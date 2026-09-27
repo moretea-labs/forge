@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { execFileSync } from 'child_process';
 import { tmpdir } from 'os';
 import { dirname, join } from 'path';
-import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
+import { ensureControllerHome, SEMANTIC_SCOPE_KEY } from '../../src/cli/repositories/controller-home';
 import { registerRepository } from '../../src/cli/repositories/registry';
 import { claimControllerSession, releaseControllerSession } from '../../src/runtime/control-plane/facade/controller-session-store';
 import {
@@ -21,7 +21,7 @@ import { createChatgptBrowserDeliveryHost } from '../../adapters/chatgpt/browser
 import { chatgptAutomationDeliveryFailure, chatgptComposerRetainsPrompt, chatgptSubmissionAcceptanceObserved, chatgptSubmissionSettlementWaitBudget, ensureControllerChatgptBrowser } from '../../adapters/chatgpt/browser-delivery-runtime';
 import { repositoryPluginConfigPath } from '../../src/runtime/plugins/config-store';
 import { createHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
-import { createWorkContract, recordWorkEvidenceState, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { appendWorkEvidence, createWorkContract, getWorkContract, listWorkSemanticRevisionRecords, readWorkContractStore, recordWorkEvidenceState, reviseWorkSemanticContext, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { ensureForgeInstanceIdentity, executionPlacement } from '../../packages/kernel/identity/api/index';
 import { bootstrapWslWindowsBridgeBrowser, chatgptBridgeTargetMatchesPage, findInstalledWslWindowsBridgeBrowser, isWslWindowsRuntime, observeWslWindowsBridgeBrowser, openWslWindowsBridgeTarget } from '../../src/cli/chatgpt-browser/bridge-provider';
 import { writeChatgptBridgeExtension } from '../../src/cli/chatgpt-browser/bridge-extension';
@@ -65,10 +65,90 @@ import {
 } from '../../src/runtime/workflow/schedules/work-continuation';
 import { createSchedule, listOccurrences } from '../../src/runtime/workflow/schedules/store';
 import type { RepositorySchedule } from '../../src/runtime/workflow/schedules/types';
+import { callRhWorkSemanticOperation } from '../../adapters/mcp/runtime-gateway/work-semantic-operations';
 
 const roots: string[] = [];
 const CONTROLLER_PLUGIN_CONFIG_SCOPE = 'controller:global';
 afterEach(() => { while (roots.length) rmSync(roots.pop()!, { recursive: true, force: true }); });
+
+describe('Thin semantic Work controller resolution', () => {
+  test('resolves canonical semantic Work first and repository-scoped legacy Work only as fallback', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-controller-semantic-work-'));
+    roots.push(root);
+    const controllerHome = join(root, 'controller');
+    ensureControllerHome(controllerHome);
+    const repoId = 'repo-controller-semantic-resolution';
+
+    const semanticResult = await callRhWorkSemanticOperation(
+      { controllerHome, scopeKey: SEMANTIC_SCOPE_KEY },
+      'start',
+      { objective: 'Canonical semantic controller Work.', request_id: 'semantic-controller-resolution' },
+    );
+    const semantic = semanticResult!.structuredContent as Record<string, any>;
+    const semanticWorkId = semantic.data.work.workId as string;
+    expect(getWorkContract({ controllerHome, repoId }, semanticWorkId)?.objective)
+      .toBe('Canonical semantic controller Work.');
+
+    createWorkContract({ controllerHome, repoId }, {
+      workId: semanticWorkId,
+      repoId,
+      workKind: 'investigation',
+      objective: 'Conflicting repository-scoped legacy duplicate.',
+      acceptanceCriteria: [],
+      allowedPaths: [],
+      forbiddenPaths: [],
+      checks: [],
+      constraints: { requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt',
+    });
+    expect(getWorkContract({ controllerHome, repoId }, semanticWorkId)?.objective)
+      .toBe('Canonical semantic controller Work.');
+
+    const revised = reviseWorkSemanticContext({ controllerHome, repoId }, semanticWorkId, {
+      expectedRevision: 1,
+      objective: 'Canonical semantic controller Work revised.',
+    });
+    expect(revised.objective).toBe('Canonical semantic controller Work revised.');
+    expect(listWorkSemanticRevisionRecords({ controllerHome, repoId }, semanticWorkId, 10)).toEqual([
+      expect.objectContaining({
+        workId: semanticWorkId,
+        revision: 1,
+        objective: 'Canonical semantic controller Work.',
+      }),
+    ]);
+    appendWorkEvidence({ controllerHome, repoId }, semanticWorkId, {
+      title: 'semantic mutation routed canonically',
+      summary: 'Mechanical evidence mutation stayed on the canonical semantic row.',
+      detailLevel: 'summary',
+    });
+    expect(getWorkContract({ controllerHome, scopeKey: SEMANTIC_SCOPE_KEY }, semanticWorkId)).toMatchObject({
+      objective: 'Canonical semantic controller Work revised.',
+      evidenceRefs: [expect.objectContaining({ title: 'semantic mutation routed canonically' })],
+    });
+    const repositoryDuplicate = readWorkContractStore({ controllerHome, repoId }).contracts
+      .find((contract) => contract.workId === semanticWorkId);
+    expect(repositoryDuplicate).toMatchObject({
+      objective: 'Conflicting repository-scoped legacy duplicate.',
+      evidenceRefs: [],
+    });
+
+    const legacyWorkId = 'WORK-LEGACY-CONTROLLER-FALLBACK';
+    createWorkContract({ controllerHome, repoId }, {
+      workId: legacyWorkId,
+      repoId,
+      workKind: 'investigation',
+      objective: 'Repository-scoped legacy controller Work.',
+      acceptanceCriteria: [],
+      allowedPaths: [],
+      forbiddenPaths: [],
+      checks: [],
+      constraints: { requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt',
+    });
+    expect(getWorkContract({ controllerHome, repoId }, legacyWorkId)?.objective)
+      .toBe('Repository-scoped legacy controller Work.');
+  });
+});
 
 describe('ChatGPT Browser controller authority', () => {
   test('does not reconfigure an already-enabled controller-scoped Browser', async () => {

@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'crypto';
 import { existsSync, mkdirSync } from 'fs';
 import { join } from 'path';
-import { ensureControllerHome, scopedOperationRoot } from '../../../../src/cli/repositories/controller-home';
+import { ensureControllerHome, scopedOperationRoot, SEMANTIC_SCOPE_KEY } from '../../../../src/cli/repositories/controller-home';
 import { withControllerLock } from '../../../../src/cli/repositories/locks';
 import { readJsonFile, sanitizeFileComponent, writeJsonAtomic } from '../../../../src/runtime/shared/json-files';
 import {
@@ -545,6 +545,23 @@ function withWorkContractStoreWrite<T>(options: WorkContractStoreOptions, operat
   );
 }
 
+function withExactWorkContractWrite<T>(
+  options: WorkContractStoreOptions,
+  workIdInput: string,
+  operation: () => T,
+): T {
+  if (!sqliteBacked(options)) return operation();
+  const workId = sanitizeFileComponent(workIdInput);
+  return withControllerLock(
+    options.controllerHome,
+    { scope: 'global', resource: `work-contract-${workId}` },
+    `work-contract:${workId}`,
+    operation,
+    undefined,
+    5_000,
+  );
+}
+
 
 function assertCanonicalWorkAdmissionAllowed(
   options: WorkContractStoreOptions,
@@ -701,7 +718,7 @@ export function createWorkContract(options: WorkContractStoreOptions, input: Cre
     writeWorkContractStore(options, nextStore);
     return contract;
   };
-  return create();
+  return withExactWorkContractWrite(options, input.workId, create);
 }
 
 interface WorkRequestIndexRecord {
@@ -940,11 +957,14 @@ export function listWorkSemanticRevisionRecords(
 ): WorkSemanticRevisionRecord[] {
   const normalizedId = workId ? sanitizeFileComponent(workId) : undefined;
   const boundedLimit = Math.max(1, Math.min(Math.trunc(limit), 1000));
-  const records = sqliteBacked(options)
-    ? listControlPlaneRecords<WorkSemanticRevisionRecord>(options.controllerHome, {
-        namespace: 'work_semantic_revision', scope: workContractStoreScopeKey(options), limit: 5_000,
+  const authoritativeOptions = normalizedId
+    ? authoritativeExistingWorkStoreOptions(options, normalizedId)
+    : options;
+  const records = sqliteBacked(authoritativeOptions)
+    ? listControlPlaneRecords<WorkSemanticRevisionRecord>(authoritativeOptions.controllerHome, {
+        namespace: 'work_semantic_revision', scope: workContractStoreScopeKey(authoritativeOptions), limit: 5_000,
       }).map((record) => record.value)
-    : readWorkSemanticRevisionStore(options).records;
+    : readWorkSemanticRevisionStore(authoritativeOptions).records;
   return records
     .filter((record) => !normalizedId || record.workId === normalizedId)
     .map((record) => ({
@@ -960,13 +980,32 @@ export function listWorkSemanticRevisionRecords(
     .slice(0, boundedLimit);
 }
 
+function authoritativeExistingWorkStoreOptions(
+  options: WorkContractStoreOptions,
+  workIdInput: string,
+): WorkContractStoreOptions {
+  if (!sqliteBacked(options)) return options;
+  const requestedScope = workContractStoreScopeKey(options);
+  if (requestedScope === SEMANTIC_SCOPE_KEY) return options;
+  const workId = sanitizeFileComponent(workIdInput);
+  const semantic = readControlPlaneRecord<WorkContract>(
+    options.controllerHome,
+    'work_contract',
+    SEMANTIC_SCOPE_KEY,
+    workId,
+  );
+  return semantic ? { ...options, scopeKey: SEMANTIC_SCOPE_KEY } : options;
+}
+
 export function reviseWorkSemanticContext(
   options: WorkContractStoreOptions,
   workIdInput: string,
   input: ReviseWorkSemanticInput,
 ): WorkContract {
   if (!Number.isInteger(input.expectedRevision) || input.expectedRevision < 1) throw new Error('WORK_EXPECTED_REVISION_INVALID');
-  return withWorkContractStoreWrite(options, () => {
+  return withExactWorkContractWrite(options, workIdInput, () => {
+    const authoritativeOptions = authoritativeExistingWorkStoreOptions(options, workIdInput);
+    return withWorkContractStoreWrite(authoritativeOptions, () => {
     const workId = sanitizeFileComponent(workIdInput);
     const applyRevision = (current: WorkContract, at: string): WorkContract => {
       const semanticRevision = currentWorkSemanticRevision(current);
@@ -1001,45 +1040,71 @@ export function reviseWorkSemanticContext(
       });
     };
 
-    if (sqliteBacked(options)) {
-      return withControlPlaneTransaction(options.controllerHome, (database) => {
-        const currentRecord = readControlPlaneRecordWithinTransaction<WorkContract>(database, 'work_contract', workContractStoreScopeKey(options), workId);
+    if (sqliteBacked(authoritativeOptions)) {
+      return withControlPlaneTransaction(authoritativeOptions.controllerHome, (database) => {
+        const scope = workContractStoreScopeKey(authoritativeOptions);
+        const currentRecord = readControlPlaneRecordWithinTransaction<WorkContract>(database, 'work_contract', scope, workId);
         if (!currentRecord) throw new Error(`work contract not found: ${workId}`);
         const current = canonicalizeStoredWorkContract(currentRecord.value);
-        const at = nowIso(options);
+        const at = nowIso(authoritativeOptions);
         const next = applyRevision(current, at);
         const semanticRevision = currentWorkSemanticRevision(current);
         const revisionKey = workSemanticRevisionKey(workId, semanticRevision);
-        if (!readControlPlaneRecordWithinTransaction<WorkSemanticRevisionRecord>(database, 'work_semantic_revision', workContractStoreScopeKey(options), revisionKey)) {
+        if (!readControlPlaneRecordWithinTransaction<WorkSemanticRevisionRecord>(database, 'work_semantic_revision', scope, revisionKey)) {
           writeControlPlaneRecordWithinTransaction(database, {
-            namespace: 'work_semantic_revision', scope: workContractStoreScopeKey(options), key: revisionKey, schemaVersion: 1,
+            namespace: 'work_semantic_revision', scope, key: revisionKey, schemaVersion: 1,
             value: { schemaVersion: 1, ...workSemanticView(current), recordedAt: at },
             action: 'work_semantic_revision_archived', expectedRevision: null,
           });
         }
         return writeControlPlaneRecordWithinTransaction(database, {
-          namespace: 'work_contract', scope: workContractStoreScopeKey(options), key: workId, schemaVersion: 3,
+          namespace: 'work_contract', scope, key: workId, schemaVersion: 3,
           value: next, action: 'work_semantic_revised', expectedRevision: currentRecord.revision,
         }).value;
       });
     }
 
-    const store = readWorkContractStore(options);
+    const store = readWorkContractStore(authoritativeOptions);
     const index = store.contracts.findIndex((contract) => contract.workId === workId);
     if (index < 0) throw new Error(`work contract not found: ${workId}`);
     const current = store.contracts[index]!;
-    const at = nowIso(options);
+    const at = nowIso(authoritativeOptions);
     const next = applyRevision(current, at);
     const archived = { schemaVersion: 1 as const, ...workSemanticView(current), recordedAt: at };
-    const history = readWorkSemanticRevisionStore(options);
+    const history = readWorkSemanticRevisionStore(authoritativeOptions);
     if (!history.records.some((record) => record.workId === workId && record.revision === archived.revision)) {
-      writeJsonAtomic(workSemanticRevisionStorePath(options), { schemaVersion: 1, records: [...history.records, archived].slice(-5_000) });
+      writeJsonAtomic(workSemanticRevisionStorePath(authoritativeOptions), { schemaVersion: 1, records: [...history.records, archived].slice(-5_000) });
     }
     const contracts = [...store.contracts];
     contracts[index] = next;
-    writeWorkContractStore(options, { schemaVersion: 3, updatedAt: at, contracts });
+    writeWorkContractStore(authoritativeOptions, { schemaVersion: 3, updatedAt: at, contracts });
     return next;
+    });
   });
+}
+
+function readExactSqliteWorkContract(
+  options: WorkContractStoreOptions & { controllerHome: string },
+  scope: string,
+  sanitizedId: string,
+): WorkContract | undefined {
+  const exact = readControlPlaneRecord<WorkContract>(options.controllerHome, 'work_contract', scope, sanitizedId);
+  if (!exact) return undefined;
+  const canonical = canonicalizeStoredWorkContract(exact.value);
+  if (storedWorkContractNeedsMigration(exact.value)) {
+    withControlPlaneTransaction(options.controllerHome, (database) => {
+      writeControlPlaneRecordWithinTransaction(database, {
+        namespace: 'work_contract',
+        scope,
+        key: canonical.workId,
+        schemaVersion: 3,
+        value: canonical,
+        action: 'work_contract_schema_v3_migrated',
+        expectedRevision: exact.revision,
+      });
+    });
+  }
+  return canonical;
 }
 
 export function getWorkContract(options: WorkContractStoreOptions, workId: string): WorkContract | undefined {
@@ -1047,30 +1112,21 @@ export function getWorkContract(options: WorkContractStoreOptions, workId: strin
   if (!sqliteBacked(options)) {
     return readWorkContractStore(options).contracts.find((contract) => contract.workId === sanitizedId);
   }
-  const exact = readControlPlaneRecord<WorkContract>(options.controllerHome, 'work_contract', workContractStoreScopeKey(options), sanitizedId);
-  if (exact) {
-    const canonical = canonicalizeStoredWorkContract(exact.value);
-    if (storedWorkContractNeedsMigration(exact.value)) {
-      withControlPlaneTransaction(options.controllerHome, (database) => {
-        writeControlPlaneRecordWithinTransaction(database, {
-          namespace: 'work_contract',
-          scope: workContractStoreScopeKey(options),
-          key: canonical.workId,
-          schemaVersion: 3,
-          value: canonical,
-          action: 'work_contract_schema_v3_migrated',
-          expectedRevision: exact.revision,
-        });
-      });
-    }
-    return canonical;
+  const requestedScope = workContractStoreScopeKey(options);
+  if (requestedScope !== SEMANTIC_SCOPE_KEY) {
+    const semantic = readExactSqliteWorkContract(options, SEMANTIC_SCOPE_KEY, sanitizedId);
+    if (semantic) return semantic;
   }
-  // Preserve the one-time legacy import path only while this repository has no
-  // per-Work rows. Once any per-Work row exists, absence of this exact key is
-  // authoritative and unrelated rows must never be normalized for an exact get.
+  const exact = readExactSqliteWorkContract(options, requestedScope, sanitizedId);
+  if (exact) return exact;
+
+  // Preserve the one-time legacy import path only while this requested scope has
+  // no per-Work rows. Canonical semantic rows are checked first and never copied
+  // into repository scope; repository-scoped rows remain a read-only compatibility
+  // fallback until their consumers are retired.
   const hasPerWorkRows = listControlPlaneRecords<WorkContract>(options.controllerHome, {
     namespace: 'work_contract',
-    scope: workContractStoreScopeKey(options),
+    scope: requestedScope,
     limit: 1,
   }).length > 0;
   if (hasPerWorkRows) return undefined;
@@ -1174,16 +1230,23 @@ function updateWorkContractInternal(
   allowImplementationReviewWrite = false,
   allowPhaseRegression = false,
 ): WorkContract {
-  return withWorkContractStoreWrite(options, () => {
+  return withExactWorkContractWrite(options, workId, () => {
+    const authoritativeOptions = authoritativeExistingWorkStoreOptions(options, workId);
+    return withWorkContractStoreWrite(authoritativeOptions, () => {
     const sanitizedId = sanitizeFileComponent(workId);
-    const exact = sqliteBacked(options)
-      ? readControlPlaneRecord<WorkContract>(options.controllerHome, 'work_contract', workContractStoreScopeKey(options), sanitizedId)
+    const exact = sqliteBacked(authoritativeOptions)
+      ? readControlPlaneRecord<WorkContract>(
+          authoritativeOptions.controllerHome,
+          'work_contract',
+          workContractStoreScopeKey(authoritativeOptions),
+          sanitizedId,
+        )
       : undefined;
-    const store = exact ? undefined : readWorkContractStore(options);
+    const store = exact ? undefined : readWorkContractStore(authoritativeOptions);
     const index = store?.contracts.findIndex((contract) => contract.workId === sanitizedId) ?? -1;
     if (!exact && index < 0) throw new Error(`work contract not found: ${sanitizedId}`);
-    const at = nowIso(options);
-    // A per-Work SQLite row is the mutable authority.  Do not normalize every
+    const at = nowIso(authoritativeOptions);
+    // A per-Work SQLite row is the mutable authority. Do not normalize every
     // sibling just to update this row: malformed historical evidence must stay
     // visible and fenced, but cannot prevent a different terminal Work from
     // recording its physical cleanup.
@@ -1192,8 +1255,8 @@ function updateWorkContractInternal(
       : store!.contracts[index]!;
     const patch = typeof mutation === 'function' ? mutation(current, at) : mutation;
     if (!patch) return current;
-    if (options.controllerHome) {
-      assertCanonicalWorkAdmissionAllowed(options, {
+    if (authoritativeOptions.controllerHome) {
+      assertCanonicalWorkAdmissionAllowed(authoritativeOptions, {
         operation: patch.status !== undefined && isTerminalWorkContractStatus(patch.status)
           ? 'maintenance'
           : 'continue',
@@ -1247,11 +1310,11 @@ function updateWorkContractInternal(
     objective: (patch.objective ?? current.objective).slice(0, 2_000),
     continuationPrompt: (patch.continuationPrompt ?? current.continuationPrompt)?.slice(0, 2_000),
     }), { allowRetainedCancelledResume, allowPhaseRegression });
-    if (exact && sqliteBacked(options)) {
-      withControlPlaneTransaction(options.controllerHome, (database) => {
+    if (exact && sqliteBacked(authoritativeOptions)) {
+      withControlPlaneTransaction(authoritativeOptions.controllerHome, (database) => {
         writeControlPlaneRecordWithinTransaction(database, {
           namespace: 'work_contract',
-          scope: workContractStoreScopeKey(options),
+          scope: workContractStoreScopeKey(authoritativeOptions),
           key: next.workId,
           schemaVersion: 3,
           value: next,
@@ -1263,8 +1326,9 @@ function updateWorkContractInternal(
     }
     const contracts = [...store!.contracts];
     contracts[index] = next;
-    writeWorkContractStore(options, { schemaVersion: 3, updatedAt: at, contracts });
+    writeWorkContractStore(authoritativeOptions, { schemaVersion: 3, updatedAt: at, contracts });
     return next;
+    });
   });
 }
 
