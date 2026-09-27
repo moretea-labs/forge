@@ -4589,12 +4589,17 @@ export async function verifyConfiguredRuntimeReleaseSessionStaticGates(
 }
 
 
+const RELEASE_SESSION_CANDIDATE_VERIFY_TIMEOUT_MS = 60_000;
+
 function candidateRecoveryConfig(session: ReleaseSession): RecoveryConfig {
   return {
     schemaVersion: 1,
     controllerHome: session.candidate.controllerHome,
     installProfile: 'manual',
-    primaryRuntimeService: defaultPrimaryRuntimeServiceConfig(),
+    primaryRuntimeService: {
+      ...defaultPrimaryRuntimeServiceConfig(),
+      postRestartVerifyTimeoutMs: RELEASE_SESSION_CANDIDATE_VERIFY_TIMEOUT_MS,
+    },
     mainMcpTokenFile: session.candidate.authTokenFile,
     readOnlyTool: {
       name: STABLE_RECOVERY_READ_ONLY_TOOL.name,
@@ -4804,7 +4809,7 @@ export async function bootAndVerifyConfiguredRuntimeReleaseSessionCandidate(
 
       let initialVerify = await verifyPrimaryRuntimeAfterStart({
         config: candidateConfig,
-        timeoutMs: 60_000,
+        timeoutMs: RELEASE_SESSION_CANDIDATE_VERIFY_TIMEOUT_MS,
         now: Date.now,
         wait: sleep,
         verifyLocal: verifyLocalRuntime,
