@@ -478,12 +478,18 @@ export async function callStatusInboxAdapter(
         });
       }
       const toolSurfaceComputed = exposure.expectedToolNames.length > 0 || exposure.actualToolNames.length > 0 || toolSurfaceReady;
-      const autonomousContinuationReady = readiness.ready && toolSurfaceReady && !sourceSnapshotStale;
-      const autonomousContinuationBlockers = [...new Set(
-        readinessReasons
+      // Runtime/tool/source health proves bounded execution only. Unattended
+      // continuation is a product-level live property and must remain unproven
+      // until an exact-active-release same-conversation receipt is observed.
+      // Never synthesize that proof from Scheduler liveness, static tool
+      // availability, delivery receipts, or completed implementation Work.
+      const autonomousContinuationReady = false;
+      const autonomousContinuationBlockers = [...new Set([
+        'AUTONOMOUS_CONTINUATION_LIVE_PROOF_REQUIRED',
+        ...readinessReasons
           .map((reason) => reason.code)
           .filter((code): code is string => typeof code === 'string' && code.length > 0),
-      )];
+      ])];
       const readinessWithToolSurface = {
         ready: effectiveReady,
         readyFor: 'bounded_execution' as const,
@@ -510,9 +516,8 @@ export async function callStatusInboxAdapter(
           },
           semantics: {
             executionReady,
-            // Derived from existing whole-runtime health and the same tool/source
-            // coherence gates already reported here. Per-Work continuation
-            // eligibility remains owned by Controller/Scheduler lifecycle facts.
+            // Deliberately independent from whole-runtime health. Only fresh
+            // exact-active-release live continuation evidence may make this true.
             autonomousContinuationReady,
             autonomousContinuationBlockers,
             maintenanceHealthy,

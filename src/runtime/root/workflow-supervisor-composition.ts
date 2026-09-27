@@ -16,6 +16,7 @@ import {
 } from '../../../packages/kernel/controller/api/index';
 import {
   bindChatgptWorkConversation,
+  bindChatgptWorkHostConversation,
   getChatgptWorkConversationBinding,
   type ChatgptWorkConversationBinding,
 } from '../../../adapters/chatgpt/work-conversation-binding-store';
@@ -28,7 +29,7 @@ import type { WorkflowSupervisorCompletion, WorkflowSupervisorLifecycleHooks, Wo
 export type WorkflowSupervisorBoundary =
   | { status: 'not_eligible' }
   | { status: 'conversation_pending'; reason: 'EXACT_WORK_CONVERSATION_BINDING_REQUIRED' }
-  | { status: 'outer_turn'; taskId: string; workId?: string; requirementId?: string; conversationId: string; conversationUrl: string };
+  | { status: 'outer_turn'; taskId: string; workId?: string; requirementId?: string; conversationId: string; conversationUrl?: string; hostConversationSessionId?: string };
 
 export type WorkflowSupervisorEnrollmentStatus =
   | 'not_eligible'
@@ -81,7 +82,8 @@ export function workflowSupervisorBoundaryForWork(
     workId: work.workId,
     ...(work.requirementId ? { requirementId: work.requirementId } : {}),
     conversationId: binding.conversationId,
-    conversationUrl: binding.conversationUrl,
+    ...(binding.conversationUrl ? { conversationUrl: binding.conversationUrl } : {}),
+    ...(binding.hostConversationSessionId ? { hostConversationSessionId: binding.hostConversationSessionId } : {}),
   };
 }
 
@@ -108,6 +110,14 @@ export function inheritWorkflowSupervisorConversationBinding(
     }
     return existing;
   }
+  if (source.hostConversationSessionId) {
+    return bindChatgptWorkHostConversation(options, {
+      workId: toWorkId,
+      hostConversationSessionId: source.hostConversationSessionId,
+      localAlias: source.localAlias,
+    });
+  }
+  if (!source.conversationUrl) return undefined;
   return bindChatgptWorkConversation(options, {
     workId: toWorkId,
     conversationUrl: source.conversationUrl,
@@ -219,6 +229,7 @@ export function resolveWorkflowSupervisorChatgptDelivery(
   if (!binding || binding.conversationId !== task.conversationId || binding.conversationUrl !== task.conversationUrl) {
     throw new Error('WORKFLOW_SUPERVISOR_CHATGPT_DELIVERY_BINDING_MISMATCH');
   }
+  if (!binding.conversationUrl?.trim()) throw new Error('WORKFLOW_SUPERVISOR_CHATGPT_BROWSER_URL_MISSING');
   if (!binding.latestBrowserSessionId?.trim()) throw new Error('WORKFLOW_SUPERVISOR_CHATGPT_BROWSER_SESSION_MISSING');
   return {
     repoId,
@@ -365,7 +376,7 @@ export async function workflowSupervisorCurrentConversationMatchesWork(
   workId: string,
 ): Promise<boolean> {
   const boundary = workflowSupervisorBoundaryForWork(options, workId);
-  if (boundary.status !== 'outer_turn') return false;
+  if (boundary.status !== 'outer_turn' || !boundary.conversationUrl) return false;
   const forgeHome = resolveWorkflowSupervisorForgeHome(options.controllerHome);
   if (!existsSync(workflowSupervisorSocketPath(forgeHome))) return false;
   try {
@@ -378,15 +389,41 @@ export async function workflowSupervisorCurrentConversationMatchesWork(
   }
 }
 
+export function workflowSupervisorHostConversationMatchesWork(
+  options: { controllerHome: string; repoId: string },
+  workId: string,
+  hostConversationSessionId: string,
+): boolean {
+  const expected = hostConversationSessionId.trim();
+  if (!expected) return false;
+  const boundary = workflowSupervisorBoundaryForWork(options, workId);
+  return boundary.status === 'outer_turn'
+    && boundary.hostConversationSessionId === expected;
+}
+
 export async function bindCurrentWorkflowSupervisorConversationForWork(
   options: { controllerHome: string; repoId: string },
   workId: string,
+  input: { hostConversationSessionId?: string } = {},
 ): Promise<
   | { status: 'bound'; binding: ChatgptWorkConversationBinding }
   | { status: 'not_eligible' | 'current_conversation_unbound' | 'daemon_unavailable'; reason?: string }
 > {
   const work = getWorkContract(options, workId);
   if (!work || semanticWorkState(work) !== 'open') return { status: 'not_eligible' };
+  const hostConversationSessionId = input.hostConversationSessionId?.trim();
+  if (hostConversationSessionId) {
+    const existing = getChatgptWorkConversationBinding(options, workId);
+    if (existing?.hostConversationSessionId === hostConversationSessionId) return { status: 'bound', binding: existing };
+    if (existing) {
+      throw new Error(`WORKFLOW_SUPERVISOR_CURRENT_CONVERSATION_CONFLICT:${workId}:${existing.conversationId}:host`);
+    }
+    return {
+      status: 'bound',
+      binding: bindChatgptWorkHostConversation(options, { workId, hostConversationSessionId }),
+    };
+  }
+
   const forgeHome = resolveWorkflowSupervisorForgeHome(options.controllerHome);
   if (!existsSync(workflowSupervisorSocketPath(forgeHome))) return { status: 'daemon_unavailable', reason: 'WORKFLOW_SUPERVISOR_DAEMON_UNAVAILABLE' };
   const current = await getWorkflowSupervisorCurrentConversation(forgeHome);
@@ -422,7 +459,7 @@ export async function ensureWorkflowSupervisorEnrollmentForWork(
   const registeredTask = await registerWorkflowSupervisorTask(forgeHome, {
     taskId: boundary.taskId,
     conversationId: boundary.conversationId,
-    conversationUrl: boundary.conversationUrl,
+    ...(boundary.conversationUrl ? { conversationUrl: boundary.conversationUrl } : {}),
     objective: requirement?.outcomeStatement ?? getWorkContract(options, boundary.workId ?? workId)?.objective ?? (boundary.workId ?? workId),
     completionContract: {
       kind: requirement ? 'forge_requirement_done' : 'forge_work_done',
@@ -433,7 +470,8 @@ export async function ensureWorkflowSupervisorEnrollmentForWork(
     continuationPolicy: {
       kind: 'forge_goal_outer_turn',
       exact_conversation_id: boundary.conversationId,
-      exact_conversation_url: boundary.conversationUrl,
+      ...(boundary.conversationUrl ? { exact_conversation_url: boundary.conversationUrl } : {}),
+      ...(boundary.hostConversationSessionId ? { exact_host_conversation_session_id: boundary.hostConversationSessionId } : {}),
       lower_layer_continuation_owner: 'controller_round',
       outer_turn_owner: 'workflow_supervisor',
     },

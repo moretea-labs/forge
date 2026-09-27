@@ -22,7 +22,8 @@ export interface WorkflowSupervisorProposal {
 export interface WorkflowSupervisorTaskInput {
   taskId: string;
   conversationId: string;
-  conversationUrl: string;
+  /** Browser locator only. Host-native current-session tasks intentionally have no URL. */
+  conversationUrl?: string;
   objective: string;
   completionContract: Record<string, unknown>;
   continuationPolicy: Record<string, unknown>;

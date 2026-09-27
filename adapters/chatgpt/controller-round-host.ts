@@ -62,6 +62,6 @@ export function chatgptControllerRoundBindingAuthorizesRecovery(
   binding: ChatgptWorkConversationBinding | undefined,
 ): boolean {
   if (record?.controllerType !== 'chatgpt' || record.status !== 'dispatched' || !record.bindingId || !binding) return false;
-  if (binding.bindingId !== record.bindingId || !binding.latestBrowserSessionId) return false;
+  if (binding.bindingId !== record.bindingId || !binding.latestBrowserSessionId || !binding.conversationUrl) return false;
   try { return hasChatgptConversationIdentity(binding.conversationUrl); } catch { return false; }
 }

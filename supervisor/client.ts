@@ -56,7 +56,7 @@ export async function registerWorkflowSupervisorTask(forgeHome: string, input: W
   return await rpc<WorkflowSupervisorTask>(forgeHome, 'task_register', {
     task_id: input.taskId,
     conversation_id: input.conversationId,
-    conversation_url: input.conversationUrl,
+    ...(input.conversationUrl ? { conversation_url: input.conversationUrl } : {}),
     objective: input.objective,
     completion_contract: input.completionContract,
     continuation_policy: input.continuationPolicy,

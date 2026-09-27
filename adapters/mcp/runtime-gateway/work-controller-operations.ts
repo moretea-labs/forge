@@ -20,7 +20,7 @@ import {
 import { assertAutomatedOperationAllowed } from '../../../src/runtime/control-plane/governance/external-effects';
 import { ensureControllerDispositionContinuation } from '../../../src/runtime/workflow/schedules/work-continuation';
 import { ensureScheduledControllerBindingForWork } from '../../../src/runtime/root/scheduled-controller-composition';
-import { bindCurrentWorkflowSupervisorConversationForWork, ensureWorkflowSupervisorEnrollmentForWork, workflowSupervisorBoundaryForWork, workflowSupervisorCurrentConversationMatchesWork } from '../../../src/runtime/root/workflow-supervisor-composition';
+import { bindCurrentWorkflowSupervisorConversationForWork, ensureWorkflowSupervisorEnrollmentForWork, workflowSupervisorBoundaryForWork, workflowSupervisorCurrentConversationMatchesWork, workflowSupervisorHostConversationMatchesWork } from '../../../src/runtime/root/workflow-supervisor-composition';
 import {
   acknowledgeControllerRoundClaim,
   claimControllerRoundSession,
@@ -131,7 +131,10 @@ export async function callRhWorkControllerOperation(
         && dispatchedRelay.principalId === identity.principalId
       );
       const supervisorOuterTurnClaimWithoutAuthority = supervisorOuterTurnClaimCandidate
-        && await workflowSupervisorCurrentConversationMatchesWork(store, workId);
+        && (supervisorBoundary.status === 'outer_turn' && supervisorBoundary.hostConversationSessionId
+          ? Boolean(ctx.hostConversationSessionId?.trim())
+            && workflowSupervisorHostConversationMatchesWork(store, workId, ctx.hostConversationSessionId!)
+          : await workflowSupervisorCurrentConversationMatchesWork(store, workId));
       const userDirectedWaitingResumeWithoutAuthority = Boolean(
         dispatchedRelay?.status === 'waiting_for_user'
         && args.requested_by === 'user'
@@ -301,7 +304,13 @@ export async function callRhWorkControllerOperation(
         if (disposition !== 'continue_immediately') throw new Error('WORKFLOW_SUPERVISOR_CURRENT_CONVERSATION_ENROLLMENT_REQUIRES_CONTINUE');
         if (!currentOwner) throw new Error(`CONTROLLER_RELAY_ACTIVE_CLAIM_REQUIRED: ${workId}`);
         if (currentOwner.controllerType !== 'chatgpt') throw new Error(`CONTROLLER_RELAY_CHATGPT_ONLY: ${workId}`);
-        const bound = await bindCurrentWorkflowSupervisorConversationForWork(store, workId);
+        const hostCurrentConversation = args.current_conversation_transport === 'host';
+        if (hostCurrentConversation && !ctx.hostConversationSessionId?.trim()) {
+          throw new Error('CHATGPT_HOST_CONVERSATION_SESSION_REQUIRED');
+        }
+        const bound = await bindCurrentWorkflowSupervisorConversationForWork(store, workId, {
+          ...(hostCurrentConversation ? { hostConversationSessionId: ctx.hostConversationSessionId } : {}),
+        });
         if (bound.status !== 'bound') throw new Error(bound.reason ?? `WORKFLOW_SUPERVISOR_CURRENT_CONVERSATION_${bound.status.toUpperCase()}`);
         if (!currentRelay) {
           const principalId = controllerSessionPrincipalId(currentOwner);

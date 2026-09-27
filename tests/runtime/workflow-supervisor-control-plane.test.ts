@@ -8,13 +8,13 @@ import { registerRepository } from '../../src/cli/repositories/registry';
 import { acknowledgeControllerRoundClaim, beginInitialControllerRoundDispatch, claimStalledControllerRoundRelays, controllerRoundProviderEffectId, finishControllerRoundRelayDispatch, getRequirementControllerRoundRelay, recoverControllerRoundRelayAuthority, submitControllerRoundDisposition } from '../../packages/kernel/controller/api/index';
 import { createWorkContract, reviseWorkSemanticContext } from '../../packages/kernel/work/api/index';
 import { createRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
-import { forgeWorkflowSupervisorLifecycleHooks, inheritWorkflowSupervisorConversationBinding, workflowSupervisorBoundaryForWork, workflowSupervisorLowerLayerReadyForWork } from '../../src/runtime/root/workflow-supervisor-composition';
+import { bindCurrentWorkflowSupervisorConversationForWork, forgeWorkflowSupervisorLifecycleHooks, inheritWorkflowSupervisorConversationBinding, workflowSupervisorBoundaryForWork, workflowSupervisorHostConversationMatchesWork, workflowSupervisorLowerLayerReadyForWork } from '../../src/runtime/root/workflow-supervisor-composition';
 import { WorkflowSupervisorControlPlane } from '../../supervisor/control-plane';
 import { LEGACY_SUPERVISOR_BLOCK_END, LEGACY_SUPERVISOR_BLOCK_START, parseSupervisorCompletion, renderSupervisorPrompt, renderSupervisorReceipt, supervisorReceiptChallenge, SUPERVISOR_BLOCK_END, SUPERVISOR_BLOCK_START } from '../../supervisor/protocol';
 import { WorkflowSupervisorStore } from '../../supervisor/store';
 import { reconcileWorkflowSupervisorSocket, WorkflowSupervisorEphemeralDiscovery } from '../../supervisor/server';
 import { claimControllerSession, releaseControllerSession } from '../../src/runtime/control-plane/facade/controller-session-store';
-import { bindChatgptWorkConversation, getChatgptWorkConversationBinding, rebindChatgptWorkConversation } from '../../adapters/chatgpt/work-conversation-binding-store';
+import { bindChatgptWorkConversation, chatgptHostConversationId, getChatgptWorkConversationBinding, rebindChatgptWorkConversation } from '../../adapters/chatgpt/work-conversation-binding-store';
 import { CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE, chatgptProviderPageFailure, classifyChatgptProviderFailure } from '../../adapters/chatgpt/provider-delivery';
 
 const roots: string[] = [];
@@ -217,6 +217,59 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
       requirementId,
       conversationId: 'exact-conversation-lineage',
     });
+  });
+
+  test('binds a host-native current ChatGPT session without inventing a browser URL', async () => {
+    const fx = fixture();
+    const workId = 'work-supervisor-host-native-current-session';
+    createWorkContract(fx.store, {
+      workId,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      objective: 'Continue the exact native ChatGPT conversation without browser discovery.',
+      acceptanceCriteria: ['host current-session identity remains exact'],
+      allowedPaths: [], forbiddenPaths: [], checks: [],
+      constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt', status: 'running',
+    });
+    const hostConversationSessionId = 'ios-native-current-session-123';
+
+    const bound = await bindCurrentWorkflowSupervisorConversationForWork(fx.store, workId, {
+      hostConversationSessionId,
+    });
+
+    expect(bound.status).toBe('bound');
+    const binding = getChatgptWorkConversationBinding(fx.store, workId);
+    expect(binding).toMatchObject({
+      workId,
+      conversationId: chatgptHostConversationId(hostConversationSessionId),
+      hostConversationSessionId,
+    });
+    expect(binding?.conversationUrl).toBeUndefined();
+    expect(workflowSupervisorHostConversationMatchesWork(fx.store, workId, hostConversationSessionId)).toBe(true);
+    expect(workflowSupervisorBoundaryForWork(fx.store, workId)).toMatchObject({
+      status: 'outer_turn',
+      conversationId: chatgptHostConversationId(hostConversationSessionId),
+      hostConversationSessionId,
+    });
+
+    const supervisorStore = new WorkflowSupervisorStore(join(fx.root, 'host-native-supervisor'));
+    const control = new WorkflowSupervisorControlPlane(supervisorStore);
+    const task = control.registerTask({
+      taskId: 'task-host-native-current-session',
+      conversationId: chatgptHostConversationId(hostConversationSessionId),
+      objective: 'Host-native current-session continuation.',
+      completionContract: {},
+      continuationPolicy: {
+        exact_conversation_id: chatgptHostConversationId(hostConversationSessionId),
+        exact_host_conversation_session_id: hostConversationSessionId,
+      },
+      userBlockerPolicy: {},
+    });
+    control.reserveEnrollment(task.taskId);
+    expect(task.conversationUrl).toBeUndefined();
+    expect(control.browserTasks()).toEqual([]);
+    supervisorStore.close();
   });
 
   test('keeps the browser-observed current conversation ephemeral, exact, and unambiguous', () => {

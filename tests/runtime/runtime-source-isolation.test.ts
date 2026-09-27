@@ -905,8 +905,9 @@ printf '{"ok":true}\\n'
       };
     };
     expect(detail.readiness?.readyFor).toBe('bounded_execution');
-    expect(typeof detail.readiness?.diagnostics?.semantics?.autonomousContinuationReady).toBe('boolean');
-    expect(Array.isArray(detail.readiness?.diagnostics?.semantics?.autonomousContinuationBlockers)).toBe(true);
+    expect(detail.readiness?.diagnostics?.semantics?.autonomousContinuationReady).toBe(false);
+    expect(detail.readiness?.diagnostics?.semantics?.autonomousContinuationBlockers)
+      .toContain('AUTONOMOUS_CONTINUATION_LIVE_PROOF_REQUIRED');
     expect(detail.activeContractCount).toBe(1);
     expect(detail.invalidActiveContractCount).toBe(1);
     expect(detail.invalidActiveContracts?.[0]).toMatchObject({ workId: malformed.workId });
