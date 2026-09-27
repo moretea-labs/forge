@@ -5169,18 +5169,34 @@ export async function cutoverConfiguredRuntimeReleaseSession(
         };
       }
 
-      const stableNow = observeRuntimeStatus(config.controllerHome);
-      const liveRuntimeIdentityVerified = stableNow.running && stableNow.ready && !stableNow.stale;
-      const candidateIsStable = Boolean(
-        liveRuntimeIdentityVerified
-        && stableNow.snapshot?.releaseId === candidateRelease.releaseId
-        && stableNow.snapshot?.artifactIdentity === candidateRelease.artifactIdentity,
+      const reconciliationTimeoutMs = Math.max(
+        1_000,
+        configuredPrimaryRuntimeService(config).postRestartVerifyTimeoutMs ?? 60_000,
       );
-      const originalStableRestored = Boolean(
-        liveRuntimeIdentityVerified
-        && stableNow.snapshot?.releaseId === session.stableRelease.releaseId
-        && stableNow.snapshot?.artifactIdentity === session.stableRelease.artifactIdentity,
-      );
+      const reconciliationDeadline = Date.now() + reconciliationTimeoutMs;
+      let stableNow = observeRuntimeStatus(config.controllerHome);
+      const stableIdentity = () => {
+        const liveRuntimeIdentityVerified = stableNow.running && stableNow.ready && !stableNow.stale;
+        return {
+          candidateIsStable: Boolean(
+            liveRuntimeIdentityVerified
+            && stableNow.snapshot?.releaseId === candidateRelease.releaseId
+            && stableNow.snapshot?.artifactIdentity === candidateRelease.artifactIdentity,
+          ),
+          originalStableRestored: Boolean(
+            liveRuntimeIdentityVerified
+            && stableNow.snapshot?.releaseId === session.stableRelease.releaseId
+            && stableNow.snapshot?.artifactIdentity === session.stableRelease.artifactIdentity,
+          ),
+        };
+      };
+      let observedIdentity = stableIdentity();
+      while (!observedIdentity.candidateIsStable && !observedIdentity.originalStableRestored && Date.now() < reconciliationDeadline) {
+        await sleep(Math.min(500, Math.max(1, reconciliationDeadline - Date.now())));
+        stableNow = observeRuntimeStatus(config.controllerHome);
+        observedIdentity = stableIdentity();
+      }
+      const { candidateIsStable, originalStableRestored } = observedIdentity;
 
       if (candidateIsStable) {
         if (session.phase === 'cutover_attempting') {
