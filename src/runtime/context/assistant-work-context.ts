@@ -1,6 +1,6 @@
 import { getRepository } from '../../cli/repositories/registry';
 import { configuredBrainRoot } from '../../cli/commands/brain-root';
-import { getWorkContract, isTerminalWorkContractStatus } from '../../../packages/kernel/work/api/index';
+import { getWorkContract, semanticWorkState } from '../../../packages/kernel/work/api/index';
 import type { ScopeRef } from '../../../packages/kernel/identity/api/index';
 import { getControllerRoundRelay, listCurrentControllerRoundRelays } from '../../../packages/kernel/controller/api/index';
 import { recordExperience, recordOutcomeObservation, queryExperiences, type ExperienceApplicability, type ExperienceDraft, type ExperienceRecord, type OutcomeObservation } from '../../../packages/kernel/memory/api/index';
@@ -206,7 +206,7 @@ function learningStoreOptions(input: { controllerHome: string; repoId: string; i
 
 function currentLearningProvenance(input: { controllerHome: string; repoId: string; identity: ExperienceWriteIdentity; now?: string }): { sourceWorkId: string; sourceRoundId: string } {
   const work = getWorkContract({ controllerHome: input.controllerHome, repoId: input.repoId }, input.identity.workId);
-  if (!work || isTerminalWorkContractStatus(work.status)) throw new Error('LEARNING_LOOP_WORK_NOT_ACTIVE');
+  if (!work || semanticWorkState(work) !== 'open') throw new Error('LEARNING_LOOP_WORK_NOT_ACTIVE');
   const revision = Number(work.semanticRevision);
   return {
     sourceWorkId: work.workId,

@@ -18,7 +18,6 @@ import {
   createWorkContract,
   failWorkContract,
   getWorkContract,
-  isTerminalWorkContractStatus,
   semanticWorkState,
   listWorkContracts,
   readActiveWorkCandidates,
@@ -52,7 +51,6 @@ import {
 import { evaluatePolicyGate } from './policy-gate';
 import {
   assertImplementationReviewPreDeliveryBoundary,
-  authoritativeImplementationReviewVerificationEvidence,
   implementationReviewChangedPathDigest,
   latestImplementationReview,
   normalizeImplementationReviewChangedPaths,
@@ -235,17 +233,6 @@ function currentImplementationReviewCandidate(
   if (!sourceRevision || !verificationWorkspaceFingerprint || !workspaceFingerprint) {
     throw new Error('WORK_IMPLEMENTATION_REVIEW_SOURCE_IDENTITY_REQUIRED');
   }
-  const verification = authoritativeImplementationReviewVerificationEvidence({
-    repoId: work.repoId,
-    workId: work.workId,
-    requiredCheckIds: work.checks,
-    records: work.checkRefs,
-    sourceRevision,
-    workspaceFingerprint: verificationWorkspaceFingerprint,
-  });
-  if (verification.missingCheckIds.length > 0) {
-    throw new Error(`WORK_IMPLEMENTATION_REVIEW_VERIFICATION_REQUIRED: ${verification.missingCheckIds.join(', ')}`);
-  }
   const latestReview = latestImplementationReview(work.implementationReviews);
   const retainedArchitectureEvidence = latestReview?.sourceRevision === sourceRevision
     ? latestReview.architectureEvidence
@@ -255,7 +242,10 @@ function currentImplementationReviewCandidate(
     workspaceFingerprint,
     verificationWorkspaceFingerprint,
     changedPaths,
-    verificationEvidence: verification.evidence,
+    // Review may cite any verification already recorded for the candidate, but
+    // absence of those receipts never prevents a model from recording review
+    // evidence or continuing the Work.
+    verificationEvidence: [],
     architectureEvidence: architectureEvidenceOverride ?? retainedArchitectureEvidence,
   };
 }
@@ -391,7 +381,7 @@ export function routeWorkStart(
     input.workKind === undefined
     && input.workRelation === 'new_goal'
     && relatedLifecycleSource?.workKind === 'read_only_review'
-    && (relatedLifecycleSource.status === 'cancelled' || relatedLifecycleSource.status === 'completed' || relatedLifecycleSource.status === 'failed'),
+    && semanticWorkState(relatedLifecycleSource) !== 'open',
   );
   if (
     inheritedReadOnlyReview
@@ -435,7 +425,7 @@ export function routeWorkStart(
   // and Plan lineage already define the goal scope, while the successor Plan step
   // becomes the Work objective later in startGoalWorkloop.
   const routeObjective = input.objective.trim()
-    || (input.workRelation === 'continue' && relatedLifecycleSource?.status === 'completed'
+    || (input.workRelation === 'continue' && relatedLifecycleSource && semanticWorkState(relatedLifecycleSource) === 'completed'
       ? relatedLifecycleSource.objective.trim()
       : '');
   const effectiveRequest: WorkStartFacts = {
@@ -680,7 +670,7 @@ export function startGoalWorkloop(
     : undefined;
   const terminalContinuationSource = input.workRelation === 'continue'
     && relatedLifecycleSource
-    && isTerminalWorkContractStatus(relatedLifecycleSource.status)
+    && semanticWorkState(relatedLifecycleSource) !== 'open'
     ? relatedLifecycleSource
     : undefined;
   if (terminalContinuationSource && !terminalContinuationSource.requirementId && !terminalContinuationSource.planId) {

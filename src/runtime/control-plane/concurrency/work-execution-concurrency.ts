@@ -2,7 +2,7 @@ import {
   buildWorkExecutionConcurrencyContract,
   evaluateWorkExecutionCompatibility,
   getWorkContract,
-  isTerminalWorkContractStatus,
+  semanticWorkState,
   readActiveWorkCandidates,
   workExecutionLaneMutates,
   updateWorkContract,
@@ -224,7 +224,7 @@ export function recordWorkExecutionConcurrencyWait(input: {
   const workId = input.workId?.trim();
   if (!workId) return undefined;
   const work = getWorkContract({ controllerHome: input.controllerHome, repoId: input.repoId }, workId);
-  if (!work || isTerminalWorkContractStatus(work.status)) return undefined;
+  if (!work || semanticWorkState(work) !== 'open') return undefined;
   const projection: WorkExecutionConcurrencyProjection = {
     schemaVersion: 1,
     status: input.wait.disposition === 'invalid' ? 'invalid' : 'waiting',
@@ -274,7 +274,7 @@ function workConcurrencyWakeResolved(input: {
   if (input.projection.status === 'invalid' || wake.kind === 'work_contract_change' || wake.kind === 'scheduler_capacity') return false;
   if (wake.kind === 'work_terminal') {
     const blocking = getWorkContract({ controllerHome: input.controllerHome, repoId: input.repoId }, wake.workId);
-    return Boolean(blocking && isTerminalWorkContractStatus(blocking.status));
+    return Boolean(blocking && semanticWorkState(blocking) !== 'open');
   }
   const activeLeases = listActiveLeases(input.controllerHome, input.projection.leaseRepoId?.trim() || input.repoId);
   return !input.projection.resourceIntents.some((claim) => activeLeases.some((lease) => claimsConflict(claim, lease)));

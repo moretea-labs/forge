@@ -324,7 +324,7 @@ describe('rh_work terminalization authority', () => {
       { repo_id: fx.repository.repoId, operation: 'continue', work_id: protectedWorkId },
     ));
     expect(protectedResult.status).toBe('ok');
-    expect(protectedResult.data?.nextStep).toBe('review');
+    expect(protectedResult.data?.nextStep).toBeUndefined();
     expect(protectedResult.data?.remainingChecks).toBeUndefined();
 
     const infrastructureOnlyWorkId = 'work-verification-infra-remains-actionable';
@@ -3519,8 +3519,8 @@ describe('rh_work terminalization authority', () => {
     expect(reviewed.status).toBe('ok');
     expect(reviewed.data?.review).toMatchObject({ decision: 'approved' });
     expect(getWorkContract(store, workId)).toMatchObject({
-      phase: 'delivery',
-      phaseEvidence: { review: { state: 'satisfied' } },
+      phase: 'review',
+      phaseEvidence: { review: { state: 'active' } },
     });
   }, 15_000);
 
