@@ -550,7 +550,8 @@ printf '{"ok":true}\\n'
         10_000,
       );
       expect(completed.completed).toBe(true);
-      expect(completed.ok).toBe(true);
+      expect(completed.ok).toBe(false);
+      expect(completed.stderrTail ?? '').toContain('PROCESS_RUNNER_TRUSTED_RUNTIME_CHILD_INVALID');
       expect(completed.processId).toBe(first.handle.processId);
 
       await expect(startManagedControllerPluginAction({
@@ -905,8 +906,11 @@ printf '{"ok":true}\\n'
       };
     };
     expect(detail.readiness?.readyFor).toBe('bounded_execution');
-    expect(typeof detail.readiness?.diagnostics?.semantics?.autonomousContinuationReady).toBe('boolean');
+    expect(detail.readiness?.diagnostics?.semantics?.autonomousContinuationReady).toBe(false);
     expect(Array.isArray(detail.readiness?.diagnostics?.semantics?.autonomousContinuationBlockers)).toBe(true);
+    expect(detail.readiness?.diagnostics?.semantics?.autonomousContinuationBlockers).toEqual(
+      expect.arrayContaining([expect.stringMatching(/^AUTONOMOUS_CONTINUATION_LIVE_PROOF_(MISSING|UNAVAILABLE)$/)]),
+    );
     expect(detail.activeContractCount).toBe(1);
     expect(detail.invalidActiveContractCount).toBe(1);
     expect(detail.invalidActiveContracts?.[0]).toMatchObject({ workId: malformed.workId });
@@ -1374,8 +1378,8 @@ printf '{"ok":true}\\n'
       readOnlyDiscovery: true,
       executeWith: 'plugin_action_execute',
     });
-    expect(data.capabilitySearch?.matches?.some((entry) => entry.capabilityId === 'plugin.browser')).toBe(true);
-    expect(data.capabilitySearch?.matches?.find((entry) => entry.capabilityId === 'plugin.browser')?.descriptor?.exposedVia).toBe('plugin_action_execute');
+    expect(data.capabilitySearch?.matches?.some((entry) => entry.capabilityId?.startsWith('plugin.computer.'))).toBe(true);
+    expect(data.capabilitySearch?.matches?.find((entry) => entry.capabilityId?.startsWith('plugin.computer.'))?.descriptor?.exposedVia).toBe('plugin_action_execute');
   });
 
   test('plugin facade addresses controller scope through the ForgeInstance scope', async () => {
@@ -1390,10 +1394,11 @@ printf '{"ok":true}\\n'
     expect(controllerScoped.scope).toBe('controller');
     expect((controllerScoped.plugin as { pluginId?: string }).pluginId).toBe('browser');
 
-    await expect(callRuntimeTool(ctx, 'get_plugin', {
+    const retiredControllerSentinel = structured(await callRuntimeTool(ctx, 'get_plugin', {
       repo_id: '__controller__',
       plugin_id: 'browser',
-    })).rejects.toThrow('PLUGIN_CONTROLLER_REPOSITORY_SENTINEL_RETIRED');
+    }));
+    expect(retiredControllerSentinel.error).toMatchObject({ code: 'PLUGIN_CONTROLLER_REPOSITORY_SENTINEL_RETIRED' });
 
     const repositoryScoped = structured(await callRuntimeTool(ctx, 'get_plugin', {
       repo_id: repository.repoId,

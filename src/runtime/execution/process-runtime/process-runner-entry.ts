@@ -342,9 +342,31 @@ export async function runProcessRunnerFromDescriptor(
   } catch (error) {
     process.removeListener('SIGTERM', onSigterm);
     process.removeListener('SIGINT', onSigint);
+    const message = error instanceof Error ? error.message : String(error);
+    stderr.write(Buffer.from(`\n[process-runner] pre-spawn error: ${message}\n`));
     stdout.close();
     stderr.close();
-    throw error;
+    const outStats = stdout.stats();
+    const errStats = stderr.stats();
+    const receipt: ProcessRunnerExitReceipt = {
+      schemaVersion: 1,
+      processId: descriptor.processId,
+      exitCode: 1,
+      finishedAt: new Date().toISOString(),
+      startedAt: descriptor.startedAt,
+      stdoutBytes: outStats.totalBytes,
+      stderrBytes: errStats.totalBytes,
+      stdoutStoredBytes: outStats.storedBytes,
+      stderrStoredBytes: errStats.storedBytes,
+      logTruncated: outStats.truncated || errStats.truncated,
+      runnerPid: process.pid,
+      // The exactly-once logical Process attempt reached a deterministic terminal
+      // result before an external child could be spawned; the started claim is
+      // therefore consumed and must never authorize replay.
+      commandExecutedOnce: true,
+    };
+    atomicWrite(descriptor.exitReceiptPath, receipt);
+    return receipt;
   }
 
   const timeoutHandle = setTimeout(() => {

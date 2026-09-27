@@ -26,7 +26,23 @@ export class WorkflowSupervisorControlPlane {
     // surfacing the operator/provider decision that terminal state represents.
     requireNonTerminalTask(this.store, task.taskId);
     const originKey = `enrollment:${taskId}`;
+    // Supervisor owns the outer-turn effect identity. A lower ControllerRound may
+    // rotate when the semantic Work carrier changes, but the Requirement + exact
+    // conversation task must keep one enrollment effect. Reuse by origin before
+    // considering a newer lower-layer canonical effect id.
+    const existingForOrigin = this.store.getEffectByOriginKey(originKey);
+    if (existingForOrigin) {
+      if (existingForOrigin.taskId !== taskId) throw new Error(`WORKFLOW_SUPERVISOR_EFFECT_TASK_CONFLICT:${originKey}`);
+      if (existingForOrigin.kind !== 'enrollment') throw new Error(`WORKFLOW_SUPERVISOR_EFFECT_KIND_CONFLICT:${originKey}`);
+      return existingForOrigin;
+    }
     const id = canonicalEffectId ? validateEffectId(canonicalEffectId) : stableEffectId(originKey);
+    const existing = this.store.getEffect(id);
+    if (existing) {
+      if (existing.taskId !== taskId) throw new Error(`WORKFLOW_SUPERVISOR_EFFECT_TASK_CONFLICT:${originKey}`);
+      if (existing.kind !== 'enrollment') throw new Error(`WORKFLOW_SUPERVISOR_EFFECT_KIND_CONFLICT:${originKey}`);
+      return existing;
+    }
     return this.store.reserveEffect({ taskId, effectId: id, kind: 'enrollment', originKey, prompt: renderSupervisorPrompt(task, id, 'enrollment') });
   }
   /** @deprecated Compatibility RPC. Recovery policy no longer lives in Supervisor/Scheduler. */
@@ -40,6 +56,7 @@ export class WorkflowSupervisorControlPlane {
   }
   getTask(taskId: string): WorkflowSupervisorTask | undefined { return this.store.getTask(taskId); }
   getEffect(id: string): WorkflowSupervisorEffect | undefined { return this.store.getEffect(validateEffectId(id)); }
+  continuationProof(input: { repoId?: string; activeReleaseId: string; notBefore: string }) { return this.store.continuationProof(input); }
   browserDiscoverySnapshot() { return this.store.discoverySnapshot(); }
   recordBrowserDiscovery(source: string, conversations: readonly WorkflowSupervisorDiscoveredConversation[]) {
     // Discovery is durable observation only. Creating a Supervisor task/effect
@@ -105,6 +122,7 @@ export class WorkflowSupervisorControlPlane {
       baseline_user_sha256: browserTextSha256(snapshot.latestUserText),
       baseline_assistant_sha256: sha256(snapshot.latestAssistantResponse),
       baseline_has_source_completion: Boolean(pending.effect.sourceCompletionFingerprint),
+      ...(this.hooks.effectDispatchEvidence?.() ?? {}),
     };
     const started = this.store.recordEffectDispatchStarted(effectId, input.dispatchGeneration, input.dispatchId, dispatchEvidence);
     return { started, mode: started ? 'send' : 'reconcile', generation: input.dispatchGeneration };
@@ -146,7 +164,7 @@ export class WorkflowSupervisorControlPlane {
     const providerFailureCode = input.providerFailureCode?.trim();
     const recoveryReason = providerFailureCode
       ? `Applied Supervisor effect ${sourceEffect.effectId} ended with provider failure ${providerFailureCode} before a committed Supervisor completion. Resume from durable Forge state; the source effect remains applied and must not be replayed.`
-      : `Applied Supervisor effect ${sourceEffect.effectId} reached a provider-idle turn without a committed Supervisor completion. Resume from durable Forge state; the source effect remains applied and must not be replayed.`;
+      : `Applied Supervisor effect ${sourceEffect.effectId} stopped making observable provider progress without a committed Supervisor completion. Resume from durable Forge state; the source effect remains applied and must not be replayed.`;
     return this.store.observeProviderTurn({
       taskId: task.taskId,
       effectId: sourceEffect.effectId,

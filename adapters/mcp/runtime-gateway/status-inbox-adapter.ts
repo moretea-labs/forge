@@ -24,6 +24,9 @@ import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contra
 import { triggerResolvedHandoffContinuation } from '../../../src/runtime/workflow/schedules/work-continuation';
 import { getUserRequest, listUserRequests, recordUserRequest, resolveUserRequest, type UserRequest } from '../../../packages/kernel/identity/api/index';
 import { controllerReadinessEvidence, runtimeSourceSnapshotStatus } from './runtime-readiness-observation';
+import { readRuntimeReleaseAuthority } from '../../../src/runtime/root/release-store';
+import { getWorkflowSupervisorContinuationProof } from '../../../supervisor/client';
+import { resolveWorkflowSupervisorForgeHome } from '../../../supervisor/paths';
 export { ageMs, probeLocalControllerHealth, localControllerDiagnosticMatchesRuntime, controllerReadinessEvidence, runtimeSourceSnapshotStatus } from './runtime-readiness-observation';
 export type { ControllerReadinessSignals } from './runtime-readiness-observation';
 
@@ -478,12 +481,38 @@ export async function callStatusInboxAdapter(
         });
       }
       const toolSurfaceComputed = exposure.expectedToolNames.length > 0 || exposure.actualToolNames.length > 0 || toolSurfaceReady;
-      const autonomousContinuationReady = readiness.ready && toolSurfaceReady && !sourceSnapshotStale;
-      const autonomousContinuationBlockers = [...new Set(
-        readinessReasons
+      const activeReleaseAuthority = readRuntimeReleaseAuthority(ctx.controllerHome);
+      let autonomousContinuationProof: Awaited<ReturnType<typeof getWorkflowSupervisorContinuationProof>>;
+      let autonomousContinuationProofObservation: 'proven' | 'missing' | 'unavailable' = 'missing';
+      if (activeReleaseAuthority?.committedAt) {
+        try {
+          autonomousContinuationProof = await getWorkflowSupervisorContinuationProof(
+            resolveWorkflowSupervisorForgeHome(ctx.controllerHome),
+            {
+              repoId: repository.repoId,
+              activeReleaseId: activeReleaseAuthority.active.releaseId,
+              notBefore: activeReleaseAuthority.committedAt,
+            },
+          );
+          autonomousContinuationProofObservation = autonomousContinuationProof ? 'proven' : 'missing';
+        } catch {
+          autonomousContinuationProofObservation = 'unavailable';
+        }
+      }
+      const autonomousContinuationReady = readiness.ready
+        && toolSurfaceReady
+        && !sourceSnapshotStale
+        && autonomousContinuationProofObservation === 'proven';
+      const autonomousContinuationBlockers = [...new Set([
+        ...readinessReasons
           .map((reason) => reason.code)
           .filter((code): code is string => typeof code === 'string' && code.length > 0),
-      )];
+        ...(autonomousContinuationProofObservation === 'proven'
+          ? []
+          : [autonomousContinuationProofObservation === 'unavailable'
+              ? 'AUTONOMOUS_CONTINUATION_LIVE_PROOF_UNAVAILABLE'
+              : 'AUTONOMOUS_CONTINUATION_LIVE_PROOF_MISSING']),
+      ])];
       const readinessWithToolSurface = {
         ready: effectiveReady,
         readyFor: 'bounded_execution' as const,
@@ -510,11 +539,18 @@ export async function callStatusInboxAdapter(
           },
           semantics: {
             executionReady,
-            // Derived from existing whole-runtime health and the same tool/source
-            // coherence gates already reported here. Per-Work continuation
-            // eligibility remains owned by Controller/Scheduler lifecycle facts.
+            // Runtime/tool health is necessary but not sufficient. Thin acceptance
+            // requires a fresh exact-active-release Supervisor ledger proof of
+            // CONTINUE -> CONTINUE -> DONE spanning at least one Runtime reconnect.
             autonomousContinuationReady,
             autonomousContinuationBlockers,
+            autonomousContinuationProof: {
+              observation: autonomousContinuationProofObservation,
+              activeReleaseId: activeReleaseAuthority?.active.releaseId,
+              activeReleaseAuthorityRevision: activeReleaseAuthority?.revision,
+              activeReleaseCommittedAt: activeReleaseAuthority?.committedAt,
+              ...(autonomousContinuationProof ? { proof: autonomousContinuationProof } : {}),
+            },
             maintenanceHealthy,
             maintenanceCandidateCount,
             maintenanceObservation,

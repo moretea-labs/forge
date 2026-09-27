@@ -439,6 +439,39 @@ export function rollbackRuntimeRelease(
   return rollbackRuntimeReleaseWithResult(controllerHome, operationId, dependencies).authority;
 }
 
+/**
+ * Failed activation is transaction compensation, not a user-requested reverse
+ * release transition. Once the physical rollback has restored the old active
+ * release, restore the exact pre-activation active/previous topology while
+ * keeping authority revision monotonic and rotating the fence.
+ */
+export function reconcileFailedRuntimeReleaseActivationAuthority(
+  controllerHome: string,
+  before: RuntimeReleaseAuthority,
+  failedReleaseId: string,
+  operationId: string,
+): RuntimeReleaseAuthority {
+  if (!operationId.trim()) throw new Error('RUNTIME_RELEASE_OPERATION_ID_REQUIRED');
+  const current = mutableRuntimeReleaseAuthority(controllerHome);
+  if (!current) throw new Error('RUNTIME_RELEASE_FAILED_ACTIVATION_AUTHORITY_MISSING');
+  if (!sameRelease(current.active, before.active)) {
+    throw new Error('RUNTIME_RELEASE_FAILED_ACTIVATION_ACTIVE_MISMATCH');
+  }
+  if (current.previous?.releaseId !== failedReleaseId) {
+    throw new Error('RUNTIME_RELEASE_FAILED_ACTIVATION_CANDIDATE_MISMATCH');
+  }
+  return writeRuntimeReleaseAuthority(controllerHome, {
+    schemaVersion: 2,
+    status: 'committed',
+    revision: current.revision + 1,
+    fencingToken: randomUUID(),
+    active: before.active,
+    ...(before.previous ? { previous: before.previous } : {}),
+    operationId,
+    committedAt: new Date().toISOString(),
+  });
+}
+
 export function activeRuntimeReleaseManifest(controllerHome: string): RuntimeReleaseManifest | undefined {
   const authority = readRuntimeReleaseAuthority(controllerHome);
   return authority ? loadRuntimeReleaseManifest(authority.active.manifestPath, controllerHome) : undefined;

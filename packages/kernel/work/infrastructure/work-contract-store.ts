@@ -1094,7 +1094,15 @@ export function reviseWorkSemanticContext(
       });
     }
 
-    const store = readWorkContractStore(authoritativeOptions);
+    // Semantic CAS validation must be side-effect free. The public read path may
+    // persist a one-way legacy migration, so normalize the file-backed store only
+    // in memory here and write it exactly once after the requested revision has
+    // been validated successfully.
+    const rawStore = readJsonFile<WorkContractStore>(
+      workContractStorePath(authoritativeOptions),
+      emptyWorkContractStore(nowIso(authoritativeOptions)),
+    );
+    const store = normalizeWorkContractStore(rawStore);
     const index = store.contracts.findIndex((contract) => contract.workId === workId);
     if (index < 0) throw new Error(`work contract not found: ${workId}`);
     const current = store.contracts[index]!;

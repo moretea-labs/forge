@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { createConnection } from 'node:net';
 import { workflowSupervisorSocketPath } from './paths';
-import type { WorkflowSupervisorDiscoveredConversation, WorkflowSupervisorEffect, WorkflowSupervisorTask, WorkflowSupervisorTaskInput } from './types';
+import type { WorkflowSupervisorContinuationProof, WorkflowSupervisorDiscoveredConversation, WorkflowSupervisorEffect, WorkflowSupervisorTask, WorkflowSupervisorTaskInput } from './types';
 
 interface RpcResponse<T> { id: string; ok: boolean; result?: T; error?: { code?: string; message?: string } }
 
@@ -76,4 +76,13 @@ export async function reserveWorkflowSupervisorSchedulerRecovery(forgeHome: stri
     task_id: taskId,
     ...(recoveryKey?.trim() ? { recovery_key: recoveryKey.trim() } : {}),
   }, SUPERVISOR_RPC_MUTATION_TIMEOUT_MS);
+}
+
+export async function getWorkflowSupervisorContinuationProof(forgeHome: string, input: { repoId?: string; activeReleaseId: string; notBefore: string }): Promise<WorkflowSupervisorContinuationProof | undefined> {
+  const proof = await rpc<WorkflowSupervisorContinuationProof | null>(forgeHome, 'continuation_proof', {
+    ...(input.repoId?.trim() ? { repo_id: input.repoId.trim() } : {}),
+    active_release_id: input.activeReleaseId,
+    not_before: input.notBefore,
+  });
+  return proof ?? undefined;
 }

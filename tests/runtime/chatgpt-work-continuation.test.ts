@@ -1362,7 +1362,13 @@ describe('ChatGPT Work conversation binding', () => {
     expect(controllerOperations).toContain('await bindCurrentWorkflowSupervisorConversationForWork(store, workId)');
     expect(controllerOperations).toContain("if (currentConversation.status !== 'bound')");
     expect(controllerOperations).toContain("supervisorBoundary.status === 'outer_turn' && transportConversation !== 'fresh' && !adoptedCurrentConversation");
+    expect(controllerOperations).not.toContain('WORKFLOW_SUPERVISOR_OUTER_TURN_OWNED');
     expect(controllerOperations).toContain('await ensureWorkflowSupervisorEnrollmentForWork(store, workId)');
+    expect(controllerOperations).toContain("supervisorEnrollment.status !== 'lower_layer_not_ready'");
+    expect(controllerOperations).toContain('getControllerRoundRelay(store, workId)');
+    expect(controllerOperations).toContain('retryFailedControllerRoundProviderDispatch(store, {');
+    expect(controllerOperations).toContain("existingRelay.status === 'failed'");
+    expect(controllerOperations).toContain('!existingRelay.failureClass');
     expect(controllerOperations).toContain('continuationDispatched: false');
     expect(controllerOperations).toContain('transportConversation,');
     expect(controllerOperations).toContain('const relay = beginInitialControllerRoundDispatch(');

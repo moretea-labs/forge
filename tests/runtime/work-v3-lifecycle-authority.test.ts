@@ -207,11 +207,12 @@ describe('Work v3 lifecycle authority', () => {
     expect(migrated).toMatchObject({
       schemaVersion: 3,
       workId,
-      status: 'running',
+      status: 'open',
       workKind: 'remote_effect',
       phase: 'implementation',
-      // Status is mechanical compatibility metadata, not a state-transition
-      // authority: it never infers dispatch/evidence/phase progression.
+      // Thin migration projects the canonical authored Work state to `status`.
+      // Legacy mechanical phase/dispatch/evidence survive only as compatibility
+      // evidence and never become semantic transition authority.
       dispatchState: 'not_dispatched',
       evidenceState: 'none',
     });

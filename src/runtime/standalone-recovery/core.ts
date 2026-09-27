@@ -46,6 +46,7 @@ import { assertRuntimeReleaseExecutionCanaries, assertRuntimeReleaseFiles, promo
 import {
   publishRuntimeRelease,
   readRuntimeReleaseAuthority,
+  reconcileFailedRuntimeReleaseActivationAuthority,
   rollbackRuntimeReleaseWithResult,
   type RuntimeDatabaseRollbackDisposition,
   type RuntimePublishedRelease,
@@ -2117,6 +2118,12 @@ async function observeBoundedRuntimeHealth(
      * working while the primary transport is the broken thing.
      */
     includePrimaryConnectorLocal?: boolean;
+    /**
+     * Public/Connector transport probes are lightweight health evidence but
+     * create Connector activity. Disable them while a ReleaseSession is waiting
+     * for the cutover quiet window so watchdog observation cannot self-starve it.
+     */
+    includePrimaryTransport?: boolean;
   } = {},
 ): Promise<VerifyResult> {
   const observation = observeRuntimeStatus(config.controllerHome);
@@ -2143,6 +2150,20 @@ async function observeBoundedRuntimeHealth(
   probes.active_gateway = endpoint
     ? await probe(transport, runtimeHealthEndpoint(endpoint))
     : { ok: false, detail: 'canonical Runtime endpoint is unavailable' };
+  if (options.includePrimaryTransport !== false && config.publicMcpUrl) {
+    probes.external_mcp_http = await probeExternalMcp(transport, config.publicMcpUrl);
+    const connectorReadinessEndpoint = config.primaryConnectorService?.localMcpUrl?.trim() || config.publicMcpUrl;
+    probes.primary_connector_ready = await probePublicGatewayReadiness(transport, connectorReadinessEndpoint, {
+      acceptOAuthChallenge: packageConnectorAuthMode(config.controllerHome) === 'oauth',
+    });
+  }
+  if (options.includePrimaryTransport !== false) {
+    const primaryTunnel = configuredPrimaryPublicTunnel(config);
+    if (primaryTunnel?.platform === 'openai-secure-tunnel') {
+      const observed = await observeOpenAiTunnelRuntime(primaryTunnel);
+      probes.primary_tunnel_runtime = { ok: observed.ok, detail: observed.detail, value: observed };
+    }
+  }
   if (options.includePrimaryConnectorLocal !== false) {
     const primaryConnectorLocal = await probePrimaryConnectorLocal(config, transport);
     if (primaryConnectorLocal) probes.primary_connector_local = primaryConnectorLocal;
@@ -2208,7 +2229,17 @@ async function observeWatchdogHealthTier(
       || session.phase === 'cutover_attempting'
       || session.phase === 'cutover_committed'
     ));
-  return observeBoundedRuntimeHealth(config, transport, { includePrimaryConnectorLocal: !cutoverQuietWindowRequired });
+  const primaryTransportAttributionRequired = Boolean(
+    config.primaryConnectorService || configuredPrimaryPublicTunnel(config),
+  );
+  return observeBoundedRuntimeHealth(config, transport, {
+    includePrimaryConnectorLocal: !cutoverQuietWindowRequired,
+    // A plain public URL is strict-verification evidence, not a five-second
+    // liveness dependency. Probe primary transport on the cheap tier only when
+    // Recovery has a managed Connector/tunnel whose failure attribution can
+    // drive a bounded repair decision.
+    includePrimaryTransport: !cutoverQuietWindowRequired && primaryTransportAttributionRequired,
+  });
 }
 
 function isExternalTunnelFailure(config: RecoveryConfig, verified: VerifyResult, localVerify: VerifyResult): boolean {
@@ -4189,13 +4220,21 @@ async function activateRuntimeReleaseInternal(
           ? `recovery-activate-runtime-rollback-${Date.now()}-${randomUUID().slice(0, 8)}`
           : operationId;
         let rollbackDatabaseDisposition: RuntimeDatabaseRollbackDisposition | 'preserved_by_guard' = 'preserved_by_guard';
-        const restored = guard.preserveDatabaseOnFailure && previousActive
+        const physicallyRestored = guard.preserveDatabaseOnFailure && previousActive
           ? publishRuntimeRelease(config.controllerHome, previousActive.manifestPath, rollbackOperationId)
           : (() => {
             const rollbackResult = rollbackRuntimeReleaseWithResult(config.controllerHome, rollbackOperationId);
             rollbackDatabaseDisposition = rollbackResult.databaseDisposition;
             return rollbackResult.authority;
           })();
+        const restored = current && previousActive
+          ? reconcileFailedRuntimeReleaseActivationAuthority(
+              config.controllerHome,
+              current,
+              candidate.manifest.releaseId,
+              rollbackOperationId,
+            )
+          : physicallyRestored;
         if (storageMigration?.migrated) {
           rollbackStoppedRepoLocalControllerHomeStorage(storageMigration);
           audit(config, 'runtime_controller_home_noindex_migration_rolled_back', {
@@ -6318,7 +6357,7 @@ export async function watchdogTick(config: RecoveryConfig, prior: WatchdogState)
     };
     return { state, decision: { action: 'degraded', reason }, verify: verified };
   }
-  if (runtimeStartupGrace && !localVerify.ok) {
+  if (runtimeStartupGrace && !localVerify.runtime.ok) {
     const state: WatchdogState = {
       ...scopedPrior,
       failures: 0,

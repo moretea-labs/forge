@@ -24,6 +24,7 @@ import { withControlPlaneReadDatabase } from '../control-plane/persistence/sqlit
 import { getWorkflowSupervisorCurrentConversation, registerWorkflowSupervisorTask, reserveWorkflowSupervisorEnrollment } from '../../../supervisor/client';
 import { resolveWorkflowSupervisorForgeHome, workflowSupervisorSocketPath } from '../../../supervisor/paths';
 import type { WorkflowSupervisorCompletion, WorkflowSupervisorLifecycleHooks, WorkflowSupervisorTask, WorkflowSupervisorTurnSettlement } from '../../../supervisor/types';
+import { getRuntimeWriteClaim } from './write-fence';
 
 export type WorkflowSupervisorBoundary =
   | { status: 'not_eligible' }
@@ -327,6 +328,17 @@ function createForgeWorkflowSupervisorBrowserTaskActive(controllerHome: string):
 export function forgeWorkflowSupervisorLifecycleHooks(controllerHome: string): WorkflowSupervisorLifecycleHooks {
   const browserTaskActive = createForgeWorkflowSupervisorBrowserTaskActive(controllerHome);
   return {
+    effectDispatchEvidence: () => {
+      const claim = getRuntimeWriteClaim();
+      return claim && !claim.unmanaged
+        ? {
+            runtime_instance_id: claim.runtimeInstanceId,
+            runtime_fencing_generation: claim.fencingGeneration,
+            active_release_id: claim.releaseId,
+            active_release_authority_revision: claim.releaseAuthorityRevision,
+          }
+        : {};
+    },
     projectScopeForTask: (task) => {
       const repoId = workflowSupervisorContractText(task, 'repo_id');
       const taskControllerHome = workflowSupervisorContractText(task, 'controller_home');

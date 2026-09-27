@@ -13,6 +13,9 @@ import {
 import {
   beginInitialControllerRoundDispatch,
   finishControllerRoundRelayDispatch,
+  getControllerRoundRelay,
+  getRequirementControllerRoundRelay,
+  retryFailedControllerRoundProviderDispatch,
 } from '../../../packages/kernel/controller/api/index';
 import { authenticatedFacadeControllerIdentity } from './controller-authority-adapter';
 import {
@@ -59,7 +62,54 @@ export async function callRhWorkControllerOperation(
         supervisorBoundary = workflowSupervisorBoundaryForWork(store, workId);
       }
       if (supervisorBoundary.status === 'outer_turn' && transportConversation !== 'fresh' && !adoptedCurrentConversation) {
-        throw new Error(`WORKFLOW_SUPERVISOR_OUTER_TURN_OWNED:${workId}:${supervisorBoundary.conversationId}`);
+        let supervisorEnrollment = await ensureWorkflowSupervisorEnrollmentForWork(store, workId);
+        if (supervisorEnrollment.status === 'enrolled') {
+          return result(buildFacadeResult({
+            summary: 'Existing ChatGPT conversation re-enrolled for unattended continuation. No replacement provider send was issued.',
+            data: {
+              workId,
+              currentConversationBound: true,
+              continuationDispatched: false,
+              supervisorEnrollment,
+              conversationUrl: supervisorBoundary.conversationUrl,
+            },
+          }) as unknown as Record<string, unknown>);
+        }
+        if (supervisorEnrollment.status !== 'lower_layer_not_ready') {
+          throw new Error(supervisorEnrollment.reason ?? `WORKFLOW_SUPERVISOR_${supervisorEnrollment.status.toUpperCase()}`);
+        }
+        const existingRelay = getControllerRoundRelay(store, workId)
+          ?? (work.requirementId ? getRequirementControllerRoundRelay(store, work.requirementId) : undefined);
+        if (existingRelay
+          && existingRelay.originWorkId === workId
+          && existingRelay.status === 'failed'
+          && !existingRelay.failureClass
+          && existingRelay.authorityId?.trim()) {
+          retryFailedControllerRoundProviderDispatch(store, {
+            workId,
+            relayScopeId: existingRelay.relayScopeId,
+            authorityId: existingRelay.authorityId,
+            expectedUpdatedAt: existingRelay.updatedAt,
+            ...(existingRelay.occurrenceId ? { occurrenceId: existingRelay.occurrenceId } : {}),
+          });
+          supervisorEnrollment = await ensureWorkflowSupervisorEnrollmentForWork(store, workId);
+          if (supervisorEnrollment.status === 'enrolled') {
+            return result(buildFacadeResult({
+              summary: 'Existing ChatGPT conversation recovered the same failed provider round and re-enrolled without creating a replacement semantic round.',
+              data: {
+                workId,
+                currentConversationBound: true,
+                continuationDispatched: false,
+                supervisorEnrollment,
+                conversationUrl: supervisorBoundary.conversationUrl,
+              },
+            }) as unknown as Record<string, unknown>);
+          }
+          throw new Error(supervisorEnrollment.reason ?? `WORKFLOW_SUPERVISOR_${supervisorEnrollment.status.toUpperCase()}`);
+        }
+        if (existingRelay) {
+          throw new Error(supervisorEnrollment.reason ?? `WORKFLOW_SUPERVISOR_LOWER_LAYER_NOT_READY:${existingRelay.status}`);
+        }
       }
 
       const handoffId = typeof args.handoff_id === 'string' ? args.handoff_id.trim() : '';
@@ -100,16 +150,21 @@ export async function callRhWorkControllerOperation(
         throw new Error(`CHATGPT_CONTINUATION_LAUNCH_BLOCKED:${relay.blockedReason ?? 'transport_not_ready'}`);
       }
 
-      if (adoptedCurrentConversation) {
+      if (supervisorBoundary.status === 'outer_turn' && transportConversation !== 'fresh') {
         const supervisorEnrollment = await ensureWorkflowSupervisorEnrollmentForWork(store, workId);
+        if (supervisorEnrollment.status !== 'enrolled') {
+          throw new Error(supervisorEnrollment.reason ?? `WORKFLOW_SUPERVISOR_${supervisorEnrollment.status.toUpperCase()}`);
+        }
         return result(buildFacadeResult({
-          summary: 'Current ChatGPT conversation bound and enrolled for unattended continuation. No replacement provider send was issued.',
+          summary: adoptedCurrentConversation
+            ? 'Current ChatGPT conversation bound and enrolled for unattended continuation. No replacement provider send was issued.'
+            : 'Existing ChatGPT conversation enrolled for unattended continuation after lower-layer relay recovery. No replacement provider send was issued.',
           data: {
             workId,
             currentConversationBound: true,
             continuationDispatched: false,
             supervisorEnrollment,
-            conversationUrl: supervisorBoundary.status === 'outer_turn' ? supervisorBoundary.conversationUrl : undefined,
+            conversationUrl: supervisorBoundary.conversationUrl,
           },
         }) as unknown as Record<string, unknown>);
       }

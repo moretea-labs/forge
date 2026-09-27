@@ -53,6 +53,19 @@ export interface WorkflowSupervisorCompletion {
   committedAt: string;
 }
 
+/** Read-only proof derived from the existing effect/completion ledger. */
+export interface WorkflowSupervisorContinuationProof {
+  taskId: string;
+  conversationId: string;
+  activeReleaseId: string;
+  actions: ['CONTINUE', 'CONTINUE', 'DONE'];
+  completionFingerprints: [string, string, string];
+  sourceEffectIds: [string, string, string];
+  runtimeInstanceIds: string[];
+  firstCommittedAt: string;
+  lastCommittedAt: string;
+}
+
 export interface WorkflowContractValidation {
   valid: boolean;
   reason: string;
@@ -78,6 +91,8 @@ export interface WorkflowSupervisorLifecycleHooks {
   discoveredConversationTask?(conversation: WorkflowSupervisorDiscoveredConversation, scope: WorkflowSupervisorProjectScope): WorkflowSupervisorTaskInput | undefined;
   /** Derived from canonical lower-layer lifecycle facts; must not create a second task lifecycle authority. */
   browserTaskActive?(task: WorkflowSupervisorTask): boolean;
+  /** Mechanical provenance attached to outbound effect dispatch evidence. */
+  effectDispatchEvidence?(): Record<string, unknown>;
   /** Idempotent: browser delivery observation may replay the same applied effect. */
   effectApplied?(
     task: WorkflowSupervisorTask,

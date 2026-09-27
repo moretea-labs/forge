@@ -117,6 +117,28 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     expect(legacy.proposal.activeScope).toBe('requirement:REQ-protocol');
   });
 
+  test('keeps one Supervisor enrollment effect when the lower ControllerRound rotates across Work carriers', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-enrollment-carrier-'));
+    roots.push(root);
+    const store = new WorkflowSupervisorStore(root);
+    try {
+      const control = new WorkflowSupervisorControlPlane(store);
+      const task = control.registerTask({
+        taskId: 'task-enrollment-carrier',
+        conversationId: 'abababab-1111-2222-3333-444444444444',
+        conversationUrl: 'https://chatgpt.com/c/abababab-1111-2222-3333-444444444444',
+        objective: 'Preserve outer-turn authority while the lower Work carrier changes.',
+        completionContract: {}, continuationPolicy: {}, userBlockerPolicy: {},
+      });
+      const first = control.reserveEnrollment(task.taskId, 'fx_11111111111111111111111111111111');
+      const migrated = control.reserveEnrollment(task.taskId, 'fx_22222222222222222222222222222222');
+      expect(migrated.effectId).toBe(first.effectId);
+      expect(migrated.effectId).toBe('fx_11111111111111111111111111111111');
+    } finally {
+      store.close();
+    }
+  });
+
   test('deduplicates an exact compact receipt after its source effect is already completed', async () => {
     const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-compact-dedupe-'));
     roots.push(root);
@@ -415,6 +437,62 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
       continuationPolicy: { kind: 'forge_goal_outer_turn', exact_conversation_id: conversationId, exact_conversation_url: conversationUrl },
       userBlockerPolicy: { kind: 'forge_requirement_waiting_for_user', repo_id: fx.repository.repoId, controller_home: fx.controllerHome, requirement_id: 'REQ-mismatch' },
     })).toThrow('WORKFLOW_SUPERVISOR_TASK_ID_CONFLICT');
+    store.close();
+  });
+
+  test('derives unattended continuation proof only for one exact release across a Runtime reconnect', () => {
+    const fx = fixture();
+    const store = new WorkflowSupervisorStore(join(fx.root, 'continuation-proof-supervisor'));
+    const control = new WorkflowSupervisorControlPlane(store);
+    const taskId = 'forge:repo-proof:conversation:proof-conversation';
+    const conversationId = 'proof-conversation';
+    control.registerTask({
+      taskId,
+      conversationId,
+      conversationUrl: 'https://chatgpt.com/c/proof-conversation',
+      objective: 'Prove unattended continuation.',
+      completionContract: { kind: 'forge_work_done', repo_id: 'repo-proof', work_id: 'work-proof' },
+      continuationPolicy: { kind: 'forge_goal_outer_turn', repo_id: 'repo-proof' },
+      userBlockerPolicy: { kind: 'forge_work_waiting_for_user', repo_id: 'repo-proof', work_id: 'work-proof' },
+    });
+    const notBefore = new Date(Date.now() - 1_000).toISOString();
+    const releaseId = 'release-proof';
+    const first = control.reserveEnrollment(taskId, 'fx_11111111111111111111111111111111');
+    expect(store.recordEffectDispatchStarted(first.effectId, 1, 'dispatch-1', { active_release_id: releaseId, runtime_instance_id: 'runtime-a' })).toBe(true);
+    store.recordEffectObservation(first.effectId, 'applied-1', 'applied');
+    const firstCompletion = {
+      completionFingerprint: 'completion-proof-1', taskId, sourceEffectId: first.effectId, action: 'CONTINUE' as const,
+      responseSha256: 'response-1', controlBlockSha256: 'control-1',
+      proposal: { action: 'CONTINUE' as const, sourceEffectId: first.effectId, checkpoint: 'round-1', reason: 'continue', evidence: [], conversationId, taskId, supervisorState: 'running' as const },
+      committedAt: new Date().toISOString(),
+    };
+    const second = store.commitCompletion(firstCompletion, { effectId: 'fx_22222222222222222222222222222222', kind: 'continuation', prompt: 'round two' }).successorEffect!;
+    expect(store.recordEffectDispatchStarted(second.effectId, 1, 'dispatch-2', { active_release_id: releaseId, runtime_instance_id: 'runtime-b' })).toBe(true);
+    store.recordEffectObservation(second.effectId, 'applied-2', 'applied');
+    const secondCompletion = {
+      completionFingerprint: 'completion-proof-2', taskId, sourceEffectId: second.effectId, action: 'CONTINUE' as const,
+      responseSha256: 'response-2', controlBlockSha256: 'control-2',
+      proposal: { action: 'CONTINUE' as const, sourceEffectId: second.effectId, checkpoint: 'round-2', reason: 'continue', evidence: [], conversationId, taskId, supervisorState: 'running' as const },
+      committedAt: new Date().toISOString(),
+    };
+    const third = store.commitCompletion(secondCompletion, { effectId: 'fx_33333333333333333333333333333333', kind: 'continuation', prompt: 'round three' }).successorEffect!;
+    expect(store.recordEffectDispatchStarted(third.effectId, 1, 'dispatch-3', { active_release_id: releaseId, runtime_instance_id: 'runtime-b' })).toBe(true);
+    store.recordEffectObservation(third.effectId, 'applied-3', 'applied');
+    const thirdCompletion = {
+      completionFingerprint: 'completion-proof-3', taskId, sourceEffectId: third.effectId, action: 'DONE' as const,
+      responseSha256: 'response-3', controlBlockSha256: 'control-3',
+      proposal: { action: 'DONE' as const, sourceEffectId: third.effectId, checkpoint: 'round-3', reason: 'done', evidence: [], conversationId, taskId, supervisorState: 'done' as const },
+      committedAt: new Date().toISOString(),
+    };
+    store.commitCompletion(thirdCompletion);
+    store.resolveTerminal({ completionFingerprint: thirdCompletion.completionFingerprint, taskId, action: 'DONE', accepted: true, reason: 'accepted' });
+
+    expect(control.continuationProof({ repoId: 'repo-proof', activeReleaseId: 'other-release', notBefore })).toBeUndefined();
+    expect(control.continuationProof({ repoId: 'repo-proof', activeReleaseId: releaseId, notBefore })).toMatchObject({
+      taskId, conversationId, activeReleaseId: releaseId,
+      actions: ['CONTINUE', 'CONTINUE', 'DONE'],
+      runtimeInstanceIds: ['runtime-a', 'runtime-b'],
+    });
     store.close();
   });
 
