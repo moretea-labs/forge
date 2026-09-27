@@ -142,7 +142,7 @@ describe('autonomous Work liveness reconciliation', () => {
 
     const second = await runSchedulerAutonomousContinuationReconciliation(input);
     expect(second.dispatched).toBe(0);
-    expect(second.skippedByReason.controller_round_present).toBe(1);
+    expect(second.skippedByReason.provider_dispatch_in_flight).toBe(1);
     expect(providerDispatches).toBe(1);
   });
 
@@ -169,7 +169,7 @@ describe('autonomous Work liveness reconciliation', () => {
     expect(first).toMatchObject({ eligible: 1, dispatched: 1, failed: 0 });
     const second = await runSchedulerAutonomousContinuationReconciliation(input);
     expect(second.dispatched).toBe(0);
-    expect(second.skippedByReason.controller_round_present).toBe(1);
+    expect(second.skippedByReason.provider_dispatch_in_flight).toBe(1);
     expect(providerDispatches).toBe(1);
   });
 

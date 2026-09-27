@@ -73,7 +73,9 @@ const PROFILES: Record<EngineeringRiskClass, EngineeringWorkProfile> = {
     schemaVersion: 1,
     profileVersion: ENGINEERING_WORK_PROFILE_VERSION,
     riskClass: 'high',
-    admissionEnforcement: 'enforce',
+    // Engineering evidence is useful model/project guidance, never a Kernel
+    // mutation-admission authority. Safety/resource admission lives elsewhere.
+    admissionEnforcement: 'observe',
     evidenceRequirements: requirement('required', 'required', 'required', 'required', 'required', 'conditional', 'required', 'conditional', 'required'),
     admissionEvidence: ['project_contract', 'context_closure', 'product_dod', 'design_decision', 'independent_critique'],
     completionEvidence: ['focused_validation', 'fresh_review'],
@@ -82,7 +84,7 @@ const PROFILES: Record<EngineeringRiskClass, EngineeringWorkProfile> = {
     schemaVersion: 1,
     profileVersion: ENGINEERING_WORK_PROFILE_VERSION,
     riskClass: 'critical',
-    admissionEnforcement: 'enforce',
+    admissionEnforcement: 'observe',
     evidenceRequirements: requirement('required', 'required', 'required', 'required', 'required', 'required', 'required', 'required', 'required'),
     admissionEvidence: ['project_contract', 'context_closure', 'product_dod', 'design_decision', 'independent_critique', 'semantic_tools'],
     completionEvidence: ['focused_validation', 'real_journey', 'fresh_review'],
@@ -208,16 +210,10 @@ export function evaluateEngineeringAdmission(input: {
   receipt: EngineeringContextReceipt;
   mutation: boolean;
 }): { allowed: true } | { allowed: false; code: string; missing: EngineeringEvidenceKind[] } {
-  if (!input.mutation || input.profile.admissionEnforcement === 'observe') return { allowed: true };
-  if (input.receipt.sourceIdentity.kind === 'unknown') {
-    return { allowed: false, code: 'ENGINEERING_SOURCE_IDENTITY_REQUIRED', missing: input.receipt.missingAdmissionEvidence };
-  }
-  if (input.receipt.designState === 'revisit_required') {
-    return { allowed: false, code: 'ENGINEERING_DESIGN_REVISIT_REQUIRED', missing: ['design_decision', 'independent_critique'] };
-  }
-  if (input.receipt.missingAdmissionEvidence.length > 0) {
-    return { allowed: false, code: 'ENGINEERING_ADMISSION_EVIDENCE_REQUIRED', missing: input.receipt.missingAdmissionEvidence };
-  }
+  // Forge records these receipts for model judgment, audit, and project-level
+  // acceptance. It must not prescribe an engineering methodology before a
+  // mutation. Source/CAS/security/resource safety is enforced by capabilities.
+  void input;
   return { allowed: true };
 }
 

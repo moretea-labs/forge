@@ -1,4 +1,4 @@
-import { getWorkContract, isTerminalWorkContractStatus } from '../../work/api/index';
+import { getWorkContract, semanticWorkState } from '../../work/api/index';
 import type { ControllerRoundRelayRecord } from '../domain/controller-round';
 import { controllerRoundBlockerClass } from '../domain/controller-round-transition-policy';
 import { getControllerWorkBinding } from '../infrastructure/controller-binding-store';
@@ -74,7 +74,7 @@ export function prepareControllerRoundOccurrence(
 ): ControllerRoundOccurrenceResult {
   const work = getWorkContract(options, input.workId);
   if (!work) throw new Error(`WORK_NOT_FOUND: ${input.workId}`);
-  if (isTerminalWorkContractStatus(work.status)) throw new Error(`WORK_ALREADY_TERMINAL: ${work.workId}:${work.status}`);
+  if (semanticWorkState(work) !== 'open') throw new Error(`WORK_ALREADY_TERMINAL: ${work.workId}:${semanticWorkState(work)}`);
 
   const session = getRetainedControllerSession(options, work.workId);
   if (!session) throw new Error(`CONTROLLER_SESSION_NOT_RETAINED: ${work.workId}`);

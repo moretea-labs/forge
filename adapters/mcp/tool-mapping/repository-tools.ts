@@ -4,10 +4,9 @@ import { resolveEphemeralWorkspaceTarget } from '../../../src/cli/repositories/e
 import { commandExecutionScopeKey, type RepositoryCommandScopeTarget } from '../../../src/cli/repositories/command-scope';
 import { executionIdentityForWork, type ResolvedExecutionIdentity } from '../../../src/runtime/control-plane/execution/execution-identity';
 import { assertNoBoundExecutionSessionMutation, resolveClaimedRepositoryWorkId, resolveExplicitClaimedRepositoryWork, type RepositoryWorkAttributionCaller } from '../../../src/runtime/control-plane/execution/repository-work-attribution';
-import { getWorkContract } from '../../../packages/kernel/work/api';
+import { getWorkContract, semanticWorkState } from '../../../packages/kernel/work/api';
 import { assertWorkPathsWithinScope } from '../../../src/runtime/control-plane/execution/work-path-scope';
 import { assertCanonicalRepositoryMutationWorkHandleAvailable, ensureRepositoryMutationWorkHandle, markRepositoryMutationStarted } from '../../../src/runtime/control-plane/execution/work-handle-authority';
-import { isTerminalWorkContractStatus } from '../../../src/runtime/control-plane/facade/types';
 import { executeRepositoryCommand, previewRepositoryCommandExecution } from '../../../src/cli/repositories/command-executor';
 import { withControllerLock } from '../../../src/cli/repositories/locks';
 import {
@@ -384,7 +383,7 @@ function historicalReadOnlyWorkContext(
   const requestedWorkId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
   if (!requestedWorkId) return undefined;
   const work = getWorkContract({ controllerHome, repoId: repository.repoId }, requestedWorkId);
-  if (!work || !isTerminalWorkContractStatus(work.status)) return undefined;
+  if (!work || semanticWorkState(work) === 'open') return undefined;
   const classification = classifyRepositoryCommand(args.command as string | string[], repository.defaultBranch);
   if (classification.risk !== 'readonly') return undefined;
   return {
@@ -1107,12 +1106,9 @@ export async function callRepositoryTool(
         // Repository-semantic checks apply only when a repository target exists;
         // an arbitrary workspace has no bound session, default branch, or Work.
         if (repository && !explicitWorkId) assertNoBoundExecutionSessionMutation(controllerHome, repository, caller);
-        const deliveryWorkId = repository && rawDefaultBranchMergeCommand(repository, args.command)
-          ? executionIdentity.workId
-          : undefined;
-        if (deliveryWorkId) {
-          throw new Error(`WORK_DELIVERY_REQUIRES_FINALIZE: ${deliveryWorkId} must pass Work verification and use rh_work finalize before default-branch integration`);
-        }
+        // Git integration is a capability with its own repository, scope and
+        // concurrency checks.  A Work's semantic completion and any optional
+        // verification/review evidence never admit or deny this operation.
         const timeoutMs = typeof args.timeout_ms === 'number'
           ? args.timeout_ms
           : typeof args.timeout_ms === 'string'

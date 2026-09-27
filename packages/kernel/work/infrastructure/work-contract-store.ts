@@ -1737,37 +1737,9 @@ export function recordWorkImplementationReview(
   return updateWorkContractInternal(options, workId, (current, at) => {
     if (isTerminalWorkContractStatus(current.status)) throw new Error(`WORK_IMPLEMENTATION_REVIEW_TERMINAL: ${workId}`);
     if (review.workId !== current.workId) throw new Error('WORK_IMPLEMENTATION_REVIEW_WORK_ID_MISMATCH');
-    if (current.phase !== 'review') {
-      throw new Error('WORK_IMPLEMENTATION_REVIEW_PHASE_REQUIRED');
-    }
-    const target = implementationReviewDecisionTarget(review.decision);
     const history = [...(current.implementationReviews ?? []), review];
     if (history.length > MAX_IMPLEMENTATION_REVIEW_HISTORY) throw new Error('WORK_IMPLEMENTATION_REVIEW_HISTORY_LIMIT');
-    const phaseEvidence = transitionPhaseEvidence(current, target.phase, {
-      status: target.status,
-      summary: `Implementation review ${review.reviewId}: ${review.decision}. ${review.rationale}`,
-      recordedAt: at,
-    });
-    if (review.decision === 'approved') {
-      phaseEvidence.review = {
-        state: 'satisfied',
-        source: 'recorded',
-        summary: `Controller approved exact implementation candidate in ${review.reviewId}.`,
-        evidenceRefs: current.evidenceRefs.slice(0, 20),
-        recordedAt: review.recordedAt,
-      };
-    } else if (review.decision === 'blocked') {
-      phaseEvidence.review = { ...phaseEvidence.review, state: 'blocked', recordedAt: review.recordedAt };
-    }
     return {
-      phase: target.phase,
-      phaseEvidence,
-      status: target.status,
-      dispatchState: target.status === 'blocked'
-        ? 'blocked'
-        : current.dispatchState === 'blocked'
-          ? 'running'
-          : current.dispatchState,
       implementationReviews: history,
     };
   }, false, true, false, true, review.decision === 'changes_required');

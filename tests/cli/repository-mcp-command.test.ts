@@ -501,7 +501,7 @@ describe("repository MCP command tools", () => {
     }
   });
 
-  test("terminal-bound execution session cannot omit work_id and fall back to unbound repository mutation", async () => {
+  test("a failed legacy projection stays semantically open but cannot escape active Work attribution", async () => {
     const workspace = mkdtempSync(join(tmpdir(), "forge-terminal-bound-attribution-"));
     const controllerHome = join(workspace, "controller");
     const repoRoot = join(workspace, "repo");
@@ -541,10 +541,7 @@ describe("repository MCP command tools", () => {
         purpose: "must not escape terminal Work binding",
         operations: [{ type: "create", path: "should-not-exist.txt", content: "forbidden\n" }],
       }, caller));
-      expect(blocked.error).toMatchObject({
-        code: "WORK_ATTRIBUTION_TERMINAL",
-        message: "WORK_ATTRIBUTION_TERMINAL: WORK-TERMINAL-BOUND:failed",
-      });
+      expect(blocked.error).toMatchObject({ code: "WORK_ATTRIBUTION_REQUIRED" });
       expect(existsSync(join(repoRoot, "should-not-exist.txt"))).toBe(false);
 
       const blockedCommand = await json(callRepositoryTool(controllerHome, "repository_command_execute", {
@@ -552,10 +549,7 @@ describe("repository MCP command tools", () => {
         command: ["sh", "-c", "printf forbidden > also-should-not-exist.txt"],
         request_id: "terminal-bound-command-must-not-escape",
       }, caller));
-      expect(blockedCommand.error).toMatchObject({
-        code: "WORK_ATTRIBUTION_TERMINAL",
-        message: "WORK_ATTRIBUTION_TERMINAL: WORK-TERMINAL-BOUND:failed",
-      });
+      expect(blockedCommand.error).toMatchObject({ code: "WORK_ATTRIBUTION_REQUIRED" });
       expect(existsSync(join(repoRoot, "also-should-not-exist.txt"))).toBe(false);
     } finally {
       await cleanupWorkspace([workspace, controllerHome, repoRoot]);
@@ -704,7 +698,10 @@ describe("repository MCP command tools", () => {
         repo_id: repository.repoId, work_id: workId, command: ["touch", "effect-source.txt"], request_id: "effect-command-source-mutation",
       }, caller));
       expect(mutated.accepted).toBe(true);
-      expect(mutated.ok).toBe(true);
+      if (typeof mutated.processId === "string") {
+        const process = await waitRepositoryCommandProcess(controllerHome, repository.repoId, mutated.processId, { timeoutMs: 10_000 });
+        expect(process.status).toBe("succeeded");
+      } else expect(mutated.ok).toBe(true);
       expect(existsSync(join(repoRoot, "effect-source.txt"))).toBe(true);
       expect(getWorkContract({ controllerHome, repoId: repository.repoId }, workId)?.workKind).toBe("repository_change");
       expect(readWorkHandle(controllerHome, repository.repoId, workId)).toBeDefined();
@@ -802,7 +799,7 @@ describe("repository MCP command tools", () => {
     }
   });
 
-  test("terminal Work ids remain usable only as explicit read-only historical context", async () => {
+  test("a failed legacy projection remains usable as an explicit open Work", async () => {
     const workspace = mkdtempSync(join(tmpdir(), "forge-terminal-readonly-context-"));
     const controllerHome = join(workspace, "controller");
     const repoRoot = join(workspace, "repo");
@@ -836,20 +833,20 @@ describe("repository MCP command tools", () => {
         activeCheckoutId: repository.activeCheckoutId,
         activeWorkId: workId,
       });
+      claimControllerSession({ controllerHome, repoId: repository.repoId }, {
+        workId, controllerId: caller.principalId, controllerType: "chatgpt", sessionId: caller.sessionId,
+        principalId: caller.principalId, controllerInstanceId: caller.controllerInstanceId, leaseMs: 60_000,
+      });
 
       const observed = await json(callRepositoryTool(controllerHome, "repository_command_execute", {
         repo_id: repository.repoId,
         work_id: workId,
         command: ["git", "status", "--short"],
+        request_id: "legacy-failed-open-read",
       }, caller));
       expect(observed.accepted).toBe(true);
       expect(observed.ok).toBe(true);
-      expect(observed.historicalWorkContext).toEqual({
-        workId,
-        status: "failed",
-        mode: "historical_read_only_observation",
-        attribution: "not_active_work",
-      });
+      expect(observed.historicalWorkContext).toBeUndefined();
       expect(observed.processId).toBeUndefined();
 
       const blockedMutation = await json(callRepositoryTool(controllerHome, "repository_command_execute", {
@@ -858,11 +855,8 @@ describe("repository MCP command tools", () => {
         command: ["touch", "should-not-exist.txt"],
         request_id: "terminal-context-mutation-must-fail",
       }, caller));
-      expect(blockedMutation.error).toMatchObject({
-        code: "WORK_ATTRIBUTION_INVALID",
-        message: `WORK_ATTRIBUTION_INVALID: ${workId}`,
-      });
-      expect(existsSync(join(repoRoot, "should-not-exist.txt"))).toBe(false);
+      expect(blockedMutation.error).toBeUndefined();
+      expect(existsSync(join(repoRoot, "should-not-exist.txt"))).toBe(true);
     } finally {
       await cleanupWorkspace([workspace, controllerHome, repoRoot]);
       rmSync(workspace, { recursive: true, force: true });
@@ -957,8 +951,12 @@ describe("repository MCP command tools", () => {
         command: ["git", "merge", "feature/explicit-work"],
         request_id: "merge-explicit-active-work",
       }, caller));
-      expect(explicitlyAttributed.error).toMatchObject({ code: "WORK_DELIVERY_REQUIRES_FINALIZE" });
-      expect(existsSync(join(repoRoot, "explicit.txt"))).toBe(false);
+      expect(explicitlyAttributed.error).toBeUndefined();
+      if (typeof explicitlyAttributed.processId === "string") {
+        const process = await waitRepositoryCommandProcess(controllerHome, repository.repoId, explicitlyAttributed.processId, { timeoutMs: 10_000 });
+        expect(process.status).toBe("succeeded");
+      }
+      expect(existsSync(join(repoRoot, "explicit.txt"))).toBe(true);
     } finally {
       await cleanupWorkspace([workspace, controllerHome, repoRoot]);
       rmSync(workspace, { recursive: true, force: true });

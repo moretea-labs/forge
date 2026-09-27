@@ -152,7 +152,7 @@ function completeEvidence(sourceRevision = 'revision-a', critiqueDecision: 'appr
 }
 
 describe('Stage7C upstream engineering authority', () => {
-  test('legacy bare receipt ids are audit-only and cannot authorize high-risk mutation', () => {
+  test('legacy bare receipt ids remain audit-only without blocking mutation', () => {
     const receipt = buildEngineeringContextReceipt({
       risk: 'high',
       sourceIdentity: { kind: 'revision', revision: 'revision-a' },
@@ -166,13 +166,10 @@ describe('Stage7C upstream engineering authority', () => {
       recordedAt,
     });
     expect(receipt.missingAdmissionEvidence).toEqual(['context_closure', 'product_dod', 'design_decision', 'independent_critique']);
-    expect(evaluateEngineeringAdmission({ profile: engineeringWorkProfileForRisk('high'), receipt, mutation: true })).toMatchObject({
-      allowed: false,
-      code: 'ENGINEERING_ADMISSION_EVIDENCE_REQUIRED',
-    });
+    expect(evaluateEngineeringAdmission({ profile: engineeringWorkProfileForRisk('high'), receipt, mutation: true })).toEqual({ allowed: true });
   });
 
-  test('exact structured receipts authorize high-risk mutation only after an approved independent critique', () => {
+  test('exact structured receipts remain useful context without gating mutation', () => {
     const approved = buildEngineeringContextReceipt({
       risk: 'high', sourceIdentity: { kind: 'revision', revision: 'revision-a' }, evidence: completeEvidence(), recordedAt,
     });
@@ -184,7 +181,7 @@ describe('Stage7C upstream engineering authority', () => {
       risk: 'high', sourceIdentity: { kind: 'revision', revision: 'revision-a' }, evidence: completeEvidence('revision-a', 'changes_required'), recordedAt,
     });
     expect(changesRequired.missingAdmissionEvidence).toContain('independent_critique');
-    expect(evaluateEngineeringAdmission({ profile: engineeringWorkProfileForRisk('high'), receipt: changesRequired, mutation: true }).allowed).toBe(false);
+    expect(evaluateEngineeringAdmission({ profile: engineeringWorkProfileForRisk('high'), receipt: changesRequired, mutation: true })).toEqual({ allowed: true });
   });
 
   test('rejects source drift and cross-receipt authority mismatch', () => {
@@ -212,9 +209,7 @@ describe('Stage7C upstream engineering authority', () => {
       semanticScopeKeys: ['kernel.work.engineering-admission'], rationale: 'The blocker invalidates the current design assumption.', recordedAt,
     }));
     expect(sameRoot.designState).toBe('revisit_required');
-    expect(evaluateEngineeringAdmission({ profile: engineeringWorkProfileForRisk('high'), receipt: sameRoot, mutation: true })).toMatchObject({
-      allowed: false, code: 'ENGINEERING_DESIGN_REVISIT_REQUIRED',
-    });
+    expect(evaluateEngineeringAdmission({ profile: engineeringWorkProfileForRisk('high'), receipt: sameRoot, mutation: true })).toEqual({ allowed: true });
 
     const observeOnly = buildEngineeringContextReceipt({
       risk: 'medium', sourceIdentity: { kind: 'revision', revision: 'revision-a' }, recordedAt,

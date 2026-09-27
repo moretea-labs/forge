@@ -1756,81 +1756,9 @@ export function verifyGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorkloop
         ? 'failed'
         : 'ok';
 
-  const completionEvidence = classified.outcome === 'valid_pass'
-    ? evaluateWorkCompletionEvidence(updated, sourceRevision, input.workspaceFingerprint)
-    : undefined;
-  const validPassReadyForNextBoundary = completionEvidence?.status === 'complete';
-  const currentChangedPaths = normalizeImplementationReviewChangedPaths(ctx.workspaceChangedPaths ?? updated.scopeEvidence?.actualChangedPaths ?? []);
-  const latestReview = latestImplementationReview(updated.implementationReviews);
-  const approvedReviewRemainsAuthoritative = Boolean(
-    validPassReadyForNextBoundary
-    && updated.phase === 'delivery'
-    && updated.phaseEvidence.review.state === 'satisfied'
-    && latestReview?.decision === 'approved'
-    && sourceRevision
-    && input.workspaceFingerprint
-    && latestReview.sourceRevision === sourceRevision
-    && latestReview.verificationWorkspaceFingerprint === input.workspaceFingerprint
-    && latestReview.changedPathDigest === implementationReviewChangedPathDigest(currentChangedPaths)
-  );
-  const reviewRequiredAfterPass = validPassReadyForNextBoundary
-    && !approvedReviewRemainsAuthoritative
-    && workRequiresImplementationReview(updated.workKind, currentChangedPaths, updated.engineeringContext?.riskClass);
-  if (approvedReviewRemainsAuthoritative && updated.evidenceState !== 'valid') {
-    recordWorkEvidenceState(ctx.workStore, updated.workId, 'valid');
-  }
-  if (reviewRequiredAfterPass) {
-    recordWorkScopeEvidence(ctx.workStore, updated.workId, { actualChangedPaths: [...(ctx.workspaceChangedPaths ?? [])] });
-    transitionWorkContractPhase(ctx.workStore, updated.workId, {
-      status: 'running',
-      phase: 'verification',
-      state: 'satisfied',
-      summary: 'All required exact Work verification receipts are current; implementation review admission is now allowed.',
-      evidenceRefs: updated.evidenceRefs,
-    });
-    requestWorkImplementationReview(ctx.workStore, updated.workId, 'Verification is complete; explicit Controller implementation review is required before delivery.');
-  }
-  if (validPassReadyForNextBoundary && !reviewRequiredAfterPass && !approvedReviewRemainsAuthoritative) {
-    transitionWorkContractPhase(ctx.workStore, updated.workId, {
-      status: 'running',
-      phase: 'delivery',
-      state: 'satisfied',
-      summary: 'All required exact Work verification receipts are current and this Work does not require implementation review; delivery admission advanced automatically.',
-      evidenceRefs: updated.evidenceRefs,
-      evidenceState: 'valid',
-    });
-  }
-  const suggested = validateSuggestedNextActions(
-    classified.outcome === 'valid_pass'
-      ? [reviewRequiredAfterPass
-          ? implementationReviewSuggestedAction(work.workId)
-          : {
-              label: validPassReadyForNextBoundary ? 'Finalize work' : 'Continue workloop',
-              tool: 'rh_work',
-              operation: validPassReadyForNextBoundary ? 'finalize' : 'continue',
-              payload: { work_id: work.workId },
-              risk: 'readonly',
-              confidence: 'high',
-            }]
-      : classified.outcome === 'valid_fail'
-        ? [{
-            label: 'Continue for review handoff',
-            tool: 'rh_work',
-            operation: 'continue',
-            payload: { work_id: work.workId },
-            risk: 'readonly',
-            confidence: 'high',
-          }]
-        : [{
-            label: 'Diagnose infrastructure (dry-run)',
-            tool: 'rh_work',
-            operation: 'repair',
-            payload: { work_id: work.workId, repair_operation: 'diagnose', dry_run: true },
-            risk: 'readonly',
-            confidence: 'high',
-          }],
-    { validCheckIds: work.checks },
-  ).actions;
+  // A verification result is a durable fact. It never advances a Work phase,
+  // requests review, or chooses a next action on the model's behalf.
+  const suggested = validateSuggestedNextActions([]).actions;
 
   return buildFacadeResult({
     status: status === 'failed' ? 'failed' : 'ok',
@@ -1846,9 +1774,6 @@ export function verifyGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorkloop
         doesNotRequestTaskChanges: !classified.isAcceptanceFailure,
       },
       backgroundCompleted: false,
-      ...(classified.outcome === 'valid_pass'
-        ? { nextStep: reviewRequiredAfterPass ? 'review' : validPassReadyForNextBoundary ? 'finalize' : 'continue' }
-        : {}),
     },
     warnings: classified.warnings,
     evidenceRefs: record.evidenceRef ? [record.evidenceRef] : [],
@@ -1876,9 +1801,6 @@ export function reviewGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorkloop
     const candidate = currentImplementationReviewCandidate(ctx, work, promotionEvidence);
     recordWorkScopeEvidence(ctx.workStore, work.workId, { actualChangedPaths: [...candidate.changedPaths] });
     work = getWorkContract(ctx.workStore, work.workId) ?? work;
-    if (work.phase !== 'review') {
-      throw new Error('WORK_IMPLEMENTATION_REVIEW_PHASE_REQUIRED: verify or continue the exact candidate into review before recording a decision.');
-    }
     const at = nowIso(ctx);
     const review: WorkImplementationReviewRecord = {
       schemaVersion: 1,
@@ -1905,16 +1827,12 @@ export function reviewGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorkloop
       recordedAt: at,
     };
     const updated = recordWorkImplementationReview(ctx.workStore, work.workId, review);
-    const suggested = validateSuggestedNextActions(input.decision === 'approved'
-      ? [{ label: 'Finalize reviewed work', tool: 'rh_work', operation: 'finalize', payload: { work_id: work.workId }, risk: 'workspace_write', confidence: 'high' }]
-      : input.decision === 'changes_required'
-        ? [{ label: 'Continue implementation repairs', tool: 'rh_work', operation: 'continue', payload: { work_id: work.workId }, risk: 'workspace_write', confidence: 'high' }]
-        : [{ label: 'Inspect blocked review evidence', tool: 'rh_context', operation: 'get', payload: { work_id: work.workId }, risk: 'readonly', confidence: 'high' }]).actions;
+    const suggested = validateSuggestedNextActions([]).actions;
     const persisted = updateWorkContract(ctx.workStore, work.workId, { suggestedNextActions: suggested });
     return buildFacadeResult({
       status: input.decision === 'blocked' ? 'blocked' : 'ok',
       summary: `Implementation review ${review.reviewId}: ${input.decision}.`,
-      data: { work: summarizeWorkContract(persisted), review, nextStep: input.decision === 'approved' ? 'finalize' : input.decision === 'changes_required' ? 'continue' : 'blocked' },
+      data: { work: summarizeWorkContract(persisted), review },
       suggestedNextActions: suggested,
     });
   } catch (error) {

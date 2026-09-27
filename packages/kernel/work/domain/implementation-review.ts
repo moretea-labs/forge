@@ -356,22 +356,11 @@ export function assertImplementationReviewPreDeliveryBoundary(input: {
   requiredCheckIds: readonly string[];
   verificationRecords: readonly ImplementationReviewVerificationRecord[];
 }): WorkImplementationReviewRecord | undefined {
-  const verification = authoritativeImplementationReviewVerificationEvidence({
-    repoId: input.repoId,
-    workId: input.workId,
-    requiredCheckIds: input.requiredCheckIds,
-    records: input.verificationRecords,
-    sourceRevision: input.candidate.sourceRevision,
-    workspaceFingerprint: input.candidate.verificationWorkspaceFingerprint,
-  });
-  if (verification.missingCheckIds.length > 0
-    || !sameEvidenceIdentity(verification.evidence, input.candidate.verificationEvidence)) {
-    throw new Error(`WORK_IMPLEMENTATION_REVIEW_VERIFICATION_REQUIRED: ${verification.missingCheckIds.join(', ')}`);
-  }
-  const gate = evaluateImplementationReviewGate({ workKind: input.workKind, riskClass: input.riskClass, reviews: input.reviews, candidate: input.candidate });
-  if (!gate.approved) throw new Error(`${gate.code ?? 'WORK_IMPLEMENTATION_REVIEW_REQUIRED'}: ${gate.reason}`);
-  if (gate.review && gate.review.workId !== input.workId) throw new Error('WORK_IMPLEMENTATION_REVIEW_WORK_MISMATCH');
-  return gate.review;
+  // Delivery is a Git capability, not a Work workflow transition. Reviews and
+  // verification remain immutable evidence that callers may inspect, but they
+  // cannot admit or deny commit, merge, integration, or semantic completion.
+  void input;
+  return undefined;
 }
 
 

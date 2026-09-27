@@ -26,11 +26,11 @@ function highEvidence(sourceRevision = 'revision-a') {
 }
 
 describe('EngineeringWorkProfile and ProjectEngineeringContract', () => {
-  test('keeps low risk lightweight while making high and critical admission evidence explicit', () => {
+  test('keeps engineering evidence observational at every risk level', () => {
     expect(engineeringWorkProfileForRisk('low')).toMatchObject({ riskClass: 'low', admissionEnforcement: 'observe' });
     expect(engineeringWorkProfileForRisk('medium')).toMatchObject({ riskClass: 'normal', admissionEnforcement: 'observe' });
-    expect(engineeringWorkProfileForRisk('high')).toMatchObject({ riskClass: 'high', admissionEnforcement: 'enforce' });
-    expect(engineeringWorkProfileForRisk('destructive')).toMatchObject({ riskClass: 'critical', admissionEnforcement: 'enforce' });
+    expect(engineeringWorkProfileForRisk('high')).toMatchObject({ riskClass: 'high', admissionEnforcement: 'observe' });
+    expect(engineeringWorkProfileForRisk('destructive')).toMatchObject({ riskClass: 'critical', admissionEnforcement: 'observe' });
   });
 
   test('skips a separate implementation review only for low-risk candidates', () => {
@@ -59,7 +59,7 @@ describe('EngineeringWorkProfile and ProjectEngineeringContract', () => {
     })).not.toThrow();
   });
 
-  test('records normal evidence gaps without blocking but fails high-risk mutation closed', () => {
+  test('records evidence gaps without turning them into mutation admission', () => {
     const normal = buildEngineeringContextReceipt({
       risk: 'medium', sourceIdentity: { kind: 'revision', revision: 'revision-a' }, recordedAt: '2026-09-03T00:00:00.000Z',
     });
@@ -69,11 +69,7 @@ describe('EngineeringWorkProfile and ProjectEngineeringContract', () => {
     const high = buildEngineeringContextReceipt({
       risk: 'high', sourceIdentity: { kind: 'revision', revision: 'revision-a' }, recordedAt: '2026-09-03T00:00:00.000Z',
     });
-    expect(evaluateEngineeringAdmission({ profile: engineeringWorkProfileForRisk('high'), receipt: high, mutation: true })).toMatchObject({
-      allowed: false,
-      code: 'ENGINEERING_ADMISSION_EVIDENCE_REQUIRED',
-      missing: ['project_contract', 'context_closure', 'product_dod', 'design_decision', 'independent_critique'],
-    });
+    expect(evaluateEngineeringAdmission({ profile: engineeringWorkProfileForRisk('high'), receipt: high, mutation: true })).toEqual({ allowed: true });
 
     const ready = buildEngineeringContextReceipt({
       risk: 'high', sourceIdentity: { kind: 'revision', revision: 'revision-a' }, evidence: highEvidence(), recordedAt: '2026-09-03T00:00:00.000Z',

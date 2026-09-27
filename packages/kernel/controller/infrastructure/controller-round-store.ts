@@ -24,7 +24,7 @@ import {
   type ControllerSessionClaimInput,
 } from './controller-session-store';
 import { getHandoffItem, listHandoffItems } from '../../../../src/runtime/control-plane/facade/handoff-inbox-store';
-import { currentTaskLineageWorkIds, getWorkContract, readActiveWorkCandidates, readWorkContractStore, isTerminalWorkContractStatus, type WorkContract } from '../../work/api/index';
+import { currentTaskLineageWorkIds, getWorkContract, readActiveWorkCandidates, readWorkContractStore, semanticWorkState, type WorkContract } from '../../work/api/index';
 import { isTerminalHandoffStatus } from '../../../protocols/handoff/index';
 import type { ControllerSession, ControllerType } from '../domain/types';
 import { deriveClosedRoundQualitySignals, type AssistantContextSnapshot, type AssistantContextUsage, type ClosedRoundObservation, type ExecutionQualityAdjustmentResult, type ExecutionQualityDecision, type ExecutionQualitySignal } from '../domain/execution-quality';
@@ -531,8 +531,8 @@ function assertControllerRoundSuccessorLineage(
 ): WorkContract {
   const successor = getWorkContract(options, successorWorkId);
   if (!successor) throw new Error(`CONTROLLER_RELAY_SUCCESSOR_WORK_NOT_FOUND: ${successorWorkId}`);
-  if (isTerminalWorkContractStatus(successor.status)) {
-    throw new Error(`CONTROLLER_RELAY_SUCCESSOR_WORK_TERMINAL: ${successor.workId}:${successor.status}`);
+  if (semanticWorkState(successor) !== 'open') {
+    throw new Error(`CONTROLLER_RELAY_SUCCESSOR_WORK_TERMINAL: ${successor.workId}:${semanticWorkState(successor)}`);
   }
   if (successor.predecessorWorkId !== predecessor.workId) {
     throw new Error(`CONTROLLER_RELAY_SUCCESSOR_LINEAGE_MISMATCH: ${successor.workId}:predecessor=${successor.predecessorWorkId ?? 'none'}:expected=${predecessor.workId}`);
@@ -775,7 +775,7 @@ export function submitControllerRoundDisposition(
   if (!work) throw new Error(`WORK_NOT_FOUND: ${input.workId}`);
   const requirementId = resolveRequirementId(options, work, input.requirementId);
   const relayScopeId = resolveRelayScope(work, requirementId, input.relayScopeId);
-  const terminal = isTerminalWorkContractStatus(work.status);
+  const terminal = semanticWorkState(work) !== 'open';
 
   return relayLock(options, relayScopeId, `controller-relay-submit:${input.identity.controllerId}`, () => {
     const existing = readRelayRecord(options, work.workId);
@@ -965,8 +965,8 @@ export function settleControllerRoundAfterTurn(
     const successor = work.status === 'completed' && current.value.successorWorkId
       ? getWorkContract(options, current.value.successorWorkId)
       : undefined;
-    const terminalSuccessorContinuation = Boolean(successor && !isTerminalWorkContractStatus(successor.status));
-    if (isTerminalWorkContractStatus(work.status) && !terminalSuccessorContinuation) {
+    const terminalSuccessorContinuation = Boolean(successor && semanticWorkState(successor) === 'open');
+    if (semanticWorkState(work) !== 'open' && !terminalSuccessorContinuation) {
       return applyControllerRoundTransition(options, current, {
         type: 'terminal_work_observed', at, error: `Controller turn settled after terminal Work ${work.status}`,
       });
@@ -989,7 +989,7 @@ export function beginInitialControllerRoundDispatch(
 ): ControllerRoundRelayRecord {
   const work = getWorkContract(options, input.workId);
   if (!work) throw new Error(`WORK_NOT_FOUND: ${input.workId}`);
-  if (isTerminalWorkContractStatus(work.status)) throw new Error(`CONTROLLER_RELAY_WORK_TERMINAL: ${work.status}`);
+  if (semanticWorkState(work) !== 'open') throw new Error(`CONTROLLER_RELAY_WORK_TERMINAL: ${semanticWorkState(work)}`);
   const requirementId = resolveRequirementId(options, work, input.requirementId);
   const requirement = requirementForRelay(options, requirementId);
   if (requirement && !['planned', 'active'].includes(requirement.state)) {
@@ -1382,7 +1382,7 @@ export function acknowledgeControllerRoundClaim(
 
     if (blocker === 'repeated_state') {
       const work = getWorkContract(options, input.workId);
-      if (!work || isTerminalWorkContractStatus(work.status)) return current.value;
+      if (!work || semanticWorkState(work) !== 'open') return current.value;
       const stateFingerprint = mechanicalStateFingerprint(options, work, current.value.requirementId, current.value.relayScopeId, current.value.handoffId);
       const transitioned = applyControllerRoundTransition(options, current, {
         type: 'semantic_state_changed', at, stateFingerprint, session, principalId: ownerPrincipal!, controllerInstanceId,
@@ -1416,7 +1416,7 @@ export function recoverControllerRoundRelayAuthority(
   }
   const work = getWorkContract(options, workId);
   if (!work) throw new Error(`WORK_NOT_FOUND: ${workId}`);
-  if (isTerminalWorkContractStatus(work.status)) {
+  if (semanticWorkState(work) !== 'open') {
     throw new Error(`WORK_CONTROLLER_AUTHORITY_RECOVERY_TERMINAL: ${workId}:${work.status}`);
   }
   const initial = readRelayRecord(options, workId);
@@ -1461,10 +1461,10 @@ export function recoverControllerRoundRelayAuthority(
     }
     const currentWork = getWorkContract(options, workId);
     if (!currentWork) throw new Error(`WORK_NOT_FOUND: ${workId}`);
-    if (isTerminalWorkContractStatus(currentWork.status)) {
-      throw new Error(`WORK_CONTROLLER_AUTHORITY_RECOVERY_TERMINAL: ${workId}:${currentWork.status}`);
+    if (semanticWorkState(currentWork) !== 'open') {
+      throw new Error(`WORK_CONTROLLER_AUTHORITY_RECOVERY_TERMINAL: ${workId}:${semanticWorkState(currentWork)}`);
     }
-    const activeWorks = recoveryFenceWork(options, current.value).filter((entry) => !isTerminalWorkContractStatus(entry.status));
+    const activeWorks = recoveryFenceWork(options, current.value).filter((entry) => semanticWorkState(entry) === 'open');
     if (activeWorks.some((entry) => workHasActiveExecution(options.controllerHome, options.repoId, entry.workId))) {
       throw new Error(`WORK_CONTROLLER_AUTHORITY_RECOVERY_ACTIVE_EXECUTION: ${workId}`);
     }
@@ -1534,7 +1534,7 @@ export function retryFailedControllerRoundProviderDispatch(
     if (current.value.relayScopeId !== input.relayScopeId.trim()) throw new Error(`CONTROLLER_RELAY_PROVIDER_RETRY_SCOPE_MISMATCH:${workId}`);
     if ((current.value.authorityId?.trim() || '') !== input.authorityId.trim()) throw new Error(`CONTROLLER_RELAY_PROVIDER_RETRY_AUTHORITY_MISMATCH:${workId}`);
     const work = getWorkContract(options, workId);
-    if (!work || isTerminalWorkContractStatus(work.status)) throw new Error(`CONTROLLER_RELAY_PROVIDER_RETRY_WORK_TERMINAL:${workId}:${work?.status ?? 'missing'}`);
+    if (!work || semanticWorkState(work) !== 'open') throw new Error(`CONTROLLER_RELAY_PROVIDER_RETRY_WORK_TERMINAL:${workId}:${work ? semanticWorkState(work) : 'missing'}`);
     const requirement = requirementForRelay(options, current.value.requirementId);
     if (requirement && !['planned', 'active'].includes(requirement.state)) throw new Error(`CONTROLLER_RELAY_PROVIDER_RETRY_REQUIREMENT_TERMINAL:${requirement.state}`);
     if (workHasActiveExecution(options.controllerHome, options.repoId, workId)) throw new Error(`CONTROLLER_RELAY_PROVIDER_RETRY_ACTIVE_EXECUTION:${workId}`);
@@ -1600,7 +1600,7 @@ export function rearmControllerRoundAfterProviderUserAction(
     const occurrenceId = requestedOccurrenceId ?? current.value.occurrenceId;
     if (!occurrenceId) throw new Error('CONTROLLER_RELAY_OCCURRENCE_ID_REQUIRED');
     const work = getWorkContract(options, workId);
-    if (!work || isTerminalWorkContractStatus(work.status)) throw new Error(`CONTROLLER_RELAY_PROVIDER_USER_ACTION_WORK_TERMINAL: ${workId}:${work?.status ?? 'missing'}`);
+    if (!work || semanticWorkState(work) !== 'open') throw new Error(`CONTROLLER_RELAY_PROVIDER_USER_ACTION_WORK_TERMINAL: ${workId}:${work ? semanticWorkState(work) : 'missing'}`);
     return applyControllerRoundTransition(options, current, {
       type: 'provider_user_action_resolved', at: nowIso(options), handoffId, occurrenceId,
     });
@@ -1624,10 +1624,10 @@ export function rearmControllerRoundAfterProviderRecovery(
     if ((current.value.authorityId?.trim() || '') !== input.authorityId.trim()) throw new Error(`CONTROLLER_RELAY_PROVIDER_RECOVERY_AUTHORITY_MISMATCH: ${workId}`);
     if (controllerRoundBlockerClass(current.value) !== 'consecutive_failures') throw new Error(`CONTROLLER_RELAY_PROVIDER_RECOVERY_BLOCKER_MISMATCH: ${workId}`);
     const work = getWorkContract(options, workId);
-    if (!work || isTerminalWorkContractStatus(work.status)) throw new Error(`CONTROLLER_RELAY_PROVIDER_RECOVERY_WORK_TERMINAL: ${workId}:${work?.status ?? 'missing'}`);
+    if (!work || semanticWorkState(work) !== 'open') throw new Error(`CONTROLLER_RELAY_PROVIDER_RECOVERY_WORK_TERMINAL: ${workId}:${work ? semanticWorkState(work) : 'missing'}`);
     const requirement = requirementForRelay(options, current.value.requirementId);
     if (requirement && !['planned', 'active'].includes(requirement.state)) throw new Error(`CONTROLLER_RELAY_PROVIDER_RECOVERY_REQUIREMENT_TERMINAL: ${requirement.state}`);
-    const activeWorks = recoveryFenceWork(options, current.value).filter((entry) => !isTerminalWorkContractStatus(entry.status));
+    const activeWorks = recoveryFenceWork(options, current.value).filter((entry) => semanticWorkState(entry) === 'open');
     if (activeWorks.some((entry) => workHasActiveExecution(options.controllerHome, options.repoId, entry.workId))) throw new Error(`CONTROLLER_RELAY_PROVIDER_RECOVERY_ACTIVE_EXECUTION: ${workId}`);
     if (activeWorks.some((entry) => Boolean(getControllerSession(options, entry.workId)))) throw new Error(`CONTROLLER_RELAY_PROVIDER_RECOVERY_ACTIVE_CLAIM: ${workId}`);
     const evidenceId = bounded(input.evidenceId, 500);
@@ -1669,7 +1669,7 @@ export function bindLegacyControllerRoundOccurrence(
       throw new Error(`CONTROLLER_RELAY_LEGACY_OCCURRENCE_CONTROLLER_MISMATCH: ${workId}`);
     }
     const work = getWorkContract(options, workId);
-    if (!work || isTerminalWorkContractStatus(work.status)) throw new Error(`CONTROLLER_RELAY_LEGACY_OCCURRENCE_WORK_TERMINAL: ${workId}:${work?.status ?? 'missing'}`);
+    if (!work || semanticWorkState(work) !== 'open') throw new Error(`CONTROLLER_RELAY_LEGACY_OCCURRENCE_WORK_TERMINAL: ${workId}:${work ? semanticWorkState(work) : 'missing'}`);
     const requirement = requirementForRelay(options, current.value.requirementId);
     if (requirement && !['planned', 'active'].includes(requirement.state)) throw new Error(`CONTROLLER_RELAY_LEGACY_OCCURRENCE_REQUIREMENT_TERMINAL: ${requirement.state}`);
     return applyControllerRoundTransition(options, current, { type: 'legacy_occurrence_bound', at: nowIso(options), occurrenceId });
@@ -1715,7 +1715,7 @@ export function claimStalledControllerRoundRelays(
     if (requirement && !['planned', 'active'].includes(requirement.state)) continue;
     if (!relayMayHaveActiveWork(options, candidate, activeWorkSnapshotForScan())) continue;
     const candidateWorks = recoveryFenceWork(options, candidate, workSnapshotForScan());
-    const activeCandidateWorks = candidateWorks.filter((work) => !isTerminalWorkContractStatus(work.status));
+    const activeCandidateWorks = candidateWorks.filter((work) => semanticWorkState(work) === 'open');
     if (activeCandidateWorks.length === 0) continue;
     if (activeCandidateWorks.some((work) => workHasActiveExecution(options.controllerHome, options.repoId, work.workId) || controllerSessionBlocksRecovery(options, work.workId, { nowMs, graceMs }))) continue;
     if (repeatedStateBlocked) {
@@ -1743,7 +1743,7 @@ export function claimStalledControllerRoundRelays(
       if (latestRequirement && !['planned', 'active'].includes(latestRequirement.state)) return undefined;
       const lockedWorkContracts = readWorkContractStore({ controllerHome: options.controllerHome, repoId: options.repoId }).contracts;
       const works = recoveryFenceWork(options, latest, lockedWorkContracts);
-      const activeWorks = works.filter((work) => !isTerminalWorkContractStatus(work.status));
+      const activeWorks = works.filter((work) => semanticWorkState(work) === 'open');
       if (activeWorks.length === 0) return undefined;
       if (activeWorks.some((work) => workHasActiveExecution(options.controllerHome, options.repoId, work.workId) || controllerSessionBlocksRecovery(options, work.workId, { nowMs, graceMs }))) return undefined;
 

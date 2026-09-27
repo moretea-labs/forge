@@ -524,23 +524,12 @@ function physicalImplementationReviewCandidate(input: {
   const verificationWorkspaceFingerprint = input.verificationWorkspaceFingerprint?.trim()
     || workspaceValidationFingerprint(input.repository.canonicalRoot, status);
   const workspaceFingerprint = implementationReviewContentFingerprint(input.repository.canonicalRoot, changedPaths);
-  const verification = authoritativeImplementationReviewVerificationEvidence({
-    repoId: input.contract.repoId,
-    workId: input.contract.workId,
-    requiredCheckIds: input.contract.checks,
-    records: input.contract.checkRefs,
-    sourceRevision,
-    workspaceFingerprint: verificationWorkspaceFingerprint,
-  });
-  if (verification.missingCheckIds.length > 0) {
-    throw new Error(`WORK_IMPLEMENTATION_REVIEW_VERIFICATION_REQUIRED: ${verification.missingCheckIds.join(', ')}`);
-  }
   return {
     sourceRevision,
     workspaceFingerprint,
     verificationWorkspaceFingerprint,
     changedPaths,
-    verificationEvidence: verification.evidence,
+    verificationEvidence: [],
     architectureEvidence: [],
   };
 }
@@ -581,51 +570,10 @@ function assertPhysicalBranchCleanupImplementationReviewGate(input: {
   contract: NonNullable<ReturnType<typeof contractFor>>;
   targetBranch?: string;
 }): void {
-  const branchHead = gitRevision(input.target.canonicalRoot, input.handle.branch);
-  if (!branchHead) throw new Error('WORK_IMPLEMENTATION_REVIEW_BRANCH_SOURCE_REQUIRED');
-  if (input.handle.expectedHead && branchHead !== input.handle.expectedHead) {
-    throw new Error('WORK_IMPLEMENTATION_REVIEW_BRANCH_SOURCE_CHANGED');
-  }
-  const review = latestImplementationReview(input.contract.implementationReviews);
-  const changedPaths = implementationReviewCommittedChangedPaths({
-    repository: input.target,
-    handle: input.handle,
-    contract: input.contract,
-    head: branchHead,
-    explicitTargetBranch: input.targetBranch,
-    review,
-  });
-  if (!workRequiresImplementationReview(input.contract.workKind, changedPaths, input.contract.engineeringContext?.riskClass)) return;
-  if (!review) throw new Error('WORK_IMPLEMENTATION_REVIEW_REQUIRED');
-  if (review.sourceRevision !== branchHead) throw new Error('WORK_IMPLEMENTATION_REVIEW_STALE: branch source revision changed');
-  const verification = authoritativeImplementationReviewVerificationEvidence({
-    repoId: input.contract.repoId,
-    workId: input.contract.workId,
-    requiredCheckIds: input.contract.checks,
-    records: input.contract.checkRefs,
-    sourceRevision: branchHead,
-    workspaceFingerprint: review.verificationWorkspaceFingerprint,
-  });
-  if (verification.missingCheckIds.length > 0) {
-    throw new Error(`WORK_IMPLEMENTATION_REVIEW_VERIFICATION_REQUIRED: ${verification.missingCheckIds.join(', ')}`);
-  }
-  assertImplementationReviewPreDeliveryBoundary({
-    repoId: input.contract.repoId,
-    workId: input.contract.workId,
-    workKind: input.contract.workKind,
-    riskClass: input.contract.engineeringContext?.riskClass,
-    reviews: input.contract.implementationReviews,
-    candidate: {
-      sourceRevision: branchHead,
-      workspaceFingerprint: review.workspaceFingerprint,
-      verificationWorkspaceFingerprint: review.verificationWorkspaceFingerprint,
-      changedPaths,
-      verificationEvidence: verification.evidence,
-      architectureEvidence: review.architectureEvidence,
-    },
-    requiredCheckIds: input.contract.checks,
-    verificationRecords: input.contract.checkRefs,
-  });
+  // `finalize` is a frozen-client compatibility carrier. Cleanup may verify
+  // physical Git ownership, but review/verification methodology is never an
+  // admission condition for delivery or semantic Work closure.
+  void input;
 }
 
 /**
@@ -639,50 +587,10 @@ function assertCleanedCompletionImplementationReviewGate(input: {
   handle: WorkHandleState;
   contract: NonNullable<ReturnType<typeof contractFor>>;
 }): ReturnType<typeof latestImplementationReview> {
-  const deliveryRevision = input.handle.expectedHead ?? input.handle.baseCommit;
-  if (!deliveryRevision) throw new Error('WORK_IMPLEMENTATION_REVIEW_SOURCE_IDENTITY_REQUIRED');
-  const review = latestImplementationReview(input.contract.implementationReviews);
-  const changedPaths = implementationReviewCommittedChangedPaths({
-    repository: input.target, handle: input.handle, contract: input.contract, head: deliveryRevision, review,
-  });
-  if (!workRequiresImplementationReview(input.contract.workKind, changedPaths, input.contract.engineeringContext?.riskClass)) return undefined;
-  if (!review) throw new Error('WORK_IMPLEMENTATION_REVIEW_REQUIRED');
-  if (review.sourceRevision !== deliveryRevision) {
-    throw new Error('WORK_IMPLEMENTATION_REVIEW_STALE: cleaned delivery source revision changed');
-  }
-  const reviewedPaths = normalizeImplementationReviewChangedPaths(review.changedPaths);
-  if (implementationReviewChangedPathDigest(reviewedPaths) !== implementationReviewChangedPathDigest(changedPaths)) {
-    throw new Error('WORK_IMPLEMENTATION_REVIEW_STALE: cleaned delivery changed-path identity changed');
-  }
-  const verification = authoritativeImplementationReviewVerificationEvidence({
-    repoId: input.contract.repoId,
-    workId: input.contract.workId,
-    requiredCheckIds: input.contract.checks,
-    records: input.contract.checkRefs,
-    sourceRevision: deliveryRevision,
-    workspaceFingerprint: review.verificationWorkspaceFingerprint,
-  });
-  if (verification.missingCheckIds.length > 0) {
-    throw new Error(`WORK_IMPLEMENTATION_REVIEW_VERIFICATION_REQUIRED: ${verification.missingCheckIds.join(', ')}`);
-  }
-  assertImplementationReviewPreDeliveryBoundary({
-    repoId: input.contract.repoId,
-    workId: input.contract.workId,
-    workKind: input.contract.workKind,
-    riskClass: input.contract.engineeringContext?.riskClass,
-    reviews: input.contract.implementationReviews,
-    candidate: {
-      sourceRevision: deliveryRevision,
-      workspaceFingerprint: review.workspaceFingerprint,
-      verificationWorkspaceFingerprint: review.verificationWorkspaceFingerprint,
-      changedPaths,
-      verificationEvidence: verification.evidence,
-      architectureEvidence: review.architectureEvidence,
-    },
-    requiredCheckIds: input.contract.checks,
-    verificationRecords: input.contract.checkRefs,
-  });
-  return review;
+  // Completion is the Work CAS primitive; a historical review is evidence, not
+  // a prerequisite for recovering or recording that completion.
+  void input;
+  return undefined;
 }
 
 
@@ -1706,7 +1614,10 @@ async function finalizeWorkInternal(
   args: Record<string, unknown>,
   options: { prepareReviewCandidate?: boolean } = {},
 ): Promise<Record<string, unknown>> {
-  const prepareReviewCandidate = options.prepareReviewCandidate === true;
+  // A frozen caller may retain this compatibility flag, but it no longer
+  // controls delivery. Review evidence must not create a second workflow gate.
+  void options;
+  const prepareReviewCandidate = false;
   const session = requireSession(ctx, args);
   let current = workForSession(ctx, session, args);
   const requestedWants = { commit: args.commit === true, merge: args.merge === true, cleanup: args.cleanup === true };

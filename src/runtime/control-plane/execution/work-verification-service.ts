@@ -143,9 +143,10 @@ function reusedVerificationResult(
         && latestReview.verificationWorkspaceFingerprint === input.workspaceFingerprint
         && latestReview.changedPathDigest === implementationReviewChangedPathDigest(currentChangedPaths)
       );
-      nextStep = approvedReviewRemainsAuthoritative || !workRequiresImplementationReview(input.workContract.workKind, currentChangedPaths)
-        ? 'finalize'
-        : 'review';
+      // Verification is evidence only. The model decides whether to continue,
+      // review, deliver, wait, or complete; Forge does not derive a workflow step.
+      void approvedReviewRemainsAuthoritative;
+      nextStep = undefined;
     } else {
       nextStep = 'continue';
     }

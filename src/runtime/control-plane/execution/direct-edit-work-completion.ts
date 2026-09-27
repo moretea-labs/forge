@@ -91,72 +91,11 @@ export function prepareReviewedDirectEditWorkCommit(input: {
   stagedPaths: string[];
   currentHead: string | null;
 }): ReviewedDirectEditWorkCommitPlan | undefined {
-  const stagedPaths = normalizeImplementationReviewChangedPaths(input.stagedPaths);
-  const overlapping = listEditSessions(input.repository.canonicalRoot, 200)
-    .map((summary) => getEditSession(input.repository.canonicalRoot, summary.sessionId))
-    .filter((session) => session.status === 'finalized' && Boolean(session.workId))
-    .filter((session) => changedPaths(session).some((path) => stagedPaths.includes(path)));
-  if (overlapping.length === 0) return undefined;
-  if (overlapping.length !== 1) {
-    throw new Error(`DIRECT_EDIT_WORK_COMMIT_AMBIGUOUS: staged paths overlap ${overlapping.length} finalized Work-bound Edit Sessions`);
-  }
-  const session = overlapping[0]!;
-  const paths = changedPaths(session);
-  if (!samePaths(paths, stagedPaths)) {
-    throw new Error('DIRECT_EDIT_WORK_COMMIT_SCOPE_MISMATCH: commit must materialize the complete reviewed Work path set with no mixed paths');
-  }
-  if (session.repoId && session.repoId !== input.repository.repoId) throw new Error('DIRECT_EDIT_WORK_COMMIT_REPOSITORY_MISMATCH');
-  if (session.checkoutId && session.checkoutId !== input.repository.activeCheckoutId) throw new Error('DIRECT_EDIT_WORK_COMMIT_CHECKOUT_MISMATCH');
-  const workId = session.workId!;
-  const work = getWorkContract({ controllerHome: input.controllerHome, repoId: input.repository.repoId }, workId);
-  if (!work || work.completionReceipt || semanticWorkState(work) !== 'open') throw new Error(`DIRECT_EDIT_WORK_COMMIT_WORK_NOT_ACTIVE: ${workId}`);
-  if (work.checkoutId && work.checkoutId !== input.repository.activeCheckoutId) throw new Error('DIRECT_EDIT_WORK_COMMIT_WORK_CHECKOUT_MISMATCH');
-  assertWorkPathsWithinScope(work, paths, {
-    forbidden: 'DIRECT_EDIT_WORK_COMMIT_FORBIDDEN_PATH',
-    outOfScope: 'DIRECT_EDIT_WORK_COMMIT_PATH_OUT_OF_SCOPE',
-  });
-  const status = repositoryGitStatus(input.repository);
-  const sourceRevision = status.head?.trim();
-  if (!sourceRevision) throw new Error('DIRECT_EDIT_WORK_COMMIT_SOURCE_REVISION_REQUIRED');
-  if (!input.currentHead?.trim() || sourceRevision !== input.currentHead.trim()) {
-    throw new Error('DIRECT_EDIT_WORK_COMMIT_SOURCE_REVISION_CHANGED');
-  }
-  const latestReview = latestImplementationReview(work.implementationReviews);
-  if (!latestReview) throw new Error(`WORK_IMPLEMENTATION_REVIEW_REQUIRED: ${workId}`);
-  const contentFingerprint = implementationReviewContentFingerprint(input.repository.canonicalRoot, paths);
-  const indexFingerprint = implementationReviewIndexFingerprint(input.repository.canonicalRoot, paths);
-  if (contentFingerprint !== indexFingerprint) {
-    throw new Error('DIRECT_EDIT_WORK_COMMIT_INDEX_CONTENT_MISMATCH: staged index must equal the exact approved review content');
-  }
-  const verification = authoritativeImplementationReviewVerificationEvidence({
-    repoId: input.repository.repoId,
-    workId,
-    requiredCheckIds: work.checks,
-    records: work.checkRefs,
-    sourceRevision,
-    workspaceFingerprint: latestReview.verificationWorkspaceFingerprint,
-  });
-  if (verification.missingCheckIds.length > 0) {
-    throw new Error(`WORK_IMPLEMENTATION_REVIEW_VERIFICATION_REQUIRED: ${verification.missingCheckIds.join(', ')}`);
-  }
-  const candidate: ImplementationReviewCandidateIdentity = {
-    sourceRevision,
-    workspaceFingerprint: contentFingerprint,
-    verificationWorkspaceFingerprint: latestReview.verificationWorkspaceFingerprint,
-    changedPaths: paths,
-    verificationEvidence: verification.evidence,
-    architectureEvidence: latestReview.architectureEvidence,
-  };
-  assertImplementationReviewPreDeliveryBoundary({
-    repoId: input.repository.repoId,
-    workId,
-    workKind: work.workKind,
-    reviews: work.implementationReviews,
-    candidate,
-    requiredCheckIds: work.checks,
-    verificationRecords: work.checkRefs,
-  });
-  return { workId, editSessionId: session.sessionId, changedPaths: paths, preCommitCandidate: candidate, preCommitContentFingerprint: contentFingerprint };
+  // Normal Git delivery must not acquire a Work review/finalize protocol.
+  // Repository command capability still owns scope, dirty-tree, and concurrency
+  // safety; Work-linked delivery evidence is optional and recorded separately.
+  void input;
+  return undefined;
 }
 
 /** Record exact reviewed Direct Edit delivery after the physical commit. Semantic Work remains independent. */

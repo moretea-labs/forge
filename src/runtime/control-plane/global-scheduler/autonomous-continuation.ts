@@ -9,7 +9,7 @@ import {
   prepareControllerRoundOccurrence,
   resumeControllerRoundOccurrence,
 } from '../../../../packages/kernel/controller/api/index';
-import { currentTaskSemanticProjectionForWork, listWorkContracts } from '../../../../packages/kernel/work/api/index';
+import { currentTaskSemanticProjectionForWork, listWorkContracts, semanticWorkState } from '../../../../packages/kernel/work/api/index';
 import { workHasActiveExecution } from '../../execution/work-activity';
 import { readRequirement } from '../persistence/requirement-store';
 import { createHandoffItem, getHandoffItem } from '../facade/handoff-inbox-store';
@@ -23,7 +23,6 @@ import { ensureControllerDispositionContinuation } from '../../workflow/schedule
 import { deriveForgeActionableFailureCode, maybeRegisterForgeActionableFailureRepair } from '../../diagnostics/incident-repair';
 
 const DEFAULT_MAX_CONTINUATIONS = 2;
-const RUNNABLE_WORK_STATUSES = new Set(['open', 'running', 'ready']);
 
 export interface SchedulerAutonomousContinuationResult {
   scanned: number;
@@ -142,7 +141,10 @@ export async function runSchedulerAutonomousContinuationReconciliation(input: {
     for (const work of works) {
       if (materialized >= maxContinuations) break;
       scanned += 1;
-      if (!RUNNABLE_WORK_STATUSES.has(work.status)) { skip(skippedByReason, 'work_status:' + work.status); continue; }
+      // Only the explicit semantic Work state decides liveness. Legacy
+      // status/phase/review/verification projections may be stale after a
+      // Runtime interruption and must not strand an otherwise open Work.
+      if (semanticWorkState(work) !== 'open') { skip(skippedByReason, 'semantic_work_terminal'); continue; }
       if (hasActiveExecution(input.controllerHome, repository.repoId, work.workId)) { skip(skippedByReason, 'active_execution'); continue; }
 
       const liveOwner = getControllerSession(store, work.workId);
@@ -152,15 +154,6 @@ export async function runSchedulerAutonomousContinuationReconciliation(input: {
       }
 
       const existingRound = getControllerRoundRelay(store, work.workId);
-      // Retry budget is ControllerRound authority, not a hint for the 5-second
-      // liveness sweep. Once it is exhausted, repeatedly asking the transition
-      // policy to retry can only reproduce the same rejection and feed incident
-      // repair. Provider-environment recovery is the existing authority that
-      // resets the budget; until then this Work is not an automatic wake target.
-      if (existingRound?.status === 'failed' && existingRound.consecutiveFailures >= existingRound.maxFailures) {
-        skip(skippedByReason, 'controller_retry_budget_exhausted');
-        continue;
-      }
 
       const currentTask = currentTaskSemanticProjectionForWork(work);
       let occurrenceId: string;
@@ -177,7 +170,14 @@ export async function runSchedulerAutonomousContinuationReconciliation(input: {
       const requirementState = requirementRecord?.value.state;
       if (requirementState === 'waiting_for_user') { skip(skippedByReason, 'requirement_waiting_for_user'); continue; }
       if (requirementState === 'done' || requirementState === 'cancelled') { skip(skippedByReason, 'requirement:' + requirementState); continue; }
-      if (existingRound && existingRound.status !== 'failed') { skip(skippedByReason, 'controller_round_present'); continue; }
+      // A physically dispatched provider effect is real active execution and
+      // must not be duplicated. All other relay states are bookkeeping and are
+      // reconciled by the occurrence primitive below rather than blocking Work
+      // liveness on their presence alone.
+      if (existingRound?.status === 'dispatching' || existingRound?.status === 'dispatched') {
+        skip(skippedByReason, 'provider_dispatch_in_flight');
+        continue;
+      }
       occurrenceId = existingRound?.occurrenceId ?? planlessOccurrenceId(work.workId, work.updatedAt);
 
       const retainedSession = getRetainedControllerSession(store, work.workId);
