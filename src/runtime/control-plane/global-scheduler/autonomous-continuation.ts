@@ -174,7 +174,15 @@ export async function runSchedulerAutonomousContinuationReconciliation(input: {
       // must not be duplicated. All other relay states are bookkeeping and are
       // reconciled by the occurrence primitive below rather than blocking Work
       // liveness on their presence alone.
-      if (existingRound?.status === 'dispatching' || existingRound?.status === 'dispatched') {
+      const providerDispatchPhysicallyStarted = Boolean(
+        existingRound?.providerDispatchStartedAt && existingRound?.providerDispatchEffectId,
+      );
+      const sameWorkIncompleteDispatch = Boolean(
+        existingRound?.status === 'dispatching'
+        && existingRound.originWorkId === work.workId
+        && !providerDispatchPhysicallyStarted,
+      );
+      if (existingRound?.status === 'dispatched' || (existingRound?.status === 'dispatching' && !sameWorkIncompleteDispatch)) {
         skip(skippedByReason, 'provider_dispatch_in_flight');
         continue;
       }

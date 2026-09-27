@@ -10,7 +10,7 @@ import {
   releaseControllerSession,
   type ControllerHost,
 } from '../../packages/kernel/controller/api/index';
-import { createWorkContract, failWorkContract } from '../../packages/kernel/work/api/index';
+import { cancelWorkContract, createWorkContract } from '../../packages/kernel/work/api/index';
 import { upsertChatgptControllerBinding } from '../../adapters/chatgpt/controller-binding-store';
 import { createRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
 import {
@@ -146,6 +146,41 @@ describe('autonomous Work liveness reconciliation', () => {
     expect(providerDispatches).toBe(1);
   });
 
+  test('resumes an incomplete dispatching round when no provider effect physically started', async () => {
+    const controllerHome = home();
+    const store = { controllerHome, repoId: 'repo-a' };
+    createRunningWork(controllerHome, { workId: 'WORK-INCOMPLETE-DISPATCH' });
+    const binding = bindReleasedChatgptController(controllerHome, 'WORK-INCOMPLETE-DISPATCH');
+    const prepared = prepareControllerRoundOccurrence(store, {
+      occurrenceId: 'incomplete-dispatch-occurrence',
+      workId: 'WORK-INCOMPLETE-DISPATCH',
+      controllerBindingId: binding.bindingId,
+    });
+    expect(prepared.outcome).toBe('dispatched');
+    const incomplete = getControllerRoundRelay(store, 'WORK-INCOMPLETE-DISPATCH');
+    expect(incomplete?.status).toBe('dispatching');
+    expect(incomplete?.providerDispatchStartedAt).toBeUndefined();
+    expect(incomplete?.providerDispatchEffectId).toBeUndefined();
+
+    let providerDispatches = 0;
+    const host: ControllerHost = {
+      resume: async () => {
+        providerDispatches += 1;
+        return { accepted: true, dispatchId: 'dispatch-incomplete-' + providerDispatches };
+      },
+    };
+    const result = await runSchedulerAutonomousContinuationReconciliation({
+      controllerHome,
+      nowMs: Date.parse('2026-09-19T10:00:00.000Z'),
+      repositories: [{ repoId: 'repo-a', canonicalRoot: controllerHome, localRoot: controllerHome }],
+      dependencies: dependencies(host),
+    });
+
+    expect(result).toMatchObject({ eligible: 1, dispatched: 1, failed: 0 });
+    expect(providerDispatches).toBe(1);
+    expect(getControllerRoundRelay(store, 'WORK-INCOMPLETE-DISPATCH')?.status).toBe('dispatched');
+  });
+
   test('materializes a planless ownerless Work without inventing Plan authority', async () => {
     const controllerHome = home();
     createRunningWork(controllerHome, { workId: 'WORK-PLAIN' });
@@ -232,7 +267,7 @@ describe('autonomous Work liveness reconciliation', () => {
       controllerBindingId: staleBinding.bindingId,
       relayScopeId: 'requirement:REQ-SUPERVISOR',
     });
-    failWorkContract(store, 'WORK-STALE', { phase: 'implementation', summary: 'Stale predecessor failed.' });
+    cancelWorkContract(store, 'WORK-STALE', { summary: 'Stale predecessor was semantically superseded.' });
 
     createPlanContract({ controllerHome, repoId: 'repo-a' }, {
       planId: 'PLAN-SUPERVISOR',
