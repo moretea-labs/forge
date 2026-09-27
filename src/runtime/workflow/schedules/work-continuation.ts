@@ -1,5 +1,5 @@
 import { createHash } from 'crypto';
-import { getWorkContract, isTerminalWorkContractStatus, type WorkContract } from '../../../../packages/kernel/work/api/index';
+import { getWorkContract, semanticWorkState, type WorkContract } from '../../../../packages/kernel/work/api/index';
 import { getControllerRoundRelay, getRetainedControllerSession, rearmControllerRoundAfterProviderUserAction, type ControllerRoundRelayRecord, type ControllerType } from '../../../../packages/kernel/controller/api/index';
 import { ensureScheduledControllerBinding } from '../../root/scheduled-controller-composition';
 import { resolveHandoffItem } from '../../control-plane/facade/handoff-inbox-store';
@@ -87,7 +87,7 @@ function requiredWork(controllerHome: string, repoId: string, workId: string): W
 
 function activeWork(controllerHome: string, repoId: string, workId: string): WorkContract {
   const work = requiredWork(controllerHome, repoId, workId);
-  if (isTerminalWorkContractStatus(work.status)) throw new Error(`WORK_ALREADY_TERMINAL: ${work.workId}:${work.status}`);
+  if (semanticWorkState(work) !== 'open') throw new Error(`WORK_ALREADY_TERMINAL: ${work.workId}:${semanticWorkState(work)}`);
   return work;
 }
 

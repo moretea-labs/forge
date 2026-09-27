@@ -10,7 +10,7 @@ import {
   previewAutomaticRuntimeMaintenance,
   type RuntimeMaintenanceActionId,
 } from '../../recovery/maintenance-executor';
-import { appendWorkEvidence, getWorkContract, isTerminalWorkContractStatus } from '../../../../packages/kernel/work/api/index';
+import { appendWorkEvidence, getWorkContract, semanticWorkState } from '../../../../packages/kernel/work/api/index';
 import {
   controllerSessionBlocksRecovery,
   getControllerSession,
@@ -266,7 +266,7 @@ async function executeExternalControllerWake(
     updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, () => ({ enabled: false, pausedReason: `Work ${workId} no longer exists.`, lastTriggeredAt: timestamp, lastOccurrenceId: occurrence.occurrenceId }));
     return decideOccurrence(controllerHome, schedule, occurrence, 'operation_blocked', 'skipped', `EXTERNAL_CONTROLLER_WAKE_WORK_NOT_FOUND:${workId}`);
   }
-  if (isTerminalWorkContractStatus(work.status)) {
+  if (semanticWorkState(work) !== 'open') {
     updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, () => ({ enabled: false, pausedReason: `Work ${workId} is terminal (${work.status}).`, lastTriggeredAt: timestamp, lastOccurrenceId: occurrence.occurrenceId }));
     return decideOccurrence(controllerHome, schedule, occurrence, 'nothing_to_do', 'skipped', `Work ${workId} is terminal (${work.status}); automatic continuation stopped.`);
   }
@@ -397,7 +397,7 @@ async function executeExternalControllerWake(
             );
             if (reEnrollment.status !== 'enrolled') {
               const currentWork = getWorkContract(workStore, workId);
-              if (reEnrollment.status === 'not_eligible' && (!currentWork || isTerminalWorkContractStatus(currentWork.status))) {
+              if (reEnrollment.status === 'not_eligible' && (!currentWork || semanticWorkState(currentWork) !== 'open')) {
                 updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, () => ({
                   enabled: false,
                   pausedReason: currentWork
@@ -876,7 +876,7 @@ export async function evaluateSchedule(
         updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, () => ({ enabled: false, pausedReason: `Work ${workId} no longer exists.`, lastTriggeredAt: timestamp, lastOccurrenceId: occurrenceId }));
         return decideOccurrence(controllerHome, schedule, occurrence, 'operation_blocked', 'skipped', `SCHEDULE_BROWSER_PROBE_WORK_NOT_FOUND:${workId}`);
       }
-      if (isTerminalWorkContractStatus(work.status)) {
+      if (semanticWorkState(work) !== 'open') {
         updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, () => ({ enabled: false, pausedReason: `Work ${workId} is terminal (${work.status}).`, lastTriggeredAt: timestamp, lastOccurrenceId: occurrenceId }));
         return decideOccurrence(controllerHome, schedule, occurrence, 'nothing_to_do', 'skipped', `Work ${workId} is terminal (${work.status}); browser watcher stopped before probing.`);
       }
