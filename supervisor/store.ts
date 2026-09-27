@@ -66,6 +66,7 @@ function openDatabase(forgeHome?: string): Database {
       kind TEXT NOT NULL, effect_id TEXT, completion_fingerprint TEXT, payload_json TEXT NOT NULL, occurred_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS events_task_order ON events(task_id, event_id);
+    CREATE INDEX IF NOT EXISTS events_effect_kind_order ON events(effect_id, kind, event_id);
     CREATE TABLE IF NOT EXISTS discovered_conversations (
       source TEXT NOT NULL, conversation_id TEXT NOT NULL, canonical_url TEXT NOT NULL, title TEXT,
       project_title TEXT, project_url TEXT, observed_at TEXT NOT NULL,

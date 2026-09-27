@@ -77,7 +77,7 @@ export class WorkflowSupervisorControlPlane {
       // Supervisor recovery belong to the Supervisor external-effect
       // lifecycle. A transient lower ControllerRound wait must not strand
       // that effect before assistant completion is observed.
-      return needsBrowserAttention && this.browserTaskActiveForExternalEffect(task);
+      return needsBrowserAttention && (appliedEffectAwaitingCompletion || this.browserTaskActive(task));
     }).map(browserTask);
   }
   browserPoll(input: { conversationId: string; conversationUrl: string }): WorkflowSupervisorBrowserPollResult {
