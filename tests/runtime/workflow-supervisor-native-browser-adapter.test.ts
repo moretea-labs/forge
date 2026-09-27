@@ -119,14 +119,14 @@ describe('Workflow Supervisor macOS native browser adapter', () => {
         return (expression.includes('sendButton.click()') ? { dispatched: true } : { prepared: true }) as T;
       },
       waitForSelector: async (selector, options) => {
-        expect(selector).toBe('[data-testid="send-button"]');
+        expect(selector).toBe('[data-testid="send-button"], button[aria-label="Send"], button[aria-label="发送"], button[data-testid*="send"]');
         expect(options).toMatchObject({ state: 'visible', timeout: 2_000 });
         return { attached: true, visible: true };
       },
     };
     await expect(defaultDispatchPrompt(page, 'continue safely')).resolves.toEqual({ dispatched: true });
     expect(expression).toContain("document.execCommand('insertText'");
-    expect(expression).toContain('[data-testid="send-button"]');
+    expect(expression).toContain('button[aria-label="发送"]');
     expect(expression).toContain('sendButton.click()');
     expect(expression).not.toContain('Enter');
   });

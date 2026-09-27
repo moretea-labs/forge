@@ -223,7 +223,8 @@ export async function defaultDispatchPrompt(
   })()`);
   if (!prepared.prepared) return { dispatched: false, reason: prepared.reason ?? 'composer_prepare_failed' };
 
-  await page.waitForSelector('[data-testid="send-button"]', { state: 'visible', timeout: 2_000 });
+  const sendSelector = '[data-testid="send-button"], button[aria-label="Send"], button[aria-label="发送"], button[data-testid*="send"]';
+  await page.waitForSelector(sendSelector, { state: 'visible', timeout: 2_000 });
 
   // Re-verify the exact payload after the bounded wait. If the user deliberately
   // edits this Forge-owned tab in the tiny interval, refuse to submit rather than
@@ -237,7 +238,7 @@ export async function defaultDispatchPrompt(
     if (!(composer instanceof HTMLElement) || normalizeValue(value(composer)) !== normalizeValue(expected)) {
       return { dispatched: false, reason: 'composer_submit_mismatch' };
     }
-    const sendButton = document.querySelector('[data-testid="send-button"]');
+    const sendButton = document.querySelector('[data-testid="send-button"], button[aria-label="Send"], button[aria-label="发送"], button[data-testid*="send"]');
     if (!(sendButton instanceof HTMLElement)
         || !visible(sendButton)
         || sendButton.hasAttribute('disabled')
