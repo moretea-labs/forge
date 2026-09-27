@@ -32,7 +32,7 @@ import { writeJsonAtomic } from '../../src/runtime/shared/json-files';
 import { acquireRuntimeOwnership, type RuntimeOwnershipHandle } from '../../src/runtime/root/ownership';
 import { collectRuntimeSourceIdentity, rotateRuntimeGeneration } from '../../src/runtime/control-plane/runtime-generation';
 import { writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
-import { collectWorkLifecycleAttention } from '../../src/runtime/control-plane/execution/work-lifecycle-audit';
+import { collectWorkLifecycleAttention, workLifecycleAttentionBlocksReadiness } from '../../src/runtime/control-plane/execution/work-lifecycle-audit';
 import { sampleRepositoryGitStatusForRepositories } from '../../src/runtime/projections/git-status-sampler';
 import { cancelWorkContract, createWorkContract, getWorkContract, listWorkContracts, recordWorkCompletionReceipt, recordWorkImplementationReview, requestWorkImplementationReview, reviseWorkSemanticContext, transitionWorkContractPhase, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { implementationReviewChangedPathDigest } from '../../packages/kernel/work/domain/implementation-review';
@@ -369,6 +369,14 @@ describe('runtime observability', () => {
       rmSync(controllerHome, { recursive: true, force: true });
       rmSync(repoRoot, { recursive: true, force: true });
     }
+  });
+
+  test('keeps isolated Work lifecycle debt out of shared Runtime readiness', () => {
+    expect(workLifecycleAttentionBlocksReadiness({ status: 'work_active' })).toBe(false);
+    expect(workLifecycleAttentionBlocksReadiness({ status: 'active_work_handle_missing' })).toBe(false);
+    expect(workLifecycleAttentionBlocksReadiness({ status: 'active_worktree_missing' })).toBe(false);
+    expect(workLifecycleAttentionBlocksReadiness({ status: 'terminal_work_cleanup_unsettled' })).toBe(true);
+    expect(workLifecycleAttentionBlocksReadiness({ status: 'dirty_linked_worktree_unregistered' })).toBe(true);
   });
 
   test('derives lifecycle attention for dirty unregistered worktrees and unintegrated Work branches', () => {
