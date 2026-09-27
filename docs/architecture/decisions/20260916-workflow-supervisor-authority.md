@@ -191,6 +191,14 @@ External send outcome uses the same three-way rule as Forge's non-idempotent eff
 
 The crash windows before reservation, after reservation/before send, after send/before acknowledgement, and after acknowledgement must all converge through this journal plus remote observation. Daemon restart, extension reload, Chrome restart, tab close/reopen/discard/freeze, Native Messaging reconnect and Forge/MCP session replacement never create a new original Goal or a second continuation for the same committed completion.
 
+## 2026-09-27 amendment: current-session identity is transport-neutral
+
+The exact current ChatGPT conversation is no longer defined by a Browser URL. ChatGPT host metadata such as the anonymized `openai/session` correlation may bind the current conversation directly to the existing Work/Controller continuation. The host route is selected explicitly by the current-session enrollment transport carrier; Forge never guesses Web vs native/iOS from `userAgent` or incidental Browser state. Forge derives an opaque stable conversation identity from the host correlation; the raw correlation is transport metadata, not authorization.
+
+A canonical Browser URL remains a Browser transport locator only. Browser delivery, discovery, tab adoption and Browser effect reconciliation still require that URL and may never manufacture one for a host-native task. Conversely, native/iOS current-session binding must not require Chrome discovery merely to prove which ChatGPT conversation invoked Forge. Runtime/tool/Scheduler health is also not unattended-continuation proof: `autonomousContinuationReady` stays false/unproven until a fresh exact-active-release same-conversation live receipt exists.
+
+This amendment changes no Work/Requirement semantics, creates no iOS lifecycle, and adds no second persistence authority.
+
 ## ChatGPT Web adapter boundary
 
 The Chrome Extension is a discovery/assistant-observation adapter, not a state authority or outbound sender. Native macOS Browser transport is the single sender: it uses trusted input, confirms the composer contains the exact fixed prompt before it clicks Send, and waits for the exact committed user message before recording the effect outcome. It may:

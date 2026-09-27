@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 import { FORGE_INSTANCE_SCOPE_KEY } from '../../src/cli/repositories/controller-home';
 import { withControllerLock } from '../../src/cli/repositories/locks';
 import { readControlPlaneRecord, writeControlPlaneRecord } from '../../src/runtime/control-plane/persistence/sqlite-store';
@@ -11,8 +12,11 @@ export interface ChatgptWorkConversationBinding {
   repoId?: string;
   workId: string;
   bindingId: string;
-  conversationUrl: string;
+  /** Browser transport locator. Absent for host-native current-session bindings. */
+  conversationUrl?: string;
   conversationId: string;
+  /** ChatGPT host-provided same-conversation correlation, e.g. _meta["openai/session"]. */
+  hostConversationSessionId?: string;
   localAlias: string;
   latestBrowserSessionId?: string;
   authorizationGrantRefs?: string[];
@@ -57,6 +61,18 @@ export function hasChatgptConversationIdentity(value: string): boolean {
     if (error instanceof Error && error.message === 'CHATGPT_WORK_CONVERSATION_ID_MISSING') return false;
     throw error;
   }
+}
+
+function normalizeHostConversationSessionId(value: string): string {
+  const normalized = value.trim();
+  if (!normalized) throw new Error('CHATGPT_HOST_CONVERSATION_SESSION_REQUIRED');
+  if (normalized.length > 512) throw new Error('CHATGPT_HOST_CONVERSATION_SESSION_INVALID');
+  return normalized;
+}
+
+export function chatgptHostConversationId(hostConversationSessionId: string): string {
+  const normalized = normalizeHostConversationSessionId(hostConversationSessionId);
+  return `host_${createHash('sha256').update(`chatgpt-host-session\n${normalized}`).digest('hex').slice(0, 32)}`;
 }
 
 function canonicalRecord(options: ChatgptWorkBindingStoreOptions, workId: string) {
@@ -167,6 +183,52 @@ export function rebindChatgptWorkConversation(
         lastContinuedAt: now,
       };
       writeBinding(options, binding, 'chatgpt_work_conversation_rebind', canonicalRecord(options, input.workId)?.revision ?? null);
+      return binding;
+    },
+  );
+}
+
+export function bindChatgptWorkHostConversation(
+  options: ChatgptWorkBindingStoreOptions,
+  input: {
+    workId: string;
+    hostConversationSessionId: string;
+    localAlias?: string;
+  },
+): ChatgptWorkConversationBinding {
+  if (!input.workId.trim()) throw new Error('CHATGPT_WORK_BINDING_WORK_REQUIRED');
+  const hostConversationSessionId = normalizeHostConversationSessionId(input.hostConversationSessionId);
+  const conversationId = chatgptHostConversationId(hostConversationSessionId);
+  return withControllerLock(
+    options.controllerHome,
+    { scope: 'global', resource: `chatgpt-work-binding:${input.workId}` },
+    `chatgpt-work-binding:${input.workId}`,
+    () => {
+      const existing = record(options, input.workId);
+      if (existing && (
+        existing.value.conversationId !== conversationId
+        || existing.value.hostConversationSessionId !== hostConversationSessionId
+      )) {
+        throw new Error(`CHATGPT_WORK_CONVERSATION_REBIND_REQUIRED: ${input.workId}:${existing.value.conversationId}`);
+      }
+      const now = nowIso(options);
+      const localAlias = input.localAlias?.trim()
+        || existing?.value.localAlias
+        || `Forge · ${input.workId} · ${conversationId.slice(0, 13)}`;
+      const binding: ChatgptWorkConversationBinding = {
+        schemaVersion: 1,
+        ...(options.repoId?.trim() ? { repoId: options.repoId.trim() } : {}),
+        workId: input.workId,
+        bindingId: chatgptControllerBindingId(undefined, input.workId),
+        conversationId,
+        hostConversationSessionId,
+        localAlias: localAlias.slice(0, 180),
+        authorizationGrantRefs: [...new Set((existing?.value.authorizationGrantRefs ?? []).map((ref) => ref.trim()).filter(Boolean))],
+        createdAt: existing?.value.createdAt ?? now,
+        updatedAt: now,
+        lastContinuedAt: now,
+      };
+      writeBinding(options, binding, existing ? 'chatgpt_work_host_conversation_continue' : 'chatgpt_work_host_conversation_bind', canonicalRecord(options, input.workId)?.revision ?? null);
       return binding;
     },
   );

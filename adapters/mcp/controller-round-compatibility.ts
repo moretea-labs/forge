@@ -5,6 +5,7 @@ import {
 
 const CONTROLLER_DISPOSITION_COMPATIBILITY_PREFIX = 'controller.disposition:';
 const CURRENT_CONVERSATION_ENROLLMENT_COMPATIBILITY = 'controller.current_conversation.enroll';
+const CURRENT_HOST_CONVERSATION_ENROLLMENT_COMPATIBILITY = 'controller.current_host_conversation.enroll';
 const CONTROLLER_ROUND_COMPATIBILITY_PREFIX = 'controller.round:';
 export const CONTROLLER_ROUND_COMPATIBILITY_OPERATIONS = [
   'controller_claim',
@@ -22,11 +23,16 @@ export type ControllerRoundReviewDecision = (typeof CONTROLLER_ROUND_REVIEW_DECI
 export function parseCurrentConversationEnrollmentCompatibilityCapability(
   operation: string,
   capabilityId: unknown,
-): { disposition: 'continue_immediately'; enrollCurrentConversation: true } | undefined {
+): { disposition: 'continue_immediately'; enrollCurrentConversation: true; hostCurrentConversation?: true } | undefined {
   if (operation !== 'repair' || typeof capabilityId !== 'string') return undefined;
   const normalized = capabilityId.trim();
-  if (normalized !== CURRENT_CONVERSATION_ENROLLMENT_COMPATIBILITY) return undefined;
-  return { disposition: 'continue_immediately', enrollCurrentConversation: true };
+  if (normalized === CURRENT_CONVERSATION_ENROLLMENT_COMPATIBILITY) {
+    return { disposition: 'continue_immediately', enrollCurrentConversation: true };
+  }
+  if (normalized === CURRENT_HOST_CONVERSATION_ENROLLMENT_COMPATIBILITY) {
+    return { disposition: 'continue_immediately', enrollCurrentConversation: true, hostCurrentConversation: true };
+  }
+  return undefined;
 }
 
 export function parseControllerDispositionCompatibilityCapability(

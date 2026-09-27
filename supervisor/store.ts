@@ -82,7 +82,7 @@ function openDatabase(forgeHome?: string): Database {
 
 function taskFromRow(row: Record<string, unknown>): WorkflowSupervisorTask {
   return {
-    taskId: String(row.task_id), conversationId: String(row.conversation_id), conversationUrl: String(row.conversation_url), objective: String(row.objective),
+    taskId: String(row.task_id), conversationId: String(row.conversation_id), ...(boundedText(row.conversation_url) ? { conversationUrl: boundedText(row.conversation_url) } : {}), objective: String(row.objective),
     completionContract: JSON.parse(String(row.completion_contract_json)) as Record<string, unknown>, continuationPolicy: JSON.parse(String(row.continuation_policy_json)) as Record<string, unknown>,
     userBlockerPolicy: JSON.parse(String(row.user_blocker_policy_json)) as Record<string, unknown>, createdAt: String(row.created_at),
   };
@@ -101,8 +101,12 @@ function explicitRequirementTaskUpgrade(input: WorkflowSupervisorTaskInput): { r
   const repoId = boundedText(input.completionContract.repo_id);
   const blockerRepoId = boundedText(input.userBlockerPolicy.repo_id);
   if (!requirementId || blockerRequirementId !== requirementId || !repoId || blockerRepoId !== repoId) return undefined;
-  if (boundedText(input.continuationPolicy.exact_conversation_id) !== input.conversationId
-    || boundedText(input.continuationPolicy.exact_conversation_url) !== input.conversationUrl) return undefined;
+  if (boundedText(input.continuationPolicy.exact_conversation_id) !== input.conversationId) return undefined;
+  if (input.conversationUrl) {
+    if (boundedText(input.continuationPolicy.exact_conversation_url) !== input.conversationUrl) return undefined;
+  } else if (!boundedText(input.continuationPolicy.exact_host_conversation_session_id)) {
+    return undefined;
+  }
   return { requirementId, repoId };
 }
 function effectFromRow(row: Record<string, unknown>): WorkflowSupervisorEffect {
@@ -200,13 +204,13 @@ export class WorkflowSupervisorStore {
   registerTask(input: WorkflowSupervisorTaskInput): WorkflowSupervisorTask {
     return this.transaction((db) => {
       const createdAt = now();
-      statement(db, 'INSERT OR IGNORE INTO tasks VALUES (?, ?, ?, ?, ?, ?, ?, ?)', (s) => s.run(input.taskId, input.conversationId, input.conversationUrl, input.objective, json(input.completionContract), json(input.continuationPolicy), json(input.userBlockerPolicy), createdAt));
+      statement(db, 'INSERT OR IGNORE INTO tasks VALUES (?, ?, ?, ?, ?, ?, ?, ?)', (s) => s.run(input.taskId, input.conversationId, input.conversationUrl ?? '', input.objective, json(input.completionContract), json(input.continuationPolicy), json(input.userBlockerPolicy), createdAt));
       let row = statement(db, 'SELECT * FROM tasks WHERE task_id = ?', (s) => s.get(input.taskId)) as Record<string, unknown> | undefined;
       if (!row) {
         row = statement(db, 'SELECT * FROM tasks WHERE conversation_id = ?', (s) => s.get(input.conversationId)) as Record<string, unknown> | undefined;
         if (!row) throw new Error('WORKFLOW_SUPERVISOR_TASK_PERSIST_FAILED');
         const existing = taskFromRow(row);
-        if (existing.conversationUrl !== input.conversationUrl) throw new Error('WORKFLOW_SUPERVISOR_TASK_CONVERSATION_CONFLICT');
+        if ((existing.conversationUrl ?? '') !== (input.conversationUrl ?? '')) throw new Error('WORKFLOW_SUPERVISOR_TASK_CONVERSATION_CONFLICT');
         const existingRepo = typeof existing.completionContract.repo_id === 'string' ? existing.completionContract.repo_id : existing.continuationPolicy.repo_id;
         const incomingRepo = typeof input.completionContract.repo_id === 'string' ? input.completionContract.repo_id : input.continuationPolicy.repo_id;
         if (typeof existingRepo === 'string' && typeof incomingRepo === 'string' && existingRepo !== incomingRepo) throw new Error('WORKFLOW_SUPERVISOR_TASK_REPOSITORY_CONFLICT');
@@ -218,7 +222,7 @@ export class WorkflowSupervisorStore {
       const projectBootstrap = task.continuationPolicy.kind === 'forge_project_conversation_outer_turn';
       const sameProjectBootstrapIdentity = projectBootstrap
         && task.conversationId === input.conversationId
-        && task.conversationUrl === input.conversationUrl
+        && (task.conversationUrl ?? '') === (input.conversationUrl ?? '')
         && (!taskRepo || !inputRepo || taskRepo === inputRepo);
       if (sameProjectBootstrapIdentity) {
         const explicitRequirementUpgrade = explicitRequirementTaskUpgrade(input);
@@ -242,7 +246,7 @@ export class WorkflowSupervisorStore {
         return task;
       }
       if (task.conversationId !== input.conversationId
-        || task.conversationUrl !== input.conversationUrl
+        || (task.conversationUrl ?? '') !== (input.conversationUrl ?? '')
         || task.objective !== input.objective
         || json(task.completionContract) !== json(input.completionContract)
         || json(task.continuationPolicy) !== json(input.continuationPolicy)

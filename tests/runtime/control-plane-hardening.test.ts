@@ -2199,6 +2199,9 @@ describe('scheduled external Controller wake', () => {
     expect(parseCurrentConversationEnrollmentCompatibilityCapability('repair', 'controller.current_conversation.enroll')).toEqual({
       disposition: 'continue_immediately', enrollCurrentConversation: true,
     });
+    expect(parseCurrentConversationEnrollmentCompatibilityCapability('repair', 'controller.current_host_conversation.enroll')).toEqual({
+      disposition: 'continue_immediately', enrollCurrentConversation: true, hostCurrentConversation: true,
+    });
     expect(parseCurrentConversationEnrollmentCompatibilityCapability('continue', 'controller.current_conversation.enroll')).toBeUndefined();
     expect(parseCurrentConversationEnrollmentCompatibilityCapability('repair', 'controller.current_conversation.enroll:unexpected')).toBeUndefined();
   });
@@ -2217,6 +2220,22 @@ describe('scheduled external Controller wake', () => {
         requirement_id: 'REQ-current-conversation-compat',
         disposition: 'continue_immediately',
         enroll_current_conversation: true,
+      },
+    });
+    expect(normalizeRhWorkInputCompatibility({
+      operation: 'repair',
+      capability_id: 'controller.current_host_conversation.enroll',
+      work_id: 'work-current-conversation-host-compat',
+      requirement_id: 'REQ-current-conversation-host-compat',
+    })).toMatchObject({
+      ok: true,
+      operation: 'controller_disposition',
+      args: {
+        work_id: 'work-current-conversation-host-compat',
+        requirement_id: 'REQ-current-conversation-host-compat',
+        disposition: 'continue_immediately',
+        enroll_current_conversation: true,
+        current_conversation_transport: 'host',
       },
     });
     expect(normalizeRhWorkInputCompatibility({

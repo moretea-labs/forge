@@ -63,6 +63,9 @@ export class WorkflowSupervisorControlPlane {
   }
   browserTasks(): WorkflowSupervisorBrowserTask[] {
     return this.store.listTasks().filter((task) => {
+      // Host-native current-session tasks have no Browser locator. They remain
+      // Supervisor tasks, but must never be manufactured into Browser work.
+      if (!task.conversationUrl) return false;
       if (this.store.terminalAction(task.taskId)) return false;
       // Browser observation is needed only while there is something to send,
       // reconcile, or observe to completion. An otherwise-active Requirement is
@@ -88,7 +91,7 @@ export class WorkflowSupervisorControlPlane {
     if (terminal) return { authorized: true, task: projection, terminal };
     const pending = this.store.nextBrowserEffect(task.taskId);
     if (!pending) return { authorized: true, task: projection };
-    return { authorized: true, task: projection, command: { mode: pending.mode, effectId: pending.effect.effectId, kind: pending.effect.kind, prompt: pending.effect.prompt, dispatchGeneration: pending.generation, conversationId: task.conversationId, conversationUrl: task.conversationUrl } };
+    return { authorized: true, task: projection, command: { mode: pending.mode, effectId: pending.effect.effectId, kind: pending.effect.kind, prompt: pending.effect.prompt, dispatchGeneration: pending.generation, conversationId: task.conversationId, conversationUrl: projection.conversationUrl } };
   }
   browserBeginEffect(input: { conversationId: string; conversationUrl: string; effectId: string; dispatchId: string; dispatchGeneration: number; evidence?: Record<string, unknown> }): { started: boolean; mode: 'send' | 'reconcile'; generation: number } {
     const task = this.requireBrowserTask(input.conversationId, input.conversationUrl);
@@ -250,6 +253,7 @@ export class WorkflowSupervisorControlPlane {
     if (observed.conversationId !== conversationId) throw new Error('WORKFLOW_SUPERVISOR_BROWSER_CONVERSATION_MISMATCH');
     const task = this.store.getTaskByConversationId(conversationId);
     if (!task) throw new Error('WORKFLOW_SUPERVISOR_BROWSER_CONVERSATION_NOT_ENROLLED');
+    if (!task.conversationUrl) throw new Error('WORKFLOW_SUPERVISOR_BROWSER_LOCATOR_UNAVAILABLE');
     const registered = parseChatgptConversationIdentity(task.conversationUrl);
     if (task.conversationId !== conversationId || registered.conversationId !== conversationId || registered.canonicalUrl !== observed.canonicalUrl) throw new Error('WORKFLOW_SUPERVISOR_BROWSER_CONVERSATION_MISMATCH');
     return task;
@@ -286,5 +290,8 @@ function sanitizeBrowserEvidence(evidence: Record<string, unknown> | undefined):
   return sanitized;
 }
 
-function browserTask(task: WorkflowSupervisorTask): WorkflowSupervisorBrowserTask { return { taskId: task.taskId, conversationId: task.conversationId, conversationUrl: task.conversationUrl }; }
+function browserTask(task: WorkflowSupervisorTask): WorkflowSupervisorBrowserTask {
+  if (!task.conversationUrl) throw new Error('WORKFLOW_SUPERVISOR_BROWSER_LOCATOR_UNAVAILABLE');
+  return { taskId: task.taskId, conversationId: task.conversationId, conversationUrl: task.conversationUrl };
+}
 function jsonIdentity(...values: string[]): string { return JSON.stringify(values); }

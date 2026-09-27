@@ -136,6 +136,10 @@ export function normalizeRhWorkInputCompatibility(input: Record<string, unknown>
   if (frozenCurrentConversationEnrollment) {
     args.disposition = frozenCurrentConversationEnrollment.disposition;
     args.enroll_current_conversation = true;
+    if (frozenCurrentConversationEnrollment.hostCurrentConversation) {
+      // Transport selection only; semantic/Controller authority is unchanged.
+      args.current_conversation_transport = 'host';
+    }
   }
   if (frozenPlanObligationDispositions) args.obligation_dispositions = frozenPlanObligationDispositions;
   if (frozenSemanticOperation?.operation === 'plan_create') {
