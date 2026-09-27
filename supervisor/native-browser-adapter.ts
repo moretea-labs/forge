@@ -130,19 +130,47 @@ export async function defaultSnapshot(page: WorkflowSupervisorNativePage, option
   return await page.evaluate<WorkflowSupervisorNativeSnapshot>(`(() => {
     const text = (node) => String(node?.innerText ?? node?.textContent ?? '').trim();
     const nodes = (selector) => document.querySelectorAll(selector);
-    const latestText = (selector) => {
-      const matches = nodes(selector);
-      return text(matches.length ? matches[matches.length - 1] : undefined);
+    const semanticRole = (node) => {
+      const explicit = node?.getAttribute?.('data-message-author-role');
+      if (explicit === 'user' || explicit === 'assistant') return explicit;
+      const key = String(node?.getAttribute?.('data-chatgpt-search-unit-key') || node?.getAttribute?.('data-content-search-unit-key') || '');
+      if (key.endsWith(':user')) return 'user';
+      if (key.endsWith(':assistant')) return 'assistant';
+      return undefined;
     };
-    const allTexts = (selector) => {
-      const matches = nodes(selector);
-      return Array.from(matches).map(text).filter(Boolean);
+    const messageText = (node) => {
+      if (!node) return '';
+      const semanticContent = node.querySelector?.('[data-chatgpt-selection-message-id]');
+      const semanticText = text(semanticContent);
+      return semanticText || text(node);
+    };
+    const roleEntries = (role) => {
+      const selector = role === 'user'
+        ? '[data-message-author-role="user"], [data-chatgpt-search-unit-key$=":user"], [data-content-search-unit-key$=":user"]'
+        : '[data-message-author-role="assistant"], [data-chatgpt-search-unit-key$=":assistant"], [data-content-search-unit-key$=":assistant"]';
+      const seen = new Set();
+      const entries = [];
+      for (const node of Array.from(nodes(selector))) {
+        const semanticKey = String(node?.getAttribute?.('data-chatgpt-search-unit-key') || node?.getAttribute?.('data-content-search-unit-key') || '');
+        const messageIds = String(node?.getAttribute?.('data-chatgpt-search-message-ids') || node?.getAttribute?.('data-chatgpt-selection-message-id') || '');
+        if (semanticKey || messageIds) {
+          const key = semanticKey + '|' + messageIds;
+          if (seen.has(key)) continue;
+          seen.add(key);
+        }
+        entries.push(node);
+      }
+      return entries;
+    };
+    const latestRoleText = (role) => {
+      const matches = roleEntries(role);
+      return messageText(matches.length ? matches[matches.length - 1] : undefined);
     };
     const includeUserHistory = ${JSON.stringify(includeUserHistory)};
     const includePageText = ${JSON.stringify(includePageText)};
-    const userSelector = '[data-message-author-role="user"], [data-chatgpt-search-unit-key$=":user"], [data-content-search-unit-key$=":user"]';
-    const assistantSelector = '[data-message-author-role="assistant"], [data-chatgpt-search-unit-key$=":assistant"], [data-content-search-unit-key$=":assistant"]';
-    const userTexts = includeUserHistory ? allTexts(userSelector) : undefined;
+    const userEntries = roleEntries('user');
+    const assistantEntries = roleEntries('assistant');
+    const userTexts = includeUserHistory ? userEntries.map(messageText).filter(Boolean) : undefined;
     const composer = [
       '[data-testid="composer-text-input"]',
       'div#prompt-textarea[contenteditable="true"]',
@@ -150,26 +178,25 @@ export async function defaultSnapshot(page: WorkflowSupervisorNativePage, option
       'textarea[name="prompt"]',
       'div[role="textbox"][contenteditable="true"]',
     ].map((selector) => document.querySelector(selector)).find((element) => Boolean(element && element.getClientRects && element.getClientRects().length));
-    const roleNodes = Array.from(nodes(userSelector + ', ' + assistantSelector));
+    const roleNodes = Array.from(nodes('[data-message-author-role="user"], [data-message-author-role="assistant"], [data-chatgpt-search-unit-key$=":user"], [data-chatgpt-search-unit-key$=":assistant"], [data-content-search-unit-key$=":user"], [data-content-search-unit-key$=":assistant"]'));
     const latestRoleNode = roleNodes.length ? roleNodes[roleNodes.length - 1] : undefined;
     const latestTurn = (() => {
       const turns = nodes('[data-testid^="conversation-turn-"]');
-      return turns.length ? text(turns[turns.length - 1]).slice(-${MAX_PROVIDER_ACTIVITY_CHARS}) : '';
+      if (turns.length) return text(turns[turns.length - 1]).slice(-${MAX_PROVIDER_ACTIVITY_CHARS});
+      return messageText(latestRoleNode).slice(-${MAX_PROVIDER_ACTIVITY_CHARS});
     })();
-    const liveProviderStatus = allTexts('[role="alert"], [aria-live="assertive"], [aria-live="polite"]').slice(-8).join('\\n');
+    const liveProviderStatus = Array.from(nodes('[role="alert"], [aria-live="assertive"], [aria-live="polite"]')).map(text).filter(Boolean).slice(-8).join('\\n');
     const snapshot = {
       url: String(location.href || ''),
       title: String(document.title || ''),
-      latestUserText: userTexts ? userTexts.join('\\n') : latestText(userSelector),
-      latestAssistantResponse: latestText(assistantSelector),
+      latestUserText: userTexts ? userTexts.join('\\n') : latestRoleText('user'),
+      latestAssistantResponse: latestRoleText('assistant'),
       ...(composer ? { composerText: String(('value' in composer ? composer.value : composer.innerText ?? composer.textContent ?? '') || '') } : {}),
       providerActivityText: latestTurn,
       // Failure classification must never inspect chat content. A user discussing
       // "429" or "Too many requests" is not evidence that the provider failed.
       providerFailureText: liveProviderStatus.slice(-${MAX_PROVIDER_FAILURE_SCAN_CHARS}),
-      latestTurnRole: latestRoleNode?.getAttribute?.('data-message-author-role')
-        || (String(latestRoleNode?.getAttribute?.('data-chatgpt-search-unit-key') || latestRoleNode?.getAttribute?.('data-content-search-unit-key') || '').endsWith(':user') ? 'user'
-          : String(latestRoleNode?.getAttribute?.('data-chatgpt-search-unit-key') || latestRoleNode?.getAttribute?.('data-content-search-unit-key') || '').endsWith(':assistant') ? 'assistant' : undefined),
+      latestTurnRole: semanticRole(latestRoleNode),
       isGenerating: Boolean(document.querySelector('[data-testid="stop-button"], [data-testid*="stop-button"], button[aria-label*="Stop"], button[aria-label*="停止"], [data-testid*="stop"], [aria-busy="true"], [data-is-streaming="true"], [data-testid*="streaming"]')),
     };
     if (includePageText) snapshot.pageText = String(document.body?.innerText ?? document.body?.textContent ?? '').trim().slice(-${MAX_PROVIDER_FAILURE_SCAN_CHARS});

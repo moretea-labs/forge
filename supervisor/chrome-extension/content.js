@@ -34,12 +34,27 @@
     }
     return conversations;
   };
-  const latestText = (selector) => {
-    const nodes = document.querySelectorAll(selector);
-    const node = nodes.item(nodes.length - 1);
-    return node ? String(node.innerText ?? node.textContent ?? '').trim() : '';
+  const messageText = (node) => {
+    if (!node) return '';
+    const semanticContent = node.querySelector?.('[data-chatgpt-selection-message-id]');
+    return core.normalizeText(semanticContent?.innerText ?? semanticContent?.textContent ?? node.innerText ?? node.textContent);
   };
-  const latestAssistant = () => { const text = latestText(ASSISTANT); return core.isCommittedAssistantResponse(text) ? text : undefined; };
+  const roleNodes = (selector) => {
+    const seen = new Set();
+    const result = [];
+    for (const node of document.querySelectorAll(selector)) {
+      const semanticKey = String(node.getAttribute?.('data-chatgpt-search-unit-key') || node.getAttribute?.('data-content-search-unit-key') || '');
+      const messageIds = String(node.getAttribute?.('data-chatgpt-search-message-ids') || node.getAttribute?.('data-chatgpt-selection-message-id') || '');
+      if (semanticKey || messageIds) {
+        const key = `${semanticKey}|${messageIds}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+      }
+      result.push(node);
+    }
+    return result;
+  };
+  const latestAssistant = () => { const nodes = roleNodes(ASSISTANT); const text = messageText(nodes[nodes.length - 1]); return core.isCommittedAssistantResponse(text) ? text : undefined; };
   const latestTurnRole = () => {
     const nodes = document.querySelectorAll(`${USER}, ${ASSISTANT}`);
     const node = nodes.item(nodes.length - 1);
@@ -55,7 +70,7 @@
     || latestTurnRole() === 'user'
   );
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-    if (!message || message.type === 'forge-workflow-supervisor-scan') { notify(); return false; }
+    if (!message || message.type === 'forge-workflow-supervisor-scan') { notify(); sendResponse?.({ ok: true }); return false; }
     if (message.type === 'forge-workflow-supervisor-discovery-scan') {
       sendResponse({ projects: discoverProjectLinks(message.projectTitles), conversations: discoverConversationLinks(), pageUrl: location.href });
       return false;
