@@ -16,7 +16,7 @@ import {
   recordWorkExecutionConcurrencyWait,
   reconcileWorkExecutionConcurrencyWaits,
 } from '../../src/runtime/control-plane/concurrency/work-execution-concurrency';
-import { repositoryControllerRoot } from '../../src/cli/repositories/controller-home';
+import { controllerSystemRoot } from '../../src/cli/repositories/controller-home';
 import { routeWorkStart } from '../../src/runtime/control-plane/facade/goal-workloop';
 import { readControlPlaneRecord, writeControlPlaneRecord } from '../../src/runtime/control-plane/persistence/sqlite-store';
 import { createProcessRecord } from '../../src/runtime/execution/process-runtime/store';
@@ -371,7 +371,7 @@ describe('Work execution concurrency', () => {
 
   test('keeps every active Lease authoritative beyond the former 5000-entry scan boundary', () => {
     const home = tempHome(), repoId = 'repo-lease-authority';
-    const root = join(repositoryControllerRoot(home, repoId), 'leases', 'active');
+    const root = join(controllerSystemRoot(home), 'execution-leases', 'active');
     mkdirSync(root, { recursive: true });
     const now = new Date().toISOString();
     const expiresAt = new Date(Date.now() + 60_000).toISOString();
@@ -409,7 +409,7 @@ describe('Work execution concurrency', () => {
 
   test('physically reaps expired resource leases before they can block a new acquisition', () => {
     const home = tempHome(), repoId = 'repo-expired-lease-reap';
-    const root = join(repositoryControllerRoot(home, repoId), 'leases', 'active');
+    const root = join(controllerSystemRoot(home), 'execution-leases', 'active');
     mkdirSync(root, { recursive: true });
     const resourceKey = `workspace:${repoId}`;
     const leasePath = join(root, 'LEASE-expired.json');
