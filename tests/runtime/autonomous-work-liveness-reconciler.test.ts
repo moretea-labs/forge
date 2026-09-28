@@ -6,7 +6,9 @@ import {
   bindControllerSessionBinding,
   claimControllerSession,
   getControllerRoundRelay,
+  getRequirementControllerRoundRelay,
   prepareControllerRoundOccurrence,
+  reconcileControllerRoundAfterTerminalWork,
   releaseControllerSession,
   type ControllerHost,
 } from '../../packages/kernel/controller/api/index';
@@ -334,6 +336,46 @@ describe('autonomous Work liveness reconciliation', () => {
     expect(providerDispatches).toBe(0);
     expect(getControllerRoundRelay(store, 'WORK-STALE')?.status).toBe('failed');
     expect(getControllerRoundRelay(store, 'WORK-CURRENT')?.status).toBe('dispatching');
+  });
+
+  test('Requirement relay lookup prefers a live relay over a newer retired terminal sibling', () => {
+    const controllerHome = home();
+    let now = '2026-09-20T07:00:00.000Z';
+    const store = { controllerHome, repoId: 'repo-a', now: () => now };
+    createRequirement({ controllerHome }, {
+      requirementId: 'REQ-RELAY-AUTHORITY',
+      title: 'Requirement relay authority',
+      outcomeStatement: 'Retired sibling relay must not shadow the live Requirement relay.',
+    });
+
+    createRunningWork(controllerHome, { workId: 'WORK-LIVE-RELAY', requirementId: 'REQ-RELAY-AUTHORITY' });
+    const liveBinding = bindReleasedChatgptController(controllerHome, 'WORK-LIVE-RELAY');
+    const live = prepareControllerRoundOccurrence(store, {
+      occurrenceId: 'live-relay-occurrence',
+      workId: 'WORK-LIVE-RELAY',
+      controllerBindingId: liveBinding.bindingId,
+      relayScopeId: 'requirement:REQ-RELAY-AUTHORITY',
+    }).relay;
+    expect(live.status).toBe('dispatching');
+
+    now = '2026-09-20T07:01:00.000Z';
+    createRunningWork(controllerHome, { workId: 'WORK-RETIRED-SIBLING', requirementId: 'REQ-RELAY-AUTHORITY' });
+    const retiredBinding = bindReleasedChatgptController(controllerHome, 'WORK-RETIRED-SIBLING');
+    prepareControllerRoundOccurrence(store, {
+      occurrenceId: 'retired-relay-occurrence',
+      workId: 'WORK-RETIRED-SIBLING',
+      controllerBindingId: retiredBinding.bindingId,
+      relayScopeId: 'requirement:REQ-RELAY-AUTHORITY',
+    });
+    cancelWorkContract(store, 'WORK-RETIRED-SIBLING', { summary: 'Retire the duplicate sibling carrier.' });
+    reconcileControllerRoundAfterTerminalWork(store, { workId: 'WORK-RETIRED-SIBLING' });
+
+    const selected = getRequirementControllerRoundRelay(store, 'REQ-RELAY-AUTHORITY');
+    expect(selected).toMatchObject({
+      originWorkId: 'WORK-LIVE-RELAY',
+      status: 'dispatching',
+      relayScopeId: 'requirement:REQ-RELAY-AUTHORITY',
+    });
   });
 
   test('does not dispatch while a live Controller still owns the Work', async () => {

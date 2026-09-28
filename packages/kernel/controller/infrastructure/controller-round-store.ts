@@ -283,6 +283,8 @@ function latestRelayRecordsByScope(options: ControllerRoundRelayStoreOptions): C
   if (cached && cached.signature === signature) return cached.records;
 
   const latest = new Map<string, ControllerRoundRelayRecord>();
+  const retiredTerminalWork = (entry: ControllerRoundRelayRecord): boolean =>
+    entry.status === 'failed' && entry.failureClass === 'terminal_work';
   for (const entry of listControlPlaneRecords<ControllerRoundRelayRecord>(options.controllerHome, {
     namespace: NAMESPACE,
     scope: options.repoId,
@@ -290,7 +292,17 @@ function latestRelayRecordsByScope(options: ControllerRoundRelayStoreOptions): C
   }).map((record) => record.value)) {
     if (entry.status === 'handed_off') continue;
     const current = latest.get(entry.relayScopeId);
-    if (!current || entry.updatedAt > current.updatedAt) latest.set(entry.relayScopeId, entry);
+    if (!current) {
+      latest.set(entry.relayScopeId, entry);
+      continue;
+    }
+    const currentRetired = retiredTerminalWork(current);
+    const candidateRetired = retiredTerminalWork(entry);
+    if (currentRetired !== candidateRetired) {
+      if (currentRetired && !candidateRetired) latest.set(entry.relayScopeId, entry);
+      continue;
+    }
+    if (entry.updatedAt > current.updatedAt) latest.set(entry.relayScopeId, entry);
   }
   const records = [...latest.values()].sort((left, right) => left.updatedAt.localeCompare(right.updatedAt));
   latestRelayRecordsCache.set(cacheKey, { signature, records });
