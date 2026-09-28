@@ -1357,11 +1357,11 @@ describe('ChatGPT Work conversation binding', () => {
     expect(controllerOperations).toContain('await runWorkChatgptContinuation({');
     expect(controllerOperations).toContain('controllerAuthorityId: relay.authorityId');
     expect(controllerOperations).toContain('relayScopeId: relay.relayScopeId');
-    expect(controllerOperations).toContain("const transportConversation = args.transport_conversation === 'fresh' ? 'fresh' : 'bound';");
-    expect(controllerOperations).toContain("transportConversation === 'bound' && !explicitConversationUrl && supervisorBoundary.status === 'conversation_pending'");
-    expect(controllerOperations).toContain('await bindCurrentWorkflowSupervisorConversationForWork(store, workId)');
-    expect(controllerOperations).toContain("if (currentConversation.status !== 'bound')");
-    expect(controllerOperations).toContain("supervisorBoundary.status === 'outer_turn' && transportConversation !== 'fresh' && !adoptedCurrentConversation");
+    expect(controllerOperations).toContain("const requestedTransportConversation = args.transport_conversation === 'fresh'");
+    expect(controllerOperations).toContain("?? (existingBinding || explicitConversationUrl ? 'bound' : 'fresh')");
+    expect(controllerOperations).toContain("WORKFLOW_SUPERVISOR_BOUND_CONVERSATION_REQUIRED");
+    expect(controllerOperations).not.toContain('bindCurrentWorkflowSupervisorConversationForWork');
+    expect(controllerOperations).toContain("supervisorBoundary.status === 'outer_turn' && transportConversation !== 'fresh'");
     expect(controllerOperations).not.toContain('WORKFLOW_SUPERVISOR_OUTER_TURN_OWNED');
     expect(controllerOperations).toContain('await ensureWorkflowSupervisorEnrollmentForWork(store, workId)');
     expect(controllerOperations).toContain("supervisorEnrollment.status !== 'lower_layer_not_ready'");

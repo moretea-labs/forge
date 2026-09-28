@@ -19,7 +19,6 @@ import {
 } from '../../../packages/kernel/controller/api/index';
 import { authenticatedFacadeControllerIdentity } from './controller-authority-adapter';
 import {
-  bindCurrentWorkflowSupervisorConversationForWork,
   ensureWorkflowSupervisorEnrollmentForWork,
   workflowSupervisorBoundaryForWork,
 } from '../../../src/runtime/root/workflow-supervisor-composition';
@@ -47,21 +46,20 @@ export async function callRhWorkControllerOperation(
     if (controllerType === 'chatgpt') {
       const work = getWorkContract(store, workId);
       if (!work) throw new Error(`WORK_NOT_FOUND: ${workId}`);
-      const transportConversation = args.transport_conversation === 'fresh' ? 'fresh' : 'bound';
       const explicitConversationUrl = typeof args.conversation_url === 'string' && args.conversation_url.trim()
         ? args.conversation_url.trim()
         : undefined;
-      let supervisorBoundary = workflowSupervisorBoundaryForWork(store, workId);
-      let adoptedCurrentConversation = false;
-      if (transportConversation === 'bound' && !explicitConversationUrl && supervisorBoundary.status === 'conversation_pending') {
-        const currentConversation = await bindCurrentWorkflowSupervisorConversationForWork(store, workId);
-        if (currentConversation.status !== 'bound') {
-          throw new Error(currentConversation.reason ?? `WORKFLOW_SUPERVISOR_${currentConversation.status.toUpperCase()}`);
-        }
-        adoptedCurrentConversation = true;
-        supervisorBoundary = workflowSupervisorBoundaryForWork(store, workId);
+      const existingBinding = chatgptControllerRoundBinding(store, workId);
+      const requestedTransportConversation = args.transport_conversation === 'fresh'
+        ? 'fresh'
+        : args.transport_conversation === 'bound' ? 'bound' : undefined;
+      const transportConversation = requestedTransportConversation
+        ?? (existingBinding || explicitConversationUrl ? 'bound' : 'fresh');
+      if (requestedTransportConversation === 'bound' && !existingBinding && !explicitConversationUrl) {
+        throw new Error('WORKFLOW_SUPERVISOR_BOUND_CONVERSATION_REQUIRED');
       }
-      if (supervisorBoundary.status === 'outer_turn' && transportConversation !== 'fresh' && !adoptedCurrentConversation) {
+      const supervisorBoundary = workflowSupervisorBoundaryForWork(store, workId);
+      if (supervisorBoundary.status === 'outer_turn' && transportConversation !== 'fresh') {
         let supervisorEnrollment = await ensureWorkflowSupervisorEnrollmentForWork(store, workId);
         if (supervisorEnrollment.status === 'enrolled') {
           return result(buildFacadeResult({
@@ -139,7 +137,6 @@ export async function callRhWorkControllerOperation(
       }
 
       const continuationPrompt = typeof args.continuation_prompt === 'string' ? args.continuation_prompt.trim() : '';
-      const existingBinding = chatgptControllerRoundBinding(store, workId);
       const relay = beginInitialControllerRoundDispatch(store, {
         workId,
         identity: authenticatedFacadeControllerIdentity(ctx, args),
@@ -156,9 +153,7 @@ export async function callRhWorkControllerOperation(
           throw new Error(supervisorEnrollment.reason ?? `WORKFLOW_SUPERVISOR_${supervisorEnrollment.status.toUpperCase()}`);
         }
         return result(buildFacadeResult({
-          summary: adoptedCurrentConversation
-            ? 'Current ChatGPT conversation bound and enrolled for unattended continuation. No replacement provider send was issued.'
-            : 'Existing ChatGPT conversation enrolled for unattended continuation after lower-layer relay recovery. No replacement provider send was issued.',
+          summary: 'Existing ChatGPT conversation enrolled for unattended continuation after lower-layer relay recovery. No replacement provider send was issued.',
           data: {
             workId,
             currentConversationBound: true,
