@@ -1374,6 +1374,10 @@ describe('ChatGPT Work conversation binding', () => {
     expect(controllerOperations).toContain('continuationDispatched: false');
     expect(controllerOperations).toContain('transportConversation,');
     expect(controllerOperations).toContain('const relay = beginInitialControllerRoundDispatch(');
+    expect(controllerOperations).toContain("const launchRequestId = typeof args.request_id === 'string'");
+    expect(controllerOperations).toContain("if (!launchRequestId) throw new Error('LAUNCHER_START_REQUEST_ID_REQUIRED')");
+    expect(controllerOperations).toContain('launcher_start:${work.workId}:${launchRequestId}');
+    expect(controllerOperations).toContain('authorizeRoundBudgetOccurrence: true');
     expect(controllerOperations).toContain('occurrenceId,');
     expect(controllerOperations).toContain('bindingId: chatgptControllerRoundBindingId(workId)');
     expect(readFileSync(join(process.cwd(), 'src/runtime/root/controller-round-composition.ts'), 'utf8')).toContain('return chatgptControllerProviderBindingId(workId);');

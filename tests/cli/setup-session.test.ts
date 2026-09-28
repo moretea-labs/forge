@@ -178,9 +178,9 @@ if [ "$1" = "runtimes" ] && [ "$2" = "list" ] && [ "$3" = "--json" ]; then
   exit 0
 fi
 if [ "$1" = "runtimes" ] && [ "$2" = "status" ] && [ "$4" = "--json" ]; then
-  if [ "$3" = "forge" ]; then echo '{"process_running":true,"healthy":true,"ready":true,"profile_path":"${correctProfile}"}'
-  elif [ "$3" = "forge-wrong-target" ]; then echo '{"process_running":true,"healthy":true,"ready":true,"tunnel_id":"${tunnelId}","profile_path":"${wrongProfile}"}'
-  else echo '{"process_running":true,"healthy":true,"ready":true,"tunnel_id":"${tunnelId}","profile_path":"${correctProfile}"}'
+if [ "$3" = "forge" ]; then echo '{"process_running":true,"healthy":true,"ready":true,"profile_path":"${correctProfile}","control_plane_poll_health":{"state":"ready"}}'
+  elif [ "$3" = "forge-wrong-target" ]; then echo '{"process_running":true,"healthy":true,"ready":true,"tunnel_id":"${tunnelId}","profile_path":"${wrongProfile}","control_plane_poll_health":{"state":"ready"}}'
+  else echo '{"process_running":true,"healthy":true,"ready":true,"tunnel_id":"${tunnelId}","profile_path":"${correctProfile}","control_plane_poll_health":{"state":"ready"}}'
   fi
   exit 0
 fi

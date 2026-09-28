@@ -18,6 +18,7 @@ import {
   controllerRoundBlockerClass,
   finishControllerRoundRelayDispatch,
   getControllerRoundRelay,
+  listControllerRoundRelaysAwaitingProviderDispatch,
   listCurrentControllerRoundRelays,
 } from '../../../../packages/kernel/controller/api/index';
 import { assertAutomatedOperationAllowed } from '../governance/external-effects';
@@ -321,11 +322,12 @@ export async function runSchedulerQueuedControllerRoundDispatch(input: {
   for (const repository of input.repositories) {
     if (dispatched + failed >= maxDispatches) break;
     const store = { controllerHome: input.controllerHome, repoId: repository.repoId };
-    for (const record of listCurrentControllerRoundRelays(store, 100)) {
+    for (const record of listControllerRoundRelaysAwaitingProviderDispatch(store, {
+      limit: 100,
+      controllerTypes: ['chatgpt'],
+      occurrenceIdPrefix: 'launcher_start:',
+    })) {
       if (dispatched + failed >= maxDispatches) break;
-      if (record.status !== 'dispatching' || (record.controllerType ?? 'chatgpt') !== 'chatgpt') continue;
-      if (!record.occurrenceId?.startsWith('launcher_start:')) continue;
-      if ((record.providerDispatchAttempt ?? 0) > 0 || record.providerDispatchEffectId || record.providerDispatchStartedAt || record.providerDispatchReceiptId || record.dispatchedAt) continue;
       const nextRecoveryAt = record.nextRecoveryAt ? Date.parse(record.nextRecoveryAt) : Number.NaN;
       if (Number.isFinite(nextRecoveryAt) && input.nowMs < nextRecoveryAt) continue;
       scanned += 1;

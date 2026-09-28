@@ -95,6 +95,8 @@ export interface BeginInitialControllerRoundDispatchInput {
    * blocker or an unknown provider outcome.
    */
   allowSemanticWaitRecovery?: boolean;
+  /** Authenticated launcher evidence for a distinct occurrence after round-budget exhaustion. */
+  authorizeRoundBudgetOccurrence?: boolean;
 }
 
 export interface RecoverControllerRoundRelayAuthorityInput {
@@ -333,6 +335,36 @@ export function listCurrentControllerRoundRelays(
 ): ControllerRoundRelayRecord[] {
   const boundedLimit = Math.max(1, Math.min(Math.trunc(limit), 100));
   return latestRelayRecordsByScope(options).slice(0, boundedLimit);
+}
+
+/**
+ * Read-only dispatch candidate query. Filter mechanical provider-dispatch facts
+ * before applying the bounded result limit so unrelated historical relays cannot
+ * permanently hide a newer runnable continuation behind the projection window.
+ */
+export function listControllerRoundRelaysAwaitingProviderDispatch(
+  options: ControllerRoundRelayStoreOptions,
+  input: {
+    limit?: number;
+    controllerTypes?: readonly ControllerType[];
+    occurrenceIdPrefix?: string;
+  } = {},
+): ControllerRoundRelayRecord[] {
+  const boundedLimit = Math.max(1, Math.min(Math.trunc(input.limit ?? 100), 100));
+  const occurrenceIdPrefix = input.occurrenceIdPrefix?.trim();
+  return latestRelayRecordsByScope(options)
+    .filter((record) => {
+      if (record.status !== 'dispatching') return false;
+      if ((record.providerDispatchAttempt ?? 0) > 0
+        || record.providerDispatchEffectId
+        || record.providerDispatchStartedAt
+        || record.providerDispatchReceiptId
+        || record.dispatchedAt) return false;
+      if (input.controllerTypes && !input.controllerTypes.includes(relayControllerType(record))) return false;
+      if (occurrenceIdPrefix && !record.occurrenceId?.startsWith(occurrenceIdPrefix)) return false;
+      return true;
+    })
+    .slice(0, boundedLimit);
 }
 
 
@@ -1041,6 +1073,7 @@ export function beginInitialControllerRoundDispatch(
       maxFailures: boundedInteger(input.maxFailures, DEFAULT_MAX_FAILURES, 1, 8),
       ...(bounded(input.bindingId, 500) ? { bindingId: bounded(input.bindingId, 500) } : {}), ...(occurrenceId ? { occurrenceId } : {}),
       ...(input.allowSemanticWaitRecovery ? { allowSemanticWaitRecovery: true } : {}),
+      ...(input.authorizeRoundBudgetOccurrence ? { authorizeRoundBudgetOccurrence: true } : {}),
       abandonedReleaseRecovery: Boolean(abandonedReleasedRound),
     });
   });

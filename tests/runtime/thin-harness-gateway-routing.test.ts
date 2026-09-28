@@ -1421,6 +1421,50 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
 });
 
 describe('work_validate persisted semantic identity', () => {
+  test('work_prepare reconciles a clean canonical checkout successor HEAD for the same Work', async () => {
+    const fx = fixture();
+    roots.push(fx.root);
+
+    const started = await callExecutionTool(fx.ctx, 'session_start', {});
+    expect(started?.isError).not.toBe(true);
+    const session = (started?.structuredContent as { session: { sessionId: string } }).session;
+    const prepared = await callExecutionTool(fx.ctx, 'work_prepare', {
+      session_id: session.sessionId,
+      repo_id: fx.repository.repoId,
+      request_id: 'prepare-canonical-successor-head',
+      objective: 'Continue one Work across an accepted canonical source advancement.',
+      acceptance_criteria: ['A clean allowed-path descendant HEAD is reconciled without replacing the Work.'],
+      allowed_paths: ['src/**'],
+      checks: [],
+      isolation: 'reuse',
+    });
+    expect(prepared?.isError).not.toBe(true);
+    const work = (prepared?.structuredContent as { work: { workId: string; expectedHead: string } }).work;
+    const originalWorkId = work.workId;
+    const previousHead = work.expectedHead;
+
+    writeFileSync(join(fx.repoRoot, 'src/lib.ts'), 'export const n = 2;\n');
+    git(fx.repoRoot, ['add', 'src/lib.ts']);
+    git(fx.repoRoot, ['commit', '-m', 'accepted canonical source advancement']);
+    const candidateHead = spawnSync('git', ['-C', fx.repoRoot, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
+
+    const continued = await callExecutionTool(fx.ctx, 'work_prepare', {
+      session_id: session.sessionId,
+      repo_id: fx.repository.repoId,
+      checkout_id: fx.repository.activeCheckoutId,
+      work_id: originalWorkId,
+    });
+    expect(continued?.isError).not.toBe(true);
+    expect(continued?.structuredContent).toMatchObject({
+      work: { workId: originalWorkId, expectedHead: candidateHead, managedWorktree: false },
+      reused: true,
+      adopted: true,
+      adoption: { previousHead, candidateHead, changedPaths: ['src/lib.ts'] },
+    });
+    expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, originalWorkId)?.workId)
+      .toBe(originalWorkId);
+  });
+
   test('bounded attach settles a freshly launched short Check in one work_validate call', async () => {
     const fx = fixture();
     roots.push(fx.root);

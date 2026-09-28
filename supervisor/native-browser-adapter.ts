@@ -482,7 +482,32 @@ export class WorkflowSupervisorNativeBrowserAdapter {
         // assistant turn is not interpreted again, but release this page now:
         // the successor effect must acquire a fresh exact transport from the
         // durable conversation identity rather than inherit a live tab.
-        if (await this.observeAssistant(task, snapshot) && !poll.command && !snapshot.composerText?.trim()) {
+        if (await this.observeAssistant(task, snapshot)) {
+          // A user may have typed into a Forge-created tab while the provider
+          // was generating. Clear only an exact causal predecessor payload;
+          // any other composer text transfers ownership to the user so terminal
+          // settlement cannot discard an unsent draft.
+          if (snapshot.composerText?.trim()) {
+            const successor = this.control.browserPoll({ conversationId: task.conversationId, conversationUrl: task.conversationUrl }).command;
+            const stale = successor
+              ? this.control.browserStaleComposerPayload({
+                conversationId: task.conversationId,
+                conversationUrl: task.conversationUrl,
+                currentEffectId: successor.effectId,
+                composerText: snapshot.composerText,
+              })
+              : { stale: false as const };
+            if (stale.stale && await this.deps.clearComposer(page, stale.prompt)) {
+              snapshot = await this.deps.snapshot(page, { includeUserHistory: false, includePageText: false });
+            }
+            if (snapshot.composerText?.trim()) {
+              const adoptedMarker = ownerMarker(task.conversationId, 'adopted');
+              await this.deps.writeOwner(page, adoptedMarker);
+              if (await this.deps.readOwner(page) !== adoptedMarker) {
+                throw new Error('WORKFLOW_SUPERVISOR_NATIVE_USER_TAB_OWNERSHIP_TRANSFER_FAILED');
+              }
+            }
+          }
           await this.retireOwnedPage(task, page, { preserveObservedAssistant: true });
           continue;
         }

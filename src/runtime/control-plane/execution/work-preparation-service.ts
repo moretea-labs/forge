@@ -1,5 +1,6 @@
 import { createHash } from 'crypto';
 import { spawnSync } from 'child_process';
+import { resolve } from 'path';
 import type { McpExecutionContext } from '../../../../packages/protocols/mcp/execution-context';
 import type { RepositoryRecord } from '../../../cli/repositories/types';
 import { getRepository, resolveRepositorySelection, selectRepositoryCheckout } from '../../../cli/repositories/registry';
@@ -10,7 +11,7 @@ import { activateWorkContract, appendWorkEvidence, failWorkContract, getWorkCont
 import { admitPreparedRepositoryWorkContract } from '../facade/repository-work-admission';
 import { isTerminalWorkContractStatus, type WorkReconciliationRecord } from '../facade/types';
 import { updateExecutionSession, type ExecutionSessionContext } from './session-store';
-import { currentPermissionSnapshotVersion, validateWorkHandle } from './validation';
+import { currentPermissionSnapshotVersion, validateWorkHandle, WorkHandleValidationError } from './validation';
 import { assertExecutionIdentity, executionIdentityFromCoordinates } from './execution-identity';
 import { withWorkPrepareRequest } from './work-prepare-request-store';
 import { markWorkHandleFailed, newWorkId, readWorkHandle, transitionWorkHandle, writeWorkHandle, type WorkFinalizationStages, type WorkHandleState } from './work-handle-store';
@@ -92,7 +93,6 @@ function adoptExistingWorkHead(
   if (requestedCheckoutId !== handle.checkoutId || repository.activeCheckoutId !== handle.checkoutId) {
     throw new Error(`WORK_HEAD_ADOPTION_CHECKOUT_MISMATCH: expected ${handle.checkoutId}, found ${requestedCheckoutId}`);
   }
-  if (!handle.managedWorktree) throw new Error('WORK_HEAD_ADOPTION_MANAGED_WORKTREE_REQUIRED');
   if (handle.principalId !== session.principalId) throw new Error('WORK_HANDLE_PRINCIPAL_MISMATCH: work handle belongs to another principal');
   if (handle.state !== 'prepared' && handle.state !== 'editing') {
     throw new Error(`WORK_HEAD_ADOPTION_STATE_INVALID: ${handle.state}`);
@@ -103,8 +103,12 @@ function adoptExistingWorkHead(
 
   const registered = getRepository(handle.repositoryId, ctx.controllerHome, { includeRemoved: true });
   const registeredCheckout = registered.checkouts.find((entry) => entry.checkoutId === handle.checkoutId);
-  if (!registeredCheckout || registeredCheckout.lifecycle !== 'active' || registeredCheckout.worktree !== true) {
-    throw new Error('WORK_HEAD_ADOPTION_CHECKOUT_NOT_ACTIVE_MANAGED');
+  const canonicalCheckout = handle.checkoutId === registered.activeCheckoutId
+    && resolve(handle.worktreePath) === resolve(registered.canonicalRoot)
+    && registeredCheckout?.worktree !== true;
+  const managedCheckout = handle.managedWorktree && registeredCheckout?.worktree === true;
+  if (!registeredCheckout || registeredCheckout.lifecycle !== 'active' || (!canonicalCheckout && !managedCheckout)) {
+    throw new Error('WORK_HEAD_ADOPTION_CHECKOUT_NOT_ACTIVE_OR_CANONICAL');
   }
   const worktreeRepository = selectRepositoryCheckout(registered, handle.checkoutId);
   const guarded = assertExecutionIdentity({
@@ -176,8 +180,8 @@ function adoptExistingWorkHead(
     reviewer: session.principalId.slice(0, 200),
     reviewedAt,
     unrecoverableStages: [],
-    cleanupOwnershipProof: `No cleanup was performed; managed checkout ${handle.checkoutId} remains owned by Work finalizer.`,
-    rationale: 'Adopted an exact clean successor commit after repository, checkout, worktree, branch, ancestry, principal, and WorkContract path-scope verification. This reconciliation is not completion evidence.',
+    cleanupOwnershipProof: `No cleanup was performed; checkout ${handle.checkoutId} remains owned by the registered Repository and WorkHandle.`,
+    rationale: 'Adopted an exact clean successor commit after repository, checkout, canonical/managed path, branch, ancestry, principal, and WorkContract path-scope verification. This reconciliation is not completion evidence.',
     outcome: 'accepted_equivalence',
   };
 
@@ -269,7 +273,25 @@ export function prepareWork(ctx: McpExecutionContext, args: Record<string, unkno
     if (existing.principalId !== session.principalId) throw new Error('WORK_HANDLE_ACCESS_DENIED');
     const adopted = adoptExistingWorkHead(ctx, session, repository, existing, args);
     if (adopted) return adopted;
-    validateWorkHandle(ctx.controllerHome, existing, identityFor(ctx, args), 'cheap', 'inspect');
+    try {
+      validateWorkHandle(ctx.controllerHome, existing, identityFor(ctx, args), 'cheap', 'inspect');
+    } catch (error) {
+      if (!(error instanceof WorkHandleValidationError)
+        || error.code !== 'WORK_HANDLE_HEAD_CHANGED'
+        || existing.managedWorktree
+        || !existing.expectedHead
+        || existing.checkoutId !== repository.activeCheckoutId) throw error;
+      const candidateHead = gitHead(existing.worktreePath);
+      if (!candidateHead || candidateHead === existing.expectedHead) throw error;
+      const reconciled = adoptExistingWorkHead(ctx, session, repository, existing, {
+        ...args,
+        checkout_id: existing.checkoutId,
+        expected_previous_head: existing.expectedHead,
+        adopt_candidate_head: candidateHead,
+      });
+      if (reconciled) return reconciled;
+      throw error;
+    }
     updateExecutionSession(ctx.controllerHome, identityFor(ctx, args), { activeRepositoryId: existing.repositoryId, activeCheckoutId: existing.checkoutId, activeWorkId: existing.workId, permissionSnapshotVersion: existing.permissionSnapshotVersion });
     return { session: requireSession(ctx, args), work: compactHandle(existing), reused: true };
   }

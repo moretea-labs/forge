@@ -15,6 +15,7 @@ export {
   getControllerRoundRelay,
   getRequirementControllerRoundRelay,
   listControllerRoundRelaysByBlocker,
+  listControllerRoundRelaysAwaitingProviderDispatch,
   listCurrentControllerRoundRelays,
   readControllerRoundContextSnapshot,
   readControllerRoundSemanticStateFingerprint,

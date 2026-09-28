@@ -15,6 +15,8 @@ import {
   bindControllerRoundSuccessorWork,
   finishControllerRoundRelayDispatch,
   getControllerRoundRelay,
+  listControllerRoundRelaysAwaitingProviderDispatch,
+  listCurrentControllerRoundRelays,
   reconcileControllerRoundAfterAbandonedRelease,
   settleControllerRoundAfterTurn,
   submitControllerRoundDisposition,
@@ -1078,6 +1080,160 @@ describe('autonomous continuation lifecycle', () => {
     )!;
     expect(retainedMalformed.value.phase).toBe('delivery');
     expect(retainedMalformed.value.phaseEvidence?.review.state).toBe('pending');
+  });
+
+  test('provider-dispatch candidates are filtered before the bounded relay window', () => {
+    const root = temp('forge-autonomous-provider-dispatch-window-');
+    const controllerHome = join(root, 'controller');
+    const repoRoot = join(root, 'repo');
+    ensureControllerHome(controllerHome);
+    initRepo(repoRoot);
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'provider-dispatch-window' });
+    const store = { controllerHome, repoId: repository.repoId };
+    const workId = 'WORK-AUTONOMOUS-PROVIDER-DISPATCH-WINDOW';
+    createWorkContract(store, {
+      workId,
+      repoId: repository.repoId,
+      checkoutId: repository.activeCheckoutId,
+      objective: 'Remain discoverable for provider dispatch after historical relay count exceeds the bounded projection window.',
+      acceptanceCriteria: ['queued provider dispatch filters runnable candidates before limiting the result set'],
+      allowedPaths: [],
+      forbiddenPaths: [],
+      checks: [],
+      constraints: { requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt',
+      status: 'running',
+    });
+    const target = beginInitialControllerRoundDispatch(store, {
+      workId,
+      identity: {
+        controllerId: 'chatgpt-provider-window',
+        controllerType: 'chatgpt',
+        principalId: 'chatgpt-provider-window',
+        controllerInstanceId: 'runtime-provider-window',
+        sessionId: 'session-provider-window',
+      },
+      occurrenceId: 'launcher_start:provider-dispatch-window',
+    });
+    const targetAtMs = Date.parse(target.updatedAt);
+    for (let index = 0; index < 101; index += 1) {
+      const updatedAt = new Date(targetAtMs - (102 - index) * 1_000).toISOString();
+      writeControlPlaneRecord(controllerHome, {
+        namespace: 'controller_round_relay',
+        scope: repository.repoId,
+        key: `historical-noise:${index}`,
+        schemaVersion: 1,
+        action: 'test_provider_dispatch_window_noise',
+        value: {
+          ...target,
+          relayScopeId: `historical-noise:${index}`,
+          originWorkId: `HISTORICAL-NOISE-${index}`,
+          status: 'goal_complete',
+          occurrenceId: undefined,
+          updatedAt,
+        },
+      });
+    }
+
+    expect(listCurrentControllerRoundRelays(store, 100).some((relay) => relay.originWorkId === workId)).toBe(false);
+    expect(listControllerRoundRelaysAwaitingProviderDispatch(store, {
+      limit: 100,
+      controllerTypes: ['chatgpt'],
+      occurrenceIdPrefix: 'launcher_start:',
+    }).map((relay) => relay.originWorkId)).toEqual([workId]);
+  });
+
+  test('a launcher request retry is idempotent and a distinct authorized occurrence gets a fresh bounded budget', () => {
+    const root = temp('forge-autonomous-fresh-launch-occurrence-');
+    const controllerHome = join(root, 'controller');
+    const repoRoot = join(root, 'repo');
+    ensureControllerHome(controllerHome);
+    initRepo(repoRoot);
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'fresh-launch-occurrence' });
+    const store = { controllerHome, repoId: repository.repoId };
+    const workId = 'WORK-AUTONOMOUS-FRESH-LAUNCH-OCCURRENCE';
+    const relayScopeId = `goal:${workId}`;
+    createWorkContract(store, {
+      workId,
+      repoId: repository.repoId,
+      checkoutId: repository.activeCheckoutId,
+      objective: 'Start a new explicit launch occurrence without reviving its exhausted predecessor.',
+      acceptanceCriteria: ['a fresh authenticated launcher request remains on the same Work and relay scope'],
+      allowedPaths: [],
+      forbiddenPaths: [],
+      checks: [],
+      constraints: { requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt',
+      status: 'running',
+    });
+    const identity = {
+      controllerId: 'chatgpt-fresh-launch',
+      controllerType: 'chatgpt' as const,
+      principalId: 'chatgpt-fresh-launch',
+      controllerInstanceId: 'runtime-fresh-launch',
+      sessionId: 'session-fresh-launch',
+    };
+    const firstOccurrenceId = `launcher_start:${workId}:request-a`;
+    const first = beginInitialControllerRoundDispatch(store, {
+      workId, relayScopeId, identity, occurrenceId: firstOccurrenceId,
+    });
+    const retried = beginInitialControllerRoundDispatch(store, {
+      workId, relayScopeId, identity, occurrenceId: firstOccurrenceId,
+    });
+    expect(retried.authorityId).toBe(first.authorityId);
+    expect(retried.occurrenceId).toBe(firstOccurrenceId);
+    expect(retried.status).toBe('dispatching');
+    expect(retried.providerDispatchAttempt).toBeUndefined();
+    expect(retried.updatedAt).toBe(first.updatedAt);
+
+    const exhausted = {
+      ...first,
+      status: 'blocked' as const,
+      blockedReason: 'round_budget_exhausted:15>8',
+      roundCount: 15,
+      maxRounds: 8,
+    };
+    writeControlPlaneRecord(controllerHome, {
+      namespace: 'controller_round_relay',
+      scope: repository.repoId,
+      key: workId,
+      schemaVersion: 1,
+      action: 'test_exhausted_explicit_launcher_occurrence',
+      value: exhausted,
+    });
+    const sameRequest = beginInitialControllerRoundDispatch(store, {
+      workId, relayScopeId, identity, occurrenceId: firstOccurrenceId, authorizeRoundBudgetOccurrence: true,
+    });
+    expect(sameRequest.status).toBe('blocked');
+    expect(sameRequest.blockedReason).toBe('round_budget_exhausted:15>8');
+    expect(sameRequest.authorityId).toBe(first.authorityId);
+    expect(sameRequest.roundCount).toBe(15);
+
+    const secondOccurrenceId = `launcher_start:${workId}:request-b`;
+    expect(() => beginInitialControllerRoundDispatch(store, {
+      workId, relayScopeId, identity, occurrenceId: secondOccurrenceId,
+    })).toThrow('CONTROLLER_RELAY_BLOCKED_OCCURRENCE_FORBIDDEN:round_budget_exhausted');
+    const fresh = beginInitialControllerRoundDispatch(store, {
+      workId, relayScopeId, identity, occurrenceId: secondOccurrenceId, authorizeRoundBudgetOccurrence: true,
+    });
+    expect(fresh.originWorkId).toBe(workId);
+    expect(fresh.relayScopeId).toBe(relayScopeId);
+    expect(fresh.occurrenceId).toBe(secondOccurrenceId);
+    expect(fresh.status).toBe('dispatching');
+    expect(fresh.roundCount).toBe(1);
+    expect(fresh.maxRounds).toBe(8);
+    expect(fresh.providerDispatchAttempt).toBeUndefined();
+    expect(fresh.authorityId).not.toBe(exhausted.authorityId);
+    expect(fresh.providerDispatchEffectId).toBeUndefined();
+    expect(getWorkContract(store, workId)?.workId).toBe(workId);
+
+    const retryFresh = beginInitialControllerRoundDispatch(store, {
+      workId, relayScopeId, identity, occurrenceId: secondOccurrenceId, authorizeRoundBudgetOccurrence: true,
+    });
+    expect(retryFresh.authorityId).toBe(fresh.authorityId);
+    expect(retryFresh.updatedAt).toBe(fresh.updatedAt);
+    expect(retryFresh.providerDispatchAttempt).toBeUndefined();
+    expect(retryFresh.providerDispatchEffectId).toBeUndefined();
   });
 
 });

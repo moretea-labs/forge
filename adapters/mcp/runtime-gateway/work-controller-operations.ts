@@ -14,6 +14,7 @@ import {
 import { touchSchedulerWakeSignal } from '../../../src/runtime/control-plane/global-scheduler/wake-signal';
 import {
   beginInitialControllerRoundDispatch,
+  controllerRoundBlockerClass,
   finishControllerRoundRelayDispatch,
   getControllerRoundRelay,
   getRequirementControllerRoundRelay,
@@ -51,6 +52,8 @@ export async function callRhWorkControllerOperation(
       const explicitConversationUrl = typeof args.conversation_url === 'string' && args.conversation_url.trim()
         ? args.conversation_url.trim()
         : undefined;
+      const launchRequestId = typeof args.request_id === 'string' ? args.request_id.trim() : '';
+      if (!launchRequestId) throw new Error('LAUNCHER_START_REQUEST_ID_REQUIRED');
       const existingBinding = chatgptControllerRoundBinding(store, workId);
       const requestedTransportConversation = args.transport_conversation === 'fresh'
         ? 'fresh'
@@ -107,7 +110,10 @@ export async function callRhWorkControllerOperation(
           }
           throw new Error(supervisorEnrollment.reason ?? `WORKFLOW_SUPERVISOR_${supervisorEnrollment.status.toUpperCase()}`);
         }
-        if (existingRelay) {
+        const explicitFreshRoundBudgetOccurrence = existingRelay?.status === 'blocked'
+          && controllerRoundBlockerClass(existingRelay) === 'round_budget_exhausted'
+          && existingRelay.occurrenceId !== `launcher_start:${work.workId}:${launchRequestId}`;
+        if (existingRelay && !explicitFreshRoundBudgetOccurrence) {
           throw new Error(supervisorEnrollment.reason ?? `WORKFLOW_SUPERVISOR_LOWER_LAYER_NOT_READY:${existingRelay.status}`);
         }
       }
@@ -140,7 +146,7 @@ export async function callRhWorkControllerOperation(
 
       const continuationPrompt = typeof args.continuation_prompt === 'string' ? args.continuation_prompt.trim() : '';
       const identity = authenticatedFacadeControllerIdentity(ctx, args);
-      const occurrenceId = `launcher_start:${work.workId}:${work.updatedAt}`;
+      const occurrenceId = `launcher_start:${work.workId}:${launchRequestId}`;
       const initialContinuationPrompt = [
         handoff ? `Handoff: ${handoff.summary}\nNext: ${handoff.recommendedContinuationPrompt ?? handoff.recommendedPrompt}` : '',
         continuationPrompt ? `Continuation: ${continuationPrompt}` : '',
@@ -151,6 +157,7 @@ export async function callRhWorkControllerOperation(
         requirementId: work.requirementId,
         bindingId: chatgptControllerRoundBindingId(workId),
         occurrenceId,
+        authorizeRoundBudgetOccurrence: true,
       });
       if (relay.status === 'blocked') {
         throw new Error(`CHATGPT_CONTINUATION_LAUNCH_BLOCKED:${relay.blockedReason ?? 'transport_not_ready'}`);

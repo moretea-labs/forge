@@ -799,10 +799,10 @@ describe('Workflow Supervisor macOS native browser adapter', () => {
     expect(h.errors).toEqual([]);
   });
 
-  test('clears a completed causal predecessor prompt from the composer and retries the current effect exactly once', async () => {
+  test('settles a completed turn before reconciling its successor on a fresh transport', async () => {
     const conversationId = '89898989-6767-4545-2323-010101010101';
     const h = harness([], '', false, 'composer_not_empty', '', false, {}, 2);
-    const { taskId, effect } = register(h.control, conversationId);
+    const { taskId, conversationUrl, effect } = register(h.control, conversationId);
     await h.adapter.runOnce();
     const page = h.pages.find((candidate) => candidate.ref.tabId === 'forge-tab-1')!;
     page.latestAssistantResponse = renderSupervisorReceipt(h.control.store.getTask(taskId)!, effect.effectId, 'CONTINUE');
@@ -812,18 +812,24 @@ describe('Workflow Supervisor macOS native browser adapter', () => {
 
     await h.adapter.runOnce();
     const successor = h.control.store.getEffectByOriginKey(`completion:${h.control.store.getCompletionBySourceEffectId(taskId, effect.effectId)!.completionFingerprint}`)!;
-    expect(h.dispatchAttempts()).toBe(2);
-    expect(h.control.store.latestEffectDispatch(successor.effectId)?.generation).toBe(1);
-    expect(page.composerText).toBe(effect.prompt);
+    expect(page.closed).toBe(true);
+    expect(page.composerText).toBe('');
+    expect(h.dispatchAttempts()).toBe(1);
+    expect(h.control.store.latestEffectDispatch(successor.effectId)).toBeUndefined();
 
     await h.adapter.runOnce();
-    expect(page.composerText).toBe('');
-    expect(h.control.store.nextBrowserEffect(taskId)?.mode).toBe('send');
-    expect(h.control.store.nextBrowserEffect(taskId)?.generation).toBe(2);
+    const successorPage = h.pages.find((candidate) => candidate.ref.tabId === 'forge-tab-2')!;
+    expect(successorPage).toBeDefined();
+    expect(successorPage.url).toBe(conversationUrl);
+    expect(h.dispatchAttempts()).toBe(2);
 
+    await h.adapter.runOnce();
+    expect(h.dispatchAttempts()).toBe(2);
+    expect(h.control.store.nextBrowserEffect(taskId)?.generation).toBe(2);
     await h.adapter.runOnce();
     expect(h.dispatchAttempts()).toBe(3);
-    expect(page.latestUserText).toContain(successor.effectId);
+    await h.adapter.runOnce();
+    expect(successorPage.latestUserText).toContain(successor.effectId);
     expect(h.control.store.effectApplied(successor.effectId)).toBe(true);
     expect(h.errors).toEqual([]);
   });
@@ -842,6 +848,8 @@ describe('Workflow Supervisor macOS native browser adapter', () => {
     await h.adapter.runOnce();
     await h.adapter.runOnce();
     expect(page.composerText).toBe('my unsent user draft');
+    expect(page.closed).toBe(false);
+    expect(page.owner).toBe(`forge-workflow-supervisor:adopted:${conversationId}`);
     expect(h.dispatchAttempts()).toBe(2);
     expect(h.control.store.nextBrowserEffect(taskId)?.mode).toBe('reconcile');
   });
@@ -855,6 +863,10 @@ describe('Workflow Supervisor macOS native browser adapter', () => {
     page.latestAssistantResponse = renderSupervisorReceipt(h.control.store.getTask(taskId)!, effect.effectId, 'CONTINUE');
     page.latestTurnRole = 'assistant';
     page.providerActivityText = page.latestAssistantResponse;
+    // Model a Runtime/controller ordering where the durable successor command
+    // is already visible when this adapter next observes the committed turn.
+    await h.control.browserObserveAssistant({ conversationId, conversationUrl, responseText: page.latestAssistantResponse });
+    expect(h.control.browserPoll({ conversationId, conversationUrl }).command?.mode).toBe('send');
     await h.adapter.runOnce();
     expect(page.closed).toBe(true);
     expect(page.latestUserText).toBe(firstPrompt);
@@ -863,7 +875,7 @@ describe('Workflow Supervisor macOS native browser adapter', () => {
     expect(successorPage.url).toBe(conversationUrl);
     expect(successorPage.latestUserText).toContain('<<<FORGE_WORKFLOW_EFFECT_V1:');
     expect(successorPage.latestUserText).toContain('Continue the current original task directly from the previous checkpoint without repeating completed work.');
-    expect(h.settlements).toHaveLength(1);
+    expect(h.settlements).toHaveLength(2);
     expect(h.control.browserPoll({ conversationId, conversationUrl }).command).toBeUndefined();
     expect(h.errors).toEqual([]);
   });

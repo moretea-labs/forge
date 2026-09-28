@@ -42,7 +42,7 @@ export function controllerRoundRelayClaimable(
 }
 
 export type ControllerRoundTransitionEvent =
-  | { type: 'occurrence_requested'; at: string; repoId: string; relayScopeId: string; originWorkId: string; requirementId?: string; identity: ControllerRoundRelayIdentity; stateFingerprint: string; proposedAuthorityId: string; maxRounds: number; maxRepeatedState: number; maxFailures: number; bindingId?: string; occurrenceId?: string; abandonedReleaseRecovery: boolean; allowSemanticWaitRecovery?: boolean }
+  | { type: 'occurrence_requested'; at: string; repoId: string; relayScopeId: string; originWorkId: string; requirementId?: string; identity: ControllerRoundRelayIdentity; stateFingerprint: string; proposedAuthorityId: string; maxRounds: number; maxRepeatedState: number; maxFailures: number; bindingId?: string; occurrenceId?: string; abandonedReleaseRecovery: boolean; allowSemanticWaitRecovery?: boolean; authorizeRoundBudgetOccurrence?: boolean }
   | { type: 'provider_dispatch_started'; at: string; providerDispatchEffectId: string; bindingId?: string }
   | { type: 'provider_dispatch_succeeded'; at: string; providerDispatchEffectId: string; bindingId?: string; providerDispatchReceiptId?: string }
   | { type: 'provider_dispatch_failed'; at: string; error: string; recovery: boolean; nextRecoveryAt?: string }
@@ -83,11 +83,19 @@ export function decideControllerRoundTransition(
   switch (event.type) {
     case 'occurrence_requested': {
       const previous = current;
+      if (previous && event.occurrenceId?.trim() && previous.occurrenceId === event.occurrenceId.trim()) {
+        return { kind: 'no_op', current: previous, reason: 'occurrence_request_already_applied' };
+      }
+      const previousBlocker = previous ? controllerRoundBlockerClass(previous) : undefined;
+      const startsAuthorizedRoundBudgetOccurrence = previousBlocker === 'round_budget_exhausted'
+        && event.authorizeRoundBudgetOccurrence === true
+        && Boolean(event.occurrenceId?.trim())
+        && previous?.occurrenceId !== event.occurrenceId?.trim();
       if (previous) {
         if (['pending_release', 'dispatching', 'dispatched', 'claimed'].includes(previous.status)) return { kind: 'reject', code: `CONTROLLER_RELAY_ROUND_ALREADY_OPEN:${previous.relayScopeId}` };
-        const blocker = controllerRoundBlockerClass(previous);
+        const blocker = previousBlocker;
         if (blocker === 'provider_dispatch_outcome_unknown') return { kind: 'reject', code: `CONTROLLER_RELAY_PROVIDER_DISPATCH_OUTCOME_UNKNOWN:${previous.relayScopeId}` };
-        if (blocker) return { kind: 'reject', code: `CONTROLLER_RELAY_BLOCKED_OCCURRENCE_FORBIDDEN:${blocker}` };
+        if (blocker && !startsAuthorizedRoundBudgetOccurrence) return { kind: 'reject', code: `CONTROLLER_RELAY_BLOCKED_OCCURRENCE_FORBIDDEN:${blocker}` };
         if (previous.status === 'waiting_for_user') return { kind: 'reject', code: 'CONTROLLER_RELAY_USER_RESUME_REQUIRED' };
         if (previous.status === 'goal_complete' || previous.status === 'handed_off') return { kind: 'reject', code: `CONTROLLER_RELAY_TERMINAL_OCCURRENCE_FORBIDDEN:${previous.status}` };
         // A terminal provider failure is still the same relay attempt.  The
@@ -98,7 +106,6 @@ export function decideControllerRoundTransition(
         // semantic states require an occurrence id so an external wake cannot
         // silently replay an old lineage.
         if (previous.status !== 'failed' && !event.abandonedReleaseRecovery && !event.occurrenceId?.trim()) return { kind: 'needs_evidence', code: 'CONTROLLER_RELAY_OCCURRENCE_ID_REQUIRED' };
-        if (event.occurrenceId?.trim() && previous.occurrenceId === event.occurrenceId.trim()) return { kind: 'reject', code: `CONTROLLER_RELAY_OCCURRENCE_ALREADY_APPLIED:${event.occurrenceId.trim()}` };
         if (previous.status === 'waiting' && previous.stateFingerprint === event.stateFingerprint && !event.allowSemanticWaitRecovery) return { kind: 'reject', code: 'CONTROLLER_RELAY_WAITING_STATE_UNCHANGED' };
         if (previous.status === 'failed' && !event.abandonedReleaseRecovery && event.occurrenceId?.trim()) return { kind: 'reject', code: 'CONTROLLER_RELAY_FAILED_REQUIRES_EXPLICIT_RESUME' };
         if (event.abandonedReleaseRecovery && previous.status !== 'failed') return { kind: 'reject', code: 'CONTROLLER_RELAY_ABANDONED_RECOVERY_STATE_INVALID' };
@@ -110,7 +117,10 @@ export function decideControllerRoundTransition(
       // launders round/repeated history back to an initial record. Provider failure
       // streak is responsibility-local, while providerFailureTotal below remains the
       // durable historical audit across occurrences.
-      const roundCount = previous ? previous.roundCount + 1 : 1;
+      // A distinct, authenticated launcher occurrence starts a new bounded round
+      // budget after the previous occurrence exhausted it. The old occurrence and
+      // its relay revisions remain durable; this does not reopen its authority.
+      const roundCount = startsAuthorizedRoundBudgetOccurrence ? 1 : previous ? previous.roundCount + 1 : 1;
       const repeatedStateCount = previous ? (previous.stateFingerprint === event.stateFingerprint ? previous.repeatedStateCount + 1 : 0) : 0;
       const consecutiveFailures = event.abandonedReleaseRecovery && previous ? previous.consecutiveFailures : 0;
       let blockedReason: string | undefined;
