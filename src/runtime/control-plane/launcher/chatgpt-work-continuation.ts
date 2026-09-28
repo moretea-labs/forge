@@ -494,6 +494,23 @@ export async function runWorkChatgptContinuation(
         throw new ChatgptExecutionPlacementError(targetForgeInstanceId, currentForgeInstanceId);
       }
     }
+    if (input.originSurface === 'schedule' && transportConversation === 'bound' && !seedUrl) {
+      return {
+        status: 'failed',
+        provider: bridgeRuntime ? 'chatgpt-bridge' : 'controller-browser',
+        browserSessionId: deliverySessionId,
+        resumedFromBinding: false,
+        model,
+        reasoning,
+        tabPolicy,
+        executionPreferenceVerified: false,
+        authorizationGrantRefs: [...authorizationGrantRefs],
+        error: {
+          code: 'CHATGPT_BOUND_CONVERSATION_URL_REQUIRED',
+          message: 'Scheduler-origin ChatGPT continuation may only reuse an existing bound conversation.',
+        },
+      };
+    }
     if (existing && transportConversation !== 'fresh') {
       const enrollment = await (dependencies.enrollWorkflowSupervisor ?? ensureWorkflowSupervisorEnrollmentForWork)(store, input.workId);
       if (enrollment.status !== 'enrolled') {

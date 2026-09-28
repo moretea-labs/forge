@@ -88,6 +88,7 @@ export function createChatgptControllerHost(options: {
         model: payload.model ?? 'gpt-5.6',
         reasoning: payload.reasoning ?? 'high',
         tabPolicy: payload.tabPolicy ?? 'auto',
+        transportConversation: payload.transportConversation ?? 'bound',
         timeoutMs: payload.timeoutMs,
         authorizationGrantRefs: [...new Set([
           ...(durableConversation?.authorizationGrantRefs ?? []),

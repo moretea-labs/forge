@@ -1026,6 +1026,42 @@ describe('ChatGPT Work conversation binding', () => {
     expect(result.error?.message).toContain('target=forge-wsl current=forge-mac');
   });
 
+  test('scheduler-origin bound continuation never creates a replacement ChatGPT conversation when no binding exists', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-chatgpt-scheduler-bound-reuse-only-'));
+    roots.push(root);
+    const controllerHome = join(root, 'controller');
+    const repoRoot = join(root, 'repo');
+    ensureControllerHome(controllerHome);
+    mkdirSync(repoRoot, { recursive: true });
+    for (const args of [['init', '-q', '-b', 'main'], ['config', 'user.email', 'reuse-only@example.test'], ['config', 'user.name', 'Reuse Only Test']] as string[][]) execFileSync('git', args, { cwd: repoRoot });
+    writeFileSync(join(repoRoot, 'README.md'), 'reuse-only fixture\n');
+    execFileSync('git', ['add', '.'], { cwd: repoRoot });
+    execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: repoRoot });
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'chatgpt-scheduler-bound-reuse-only' });
+    const store = { controllerHome, repoId: repository.repoId };
+    createWorkContract(store, {
+      workId: 'WORK-SCHEDULER-BOUND-REUSE-ONLY', repoId: repository.repoId, checkoutId: repository.activeCheckoutId,
+      objective: 'Reuse an existing ChatGPT conversation during automatic continuation.', acceptanceCriteria: [],
+      allowedPaths: ['**/*'], forbiddenPaths: [], checks: [], constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt', status: 'running',
+    });
+    let dispatches = 0;
+    const result = await runWorkChatgptContinuation({
+      controllerHome, repoId: repository.repoId, repoRoot, workId: 'WORK-SCHEDULER-BOUND-REUSE-ONLY', prompt: 'continue',
+      controllerAuthorityId: 'cra_66666666666666666666666666666666', relayScopeId: 'goal:WORK-SCHEDULER-BOUND-REUSE-ONLY',
+      originSurface: 'schedule', transportConversation: 'bound',
+    }, {
+      bridgeRuntime: false,
+      browserHost: { dispatch: async () => { dispatches += 1; throw new Error('automatic bound continuation must not dispatch without a bound conversation'); } },
+    });
+    expect(dispatches).toBe(0);
+    expect(result).toMatchObject({
+      status: 'failed', resumedFromBinding: false,
+      error: { code: 'CHATGPT_BOUND_CONVERSATION_URL_REQUIRED' },
+    });
+    expect(getChatgptWorkConversationBinding(store, 'WORK-SCHEDULER-BOUND-REUSE-ONLY')).toBeUndefined();
+  });
+
   test('fails closed before browser mutation when relay authority inputs are incomplete', async () => {
     const root = mkdtempSync(join(tmpdir(), 'forge-chatgpt-work-incomplete-authority-'));
     roots.push(root);
@@ -1261,7 +1297,7 @@ describe('ChatGPT Work conversation binding', () => {
     const result = await runWorkChatgptContinuation({
       controllerHome, repoId: repository.repoId, repoRoot, workId: 'WORK-FRESH-TRANSPORT', prompt: 'continue in a fresh transport',
       controllerAuthorityId: 'cra_44444444444444444444444444444444', relayScopeId: 'goal:WORK-FRESH-TRANSPORT',
-      browserSessionId: 'browser-old-transport', conversationUrl: 'https://chatgpt.com/c/old-transport', tabPolicy: 'reuse', transportConversation: 'fresh',
+      browserSessionId: 'browser-old-transport', conversationUrl: 'https://chatgpt.com/c/old-transport', tabPolicy: 'reuse', transportConversation: 'fresh', originSurface: 'schedule',
     }, {
       bridgeRuntime: false,
       browserHost: { dispatch: async (input) => {
@@ -1353,6 +1389,7 @@ describe('ChatGPT Work conversation binding', () => {
     expect(engine).not.toContain('relayScopeId: relay.relayScopeId');
     expect(engine).toContain('Standalone browser keepalive auth-required prompt dispatched to ChatGPT.');
     const controllerOperations = readFileSync(join(process.cwd(), 'adapters/mcp/runtime-gateway/work-controller-operations.ts'), 'utf8');
+    expect(controllerHost).toContain("transportConversation: payload.transportConversation ?? 'bound'");
     expect(controllerOperations).toContain("if (operation !== 'launcher_start') return undefined;");
     expect(controllerOperations).toContain("if (controllerType === 'chatgpt')");
     expect(controllerOperations).not.toContain('await runWorkChatgptContinuation({');
