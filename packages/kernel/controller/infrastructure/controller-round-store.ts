@@ -1510,6 +1510,65 @@ export function recoverControllerRoundRelayAuthority(
   });
 }
 
+export interface RearmControllerRoundAfterContinuationEvidenceInput {
+  workId: string;
+  relayScopeId: string;
+  expectedUpdatedAt: string;
+  completionEvidenceId: string;
+}
+
+/**
+ * Rearm one repeated-state-blocked round from an already-authorized durable
+ * outer-controller continuation decision. This is a mechanical continuation
+ * bridge, not a replacement for explicit user authority recovery: callers must
+ * independently prove that the outer controller owns unattended continuation.
+ * Lineage counters and budgets are preserved exactly.
+ */
+export function rearmControllerRoundAfterContinuationEvidence(
+  options: ControllerRoundRelayStoreOptions,
+  input: RearmControllerRoundAfterContinuationEvidenceInput,
+): ControllerRoundRelayRecord {
+  const workId = input.workId.trim();
+  const relayScopeId = input.relayScopeId.trim();
+  const expectedUpdatedAt = input.expectedUpdatedAt.trim();
+  const completionEvidenceId = bounded(input.completionEvidenceId, 500);
+  if (!workId) throw new Error('CONTROLLER_RELAY_CONTINUATION_EVIDENCE_WORK_REQUIRED');
+  if (!relayScopeId) throw new Error('CONTROLLER_RELAY_CONTINUATION_EVIDENCE_SCOPE_REQUIRED');
+  if (!expectedUpdatedAt) throw new Error('CONTROLLER_RELAY_CONTINUATION_EVIDENCE_REVISION_REQUIRED');
+  if (!completionEvidenceId) throw new Error('CONTROLLER_RELAY_CONTINUATION_EVIDENCE_REQUIRED');
+  const recoveryReason = `continuation_evidence:${completionEvidenceId}`;
+  const initial = readRelayRecord(options, workId);
+  if (!initial) throw new Error(`CONTROLLER_RELAY_CONTINUATION_EVIDENCE_RELAY_REQUIRED:${workId}`);
+  if (initial.value.relayScopeId !== relayScopeId) throw new Error(`CONTROLLER_RELAY_CONTINUATION_EVIDENCE_SCOPE_MISMATCH:${workId}`);
+  return relayLock(options, relayScopeId, `controller-relay-continuation-evidence:${workId}`, () => {
+    const current = readRelayRecord(options, workId);
+    if (!current) throw new Error(`CONTROLLER_RELAY_CONTINUATION_EVIDENCE_RELAY_REQUIRED:${workId}`);
+    if (current.value.relayScopeId !== relayScopeId) throw new Error(`CONTROLLER_RELAY_CONTINUATION_EVIDENCE_SCOPE_MISMATCH:${workId}`);
+    // A concurrent/replayed settlement may already have rearmed this exact
+    // completion. Treat that as idempotent success rather than reopening again.
+    if (current.value.status === 'dispatching' && current.value.reason === recoveryReason) return current.value;
+    if (current.value.updatedAt !== expectedUpdatedAt) throw new Error(`CONTROLLER_RELAY_CONTINUATION_EVIDENCE_STALE:${workId}`);
+    if (controllerRoundBlockerClass(current.value) !== 'repeated_state') {
+      throw new Error(`CONTROLLER_RELAY_CONTINUATION_EVIDENCE_BLOCKER_MISMATCH:${workId}:${current.value.status}`);
+    }
+    const work = getWorkContract(options, workId);
+    if (!work || semanticWorkState(work) !== 'open') throw new Error(`CONTROLLER_RELAY_CONTINUATION_EVIDENCE_WORK_TERMINAL:${workId}:${work ? semanticWorkState(work) : 'missing'}`);
+    const requirement = requirementForRelay(options, current.value.requirementId);
+    if (requirement && !['planned', 'active'].includes(requirement.state)) throw new Error(`CONTROLLER_RELAY_CONTINUATION_EVIDENCE_REQUIREMENT_TERMINAL:${requirement.state}`);
+    const activeWorks = recoveryFenceWork(options, current.value).filter((entry) => semanticWorkState(entry) === 'open');
+    if (activeWorks.some((entry) => workHasActiveExecution(options.controllerHome, options.repoId, entry.workId))) {
+      throw new Error(`CONTROLLER_RELAY_CONTINUATION_EVIDENCE_ACTIVE_EXECUTION:${workId}`);
+    }
+    if (activeWorks.some((entry) => Boolean(getControllerSession(options, entry.workId)))) {
+      throw new Error(`CONTROLLER_RELAY_CONTINUATION_EVIDENCE_ACTIVE_CLAIM:${workId}`);
+    }
+    return applyControllerRoundTransition(options, current, {
+      type: 'authority_recovery_requested', at: nowIso(options), proposedAuthorityId: newControllerRoundAuthorityId(),
+      keepsConfirmedDispatch: false, reason: recoveryReason,
+    });
+  });
+}
+
 export interface RetryFailedControllerRoundProviderDispatchInput {
   workId: string;
   relayScopeId: string;

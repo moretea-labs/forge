@@ -548,6 +548,90 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     expect(recovered).toMatchObject({ status: 'dispatching', roundCount: blocked.roundCount, repeatedStateCount: blocked.repeatedStateCount, maxRepeatedState: blocked.maxRepeatedState });
   });
 
+  test('reconciles a committed enrolled CONTINUE across a repeated-state block without user recovery', async () => {
+    const fx = fixture();
+    const requirementId = 'REQ-supervisor-enrolled-repeat-reconcile';
+    const workId = 'work-supervisor-enrolled-repeat-reconcile';
+    const conversationId = '56565656-7878-9090-abab-cdcdcdcdcdcd';
+    const conversationUrl = `https://chatgpt.com/c/${conversationId}`;
+    createRequirement({ controllerHome: fx.controllerHome }, {
+      requirementId,
+      title: 'Enrolled repeat reconcile',
+      outcomeStatement: 'A durable Supervisor CONTINUE must mechanically resume unattended execution.',
+    });
+    createWorkContract(fx.store, {
+      workId, repoId: fx.repository.repoId, checkoutId: fx.repository.activeCheckoutId, requirementId,
+      objective: 'Prove repeated-state recovery is scoped to exact enrolled unattended continuation.',
+      acceptanceCriteria: ['committed CONTINUE reserves successor without another user message'],
+      allowedPaths: [], forbiddenPaths: [], checks: [],
+      constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt', status: 'running',
+    });
+    const identity = {
+      controllerId: 'supervisor-enrolled-repeat-controller', controllerType: 'chatgpt' as const,
+      principalId: 'supervisor-enrolled-repeat-principal', controllerInstanceId: 'runtime-supervisor-enrolled-repeat',
+    };
+    const first = beginInitialControllerRoundDispatch(fx.store, {
+      workId, requirementId, identity: { ...identity, sessionId: 'supervisor-enrolled-repeat-1' }, maxRepeatedState: 2,
+    });
+    finishControllerRoundRelayDispatch(fx.store, { workId, ok: true });
+    const firstSession = claimControllerSession(fx.store, { workId, ...identity, sessionId: 'supervisor-enrolled-repeat-1', leaseMs: 60_000 });
+    acknowledgeControllerRoundClaim(fx.store, { workId, session: firstSession });
+    submitControllerRoundDisposition(fx.store, {
+      workId, relayScopeId: first.relayScopeId, identity: { ...identity, sessionId: firstSession.sessionId }, disposition: 'continue_immediately',
+    });
+    releaseControllerSession(fx.store, workId, identity.controllerId);
+    claimStalledControllerRoundRelays(fx.store, { nowMs: Date.now() + 120_000, graceMs: 60_000 });
+    finishControllerRoundRelayDispatch(fx.store, { workId, ok: true });
+    const secondSession = claimControllerSession(fx.store, { workId, ...identity, sessionId: 'supervisor-enrolled-repeat-2', leaseMs: 60_000 });
+    acknowledgeControllerRoundClaim(fx.store, { workId, session: secondSession });
+    const blocked = submitControllerRoundDisposition(fx.store, {
+      workId, relayScopeId: first.relayScopeId, identity: { ...identity, sessionId: secondSession.sessionId }, disposition: 'continue_immediately',
+    });
+    expect(blocked).toMatchObject({ status: 'blocked', repeatedStateCount: 2, blockedReason: 'repeated_state:2>=2' });
+    releaseControllerSession(fx.store, workId, identity.controllerId);
+    bindChatgptWorkConversation(fx.store, { workId, conversationUrl });
+
+    const supervisorStore = new WorkflowSupervisorStore(join(fx.root, 'enrolled-repeat-reconcile-supervisor'));
+    const control = new WorkflowSupervisorControlPlane(supervisorStore, {}, forgeWorkflowSupervisorLifecycleHooks(fx.controllerHome));
+    const taskId = `forge:${fx.repository.repoId}:conversation:${conversationId}`;
+    const task = control.registerTask({
+      taskId, conversationId, conversationUrl,
+      objective: 'Resume the exact enrolled Work without another user message.',
+      completionContract: { kind: 'forge_requirement_done', controller_home: fx.controllerHome, repo_id: fx.repository.repoId, work_id: workId, requirement_id: requirementId },
+      continuationPolicy: { kind: 'forge_goal_outer_turn', controller_home: fx.controllerHome, repo_id: fx.repository.repoId, work_id: workId, requirement_id: requirementId, exact_conversation_id: conversationId, exact_conversation_url: conversationUrl },
+      userBlockerPolicy: { kind: 'forge_requirement_waiting_for_user', controller_home: fx.controllerHome, repo_id: fx.repository.repoId, work_id: workId, requirement_id: requirementId },
+    });
+    const enrollment = control.reserveEnrollment(taskId, controllerRoundProviderEffectId(blocked));
+    supervisorStore.recordEffectObservation(enrollment.effectId, 'obs-enrolled-repeat-applied', 'applied');
+    const completion = {
+      completionFingerprint: 'completion-enrolled-repeat-reconcile', taskId, sourceEffectId: enrollment.effectId, action: 'CONTINUE' as const,
+      responseSha256: 'response-enrolled-repeat-reconcile', controlBlockSha256: 'control-enrolled-repeat-reconcile',
+      proposal: {
+        action: 'CONTINUE' as const, sourceEffectId: enrollment.effectId, checkpoint: 'repeat-blocked', reason: 'continue', evidence: [],
+        conversationId, taskId, supervisorState: 'running' as const, activeScope: `requirement:${requirementId}`,
+      },
+      committedAt: new Date().toISOString(),
+    };
+    supervisorStore.commitCompletion(completion);
+    expect(supervisorStore.getEffectByOriginKey(`completion:${completion.completionFingerprint}`)).toBeUndefined();
+
+    const reconciled = await control.reconcileCommittedContinuations();
+    expect(reconciled).toEqual({ scanned: 1, reconciled: 1 });
+    const successor = supervisorStore.getEffectByOriginKey(`completion:${completion.completionFingerprint}`);
+    expect(successor).toBeDefined();
+    const relay = getRequirementControllerRoundRelay(fx.store, requirementId);
+    expect(relay).toMatchObject({
+      status: 'dispatching', repeatedStateCount: blocked.repeatedStateCount, roundCount: blocked.roundCount,
+      reason: `continuation_evidence:${completion.completionFingerprint}`,
+    });
+    expect(successor?.effectId).toMatch(/^fx_/);
+    expect(successor?.effectId).not.toBe(enrollment.effectId);
+    expect(successor?.effectId).not.toBe(controllerRoundProviderEffectId(relay!));
+    expect((await control.reconcileCommittedContinuations())).toEqual({ scanned: 0, reconciled: 0 });
+    supervisorStore.close();
+  });
+
   test('retires a predecessor browser task after the Work CAS-rebinds to a fresh conversation', () => {
     const fx = fixture();
     const requirementId = 'REQ-supervisor-conversation-rebind';

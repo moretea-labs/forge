@@ -181,6 +181,33 @@ export class WorkflowSupervisorControlPlane {
     return await this.observeAssistantTurn({ taskId: task.taskId, conversationId: task.conversationId, responseText: input.responseText });
   }
 
+  /**
+   * Repair the crash boundary where a CONTINUE completion was durably committed
+   * before lower-layer settlement and successor reservation finished. This never
+   * replays the provider response; it only settles existing durable evidence and
+   * reserves the exactly-once successor effect.
+   */
+  async reconcileCommittedContinuations(limit = 16): Promise<{ scanned: number; reconciled: number }> {
+    const completions = this.store.listContinueCompletionsAwaitingSuccessor(limit);
+    let reconciled = 0;
+    for (const completion of completions) {
+      const task = this.store.getTask(completion.taskId);
+      if (!task || this.store.terminalAction(task.taskId)) continue;
+      const settlement: WorkflowSupervisorTurnSettlement = await this.hooks.assistantTurnCommitted?.(task, completion)
+        ?? { continuationAllowed: true };
+      if (!settlement.continuationAllowed) continue;
+      const successorOriginKey = `completion:${completion.completionFingerprint}`;
+      const nextId = settlement.continuationEffectId
+        ? validateEffectId(settlement.continuationEffectId)
+        : stableEffectId(successorOriginKey);
+      const checkpoint = completion.proposal.reason === 'compact_receipt' ? undefined : completion.proposal.checkpoint;
+      const prompt = renderSupervisorPrompt(task, nextId, 'continuation', checkpoint, undefined, settlement.continuationContext);
+      const committed = this.store.commitCompletion(completion, { effectId: nextId, kind: 'continuation', prompt });
+      if (committed.successorEffect) reconciled += 1;
+    }
+    return { scanned: completions.length, reconciled };
+  }
+
   async observeAssistantTurn(input: WorkflowAssistantObservation): Promise<WorkflowAssistantObservationResult> {
     const task = this.requireTask(input.taskId);
     if (task.conversationId !== input.conversationId) throw new Error('WORKFLOW_SUPERVISOR_CONVERSATION_MISMATCH');

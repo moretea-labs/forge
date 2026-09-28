@@ -258,6 +258,15 @@ export class WorkflowSupervisorStore {
   getEffect(effectId: string): WorkflowSupervisorEffect | undefined { return this.read((db) => { const row = statement(db, 'SELECT * FROM effects WHERE effect_id = ?', (s) => s.get(effectId)); return row ? effectFromRow(row as Record<string, unknown>) : undefined; }); }
   getEffectByOriginKey(originKey: string): WorkflowSupervisorEffect | undefined { return this.read((db) => { const row = statement(db, 'SELECT * FROM effects WHERE origin_key = ?', (s) => s.get(originKey)); return row ? effectFromRow(row as Record<string, unknown>) : undefined; }); }
   getCompletion(completionFingerprint: string): WorkflowSupervisorCompletion | undefined { return this.read((db) => { const row = statement(db, 'SELECT * FROM completions WHERE completion_fingerprint = ?', (s) => s.get(completionFingerprint)); return row ? completionFromRow(row as Record<string, unknown>) : undefined; }); }
+  listContinueCompletionsAwaitingSuccessor(limit = 16): WorkflowSupervisorCompletion[] {
+    const boundedLimit = Math.max(1, Math.min(Math.trunc(limit), 128));
+    return this.read((db) => statement(db, `SELECT c.* FROM completions c
+      WHERE c.action = 'CONTINUE'
+        AND NOT EXISTS (SELECT 1 FROM effects successor WHERE successor.origin_key = 'completion:' || c.completion_fingerprint)
+        AND NOT EXISTS (SELECT 1 FROM events terminal WHERE terminal.task_id = c.task_id AND terminal.kind IN ('terminal_done','terminal_needs_user'))
+      ORDER BY c.committed_at DESC, c.completion_fingerprint DESC LIMIT ?`, (s) => s.all(boundedLimit))
+      .map((row) => completionFromRow(row as Record<string, unknown>)));
+  }
   getCompletionByResponseSha256(taskId: string, responseSha256: string): WorkflowSupervisorCompletion | undefined {
     return this.read((db) => {
       const rows = statement(db, 'SELECT * FROM completions WHERE task_id = ? AND response_sha256 = ? ORDER BY committed_at, completion_fingerprint LIMIT 2', (s) => s.all(taskId, responseSha256)) as Record<string, unknown>[];

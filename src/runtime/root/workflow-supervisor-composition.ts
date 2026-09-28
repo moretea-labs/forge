@@ -12,6 +12,7 @@ import {
   getRetainedControllerSession,
   releaseObservedControllerSession,
   reconcileControllerRoundAfterTerminalWork,
+  rearmControllerRoundAfterContinuationEvidence,
   settleControllerRoundAfterTurn,
 } from '../../../packages/kernel/controller/api/index';
 import {
@@ -168,6 +169,31 @@ async function settleForgeWorkflowSupervisorTurn(
     }
   }
 
+  let continuationNeedsFreshSupervisorEffect = false;
+  if (completion.action === 'CONTINUE'
+    && task.continuationPolicy.kind === 'forge_goal_outer_turn'
+    && controllerRoundBlockerClass(relay) === 'repeated_state') {
+    const boundary = workflowSupervisorBoundaryForWork(store, settledWorkId);
+    const exactEnrolledBoundary = boundary.status === 'outer_turn'
+      && boundary.taskId === task.taskId
+      && boundary.conversationId === task.conversationId
+      && boundary.conversationUrl === task.conversationUrl;
+    if (exactEnrolledBoundary) {
+      relay = rearmControllerRoundAfterContinuationEvidence(store, {
+        workId: settledWorkId,
+        relayScopeId: relay.relayScopeId,
+        expectedUpdatedAt: relay.updatedAt,
+        completionEvidenceId: completion.completionFingerprint,
+      });
+      // The blocked round's canonical provider effect identity may already have
+      // been used by the source/recovery chain. A durable CONTINUE that reopens
+      // this same semantic round therefore needs a fresh Supervisor effect. The
+      // control plane derives that identity from the completion fingerprint and
+      // effectApplied records it back onto the lower relay exactly once.
+      continuationNeedsFreshSupervisorEffect = true;
+    }
+  }
+
   if (relay.status === 'pending_release') {
     if (!releaseWitness) return { continuationAllowed: false, reason: 'CONTROLLER_SESSION_RELEASE_WITNESS_MISSING' };
     relay = beginControllerRoundRelayAfterRelease(store, {
@@ -197,7 +223,9 @@ async function settleForgeWorkflowSupervisorTurn(
   return {
     continuationAllowed: true,
     continuationContext,
-    continuationEffectId: relay.providerDispatchEffectId ?? controllerRoundProviderEffectId(relay),
+    ...(continuationNeedsFreshSupervisorEffect
+      ? {}
+      : { continuationEffectId: relay.providerDispatchEffectId ?? controllerRoundProviderEffectId(relay) }),
   };
 }
 

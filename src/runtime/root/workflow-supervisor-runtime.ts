@@ -54,16 +54,31 @@ export async function startWorkflowSupervisorRuntime(
   });
   const done = once(server, 'close').then(() => undefined);
   await once(server, 'listening');
+  let closing = false;
+  let reconciliationInFlight: Promise<void> | undefined;
+  const reconcileCommittedContinuations = (): void => {
+    if (closing || reconciliationInFlight) return;
+    reconciliationInFlight = controlPlane.reconcileCommittedContinuations()
+      .then(() => undefined)
+      .catch((error) => { process.stderr.write(`[workflow-supervisor-reconcile] ${error instanceof Error ? error.message : String(error)}\\n`); })
+      .finally(() => { reconciliationInFlight = undefined; });
+  };
+  // Reconcile before browser polling starts so a Runtime restart can finish a
+  // previously committed CONTINUE without requiring another user/provider turn.
+  reconcileCommittedContinuations();
+  const reconciliationTimer = setInterval(reconcileCommittedContinuations, 2_000);
+  reconciliationTimer.unref?.();
   const nativeBrowser = options.nativeBrowserAdapter === false
     ? undefined
     : startWorkflowSupervisorNativeBrowserAdapter(controlPlane, discovery, { providerScopeKey: controllerHome });
-  let closing = false;
   return {
     done,
     async close(): Promise<void> {
       if (closing) return;
       closing = true;
+      clearInterval(reconciliationTimer);
       try {
+        await reconciliationInFlight?.catch(() => undefined);
         await nativeBrowser?.close().catch(() => undefined);
         if (server.listening) {
           await new Promise<void>((resolve, reject) => {
