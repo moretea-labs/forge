@@ -231,12 +231,13 @@ export function resolveChatgptWorkBrowserSessionId(input: {
 }): string {
   const policy = normalizeTabPolicy(input.tabPolicy);
   const stable = stableChatgptWorkBrowserSessionId(input.repoId, input.workId);
-  // An explicit Browser session is already an exact transport identity. `new`
-  // only allocates an identity when the caller did not prepare one; otherwise a
-  // durable launcher handoff would silently replace its authorized session.
+  // A fresh conversation is a fresh transport effect.  Do not inherit an
+  // explicit or durable session from the previous bound conversation: only its
+  // newly observed canonical conversation identity may survive this dispatch.
+  if (policy === 'new') return `${stable}-${randomUUID().slice(0, 8)}`;
+  // An explicit Browser session is an exact *current-effect* transport identity.
   const explicit = input.explicitSessionId?.trim();
   if (explicit && explicit !== LEGACY_CONTROLLER_CHATGPT_SESSION_ID) return explicit;
-  if (policy === 'new') return `${stable}-${randomUUID().slice(0, 8)}`;
   const bound = input.boundSessionId?.trim();
   if (bound && bound !== LEGACY_CONTROLLER_CHATGPT_SESSION_ID) return bound;
   return stable;

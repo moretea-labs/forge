@@ -436,10 +436,12 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     for (const task of tasks) {
       try {
         let poll = this.control.browserPoll({ conversationId: task.conversationId, conversationUrl: task.conversationUrl });
-        // Only an explicit send obligation may create a browser resource.
-        // Reconciliation/observation must attach to an existing exact owned tab;
-        // a user closing the tab is transport loss, not authority to reopen it.
-        const allowCreate = poll.command?.mode === 'send';
+        // A command is one effect-scoped observation window.  Sending may create
+        // a fresh tab, and an outcome-unknown reconcile may also open the exact
+        // durable conversation *only to observe that same effect*.  The latter
+        // never authorizes a replay; tab absence is still not application proof.
+        const allowCreate = Boolean(poll.command);
+        let recoveryAuthorized = false;
         let ensured = await this.ensurePage(task, allowCreate);
         if (ensured.state !== 'ready') {
           // A reconcile command represents an unconfirmed external mutation. Missing
@@ -456,7 +458,8 @@ export class WorkflowSupervisorNativeBrowserAdapter {
             observedAtMs: this.deps.nowMs(),
             graceMs: this.deps.providerIdleGraceMs,
           });
-          if (transport.state !== 'recovery_reserved') continue;
+          recoveryAuthorized = transport.state === 'recovery_reserved';
+          if (!recoveryAuthorized) continue;
           poll = this.control.browserPoll({ conversationId: task.conversationId, conversationUrl: task.conversationUrl });
           if (poll.command?.mode !== 'send') continue;
           ensured = await this.ensurePage(task, true);
@@ -474,7 +477,15 @@ export class WorkflowSupervisorNativeBrowserAdapter {
           snapshot = replacement.snapshot;
         }
         conversations.push({ conversation_id: task.conversationId, canonical_url: task.conversationUrl, ...(snapshot.title.trim() ? { title: snapshot.title.trim().slice(0, 512) } : {}) });
-        await this.observeAssistant(task, snapshot);
+        // A committed Supervisor receipt is the terminal observation for this
+        // transport effect.  Keep its digest across the next page so the old
+        // assistant turn is not interpreted again, but release this page now:
+        // the successor effect must acquire a fresh exact transport from the
+        // durable conversation identity rather than inherit a live tab.
+        if (await this.observeAssistant(task, snapshot) && !poll.command && !snapshot.composerText?.trim()) {
+          await this.retireOwnedPage(task, page, { preserveObservedAssistant: true });
+          continue;
+        }
         const providerBusy = snapshot.isGenerating;
         const latestRoleStillUser = snapshot.latestTurnRole === 'user';
         const providerFailureCode = chatgptProviderPageFailure(snapshot.providerFailureText);
@@ -489,7 +500,6 @@ export class WorkflowSupervisorNativeBrowserAdapter {
         // 429 is transport backpressure, not authority to mint a semantic recovery
         // effect. While the shared cooldown is live, observe locally and send nothing.
         if (poll.command?.mode !== 'reconcile' && providerFailureCode === CHATGPT_AUTOMATION_RATE_LIMITED && providerBackpressureMs > 0) continue;
-        let recoveryAuthorized = false;
         if (!poll.command) {
           // Provider failure evidence is scoped to the latest turn plus current
           // live status regions. Historical page text must never poison a later turn.
@@ -707,26 +717,38 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     }
   }
 
-  private async retireOwnedPage(task: WorkflowSupervisorBrowserTask, page: WorkflowSupervisorNativePage): Promise<void> {
+  private async retireOwnedPage(
+    task: WorkflowSupervisorBrowserTask,
+    page: WorkflowSupervisorNativePage,
+    options: { preserveObservedAssistant?: boolean } = {},
+  ): Promise<void> {
     try { await this.releasePage(task.conversationId, page); }
     finally {
       this.pages.delete(task.conversationId);
-      this.observedAssistant.delete(task.conversationId);
+      if (!options.preserveObservedAssistant) this.observedAssistant.delete(task.conversationId);
       this.providerFailureSeen.delete(task.conversationId);
     }
   }
 
-  private async observeAssistant(task: WorkflowSupervisorBrowserTask, snapshot: WorkflowSupervisorNativeSnapshot): Promise<void> {
+  private async observeAssistant(task: WorkflowSupervisorBrowserTask, snapshot: WorkflowSupervisorNativeSnapshot): Promise<boolean> {
     const response = snapshot.latestAssistantResponse.trim();
-    if (!committedAssistant(response)) return;
+    if (!committedAssistant(response)) return false;
     const digest = sha256(response);
-    if (this.observedAssistant.get(task.conversationId) === digest) return;
+    if (this.observedAssistant.get(task.conversationId) === digest) return false;
     try {
-      await this.control.browserObserveAssistant({ conversationId: task.conversationId, conversationUrl: task.conversationUrl, responseText: response });
+      const observed = await this.control.browserObserveAssistant({ conversationId: task.conversationId, conversationUrl: task.conversationUrl, responseText: response });
       this.observedAssistant.set(task.conversationId, digest);
+      // `commitCompletion` intentionally performs two idempotent writes for a
+      // CONTINUE (receipt, then successor), so its aggregate `deduplicated`
+      // flag is not a transport-terminal signal.  A successfully parsed and
+      // persisted receipt is the terminal observation.  The caller preserves a
+      // pending command so a Runtime restart can still dispatch an already
+      // reserved successor after seeing historical transcript content.
+      void observed;
+      return true;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      if (message.includes('WORKFLOW_SUPERVISOR_CAUSAL_EFFECT_NOT_APPLIED') || message.includes('WORKFLOW_SUPERVISOR_TASK_TERMINAL')) return;
+      if (message.includes('WORKFLOW_SUPERVISOR_CAUSAL_EFFECT_NOT_APPLIED') || message.includes('WORKFLOW_SUPERVISOR_TASK_TERMINAL')) return false;
       // A provider can render a syntactically complete but semantically invalid
       // Supervisor block. It is not a completion receipt and must not be
       // retried on every one-second browser tick. Remember that exact response
@@ -738,11 +760,11 @@ export class WorkflowSupervisorNativeBrowserAdapter {
         // The same rendered receipt may be observed just before a reserved recovery
         // effect becomes applied; caching it here would prevent reconsideration once
         // the causal effect context advances.
-        return;
+        return false;
       }
       if (message.startsWith('WORKFLOW_SUPERVISOR_')) {
         this.observedAssistant.set(task.conversationId, digest);
-        return;
+        return false;
       }
       throw error;
     }

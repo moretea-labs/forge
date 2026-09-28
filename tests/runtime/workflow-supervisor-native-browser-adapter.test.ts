@@ -56,6 +56,15 @@ function harness(
     reattach: async (ref) => pages.find((page) => !page.closed && page.ref.tabId === ref.tabId)!,
     create: async (url) => {
       const page = new FakePage({ windowId: 'forge-window', tabId: `forge-tab-${++created}` }, url);
+      // A new transport shows the same durable conversation transcript. It does
+      // not inherit ownership or a live page handle from the previous effect.
+      const prior = [...pages].reverse().find((candidate) => candidate.url === url);
+      if (prior) {
+        page.latestUserText = prior.latestUserText;
+        page.latestAssistantResponse = prior.latestAssistantResponse;
+        page.latestTurnRole = prior.latestTurnRole;
+        page.providerActivityText = prior.providerActivityText;
+      }
       pages.push(page); return page;
     },
     close: async (ref) => { const page = pages.find((candidate) => candidate.ref.tabId === ref.tabId); if (page) page.closed = true; },
@@ -538,7 +547,7 @@ describe('Workflow Supervisor macOS native browser adapter', () => {
     expect(h.control.browserPoll({ conversationId, conversationUrl: url }).command).toBeUndefined();
     expect(h.errors).toEqual([]);
   });
-  test('does not recreate a closed or missing tab for reconcile-only browser work', async () => {
+  test('reopens the exact conversation only to reconcile an outcome-unknown effect without replaying it', async () => {
     const conversationId = 'abababab-cdcd-efef-1212-343434343434';
     const url = `https://chatgpt.com/c/${conversationId}`;
     const h = harness();
@@ -549,7 +558,7 @@ describe('Workflow Supervisor macOS native browser adapter', () => {
     await h.adapter.runOnce();
     await h.adapter.runOnce();
 
-    expect(h.created()).toBe(0);
+    expect(h.created()).toBe(1);
     expect(h.dispatchAttempts()).toBe(0);
     expect(h.control.store.latestEffectDispatch(effect.effectId)?.generation).toBe(1);
     expect(h.control.browserPoll({ conversationId, conversationUrl: url }).command).toMatchObject({ mode: 'reconcile', dispatchGeneration: 1 });
@@ -627,6 +636,7 @@ describe('Workflow Supervisor macOS native browser adapter', () => {
     expect(h.control.store.latestEffectDispatch(effect.effectId)?.generation).toBe(1);
 
     original.closed = true;
+    await h.adapter.runOnce();
     await h.adapter.runOnce();
 
     expect(h.created()).toBe(2);
@@ -836,19 +846,23 @@ describe('Workflow Supervisor macOS native browser adapter', () => {
     expect(h.control.store.nextBrowserEffect(taskId)?.mode).toBe('reconcile');
   });
 
-  test('observes a committed CONTINUE response and dispatches the successor effect in the same loop', async () => {
+  test('settles a Forge-created tab after a committed CONTINUE and opens a fresh exact tab for its successor', async () => {
     const conversationId = '99999999-8888-7777-6666-555555555555';
     const h = harness([], 'controller_authority_id=ctrl_next relay_scope_id=requirement:REQ-next', false, '', '\\n展开'); const { taskId, conversationUrl, effect } = register(h.control, conversationId);
     await h.adapter.runOnce();
     const page = h.pages.find((candidate) => candidate.ref.tabId === 'forge-tab-1')!;
     const firstPrompt = page.latestUserText;
-    page.latestAssistantResponse = `Work remains.\n${SUPERVISOR_BLOCK_START}\n${JSON.stringify({ action: 'CONTINUE', conversation_id: conversationId, task_id: taskId, supervisor_state: 'running', active_scope: 'requirement:REQ-next', source_effect_id: effect.effectId, checkpoint: 'native checkpoint', reason: 'continue', evidence: ['native transport'] })}\n${SUPERVISOR_BLOCK_END}`;
+    page.latestAssistantResponse = renderSupervisorReceipt(h.control.store.getTask(taskId)!, effect.effectId, 'CONTINUE');
     page.latestTurnRole = 'assistant';
     page.providerActivityText = page.latestAssistantResponse;
     await h.adapter.runOnce();
-    expect(page.latestUserText).not.toBe(firstPrompt);
-    expect(page.latestUserText).toContain('<<<FORGE_WORKFLOW_EFFECT_V1:');
-    expect(page.latestUserText).toContain('Continue the current original task directly from the previous checkpoint without repeating completed work.');
+    expect(page.closed).toBe(true);
+    expect(page.latestUserText).toBe(firstPrompt);
+    await h.adapter.runOnce();
+    const successorPage = h.pages.find((candidate) => candidate.ref.tabId === 'forge-tab-2')!;
+    expect(successorPage.url).toBe(conversationUrl);
+    expect(successorPage.latestUserText).toContain('<<<FORGE_WORKFLOW_EFFECT_V1:');
+    expect(successorPage.latestUserText).toContain('Continue the current original task directly from the previous checkpoint without repeating completed work.');
     expect(h.settlements).toHaveLength(1);
     expect(h.control.browserPoll({ conversationId, conversationUrl }).command).toBeUndefined();
     expect(h.errors).toEqual([]);
