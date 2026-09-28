@@ -83,6 +83,7 @@ export function recordChatgptControllerRoundTabSettlement(
     relayScopeId: string;
     status: ChatgptControllerRoundSettlementStatus;
     error?: string;
+    attemptIdentity?: string;
   },
 ): void {
   recordChatgptControllerRoundSettlement(store, input);

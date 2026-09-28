@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 import { withControllerLock } from '../../src/cli/repositories/locks';
 import { readControlPlaneRecord, writeControlPlaneRecord } from '../../src/runtime/control-plane/persistence/sqlite-store';
 
@@ -21,10 +22,33 @@ export interface ChatgptControllerRoundSettlement {
   status: ChatgptControllerRoundSettlementStatus;
   recordedAt: string;
   error?: string;
+  /**
+   * Opaque identity of the browser resource and grants used for this settlement
+   * attempt. A matching failed attempt must not repeatedly call the provider.
+   */
+  attemptIdentity?: string;
 }
 
 function settlementKey(workId: string, relayScopeId: string): string {
   return `${workId}:${relayScopeId}`;
+}
+
+/**
+ * Keep browser-session and grant identifiers out of durable settlement evidence
+ * while preserving the exact retry boundary: a changed session or grant set may
+ * be retried, an unchanged failed attempt may not.
+ */
+export function chatgptControllerRoundSettlementAttemptIdentity(input: {
+  browserSessionId: string;
+  authorizationGrantRefs?: readonly string[];
+}): string {
+  const identity = {
+    browserSessionId: input.browserSessionId.trim(),
+    authorizationGrantRefs: [...new Set((input.authorizationGrantRefs ?? [])
+      .map((grantRef) => grantRef.trim())
+      .filter(Boolean))].sort(),
+  };
+  return `sha256:${createHash('sha256').update(JSON.stringify(identity)).digest('hex')}`;
 }
 
 export function getChatgptControllerRoundSettlement(
@@ -41,11 +65,24 @@ export function getChatgptControllerRoundSettlement(
 
 export function recordChatgptControllerRoundSettlement(
   options: { controllerHome: string; repoId: string; now?: () => string },
-  input: { workId: string; relayScopeId: string; status: ChatgptControllerRoundSettlementStatus; error?: string },
+  input: {
+    workId: string;
+    relayScopeId: string;
+    status: ChatgptControllerRoundSettlementStatus;
+    error?: string;
+    attemptIdentity?: string;
+  },
 ): ChatgptControllerRoundSettlement {
   const key = settlementKey(input.workId, input.relayScopeId);
   return withControllerLock(options.controllerHome, { scope: 'task', repoId: options.repoId, taskId: `chatgpt-round-settlement-${input.workId}` }, `chatgpt-round-settlement:${key}`, () => {
     const existing = readControlPlaneRecord<ChatgptControllerRoundSettlement>(options.controllerHome, NAMESPACE, options.repoId, key);
+    const error = input.error?.trim().slice(0, 2_000) || undefined;
+    const attemptIdentity = input.attemptIdentity?.trim().slice(0, 200) || undefined;
+    if (
+      existing?.value.status === input.status
+      && existing.value.error === error
+      && existing.value.attemptIdentity === attemptIdentity
+    ) return existing.value;
     const value: ChatgptControllerRoundSettlement = {
       schemaVersion: 1,
       repoId: options.repoId,
@@ -53,7 +90,8 @@ export function recordChatgptControllerRoundSettlement(
       relayScopeId: input.relayScopeId,
       status: input.status,
       recordedAt: options.now?.() ?? new Date().toISOString(),
-      ...(input.error?.trim() ? { error: input.error.trim().slice(0, 2_000) } : {}),
+      ...(error ? { error } : {}),
+      ...(attemptIdentity ? { attemptIdentity } : {}),
     };
     writeControlPlaneRecord(options.controllerHome, { namespace: NAMESPACE, scope: options.repoId, key, schemaVersion: 1, value, action: 'chatgpt_controller_round_settlement', expectedRevision: existing?.revision ?? null });
     return value;

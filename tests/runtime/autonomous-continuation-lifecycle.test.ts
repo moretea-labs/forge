@@ -585,6 +585,90 @@ describe('autonomous continuation lifecycle', () => {
     expect(calls).toEqual([]);
   });
 
+  test('periodic cleanup does not repeat an unchanged failed tab settlement, but retries after browser binding changes', async () => {
+    const root = temp('forge-autonomous-tab-failed-settlement-');
+    const controllerHome = join(root, 'controller');
+    const repoRoot = join(root, 'repo');
+    ensureControllerHome(controllerHome);
+    initRepo(repoRoot);
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'tab-failed-settlement' });
+    const store = { controllerHome, repoId: repository.repoId };
+    const workId = 'WORK-TAB-FAILED-SETTLEMENT';
+    createWorkContract(store, {
+      workId,
+      repoId: repository.repoId,
+      checkoutId: repository.activeCheckoutId,
+      objective: 'Avoid repeatedly calling a provider with unchanged failed browser settlement input.',
+      acceptanceCriteria: ['unchanged failed settlement is not retried', 'changed browser binding is retried'],
+      allowedPaths: [],
+      forbiddenPaths: [],
+      checks: [],
+      constraints: { requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt',
+      status: 'running',
+    });
+    const binding = bindChatgptWorkConversation(store, {
+      workId,
+      conversationUrl: 'https://chatgpt.com/c/failed-settlement',
+      latestBrowserSessionId: 'browser-failed-settlement-1',
+    });
+    const identity = {
+      controllerId: 'controller-failed-settlement',
+      controllerType: 'chatgpt' as const,
+      principalId: 'controller-failed-settlement',
+      controllerInstanceId: 'runtime-failed-settlement',
+      sessionId: 'session-failed-settlement',
+    };
+    const opened = beginInitialControllerRoundDispatch(store, { workId, identity, bindingId: binding.bindingId });
+    finishControllerRoundRelayDispatch(store, { workId, ok: true, bindingId: binding.bindingId });
+    const owner = claimControllerSession(store, { workId, ...identity, leaseMs: 60_000 });
+    acknowledgeControllerRoundClaim(store, { workId, session: owner });
+    submitControllerRoundDisposition(store, {
+      workId,
+      relayScopeId: opened.relayScopeId,
+      identity,
+      disposition: 'wait',
+      reason: 'Simulate a durable inactive round with an unauthorized browser close.',
+    });
+    releaseControllerSession(store, workId, owner.controllerId);
+
+    const calls: string[] = [];
+    const cleanupInput = {
+      controllerHome,
+      controllerPid: process.pid,
+      nowMs: 0,
+      cleanupIntervalMs: 60_000,
+      repositories: [repository],
+      runtimeCleanup: (() => ({ ok: true })) as any,
+      terminalWorkCleanup: (async () => ({ inspected: 0, cleaned: 0, blocked: [] })) as any,
+      processGc: (() => ({ ok: true })) as any,
+      settleBrowserTab: (async (input: { browserSessionId: string }) => {
+        calls.push(input.browserSessionId);
+        return {
+          status: 'failed' as const,
+          error: { message: 'EXTERNAL_EFFECT_AUTHORIZATION_REQUIRED' },
+        };
+      }) as any,
+    };
+
+    await runSchedulerPeriodicCleanup(cleanupInput);
+    await runSchedulerPeriodicCleanup(cleanupInput);
+    expect(calls).toEqual(['browser-failed-settlement-1']);
+    expect(getChatgptControllerRoundSettlement(store, {
+      workId,
+      relayScopeId: opened.relayScopeId,
+    })).toMatchObject({ status: 'failed', attemptIdentity: expect.stringMatching(/^sha256:/) });
+
+    rebindChatgptWorkConversation(store, {
+      workId,
+      previousConversationId: binding.conversationId,
+      conversationUrl: 'https://chatgpt.com/c/failed-settlement-rebound',
+      latestBrowserSessionId: 'browser-failed-settlement-2',
+    });
+    await runSchedulerPeriodicCleanup(cleanupInput);
+    expect(calls).toEqual(['browser-failed-settlement-1', 'browser-failed-settlement-2']);
+  });
+
   test('stalled ChatGPT Work recovery uses the exact Work continuation with durable bounded backoff', async () => {
     const root = temp('forge-autonomous-recovery-backoff-');
     const controllerHome = join(root, 'controller');

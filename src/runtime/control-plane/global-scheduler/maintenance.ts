@@ -26,7 +26,10 @@ import { runWorkChatgptContinuation, settleWorkChatgptAutomationTab } from '../l
 import { chatgptControllerBindingId, getChatgptWorkConversationBinding } from '../../../../adapters/chatgpt/work-conversation-binding-store';
 import { getChatgptControllerBindingPayload } from '../../../../adapters/chatgpt/controller-binding-store';
 import { getWorkContract, semanticWorkState } from '../../../../packages/kernel/work/api/index';
-import { getChatgptControllerRoundSettlement } from '../../../../adapters/chatgpt/controller-round-settlement-store';
+import {
+  chatgptControllerRoundSettlementAttemptIdentity,
+  getChatgptControllerRoundSettlement,
+} from '../../../../adapters/chatgpt/controller-round-settlement-store';
 import { recordChatgptControllerRoundTabSettlement, renderChatgptControllerRoundPrompt } from '../../root/controller-round-composition';
 import { ensureWorkflowSupervisorEnrollmentForWork, workflowSupervisorBoundaryForWork } from '../../root/workflow-supervisor-composition';
 import { classifySchedulerProviderFailure, ensureSchedulerProviderUserActionHandoff } from './autonomous-continuation';
@@ -197,6 +200,15 @@ export async function runSchedulerPeriodicCleanup(input: {
         if (existingSettlement && ['closed', 'preserved_user_owned', 'session_closed'].includes(existingSettlement.status)) continue;
         const binding = getChatgptWorkConversationBinding(store, relay.originWorkId);
         if (!binding?.latestBrowserSessionId) continue;
+        const attemptIdentity = chatgptControllerRoundSettlementAttemptIdentity({
+          browserSessionId: binding.latestBrowserSessionId,
+          authorizationGrantRefs: binding.authorizationGrantRefs,
+        });
+        // Failed close_page calls are commonly authorization failures. Retrying
+        // the same browser/grant tuple on every retention pass only creates
+        // provider traffic and audit churn; a changed resource or grant set is a
+        // distinct attempt and remains eligible for recovery.
+        if (existingSettlement?.status === 'failed' && existingSettlement.attemptIdentity === attemptIdentity) continue;
         const settlement = await (input.settleBrowserTab ?? settleWorkChatgptAutomationTab)({
           controllerHome: input.controllerHome,
           workId: relay.originWorkId,
@@ -208,6 +220,7 @@ export async function runSchedulerPeriodicCleanup(input: {
           relayScopeId: relay.relayScopeId,
           status: settlement.status,
           error: settlement.error?.message,
+          attemptIdentity,
         });
       }
     }
