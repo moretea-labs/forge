@@ -178,26 +178,17 @@ export async function safeLaunchdHandoff(
     portChecks: [],
   };
 
-  // Step 1: Bootout old service
+  // Step 1: Request bootout of the old service. launchctl is an effectful
+  // helper, so a non-zero/timeout result is not proof that the bootout did not
+  // happen. Reconcile the physical launchd state below before deciding whether
+  // this handoff may proceed.
   const target = `${options.domain}/${options.label}`;
   const bootoutResult = run(['bootout', target]);
   diagnostics.bootoutResult = bootoutResult;
 
-  const bootoutClean = bootoutResult.ok || isBootoutAlreadyGone(bootoutResult);
-  if (!bootoutClean) {
-    // Bootout failed with unexpected error — collect diagnostics but don't proceed
-    return {
-      bootstrapAttempts: 0,
-      bootoutClean: false,
-      pidWaitClean: true,
-      portWaitClean: true,
-      plistInstalled: false,
-      serviceRegistered: false,
-      diagnostics,
-    };
-  }
-
-  // Step 2: Wait for service to disappear from launchd
+  // Step 2: Reconcile the bootout effect by waiting for the exact service to
+  // disappear from launchd. This is authoritative even when the helper returned
+  // an error after dispatching the effect.
   const bootoutDeadline = Date.now() + maxBootoutWaitMs;
   let serviceGone = false;
   while (Date.now() < bootoutDeadline) {
@@ -478,9 +469,20 @@ export async function bootstrapLaunchAgentWithRetryV2(
     },
     dependencies,
   );
-  const diagnostics = result.diagnostics.bootstrapResults.map((entry, index) =>
+  const diagnostics: string[] = [];
+  const bootout = result.diagnostics.bootoutResult;
+  if (bootout && !bootout.ok && !isBootoutAlreadyGone(bootout)) {
+    diagnostics.push(`bootout: ${(bootout.stderr || bootout.stdout || `exit=${bootout.exitCode}`).trim()}`);
+    if (result.bootoutClean) diagnostics.push('bootout-reconciled: exact launchd service is absent despite helper failure');
+  }
+  if (!result.bootoutClean && result.diagnostics.serviceProbeResults.length > 0) {
+    diagnostics.push('bootout-reconcile: exact launchd service remained registered after bounded observation');
+  }
+  if (!result.pidWaitClean) diagnostics.push('bootout-reconcile: prior service PID remained live after bounded observation');
+  if (!result.portWaitClean) diagnostics.push('bootout-reconcile: prior service port remained occupied after bounded observation');
+  diagnostics.push(...result.diagnostics.bootstrapResults.map((entry, index) =>
     `bootstrap-${index + 1}: ${(entry.stderr || entry.stdout || `exit=${entry.exitCode}`).trim()}`,
-  );
+  ));
   return {
     ok: result.bootoutClean && result.pidWaitClean && result.portWaitClean && result.serviceRegistered,
     attempts: result.bootstrapAttempts,

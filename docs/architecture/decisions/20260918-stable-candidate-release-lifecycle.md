@@ -126,6 +126,12 @@ rollback authority commit but before the ReleaseSession phase write,
 reconciliation requires the exact `release-session-rollback:<sessionId>:`
 authority operation plus matching Stable A, candidate and transaction identities;
 it then records `rolled_back` without replaying the rollback effect.
+Physical service handoff follows the same effect rule: a launchd/systemd helper
+error or timeout is not itself authority that the requested stop/start failed.
+Recovery performs bounded observation of the exact service identity and may
+continue the same fenced transaction only when the physical effect is proven;
+otherwise that transaction fails. It never replays a cutover merely because a
+helper response was lost.
 Automatic source reconciliation is also revision-bounded: once an immutable
 source revision has any terminal ReleaseSession, the daemon will not create a
 second automatic ReleaseSession for that same revision. Explicit human release
