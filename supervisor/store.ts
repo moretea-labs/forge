@@ -258,6 +258,12 @@ export class WorkflowSupervisorStore {
   getEffect(effectId: string): WorkflowSupervisorEffect | undefined { return this.read((db) => { const row = statement(db, 'SELECT * FROM effects WHERE effect_id = ?', (s) => s.get(effectId)); return row ? effectFromRow(row as Record<string, unknown>) : undefined; }); }
   getEffectByOriginKey(originKey: string): WorkflowSupervisorEffect | undefined { return this.read((db) => { const row = statement(db, 'SELECT * FROM effects WHERE origin_key = ?', (s) => s.get(originKey)); return row ? effectFromRow(row as Record<string, unknown>) : undefined; }); }
   getCompletion(completionFingerprint: string): WorkflowSupervisorCompletion | undefined { return this.read((db) => { const row = statement(db, 'SELECT * FROM completions WHERE completion_fingerprint = ?', (s) => s.get(completionFingerprint)); return row ? completionFromRow(row as Record<string, unknown>) : undefined; }); }
+  getCompletionBySourceEffectId(taskId: string, sourceEffectId: string): WorkflowSupervisorCompletion | undefined {
+    return this.read((db) => {
+      const row = statement(db, 'SELECT * FROM completions WHERE task_id = ? AND source_effect_id = ? LIMIT 1', (s) => s.get(taskId, sourceEffectId)) as Record<string, unknown> | undefined;
+      return row ? completionFromRow(row) : undefined;
+    });
+  }
   listContinueCompletionsAwaitingSuccessor(limit = 16): WorkflowSupervisorCompletion[] {
     const boundedLimit = Math.max(1, Math.min(Math.trunc(limit), 128));
     return this.read((db) => statement(db, `SELECT c.* FROM completions c

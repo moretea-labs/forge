@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { WorkflowSupervisorControlPlane } from '../../supervisor/control-plane';
-import { defaultDispatchPrompt, defaultSnapshot, WorkflowSupervisorNativeBrowserAdapter, type WorkflowSupervisorNativeBrowserDependencies, type WorkflowSupervisorNativePage } from '../../supervisor/native-browser-adapter';
+import { defaultClearComposer, defaultDispatchPrompt, defaultSnapshot, WorkflowSupervisorNativeBrowserAdapter, type WorkflowSupervisorNativeBrowserDependencies, type WorkflowSupervisorNativePage } from '../../supervisor/native-browser-adapter';
 import { renderSupervisorReceipt, SUPERVISOR_BLOCK_END, SUPERVISOR_BLOCK_START } from '../../supervisor/protocol';
 import { WorkflowSupervisorEphemeralDiscovery } from '../../supervisor/server';
 import { WorkflowSupervisorStore } from '../../supervisor/store';
@@ -32,6 +32,7 @@ function harness(
   dispatchedUserSuffix = '',
   pageTextOnly = false,
   overrides: Partial<WorkflowSupervisorNativeBrowserDependencies> = {},
+  preSubmitFailureAttempt = 1,
 ) {
   const settlements: string[] = [];
   const control = new WorkflowSupervisorControlPlane(new WorkflowSupervisorStore(home()), {
@@ -66,10 +67,16 @@ function harness(
       if (value.closed) throw new Error('fake transport closed');
       return { url: value.url, title: value.title, latestUserText: value.latestUserText, composerText: value.composerText, pageText: value.pageText, latestAssistantResponse: value.latestAssistantResponse, providerActivityText: value.providerActivityText, providerFailureText: value.providerFailureText, latestTurnRole: value.latestTurnRole, isGenerating: value.isGenerating };
     },
+    clearComposer: async (page, expectedStalePrompt) => {
+      const value = page as FakePage;
+      if (value.composerText.replace(/\\s+/g, ' ').trim() !== expectedStalePrompt.replace(/\\s+/g, ' ').trim()) return false;
+      value.composerText = '';
+      return true;
+    },
     dispatchPrompt: async (page, prompt) => {
       dispatchAttempts += 1;
       dispatchedPrompts.push(prompt);
-      if (preSubmitFailureReason && dispatchAttempts === 1) return { dispatched: false, reason: preSubmitFailureReason };
+      if (preSubmitFailureReason && dispatchAttempts === preSubmitFailureAttempt) return { dispatched: false, reason: preSubmitFailureReason };
       if (!providerConfirmed) {
         if (pageTextOnly) (page as FakePage).pageText = `${prompt}${dispatchedUserSuffix}`;
         else {
@@ -129,6 +136,21 @@ describe('Workflow Supervisor macOS native browser adapter', () => {
     expect(expression).toContain('button[aria-label="发送"]');
     expect(expression).toContain('sendButton.click()');
     expect(expression).not.toContain('Enter');
+  });
+
+  test('clears only an exact expected stale composer payload at mutation time', async () => {
+    let expression = '';
+    const page: WorkflowSupervisorNativePage = {
+      tabRef: () => ({ windowId: 'background-window', tabId: 'background-tab' }),
+      evaluate: async <T>(source: string | ((...args: unknown[]) => unknown)) => {
+        expression = String(source);
+        return true as T;
+      },
+      waitForSelector: async () => ({ attached: true, visible: true }),
+    };
+    await expect(defaultClearComposer(page, 'stale forge payload')).resolves.toBe(true);
+    expect(expression).toContain("document.execCommand('delete')");
+    expect(expression).toContain('normalizeValue(value(composer)) !== normalizeValue(expected)');
   });
 
   test('propagates exact background DOM refusal without falling back to physical input', async () => {
@@ -703,6 +725,53 @@ describe('Workflow Supervisor macOS native browser adapter', () => {
     expect(new Set(effectIds.filter(Boolean)).size).toBe(2);
     expect(h.control.browserTasks()).toHaveLength(1);
     expect(h.errors).toEqual([]);
+  });
+
+  test('clears a completed causal predecessor prompt from the composer and retries the current effect exactly once', async () => {
+    const conversationId = '89898989-6767-4545-2323-010101010101';
+    const h = harness([], '', false, 'composer_not_empty', '', false, {}, 2);
+    const { taskId, effect } = register(h.control, conversationId);
+    await h.adapter.runOnce();
+    const page = h.pages.find((candidate) => candidate.ref.tabId === 'forge-tab-1')!;
+    page.latestAssistantResponse = renderSupervisorReceipt(h.control.store.getTask(taskId)!, effect.effectId, 'CONTINUE');
+    page.latestTurnRole = 'assistant';
+    page.providerActivityText = page.latestAssistantResponse;
+    page.composerText = effect.prompt;
+
+    await h.adapter.runOnce();
+    const successor = h.control.store.getEffectByOriginKey(`completion:${h.control.store.getCompletionBySourceEffectId(taskId, effect.effectId)!.completionFingerprint}`)!;
+    expect(h.dispatchAttempts()).toBe(2);
+    expect(h.control.store.latestEffectDispatch(successor.effectId)?.generation).toBe(1);
+    expect(page.composerText).toBe(effect.prompt);
+
+    await h.adapter.runOnce();
+    expect(page.composerText).toBe('');
+    expect(h.control.store.nextBrowserEffect(taskId)?.mode).toBe('send');
+    expect(h.control.store.nextBrowserEffect(taskId)?.generation).toBe(2);
+
+    await h.adapter.runOnce();
+    expect(h.dispatchAttempts()).toBe(3);
+    expect(page.latestUserText).toContain(successor.effectId);
+    expect(h.control.store.effectApplied(successor.effectId)).toBe(true);
+    expect(h.errors).toEqual([]);
+  });
+
+  test('never clears an arbitrary user draft while reconciling a pending successor effect', async () => {
+    const conversationId = '78787878-5656-3434-1212-909090909090';
+    const h = harness([], '', false, 'composer_not_empty', '', false, {}, 2);
+    const { taskId, effect } = register(h.control, conversationId);
+    await h.adapter.runOnce();
+    const page = h.pages.find((candidate) => candidate.ref.tabId === 'forge-tab-1')!;
+    page.latestAssistantResponse = renderSupervisorReceipt(h.control.store.getTask(taskId)!, effect.effectId, 'CONTINUE');
+    page.latestTurnRole = 'assistant';
+    page.providerActivityText = page.latestAssistantResponse;
+    page.composerText = 'my unsent user draft';
+
+    await h.adapter.runOnce();
+    await h.adapter.runOnce();
+    expect(page.composerText).toBe('my unsent user draft');
+    expect(h.dispatchAttempts()).toBe(2);
+    expect(h.control.store.nextBrowserEffect(taskId)?.mode).toBe('reconcile');
   });
 
   test('observes a committed CONTINUE response and dispatches the successor effect in the same loop', async () => {

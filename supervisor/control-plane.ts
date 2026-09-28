@@ -182,6 +182,31 @@ export class WorkflowSupervisorControlPlane {
   }
 
   /**
+   * Prove that a non-empty composer contains only the exact completed causal
+   * predecessor prompt for the current effect. This is intentionally much
+   * narrower than "looks like a Forge prompt": arbitrary drafts, another task's
+   * prompt, an incomplete effect, or a modified stale prompt are never clearable.
+   */
+  browserStaleComposerPayload(input: {
+    conversationId: string;
+    conversationUrl: string;
+    currentEffectId: string;
+    composerText: string;
+  }): { stale: false } | { stale: true; effectId: string; prompt: string } {
+    const task = this.requireBrowserTask(input.conversationId, input.conversationUrl);
+    const currentEffect = this.store.getEffect(validateEffectId(input.currentEffectId));
+    if (!currentEffect || currentEffect.taskId !== task.taskId || !currentEffect.sourceCompletionFingerprint) return { stale: false };
+    const sourceCompletion = this.store.getCompletion(currentEffect.sourceCompletionFingerprint);
+    if (!sourceCompletion || sourceCompletion.taskId !== task.taskId || sourceCompletion.sourceEffectId === currentEffect.effectId) return { stale: false };
+    const predecessor = this.store.getEffect(sourceCompletion.sourceEffectId);
+    if (!predecessor || predecessor.taskId !== task.taskId || !this.store.effectApplied(predecessor.effectId)) return { stale: false };
+    const durableCompletion = this.store.getCompletionBySourceEffectId(task.taskId, predecessor.effectId);
+    if (!durableCompletion || durableCompletion.completionFingerprint !== sourceCompletion.completionFingerprint) return { stale: false };
+    if (normalizeBrowserText(input.composerText) !== normalizeBrowserText(predecessor.prompt)) return { stale: false };
+    return { stale: true, effectId: predecessor.effectId, prompt: predecessor.prompt };
+  }
+
+  /**
    * Repair the crash boundary where a CONTINUE completion was durably committed
    * before lower-layer settlement and successor reservation finished. This never
    * replays the provider response; it only settles existing durable evidence and

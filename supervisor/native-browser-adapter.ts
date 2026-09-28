@@ -60,6 +60,7 @@ export interface WorkflowSupervisorNativeBrowserDependencies {
   readOwner(page: WorkflowSupervisorNativePage): Promise<string>;
   writeOwner(page: WorkflowSupervisorNativePage, marker: string): Promise<void>;
   snapshot(page: WorkflowSupervisorNativePage, options?: WorkflowSupervisorNativeSnapshotOptions): Promise<WorkflowSupervisorNativeSnapshot>;
+  clearComposer(page: WorkflowSupervisorNativePage, expectedStalePrompt: string): Promise<boolean>;
   dispatchPrompt(page: WorkflowSupervisorNativePage, prompt: string, task: WorkflowSupervisorBrowserTask, options?: { mode?: 'send' | 'resume' }): Promise<{ dispatched: boolean; confirmed?: boolean; reason?: string }>;
   nowMs(): number;
   providerIdleGraceMs: number;
@@ -203,6 +204,40 @@ export async function defaultSnapshot(page: WorkflowSupervisorNativePage, option
     return snapshot;
   })()`);
 }
+export async function defaultClearComposer(page: WorkflowSupervisorNativePage, expectedStalePrompt: string): Promise<boolean> {
+  return await page.evaluate<boolean>(`(() => {
+    const visible = (element) => Boolean(element && element.getClientRects && element.getClientRects().length);
+    const value = (element) => String((element?.innerText ?? element?.textContent ?? '') || '');
+    const normalizeValue = (input) => String(input || '').replace(/\\s+/g, ' ').trim();
+    const expected = ${JSON.stringify(expectedStalePrompt)};
+    const composer = [
+      'div#prompt-textarea[contenteditable="true"]',
+      '#prompt-textarea[contenteditable="true"]',
+      '[data-testid="composer-text-input"][contenteditable="true"]',
+      'div[role="textbox"][contenteditable="true"]',
+    ].map((selector) => document.querySelector(selector)).find(visible);
+    if (!(composer instanceof HTMLElement) || !composer.isContentEditable) return false;
+    // Re-check the entire durable predecessor prompt at mutation time. If the
+    // user edited even one character after the snapshot, fail closed.
+    if (normalizeValue(value(composer)) !== normalizeValue(expected)) return false;
+    composer.focus({ preventScroll: true });
+    const selection = window.getSelection();
+    if (!selection) return false;
+    const range = document.createRange();
+    range.selectNodeContents(composer);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    const deleted = document.execCommand('delete');
+    if (!deleted && normalizeValue(value(composer))) {
+      range.deleteContents();
+      try { composer.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'deleteContentBackward', data: null })); }
+      catch { composer.dispatchEvent(new Event('input', { bubbles: true })); }
+    }
+    selection.removeAllRanges();
+    return !normalizeValue(value(composer));
+  })()`);
+}
+
 export async function defaultDispatchPrompt(
   page: WorkflowSupervisorNativePage,
   prompt: string,
@@ -314,6 +349,7 @@ const DEFAULT_DEPENDENCIES: WorkflowSupervisorNativeBrowserDependencies = {
   readOwner: async (page) => await page.evaluate<string>('String(window.name || "")'),
   writeOwner: async (page, marker) => { await page.evaluate(`(() => { window.name = ${JSON.stringify(marker)}; return window.name; })()`); },
   snapshot: defaultSnapshot,
+  clearComposer: defaultClearComposer,
   dispatchPrompt: async (page, prompt, _task, options) => await defaultDispatchPrompt(page, prompt, options),
   nowMs: () => Date.now(),
   providerIdleGraceMs: 60_000,
@@ -754,7 +790,25 @@ export class WorkflowSupervisorNativeBrowserAdapter {
           return;
         }
       } else {
-        const composerProvablyEmpty = composerPresent && !composerValue;
+        let composerProvablyEmpty = composerPresent && !composerValue;
+        let reconciliationReason = composerProvablyEmpty ? 'composer_proven_empty' : composerPresent ? 'composer_payload_mismatch' : 'composer_state_unavailable';
+        if (composerPresent && composerValue) {
+          const stale = this.control.browserStaleComposerPayload({
+            conversationId: command.conversationId,
+            conversationUrl: command.conversationUrl,
+            currentEffectId: command.effectId,
+            composerText: snapshot.composerText ?? '',
+          });
+          if (stale.stale && await this.deps.clearComposer(page, stale.prompt)) {
+            const afterClear = await this.deps.snapshot(page, { includeUserHistory: true, includePageText: true });
+            const afterClearValue = normalize(afterClear.composerText ?? '');
+            if (afterClear.composerText !== undefined && !afterClearValue) {
+              snapshot = afterClear;
+              composerProvablyEmpty = true;
+              reconciliationReason = 'stale_completed_supervisor_composer_cleared';
+            }
+          }
+        }
         this.control.browserObserveEffect({
           conversationId: command.conversationId,
           conversationUrl: command.conversationUrl,
@@ -766,7 +820,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
             exact_user_message: false,
             reconciliation: true,
             target_marker_present: false,
-            reason: composerProvablyEmpty ? 'composer_proven_empty' : composerPresent ? 'composer_payload_mismatch' : 'composer_state_unavailable',
+            reason: reconciliationReason,
             latest_user_text: snapshot.latestUserText,
             latest_assistant_response: snapshot.latestAssistantResponse,
           },
