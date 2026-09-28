@@ -3,13 +3,17 @@ import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
+  acknowledgeControllerRoundClaim,
+  beginInitialControllerRoundDispatch,
   bindControllerSessionBinding,
   claimControllerSession,
+  finishControllerRoundRelayDispatch,
   getControllerRoundRelay,
   getRequirementControllerRoundRelay,
   prepareControllerRoundOccurrence,
   reconcileControllerRoundAfterTerminalWork,
   releaseControllerSession,
+  submitControllerRoundDisposition,
   type ControllerHost,
 } from '../../packages/kernel/controller/api/index';
 import { cancelWorkContract, createWorkContract } from '../../packages/kernel/work/api/index';
@@ -375,6 +379,83 @@ describe('autonomous Work liveness reconciliation', () => {
       originWorkId: 'WORK-LIVE-RELAY',
       status: 'dispatching',
       relayScopeId: 'requirement:REQ-RELAY-AUTHORITY',
+    });
+  });
+
+  test('does not retry a ControllerRound that already exhausted its round budget', async () => {
+    const controllerHome = home();
+    const workId = 'WORK-ROUND-BUDGET-EXHAUSTED';
+    const store = { controllerHome, repoId: 'repo-a' };
+    createRunningWork(controllerHome, { workId });
+    bindReleasedChatgptController(controllerHome, workId);
+
+    const identity = {
+      controllerId: 'controller-a',
+      controllerType: 'chatgpt' as const,
+      principalId: 'controller-a',
+      controllerInstanceId: 'runtime-a',
+    };
+    const first = beginInitialControllerRoundDispatch(store, {
+      workId,
+      identity: { ...identity, sessionId: `session-${workId}` },
+      maxRounds: 1,
+      maxRepeatedState: 8,
+    });
+    finishControllerRoundRelayDispatch(store, { workId, ok: true });
+    const session = claimControllerSession(store, {
+      workId,
+      ...identity,
+      sessionId: `session-${workId}`,
+      leaseMs: 60_000,
+    });
+    acknowledgeControllerRoundClaim(store, { workId, session });
+    const blocked = submitControllerRoundDisposition(store, {
+      workId,
+      relayScopeId: first.relayScopeId,
+      identity: { ...identity, sessionId: session.sessionId },
+      disposition: 'continue_immediately',
+    });
+    releaseControllerSession(store, workId, identity.controllerId);
+    expect(blocked).toMatchObject({
+      status: 'blocked',
+      roundCount: 2,
+      maxRounds: 1,
+      blockedReason: 'round_budget_exhausted:2>1',
+    });
+
+    let providerDispatches = 0;
+    let wakeAuthorizations = 0;
+    const input = {
+      controllerHome,
+      nowMs: Date.parse('2026-09-28T09:00:00.000Z'),
+      repositories: [{ repoId: 'repo-a', canonicalRoot: controllerHome, localRoot: controllerHome }],
+      dependencies: {
+        ...dependencies({
+          resume: async () => {
+            providerDispatches += 1;
+            return { accepted: true };
+          },
+        }),
+        authorizeWake: () => { wakeAuthorizations += 1; },
+      },
+    };
+
+    const firstReconciliation = await runSchedulerAutonomousContinuationReconciliation(input);
+    const secondReconciliation = await runSchedulerAutonomousContinuationReconciliation({
+      ...input,
+      nowMs: input.nowMs + 60_000,
+    });
+
+    expect(firstReconciliation).toMatchObject({ eligible: 0, dispatched: 0, failed: 0 });
+    expect(secondReconciliation).toMatchObject({ eligible: 0, dispatched: 0, failed: 0 });
+    expect(firstReconciliation.skippedByReason.controller_round_blocked).toBe(1);
+    expect(secondReconciliation.skippedByReason.controller_round_blocked).toBe(1);
+    expect(providerDispatches).toBe(0);
+    expect(wakeAuthorizations).toBe(0);
+    expect(getControllerRoundRelay(store, workId)).toMatchObject({
+      status: 'blocked',
+      roundCount: 2,
+      blockedReason: 'round_budget_exhausted:2>1',
     });
   });
 

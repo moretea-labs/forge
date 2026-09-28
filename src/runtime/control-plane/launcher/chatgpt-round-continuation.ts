@@ -20,7 +20,7 @@ import { runWorkChatgptContinuation, type WorkChatgptContinuationResult } from '
 import { getRepository } from '../../../cli/repositories/registry';
 
 export const SOURCE_ROUND_CONTINUATION_INSTRUCTION =
-  '当前为 Forge V2 源码自动续跑模式。不要用已安装旧 Runtime 直接结束本轮，因为旧 Runtime 可能只建立 Work owner 而未 reconciliation provider_dispatch_outcome_unknown。若 Goal 尚未完成且无真实 blocker，必须使用 prompt 提供的 exact current-source round-continue invocation；若本轮应 wait、wait_for_user 或 goal_complete，则必须使用 current-source round-close，它只做 canonical claim acknowledgement、semantic disposition 和 release，绝不派发 successor。不得重新探测 Controller Home、repo/work identity、controller authority 或 relay scope。';
+  '当前为 Forge V2 源码自动续跑模式。不要用已安装旧 Runtime 直接结束本轮，因为旧 Runtime 可能只建立 Work owner 而未 reconciliation provider_dispatch_outcome_unknown。ChatGPT 自己决定 Goal 是否完成，以及验证现在执行还是留待后续交付边界；Forge 不从 Supervisor/transport 状态推断完成，也不把测试作为关闭 Work 的前置条件。决定完成时，先用 rh_work work_get 取得 Work semantic revision，再用 rh_work work_complete 显式完成同一 Work，最后使用 current-source round-close --disposition goal_complete 停止本轮；终态资源 cleanup 由 Forge 的既有 reconciler 依据该决定处理。若 Goal 尚未完成且无真实 blocker，必须使用 prompt 提供的 exact current-source round-continue invocation；若本轮应 wait 或 wait_for_user，则必须使用 current-source round-close，它只做 canonical claim acknowledgement、semantic disposition 和 release，绝不派发 successor。不得重新探测 Controller Home、repo/work identity、controller authority 或 relay scope。';
 
 function sourceCheckoutId(controllerHome: string, repoId: string, repoRoot: string): string {
   const repository = getRepository(repoId, controllerHome);

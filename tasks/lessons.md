@@ -10,6 +10,13 @@
 - Prevention rule:
 - Where to apply next time:
 
+## The Controller owns semantic completion and verification timing
+- Date: 2026-09-28
+- Triggered by correction: User clarified that ChatGPT, not Forge, must decide whether the objective is complete and whether verification should run now or be deferred to a later delivery boundary.
+- Mistake pattern: Letting Forge infer semantic completion from transport/supervisor activity or treating test/verification as an unconditional precondition for terminal cleanup; responding by adding another finalization state or workflow layer.
+- Prevention rule: Reuse the existing ControllerRound `goal_complete` / `wait` / `wait_for_user` dispositions and the canonical Work semantic completion transition. ChatGPT explicitly chooses continuation, completion, user handoff, verification timing, and resource disposition. Forge records and executes only the mechanical consequences of that decision. It may enforce resource-safety facts before destructive cleanup (for example, dirty bytes, an in-use branch, or unpreserved commits), but it must not prescribe or silently run product verification. Scheduler/Supervisor continuation is liveness/retry machinery, never evidence that a Work is complete. Do not introduce an additional completion/finalization state when the existing Work and ControllerRound contracts can carry the decision.
+- Where to apply next time: ControllerRound disposition handling, GoalWorkloop/Work semantic APIs, Workflow Supervisor prompts and settlement, Work terminal cleanup receipts, scheduler reconciliation, MCP/ChatGPT controller contracts, and architecture reviews of any new execution state.
+
 ## Command facade skills must register standalone, not only the umbrella
 - Date: 2026-06-18
 - Triggered by correction: User reported only the umbrella `repo-harness` skill was discoverable in Claude Code; the 19 `assets/skill-commands/repo-harness-*` facades were invisible.

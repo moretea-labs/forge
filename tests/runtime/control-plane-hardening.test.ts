@@ -1046,6 +1046,10 @@ describe('scheduled external Controller wake', () => {
     expect(dispatchedPrompt).toContain(`request_id=${JSON.stringify(`source-round-continue:${dispatchedAuthority}`)}`);
     expect(dispatchedPrompt).toContain('round-close');
     expect(dispatchedPrompt).toContain(`request_id=${JSON.stringify(`source-round-close:wait:${dispatchedAuthority}`)}`);
+    expect(dispatchedPrompt).toContain('ChatGPT 自己决定 Goal 是否完成，以及验证现在执行还是留待后续交付边界');
+    expect(dispatchedPrompt).toContain('Forge 不从 Supervisor/transport 状态推断完成，也不把测试作为关闭 Work 的前置条件');
+    expect(dispatchedPrompt).toContain('先用 rh_work work_get 取得 Work semantic revision，再用 rh_work work_complete 显式完成同一 Work');
+    expect(dispatchedPrompt).toContain('round-close --disposition goal_complete');
     expect(dispatchedPrompt).toContain('sole repository_command_execute exception');
     expect(dispatchedPrompt).toContain('do not pass wrapper work_id');
     expect(dispatchedPrompt).toContain(JSON.stringify(controllerHome));
