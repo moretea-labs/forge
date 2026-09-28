@@ -260,6 +260,25 @@ describe('Workflow Supervisor macOS native browser adapter', () => {
   // opening a duplicate tab. Adoption is a fallback: when this Supervisor still
   // owns an exact tab, that owned attachment always wins (see the recovery test
   // below), so a live owned tab is never displaced by a user tab.
+  test('transfers exact Controller Browser plugin-owned tabs instead of opening duplicate conversation tabs', async () => {
+    const conversationId = '01111111-2222-3333-4444-555555555555';
+    const url = `https://chatgpt.com/c/${conversationId}`;
+    const first = new FakePage({ windowId: 'forge-window', tabId: 'controller-tab-1' }, url);
+    const duplicate = new FakePage({ windowId: 'forge-window', tabId: 'controller-tab-2' }, url);
+    first.owner = 'forge-browser-owned:controller-session-a';
+    duplicate.owner = 'forge-browser-owned:controller-session-b';
+    const h = harness([first, duplicate]); const { effect } = register(h.control, conversationId);
+
+    await h.adapter.runOnce();
+
+    expect(h.created()).toBe(0);
+    expect(first.owner).toBe(`forge-workflow-supervisor:created:${conversationId}`);
+    expect(first.latestUserText).toBe(effect.prompt);
+    expect(duplicate.closed).toBe(true);
+    expect(h.control.browserPoll({ conversationId, conversationUrl: url }).command).toBeUndefined();
+    expect(h.errors).toEqual([]);
+  });
+
   test('adopts an unowned exact conversation tab instead of opening a duplicate browser tab', async () => {
     const conversationId = '11111111-2222-3333-4444-555555555555';
     const url = `https://chatgpt.com/c/${conversationId}`;

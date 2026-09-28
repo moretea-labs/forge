@@ -18,6 +18,7 @@ import type { WorkflowSupervisorEphemeralDiscovery } from './server';
 import type { WorkflowSupervisorBrowserCommand, WorkflowSupervisorBrowserTask } from './types';
 
 const OWNER_PREFIX = 'forge-workflow-supervisor:';
+const LEGACY_BROWSER_PLUGIN_OWNER_PREFIX = 'forge-browser-owned:';
 const DEFAULT_INTERVAL_MS = 1_000;
 const IDLE_INTERVAL_MS = 5_000;
 const DEFAULT_TIMEOUT_MS = 10_000;
@@ -587,6 +588,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     }
     const inventory = await this.listInventory();
     const matches: Array<{ page: WorkflowSupervisorNativePage; ref: TaggedBrowserTabRef; ownership: WorkflowSupervisorTabOwnership }> = [];
+    const transferablePluginOwned: Array<{ page: WorkflowSupervisorNativePage; ref: TaggedBrowserTabRef }> = [];
     const adoptable: Array<{ page: WorkflowSupervisorNativePage; ref: TaggedBrowserTabRef }> = [];
     let exactCandidateInspectionFailed = false;
     for (const candidate of inventory.entries.filter((entry) => exactConversation(entry.url, task))) {
@@ -601,6 +603,14 @@ export class WorkflowSupervisorNativeBrowserAdapter {
         const ownership = ownerMarkerOwnership(owner, task.conversationId);
         if (ownership) {
           matches.push({ page, ref, ownership });
+        } else if (owner?.trim().startsWith(LEGACY_BROWSER_PLUGIN_OWNER_PREFIX)) {
+          // The initial Controller Browser transport owns its native tab with a
+          // forge-browser-owned:* window.name token. Once the exact conversation
+          // is enrolled under Workflow Supervisor, that Forge-owned transport
+          // resource must be transferred instead of opening a second exact tab.
+          // Exact conversation identity is the handoff fence; user-owned tabs do
+          // not carry this Forge plugin owner token.
+          transferablePluginOwned.push({ page, ref });
         } else if (!owner?.trim()) {
           // A user can close and reopen the exact durable conversation. Its
           // browser attachment is ephemeral, so an unowned exact tab may be
@@ -609,6 +619,20 @@ export class WorkflowSupervisorNativeBrowserAdapter {
           // whole inventory is inspected so a live owned tab is never displaced
           // (and closed) in favour of a tab the user is working in.
           adoptable.push({ page, ref });
+        }
+      } catch { exactCandidateInspectionFailed = true; }
+    }
+    if (matches.length === 0 && transferablePluginOwned.length > 0) {
+      const transferredMarker = ownerMarker(task.conversationId, 'created');
+      const [selected, ...duplicates] = transferablePluginOwned;
+      try {
+        await this.deps.writeOwner(selected!.page, transferredMarker);
+        if (await this.deps.readOwner(selected!.page) === transferredMarker) {
+          matches.push({ ...selected!, ownership: 'created' });
+          for (const duplicate of duplicates) {
+            await this.deps.close(duplicate.ref).catch(() => undefined);
+            this.invalidateInventory();
+          }
         }
       } catch { exactCandidateInspectionFailed = true; }
     }

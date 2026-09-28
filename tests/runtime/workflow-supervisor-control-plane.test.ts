@@ -4,7 +4,7 @@ import { execFileSync } from 'child_process';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
+import { ensureControllerHome, SEMANTIC_SCOPE_KEY } from '../../src/cli/repositories/controller-home';
 import { registerRepository } from '../../src/cli/repositories/registry';
 import { acknowledgeControllerRoundClaim, beginInitialControllerRoundDispatch, claimStalledControllerRoundRelays, controllerRoundProviderEffectId, finishControllerRoundRelayDispatch, getRequirementControllerRoundRelay, recoverControllerRoundRelayAuthority, submitControllerRoundDisposition } from '../../packages/kernel/controller/api/index';
 import { createWorkContract, reviseWorkSemanticContext } from '../../packages/kernel/work/api/index';
@@ -927,7 +927,7 @@ test('reconciles a late applied Supervisor effect into the same outcome-unknown 
     title: 'Late provider confirmation',
     outcomeStatement: 'Reconcile exact applied provider evidence into the original ControllerRound.',
   });
-  createWorkContract(fx.store, {
+  createWorkContract({ controllerHome: fx.controllerHome, scopeKey: SEMANTIC_SCOPE_KEY }, {
     workId, repoId: fx.repository.repoId, checkoutId: fx.repository.activeCheckoutId, requirementId, objective: 'Prove an outcome-unknown provider dispatch converges when the same external effect is later observed applied.',
     acceptanceCriteria: ['same effect and authority become dispatched without replay'], allowedPaths: [], forbiddenPaths: [], checks: [],
     constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'running',
@@ -950,12 +950,7 @@ test('reconciles a late applied Supervisor effect into the same outcome-unknown 
   });
   const effect = control.reserveEnrollment(taskId, providerDispatchEffectId);
   expect(effect.effectId).toBe(providerDispatchEffectId);
-  const began = control.browserBeginEffect({
-    conversationId, conversationUrl, effectId: providerDispatchEffectId,
-    dispatchId: 'dispatch-late-provider-confirmation', dispatchGeneration: 1,
-    evidence: { surface: 'test', latest_user_text: 'before late confirmation', latest_assistant_response: '' },
-  });
-  expect(began).toEqual({ started: true, mode: 'send', generation: 1 });
+  expect(supervisorStore.latestEffectDispatch(providerDispatchEffectId)).toBeUndefined();
 
   const blocked = finishControllerRoundRelayDispatch(fx.store, {
     workId, ok: false, outcomeUnknown: true, providerDispatchEffectId,
@@ -967,6 +962,13 @@ test('reconciles a late applied Supervisor effect into the same outcome-unknown 
     providerDispatchEffectId,
     authorityId: initial.authorityId,
   });
+  expect(workflowSupervisorLowerLayerReadyForWork(fx.store, workId)).toEqual({
+    ready: true,
+    workId,
+    providerEffectId: providerDispatchEffectId,
+  });
+  const reenrolled = control.reserveEnrollment(taskId, providerDispatchEffectId);
+  expect(reenrolled.effectId).toBe(providerDispatchEffectId);
   expect(control.browserTasks()).toEqual([
     expect.objectContaining({ taskId, conversationId, conversationUrl }),
   ]);
@@ -975,7 +977,13 @@ test('reconciles a late applied Supervisor effect into the same outcome-unknown 
     effectId: providerDispatchEffectId,
     dispatchGeneration: 1,
   });
-  expect(supervisorStore.latestEffectDispatch(providerDispatchEffectId)?.generation).toBe(1);
+  expect(supervisorStore.latestEffectDispatch(providerDispatchEffectId)).toMatchObject({
+    generation: 1,
+    evidence: {
+      inherited_provider_dispatch: true,
+      surface: 'controller_round_reconciliation',
+    },
+  });
 
   control.browserObserveEffect({
     conversationId, conversationUrl, effectId: providerDispatchEffectId,

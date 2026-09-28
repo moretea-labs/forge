@@ -93,6 +93,11 @@ export interface WorkflowSupervisorLifecycleHooks {
   browserTaskActive?(task: WorkflowSupervisorTask): boolean;
   /** Mechanical provenance attached to outbound effect dispatch evidence. */
   effectDispatchEvidence?(): Record<string, unknown>;
+  /** Existing lower-layer evidence that this exact reserved effect may already have been dispatched outside Supervisor. */
+  inheritedEffectDispatch?(
+    task: WorkflowSupervisorTask,
+    effect: WorkflowSupervisorEffect,
+  ): { generation: number; dispatchId: string; evidence: Record<string, unknown> } | undefined;
   /** Idempotent: browser delivery observation may replay the same applied effect. */
   effectApplied?(
     task: WorkflowSupervisorTask,

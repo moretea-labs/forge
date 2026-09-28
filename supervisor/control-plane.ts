@@ -31,19 +31,32 @@ export class WorkflowSupervisorControlPlane {
     // conversation task must keep one enrollment effect. Reuse by origin before
     // considering a newer lower-layer canonical effect id.
     const existingForOrigin = this.store.getEffectByOriginKey(originKey);
+    let effect: WorkflowSupervisorEffect;
     if (existingForOrigin) {
       if (existingForOrigin.taskId !== taskId) throw new Error(`WORKFLOW_SUPERVISOR_EFFECT_TASK_CONFLICT:${originKey}`);
       if (existingForOrigin.kind !== 'enrollment') throw new Error(`WORKFLOW_SUPERVISOR_EFFECT_KIND_CONFLICT:${originKey}`);
-      return existingForOrigin;
+      effect = existingForOrigin;
+    } else {
+      const id = canonicalEffectId ? validateEffectId(canonicalEffectId) : stableEffectId(originKey);
+      const existing = this.store.getEffect(id);
+      if (existing) {
+        if (existing.taskId !== taskId) throw new Error(`WORKFLOW_SUPERVISOR_EFFECT_TASK_CONFLICT:${originKey}`);
+        if (existing.kind !== 'enrollment') throw new Error(`WORKFLOW_SUPERVISOR_EFFECT_KIND_CONFLICT:${originKey}`);
+        effect = existing;
+      } else {
+        effect = this.store.reserveEffect({ taskId, effectId: id, kind: 'enrollment', originKey, prompt: renderSupervisorPrompt(task, id, 'enrollment') });
+      }
     }
-    const id = canonicalEffectId ? validateEffectId(canonicalEffectId) : stableEffectId(originKey);
-    const existing = this.store.getEffect(id);
-    if (existing) {
-      if (existing.taskId !== taskId) throw new Error(`WORKFLOW_SUPERVISOR_EFFECT_TASK_CONFLICT:${originKey}`);
-      if (existing.kind !== 'enrollment') throw new Error(`WORKFLOW_SUPERVISOR_EFFECT_KIND_CONFLICT:${originKey}`);
-      return existing;
+    const inheritedDispatch = this.hooks.inheritedEffectDispatch?.(task, effect);
+    if (inheritedDispatch && !this.store.effectApplied(effect.effectId)) {
+      this.store.recordEffectDispatchStarted(
+        effect.effectId,
+        inheritedDispatch.generation,
+        inheritedDispatch.dispatchId,
+        inheritedDispatch.evidence,
+      );
     }
-    return this.store.reserveEffect({ taskId, effectId: id, kind: 'enrollment', originKey, prompt: renderSupervisorPrompt(task, id, 'enrollment') });
+    return effect;
   }
   /** @deprecated Compatibility RPC. Recovery policy no longer lives in Supervisor/Scheduler. */
   reserveSchedulerRecovery(taskId: string, _recoveryKey?: string): WorkflowSupervisorEffect | undefined {

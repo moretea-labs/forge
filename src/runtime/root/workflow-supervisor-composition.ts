@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs';
 import { getRepository } from '../../cli/repositories/registry';
-import { getWorkContract, semanticWorkState } from '../../../packages/kernel/work/api/index';
+import { getWorkContract, semanticWorkState, workSemanticView } from '../../../packages/kernel/work/api/index';
 import {
   beginControllerRoundRelayAfterRelease,
   claimControllerRoundSession,
@@ -22,7 +22,6 @@ import {
   type ChatgptWorkConversationBinding,
 } from '../../../adapters/chatgpt/work-conversation-binding-store';
 import { readRequirement } from '../control-plane/persistence/requirement-store';
-import { withControlPlaneReadDatabase } from '../control-plane/persistence/sqlite-store';
 import { getWorkflowSupervisorCurrentConversation, registerWorkflowSupervisorTask, reserveWorkflowSupervisorEnrollment } from '../../../supervisor/client';
 import { resolveWorkflowSupervisorForgeHome, workflowSupervisorSocketPath } from '../../../supervisor/paths';
 import type { WorkflowSupervisorCompletion, WorkflowSupervisorLifecycleHooks, WorkflowSupervisorTask, WorkflowSupervisorTurnSettlement } from '../../../supervisor/types';
@@ -50,7 +49,11 @@ export function workflowSupervisorLowerLayerReadyForWork(
   const relay = directRelay ?? (work?.requirementId ? getRequirementControllerRoundRelay(options, work.requirementId) : undefined);
   if (!relay) return { ready: false, reason: 'CONTROLLER_ROUND_NOT_PREPARED' };
   if (!relay.authorityId?.trim()) return { ready: false, reason: `CONTROLLER_ROUND_AUTHORITY_REQUIRED:${relay.originWorkId}` };
-  if (!['dispatching', 'dispatched', 'claimed'].includes(relay.status)) {
+  const outcomeUnknownEffectAwaitingObservation = relay.status === 'blocked'
+    && controllerRoundBlockerClass(relay) === 'provider_dispatch_outcome_unknown'
+    && (relay.providerDispatchAttempt ?? 0) > 0
+    && Boolean(relay.providerDispatchEffectId?.trim());
+  if (!['dispatching', 'dispatched', 'claimed'].includes(relay.status) && !outcomeUnknownEffectAwaitingObservation) {
     return { ready: false, reason: `CONTROLLER_ROUND_NOT_DISPATCHABLE:${relay.status}:${relay.blockedReason ?? relay.originWorkId}` };
   }
   return {
@@ -281,22 +284,6 @@ export function resolveWorkflowSupervisorChatgptDelivery(
     authorizationGrantRefs: [...(binding.authorizationGrantRefs ?? [])],
   };
 }
-function workflowSupervisorWorkRecordRevision(controllerHome: string, repoId: string, workId: string): number | undefined {
-  return withControlPlaneReadDatabase(controllerHome, (database) => {
-    const statement = database.prepare(`
-      SELECT revision FROM control_plane_records
-      WHERE namespace = 'work_contract' AND scope = ? AND record_key = ?
-    `);
-    try {
-      const row = statement.get(repoId, workId) as { revision?: number } | undefined;
-      const revision = Number(row?.revision);
-      return Number.isInteger(revision) && revision > 0 ? revision : undefined;
-    } finally {
-      statement.finalize?.();
-    }
-  });
-}
-
 function createForgeWorkflowSupervisorBrowserTaskActive(controllerHome: string): (task: WorkflowSupervisorTask) => boolean {
   const workStateById = new Map<string, { revision: number; active: boolean }>();
   const lowerLayerNotReadyUntilByTask = new Map<string, number>();
@@ -338,16 +325,12 @@ function createForgeWorkflowSupervisorBrowserTaskActive(controllerHome: string):
       lowerLayerNotReadyUntilByTask.set(task.taskId, nowMs + LOWER_LAYER_NOT_READY_CACHE_MS);
       return false;
     }
-    const revision = workflowSupervisorWorkRecordRevision(controllerHome, repoId, relay.originWorkId);
-    if (!revision) {
-      lowerLayerNotReadyUntilByTask.set(task.taskId, nowMs + LOWER_LAYER_NOT_READY_CACHE_MS);
-      return false;
-    }
     const work = getWorkContract(store, relay.originWorkId);
     if (!work) {
       lowerLayerNotReadyUntilByTask.set(task.taskId, nowMs + LOWER_LAYER_NOT_READY_CACHE_MS);
       return false;
     }
+    const revision = workSemanticView(work).revision;
     const semanticState = semanticWorkState(work);
     if (semanticState !== 'open') {
       if (semanticState === 'cancelled') {
@@ -390,6 +373,38 @@ export function forgeWorkflowSupervisorLifecycleHooks(controllerHome: string): W
             active_release_authority_revision: claim.releaseAuthorityRevision,
           }
         : {};
+    },
+    inheritedEffectDispatch: (task, effect) => {
+      const repoId = workflowSupervisorContractText(task, 'repo_id');
+      const requirementId = workflowSupervisorContractText(task, 'requirement_id');
+      const workId = workflowSupervisorContractText(task, 'work_id');
+      const taskControllerHome = workflowSupervisorContractText(task, 'controller_home');
+      if (!repoId || (!requirementId && !workId) || taskControllerHome !== controllerHome) return undefined;
+      const store = { controllerHome, repoId };
+      const relay = requirementId
+        ? getRequirementControllerRoundRelay(store, requirementId)
+        : getControllerRoundRelay(store, workId!);
+      if (!relay
+        || relay.status !== 'blocked'
+        || controllerRoundBlockerClass(relay) !== 'provider_dispatch_outcome_unknown'
+        || (relay.providerDispatchAttempt ?? 0) < 1
+        || relay.providerDispatchEffectId !== effect.effectId) return undefined;
+      const boundary = workflowSupervisorBoundaryForWork(store, relay.originWorkId);
+      if (boundary.status !== 'outer_turn'
+        || boundary.taskId !== task.taskId
+        || boundary.conversationId !== task.conversationId
+        || boundary.conversationUrl !== task.conversationUrl) return undefined;
+      return {
+        generation: 1,
+        dispatchId: `controller-round:${relay.relayScopeId}:${relay.providerDispatchAttempt}`,
+        evidence: {
+          surface: 'controller_round_reconciliation',
+          inherited_provider_dispatch: true,
+          relay_scope_id: relay.relayScopeId,
+          provider_dispatch_attempt: relay.providerDispatchAttempt,
+          ...(relay.providerDispatchStartedAt ? { provider_dispatch_started_at: relay.providerDispatchStartedAt } : {}),
+        },
+      };
     },
     projectScopeForTask: (task) => {
       const repoId = workflowSupervisorContractText(task, 'repo_id');
