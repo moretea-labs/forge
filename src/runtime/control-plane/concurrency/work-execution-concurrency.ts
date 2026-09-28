@@ -100,34 +100,6 @@ export interface RuntimeWorkCompatibilityDecision {
   wait?: ExecutionConcurrencyWaitProjection;
 }
 
-function invalidActiveWorkCompatibility(
-  candidate: WorkExecutionConcurrencyContract,
-  invalid: ReturnType<typeof readActiveWorkCandidates>['invalid'],
-): ExecutionConcurrencyWaitProjection | undefined {
-  if (!workExecutionLaneMutates(candidate.lane)) return undefined;
-  for (const current of invalid) {
-    if (current.workId === candidate.workId) continue;
-    const currentScope = new Set(current.semanticScopeKeys);
-    const overlap = candidate.semanticScopeKeys.filter((key) => currentScope.has(key));
-    if (overlap.length === 0
-      && candidate.lane === 'isolated_write'
-      && candidate.isolation === 'isolated'
-      && current.isolation === 'isolated') continue;
-    return executionConcurrencyWaitProjection({
-      source: 'work_compatibility',
-      blockerCode: 'work_contract_invalid',
-      disposition: 'invalid',
-      blockingWorkId: current.workId,
-      semanticScopeKeys: overlap.length > 0 ? overlap : current.semanticScopeKeys,
-      resourceKeys: candidate.resourceIntents
-        .filter((intent) => intent.mode !== 'read')
-        .map((intent) => intent.resourceKey),
-      wakeTrigger: { kind: 'work_contract_change', workId: current.workId },
-    });
-  }
-  return undefined;
-}
-
 function contractForProcess(
   controllerHome: string,
   repoId: string,
@@ -180,18 +152,12 @@ export function evaluateManagedProcessWorkCompatibility(input: {
     .filter((record) => record.processId !== input.processId && record.workId && isManagedProcessActive(record))
     .map((record) => contractForProcess(input.controllerHome, input.repoId, record))
     .filter((value): value is WorkExecutionConcurrencyContract => Boolean(value));
-  const worksWithActiveProcesses = new Set(activeProcessContracts.map((contract) => contract.workId));
-  const activeSnapshot = readActiveWorkCandidates({
-    controllerHome: input.controllerHome,
-    repoId: input.repoId,
-    limit: 1_000,
-  });
-  const invalidWait = invalidActiveWorkCompatibility(candidate, activeSnapshot.invalid);
-  if (invalidWait) return { compatible: false, hardBlocked: true, wait: invalidWait };
-  const activeWorkContracts = activeSnapshot.contracts
-    .filter((activeWork) => activeWork.workId !== input.workId && !worksWithActiveProcesses.has(activeWork.workId))
-    .map((activeWork) => buildWorkExecutionConcurrencyContract(activeWork));
-  const decision = evaluateWorkExecutionCompatibility(candidate, [...activeProcessContracts, ...activeWorkContracts]);
+  // Thin Work is semantic context, not a physical execution lease. An open Work
+  // with no running Process must not reserve the shared checkout or make another
+  // Process wait for semantic terminalization. Concrete Process contracts own
+  // in-flight compatibility here; durable WorkHandle and resource-lease fences
+  // separately protect repository mutation across Process lifetimes.
+  const decision = evaluateWorkExecutionCompatibility(candidate, activeProcessContracts);
   const blocker = decision.blockers[0];
   return blocker
     ? { compatible: false, hardBlocked: blocker.disposition === 'invalid', wait: blockerProjection(blocker) }

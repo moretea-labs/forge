@@ -66,6 +66,7 @@ import {
 import { createSchedule, listOccurrences } from '../../src/runtime/workflow/schedules/store';
 import type { RepositorySchedule } from '../../src/runtime/workflow/schedules/types';
 import { callRhWorkSemanticOperation } from '../../adapters/mcp/runtime-gateway/work-semantic-operations';
+import { readSchedulerWakeSignal } from '../../src/runtime/control-plane/global-scheduler/wake-signal';
 
 const roots: string[] = [];
 const CONTROLLER_PLUGIN_CONFIG_SCOPE = 'controller:global';
@@ -1576,12 +1577,14 @@ describe('ChatGPT Work conversation binding', () => {
     });
     releaseControllerSession(store, workId, 'test-controller');
 
+    const wakeBeforeResolution = readSchedulerWakeSignal(controllerHome).revision;
     const resolved = await resolveHandoffAndTriggerContinuation(controllerHome, repository.repoId, handoffId, {
       decision: 'resolved for regression coverage',
       resolver: 'test-controller',
     });
 
     expect(resolved.item.status).toBe('resolved');
+    expect(readSchedulerWakeSignal(controllerHome).revision).toBeGreaterThan(wakeBeforeResolution);
     const rearmedRelay = getControllerRoundRelay(store, workId)!;
     expect(rearmedRelay).toMatchObject({
       status: 'dispatching',

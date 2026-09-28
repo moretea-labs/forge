@@ -200,7 +200,7 @@ describe('Work execution concurrency', () => {
     expect(exactInvalid.summary).toContain('WORK_RELATED_CONTRACT_INVALID');
   });
 
-  test('isolates malformed active sibling Work without weakening semantic-scope fencing', () => {
+  test('keeps malformed passive sibling Work diagnostic without turning it into a Process execution lock', () => {
     const home = tempHome(), repoId = 'repo-invalid-sibling';
     const candidate = work({ controllerHome: home, repoId, workId: 'work-candidate', stepId: 'candidate-step' });
     const malformed = work({ controllerHome: home, repoId, workId: 'work-malformed', stepId: 'other-step' });
@@ -225,14 +225,13 @@ describe('Work execution concurrency', () => {
       expectedRevision: sameScopeRecord.revision, action: 'test_malformed_same_scope',
       value: { ...sameScopeRecord.value, planStepId: 'candidate-step' },
     });
-    const blocked = evaluateManagedProcessWorkCompatibility({
+    const sameScopePassiveSibling = evaluateManagedProcessWorkCompatibility({
       controllerHome: home, repoId, processId: 'process-same-scope', workId: candidate.workId,
       resourceClaims: [{ resourceKey: 'path:checkout-work-candidate:src/a.ts', mode: 'write', checkoutId: candidate.checkoutId! }],
     });
-    expect(blocked).toMatchObject({
-      compatible: false, hardBlocked: true,
-      wait: { blockerCode: 'work_contract_invalid', blockingWorkId: malformed.workId, disposition: 'invalid' },
-    });
+    // The malformed Work remains visible to Work/Scheduler diagnostics, but with
+    // no active Process it has no concrete execution ownership to fence here.
+    expect(sameScopePassiveSibling).toEqual({ compatible: true, hardBlocked: false });
   });
 
   test('keeps same-Work process overlap outside Work compatibility and derives mutation authority from concrete resource intent', () => {
@@ -329,11 +328,10 @@ describe('Work execution concurrency', () => {
     expect(blocked.compatible).toBe(false);
     expect(blocked.wait).toMatchObject({ blockerCode: 'same_semantic_scope_mutation', blockingWorkId: first.workId, wakeTrigger: { kind: 'work_terminal', workId: first.workId } });
     const sameWork = evaluateManagedProcessWorkCompatibility({ controllerHome: home, repoId, processId: 'proc-candidate-a2', workId: first.workId, resourceClaims: [claimA] });
-    // The candidate does not self-deadlock on proc-active-a; Work B is the
-    // truthful semantic blocker because it is a distinct active writer in the
-    // same Plan step even before it owns a Process.
-    expect(sameWork).toMatchObject({ compatible: false, hardBlocked: false, wait: { blockingWorkId: second.workId } });
-    expect(sameWork.wait?.blockingWorkId).not.toBe(first.workId);
+    // The candidate does not self-deadlock on proc-active-a, and the merely-open
+    // Work B is semantic context rather than an execution owner. Physical
+    // mutation ownership begins with Process/WorkHandle/resource authority.
+    expect(sameWork).toEqual({ compatible: true, hardBlocked: false });
   });
 
   test('runtime admission does not make disjoint shared and isolated Works wait on each other', () => {

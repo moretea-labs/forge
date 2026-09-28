@@ -5,6 +5,7 @@ import { ensureScheduledControllerBinding } from '../../root/scheduled-controlle
 import { resolveHandoffItem } from '../../control-plane/facade/handoff-inbox-store';
 import type { HandoffItem } from '../../control-plane/facade/types';
 import { readWorkHandle, type WorkHandleState } from '../../control-plane/execution/work-handle-store';
+import { touchSchedulerWakeSignal } from '../../control-plane/global-scheduler/wake-signal';
 
 import { assertAutomatedOperationAllowed } from '../../control-plane/governance/external-effects';
 import { evaluateSchedule } from './engine';
@@ -479,6 +480,13 @@ export async function triggerResolvedHandoffContinuation(
   const rearmedRelay = item.workId && relay?.status === 'waiting_for_user' && relay.blockedReason === 'provider_user_action_required' && relay.handoffId === item.id
     ? rearmControllerRoundAfterProviderUserAction({ controllerHome, repoId }, { workId: item.workId, handoffId: item.id })
     : undefined;
+  if (rearmedRelay) {
+    // The ControllerRound itself is the continuation authority. A repository-event
+    // Schedule is optional policy, not the wake mechanism for an already rearmed
+    // provider dispatch. Wake the canonical Scheduler immediately so a resolved
+    // provider blocker resumes the same occurrence even when no Schedule exists.
+    touchSchedulerWakeSignal(controllerHome, `provider-user-action-resolved:${item.workId}`);
+  }
   const continuationOccurrences = item.workId
     ? await triggerWorkContinuationRepositoryEvent(
         controllerHome,
