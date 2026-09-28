@@ -646,16 +646,9 @@ function replacePlanContractUnlocked(
   const current = store.contracts[predecessorIndex]!;
   if (!isPlanExtensionPredecessor(current)) throw new Error(`plan contract ${current.planId} is terminal (${current.status})`);
 
-  // Before approval Plan identity is already provisional, so an extension simply
-  // repairs that exact draft instead of minting an r2/r3 entity.
+  // Draft extension keeps the stable Plan identity, but authored content is still
+  // a semantic revision: the previous head is archived and the current head advances.
   if (current.status === 'draft') {
-    const draftCandidate = buildPlanContract({
-      ...input,
-      planId: current.planId,
-      repoId: current.repoId,
-      requirementId: current.requirementId,
-      scopeKey: current.scopeKey,
-    }, at);
     return repairDraftPlanContractUnlocked(options, current.planId, {
       scopeKey: input.scopeKey, sourceRevision: input.sourceRevision, goal: input.goal, nonGoals: input.nonGoals, assumptions: input.assumptions,
       resolvedDecisions: input.resolvedDecisions, stopConditions: input.stopConditions, replanConditions: input.replanConditions,
@@ -737,11 +730,46 @@ function repairDraftPlanContractUnlocked(
     && existing.scopeKey === candidateWithLineage.scopeKey
     && !explicitPredecessors.has(existing.planId));
   if (conflictingScope) throw new Error(`PLAN_SCOPE_ALREADY_OWNED: ${candidateWithLineage.scopeKey}:${conflictingScope.planId}`);
+  const previousSemantic = planSemanticView(current);
+  const candidateSemantic = legacyPlanSemanticContext(candidateWithLineage);
   const repaired: PlanContract = {
     ...candidateWithLineage,
+    // Mechanical lifecycle revision is independent from the model-facing semantic
+    // head. Draft/extend compatibility must never silently overwrite semantic r1.
+    revision: current.revision,
+    semanticRevision: previousSemantic.revision + 1,
+    semanticUpdatedAt: at,
+    semanticContext: {
+      ...candidateSemantic,
+      requirementBasisRevision: previousSemantic.requirementBasisRevision,
+    },
     createdAt: current.createdAt,
     updatedAt: at,
   };
+  if (sqliteBacked(options)) {
+    return withControlPlaneTransaction(options.controllerHome, (database) => {
+      const scope = requirePlanContractStoreScopeKey(options);
+      const currentRecord = readControlPlaneRecordWithinTransaction<PlanContract>(database, 'plan_contract', scope, current.planId);
+      if (!currentRecord) throw new Error(`plan contract not found: ${current.planId}`);
+      const actualSemanticRevision = currentPlanSemanticRevision(currentRecord.value);
+      if (actualSemanticRevision !== previousSemantic.revision) {
+        throw new Error(`PLAN_REVISION_CONFLICT:${current.planId}:expected=${previousSemantic.revision}:actual=${actualSemanticRevision}`);
+      }
+      const semanticRevisionKey = `${current.planId}:r${previousSemantic.revision}`;
+      if (!readControlPlaneRecordWithinTransaction<PlanSemanticRevisionRecord>(database, 'plan_semantic_revision', scope, semanticRevisionKey)) {
+        writeControlPlaneRecordWithinTransaction(database, {
+          namespace: 'plan_semantic_revision', scope, key: semanticRevisionKey, schemaVersion: 1,
+          value: { schemaVersion: 1, ...previousSemantic, recordedAt: at },
+          action: 'plan_semantic_revision_archived', expectedRevision: null,
+        });
+      }
+      return writeControlPlaneRecordWithinTransaction(database, {
+        namespace: 'plan_contract', scope, key: current.planId, schemaVersion: 1,
+        value: repaired, action: 'plan_semantic_revised', expectedRevision: currentRecord.revision,
+      }).value;
+    });
+  }
+  appendJsonPlanSemanticRevisionRecord(options, { schemaVersion: 1, ...previousSemantic, recordedAt: at });
   const contracts = [...store.contracts];
   contracts[index] = repaired;
   writePlanContractStore(options, { schemaVersion: 1, updatedAt: at, contracts });
@@ -789,11 +817,19 @@ export function createPlanSemanticContext(options: PlanContractStoreOptions, inp
     if (!String(input.planId ?? '').trim() || planId === 'unknown') throw new Error('plan_id is required');
     if (store.contracts.some((existing) => existing.planId === planId)) throw new Error(`plan contract already exists: ${planId}`);
 
-    // Thin Plan scope is descriptive discovery/lineage metadata only. It is not
-    // execution ownership and therefore must never reject another semantic Plan.
-    // Defaulting the compatibility field to planId keeps legacy storage readable
-    // without creating a synthetic mutex.
+    // Thin Plan scope identifies one semantic planning lineage; it is not an
+    // execution mutex. The same Requirement + scope has one current Plan head,
+    // while genuinely independent goals remain free to use distinct scopes.
     const scopeKey = normalizeScopeKey(input.scopeKey?.trim() || planId);
+    const requirementId = input.requirementId?.trim().slice(0, 160) || undefined;
+    const existingLineage = store.contracts.find((existing) =>
+      existing.planId !== planId
+      && isCurrentPlanContract(existing)
+      && existing.scopeKey === scopeKey
+      && (existing.requirementId?.trim() || undefined) === requirementId);
+    if (existingLineage) {
+      throw new Error(`PLAN_SEMANTIC_LINEAGE_ALREADY_EXISTS:${scopeKey}:${existingLineage.planId}`);
+    }
 
     const goal = String(input.goal ?? '').trim().slice(0, 2_000);
     if (!goal) throw new Error('PLAN_GOAL_REQUIRED');
@@ -828,7 +864,7 @@ export function createPlanSemanticContext(options: PlanContractStoreOptions, inp
       semanticUpdatedAt: at,
       semanticContext,
       repoId: input.repoId,
-      requirementId: input.requirementId?.trim().slice(0, 160) || undefined,
+      requirementId,
       scopeKey,
       sourceRevision: sourceBasisRevision,
       goal,

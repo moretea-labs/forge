@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'fs';
 import { join } from 'path';
 import {
+  admitPlanContract,
   createPlanContract,
   createPlanSemanticContext,
   getPlanContract,
@@ -151,6 +152,84 @@ describe('Goal authority convergence', () => {
     });
     expect(() => revisePlanSemanticContext(planOptions, planId, { expectedRevision: 2, goal: 'stale writer' }))
       .toThrow('PLAN_REVISION_CONFLICT');
+  });
+
+  test('advances one stable draft Plan head when compatibility extend revises authored content', () => {
+    const controllerHome = home();
+    const repoId = 'repo-plan-stable-head';
+    const requirementId = 'REQ-PLAN-STABLE-HEAD';
+    const planId = 'PLAN-STABLE-HEAD';
+    createRequirement({ controllerHome }, {
+      requirementId,
+      title: 'Keep one Plan head',
+      outcomeStatement: 'Plan revisions reuse one stable identity.',
+    });
+    const planOptions = { controllerHome, repoId, now: () => '2026-09-28T09:00:00.000Z' };
+    createPlanContract(planOptions, {
+      planId,
+      repoId,
+      requirementId,
+      scopeKey: 'stable-head',
+      sourceRevision: 'source-a',
+      goal: 'Original draft goal',
+      steps: [{ id: 'step-a', objective: 'Original step.', dependencies: [], authoritativeFiles: [], allowedPaths: [], forbiddenPaths: [], checks: ['package:check:type'], acceptanceCriteria: ['Original acceptance.'] }],
+    });
+
+    const admitted = admitPlanContract(planOptions, {
+      planId,
+      repoId,
+      requirementId,
+      scopeKey: 'stable-head',
+      sourceRevision: 'source-b',
+      goal: 'Revised draft goal',
+      planRelation: 'extend',
+      relatedPlanId: planId,
+      steps: [{ id: 'step-b', objective: 'Revised step.', dependencies: [], authoritativeFiles: [], allowedPaths: [], forbiddenPaths: [], checks: ['package:check:type'], acceptanceCriteria: ['Revised acceptance.'] }],
+    });
+
+    expect(admitted.admissionDecision).toBe('reuse_existing');
+    expect(admitted.plan?.planId).toBe(planId);
+    expect(planSemanticView(admitted.plan!)).toMatchObject({
+      revision: 2,
+      sourceBasisRevision: 'source-b',
+      goal: 'Revised draft goal',
+      items: [{ id: 'step-b', objective: 'Revised step.', dependencies: [] }],
+    });
+    expect(planSemanticView(getPlanContract(planOptions, planId)!)).toMatchObject({ revision: 2, goal: 'Revised draft goal' });
+    expect(listPlanSemanticRevisionRecords(planOptions, planId)).toMatchObject([
+      { revision: 1, sourceBasisRevision: 'source-a', goal: 'Original draft goal' },
+    ]);
+  });
+
+  test('rejects a sibling semantic Plan in the same Requirement and scope lineage', () => {
+    const controllerHome = home();
+    const repoId = 'repo-plan-lineage';
+    const requirementId = 'REQ-PLAN-LINEAGE';
+    createRequirement({ controllerHome }, {
+      requirementId,
+      title: 'One semantic lineage',
+      outcomeStatement: 'A Requirement scope has one current Plan head.',
+    });
+    const options = { controllerHome, repoId, now: () => '2026-09-28T09:01:00.000Z' };
+    createPlanSemanticContext(options, {
+      planId: 'PLAN-LINEAGE-A',
+      repoId,
+      requirementId,
+      scopeKey: 'lineage-a',
+      sourceBasisRevision: 'source-a',
+      goal: 'Current lineage head',
+    });
+
+    expect(() => createPlanSemanticContext(options, {
+      planId: 'PLAN-LINEAGE-B',
+      repoId,
+      requirementId,
+      scopeKey: 'lineage-a',
+      sourceBasisRevision: 'source-b',
+      goal: 'Ambiguous sibling head',
+    })).toThrow('PLAN_SEMANTIC_LINEAGE_ALREADY_EXISTS:lineage-a:PLAN-LINEAGE-A');
+    expect(getPlanContract(options, 'PLAN-LINEAGE-A')).toBeDefined();
+    expect(getPlanContract(options, 'PLAN-LINEAGE-B')).toBeUndefined();
   });
 
   test('keeps Work delivery evidence separate from authored Plan and Requirement progress', () => {

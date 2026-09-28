@@ -50,7 +50,7 @@ export async function callRhWorkPlanOperation(
     const plan = getPlanContract(store, String(args.plan_id ?? ''));
     const facade = plan
       ? buildFacadeResult({
-          summary: `Plan ${plan.planId} retrieved at semantic revision ${planSemanticView(plan).revision}.`,
+          summary: `Plan ${plan.planId} current head retrieved at semantic revision ${planSemanticView(plan).revision}.`,
           data: {
             plan: planSemanticView(plan),
             ...(args.detail_level === 'detail' ? { revisionHistory: listPlanSemanticRevisionRecords(store, plan.planId) } : {}),
@@ -281,7 +281,8 @@ export async function callRhWorkPlanCreateOperation(
       }
       if (admission.reason === 'extend_existing' && admission.plan) {
         // plan_create + plan_relation=extend revises the explicitly related stable
-        // Plan identity in place. Preflight continues into atomic admission.
+        // Plan identity in place and advances its semantic head. Preflight continues
+        // into atomic admission; compatibility must not create a sibling revision Plan.
         return undefined;
       }
       throw new Error(`PLAN_ADMISSION_RESULT_INVALID: ${admission.admissionDecision}:${admission.reason}`);
