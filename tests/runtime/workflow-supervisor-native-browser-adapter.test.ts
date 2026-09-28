@@ -626,7 +626,7 @@ describe('Workflow Supervisor macOS native browser adapter', () => {
     h.advance(60_000);
     await h.adapter.runOnce();
     expect(h.dispatchAttempts()).toBe(2);
-    expect(h.control.browserTasks()).toEqual([]);
+    expect(h.control.browserTasks()).toHaveLength(1);
     expect(h.errors).toEqual([]);
   });
   test('recovers a no-output provider turn only after busy clears and provider activity stays stable for the idle grace', async () => {
@@ -701,7 +701,7 @@ describe('Workflow Supervisor macOS native browser adapter', () => {
     const effectIds = h.dispatchedPrompts.map((prompt) => /<<<FORGE_WORKFLOW_EFFECT_V1:([^>]+)>>>/.exec(prompt)?.[1]);
     expect(effectIds.filter(Boolean)).toHaveLength(2);
     expect(new Set(effectIds.filter(Boolean)).size).toBe(2);
-    expect(h.control.browserTasks()).toEqual([]);
+    expect(h.control.browserTasks()).toHaveLength(1);
     expect(h.errors).toEqual([]);
   });
 

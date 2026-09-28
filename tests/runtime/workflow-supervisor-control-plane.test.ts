@@ -829,6 +829,9 @@ test('provider recovery is a single exactly-once resume and does not recurse thr
   expect(exhausted.state).toBe('exhausted');
   expect(store.providerResumeExhausted(resume.effectId)).toBe(true);
   expect(control.reserveSchedulerRecovery(taskId, 'legacy-retry')).toBeUndefined();
+  // Exhaustion bounds recovery recursion; it does not abandon an already-applied
+  // provider turn whose assistant receipt may still arrive late.
+  expect(control.browserTasks()).toHaveLength(1);
 
   const lateReceipt = renderSupervisorReceipt(control.getTask(taskId)!, resume.effectId, 'CONTINUE');
   const late = await control.observeAssistantTurn({ taskId, conversationId, responseText: lateReceipt });
