@@ -5595,6 +5595,33 @@ function releaseSessionRollbackTransaction(
   return transaction;
 }
 
+/**
+ * A rollback can durably switch release authority before the process gets to
+ * write the ReleaseSession terminal phase. This is sufficient proof only when
+ * the authority operation, Stable A, Candidate B, and fenced transaction all
+ * agree; a merely similar active/previous pair must not terminalize a session.
+ */
+function releaseSessionRollbackAlreadyCommitted(
+  session: ReleaseSession,
+  authority: RuntimeReleaseAuthority | undefined,
+): boolean {
+  const candidateRelease = session.candidateRelease;
+  const transaction = session.transaction;
+  return Boolean(
+    candidateRelease
+    && transaction
+    && authority?.operationId?.startsWith(`release-session-rollback:${session.sessionId}:`)
+    && authority.active.releaseId === session.stableRelease.releaseId
+    && authority.active.artifactIdentity === session.stableRelease.artifactIdentity
+    && authority.active.manifestSha256 === session.stableRelease.manifestSha256
+    && authority.previous?.releaseId === candidateRelease.releaseId
+    && authority.previous?.artifactIdentity === candidateRelease.artifactIdentity
+    && transaction.candidateReleaseId === candidateRelease.releaseId
+    && transaction.rollbackRelease.releaseId === session.stableRelease.releaseId
+    && transaction.rollbackRelease.artifactIdentity === session.stableRelease.artifactIdentity
+  );
+}
+
 export async function rollbackConfiguredRuntimeReleaseSession(
   config: RecoveryConfig,
   sessionId: string,
@@ -5623,18 +5650,9 @@ export async function rollbackConfiguredRuntimeReleaseSession(
     const candidateRelease = session.candidateRelease;
     const transactionBeforeRollback = session.transaction;
     const authorityBeforeRollback = readRuntimeReleaseAuthority(config.controllerHome);
-    const rollbackAlreadyCommitted = Boolean(
-      candidateRelease
-      && transactionBeforeRollback
-      && authorityBeforeRollback?.operationId?.startsWith(`release-session-rollback:${session.sessionId}:`)
-      && authorityBeforeRollback.active.releaseId === session.stableRelease.releaseId
-      && authorityBeforeRollback.active.artifactIdentity === session.stableRelease.artifactIdentity
-      && authorityBeforeRollback.active.manifestSha256 === session.stableRelease.manifestSha256
-      && authorityBeforeRollback.previous?.releaseId === candidateRelease.releaseId
-      && authorityBeforeRollback.previous?.artifactIdentity === candidateRelease.artifactIdentity
-      && transactionBeforeRollback.candidateReleaseId === candidateRelease.releaseId
-      && transactionBeforeRollback.rollbackRelease.releaseId === session.stableRelease.releaseId
-      && transactionBeforeRollback.rollbackRelease.artifactIdentity === session.stableRelease.artifactIdentity
+    const rollbackAlreadyCommitted = releaseSessionRollbackAlreadyCommitted(
+      session,
+      authorityBeforeRollback,
     );
     if (rollbackAlreadyCommitted) {
       const live = observeRuntimeStatus(config.controllerHome);
@@ -5819,6 +5837,18 @@ export async function promoteConfiguredRuntimeReleaseSessionKnownGood(
   if (!initial) return { ok: false, attempted: false, noOp: true, detail: 'RELEASE_SESSION_MISSING' };
   if (initial.phase !== 'soaking') {
     return { ok: false, attempted: false, noOp: true, detail: `RELEASE_SESSION_KNOWN_GOOD_REQUIRES_SOAKING: ${initial.phase}`, releaseSession: initial };
+  }
+  // A crash or caller timeout may happen after rollback authority is committed
+  // but before its ReleaseSession receipt is written. Reconcile that terminal
+  // fact before candidate identity or any expensive whole-Runtime acceptance
+  // work; Candidate B is no longer active, so it can never become known-good.
+  if (releaseSessionRollbackAlreadyCommitted(initial, readRuntimeReleaseAuthority(config.controllerHome))) {
+    return rollbackConfiguredRuntimeReleaseSession(
+      config,
+      sessionId,
+      dependencies.rollback ?? {},
+      requestId?.trim() ? `${requestId.trim()}:reconcile-committed-rollback` : undefined,
+    );
   }
   const candidateRelease = initial.candidateRelease;
   if (!candidateRelease) return { ok: false, attempted: false, noOp: true, detail: 'RELEASE_SESSION_CANDIDATE_RELEASE_REQUIRED', releaseSession: initial };

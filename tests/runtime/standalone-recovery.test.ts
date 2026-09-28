@@ -2445,6 +2445,30 @@ describe('standalone recovery on canonical Runtime', () => {
       expect(promoted.detail).toContain('RECOVERY_PERFORMANCE_REJECTED');
       expect(promoted.detail).toContain('Stable A restored');
       expect(readRuntimeReleaseAuthority(home)?.active.releaseId).toBe('release-a');
+
+      // Model a process death after the rollback authority write but before the
+      // ReleaseSession terminal receipt. A later known-good retry must settle
+      // that durable rollback locally, rather than retry Candidate B's full
+      // verification, public transport probes, or CPU sampler.
+      const strandedPath = join(home, 'recovery', 'state', 'release-sessions', `${sessionId}.json`);
+      const stranded = JSON.parse(readFileSync(strandedPath, 'utf8')) as { phase: string; revision: number; updatedAt: string };
+      stranded.phase = 'soaking';
+      stranded.revision += 1;
+      stranded.updatedAt = new Date().toISOString();
+      writeFileSync(strandedPath, `${JSON.stringify(stranded, null, 2)}\n`);
+      startObservedRuntime(home, runtime.endpoint, 'release-a', 'artifact-a');
+      const requestsBeforeReconcile = runtime.requests.length;
+
+      const reconciled = await promoteConfiguredRuntimeReleaseSessionKnownGood(
+        config,
+        sessionId,
+        idleCpuDependencies(),
+        'known-good-reconcile-committed-rollback',
+      );
+
+      expect(reconciled).toMatchObject({ ok: true, attempted: false, noOp: true, releaseSession: { phase: 'rolled_back' } });
+      expect(reconciled.detail).toContain('reconciled the already-committed Stable A rollback');
+      expect(runtime.requests).toHaveLength(requestsBeforeReconcile);
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
