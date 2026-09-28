@@ -8,6 +8,7 @@ import {
 import type { cleanupControllerRuntimeState } from '../runtime-cleanup';
 import type { reconcileTerminalWorkCleanups } from '../execution/work-terminal-cleanup';
 import type { gcTerminalProcesses } from '../../execution/process-runtime/gc';
+import { assertRuntimeMayWrite } from '../../root/write-fence';
 import { cleanupPersistedCheckResults } from '../../execution/process-runtime/check-result-retention';
 import { cleanupRetiredExecutionJobs } from '../../execution/jobs/store';
 import type { reconcilePendingWorkValidations } from '../execution/work-validation-reconciler';
@@ -43,6 +44,17 @@ const PERIODIC_DEEP_RETENTION_INTERVAL_MS = 15 * 60_000;
 // turn a bounded claim window, then release the ephemeral resource without
 // replaying or clearing the semantic outcome-unknown fence.
 const CHATGPT_OUTCOME_UNKNOWN_TAB_SETTLEMENT_GRACE_MS = 5 * 60_000;
+// Retention is a fallback GC path, not the primary ControllerRound settlement path.
+// Keep its external-effect volume deliberately small so one stale repository set
+// cannot create a provider burst or hold a maintenance worker for hours.
+const CHATGPT_TAB_SETTLEMENT_EFFECT_BUDGET_PER_PASS = 4;
+
+function runtimeMaintenanceAuthorityCurrent(controllerHome: string): boolean {
+  const fence = assertRuntimeMayWrite('cleanup', controllerHome);
+  if (fence.allowed) return true;
+  console.error(`[forge cleanup] stale periodic cleanup worker fenced: ${fence.reason ?? 'denied'}`);
+  return false;
+}
 
 function registerSchedulerFailure(input: {
   controllerHome: string;
@@ -115,6 +127,10 @@ export async function runSchedulerPeriodicCleanup(input: {
     cleanupIntervalMs: input.cleanupIntervalMs,
     repositoryCount: input.repositories.length,
   });
+  // The cleanup process inherits the spawning Runtime's exact write claim. Re-check
+  // that claim throughout a long pass so a detached child cannot survive a Runtime
+  // rollover and continue producing effects under retired authority.
+  if (!runtimeMaintenanceAuthorityCurrent(input.controllerHome)) return;
   // Runtime-state phase rotation and terminal Work cleanup are lifecycle
   // reconciliation, not retention. Keep them at the base cleanup cadence.
   try {
@@ -136,6 +152,7 @@ export async function runSchedulerPeriodicCleanup(input: {
     });
     console.error('[forge cleanup] periodic cleanup failed:', error);
   }
+  if (!runtimeMaintenanceAuthorityCurrent(input.controllerHome)) return;
   try {
     await input.terminalWorkCleanup(input.controllerHome, { nowMs: input.nowMs });
   } catch (error) {
@@ -150,6 +167,7 @@ export async function runSchedulerPeriodicCleanup(input: {
     });
     console.error('[forge cleanup] terminal Work cleanup failed:', error);
   }
+  if (!runtimeMaintenanceAuthorityCurrent(input.controllerHome)) return;
 
   try {
     maybeRegisterFailedReleaseSessionRepairs({ controllerHome: input.controllerHome, now: () => input.nowMs });
@@ -161,6 +179,7 @@ export async function runSchedulerPeriodicCleanup(input: {
   // written synchronously by their owning authorities, so a five-minute sweep
   // is sufficient and avoids repeating controller-wide scans every minute.
   if (plan.runRetention) {
+    if (!runtimeMaintenanceAuthorityCurrent(input.controllerHome)) return;
     try {
       closeRuntimeBrowserSessionLegacyImportCutover(
         input.controllerHome,
@@ -173,6 +192,7 @@ export async function runSchedulerPeriodicCleanup(input: {
     } catch (error) {
       console.error('[forge cleanup] Browser session retention failed:', error);
     }
+    if (!runtimeMaintenanceAuthorityCurrent(input.controllerHome)) return;
     try {
       const computerTargets = await cleanupRuntimeComputerInteractionTargets(input.controllerHome, { nowMs: input.nowMs });
       if (computerTargets.blockers.length > 0 || computerTargets.overCapacity || computerTargets.budgetExhausted) {
@@ -181,6 +201,9 @@ export async function runSchedulerPeriodicCleanup(input: {
     } catch (error) {
       console.error('[forge cleanup] Computer interaction-target retention failed:', error);
     }
+    if (!runtimeMaintenanceAuthorityCurrent(input.controllerHome)) return;
+    let chatgptTabSettlementEffects = 0;
+    chatgptTabSettlementSweep:
     for (const repository of input.repositories) {
       const store = { controllerHome: input.controllerHome, repoId: repository.repoId };
       for (const relay of listCurrentControllerRoundRelays(store, 100)) {
@@ -209,12 +232,19 @@ export async function runSchedulerPeriodicCleanup(input: {
         // provider traffic and audit churn; a changed resource or grant set is a
         // distinct attempt and remains eligible for recovery.
         if (existingSettlement?.status === 'failed' && existingSettlement.attemptIdentity === attemptIdentity) continue;
+        if (chatgptTabSettlementEffects >= CHATGPT_TAB_SETTLEMENT_EFFECT_BUDGET_PER_PASS) {
+          console.error('[forge cleanup] ChatGPT tab settlement reached bounded effect budget');
+          break chatgptTabSettlementSweep;
+        }
+        if (!runtimeMaintenanceAuthorityCurrent(input.controllerHome)) return;
+        chatgptTabSettlementEffects += 1;
         const settlement = await (input.settleBrowserTab ?? settleWorkChatgptAutomationTab)({
           controllerHome: input.controllerHome,
           workId: relay.originWorkId,
           browserSessionId: binding.latestBrowserSessionId,
           authorizationGrantRefs: binding.authorizationGrantRefs,
         });
+        if (!runtimeMaintenanceAuthorityCurrent(input.controllerHome)) return;
         recordChatgptControllerRoundTabSettlement(store, {
           workId: relay.originWorkId,
           relayScopeId: relay.relayScopeId,
@@ -230,6 +260,7 @@ export async function runSchedulerPeriodicCleanup(input: {
   // age. Preserve the existing one-repository-per-base-pass round robin so that
   // recovery remains smooth instead of concentrating all repositories in one
   // periodic spike.
+  if (!runtimeMaintenanceAuthorityCurrent(input.controllerHome)) return;
   if (plan.processGcRepositoryIndex !== undefined) {
     const processRepo = input.repositories[plan.processGcRepositoryIndex]!;
     const result = input.processGc({ controllerHome: input.controllerHome, repoId: processRepo.repoId });
@@ -249,6 +280,7 @@ export async function runSchedulerPeriodicCleanup(input: {
   }
 
   if (!plan.runDeepRetention) return;
+  if (!runtimeMaintenanceAuthorityCurrent(input.controllerHome)) return;
 
   // Generated caches and persisted artifacts have hour/day-scale retention
   // thresholds. Run one repository per deep-retention pass, and rotate the
