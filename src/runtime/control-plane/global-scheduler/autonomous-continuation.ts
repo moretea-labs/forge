@@ -170,12 +170,10 @@ export async function runSchedulerAutonomousContinuationReconciliation(input: {
       const requirementState = requirementRecord?.value.state;
       if (requirementState === 'waiting_for_user') { skip(skippedByReason, 'requirement_waiting_for_user'); continue; }
       if (requirementState === 'done' || requirementState === 'cancelled') { skip(skippedByReason, 'requirement:' + requirementState); continue; }
-      // Liveness only materializes a missing lower ControllerRound. An existing
-      // round already has a semantic/mechanical owner: explicit waits and terminal
-      // blockers stay stable, while stalled-round/provider recovery owns abandoned
-      // open rounds. The one safe exception is a dispatching round for this Work
-      // whose provider effect provably never started; resuming it completes the same
-      // already-authorized occurrence rather than creating a new attempt.
+      // A physically dispatched provider effect is real active execution and
+      // must not be duplicated. All other relay states are bookkeeping and are
+      // reconciled by the occurrence primitive below rather than blocking Work
+      // liveness on their presence alone.
       const providerDispatchPhysicallyStarted = Boolean(
         existingRound?.providerDispatchStartedAt && existingRound?.providerDispatchEffectId,
       );
@@ -184,9 +182,8 @@ export async function runSchedulerAutonomousContinuationReconciliation(input: {
         && existingRound.originWorkId === work.workId
         && !providerDispatchPhysicallyStarted,
       );
-      if (existingRound && !sameWorkIncompleteDispatch) {
-        const activeDispatchState = existingRound.status === 'dispatching' || existingRound.status === 'dispatched';
-        skip(skippedByReason, activeDispatchState ? 'provider_dispatch_in_flight' : `controller_round_${existingRound.status}`);
+      if (existingRound?.status === 'dispatched' || (existingRound?.status === 'dispatching' && !sameWorkIncompleteDispatch)) {
+        skip(skippedByReason, 'provider_dispatch_in_flight');
         continue;
       }
       occurrenceId = existingRound?.occurrenceId ?? planlessOccurrenceId(work.workId, work.updatedAt);
