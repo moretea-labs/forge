@@ -14,6 +14,7 @@ import {
   claimStalledControllerRoundRelays,
   finishControllerRoundRelayDispatch,
   getControllerRoundRelay,
+  listControllerRoundRelaysAwaitingProviderDispatch,
   submitControllerRoundDisposition,
 } from '../../packages/kernel/controller/api/index';
 import { CHATGPT_AUTOMATION_MESSAGE_DELIVERY_TIMED_OUT, CHATGPT_AUTOMATION_RATE_LIMITED, CHATGPT_AUTOMATION_RATE_LIMITED_AFTER_SUBMIT, CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE, ChatgptProviderDeliveryError, chatgptProviderBackoffDelayMs, chatgptProviderBackpressureRemainingMs, classifyChatgptProviderFailure, dispatchWithChatgptProviderBackpressure, withChatgptProviderDispatchLane, type ChatgptProviderDeliveryHost } from '../../adapters/chatgpt/provider-delivery';
@@ -1592,8 +1593,12 @@ describe('ChatGPT Work conversation binding', () => {
       authorityId: relay.authorityId,
     });
     expect(rearmedRelay.blockedReason).toBeUndefined();
+    expect(rearmedRelay.providerDispatchAttempt).toBe(1);
     expect(rearmedRelay.providerDispatchEffectId).toBeUndefined();
     expect(rearmedRelay.providerDispatchStartedAt).toBeUndefined();
+    expect(listControllerRoundRelaysAwaitingProviderDispatch(store, {
+      controllerTypes: ['chatgpt'],
+    }).map((candidate) => candidate.originWorkId)).toContain(workId);
     expect(resolved.continuationOccurrences).toHaveLength(1);
     const scheduleId = resolved.continuationOccurrences[0]?.scheduleId;
     expect(scheduleId).toBe(schedule.scheduleId);

@@ -355,8 +355,11 @@ export function listControllerRoundRelaysAwaitingProviderDispatch(
   return latestRelayRecordsByScope(options)
     .filter((record) => {
       if (record.status !== 'dispatching') return false;
-      if ((record.providerDispatchAttempt ?? 0) > 0
-        || record.providerDispatchEffectId
+      // Attempt count is diagnostic history, not evidence that an external
+      // provider effect may have committed. A resolved user-action blocker clears
+      // the concrete effect facts below while preserving the retry count; that
+      // exact round must become runnable again without inventing a new occurrence.
+      if (record.providerDispatchEffectId
         || record.providerDispatchStartedAt
         || record.providerDispatchReceiptId
         || record.dispatchedAt) return false;
