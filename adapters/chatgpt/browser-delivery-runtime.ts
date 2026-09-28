@@ -394,7 +394,7 @@ async function chatgptDeliveryFailureOnPage(
 }
 
 function chatgptSendControlUnavailable(error: unknown): boolean {
-  return error instanceof Error && (error.message.includes('Selector') && error.message.includes('not found'));
+  return error instanceof Error && error.message.includes('PLUGIN_BROWSER_SELECTOR_UNAVAILABLE');
 }
 
 function normalizeExecutionControlLabel(label: string | undefined): string {

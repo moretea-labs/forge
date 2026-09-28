@@ -3009,11 +3009,15 @@ const EXTRACTION_SCRIPTS = {
   })()`,
 };
 
+function selectorUnavailableInTime(errorMessage: string): boolean {
+  return /timeout|timed out|waiting for selector|selector.*not found|not found.*selector/i.test(errorMessage);
+}
+
 function selectorRepairHint(selector: string, errorMessage: string): string {
   if (/strict mode violation|resolved to \d+ elements/i.test(errorMessage)) {
     return `Selector "${selector}" matched multiple elements. Prefer a unique #id, [data-testid], or more specific path.`;
   }
-  if (/Timeout|waiting for selector|not found/i.test(errorMessage)) {
+  if (selectorUnavailableInTime(errorMessage)) {
     return `Selector "${selector}" was not found in time. Use snapshot_interactive or query_all to discover stable selectors, then retry.`;
   }
   return `Check selector "${selector}" against the current page structure.`;
@@ -4490,10 +4494,14 @@ async function executeBrowserPluginActionInternal(
           });
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
-          throw new AssistantPluginError('PLUGIN_ACTION_FAILED', message, {
-            retryable: true,
-            details: { selector, repairHint: selectorRepairHint(selector, message) },
-          });
+          throw new AssistantPluginError(
+            selectorUnavailableInTime(message) ? 'PLUGIN_BROWSER_SELECTOR_UNAVAILABLE' : 'PLUGIN_ACTION_FAILED',
+            message,
+            {
+              retryable: true,
+              details: { selector, repairHint: selectorRepairHint(selector, message) },
+            },
+          );
         }
       }
       case 'type':
