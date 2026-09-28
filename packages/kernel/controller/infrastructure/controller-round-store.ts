@@ -1548,7 +1548,8 @@ export function rearmControllerRoundAfterContinuationEvidence(
     // completion. Treat that as idempotent success rather than reopening again.
     if (current.value.status === 'dispatching' && current.value.reason === recoveryReason) return current.value;
     if (current.value.updatedAt !== expectedUpdatedAt) throw new Error(`CONTROLLER_RELAY_CONTINUATION_EVIDENCE_STALE:${workId}`);
-    if (controllerRoundBlockerClass(current.value) !== 'repeated_state') {
+    const continuationBlocker = controllerRoundBlockerClass(current.value);
+    if (continuationBlocker !== 'repeated_state' && continuationBlocker !== 'round_budget_exhausted') {
       throw new Error(`CONTROLLER_RELAY_CONTINUATION_EVIDENCE_BLOCKER_MISMATCH:${workId}:${current.value.status}`);
     }
     const work = getWorkContract(options, workId);

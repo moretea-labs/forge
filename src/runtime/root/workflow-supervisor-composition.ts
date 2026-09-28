@@ -193,9 +193,10 @@ async function settleForgeWorkflowSupervisorTurn(
   }
 
   let continuationNeedsFreshSupervisorEffect = false;
+  const continuationBlocker = controllerRoundBlockerClass(relay);
   if (completion.action === 'CONTINUE'
     && task.continuationPolicy.kind === 'forge_goal_outer_turn'
-    && controllerRoundBlockerClass(relay) === 'repeated_state') {
+    && (continuationBlocker === 'repeated_state' || continuationBlocker === 'round_budget_exhausted')) {
     const boundary = workflowSupervisorBoundaryForWork(store, settledWorkId);
     const exactEnrolledBoundary = boundary.status === 'outer_turn'
       && boundary.taskId === task.taskId

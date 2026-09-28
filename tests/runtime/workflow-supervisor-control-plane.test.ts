@@ -632,6 +632,78 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     supervisorStore.close();
   });
 
+  test('reconciles a committed enrolled CONTINUE across lower round-budget exhaustion without resetting lineage', async () => {
+    const fx = fixture();
+    const requirementId = 'REQ-supervisor-round-budget-reconcile';
+    const workId = 'work-supervisor-round-budget-reconcile';
+    const conversationId = '57575757-7979-9191-abab-dededededede';
+    const conversationUrl = `https://chatgpt.com/c/${conversationId}`;
+    createRequirement({ controllerHome: fx.controllerHome }, {
+      requirementId,
+      title: 'Enrolled round budget reconcile',
+      outcomeStatement: 'A durable Supervisor CONTINUE may mechanically resume after lower semantic round budget exhaustion.',
+    });
+    createWorkContract(fx.store, {
+      workId, repoId: fx.repository.repoId, checkoutId: fx.repository.activeCheckoutId, requirementId,
+      objective: 'Prove lower ControllerRound budget cannot terminate an exact enrolled outer Supervisor continuation.',
+      acceptanceCriteria: ['committed CONTINUE reserves successor without resetting lower lineage history'],
+      allowedPaths: [], forbiddenPaths: [], checks: [],
+      constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt', status: 'running',
+    });
+    const identity = {
+      controllerId: 'supervisor-round-budget-controller', controllerType: 'chatgpt' as const,
+      principalId: 'supervisor-round-budget-principal', controllerInstanceId: 'runtime-supervisor-round-budget',
+    };
+    const first = beginInitialControllerRoundDispatch(fx.store, {
+      workId, requirementId, identity: { ...identity, sessionId: 'supervisor-round-budget-1' }, maxRounds: 1, maxRepeatedState: 8,
+    });
+    finishControllerRoundRelayDispatch(fx.store, { workId, ok: true });
+    const session = claimControllerSession(fx.store, { workId, ...identity, sessionId: 'supervisor-round-budget-1', leaseMs: 60_000 });
+    acknowledgeControllerRoundClaim(fx.store, { workId, session });
+    const blocked = submitControllerRoundDisposition(fx.store, {
+      workId, relayScopeId: first.relayScopeId, identity: { ...identity, sessionId: session.sessionId }, disposition: 'continue_immediately',
+    });
+    expect(blocked).toMatchObject({ status: 'blocked', roundCount: 2, maxRounds: 1, blockedReason: 'round_budget_exhausted:2>1' });
+    releaseControllerSession(fx.store, workId, identity.controllerId);
+    bindChatgptWorkConversation(fx.store, { workId, conversationUrl });
+
+    const supervisorStore = new WorkflowSupervisorStore(join(fx.root, 'round-budget-reconcile-supervisor'));
+    const control = new WorkflowSupervisorControlPlane(supervisorStore, {}, forgeWorkflowSupervisorLifecycleHooks(fx.controllerHome));
+    const taskId = `forge:${fx.repository.repoId}:conversation:${conversationId}`;
+    control.registerTask({
+      taskId, conversationId, conversationUrl,
+      objective: 'Resume the exact enrolled Work after lower round budget exhaustion.',
+      completionContract: { kind: 'forge_requirement_done', controller_home: fx.controllerHome, repo_id: fx.repository.repoId, work_id: workId, requirement_id: requirementId },
+      continuationPolicy: { kind: 'forge_goal_outer_turn', controller_home: fx.controllerHome, repo_id: fx.repository.repoId, work_id: workId, requirement_id: requirementId, exact_conversation_id: conversationId, exact_conversation_url: conversationUrl },
+      userBlockerPolicy: { kind: 'forge_requirement_waiting_for_user', controller_home: fx.controllerHome, repo_id: fx.repository.repoId, work_id: workId, requirement_id: requirementId },
+    });
+    const enrollment = control.reserveEnrollment(taskId, controllerRoundProviderEffectId(blocked));
+    supervisorStore.recordEffectObservation(enrollment.effectId, 'obs-round-budget-applied', 'applied');
+    const completion = {
+      completionFingerprint: 'completion-round-budget-reconcile', taskId, sourceEffectId: enrollment.effectId, action: 'CONTINUE' as const,
+      responseSha256: 'response-round-budget-reconcile', controlBlockSha256: 'control-round-budget-reconcile',
+      proposal: {
+        action: 'CONTINUE' as const, sourceEffectId: enrollment.effectId, checkpoint: 'round-budget-blocked', reason: 'continue', evidence: [],
+        conversationId, taskId, supervisorState: 'running' as const, activeScope: `requirement:${requirementId}`,
+      },
+      committedAt: new Date().toISOString(),
+    };
+    supervisorStore.commitCompletion(completion);
+
+    expect(await control.reconcileCommittedContinuations()).toEqual({ scanned: 1, reconciled: 1 });
+    const successor = supervisorStore.getEffectByOriginKey(`completion:${completion.completionFingerprint}`);
+    expect(successor).toBeDefined();
+    const relay = getRequirementControllerRoundRelay(fx.store, requirementId);
+    expect(relay).toMatchObject({
+      status: 'dispatching', roundCount: blocked.roundCount, maxRounds: blocked.maxRounds,
+      reason: `continuation_evidence:${completion.completionFingerprint}`,
+    });
+    expect(successor?.effectId).not.toBe(enrollment.effectId);
+    expect((await control.reconcileCommittedContinuations())).toEqual({ scanned: 0, reconciled: 0 });
+    supervisorStore.close();
+  });
+
   test('reclaims a dispatch-confirmed Supervisor relay before settling a committed CONTINUE', async () => {
     const fx = fixture();
     const requirementId = 'REQ-supervisor-dispatched-completion-reclaim';
