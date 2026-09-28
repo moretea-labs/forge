@@ -2,8 +2,12 @@ import { createHash } from 'crypto';
 import type { AssistantContextSnapshot, ControllerRoundRelayRecord } from '../../../packages/kernel/controller/api/index';
 import { prepareAssistantWorkContext } from '../context/assistant-work-context';
 import { renderAssistantContext, type AssistantContextResolution } from '../context/assistant-context';
-import { chatgptControllerBindingId, getChatgptWorkConversationBinding } from '../../../adapters/chatgpt/work-conversation-binding-store';
-import { upsertChatgptControllerBinding, type ChatgptControllerBindingPayload } from '../../../adapters/chatgpt/controller-binding-store';
+import { getChatgptWorkConversationBinding } from '../../../adapters/chatgpt/work-conversation-binding-store';
+import {
+  chatgptControllerProviderBindingId,
+  upsertChatgptControllerBinding,
+  type ChatgptControllerBindingPayload,
+} from '../../../adapters/chatgpt/controller-binding-store';
 import {
   buildChatgptControllerRoundPrompt,
   chatgptControllerRoundBindingAuthorizesRecovery,
@@ -27,7 +31,7 @@ export interface ChatgptControllerRoundBindingSnapshot {
 }
 
 export function chatgptControllerRoundBindingId(workId: string): string {
-  return chatgptControllerBindingId(undefined, workId);
+  return chatgptControllerProviderBindingId(workId);
 }
 
 export function upsertChatgptControllerRoundTransportBinding(

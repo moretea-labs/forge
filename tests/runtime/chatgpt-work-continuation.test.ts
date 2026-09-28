@@ -1375,6 +1375,8 @@ describe('ChatGPT Work conversation binding', () => {
     expect(controllerOperations).toContain('transportConversation,');
     expect(controllerOperations).toContain('const relay = beginInitialControllerRoundDispatch(');
     expect(controllerOperations).toContain('occurrenceId,');
+    expect(controllerOperations).toContain('bindingId: chatgptControllerRoundBindingId(workId)');
+    expect(readFileSync(join(process.cwd(), 'src/runtime/root/controller-round-composition.ts'), 'utf8')).toContain('return chatgptControllerProviderBindingId(workId);');
     expect(controllerOperations).toContain("controllerType: controllerType as 'codex' | 'grok' | 'claude'");
     expect(controllerOperations.indexOf('await prepareWorkChatgptContinuationTransport({')).toBeLessThan(controllerOperations.indexOf('const launched = await launchSuperController'));
   });

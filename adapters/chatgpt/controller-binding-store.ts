@@ -28,8 +28,12 @@ export interface ChatgptControllerBindingPayload {
   updatedAt: string;
 }
 
-function canonicalBindingId(workId: string): string {
+export function chatgptControllerProviderBindingId(workId: string): string {
   return `chatgpt-controller:${workId}`;
+}
+
+function canonicalBindingId(workId: string): string {
+  return chatgptControllerProviderBindingId(workId);
 }
 
 function legacyBindingId(repoId: string, workId: string): string {
