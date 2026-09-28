@@ -3,6 +3,7 @@ import { getRepository } from '../../cli/repositories/registry';
 import { getWorkContract, semanticWorkState } from '../../../packages/kernel/work/api/index';
 import {
   beginControllerRoundRelayAfterRelease,
+  claimControllerRoundSession,
   controllerRoundBlockerClass,
   controllerRoundProviderEffectId,
   finishControllerRoundRelayDispatch,
@@ -149,6 +150,28 @@ async function settleForgeWorkflowSupervisorTurn(
   if (!relay) return { continuationAllowed: false, reason: 'CONTROLLER_ROUND_WORK_RELAY_MISSING' };
 
   const settledWorkId = relay.originWorkId;
+  let liveOwner = getControllerSession(store, settledWorkId);
+  if (relay.status === 'dispatched') {
+    const retained = liveOwner ?? getRetainedControllerSession(store, settledWorkId);
+    if (!retained) {
+      return { continuationAllowed: false, reason: 'CONTROLLER_SESSION_COMPLETION_CLAIM_WITNESS_MISSING' };
+    }
+    const claimed = claimControllerRoundSession(store, {
+      workId: settledWorkId,
+      relayWorkId: settledWorkId,
+      sessionClaim: {
+        workId: settledWorkId,
+        controllerId: retained.controllerId,
+        controllerType: retained.controllerType,
+        sessionId: retained.sessionId,
+        principalId: retained.principalId?.trim() || retained.controllerId,
+        controllerInstanceId: retained.controllerInstanceId?.trim() || relay.controllerInstanceId,
+        leaseMs: 60_000,
+      },
+    });
+    relay = claimed.relay ?? relay;
+    liveOwner = claimed.session;
+  }
   if (relay.status === 'claimed') {
     relay = settleControllerRoundAfterTurn(store, {
       workId: settledWorkId,
@@ -156,7 +179,7 @@ async function settleForgeWorkflowSupervisorTurn(
     }) ?? relay;
   }
 
-  const liveOwner = getControllerSession(store, settledWorkId);
+  liveOwner = getControllerSession(store, settledWorkId);
   const releaseWitness = liveOwner ?? getRetainedControllerSession(store, settledWorkId);
   if (liveOwner && ['pending_release', 'waiting', 'waiting_for_user', 'goal_complete', 'blocked', 'failed'].includes(relay.status)) {
     const released = releaseObservedControllerSession(store, {

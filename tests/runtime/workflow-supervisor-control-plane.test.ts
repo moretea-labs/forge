@@ -14,7 +14,7 @@ import { WorkflowSupervisorControlPlane } from '../../supervisor/control-plane';
 import { LEGACY_SUPERVISOR_BLOCK_END, LEGACY_SUPERVISOR_BLOCK_START, parseSupervisorCompletion, renderSupervisorPrompt, renderSupervisorReceipt, supervisorReceiptChallenge, SUPERVISOR_BLOCK_END, SUPERVISOR_BLOCK_START } from '../../supervisor/protocol';
 import { WorkflowSupervisorStore } from '../../supervisor/store';
 import { reconcileWorkflowSupervisorSocket, WorkflowSupervisorEphemeralDiscovery } from '../../supervisor/server';
-import { claimControllerSession, releaseControllerSession } from '../../src/runtime/control-plane/facade/controller-session-store';
+import { claimControllerSession, getControllerSession, releaseControllerSession } from '../../src/runtime/control-plane/facade/controller-session-store';
 import { bindChatgptWorkConversation, getChatgptWorkConversationBinding, rebindChatgptWorkConversation } from '../../adapters/chatgpt/work-conversation-binding-store';
 import { CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE, chatgptProviderPageFailure, classifyChatgptProviderFailure } from '../../adapters/chatgpt/provider-delivery';
 
@@ -629,6 +629,70 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     expect(successor?.effectId).not.toBe(enrollment.effectId);
     expect(successor?.effectId).not.toBe(controllerRoundProviderEffectId(relay!));
     expect((await control.reconcileCommittedContinuations())).toEqual({ scanned: 0, reconciled: 0 });
+    supervisorStore.close();
+  });
+
+  test('reclaims a dispatch-confirmed Supervisor relay before settling a committed CONTINUE', async () => {
+    const fx = fixture();
+    const requirementId = 'REQ-supervisor-dispatched-completion-reclaim';
+    const workId = 'work-supervisor-dispatched-completion-reclaim';
+    const conversationId = '67676767-8989-1010-abab-efefefefefef';
+    const conversationUrl = `https://chatgpt.com/c/${conversationId}`;
+    createRequirement({ controllerHome: fx.controllerHome }, {
+      requirementId,
+      title: 'Dispatched completion reclaim',
+      outcomeStatement: 'A provider-confirmed Supervisor turn must settle without requiring another user claim.',
+    });
+    createWorkContract(fx.store, {
+      workId, repoId: fx.repository.repoId, checkoutId: fx.repository.activeCheckoutId, requirementId,
+      objective: 'Settle one dispatch-confirmed Supervisor turn through retained controller identity.',
+      acceptanceCriteria: ['committed CONTINUE reserves exactly one successor'],
+      allowedPaths: [], forbiddenPaths: [], checks: [],
+      constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt', status: 'running',
+    });
+    const identity = {
+      controllerId: 'chatgpt-workflow-supervisor', controllerType: 'chatgpt' as const,
+      principalId: 'chatgpt-workflow-supervisor', controllerInstanceId: 'runtime-dispatched-completion-reclaim',
+      sessionId: 'thin:work-supervisor-dispatched-completion-reclaim',
+    };
+    const initial = beginInitialControllerRoundDispatch(fx.store, { workId, requirementId, identity });
+    finishControllerRoundRelayDispatch(fx.store, { workId, ok: true });
+    const retained = claimControllerSession(fx.store, { workId, ...identity, leaseMs: 60_000 });
+    releaseControllerSession(fx.store, workId, identity.controllerId);
+    expect(retained.claimGeneration).toBeGreaterThan(0);
+    expect(getRequirementControllerRoundRelay(fx.store, requirementId)?.status).toBe('dispatched');
+    bindChatgptWorkConversation(fx.store, { workId, conversationUrl });
+
+    const supervisorStore = new WorkflowSupervisorStore(join(fx.root, 'dispatched-completion-reclaim-supervisor'));
+    const control = new WorkflowSupervisorControlPlane(supervisorStore, {}, forgeWorkflowSupervisorLifecycleHooks(fx.controllerHome));
+    const taskId = `forge:${fx.repository.repoId}:conversation:${conversationId}`;
+    control.registerTask({
+      taskId, conversationId, conversationUrl,
+      objective: 'Continue after the exact dispatch-confirmed provider turn.',
+      completionContract: { kind: 'forge_requirement_done', controller_home: fx.controllerHome, repo_id: fx.repository.repoId, work_id: workId, requirement_id: requirementId },
+      continuationPolicy: { kind: 'forge_goal_outer_turn', controller_home: fx.controllerHome, repo_id: fx.repository.repoId, work_id: workId, requirement_id: requirementId, exact_conversation_id: conversationId, exact_conversation_url: conversationUrl },
+      userBlockerPolicy: { kind: 'forge_requirement_waiting_for_user', controller_home: fx.controllerHome, repo_id: fx.repository.repoId, work_id: workId, requirement_id: requirementId },
+    });
+    const enrollment = control.reserveEnrollment(taskId, controllerRoundProviderEffectId(initial));
+    supervisorStore.recordEffectObservation(enrollment.effectId, 'obs-dispatched-completion-applied', 'applied');
+    const completion = {
+      completionFingerprint: 'completion-dispatched-reclaim', taskId, sourceEffectId: enrollment.effectId, action: 'CONTINUE' as const,
+      responseSha256: 'response-dispatched-reclaim', controlBlockSha256: 'control-dispatched-reclaim',
+      proposal: {
+        action: 'CONTINUE' as const, sourceEffectId: enrollment.effectId, checkpoint: 'dispatch-confirmed', reason: 'continue', evidence: [],
+        conversationId, taskId, supervisorState: 'running' as const, activeScope: `requirement:${requirementId}`,
+      },
+      committedAt: new Date().toISOString(),
+    };
+    supervisorStore.commitCompletion(completion);
+    expect(getControllerSession(fx.store, workId)).toBeUndefined();
+
+    const reconciled = await control.reconcileCommittedContinuations();
+    expect(reconciled).toEqual({ scanned: 1, reconciled: 1 });
+    expect(supervisorStore.getEffectByOriginKey(`completion:${completion.completionFingerprint}`)).toBeDefined();
+    expect(getControllerSession(fx.store, workId)).toBeUndefined();
+    expect(getRequirementControllerRoundRelay(fx.store, requirementId)?.status).toBe('dispatching');
     supervisorStore.close();
   });
 
