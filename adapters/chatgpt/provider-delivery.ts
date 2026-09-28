@@ -178,16 +178,36 @@ export function chatgptProviderBackpressureRemainingMs(
   return gate ? Math.max(0, gate.cooldownUntilMs - nowMs) : 0;
 }
 
+export interface ChatgptProviderDispatchOutcome {
+  status?: ChatgptProviderDeliveryStatus;
+  code?: string;
+  message?: string;
+  /**
+   * True only when the provider actually accepted this submission. A local
+   * transport failure (foreground required, composer missing, transport
+   * unavailable) is neither acceptance nor provider backpressure, so it must
+   * not clear pressure that a real provider limit established.
+   */
+  providerAccepted?: boolean;
+}
+
 /**
  * One active Runtime owns one transient ChatGPT provider dispatch lane. This is
  * deliberately mechanical and in-memory: ControllerRound effect identity remains
  * the durable replay fence across Runtime rotation, while provider pressure must
  * not become Work/Plan lifecycle state.
+ *
+ * Provider rate limiting is an account-level resource, so *every* transport that
+ * can submit a provider prompt through this Runtime must enter the same lane and
+ * obey the same cooldown. A separate lane that only reads the cooldown still
+ * submits concurrently with this one, which is exactly how one ChatGPT account
+ * observes request concurrency that no single session produced.
  */
-export async function dispatchWithChatgptProviderBackpressure(
+export async function withChatgptProviderDispatchLane<T>(
   controllerHome: string,
-  dispatch: () => Promise<ChatgptProviderDeliveryResult>,
-): Promise<ChatgptProviderDeliveryResult> {
+  operation: () => Promise<T>,
+  outcomeOf: (result: T) => ChatgptProviderDispatchOutcome | undefined,
+): Promise<T> {
   const key = providerGateKey(controllerHome);
   const gate = chatgptProviderDispatchGate(controllerHome);
 
@@ -201,10 +221,11 @@ export async function dispatchWithChatgptProviderBackpressure(
     const waitMs = gate.cooldownUntilMs - Date.now();
     if (waitMs > 0) await new Promise((resolve) => setTimeout(resolve, waitMs));
 
-    const result = await dispatch();
-    if (chatgptProviderFailureRequiresBackpressure(result.status, result.error?.code, result.error?.message)) {
-      noteChatgptProviderBackpressure(controllerHome, result.error?.message);
-    } else {
+    const result = await operation();
+    const outcome = outcomeOf(result);
+    if (outcome && chatgptProviderFailureRequiresBackpressure(outcome.status, outcome.code, outcome.message)) {
+      noteChatgptProviderBackpressure(controllerHome, outcome.message);
+    } else if (outcome?.providerAccepted === true) {
       gate.pressureLevel = 0;
       gate.cooldownUntilMs = 0;
     }
@@ -222,6 +243,18 @@ export async function dispatchWithChatgptProviderBackpressure(
       chatgptProviderDispatchGates.delete(key);
     }
   }
+}
+
+/** Controller-relay delivery: one serialized provider prompt submission lane. */
+export async function dispatchWithChatgptProviderBackpressure(
+  controllerHome: string,
+  dispatch: () => Promise<ChatgptProviderDeliveryResult>,
+): Promise<ChatgptProviderDeliveryResult> {
+  return await withChatgptProviderDispatchLane(controllerHome, dispatch, (result) => (
+    chatgptProviderFailureRequiresBackpressure(result.status, result.error?.code, result.error?.message)
+      ? { code: result.error?.code, message: result.error?.message }
+      : { providerAccepted: result.status === 'dispatch_confirmed' }
+  ));
 }
 
 const CHATGPT_WAIT_FOR_USER_MARKERS = [

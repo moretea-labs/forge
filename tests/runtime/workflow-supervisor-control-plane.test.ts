@@ -1175,3 +1175,149 @@ test('browserTasks keeps an applied external effect observable while lower Contr
   expect(control.browserTasks()).toHaveLength(1);
   expect(control.browserPoll({ conversationId, conversationUrl: `https://chatgpt.com/c/${conversationId}` }).command?.effectId).toBe(recovery.effectId);
 });
+
+test('refuses a not-applied proof observed on an unrendered conversation page', () => {
+  const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-not-applied-surface-'));
+  roots.push(root);
+  const store = new WorkflowSupervisorStore(join(root, 'supervisor-home'));
+  const control = new WorkflowSupervisorControlPlane(store);
+  const taskId = 'task-not-applied-surface';
+  const conversationId = '57575757-6868-7979-8080-919191919191';
+  const conversationUrl = `https://chatgpt.com/c/${conversationId}`;
+  control.registerTask({
+    taskId,
+    conversationId,
+    conversationUrl,
+    objective: 'Only a rendered conversation surface may prove non-application.',
+    completionContract: {},
+    continuationPolicy: {},
+    userBlockerPolicy: {},
+  });
+  const effect = control.reserveEnrollment(taskId);
+  const latestUserText = 'baseline user turn';
+  const latestAssistantResponse = 'baseline assistant turn';
+  const began = control.browserBeginEffect({
+    conversationId,
+    conversationUrl,
+    effectId: effect.effectId,
+    dispatchId: 'dispatch-surface-1',
+    dispatchGeneration: 1,
+    evidence: { surface: 'test', latest_user_text: latestUserText, latest_assistant_response: latestAssistantResponse },
+  });
+  expect(began.started).toBe(true);
+
+  // An empty/loading page with no readable composer cannot distinguish "the send
+  // never applied" from "nothing rendered yet", so it is not negative proof.
+  control.browserObserveEffect({
+    conversationId,
+    conversationUrl,
+    effectId: effect.effectId,
+    observationId: 'unrendered-page',
+    outcome: 'not_applied',
+    evidence: {
+      surface: 'test',
+      reconciliation: true,
+      reason: 'composer_state_unavailable',
+      latest_user_text: latestUserText,
+      latest_assistant_response: latestAssistantResponse,
+    },
+  });
+  expect(control.browserTasks()).toHaveLength(1);
+  expect(store.nextBrowserEffect(taskId, { nowMs: Date.now() + 3_600_000 }))
+    .toMatchObject({ mode: 'reconcile', generation: 1 });
+
+  // The same observation from a rendered conversation surface whose composer is
+  // provably empty is real negative proof and does authorise the spaced retry.
+  control.browserObserveEffect({
+    conversationId,
+    conversationUrl,
+    effectId: effect.effectId,
+    observationId: 'rendered-empty-composer',
+    outcome: 'not_applied',
+    evidence: {
+      surface: 'test',
+      reconciliation: true,
+      reason: 'composer_proven_empty',
+      provider_surface_rendered: true,
+      latest_user_text: latestUserText,
+      latest_assistant_response: latestAssistantResponse,
+    },
+  });
+  expect(store.nextBrowserEffect(taskId, { nowMs: Date.now() + 31_000 }))
+    .toMatchObject({ mode: 'send', generation: 2 });
+});
+
+test('bounds and spaces provider re-dispatch of one un-applied effect, then releases browser attention', () => {
+  const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-dispatch-budget-'));
+  roots.push(root);
+  const clock = { nowMs: Date.now() };
+  const store = new WorkflowSupervisorStore(join(root, 'supervisor-home'), { now: () => clock.nowMs });
+  const control = new WorkflowSupervisorControlPlane(store);
+  const taskId = 'task-dispatch-budget';
+  const conversationId = '58585858-6969-7070-8181-929292929292';
+  const conversationUrl = `https://chatgpt.com/c/${conversationId}`;
+  control.registerTask({
+    taskId,
+    conversationId,
+    conversationUrl,
+    objective: 'One un-applied effect may not mint unlimited provider submissions.',
+    completionContract: {},
+    continuationPolicy: {},
+    userBlockerPolicy: {},
+  });
+  const effect = control.reserveEnrollment(taskId);
+  const latestUserText = 'baseline user turn';
+  const latestAssistantResponse = 'baseline assistant turn';
+  const snapshotEvidence = { latest_user_text: latestUserText, latest_assistant_response: latestAssistantResponse };
+  const dispatch = (generation: number): void => {
+    expect(control.browserBeginEffect({
+      conversationId,
+      conversationUrl,
+      effectId: effect.effectId,
+      dispatchId: `dispatch-budget-${generation}`,
+      dispatchGeneration: generation,
+      evidence: { surface: 'test', ...snapshotEvidence },
+    })).toMatchObject({ started: true, mode: 'send', generation });
+  };
+  const proveNotApplied = (observationId: string): void => {
+    control.browserObserveEffect({
+      conversationId,
+      conversationUrl,
+      effectId: effect.effectId,
+      observationId,
+      outcome: 'not_applied',
+      evidence: {
+        surface: 'test',
+        reconciliation: true,
+        reason: 'composer_proven_empty',
+        provider_surface_rendered: true,
+        ...snapshotEvidence,
+      },
+    });
+  };
+
+  dispatch(1);
+  proveNotApplied('budget-proof-1');
+  // Inside the retry window the provider is left alone; the proof only permits a
+  // later generation, it does not replay immediately.
+  expect(store.nextBrowserEffect(taskId)).toMatchObject({ mode: 'reconcile', generation: 1 });
+
+  clock.nowMs += 30_000;
+  dispatch(2);
+  proveNotApplied('budget-proof-2');
+  clock.nowMs += 60_000;
+  dispatch(3);
+  proveNotApplied('budget-proof-3');
+  clock.nowMs += 120_000;
+  dispatch(4);
+  proveNotApplied('budget-proof-4');
+
+  expect(store.effectDispatchBudget(effect.effectId)).toMatchObject({ generations: 4, maxGenerations: 4, exhausted: true });
+  // Exhaustion stops demanding the conversation tab, so the adapter no longer
+  // re-opens and re-observes a provider effect it can never deliver.
+  expect(store.nextBrowserEffect(taskId)).toBeUndefined();
+  expect(control.browserTasks()).toEqual([]);
+  // The ceiling also holds for a caller that names a generation past the budget.
+  expect(store.recordEffectDispatchStarted(effect.effectId, 5, 'dispatch-budget-5')).toBe(false);
+  expect(store.latestEffectDispatch(effect.effectId)?.generation).toBe(4);
+});

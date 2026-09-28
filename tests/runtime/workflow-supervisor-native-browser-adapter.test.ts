@@ -35,7 +35,11 @@ function harness(
   preSubmitFailureAttempt = 1,
 ) {
   const settlements: string[] = [];
-  const control = new WorkflowSupervisorControlPlane(new WorkflowSupervisorStore(home()), {
+  // One mechanical clock drives both the browser transport and the Supervisor
+  // store's provider retry window, so retry spacing is deterministic here and
+  // identical in kind to the Runtime's wall-clock spacing.
+  const clock = { nowMs: Date.now() };
+  const control = new WorkflowSupervisorControlPlane(new WorkflowSupervisorStore(home(), { now: () => clock.nowMs }), {
     completionContract: async () => ({ valid: true, reason: 'ok' }),
     userBlockerPolicy: async () => ({ valid: true, reason: 'ok' }),
   }, {
@@ -45,7 +49,7 @@ function harness(
     },
   });
   const discovery = new WorkflowSupervisorEphemeralDiscovery();
-  const pages = [...initial]; let created = 0; let dispatchAttempts = 0; let snapshotCount = 0; let nowMs = 1_000_000; let inventoryReads = 0; let inventoryUnavailable = false; const errors: string[] = []; const dispatchedPrompts: string[] = [];
+  const pages = [...initial]; let created = 0; let dispatchAttempts = 0; let snapshotCount = 0; let inventoryReads = 0; let inventoryUnavailable = false; const errors: string[] = []; const dispatchedPrompts: string[] = [];
   const dependencies: Partial<WorkflowSupervisorNativeBrowserDependencies> = {
     platform: 'darwin',
     listTabs: async () => {
@@ -95,7 +99,7 @@ function harness(
       }
       return { dispatched: true, ...(providerConfirmed ? { confirmed: true } : {}) };
     },
-    nowMs: () => nowMs,
+    nowMs: () => clock.nowMs,
     providerIdleGraceMs: 1_000,
     providerScopeKey: home(),
     sleep: async () => undefined,
@@ -115,7 +119,7 @@ function harness(
     snapshots: () => snapshotCount,
     inventoryReads: () => inventoryReads,
     setInventoryUnavailable: (value: boolean) => { inventoryUnavailable = value; },
-    advance: (ms: number) => { nowMs += ms; },
+    advance: (ms: number) => { clock.nowMs += ms; },
   };
 }
 function register(control: WorkflowSupervisorControlPlane, conversationId: string) {
@@ -380,8 +384,13 @@ describe('Workflow Supervisor macOS native browser adapter', () => {
       .toMatchObject({ mode: 'reconcile', dispatchGeneration: 1 });
 
     // The adapter must first reconcile the exact conversation state. Only that
-    // canonical negative proof may authorize a second dispatch generation.
+    // canonical negative proof may authorize a second dispatch generation, and
+    // the shared provider retry window keeps that resend spaced instead of
+    // re-submitting on every browser tick.
     await h.adapter.runOnce();
+    expect(h.control.browserPoll({ conversationId, conversationUrl: url }).command)
+      .toMatchObject({ mode: 'reconcile', dispatchGeneration: 1 });
+    h.advance(31_000);
     expect(h.control.browserPoll({ conversationId, conversationUrl: url }).command)
       .toMatchObject({ mode: 'send', dispatchGeneration: 2 });
 
@@ -533,6 +542,9 @@ describe('Workflow Supervisor macOS native browser adapter', () => {
     await h.adapter.runOnce();
 
     expect(h.control.store.effectApplied(effect.effectId)).toBe(false);
+    // The canonical negative proof authorises the next generation, but the
+    // shared provider retry window keeps the resend spaced.
+    h.advance(31_000);
     expect(h.control.browserPoll({ conversationId, conversationUrl: url }).command).toMatchObject({ mode: 'send', dispatchGeneration: 2 });
     expect(h.errors).toEqual([]);
   });
@@ -825,6 +837,9 @@ describe('Workflow Supervisor macOS native browser adapter', () => {
 
     await h.adapter.runOnce();
     expect(h.dispatchAttempts()).toBe(2);
+    // The successor's canonical negative proof has landed; the spaced retry
+    // window is what keeps the successor resend from following it per tick.
+    h.advance(31_000);
     expect(h.control.store.nextBrowserEffect(taskId)?.generation).toBe(2);
     await h.adapter.runOnce();
     expect(h.dispatchAttempts()).toBe(3);

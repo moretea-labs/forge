@@ -129,12 +129,65 @@ function latestNotAppliedProofEventId(db: Database, effectId: string): number {
   const notApplied = statement(db, "SELECT event_id FROM events WHERE effect_id = ? AND kind = 'effect_not_applied' ORDER BY event_id DESC LIMIT 1", (s) => s.get(effectId)) as { event_id?: number } | undefined;
   return Number(notApplied?.event_id ?? 0);
 }
+
+/**
+ * Mechanical ceiling on how many times one un-applied Supervisor effect may be
+ * submitted to the provider. A proven non-application may legitimately be
+ * retried, but ChatGPT is one rate-limited shared resource: without a ceiling a
+ * single stuck effect minted an unbounded generation chain (live evidence:
+ * single effects were re-sent 130-166 times over hours), which is provider
+ * request volume that no Work actually asked for.
+ */
+export const WORKFLOW_SUPERVISOR_MAX_DISPATCH_GENERATIONS = 4;
+export const WORKFLOW_SUPERVISOR_DISPATCH_RETRY_BASE_MS = 30_000;
+export const WORKFLOW_SUPERVISOR_DISPATCH_RETRY_MAX_MS = 10 * 60_000;
+
+/** Spaced retries keep a persistent local obstacle from becoming a request storm. */
+export function workflowSupervisorDispatchRetryDelayMs(generation: number): number {
+  const exponent = Math.max(0, Math.min(8, Math.trunc(generation) - 1));
+  return Math.min(WORKFLOW_SUPERVISOR_DISPATCH_RETRY_MAX_MS, WORKFLOW_SUPERVISOR_DISPATCH_RETRY_BASE_MS * 2 ** exponent);
+}
+
+export interface WorkflowSupervisorEffectDispatchBudget {
+  effectId: string;
+  generations: number;
+  maxGenerations: number;
+  lastDispatchedAtMs?: number;
+  retryDelayMs?: number;
+  exhausted: boolean;
+}
+
+interface EffectDispatchLedger {
+  generations: number;
+  lastEventId: number;
+  lastGeneration: number;
+  lastOccurredAtMs: number;
+}
+
+function effectDispatchLedger(db: Database, effectId: string): EffectDispatchLedger {
+  const rows = statement(db, "SELECT event_id,payload_json,occurred_at FROM events WHERE effect_id = ? AND kind = 'effect_dispatch_started' ORDER BY event_id", (s) => s.all(effectId)) as Array<{ event_id?: number; payload_json?: string; occurred_at?: string }>;
+  const last = rows[rows.length - 1];
+  const payload = parsedObject(last?.payload_json);
+  const payloadMs = Number(payload.dispatched_at_ms);
+  const lastOccurredAtMs = Number.isFinite(payloadMs) && payloadMs > 0
+    ? payloadMs
+    : Date.parse(String(last?.occurred_at ?? ''));
+  return {
+    generations: rows.length,
+    lastEventId: Number(last?.event_id ?? 0),
+    lastGeneration: last?.event_id ? storedGeneration(last.payload_json) : 0,
+    lastOccurredAtMs: Number.isFinite(lastOccurredAtMs) ? lastOccurredAtMs : 0,
+  };
+}
 export class WorkflowSupervisorStore {
   private readonly db: Database;
   private closed = false;
+  /** Mechanical clock for provider retry spacing. Durable event timestamps keep wall-clock ISO. */
+  private readonly clockMs: () => number;
 
-  constructor(readonly forgeHome?: string) {
+  constructor(readonly forgeHome?: string, options: { now?: () => number } = {}) {
     this.db = openDatabase(forgeHome);
+    this.clockMs = options.now ?? Date.now;
   }
 
   close(): void {
@@ -337,7 +390,21 @@ export class WorkflowSupervisorStore {
       return { eventId: Number(row.event_id), generation: storedGeneration(row.payload_json), evidence: parsedObject(row.payload_json) };
     });
   }
-  nextBrowserEffect(taskId: string): { effect: WorkflowSupervisorEffect; mode: 'send' | 'reconcile'; generation: number } | undefined {
+  /**
+   * Select the one browser command for a task's oldest un-applied effect.
+   *
+   * A dispatch generation is only minted from the canonical negative proof that
+   * the previous send never reached the conversation, and only while the effect
+   * stays inside its mechanical retry budget and retry window. When the budget
+   * is exhausted this returns `undefined`: the effect stops demanding browser
+   * attention so the adapter stops re-opening the conversation, and the
+   * ControllerRound recovery path reports the bounded failure instead of the
+   * Supervisor silently resending forever.
+   */
+  nextBrowserEffect(
+    taskId: string,
+    options: { nowMs?: number } = {},
+  ): { effect: WorkflowSupervisorEffect; mode: 'send' | 'reconcile'; generation: number } | undefined {
     return this.read((db) => {
       const row = statement(db, `SELECT e.* FROM effects e
         WHERE e.task_id = ? AND NOT EXISTS (
@@ -345,11 +412,31 @@ export class WorkflowSupervisorStore {
         ) ORDER BY e.created_at, e.effect_id LIMIT 1`, (s) => s.get(taskId)) as Record<string, unknown> | undefined;
       if (!row) return undefined;
       const effect = effectFromRow(row);
-      const dispatch = statement(db, "SELECT event_id,payload_json FROM events WHERE effect_id = ? AND kind = 'effect_dispatch_started' ORDER BY event_id DESC LIMIT 1", (s) => s.get(effect.effectId)) as { event_id?: number; payload_json?: string } | undefined;
-      if (!dispatch?.event_id) return { effect, mode: 'send', generation: 1 };
-      const currentGeneration = storedGeneration(dispatch.payload_json);
-      const retryAuthorized = latestNotAppliedProofEventId(db, effect.effectId) > Number(dispatch.event_id);
-      return { effect, mode: retryAuthorized ? 'send' : 'reconcile', generation: retryAuthorized ? currentGeneration + 1 : currentGeneration };
+      const ledger = effectDispatchLedger(db, effect.effectId);
+      if (ledger.generations === 0) return { effect, mode: 'send', generation: 1 };
+      const retryAuthorized = latestNotAppliedProofEventId(db, effect.effectId) > ledger.lastEventId;
+      if (!retryAuthorized) return { effect, mode: 'reconcile', generation: ledger.lastGeneration };
+      if (ledger.generations >= WORKFLOW_SUPERVISOR_MAX_DISPATCH_GENERATIONS) return undefined;
+      const nowMs = options.nowMs ?? this.clockMs();
+      if (nowMs - ledger.lastOccurredAtMs < workflowSupervisorDispatchRetryDelayMs(ledger.lastGeneration)) {
+        return { effect, mode: 'reconcile', generation: ledger.lastGeneration };
+      }
+      return { effect, mode: 'send', generation: ledger.lastGeneration + 1 };
+    });
+  }
+  effectDispatchBudget(effectId: string): WorkflowSupervisorEffectDispatchBudget {
+    return this.read((db) => {
+      const ledger = effectDispatchLedger(db, effectId);
+      const exhausted = ledger.generations >= WORKFLOW_SUPERVISOR_MAX_DISPATCH_GENERATIONS
+        && !statement(db, "SELECT 1 AS ok FROM events WHERE effect_id = ? AND kind = 'effect_applied' LIMIT 1", (s) => s.get(effectId));
+      return {
+        effectId,
+        generations: ledger.generations,
+        maxGenerations: WORKFLOW_SUPERVISOR_MAX_DISPATCH_GENERATIONS,
+        ...(ledger.lastOccurredAtMs ? { lastDispatchedAtMs: ledger.lastOccurredAtMs } : {}),
+        ...(ledger.generations ? { retryDelayMs: workflowSupervisorDispatchRetryDelayMs(ledger.lastGeneration) } : {}),
+        exhausted,
+      };
     });
   }
   terminalAction(taskId: string): 'DONE' | 'NEEDS_USER' | undefined { return this.read((db) => { const row = statement(db, "SELECT kind FROM events WHERE task_id = ? AND kind IN ('terminal_done','terminal_needs_user') ORDER BY event_id DESC LIMIT 1", (s) => s.get(taskId)) as { kind?: string } | undefined; return row?.kind === 'terminal_done' ? 'DONE' : row?.kind === 'terminal_needs_user' ? 'NEEDS_USER' : undefined; }); }
@@ -499,6 +586,9 @@ export class WorkflowSupervisorStore {
 
   recordEffectDispatchStarted(effectId: string, generation: number, dispatchId: string, evidence: Record<string, unknown> = {}): boolean {
     if (!Number.isInteger(generation) || generation < 1 || generation > 1_000_000) throw new Error('WORKFLOW_SUPERVISOR_DISPATCH_GENERATION_INVALID');
+    // The retry budget is enforced here as well as in `nextBrowserEffect`, so a
+    // caller cannot mint generations past the ceiling by naming one directly.
+    if (generation > WORKFLOW_SUPERVISOR_MAX_DISPATCH_GENERATIONS) return false;
     return this.transaction((db) => {
       const effect = statement(db, 'SELECT task_id FROM effects WHERE effect_id = ?', (s) => s.get(effectId)) as { task_id?: string } | undefined;
       if (!effect?.task_id) throw new Error('WORKFLOW_SUPERVISOR_EFFECT_UNKNOWN');
@@ -508,7 +598,10 @@ export class WorkflowSupervisorStore {
       const currentGeneration = prior?.event_id ? storedGeneration(prior.payload_json) : 0;
       const retryAuthorized = !prior?.event_id || latestNotAppliedProofEventId(db, effectId) > Number(prior.event_id);
       if (!retryAuthorized || generation !== currentGeneration + 1) return false;
-      statement(db, 'INSERT INTO events(task_id,event_key,kind,effect_id,payload_json,occurred_at) VALUES (?,?,?,?,?,?)', (s) => s.run(effect.task_id, `effect-dispatch:${effectId}:${generation}`, 'effect_dispatch_started', effectId, json({ dispatchId, generation, ...evidence }), now()));
+      // `dispatched_at_ms` is the mechanical retry-spacing fact. It is recorded
+      // inside the evidence payload so retry spacing stays deterministic under
+      // an injected clock without changing durable event timestamps.
+      statement(db, 'INSERT INTO events(task_id,event_key,kind,effect_id,payload_json,occurred_at) VALUES (?,?,?,?,?,?)', (s) => s.run(effect.task_id, `effect-dispatch:${effectId}:${generation}`, 'effect_dispatch_started', effectId, json({ dispatchId, generation, dispatched_at_ms: this.clockMs(), ...evidence }), now()));
       return true;
     });
   }

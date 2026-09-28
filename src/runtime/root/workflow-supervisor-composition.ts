@@ -22,7 +22,7 @@ import {
   type ChatgptWorkConversationBinding,
 } from '../../../adapters/chatgpt/work-conversation-binding-store';
 import { readRequirement } from '../control-plane/persistence/requirement-store';
-import { getWorkflowSupervisorCurrentConversation, registerWorkflowSupervisorTask, reserveWorkflowSupervisorEnrollment } from '../../../supervisor/client';
+import { getWorkflowSupervisorCurrentConversation, getWorkflowSupervisorEffectDispatchBudget, registerWorkflowSupervisorTask, reserveWorkflowSupervisorEnrollment } from '../../../supervisor/client';
 import { resolveWorkflowSupervisorForgeHome, workflowSupervisorSocketPath } from '../../../supervisor/paths';
 import type { WorkflowSupervisorCompletion, WorkflowSupervisorLifecycleHooks, WorkflowSupervisorTask, WorkflowSupervisorTurnSettlement } from '../../../supervisor/types';
 import { getRuntimeWriteClaim } from './write-fence';
@@ -38,7 +38,14 @@ export type WorkflowSupervisorEnrollmentStatus =
   | 'current_conversation_unbound'
   | 'daemon_unavailable'
   | 'enrolled'
-  | 'lower_layer_not_ready';
+  | 'lower_layer_not_ready'
+  /**
+   * The Supervisor effect exists but has already spent its mechanical provider
+   * re-dispatch budget without becoming applied. Enrollment must not report a
+   * deliverable continuation: the caller records a bounded recovery failure and
+   * the ControllerRound transition policy turns it into a visible blocker.
+   */
+  | 'provider_dispatch_exhausted';
 
 export function workflowSupervisorLowerLayerReadyForWork(
   options: { controllerHome: string; repoId: string },
@@ -524,5 +531,18 @@ export async function ensureWorkflowSupervisorEnrollmentForWork(
     },
   });
   const effect = await reserveWorkflowSupervisorEnrollment(forgeHome, registeredTask.taskId, lowerLayer.providerEffectId);
+  // Enrollment only reports a deliverable continuation while the provider
+  // effect can still be submitted. Once its bounded re-dispatch budget is
+  // spent, the honest result is an exhausted enrollment: the caller records a
+  // bounded recovery failure instead of the Supervisor resending forever.
+  const dispatchBudget = await getWorkflowSupervisorEffectDispatchBudget(forgeHome, effect.effectId).catch(() => undefined);
+  if (dispatchBudget?.exhausted) {
+    return {
+      status: 'provider_dispatch_exhausted',
+      taskId: registeredTask.taskId,
+      effectId: effect.effectId,
+      reason: `WORKFLOW_SUPERVISOR_PROVIDER_DISPATCH_EXHAUSTED:${effect.effectId}:${dispatchBudget.generations}/${dispatchBudget.maxGenerations}`,
+    };
+  }
   return { status: 'enrolled', taskId: registeredTask.taskId, effectId: effect.effectId };
 }

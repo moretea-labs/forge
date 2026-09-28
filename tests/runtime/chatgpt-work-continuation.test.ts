@@ -16,7 +16,7 @@ import {
   getControllerRoundRelay,
   submitControllerRoundDisposition,
 } from '../../packages/kernel/controller/api/index';
-import { CHATGPT_AUTOMATION_MESSAGE_DELIVERY_TIMED_OUT, CHATGPT_AUTOMATION_RATE_LIMITED, CHATGPT_AUTOMATION_RATE_LIMITED_AFTER_SUBMIT, CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE, ChatgptProviderDeliveryError, chatgptProviderBackoffDelayMs, classifyChatgptProviderFailure, dispatchWithChatgptProviderBackpressure, type ChatgptProviderDeliveryHost } from '../../adapters/chatgpt/provider-delivery';
+import { CHATGPT_AUTOMATION_MESSAGE_DELIVERY_TIMED_OUT, CHATGPT_AUTOMATION_RATE_LIMITED, CHATGPT_AUTOMATION_RATE_LIMITED_AFTER_SUBMIT, CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE, ChatgptProviderDeliveryError, chatgptProviderBackoffDelayMs, chatgptProviderBackpressureRemainingMs, classifyChatgptProviderFailure, dispatchWithChatgptProviderBackpressure, withChatgptProviderDispatchLane, type ChatgptProviderDeliveryHost } from '../../adapters/chatgpt/provider-delivery';
 import { createChatgptBrowserDeliveryHost } from '../../adapters/chatgpt/browser-delivery-host';
 import { chatgptAutomationDeliveryFailure, chatgptComposerRetainsPrompt, chatgptSubmissionAcceptanceObserved, chatgptSubmissionObservationDelayMs, chatgptSubmissionSettlementWaitBudget, ensureControllerChatgptBrowser } from '../../adapters/chatgpt/browser-delivery-runtime';
 import { repositoryPluginConfigPath } from '../../src/runtime/plugins/config-store';
@@ -307,6 +307,51 @@ describe('ChatGPT provider delivery classification', () => {
     releaseFirst();
     await Promise.all([first, second]);
     expect(order).toEqual(['first:start', 'first:end', 'second:start']);
+  });
+
+  test('shares one provider dispatch lane across every Runtime transport that submits a prompt', async () => {
+    const order: string[] = [];
+    const scope = '/tmp/controller-provider-shared-lane';
+    let releaseRelay!: () => void;
+    const relayBlocked = new Promise<void>((resolve) => { releaseRelay = resolve; });
+    // The Controller relay and the Supervisor browser transport are separate
+    // code paths onto the same ChatGPT account. Reading the cooldown without
+    // entering this lane let them submit concurrently.
+    const relay = dispatchWithChatgptProviderBackpressure(scope, async () => {
+      order.push('relay:start');
+      await relayBlocked;
+      order.push('relay:end');
+      return {
+        status: 'dispatch_confirmed',
+        provider: 'controller-browser',
+        browserSessionId: 'browser-1',
+        executionPreferenceVerified: true,
+      };
+    });
+    const supervisor = withChatgptProviderDispatchLane(
+      scope,
+      async () => {
+        order.push('supervisor:start');
+        return { dispatched: true };
+      },
+      () => ({ providerAccepted: false }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(order).toEqual(['relay:start']);
+    releaseRelay();
+    await Promise.all([relay, supervisor]);
+    expect(order).toEqual(['relay:start', 'relay:end', 'supervisor:start']);
+  });
+
+  test('a rate-limited Supervisor submission establishes the shared provider cooldown', async () => {
+    const scope = '/tmp/controller-provider-shared-pressure';
+    expect(chatgptProviderBackpressureRemainingMs(scope)).toBe(0);
+    await withChatgptProviderDispatchLane(
+      scope,
+      async () => ({ dispatched: false, reason: 'Too many requests' }),
+      (result) => ({ code: result.reason, message: result.reason }),
+    );
+    expect(chatgptProviderBackpressureRemainingMs(scope)).toBeGreaterThan(0);
   });
 });
 

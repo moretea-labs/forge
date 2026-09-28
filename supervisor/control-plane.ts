@@ -69,6 +69,10 @@ export class WorkflowSupervisorControlPlane {
   }
   getTask(taskId: string): WorkflowSupervisorTask | undefined { return this.store.getTask(taskId); }
   getEffect(id: string): WorkflowSupervisorEffect | undefined { return this.store.getEffect(validateEffectId(id)); }
+  /** Mechanical provider re-dispatch budget for one effect, used by recovery to surface exhaustion. */
+  effectDispatchBudget(effectId: string): ReturnType<WorkflowSupervisorStore['effectDispatchBudget']> {
+    return this.store.effectDispatchBudget(validateEffectId(effectId));
+  }
   continuationProof(input: { repoId?: string; activeReleaseId: string; notBefore: string }) { return this.store.continuationProof(input); }
   browserDiscoverySnapshot() { return this.store.discoverySnapshot(); }
   recordBrowserDiscovery(source: string, conversations: readonly WorkflowSupervisorDiscoveredConversation[]) {
@@ -162,7 +166,7 @@ export class WorkflowSupervisorControlPlane {
       && browserAssistantHistoryContainsBaseline(snapshot.assistantMessages, dispatch.evidence.baseline_assistant_sha256, dispatch.evidence.baseline_has_source_completion));
     const targetAbsent = Boolean(snapshot && !browserTextHasEffect(snapshot.latestUserText, effect.effectId));
     const causalBaselinePreserved = (sourceMatches && preservedBaseline) || preservedHistoricalBaseline;
-    if (!pending || pending.effect.effectId !== effect.effectId || pending.mode !== 'reconcile' || !dispatch || pending.generation !== dispatch.generation || !snapshot || !causalBaselinePreserved || !targetAbsent) {
+    if (!pending || pending.effect.effectId !== effect.effectId || pending.mode !== 'reconcile' || !dispatch || pending.generation !== dispatch.generation || !snapshot || !causalBaselinePreserved || !targetAbsent || !browserNotAppliedSurfaceProven(input.evidence)) {
       this.store.recordEffectObservation(effect.effectId, input.observationId, 'unknown', { reconciliation: true, reason: 'not_applied_proof_incomplete' });
       return { recorded: true };
     }
@@ -392,6 +396,25 @@ function browserAssistantHistoryContainsBaseline(messages: readonly string[] | u
     && messages.some((message) => sha256(message) === baselineSha256));
 }
 function browserTextHasEffect(value: string, effectId: string): boolean { return value.includes(renderEffectMarker(effectId)); }
+/**
+ * Reasons that prove a live ChatGPT conversation surface was actually rendered
+ * and its composer was readable and empty at observation time.
+ */
+const BROWSER_NOT_APPLIED_SURFACE_REASONS = new Set([
+  'composer_proven_empty',
+  'stale_completed_supervisor_composer_cleared',
+]);
+/**
+ * A negative proof claims "this exact send did not reach the conversation".
+ * That is only observable on a rendered conversation surface. A missing or
+ * still-loading page (no composer, no message history) cannot distinguish
+ * "the send never applied" from "nothing has rendered yet", and treating it as
+ * proof is what let one stuck effect authorise an unbounded resend chain.
+ */
+function browserNotAppliedSurfaceProven(evidence: Record<string, unknown> | undefined): boolean {
+  if (!evidence || evidence.provider_surface_rendered !== true) return false;
+  return typeof evidence.reason === 'string' && BROWSER_NOT_APPLIED_SURFACE_REASONS.has(evidence.reason);
+}
 const PERSISTED_BROWSER_EVIDENCE_KEYS = new Set(['exact_user_message', 'reconciliation', 'reason', 'surface', 'target_marker_present']);
 function sanitizeBrowserEvidence(evidence: Record<string, unknown> | undefined): Record<string, unknown> {
   if (!evidence) return {};

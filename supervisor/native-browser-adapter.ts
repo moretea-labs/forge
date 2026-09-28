@@ -10,7 +10,7 @@ import {
   type MacOsBrowserProduct,
   type MacOsBrowserTabRef,
 } from '../src/runtime/plugins/browser-macos-bridge';
-import { CHATGPT_AUTOMATION_RATE_LIMITED, chatgptProviderBackpressureRemainingMs, chatgptProviderPageFailure, noteChatgptProviderBackpressure } from '../adapters/chatgpt/provider-delivery';
+import { CHATGPT_AUTOMATION_RATE_LIMITED, chatgptProviderBackpressureRemainingMs, chatgptProviderPageFailure, noteChatgptProviderBackpressure, withChatgptProviderDispatchLane } from '../adapters/chatgpt/provider-delivery';
 import { parseChatgptConversationIdentity } from './chatgpt-conversation';
 import { WorkflowSupervisorControlPlane } from './control-plane';
 import { hasCommittedSupervisorEnvelope, renderEffectMarker, sha256 } from './protocol';
@@ -801,6 +801,17 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     task: WorkflowSupervisorBrowserTask,
     options: { mutationAllowed?: boolean } = {},
   ): Promise<void> {
+    // Every Supervisor submission shares the Runtime's single transient ChatGPT
+    // provider dispatch lane. Sharing only the cooldown would still allow this
+    // transport to submit concurrently with the Controller-relay lane, which is
+    // provider-level concurrency no individual Work asked for.
+    const dispatchPrompt = (mode?: 'send' | 'resume') => withChatgptProviderDispatchLane(
+      this.deps.providerScopeKey,
+      () => this.deps.dispatchPrompt(page, command.prompt, task, mode ? { mode } : undefined),
+      (result) => (result.dispatched
+        ? { providerAccepted: result.confirmed === true }
+        : { code: result.reason, message: result.reason }),
+    );
     let snapshot = await this.deps.snapshot(page, { includeUserHistory: true, includePageText: true });
     // A recovery effect may be authorized because an enrolled provider turn stayed
     // visually `generating` without observable progress for the bounded stale
@@ -882,7 +893,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
         // generation; never retype it and never manufacture a retry generation.
         // The exact Browser tab itself is the transport target. Resume the
         // already-written payload in that background tab without activating it.
-        dispatch = await this.deps.dispatchPrompt(page, command.prompt, task, { mode: 'resume' });
+        dispatch = await dispatchPrompt('resume');
         if (!dispatch.dispatched) {
           this.control.browserObserveEffect({
             conversationId: command.conversationId,
@@ -922,6 +933,11 @@ export class WorkflowSupervisorNativeBrowserAdapter {
           outcome: composerProvablyEmpty ? 'not_applied' : 'unknown',
           evidence: {
             surface: 'macos-native',
+            // "The send never applied" is only observable on a rendered
+            // conversation surface. A missing composer means the page (or the
+            // exact tab) had not rendered a live conversation yet, which is not
+            // proof of non-application and must not authorise another send.
+            provider_surface_rendered: composerPresent,
             exact_user_message: false,
             reconciliation: true,
             target_marker_present: false,
@@ -938,7 +954,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     if (!dispatch) {
       // Unattended continuation targets the exact Forge-owned tab by identity;
       // it must not steal the user's foreground browser/tab to obtain input focus.
-      dispatch = await this.deps.dispatchPrompt(page, command.prompt, task);
+      dispatch = await dispatchPrompt();
     }
     if (!dispatch.dispatched) {
       this.control.browserObserveEffect({

@@ -78,6 +78,22 @@ export async function reserveWorkflowSupervisorSchedulerRecovery(forgeHome: stri
   }, SUPERVISOR_RPC_MUTATION_TIMEOUT_MS);
 }
 
+export interface WorkflowSupervisorEffectDispatchBudget {
+  effectId: string;
+  generations: number;
+  maxGenerations: number;
+  lastDispatchedAtMs?: number;
+  retryDelayMs?: number;
+  exhausted: boolean;
+}
+
+export async function getWorkflowSupervisorEffectDispatchBudget(
+  forgeHome: string,
+  effectId: string,
+): Promise<WorkflowSupervisorEffectDispatchBudget> {
+  return await rpc<WorkflowSupervisorEffectDispatchBudget>(forgeHome, 'effect_dispatch_budget', { effect_id: effectId });
+}
+
 export async function getWorkflowSupervisorContinuationProof(forgeHome: string, input: { repoId?: string; activeReleaseId: string; notBefore: string }): Promise<WorkflowSupervisorContinuationProof | undefined> {
   const proof = await rpc<WorkflowSupervisorContinuationProof | null>(forgeHome, 'continuation_proof', {
     ...(input.repoId?.trim() ? { repo_id: input.repoId.trim() } : {}),

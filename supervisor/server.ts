@@ -292,6 +292,7 @@ async function dispatch(control: WorkflowSupervisorControlPlane, discovery: Work
   if (req.method === 'observe_assistant') return control.observeAssistantTurn({ taskId: text(p, 'task_id'), conversationId: text(p, 'conversation_id'), responseText: text(p, 'response_text') });
   if (req.method === 'task_get') return control.getTask(text(p, 'task_id')) ?? null;
   if (req.method === 'effect_get') return control.getEffect(text(p, 'effect_id')) ?? null;
+  if (req.method === 'effect_dispatch_budget') return control.effectDispatchBudget(text(p, 'effect_id'));
   if (req.method === 'continuation_proof') return control.continuationProof({ repoId: typeof p.repo_id === 'string' && p.repo_id.trim() ? p.repo_id.trim() : undefined, activeReleaseId: text(p, 'active_release_id'), notBefore: text(p, 'not_before') }) ?? null;
   throw new Error('WORKFLOW_SUPERVISOR_RPC_METHOD_UNKNOWN');
 }
