@@ -1291,8 +1291,25 @@ function updateWorkContractInternal(
     const current = exact
       ? canonicalizeStoredWorkContract(exact.value)
       : store!.contracts[index]!;
-    const patch = typeof mutation === 'function' ? mutation(current, at) : mutation;
-    if (!patch) return current;
+    const mutationPatch = typeof mutation === 'function' ? mutation(current, at) : mutation;
+    if (!mutationPatch) return current;
+    const placementChanged = (
+      Object.prototype.hasOwnProperty.call(mutationPatch, 'checkoutId')
+      && mutationPatch.checkoutId !== current.checkoutId
+    ) || (
+      Object.prototype.hasOwnProperty.call(mutationPatch, 'worktreeRef')
+      && mutationPatch.worktreeRef !== current.worktreeRef
+    ) || (
+      Object.prototype.hasOwnProperty.call(mutationPatch, 'executionPlacement')
+      && JSON.stringify(mutationPatch.executionPlacement) !== JSON.stringify(current.executionPlacement)
+    );
+    // executionConcurrency is only a projection of the concrete placement that
+    // existed when an execution attempt was admitted. A checkout/worktree move
+    // makes that projection stale; clear it centrally unless the same atomic
+    // mutation explicitly supplies a replacement projection for the new target.
+    const patch = placementChanged && !Object.prototype.hasOwnProperty.call(mutationPatch, 'executionConcurrency')
+      ? { ...mutationPatch, executionConcurrency: undefined }
+      : mutationPatch;
     if (authoritativeOptions.controllerHome) {
       assertCanonicalWorkAdmissionAllowed(authoritativeOptions, {
         operation: patch.status !== undefined && isTerminalWorkContractStatus(patch.status)

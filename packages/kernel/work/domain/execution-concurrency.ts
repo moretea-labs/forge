@@ -3,7 +3,6 @@ import type { WorkContract } from './types';
 
 export type WorkExecutionLane = 'read' | 'review' | 'isolated_write' | 'integration_write' | 'external_effect';
 export type WorkExecutionIsolation = 'shared' | 'isolated';
-export type WorkExecutionControllerRole = 'mutable_owner' | 'reviewer';
 export type WorkExecutionResourceMode = 'read' | 'write' | 'exclusive';
 
 export interface WorkExecutionResourceIntent {
@@ -19,7 +18,6 @@ export type WorkExecutionWakeTrigger =
 
 export interface WorkExecutionConcurrencyBlocker {
   code:
-    | 'reviewer_mutation_forbidden'
     | 'same_semantic_scope_mutation'
     | 'shared_mutation_lane_conflict'
     | 'integration_target_conflict'
@@ -43,7 +41,6 @@ export interface WorkExecutionConcurrencyContract {
   resourceIntents: WorkExecutionResourceIntent[];
   blockers: WorkExecutionConcurrencyBlocker[];
   isolation: WorkExecutionIsolation;
-  controllerRole: WorkExecutionControllerRole;
 }
 
 export interface WorkExecutionConcurrencyInput {
@@ -93,7 +90,20 @@ function semanticScopeKeys(work: WorkContract): string[] {
   return [`work:${work.workId}`];
 }
 
-function defaultLane(work: WorkContract, mutationClass: EngineeringMutationClass): WorkExecutionLane {
+function defaultLane(
+  work: WorkContract,
+  mutationClass: EngineeringMutationClass,
+  resourceIntents: readonly WorkExecutionResourceIntent[],
+  requestedLane?: WorkExecutionLane,
+): WorkExecutionLane {
+  const hasMutableResourceIntent = resourceIntents.some((intent) => intent.mode !== 'read');
+  if (hasMutableResourceIntent && (!requestedLane || !workExecutionLaneMutates(requestedLane))) {
+    if (mutationClass === 'external_effect') return 'external_effect';
+    return work.worktreePolicy.required || work.constraints.workspaceMode === 'isolated' || work.constraints.requireWorktree === true
+      ? 'isolated_write'
+      : 'integration_write';
+  }
+  if (requestedLane) return requestedLane;
   if (work.workKind === 'read_only_review') return 'review';
   if (mutationClass === 'readonly') return 'read';
   return mutationClass;
@@ -104,6 +114,7 @@ export function buildWorkExecutionConcurrencyContract(
   input: WorkExecutionConcurrencyInput = {},
 ): WorkExecutionConcurrencyContract {
   const mutationClass = work.engineeringContext?.semanticScope?.mutationClass ?? fallbackMutationClass(work);
+  const resourceIntents = normalizedResourceIntents(input.resourceIntents ?? []);
   return {
     schemaVersion: 1,
     workId: work.workId,
@@ -111,13 +122,12 @@ export function buildWorkExecutionConcurrencyContract(
     observedWorkUpdatedAt: work.updatedAt,
     semanticScopeKeys: semanticScopeKeys(work),
     mutationClass,
-    lane: input.lane ?? defaultLane(work, mutationClass),
-    resourceIntents: normalizedResourceIntents(input.resourceIntents ?? []),
+    lane: defaultLane(work, mutationClass, resourceIntents, input.lane),
+    resourceIntents,
     blockers: [...(input.blockers ?? [])],
     isolation: work.worktreePolicy.required || work.constraints.workspaceMode === 'isolated' || work.constraints.requireWorktree === true
       ? 'isolated'
       : 'shared',
-    controllerRole: work.workKind === 'read_only_review' ? 'reviewer' : 'mutable_owner',
   };
 }
 
@@ -144,25 +154,11 @@ function sharedMutableResourceKeys(
   return mutableResourceKeys(left).filter((key) => rightKeys.has(key));
 }
 
-function invalidReviewerBlocker(contract: WorkExecutionConcurrencyContract): WorkExecutionConcurrencyBlocker | undefined {
-  if (contract.controllerRole !== 'reviewer'
-    || (!workExecutionLaneMutates(contract.lane) && mutableResourceKeys(contract).length === 0)) return undefined;
-  return {
-    code: 'reviewer_mutation_forbidden',
-    disposition: 'invalid',
-    semanticScopeKeys: contract.semanticScopeKeys,
-    resourceKeys: mutableResourceKeys(contract),
-    wakeTrigger: { kind: 'work_contract_change', workId: contract.workId },
-  };
-}
-
 export function evaluateWorkExecutionCompatibility(
   candidate: WorkExecutionConcurrencyContract,
   active: readonly WorkExecutionConcurrencyContract[],
 ): WorkExecutionCompatibilityDecision {
   const blockers: WorkExecutionConcurrencyBlocker[] = [];
-  const reviewerBlocker = invalidReviewerBlocker(candidate);
-  if (reviewerBlocker) blockers.push(reviewerBlocker);
   if (candidate.lane === 'external_effect' && mutableResourceKeys(candidate).length === 0) {
     blockers.push({
       code: 'external_effect_target_unknown',
@@ -177,8 +173,6 @@ export function evaluateWorkExecutionCompatibility(
 
   for (const current of active) {
     if (current.workId === candidate.workId) continue;
-    const currentReviewerBlocker = invalidReviewerBlocker(current);
-    if (currentReviewerBlocker) continue;
     if (!workExecutionLaneMutates(current.lane)) continue;
 
     const overlap = scopesOverlap(candidate, current);

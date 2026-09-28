@@ -8,6 +8,7 @@ import {
   evaluateWorkExecutionCompatibility,
   getWorkContract,
   readActiveWorkCandidates,
+  updateWorkContract,
   type WorkContract,
 } from '../../packages/kernel/work/api/index';
 import {
@@ -234,7 +235,7 @@ describe('Work execution concurrency', () => {
     });
   });
 
-  test('keeps same-Work process overlap outside Work compatibility and keeps reviewer lanes read-only', () => {
+  test('keeps same-Work process overlap outside Work compatibility and derives mutation authority from concrete resource intent', () => {
     const home = tempHome(), repoId = 'repo-same-work';
     const mutable = work({ controllerHome: home, repoId, workId: 'work-mutable', stepId: 'same-step' });
     const reviewer = work({ controllerHome: home, repoId, workId: 'work-review', stepId: 'same-step', workKind: 'read_only_review' });
@@ -242,23 +243,19 @@ describe('Work execution concurrency', () => {
     expect(evaluateWorkExecutionCompatibility(mutableContract, [mutableContract])).toEqual({ compatible: true, blockers: [] });
     const reviewContract = buildWorkExecutionConcurrencyContract(reviewer, { resourceIntents: [{ resourceKey: 'workspace:review', mode: 'read' }] });
     expect(evaluateWorkExecutionCompatibility(mutableContract, [reviewContract])).toEqual({ compatible: true, blockers: [] });
-    const invalidReview = buildWorkExecutionConcurrencyContract(reviewer, {
-      lane: 'isolated_write',
+    const concreteMutation = buildWorkExecutionConcurrencyContract(reviewer, {
       resourceIntents: intent('path:checkout-work-review:src/a.ts'),
     });
-    expect(evaluateWorkExecutionCompatibility(invalidReview, []).blockers[0]).toMatchObject({
-      code: 'reviewer_mutation_forbidden', disposition: 'invalid',
-    });
-    const disguisedReviewMutation = buildWorkExecutionConcurrencyContract(reviewer, {
+    expect(concreteMutation).toMatchObject({ lane: 'isolated_write', isolation: 'isolated' });
+    expect(evaluateWorkExecutionCompatibility(concreteMutation, [])).toEqual({ compatible: true, blockers: [] });
+    const disguisedReadLane = buildWorkExecutionConcurrencyContract(reviewer, {
       lane: 'review',
       resourceIntents: intent('path:checkout-work-review:src/a.ts'),
     });
-    expect(evaluateWorkExecutionCompatibility(disguisedReviewMutation, []).blockers[0]).toMatchObject({
-      code: 'reviewer_mutation_forbidden', disposition: 'invalid',
-    });
+    expect(disguisedReadLane.lane).toBe('isolated_write');
   });
 
-  test('lets read-only review checks coordinate cache/temp capacity without granting source or authority mutation', () => {
+  test('lets review checks coordinate cache/temp capacity while mutable source claims stay visible to concurrency authority', () => {
     const home = tempHome(), repoId = 'repo-review-check';
     const reviewer = work({ controllerHome: home, repoId, workId: 'work-review-check', stepId: 'review-step', workKind: 'read_only_review' });
     const claim = (resourceKey: string, mode: ProcessResourceClaim['mode']): ProcessResourceClaim => ({
@@ -290,30 +287,14 @@ describe('Work execution concurrency', () => {
       ],
     })).toEqual({ compatible: true, hardBlocked: false });
 
-    for (const forbidden of [
-      claim(`workspace:${reviewer.checkoutId}`, 'write'),
-      claim(`path:${reviewer.checkoutId}:src/a.ts`, 'write'),
-      claim(`git-index:${reviewer.checkoutId}`, 'exclusive'),
-      claim(`git-refs:${repoId}`, 'exclusive'),
-      claim(`integration:${repoId}`, 'exclusive'),
-      claim(`release:${repoId}`, 'exclusive'),
-      claim(`remote:${repoId}`, 'exclusive'),
-      claim(`network:${repoId}`, 'write'),
-      claim('host-service:canonical-runtime', 'write'),
-    ]) {
-      expect(evaluateManagedProcessWorkCompatibility({
-        controllerHome: home,
-        repoId,
-        processId: `proc-review-forbidden-${forbidden.resourceKey}`,
-        workId: reviewer.workId,
-        checkExecution,
-        resourceClaims: [claim(`workspace:${reviewer.checkoutId}`, 'read'), forbidden],
-      })).toMatchObject({
-        compatible: false,
-        hardBlocked: true,
-        wait: { blockerCode: 'reviewer_mutation_forbidden', disposition: 'invalid' },
-      });
-    }
+    expect(evaluateManagedProcessWorkCompatibility({
+      controllerHome: home,
+      repoId,
+      processId: 'proc-review-source-write',
+      workId: reviewer.workId,
+      checkExecution,
+      resourceClaims: [claim(`workspace:${reviewer.checkoutId}`, 'write')],
+    })).toEqual({ compatible: true, hardBlocked: false });
   });
 
   test('serializes shared integration/external targets while allowing distinct targets', () => {
@@ -506,6 +487,30 @@ describe('Work execution concurrency', () => {
     expect(reconcileWorkExecutionConcurrencyWaits({ controllerHome: home, repoId })).toMatchObject({ waiting: 1, cleared: 0 });
     releaseExecutionLeases(home, repoId, 'process:blocker');
     expect(reconcileWorkExecutionConcurrencyWaits({ controllerHome: home, repoId })).toMatchObject({ waiting: 1, cleared: 1, workIds: [blockedWork.workId] });
+    expect(getWorkContract({ controllerHome: home, repoId }, blockedWork.workId)?.executionConcurrency).toBeUndefined();
+
+    recordWorkExecutionConcurrencyWait({
+      controllerHome: home,
+      repoId,
+      workId: blockedWork.workId,
+      attemptId: 'proc-stale-placement',
+      resourceClaims: [{ resourceKey: `workspace:${blockedWork.checkoutId}`, mode: 'write' }],
+      wait: {
+        schemaVersion: 1,
+        source: 'resource_lease',
+        blockerCode: 'resource_claim_conflict',
+        disposition: 'wait',
+        semanticScopeKeys: [],
+        resourceKeys: [`workspace:${blockedWork.checkoutId}`],
+        wakeTrigger: { kind: 'resource_release', resourceKeys: [`workspace:${blockedWork.checkoutId}`] },
+        observedAt: new Date().toISOString(),
+      },
+    });
+    expect(getWorkContract({ controllerHome: home, repoId }, blockedWork.workId)?.executionConcurrency).toBeDefined();
+    updateWorkContract({ controllerHome: home, repoId }, blockedWork.workId, {
+      checkoutId: 'checkout-rebound',
+      worktreeRef: '/tmp/rebound-worktree',
+    });
     expect(getWorkContract({ controllerHome: home, repoId }, blockedWork.workId)?.executionConcurrency).toBeUndefined();
   });
 });
