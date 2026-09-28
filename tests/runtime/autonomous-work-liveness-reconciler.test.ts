@@ -342,6 +342,69 @@ describe('autonomous Work liveness reconciliation', () => {
     expect(getControllerRoundRelay(store, 'WORK-CURRENT')?.status).toBe('dispatching');
   });
 
+  test('bootstraps one dedicated fresh ChatGPT execution conversation when no conversation is bound yet', async () => {
+    const controllerHome = home();
+    const workId = 'WORK-FRESH-EXECUTION-TRANSPORT';
+    const store = { controllerHome, repoId: 'repo-a' };
+    createRunningWork(controllerHome, { workId });
+
+    const owner = claimControllerSession(store, {
+      workId,
+      controllerId: 'controller-a',
+      controllerType: 'chatgpt',
+      sessionId: 'session-' + workId,
+      principalId: 'controller-a',
+      controllerInstanceId: 'runtime-a',
+      leaseMs: 60_000,
+    });
+    const adapter = upsertChatgptControllerBinding(store, {
+      workId,
+      sessionId: owner.sessionId,
+      browserSessionId: 'prepared-fresh-session',
+      title: 'dedicated execution transport',
+      model: 'gpt-5.6',
+      reasoning: 'high',
+      tabPolicy: 'new',
+      transportConversation: 'fresh',
+    });
+    bindControllerSessionBinding(store, { workId, sessionId: owner.sessionId, binding: adapter.binding });
+    releaseControllerSession(store, workId, owner.controllerId);
+
+    const relay = beginInitialControllerRoundDispatch(store, {
+      workId,
+      occurrenceId: 'launcher_start:WORK-FRESH-EXECUTION-TRANSPORT:proof',
+      identity: {
+        controllerId: 'controller-a',
+        controllerType: 'chatgpt',
+        sessionId: 'session-' + workId,
+        principalId: 'controller-a',
+        controllerInstanceId: 'runtime-a',
+      },
+    });
+    expect(relay.status).toBe('dispatching');
+
+    let providerDispatches = 0;
+    const result = await runSchedulerAutonomousContinuationReconciliation({
+      controllerHome,
+      nowMs: Date.parse('2026-09-28T14:45:00.000Z'),
+      repositories: [{ repoId: 'repo-a', canonicalRoot: controllerHome, localRoot: controllerHome }],
+      dependencies: {
+        authorizeWake: () => undefined,
+        boundaryForWork: () => ({ status: 'conversation_pending' as const, reason: 'EXACT_WORK_CONVERSATION_BINDING_REQUIRED' as const }),
+        hostForBinding: () => ({
+          resume: async () => {
+            providerDispatches += 1;
+            return { accepted: true, dispatchId: 'fresh-dispatch' };
+          },
+        }),
+      },
+    });
+
+    expect(result).toMatchObject({ eligible: 1, dispatched: 1, supervisorEnrolled: 0, failed: 0 });
+    expect(providerDispatches).toBe(1);
+    expect(getControllerRoundRelay(store, workId)).toMatchObject({ status: 'dispatched', originWorkId: workId });
+  });
+
   test('Requirement relay lookup prefers a live relay over a newer retired terminal sibling', () => {
     const controllerHome = home();
     let now = '2026-09-20T07:00:00.000Z';

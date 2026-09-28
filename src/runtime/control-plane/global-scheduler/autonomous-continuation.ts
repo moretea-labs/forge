@@ -13,6 +13,7 @@ import { currentTaskSemanticProjectionForWork, listWorkContracts, semanticWorkSt
 import { workHasActiveExecution } from '../../execution/work-activity';
 import { readRequirement } from '../persistence/requirement-store';
 import { createHandoffItem, getHandoffItem } from '../facade/handoff-inbox-store';
+import { getChatgptControllerBindingPayload } from '../../../../adapters/chatgpt/controller-binding-store';
 import { assertAutomatedOperationAllowed } from '../governance/external-effects';
 import { controllerHostForScheduledBinding, ensureScheduledControllerBindingForWork } from '../../root/scheduled-controller-composition';
 import {
@@ -244,12 +245,18 @@ export async function runSchedulerAutonomousContinuationReconciliation(input: {
             continue;
           }
           if (boundary.status === 'conversation_pending') {
-            // Requirement-backed ChatGPT Work must be explicitly bound to the
-            // current conversation before outer-turn continuation. Never fall
-            // through to the legacy Browser host, which may create a replacement
-            // provider session/conversation and split lifecycle authority.
-            skip(skippedByReason, 'workflow_supervisor:conversation_pending');
-            continue;
+            // The control conversation is never the execution transport. A
+            // launcher-admitted fresh binding is the one intentional exception:
+            // let the lower ChatGPT host create exactly one dedicated execution
+            // conversation. Once that conversation is observed and bound, the
+            // outer-turn Supervisor owns every successor round. Any other
+            // unbound state remains fail-closed so recovery cannot invent a new
+            // conversation or split an existing execution lineage.
+            const chatgptBinding = getChatgptControllerBindingPayload(store, binding.adapterRef);
+            if (chatgptBinding?.transportConversation !== 'fresh') {
+              skip(skippedByReason, 'workflow_supervisor:conversation_pending');
+              continue;
+            }
           }
         }
 
