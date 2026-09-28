@@ -41,6 +41,9 @@ export interface WorkflowSupervisorNativeSnapshot {
   latestUserText: string;
   pageText?: string;
   latestAssistantResponse: string;
+  /** Complete currently-observed role history, present only for causal reconciliation snapshots. */
+  userMessages?: string[];
+  assistantMessages?: string[];
   /** Exact current composer payload, when the ChatGPT composer is present. */
   composerText?: string;
   providerActivityText: string;
@@ -173,6 +176,7 @@ export async function defaultSnapshot(page: WorkflowSupervisorNativePage, option
     const userEntries = roleEntries('user');
     const assistantEntries = roleEntries('assistant');
     const userTexts = includeUserHistory ? userEntries.map(messageText).filter(Boolean) : undefined;
+    const assistantTexts = includeUserHistory ? assistantEntries.map(messageText).filter(Boolean) : undefined;
     const composer = [
       '[data-testid="composer-text-input"]',
       'div#prompt-textarea[contenteditable="true"]',
@@ -193,6 +197,8 @@ export async function defaultSnapshot(page: WorkflowSupervisorNativePage, option
       title: String(document.title || ''),
       latestUserText: userTexts ? userTexts.join('\\n') : latestRoleText('user'),
       latestAssistantResponse: latestRoleText('assistant'),
+      ...(userTexts ? { userMessages: userTexts } : {}),
+      ...(assistantTexts ? { assistantMessages: assistantTexts } : {}),
       ...(composer ? { composerText: String(('value' in composer ? composer.value : composer.innerText ?? composer.textContent ?? '') || '') } : {}),
       providerActivityText: latestTurn,
       // Failure classification must never inspect chat content. A user discussing
@@ -875,6 +881,8 @@ export class WorkflowSupervisorNativeBrowserAdapter {
             reason: reconciliationReason,
             latest_user_text: snapshot.latestUserText,
             latest_assistant_response: snapshot.latestAssistantResponse,
+            user_messages: snapshot.userMessages,
+            assistant_messages: snapshot.assistantMessages,
           },
         });
         return;

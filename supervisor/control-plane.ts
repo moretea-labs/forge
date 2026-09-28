@@ -157,8 +157,12 @@ export class WorkflowSupervisorControlPlane {
     const preservedBaseline = Boolean(snapshot && dispatch
       && browserTextSha256(snapshot.latestUserText) === dispatch.evidence.baseline_user_sha256
       && sha256(snapshot.latestAssistantResponse) === dispatch.evidence.baseline_assistant_sha256);
+    const preservedHistoricalBaseline = Boolean(snapshot && dispatch
+      && browserUserHistoryContainsBaseline(snapshot.userMessages, dispatch.evidence.baseline_user_sha256)
+      && browserAssistantHistoryContainsBaseline(snapshot.assistantMessages, dispatch.evidence.baseline_assistant_sha256, dispatch.evidence.baseline_has_source_completion));
     const targetAbsent = Boolean(snapshot && !browserTextHasEffect(snapshot.latestUserText, effect.effectId));
-    if (!pending || pending.effect.effectId !== effect.effectId || pending.mode !== 'reconcile' || !dispatch || pending.generation !== dispatch.generation || !snapshot || !sourceMatches || !preservedBaseline || !targetAbsent) {
+    const causalBaselinePreserved = (sourceMatches && preservedBaseline) || preservedHistoricalBaseline;
+    if (!pending || pending.effect.effectId !== effect.effectId || pending.mode !== 'reconcile' || !dispatch || pending.generation !== dispatch.generation || !snapshot || !causalBaselinePreserved || !targetAbsent) {
       this.store.recordEffectObservation(effect.effectId, input.observationId, 'unknown', { reconciliation: true, reason: 'not_applied_proof_incomplete' });
       return { recorded: true };
     }
@@ -350,13 +354,43 @@ function requireNonTerminalTask(store: WorkflowSupervisorStore, taskId: string):
   const terminal = store.terminalAction(taskId);
   if (terminal) throw new Error(`WORKFLOW_SUPERVISOR_TASK_TERMINAL:${terminal}`);
 }
-function browserSnapshot(evidence: Record<string, unknown> | undefined): { latestUserText: string; latestAssistantResponse: string } | undefined {
+function boundedBrowserTextArray(value: unknown, maxBytes: number): string[] | undefined {
+  if (!Array.isArray(value) || value.length > 2048) return undefined;
+  const items: string[] = [];
+  let bytes = 0;
+  for (const item of value) {
+    if (typeof item !== 'string') return undefined;
+    bytes += Buffer.byteLength(item, 'utf8');
+    if (bytes > maxBytes) return undefined;
+    items.push(item);
+  }
+  return items;
+}
+function browserSnapshot(evidence: Record<string, unknown> | undefined): { latestUserText: string; latestAssistantResponse: string; userMessages?: string[]; assistantMessages?: string[] } | undefined {
   const latestUserText = boundedBrowserText(evidence?.latest_user_text, 128 * 1024);
   const latestAssistantResponse = boundedBrowserText(evidence?.latest_assistant_response, 512 * 1024);
-  return latestUserText === undefined || latestAssistantResponse === undefined ? undefined : { latestUserText, latestAssistantResponse };
+  if (latestUserText === undefined || latestAssistantResponse === undefined) return undefined;
+  const userMessages = boundedBrowserTextArray(evidence?.user_messages, 128 * 1024);
+  const assistantMessages = boundedBrowserTextArray(evidence?.assistant_messages, 512 * 1024);
+  return { latestUserText, latestAssistantResponse, ...(userMessages ? { userMessages } : {}), ...(assistantMessages ? { assistantMessages } : {}) };
 }
 function normalizeBrowserText(value: string): string { return value.replace(/\s+/g, ' ').trim(); }
 function browserTextSha256(value: string): string { return sha256(normalizeBrowserText(value)); }
+function browserUserHistoryContainsBaseline(messages: readonly string[] | undefined, baselineSha256: unknown): boolean {
+  if (!messages || typeof baselineSha256 !== 'string' || !baselineSha256) return false;
+  if (browserTextSha256('') === baselineSha256) return true;
+  const prefix: string[] = [];
+  for (const message of messages) {
+    prefix.push(message);
+    if (browserTextSha256(prefix.join('\n')) === baselineSha256) return true;
+  }
+  return false;
+}
+function browserAssistantHistoryContainsBaseline(messages: readonly string[] | undefined, baselineSha256: unknown, hasSourceCompletion: unknown): boolean {
+  if (hasSourceCompletion !== true) return true;
+  return Boolean(messages && typeof baselineSha256 === 'string' && baselineSha256
+    && messages.some((message) => sha256(message) === baselineSha256));
+}
 function browserTextHasEffect(value: string, effectId: string): boolean { return value.includes(renderEffectMarker(effectId)); }
 const PERSISTED_BROWSER_EVIDENCE_KEYS = new Set(['exact_user_message', 'reconciliation', 'reason', 'surface', 'target_marker_present']);
 function sanitizeBrowserEvidence(evidence: Record<string, unknown> | undefined): Record<string, unknown> {
