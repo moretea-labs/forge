@@ -723,6 +723,26 @@ describe('Workflow Supervisor macOS native browser adapter', () => {
     expect(h.errors).toEqual([]);
   });
 
+  test('reconsiders the same compact receipt after the causal applied effect advances', async () => {
+    const conversationId = '77777777-6666-5555-4444-333333333333';
+    const h = harness();
+    const { taskId } = register(h.control, conversationId);
+    await h.adapter.runOnce();
+    const page = h.pages.find((candidate) => candidate.ref.tabId === 'forge-tab-1')!;
+    const recoveryEffectId = 'fx_causalrecovery1234567890';
+    page.latestAssistantResponse = renderSupervisorReceipt({ taskId, conversationId }, recoveryEffectId, 'CONTINUE');
+    page.latestTurnRole = 'assistant';
+    page.providerActivityText = page.latestAssistantResponse;
+    await h.adapter.runOnce();
+    expect(h.settlements).toHaveLength(0);
+    await Bun.sleep(2);
+    h.control.store.reserveEffect({ taskId, effectId: recoveryEffectId, kind: 'recovery', originKey: 'test:causal-recovery', prompt: 'causal recovery' });
+    h.control.store.recordEffectObservation(recoveryEffectId, 'test-recovery-applied', 'applied', { surface: 'test' });
+    await h.adapter.runOnce();
+    expect(h.settlements).toHaveLength(1);
+    expect(h.errors).toEqual([]);
+  });
+
   test('does not retry the same invalid Supervisor completion on every browser tick', async () => {
     const conversationId = '88888888-7777-6666-5555-444444444444';
     const h = harness();

@@ -45,7 +45,8 @@ async function handlePage(message, sender) {
         // A malformed provider block is durable evidence that this exact
         // response is not a completion. Do not reparse it on every mutation;
         // the next distinct response remains eligible for observation.
-        if (String(error?.message ?? error).includes('WORKFLOW_SUPERVISOR_')) observedAssistant.set(identity.conversationId, fingerprint);
+        const message = String(error?.message ?? error);
+        if (message.includes('WORKFLOW_SUPERVISOR_') && !message.includes('WORKFLOW_SUPERVISOR_COMPACT_RECEIPT_CHALLENGE_MISMATCH')) observedAssistant.set(identity.conversationId, fingerprint);
         if (!String(error?.message ?? error).includes('TASK_TERMINAL')) console.warn('[Forge Supervisor] assistant observation rejected', error);
       }
     }

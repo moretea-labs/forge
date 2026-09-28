@@ -655,6 +655,13 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       // while still allowing the provider-idle observer below to drive bounded
       // recovery. A later provider response has a different digest and is
       // observed normally.
+      if (message === 'WORKFLOW_SUPERVISOR_COMPACT_RECEIPT_CHALLENGE_MISMATCH') {
+        // Compact receipts are causally scoped to the currently applied effect.
+        // The same rendered receipt may be observed just before a reserved recovery
+        // effect becomes applied; caching it here would prevent reconsideration once
+        // the causal effect context advances.
+        return;
+      }
       if (message.startsWith('WORKFLOW_SUPERVISOR_')) {
         this.observedAssistant.set(task.conversationId, digest);
         return;
