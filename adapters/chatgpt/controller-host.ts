@@ -83,7 +83,10 @@ export function createChatgptControllerHost(options: {
         controllerAuthorityId: roundContext.authorityId,
         relayScopeId: roundContext.relayScopeId,
         title: payload.title,
-        browserSessionId: durableConversation?.latestBrowserSessionId ?? payload.browserSessionId,
+        browserSessionId: payload.transportConversation === 'fresh'
+          ? undefined
+          : durableConversation?.latestBrowserSessionId ?? payload.browserSessionId,
+        preparedBrowserSessionId: payload.transportConversation === 'fresh' ? payload.browserSessionId : undefined,
         conversationUrl: durableConversation?.conversationUrl ?? payload.conversationUrl,
         model: payload.model ?? 'gpt-5.6',
         reasoning: payload.reasoning ?? 'high',

@@ -88,6 +88,8 @@ export interface WorkChatgptContinuationInput {
   relayScopeId?: string;
   title?: string;
   browserSessionId?: string;
+  /** Exact Browser session prepared interactively for this fresh provider effect. Never inherited from an older bound conversation. */
+  preparedBrowserSessionId?: string;
   conversationUrl?: string;
   model?: string;
   reasoning?: ChatgptAutomationReasoning;
@@ -226,16 +228,21 @@ export function resolveChatgptWorkBrowserSessionId(input: {
   repoId: string;
   workId: string;
   tabPolicy?: ChatgptAutomationTabPolicy;
+  /** Exact Browser session prepared for this fresh current effect. */
+  preparedSessionId?: string;
   explicitSessionId?: string;
   boundSessionId?: string;
 }): string {
   const policy = normalizeTabPolicy(input.tabPolicy);
   const stable = stableChatgptWorkBrowserSessionId(input.repoId, input.workId);
-  // A fresh conversation is a fresh transport effect.  Do not inherit an
-  // explicit or durable session from the previous bound conversation: only its
-  // newly observed canonical conversation identity may survive this dispatch.
-  if (policy === 'new') return `${stable}-${randomUUID().slice(0, 8)}`;
-  // An explicit Browser session is an exact *current-effect* transport identity.
+  // A fresh conversation must never inherit an older explicit/bound session.
+  // It may only reuse the exact current-effect identity prepared interactively
+  // by launcher_start so the already-established capability grant remains valid.
+  if (policy === 'new') {
+    const prepared = input.preparedSessionId?.trim();
+    if (prepared && prepared !== LEGACY_CONTROLLER_CHATGPT_SESSION_ID) return prepared;
+    return `${stable}-${randomUUID().slice(0, 8)}`;
+  }
   const explicit = input.explicitSessionId?.trim();
   if (explicit && explicit !== LEGACY_CONTROLLER_CHATGPT_SESSION_ID) return explicit;
   const bound = input.boundSessionId?.trim();
@@ -447,6 +454,7 @@ export async function runWorkChatgptContinuation(
           repoId: input.repoId,
           workId: input.workId,
           tabPolicy,
+          preparedSessionId: transportConversation === 'fresh' ? input.preparedBrowserSessionId : undefined,
           explicitSessionId: input.browserSessionId,
           boundSessionId: existing?.latestBrowserSessionId,
         });
@@ -474,6 +482,7 @@ export async function runWorkChatgptContinuation(
     repoId: input.repoId,
     workId: input.workId,
     tabPolicy,
+    preparedSessionId: transportConversation === 'fresh' ? input.preparedBrowserSessionId : undefined,
     explicitSessionId: input.browserSessionId,
     boundSessionId: existing?.latestBrowserSessionId,
   });

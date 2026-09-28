@@ -768,6 +768,7 @@ describe('ChatGPT Work conversation binding', () => {
     expect(resolveChatgptWorkBrowserSessionId({ repoId: 'repo-1', workId: 'WORK-1', boundSessionId: 'work-owned-session' })).toBe('work-owned-session');
     expect(resolveChatgptWorkBrowserSessionId({ repoId: 'repo-1', workId: 'WORK-1', tabPolicy: 'new' })).toStartWith(`${first}-`);
     expect(resolveChatgptWorkBrowserSessionId({ repoId: 'repo-1', workId: 'WORK-1', tabPolicy: 'new', explicitSessionId: 'prepared-session' })).toStartWith(`${first}-`);
+    expect(resolveChatgptWorkBrowserSessionId({ repoId: 'repo-1', workId: 'WORK-1', tabPolicy: 'new', preparedSessionId: 'prepared-session' })).toBe('prepared-session');
     const standalone = stableStandaloneChatgptBrowserSessionId('repo-1', 'schedule:SCH-1');
     expect(standalone).toBe(stableStandaloneChatgptBrowserSessionId('repo-1', 'schedule:SCH-1'));
     expect(standalone).not.toBe(stableStandaloneChatgptBrowserSessionId('repo-1', 'schedule:SCH-2'));
@@ -1342,7 +1343,7 @@ describe('ChatGPT Work conversation binding', () => {
     const result = await runWorkChatgptContinuation({
       controllerHome, repoId: repository.repoId, repoRoot, workId: 'WORK-FRESH-TRANSPORT', prompt: 'continue in a fresh transport',
       controllerAuthorityId: 'cra_44444444444444444444444444444444', relayScopeId: 'goal:WORK-FRESH-TRANSPORT',
-      browserSessionId: 'browser-old-transport', conversationUrl: 'https://chatgpt.com/c/old-transport', tabPolicy: 'reuse', transportConversation: 'fresh', originSurface: 'schedule',
+      browserSessionId: 'browser-old-transport', preparedBrowserSessionId: 'browser-prepared-transport', conversationUrl: 'https://chatgpt.com/c/old-transport', tabPolicy: 'reuse', transportConversation: 'fresh', originSurface: 'schedule',
     }, {
       bridgeRuntime: false,
       browserHost: { dispatch: async (input) => {
@@ -1355,6 +1356,7 @@ describe('ChatGPT Work conversation binding', () => {
       } },
     });
     expect(targetUrl).toBe('https://chatgpt.com/');
+    expect(dispatchedSessionId).toBe('browser-prepared-transport');
     expect(dispatchedSessionId).not.toBe('browser-old-transport');
     expect(result).toMatchObject({
       status: 'failed', providerDeliveryStatus: 'outcome_unknown', conversationId: 'new-transport',
