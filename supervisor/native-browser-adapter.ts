@@ -289,31 +289,37 @@ export async function defaultDispatchPrompt(
   })()`);
   if (!prepared.prepared) return { dispatched: false, reason: prepared.reason ?? 'composer_prepare_failed' };
 
-  const sendSelector = '[data-testid="send-button"], button[aria-label="Send"], button[aria-label="发送"], button[data-testid*="send"]';
-  await page.waitForSelector(sendSelector, { state: 'visible', timeout: 2_000 });
-
-  // Re-verify the exact payload after the bounded wait. If the user deliberately
-  // edits this Forge-owned tab in the tiny interval, refuse to submit rather than
-  // sending mixed content. browserBeginEffect will reconcile the same generation.
-  return await page.evaluate<{ dispatched: boolean; reason?: string }>(`(() => {
-    const visible = (element) => Boolean(element && element.getClientRects && element.getClientRects().length);
-    const value = (element) => String((element?.innerText ?? element?.textContent ?? '') || '');
-    const normalizeValue = (input) => String(input || '').replace(/\\s+/g, ' ').trim();
-    const expected = ${JSON.stringify(prompt)};
-    const composer = document.querySelector('div#prompt-textarea[contenteditable="true"], #prompt-textarea[contenteditable="true"], [data-testid="composer-text-input"][contenteditable="true"], div[role="textbox"][contenteditable="true"]');
-    if (!(composer instanceof HTMLElement) || normalizeValue(value(composer)) !== normalizeValue(expected)) {
-      return { dispatched: false, reason: 'composer_submit_mismatch' };
-    }
-    const sendButton = document.querySelector('[data-testid="send-button"], button[aria-label="Send"], button[aria-label="发送"], button[data-testid*="send"]');
-    if (!(sendButton instanceof HTMLElement)
-        || !visible(sendButton)
-        || sendButton.hasAttribute('disabled')
-        || sendButton.getAttribute('aria-disabled') === 'true') {
-      return { dispatched: false, reason: 'send_button_missing' };
-    }
-    sendButton.click();
-    return { dispatched: true };
-  })()`);
+  // Keep send-control readiness on the same exact-tab DOM transport as
+  // composer mutation. The generic selector-wait bridge can lag ChatGPT DOM
+  // changes even while execute_javascript sees the live submit button.
+  const submitDeadline = Date.now() + 2_000;
+  while (true) {
+    // Re-verify the exact payload on every observation. If the user deliberately
+    // edits this Forge-owned tab in the tiny interval, refuse to submit rather
+    // than sending mixed content. browserBeginEffect will reconcile the same
+    // generation.
+    const result = await page.evaluate<{ dispatched: boolean; reason?: string }>(`(() => {
+      const visible = (element) => Boolean(element && element.getClientRects && element.getClientRects().length);
+      const value = (element) => String((element?.innerText ?? element?.textContent ?? '') || '');
+      const normalizeValue = (input) => String(input || '').replace(/\\s+/g, ' ').trim();
+      const expected = ${JSON.stringify(prompt)};
+      const composer = document.querySelector('div#prompt-textarea[contenteditable="true"], #prompt-textarea[contenteditable="true"], [data-testid="composer-text-input"][contenteditable="true"], div[role="textbox"][contenteditable="true"]');
+      if (!(composer instanceof HTMLElement) || normalizeValue(value(composer)) !== normalizeValue(expected)) {
+        return { dispatched: false, reason: 'composer_submit_mismatch' };
+      }
+      const sendButton = document.querySelector('[data-testid="send-button"], button[aria-label="Send"], button[aria-label="发送"], button[data-testid*="send"], button[type="submit"]');
+      if (!(sendButton instanceof HTMLElement)
+          || !visible(sendButton)
+          || sendButton.hasAttribute('disabled')
+          || sendButton.getAttribute('aria-disabled') === 'true') {
+        return { dispatched: false, reason: 'send_button_missing' };
+      }
+      sendButton.click();
+      return { dispatched: true };
+    })()`);
+    if (result.dispatched || result.reason !== 'send_button_missing' || Date.now() >= submitDeadline) return result;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
 }
 
 const DEFAULT_DEPENDENCIES: WorkflowSupervisorNativeBrowserDependencies = {
