@@ -14,13 +14,15 @@ import {
 import { touchSchedulerWakeSignal } from '../../../src/runtime/control-plane/global-scheduler/wake-signal';
 import {
   beginInitialControllerRoundDispatch,
+  bindControllerSessionBinding,
   controllerRoundBlockerClass,
   finishControllerRoundRelayDispatch,
   getControllerRoundRelay,
   getRequirementControllerRoundRelay,
+  releaseObservedControllerSession,
   retryFailedControllerRoundProviderDispatch,
 } from '../../../packages/kernel/controller/api/index';
-import { authenticatedFacadeControllerIdentity } from './controller-authority-adapter';
+import { authenticatedFacadeControllerIdentity, bindFacadeControllerOwnership } from './controller-authority-adapter';
 import {
   ensureWorkflowSupervisorEnrollmentForWork,
   workflowSupervisorBoundaryForWork,
@@ -205,7 +207,7 @@ export async function callRhWorkControllerOperation(
           timeoutMs,
           authorizationGrantRefs: transportConversation === 'bound' ? existingBinding?.authorizationGrantRefs : undefined,
         });
-        upsertChatgptControllerRoundTransportBinding(store, {
+        const preparedControllerBinding = upsertChatgptControllerRoundTransportBinding(store, {
           workId,
           sessionId: relay.sessionId,
           browserSessionId: prepared.browserSessionId,
@@ -218,6 +220,29 @@ export async function callRhWorkControllerOperation(
           continuationPrompt: initialControllerBinding.payload.continuationPrompt,
           authorizationGrantRefs: prepared.authorizationGrantRefs,
         });
+        // Launcher admission is the one moment where the authenticated control
+        // request and the freshly prepared provider transport are both present.
+        // Persist that mechanical resume identity, then immediately release the
+        // live lease. Scheduler/Runtime rotation can later recover the same
+        // execution conversation without turning semantic Work into ownership.
+        const launchOwner = bindFacadeControllerOwnership(ctx, store, workId, identity, {
+          allowClaimIfMissing: true,
+          leaseMs: 60_000,
+          relayScopeId: relay.relayScopeId,
+        });
+        bindControllerSessionBinding(store, {
+          workId,
+          sessionId: launchOwner.sessionId,
+          binding: preparedControllerBinding.binding,
+        });
+        const released = releaseObservedControllerSession(store, {
+          workId,
+          actor: `launcher-start-retain:${workId}`,
+          owner: launchOwner,
+        });
+        if (!released.allowed) {
+          throw new Error(`CONTROLLER_LAUNCH_RESUME_IDENTITY_RELEASE_FAILED:${workId}:${released.reason}`);
+        }
       } catch (launchError) {
         const launchFailure = launchError instanceof Error ? launchError.message : String(launchError);
         finishControllerRoundRelayDispatch(store, {

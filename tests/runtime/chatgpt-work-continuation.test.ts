@@ -1464,6 +1464,10 @@ describe('ChatGPT Work conversation binding', () => {
     expect(controllerOperations).toContain('authorizeRoundBudgetOccurrence: true');
     expect(controllerOperations).toContain('occurrenceId,');
     expect(controllerOperations).toContain('bindingId: chatgptControllerRoundBindingId(workId)');
+    expect(controllerOperations).toContain('const launchOwner = bindFacadeControllerOwnership(ctx, store, workId, identity');
+    expect(controllerOperations).toContain('bindControllerSessionBinding(store, {');
+    expect(controllerOperations).toContain('releaseObservedControllerSession(store, {');
+    expect(controllerOperations).toContain('binding: preparedControllerBinding.binding');
     expect(readFileSync(join(process.cwd(), 'src/runtime/root/controller-round-composition.ts'), 'utf8')).toContain('return chatgptControllerProviderBindingId(workId);');
     expect(controllerOperations).toContain("controllerType: controllerType as 'codex' | 'grok' | 'claude'");
     expect(controllerOperations.indexOf('await prepareWorkChatgptContinuationTransport({')).toBeLessThan(controllerOperations.indexOf('const launched = await launchSuperController'));
