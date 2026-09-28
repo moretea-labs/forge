@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
+import { createHash } from 'crypto';
 import { execFileSync } from 'child_process';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
@@ -789,7 +790,7 @@ test('reconciles a late applied Supervisor effect into the same outcome-unknown 
   });
 });
 
-test('provider recovery is a single exactly-once resume and does not recurse through Scheduler policy', () => {
+test('provider recovery is a single exactly-once resume and does not recurse through Scheduler policy', async () => {
   const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-browser-exhausted-'));
   roots.push(root);
   const store = new WorkflowSupervisorStore(join(root, 'supervisor-home'));
@@ -828,6 +829,13 @@ test('provider recovery is a single exactly-once resume and does not recurse thr
   expect(exhausted.state).toBe('exhausted');
   expect(store.providerResumeExhausted(resume.effectId)).toBe(true);
   expect(control.reserveSchedulerRecovery(taskId, 'legacy-retry')).toBeUndefined();
+
+  const lateReceipt = renderSupervisorReceipt(control.getTask(taskId)!, resume.effectId, 'CONTINUE');
+  const late = await control.observeAssistantTurn({ taskId, conversationId, responseText: lateReceipt });
+  expect(late.action).toBe('CONTINUE');
+  expect(late.terminal).toBe(false);
+  expect(late.successorEffect).toBeDefined();
+  expect(store.getCompletionByResponseSha256(taskId, createHash('sha256').update(lateReceipt).digest('hex'))?.sourceEffectId).toBe(resume.effectId);
 });
 
 test('Resume stream unavailable reserves exactly one same-conversation recovery effect and never replays the applied effect', () => {

@@ -185,7 +185,8 @@ export class WorkflowSupervisorControlPlane {
     const task = this.requireTask(input.taskId);
     if (task.conversationId !== input.conversationId) throw new Error('WORKFLOW_SUPERVISOR_CONVERSATION_MISMATCH');
     const responseSha256 = sha256(input.responseText);
-    const expectedEffect = this.store.latestAppliedEffectWithoutCompletion(task.taskId);
+    const expectedEffect = this.store.latestAppliedEffectWithoutCompletion(task.taskId)
+      ?? this.store.latestAppliedLeafEffectWithoutCompletion(task.taskId);
     // A live applied effect always wins: an old compact receipt must never be
     // allowed to satisfy a newer causal obligation. Only when no effect is
     // awaiting completion may an exact persisted response hash recover the

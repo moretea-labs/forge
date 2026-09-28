@@ -353,6 +353,18 @@ export class WorkflowSupervisorStore {
       return row ? effectFromRow(row) : undefined;
     });
   }
+  latestAppliedLeafEffectWithoutCompletion(taskId: string): WorkflowSupervisorEffect | undefined {
+    return this.read((db) => {
+      const row = statement(db, `SELECT e.* FROM effects e
+        WHERE e.task_id = ?
+          AND EXISTS (SELECT 1 FROM events applied WHERE applied.effect_id = e.effect_id AND applied.kind = 'effect_applied')
+          AND NOT EXISTS (SELECT 1 FROM completions c WHERE c.task_id = e.task_id AND c.source_effect_id = e.effect_id)
+          AND NOT EXISTS (SELECT 1 FROM effects child WHERE child.origin_key = 'provider-recovery:' || e.effect_id)
+        ORDER BY (SELECT MAX(event_id) FROM events applied WHERE applied.effect_id = e.effect_id AND applied.kind = 'effect_applied') DESC
+        LIMIT 1`, (s) => s.get(taskId)) as Record<string, unknown> | undefined;
+      return row ? effectFromRow(row) : undefined;
+    });
+  }
 
   /**
    * An applied browser effect remains a Supervisor-owned external observation
