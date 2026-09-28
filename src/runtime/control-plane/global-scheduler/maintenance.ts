@@ -17,11 +17,14 @@ import {
   claimStalledControllerRoundRelays,
   controllerRoundBlockerClass,
   finishControllerRoundRelayDispatch,
+  getControllerRoundRelay,
   listCurrentControllerRoundRelays,
 } from '../../../../packages/kernel/controller/api/index';
 import { assertAutomatedOperationAllowed } from '../governance/external-effects';
 import { runWorkChatgptContinuation, settleWorkChatgptAutomationTab } from '../launcher/chatgpt-work-continuation';
-import { getChatgptWorkConversationBinding } from '../../../../adapters/chatgpt/work-conversation-binding-store';
+import { chatgptControllerBindingId, getChatgptWorkConversationBinding } from '../../../../adapters/chatgpt/work-conversation-binding-store';
+import { getChatgptControllerBindingPayload } from '../../../../adapters/chatgpt/controller-binding-store';
+import { getWorkContract, semanticWorkState } from '../../../../packages/kernel/work/api/index';
 import { getChatgptControllerRoundSettlement } from '../../../../adapters/chatgpt/controller-round-settlement-store';
 import { recordChatgptControllerRoundTabSettlement, renderChatgptControllerRoundPrompt } from '../../root/controller-round-composition';
 import { ensureWorkflowSupervisorEnrollmentForWork, workflowSupervisorBoundaryForWork } from '../../root/workflow-supervisor-composition';
@@ -298,6 +301,149 @@ export async function runSchedulerValidationReconciliation(input: {
       );
     }
   }
+}
+
+export async function runSchedulerQueuedControllerRoundDispatch(input: {
+  controllerHome: string;
+  nowMs: number;
+  repositories: readonly Pick<RepositoryRecord, 'repoId' | 'canonicalRoot' | 'localRoot'>[];
+  maxDispatches?: number;
+  dispatchPrompt?: typeof runWorkChatgptContinuation;
+  authorizeWake?: typeof assertAutomatedOperationAllowed;
+}): Promise<{ scanned: number; dispatched: number; failed: number }> {
+  const dispatchPrompt = input.dispatchPrompt ?? runWorkChatgptContinuation;
+  const authorizeWake = input.authorizeWake ?? assertAutomatedOperationAllowed;
+  const maxDispatches = Math.max(1, Math.min(Math.trunc(input.maxDispatches ?? 2), 8));
+  let scanned = 0;
+  let dispatched = 0;
+  let failed = 0;
+
+  for (const repository of input.repositories) {
+    if (dispatched + failed >= maxDispatches) break;
+    const store = { controllerHome: input.controllerHome, repoId: repository.repoId };
+    for (const record of listCurrentControllerRoundRelays(store, 100)) {
+      if (dispatched + failed >= maxDispatches) break;
+      if (record.status !== 'dispatching' || (record.controllerType ?? 'chatgpt') !== 'chatgpt') continue;
+      if (!record.occurrenceId?.startsWith('launcher_start:')) continue;
+      if ((record.providerDispatchAttempt ?? 0) > 0 || record.providerDispatchEffectId || record.providerDispatchStartedAt || record.providerDispatchReceiptId || record.dispatchedAt) continue;
+      const nextRecoveryAt = record.nextRecoveryAt ? Date.parse(record.nextRecoveryAt) : Number.NaN;
+      if (Number.isFinite(nextRecoveryAt) && input.nowMs < nextRecoveryAt) continue;
+      scanned += 1;
+      const work = getWorkContract(store, record.originWorkId);
+      if (!work || semanticWorkState(work) !== 'open') continue;
+      const adapterRef = record.bindingId ?? chatgptControllerBindingId(undefined, record.originWorkId);
+      const binding = getChatgptControllerBindingPayload(store, adapterRef);
+      if (!binding || binding.workId !== record.originWorkId || binding.sessionId !== record.sessionId || !binding.browserSessionId) continue;
+      const bridgePrepared = binding.browserSessionId.startsWith('forge-chatgpt-bridge-');
+      if (!bridgePrepared && (binding.authorizationGrantRefs?.length ?? 0) === 0) continue;
+
+      let providerDispatchStartedByThisPass = false;
+      try {
+        authorizeWake('external_controller_wake', {
+          work_id: record.originWorkId,
+          controller_type: 'chatgpt',
+          relay_scope_id: record.relayScopeId,
+          recovery_reason: 'queued_controller_round_ready',
+        });
+        if (!record.authorityId) throw new Error(`CONTROLLER_ROUND_AUTHORITY_REQUIRED:${record.relayScopeId}`);
+        const dispatchingRecord = beginControllerRoundProviderDispatch(store, {
+          workId: record.originWorkId,
+          authorityId: record.authorityId,
+          expectedUpdatedAt: record.updatedAt,
+          bindingId: binding.bindingId,
+        });
+        providerDispatchStartedByThisPass = true;
+        const prompt = [
+          renderChatgptControllerRoundPrompt(store, dispatchingRecord, { exactOriginWork: true }),
+          'Forge continuation transport is active for this Work; provider delivery success is not semantic completion.',
+          binding.continuationPrompt?.trim() ?? '',
+        ].filter(Boolean).join('\n');
+        const delivery = await dispatchPrompt({
+          controllerHome: input.controllerHome,
+          repoId: repository.repoId,
+          repoRoot: repository.canonicalRoot ?? repository.localRoot,
+          workId: record.originWorkId,
+          prompt,
+          controllerAuthorityId: dispatchingRecord.authorityId,
+          relayScopeId: dispatchingRecord.relayScopeId,
+          browserSessionId: binding.browserSessionId,
+          conversationUrl: binding.conversationUrl,
+          model: binding.model ?? 'gpt-5.6',
+          reasoning: binding.reasoning ?? 'high',
+          tabPolicy: binding.tabPolicy ?? 'auto',
+          transportConversation: binding.transportConversation ?? (binding.conversationUrl ? 'bound' : 'fresh'),
+          timeoutMs: binding.timeoutMs,
+          authorizationGrantRefs: binding.authorizationGrantRefs,
+          originSurface: 'schedule',
+        });
+        if (delivery.status === 'failed') {
+          const reason = delivery.error?.message ?? delivery.error?.code ?? 'CHATGPT_CONTROLLER_ROUND_DISPATCH_FAILED';
+          const disposition = classifySchedulerProviderFailure(reason);
+          if (disposition === 'wait_for_user' && record.authorityId) {
+            const handoffId = ensureSchedulerProviderUserActionHandoff(store, {
+              workId: record.originWorkId,
+              relayScopeId: record.relayScopeId,
+              authorityId: record.authorityId,
+              reason,
+            });
+            finishControllerRoundRelayDispatch(store, { workId: record.originWorkId, ok: false, waitForUser: true, handoffId, error: reason });
+          } else {
+            finishControllerRoundRelayDispatch(store, {
+              workId: record.originWorkId,
+              ok: false,
+              error: reason,
+              outcomeUnknown: disposition === 'outcome_unknown',
+              recovery: disposition === 'retryable',
+              nowMs: input.nowMs,
+            });
+          }
+          failed += 1;
+          continue;
+        }
+        const updatedBinding = getChatgptWorkConversationBinding(store, record.originWorkId);
+        finishControllerRoundRelayDispatch(store, {
+          workId: record.originWorkId,
+          ok: true,
+          bindingId: updatedBinding?.bindingId ?? binding.bindingId,
+        });
+        dispatched += 1;
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        if (!providerDispatchStartedByThisPass) {
+          const latest = getControllerRoundRelay(store, record.originWorkId);
+          if (latest && latest.updatedAt !== record.updatedAt) continue;
+        }
+        const disposition = classifySchedulerProviderFailure(reason);
+        if (disposition === 'wait_for_user' && record.authorityId) {
+          const handoffId = ensureSchedulerProviderUserActionHandoff(store, {
+            workId: record.originWorkId,
+            relayScopeId: record.relayScopeId,
+            authorityId: record.authorityId,
+            reason,
+          });
+          finishControllerRoundRelayDispatch(store, {
+            workId: record.originWorkId,
+            ok: false,
+            waitForUser: true,
+            handoffId,
+            error: reason,
+          });
+        } else {
+          finishControllerRoundRelayDispatch(store, {
+            workId: record.originWorkId,
+            ok: false,
+            error: reason,
+            outcomeUnknown: disposition === 'outcome_unknown',
+            recovery: disposition === 'retryable',
+            nowMs: input.nowMs,
+          });
+        }
+        failed += 1;
+        console.error(`[forge controller relay] queued round dispatch failed for ${record.relayScopeId}:`, reason);
+      }
+    }
+  }
+  return { scanned, dispatched, failed };
 }
 
 export async function runSchedulerControllerRoundRecovery(input: {

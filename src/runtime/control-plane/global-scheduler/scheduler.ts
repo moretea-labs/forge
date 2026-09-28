@@ -27,6 +27,7 @@ import { schedulerDispatchAllowed } from '../facade/work-admission-policy';
 import {
   runSchedulerControllerRoundRecovery,
   runSchedulerPeriodicCleanup,
+  runSchedulerQueuedControllerRoundDispatch,
   runSchedulerValidationReconciliation,
 } from './maintenance';
 import { planSchedulerSourceSampling } from './source-scan';
@@ -650,6 +651,14 @@ export class GlobalScheduler {
       return { activeJobs: activeJobSnapshot.length };
     }
     if (reconciliationRan && schedulerDispatchAllowed(this.controllerHome)) {
+      const queuedRounds = await runSchedulerQueuedControllerRoundDispatch({
+        controllerHome: this.controllerHome,
+        nowMs: now,
+        repositories,
+      });
+      if (queuedRounds.failed > 0) {
+        console.error('[forge controller relay] queued dispatch reported ' + queuedRounds.failed + ' failure(s)');
+      }
       const liveness = await runSchedulerAutonomousContinuationReconciliation({
         controllerHome: this.controllerHome,
         nowMs: now,

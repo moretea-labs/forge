@@ -5,11 +5,13 @@ import { result } from './result-adapter';
 import { buildFacadeResult, getHandoffItem } from '../../../src/runtime/control-plane/facade';
 import { getWorkContract } from '../../../packages/kernel/work/api/index';
 import { launchSuperController } from '../../../src/runtime/control-plane/launcher/thin-launcher';
-import { runWorkChatgptContinuation } from '../../../src/runtime/control-plane/launcher/chatgpt-work-continuation';
+import { prepareWorkChatgptContinuationTransport } from '../../../src/runtime/control-plane/launcher/chatgpt-work-continuation';
 import {
   chatgptControllerRoundBinding,
-  renderChatgptControllerRoundPrompt,
+  chatgptControllerRoundBindingId,
+  upsertChatgptControllerRoundTransportBinding,
 } from '../../../src/runtime/root/controller-round-composition';
+import { touchSchedulerWakeSignal } from '../../../src/runtime/control-plane/global-scheduler/wake-signal';
 import {
   beginInitialControllerRoundDispatch,
   finishControllerRoundRelayDispatch,
@@ -137,11 +139,18 @@ export async function callRhWorkControllerOperation(
       }
 
       const continuationPrompt = typeof args.continuation_prompt === 'string' ? args.continuation_prompt.trim() : '';
+      const identity = authenticatedFacadeControllerIdentity(ctx, args);
+      const occurrenceId = `launcher_start:${work.workId}:${work.updatedAt}`;
+      const initialContinuationPrompt = [
+        handoff ? `Handoff: ${handoff.summary}\nNext: ${handoff.recommendedContinuationPrompt ?? handoff.recommendedPrompt}` : '',
+        continuationPrompt ? `Continuation: ${continuationPrompt}` : '',
+      ].filter(Boolean).join('\n') || undefined;
       const relay = beginInitialControllerRoundDispatch(store, {
         workId,
-        identity: authenticatedFacadeControllerIdentity(ctx, args),
+        identity,
         requirementId: work.requirementId,
-        bindingId: existingBinding?.bindingId,
+        bindingId: chatgptControllerRoundBindingId(workId),
+        occurrenceId,
       });
       if (relay.status === 'blocked') {
         throw new Error(`CHATGPT_CONTINUATION_LAUNCH_BLOCKED:${relay.blockedReason ?? 'transport_not_ready'}`);
@@ -164,55 +173,64 @@ export async function callRhWorkControllerOperation(
         }) as unknown as Record<string, unknown>);
       }
 
-      const prompt = [
-        renderChatgptControllerRoundPrompt(store, relay, { exactOriginWork: true }),
-        'Forge continuation transport is active for this Work; provider delivery success is not semantic completion.',
-        handoff ? `Handoff: ${handoff.summary}\nNext: ${handoff.recommendedContinuationPrompt ?? handoff.recommendedPrompt}` : '',
-        continuationPrompt ? `Continuation: ${continuationPrompt}` : '',
-      ].filter(Boolean).join('\n');
-
-      let dispatched: Awaited<ReturnType<typeof runWorkChatgptContinuation>>;
+      const initialControllerBinding = upsertChatgptControllerRoundTransportBinding(store, {
+        workId,
+        sessionId: relay.sessionId,
+        browserSessionId: undefined,
+        conversationUrl: transportConversation === 'bound' ? explicitConversationUrl ?? existingBinding?.conversationUrl : undefined,
+        model: valueForFlag('--model') ?? 'gpt-5.6',
+        reasoning: reasoning as 'medium' | 'high' | 'xhigh',
+        tabPolicy: tabPolicy as 'auto' | 'reuse' | 'new',
+        timeoutMs,
+        transportConversation,
+        continuationPrompt: initialContinuationPrompt,
+        authorizationGrantRefs: [],
+      });
       try {
-        dispatched = await runWorkChatgptContinuation({
+        const prepared = await prepareWorkChatgptContinuationTransport({
           controllerHome: ctx.controllerHome,
           repoId: repository.repoId,
-          repoRoot: repository.canonicalRoot,
           workId,
-          prompt,
-          controllerAuthorityId: relay.authorityId,
-          relayScopeId: relay.relayScopeId,
+          occurrenceId,
+          transportConversation,
           browserSessionId: typeof args.browser_session_id === 'string' ? args.browser_session_id : undefined,
-          conversationUrl: explicitConversationUrl,
+          conversationUrl: transportConversation === 'bound' ? explicitConversationUrl ?? existingBinding?.conversationUrl : undefined,
+          timeoutMs,
+          authorizationGrantRefs: transportConversation === 'bound' ? existingBinding?.authorizationGrantRefs : undefined,
+        });
+        upsertChatgptControllerRoundTransportBinding(store, {
+          workId,
+          sessionId: relay.sessionId,
+          browserSessionId: prepared.browserSessionId,
+          conversationUrl: prepared.conversationUrl,
           model: valueForFlag('--model') ?? 'gpt-5.6',
           reasoning: reasoning as 'medium' | 'high' | 'xhigh',
           tabPolicy: tabPolicy as 'auto' | 'reuse' | 'new',
-          transportConversation,
           timeoutMs,
+          transportConversation,
+          continuationPrompt: initialControllerBinding.payload.continuationPrompt,
+          authorizationGrantRefs: prepared.authorizationGrantRefs,
         });
-        if (dispatched.status === 'failed') {
-          throw new Error(`${dispatched.error?.code ?? 'CHATGPT_WORK_CONTINUATION_FAILED'}:${dispatched.error?.message ?? 'ChatGPT Work continuation failed'}`);
-        }
       } catch (launchError) {
         const launchFailure = launchError instanceof Error ? launchError.message : String(launchError);
         finishControllerRoundRelayDispatch(store, {
           workId,
           ok: false,
           error: launchFailure,
-          outcomeUnknown: /OUTCOME_UNKNOWN/i.test(launchFailure),
+          recovery: true,
         });
         throw launchError;
       }
 
-      const updatedBinding = chatgptControllerRoundBinding(store, workId);
-      finishControllerRoundRelayDispatch(store, { workId, ok: true, bindingId: updatedBinding?.bindingId });
+      touchSchedulerWakeSignal(ctx.controllerHome, `controller-round-ready:${workId}`);
       return result(buildFacadeResult({
-        summary: 'ChatGPT continuation dispatched. Provider/session and retry bookkeeping remain internal; semantic Work state is unchanged until an explicit semantic update.',
+        summary: 'ChatGPT continuation queued on the durable ControllerRound. Interactive admission prepared only the authorized provider transport; Scheduler owns provider dispatch and retry.',
         data: {
           workId,
-          continuationDispatched: true,
-          browserSessionId: dispatched.browserSessionId,
-          conversationUrl: dispatched.conversationUrl,
-          executionPreferenceVerified: dispatched.executionPreferenceVerified,
+          continuationQueued: true,
+          continuationDispatched: false,
+          relayScopeId: relay.relayScopeId,
+          transportConversation,
         },
       }) as unknown as Record<string, unknown>);
     }

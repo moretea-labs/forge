@@ -19,6 +19,10 @@ export interface ChatgptControllerBindingPayload {
   reasoning?: 'medium' | 'high' | 'xhigh';
   tabPolicy?: 'auto' | 'reuse' | 'new';
   timeoutMs?: number;
+  /** Provider transport choice captured by launcher admission; not lifecycle authority. */
+  transportConversation?: 'bound' | 'fresh';
+  /** Initial provider hint captured for the queued ControllerRound only. */
+  continuationPrompt?: string;
   authorizationGrantRefs?: string[];
   createdAt: string;
   updatedAt: string;

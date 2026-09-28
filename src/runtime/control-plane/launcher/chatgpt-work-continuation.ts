@@ -231,12 +231,85 @@ export function resolveChatgptWorkBrowserSessionId(input: {
 }): string {
   const policy = normalizeTabPolicy(input.tabPolicy);
   const stable = stableChatgptWorkBrowserSessionId(input.repoId, input.workId);
-  if (policy === 'new') return `${stable}-${randomUUID().slice(0, 8)}`;
+  // An explicit Browser session is already an exact transport identity. `new`
+  // only allocates an identity when the caller did not prepare one; otherwise a
+  // durable launcher handoff would silently replace its authorized session.
   const explicit = input.explicitSessionId?.trim();
   if (explicit && explicit !== LEGACY_CONTROLLER_CHATGPT_SESSION_ID) return explicit;
+  if (policy === 'new') return `${stable}-${randomUUID().slice(0, 8)}`;
   const bound = input.boundSessionId?.trim();
   if (bound && bound !== LEGACY_CONTROLLER_CHATGPT_SESSION_ID) return bound;
   return stable;
+}
+
+export interface PreparedWorkChatgptTransport {
+  provider: 'controller-browser' | 'chatgpt-bridge';
+  browserSessionId: string;
+  conversationUrl?: string;
+  authorizationGrantRefs: string[];
+}
+
+/**
+ * Prepare only the replaceable provider transport for a queued ControllerRound.
+ * Interactive admission may establish Browser authorization; semantic/provider
+ * dispatch remains owned by the durable ControllerRound and Scheduler.
+ */
+export async function prepareWorkChatgptContinuationTransport(input: {
+  controllerHome: string;
+  repoId: string;
+  workId: string;
+  occurrenceId: string;
+  transportConversation: 'bound' | 'fresh';
+  browserSessionId?: string;
+  conversationUrl?: string;
+  timeoutMs?: number;
+  authorizationGrantRefs?: readonly string[];
+}): Promise<PreparedWorkChatgptTransport> {
+  const authorizationGrantRefs = new Set(
+    [...(input.authorizationGrantRefs ?? [])].map((value) => value.trim()).filter(Boolean),
+  );
+  if (isWslWindowsRuntime()) {
+    return {
+      provider: 'chatgpt-bridge',
+      browserSessionId: stableChatgptWorkBridgeSessionId(input.repoId, input.workId),
+      ...(input.transportConversation === 'bound' && input.conversationUrl?.trim()
+        ? { conversationUrl: input.conversationUrl.trim() }
+        : {}),
+      authorizationGrantRefs: [...authorizationGrantRefs],
+    };
+  }
+
+  const explicitSessionId = input.browserSessionId?.trim();
+  const occurrenceSuffix = createHash('sha256').update(input.occurrenceId).digest('hex').slice(0, 8);
+  const browserSessionId = explicitSessionId
+    || (input.transportConversation === 'fresh'
+      ? `${stableChatgptWorkBrowserSessionId(input.repoId, input.workId)}-${occurrenceSuffix}`
+      : stableChatgptWorkBrowserSessionId(input.repoId, input.workId));
+  const targetUrl = input.transportConversation === 'fresh'
+    ? 'https://chatgpt.com/'
+    : input.conversationUrl?.trim();
+  if (!targetUrl) throw new Error('CHATGPT_BOUND_CONVERSATION_URL_REQUIRED');
+
+  const navigation = await withChatgptBrowserActionOrigin(
+    { surface: 'chatgpt-action', actor: 'chatgpt-launcher-transport-prepare' },
+    async () => {
+      await ensureControllerChatgptBrowser(input.controllerHome, input.workId);
+      return navigateWorkConversation(
+        input.controllerHome,
+        input.workId,
+        browserSessionId,
+        targetUrl,
+        input.timeoutMs,
+      );
+    },
+    authorizationGrantRefs,
+  );
+  return {
+    provider: 'controller-browser',
+    browserSessionId: navigation.browserSessionId,
+    ...(input.transportConversation === 'bound' ? { conversationUrl: navigation.submissionTargetUrl } : {}),
+    authorizationGrantRefs: [...authorizationGrantRefs],
+  };
 }
 
 export function withForgePluginMention(prompt: string): string {

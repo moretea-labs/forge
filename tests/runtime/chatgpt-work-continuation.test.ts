@@ -722,6 +722,7 @@ describe('ChatGPT Work conversation binding', () => {
     expect(resolveChatgptWorkBrowserSessionId({ repoId: 'repo-1', workId: 'WORK-1', boundSessionId: 'forge-chatgpt-supercontroller' })).toBe(first);
     expect(resolveChatgptWorkBrowserSessionId({ repoId: 'repo-1', workId: 'WORK-1', boundSessionId: 'work-owned-session' })).toBe('work-owned-session');
     expect(resolveChatgptWorkBrowserSessionId({ repoId: 'repo-1', workId: 'WORK-1', tabPolicy: 'new' })).toStartWith(`${first}-`);
+    expect(resolveChatgptWorkBrowserSessionId({ repoId: 'repo-1', workId: 'WORK-1', tabPolicy: 'new', explicitSessionId: 'prepared-session' })).toBe('prepared-session');
     const standalone = stableStandaloneChatgptBrowserSessionId('repo-1', 'schedule:SCH-1');
     expect(standalone).toBe(stableStandaloneChatgptBrowserSessionId('repo-1', 'schedule:SCH-1'));
     expect(standalone).not.toBe(stableStandaloneChatgptBrowserSessionId('repo-1', 'schedule:SCH-2'));
@@ -1354,9 +1355,10 @@ describe('ChatGPT Work conversation binding', () => {
     const controllerOperations = readFileSync(join(process.cwd(), 'adapters/mcp/runtime-gateway/work-controller-operations.ts'), 'utf8');
     expect(controllerOperations).toContain("if (operation !== 'launcher_start') return undefined;");
     expect(controllerOperations).toContain("if (controllerType === 'chatgpt')");
-    expect(controllerOperations).toContain('await runWorkChatgptContinuation({');
-    expect(controllerOperations).toContain('controllerAuthorityId: relay.authorityId');
-    expect(controllerOperations).toContain('relayScopeId: relay.relayScopeId');
+    expect(controllerOperations).not.toContain('await runWorkChatgptContinuation({');
+    expect(controllerOperations).toContain('await prepareWorkChatgptContinuationTransport({');
+    expect(controllerOperations).toContain('touchSchedulerWakeSignal(ctx.controllerHome');
+    expect(controllerOperations).toContain('continuationQueued: true');
     expect(controllerOperations).toContain("const requestedTransportConversation = args.transport_conversation === 'fresh'");
     expect(controllerOperations).toContain("?? (existingBinding || explicitConversationUrl ? 'bound' : 'fresh')");
     expect(controllerOperations).toContain("WORKFLOW_SUPERVISOR_BOUND_CONVERSATION_REQUIRED");
@@ -1372,8 +1374,9 @@ describe('ChatGPT Work conversation binding', () => {
     expect(controllerOperations).toContain('continuationDispatched: false');
     expect(controllerOperations).toContain('transportConversation,');
     expect(controllerOperations).toContain('const relay = beginInitialControllerRoundDispatch(');
+    expect(controllerOperations).toContain('occurrenceId,');
     expect(controllerOperations).toContain("controllerType: controllerType as 'codex' | 'grok' | 'claude'");
-    expect(controllerOperations.indexOf('await runWorkChatgptContinuation({')).toBeLessThan(controllerOperations.indexOf('const launched = await launchSuperController'));
+    expect(controllerOperations.indexOf('await prepareWorkChatgptContinuationTransport({')).toBeLessThan(controllerOperations.indexOf('const launched = await launchSuperController'));
   });
 
   test('resolving a provider Handoff rearms the same round and triggers only the exact Work repository-event continuation schedule', async () => {
