@@ -92,4 +92,52 @@ describe('native browser session cleanup', () => {
     expect(inspection.items.get('browser-native-owned')?.cleanupError).toContain('inventory stalled');
     expect(observedTimeouts).toEqual([3_000, 3_000]);
   });
+
+  test('does not close a tab when its reused native id no longer resolves to the saved URL', async () => {
+    const separator = String.fromCharCode(30);
+    const fieldSeparator = String.fromCharCode(31);
+    let closeCalls = 0;
+    setMacOsBrowserRuntimeHooksForTest({
+      platform: 'darwin',
+      appExists: () => true,
+      processRunning: async () => true,
+      runAppleScript: async (script) => {
+        if (script.includes('set outputText to "false"')) {
+          return 'false' + separator + '7' + fieldSeparator + '9' + fieldSeparator + 'false'
+            + fieldSeparator + 'https://chatgpt.com/c/different-conversation' + fieldSeparator + 'ChatGPT';
+        }
+        if (script.includes('close targetTab')) closeCalls += 1;
+        return '';
+      },
+    });
+
+    await expect(closeTrackedNativeOwnedSession(nativeSession(), 20_000)).resolves.toEqual({
+      resourceClosed: false,
+      resourceAlreadyMissing: true,
+    });
+    expect(closeCalls).toBe(0);
+  });
+
+  test('retires plugin-owned transport metadata when its native browser is not running', async () => {
+    setMacOsBrowserRuntimeHooksForTest({
+      platform: 'darwin',
+      appExists: () => true,
+      processRunning: async () => false,
+    });
+
+    await expect(closeTrackedNativeOwnedSession(nativeSession(), 20_000)).resolves.toEqual({
+      resourceClosed: false,
+      resourceAlreadyMissing: true,
+    });
+    const inspection = await inspectNativeOwnedSessions({
+      repoRoot: '/tmp/unused-for-stopped-native-browser',
+      savedSessions: [nativeSession()],
+      timeoutMs: 20_000,
+      pruneDead: false,
+    });
+    expect(inspection.items.get('browser-native-owned')).toMatchObject({
+      liveness: 'dead',
+      evidence: 'native_tab_missing',
+    });
+  });
 });

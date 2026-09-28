@@ -31,6 +31,10 @@ export function nativeTabInventoryUnsupported(error: unknown): boolean {
   return /\bBROWSER_AUTOMATION_ACTION_UNSUPPORTED\b/.test(message);
 }
 
+function nativeBrowserApplicationNotRunning(error: unknown): boolean {
+  return error instanceof AssistantPluginError && error.code === 'PLUGIN_BROWSER_NATIVE_APP_NOT_RUNNING';
+}
+
 function isDiscardableNativeOwnedTabUrl(url: string): boolean {
   const normalized = url.trim().toLowerCase();
   return normalized === ''
@@ -39,6 +43,20 @@ function isDiscardableNativeOwnedTabUrl(url: string): boolean {
     || normalized === 'chrome://new-tab-page/'
     || normalized === 'vivaldi://newtab/'
     || normalized === 'vivaldi://startpage/';
+}
+
+/**
+ * Native tab ids are only stable while the browser keeps the same tab alive.
+ * If a later inventory resolves that id to a different URL, the saved binding
+ * no longer proves ownership of that live tab. Treat the session as detached;
+ * never close the replacement tab merely because it inherited an old id.
+ */
+function nativeTabMatchesSessionUrl(session: BrowserSessionState, url: string): boolean {
+  try {
+    return new URL(session.url).toString() === new URL(url).toString();
+  } catch {
+    return session.url.trim() === url.trim();
+  }
 }
 
 /**
@@ -88,6 +106,19 @@ export async function inspectNativeOwnedSessions(input: {
       inventories.set(product, inventory);
     }
     if (inventory instanceof Error) {
+      // A plugin-owned tab cannot outlive its native browser process. This is
+      // stronger than an unavailable inventory: retire the stale transport
+      // metadata so a later continuation opens a fresh effect-scoped tab.
+      if (nativeBrowserApplicationNotRunning(inventory)) {
+        const pruned = input.pruneDead === true;
+        if (pruned) {
+          for (const session of group) removeBrowserSession(repoRoot, session.sessionId);
+          prunedCount += group.length;
+        }
+        for (const session of group) items.set(session.sessionId, { session, liveness: 'dead', evidence: 'native_tab_missing', pruned });
+        deadCount += group.length;
+        continue;
+      }
       if (!nativeTabInventoryUnsupported(inventory)) {
         for (const session of group) items.set(session.sessionId, { session, liveness: 'unverified', evidence: 'native_inventory_unavailable', cleanupError: inventory.message });
         unverifiedCount += group.length;
@@ -140,7 +171,7 @@ export async function inspectNativeOwnedSessions(input: {
     }
 
     const live = inventory.tabs.find((entry) => entry.windowId === tab.windowId && entry.tabId === tab.tabId);
-    if (!live) {
+    if (!live || !nativeTabMatchesSessionUrl(canonical, live.url)) {
       const pruned = input.pruneDead === true;
       if (pruned) {
         for (const session of group) removeBrowserSession(repoRoot, session.sessionId);
@@ -201,6 +232,7 @@ export async function closeTrackedNativeOwnedSession(
   try {
     inventory = await listMacOsBrowserTabs(browser.browserProduct, nativeInventoryTimeoutMs(timeoutMs));
   } catch (error) {
+    if (nativeBrowserApplicationNotRunning(error)) return { resourceClosed: false, resourceAlreadyMissing: true };
     if (!nativeTabInventoryUnsupported(error)) throw error;
     try {
       await readResolvedMacOsBrowserOwnedTabMetadata(browser.browserProduct, ref, timeoutMs);
@@ -212,6 +244,7 @@ export async function closeTrackedNativeOwnedSession(
   if (inventory) {
     const live = inventory.tabs.find((entry) => entry.windowId === tab.windowId && entry.tabId === tab.tabId);
     if (!live) return { resourceClosed: false, resourceAlreadyMissing: true };
+    if (!nativeTabMatchesSessionUrl(session, live.url)) return { resourceClosed: false, resourceAlreadyMissing: true };
     await closeResolvedMacOsBrowserOwnedTab(
       browser.browserProduct,
       { windowId: live.windowId, tabId: live.tabId },
