@@ -458,6 +458,49 @@ describe('Workflow Supervisor macOS native browser adapter', () => {
     expect(h.control.store.effectApplied(effect.effectId)).toBe(true);
     expect(h.errors).toEqual([]);
   });
+  test('reconciles an already-started effect while the latest committed role is user and the provider is still generating', async () => {
+    const conversationId = '17171717-2828-3939-5050-616161616161';
+    const url = `https://chatgpt.com/c/${conversationId}`;
+    const page = new FakePage({ windowId: 'forge-window', tabId: 'forge-tab-reconcile-live-turn' }, url);
+    page.owner = `forge-workflow-supervisor:${conversationId}`;
+    const h = harness([page]);
+    const { effect } = register(h.control, conversationId);
+    h.control.store.recordEffectDispatchStarted(effect.effectId, 1, 'inherited-provider-dispatch', { surface: 'controller_round_reconciliation' });
+    page.latestUserText = effect.prompt;
+    page.latestTurnRole = 'user';
+    page.isGenerating = true;
+
+    expect(h.control.browserPoll({ conversationId, conversationUrl: url }).command)
+      .toMatchObject({ mode: 'reconcile', dispatchGeneration: 1 });
+    await h.adapter.runOnce();
+
+    expect(h.dispatchAttempts()).toBe(0);
+    expect(h.control.store.effectApplied(effect.effectId)).toBe(true);
+    expect(h.control.browserPoll({ conversationId, conversationUrl: url }).command).toBeUndefined();
+    expect(h.errors).toEqual([]);
+  });
+
+  test('does not resume an exact reconcile composer payload while the provider turn is still live', async () => {
+    const conversationId = '18181818-2929-4040-5151-626262626262';
+    const url = `https://chatgpt.com/c/${conversationId}`;
+    const page = new FakePage({ windowId: 'forge-window', tabId: 'forge-tab-reconcile-live-composer' }, url);
+    page.owner = `forge-workflow-supervisor:${conversationId}`;
+    const h = harness([page]);
+    const { effect } = register(h.control, conversationId);
+    h.control.store.recordEffectDispatchStarted(effect.effectId, 1, 'inherited-provider-dispatch', { surface: 'controller_round_reconciliation' });
+    page.composerText = effect.prompt;
+    page.latestTurnRole = 'user';
+    page.isGenerating = true;
+
+    await h.adapter.runOnce();
+
+    expect(h.dispatchAttempts()).toBe(0);
+    expect(h.control.store.effectApplied(effect.effectId)).toBe(false);
+    expect(h.control.browserPoll({ conversationId, conversationUrl: url }).command)
+      .toMatchObject({ mode: 'reconcile', dispatchGeneration: 1 });
+    expect(h.errors).toEqual([]);
+  });
+
   test('confirms a dispatched effect from its unique marker when the DOM adds UI text', async () => {
     const conversationId = '15151515-2626-3737-4848-595959595959';
     const url = `https://chatgpt.com/c/${conversationId}`;

@@ -482,7 +482,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
         let providerBackpressureMs = chatgptProviderBackpressureRemainingMs(this.deps.providerScopeKey, this.deps.nowMs());
         // 429 is transport backpressure, not authority to mint a semantic recovery
         // effect. While the shared cooldown is live, observe locally and send nothing.
-        if (providerFailureCode === CHATGPT_AUTOMATION_RATE_LIMITED && providerBackpressureMs > 0) continue;
+        if (poll.command?.mode !== 'reconcile' && providerFailureCode === CHATGPT_AUTOMATION_RATE_LIMITED && providerBackpressureMs > 0) continue;
         let recoveryAuthorized = false;
         if (!poll.command) {
           // Provider failure evidence is scoped to the latest turn plus current
@@ -507,13 +507,19 @@ export class WorkflowSupervisorNativeBrowserAdapter {
           poll = this.control.browserPoll({ conversationId: task.conversationId, conversationUrl: task.conversationUrl });
         }
         providerBackpressureMs = chatgptProviderBackpressureRemainingMs(this.deps.providerScopeKey, this.deps.nowMs());
-        if (poll.command && providerBackpressureMs > 0) continue;
-        // An already-present send command must not steal the composer from a live
-        // provider turn. Only the causal recovery observation above authorizes a
-        // send while the latest committed role is still the user.
-        if (providerBusy && !providerFailureCode && !recoveryAuthorized) continue;
-        if (latestRoleStillUser && !providerFailureCode && !recoveryAuthorized) continue;
-        if (poll.command) await this.executeCommand(this.pages.get(task.conversationId) ?? page, poll.command, task);
+        const commandMutationBlocked = providerBackpressureMs > 0
+          || (providerBusy && !providerFailureCode && !recoveryAuthorized)
+          || (latestRoleStillUser && !providerFailureCode && !recoveryAuthorized);
+        // Keep one mutation gate for both a fresh send and reconcile's bounded
+        // resume/cleanup path. A blocked reconcile may still observe committed
+        // user history, but it cannot touch the composer or submit anything.
+        if (poll.command?.mode === 'send' && commandMutationBlocked) continue;
+        if (poll.command) await this.executeCommand(
+          this.pages.get(task.conversationId) ?? page,
+          poll.command,
+          task,
+          { mutationAllowed: !commandMutationBlocked },
+        );
       } catch (error) {
         this.deps.onError(error);
       }
@@ -736,7 +742,12 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     }
   }
 
-  private async executeCommand(page: WorkflowSupervisorNativePage, command: WorkflowSupervisorBrowserCommand, task: WorkflowSupervisorBrowserTask): Promise<void> {
+  private async executeCommand(
+    page: WorkflowSupervisorNativePage,
+    command: WorkflowSupervisorBrowserCommand,
+    task: WorkflowSupervisorBrowserTask,
+    options: { mutationAllowed?: boolean } = {},
+  ): Promise<void> {
     let snapshot = await this.deps.snapshot(page, { includeUserHistory: true, includePageText: true });
     // A recovery effect may be authorized because an enrolled provider turn stayed
     // visually `generating` without observable progress for the bounded stale
@@ -802,6 +813,17 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       const composerPresent = snapshot.composerText !== undefined;
       const composerValue = normalize(snapshot.composerText ?? '');
       if (composerPresent && composerValue === normalize(command.prompt)) {
+        if (options.mutationAllowed === false) {
+          this.control.browserObserveEffect({
+            conversationId: command.conversationId,
+            conversationUrl: command.conversationUrl,
+            effectId: command.effectId,
+            observationId: `native-observe-${randomUUID()}`,
+            outcome: 'unknown',
+            evidence: { surface: 'macos-native', reconciliation: true, reason: 'resume_blocked_live_provider' },
+          });
+          return;
+        }
         // Input mutation already happened in this generation, but Send did not
         // become observable. Resume only that exact payload in the same
         // generation; never retype it and never manufacture a retry generation.
@@ -822,7 +844,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       } else {
         let composerProvablyEmpty = composerPresent && !composerValue;
         let reconciliationReason = composerProvablyEmpty ? 'composer_proven_empty' : composerPresent ? 'composer_payload_mismatch' : 'composer_state_unavailable';
-        if (composerPresent && composerValue) {
+        if (options.mutationAllowed !== false && composerPresent && composerValue) {
           const stale = this.control.browserStaleComposerPayload({
             conversationId: command.conversationId,
             conversationUrl: command.conversationUrl,
