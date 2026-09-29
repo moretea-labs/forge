@@ -864,11 +864,13 @@ export async function navigateWorkConversation(
     } catch (preflightError) {
       if (!chatgptAutomationNavigationRequiresReplacement(preflightError)) throw preflightError;
       const replacementSessionId = await openReplacement(browserSessionId, targetUrl);
-      // create_session establishes the session capability. Re-run the exact
-      // navigation through the interactive path so the same prepare operation
-      // also establishes the interaction capability required by later
-      // schedule-origin fill/click actions on this origin.
-      await navigate(replacementSessionId, targetUrl);
+      // create_session establishes only the session capability. Activating the
+      // exact replacement page is an interaction-capability action, so an
+      // interactive prepare also establishes the grant required by later
+      // schedule-origin fill/click actions on this same origin.
+      await controllerBrowserAction(controllerHome, workId, 'activate_page', {
+        session_id: replacementSessionId,
+      }, timeoutMs);
       return { submissionTargetUrl: targetUrl, recoveredFromStaleBinding: true, browserSessionId: replacementSessionId };
     }
     await navigate(browserSessionId, targetUrl);
