@@ -10,7 +10,7 @@ import type {
   AssistantPluginManifest,
 } from './types';
 import { AssistantPluginError, toAssistantPluginError } from './errors';
-import { listCanonicalGrants } from '../../../packages/kernel/identity/infrastructure/grant-store';
+import { listCanonicalGrants } from '../../../packages/kernel/identity/api/index';
 import { readRepositoryPluginConfig, writeRepositoryPluginConfig, type RepositoryPluginConfigContext } from './config-store';
 import {
   browserActions,
