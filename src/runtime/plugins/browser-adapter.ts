@@ -10,6 +10,7 @@ import type {
   AssistantPluginManifest,
 } from './types';
 import { AssistantPluginError, toAssistantPluginError } from './errors';
+import { listCanonicalGrants } from '../../../packages/kernel/identity/infrastructure/grant-store';
 import { readRepositoryPluginConfig, writeRepositoryPluginConfig, type RepositoryPluginConfigContext } from './config-store';
 import {
   browserActions,
@@ -515,7 +516,24 @@ async function resolveBrowserPluginAuthorizationContextInternal(
   const session = findBrowserSession(input.repoRoot, sessionId);
   const config = effectiveBrowserActionConfig(persistedConfig, input.args, session);
   const connection = session?.browser;
-  if (!session || !connection || connection.activeMode === 'isolated') return undefined;
+  if (!session || !connection || connection.activeMode === 'isolated') {
+    // create_session precedes its durable session record. Recover only the
+    // exact browser-origin target already named by this Work's grant refs.
+    if (input.actionId !== 'create_session') return undefined;
+    let origin: string;
+    try { origin = new URL(stringValue(input.args.url) ?? '').origin.toLowerCase(); } catch { return undefined; }
+    const refs = new Set((input.authorizationGrantRefs ?? []).map((ref) => ref.trim()).filter(Boolean));
+    const target = listCanonicalGrants(input.controllerHome).find((grant) => (
+      refs.has(grant.grantId)
+      && grant.target?.kind === 'browser-origin'
+      && grant.target.id.endsWith(`@${origin}`)
+      && grant.scopes?.includes('browser.profile')
+    ))?.target;
+    return target ? {
+      target: { kind: target.kind, id: target.id, identityFingerprint: target.identityFingerprint },
+      expiresInMinutes: 30 * 24 * 60,
+    } : undefined;
+  }
 
   let origin: string;
   try {
