@@ -26,7 +26,7 @@ const MAX_TRANSPORT_BACKOFF_MS = 60_000;
 const MAX_TRANSPORT_BACKOFF_STEPS = 6;
 const MAX_PROVIDER_FAILURE_SCAN_CHARS = 250_000;
 const MAX_PROVIDER_ACTIVITY_CHARS = 64 * 1024;
-const NATIVE_BROWSER_PRODUCTS: readonly MacOsBrowserProduct[] = ['vivaldi', 'chrome'];
+const NATIVE_BROWSER_PRODUCTS: readonly MacOsBrowserProduct[] = ['chrome', 'vivaldi'];
 type TaggedBrowserTabRef = MacOsBrowserTabRef & { browserProduct?: MacOsBrowserProduct };
 type TaggedBrowserTabInventoryEntry = MacOsBrowserTabInventoryEntry & { browserProduct?: MacOsBrowserProduct };
 
@@ -253,45 +253,59 @@ export async function defaultDispatchPrompt(
   // in other tabs/windows cannot redirect the effect. React renders the send
   // control asynchronously after contenteditable input, so use the Browser's
   // exact-tab bounded selector wait instead of a foreground sleep or Computer input.
-  const prepared = await page.evaluate<{ prepared: boolean; reason?: string }>(`(() => {
-    const visible = (element) => Boolean(element && element.getClientRects && element.getClientRects().length);
-    const value = (element) => String((element?.innerText ?? element?.textContent ?? '') || '');
-    const normalizeValue = (input) => String(input || '').replace(/\\s+/g, ' ').trim();
-    const expected = ${JSON.stringify(prompt)};
-    const normalizedExpected = normalizeValue(expected);
-    const resume = ${JSON.stringify(resume)};
-    const composer = [
-      'div#prompt-textarea[contenteditable="true"]',
-      '#prompt-textarea[contenteditable="true"]',
-      '[data-testid="composer-text-input"][contenteditable="true"]',
-      'div[role="textbox"][contenteditable="true"]',
-    ].map((selector) => document.querySelector(selector)).find(visible);
-    if (!(composer instanceof HTMLElement) || !composer.isContentEditable) return { prepared: false, reason: 'composer_missing' };
-    const current = normalizeValue(value(composer));
-    if (resume) {
-      if (!current) return { prepared: false, reason: 'composer_resume_empty' };
-      if (current !== normalizedExpected) return { prepared: false, reason: 'composer_resume_mismatch' };
-    } else {
-      if (current) return { prepared: false, reason: 'composer_not_empty' };
-      composer.focus({ preventScroll: true });
-      const selection = window.getSelection();
-      if (!selection) return { prepared: false, reason: 'composer_selection_unavailable' };
-      const range = document.createRange();
-      range.selectNodeContents(composer);
-      range.deleteContents();
-      range.collapse(true);
-      selection.removeAllRanges();
-      selection.addRange(range);
-      if (!document.execCommand('insertText', false, expected)) {
-        return { prepared: false, reason: 'composer_text_insertion_rejected' };
-      }
+  const prepareDeadline = Date.now() + 5_000;
+  let prepared: { prepared: boolean; reason?: string } | undefined;
+  while (true) {
+    try {
+      prepared = await page.evaluate<{ prepared: boolean; reason?: string }>(`(() => {
+        const visible = (element) => Boolean(element && element.getClientRects && element.getClientRects().length);
+        const value = (element) => String((element?.innerText ?? element?.textContent ?? '') || '');
+        const normalizeValue = (input) => String(input || '').replace(/\\s+/g, ' ').trim();
+        const expected = ${JSON.stringify(prompt)};
+        const normalizedExpected = normalizeValue(expected);
+        const resume = ${JSON.stringify(resume)};
+        const composer = [
+          'div#prompt-textarea[contenteditable="true"]',
+          '#prompt-textarea[contenteditable="true"]',
+          '[data-testid="composer-text-input"][contenteditable="true"]',
+          'div[role="textbox"][contenteditable="true"]',
+        ].map((selector) => document.querySelector(selector)).find(visible);
+        if (!(composer instanceof HTMLElement) || !composer.isContentEditable) return { prepared: false, reason: 'composer_missing' };
+        const current = normalizeValue(value(composer));
+        if (resume) {
+          if (!current) return { prepared: false, reason: 'composer_resume_empty' };
+          if (current !== normalizedExpected) return { prepared: false, reason: 'composer_resume_mismatch' };
+        } else {
+          if (current) return { prepared: false, reason: 'composer_not_empty' };
+          composer.focus({ preventScroll: true });
+          const selection = window.getSelection();
+          if (!selection) return { prepared: false, reason: 'composer_selection_unavailable' };
+          const range = document.createRange();
+          range.selectNodeContents(composer);
+          range.deleteContents();
+          range.collapse(true);
+          selection.removeAllRanges();
+          selection.addRange(range);
+          if (!document.execCommand('insertText', false, expected)) {
+            return { prepared: false, reason: 'composer_text_insertion_rejected' };
+          }
+        }
+        if (normalizeValue(value(composer)) !== normalizedExpected) {
+          return { prepared: false, reason: 'composer_text_unconfirmed' };
+        }
+        return { prepared: true };
+      })()`);
+    } catch (error) {
+      if (Date.now() >= prepareDeadline) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      continue;
     }
-    if (normalizeValue(value(composer)) !== normalizedExpected) {
-      return { prepared: false, reason: 'composer_text_unconfirmed' };
+    if (prepared.prepared) break;
+    if (prepared.reason !== 'composer_missing' || Date.now() >= prepareDeadline) {
+      return { dispatched: false, reason: prepared.reason ?? 'composer_prepare_failed' };
     }
-    return { prepared: true };
-  })()`);
-  if (!prepared.prepared) return { dispatched: false, reason: prepared.reason ?? 'composer_prepare_failed' };
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
 
   // Keep send-control readiness on the same exact-tab DOM transport as
   // composer mutation. The generic selector-wait bridge can lag ChatGPT DOM
