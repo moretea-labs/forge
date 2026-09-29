@@ -138,7 +138,13 @@ export class WorkflowSupervisorControlPlane {
       // Bootstrap has no exact conversation yet, so it cannot satisfy the
       // normal Work-boundary predicate. Its already-persisted enrollment effect
       // is the narrow authority to acquire one through Computer exactly once.
-      return needsBrowserAttention && (task.conversationId.startsWith('bootstrap:') || this.browserTaskActive(task));
+      if (!needsBrowserAttention) return false;
+      if (task.conversationId.startsWith('bootstrap:')) return true;
+      // Optional lower-layer Work/Requirement compatibility must be task-local.
+      // A stale legacy task is allowed to fail closed, but it must never poison
+      // the global Supervisor delivery queue and block standalone tasks.
+      try { return this.browserTaskActive(task); }
+      catch { return false; }
     }).map(browserTask);
   }
   browserPoll(input: { conversationId: string; conversationUrl: string }): WorkflowSupervisorBrowserPollResult {
@@ -302,8 +308,16 @@ export class WorkflowSupervisorControlPlane {
     for (const completion of completions) {
       const task = this.store.getTask(completion.taskId);
       if (!task || this.store.terminalAction(task.taskId)) continue;
-      const settlement: WorkflowSupervisorTurnSettlement = await this.hooks.assistantTurnCommitted?.(task, completion)
-        ?? { continuationAllowed: true };
+      let settlement: WorkflowSupervisorTurnSettlement;
+      try {
+        settlement = await this.hooks.assistantTurnCommitted?.(task, completion)
+          ?? { continuationAllowed: true };
+      } catch {
+        // Lower-layer compatibility reconciliation is scoped to this task. A
+        // stale Work/ControllerRound must not stop successor recovery for other
+        // independent Supervisor tasks.
+        continue;
+      }
       if (!settlement.continuationAllowed) continue;
       const successorOriginKey = `completion:${completion.completionFingerprint}`;
       const nextId = settlement.continuationEffectId

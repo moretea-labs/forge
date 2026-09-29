@@ -947,6 +947,39 @@ test('browserTasks polls only tasks with pending browser work or an applied effe
   expect(control.browserTasks()).toEqual([]);
 });
 
+test('browserTasks isolates a stale legacy task from an independent bootstrap task', () => {
+  const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-browser-task-isolation-'));
+  roots.push(root);
+  const store = new WorkflowSupervisorStore(join(root, 'supervisor-home'));
+  const control = new WorkflowSupervisorControlPlane(store, {}, {
+    browserTaskActive: (task) => {
+      if (task.taskId === 'legacy-stale-task') throw new Error('STALE_LEGACY_WORK');
+      return true;
+    },
+  });
+  const legacyConversationId = '56565656-1111-2222-3333-343434343434';
+  control.registerTask({
+    taskId: 'legacy-stale-task',
+    conversationId: legacyConversationId,
+    conversationUrl: `https://chatgpt.com/c/${legacyConversationId}`,
+    objective: 'Legacy task must fail closed locally.',
+    completionContract: {}, continuationPolicy: {}, userBlockerPolicy: {},
+  });
+  control.reserveEnrollment('legacy-stale-task');
+  control.registerTask({
+    taskId: 'standalone-bootstrap-task',
+    conversationId: 'bootstrap:standalone-bootstrap-task',
+    conversationUrl: 'https://chatgpt.com/',
+    objective: 'Independent bootstrap must remain dispatchable.',
+    completionContract: {}, continuationPolicy: { kind: 'standalone_supervisor', bootstrap: true }, userBlockerPolicy: {},
+  });
+  control.reserveEnrollment('standalone-bootstrap-task');
+
+  expect(control.browserTasks()).toEqual([
+    expect.objectContaining({ taskId: 'standalone-bootstrap-task', conversationId: 'bootstrap:standalone-bootstrap-task' }),
+  ]);
+});
+
 test('reconciles a late applied Supervisor effect into the same outcome-unknown ControllerRound without replay', () => {
   const fx = fixture();
   const requirementId = 'REQ-supervisor-late-provider-confirmation';
