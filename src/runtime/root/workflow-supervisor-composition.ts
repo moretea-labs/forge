@@ -484,9 +484,10 @@ export async function workflowSupervisorCurrentConversationMatchesWork(
   if (!existsSync(workflowSupervisorSocketPath(forgeHome))) return false;
   try {
     const current = await getWorkflowSupervisorCurrentConversation(forgeHome);
+    // The same ChatGPT conversation may be rendered with or without its Project
+    // route. Its durable conversation id, not that route, proves continuity.
     return Boolean(current
-      && current.conversationId === boundary.conversationId
-      && current.canonicalUrl === boundary.conversationUrl);
+      && current.conversationId === boundary.conversationId);
   } catch {
     return false;
   }

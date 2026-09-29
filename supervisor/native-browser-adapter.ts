@@ -109,7 +109,10 @@ function ownerMarkerOwnership(marker: string, conversationId: string): WorkflowS
 function exactConversation(url: string, task: WorkflowSupervisorBrowserTask): boolean {
   try {
     const parsed = parseChatgptConversationIdentity(url);
-    return parsed.conversationId === task.conversationId && parsed.canonicalUrl === task.conversationUrl;
+    // ChatGPT may add or remove its Project route while retaining the same
+    // durable conversation. This adapter is already attached to the exact tab;
+    // route presentation is therefore not a second conversation identity.
+    return parsed.conversationId === task.conversationId;
   } catch { return false; }
 }
 function targetMarkerPresent(text: string, effectId: string): boolean { return text.includes(renderEffectMarker(effectId)); }

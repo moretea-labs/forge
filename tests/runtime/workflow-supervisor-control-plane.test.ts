@@ -52,6 +52,33 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     });
   });
 
+  test('keeps one durable conversation across ChatGPT Project route changes', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-route-identity-'));
+    roots.push(root);
+    const store = new WorkflowSupervisorStore(root);
+    const control = new WorkflowSupervisorControlPlane(store, {
+      completionContract: async () => ({ valid: true, reason: 'ok' }),
+      userBlockerPolicy: async () => ({ valid: true, reason: 'ok' }),
+    });
+    const conversationId = '11111111-2222-3333-4444-555555555555';
+    control.registerTask({
+      taskId: 'route-identity',
+      conversationId,
+      conversationUrl: `https://chatgpt.com/c/${conversationId}`,
+      objective: 'Keep the same durable ChatGPT conversation.',
+      completionContract: {},
+      continuationPolicy: {},
+      userBlockerPolicy: {},
+    });
+    const effect = control.reserveEnrollment('route-identity');
+
+    expect(control.browserPoll({
+      conversationId,
+      conversationUrl: `https://chatgpt.com/g/g-p-abc123-forge/c/${conversationId}`,
+    }).command).toMatchObject({ effectId: effect.effectId, conversationId });
+    store.close();
+  });
+
   test('derives standalone project scope from Supervisor-owned Controller Home', () => {
     const fx = fixture();
     const supervisorStore = new WorkflowSupervisorStore(join(fx.root, 'standalone-project-scope'));

@@ -505,7 +505,10 @@ export class WorkflowSupervisorControlPlane {
     const task = this.store.getTaskByConversationId(conversationId);
     if (!task) throw new Error('WORKFLOW_SUPERVISOR_BROWSER_CONVERSATION_NOT_ENROLLED');
     const registered = parseChatgptConversationIdentity(task.conversationUrl);
-    if (task.conversationId !== conversationId || registered.conversationId !== conversationId || registered.canonicalUrl !== observed.canonicalUrl) throw new Error('WORKFLOW_SUPERVISOR_BROWSER_CONVERSATION_MISMATCH');
+    // Project routing is presentation metadata. A ChatGPT conversation can move
+    // between `/c/<id>` and a Project-prefixed route without becoming a different
+    // provider conversation, so the durable id is the only identity fence here.
+    if (task.conversationId !== conversationId || registered.conversationId !== conversationId || observed.conversationId !== conversationId) throw new Error('WORKFLOW_SUPERVISOR_BROWSER_CONVERSATION_MISMATCH');
     return task;
   }
 }
