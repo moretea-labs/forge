@@ -864,6 +864,11 @@ export async function navigateWorkConversation(
     } catch (preflightError) {
       if (!chatgptAutomationNavigationRequiresReplacement(preflightError)) throw preflightError;
       const replacementSessionId = await openReplacement(browserSessionId, targetUrl);
+      // create_session establishes the session capability. Re-run the exact
+      // navigation through the interactive path so the same prepare operation
+      // also establishes the interaction capability required by later
+      // schedule-origin fill/click actions on this origin.
+      await navigate(replacementSessionId, targetUrl);
       return { submissionTargetUrl: targetUrl, recoveredFromStaleBinding: true, browserSessionId: replacementSessionId };
     }
     await navigate(browserSessionId, targetUrl);
