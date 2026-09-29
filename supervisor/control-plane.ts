@@ -87,20 +87,25 @@ export class WorkflowSupervisorControlPlane {
     const scope = this.hooks.projectScopeForTask?.(task);
     const title = scope?.title.trim();
     if (!title) throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_SCOPE_REQUIRED');
-    const projectUrls = new Set(
-      this.store.discoverySnapshot().conversations
-        .filter((conversation) => conversation.projectTitle?.trim().toLocaleLowerCase() === title.toLocaleLowerCase())
-        .map((conversation) => conversation.projectUrl?.trim())
-        .filter((value): value is string => Boolean(value)),
-    );
-    if (projectUrls.size === 0) throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_NOT_DISCOVERED');
-    if (projectUrls.size !== 1) throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_AMBIGUOUS');
-    const projectUrl = [...projectUrls][0]!;
-    const parsed = new URL(projectUrl);
-    if (parsed.protocol !== 'https:' || parsed.hostname !== 'chatgpt.com' || !parsed.pathname.endsWith('/project')) {
-      throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_URL_INVALID');
+    const projects = new Map<string, string>();
+    for (const conversation of this.store.discoverySnapshot().conversations) {
+      if (conversation.projectTitle?.trim().toLocaleLowerCase() !== title.toLocaleLowerCase()) continue;
+      const value = conversation.projectUrl?.trim();
+      if (!value) continue;
+      try {
+        const parsed = new URL(value);
+        if (parsed.protocol !== 'https:' || parsed.hostname !== 'chatgpt.com') continue;
+        const match = /^\/g\/(g-p-[a-z0-9]+)(?:-[^/]+)?\/project\/?$/i.exec(parsed.pathname);
+        if (!match) continue;
+        const projectId = match[1]!.toLocaleLowerCase();
+        projects.set(projectId, `https://chatgpt.com/g/${match[1]!}/project`);
+      } catch {
+        continue;
+      }
     }
-    return parsed.toString();
+    if (projects.size === 0) throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_NOT_DISCOVERED');
+    if (projects.size !== 1) throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_AMBIGUOUS');
+    return [...projects.values()][0]!;
   }
   recordBrowserDiscovery(source: string, conversations: readonly WorkflowSupervisorDiscoveredConversation[]) {
     // Discovery is durable observation only. Creating a Supervisor task/effect

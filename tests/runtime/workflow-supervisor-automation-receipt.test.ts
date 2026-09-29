@@ -42,13 +42,27 @@ describe('Workflow Supervisor automation receipts', () => {
       continuationPolicy: { kind: 'standalone_supervisor', bootstrap: true },
       userBlockerPolicy: {},
     });
-    control.recordBrowserDiscovery('chrome-extension', [{
-      conversationId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
-      canonicalUrl: 'https://chatgpt.com/c/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
-      projectTitle: 'forge',
-      projectUrl: 'https://chatgpt.com/g/g-p-forge/project',
-    }]);
-    expect(control.bootstrapProjectUrl(task.taskId)).toBe('https://chatgpt.com/g/g-p-forge/project');
+    control.recordBrowserDiscovery('chrome-extension', [
+      {
+        conversationId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+        canonicalUrl: 'https://chatgpt.com/c/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+        projectTitle: 'forge',
+        projectUrl: 'https://chatgpt.com/g/g-p-abc123/project',
+      },
+      {
+        conversationId: 'bbbbbbbb-cccc-dddd-eeee-ffffffffffff',
+        canonicalUrl: 'https://chatgpt.com/g/g-p-abc123-forge/c/bbbbbbbb-cccc-dddd-eeee-ffffffffffff',
+        projectTitle: 'forge',
+        projectUrl: 'https://chatgpt.com/g/g-p-abc123-forge/project',
+      },
+      {
+        conversationId: 'cccccccc-dddd-eeee-ffff-aaaaaaaaaaaa',
+        canonicalUrl: 'https://chatgpt.com/c/cccccccc-dddd-eeee-ffff-aaaaaaaaaaaa',
+        projectTitle: 'forge',
+        projectUrl: 'https://chatgpt.com/plugins/plugin_asdk_app_example',
+      },
+    ]);
+    expect(control.bootstrapProjectUrl(task.taskId)).toBe('https://chatgpt.com/g/g-p-abc123/project');
     store.close();
   });
 
