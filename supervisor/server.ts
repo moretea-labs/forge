@@ -228,7 +228,7 @@ function text(params: Record<string, unknown>, key: string): string { const valu
 function reply(socket: Socket, id: string, result: unknown): void { socket.write(`${JSON.stringify({ id, ok: true, result })}\n`); }
 function fail(socket: Socket, id: string, error: unknown): void { const message = error instanceof Error ? error.message : String(error); socket.write(`${JSON.stringify({ id, ok: false, error: { code: message.split(':')[0], message } })}\n`); }
 
-export function createWorkflowSupervisorServer(input: { controlPlane: WorkflowSupervisorControlPlane; socketPath: string; discovery?: WorkflowSupervisorEphemeralDiscovery; writer?: WorkflowSupervisorWriterIdentity }): Server {
+export function createWorkflowSupervisorServer(input: { controlPlane: WorkflowSupervisorControlPlane; socketPath: string; discovery?: WorkflowSupervisorEphemeralDiscovery; writer?: WorkflowSupervisorWriterIdentity; browserAdapterEnabled?: boolean }): Server {
   const discovery = input.discovery ?? new WorkflowSupervisorEphemeralDiscovery();
   const server = createServer((socket) => {
     let buffer = Buffer.alloc(0); let chain = Promise.resolve();
@@ -240,7 +240,7 @@ export function createWorkflowSupervisorServer(input: { controlPlane: WorkflowSu
         const raw = buffer.subarray(0, newline).toString('utf8'); buffer = buffer.subarray(newline + 1);
         chain = chain.then(async () => {
           let id = 'invalid';
-          try { const req = request(JSON.parse(raw)); id = req.id; reply(socket, id, await dispatch(input.controlPlane, discovery, req)); } catch (error) { fail(socket, id, error); }
+          try { const req = request(JSON.parse(raw)); id = req.id; reply(socket, id, await dispatch(input.controlPlane, discovery, req, input.browserAdapterEnabled !== false)); } catch (error) { fail(socket, id, error); }
         });
         newline = buffer.indexOf(0x0a);
       }
@@ -269,9 +269,11 @@ export function createWorkflowSupervisorServer(input: { controlPlane: WorkflowSu
   return server;
 }
 
-async function dispatch(control: WorkflowSupervisorControlPlane, discovery: WorkflowSupervisorEphemeralDiscovery, req: RpcRequest): Promise<unknown> {
+async function dispatch(control: WorkflowSupervisorControlPlane, discovery: WorkflowSupervisorEphemeralDiscovery, req: RpcRequest, browserAdapterEnabled = true): Promise<unknown> {
   const p = req.params;
   if (req.method === 'health') return { status: 'ready', writer: 'workflow-supervisor-daemon' };
+  if (!browserAdapterEnabled && req.method === 'browser_tasks') return { tasks: [] };
+  if (!browserAdapterEnabled && req.method.startsWith('browser_')) throw new Error('WORKFLOW_SUPERVISOR_BROWSER_ADAPTER_DISABLED');
   if (req.method === 'browser_discovery') return control.browserDiscoverySnapshot();
   if (req.method === 'browser_current_conversation') return { conversation: discovery.currentConversation('chrome-extension') };
   if (req.method === 'browser_discovery_update') {

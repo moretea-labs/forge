@@ -50,6 +50,7 @@ export async function startWorkflowSupervisorRuntime(
     controlPlane,
     socketPath,
     discovery,
+    browserAdapterEnabled: options.nativeBrowserAdapter !== false,
     ...(writer ? { writer } : {}),
   });
   const done = once(server, 'close').then(() => undefined);
