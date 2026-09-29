@@ -76,13 +76,15 @@ export function ensureSchedulerProviderUserActionHandoff(
   input: { workId: string; relayScopeId: string; authorityId: string; reason: string },
 ): string {
   const baseId = schedulerProviderUserHandoffId(options.repoId, input.workId, input.relayScopeId, input.authorityId);
-  const previous = getHandoffItem(options, baseId);
-  // A resolved/cancelled request is historical evidence, never the blocking
-  // authorization object for a later provider recovery epoch.
-  const id = previous && isTerminalHandoffStatus(previous.status)
-    ? recoveredSchedulerProviderUserHandoffId(baseId, input.reason)
-    : baseId;
-  const existing = getHandoffItem(options, id);
+  let id = baseId;
+  let existing = getHandoffItem(options, id);
+  // A terminal request is history, never the authorization object for the next
+  // recovery epoch. Include its durable version in the successor identity so a
+  // previously resolved recovery request cannot be selected again.
+  for (let generation = 0; existing && isTerminalHandoffStatus(existing.status) && generation < 8; generation += 1) {
+    id = recoveredSchedulerProviderUserHandoffId(id, `${input.reason}\n${existing.updatedAt}`);
+    existing = getHandoffItem(options, id);
+  }
   if (existing) return existing.id;
   return createHandoffItem(options, {
     id, repoId: options.repoId, workId: input.workId,
