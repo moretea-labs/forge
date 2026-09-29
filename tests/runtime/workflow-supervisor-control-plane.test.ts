@@ -1090,6 +1090,80 @@ test('retries a bootstrap effect after a proven pre-send failure instead of reco
     .toEqual(expect.objectContaining({ effect: expect.objectContaining({ effectId: effect.effectId }), mode: 'send', generation: 2 }));
 });
 
+test('bootstrap does not require window.name and reconciles the exact effect marker after navigation', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-bootstrap-causal-marker-'));
+  roots.push(root);
+  const store = new WorkflowSupervisorStore(join(root, 'supervisor-home'));
+  const control = new WorkflowSupervisorControlPlane(store, {}, {
+    projectScopeForTask: () => ({ title: 'forge' }),
+  });
+  const projectUrl = 'https://chatgpt.com/g/g-p-forge/project';
+  const conversationId = 'abababab-cdcd-efef-1212-343434343434';
+  const conversationUrl = `https://chatgpt.com/c/${conversationId}`;
+  control.recordBrowserDiscovery('test', [{
+    conversationId: '11111111-2222-3333-4444-555555555555',
+    canonicalUrl: 'https://chatgpt.com/c/11111111-2222-3333-4444-555555555555',
+    title: 'Forge project seed', projectTitle: 'forge', projectUrl,
+  }]);
+  const taskId = 'bootstrap-causal-marker-task';
+  control.registerTask({
+    taskId, conversationId: `bootstrap:${taskId}`, conversationUrl: 'https://chatgpt.com/',
+    objective: 'Bind from causal effect evidence even when navigation clears window.name.',
+    completionContract: {}, continuationPolicy: { kind: 'standalone_supervisor', bootstrap: true }, userBlockerPolicy: {},
+  });
+  const effect = control.reserveEnrollment(taskId);
+  const page: WorkflowSupervisorNativePage = {
+    evaluate: async <T>() => false as T,
+    waitForSelector: async () => undefined,
+    tabRef: () => ({ windowId: 'window-bootstrap', tabId: 'tab-bootstrap' }),
+  };
+  let canonical = false;
+  let sentPrompt = '';
+  let dispatchCount = 0;
+  let closeCount = 0;
+  const adapter = new WorkflowSupervisorNativeBrowserAdapter(control, new WorkflowSupervisorEphemeralDiscovery(), {
+    platform: 'darwin',
+    listTabs: async () => ({ entries: [{
+      windowId: 'window-bootstrap', tabId: 'tab-bootstrap', active: false,
+      url: canonical ? conversationUrl : projectUrl, title: 'Forge bootstrap', browserProduct: 'chrome',
+    }], unavailableProducts: [] }),
+    reattach: async () => page,
+    create: async () => page,
+    close: async () => { closeCount += 1; },
+    readOwner: async () => '',
+    writeOwner: async () => undefined,
+    snapshot: async () => ({
+      url: canonical ? conversationUrl : projectUrl,
+      title: 'Forge bootstrap', latestUserText: sentPrompt,
+      userMessages: sentPrompt ? [sentPrompt] : [],
+      latestAssistantResponse: '', providerActivityText: '', providerFailureText: '',
+      latestTurnRole: sentPrompt ? 'user' : undefined, isGenerating: false,
+    }),
+    clearComposer: async () => true,
+    dispatchPrompt: async (_page, prompt) => { sentPrompt = prompt; dispatchCount += 1; return { dispatched: true, confirmed: true }; },
+    nowMs: () => Date.now(),
+    providerIdleGraceMs: 60_000,
+    providerScopeKey: join(root, 'provider-scope'),
+    sleep: async () => undefined,
+    setInterval: () => 0 as unknown as ReturnType<typeof setInterval>,
+    clearInterval: () => undefined,
+    onError: (error) => { throw error; },
+  });
+
+  await adapter.runOnce();
+  expect(store.nextBrowserEffect(taskId)).toEqual(expect.objectContaining({ mode: 'reconcile', generation: 1 }));
+  expect(dispatchCount).toBe(1);
+
+  canonical = true;
+  await adapter.runOnce();
+
+  expect(control.getTask(taskId)).toEqual(expect.objectContaining({ conversationId, conversationUrl }));
+  expect(store.nextBrowserEffect(taskId)).toBeUndefined();
+  expect(store.latestEffectDispatch(effect.effectId)?.generation).toBe(1);
+  expect(dispatchCount).toBe(1);
+  expect(closeCount).toBe(0);
+});
+
 test('reconciles a late applied Supervisor effect into the same outcome-unknown ControllerRound without replay', () => {
   const fx = fixture();
   const requirementId = 'REQ-supervisor-late-provider-confirmation';

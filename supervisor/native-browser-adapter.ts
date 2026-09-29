@@ -116,6 +116,10 @@ function exactConversation(url: string, task: WorkflowSupervisorBrowserTask): bo
   } catch { return false; }
 }
 function targetMarkerPresent(text: string, effectId: string): boolean { return text.includes(renderEffectMarker(effectId)); }
+function snapshotTargetMarkerPresent(snapshot: WorkflowSupervisorNativeSnapshot, effectId: string): boolean {
+  return targetMarkerPresent(snapshot.latestUserText, effectId)
+    || snapshot.userMessages?.some((message) => targetMarkerPresent(message, effectId)) === true;
+}
 function refKey(ref: TaggedBrowserTabRef): string { return `${ref.browserProduct ?? 'unknown'}:${ref.windowId}:${ref.tabId}`; }
 function productForRef(ref: TaggedBrowserTabRef): MacOsBrowserProduct {
   if (ref.browserProduct === 'chrome' || ref.browserProduct === 'vivaldi') return ref.browserProduct;
@@ -634,8 +638,12 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     let preserveForReconcile = false;
     try {
       const marker = bootstrapOwnerMarker(task.taskId);
-      await this.deps.writeOwner(page, marker);
-      if (await this.deps.readOwner(page) !== marker) throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_OWNER_MARKER_FAILED');
+      // The page came from create(), so this tick already has exact native-tab
+      // ownership. window.name is only a best-effort restart hint: ChatGPT
+      // project navigation can clear it between two JavaScript calls, and that
+      // must never block a send that has not started yet. Cross-tick authority
+      // is recovered from the unique effect marker rendered in the user turn.
+      try { await this.deps.writeOwner(page, marker); } catch { /* causal marker reconciliation remains authoritative */ }
       if (!this.control.bootstrapBeginEffect({
         taskId: task.taskId,
         effectId: command.effectId,
@@ -680,7 +688,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
   private async reconcileBootstrapTask(task: WorkflowSupervisorBrowserTask, command: WorkflowSupervisorBrowserCommand): Promise<void> {
     const inventory = await this.listInventory();
     const expectedOwner = bootstrapOwnerMarker(task.taskId);
-    const matches: Array<{ page: WorkflowSupervisorNativePage; ref: TaggedBrowserTabRef }> = [];
+    const matches: Array<{ page: WorkflowSupervisorNativePage; ref: TaggedBrowserTabRef; ownerMatched: boolean; snapshot?: WorkflowSupervisorNativeSnapshot }> = [];
     for (const candidate of inventory.entries) {
       let parsed: URL;
       try { parsed = new URL(candidate.url); } catch { continue; }
@@ -690,25 +698,37 @@ export class WorkflowSupervisorNativeBrowserAdapter {
         tabId: candidate.tabId,
         ...(candidate.browserProduct ? { browserProduct: candidate.browserProduct } : {}),
       };
+      let page: WorkflowSupervisorNativePage;
+      try { page = await this.deps.reattach(ref); }
+      catch { continue; /* An unreadable tab is not evidence that the effect was not applied. */ }
       try {
-        const page = await this.deps.reattach(ref);
-        if (await this.deps.readOwner(page) === expectedOwner) matches.push({ page, ref });
-      } catch { /* An unreadable tab is not evidence that the effect was not applied. */ }
+        if (await this.deps.readOwner(page) === expectedOwner) {
+          matches.push({ page, ref, ownerMatched: true });
+          continue;
+        }
+      } catch { /* window.name is only a best-effort hint. */ }
+      try {
+        const snapshot = await this.deps.snapshot(page, { includeUserHistory: true, includePageText: false });
+        if (snapshotTargetMarkerPresent(snapshot, command.effectId)) matches.push({ page, ref, ownerMatched: false, snapshot });
+      } catch { /* No readable marker means no causal bootstrap match. */ }
     }
     if (matches.length === 0) return;
     if (matches.length !== 1) throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_RECONCILE_AMBIGUOUS');
-    const [{ page, ref }] = matches;
+    const [{ page, ref, ownerMatched, snapshot: observed }] = matches;
     let applied = false;
     try {
-      const snapshot = await this.deps.snapshot(page, { includeUserHistory: true, includePageText: false });
+      const snapshot = observed ?? await this.deps.snapshot(page, { includeUserHistory: true, includePageText: false });
       let identity;
       try { identity = parseChatgptConversationIdentity(snapshot.url); } catch { return; }
-      if (!targetMarkerPresent(snapshot.latestUserText, command.effectId)) return;
+      if (!snapshotTargetMarkerPresent(snapshot, command.effectId)) return;
       this.control.bindBootstrapConversation({ taskId: task.taskId, conversationId: identity.conversationId, conversationUrl: identity.canonicalUrl });
       this.control.bootstrapObserveEffect({ taskId: task.taskId, effectId: command.effectId, observationId: `bootstrap-reconcile-${randomUUID()}`, outcome: 'applied' });
       applied = true;
     } finally {
-      if (applied) {
+      // A surviving owner marker proves Forge-created resource ownership. Marker-
+      // only recovery proves causal conversation identity, not tab ownership, so
+      // bind it but leave that browser resource intact.
+      if (applied && ownerMatched) {
         await this.deps.close(ref).catch(() => undefined);
         this.invalidateInventory();
       }
