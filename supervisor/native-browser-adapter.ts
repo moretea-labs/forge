@@ -259,7 +259,11 @@ export async function defaultDispatchPrompt(
   // in other tabs/windows cannot redirect the effect. React renders the send
   // control asynchronously after contenteditable input, so use the Browser's
   // exact-tab bounded selector wait instead of a foreground sleep or Computer input.
-  const prepareDeadline = Date.now() + 5_000;
+  // A freshly opened ChatGPT Project shell can finish its route transition
+  // before React hydrates the composer. Give that exact-tab transition a
+  // bounded window rather than classifying an otherwise untouched tab as an
+  // outcome-unknown provider send.
+  const prepareDeadline = Date.now() + 15_000;
   let prepared: { prepared: boolean; reason?: string } | undefined;
   while (true) {
     try {
@@ -632,7 +636,12 @@ export class WorkflowSupervisorNativeBrowserAdapter {
         (result) => result.dispatched ? { providerAccepted: result.confirmed === true } : { code: result.reason, message: result.reason },
       );
       if (!dispatched.dispatched) {
-        this.control.bootstrapObserveEffect({ taskId: task.taskId, effectId: command.effectId, observationId: `bootstrap-${randomUUID()}`, outcome: 'unknown' });
+        // dispatchPrompt returns false only before clicking the exact-tab send
+        // control, so this is a durable negative proof rather than an
+        // outcome-unknown provider effect. Release this untouched Forge-owned
+        // tab and let the existing bounded retry ledger mint the next send.
+        this.control.bootstrapObserveEffect({ taskId: task.taskId, effectId: command.effectId, observationId: `bootstrap-${randomUUID()}`, outcome: 'not_applied' });
+        preserveForReconcile = false;
         return;
       }
       for (let attempt = 0; attempt < 50; attempt += 1) {

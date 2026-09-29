@@ -197,10 +197,28 @@ export class WorkflowSupervisorControlPlane {
       ...(this.hooks.effectDispatchEvidence?.() ?? {}),
     });
   }
-  bootstrapObserveEffect(input: { taskId: string; effectId: string; observationId: string; outcome: 'applied' | 'unknown' }): void {
+  bootstrapObserveEffect(input: { taskId: string; effectId: string; observationId: string; outcome: 'applied' | 'not_applied' | 'unknown' }): void {
     const task = this.requireTask(input.taskId);
     const effect = this.store.getEffect(validateEffectId(input.effectId));
     if (!effect || effect.taskId !== task.taskId) throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_EFFECT_TASK_MISMATCH');
+    if (input.outcome === 'not_applied') {
+      // This path is private to the native bootstrap adapter after its exact-tab
+      // dispatch function returned without clicking Send. It is therefore a
+      // mechanical negative proof, unlike a missing post-send conversation
+      // marker, which remains outcome-unknown and must reconcile.
+      const pending = this.store.nextBrowserEffect(task.taskId);
+      const dispatch = this.store.latestEffectDispatch(effect.effectId);
+      if (!pending || pending.effect.effectId !== effect.effectId || pending.mode !== 'reconcile'
+        || !dispatch || pending.generation !== dispatch.generation) {
+        throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_NOT_APPLIED_PROOF_INVALID');
+      }
+      this.store.recordEffectNotAppliedProof(effect.effectId, input.observationId, {
+        surface: 'computer-bootstrap',
+        dispatch_generation: dispatch.generation,
+        pre_send_rejection: true,
+      });
+      return;
+    }
     this.observeEffect({ effectId: effect.effectId, observationId: input.observationId, outcome: input.outcome, evidence: { surface: 'computer-bootstrap' } });
     if (input.outcome === 'applied') this.hooks.effectApplied?.(task, effect, { observationId: input.observationId, evidence: { surface: 'computer-bootstrap' } });
   }

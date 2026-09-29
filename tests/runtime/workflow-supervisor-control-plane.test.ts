@@ -1058,6 +1058,33 @@ test('browserTasks prioritizes fresh sends ahead of older reconciliation work', 
   ]);
 });
 
+test('retries a bootstrap effect after a proven pre-send failure instead of reconciling it forever', () => {
+  const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-bootstrap-negative-proof-'));
+  roots.push(root);
+  const dispatchedAt = 1_700_000_000_000;
+  const store = new WorkflowSupervisorStore(join(root, 'supervisor-home'), { now: () => dispatchedAt });
+  const control = new WorkflowSupervisorControlPlane(store);
+  control.registerTask({
+    taskId: 'bootstrap-negative-proof-task',
+    conversationId: 'bootstrap:bootstrap-negative-proof-task',
+    conversationUrl: 'https://chatgpt.com/',
+    objective: 'Retry only after a mechanically proven pre-send failure.',
+    completionContract: {}, continuationPolicy: { kind: 'standalone_supervisor', bootstrap: true }, userBlockerPolicy: {},
+  });
+  const effect = control.reserveEnrollment('bootstrap-negative-proof-task');
+  expect(control.bootstrapBeginEffect({
+    taskId: 'bootstrap-negative-proof-task', effectId: effect.effectId,
+    dispatchId: 'dispatch-pre-send-failure', dispatchGeneration: 1,
+  })).toBe(true);
+  control.bootstrapObserveEffect({
+    taskId: 'bootstrap-negative-proof-task', effectId: effect.effectId,
+    observationId: 'proven-no-send', outcome: 'not_applied',
+  });
+
+  expect(store.nextBrowserEffect('bootstrap-negative-proof-task', { nowMs: dispatchedAt + 30_000 }))
+    .toEqual(expect.objectContaining({ effect: expect.objectContaining({ effectId: effect.effectId }), mode: 'send', generation: 2 }));
+});
+
 test('reconciles a late applied Supervisor effect into the same outcome-unknown ControllerRound without replay', () => {
   const fx = fixture();
   const requirementId = 'REQ-supervisor-late-provider-confirmation';
