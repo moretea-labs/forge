@@ -423,7 +423,9 @@ export function forgeWorkflowSupervisorLifecycleHooks(controllerHome: string): W
     projectScopeForTask: (task) => {
       const repoId = workflowSupervisorContractText(task, 'repo_id');
       const taskControllerHome = workflowSupervisorContractText(task, 'controller_home');
-      if (!repoId || !taskControllerHome || taskControllerHome !== controllerHome) return undefined;
+      if (!repoId) return undefined;
+      if (taskControllerHome && taskControllerHome !== controllerHome) return undefined;
+      if (!taskControllerHome && task.continuationPolicy.kind !== 'standalone_supervisor') return undefined;
       try {
         const repository = getRepository(repoId, controllerHome);
         return { title: repository.displayName, repoId, controllerHome };

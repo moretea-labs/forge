@@ -39,6 +39,38 @@ function fixture() {
 }
 
 describe('Workflow Supervisor canonical lifecycle projection', () => {
+  test('derives standalone project scope from Supervisor-owned Controller Home', () => {
+    const fx = fixture();
+    const supervisorStore = new WorkflowSupervisorStore(join(fx.root, 'standalone-project-scope'));
+    const hooks = forgeWorkflowSupervisorLifecycleHooks(fx.controllerHome);
+    const standalone = supervisorStore.registerTask({
+      taskId: 'supervisor:standalone-project-scope',
+      conversationId: 'bootstrap:supervisor:standalone-project-scope',
+      conversationUrl: 'https://chatgpt.com/',
+      objective: 'Standalone bootstrap.',
+      completionContract: { repo_id: fx.repository.repoId },
+      continuationPolicy: { kind: 'standalone_supervisor', bootstrap: true },
+      userBlockerPolicy: {},
+    });
+    expect(hooks.projectScopeForTask?.(standalone)).toEqual({
+      title: 'supervisor-terminal-reconcile',
+      repoId: fx.repository.repoId,
+      controllerHome: fx.controllerHome,
+    });
+
+    const mismatched = supervisorStore.registerTask({
+      taskId: 'supervisor:standalone-project-scope-mismatch',
+      conversationId: 'bootstrap:supervisor:standalone-project-scope-mismatch',
+      conversationUrl: 'https://chatgpt.com/',
+      objective: 'Reject cross-home bootstrap.',
+      completionContract: { repo_id: fx.repository.repoId, controller_home: join(fx.root, 'other-controller') },
+      continuationPolicy: { kind: 'standalone_supervisor', bootstrap: true },
+      userBlockerPolicy: {},
+    });
+    expect(hooks.projectScopeForTask?.(mismatched)).toBeUndefined();
+    supervisorStore.close();
+  });
+
   test('keeps normal same-conversation continuation minimal while recovery retains bounded restore context', () => {
     const task = {
       taskId: 'task-minimal-continuation',
