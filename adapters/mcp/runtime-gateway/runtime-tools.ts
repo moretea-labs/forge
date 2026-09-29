@@ -6,6 +6,7 @@ import { result } from './result-adapter';
 import { callContextAdapter } from './context-adapter';import { callPluginAdapter } from './plugin-adapter';import { callRecoveryAdapter } from './recovery-adapter';import { callArtifactAdapter } from './artifact-adapter';import { callFilesystemAdapter } from './filesystem-adapter';import { callModelAdapter } from './model-adapter';
 import { callProtectedComputerAdapter } from './protected-computer-adapter';
 import { callWorkCompatibilityAdapter } from './work-compat-adapter';
+import { callWorkflowSupervisorAdapter } from './workflow-supervisor-adapter';
 import { callRepositoryCompatibilityAdapter } from './repository-compat-adapter';
 import { callSchedulerAdapter } from './scheduler-adapter';
 import { callRuntimeObservationAdapter } from './runtime-observation-adapter';
@@ -21,8 +22,9 @@ export {
   runtimeToolDefinitions,
 } from './runtime-tool-definitions';
 import { callWorkAdapter, runFacadeRepair } from './work-adapter';
+import { automationMetadata, persistAutomationReceipt } from './automation-receipt-adapter';
 
-export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: string, args: Record<string, unknown>): Promise<CallToolResult | undefined> {
+async function callRuntimeToolUnchecked(ctx: MultiRepositoryMcpToolContext, name: string, args: Record<string, unknown>): Promise<CallToolResult | undefined> {
   try {
     const statusInbox = await callStatusInboxAdapter(ctx, name, args, { repair: runFacadeRepair });
     if (statusInbox) return statusInbox;
@@ -40,6 +42,8 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
     if (filesystem) return filesystem;
     const model = callModelAdapter(ctx, name, args);
     if (model) return model;
+    const workflowSupervisor = await callWorkflowSupervisorAdapter(ctx, name, args);
+    if (workflowSupervisor) return workflowSupervisor;
     const workCompatibility = await callWorkCompatibilityAdapter(ctx, name, args);
     if (workCompatibility) return workCompatibility;
     const repositoryCompatibility = await callRepositoryCompatibilityAdapter(ctx, name, args);
@@ -61,6 +65,13 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
     const structuredCode = /^([A-Z][A-Z0-9_]+)(?::|$)/.exec(message)?.[1];
     return result({ error: { code: structuredCode ?? 'RUNTIME_TOOL_FAILED', message } }, true);
   }
+}
+
+export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: string, args: Record<string, unknown>): Promise<CallToolResult | undefined> {
+  const metadata = automationMetadata(args);
+  const outcome = await callRuntimeToolUnchecked(ctx, name, args);
+  await persistAutomationReceipt(ctx, name, metadata, outcome);
+  return outcome;
 }
 
 export { runtimeIdentitySnapshot, dispatchedChatgptRelayAuthorizesStaleControllerRecovery, sessionlessFacadeControllerAuthorityMatches } from './controller-authority-adapter';

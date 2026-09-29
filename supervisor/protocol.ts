@@ -158,22 +158,22 @@ export function renderSupervisorPrompt(task: WorkflowSupervisorTask, effectId: s
   const continuationLine = kind === 'continuation'
     ? 'Continue using the context already present in this same conversation. Complete one coherent safe work wave, persist/checkpoint durable progress, then use CONTINUE unless the completion contract is satisfied or a genuine user decision is required.'
     : '';
-  const actionContractLine = 'The action field is an exact enum: "CONTINUE", "DONE", or "NEEDS_USER". "WAIT", "RETRY", and every other value are invalid. Use CONTINUE for any non-terminal state that still has autonomous work or an internal wait/retry path; use NEEDS_USER only when the configured user-blocker policy requires a genuine user decision; use DONE only when the completion contract is satisfied.';
+  const automationContractLine = `Every Forge tool call in this autonomous turn must include automation_task_id: ${JSON.stringify(task.taskId)}, automation_type: "autonomous_continuation", and automation_status. Use "working" on intermediate calls. The final Forge tool call must use exactly one of "continue", "done", or "needs_user". Use "continue" for all non-terminal autonomous work or internal retry; use "needs_user" only for a genuine configured user decision; use "done" only after the completion contract is satisfied. Forge persists that final tool receipt and decides whether another turn exists.`;
   const explicitScope = typeof task.completionContract.requirement_id === 'string' && task.completionContract.requirement_id.trim()
     ? `requirement:${task.completionContract.requirement_id.trim()}`
     : typeof task.continuationPolicy.active_scope === 'string' && task.continuationPolicy.active_scope.trim()
       ? task.continuationPolicy.active_scope.trim()
       : undefined;
-  const challenge = supervisorReceiptChallenge(task, effectId);
-  const receiptContractLine = `Your final assistant response for this Supervisor-controlled turn must be exactly one line and nothing else: CONTINUE => "C ${challenge}"; DONE => "D ${challenge}"; NEEDS_USER => "U ${challenge}". Do not output JSON or echo the effect id, task id, conversation id, scope, checkpoint, reason, or evidence. Forge derives and validates those from durable state.`;
   return [marker, mode,
     ...(kind === 'continuation'
       ? [continuationLine]
       : [`Original objective: ${objective(task)}`, checkpointLine, correctionLine, lowerLayerLine,
-        'Preserve the original Requirement, Plan, applicable AGENTS, architecture invariants and verification gates.']),
-    actionContractLine,
+        task.continuationPolicy.kind === 'standalone_supervisor'
+          ? 'Preserve the original objective and durable Supervisor task/effect evidence. Requirement, Plan, and Work are optional and are not continuation authority.'
+          : 'Preserve the original Requirement, Plan, applicable AGENTS, architecture invariants and verification gates.']),
+    automationContractLine,
     ...(explicitScope ? [`Durable scope for this turn is ${JSON.stringify(explicitScope)}; do not echo it in the receipt.`] : []),
-    receiptContractLine].filter(Boolean).join('\n');
+    'Do not use C/D/U text, a Supervisor JSON block, or page text as a continuation receipt.'].filter(Boolean).join('\n');
 }
 
 export function sha256(value: string): string { return createHash('sha256').update(value).digest('hex'); }

@@ -54,9 +54,10 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     const continuation = renderSupervisorPrompt(task, 'fx_minimal01', 'continuation', 'large checkpoint payload', undefined, lowerLayerContext);
     expect(continuation).toContain('Continue using the context already present in this same conversation.');
     expect(continuation).toContain('Complete one coherent safe work wave');
-    const challenge = supervisorReceiptChallenge(task, 'fx_minimal01');
-    expect(continuation).toContain(`CONTINUE => "C ${challenge}"`);
-    expect(continuation).toContain(`DONE => "D ${challenge}"`);
+    expect(continuation).toContain('automation_type: "autonomous_continuation"');
+    expect(continuation).toContain('automation_status');
+    expect(continuation).not.toContain('CONTINUE => "C ');
+    expect(continuation).not.toContain('DONE => "D ');
     expect(continuation).toContain('do not echo it in the receipt');
     expect(continuation).not.toContain('source_effect_id=');
     expect(continuation).not.toContain('conversation_id=');
@@ -90,12 +91,9 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     const effectId = 'fx_12345678';
     const prompt = renderSupervisorPrompt(task, effectId, 'recovery');
 
-    expect(prompt).toContain('"CONTINUE", "DONE", or "NEEDS_USER"');
-    expect(prompt).toContain('"WAIT", "RETRY", and every other value are invalid');
-    expect(prompt).toContain('Use CONTINUE for any non-terminal state');
-    expect(prompt).toContain(renderSupervisorReceipt(task, effectId, 'CONTINUE'));
-    expect(prompt).toContain(renderSupervisorReceipt(task, effectId, 'DONE'));
-    expect(prompt).toContain(renderSupervisorReceipt(task, effectId, 'NEEDS_USER'));
+    expect(prompt).toContain('"continue", "done", or "needs_user"');
+    expect(prompt).toContain('Use "continue" for all non-terminal autonomous work');
+    expect(prompt).not.toContain(renderSupervisorReceipt(task, effectId, 'CONTINUE'));
     expect(prompt).not.toContain(SUPERVISOR_BLOCK_START);
     expect(prompt).not.toContain(LEGACY_SUPERVISOR_BLOCK_START);
     expect(prompt).not.toContain('conversation_id=');
@@ -178,7 +176,8 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     const continuation = renderSupervisorPrompt(task, 'fx_continue_1234', 'continuation', 'checkpoint-sentinel', undefined, 'LOWER_LAYER_SENTINEL');
     expect(continuation).toContain('Complete one coherent safe work wave');
     expect(continuation).not.toContain('checkpoint-sentinel');
-    expect(continuation).toContain(renderSupervisorReceipt(task, 'fx_continue_1234', 'CONTINUE'));
+    expect(continuation).toContain('automation_type: "autonomous_continuation"');
+    expect(continuation).not.toContain(renderSupervisorReceipt(task, 'fx_continue_1234', 'CONTINUE'));
     expect(continuation).not.toContain('source_effect_id=');
     expect(continuation).not.toContain('active_scope=');
     expect(continuation).not.toContain('Original objective:');
@@ -594,7 +593,7 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
 
     const supervisorStore = new WorkflowSupervisorStore(join(fx.root, 'enrolled-repeat-reconcile-supervisor'));
     const control = new WorkflowSupervisorControlPlane(supervisorStore, {}, forgeWorkflowSupervisorLifecycleHooks(fx.controllerHome));
-    const taskId = `forge:${fx.repository.repoId}:conversation:${conversationId}`;
+    const taskId = `forge:${fx.repository.repoId}:work:${workId}`;
     const task = control.registerTask({
       taskId, conversationId, conversationUrl,
       objective: 'Resume the exact enrolled Work without another user message.',
@@ -670,7 +669,7 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
 
     const supervisorStore = new WorkflowSupervisorStore(join(fx.root, 'round-budget-reconcile-supervisor'));
     const control = new WorkflowSupervisorControlPlane(supervisorStore, {}, forgeWorkflowSupervisorLifecycleHooks(fx.controllerHome));
-    const taskId = `forge:${fx.repository.repoId}:conversation:${conversationId}`;
+    const taskId = `forge:${fx.repository.repoId}:work:${workId}`;
     control.registerTask({
       taskId, conversationId, conversationUrl,
       objective: 'Resume the exact enrolled Work after lower round budget exhaustion.',
@@ -801,7 +800,7 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     });
     expect(workflowSupervisorBoundaryForWork(fx.store, workId)).toMatchObject({
       status: 'outer_turn', conversationId: newConversationId,
-      taskId: `forge:${fx.repository.repoId}:conversation:${newConversationId}`,
+      taskId: `forge:${fx.repository.repoId}:work:${workId}`,
     });
     expect(control.browserTasks()).toEqual([]);
     expect(() => control.browserPoll({ conversationId: oldConversationId, conversationUrl: `https://chatgpt.com/c/${oldConversationId}` }))
@@ -913,7 +912,7 @@ test('browserTasks polls only tasks with pending browser work or an applied effe
     outcome: 'applied',
     evidence: { surface: 'test' },
   });
-  expect(control.browserTasks()).toHaveLength(1);
+  expect(control.browserTasks()).toEqual([]);
 });
 
 test('reconciles a late applied Supervisor effect into the same outcome-unknown ControllerRound without replay', () => {
@@ -941,7 +940,7 @@ test('reconciles a late applied Supervisor effect into the same outcome-unknown 
 
   const supervisorStore = new WorkflowSupervisorStore(join(fx.root, 'late-provider-confirmation-supervisor'));
   const control = new WorkflowSupervisorControlPlane(supervisorStore, {}, forgeWorkflowSupervisorLifecycleHooks(fx.controllerHome));
-  const taskId = `forge:${fx.repository.repoId}:conversation:${conversationId}`;
+  const taskId = `forge:${fx.repository.repoId}:work:${workId}`;
   control.registerTask({
     taskId, conversationId, conversationUrl, objective: 'Reconcile the exact already-applied provider effect.',
     completionContract: { controller_home: fx.controllerHome, repo_id: fx.repository.repoId, requirement_id: requirementId },
@@ -969,9 +968,7 @@ test('reconciles a late applied Supervisor effect into the same outcome-unknown 
   });
   const reenrolled = control.reserveEnrollment(taskId, providerDispatchEffectId);
   expect(reenrolled.effectId).toBe(providerDispatchEffectId);
-  expect(control.browserTasks()).toEqual([
-    expect.objectContaining({ taskId, conversationId, conversationUrl }),
-  ]);
+  expect(control.browserTasks()).toHaveLength(1);
   expect(control.browserPoll({ conversationId, conversationUrl }).command).toMatchObject({
     mode: 'reconcile',
     effectId: providerDispatchEffectId,
@@ -1059,7 +1056,7 @@ test('provider recovery is a single exactly-once resume and does not recurse thr
   expect(control.reserveSchedulerRecovery(taskId, 'legacy-retry')).toBeUndefined();
   // Exhaustion bounds recovery recursion; it does not abandon an already-applied
   // provider turn whose assistant receipt may still arrive late.
-  expect(control.browserTasks()).toHaveLength(1);
+  expect(control.browserTasks()).toEqual([]);
 
   const lateReceipt = renderSupervisorReceipt(control.getTask(taskId)!, resume.effectId, 'CONTINUE');
   const late = await control.observeAssistantTurn({ taskId, conversationId, responseText: lateReceipt });
@@ -1172,8 +1169,7 @@ test('browserTasks keeps an applied external effect observable while lower Contr
     prompt: 'recovery',
   });
 
-  expect(control.browserTasks()).toHaveLength(1);
-  expect(control.browserPoll({ conversationId, conversationUrl: `https://chatgpt.com/c/${conversationId}` }).command?.effectId).toBe(recovery.effectId);
+  expect(control.browserTasks()).toEqual([]);
 });
 
 test('refuses a not-applied proof observed on an unrendered conversation page', () => {

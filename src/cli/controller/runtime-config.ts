@@ -6,10 +6,11 @@ export { FORGE_VERSION } from '../../version';
 /** Product identity exposed by every Forge runtime surface. */
 export const FORGE_TOOL_SURFACE = FORGE_PRODUCT_ID;
 /** Payload schema for MCP health/config records; this is not a product/component version. */
-// 11: Thin Forge Slice 2 added the canonical `process_exec` host-local command
-// capability and made process attachment handle-addressed (`repo_id` optional).
+// 12: autonomous continuation is addressed by Workflow Supervisor task identity
+// rather than optional Work identity. Tool names stay bounded; the served input
+// schema changes and therefore must fence stale Connector schema snapshots.
 // A served-schema change must be visible to connector freshness checks.
-export const FORGE_MCP_SCHEMA_VERSION = 11;
+export const FORGE_MCP_SCHEMA_VERSION = 12;
 
 type ToolSurfaceDefinition = {
   name: string;

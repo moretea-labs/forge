@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { parseChatgptConversationIdentity } from './chatgpt-conversation';
 import { parseSupervisorCompletion, renderEffectMarker, renderSupervisorPrompt, sha256, validateEffectId } from './protocol';
 import { WorkflowSupervisorStore } from './store';
-import type { WorkflowAssistantObservation, WorkflowAssistantObservationResult, WorkflowContractValidation, WorkflowSupervisorBrowserPollResult, WorkflowSupervisorBrowserTask, WorkflowSupervisorCompletion, WorkflowSupervisorDiscoveredConversation, WorkflowSupervisorEffect, WorkflowSupervisorLifecycleHooks, WorkflowSupervisorProjectScope, WorkflowSupervisorTask, WorkflowSupervisorTaskInput, WorkflowSupervisorTurnSettlement, WorkflowSupervisorValidators } from './types';
+import type { WorkflowAssistantObservation, WorkflowAssistantObservationResult, WorkflowContractValidation, WorkflowSupervisorAutomationStatus, WorkflowSupervisorBrowserPollResult, WorkflowSupervisorBrowserTask, WorkflowSupervisorCompletion, WorkflowSupervisorDiscoveredConversation, WorkflowSupervisorEffect, WorkflowSupervisorLifecycleHooks, WorkflowSupervisorProjectScope, WorkflowSupervisorTask, WorkflowSupervisorTaskInput, WorkflowSupervisorTurnSettlement, WorkflowSupervisorValidators } from './types';
 
 function effectId(): string { return `fx_${randomUUID().replaceAll('-', '')}`; }
 function stableEffectId(originKey: string): string {
@@ -68,6 +68,13 @@ export class WorkflowSupervisorControlPlane {
     this.store.recordEffectObservation(validateEffectId(input.effectId), input.observationId, input.outcome, input.evidence);
   }
   getTask(taskId: string): WorkflowSupervisorTask | undefined { return this.store.getTask(taskId); }
+  bindBootstrapConversation(input: { taskId: string; conversationId: string; conversationUrl: string }): WorkflowSupervisorTask {
+    const identity = parseChatgptConversationIdentity(input.conversationUrl);
+    if (identity.conversationId !== input.conversationId) throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_CONVERSATION_MISMATCH');
+    const task = this.store.bindBootstrapConversation(input.taskId, identity.conversationId, identity.canonicalUrl);
+    this.hooks.bootstrapConversationBound?.(task);
+    return task;
+  }
   getEffect(id: string): WorkflowSupervisorEffect | undefined { return this.store.getEffect(validateEffectId(id)); }
   /** Mechanical provider re-dispatch budget for one effect, used by recovery to surface exhaustion. */
   effectDispatchBudget(effectId: string): ReturnType<WorkflowSupervisorStore['effectDispatchBudget']> {
@@ -98,20 +105,15 @@ export class WorkflowSupervisorControlPlane {
   browserTasks(): WorkflowSupervisorBrowserTask[] {
     return this.store.listTasks().filter((task) => {
       if (this.store.terminalAction(task.taskId)) return false;
-      // Browser observation is needed only while there is something to send,
-      // reconcile, or observe to completion. An otherwise-active Requirement is
-      // not itself a reason to re-open Work/Requirement authority and snapshot
-      // the browser every second.
-      const appliedEffectAwaitingCompletion = this.store.hasAppliedEffectAwaitingCompletion(task.taskId);
-      const needsBrowserAttention = Boolean(
-        this.store.nextBrowserEffect(task.taskId)
-        || appliedEffectAwaitingCompletion,
-      );
-      // Once a browser effect has been applied, observation and any bounded
-      // Supervisor recovery belong to the Supervisor external-effect
-      // lifecycle. A transient lower ControllerRound wait must not strand
-      // that effect before assistant completion is observed.
-      return needsBrowserAttention && (appliedEffectAwaitingCompletion || this.browserTaskActive(task));
+      // A Computer page is an ephemeral delivery surface.  Once submission is
+      // durably applied it must be closed and never reopened to infer an
+      // assistant decision from rendered text.  The next page open is only a
+      // reserved send/reconcile effect, created by a persisted tool receipt.
+      const needsBrowserAttention = Boolean(this.store.nextBrowserEffect(task.taskId));
+      // Bootstrap has no exact conversation yet, so it cannot satisfy the
+      // normal Work-boundary predicate. Its already-persisted enrollment effect
+      // is the narrow authority to acquire one through Computer exactly once.
+      return needsBrowserAttention && (task.conversationId.startsWith('bootstrap:') || this.browserTaskActive(task));
     }).map(browserTask);
   }
   browserPoll(input: { conversationId: string; conversationUrl: string }): WorkflowSupervisorBrowserPollResult {
@@ -123,6 +125,42 @@ export class WorkflowSupervisorControlPlane {
     const pending = this.store.nextBrowserEffect(task.taskId);
     if (!pending) return { authorized: true, task: projection };
     return { authorized: true, task: projection, command: { mode: pending.mode, effectId: pending.effect.effectId, kind: pending.effect.kind, prompt: pending.effect.prompt, dispatchGeneration: pending.generation, conversationId: task.conversationId, conversationUrl: task.conversationUrl } };
+  }
+  bootstrapPoll(taskId: string): WorkflowSupervisorBrowserPollResult {
+    const task = this.requireTask(taskId);
+    if (!task.conversationId.startsWith('bootstrap:')) throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_NOT_PENDING');
+    const pending = this.store.nextBrowserEffect(task.taskId);
+    if (!pending) return { authorized: true, task: browserTask(task) };
+    return {
+      authorized: true,
+      task: browserTask(task),
+      command: {
+        mode: pending.mode,
+        effectId: pending.effect.effectId,
+        kind: pending.effect.kind,
+        prompt: pending.effect.prompt,
+        dispatchGeneration: pending.generation,
+        conversationId: task.conversationId,
+        conversationUrl: task.conversationUrl,
+      },
+    };
+  }
+  bootstrapBeginEffect(input: { taskId: string; effectId: string; dispatchId: string; dispatchGeneration: number }): boolean {
+    const task = this.requireTask(input.taskId);
+    if (!task.conversationId.startsWith('bootstrap:')) throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_NOT_PENDING');
+    const pending = this.store.nextBrowserEffect(task.taskId);
+    if (!pending || pending.effect.effectId !== validateEffectId(input.effectId) || pending.mode !== 'send') return false;
+    return this.store.recordEffectDispatchStarted(input.effectId, input.dispatchGeneration, input.dispatchId, {
+      surface: 'computer-bootstrap',
+      ...(this.hooks.effectDispatchEvidence?.() ?? {}),
+    });
+  }
+  bootstrapObserveEffect(input: { taskId: string; effectId: string; observationId: string; outcome: 'applied' | 'unknown' }): void {
+    const task = this.requireTask(input.taskId);
+    const effect = this.store.getEffect(validateEffectId(input.effectId));
+    if (!effect || effect.taskId !== task.taskId) throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_EFFECT_TASK_MISMATCH');
+    this.observeEffect({ effectId: effect.effectId, observationId: input.observationId, outcome: input.outcome, evidence: { surface: 'computer-bootstrap' } });
+    if (input.outcome === 'applied') this.hooks.effectApplied?.(task, effect, { observationId: input.observationId, evidence: { surface: 'computer-bootstrap' } });
   }
   browserBeginEffect(input: { conversationId: string; conversationUrl: string; effectId: string; dispatchId: string; dispatchGeneration: number; evidence?: Record<string, unknown> }): { started: boolean; mode: 'send' | 'reconcile'; generation: number } {
     const task = this.requireBrowserTask(input.conversationId, input.conversationUrl);
@@ -318,6 +356,80 @@ export class WorkflowSupervisorControlPlane {
     const resolved = this.store.resolveTerminal({ completionFingerprint, taskId: task.taskId, action: parsed.proposal.action, accepted: validation.valid, reason: validation.reason,
       ...(correctionId ? { correction: { effectId: correctionId, prompt: renderSupervisorPrompt(task, correctionId, 'correction', parsed.proposal.reason === 'compact_receipt' ? undefined : parsed.proposal.checkpoint, validation.reason, settlement.continuationContext) } } : {}) });
     return { action: parsed.proposal.action, completionFingerprint, terminal: validation.valid, ...(resolved.successorEffect ? { successorEffect: resolved.successorEffect } : {}), validation, deduplicated: committed.deduplicated || resolved.deduplicated };
+  }
+
+  /**
+   * The autonomous transport records its final state through the Forge tool
+   * call, not through text rendered in the ChatGPT page.  The exact task and
+   * applied effect are derived locally; callers cannot select a different
+   * conversation or effect by supplying model-authored identifiers.
+   */
+  async observeAutomationReceipt(input: {
+    taskId: string;
+    conversationId: string;
+    status: WorkflowSupervisorAutomationStatus;
+    receiptId: string;
+  }): Promise<WorkflowAssistantObservationResult | { recorded: true }> {
+    if (input.status === 'working') return { recorded: true };
+    const task = this.requireTask(input.taskId);
+    if (task.conversationId !== input.conversationId) throw new Error('WORKFLOW_SUPERVISOR_CONVERSATION_MISMATCH');
+    const terminal = this.store.terminalAction(task.taskId);
+    if (terminal) throw new Error(`WORKFLOW_SUPERVISOR_TASK_TERMINAL:${terminal}`);
+    const expectedEffect = this.store.latestAppliedEffectWithoutCompletion(task.taskId)
+      ?? this.store.latestAppliedLeafEffectWithoutCompletion(task.taskId);
+    // A provider can reuse one tool name/status in successive outer turns.
+    // Include the locally selected effect in the durable receipt identity so a
+    // later `continue` cannot replay the first effect's completion.
+    const replayCompletion = expectedEffect ? undefined : this.store.getLatestCompletion(task.taskId);
+    if (!expectedEffect && (!replayCompletion
+      || replayCompletion.proposal.checkpoint !== `automation:${input.receiptId}:${replayCompletion.sourceEffectId}`)) {
+      throw new Error('WORKFLOW_SUPERVISOR_CAUSAL_EFFECT_NOT_APPLIED');
+    }
+    const receiptForEffect = `${input.receiptId}:${expectedEffect?.effectId ?? replayCompletion!.sourceEffectId}`;
+    const responseText = `automation:${input.status}:${receiptForEffect}`;
+    const responseSha256 = sha256(responseText);
+    const priorCompletion = expectedEffect ? undefined : this.store.getCompletionByResponseSha256(task.taskId, responseSha256);
+    const sourceEffect = expectedEffect ?? (priorCompletion ? this.store.getEffect(priorCompletion.sourceEffectId) : undefined);
+    if (!sourceEffect || sourceEffect.taskId !== task.taskId || !this.store.effectApplied(sourceEffect.effectId)) {
+      throw new Error('WORKFLOW_SUPERVISOR_CAUSAL_EFFECT_NOT_APPLIED');
+    }
+    const action = input.status === 'continue' ? 'CONTINUE' : input.status === 'done' ? 'DONE' : 'NEEDS_USER';
+    const proposal = {
+      action: action as 'CONTINUE' | 'DONE' | 'NEEDS_USER',
+      sourceEffectId: sourceEffect.effectId,
+      checkpoint: `automation:${receiptForEffect}`,
+      reason: 'automation_tool_receipt',
+      evidence: [],
+      conversationId: task.conversationId,
+      taskId: task.taskId,
+      supervisorState: action === 'CONTINUE' ? 'running' as const : action === 'DONE' ? 'done' as const : 'needs_user' as const,
+    };
+    const controlBlockSha256 = sha256(responseText);
+    const completionFingerprint = sha256(jsonIdentity(task.taskId, task.conversationId, sourceEffect.effectId, responseSha256, controlBlockSha256));
+    const completion: WorkflowSupervisorCompletion = { completionFingerprint, taskId: task.taskId, sourceEffectId: sourceEffect.effectId, action: proposal.action, responseSha256, controlBlockSha256, proposal, committedAt: new Date().toISOString() };
+    const committed = this.store.commitCompletion(completion);
+    const settlement: WorkflowSupervisorTurnSettlement = await this.hooks.assistantTurnCommitted?.(task, completion) ?? { continuationAllowed: true };
+    if (proposal.action === 'CONTINUE') {
+      if (!settlement.continuationAllowed) throw new Error(`WORKFLOW_SUPERVISOR_LOWER_LAYER_CONTINUATION_BLOCKED:${settlement.reason ?? 'unspecified'}`);
+      const nextId = settlement.continuationEffectId
+        ? validateEffectId(settlement.continuationEffectId)
+        : stableEffectId(`completion:${completionFingerprint}`);
+      const withSuccessor = this.store.commitCompletion(completion, {
+        effectId: nextId,
+        kind: 'continuation',
+        prompt: renderSupervisorPrompt(task, nextId, 'continuation', proposal.checkpoint, undefined, settlement.continuationContext),
+      });
+      return { action: 'CONTINUE', completionFingerprint, terminal: false, successorEffect: withSuccessor.successorEffect!, deduplicated: committed.deduplicated || withSuccessor.deduplicated };
+    }
+    const validation = proposal.action === 'DONE'
+      ? await this.validators.completionContract(task, proposal)
+      : await this.validators.userBlockerPolicy(task, proposal);
+    const correctionId = validation.valid ? undefined : stableEffectId(`completion:${completionFingerprint}`);
+    const resolved = this.store.resolveTerminal({
+      completionFingerprint, taskId: task.taskId, action: proposal.action, accepted: validation.valid, reason: validation.reason,
+      ...(correctionId ? { correction: { effectId: correctionId, prompt: renderSupervisorPrompt(task, correctionId, 'correction', proposal.checkpoint, validation.reason, settlement.continuationContext) } } : {}),
+    });
+    return { action: proposal.action, completionFingerprint, terminal: validation.valid, ...(resolved.successorEffect ? { successorEffect: resolved.successorEffect } : {}), validation, deduplicated: committed.deduplicated || resolved.deduplicated };
   }
 
   private browserTaskActive(task: WorkflowSupervisorTask): boolean { return this.hooks.browserTaskActive?.(task) ?? true; }

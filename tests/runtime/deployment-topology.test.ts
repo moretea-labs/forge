@@ -2,16 +2,16 @@ import { describe, expect, test } from 'bun:test';
 import { deriveRuntimeDeploymentTopology, normalizeRuntimeDeploymentTopology } from '../../src/runtime/root/deployment-topology';
 
 describe('Runtime deployment topology', () => {
-  test('keeps native browser delivery disabled for a ChatGPT Supervisor', () => {
+  test('enables the Supervisor Computer executor for a ChatGPT Supervisor', () => {
     expect(deriveRuntimeDeploymentTopology({ controllers: ['chatgpt'] })).toMatchObject({
       components: {
         workflowSupervisor: true,
-        workflowSupervisorNativeBrowser: false,
+        workflowSupervisorNativeBrowser: true,
       },
     });
   });
 
-  test('normalizes a legacy persisted native-browser flag to disabled', () => {
+  test('normalizes a legacy persisted native-browser flag to the derived executor', () => {
     expect(normalizeRuntimeDeploymentTopology({
       schemaVersion: 1,
       remoteControllers: ['chatgpt'],
@@ -24,7 +24,7 @@ describe('Runtime deployment topology', () => {
     })).toMatchObject({
       components: {
         workflowSupervisor: true,
-        workflowSupervisorNativeBrowser: false,
+        workflowSupervisorNativeBrowser: true,
       },
     });
   });

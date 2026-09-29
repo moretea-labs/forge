@@ -13,7 +13,7 @@ import {
 import { CHATGPT_AUTOMATION_RATE_LIMITED, chatgptProviderBackpressureRemainingMs, chatgptProviderPageFailure, noteChatgptProviderBackpressure, withChatgptProviderDispatchLane } from '../adapters/chatgpt/provider-delivery';
 import { parseChatgptConversationIdentity } from './chatgpt-conversation';
 import { WorkflowSupervisorControlPlane } from './control-plane';
-import { hasCommittedSupervisorEnvelope, renderEffectMarker, sha256 } from './protocol';
+import { renderEffectMarker, sha256 } from './protocol';
 import type { WorkflowSupervisorEphemeralDiscovery } from './server';
 import type { WorkflowSupervisorBrowserCommand, WorkflowSupervisorBrowserTask } from './types';
 
@@ -108,9 +108,6 @@ function exactConversation(url: string, task: WorkflowSupervisorBrowserTask): bo
     const parsed = parseChatgptConversationIdentity(url);
     return parsed.conversationId === task.conversationId && parsed.canonicalUrl === task.conversationUrl;
   } catch { return false; }
-}
-function committedAssistant(text: string): boolean {
-  return hasCommittedSupervisorEnvelope(text.trim());
 }
 function targetMarkerPresent(text: string, effectId: string): boolean { return text.includes(renderEffectMarker(effectId)); }
 function refKey(ref: TaggedBrowserTabRef): string { return `${ref.browserProduct ?? 'unknown'}:${ref.windowId}:${ref.tabId}`; }
@@ -435,6 +432,10 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     const conversations: Array<{ conversation_id: string; canonical_url: string; title?: string }> = [];
     for (const task of tasks) {
       try {
+        if (task.conversationId.startsWith('bootstrap:')) {
+          await this.bootstrapTask(task);
+          continue;
+        }
         let poll = this.control.browserPoll({ conversationId: task.conversationId, conversationUrl: task.conversationUrl });
         // A command is one effect-scoped observation window.  Sending may create
         // a fresh tab, and an outcome-unknown reconcile may also open the exact
@@ -477,40 +478,6 @@ export class WorkflowSupervisorNativeBrowserAdapter {
           snapshot = replacement.snapshot;
         }
         conversations.push({ conversation_id: task.conversationId, canonical_url: task.conversationUrl, ...(snapshot.title.trim() ? { title: snapshot.title.trim().slice(0, 512) } : {}) });
-        // A committed Supervisor receipt is the terminal observation for this
-        // transport effect.  Keep its digest across the next page so the old
-        // assistant turn is not interpreted again, but release this page now:
-        // the successor effect must acquire a fresh exact transport from the
-        // durable conversation identity rather than inherit a live tab.
-        if (await this.observeAssistant(task, snapshot)) {
-          // A user may have typed into a Forge-created tab while the provider
-          // was generating. Clear only an exact causal predecessor payload;
-          // any other composer text transfers ownership to the user so terminal
-          // settlement cannot discard an unsent draft.
-          if (snapshot.composerText?.trim()) {
-            const successor = this.control.browserPoll({ conversationId: task.conversationId, conversationUrl: task.conversationUrl }).command;
-            const stale = successor
-              ? this.control.browserStaleComposerPayload({
-                conversationId: task.conversationId,
-                conversationUrl: task.conversationUrl,
-                currentEffectId: successor.effectId,
-                composerText: snapshot.composerText,
-              })
-              : { stale: false as const };
-            if (stale.stale && await this.deps.clearComposer(page, stale.prompt)) {
-              snapshot = await this.deps.snapshot(page, { includeUserHistory: false, includePageText: false });
-            }
-            if (snapshot.composerText?.trim()) {
-              const adoptedMarker = ownerMarker(task.conversationId, 'adopted');
-              await this.deps.writeOwner(page, adoptedMarker);
-              if (await this.deps.readOwner(page) !== adoptedMarker) {
-                throw new Error('WORKFLOW_SUPERVISOR_NATIVE_USER_TAB_OWNERSHIP_TRANSFER_FAILED');
-              }
-            }
-          }
-          await this.retireOwnedPage(task, page, { preserveObservedAssistant: true });
-          continue;
-        }
         const providerBusy = snapshot.isGenerating;
         const latestRoleStillUser = snapshot.latestTurnRole === 'user';
         const providerFailureCode = chatgptProviderPageFailure(snapshot.providerFailureText);
@@ -555,12 +522,19 @@ export class WorkflowSupervisorNativeBrowserAdapter {
         // resume/cleanup path. A blocked reconcile may still observe committed
         // user history, but it cannot touch the composer or submit anything.
         if (poll.command?.mode === 'send' && commandMutationBlocked) continue;
-        if (poll.command) await this.executeCommand(
-          this.pages.get(task.conversationId) ?? page,
-          poll.command,
-          task,
-          { mutationAllowed: !commandMutationBlocked },
-        );
+        if (poll.command) {
+          // The page is an ephemeral Computer resource. The durable effect
+          // ledger, not an open page or rendered assistant text, decides the
+          // next turn. Unknown sends reopen only the exact conversation for
+          // reconciliation on a later tick.
+          await this.executeCommand(
+            this.pages.get(task.conversationId) ?? page,
+            poll.command,
+            task,
+            { mutationAllowed: !commandMutationBlocked },
+          );
+          await this.retireOwnedPage(task, this.pages.get(task.conversationId) ?? page);
+        }
       } catch (error) {
         this.deps.onError(error);
       }
@@ -604,6 +578,44 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     // provenance, so they are ambiguous and receive the same conservative
     // treatment: release the marker but leave the browser resource intact.
     await this.deps.writeOwner(page, '');
+  }
+
+  private async bootstrapTask(task: WorkflowSupervisorBrowserTask): Promise<void> {
+    const poll = this.control.bootstrapPoll(task.taskId);
+    const command = poll.command;
+    if (!command || command.mode !== 'send') return;
+    const page = await this.deps.create('https://chatgpt.com/');
+    const ref = page.tabRef();
+    try {
+      if (!this.control.bootstrapBeginEffect({
+        taskId: task.taskId,
+        effectId: command.effectId,
+        dispatchId: `bootstrap-${randomUUID()}`,
+        dispatchGeneration: command.dispatchGeneration,
+      })) return;
+      const dispatched = await withChatgptProviderDispatchLane(
+        this.deps.providerScopeKey,
+        () => this.deps.dispatchPrompt(page, command.prompt, task),
+        (result) => result.dispatched ? { providerAccepted: result.confirmed === true } : { code: result.reason, message: result.reason },
+      );
+      if (!dispatched.dispatched) {
+        this.control.bootstrapObserveEffect({ taskId: task.taskId, effectId: command.effectId, observationId: `bootstrap-${randomUUID()}`, outcome: 'unknown' });
+        return;
+      }
+      let snapshot: WorkflowSupervisorNativeSnapshot | undefined;
+      for (let attempt = 0; attempt < 50; attempt += 1) {
+        snapshot = await this.deps.snapshot(page, { includeUserHistory: true, includePageText: false });
+        try {
+          const identity = parseChatgptConversationIdentity(snapshot.url);
+          this.control.bindBootstrapConversation({ taskId: task.taskId, conversationId: identity.conversationId, conversationUrl: identity.canonicalUrl });
+          this.control.bootstrapObserveEffect({ taskId: task.taskId, effectId: command.effectId, observationId: `bootstrap-${randomUUID()}`, outcome: 'applied' });
+          return;
+        } catch { await this.deps.sleep(100); }
+      }
+      this.control.bootstrapObserveEffect({ taskId: task.taskId, effectId: command.effectId, observationId: `bootstrap-${randomUUID()}`, outcome: 'unknown' });
+    } finally {
+      if (ref) await this.deps.close(ref).catch(() => undefined);
+    }
   }
 
   private async cleanupInactive(tasks: WorkflowSupervisorBrowserTask[]): Promise<void> {
@@ -752,46 +764,6 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       this.pages.delete(task.conversationId);
       if (!options.preserveObservedAssistant) this.observedAssistant.delete(task.conversationId);
       this.providerFailureSeen.delete(task.conversationId);
-    }
-  }
-
-  private async observeAssistant(task: WorkflowSupervisorBrowserTask, snapshot: WorkflowSupervisorNativeSnapshot): Promise<boolean> {
-    const response = snapshot.latestAssistantResponse.trim();
-    if (!committedAssistant(response)) return false;
-    const digest = sha256(response);
-    if (this.observedAssistant.get(task.conversationId) === digest) return false;
-    try {
-      const observed = await this.control.browserObserveAssistant({ conversationId: task.conversationId, conversationUrl: task.conversationUrl, responseText: response });
-      this.observedAssistant.set(task.conversationId, digest);
-      // `commitCompletion` intentionally performs two idempotent writes for a
-      // CONTINUE (receipt, then successor), so its aggregate `deduplicated`
-      // flag is not a transport-terminal signal.  A successfully parsed and
-      // persisted receipt is the terminal observation.  The caller preserves a
-      // pending command so a Runtime restart can still dispatch an already
-      // reserved successor after seeing historical transcript content.
-      void observed;
-      return true;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (message.includes('WORKFLOW_SUPERVISOR_CAUSAL_EFFECT_NOT_APPLIED') || message.includes('WORKFLOW_SUPERVISOR_TASK_TERMINAL')) return false;
-      // A provider can render a syntactically complete but semantically invalid
-      // Supervisor block. It is not a completion receipt and must not be
-      // retried on every one-second browser tick. Remember that exact response
-      // while still allowing the provider-idle observer below to drive bounded
-      // recovery. A later provider response has a different digest and is
-      // observed normally.
-      if (message === 'WORKFLOW_SUPERVISOR_COMPACT_RECEIPT_CHALLENGE_MISMATCH') {
-        // Compact receipts are causally scoped to the currently applied effect.
-        // The same rendered receipt may be observed just before a reserved recovery
-        // effect becomes applied; caching it here would prevent reconsideration once
-        // the causal effect context advances.
-        return false;
-      }
-      if (message.startsWith('WORKFLOW_SUPERVISOR_')) {
-        this.observedAssistant.set(task.conversationId, digest);
-        return false;
-      }
-      throw error;
     }
   }
 

@@ -268,6 +268,25 @@ export class WorkflowSupervisorStore {
       const task = taskFromRow(row);
       const taskRepo = typeof task.completionContract.repo_id === 'string' ? task.completionContract.repo_id : task.continuationPolicy.repo_id;
       const inputRepo = typeof input.completionContract.repo_id === 'string' ? input.completionContract.repo_id : input.continuationPolicy.repo_id;
+      const bootstrapUpgrade = task.continuationPolicy.bootstrap === true
+        && input.continuationPolicy.bootstrap !== true
+        && taskRepo === inputRepo
+        && task.conversationId === input.conversationId
+        && task.conversationUrl === input.conversationUrl;
+      if (bootstrapUpgrade) {
+        statement(db, `UPDATE tasks
+          SET objective = ?, completion_contract_json = ?, continuation_policy_json = ?, user_blocker_policy_json = ?
+          WHERE task_id = ?`, (s) => s.run(
+          input.objective,
+          json(input.completionContract),
+          json(input.continuationPolicy),
+          json(input.userBlockerPolicy),
+          input.taskId,
+        ));
+        const upgraded = statement(db, 'SELECT * FROM tasks WHERE task_id = ?', (s) => s.get(input.taskId)) as Record<string, unknown> | undefined;
+        if (!upgraded) throw new Error('WORKFLOW_SUPERVISOR_TASK_PERSIST_FAILED');
+        return taskFromRow(upgraded);
+      }
       const projectBootstrap = task.continuationPolicy.kind === 'forge_project_conversation_outer_turn';
       const sameProjectBootstrapIdentity = projectBootstrap
         && task.conversationId === input.conversationId
@@ -306,6 +325,23 @@ export class WorkflowSupervisorStore {
     });
   }
   getTask(taskId: string): WorkflowSupervisorTask | undefined { return this.read((db) => { const row = statement(db, 'SELECT * FROM tasks WHERE task_id = ?', (s) => s.get(taskId)); return row ? taskFromRow(row as Record<string, unknown>) : undefined; }); }
+  bindBootstrapConversation(taskId: string, conversationId: string, conversationUrl: string): WorkflowSupervisorTask {
+    return this.transaction((db) => {
+      const row = statement(db, 'SELECT * FROM tasks WHERE task_id = ?', (s) => s.get(taskId)) as Record<string, unknown> | undefined;
+      if (!row) throw new Error('WORKFLOW_SUPERVISOR_TASK_UNKNOWN');
+      const task = taskFromRow(row);
+      if (!task.conversationId.startsWith('bootstrap:')) {
+        if (task.conversationId === conversationId && task.conversationUrl === conversationUrl) return task;
+        throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_ALREADY_BOUND');
+      }
+      const conflict = statement(db, 'SELECT task_id FROM tasks WHERE conversation_id = ? AND task_id <> ?', (s) => s.get(conversationId, taskId)) as { task_id?: string } | undefined;
+      if (conflict) throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_CONVERSATION_CONFLICT');
+      statement(db, 'UPDATE tasks SET conversation_id = ?, conversation_url = ? WHERE task_id = ?', (s) => s.run(conversationId, conversationUrl, taskId));
+      const bound = statement(db, 'SELECT * FROM tasks WHERE task_id = ?', (s) => s.get(taskId)) as Record<string, unknown> | undefined;
+      if (!bound) throw new Error('WORKFLOW_SUPERVISOR_TASK_PERSIST_FAILED');
+      return taskFromRow(bound);
+    });
+  }
   getTaskByConversationId(conversationId: string): WorkflowSupervisorTask | undefined { return this.read((db) => { const row = statement(db, 'SELECT * FROM tasks WHERE conversation_id = ?', (s) => s.get(conversationId)); return row ? taskFromRow(row as Record<string, unknown>) : undefined; }); }
   listTasks(): WorkflowSupervisorTask[] { return this.read((db) => statement(db, 'SELECT * FROM tasks ORDER BY created_at, task_id', (s) => s.all()).map((row) => taskFromRow(row as Record<string, unknown>))); }
   getEffect(effectId: string): WorkflowSupervisorEffect | undefined { return this.read((db) => { const row = statement(db, 'SELECT * FROM effects WHERE effect_id = ?', (s) => s.get(effectId)); return row ? effectFromRow(row as Record<string, unknown>) : undefined; }); }
@@ -331,6 +367,13 @@ export class WorkflowSupervisorStore {
       const rows = statement(db, 'SELECT * FROM completions WHERE task_id = ? AND response_sha256 = ? ORDER BY committed_at, completion_fingerprint LIMIT 2', (s) => s.all(taskId, responseSha256)) as Record<string, unknown>[];
       if (rows.length > 1) throw new Error('WORKFLOW_SUPERVISOR_RESPONSE_COMPLETION_AMBIGUOUS');
       return rows[0] ? completionFromRow(rows[0]) : undefined;
+    });
+  }
+  /** The only replay candidate when no applied effect is awaiting a receipt. */
+  getLatestCompletion(taskId: string): WorkflowSupervisorCompletion | undefined {
+    return this.read((db) => {
+      const row = statement(db, 'SELECT * FROM completions WHERE task_id = ? ORDER BY committed_at DESC, completion_fingerprint DESC LIMIT 1', (s) => s.get(taskId)) as Record<string, unknown> | undefined;
+      return row ? completionFromRow(row) : undefined;
     });
   }
   continuationProof(input: { repoId?: string; activeReleaseId: string; notBefore: string }): WorkflowSupervisorContinuationProof | undefined {
@@ -367,7 +410,8 @@ export class WorkflowSupervisorStore {
             const applied = statement(db, "SELECT 1 AS ok FROM events WHERE effect_id = ? AND kind = 'effect_applied' AND occurred_at >= ? LIMIT 1", (s) => s.get(effect.effectId, input.notBefore));
             if (!applied) { valid = false; break; }
           }
-          if (!valid || new Set(runtimeInstanceIds).size < 2) continue;
+          const minimumRuntimeInstances = task.continuationPolicy.kind === 'standalone_supervisor' ? 1 : 2;
+          if (!valid || new Set(runtimeInstanceIds).size < minimumRuntimeInstances) continue;
           const terminalDone = statement(db, "SELECT 1 AS ok FROM events WHERE task_id = ? AND completion_fingerprint = ? AND kind = 'terminal_done' AND occurred_at >= ? LIMIT 1", (s) => s.get(task.taskId, third.completionFingerprint, input.notBefore));
           if (!terminalDone) continue;
           return {

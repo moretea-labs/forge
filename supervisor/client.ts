@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { createConnection } from 'node:net';
 import { workflowSupervisorSocketPath } from './paths';
-import type { WorkflowSupervisorContinuationProof, WorkflowSupervisorDiscoveredConversation, WorkflowSupervisorEffect, WorkflowSupervisorTask, WorkflowSupervisorTaskInput } from './types';
+import type { WorkflowSupervisorAutomationStatus, WorkflowSupervisorContinuationProof, WorkflowSupervisorDiscoveredConversation, WorkflowSupervisorEffect, WorkflowSupervisorTask, WorkflowSupervisorTaskInput } from './types';
 
 interface RpcResponse<T> { id: string; ok: boolean; result?: T; error?: { code?: string; message?: string } }
 
@@ -52,6 +52,11 @@ export async function getWorkflowSupervisorCurrentConversation(forgeHome: string
   return result.conversation;
 }
 
+export async function getWorkflowSupervisorTask(forgeHome: string, taskId: string): Promise<WorkflowSupervisorTask | undefined> {
+  const task = await rpc<WorkflowSupervisorTask | null>(forgeHome, 'task_get', { task_id: taskId });
+  return task ?? undefined;
+}
+
 export async function registerWorkflowSupervisorTask(forgeHome: string, input: WorkflowSupervisorTaskInput): Promise<WorkflowSupervisorTask> {
   return await rpc<WorkflowSupervisorTask>(forgeHome, 'task_register', {
     task_id: input.taskId,
@@ -61,6 +66,17 @@ export async function registerWorkflowSupervisorTask(forgeHome: string, input: W
     completion_contract: input.completionContract,
     continuation_policy: input.continuationPolicy,
     user_blocker_policy: input.userBlockerPolicy,
+  }, SUPERVISOR_RPC_MUTATION_TIMEOUT_MS);
+}
+
+export async function bindWorkflowSupervisorBootstrapConversation(
+  forgeHome: string,
+  input: { taskId: string; conversationId: string; conversationUrl: string },
+): Promise<WorkflowSupervisorTask> {
+  return await rpc<WorkflowSupervisorTask>(forgeHome, 'bootstrap_bind_conversation', {
+    task_id: input.taskId,
+    conversation_id: input.conversationId,
+    conversation_url: input.conversationUrl,
   }, SUPERVISOR_RPC_MUTATION_TIMEOUT_MS);
 }
 
@@ -75,6 +91,18 @@ export async function reserveWorkflowSupervisorSchedulerRecovery(forgeHome: stri
   return await rpc<WorkflowSupervisorEffect | undefined>(forgeHome, 'reserve_scheduler_recovery', {
     task_id: taskId,
     ...(recoveryKey?.trim() ? { recovery_key: recoveryKey.trim() } : {}),
+  }, SUPERVISOR_RPC_MUTATION_TIMEOUT_MS);
+}
+
+export async function recordWorkflowSupervisorAutomationReceipt(
+  forgeHome: string,
+  input: { taskId: string; conversationId: string; status: WorkflowSupervisorAutomationStatus; receiptId: string },
+): Promise<unknown> {
+  return await rpc(forgeHome, 'automation_receipt', {
+    task_id: input.taskId,
+    conversation_id: input.conversationId,
+    automation_status: input.status,
+    receipt_id: input.receiptId,
   }, SUPERVISOR_RPC_MUTATION_TIMEOUT_MS);
 }
 

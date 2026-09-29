@@ -942,15 +942,19 @@
       "module": "release",
       "resource": "controller-home-isolated"
     },
+    "tests/runtime/deployment-topology.test.ts": {
+      "module": "controller",
+      "resource": "pure"
+    },
+    "tests/runtime/workflow-supervisor-automation-receipt.test.ts": {
+      "module": "workflow",
+      "resource": "controller-home-isolated"
+    },
     "tests/runtime/workflow-supervisor-browser-adapter-installer.test.ts": {
       "module": "browser",
       "resource": "temp-isolated"
     },
     "tests/runtime/workflow-supervisor-control-plane.test.ts": {
-      "module": "workflow",
-      "resource": "controller-home-isolated"
-    },
-    "tests/runtime/workflow-supervisor-native-browser-adapter.test.ts": {
       "module": "workflow",
       "resource": "controller-home-isolated"
     },

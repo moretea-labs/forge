@@ -109,7 +109,7 @@ function candidateServiceConfig(stable: ForgeRuntimeServiceConfig, lane: Candida
     // real conversation during an isolated canary.
     topology: {
       ...topology,
-      components: { ...topology.components, workflowSupervisorNativeBrowser: false },
+      components: { ...topology.components },
     },
   };
 }

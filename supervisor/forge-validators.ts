@@ -39,6 +39,9 @@ function workFor(task: WorkflowSupervisorTask) {
 export function forgeWorkflowSupervisorValidators(): WorkflowSupervisorValidators {
   return {
     completionContract: async (task, proposal) => {
+      if (task.completionContract.kind === 'model_semantic_completion') {
+        return { valid: true, reason: 'model_semantic_completion' };
+      }
       if (task.completionContract.kind === 'forge_work_done') {
         const work = workFor(task);
         return work && isTerminalWorkContractStatus(work.status)
@@ -54,6 +57,9 @@ export function forgeWorkflowSupervisorValidators(): WorkflowSupervisorValidator
       return { valid: true, reason: 'requirement_semantic_acceptance_committed', evidence: requirement.auditRefs.slice(-8) };
     },
     userBlockerPolicy: async (task, proposal) => {
+      if (task.userBlockerPolicy.kind === 'model_semantic_user_blocker') {
+        return { valid: true, reason: 'model_semantic_user_blocker' };
+      }
       if (task.userBlockerPolicy.kind === 'forge_work_waiting_for_user') {
         const work = workFor(task);
         return { valid: work?.status === 'blocked', reason: work?.status === 'blocked' ? 'work_blocked_committed' : 'work_not_blocked' };

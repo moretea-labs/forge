@@ -1,5 +1,7 @@
 export type WorkflowSupervisorAction = 'CONTINUE' | 'DONE' | 'NEEDS_USER';
 export type WorkflowSupervisorState = 'running' | 'done' | 'needs_user';
+/** Machine receipt attached to Forge MCP calls made by an autonomous ChatGPT turn. */
+export type WorkflowSupervisorAutomationStatus = 'working' | 'continue' | 'done' | 'needs_user';
 export type WorkflowEffectKind = 'enrollment' | 'continuation' | 'correction' | 'recovery';
 export type WorkflowEffectOutcome = 'applied' | 'not_applied' | 'unknown';
 
@@ -109,6 +111,8 @@ export interface WorkflowSupervisorLifecycleHooks {
     task: WorkflowSupervisorTask,
     completion: WorkflowSupervisorCompletion,
   ): Promise<WorkflowSupervisorTurnSettlement | void>;
+  /** Atomically project a newly-created Computer conversation into Work binding authority. */
+  bootstrapConversationBound?(task: WorkflowSupervisorTask): void;
 }
 
 export interface WorkflowAssistantObservation {

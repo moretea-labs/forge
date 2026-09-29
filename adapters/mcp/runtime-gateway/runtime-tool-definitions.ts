@@ -4,10 +4,17 @@ import { RH_WORK_MODEL_OPERATIONS } from '../../../src/runtime/control-plane/fac
 import { CONTROLLER_LEARNING_SIGNAL_ENVELOPE_MAX_ITEMS } from '../../../src/runtime/context/automatic-learning';
 
 function definition(name: string, description: string, properties: Record<string, unknown>, required: string[] = [], readOnly = true): McpToolDefinition {
+  const automationProperties = {
+    // Workflow Supervisor task/effect authority is independent from optional
+    // Requirement/Plan/Work semantic context.
+    automation_task_id: { type: 'string', description: 'Required with autonomous_continuation metadata; identifies the already-bound Workflow Supervisor task.' },
+    automation_type: { type: 'string', enum: ['autonomous_continuation'], description: 'Required on every Forge call made by a Supervisor-controlled autonomous ChatGPT turn.' },
+    automation_status: { type: 'string', enum: ['working', 'continue', 'done', 'needs_user'], description: 'Use working on intermediate calls; the final autonomous call records continue, done, or needs_user.' },
+  };
   return {
     name,
     description,
-    inputSchema: { type: 'object', properties, ...(required.length ? { required } : {}), additionalProperties: false },
+    inputSchema: { type: 'object', properties: { ...properties, ...automationProperties }, ...(required.length ? { required } : {}), additionalProperties: false },
     annotations: { readOnlyHint: readOnly, openWorldHint: false, destructiveHint: false },
   };
 }
@@ -450,6 +457,15 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     recent_safe_error: { type: 'string' },
     model: { type: 'string' },
   }),
+  definition('supervisor_task', 'Start, inspect, or prove one standalone Workflow Supervisor autonomous task. Supervisor task/effect state is the continuation authority; Requirement, Plan, and Work are optional and are not created by this tool.', {
+    repo_id: { ...repoId, description: 'Optional repository provenance for start/proof; never Work authority.' },
+    operation: { type: 'string', enum: ['start', 'get', 'proof'] },
+    task_id: { type: 'string' },
+    objective: { type: 'string' },
+    request_id: { type: 'string', description: 'Stable idempotency identity for start.' },
+    active_release_id: { type: 'string', description: 'Active Runtime release expected in proof dispatch evidence.' },
+    not_before: { type: 'string', description: 'ISO-8601 lower bound for proof completions.' },
+  }, ['operation'], false),
   definition('review_artifacts_prepare', 'Create bounded repo-local review artifact roots for browser/iOS screenshot review workflows.', { repo_id: repoId }, [], false),
   definition('review_artifacts_index', 'Index bounded repo-local browser/iOS screenshots, logs, and build reports for visual review.', { repo_id: repoId, limit: { type: 'number' } }),
   definition('browser_review_packet', 'Build a browser visual review packet from indexed browser screenshots.', { repo_id: repoId, limit: { type: 'number' } }),

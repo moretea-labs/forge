@@ -45,18 +45,17 @@ export function deriveRuntimeDeploymentTopology(input: {
       // Requirement-level ChatGPT continuation uses Supervisor Core as its
       // outer-turn authority. Generic remote MCP transport does not.
       workflowSupervisor: chatgpt,
-      // Supervisor Core records and exposes continuation state. It never owns
-      // an unattended native-browser delivery loop: a broken browser bridge
-      // must not create Chrome tabs or generate provider traffic on its own.
-      workflowSupervisorNativeBrowser: false,
+      // ChatGPT Work has one controlled outer-turn executor: the Supervisor's
+      // Computer adapter. It owns exact-conversation delivery and its durable
+      // effect ledger; Scheduler must never fall back to direct Browser delivery.
+      workflowSupervisorNativeBrowser: chatgpt,
     },
   };
 }
 
 /**
  * Missing topology means an installation predates this contract. Preserve the
- * Supervisor Core composition during upgrade while keeping native browser
- * delivery disabled.
+ * complete ChatGPT Supervisor composition during upgrade.
  */
 export function legacyRuntimeDeploymentTopology(): RuntimeDeploymentTopology {
   return deriveRuntimeDeploymentTopology({ controllers: ['chatgpt'] });
@@ -91,8 +90,8 @@ export function normalizeRuntimeDeploymentTopology(value: unknown): RuntimeDeplo
     || record.persistentRuntimeRequired !== canonical.persistentRuntimeRequired) {
     throw new Error('RUNTIME_TOPOLOGY_DERIVATION_MISMATCH');
   }
-  // Existing installations may persist the retired adapter flag. Normalize it
-  // to the safe topology rather than letting stale state retain tab authority.
+  // The flag is derived, so stale persisted topology cannot disable the sole
+  // autonomous delivery owner or reintroduce an alternate Browser path.
   return canonical;
 }
 

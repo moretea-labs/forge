@@ -30,16 +30,13 @@ const EXPECTED_STABLE_CONTROLLER_TOOL_NAMES = [
   'read_repository_file', 'repository_safe_patch_apply', 'run_check', 'plugin_action_execute',
   'process_exec', 'process_get', 'process_wait', 'process_logs', 'process_cancel', 'result_read', 'result_search',
 ] as const;
-// Thin Forge Slice 2 (execution-target-scope-cutover): the stable surface gains
-// the canonical `process_exec` host-local command capability, and process
-// attachment is addressed by the process handle. `repo_id` stays accepted
-// (validated against the recorded target) but is no longer a required schema
-// field for process_get/process_wait/process_logs/process_cancel. Both frozen
-// fingerprints move with that intentional ABI change. The thin semantic ABI
-// keeps the frozen transport carriers below while retiring lifecycle-only
-// fields from the model-facing schema.
-const EXPECTED_STABLE_TOOL_NAME_FINGERPRINT = '8af6294a1fb9d8c9';
-const EXPECTED_STABLE_TOOL_SCHEMA_FINGERPRINT = '8193162a4e64279d';
+// Thin Forge Slice 3 (standalone Supervisor continuation): the bounded stable
+// tool names remain unchanged, while autonomous continuation metadata moves from
+// optional Work identity to Workflow Supervisor task identity. This is an
+// intentional served-schema ABI change and must invalidate stale Connector
+// schema snapshots without expanding the default ChatGPT tool surface.
+const EXPECTED_STABLE_TOOL_NAME_FINGERPRINT = '69e4191fe8f163fd';
+const EXPECTED_STABLE_TOOL_SCHEMA_FINGERPRINT = '19aae69a034c702e';
 
 const policy = runtimePolicy(process.cwd(), {
   profile: 'controller',
