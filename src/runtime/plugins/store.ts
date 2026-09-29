@@ -769,6 +769,7 @@ async function resolveAutomatedWriteAuthorization(input: {
     args: input.args,
     origin: input.origin,
     jobId: input.jobId,
+    authorizationGrantRefs: refs,
   });
   if (!targetContext) {
     throw new AssistantPluginError(
