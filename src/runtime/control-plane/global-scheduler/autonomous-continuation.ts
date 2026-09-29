@@ -13,6 +13,7 @@ import { currentTaskSemanticProjectionForWork, listWorkContracts, semanticWorkSt
 import { workHasActiveExecution } from '../../execution/work-activity';
 import { readRequirement } from '../persistence/requirement-store';
 import { createHandoffItem, getHandoffItem } from '../facade/handoff-inbox-store';
+import { isTerminalHandoffStatus } from '../../../../packages/protocols/handoff/index';
 import { getChatgptControllerBindingPayload } from '../../../../adapters/chatgpt/controller-binding-store';
 import { assertAutomatedOperationAllowed } from '../governance/external-effects';
 import { controllerHostForScheduledBinding, ensureScheduledControllerBindingForWork } from '../../root/scheduled-controller-composition';
@@ -66,11 +67,21 @@ function schedulerProviderUserHandoffId(repoId: string, workId: string, relaySco
   return 'hnd-scheduler-provider-auth-' + createHash('sha256').update([repoId, workId, relayScopeId, authorityId].join('\n')).digest('hex').slice(0, 20);
 }
 
+function recoveredSchedulerProviderUserHandoffId(baseId: string, reason: string): string {
+  return `${baseId}-recovery-${createHash('sha256').update(reason).digest('hex').slice(0, 12)}`;
+}
+
 export function ensureSchedulerProviderUserActionHandoff(
   options: { controllerHome: string; repoId: string },
   input: { workId: string; relayScopeId: string; authorityId: string; reason: string },
 ): string {
-  const id = schedulerProviderUserHandoffId(options.repoId, input.workId, input.relayScopeId, input.authorityId);
+  const baseId = schedulerProviderUserHandoffId(options.repoId, input.workId, input.relayScopeId, input.authorityId);
+  const previous = getHandoffItem(options, baseId);
+  // A resolved/cancelled request is historical evidence, never the blocking
+  // authorization object for a later provider recovery epoch.
+  const id = previous && isTerminalHandoffStatus(previous.status)
+    ? recoveredSchedulerProviderUserHandoffId(baseId, input.reason)
+    : baseId;
   const existing = getHandoffItem(options, id);
   if (existing) return existing.id;
   return createHandoffItem(options, {
