@@ -128,24 +128,35 @@ export class WorkflowSupervisorControlPlane {
     return [...scopes.values()];
   }
   browserTasks(): WorkflowSupervisorBrowserTask[] {
-    return this.store.listTasks().filter((task) => {
-      if (this.store.terminalAction(task.taskId)) return false;
-      // A Computer page is an ephemeral delivery surface.  Once submission is
+    const active = this.store.listTasks().flatMap((task) => {
+      if (this.store.terminalAction(task.taskId)) return [];
+      // A Computer page is an ephemeral delivery surface. Once submission is
       // durably applied it must be closed and never reopened to infer an
-      // assistant decision from rendered text.  The next page open is only a
+      // assistant decision from rendered text. The next page open is only a
       // reserved send/reconcile effect, created by a persisted tool receipt.
-      const needsBrowserAttention = Boolean(this.store.nextBrowserEffect(task.taskId));
+      const pending = this.store.nextBrowserEffect(task.taskId);
+      if (!pending) return [];
       // Bootstrap has no exact conversation yet, so it cannot satisfy the
       // normal Work-boundary predicate. Its already-persisted enrollment effect
       // is the narrow authority to acquire one through Computer exactly once.
-      if (!needsBrowserAttention) return false;
-      if (task.conversationId.startsWith('bootstrap:')) return true;
-      // Optional lower-layer Work/Requirement compatibility must be task-local.
-      // A stale legacy task is allowed to fail closed, but it must never poison
-      // the global Supervisor delivery queue and block standalone tasks.
-      try { return this.browserTaskActive(task); }
-      catch { return false; }
-    }).map(browserTask);
+      if (!task.conversationId.startsWith('bootstrap:')) {
+        // Optional lower-layer Work/Requirement compatibility must be task-local.
+        // A stale legacy task is allowed to fail closed, but it must never poison
+        // the global Supervisor delivery queue and block standalone tasks.
+        try { if (!this.browserTaskActive(task)) return []; }
+        catch { return []; }
+      }
+      return [{ task, mode: pending.mode }];
+    });
+    // Fresh effects are bounded work with no prior external mutation. Outcome-
+    // unknown reconciliation remains durable and exactly-once, but cannot be
+    // allowed to monopolize the single native browser lane indefinitely.
+    active.sort((left, right) => {
+      const leftPriority = left.mode === 'send' ? 0 : 1;
+      const rightPriority = right.mode === 'send' ? 0 : 1;
+      return leftPriority - rightPriority;
+    });
+    return active.map(({ task }) => browserTask(task));
   }
   browserPoll(input: { conversationId: string; conversationUrl: string }): WorkflowSupervisorBrowserPollResult {
     const task = this.requireBrowserTask(input.conversationId, input.conversationUrl);

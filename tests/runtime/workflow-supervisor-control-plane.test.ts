@@ -993,6 +993,44 @@ test('browserTasks isolates a stale legacy task from an independent bootstrap ta
   ]);
 });
 
+test('browserTasks prioritizes fresh sends ahead of older reconciliation work', () => {
+  const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-browser-task-priority-'));
+  roots.push(root);
+  const store = new WorkflowSupervisorStore(join(root, 'supervisor-home'));
+  const control = new WorkflowSupervisorControlPlane(store);
+
+  control.registerTask({
+    taskId: 'older-reconcile-task',
+    conversationId: 'bootstrap:older-reconcile-task',
+    conversationUrl: 'https://chatgpt.com/',
+    objective: 'Older outcome-unknown bootstrap.',
+    completionContract: {}, continuationPolicy: { kind: 'standalone_supervisor', bootstrap: true }, userBlockerPolicy: {},
+  });
+  const older = control.reserveEnrollment('older-reconcile-task');
+  expect(control.bootstrapBeginEffect({
+    taskId: 'older-reconcile-task', effectId: older.effectId,
+    dispatchId: 'dispatch-older-reconcile', dispatchGeneration: 1,
+  })).toBe(true);
+  control.bootstrapObserveEffect({
+    taskId: 'older-reconcile-task', effectId: older.effectId,
+    observationId: 'older-outcome-unknown', outcome: 'unknown',
+  });
+
+  control.registerTask({
+    taskId: 'fresh-send-task',
+    conversationId: 'bootstrap:fresh-send-task',
+    conversationUrl: 'https://chatgpt.com/',
+    objective: 'Fresh bootstrap must not be starved by reconciliation backlog.',
+    completionContract: {}, continuationPolicy: { kind: 'standalone_supervisor', bootstrap: true }, userBlockerPolicy: {},
+  });
+  control.reserveEnrollment('fresh-send-task');
+
+  expect(control.browserTasks().map((task) => task.taskId)).toEqual([
+    'fresh-send-task',
+    'older-reconcile-task',
+  ]);
+});
+
 test('reconciles a late applied Supervisor effect into the same outcome-unknown ControllerRound without replay', () => {
   const fx = fixture();
   const requirementId = 'REQ-supervisor-late-provider-confirmation';
