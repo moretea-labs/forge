@@ -40,7 +40,10 @@ export async function callWorkflowSupervisorAdapter(
       conversationId: `bootstrap:${id}`,
       conversationUrl: 'https://chatgpt.com/',
       objective,
-      completionContract: { kind: 'model_semantic_completion', ...(repoId ? { repo_id: repoId } : {}) },
+      completionContract: {
+        kind: 'model_semantic_completion',
+        ...(repoId ? { repo_id: repoId, controller_home: ctx.controllerHome } : {}),
+      },
       continuationPolicy: { kind: 'standalone_supervisor', bootstrap: true, ...(repoId ? { repo_id: repoId } : {}) },
       userBlockerPolicy: { kind: 'model_semantic_user_blocker' },
     });

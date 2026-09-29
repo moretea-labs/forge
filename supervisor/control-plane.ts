@@ -82,6 +82,26 @@ export class WorkflowSupervisorControlPlane {
   }
   continuationProof(input: { repoId?: string; activeReleaseId: string; notBefore: string }) { return this.store.continuationProof(input); }
   browserDiscoverySnapshot() { return this.store.discoverySnapshot(); }
+  bootstrapProjectUrl(taskId: string): string {
+    const task = this.requireTask(taskId);
+    const scope = this.hooks.projectScopeForTask?.(task);
+    const title = scope?.title.trim();
+    if (!title) throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_SCOPE_REQUIRED');
+    const projectUrls = new Set(
+      this.store.discoverySnapshot().conversations
+        .filter((conversation) => conversation.projectTitle?.trim().toLocaleLowerCase() === title.toLocaleLowerCase())
+        .map((conversation) => conversation.projectUrl?.trim())
+        .filter((value): value is string => Boolean(value)),
+    );
+    if (projectUrls.size === 0) throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_NOT_DISCOVERED');
+    if (projectUrls.size !== 1) throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_AMBIGUOUS');
+    const projectUrl = [...projectUrls][0]!;
+    const parsed = new URL(projectUrl);
+    if (parsed.protocol !== 'https:' || parsed.hostname !== 'chatgpt.com' || !parsed.pathname.endsWith('/project')) {
+      throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_URL_INVALID');
+    }
+    return parsed.toString();
+  }
   recordBrowserDiscovery(source: string, conversations: readonly WorkflowSupervisorDiscoveredConversation[]) {
     // Discovery is durable observation only. Creating a Supervisor task/effect
     // requires the explicit Work/current-conversation enrollment path.

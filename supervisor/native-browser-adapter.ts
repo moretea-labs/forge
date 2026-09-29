@@ -584,7 +584,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     const poll = this.control.bootstrapPoll(task.taskId);
     const command = poll.command;
     if (!command || command.mode !== 'send') return;
-    const page = await this.deps.create('https://chatgpt.com/');
+    const page = await this.deps.create(this.control.bootstrapProjectUrl(task.taskId));
     const ref = page.tabRef();
     try {
       if (!this.control.bootstrapBeginEffect({

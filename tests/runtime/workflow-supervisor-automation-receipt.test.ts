@@ -26,6 +26,32 @@ describe('Workflow Supervisor automation receipts', () => {
     expect(() => automationMetadata({ automation_type: 'autonomous_continuation', automation_status: 'continue' })).toThrow('AUTOMATION_TASK_ID_REQUIRED');
   });
 
+  test('resolves bootstrap inside the uniquely discovered repository ChatGPT Project', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-project-bootstrap-'));
+    roots.push(root);
+    const store = new WorkflowSupervisorStore(root);
+    const control = new WorkflowSupervisorControlPlane(store, {}, {
+      projectScopeForTask: () => ({ title: 'forge', repoId: 'repo-forge', controllerHome: root }),
+    });
+    const task = control.registerTask({
+      taskId: 'supervisor:project-bootstrap',
+      conversationId: 'bootstrap:supervisor:project-bootstrap',
+      conversationUrl: 'https://chatgpt.com/',
+      objective: 'Continue inside the Forge project.',
+      completionContract: { repo_id: 'repo-forge', controller_home: root },
+      continuationPolicy: { kind: 'standalone_supervisor', bootstrap: true },
+      userBlockerPolicy: {},
+    });
+    control.recordBrowserDiscovery('chrome-extension', [{
+      conversationId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+      canonicalUrl: 'https://chatgpt.com/c/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+      projectTitle: 'forge',
+      projectUrl: 'https://chatgpt.com/g/g-p-forge/project',
+    }]);
+    expect(control.bootstrapProjectUrl(task.taskId)).toBe('https://chatgpt.com/g/g-p-forge/project');
+    store.close();
+  });
+
   test('turns one durable bootstrap reservation into exactly one canonical conversation', () => {
     const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-bootstrap-'));
     roots.push(root);
