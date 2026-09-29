@@ -11,6 +11,7 @@ import { createWorkContract, reviseWorkSemanticContext } from '../../packages/ke
 import { createRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
 import { forgeWorkflowSupervisorLifecycleHooks, inheritWorkflowSupervisorConversationBinding, workflowSupervisorBoundaryForWork, workflowSupervisorLowerLayerReadyForWork } from '../../src/runtime/root/workflow-supervisor-composition';
 import { WorkflowSupervisorControlPlane } from '../../supervisor/control-plane';
+import { WorkflowSupervisorNativeBrowserAdapter, type WorkflowSupervisorNativePage } from '../../supervisor/native-browser-adapter';
 import { LEGACY_SUPERVISOR_BLOCK_END, LEGACY_SUPERVISOR_BLOCK_START, parseSupervisorCompletion, renderSupervisorPrompt, renderSupervisorReceipt, supervisorReceiptChallenge, SUPERVISOR_BLOCK_END, SUPERVISOR_BLOCK_START } from '../../supervisor/protocol';
 import { WorkflowSupervisorStore } from '../../supervisor/store';
 import { reconcileWorkflowSupervisorSocket, WorkflowSupervisorEphemeralDiscovery } from '../../supervisor/server';
@@ -984,7 +985,11 @@ test('browserTasks polls only tasks with pending browser work or an applied effe
     outcome: 'applied',
     evidence: { surface: 'test' },
   });
-  expect(control.browserTasks()).toEqual([]);
+  expect(control.browserTasks()).toEqual([{
+    taskId,
+    conversationId,
+    conversationUrl: `https://chatgpt.com/c/${conversationId}`,
+  }]);
 });
 
 test('browserTasks isolates a stale legacy task from an independent bootstrap task', () => {
@@ -1263,6 +1268,7 @@ test('Resume stream unavailable reserves exactly one same-conversation recovery 
   // stream loss is always outcome-unknown rather than a retryable failure.
   const failureCode = chatgptProviderPageFailure('Resume stream unavailable');
   expect(failureCode).toBe(CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE);
+  expect(chatgptProviderPageFailure('ChatGPT stream recovery polling timed out')).toBe(CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE);
   expect(classifyChatgptProviderFailure(failureCode!)).toBe('outcome_unknown');
 
   const observed = control.browserObserveProviderTurn({
@@ -1311,6 +1317,70 @@ test('Resume stream unavailable reserves exactly one same-conversation recovery 
   expect(exhausted.state).toBe('exhausted');
   expect(exhausted.recoveryEffect).toBeUndefined();
   expect(store.providerResumeExhausted(recovery.effectId)).toBe(true);
+});
+
+test('stream recovery timeout moves the one recovery effect to a fresh Forge-owned tab', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-stream-recovery-tab-'));
+  roots.push(root);
+  const store = new WorkflowSupervisorStore(join(root, 'supervisor-home'));
+  const control = new WorkflowSupervisorControlPlane(store, {}, { browserTaskActive: () => true });
+  const conversationId = '23232323-2323-2323-2323-232323232323';
+  const conversationUrl = `https://chatgpt.com/c/${conversationId}`;
+  control.registerTask({
+    taskId: 'stream-recovery-tab', conversationId, conversationUrl,
+    objective: 'Recover a failed stream without replaying its source effect.',
+    completionContract: {}, continuationPolicy: {}, userBlockerPolicy: {},
+  });
+  const enrollment = control.reserveEnrollment('stream-recovery-tab');
+  expect(store.recordEffectDispatchStarted(enrollment.effectId, 1, 'enrollment-dispatch', { surface: 'test' })).toBe(true);
+  control.observeEffect({ effectId: enrollment.effectId, observationId: 'enrollment-applied', outcome: 'applied' });
+
+  const page = (tabId: string): WorkflowSupervisorNativePage => ({
+    evaluate: async <T>() => false as T,
+    waitForSelector: async () => undefined,
+    tabRef: () => ({ windowId: 'window-1', tabId }),
+  });
+  const stalePage = page('tab-1');
+  const freshPage = page('tab-2');
+  const owners = new Map<unknown, string>([[stalePage, `forge-workflow-supervisor:created:${conversationId}`]]);
+  const createdUrls: string[] = [];
+  const closed: unknown[] = [];
+  const dispatchedPages: unknown[] = [];
+  let nowMs = 0;
+  const snapshot = (page: unknown) => ({
+    url: conversationUrl,
+    title: 'Forge recovery test',
+    latestUserText: '', latestAssistantResponse: '', providerActivityText: '',
+    providerFailureText: page === stalePage ? 'ChatGPT stream recovery polling timed out' : '',
+    latestTurnRole: 'assistant' as const, isGenerating: false,
+  });
+  const adapter = new WorkflowSupervisorNativeBrowserAdapter(control, new WorkflowSupervisorEphemeralDiscovery(), {
+    platform: 'darwin',
+    listTabs: async () => ({ entries: [{ windowId: 'window-1', tabId: 'tab-1', url: conversationUrl, title: 'Forge recovery test', active: false, browserProduct: 'chrome' }], unavailableProducts: [] }),
+    reattach: async () => stalePage,
+    create: async (url) => { createdUrls.push(url); return freshPage; },
+    close: async (ref) => { closed.push(ref); },
+    readOwner: async (page) => owners.get(page) ?? '',
+    writeOwner: async (page, owner) => { owners.set(page, owner); },
+    snapshot: async (page) => snapshot(page),
+    dispatchPrompt: async (page) => { dispatchedPages.push(page); return { dispatched: true, confirmed: true }; },
+    nowMs: () => nowMs,
+    providerScopeKey: join(root, 'provider-scope'),
+    sleep: async () => undefined,
+    onError: (error) => { throw error; },
+  });
+
+  await adapter.runOnce();
+
+  // The stream error applies provider backpressure before the recovery attempt.
+  // On the next eligible tick the same reserved recovery effect uses the fresh tab.
+  nowMs += 30_000;
+  await adapter.runOnce();
+
+  expect(createdUrls).toEqual([conversationUrl]);
+  expect(dispatchedPages).toEqual([freshPage]);
+  expect(closed).toContainEqual(expect.objectContaining({ windowId: 'window-1', tabId: 'tab-1' }));
+  expect(store.latestEffectDispatch(enrollment.effectId)?.generation).toBe(1);
 });
 
 test('browserTasks keeps an applied external effect observable while lower ControllerRound waits', () => {

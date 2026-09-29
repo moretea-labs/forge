@@ -10,7 +10,7 @@ import {
   type MacOsBrowserProduct,
   type MacOsBrowserTabRef,
 } from '../src/runtime/plugins/browser-macos-bridge';
-import { CHATGPT_AUTOMATION_RATE_LIMITED, chatgptProviderBackpressureRemainingMs, chatgptProviderPageFailure, noteChatgptProviderBackpressure, withChatgptProviderDispatchLane } from '../adapters/chatgpt/provider-delivery';
+import { CHATGPT_AUTOMATION_RATE_LIMITED, CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE, chatgptProviderBackpressureRemainingMs, chatgptProviderPageFailure, noteChatgptProviderBackpressure, withChatgptProviderDispatchLane } from '../adapters/chatgpt/provider-delivery';
 import { parseChatgptConversationIdentity } from './chatgpt-conversation';
 import { WorkflowSupervisorControlPlane } from './control-plane';
 import { renderEffectMarker, sha256 } from './protocol';
@@ -537,6 +537,22 @@ export class WorkflowSupervisorNativeBrowserAdapter {
           if (providerBusy && !providerFailureCode && !recoveryAuthorized) continue;
           if (latestRoleStillUser && !providerFailureCode && !recoveryAuthorized) continue;
           poll = this.control.browserPoll({ conversationId: task.conversationId, conversationUrl: task.conversationUrl });
+        }
+        // A terminal stream-recovery error belongs to this rendered tab, not to
+        // the durable conversation. Preserve the already-reserved recovery
+        // effect, then use a fresh Forge-owned exact-conversation page for its
+        // one bounded delivery attempt. This never replays the source effect
+        // and never submits through a user-owned tab.
+        if (
+          providerFailureCode === CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE
+          && recoveryAuthorized
+          && poll.command?.kind === 'recovery'
+        ) {
+          const replacement = await this.createOwnedPage(task);
+          await this.retireOwnedPage(task, page, { preserveObservedAssistant: true });
+          this.pages.set(task.conversationId, replacement.page);
+          page = replacement.page;
+          snapshot = replacement.snapshot;
         }
         providerBackpressureMs = chatgptProviderBackpressureRemainingMs(this.deps.providerScopeKey, this.deps.nowMs());
         const commandMutationBlocked = providerBackpressureMs > 0

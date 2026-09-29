@@ -23,7 +23,11 @@ export function chatgptProviderPageFailure(
   bodyText: string | undefined,
 ): ChatgptProviderPageFailureCode | undefined {
   const normalized = normalizeChatgptProviderPageText(bodyText ?? '');
-  if (normalized.includes('resume stream unavailable') || normalized.includes('tokenless_resume_unavailable')) {
+  if (
+    normalized.includes('resume stream unavailable')
+    || normalized.includes('tokenless_resume_unavailable')
+    || normalized.includes('stream recovery polling timed out')
+  ) {
     return CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE;
   }
   if (

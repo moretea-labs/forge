@@ -130,12 +130,14 @@ export class WorkflowSupervisorControlPlane {
   browserTasks(): WorkflowSupervisorBrowserTask[] {
     const active = this.store.listTasks().flatMap((task) => {
       if (this.store.terminalAction(task.taskId)) return [];
-      // A Computer page is an ephemeral delivery surface. Once submission is
-      // durably applied it must be closed and never reopened to infer an
-      // assistant decision from rendered text. The next page open is only a
-      // reserved send/reconcile effect, created by a persisted tool receipt.
+      // A Computer page is an ephemeral delivery surface. An applied effect
+      // awaiting its receipt remains eligible for read-only provider-health
+      // observation, so a terminal stream error can reserve its one bounded
+      // recovery effect. Rendered assistant text never decides the workflow;
+      // only a persisted receipt does that.
       const pending = this.store.nextBrowserEffect(task.taskId);
-      if (!pending) return [];
+      const providerTurnAwaitingReceipt = Boolean(this.store.latestAppliedEffectWithoutCompletion(task.taskId));
+      if (!pending && !providerTurnAwaitingReceipt) return [];
       // Bootstrap has no exact conversation yet, so it cannot satisfy the
       // normal Work-boundary predicate. Its already-persisted enrollment effect
       // is the narrow authority to acquire one through Computer exactly once.
@@ -146,7 +148,7 @@ export class WorkflowSupervisorControlPlane {
         try { if (!this.browserTaskActive(task)) return []; }
         catch { return []; }
       }
-      return [{ task, mode: pending.mode }];
+      return [{ task, mode: pending?.mode ?? 'reconcile' }];
     });
     // Fresh effects are bounded work with no prior external mutation. Outcome-
     // unknown reconciliation remains durable and exactly-once, but cannot be
