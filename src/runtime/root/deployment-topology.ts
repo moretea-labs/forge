@@ -45,17 +45,18 @@ export function deriveRuntimeDeploymentTopology(input: {
       // Requirement-level ChatGPT continuation uses Supervisor Core as its
       // outer-turn authority. Generic remote MCP transport does not.
       workflowSupervisor: chatgpt,
-      // Native browser delivery is a ChatGPT adapter, not a generic Runtime
-      // responsibility, and is never enabled without Supervisor Core.
-      workflowSupervisorNativeBrowser: chatgpt,
+      // Supervisor Core records and exposes continuation state. It never owns
+      // an unattended native-browser delivery loop: a broken browser bridge
+      // must not create Chrome tabs or generate provider traffic on its own.
+      workflowSupervisorNativeBrowser: false,
     },
   };
 }
 
 /**
  * Missing topology means an installation predates this contract. Preserve the
- * historical ChatGPT-capable composition during upgrade instead of silently
- * disabling unattended continuation.
+ * Supervisor Core composition during upgrade while keeping native browser
+ * delivery disabled.
  */
 export function legacyRuntimeDeploymentTopology(): RuntimeDeploymentTopology {
   return deriveRuntimeDeploymentTopology({ controllers: ['chatgpt'] });
@@ -87,20 +88,12 @@ export function normalizeRuntimeDeploymentTopology(value: unknown): RuntimeDeplo
     throw new Error('RUNTIME_TOPOLOGY_COMPONENTS_INVALID');
   }
   if (componentRecord.workflowSupervisor !== canonical.components.workflowSupervisor
-    // Supervisor Core may remain enabled while its native browser adapter is
-    // explicitly disabled for an isolated Candidate B canary. Enabling the
-    // adapter still requires a ChatGPT-capable topology.
-    || (componentRecord.workflowSupervisorNativeBrowser === true && !canonical.components.workflowSupervisorNativeBrowser)
     || record.persistentRuntimeRequired !== canonical.persistentRuntimeRequired) {
     throw new Error('RUNTIME_TOPOLOGY_DERIVATION_MISMATCH');
   }
-  return {
-    ...canonical,
-    components: {
-      ...canonical.components,
-      workflowSupervisorNativeBrowser: componentRecord.workflowSupervisorNativeBrowser as boolean,
-    },
-  };
+  // Existing installations may persist the retired adapter flag. Normalize it
+  // to the safe topology rather than letting stale state retain tab authority.
+  return canonical;
 }
 
 export function parseRuntimeDeploymentTopologyArgument(value: string | undefined): RuntimeDeploymentTopology {

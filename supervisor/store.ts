@@ -139,10 +139,6 @@ function latestNotAppliedProofEventId(db: Database, effectId: string): number {
  * request volume that no Work actually asked for.
  */
 export const WORKFLOW_SUPERVISOR_MAX_DISPATCH_GENERATIONS = 4;
-// An uncertain observation must never keep a durable effect eligible for
-// browser creation forever. This is deliberately separate from the send
-// generation budget: reconciliation never replays a provider action.
-export const WORKFLOW_SUPERVISOR_MAX_RECONCILE_OBSERVATIONS = 4;
 export const WORKFLOW_SUPERVISOR_DISPATCH_RETRY_BASE_MS = 30_000;
 export const WORKFLOW_SUPERVISOR_DISPATCH_RETRY_MAX_MS = 10 * 60_000;
 
@@ -182,11 +178,6 @@ function effectDispatchLedger(db: Database, effectId: string): EffectDispatchLed
     lastGeneration: last?.event_id ? storedGeneration(last.payload_json) : 0,
     lastOccurredAtMs: Number.isFinite(lastOccurredAtMs) ? lastOccurredAtMs : 0,
   };
-}
-function reconcileObservationCountSinceLastDispatch(db: Database, effectId: string, dispatchEventId: number): number {
-  const row = statement(db, `SELECT COUNT(*) AS count FROM events
-    WHERE effect_id = ? AND kind = 'effect_unknown' AND event_id > ?`, (s) => s.get(effectId, dispatchEventId)) as { count?: number } | undefined;
-  return Number(row?.count ?? 0);
 }
 export class WorkflowSupervisorStore {
   private readonly db: Database;
@@ -423,13 +414,6 @@ export class WorkflowSupervisorStore {
       const effect = effectFromRow(row);
       const ledger = effectDispatchLedger(db, effect.effectId);
       if (ledger.generations === 0) return { effect, mode: 'send', generation: 1 };
-      // A broken browser transport can report an unprovable outcome forever.
-      // Once the bounded observation window is spent, leave the effect intact
-      // for audit/recovery but release browser attention (and its tab creation
-      // authority) until a fresh causal event changes the state.
-      if (reconcileObservationCountSinceLastDispatch(db, effect.effectId, ledger.lastEventId) >= WORKFLOW_SUPERVISOR_MAX_RECONCILE_OBSERVATIONS) {
-        return undefined;
-      }
       const retryAuthorized = latestNotAppliedProofEventId(db, effect.effectId) > ledger.lastEventId;
       if (!retryAuthorized) return { effect, mode: 'reconcile', generation: ledger.lastGeneration };
       if (ledger.generations >= WORKFLOW_SUPERVISOR_MAX_DISPATCH_GENERATIONS) return undefined;

@@ -1321,37 +1321,3 @@ test('bounds and spaces provider re-dispatch of one un-applied effect, then rele
   expect(store.recordEffectDispatchStarted(effect.effectId, 5, 'dispatch-budget-5')).toBe(false);
   expect(store.latestEffectDispatch(effect.effectId)?.generation).toBe(4);
 });
-
-test('bounds outcome-unknown reconciliation so a broken browser port cannot keep reopening a tab', () => {
-  const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-reconcile-budget-'));
-  roots.push(root);
-  const store = new WorkflowSupervisorStore(join(root, 'supervisor-home'));
-  const control = new WorkflowSupervisorControlPlane(store);
-  const taskId = 'task-reconcile-budget';
-  const conversationId = '69696969-7070-8181-9292-030303030303';
-  const conversationUrl = `https://chatgpt.com/c/${conversationId}`;
-  control.registerTask({ taskId, conversationId, conversationUrl, objective: 'A broken browser port must not retain tab creation authority.', completionContract: {}, continuationPolicy: {}, userBlockerPolicy: {} });
-  const effect = control.reserveEnrollment(taskId);
-
-  expect(control.browserBeginEffect({
-    conversationId,
-    conversationUrl,
-    effectId: effect.effectId,
-    dispatchId: 'reconcile-budget-1',
-    dispatchGeneration: 1,
-    evidence: { latest_user_text: '', latest_assistant_response: '' },
-  })).toMatchObject({ started: true });
-  for (let observation = 1; observation <= 4; observation += 1) {
-    control.browserObserveEffect({
-      conversationId,
-      conversationUrl,
-      effectId: effect.effectId,
-      observationId: `port-closed-${observation}`,
-      outcome: 'unknown',
-      evidence: { reason: 'message_port_closed' },
-    });
-  }
-
-  expect(store.nextBrowserEffect(taskId)).toBeUndefined();
-  expect(control.browserTasks()).toEqual([]);
-});
