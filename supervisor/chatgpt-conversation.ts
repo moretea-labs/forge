@@ -8,6 +8,11 @@ export interface ChatgptConversationIdentity {
 export function parseChatgptConversationIdentity(value: string): ChatgptConversationIdentity {
   try {
     const identity = parseCanonicalChatgptConversationIdentity(value);
+    let decodedConversationId = identity.conversationId;
+    try { decodedConversationId = decodeURIComponent(identity.conversationId); } catch { /* keep raw identity for validation below */ }
+    if (decodedConversationId.startsWith('local-chatgpt:')) {
+      throw new Error('CHATGPT_CONVERSATION_ID_INVALID');
+    }
     return { conversationId: identity.conversationId, canonicalUrl: identity.conversationUrl };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

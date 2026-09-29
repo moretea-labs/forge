@@ -17,6 +17,7 @@ import { reconcileWorkflowSupervisorSocket, WorkflowSupervisorEphemeralDiscovery
 import { claimControllerSession, getControllerSession, releaseControllerSession } from '../../src/runtime/control-plane/facade/controller-session-store';
 import { bindChatgptWorkConversation, getChatgptWorkConversationBinding, rebindChatgptWorkConversation } from '../../adapters/chatgpt/work-conversation-binding-store';
 import { CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE, chatgptProviderPageFailure, classifyChatgptProviderFailure } from '../../adapters/chatgpt/provider-delivery';
+import { parseChatgptConversationIdentity } from '../../supervisor/chatgpt-conversation';
 
 const roots: string[] = [];
 afterEach(() => { while (roots.length) rmSync(roots.pop()!, { recursive: true, force: true }); });
@@ -39,6 +40,18 @@ function fixture() {
 }
 
 describe('Workflow Supervisor canonical lifecycle projection', () => {
+  test('rejects ChatGPT local temporary conversation ids as non-canonical bootstrap identity', () => {
+    expect(() => parseChatgptConversationIdentity(
+      'https://chatgpt.com/g/g-p-6a922010db348191a84d1a5306c083e8-forge/c/local-chatgpt%3A401bd127-b347-47d1-bc9c-895b5741ec7b',
+    )).toThrow('WORKFLOW_SUPERVISOR_CHATGPT_CONVERSATION_ID_INVALID');
+    expect(parseChatgptConversationIdentity(
+      'https://chatgpt.com/c/11111111-2222-3333-4444-555555555555',
+    )).toEqual({
+      conversationId: '11111111-2222-3333-4444-555555555555',
+      canonicalUrl: 'https://chatgpt.com/c/11111111-2222-3333-4444-555555555555',
+    });
+  });
+
   test('derives standalone project scope from Supervisor-owned Controller Home', () => {
     const fx = fixture();
     const supervisorStore = new WorkflowSupervisorStore(join(fx.root, 'standalone-project-scope'));
