@@ -95,6 +95,9 @@ type WorkflowSupervisorTabOwnership = 'created' | 'adopted' | 'legacy';
 function ownerMarker(conversationId: string, ownership: 'created' | 'adopted' = 'created'): string {
   return `${OWNER_PREFIX}${ownership}:${conversationId}`;
 }
+function bootstrapOwnerMarker(taskId: string): string {
+  return `${OWNER_PREFIX}bootstrap:${taskId}`;
+}
 function ownerMarkerOwnership(marker: string, conversationId: string): WorkflowSupervisorTabOwnership | undefined {
   if (marker === ownerMarker(conversationId, 'created')) return 'created';
   if (marker === ownerMarker(conversationId, 'adopted')) return 'adopted';
@@ -597,16 +600,29 @@ export class WorkflowSupervisorNativeBrowserAdapter {
   private async bootstrapTask(task: WorkflowSupervisorBrowserTask): Promise<void> {
     const poll = this.control.bootstrapPoll(task.taskId);
     const command = poll.command;
-    if (!command || command.mode !== 'send') return;
+    if (!command) return;
+    if (command.mode === 'reconcile') {
+      await this.reconcileBootstrapTask(task, command);
+      return;
+    }
+    if (command.mode !== 'send') return;
     const page = await this.deps.create(this.control.bootstrapProjectUrl(task.taskId));
     const ref = page.tabRef();
+    let preserveForReconcile = false;
     try {
+      const marker = bootstrapOwnerMarker(task.taskId);
+      await this.deps.writeOwner(page, marker);
+      if (await this.deps.readOwner(page) !== marker) throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_OWNER_MARKER_FAILED');
       if (!this.control.bootstrapBeginEffect({
         taskId: task.taskId,
         effectId: command.effectId,
         dispatchId: `bootstrap-${randomUUID()}`,
         dispatchGeneration: command.dispatchGeneration,
       })) return;
+      // Once the durable dispatch starts, an exception or timeout is outcome-
+      // unknown. Keep the task-owned tab alive so a later tick (or Runtime
+      // incarnation) can reconcile the exact same external effect without replay.
+      preserveForReconcile = true;
       const dispatched = await withChatgptProviderDispatchLane(
         this.deps.providerScopeKey,
         () => this.deps.dispatchPrompt(page, command.prompt, task),
@@ -616,19 +632,58 @@ export class WorkflowSupervisorNativeBrowserAdapter {
         this.control.bootstrapObserveEffect({ taskId: task.taskId, effectId: command.effectId, observationId: `bootstrap-${randomUUID()}`, outcome: 'unknown' });
         return;
       }
-      let snapshot: WorkflowSupervisorNativeSnapshot | undefined;
       for (let attempt = 0; attempt < 50; attempt += 1) {
-        snapshot = await this.deps.snapshot(page, { includeUserHistory: true, includePageText: false });
+        const snapshot = await this.deps.snapshot(page, { includeUserHistory: true, includePageText: false });
         try {
           const identity = parseChatgptConversationIdentity(snapshot.url);
+          if (!targetMarkerPresent(snapshot.latestUserText, command.effectId)) throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_EFFECT_MARKER_NOT_OBSERVED');
           this.control.bindBootstrapConversation({ taskId: task.taskId, conversationId: identity.conversationId, conversationUrl: identity.canonicalUrl });
           this.control.bootstrapObserveEffect({ taskId: task.taskId, effectId: command.effectId, observationId: `bootstrap-${randomUUID()}`, outcome: 'applied' });
+          preserveForReconcile = false;
           return;
         } catch { await this.deps.sleep(100); }
       }
       this.control.bootstrapObserveEffect({ taskId: task.taskId, effectId: command.effectId, observationId: `bootstrap-${randomUUID()}`, outcome: 'unknown' });
     } finally {
-      if (ref) await this.deps.close(ref).catch(() => undefined);
+      if (ref && !preserveForReconcile) await this.deps.close(ref).catch(() => undefined);
+    }
+  }
+
+  private async reconcileBootstrapTask(task: WorkflowSupervisorBrowserTask, command: WorkflowSupervisorBrowserCommand): Promise<void> {
+    const inventory = await this.listInventory();
+    const expectedOwner = bootstrapOwnerMarker(task.taskId);
+    const matches: Array<{ page: WorkflowSupervisorNativePage; ref: TaggedBrowserTabRef }> = [];
+    for (const candidate of inventory.entries) {
+      let parsed: URL;
+      try { parsed = new URL(candidate.url); } catch { continue; }
+      if (parsed.protocol !== 'https:' || parsed.hostname !== 'chatgpt.com') continue;
+      const ref: TaggedBrowserTabRef = {
+        windowId: candidate.windowId,
+        tabId: candidate.tabId,
+        ...(candidate.browserProduct ? { browserProduct: candidate.browserProduct } : {}),
+      };
+      try {
+        const page = await this.deps.reattach(ref);
+        if (await this.deps.readOwner(page) === expectedOwner) matches.push({ page, ref });
+      } catch { /* An unreadable tab is not evidence that the effect was not applied. */ }
+    }
+    if (matches.length === 0) return;
+    if (matches.length !== 1) throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_RECONCILE_AMBIGUOUS');
+    const [{ page, ref }] = matches;
+    let applied = false;
+    try {
+      const snapshot = await this.deps.snapshot(page, { includeUserHistory: true, includePageText: false });
+      let identity;
+      try { identity = parseChatgptConversationIdentity(snapshot.url); } catch { return; }
+      if (!targetMarkerPresent(snapshot.latestUserText, command.effectId)) return;
+      this.control.bindBootstrapConversation({ taskId: task.taskId, conversationId: identity.conversationId, conversationUrl: identity.canonicalUrl });
+      this.control.bootstrapObserveEffect({ taskId: task.taskId, effectId: command.effectId, observationId: `bootstrap-reconcile-${randomUUID()}`, outcome: 'applied' });
+      applied = true;
+    } finally {
+      if (applied) {
+        await this.deps.close(ref).catch(() => undefined);
+        this.invalidateInventory();
+      }
     }
   }
 
