@@ -256,7 +256,10 @@ export function decideControllerRoundTransition(
         status: 'dispatching', lifecycleStage: 'dispatching', consecutiveFailures: 0,
         providerRecoveryEpoch: (current.providerRecoveryEpoch ?? 0) + 1, providerRecoveryEvidenceId: event.evidenceId.slice(0, 500),
         providerDispatchEffectId: undefined, providerDispatchStartedAt: undefined, providerDispatchReceiptId: undefined,
-        blockedReason: undefined, failureClass: undefined, lastError: undefined, nextRecoveryAt: undefined,
+        // A resolved user-action handoff belongs to the failed provider epoch.
+        // Keeping it makes the next dispatch reject it as terminal before it can
+        // reach the recovered provider environment.
+        handoffId: undefined, blockedReason: undefined, failureClass: undefined, lastError: undefined, nextRecoveryAt: undefined,
         reason: `provider_environment_recovered:${event.evidenceId.slice(0, 240)}`, updatedAt: event.at,
       }, 'controller_round_relay_provider_environment_recovered');
     }

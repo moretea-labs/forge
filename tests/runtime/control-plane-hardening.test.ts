@@ -1302,7 +1302,7 @@ describe('scheduled external Controller wake', () => {
       status: 'dispatching', lifecycleStage: 'dispatching', authorityId: opened.authorityId,
       roundCount: opened.roundCount, repeatedStateCount: opened.repeatedStateCount, consecutiveFailures: 0,
       providerFailureTotal: 3, providerRecoveryEpoch: 1, providerRecoveryEvidenceId: 'runtime:verified-browser-provider:rev-1',
-      blockedReason: undefined, lastError: undefined,
+      handoffId: undefined, blockedReason: undefined, lastError: undefined,
     });
     expect(rearmed.occurrenceId).toBeUndefined();
     const identity = { controllerId: opened.controllerId, controllerType: opened.controllerType, principalId: opened.principalId };
