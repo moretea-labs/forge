@@ -82,6 +82,7 @@ async function browserAction(
   occurrenceId: string,
   actionId: string,
   args: Record<string, unknown>,
+  authorizationGrantRefs: readonly string[],
 ): Promise<Record<string, unknown>> {
   return executeBrowserPluginAction({
     controllerHome,
@@ -92,7 +93,14 @@ async function browserAction(
     requestId: `schedule-browser-probe:${occurrenceId}:${actionId}`,
     args,
     origin: { surface: 'schedule', actor: 'browser-probe', correlationId: occurrenceId },
+    authorizationGrantRefs,
   });
+}
+
+/** Exact interactive grants attached to this Schedule; contents remain Controller-owned. */
+export function scheduledBrowserProbeAuthorizationGrantRefs(args: Record<string, unknown>): string[] {
+  if (!Array.isArray(args.authorization_grant_refs)) return [];
+  return [...new Set(args.authorization_grant_refs.map(String).map((value) => value.trim()).filter(Boolean))];
 }
 
 interface ScheduledBrowserSessionMetadata {
@@ -137,8 +145,9 @@ async function scheduledBrowserSessionMetadata(
   repository: RepositoryRecord,
   occurrenceId: string,
   sessionId: string,
+  authorizationGrantRefs: readonly string[],
 ): Promise<ScheduledBrowserSessionMetadata | undefined> {
-  const inventory = await browserAction(controllerHome, repository, occurrenceId, 'list_sessions', {});
+  const inventory = await browserAction(controllerHome, repository, occurrenceId, 'list_sessions', {}, authorizationGrantRefs);
   const sessions = Array.isArray(inventory.sessions) ? inventory.sessions : [];
   const saved = sessions
     .map((entry) => recordValue(entry))
@@ -170,10 +179,12 @@ export async function executeScheduledBrowserProbe(input: {
   const url = stringValue(input.args.probe_url) ?? stringValue(input.args.url);
   if (!requestedSessionId && !url) throw new Error('SCHEDULE_BROWSER_PROBE_TARGET_REQUIRED');
 
+  const authorizationGrantRefs = scheduledBrowserProbeAuthorizationGrantRefs(input.args);
+
   const waitUntil = stringValue(input.args.wait_until) ?? 'domcontentloaded';
   const timeoutMs = boundedNumber(input.args.timeout_ms, 60_000, 1_000, 120_000);
   const savedSession = requestedSessionId
-    ? await scheduledBrowserSessionMetadata(input.controllerHome, input.repository, input.occurrenceId, requestedSessionId)
+    ? await scheduledBrowserSessionMetadata(input.controllerHome, input.repository, input.occurrenceId, requestedSessionId, authorizationGrantRefs)
     : undefined;
   const navigationAction = scheduledBrowserProbeNavigationAction(savedSession?.ownership, Boolean(url));
   const managedRehydrateIntent = scheduledBrowserProbeManagedRehydrateIntent(savedSession);
@@ -188,7 +199,7 @@ export async function executeScheduledBrowserProbe(input: {
       state: waitUntil,
       timeout_ms: timeoutMs,
       ...managedRehydrateIntent,
-    });
+    }, authorizationGrantRefs);
   } else if (navigationAction === 'navigate') {
     navigation = await browserAction(input.controllerHome, input.repository, input.occurrenceId, 'navigate', {
       ...(requestedSessionId ? { session_id: requestedSessionId } : {}),
@@ -197,14 +208,14 @@ export async function executeScheduledBrowserProbe(input: {
       timeout_ms: timeoutMs,
       retries: 1,
       ...managedRehydrateIntent,
-    });
+    }, authorizationGrantRefs);
   } else {
     navigation = await browserAction(input.controllerHome, input.repository, input.occurrenceId, 'reload', {
       session_id: requestedSessionId!,
       wait_until: waitUntil,
       timeout_ms: timeoutMs,
       ...managedRehydrateIntent,
-    });
+    }, authorizationGrantRefs);
   }
 
   const session = recordValue(navigation.session);
@@ -224,7 +235,7 @@ export async function executeScheduledBrowserProbe(input: {
       session_id: sessionId,
       ...(stringValue(input.args.selector) ? { selector: stringValue(input.args.selector) } : {}),
       max_chars: boundedNumber(input.args.max_chars, 20_000, 256, 100_000),
-    });
+    }, authorizationGrantRefs);
     rawText = stringValue(textResult.text) ?? '';
     truncated = textResult.truncated === true;
   }

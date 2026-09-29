@@ -2,12 +2,20 @@ import { describe, expect, test } from 'bun:test';
 import {
   buildScheduledBrowserFingerprint,
   classifyScheduledBrowserObservation,
+  scheduledBrowserProbeAuthorizationGrantRefs,
   scheduledBrowserProbeManagedRehydrateIntent,
   scheduledBrowserProbeNavigationAction,
 } from '../../src/runtime/workflow/schedules/browser-probe';
 import { createWorkContinuationSchedule } from '../../src/runtime/workflow/schedules/work-continuation';
 
 describe('scheduled browser probe primitives', () => {
+  test('forwards only normalized exact interactive grant references into scheduled browser actions', () => {
+    expect(scheduledBrowserProbeAuthorizationGrantRefs({
+      authorization_grant_refs: [' grant-a ', 'grant-b', 'grant-a', '', 42],
+    })).toEqual(['grant-a', 'grant-b', '42']);
+    expect(scheduledBrowserProbeAuthorizationGrantRefs({ authorization_grant_refs: 'grant-a' })).toEqual([]);
+  });
+
   test('fingerprints only selected lines and can strip volatile timestamps', () => {
     const first = buildScheduledBrowserFingerprint([
       '其他邮件 14:02',
