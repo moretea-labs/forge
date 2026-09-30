@@ -3,13 +3,21 @@ export type Scope = 'assistant' | 'projects';
 export type WorkState = 'active' | 'blocked' | 'planned' | 'done';
 export type Work = { id:string; title:string; summary:string; state:WorkState; repository:string; plan?:string; requirement?:string; parentId?:string; dependsOn?:string[]; updatedAt:string; evidence?:string[] };
 export type Project = { id:string; name:string; path:string; branch:string; work:Work[] };
-export type Snapshot = { runtime:'ready'|'offline'|'attention'; runtimeLabel:string; projects:Project[]; assistant:Work[]; source:'live'|'preview' };
+export type Snapshot = { runtime:'ready'|'offline'|'attention'; runtimeLabel:string; projects:Project[]; assistant:Work[]; source:'live'|'preview'|'native' };
 export type LocalMessage = { id:string; role:'user'|'assistant'|'system'; content:string; createdAt:string };
 export type LocalThread = { id:string; title:string; projectId?:string; createdAt:string; updatedAt:string; archived:boolean; messages:LocalMessage[] };
 
 const LOCAL_THREADS_KEY = 'forge.v3.local-conversations.v1';
 const localId = () => globalThis.crypto?.randomUUID?.() ?? `local-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 const now = () => new Date().toISOString();
+type NativeRecoveryResult = { ok:boolean; operation:string; payload:{runtime?:{ready?:boolean;running?:boolean;stale?:boolean;reasonCodes?:string[]}} };
+type TauriWindow = Window & { __TAURI_INTERNALS__?: { invoke(command:string,args?:Record<string,unknown>):Promise<unknown> } };
+
+export const isNativeDesktop = () => typeof window !== 'undefined' && Boolean((window as TauriWindow).__TAURI_INTERNALS__?.invoke);
+async function nativeInvoke<T>(command:string):Promise<T|undefined>{ const invoke=(window as TauriWindow).__TAURI_INTERNALS__?.invoke; return invoke ? await invoke(command) as T : undefined; }
+export async function nativeRecoveryStatus():Promise<NativeRecoveryResult|undefined>{ return nativeInvoke<NativeRecoveryResult>('recovery_status'); }
+export async function restartNativeRuntime():Promise<NativeRecoveryResult|undefined>{ return nativeInvoke<NativeRecoveryResult>('recovery_restart_runtime'); }
+async function nativeBootstrap():Promise<any|undefined>{ return nativeInvoke<any>('local_bridge_bootstrap'); }
 
 export function loadLocalThreads():LocalThread[]{
   try {
@@ -21,14 +29,8 @@ export function loadLocalThreads():LocalThread[]{
   } catch { return []; }
 }
 
-export function persistLocalThreads(threads:LocalThread[]):void{
-  localStorage.setItem(LOCAL_THREADS_KEY, JSON.stringify(threads.slice(0, 100)));
-}
-
-export function createLocalThread(projectId?:string):LocalThread{
-  const timestamp=now();
-  return { id:localId(), title:'New conversation', ...(projectId?{projectId}:{}), createdAt:timestamp, updatedAt:timestamp, archived:false, messages:[] };
-}
+export function persistLocalThreads(threads:LocalThread[]):void{ localStorage.setItem(LOCAL_THREADS_KEY, JSON.stringify(threads.slice(0, 100))); }
+export function createLocalThread(projectId?:string):LocalThread{ const timestamp=now(); return { id:localId(), title:'New conversation', ...(projectId?{projectId}:{}), createdAt:timestamp, updatedAt:timestamp, archived:false, messages:[] }; }
 
 const preview:Snapshot = { runtime:'offline', runtimeLabel:'Forge Runtime not connected', source:'preview', projects:[
   { id:'forge', name:'Forge', path:'/Users/greyson/.codex/worktrees/d0a2/forge', branch:'codex/v3-desktop-client', work:[
@@ -39,19 +41,23 @@ const preview:Snapshot = { runtime:'offline', runtimeLabel:'Forge Runtime not co
 ], assistant:[{ id:'assistant-1', title:'Review pending decisions', summary:'Assistant-global Work can exist without a project, Requirement or Plan.', state:'planned', repository:'Assistant', updatedAt:'Today' }] };
 
 async function json<T>(path:string):Promise<T>{ const token=import.meta.env.VITE_FORGE_LOCAL_BRIDGE_TOKEN; const response=await fetch(path,{credentials:'same-origin',headers:token?{'x-forge-local-token':token}:undefined}); if(!response.ok) throw new Error(`HTTP ${response.status}`); return response.json() as Promise<T>; }
+function runtimeSnapshot(recovery:NativeRecoveryResult):Snapshot { const runtime=recovery.payload.runtime; const ready=runtime?.ready===true && runtime.running!==false && runtime.stale!==true; return {...preview,runtime:ready?'ready':runtime?.running?'attention':'offline',runtimeLabel:ready?'Forge Runtime ready':runtime?.running?'Forge Runtime starting':'Forge Runtime unavailable',source:'native'}; }
+function bootstrapSnapshot(bootstrap:any, source:'live'|'native'):Snapshot {
+  const repositories=bootstrap.repositories ?? [];
+  const items=bootstrap.work ?? [];
+  const projects=repositories.map((repo:any):Project=>({ id:repo.id, name:repo.name, path:repo.path ?? '', branch:repo.branchLabel ?? 'working tree', work:items.filter((item:any)=>item.repoId===repo.id).map((item:any):Work=>({ id:item.id, title:item.title, summary:item.latestSummary ?? item.objective, state:item.advanced?.status==='blocked'?'blocked':item.advanced?.status==='completed'?'done':'active', repository:repo.name, updatedAt:item.updatedAt ?? 'recent', plan:item.advanced?.planId ?? item.plan, requirement:item.advanced?.requirementId, parentId:item.advanced?.semanticParentWorkId, dependsOn:item.advanced?.dependsOnWorkIds ?? [], evidence:item.latestVerification ? ['Latest verification available'] : undefined })) }));
+  const runtimeStatus=String(bootstrap.runtime?.status ?? 'unavailable');
+  const runtime=runtimeStatus==='ready'?'ready':runtimeStatus==='starting'?'attention':'offline';
+  return { runtime, runtimeLabel:runtime==='ready'?'Forge Runtime ready':runtime==='attention'?'Forge Runtime starting':'Forge Runtime unavailable', projects, assistant:preview.assistant, source };
+}
+
 export async function loadSnapshot():Promise<Snapshot>{
-  // The packaged client talks to the canonical Local Bridge. The standalone
-  // dev shell intentionally stays useful before Runtime is installed; opt in
-  // to live probing with VITE_FORGE_LIVE=1.
-  const liveRequested = import.meta.env.VITE_FORGE_LIVE === '1' || new URLSearchParams(location.search).get('live') === '1';
-  if (!liveRequested) return preview;
-  try {
-    const bootstrap = await json<any>('/api/client/v3/bootstrap');
-    const center = { repositories: bootstrap.repositories ?? [] };
-    const portfolio = { items: bootstrap.work ?? [] };
-    const projects = (center.repositories ?? []).map((repo:any):Project => ({ id:repo.id, name:repo.name, path:repo.path ?? '', branch:repo.branchLabel ?? 'working tree', work:(portfolio.items ?? []).filter((item:any)=>item.repoId===repo.id).map((item:any):Work=>({ id:item.id, title:item.title, summary:item.latestSummary ?? item.objective, state:item.advanced?.status==='blocked'?'blocked':item.advanced?.status==='completed'?'done':'active', repository:repo.name, updatedAt:item.updatedAt ?? 'recent', plan:item.advanced?.planId ?? item.plan, requirement:item.advanced?.requirementId, parentId:item.advanced?.semanticParentWorkId, dependsOn:item.advanced?.dependsOnWorkIds ?? [], evidence:item.latestVerification ? ['Latest verification available'] : undefined })) }));
-    const runtimeStatus = String(bootstrap.runtime?.status ?? 'unavailable');
-    const runtime = runtimeStatus === 'ready' ? 'ready' : runtimeStatus === 'starting' ? 'attention' : 'offline';
-    return { runtime, runtimeLabel:runtime === 'ready' ? 'Forge Runtime ready' : runtime === 'attention' ? 'Forge Runtime starting' : 'Forge Runtime unavailable', projects, assistant:preview.assistant, source:'live' };
-  } catch { return preview; }
+  const nativeRecovery=isNativeDesktop()?await nativeRecoveryStatus().catch(()=>undefined):undefined;
+  const nativeData=isNativeDesktop()?await nativeBootstrap().catch(()=>undefined):undefined;
+  const liveRequested=import.meta.env.VITE_FORGE_LIVE==='1' || new URLSearchParams(location.search).get('live')==='1';
+  if(nativeData) return bootstrapSnapshot(nativeData,'native');
+  if(!liveRequested && nativeRecovery) return runtimeSnapshot(nativeRecovery);
+  if(!liveRequested) return preview;
+  try { return bootstrapSnapshot(await json<any>('/api/client/v3/bootstrap'),'live'); }
+  catch { return nativeRecovery ? runtimeSnapshot(nativeRecovery) : preview; }
 }

@@ -4,6 +4,7 @@ import {
   loadLocalThreads,
   loadSnapshot,
   persistLocalThreads,
+  restartNativeRuntime,
   type LocalMessage,
   type LocalThread,
   type Mode,
@@ -27,10 +28,10 @@ function Icon({ name }: { name: keyof typeof iconPaths }) {
   return <svg viewBox="0 0 24 24" aria-hidden="true"><path d={iconPaths[name]} /></svg>;
 }
 
-function RuntimePill({ snapshot, onRefresh }: { snapshot: Snapshot; onRefresh: () => void }) {
-  return <button className={`runtime-pill ${snapshot.runtime}`} onClick={onRefresh} title="Refresh Forge status">
-    <span className="runtime-dot" /><span>{snapshot.runtimeLabel}</span><small>{snapshot.source === 'live' ? 'LIVE' : 'PREVIEW'}</small>
-  </button>;
+function RuntimePill({ snapshot, onRefresh, onRecover }: { snapshot: Snapshot; onRefresh: () => void; onRecover: () => void }) {
+  return <div className="runtime-control"><button className={`runtime-pill ${snapshot.runtime}`} onClick={onRefresh} title="Refresh Forge status">
+    <span className="runtime-dot" /><span>{snapshot.runtimeLabel}</span><small>{snapshot.source === 'live' ? 'LIVE' : snapshot.source === 'native' ? 'NATIVE' : 'PREVIEW'}</small>
+  </button>{snapshot.source === 'native' && snapshot.runtime !== 'ready' && <button className="runtime-recover" onClick={onRecover}>Restart Runtime</button>}</div>;
 }
 
 function WorkRow({ work, selected, onSelect }: { work: Work; selected: boolean; onSelect: () => void }) {
@@ -78,6 +79,7 @@ export function App() {
   const newThread = () => { const thread = createLocalThread(scope === 'projects' ? project?.id : undefined); setThreads(current => [thread, ...current]); setThreadId(thread.id); setMode('local'); };
   const updateThread = (thread: LocalThread) => setThreads(current => current.map(item => item.id === thread.id ? thread : item));
   const archiveThread = () => { if (!selectedThread) return; setThreads(current => current.map(item => item.id === selectedThread.id ? { ...item, archived: true, updatedAt: new Date().toISOString() } : item)); setThreadId(undefined); };
+  const recoverRuntime = async () => { await restartNativeRuntime(); await refresh(); };
 
   if (!snapshot) return <div className="loading"><span className="forge-mark">F</span><strong>Opening Forge</strong><span>Restoring workspace…</span></div>;
   return <div className="app">
@@ -86,7 +88,7 @@ export function App() {
       <div className="mode-switch" role="tablist" aria-label="Forge mode"><button className={mode === 'mcp' ? 'active' : ''} onClick={() => setMode('mcp')}>MCP</button><button className={mode === 'local' ? 'active' : ''} onClick={() => setMode('local')}>Local</button></div>
       <nav className="scope-nav"><button className={scope === 'assistant' ? 'active' : ''} onClick={() => setScope('assistant')}><Icon name="spark" /><span>Assistant</span></button><button className={scope === 'projects' ? 'active' : ''} onClick={() => setScope('projects')}><Icon name="folder" /><span>Projects</span><kbd>⌘1</kbd></button></nav>
       {mode === 'local' ? <div className="project-list"><div className="side-label">Threads <button aria-label="New thread" onClick={newThread}><Icon name="plus" /></button></div>{activeThreads.map(thread => <button className={thread.id === selectedThread?.id ? 'project active' : 'project'} key={thread.id} onClick={() => { setThreadId(thread.id); setMode('local'); }}><span className="project-icon"><Icon name="spark" /></span><span><strong>{thread.title}</strong><small>{thread.projectId ?? 'Assistant-global'}</small></span></button>)}{!activeThreads.length && <span className="thread-hint">No local threads yet.</span>}</div> : scope === 'projects' && <div className="project-list"><div className="side-label">Projects <button aria-label="Add project"><Icon name="plus" /></button></div>{snapshot.projects.map(item => <button className={item.id === projectId ? 'project active' : 'project'} key={item.id} onClick={() => { setProjectId(item.id); setSelectedId(item.work[0]?.id); }}><span className="project-icon"><Icon name="folder" /></span><span><strong>{item.name}</strong><small>{item.branch}</small></span></button>)}</div>}
-      <div className="sidebar-bottom"><RuntimePill snapshot={snapshot} onRefresh={() => void refresh()} /><button className="settings-link" onClick={() => setMode('local')}><span className="avatar">G</span><span><strong>Greyson</strong><small>Connections</small></span><Icon name="chevron" /></button></div>
+      <div className="sidebar-bottom"><RuntimePill snapshot={snapshot} onRefresh={() => void refresh()} onRecover={() => void recoverRuntime()} /><button className="settings-link" onClick={() => setMode('local')}><span className="avatar">G</span><span><strong>Greyson</strong><small>Connections</small></span><Icon name="chevron" /></button></div>
     </aside>
     <main className="main"><header className="topbar"><div><span className="context-label">{mode === 'mcp' ? 'MCP WORKSPACE' : 'LOCAL CONVERSATION'}</span><h1>{mode === 'local' ? 'Local' : scope === 'assistant' ? 'Assistant' : project?.name ?? 'Projects'}</h1></div><div className="top-actions"><button className="quiet-action" onClick={() => void refresh()} disabled={refreshing}>{refreshing ? 'Refreshing…' : 'Refresh'}</button><button className="primary-action" onClick={newThread}><Icon name="plus" />{mode === 'local' ? 'New thread' : 'New Work'}</button></div></header>
       {mode === 'local' ? (selectedThread ? <LocalConversation thread={selectedThread} onChange={updateThread} onArchive={archiveThread} /> : <section className="local-empty"><div className="empty-icon"><Icon name="spark" /></div><h2>Conversation-first work</h2><p>Local threads are client-owned and independent from Requirement, Plan and Work.</p><button className="primary-action" onClick={newThread}><Icon name="plus" />New thread</button></section>) : <div className="workspace"><section className="work-column"><div className="workspace-heading"><div><span className="context-label">{scope === 'assistant' ? 'ASSISTANT-GLOBAL' : 'PROJECT WORK'}</span><h2>{scope === 'assistant' ? 'Current work' : 'Current'}</h2></div><span className="count-label">{works.length} {works.length === 1 ? 'item' : 'items'}</span></div><div className="work-list">{works.map(work => <WorkRow key={work.id} work={work} selected={selected?.id === work.id} onSelect={() => setSelectedId(work.id)} />)}</div>{!works.length && <div className="empty-state"><strong>No current Work</strong><span>Start from a repository or keep this as an Assistant-global workspace.</span></div>}<div className="history-link"><button onClick={() => setScope(scope)}>Show history <Icon name="chevron" /></button></div></section><aside className="inspector">{selected ? <><div className="inspector-header"><span className={`state-badge ${selected.state}`}>{selected.state === 'active' ? 'Active' : selected.state === 'planned' ? 'Planned' : selected.state === 'blocked' ? 'Blocked' : 'Done'}</span><span className="id-label">{selected.id}</span></div><h2>{selected.title}</h2><p className="inspector-summary">{selected.summary}</p><dl><div><dt>Repository</dt><dd>{selected.repository}</dd></div><div><dt>Semantic parent</dt><dd>{selected.parentId ?? 'None'}</dd></div><div><dt>Dependencies</dt><dd>{selected.dependsOn?.length ? selected.dependsOn.join(', ') : 'None'}</dd></div></dl>{selected.plan && <div className="plan-reference"><span>Plan context</span><strong>{selected.plan}</strong><small>Descriptive context only · Work is the progress node</small></div>}{selected.evidence && <div className="evidence"><span>Evidence</span>{selected.evidence.map(entry => <div key={entry}><Icon name="pulse" />{entry}</div>)}</div>}<button className="secondary-action">Open details <Icon name="chevron" /></button></> : <div className="inspector-empty">Select a Work to inspect its current facts.</div>}</aside></div>}
