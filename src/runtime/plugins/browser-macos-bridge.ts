@@ -495,7 +495,7 @@ function parseTabInventory(product: MacOsBrowserProduct, raw: string): MacOsBrow
   for (const record of records) {
     if (!record) continue;
     const fields = record.split(fieldSeparator);
-    if (fields.length < 6) {
+    if (fields.length < 5) {
       throw new AssistantPluginError(
         'PLUGIN_MACOS_CAPABILITY_BROKER_PROTOCOL_ERROR',
         'Stable Forge macOS capability broker returned incomplete browser tab inventory metadata.',
@@ -505,15 +505,23 @@ function parseTabInventory(product: MacOsBrowserProduct, raw: string): MacOsBrow
     const windowId = (fields[0] ?? '').trim();
     const tabId = (fields[1] ?? '').trim();
     const activeText = (fields[2] ?? '').trim().toLowerCase();
-    const frontmostText = (fields[3] ?? '').trim().toLowerCase();
-    if (!windowId || !tabId || (activeText !== 'true' && activeText !== 'false') || (frontmostText !== 'true' && frontmostText !== 'false')) {
+    const hasFrontmostField = fields.length >= 6 && ['true', 'false'].includes((fields[3] ?? '').trim().toLowerCase());
+    const frontmostText = hasFrontmostField ? (fields[3] ?? '').trim().toLowerCase() : undefined;
+    if (!windowId || !tabId || (activeText !== 'true' && activeText !== 'false') || (fields.length >= 6 && !hasFrontmostField)) {
       throw new AssistantPluginError(
         'PLUGIN_MACOS_CAPABILITY_BROKER_PROTOCOL_ERROR',
         'Stable Forge macOS capability broker returned invalid browser tab inventory metadata.',
         { retryable: true },
       );
     }
-    tabs.push({ windowId, tabId, active: activeText === 'true', frontmost: frontmostText === 'true', url: fields[4] ?? '', title: fields.slice(5).join(fieldSeparator) });
+    tabs.push({
+      windowId,
+      tabId,
+      active: activeText === 'true',
+      ...(frontmostText ? { frontmost: frontmostText === 'true' } : {}),
+      url: fields[hasFrontmostField ? 4 : 3] ?? '',
+      title: fields.slice(hasFrontmostField ? 5 : 4).join(fieldSeparator),
+    });
     if (tabs.length > 256) {
       throw new AssistantPluginError(
         'PLUGIN_MACOS_CAPABILITY_BROKER_PROTOCOL_ERROR',
@@ -1533,7 +1541,28 @@ export async function listMacOsBrowserTabs(
     [],
     timeoutMs,
   );
-  return parseTabInventory(product, raw);
+  const inventory = parseTabInventory(product, raw);
+  if (!inventory.tabs.some(tab => tab.frontmost === undefined)) return inventory;
+  // Older stable capability brokers do not include frontmost-window metadata
+  // in list_tabs. Reuse the existing metadata probe to enrich that legacy
+  // response without making the old broker a second authority.
+  try {
+    const inspected = await inspectBrowser(product, timeoutMs);
+    const current = inspected.metadata?.frontmost === true && inspected.metadata.active === true
+      ? { windowId: inspected.metadata.windowId, tabId: inspected.metadata.tabId }
+      : undefined;
+    return {
+      ...inventory,
+      tabs: inventory.tabs.map(tab => ({
+        ...tab,
+        ...(current?.windowId === tab.windowId && current.tabId === tab.tabId ? { frontmost: true } : { frontmost: false }),
+      })),
+    };
+  } catch {
+    // Inventory remains useful for exact task reattachment, but current-session
+    // binding stays fail-closed when frontmost identity cannot be proven.
+    return inventory;
+  }
 }
 
 export async function readMacOsBrowserOwnedTabMetadata(
