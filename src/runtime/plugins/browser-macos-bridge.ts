@@ -1535,6 +1535,10 @@ export async function listMacOsBrowserTabs(
   timeoutMs = DEFAULT_NATIVE_TIMEOUT_MS,
 ): Promise<MacOsBrowserTabInventory> {
   const browser = browserDefinition(product);
+  // Capture the frontmost tab before reading the stable inventory. Some older
+  // brokers expose stale active/frontmost bits in list_tabs, while metadata
+  // still identifies the actual frontmost tab and URL.
+  const inspected = await inspectBrowser(product, timeoutMs);
   const raw = await runBrowserAutomationText(
     { action: 'list_tabs', product },
     listTabsScript(browser),
@@ -1542,27 +1546,28 @@ export async function listMacOsBrowserTabs(
     timeoutMs,
   );
   const inventory = parseTabInventory(product, raw);
-  if (!inventory.tabs.some(tab => tab.frontmost === undefined)) return inventory;
-  // Older stable capability brokers do not include frontmost-window metadata
-  // in list_tabs. Reuse the existing metadata probe to enrich that legacy
-  // response without making the old broker a second authority.
-  try {
-    const inspected = await inspectBrowser(product, timeoutMs);
-    const current = inspected.metadata?.frontmost === true && inspected.metadata.active === true
-      ? { windowId: inspected.metadata.windowId, tabId: inspected.metadata.tabId }
-      : undefined;
-    return {
-      ...inventory,
-      tabs: inventory.tabs.map(tab => ({
-        ...tab,
-        ...(current?.windowId === tab.windowId && current.tabId === tab.tabId ? { frontmost: true } : { frontmost: false }),
-      })),
-    };
-  } catch {
-    // Inventory remains useful for exact task reattachment, but current-session
-    // binding stays fail-closed when frontmost identity cannot be proven.
-    return inventory;
-  }
+  const metadata = inspected.metadata;
+  const current = metadata?.frontmost === true && metadata.active !== false
+    ? { windowId: metadata.windowId, tabId: metadata.tabId, url: metadata.url.trim() }
+    : undefined;
+  if (!current) return inventory;
+  const hasIdentity = Boolean(current.windowId && current.tabId);
+  const currentMatches = inventory.tabs.filter(tab => (
+    hasIdentity
+      ? tab.windowId === current.windowId && tab.tabId === current.tabId
+      : Boolean(current.url) && tab.url.trim() === current.url
+  ));
+  const currentMatch = currentMatches.length === 1 ? currentMatches[0] : undefined;
+  if (!currentMatch) return inventory;
+  return {
+    ...inventory,
+    tabs: inventory.tabs.map(tab => ({
+      ...tab,
+      ...(currentMatch.windowId === tab.windowId && currentMatch.tabId === tab.tabId
+        ? { active: true, frontmost: true }
+        : { frontmost: false }),
+    })),
+  };
 }
 
 export async function readMacOsBrowserOwnedTabMetadata(
