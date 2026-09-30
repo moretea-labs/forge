@@ -14,10 +14,11 @@ type NativeRecoveryResult = { ok:boolean; operation:string; payload:{runtime?:{r
 type TauriWindow = Window & { __TAURI_INTERNALS__?: { invoke(command:string,args?:Record<string,unknown>):Promise<unknown> } };
 
 export const isNativeDesktop = () => typeof window !== 'undefined' && Boolean((window as TauriWindow).__TAURI_INTERNALS__?.invoke);
-async function nativeInvoke<T>(command:string):Promise<T|undefined>{ const invoke=(window as TauriWindow).__TAURI_INTERNALS__?.invoke; return invoke ? await invoke(command) as T : undefined; }
+async function nativeInvoke<T>(command:string,args?:Record<string,unknown>):Promise<T|undefined>{ const invoke=(window as TauriWindow).__TAURI_INTERNALS__?.invoke; return invoke ? await invoke(command,args) as T : undefined; }
 export async function nativeRecoveryStatus():Promise<NativeRecoveryResult|undefined>{ return nativeInvoke<NativeRecoveryResult>('recovery_status'); }
 export async function restartNativeRuntime():Promise<NativeRecoveryResult|undefined>{ return nativeInvoke<NativeRecoveryResult>('recovery_restart_runtime'); }
 async function nativeBootstrap():Promise<any|undefined>{ return nativeInvoke<any>('local_bridge_bootstrap'); }
+export async function startNativeWork(objective:string):Promise<any|undefined>{ return nativeInvoke<any>('local_bridge_start_work',{objective}); }
 
 export function loadLocalThreads():LocalThread[]{
   try {
@@ -41,6 +42,7 @@ const preview:Snapshot = { runtime:'offline', runtimeLabel:'Forge Runtime not co
 ], assistant:[{ id:'assistant-1', title:'Review pending decisions', summary:'Assistant-global Work can exist without a project, Requirement or Plan.', state:'planned', repository:'Assistant', updatedAt:'Today' }] };
 
 async function json<T>(path:string):Promise<T>{ const token=import.meta.env.VITE_FORGE_LOCAL_BRIDGE_TOKEN; const response=await fetch(path,{credentials:'same-origin',headers:token?{'x-forge-local-token':token}:undefined}); if(!response.ok) throw new Error(`HTTP ${response.status}`); return response.json() as Promise<T>; }
+export async function startLiveWork(objective:string):Promise<any>{ const token=import.meta.env.VITE_FORGE_LOCAL_BRIDGE_TOKEN; const response=await fetch('/api/console/work/start',{method:'POST',credentials:'same-origin',headers:{'content-type':'application/json',...(token?{'x-forge-local-token':token}: {})},body:JSON.stringify({objective,scopeClear:true})}); if(!response.ok) throw new Error(`HTTP ${response.status}`); return response.json(); }
 function runtimeSnapshot(recovery:NativeRecoveryResult):Snapshot { const runtime=recovery.payload.runtime; const ready=runtime?.ready===true && runtime.running!==false && runtime.stale!==true; return {...preview,runtime:ready?'ready':runtime?.running?'attention':'offline',runtimeLabel:ready?'Forge Runtime ready':runtime?.running?'Forge Runtime starting':'Forge Runtime unavailable',source:'native'}; }
 function bootstrapSnapshot(bootstrap:any, source:'live'|'native'):Snapshot {
   const repositories=bootstrap.repositories ?? [];
