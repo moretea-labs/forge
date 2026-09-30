@@ -66,6 +66,8 @@ export interface MacOsBrowserTabInventoryEntry {
   url: string;
   title: string;
   active: boolean;
+  /** True when this tab is active in the frontmost browser window. */
+  frontmost?: boolean;
 }
 
 export interface MacOsBrowserTabInventory {
@@ -447,6 +449,8 @@ set maxTabs to 256
 set returnedCount to 0
 set truncatedInventory to false
 set outputText to "false"
+set frontWindowId to ""
+if (count of windows) is greater than 0 then set frontWindowId to ((id of front window) as text)
 repeat with candidateWindow in windows
   set activeTabId to ""
   try
@@ -459,10 +463,11 @@ repeat with candidateWindow in windows
     end if
     set candidateWindowId to ((id of candidateWindow) as text)
     set candidateTabId to ((id of candidateTab) as text)
+    set candidateFrontmost to (candidateWindowId is frontWindowId)
     set candidateURL to my cleanField((URL of candidateTab as text), recordSeparator, fieldSeparator)
     set candidateTitle to my cleanField((title of candidateTab as text), recordSeparator, fieldSeparator)
     set candidateActive to (candidateTabId is activeTabId)
-    set outputText to outputText & recordSeparator & candidateWindowId & fieldSeparator & candidateTabId & fieldSeparator & (candidateActive as text) & fieldSeparator & candidateURL & fieldSeparator & candidateTitle
+    set outputText to outputText & recordSeparator & candidateWindowId & fieldSeparator & candidateTabId & fieldSeparator & (candidateActive as text) & fieldSeparator & (candidateFrontmost as text) & fieldSeparator & candidateURL & fieldSeparator & candidateTitle
     set returnedCount to returnedCount + 1
   end repeat
   if truncatedInventory then exit repeat
@@ -490,7 +495,7 @@ function parseTabInventory(product: MacOsBrowserProduct, raw: string): MacOsBrow
   for (const record of records) {
     if (!record) continue;
     const fields = record.split(fieldSeparator);
-    if (fields.length < 5) {
+    if (fields.length < 6) {
       throw new AssistantPluginError(
         'PLUGIN_MACOS_CAPABILITY_BROKER_PROTOCOL_ERROR',
         'Stable Forge macOS capability broker returned incomplete browser tab inventory metadata.',
@@ -500,14 +505,15 @@ function parseTabInventory(product: MacOsBrowserProduct, raw: string): MacOsBrow
     const windowId = (fields[0] ?? '').trim();
     const tabId = (fields[1] ?? '').trim();
     const activeText = (fields[2] ?? '').trim().toLowerCase();
-    if (!windowId || !tabId || (activeText !== 'true' && activeText !== 'false')) {
+    const frontmostText = (fields[3] ?? '').trim().toLowerCase();
+    if (!windowId || !tabId || (activeText !== 'true' && activeText !== 'false') || (frontmostText !== 'true' && frontmostText !== 'false')) {
       throw new AssistantPluginError(
         'PLUGIN_MACOS_CAPABILITY_BROKER_PROTOCOL_ERROR',
         'Stable Forge macOS capability broker returned invalid browser tab inventory metadata.',
         { retryable: true },
       );
     }
-    tabs.push({ windowId, tabId, active: activeText === 'true', url: fields[3] ?? '', title: fields.slice(4).join(fieldSeparator) });
+    tabs.push({ windowId, tabId, active: activeText === 'true', frontmost: frontmostText === 'true', url: fields[4] ?? '', title: fields.slice(5).join(fieldSeparator) });
     if (tabs.length > 256) {
       throw new AssistantPluginError(
         'PLUGIN_MACOS_CAPABILITY_BROKER_PROTOCOL_ERROR',

@@ -476,8 +476,35 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     this.lastRunTransportUnavailable = false;
     const tasks = this.control.browserTasks();
     this.lastRunHadTasks = tasks.length > 0;
+    const inventory = await this.listInventory();
     await this.cleanupInactive(tasks);
-    const conversations: Array<{ conversation_id: string; canonical_url: string; title?: string }> = [];
+    const conversations: Array<{ conversation_id: string; canonical_url: string; title?: string; is_current?: boolean }> = [];
+    // Current-conversation binding must work for a real browser session even
+    // before a Supervisor task is enrolled. Use only the frontmost active tab,
+    // and fail closed if any supported browser inventory is unavailable.
+    if (inventory.unavailableProducts.length === 0) {
+      const currentCandidates = inventory.entries
+        .filter(entry => entry.active && entry.frontmost === true)
+        .flatMap(entry => {
+          try {
+            return [{ entry, identity: parseChatgptConversationIdentity(entry.url) }];
+          } catch {
+            return [];
+          }
+        });
+      const currentIds = new Set(currentCandidates.map(candidate => candidate.identity.conversationId));
+      if (currentIds.size === 1) {
+        const current = currentCandidates.find(candidate => candidate.identity.conversationId === [...currentIds][0]);
+        if (current) {
+          conversations.push({
+            conversation_id: current.identity.conversationId,
+            canonical_url: current.identity.canonicalUrl,
+            ...(current.entry.title.trim() ? { title: current.entry.title.trim().slice(0, 512) } : {}),
+            is_current: true,
+          });
+        }
+      }
+    }
     for (const task of tasks) {
       try {
         if (task.conversationId.startsWith('bootstrap:')) {

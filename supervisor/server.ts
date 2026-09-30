@@ -198,11 +198,25 @@ export class WorkflowSupervisorEphemeralDiscovery {
     else this.currentBySource.delete(source);
     return this.get();
   }
-  currentConversation(source = 'chrome-extension', maxAgeMs = 90_000): WorkflowSupervisorDiscoveredConversation | undefined {
-    const current = this.currentBySource.get(source);
-    if (!current || Date.now() - current.observedAtMs > maxAgeMs) return undefined;
-    const conversation = (this.bySource.get(source) ?? []).find((entry) => entry.conversationId === current.conversationId);
-    return conversation ? structuredClone(conversation) : undefined;
+  currentConversation(source?: string, maxAgeMs = 90_000): WorkflowSupervisorDiscoveredConversation | undefined {
+    const now = Date.now();
+    const sources = source ? [source] : [...this.currentBySource.keys()];
+    const currentIds = new Set<string>();
+    for (const candidateSource of sources) {
+      const current = this.currentBySource.get(candidateSource);
+      if (!current || now - current.observedAtMs > maxAgeMs) continue;
+      currentIds.add(current.conversationId);
+    }
+    // Chrome Extension and Native Browser may both report the same exact
+    // conversation. Different current conversations are ambiguous: binding
+    // must not guess which browser surface the user meant.
+    if (currentIds.size !== 1) return undefined;
+    const conversationId = [...currentIds][0]!;
+    for (const candidateSource of sources) {
+      const conversation = (this.bySource.get(candidateSource) ?? []).find(entry => entry.conversationId === conversationId);
+      if (conversation) return structuredClone(conversation);
+    }
+    return undefined;
   }
   sourceConversations(source: string): WorkflowSupervisorDiscoveredConversation[] {
     return structuredClone(this.bySource.get(source) ?? []);
@@ -275,7 +289,7 @@ async function dispatch(control: WorkflowSupervisorControlPlane, discovery: Work
   if (!browserAdapterEnabled && req.method === 'browser_tasks') return { tasks: [] };
   if (!browserAdapterEnabled && req.method.startsWith('browser_')) throw new Error('WORKFLOW_SUPERVISOR_BROWSER_ADAPTER_DISABLED');
   if (req.method === 'browser_discovery') return control.browserDiscoverySnapshot();
-  if (req.method === 'browser_current_conversation') return { conversation: discovery.currentConversation('chrome-extension') };
+  if (req.method === 'browser_current_conversation') return { conversation: discovery.currentConversation() };
   if (req.method === 'browser_discovery_update') {
     const source = typeof p.source === 'string' && p.source.trim() ? p.source.trim() : 'chrome-extension';
     discovery.update(p.conversations, source);
