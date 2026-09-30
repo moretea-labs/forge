@@ -144,6 +144,7 @@ import { applyRuntimeCleanup, previewRuntimeCleanup } from "../../runtime/mainte
 import { assertRecoveryAuthorized, buildCapabilityRecoverySnapshot, buildRecoveryAuditRecord, recoveryActionById, writeRecoveryAuditRecord } from "../../runtime/recovery";
 import { readBrowserBinding } from "../chatgpt-browser/binding";
 import { startBrowserBindServer, type BrowserBindServer } from "../chatgpt-browser/bind-server";
+import { runBrowserConsult, runBrowserFollowup } from "../chatgpt-browser/engine";
 
 export interface LocalBridgeServerOptions {
   /**
@@ -1294,6 +1295,55 @@ export async function startLocalBridgeServer(
       });
     } catch (error) {
       response.status(409).json({ error: errorMessage(error), provider: v3ProviderConnection(repoRoot) });
+    }
+  });
+
+  app.post("/api/client/v3/local/message", async (request, response) => {
+    try {
+      const repository = requestRepositorySelection(request, options, controllerHome);
+      const body = request.body && typeof request.body === "object" && !Array.isArray(request.body)
+        ? request.body as Record<string, unknown>
+        : {};
+      const prompt = queryString(body.prompt) ?? "";
+      if (!prompt.trim() || prompt.length > 20_000) {
+        response.status(400).json({ error: "LOCAL_MESSAGE_INVALID" });
+        return;
+      }
+      const provider = v3ProviderConnection(repository.canonicalRoot);
+      if (!provider.configured || provider.status !== "ready") {
+        response.status(409).json({ error: "LOCAL_PROVIDER_NOT_READY", provider });
+        return;
+      }
+      // The authorization page owns the temporary bind server. Once the
+      // binding is ready, release that port so the existing bridge provider
+      // can own it for the actual message dispatch.
+      v3ProviderBindServer?.stop();
+      v3ProviderBindServer = undefined;
+      const sessionId = queryString(body.sessionId);
+      const result = sessionId
+        ? await runBrowserFollowup({
+            repoRoot: repository.canonicalRoot,
+            sessionId,
+            prompt,
+            provider: "bridge",
+            timeoutMs: 180_000,
+          })
+        : await runBrowserConsult({
+            repoRoot: repository.canonicalRoot,
+            title: "Forge V3 local conversation",
+            prompt,
+            provider: "bridge",
+            timeoutMs: 180_000,
+          });
+      response.status(result.status === "failed" ? 409 : 200).json({
+        sessionId: result.sessionId,
+        status: result.status,
+        output: result.output,
+        conversationUrl: result.conversationUrl,
+        error: result.error,
+      });
+    } catch (error) {
+      response.status(409).json({ error: errorMessage(error) });
     }
   });
 

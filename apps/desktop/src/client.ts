@@ -6,7 +6,7 @@ export type Project = { id:string; name:string; path:string; branch:string; work
 export type ProviderConnection = { id:string; label:string; configured:boolean; status:'ready'|'login_required'|'failed'|'not_configured'; nextAction:string };
 export type Snapshot = { runtime:'ready'|'offline'|'attention'; runtimeLabel:string; projects:Project[]; assistant:Work[]; provider?:ProviderConnection; source:'live'|'preview'|'native' };
 export type LocalMessage = { id:string; role:'user'|'assistant'|'system'; content:string; createdAt:string };
-export type LocalThread = { id:string; title:string; projectId?:string; createdAt:string; updatedAt:string; archived:boolean; messages:LocalMessage[] };
+export type LocalThread = { id:string; title:string; projectId?:string; providerSessionId?:string; createdAt:string; updatedAt:string; archived:boolean; messages:LocalMessage[] };
 
 const LOCAL_THREADS_KEY = 'forge.v3.local-conversations.v1';
 const localId = () => globalThis.crypto?.randomUUID?.() ?? `local-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -21,6 +21,7 @@ export async function restartNativeRuntime():Promise<NativeRecoveryResult|undefi
 async function nativeBootstrap():Promise<any|undefined>{ return nativeInvoke<any>('local_bridge_bootstrap'); }
 export async function startNativeWork(objective:string):Promise<any|undefined>{ return nativeInvoke<any>('local_bridge_start_work',{objective}); }
 export async function connectNativeProvider():Promise<any|undefined>{ return nativeInvoke<any>('local_bridge_connect_provider'); }
+export async function sendNativeLocalMessage(prompt:string,sessionId?:string):Promise<any|undefined>{ return nativeInvoke<any>('local_bridge_local_message',{prompt,...(sessionId?{sessionId}:{})}); }
 
 export function loadLocalThreads():LocalThread[]{
   try {
@@ -46,6 +47,7 @@ const preview:Snapshot = { runtime:'offline', runtimeLabel:'Forge Runtime not co
 async function json<T>(path:string):Promise<T>{ const token=import.meta.env.VITE_FORGE_LOCAL_BRIDGE_TOKEN; const response=await fetch(path,{credentials:'same-origin',headers:token?{'x-forge-local-token':token}:undefined}); if(!response.ok) throw new Error(`HTTP ${response.status}`); return response.json() as Promise<T>; }
 export async function startLiveWork(objective:string):Promise<any>{ const token=import.meta.env.VITE_FORGE_LOCAL_BRIDGE_TOKEN; const response=await fetch('/api/console/work/start',{method:'POST',credentials:'same-origin',headers:{'content-type':'application/json',...(token?{'x-forge-local-token':token}: {})},body:JSON.stringify({objective,scopeClear:true})}); if(!response.ok) throw new Error(`HTTP ${response.status}`); return response.json(); }
 export async function connectLiveProvider():Promise<any>{ const token=import.meta.env.VITE_FORGE_LOCAL_BRIDGE_TOKEN; const response=await fetch('/api/client/v3/provider/connect',{method:'POST',credentials:'same-origin',headers:{...(token?{'x-forge-local-token':token}: {})}}); const body=await response.json(); if(!response.ok) throw new Error(body.error ?? `HTTP ${response.status}`); return body; }
+export async function sendLiveLocalMessage(prompt:string,sessionId?:string):Promise<any>{ const token=import.meta.env.VITE_FORGE_LOCAL_BRIDGE_TOKEN; const response=await fetch('/api/client/v3/local/message',{method:'POST',credentials:'same-origin',headers:{'content-type':'application/json',...(token?{'x-forge-local-token':token}: {})},body:JSON.stringify({prompt,...(sessionId?{sessionId}:{})})}); const body=await response.json(); if(!response.ok) throw new Error(body.error ?? `HTTP ${response.status}`); return body; }
 function runtimeSnapshot(recovery:NativeRecoveryResult):Snapshot { const runtime=recovery.payload.runtime; const ready=runtime?.ready===true && runtime.running!==false && runtime.stale!==true; return {...preview,runtime:ready?'ready':runtime?.running?'attention':'offline',runtimeLabel:ready?'Forge Runtime ready':runtime?.running?'Forge Runtime starting':'Forge Runtime unavailable',source:'native'}; }
 function bootstrapSnapshot(bootstrap:any, source:'live'|'native'):Snapshot {
   const repositories=bootstrap.repositories ?? [];

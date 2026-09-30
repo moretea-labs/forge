@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   connectLiveProvider, connectNativeProvider, createLocalThread, isNativeDesktop, loadLocalThreads, loadSnapshot, persistLocalThreads,
-  restartNativeRuntime, startLiveWork, startNativeWork,
+  restartNativeRuntime, sendLiveLocalMessage, sendNativeLocalMessage, startLiveWork, startNativeWork,
   type LocalMessage, type LocalThread, type Mode, type Scope, type Snapshot, type Work,
 } from './client';
 import './conversation.css';
@@ -28,13 +28,13 @@ function WorkRow({ work, selected, onSelect }: { work: Work; selected: boolean; 
 }
 
 function LocalConversation({ thread, snapshot, onChange, onArchive, onConnect }: { thread: LocalThread; snapshot: Snapshot; onChange: (thread: LocalThread) => void; onArchive: () => void; onConnect: () => void }) {
-  const [input, setInput] = useState('');
-  const send = () => { const content = input.trim(); if (!content) return; const message: LocalMessage = { id: `message-${Date.now()}`, role: 'user', content, createdAt: new Date().toISOString() }; onChange({ ...thread, title: thread.title === 'New conversation' ? content.slice(0, 48) : thread.title, updatedAt: message.createdAt, messages: [...thread.messages, message] }); setInput(''); };
+  const [input, setInput] = useState(''); const [sending, setSending] = useState(false);
+  const send = async () => { const content = input.trim(); if (!content || sending) return; const createdAt = new Date().toISOString(); const message: LocalMessage = { id: `message-${Date.now()}`, role: 'user', content, createdAt }; const nextThread = { ...thread, title: thread.title === 'New conversation' ? content.slice(0, 48) : thread.title, updatedAt: createdAt, messages: [...thread.messages, message] }; onChange(nextThread); setInput(''); if (snapshot.provider?.status !== 'ready') return; setSending(true); try { const result = isNativeDesktop() ? await sendNativeLocalMessage(content, thread.providerSessionId) : await sendLiveLocalMessage(content, thread.providerSessionId); const replyAt = new Date().toISOString(); onChange({ ...nextThread, providerSessionId: result?.sessionId ?? thread.providerSessionId, updatedAt: replyAt, messages: [...nextThread.messages, { id: `message-${Date.now()}-reply`, role: 'assistant', content: result?.output?.trim() || `Provider completed with status: ${result?.status ?? 'unknown'}`, createdAt: replyAt }] }); } catch (error) { const errorAt = new Date().toISOString(); onChange({ ...nextThread, updatedAt: errorAt, messages: [...nextThread.messages, { id: `message-${Date.now()}-error`, role: 'system', content: `Provider request failed: ${error instanceof Error ? error.message : String(error)}`, createdAt: errorAt }] }); } finally { setSending(false); } };
   return <section className="conversation">
     <div className="conversation-head"><div><span className="context-label">LOCAL THREAD</span><h2>{thread.title}</h2></div><button className="quiet-action" onClick={onArchive}><Icon name="archive" />Archive</button></div>
     <div className="provider-banner"><span className={`runtime-dot ${snapshot.provider?.status === 'ready' ? 'ready' : 'attention'}`} /><div><strong>{snapshot.provider?.status === 'ready' ? 'ChatGPT provider connected' : 'Local provider not connected'}</strong><small>{snapshot.provider?.nextAction ?? 'Messages stay in this client-local transcript. Forge Work and Plan state is not created implicitly.'}</small></div><button className="secondary-action" onClick={onConnect}>{snapshot.provider?.configured ? 'Open connection' : 'Connect provider'}</button></div>
     <div className="message-list">{thread.messages.length === 0 ? <div className="conversation-empty"><div className="empty-icon"><Icon name="spark" /></div><strong>Start a local conversation</strong><span>This thread is independent from Requirement, Plan and Work.</span></div> : thread.messages.map(message => <div className={`message ${message.role}`} key={message.id}><span className="message-role">{message.role === 'user' ? 'You' : 'Forge'}</span><p>{message.content}</p></div>)}</div>
-    <div className="composer"><textarea value={input} onChange={event => setInput(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); send(); } }} placeholder="Write a message…" aria-label="Local conversation message" /><button className="primary-action" onClick={send} disabled={!input.trim()}><Icon name="send" />Send</button></div>
+    <div className="composer"><textarea value={input} onChange={event => setInput(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void send(); } }} placeholder={sending ? 'Waiting for provider…' : 'Write a message…'} aria-label="Local conversation message" /><button className="primary-action" onClick={() => void send()} disabled={!input.trim() || sending}><Icon name="send" />{sending ? 'Sending…' : 'Send'}</button></div>
   </section>;
 }
 
