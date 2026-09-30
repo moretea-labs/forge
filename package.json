@@ -178,6 +178,10 @@
     "test:node-smoke": "node --test tests/node/*.test.mjs",
     "check:ci:portable": "FORGE_ALLOW_NODE_ONLY=1 bash scripts/check-ci.sh",
     "dev:controller-ui": "vite --config src/cli/local-bridge/frontend/vite.config.ts",
+    "dev:v3-client": "vite --config apps/desktop/vite.config.ts",
+    "build:v3-client": "vite build --config apps/desktop/vite.config.ts",
+    "check:v3-client": "bun x tsc -p apps/desktop/tsconfig.json --noEmit && bun run build:v3-client",
+    "install:v3-client": "bash scripts/install-v3-client.sh",
     "prepack": "node scripts/sync-generated-authority.mjs --check",
     "check:portable-package": "node --test tests/node/*.test.mjs && npm run smoke:tarball-install"
   },
