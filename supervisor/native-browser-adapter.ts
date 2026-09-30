@@ -515,6 +515,31 @@ export class WorkflowSupervisorNativeBrowserAdapter {
         // 429 is transport backpressure, not authority to mint a semantic recovery
         // effect. While the shared cooldown is live, observe locally and send nothing.
         if (poll.command?.mode !== 'reconcile' && providerFailureCode === CHATGPT_AUTOMATION_RATE_LIMITED && providerBackpressureMs > 0) continue;
+        if (!poll.command && !providerBusy && snapshot.latestTurnRole === 'assistant' && snapshot.latestAssistantResponse.trim()) {
+          const responseFingerprint = sha256(snapshot.latestAssistantResponse);
+          if (this.observedAssistant.get(task.conversationId) !== responseFingerprint) {
+            try {
+              await this.control.browserObserveAssistant({
+                conversationId: task.conversationId,
+                conversationUrl: task.conversationUrl,
+                responseText: snapshot.latestAssistantResponse,
+              });
+              this.observedAssistant.set(task.conversationId, responseFingerprint);
+            } catch (error) {
+              const message = error instanceof Error ? error.message : String(error);
+              // Mirror the extension adapter's bounded duplicate suppression: a
+              // distinct malformed Supervisor response is useful evidence once,
+              // not an excuse to reparse the same assistant text every tick.
+              if (message.includes('WORKFLOW_SUPERVISOR_')
+                && !message.includes('WORKFLOW_SUPERVISOR_COMPACT_RECEIPT_CHALLENGE_MISMATCH')) {
+                this.observedAssistant.set(task.conversationId, responseFingerprint);
+              }
+              if (!message.includes('WORKFLOW_SUPERVISOR_TASK_TERMINAL')) this.deps.onError(error);
+            }
+          }
+          poll = this.control.browserPoll({ conversationId: task.conversationId, conversationUrl: task.conversationUrl });
+          if (poll.terminal) continue;
+        }
         if (!poll.command) {
           // Provider failure evidence is scoped to the latest turn plus current
           // live status regions. Historical page text must never poison a later turn.
