@@ -15,7 +15,18 @@ Keep this file focused on the local contract for this primary functional block.
 ## Test boundary
 
 Tests are a bounded safety net, not an ever-growing specification archive.
-Extend an existing test file before adding a new one, remove duplicate or
-historical cases when behavior changes, and keep the manifest within its
-machine-checked 80-file/40,000-line budget. Preserve only current observable
-contracts and high-risk process, worktree, Controller, and release behavior.
+Preserve only current observable contracts and high-risk process, worktree,
+Controller, effect/idempotency, recovery, and release behavior.
+
+During the current Kernel V2 single-authority convergence:
+
+- Do not add new test files or new test cases. Govern and shrink the existing suite first.
+- A failing historical test is evidence, not architecture authority. Never restore a retired production API, compatibility shim, lifecycle state, provider writer, fallback, or wrapper solely to satisfy it.
+- Delete a test when its only contract is retired implementation shape, internal field/source-string presence, old lifecycle ordering, obsolete error wording, or a removed compatibility path.
+- Update an existing test only when the externally meaningful behavior or mechanical-safety invariant still exists under the accepted architecture.
+- Prefer the cheapest authoritative proof: TypeScript/compiler -> architecture/import/AST gate -> retained focused behavior/E2E -> broad regression suite.
+- Avoid duplicate proof. If a maintained architecture gate already establishes a structural invariant, remove expensive Runtime tests that only re-check that same structure.
+- Keep inner-loop validation focused. Full-suite execution is diagnostic/candidate evidence, not a reason to preserve obsolete tests.
+
+This temporary no-new-tests freeze ends only after the single-authority Runtime
+candidate is accepted and the remaining suite has been reclassified by value.

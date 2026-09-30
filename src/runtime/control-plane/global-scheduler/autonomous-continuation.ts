@@ -1,26 +1,28 @@
 import { createHash } from 'crypto';
 import type { RepositoryRecord } from '../../../cli/repositories/types';
 import {
+  controllerRoundBlockerClass,
   controllerSessionBlocksRecovery,
   getControllerRoundRelay,
   getControllerSession,
-  getControllerWorkBinding,
   getRetainedControllerSession,
-  prepareControllerRoundOccurrence,
-  resumeControllerRoundOccurrence,
 } from '../../../../packages/kernel/controller/api/index';
-import { currentTaskSemanticProjectionForWork, listWorkContracts, semanticWorkState } from '../../../../packages/kernel/work/api/index';
+import {
+  currentTaskSemanticProjectionForWork,
+  listWorkContracts,
+  semanticWorkState,
+  workSemanticView,
+} from '../../../../packages/kernel/work/api/index';
 import { workHasActiveExecution } from '../../execution/work-activity';
 import { readRequirement } from '../persistence/requirement-store';
-import { createHandoffItem, getHandoffItem } from '../facade/handoff-inbox-store';
-import { isTerminalHandoffStatus } from '../../../../packages/protocols/handoff/index';
-import { getChatgptControllerBindingPayload } from '../../../../adapters/chatgpt/controller-binding-store';
 import { assertAutomatedOperationAllowed } from '../governance/external-effects';
-import { controllerHostForScheduledBinding, ensureScheduledControllerBindingForWork } from '../../root/scheduled-controller-composition';
 import {
-  ensureWorkflowSupervisorEnrollmentForWork,
-  workflowSupervisorBoundaryForWork,
-} from '../../root/workflow-supervisor-composition';
+  controllerHostForScheduledBinding,
+  ensureScheduledControllerBindingForWork,
+} from '../../root/scheduled-controller-composition';
+import { ensureWorkflowSupervisorEnrollmentForWork } from '../../root/workflow-supervisor-composition';
+import { reconcileControllerProgression } from '../../root/controller-progression-composition';
+import { prepareControllerRoundOccurrence, resumeControllerRoundOccurrence } from '../../../../packages/kernel/controller/api/index';
 import { ensureControllerDispositionContinuation } from '../../workflow/schedules/work-continuation';
 import { deriveForgeActionableFailureCode, maybeRegisterForgeActionableFailureRepair } from '../../diagnostics/incident-repair';
 
@@ -38,7 +40,6 @@ export interface SchedulerAutonomousContinuationResult {
 export interface SchedulerAutonomousContinuationDependencies {
   hasActiveExecution?: typeof workHasActiveExecution;
   authorizeWake?: typeof assertAutomatedOperationAllowed;
-  boundaryForWork?: typeof workflowSupervisorBoundaryForWork;
   ensureSupervisorEnrollment?: typeof ensureWorkflowSupervisorEnrollmentForWork;
   hostForBinding?: typeof controllerHostForScheduledBinding;
   ensureBinding?: typeof ensureScheduledControllerBindingForWork;
@@ -50,70 +51,23 @@ function skip(counts: Record<string, number>, reason: string): void {
   counts[reason] = (counts[reason] ?? 0) + 1;
 }
 
-export type SchedulerProviderFailureDisposition = 'outcome_unknown' | 'wait_for_user' | 'retryable' | 'failed';
-
-export function classifySchedulerProviderFailure(reason: string | undefined): SchedulerProviderFailureDisposition {
-  const normalized = (reason ?? '').toUpperCase();
-  if (normalized.includes('OUTCOME_UNKNOWN') || normalized.includes('MESSAGE_DELIVERY_TIMED_OUT') || normalized.includes('RESPONSE_STREAM_UNAVAILABLE')) return 'outcome_unknown';
-  // A terminal Supervisor task (the operator or the provider already decided the
-  // conversation needs a human) is the same class of decision: surface one
-  // actionable Handoff and stop retrying instead of looping invisibly.
-  if (normalized.includes('EXTERNAL_EFFECT_AUTHORIZATION_REQUIRED') || normalized.includes('AUTHORIZATION_REQUIRED') || normalized.includes('AUTHENTICATION_REQUIRED') || normalized.includes('LOGIN_REQUIRED') || normalized.includes('PERMISSION_REQUIRED') || normalized.includes('CONSENT_REQUIRED') || normalized.includes('CAPABILITY_GRANT') || normalized.includes('WORKFLOW_SUPERVISOR_TASK_TERMINAL')) return 'wait_for_user';
-  if (normalized.includes('CONTROLLER_HOST_KIND_MISMATCH') || normalized.includes('CHATGPT_CONTROLLER_BINDING_NOT_FOUND') || normalized.includes('CONTROLLER_ROUND_CONTEXT_STALE') || normalized.includes('CHATGPT_CONTROLLER_ROUND_AUTHORITY_INCOMPLETE')) return 'failed';
-  return 'retryable';
+function planlessOccurrenceId(workId: string, semanticRevision: number): string {
+  const digest = createHash('sha256').update(workId + '\0semantic:' + semanticRevision).digest('hex').slice(0, 32);
+  return 'work-liveness:v2:' + digest;
 }
 
-function schedulerProviderUserHandoffId(repoId: string, workId: string, relayScopeId: string, authorityId: string): string {
-  return 'hnd-scheduler-provider-auth-' + createHash('sha256').update([repoId, workId, relayScopeId, authorityId].join('\n')).digest('hex').slice(0, 20);
-}
-
-function recoveredSchedulerProviderUserHandoffId(baseId: string, reason: string): string {
-  return `${baseId}-recovery-${createHash('sha256').update(reason).digest('hex').slice(0, 12)}`;
-}
-
-export function ensureSchedulerProviderUserActionHandoff(
-  options: { controllerHome: string; repoId: string },
-  input: { workId: string; relayScopeId: string; authorityId: string; reason: string },
-): string {
-  const baseId = schedulerProviderUserHandoffId(options.repoId, input.workId, input.relayScopeId, input.authorityId);
-  let id = baseId;
-  let existing = getHandoffItem(options, id);
-  // A terminal request is history, never the authorization object for the next
-  // recovery epoch. Include its durable version in the successor identity so a
-  // previously resolved recovery request cannot be selected again.
-  for (let generation = 0; existing && isTerminalHandoffStatus(existing.status) && generation < 8; generation += 1) {
-    id = recoveredSchedulerProviderUserHandoffId(id, `${input.reason}\n${existing.updatedAt}`);
-    existing = getHandoffItem(options, id);
-  }
-  if (existing) return existing.id;
-  return createHandoffItem(options, {
-    id, repoId: options.repoId, workId: input.workId,
-    title: 'Provider authorization required for autonomous continuation',
-    severity: 'needs_review', reason: input.reason, creationReason: 'missing_authorization',
-    summary: 'Autonomous continuation is waiting for one explicit provider authentication, consent, permission, or capability grant.',
-    currentState: { repoId: options.repoId, workId: input.workId, statusSummary: 'waiting for provider authorization', blockedBy: [input.reason] },
-    evidenceRefs: [], blockingDecision: 'Complete the required provider authorization.',
-    recommendedDecision: 'Authorize the existing provider capability, then resolve this Handoff; Forge will continue the same durable Work automatically.',
-    recommendedPrompt: `Authorize provider access for ${input.workId}; no manual continue message is required after the Handoff resolves.`,
-    suggestedNextActions: [],
-  }).id;
-}
-
-function planlessOccurrenceId(workId: string, updatedAt: string): string {
-  const digest = createHash('sha256').update(workId + '\0' + updatedAt).digest('hex').slice(0, 32);
-  return 'work-liveness:v1:' + digest;
+function livenessMayReconcileExistingRound(record: ReturnType<typeof getControllerRoundRelay>): boolean {
+  if (!record) return true;
+  if (record.status === 'waiting') return true;
+  if (record.status === 'dispatching') return true;
+  if (record.status === 'dispatched') return true;
+  return record.status === 'blocked' && controllerRoundBlockerClass(record) === 'provider_dispatch_outcome_unknown';
 }
 
 /**
- * Materialize already-authorized Work continuation. This is deliberately a
- * reconciliation hook, not a second planner:
- *
- * - Work receives only a mechanical liveness wake when its own Work, Requirement
- *   and ControllerRound authorities expose no wait/terminal state. Plan and Plan
- *   item state never select, block or progress Work.
- * - ControllerRound carries lower-layer claim/resume bookkeeping and the bootstrap-send compatibility mirror.
- * - Workflow Supervisor owns autonomous outer-turn Effect reservation, dispatch generations, applied/unknown observation, and not-applied retry proof.
- *
+ * Single Scheduler liveness scanner. Scheduler selects only which open Work
+ * needs another mechanical opportunity; reconcileControllerProgression owns the
+ * stateless composition of existing authorities.
  */
 export async function runSchedulerAutonomousContinuationReconciliation(input: {
   controllerHome: string;
@@ -125,12 +79,6 @@ export async function runSchedulerAutonomousContinuationReconciliation(input: {
   const maxContinuations = Math.max(1, Math.min(Math.trunc(input.maxContinuations ?? DEFAULT_MAX_CONTINUATIONS), 8));
   const hasActiveExecution = input.dependencies?.hasActiveExecution ?? workHasActiveExecution;
   const authorizeWake = input.dependencies?.authorizeWake ?? assertAutomatedOperationAllowed;
-  const boundaryForWork = input.dependencies?.boundaryForWork ?? workflowSupervisorBoundaryForWork;
-  const ensureSupervisorEnrollment = input.dependencies?.ensureSupervisorEnrollment ?? ensureWorkflowSupervisorEnrollmentForWork;
-  const hostForBinding = input.dependencies?.hostForBinding ?? controllerHostForScheduledBinding;
-  const ensureBinding = input.dependencies?.ensureBinding ?? ensureScheduledControllerBindingForWork;
-  const prepareOccurrence = input.dependencies?.prepareOccurrence ?? prepareControllerRoundOccurrence;
-  const resumeOccurrence = input.dependencies?.resumeOccurrence ?? resumeControllerRoundOccurrence;
 
   let scanned = 0;
   let eligible = 0;
@@ -155,9 +103,6 @@ export async function runSchedulerAutonomousContinuationReconciliation(input: {
     for (const work of works) {
       if (materialized >= maxContinuations) break;
       scanned += 1;
-      // Only the explicit semantic Work state decides liveness. Legacy
-      // status/phase/review/verification projections may be stale after a
-      // Runtime interruption and must not strand an otherwise open Work.
       if (semanticWorkState(work) !== 'open') { skip(skippedByReason, 'semantic_work_terminal'); continue; }
       if (hasActiveExecution(input.controllerHome, repository.repoId, work.workId)) { skip(skippedByReason, 'active_execution'); continue; }
 
@@ -167,16 +112,10 @@ export async function runSchedulerAutonomousContinuationReconciliation(input: {
         continue;
       }
 
-      const existingRound = getControllerRoundRelay(store, work.workId);
-
       const currentTask = currentTaskSemanticProjectionForWork(work);
-      let occurrenceId: string;
-      let relayScopeId = currentTask.requirementId ? 'requirement:' + currentTask.requirementId : undefined;
-      let continuationHint = 'Resume exact Work ' + currentTask.workId + '; scheduler observed no active execution or live Controller owner and no explicit wait.';
+      const relayScopeId = currentTask.requirementId ? 'requirement:' + currentTask.requirementId : undefined;
+      const continuationHint = 'Resume exact Work ' + currentTask.workId + '; scheduler observed no active execution or live Controller owner and no unresolved semantic blocker.';
 
-      // Work liveness is decided by the Work's own Requirement/ControllerRound
-      // facts. Plan provenance, Plan item status and Plan dependencies never
-      // select, block or progress an autonomous wake.
       const requirementRecord = work.requirementId
         ? readRequirement({ controllerHome: input.controllerHome }, work.requirementId)
         : undefined;
@@ -184,41 +123,18 @@ export async function runSchedulerAutonomousContinuationReconciliation(input: {
       const requirementState = requirementRecord?.value.state;
       if (requirementState === 'waiting_for_user') { skip(skippedByReason, 'requirement_waiting_for_user'); continue; }
       if (requirementState === 'done' || requirementState === 'cancelled') { skip(skippedByReason, 'requirement:' + requirementState); continue; }
-      // Liveness only materializes a missing lower ControllerRound. An existing
-      // round already has a semantic/mechanical owner: explicit waits and terminal
-      // blockers stay stable, while stalled-round/provider recovery owns abandoned
-      // open rounds. The one safe exception is a dispatching round for this Work
-      // whose provider effect provably never started; resuming it completes the same
-      // already-authorized occurrence rather than creating a new attempt.
-      const providerDispatchPhysicallyStarted = Boolean(
-        existingRound?.providerDispatchStartedAt && existingRound?.providerDispatchEffectId,
-      );
-      const sameWorkIncompleteDispatch = Boolean(
-        existingRound?.status === 'dispatching'
-        && existingRound.originWorkId === work.workId
-        && !providerDispatchPhysicallyStarted,
-      );
-      if (existingRound && !sameWorkIncompleteDispatch) {
-        const activeDispatchState = existingRound.status === 'dispatching' || existingRound.status === 'dispatched';
-        skip(skippedByReason, activeDispatchState ? 'provider_dispatch_in_flight' : `controller_round_${existingRound.status}`);
+
+      const existingRound = getControllerRoundRelay(store, work.workId);
+      if (!livenessMayReconcileExistingRound(existingRound)) {
+        skip(skippedByReason, `controller_round_${existingRound!.status}`);
         continue;
       }
-      occurrenceId = existingRound?.occurrenceId ?? planlessOccurrenceId(work.workId, work.updatedAt);
+      const occurrenceId = existingRound?.occurrenceId
+        ?? planlessOccurrenceId(work.workId, workSemanticView(work).revision);
 
       const retainedSession = getRetainedControllerSession(store, work.workId);
       if (!retainedSession) { skip(skippedByReason, 'retained_controller_session_missing'); continue; }
       if (retainedSession.controllerType === 'human') { skip(skippedByReason, 'human_controller'); continue; }
-      let binding = getControllerWorkBinding(store, work.workId)?.binding;
-      if (!binding) {
-        try {
-          binding = ensureBinding(store, { workId: work.workId, session: retainedSession, scheduleName: 'autonomous-work-liveness', args: {} });
-        } catch (error) {
-          const reason = error instanceof Error ? error.message : String(error);
-          skip(skippedByReason, 'controller_binding_recovery_failed:' + reason.split(':', 1)[0]);
-          continue;
-        }
-      }
-      if (binding.hostKind !== retainedSession.controllerType) { skip(skippedByReason, 'controller_binding_kind_mismatch'); continue; }
 
       eligible += 1;
       try {
@@ -229,101 +145,55 @@ export async function runSchedulerAutonomousContinuationReconciliation(input: {
           recovery_reason: 'ownerless_work_ready_to_continue',
         });
 
-        if (retainedSession.controllerType === 'chatgpt') {
-          const boundary = boundaryForWork(store, work.workId);
-          if (boundary.status === 'outer_turn') {
-            // Supervisor owns the outer ChatGPT submit, but ControllerRound still
-            // owns the lower continuation. Materialize that round first so
-            // enrollment never depends on a previous Work having left one behind.
-            const prepared = prepareOccurrence(store, {
-              occurrenceId,
-              workId: work.workId,
-              controllerBindingId: binding.bindingId,
-              relayScopeId,
-              continuationHint,
-            });
-            if (prepared.outcome !== 'dispatched') {
-              skip(skippedByReason, 'controller_prepare:' + prepared.outcome);
-              continue;
-            }
-            const enrollment = await ensureSupervisorEnrollment(store, work.workId, {
-              schedulerRecoveryKey: occurrenceId,
-            });
-            if (enrollment.status === 'enrolled') {
-              supervisorEnrolled += 1;
-              materialized += 1;
-            } else {
-              skip(skippedByReason, 'workflow_supervisor:' + enrollment.status);
-            }
-            continue;
-          }
-          if (boundary.status === 'conversation_pending') {
-            // The control conversation is never the execution transport. A
-            // launcher-admitted fresh binding is the one intentional exception:
-            // let the lower ChatGPT host create exactly one dedicated execution
-            // conversation. Once that conversation is observed and bound, the
-            // outer-turn Supervisor owns every successor round. Any other
-            // unbound state remains fail-closed so recovery cannot invent a new
-            // conversation or split an existing execution lineage.
-            const chatgptBinding = getChatgptControllerBindingPayload(store, binding.adapterRef);
-            if (chatgptBinding?.transportConversation !== 'fresh') {
-              skip(skippedByReason, 'workflow_supervisor:conversation_pending');
-              continue;
-            }
-          }
-        }
-
-        const rawHost = hostForBinding(
+        const progression = await reconcileControllerProgression(
           {
             controllerHome: input.controllerHome,
             repoId: repository.repoId,
             repoRoot: repository.canonicalRoot ?? repository.localRoot,
           },
-          binding,
-        );
-        const host = {
-          resume: async (controllerBinding: typeof binding, roundContext: Parameters<typeof rawHost.resume>[1]) => {
-            const result = await rawHost.resume(controllerBinding, roundContext);
-            if (result.accepted || result.waitForUser || result.recoverable) return result;
-            const disposition = classifySchedulerProviderFailure(result.reason);
-            if (disposition === 'outcome_unknown') throw new Error(`CONTROLLER_HOST_PROVIDER_DISPATCH_OUTCOME_UNKNOWN:${result.reason ?? 'provider outcome unknown'}`);
-            if (disposition === 'wait_for_user') {
-              const handoffId = ensureSchedulerProviderUserActionHandoff(store, {
-                workId: roundContext.workId, relayScopeId: roundContext.relayScopeId,
-                authorityId: roundContext.authorityId, reason: result.reason ?? 'provider authorization required',
-              });
-              return { ...result, waitForUser: true, handoffId };
-            }
-            if (disposition === 'retryable') return { ...result, recoverable: true };
-            return result;
-          },
-        };
-        const resumed = await resumeOccurrence(
-          store,
           {
             occurrenceId,
             workId: work.workId,
-            controllerBindingId: binding.bindingId,
             relayScopeId,
             continuationHint,
+            scheduleName: 'autonomous-work-liveness',
           },
-          host,
+          {
+            ...(input.dependencies?.ensureSupervisorEnrollment
+              ? { ensureSupervisorEnrollment: input.dependencies.ensureSupervisorEnrollment }
+              : {}),
+            ...(input.dependencies?.ensureBinding ? { ensureBinding: input.dependencies.ensureBinding } : {}),
+            ...(input.dependencies?.prepareOccurrence ? { prepareOccurrence: input.dependencies.prepareOccurrence } : {}),
+            ...(input.dependencies?.resumeOccurrence ? { resumeOccurrence: input.dependencies.resumeOccurrence } : {}),
+            ...(input.dependencies?.hostForBinding ? { hostForBinding: input.dependencies.hostForBinding } : {}),
+          },
         );
-        const settledRound = getControllerRoundRelay(store, work.workId);
-        if (settledRound?.status === 'waiting_for_user' && settledRound.handoffId) {
-          ensureControllerDispositionContinuation(input.controllerHome, repository.repoId, settledRound);
+
+        if (progression.status === 'chatgpt_enrolled') {
+          supervisorEnrolled += 1;
+          materialized += 1;
+          continue;
         }
-        if (resumed.outcome === 'dispatched') {
+        if (progression.status === 'provider_dispatched') {
           dispatched += 1;
           materialized += 1;
+          continue;
+        }
+        if (progression.status === 'wait_for_user') {
+          const settledRound = getControllerRoundRelay(store, work.workId);
+          if (settledRound?.status === 'waiting_for_user' && settledRound.handoffId) {
+            ensureControllerDispositionContinuation(input.controllerHome, repository.repoId, settledRound);
+          }
+        }
+        if (progression.status === 'chatgpt_not_enrolled') {
+          skip(skippedByReason, 'workflow_supervisor:' + progression.supervisorEnrollment.status);
         } else {
-          skip(skippedByReason, 'controller_resume:' + resumed.outcome);
+          skip(skippedByReason, 'controller_progression:' + progression.status);
         }
       } catch (error) {
         failed += 1;
         const reason = error instanceof Error ? error.message : String(error);
-        const disposition = classifySchedulerProviderFailure(reason);
-        if (disposition === 'retryable' || disposition === 'failed') {
+        if (retainedSession.controllerType !== 'chatgpt') {
           try {
             maybeRegisterForgeActionableFailureRepair({
               controllerHome: input.controllerHome,
@@ -338,9 +208,7 @@ export async function runSchedulerAutonomousContinuationReconciliation(input: {
                 workId: work.workId,
               },
             });
-          } catch {
-            // Repair promotion is evidence-side reconciliation; liveness remains the owner.
-          }
+          } catch {}
         }
         console.error('[forge liveness] autonomous continuation failed for ' + repository.repoId + '/' + work.workId + ':', reason);
       }

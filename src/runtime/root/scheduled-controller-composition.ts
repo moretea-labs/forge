@@ -5,7 +5,6 @@ import {
   type ControllerHost,
   type ControllerSession,
 } from '../../../packages/kernel/controller/api/index';
-import { createChatgptControllerHost } from '../../../adapters/chatgpt/controller-host';
 import { upsertChatgptControllerBinding } from '../../../adapters/chatgpt/controller-binding-store';
 import { getWorkContract } from '../../../packages/kernel/work/api/index';
 import { inheritWorkflowSupervisorConversationBinding } from './workflow-supervisor-composition';
@@ -70,5 +69,8 @@ export function controllerHostForScheduledBinding(
   options: { controllerHome: string; repoId: string; repoRoot: string },
   binding: ControllerBinding,
 ): ControllerHost {
-  return binding.hostKind === 'chatgpt' ? createChatgptControllerHost(options) : createProcessControllerHost(options);
+  if (binding.hostKind === 'chatgpt') {
+    throw new Error('CHATGPT_CONTROLLER_HOST_SUPERVISOR_OWNED');
+  }
+  return createProcessControllerHost(options);
 }

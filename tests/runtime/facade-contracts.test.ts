@@ -7,6 +7,7 @@ import { allowedFacadeOperations, validateSuggestedNextActions } from '../../src
 import { buildSuperControllerInvocation, type ThinLauncherRequest } from '../../src/runtime/control-plane/launcher/thin-launcher';
 import { RH_WORK_MODEL_OPERATIONS, isRhWorkAcceptedOperation } from '../../src/runtime/control-plane/facade/rh-work-operation-contract';
 import { runtimeToolDefinitions } from '../../src/runtime/gateway/mcp/runtime-tool-definitions';
+import { normalizeRhWorkInputCompatibility } from '../../adapters/mcp/runtime-gateway/work-input-compatibility';
 import { CONTROLLER_LEARNING_SIGNAL_ENVELOPE_MAX_ITEMS } from '../../src/runtime/context/automatic-learning';
 import {
   FACADE_TOOLS,
@@ -18,7 +19,7 @@ import {
 
 describe('handoff and facade contracts', () => {
   test('keeps the ChatGPT-facing facade small and stable', () => {
-    expect(FACADE_TOOLS).toEqual(['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work']);
+    expect(FACADE_TOOLS).toEqual(['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work', 'capability_execute']);
   });
 
   test('keeps expensive maintenance inspection explicit on rh_status', () => {
@@ -44,7 +45,7 @@ describe('handoff and facade contracts', () => {
     const properties = rhContext?.inputSchema.properties as Record<string, any> | undefined;
     expect(properties?.include_learning_recall?.type).toBe('boolean');
     expect(properties?.include_learning_recall?.description).toContain('model-owned attention/cadence choice');
-    expect(FACADE_TOOLS).toHaveLength(5);
+    expect(FACADE_TOOLS).toHaveLength(6);
   });
 
   test('keeps controller learning drafts bounded and provenance server-owned', () => {
@@ -102,6 +103,92 @@ describe('handoff and facade contracts', () => {
     }
   });
 
+  test('keeps frozen MCP carriers bounded and transport-only', () => {
+    const semantic = normalizeRhWorkInputCompatibility({
+      operation: 'repair',
+      repo_id: 'repo-current',
+      request_id: 'frozen-semantic-read',
+      capability_id: `semantic.v1:${JSON.stringify({ operation: 'work_get', work_id: 'WORK-1' })}`,
+    });
+    expect(semantic).toMatchObject({
+      ok: true,
+      operation: 'work_get',
+      args: {
+        operation: 'work_get',
+        repo_id: 'repo-current',
+        request_id: 'frozen-semantic-read',
+        work_id: 'WORK-1',
+      },
+    });
+
+    expect(normalizeRhWorkInputCompatibility({
+      operation: 'repair',
+      work_id: 'WORK-OUTER',
+      capability_id: `semantic.v1:${JSON.stringify({ operation: 'work_get', work_id: 'WORK-INNER' })}`,
+    })).toMatchObject({
+      ok: false,
+      summary: 'FROZEN_MCP_SEMANTIC_V1_FIELD_CONFLICT',
+      data: { operation: 'work_get', field: 'work_id' },
+    });
+
+    expect(normalizeRhWorkInputCompatibility({
+      operation: 'repair',
+      capability_id: `semantic.v1:${JSON.stringify({ operation: 'work_get', work_id: 'WORK-1', lifecycle_phase: 'review' })}`,
+    })).toMatchObject({
+      ok: false,
+      summary: 'FROZEN_MCP_SEMANTIC_V1_FIELD_UNSUPPORTED',
+      data: { operation: 'work_get', field: 'lifecycle_phase' },
+    });
+
+    expect(normalizeRhWorkInputCompatibility({
+      operation: 'repair',
+      capability_id: `semantic.v1:${'x'.repeat(8 * 1024 + 1)}`,
+    })).toMatchObject({
+      ok: false,
+      summary: 'FROZEN_MCP_SEMANTIC_V1_TOO_LARGE',
+    });
+
+    const enrollment = normalizeRhWorkInputCompatibility({
+      operation: 'repair',
+      repo_id: 'repo-current',
+      work_id: 'WORK-1',
+      request_id: 'frozen-current-conversation',
+      capability_id: 'controller.current_conversation.enroll',
+    });
+    expect(enrollment).toMatchObject({
+      ok: true,
+      operation: 'launcher_start',
+      args: {
+        operation: 'launcher_start',
+        controller_type: 'chatgpt',
+        transport_conversation: 'bound',
+        enroll_current_conversation: true,
+        work_id: 'WORK-1',
+      },
+    });
+
+    expect(normalizeRhWorkInputCompatibility({
+      operation: 'repair',
+      work_id: 'WORK-1',
+      controller_type: 'codex',
+      capability_id: 'controller.current_conversation.enroll',
+    })).toMatchObject({
+      ok: false,
+      summary: 'FROZEN_MCP_CURRENT_CONVERSATION_FIELD_CONFLICT',
+      data: { field: 'controller_type' },
+    });
+
+    const retiredLifecycle = normalizeRhWorkInputCompatibility({
+      operation: 'repair',
+      capability_id: `semantic.v1:${JSON.stringify({ operation: 'review', work_id: 'WORK-1' })}`,
+    });
+    expect(retiredLifecycle).toMatchObject({
+      ok: false,
+      summary: 'FROZEN_MCP_SEMANTIC_V1_OPERATION_UNSUPPORTED',
+    });
+    expect(isRhWorkAcceptedOperation('review')).toBe(false);
+  });
+
   test('exposes explicit Requirement bootstrap through rh_work without expanding the tool surface', () => {
     const rhWork = runtimeToolDefinitions.find((definition) => definition.name === 'rh_work');
     const properties = rhWork?.inputSchema.properties as Record<string, { enum?: string[] }> | undefined;
@@ -112,7 +199,7 @@ describe('handoff and facade contracts', () => {
     expect(properties).toHaveProperty('requirement_outcome');
     expect(properties).toHaveProperty('requirement_acceptance_criteria');
     expect(allowedFacadeOperations('rh_work')).toContain('requirement_create');
-    expect(FACADE_TOOLS).toHaveLength(5);
+    expect(FACADE_TOOLS).toHaveLength(6);
   });
 
   test('keeps Work continuation scheduling inside rh_work instead of expanding the tool surface', () => {
@@ -125,7 +212,7 @@ describe('handoff and facade contracts', () => {
       'schedule_delete',
       'schedule_trigger',
     ]));
-    expect(FACADE_TOOLS).toHaveLength(5);
+    expect(FACADE_TOOLS).toHaveLength(6);
   });
 
   test('keeps execution evidence shape out of semantic Work creation', () => {
@@ -300,7 +387,7 @@ describe('handoff and facade contracts', () => {
     expect(iosGroup?.facadeTools).toEqual([]);
   });
 
-  test('registers parallel internal capabilities without expanding facade tools', () => {
+  test('registers internal capabilities behind the bounded facade tool set', () => {
     const capabilities = listCapabilityDescriptors([]);
     expect(capabilities.map((entry) => entry.capabilityId)).toContain('repository.direct_edit');
     expect(capabilities.map((entry) => entry.capabilityId)).not.toContain('controller.goal_workloop');
@@ -319,7 +406,7 @@ describe('handoff and facade contracts', () => {
     ]));
     expect(capabilities.every((entry) => entry.schemaExposure === 'stable_static')).toBe(true);
     const groups = summarizeCapabilityGroups([]);
-    expect(groups.find((entry) => entry.group === 'git')).toMatchObject({ capabilityCount: 1, facadeTools: ['rh_context'] });
+    expect(groups.find((entry) => entry.group === 'git')).toMatchObject({ capabilityCount: 1, facadeTools: ['capability_execute'] });
     expect(groups.find((entry) => entry.group === 'ios')).toMatchObject({ capabilityCount: 1, executionSurfaces: ['plugin_action_execute'], facadeTools: [] });
   });
 
@@ -404,14 +491,6 @@ describe('handoff and facade contracts', () => {
 
 describe('Thin Launcher external Controller invocation', () => {
   const request = (overrides: Partial<ThinLauncherRequest> = {}): ThinLauncherRequest => ({ controllerType: 'chatgpt', workId: 'WORK-1', cwd: '/tmp/repo', controllerHome: '/tmp/controller', repoId: 'repo-1', ...overrides });
-  test('builds safe ChatGPT browser continuation invocations', () => {
-    expect(buildSuperControllerInvocation(request({ browserSessionId: 'browser-session-123' }), 'forge', 'continue bounded work')).toEqual({ executable: 'forge', args: ['chatgpt', 'work-continue', '--repo', '/tmp/repo', '--controller-home', '/tmp/controller', '--repo-id', 'repo-1', '--work-id', 'WORK-1', '--prompt', 'continue bounded work', '--session', 'browser-session-123'] });
-    const byUrl = buildSuperControllerInvocation(request({ conversationUrl: 'https://chatgpt.com/c/example' }), 'forge', 'continue bounded work').args;
-    expect(byUrl).toEqual(expect.arrayContaining(['work-continue', '--conversation-url', 'https://chatgpt.com/c/example']));
-    expect(byUrl).not.toContain('browser-consult');
-    expect(byUrl).not.toContain('oracle');
-    expect(() => buildSuperControllerInvocation(request({ conversationUrl: 'https://example.com/c/example' }), 'forge', 'continue bounded work')).toThrow('LAUNCHER_CHATGPT_CONVERSATION_URL_INVALID');
-  });
   test('uses non-interactive provider modes and requires Forge MCP bootstrap for detached CLI controllers', () => {
     const bootstrap = {
       url: 'http://127.0.0.1:8765/mcp',

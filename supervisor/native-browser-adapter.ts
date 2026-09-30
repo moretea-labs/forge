@@ -24,6 +24,7 @@ const IDLE_INTERVAL_MS = 5_000;
 const DEFAULT_TIMEOUT_MS = 10_000;
 const MAX_TRANSPORT_BACKOFF_MS = 60_000;
 const MAX_TRANSPORT_BACKOFF_STEPS = 6;
+const MAX_LOCAL_OBSERVATION_ATTEMPTS = 3;
 const MAX_PROVIDER_FAILURE_SCAN_CHARS = 250_000;
 const MAX_PROVIDER_ACTIVITY_CHARS = 64 * 1024;
 const NATIVE_BROWSER_PRODUCTS: readonly MacOsBrowserProduct[] = ['chrome', 'vivaldi'];
@@ -91,6 +92,13 @@ export interface WorkflowSupervisorNativeBrowserHandle {
 }
 
 function normalize(value: string): string { return value.replace(/\s+/g, ' ').trim(); }
+function localObservationDelayMs(completedAttempts: number, baseMs: number, maxMs: number): number {
+  const exponent = Math.max(0, Math.min(8, Math.trunc(completedAttempts) - 1));
+  return Math.min(maxMs, baseMs * 2 ** exponent);
+}
+async function sleepMs(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
 type WorkflowSupervisorTabOwnership = 'created' | 'adopted' | 'legacy';
 function ownerMarker(conversationId: string, ownership: 'created' | 'adopted' = 'created'): string {
   return `${OWNER_PREFIX}${ownership}:${conversationId}`;
@@ -116,6 +124,18 @@ function exactConversation(url: string, task: WorkflowSupervisorBrowserTask): bo
   } catch { return false; }
 }
 function targetMarkerPresent(text: string, effectId: string): boolean { return text.includes(renderEffectMarker(effectId)); }
+function unknownObservationFingerprint(effectId: string, reason: string, snapshot: WorkflowSupervisorNativeSnapshot): string {
+  return sha256(JSON.stringify({
+    effectId,
+    reason,
+    url: snapshot.url,
+    latestUserText: normalize(snapshot.latestUserText),
+    latestAssistantResponse: normalize(snapshot.latestAssistantResponse),
+    composerText: snapshot.composerText === undefined ? null : normalize(snapshot.composerText),
+    latestTurnRole: snapshot.latestTurnRole ?? null,
+    isGenerating: snapshot.isGenerating,
+  }));
+}
 function snapshotTargetMarkerPresent(snapshot: WorkflowSupervisorNativeSnapshot, effectId: string): boolean {
   return targetMarkerPresent(snapshot.latestUserText, effectId)
     || snapshot.userMessages?.some((message) => targetMarkerPresent(message, effectId)) === true;
@@ -267,9 +287,8 @@ export async function defaultDispatchPrompt(
   // before React hydrates the composer. Give that exact-tab transition a
   // bounded window rather than classifying an otherwise untouched tab as an
   // outcome-unknown provider send.
-  const prepareDeadline = Date.now() + 15_000;
   let prepared: { prepared: boolean; reason?: string } | undefined;
-  while (true) {
+  for (let attempt = 1; attempt <= MAX_LOCAL_OBSERVATION_ATTEMPTS; attempt += 1) {
     try {
       prepared = await page.evaluate<{ prepared: boolean; reason?: string }>(`(() => {
         const visible = (element) => Boolean(element && element.getClientRects && element.getClientRects().length);
@@ -310,22 +329,22 @@ export async function defaultDispatchPrompt(
         return { prepared: true };
       })()`);
     } catch (error) {
-      if (Date.now() >= prepareDeadline) throw error;
-      await new Promise((resolve) => setTimeout(resolve, 100));
+      if (attempt >= MAX_LOCAL_OBSERVATION_ATTEMPTS) throw error;
+      await sleepMs(localObservationDelayMs(attempt, 2_000, 4_000));
       continue;
     }
     if (prepared.prepared) break;
-    if (prepared.reason !== 'composer_missing' || Date.now() >= prepareDeadline) {
+    if (prepared.reason !== 'composer_missing' || attempt >= MAX_LOCAL_OBSERVATION_ATTEMPTS) {
       return { dispatched: false, reason: prepared.reason ?? 'composer_prepare_failed' };
     }
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    await sleepMs(localObservationDelayMs(attempt, 2_000, 4_000));
   }
+  if (!prepared?.prepared) return { dispatched: false, reason: prepared?.reason ?? 'composer_prepare_failed' };
 
   // Keep send-control readiness on the same exact-tab DOM transport as
   // composer mutation. The generic selector-wait bridge can lag ChatGPT DOM
   // changes even while execute_javascript sees the live submit button.
-  const submitDeadline = Date.now() + 2_000;
-  while (true) {
+  for (let attempt = 1; attempt <= MAX_LOCAL_OBSERVATION_ATTEMPTS; attempt += 1) {
     // Re-verify the exact payload on every observation. If the user deliberately
     // edits this Forge-owned tab in the tiny interval, refuse to submit rather
     // than sending mixed content. browserBeginEffect will reconcile the same
@@ -349,9 +368,10 @@ export async function defaultDispatchPrompt(
       sendButton.click();
       return { dispatched: true };
     })()`);
-    if (result.dispatched || result.reason !== 'send_button_missing' || Date.now() >= submitDeadline) return result;
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    if (result.dispatched || result.reason !== 'send_button_missing' || attempt >= MAX_LOCAL_OBSERVATION_ATTEMPTS) return result;
+    await sleepMs(localObservationDelayMs(attempt, 250, 1_000));
   }
+  return { dispatched: false, reason: 'send_button_missing' };
 }
 
 const DEFAULT_DEPENDENCIES: WorkflowSupervisorNativeBrowserDependencies = {
@@ -594,42 +614,43 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       return;
     }
     if (command.mode !== 'send') return;
-    const page = await this.deps.create(this.control.bootstrapProjectUrl(task.taskId));
-    const ref = page.tabRef();
-    let preserveForReconcile = false;
+
+    // Reserve the durable generation before creating a native Browser resource.
+    // If create() opens a tab but its reply is lost, the next tick is therefore
+    // reconciliation-only and can never create a second replacement tab.
+    if (!this.control.bootstrapBeginEffect({
+      taskId: task.taskId,
+      effectId: command.effectId,
+      dispatchId: `bootstrap-${randomUUID()}`,
+      dispatchGeneration: command.dispatchGeneration,
+    })) return;
+
+    let page: WorkflowSupervisorNativePage | undefined;
+    let ref: MacOsBrowserTabRef | undefined;
+    let preserveForReconcile = true;
     try {
+      page = await this.deps.create(this.control.bootstrapProjectUrl(task.taskId));
+      ref = page.tabRef();
       const marker = bootstrapOwnerMarker(task.taskId);
-      // The page came from create(), so this tick already has exact native-tab
-      // ownership. window.name is only a best-effort restart hint: ChatGPT
-      // project navigation can clear it between two JavaScript calls, and that
-      // must never block a send that has not started yet. Cross-tick authority
-      // is recovered from the unique effect marker rendered in the user turn.
+      // window.name is a best-effort ownership hint. The effect marker rendered
+      // in committed user history remains the causal cross-restart proof.
       try { await this.deps.writeOwner(page, marker); } catch { /* causal marker reconciliation remains authoritative */ }
-      if (!this.control.bootstrapBeginEffect({
-        taskId: task.taskId,
-        effectId: command.effectId,
-        dispatchId: `bootstrap-${randomUUID()}`,
-        dispatchGeneration: command.dispatchGeneration,
-      })) return;
-      // Once the durable dispatch starts, an exception or timeout is outcome-
-      // unknown. Keep the task-owned tab alive so a later tick (or Runtime
-      // incarnation) can reconcile the exact same external effect without replay.
-      preserveForReconcile = true;
+
       const dispatched = await withChatgptProviderDispatchLane(
         this.deps.providerScopeKey,
-        () => this.deps.dispatchPrompt(page, command.prompt, task),
+        () => this.deps.dispatchPrompt(page!, command.prompt, task),
         (result) => result.dispatched ? { providerAccepted: result.confirmed === true } : { code: result.reason, message: result.reason },
       );
       if (!dispatched.dispatched) {
-        // dispatchPrompt returns false only before clicking the exact-tab send
-        // control, so this is a durable negative proof rather than an
-        // outcome-unknown provider effect. Release this untouched Forge-owned
-        // tab and let the existing bounded retry ledger mint the next send.
+        // No Send click occurred, so this is the only safe negative proof that
+        // authorizes another provider generation after the durable backoff.
         this.control.bootstrapObserveEffect({ taskId: task.taskId, effectId: command.effectId, observationId: `bootstrap-${randomUUID()}`, outcome: 'not_applied' });
         preserveForReconcile = false;
         return;
       }
-      for (let attempt = 0; attempt < 50; attempt += 1) {
+
+      let reason = 'bootstrap_outbound_not_confirmed';
+      for (let attempt = 1; attempt <= MAX_LOCAL_OBSERVATION_ATTEMPTS; attempt += 1) {
         const snapshot = await this.deps.snapshot(page, { includeUserHistory: true, includePageText: false });
         try {
           const identity = parseChatgptConversationIdentity(snapshot.url);
@@ -638,9 +659,33 @@ export class WorkflowSupervisorNativeBrowserAdapter {
           this.control.bootstrapObserveEffect({ taskId: task.taskId, effectId: command.effectId, observationId: `bootstrap-${randomUUID()}`, outcome: 'applied' });
           preserveForReconcile = false;
           return;
-        } catch { await this.deps.sleep(100); }
+        } catch (error) {
+          reason = error instanceof Error ? error.message : String(error);
+          if (attempt < MAX_LOCAL_OBSERVATION_ATTEMPTS) {
+            await this.deps.sleep(localObservationDelayMs(attempt, 1_000, 4_000));
+          }
+        }
       }
-      this.control.bootstrapObserveEffect({ taskId: task.taskId, effectId: command.effectId, observationId: `bootstrap-${randomUUID()}`, outcome: 'unknown' });
+      this.control.bootstrapObserveEffect({
+        taskId: task.taskId,
+        effectId: command.effectId,
+        observationId: `bootstrap-${randomUUID()}`,
+        outcome: 'unknown',
+        evidence: { reconciliation: true, reason },
+      });
+    } catch (error) {
+      this.lastRunTransportUnavailable = true;
+      const reason = error instanceof Error ? error.message : String(error);
+      try {
+        this.control.bootstrapObserveEffect({
+          taskId: task.taskId,
+          effectId: command.effectId,
+          observationId: `bootstrap-${randomUUID()}`,
+          outcome: 'unknown',
+          evidence: { reconciliation: true, reason },
+        });
+      } catch { /* Preserve the original transport failure. */ }
+      throw error;
     } finally {
       if (ref && !preserveForReconcile) await this.deps.close(ref).catch(() => undefined);
     }
@@ -673,15 +718,42 @@ export class WorkflowSupervisorNativeBrowserAdapter {
         if (snapshotTargetMarkerPresent(snapshot, command.effectId)) matches.push({ page, ref, ownerMatched: false, snapshot });
       } catch { /* No readable marker means no causal bootstrap match. */ }
     }
-    if (matches.length === 0) return;
-    if (matches.length !== 1) throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_RECONCILE_AMBIGUOUS');
+    const observeUnknown = (reason: string): void => {
+      this.control.bootstrapObserveEffect({
+        taskId: task.taskId,
+        effectId: command.effectId,
+        observationId: `bootstrap-reconcile-${randomUUID()}`,
+        outcome: 'unknown',
+        evidence: { reconciliation: true, reason },
+      });
+    };
+    if (matches.length === 0) {
+      observeUnknown(inventory.unavailableProducts.length > 0 ? 'bootstrap_inventory_unavailable' : 'bootstrap_tab_not_observed');
+      return;
+    }
+    if (matches.length !== 1) {
+      observeUnknown('bootstrap_reconcile_ambiguous');
+      return;
+    }
     const [{ page, ref, ownerMatched, snapshot: observed }] = matches;
     let applied = false;
     try {
-      const snapshot = observed ?? await this.deps.snapshot(page, { includeUserHistory: true, includePageText: false });
+      let snapshot: WorkflowSupervisorNativeSnapshot;
+      try { snapshot = observed ?? await this.deps.snapshot(page, { includeUserHistory: true, includePageText: false }); }
+      catch (error) {
+        observeUnknown(error instanceof Error ? error.message : String(error));
+        return;
+      }
       let identity;
-      try { identity = parseChatgptConversationIdentity(snapshot.url); } catch { return; }
-      if (!snapshotTargetMarkerPresent(snapshot, command.effectId)) return;
+      try { identity = parseChatgptConversationIdentity(snapshot.url); }
+      catch {
+        observeUnknown('bootstrap_conversation_identity_unavailable');
+        return;
+      }
+      if (!snapshotTargetMarkerPresent(snapshot, command.effectId)) {
+        observeUnknown('bootstrap_effect_marker_not_observed');
+        return;
+      }
       this.control.bindBootstrapConversation({ taskId: task.taskId, conversationId: identity.conversationId, conversationUrl: identity.canonicalUrl });
       this.control.bootstrapObserveEffect({ taskId: task.taskId, effectId: command.effectId, observationId: `bootstrap-reconcile-${randomUUID()}`, outcome: 'applied' });
       applied = true;
@@ -852,8 +924,8 @@ export class WorkflowSupervisorNativeBrowserAdapter {
         return true;
       })()`);
       if (!stopped) return;
-      for (let attempt = 0; attempt < 20; attempt += 1) {
-        await this.deps.sleep(100);
+      for (let attempt = 1; attempt <= MAX_LOCAL_OBSERVATION_ATTEMPTS; attempt += 1) {
+        await this.deps.sleep(localObservationDelayMs(attempt, 250, 1_000));
         snapshot = await this.deps.snapshot(page, { includeUserHistory: true, includePageText: true });
         if (!snapshot.isGenerating) break;
       }
@@ -904,7 +976,12 @@ export class WorkflowSupervisorNativeBrowserAdapter {
             effectId: command.effectId,
             observationId: `native-observe-${randomUUID()}`,
             outcome: 'unknown',
-            evidence: { surface: 'macos-native', reconciliation: true, reason: 'resume_blocked_live_provider' },
+            evidence: {
+              surface: 'macos-native',
+              reconciliation: true,
+              reason: 'resume_blocked_live_provider',
+              observation_fingerprint: unknownObservationFingerprint(command.effectId, 'resume_blocked_live_provider', snapshot),
+            },
           });
           return;
         }
@@ -921,7 +998,12 @@ export class WorkflowSupervisorNativeBrowserAdapter {
             effectId: command.effectId,
             observationId: `native-observe-${randomUUID()}`,
             outcome: 'unknown',
-            evidence: { surface: 'macos-native', reconciliation: true, reason: dispatch.reason ?? 'resume_dispatch_failed' },
+            evidence: {
+              surface: 'macos-native',
+              reconciliation: true,
+              reason: dispatch.reason ?? 'resume_dispatch_failed',
+              observation_fingerprint: unknownObservationFingerprint(command.effectId, dispatch.reason ?? 'resume_dispatch_failed', snapshot),
+            },
           });
           return;
         }
@@ -966,6 +1048,9 @@ export class WorkflowSupervisorNativeBrowserAdapter {
             latest_assistant_response: snapshot.latestAssistantResponse,
             user_messages: snapshot.userMessages,
             assistant_messages: snapshot.assistantMessages,
+            ...(!composerProvablyEmpty ? {
+              observation_fingerprint: unknownObservationFingerprint(command.effectId, reconciliationReason, snapshot),
+            } : {}),
           },
         });
         return;
@@ -983,7 +1068,11 @@ export class WorkflowSupervisorNativeBrowserAdapter {
         effectId: command.effectId,
         observationId: `native-observe-${randomUUID()}`,
         outcome: 'unknown',
-        evidence: { surface: 'macos-native', reason: dispatch.reason ?? 'dispatch_failed' },
+        evidence: {
+          surface: 'macos-native',
+          reason: dispatch.reason ?? 'dispatch_failed',
+          observation_fingerprint: unknownObservationFingerprint(command.effectId, dispatch.reason ?? 'dispatch_failed', snapshot),
+        },
       });
       return;
     }
@@ -1000,15 +1089,15 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     }
     let exact = false;
     let markerPresent = false;
-    for (let attempt = 0; attempt < 50; attempt += 1) {
+    for (let attempt = 1; attempt <= MAX_LOCAL_OBSERVATION_ATTEMPTS; attempt += 1) {
       snapshot = await this.deps.snapshot(page, { includeUserHistory: true, includePageText: true });
       exact = normalize(snapshot.latestUserText) === normalize(command.prompt);
       // A marker in page text may still be sitting in the composer after the
       // send control failed. Only the committed user-role history can prove
       // that this external mutation reached the conversation.
       markerPresent = targetMarkerPresent(snapshot.latestUserText, command.effectId);
-      if (exact || markerPresent) break;
-      await this.deps.sleep(100);
+      if (exact || markerPresent || attempt >= MAX_LOCAL_OBSERVATION_ATTEMPTS) break;
+      await this.deps.sleep(localObservationDelayMs(attempt, 1_000, 4_000));
     }
     this.control.browserObserveEffect({
       conversationId: command.conversationId,
@@ -1020,7 +1109,10 @@ export class WorkflowSupervisorNativeBrowserAdapter {
         surface: 'macos-native',
         exact_user_message: exact,
         target_marker_present: markerPresent,
-        ...(!exact && !markerPresent ? { reason: 'outbound_not_confirmed' } : {}),
+        ...(!exact && !markerPresent ? {
+          reason: 'outbound_not_confirmed',
+          observation_fingerprint: unknownObservationFingerprint(command.effectId, 'outbound_not_confirmed', snapshot),
+        } : {}),
       },
     });
   }

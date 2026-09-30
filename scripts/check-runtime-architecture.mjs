@@ -361,19 +361,33 @@ requireExactShrinkingDebt(
   new Set(),
 );
 
-// Hard cutover: frozen lifecycle transport is retired rather than preserved as
-// a second behavioral authority. Historical data remains readable through the
-// canonical stores, but these protocol decoders must not return.
+// Hard cutover: retired lifecycle decoders remain absent. One bounded
+// frozen-session wire decoder may translate the pre-Thin semantic.v1 carrier
+// and current-conversation enrollment into current owners because host MCP
+// schemas can remain frozen across Runtime reconnect. That decoder owns no
+// lifecycle or persistence and must not grow retired lifecycle carriers.
 for (const path of [
   'adapters/mcp/runtime-gateway/work-controller-recovery-operations.ts',
   'adapters/mcp/controller-round-compatibility.ts',
   'adapters/mcp/frozen-client-semantic-compatibility.ts',
 ]) requireMissing(path);
+requireText(
+  'adapters/mcp/runtime-gateway/work-input-compatibility.ts',
+  "const FROZEN_SEMANTIC_V1_PREFIX = 'semantic.v1:';",
+);
+requireText(
+  'adapters/mcp/runtime-gateway/work-input-compatibility.ts',
+  "const FROZEN_CURRENT_CONVERSATION_ENROLLMENT = 'controller.current_conversation.enroll';",
+);
 forbid(
   'adapters/mcp/runtime-gateway/work-input-compatibility.ts',
-  /semantic\.v1:|schedule\.delete:|work\.review:|controller\.(?:authority|provider|disposition|round):|plan\.step\.retry:/,
-  'frozen lifecycle capability encodings must not survive the Thin hard cutover',
+  /schedule\.delete:|work\.review:|controller\.(?:authority|provider|disposition|round):|plan\.step\.retry:/,
+  'the bounded frozen-session decoder must not restore retired lifecycle carriers',
 );
+for (const path of sourceFiles('adapters/mcp')) {
+  if (path === 'adapters/mcp/runtime-gateway/work-input-compatibility.ts') continue;
+  forbid(path, /semantic\.v1:/, 'semantic.v1 frozen-session decoding must have exactly one transport owner');
+}
 
 const SEMANTIC_AUTHORITY_CRITICAL_ROOTS = [
   'packages/kernel',
@@ -914,13 +928,17 @@ if (existsSync(resolve(root, controllerRoundTransitionPolicyPath))) {
   requireText('packages/kernel/controller/infrastructure/controller-round-store.ts', "blockedReason: 'provider_dispatch_outcome_unknown'");
 }
 requireText('src/runtime/control-plane/launcher/chatgpt-work-continuation.ts', 'CHATGPT_AUTOMATION_SUBMISSION_OUTCOME_UNKNOWN');
-requireText('adapters/chatgpt/controller-host.ts', 'CONTROLLER_HOST_PROVIDER_DISPATCH_OUTCOME_UNKNOWN');
+requireMissing('adapters/chatgpt/controller-host.ts');
 requireText('packages/kernel/controller/application/continuation-service.ts', 'const outcomeUnknown =');
 requireText('packages/kernel/controller/application/continuation-service.ts', 'outcomeUnknown });');
 requireText('adapters/chatgpt/controller-round-host.ts', 'buildChatgptControllerRoundPrompt');
 requireText('adapters/chatgpt/controller-round-settlement-store.ts', 'recordChatgptControllerRoundSettlement');
 forbid('packages/kernel/controller/infrastructure/controller-round-store.ts', /browserSessionId|conversationUrl|recordControllerRoundTabSettlement|buildControllerRoundRelayPrompt|capability_id=/, 'Kernel ControllerRound must remain provider/transport neutral; ChatGPT/MCP rendering and settlement belong to adapters');
-requireText('src/runtime/control-plane/global-scheduler/maintenance.ts', "controllerTypes: ['chatgpt']");
+forbid(
+  'src/runtime/control-plane/global-scheduler/maintenance.ts',
+  /beginControllerRoundProviderDispatch|runWorkChatgptContinuation|createChatgptControllerHost/,
+  'Scheduler maintenance must never become a Work-bound ChatGPT provider writer',
+);
 forbid(
   'adapters/mcp/runtime-gateway/runtime-tools.ts',
   /function\s+(?:assert|evaluate|derive)[A-Za-z0-9_]*ImplementationReview/,
@@ -1029,26 +1047,39 @@ requireText('packages/kernel/controller/application/continuation-service.ts', 'h
 requireText('packages/kernel/controller/infrastructure/controller-round-store.ts', 'controller-provider-dispatch-start');
 requireText('packages/kernel/controller/domain/controller-round-transition-policy.ts', "type: 'provider_dispatch_started'");
 forbid('packages/kernel/controller/application/continuation-service.ts', /scheduler_continuation_dispatch|ScheduledContinuationDispatch/, 'Controller continuation must not recreate Scheduler-owned continuation lifecycle persistence');
-requireText('src/runtime/control-plane/launcher/chatgpt-round-continuation.ts', 'beginControllerRoundProviderDispatch');
-requireText('src/runtime/control-plane/global-scheduler/maintenance.ts', 'beginControllerRoundProviderDispatch');
-requireText('src/runtime/root/scheduled-controller-composition.ts', 'controllerHostForScheduledBinding');
+requireText('src/runtime/root/controller-progression-composition.ts', 'reconcileControllerProgression');
+requireText('src/runtime/root/controller-progression-composition.ts', 'ensureWorkflowSupervisorEnrollmentForWork');
+requireText('src/runtime/control-plane/global-scheduler/autonomous-continuation.ts', 'reconcileControllerProgression');
+requireText('src/runtime/workflow/schedules/engine.ts', 'reconcileControllerProgression');
+requireText('adapters/mcp/runtime-gateway/work-controller-operations.ts', 'reconcileControllerProgression');
+forbid(
+  'src/runtime/control-plane/launcher/chatgpt-round-continuation.ts',
+  /beginControllerRoundProviderDispatch|runWorkChatgptContinuation|openChatgptControllerRoundFromSource|continueChatgptControllerRoundFromSource/,
+  'current-source compatibility may close an already-open legacy round but must never send or open a new Work-bound ChatGPT turn',
+);
+forbid(
+  'src/runtime/control-plane/launcher/chatgpt-work-continuation.ts',
+  /runWorkChatgptContinuation|prepareWorkChatgptContinuationTransport/,
+  'Work-bound ChatGPT provider delivery is Workflow Supervisor-owned; this module may expose only standalone prompt and Browser settlement primitives',
+);
+requireText('src/runtime/root/scheduled-controller-composition.ts', 'CHATGPT_CONTROLLER_HOST_SUPERVISOR_OWNED');
+requireText('src/runtime/control-plane/launcher/thin-launcher.ts', 'LAUNCHER_CHATGPT_SUPERVISOR_OWNED');
 requireMissing('adapters/scheduler/controller-binding.ts');
-requireText('adapters/chatgpt/controller-host.ts', 'createChatgptControllerHost');
 requireText('adapters/controller-process/controller-host.ts', 'createProcessControllerHost');
-requireText('src/runtime/workflow/schedules/engine.ts', 'resumeControllerRoundOccurrence');
-requireText('src/runtime/workflow/schedules/engine.ts', 'workflowSupervisorBoundaryForWork');
 requireText('src/runtime/workflow/schedules/engine.ts', 'workflow_supervisor_owns_outer_turn');
-requireText('src/runtime/control-plane/launcher/chatgpt-work-continuation.ts', 'ensureWorkflowSupervisorEnrollmentForWork');
-requireText('src/runtime/control-plane/launcher/chatgpt-round-continuation.ts', "outerTurnOwner: 'workflow_supervisor'");
-requireText('src/runtime/control-plane/global-scheduler/maintenance.ts', 'workflowSupervisorBoundaryForWork');
 requireText('src/runtime/root/workflow-supervisor-composition.ts', 'registerWorkflowSupervisorTask');
 requireText('src/runtime/root/workflow-supervisor-composition.ts', 'reserveWorkflowSupervisorEnrollment');
 requireText('supervisor/entry.ts', 'forgeWorkflowSupervisorValidators()');
+forbid('supervisor/client.ts', /reserveWorkflowSupervisorSchedulerRecovery|reserve_scheduler_recovery/, 'Scheduler recovery is not a Supervisor RPC; reconciliation stays on the canonical effect ledger');
+forbid('supervisor/control-plane.ts', /reserveSchedulerRecovery/, 'Scheduler recovery must not regrow as a second Supervisor recovery authority');
+forbid('supervisor/server.ts', /reserve_scheduler_recovery/, 'Supervisor RPC surface must not expose retired Scheduler recovery authority');
 requireText('supervisor/forge-validators.ts', "requirement.state !== 'done'");
 requireText('supervisor/forge-validators.ts', "requirement.state === 'waiting_for_user'");
 forbid('src/runtime/root/workflow-supervisor-composition.ts', /WorkflowSupervisorStore|supervisor\.sqlite|registerTask\(|reserveEffect\(/, 'Forge composition must access Supervisor state only through daemon RPC, never open its database or become a second writer');
 requireText('src/runtime/root/workflow-supervisor-composition.ts', 'workflowSupervisorBoundaryForWork');
-requireText('src/runtime/root/workflow-supervisor-composition.ts', '`forge:${repoId}:conversation:${conversationId}`');
+requireText('src/runtime/root/workflow-supervisor-composition.ts', '`forge:${repoId}:work:${workId}`');
+requireText('src/runtime/root/workflow-supervisor-composition.ts', 'registeredTask.taskId');
+forbid('src/runtime/root/workflow-supervisor-composition.ts', /forge:\$\{repoId\}:conversation:\$\{conversationId\}/, 'Supervisor task identity must remain conversation-stable through registration, not be recomputed from the current Work conversation');
 forbid('supervisor/client.ts', /task_has_effect|taskHasAnyEffect/, 'Supervisor boundary is derived from canonical Work+conversation facts; do not add a second ownership projection RPC');
 requireText('src/runtime/workflow/schedules/engine.ts', 'evaluateScheduleTriggerEligibility');
 requireText('src/runtime/workflow/schedules/engine.ts', 'evaluateScheduleOccurrenceAdmission');

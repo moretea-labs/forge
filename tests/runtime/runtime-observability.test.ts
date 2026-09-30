@@ -1123,7 +1123,7 @@ describe('runtime observability', () => {
 
       const facadeNames = await listNames('facade');
       expect(facadeNames).toEqual([...PREFERRED_FACADE_TOOL_NAMES]);
-      expect(facadeNames).toEqual(['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work']);
+      expect(facadeNames).toEqual(['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work', 'capability_execute']);
       expect(facadeNames).not.toContain('repository_command_execute');
       expect(facadeNames).not.toContain('run_check');
 

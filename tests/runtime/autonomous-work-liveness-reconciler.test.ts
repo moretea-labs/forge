@@ -14,7 +14,6 @@ import {
   reconcileControllerRoundAfterTerminalWork,
   releaseControllerSession,
   submitControllerRoundDisposition,
-  type ControllerHost,
 } from '../../packages/kernel/controller/api/index';
 import { cancelWorkContract, createWorkContract } from '../../packages/kernel/work/api/index';
 import { upsertChatgptControllerBinding } from '../../adapters/chatgpt/controller-binding-store';
@@ -80,16 +79,23 @@ function bindReleasedChatgptController(controllerHome: string, workId: string) {
   return adapter.binding;
 }
 
-function dependencies(host: ControllerHost) {
+function enrollmentDependencies(enrollments: { count: number }) {
   return {
     authorizeWake: () => undefined,
-    boundaryForWork: () => ({ status: 'not_eligible' as const }),
-    hostForBinding: () => host,
+    ensureSupervisorEnrollment: async () => {
+      enrollments.count += 1;
+      return { status: 'enrolled' as const, taskId: 'task-supervisor', effectId: 'effect-supervisor' };
+    },
+    hostForBinding: () => ({
+      resume: async () => {
+        throw new Error('Scheduler must not drive Browser delivery for a ChatGPT Work');
+      },
+    }),
   };
 }
 
 describe('autonomous Work liveness reconciliation', () => {
-  test('materializes an ownerless Plan Work once and repeated reconciliation cannot duplicate provider dispatch', async () => {
+  test('materializes an ownerless Plan Work and enrolls the Workflow Supervisor', async () => {
     const controllerHome = home();
     createRequirement({ controllerHome }, {
       requirementId: 'REQ-A',
@@ -127,32 +133,21 @@ describe('autonomous Work liveness reconciliation', () => {
     });
     bindReleasedChatgptController(controllerHome, 'WORK-A');
 
-    let providerDispatches = 0;
-    const host: ControllerHost = {
-      resume: async () => {
-        providerDispatches += 1;
-        return { accepted: true, dispatchId: 'dispatch-' + providerDispatches };
-      },
-    };
+    const enrollments = { count: 0 };
     const input = {
       controllerHome,
       nowMs: Date.parse('2026-09-19T10:00:00.000Z'),
       repositories: [{ repoId: 'repo-a', canonicalRoot: controllerHome, localRoot: controllerHome }],
-      dependencies: dependencies(host),
+      dependencies: enrollmentDependencies(enrollments),
     };
 
     const first = await runSchedulerAutonomousContinuationReconciliation(input);
-    expect(first).toMatchObject({ eligible: 1, dispatched: 1, failed: 0 });
-    expect(providerDispatches).toBe(1);
-    expect(getControllerRoundRelay({ controllerHome, repoId: 'repo-a' }, 'WORK-A')?.status).toBe('dispatched');
-
-    const second = await runSchedulerAutonomousContinuationReconciliation(input);
-    expect(second.dispatched).toBe(0);
-    expect(second.skippedByReason.provider_dispatch_in_flight).toBe(1);
-    expect(providerDispatches).toBe(1);
+    expect(first).toMatchObject({ eligible: 1, supervisorEnrolled: 1, dispatched: 0, failed: 0 });
+    expect(enrollments.count).toBe(1);
+    expect(getControllerRoundRelay({ controllerHome, repoId: 'repo-a' }, 'WORK-A')?.status).toBe('dispatching');
   });
 
-  test('resumes an incomplete dispatching round when no provider effect physically started', async () => {
+  test('enrolls Supervisor for an incomplete dispatching round when no provider effect physically started', async () => {
     const controllerHome = home();
     const store = { controllerHome, repoId: 'repo-a' };
     createRunningWork(controllerHome, { workId: 'WORK-INCOMPLETE-DISPATCH' });
@@ -168,53 +163,38 @@ describe('autonomous Work liveness reconciliation', () => {
     expect(incomplete?.providerDispatchStartedAt).toBeUndefined();
     expect(incomplete?.providerDispatchEffectId).toBeUndefined();
 
-    let providerDispatches = 0;
-    const host: ControllerHost = {
-      resume: async () => {
-        providerDispatches += 1;
-        return { accepted: true, dispatchId: 'dispatch-incomplete-' + providerDispatches };
-      },
-    };
+    const enrollments = { count: 0 };
     const result = await runSchedulerAutonomousContinuationReconciliation({
       controllerHome,
       nowMs: Date.parse('2026-09-19T10:00:00.000Z'),
       repositories: [{ repoId: 'repo-a', canonicalRoot: controllerHome, localRoot: controllerHome }],
-      dependencies: dependencies(host),
+      dependencies: enrollmentDependencies(enrollments),
     });
 
-    expect(result).toMatchObject({ eligible: 1, dispatched: 1, failed: 0 });
-    expect(providerDispatches).toBe(1);
-    expect(getControllerRoundRelay(store, 'WORK-INCOMPLETE-DISPATCH')?.status).toBe('dispatched');
+    expect(result).toMatchObject({ eligible: 1, supervisorEnrolled: 1, dispatched: 0, failed: 0 });
+    expect(enrollments.count).toBe(1);
+    expect(getControllerRoundRelay(store, 'WORK-INCOMPLETE-DISPATCH')?.status).toBe('dispatching');
   });
 
-  test('materializes a planless ownerless Work without inventing Plan authority', async () => {
+  test('enrolls Supervisor for a planless ownerless Work without inventing Plan authority', async () => {
     const controllerHome = home();
     createRunningWork(controllerHome, { workId: 'WORK-PLAIN' });
     bindReleasedChatgptController(controllerHome, 'WORK-PLAIN');
 
-    let providerDispatches = 0;
-    const host: ControllerHost = {
-      resume: async () => {
-        providerDispatches += 1;
-        return { accepted: true, dispatchId: 'dispatch-planless' };
-      },
-    };
+    const enrollments = { count: 0 };
     const input = {
       controllerHome,
       nowMs: Date.parse('2026-09-19T10:00:00.000Z'),
       repositories: [{ repoId: 'repo-a', canonicalRoot: controllerHome, localRoot: controllerHome }],
-      dependencies: dependencies(host),
+      dependencies: enrollmentDependencies(enrollments),
     };
 
     const first = await runSchedulerAutonomousContinuationReconciliation(input);
-    expect(first).toMatchObject({ eligible: 1, dispatched: 1, failed: 0 });
-    const second = await runSchedulerAutonomousContinuationReconciliation(input);
-    expect(second.dispatched).toBe(0);
-    expect(second.skippedByReason.provider_dispatch_in_flight).toBe(1);
-    expect(providerDispatches).toBe(1);
+    expect(first).toMatchObject({ eligible: 1, supervisorEnrolled: 1, dispatched: 0, failed: 0 });
+    expect(enrollments.count).toBe(1);
   });
 
-  test('thin Plan provenance never becomes Scheduler step authority', async () => {
+  test('thin Plan provenance never becomes Scheduler step authority and enrolls Supervisor', async () => {
     const controllerHome = home();
     createRequirement({ controllerHome }, {
       requirementId: 'REQ-THIN-PLAN',
@@ -237,23 +217,17 @@ describe('autonomous Work liveness reconciliation', () => {
     });
     bindReleasedChatgptController(controllerHome, 'WORK-THIN-PLAN');
 
-    let providerDispatches = 0;
-    const host: ControllerHost = {
-      resume: async () => {
-        providerDispatches += 1;
-        return { accepted: true, dispatchId: 'dispatch-thin-plan' };
-      },
-    };
+    const enrollments = { count: 0 };
     const result = await runSchedulerAutonomousContinuationReconciliation({
       controllerHome,
       nowMs: Date.parse('2026-09-19T10:00:00.000Z'),
       repositories: [{ repoId: 'repo-a', canonicalRoot: controllerHome, localRoot: controllerHome }],
-      dependencies: dependencies(host),
+      dependencies: enrollmentDependencies(enrollments),
     });
 
-    expect(result).toMatchObject({ eligible: 1, dispatched: 1, failed: 0 });
+    expect(result).toMatchObject({ eligible: 1, supervisorEnrolled: 1, dispatched: 0, failed: 0 });
     expect(result.skippedByReason['progression:PLAN_EMPTY'] ?? 0).toBe(0);
-    expect(providerDispatches).toBe(1);
+    expect(enrollments.count).toBe(1);
   });
 
   test('prepares the lower ControllerRound before Supervisor enrollment and retires a failed stale Requirement relay', async () => {
@@ -314,13 +288,6 @@ describe('autonomous Work liveness reconciliation', () => {
       repositories: [{ repoId: 'repo-a', canonicalRoot: controllerHome, localRoot: controllerHome }],
       dependencies: {
         authorizeWake: () => undefined,
-        boundaryForWork: () => ({
-          status: 'outer_turn' as const,
-          taskId: 'task-supervisor',
-          requirementId: 'REQ-SUPERVISOR',
-          conversationId: 'conversation-supervisor',
-          conversationUrl: 'https://chatgpt.com/c/conversation-supervisor',
-        }),
         ensureSupervisorEnrollment: async (_options, workId) => {
           const relay = getControllerRoundRelay(store, workId);
           expect(relay).toMatchObject({
@@ -383,26 +350,23 @@ describe('autonomous Work liveness reconciliation', () => {
     });
     expect(relay.status).toBe('dispatching');
 
-    let providerDispatches = 0;
+    let enrollments = 0;
     const result = await runSchedulerAutonomousContinuationReconciliation({
       controllerHome,
       nowMs: Date.parse('2026-09-28T14:45:00.000Z'),
       repositories: [{ repoId: 'repo-a', canonicalRoot: controllerHome, localRoot: controllerHome }],
       dependencies: {
         authorizeWake: () => undefined,
-        boundaryForWork: () => ({ status: 'conversation_pending' as const, reason: 'EXACT_WORK_CONVERSATION_BINDING_REQUIRED' as const }),
-        hostForBinding: () => ({
-          resume: async () => {
-            providerDispatches += 1;
-            return { accepted: true, dispatchId: 'fresh-dispatch' };
-          },
-        }),
+        ensureSupervisorEnrollment: async () => {
+          enrollments += 1;
+          return { status: 'enrolled' as const, taskId: 'task-fresh', effectId: 'effect-fresh' };
+        },
       },
     });
 
-    expect(result).toMatchObject({ eligible: 1, dispatched: 1, supervisorEnrolled: 0, failed: 0 });
-    expect(providerDispatches).toBe(1);
-    expect(getControllerRoundRelay(store, workId)).toMatchObject({ status: 'dispatched', originWorkId: workId });
+    expect(result).toMatchObject({ eligible: 1, supervisorEnrolled: 1, dispatched: 0, failed: 0 });
+    expect(enrollments).toBe(1);
+    expect(getControllerRoundRelay(store, workId)).toMatchObject({ status: 'dispatching', originWorkId: workId });
   });
 
   test('Requirement relay lookup prefers a live relay over a newer retired terminal sibling', () => {
@@ -486,19 +450,12 @@ describe('autonomous Work liveness reconciliation', () => {
       blockedReason: 'round_budget_exhausted:2>1',
     });
 
-    let providerDispatches = 0;
     let wakeAuthorizations = 0;
     const input = {
       controllerHome,
       nowMs: Date.parse('2026-09-28T09:00:00.000Z'),
       repositories: [{ repoId: 'repo-a', canonicalRoot: controllerHome, localRoot: controllerHome }],
       dependencies: {
-        ...dependencies({
-          resume: async () => {
-            providerDispatches += 1;
-            return { accepted: true };
-          },
-        }),
         authorizeWake: () => { wakeAuthorizations += 1; },
       },
     };
@@ -513,7 +470,6 @@ describe('autonomous Work liveness reconciliation', () => {
     expect(secondReconciliation).toMatchObject({ eligible: 0, dispatched: 0, failed: 0 });
     expect(firstReconciliation.skippedByReason.controller_round_blocked).toBe(1);
     expect(secondReconciliation.skippedByReason.controller_round_blocked).toBe(1);
-    expect(providerDispatches).toBe(0);
     expect(wakeAuthorizations).toBe(0);
     expect(getControllerRoundRelay(store, workId)).toMatchObject({
       status: 'blocked',
@@ -544,17 +500,14 @@ describe('autonomous Work liveness reconciliation', () => {
     });
     bindControllerSessionBinding(store, { workId: 'WORK-LIVE', sessionId: owner.sessionId, binding: adapter.binding });
 
-    let providerDispatches = 0;
     const result = await runSchedulerAutonomousContinuationReconciliation({
       controllerHome,
       nowMs: Date.now(),
       repositories: [{ repoId: 'repo-a', canonicalRoot: controllerHome, localRoot: controllerHome }],
-      dependencies: dependencies({ resume: async () => { providerDispatches += 1; return { accepted: true }; } }),
     });
 
     expect(result.dispatched).toBe(0);
     expect(result.skippedByReason.active_controller_session).toBe(1);
-    expect(providerDispatches).toBe(0);
   });
 
   test('does not dispatch while the Work has active execution', async () => {
@@ -562,19 +515,16 @@ describe('autonomous Work liveness reconciliation', () => {
     createRunningWork(controllerHome, { workId: 'WORK-ACTIVE' });
     bindReleasedChatgptController(controllerHome, 'WORK-ACTIVE');
 
-    let providerDispatches = 0;
     const result = await runSchedulerAutonomousContinuationReconciliation({
       controllerHome,
       nowMs: Date.now(),
       repositories: [{ repoId: 'repo-a', canonicalRoot: controllerHome, localRoot: controllerHome }],
       dependencies: {
-        ...dependencies({ resume: async () => { providerDispatches += 1; return { accepted: true }; } }),
         hasActiveExecution: () => true,
       },
     });
 
     expect(result.dispatched).toBe(0);
     expect(result.skippedByReason.active_execution).toBe(1);
-    expect(providerDispatches).toBe(0);
   });
 });

@@ -28,7 +28,7 @@ bun bin/forge.mjs --help
 
 Forge has no previous-product command aliases. New documentation, tests, fixtures, and examples must use the Forge package, command, state, and protocol names unless they are explicitly asserting that a retired surface is absent.
 
-Run focused tests while working. Before requesting review, run the checks relevant to the change; public and release-facing changes should normally include:
+Run the cheapest authoritative checks while working. Prefer compiler/type and architecture/import gates before behavior tests. Before requesting review, run the checks relevant to the change; public and release-facing changes should normally include:
 
 ```bash
 npm run check:type
@@ -55,7 +55,8 @@ smoke and publish. `test:full` is a manual diagnostic only.
 - Do not commit Controller Home, `.ai/harness` runtime state, local jobs, logs, worktrees, tokens, OAuth material, or machine-specific paths.
 - Prefer an isolated worktree or a dedicated branch. Do not mix unrelated fixes.
 - Preserve structured authorization boundaries. Remote writes, destructive actions, and secret access must remain explicit.
-- Add or update tests for behavior changes.
+- Do not add tests mechanically for every behavior change. Keep or update a test only when it protects an accepted externally meaningful behavior or mechanical-safety invariant that cheaper compiler/architecture checks do not already prove. Delete tests that assert retired implementation shape, lifecycle ordering, compatibility paths, or removed APIs instead of restoring production code for them.
+- During the current Kernel V2 single-authority convergence, do not add new test files or test cases. First reduce the existing suite to high-value architecture/safety/E2E coverage; use existing type and architecture gates plus retained behavior tests for validation.
 - Keep the root README user-focused. Detailed architecture and operations belong in `docs/` and the GitHub Wiki source under `docs/wiki/`.
 - English and Simplified Chinese are the maintained public documentation languages. Other translation landing pages must clearly identify themselves as unmaintained unless a maintainer owns them.
 - Do not bump a package version or create a release tag without following [the release process](docs/operations/releasing.md).

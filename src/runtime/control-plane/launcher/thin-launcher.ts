@@ -14,7 +14,6 @@ import {
 } from './launch-reservation-store';
 import type { ControllerType } from '../facade/types';
 import { codexMcpConfigArgs, resolveProviderMcpBootstrap, type ProviderMcpBootstrap } from './provider-mcp-bootstrap';
-import { getChatgptWorkConversationBinding } from '../../../../adapters/chatgpt/work-conversation-binding-store';
 import { repositoryChildProcessEnvironment } from '../../shared/process-environment';
 import { redactProcessOutput } from '../../../effects/process-runner';
 
@@ -78,15 +77,16 @@ export function resolveLauncherExecutable(
   request: ThinLauncherRequest,
   env: NodeJS.ProcessEnv = process.env,
 ): string {
+  if (request.controllerType === 'chatgpt') {
+    throw new Error('LAUNCHER_CHATGPT_SUPERVISOR_OWNED');
+  }
   const configured = request.executable?.trim();
   if (configured) return configured;
   const executable = request.controllerType === 'codex'
     ? 'codex'
     : request.controllerType === 'claude'
       ? 'claude'
-      : request.controllerType === 'chatgpt'
-        ? env.FORGE_CLI_EXECUTABLE?.trim() || 'forge'
-        : '';
+      : '';
   if (!executable) throw new Error(`LAUNCHER_EXECUTABLE_REQUIRED: ${request.controllerType} requires an external launcher executable`);
   const probe = spawnSync(executable, ['--version'], {
     cwd: request.cwd,
@@ -179,21 +179,6 @@ async function awaitExternalControllerStartup(
   });
 }
 
-function assertChatgptConversationUrl(value: string | undefined): string | undefined {
-  const raw = value?.trim();
-  if (!raw) return undefined;
-  let url: URL;
-  try {
-    url = new URL(raw);
-  } catch {
-    throw new Error('LAUNCHER_CHATGPT_CONVERSATION_URL_INVALID');
-  }
-  if (url.protocol !== 'https:' || !['chatgpt.com', 'www.chatgpt.com'].includes(url.hostname)) {
-    throw new Error('LAUNCHER_CHATGPT_CONVERSATION_URL_INVALID');
-  }
-  return url.toString();
-}
-
 export function buildSuperControllerInvocation(
   request: ThinLauncherRequest,
   executable: string,
@@ -226,26 +211,10 @@ export function buildSuperControllerInvocation(
       args: ['--print', '--permission-mode', 'auto', ...(request.args ?? []), prompt],
     };
   }
-  if (request.controllerType !== 'chatgpt') {
-    return { executable, args: [...(request.args ?? []), prompt] };
+  if (request.controllerType === 'chatgpt') {
+    throw new Error('LAUNCHER_CHATGPT_SUPERVISOR_OWNED');
   }
-  const browserSessionId = request.browserSessionId?.trim();
-  const conversationUrl = assertChatgptConversationUrl(request.conversationUrl);
-  if (!request.controllerHome || !request.repoId) throw new Error('LAUNCHER_CHATGPT_WORK_BINDING_CONTEXT_REQUIRED');
-  return {
-    executable,
-    args: [
-      'chatgpt', 'work-continue',
-      '--repo', request.cwd,
-      '--controller-home', request.controllerHome,
-      '--repo-id', request.repoId,
-      '--work-id', request.workId,
-      '--prompt', prompt,
-      ...(browserSessionId ? ['--session', browserSessionId] : []),
-      ...(conversationUrl ? ['--conversation-url', conversationUrl] : []),
-      ...(request.args ?? []),
-    ],
-  };
+  return { executable, args: [...(request.args ?? []), prompt] };
 }
 
 /**
@@ -264,31 +233,24 @@ export async function launchSuperController(
   const executable = resolveLauncherExecutable(request);
   const work = getWorkContract(stores.work, request.workId);
   if (!work) throw new Error(`WORK_NOT_FOUND: ${request.workId}`);
+  if (request.controllerType === 'chatgpt') {
+    throw new Error('LAUNCHER_CHATGPT_SUPERVISOR_OWNED');
+  }
   const reservation = reserveExternalControllerLaunch(stores.work, {
     workId: work.workId,
     controllerType: request.controllerType,
     ttlMs: request.launchReservationMs,
   });
   const handoff = request.handoffId ? getHandoffItem(stores.handoff, request.handoffId) : undefined;
-  const chatgptBinding = request.controllerType === 'chatgpt'
-    ? getChatgptWorkConversationBinding(stores.work, work.workId)
-    : undefined;
-  const prompt = (request.controllerType === 'chatgpt' && chatgptBinding)
-    ? [
-      `Continue Forge Work ${work.workId} in repo ${work.repoId}.`,
-      handoff ? `Handoff: ${handoff.summary}\nNext: ${handoff.recommendedContinuationPrompt ?? handoff.recommendedPrompt}` : '',
-      request.continuationPrompt?.trim() ? `Continuation: ${request.continuationPrompt.trim()}` : '',
-      `Forge maintains provider/session binding, transport recovery, effect dedupe, and retry bookkeeping internally. Continue the original Work without repeating completed effects; use direct capabilities for execution and validation, and update semantic Work only when objective/result state changes. Surface genuine human decisions through the existing user-request/inbox path.`,
-    ].filter(Boolean).join('\n')
-    : [
-      `Work: ${work.workId}`,
-      `Objective: ${work.objective}`,
-      `Acceptance: ${work.acceptanceCriteria.join('; ') || 'none declared'}`,
-      `Current status: ${work.status}`,
-      handoff ? `Handoff: ${handoff.summary}\nNext: ${handoff.recommendedContinuationPrompt ?? handoff.recommendedPrompt}` : '',
-      request.continuationPrompt?.trim() ? `Continuation: ${request.continuationPrompt.trim()}` : '',
-      `Forge maintains provider/session binding, transport recovery, effect dedupe, and retry bookkeeping internally. Continue this exact Work using repository capabilities; pass work_id=${work.workId} when durable source attribution is needed, validate with normal capability evidence, and update semantic Work only when objective/result state changes. Surface genuine human decisions through the existing user-request/inbox path.`,
-    ].filter(Boolean).join('\n');
+  const prompt = [
+    `Work: ${work.workId}`,
+    `Objective: ${work.objective}`,
+    `Acceptance: ${work.acceptanceCriteria.join('; ') || 'none declared'}`,
+    `Current status: ${work.status}`,
+    handoff ? `Handoff: ${handoff.summary}\nNext: ${handoff.recommendedContinuationPrompt ?? handoff.recommendedPrompt}` : '',
+    request.continuationPrompt?.trim() ? `Continuation: ${request.continuationPrompt.trim()}` : '',
+    `Forge maintains provider/session binding, transport recovery, effect dedupe, and retry bookkeeping internally. Continue this exact Work using repository capabilities; pass work_id=${work.workId} when durable source attribution is needed, validate with normal capability evidence, and update semantic Work only when objective/result state changes. Surface genuine human decisions through the existing user-request/inbox path.`,
+  ].filter(Boolean).join('\n');
   try {
     const mcpBootstrap = request.controllerType === 'codex'
       ? (dependencies.resolveProviderMcpBootstrap ?? resolveProviderMcpBootstrap)(stores.work.controllerHome, 'codex', reservation.reservationId)

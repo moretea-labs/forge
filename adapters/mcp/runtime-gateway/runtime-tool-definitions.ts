@@ -102,7 +102,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     checkout_id: { type: 'string', description: 'Optional checkout identity for exact Work and Plan source selection.' },
     operation: { type: 'string', enum: [...RH_WORK_MODEL_OPERATIONS], description: 'Defaults to start. Requirement, Plan, and optional Work are model-authored durable semantic records. start creates semantic Work context only; execution and validation use direct capabilities. Work completion is an explicit semantic update rather than an execution phase transition.' },
     objective: { type: 'string' },
-    capability_id: { type: 'string', description: 'Optional typed maintenance or workflow capability identity; lifecycle transport encodings are not accepted.' },
+    capability_id: { type: 'string', description: 'Compatibility-only carrier. Current callers should use typed rh_work fields directly. The outer adapter accepts only the bounded frozen semantic.v1 bridge and current-conversation enrollment, validates them without persistence, and routes them into the same Thin owners.' },
     work_id: { type: 'string' },
     workflow_id: { type: 'string', description: 'Versioned Workflow asset identity for workflow_execute/workflow_reconcile.' },
     workflow_run_id: { type: 'string', description: 'Stable run identity. Reusing it resumes only the exact same workflow/content/input identity.' },
@@ -399,6 +399,14 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     confirm_authorization: { type: 'boolean', description: 'Must be true to authorize this exact one-shot console unlock invocation.' },
     timeout_ms: { type: 'number', description: 'Bounded provider/postcondition timeout in milliseconds. Defaults to 15000 and is capped at 30000.' },
   }, ['credential_handle', 'confirm_authorization'], false),
+  definition('capability_execute', 'Execute one typed Forge core capability through its canonical substrate owner. Discover the exact action schema with rh_context capability_id first. This stable facade prevents one top-level MCP tool per atomic repository operation; plugin capabilities continue to use plugin_action_execute.', {
+    repo_id: repoId,
+    checkout_id: { type: 'string', description: 'Optional exact checkout identity.' },
+    capability_id: { type: 'string', description: 'Exact core capability identity returned by rh_context.' },
+    action: { type: 'string', description: 'Exact capability action returned by rh_context.' },
+    request_id: { type: 'string', description: 'Stable idempotency identity for this invocation.' },
+    arguments: { type: 'object', description: 'Action-specific arguments validated by the capability owner.' },
+  }, ['capability_id', 'action', 'request_id'], false),
   definition('plugin_action_execute', 'Execute one typed repository or controller-scoped plugin action through the plugin provider authority. rh_context exposes plugin schemas/policy; rh_work does not execute plugin capabilities. For confirmation=authorization, normal host permission is authoritative and an exact-target Forge capability grant may be reused; do not set confirm_authorization merely because an ordinary authorization-class action was previously allowed. Strong-confirmation actions still require their explicit confirmation contract.', {
     repo_id: repoId,
     plugin_id: { type: 'string' },

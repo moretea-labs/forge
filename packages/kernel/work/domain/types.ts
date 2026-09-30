@@ -36,7 +36,7 @@ export interface WorkExecutionConcurrencyProjection {
 
 export interface SuggestedNextAction {
   label: string;
-  tool: 'rh_access' | 'rh_status' | 'rh_inbox' | 'rh_context' | 'rh_work';
+  tool: 'rh_access' | 'rh_status' | 'rh_inbox' | 'rh_context' | 'rh_work' | 'capability_execute';
   operation: string;
   payload?: Record<string, unknown>;
   risk: 'readonly' | 'local_repo_write' | 'workspace_write' | 'remote_write' | 'destructive_remote' | 'destructive' | 'raw_secret_config' | 'unknown';

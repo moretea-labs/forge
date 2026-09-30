@@ -5,28 +5,23 @@ import { result } from './result-adapter';
 import { buildFacadeResult, getHandoffItem } from '../../../src/runtime/control-plane/facade';
 import { getWorkContract } from '../../../packages/kernel/work/api/index';
 import { launchSuperController } from '../../../src/runtime/control-plane/launcher/thin-launcher';
-import { prepareWorkChatgptContinuationTransport } from '../../../src/runtime/control-plane/launcher/chatgpt-work-continuation';
 import {
-  chatgptControllerRoundBinding,
-  chatgptControllerRoundBindingId,
   upsertChatgptControllerRoundTransportBinding,
 } from '../../../src/runtime/root/controller-round-composition';
 import { touchSchedulerWakeSignal } from '../../../src/runtime/control-plane/global-scheduler/wake-signal';
 import {
-  beginInitialControllerRoundDispatch,
   bindControllerSessionBinding,
   controllerRoundBlockerClass,
-  finishControllerRoundRelayDispatch,
   getControllerRoundRelay,
-  getRequirementControllerRoundRelay,
   releaseObservedControllerSession,
-  retryFailedControllerRoundProviderDispatch,
 } from '../../../packages/kernel/controller/api/index';
 import { authenticatedFacadeControllerIdentity, bindFacadeControllerOwnership } from './controller-authority-adapter';
 import {
-  ensureWorkflowSupervisorEnrollmentForWork,
-  workflowSupervisorBoundaryForWork,
+  bindCurrentWorkflowSupervisorConversationForWork,
+  bindWorkflowSupervisorConversationForWork,
+  getWorkflowSupervisorConversationBindingForWork,
 } from '../../../src/runtime/root/workflow-supervisor-composition';
+import { reconcileControllerProgression } from '../../../src/runtime/root/controller-progression-composition';
 
 const RH_WORK_CONTROLLER_OPERATIONS = new Set(['launcher_start']);
 
@@ -51,73 +46,15 @@ export async function callRhWorkControllerOperation(
     if (controllerType === 'chatgpt') {
       const work = getWorkContract(store, workId);
       if (!work) throw new Error(`WORK_NOT_FOUND: ${workId}`);
+      const launchRequestId = typeof args.request_id === 'string' ? args.request_id.trim() : '';
+      if (!launchRequestId) throw new Error('LAUNCHER_START_REQUEST_ID_REQUIRED');
+
       const explicitConversationUrl = typeof args.conversation_url === 'string' && args.conversation_url.trim()
         ? args.conversation_url.trim()
         : undefined;
-      const launchRequestId = typeof args.request_id === 'string' ? args.request_id.trim() : '';
-      if (!launchRequestId) throw new Error('LAUNCHER_START_REQUEST_ID_REQUIRED');
-      const existingBinding = chatgptControllerRoundBinding(store, workId);
-      const requestedTransportConversation = args.transport_conversation === 'fresh'
-        ? 'fresh'
-        : args.transport_conversation === 'bound' ? 'bound' : undefined;
-      const transportConversation = requestedTransportConversation
-        ?? (existingBinding || explicitConversationUrl ? 'bound' : 'fresh');
-      if (requestedTransportConversation === 'bound' && !existingBinding && !explicitConversationUrl) {
-        throw new Error('WORKFLOW_SUPERVISOR_BOUND_CONVERSATION_REQUIRED');
-      }
-      const supervisorBoundary = workflowSupervisorBoundaryForWork(store, workId);
-      if (supervisorBoundary.status === 'outer_turn' && transportConversation !== 'fresh') {
-        let supervisorEnrollment = await ensureWorkflowSupervisorEnrollmentForWork(store, workId);
-        if (supervisorEnrollment.status === 'enrolled') {
-          return result(buildFacadeResult({
-            summary: 'Existing ChatGPT conversation re-enrolled for unattended continuation. No replacement provider send was issued.',
-            data: {
-              workId,
-              currentConversationBound: true,
-              continuationDispatched: false,
-              supervisorEnrollment,
-              conversationUrl: supervisorBoundary.conversationUrl,
-            },
-          }) as unknown as Record<string, unknown>);
-        }
-        if (supervisorEnrollment.status !== 'lower_layer_not_ready') {
-          throw new Error(supervisorEnrollment.reason ?? `WORKFLOW_SUPERVISOR_${supervisorEnrollment.status.toUpperCase()}`);
-        }
-        const existingRelay = getControllerRoundRelay(store, workId)
-          ?? (work.requirementId ? getRequirementControllerRoundRelay(store, work.requirementId) : undefined);
-        if (existingRelay
-          && existingRelay.originWorkId === workId
-          && existingRelay.status === 'failed'
-          && !existingRelay.failureClass
-          && existingRelay.authorityId?.trim()) {
-          retryFailedControllerRoundProviderDispatch(store, {
-            workId,
-            relayScopeId: existingRelay.relayScopeId,
-            authorityId: existingRelay.authorityId,
-            expectedUpdatedAt: existingRelay.updatedAt,
-            ...(existingRelay.occurrenceId ? { occurrenceId: existingRelay.occurrenceId } : {}),
-          });
-          supervisorEnrollment = await ensureWorkflowSupervisorEnrollmentForWork(store, workId);
-          if (supervisorEnrollment.status === 'enrolled') {
-            return result(buildFacadeResult({
-              summary: 'Existing ChatGPT conversation recovered the same failed provider round and re-enrolled without creating a replacement semantic round.',
-              data: {
-                workId,
-                currentConversationBound: true,
-                continuationDispatched: false,
-                supervisorEnrollment,
-                conversationUrl: supervisorBoundary.conversationUrl,
-              },
-            }) as unknown as Record<string, unknown>);
-          }
-          throw new Error(supervisorEnrollment.reason ?? `WORKFLOW_SUPERVISOR_${supervisorEnrollment.status.toUpperCase()}`);
-        }
-        const explicitFreshRoundBudgetOccurrence = existingRelay?.status === 'blocked'
-          && controllerRoundBlockerClass(existingRelay) === 'round_budget_exhausted'
-          && existingRelay.occurrenceId !== `launcher_start:${work.workId}:${launchRequestId}`;
-        if (existingRelay && !explicitFreshRoundBudgetOccurrence) {
-          throw new Error(supervisorEnrollment.reason ?? `WORKFLOW_SUPERVISOR_LOWER_LAYER_NOT_READY:${existingRelay.status}`);
-        }
+      const enrollCurrentConversation = args.enroll_current_conversation === true;
+      if (enrollCurrentConversation && explicitConversationUrl) {
+        throw new Error('CURRENT_CONVERSATION_ENROLLMENT_EXPLICIT_URL_CONFLICT');
       }
 
       const handoffId = typeof args.handoff_id === 'string' ? args.handoff_id.trim() : '';
@@ -133,7 +70,9 @@ export async function callRhWorkControllerOperation(
       for (let index = 0; index < launchArgs.length; index += 2) {
         const flag = launchArgs[index];
         if (!flag || !supportedFlags.has(flag)) throw new Error(`CHATGPT_LAUNCH_ARG_UNSUPPORTED: ${flag ?? ''}`);
-        if (!launchArgs[index + 1] || launchArgs[index + 1]!.startsWith('--')) throw new Error(`CHATGPT_LAUNCH_ARG_VALUE_REQUIRED: ${flag}`);
+        if (!launchArgs[index + 1] || launchArgs[index + 1]!.startsWith('--')) {
+          throw new Error(`CHATGPT_LAUNCH_ARG_VALUE_REQUIRED: ${flag}`);
+        }
       }
 
       const reasoning = valueForFlag('--reasoning') ?? 'high';
@@ -145,124 +84,147 @@ export async function callRhWorkControllerOperation(
       if (timeoutMs !== undefined && (!Number.isFinite(timeoutMs) || timeoutMs <= 0)) {
         throw new Error(`CHATGPT_LAUNCH_TIMEOUT_INVALID: ${timeoutValue}`);
       }
-
       const continuationPrompt = typeof args.continuation_prompt === 'string' ? args.continuation_prompt.trim() : '';
-      const identity = authenticatedFacadeControllerIdentity(ctx, args);
-      const occurrenceId = `launcher_start:${work.workId}:${launchRequestId}`;
       const initialContinuationPrompt = [
         handoff ? `Handoff: ${handoff.summary}\nNext: ${handoff.recommendedContinuationPrompt ?? handoff.recommendedPrompt}` : '',
         continuationPrompt ? `Continuation: ${continuationPrompt}` : '',
       ].filter(Boolean).join('\n') || undefined;
-      const relay = beginInitialControllerRoundDispatch(store, {
-        workId,
-        identity,
-        requirementId: work.requirementId,
-        bindingId: chatgptControllerRoundBindingId(workId),
-        occurrenceId,
-        authorizeRoundBudgetOccurrence: true,
-      });
-      if (relay.status === 'blocked') {
-        throw new Error(`CHATGPT_CONTINUATION_LAUNCH_BLOCKED:${relay.blockedReason ?? 'transport_not_ready'}`);
+
+      const requestedTransportConversation = args.transport_conversation === 'fresh'
+        ? 'fresh'
+        : args.transport_conversation === 'bound' ? 'bound' : undefined;
+      if (enrollCurrentConversation && requestedTransportConversation === 'fresh') {
+        throw new Error('CURRENT_CONVERSATION_ENROLLMENT_FRESH_TRANSPORT_CONFLICT');
       }
 
-      if (supervisorBoundary.status === 'outer_turn' && transportConversation !== 'fresh') {
-        const supervisorEnrollment = await ensureWorkflowSupervisorEnrollmentForWork(store, workId);
-        if (supervisorEnrollment.status !== 'enrolled') {
-          throw new Error(supervisorEnrollment.reason ?? `WORKFLOW_SUPERVISOR_${supervisorEnrollment.status.toUpperCase()}`);
+      // All request/identity and clearly terminal round validation happens before
+      // any conversation binding is persisted. Frozen compatibility must be
+      // transport-only: an invalid launcher request is a zero-write request.
+      const identity = authenticatedFacadeControllerIdentity(ctx, args);
+      const existingRound = getControllerRoundRelay(store, workId);
+      if (existingRound?.status === 'failed') {
+        throw new Error(existingRound.lastError ?? `CONTROLLER_RELAY_FAILED:${workId}`);
+      }
+      if (existingRound?.status === 'blocked'
+        && controllerRoundBlockerClass(existingRound) !== 'provider_dispatch_outcome_unknown') {
+        throw new Error(`CONTROLLER_RELAY_LAUNCH_BLOCKED:${existingRound.blockedReason ?? existingRound.relayScopeId}`);
+      }
+      if (existingRound && ['pending_release', 'goal_complete', 'handed_off'].includes(existingRound.status)) {
+        throw new Error(`CONTROLLER_RELAY_NOT_PROGRESSABLE:${existingRound.status}`);
+      }
+
+      let conversationBinding = getWorkflowSupervisorConversationBindingForWork(store, workId);
+      if (requestedTransportConversation === 'fresh' && conversationBinding) {
+        throw new Error('CHATGPT_FRESH_CONVERSATION_EXISTING_BINDING_CONFLICT');
+      }
+      if (enrollCurrentConversation) {
+        const currentBinding = await bindCurrentWorkflowSupervisorConversationForWork(store, workId);
+        if (currentBinding.status !== 'bound') {
+          throw new Error(currentBinding.reason ?? `CURRENT_CONVERSATION_ENROLLMENT_${currentBinding.status.toUpperCase()}`);
         }
-        return result(buildFacadeResult({
-          summary: 'Existing ChatGPT conversation enrolled for unattended continuation after lower-layer relay recovery. No replacement provider send was issued.',
-          data: {
-            workId,
-            currentConversationBound: true,
-            continuationDispatched: false,
-            supervisorEnrollment,
-            conversationUrl: supervisorBoundary.conversationUrl,
-          },
-        }) as unknown as Record<string, unknown>);
+        conversationBinding = currentBinding.binding;
+      } else if (explicitConversationUrl) {
+        if (args.transport_conversation === 'fresh') {
+          throw new Error('CHATGPT_FRESH_CONVERSATION_EXPLICIT_URL_CONFLICT');
+        }
+        conversationBinding = bindWorkflowSupervisorConversationForWork(store, {
+          workId,
+          conversationUrl: explicitConversationUrl,
+          localAlias: 'Forge autonomous execution',
+        });
       }
 
-      const initialControllerBinding = upsertChatgptControllerRoundTransportBinding(store, {
-        workId,
-        sessionId: relay.sessionId,
-        browserSessionId: undefined,
-        conversationUrl: transportConversation === 'bound' ? explicitConversationUrl ?? existingBinding?.conversationUrl : undefined,
-        model: valueForFlag('--model') ?? 'gpt-5.6',
-        reasoning: reasoning as 'medium' | 'high' | 'xhigh',
-        tabPolicy: tabPolicy as 'auto' | 'reuse' | 'new',
-        timeoutMs,
-        transportConversation,
-        continuationPrompt: initialContinuationPrompt,
-        authorizationGrantRefs: [],
-      });
-      try {
-        const prepared = await prepareWorkChatgptContinuationTransport({
-          controllerHome: ctx.controllerHome,
-          repoId: repository.repoId,
-          workId,
-          occurrenceId,
-          transportConversation,
-          browserSessionId: typeof args.browser_session_id === 'string' ? args.browser_session_id : undefined,
-          conversationUrl: transportConversation === 'bound' ? explicitConversationUrl ?? existingBinding?.conversationUrl : undefined,
-          timeoutMs,
-          authorizationGrantRefs: transportConversation === 'bound' ? existingBinding?.authorizationGrantRefs : undefined,
+      const transportConversation = requestedTransportConversation
+        ?? (conversationBinding ? 'bound' : 'fresh');
+      if (transportConversation === 'bound' && !conversationBinding) {
+        throw new Error('WORKFLOW_SUPERVISOR_BOUND_CONVERSATION_REQUIRED');
+      }
+
+      const occurrenceId = `launcher_start:${work.workId}:${launchRequestId}`;
+      const relayScopeId = work.requirementId ? `requirement:${work.requirementId}` : `goal:${work.workId}`;
+
+      let launchOwner;
+      if (!existingRound) {
+        launchOwner = bindFacadeControllerOwnership(ctx, store, workId, identity, {
+          allowClaimIfMissing: true,
+          leaseMs: 60_000,
         });
-        const preparedControllerBinding = upsertChatgptControllerRoundTransportBinding(store, {
+        const controllerBinding = upsertChatgptControllerRoundTransportBinding(store, {
           workId,
-          sessionId: relay.sessionId,
-          browserSessionId: prepared.browserSessionId,
-          conversationUrl: prepared.conversationUrl,
+          sessionId: launchOwner.sessionId,
+          browserSessionId: undefined,
+          conversationUrl: transportConversation === 'bound' ? conversationBinding?.conversationUrl : undefined,
           model: valueForFlag('--model') ?? 'gpt-5.6',
           reasoning: reasoning as 'medium' | 'high' | 'xhigh',
           tabPolicy: tabPolicy as 'auto' | 'reuse' | 'new',
           timeoutMs,
           transportConversation,
-          continuationPrompt: initialControllerBinding.payload.continuationPrompt,
-          authorizationGrantRefs: prepared.authorizationGrantRefs,
-        });
-        // Launcher admission is the one moment where the authenticated control
-        // request and the freshly prepared provider transport are both present.
-        // Persist that mechanical resume identity, then immediately release the
-        // live lease. Scheduler/Runtime rotation can later recover the same
-        // execution conversation without turning semantic Work into ownership.
-        const launchOwner = bindFacadeControllerOwnership(ctx, store, workId, identity, {
-          allowClaimIfMissing: true,
-          leaseMs: 60_000,
-          relayScopeId: relay.relayScopeId,
+          continuationPrompt: initialContinuationPrompt,
+          authorizationGrantRefs: conversationBinding?.authorizationGrantRefs ?? [],
         });
         bindControllerSessionBinding(store, {
           workId,
           sessionId: launchOwner.sessionId,
-          binding: preparedControllerBinding.binding,
+          binding: controllerBinding.binding,
         });
-        const released = releaseObservedControllerSession(store, {
-          workId,
-          actor: `launcher-start-retain:${workId}`,
-          owner: launchOwner,
-        });
-        if (!released.allowed) {
-          throw new Error(`CONTROLLER_LAUNCH_RESUME_IDENTITY_RELEASE_FAILED:${workId}:${released.reason}`);
+      }
+
+      let progression;
+      try {
+        progression = await reconcileControllerProgression(
+          {
+            controllerHome: ctx.controllerHome,
+            repoId: repository.repoId,
+            repoRoot: repository.canonicalRoot,
+          },
+          {
+            workId,
+            occurrenceId,
+            relayScopeId,
+            continuationHint: initialContinuationPrompt,
+            scheduleName: 'launcher-start',
+          },
+        );
+      } finally {
+        if (launchOwner) {
+          const released = releaseObservedControllerSession(store, {
+            workId,
+            actor: `launcher-start-retain:${workId}`,
+            owner: launchOwner,
+          });
+          if (!released.allowed) {
+            throw new Error(`CONTROLLER_LAUNCH_RESUME_IDENTITY_RELEASE_FAILED:${workId}:${released.reason}`);
+          }
         }
-      } catch (launchError) {
-        const launchFailure = launchError instanceof Error ? launchError.message : String(launchError);
-        finishControllerRoundRelayDispatch(store, {
-          workId,
-          ok: false,
-          error: launchFailure,
-          recovery: true,
-        });
-        throw launchError;
       }
 
       touchSchedulerWakeSignal(ctx.controllerHome, `controller-round-ready:${workId}`);
+      if (progression.status === 'rejected') {
+        throw new Error(progression.reason ?? 'CHATGPT_CONTINUATION_LAUNCH_REJECTED');
+      }
+      if (progression.status === 'terminal_or_missing') {
+        throw new Error(progression.reason);
+      }
+      if (progression.status === 'retained_session_missing' || progression.status === 'human_controller') {
+        throw new Error(progression.reason);
+      }
+
       return result(buildFacadeResult({
-        summary: 'ChatGPT continuation queued on the durable ControllerRound. Interactive admission prepared only the authorized provider transport; Scheduler owns provider dispatch and retry.',
+        summary: progression.status === 'chatgpt_enrolled'
+          ? 'ChatGPT continuation enrolled with Workflow Supervisor effect authority.'
+          : progression.status === 'chatgpt_not_enrolled'
+            ? 'ChatGPT continuation is durably queued; Workflow Supervisor enrollment will retry without consuming provider failure budget.'
+            : `ChatGPT continuation is waiting in canonical progression state: ${progression.status}.`,
         data: {
           workId,
           continuationQueued: true,
           continuationDispatched: false,
-          relayScopeId: relay.relayScopeId,
+          relayScopeId: 'relayScopeId' in progression ? progression.relayScopeId : relayScopeId,
           transportConversation,
+          progressionStatus: progression.status,
+          ...(progression.status === 'chatgpt_enrolled' || progression.status === 'chatgpt_not_enrolled'
+            ? { supervisorEnrollment: progression.supervisorEnrollment }
+            : {}),
         },
       }) as unknown as Record<string, unknown>);
     }

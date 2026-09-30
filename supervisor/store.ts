@@ -130,17 +130,29 @@ function latestNotAppliedProofEventId(db: Database, effectId: string): number {
   return Number(notApplied?.event_id ?? 0);
 }
 
+function oldestUnappliedEffect(db: Database, taskId: string): WorkflowSupervisorEffect | undefined {
+  const row = statement(db, `SELECT e.* FROM effects e
+    WHERE e.task_id = ? AND NOT EXISTS (
+      SELECT 1 FROM events applied WHERE applied.effect_id = e.effect_id AND applied.kind = 'effect_applied'
+    ) ORDER BY e.created_at, e.effect_id LIMIT 1`, (s) => s.get(taskId)) as Record<string, unknown> | undefined;
+  return row ? effectFromRow(row) : undefined;
+}
+
 /**
  * Mechanical ceiling on how many times one un-applied Supervisor effect may be
  * submitted to the provider. A proven non-application may legitimately be
  * retried, but ChatGPT is one rate-limited shared resource: without a ceiling a
  * single stuck effect minted an unbounded generation chain (live evidence:
  * single effects were re-sent 130-166 times over hours), which is provider
- * request volume that no Work actually asked for.
+ * request volume that no Work actually asked for. Three total attempts is the
+ * hard ceiling: one normal submission plus at most two causally authorized retries.
  */
-export const WORKFLOW_SUPERVISOR_MAX_DISPATCH_GENERATIONS = 4;
+export const WORKFLOW_SUPERVISOR_MAX_DISPATCH_GENERATIONS = 3;
 export const WORKFLOW_SUPERVISOR_DISPATCH_RETRY_BASE_MS = 30_000;
 export const WORKFLOW_SUPERVISOR_DISPATCH_RETRY_MAX_MS = 10 * 60_000;
+export const WORKFLOW_SUPERVISOR_MAX_SAME_UNKNOWN_OBSERVATIONS = 3;
+export const WORKFLOW_SUPERVISOR_UNKNOWN_OBSERVATION_BASE_MS = 5_000;
+export const WORKFLOW_SUPERVISOR_UNKNOWN_OBSERVATION_MAX_MS = 60_000;
 
 /** Spaced retries keep a persistent local obstacle from becoming a request storm. */
 export function workflowSupervisorDispatchRetryDelayMs(generation: number): number {
@@ -162,6 +174,56 @@ interface EffectDispatchLedger {
   lastEventId: number;
   lastGeneration: number;
   lastOccurredAtMs: number;
+}
+
+interface EffectUnknownObservationLedger {
+  sameFingerprintCount: number;
+  lastOccurredAtMs: number;
+  fingerprint?: string;
+}
+
+function unknownObservationFingerprintFromObject(payload: Record<string, unknown>): string | undefined {
+  const explicit = boundedText(payload.observation_fingerprint);
+  if (explicit) return `explicit:${explicit}`;
+  // A transport may fail before a Browser snapshot exists. The canonical
+  // ledger still has to collapse repeated identical transport failures from
+  // native messaging, extensions, or older adapters. A changed reason/surface
+  // is materially new evidence and receives a fresh bounded budget.
+  const reason = boundedText(payload.reason) ?? 'unknown';
+  const surface = boundedText(payload.surface) ?? '';
+  const reconciliation = payload.reconciliation === true ? 'reconcile' : 'observe';
+  return `fallback:${surface}:${reconciliation}:${reason}`;
+}
+
+function unknownObservationFingerprint(payloadJson: unknown): string | undefined {
+  return unknownObservationFingerprintFromObject(parsedObject(payloadJson));
+}
+
+function effectUnknownObservationLedger(db: Database, effectId: string, afterEventId: number): EffectUnknownObservationLedger {
+  const rows = statement(db, "SELECT event_id,payload_json,occurred_at FROM events WHERE effect_id = ? AND kind = 'effect_unknown' AND event_id > ? ORDER BY event_id DESC LIMIT 32", (s) => s.all(effectId, afterEventId)) as Array<{ event_id?: number; payload_json?: string; occurred_at?: string }>;
+  const latest = rows[0];
+  if (!latest) return { sameFingerprintCount: 0, lastOccurredAtMs: 0 };
+  const fingerprint = unknownObservationFingerprint(latest.payload_json);
+  if (!fingerprint) return { sameFingerprintCount: 0, lastOccurredAtMs: 0 };
+  let sameFingerprintCount = 0;
+  for (const row of rows) {
+    if (unknownObservationFingerprint(row.payload_json) !== fingerprint) break;
+    sameFingerprintCount += 1;
+  }
+  const occurredAtMs = Date.parse(String(latest.occurred_at ?? ''));
+  return {
+    sameFingerprintCount,
+    lastOccurredAtMs: Number.isFinite(occurredAtMs) ? occurredAtMs : 0,
+    fingerprint,
+  };
+}
+
+function unknownObservationDelayMs(count: number): number {
+  const exponent = Math.max(0, Math.min(8, Math.trunc(count) - 1));
+  return Math.min(
+    WORKFLOW_SUPERVISOR_UNKNOWN_OBSERVATION_MAX_MS,
+    WORKFLOW_SUPERVISOR_UNKNOWN_OBSERVATION_BASE_MS * 2 ** exponent,
+  );
 }
 
 function effectDispatchLedger(db: Database, effectId: string): EffectDispatchLedger {
@@ -345,6 +407,7 @@ export class WorkflowSupervisorStore {
   getTaskByConversationId(conversationId: string): WorkflowSupervisorTask | undefined { return this.read((db) => { const row = statement(db, 'SELECT * FROM tasks WHERE conversation_id = ?', (s) => s.get(conversationId)); return row ? taskFromRow(row as Record<string, unknown>) : undefined; }); }
   listTasks(): WorkflowSupervisorTask[] { return this.read((db) => statement(db, 'SELECT * FROM tasks ORDER BY created_at, task_id', (s) => s.all()).map((row) => taskFromRow(row as Record<string, unknown>))); }
   getEffect(effectId: string): WorkflowSupervisorEffect | undefined { return this.read((db) => { const row = statement(db, 'SELECT * FROM effects WHERE effect_id = ?', (s) => s.get(effectId)); return row ? effectFromRow(row as Record<string, unknown>) : undefined; }); }
+  currentUnappliedEffect(taskId: string): WorkflowSupervisorEffect | undefined { return this.read((db) => oldestUnappliedEffect(db, taskId)); }
   getEffectByOriginKey(originKey: string): WorkflowSupervisorEffect | undefined { return this.read((db) => { const row = statement(db, 'SELECT * FROM effects WHERE origin_key = ?', (s) => s.get(originKey)); return row ? effectFromRow(row as Record<string, unknown>) : undefined; }); }
   getCompletion(completionFingerprint: string): WorkflowSupervisorCompletion | undefined { return this.read((db) => { const row = statement(db, 'SELECT * FROM completions WHERE completion_fingerprint = ?', (s) => s.get(completionFingerprint)); return row ? completionFromRow(row as Record<string, unknown>) : undefined; }); }
   getCompletionBySourceEffectId(taskId: string, sourceEffectId: string): WorkflowSupervisorCompletion | undefined {
@@ -450,20 +513,24 @@ export class WorkflowSupervisorStore {
     options: { nowMs?: number } = {},
   ): { effect: WorkflowSupervisorEffect; mode: 'send' | 'reconcile'; generation: number } | undefined {
     return this.read((db) => {
-      const row = statement(db, `SELECT e.* FROM effects e
-        WHERE e.task_id = ? AND NOT EXISTS (
-          SELECT 1 FROM events applied WHERE applied.effect_id = e.effect_id AND applied.kind = 'effect_applied'
-        ) ORDER BY e.created_at, e.effect_id LIMIT 1`, (s) => s.get(taskId)) as Record<string, unknown> | undefined;
-      if (!row) return undefined;
-      const effect = effectFromRow(row);
+      const effect = oldestUnappliedEffect(db, taskId);
+      if (!effect) return undefined;
       const ledger = effectDispatchLedger(db, effect.effectId);
       if (ledger.generations === 0) return { effect, mode: 'send', generation: 1 };
       const retryAuthorized = latestNotAppliedProofEventId(db, effect.effectId) > ledger.lastEventId;
-      if (!retryAuthorized) return { effect, mode: 'reconcile', generation: ledger.lastGeneration };
-      if (ledger.generations >= WORKFLOW_SUPERVISOR_MAX_DISPATCH_GENERATIONS) return undefined;
       const nowMs = options.nowMs ?? this.clockMs();
-      if (nowMs - ledger.lastOccurredAtMs < workflowSupervisorDispatchRetryDelayMs(ledger.lastGeneration)) {
+      if (!retryAuthorized) {
+        const unknownLedger = effectUnknownObservationLedger(db, effect.effectId, ledger.lastEventId);
+        if (unknownLedger.sameFingerprintCount >= WORKFLOW_SUPERVISOR_MAX_SAME_UNKNOWN_OBSERVATIONS) return undefined;
+        if (unknownLedger.sameFingerprintCount > 0
+          && nowMs - unknownLedger.lastOccurredAtMs < unknownObservationDelayMs(unknownLedger.sameFingerprintCount)) {
+          return undefined;
+        }
         return { effect, mode: 'reconcile', generation: ledger.lastGeneration };
+      }
+      if (ledger.generations >= WORKFLOW_SUPERVISOR_MAX_DISPATCH_GENERATIONS) return undefined;
+      if (nowMs - ledger.lastOccurredAtMs < workflowSupervisorDispatchRetryDelayMs(ledger.lastGeneration)) {
+        return undefined;
       }
       return { effect, mode: 'send', generation: ledger.lastGeneration + 1 };
     });
@@ -660,6 +727,16 @@ export class WorkflowSupervisorStore {
       const existing = statement(db, 'SELECT kind,payload_json FROM events WHERE event_key = ?', (s) => s.get(key)) as { kind?: string; payload_json?: string } | undefined;
       const payload = json(evidence);
       if (existing && (existing.kind !== kind || existing.payload_json !== payload)) throw new Error('WORKFLOW_SUPERVISOR_OBSERVATION_ID_CONFLICT');
+      if (outcome === 'unknown') {
+        const dispatch = effectDispatchLedger(db, effectId);
+        const unknownLedger = effectUnknownObservationLedger(db, effectId, dispatch.lastEventId);
+        const fingerprint = unknownObservationFingerprintFromObject(evidence);
+        if (fingerprint
+          && unknownLedger.fingerprint === fingerprint
+          && unknownLedger.sameFingerprintCount >= WORKFLOW_SUPERVISOR_MAX_SAME_UNKNOWN_OBSERVATIONS) {
+          return;
+        }
+      }
       statement(db, 'INSERT OR IGNORE INTO events(task_id,event_key,kind,effect_id,payload_json,occurred_at) VALUES (?,?,?,?,?,?)', (s) => s.run(effect.task_id, key, kind, effectId, payload, now()));
     });
   }

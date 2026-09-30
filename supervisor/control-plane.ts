@@ -58,12 +58,6 @@ export class WorkflowSupervisorControlPlane {
     }
     return effect;
   }
-  /** @deprecated Compatibility RPC. Recovery policy no longer lives in Supervisor/Scheduler. */
-  reserveSchedulerRecovery(taskId: string, _recoveryKey?: string): WorkflowSupervisorEffect | undefined {
-    const task = this.requireTask(taskId);
-    requireNonTerminalTask(this.store, task.taskId);
-    return undefined;
-  }
   observeEffect(input: { effectId: string; observationId: string; outcome: 'applied' | 'not_applied' | 'unknown'; evidence?: Record<string, unknown> }): void {
     this.store.recordEffectObservation(validateEffectId(input.effectId), input.observationId, input.outcome, input.evidence);
   }
@@ -174,16 +168,38 @@ export class WorkflowSupervisorControlPlane {
     const task = this.requireTask(taskId);
     if (!task.conversationId.startsWith('bootstrap:')) throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_NOT_PENDING');
     const pending = this.store.nextBrowserEffect(task.taskId);
-    if (!pending) return { authorized: true, task: browserTask(task) };
+    if (pending) {
+      return {
+        authorized: true,
+        task: browserTask(task),
+        command: {
+          mode: pending.mode,
+          effectId: pending.effect.effectId,
+          kind: pending.effect.kind,
+          prompt: pending.effect.prompt,
+          dispatchGeneration: pending.generation,
+          conversationId: task.conversationId,
+          conversationUrl: task.conversationUrl,
+        },
+      };
+    }
+    // Provider application and bootstrap identity binding are separate facts.
+    // A confirmed send may already be applied while ChatGPT has only just
+    // canonicalized the new /c/<conversation> route. Keep one read-only
+    // reconciliation command for that applied effect so the exact conversation
+    // can be bound without manufacturing another provider generation.
+    const applied = this.store.latestAppliedEffectWithoutCompletion(task.taskId);
+    if (!applied) return { authorized: true, task: browserTask(task) };
+    const dispatch = this.store.latestEffectDispatch(applied.effectId);
     return {
       authorized: true,
       task: browserTask(task),
       command: {
-        mode: pending.mode,
-        effectId: pending.effect.effectId,
-        kind: pending.effect.kind,
-        prompt: pending.effect.prompt,
-        dispatchGeneration: pending.generation,
+        mode: 'reconcile',
+        effectId: applied.effectId,
+        kind: applied.kind,
+        prompt: applied.prompt,
+        dispatchGeneration: dispatch?.generation ?? 1,
         conversationId: task.conversationId,
         conversationUrl: task.conversationUrl,
       },
@@ -199,7 +215,7 @@ export class WorkflowSupervisorControlPlane {
       ...(this.hooks.effectDispatchEvidence?.() ?? {}),
     });
   }
-  bootstrapObserveEffect(input: { taskId: string; effectId: string; observationId: string; outcome: 'applied' | 'not_applied' | 'unknown' }): void {
+  bootstrapObserveEffect(input: { taskId: string; effectId: string; observationId: string; outcome: 'applied' | 'not_applied' | 'unknown'; evidence?: Record<string, unknown> }): void {
     const task = this.requireTask(input.taskId);
     const effect = this.store.getEffect(validateEffectId(input.effectId));
     if (!effect || effect.taskId !== task.taskId) throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_EFFECT_TASK_MISMATCH');
@@ -221,8 +237,9 @@ export class WorkflowSupervisorControlPlane {
       });
       return;
     }
-    this.observeEffect({ effectId: effect.effectId, observationId: input.observationId, outcome: input.outcome, evidence: { surface: 'computer-bootstrap' } });
-    if (input.outcome === 'applied') this.hooks.effectApplied?.(task, effect, { observationId: input.observationId, evidence: { surface: 'computer-bootstrap' } });
+    const evidence = { surface: 'computer-bootstrap', ...(input.evidence ?? {}) };
+    this.observeEffect({ effectId: effect.effectId, observationId: input.observationId, outcome: input.outcome, evidence });
+    if (input.outcome === 'applied') this.hooks.effectApplied?.(task, effect, { observationId: input.observationId, evidence });
   }
   browserBeginEffect(input: { conversationId: string; conversationUrl: string; effectId: string; dispatchId: string; dispatchGeneration: number; evidence?: Record<string, unknown> }): { started: boolean; mode: 'send' | 'reconcile'; generation: number } {
     const task = this.requireBrowserTask(input.conversationId, input.conversationUrl);
@@ -254,7 +271,7 @@ export class WorkflowSupervisorControlPlane {
       if (input.outcome === 'applied') this.hooks.effectApplied?.(task, effect, { observationId: input.observationId, evidence });
       return { recorded: true };
     }
-    const pending = this.store.nextBrowserEffect(task.taskId);
+    const current = this.store.currentUnappliedEffect(task.taskId);
     const dispatch = this.store.latestEffectDispatch(effect.effectId);
     const snapshot = browserSnapshot(input.evidence);
     const sourceMatches = snapshot ? this.browserSnapshotMatchesSource(task, effect, snapshot) : false;
@@ -266,7 +283,7 @@ export class WorkflowSupervisorControlPlane {
       && browserAssistantHistoryContainsBaseline(snapshot.assistantMessages, dispatch.evidence.baseline_assistant_sha256, dispatch.evidence.baseline_has_source_completion));
     const targetAbsent = Boolean(snapshot && !browserTextHasEffect(snapshot.latestUserText, effect.effectId));
     const causalBaselinePreserved = (sourceMatches && preservedBaseline) || preservedHistoricalBaseline;
-    if (!pending || pending.effect.effectId !== effect.effectId || pending.mode !== 'reconcile' || !dispatch || pending.generation !== dispatch.generation || !snapshot || !causalBaselinePreserved || !targetAbsent || !browserNotAppliedSurfaceProven(input.evidence)) {
+    if (!current || current.effectId !== effect.effectId || !dispatch || !snapshot || !causalBaselinePreserved || !targetAbsent || !browserNotAppliedSurfaceProven(input.evidence)) {
       this.store.recordEffectObservation(effect.effectId, input.observationId, 'unknown', { reconciliation: true, reason: 'not_applied_proof_incomplete' });
       return { recorded: true };
     }
@@ -600,7 +617,7 @@ function browserNotAppliedSurfaceProven(evidence: Record<string, unknown> | unde
   if (!evidence || evidence.provider_surface_rendered !== true) return false;
   return typeof evidence.reason === 'string' && BROWSER_NOT_APPLIED_SURFACE_REASONS.has(evidence.reason);
 }
-const PERSISTED_BROWSER_EVIDENCE_KEYS = new Set(['exact_user_message', 'reconciliation', 'reason', 'surface', 'target_marker_present']);
+const PERSISTED_BROWSER_EVIDENCE_KEYS = new Set(['exact_user_message', 'observation_fingerprint', 'reconciliation', 'reason', 'surface', 'target_marker_present']);
 function sanitizeBrowserEvidence(evidence: Record<string, unknown> | undefined): Record<string, unknown> {
   if (!evidence) return {};
   const sanitized: Record<string, unknown> = {};

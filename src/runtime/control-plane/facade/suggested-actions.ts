@@ -44,6 +44,7 @@ const ALLOWED_FACADE_OPERATIONS: Record<FacadeTool, readonly string[]> = {
   rh_inbox: ['list', 'get', 'ack', 'accept', 'resolve', 'dismiss', 'create'],
   rh_context: ['list', 'get', 'search'],
   rh_work: RH_WORK_MODEL_OPERATIONS,
+  capability_execute: ['execute'],
 };
 
 export interface SuggestedActionValidationOptions {

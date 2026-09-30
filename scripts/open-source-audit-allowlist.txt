@@ -45,7 +45,6 @@ tests/runtime/target-architecture.test.ts
 # and installation locations to prove discovery and identity fencing.
 scripts/portability-bindings.mjs
 tests/runtime/browser-product-discovery.test.ts
-tests/runtime/chatgpt-work-continuation.test.ts
 tests/runtime/windows-host-discovery.test.ts
 tests/runtime/standalone-recovery.test.ts
 # Secret-marker rejection tests use non-secret synthetic values by design.

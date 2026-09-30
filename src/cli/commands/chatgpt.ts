@@ -13,12 +13,7 @@ import {
 } from '../chatgpt-browser/engine';
 import type { BrowserProviderName, BrowserSessionStatus, NativeBrowserChannel, ThinkingLevel } from '../chatgpt-browser/types';
 import { durableControllerHome } from '../repositories/controller-home';
-import {
-  runWorkChatgptContinuation,
-  type ChatgptAutomationReasoning,
-  type ChatgptAutomationTabPolicy,
-} from '../../runtime/control-plane/launcher/chatgpt-work-continuation';
-import { closeChatgptControllerRoundFromSource, continueChatgptControllerRoundFromSource, openChatgptControllerRoundFromSource } from '../../runtime/control-plane/launcher/chatgpt-round-continuation';
+import { closeChatgptControllerRoundFromSource } from '../../runtime/control-plane/launcher/chatgpt-round-continuation';
 
 interface BrowserCommonOptions {
   repo?: string;
@@ -81,43 +76,6 @@ interface BrowserConsultOptions extends BrowserCommonOptions {
   headless?: boolean;
 }
 
-interface WorkChatgptContinueOptions extends BrowserCommonOptions {
-  controllerHome: string;
-  repoId: string;
-  workId: string;
-  prompt: string;
-  title?: string;
-  session?: string;
-  conversationUrl?: string;
-  model?: string;
-  reasoning?: string;
-  tabPolicy?: string;
-  timeoutMs?: string;
-  controllerAuthorityId?: string;
-  relayScopeId?: string;
-}
-
-interface SourceRoundOpenOptions extends BrowserCommonOptions {
-  controllerHome?: string;
-  repoId: string;
-  workId: string;
-  controllerId: string;
-  principalId: string;
-  controllerInstanceId?: string;
-  continuationPrompt?: string;
-  timeoutMs?: string;
-}
-
-interface SourceRoundContinueOptions extends BrowserCommonOptions {
-  controllerHome?: string;
-  repoId: string;
-  workId: string;
-  controllerAuthorityId: string;
-  relayScopeId: string;
-  reason?: string;
-  timeoutMs?: string;
-}
-
 interface SourceRoundCloseOptions extends BrowserCommonOptions {
   controllerHome?: string;
   repoId: string;
@@ -154,18 +112,6 @@ interface BrowserFollowupOptions extends BrowserCommonOptions {
   keepBrowser?: boolean;
   headless?: boolean;
   oracleBin?: string;
-}
-
-function parseAutomationReasoning(value?: string): ChatgptAutomationReasoning | undefined {
-  if (value === undefined) return undefined;
-  if (value === 'medium' || value === 'high' || value === 'xhigh') return value;
-  throw new Error(`invalid --reasoning "${value}" (expected: medium, high, xhigh)`);
-}
-
-function parseAutomationTabPolicy(value?: string): ChatgptAutomationTabPolicy | undefined {
-  if (value === undefined) return undefined;
-  if (value === 'auto' || value === 'reuse' || value === 'new') return value;
-  throw new Error(`invalid --tab-policy "${value}" (expected: auto, reuse, new)`);
 }
 
 function parseProvider(value?: string): BrowserProviderName {
@@ -434,114 +380,6 @@ export function buildChatgptCommand(): Command {
         }, null, 2));
       });
     });
-
-  const workContinue = new Command('work-continue')
-    .description('Internal: continue one Forge Work in its bound ChatGPT Web conversation')
-    .option('--repo <path>', 'Repository root for the Work browser session', '.')
-    .requiredOption('--controller-home <path>', 'Explicit Controller Home containing the authoritative Work and conversation binding')
-    .requiredOption('--repo-id <repo-id>', 'Stable Forge repository id')
-    .requiredOption('--work-id <work-id>', 'Stable Forge Work id')
-    .requiredOption('--prompt <text>', 'Bounded continuation prompt')
-    .option('--title <title>', 'Human-readable local conversation alias')
-    .option('--session <session-id>', 'Saved browser session to seed or resume the Work binding')
-    .option('--conversation-url <url>', 'Explicit ChatGPT conversation URL to seed the binding')
-    .option('--model <label>', 'Requested ChatGPT automation model', 'gpt-5.6')
-    .option('--reasoning <level>', 'Reasoning level: medium|high|xhigh', 'high')
-    .option('--tab-policy <policy>', 'Browser tab policy: auto|reuse|new', 'auto')
-    .option('--timeout-ms <ms>', 'Assistant timeout in milliseconds')
-    .option('--controller-authority-id <id>', 'Durable ControllerRound authority for source-mode continuation')
-    .option('--relay-scope-id <id>', 'Durable ControllerRound relay scope paired with controller authority')
-    .action((rawOpts: WorkChatgptContinueOptions) => {
-      void runChatgptAction(async () => {
-        const result = await runWorkChatgptContinuation({
-          controllerHome: durableControllerHome(rawOpts.controllerHome),
-          repoId: rawOpts.repoId,
-          repoRoot: resolveRepoRoot(rawOpts.repo),
-          workId: rawOpts.workId,
-          prompt: rawOpts.prompt,
-          controllerAuthorityId: rawOpts.controllerAuthorityId,
-          relayScopeId: rawOpts.relayScopeId,
-          title: rawOpts.title,
-          browserSessionId: rawOpts.session,
-          conversationUrl: rawOpts.conversationUrl,
-          model: rawOpts.model,
-          reasoning: parseAutomationReasoning(rawOpts.reasoning),
-          tabPolicy: parseAutomationTabPolicy(rawOpts.tabPolicy),
-          timeoutMs: parsePositiveInteger('timeout-ms', rawOpts.timeoutMs),
-        });
-        console.log(JSON.stringify({
-          status: result.status,
-          provider: result.provider,
-          sessionId: result.browserSessionId,
-          conversationUrl: result.conversationUrl,
-          conversationId: result.conversationId,
-          localAlias: result.localAlias,
-          resumedFromBinding: result.resumedFromBinding,
-          model: result.model,
-          reasoning: result.reasoning,
-          tabPolicy: result.tabPolicy,
-          executionPreferenceVerified: result.executionPreferenceVerified,
-          error: result.error,
-        }, null, 2));
-      });
-    });
-  chatgpt.addCommand(workContinue, { hidden: true });
-
-  const roundOpen = new Command('round-open')
-    .description('Internal: open and dispatch one ChatGPT ControllerRound from current source')
-    .option('--repo <path>', 'Repository root used by the ChatGPT Browser delivery host', '.')
-    .option('--controller-home <path>', 'Explicit Controller Home containing ControllerRound authority; defaults to canonical user-level Forge Controller Home')
-    .requiredOption('--repo-id <repo-id>', 'Stable Forge repository id')
-    .requiredOption('--work-id <work-id>', 'Forge Work id to dispatch')
-    .requiredOption('--controller-id <id>', 'Authenticated ChatGPT controller id/principal identity')
-    .requiredOption('--principal-id <id>', 'Authenticated ChatGPT principal id')
-    .option('--controller-instance-id <id>', 'Source launcher instance identity')
-    .option('--continuation-prompt <text>', 'Bounded source-mode continuation instruction')
-    .option('--timeout-ms <ms>', 'Assistant dispatch timeout in milliseconds')
-    .action((rawOpts: SourceRoundOpenOptions) => {
-      void runChatgptAction(async () => {
-        const result = await openChatgptControllerRoundFromSource({
-          controllerHome: durableControllerHome(rawOpts.controllerHome),
-          repoId: rawOpts.repoId,
-          repoRoot: resolveRepoRoot(rawOpts.repo),
-          workId: rawOpts.workId,
-          controllerId: rawOpts.controllerId,
-          principalId: rawOpts.principalId,
-          controllerInstanceId: rawOpts.controllerInstanceId,
-          continuationPrompt: rawOpts.continuationPrompt,
-          timeoutMs: parsePositiveInteger('timeout-ms', rawOpts.timeoutMs),
-        });
-        console.log(JSON.stringify(result, null, 2));
-      });
-    });
-  chatgpt.addCommand(roundOpen, { hidden: true });
-
-  const roundContinue = new Command('round-continue')
-    .description('Internal: close one claimed ChatGPT ControllerRound and immediately dispatch its successor from current source')
-    .option('--repo <path>', 'Repository root used by the ChatGPT Browser delivery host', '.')
-    .option('--controller-home <path>', 'Explicit Controller Home containing ControllerRound authority; defaults to canonical user-level Forge Controller Home')
-    .requiredOption('--repo-id <repo-id>', 'Stable Forge repository id')
-    .requiredOption('--work-id <work-id>', 'Currently claimed Forge Work id')
-    .requiredOption('--controller-authority-id <id>', 'Exact durable ControllerRound authority')
-    .requiredOption('--relay-scope-id <id>', 'Exact durable ControllerRound relay scope')
-    .option('--reason <text>', 'Bounded semantic continuation reason')
-    .option('--timeout-ms <ms>', 'Assistant dispatch timeout in milliseconds')
-    .action((rawOpts: SourceRoundContinueOptions) => {
-      void runChatgptAction(async () => {
-        const result = await continueChatgptControllerRoundFromSource({
-          controllerHome: durableControllerHome(rawOpts.controllerHome),
-          repoId: rawOpts.repoId,
-          repoRoot: resolveRepoRoot(rawOpts.repo),
-          workId: rawOpts.workId,
-          controllerAuthorityId: rawOpts.controllerAuthorityId,
-          relayScopeId: rawOpts.relayScopeId,
-          reason: rawOpts.reason,
-          timeoutMs: parsePositiveInteger('timeout-ms', rawOpts.timeoutMs),
-        });
-        console.log(JSON.stringify(result, null, 2));
-      });
-    });
-  chatgpt.addCommand(roundContinue, { hidden: true });
 
   const roundClose = new Command('round-close')
     .description('Internal: reconcile and close one claimed ChatGPT ControllerRound from current source without dispatching a successor')

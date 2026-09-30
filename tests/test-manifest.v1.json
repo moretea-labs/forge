@@ -389,10 +389,6 @@
       "module": "workflow",
       "resource": "pure"
     },
-    "tests/runtime/autonomous-continuation-lifecycle.test.ts": {
-      "module": "controller",
-      "resource": "process-tree"
-    },
     "tests/runtime/browser-session-authority.test.ts": {
       "module": "browser",
       "resource": "controller-home-isolated"
@@ -408,14 +404,6 @@
     "tests/runtime/capability-recovery.test.ts": {
       "module": "workflow",
       "resource": "process-tree"
-    },
-    "tests/runtime/chatgpt-work-continuation.test.ts": {
-      "module": "controller",
-      "resource": "controller-home-isolated"
-    },
-    "tests/runtime/chatgpt-work-continuation-outcome-unknown.test.ts": {
-      "module": "controller",
-      "resource": "controller-home-isolated"
     },
     "tests/runtime/check-runner-provenance.test.ts": {
       "module": "process-runtime",
@@ -921,10 +909,6 @@
     "tests/runtime/semantic-authority-guardrail.test.ts": {
       "module": "controller",
       "resource": "pure"
-    },
-    "tests/runtime/source-controller-round-command-abi.test.ts": {
-      "module": "repository",
-      "resource": "controller-home-isolated"
     },
     "tests/runtime/work-v3-lifecycle-authority.test.ts": {
       "module": "workflow",

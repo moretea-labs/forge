@@ -156,3 +156,11 @@ Prefer whole-system tests over component-survival tests:
 - verify no old Gateway, Controller, ingress, keepalive, or recovery owner survives the Runtime generation.
 
 A component reporting healthy is evidence only. Success means the complete supported MCP path works and the system converges to one coherent Runtime release.
+
+### Test-value governance
+
+- Tests protect durable behavior and safety invariants, not historical implementation shape.
+- Prefer, in order, compiler/type contracts, architecture/import/AST gates, focused behavior/E2E scenarios, then broader regression suites.
+- Delete tests with the implementation surface they uniquely describe when that surface is deliberately retired. Do not preserve a daemon, provider writer, lifecycle state, compatibility path, or wrapper merely to keep those tests green.
+- Duplicate verification is debt: when an architecture gate proves a structural single-writer/import invariant, do not also retain expensive Runtime tests whose only value is checking the same source shape.
+- During an active authority-convergence migration, a temporary no-new-tests freeze may be declared in root repository instructions so the suite is governed before more cases are accumulated.

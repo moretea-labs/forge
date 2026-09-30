@@ -25,7 +25,7 @@ export {
   type PlanStepStatus,
 } from '../../../../packages/kernel/goal/api/index';
 
-export const FACADE_TOOLS = ['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work'] as const;
+export const FACADE_TOOLS = ['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work', 'capability_execute'] as const;
 export type FacadeTool = (typeof FACADE_TOOLS)[number];
 export type CapabilityExecutionSurface = FacadeTool | 'plugin_action_execute';
 

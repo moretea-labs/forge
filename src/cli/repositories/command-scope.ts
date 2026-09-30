@@ -281,7 +281,7 @@ interface RepositoryCommandPathPolicyOptions {
 }
 
 interface SourceControllerRoundCompatibilityScope {
-  operation: 'round-continue' | 'round-close';
+  operation: 'round-close';
   controllerHome: string;
   workId: string;
   controllerAuthorityId: string;
@@ -297,11 +297,9 @@ function sourceControllerRoundCompatibilityScope(
   const args = command.args ?? [];
   if (executable !== 'bun' || args[0] !== 'src/cli/index.ts' || args[1] !== 'chatgpt') return undefined;
   const operation = args[2];
-  if (operation !== 'round-continue' && operation !== 'round-close') return undefined;
+  if (operation !== 'round-close') return undefined;
 
-  const allowedFlags = operation === 'round-continue'
-    ? new Set(['--controller-home', '--repo-id', '--work-id', '--controller-authority-id', '--relay-scope-id', '--reason', '--timeout-ms'])
-    : new Set(['--controller-home', '--repo-id', '--work-id', '--controller-authority-id', '--relay-scope-id', '--disposition', '--handoff-id', '--reason']);
+  const allowedFlags = new Set(['--controller-home', '--repo-id', '--work-id', '--controller-authority-id', '--relay-scope-id', '--disposition', '--handoff-id', '--reason']);
   const values = new Map<string, string>();
   for (let index = 3; index < args.length; index += 2) {
     const flag = args[index];
@@ -323,14 +321,12 @@ function sourceControllerRoundCompatibilityScope(
   if (requestedControllerHome !== configuredControllerHome) {
     throw new Error(`SOURCE_CONTROLLER_ROUND_COMMAND_CONTROLLER_HOME_MISMATCH:${requestedControllerHome}`);
   }
-  if (operation === 'round-close') {
-    const disposition = values.get('--disposition');
-    if (!disposition || !['wait', 'wait_for_user', 'goal_complete'].includes(disposition)) {
-      throw new Error(`SOURCE_CONTROLLER_ROUND_COMMAND_DISPOSITION_INVALID:${disposition ?? 'missing'}`);
-    }
-    if (disposition === 'wait_for_user' && !values.get('--handoff-id')?.trim()) {
-      throw new Error('SOURCE_CONTROLLER_ROUND_COMMAND_HANDOFF_REQUIRED');
-    }
+  const disposition = values.get('--disposition');
+  if (!disposition || !['wait', 'wait_for_user', 'goal_complete'].includes(disposition)) {
+    throw new Error(`SOURCE_CONTROLLER_ROUND_COMMAND_DISPOSITION_INVALID:${disposition ?? 'missing'}`);
+  }
+  if (disposition === 'wait_for_user' && !values.get('--handoff-id')?.trim()) {
+    throw new Error('SOURCE_CONTROLLER_ROUND_COMMAND_HANDOFF_REQUIRED');
   }
   return {
     operation,

@@ -4,7 +4,7 @@ import {
   COMPUTER_OBSERVE_CAPABILITY,
 } from '../../../../packages/protocols/computer/index';
 import type { AssistantPluginManifest } from '../../plugins/types';
-import type { CapabilityDescriptor, CapabilityDomain, CapabilityExecutionSurface, CapabilityGroupSummary, CapabilityOperationClass, CapabilityRisk, FacadeTool } from './types';
+import { FACADE_TOOLS, type CapabilityDescriptor, type CapabilityDomain, type CapabilityExecutionSurface, type CapabilityGroupSummary, type CapabilityOperationClass, type CapabilityRisk, type FacadeTool } from './types';
 
 const CORE_CAPABILITIES: CapabilityDescriptor[] = [
   {
@@ -113,7 +113,7 @@ const CORE_CAPABILITIES: CapabilityDescriptor[] = [
     group: 'git',
     operationClass: 'write',
     risk: 'local_repo_write',
-    exposedVia: 'rh_context',
+    exposedVia: 'capability_execute',
     schemaExposure: 'stable_static',
     summary: 'Repository-native typed Git handlers own identity, dirty-path, CAS, lease, conflict, authorization, and idempotency fences; Work completion is not a Git admission gate.',
   },
@@ -300,11 +300,60 @@ export function summarizeCapabilityGroups(manifests: readonly AssistantPluginMan
       capabilityCount: entries.length,
       domains: [...new Set(entries.map((entry) => entry.domain))].sort(),
       executionSurfaces: [...new Set(entries.map((entry) => entry.exposedVia))].sort(),
-      facadeTools: [...new Set(entries.map((entry) => entry.exposedVia).filter((surface): surface is FacadeTool => surface.startsWith('rh_')))].sort(),
+      facadeTools: [...new Set(entries.map((entry) => entry.exposedVia).filter((surface): surface is FacadeTool => FACADE_TOOLS.includes(surface as FacadeTool)))].sort(),
       operationClasses: [...new Set(entries.map((entry) => entry.operationClass))].sort(),
       risks: [...new Set(entries.map((entry) => entry.risk))].sort(),
       schemaExposures: [...new Set(entries.map((entry) => entry.schemaExposure))].sort(),
     }));
+}
+
+export function getCoreCapabilityExecutionSchema(capabilityId: string): Record<string, unknown> | undefined {
+  if (capabilityId !== 'repository.git') return undefined;
+  return {
+    capabilityId,
+    executeWith: 'capability_execute',
+    actions: {
+      diff_paths: {
+        readOnly: true,
+        risk: 'readonly',
+        argumentsSchema: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['paths'],
+          properties: {
+            paths: { type: 'array', minItems: 1, maxItems: 128, items: { type: 'string' } },
+            staged: { type: 'boolean' },
+            max_bytes: { type: 'number', minimum: 1024, maximum: 524288 },
+          },
+        },
+      },
+      stage_paths: {
+        readOnly: false,
+        risk: 'local_repo_write',
+        argumentsSchema: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['paths'],
+          properties: {
+            paths: { type: 'array', minItems: 1, maxItems: 128, items: { type: 'string' } },
+          },
+        },
+      },
+      commit_paths: {
+        readOnly: false,
+        risk: 'local_repo_write',
+        argumentsSchema: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['paths', 'message'],
+          properties: {
+            paths: { type: 'array', minItems: 1, maxItems: 128, items: { type: 'string' } },
+            message: { type: 'string', minLength: 1 },
+          },
+        },
+      },
+    },
+  };
 }
 
 export function getPluginActionCapabilitySchema(

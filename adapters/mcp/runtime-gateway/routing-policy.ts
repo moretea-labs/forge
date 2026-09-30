@@ -20,6 +20,7 @@ const THIN_ROUTED_TOOLS = new Set([
   'repository_command_execute',
   'repository_safe_patch_apply',
   'repository_safe_patch_plan',
+  'capability_execute',
   'repository_git_status',
   'repository_git_diff',
   'repository_git_commit',
@@ -84,6 +85,7 @@ export function isDirectHotReadTool(name: string): boolean {
 /** Small interactive development writes: run synchronously by default so ChatGPT/GUI get immediate results. */
 const INTERACTIVE_SYNC_WRITE_TOOLS = new Set([
   'repository_safe_patch_apply',
+  'capability_execute',
   'repository_git_create_branch',
   'repository_git_switch_branch',
   'repository_git_merge_branch',

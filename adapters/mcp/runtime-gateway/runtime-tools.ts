@@ -13,6 +13,7 @@ import { callRuntimeObservationAdapter } from './runtime-observation-adapter';
 import { callExecutionControlAdapter } from './execution-control-adapter';
 import { callMaintenanceAdapter } from './maintenance-adapter';
 import { callStatusInboxAdapter } from './status-inbox-adapter';
+import { callCoreCapabilityAdapter } from './core-capability-adapter';
 export { boundedPluginArtifactImageContent } from './result-adapter';
 export { classifyTerminalCheckEvidence } from '../../../src/runtime/execution/process-runtime/check-result';
 
@@ -32,6 +33,8 @@ async function callRuntimeToolUnchecked(ctx: MultiRepositoryMcpToolContext, name
     if (context) return context;
     const protectedComputer = await callProtectedComputerAdapter(ctx, name, args);
     if (protectedComputer) return protectedComputer;
+    const coreCapability = await callCoreCapabilityAdapter(ctx, name, args);
+    if (coreCapability) return coreCapability;
     const plugin = await callPluginAdapter(ctx, name, args);
     if (plugin) return plugin;
     const recovery = await callRecoveryAdapter(ctx, name, args);

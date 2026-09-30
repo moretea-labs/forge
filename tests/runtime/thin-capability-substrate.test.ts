@@ -212,6 +212,15 @@ describe('Thin capability substrate', () => {
     expect(workSemanticView(completedWork).resultRefs).toEqual(['git:commit:12345678', 'doc:summary:complete']);
 
     expect(completedWork.completionReceipt).toBeUndefined();
+
+    // Terminal semantic decisions are monotonic. If later evidence shows the
+    // same root cause remains open, the model creates an explicit successor Work
+    // and preserves this terminal audit record.
+    expect(() => reviseWorkSemanticContext(store, workId, {
+      expectedRevision: 2,
+      state: 'open',
+      resultRefs: ['reason:acceptance-still-open'],
+    })).toThrow(`WORK_SEMANTIC_REOPEN_FORBIDDEN:${workId}:completed`);
   });
 
 

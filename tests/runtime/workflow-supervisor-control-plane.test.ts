@@ -377,7 +377,6 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
         reason: 'operator cancelled this conversation',
       });
       expect(() => control.reserveEnrollment(task.taskId)).toThrow('WORKFLOW_SUPERVISOR_TASK_TERMINAL:NEEDS_USER');
-      expect(() => control.reserveSchedulerRecovery(task.taskId, 'scheduler-recovery-key')).toThrow('WORKFLOW_SUPERVISOR_TASK_TERMINAL:NEEDS_USER');
     } finally {
       store.close();
     }
@@ -874,8 +873,11 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
       workId, previousConversationId: oldConversationId, conversationUrl: `https://chatgpt.com/c/${newConversationId}`,
     });
     expect(workflowSupervisorBoundaryForWork(fx.store, workId)).toMatchObject({
-      status: 'outer_turn', conversationId: newConversationId,
-      taskId: `forge:${fx.repository.repoId}:work:${workId}`,
+      status: 'outer_turn',
+      workId,
+      requirementId,
+      conversationId: newConversationId,
+      conversationUrl: `https://chatgpt.com/c/${newConversationId}`,
     });
     expect(control.browserTasks()).toEqual([]);
     expect(() => control.browserPoll({ conversationId: oldConversationId, conversationUrl: `https://chatgpt.com/c/${oldConversationId}` }))
@@ -1030,7 +1032,8 @@ test('browserTasks isolates a stale legacy task from an independent bootstrap ta
 test('browserTasks prioritizes fresh sends ahead of older reconciliation work', () => {
   const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-browser-task-priority-'));
   roots.push(root);
-  const store = new WorkflowSupervisorStore(join(root, 'supervisor-home'));
+  const clock = { nowMs: Date.now() };
+  const store = new WorkflowSupervisorStore(join(root, 'supervisor-home'), { now: () => clock.nowMs });
   const control = new WorkflowSupervisorControlPlane(store);
 
   control.registerTask({
@@ -1059,6 +1062,9 @@ test('browserTasks prioritizes fresh sends ahead of older reconciliation work', 
   });
   control.reserveEnrollment('fresh-send-task');
 
+  // The older unknown is temporarily suppressed; once its bounded observation
+  // backoff expires, the fresh send still sorts ahead of reconciliation.
+  clock.nowMs += 10_000;
   expect(control.browserTasks().map((task) => task.taskId)).toEqual([
     'fresh-send-task',
     'older-reconcile-task',
@@ -1068,7 +1074,8 @@ test('browserTasks prioritizes fresh sends ahead of older reconciliation work', 
 test('enrolled conversations never create a browser tab for send or reconciliation', async () => {
   const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-reconcile-no-create-'));
   roots.push(root);
-  const store = new WorkflowSupervisorStore(join(root, 'supervisor-home'));
+  const clock = { nowMs: Date.now() };
+  const store = new WorkflowSupervisorStore(join(root, 'supervisor-home'), { now: () => clock.nowMs });
   const control = new WorkflowSupervisorControlPlane(store, {}, { browserTaskActive: () => true });
   const taskId = 'reconcile-no-create-task';
   const conversationId = '45454545-6767-8989-1010-121212121212';
@@ -1093,7 +1100,7 @@ test('enrolled conversations never create a browser tab for send or reconciliati
     snapshot: async () => { throw new Error('unexpected snapshot'); },
     clearComposer: async () => false,
     dispatchPrompt: async () => { throw new Error('unexpected dispatch'); },
-    nowMs: () => Date.now(),
+    nowMs: () => clock.nowMs,
     providerIdleGraceMs: 60_000,
     providerScopeKey: join(root, 'provider-scope'),
     sleep: async () => undefined,
@@ -1116,8 +1123,10 @@ test('enrolled conversations never create a browser tab for send or reconciliati
     observationId: 'reconcile-no-create-unknown', outcome: 'unknown',
     evidence: { surface: 'test' },
   });
-  expect(control.browserPoll({ conversationId, conversationUrl }).command?.mode).toBe('reconcile');
+  expect(control.browserPoll({ conversationId, conversationUrl }).command).toBeUndefined();
 
+  clock.nowMs += 10_000;
+  expect(control.browserPoll({ conversationId, conversationUrl }).command?.mode).toBe('reconcile');
   await adapter.runOnce();
 
   expect(createCalls).toBe(0);
@@ -1154,7 +1163,8 @@ test('retries a bootstrap effect after a proven pre-send failure instead of reco
 test('bootstrap does not require window.name and reconciles the exact effect marker after navigation', async () => {
   const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-bootstrap-causal-marker-'));
   roots.push(root);
-  const store = new WorkflowSupervisorStore(join(root, 'supervisor-home'));
+  const clock = { nowMs: Date.now() };
+  const store = new WorkflowSupervisorStore(join(root, 'supervisor-home'), { now: () => clock.nowMs });
   const control = new WorkflowSupervisorControlPlane(store, {}, {
     projectScopeForTask: () => ({ title: 'forge' }),
   });
@@ -1202,7 +1212,7 @@ test('bootstrap does not require window.name and reconciles the exact effect mar
     }),
     clearComposer: async () => true,
     dispatchPrompt: async (_page, prompt) => { sentPrompt = prompt; dispatchCount += 1; return { dispatched: true, confirmed: true }; },
-    nowMs: () => Date.now(),
+    nowMs: () => clock.nowMs,
     providerIdleGraceMs: 60_000,
     providerScopeKey: join(root, 'provider-scope'),
     sleep: async () => undefined,
@@ -1212,10 +1222,13 @@ test('bootstrap does not require window.name and reconciles the exact effect mar
   });
 
   await adapter.runOnce();
-  expect(store.nextBrowserEffect(taskId)).toEqual(expect.objectContaining({ mode: 'reconcile', generation: 1 }));
+  // The send outcome is still unknown until the canonical conversation route
+  // and exact effect marker become observable. Do not re-poll on the next tick.
+  expect(store.nextBrowserEffect(taskId)).toBeUndefined();
   expect(dispatchCount).toBe(1);
 
   canonical = true;
+  clock.nowMs += 10_000;
   await adapter.runOnce();
 
   expect(control.getTask(taskId)).toEqual(expect.objectContaining({ conversationId, conversationUrl }));
@@ -1363,7 +1376,6 @@ test('provider recovery is a single exactly-once resume and does not recurse thr
   });
   expect(exhausted.state).toBe('exhausted');
   expect(store.providerResumeExhausted(resume.effectId)).toBe(true);
-  expect(control.reserveSchedulerRecovery(taskId, 'legacy-retry')).toBeUndefined();
   // Exhaustion bounds recovery recursion; it does not abandon an already-applied
   // provider turn whose assistant receipt may still arrive late.
   expect(control.browserTasks()).toEqual([]);
@@ -1593,7 +1605,9 @@ test('refuses a not-applied proof observed on an unrendered conversation page', 
       latest_assistant_response: latestAssistantResponse,
     },
   });
-  expect(control.browserTasks()).toHaveLength(1);
+  // Unproven negative evidence must never mint a new provider generation. The
+  // Browser lane may stay quiet under observation backoff; a later external
+  // rendered-surface observation is still accepted independently of polling.
   expect(store.nextBrowserEffect(taskId, { nowMs: Date.now() + 3_600_000 }))
     .toMatchObject({ mode: 'reconcile', generation: 1 });
 
@@ -1669,9 +1683,9 @@ test('bounds and spaces provider re-dispatch of one un-applied effect, then rele
 
   dispatch(1);
   proveNotApplied('budget-proof-1');
-  // Inside the retry window the provider is left alone; the proof only permits a
-  // later generation, it does not replay immediately.
-  expect(store.nextBrowserEffect(taskId)).toMatchObject({ mode: 'reconcile', generation: 1 });
+  // Inside the retry window the provider and Browser lane are both left alone;
+  // the proof only permits a later generation, it does not replay or re-observe immediately.
+  expect(store.nextBrowserEffect(taskId)).toBeUndefined();
 
   clock.nowMs += 30_000;
   dispatch(2);
@@ -1679,16 +1693,13 @@ test('bounds and spaces provider re-dispatch of one un-applied effect, then rele
   clock.nowMs += 60_000;
   dispatch(3);
   proveNotApplied('budget-proof-3');
-  clock.nowMs += 120_000;
-  dispatch(4);
-  proveNotApplied('budget-proof-4');
 
-  expect(store.effectDispatchBudget(effect.effectId)).toMatchObject({ generations: 4, maxGenerations: 4, exhausted: true });
+  expect(store.effectDispatchBudget(effect.effectId)).toMatchObject({ generations: 3, maxGenerations: 3, exhausted: true });
   // Exhaustion stops demanding the conversation tab, so the adapter no longer
   // re-opens and re-observes a provider effect it can never deliver.
   expect(store.nextBrowserEffect(taskId)).toBeUndefined();
   expect(control.browserTasks()).toEqual([]);
   // The ceiling also holds for a caller that names a generation past the budget.
-  expect(store.recordEffectDispatchStarted(effect.effectId, 5, 'dispatch-budget-5')).toBe(false);
-  expect(store.latestEffectDispatch(effect.effectId)?.generation).toBe(4);
+  expect(store.recordEffectDispatchStarted(effect.effectId, 4, 'dispatch-budget-4')).toBe(false);
+  expect(store.latestEffectDispatch(effect.effectId)?.generation).toBe(3);
 });

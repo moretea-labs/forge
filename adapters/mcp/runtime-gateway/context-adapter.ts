@@ -16,7 +16,7 @@ import { CONTROLLER_CONTEXT_IMPACT_DOMAINS, type ControllerContextImpactDomain }
 import { buildControllerContextPackInSidecar } from "../../../src/runtime/context/context-pack-process";
 import { listControllerChecks } from "../../../src/cli/controller/check-runner";
 import { getAssistantPluginManifest, getControllerPluginManifest, listAssistantPluginManifests, listControllerPluginManifests } from "../../../src/runtime/plugins/store";
-import { allowedFacadeOperations, buildFacadeResult, listCapabilityDescriptors, getCapabilityDescriptor, getPluginActionCapabilitySchema, searchCapabilityDescriptors, summarizeCapabilityGroups, listHandoffAttentionItems, listHandoffItems, normalizeCheckIds, summarizeHandoffItem, buildWorkContinuationSnapshot, getPlanContract, planSemanticView } from "../../../src/runtime/control-plane/facade";
+import { allowedFacadeOperations, buildFacadeResult, listCapabilityDescriptors, getCapabilityDescriptor, getCoreCapabilityExecutionSchema, getPluginActionCapabilitySchema, searchCapabilityDescriptors, summarizeCapabilityGroups, listHandoffAttentionItems, listHandoffItems, normalizeCheckIds, summarizeHandoffItem, buildWorkContinuationSnapshot, getPlanContract, planSemanticView, FACADE_TOOLS } from "../../../src/runtime/control-plane/facade";
 import { currentTaskLineageWorkIds, currentTaskSemanticProjectionForWork, getWorkContract, readActiveWorkCandidates, readWorkContractStore, workSemanticView, type InvalidActiveWorkCandidate } from "../../../packages/kernel/work/api/index";
 import { readRequirement, requirementSemanticView } from '../../../src/runtime/control-plane/persistence/requirement-store';
 import { readForgeInstanceIdentity, type ScopeRef } from "../../../packages/kernel/identity/api/index";
@@ -733,6 +733,7 @@ export async function callContextAdapter(ctx: MultiRepositoryMcpToolContext, nam
         return [];
       })() : [];
       const descriptor = getCapabilityDescriptor(requestedCapabilityId, manifests);
+      const coreCapability = getCoreCapabilityExecutionSchema(requestedCapabilityId);
       const pluginAction = getPluginActionCapabilitySchema(requestedCapabilityId, manifests);
       const facade = buildFacadeResult({
         status: 'ok',
@@ -752,10 +753,11 @@ export async function callContextAdapter(ctx: MultiRepositoryMcpToolContext, nam
             requestedCapabilityId,
             found: Boolean(descriptor),
             descriptor,
+            coreCapability,
             pluginAction,
           },
           toolArchitecture: {
-            facadeTools: ['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work'],
+            facadeTools: [...FACADE_TOOLS],
             domainSchemaLoading: 'exact_capability_fast_path',
           },
           bounded: true,
@@ -789,6 +791,7 @@ export async function callContextAdapter(ctx: MultiRepositoryMcpToolContext, nam
       const matches = searchCapabilityDescriptors(capabilityIntentQuery, manifests, 12)
         .map((match) => ({
           ...match,
+          coreCapability: getCoreCapabilityExecutionSchema(match.capabilityId),
           pluginAction: getPluginActionCapabilitySchema(match.capabilityId, manifests),
         }));
       const facade = buildFacadeResult({
@@ -803,11 +806,11 @@ export async function callContextAdapter(ctx: MultiRepositoryMcpToolContext, nam
             query: capabilityIntentQuery,
             matches,
             readOnlyDiscovery: true,
-            executeWith: 'plugin_action_execute',
+            executeWith: 'capability-specific',
           },
           ...(learningRecall ? { learningRecall } : {}),
           toolArchitecture: {
-            facadeTools: ['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work'],
+            facadeTools: [...FACADE_TOOLS],
             domainSchemaLoading: 'intent_ranked_capability_search',
             exactCapabilityLookupStillAvailable: true,
           },

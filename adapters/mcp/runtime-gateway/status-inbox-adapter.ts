@@ -285,7 +285,7 @@ export async function callStatusInboxAdapter(
         const pendingHandoffSnapshot = pendingHandoffAttention.slice(0, 4);
         const pendingHandoffCount = pendingHandoffAttention.length;
         markSummaryPhase('controller_state');
-        const preferredFacadeTools = ['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work'] as const;
+        const preferredFacadeTools = ['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work', 'capability_execute'] as const;
         const facade = buildFacadeResult({
           status: ready ? 'ok' : 'blocked',
           summary: ready ? 'Controller and MCP tool surface are ready for bounded work.' : 'Controller or MCP tool surface needs attention before work.',
@@ -595,7 +595,7 @@ export async function callStatusInboxAdapter(
       const activeControllerWorkIds = new Set(activePrimaryWork.filter((contract) => Boolean(getControllerSession({ controllerHome: ctx.controllerHome, repoId: repository.repoId }, contract.workId))).map((contract) => contract.workId));
       const executingPrimaryWorkIds = new Set([...activeProcessWorkIds, ...activeControllerWorkIds].filter((workId) => activePrimaryWork.some((contract) => contract.workId === workId)));
       markDetailPhase('controller_sessions');
-      const preferredFacadeTools = ['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work'] as const;
+      const preferredFacadeTools = ['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work', 'capability_execute'] as const;
       const facade = buildFacadeResult({
         status: effectiveReady ? 'ok' : 'blocked',
         summary: effectiveReady

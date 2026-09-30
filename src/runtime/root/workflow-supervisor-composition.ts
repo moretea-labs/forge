@@ -22,7 +22,7 @@ import {
   type ChatgptWorkConversationBinding,
 } from '../../../adapters/chatgpt/work-conversation-binding-store';
 import { readRequirement } from '../control-plane/persistence/requirement-store';
-import { getWorkflowSupervisorCurrentConversation, getWorkflowSupervisorEffectDispatchBudget, registerWorkflowSupervisorTask, reserveWorkflowSupervisorEnrollment } from '../../../supervisor/client';
+import { getWorkflowSupervisorCurrentConversation, registerWorkflowSupervisorTask, reserveWorkflowSupervisorEnrollment } from '../../../supervisor/client';
 import { resolveWorkflowSupervisorForgeHome, workflowSupervisorSocketPath } from '../../../supervisor/paths';
 import type { WorkflowSupervisorCompletion, WorkflowSupervisorLifecycleHooks, WorkflowSupervisorTask, WorkflowSupervisorTurnSettlement } from '../../../supervisor/types';
 import { getRuntimeWriteClaim } from './write-fence';
@@ -30,7 +30,7 @@ import { getRuntimeWriteClaim } from './write-fence';
 export type WorkflowSupervisorBoundary =
   | { status: 'not_eligible' }
   | { status: 'conversation_pending'; reason: 'EXACT_WORK_CONVERSATION_BINDING_REQUIRED' }
-  | { status: 'outer_turn'; taskId: string; workId?: string; requirementId?: string; conversationId: string; conversationUrl: string };
+  | { status: 'outer_turn'; workId?: string; requirementId?: string; conversationId: string; conversationUrl: string };
 
 export type WorkflowSupervisorEnrollmentStatus =
   | 'not_eligible'
@@ -38,14 +38,7 @@ export type WorkflowSupervisorEnrollmentStatus =
   | 'current_conversation_unbound'
   | 'daemon_unavailable'
   | 'enrolled'
-  | 'lower_layer_not_ready'
-  /**
-   * The Supervisor effect exists but has already spent its mechanical provider
-   * re-dispatch budget without becoming applied. Enrollment must not report a
-   * deliverable continuation: the caller records a bounded recovery failure and
-   * the ControllerRound transition policy turns it into a visible blocker.
-   */
-  | 'provider_dispatch_exhausted';
+  | 'lower_layer_not_ready';
 
 export function workflowSupervisorLowerLayerReadyForWork(
   options: { controllerHome: string; repoId: string },
@@ -73,11 +66,18 @@ export function workflowSupervisorLowerLayerReadyForWork(
 function taskIdForWork(repoId: string, workId: string): string {
   return `forge:${repoId}:work:${workId}`;
 }
-// Retained as a read-only legacy identity parser while already-bound historical
-// tasks drain. New autonomous tasks use the stable Work identity above so the
-// pre-conversation bootstrap reservation survives canonical URL assignment.
-function taskIdForConversation(repoId: string, conversationId: string): string {
-  return `forge:${repoId}:conversation:${conversationId}`;
+export function getWorkflowSupervisorConversationBindingForWork(
+  options: { controllerHome: string; repoId: string },
+  workId: string,
+): ChatgptWorkConversationBinding | undefined {
+  return getChatgptWorkConversationBinding(options, workId);
+}
+
+export function bindWorkflowSupervisorConversationForWork(
+  options: { controllerHome: string; repoId: string },
+  input: { workId: string; conversationUrl: string; localAlias?: string },
+): ChatgptWorkConversationBinding {
+  return bindChatgptWorkConversation(options, input);
 }
 
 /**
@@ -96,7 +96,6 @@ export function workflowSupervisorBoundaryForWork(
   if (!binding) return { status: 'conversation_pending', reason: 'EXACT_WORK_CONVERSATION_BINDING_REQUIRED' };
   return {
     status: 'outer_turn',
-    taskId: taskIdForWork(options.repoId, work.workId),
     workId: work.workId,
     ...(work.requirementId ? { requirementId: work.requirementId } : {}),
     conversationId: binding.conversationId,
@@ -215,7 +214,6 @@ async function settleForgeWorkflowSupervisorTurn(
     && (continuationBlocker === 'repeated_state' || continuationBlocker === 'round_budget_exhausted')) {
     const boundary = workflowSupervisorBoundaryForWork(store, settledWorkId);
     const exactEnrolledBoundary = boundary.status === 'outer_turn'
-      && boundary.taskId === task.taskId
       && boundary.conversationId === task.conversationId
       && boundary.conversationUrl === task.conversationUrl;
     if (exactEnrolledBoundary) {
@@ -398,14 +396,18 @@ export function forgeWorkflowSupervisorLifecycleHooks(controllerHome: string): W
       const relay = requirementId
         ? getRequirementControllerRoundRelay(store, requirementId)
         : getControllerRoundRelay(store, workId!);
-      if (!relay
-        || relay.status !== 'blocked'
-        || controllerRoundBlockerClass(relay) !== 'provider_dispatch_outcome_unknown'
-        || (relay.providerDispatchAttempt ?? 0) < 1
-        || relay.providerDispatchEffectId !== effect.effectId) return undefined;
+      const legacyStartedDispatch = Boolean(
+        relay
+        && (relay.providerDispatchAttempt ?? 0) >= 1
+        && relay.providerDispatchEffectId === effect.effectId
+        && (
+          (relay.status === 'blocked' && controllerRoundBlockerClass(relay) === 'provider_dispatch_outcome_unknown')
+          || (relay.status === 'dispatched' && Boolean(relay.providerDispatchReceiptId))
+        )
+      );
+      if (!relay || !legacyStartedDispatch) return undefined;
       const boundary = workflowSupervisorBoundaryForWork(store, relay.originWorkId);
       if (boundary.status !== 'outer_turn'
-        || boundary.taskId !== task.taskId
         || boundary.conversationId !== task.conversationId
         || boundary.conversationUrl !== task.conversationUrl) return undefined;
       return {
@@ -461,7 +463,7 @@ export function forgeWorkflowSupervisorLifecycleHooks(controllerHome: string): W
         : getControllerRoundRelay(store, workId!);
       if (!relay) return;
       const boundary = workflowSupervisorBoundaryForWork(store, relay.originWorkId);
-      if (boundary.status !== 'outer_turn' || boundary.taskId !== task.taskId || boundary.conversationId !== task.conversationId) return;
+      if (boundary.status !== 'outer_turn' || boundary.conversationId !== task.conversationId) return;
       finishControllerRoundRelayDispatch(store, {
         workId: relay.originWorkId,
         ok: true,
@@ -521,12 +523,14 @@ export async function bindCurrentWorkflowSupervisorConversationForWork(
 export async function ensureWorkflowSupervisorEnrollmentForWork(
   options: { controllerHome: string; repoId: string },
   workId: string,
-  input: { schedulerRecoveryKey?: string } = {},
 ): Promise<{ status: WorkflowSupervisorEnrollmentStatus; taskId?: string; effectId?: string; reason?: string }> {
   const boundary = workflowSupervisorBoundaryForWork(options, workId);
   if (boundary.status === 'not_eligible') return { status: boundary.status };
   const forgeHome = resolveWorkflowSupervisorForgeHome(options.controllerHome);
-  const taskId = boundary.status === 'outer_turn' ? boundary.taskId : taskIdForWork(options.repoId, workId);
+  // Work-derived task ids are only bootstrap reservation identities. Once an
+  // exact conversation exists, the task-registration RPC returns the canonical
+  // Supervisor task already owning that conversation, including across successor Work.
+  const taskId = taskIdForWork(options.repoId, workId);
   if (!existsSync(workflowSupervisorSocketPath(forgeHome))) return { status: 'daemon_unavailable', taskId };
   const lowerLayer = workflowSupervisorLowerLayerReadyForWork(options, workId);
   if (!lowerLayer.ready) return { status: 'lower_layer_not_ready', reason: lowerLayer.reason };
@@ -564,18 +568,7 @@ export async function ensureWorkflowSupervisorEnrollmentForWork(
     },
   });
   const effect = await reserveWorkflowSupervisorEnrollment(forgeHome, registeredTask.taskId, lowerLayer.providerEffectId);
-  // Enrollment only reports a deliverable continuation while the provider
-  // effect can still be submitted. Once its bounded re-dispatch budget is
-  // spent, the honest result is an exhausted enrollment: the caller records a
-  // bounded recovery failure instead of the Supervisor resending forever.
-  const dispatchBudget = await getWorkflowSupervisorEffectDispatchBudget(forgeHome, effect.effectId).catch(() => undefined);
-  if (dispatchBudget?.exhausted) {
-    return {
-      status: 'provider_dispatch_exhausted',
-      taskId: registeredTask.taskId,
-      effectId: effect.effectId,
-      reason: `WORKFLOW_SUPERVISOR_PROVIDER_DISPATCH_EXHAUSTED:${effect.effectId}:${dispatchBudget.generations}/${dispatchBudget.maxGenerations}`,
-    };
-  }
+  // Runtime owns only enrollment. Provider send/reconcile/re-dispatch budgeting
+  // stays entirely inside the Supervisor effect ledger and Browser adapter.
   return { status: 'enrolled', taskId: registeredTask.taskId, effectId: effect.effectId };
 }

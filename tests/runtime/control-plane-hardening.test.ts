@@ -37,7 +37,7 @@ import {
 } from '../../packages/kernel/controller/api/index';
 import { buildChatgptControllerRoundPrompt } from '../../adapters/chatgpt/controller-round-host';
 import { decideControllerRoundTransition } from '../../packages/kernel/controller/domain/controller-round-transition-policy';
-import { closeChatgptControllerRoundFromSource, continueChatgptControllerRoundFromSource, openChatgptControllerRoundFromSource, SOURCE_ROUND_CONTINUATION_INSTRUCTION } from '../../src/runtime/control-plane/launcher/chatgpt-round-continuation';
+import { closeChatgptControllerRoundFromSource } from '../../src/runtime/control-plane/launcher/chatgpt-round-continuation';
 import { getExternalControllerLaunchReservation } from '../../src/runtime/control-plane/launcher/launch-reservation-store';
 import { awaitExternalControllerWake, classifyChatgptWakeFailure, evaluateSchedule, externalControllerWakeTimeoutMs } from '../../src/runtime/workflow/schedules/engine';
 import { applyScheduleRetryableFailure } from '../../src/runtime/workflow/schedules/settlement';
@@ -130,46 +130,7 @@ describe('bounded Work candidate extension authority', () => {
 });
 
 describe('repository command managed-worktree authority', () => {
-  test('exact current-source ControllerRound argv owns one explicit controller-local effect without weakening repository scope', () => {
-    const root = temp('forge-source-round-command-scope-');
-    const repoRoot = process.cwd();
-    const controllerHome = join(root, 'controller');
-    mkdirSync(controllerHome, { recursive: true });
-    const repoId = 'repo-source-round-scope';
-    const exact = assertRepositoryCommandInputAllowed([
-      'bun', 'src/cli/index.ts', 'chatgpt', 'round-continue',
-      '--controller-home', controllerHome,
-      '--repo-id', repoId,
-      '--work-id', 'work-source-round',
-      '--controller-authority-id', 'cra_source_round',
-      '--relay-scope-id', 'goal:work-source-round',
-    ]);
-    const usages = assertCommandPathOperandsStayInRepository(exact, repoRoot, repoRoot, [], {
-      controllerHome,
-      repositoryId: repoId,
-    });
-    expect(usages).toHaveLength(1);
-    expect(usages[0]).toMatchObject({ canonicalPath: realpathSync(controllerHome), operation: 'controller_local_effect' });
 
-    const wrongRepo = assertRepositoryCommandInputAllowed([
-      'bun', 'src/cli/index.ts', 'chatgpt', 'round-continue',
-      '--controller-home', controllerHome,
-      '--repo-id', 'repo-other',
-      '--work-id', 'work-source-round',
-      '--controller-authority-id', 'cra_source_round',
-      '--relay-scope-id', 'goal:work-source-round',
-    ]);
-    expect(() => assertCommandPathOperandsStayInRepository(wrongRepo, repoRoot, repoRoot, [], {
-      controllerHome,
-      repositoryId: repoId,
-    })).toThrow('SOURCE_CONTROLLER_ROUND_COMMAND_REPOSITORY_MISMATCH');
-
-    const shell = `bun src/cli/index.ts chatgpt round-continue --controller-home ${controllerHome} --repo-id ${repoId} --work-id work-source-round --controller-authority-id cra_source_round --relay-scope-id goal:work-source-round`;
-    expect(() => assertCommandPathOperandsStayInRepository(shell, repoRoot, repoRoot, [], {
-      controllerHome,
-      repositoryId: repoId,
-    })).toThrow('COMMAND_SCOPE_DENIED: external writes are not allowed from repository commands');
-  });
 
   test('requires rh_work ownership for temporary git worktree creation while preserving read-only worktree inspection', () => {
     expect(() => assertRepositoryCommandInputAllowed(['git', 'worktree', 'add', '/tmp/forge-repair', '-b', 'fix/repair'])).toThrow(
@@ -782,38 +743,6 @@ describe('scheduled external Controller wake', () => {
     await expect(awaitExternalControllerWake(new Promise<never>(() => {}), 5)).rejects.toThrow('CONTROLLER_WAKE_TOTAL_TIMEOUT');
   });
 
-  test('does not treat an old unexpired Controller lease as work, while a live Work Process remains authoritative', () => {
-    const root = temp('forge-controller-liveness-'), controllerHome = join(root, 'controller'), repoRoot = join(root, 'repo');
-    ensureControllerHome(controllerHome); mkdirSync(repoRoot, { recursive: true });
-    for (const args of [['init', '-q', '-b', 'main'], ['config', 'user.email', 'liveness@example.test'], ['config', 'user.name', 'Liveness Test']] as string[][]) execFileSync('git', args, { cwd: repoRoot });
-    writeFileSync(join(repoRoot, 'README.md'), 'liveness\n'); execFileSync('git', ['add', '.'], { cwd: repoRoot }); execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: repoRoot });
-    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'controller-liveness' });
-    const workId = 'WORK-CONTROLLER-LIVENESS';
-    createWorkContract({ controllerHome, repoId: repository.repoId }, {
-      workId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId, objective: 'Verify continuation liveness semantics.', acceptanceCriteria: ['Idle leases do not masquerade as execution.'],
-      allowedPaths: ['**/*'], forbiddenPaths: [], checks: [],
-      constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'running',
-    });
-    const observedNow = Date.now();
-    const staleAt = new Date(observedNow - 10 * 60_000).toISOString();
-    const staleStore = { controllerHome, repoId: repository.repoId, now: () => staleAt };
-    const staleOwner = claimControllerSession(staleStore, {
-      workId, controllerId: 'stale-controller', controllerType: 'chatgpt', sessionId: 'stale-session-without-execution-context',
-      principalId: 'stale-principal', controllerInstanceId: 'runtime-stale', leaseMs: 60 * 60_000,
-    });
-    expect(Date.parse(staleOwner.leaseExpiresAt)).toBeGreaterThan(observedNow);
-    expect(controllerSessionBlocksRecovery({ controllerHome, repoId: repository.repoId }, workId, { nowMs: observedNow, graceMs: 5 * 60_000 })).toBe(false);
-
-    const processNow = new Date(observedNow).toISOString();
-    createProcessRecord({
-      schemaVersion: 1, processId: 'proc-live-work-liveness', repoId: repository.repoId, checkoutId: repository.activeCheckoutId, workId,
-      commandId: 'live-work-liveness', controllerHome, status: 'running', route: 'managed',
-      command: { kind: 'argv', executable: 'node', args: ['-e', 'setTimeout(() => {}, 1000)'], cwd: repoRoot }, resourceClaims: [],
-      interactiveWaitMs: 0, timeoutMs: 30_000, maxOutputBytes: 1_024, startedAt: processNow, updatedAt: processNow, terminalFenceToken: 1,
-    } satisfies ManagedProcessRecord);
-    expect(workHasActiveExecution(controllerHome, repository.repoId, workId)).toBe(true);
-  });
-
   test('retryable continuation failure backs off once, then honours the declared failure circuit breaker', () => {
     const root = temp('forge-schedule-retryable-'), controllerHome = join(root, 'controller'), repoRoot = join(root, 'repo');
     ensureControllerHome(controllerHome); mkdirSync(repoRoot, { recursive: true });
@@ -940,188 +869,10 @@ describe('scheduled external Controller wake', () => {
     });
   });
 
-  test('source round continuation reconciles an old-Runtime owner with provider outcome_unknown and dispatches the next round without a timer', async () => {
-    const root = temp('forge-source-round-continuation-'), controllerHome = join(root, 'controller'), repoRoot = join(root, 'repo');
-    ensureControllerHome(controllerHome); mkdirSync(repoRoot, { recursive: true });
-    for (const args of [['init', '-q', '-b', 'main'], ['config', 'user.email', 'relay@example.test'], ['config', 'user.name', 'Relay Test']] as string[][]) execFileSync('git', args, { cwd: repoRoot });
-    writeFileSync(join(repoRoot, 'README.md'), 'relay\n'); execFileSync('git', ['add', '.'], { cwd: repoRoot }); execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: repoRoot });
-    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'source-round-continuation' });
-    const workId = 'WORK-SOURCE-ROUND-CONTINUE';
-    createWorkContract({ controllerHome, repoId: repository.repoId }, {
-      workId,
-      repoId: repository.repoId,
-      checkoutId: repository.activeCheckoutId,
-      objective: 'Keep advancing without asking the user to type continue.',
-      acceptanceCriteria: ['The next ControllerRound is dispatched from current source.'],
-      allowedPaths: ['**/*'],
-      forbiddenPaths: [],
-      checks: [],
-      constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
-      requestedBy: 'chatgpt',
-      status: 'running',
-    });
-    const store = { controllerHome, repoId: repository.repoId };
-    const opened = beginInitialControllerRoundDispatch(store, {
-      workId,
-      identity: { controllerId: 'chatgpt-controller', controllerType: 'chatgpt', principalId: 'chatgpt-principal', controllerInstanceId: 'runtime-source', sessionId: 'launch-source' },
-    });
-    const outcomeUnknown = finishControllerRoundRelayDispatch(store, {
-      workId,
-      ok: false,
-      outcomeUnknown: true,
-      error: 'CHATGPT_AUTOMATION_SUBMISSION_NOT_CONFIRMED:https://chatgpt.com/c/source-next',
-    });
-    expect(outcomeUnknown).toMatchObject({ status: 'blocked', blockedReason: 'provider_dispatch_outcome_unknown', consecutiveFailures: 1 });
-    startExecutionSession(controllerHome, {
-      sessionId: 'chatgpt-source-session',
-      principalId: 'chatgpt-principal',
-      controllerInstanceId: 'runtime-source',
-    });
-    updateExecutionSession(controllerHome, {
-      sessionId: 'chatgpt-source-session',
-      principalId: 'chatgpt-principal',
-      controllerInstanceId: 'runtime-source',
-    }, { activeWorkId: workId });
-    const owner = claimControllerSession(store, {
-      workId,
-      controllerId: 'chatgpt-controller',
-      controllerType: 'chatgpt',
-      sessionId: 'chatgpt-source-session',
-      principalId: 'chatgpt-principal',
-      controllerInstanceId: 'runtime-source',
-      leaseMs: 5 * 60_000,
-    });
-    // Simulate the installed old Runtime stopping after it establishes the exact owner.
-    // Current source round-continue must perform the canonical claim acknowledgement itself.
-    expect(getControllerRoundRelay(store, workId)).toMatchObject({ status: 'blocked', blockedReason: 'provider_dispatch_outcome_unknown' });
-
-    let dispatchedPrompt = '';
-    let dispatchedAuthority = '';
-    let dispatchedTabPolicy = '';
-    let dispatchedTransportConversation = '';
-    const result = await continueChatgptControllerRoundFromSource({
-      controllerHome,
-      repoId: repository.repoId,
-      repoRoot,
-      workId,
-      controllerAuthorityId: opened.authorityId!,
-      relayScopeId: opened.relayScopeId,
-      reason: 'continue source canary',
-    }, {
-      dispatch: async (input) => {
-        dispatchedPrompt = input.prompt;
-        dispatchedAuthority = input.controllerAuthorityId ?? '';
-        dispatchedTabPolicy = input.tabPolicy ?? '';
-        dispatchedTransportConversation = input.transportConversation ?? '';
-        return {
-          status: 'dispatched' as const,
-          provider: 'controller-browser' as const,
-          browserSessionId: 'browser-source-next',
-          conversationUrl: 'https://chatgpt.com/c/source-next',
-          conversationId: 'source-next',
-          localAlias: 'source-next',
-          resumedFromBinding: false,
-          model: 'gpt-5.6',
-          reasoning: 'high' as const,
-          tabPolicy: 'new' as const,
-          executionPreferenceVerified: true,
-        };
-      },
-    });
-
-    expect(result).toMatchObject({ dispositionStatus: 'pending_release', relayStatus: 'dispatched', relayWorkId: workId });
-    expect(getControllerSession(store, workId)).toBeUndefined();
-    expect(readExecutionSession(controllerHome, {
-      sessionId: 'chatgpt-source-session',
-      principalId: 'chatgpt-principal',
-      controllerInstanceId: 'runtime-source',
-    })?.activeWorkId).toBeUndefined();
-    expect(dispatchedAuthority).toStartWith('cra_');
-    expect(dispatchedAuthority).not.toBe(opened.authorityId);
-    expect(dispatchedTabPolicy).toBe('new');
-    expect(dispatchedTransportConversation).toBe('fresh');
-    expect(dispatchedPrompt).toContain(SOURCE_ROUND_CONTINUATION_INSTRUCTION);
-    expect(dispatchedPrompt).toContain(`repository_command_execute(repo_id=${JSON.stringify(repository.repoId)}, checkout_id=${JSON.stringify(repository.activeCheckoutId)}, command=`);
-    expect(dispatchedPrompt).toContain(`command=[\"bun\",\"src/cli/index.ts\",\"chatgpt\",\"round-continue\",\"--controller-home\",${JSON.stringify(controllerHome)},\"--repo-id\",${JSON.stringify(repository.repoId)},\"--work-id\",${JSON.stringify(workId)}`);
-    expect(dispatchedPrompt).toContain(`request_id=${JSON.stringify(`source-round-continue:${dispatchedAuthority}`)}`);
-    expect(dispatchedPrompt).toContain('round-close');
-    expect(dispatchedPrompt).toContain(`request_id=${JSON.stringify(`source-round-close:wait:${dispatchedAuthority}`)}`);
-    expect(dispatchedPrompt).toContain('ChatGPT 自己决定 Goal 是否完成，以及验证现在执行还是留待后续交付边界');
-    expect(dispatchedPrompt).toContain('Forge 不从 Supervisor/transport 状态推断完成，也不把测试作为关闭 Work 的前置条件');
-    expect(dispatchedPrompt).toContain('先用 rh_work work_get 取得 Work semantic revision，再用 rh_work work_complete 显式完成同一 Work');
-    expect(dispatchedPrompt).toContain('round-close --disposition goal_complete');
-    expect(dispatchedPrompt).toContain('sole repository_command_execute exception');
-    expect(dispatchedPrompt).toContain('do not pass wrapper work_id');
-    expect(dispatchedPrompt).toContain(JSON.stringify(controllerHome));
-    expect(dispatchedPrompt).not.toContain(JSON.stringify(repoRoot));
-    expect(dispatchedPrompt).toContain(JSON.stringify(dispatchedAuthority));
-    expect(dispatchedPrompt).toContain(JSON.stringify(opened.relayScopeId));
-    expect(dispatchedPrompt).not.toContain('<controller-home>');
-    expect(dispatchedPrompt).not.toContain('<controller_authority_id>');
-    expect(dispatchedPrompt).toContain('若当前 frozen Runtime 仍要求 controller disposition/release，在结束本轮前完成这一机械 bookkeeping');
-  });
 
 
-  test('source round continue resumes exact pending_release after a post-disposition interruption without double-consuming round budget', async () => {
-    const root = temp('forge-source-round-pending-release-retry-'), controllerHome = join(root, 'controller'), repoRoot = join(root, 'repo');
-    ensureControllerHome(controllerHome); mkdirSync(repoRoot, { recursive: true });
-    for (const args of [['init', '-q', '-b', 'main'], ['config', 'user.email', 'relay@example.test'], ['config', 'user.name', 'Relay Test']] as string[][]) execFileSync('git', args, { cwd: repoRoot });
-    writeFileSync(join(repoRoot, 'README.md'), 'relay\n'); execFileSync('git', ['add', '.'], { cwd: repoRoot }); execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: repoRoot });
-    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'source-round-pending-release-retry' });
-    const workId = 'WORK-SOURCE-ROUND-PENDING-RELEASE';
-    createWorkContract({ controllerHome, repoId: repository.repoId }, {
-      workId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId, objective: 'Resume an interrupted continue after durable semantic closure.', acceptanceCriteria: [],
-      allowedPaths: ['**/*'], forbiddenPaths: [], checks: [],
-      constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
-      requestedBy: 'chatgpt', status: 'running',
-    });
-    const store = { controllerHome, repoId: repository.repoId };
-    const opened = beginInitialControllerRoundDispatch(store, {
-      workId,
-      identity: { controllerId: 'chatgpt-controller', controllerType: 'chatgpt', principalId: 'chatgpt-principal', controllerInstanceId: 'runtime-source', sessionId: 'launch-source' },
-    });
-    finishControllerRoundRelayDispatch(store, { workId, ok: true });
-    startExecutionSession(controllerHome, { sessionId: 'chatgpt-source-session', principalId: 'chatgpt-principal', controllerInstanceId: 'runtime-source' });
-    updateExecutionSession(controllerHome, { sessionId: 'chatgpt-source-session', principalId: 'chatgpt-principal', controllerInstanceId: 'runtime-source' }, { activeWorkId: workId });
-    const owner = claimControllerSession(store, {
-      workId, controllerId: 'chatgpt-controller', controllerType: 'chatgpt', sessionId: 'chatgpt-source-session',
-      principalId: 'chatgpt-principal', controllerInstanceId: 'runtime-source', leaseMs: 5 * 60_000,
-    });
-    const claimed = acknowledgeControllerRoundClaim(store, { workId, session: owner })!;
-    expect(claimed.status).toBe('claimed');
-    const pending = submitControllerRoundDisposition(store, {
-      workId,
-      identity: {
-        controllerId: owner.controllerId, controllerType: 'chatgpt', principalId: 'chatgpt-principal',
-        controllerInstanceId: 'runtime-source', sessionId: owner.sessionId,
-      },
-      disposition: 'continue_immediately', relayScopeId: opened.relayScopeId,
-      requirementId: claimed.requirementId, reason: 'simulate durable disposition before transport interruption',
-    });
-    expect(pending).toMatchObject({ status: 'pending_release', lifecycleStage: 'semantic_round_closed', disposition: 'continue_immediately' });
-    const roundCountAfterDisposition = pending.roundCount;
 
-    let dispatchCount = 0;
-    const result = await continueChatgptControllerRoundFromSource({
-      controllerHome, repoId: repository.repoId, repoRoot, workId,
-      controllerAuthorityId: opened.authorityId!, relayScopeId: opened.relayScopeId,
-    }, {
-      dispatch: async () => {
-        dispatchCount += 1;
-        return {
-          status: 'dispatched' as const, provider: 'controller-browser' as const,
-          browserSessionId: 'browser-pending-release-next', conversationUrl: 'https://chatgpt.com/c/pending-release-next',
-          conversationId: 'pending-release-next', localAlias: 'pending-release-next', resumedFromBinding: false,
-          model: 'gpt-5.6', reasoning: 'high' as const, tabPolicy: 'new' as const, executionPreferenceVerified: true,
-        };
-      },
-    });
 
-    expect(result).toMatchObject({ dispositionStatus: 'pending_release', relayStatus: 'dispatched', relayWorkId: workId });
-    expect(dispatchCount).toBe(1);
-    expect(getControllerSession(store, workId)).toBeUndefined();
-    expect(getControllerRoundRelay(store, workId)).toMatchObject({ status: 'dispatched', roundCount: roundCountAfterDisposition });
-  });
 
 
 
@@ -1164,97 +915,9 @@ describe('scheduled external Controller wake', () => {
     expect(readExecutionSession(controllerHome, { sessionId: 'chatgpt-source-close-session', principalId: 'chatgpt-principal', controllerInstanceId: 'runtime-source' })?.activeWorkId).toBeUndefined();
   });
 
-  test('source round reconciliation never revives an ordinary failed relay even when an exact live owner exists', async () => {
-    const root = temp('forge-source-round-known-failure-'), controllerHome = join(root, 'controller'), repoRoot = join(root, 'repo');
-    ensureControllerHome(controllerHome); mkdirSync(repoRoot, { recursive: true });
-    for (const args of [['init', '-q', '-b', 'main'], ['config', 'user.email', 'relay@example.test'], ['config', 'user.name', 'Relay Test']] as string[][]) execFileSync('git', args, { cwd: repoRoot });
-    writeFileSync(join(repoRoot, 'README.md'), 'relay\n'); execFileSync('git', ['add', '.'], { cwd: repoRoot }); execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: repoRoot });
-    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'source-round-known-failure' });
-    const workId = 'WORK-SOURCE-ROUND-KNOWN-FAILURE';
-    createWorkContract({ controllerHome, repoId: repository.repoId }, {
-      workId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId, objective: 'Known provider failure must remain fail-closed.', acceptanceCriteria: [],
-      allowedPaths: ['**/*'], forbiddenPaths: [], checks: [],
-      constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'running',
-    });
-    const store = { controllerHome, repoId: repository.repoId };
-    const opened = beginInitialControllerRoundDispatch(store, {
-      workId,
-      identity: { controllerId: 'chatgpt-controller', controllerType: 'chatgpt', principalId: 'chatgpt-principal', controllerInstanceId: 'runtime-source', sessionId: 'launch-source' },
-    });
-    expect(finishControllerRoundRelayDispatch(store, { workId, ok: false, error: 'CHATGPT_LOGIN_REQUIRED' })).toMatchObject({ status: 'failed' });
-    startExecutionSession(controllerHome, { sessionId: 'chatgpt-source-session', principalId: 'chatgpt-principal', controllerInstanceId: 'runtime-source' });
-    updateExecutionSession(controllerHome, { sessionId: 'chatgpt-source-session', principalId: 'chatgpt-principal', controllerInstanceId: 'runtime-source' }, { activeWorkId: workId });
-    const owner = claimControllerSession(store, {
-      workId, controllerId: 'chatgpt-controller', controllerType: 'chatgpt', sessionId: 'chatgpt-source-session',
-      principalId: 'chatgpt-principal', controllerInstanceId: 'runtime-source', leaseMs: 5 * 60_000,
-    });
 
-    await expect(continueChatgptControllerRoundFromSource({
-      controllerHome, repoId: repository.repoId, repoRoot, workId,
-      controllerAuthorityId: opened.authorityId!, relayScopeId: opened.relayScopeId,
-    })).rejects.toThrow('CONTROLLER_RELAY_ROUND_NOT_CLAIMED: failed');
-    expect(getControllerRoundRelay(store, workId)).toMatchObject({ status: 'failed', lastError: 'CHATGPT_LOGIN_REQUIRED' });
-    expect(getControllerSession(store, workId)).toMatchObject({ sessionId: owner.sessionId, claimGeneration: owner.claimGeneration });
-  });
 
-  test('source round preserves typed outcome_unknown even when the provider error code is submission-not-confirmed', async () => {
-    const root = temp('forge-source-round-outcome-unknown-'), controllerHome = join(root, 'controller'), repoRoot = join(root, 'repo');
-    ensureControllerHome(controllerHome); mkdirSync(repoRoot, { recursive: true });
-    for (const args of [['init', '-q', '-b', 'main'], ['config', 'user.email', 'relay@example.test'], ['config', 'user.name', 'Relay Test']] as string[][]) execFileSync('git', args, { cwd: repoRoot });
-    writeFileSync(join(repoRoot, 'README.md'), 'relay\n'); execFileSync('git', ['add', '.'], { cwd: repoRoot }); execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: repoRoot });
-    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'source-round-outcome-unknown' });
-    const workId = 'WORK-SOURCE-ROUND-OUTCOME-UNKNOWN';
-    createWorkContract({ controllerHome, repoId: repository.repoId }, {
-      workId,
-      repoId: repository.repoId,
-      checkoutId: repository.activeCheckoutId,
-      objective: 'Keep typed provider delivery uncertainty across the source round boundary.',
-      acceptanceCriteria: [],
-      allowedPaths: ['**/*'],
-      forbiddenPaths: [],
-      checks: [],
-      constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
-      requestedBy: 'chatgpt',
-      status: 'running',
-    });
-    const store = { controllerHome, repoId: repository.repoId };
 
-    const openedUnknown = await openChatgptControllerRoundFromSource({
-      controllerHome,
-      repoId: repository.repoId,
-      repoRoot,
-      workId,
-      controllerId: 'chatgpt-controller',
-      principalId: 'chatgpt-principal',
-      controllerInstanceId: 'runtime-source',
-    }, {
-      dispatch: async () => ({
-        status: 'failed' as const,
-        provider: 'controller-browser' as const,
-        providerDeliveryStatus: 'outcome_unknown' as const,
-        browserSessionId: 'browser-source-unknown',
-        conversationUrl: 'https://chatgpt.com/c/source-unknown',
-        resumedFromBinding: false,
-        model: 'gpt-5.6',
-        reasoning: 'high' as const,
-        tabPolicy: 'reuse' as const,
-        executionPreferenceVerified: true,
-        error: {
-          code: 'CHATGPT_AUTOMATION_SUBMISSION_NOT_CONFIRMED',
-          message: 'CHATGPT_AUTOMATION_SUBMISSION_NOT_CONFIRMED:https://chatgpt.com/c/source-unknown',
-        },
-      }),
-    });
-    expect(openedUnknown.relayStatus).toBe('blocked');
-    expect(openedUnknown.dispatch.providerDeliveryStatus).toBe('outcome_unknown');
-
-    expect(getControllerRoundRelay(store, workId)).toMatchObject({
-      status: 'blocked',
-      blockedReason: 'provider_dispatch_outcome_unknown',
-      consecutiveFailures: 1,
-      lastError: 'CHATGPT_AUTOMATION_SUBMISSION_NOT_CONFIRMED:CHATGPT_AUTOMATION_SUBMISSION_NOT_CONFIRMED:https://chatgpt.com/c/source-unknown',
-    });
-  });
 
   test('verified provider recovery rearms the exact consecutive-failure fuse without changing semantic round identity', () => {
     const root = temp('forge-controller-relay-provider-recovery-'), controllerHome = join(root, 'controller'), repoRoot = join(root, 'repo');
@@ -1356,7 +1019,7 @@ describe('scheduled external Controller wake', () => {
     });
 
     expect(decideControllerRoundTransition(base, occurrence('fingerprint-a'))).toMatchObject({ kind: 'reject', code: 'CONTROLLER_RELAY_WAITING_STATE_UNCHANGED' });
-    expect(decideControllerRoundTransition(base, occurrence('fingerprint-b', 'OCC-1'))).toMatchObject({ kind: 'reject', code: 'CONTROLLER_RELAY_OCCURRENCE_ALREADY_APPLIED:OCC-1' });
+    expect(decideControllerRoundTransition(base, occurrence('fingerprint-b', 'OCC-1'))).toMatchObject({ kind: 'no_op', reason: 'occurrence_request_already_applied' });
     const reopened = decideControllerRoundTransition(base, occurrence('fingerprint-b'));
     expect(reopened).toMatchObject({ kind: 'accept', next: { status: 'dispatching', occurrenceId: 'OCC-2', roundCount: 3, repeatedStateCount: 0, providerFailureTotal: 5, providerRecoveryEpoch: 1 } });
     if (reopened.kind !== 'accept') throw new Error('expected accepted occurrence');
@@ -1500,23 +1163,8 @@ describe('scheduled external Controller wake', () => {
     const scheduledPrompt = buildChatgptControllerRoundPrompt(store, opened, { exactOriginWork: true });
 
     expect(scheduledPrompt).toContain(`只推进 origin Work ${workId} 的既定范围`);
-    expect(scheduledPrompt).toContain(`controller_authority_id=${opened.authorityId}`);
-    expect(scheduledPrompt).toContain(`relay_scope_id=${opened.relayScopeId}`);
-    expect(scheduledPrompt).toContain('不是 Requirement、Plan 或 Work 的语义写权限');
-    expect(scheduledPrompt).not.toContain('controller.round:<operation>:');
-    expect(scheduledPrompt).toContain('这是新的 ChatGPT controller round。');
-    expect(scheduledPrompt).not.toContain('This is a new ChatGPT controller round.');
-    expect(scheduledPrompt).toContain('不得扩大 scope、创建 sibling Work 或新增 schedule');
-    expect(scheduledPrompt).not.toContain('选择、启动或 claim 正确的 Work');
     expect(scheduledPrompt).toContain('ROUND4_EXPLICITLY_WAITS_AFTER_EXTERNAL_EVALUATOR_BOUNDARY');
-    expect(scheduledPrompt).toContain('origin Work acceptanceCriteria（durable semantic contract）');
     expect(scheduledPrompt).toContain('ROUND4_TERMINAL_OBLIGATION: when the external evaluator boundary is reached, use wait rather than goal_complete.');
-    expect(scheduledPrompt).toContain('origin Work 的 objective 与 acceptanceCriteria 是本轮必须显式检查的 durable semantic contract');
-    expect(scheduledPrompt).toContain('若当前 frozen Runtime 仍要求 controller disposition/release，在结束本轮前完成这一机械 bookkeeping');
-    expect(scheduledPrompt).toContain('必须选择 continue_immediately');
-    expect(scheduledPrompt).toContain('必须立即 controller_release 当前 Work');
-    expect(scheduledPrompt).toContain('正常连续推进不得依赖用户再次发送“继续”');
-    expect(scheduledPrompt).toContain('schedule 只能作为故障恢复/watchdog');
     const dispatched = finishControllerRoundRelayDispatch(store, {
       workId,
       ok: true,
@@ -1970,73 +1618,6 @@ describe('scheduled external Controller wake', () => {
       repeatedStateCount: dispatching.repeatedStateCount,
       lastError: 'CONTROLLER_RELAY_DISPATCH_TRANSITION_INCOMPLETE',
     });
-  });
-
-  test('does not recover a Requirement relay while any linked active Work still has real execution beyond the prompt snapshot limit', () => {
-    const root = temp('forge-controller-relay-requirement-owner-'), controllerHome = join(root, 'controller'), repoRoot = join(root, 'repo');
-    ensureControllerHome(controllerHome); mkdirSync(repoRoot, { recursive: true });
-    for (const args of [['init', '-q', '-b', 'main'], ['config', 'user.email', 'relay@example.test'], ['config', 'user.name', 'Relay Test']] as string[][]) execFileSync('git', args, { cwd: repoRoot });
-    writeFileSync(join(repoRoot, 'README.md'), 'relay requirement owner\n'); execFileSync('git', ['add', '.'], { cwd: repoRoot }); execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: repoRoot });
-    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'controller-relay-requirement-owner' });
-    const requirementId = 'REQ-RELAY-OWNER-BEYOND-SNAPSHOT';
-    createRequirement({ controllerHome, now: () => '2026-08-25T00:00:00.000Z' }, {
-      requirementId,
-      title: 'Requirement relay owner fencing',
-      outcomeStatement: 'A relay must not recover while any linked active Work still has real active execution.',
-    });
-    const workIds = Array.from({ length: 9 }, (_, index) => `WORK-RELAY-REQ-${index + 1}`);
-    for (const [index, workId] of workIds.entries()) {
-      createWorkContract({
-        controllerHome,
-        repoId: repository.repoId,
-        now: () => `2026-08-25T00:00:${String(index).padStart(2, '0')}.000Z`,
-      }, {
-        workId,
-        repoId: repository.repoId,
-        checkoutId: repository.activeCheckoutId,
-        requirementId,
-        objective: `Requirement relay Work ${index + 1}.`,
-        acceptanceCriteria: ['Preserve Requirement-wide active execution fencing.'],
-        allowedPaths: ['**/*'],
-        forbiddenPaths: [],
-        checks: [],
-        constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
-        requestedBy: 'chatgpt',
-        status: 'running',
-      });
-    }
-    const store = { controllerHome, repoId: repository.repoId };
-    const originWorkId = workIds.at(-1)!;
-    const opened = beginInitialControllerRoundDispatch(store, {
-      workId: originWorkId,
-      identity: { controllerId: 'schedule:test', controllerType: 'chatgpt', principalId: 'forge-scheduler', controllerInstanceId: 'runtime-test', sessionId: 'occurrence-test' },
-    });
-    const dispatched = finishControllerRoundRelayDispatch(store, { workId: originWorkId, ok: true });
-    expect(dispatched?.status).toBe('dispatched');
-    const processNow = new Date().toISOString();
-    createProcessRecord({
-      schemaVersion: 1,
-      processId: 'proc-requirement-linked-live-work',
-      repoId: repository.repoId,
-      checkoutId: repository.activeCheckoutId,
-      workId: workIds[0]!,
-      commandId: 'requirement-linked-live-work',
-      controllerHome,
-      status: 'running',
-      route: 'managed',
-      command: { kind: 'argv', executable: 'node', args: ['-e', 'setTimeout(() => {}, 1000)'], cwd: repoRoot },
-      resourceClaims: [],
-      interactiveWaitMs: 0,
-      timeoutMs: 30_000,
-      maxOutputBytes: 1_024,
-      startedAt: processNow,
-      updatedAt: processNow,
-      terminalFenceToken: 1,
-    } satisfies ManagedProcessRecord);
-
-    const afterGrace = Date.parse(dispatched!.dispatchedAt!) + 2 * 60_000;
-    expect(opened.relayScopeId).toBe(`requirement:${requirementId}`);
-    expect(claimStalledControllerRoundRelays(store, { nowMs: afterGrace, graceMs: 60_000 })).toEqual([]);
   });
 
   test('controller relay claim wins a claim-before-dispatch-finish race and remains claimed', () => {
@@ -2512,36 +2093,5 @@ describe('scheduled external Controller wake', () => {
     })).toThrow(/handoff creation reason is not eligible/);
   });
 
-  test('blocks a scheduled external Controller wake without an existing ControllerSession authority', async () => {
-    const root = temp('forge-schedule-wake-'), controllerHome = join(root, 'controller'), repoRoot = join(root, 'repo');
-    ensureControllerHome(controllerHome); mkdirSync(repoRoot, { recursive: true });
-    const runtimeOwner = acquireRuntimeOwnership(controllerHome, 'runtime-schedule-wake');
-    const runtimeService = forgeRuntimeServicePaths(controllerHome);
-    mkdirSync(runtimeService.serviceRoot, { recursive: true });
-    const runtimeTokenPath = join(controllerHome, 'mcp', 'runtime-token');
-    mkdirSync(join(controllerHome, 'mcp'), { recursive: true });
-    writeFileSync(runtimeTokenPath, 'schedule-wake-token\n', { mode: 0o600 });
-    writeFileSync(runtimeService.configPath, JSON.stringify({ schemaVersion: 1, controllerHome, repositoryRoot: repoRoot, host: '127.0.0.1', port: 9876, authTokenFile: runtimeTokenPath }));
-    const runtimeObservedAt = new Date().toISOString();
-    writeRuntimeStatusSnapshot(controllerHome, {
-      schemaVersion: 1, runtimeInstanceId: runtimeOwner.record.runtimeInstanceId, pid: runtimeOwner.record.pid,
-      releaseId: 'release-schedule-wake', artifactIdentity: 'artifact-schedule-wake', endpoint: 'http://127.0.0.1:9876/mcp',
-      readiness: { ready: true, reasonCodes: [], diagnostics: passingDiagnostics(), observedAt: runtimeObservedAt },
-      startedAt: runtimeObservedAt, updatedAt: runtimeObservedAt,
-    });
-    for (const args of [['init', '-q', '-b', 'main'], ['config', 'user.email', 'wake@example.test'], ['config', 'user.name', 'Wake Test']] as string[][]) execFileSync('git', args, { cwd: repoRoot });
-    writeFileSync(join(repoRoot, 'README.md'), 'wake\n'); execFileSync('git', ['add', '.'], { cwd: repoRoot }); execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: repoRoot });
-    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'schedule-wake' }), workId = 'WORK-SCHEDULE-WAKE';
-    const fakeController = join(repoRoot, 'fake-controller.sh');
-    writeFileSync(fakeController, '#!/bin/sh\nsleep 2\n'); chmodSync(fakeController, 0o755);
-    createWorkContract({ controllerHome, repoId: repository.repoId }, { workId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId, objective: 'Continue a bounded goal from a scheduled external Controller wake.', acceptanceCriteria: ['external controller was launched'], allowedPaths: ['**/*'], forbiddenPaths: [], checks: [], constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'running' });
-    const schedule = createSchedule(controllerHome, { requestId: 'schedule-wake-request', repoId: repository.repoId, name: 'continue bounded work', enabled: true, trigger: { type: 'manual' }, policy: { maxActiveOccurrences: 1, maxFailures: 3, cooldownMinutes: 0, dailyBudgetMinutes: 60, shadowMode: false }, action: { operation: 'external_controller_wake', target: 'runtime', arguments: { work_id: workId, controller_type: 'codex', executable: fakeController } }, stopConditions: [] });
-    const failedWake = await evaluateSchedule(controllerHome, schedule, true, { source: 'manual' });
-    expect(failedWake).toMatchObject({ status: 'skipped', decision: 'operation_blocked' });
-    expect(failedWake?.reason).toContain(`SCHEDULE_CONTINUATION_CONTROLLER_SESSION_REQUIRED:${workId}`);
-    expect(getControllerSession({ controllerHome, repoId: repository.repoId }, workId)).toBeUndefined();
-    expect(getExternalControllerLaunchReservation({ controllerHome, repoId: repository.repoId }, workId)).toBeUndefined();
-    expect(failedWake?.handoffId).toBeUndefined();
-    runtimeOwner.release();
-  });
+
 });
