@@ -87,3 +87,9 @@ Settlement now checks the current Work's canonical conversation binding before
 any mutable claim or settlement and rejects a different conversation ID. The
 existing CAS-rebind test verifies that stale completion leaves the relay
 unchanged. No historical database records or other conversations are rewritten.
+
+The first conversation guard still allowed an absent canonical binding. Live
+verification reproduced the loop because the new Work had a Supervisor task
+and effect but no Work conversation binding. Settlement now requires a matching
+binding, consistent with browser delivery's existing authority boundary. The
+same rebind test also checks that an unbound completion cannot mutate the relay.

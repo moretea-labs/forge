@@ -894,7 +894,6 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     beginInitialControllerRoundDispatch(fx.store, {
       workId, requirementId, identity: { controllerId: 'chatgpt-supervisor-test', controllerType: 'chatgpt', principalId: 'chatgpt-supervisor-test', controllerInstanceId: 'runtime-supervisor-test', sessionId: 'session-supervisor-test' },
     });
-    bindChatgptWorkConversation(fx.store, { workId, conversationUrl: `https://chatgpt.com/c/${oldConversationId}` });
     const supervisorStore = new WorkflowSupervisorStore(join(fx.root, 'supervisor-home'));
     const control = new WorkflowSupervisorControlPlane(supervisorStore, {}, forgeWorkflowSupervisorLifecycleHooks(fx.controllerHome));
     const oldTaskId = `forge:${fx.repository.repoId}:conversation:${oldConversationId}`;
@@ -905,6 +904,16 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
       userBlockerPolicy: { controller_home: fx.controllerHome, repo_id: fx.repository.repoId, requirement_id: requirementId },
     });
     const oldEnrollment = control.reserveEnrollment(oldTaskId);
+    const unboundRelay = getRequirementControllerRoundRelay(fx.store, requirementId);
+    expect(await control.hooks.assistantTurnCommitted?.(control.getTask(oldTaskId)!, {
+      completionFingerprint: 'unbound-completion', taskId: oldTaskId,
+      sourceEffectId: oldEnrollment.effectId, action: 'CONTINUE',
+      responseSha256: 'unbound-response', controlBlockSha256: 'unbound-control',
+      proposal: { action: 'CONTINUE', sourceEffectId: oldEnrollment.effectId, checkpoint: 'unbound', reason: 'continue', evidence: [] },
+      committedAt: new Date().toISOString(),
+    })).toMatchObject({ continuationAllowed: false, reason: 'WORKFLOW_SUPERVISOR_CONTINUATION_CONVERSATION_MISMATCH' });
+    expect(getRequirementControllerRoundRelay(fx.store, requirementId)).toEqual(unboundRelay);
+    bindChatgptWorkConversation(fx.store, { workId, conversationUrl: `https://chatgpt.com/c/${oldConversationId}` });
     expect(control.browserTasks()).toHaveLength(1);
 
     rebindChatgptWorkConversation(fx.store, {

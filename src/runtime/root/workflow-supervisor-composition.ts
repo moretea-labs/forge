@@ -176,7 +176,7 @@ async function settleForgeWorkflowSupervisorTurn(
 
   const settledWorkId = relay.originWorkId;
   const currentBinding = getChatgptWorkConversationBinding(store, settledWorkId);
-  if (currentBinding && currentBinding.conversationId !== task.conversationId) {
+  if (!currentBinding || currentBinding.conversationId !== task.conversationId) {
     return { continuationAllowed: false, reason: 'WORKFLOW_SUPERVISOR_CONTINUATION_CONVERSATION_MISMATCH' };
   }
   let liveOwner = getControllerSession(store, settledWorkId);
