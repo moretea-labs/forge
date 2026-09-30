@@ -1403,6 +1403,53 @@ export async function startLocalBridgeServer(
     }
   });
 
+  app.post("/api/client/v3/local/message/stream", async (request, response) => {
+    const send = (event: string, payload: Record<string, unknown>) => {
+      response.write(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`);
+    };
+    try {
+      const repository = requestRepositorySelection(request, options, controllerHome);
+      const body = request.body && typeof request.body === "object" && !Array.isArray(request.body)
+        ? request.body as Record<string, unknown>
+        : {};
+      const prompt = queryString(body.prompt) ?? "";
+      if (!prompt.trim() || prompt.length > 20_000) {
+        response.status(400).json({ error: "LOCAL_MESSAGE_INVALID" });
+        return;
+      }
+      const provider = v3ProviderConnection(repository.canonicalRoot);
+      if (!provider.configured || provider.status !== "ready") {
+        response.status(409).json({ error: "LOCAL_PROVIDER_NOT_READY", provider });
+        return;
+      }
+      response.status(200);
+      response.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+      response.setHeader("Cache-Control", "no-cache, no-transform");
+      response.setHeader("Connection", "keep-alive");
+      response.flushHeaders();
+      send("phase", { phase: "accepted", label: "Request accepted" });
+      v3ProviderBindServer?.stop();
+      v3ProviderBindServer = undefined;
+      send("phase", { phase: "provider_running", label: "Waiting for ChatGPT" });
+      const sessionId = queryString(body.sessionId);
+      const result = sessionId
+        ? await runBrowserFollowup({ repoRoot: repository.canonicalRoot, sessionId, prompt, provider: "bridge", timeoutMs: 180_000 })
+        : await runBrowserConsult({ repoRoot: repository.canonicalRoot, title: "Forge V3 local conversation", prompt, provider: "bridge", timeoutMs: 180_000 });
+      send("result", {
+        sessionId: result.sessionId,
+        status: result.status,
+        output: result.output,
+        conversationUrl: result.conversationUrl,
+        error: result.error,
+      });
+    } catch (error) {
+      if (!response.headersSent) response.status(409);
+      send("error", { error: errorMessage(error) });
+    } finally {
+      response.end();
+    }
+  });
+
   app.get("/api/console/requirements", (_request, response) => {
     try {
       response.json(buildRequirementBoard({ controllerHome }));
