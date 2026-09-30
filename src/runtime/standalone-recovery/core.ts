@@ -44,6 +44,7 @@ import {
 import { loadRuntimeReleaseManifest } from '../root/release-manifest';
 import { assertRuntimeReleaseExecutionCanaries, assertRuntimeReleaseFiles, promotePortableRuntimeRelease, runtimeReleaseTreeSha256, stageRuntimeReleaseFromCandidateSource, withRuntimeReleaseSourceSnapshot, type RuntimeReleaseExecutionCanaryDependencies, type StagedRuntimeRelease } from '../root/release-materialize';
 import {
+  prepareRuntimeReleaseDatabaseBackup,
   publishRuntimeRelease,
   readRuntimeReleaseAuthority,
   reconcileFailedRuntimeReleaseActivationAuthority,
@@ -3495,14 +3496,44 @@ async function stopPrimaryRuntimeForReleaseTransition(input: {
 
 const PRIMARY_RUNTIME_READINESS_POLL_INTERVAL_MS = 250;
 
-async function observePrimaryRuntimeRecoveryHealth(config: RecoveryConfig): Promise<VerifyResult> {
-  const primaryTransportAttributionRequired = Boolean(
-    config.primaryConnectorService || configuredPrimaryPublicTunnel(config),
+async function observePrimaryRuntimeActivationReadiness(config: RecoveryConfig): Promise<VerifyResult> {
+  const observation = observeRuntimeStatus(config.controllerHome);
+  const authority = releaseAuthority(config);
+  const active = releaseEvidence(config.controllerHome, authority?.active, authority);
+  const previous = releaseEvidence(config.controllerHome, authority?.previous, authority);
+  const runtimeHealthy = observation.running && observation.ready && !observation.stale;
+  const coherent = Boolean(
+    authority
+    && active
+    && observation.snapshot?.releaseId === active.revision
+    && observation.snapshot?.artifactIdentity === active.artifactIdentity
+    && authority.active.workerProtocolVersion === active.workerProtocolVersion,
   );
-  return observeBoundedRuntimeHealth(config, createRecoveryHttpTransport(config.controllerHome), {
-    includePrimaryConnectorLocal: true,
-    includePrimaryTransport: primaryTransportAttributionRequired,
-  });
+  const probes: VerifyResult['probes'] = {
+    runtime_status: {
+      ok: observation.running && !observation.stale,
+      detail: observation.running
+        ? observation.stale ? 'canonical Runtime status is stale' : 'canonical Runtime owner is live'
+        : 'canonical Runtime is not running',
+    },
+  };
+  const endpoint = observation.snapshot?.endpoint;
+  probes.active_gateway = endpoint
+    ? await probe(createRecoveryHttpTransport(config.controllerHome), runtimeHealthEndpoint(endpoint), 750)
+    : { ok: false, detail: 'canonical Runtime endpoint is unavailable' };
+  return {
+    ok: Boolean(runtimeHealthy && coherent && probes.active_gateway.ok),
+    at: new Date().toISOString(),
+    runtime: {
+      ok: runtimeHealthy,
+      running: observation.running,
+      ready: observation.ready,
+      stale: observation.stale,
+      reasonCodes: [...observation.reasonCodes],
+    },
+    releases: { active, previous, coherent },
+    probes,
+  };
 }
 
 async function waitForPrimaryRuntimeRecoveryHealth(input: {
@@ -3611,46 +3642,41 @@ async function rebindStartAndVerifyPrimaryRuntime(input: {
     return { ok: false, detail: started.detail, verify: await input.verifyLocal(input.config) };
   }
   const observeLocal = input.observeLocal ?? input.verifyLocal;
-  if (input.afterRuntimeReady) {
-    // Connector rebinding depends only on the canonical Runtime being live and
-    // locally coherent. Do not rerun execution canaries/known-good/MCP protocol
-    // verification on every readiness tick while the Connector still points at
-    // the previous release.
-    const runtimeOnlyConfig: RecoveryConfig = {
-      ...input.config,
-      publicMcpUrl: undefined,
-      primaryConnectorService: undefined,
-      primaryPublicTunnelService: undefined,
+  const runtimeOnlyConfig: RecoveryConfig = input.afterRuntimeReady
+    ? {
+        ...input.config,
+        publicMcpUrl: undefined,
+        primaryConnectorService: undefined,
+        primaryPublicTunnelService: undefined,
+      }
+    : input.config;
+  const runtimeHealth = await waitForPrimaryRuntimeRecoveryHealth({
+    config: runtimeOnlyConfig,
+    timeoutMs: input.timeoutMs,
+    now: input.now,
+    wait: input.wait,
+    observeLocal,
+  });
+  if (!runtimeHealth.ok) {
+    await stopPrimaryRuntimeServiceOwner(input.service, input.runCommand);
+    return {
+      ok: false,
+      detail: input.afterRuntimeReady
+        ? 'release transition candidate Runtime did not reach local readiness before Connector rebinding'
+        : 'release transition candidate Runtime did not reach local readiness',
+      verify: runtimeHealth,
     };
-    const runtimeHealth = await waitForPrimaryRuntimeRecoveryHealth({
-      config: runtimeOnlyConfig,
-      timeoutMs: input.timeoutMs,
-      now: input.now,
-      wait: input.wait,
-      observeLocal,
-    });
-    if (!runtimeHealth.ok) {
-      await stopPrimaryRuntimeServiceOwner(input.service, input.runCommand);
-      return {
-        ok: false,
-        detail: 'release transition candidate Runtime did not reach local readiness before Connector rebinding',
-        verify: runtimeHealth,
-      };
-    }
+  }
+  if (input.afterRuntimeReady) {
     const postReady = await input.afterRuntimeReady();
     if (!postReady.ok) {
       await stopPrimaryRuntimeServiceOwner(input.service, input.runCommand);
       return { ok: false, detail: postReady.detail, verify: await input.verifyLocal(input.config) };
     }
   }
-  const verify = await verifyPrimaryRuntimeAfterStart({
-    config: input.config,
-    timeoutMs: input.timeoutMs,
-    now: input.now,
-    wait: input.wait,
-    verifyLocal: input.verifyLocal,
-    observeLocal,
-  });
+  // Readiness has converged and any Connector rebind has completed. Strict
+  // acceptance runs once here; there is no second readiness polling phase.
+  const verify = await input.verifyLocal(input.config);
   if (verify.ok) return { ok: true, detail: input.successDetail, verify };
   await stopPrimaryRuntimeServiceOwner(input.service, input.runCommand);
   return {
@@ -3665,7 +3691,7 @@ export async function restartPrimaryRuntime(
   dependencies: PrimaryRuntimeRecoveryDependencies = {},
 ): Promise<PrimaryRuntimeRestartResult> {
   const verifyLocal = dependencies.verifyLocal ?? verifyLocalRuntime;
-  const observeLocal = dependencies.observeLocal ?? (dependencies.verifyLocal ? dependencies.verifyLocal : observePrimaryRuntimeRecoveryHealth);
+  const observeLocal = dependencies.observeLocal ?? (dependencies.verifyLocal ? dependencies.verifyLocal : observePrimaryRuntimeActivationReadiness);
   const initial = await verifyLocal(config);
   if (initial.ok) return { ok: true, attempted: false, noOp: true, detail: 'Canonical Forge Runtime is already healthy', verify: initial };
   const platform = dependencies.platform ?? process.platform;
@@ -3723,7 +3749,7 @@ export async function recoverPrimaryRuntime(
   dependencies: PrimaryRuntimeRecoveryDependencies = {},
 ): Promise<PrimaryRuntimeRecoveryResult> {
   const verifyLocal = dependencies.verifyLocal ?? verifyLocalRuntime;
-  const observeLocal = dependencies.observeLocal ?? (dependencies.verifyLocal ? dependencies.verifyLocal : observePrimaryRuntimeRecoveryHealth);
+  const observeLocal = dependencies.observeLocal ?? (dependencies.verifyLocal ? dependencies.verifyLocal : observePrimaryRuntimeActivationReadiness);
   const initial = await verifyLocal(config);
   if (initial.ok) return { ok: true, attempted: false, noOp: true, detail: 'Canonical Forge Runtime recovered before rollback', verify: initial };
 
@@ -3978,7 +4004,7 @@ async function activateRuntimeReleaseInternal(
   const wait = dependencies.sleep ?? sleep;
   const runtimeRunning = dependencies.runtimeRunning ?? ((value: RecoveryConfig) => observeRuntimeStatus(value.controllerHome).running);
   const verifyLocal = dependencies.verifyLocal ?? verifyLocalRuntime;
-  const observeLocal = dependencies.observeLocal ?? (dependencies.verifyLocal ? dependencies.verifyLocal : observePrimaryRuntimeRecoveryHealth);
+  const observeLocal = dependencies.observeLocal ?? (dependencies.verifyLocal ? dependencies.verifyLocal : observePrimaryRuntimeActivationReadiness);
   const repairConnectorBinding = dependencies.repairPrimaryConnectorBinding
     ?? ((value: RecoveryConfig) => repairPrimaryConnectorBinding(value, platform));
   const operationId = `recovery-activate-runtime-${Date.now()}-${randomUUID().slice(0, 8)}`;
@@ -4095,9 +4121,23 @@ async function activateRuntimeReleaseInternal(
       });
       return { ok: false, attempted: false, noOp: true, detail, operationId } satisfies RuntimeReleaseActivationResult;
     }
-    const before = await verifyLocal(config);
+    // Snapshot Stable A while it is still serving. The release store keeps a
+    // database-wide SQLite data_version observer open across this snapshot and
+    // the stop boundary. Any intervening commit invalidates the speculative
+    // snapshot and publish falls back to a stopped-state backup.
+    let preparedDatabaseBackup;
+    try {
+      preparedDatabaseBackup = current
+        ? prepareRuntimeReleaseDatabaseBackup(config.controllerHome, operationId)
+        : undefined;
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : 'runtime release rollback database preparation failed';
+      audit(config, 'runtime_release_activation_backup_prepare_failed', { serviceTarget: service.target, operationId, detail });
+      return { ok: false, attempted: false, noOp: true, detail, serviceTarget: service.target, verify: await observeLocal(config) } satisfies RuntimeReleaseActivationResult;
+    }
     const stopped = await stopPrimaryRuntimeForReleaseTransition({ config, service, now, wait, runCommand, runtimeRunning });
     if (!stopped.ok) {
+      preparedDatabaseBackup?.discard();
       const action = stopped.detail.startsWith('primary Runtime bootout failed')
         ? 'runtime_release_activation_stop_failed'
         : 'runtime_release_activation_stop_unverified';
@@ -4119,6 +4159,8 @@ async function activateRuntimeReleaseInternal(
         config.controllerHome,
         candidate.manifestPath,
         operationId,
+        undefined,
+        preparedDatabaseBackup,
       );
     } catch (error) {
       const detail = error instanceof Error ? error.message : 'runtime release authority publish failed';
@@ -4130,6 +4172,47 @@ async function activateRuntimeReleaseInternal(
       audit(config, 'runtime_release_activation_commit_mismatch', { serviceTarget: service.target, operationId });
       return { ok: false, attempted: true, detail, serviceTarget: service.target, verify: await verifyLocal(config) } satisfies RuntimeReleaseActivationResult;
     }
+
+    // Once the physical authority switch is durable, persist exact Stable A
+    // rollback identity before Candidate B starts. A later start/Connector/verify
+    // failure therefore never precedes ReleaseSession rollback authority.
+    let releaseSessionTransactionPersisted = false;
+    let activationFailureDetail: string | undefined;
+    if (!guard.preserveDatabaseOnFailure && guard.releaseSessionId?.trim()) {
+      try {
+        const session = readReleaseSession(config.controllerHome, guard.releaseSessionId.trim());
+        if (
+          committed.operationId !== operationId
+          || !committed.previous?.databaseBackup
+          || !session
+          || session.phase !== 'cutover_attempting'
+        ) throw new Error('RELEASE_SESSION_TRANSACTION_CAPTURE_PRECONDITION_FAILED');
+        recordReleaseSessionTransaction({
+          controllerHome: config.controllerHome,
+          sessionId: session.sessionId,
+          expectedRevision: session.revision,
+          transaction: {
+            schemaVersion: 1,
+            operationId,
+            candidateReleaseId: candidate.manifest.releaseId,
+            cutoverAuthorityRevision: committed.revision,
+            rollbackRelease: committed.previous,
+            startedAt: committed.committedAt,
+          },
+        });
+        releaseSessionTransactionPersisted = true;
+      } catch (error) {
+        activationFailureDetail = `ReleaseSession rollback transaction capture failed before Runtime start: ${error instanceof Error ? error.message : String(error)}`;
+        audit(config, 'release_session_transaction_capture_failed', {
+          serviceTarget: service.target,
+          operationId,
+          requestId: lockRequestId,
+          releaseSessionId: guard.releaseSessionId.trim(),
+          detail: activationFailureDetail,
+        });
+      }
+    }
+
     // The Connector is independently supervised, but its package snapshot proxies
     // the Canonical Runtime. Starting/rebinding it while the Runtime is stopped
     // creates a dependency cycle: Connector readiness waits on a Runtime that has
@@ -4137,8 +4220,9 @@ async function activateRuntimeReleaseInternal(
     // then rebind the Connector and finally require whole-Runtime verification.
     let candidateConnectorBinding: { ok: boolean; attempted: boolean; noOp?: boolean; detail: string } | undefined;
     let storageMigration: ControllerHomeStorageMigration | undefined;
-    let activationFailureDetail: string | undefined;
-    const activated = await rebindStartAndVerifyPrimaryRuntime({
+    const activated = activationFailureDetail
+      ? { ok: false, detail: activationFailureDetail, verify: await observeLocal(config) }
+      : await rebindStartAndVerifyPrimaryRuntime({
       config,
       service,
       runCommand,
@@ -4175,47 +4259,7 @@ async function activateRuntimeReleaseInternal(
     });
     let after = activated.verify;
     if (activated.ok && after.releases.active?.revision === candidate.manifest.releaseId) {
-      let activationReady = true;
-      let releaseSessionTransactionPersisted = false;
-      if (!guard.preserveDatabaseOnFailure && guard.releaseSessionId?.trim()) {
-        try {
-          const authority = readRuntimeReleaseAuthority(config.controllerHome);
-          const session = readReleaseSession(config.controllerHome, guard.releaseSessionId.trim());
-          if (
-            !authority
-            || authority.operationId !== operationId
-            || !authority.previous?.databaseBackup
-            || !session
-            || session.phase !== 'cutover_attempting'
-          ) throw new Error('RELEASE_SESSION_TRANSACTION_CAPTURE_PRECONDITION_FAILED');
-          recordReleaseSessionTransaction({
-            controllerHome: config.controllerHome,
-            sessionId: session.sessionId,
-            expectedRevision: session.revision,
-            transaction: {
-              schemaVersion: 1,
-              operationId,
-              candidateReleaseId: candidate.manifest.releaseId,
-              cutoverAuthorityRevision: authority.revision,
-              rollbackRelease: authority.previous,
-              startedAt: authority.committedAt,
-            },
-          });
-          releaseSessionTransactionPersisted = true;
-        } catch (error) {
-          activationReady = false;
-          activationFailureDetail = `Runtime became healthy but ReleaseSession rollback transaction capture failed: ${error instanceof Error ? error.message : String(error)}`;
-          audit(config, 'release_session_transaction_capture_failed', {
-            serviceTarget: service.target,
-            operationId,
-            requestId: lockRequestId,
-            releaseSessionId: guard.releaseSessionId.trim(),
-            detail: activationFailureDetail,
-          });
-        }
-      }
-      if (activationReady) {
-        audit(config, 'runtime_release_activation_succeeded', {
+      audit(config, 'runtime_release_activation_succeeded', {
           serviceTarget: service.target,
           operationId,
           requestId: lockRequestId,
@@ -4226,20 +4270,19 @@ async function activateRuntimeReleaseInternal(
           connectorBindingRepaired: candidateConnectorBinding?.attempted === true,
           releaseSessionTransactionPersisted,
           ...(guard.releaseSessionId?.trim() ? { releaseSessionId: guard.releaseSessionId.trim() } : {}),
-        });
-        return {
-          ok: true,
-          attempted: true,
-          detail: releaseSessionTransactionPersisted
-            ? 'requested Runtime release activated and verified; physical activation committed and ReleaseSession owns rollback authority through soak'
-            : storageMigration?.migrated
-              ? 'requested Runtime release activated, Controller Home migrated to .noindex storage, persistent Connector rebound, and whole-Runtime verification passed'
-              : 'requested Runtime release activated, persistent Connector rebound, and whole-Runtime verification passed',
-          serviceTarget: service.target,
-          operationId,
-          verify: after,
-        } satisfies RuntimeReleaseActivationResult;
-      }
+      });
+      return {
+        ok: true,
+        attempted: true,
+        detail: releaseSessionTransactionPersisted
+          ? 'requested Runtime release activated and verified; physical activation committed and ReleaseSession owns rollback authority through soak'
+          : storageMigration?.migrated
+            ? 'requested Runtime release activated, Controller Home migrated to .noindex storage, persistent Connector rebound, and whole-Runtime verification passed'
+            : 'requested Runtime release activated, persistent Connector rebound, and whole-Runtime verification passed',
+        serviceTarget: service.target,
+        operationId,
+        verify: after,
+      } satisfies RuntimeReleaseActivationResult;
     }
     if (!activated.ok && !activationFailureDetail) {
       activationFailureDetail = activated.detail;
@@ -5092,7 +5135,7 @@ export async function bootAndVerifyConfiguredRuntimeReleaseSessionCandidate(
         now: Date.now,
         wait: sleep,
         verifyLocal: verifyLocalRuntime,
-        observeLocal: observePrimaryRuntimeRecoveryHealth,
+        observeLocal: observePrimaryRuntimeActivationReadiness,
       });
       if (!initialVerify.ok) throw new Error(`RELEASE_SESSION_CANDIDATE_BOOT_UNVERIFIED: ${initialVerify.runtime.reasonCodes.join(',')}`);
       assertStableReleaseSessionIdentityCurrent(config, session.stableRelease);
@@ -5780,7 +5823,7 @@ export async function rollbackConfiguredRuntimeReleaseSession(
     const wait = dependencies.sleep ?? sleep;
     const runtimeRunning = dependencies.runtimeRunning ?? ((value: RecoveryConfig) => observeRuntimeStatus(value.controllerHome).running);
     const verifyLocal = dependencies.verifyLocal ?? verifyLocalRuntime;
-    const observeLocal = dependencies.observeLocal ?? (dependencies.verifyLocal ? dependencies.verifyLocal : observePrimaryRuntimeRecoveryHealth);
+    const observeLocal = dependencies.observeLocal ?? (dependencies.verifyLocal ? dependencies.verifyLocal : observePrimaryRuntimeActivationReadiness);
     const repairConnectorBinding = dependencies.repairPrimaryConnectorBinding
       ?? ((value: RecoveryConfig) => repairPrimaryConnectorBinding(value, platform));
 

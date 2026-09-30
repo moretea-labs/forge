@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
-import { copyFileSync, existsSync, mkdirSync, renameSync, statSync, unlinkSync } from 'fs';
+import { closeSync, copyFileSync, existsSync, mkdirSync, openSync, readSync, renameSync, statSync, unlinkSync } from 'fs';
 import { dirname, join } from 'path';
 import { durableControllerHome } from '../../../cli/repositories/controller-home';
 
@@ -60,6 +60,36 @@ export interface ControlPlaneDatabaseInspection {
   recordCount: number;
   auditEventCount: number;
   orphanRecordCount: number;
+}
+
+/**
+ * Ephemeral database-wide change fence. SQLite data_version changes whenever a
+ * different connection commits to the same database, including domain tables
+ * that do not participate in control_plane_audit.
+ */
+export interface ControlPlaneDatabaseChangeObserver {
+  path: string;
+  dataVersion(): number;
+  close(): void;
+}
+
+const CONTROL_PLANE_DATABASE_HASH_CHUNK_BYTES = 1024 * 1024;
+
+/** Full snapshot identity without allocating the whole SQLite file. */
+export function sha256ControlPlaneDatabaseFile(path: string): string {
+  const descriptor = openSync(path, 'r');
+  const hash = createHash('sha256');
+  const buffer = Buffer.allocUnsafe(CONTROL_PLANE_DATABASE_HASH_CHUNK_BYTES);
+  try {
+    for (;;) {
+      const bytesRead = readSync(descriptor, buffer, 0, buffer.length, null);
+      if (bytesRead === 0) break;
+      hash.update(buffer.subarray(0, bytesRead));
+    }
+    return hash.digest('hex');
+  } finally {
+    closeSync(descriptor);
+  }
 }
 
 export const CONTROL_PLANE_SQLITE_MAINTENANCE_POLICY_VERSION = 'control-plane-sqlite-maintenance-v1' as const;
@@ -353,6 +383,27 @@ function openDatabaseForRead(controllerHome: string): SqliteDatabase {
   return openDatabase(controllerHome);
 }
 
+export function openControlPlaneDatabaseChangeObserver(controllerHome: string): ControlPlaneDatabaseChangeObserver {
+  const path = controlPlaneDatabasePath(controllerHome);
+  const database = openDatabaseForRead(controllerHome);
+  let closed = false;
+  const dataVersion = () => {
+    if (closed) throw new Error('CONTROL_PLANE_DATABASE_CHANGE_OBSERVER_CLOSED');
+    return integerPragma(database, 'PRAGMA data_version', 'data_version');
+  };
+  // Prime the connection before returning it so the first caller observation
+  // is relative to an established SQLite connection, not connection startup.
+  dataVersion();
+  return {
+    path,
+    dataVersion,
+    close() {
+      if (closed) return;
+      closed = true;
+      database.close();
+    },
+  };
+}
 
 function withDatabaseForRead<T>(controllerHome: string, operation: (database: SqliteDatabase) => T): T {
   const path = controlPlaneDatabasePath(controllerHome);

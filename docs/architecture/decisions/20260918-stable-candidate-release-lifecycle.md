@@ -130,13 +130,33 @@ Physical service handoff follows the same effect rule: a launchd/systemd helper
 error or timeout is not itself authority that the requested stop/start failed.
 Recovery performs bounded observation of the exact service identity and may
 continue the same fenced transaction only when the physical effect is proven;
-otherwise that transaction fails. During the stop/start critical section,
-readiness convergence uses bounded Runtime/transport observation only; strict
-whole-Runtime verification runs once at the acceptance boundary after any
-required Connector rebinding. This preserves the verification gate without
-turning execution canaries, recoverability inspection, or MCP protocol checks
-into a polling loop. Recovery never replays a cutover merely because a helper
-response was lost.
+otherwise that transaction fails. Before stopping Stable A, Recovery may build
+the rollback SQLite snapshot while A is still serving, but only under a
+long-lived SQLite `data_version` observer. Any commit by another SQLite
+connection during or after that speculative snapshot invalidates it; after
+quiescence the release store discards it and falls back to the stopped-state
+snapshot. Recovery also computes the bounded SHA-256 of that snapshot while A
+is still serving. RuntimeReleaseAuthority persists this whole-database identity;
+on rollback, a fresh live `VACUUM INTO` snapshot is compared against it. Only an
+identical whole-database snapshot may be restored from the cutover backup. Any
+SQLite change, including domain tables outside `control_plane_audit`, preserves
+the newer live database while the Runtime release rolls back. Legacy backups
+without whole-database identity also preserve live state. This optimization
+therefore removes normal-path database copy/hash cost from the outage window
+without weakening rollback or losing post-cutover durable state.
+
+During the stop/start critical section, readiness convergence is intentionally
+narrow: canonical Runtime owner/status, exact release/artifact authority and the
+local `/ready` endpoint. Recovery Gateway/watchdog/tunnel probes, Connector
+transport probes, execution canaries, known-good inspection and MCP protocol
+verification are not activation-readiness inputs. After Runtime readiness,
+Recovery rebinds the persistent Connector and then runs strict whole-Runtime
+verification exactly once. There is no second readiness polling phase after
+Connector rebinding. Once the physical candidate authority is published, the
+ReleaseSession rollback transaction is durably captured before Candidate B is
+started, so every later start/Connector/acceptance failure already has exact
+Stable A rollback identity. Recovery never replays a cutover merely because a
+helper response was lost.
 Automatic source reconciliation is also revision-bounded: once an immutable
 source revision has any terminal ReleaseSession, the daemon will not create a
 second automatic ReleaseSession for that same revision. Explicit human release
@@ -174,7 +194,10 @@ the service contract records a token *path*, while each B token is an independen
 - byte-identical release-tree identity is required for B→A promotion; no production rebuild is allowed;
 - stale Runtime generation and release claims cannot write;
 - every Recovery restart/release transition proves service, Runtime owner, TCP listener and Supervisor writer quiescence before authority may change;
-- Recovery restart/cutover readiness polling is bounded observation; strict whole-Runtime verification remains a single post-convergence acceptance gate;
+- Recovery restart/cutover readiness polling is bounded to fenced Runtime identity plus local readiness; strict whole-Runtime verification remains a single post-Connector acceptance gate;
+- the normal cutover prebuilds and hashes its rollback SQLite snapshot while Stable A is live and reuses it only when one SQLite-wide `data_version` observer proves no intervening commit; otherwise stopped-state backup remains the fail-closed fallback;
+- rollback restores the cutover SQLite snapshot only when whole-snapshot SHA-256 matches a fresh live snapshot; any database-wide change preserves live SQLite, while `auditEventCount` remains compatibility/diagnostic evidence only;
+- ReleaseSession captures exact rollback transaction identity immediately after the physical authority publish and before Candidate B starts;
 - private writer environment cannot cross service or child boundaries;
 - stale or missing known-good bundle material cannot protect a release;
 - ReleaseSession cannot advance past static/candidate gates or a stale CAS;

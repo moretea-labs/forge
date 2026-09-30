@@ -5,7 +5,10 @@ import { ensureControllerHome } from '../../cli/repositories/controller-home';
 import {
   backupControlPlaneDatabase,
   controlPlaneDatabasePath,
+  openControlPlaneDatabaseChangeObserver,
   restoreControlPlaneDatabase,
+  sha256ControlPlaneDatabaseFile,
+  type ControlPlaneDatabaseChangeObserver,
   type ControlPlaneDatabaseInspection,
 } from '../control-plane/persistence/sqlite-store';
 import { loadRuntimeReleaseManifest } from './release-manifest';
@@ -21,10 +24,12 @@ export interface RuntimeDatabaseBackup {
   path: string;
   schemaVersion: number;
   createdAt: string;
-  /** Monotonic durable-mutation generation from control_plane_audit. */
+  /** Legacy partial mutation evidence retained for wire compatibility/audit. */
   auditEventCount?: number;
   /** Diagnostic cardinality captured with the same SQLite snapshot. */
   recordCount?: number;
+  /** Whole SQLite snapshot identity; authoritative for rollback freshness. */
+  databaseSha256?: string;
 }
 
 export interface RuntimePublishedRelease {
@@ -51,6 +56,18 @@ export interface RuntimeReleaseAuthority {
 export interface RuntimeReleaseStoreDependencies {
   backupDatabase(controllerHome: string, destinationPath: string): ControlPlaneDatabaseInspection;
   restoreDatabase(controllerHome: string, backupPath: string): ControlPlaneDatabaseInspection;
+  openDatabaseChangeObserver?(controllerHome: string): ControlPlaneDatabaseChangeObserver;
+}
+
+export interface PreparedRuntimeReleaseDatabaseBackup {
+  controllerHome: string;
+  activeReleaseId: string;
+  operationId: string;
+  path: string;
+  inspection: ControlPlaneDatabaseInspection;
+  databaseSha256: string;
+  takeIfCurrent(): { path: string; inspection: ControlPlaneDatabaseInspection; databaseSha256: string } | undefined;
+  discard(): void;
 }
 
 export type RuntimeDatabaseRollbackDisposition =
@@ -68,6 +85,7 @@ export interface RuntimeReleaseRollbackResult {
 const DEFAULT_DEPENDENCIES: RuntimeReleaseStoreDependencies = {
   backupDatabase: backupControlPlaneDatabase,
   restoreDatabase: restoreControlPlaneDatabase,
+  openDatabaseChangeObserver: openControlPlaneDatabaseChangeObserver,
 };
 
 const RUNTIME_RELEASE_STATE_RESERVE_BYTES = 64 * 1024 * 1024;
@@ -170,6 +188,8 @@ function validRelease(controllerHome: string, release: RuntimePublishedRelease |
           || (Number.isSafeInteger(release.databaseBackup.auditEventCount) && release.databaseBackup.auditEventCount >= 0))
         && (release.databaseBackup.recordCount === undefined
           || (Number.isSafeInteger(release.databaseBackup.recordCount) && release.databaseBackup.recordCount >= 0))
+        && (release.databaseBackup.databaseSha256 === undefined
+          || /^[a-f0-9]{64}$/i.test(release.databaseBackup.databaseSha256))
       ));
   } catch {
     return false;
@@ -305,16 +325,79 @@ export function ensureActiveRuntimeRelease(
   });
 }
 
+export function prepareRuntimeReleaseDatabaseBackup(
+  controllerHome: string,
+  operationId: string,
+  dependencies: RuntimeReleaseStoreDependencies = DEFAULT_DEPENDENCIES,
+): PreparedRuntimeReleaseDatabaseBackup | undefined {
+  if (!operationId.trim()) throw new Error('RUNTIME_RELEASE_OPERATION_ID_REQUIRED');
+  const current = mutableRuntimeReleaseAuthority(controllerHome);
+  if (!current) return undefined;
+  assertDatabaseBackupHeadroom(controllerHome, 'prepare_runtime_release_database_backup');
+  const observer = (dependencies.openDatabaseChangeObserver ?? openControlPlaneDatabaseChangeObserver)(controllerHome);
+  const initialDataVersion = observer.dataVersion();
+  const path = backupPath(controllerHome, current.active.releaseId, operationId);
+  let settled = false;
+  try {
+    const inspection = dependencies.backupDatabase(controllerHome, path);
+    const databaseSha256 = sha256ControlPlaneDatabaseFile(path);
+    const capturedDataVersion = observer.dataVersion();
+    if (capturedDataVersion !== initialDataVersion) {
+      observer.close();
+      rmSync(path, { force: true });
+      return undefined;
+    }
+    const discard = () => {
+      if (settled) return;
+      settled = true;
+      observer.close();
+      rmSync(path, { force: true });
+    };
+    return {
+      controllerHome: resolve(controllerHome),
+      activeReleaseId: current.active.releaseId,
+      operationId,
+      path: resolve(path),
+      inspection,
+      databaseSha256,
+      takeIfCurrent() {
+        if (settled) return undefined;
+        settled = true;
+        try {
+          const currentDataVersion = observer.dataVersion();
+          if (currentDataVersion !== capturedDataVersion) {
+            rmSync(path, { force: true });
+            return undefined;
+          }
+          return { path: resolve(path), inspection, databaseSha256 };
+        } catch (error) {
+          rmSync(path, { force: true });
+          throw error;
+        } finally {
+          observer.close();
+        }
+      },
+      discard,
+    };
+  } catch (error) {
+    observer.close();
+    rmSync(path, { force: true });
+    throw error;
+  }
+}
+
 export function publishRuntimeRelease(
   controllerHome: string,
   manifestPath: string,
   operationId: string,
   dependencies: RuntimeReleaseStoreDependencies = DEFAULT_DEPENDENCIES,
+  preparedDatabaseBackup?: PreparedRuntimeReleaseDatabaseBackup,
 ): RuntimeReleaseAuthority {
   if (!operationId.trim()) throw new Error('RUNTIME_RELEASE_OPERATION_ID_REQUIRED');
   const candidate = manifestRecord(controllerHome, manifestPath);
   const current = mutableRuntimeReleaseAuthority(controllerHome);
   if (!current) {
+    preparedDatabaseBackup?.discard();
     return writeRuntimeReleaseAuthority(controllerHome, {
       schemaVersion: 2,
       status: 'committed',
@@ -325,10 +408,34 @@ export function publishRuntimeRelease(
       committedAt: new Date().toISOString(),
     });
   }
-  if (sameRelease(current.active, candidate)) return current;
-  assertDatabaseBackupHeadroom(controllerHome, 'publish_runtime_release_database_backup');
-  const backup = backupPath(controllerHome, current.active.releaseId, operationId);
-  const inspection = dependencies.backupDatabase(controllerHome, backup);
+  if (sameRelease(current.active, candidate)) {
+    preparedDatabaseBackup?.discard();
+    return current;
+  }
+  let prepared: { path: string; inspection: ControlPlaneDatabaseInspection; databaseSha256: string } | undefined;
+  if (
+    preparedDatabaseBackup
+    && preparedDatabaseBackup.controllerHome === resolve(controllerHome)
+    && preparedDatabaseBackup.activeReleaseId === current.active.releaseId
+    && preparedDatabaseBackup.operationId === operationId
+  ) {
+    prepared = preparedDatabaseBackup.takeIfCurrent();
+  } else {
+    preparedDatabaseBackup?.discard();
+  }
+  let backup: string;
+  let inspection: ControlPlaneDatabaseInspection;
+  let databaseSha256: string;
+  if (prepared) {
+    backup = prepared.path;
+    inspection = prepared.inspection;
+    databaseSha256 = prepared.databaseSha256;
+  } else {
+    assertDatabaseBackupHeadroom(controllerHome, 'publish_runtime_release_database_backup');
+    backup = backupPath(controllerHome, current.active.releaseId, operationId);
+    inspection = dependencies.backupDatabase(controllerHome, backup);
+    databaseSha256 = sha256ControlPlaneDatabaseFile(backup);
+  }
   const committedAt = new Date().toISOString();
   return writeRuntimeReleaseAuthority(controllerHome, {
     schemaVersion: 2,
@@ -344,6 +451,7 @@ export function publishRuntimeRelease(
         createdAt: committedAt,
         auditEventCount: inspection.auditEventCount,
         recordCount: inspection.recordCount,
+        databaseSha256,
       },
     },
     operationId,
@@ -376,14 +484,19 @@ export function rollbackRuntimeReleaseWithResult(
   );
   const currentBackup = backupPath(controllerHome, current.active.releaseId, operationId);
   const currentInspection = dependencies.backupDatabase(controllerHome, currentBackup);
+  const currentDatabaseSha256 = sha256ControlPlaneDatabaseFile(currentBackup);
+  const rollbackDatabaseSha256 = target.databaseBackup.databaseSha256;
   const rollbackAuditEventCount = target.databaseBackup.auditEventCount;
   if (rollbackAuditEventCount !== undefined && currentInspection.auditEventCount < rollbackAuditEventCount) {
     rmSync(currentBackup, { force: true });
     throw new Error(`RUNTIME_RELEASE_DATABASE_GENERATION_REGRESSED: rollback=${rollbackAuditEventCount}; live=${currentInspection.auditEventCount}`);
   }
-  const databaseDisposition: RuntimeDatabaseRollbackDisposition = rollbackAuditEventCount === undefined
+  // auditEventCount covers only record-store mutations and is retained as
+  // diagnostic/legacy evidence. Whole-snapshot identity is the only proof that
+  // no SQLite domain state changed after cutover.
+  const databaseDisposition: RuntimeDatabaseRollbackDisposition = rollbackDatabaseSha256 === undefined
     ? 'preserved_unversioned_backup'
-    : currentInspection.auditEventCount === rollbackAuditEventCount
+    : currentDatabaseSha256 === rollbackDatabaseSha256
       ? 'restored_backup'
       : 'preserved_newer_live_state';
   if (databaseDisposition === 'restored_backup') {
@@ -412,6 +525,7 @@ export function rollbackRuntimeReleaseWithResult(
           createdAt: committedAt,
           auditEventCount: currentInspection.auditEventCount,
           recordCount: currentInspection.recordCount,
+          databaseSha256: currentDatabaseSha256,
         },
       },
       operationId,

@@ -4224,9 +4224,10 @@ describe('standalone recovery on canonical Runtime', () => {
           return { ok: true, status: 0, stdout: '', stderr: '' };
         },
         runtimeRunning: () => false,
-        verifyLocal: async () => ++strictLocalProbes >= 2
-          ? candidateHealthy()
-          : { ...healthyVerify(), ok: false, runtime: { ok: false, running: false, ready: false, stale: false, reasonCodes: ['RUNTIME_UNAVAILABLE'] } },
+        verifyLocal: async () => {
+          strictLocalProbes += 1;
+          return candidateHealthy();
+        },
         observeLocal: async () => ++readinessProbes >= 3
           ? candidateHealthy()
           : { ...healthyVerify(), ok: false, runtime: { ok: false, running: false, ready: false, stale: false, reasonCodes: ['RUNTIME_UNAVAILABLE'] } },
@@ -4234,7 +4235,7 @@ describe('standalone recovery on canonical Runtime', () => {
         sleep: async () => undefined,
       });
       expect(result).toMatchObject({ ok: true, attempted: true });
-      expect(strictLocalProbes).toBe(2);
+      expect(strictLocalProbes).toBe(1);
       expect(readinessProbes).toBeGreaterThan(strictLocalProbes);
       const authority = readRuntimeReleaseAuthority(home)!;
       expect(authority.active.releaseId).toBe(candidateReleaseId);
@@ -4386,7 +4387,9 @@ describe('standalone recovery on canonical Runtime', () => {
       });
       expect(restoredAuthority?.previous).toBeUndefined();
       expect(commands.filter((args) => args.includes('kickstart')).length).toBeGreaterThanOrEqual(2);
-      expect(strictProbes).toBe(3);
+      // Candidate B and restored Stable A each cross exactly one strict
+      // acceptance boundary; no redundant pre-stop strict verification remains.
+      expect(strictProbes).toBe(2);
       expect(candidateStrictProbes).toBe(1);
       expect(readinessProbes).toBeGreaterThan(candidateStrictProbes);
       expect(connectorBindingStates).toEqual(['release-failed-activation:runtime-started', 'release-a:runtime-started']);
