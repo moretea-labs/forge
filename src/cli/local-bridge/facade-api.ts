@@ -35,8 +35,11 @@ import {
   dismissHandoffItem,
   getHandoffItem,
   getWorkContract,
+  getPlanContract,
+  listPlanSemanticRevisionRecords,
   listHandoffItems,
   listWorkContracts,
+  listWorkSemanticRevisionRecords,
   normalizeCheckIds,
   createWorkSemanticContext,
   workSemanticView,
@@ -48,6 +51,15 @@ import {
   type SuggestedNextAction,
   type WorkContract,
 } from '../../runtime/control-plane/facade';
+
+export interface ConsoleWorkDetailViewModel {
+  summary: WorkSummaryViewModel;
+  semanticRevisions: ReturnType<typeof listWorkSemanticRevisionRecords>;
+  plan?: {
+    current: ReturnType<typeof getPlanContract>;
+    semanticRevisions: ReturnType<typeof listPlanSemanticRevisionRecords>;
+  };
+}
 import { resolveHandoffAndTriggerContinuation } from '../../runtime/workflow/schedules/work-continuation';
 import { buildRuntimeMaintenanceStatus } from '../../runtime/recovery';
 import { applySafePatch } from '../repositories/safe-patch';
@@ -1207,6 +1219,26 @@ export function getConsoleWork(ctx: ConsoleFacadeContext, workId: string): WorkS
   return work
     ? mapWorkSummary(work, { controllerHome: ctx.controllerHome, repoId: ctx.repository.repoId })
     : undefined;
+}
+
+export function getConsoleWorkDetail(ctx: ConsoleFacadeContext, workId: string): ConsoleWorkDetailViewModel | undefined {
+  const work = getWorkContract(store(ctx), workId);
+  if (!work) return undefined;
+  const summary = mapWorkSummary(work, { controllerHome: ctx.controllerHome, repoId: ctx.repository.repoId });
+  const semanticRevisions = listWorkSemanticRevisionRecords({ controllerHome: ctx.controllerHome, repoId: ctx.repository.repoId }, workId, 50);
+  const plan = work.planId
+    ? getPlanContract({ controllerHome: ctx.controllerHome, repoId: ctx.repository.repoId }, work.planId)
+    : undefined;
+  return {
+    summary,
+    semanticRevisions,
+    ...(plan ? {
+      plan: {
+        current: plan,
+        semanticRevisions: listPlanSemanticRevisionRecords({ controllerHome: ctx.controllerHome, repoId: ctx.repository.repoId }, plan.planId).slice(0, 50),
+      },
+    } : {}),
+  };
 }
 
 export function listConsoleWork(ctx: ConsoleFacadeContext, status: 'active' | 'all' = 'active'): WorkSummaryViewModel[] {

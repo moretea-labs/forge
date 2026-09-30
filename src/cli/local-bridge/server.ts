@@ -93,6 +93,7 @@ import {
   dismissConsoleHandoff,
   getConsoleHandoff,
   getConsoleWork,
+  getConsoleWorkDetail,
   listConsoleHandoffs,
   listConsoleWork,
   mapRepositoryCard,
@@ -1278,6 +1279,19 @@ export async function startLocalBridgeServer(
     try {
       const repository = requestRepositorySelection(request, options, controllerHome);
       response.json(v3ProviderConnection(repository.canonicalRoot));
+    } catch (error) {
+      response.status(400).json({ error: errorMessage(error) });
+    }
+  });
+
+  app.get("/api/client/v3/work/:workId", (request, response) => {
+    try {
+      const detail = getConsoleWorkDetail(consoleCtx(request), request.params.workId);
+      if (!detail) {
+        response.status(404).json({ error: 'WORK_NOT_FOUND' });
+        return;
+      }
+      response.json({ schemaVersion: 1, ...detail });
     } catch (error) {
       response.status(400).json({ error: errorMessage(error) });
     }

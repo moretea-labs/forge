@@ -2,6 +2,7 @@ export type Mode = 'mcp' | 'local';
 export type Scope = 'assistant' | 'projects';
 export type WorkState = 'active' | 'blocked' | 'planned' | 'done';
 export type Work = { id:string; title:string; summary:string; state:WorkState; repository:string; plan?:string; requirement?:string; parentId?:string; dependsOn?:string[]; updatedAt:string; evidence?:string[]; statusLabel?:string; phase?:string; nextAction?:string; latestAction?:string; acceptanceCriteria?:string[]; evidenceLabels?:string[]; changedFiles?:{count:number; examples:string[]}; error?:{title:string; explanation:string; nextActions:string[]}; };
+export type WorkDetail = { semanticRevisions:Array<{ revision:number; recordedAt?:string; requirementId?:string; planId?:string; semanticParentWorkId?:string; dependsOnWorkIds?:string[]; objective?:string }>; plan?:{current?:{planId:string; revision?:number; goal?:string}; semanticRevisions:Array<{revision:number; recordedAt?:string; goal?:string}>} };
 export type Project = { id:string; name:string; path:string; branch:string; work:Work[] };
 export type ProviderConnection = { id:string; label:string; configured:boolean; status:'ready'|'login_required'|'failed'|'not_configured'; nextAction:string };
 export type RequirementRoot = { requirementId:string; title:string; outcome:string; state:string; persistedState?:string; needsAttention?:boolean; activePlanIds?:string[]; updatedAt?:string };
@@ -23,6 +24,7 @@ async function nativeBootstrap():Promise<any|undefined>{ return nativeInvoke<any
 export async function startNativeWork(objective:string):Promise<any|undefined>{ return nativeInvoke<any>('local_bridge_start_work',{objective}); }
 export async function connectNativeProvider():Promise<any|undefined>{ return nativeInvoke<any>('local_bridge_connect_provider'); }
 export async function sendNativeLocalMessage(prompt:string,sessionId?:string):Promise<any|undefined>{ return nativeInvoke<any>('local_bridge_local_message',{prompt,...(sessionId?{sessionId}:{})}); }
+export async function loadNativeWorkDetail(workId:string):Promise<WorkDetail|undefined>{ return nativeInvoke<WorkDetail>('local_bridge_work_detail',{workId}); }
 
 export function loadLocalThreads():LocalThread[]{
   try {
@@ -49,6 +51,7 @@ async function json<T>(path:string):Promise<T>{ const token=import.meta.env.VITE
 export async function startLiveWork(objective:string):Promise<any>{ const token=import.meta.env.VITE_FORGE_LOCAL_BRIDGE_TOKEN; const response=await fetch('/api/console/work/start',{method:'POST',credentials:'same-origin',headers:{'content-type':'application/json',...(token?{'x-forge-local-token':token}: {})},body:JSON.stringify({objective,scopeClear:true})}); if(!response.ok) throw new Error(`HTTP ${response.status}`); return response.json(); }
 export async function connectLiveProvider():Promise<any>{ const token=import.meta.env.VITE_FORGE_LOCAL_BRIDGE_TOKEN; const response=await fetch('/api/client/v3/provider/connect',{method:'POST',credentials:'same-origin',headers:{...(token?{'x-forge-local-token':token}: {})}}); const body=await response.json(); if(!response.ok) throw new Error(body.error ?? `HTTP ${response.status}`); return body; }
 export async function sendLiveLocalMessage(prompt:string,sessionId?:string):Promise<any>{ const token=import.meta.env.VITE_FORGE_LOCAL_BRIDGE_TOKEN; const response=await fetch('/api/client/v3/local/message',{method:'POST',credentials:'same-origin',headers:{'content-type':'application/json',...(token?{'x-forge-local-token':token}: {})},body:JSON.stringify({prompt,...(sessionId?{sessionId}:{})})}); const body=await response.json(); if(!response.ok) throw new Error(body.error ?? `HTTP ${response.status}`); return body; }
+export async function loadLiveWorkDetail(workId:string):Promise<WorkDetail>{ const token=import.meta.env.VITE_FORGE_LOCAL_BRIDGE_TOKEN; const response=await fetch(`/api/client/v3/work/${encodeURIComponent(workId)}`,{credentials:'same-origin',headers:token?{'x-forge-local-token':token}:undefined}); const body=await response.json(); if(!response.ok) throw new Error(body.error ?? `HTTP ${response.status}`); return body as WorkDetail; }
 function runtimeSnapshot(recovery:NativeRecoveryResult):Snapshot { const runtime=recovery.payload.runtime; const ready=runtime?.ready===true && runtime.running!==false && runtime.stale!==true; return {...preview,runtime:ready?'ready':runtime?.running?'attention':'offline',runtimeLabel:ready?'Forge Runtime ready':runtime?.running?'Forge Runtime starting':'Forge Runtime unavailable',source:'native'}; }
 function bootstrapSnapshot(bootstrap:any, source:'live'|'native'):Snapshot {
   const repositories=bootstrap.repositories ?? [];
