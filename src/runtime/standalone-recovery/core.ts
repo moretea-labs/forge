@@ -12,7 +12,8 @@ import { backupControlPlaneDatabase } from '../control-plane/persistence/sqlite-
 import { measureReclaimablePath } from '../control-plane/lifecycle-retention-metrics';
 import { cleanupControllerReleaseHistory } from '../control-plane/release-retention';
 import { observeRuntimeStatus, readRuntimeStartupFailureEvidence } from '../root/status';
-import { reconcileStoppedRuntimeOwnership, terminateVerifiedRuntimeOwner } from '../root/ownership';
+import { reconcileStoppedRuntimeOwnership, terminateVerifiedRuntimeOwner, readRuntimeOwner } from '../root/ownership';
+import type { RuntimeOwnerRecord } from '../root/ownership';
 import {
   activeRuntimeEntrypoint,
   activeRuntimeLaunchSpec,
@@ -1847,26 +1848,34 @@ function estimateReleaseSessionCandidateBytes(config: RecoveryConfig, manifestPa
   const releaseMeasurement = measureReclaimablePath(releaseRoot, 100_000);
   const sourceRoot = config.primaryRuntimeSourceRoot?.trim();
   if (!sourceRoot) throw new Error('RELEASE_SESSION_STORAGE_SOURCE_UNAVAILABLE');
-  const sourceMeasurement = measureReclaimablePath(resolve(sourceRoot), 100_000);
+  const resolvedSourceRoot = resolve(sourceRoot);
+  const sourceMeasurement = measureReclaimablePath(resolvedSourceRoot, 100_000);
+  const dependencyRoot = join(resolvedSourceRoot, 'node_modules');
+  const dependencyMeasurement = existsSync(dependencyRoot)
+    ? measureReclaimablePath(realpathSync(dependencyRoot), 1_000_000)
+    : { bytes: 0, entries: 0, complete: true };
   const databasePath = join(resolve(config.controllerHome), 'control-plane.sqlite');
   let databaseBytes: number;
   try { databaseBytes = Math.max(0, statSync(databasePath).size); }
   catch (error) { throw new Error(`RELEASE_SESSION_STORAGE_DATABASE_UNAVAILABLE: ${error instanceof Error ? error.message : String(error)}`); }
   if (!releaseMeasurement.complete) throw new Error('RELEASE_SESSION_STORAGE_RELEASE_ESTIMATE_INCOMPLETE');
   if (!sourceMeasurement.complete) throw new Error('RELEASE_SESSION_STORAGE_SOURCE_ESTIMATE_INCOMPLETE');
+  if (!dependencyMeasurement.complete) throw new Error('RELEASE_SESSION_STORAGE_DEPENDENCY_ESTIMATE_INCOMPLETE');
   // The candidate is rebuilt from the frozen checkout, not copied from the
-  // active release. Size admission must therefore account for whichever input
-  // is larger, plus the consistent SQLite snapshot; the active tree alone can
-  // understate a newer checkout and allow a mid-build disk exhaustion.
-  const sourceBytes = Math.max(releaseMeasurement.bytes, sourceMeasurement.bytes) + databaseBytes;
+  // active release. It creates a detached worktree, a dependency-inclusive
+  // package snapshot, compiled artifacts, and a consistent SQLite snapshot.
+  // Account for each independently rather than treating the active tree as a
+  // proxy for the build's incremental footprint.
+  const sourceBytes = releaseMeasurement.bytes
+    + sourceMeasurement.bytes
+    + dependencyMeasurement.bytes
+    + databaseBytes;
   if (!Number.isFinite(sourceBytes) || sourceBytes < 1) throw new Error('RELEASE_SESSION_STORAGE_ESTIMATE_INVALID');
-  // Candidate creation first copies the database and then builds a new
-  // immutable release. The active release plus database is the only measured
-  // operation-specific baseline available before staging; reserve one more
-  // baseline-sized footprint for compiler/materialization variance instead of
-  // treating the global warning threshold as rollback capacity.
-  const baselineBytes = Math.max(1, Math.ceil(sourceBytes));
-  return { requiredBytes: baselineBytes, reserveBytes: baselineBytes };
+  // Keep an equally sized reserve for compiler/materialization variance and
+  // atomic promotion, rather than treating the global warning threshold as
+  // rollback capacity.
+  const measuredBytes = Math.max(1, Math.ceil(sourceBytes));
+  return { requiredBytes: measuredBytes, reserveBytes: measuredBytes };
 }
 
 /** Explicitly records evidence only after the full independent verification passed. */
@@ -3465,6 +3474,7 @@ async function stopPrimaryRuntimeForReleaseTransition(input: {
   runCommand: CommandRunner;
   runtimeRunning: (config: RecoveryConfig) => boolean;
 }): Promise<PrimaryRuntimeStoppedTransition> {
+  const ownerBeforeStop: RuntimeOwnerRecord | null = readRuntimeOwner(input.config.controllerHome) ?? null;
   const stopped = await stopPrimaryRuntimeServiceOwner(input.service, input.runCommand);
   if (!stopped.ok) return { ok: false, detail: stopped.detail };
   const serviceStopped = await waitForPrimaryRuntimeServiceStopped({
@@ -3492,7 +3502,7 @@ async function stopPrimaryRuntimeForReleaseTransition(input: {
     runtimeRunning: input.runtimeRunning,
   });
   if (!runtimeStopped) {
-    const orphanTermination = await terminateVerifiedRuntimeOwner(input.config.controllerHome);
+    const orphanTermination = await terminateVerifiedRuntimeOwner(input.config.controllerHome, ownerBeforeStop);
     if (!orphanTermination.ok) {
       return {
         ok: false,
@@ -3544,7 +3554,7 @@ async function stopPrimaryRuntimeForReleaseTransition(input: {
     // exited. The service and port fences above make this a safe, bounded
     // orphan-termination point; use the same process-identity proof as the
     // running-state path instead of treating the durable owner as permanent.
-    const orphanTermination = await terminateVerifiedRuntimeOwner(input.config.controllerHome);
+    const orphanTermination = await terminateVerifiedRuntimeOwner(input.config.controllerHome, ownerBeforeStop);
     if (!orphanTermination.ok) {
       return {
         ok: false,

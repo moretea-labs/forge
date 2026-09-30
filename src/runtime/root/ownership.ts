@@ -188,7 +188,10 @@ export function reconcileStoppedRuntimeOwnership(controllerHome: string): {
 }
 
 
-export async function terminateVerifiedRuntimeOwner(controllerHome: string): Promise<{
+export async function terminateVerifiedRuntimeOwner(
+  controllerHome: string,
+  expectedOwner?: RuntimeOwnerRecord | null,
+): Promise<{
   ok: boolean;
   attempted: boolean;
   detail: string;
@@ -196,6 +199,37 @@ export async function terminateVerifiedRuntimeOwner(controllerHome: string): Pro
   termination?: ProcessTreeTerminationResult;
 }> {
   const owner = readRuntimeOwner(controllerHome);
+  if (expectedOwner) {
+    if (!owner) {
+      return {
+        ok: true,
+        attempted: false,
+        detail: 'Runtime owner disappeared during stop',
+        owner: expectedOwner,
+      };
+    }
+    if (
+      owner.pid !== expectedOwner.pid
+      || owner.runtimeInstanceId !== expectedOwner.runtimeInstanceId
+      || owner.fencingGeneration !== expectedOwner.fencingGeneration
+      || owner.processStartTime !== expectedOwner.processStartTime
+      || owner.executableFingerprint !== expectedOwner.executableFingerprint
+    ) {
+      return {
+        ok: false,
+        attempted: false,
+        detail: 'RUNTIME_OWNER_CHANGED_DURING_STOP',
+        owner,
+      };
+    }
+  } else if (owner) {
+    return {
+      ok: false,
+      attempted: false,
+      detail: 'RUNTIME_OWNER_APPEARED_DURING_STOP',
+      owner,
+    };
+  }
   if (!owner) return { ok: true, attempted: false, detail: 'Runtime owner is already absent' };
   if (!isProcessAlive(owner.pid)) {
     return { ok: true, attempted: false, detail: 'Runtime owner process is already dead', owner };

@@ -144,7 +144,7 @@ function publicationLeasePath(controllerHome: string, operationId: string): stri
 function writePublicationLease(
   controllerHome: string,
   operationId: string,
-  candidateReleasePath: string,
+  candidateManifestPath: string,
   backupPathValue?: string,
 ): () => void {
   const path = publicationLeasePath(controllerHome, operationId);
@@ -153,7 +153,7 @@ function writePublicationLease(
     schemaVersion: 1,
     pid: process.pid,
     operationId,
-    candidateReleasePath: resolve(candidateReleasePath),
+    candidateReleasePath: resolve(dirname(candidateManifestPath)),
     ...(backupPathValue ? { backupPath: resolve(backupPathValue) } : {}),
   };
   const temporary = `${path}.${randomUUID().slice(0, 8)}.tmp`;
