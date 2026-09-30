@@ -168,6 +168,7 @@
     "check:task-workflow": "bun src/cli/index.ts run check-task-workflow --strict",
     "runtime:activate-source-baseline": "bun scripts/activate-source-baseline.ts request",
     "plugin:install-desktop-operator": "bun scripts/install-desktop-operator-registration.ts",
+    "package:v3-macos": "bash scripts/package-v3-client-macos.sh",
     "sync:brain-docs": "bun src/cli/index.ts run sync-brain-docs --all",
     "sync:codex-installed": "bash scripts/sync-codex-installed-copies.sh",
     "check:forge-runtime": "bash scripts/verify-forge-runtime.sh",

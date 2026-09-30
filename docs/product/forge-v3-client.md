@@ -60,6 +60,15 @@ initial boundary probe. `recovery_status`, `recovery_restart_runtime`,
 Runtime/Recovery/Work owners; they do not create a second persistence or
 lifecycle authority.
 
+## macOS packaging
+
+`apps/desktop/src-tauri/tauri.conf.json` enables the native application bundle.
+Use `scripts/package-v3-client-macos.sh` with
+`FORGE_MACOS_SIGNING_IDENTITY` to build the arm64 `.app`, sign it with the
+selected Developer ID, verify the code signature, and create/verify the DMG.
+Apple notarization is a separate release step and is not claimed by this local
+package script.
+
 ## Required empty and failure states
 
 - No repository: Assistant remains usable; Projects explains how to add one.
