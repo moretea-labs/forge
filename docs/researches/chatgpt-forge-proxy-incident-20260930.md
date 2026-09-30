@@ -73,3 +73,17 @@ composition now omits the lower-layer ID when it equals the completion source,
 allowing Supervisor to derive its stable successor ID from the completion
 fingerprint. This preserves effect ownership and idempotency without rewriting
 historical records, adding a retry loop, or replaying the applied source.
+
+## Cross-conversation settlement defect
+
+After deploying the successor correction, the same 30-second window still
+contained 15 reservation failures. Read-only Supervisor evidence narrowed the
+remaining case to a completed Work's old conversation whose Requirement had
+advanced to another Work and conversation. The new provider effect was already
+owned by that new conversation's Supervisor task. Requirement lookup alone
+therefore crossed the completion's conversation authority before reservation.
+
+Settlement now checks the current Work's canonical conversation binding before
+any mutable claim or settlement and rejects a different conversation ID. The
+existing CAS-rebind test verifies that stale completion leaves the relay
+unchanged. No historical database records or other conversations are rewritten.

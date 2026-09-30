@@ -879,7 +879,7 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     supervisorStore.close();
   });
 
-  test('retires a predecessor browser task after the Work CAS-rebinds to a fresh conversation', () => {
+  test('retires a predecessor browser task after the Work CAS-rebinds to a fresh conversation', async () => {
     const fx = fixture();
     const requirementId = 'REQ-supervisor-conversation-rebind';
     const workId = 'work-supervisor-conversation-rebind';
@@ -904,7 +904,7 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
       continuationPolicy: { kind: 'forge_goal_outer_turn' },
       userBlockerPolicy: { controller_home: fx.controllerHome, repo_id: fx.repository.repoId, requirement_id: requirementId },
     });
-    control.reserveEnrollment(oldTaskId);
+    const oldEnrollment = control.reserveEnrollment(oldTaskId);
     expect(control.browserTasks()).toHaveLength(1);
 
     rebindChatgptWorkConversation(fx.store, {
@@ -920,6 +920,18 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     expect(control.browserTasks()).toEqual([]);
     expect(() => control.browserPoll({ conversationId: oldConversationId, conversationUrl: `https://chatgpt.com/c/${oldConversationId}` }))
       .toThrow('WORKFLOW_SUPERVISOR_BROWSER_TASK_INACTIVE');
+    const relayBefore = getRequirementControllerRoundRelay(fx.store, requirementId);
+    const staleCompletion = {
+      completionFingerprint: 'stale-rebound-completion', taskId: oldTaskId,
+      sourceEffectId: oldEnrollment.effectId, action: 'CONTINUE' as const,
+      responseSha256: 'stale-response', controlBlockSha256: 'stale-control',
+      proposal: { action: 'CONTINUE' as const, sourceEffectId: oldEnrollment.effectId, checkpoint: 'old-conversation', reason: 'continue', evidence: [] },
+      committedAt: new Date().toISOString(),
+    };
+    expect(await control.hooks.assistantTurnCommitted?.(control.getTask(oldTaskId)!, staleCompletion)).toMatchObject({
+      continuationAllowed: false, reason: 'WORKFLOW_SUPERVISOR_CONTINUATION_CONVERSATION_MISMATCH',
+    });
+    expect(getRequirementControllerRoundRelay(fx.store, requirementId)).toEqual(relayBefore);
   });
 
   test('retires a stale relay when its canonical origin Work is cancelled', () => {

@@ -175,6 +175,10 @@ async function settleForgeWorkflowSupervisorTurn(
   if (!relay) return { continuationAllowed: false, reason: 'CONTROLLER_ROUND_WORK_RELAY_MISSING' };
 
   const settledWorkId = relay.originWorkId;
+  const currentBinding = getChatgptWorkConversationBinding(store, settledWorkId);
+  if (currentBinding && currentBinding.conversationId !== task.conversationId) {
+    return { continuationAllowed: false, reason: 'WORKFLOW_SUPERVISOR_CONTINUATION_CONVERSATION_MISMATCH' };
+  }
   let liveOwner = getControllerSession(store, settledWorkId);
   if (relay.status === 'dispatched') {
     const retained = liveOwner ?? getRetainedControllerSession(store, settledWorkId);
