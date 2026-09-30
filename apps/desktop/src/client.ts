@@ -5,8 +5,9 @@ export type Work = { id:string; title:string; summary:string; state:WorkState; r
 export type WorkDetail = { semanticRevisions:Array<{ revision:number; recordedAt?:string; requirementId?:string; planId?:string; semanticParentWorkId?:string; dependsOnWorkIds?:string[]; objective?:string }>; plan?:{current?:{planId:string; revision?:number; goal?:string}; semanticRevisions:Array<{revision:number; recordedAt?:string; goal?:string}>} };
 export type Project = { id:string; name:string; path:string; branch:string; work:Work[] };
 export type ProviderConnection = { id:string; label:string; configured:boolean; status:'ready'|'login_required'|'failed'|'not_configured'; nextAction:string };
+export type ConnectionHealth = { status:string; severity:'ok'|'info'|'warning'|'error'|string; summary:string; reconnectRecommended:boolean };
 export type RequirementRoot = { requirementId:string; title:string; outcome:string; state:string; persistedState?:string; needsAttention?:boolean; activePlanIds?:string[]; updatedAt?:string };
-export type Snapshot = { runtime:'ready'|'offline'|'attention'; runtimeLabel:string; projects:Project[]; assistant:Work[]; requirements:RequirementRoot[]; provider?:ProviderConnection; source:'live'|'preview'|'native' };
+export type Snapshot = { runtime:'ready'|'offline'|'attention'; runtimeLabel:string; projects:Project[]; assistant:Work[]; requirements:RequirementRoot[]; provider?:ProviderConnection; connection?:ConnectionHealth; source:'live'|'preview'|'native' };
 export type LocalMessage = { id:string; role:'user'|'assistant'|'system'; content:string; createdAt:string };
 export type LocalThread = { id:string; title:string; projectId?:string; providerSessionId?:string; createdAt:string; updatedAt:string; archived:boolean; messages:LocalMessage[] };
 
@@ -46,7 +47,7 @@ const preview:Snapshot = { runtime:'offline', runtimeLabel:'Forge Runtime not co
     { id:'w-relations', title:'Add thin Work relations', summary:'Semantic parent and dependency edges for Work projections.', state:'planned', repository:'Forge', parentId:'w-v3', dependsOn:[], updatedAt:'Today' },
     { id:'w-shell', title:'Build independent desktop foundation', summary:'OS-neutral renderer with a macOS-first native shell boundary.', state:'active', repository:'Forge', parentId:'w-v3', dependsOn:['w-relations'], updatedAt:'Today' },
   ] },
-], assistant:[{ id:'assistant-1', title:'Review pending decisions', summary:'Assistant-global Work can exist without a project, Requirement or Plan.', state:'planned', repository:'Assistant', updatedAt:'Today' }], requirements:[] };
+], assistant:[{ id:'assistant-1', title:'Review pending decisions', summary:'Assistant-global Work can exist without a project, Requirement or Plan.', state:'planned', repository:'Assistant', updatedAt:'Today' }], requirements:[], connection:{status:'unknown',severity:'warning',summary:'Connection health is unavailable in preview mode.',reconnectRecommended:false} };
 
 async function json<T>(path:string):Promise<T>{ const token=import.meta.env.VITE_FORGE_LOCAL_BRIDGE_TOKEN; const response=await fetch(path,{credentials:'same-origin',headers:token?{'x-forge-local-token':token}:undefined}); if(!response.ok) throw new Error(`HTTP ${response.status}`); return response.json() as Promise<T>; }
 export async function startLiveWork(objective:string):Promise<any>{ const token=import.meta.env.VITE_FORGE_LOCAL_BRIDGE_TOKEN; const response=await fetch('/api/console/work/start',{method:'POST',credentials:'same-origin',headers:{'content-type':'application/json',...(token?{'x-forge-local-token':token}: {})},body:JSON.stringify({objective,scopeClear:true})}); if(!response.ok) throw new Error(`HTTP ${response.status}`); return response.json(); }
@@ -61,7 +62,7 @@ function bootstrapSnapshot(bootstrap:any, source:'live'|'native'):Snapshot {
   const projects=repositories.map((repo:any):Project=>({ id:repo.id, name:repo.name, path:repo.path ?? '', branch:repo.branchLabel ?? 'working tree', work:items.filter((item:any)=>item.repoId===repo.id).map((item:any)=>mapWork(item,repo.name)) }));
   const runtimeStatus=String(bootstrap.runtime?.status ?? 'unavailable');
   const runtime=runtimeStatus==='ready'?'ready':runtimeStatus==='starting'?'attention':'offline';
-  return { runtime, runtimeLabel:runtime==='ready'?'Forge Runtime ready':runtime==='attention'?'Forge Runtime starting':'Forge Runtime unavailable', projects, assistant:preview.assistant, requirements:(bootstrap.requirements?.requirements ?? []) as RequirementRoot[], provider:bootstrap.provider, source };
+  return { runtime, runtimeLabel:runtime==='ready'?'Forge Runtime ready':runtime==='attention'?'Forge Runtime starting':'Forge Runtime unavailable', projects, assistant:preview.assistant, requirements:(bootstrap.requirements?.requirements ?? []) as RequirementRoot[], provider:bootstrap.provider, connection:bootstrap.connection, source };
 }
 
 export async function loadSnapshot():Promise<Snapshot>{

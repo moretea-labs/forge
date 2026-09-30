@@ -256,6 +256,30 @@ function v3ProviderConnection(repoRoot: string): {
   };
 }
 
+async function v3ConnectionHealth(ctx: Parameters<typeof evaluateConsoleConnectorFreshness>[0]): Promise<{
+  status: string;
+  severity: string;
+  summary: string;
+  reconnectRecommended: boolean;
+}> {
+  try {
+    const report = await evaluateConsoleConnectorFreshness(ctx);
+    return {
+      status: report.status,
+      severity: report.severity,
+      summary: report.summary,
+      reconnectRecommended: report.reconnectRecommended,
+    };
+  } catch (error) {
+    return {
+      status: 'unknown',
+      severity: 'warning',
+      summary: `无法确认 ChatGPT MCP 连接：${errorMessage(error)}`,
+      reconnectRecommended: false,
+    };
+  }
+}
+
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -1266,6 +1290,7 @@ export async function startLocalBridgeServer(
         generatedAt: new Date().toISOString(),
         runtime: readForgeRuntimeStatus(controllerHome),
         provider: v3ProviderConnection(repoRoot),
+        connection: await v3ConnectionHealth(ctx),
         requirements: buildRequirementBoard({ controllerHome }),
         repositories,
         work: listConsoleWork(ctx, 'all'),
