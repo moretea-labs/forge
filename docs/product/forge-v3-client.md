@@ -30,7 +30,7 @@ fast bootstrap path.
 | Work dependency | `dependsOnWorkIds` | Canonical WorkContract | Work semantic creation |
 | Plan context | descriptive Plan id/revision | Canonical Plan/Work links | Existing Plan/Work APIs |
 | Local transcript | thread and message history | Versioned client-local store | Client/Tauri boundary |
-| Provider credential | connected/disconnected | macOS Keychain | Typed platform IPC |
+| Provider connection | connected/disconnected | Existing Forge ChatGPT browser binding and extension token | Typed platform IPC |
 
 `parentWorkId` is never used for decomposition: it remains the execution-child
 ownership edge. `predecessorWorkId`, `supersedes`, and `supersededBy` remain
