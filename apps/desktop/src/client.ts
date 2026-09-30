@@ -4,6 +4,31 @@ export type WorkState = 'active' | 'blocked' | 'planned' | 'done';
 export type Work = { id:string; title:string; summary:string; state:WorkState; repository:string; plan?:string; requirement?:string; parentId?:string; dependsOn?:string[]; updatedAt:string; evidence?:string[] };
 export type Project = { id:string; name:string; path:string; branch:string; work:Work[] };
 export type Snapshot = { runtime:'ready'|'offline'|'attention'; runtimeLabel:string; projects:Project[]; assistant:Work[]; source:'live'|'preview' };
+export type LocalMessage = { id:string; role:'user'|'assistant'|'system'; content:string; createdAt:string };
+export type LocalThread = { id:string; title:string; projectId?:string; createdAt:string; updatedAt:string; archived:boolean; messages:LocalMessage[] };
+
+const LOCAL_THREADS_KEY = 'forge.v3.local-conversations.v1';
+const localId = () => globalThis.crypto?.randomUUID?.() ?? `local-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+const now = () => new Date().toISOString();
+
+export function loadLocalThreads():LocalThread[]{
+  try {
+    const raw = localStorage.getItem(LOCAL_THREADS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((thread):thread is LocalThread => Boolean(thread && typeof thread === 'object' && typeof (thread as LocalThread).id === 'string' && Array.isArray((thread as LocalThread).messages))).sort((a,b)=>b.updatedAt.localeCompare(a.updatedAt));
+  } catch { return []; }
+}
+
+export function persistLocalThreads(threads:LocalThread[]):void{
+  localStorage.setItem(LOCAL_THREADS_KEY, JSON.stringify(threads.slice(0, 100)));
+}
+
+export function createLocalThread(projectId?:string):LocalThread{
+  const timestamp=now();
+  return { id:localId(), title:'New conversation', ...(projectId?{projectId}:{}), createdAt:timestamp, updatedAt:timestamp, archived:false, messages:[] };
+}
 
 const preview:Snapshot = { runtime:'offline', runtimeLabel:'Forge Runtime not connected', source:'preview', projects:[
   { id:'forge', name:'Forge', path:'/Users/greyson/.codex/worktrees/d0a2/forge', branch:'codex/v3-desktop-client', work:[
