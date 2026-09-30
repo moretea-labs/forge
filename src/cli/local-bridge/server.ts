@@ -142,6 +142,8 @@ import { summarizePluginForLowInterception } from "../../runtime/safe-tooling";
 import { buildModelClientSummary, buildModelControlPlaneSummary, deepSeekControllerManifest, deepSeekFunctionToolManifest, prepareDeepSeekControllerHandoff, prepareDeepSeekControllerRequest, prepareDeepSeekToolCall } from "../../runtime/model-clients";
 import { applyRuntimeCleanup, previewRuntimeCleanup } from "../../runtime/maintenance/cleanup";
 import { assertRecoveryAuthorized, buildCapabilityRecoverySnapshot, buildRecoveryAuditRecord, recoveryActionById, writeRecoveryAuditRecord } from "../../runtime/recovery";
+import { readBrowserBinding } from "../chatgpt-browser/binding";
+import { startBrowserBindServer, type BrowserBindServer } from "../chatgpt-browser/bind-server";
 
 export interface LocalBridgeServerOptions {
   /**
@@ -228,6 +230,28 @@ function openUrl(url: string): void {
   } catch (_error) {
     // The URL is still printed by the caller when a desktop opener is unavailable.
   }
+}
+
+function v3ProviderConnection(repoRoot: string): {
+  id: 'chatgpt-browser';
+  label: string;
+  configured: boolean;
+  status: 'ready' | 'login_required' | 'failed' | 'not_configured';
+  nextAction: string;
+} {
+  const binding = readBrowserBinding(repoRoot).binding;
+  const status = binding?.lastStatus ?? 'not_configured';
+  return {
+    id: 'chatgpt-browser',
+    label: 'ChatGPT browser provider',
+    configured: Boolean(binding),
+    status,
+    nextAction: !binding
+      ? 'Configure a ChatGPT browser profile with forge chatgpt browser-setup, then connect again.'
+      : status === 'ready'
+        ? 'Provider is ready for a local conversation.'
+        : 'Open the authorization page, sign in if needed, and bind the ChatGPT profile.',
+  };
 }
 
 function errorMessage(error: unknown): string {
@@ -868,6 +892,7 @@ export async function startLocalBridgeServer(
   reconcileLocalBridgeJobs(repoRoot);
   const token = options.token ?? randomBytes(32).toString("base64url");
   const app = express();
+  let v3ProviderBindServer: BrowserBindServer | undefined;
   const streamClients = new Map<Response, { repoRoot: string; signature: string }>();
   let streamIdleTicks = 0;
   const sendStreamEvent = (response: Response, type: string): void => {
@@ -1238,11 +1263,37 @@ export async function startLocalBridgeServer(
         client: 'forge-v3-desktop',
         generatedAt: new Date().toISOString(),
         runtime: readForgeRuntimeStatus(controllerHome),
+        provider: v3ProviderConnection(repoRoot),
         repositories,
         work: listConsoleWork(ctx, 'all'),
       });
     } catch (error) {
       response.status(400).json({ error: errorMessage(error) });
+    }
+  });
+
+  app.get("/api/client/v3/provider", (request, response) => {
+    try {
+      const repository = requestRepositorySelection(request, options, controllerHome);
+      response.json(v3ProviderConnection(repository.canonicalRoot));
+    } catch (error) {
+      response.status(400).json({ error: errorMessage(error) });
+    }
+  });
+
+  app.post("/api/client/v3/provider/connect", async (request, response) => {
+    try {
+      const repository = requestRepositorySelection(request, options, controllerHome);
+      if (!v3ProviderBindServer) {
+        v3ProviderBindServer = await startBrowserBindServer(repository.canonicalRoot, { open: true });
+      }
+      response.json({
+        ok: true,
+        provider: v3ProviderConnection(repository.canonicalRoot),
+        authorizationUrl: v3ProviderBindServer.url,
+      });
+    } catch (error) {
+      response.status(409).json({ error: errorMessage(error), provider: v3ProviderConnection(repoRoot) });
     }
   });
 
@@ -2654,6 +2705,8 @@ export async function startLocalBridgeServer(
     for (const client of streamClients.keys()) client.end();
     streamClients.clear();
     localSnapshotCache.delete(repoRoot);
+    v3ProviderBindServer?.stop();
+    v3ProviderBindServer = undefined;
   });
   const address = server.address();
   const port =

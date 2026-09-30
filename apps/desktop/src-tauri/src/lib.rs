@@ -82,6 +82,22 @@ fn start_local_bridge_work(objective: String) -> Result<serde_json::Value, Strin
     Ok(payload)
 }
 
+fn connect_local_bridge_provider() -> Result<serde_json::Value, String> {
+    let token = local_bridge_token()?;
+    let mut api = TcpStream::connect("127.0.0.1:8766").map_err(|error| error.to_string())?;
+    let request = format!("POST /api/client/v3/provider/connect HTTP/1.1\r\nHost: 127.0.0.1:8766\r\nConnection: close\r\nContent-Length: 0\r\nX-Forge-Local-Token: {token}\r\n\r\n");
+    api.write_all(request.as_bytes()).map_err(|error| error.to_string())?;
+    let mut response = Vec::new();
+    api.read_to_end(&mut response).map_err(|error| error.to_string())?;
+    let separator = response.windows(4).position(|window| window == b"\r\n\r\n").ok_or_else(|| "LOCAL_BRIDGE_RESPONSE_INVALID".to_string())?;
+    let status = String::from_utf8_lossy(&response[..separator]).lines().next().unwrap_or_default().to_string();
+    let payload: serde_json::Value = serde_json::from_slice(&response[separator + 4..]).map_err(|error| format!("LOCAL_BRIDGE_JSON_INVALID:{error}"))?;
+    if !status.contains(" 2") {
+        return Err(payload.get("error").and_then(serde_json::Value::as_str).unwrap_or("PROVIDER_CONNECT_FAILED").to_string());
+    }
+    Ok(payload)
+}
+
 #[tauri::command]
 fn platform_info() -> PlatformInfo {
     PlatformInfo {
@@ -111,9 +127,14 @@ fn local_bridge_start_work(objective: String) -> Result<serde_json::Value, Strin
     start_local_bridge_work(objective)
 }
 
+#[tauri::command]
+fn local_bridge_connect_provider() -> Result<serde_json::Value, String> {
+    connect_local_bridge_provider()
+}
+
 pub fn run() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![platform_info, recovery_status, recovery_restart_runtime, local_bridge_bootstrap, local_bridge_start_work])
+        .invoke_handler(tauri::generate_handler![platform_info, recovery_status, recovery_restart_runtime, local_bridge_bootstrap, local_bridge_start_work, local_bridge_connect_provider])
         .run(tauri::generate_context!())
         .expect("error while running Forge V3 desktop");
 }
