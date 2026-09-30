@@ -49,6 +49,16 @@ does not change Runtime lifecycle. Runtime-down actions remain owned by
 Standalone Recovery and are added to the native typed IPC boundary rather than
 implemented as renderer-side process management.
 
+## Native shell boundary
+
+The initial macOS shell is Tauri 2. The renderer is loaded from the built V3
+bundle and owns presentation plus client-local transcript state. Native commands
+are allowlisted and intentionally small; the shell does not own Runtime,
+Recovery, Work, Plan, repository, or credential state. `platform_info` is the
+initial boundary probe. Runtime/Recovery commands must be added as typed,
+reconciled operations that delegate to the existing owners before they are
+exposed in the normal user journey.
+
 ## Required empty and failure states
 
 - No repository: Assistant remains usable; Projects explains how to add one.

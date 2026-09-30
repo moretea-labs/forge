@@ -179,6 +179,8 @@
     "check:ci:portable": "FORGE_ALLOW_NODE_ONLY=1 bash scripts/check-ci.sh",
     "dev:controller-ui": "vite --config src/cli/local-bridge/frontend/vite.config.ts",
     "dev:v3-client": "vite --config apps/desktop/vite.config.ts",
+    "check:v3-native": "cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml",
+    "dev:v3-native": "cargo run --manifest-path apps/desktop/src-tauri/Cargo.toml",
     "build:v3-client": "vite build --config apps/desktop/vite.config.ts",
     "check:v3-client": "bun x tsc -p apps/desktop/tsconfig.json --noEmit && bun run build:v3-client",
     "install:v3-client": "bash scripts/install-v3-client.sh",
