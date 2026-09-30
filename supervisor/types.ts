@@ -152,6 +152,8 @@ export interface WorkflowSupervisorDiscoverySnapshot {
 
 export interface WorkflowSupervisorProjectScope {
   title: string;
+  /** Additional stable names used by the external Project surface. */
+  aliases?: string[];
   repoId?: string;
   controllerHome?: string;
 }

@@ -4,6 +4,33 @@ import { parseSupervisorCompletion, renderEffectMarker, renderSupervisorPrompt, 
 import { WorkflowSupervisorStore } from './store';
 import type { WorkflowAssistantObservation, WorkflowAssistantObservationResult, WorkflowContractValidation, WorkflowSupervisorAutomationStatus, WorkflowSupervisorBrowserPollResult, WorkflowSupervisorBrowserTask, WorkflowSupervisorCompletion, WorkflowSupervisorDiscoveredConversation, WorkflowSupervisorEffect, WorkflowSupervisorLifecycleHooks, WorkflowSupervisorProjectScope, WorkflowSupervisorTask, WorkflowSupervisorTaskInput, WorkflowSupervisorTurnSettlement, WorkflowSupervisorValidators } from './types';
 
+function compactProjectIdentity(value: string): string {
+  return value.toLocaleLowerCase().replace(/[^a-z0-9]+/g, '');
+}
+
+function projectSlugFromUrl(value: string): string | undefined {
+  try {
+    const parsed = new URL(value);
+    const match = /^\/g\/(g-p-[a-z0-9]+)(?:-([^/]+))?\/project\/?$/i.exec(parsed.pathname);
+    return match?.[2] ? compactProjectIdentity(match[2]) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function projectMatchesScope(conversation: WorkflowSupervisorDiscoveredConversation, scope: WorkflowSupervisorProjectScope): boolean {
+  const names = [scope.title, ...(scope.aliases ?? [])]
+    .map((value) => value.trim().toLocaleLowerCase())
+    .filter(Boolean);
+  if (conversation.projectTitle?.trim() && names.includes(conversation.projectTitle.trim().toLocaleLowerCase())) return true;
+  const projectSlug = conversation.projectUrl ? projectSlugFromUrl(conversation.projectUrl) : undefined;
+  if (!projectSlug) return false;
+  return (scope.aliases ?? []).some((alias) => {
+    const compact = compactProjectIdentity(alias);
+    return compact.length >= 4 && compact === projectSlug;
+  });
+}
+
 function effectId(): string { return `fx_${randomUUID().replaceAll('-', '')}`; }
 function stableEffectId(originKey: string): string {
   return validateEffectId(`fx_${sha256(originKey).slice(0, 32)}`);
@@ -87,10 +114,10 @@ export class WorkflowSupervisorControlPlane {
     const task = this.requireTask(taskId);
     const scope = this.hooks.projectScopeForTask?.(task);
     const title = scope?.title.trim();
-    if (!title) throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_SCOPE_REQUIRED');
+    if (!scope || !title) throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_SCOPE_REQUIRED');
     const projects = new Map<string, string>();
     for (const conversation of this.store.discoverySnapshot().conversations) {
-      if (conversation.projectTitle?.trim().toLocaleLowerCase() !== title.toLocaleLowerCase()) continue;
+      if (!projectMatchesScope(conversation, scope)) continue;
       const value = conversation.projectUrl?.trim();
       if (!value) continue;
       try {
@@ -120,6 +147,7 @@ export class WorkflowSupervisorControlPlane {
       if (!scope?.title.trim()) continue;
       const normalized: WorkflowSupervisorProjectScope = {
         title: scope.title.trim().slice(0, 512),
+        ...(scope.aliases?.length ? { aliases: [...new Set(scope.aliases.map((value) => value.trim().slice(0, 256)).filter(Boolean))].slice(0, 16) } : {}),
         ...(scope.repoId?.trim() ? { repoId: scope.repoId.trim().slice(0, 256) } : {}),
         ...(scope.controllerHome?.trim() ? { controllerHome: scope.controllerHome.trim().slice(0, 2048) } : {}),
       };

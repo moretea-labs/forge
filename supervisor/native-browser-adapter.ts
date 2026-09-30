@@ -123,6 +123,21 @@ function exactConversation(url: string, task: WorkflowSupervisorBrowserTask): bo
     return parsed.conversationId === task.conversationId;
   } catch { return false; }
 }
+
+function projectMetadataFromConversationUrl(value: string): { projectTitle: string; projectUrl: string } | undefined {
+  try {
+    const parsed = new URL(value);
+    const match = /^\/g\/(g-p-[a-z0-9]+)(?:-([^/]+))?\/c\/[a-z0-9-]+\/?$/i.exec(parsed.pathname);
+    const slug = match?.[2]?.trim();
+    if (!match?.[1] || !slug) return undefined;
+    return {
+      projectTitle: slug.replace(/[-_]+/g, ' ').replace(/\s+/g, ' ').trim(),
+      projectUrl: `https://chatgpt.com/g/${match[1]}/project`,
+    };
+  } catch {
+    return undefined;
+  }
+}
 function targetMarkerPresent(text: string, effectId: string): boolean { return text.includes(renderEffectMarker(effectId)); }
 function unknownObservationFingerprint(effectId: string, reason: string, snapshot: WorkflowSupervisorNativeSnapshot): string {
   return sha256(JSON.stringify({
@@ -500,6 +515,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
             conversation_id: current.identity.conversationId,
             canonical_url: current.identity.canonicalUrl,
             ...(current.entry.title.trim() ? { title: current.entry.title.trim().slice(0, 512) } : {}),
+            ...(projectMetadataFromConversationUrl(current.entry.url) ?? {}),
             is_current: true,
           });
         }
@@ -527,7 +543,12 @@ export class WorkflowSupervisorNativeBrowserAdapter {
           await this.retireOwnedPage(task, page);
           continue;
         }
-        conversations.push({ conversation_id: task.conversationId, canonical_url: task.conversationUrl, ...(snapshot.title.trim() ? { title: snapshot.title.trim().slice(0, 512) } : {}) });
+        conversations.push({
+          conversation_id: task.conversationId,
+          canonical_url: task.conversationUrl,
+          ...(snapshot.title.trim() ? { title: snapshot.title.trim().slice(0, 512) } : {}),
+          ...(projectMetadataFromConversationUrl(snapshot.url) ?? projectMetadataFromConversationUrl(task.conversationUrl) ?? {}),
+        });
         const providerBusy = snapshot.isGenerating;
         const latestRoleStillUser = snapshot.latestTurnRole === 'user';
         const providerFailureCode = chatgptProviderPageFailure(snapshot.providerFailureText);
@@ -680,6 +701,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     let page: WorkflowSupervisorNativePage | undefined;
     let ref: MacOsBrowserTabRef | undefined;
     let preserveForReconcile = true;
+    let providerMutationAttempted = false;
     try {
       page = await this.deps.create(this.control.bootstrapProjectUrl(task.taskId));
       ref = page.tabRef();
@@ -688,6 +710,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       // in committed user history remains the causal cross-restart proof.
       try { await this.deps.writeOwner(page, marker); } catch { /* causal marker reconciliation remains authoritative */ }
 
+      providerMutationAttempted = true;
       const dispatched = await withChatgptProviderDispatchLane(
         this.deps.providerScopeKey,
         () => this.deps.dispatchPrompt(page!, command.prompt, task),
@@ -739,8 +762,8 @@ export class WorkflowSupervisorNativeBrowserAdapter {
           taskId: task.taskId,
           effectId: command.effectId,
           observationId: `bootstrap-${randomUUID()}`,
-          outcome: 'unknown',
-          evidence: { reconciliation: true, reason },
+          outcome: providerMutationAttempted ? 'unknown' : 'not_applied',
+          evidence: providerMutationAttempted ? { reconciliation: true, reason } : { pre_send_rejection: true, reason },
         });
       } catch { /* Preserve the original transport failure. */ }
       throw error;

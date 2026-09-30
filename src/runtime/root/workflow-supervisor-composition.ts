@@ -140,6 +140,16 @@ function workflowSupervisorContractText(task: WorkflowSupervisorTask, key: strin
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
+function workflowSupervisorProjectAliases(task: WorkflowSupervisorTask): string[] {
+  const requirementId = workflowSupervisorContractText(task, 'requirement_id');
+  if (!requirementId) return [];
+  // Requirement ids intentionally carry the product key before the structural
+  // suffix. ChatGPT Project slugs may insert word separators (for example
+  // shenbaobao -> shen-bao-bao), so the browser adapter compares compact ids.
+  const productKey = /^REQ-([a-z0-9]{4,})-/i.exec(requirementId.trim())?.[1];
+  return productKey ? [productKey] : [];
+}
+
 async function settleForgeWorkflowSupervisorTurn(
   controllerHome: string,
   task: WorkflowSupervisorTask,
@@ -430,7 +440,7 @@ export function forgeWorkflowSupervisorLifecycleHooks(controllerHome: string): W
       if (!taskControllerHome && task.continuationPolicy.kind !== 'standalone_supervisor') return undefined;
       try {
         const repository = getRepository(repoId, controllerHome);
-        return { title: repository.displayName, repoId, controllerHome };
+        return { title: repository.displayName, aliases: workflowSupervisorProjectAliases(task), repoId, controllerHome };
       } catch { return undefined; }
     },
     browserTaskActive,
