@@ -1433,8 +1433,8 @@ export async function startLocalBridgeServer(
       send("phase", { phase: "provider_running", label: "Waiting for ChatGPT" });
       const sessionId = queryString(body.sessionId);
       const result = sessionId
-        ? await runBrowserFollowup({ repoRoot: repository.canonicalRoot, sessionId, prompt, provider: "bridge", timeoutMs: 180_000 })
-        : await runBrowserConsult({ repoRoot: repository.canonicalRoot, title: "Forge V3 local conversation", prompt, provider: "bridge", timeoutMs: 180_000 });
+        ? await runBrowserFollowup({ repoRoot: repository.canonicalRoot, sessionId, prompt, provider: "bridge", timeoutMs: 180_000, onProgress: (progress) => send("phase", { ...progress }) })
+        : await runBrowserConsult({ repoRoot: repository.canonicalRoot, title: "Forge V3 local conversation", prompt, provider: "bridge", timeoutMs: 180_000, onProgress: (progress) => send("phase", { ...progress }) });
       send("result", {
         sessionId: result.sessionId,
         status: result.status,

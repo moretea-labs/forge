@@ -463,11 +463,15 @@ export async function runBridgeProvider(input: BrowserConsultInput, bundle: Prom
     heartbeat?: ExtensionHeartbeat;
     claimed: boolean;
     started: boolean;
+    connectedReported: boolean;
+    dispatchReported: boolean;
     dispatched?: ExtensionDispatchReceipt;
     result?: ExtensionResult;
   } = {
     claimed: false,
     started: false,
+    connectedReported: false,
+    dispatchReported: false,
   };
 
   let server: FetchHttpServer | undefined;
@@ -495,6 +499,10 @@ export async function runBridgeProvider(input: BrowserConsultInput, bundle: Prom
             ts: typeof body.ts === 'string' ? body.ts : undefined,
             receivedAt: Date.now(),
           };
+          if (state.heartbeat.composerVisible === true && !state.connectedReported) {
+            state.connectedReported = true;
+            input.onProgress?.({ phase: 'browser_connected', label: 'ChatGPT browser connected', url: state.heartbeat.url });
+          }
           if (
             body.lastDispatch
             && typeof body.lastDispatch === 'object'
@@ -508,6 +516,10 @@ export async function runBridgeProvider(input: BrowserConsultInput, bundle: Prom
               outboundFingerprint: body.lastDispatch.outboundFingerprint.trim(),
               confirmedAt: typeof body.lastDispatch.confirmedAt === 'string' ? body.lastDispatch.confirmedAt : undefined,
             };
+            if (!state.dispatchReported) {
+              state.dispatchReported = true;
+              input.onProgress?.({ phase: 'dispatch_confirmed', label: 'Prompt dispatch confirmed', url: state.dispatched.conversationUrl });
+            }
           }
           return jsonResponse({ ok: true });
         }
@@ -520,7 +532,10 @@ export async function runBridgeProvider(input: BrowserConsultInput, bundle: Prom
         }
         if (request.method === 'POST' && url.pathname === '/api/extension/task-started') {
           const body = await readJson(request);
-          if (body.taskId === task.id) state.started = true;
+          if (body.taskId === task.id) {
+            state.started = true;
+            input.onProgress?.({ phase: 'task_started', label: 'ChatGPT task started' });
+          }
           return jsonResponse({ ok: true });
         }
         if (request.method === 'POST' && url.pathname === '/api/extension/dispatched') {
@@ -532,6 +547,10 @@ export async function runBridgeProvider(input: BrowserConsultInput, bundle: Prom
               outboundFingerprint: body.outboundFingerprint.trim(),
               confirmedAt: typeof body.confirmedAt === 'string' ? body.confirmedAt : undefined,
             };
+            if (!state.dispatchReported) {
+              state.dispatchReported = true;
+              input.onProgress?.({ phase: 'dispatch_confirmed', label: 'Prompt dispatch confirmed', url: state.dispatched.conversationUrl });
+            }
           }
           return jsonResponse({ ok: true });
         }
@@ -568,6 +587,7 @@ export async function runBridgeProvider(input: BrowserConsultInput, bundle: Prom
                 } : undefined,
               };
             }
+            input.onProgress?.({ phase: 'result_received', label: 'Assistant result received', url: state.result?.conversationUrl });
           }
           return jsonResponse({ ok: true });
         }

@@ -8,6 +8,14 @@ export type ThinkingLevel = 'light' | 'standard' | 'extended' | 'heavy';
 
 export type BrowserWriteOutputPolicy = 'cli' | 'mcp';
 
+export type BrowserConsultProgressPhase = 'browser_connected' | 'task_started' | 'dispatch_confirmed' | 'result_received';
+
+export interface BrowserConsultProgress {
+  phase: BrowserConsultProgressPhase;
+  label: string;
+  url?: string;
+}
+
 export interface BrowserFileInput {
   path: string;
   delivery?: 'inline';
@@ -43,6 +51,7 @@ export interface BrowserConsultInput {
   browserChannel?: NativeBrowserChannel;
   keepBrowser?: boolean;
   headless?: boolean;
+  onProgress?: (progress: BrowserConsultProgress) => void;
 }
 
 export interface BrowserImportedArtifact {
