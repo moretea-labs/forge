@@ -60,6 +60,7 @@ const FROZEN_SEMANTIC_V1_FIELDS: Record<string, ReadonlySet<string>> = {
     'operation',
     'plan_id',
     'expected_revision',
+    'superseded_by',
     'requirement_revision',
     'source_revision',
     'objective',

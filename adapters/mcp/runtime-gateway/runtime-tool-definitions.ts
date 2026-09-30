@@ -197,6 +197,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     backoff_max_minutes: { type: 'number' },
     include_occurrences: { type: 'boolean' },
     plan_id: { type: 'string' },
+    superseded_by: { type: 'string', description: 'For plan_revise only: record the one-way successor Plan lineage. Once set it cannot be cleared or redirected; current Plan listings exclude the predecessor without restoring legacy Plan lifecycle semantics.' },
     scope_key: { type: 'string', description: 'Optional normalized semantic scope label for Plan discovery/lineage; it is not execution ownership or a repository mutex.' },
     source_revision: { type: 'string', description: 'Repository revision observed during read-only planning preflight.' },
     plan_items: { type: 'array', maxItems: 100, items: { type: 'object', required: ['id', 'objective'], additionalProperties: false, properties: { id: { type: 'string', maxLength: 200 }, objective: { type: 'string', maxLength: 2000 }, dependencies: { type: 'array', maxItems: 100, items: { type: 'string', maxLength: 200 } } } }, description: 'Thin model-authored Plan items for plan_create/plan_revise. Items are descriptive working memory only and never own paths, checks, Work, scheduling, or acceptance.' },

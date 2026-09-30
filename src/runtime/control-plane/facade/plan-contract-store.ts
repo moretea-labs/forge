@@ -132,6 +132,8 @@ export interface PlanSemanticView {
   revision: number;
   semanticScope: ScopeRef;
   requirementId?: string;
+  /** One-way lineage fact: this Plan is historical and its obligations continue in the named successor. */
+  supersededBy?: string;
   requirementBasisRevision?: number;
   sourceBasisRevision: string;
   goal: string;
@@ -153,6 +155,8 @@ export interface PlanSemanticRevisionRecord extends PlanSemanticView {
 
 export interface RevisePlanSemanticInput {
   expectedRevision: number;
+  /** Optional one-way successor relation. Once set it cannot be cleared or changed. */
+  supersededBy?: string;
   requirementBasisRevision?: number;
   sourceBasisRevision?: string;
   goal?: string;
@@ -208,6 +212,7 @@ export function planSemanticView(plan: PlanContract): PlanSemanticView {
     revision: currentPlanSemanticRevision(plan),
     semanticScope,
     requirementId: plan.requirementId,
+    ...(plan.supersededBy?.trim() ? { supersededBy: plan.supersededBy.trim() } : {}),
     requirementBasisRevision: semantic.requirementBasisRevision,
     sourceBasisRevision: semantic.sourceBasisRevision,
     goal: semantic.goal,
@@ -921,12 +926,27 @@ export function revisePlanSemanticContext(
   input: RevisePlanSemanticInput,
 ): PlanContract {
   if (!Number.isInteger(input.expectedRevision) || input.expectedRevision < 1) throw new Error('PLAN_EXPECTED_REVISION_INVALID');
+  const planId = sanitizeFileComponent(planIdInput);
+  const requestedSuccessor = input.supersededBy === undefined
+    ? undefined
+    : (() => {
+        const raw = String(input.supersededBy).trim();
+        if (!raw) throw new Error('PLAN_SUCCESSOR_REQUIRED');
+        const successorId = sanitizeFileComponent(raw);
+        if (!successorId || successorId === 'unknown') throw new Error('PLAN_SUCCESSOR_INVALID');
+        if (successorId === planId) throw new Error(`PLAN_SUCCESSOR_SELF_REFERENCE:${planId}`);
+        return successorId;
+      })();
   return withPlanAdmissionLock(options, () => {
-    const planId = sanitizeFileComponent(planIdInput);
     const applyRevision = (current: PlanContract, at: string): { previous: PlanSemanticView; next: PlanContract } => {
       const revision = currentPlanSemanticRevision(current);
       if (revision !== input.expectedRevision) throw new Error(`PLAN_REVISION_CONFLICT:${planId}:expected=${input.expectedRevision}:actual=${revision}`);
       const previous = planSemanticView(current);
+      const existingSuccessor = current.supersededBy?.trim() || undefined;
+      if (existingSuccessor && requestedSuccessor && existingSuccessor !== requestedSuccessor) {
+        throw new Error(`PLAN_SUCCESSOR_IMMUTABLE:${planId}:current=${existingSuccessor}:requested=${requestedSuccessor}`);
+      }
+      const supersededBy = requestedSuccessor ?? existingSuccessor;
       const goal = input.goal === undefined ? previous.goal : String(input.goal).trim().slice(0, 2_000);
       if (!goal) throw new Error('PLAN_GOAL_REQUIRED');
       const requirementBasisRevision = input.requirementBasisRevision === undefined
@@ -951,26 +971,39 @@ export function revisePlanSemanticContext(
       };
       return {
         previous,
-        next: { ...current, semanticRevision: revision + 1, semanticUpdatedAt: at, semanticContext, updatedAt: at },
+        next: {
+          ...current,
+          ...(supersededBy ? { supersededBy } : {}),
+          semanticRevision: revision + 1,
+          semanticUpdatedAt: at,
+          semanticContext,
+          updatedAt: at,
+        },
       };
     };
 
     if (sqliteBacked(options)) {
       return withControlPlaneTransaction(options.controllerHome, (database) => {
-        const currentRecord = readControlPlaneRecordWithinTransaction<PlanContract>(database, 'plan_contract', requirePlanContractStoreScopeKey(options), planId);
+        const scope = requirePlanContractStoreScopeKey(options);
+        const currentRecord = readControlPlaneRecordWithinTransaction<PlanContract>(database, 'plan_contract', scope, planId);
         if (!currentRecord) throw new Error(`plan contract not found: ${planId}`);
+        if (requestedSuccessor) {
+          const successorRecord = readControlPlaneRecordWithinTransaction<PlanContract>(database, 'plan_contract', scope, requestedSuccessor);
+          if (!successorRecord) throw new Error(`PLAN_SUCCESSOR_NOT_FOUND:${requestedSuccessor}`);
+          if (!isCurrentPlanContract(successorRecord.value)) throw new Error(`PLAN_SUCCESSOR_NOT_CURRENT:${requestedSuccessor}`);
+        }
         const at = nowIso(options);
         const { previous, next } = applyRevision(currentRecord.value, at);
         const semanticRevisionKey = `${planId}:r${previous.revision}`;
         if (!readControlPlaneRecordWithinTransaction<PlanSemanticRevisionRecord>(database, 'plan_semantic_revision', requirePlanContractStoreScopeKey(options), semanticRevisionKey)) {
           writeControlPlaneRecordWithinTransaction(database, {
-            namespace: 'plan_semantic_revision', scope: requirePlanContractStoreScopeKey(options), key: semanticRevisionKey, schemaVersion: 1,
+            namespace: 'plan_semantic_revision', scope, key: semanticRevisionKey, schemaVersion: 1,
             value: { schemaVersion: 1, ...previous, recordedAt: at },
             action: 'plan_semantic_revision_archived', expectedRevision: null,
           });
         }
         return writeControlPlaneRecordWithinTransaction(database, {
-          namespace: 'plan_contract', scope: requirePlanContractStoreScopeKey(options), key: planId, schemaVersion: 1,
+          namespace: 'plan_contract', scope, key: planId, schemaVersion: 1,
           value: next, action: 'plan_semantic_revised', expectedRevision: currentRecord.revision,
         }).value;
       });
@@ -979,6 +1012,11 @@ export function revisePlanSemanticContext(
     const store = readPlanContractStore(options);
     const index = store.contracts.findIndex((contract) => contract.planId === planId);
     if (index < 0) throw new Error(`plan contract not found: ${planId}`);
+    if (requestedSuccessor) {
+      const successor = store.contracts.find((contract) => contract.planId === requestedSuccessor);
+      if (!successor) throw new Error(`PLAN_SUCCESSOR_NOT_FOUND:${requestedSuccessor}`);
+      if (!isCurrentPlanContract(successor)) throw new Error(`PLAN_SUCCESSOR_NOT_CURRENT:${requestedSuccessor}`);
+    }
     const at = nowIso(options);
     const { previous, next } = applyRevision(store.contracts[index]!, at);
     appendJsonPlanSemanticRevisionRecord(options, { schemaVersion: 1, ...previous, recordedAt: at });

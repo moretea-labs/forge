@@ -71,6 +71,7 @@ export async function callRhWorkPlanOperation(
       const expectedRevision = Number(args.expected_revision);
       const plan = revisePlanSemanticContext(store, planId, {
         expectedRevision,
+        ...(typeof args.superseded_by === 'string' ? { supersededBy: args.superseded_by } : {}),
         ...(typeof args.requirement_revision === 'number' ? { requirementBasisRevision: args.requirement_revision } : {}),
         ...(typeof args.source_revision === 'string' ? { sourceBasisRevision: args.source_revision } : {}),
         ...(typeof args.objective === 'string' ? { goal: args.objective } : {}),

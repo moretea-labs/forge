@@ -6,6 +6,7 @@ import {
   createPlanContract,
   createPlanSemanticContext,
   getPlanContract,
+  listPlanContracts,
   listPlanSemanticRevisionRecords,
   planSemanticView,
   revisePlanSemanticContext,
@@ -230,6 +231,66 @@ describe('Goal authority convergence', () => {
     })).toThrow('PLAN_SEMANTIC_LINEAGE_ALREADY_EXISTS:lineage-a:PLAN-LINEAGE-A');
     expect(getPlanContract(options, 'PLAN-LINEAGE-A')).toBeDefined();
     expect(getPlanContract(options, 'PLAN-LINEAGE-B')).toBeUndefined();
+  });
+
+  test('retires one semantic Plan through monotonic successor lineage without reviving legacy lifecycle authority', () => {
+    const controllerHome = home();
+    const repoId = 'repo-plan-successor';
+    const options = { controllerHome, repoId, now: () => '2026-09-30T08:20:00.000Z' };
+    createPlanSemanticContext(options, {
+      planId: 'PLAN-SUCCESSOR-A',
+      repoId,
+      scopeKey: 'successor-a',
+      sourceBasisRevision: 'source-a',
+      goal: 'Historical predecessor',
+      items: [{ id: 'legacy', objective: 'Old obligation.' }],
+    });
+    createPlanSemanticContext(options, {
+      planId: 'PLAN-SUCCESSOR-B',
+      repoId,
+      scopeKey: 'successor-b',
+      sourceBasisRevision: 'source-b',
+      goal: 'Canonical successor',
+      items: [{ id: 'mainline', objective: 'Own the remaining obligation.' }],
+    });
+
+    const retired = revisePlanSemanticContext(options, 'PLAN-SUCCESSOR-A', {
+      expectedRevision: 1,
+      supersededBy: 'PLAN-SUCCESSOR-B',
+      goal: 'Historical ledger only',
+      items: [],
+    });
+    expect(planSemanticView(retired)).toMatchObject({
+      revision: 2,
+      supersededBy: 'PLAN-SUCCESSOR-B',
+      goal: 'Historical ledger only',
+      items: [],
+    });
+    expect(listPlanContracts({ ...options, status: 'active', limit: 20 }).map((plan) => plan.planId)).toEqual(['PLAN-SUCCESSOR-B']);
+    expect(listPlanSemanticRevisionRecords(options, 'PLAN-SUCCESSOR-A')).toMatchObject([
+      { revision: 1, goal: 'Historical predecessor' },
+    ]);
+
+    expect(() => revisePlanSemanticContext(options, 'PLAN-SUCCESSOR-A', {
+      expectedRevision: 2,
+      supersededBy: '',
+    })).toThrow('PLAN_SUCCESSOR_REQUIRED');
+    expect(() => revisePlanSemanticContext(options, 'PLAN-SUCCESSOR-A', {
+      expectedRevision: 2,
+      supersededBy: 'PLAN-SUCCESSOR-A',
+    })).toThrow('PLAN_SUCCESSOR_SELF_REFERENCE');
+
+    createPlanSemanticContext(options, {
+      planId: 'PLAN-SUCCESSOR-C',
+      repoId,
+      scopeKey: 'successor-c',
+      sourceBasisRevision: 'source-c',
+      goal: 'Different successor',
+    });
+    expect(() => revisePlanSemanticContext(options, 'PLAN-SUCCESSOR-A', {
+      expectedRevision: 2,
+      supersededBy: 'PLAN-SUCCESSOR-C',
+    })).toThrow('PLAN_SUCCESSOR_IMMUTABLE');
   });
 
   test('keeps Work delivery evidence separate from authored Plan and Requirement progress', () => {
