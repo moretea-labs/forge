@@ -19,6 +19,20 @@ function statement<T>(db: Database, sql: string, fn: (statement: Statement) => T
   try { return fn(prepared); } finally { prepared.finalize?.(); }
 }
 function now(): string { return new Date().toISOString(); }
+function projectMetadataFromConversationUrl(value: string): { projectTitle: string; projectUrl: string } | undefined {
+  try {
+    const parsed = new URL(value);
+    const match = /^\/g\/(g-p-[a-z0-9]+)(?:-([^/]+))?\/c\/[a-z0-9-]+\/?$/i.exec(parsed.pathname);
+    const slug = match?.[2]?.trim();
+    if (!match?.[1] || !slug) return undefined;
+    return {
+      projectTitle: slug.replace(/[-_]+/g, ' ').replace(/\s+/g, ' ').trim(),
+      projectUrl: `https://chatgpt.com/g/${match[1]}/project`,
+    };
+  } catch {
+    return undefined;
+  }
+}
 function json(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map((item) => json(item)).join(',')}]`;
   if (value && typeof value === 'object') {
@@ -279,12 +293,15 @@ export class WorkflowSupervisorStore {
     const observedAt = now();
     this.transaction((db) => {
       for (const conversation of conversations) {
+        const routeProject = projectMetadataFromConversationUrl(conversation.canonicalUrl);
+        const projectTitle = routeProject?.projectTitle ?? conversation.projectTitle;
+        const projectUrl = routeProject?.projectUrl ?? conversation.projectUrl;
         statement(db, `INSERT INTO discovered_conversations(source,conversation_id,canonical_url,title,project_title,project_url,observed_at)
           VALUES (?,?,?,?,?,?,?)
           ON CONFLICT(source,conversation_id) DO UPDATE SET canonical_url=excluded.canonical_url,title=excluded.title,
             project_title=COALESCE(excluded.project_title,discovered_conversations.project_title),
             project_url=COALESCE(excluded.project_url,discovered_conversations.project_url),observed_at=excluded.observed_at`,
-        (s) => s.run(normalizedSource, conversation.conversationId, conversation.canonicalUrl, conversation.title ?? null, conversation.projectTitle ?? null, conversation.projectUrl ?? null, observedAt));
+        (s) => s.run(normalizedSource, conversation.conversationId, conversation.canonicalUrl, conversation.title ?? null, projectTitle ?? null, projectUrl ?? null, observedAt));
       }
     });
     return this.discoverySnapshot();
@@ -298,6 +315,7 @@ export class WorkflowSupervisorStore {
       for (const row of rows) {
         const conversationId = String(row.conversation_id ?? '');
         const canonicalUrl = String(row.canonical_url ?? '');
+        const routeProject = projectMetadataFromConversationUrl(canonicalUrl);
         const rowObservedAt = String(row.observed_at ?? '');
         if (rowObservedAt > observedAt) observedAt = rowObservedAt;
         const current = byConversation.get(conversationId);
@@ -305,8 +323,8 @@ export class WorkflowSupervisorStore {
           conversationId,
           canonicalUrl,
           ...(row.title ? { title: String(row.title) } : {}),
-          ...(row.project_title ? { projectTitle: String(row.project_title) } : {}),
-          ...(row.project_url ? { projectUrl: String(row.project_url) } : {}),
+          ...(routeProject?.projectTitle ? { projectTitle: routeProject.projectTitle } : row.project_title ? { projectTitle: String(row.project_title) } : {}),
+          ...(routeProject?.projectUrl ? { projectUrl: routeProject.projectUrl } : row.project_url ? { projectUrl: String(row.project_url) } : {}),
         };
         if (!current) byConversation.set(conversationId, candidate);
         else if (!current.projectTitle && candidate.projectTitle) byConversation.set(conversationId, { ...current, projectTitle: candidate.projectTitle, ...(candidate.projectUrl ? { projectUrl: candidate.projectUrl } : {}) });
