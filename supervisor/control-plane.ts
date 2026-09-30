@@ -8,11 +8,27 @@ function compactProjectIdentity(value: string): string {
   return value.toLocaleLowerCase().replace(/[^a-z0-9]+/g, '');
 }
 
+function projectIdentityTokens(value: string): string[] {
+  return value.toLocaleLowerCase().split(/[^a-z0-9]+/g).filter(Boolean);
+}
+
+function boundedProjectIdentityMatch(expected: string, observed: string): boolean {
+  const compactExpected = compactProjectIdentity(expected);
+  const compactObserved = compactProjectIdentity(observed);
+  if (!compactExpected || !compactObserved) return false;
+  if (compactExpected === compactObserved) return true;
+  if (compactExpected.length < 4) return false;
+  const expectedTokens = projectIdentityTokens(expected);
+  const observedTokens = projectIdentityTokens(observed);
+  if (expectedTokens.length === 0 || expectedTokens.length >= observedTokens.length) return false;
+  return expectedTokens.every((token, index) => observedTokens[index] === token);
+}
+
 function projectSlugFromUrl(value: string): string | undefined {
   try {
     const parsed = new URL(value);
     const match = /^\/g\/(g-p-[a-z0-9]+)(?:-([^/]+))?\/project\/?$/i.exec(parsed.pathname);
-    return match?.[2] ? compactProjectIdentity(match[2]) : undefined;
+    return match?.[2]?.toLocaleLowerCase();
   } catch {
     return undefined;
   }
@@ -22,15 +38,11 @@ function projectMatchesScope(conversation: WorkflowSupervisorDiscoveredConversat
   const names = [scope.title, ...(scope.aliases ?? [])]
     .map((value) => value.trim().toLocaleLowerCase())
     .filter(Boolean);
-  if (conversation.projectTitle?.trim() && names.includes(conversation.projectTitle.trim().toLocaleLowerCase())) return true;
-  const compactProjectTitle = conversation.projectTitle ? compactProjectIdentity(conversation.projectTitle) : '';
-  if (compactProjectTitle && names.some((name) => compactProjectIdentity(name) === compactProjectTitle)) return true;
+  const projectTitle = conversation.projectTitle?.trim().toLocaleLowerCase();
+  if (projectTitle && names.some((name) => boundedProjectIdentityMatch(name, projectTitle))) return true;
   const projectSlug = conversation.projectUrl ? projectSlugFromUrl(conversation.projectUrl) : undefined;
   if (!projectSlug) return false;
-  return (scope.aliases ?? []).some((alias) => {
-    const compact = compactProjectIdentity(alias);
-    return compact.length >= 4 && compact === projectSlug;
-  });
+  return names.some((name) => boundedProjectIdentityMatch(name, projectSlug));
 }
 
 function effectId(): string { return `fx_${randomUUID().replaceAll('-', '')}`; }

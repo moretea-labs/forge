@@ -147,6 +147,39 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     supervisorStore.close();
   });
 
+  test('matches a leading product token to a longer Project identity and fails closed on ambiguity', () => {
+    const fx = fixture();
+    const supervisorStore = new WorkflowSupervisorStore(join(fx.root, 'bounded-project-product-token'));
+    const task = supervisorStore.registerTask({
+      taskId: 'forge:repo:bounded-project-product-token',
+      conversationId: 'bootstrap:bounded-project-product-token',
+      conversationUrl: 'https://chatgpt.com/',
+      objective: 'Bootstrap inside Avela.',
+      completionContract: {},
+      continuationPolicy: { kind: 'standalone_supervisor', bootstrap: true },
+      userBlockerPolicy: {},
+    });
+    const control = new WorkflowSupervisorControlPlane(supervisorStore, {}, {
+      projectScopeForTask: () => ({ title: 'Avela' }),
+    });
+    control.recordBrowserDiscovery('test', [{
+      conversationId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+      canonicalUrl: 'https://chatgpt.com/g/g-p-avela123-avela-yi-fu-yao/c/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+      projectTitle: 'Avela Yi Fu Yao',
+      projectUrl: 'https://chatgpt.com/g/g-p-avela123-avela-yi-fu-yao/project',
+    }]);
+    expect(control.bootstrapProjectUrl(task.taskId)).toBe('https://chatgpt.com/g/g-p-avela123/project');
+
+    control.recordBrowserDiscovery('test', [{
+      conversationId: 'ffffffff-eeee-dddd-cccc-bbbbbbbbbbbb',
+      canonicalUrl: 'https://chatgpt.com/g/g-p-sandbox456-avela-sandbox/c/ffffffff-eeee-dddd-cccc-bbbbbbbbbbbb',
+      projectTitle: 'Avela Sandbox',
+      projectUrl: 'https://chatgpt.com/g/g-p-sandbox456-avela-sandbox/project',
+    }]);
+    expect(() => control.bootstrapProjectUrl(task.taskId)).toThrow('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_AMBIGUOUS');
+    supervisorStore.close();
+  });
+
   test('keeps normal same-conversation continuation minimal while recovery retains bounded restore context', () => {
     const task = {
       taskId: 'task-minimal-continuation',
