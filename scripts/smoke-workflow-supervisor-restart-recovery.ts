@@ -7,8 +7,9 @@ import { SUPERVISOR_BLOCK_END, SUPERVISOR_BLOCK_START } from '../supervisor/prot
 import { WorkflowSupervisorStore } from '../supervisor/store';
 
 const home = mkdtempSync(join(tmpdir(), 'forge-supervisor-recovery-'));
+let mechanicalNowMs = Date.now();
 const validators = { completionContract: async () => ({ valid: true, reason: 'ok' }), userBlockerPolicy: async () => ({ valid: true, reason: 'ok' }) };
-const control = () => new WorkflowSupervisorControlPlane(new WorkflowSupervisorStore(home), validators);
+const control = () => new WorkflowSupervisorControlPlane(new WorkflowSupervisorStore(home, { now: () => mechanicalNowMs }), validators);
 const block = (
   action: 'CONTINUE' | 'DONE',
   effectId: string,
@@ -41,7 +42,8 @@ try {
   assert.throws(() => supervisor.observeEffect({ effectId: enrollment.effectId, observationId: 'forged-not-applied', outcome: 'not_applied', evidence: { latest_user_text: 'forged' } }), /NOT_APPLIED_PROOF_REQUIRED/);
   poll = supervisor.browserPoll({ conversationId, conversationUrl });
   assert.equal(poll.command?.mode, 'reconcile'); assert.equal(poll.command?.dispatchGeneration, 1);
-  supervisor.browserObserveEffect({ conversationId, conversationUrl, effectId: enrollment.effectId, observationId: 'enroll-not-applied', outcome: 'not_applied', evidence: { latest_user_text: 'before enrollment', latest_assistant_response: 'existing assistant text', target_marker_present: false } });
+  supervisor.browserObserveEffect({ conversationId, conversationUrl, effectId: enrollment.effectId, observationId: 'enroll-not-applied', outcome: 'not_applied', evidence: { latest_user_text: 'before enrollment', latest_assistant_response: 'existing assistant text', target_marker_present: false, provider_surface_rendered: true, reason: 'composer_proven_empty' } });
+  mechanicalNowMs += 30_000;
   poll = supervisor.browserPoll({ conversationId, conversationUrl });
   assert.equal(poll.command?.mode, 'send'); assert.equal(poll.command?.dispatchGeneration, 2); assert.equal(poll.command?.effectId, enrollment.effectId);
   assert.equal(supervisor.browserBeginEffect({ conversationId, conversationUrl, effectId: enrollment.effectId, dispatchId: 'enroll-g2', dispatchGeneration: 2, evidence: { latest_user_text: 'before enrollment', latest_assistant_response: 'existing assistant text' } }).started, true);
@@ -55,9 +57,10 @@ try {
   assert.equal(supervisor.browserBeginEffect({ conversationId, conversationUrl, effectId: continuation.effectId, dispatchId: 'continue-g1', dispatchGeneration: 1, evidence: { latest_user_text: enrollment.prompt, latest_assistant_response: response1 } }).started, true);
   supervisor = control();
   poll = supervisor.browserPoll({ conversationId, conversationUrl }); assert.equal(poll.command?.mode, 'reconcile');
-  supervisor.browserObserveEffect({ conversationId, conversationUrl, effectId: continuation.effectId, observationId: 'bad-proof', outcome: 'not_applied', evidence: { latest_user_text: 'conversation drifted', latest_assistant_response: response1, target_marker_present: false } });
+  supervisor.browserObserveEffect({ conversationId, conversationUrl, effectId: continuation.effectId, observationId: 'bad-proof', outcome: 'not_applied', evidence: { latest_user_text: 'conversation drifted', latest_assistant_response: response1, target_marker_present: false, provider_surface_rendered: true, reason: 'composer_proven_empty' } });
   poll = supervisor.browserPoll({ conversationId, conversationUrl }); assert.equal(poll.command?.mode, 'reconcile'); assert.equal(poll.command?.dispatchGeneration, 1);
-  supervisor.browserObserveEffect({ conversationId, conversationUrl, effectId: continuation.effectId, observationId: 'good-proof', outcome: 'not_applied', evidence: { latest_user_text: enrollment.prompt, latest_assistant_response: response1, target_marker_present: false } });
+  supervisor.browserObserveEffect({ conversationId, conversationUrl, effectId: continuation.effectId, observationId: 'good-proof', outcome: 'not_applied', evidence: { latest_user_text: enrollment.prompt, latest_assistant_response: response1, target_marker_present: false, provider_surface_rendered: true, reason: 'composer_proven_empty' } });
+  mechanicalNowMs += 30_000;
   poll = supervisor.browserPoll({ conversationId, conversationUrl }); assert.equal(poll.command?.mode, 'send'); assert.equal(poll.command?.dispatchGeneration, 2); assert.equal(poll.command?.effectId, continuation.effectId);
   assert.equal(supervisor.browserBeginEffect({ conversationId, conversationUrl, effectId: continuation.effectId, dispatchId: 'continue-g2', dispatchGeneration: 2, evidence: { latest_user_text: enrollment.prompt, latest_assistant_response: response1 } }).started, true);
   assert.equal(supervisor.browserBeginEffect({ conversationId, conversationUrl, effectId: continuation.effectId, dispatchId: 'continue-g2-duplicate', dispatchGeneration: 2, evidence: { latest_user_text: enrollment.prompt, latest_assistant_response: response1 } }).started, false);

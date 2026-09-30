@@ -27,7 +27,9 @@ try {
   const observed = await control.browserObserveAssistant({ conversationId, conversationUrl, responseText: response });
   assert.equal(observed.action, 'CONTINUE'); assert.ok(observed.successorEffect);
   poll = control.browserPoll({ conversationId, conversationUrl }); assert.equal(poll.command?.effectId, observed.successorEffect?.effectId); assert.equal(poll.command?.mode, 'send');
-  assert.throws(() => control.browserPoll({ conversationId, conversationUrl: `https://chatgpt.com/g/not-the-same/c/${conversationId}` }), /CONVERSATION_MISMATCH/);
+  const projectRoutePoll = control.browserPoll({ conversationId, conversationUrl: `https://chatgpt.com/g/not-the-same/c/${conversationId}` });
+  assert.equal(projectRoutePoll.command?.effectId, observed.successorEffect?.effectId);
+  assert.equal(projectRoutePoll.command?.mode, 'send');
 
   const doneConversationId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
   const doneConversationUrl = `https://chatgpt.com/c/${doneConversationId}`;
@@ -71,9 +73,10 @@ try {
   assert.ok(discoverySource.includes("browser_discovery_update"));
   for (const forbidden of ['task_register', 'reserve_enrollment', 'browser_begin_effect', 'forge-workflow-supervisor-effect']) assert.equal(discoverySource.includes(forbidden), false);
   const taskRefreshSource = backgroundSource.slice(backgroundSource.indexOf("const result = await nativeRpc('browser_tasks')"), backgroundSource.indexOf('chrome.runtime.onMessage.addListener'));
-  assert.ok(taskRefreshSource.includes("chrome.tabs.create({ url: target.canonicalUrl, active: false })"));
+  assert.ok(taskRefreshSource.includes('findConversationTab(tabs, target)'));
+  assert.equal(taskRefreshSource.includes('chrome.tabs.create('), false);
   assert.ok(taskRefreshSource.includes('if (tab.discarded && tab.id) { await chrome.tabs.reload(tab.id); continue; }'));
-  assert.ok(taskRefreshSource.includes('core.sameIdentity(core.parseConversation(candidate.url ?? \'\'), target)'));
+  assert.ok(backgroundSource.includes("core.sameConversation(core.parseConversation(candidate.url ?? ''), target)"));
   assert.ok(backgroundSource.includes("chrome.alarms.create(ALARM, { periodInMinutes: 1 })"));
   const contentSource = readFileSync(resolve('supervisor/chrome-extension/content.js'), 'utf8');
   assert.ok(contentSource.includes('new MutationObserver(notify).observe'));

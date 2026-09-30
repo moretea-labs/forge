@@ -20,15 +20,17 @@ function arg(name: string): string | undefined {
   return index >= 0 ? process.argv[index + 1] : undefined;
 }
 
+const mechanicalNowMs = Number(arg('--now-ms') ?? Date.now());
+
 function control(home: string): WorkflowSupervisorControlPlane {
-  return new WorkflowSupervisorControlPlane(new WorkflowSupervisorStore(home), {
+  return new WorkflowSupervisorControlPlane(new WorkflowSupervisorStore(home, { now: () => mechanicalNowMs }), {
     completionContract: async () => ({ valid: true, reason: 'ok' }),
     userBlockerPolicy: async () => ({ valid: true, reason: 'ok' }),
   });
 }
 
 function sourceBaseline(home: string, effectId: string, checkpoint: string): { latest_user_text: string; latest_assistant_response: string } {
-  const store = new WorkflowSupervisorStore(home);
+  const store = new WorkflowSupervisorStore(home, { now: () => mechanicalNowMs });
   const effect = store.getEffect(effectId);
   assert.ok(effect?.sourceCompletionFingerprint, `effect ${effectId} must have source completion`);
   const completion = store.getCompletion(effect.sourceCompletionFingerprint);
@@ -99,6 +101,8 @@ async function runPhase(home: string, phase: string): Promise<void> {
         latest_user_text: BASELINE_USER,
         latest_assistant_response: BASELINE_ASSISTANT,
         target_marker_present: false,
+        provider_surface_rendered: true,
+        reason: 'composer_proven_empty',
       },
     });
     poll = supervisor.browserPoll({ conversationId: CONVERSATION_ID, conversationUrl: CONVERSATION_URL });
@@ -231,16 +235,17 @@ async function main(): Promise<void> {
 
   const home = mkdtempSync(join(tmpdir(), 'forge-supervisor-process-restart-'));
   const script = fileURLToPath(import.meta.url);
+  const baseNowMs = Date.now();
   try {
-    for (const nextPhase of [
+    for (const [index, nextPhase] of [
       'arm-enrollment',
       'prove-not-applied',
       'reconcile-unknown-and-continue-1',
       'continue-2',
       'done-3',
       'quiescent',
-    ]) {
-      const child = spawnSync(process.execPath, [script, '--phase', nextPhase, '--home', home], {
+    ].entries()) {
+      const child = spawnSync(process.execPath, [script, '--phase', nextPhase, '--home', home, '--now-ms', String(baseNowMs + index * 30_000)], {
         cwd: process.cwd(),
         encoding: 'utf8',
         stdio: ['ignore', 'pipe', 'pipe'],
