@@ -23,6 +23,8 @@ function projectMatchesScope(conversation: WorkflowSupervisorDiscoveredConversat
     .map((value) => value.trim().toLocaleLowerCase())
     .filter(Boolean);
   if (conversation.projectTitle?.trim() && names.includes(conversation.projectTitle.trim().toLocaleLowerCase())) return true;
+  const compactProjectTitle = conversation.projectTitle ? compactProjectIdentity(conversation.projectTitle) : '';
+  if (compactProjectTitle && names.some((name) => compactProjectIdentity(name) === compactProjectTitle)) return true;
   const projectSlug = conversation.projectUrl ? projectSlugFromUrl(conversation.projectUrl) : undefined;
   if (!projectSlug) return false;
   return (scope.aliases ?? []).some((alias) => {
