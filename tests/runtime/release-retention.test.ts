@@ -443,7 +443,7 @@ describe('controller release retention', () => {
     expect(report.skippedByReason.release_authority).toBe(2);
   });
 
-  test('preserves only a bounded Recovery bundle that is independently restorable', () => {
+  test('does not pin historical Recovery bundles outside current rollback authority', () => {
     const home = controllerHome();
     const active = runtimeRelease(home, 'active-release');
     const previous = runtimeRelease(home, 'previous-release');
@@ -457,9 +457,9 @@ describe('controller release retention', () => {
 
     expect(existsSync(active)).toBe(true);
     expect(existsSync(previous)).toBe(true);
-    expect(existsSync(knownGood)).toBe(true);
+    expect(existsSync(knownGood)).toBe(false);
     expect(existsSync(stale)).toBe(false);
-    expect(report.skippedByReason.release_authority).toBe(3);
+    expect(report.skippedByReason.release_authority).toBe(2);
   });
 
   test('preserves an explicitly pinned Runtime release while known-good history remains non-owning', () => {

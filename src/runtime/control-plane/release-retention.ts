@@ -63,7 +63,9 @@ function canonical(path: string): string {
 }
 
 function directChild(root: string, path: string): boolean {
-  return dirname(canonical(path)) === canonical(root);
+  // Resolve the parent rather than the child: a reclaimed path may no longer
+  // exist, while its managed parent still does (and may itself be a symlink).
+  return canonical(dirname(path)) === canonical(root);
 }
 
 function entryExists(path: string): boolean {
@@ -134,7 +136,11 @@ function loadPackageConnectorReleaseProtection(controllerHome: string, releasesR
   return canonical(releaseRoot);
 }
 
-function loadRecoveryKnownGoodProtection(controllerHome: string, releasesRoot: string): Set<string> {
+function loadRecoveryKnownGoodProtection(
+  controllerHome: string,
+  releasesRoot: string,
+  rollbackReleasePaths: ReadonlySet<string>,
+): Set<string> {
   const protectedPaths = new Set<string>();
   const knownGoodPath = join(controllerHome, 'recovery', 'state', 'known-good.json');
   if (!existsSync(knownGoodPath)) return protectedPaths;
@@ -148,15 +154,33 @@ function loadRecoveryKnownGoodProtection(controllerHome: string, releasesRoot: s
   }
   for (const raw of parsed.releases) {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('standalone recovery known-good release record is invalid');
+    const entry = raw as Record<string, unknown>;
+    const manifestPath = typeof entry.path === 'string' ? entry.path.trim() : '';
+    const revision = typeof entry.revision === 'string' ? entry.revision.trim() : '';
+    const releaseRoot = manifestPath ? dirname(resolve(manifestPath)) : '';
+    if (
+      !manifestPath
+      || !revision
+      || basename(manifestPath) !== 'manifest.json'
+      || basename(releaseRoot) !== revision
+      || !directChild(releasesRoot, releaseRoot)
+    ) throw new Error('standalone recovery known-good release is outside runtime releases');
+    // Historical records are not protection. Do not inspect them after their
+    // release tree has been reclaimed, or one old record would block cleanup
+    // of every later candidate in the same pass.
+    if (!rollbackReleasePaths.has(canonical(releaseRoot))) continue;
     let inspected;
     try {
       inspected = inspectKnownGoodRecoveryBundle(controllerHome, raw as KnownGoodReleaseIdentity);
     } catch (error) {
       throw new Error(`standalone recovery known-good bundle is not recoverable: ${error instanceof Error ? error.message : String(error)}`);
     }
-    if (canonical(dirname(inspected.releaseRoot)) !== canonical(releasesRoot)) {
+    const inspectedReleaseRoot = canonical(dirname(inspected.releaseRoot));
+    if (inspectedReleaseRoot !== canonical(releasesRoot)) {
       throw new Error('standalone recovery known-good release is outside runtime releases');
     }
+    // Historical attestations are evidence, not rollback authority. Recovery
+    // can only target releases currently named by the committed Runtime.
     protectedPaths.add(canonical(inspected.releaseRoot));
   }
   return protectedPaths;
@@ -211,12 +235,10 @@ function loadRuntimeProtection(controllerHome: string): RuntimeProtection | unde
   if (connectorRelease) releasePaths.add(connectorRelease);
   const pinnedRelease = loadPinnedRuntimeReleaseProtection(controllerHome, releasesRoot);
   if (pinnedRelease) releasePaths.add(pinnedRelease);
-  // The known-good ledger is bounded by Recovery (currently at most eight
-  // attestations), so its extant immutable releases are bounded recovery
-  // authority, not unbounded history. Once Recovery retires an attestation the
-  // release naturally falls out of this protection set and ordinary retention
-  // may prune it after the grace period.
-  for (const knownGoodRelease of loadRecoveryKnownGoodProtection(controllerHome, releasesRoot)) {
+  // Only known-good entries that are also named by the committed Runtime
+  // authority are rollback protection. Older attestations are historical
+  // evidence and must not pin immutable release trees.
+  for (const knownGoodRelease of loadRecoveryKnownGoodProtection(controllerHome, releasesRoot, releasePaths)) {
     releasePaths.add(knownGoodRelease);
   }
 

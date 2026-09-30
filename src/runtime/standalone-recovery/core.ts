@@ -2,13 +2,15 @@ import { assertRuntimePerformanceEvidence, measureRuntimePerformance, samePerfor
 import { runBoundedChild } from '../shared/bounded-child-supervisor';
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'crypto';
 import { spawn, spawnSync } from 'child_process';
-import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from 'fs';
+import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'fs';
 import { homedir, hostname } from 'os';
 import { createServer as createNetServer } from 'net';
 import { basename, delimiter, dirname, isAbsolute, join, resolve } from 'path';
-import { assertStorageHeadroom, STORAGE_WARNING_BYTES } from '../shared/storage-capacity';
+import { assertStorageHeadroom } from '../shared/storage-capacity';
 import { resolveBunExecutable, runtimeAuthorityFreeEnvironment } from '../shared/process-environment';
 import { backupControlPlaneDatabase } from '../control-plane/persistence/sqlite-store';
+import { measureReclaimablePath } from '../control-plane/lifecycle-retention-metrics';
+import { cleanupControllerReleaseHistory } from '../control-plane/release-retention';
 import { observeRuntimeStatus, readRuntimeStartupFailureEvidence } from '../root/status';
 import { reconcileStoppedRuntimeOwnership, terminateVerifiedRuntimeOwner } from '../root/ownership';
 import {
@@ -665,7 +667,14 @@ function inspectKnownGoodRecoverability(config: RecoveryConfig): {
   // otherwise healthy Runtime, because no action can make them restorable.
   if (store.schemaVersion !== 2) return { available, unavailable };
   const releasesRoot = resolve(config.controllerHome, 'runtime', 'releases');
+  const authority = releaseAuthority(config);
+  const rollbackReleasePaths = new Set<string>();
+  if (authority) {
+    rollbackReleasePaths.add(resolve(dirname(authority.active.manifestPath)));
+    if (authority.previous) rollbackReleasePaths.add(resolve(dirname(authority.previous.manifestPath)));
+  }
   for (const entry of store.releases) {
+    if (!rollbackReleasePaths.has(resolve(dirname(entry.path)))) continue;
     try {
       const inspected = inspectKnownGoodRecoveryBundle(config.controllerHome, entry);
       if (dirname(inspected.releaseRoot) !== releasesRoot) throw new Error('known-good path is outside Runtime release authority');
@@ -1798,6 +1807,60 @@ function pruneRetiredKnownGoodRecoveryBundles(config: RecoveryConfig, releases: 
   }
 }
 
+/**
+ * Reconcile Recovery's restore-point ledger with the only releases that the
+ * committed Runtime authority can actually roll back to. Historical
+ * attestations are evidence, not a second rollback authority, and must not
+ * keep full SQLite bundles and immutable Runtime trees alive indefinitely.
+ */
+function reconcileKnownGoodRecoveryRetention(config: RecoveryConfig): void {
+  const store = knownGood(config);
+  if (store.schemaVersion !== 2 || store.releases.length === 0) return;
+  const authority = releaseAuthority(config);
+  if (!authority) throw new Error('KNOWN_GOOD_RETENTION_RUNTIME_AUTHORITY_MISSING');
+  const rollbackReleases = [
+    releaseEvidence(config.controllerHome, authority.active, authority),
+    ...(authority.previous ? [releaseEvidence(config.controllerHome, authority.previous, authority)] : []),
+  ].filter((release): release is ReleaseEvidence => Boolean(release));
+  const retained: ReleaseEvidence[] = [];
+  for (const entry of store.releases) {
+    const rollbackEntry = rollbackReleases.find((release) => sameReleaseIdentity(release, entry));
+    if (!rollbackEntry) continue;
+    try { inspectKnownGoodRecoveryBundle(config.controllerHome, entry); }
+    catch (error) {
+      throw new Error(`KNOWN_GOOD_RETENTION_AUTHORITY_INVALID: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    retained.push(entry);
+  }
+  if (retained.length === store.releases.length) return;
+  writeJson(statePath(config), { schemaVersion: 2, releases: retained, updatedAt: new Date().toISOString() } satisfies KnownGoodStore);
+  pruneRetiredKnownGoodRecoveryBundles(config, retained);
+}
+
+interface ReleaseSessionStorageEstimate {
+  requiredBytes: number;
+  reserveBytes: number;
+}
+
+function estimateReleaseSessionCandidateBytes(config: RecoveryConfig, manifestPath: string): ReleaseSessionStorageEstimate {
+  const releaseRoot = dirname(resolve(manifestPath));
+  const releaseMeasurement = measureReclaimablePath(releaseRoot, 100_000);
+  const databasePath = join(resolve(config.controllerHome), 'control-plane.sqlite');
+  let databaseBytes: number;
+  try { databaseBytes = Math.max(0, statSync(databasePath).size); }
+  catch (error) { throw new Error(`RELEASE_SESSION_STORAGE_DATABASE_UNAVAILABLE: ${error instanceof Error ? error.message : String(error)}`); }
+  if (!releaseMeasurement.complete) throw new Error('RELEASE_SESSION_STORAGE_RELEASE_ESTIMATE_INCOMPLETE');
+  const sourceBytes = releaseMeasurement.bytes + databaseBytes;
+  if (!Number.isFinite(sourceBytes) || sourceBytes < 1) throw new Error('RELEASE_SESSION_STORAGE_ESTIMATE_INVALID');
+  // Candidate creation first copies the database and then builds a new
+  // immutable release. The active release plus database is the only measured
+  // operation-specific baseline available before staging; reserve one more
+  // baseline-sized footprint for compiler/materialization variance instead of
+  // treating the global warning threshold as rollback capacity.
+  const baselineBytes = Math.max(1, Math.ceil(sourceBytes));
+  return { requiredBytes: baselineBytes, reserveBytes: baselineBytes };
+}
+
 /** Explicitly records evidence only after the full independent verification passed. */
 function persistVerifiedKnownGood(config: RecoveryConfig, verified: VerifyResult, performance: RuntimePerformanceEvidence): ReleaseEvidence {
   const authority = releaseAuthority(config);
@@ -1824,14 +1887,11 @@ function persistVerifiedKnownGood(config: RecoveryConfig, verified: VerifyResult
       recoveryBundle: createKnownGoodRecoveryBundle(config),
     };
     const store = knownGood(config);
+    const previous = authority.previous ? releaseEvidence(config.controllerHome, authority.previous, authority) : undefined;
     const releases = [
       attested,
-      ...store.releases.filter((entry) => {
-        if (entry.path === active.path) return false;
-        try { inspectKnownGoodRecoveryBundle(config.controllerHome, entry); return true; }
-        catch { return false; }
-      }),
-    ].slice(0, 8);
+      ...(previous ? store.releases.filter((entry) => sameReleaseIdentity(entry, previous)) : []),
+    ];
     writeJson(statePath(config), { schemaVersion: 2, releases, updatedAt: new Date().toISOString() } satisfies KnownGoodStore);
     // State is durable before cleanup. A crash between these lines leaves an
     // orphaned bundle, which this same owner removes on the next attestation;
@@ -4691,16 +4751,29 @@ export async function prepareConfiguredRuntimeReleaseSession(
       };
     }
 
-    // Candidate B currently costs several GiB because it contains a consistent
-    // SQLite snapshot plus an immutable Runtime tree. Preserve the host warning
-    // reserve *after* admitting a conservative 4 GiB candidate budget. A retry
-    // that already owns a progressed matching session returns above and needs no
-    // fresh storage admission.
+    // Reconcile and reclaim only bytes that no current rollback authority needs.
+    // This is one bounded lifecycle attempt, not a second GC owner, and it
+    // retains fail-closed behavior whenever an authority cannot be proven.
+    reconcileKnownGoodRecoveryRetention(config);
+    const releaseRetention = cleanupControllerReleaseHistory(config.controllerHome, {
+      graceMs: 0,
+      stagingGraceMs: 0,
+      maxRemovals: 16,
+    });
+    if (releaseRetention.errors.length > 0) {
+      throw new Error(`RELEASE_SESSION_RETENTION_RECONCILIATION_FAILED: ${releaseRetention.errors.slice(0, 3).join('; ')}`);
+    }
+
+    // Capacity is operation-specific: the candidate is a measured copy of the
+    // current immutable Runtime tree plus a consistent SQLite snapshot. The
+    // global warning threshold is observability, not rollback reserve; existing
+    // active/previous authorities are already allocated and protected above.
     const candidateRoot = join(dirname(resolve(config.controllerHome)), 'candidate-runtime-lanes');
+    const storageEstimate = estimateReleaseSessionCandidateBytes(config, releaseAuthority(config)!.active.manifestPath);
     assertStorageHeadroom(candidateRoot, {
       operation: 'release_session_prepare',
-      requiredBytes: 4 * 1024 ** 3,
-      reserveBytes: STORAGE_WARNING_BYTES,
+      requiredBytes: storageEstimate.requiredBytes,
+      reserveBytes: storageEstimate.reserveBytes,
     });
 
     let session: ReleaseSession;
