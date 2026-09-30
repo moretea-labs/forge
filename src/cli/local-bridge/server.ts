@@ -1265,6 +1265,7 @@ export async function startLocalBridgeServer(
         generatedAt: new Date().toISOString(),
         runtime: readForgeRuntimeStatus(controllerHome),
         provider: v3ProviderConnection(repoRoot),
+        requirements: buildRequirementBoard({ controllerHome }),
         repositories,
         work: listConsoleWork(ctx, 'all'),
       });
