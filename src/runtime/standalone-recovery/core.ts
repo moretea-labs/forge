@@ -3530,13 +3530,28 @@ async function stopPrimaryRuntimeForReleaseTransition(input: {
     };
   }
 
-  const ownership = reconcileStoppedRuntimeOwnership(input.config.controllerHome);
+  let ownership = reconcileStoppedRuntimeOwnership(input.config.controllerHome);
   if (!ownership.ok) {
-    return {
-      ok: false,
-      detail: `primary Runtime ownership did not quiesce after bounded ${input.service.platform} stop: ${ownership.detail}`,
-      staleListenerCleanup,
-    };
+    // A Runtime can finish its listener shutdown before its owner process has
+    // exited. The service and port fences above make this a safe, bounded
+    // orphan-termination point; use the same process-identity proof as the
+    // running-state path instead of treating the durable owner as permanent.
+    const orphanTermination = await terminateVerifiedRuntimeOwner(input.config.controllerHome);
+    if (!orphanTermination.ok) {
+      return {
+        ok: false,
+        detail: `primary Runtime ownership did not quiesce after bounded ${input.service.platform} stop: ${orphanTermination.detail}`,
+        staleListenerCleanup,
+      };
+    }
+    ownership = reconcileStoppedRuntimeOwnership(input.config.controllerHome);
+    if (!ownership.ok) {
+      return {
+        ok: false,
+        detail: `primary Runtime ownership did not quiesce after verified orphan termination: ${ownership.detail}`,
+        staleListenerCleanup,
+      };
+    }
   }
   const supervisorSocket = workflowSupervisorSocketPath(resolveWorkflowSupervisorForgeHome(input.config.controllerHome));
   const supervisor = await reconcileStoppedWorkflowSupervisorSocket(supervisorSocket);
