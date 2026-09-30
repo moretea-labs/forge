@@ -521,6 +521,29 @@ export class WorkflowSupervisorNativeBrowserAdapter {
         }
       }
     }
+    // Project identity is carried by ChatGPT's canonical /g/<project>/c/<id>
+    // route. Observe every readable open Project conversation, not only the
+    // frontmost tab: the frontmost tab may belong to another Project while the
+    // exact target Project is already open in an inactive tab. This is
+    // discovery only; bootstrapProjectUrl still requires an unambiguous scope
+    // match before creating a page.
+    if (inventory.unavailableProducts.length === 0) {
+      const seenConversationIds = new Set(conversations.map((conversation) => conversation.conversation_id));
+      for (const entry of inventory.entries) {
+        let identity;
+        try { identity = parseChatgptConversationIdentity(entry.url); } catch { continue; }
+        if (seenConversationIds.has(identity.conversationId)) continue;
+        const project = projectMetadataFromConversationUrl(entry.url);
+        if (!project) continue;
+        seenConversationIds.add(identity.conversationId);
+        conversations.push({
+          conversation_id: identity.conversationId,
+          canonical_url: identity.canonicalUrl,
+          ...(entry.title.trim() ? { title: entry.title.trim().slice(0, 512) } : {}),
+          ...project,
+        });
+      }
+    }
     for (const task of tasks) {
       try {
         if (task.conversationId.startsWith('bootstrap:')) {
