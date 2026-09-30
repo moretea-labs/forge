@@ -344,6 +344,13 @@ export async function defaultDispatchPrompt(
         return { prepared: true };
       })()`);
     } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      if (reason.includes('PLUGIN_BROWSER_JAVASCRIPT_PERMISSION_REQUIRED')) {
+        // Chrome rejects the Apple Events JavaScript command before evaluating
+        // any page script. No composer mutation or Send click can have occurred,
+        // so preserve the dispatch contract as a mechanical not-applied result.
+        return { dispatched: false, reason };
+      }
       if (attempt >= MAX_LOCAL_OBSERVATION_ATTEMPTS) throw error;
       await sleepMs(localObservationDelayMs(attempt, 2_000, 4_000));
       continue;
