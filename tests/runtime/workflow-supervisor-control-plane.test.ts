@@ -112,6 +112,41 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     supervisorStore.close();
   });
 
+  test('matches a Requirement-derived compact product alias to the ChatGPT Project identity', () => {
+    const fx = fixture();
+    const supervisorStore = new WorkflowSupervisorStore(join(fx.root, 'requirement-project-alias'));
+    const hooks = forgeWorkflowSupervisorLifecycleHooks(fx.controllerHome);
+    const task = supervisorStore.registerTask({
+      taskId: 'forge:repo:requirement-project-alias',
+      conversationId: 'bootstrap:requirement-project-alias',
+      conversationUrl: 'https://chatgpt.com/',
+      objective: 'Bootstrap inside the product Project.',
+      completionContract: {
+        repo_id: fx.repository.repoId,
+        controller_home: fx.controllerHome,
+        requirement_id: 'REQ-shenbaobao-product-architecture-v2-20260905',
+      },
+      continuationPolicy: { kind: 'forge_goal_outer_turn', bootstrap: true },
+      userBlockerPolicy: {},
+    });
+    expect(hooks.projectScopeForTask?.(task)).toEqual({
+      title: 'supervisor-terminal-reconcile',
+      aliases: ['shenbaobao'],
+      repoId: fx.repository.repoId,
+      controllerHome: fx.controllerHome,
+    });
+
+    const control = new WorkflowSupervisorControlPlane(supervisorStore, {}, hooks);
+    control.recordBrowserDiscovery('test', [{
+      conversationId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+      canonicalUrl: 'https://chatgpt.com/g/g-p-abc123-shen-bao-bao/c/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+      projectTitle: 'Shen Bao Bao',
+      projectUrl: 'https://chatgpt.com/g/g-p-abc123-shen-bao-bao/project',
+    }]);
+    expect(control.bootstrapProjectUrl(task.taskId)).toBe('https://chatgpt.com/g/g-p-abc123/project');
+    supervisorStore.close();
+  });
+
   test('keeps normal same-conversation continuation minimal while recovery retains bounded restore context', () => {
     const task = {
       taskId: 'task-minimal-continuation',
