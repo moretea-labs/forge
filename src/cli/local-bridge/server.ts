@@ -143,7 +143,7 @@ import { summarizePluginForLowInterception } from "../../runtime/safe-tooling";
 import { buildModelClientSummary, buildModelControlPlaneSummary, deepSeekControllerManifest, deepSeekFunctionToolManifest, prepareDeepSeekControllerHandoff, prepareDeepSeekControllerRequest, prepareDeepSeekToolCall } from "../../runtime/model-clients";
 import { applyRuntimeCleanup, previewRuntimeCleanup } from "../../runtime/maintenance/cleanup";
 import { assertRecoveryAuthorized, buildCapabilityRecoverySnapshot, buildRecoveryAuditRecord, recoveryActionById, writeRecoveryAuditRecord } from "../../runtime/recovery";
-import { readBrowserBinding } from "../chatgpt-browser/binding";
+import { readBrowserBinding, writeBrowserBinding } from "../chatgpt-browser/binding";
 import { startBrowserBindServer, type BrowserBindServer } from "../chatgpt-browser/bind-server";
 import { runBrowserConsult, runBrowserFollowup } from "../chatgpt-browser/engine";
 
@@ -1300,8 +1300,21 @@ export async function startLocalBridgeServer(
   app.post("/api/client/v3/provider/connect", async (request, response) => {
     try {
       const repository = requestRepositorySelection(request, options, controllerHome);
+      const body = request.body && typeof request.body === "object" && !Array.isArray(request.body)
+        ? request.body as Record<string, unknown>
+        : {};
+      const profileDir = queryString(body.profileDir);
+      const profileDirectory = queryString(body.profileDirectory);
+      if (profileDir) {
+        writeBrowserBinding(repository.canonicalRoot, {
+          profileDir,
+          ...(profileDirectory ? { profileDirectory } : {}),
+          browserChannel: 'chrome',
+          chatgptUrl: 'https://chatgpt.com/',
+        });
+      }
       if (!v3ProviderBindServer) {
-        v3ProviderBindServer = await startBrowserBindServer(repository.canonicalRoot, { open: true });
+        v3ProviderBindServer = await startBrowserBindServer(repository.canonicalRoot, { open: true, ...(profileDir ? { profileDir, profileDirectory } : {}) });
       }
       response.json({
         ok: true,

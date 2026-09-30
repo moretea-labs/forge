@@ -22,7 +22,8 @@ export async function nativeRecoveryStatus():Promise<NativeRecoveryResult|undefi
 export async function restartNativeRuntime():Promise<NativeRecoveryResult|undefined>{ return nativeInvoke<NativeRecoveryResult>('recovery_restart_runtime'); }
 async function nativeBootstrap():Promise<any|undefined>{ return nativeInvoke<any>('local_bridge_bootstrap'); }
 export async function startNativeWork(objective:string):Promise<any|undefined>{ return nativeInvoke<any>('local_bridge_start_work',{objective}); }
-export async function connectNativeProvider():Promise<any|undefined>{ return nativeInvoke<any>('local_bridge_connect_provider'); }
+export async function chooseNativeProviderProfile():Promise<string|undefined>{ return nativeInvoke<string>('local_bridge_choose_provider_profile'); }
+export async function connectNativeProvider(profileDir?:string):Promise<any|undefined>{ return nativeInvoke<any>('local_bridge_connect_provider',profileDir?{profileDir}:undefined); }
 export async function sendNativeLocalMessage(prompt:string,sessionId?:string):Promise<any|undefined>{ return nativeInvoke<any>('local_bridge_local_message',{prompt,...(sessionId?{sessionId}:{})}); }
 export async function loadNativeWorkDetail(workId:string):Promise<WorkDetail|undefined>{ return nativeInvoke<WorkDetail>('local_bridge_work_detail',{workId}); }
 

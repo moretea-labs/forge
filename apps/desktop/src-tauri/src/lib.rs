@@ -82,11 +82,15 @@ fn start_local_bridge_work(objective: String) -> Result<serde_json::Value, Strin
     Ok(payload)
 }
 
-fn connect_local_bridge_provider() -> Result<serde_json::Value, String> {
+fn connect_local_bridge_provider(profile_dir: Option<String>) -> Result<serde_json::Value, String> {
     let token = local_bridge_token()?;
     let mut api = TcpStream::connect("127.0.0.1:8766").map_err(|error| error.to_string())?;
-    let request = format!("POST /api/client/v3/provider/connect HTTP/1.1\r\nHost: 127.0.0.1:8766\r\nConnection: close\r\nContent-Length: 0\r\nX-Forge-Local-Token: {token}\r\n\r\n");
-    api.write_all(request.as_bytes()).map_err(|error| error.to_string())?;
+    let body = match profile_dir.filter(|value| !value.trim().is_empty()) {
+        Some(profile_dir) => serde_json::to_vec(&serde_json::json!({ "profileDir": profile_dir })).map_err(|error| error.to_string())?,
+        None => Vec::new(),
+    };
+    let request = format!("POST /api/client/v3/provider/connect HTTP/1.1\r\nHost: 127.0.0.1:8766\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\nX-Forge-Local-Token: {token}\r\n\r\n", body.len());
+    api.write_all(request.as_bytes()).and_then(|_| api.write_all(&body)).map_err(|error| error.to_string())?;
     let mut response = Vec::new();
     api.read_to_end(&mut response).map_err(|error| error.to_string())?;
     let separator = response.windows(4).position(|window| window == b"\r\n\r\n").ok_or_else(|| "LOCAL_BRIDGE_RESPONSE_INVALID".to_string())?;
@@ -96,6 +100,18 @@ fn connect_local_bridge_provider() -> Result<serde_json::Value, String> {
         return Err(payload.get("error").and_then(serde_json::Value::as_str).unwrap_or("PROVIDER_CONNECT_FAILED").to_string());
     }
     Ok(payload)
+}
+
+fn choose_provider_profile() -> Result<String, String> {
+    if std::env::consts::OS != "macos" { return Err("PROFILE_PICKER_UNSUPPORTED_PLATFORM".to_string()); }
+    let output = Command::new("osascript")
+        .args(["-e", "POSIX path of (choose folder with prompt \"Choose the Chrome user-data directory for Forge\")"])
+        .output()
+        .map_err(|error| error.to_string())?;
+    if !output.status.success() { return Err("PROFILE_PICKER_CANCELLED".to_string()); }
+    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if path.is_empty() { return Err("PROFILE_PICKER_EMPTY".to_string()); }
+    Ok(path)
 }
 
 fn send_local_bridge_message(prompt: String, session_id: Option<String>) -> Result<serde_json::Value, String> {
@@ -164,8 +180,13 @@ fn local_bridge_start_work(objective: String) -> Result<serde_json::Value, Strin
 }
 
 #[tauri::command]
-fn local_bridge_connect_provider() -> Result<serde_json::Value, String> {
-    connect_local_bridge_provider()
+fn local_bridge_connect_provider(profile_dir: Option<String>) -> Result<serde_json::Value, String> {
+    connect_local_bridge_provider(profile_dir)
+}
+
+#[tauri::command]
+fn local_bridge_choose_provider_profile() -> Result<String, String> {
+    choose_provider_profile()
 }
 
 #[tauri::command]
@@ -180,7 +201,7 @@ fn local_bridge_work_detail(work_id: String) -> Result<serde_json::Value, String
 
 pub fn run() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![platform_info, recovery_status, recovery_restart_runtime, local_bridge_bootstrap, local_bridge_start_work, local_bridge_connect_provider, local_bridge_local_message, local_bridge_work_detail])
+        .invoke_handler(tauri::generate_handler![platform_info, recovery_status, recovery_restart_runtime, local_bridge_bootstrap, local_bridge_start_work, local_bridge_connect_provider, local_bridge_choose_provider_profile, local_bridge_local_message, local_bridge_work_detail])
         .run(tauri::generate_context!())
         .expect("error while running Forge V3 desktop");
 }
