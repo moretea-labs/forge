@@ -79,6 +79,10 @@ export interface WorkSemanticView {
   requirementRevision?: number;
   planId?: string;
   planRevision?: number;
+  /** Thin semantic hierarchy edge; distinct from execution-child parentWorkId. */
+  semanticParentWorkId?: string;
+  /** Thin semantic dependency edges; descriptive and never execution-lineage authority. */
+  dependsOnWorkIds: string[];
   resultRefs: string[];
   createdAt: string;
   updatedAt: string;
@@ -426,6 +430,10 @@ export interface WorkContract {
   lifecycleRole?: 'primary' | 'execution_child';
   /** Optional objective-level parent when this Work is only an execution child. */
   parentWorkId?: string;
+  /** Semantic hierarchy edge for V3 projections; never execution-child authority. */
+  semanticParentWorkId?: string;
+  /** Semantic dependency edges for V3 projections; never execution scheduling authority. */
+  dependsOnWorkIds?: string[];
   /** Immediate prior primary Work in the same semantic continuation lineage. Relationship evidence only; never execution or deletion authority. */
   predecessorWorkId?: string;
   /** Historical predecessors explicitly replaced by this Work. Relationship evidence only; never deletion authority. */

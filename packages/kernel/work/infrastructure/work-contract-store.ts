@@ -122,6 +122,8 @@ export interface CreateWorkSemanticInput {
   requirementRevision?: number;
   planId?: string;
   planRevision?: number;
+  semanticParentWorkId?: string;
+  dependsOnWorkIds?: string[];
   requestedBy?: 'chatgpt' | 'user' | 'system' | 'scheduler';
 }
 
@@ -214,6 +216,7 @@ export function semanticWorkState(work: Pick<WorkContract, 'semanticRevision' | 
 
 export function workSemanticView(work: WorkContract): WorkSemanticView {
   const resultRefs = [...new Set((work.semanticResultRefs ?? []).map((value) => value.trim()).filter(Boolean))].slice(0, 100);
+  const dependsOnWorkIds = [...new Set((work.dependsOnWorkIds ?? []).map((value) => value.trim()).filter(Boolean))].sort().slice(0, 50);
   return {
     workId: work.workId,
     revision: currentWorkSemanticRevision(work),
@@ -224,6 +227,8 @@ export function workSemanticView(work: WorkContract): WorkSemanticView {
     ...(Number.isInteger(work.requirementRevision) && Number(work.requirementRevision) > 0 ? { requirementRevision: Number(work.requirementRevision) } : {}),
     ...(work.planId?.trim() ? { planId: work.planId.trim() } : {}),
     ...(Number.isInteger(work.planRevision) && Number(work.planRevision) > 0 ? { planRevision: Number(work.planRevision) } : {}),
+    ...(work.semanticParentWorkId?.trim() ? { semanticParentWorkId: work.semanticParentWorkId.trim() } : {}),
+    dependsOnWorkIds,
     resultRefs,
     createdAt: work.createdAt,
     updatedAt: work.semanticUpdatedAt ?? work.createdAt,
@@ -610,6 +615,8 @@ export function createWorkSemanticContext(options: WorkContractStoreOptions, inp
     ...(Number.isInteger(input.requirementRevision) ? { requirementRevision: input.requirementRevision } : {}),
     ...(input.planId?.trim() ? { planId: input.planId.trim() } : {}),
     ...(Number.isInteger(input.planRevision) ? { planRevision: input.planRevision } : {}),
+    ...(input.semanticParentWorkId?.trim() ? { semanticParentWorkId: input.semanticParentWorkId.trim() } : {}),
+    ...(input.dependsOnWorkIds ? { dependsOnWorkIds: input.dependsOnWorkIds } : {}),
     ...(input.requestId?.trim() ? { requestId: input.requestId.trim() } : {}),
   });
 }
@@ -628,6 +635,12 @@ export function createWorkContract(options: WorkContractStoreOptions, input: Cre
     const workId = sanitizeFileComponent(input.workId);
     const predecessorWorkId = input.predecessorWorkId ? sanitizeFileComponent(input.predecessorWorkId) : undefined;
     if (predecessorWorkId === workId) throw new Error('WORK_PREDECESSOR_SELF_REFERENCE');
+    const semanticParentWorkId = input.semanticParentWorkId ? sanitizeFileComponent(input.semanticParentWorkId) : undefined;
+    if (semanticParentWorkId === workId) throw new Error('WORK_SEMANTIC_PARENT_SELF_REFERENCE');
+    const dependsOnWorkIds = [...new Set((input.dependsOnWorkIds ?? [])
+      .map((value) => sanitizeFileComponent(value))
+      .filter((value) => value && value !== 'unknown'))].slice(0, 50);
+    if (dependsOnWorkIds.includes(workId)) throw new Error('WORK_DEPENDENCY_SELF_REFERENCE');
     const contract: WorkContract = validateWorkSemantics({
       schemaVersion: 3,
       workId,
@@ -658,6 +671,8 @@ export function createWorkContract(options: WorkContractStoreOptions, input: Cre
       workKind: input.workKind ?? 'repository_change',
       lifecycleRole: input.lifecycleRole ?? 'primary',
       parentWorkId: input.parentWorkId?.trim() || undefined,
+      semanticParentWorkId,
+      dependsOnWorkIds,
       predecessorWorkId: predecessorWorkId && predecessorWorkId !== 'unknown' ? predecessorWorkId : undefined,
       supersedes: input.supersedes?.map((value) => sanitizeFileComponent(value)).filter((value) => value !== 'unknown').slice(0, 50),
       supersededBy: input.supersededBy ? sanitizeFileComponent(input.supersededBy) : undefined,
@@ -999,6 +1014,7 @@ export function listWorkSemanticRevisionRecords(
     .filter((record) => !normalizedId || record.workId === normalizedId)
     .map((record) => ({
       ...record,
+      dependsOnWorkIds: [...new Set((record.dependsOnWorkIds ?? []).map((id) => id.trim()).filter(Boolean))].sort(),
       semanticScope: record.semanticScope ?? semanticScopeRefForWork({
         workId: record.workId,
         requirementId: record.requirementId,

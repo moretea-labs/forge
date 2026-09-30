@@ -73,6 +73,8 @@ export function transitionPhaseEvidence(
 
 export function validateWorkSemantics(contract: WorkContract): WorkContract {
   if (!contract.objective.trim()) throw new Error('WORK_OBJECTIVE_REQUIRED');
+  if (contract.semanticParentWorkId?.trim() === contract.workId) throw new Error('WORK_SEMANTIC_PARENT_SELF_REFERENCE');
+  if ((contract.dependsOnWorkIds ?? []).some((id) => id.trim() === contract.workId)) throw new Error('WORK_DEPENDENCY_SELF_REFERENCE');
   if (contract.semanticState === 'completed' || contract.semanticState === 'cancelled') {
     return contract;
   }
@@ -237,6 +239,14 @@ export function validateWorkSemanticTransition(
   }
   if (current.parentWorkId !== next.parentWorkId) {
     throw new Error('WORK_SEMANTICS_TRANSITION_INVALID: parentWorkId is immutable');
+  }
+  if (current.semanticParentWorkId !== next.semanticParentWorkId) {
+    throw new Error('WORK_SEMANTICS_TRANSITION_INVALID: semanticParentWorkId is immutable');
+  }
+  const currentDependencies = [...new Set((current.dependsOnWorkIds ?? []).map((id) => id.trim()).filter(Boolean))].sort();
+  const nextDependencies = [...new Set((next.dependsOnWorkIds ?? []).map((id) => id.trim()).filter(Boolean))].sort();
+  if (currentDependencies.length !== nextDependencies.length || currentDependencies.some((id, index) => id !== nextDependencies[index])) {
+    throw new Error('WORK_SEMANTICS_TRANSITION_INVALID: dependsOnWorkIds is immutable');
   }
   if (current.predecessorWorkId !== next.predecessorWorkId) {
     throw new Error('WORK_SEMANTICS_TRANSITION_INVALID: predecessorWorkId is immutable');

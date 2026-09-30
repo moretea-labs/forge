@@ -120,6 +120,10 @@ export interface WorkSummaryViewModel {
     status: string;
     checkIds: string[];
     handoffRefs: string[];
+    requirementId?: string;
+    planId?: string;
+    semanticParentWorkId?: string;
+    dependsOnWorkIds: string[];
   };
 }
 

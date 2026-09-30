@@ -383,6 +383,10 @@ export function mapWorkSummary(
       status: work.status,
       checkIds: work.checks,
       handoffRefs: work.handoffRefs,
+      ...(work.requirementId ? { requirementId: work.requirementId } : {}),
+      ...(work.planId ? { planId: work.planId } : {}),
+      ...(work.semanticParentWorkId ? { semanticParentWorkId: work.semanticParentWorkId } : {}),
+      dependsOnWorkIds: [...new Set((work.dependsOnWorkIds ?? []).map((id) => id.trim()).filter(Boolean))].sort(),
     },
   };
 }

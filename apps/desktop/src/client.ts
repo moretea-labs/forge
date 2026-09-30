@@ -1,7 +1,7 @@
 export type Mode = 'mcp' | 'local';
 export type Scope = 'assistant' | 'projects';
 export type WorkState = 'active' | 'blocked' | 'planned' | 'done';
-export type Work = { id:string; title:string; summary:string; state:WorkState; repository:string; plan?:string; parentId?:string; dependsOn?:string[]; updatedAt:string; evidence?:string[] };
+export type Work = { id:string; title:string; summary:string; state:WorkState; repository:string; plan?:string; requirement?:string; parentId?:string; dependsOn?:string[]; updatedAt:string; evidence?:string[] };
 export type Project = { id:string; name:string; path:string; branch:string; work:Work[] };
 export type Snapshot = { runtime:'ready'|'offline'|'attention'; runtimeLabel:string; projects:Project[]; assistant:Work[]; source:'live'|'preview' };
 
@@ -22,7 +22,7 @@ export async function loadSnapshot():Promise<Snapshot>{
   if (!liveRequested) return preview;
   try {
     const [center, portfolio] = await Promise.all([json<any>('/api/console/command-center'), json<any>('/api/console/work-portfolio')]);
-    const projects = (center.repositories ?? []).map((repo:any):Project => ({ id:repo.id, name:repo.name, path:repo.path ?? '', branch:repo.branchLabel ?? 'working tree', work:(portfolio.items ?? []).filter((item:any)=>item.repoId===repo.id).map((item:any):Work=>({ id:item.id, title:item.title, summary:item.latestSummary ?? item.objective, state:item.advanced?.status==='blocked'?'blocked':item.advanced?.status==='completed'?'done':'active', repository:repo.name, updatedAt:item.updatedAt ?? 'recent', plan:item.advanced?.planLabel, evidence:item.latestVerification ? ['Latest verification available'] : undefined })) }));
+    const projects = (center.repositories ?? []).map((repo:any):Project => ({ id:repo.id, name:repo.name, path:repo.path ?? '', branch:repo.branchLabel ?? 'working tree', work:(portfolio.items ?? []).filter((item:any)=>item.repoId===repo.id).map((item:any):Work=>({ id:item.id, title:item.title, summary:item.latestSummary ?? item.objective, state:item.advanced?.status==='blocked'?'blocked':item.advanced?.status==='completed'?'done':'active', repository:repo.name, updatedAt:item.updatedAt ?? 'recent', plan:item.advanced?.planId ?? item.plan, requirement:item.advanced?.requirementId, parentId:item.advanced?.semanticParentWorkId, dependsOn:item.advanced?.dependsOnWorkIds ?? [], evidence:item.latestVerification ? ['Latest verification available'] : undefined })) }));
     return { runtime:/ready|healthy/i.test(String(center.readiness?.state ?? center.readiness?.status ?? 'ready'))?'ready':'attention', runtimeLabel:String(center.readiness?.label ?? 'Forge Runtime connected'), projects, assistant:preview.assistant, source:'live' };
   } catch { return preview; }
 }
