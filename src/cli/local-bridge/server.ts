@@ -96,6 +96,7 @@ import {
   getConsoleWorkDetail,
   listConsoleHandoffs,
   listConsoleWork,
+  listConsoleWorkAcrossRepositories,
   mapRepositoryCard,
   repairConsole,
   resolveConsoleHandoff,
@@ -1276,6 +1277,7 @@ export async function startLocalBridgeServer(
   app.get("/api/client/v3/bootstrap", async (request, response) => {
     try {
       const ctx = consoleCtx(request);
+      const repositoryRecords = loadRepositoryRegistry(controllerHome).repositories;
       const repositories = userFacingRepositories(ctx.repository.canonicalRoot, controllerHome, ctx.repository.repoId)
         .map((entry) => {
           const record = loadRepositoryRegistry(controllerHome).repositories.find((item) => item.repoId === entry.id);
@@ -1293,7 +1295,8 @@ export async function startLocalBridgeServer(
         connection: await v3ConnectionHealth(ctx),
         requirements: buildRequirementBoard({ controllerHome }),
         repositories,
-        work: listConsoleWork(ctx, 'all'),
+        work: listConsoleWorkAcrossRepositories(controllerHome, repositoryRecords, 'all'),
+        assistant: listConsoleWorkAcrossRepositories(controllerHome, repositoryRecords, 'all'),
       });
     } catch (error) {
       response.status(400).json({ error: errorMessage(error) });

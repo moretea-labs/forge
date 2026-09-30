@@ -58,11 +58,12 @@ function runtimeSnapshot(recovery:NativeRecoveryResult):Snapshot { const runtime
 function bootstrapSnapshot(bootstrap:any, source:'live'|'native'):Snapshot {
   const repositories=bootstrap.repositories ?? [];
   const items=bootstrap.work ?? [];
+  const repositoryNames=new Map(repositories.map((repo:any)=>[repo.id, repo.name]));
   const mapWork=(item:any, repository:string):Work=>({ id:item.id, title:item.title, summary:item.latestSummary ?? item.objective, state:item.advanced?.status==='blocked'?'blocked':(item.advanced?.status==='completed'||item.advanced?.status==='cancelled')?'done':'active', repository, updatedAt:item.updatedAt ?? 'recent', plan:item.advanced?.planId ?? item.plan, requirement:item.advanced?.requirementId, parentId:item.advanced?.semanticParentWorkId, dependsOn:item.advanced?.dependsOnWorkIds ?? [], statusLabel:item.statusLabel, phase:item.phase, nextAction:item.nextAction, latestAction:item.latestAction, acceptanceCriteria:item.acceptanceCriteria, evidenceLabels:item.evidenceLabels, evidence:item.latestVerification ? ['Latest verification available'] : undefined, changedFiles:item.changedFiles ? { count:item.changedFiles.count ?? 0, examples:item.changedFiles.examples ?? [] } : undefined, error:item.error ? { title:item.error.title, explanation:item.error.explanation, nextActions:item.error.nextActions ?? [] } : undefined });
   const projects=repositories.map((repo:any):Project=>({ id:repo.id, name:repo.name, path:repo.path ?? '', branch:repo.branchLabel ?? 'working tree', work:items.filter((item:any)=>item.repoId===repo.id).map((item:any)=>mapWork(item,repo.name)) }));
   const runtimeStatus=String(bootstrap.runtime?.status ?? 'unavailable');
   const runtime=runtimeStatus==='ready'?'ready':runtimeStatus==='starting'?'attention':'offline';
-  return { runtime, runtimeLabel:runtime==='ready'?'Forge Runtime ready':runtime==='attention'?'Forge Runtime starting':'Forge Runtime unavailable', projects, assistant:preview.assistant, requirements:(bootstrap.requirements?.requirements ?? []) as RequirementRoot[], provider:bootstrap.provider, connection:bootstrap.connection, source };
+  return { runtime, runtimeLabel:runtime==='ready'?'Forge Runtime ready':runtime==='attention'?'Forge Runtime starting':'Forge Runtime unavailable', projects, assistant:(bootstrap.assistant ?? []).map((item:any):Work=>mapWork(item, repositoryNames.get(item.repoId) ?? item.repository ?? 'Assistant')), requirements:(bootstrap.requirements?.requirements ?? []) as RequirementRoot[], provider:bootstrap.provider, connection:bootstrap.connection, source };
 }
 
 export async function loadSnapshot():Promise<Snapshot>{

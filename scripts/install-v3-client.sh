@@ -21,9 +21,7 @@ mkdir -p "$install_dir"
 
 if ((native)); then
   binary="$repo_root/apps/desktop/src-tauri/target/release/forge-v3-desktop"
-  if [[ ! -x "$binary" ]]; then
-    (cd "$repo_root" && cargo build --release --manifest-path apps/desktop/src-tauri/Cargo.toml)
-  fi
+  (cd "$repo_root" && cargo build --release --manifest-path apps/desktop/src-tauri/Cargo.toml)
   install -m 755 "$binary" "$install_dir/forge-v3-desktop"
   printf 'Forge V3 native client installed at %s/forge-v3-desktop\n' "$install_dir"
   if ((launch)); then

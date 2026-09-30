@@ -1246,6 +1246,23 @@ export function listConsoleWork(ctx: ConsoleFacadeContext, status: 'active' | 'a
     mapWorkSummary(work, { controllerHome: ctx.controllerHome, repoId: ctx.repository.repoId }));
 }
 
+/**
+ * Build the Assistant-global projection from the same repository-scoped Work
+ * authority used by Projects. This is a read-only aggregate; it does not
+ * introduce a controller-global Work store or change Work ownership.
+ */
+export function listConsoleWorkAcrossRepositories(
+  controllerHome: string,
+  repositories: RepositoryRecord[],
+  status: 'active' | 'all' = 'active',
+): WorkSummaryViewModel[] {
+  return repositories
+    .filter((repository) => repository.enabled !== false && !repository.removedAt)
+    .flatMap((repository) => listConsoleWork({ controllerHome, repository }, status))
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+    .slice(0, 100);
+}
+
 /** Normalize facade/tool results into GUI-friendly operation feedback. */
 export function toConsoleOperationFeedback(result: FacadeResult): {
   phase: string;
