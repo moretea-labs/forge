@@ -1220,6 +1220,32 @@ export async function startLocalBridgeServer(
     }
   });
 
+  /** Versioned V3 client bootstrap projection. The desktop client consumes
+   * this single facade; Runtime/Work/Repository authority remains canonical. */
+  app.get("/api/client/v3/bootstrap", async (request, response) => {
+    try {
+      const ctx = consoleCtx(request);
+      const repositories = userFacingRepositories(ctx.repository.canonicalRoot, controllerHome, ctx.repository.repoId)
+        .map((entry) => {
+          const record = loadRepositoryRegistry(controllerHome).repositories.find((item) => item.repoId === entry.id);
+          return record ? mapRepositoryCard(record, entry.current) : {
+            ...entry,
+            tone: entry.current ? 'green' as const : 'blue' as const,
+          };
+        });
+      response.json({
+        schemaVersion: 1,
+        client: 'forge-v3-desktop',
+        generatedAt: new Date().toISOString(),
+        runtime: readForgeRuntimeStatus(controllerHome),
+        repositories,
+        work: listConsoleWork(ctx, 'all'),
+      });
+    } catch (error) {
+      response.status(400).json({ error: errorMessage(error) });
+    }
+  });
+
   app.get("/api/console/requirements", (_request, response) => {
     try {
       response.json(buildRequirementBoard({ controllerHome }));
