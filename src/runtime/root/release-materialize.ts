@@ -976,6 +976,29 @@ function inspectRuntimeReleaseTree(releaseRootInput: string): RuntimeReleaseTree
   };
 }
 
+function preserveRuntimeReleaseTreeModes(sourceRootInput: string, targetRootInput: string): void {
+  const sourceRoot = resolve(sourceRootInput);
+  const targetRoot = resolve(targetRootInput);
+  const visit = (sourceDirectory: string, targetDirectory: string): void => {
+    for (const entry of readdirSync(sourceDirectory, { withFileTypes: true })) {
+      const sourcePath = join(sourceDirectory, entry.name);
+      const targetPath = join(targetDirectory, entry.name);
+      const sourceStat = lstatSync(sourcePath);
+      if (sourceStat.isDirectory()) {
+        chmodSync(targetPath, sourceStat.mode & 0o777);
+        visit(sourcePath, targetPath);
+      } else if (sourceStat.isFile()) {
+        // fs.cpSync applies the process umask to copied files. The release
+        // tree digest includes permission bits, so restore the source mode
+        // before comparing the staged tree with its immutable source.
+        chmodSync(targetPath, sourceStat.mode & 0o777);
+      }
+    }
+  };
+  chmodSync(targetRoot, lstatSync(sourceRoot).mode & 0o777);
+  visit(sourceRoot, targetRoot);
+}
+
 export function runtimeReleaseTreeSha256(releaseRoot: string): string {
   return inspectRuntimeReleaseTree(releaseRoot).sha256;
 }
@@ -1055,6 +1078,7 @@ export function promotePortableRuntimeRelease(input: {
       preserveTimestamps: false,
       dereference: false,
     });
+    preserveRuntimeReleaseTreeModes(sourceReleaseRoot, staging);
     const stagedTree = inspectRuntimeReleaseTree(staging);
     if (stagedTree.sha256 !== sourceTree.sha256) throw new Error('RUNTIME_RELEASE_PROMOTION_STAGING_TREE_MISMATCH');
     renameSync(staging, targetReleaseRoot);
