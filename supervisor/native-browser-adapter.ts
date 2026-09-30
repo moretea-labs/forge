@@ -681,8 +681,14 @@ export class WorkflowSupervisorNativeBrowserAdapter {
           const identity = parseChatgptConversationIdentity(snapshot.url);
           if (!targetMarkerPresent(snapshot.latestUserText, command.effectId)) throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_EFFECT_MARKER_NOT_OBSERVED');
           this.control.bindBootstrapConversation({ taskId: task.taskId, conversationId: identity.conversationId, conversationUrl: identity.canonicalUrl });
+          const canonicalOwner = ownerMarker(identity.conversationId, 'created');
+          await this.deps.writeOwner(page, canonicalOwner);
+          this.pages.set(identity.conversationId, page);
           this.control.bootstrapObserveEffect({ taskId: task.taskId, effectId: command.effectId, observationId: `bootstrap-${randomUUID()}`, outcome: 'applied' });
-          preserveForReconcile = false;
+          // The bootstrap-created tab is now the canonical conversation transport.
+          // Keep the same Forge-owned resource alive so the next Supervisor turn
+          // can observe the assistant receipt without manufacturing a replacement.
+          preserveForReconcile = true;
           return;
         } catch (error) {
           reason = error instanceof Error ? error.message : String(error);
@@ -762,6 +768,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     }
     const [{ page, ref, ownerMatched, snapshot: observed }] = matches;
     let applied = false;
+    let canonicalConversationId: string | undefined;
     try {
       let snapshot: WorkflowSupervisorNativeSnapshot;
       try { snapshot = observed ?? await this.deps.snapshot(page, { includeUserHistory: true, includePageText: false }); }
@@ -781,14 +788,24 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       }
       this.control.bindBootstrapConversation({ taskId: task.taskId, conversationId: identity.conversationId, conversationUrl: identity.canonicalUrl });
       this.control.bootstrapObserveEffect({ taskId: task.taskId, effectId: command.effectId, observationId: `bootstrap-reconcile-${randomUUID()}`, outcome: 'applied' });
+      canonicalConversationId = identity.conversationId;
       applied = true;
     } finally {
-      // A surviving owner marker proves Forge-created resource ownership. Marker-
-      // only recovery proves causal conversation identity, not tab ownership, so
-      // bind it but leave that browser resource intact.
-      if (applied && ownerMatched) {
-        await this.deps.close(ref).catch(() => undefined);
-        this.invalidateInventory();
+      // A surviving bootstrap owner marker proves Forge-created resource
+      // ownership. Transfer that exact tab to the canonical conversation instead
+      // of closing the only observable transport after enrollment.
+      if (applied && ownerMatched && canonicalConversationId) {
+        const canonicalOwner = ownerMarker(canonicalConversationId, 'created');
+        try {
+          await this.deps.writeOwner(page, canonicalOwner);
+          if (await this.deps.readOwner(page) === canonicalOwner) {
+            this.pages.set(canonicalConversationId, page);
+          }
+        } catch {
+          // The durable conversation binding remains authoritative. If the
+          // ownership handoff cannot be proven, leave the tab intact rather than
+          // closing an otherwise valid causal resource.
+        }
       }
     }
   }
