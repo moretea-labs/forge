@@ -268,12 +268,16 @@ async function settleForgeWorkflowSupervisorTurn(
     'Treat ControllerRound identity as resume/transport bookkeeping only. Re-read current Requirement/Plan/Work/UserRequest facts and use canonical stable-id + expected_revision semantic operations; do not invent mandatory verify/review/finalize/PlanStep lifecycle from this authority.',
     'Never mint a replacement continuation authority and never substitute a transport session id.',
   ].join('\n');
+  // Settlement can survive a crash before the successor is committed. The
+  // lower relay may still name the applied source; derive a fresh successor
+  // from its completion rather than trying to reserve that source id again.
+  const continuationEffectId = relay.providerDispatchEffectId ?? controllerRoundProviderEffectId(relay);
   return {
     continuationAllowed: true,
     continuationContext,
-    ...(continuationNeedsFreshSupervisorEffect
+    ...(continuationNeedsFreshSupervisorEffect || continuationEffectId === completion.sourceEffectId
       ? {}
-      : { continuationEffectId: relay.providerDispatchEffectId ?? controllerRoundProviderEffectId(relay) }),
+      : { continuationEffectId }),
   };
 }
 

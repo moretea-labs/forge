@@ -2015,7 +2015,7 @@ forbid(
   /controllerRoundProviderEffectId[\s\S]{0,400}authorityId/,
   'canonical continuation/provider effect identity must survive Controller authority rotation',
 );
-requireText('src/runtime/root/workflow-supervisor-composition.ts', 'continuationEffectId: relay.providerDispatchEffectId ?? controllerRoundProviderEffectId(relay)');
+requireText('src/runtime/root/workflow-supervisor-composition.ts', 'const continuationEffectId = relay.providerDispatchEffectId ?? controllerRoundProviderEffectId(relay)');
 requireText('src/runtime/root/workflow-supervisor-composition.ts', 'reserveWorkflowSupervisorEnrollment(forgeHome, registeredTask.taskId, lowerLayer.providerEffectId)');
 requireText('src/runtime/root/workflow-supervisor-composition.ts', 'providerDispatchEffectId: effect.effectId');
 requireText('supervisor/control-plane.ts', 'settlement.continuationEffectId');

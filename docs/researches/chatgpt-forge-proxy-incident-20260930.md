@@ -57,3 +57,19 @@ cause/scope of this remaining server response is unknown; the successful
 other endpoints and local proxy repair do not prove that it has been fixed.
 Do not attribute the proxy's CONNECT 503 to an OpenAI service outage or claim
 that the separate project-alias contract correction resolves HTTP 429.
+
+## Supervisor successor reservation defect
+
+A later live 30-second log window observed 15 additional
+`WORKFLOW_SUPERVISOR_EFFECT_RESERVE_FAILED` errors. One committed CONTINUE had
+no successor, while its lower relay was dispatching with a canonical provider
+effect ID equal to the already-applied completion source effect ID. Reserving
+the same primary key under a different completion origin could not succeed.
+
+The existing round-budget recovery test was extended to perform lower-layer
+settlement before successor reconciliation, representing a crash between those
+operations. It reproduced the exact reservation error before correction. The
+composition now omits the lower-layer ID when it equals the completion source,
+allowing Supervisor to derive its stable successor ID from the completion
+fingerprint. This preserves effect ownership and idempotency without rewriting
+historical records, adding a retry loop, or replaying the applied source.

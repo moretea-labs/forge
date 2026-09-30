@@ -799,6 +799,9 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     };
     supervisorStore.commitCompletion(completion);
 
+    // A crash can occur after lower-layer settlement, before the successor is
+    // committed. Reconciliation must not reuse the already-applied source id.
+    await control.hooks.assistantTurnCommitted?.(control.getTask(taskId)!, completion);
     expect(await control.reconcileCommittedContinuations()).toEqual({ scanned: 1, reconciled: 1 });
     const successor = supervisorStore.getEffectByOriginKey(`completion:${completion.completionFingerprint}`);
     expect(successor).toBeDefined();
