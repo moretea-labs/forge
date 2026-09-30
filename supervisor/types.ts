@@ -1,5 +1,6 @@
 export type WorkflowSupervisorAction = 'CONTINUE' | 'DONE' | 'NEEDS_USER';
 export type WorkflowSupervisorState = 'running' | 'done' | 'needs_user';
+export type WorkflowSupervisorTerminalState = 'DONE' | 'NEEDS_USER' | 'STOPPED';
 /** Machine receipt attached to Forge MCP calls made by an autonomous ChatGPT turn. */
 export type WorkflowSupervisorAutomationStatus = 'working' | 'continue' | 'done' | 'needs_user';
 export type WorkflowEffectKind = 'enrollment' | 'continuation' | 'correction' | 'recovery';
@@ -168,6 +169,6 @@ export interface WorkflowSupervisorBrowserCommand {
 export interface WorkflowSupervisorBrowserPollResult {
   authorized: true;
   task: WorkflowSupervisorBrowserTask;
-  terminal?: 'DONE' | 'NEEDS_USER';
+  terminal?: WorkflowSupervisorTerminalState;
   command?: WorkflowSupervisorBrowserCommand;
 }

@@ -942,6 +942,10 @@
       "module": "workflow",
       "resource": "controller-home-isolated"
     },
+    "tests/runtime/workflow-supervisor-stop.test.ts": {
+      "module": "workflow",
+      "resource": "controller-home-isolated"
+    },
     "tests/runtime/workflow-asset-storage.test.ts": {
       "module": "workflow",
       "resource": "controller-home-isolated"

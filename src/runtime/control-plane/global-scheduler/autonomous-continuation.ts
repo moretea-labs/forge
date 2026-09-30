@@ -175,6 +175,14 @@ export async function runSchedulerAutonomousContinuationReconciliation(input: {
           continue;
         }
         if (progression.status === 'provider_dispatched') {
+          // The occurrence identity is the dedupe fence. A reused dispatched
+          // relay is already complete; reporting it as a fresh dispatch makes
+          // repeated scheduler scans look like new progress even though no
+          // provider call occurred.
+          if (progression.reused) {
+            skip(skippedByReason, 'controller_progression:already_dispatched');
+            continue;
+          }
           dispatched += 1;
           materialized += 1;
           continue;

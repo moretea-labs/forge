@@ -465,11 +465,13 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     recent_safe_error: { type: 'string' },
     model: { type: 'string' },
   }),
-  definition('supervisor_task', 'Start, inspect, or prove one standalone Workflow Supervisor autonomous task. Supervisor task/effect state is the continuation authority; Requirement, Plan, and Work are optional and are not created by this tool.', {
+  definition('supervisor_task', 'Start, list, inspect, stop, or prove standalone Workflow Supervisor autonomous tasks. Supervisor task/effect state is the continuation authority; Requirement, Plan, and Work are optional and are not created by this tool.', {
     repo_id: { ...repoId, description: 'Optional repository provenance for start/proof; never Work authority.' },
-    operation: { type: 'string', enum: ['start', 'get', 'proof'] },
+    operation: { type: 'string', enum: ['start', 'list', 'get', 'stop', 'proof'] },
     task_id: { type: 'string' },
     objective: { type: 'string' },
+    reason: { type: 'string', description: 'Operator reason recorded when stopping a Supervisor task.' },
+    active_only: { type: 'boolean', description: 'For list, defaults true; exclude terminal tasks.' },
     request_id: { type: 'string', description: 'Stable idempotency identity for start.' },
     active_release_id: { type: 'string', description: 'Active Runtime release expected in proof dispatch evidence.' },
     not_before: { type: 'string', description: 'ISO-8601 lower bound for proof completions.' },

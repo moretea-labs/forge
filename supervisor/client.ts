@@ -57,6 +57,19 @@ export async function getWorkflowSupervisorTask(forgeHome: string, taskId: strin
   return task ?? undefined;
 }
 
+export async function listWorkflowSupervisorTasks(forgeHome: string, activeOnly = false): Promise<WorkflowSupervisorTask[]> {
+  const result = await rpc<{ tasks: WorkflowSupervisorTask[] }>(forgeHome, 'task_list', { active_only: activeOnly });
+  return result.tasks;
+}
+
+export async function stopWorkflowSupervisorTask(
+  forgeHome: string,
+  taskId: string,
+  reason = 'Stopped by operator request.',
+): Promise<{ taskId: string; terminal: 'STOPPED'; deduplicated: boolean }> {
+  return await rpc(forgeHome, 'task_stop', { task_id: taskId, reason }, SUPERVISOR_RPC_MUTATION_TIMEOUT_MS);
+}
+
 export async function registerWorkflowSupervisorTask(forgeHome: string, input: WorkflowSupervisorTaskInput): Promise<WorkflowSupervisorTask> {
   return await rpc<WorkflowSupervisorTask>(forgeHome, 'task_register', {
     task_id: input.taskId,

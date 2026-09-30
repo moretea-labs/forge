@@ -3,8 +3,10 @@ import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contra
 import {
   getWorkflowSupervisorContinuationProof,
   getWorkflowSupervisorTask,
+  listWorkflowSupervisorTasks,
   registerWorkflowSupervisorTask,
   reserveWorkflowSupervisorEnrollment,
+  stopWorkflowSupervisorTask,
 } from '../../../supervisor/client';
 import { resolveWorkflowSupervisorForgeHome } from '../../../supervisor/paths';
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
@@ -49,6 +51,19 @@ export async function callWorkflowSupervisorAdapter(
     });
     const effect = await reserveWorkflowSupervisorEnrollment(forgeHome, task.taskId);
     return result({ task, effect, summary: `Standalone Supervisor task ${task.taskId} started.` });
+  }
+
+  if (operation === 'list') {
+    const activeOnly = args.active_only !== false;
+    const tasks = await listWorkflowSupervisorTasks(forgeHome, activeOnly);
+    return result({ tasks, count: tasks.length, activeOnly, summary: `${tasks.length} Supervisor task(s) listed.` });
+  }
+
+  if (operation === 'stop') {
+    const id = textArg(args, 'task_id');
+    if (!id) throw new Error('WORKFLOW_SUPERVISOR_TASK_ID_REQUIRED');
+    const stopped = await stopWorkflowSupervisorTask(forgeHome, id, textArg(args, 'reason') || 'Stopped by operator request.');
+    return result({ ...stopped, summary: `Supervisor task ${id} stopped.` });
   }
 
   if (operation === 'get') {

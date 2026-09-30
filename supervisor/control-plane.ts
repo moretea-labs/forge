@@ -62,6 +62,13 @@ export class WorkflowSupervisorControlPlane {
     this.store.recordEffectObservation(validateEffectId(input.effectId), input.observationId, input.outcome, input.evidence);
   }
   getTask(taskId: string): WorkflowSupervisorTask | undefined { return this.store.getTask(taskId); }
+  listTasks(activeOnly = false): WorkflowSupervisorTask[] {
+    const tasks = this.store.listTasks();
+    return activeOnly ? tasks.filter((task) => !this.store.terminalAction(task.taskId)) : tasks;
+  }
+  stopTask(taskId: string, reason = 'Stopped by operator request.'): { taskId: string; terminal: 'STOPPED'; deduplicated: boolean } {
+    return this.store.stopTask(taskId, reason);
+  }
   bindBootstrapConversation(input: { taskId: string; conversationId: string; conversationUrl: string }): WorkflowSupervisorTask {
     const identity = parseChatgptConversationIdentity(input.conversationUrl);
     if (identity.conversationId !== input.conversationId) throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_CONVERSATION_MISMATCH');
@@ -156,9 +163,13 @@ export class WorkflowSupervisorControlPlane {
   }
   browserPoll(input: { conversationId: string; conversationUrl: string }): WorkflowSupervisorBrowserPollResult {
     const task = this.requireBrowserTask(input.conversationId, input.conversationUrl);
-    if (!this.browserTaskActiveForExternalEffect(task)) throw new Error('WORKFLOW_SUPERVISOR_BROWSER_TASK_INACTIVE');
     const projection = browserTask(task);
     const terminal = this.store.terminalAction(task.taskId);
+    // STOPPED is an operator terminal, not a semantic completion. Return it
+    // before the normal external-effect activity gate so an already-running
+    // browser poll observes the stop and cannot turn it into another command.
+    if (terminal === 'STOPPED') return { authorized: true, task: projection, terminal };
+    if (!this.browserTaskActiveForExternalEffect(task)) throw new Error('WORKFLOW_SUPERVISOR_BROWSER_TASK_INACTIVE');
     if (terminal) return { authorized: true, task: projection, terminal };
     const pending = this.store.nextBrowserEffect(task.taskId);
     if (!pending) return { authorized: true, task: projection };
@@ -167,6 +178,8 @@ export class WorkflowSupervisorControlPlane {
   bootstrapPoll(taskId: string): WorkflowSupervisorBrowserPollResult {
     const task = this.requireTask(taskId);
     if (!task.conversationId.startsWith('bootstrap:')) throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_NOT_PENDING');
+    const terminal = this.store.terminalAction(task.taskId);
+    if (terminal === 'STOPPED') return { authorized: true, task: browserTask(task), terminal };
     const pending = this.store.nextBrowserEffect(task.taskId);
     if (pending) {
       return {

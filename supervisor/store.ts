@@ -1,7 +1,7 @@
 import { createRequire } from 'node:module';
 import { mkdirSync } from 'node:fs';
 import { resolveWorkflowSupervisorForgeHome, workflowSupervisorDatabasePathValue, workflowSupervisorRootPath } from './paths';
-import type { WorkflowEffectKind, WorkflowEffectOutcome, WorkflowSupervisorCompletion, WorkflowSupervisorContinuationProof, WorkflowSupervisorDiscoverySnapshot, WorkflowSupervisorDiscoveredConversation, WorkflowSupervisorEffect, WorkflowSupervisorTask, WorkflowSupervisorTaskInput } from './types';
+import type { WorkflowEffectKind, WorkflowEffectOutcome, WorkflowSupervisorCompletion, WorkflowSupervisorContinuationProof, WorkflowSupervisorDiscoverySnapshot, WorkflowSupervisorDiscoveredConversation, WorkflowSupervisorEffect, WorkflowSupervisorTask, WorkflowSupervisorTaskInput, WorkflowSupervisorTerminalState } from './types';
 
 interface Statement { get(...params: unknown[]): unknown; all(...params: unknown[]): unknown[]; run(...params: unknown[]): unknown; finalize?(): void }
 interface Database { exec(sql: string): void; prepare(sql: string): Statement; close(): void }
@@ -421,7 +421,7 @@ export class WorkflowSupervisorStore {
     return this.read((db) => statement(db, `SELECT c.* FROM completions c
       WHERE c.action = 'CONTINUE'
         AND NOT EXISTS (SELECT 1 FROM effects successor WHERE successor.origin_key = 'completion:' || c.completion_fingerprint)
-        AND NOT EXISTS (SELECT 1 FROM events terminal WHERE terminal.task_id = c.task_id AND terminal.kind IN ('terminal_done','terminal_needs_user'))
+        AND NOT EXISTS (SELECT 1 FROM events terminal WHERE terminal.task_id = c.task_id AND terminal.kind IN ('terminal_done','terminal_needs_user','terminal_stopped'))
       ORDER BY c.committed_at DESC, c.completion_fingerprint DESC LIMIT ?`, (s) => s.all(boundedLimit))
       .map((row) => completionFromRow(row as Record<string, unknown>)));
   }
@@ -550,7 +550,26 @@ export class WorkflowSupervisorStore {
       };
     });
   }
-  terminalAction(taskId: string): 'DONE' | 'NEEDS_USER' | undefined { return this.read((db) => { const row = statement(db, "SELECT kind FROM events WHERE task_id = ? AND kind IN ('terminal_done','terminal_needs_user') ORDER BY event_id DESC LIMIT 1", (s) => s.get(taskId)) as { kind?: string } | undefined; return row?.kind === 'terminal_done' ? 'DONE' : row?.kind === 'terminal_needs_user' ? 'NEEDS_USER' : undefined; }); }
+  terminalAction(taskId: string): WorkflowSupervisorTerminalState | undefined {
+    return this.read((db) => {
+      const row = statement(db, "SELECT kind FROM events WHERE task_id = ? AND kind IN ('terminal_done','terminal_needs_user','terminal_stopped') ORDER BY event_id DESC LIMIT 1", (s) => s.get(taskId)) as { kind?: string } | undefined;
+      return row?.kind === 'terminal_done' ? 'DONE' : row?.kind === 'terminal_needs_user' ? 'NEEDS_USER' : row?.kind === 'terminal_stopped' ? 'STOPPED' : undefined;
+    });
+  }
+  stopTask(taskId: string, reason: string): { taskId: string; terminal: 'STOPPED'; deduplicated: boolean } {
+    return this.transaction((db) => {
+      const task = statement(db, 'SELECT task_id FROM tasks WHERE task_id = ?', (s) => s.get(taskId)) as { task_id?: string } | undefined;
+      if (!task) throw new Error('WORKFLOW_SUPERVISOR_TASK_UNKNOWN');
+      const existing = statement(db, "SELECT kind FROM events WHERE task_id = ? AND kind IN ('terminal_done','terminal_needs_user','terminal_stopped') ORDER BY event_id DESC LIMIT 1", (s) => s.get(taskId)) as { kind?: string } | undefined;
+      if (existing?.kind === 'terminal_stopped') return { taskId, terminal: 'STOPPED', deduplicated: true };
+      if (existing?.kind) {
+        const terminal = existing.kind === 'terminal_done' ? 'DONE' : 'NEEDS_USER';
+        throw new Error(`WORKFLOW_SUPERVISOR_TASK_TERMINAL:${terminal}`);
+      }
+      statement(db, 'INSERT INTO events(task_id,event_key,kind,payload_json,occurred_at) VALUES (?,?,?,?,?)', (s) => s.run(taskId, `task-stop:${taskId}`, 'terminal_stopped', json({ reason }), now()));
+      return { taskId, terminal: 'STOPPED', deduplicated: false };
+    });
+  }
   effectApplied(effectId: string): boolean { return this.read((db) => Boolean(statement(db, "SELECT 1 AS ok FROM events WHERE effect_id = ? AND kind = 'effect_applied' LIMIT 1", (s) => s.get(effectId)))); }
   providerResumeExhausted(effectId: string): boolean { return this.read((db) => Boolean(statement(db, "SELECT 1 AS ok FROM events WHERE effect_id = ? AND kind = 'assistant_recovery_exhausted' LIMIT 1", (s) => s.get(effectId)))); }
   latestAppliedEffectWithoutCompletion(taskId: string): WorkflowSupervisorEffect | undefined {

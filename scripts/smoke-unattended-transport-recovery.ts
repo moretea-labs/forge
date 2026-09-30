@@ -14,7 +14,7 @@ import {
   type ControllerHost,
 } from '../packages/kernel/controller/api/index';
 import { createWorkContract } from '../packages/kernel/work/api/index';
-import { upsertChatgptControllerBinding } from '../adapters/chatgpt/controller-binding-store';
+import { upsertProcessControllerBinding } from '../adapters/controller-process/binding-store';
 import { runSchedulerAutonomousContinuationReconciliation } from '../src/runtime/control-plane/global-scheduler/autonomous-continuation';
 import { WorkflowSupervisorControlPlane } from '../supervisor/control-plane';
 import { SUPERVISOR_BLOCK_END, SUPERVISOR_BLOCK_START } from '../supervisor/protocol';
@@ -121,20 +121,22 @@ try {
   const owner = claimControllerSession(store, {
     workId,
     controllerId: principalId,
-    controllerType: 'chatgpt',
+    // This section proves the generic retained-provider wake path. ChatGPT is
+    // intentionally covered by the Workflow Supervisor section below and must
+    // not silently fall back to direct provider dispatch when its daemon is down.
+    controllerType: 'claude',
     sessionId: oldTransportSessionId,
     authorityDigest: createHash('sha256').update(controllerAuthorityId).digest('hex'),
     principalId,
     controllerInstanceId: 'runtime-before-restart',
     leaseMs: 60_000,
   });
-  const binding = upsertChatgptControllerBinding(store, {
+  const binding = upsertProcessControllerBinding(store, {
     workId,
     sessionId: owner.sessionId,
-    title: 'unattended recovery smoke',
-    model: 'gpt-5.6',
-    reasoning: 'high',
-    tabPolicy: 'auto',
+    controllerType: 'claude',
+    executable: 'claude',
+    launchArgs: [],
   });
   bindControllerSessionBinding(store, { workId, sessionId: owner.sessionId, binding: binding.binding });
   releaseControllerSession(store, workId, owner.controllerId);
