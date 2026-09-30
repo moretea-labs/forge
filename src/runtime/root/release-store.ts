@@ -67,6 +67,7 @@ export interface PreparedRuntimeReleaseDatabaseBackup {
   inspection: ControlPlaneDatabaseInspection;
   databaseSha256: string;
   takeIfCurrent(): { path: string; inspection: ControlPlaneDatabaseInspection; databaseSha256: string } | undefined;
+  release(): void;
   discard(): void;
 }
 
@@ -121,6 +122,49 @@ export function runtimeReleaseAuthorityPath(controllerHome: string): string {
 function backupPath(controllerHome: string, releaseId: string, operationId: string): string {
   const safe = `${releaseId}-${operationId}`.replace(/[^A-Za-z0-9._-]+/g, '-').slice(0, 120);
   return join(ensureControllerHome(controllerHome), 'runtime', 'releases', 'backups', `${Date.now()}-${safe}.sqlite`);
+}
+
+interface RuntimeReleasePublicationLease {
+  schemaVersion: 1;
+  pid: number;
+  operationId: string;
+  candidateReleasePath: string;
+  backupPath?: string;
+}
+
+function publicationLeaseDirectory(controllerHome: string): string {
+  return join(ensureControllerHome(controllerHome), 'runtime', 'releases', '.publication-leases');
+}
+
+function publicationLeasePath(controllerHome: string, operationId: string): string {
+  const safe = operationId.replace(/[^A-Za-z0-9._-]+/g, '-').slice(0, 120);
+  return join(publicationLeaseDirectory(controllerHome), `${safe}-${process.pid}.json`);
+}
+
+function writePublicationLease(
+  controllerHome: string,
+  operationId: string,
+  candidateReleasePath: string,
+  backupPathValue?: string,
+): () => void {
+  const path = publicationLeasePath(controllerHome, operationId);
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  const lease: RuntimeReleasePublicationLease = {
+    schemaVersion: 1,
+    pid: process.pid,
+    operationId,
+    candidateReleasePath: resolve(candidateReleasePath),
+    ...(backupPathValue ? { backupPath: resolve(backupPathValue) } : {}),
+  };
+  const temporary = `${path}.${randomUUID().slice(0, 8)}.tmp`;
+  writeFileSync(temporary, `${JSON.stringify(lease)}\n`, { encoding: 'utf8', mode: 0o600 });
+  renameSync(temporary, path);
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    rmSync(path, { force: true });
+  };
 }
 
 function atomicWrite(path: string, value: unknown): void {
@@ -337,6 +381,7 @@ export function prepareRuntimeReleaseDatabaseBackup(
   const observer = (dependencies.openDatabaseChangeObserver ?? openControlPlaneDatabaseChangeObserver)(controllerHome);
   const initialDataVersion = observer.dataVersion();
   const path = backupPath(controllerHome, current.active.releaseId, operationId);
+  const releaseLease = writePublicationLease(controllerHome, operationId, current.active.manifestPath, path);
   let settled = false;
   try {
     const inspection = dependencies.backupDatabase(controllerHome, path);
@@ -345,6 +390,7 @@ export function prepareRuntimeReleaseDatabaseBackup(
     if (capturedDataVersion !== initialDataVersion) {
       observer.close();
       rmSync(path, { force: true });
+      releaseLease();
       return undefined;
     }
     const discard = () => {
@@ -352,6 +398,7 @@ export function prepareRuntimeReleaseDatabaseBackup(
       settled = true;
       observer.close();
       rmSync(path, { force: true });
+      releaseLease();
     };
     return {
       controllerHome: resolve(controllerHome),
@@ -367,21 +414,25 @@ export function prepareRuntimeReleaseDatabaseBackup(
           const currentDataVersion = observer.dataVersion();
           if (currentDataVersion !== capturedDataVersion) {
             rmSync(path, { force: true });
+            releaseLease();
             return undefined;
           }
           return { path: resolve(path), inspection, databaseSha256 };
         } catch (error) {
           rmSync(path, { force: true });
+          releaseLease();
           throw error;
         } finally {
           observer.close();
         }
       },
+      release: releaseLease,
       discard,
     };
   } catch (error) {
     observer.close();
     rmSync(path, { force: true });
+    releaseLease();
     throw error;
   }
 }
@@ -412,16 +463,29 @@ export function publishRuntimeRelease(
     preparedDatabaseBackup?.discard();
     return current;
   }
-  let prepared: { path: string; inspection: ControlPlaneDatabaseInspection; databaseSha256: string } | undefined;
-  if (
+  const preparedMatches = Boolean(
     preparedDatabaseBackup
     && preparedDatabaseBackup.controllerHome === resolve(controllerHome)
     && preparedDatabaseBackup.activeReleaseId === current.active.releaseId
-    && preparedDatabaseBackup.operationId === operationId
-  ) {
+    && preparedDatabaseBackup.operationId === operationId,
+  );
+  const pendingBackupPath = preparedMatches && preparedDatabaseBackup
+    ? preparedDatabaseBackup.path
+    : backupPath(controllerHome, current.active.releaseId, operationId);
+  let releaseLease = () => {};
+  try {
+  let prepared: { path: string; inspection: ControlPlaneDatabaseInspection; databaseSha256: string } | undefined;
+  if (preparedMatches && preparedDatabaseBackup) {
     prepared = preparedDatabaseBackup.takeIfCurrent();
   } else {
     preparedDatabaseBackup?.discard();
+    releaseLease = writePublicationLease(controllerHome, operationId, candidate.manifestPath, pendingBackupPath);
+  }
+  // A prepared backup lease initially protects Stable A. Refresh the same
+  // lease with Candidate B before publication so cleanup protects both sides
+  // of the complete authority transition.
+  if (prepared || preparedMatches) {
+    releaseLease = writePublicationLease(controllerHome, operationId, candidate.manifestPath, pendingBackupPath);
   }
   let backup: string;
   let inspection: ControlPlaneDatabaseInspection;
@@ -432,12 +496,12 @@ export function publishRuntimeRelease(
     databaseSha256 = prepared.databaseSha256;
   } else {
     assertDatabaseBackupHeadroom(controllerHome, 'publish_runtime_release_database_backup');
-    backup = backupPath(controllerHome, current.active.releaseId, operationId);
+    backup = pendingBackupPath;
     inspection = dependencies.backupDatabase(controllerHome, backup);
     databaseSha256 = sha256ControlPlaneDatabaseFile(backup);
   }
   const committedAt = new Date().toISOString();
-  return writeRuntimeReleaseAuthority(controllerHome, {
+  const authority = writeRuntimeReleaseAuthority(controllerHome, {
     schemaVersion: 2,
     status: 'committed',
     revision: current.revision + 1,
@@ -457,6 +521,11 @@ export function publishRuntimeRelease(
     operationId,
     committedAt,
   });
+  return authority;
+  } finally {
+    releaseLease();
+    preparedDatabaseBackup?.release();
+  }
 }
 
 export function revertInitialRuntimeReleasePublication(controllerHome: string, operationId: string): void {

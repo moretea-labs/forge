@@ -1845,12 +1845,20 @@ interface ReleaseSessionStorageEstimate {
 function estimateReleaseSessionCandidateBytes(config: RecoveryConfig, manifestPath: string): ReleaseSessionStorageEstimate {
   const releaseRoot = dirname(resolve(manifestPath));
   const releaseMeasurement = measureReclaimablePath(releaseRoot, 100_000);
+  const sourceRoot = config.primaryRuntimeSourceRoot?.trim();
+  if (!sourceRoot) throw new Error('RELEASE_SESSION_STORAGE_SOURCE_UNAVAILABLE');
+  const sourceMeasurement = measureReclaimablePath(resolve(sourceRoot), 100_000);
   const databasePath = join(resolve(config.controllerHome), 'control-plane.sqlite');
   let databaseBytes: number;
   try { databaseBytes = Math.max(0, statSync(databasePath).size); }
   catch (error) { throw new Error(`RELEASE_SESSION_STORAGE_DATABASE_UNAVAILABLE: ${error instanceof Error ? error.message : String(error)}`); }
   if (!releaseMeasurement.complete) throw new Error('RELEASE_SESSION_STORAGE_RELEASE_ESTIMATE_INCOMPLETE');
-  const sourceBytes = releaseMeasurement.bytes + databaseBytes;
+  if (!sourceMeasurement.complete) throw new Error('RELEASE_SESSION_STORAGE_SOURCE_ESTIMATE_INCOMPLETE');
+  // The candidate is rebuilt from the frozen checkout, not copied from the
+  // active release. Size admission must therefore account for whichever input
+  // is larger, plus the consistent SQLite snapshot; the active tree alone can
+  // understate a newer checkout and allow a mid-build disk exhaustion.
+  const sourceBytes = Math.max(releaseMeasurement.bytes, sourceMeasurement.bytes) + databaseBytes;
   if (!Number.isFinite(sourceBytes) || sourceBytes < 1) throw new Error('RELEASE_SESSION_STORAGE_ESTIMATE_INVALID');
   // Candidate creation first copies the database and then builds a new
   // immutable release. The active release plus database is the only measured

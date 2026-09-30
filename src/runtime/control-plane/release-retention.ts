@@ -49,6 +49,14 @@ interface RuntimeProtection {
   backupAuthoritySafe: boolean;
 }
 
+interface RuntimeReleasePublicationLease {
+  schemaVersion: 1;
+  pid: number;
+  operationId: string;
+  candidateReleasePath: string;
+  backupPath?: string;
+}
+
 interface LinkedReleaseProtection {
   releasesRoot: string;
   releasePaths: Set<string>;
@@ -65,7 +73,14 @@ function canonical(path: string): string {
 function directChild(root: string, path: string): boolean {
   // Resolve the parent rather than the child: a reclaimed path may no longer
   // exist, while its managed parent still does (and may itself be a symlink).
-  return canonical(dirname(path)) === canonical(root);
+  // An existing child must not itself be a symlink; otherwise a lexical child
+  // under Controller Home could retain or delete an external target.
+  if (canonical(dirname(path)) !== canonical(root)) return false;
+  try {
+    return !lstatSync(path).isSymbolicLink();
+  } catch {
+    return true;
+  }
 }
 
 function entryExists(path: string): boolean {
@@ -226,6 +241,7 @@ function loadRuntimeProtection(controllerHome: string): RuntimeProtection | unde
   }
 
   const releasePaths = new Set<string>();
+  const backupPaths = new Set<string>();
   releasePaths.add(releasePathFromAuthorityRecord(releasesRoot, parsed.active, 'active'));
   const previous = parsed.previous;
   if (previous !== undefined) {
@@ -242,7 +258,45 @@ function loadRuntimeProtection(controllerHome: string): RuntimeProtection | unde
     releasePaths.add(knownGoodRelease);
   }
 
-  const backupPaths = new Set<string>();
+  // A publication writes the rollback backup before it atomically updates
+  // authority.json. Keep both the candidate tree and backup leased for the
+  // lifetime of that publication, so periodic cleanup cannot win the race.
+  const publicationLeasesRoot = join(releasesRoot, '.publication-leases');
+  if (existsSync(publicationLeasesRoot)) {
+    for (const entry of readdirSync(publicationLeasesRoot, { withFileTypes: true })) {
+      if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
+      const leasePath = join(publicationLeasesRoot, entry.name);
+      let lease: RuntimeReleasePublicationLease;
+      try {
+        lease = JSON.parse(readFileSync(leasePath, 'utf8')) as RuntimeReleasePublicationLease;
+      } catch (error) {
+        throw new Error(`runtime release publication lease is invalid: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      if (
+        lease.schemaVersion !== 1
+        || !Number.isInteger(lease.pid)
+        || lease.pid <= 0
+        || typeof lease.operationId !== 'string'
+        || !lease.operationId.trim()
+        || typeof lease.candidateReleasePath !== 'string'
+        || !directChild(releasesRoot, resolve(lease.candidateReleasePath))
+      ) throw new Error('runtime release publication lease is invalid');
+      let alive = true;
+      try { process.kill(lease.pid, 0); } catch (error) {
+        alive = (error as NodeJS.ErrnoException).code === 'EPERM';
+      }
+      if (!alive) {
+        rmSync(leasePath, { force: true });
+        continue;
+      }
+      releasePaths.add(canonical(lease.candidateReleasePath));
+      if (lease.backupPath !== undefined) {
+        if (!directChild(backupsRoot, resolve(lease.backupPath))) throw new Error('runtime release publication lease backup is invalid');
+        backupPaths.add(canonical(lease.backupPath));
+      }
+    }
+  }
+
   let backupAuthoritySafe = true;
   if (previous && typeof previous === 'object' && !Array.isArray(previous)) {
     const databaseBackup = (previous as Record<string, unknown>).databaseBackup;
@@ -355,7 +409,7 @@ function scanRuntimeReleases(
   if (!protection) return;
 
   for (const entry of readdirSync(protection.releasesRoot, { withFileTypes: true })) {
-    if (entry.name === 'backups' || entry.name === 'authority.json') continue;
+    if (entry.name === 'backups' || entry.name === 'authority.json' || entry.name === '.publication-leases') continue;
     const path = join(protection.releasesRoot, entry.name);
     state.inspected += 1;
 
