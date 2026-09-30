@@ -307,11 +307,13 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
 
     const inherited = inheritWorkflowSupervisorConversationBinding(fx.store, predecessorWorkId, successorWorkId);
     expect(inherited?.conversationId).toBe('exact-conversation-lineage');
-    expect(workflowSupervisorBoundaryForWork(fx.store, successorWorkId)).toMatchObject({
+    const successorBoundary = workflowSupervisorBoundaryForWork(fx.store, successorWorkId);
+    expect(successorBoundary).toMatchObject({
       status: 'outer_turn',
       requirementId,
       conversationId: 'exact-conversation-lineage',
     });
+    expect(successorBoundary).not.toHaveProperty('taskId');
   });
 
   test('keeps the browser-observed current conversation ephemeral, exact, and unambiguous', () => {
@@ -1063,6 +1065,65 @@ test('browserTasks prioritizes fresh sends ahead of older reconciliation work', 
   ]);
 });
 
+test('enrolled conversations never create a browser tab for send or reconciliation', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-reconcile-no-create-'));
+  roots.push(root);
+  const store = new WorkflowSupervisorStore(join(root, 'supervisor-home'));
+  const control = new WorkflowSupervisorControlPlane(store, {}, { browserTaskActive: () => true });
+  const taskId = 'reconcile-no-create-task';
+  const conversationId = '45454545-6767-8989-1010-121212121212';
+  const conversationUrl = `https://chatgpt.com/c/${conversationId}`;
+  control.registerTask({
+    taskId, conversationId, conversationUrl,
+    objective: 'Reconcile without manufacturing browser resources.',
+    completionContract: {}, continuationPolicy: {}, userBlockerPolicy: {},
+  });
+  const effect = control.reserveEnrollment(taskId);
+  expect(control.browserPoll({ conversationId, conversationUrl }).command?.mode).toBe('send');
+
+  let createCalls = 0;
+  const adapter = new WorkflowSupervisorNativeBrowserAdapter(control, new WorkflowSupervisorEphemeralDiscovery(), {
+    platform: 'darwin',
+    listTabs: async () => ({ entries: [], unavailableProducts: [] }),
+    reattach: async () => { throw new Error('unexpected reattach'); },
+    create: async () => { createCalls += 1; throw new Error('unexpected create'); },
+    close: async () => undefined,
+    readOwner: async () => '',
+    writeOwner: async () => undefined,
+    snapshot: async () => { throw new Error('unexpected snapshot'); },
+    clearComposer: async () => false,
+    dispatchPrompt: async () => { throw new Error('unexpected dispatch'); },
+    nowMs: () => Date.now(),
+    providerIdleGraceMs: 60_000,
+    providerScopeKey: join(root, 'provider-scope'),
+    sleep: async () => undefined,
+    setInterval: () => 0 as unknown as ReturnType<typeof setInterval>,
+    clearInterval: () => undefined,
+    onError: (error) => { throw error; },
+  });
+
+  await adapter.runOnce();
+  expect(createCalls).toBe(0);
+  expect(store.nextBrowserEffect(taskId)).toEqual(expect.objectContaining({ mode: 'send', generation: 1 }));
+
+  expect(control.browserBeginEffect({
+    conversationId, conversationUrl, effectId: effect.effectId,
+    dispatchId: 'reconcile-no-create-dispatch', dispatchGeneration: 1,
+    evidence: { surface: 'test', latest_user_text: '', latest_assistant_response: '' },
+  })).toEqual(expect.objectContaining({ started: true }));
+  control.browserObserveEffect({
+    conversationId, conversationUrl, effectId: effect.effectId,
+    observationId: 'reconcile-no-create-unknown', outcome: 'unknown',
+    evidence: { surface: 'test' },
+  });
+  expect(control.browserPoll({ conversationId, conversationUrl }).command?.mode).toBe('reconcile');
+
+  await adapter.runOnce();
+
+  expect(createCalls).toBe(0);
+  expect(store.nextBrowserEffect(taskId)).toEqual(expect.objectContaining({ mode: 'reconcile', generation: 1 }));
+});
+
 test('retries a bootstrap effect after a proven pre-send failure instead of reconciling it forever', () => {
   const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-bootstrap-negative-proof-'));
   roots.push(root);
@@ -1393,7 +1454,7 @@ test('Resume stream unavailable reserves exactly one same-conversation recovery 
   expect(store.providerResumeExhausted(recovery.effectId)).toBe(true);
 });
 
-test('stream recovery timeout moves the one recovery effect to a fresh Forge-owned tab', async () => {
+test('stream recovery stays on the attached exact tab and never creates a replacement', async () => {
   const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-stream-recovery-tab-'));
   roots.push(root);
   const store = new WorkflowSupervisorStore(join(root, 'supervisor-home'));
@@ -1415,7 +1476,6 @@ test('stream recovery timeout moves the one recovery effect to a fresh Forge-own
     tabRef: () => ({ windowId: 'window-1', tabId }),
   });
   const stalePage = page('tab-1');
-  const freshPage = page('tab-2');
   const owners = new Map<unknown, string>([[stalePage, `forge-workflow-supervisor:created:${conversationId}`]]);
   const createdUrls: string[] = [];
   const closed: unknown[] = [];
@@ -1432,7 +1492,7 @@ test('stream recovery timeout moves the one recovery effect to a fresh Forge-own
     platform: 'darwin',
     listTabs: async () => ({ entries: [{ windowId: 'window-1', tabId: 'tab-1', url: conversationUrl, title: 'Forge recovery test', active: false, browserProduct: 'chrome' }], unavailableProducts: [] }),
     reattach: async () => stalePage,
-    create: async (url) => { createdUrls.push(url); return freshPage; },
+    create: async (url) => { createdUrls.push(url); throw new Error('unexpected create'); },
     close: async (ref) => { closed.push(ref); },
     readOwner: async (page) => owners.get(page) ?? '',
     writeOwner: async (page, owner) => { owners.set(page, owner); },
@@ -1447,12 +1507,13 @@ test('stream recovery timeout moves the one recovery effect to a fresh Forge-own
   await adapter.runOnce();
 
   // The stream error applies provider backpressure before the recovery attempt.
-  // On the next eligible tick the same reserved recovery effect uses the fresh tab.
+  // On the next eligible tick the same reserved recovery effect stays on the
+  // already-attached exact tab instead of manufacturing another resource.
   nowMs += 30_000;
   await adapter.runOnce();
 
-  expect(createdUrls).toEqual([conversationUrl]);
-  expect(dispatchedPages).toEqual([freshPage]);
+  expect(createdUrls).toEqual([]);
+  expect(dispatchedPages).toEqual([stalePage]);
   expect(closed).toContainEqual(expect.objectContaining({ windowId: 'window-1', tabId: 'tab-1' }));
   expect(store.latestEffectDispatch(enrollment.effectId)?.generation).toBe(1);
 });

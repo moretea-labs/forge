@@ -10,7 +10,7 @@ import {
   type MacOsBrowserProduct,
   type MacOsBrowserTabRef,
 } from '../src/runtime/plugins/browser-macos-bridge';
-import { CHATGPT_AUTOMATION_RATE_LIMITED, CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE, chatgptProviderBackpressureRemainingMs, chatgptProviderPageFailure, noteChatgptProviderBackpressure, withChatgptProviderDispatchLane } from '../adapters/chatgpt/provider-delivery';
+import { CHATGPT_AUTOMATION_RATE_LIMITED, chatgptProviderBackpressureRemainingMs, chatgptProviderPageFailure, noteChatgptProviderBackpressure, withChatgptProviderDispatchLane } from '../adapters/chatgpt/provider-delivery';
 import { parseChatgptConversationIdentity } from './chatgpt-conversation';
 import { WorkflowSupervisorControlPlane } from './control-plane';
 import { renderEffectMarker, sha256 } from './protocol';
@@ -465,45 +465,20 @@ export class WorkflowSupervisorNativeBrowserAdapter {
           continue;
         }
         let poll = this.control.browserPoll({ conversationId: task.conversationId, conversationUrl: task.conversationUrl });
-        // A command is one effect-scoped observation window.  Sending may create
-        // a fresh tab, and an outcome-unknown reconcile may also open the exact
-        // durable conversation *only to observe that same effect*.  The latter
-        // never authorizes a replay; tab absence is still not application proof.
-        const allowCreate = Boolean(poll.command);
         let recoveryAuthorized = false;
-        let ensured = await this.ensurePage(task, allowCreate);
-        if (ensured.state !== 'ready') {
-          // A reconcile command represents an unconfirmed external mutation. Missing
-          // transport is not proof that the effect was or was not applied, so never
-          // recreate or replay that source effect from transport absence alone.
-          if (poll.command || ensured.state !== 'missing') continue;
-          const transport = this.control.browserObserveProviderTurn({
-            conversationId: task.conversationId,
-            conversationUrl: task.conversationUrl,
-            generating: false,
-            latestAssistantResponse: '',
-            providerActivityText: 'exact Forge-owned conversation transport absent from successful browser inventory',
-            providerFailureCode: 'WORKFLOW_SUPERVISOR_PROVIDER_TRANSPORT_UNAVAILABLE',
-            observedAtMs: this.deps.nowMs(),
-            graceMs: this.deps.providerIdleGraceMs,
-          });
-          recoveryAuthorized = transport.state === 'recovery_reserved';
-          if (!recoveryAuthorized) continue;
-          poll = this.control.browserPoll({ conversationId: task.conversationId, conversationUrl: task.conversationUrl });
-          if (poll.command?.mode !== 'send') continue;
-          ensured = await this.ensurePage(task, true);
-          if (ensured.state !== 'ready') continue;
-        }
-        let page = ensured.page;
-        let snapshot = ensured.snapshot
+        // An enrolled conversation is an existing user resource. Supervisor may
+        // attach to its exact open tab, but a queued send/recovery is not authority
+        // to manufacture a browser tab. Historical pending tasks survive Runtime
+        // restarts; letting each one create transport turned that durable registry
+        // into an implicit tab-opening queue whenever native cleanup failed.
+        const ensured = await this.ensurePage(task);
+        if (ensured.state !== 'ready') continue;
+        const page = ensured.page;
+        const snapshot = ensured.snapshot
           ?? await this.deps.snapshot(page, { includeUserHistory: false, includePageText: false });
         if (!exactConversation(snapshot.url, task)) {
           await this.retireOwnedPage(task, page);
-          if (!allowCreate) continue;
-          const replacement = await this.createOwnedPage(task);
-          page = replacement.page;
-          this.pages.set(task.conversationId, page);
-          snapshot = replacement.snapshot;
+          continue;
         }
         conversations.push({ conversation_id: task.conversationId, canonical_url: task.conversationUrl, ...(snapshot.title.trim() ? { title: snapshot.title.trim().slice(0, 512) } : {}) });
         const providerBusy = snapshot.isGenerating;
@@ -542,22 +517,8 @@ export class WorkflowSupervisorNativeBrowserAdapter {
           if (latestRoleStillUser && !providerFailureCode && !recoveryAuthorized) continue;
           poll = this.control.browserPoll({ conversationId: task.conversationId, conversationUrl: task.conversationUrl });
         }
-        // A terminal stream-recovery error belongs to this rendered tab, not to
-        // the durable conversation. Preserve the already-reserved recovery
-        // effect, then use a fresh Forge-owned exact-conversation page for its
-        // one bounded delivery attempt. This never replays the source effect
-        // and never submits through a user-owned tab.
-        if (
-          providerFailureCode === CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE
-          && recoveryAuthorized
-          && poll.command?.kind === 'recovery'
-        ) {
-          const replacement = await this.createOwnedPage(task);
-          await this.retireOwnedPage(task, page, { preserveObservedAssistant: true });
-          this.pages.set(task.conversationId, replacement.page);
-          page = replacement.page;
-          snapshot = replacement.snapshot;
-        }
+        // Recovery stays on the already-attached exact tab. Transport loss is
+        // not authority to create a replacement browser resource.
         providerBackpressureMs = chatgptProviderBackpressureRemainingMs(this.deps.providerScopeKey, this.deps.nowMs());
         const commandMutationBlocked = providerBackpressureMs > 0
           || (providerBusy && !providerFailureCode && !recoveryAuthorized)
@@ -747,7 +708,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     }
   }
 
-  private async ensurePage(task: WorkflowSupervisorBrowserTask, allowCreate: boolean): Promise<
+  private async ensurePage(task: WorkflowSupervisorBrowserTask): Promise<
     | { state: 'ready'; page: WorkflowSupervisorNativePage; snapshot?: WorkflowSupervisorNativeSnapshot }
     | { state: 'missing' | 'unproven' }
   > {
@@ -839,47 +800,17 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       this.lastRunTransportUnavailable = true;
       return { state: 'unproven' };
     }
-    if (!allowCreate) return { state: exactCandidateInspectionFailed ? 'unproven' : 'missing' };
-    const created = await this.createOwnedPage(task);
-    this.pages.set(task.conversationId, created.page);
-    return { state: 'ready', ...created };
-  }
-
-  private async createOwnedPage(task: WorkflowSupervisorBrowserTask): Promise<{
-    page: WorkflowSupervisorNativePage;
-    snapshot: WorkflowSupervisorNativeSnapshot;
-  }> {
-    const page = await this.deps.create(task.conversationUrl);
-    const ref = page.tabRef();
-    try {
-      let snapshot: WorkflowSupervisorNativeSnapshot | undefined;
-      for (let attempt = 0; attempt < 30; attempt += 1) {
-        try {
-          snapshot = await this.deps.snapshot(page, { includeUserHistory: false, includePageText: false });
-          if (exactConversation(snapshot.url, task)) break;
-        } catch { /* Page may still be loading. */ }
-        await this.deps.sleep(100);
-      }
-      if (!snapshot || !exactConversation(snapshot.url, task)) throw new Error('WORKFLOW_SUPERVISOR_NATIVE_CONVERSATION_NOT_READY');
-      const marker = ownerMarker(task.conversationId, 'created');
-      await this.deps.writeOwner(page, marker);
-      if (await this.deps.readOwner(page) !== marker) throw new Error('WORKFLOW_SUPERVISOR_NATIVE_OWNER_MARKER_FAILED');
-      return { page, snapshot };
-    } catch (error) {
-      if (ref) await this.deps.close(ref).catch(() => undefined);
-      throw error;
-    }
+    return { state: exactCandidateInspectionFailed ? 'unproven' : 'missing' };
   }
 
   private async retireOwnedPage(
     task: WorkflowSupervisorBrowserTask,
     page: WorkflowSupervisorNativePage,
-    options: { preserveObservedAssistant?: boolean } = {},
   ): Promise<void> {
     try { await this.releasePage(task.conversationId, page); }
     finally {
       this.pages.delete(task.conversationId);
-      if (!options.preserveObservedAssistant) this.observedAssistant.delete(task.conversationId);
+      this.observedAssistant.delete(task.conversationId);
       this.providerFailureSeen.delete(task.conversationId);
     }
   }
