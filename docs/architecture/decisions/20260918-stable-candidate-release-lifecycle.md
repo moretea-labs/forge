@@ -130,8 +130,13 @@ Physical service handoff follows the same effect rule: a launchd/systemd helper
 error or timeout is not itself authority that the requested stop/start failed.
 Recovery performs bounded observation of the exact service identity and may
 continue the same fenced transaction only when the physical effect is proven;
-otherwise that transaction fails. It never replays a cutover merely because a
-helper response was lost.
+otherwise that transaction fails. During the stop/start critical section,
+readiness convergence uses bounded Runtime/transport observation only; strict
+whole-Runtime verification runs once at the acceptance boundary after any
+required Connector rebinding. This preserves the verification gate without
+turning execution canaries, recoverability inspection, or MCP protocol checks
+into a polling loop. Recovery never replays a cutover merely because a helper
+response was lost.
 Automatic source reconciliation is also revision-bounded: once an immutable
 source revision has any terminal ReleaseSession, the daemon will not create a
 second automatic ReleaseSession for that same revision. Explicit human release
@@ -169,6 +174,7 @@ the service contract records a token *path*, while each B token is an independen
 - byte-identical release-tree identity is required for B→A promotion; no production rebuild is allowed;
 - stale Runtime generation and release claims cannot write;
 - every Recovery restart/release transition proves service, Runtime owner, TCP listener and Supervisor writer quiescence before authority may change;
+- Recovery restart/cutover readiness polling is bounded observation; strict whole-Runtime verification remains a single post-convergence acceptance gate;
 - private writer environment cannot cross service or child boundaries;
 - stale or missing known-good bundle material cannot protect a release;
 - ReleaseSession cannot advance past static/candidate gates or a stale CAS;

@@ -3191,7 +3191,7 @@ describe('standalone recovery on canonical Runtime', () => {
     }).action).toBe('degraded');
   });
 
-  test('restarts the installed primary Forge Runtime service and requires whole-Runtime verification', async () => {
+  test('restarts the installed primary Forge Runtime service with cheap readiness polling and one strict acceptance verification', async () => {
     const home = controllerHome();
     const previousHome = process.env.HOME;
     process.env.HOME = home;
@@ -3202,7 +3202,8 @@ describe('standalone recovery on canonical Runtime', () => {
       const config = createRecoveryConfig(home, {
         primaryRuntimeService: { platform: 'launchd', postRestartVerifyTimeoutMs: 10_000 },
       });
-      let probes = 0;
+      let strictProbes = 0;
+      let readinessProbes = 0;
       let launchdLoaded = true;
       const commands: string[][] = [];
       const result = await restartPrimaryRuntime(config, {
@@ -3217,13 +3218,18 @@ describe('standalone recovery on canonical Runtime', () => {
             : { ok: false, status: 3, stdout: '', stderr: 'service not found' };
           return { ok: true, status: 0, stdout: '', stderr: '' };
         },
-        verifyLocal: async () => ++probes >= 3
+        verifyLocal: async () => ++strictProbes >= 3
           ? healthyVerify()
           : { ...healthyVerify(), ok: false, runtime: { ok: false, running: false, ready: false, stale: false, reasonCodes: ['RUNTIME_UNAVAILABLE'] } },
-        now: (() => { let value = 0; return () => value += 1_000; })(),
+        observeLocal: async () => ++readinessProbes >= 3
+          ? healthyVerify()
+          : { ...healthyVerify(), ok: false, runtime: { ok: false, running: false, ready: false, stale: false, reasonCodes: ['RUNTIME_UNAVAILABLE'] } },
+        now: (() => { let value = 0; return () => value += 250; })(),
         sleep: async () => undefined,
       });
       expect(result).toMatchObject({ ok: true, attempted: true });
+      expect(strictProbes).toBe(3);
+      expect(readinessProbes).toBe(3);
       const bootoutIndex = commands.findIndex((args) => args.includes('bootout'));
       const kickstartIndex = commands.findIndex((args) => args.includes('kickstart'));
       expect(bootoutIndex).toBeGreaterThanOrEqual(0);
@@ -4193,9 +4199,17 @@ describe('standalone recovery on canonical Runtime', () => {
       mkdirSync(dirname(paths.installedPlistPath), { recursive: true });
       writeFileSync(paths.installedPlistPath, '<plist/>');
 
-      let localProbes = 0;
+      let strictLocalProbes = 0;
+      let readinessProbes = 0;
       let launchdLoaded = true;
       const commands: string[][] = [];
+      const candidateHealthy = (): VerifyResult => ({
+        ...healthyVerify(),
+        releases: {
+          active: { path: candidateManifestPath, revision: candidateReleaseId, artifactIdentity, manifestSha256: 'candidate-sha', workerProtocolVersion: 1 },
+          coherent: true,
+        },
+      });
       const result = await activateRuntimeRelease(config, candidateManifestPath, {
         platform: 'darwin',
         currentUid: async () => 501,
@@ -4210,19 +4224,18 @@ describe('standalone recovery on canonical Runtime', () => {
           return { ok: true, status: 0, stdout: '', stderr: '' };
         },
         runtimeRunning: () => false,
-        verifyLocal: async () => ++localProbes >= 2
-          ? {
-              ...healthyVerify(),
-              releases: {
-                active: { path: candidateManifestPath, revision: candidateReleaseId, artifactIdentity, manifestSha256: 'candidate-sha', workerProtocolVersion: 1 },
-                coherent: true,
-              },
-            }
+        verifyLocal: async () => ++strictLocalProbes >= 2
+          ? candidateHealthy()
           : { ...healthyVerify(), ok: false, runtime: { ok: false, running: false, ready: false, stale: false, reasonCodes: ['RUNTIME_UNAVAILABLE'] } },
-        now: (() => { let value = 0; return () => value += 1_000; })(),
+        observeLocal: async () => ++readinessProbes >= 3
+          ? candidateHealthy()
+          : { ...healthyVerify(), ok: false, runtime: { ok: false, running: false, ready: false, stale: false, reasonCodes: ['RUNTIME_UNAVAILABLE'] } },
+        now: (() => { let value = 0; return () => value += 250; })(),
         sleep: async () => undefined,
       });
       expect(result).toMatchObject({ ok: true, attempted: true });
+      expect(strictLocalProbes).toBe(2);
+      expect(readinessProbes).toBeGreaterThan(strictLocalProbes);
       const authority = readRuntimeReleaseAuthority(home)!;
       expect(authority.active.releaseId).toBe(candidateReleaseId);
       expect(authority.active.artifactIdentity).toBe(artifactIdentity);
@@ -4312,8 +4325,23 @@ describe('standalone recovery on canonical Runtime', () => {
 
       const commands: string[][] = [];
       const connectorBindingStates: string[] = [];
-      let probes = 0;
+      let strictProbes = 0;
+      let candidateStrictProbes = 0;
+      let readinessProbes = 0;
       let launchdLoaded = true;
+      const currentAuthorityVerify = (ok = true): VerifyResult => {
+        const authority = readRuntimeReleaseAuthority(home)!;
+        const verify = healthyVerify();
+        return {
+          ...verify,
+          ok,
+          releases: {
+            active: { path: authority.active.manifestPath, revision: authority.active.releaseId, artifactIdentity: authority.active.artifactIdentity, manifestSha256: 'test-sha', workerProtocolVersion: 1 },
+            coherent: true,
+          },
+          probes: ok ? verify.probes : { ...verify.probes, mcp_initialize: { ok: false, detail: 'strict MCP acceptance failed' } },
+        };
+      };
       const result = await activateRuntimeRelease(config, candidateManifestPath, {
         platform: 'darwin',
         currentUid: async () => 501,
@@ -4334,10 +4362,20 @@ describe('standalone recovery on canonical Runtime', () => {
             ? { ok: true, attempted: true, detail: `Connector rebound for ${activeRelease}` }
             : { ok: false, attempted: true, detail: `Connector bind attempted while ${activeRelease} Runtime was stopped` };
         },
-        verifyLocal: async () => ++probes > 12
-          ? healthyVerify()
-          : { ...healthyVerify(), ok: false, runtime: { ok: false, running: false, ready: false, stale: false, reasonCodes: ['RUNTIME_UNAVAILABLE'] } },
-        now: (() => { let value = 0; return () => value += 1_000; })(),
+        verifyLocal: async () => {
+          strictProbes += 1;
+          const activeRelease = readRuntimeReleaseAuthority(home)?.active.releaseId;
+          if (activeRelease === candidateReleaseId) {
+            candidateStrictProbes += 1;
+            return currentAuthorityVerify(false);
+          }
+          return currentAuthorityVerify(true);
+        },
+        observeLocal: async () => {
+          readinessProbes += 1;
+          return currentAuthorityVerify(true);
+        },
+        now: (() => { let value = 0; return () => value += 250; })(),
         sleep: async () => undefined,
       });
       expect(result.ok).toBe(false);
@@ -4348,7 +4386,10 @@ describe('standalone recovery on canonical Runtime', () => {
       });
       expect(restoredAuthority?.previous).toBeUndefined();
       expect(commands.filter((args) => args.includes('kickstart')).length).toBeGreaterThanOrEqual(2);
-      expect(connectorBindingStates).toEqual(['release-a:runtime-started']);
+      expect(strictProbes).toBe(3);
+      expect(candidateStrictProbes).toBe(1);
+      expect(readinessProbes).toBeGreaterThan(candidateStrictProbes);
+      expect(connectorBindingStates).toEqual(['release-failed-activation:runtime-started', 'release-a:runtime-started']);
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;

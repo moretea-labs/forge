@@ -2624,6 +2624,8 @@ export interface PrimaryRuntimeRecoveryDependencies {
   currentUid?: () => Promise<number | undefined>;
   runCommand?: CommandRunner;
   verifyLocal?: (config: RecoveryConfig) => Promise<VerifyResult>;
+  /** Cheap readiness observation used while a restarted Runtime is converging; strict verification remains a separate acceptance boundary. */
+  observeLocal?: (config: RecoveryConfig) => Promise<VerifyResult>;
   /** Rebind the independently supervised OAuth Connector after a whole-Runtime release switch. */
   repairPrimaryConnectorBinding?: (config: RecoveryConfig) => Promise<{ ok: boolean; attempted: boolean; noOp?: boolean; detail: string }>;
   runtimeRunning?: (config: RecoveryConfig) => boolean;
@@ -3491,20 +3493,53 @@ async function stopPrimaryRuntimeForReleaseTransition(input: {
   };
 }
 
+const PRIMARY_RUNTIME_READINESS_POLL_INTERVAL_MS = 250;
+
+async function observePrimaryRuntimeRecoveryHealth(config: RecoveryConfig): Promise<VerifyResult> {
+  const primaryTransportAttributionRequired = Boolean(
+    config.primaryConnectorService || configuredPrimaryPublicTunnel(config),
+  );
+  return observeBoundedRuntimeHealth(config, createRecoveryHttpTransport(config.controllerHome), {
+    includePrimaryConnectorLocal: true,
+    includePrimaryTransport: primaryTransportAttributionRequired,
+  });
+}
+
+async function waitForPrimaryRuntimeRecoveryHealth(input: {
+  config: RecoveryConfig;
+  timeoutMs: number;
+  now: () => number;
+  wait: (ms: number) => Promise<void>;
+  observeLocal: (config: RecoveryConfig) => Promise<VerifyResult>;
+}): Promise<VerifyResult> {
+  const deadline = input.now() + input.timeoutMs;
+  let observed = await input.observeLocal(input.config);
+  while (!observed.ok && input.now() < deadline) {
+    await input.wait(PRIMARY_RUNTIME_READINESS_POLL_INTERVAL_MS);
+    observed = await input.observeLocal(input.config);
+  }
+  return observed;
+}
+
 async function verifyPrimaryRuntimeAfterStart(input: {
   config: RecoveryConfig;
   timeoutMs: number;
   now: () => number;
   wait: (ms: number) => Promise<void>;
   verifyLocal: (config: RecoveryConfig) => Promise<VerifyResult>;
+  observeLocal?: (config: RecoveryConfig) => Promise<VerifyResult>;
 }): Promise<VerifyResult> {
-  const deadline = input.now() + input.timeoutMs;
-  let observed = await input.verifyLocal(input.config);
-  while (!observed.ok && input.now() < deadline) {
-    await input.wait(1_000);
-    observed = await input.verifyLocal(input.config);
-  }
-  return observed;
+  const readiness = await waitForPrimaryRuntimeRecoveryHealth({
+    config: input.config,
+    timeoutMs: input.timeoutMs,
+    now: input.now,
+    wait: input.wait,
+    observeLocal: input.observeLocal ?? input.verifyLocal,
+  });
+  if (!readiness.ok) return readiness;
+  // Readiness convergence is intentionally cheap. The acceptance gate remains
+  // one strict whole-Runtime verification after the bounded observation phase.
+  return input.verifyLocal(input.config);
 }
 
 interface PrimaryRuntimeRebindStartResult {
@@ -3526,6 +3561,7 @@ async function rebindStartAndVerifyPrimaryRuntime(input: {
   now: () => number;
   wait: (ms: number) => Promise<void>;
   verifyLocal: (config: RecoveryConfig) => Promise<VerifyResult>;
+  observeLocal?: (config: RecoveryConfig) => Promise<VerifyResult>;
   ensureRuntimeLaunchContract?: (controllerHome: string) => void;
   beforeStart?: () => void;
   afterRuntimeReady?: () => Promise<{ ok: boolean; detail: string }>;
@@ -3574,20 +3610,31 @@ async function rebindStartAndVerifyPrimaryRuntime(input: {
   if (!started.ok) {
     return { ok: false, detail: started.detail, verify: await input.verifyLocal(input.config) };
   }
+  const observeLocal = input.observeLocal ?? input.verifyLocal;
   if (input.afterRuntimeReady) {
-    const deadline = input.now() + input.timeoutMs;
-    let runtimeVerify = await input.verifyLocal(input.config);
-    const runtimeReady = (value: VerifyResult) => value.runtime.ok && value.runtime.running && value.runtime.ready && !value.runtime.stale;
-    while (!runtimeReady(runtimeVerify) && input.now() < deadline) {
-      await input.wait(1_000);
-      runtimeVerify = await input.verifyLocal(input.config);
-    }
-    if (!runtimeReady(runtimeVerify)) {
+    // Connector rebinding depends only on the canonical Runtime being live and
+    // locally coherent. Do not rerun execution canaries/known-good/MCP protocol
+    // verification on every readiness tick while the Connector still points at
+    // the previous release.
+    const runtimeOnlyConfig: RecoveryConfig = {
+      ...input.config,
+      publicMcpUrl: undefined,
+      primaryConnectorService: undefined,
+      primaryPublicTunnelService: undefined,
+    };
+    const runtimeHealth = await waitForPrimaryRuntimeRecoveryHealth({
+      config: runtimeOnlyConfig,
+      timeoutMs: input.timeoutMs,
+      now: input.now,
+      wait: input.wait,
+      observeLocal,
+    });
+    if (!runtimeHealth.ok) {
       await stopPrimaryRuntimeServiceOwner(input.service, input.runCommand);
       return {
         ok: false,
         detail: 'release transition candidate Runtime did not reach local readiness before Connector rebinding',
-        verify: runtimeVerify,
+        verify: runtimeHealth,
       };
     }
     const postReady = await input.afterRuntimeReady();
@@ -3602,6 +3649,7 @@ async function rebindStartAndVerifyPrimaryRuntime(input: {
     now: input.now,
     wait: input.wait,
     verifyLocal: input.verifyLocal,
+    observeLocal,
   });
   if (verify.ok) return { ok: true, detail: input.successDetail, verify };
   await stopPrimaryRuntimeServiceOwner(input.service, input.runCommand);
@@ -3617,6 +3665,7 @@ export async function restartPrimaryRuntime(
   dependencies: PrimaryRuntimeRecoveryDependencies = {},
 ): Promise<PrimaryRuntimeRestartResult> {
   const verifyLocal = dependencies.verifyLocal ?? verifyLocalRuntime;
+  const observeLocal = dependencies.observeLocal ?? (dependencies.verifyLocal ? dependencies.verifyLocal : observePrimaryRuntimeRecoveryHealth);
   const initial = await verifyLocal(config);
   if (initial.ok) return { ok: true, attempted: false, noOp: true, detail: 'Canonical Forge Runtime is already healthy', verify: initial };
   const platform = dependencies.platform ?? process.platform;
@@ -3655,6 +3704,7 @@ export async function restartPrimaryRuntime(
       now,
       wait,
       verifyLocal,
+      observeLocal,
     });
     if (after.ok) {
       audit(config, 'primary_runtime_restart_succeeded', { serviceTarget: service.target, release: after.releases.active?.revision });
@@ -3673,6 +3723,7 @@ export async function recoverPrimaryRuntime(
   dependencies: PrimaryRuntimeRecoveryDependencies = {},
 ): Promise<PrimaryRuntimeRecoveryResult> {
   const verifyLocal = dependencies.verifyLocal ?? verifyLocalRuntime;
+  const observeLocal = dependencies.observeLocal ?? (dependencies.verifyLocal ? dependencies.verifyLocal : observePrimaryRuntimeRecoveryHealth);
   const initial = await verifyLocal(config);
   if (initial.ok) return { ok: true, attempted: false, noOp: true, detail: 'Canonical Forge Runtime recovered before rollback', verify: initial };
 
@@ -3773,6 +3824,7 @@ export async function recoverPrimaryRuntime(
       now,
       wait,
       verifyLocal,
+      observeLocal,
       ensureRuntimeLaunchContract: dependencies.ensureRuntimeLaunchContract,
       contractFailureContext: 'after rollback',
       timeoutMs: configuredPrimaryRuntimeService(config).postRestartVerifyTimeoutMs ?? 45_000,
@@ -3926,6 +3978,7 @@ async function activateRuntimeReleaseInternal(
   const wait = dependencies.sleep ?? sleep;
   const runtimeRunning = dependencies.runtimeRunning ?? ((value: RecoveryConfig) => observeRuntimeStatus(value.controllerHome).running);
   const verifyLocal = dependencies.verifyLocal ?? verifyLocalRuntime;
+  const observeLocal = dependencies.observeLocal ?? (dependencies.verifyLocal ? dependencies.verifyLocal : observePrimaryRuntimeRecoveryHealth);
   const repairConnectorBinding = dependencies.repairPrimaryConnectorBinding
     ?? ((value: RecoveryConfig) => repairPrimaryConnectorBinding(value, platform));
   const operationId = `recovery-activate-runtime-${Date.now()}-${randomUUID().slice(0, 8)}`;
@@ -4092,6 +4145,7 @@ async function activateRuntimeReleaseInternal(
       now,
       wait,
       verifyLocal,
+      observeLocal,
       timeoutMs: configuredPrimaryRuntimeService(config).postRestartVerifyTimeoutMs ?? 60_000,
       successDetail: 'requested Runtime release started and passed whole-Runtime verification',
       beforeStart: () => {
@@ -4261,6 +4315,7 @@ async function activateRuntimeReleaseInternal(
           now,
           wait,
           verifyLocal,
+          observeLocal,
           contractFailureContext: 'after rollback',
           timeoutMs: configuredPrimaryRuntimeService(config).postRestartVerifyTimeoutMs ?? 60_000,
           successDetail: rollbackDatabaseDisposition === 'restored_backup'
@@ -5037,6 +5092,7 @@ export async function bootAndVerifyConfiguredRuntimeReleaseSessionCandidate(
         now: Date.now,
         wait: sleep,
         verifyLocal: verifyLocalRuntime,
+        observeLocal: observePrimaryRuntimeRecoveryHealth,
       });
       if (!initialVerify.ok) throw new Error(`RELEASE_SESSION_CANDIDATE_BOOT_UNVERIFIED: ${initialVerify.runtime.reasonCodes.join(',')}`);
       assertStableReleaseSessionIdentityCurrent(config, session.stableRelease);
@@ -5724,6 +5780,7 @@ export async function rollbackConfiguredRuntimeReleaseSession(
     const wait = dependencies.sleep ?? sleep;
     const runtimeRunning = dependencies.runtimeRunning ?? ((value: RecoveryConfig) => observeRuntimeStatus(value.controllerHome).running);
     const verifyLocal = dependencies.verifyLocal ?? verifyLocalRuntime;
+    const observeLocal = dependencies.observeLocal ?? (dependencies.verifyLocal ? dependencies.verifyLocal : observePrimaryRuntimeRecoveryHealth);
     const repairConnectorBinding = dependencies.repairPrimaryConnectorBinding
       ?? ((value: RecoveryConfig) => repairPrimaryConnectorBinding(value, platform));
 
@@ -5751,6 +5808,7 @@ export async function rollbackConfiguredRuntimeReleaseSession(
         now,
         wait,
         verifyLocal,
+        observeLocal,
         ensureRuntimeLaunchContract: dependencies.ensureRuntimeLaunchContract,
         timeoutMs: configuredPrimaryRuntimeService(config).postRestartVerifyTimeoutMs ?? 60_000,
         successDetail: 'ReleaseSession rollback transaction failed; current authoritative Runtime was restarted and verified',
@@ -5771,6 +5829,7 @@ export async function rollbackConfiguredRuntimeReleaseSession(
       now,
       wait,
       verifyLocal,
+      observeLocal,
       ensureRuntimeLaunchContract: dependencies.ensureRuntimeLaunchContract,
       contractFailureContext: 'after ReleaseSession rollback',
       timeoutMs: configuredPrimaryRuntimeService(config).postRestartVerifyTimeoutMs ?? 60_000,
