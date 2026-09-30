@@ -682,13 +682,29 @@ export function registerRepository(input: RegisterRepositoryInput): RepositoryRe
     ? repositoryByGitCommonDirectory(registry.repositories, canonicalRoot)
     : undefined;
   const existingIdentity = existingByRoot ?? existingByCommonDirectory;
-  const derivedRepoId = input.repoIdOverride?.trim()
+  const explicitRepoId = input.repoIdOverride?.trim();
+  const derivedRepoId = explicitRepoId
     || existingIdentity?.repoId
     || localIdentity.repoId
     || (canonicalRemote ? stableRemoteRepoId(canonicalRemote) : newLocalRepoId());
-  const repoId = existingIdentity?.repoId ?? derivedRepoId;
+  const existingByDerivedId = registry.repositories.find((record) => record.repoId === derivedRepoId);
+  // Repository identity is rooted in one Git checkout family, not merely one
+  // remote URL. Two independent clones of the same remote have different Git
+  // common directories and must remain separate Repository records. The one
+  // intentional exception is an explicit registration replacement; legacy
+  // repo-local identity may also restore a record whose old canonical root no
+  // longer exists after a filesystem move.
+  const explicitReplacement = Boolean(explicitRepoId && existingByDerivedId);
+  const legacyMovedRoot = Boolean(
+    !explicitRepoId
+    && localIdentity.repoId
+    && existingByDerivedId
+    && !existsSync(existingByDerivedId.canonicalRoot),
+  );
+  const existing = existingIdentity ?? (explicitReplacement || legacyMovedRoot ? existingByDerivedId : undefined);
+  const repoId = existing?.repoId
+    ?? (existingByDerivedId && !existingIdentity ? newLocalRepoId() : derivedRepoId);
   const checkoutId = stableCheckoutId(repoId, canonicalRoot);
-  const existing = existingIdentity ?? registry.repositories.find((record) => record.repoId === repoId);
   const checkout: RepositoryCheckout = {
     checkoutId,
     localRoot: canonicalRoot,
@@ -706,8 +722,8 @@ export function registerRepository(input: RegisterRepositoryInput): RepositoryRe
   // A repository-scoped command may start from a managed checkout (for example
   // immutable release construction). Registering that path must add/update the
   // checkout only; it must never promote the ephemeral worktree to repository
-  // canonical authority. Explicit activation remains available through
-  // addRepositoryCheckout({ activate: true }).
+  // canonical authority. Active checkout selection is separate authority held
+  // by activeCheckoutId; canonicalRoot remains the repository registration root.
   if (existing && worktree && existing.canonicalRemote && canonicalRemote !== existing.canonicalRemote) {
     throw new Error(`CHECKOUT_REPOSITORY_MISMATCH: ${canonicalRoot}`);
   }
@@ -823,6 +839,9 @@ export function addRepositoryCheckout(input: AddRepositoryCheckoutInput): Reposi
   if (current.canonicalRemote && canonicalRemote !== current.canonicalRemote) {
     throw new Error(`CHECKOUT_REPOSITORY_MISMATCH: ${canonicalRoot}`);
   }
+  if (!repositoryCheckoutRootMatches(current, canonicalRoot)) {
+    throw new Error(`CHECKOUT_REPOSITORY_MISMATCH: ${canonicalRoot}`);
+  }
   const timestamp = now();
   const checkoutId = stableCheckoutId(current.repoId, canonicalRoot);
   const checkout: RepositoryCheckout = {
@@ -839,14 +858,14 @@ export function addRepositoryCheckout(input: AddRepositoryCheckoutInput): Reposi
   const activate = input.activate === true;
   const next: RepositoryRecord = {
     ...current,
-    ...(activate ? { localRoot: canonicalRoot, canonicalRoot, activeCheckoutId: checkoutId } : {}),
+    ...(activate ? { activeCheckoutId: checkoutId } : {}),
     checkouts: [...current.checkouts.filter((value) => value.checkoutId !== checkoutId), checkout],
     updatedAt: timestamp,
     lastSeenAt: timestamp,
   };
   registry.repositories[index] = next;
   saveRepositoryRegistry(registry, home);
-  return next;
+  return activate ? selectRepositoryCheckout(next, checkoutId) : next;
 }
 
 export function setRepositoryCheckoutLifecycle(input: SetRepositoryCheckoutLifecycleInput): RepositoryRecord {

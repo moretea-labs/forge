@@ -4,7 +4,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { spawnSync } from "child_process";
 import { repositoryControllerRoot } from "../../src/cli/repositories/controller-home";
-import { getRepository, listRepositories, registerRepository } from "../../src/cli/repositories/registry";
+import { addRepositoryCheckout, getRepository, listRepositories, registerRepository, repositorySummary } from "../../src/cli/repositories/registry";
 import { callMcpTool } from "../../src/cli/mcp/tools";
 import { callRepositoryTool, repositoryToolDefinitions } from "../../src/cli/mcp/repository-tools";
 import { repositoryGitCommit, repositoryGitMergeBranch, repositoryGitRebaseOnto, repositoryGitStatus } from "../../src/cli/repositories/structured-git";
@@ -1055,6 +1055,82 @@ describe("repository MCP command tools", () => {
       expect(existsSync(join(realpathSync(repoRoot), ".ai/harness/repository.json"))).toBe(false);
     } finally {
       await cleanupWorkspace([workspace, controllerHome, repoRoot, worktreeRoot]);
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  test("activating a linked checkout preserves canonical repository authority", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "forge-activate-checkout-authority-"));
+    const controllerHome = join(workspace, "controller-home");
+    const repoRoot = join(workspace, "source");
+    const worktreeRoot = join(workspace, "secondary");
+    try {
+      mkdirSync(controllerHome, { recursive: true });
+      mkdirSync(repoRoot, { recursive: true });
+      git(repoRoot, ["init", "-q"]);
+      git(repoRoot, ["config", "user.email", "forge@example.invalid"]);
+      git(repoRoot, ["config", "user.name", "Forge Test"]);
+      writeFileSync(join(repoRoot, "README.md"), "# source\n");
+      git(repoRoot, ["add", "README.md"]);
+      git(repoRoot, ["commit", "-qm", "initial"]);
+      const canonical = registerRepository({ path: repoRoot, controllerHome, displayName: "canonical-name" });
+      git(repoRoot, ["worktree", "add", "--detach", worktreeRoot, "HEAD"]);
+
+      const selected = addRepositoryCheckout({
+        repoId: canonical.repoId,
+        path: worktreeRoot,
+        controllerHome,
+        activate: true,
+      });
+      const persisted = getRepository(canonical.repoId, controllerHome);
+
+      expect(selected.canonicalRoot).toBe(realpathSync(worktreeRoot));
+      expect(persisted.canonicalRoot).toBe(realpathSync(repoRoot));
+      expect(persisted.localRoot).toBe(realpathSync(repoRoot));
+      expect(persisted.displayName).toBe("canonical-name");
+      expect(persisted.activeCheckoutId).toBe(selected.activeCheckoutId);
+      expect(repositorySummary(persisted).canonicalRoot).toBe(realpathSync(worktreeRoot));
+    } finally {
+      await cleanupWorkspace([workspace, controllerHome, repoRoot, worktreeRoot]);
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  test("independent clones of one remote cannot replace canonical repository authority", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "forge-independent-clone-authority-"));
+    const controllerHome = join(workspace, "controller-home");
+    const repoRoot = join(workspace, "source");
+    const cloneRoot = join(workspace, "independent-clone");
+    const remote = "https://github.com/moretea-labs/forge-independent-clone-fixture.git";
+    try {
+      mkdirSync(controllerHome, { recursive: true });
+      mkdirSync(repoRoot, { recursive: true });
+      git(repoRoot, ["init", "-q"]);
+      git(repoRoot, ["config", "user.email", "forge@example.invalid"]);
+      git(repoRoot, ["config", "user.name", "Forge Test"]);
+      git(repoRoot, ["remote", "add", "origin", remote]);
+      writeFileSync(join(repoRoot, "README.md"), "# source\n");
+      git(repoRoot, ["add", "README.md"]);
+      git(repoRoot, ["commit", "-qm", "initial"]);
+      const canonical = registerRepository({ path: repoRoot, controllerHome, displayName: "canonical-name" });
+
+      const clone = spawnSync("git", ["clone", "--quiet", "--no-local", repoRoot, cloneRoot], { encoding: "utf8" });
+      expect(clone.status).toBe(0);
+      git(cloneRoot, ["remote", "set-url", "origin", remote]);
+      const independent = registerRepository({ path: cloneRoot, controllerHome, displayName: "independent-name" });
+      const persisted = getRepository(canonical.repoId, controllerHome);
+
+      expect(independent.repoId).not.toBe(canonical.repoId);
+      expect(persisted.canonicalRoot).toBe(realpathSync(repoRoot));
+      expect(persisted.displayName).toBe("canonical-name");
+      expect(persisted.checkouts).toHaveLength(1);
+      expect(() => addRepositoryCheckout({
+        repoId: canonical.repoId,
+        path: cloneRoot,
+        controllerHome,
+      })).toThrow(/CHECKOUT_REPOSITORY_MISMATCH/);
+    } finally {
+      await cleanupWorkspace([workspace, controllerHome, repoRoot, cloneRoot]);
       rmSync(workspace, { recursive: true, force: true });
     }
   });
