@@ -440,7 +440,13 @@ export function forgeWorkflowSupervisorLifecycleHooks(controllerHome: string): W
       if (!taskControllerHome && task.continuationPolicy.kind !== 'standalone_supervisor') return undefined;
       try {
         const repository = getRepository(repoId, controllerHome);
-        return { title: repository.displayName, aliases: workflowSupervisorProjectAliases(task), repoId, controllerHome };
+        const aliases = workflowSupervisorProjectAliases(task);
+        return {
+          title: repository.displayName,
+          ...(aliases.length > 0 ? { aliases } : {}),
+          repoId,
+          controllerHome,
+        };
       } catch { return undefined; }
     },
     browserTaskActive,
