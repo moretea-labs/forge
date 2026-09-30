@@ -711,22 +711,24 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     }
     if (command.mode !== 'send') return;
 
-    // Reserve the durable generation before creating a native Browser resource.
-    // If create() opens a tab but its reply is lost, the next tick is therefore
-    // reconciliation-only and can never create a second replacement tab.
-    if (!this.control.bootstrapBeginEffect({
-      taskId: task.taskId,
-      effectId: command.effectId,
-      dispatchId: `bootstrap-${randomUUID()}`,
-      dispatchGeneration: command.dispatchGeneration,
-    })) return;
-
     let page: WorkflowSupervisorNativePage | undefined;
     let ref: MacOsBrowserTabRef | undefined;
     let preserveForReconcile = true;
     let providerMutationAttempted = false;
+    let effectDispatchStarted = false;
     try {
-      page = await this.deps.create(this.control.bootstrapProjectUrl(task.taskId));
+      // Resolve the target Project before reserving a dispatch generation. A
+      // local discovery miss cannot have reached ChatGPT and must not consume
+      // the provider retry budget.
+      const projectUrl = this.control.bootstrapProjectUrl(task.taskId);
+      if (!this.control.bootstrapBeginEffect({
+        taskId: task.taskId,
+        effectId: command.effectId,
+        dispatchId: `bootstrap-${randomUUID()}`,
+        dispatchGeneration: command.dispatchGeneration,
+      })) return;
+      effectDispatchStarted = true;
+      page = await this.deps.create(projectUrl);
       ref = page.tabRef();
       const marker = bootstrapOwnerMarker(task.taskId);
       // window.name is a best-effort ownership hint. The effect marker rendered
@@ -770,25 +772,27 @@ export class WorkflowSupervisorNativeBrowserAdapter {
           }
         }
       }
-      this.control.bootstrapObserveEffect({
-        taskId: task.taskId,
-        effectId: command.effectId,
-        observationId: `bootstrap-${randomUUID()}`,
-        outcome: 'unknown',
-        evidence: { reconciliation: true, reason },
-      });
+          this.control.bootstrapObserveEffect({
+            taskId: task.taskId,
+            effectId: command.effectId,
+            observationId: `bootstrap-${randomUUID()}`,
+            outcome: 'unknown',
+            evidence: { reconciliation: true, reason },
+          });
     } catch (error) {
       this.lastRunTransportUnavailable = true;
       const reason = error instanceof Error ? error.message : String(error);
-      try {
-        this.control.bootstrapObserveEffect({
-          taskId: task.taskId,
-          effectId: command.effectId,
-          observationId: `bootstrap-${randomUUID()}`,
-          outcome: providerMutationAttempted ? 'unknown' : 'not_applied',
-          evidence: providerMutationAttempted ? { reconciliation: true, reason } : { pre_send_rejection: true, reason },
-        });
-      } catch { /* Preserve the original transport failure. */ }
+      if (effectDispatchStarted) {
+        try {
+          this.control.bootstrapObserveEffect({
+            taskId: task.taskId,
+            effectId: command.effectId,
+            observationId: `bootstrap-${randomUUID()}`,
+            outcome: providerMutationAttempted ? 'unknown' : 'not_applied',
+            evidence: providerMutationAttempted ? { reconciliation: true, reason } : { pre_send_rejection: true, reason },
+          });
+        } catch { /* Preserve the original transport failure. */ }
+      }
       throw error;
     } finally {
       if (ref && !preserveForReconcile) await this.deps.close(ref).catch(() => undefined);

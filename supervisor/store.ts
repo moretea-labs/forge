@@ -171,6 +171,7 @@ export interface WorkflowSupervisorEffectDispatchBudget {
 
 interface EffectDispatchLedger {
   generations: number;
+  budgetRefunds: number;
   lastEventId: number;
   lastGeneration: number;
   lastOccurredAtMs: number;
@@ -229,6 +230,7 @@ function unknownObservationDelayMs(count: number): number {
 function effectDispatchLedger(db: Database, effectId: string): EffectDispatchLedger {
   const rows = statement(db, "SELECT event_id,payload_json,occurred_at FROM events WHERE effect_id = ? AND kind = 'effect_dispatch_started' ORDER BY event_id", (s) => s.all(effectId)) as Array<{ event_id?: number; payload_json?: string; occurred_at?: string }>;
   const last = rows[rows.length - 1];
+  const refundRows = statement(db, "SELECT event_id FROM events WHERE effect_id = ? AND kind = 'effect_dispatch_budget_refunded'", (s) => s.all(effectId)) as Array<{ event_id?: number }>;
   const payload = parsedObject(last?.payload_json);
   const payloadMs = Number(payload.dispatched_at_ms);
   const lastOccurredAtMs = Number.isFinite(payloadMs) && payloadMs > 0
@@ -236,6 +238,7 @@ function effectDispatchLedger(db: Database, effectId: string): EffectDispatchLed
     : Date.parse(String(last?.occurred_at ?? ''));
   return {
     generations: rows.length,
+    budgetRefunds: refundRows.length,
     lastEventId: Number(last?.event_id ?? 0),
     lastGeneration: last?.event_id ? storedGeneration(last.payload_json) : 0,
     lastOccurredAtMs: Number.isFinite(lastOccurredAtMs) ? lastOccurredAtMs : 0,
@@ -528,7 +531,7 @@ export class WorkflowSupervisorStore {
         }
         return { effect, mode: 'reconcile', generation: ledger.lastGeneration };
       }
-      if (ledger.generations >= WORKFLOW_SUPERVISOR_MAX_DISPATCH_GENERATIONS) return undefined;
+      if (ledger.generations >= WORKFLOW_SUPERVISOR_MAX_DISPATCH_GENERATIONS + ledger.budgetRefunds) return undefined;
       if (nowMs - ledger.lastOccurredAtMs < workflowSupervisorDispatchRetryDelayMs(ledger.lastGeneration)) {
         return undefined;
       }
@@ -538,7 +541,7 @@ export class WorkflowSupervisorStore {
   effectDispatchBudget(effectId: string): WorkflowSupervisorEffectDispatchBudget {
     return this.read((db) => {
       const ledger = effectDispatchLedger(db, effectId);
-      const exhausted = ledger.generations >= WORKFLOW_SUPERVISOR_MAX_DISPATCH_GENERATIONS
+      const exhausted = ledger.generations >= WORKFLOW_SUPERVISOR_MAX_DISPATCH_GENERATIONS + ledger.budgetRefunds
         && !statement(db, "SELECT 1 AS ok FROM events WHERE effect_id = ? AND kind = 'effect_applied' LIMIT 1", (s) => s.get(effectId));
       return {
         effectId,
@@ -716,14 +719,13 @@ export class WorkflowSupervisorStore {
 
   recordEffectDispatchStarted(effectId: string, generation: number, dispatchId: string, evidence: Record<string, unknown> = {}): boolean {
     if (!Number.isInteger(generation) || generation < 1 || generation > 1_000_000) throw new Error('WORKFLOW_SUPERVISOR_DISPATCH_GENERATION_INVALID');
-    // The retry budget is enforced here as well as in `nextBrowserEffect`, so a
-    // caller cannot mint generations past the ceiling by naming one directly.
-    if (generation > WORKFLOW_SUPERVISOR_MAX_DISPATCH_GENERATIONS) return false;
     return this.transaction((db) => {
       const effect = statement(db, 'SELECT task_id FROM effects WHERE effect_id = ?', (s) => s.get(effectId)) as { task_id?: string } | undefined;
       if (!effect?.task_id) throw new Error('WORKFLOW_SUPERVISOR_EFFECT_UNKNOWN');
       const applied = statement(db, "SELECT 1 AS ok FROM events WHERE effect_id = ? AND kind = 'effect_applied' LIMIT 1", (s) => s.get(effectId));
       if (applied) throw new Error('WORKFLOW_SUPERVISOR_EFFECT_ALREADY_APPLIED');
+      const refunds = statement(db, "SELECT event_id FROM events WHERE effect_id = ? AND kind = 'effect_dispatch_budget_refunded'", (s) => s.all(effectId)) as Array<{ event_id?: number }>;
+      if (generation > WORKFLOW_SUPERVISOR_MAX_DISPATCH_GENERATIONS + refunds.length) return false;
       const prior = statement(db, "SELECT event_id,payload_json FROM events WHERE effect_id = ? AND kind = 'effect_dispatch_started' ORDER BY event_id DESC LIMIT 1", (s) => s.get(effectId)) as { event_id?: number; payload_json?: string } | undefined;
       const currentGeneration = prior?.event_id ? storedGeneration(prior.payload_json) : 0;
       const retryAuthorized = !prior?.event_id || latestNotAppliedProofEventId(db, effectId) > Number(prior.event_id);
@@ -771,6 +773,12 @@ export class WorkflowSupervisorStore {
       const existing = statement(db, 'SELECT kind,payload_json FROM events WHERE event_key = ?', (s) => s.get(key)) as { kind?: string; payload_json?: string } | undefined;
       if (existing && (existing.kind !== 'effect_not_applied' || existing.payload_json !== payload)) throw new Error('WORKFLOW_SUPERVISOR_OBSERVATION_ID_CONFLICT');
       statement(db, 'INSERT OR IGNORE INTO events(task_id,event_key,kind,effect_id,payload_json,occurred_at) VALUES (?,?,?,?,?,?)', (s) => s.run(effect.task_id, key, 'effect_not_applied', effectId, payload, now()));
+      const ledger = effectDispatchLedger(db, effectId);
+      if (proof.pre_send_rejection === true
+        && ledger.generations >= WORKFLOW_SUPERVISOR_MAX_DISPATCH_GENERATIONS
+        && ledger.budgetRefunds === 0) {
+        statement(db, 'INSERT OR IGNORE INTO events(task_id,event_key,kind,effect_id,payload_json,occurred_at) VALUES (?,?,?,?,?,?)', (s) => s.run(effect.task_id, `effect-dispatch-budget-refund:${effectId}`, 'effect_dispatch_budget_refunded', effectId, json({ reason: 'pre_send_rejection_did_not_reach_provider' }), now()));
+      }
     });
   }
 
