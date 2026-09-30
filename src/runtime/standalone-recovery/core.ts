@@ -5477,7 +5477,29 @@ export async function cutoverConfiguredRuntimeReleaseSession(
       // remaining sessions have been idle for the bounded quiet window before
       // Stable A ownership can move. Otherwise a perfectly valid release switch
       // can tear down the ChatGPT turn that requested it.
-      const readiness = await probeReleaseCutoverReadiness(config);
+      let readiness = await probeReleaseCutoverReadiness(config);
+      // The post-promotion verification above may itself create MCP activity
+      // on the primary Connector.  Give that activity a bounded opportunity
+      // to become quiet before deferring the session; otherwise every retry
+      // re-verifies the Runtime, refreshes latestActivityAgeMs, and can defer
+      // forever without ever reaching the cutover attempt.
+      const quietWaitDeadline = Date.now() + AUTOMATIC_RELEASE_CUTOVER_QUIET_MS + 5_000;
+      while (
+        !readiness.ready
+        && readiness.activePosts === 0
+        && readiness.activeStreams === 0
+        && readiness.initializing === 0
+        && Number.isFinite(readiness.latestActivityAgeMs)
+        && (readiness.latestActivityAgeMs ?? AUTOMATIC_RELEASE_CUTOVER_QUIET_MS) < AUTOMATIC_RELEASE_CUTOVER_QUIET_MS
+        && Date.now() < quietWaitDeadline
+      ) {
+        const remainingMs = Math.max(
+          50,
+          AUTOMATIC_RELEASE_CUTOVER_QUIET_MS - (readiness.latestActivityAgeMs ?? 0) + 25,
+        );
+        await sleep(Math.min(2_000, remainingMs));
+        readiness = await probeReleaseCutoverReadiness(config);
+      }
       if (!readiness.ready) {
         audit(config, 'release_session_cutover_deferred_for_mcp_activity', {
           sessionId,
