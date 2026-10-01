@@ -86,7 +86,7 @@ async function runPhase(home: string, phase: string): Promise<void> {
     return;
   }
 
-  if (phase === 'prove-not-applied') {
+  if (phase === 'observe-ambiguous-enrollment') {
     let poll = supervisor.browserPoll({ conversationId: CONVERSATION_ID, conversationUrl: CONVERSATION_URL });
     assert.equal(poll.command?.mode, 'reconcile');
     assert.equal(poll.command?.dispatchGeneration, 1);
@@ -95,7 +95,7 @@ async function runPhase(home: string, phase: string): Promise<void> {
       conversationId: CONVERSATION_ID,
       conversationUrl: CONVERSATION_URL,
       effectId,
-      observationId: 'enrollment-g1-not-applied',
+      observationId: 'enrollment-g1-stale-negative-observation',
       outcome: 'not_applied',
       evidence: {
         latest_user_text: BASELINE_USER,
@@ -107,21 +107,24 @@ async function runPhase(home: string, phase: string): Promise<void> {
     });
     poll = supervisor.browserPoll({ conversationId: CONVERSATION_ID, conversationUrl: CONVERSATION_URL });
     assert.equal(poll.command?.effectId, effectId);
-    assert.equal(poll.command?.mode, 'send');
-    assert.equal(poll.command?.dispatchGeneration, 2);
+    // A rendered empty composer can be a stale provider view. Across restart,
+    // this observation must retain the original effect/generation, never resend.
+    assert.equal(poll.command?.mode, 'reconcile');
+    assert.equal(poll.command?.dispatchGeneration, 1);
+    assert.equal(supervisor.store.effectDispatchBudget(effectId).generations, 1);
     assert.equal(supervisor.browserBeginEffect({
       conversationId: CONVERSATION_ID,
       conversationUrl: CONVERSATION_URL,
       effectId,
-      dispatchId: 'enrollment-g2',
-      dispatchGeneration: 2,
+      dispatchId: 'stale-enrollment-resend',
+      dispatchGeneration: 1,
       evidence: { latest_user_text: BASELINE_USER, latest_assistant_response: BASELINE_ASSISTANT },
-    }).started, true);
+    }).started, false);
     supervisor.browserObserveEffect({
       conversationId: CONVERSATION_ID,
       conversationUrl: CONVERSATION_URL,
       effectId,
-      observationId: 'enrollment-g2-unknown',
+      observationId: 'enrollment-g1-unknown',
       outcome: 'unknown',
       evidence: { send_boundary_crossed: true },
     });
@@ -131,13 +134,13 @@ async function runPhase(home: string, phase: string): Promise<void> {
   if (phase === 'reconcile-unknown-and-continue-1') {
     const poll = supervisor.browserPoll({ conversationId: CONVERSATION_ID, conversationUrl: CONVERSATION_URL });
     assert.equal(poll.command?.mode, 'reconcile');
-    assert.equal(poll.command?.dispatchGeneration, 2);
+    assert.equal(poll.command?.dispatchGeneration, 1);
     const effectId = poll.command!.effectId;
     supervisor.browserObserveEffect({
       conversationId: CONVERSATION_ID,
       conversationUrl: CONVERSATION_URL,
       effectId,
-      observationId: 'enrollment-g2-applied-after-restart',
+      observationId: 'enrollment-g1-applied-after-restart',
       outcome: 'applied',
       evidence: { exact_user_message: true },
     });
@@ -239,7 +242,7 @@ async function main(): Promise<void> {
   try {
     for (const [index, nextPhase] of [
       'arm-enrollment',
-      'prove-not-applied',
+      'observe-ambiguous-enrollment',
       'reconcile-unknown-and-continue-1',
       'continue-2',
       'done-3',

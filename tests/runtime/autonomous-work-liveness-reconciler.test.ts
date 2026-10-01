@@ -15,7 +15,7 @@ import {
   releaseControllerSession,
   submitControllerRoundDisposition,
 } from '../../packages/kernel/controller/api/index';
-import { cancelWorkContract, createWorkContract } from '../../packages/kernel/work/api/index';
+import { cancelWorkContract, createWorkContract, createWorkSemanticContext, getWorkContract, listWorkContracts } from '../../packages/kernel/work/api/index';
 import { upsertChatgptControllerBinding } from '../../adapters/chatgpt/controller-binding-store';
 import { createRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
 import {
@@ -150,7 +150,11 @@ describe('autonomous Work liveness reconciliation', () => {
   test('enrolls Supervisor for an incomplete dispatching round when no provider effect physically started', async () => {
     const controllerHome = home();
     const store = { controllerHome, repoId: 'repo-a' };
-    createRunningWork(controllerHome, { workId: 'WORK-INCOMPLETE-DISPATCH' });
+    createWorkSemanticContext({ controllerHome, scopeKey: 'semantic' }, {
+      workId: 'WORK-INCOMPLETE-DISPATCH', objective: 'Resume canonical semantic authority omitted by the repo projection.',
+    });
+    expect(listWorkContracts({ ...store, status: 'active' })).toEqual([]);
+    expect(getWorkContract(store, 'WORK-INCOMPLETE-DISPATCH')?.semanticState).toBe('open');
     const binding = bindReleasedChatgptController(controllerHome, 'WORK-INCOMPLETE-DISPATCH');
     const prepared = prepareControllerRoundOccurrence(store, {
       occurrenceId: 'incomplete-dispatch-occurrence',

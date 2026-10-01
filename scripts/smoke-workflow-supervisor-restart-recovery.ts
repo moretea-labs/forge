@@ -45,8 +45,8 @@ try {
   supervisor.browserObserveEffect({ conversationId, conversationUrl, effectId: enrollment.effectId, observationId: 'enroll-not-applied', outcome: 'not_applied', evidence: { latest_user_text: 'before enrollment', latest_assistant_response: 'existing assistant text', target_marker_present: false, provider_surface_rendered: true, reason: 'composer_proven_empty' } });
   mechanicalNowMs += 30_000;
   poll = supervisor.browserPoll({ conversationId, conversationUrl });
-  assert.equal(poll.command?.mode, 'send'); assert.equal(poll.command?.dispatchGeneration, 2); assert.equal(poll.command?.effectId, enrollment.effectId);
-  assert.equal(supervisor.browserBeginEffect({ conversationId, conversationUrl, effectId: enrollment.effectId, dispatchId: 'enroll-g2', dispatchGeneration: 2, evidence: { latest_user_text: 'before enrollment', latest_assistant_response: 'existing assistant text' } }).started, true);
+  assert.equal(poll.command?.mode, 'reconcile'); assert.equal(poll.command?.dispatchGeneration, 1); assert.equal(poll.command?.effectId, enrollment.effectId);
+  assert.equal(supervisor.store.effectDispatchBudget(enrollment.effectId).generations, 1);
   supervisor.browserObserveEffect({ conversationId, conversationUrl, effectId: enrollment.effectId, observationId: 'enroll-applied', outcome: 'applied', evidence: { exact_user_message: true } });
   const response1 = block('CONTINUE', enrollment.effectId, 'checkpoint-1', conversationId, 'recovery-task');
   const turn1 = await supervisor.browserObserveAssistant({ conversationId, conversationUrl, responseText: response1 });
@@ -59,11 +59,13 @@ try {
   poll = supervisor.browserPoll({ conversationId, conversationUrl }); assert.equal(poll.command?.mode, 'reconcile');
   supervisor.browserObserveEffect({ conversationId, conversationUrl, effectId: continuation.effectId, observationId: 'bad-proof', outcome: 'not_applied', evidence: { latest_user_text: 'conversation drifted', latest_assistant_response: response1, target_marker_present: false, provider_surface_rendered: true, reason: 'composer_proven_empty' } });
   poll = supervisor.browserPoll({ conversationId, conversationUrl }); assert.equal(poll.command?.mode, 'reconcile'); assert.equal(poll.command?.dispatchGeneration, 1);
-  supervisor.browserObserveEffect({ conversationId, conversationUrl, effectId: continuation.effectId, observationId: 'good-proof', outcome: 'not_applied', evidence: { latest_user_text: enrollment.prompt, latest_assistant_response: response1, target_marker_present: false, provider_surface_rendered: true, reason: 'composer_proven_empty' } });
+  // Even the exact pre-send baseline on a rendered page can be stale. A
+  // reopened observer cannot turn provider outcome uncertainty into a resend.
+  supervisor.browserObserveEffect({ conversationId, conversationUrl, effectId: continuation.effectId, observationId: 'stale-baseline-observation', outcome: 'not_applied', evidence: { latest_user_text: enrollment.prompt, latest_assistant_response: response1, target_marker_present: false, provider_surface_rendered: true, reason: 'composer_proven_empty' } });
   mechanicalNowMs += 30_000;
-  poll = supervisor.browserPoll({ conversationId, conversationUrl }); assert.equal(poll.command?.mode, 'send'); assert.equal(poll.command?.dispatchGeneration, 2); assert.equal(poll.command?.effectId, continuation.effectId);
-  assert.equal(supervisor.browserBeginEffect({ conversationId, conversationUrl, effectId: continuation.effectId, dispatchId: 'continue-g2', dispatchGeneration: 2, evidence: { latest_user_text: enrollment.prompt, latest_assistant_response: response1 } }).started, true);
-  assert.equal(supervisor.browserBeginEffect({ conversationId, conversationUrl, effectId: continuation.effectId, dispatchId: 'continue-g2-duplicate', dispatchGeneration: 2, evidence: { latest_user_text: enrollment.prompt, latest_assistant_response: response1 } }).started, false);
+  poll = supervisor.browserPoll({ conversationId, conversationUrl }); assert.equal(poll.command?.mode, 'reconcile'); assert.equal(poll.command?.dispatchGeneration, 1); assert.equal(poll.command?.effectId, continuation.effectId);
+  assert.equal(supervisor.browserBeginEffect({ conversationId, conversationUrl, effectId: continuation.effectId, dispatchId: 'continue-g1-duplicate', dispatchGeneration: 1, evidence: { latest_user_text: enrollment.prompt, latest_assistant_response: response1 } }).started, false);
+  assert.equal(supervisor.store.effectDispatchBudget(continuation.effectId).generations, 1);
   supervisor.browserObserveEffect({ conversationId, conversationUrl, effectId: continuation.effectId, observationId: 'continue-applied', outcome: 'applied', evidence: { exact_user_message: true } });
 
   const response2 = block('CONTINUE', continuation.effectId, 'checkpoint-2', conversationId, 'recovery-task');

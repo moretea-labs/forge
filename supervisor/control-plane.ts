@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { parseChatgptConversationIdentity } from './chatgpt-conversation';
 import { parseSupervisorCompletion, renderEffectMarker, renderSupervisorPrompt, sha256, validateEffectId } from './protocol';
 import { WorkflowSupervisorStore } from './store';
-import type { WorkflowAssistantObservation, WorkflowAssistantObservationResult, WorkflowContractValidation, WorkflowSupervisorAutomationStatus, WorkflowSupervisorBrowserPollResult, WorkflowSupervisorBrowserTask, WorkflowSupervisorCompletion, WorkflowSupervisorDiscoveredConversation, WorkflowSupervisorEffect, WorkflowSupervisorLifecycleHooks, WorkflowSupervisorProjectScope, WorkflowSupervisorTask, WorkflowSupervisorTaskInput, WorkflowSupervisorTurnSettlement, WorkflowSupervisorValidators } from './types';
+import type { WorkflowAssistantObservation, WorkflowAssistantObservationResult, WorkflowContractValidation, WorkflowSupervisorAutomationStatus, WorkflowSupervisorBrowserPollResult, WorkflowSupervisorBrowserTask, WorkflowSupervisorCompletion, WorkflowSupervisorDiscoveredConversation, WorkflowSupervisorEffect, WorkflowSupervisorLifecycleHooks, WorkflowSupervisorProjectScope, WorkflowSupervisorTask, WorkflowSupervisorTaskInput, WorkflowSupervisorValidators } from './types';
 
 function compactProjectIdentity(value: string): string {
   return value.toLocaleLowerCase().replace(/[^a-z0-9]+/g, '');
@@ -188,7 +188,7 @@ export class WorkflowSupervisorControlPlane {
         // Optional lower-layer Work/Requirement compatibility must be task-local.
         // A stale legacy task is allowed to fail closed, but it must never poison
         // the global Supervisor delivery queue and block standalone tasks.
-        try { if (!this.browserTaskActive(task)) return []; }
+        try { if (pending?.mode === 'send' && !this.browserTaskActive(task)) return []; }
         catch { return []; }
       }
       return [{ task, mode: pending?.mode ?? 'reconcile' }];
@@ -211,9 +211,11 @@ export class WorkflowSupervisorControlPlane {
     // before the normal external-effect activity gate so an already-running
     // browser poll observes the stop and cannot turn it into another command.
     if (terminal === 'STOPPED') return { authorized: true, task: projection, terminal };
-    if (!this.browserTaskActiveForExternalEffect(task)) throw new Error('WORKFLOW_SUPERVISOR_BROWSER_TASK_INACTIVE');
     if (terminal) return { authorized: true, task: projection, terminal };
     const pending = this.store.nextBrowserEffect(task.taskId);
+    // Read-only reconciliation belongs to the already-started effect even when
+    // its Work/conversation binding was retired. It never authorizes a resend.
+    if (pending?.mode === 'send' && !this.browserTaskActive(task)) throw new Error('WORKFLOW_SUPERVISOR_BROWSER_TASK_INACTIVE');
     if (!pending) return { authorized: true, task: projection };
     return { authorized: true, task: projection, command: { mode: pending.mode, effectId: pending.effect.effectId, kind: pending.effect.kind, prompt: pending.effect.prompt, dispatchGeneration: pending.generation, conversationId: task.conversationId, conversationUrl: task.conversationUrl } };
   }
@@ -302,6 +304,9 @@ export class WorkflowSupervisorControlPlane {
     const effectId = validateEffectId(input.effectId);
     if (!pending || pending.effect.effectId !== effectId) throw new Error('WORKFLOW_SUPERVISOR_BROWSER_EFFECT_NOT_CURRENT');
     if (pending.mode !== 'send' || pending.generation !== input.dispatchGeneration) return { started: false, mode: 'reconcile', generation: pending.generation };
+    // Re-check immediately before committing dispatch; a queued browser command
+    // must not outlive an explicit conversation rebind.
+    if (!this.browserTaskActive(task)) throw new Error('WORKFLOW_SUPERVISOR_BROWSER_TASK_INACTIVE');
     const snapshot = browserSnapshot(input.evidence);
     if (!snapshot || browserTextHasEffect(snapshot.latestUserText, effectId) || !this.browserSnapshotMatchesSource(task, pending.effect, snapshot)) {
       return { started: false, mode: 'reconcile', generation: pending.generation };
@@ -364,8 +369,8 @@ export class WorkflowSupervisorControlPlane {
 
   /**
    * Repair the crash boundary where a CONTINUE completion was durably committed
-   * before lower-layer settlement and successor reservation finished. This never
-   * replays the provider response; it only settles existing durable evidence and
+   * before successor reservation finished in a previous Runtime. This never
+   * replays the provider response; it only reads the committed causal receipt and
    * reserves the exactly-once successor effect.
    */
   async reconcileCommittedContinuations(limit = 16): Promise<{ scanned: number; reconciled: number }> {
@@ -374,24 +379,7 @@ export class WorkflowSupervisorControlPlane {
     for (const completion of completions) {
       const task = this.store.getTask(completion.taskId);
       if (!task || this.store.terminalAction(task.taskId)) continue;
-      let settlement: WorkflowSupervisorTurnSettlement;
-      try {
-        settlement = await this.hooks.assistantTurnCommitted?.(task, completion)
-          ?? { continuationAllowed: true };
-      } catch {
-        // Lower-layer compatibility reconciliation is scoped to this task. A
-        // stale Work/ControllerRound must not stop successor recovery for other
-        // independent Supervisor tasks.
-        continue;
-      }
-      if (!settlement.continuationAllowed) continue;
-      const successorOriginKey = `completion:${completion.completionFingerprint}`;
-      const nextId = settlement.continuationEffectId
-        ? validateEffectId(settlement.continuationEffectId)
-        : stableEffectId(successorOriginKey);
-      const checkpoint = completion.proposal.reason === 'compact_receipt' ? undefined : completion.proposal.checkpoint;
-      const prompt = renderSupervisorPrompt(task, nextId, 'continuation', checkpoint, undefined, settlement.continuationContext);
-      const committed = this.store.commitCompletion(completion, { effectId: nextId, kind: 'continuation', prompt });
+      const committed = this.reserveContinuation(task, completion);
       if (committed.successorEffect) reconciled += 1;
     }
     return { scanned: completions.length, reconciled };
@@ -434,32 +422,17 @@ export class WorkflowSupervisorControlPlane {
     const terminal = this.store.terminalAction(task.taskId);
     if (terminal) throw new Error(`WORKFLOW_SUPERVISOR_TASK_TERMINAL:${terminal}`);
 
-    // Persist exact assistant-turn evidence before lower-layer reconciliation.
-    // Replayed observation may therefore retry a missed settlement without asking
-    // the provider to regenerate the completion.
-    const committed = this.store.commitCompletion(completion);
-    const settlement: WorkflowSupervisorTurnSettlement = await this.hooks.assistantTurnCommitted?.(task, completion)
-      ?? { continuationAllowed: true };
-
     if (parsed.proposal.action === 'CONTINUE') {
-      if (!settlement.continuationAllowed) {
-        throw new Error(`WORKFLOW_SUPERVISOR_LOWER_LAYER_CONTINUATION_BLOCKED:${settlement.reason ?? 'unspecified'}`);
-      }
-      const successorOriginKey = `completion:${completionFingerprint}`;
-      const nextId = settlement.continuationEffectId
-        ? validateEffectId(settlement.continuationEffectId)
-        : stableEffectId(successorOriginKey);
-      const checkpoint = parsed.proposal.reason === 'compact_receipt' ? undefined : parsed.proposal.checkpoint;
-      const prompt = renderSupervisorPrompt(task, nextId, 'continuation', checkpoint, undefined, settlement.continuationContext);
-      const withSuccessor = this.store.commitCompletion(completion, { effectId: nextId, kind: 'continuation', prompt });
-      return { action: 'CONTINUE', completionFingerprint, terminal: false, successorEffect: withSuccessor.successorEffect!, deduplicated: committed.deduplicated || withSuccessor.deduplicated };
+      const committed = this.reserveContinuation(task, completion);
+      return { action: 'CONTINUE', completionFingerprint, terminal: false, successorEffect: committed.successorEffect!, deduplicated: committed.deduplicated };
     }
+    const committed = this.store.commitCompletion(completion);
 
     const validator = parsed.proposal.action === 'DONE' ? this.validators.completionContract : this.validators.userBlockerPolicy;
     const validation = await validator(task, parsed.proposal);
     const correctionId = validation.valid ? undefined : stableEffectId(`completion:${completionFingerprint}`);
     const resolved = this.store.resolveTerminal({ completionFingerprint, taskId: task.taskId, action: parsed.proposal.action, accepted: validation.valid, reason: validation.reason,
-      ...(correctionId ? { correction: { effectId: correctionId, prompt: renderSupervisorPrompt(task, correctionId, 'correction', parsed.proposal.reason === 'compact_receipt' ? undefined : parsed.proposal.checkpoint, validation.reason, settlement.continuationContext) } } : {}) });
+      ...(correctionId ? { correction: { effectId: correctionId, prompt: renderSupervisorPrompt(task, correctionId, 'correction', parsed.proposal.reason === 'compact_receipt' ? undefined : parsed.proposal.checkpoint, validation.reason) } } : {}) });
     return { action: parsed.proposal.action, completionFingerprint, terminal: validation.valid, ...(resolved.successorEffect ? { successorEffect: resolved.successorEffect } : {}), validation, deduplicated: committed.deduplicated || resolved.deduplicated };
   }
 
@@ -512,29 +485,31 @@ export class WorkflowSupervisorControlPlane {
     const controlBlockSha256 = sha256(responseText);
     const completionFingerprint = sha256(jsonIdentity(task.taskId, task.conversationId, sourceEffect.effectId, responseSha256, controlBlockSha256));
     const completion: WorkflowSupervisorCompletion = { completionFingerprint, taskId: task.taskId, sourceEffectId: sourceEffect.effectId, action: proposal.action, responseSha256, controlBlockSha256, proposal, committedAt: new Date().toISOString() };
-    const committed = this.store.commitCompletion(completion);
-    const settlement: WorkflowSupervisorTurnSettlement = await this.hooks.assistantTurnCommitted?.(task, completion) ?? { continuationAllowed: true };
     if (proposal.action === 'CONTINUE') {
-      if (!settlement.continuationAllowed) throw new Error(`WORKFLOW_SUPERVISOR_LOWER_LAYER_CONTINUATION_BLOCKED:${settlement.reason ?? 'unspecified'}`);
-      const nextId = settlement.continuationEffectId
-        ? validateEffectId(settlement.continuationEffectId)
-        : stableEffectId(`completion:${completionFingerprint}`);
-      const withSuccessor = this.store.commitCompletion(completion, {
-        effectId: nextId,
-        kind: 'continuation',
-        prompt: renderSupervisorPrompt(task, nextId, 'continuation', proposal.checkpoint, undefined, settlement.continuationContext),
-      });
-      return { action: 'CONTINUE', completionFingerprint, terminal: false, successorEffect: withSuccessor.successorEffect!, deduplicated: committed.deduplicated || withSuccessor.deduplicated };
+      const committed = this.reserveContinuation(task, completion);
+      return { action: 'CONTINUE', completionFingerprint, terminal: false, successorEffect: committed.successorEffect!, deduplicated: committed.deduplicated };
     }
+    const committed = this.store.commitCompletion(completion);
     const validation = proposal.action === 'DONE'
       ? await this.validators.completionContract(task, proposal)
       : await this.validators.userBlockerPolicy(task, proposal);
     const correctionId = validation.valid ? undefined : stableEffectId(`completion:${completionFingerprint}`);
     const resolved = this.store.resolveTerminal({
       completionFingerprint, taskId: task.taskId, action: proposal.action, accepted: validation.valid, reason: validation.reason,
-      ...(correctionId ? { correction: { effectId: correctionId, prompt: renderSupervisorPrompt(task, correctionId, 'correction', proposal.checkpoint, validation.reason, settlement.continuationContext) } } : {}),
+      ...(correctionId ? { correction: { effectId: correctionId, prompt: renderSupervisorPrompt(task, correctionId, 'correction', proposal.checkpoint, validation.reason) } } : {}),
     });
     return { action: proposal.action, completionFingerprint, terminal: validation.valid, ...(resolved.successorEffect ? { successorEffect: resolved.successorEffect } : {}), validation, deduplicated: committed.deduplicated || resolved.deduplicated };
+  }
+
+  /** Model CONTINUE and its causal successor commit in the same authority transaction. */
+  private reserveContinuation(task: WorkflowSupervisorTask, completion: WorkflowSupervisorCompletion) {
+    const nextId = stableEffectId(`completion:${completion.completionFingerprint}`);
+    const checkpoint = completion.proposal.reason === 'compact_receipt' ? undefined : completion.proposal.checkpoint;
+    return this.store.commitCompletion(completion, {
+      effectId: nextId,
+      kind: 'continuation',
+      prompt: renderSupervisorPrompt(task, nextId, 'continuation', checkpoint),
+    });
   }
 
   private browserTaskActive(task: WorkflowSupervisorTask): boolean { return this.hooks.browserTaskActive?.(task) ?? true; }

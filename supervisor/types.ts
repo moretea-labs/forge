@@ -79,20 +79,12 @@ export interface WorkflowSupervisorValidators {
   completionContract(task: WorkflowSupervisorTask, proposal: WorkflowSupervisorProposal): Promise<WorkflowContractValidation>;
   userBlockerPolicy(task: WorkflowSupervisorTask, proposal: WorkflowSupervisorProposal): Promise<WorkflowContractValidation>;
 }
-export interface WorkflowSupervisorTurnSettlement {
-  continuationAllowed: boolean;
-  continuationContext?: string;
-  /** Canonical lower-layer non-idempotent send effect identity for the next outer turn. */
-  continuationEffectId?: string;
-  reason?: string;
-}
-
 export interface WorkflowSupervisorLifecycleHooks {
   /** Derived project identity used only for browser discovery; never a lifecycle authority. */
   projectScopeForTask?(task: WorkflowSupervisorTask): WorkflowSupervisorProjectScope | undefined;
   /** Build the one bounded enrollment task for a newly discovered project conversation. */
   discoveredConversationTask?(conversation: WorkflowSupervisorDiscoveredConversation, scope: WorkflowSupervisorProjectScope): WorkflowSupervisorTaskInput | undefined;
-  /** Derived from canonical lower-layer lifecycle facts; must not create a second task lifecycle authority. */
+  /** Admission for a new send only. Never suppress observation of an already-started effect. */
   browserTaskActive?(task: WorkflowSupervisorTask): boolean;
   /** Mechanical provenance attached to outbound effect dispatch evidence. */
   effectDispatchEvidence?(): Record<string, unknown>;
@@ -107,11 +99,6 @@ export interface WorkflowSupervisorLifecycleHooks {
     effect: WorkflowSupervisorEffect,
     observation: { observationId: string; evidence?: Record<string, unknown> },
   ): void;
-  /** Idempotent: browser/recovery observation may replay the same completion fingerprint. */
-  assistantTurnCommitted?(
-    task: WorkflowSupervisorTask,
-    completion: WorkflowSupervisorCompletion,
-  ): Promise<WorkflowSupervisorTurnSettlement | void>;
   /** Atomically project a newly-created Computer conversation into Work binding authority. */
   bootstrapConversationBound?(task: WorkflowSupervisorTask): void;
 }

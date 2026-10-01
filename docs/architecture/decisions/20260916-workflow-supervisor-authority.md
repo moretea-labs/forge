@@ -207,7 +207,7 @@ Existing conversations require an explicit enrollment handshake. A conversation 
 
 ## Relationship to existing Forge continuation
 
-ControllerRound remains the sole lower-layer semantic continuation/provider-effect authority. Schedule occurrences hand exact trigger identity into ControllerRound; Scheduler-owned continuation-dispatch persistence has been removed. ControllerRound is not the authority that reactivates ChatGPT after the outer assistant call stack is gone, and it is not proof that the long-lived WorkflowRun progressed or completed.
+The cross-turn dependency described in this section is superseded by [Supervisor turn authority](20261001-supervisor-turn-authority.md): ControllerRound remains initial admission and direct non-ChatGPT provider-effect authority, while enrolled ChatGPT turns use only the Supervisor causal effect ledger. Schedule occurrences hand exact trigger identity into ControllerRound; Scheduler-owned continuation-dispatch persistence has been removed. ControllerRound is not the authority that reactivates ChatGPT after the outer assistant call stack is gone, and it is not proof that the long-lived WorkflowRun progressed or completed.
 
 The existing Scheduler remains only an execution/occurrence scheduler. Once an exact Requirement-backed ChatGPT conversation binding exists, lower Scheduler/maintenance/direct-continuation paths must not submit the next outer ChatGPT turn; Workflow Supervisor is the single outer writer.
 

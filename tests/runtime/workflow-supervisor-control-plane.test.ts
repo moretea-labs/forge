@@ -6,9 +6,9 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { ensureControllerHome, SEMANTIC_SCOPE_KEY } from '../../src/cli/repositories/controller-home';
 import { registerRepository } from '../../src/cli/repositories/registry';
-import { acknowledgeControllerRoundClaim, beginInitialControllerRoundDispatch, claimStalledControllerRoundRelays, controllerRoundProviderEffectId, finishControllerRoundRelayDispatch, getRequirementControllerRoundRelay, recoverControllerRoundRelayAuthority, submitControllerRoundDisposition } from '../../packages/kernel/controller/api/index';
+import { acknowledgeControllerRoundClaim, beginInitialControllerRoundDispatch, claimStalledControllerRoundRelays, controllerRoundProviderEffectId, finishControllerRoundRelayDispatch, getControllerRoundRelay, getRequirementControllerRoundRelay, recoverControllerRoundRelayAuthority, submitControllerRoundDisposition } from '../../packages/kernel/controller/api/index';
 import { createWorkContract, reviseWorkSemanticContext } from '../../packages/kernel/work/api/index';
-import { createRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
+import { createRequirement, updateRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
 import { forgeWorkflowSupervisorLifecycleHooks, inheritWorkflowSupervisorConversationBinding, workflowSupervisorBoundaryForWork, workflowSupervisorLowerLayerReadyForWork } from '../../src/runtime/root/workflow-supervisor-composition';
 import { WorkflowSupervisorControlPlane } from '../../supervisor/control-plane';
 import { WorkflowSupervisorNativeBrowserAdapter, type WorkflowSupervisorNativePage } from '../../supervisor/native-browser-adapter';
@@ -382,6 +382,35 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
       conversationId: 'exact-conversation-lineage',
     });
     expect(successorBoundary).not.toHaveProperty('taskId');
+
+    const identity = {
+      controllerId: 'lineage-controller', controllerType: 'chatgpt' as const,
+      principalId: 'lineage-principal', controllerInstanceId: 'lineage-runtime',
+    };
+    const predecessorRelay = beginInitialControllerRoundDispatch(fx.store, {
+      workId: predecessorWorkId, requirementId, identity: { ...identity, sessionId: 'lineage-predecessor' },
+    });
+    const successorRelay = beginInitialControllerRoundDispatch({ ...fx.store, now: () => new Date(Date.now() + 1_000).toISOString() }, {
+      workId: successorWorkId, requirementId, identity: { ...identity, sessionId: 'lineage-successor' },
+    });
+    expect(getRequirementControllerRoundRelay(fx.store, requirementId)?.originWorkId).toBe(successorWorkId);
+    const supervisorStore = new WorkflowSupervisorStore(join(fx.root, 'lineage-supervisor'));
+    const control = new WorkflowSupervisorControlPlane(supervisorStore, {}, forgeWorkflowSupervisorLifecycleHooks(fx.controllerHome));
+    const task = control.registerTask({
+      taskId: `forge:${fx.repository.repoId}:work:${predecessorWorkId}`,
+      conversationId: inherited!.conversationId, conversationUrl: inherited!.conversationUrl,
+      objective: 'Keep exact effect provenance across a successor carrier.',
+      completionContract: { controller_home: fx.controllerHome, repo_id: fx.repository.repoId, work_id: predecessorWorkId, requirement_id: requirementId },
+      continuationPolicy: { kind: 'forge_goal_outer_turn' }, userBlockerPolicy: {},
+    });
+    const enrollment = control.reserveEnrollment(task.taskId, controllerRoundProviderEffectId(predecessorRelay));
+    control.browserObserveEffect({
+      conversationId: task.conversationId, conversationUrl: task.conversationUrl,
+      effectId: enrollment.effectId, observationId: 'lineage-predecessor-applied', outcome: 'applied',
+    });
+    expect(getControllerRoundRelay(fx.store, predecessorWorkId)?.status).toBe('dispatched');
+    expect(getControllerRoundRelay(fx.store, successorWorkId)).toEqual(successorRelay);
+    supervisorStore.close();
   });
 
   test('keeps the browser-observed current conversation ephemeral, exact, and unambiguous', () => {
@@ -763,8 +792,8 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     expect(successor).toBeDefined();
     const relay = getRequirementControllerRoundRelay(fx.store, requirementId);
     expect(relay).toMatchObject({
-      status: 'dispatching', repeatedStateCount: blocked.repeatedStateCount, roundCount: blocked.roundCount,
-      reason: `continuation_evidence:${completion.completionFingerprint}`,
+      status: 'blocked', repeatedStateCount: blocked.repeatedStateCount, roundCount: blocked.roundCount,
+      authorityId: blocked.authorityId,
     });
     expect(successor?.effectId).toMatch(/^fx_/);
     expect(successor?.effectId).not.toBe(enrollment.effectId);
@@ -832,23 +861,44 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     };
     supervisorStore.commitCompletion(completion);
 
-    // A crash can occur after lower-layer settlement, before the successor is
-    // committed. Reconciliation must not reuse the already-applied source id.
-    await control.hooks.assistantTurnCommitted?.(control.getTask(taskId)!, completion);
+    // Recover a completion persisted by a previous Runtime without a successor.
+    // Reconciliation must not reuse the already-applied source id.
     expect(await control.reconcileCommittedContinuations()).toEqual({ scanned: 1, reconciled: 1 });
     const successor = supervisorStore.getEffectByOriginKey(`completion:${completion.completionFingerprint}`);
     expect(successor).toBeDefined();
     const relay = getRequirementControllerRoundRelay(fx.store, requirementId);
     expect(relay).toMatchObject({
-      status: 'dispatching', roundCount: blocked.roundCount, maxRounds: blocked.maxRounds,
-      reason: `continuation_evidence:${completion.completionFingerprint}`,
+      status: 'blocked', roundCount: blocked.roundCount, maxRounds: blocked.maxRounds,
+      authorityId: blocked.authorityId,
     });
     expect(successor?.effectId).not.toBe(enrollment.effectId);
     expect((await control.reconcileCommittedContinuations())).toEqual({ scanned: 0, reconciled: 0 });
+    // Repeated real tool receipts must keep advancing past the lower budget.
+    // Every completion owns one successor; lower authority/history stay fixed.
+    let currentEffect = successor!;
+    for (let turn = 0; turn < 12; turn += 1) {
+      expect(control.browserPoll({ conversationId, conversationUrl }).command?.effectId).toBe(currentEffect.effectId);
+      control.browserObserveEffect({
+        conversationId, conversationUrl, effectId: currentEffect.effectId,
+        observationId: `budget-turn-${turn}`, outcome: 'applied',
+      });
+      const continued = await control.observeAutomationReceipt({
+        taskId, conversationId, status: 'continue', receiptId: `rh_work:continue:${taskId}`,
+      });
+      expect('successorEffect' in continued ? continued.successorEffect : undefined).toBeDefined();
+      const replayed = await control.observeAutomationReceipt({
+        taskId, conversationId, status: 'continue', receiptId: `rh_work:continue:${taskId}`,
+      });
+      expect('successorEffect' in replayed ? replayed.successorEffect?.effectId : undefined)
+        .toBe('successorEffect' in continued ? continued.successorEffect?.effectId : undefined);
+      currentEffect = 'successorEffect' in continued ? continued.successorEffect! : currentEffect;
+      expect(getRequirementControllerRoundRelay(fx.store, requirementId)).toEqual(relay);
+      expect(getControllerSession(fx.store, workId)).toBeUndefined();
+    }
     supervisorStore.close();
   });
 
-  test('reclaims a dispatch-confirmed Supervisor relay before settling a committed CONTINUE', async () => {
+  test('reserves a committed CONTINUE without manufacturing a lower Controller claim or round', async () => {
     const fx = fixture();
     const requirementId = 'REQ-supervisor-dispatched-completion-reclaim';
     const workId = 'work-supervisor-dispatched-completion-reclaim';
@@ -908,7 +958,9 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     expect(reconciled).toEqual({ scanned: 1, reconciled: 1 });
     expect(supervisorStore.getEffectByOriginKey(`completion:${completion.completionFingerprint}`)).toBeDefined();
     expect(getControllerSession(fx.store, workId)).toBeUndefined();
-    expect(getRequirementControllerRoundRelay(fx.store, requirementId)?.status).toBe('dispatching');
+    expect(getRequirementControllerRoundRelay(fx.store, requirementId)?.status).toBe('dispatched');
+    expect(getRequirementControllerRoundRelay(fx.store, requirementId)?.authorityId).toBe(initial.authorityId);
+    expect(await control.reconcileCommittedContinuations()).toEqual({ scanned: 0, reconciled: 0 });
     supervisorStore.close();
   });
 
@@ -932,20 +984,11 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     const oldTaskId = `forge:${fx.repository.repoId}:conversation:${oldConversationId}`;
     control.registerTask({
       taskId: oldTaskId, conversationId: oldConversationId, conversationUrl: `https://chatgpt.com/c/${oldConversationId}`, objective: 'Old execution conversation.',
-      completionContract: { controller_home: fx.controllerHome, repo_id: fx.repository.repoId, requirement_id: requirementId },
+      completionContract: { controller_home: fx.controllerHome, repo_id: fx.repository.repoId, work_id: workId, requirement_id: requirementId },
       continuationPolicy: { kind: 'forge_goal_outer_turn' },
-      userBlockerPolicy: { controller_home: fx.controllerHome, repo_id: fx.repository.repoId, requirement_id: requirementId },
+      userBlockerPolicy: { controller_home: fx.controllerHome, repo_id: fx.repository.repoId, work_id: workId, requirement_id: requirementId },
     });
     const oldEnrollment = control.reserveEnrollment(oldTaskId);
-    const unboundRelay = getRequirementControllerRoundRelay(fx.store, requirementId);
-    expect(await control.hooks.assistantTurnCommitted?.(control.getTask(oldTaskId)!, {
-      completionFingerprint: 'unbound-completion', taskId: oldTaskId,
-      sourceEffectId: oldEnrollment.effectId, action: 'CONTINUE',
-      responseSha256: 'unbound-response', controlBlockSha256: 'unbound-control',
-      proposal: { action: 'CONTINUE', sourceEffectId: oldEnrollment.effectId, checkpoint: 'unbound', reason: 'continue', evidence: [] },
-      committedAt: new Date().toISOString(),
-    })).toMatchObject({ continuationAllowed: false, reason: 'WORKFLOW_SUPERVISOR_CONTINUATION_CONVERSATION_MISMATCH' });
-    expect(getRequirementControllerRoundRelay(fx.store, requirementId)).toEqual(unboundRelay);
     bindChatgptWorkConversation(fx.store, { workId, conversationUrl: `https://chatgpt.com/c/${oldConversationId}` });
     expect(control.browserTasks()).toHaveLength(1);
 
@@ -962,28 +1005,28 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     expect(control.browserTasks()).toEqual([]);
     expect(() => control.browserPoll({ conversationId: oldConversationId, conversationUrl: `https://chatgpt.com/c/${oldConversationId}` }))
       .toThrow('WORKFLOW_SUPERVISOR_BROWSER_TASK_INACTIVE');
-    const relayBefore = getRequirementControllerRoundRelay(fx.store, requirementId);
-    const staleCompletion = {
-      completionFingerprint: 'stale-rebound-completion', taskId: oldTaskId,
-      sourceEffectId: oldEnrollment.effectId, action: 'CONTINUE' as const,
-      responseSha256: 'stale-response', controlBlockSha256: 'stale-control',
-      proposal: { action: 'CONTINUE' as const, sourceEffectId: oldEnrollment.effectId, checkpoint: 'old-conversation', reason: 'continue', evidence: [] },
-      committedAt: new Date().toISOString(),
-    };
-    expect(await control.hooks.assistantTurnCommitted?.(control.getTask(oldTaskId)!, staleCompletion)).toMatchObject({
-      continuationAllowed: false, reason: 'WORKFLOW_SUPERVISOR_CONTINUATION_CONVERSATION_MISMATCH',
-    });
-    expect(getRequirementControllerRoundRelay(fx.store, requirementId)).toEqual(relayBefore);
+    // A command selected before the rebind cannot start after it.
+    expect(() => control.browserBeginEffect({
+      conversationId: oldConversationId, conversationUrl: `https://chatgpt.com/c/${oldConversationId}`,
+      effectId: oldEnrollment.effectId, dispatchId: 'stale-rebound-send', dispatchGeneration: 1,
+      evidence: { latest_user_text: '', latest_assistant_response: '' },
+    })).toThrow('WORKFLOW_SUPERVISOR_BROWSER_TASK_INACTIVE');
+    expect(supervisorStore.latestEffectDispatch(oldEnrollment.effectId)).toBeUndefined();
+    // A send committed before the rebind still has a reconciliation obligation.
+    supervisorStore.recordEffectDispatchStarted(oldEnrollment.effectId, 1, 'pre-rebind-send');
+    expect(control.browserTasks()).toHaveLength(1);
+    expect(control.browserPoll({ conversationId: oldConversationId, conversationUrl: `https://chatgpt.com/c/${oldConversationId}` }).command?.mode).toBe('reconcile');
+    supervisorStore.close();
   });
 
-  test('retires a stale relay when its canonical origin Work is cancelled', () => {
+  test('keeps the enrolled Goal alive across Work cancellation without pretending the relay completed', () => {
     const fx = fixture();
     const requirementId = 'REQ-supervisor-terminal-reconcile';
     const workId = 'work-supervisor-terminal-reconcile';
-    createRequirement({ controllerHome: fx.controllerHome }, { requirementId, title: 'Supervisor terminal reconciliation', outcomeStatement: 'Retire stale outer-turn authority after canonical Work cancellation.' });
+    createRequirement({ controllerHome: fx.controllerHome }, { requirementId, title: 'Supervisor cancellation boundary', outcomeStatement: 'Keep the original Goal independent from a cancelled Work carrier.' });
     createWorkContract(fx.store, {
-      workId, repoId: fx.repository.repoId, checkoutId: fx.repository.activeCheckoutId, requirementId, objective: 'Prove canonical terminal Work authority retires the stale Supervisor relay.',
-      acceptanceCriteria: ['cancelled Work cannot remain an active outer-turn authority'], allowedPaths: [], forbiddenPaths: [], checks: [],
+      workId, repoId: fx.repository.repoId, checkoutId: fx.repository.activeCheckoutId, requirementId, objective: 'Work cancellation is not Goal cancellation or provider completion.',
+      acceptanceCriteria: ['only Goal cancellation revokes the original prompt chain'], allowedPaths: [], forbiddenPaths: [], checks: [],
       constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'running',
     });
     beginInitialControllerRoundDispatch(fx.store, {
@@ -994,7 +1037,7 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     bindChatgptWorkConversation(fx.store, { workId, conversationUrl: `https://chatgpt.com/c/${conversationId}` });
     const taskId = `forge:${fx.repository.repoId}:requirement:${requirementId}`;
     control.registerTask({
-      taskId, conversationId, conversationUrl: `https://chatgpt.com/c/${conversationId}`, objective: 'Retire stale relay.',
+      taskId, conversationId, conversationUrl: `https://chatgpt.com/c/${conversationId}`, objective: 'Continue the original Goal across Work turnover.',
       completionContract: { controller_home: fx.controllerHome, repo_id: fx.repository.repoId, requirement_id: requirementId },
       continuationPolicy: { kind: 'forge_goal_outer_turn' },
       userBlockerPolicy: { controller_home: fx.controllerHome, repo_id: fx.repository.repoId, requirement_id: requirementId },
@@ -1004,19 +1047,27 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     expect(getRequirementControllerRoundRelay(fx.store, requirementId)?.status).toBe('dispatching');
 
     reviseWorkSemanticContext(fx.store, workId, { expectedRevision: 1, state: 'cancelled' });
+    expect(control.browserTasks()).toHaveLength(1);
+    expect(getRequirementControllerRoundRelay(fx.store, requirementId)).toMatchObject({ status: 'dispatching', originWorkId: workId });
+    expect(control.browserPoll({ conversationId, conversationUrl: `https://chatgpt.com/c/${conversationId}` }).command?.mode).toBe('send');
+    updateRequirement({ controllerHome: fx.controllerHome }, {
+      requirementId, action: 'explicit_goal_cancellation', mutate: current => ({ ...current, state: 'cancelled' }),
+    });
     expect(control.browserTasks()).toEqual([]);
-    expect(getRequirementControllerRoundRelay(fx.store, requirementId)).toMatchObject({ status: 'failed', originWorkId: workId });
-    expect(() => control.browserPoll({ conversationId, conversationUrl: `https://chatgpt.com/c/${conversationId}` })).toThrow('WORKFLOW_SUPERVISOR_BROWSER_TASK_INACTIVE');
+    expect(() => control.browserPoll({ conversationId, conversationUrl: `https://chatgpt.com/c/${conversationId}` }))
+      .toThrow('WORKFLOW_SUPERVISOR_BROWSER_TASK_INACTIVE');
+    expect(getRequirementControllerRoundRelay(fx.store, requirementId)?.status).toBe('dispatching');
+    control.store.close();
   });
 
-  test('does not project a completed canonical Work as active outer-turn authority', () => {
+  test('Work completion does not terminalize an enrolled original Goal', () => {
     const fx = fixture();
     const requirementId = 'REQ-supervisor-completed-reconcile';
     const workId = 'work-supervisor-completed-reconcile';
-    createRequirement({ controllerHome: fx.controllerHome }, { requirementId, title: 'Supervisor completed reconciliation', outcomeStatement: 'Completed Work is not an active outer-turn authority.' });
+    createRequirement({ controllerHome: fx.controllerHome }, { requirementId, title: 'Supervisor completed Work boundary', outcomeStatement: 'Original Goal may outlive a completed Work carrier.' });
     createWorkContract(fx.store, {
-      workId, repoId: fx.repository.repoId, checkoutId: fx.repository.activeCheckoutId, requirementId, objective: 'Prove completed Work is not projected as active Supervisor work.',
-      acceptanceCriteria: ['completed Work cannot remain active outer-turn authority'], allowedPaths: [], forbiddenPaths: [], checks: [],
+      workId, repoId: fx.repository.repoId, checkoutId: fx.repository.activeCheckoutId, requirementId, objective: 'Complete the original Goal independently from this Work carrier.',
+      acceptanceCriteria: ['Work completion never fabricates Supervisor terminality'], allowedPaths: [], forbiddenPaths: [], checks: [],
       constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', workKind: 'completed_no_change', status: 'running',
     });
     beginInitialControllerRoundDispatch(fx.store, {
@@ -1027,7 +1078,7 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     bindChatgptWorkConversation(fx.store, { workId, conversationUrl: `https://chatgpt.com/c/${conversationId}` });
     const taskId = `forge:${fx.repository.repoId}:requirement:${requirementId}`;
     control.registerTask({
-      taskId, conversationId, conversationUrl: `https://chatgpt.com/c/${conversationId}`, objective: 'Retire completed Work projection.',
+      taskId, conversationId, conversationUrl: `https://chatgpt.com/c/${conversationId}`, objective: 'Preserve original Goal ownership.',
       completionContract: { controller_home: fx.controllerHome, repo_id: fx.repository.repoId, requirement_id: requirementId },
       continuationPolicy: { kind: 'forge_goal_outer_turn' },
       userBlockerPolicy: { controller_home: fx.controllerHome, repo_id: fx.repository.repoId, requirement_id: requirementId },
@@ -1036,8 +1087,11 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     expect(control.browserTasks()).toHaveLength(1);
 
     reviseWorkSemanticContext(fx.store, workId, { expectedRevision: 1, state: 'completed' });
+    expect(control.browserTasks()).toHaveLength(1);
+    expect(control.browserPoll({ conversationId, conversationUrl: `https://chatgpt.com/c/${conversationId}` }).command?.mode).toBe('send');
+    control.stopTask(taskId);
     expect(control.browserTasks()).toEqual([]);
-    expect(() => control.browserPoll({ conversationId, conversationUrl: `https://chatgpt.com/c/${conversationId}` })).toThrow('WORKFLOW_SUPERVISOR_BROWSER_TASK_INACTIVE');
+    control.store.close();
   });
 
   test('never deletes a non-socket path during writer reconciliation', async () => {

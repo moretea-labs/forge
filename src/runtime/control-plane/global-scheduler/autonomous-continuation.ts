@@ -4,11 +4,13 @@ import {
   controllerRoundBlockerClass,
   controllerSessionBlocksRecovery,
   getControllerRoundRelay,
+  listCurrentControllerRoundRelays,
   getControllerSession,
   getRetainedControllerSession,
 } from '../../../../packages/kernel/controller/api/index';
 import {
   currentTaskSemanticProjectionForWork,
+  getWorkContract,
   listWorkContracts,
   semanticWorkState,
   workSemanticView,
@@ -93,7 +95,16 @@ export async function runSchedulerAutonomousContinuationReconciliation(input: {
     const store = { controllerHome: input.controllerHome, repoId: repository.repoId };
     let works: ReturnType<typeof listWorkContracts>;
     try {
-      works = listWorkContracts({ ...store, status: 'active', limit: 100 });
+      const candidates = new Map(listWorkContracts({ ...store, status: 'active', limit: 100 })
+        .map((work) => [work.workId, work]));
+      // Semantic Work authority is Forge-scoped; the repository list is only
+      // an execution projection. Existing relay references must use the same
+      // canonical lookup as launcher admission, never infer deletion from a list.
+      for (const relay of listCurrentControllerRoundRelays(store, 100)) {
+        const work = getWorkContract(store, relay.originWorkId);
+        if (work) candidates.set(work.workId, work);
+      }
+      works = [...candidates.values()];
     } catch (error) {
       failed += 1;
       console.error('[forge liveness] failed to read current Work authority for ' + repository.repoId + ':', error);

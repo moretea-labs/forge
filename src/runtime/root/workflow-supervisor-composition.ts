@@ -1,20 +1,12 @@
 import { existsSync } from 'node:fs';
 import { getRepository } from '../../cli/repositories/registry';
-import { getWorkContract, semanticWorkState, workSemanticView } from '../../../packages/kernel/work/api/index';
+import { getWorkContract, semanticWorkState } from '../../../packages/kernel/work/api/index';
 import {
-  beginControllerRoundRelayAfterRelease,
-  claimControllerRoundSession,
   controllerRoundBlockerClass,
   controllerRoundProviderEffectId,
   finishControllerRoundRelayDispatch,
   getControllerRoundRelay,
-  getControllerSession,
   getRequirementControllerRoundRelay,
-  getRetainedControllerSession,
-  releaseObservedControllerSession,
-  reconcileControllerRoundAfterTerminalWork,
-  rearmControllerRoundAfterContinuationEvidence,
-  settleControllerRoundAfterTurn,
 } from '../../../packages/kernel/controller/api/index';
 import {
   bindChatgptWorkConversation,
@@ -24,7 +16,7 @@ import {
 import { readRequirement } from '../control-plane/persistence/requirement-store';
 import { getWorkflowSupervisorCurrentConversation, registerWorkflowSupervisorTask, reserveWorkflowSupervisorEnrollment } from '../../../supervisor/client';
 import { resolveWorkflowSupervisorForgeHome, workflowSupervisorSocketPath } from '../../../supervisor/paths';
-import type { WorkflowSupervisorCompletion, WorkflowSupervisorLifecycleHooks, WorkflowSupervisorTask, WorkflowSupervisorTurnSettlement } from '../../../supervisor/types';
+import type { WorkflowSupervisorLifecycleHooks, WorkflowSupervisorTask } from '../../../supervisor/types';
 import { getRuntimeWriteClaim } from './write-fence';
 
 export type WorkflowSupervisorBoundary =
@@ -140,6 +132,12 @@ function workflowSupervisorContractText(task: WorkflowSupervisorTask, key: strin
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
+function workflowSupervisorOriginWorkId(task: WorkflowSupervisorTask, repoId: string): string | undefined {
+  const legacyWorkPrefix = `forge:${repoId}:work:`;
+  return workflowSupervisorContractText(task, 'work_id')
+    ?? (task.taskId.startsWith(legacyWorkPrefix) ? task.taskId.slice(legacyWorkPrefix.length) || undefined : undefined);
+}
+
 function workflowSupervisorProjectAliases(task: WorkflowSupervisorTask): string[] {
   const requirementId = workflowSupervisorContractText(task, 'requirement_id');
   if (!requirementId) return [];
@@ -150,243 +148,28 @@ function workflowSupervisorProjectAliases(task: WorkflowSupervisorTask): string[
   return productKey ? [productKey] : [];
 }
 
-async function settleForgeWorkflowSupervisorTurn(
-  controllerHome: string,
-  task: WorkflowSupervisorTask,
-  completion: WorkflowSupervisorCompletion,
-): Promise<WorkflowSupervisorTurnSettlement> {
-  const repoId = workflowSupervisorContractText(task, 'repo_id');
-  const workId = workflowSupervisorContractText(task, 'work_id');
-  const taskControllerHome = workflowSupervisorContractText(task, 'controller_home');
-  const workRequirementId = repoId && workId && taskControllerHome === controllerHome
-    ? getWorkContract({ controllerHome, repoId }, workId)?.requirementId
-    : undefined;
-  // Legacy completions may still carry activeScope, but current execution derives
-  // Requirement identity from the task/Work authority whenever possible.
-  const legacyRequirementId = completion.proposal.activeScope?.startsWith('requirement:') ? completion.proposal.activeScope.slice('requirement:'.length).trim() : undefined;
-  const requirementId = workflowSupervisorContractText(task, 'requirement_id') ?? workRequirementId ?? legacyRequirementId;
-  if (!repoId || (!requirementId && !workId) || !taskControllerHome) return { continuationAllowed: false, reason: 'WORKFLOW_SUPERVISOR_ACTIVE_WORK_SCOPE_REQUIRED' };
-  if (taskControllerHome !== controllerHome) throw new Error('WORKFLOW_SUPERVISOR_CONTROLLER_HOME_MISMATCH');
-
-  const store = { controllerHome, repoId };
-  let relay = requirementId
-    ? getRequirementControllerRoundRelay(store, requirementId)
-    : getControllerRoundRelay(store, workId!);
-  if (!relay) return { continuationAllowed: false, reason: 'CONTROLLER_ROUND_WORK_RELAY_MISSING' };
-
-  const settledWorkId = relay.originWorkId;
-  const currentBinding = getChatgptWorkConversationBinding(store, settledWorkId);
-  if (!currentBinding || currentBinding.conversationId !== task.conversationId) {
-    return { continuationAllowed: false, reason: 'WORKFLOW_SUPERVISOR_CONTINUATION_CONVERSATION_MISMATCH' };
-  }
-  let liveOwner = getControllerSession(store, settledWorkId);
-  if (relay.status === 'dispatched') {
-    const retained = liveOwner ?? getRetainedControllerSession(store, settledWorkId);
-    if (!retained) {
-      return { continuationAllowed: false, reason: 'CONTROLLER_SESSION_COMPLETION_CLAIM_WITNESS_MISSING' };
-    }
-    const claimed = claimControllerRoundSession(store, {
-      workId: settledWorkId,
-      relayWorkId: settledWorkId,
-      sessionClaim: {
-        workId: settledWorkId,
-        controllerId: retained.controllerId,
-        controllerType: retained.controllerType,
-        sessionId: retained.sessionId,
-        principalId: retained.principalId?.trim() || retained.controllerId,
-        controllerInstanceId: retained.controllerInstanceId?.trim() || relay.controllerInstanceId,
-        leaseMs: 60_000,
-      },
-    });
-    relay = claimed.relay ?? relay;
-    liveOwner = claimed.session;
-  }
-  if (relay.status === 'claimed') {
-    relay = settleControllerRoundAfterTurn(store, {
-      workId: settledWorkId,
-      completionEvidenceId: completion.completionFingerprint,
-    }) ?? relay;
-  }
-
-  liveOwner = getControllerSession(store, settledWorkId);
-  const releaseWitness = liveOwner ?? getRetainedControllerSession(store, settledWorkId);
-  if (liveOwner && ['pending_release', 'waiting', 'waiting_for_user', 'goal_complete', 'blocked', 'failed'].includes(relay.status)) {
-    const released = releaseObservedControllerSession(store, {
-      workId: settledWorkId,
-      actor: `workflow-supervisor-turn-settled:${completion.completionFingerprint}`,
-      owner: liveOwner,
-    });
-    if (!released.allowed) {
-      return { continuationAllowed: false, reason: `CONTROLLER_SESSION_RELEASE_FENCED:${released.reason}` };
-    }
-  }
-
-  let continuationNeedsFreshSupervisorEffect = false;
-  const continuationBlocker = controllerRoundBlockerClass(relay);
-  if (completion.action === 'CONTINUE'
-    && task.continuationPolicy.kind === 'forge_goal_outer_turn'
-    && (continuationBlocker === 'repeated_state' || continuationBlocker === 'round_budget_exhausted')) {
-    const boundary = workflowSupervisorBoundaryForWork(store, settledWorkId);
-    const exactEnrolledBoundary = boundary.status === 'outer_turn'
-      && boundary.conversationId === task.conversationId
-      && boundary.conversationUrl === task.conversationUrl;
-    if (exactEnrolledBoundary) {
-      relay = rearmControllerRoundAfterContinuationEvidence(store, {
-        workId: settledWorkId,
-        relayScopeId: relay.relayScopeId,
-        expectedUpdatedAt: relay.updatedAt,
-        completionEvidenceId: completion.completionFingerprint,
-      });
-      // The blocked round's canonical provider effect identity may already have
-      // been used by the source/recovery chain. A durable CONTINUE that reopens
-      // this same semantic round therefore needs a fresh Supervisor effect. The
-      // control plane derives that identity from the completion fingerprint and
-      // effectApplied records it back onto the lower relay exactly once.
-      continuationNeedsFreshSupervisorEffect = true;
-    }
-  }
-
-  if (relay.status === 'pending_release') {
-    if (!releaseWitness) return { continuationAllowed: false, reason: 'CONTROLLER_SESSION_RELEASE_WITNESS_MISSING' };
-    relay = beginControllerRoundRelayAfterRelease(store, {
-      workId: settledWorkId,
-      releasedSession: releaseWitness,
-    }) ?? relay;
-  }
-
-  if (relay.status !== 'dispatching' || !relay.authorityId) {
-    return {
-      continuationAllowed: false,
-      reason: `CONTROLLER_ROUND_NOT_READY_FOR_OUTER_CONTINUATION:${relay.status}${relay.blockedReason ? `:${relay.blockedReason}` : ''}`,
-    };
-  }
-
-  if (relay.originWorkId !== settledWorkId) {
-    inheritWorkflowSupervisorConversationBinding(store, settledWorkId, relay.originWorkId);
-  }
-  const continuationContext = [
-    `Exact lower-layer continuation is prepared for Work ${relay.originWorkId} in repo ${repoId}.`,
-    `controller_authority_id=${relay.authorityId}`,
-    `relay_scope_id=${relay.relayScopeId}`,
-    'Controller authority and relay scope are internal transport fencing facts; the model must not claim, release, or progress Work through them.',
-    'Treat ControllerRound identity as resume/transport bookkeeping only. Re-read current Requirement/Plan/Work/UserRequest facts and use canonical stable-id + expected_revision semantic operations; do not invent mandatory verify/review/finalize/PlanStep lifecycle from this authority.',
-    'Never mint a replacement continuation authority and never substitute a transport session id.',
-  ].join('\n');
-  // Settlement can survive a crash before the successor is committed. The
-  // lower relay may still name the applied source; derive a fresh successor
-  // from its completion rather than trying to reserve that source id again.
-  const continuationEffectId = relay.providerDispatchEffectId ?? controllerRoundProviderEffectId(relay);
-  return {
-    continuationAllowed: true,
-    continuationContext,
-    ...(continuationNeedsFreshSupervisorEffect || continuationEffectId === completion.sourceEffectId
-      ? {}
-      : { continuationEffectId }),
-  };
-}
-
-export function resolveWorkflowSupervisorChatgptDelivery(
-  controllerHome: string,
-  task: WorkflowSupervisorTask,
-): { repoId: string; workId: string; browserSessionId: string; conversationUrl: string; authorizationGrantRefs: string[] } {
-  const repoId = workflowSupervisorContractText(task, 'repo_id');
-  const requirementId = workflowSupervisorContractText(task, 'requirement_id');
-  const workId = workflowSupervisorContractText(task, 'work_id');
-  const taskControllerHome = workflowSupervisorContractText(task, 'controller_home');
-  if (!repoId || (!requirementId && !workId) || !taskControllerHome) throw new Error('WORKFLOW_SUPERVISOR_CHATGPT_DELIVERY_CONTRACT_INCOMPLETE');
-  if (taskControllerHome !== controllerHome) throw new Error('WORKFLOW_SUPERVISOR_CONTROLLER_HOME_MISMATCH');
-  const store = { controllerHome, repoId };
-  const relay = requirementId
-    ? getRequirementControllerRoundRelay(store, requirementId)
-    : getControllerRoundRelay(store, workId!);
-  if (!relay) throw new Error('WORKFLOW_SUPERVISOR_CHATGPT_DELIVERY_RELAY_MISSING');
-  const binding = getChatgptWorkConversationBinding(store, relay.originWorkId);
-  if (!binding || binding.conversationId !== task.conversationId || binding.conversationUrl !== task.conversationUrl) {
-    throw new Error('WORKFLOW_SUPERVISOR_CHATGPT_DELIVERY_BINDING_MISMATCH');
-  }
-  if (!binding.latestBrowserSessionId?.trim()) throw new Error('WORKFLOW_SUPERVISOR_CHATGPT_BROWSER_SESSION_MISSING');
-  return {
-    repoId,
-    workId: relay.originWorkId,
-    browserSessionId: binding.latestBrowserSessionId,
-    conversationUrl: binding.conversationUrl,
-    authorizationGrantRefs: [...(binding.authorizationGrantRefs ?? [])],
-  };
-}
+/**
+ * Enrollment gives Supervisor authority over this exact conversation. Work and
+ * ControllerRound are execution context, not another cross-turn lifecycle.
+ * Goal cancellation and explicit conversation rebind revoke new-send authority.
+ * Provider observation remains governed separately by the effect ledger.
+ */
 function createForgeWorkflowSupervisorBrowserTaskActive(controllerHome: string): (task: WorkflowSupervisorTask) => boolean {
-  const workStateById = new Map<string, { revision: number; active: boolean }>();
-  const lowerLayerNotReadyUntilByTask = new Map<string, number>();
-  const LOWER_LAYER_NOT_READY_CACHE_MS = 5_000;
   return (task) => {
     if (task.continuationPolicy.kind === 'standalone_supervisor') return true;
+    if (task.continuationPolicy.kind !== 'forge_goal_outer_turn') return false;
     const repoId = workflowSupervisorContractText(task, 'repo_id');
     const requirementId = workflowSupervisorContractText(task, 'requirement_id');
-    const workId = workflowSupervisorContractText(task, 'work_id');
     const taskControllerHome = workflowSupervisorContractText(task, 'controller_home');
-    if (!repoId || (!requirementId && !workId) || !taskControllerHome) return false;
-    if (taskControllerHome !== controllerHome) return false;
-    const nowMs = Date.now();
-    const lowerLayerNotReadyUntil = lowerLayerNotReadyUntilByTask.get(task.taskId) ?? 0;
-    if (lowerLayerNotReadyUntil > nowMs) return false;
-    lowerLayerNotReadyUntilByTask.delete(task.taskId);
-    const requirement = requirementId ? readRequirement({ controllerHome }, requirementId)?.value : undefined;
-    if (requirementId && (!requirement || requirement.state === 'done' || requirement.state === 'cancelled')) {
-      lowerLayerNotReadyUntilByTask.set(task.taskId, nowMs + LOWER_LAYER_NOT_READY_CACHE_MS);
-      return false;
-    }
-    const store = { controllerHome, repoId };
-    let relay = requirementId
-      ? getRequirementControllerRoundRelay(store, requirementId)
-      : getControllerRoundRelay(store, workId!);
-    if (!relay || relay.status === 'failed') {
-      lowerLayerNotReadyUntilByTask.set(task.taskId, nowMs + LOWER_LAYER_NOT_READY_CACHE_MS);
-      return false;
-    }
-    const lowerLayerReady = workflowSupervisorLowerLayerReadyForWork(store, relay.originWorkId).ready;
-    const outcomeUnknownEffectAwaitingObservation = relay.status === 'blocked'
-      && controllerRoundBlockerClass(relay) === 'provider_dispatch_outcome_unknown'
-      && (relay.providerDispatchAttempt ?? 0) > 0
-      && Boolean(relay.providerDispatchEffectId?.trim());
-    if (!lowerLayerReady && !outcomeUnknownEffectAwaitingObservation) {
-      // A blocked/paused lower layer must not make the native adapter rescan
-      // the full Controller record set every second. The sole blocked exception
-      // is an already-started outcome-unknown provider effect: Supervisor must
-      // keep observing that exact effect so it can reconcile, never resend it.
-      lowerLayerNotReadyUntilByTask.set(task.taskId, nowMs + LOWER_LAYER_NOT_READY_CACHE_MS);
-      return false;
-    }
-    const work = getWorkContract(store, relay.originWorkId);
-    if (!work) {
-      lowerLayerNotReadyUntilByTask.set(task.taskId, nowMs + LOWER_LAYER_NOT_READY_CACHE_MS);
-      return false;
-    }
-    const revision = workSemanticView(work).revision;
-    const semanticState = semanticWorkState(work);
-    if (semanticState !== 'open') {
-      if (semanticState === 'cancelled') {
-        try {
-          relay = reconcileControllerRoundAfterTerminalWork(store, { workId: work.workId, actor: `workflow-supervisor-task-reconcile:${task.taskId}` }) ?? relay;
-        } catch {
-          return false;
-        }
-      }
-      workStateById.set(work.workId, { revision, active: false });
-      return false;
-    }
-    // A Work may deliberately CAS-rebind from an interactive/control
-    // conversation onto a fresh autonomous execution conversation. Requirement
-    // scope alone is not enough to keep the predecessor task alive: only the
-    // Work's current exact conversation boundary may own browser delivery.
-    // Check this before consulting the Work-revision cache because a conversation
-    // rebind does not have to mutate the WorkContract revision.
-    const boundary = workflowSupervisorBoundaryForWork(store, relay.originWorkId);
-    if (boundary.status !== 'outer_turn'
-      || boundary.conversationId !== task.conversationId
-      || boundary.conversationUrl !== task.conversationUrl) return false;
-    const cached = workStateById.get(relay.originWorkId);
-    if (cached?.revision === revision) return cached.active;
-    workStateById.set(work.workId, { revision, active: true });
-    return true;
+    if (!repoId || taskControllerHome !== controllerHome) return false;
+    if (requirementId && readRequirement({ controllerHome }, requirementId)?.value.state === 'cancelled') return false;
+    const workId = workflowSupervisorOriginWorkId(task, repoId);
+    if (!requirementId && !workId) return false;
+    // An existing task may outlive the Work that originally enrolled it. Its
+    // durable task/effect chain still owns the original Goal; absence cannot
+    // mean DONE, NEEDS_USER, nor permit a replacement provider send.
+    const binding = workId ? getChatgptWorkConversationBinding({ controllerHome, repoId }, workId) : undefined;
+    return !binding || binding.conversationId === task.conversationId;
   };
 }
 
@@ -405,15 +188,16 @@ export function forgeWorkflowSupervisorLifecycleHooks(controllerHome: string): W
         : {};
     },
     inheritedEffectDispatch: (task, effect) => {
+      if (effect.kind !== 'enrollment') return undefined;
       const repoId = workflowSupervisorContractText(task, 'repo_id');
       const requirementId = workflowSupervisorContractText(task, 'requirement_id');
-      const workId = workflowSupervisorContractText(task, 'work_id');
+      const workId = repoId ? workflowSupervisorOriginWorkId(task, repoId) : undefined;
       const taskControllerHome = workflowSupervisorContractText(task, 'controller_home');
       if (!repoId || (!requirementId && !workId) || taskControllerHome !== controllerHome) return undefined;
       const store = { controllerHome, repoId };
-      const relay = requirementId
-        ? getRequirementControllerRoundRelay(store, requirementId)
-        : getControllerRoundRelay(store, workId!);
+      const relay = workId
+        ? getControllerRoundRelay(store, workId)
+        : getRequirementControllerRoundRelay(store, requirementId!);
       const legacyStartedDispatch = Boolean(
         relay
         && (relay.providerDispatchAttempt ?? 0) >= 1
@@ -476,16 +260,20 @@ export function forgeWorkflowSupervisorLifecycleHooks(controllerHome: string): W
       }
     },
     effectApplied: (task, effect, observation) => {
+      if (effect.kind !== 'enrollment') return;
       const repoId = workflowSupervisorContractText(task, 'repo_id');
       const requirementId = workflowSupervisorContractText(task, 'requirement_id');
-      const workId = workflowSupervisorContractText(task, 'work_id');
+      const workId = repoId ? workflowSupervisorOriginWorkId(task, repoId) : undefined;
       const taskControllerHome = workflowSupervisorContractText(task, 'controller_home');
       if (!repoId || (!requirementId && !workId) || taskControllerHome !== controllerHome) return;
       const store = { controllerHome, repoId };
-      const relay = requirementId
-        ? getRequirementControllerRoundRelay(store, requirementId)
-        : getControllerRoundRelay(store, workId!);
-      if (!relay) return;
+      const relay = workId
+        ? getControllerRoundRelay(store, workId)
+        : getRequirementControllerRoundRelay(store, requirementId!);
+      if (!relay || !['dispatching', 'blocked'].includes(relay.status)) return;
+      // Receipt projection can settle only the enrolled lower effect. A newer
+      // occurrence or sibling Work must never inherit an old conversation send.
+      if ((relay.providerDispatchEffectId ?? controllerRoundProviderEffectId(relay)) !== effect.effectId) return;
       const boundary = workflowSupervisorBoundaryForWork(store, relay.originWorkId);
       if (boundary.status !== 'outer_turn' || boundary.conversationId !== task.conversationId) return;
       finishControllerRoundRelayDispatch(store, {
@@ -495,9 +283,6 @@ export function forgeWorkflowSupervisorLifecycleHooks(controllerHome: string): W
         providerDispatchReceiptId: `workflow-supervisor:${effect.effectId}:${observation.observationId}`,
       });
     },
-    assistantTurnCommitted: (task, completion) => task.continuationPolicy.kind === 'standalone_supervisor'
-      ? Promise.resolve({ continuationAllowed: true })
-      : settleForgeWorkflowSupervisorTurn(controllerHome, task, completion),
   };
 }
 export async function workflowSupervisorCurrentConversationMatchesWork(
@@ -574,21 +359,22 @@ export async function ensureWorkflowSupervisorEnrollmentForWork(
       kind: requirement ? 'forge_requirement_done' : 'forge_work_done',
       controller_home: options.controllerHome,
       repo_id: options.repoId,
-      ...(requirement ? { requirement_id: requirement.requirementId } : { work_id: workId }),
+      work_id: workId,
+      ...(requirement ? { requirement_id: requirement.requirementId } : {}),
     },
     continuationPolicy: {
       kind: 'forge_goal_outer_turn',
       ...(boundary.status === 'outer_turn'
         ? { exact_conversation_id: boundary.conversationId, exact_conversation_url: boundary.conversationUrl }
         : { bootstrap: true }),
-      lower_layer_continuation_owner: 'controller_round',
       outer_turn_owner: 'workflow_supervisor',
     },
     userBlockerPolicy: {
       kind: requirement ? 'forge_requirement_waiting_for_user' : 'forge_work_waiting_for_user',
       controller_home: options.controllerHome,
       repo_id: options.repoId,
-      ...(requirement ? { requirement_id: requirement.requirementId } : { work_id: workId }),
+      work_id: workId,
+      ...(requirement ? { requirement_id: requirement.requirementId } : {}),
     },
   });
   const effect = await reserveWorkflowSupervisorEnrollment(forgeHome, registeredTask.taskId, lowerLayer.providerEffectId);
