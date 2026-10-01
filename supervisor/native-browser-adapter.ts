@@ -65,7 +65,6 @@ export interface WorkflowSupervisorNativeBrowserDependencies {
   readOwner(page: WorkflowSupervisorNativePage): Promise<string>;
   writeOwner(page: WorkflowSupervisorNativePage, marker: string): Promise<void>;
   snapshot(page: WorkflowSupervisorNativePage, options?: WorkflowSupervisorNativeSnapshotOptions): Promise<WorkflowSupervisorNativeSnapshot>;
-  clearComposer(page: WorkflowSupervisorNativePage, expectedStalePrompt: string): Promise<boolean>;
   dispatchPrompt(page: WorkflowSupervisorNativePage, prompt: string, task: WorkflowSupervisorBrowserTask, options?: { mode?: 'send' | 'resume' }): Promise<{ dispatched: boolean; confirmed?: boolean; reason?: string }>;
   nowMs(): number;
   providerIdleGraceMs: number;
@@ -253,39 +252,6 @@ export async function defaultSnapshot(page: WorkflowSupervisorNativePage, option
     return snapshot;
   })()`);
 }
-export async function defaultClearComposer(page: WorkflowSupervisorNativePage, expectedStalePrompt: string): Promise<boolean> {
-  return await page.evaluate<boolean>(`(() => {
-    const visible = (element) => Boolean(element && element.getClientRects && element.getClientRects().length);
-    const value = (element) => String((element?.innerText ?? element?.textContent ?? '') || '');
-    const normalizeValue = (input) => String(input || '').replace(/\\s+/g, ' ').trim();
-    const expected = ${JSON.stringify(expectedStalePrompt)};
-    const composer = [
-      'div#prompt-textarea[contenteditable="true"]',
-      '#prompt-textarea[contenteditable="true"]',
-      '[data-testid="composer-text-input"][contenteditable="true"]',
-      'div[role="textbox"][contenteditable="true"]',
-    ].map((selector) => document.querySelector(selector)).find(visible);
-    if (!(composer instanceof HTMLElement) || !composer.isContentEditable) return false;
-    // Re-check the entire durable predecessor prompt at mutation time. If the
-    // user edited even one character after the snapshot, fail closed.
-    if (normalizeValue(value(composer)) !== normalizeValue(expected)) return false;
-    composer.focus({ preventScroll: true });
-    const selection = window.getSelection();
-    if (!selection) return false;
-    const range = document.createRange();
-    range.selectNodeContents(composer);
-    selection.removeAllRanges();
-    selection.addRange(range);
-    const deleted = document.execCommand('delete');
-    if (!deleted && normalizeValue(value(composer))) {
-      range.deleteContents();
-      try { composer.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'deleteContentBackward', data: null })); }
-      catch { composer.dispatchEvent(new Event('input', { bubbles: true })); }
-    }
-    selection.removeAllRanges();
-    return !normalizeValue(value(composer));
-  })()`);
-}
 
 export async function defaultDispatchPrompt(
   page: WorkflowSupervisorNativePage,
@@ -429,7 +395,6 @@ const DEFAULT_DEPENDENCIES: WorkflowSupervisorNativeBrowserDependencies = {
   readOwner: async (page) => await page.evaluate<string>('String(window.name || "")'),
   writeOwner: async (page, marker) => { await page.evaluate(`(() => { window.name = ${JSON.stringify(marker)}; return window.name; })()`); },
   snapshot: defaultSnapshot,
-  clearComposer: defaultClearComposer,
   dispatchPrompt: async (page, prompt, _task, options) => await defaultDispatchPrompt(page, prompt, options),
   nowMs: () => Date.now(),
   providerIdleGraceMs: 60_000,
@@ -646,9 +611,8 @@ export class WorkflowSupervisorNativeBrowserAdapter {
         const commandMutationBlocked = providerBackpressureMs > 0
           || (providerBusy && !providerFailureCode && !recoveryAuthorized)
           || (latestRoleStillUser && !providerFailureCode && !recoveryAuthorized);
-        // Keep one mutation gate for both a fresh send and reconcile's bounded
-        // resume/cleanup path. A blocked reconcile may still observe committed
-        // user history, but it cannot touch the composer or submit anything.
+        // Only a fresh send mutates the provider. Reconciliation is read-only,
+        // regardless of whether the current provider turn appears idle.
         if (poll.command?.mode === 'send' && commandMutationBlocked) continue;
         if (poll.command) {
           // The page is an ephemeral Computer resource. The durable effect
@@ -659,7 +623,6 @@ export class WorkflowSupervisorNativeBrowserAdapter {
             this.pages.get(task.conversationId) ?? page,
             poll.command,
             task,
-            { mutationAllowed: !commandMutationBlocked },
           );
           await this.retireOwnedPage(task, this.pages.get(task.conversationId) ?? page);
         }
@@ -1017,15 +980,14 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     page: WorkflowSupervisorNativePage,
     command: WorkflowSupervisorBrowserCommand,
     task: WorkflowSupervisorBrowserTask,
-    options: { mutationAllowed?: boolean } = {},
   ): Promise<void> {
     // Every Supervisor submission shares the Runtime's single transient ChatGPT
     // provider dispatch lane. Sharing only the cooldown would still allow this
     // transport to submit concurrently with the Controller-relay lane, which is
     // provider-level concurrency no individual Work asked for.
-    const dispatchPrompt = (mode?: 'send' | 'resume') => withChatgptProviderDispatchLane(
+    const dispatchPrompt = () => withChatgptProviderDispatchLane(
       this.deps.providerScopeKey,
-      () => this.deps.dispatchPrompt(page, command.prompt, task, mode ? { mode } : undefined),
+      () => this.deps.dispatchPrompt(page, command.prompt, task),
       (result) => (result.dispatched
         ? { providerAccepted: result.confirmed === true }
         : { code: result.reason, message: result.reason }),
@@ -1036,7 +998,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     // window. Do not type into a live composer. Stop only that exact Forge-owned
     // conversation turn, verify the provider left generating state, then continue
     // through the normal effect dispatch/reconciliation fence.
-    if (command.kind === 'recovery' && snapshot.isGenerating) {
+    if (command.mode === 'send' && command.kind === 'recovery' && snapshot.isGenerating) {
       const stopped = await page.evaluate<boolean>(`(() => {
         const visible = (element) => Boolean(element && element.getClientRects && element.getClientRects().length);
         const stop = [
@@ -1073,7 +1035,6 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       });
       if (!begin.started) mode = 'reconcile';
     }
-    let dispatch: { dispatched: boolean; confirmed?: boolean; reason?: string } | undefined;
     if (mode === 'reconcile') {
       const exact = normalize(snapshot.latestUserText) === normalize(command.prompt);
       // Page text also includes the composer and transient UI labels. Treating
@@ -1092,101 +1053,26 @@ export class WorkflowSupervisorNativeBrowserAdapter {
         });
         return;
       }
-      const composerPresent = snapshot.composerText !== undefined;
-      const composerValue = normalize(snapshot.composerText ?? '');
-      if (composerPresent && composerValue === normalize(command.prompt)) {
-        if (options.mutationAllowed === false) {
-          this.control.browserObserveEffect({
-            conversationId: command.conversationId,
-            conversationUrl: command.conversationUrl,
-            effectId: command.effectId,
-            observationId: `native-observe-${randomUUID()}`,
-            outcome: 'unknown',
-            evidence: {
-              surface: 'macos-native',
-              reconciliation: true,
-              reason: 'resume_blocked_live_provider',
-              observation_fingerprint: unknownObservationFingerprint(command.effectId, 'resume_blocked_live_provider', snapshot),
-            },
-          });
-          return;
-        }
-        // Input mutation already happened in this generation, but Send did not
-        // become observable. Resume only that exact payload in the same
-        // generation; never retype it and never manufacture a retry generation.
-        // The exact Browser tab itself is the transport target. Resume the
-        // already-written payload in that background tab without activating it.
-        dispatch = await dispatchPrompt('resume');
-        if (!dispatch.dispatched) {
-          this.control.browserObserveEffect({
-            conversationId: command.conversationId,
-            conversationUrl: command.conversationUrl,
-            effectId: command.effectId,
-            observationId: `native-observe-${randomUUID()}`,
-            outcome: 'unknown',
-            evidence: {
-              surface: 'macos-native',
-              reconciliation: true,
-              reason: dispatch.reason ?? 'resume_dispatch_failed',
-              observation_fingerprint: unknownObservationFingerprint(command.effectId, dispatch.reason ?? 'resume_dispatch_failed', snapshot),
-            },
-          });
-          return;
-        }
-      } else {
-        let composerProvablyEmpty = composerPresent && !composerValue;
-        let reconciliationReason = composerProvablyEmpty ? 'composer_proven_empty' : composerPresent ? 'composer_payload_mismatch' : 'composer_state_unavailable';
-        if (options.mutationAllowed !== false && composerPresent && composerValue) {
-          const stale = this.control.browserStaleComposerPayload({
-            conversationId: command.conversationId,
-            conversationUrl: command.conversationUrl,
-            currentEffectId: command.effectId,
-            composerText: snapshot.composerText ?? '',
-          });
-          if (stale.stale && await this.deps.clearComposer(page, stale.prompt)) {
-            const afterClear = await this.deps.snapshot(page, { includeUserHistory: true, includePageText: true });
-            const afterClearValue = normalize(afterClear.composerText ?? '');
-            if (afterClear.composerText !== undefined && !afterClearValue) {
-              snapshot = afterClear;
-              composerProvablyEmpty = true;
-              reconciliationReason = 'stale_completed_supervisor_composer_cleared';
-            }
-          }
-        }
-        this.control.browserObserveEffect({
-          conversationId: command.conversationId,
-          conversationUrl: command.conversationUrl,
-          effectId: command.effectId,
-          observationId: `native-observe-${randomUUID()}`,
-          outcome: composerProvablyEmpty ? 'not_applied' : 'unknown',
-          evidence: {
-            surface: 'macos-native',
-            // "The send never applied" is only observable on a rendered
-            // conversation surface. A missing composer means the page (or the
-            // exact tab) had not rendered a live conversation yet, which is not
-            // proof of non-application and must not authorise another send.
-            provider_surface_rendered: composerPresent,
-            exact_user_message: false,
-            reconciliation: true,
-            target_marker_present: false,
-            reason: reconciliationReason,
-            latest_user_text: snapshot.latestUserText,
-            latest_assistant_response: snapshot.latestAssistantResponse,
-            user_messages: snapshot.userMessages,
-            assistant_messages: snapshot.assistantMessages,
-            ...(!composerProvablyEmpty ? {
-              observation_fingerprint: unknownObservationFingerprint(command.effectId, reconciliationReason, snapshot),
-            } : {}),
-          },
-        });
-        return;
-      }
+      // Even a rendered, empty composer (or this payload still in it) may be
+      // a stale view of an accepted send. Reconcile without clicking Send,
+      // clearing input, or minting a negative proof of provider rejection.
+      const reason = 'submission_not_observed';
+      this.control.browserObserveEffect({
+        conversationId: command.conversationId,
+        conversationUrl: command.conversationUrl,
+        effectId: command.effectId,
+        observationId: `native-observe-${randomUUID()}`,
+        outcome: 'unknown',
+        evidence: {
+          surface: 'macos-native', reconciliation: true, target_marker_present: false,
+          reason, observation_fingerprint: unknownObservationFingerprint(command.effectId, reason, snapshot),
+        },
+      });
+      return;
     }
-    if (!dispatch) {
-      // Unattended continuation targets the exact Forge-owned tab by identity;
-      // it must not steal the user's foreground browser/tab to obtain input focus.
-      dispatch = await dispatchPrompt();
-    }
+    // Unattended continuation targets the exact Forge-owned tab by identity;
+    // it must not steal the user's foreground browser/tab to obtain input focus.
+    const dispatch = await dispatchPrompt();
     if (!dispatch.dispatched) {
       this.control.browserObserveEffect({
         conversationId: command.conversationId,

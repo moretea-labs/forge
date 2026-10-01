@@ -326,25 +326,13 @@ export class WorkflowSupervisorControlPlane {
       if (input.outcome === 'applied') this.hooks.effectApplied?.(task, effect, { observationId: input.observationId, evidence });
       return { recorded: true };
     }
-    const current = this.store.currentUnappliedEffect(task.taskId);
-    const dispatch = this.store.latestEffectDispatch(effect.effectId);
-    const snapshot = browserSnapshot(input.evidence);
-    const sourceMatches = snapshot ? this.browserSnapshotMatchesSource(task, effect, snapshot) : false;
-    const preservedBaseline = Boolean(snapshot && dispatch
-      && browserTextSha256(snapshot.latestUserText) === dispatch.evidence.baseline_user_sha256
-      && sha256(snapshot.latestAssistantResponse) === dispatch.evidence.baseline_assistant_sha256);
-    const preservedHistoricalBaseline = Boolean(snapshot && dispatch
-      && browserUserHistoryContainsBaseline(snapshot.userMessages, dispatch.evidence.baseline_user_sha256)
-      && browserAssistantHistoryContainsBaseline(snapshot.assistantMessages, dispatch.evidence.baseline_assistant_sha256, dispatch.evidence.baseline_has_source_completion));
-    const targetAbsent = Boolean(snapshot && !browserTextHasEffect(snapshot.latestUserText, effect.effectId));
-    const causalBaselinePreserved = (sourceMatches && preservedBaseline) || preservedHistoricalBaseline;
-    if (!current || current.effectId !== effect.effectId || !dispatch || !snapshot || !causalBaselinePreserved || !targetAbsent || !browserNotAppliedSurfaceProven(input.evidence)) {
-      this.store.recordEffectObservation(effect.effectId, input.observationId, 'unknown', { reconciliation: true, reason: 'not_applied_proof_incomplete' });
-      return { recorded: true };
-    }
-    this.store.recordEffectNotAppliedProof(effect.effectId, input.observationId, {
-      reconciliation: true, dispatch_generation: dispatch.generation, source_completion_fingerprint: effect.sourceCompletionFingerprint ?? 'enrollment_baseline',
-      latest_user_sha256: browserTextSha256(snapshot.latestUserText), latest_assistant_sha256: sha256(snapshot.latestAssistantResponse), target_marker_present: false,
+    // A rendered page can still be stale, including an empty composer and the
+    // exact pre-send history. Absence in that page is never proof that the
+    // provider rejected a submission. Only the dispatch owner can attest a
+    // mechanical pre-send failure (bootstrapObserveEffect); browser observers
+    // cannot authorize re-dispatch of an outcome-unknown mutation.
+    this.store.recordEffectObservation(effect.effectId, input.observationId, 'unknown', {
+      ...sanitizeBrowserEvidence(input.evidence), reconciliation: true, reason: 'not_applied_proof_incomplete',
     });
     return { recorded: true };
   }
@@ -372,31 +360,6 @@ export class WorkflowSupervisorControlPlane {
   async browserObserveAssistant(input: { conversationId: string; conversationUrl: string; responseText: string }): Promise<WorkflowAssistantObservationResult> {
     const task = this.requireBrowserTask(input.conversationId, input.conversationUrl);
     return await this.observeAssistantTurn({ taskId: task.taskId, conversationId: task.conversationId, responseText: input.responseText });
-  }
-
-  /**
-   * Prove that a non-empty composer contains only the exact completed causal
-   * predecessor prompt for the current effect. This is intentionally much
-   * narrower than "looks like a Forge prompt": arbitrary drafts, another task's
-   * prompt, an incomplete effect, or a modified stale prompt are never clearable.
-   */
-  browserStaleComposerPayload(input: {
-    conversationId: string;
-    conversationUrl: string;
-    currentEffectId: string;
-    composerText: string;
-  }): { stale: false } | { stale: true; effectId: string; prompt: string } {
-    const task = this.requireBrowserTask(input.conversationId, input.conversationUrl);
-    const currentEffect = this.store.getEffect(validateEffectId(input.currentEffectId));
-    if (!currentEffect || currentEffect.taskId !== task.taskId || !currentEffect.sourceCompletionFingerprint) return { stale: false };
-    const sourceCompletion = this.store.getCompletion(currentEffect.sourceCompletionFingerprint);
-    if (!sourceCompletion || sourceCompletion.taskId !== task.taskId || sourceCompletion.sourceEffectId === currentEffect.effectId) return { stale: false };
-    const predecessor = this.store.getEffect(sourceCompletion.sourceEffectId);
-    if (!predecessor || predecessor.taskId !== task.taskId || !this.store.effectApplied(predecessor.effectId)) return { stale: false };
-    const durableCompletion = this.store.getCompletionBySourceEffectId(task.taskId, predecessor.effectId);
-    if (!durableCompletion || durableCompletion.completionFingerprint !== sourceCompletion.completionFingerprint) return { stale: false };
-    if (normalizeBrowserText(input.composerText) !== normalizeBrowserText(predecessor.prompt)) return { stale: false };
-    return { stale: true, effectId: predecessor.effectId, prompt: predecessor.prompt };
   }
 
   /**
@@ -626,63 +589,15 @@ function requireNonTerminalTask(store: WorkflowSupervisorStore, taskId: string):
   const terminal = store.terminalAction(taskId);
   if (terminal) throw new Error(`WORKFLOW_SUPERVISOR_TASK_TERMINAL:${terminal}`);
 }
-function boundedBrowserTextArray(value: unknown, maxBytes: number): string[] | undefined {
-  if (!Array.isArray(value) || value.length > 2048) return undefined;
-  const items: string[] = [];
-  let bytes = 0;
-  for (const item of value) {
-    if (typeof item !== 'string') return undefined;
-    bytes += Buffer.byteLength(item, 'utf8');
-    if (bytes > maxBytes) return undefined;
-    items.push(item);
-  }
-  return items;
-}
-function browserSnapshot(evidence: Record<string, unknown> | undefined): { latestUserText: string; latestAssistantResponse: string; userMessages?: string[]; assistantMessages?: string[] } | undefined {
+function browserSnapshot(evidence: Record<string, unknown> | undefined): { latestUserText: string; latestAssistantResponse: string } | undefined {
   const latestUserText = boundedBrowserText(evidence?.latest_user_text, 128 * 1024);
   const latestAssistantResponse = boundedBrowserText(evidence?.latest_assistant_response, 512 * 1024);
   if (latestUserText === undefined || latestAssistantResponse === undefined) return undefined;
-  const userMessages = boundedBrowserTextArray(evidence?.user_messages, 128 * 1024);
-  const assistantMessages = boundedBrowserTextArray(evidence?.assistant_messages, 512 * 1024);
-  return { latestUserText, latestAssistantResponse, ...(userMessages ? { userMessages } : {}), ...(assistantMessages ? { assistantMessages } : {}) };
+  return { latestUserText, latestAssistantResponse };
 }
 function normalizeBrowserText(value: string): string { return value.replace(/\s+/g, ' ').trim(); }
 function browserTextSha256(value: string): string { return sha256(normalizeBrowserText(value)); }
-function browserUserHistoryContainsBaseline(messages: readonly string[] | undefined, baselineSha256: unknown): boolean {
-  if (!messages || typeof baselineSha256 !== 'string' || !baselineSha256) return false;
-  if (browserTextSha256('') === baselineSha256) return true;
-  const prefix: string[] = [];
-  for (const message of messages) {
-    prefix.push(message);
-    if (browserTextSha256(prefix.join('\n')) === baselineSha256) return true;
-  }
-  return false;
-}
-function browserAssistantHistoryContainsBaseline(messages: readonly string[] | undefined, baselineSha256: unknown, hasSourceCompletion: unknown): boolean {
-  if (hasSourceCompletion !== true) return true;
-  return Boolean(messages && typeof baselineSha256 === 'string' && baselineSha256
-    && messages.some((message) => sha256(message) === baselineSha256));
-}
 function browserTextHasEffect(value: string, effectId: string): boolean { return value.includes(renderEffectMarker(effectId)); }
-/**
- * Reasons that prove a live ChatGPT conversation surface was actually rendered
- * and its composer was readable and empty at observation time.
- */
-const BROWSER_NOT_APPLIED_SURFACE_REASONS = new Set([
-  'composer_proven_empty',
-  'stale_completed_supervisor_composer_cleared',
-]);
-/**
- * A negative proof claims "this exact send did not reach the conversation".
- * That is only observable on a rendered conversation surface. A missing or
- * still-loading page (no composer, no message history) cannot distinguish
- * "the send never applied" from "nothing has rendered yet", and treating it as
- * proof is what let one stuck effect authorise an unbounded resend chain.
- */
-function browserNotAppliedSurfaceProven(evidence: Record<string, unknown> | undefined): boolean {
-  if (!evidence || evidence.provider_surface_rendered !== true) return false;
-  return typeof evidence.reason === 'string' && BROWSER_NOT_APPLIED_SURFACE_REASONS.has(evidence.reason);
-}
 const PERSISTED_BROWSER_EVIDENCE_KEYS = new Set(['exact_user_message', 'observation_fingerprint', 'reconciliation', 'reason', 'surface', 'target_marker_present']);
 function sanitizeBrowserEvidence(evidence: Record<string, unknown> | undefined): Record<string, unknown> {
   if (!evidence) return {};

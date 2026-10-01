@@ -1163,7 +1163,7 @@ test('browserTasks prioritizes fresh sends ahead of older reconciliation work', 
   ]);
 });
 
-test('enrolled conversations never create a browser tab for send or reconciliation', async () => {
+test('enrolled reconciliation neither creates tabs nor repeats an ambiguous submission', async () => {
   const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-reconcile-no-create-'));
   roots.push(root);
   const clock = { nowMs: Date.now() };
@@ -1181,16 +1181,35 @@ test('enrolled conversations never create a browser tab for send or reconciliati
   expect(control.browserPoll({ conversationId, conversationUrl }).command?.mode).toBe('send');
 
   let createCalls = 0;
+  let tabPresent = false;
+  let owner = '';
+  let composerText = '';
+  let submittedText = '';
+  let snapshotCalls = 0;
+  const page: WorkflowSupervisorNativePage = {
+    evaluate: async () => { throw new Error('reconciliation must not click provider controls'); },
+    waitForSelector: async () => undefined,
+    tabRef: () => ({ windowId: 'reconcile-window', tabId: 'reconcile-tab' }),
+  };
   const adapter = new WorkflowSupervisorNativeBrowserAdapter(control, new WorkflowSupervisorEphemeralDiscovery(), {
     platform: 'darwin',
-    listTabs: async () => ({ entries: [], unavailableProducts: [] }),
-    reattach: async () => { throw new Error('unexpected reattach'); },
+    listTabs: async () => ({ entries: tabPresent ? [{
+      windowId: 'reconcile-window', tabId: 'reconcile-tab', active: false,
+      url: conversationUrl, title: 'Existing conversation', browserProduct: 'chrome',
+    }] : [], unavailableProducts: [] }),
+    reattach: async () => page,
     create: async () => { createCalls += 1; throw new Error('unexpected create'); },
     close: async () => undefined,
-    readOwner: async () => '',
-    writeOwner: async () => undefined,
-    snapshot: async () => { throw new Error('unexpected snapshot'); },
-    clearComposer: async () => false,
+    readOwner: async () => owner,
+    writeOwner: async (_page, marker) => { owner = marker; },
+    snapshot: async () => {
+      snapshotCalls += 1;
+      return {
+        url: conversationUrl, title: 'Existing conversation',
+        latestUserText: submittedText, latestAssistantResponse: '',
+        composerText, isGenerating: false, providerActivityText: '', providerFailureText: '',
+      };
+    },
     dispatchPrompt: async () => { throw new Error('unexpected dispatch'); },
     nowMs: () => clock.nowMs,
     providerIdleGraceMs: 60_000,
@@ -1223,6 +1242,24 @@ test('enrolled conversations never create a browser tab for send or reconciliati
 
   expect(createCalls).toBe(0);
   expect(store.nextBrowserEffect(taskId)).toEqual(expect.objectContaining({ mode: 'reconcile', generation: 1 }));
+
+  // A stale exact tab can have an empty composer, or still show the sent draft.
+  // Neither authorizes another click in this generation or a new generation.
+  tabPresent = true;
+  for (const draft of ['', effect.prompt]) {
+    composerText = draft;
+    clock.nowMs += 60_000;
+    await adapter.runOnce();
+    expect(store.effectDispatchBudget(effect.effectId).generations).toBe(1);
+    expect(store.effectApplied(effect.effectId)).toBe(false);
+  }
+  expect(snapshotCalls).toBeGreaterThan(0);
+  submittedText = effect.prompt;
+  clock.nowMs += 60_000;
+  await adapter.runOnce();
+  expect(store.effectApplied(effect.effectId)).toBe(true);
+  expect(store.effectDispatchBudget(effect.effectId).generations).toBe(1);
+  expect(createCalls).toBe(0);
 });
 
 test('retries a bootstrap effect after a proven pre-send failure instead of reconciling it forever', () => {
@@ -1302,7 +1339,6 @@ test('bootstrap does not require window.name and reconciles the exact effect mar
       latestAssistantResponse: '', providerActivityText: '', providerFailureText: '',
       latestTurnRole: sentPrompt ? 'user' : undefined, isGenerating: false,
     }),
-    clearComposer: async () => true,
     dispatchPrompt: async (_page, prompt) => { sentPrompt = prompt; dispatchCount += 1; return { dispatched: true, confirmed: true }; },
     nowMs: () => clock.nowMs,
     providerIdleGraceMs: 60_000,
@@ -1699,7 +1735,7 @@ test('automation tool receipt successor begins from the real assistant page base
   })).toMatchObject({ started: true, mode: 'send', generation: 1 });
 });
 
-test('refuses a not-applied proof observed on an unrendered conversation page', () => {
+test('refuses post-send negative proofs from both loading and rendered stale conversation pages', () => {
   const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-not-applied-surface-'));
   roots.push(root);
   const store = new WorkflowSupervisorStore(join(root, 'supervisor-home'));
@@ -1711,7 +1747,7 @@ test('refuses a not-applied proof observed on an unrendered conversation page', 
     taskId,
     conversationId,
     conversationUrl,
-    objective: 'Only a rendered conversation surface may prove non-application.',
+    objective: 'A browser snapshot cannot prove a provider submission never applied.',
     completionContract: {},
     continuationPolicy: {},
     userBlockerPolicy: {},
@@ -1751,8 +1787,8 @@ test('refuses a not-applied proof observed on an unrendered conversation page', 
   expect(store.nextBrowserEffect(taskId, { nowMs: Date.now() + 3_600_000 }))
     .toMatchObject({ mode: 'reconcile', generation: 1 });
 
-  // The same observation from a rendered conversation surface whose composer is
-  // provably empty is real negative proof and does authorise the spaced retry.
+  // A rendered, empty composer with the exact old baseline can also be stale.
+  // It must not authorize another send after an ambiguous transport outcome.
   control.browserObserveEffect({
     conversationId,
     conversationUrl,
@@ -1768,8 +1804,16 @@ test('refuses a not-applied proof observed on an unrendered conversation page', 
       latest_assistant_response: latestAssistantResponse,
     },
   });
-  expect(store.nextBrowserEffect(taskId, { nowMs: Date.now() + 31_000 }))
-    .toMatchObject({ mode: 'send', generation: 2 });
+  expect(store.nextBrowserEffect(taskId, { nowMs: Date.now() + 3_600_000 }))
+    .toMatchObject({ mode: 'reconcile', generation: 1 });
+  control.browserObserveEffect({
+    conversationId, conversationUrl, effectId: effect.effectId,
+    observationId: 'delayed-provider-acceptance', outcome: 'applied',
+    evidence: { target_marker_present: true },
+  });
+  expect(store.effectApplied(effect.effectId)).toBe(true);
+  expect(store.effectDispatchBudget(effect.effectId).generations).toBe(1);
+  expect(store.nextBrowserEffect(taskId)).toBeUndefined();
 });
 
 test('bounds and spaces provider re-dispatch of one un-applied effect, then releases browser attention', () => {
@@ -1805,19 +1849,11 @@ test('bounds and spaces provider re-dispatch of one un-applied effect, then rele
     })).toMatchObject({ started: true, mode: 'send', generation });
   };
   const proveNotApplied = (observationId: string): void => {
-    control.browserObserveEffect({
-      conversationId,
-      conversationUrl,
-      effectId: effect.effectId,
-      observationId,
-      outcome: 'not_applied',
-      evidence: {
-        surface: 'test',
-        reconciliation: true,
-        reason: 'composer_proven_empty',
-        provider_surface_rendered: true,
-        ...snapshotEvidence,
-      },
+    // Exercise bounded retry with trusted dispatch-owner evidence, never with
+    // a post-send DOM observation claiming provider rejection.
+    store.recordEffectNotAppliedProof(effect.effectId, observationId, {
+      dispatch_generation: store.latestEffectDispatch(effect.effectId)!.generation,
+      reason: 'provider_rejected_before_submission',
     });
   };
 

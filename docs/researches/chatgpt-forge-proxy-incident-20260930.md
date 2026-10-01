@@ -93,3 +93,44 @@ verification reproduced the loop because the new Work had a Supervisor task
 and effect but no Work conversation binding. Settlement now requires a matching
 binding, consistent with browser delivery's existing authority boundary. The
 same rebind test also checks that an unbound completion cannot mutate the relay.
+
+## October 1 continuation and ambiguous-send correction
+
+The frozen `fb78c9d537bc` Runtime completed the canonical ReleaseSession gates,
+cutover, whole-Runtime verification, and known-good promotion on October 1.
+The live enrolled read-only canary then advanced through two automatic successor
+turns without a manually submitted continuation. The synthetic automation tool
+receipt digest must not be compared with the real assistant DOM response digest;
+task, conversation, and source-effect identity remain mandatory.
+
+The original canary pinned an older Runtime revision. Its unchanged-version
+condition became unsatisfiable after the intentional cutover, so it was stopped
+through the canonical Supervisor API rather than left in repeated CONTINUE.
+This proves successor dispatch, not the original three-round DONE acceptance.
+
+A separate real duplicate submission was observed: one effect appeared twice
+in committed user messages. Its event sequence was dispatch generation 1,
+transport outcome unknown, post-send DOM negative proof, then generation 2.
+The page's unchanged baseline and empty composer were not authoritative proof
+that the provider had rejected the first send. Multiple existing tabs were
+present, but their causal contribution to stale observation is unproven.
+
+Correction: browser observation cannot mint a not-applied proof from DOM absence,
+and native reconciliation is read-only: no resume-send click, Stop click,
+composer cleanup, or new dispatch generation. Delayed committed user-message
+evidence may still acknowledge the original effect. Mechanical pre-send failure
+remains owned by the existing dispatch/bootstrap path; bounded retry and unknown
+observation spacing remain under the existing Supervisor ledger. There is no
+new schema, owner, process, credential, state machine, or polling loop.
+
+Three retained regression cases cover stale empty/exact-payload views, delayed
+acceptance in the original generation, refusal of browser negative proofs, and
+bounded dispatch-owner retry. No new test file or test case was added during
+Kernel V2 convergence. Claude cross-review was unavailable because the local
+CLI was not signed in; it must not be reported as passed.
+
+The preserved Vivaldi network log later contained 10 HTTP 429 responses among
+481 total requests, all for the two conversation-list variants. The selected
+response remained `{"detail":"Too many requests"}`. Those observations do not
+prove account downgrading or a generation API failure, and the server-side rate
+limit remains separate from both local Supervisor defects.
