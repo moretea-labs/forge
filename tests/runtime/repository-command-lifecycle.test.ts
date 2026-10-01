@@ -23,6 +23,7 @@ import { acquireControllerLock, releaseControllerLock } from '../../src/cli/repo
 import { persistControllerAccessMode } from '../../src/cli/mcp/access-mode';
 import { executionIdentityForRepository, executionIdentityForWork } from '../../src/runtime/control-plane/execution/execution-identity';
 import { readWorkHandle, transitionWorkHandle, writeWorkHandle, type WorkHandleState } from '../../src/runtime/control-plane/execution/work-handle-store';
+import { assertCanonicalRepositoryMutationWorkHandleAvailable } from '../../src/runtime/control-plane/execution/work-handle-authority';
 import { settleWorkHandleExpectedHeadAfterRepositoryCommand } from '../../src/runtime/control-plane/execution/work-head-settlement';
 import { pushExactWorkRemoteDelivery } from '../../src/runtime/control-plane/execution/work-remote-delivery';
 import { cancelWorkContract, createWorkContract, getWorkContract, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
@@ -134,6 +135,46 @@ afterEach(async () => {
 });
 
 describe('repository command execution lifecycle', () => {
+  test('ignores an orphan physical WorkHandle after canonical semantic Work authority is gone', () => {
+    const controllerHome = tempRoot('forge-orphan-workhandle-home-');
+    const repoRoot = tempRoot('forge-orphan-workhandle-repo-');
+    const repository = seedRepo(controllerHome, repoRoot);
+    const workId = 'work-orphan-owner';
+    const now = new Date().toISOString();
+    const head = gitOutput(repository.canonicalRoot, ['rev-parse', 'HEAD']);
+    writeWorkHandle(controllerHome, {
+      schemaVersion: 1,
+      workId,
+      sessionId: 'session-orphan-owner',
+      principalId: 'principal-test',
+      repositoryId: repository.repoId,
+      checkoutId: repository.activeCheckoutId,
+      worktreePath: repository.canonicalRoot,
+      branch: 'main',
+      managedWorktree: false,
+      baseCommit: head,
+      deliveryBaseCommit: head,
+      expectedHead: head,
+      permissionSnapshotVersion: 1,
+      state: 'editing',
+      createdAt: now,
+      updatedAt: now,
+      finalization: { validation: 'pending', commit: 'pending', merge: 'pending', branchCleanup: 'pending', worktreeCleanup: 'pending' },
+    });
+
+    expect(() => assertCanonicalRepositoryMutationWorkHandleAvailable({
+      controllerHome, repositoryId: repository.repoId, checkoutId: repository.activeCheckoutId, workId: 'work-new-owner',
+    })).not.toThrow();
+
+    createWorkContract({ controllerHome, repoId: repository.repoId }, {
+      workId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId, workKind: 'repository_change',
+      objective: 'Keep the canonical checkout owned while semantic Work is open.', acceptanceCriteria: [], allowedPaths: ['**'], forbiddenPaths: [], checks: [],
+      constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt',
+    });
+    expect(() => assertCanonicalRepositoryMutationWorkHandleAvailable({
+      controllerHome, repositoryId: repository.repoId, checkoutId: repository.activeCheckoutId, workId: 'work-new-owner',
+    })).toThrow('WORK_CANONICAL_MUTATION_OWNED');
+  });
   test('accepts explicit long timeouts up to the shared agent maximum and rejects above it', () => {
     const controllerHome = tempRoot('forge-cmd-timeout-home-');
     const repoRoot = tempRoot('forge-cmd-timeout-repo-');

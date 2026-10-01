@@ -7,6 +7,8 @@ import { forgeWorkflowSupervisorValidators } from '../../supervisor/forge-valida
 import { WorkflowSupervisorStore } from '../../supervisor/store';
 import { renderSupervisorPrompt } from '../../supervisor/protocol';
 import { automationMetadata } from '../../adapters/mcp/runtime-gateway/automation-receipt-adapter';
+import { normalizeRhWorkInputCompatibility } from '../../adapters/mcp/runtime-gateway/work-input-compatibility';
+import { callWorkAdapter } from '../../adapters/mcp/runtime-gateway/work-adapter';
 import { runtimeToolDefinitions } from '../../adapters/mcp/runtime-gateway/runtime-tool-definitions';
 
 const roots: string[] = [];
@@ -24,6 +26,23 @@ describe('Workflow Supervisor automation receipts', () => {
       automation_type: 'autonomous_continuation', automation_status: 'continue', automation_task_id: 'TASK-1',
     })).toEqual({ status: 'continue', taskId: 'TASK-1' });
     expect(() => automationMetadata({ automation_type: 'autonomous_continuation', automation_status: 'continue' })).toThrow('AUTOMATION_TASK_ID_REQUIRED');
+    expect(automationMetadata({ capability_id: 'automation.receipt:continue:forge:repo:test-work' })).toEqual({
+      status: 'continue', taskId: 'forge:repo:test-work',
+    });
+    expect(automationMetadata({ capability_id: 'automation.receipt:done:forge:repo:test-work' })).toEqual({
+      status: 'done', taskId: 'forge:repo:test-work',
+    });
+  });
+
+  test('accepts the frozen-schema automation receipt carrier without repository admission', async () => {
+    const input = { operation: 'repair', capability_id: 'automation.receipt:continue:forge:repo:test-work' };
+    expect(normalizeRhWorkInputCompatibility(input)).toMatchObject({ ok: true, operation: 'repair' });
+    const response = await callWorkAdapter({ controllerHome: '/tmp/unused-for-automation-receipt' } as any, input);
+    expect(response.isError).not.toBe(true);
+    expect(response.structuredContent).toMatchObject({
+      status: 'ok',
+      data: { automationReceiptCompatibility: true },
+    });
   });
 
   test('resolves bootstrap inside the uniquely discovered repository ChatGPT Project', () => {
@@ -125,7 +144,8 @@ describe('Workflow Supervisor automation receipts', () => {
     expect(first).toMatchObject({ action: 'CONTINUE', terminal: false });
     expect(replay).toMatchObject({ action: 'CONTINUE', terminal: false });
     expect(store.getEffectByOriginKey(`completion:${(first as { completionFingerprint: string }).completionFingerprint}`)).toBeDefined();
-    expect(renderSupervisorPrompt(task, effect.effectId, 'enrollment')).toContain('automation_type: "autonomous_continuation"');
+    expect(renderSupervisorPrompt(task, effect.effectId, 'enrollment')).toContain(`automation.receipt:<status>:${task.taskId}`);
+    expect(renderSupervisorPrompt(task, effect.effectId, 'enrollment')).toContain('connected client schema predates automation_* fields');
     expect(renderSupervisorPrompt(task, effect.effectId, 'enrollment')).not.toContain('CONTINUE => "C ');
     store.close();
   });

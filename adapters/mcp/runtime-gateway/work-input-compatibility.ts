@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from 'node:util';
+import { AUTOMATION_RECEIPT_CAPABILITY_PREFIX } from './automation-receipt-adapter';
 
 export type RhWorkInputCompatibilityResult =
   | {
@@ -210,6 +211,14 @@ export function normalizeRhWorkInputCompatibility(input: Record<string, unknown>
     const parsed = parseFrozenSemanticV1(capabilityId);
     if (!parsed.ok) return failure(parsed.summary, parsed.data);
     return translateFrozenSemanticV1(args, parsed.value);
+  }
+
+  if (capabilityId.startsWith(AUTOMATION_RECEIPT_CAPABILITY_PREFIX)) {
+    const allowed = new Set(['operation', 'capability_id']);
+    const unsupported = unsupportedInputField(args, allowed);
+    if (unsupported) return failure('FROZEN_MCP_AUTOMATION_RECEIPT_FIELD_UNSUPPORTED', { field: unsupported });
+    if (requestedOperation !== 'repair') return failure('FROZEN_MCP_AUTOMATION_RECEIPT_OPERATION_INVALID', { operation: requestedOperation });
+    return { ok: true, args, operation: 'repair' };
   }
 
   if (capabilityId.includes(':')) {

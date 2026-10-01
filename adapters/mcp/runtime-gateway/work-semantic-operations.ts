@@ -13,7 +13,7 @@ import { result } from './result-adapter';
 
 const RH_WORK_SEMANTIC_OPERATIONS = new Set(['start', 'work_get', 'work_revise', 'work_complete']);
 
-function semanticWorkId(store: WorkContractStoreOptions, args: Record<string, unknown>): string {
+export function semanticWorkId(store: WorkContractStoreOptions, args: Record<string, unknown>): string {
   const explicit = typeof args.work_id === 'string' ? args.work_id.trim() : '';
   if (explicit) return explicit;
   const requestId = typeof args.request_id === 'string' ? args.request_id.trim() : '';

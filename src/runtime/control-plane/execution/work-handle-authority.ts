@@ -47,7 +47,8 @@ export function assertCanonicalRepositoryMutationWorkHandleAvailable(input: {
       // Delivery receipts are mechanical evidence only; an explicitly open Work
       // continues to own its concrete mutation surface until semantic completion
       // or cancellation releases that authority.
-      return !contract || semanticWorkState(contract) === 'open';
+      if (!contract) return false;
+      return semanticWorkState(contract) === 'open';
     })
     .sort((left, right) => left.workId.localeCompare(right.workId));
   if (owners.length === 0) return;

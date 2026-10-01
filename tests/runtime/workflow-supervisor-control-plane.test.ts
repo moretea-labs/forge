@@ -195,8 +195,8 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     const continuation = renderSupervisorPrompt(task, 'fx_minimal01', 'continuation', 'large checkpoint payload', undefined, lowerLayerContext);
     expect(continuation).toContain('Continue using the context already present in this same conversation.');
     expect(continuation).toContain('Complete one coherent safe work wave');
-    expect(continuation).toContain('automation_type: "autonomous_continuation"');
-    expect(continuation).toContain('automation_status');
+    expect(continuation).toContain(`automation.receipt:<status>:${task.taskId}`);
+    expect(continuation).toContain('connected client schema predates automation_* fields');
     expect(continuation).not.toContain('CONTINUE => "C ');
     expect(continuation).not.toContain('DONE => "D ');
     expect(continuation).toContain('do not echo it in the receipt');
@@ -317,7 +317,7 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     const continuation = renderSupervisorPrompt(task, 'fx_continue_1234', 'continuation', 'checkpoint-sentinel', undefined, 'LOWER_LAYER_SENTINEL');
     expect(continuation).toContain('Complete one coherent safe work wave');
     expect(continuation).not.toContain('checkpoint-sentinel');
-    expect(continuation).toContain('automation_type: "autonomous_continuation"');
+    expect(continuation).toContain(`automation.receipt:<status>:${task.taskId}`);
     expect(continuation).not.toContain(renderSupervisorReceipt(task, 'fx_continue_1234', 'CONTINUE'));
     expect(continuation).not.toContain('source_effect_id=');
     expect(continuation).not.toContain('active_scope=');
