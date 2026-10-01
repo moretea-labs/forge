@@ -755,54 +755,6 @@ function sameRecoveryReleasePayload(left: RecoveryReleaseDescriptor, right: Reco
     && RECOVERY_RELEASE_BINARIES.every((binary) => left.artifacts[binary].sha256 === right.artifacts[binary].sha256);
 }
 
-const RECOVERY_GATEWAY_DRAIN_WAIT_MS = 60_000;
-const RECOVERY_GATEWAY_DRAIN_POLL_MS = 200;
-const RECOVERY_GATEWAY_DRAIN_QUIET_MS = 3_000;
-
-interface RecoveryGatewayDrainHealth {
-  draining?: boolean;
-  activeMcpRequests?: number;
-  latestMcpActivityAgeMs?: number;
-}
-
-async function recoveryGatewayDrainHealth(config: RecoveryConfig): Promise<RecoveryGatewayDrainHealth | undefined> {
-  const gateway = config.gateway;
-  if (!gateway) return undefined;
-  try {
-    const response = await fetch(`http://${gateway.host}:${gateway.port}/health`, { signal: AbortSignal.timeout(2_000) });
-    if (!response.ok) return undefined;
-    const payload = await response.json() as { requests?: RecoveryGatewayDrainHealth };
-    return payload.requests;
-  } catch {
-    return undefined;
-  }
-}
-
-async function drainRecoveryGatewayBeforeHandoff(config: RecoveryConfig): Promise<void> {
-  const gateway = config.gateway;
-  if (!gateway) return;
-  setRecoveryGatewayDraining(config.controllerHome, true);
-  const deadline = Date.now() + RECOVERY_GATEWAY_DRAIN_WAIT_MS;
-  let observedMetrics = false;
-  while (Date.now() < deadline) {
-    const health = await recoveryGatewayDrainHealth(config);
-    if (!health || !Number.isFinite(Number(health.activeMcpRequests))) {
-      // Compatibility with an older Recovery release that predates request
-      // accounting. The newly activated release will enforce drain safety for
-      // every subsequent handoff.
-      if (!observedMetrics) return;
-      await new Promise((resolveWait) => setTimeout(resolveWait, RECOVERY_GATEWAY_DRAIN_POLL_MS));
-      continue;
-    }
-    observedMetrics = true;
-    const active = Number(health.activeMcpRequests);
-    const quietAge = Number(health.latestMcpActivityAgeMs);
-    if (active === 0 && (!Number.isFinite(quietAge) || quietAge >= RECOVERY_GATEWAY_DRAIN_QUIET_MS)) return;
-    await new Promise((resolveWait) => setTimeout(resolveWait, RECOVERY_GATEWAY_DRAIN_POLL_MS));
-  }
-  throw new Error('RECOVERY_GATEWAY_DRAIN_TIMEOUT');
-}
-
 export async function activateRecoveryRelease(input: {
   controllerHome: string;
   config?: RecoveryConfig;
@@ -834,8 +786,11 @@ export async function activateRecoveryRelease(input: {
     const previous = current ?? captureLegacyRecoveryRelease(controllerHome, dependencies);
     const migratedLegacy = previous?.legacy ? previous : undefined;
     const drainArmed = Boolean(current);
-    if (drainArmed) await drainRecoveryGatewayBeforeHandoff(config);
     try {
+      // The shared operation lock already excludes every Recovery mutation.
+      // Stop new transport admission during handoff; retained read streams are
+      // connections, not effects, and cannot be a second quiescence authority.
+      if (drainArmed) setRecoveryGatewayDraining(controllerHome, true);
       publishRecoveryRelease(controllerHome, input.candidate.releasePath, previous?.releasePath);
       publishRecoveryCompatibilityLinks(controllerHome);
       try {

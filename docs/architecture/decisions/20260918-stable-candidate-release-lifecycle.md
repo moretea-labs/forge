@@ -96,6 +96,14 @@ coordinator state. Only one non-terminal ReleaseSession may exist per Forge
 instance. An interrupted `source_frozen` preparation resumes that same session
 when the frozen source and Stable A identity still match.
 
+Recovery's own bundle handoff acquires that same exclusive operation lock before
+changing the immutable release pointer and holds it through activation verification
+or exact rollback. New Gateway requests are fenced during this interval and the
+admission marker is cleared on every exit. Open read-only MCP streams are transport
+connections, not in-flight mutation evidence; HTTP request counts cannot add a
+second quiescence gate. The existing service handoff still proves the previous
+process has stopped and the exact replacement is serving before acceptance.
+
 ReleaseSession separates wire compatibility from semantic authority. One-way migration also reconciles historical legacy `soaking` records without guesswork: Candidate B is terminalized as `known_good` only when exact durable lineage proves it became a later Stable A, or current RuntimeReleaseAuthority `previous` references that exact release identity; missing proof fails closed. Multiple later ReleaseSession attempts that all name the same exact Candidate B as Stable A are corroborating acceptance evidence, not branches. Successor proof is derived from one pre-migration inventory snapshot, so rewrite order cannot manufacture or erase acceptance evidence. Its
 storage `schemaVersion` remains 1 so the immediately previous Recovery release
 can still inventory the record after an exact rollback; current code requires

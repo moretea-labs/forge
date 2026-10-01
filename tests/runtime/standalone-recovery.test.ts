@@ -97,6 +97,7 @@ import {
 import { ensureMcpControllerHomeOAuthPassphrase, writeMcpServiceLocalConfig } from '../../src/cli/mcp/auth';
 import { acquireRecoveryReleaseLock, installStandaloneRecovery, inspectPrimaryConnectorLaunchdContract, inspectPrimaryPublicTunnelLaunchdContract, inspectRecoveryTunnelLaunchdContract, RECOVERY_DAEMON_LABEL, resolveRecoveryCompilerExecutable, retireStaleRecoveryLaunchAgents } from '../../src/runtime/standalone-recovery/installer';
 import { acquireRecoveryOperationLock, recoveryOperationLockPath } from '../../src/runtime/standalone-recovery/operation-lock';
+import { readCurrentRecoveryRelease, recoveryGatewayIsDraining } from '../../src/runtime/standalone-recovery/release';
 import { createRecoveryHttpTransport } from '../../src/runtime/standalone-recovery/http-transport';
 
 import { measureRuntimePerformance, assertRuntimePerformanceEvidence, readRuntimeCpu, RECOVERY_RUNAWAY_MEAN_CPU_PERCENT, RECOVERY_RUNAWAY_P95_CPU_PERCENT } from '../../src/runtime/standalone-recovery/performance';
@@ -274,26 +275,39 @@ test('standalone Recovery non-stage install persists a durable canonical source 
     serviceRegistered: true,
     diagnostics: { bootstrapResults: [], serviceProbeResults: [true], pidAliveChecks: [true], portChecks: [true] },
   };
+  let expectedDraining = false;
+  let rejectedCommit: string | undefined;
+  const dependencies = {
+    ...recoveryInstallerStubs(),
+    platform: 'darwin' as const,
+    uid: () => 501,
+    installAgent: (sourcePath: string) => ({ path: sourcePath }),
+    handoff: async () => {
+      expect(recoveryGatewayIsDraining(home)).toBe(expectedDraining);
+      const competing = acquireRecoveryOperationLock({ controllerHome: home, action: 'restart_primary_runtime' });
+      expect(competing.acquired).toBe(false);
+      if (competing.acquired) {
+        competing.handle.close();
+        throw new Error('Recovery handoff lost its mutation fence');
+      }
+      expect(competing.owner.action).toBe('install_recovery_release');
+      return handoffResult;
+    },
+    currentPid: () => undefined,
+    verify: async ({ expectedRelease }: { expectedRelease: { sourceCommit: string; releaseRevision: string } }) => ({
+      ok: expectedRelease.sourceCommit !== rejectedCommit,
+      expectedReleaseRevision: expectedRelease.releaseRevision,
+      failures: expectedRelease.sourceCommit === rejectedCommit ? ['injected activation rejection'] : [],
+      daemonPid: 4101,
+      healthStatus: 200,
+    }),
+  };
   const result = await installStandaloneRecovery({
     controllerHome: home,
     repoRoot: durableSource,
     primaryRuntimeSourceRepositoryId: 'repo_durable_source',
     sourceRoot: durableSource,
-  }, {
-    ...recoveryInstallerStubs(),
-    platform: 'darwin',
-    uid: () => 501,
-    installAgent: (sourcePath) => ({ path: sourcePath }),
-    handoff: async () => handoffResult,
-    currentPid: () => undefined,
-    verify: async ({ expectedRelease }) => ({
-      ok: true,
-      expectedReleaseRevision: expectedRelease.releaseRevision,
-      failures: [],
-      daemonPid: 4101,
-      healthStatus: 200,
-    }),
-  });
+  }, dependencies);
 
   expect(result.config.primaryRuntimeSourceRoot).toBe(resolve(durableSource));
   expect(result.config.primaryRuntimeSourceRepositoryId).toBe('repo_durable_source');
@@ -304,6 +318,44 @@ test('standalone Recovery non-stage install persists a durable canonical source 
   expect(result.activated?.release.sourceCommit).toBe(sourceCommit);
   expect(result.activated?.release.productVersion).toBe('1.7.2');
   expect(result.activated?.verification.ok).toBe(true);
+
+  // Legacy Gateway counts retained, idle MCP read streams as active requests.
+  // This is not evidence of another mutation after the shared lock is acquired.
+  let healthReads = 0;
+  const server = createServer((_request, response) => {
+    healthReads += 1;
+    response.setHeader('Content-Type', 'application/json');
+    response.end(JSON.stringify({ requests: { activeMcpRequests: 2, latestMcpActivityAgeMs: 11_000_000 } }));
+  });
+  servers.push(server);
+  await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('fixture Gateway port unavailable');
+  expectedDraining = true;
+  let acceptedCommit = sourceCommit;
+  for (const step of ['upgrade', 'rollback']) {
+    writeFileSync(join(durableSource, 'README.md'), `${step}\n`);
+    execFileSync('git', ['add', 'README.md'], { cwd: durableSource });
+    execFileSync('git', ['-c', 'user.name=Forge Test', '-c', 'user.email=forge-test@example.invalid', 'commit', '-qm', step], { cwd: durableSource });
+    const commit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: durableSource, encoding: 'utf8' }).trim();
+    if (step === 'rollback') rejectedCommit = commit;
+    const installation = installStandaloneRecovery({
+      controllerHome: home,
+      repoRoot: durableSource,
+      primaryRuntimeSourceRepositoryId: 'repo_durable_source',
+      port: address.port,
+    }, dependencies);
+    if (step === 'rollback') {
+      await expect(installation).rejects.toThrow('RECOVERY_RELEASE_ACTIVATION_FAILED_ROLLED_BACK');
+    } else {
+      expect((await installation).activated?.verification.ok).toBe(true);
+      acceptedCommit = commit;
+    }
+    expect(readCurrentRecoveryRelease(home)?.sourceCommit).toBe(acceptedCommit);
+    expect(recoveryGatewayIsDraining(home)).toBe(false);
+    expect(existsSync(recoveryOperationLockPath(home))).toBe(false);
+  }
+  expect(healthReads).toBe(0);
 });
 
 test('Recovery command PATH includes the standard user binary directory outside interactive shells', () => {
