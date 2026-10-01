@@ -653,6 +653,10 @@
       "module": "workflow",
       "resource": "controller-home-isolated"
     },
+    "tests/runtime/rh-work-repository-admission.test.ts": {
+      "module": "routing",
+      "resource": "git-worktree"
+    },
     "tests/runtime/rh-work-scheduler-adapter.test.ts": {
       "module": "controller",
       "resource": "git-worktree"
@@ -941,6 +945,10 @@
     "tests/runtime/workflow-supervisor-control-plane.test.ts": {
       "module": "workflow",
       "resource": "controller-home-isolated"
+    },
+    "tests/runtime/workflow-supervisor-native-browser.test.ts": {
+      "module": "browser",
+      "resource": "pure"
     },
     "tests/runtime/workflow-supervisor-stop.test.ts": {
       "module": "workflow",
