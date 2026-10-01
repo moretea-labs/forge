@@ -1651,6 +1651,54 @@ test('browserTasks keeps an applied external effect observable while lower Contr
   expect(control.browserTasks()).toEqual([]);
 });
 
+test('automation tool receipt successor begins from the real assistant page baseline', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-automation-successor-baseline-'));
+  roots.push(root);
+  const store = new WorkflowSupervisorStore(join(root, 'supervisor-home'));
+  const control = new WorkflowSupervisorControlPlane(store);
+  const taskId = 'task-automation-successor-baseline';
+  const conversationId = '67676767-7878-8989-9090-121212121212';
+  const conversationUrl = `https://chatgpt.com/c/${conversationId}`;
+  control.registerTask({
+    taskId,
+    conversationId,
+    conversationUrl,
+    objective: 'Continue through a canonical automation tool receipt.',
+    completionContract: {},
+    continuationPolicy: {},
+    userBlockerPolicy: {},
+  });
+
+  const sourceEffect = control.reserveEnrollment(taskId);
+  control.observeEffect({ effectId: sourceEffect.effectId, observationId: 'automation-source-applied', outcome: 'applied' });
+  const continued = await control.observeAutomationReceipt({
+    taskId,
+    conversationId,
+    status: 'continue',
+    receiptId: `rh_work:continue:${taskId}`,
+  });
+  expect('successorEffect' in continued ? continued.successorEffect : undefined).toBeDefined();
+  const successor = 'successorEffect' in continued ? continued.successorEffect! : undefined;
+  expect(successor).toBeDefined();
+
+  // The page contains the model's real assistant response, not the synthetic
+  // `automation:continue:...` receipt carrier whose digest is persisted in the
+  // completion row. Exact task/conversation/source-effect identity is still
+  // required, but this real page text must not force the successor into reconcile.
+  expect(control.browserBeginEffect({
+    conversationId,
+    conversationUrl,
+    effectId: successor!.effectId,
+    dispatchId: 'automation-successor-dispatch-1',
+    dispatchGeneration: 1,
+    evidence: {
+      surface: 'test',
+      latest_user_text: sourceEffect.prompt,
+      latest_assistant_response: 'Repository facts verified; canonical CONTINUE receipt submitted.',
+    },
+  })).toMatchObject({ started: true, mode: 'send', generation: 1 });
+});
+
 test('refuses a not-applied proof observed on an unrendered conversation page', () => {
   const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-not-applied-surface-'));
   roots.push(root);

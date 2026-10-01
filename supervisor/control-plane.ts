@@ -582,7 +582,18 @@ export class WorkflowSupervisorControlPlane {
   private browserSnapshotMatchesSource(task: WorkflowSupervisorTask, effect: WorkflowSupervisorEffect, snapshot: { latestUserText: string; latestAssistantResponse: string }): boolean {
     if (!effect.sourceCompletionFingerprint) return true;
     const completion = this.store.getCompletion(effect.sourceCompletionFingerprint);
-    if (!completion || completion.taskId !== task.taskId || sha256(snapshot.latestAssistantResponse) !== completion.responseSha256) return false;
+    if (!completion || completion.taskId !== task.taskId) return false;
+    // Text-parsed completions are causally anchored to the exact assistant page
+    // response that produced the Supervisor receipt. Automation tool receipts are
+    // different: their responseSha256 hashes the synthetic durable receipt carrier,
+    // not text rendered in ChatGPT. Requiring that synthetic hash to equal the
+    // visible assistant response makes every canonical CONTINUE successor fall
+    // into reconcile before a dispatch generation can begin. The tool-receipt path
+    // already derives the exact task, conversation, and latest applied source effect
+    // locally; retain those fences below while skipping only the inapplicable page-
+    // text hash comparison.
+    const automationToolReceipt = completion.proposal.reason === 'automation_tool_receipt';
+    if (!automationToolReceipt && sha256(snapshot.latestAssistantResponse) !== completion.responseSha256) return false;
     const sourceEffect = this.store.getEffect(completion.sourceEffectId);
     return Boolean(sourceEffect
       && sourceEffect.taskId === task.taskId
