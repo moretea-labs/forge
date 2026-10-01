@@ -464,7 +464,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     const tasks = this.control.browserTasks();
     this.lastRunHadTasks = tasks.length > 0;
     const inventory = await this.listInventory();
-    await this.cleanupInactive(tasks);
+    await this.cleanupInactive();
     const conversations: Array<{ conversation_id: string; canonical_url: string; title?: string; is_current?: boolean }> = [];
     // Current-conversation binding must work for a real browser session even
     // before a Supervisor task is enrolled. Use only the frontmost active tab,
@@ -608,9 +608,15 @@ export class WorkflowSupervisorNativeBrowserAdapter {
         // Recovery stays on the already-attached exact tab. Transport loss is
         // not authority to create a replacement browser resource.
         providerBackpressureMs = chatgptProviderBackpressureRemainingMs(this.deps.providerScopeKey, this.deps.nowMs());
+        // A canonical tool receipt can complete a turn without rendered
+        // assistant prose. The persisted causal completion authorizes its
+        // successor; the visible last role is not a second lifecycle gate.
+        const completedSource = poll.command
+          ? Boolean(this.control.getEffect(poll.command.effectId)?.sourceCompletionFingerprint)
+          : false;
         const commandMutationBlocked = providerBackpressureMs > 0
           || (providerBusy && !providerFailureCode && !recoveryAuthorized)
-          || (latestRoleStillUser && !providerFailureCode && !recoveryAuthorized);
+          || (latestRoleStillUser && !providerFailureCode && !recoveryAuthorized && !completedSource);
         // Only a fresh send mutates the provider. Reconciliation is read-only,
         // regardless of whether the current provider turn appears idle.
         if (poll.command?.mode === 'send' && commandMutationBlocked) continue;
@@ -624,7 +630,6 @@ export class WorkflowSupervisorNativeBrowserAdapter {
             poll.command,
             task,
           );
-          await this.retireOwnedPage(task, this.pages.get(task.conversationId) ?? page);
         }
       } catch (error) {
         this.deps.onError(error);
@@ -857,8 +862,10 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     }
   }
 
-  private async cleanupInactive(tasks: WorkflowSupervisorBrowserTask[]): Promise<void> {
-    const active = new Set(tasks.map((task) => task.conversationId));
+  private async cleanupInactive(): Promise<void> {
+    // Poll eligibility includes durable backoff and bounded unknown-observation
+    // spacing. It does not terminate the task or its exact observation resource.
+    const active = new Set(this.control.listTasks(true).map((task) => task.conversationId));
     for (const [conversationId, page] of [...this.pages]) {
       if (active.has(conversationId)) continue;
       try { await this.releasePage(conversationId, page); }

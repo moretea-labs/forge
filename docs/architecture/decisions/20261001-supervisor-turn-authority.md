@@ -71,3 +71,12 @@ the automation receipt successor baseline, bounded retry/unknown behavior and
 process restart. Compiler and canonical architecture gates precede deployment.
 Live acceptance requires a real enrolled conversation advancing multiple turns
 without human continuation and a validated terminal receipt.
+
+The native consumer must accept a causally completed tool-only turn even when
+ChatGPT renders no assistant prose and its last visible message role is user.
+Provider generation and cooldown still delay a new send, and dispatch admission
+still verifies the exact source effect. An owned observation tab survives sends
+and unknown-observation spacing until the enrolled task becomes terminal; poll
+eligibility is not resource retirement authority. A real b388b27c canary exposed
+these consumer gaps after its first persisted CONTINUE, so source gates alone
+did not establish unattended continuation acceptance.

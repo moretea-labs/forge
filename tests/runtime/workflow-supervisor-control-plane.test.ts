@@ -1708,8 +1708,11 @@ test('stream recovery stays on the attached exact tab and never creates a replac
 
   expect(createdUrls).toEqual([]);
   expect(dispatchedPages).toEqual([stalePage]);
-  expect(closed).toContainEqual(expect.objectContaining({ windowId: 'window-1', tabId: 'tab-1' }));
+  expect(closed).toEqual([]);
   expect(store.latestEffectDispatch(enrollment.effectId)?.generation).toBe(1);
+  control.stopTask('stream-recovery-tab');
+  await adapter.runOnce();
+  expect(closed).toContainEqual(expect.objectContaining({ windowId: 'window-1', tabId: 'tab-1' }));
 });
 
 test('browserTasks keeps an applied external effect observable while lower ControllerRound waits', () => {
@@ -1771,22 +1774,59 @@ test('automation tool receipt successor begins from the real assistant page base
   const successor = 'successorEffect' in continued ? continued.successorEffect! : undefined;
   expect(successor).toBeDefined();
 
-  // The page contains the model's real assistant response, not the synthetic
-  // `automation:continue:...` receipt carrier whose digest is persisted in the
-  // completion row. Exact task/conversation/source-effect identity is still
-  // required, but this real page text must not force the successor into reconcile.
-  expect(control.browserBeginEffect({
-    conversationId,
-    conversationUrl,
-    effectId: successor!.effectId,
-    dispatchId: 'automation-successor-dispatch-1',
-    dispatchGeneration: 1,
-    evidence: {
-      surface: 'test',
-      latest_user_text: sourceEffect.prompt,
-      latest_assistant_response: 'Repository facts verified; canonical CONTINUE receipt submitted.',
+  // A tool-only completed turn can leave the last rendered role as user.
+  // Exercise the actual consumer, including its exact owned resource lifetime.
+  let submittedText = sourceEffect.prompt;
+  let owner = `forge-workflow-supervisor:created:${conversationId}`;
+  let generating = true;
+  let closeCount = 0;
+  const dispatched: string[] = [];
+  const page: WorkflowSupervisorNativePage = {
+    evaluate: async () => { throw new Error('unexpected provider control'); },
+    waitForSelector: async () => undefined,
+    tabRef: () => ({ windowId: 'receipt-window', tabId: 'receipt-tab' }),
+  };
+  const dependencies = {
+    platform: 'darwin' as const,
+    listTabs: async () => ({ entries: [{
+      windowId: 'receipt-window', tabId: 'receipt-tab', active: false,
+      url: conversationUrl, title: 'Tool-only completed turn', browserProduct: 'chrome' as const,
+    }], unavailableProducts: [] }),
+    reattach: async () => page,
+    create: async () => { throw new Error('must retain the same conversation tab'); },
+    close: async () => { closeCount += 1; },
+    readOwner: async () => owner,
+    writeOwner: async (_page: WorkflowSupervisorNativePage, marker: string) => { owner = marker; },
+    snapshot: async () => ({
+      url: conversationUrl, title: 'Tool-only completed turn', latestUserText: submittedText,
+      latestAssistantResponse: '', latestTurnRole: 'user' as const,
+      isGenerating: generating, providerActivityText: '', providerFailureText: '',
+    }),
+    dispatchPrompt: async (_page: WorkflowSupervisorNativePage, prompt: string) => {
+      dispatched.push(prompt); submittedText = prompt;
+      return { dispatched: true, confirmed: true };
     },
-  })).toMatchObject({ started: true, mode: 'send', generation: 1 });
+    providerScopeKey: join(root, 'provider-scope'),
+    sleep: async () => undefined,
+    onError: (error: unknown) => { throw error; },
+  };
+  const adapter = new WorkflowSupervisorNativeBrowserAdapter(control, new WorkflowSupervisorEphemeralDiscovery(), dependencies);
+  await adapter.runOnce();
+  expect(dispatched).toEqual([]);
+  generating = false;
+  await adapter.runOnce();
+  expect(dispatched).toEqual([successor!.prompt]);
+  expect(store.latestEffectDispatch(successor!.effectId)?.generation).toBe(1);
+  expect(closeCount).toBe(0);
+  await adapter.close();
+  await control.observeAutomationReceipt({ taskId, conversationId, status: 'continue', receiptId: 'second-native-continue' });
+  const restarted = new WorkflowSupervisorNativeBrowserAdapter(control, new WorkflowSupervisorEphemeralDiscovery(), dependencies);
+  await restarted.runOnce();
+  expect(dispatched).toHaveLength(2);
+  expect(closeCount).toBe(0);
+  control.stopTask(taskId);
+  await restarted.runOnce();
+  expect(closeCount).toBe(1);
 });
 
 test('refuses post-send negative proofs from both loading and rendered stale conversation pages', () => {
