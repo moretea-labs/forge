@@ -69,7 +69,6 @@ export const COMPILED_RUNTIME_RELEASE_COMPONENT_FIELDS = [
   'codeGraphSidecarEntrypoint', 'codeGraphSidecarArtifactIdentity',
   'codeGraphLibraryRoot', 'codeGraphLibraryArtifactIdentity',
   'packageRoot', 'packageArtifactIdentity',
-  'controllerUiRoot', 'controllerUiArtifactIdentity',
 ] as const satisfies readonly (keyof RuntimeReleaseManifest)[];
 
 /**
