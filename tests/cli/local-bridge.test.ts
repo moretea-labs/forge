@@ -155,9 +155,9 @@ describe("Local Execution Bridge", () => {
     expect(listLocalBridgeJobs(root)).toHaveLength(0);
   });
 
-  test('returns stable 410 handoffs for retired Local Bridge creation routes', async () => {
+  test('returns stable 410 handoffs for retired Local Bridge creation and progress projection routes', async () => {
     const root = repo();
-    const handle = await startLocalBridgeServer({ repoRoot: root, port: 0, openBrowser: false });
+    const handle = await startLocalBridgeServer({ repoRoot: root, port: 0 });
     servers.push(handle);
 
     for (const path of ['/api/jobs', '/api/tasks/launch-ready', '/api/issues/ISS-test/launch', '/api/issues/ISS-test/tasks/T1/launch']) {
@@ -169,15 +169,20 @@ describe("Local Execution Bridge", () => {
       expect(response.status).toBe(410);
       expect(await response.json()).toMatchObject({ error: 'LOCAL_BRIDGE_JOB_RETIRED' });
     }
+    for (const path of ['/api/progress', '/api/issues/ISS-test/tasks/T1']) {
+      const response = await fetch(new URL(path, handle.url), { headers: { 'x-forge-local-token': handle.token } });
+      expect(response.status).toBe(410);
+      expect(await response.json()).toMatchObject({ error: 'LEGACY_PROGRESS_PROJECTION_RETIRED' });
+    }
   });
 
   test("starts successfully when Local Job runtime storage is already linked", async () => {
     const root = repo();
-    const first = await startLocalBridgeServer({ repoRoot: root, port: 0, openBrowser: false });
+    const first = await startLocalBridgeServer({ repoRoot: root, port: 0 });
     await first.close();
     expect(lstatSync(join(root, ".ai/harness/local-jobs")).isSymbolicLink()).toBe(true);
 
-    const second = await startLocalBridgeServer({ repoRoot: root, port: 0, openBrowser: false });
+    const second = await startLocalBridgeServer({ repoRoot: root, port: 0 });
     servers.push(second);
     expect((await fetch(new URL("/health", second.url))).status).toBe(200);
   });
@@ -187,7 +192,7 @@ describe("Local Execution Bridge", () => {
     const localJobsPath = join(root, ".ai/harness/local-jobs");
     symlinkSync(join(root, ".missing-runtime-storage"), localJobsPath, "dir");
 
-    const handle = await startLocalBridgeServer({ repoRoot: root, port: 0, openBrowser: false });
+    const handle = await startLocalBridgeServer({ repoRoot: root, port: 0 });
     servers.push(handle);
 
     const controllerHome = process.env.FORGE_CONTROLLER_HOME!;
@@ -392,7 +397,7 @@ describe("Local Execution Bridge", () => {
     updateTask(root, issue.id, "T1", { status: "running", runId });
 
     try {
-      const handle = await startLocalBridgeServer({ repoRoot: root, port: 0, openBrowser: false });
+      const handle = await startLocalBridgeServer({ repoRoot: root, port: 0 });
       servers.push(handle);
       let alive = true;
       for (let attempt = 0; attempt < 80 && alive; attempt += 1) {
@@ -469,7 +474,7 @@ describe("Local Execution Bridge", () => {
     updateTask(root, issue.id, "T1", { status: "running", runId });
 
     try {
-      const handle = await startLocalBridgeServer({ repoRoot: root, port: 0, openBrowser: false });
+      const handle = await startLocalBridgeServer({ repoRoot: root, port: 0 });
       servers.push(handle);
       let alive = true;
       for (let attempt = 0; attempt < 80 && alive; attempt += 1) {
@@ -519,22 +524,15 @@ describe("Local Execution Bridge", () => {
       schemaVersion: 2, runId, issueId: issue.id, taskId: "T1", agent: "codex", provider: "local", executionMode: "workspace", status: "succeeded", repoRoot: realpathSync(root), worktree: realpathSync(root), branch: null, baseRevision: null, promptPath: `.ai/harness/jobs/${runId}/prompt.md`, stdoutPath: `.ai/harness/jobs/${runId}/stdout.log`, stderrPath: `.ai/harness/jobs/${runId}/stderr.log`, resultPath: `.ai/harness/jobs/${runId}/result.json`, eventsPath: `.ai/harness/jobs/${runId}/events.jsonl`, timeoutMs: 10_000, createdAt: now, startedAt: now, finishedAt: now, integratedSessionId: "EDIT-v5-api-fixture", progress: { phase: "completed", currentActivity: "complete", lastActivityAt: now, activityCount: 1 },
     }, null, 2));
     updateTask(root, issue.id, "T1", { status: "review", runId, note: "Ready for verification." });
-    const handle = await startLocalBridgeServer({ repoRoot: root, port: 0, openBrowser: false });
+    const handle = await startLocalBridgeServer({ repoRoot: root, port: 0 });
     servers.push(handle);
     const headers = { "x-forge-local-token": handle.token };
 
-    const progress = await fetch(new URL("/api/progress", handle.url), { headers }).then((response) => response.json());
-    expect(progress.issueCount).toBe(1);
-    expect(progress.issues[0].id).toBe(issue.id);
     const focused = await fetch(new URL(`/api/issues/${issue.id}/focus`, handle.url), { method: "POST", headers }).then((response) => response.json());
     expect(focused.currentIssueId).toBe(issue.id);
     const governance = await fetch(new URL("/api/governance", handle.url), { headers }).then((response) => response.json());
     expect(governance.currentIssueId).toBe(issue.id);
     expect(governance.executionQueue[0].taskId).toBe("T1");
-
-    const detail = await fetch(new URL(`/api/issues/${issue.id}/tasks/T1`, handle.url), { headers }).then((response) => response.json());
-    expect(detail.task.id).toBe("T1");
-    expect(detail.timeline.some((event: { action: string }) => event.action === "issue_created")).toBe(true);
 
     const verified = await fetch(new URL(`/api/issues/${issue.id}/tasks/T1/verify`, handle.url), {
       method: "POST",
@@ -580,7 +578,7 @@ describe("Local Execution Bridge", () => {
 
   test("serves generic plugin discovery and durable plugin action submission APIs", async () => {
     const root = repo();
-    const handle = await startLocalBridgeServer({ repoRoot: root, port: 0, openBrowser: false });
+    const handle = await startLocalBridgeServer({ repoRoot: root, port: 0 });
     servers.push(handle);
     const headers = { "x-forge-local-token": handle.token };
 
@@ -609,7 +607,7 @@ describe("Local Execution Bridge", () => {
 
   test("projects repository schedules without personal-assistant routines", async () => {
     const root = repo();
-    const handle = await startLocalBridgeServer({ repoRoot: root, port: 0, openBrowser: false });
+    const handle = await startLocalBridgeServer({ repoRoot: root, port: 0 });
     servers.push(handle);
     const headers = { "x-forge-local-token": handle.token, "content-type": "application/json" };
 
@@ -687,7 +685,7 @@ describe("Local Execution Bridge", () => {
 
   test("serves signed mobile Shortcut intents with device scopes, replay protection, and approval polling", async () => {
     const root = repo();
-    const handle = await startLocalBridgeServer({ repoRoot: root, port: 0, openBrowser: false });
+    const handle = await startLocalBridgeServer({ repoRoot: root, port: 0 });
     servers.push(handle);
     const localHeaders = { "x-forge-local-token": handle.token, "content-type": "application/json" };
 
@@ -819,7 +817,7 @@ describe("Local Execution Bridge", () => {
       expectedSha256: hash,
       replacements: [{ oldText: "value = 1", newText: "value = 4" }],
     }]);
-    const handle = await startLocalBridgeServer({ repoRoot: root, port: 0, openBrowser: false });
+    const handle = await startLocalBridgeServer({ repoRoot: root, port: 0 });
     servers.push(handle);
     const headers = { "x-forge-local-token": handle.token };
     const snapshot = await fetch(new URL("/api/snapshot", handle.url), { headers }).then((response) => response.json());
@@ -841,10 +839,6 @@ describe("Local Execution Bridge", () => {
       body: JSON.stringify({ reviewer: "local-test" }),
     }).then((response) => response.json());
     expect(finalized.status).toBe("finalized");
-    const dashboard = await fetch(handle.url).then((response) => response.text());
-    for (const text of ["Forge · Utility Console", "/console-assets/app.css", "/console-assets/app.js"]) expect(dashboard).toContain(text); expect(dashboard).not.toContain("你想让它完成什么");
-    const uiScript = await fetch(new URL("/console-assets/app.js", handle.url)).then((response) => response.text());
-    for (const text of ["Automations", "Capabilities", "/api/console/requirements", "/api/console/automations", "/api/repositories/register"]) expect(uiScript).toContain(text);
   });
   test("preserves executable mode when an Edit Session replaces a shebang file", () => {
     const root = repo();
@@ -882,7 +876,6 @@ describe("Local Execution Bridge", () => {
     const handle = await startLocalBridgeServer({
       repoRoot: root,
       port: 0,
-      openBrowser: false,
     });
     servers.push(handle);
     const headers = { "x-forge-local-token": handle.token, "content-type": "application/json" };
@@ -930,12 +923,11 @@ describe("Local Execution Bridge", () => {
     expect(String(missingBody.error)).toContain("repository not found");
   });
 
-  test("serves a hardened localhost visual control surface", async () => {
+  test("serves a hardened localhost API surface", async () => {
     const root = repo();
     const handle = await startLocalBridgeServer({
       repoRoot: root,
       port: 0,
-      openBrowser: false,
     });
     servers.push(handle);
 
@@ -974,30 +966,6 @@ describe("Local Execution Bridge", () => {
       maxTimeoutMs: 43_200_000,
     });
 
-    const dashboardResponse = await fetch(handle.url);
-    expect(dashboardResponse.headers.get("cache-control")).toBe("no-store, max-age=0");
-    expect(dashboardResponse.headers.get("pragma")).toBe("no-cache");
-    expect(dashboardResponse.headers.get("expires")).toBe("0");
-    expect(dashboardResponse.headers.get("referrer-policy")).toBe("no-referrer");
-    const setCookie = dashboardResponse.headers.get("set-cookie");
-    expect(setCookie).toContain("Path=/api");
-    expect(setCookie).toContain("HttpOnly");
-    expect(setCookie).toContain("SameSite=Strict");
-    const cookie = setCookie?.split(";", 1)[0];
-    expect(cookie).toBeTruthy();
-
-    const cookieSnapshot = await fetch(new URL("/api/snapshot", handle.url), {
-      headers: { cookie: cookie as string },
-    }).then((response) => response.json());
-    expect(cookieSnapshot.repoRoot).toBe(realpathSync(root));
-
-    const dashboard = await dashboardResponse.text();
-    expect(dashboard).not.toContain(handle.token);
-    expect(dashboard).not.toContain("?token=");
-    for (const text of ["Forge · Utility Console", "正在读取 Forge 配置", "/console-assets/app.js"]) expect(dashboard).toContain(text); expect(dashboard).not.toContain("你想让它完成什么");
-    const uiScriptResponse = await fetch(new URL("/console-assets/app.js", handle.url)); expect(uiScriptResponse.status).toBe(200); expect(uiScriptResponse.headers.get("content-type")).toContain("javascript"); const uiScript = await uiScriptResponse.text();
-    for (const text of ["Overview", "Needs attention", "Workspace", "Work", "Automations", "Capabilities", "Repositories", "System", "/api/console/command-center", "/api/console/requirements", "/api/console/work-portfolio", "/api/console/automations"]) expect(uiScript).toContain(text);
-    for (const retiredSurface of ["Settings", "/api/console/automation-settings", "/api/console/provider-config", "/api/console/local-tools", "/api/console/executor-routing"]) expect(uiScript).not.toContain(retiredSurface);
     const auth = { "x-forge-local-token": handle.token };
     for (const path of ["/api/console/automation-settings", "/api/console/provider-config", "/api/console/local-tools", "/api/console/executor-routing"]) {
       expect((await fetch(new URL(path, handle.url), { headers: auth })).status).toBe(404);

@@ -50,17 +50,11 @@ export interface MultiRepositoryMcpToolContext extends McpToolContext {
 type ToolResult = CallToolResult;
 
 const EXECUTION_STORAGE_TOOLS = new Set([
-  'dispatch_task',
-  'launch_issue',
-  'dispatch_ready_tasks',
-  'retry_task_run',
-  'integrate_task_run',
   'begin_edit_session',
   'apply_edit_operations',
   'create_edit_savepoint',
   'rollback_edit_session',
   'finalize_edit_session',
-  'finish_edit_session',
   'verify_edit_session',
   'submit_local_bridge_job',
   'execute_local_bridge_job',
@@ -68,19 +62,6 @@ const EXECUTION_STORAGE_TOOLS = new Set([
 
 const REPOSITORY_LOCKED_TOOLS = new Set([
   ...EXECUTION_STORAGE_TOOLS,
-  'create_issue',
-  'update_issue',
-  'plan_issue',
-  'append_task',
-  'split_task',
-  'supersede_task',
-  'set_task_dependencies',
-  'update_task',
-  'record_task_verification',
-  'accept_verified_task',
-  'publish_issue_to_github',
-  'refresh_github_issue',
-  'close_github_issue',
   'configure_github_plugin',
 ]);
 

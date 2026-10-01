@@ -10,13 +10,6 @@ import { loadRuntimeReleaseManifest } from '../../src/runtime/root/release-manif
 import { ensureActiveRuntimeRelease } from '../../src/runtime/root/release-store';
 import { readRuntimeGeneration } from '../../src/runtime/control-plane/runtime-generation';
 import {
-  activateConvergenceWorkAdmission,
-  activateExclusiveWorkAdmission,
-  readWorkAdmissionPolicy,
-  schedulerDispatchAllowed,
-  transitionConvergenceToExclusiveWorkAdmission,
-} from '../../src/runtime/control-plane/facade/work-admission-policy';
-import {
   acceptSubmittedWorkContract,
   cancelWorkContract,
   createWorkContract,
@@ -392,7 +385,7 @@ describe('canonical single Runtime', () => {
   });
 
   test('one process serves authenticated initialize, bounded tools/list, bootstrap call, and SQLite readiness', async () => {
-    const fixture = createFixture({ exclusiveWorkId: 'WORK-P0' });
+    const fixture = createFixture();
     const runtime = new CanonicalForgeRuntime(fixture.config);
     cleanups.push(() => runtime.stop('TEST_CLEANUP'));
     await runtime.start();
@@ -898,116 +891,6 @@ describe('canonical single Runtime', () => {
     cleanups.push(() => first.release());
     expect(() => acquireRuntimeOwnership(fixture.controllerHome, 'runtime-two'))
       .toThrow('RUNTIME_OWNERSHIP_CONFLICT');
-  });
-
-  test('exclusive Work admission persists and blocks ordinary create/continue', () => {
-    const fixture = createFixture();
-    inspectControlPlaneDatabase(fixture.controllerHome);
-    createWorkContract(
-      { controllerHome: fixture.controllerHome, repoId: 'repo-test' },
-      workInput('WORK-HISTORICAL'),
-    );
-    const submittedInput = {
-      requestId: 'request-before-isolation',
-      repoId: 'repo-test',
-      semanticKey: 'repository.status:readonly',
-      operation: {
-        name: 'repository_status',
-        semanticKey: 'repository.status:readonly',
-        argumentHash: 'sha256:test-status',
-        mode: 'readonly' as const,
-        idempotent: true,
-        replayable: true,
-        resourceClaims: [],
-      },
-    };
-    const acceptedBeforeIsolation = acceptSubmittedWorkContract(fixture.controllerHome, submittedInput);
-    activateExclusiveWorkAdmission(fixture.controllerHome, {
-      allowedWorkId: 'WORK-P0',
-      reason: 'P0 migration',
-    });
-    expect(readWorkAdmissionPolicy(fixture.controllerHome)).toMatchObject({
-      mode: 'exclusive_work',
-      allowedWorkId: 'WORK-P0',
-      allowReadOnlyDiagnostics: true,
-    });
-    expect(() => createWorkContract(
-      { controllerHome: fixture.controllerHome, repoId: 'repo-test' },
-      workInput('WORK-ORDINARY'),
-    )).toThrow('WORK_ADMISSION_BLOCKED');
-    expect(() => updateWorkContract(
-      { controllerHome: fixture.controllerHome, repoId: 'repo-test' },
-      'WORK-HISTORICAL',
-      { continuationPrompt: 'This metadata write must remain fenced during exclusive admission.' },
-    )).toThrow('WORK_ADMISSION_BLOCKED');
-    expect(cancelWorkContract(
-      { controllerHome: fixture.controllerHome, repoId: 'repo-test' },
-      'WORK-HISTORICAL',
-      { summary: 'Explicitly retire historical Work during exclusive admission.' },
-    ).status).toBe('cancelled');
-    const acceptedRetry = acceptSubmittedWorkContract(fixture.controllerHome, submittedInput);
-    expect(acceptedRetry.deduplicated).toBe(true);
-    expect(acceptedRetry.contract.workId).toBe(acceptedBeforeIsolation.contract.workId);
-    const p0 = createWorkContract(
-      { controllerHome: fixture.controllerHome, repoId: 'repo-test' },
-      workInput('WORK-P0'),
-    );
-    expect(updateWorkContract(
-      { controllerHome: fixture.controllerHome, repoId: 'repo-test' },
-      p0.workId,
-      { continuationPrompt: 'Continue the P0 migration.' },
-    ).continuationPrompt).toContain('P0');
-  });
-
-  test('convergence Work admission blocks new Work while existing Work and scheduler continuation remain available', () => {
-    const fixture = createFixture();
-    const historical = createWorkContract(
-      { controllerHome: fixture.controllerHome, repoId: 'repo-test' },
-      workInput('WORK-CONVERGENCE-HISTORICAL'),
-    );
-
-    activateConvergenceWorkAdmission(fixture.controllerHome, {
-      reason: 'Converge the existing Work backlog without admitting new Work.',
-    });
-
-    expect(readWorkAdmissionPolicy(fixture.controllerHome)).toMatchObject({
-      mode: 'convergence',
-      allowReadOnlyDiagnostics: true,
-    });
-    expect(schedulerDispatchAllowed(fixture.controllerHome)).toBe(true);
-    expect(() => createWorkContract(
-      { controllerHome: fixture.controllerHome, repoId: 'repo-test' },
-      workInput('WORK-CONVERGENCE-NEW'),
-    )).toThrow('WORK_ADMISSION_BLOCKED:CONVERGENCE:operation=create');
-    expect(updateWorkContract(
-      { controllerHome: fixture.controllerHome, repoId: 'repo-test' },
-      historical.workId,
-      { continuationPrompt: 'Continue converging this existing Work.' },
-    ).continuationPrompt).toContain('Continue converging');
-    expect(cancelWorkContract(
-      { controllerHome: fixture.controllerHome, repoId: 'repo-test' },
-      historical.workId,
-      { summary: 'Explicitly retire historical Work during convergence.' },
-    ).status).toBe('cancelled');
-
-    const reservedWorkId = 'WORK-CONVERGENCE-RESERVED';
-    expect(transitionConvergenceToExclusiveWorkAdmission(fixture.controllerHome, {
-      allowedWorkId: reservedWorkId,
-      reason: 'Atomically admit the exact closure successor without opening a normal admission window.',
-    })).toMatchObject({ mode: 'exclusive_work', allowedWorkId: reservedWorkId });
-    expect(schedulerDispatchAllowed(fixture.controllerHome)).toBe(false);
-    expect(() => createWorkContract(
-      { controllerHome: fixture.controllerHome, repoId: 'repo-test' },
-      workInput('WORK-CONVERGENCE-UNRELATED'),
-    )).toThrow('WORK_ADMISSION_BLOCKED:P0_EXCLUSIVE_WORK');
-    expect(createWorkContract(
-      { controllerHome: fixture.controllerHome, repoId: 'repo-test' },
-      workInput(reservedWorkId),
-    ).workId).toBe(reservedWorkId);
-    expect(transitionConvergenceToExclusiveWorkAdmission(fixture.controllerHome, {
-      allowedWorkId: reservedWorkId,
-      reason: 'Idempotent exact reservation.',
-    })).toMatchObject({ mode: 'exclusive_work', allowedWorkId: reservedWorkId });
   });
 
   test('release manifest accepts a logical Controller Home symlink to the same physical directory', () => {

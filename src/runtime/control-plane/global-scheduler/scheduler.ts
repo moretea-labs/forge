@@ -23,7 +23,6 @@ import { reconcileTerminalWorkCleanups } from '../execution/work-terminal-cleanu
 import { gcTerminalProcesses } from '../../execution/process-runtime/gc';
 import { reconcilePendingWorkValidations } from '../execution/work-validation-reconciler';
 import { reconcilePendingEditValidations } from '../execution/edit-validation-coordinator';
-import { schedulerDispatchAllowed } from '../facade/work-admission-policy';
 import {
   runSchedulerPeriodicCleanup,
   runSchedulerValidationReconciliation,
@@ -33,7 +32,6 @@ import { runSchedulerAutonomousContinuationReconciliation } from './autonomous-c
 import {
   runSchedulerDurableAdmission,
   SCHEDULE_TICK_INTERVAL_MS,
-  schedulerDurableAdmissionRequiresPolicy,
 } from './durable-admission';
 import { sampleRepositoryGitStatusForRepositories } from '../../projections/git-status-sampler';
 import { selectExecutionJobDispatchRepositories } from '../dispatch-priority';
@@ -547,7 +545,6 @@ export class GlobalScheduler {
     this.lastTickAt = this.lastHeartbeatAt;
     this.persistState();
     const repositories = this.repositoryList(this.controllerHome).filter((repo) => repo.enabled && !repo.removedAt);
-    let periodicCleanupRan = false;
     let reconciliationRan = false;
     if (now - this.lastCleanupAt >= RUNTIME_CLEANUP_INTERVAL_MS) {
       // Advance the interval before cleanup so a failing pass cannot create a
@@ -569,7 +566,6 @@ export class GlobalScheduler {
           processGc: this.processGc,
         });
       }
-      periodicCleanupRan = true;
     }
     if (now - this.lastReconcile >= SCHEDULER_RECONCILIATION_INTERVAL_MS) {
       await reconcileExecutionJobsAsync(this.controllerHome);
@@ -626,29 +622,9 @@ export class GlobalScheduler {
         .map((repository) => [repository.repoId, repository] as const),
     ).values());
     this.sourceScansAvoided += sourceSampling.avoidedRepositoryCount;
-    // Phase 0 reuses one durable Work admission policy. Exclusive-Work mode stops
-    // ordinary schedule/workflow advancement and Worker dispatch while preserving
-    // cleanup and projections. Convergence mode remains dispatchable because new
-    // Work creation is independently fenced at the Work contract authority, so
-    // existing Work continuations can keep draining the backlog.
-    const admissionPolicyRequired = periodicCleanupRan || schedulerDurableAdmissionRequiresPolicy({
-      activeJobs: activeJobSnapshot,
-      nowMs: now,
-      lastScheduleTickAt: this.lastScheduleTick,
-    });
-    if (admissionPolicyRequired && !schedulerDispatchAllowed(this.controllerHome)) {
-      refreshSchedulerRepositoryProjections({
-        controllerHome: this.controllerHome,
-        repositories,
-        sourceScanRepositories: projectionMaintenanceRepositories,
-        projectionRefreshRepoIds: [],
-        controllerPid: this.controllerPid,
-      });
-      this.lastHeartbeatAt = new Date().toISOString();
-      this.persistState(true);
-      return { activeJobs: activeJobSnapshot.length };
-    }
-    if (reconciliationRan && schedulerDispatchAllowed(this.controllerHome)) {
+    // Migration-era global Work admission gates are retired. Scheduler dispatch
+    // is constrained by durable admission, placement and concrete resource authority.
+    if (reconciliationRan) {
       const liveness = await runSchedulerAutonomousContinuationReconciliation({
         controllerHome: this.controllerHome,
         nowMs: now,

@@ -32,7 +32,6 @@ export function resolveForgeRuntimeServiceCommand(controllerHome: string, config
       '--port', String(config.port),
       '--auth-token-file', config.authTokenFile,
       ...activeRuntimeReleaseManifest.arguments,
-      ...(config.exclusiveWorkId ? ['--exclusive-work-id', config.exclusiveWorkId] : []),
     ],
     env: {
       ...runtimeAuthorityFreeEnvironment(process.env),

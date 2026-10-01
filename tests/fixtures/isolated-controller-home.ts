@@ -58,7 +58,7 @@ export async function createIsolatedControllerFixture(prefix = 'forge-isolated-'
       profile: 'controller',
       server: { host: '127.0.0.1', port: mcpPort },
       auth: { mode: 'bearer' },
-      localController: { enabled: true, host: '127.0.0.1', port: localControllerPort, autoOpen: false },
+      localController: { enabled: true, host: '127.0.0.1', port: localControllerPort },
     }, null, 2)}\n`,
   );
   execFileSync('git', ['init', '-b', 'main'], { cwd: repoRoot, stdio: 'ignore' });

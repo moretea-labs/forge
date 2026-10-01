@@ -5,7 +5,6 @@ import { join } from 'path';
 import { writeControlPlaneRecord } from '../../src/runtime/control-plane/persistence/sqlite-store';
 import { getIssueReadView, createIssue, updateTask } from '../../src/cli/controller/issue-store';
 import { buildControllerTaskLedgerProjection, writeControllerTaskLedgerArtifacts } from '../../src/cli/controller/task-ledger';
-import { getProjectProgress } from '../../src/cli/controller/progress';
 import { inspectProjectGovernance, reconcileProjectGovernance } from '../../src/cli/controller/governance';
 import { clearCurrentIssue, loadControllerProjectState, saveControllerProjectState } from '../../src/cli/controller/project-state';
 import { finishEditSession, finishTaskRun } from '../../src/cli/controller/completion-orchestrator';
@@ -134,17 +133,8 @@ describe('legacy control-plane cutover', () => {
     });
   });
 
-  test('default progress, governance and task ledger expose Requirement authority only', () => {
+  test('default governance and task ledger expose Requirement authority only', () => {
     withRepo((repoRoot) => {
-      const progress = getProjectProgress(repoRoot);
-      expect(progress).toMatchObject({
-        view: 'requirement_progress',
-        authority: 'controller-home-sqlite',
-        issues: [],
-        taskCount: 0,
-      });
-      expect(JSON.stringify(progress.requirementBoard)).toContain(REQUIREMENT_ID);
-
       const governance = inspectProjectGovernance(repoRoot);
       expect(governance).toMatchObject({
         view: 'requirement_governance',

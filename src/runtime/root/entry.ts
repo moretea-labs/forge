@@ -12,7 +12,6 @@ interface CliOptions {
   host: string;
   port: string;
   authTokenFile: string;
-  exclusiveWorkId?: string;
   deploymentTopology?: string;
 }
 
@@ -31,8 +30,7 @@ export async function runCanonicalRuntimeCli(argv = process.argv): Promise<void>
     .requiredOption('--host <host>', 'MCP listener host')
     .requiredOption('--port <port>', 'MCP listener port')
     .requiredOption('--auth-token-file <path>', 'Bearer token file')
-    .option('--deployment-topology <json>', 'Normalized product-level Runtime deployment topology')
-    .option('--exclusive-work-id <id>', 'Persistently admit only this P0 Work while migration is active');
+    .option('--deployment-topology <json>', 'Normalized product-level Runtime deployment topology');
   command.parse(argv);
   const options = command.opts<CliOptions>();
   const port = Number(options.port);
@@ -45,7 +43,6 @@ export async function runCanonicalRuntimeCli(argv = process.argv): Promise<void>
     port,
     topology: parseRuntimeDeploymentTopologyArgument(options.deploymentTopology),
     authToken: readAuthToken(options.authTokenFile),
-    exclusiveWorkId: options.exclusiveWorkId,
   });
   await runtime.start();
   process.stderr.write(`${JSON.stringify({

@@ -675,7 +675,6 @@ async function defaultInstallServices(controllerHome: string, request: LinuxCont
       host: runtimeConfig.host,
       port: runtimeConfig.port,
       authTokenFile: runtimeConfig.authTokenFile,
-      ...(runtimeConfig.exclusiveWorkId ? { exclusiveWorkId: runtimeConfig.exclusiveWorkId } : {}),
       platform: 'linux',
       env,
       refreshConnector: true,

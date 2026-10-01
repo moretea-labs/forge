@@ -17,7 +17,6 @@ export interface ForgeRuntimeServiceConfig {
   host: string;
   port: number;
   authTokenFile: string;
-  exclusiveWorkId?: string;
   /** Persisted product-level component composition. Missing is accepted only for legacy configs. */
   topology?: RuntimeDeploymentTopology;
 }
@@ -79,7 +78,6 @@ export function validateForgeRuntimeServiceConfig(input: ForgeRuntimeServiceConf
     host: input.host.trim(),
     authTokenFile,
     topology: normalizeRuntimeDeploymentTopology(input.topology),
-    ...(input.exclusiveWorkId?.trim() ? { exclusiveWorkId: input.exclusiveWorkId.trim() } : {}),
   };
 }
 
@@ -209,7 +207,6 @@ export function activeRuntimeLaunchSpec(controllerHome: string): ActiveRuntimeLa
       '--auth-token-file', config.authTokenFile,
       '--deployment-topology', JSON.stringify(topology),
       ...manifestArguments,
-      ...(config.exclusiveWorkId ? ['--exclusive-work-id', config.exclusiveWorkId] : []),
     ],
     environment: {
       FORGE_CONTROLLER_HOME: home,

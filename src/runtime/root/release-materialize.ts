@@ -809,17 +809,6 @@ export function stageRuntimeRelease(input: {
     const codeGraphSidecarArtifactIdentity = `sha256:${sha256(codeGraphSidecarPath)}`;
     const codeGraphLibraryArtifactIdentity = `sha256:${sha256Directory(codeGraphLibraryPath)}`;
 
-    const controllerUiRoot = 'ui-dist' as const;
-    const sourceControllerUiPath = join(sourceRoot, 'src', 'cli', 'local-bridge', controllerUiRoot);
-    const sourceControllerUiJs = join(sourceControllerUiPath, 'app.js');
-    const sourceControllerUiCss = join(sourceControllerUiPath, 'app.css');
-    if (!existsSync(sourceControllerUiJs) || !existsSync(sourceControllerUiCss)) {
-      throw new Error(`RUNTIME_RELEASE_CONTROLLER_UI_SOURCE_MISSING: ${sourceControllerUiPath}`);
-    }
-    const controllerUiPath = join(staging, controllerUiRoot);
-    cpSync(sourceControllerUiPath, controllerUiPath, { recursive: true, force: false });
-    const controllerUiArtifactIdentity = `sha256:${sha256Directory(controllerUiPath)}`;
-
     // Keep the source-backed package projection during the Recovery migration.
     // The active standalone Recovery release can predate the compiled Connector
     // sidecar and still rebind the primary Connector through package/src/cli.
@@ -878,8 +867,6 @@ export function stageRuntimeRelease(input: {
       codeGraphLibraryArtifactIdentity,
       packageRoot,
       packageArtifactIdentity,
-      controllerUiRoot,
-      controllerUiArtifactIdentity,
       arguments: [],
       configurationSchemaVersion: 1,
       deploymentScope: 'portable',
@@ -923,7 +910,6 @@ export function stageRuntimeRelease(input: {
       codeGraphSidecarArtifactIdentity,
       codeGraphLibraryArtifactIdentity,
       packageArtifactIdentity,
-      controllerUiArtifactIdentity,
       manifestSha256: createHash('sha256').update(`${JSON.stringify(manifest, null, 2)}\n`).digest('hex'),
       sourceCommit,
       ...(sourceRepositoryId ? { sourceRepositoryId } : {}),

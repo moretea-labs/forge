@@ -10,7 +10,6 @@ import {
   enableControlPlaneReadConnectionReuse,
   inspectControlPlaneDatabase,
 } from '../control-plane/persistence/sqlite-store';
-import { activateExclusiveWorkAdmission } from '../control-plane/facade/work-admission-policy';
 import { closeCodeGraphReadProviderSessions } from '../context/codegraph-read-provider';
 import { cancelAllLightweightProcesses } from '../execution/process-runtime/lightweight-managed';
 import {
@@ -508,13 +507,6 @@ export class CanonicalForgeRuntime {
       this.installJscSamplingProfilerSignal();
       this.readinessState.setDiagnostic('database', 'pass');
       this.publishStatus();
-      if (this.config.exclusiveWorkId) {
-        activateExclusiveWorkAdmission(this.config.controllerHome, {
-          allowedWorkId: this.config.exclusiveWorkId,
-          reason: 'P0 canonical single Runtime migration isolation',
-        });
-      }
-
       if (this.topology.components.workflowSupervisor) {
         stage = 'supervisor';
         this.workflowSupervisor = await this.dependencies.startWorkflowSupervisor(this.config.controllerHome, {

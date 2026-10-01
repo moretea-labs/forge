@@ -20,14 +20,6 @@ import {
 } from '../domain/implementation-review';
 import { phaseIndex, suggestedActionsForStatus, transitionPhaseEvidence, validateWorkSemanticTransition, validateWorkSemantics } from '../domain/state-machine';
 import {
-  WORK_ADMISSION_POLICY_KEY,
-  WORK_ADMISSION_POLICY_NAMESPACE,
-  WORK_ADMISSION_POLICY_SCOPE,
-  assertWorkAdmissionPolicyAllows,
-  normalWorkAdmissionPolicy,
-  type WorkAdmissionPolicy,
-} from '../domain/admission-policy';
-import {
   WORK_PHASES,
   type EvidenceRef,
   type CompletionOutcome,
@@ -576,20 +568,6 @@ function withExactWorkContractWrite<T>(
 }
 
 
-function assertCanonicalWorkAdmissionAllowed(
-  options: WorkContractStoreOptions,
-  input: { operation: 'create' | 'continue' | 'maintenance'; workId?: string },
-): WorkAdmissionPolicy {
-  if (!options.controllerHome) return normalWorkAdmissionPolicy(nowIso(options));
-  const policy = readControlPlaneRecord<WorkAdmissionPolicy>(
-    options.controllerHome,
-    WORK_ADMISSION_POLICY_NAMESPACE,
-    WORK_ADMISSION_POLICY_SCOPE,
-    WORK_ADMISSION_POLICY_KEY,
-  )?.value ?? normalWorkAdmissionPolicy(nowIso(options));
-  return assertWorkAdmissionPolicyAllows(policy, input);
-}
-
 export function createWorkSemanticContext(options: WorkContractStoreOptions, input: CreateWorkSemanticInput): WorkContract {
   const semanticOptions = options.scopeKey?.trim() || !options.repoId?.trim()
     ? options
@@ -615,11 +593,8 @@ export function createWorkSemanticContext(options: WorkContractStoreOptions, inp
 }
 
 export function createWorkContract(options: WorkContractStoreOptions, input: CreateWorkContractInput): WorkContract {
-  // Thin semantic Work is authored context, not admission-controlled execution.
-  // Legacy/repository Work continues through the compatibility admission path.
-  if (options.controllerHome && !options.scopeKey?.trim()) {
-    assertCanonicalWorkAdmissionAllowed(options, { operation: 'create', workId: input.workId });
-  }
+  // Thin semantic Work is authored context. Repository execution and concurrency
+  // are fenced by placement/resource ownership rather than a global migration gate.
   if (input.status === 'completed' || input.completionReceipt || input.completionOutcome) {
     throw new Error('WORK_COMPLETION_REQUIRES_RECORD_API');
   }
@@ -1310,14 +1285,6 @@ function updateWorkContractInternal(
     const patch = placementChanged && !Object.prototype.hasOwnProperty.call(mutationPatch, 'executionConcurrency')
       ? { ...mutationPatch, executionConcurrency: undefined }
       : mutationPatch;
-    if (authoritativeOptions.controllerHome) {
-      assertCanonicalWorkAdmissionAllowed(authoritativeOptions, {
-        operation: patch.status !== undefined && isTerminalWorkContractStatus(patch.status)
-          ? 'maintenance'
-          : 'continue',
-        workId: sanitizedId,
-      });
-    }
     const writesCompletionReceipt = Object.prototype.hasOwnProperty.call(patch, 'completionReceipt');
     const changesCompletionOutcome = patch.completionOutcome !== undefined && patch.completionOutcome !== current.completionOutcome;
     const writesPhase = Object.prototype.hasOwnProperty.call(patch, 'phase') || Object.prototype.hasOwnProperty.call(patch, 'phaseEvidence');

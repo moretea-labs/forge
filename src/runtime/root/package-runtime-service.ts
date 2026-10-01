@@ -92,7 +92,6 @@ export interface PackageRuntimeServiceOptions {
   host?: string;
   port?: number;
   authTokenFile: string;
-  exclusiveWorkId?: string;
   platform?: NodeJS.Platform;
   env?: NodeJS.ProcessEnv;
   forcePortable?: boolean;
@@ -473,7 +472,6 @@ export async function installPackageRuntimeService(
     port: options.port ?? 8765,
     authTokenFile: options.authTokenFile,
     topology: normalizeRuntimeDeploymentTopology(options.topology),
-    ...(options.exclusiveWorkId?.trim() ? { exclusiveWorkId: options.exclusiveWorkId.trim() } : {}),
   };
   writeForgeRuntimeServiceConfig(config);
   syncForgeRuntimeActiveEntrypoint(controllerHome);

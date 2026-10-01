@@ -121,7 +121,6 @@ export interface CanonicalRuntimeConfig {
   host: string;
   port: number;
   authToken: string;
-  exclusiveWorkId?: string;
   runtimeInstanceId?: string;
   schedulerReadyTimeoutMs?: number;
   /** Product-level component composition; missing means a legacy ChatGPT-capable installation. */

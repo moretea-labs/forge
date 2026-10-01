@@ -155,7 +155,6 @@ describe('Forge Runtime service', () => {
       host: '127.0.0.1',
       port: 8765,
       authTokenFile: fx.token,
-      exclusiveWorkId: 'work-test',
     })}\n`);
 
     expect(activeRuntimeEntrypoint(fx.home)).toBe(entry);
@@ -181,8 +180,6 @@ describe('Forge Runtime service', () => {
     expect(plist).toContain('<string>8765</string>');
     expect(plist).toContain('<string>--auth-token-file</string>');
     expect(plist).toContain(`<string>${fx.token}</string>`);
-    expect(plist).toContain('<string>--exclusive-work-id</string>');
-    expect(plist).toContain('<string>work-test</string>');
     expect(plist).toContain('<key>FORGE_CONTROLLER_RUNTIME_SOURCE_ROOT</key>');
     expect(plist).toContain('<key>FORGE_CLI_EXECUTABLE</key>');
     expect(plist).toContain(`<string>${cliEntry}</string>`);
@@ -1113,12 +1110,10 @@ describe('Forge Runtime service', () => {
       host: '127.0.0.1',
       port: 8765,
       authTokenFile: fx.token,
-      exclusiveWorkId: 'work-test',
     });
     expect(config.controllerHome).toBe(fx.home);
     expect(config.repositoryRoot).toBe(fx.repo);
     expect(config.authTokenFile).toBe(fx.token);
-    expect(config.exclusiveWorkId).toBe('work-test');
     const packageConfig = validateForgeRuntimeServiceConfig({
       schemaVersion: 1,
       controllerHome: fx.home,

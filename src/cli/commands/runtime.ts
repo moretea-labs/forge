@@ -119,7 +119,6 @@ export function buildRuntimeCommand(): Command {
     .option('--port <port>', 'MCP listener port', '8765')
     .option('--stage-only', 'Build and validate the immutable Runtime release without publishing or activating it')
     .option('--auth-token-file <path>', 'Raw bearer token file (defaults to controllerHome/mcp/runtime-token, created from the MCP bearer token when missing)')
-    .option('--exclusive-work-id <id>', 'Persistently admit only this P0 Work while migration is active')
     .option('--node-executable <path>', 'Executable launchd uses to run the Forge Runtime service runner', process.execPath)
     .option('--runner-path <path>', 'Forge Runtime service runner entry', join(resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..'), 'bin', 'forge-runtime-service.mjs'))
     .action(async (opts: {
@@ -128,7 +127,6 @@ export function buildRuntimeCommand(): Command {
       host: string;
       port: string;
       authTokenFile?: string;
-      exclusiveWorkId?: string;
       nodeExecutable: string;
       runnerPath: string;
       stageOnly?: boolean;
@@ -174,7 +172,6 @@ export function buildRuntimeCommand(): Command {
           host: opts.host,
           port,
           authTokenFile: tokenPath,
-          ...(opts.exclusiveWorkId?.trim() ? { exclusiveWorkId: opts.exclusiveWorkId.trim() } : {}),
         },
         runnerPath: resolve(opts.runnerPath),
         nodeExecutable: resolve(opts.nodeExecutable),

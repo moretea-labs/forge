@@ -652,7 +652,6 @@ const required = [
   'src/runtime/control-plane/execution/work-verification-service.ts',
   'src/runtime/control-plane/execution/implementation-review-content.ts',
   'packages/protocols/handoff/status.ts',
-  'packages/kernel/work/domain/admission-policy.ts',
   'packages/kernel/work/domain/implementation-review.ts',
   'packages/kernel/work/domain/state-machine.ts',
   'packages/kernel/identity/domain/scope.ts',
@@ -1693,8 +1692,6 @@ for (const path of [
 
 requireText('scripts/run-governed-gate.ts', "label: 'source duplication'");
 requireText('scripts/run-governed-gate.ts', "args: ['scripts/check-source-duplication.mjs']");
-requireText('scripts/run-governed-gate.ts', "label: 'controller UI bundle'");
-requireText('scripts/run-governed-gate.ts', "args: ['run', 'check:controller-ui']");
 requireText('docs/architecture/CURRENT.md', '## State ownership');
 requireText('docs/architecture/CURRENT.md', '## Runtime and MCP boundary');
 requireText('docs/architecture/CURRENT.md', '## Testing and verification');

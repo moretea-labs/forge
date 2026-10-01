@@ -1,6 +1,5 @@
 import { randomBytes } from "crypto";
 import { readFileSync } from "fs";
-import { spawn } from "child_process";
 import { createServer, type Server } from "http";
 import express, {
   type NextFunction,
@@ -36,11 +35,6 @@ import {
 } from "../controller/issue-store";
 import { readTaskRunEvidence } from "../controller/run-evidence";
 import { resolveEffectiveTaskState } from "../controller/task-status-resolver";
-import {
-  getControllerTimeline,
-  getProjectProgress,
-  getTaskProgressDetail,
-} from "../controller/progress";
 import { buildControllerTaskLedgerProjection } from "../controller/task-ledger";
 import { buildControllerOperationalPlan } from "../controller/operational-plan";
 import { exportControllerWorklog, listControllerWorklogEvents, parseWorklogCategory } from "../controller/worklog";
@@ -73,8 +67,6 @@ import {
   rollbackEditSession,
   verifyEditSession,
 } from "../editing/edit-session";
-import { localBridgeDashboardHtml } from "./dashboard";
-import { readConsoleAsset, type ConsoleAssetName } from "./console-assets";
 import { applyConsoleAutomationAction, listConsoleAutomations, summarizeConsoleAutomations } from "./console-automations";
 import {
   ackConsoleHandoff,
@@ -154,7 +146,6 @@ export interface LocalBridgeServerOptions {
   defaultRepoId?: string;
   host?: string;
   port?: number;
-  openBrowser?: boolean;
   token?: string;
   allowLanMobileIntents?: boolean;
   mode?: "standalone" | "embedded" | "remote" | "disabled" | "unknown";
@@ -214,22 +205,6 @@ function cookieValue(request: Request, name: string): string | undefined {
   return undefined;
 }
 
-function openUrl(url: string): void {
-  const command =
-    process.platform === "darwin"
-      ? "open"
-      : process.platform === "win32"
-        ? "cmd"
-        : "xdg-open";
-  const args = process.platform === "win32" ? ["/c", "start", "", url] : [url];
-  try {
-    const child = spawn(command, args, { detached: true, stdio: "ignore" });
-    child.unref();
-  } catch (_error) {
-    // The URL is still printed by the caller when a desktop opener is unavailable.
-  }
-}
-
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -256,6 +231,15 @@ function legacyControlPlaneMutationRetiredPayload(): Record<string, unknown> {
     authority: "controller-home-sqlite",
     deprecated: true,
     frozen: true,
+  };
+}
+
+function legacyProgressProjectionRetiredPayload(): Record<string, unknown> {
+  return {
+    error: "LEGACY_PROGRESS_PROJECTION_RETIRED",
+    message: "Legacy Issue/Task progress projections were retired with the Local Bridge web UI. Use Requirement, Plan, Work and execution evidence APIs.",
+    authority: "controller-home-sqlite",
+    deprecated: true,
   };
 }
 
@@ -541,8 +525,7 @@ export function buildLocalControllerSnapshot(repoRoot: string) {
     projectState: loadControllerProjectState(repoRoot),
     governance: inspectProjectGovernance(repoRoot),
     recovery,
-    progress: getProjectProgress(repoRoot),
-    timeline: getControllerTimeline(repoRoot, { limit: 40 }),
+    timeline: listControllerWorklogEvents(repoRoot, { limit: 40 }),
     githubPlugin: getGitHubPluginStatus(repoRoot),
     assistantPlugins,
     mobileIntents,
@@ -945,26 +928,6 @@ export async function startLocalBridgeServer(
     next();
   };
 
-  app.get("/console-assets/:asset", (request, response) => {
-    const asset = String(request.params.asset ?? "");
-    if (asset !== "app.js" && asset !== "app.css") { response.status(404).end(); return; }
-    response.setHeader("Cache-Control", "no-cache");
-    response.type(asset.endsWith(".css") ? "text/css" : "application/javascript");
-    response.send(readConsoleAsset(asset as ConsoleAssetName));
-  });
-
-  app.get("/", (_request, response) => {
-    response.setHeader("Cache-Control", "no-store, max-age=0");
-    response.setHeader("Pragma", "no-cache");
-    response.setHeader("Expires", "0");
-    response.setHeader("Referrer-Policy", "no-referrer");
-    response.setHeader(
-      "Set-Cookie",
-      `${cookieName}=${encodeURIComponent(token)}; Path=/api; HttpOnly; SameSite=Strict`,
-    );
-    response.setHeader("Content-Type", "text/html; charset=utf-8");
-    response.send(localBridgeDashboardHtml());
-  });
   app.get("/health", (_request, response) => {
     const exposure = controllerExposureSnapshot(mcpExposureContext);
     const fingerprint = exposure.fingerprint;
@@ -1820,13 +1783,6 @@ export async function startLocalBridgeServer(
       response.status(400).json({ error: errorMessage(error) });
     }
   });
-  app.get("/api/progress", (request, response) => {
-    try {
-      response.json(getProjectProgress(requestRepositoryRoot(request, options, controllerHome)));
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
-    }
-  });
   app.get("/api/governance", (request, response) => {
     try {
       response.json(inspectProjectGovernance(requestRepositoryRoot(request, options, controllerHome)));
@@ -1936,6 +1892,12 @@ export async function startLocalBridgeServer(
     } catch (error) {
       response.status(400).json({ error: errorMessage(error) });
     }
+  });
+  app.get("/api/progress", (_request, response) => {
+    response.status(410).json(legacyProgressProjectionRetiredPayload());
+  });
+  app.get("/api/issues/:issueId/tasks/:taskId", (_request, response) => {
+    response.status(410).json(legacyProgressProjectionRetiredPayload());
   });
   app.patch("/api/project-state", (request, response) => {
     try {
@@ -2208,7 +2170,7 @@ export async function startLocalBridgeServer(
   app.get("/api/timeline", (request, response) => {
     try {
       response.json({
-        events: getControllerTimeline(requestRepositoryRoot(request, options, controllerHome), {
+        events: listControllerWorklogEvents(requestRepositoryRoot(request, options, controllerHome), {
           category: parseWorklogCategory(queryString(request.query.category)),
           issueId: queryString(request.query.issueId),
           taskId: queryString(request.query.taskId),
@@ -2221,19 +2183,6 @@ export async function startLocalBridgeServer(
       });
     } catch (error) {
       response.status(400).json({ error: errorMessage(error) });
-    }
-  });
-  app.get("/api/issues/:issueId/tasks/:taskId", (request, response) => {
-    try {
-      response.json(
-        getTaskProgressDetail(
-          requestRepositoryRoot(request, options, controllerHome),
-          request.params.issueId,
-          request.params.taskId,
-        ),
-      );
-    } catch (error) {
-      response.status(404).json({ error: errorMessage(error) });
     }
   });
   app.post("/api/worklog/export", (request, response) => {
@@ -2633,7 +2582,6 @@ export async function startLocalBridgeServer(
   const port =
     typeof address === "object" && address ? address.port : requestedPort;
   const url = `http://${host === "::1" ? "[::1]" : host}:${port}/`;
-  if (options.openBrowser) openUrl(url);
   return {
     host,
     port,

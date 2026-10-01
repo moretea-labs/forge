@@ -49,7 +49,6 @@ const handle = await startLocalBridgeServer({
   defaultRepoId,
   host,
   port,
-  openBrowser: false,
   allowLanMobileIntents: true,
   mode: 'standalone',
 });

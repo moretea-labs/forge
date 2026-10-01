@@ -49,7 +49,6 @@ function sourceFixture() {
   mkdirSync(join(root, 'src/runtime/plugins'), { recursive: true });
   mkdirSync(join(root, 'src/runtime/shared'), { recursive: true });
   mkdirSync(join(root, 'src/cli/commands'), { recursive: true });
-  mkdirSync(join(root, 'src/cli/local-bridge/ui-dist'), { recursive: true });
   mkdirSync(join(root, 'supervisor/native-messaging'), { recursive: true });
   mkdirSync(join(root, 'supervisor/chrome-extension'), { recursive: true });
   mkdirSync(join(root, 'bin'), { recursive: true });
@@ -65,8 +64,6 @@ function sourceFixture() {
   writeFileSync(join(root, 'src/runtime/plugins/external-unix-socket-probe.cjs'), 'console.log("probe");\n');
   writeFileSync(join(root, 'supervisor/native-messaging/host.ts'), 'process.exit(0);\n');
   for (const file of ['manifest.json', 'background.js', 'content.js', 'core.js']) writeFileSync(join(root, 'supervisor/chrome-extension', file), file === 'manifest.json' ? '{"manifest_version":3}\n' : '// supervisor extension fixture\n');
-  writeFileSync(join(root, 'src/cli/local-bridge/ui-dist/app.js'), 'console.log("ui");\n');
-  writeFileSync(join(root, 'src/cli/local-bridge/ui-dist/app.css'), ':root { color-scheme: light; }\n');
   writeFileSync(join(root, 'scripts/stage-runtime-release.ts'), '// candidate-owned stager fixture\n');
   spawnSync('git', ['init', '-b', 'main'], { cwd: root, stdio: 'ignore' });
   spawnSync('git', ['config', 'user.email', 'forge-test@example.invalid'], { cwd: root, stdio: 'ignore' });
@@ -189,28 +186,6 @@ describe('immutable Runtime Process Runtime execution surface', () => {
     expect(spawnSync(runnerPath, [], { encoding: 'utf8', env: runtimeReleaseCanaryEnvironment(developerEnv) }).status).not.toBe(0);
     expect(() => assertRuntimeReleaseExecutionCanaries(manifestPath, controllerHome))
       .toThrow('RUNTIME_RELEASE_EXECUTION_CANARY_FAILED: process_runner');
-  });
-});
-
-describe('compiled runtime UI assets', () => {
-  test('reads controller UI assets co-located with a Bun compiled executable', () => {
-    const root = mkdtempSync(join(tmpdir(), 'forge-runtime-ui-compiled-'));
-    roots.push(root);
-    const uiRoot = join(root, 'ui-dist');
-    mkdirSync(uiRoot, { recursive: true });
-    writeFileSync(join(uiRoot, 'app.js'), 'compiled-ui-marker');
-    const entryPath = join(root, 'entry.ts');
-    const helperPath = join(import.meta.dir, '../../src/cli/local-bridge/console-assets.ts');
-    writeFileSync(entryPath, `import { readConsoleAsset } from ${JSON.stringify(helperPath)};\nprocess.stdout.write(readConsoleAsset("app.js"));\n`);
-    const executable = join(root, 'forge-runtime-ui-smoke');
-    const compile = spawnSync(process.execPath, ['build', entryPath, '--compile', '--outfile', executable], {
-      cwd: root,
-      encoding: 'utf8',
-    });
-    expect(compile.status).toBe(0);
-    const run = spawnSync(executable, [], { cwd: root, encoding: 'utf8' });
-    expect(run.status).toBe(0);
-    expect(run.stdout).toBe('compiled-ui-marker');
   });
 });
 
@@ -565,12 +540,9 @@ describe('runtime release materialization', () => {
     expect(staged.packageArtifactIdentity).toMatch(/^sha256:/);
     expect(manifest.packageRoot).toBe('package');
     expect(manifest.packageArtifactIdentity).toBe(staged.packageArtifactIdentity);
-    expect(existsSync(join(staged.releasePath, 'ui-dist', 'app.js'))).toBe(true);
-    expect(existsSync(join(staged.releasePath, 'ui-dist', 'app.css'))).toBe(true);
-    expect(readFileSync(join(staged.releasePath, 'ui-dist', 'app.js'), 'utf8')).toContain('console.log');
-    expect(staged.controllerUiArtifactIdentity).toMatch(/^sha256:/);
-    expect(manifest.controllerUiRoot).toBe('ui-dist');
-    expect(manifest.controllerUiArtifactIdentity).toBe(staged.controllerUiArtifactIdentity);
+    expect(existsSync(join(staged.releasePath, 'ui-dist'))).toBe(false);
+    expect(manifest.controllerUiRoot).toBeUndefined();
+    expect(manifest.controllerUiArtifactIdentity).toBeUndefined();
     expect(loadRuntimeReleaseManifest(staged.manifestPath, controllerHome)).toMatchObject({
       codeGraphNodeEntrypoint: 'codegraph-node',
       codeGraphNodeArtifactIdentity: staged.codeGraphNodeArtifactIdentity,

@@ -68,7 +68,6 @@ import {
   updateTask,
 } from "../../../src/cli/controller/issue-store";
 import { applyMigratedIssueDecision } from '../../../src/cli/controller/migrated-issue-decision';
-import { legacyIssueAuthorityRetired } from '../../../src/cli/controller/legacy-issue-cutover';
 import {
   listControllerChecks,
 } from "../../../src/cli/controller/check-runner";
@@ -79,12 +78,10 @@ import { getWorkContract } from '../../../packages/kernel/work/api';
 import { admitDirectEditWorkContract } from '../../../src/runtime/control-plane/facade/repository-work-admission';
 import { listCapabilityDescriptors, summarizeCapabilityGroups } from '../../../src/runtime/control-plane/facade/capability-registry';
 import {
-  getControllerTimeline,
-  getProjectProgress,
-  getTaskProgressDetail,
-  getTaskProgressReadView,
-} from "../../../src/cli/controller/progress";
-import { exportControllerWorklog, parseWorklogCategory } from "../../../src/cli/controller/worklog";
+  exportControllerWorklog,
+  listControllerWorklogEvents,
+  parseWorklogCategory,
+} from "../../../src/cli/controller/worklog";
 import { inspectProjectGovernance, reconcileProjectGovernance } from "../../../src/cli/controller/governance";
 import { taskExecutionPolicy } from "../../../src/cli/controller/execution-policy";
 import { finishEditSession, finishTaskRun } from "../../../src/cli/controller/completion-orchestrator";
@@ -1774,13 +1771,6 @@ export function buildMcpToolDefinitions(
         annotations: readOnly,
       },
       {
-        name: "get_project_progress",
-        description:
-          "Return evidence-gate completion, effective status, blockers, throughput, current-focus progress, and attention items without lifecycle-percentage estimates.",
-        inputSchema: EMPTY_SCHEMA,
-        annotations: readOnly,
-      },
-      {
         name: "get_project_governance",
         description:
           "Return the current execution focus, evidence-driven execution queue, dead dependencies, pending review/acceptance, duplicate active Issues, and closeout anomalies.",
@@ -1832,22 +1822,6 @@ export function buildMcpToolDefinitions(
           additionalProperties: false,
         },
         annotations: write,
-      },
-      {
-        name: "get_task_progress_detail",
-        description:
-          "Return one Task with effective progress, bounded Run and timeline summaries by default, and full detail on demand.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            issue_id: { type: "string" },
-            task_id: { type: "string" },
-            detail_level: { type: "string", enum: ["summary", "full"] },
-          },
-          required: ["issue_id", "task_id"],
-          additionalProperties: false,
-        },
-        annotations: readOnly,
       },
       {
         name: "get_worklog_timeline",
@@ -2787,7 +2761,7 @@ export function buildMcpToolDefinitions(
       },
     );
   }
-  return tools;
+  return tools.filter((tool) => !RETIRED_LEGACY_PUBLIC_TOOLS.has(tool.name));
 }
 
 export function controllerExpectedToolNames(
@@ -2801,24 +2775,48 @@ export function controllerExpectedToolNames(
   return [...DEFAULT_CONTROLLER_TOOL_NAMES];
 }
 
-const RETIRED_LEGACY_MUTATION_TOOLS = new Set([
+const RETIRED_LEGACY_PUBLIC_TOOLS = new Set([
+  "list_issues",
+  "get_project_board",
+  "get_project_governance",
   "reconcile_project_governance",
+  "get_project_state",
   "set_current_issue",
   "archive_issue",
   "restore_issue",
+  "get_issue",
   "publish_issue_to_github",
   "refresh_github_issue",
   "close_github_issue",
+  "inspect_issue_readiness",
+  "inspect_task_readiness",
   "prepare_issue_launch",
   "create_issue",
+  "update_issue",
   "plan_issue",
   "append_task",
   "split_task",
   "supersede_task",
   "set_task_dependencies",
   "update_task",
+  "dispatch_task",
+  "launch_issue",
+  "dispatch_ready_tasks",
+  "get_task_run",
+  "get_task_run_events",
+  "get_task_run_log",
+  "get_task_diff",
+  "integrate_task_run",
+  "finish_task_run",
+  "list_task_runs",
+  "cancel_task_run",
+  "retry_task_run",
+  "verify_task",
+  "accept_task",
+  "request_task_changes",
   "record_task_verification",
   "accept_verified_task",
+  "finish_edit_session",
 ]);
 
 export async function callMcpTool(
@@ -2827,12 +2825,9 @@ export async function callMcpTool(
   args: Record<string, unknown> = {},
 ): Promise<CallToolResult> {
   try {
-    if (RETIRED_LEGACY_MUTATION_TOOLS.has(name) && legacyIssueAuthorityRetired(ctx.repoRoot)) {
+    if (RETIRED_LEGACY_PUBLIC_TOOLS.has(name)) {
       audit(ctx, name, "blocked", args);
-      return errorResult(
-        "LEGACY_CONTROL_PLANE_MUTATION_RETIRED",
-        `${name} cannot mutate frozen Issue/Task/currentIssue/project-board compatibility files after SQLite cutover. Use Requirement, Plan and Work APIs.`,
-      );
+      return errorResult("UNKNOWN_TOOL", `unknown tool: ${name}`);
     }
     switch (name) {
       case "harness_status": {
@@ -3465,13 +3460,6 @@ export async function callMcpTool(
         response.responseMeta.structuredPayloadBytes = Buffer.byteLength(JSON.stringify(response), "utf8");
         return textResult(response);
       }
-      case "get_project_progress": {
-        if (ctx.policy.profile !== "controller")
-          return errorResult("TOOL_DISABLED", "get_project_progress requires the controller profile");
-        const progress = getProjectProgress(ctx.repoRoot);
-        audit(ctx, name, "ok", args);
-        return textResult(progress);
-      }
       case "get_project_governance": {
         if (ctx.policy.profile !== "controller")
           return errorResult("TOOL_DISABLED", "get_project_governance requires the controller profile");
@@ -3517,22 +3505,10 @@ export async function callMcpTool(
         audit(ctx, name, "ok", args, `tasks/issues/${issue.id}`);
         return textResult(projectIssueEffectiveView(ctx.repoRoot, issue));
       }
-      case "get_task_progress_detail": {
-        if (ctx.policy.profile !== "controller")
-          return errorResult("TOOL_DISABLED", "get_task_progress_detail requires the controller profile");
-        const result = getTaskProgressReadView(
-          ctx.repoRoot,
-          String(args.issue_id ?? ""),
-          String(args.task_id ?? ""),
-          args.detail_level === "full" ? "full" : "summary",
-        );
-        audit(ctx, name, "ok", args, `tasks/issues/${result.issue.id}`);
-        return textResult(result);
-      }
       case "get_worklog_timeline": {
         if (ctx.policy.profile !== "controller")
           return errorResult("TOOL_DISABLED", "get_worklog_timeline requires the controller profile");
-        const events = getControllerTimeline(ctx.repoRoot, {
+        const events = listControllerWorklogEvents(ctx.repoRoot, {
           category: parseWorklogCategory(args.category),
           issueId: typeof args.issue_id === "string" ? args.issue_id : undefined,
           taskId: typeof args.task_id === "string" ? args.task_id : undefined,

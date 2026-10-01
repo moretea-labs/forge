@@ -16,10 +16,6 @@ import {
 } from '../../src/runtime/control-plane/runtime-cleanup';
 import { applyRuntimeCleanup, previewRuntimeCleanup } from '../../src/runtime/maintenance/cleanup';
 import { codegraphRepositoryCacheRoot, createCodegraphCacheLocator } from '../../src/runtime/context/codegraph-cache-boundary';
-import {
-  activateConvergenceWorkAdmission,
-  activateExclusiveWorkAdmission,
-} from '../../src/runtime/control-plane/facade/work-admission-policy';
 import { markRepositoryProjectionDirty, persistRepositoryProjectionDirty, repositoryProjectionIsDirty } from '../../src/runtime/projections/invalidation';
 import type { RepositoryRecord } from '../../src/cli/repositories/types';
 import { repositoryControllerRoot } from '../../src/cli/repositories/controller-home';
@@ -1020,7 +1016,7 @@ describe('runtime cleanup', () => {
     });
   });
 
-  test('refreshes dirty repository projections even when exclusive Work admission disables dispatch', async () => {
+  test('refreshes dirty repository projections during scheduler maintenance', async () => {
     const home = controllerHome();
     const root = mkdtempSync(join(tmpdir(), 'forge-projection-refresh-disabled-dispatch-'));
     homes.push(root);
@@ -1063,24 +1059,12 @@ describe('runtime cleanup', () => {
     internal.processGc = () => ({ ok: true });
     internal.workValidationReconcile = () => ({ errors: [] });
     internal.editValidationReconcile = async () => ({ errors: [] });
-    activateExclusiveWorkAdmission(home, { allowedWorkId: 'work-exclusive', reason: 'test exclusive admission' });
     markRepositoryProjectionDirty(home, repository.repoId, 'source-scan-test', { sourceRevision: 'abc123' });
     expect(repositoryProjectionIsDirty(home, repository.repoId)).toBe(true);
 
     await expect(scheduler.tick()).resolves.toEqual({ activeJobs: 0 });
 
     expect(repositoryProjectionIsDirty(home, repository.repoId)).toBe(false);
-  });
-
-  test('convergence admission keeps scheduler advancement active for existing Work', async () => {
-    const home = controllerHome();
-    const scheduler = new GlobalScheduler(home, { pollIntervalMs: 1 });
-    const internal = scheduler as unknown as { lastScheduleTick: number };
-    activateConvergenceWorkAdmission(home, { reason: 'Drain existing Work without admitting new Work.' });
-
-    expect(internal.lastScheduleTick).toBe(0);
-    await expect(scheduler.tick()).resolves.toEqual({ activeJobs: 0 });
-    expect(internal.lastScheduleTick).toBeGreaterThan(0);
   });
 
   test('refreshes a dirty projection before its idle round-robin source-scan slot', async () => {
@@ -1133,7 +1117,6 @@ describe('runtime cleanup', () => {
     internal.processGc = () => ({ ok: true });
     internal.workValidationReconcile = () => ({ errors: [] });
     internal.editValidationReconcile = async () => ({ errors: [] });
-    activateExclusiveWorkAdmission(home, { allowedWorkId: 'work-exclusive', reason: 'test targeted dirty projection maintenance' });
     markRepositoryProjectionDirty(home, repositoryB.repoId, 'source-change-before-idle-slot', { sourceRevision: 'def456' });
     expect(selectSchedulerSourceScanRepositories([repositoryA, repositoryB], new Set(), now, now)).toEqual([]);
     expect(repositoryProjectionIsDirty(home, repositoryB.repoId)).toBe(true);
@@ -1198,7 +1181,6 @@ describe('runtime cleanup', () => {
     };
     internal.workValidationReconcile = () => ({ errors: [] });
     internal.editValidationReconcile = async () => ({ errors: [] });
-    activateExclusiveWorkAdmission(home, { allowedWorkId: 'work-exclusive', reason: 'test concurrency reconciliation isolation' });
     const originalError = console.error;
     console.error = () => undefined;
     try {

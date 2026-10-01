@@ -419,11 +419,10 @@ export function runMcpSetupChatgpt(opts: {
           enabled: false,
           host: existingConfig?.localController?.host ?? "127.0.0.1",
           port: localControllerPort,
-          autoOpen: false,
           mode: "disabled",
         }
       : {
-          ...(existingConfig?.localController ?? { enabled: true, host: "127.0.0.1", autoOpen: false }),
+          ...(existingConfig?.localController ?? { enabled: true, host: "127.0.0.1" }),
           port: localControllerPort,
         },
     devMode: {
@@ -701,7 +700,6 @@ export function runMcpDoctor(opts: {
         enabled: localConfig?.localController?.enabled ?? true,
         host: localConfig?.localController?.host ?? "127.0.0.1",
         port: localConfig?.localController?.port ?? 8766,
-        autoOpen: localConfig?.localController?.autoOpen ?? false,
       },
       devMode: {
         agentRunner: localConfig?.devMode?.agentRunner === true,

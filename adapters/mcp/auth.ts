@@ -46,7 +46,6 @@ export interface McpLocalConfig {
     mode?: 'standalone' | 'embedded' | 'remote' | 'disabled' | 'unknown';
     host?: string;
     port?: number;
-    autoOpen?: boolean;
   };
 }
 

@@ -35,7 +35,6 @@ export async function startConfiguredRuntimeLocalBridge(input: {
     controllerHome: input.controllerHome,
     host: local.host ?? '127.0.0.1',
     port: local.port ?? 8766,
-    openBrowser: local.autoOpen === true,
     mode: 'embedded',
   });
   const generation = readRuntimeGeneration(input.controllerHome)?.generation;
