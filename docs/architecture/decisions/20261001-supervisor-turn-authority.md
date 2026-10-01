@@ -127,3 +127,10 @@ state, extra lifecycle owner, schema or provider retry policy is added.
 The operator's three-goal consolidation explicitly stops historical duplicate
 tasks through the Supervisor API. It does not infer completion, clear effects,
 cancel another execution owner's claim or delete ControllerRound authority.
+
+Project discovery attributes a conversation to a project page only when its
+canonical route carries the same project id. Sidebar presence is not project
+membership. The existing discovery store validates both incoming and retained
+metadata against that route, including projects whose URLs omit a title slug;
+a conflicting observation cannot displace a proven title from another source.
+Discovery remains observation, never task enrollment or dispatch authority.

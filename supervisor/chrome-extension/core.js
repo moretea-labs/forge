@@ -19,6 +19,13 @@
     } catch { return null; }
   }
   function effectMarker(effectId) { return EFFECT.test(effectId) ? `<<<FORGE_WORKFLOW_EFFECT_V1:${effectId}>>>` : ''; }
+  function projectId(value) {
+    try {
+      const url = new URL(value);
+      if (url.protocol !== 'https:' || url.hostname !== 'chatgpt.com') return null;
+      return /^\/g\/(g-p-[a-z0-9]+)(?:-[^/]+)?\/(?:project\/?|c\/[^/]+\/?)$/i.exec(url.pathname)?.[1]?.toLowerCase() ?? null;
+    } catch { return null; }
+  }
   function promptHasEffect(prompt, effectId) { const marker = effectMarker(effectId); return Boolean(marker && String(prompt).includes(marker)); }
   function isCommittedAssistantResponse(text) {
     const value = String(text ?? '').trim();
@@ -41,5 +48,5 @@
   // requiring the exact route to match made the extension open another tab for
   // the same conversation on every refresh pass.
   function sameConversation(a, b) { return Boolean(a && b && a.conversationId === b.conversationId); }
-  globalThis.ForgeWorkflowSupervisorChromeCore = Object.freeze({ normalizeText, parseConversation, effectMarker, promptHasEffect, isCommittedAssistantResponse, textFingerprint, sameIdentity, sameConversation });
+  globalThis.ForgeWorkflowSupervisorChromeCore = Object.freeze({ normalizeText, parseConversation, projectId, effectMarker, promptHasEffect, isCommittedAssistantResponse, textFingerprint, sameIdentity, sameConversation });
 })();

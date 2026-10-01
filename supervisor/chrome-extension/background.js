@@ -67,6 +67,7 @@ async function discoveryScan(tabId, projectTitles) {
 async function publishDiscovery(tabs, projectConversations = [], currentTabId) {
   const seen = new Set();
   const conversations = [];
+  const projectByConversation = new Map(projectConversations.map((entry) => [entry.conversation_id, entry]));
   const append = (entry) => {
     if (!entry?.conversation_id || seen.has(entry.conversation_id) || conversations.length >= 512) return;
     seen.add(entry.conversation_id);
@@ -76,7 +77,7 @@ async function publishDiscovery(tabs, projectConversations = [], currentTabId) {
     const identity = core.parseConversation(tab.url ?? '');
     if (!identity) continue;
     const title = String(tab.title ?? '').trim();
-    append({ conversation_id: identity.conversationId, canonical_url: identity.canonicalUrl, ...(title ? { title: title.slice(0, 512) } : {}), ...(tab.id === currentTabId ? { is_current: true } : {}) });
+    append({ ...projectByConversation.get(identity.conversationId), conversation_id: identity.conversationId, canonical_url: identity.canonicalUrl, ...(title ? { title: title.slice(0, 512) } : {}), ...(tab.id === currentTabId ? { is_current: true } : {}) });
   }
   for (const entry of projectConversations) append(entry);
   return nativeRpc('browser_discovery_update', { source: 'chrome-extension', conversations });
@@ -105,9 +106,13 @@ async function refreshAuthorizedTabs() {
     if (!projectTab) continue;
     if (!projectTab.id) continue;
     const scan = await discoveryScan(projectTab.id, projectTitles);
+    const projectId = core.projectId(project.url);
+    if (!projectId || core.projectId(scan.pageUrl) !== projectId) continue;
     for (const conversation of Array.isArray(scan?.conversations) ? scan.conversations : []) {
       const identity = core.parseConversation(conversation?.canonicalUrl ?? '');
-      if (!identity) continue;
+      // The sidebar contains chats from other projects and unscoped chats.
+      // Only a matching canonical project route proves this attribution.
+      if (!identity || core.projectId(identity.canonicalUrl) !== projectId) continue;
       const title = String(conversation?.title ?? '').trim();
       projectConversations.push({
         conversation_id: identity.conversationId,

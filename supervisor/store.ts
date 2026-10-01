@@ -19,14 +19,22 @@ function statement<T>(db: Database, sql: string, fn: (statement: Statement) => T
   try { return fn(prepared); } finally { prepared.finalize?.(); }
 }
 function now(): string { return new Date().toISOString(); }
-function projectMetadataFromConversationUrl(value: string): { projectTitle: string; projectUrl: string } | undefined {
+function projectMetadataFromConversationUrl(value: string, observedTitle?: string, observedUrl?: string): { projectTitle?: string; projectUrl: string } | undefined {
   try {
     const parsed = new URL(value);
     const match = /^\/g\/(g-p-[a-z0-9]+)(?:-([^/]+))?\/c\/[a-z0-9-]+\/?$/i.exec(parsed.pathname);
     const slug = match?.[2]?.trim();
-    if (!match?.[1] || !slug) return undefined;
+    if (parsed.protocol !== 'https:' || parsed.hostname !== 'chatgpt.com' || !match?.[1]) return undefined;
+    let observedProjectId: string | undefined;
+    try {
+      const observed = new URL(observedUrl ?? '');
+      if (observed.origin === parsed.origin) observedProjectId = /^\/g\/(g-p-[a-z0-9]+)(?:-[^/]+)?\/project\/?$/i.exec(observed.pathname)?.[1];
+    } catch { /* An unproven title cannot override the canonical route. */ }
+    const projectTitle = observedProjectId?.toLowerCase() === match[1].toLowerCase()
+      ? observedTitle ?? slug?.replace(/[-_]+/g, ' ').replace(/\s+/g, ' ').trim()
+      : slug?.replace(/[-_]+/g, ' ').replace(/\s+/g, ' ').trim();
     return {
-      projectTitle: slug.replace(/[-_]+/g, ' ').replace(/\s+/g, ' ').trim(),
+      ...(projectTitle ? { projectTitle } : {}),
       projectUrl: `https://chatgpt.com/g/${match[1]}/project`,
     };
   } catch {
@@ -293,15 +301,16 @@ export class WorkflowSupervisorStore {
     const observedAt = now();
     this.transaction((db) => {
       for (const conversation of conversations) {
-        const routeProject = projectMetadataFromConversationUrl(conversation.canonicalUrl);
-        const projectTitle = routeProject?.projectTitle ?? conversation.projectTitle;
-        const projectUrl = routeProject?.projectUrl ?? conversation.projectUrl;
+        const project = projectMetadataFromConversationUrl(conversation.canonicalUrl, conversation.projectTitle, conversation.projectUrl)
+          ?? { projectTitle: conversation.projectTitle, projectUrl: conversation.projectUrl };
         statement(db, `INSERT INTO discovered_conversations(source,conversation_id,canonical_url,title,project_title,project_url,observed_at)
           VALUES (?,?,?,?,?,?,?)
           ON CONFLICT(source,conversation_id) DO UPDATE SET canonical_url=excluded.canonical_url,title=excluded.title,
-            project_title=COALESCE(excluded.project_title,discovered_conversations.project_title),
+            project_title=CASE WHEN excluded.project_url IS NOT NULL AND discovered_conversations.project_url IS NOT NULL
+              AND excluded.project_url<>discovered_conversations.project_url THEN excluded.project_title
+              ELSE COALESCE(excluded.project_title,discovered_conversations.project_title) END,
             project_url=COALESCE(excluded.project_url,discovered_conversations.project_url),observed_at=excluded.observed_at`,
-        (s) => s.run(normalizedSource, conversation.conversationId, conversation.canonicalUrl, conversation.title ?? null, projectTitle ?? null, projectUrl ?? null, observedAt));
+        (s) => s.run(normalizedSource, conversation.conversationId, conversation.canonicalUrl, conversation.title ?? null, project.projectTitle ?? null, project.projectUrl ?? null, observedAt));
       }
     });
     return this.discoverySnapshot();
@@ -315,7 +324,10 @@ export class WorkflowSupervisorStore {
       for (const row of rows) {
         const conversationId = String(row.conversation_id ?? '');
         const canonicalUrl = String(row.canonical_url ?? '');
-        const routeProject = projectMetadataFromConversationUrl(canonicalUrl);
+        // Validate retained observations too: an older adapter may have tagged
+        // every sidebar conversation with the project page it happened to scan.
+        const project = projectMetadataFromConversationUrl(canonicalUrl, row.project_title ? String(row.project_title) : undefined, row.project_url ? String(row.project_url) : undefined)
+          ?? { projectTitle: row.project_title ? String(row.project_title) : undefined, projectUrl: row.project_url ? String(row.project_url) : undefined };
         const rowObservedAt = String(row.observed_at ?? '');
         if (rowObservedAt > observedAt) observedAt = rowObservedAt;
         const current = byConversation.get(conversationId);
@@ -323,11 +335,11 @@ export class WorkflowSupervisorStore {
           conversationId,
           canonicalUrl,
           ...(row.title ? { title: String(row.title) } : {}),
-          ...(routeProject?.projectTitle ? { projectTitle: routeProject.projectTitle } : row.project_title ? { projectTitle: String(row.project_title) } : {}),
-          ...(routeProject?.projectUrl ? { projectUrl: routeProject.projectUrl } : row.project_url ? { projectUrl: String(row.project_url) } : {}),
+          ...(project.projectTitle ? { projectTitle: project.projectTitle } : {}),
+          ...(project.projectUrl ? { projectUrl: project.projectUrl } : {}),
         };
         if (!current) byConversation.set(conversationId, candidate);
-        else if (!current.projectTitle && candidate.projectTitle) byConversation.set(conversationId, { ...current, projectTitle: candidate.projectTitle, ...(candidate.projectUrl ? { projectUrl: candidate.projectUrl } : {}) });
+        else if (!current.projectTitle && candidate.projectTitle && (!current.projectUrl || current.projectUrl === candidate.projectUrl)) byConversation.set(conversationId, { ...current, projectTitle: candidate.projectTitle, ...(candidate.projectUrl ? { projectUrl: candidate.projectUrl } : {}) });
       }
       return { observedAt, conversations: [...byConversation.values()] };
     });

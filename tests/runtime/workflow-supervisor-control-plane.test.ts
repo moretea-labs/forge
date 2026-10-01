@@ -158,6 +158,20 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
       projectTitle: '肾宝保2', projectUrl: 'https://chatgpt.com/g/g-p-near456/project',
     }]);
     expect(chinese.bootstrapProjectUrl(task.taskId)).toBe('https://chatgpt.com/g/g-p-abc123/project');
+    // A different project's sidebar observation cannot relabel this route,
+    // even when the Chinese project has no slug in its canonical URL.
+    chinese.recordBrowserDiscovery('stale-extension', [{
+      conversationId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+      canonicalUrl: 'https://chatgpt.com/g/g-p-abc123/c/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+      projectTitle: 'forge', projectUrl: 'https://chatgpt.com/g/g-p-other123/project',
+    }]);
+    expect(chinese.bootstrapProjectUrl(task.taskId)).toBe('https://chatgpt.com/g/g-p-abc123/project');
+    expect(chinese.browserDiscoverySnapshot().conversations.find(entry => entry.conversationId === 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee')?.projectTitle).toBe('肾宝保');
+    chinese.recordBrowserDiscovery('stale-extension', [{
+      conversationId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+      canonicalUrl: 'https://chatgpt.com/g/g-p-abc123/c/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+    }]);
+    expect(chinese.bootstrapProjectUrl(task.taskId)).toBe('https://chatgpt.com/g/g-p-abc123/project');
     chinese.recordBrowserDiscovery('test', [{
       conversationId: 'ffffffff-eeee-dddd-cccc-bbbbbbbbbbbb',
       canonicalUrl: 'https://chatgpt.com/g/g-p-near456/c/ffffffff-eeee-dddd-cccc-bbbbbbbbbbbb',
