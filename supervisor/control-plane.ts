@@ -264,6 +264,7 @@ export class WorkflowSupervisorControlPlane {
   }
   bootstrapBeginEffect(input: { taskId: string; effectId: string; dispatchId: string; dispatchGeneration: number }): boolean {
     const task = this.requireTask(input.taskId);
+    requireNonTerminalTask(this.store, task.taskId);
     if (!task.conversationId.startsWith('bootstrap:')) throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_NOT_PENDING');
     const pending = this.store.nextBrowserEffect(task.taskId);
     if (!pending || pending.effect.effectId !== validateEffectId(input.effectId) || pending.mode !== 'send') return false;
@@ -300,6 +301,7 @@ export class WorkflowSupervisorControlPlane {
   }
   browserBeginEffect(input: { conversationId: string; conversationUrl: string; effectId: string; dispatchId: string; dispatchGeneration: number; evidence?: Record<string, unknown> }): { started: boolean; mode: 'send' | 'reconcile'; generation: number } {
     const task = this.requireBrowserTask(input.conversationId, input.conversationUrl);
+    requireNonTerminalTask(this.store, task.taskId);
     const pending = this.store.nextBrowserEffect(task.taskId);
     const effectId = validateEffectId(input.effectId);
     if (!pending || pending.effect.effectId !== effectId) throw new Error('WORKFLOW_SUPERVISOR_BROWSER_EFFECT_NOT_CURRENT');

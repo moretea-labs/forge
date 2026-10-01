@@ -1781,6 +1781,14 @@ test('automation tool receipt successor begins from the real assistant page base
   let generating = true;
   let closeCount = 0;
   const dispatched: string[] = [];
+  let nowMs = Date.now();
+  let receiptDuringScan: (() => Promise<void>) | undefined;
+  const scanEvents: string[] = [];
+  const backlogPages = ['unknown-tab-1', 'unknown-tab-2'].map((tabId): WorkflowSupervisorNativePage => ({
+    evaluate: async () => { throw new Error('unknown reconciliation must never mutate'); },
+    waitForSelector: async () => undefined,
+    tabRef: () => ({ windowId: 'receipt-window', tabId }),
+  }));
   const page: WorkflowSupervisorNativePage = {
     evaluate: async () => { throw new Error('unexpected provider control'); },
     waitForSelector: async () => undefined,
@@ -1791,21 +1799,45 @@ test('automation tool receipt successor begins from the real assistant page base
     listTabs: async () => ({ entries: [{
       windowId: 'receipt-window', tabId: 'receipt-tab', active: false,
       url: conversationUrl, title: 'Tool-only completed turn', browserProduct: 'chrome' as const,
-    }], unavailableProducts: [] }),
-    reattach: async () => page,
+    }, ...backlogPages.map((entry) => ({
+      windowId: 'receipt-window', tabId: entry.tabRef()!.tabId, active: false,
+      url: 'https://chatgpt.com/', title: 'Unrelated unknown bootstrap', browserProduct: 'chrome' as const,
+    }))], unavailableProducts: [] }),
+    reattach: async (ref: { tabId: string }) => backlogPages.find((entry) => entry.tabRef()!.tabId === ref.tabId) ?? page,
     create: async () => { throw new Error('must retain the same conversation tab'); },
     close: async () => { closeCount += 1; },
-    readOwner: async () => owner,
+    readOwner: async (entry: WorkflowSupervisorNativePage) => {
+      if (entry.tabRef()!.tabId === 'unknown-tab-2') {
+        generating = false;
+        nowMs += 1_500;
+        scanEvents.push('provider-idle');
+      }
+      return entry === page ? owner : '';
+    },
     writeOwner: async (_page: WorkflowSupervisorNativePage, marker: string) => { owner = marker; },
-    snapshot: async () => ({
-      url: conversationUrl, title: 'Tool-only completed turn', latestUserText: submittedText,
-      latestAssistantResponse: '', latestTurnRole: 'user' as const,
-      isGenerating: generating, providerActivityText: '', providerFailureText: '',
-    }),
+    snapshot: async (entry: WorkflowSupervisorNativePage) => {
+      if (entry !== page) {
+        scanEvents.push(entry.tabRef()!.tabId);
+        const receipt = receiptDuringScan;
+        receiptDuringScan = undefined;
+        await receipt?.();
+        return {
+          url: 'https://chatgpt.com/', title: 'Unrelated unknown bootstrap', latestUserText: '',
+          latestAssistantResponse: '', latestTurnRole: 'user' as const,
+          isGenerating: false, providerActivityText: '', providerFailureText: '',
+        };
+      }
+      return {
+        url: conversationUrl, title: 'Tool-only completed turn', latestUserText: submittedText,
+        latestAssistantResponse: '', latestTurnRole: 'user' as const,
+        isGenerating: generating, providerActivityText: '', providerFailureText: '',
+      };
+    },
     dispatchPrompt: async (_page: WorkflowSupervisorNativePage, prompt: string) => {
-      dispatched.push(prompt); submittedText = prompt;
+      dispatched.push(prompt); submittedText = prompt; scanEvents.push('successor-send');
       return { dispatched: true, confirmed: true };
     },
+    nowMs: () => nowMs,
     providerScopeKey: join(root, 'provider-scope'),
     sleep: async () => undefined,
     onError: (error: unknown) => { throw error; },
@@ -1819,14 +1851,51 @@ test('automation tool receipt successor begins from the real assistant page base
   expect(store.latestEffectDispatch(successor!.effectId)?.generation).toBe(1);
   expect(closeCount).toBe(0);
   await adapter.close();
-  await control.observeAutomationReceipt({ taskId, conversationId, status: 'continue', receiptId: 'second-native-continue' });
+  // After restart, commit CONTINUE in the middle of a historical bootstrap
+  // inventory scan. It must dispatch before that scan reads the next tab.
+  const backlogTaskId = 'old-outcome-unknown-bootstrap';
+  control.registerTask({
+    taskId: backlogTaskId, conversationId: `bootstrap:${backlogTaskId}`, conversationUrl: 'https://chatgpt.com/',
+    objective: 'Observe an already-started provider effect without resending.',
+    completionContract: {}, continuationPolicy: {}, userBlockerPolicy: {},
+  });
+  const backlogEffect = control.reserveEnrollment(backlogTaskId);
+  expect(control.bootstrapBeginEffect({
+    taskId: backlogTaskId, effectId: backlogEffect.effectId,
+    dispatchId: 'old-bootstrap-dispatch', dispatchGeneration: 1,
+  })).toBe(true);
+  receiptDuringScan = async () => {
+    await control.observeAutomationReceipt({ taskId, conversationId, status: 'continue', receiptId: 'second-native-continue' });
+    generating = true;
+    scanEvents.push('continue-committed');
+  };
+  scanEvents.length = 0;
   const restarted = new WorkflowSupervisorNativeBrowserAdapter(control, new WorkflowSupervisorEphemeralDiscovery(), dependencies);
   await restarted.runOnce();
   expect(dispatched).toHaveLength(2);
+  expect(scanEvents).toEqual(['unknown-tab-1', 'continue-committed', 'provider-idle', 'successor-send', 'unknown-tab-2']);
+  expect(store.effectDispatchBudget(backlogEffect.effectId).generations).toBe(1);
+  expect(store.effectApplied(backlogEffect.effectId)).toBe(false);
+  expect(control.bootstrapPoll(backlogTaskId).command?.mode).not.toBe('send');
+  await restarted.runOnce();
+  expect(dispatched).toHaveLength(2);
+  expect(store.effectDispatchBudget(backlogEffect.effectId).generations).toBe(1);
   expect(closeCount).toBe(0);
   control.stopTask(taskId);
   await restarted.runOnce();
   expect(closeCount).toBe(1);
+  const last = store.latestAppliedEffectWithoutCompletion(taskId)!;
+  expect(() => control.browserBeginEffect({
+    conversationId, conversationUrl, effectId: last.effectId,
+    dispatchId: 'stale-after-stop', dispatchGeneration: 1,
+  })).toThrow('WORKFLOW_SUPERVISOR_TASK_TERMINAL:STOPPED');
+  control.stopTask(backlogTaskId);
+  expect(() => control.bootstrapBeginEffect({
+    taskId: backlogTaskId, effectId: backlogEffect.effectId,
+    dispatchId: 'stale-bootstrap-after-stop', dispatchGeneration: 1,
+  })).toThrow('WORKFLOW_SUPERVISOR_TASK_TERMINAL:STOPPED');
+  await restarted.close();
+  store.close();
 });
 
 test('refuses post-send negative proofs from both loading and rendered stale conversation pages', () => {

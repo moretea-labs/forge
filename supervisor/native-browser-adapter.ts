@@ -30,6 +30,7 @@ const MAX_PROVIDER_ACTIVITY_CHARS = 64 * 1024;
 const NATIVE_BROWSER_PRODUCTS: readonly MacOsBrowserProduct[] = ['chrome', 'vivaldi'];
 type TaggedBrowserTabRef = MacOsBrowserTabRef & { browserProduct?: MacOsBrowserProduct };
 type TaggedBrowserTabInventoryEntry = MacOsBrowserTabInventoryEntry & { browserProduct?: MacOsBrowserProduct };
+type ObservedConversation = { conversation_id: string; canonical_url: string; title?: string; is_current?: boolean };
 
 export interface WorkflowSupervisorNativePage {
   evaluate<T>(expression: string | ((...args: unknown[]) => unknown), arg?: unknown): Promise<T>;
@@ -418,6 +419,10 @@ export class WorkflowSupervisorNativeBrowserAdapter {
   private inventory?: Promise<WorkflowSupervisorNativeBrowserInventory>;
   private lastRunTransportUnavailable = false;
   private transportFailureStreak = 0;
+  // Delivery fairness is ephemeral. Only the effect ledger authorizes a send.
+  private readonly freshSendCheckedAt = new Map<string, number>();
+  private servicingFreshSend = false;
+  private conversations: ObservedConversation[] = [];
   constructor(
     private readonly control: WorkflowSupervisorControlPlane,
     private readonly discovery: WorkflowSupervisorEphemeralDiscovery,
@@ -455,17 +460,20 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     this.pages.clear();
     this.observedAssistant.clear();
     this.providerFailureSeen.clear();
+    this.freshSendCheckedAt.clear();
   }
 
   async runOnce(): Promise<void> {
     if (this.deps.platform !== 'darwin' || this.closed) return;
     this.inventory = undefined;
+    this.freshSendCheckedAt.clear();
     this.lastRunTransportUnavailable = false;
     const tasks = this.control.browserTasks();
     this.lastRunHadTasks = tasks.length > 0;
     const inventory = await this.listInventory();
     await this.cleanupInactive();
-    const conversations: Array<{ conversation_id: string; canonical_url: string; title?: string; is_current?: boolean }> = [];
+    const conversations: ObservedConversation[] = [];
+    this.conversations = conversations;
     // Current-conversation binding must work for a real browser session even
     // before a Supervisor task is enrolled. Use only the frontmost active tab,
     // and fail closed if any supported browser inventory is unavailable.
@@ -517,129 +525,177 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       }
     }
     for (const task of tasks) {
+      if (this.closed) break;
+      await this.serviceFreshSend();
       try {
-        if (task.conversationId.startsWith('bootstrap:')) {
-          await this.bootstrapTask(task);
-          continue;
-        }
-        let poll = this.control.browserPoll({ conversationId: task.conversationId, conversationUrl: task.conversationUrl });
-        let recoveryAuthorized = false;
-        // An enrolled conversation is an existing user resource. Supervisor may
-        // attach to its exact open tab, but a queued send/recovery is not authority
-        // to manufacture a browser tab. Historical pending tasks survive Runtime
-        // restarts; letting each one create transport turned that durable registry
-        // into an implicit tab-opening queue whenever native cleanup failed.
-        const ensured = await this.ensurePage(task);
-        if (ensured.state !== 'ready') continue;
-        const page = ensured.page;
-        const snapshot = ensured.snapshot
-          ?? await this.deps.snapshot(page, { includeUserHistory: false, includePageText: false });
-        if (!exactConversation(snapshot.url, task)) {
-          await this.retireOwnedPage(task, page);
-          continue;
-        }
-        conversations.push({
-          conversation_id: task.conversationId,
-          canonical_url: task.conversationUrl,
-          ...(snapshot.title.trim() ? { title: snapshot.title.trim().slice(0, 512) } : {}),
-          ...(projectMetadataFromConversationUrl(snapshot.url) ?? projectMetadataFromConversationUrl(task.conversationUrl) ?? {}),
-        });
-        const providerBusy = snapshot.isGenerating;
-        const latestRoleStillUser = snapshot.latestTurnRole === 'user';
-        const providerFailureCode = chatgptProviderPageFailure(snapshot.providerFailureText);
-        const priorProviderFailure = this.providerFailureSeen.get(task.conversationId);
-        if (!providerFailureCode) {
-          this.providerFailureSeen.delete(task.conversationId);
-        } else if (priorProviderFailure !== providerFailureCode) {
-          noteChatgptProviderBackpressure(this.deps.providerScopeKey, providerFailureCode, this.deps.nowMs());
-          this.providerFailureSeen.set(task.conversationId, providerFailureCode);
-        }
-        let providerBackpressureMs = chatgptProviderBackpressureRemainingMs(this.deps.providerScopeKey, this.deps.nowMs());
-        // 429 is transport backpressure, not authority to mint a semantic recovery
-        // effect. While the shared cooldown is live, observe locally and send nothing.
-        if (poll.command?.mode !== 'reconcile' && providerFailureCode === CHATGPT_AUTOMATION_RATE_LIMITED && providerBackpressureMs > 0) continue;
-        if (!poll.command && !providerBusy && snapshot.latestTurnRole === 'assistant' && snapshot.latestAssistantResponse.trim()) {
-          const responseFingerprint = sha256(snapshot.latestAssistantResponse);
-          if (this.observedAssistant.get(task.conversationId) !== responseFingerprint) {
-            try {
-              await this.control.browserObserveAssistant({
-                conversationId: task.conversationId,
-                conversationUrl: task.conversationUrl,
-                responseText: snapshot.latestAssistantResponse,
-              });
-              this.observedAssistant.set(task.conversationId, responseFingerprint);
-            } catch (error) {
-              const message = error instanceof Error ? error.message : String(error);
-              // Mirror the extension adapter's bounded duplicate suppression: a
-              // distinct malformed Supervisor response is useful evidence once,
-              // not an excuse to reparse the same assistant text every tick.
-              if (message.includes('WORKFLOW_SUPERVISOR_')
-                && !message.includes('WORKFLOW_SUPERVISOR_COMPACT_RECEIPT_CHALLENGE_MISMATCH')) {
-                this.observedAssistant.set(task.conversationId, responseFingerprint);
-              }
-              if (!message.includes('WORKFLOW_SUPERVISOR_TASK_TERMINAL')) this.deps.onError(error);
-            }
-          }
-          poll = this.control.browserPoll({ conversationId: task.conversationId, conversationUrl: task.conversationUrl });
-          if (poll.terminal) continue;
-        }
-        if (!poll.command) {
-          // Provider failure evidence is scoped to the latest turn plus current
-          // live status regions. Historical page text must never poison a later turn.
-          // The latest committed role being user is not itself a busy signal: if
-          // provider activity keeps changing, the digest below resets idle grace;
-          // if activity stops changing, the existing bounded recovery path closes
-          // a provider turn that died without ever committing an assistant message.
-          const providerObservation = this.control.browserObserveProviderTurn({
-            conversationId: task.conversationId,
-            conversationUrl: task.conversationUrl,
-            generating: providerFailureCode ? false : providerBusy,
-            latestAssistantResponse: snapshot.latestAssistantResponse,
-            providerActivityText: snapshot.providerActivityText,
-            providerFailureCode: providerFailureCode === CHATGPT_AUTOMATION_RATE_LIMITED ? undefined : providerFailureCode,
-            observedAtMs: this.deps.nowMs(),
-            graceMs: this.deps.providerIdleGraceMs,
-          });
-          recoveryAuthorized = providerObservation.state === 'recovery_reserved';
-          if (providerBusy && !providerFailureCode && !recoveryAuthorized) continue;
-          if (latestRoleStillUser && !providerFailureCode && !recoveryAuthorized) continue;
-          poll = this.control.browserPoll({ conversationId: task.conversationId, conversationUrl: task.conversationUrl });
-        }
-        // Recovery stays on the already-attached exact tab. Transport loss is
-        // not authority to create a replacement browser resource.
-        providerBackpressureMs = chatgptProviderBackpressureRemainingMs(this.deps.providerScopeKey, this.deps.nowMs());
-        // A canonical tool receipt can complete a turn without rendered
-        // assistant prose. The persisted causal completion authorizes its
-        // successor; the visible last role is not a second lifecycle gate.
-        const completedSource = poll.command
-          ? Boolean(this.control.getEffect(poll.command.effectId)?.sourceCompletionFingerprint)
-          : false;
-        const commandMutationBlocked = providerBackpressureMs > 0
-          || (providerBusy && !providerFailureCode && !recoveryAuthorized)
-          || (latestRoleStillUser && !providerFailureCode && !recoveryAuthorized && !completedSource);
-        // Only a fresh send mutates the provider. Reconciliation is read-only,
-        // regardless of whether the current provider turn appears idle.
-        if (poll.command?.mode === 'send' && commandMutationBlocked) continue;
-        if (poll.command) {
-          // The page is an ephemeral Computer resource. The durable effect
-          // ledger, not an open page or rendered assistant text, decides the
-          // next turn. Unknown sends reopen only the exact conversation for
-          // reconciliation on a later tick.
-          await this.executeCommand(
-            this.pages.get(task.conversationId) ?? page,
-            poll.command,
-            task,
-          );
-        }
-      } catch (error) {
-        this.deps.onError(error);
-      }
+        const poll = task.conversationId.startsWith('bootstrap:')
+          ? this.control.bootstrapPoll(task.taskId)
+          : this.control.browserPoll({ conversationId: task.conversationId, conversationUrl: task.conversationUrl });
+        // Fresh sends are checked fairly at checkpoints, not repeatedly from the
+        // stale start-of-pass projection. Observations still advance this pass.
+        if (poll.terminal || poll.command?.mode === 'send') continue;
+        await this.processTask(task);
+      } catch (error) { this.deps.onError(error); }
     }
+    await this.serviceFreshSend();
+    await this.cleanupInactive();
     this.discovery.update(conversations, 'native-browser');
     this.control.recordBrowserDiscovery('native-browser', this.discovery.sourceConversations('native-browser'));
     this.transportFailureStreak = this.lastRunTransportUnavailable
       ? Math.min(this.transportFailureStreak + 1, MAX_TRANSPORT_BACKOFF_STEPS)
       : 0;
+  }
+
+  /**
+   * Yield the single consumer between bounded Browser reads. A CONTINUE can
+   * commit while an older unknown bootstrap scans many tabs; refreshing only
+   * after that entire scan made the new effect wait minutes. Admit at most one
+   * fresh send per checkpoint so observation also keeps making progress.
+   */
+  private async serviceFreshSend(excludeTaskId?: string): Promise<void> {
+    if (this.closed || this.servicingFreshSend) return;
+    await this.cleanupInactive(1);
+    const nowMs = this.deps.nowMs();
+    const eligible = this.control.browserTasks().flatMap((task) => {
+      if (task.taskId === excludeTaskId) return [];
+      try {
+        const poll = task.conversationId.startsWith('bootstrap:')
+          ? this.control.bootstrapPoll(task.taskId)
+          : this.control.browserPoll({ conversationId: task.conversationId, conversationUrl: task.conversationUrl });
+        if (poll.command?.mode !== 'send') return [];
+        return [{ task, effectId: poll.command.effectId, checkedAt: this.freshSendCheckedAt.get(poll.command.effectId) }];
+      } catch { return []; /* One stale task cannot block the global consumer. */ }
+    });
+    const pending = new Set(eligible.map(({ effectId }) => effectId));
+    for (const effectId of this.freshSendCheckedAt.keys()) {
+      if (!pending.has(effectId)) this.freshSendCheckedAt.delete(effectId);
+    }
+    eligible.sort((left, right) => (left.checkedAt ?? 0) - (right.checkedAt ?? 0));
+    const next = eligible.find(({ checkedAt }) => checkedAt === undefined || nowMs - checkedAt >= DEFAULT_INTERVAL_MS);
+    if (!next) return;
+    this.freshSendCheckedAt.set(next.effectId, nowMs);
+    this.servicingFreshSend = true;
+    try { await this.processTask(next.task); }
+    catch (error) { this.deps.onError(error); }
+    finally { this.servicingFreshSend = false; }
+  }
+
+  private async processTask(task: WorkflowSupervisorBrowserTask): Promise<void> {
+    const conversations = this.conversations;
+    if (task.conversationId.startsWith('bootstrap:')) {
+      await this.bootstrapTask(task);
+      return;
+    }
+    let poll = this.control.browserPoll({ conversationId: task.conversationId, conversationUrl: task.conversationUrl });
+    if (poll.terminal) return;
+    let recoveryAuthorized = false;
+    // An enrolled conversation is an existing user resource. Supervisor may
+    // attach to its exact open tab, but a queued send/recovery is not authority
+    // to manufacture a browser tab. Historical pending tasks survive Runtime
+    // restarts; letting each one create transport turned that durable registry
+    // into an implicit tab-opening queue whenever native cleanup failed.
+    const ensured = await this.ensurePage(task);
+    if (ensured.state !== 'ready') return;
+    const page = ensured.page;
+    const snapshot = ensured.snapshot
+      ?? await this.deps.snapshot(page, { includeUserHistory: false, includePageText: false });
+    if (!exactConversation(snapshot.url, task)) {
+      await this.retireOwnedPage(task, page);
+      return;
+    }
+    conversations.push({
+      conversation_id: task.conversationId,
+      canonical_url: task.conversationUrl,
+      ...(snapshot.title.trim() ? { title: snapshot.title.trim().slice(0, 512) } : {}),
+      ...(projectMetadataFromConversationUrl(snapshot.url) ?? projectMetadataFromConversationUrl(task.conversationUrl) ?? {}),
+    });
+    const providerBusy = snapshot.isGenerating;
+    const latestRoleStillUser = snapshot.latestTurnRole === 'user';
+    const providerFailureCode = chatgptProviderPageFailure(snapshot.providerFailureText);
+    const priorProviderFailure = this.providerFailureSeen.get(task.conversationId);
+    if (!providerFailureCode) {
+      this.providerFailureSeen.delete(task.conversationId);
+    } else if (priorProviderFailure !== providerFailureCode) {
+      noteChatgptProviderBackpressure(this.deps.providerScopeKey, providerFailureCode, this.deps.nowMs());
+      this.providerFailureSeen.set(task.conversationId, providerFailureCode);
+    }
+    let providerBackpressureMs = chatgptProviderBackpressureRemainingMs(this.deps.providerScopeKey, this.deps.nowMs());
+    // 429 is transport backpressure, not authority to mint a semantic recovery
+    // effect. While the shared cooldown is live, observe locally and send nothing.
+    if (poll.command?.mode !== 'reconcile' && providerFailureCode === CHATGPT_AUTOMATION_RATE_LIMITED && providerBackpressureMs > 0) return;
+    if (!poll.command && !providerBusy && snapshot.latestTurnRole === 'assistant' && snapshot.latestAssistantResponse.trim()) {
+      const responseFingerprint = sha256(snapshot.latestAssistantResponse);
+      if (this.observedAssistant.get(task.conversationId) !== responseFingerprint) {
+        try {
+          await this.control.browserObserveAssistant({
+            conversationId: task.conversationId,
+            conversationUrl: task.conversationUrl,
+            responseText: snapshot.latestAssistantResponse,
+          });
+          this.observedAssistant.set(task.conversationId, responseFingerprint);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          // Mirror the extension adapter's bounded duplicate suppression: a
+          // distinct malformed Supervisor response is useful evidence once,
+          // not an excuse to reparse the same assistant text every tick.
+          if (message.includes('WORKFLOW_SUPERVISOR_')
+            && !message.includes('WORKFLOW_SUPERVISOR_COMPACT_RECEIPT_CHALLENGE_MISMATCH')) {
+            this.observedAssistant.set(task.conversationId, responseFingerprint);
+          }
+          if (!message.includes('WORKFLOW_SUPERVISOR_TASK_TERMINAL')) this.deps.onError(error);
+        }
+      }
+      poll = this.control.browserPoll({ conversationId: task.conversationId, conversationUrl: task.conversationUrl });
+      if (poll.terminal) return;
+    }
+    if (!poll.command) {
+      // Provider failure evidence is scoped to the latest turn plus current
+      // live status regions. Historical page text must never poison a later turn.
+      // The latest committed role being user is not itself a busy signal: if
+      // provider activity keeps changing, the digest below resets idle grace;
+      // if activity stops changing, the existing bounded recovery path closes
+      // a provider turn that died without ever committing an assistant message.
+      const providerObservation = this.control.browserObserveProviderTurn({
+        conversationId: task.conversationId,
+        conversationUrl: task.conversationUrl,
+        generating: providerFailureCode ? false : providerBusy,
+        latestAssistantResponse: snapshot.latestAssistantResponse,
+        providerActivityText: snapshot.providerActivityText,
+        providerFailureCode: providerFailureCode === CHATGPT_AUTOMATION_RATE_LIMITED ? undefined : providerFailureCode,
+        observedAtMs: this.deps.nowMs(),
+        graceMs: this.deps.providerIdleGraceMs,
+      });
+      recoveryAuthorized = providerObservation.state === 'recovery_reserved';
+      if (providerBusy && !providerFailureCode && !recoveryAuthorized) return;
+      if (latestRoleStillUser && !providerFailureCode && !recoveryAuthorized) return;
+      poll = this.control.browserPoll({ conversationId: task.conversationId, conversationUrl: task.conversationUrl });
+    }
+    // Recovery stays on the already-attached exact tab. Transport loss is
+    // not authority to create a replacement browser resource.
+    providerBackpressureMs = chatgptProviderBackpressureRemainingMs(this.deps.providerScopeKey, this.deps.nowMs());
+    // A canonical tool receipt can complete a turn without rendered
+    // assistant prose. The persisted causal completion authorizes its
+    // successor; the visible last role is not a second lifecycle gate.
+    const completedSource = poll.command
+      ? Boolean(this.control.getEffect(poll.command.effectId)?.sourceCompletionFingerprint)
+      : false;
+    const commandMutationBlocked = providerBackpressureMs > 0
+      || (providerBusy && !providerFailureCode && !recoveryAuthorized)
+      || (latestRoleStillUser && !providerFailureCode && !recoveryAuthorized && !completedSource);
+    // Only a fresh send mutates the provider. Reconciliation is read-only,
+    // regardless of whether the current provider turn appears idle.
+    if (poll.command?.mode === 'send' && commandMutationBlocked) return;
+    if (poll.command) {
+      // The page is an ephemeral Computer resource. The durable effect
+      // ledger, not an open page or rendered assistant text, decides the
+      // next turn. Unknown sends reopen only the exact conversation for
+      // reconciliation on a later tick.
+      await this.executeCommand(
+        this.pages.get(task.conversationId) ?? page,
+        poll.command,
+        task,
+      );
+    }
   }
 
   /**
@@ -779,6 +835,8 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     const expectedOwner = bootstrapOwnerMarker(task.taskId);
     const matches: Array<{ page: WorkflowSupervisorNativePage; ref: TaggedBrowserTabRef; ownerMatched: boolean; snapshot?: WorkflowSupervisorNativeSnapshot }> = [];
     for (const candidate of inventory.entries) {
+      if (this.closed) return;
+      await this.serviceFreshSend(task.taskId);
       let parsed: URL;
       try { parsed = new URL(candidate.url); } catch { continue; }
       if (parsed.protocol !== 'https:' || parsed.hostname !== 'chatgpt.com') continue;
@@ -790,12 +848,14 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       let page: WorkflowSupervisorNativePage;
       try { page = await this.deps.reattach(ref); }
       catch { continue; /* An unreadable tab is not evidence that the effect was not applied. */ }
+      await this.serviceFreshSend(task.taskId);
       try {
         if (await this.deps.readOwner(page) === expectedOwner) {
           matches.push({ page, ref, ownerMatched: true });
           continue;
         }
       } catch { /* window.name is only a best-effort hint. */ }
+      await this.serviceFreshSend(task.taskId);
       try {
         const snapshot = await this.deps.snapshot(page, { includeUserHistory: true, includePageText: false });
         if (snapshotTargetMarkerPresent(snapshot, command.effectId)) matches.push({ page, ref, ownerMatched: false, snapshot });
@@ -862,12 +922,15 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     }
   }
 
-  private async cleanupInactive(): Promise<void> {
+  private async cleanupInactive(limit = Infinity): Promise<void> {
     // Poll eligibility includes durable backoff and bounded unknown-observation
     // spacing. It does not terminate the task or its exact observation resource.
     const active = new Set(this.control.listTasks(true).map((task) => task.conversationId));
+    let released = 0;
     for (const [conversationId, page] of [...this.pages]) {
       if (active.has(conversationId)) continue;
+      if (released >= limit) break;
+      released += 1;
       try { await this.releasePage(conversationId, page); }
       catch { /* Transport cleanup is best-effort; never reinterpret lifecycle state. */ }
       this.pages.delete(conversationId);
@@ -897,6 +960,8 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     const adoptable: Array<{ page: WorkflowSupervisorNativePage; ref: TaggedBrowserTabRef }> = [];
     let exactCandidateInspectionFailed = false;
     for (const candidate of inventory.entries.filter((entry) => exactConversation(entry.url, task))) {
+      if (this.closed) return { state: 'unproven' };
+      await this.serviceFreshSend(task.taskId);
       const ref: TaggedBrowserTabRef = {
         windowId: candidate.windowId,
         tabId: candidate.tabId,
@@ -904,6 +969,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       };
       try {
         const page = await this.deps.reattach(ref);
+        await this.serviceFreshSend(task.taskId);
         const owner = await this.deps.readOwner(page);
         const ownership = ownerMarkerOwnership(owner, task.conversationId);
         if (ownership) {

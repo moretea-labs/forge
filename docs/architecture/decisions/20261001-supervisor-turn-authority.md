@@ -80,3 +80,24 @@ and unknown-observation spacing until the enrolled task becomes terminal; poll
 eligibility is not resource retirement authority. A real b388b27c canary exposed
 these consumer gaps after its first persisted CONTINUE, so source gates alone
 did not establish unattended continuation acceptance.
+
+## Timely consumption under observation backlog
+
+The native consumer refreshes the canonical pending-send projection between
+individual read-only tab inspections, including within bootstrap unknown-effect
+inventory walks. At most one send is serviced at each checkpoint; least-recently
+checked eligible effects receive the next opportunity. Busy/cooldown checks are
+spaced by the existing active tick. Observation resumes after that opportunity,
+so fresh sends cannot starve it and a full historical scan cannot hold a new
+CONTINUE until the next pass. This is serial cooperative scheduling within the
+same Runtime owner; its timestamps are ephemeral fairness hints, never dispatch
+authority. Existing bounded native calls and admitted provider dispatches finish
+before the next checkpoint; no operation is abandoned or allowed to race a
+second writer. Unknown observation spacing/budgets, durable dispatch CAS,
+source-completion validation and the shared provider lane remain authoritative.
+
+Live acceptance also records completion-to-successor dispatch latency under
+existing Browser backlog. An eventual CONTINUE/CONTINUE/DONE chain alone does
+not establish timely continuation. The previous 5a6fc9cb canary's 688,144 ms
+second-successor delay is failed timing evidence and remains in the incident
+record; it must not be erased or relabeled as successful timing acceptance.
