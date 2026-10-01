@@ -19,9 +19,10 @@ import { claimControllerSession, getControllerSession, releaseControllerSession 
 import { bindChatgptWorkConversation, getChatgptWorkConversationBinding, rebindChatgptWorkConversation } from '../../adapters/chatgpt/work-conversation-binding-store';
 import { CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE, chatgptProviderPageFailure, classifyChatgptProviderFailure } from '../../adapters/chatgpt/provider-delivery';
 import { parseChatgptConversationIdentity } from '../../supervisor/chatgpt-conversation';
+import { setMacOsBrowserRuntimeHooksForTest, resetMacOsBrowserRuntimeHooksForTest } from '../../src/runtime/plugins/browser-macos-bridge';
 
 const roots: string[] = [];
-afterEach(() => { while (roots.length) rmSync(roots.pop()!, { recursive: true, force: true }); });
+afterEach(() => { resetMacOsBrowserRuntimeHooksForTest(); while (roots.length) rmSync(roots.pop()!, { recursive: true, force: true }); });
 
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-terminal-reconcile-'));
@@ -1242,6 +1243,13 @@ test('enrolled reconciliation reopens only its exact conversation and never repe
   let composerText = '';
   let submittedText = '';
   let snapshotCalls = 0;
+  setMacOsBrowserRuntimeHooksForTest({
+    platform: 'darwin', appExists: () => true,
+    processRunning: async () => {
+      if (inventoryUnavailable) throw new Error('process inventory unavailable');
+      return false;
+    },
+  });
   const page: WorkflowSupervisorNativePage = {
     evaluate: async () => { throw new Error('reconciliation must not click provider controls'); },
     waitForSelector: async () => undefined,
@@ -1249,10 +1257,6 @@ test('enrolled reconciliation reopens only its exact conversation and never repe
   };
   const adapter = new WorkflowSupervisorNativeBrowserAdapter(control, new WorkflowSupervisorEphemeralDiscovery(), {
     platform: 'darwin',
-    listTabs: async () => ({ entries: tabPresent ? [{
-      windowId: 'reconcile-window', tabId: 'reconcile-tab', active: false,
-      url: conversationUrl, title: 'Existing conversation', browserProduct: 'chrome',
-    }] : [], unavailableProducts: inventoryUnavailable ? ['chrome'] : [] }),
     reattach: async () => page,
     create: async (url) => { expect(url).toBe(conversationUrl); createCalls += 1; tabPresent = true; return page; },
     close: async () => { closeCalls += 1; tabPresent = false; },

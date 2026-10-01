@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { AssistantPluginError } from '../src/runtime/plugins/errors';
 import {
   closeMacOsBrowserOwnedTab,
   createMacOsBrowserOwnedPageForProduct,
@@ -371,7 +372,12 @@ const DEFAULT_DEPENDENCIES: WorkflowSupervisorNativeBrowserDependencies = {
         return {
           entries: (await listMacOsBrowserTabs(product, DEFAULT_TIMEOUT_MS)).tabs.map((tab): TaggedBrowserTabInventoryEntry => ({ ...tab, browserProduct: product })),
         };
-      } catch {
+      } catch (error) {
+        // The native bridge proves this application is not running before
+        // issuing Apple Events. It therefore has no live tab to duplicate.
+        if (error instanceof AssistantPluginError && error.code === 'PLUGIN_BROWSER_NATIVE_APP_NOT_RUNNING') {
+          return { entries: [] as TaggedBrowserTabInventoryEntry[] };
+        }
         // A failed native inventory is unknown transport state, not evidence
         // that the exact conversation tab is absent.
         return { entries: [] as TaggedBrowserTabInventoryEntry[], unavailableProduct: product };

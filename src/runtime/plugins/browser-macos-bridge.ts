@@ -123,7 +123,7 @@ function execFileText(file: string, args: string[], timeoutMs: number): Promise<
     }, (error, stdout, stderr) => {
       if (error) {
         const diagnostic = String(stderr || error.message).trim().slice(-2_000);
-        reject(new Error(diagnostic || error.message));
+        reject(new Error(diagnostic || error.message, { cause: error }));
         return;
       }
       resolve(String(stdout).trim());
@@ -138,8 +138,12 @@ const defaultRuntimeHooks: MacOsBrowserRuntimeHooks = {
     try {
       await execFileText('/usr/bin/pgrep', ['-x', processName], timeoutMs);
       return true;
-    } catch {
-      return false;
+    } catch (error) {
+      // pgrep's no-match exit is absence; timeout/permission/transport failure
+      // cannot prove that an application's tabs are absent.
+      const cause = error instanceof Error ? error.cause : undefined;
+      if (cause && typeof cause === 'object' && 'code' in cause && cause.code === 1) return false;
+      throw error;
     }
   },
 };
