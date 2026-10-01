@@ -145,6 +145,25 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
       projectUrl: 'https://chatgpt.com/g/g-p-abc123-shen-bao-bao/project',
     }]);
     expect(control.bootstrapProjectUrl(task.taskId)).toBe('https://chatgpt.com/g/g-p-abc123/project');
+    const chinese = new WorkflowSupervisorControlPlane(supervisorStore, {}, {
+      ...hooks, projectScopeForTask: () => ({ title: '肾宝保' }),
+    });
+    chinese.recordBrowserDiscovery('test', [{
+      conversationId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+      canonicalUrl: 'https://chatgpt.com/g/g-p-abc123/c/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+      projectTitle: '肾宝保', projectUrl: 'https://chatgpt.com/g/g-p-abc123/project',
+    }, {
+      conversationId: 'ffffffff-eeee-dddd-cccc-bbbbbbbbbbbb',
+      canonicalUrl: 'https://chatgpt.com/g/g-p-near456/c/ffffffff-eeee-dddd-cccc-bbbbbbbbbbbb',
+      projectTitle: '肾宝保2', projectUrl: 'https://chatgpt.com/g/g-p-near456/project',
+    }]);
+    expect(chinese.bootstrapProjectUrl(task.taskId)).toBe('https://chatgpt.com/g/g-p-abc123/project');
+    chinese.recordBrowserDiscovery('test', [{
+      conversationId: 'ffffffff-eeee-dddd-cccc-bbbbbbbbbbbb',
+      canonicalUrl: 'https://chatgpt.com/g/g-p-near456/c/ffffffff-eeee-dddd-cccc-bbbbbbbbbbbb',
+      projectTitle: '肾宝保', projectUrl: 'https://chatgpt.com/g/g-p-near456/project',
+    }]);
+    expect(() => chinese.bootstrapProjectUrl(task.taskId)).toThrow('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_AMBIGUOUS');
     supervisorStore.close();
   });
 

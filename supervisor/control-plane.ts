@@ -5,11 +5,11 @@ import { WorkflowSupervisorStore } from './store';
 import type { WorkflowAssistantObservation, WorkflowAssistantObservationResult, WorkflowContractValidation, WorkflowSupervisorAutomationStatus, WorkflowSupervisorBrowserPollResult, WorkflowSupervisorBrowserTask, WorkflowSupervisorCompletion, WorkflowSupervisorDiscoveredConversation, WorkflowSupervisorEffect, WorkflowSupervisorLifecycleHooks, WorkflowSupervisorProjectScope, WorkflowSupervisorTask, WorkflowSupervisorTaskInput, WorkflowSupervisorValidators } from './types';
 
 function compactProjectIdentity(value: string): string {
-  return value.toLocaleLowerCase().replace(/[^a-z0-9]+/g, '');
+  return value.normalize('NFKC').toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
 }
 
 function projectIdentityTokens(value: string): string[] {
-  return value.toLocaleLowerCase().split(/[^a-z0-9]+/g).filter(Boolean);
+  return value.normalize('NFKC').toLocaleLowerCase().split(/[^\p{L}\p{N}]+/gu).filter(Boolean);
 }
 
 function boundedProjectIdentityMatch(expected: string, observed: string): boolean {
