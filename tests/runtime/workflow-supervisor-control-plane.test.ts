@@ -1217,7 +1217,7 @@ test('browserTasks prioritizes fresh sends ahead of older reconciliation work', 
   ]);
 });
 
-test('enrolled reconciliation neither creates tabs nor repeats an ambiguous submission', async () => {
+test('enrolled reconciliation reopens only its exact conversation and never repeats an ambiguous submission', async () => {
   const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-reconcile-no-create-'));
   roots.push(root);
   const clock = { nowMs: Date.now() };
@@ -1228,13 +1228,15 @@ test('enrolled reconciliation neither creates tabs nor repeats an ambiguous subm
   const conversationUrl = `https://chatgpt.com/c/${conversationId}`;
   control.registerTask({
     taskId, conversationId, conversationUrl,
-    objective: 'Reconcile without manufacturing browser resources.',
+    objective: 'Reconcile the same durable conversation with disposable browser resources.',
     completionContract: {}, continuationPolicy: {}, userBlockerPolicy: {},
   });
   const effect = control.reserveEnrollment(taskId);
   expect(control.browserPoll({ conversationId, conversationUrl }).command?.mode).toBe('send');
 
   let createCalls = 0;
+  let closeCalls = 0;
+  let inventoryUnavailable = true;
   let tabPresent = false;
   let owner = '';
   let composerText = '';
@@ -1250,10 +1252,10 @@ test('enrolled reconciliation neither creates tabs nor repeats an ambiguous subm
     listTabs: async () => ({ entries: tabPresent ? [{
       windowId: 'reconcile-window', tabId: 'reconcile-tab', active: false,
       url: conversationUrl, title: 'Existing conversation', browserProduct: 'chrome',
-    }] : [], unavailableProducts: [] }),
+    }] : [], unavailableProducts: inventoryUnavailable ? ['chrome'] : [] }),
     reattach: async () => page,
-    create: async () => { createCalls += 1; throw new Error('unexpected create'); },
-    close: async () => undefined,
+    create: async (url) => { expect(url).toBe(conversationUrl); createCalls += 1; tabPresent = true; return page; },
+    close: async () => { closeCalls += 1; tabPresent = false; },
     readOwner: async () => owner,
     writeOwner: async (_page, marker) => { owner = marker; },
     snapshot: async () => {
@@ -1291,21 +1293,30 @@ test('enrolled reconciliation neither creates tabs nor repeats an ambiguous subm
   expect(control.browserPoll({ conversationId, conversationUrl }).command).toBeUndefined();
 
   clock.nowMs += 10_000;
+  inventoryUnavailable = false;
   expect(control.browserPoll({ conversationId, conversationUrl }).command?.mode).toBe('reconcile');
   await adapter.runOnce();
 
-  expect(createCalls).toBe(0);
+  expect(createCalls).toBe(1);
   expect(store.nextBrowserEffect(taskId)).toEqual(expect.objectContaining({ mode: 'reconcile', generation: 1 }));
+  // Durable observation timestamps use wall time. Return the fixture clock to
+  // that observation's cooldown before checking idle resource retirement.
+  clock.nowMs = Date.now();
+  await adapter.runOnce();
+  expect(closeCalls).toBe(1);
+  expect(tabPresent).toBe(false);
+  expect(store.nextBrowserEffect(taskId)).toBeUndefined();
 
   // A stale exact tab can have an empty composer, or still show the sent draft.
   // Neither authorizes another click in this generation or a new generation.
-  tabPresent = true;
   for (const draft of ['', effect.prompt]) {
     composerText = draft;
     clock.nowMs += 60_000;
     await adapter.runOnce();
     expect(store.effectDispatchBudget(effect.effectId).generations).toBe(1);
     expect(store.effectApplied(effect.effectId)).toBe(false);
+    clock.nowMs = Date.now();
+    await adapter.runOnce();
   }
   expect(snapshotCalls).toBeGreaterThan(0);
   submittedText = effect.prompt;
@@ -1313,7 +1324,11 @@ test('enrolled reconciliation neither creates tabs nor repeats an ambiguous subm
   await adapter.runOnce();
   expect(store.effectApplied(effect.effectId)).toBe(true);
   expect(store.effectDispatchBudget(effect.effectId).generations).toBe(1);
-  expect(createCalls).toBe(0);
+  expect(createCalls).toBe(4);
+  expect(closeCalls).toBe(3);
+  expect(tabPresent).toBe(true);
+  await adapter.close();
+  store.close();
 });
 
 test('retries a bootstrap effect after a proven pre-send failure instead of reconciling it forever', () => {
@@ -1708,7 +1723,9 @@ test('stream recovery stays on the attached exact tab and never creates a replac
 
   expect(createdUrls).toEqual([]);
   expect(dispatchedPages).toEqual([stalePage]);
-  expect(closed).toEqual([]);
+  // Provider cooldown can retire the disposable owned tab. The recovery still
+  // submits once on the attached exact conversation, without another resource.
+  expect(closed).toEqual([{ windowId: 'window-1', tabId: 'tab-1' }]);
   expect(store.latestEffectDispatch(enrollment.effectId)?.generation).toBe(1);
   control.stopTask('stream-recovery-tab');
   await adapter.runOnce();
@@ -1780,6 +1797,7 @@ test('automation tool receipt successor begins from the real assistant page base
   let owner = `forge-workflow-supervisor:created:${conversationId}`;
   let generating = true;
   let closeCount = 0;
+  let tabPresent = true;
   const dispatched: string[] = [];
   let nowMs = Date.now();
   let receiptDuringScan: (() => Promise<void>) | undefined;
@@ -1796,16 +1814,16 @@ test('automation tool receipt successor begins from the real assistant page base
   };
   const dependencies = {
     platform: 'darwin' as const,
-    listTabs: async () => ({ entries: [{
+    listTabs: async () => ({ entries: [...(tabPresent ? [{
       windowId: 'receipt-window', tabId: 'receipt-tab', active: false,
       url: conversationUrl, title: 'Tool-only completed turn', browserProduct: 'chrome' as const,
-    }, ...backlogPages.map((entry) => ({
+    }] : []), ...backlogPages.map((entry) => ({
       windowId: 'receipt-window', tabId: entry.tabRef()!.tabId, active: false,
       url: 'https://chatgpt.com/', title: 'Unrelated unknown bootstrap', browserProduct: 'chrome' as const,
     }))], unavailableProducts: [] }),
     reattach: async (ref: { tabId: string }) => backlogPages.find((entry) => entry.tabRef()!.tabId === ref.tabId) ?? page,
     create: async () => { throw new Error('must retain the same conversation tab'); },
-    close: async () => { closeCount += 1; },
+    close: async () => { closeCount += 1; tabPresent = false; },
     readOwner: async (entry: WorkflowSupervisorNativePage) => {
       if (entry.tabRef()!.tabId === 'unknown-tab-2') {
         generating = false;
@@ -1895,6 +1913,20 @@ test('automation tool receipt successor begins from the real assistant page base
     dispatchId: 'stale-bootstrap-after-stop', dispatchGeneration: 1,
   })).toThrow('WORKFLOW_SUPERVISOR_TASK_TERMINAL:STOPPED');
   await restarted.close();
+  // Runtime restart loses its attachment cache, not durable terminality or the
+  // browser's ownership marker. Reclaim a leaked owned tab without opening any.
+  tabPresent = true;
+  const cleanup = new WorkflowSupervisorNativeBrowserAdapter(control, new WorkflowSupervisorEphemeralDiscovery(), dependencies);
+  await cleanup.runOnce();
+  expect(closeCount).toBe(2);
+  expect(tabPresent).toBe(false);
+  // Matching URLs alone do not authorize closing user-owned tabs.
+  tabPresent = true;
+  owner = '';
+  await cleanup.runOnce();
+  expect(closeCount).toBe(2);
+  expect(tabPresent).toBe(true);
+  await cleanup.close();
   store.close();
 });
 

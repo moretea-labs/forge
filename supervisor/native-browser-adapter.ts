@@ -421,6 +421,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
   private transportFailureStreak = 0;
   // Delivery fairness is ephemeral. Only the effect ledger authorizes a send.
   private readonly freshSendCheckedAt = new Map<string, number>();
+  private readonly restoredThisPass = new Set<string>();
   private servicingFreshSend = false;
   private conversations: ObservedConversation[] = [];
   constructor(
@@ -461,17 +462,19 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     this.observedAssistant.clear();
     this.providerFailureSeen.clear();
     this.freshSendCheckedAt.clear();
+    this.restoredThisPass.clear();
   }
 
   async runOnce(): Promise<void> {
     if (this.deps.platform !== 'darwin' || this.closed) return;
     this.inventory = undefined;
     this.freshSendCheckedAt.clear();
+    this.restoredThisPass.clear();
     this.lastRunTransportUnavailable = false;
     const tasks = this.control.browserTasks();
     this.lastRunHadTasks = tasks.length > 0;
     const inventory = await this.listInventory();
-    await this.cleanupInactive();
+    await this.cleanupInactive(Infinity, true);
     const conversations: ObservedConversation[] = [];
     this.conversations = conversations;
     // Current-conversation binding must work for a real browser session even
@@ -589,11 +592,8 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     let poll = this.control.browserPoll({ conversationId: task.conversationId, conversationUrl: task.conversationUrl });
     if (poll.terminal) return;
     let recoveryAuthorized = false;
-    // An enrolled conversation is an existing user resource. Supervisor may
-    // attach to its exact open tab, but a queued send/recovery is not authority
-    // to manufacture a browser tab. Historical pending tasks survive Runtime
-    // restarts; letting each one create transport turned that durable registry
-    // into an implicit tab-opening queue whenever native cleanup failed.
+    // Restore only the enrolled exact conversation when delivery/observation is
+    // due. A transport tab is disposable; it is never a new conversation/effect.
     const ensured = await this.ensurePage(task);
     if (ensured.state !== 'ready') return;
     const page = ensured.page;
@@ -824,6 +824,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
           });
         } catch { /* Preserve the original transport failure. */ }
       }
+      if (!providerMutationAttempted) preserveForReconcile = false;
       throw error;
     } finally {
       if (ref && !preserveForReconcile) await this.deps.close(ref).catch(() => undefined);
@@ -922,17 +923,53 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     }
   }
 
-  private async cleanupInactive(limit = Infinity): Promise<void> {
-    // Poll eligibility includes durable backoff and bounded unknown-observation
-    // spacing. It does not terminate the task or its exact observation resource.
+  private async cleanupInactive(limit = Infinity, recoverResources = false): Promise<void> {
+    const tasks = this.control.listTasks();
     const active = new Set(this.control.listTasks(true).map((task) => task.conversationId));
+    const due = new Set(this.control.browserTasks().map((task) => task.conversationId));
+    // Recover terminal resource ownership from the browser after Runtime restart.
+    // Never infer ownership from a matching URL or from a missing Work record.
+    if (recoverResources) {
+      const terminal = tasks.filter((task) => !active.has(task.conversationId));
+      const bootstrapOwners = new Map(terminal.filter((task) => task.conversationId.startsWith('bootstrap:'))
+        .map((task) => [bootstrapOwnerMarker(task.taskId), task.conversationId]));
+      const terminalIds = new Set(terminal.map((task) => task.conversationId));
+      for (const entry of (await this.listInventory()).entries) {
+        if (this.closed) return;
+        let conversationId: string | undefined;
+        try { conversationId = parseChatgptConversationIdentity(entry.url).conversationId; } catch { /* Bootstrap may still be on its Project route. */ }
+        if (conversationId && active.has(conversationId)) continue;
+        if ((!conversationId || !terminalIds.has(conversationId)) && bootstrapOwners.size === 0) continue;
+        try {
+          if (new URL(entry.url).hostname !== 'chatgpt.com') continue;
+          const page = await this.deps.reattach(entry);
+          const marker = await this.deps.readOwner(page);
+          const bootstrapId = bootstrapOwners.get(marker);
+          if (bootstrapId) {
+            await this.deps.close(entry);
+            this.invalidateInventory();
+          } else if (conversationId && terminalIds.has(conversationId) && ownerMarkerOwnership(marker, conversationId)) {
+            this.pages.set(conversationId, page);
+          }
+        } catch { /* Unreadable ownership is not permission to close a tab. */ }
+        finally { await this.serviceFreshSend(); }
+      }
+    }
     let released = 0;
     for (const [conversationId, page] of [...this.pages]) {
-      if (active.has(conversationId)) continue;
+      if (active.has(conversationId)) {
+        if (due.has(conversationId)) continue;
+        // Durable cooldown/unknown spacing suspends browser work, not the Goal.
+        // Keep a live provider turn and an unbound bootstrap's sole evidence.
+        if (conversationId.startsWith('bootstrap:')) continue;
+        try {
+          if ((await this.deps.snapshot(page, { includeUserHistory: false, includePageText: false })).isGenerating) continue;
+        } catch { continue; }
+      }
       if (released >= limit) break;
       released += 1;
       try { await this.releasePage(conversationId, page); }
-      catch { /* Transport cleanup is best-effort; never reinterpret lifecycle state. */ }
+      catch { continue; /* Retain the handle so the same owner can retry cleanup. */ }
       this.pages.delete(conversationId);
       this.observedAssistant.delete(conversationId);
       this.providerFailureSeen.delete(conversationId);
@@ -951,15 +988,20 @@ export class WorkflowSupervisorNativeBrowserAdapter {
         if (ownership && exactConversation(snapshot.url, task)) {
           return { state: 'ready', page: cached, snapshot };
         }
+        if (ownership) {
+          await this.releasePage(task.conversationId, cached);
+          this.pages.delete(task.conversationId);
+          this.invalidateInventory();
+        }
       } catch { /* Reconstruct from browser evidence below. */ }
-      this.pages.delete(task.conversationId);
     }
     const inventory = await this.listInventory();
     const matches: Array<{ page: WorkflowSupervisorNativePage; ref: TaggedBrowserTabRef; ownership: WorkflowSupervisorTabOwnership }> = [];
     const transferablePluginOwned: Array<{ page: WorkflowSupervisorNativePage; ref: TaggedBrowserTabRef }> = [];
     const adoptable: Array<{ page: WorkflowSupervisorNativePage; ref: TaggedBrowserTabRef }> = [];
     let exactCandidateInspectionFailed = false;
-    for (const candidate of inventory.entries.filter((entry) => exactConversation(entry.url, task))) {
+    const exactCandidates = inventory.entries.filter((entry) => exactConversation(entry.url, task));
+    for (const candidate of exactCandidates) {
       if (this.closed) return { state: 'unproven' };
       await this.serviceFreshSend(task.taskId);
       const ref: TaggedBrowserTabRef = {
@@ -1034,7 +1076,43 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       this.lastRunTransportUnavailable = true;
       return { state: 'unproven' };
     }
-    return { state: exactCandidateInspectionFailed ? 'unproven' : 'missing' };
+    const cachedRef = cached?.tabRef() as TaggedBrowserTabRef | undefined;
+    if (exactCandidateInspectionFailed || exactCandidates.length > 0
+      || (cachedRef && inventory.entries.some((entry) => entry.windowId === cachedRef.windowId
+        && entry.tabId === cachedRef.tabId
+        && (!cachedRef.browserProduct || entry.browserProduct === cachedRef.browserProduct)))) return { state: 'unproven' };
+    this.pages.delete(task.conversationId);
+    if (!this.control.browserTasks().some((entry) => entry.taskId === task.taskId)) return { state: 'missing' };
+    if (this.restoredThisPass.has(task.conversationId)) return { state: 'unproven' };
+    this.restoredThisPass.add(task.conversationId);
+    // Complete inventory proves absence. Reopen this exact persisted /c/ URL;
+    // bootstrap creation and provider resend have separate durable admission.
+    let restored: WorkflowSupervisorNativePage | undefined;
+    try {
+      restored = await this.deps.create(task.conversationUrl);
+      await this.deps.writeOwner(restored, ownerMarker(task.conversationId, 'created'));
+      const snapshot = await this.deps.snapshot(restored, { includeUserHistory: false, includePageText: false });
+      if (!exactConversation(snapshot.url, task)
+        || await this.deps.readOwner(restored) !== ownerMarker(task.conversationId, 'created')) {
+        throw new Error('WORKFLOW_SUPERVISOR_RESTORED_CONVERSATION_UNPROVEN');
+      }
+      this.pages.set(task.conversationId, restored);
+      this.invalidateInventory();
+      return { state: 'ready', page: restored, snapshot };
+    } catch (error) {
+      this.lastRunTransportUnavailable = true;
+      const ref = restored?.tabRef();
+      if (restored) this.pages.set(task.conversationId, restored);
+      if (ref) {
+        try {
+          await this.deps.close(ref);
+          this.pages.delete(task.conversationId);
+          this.invalidateInventory();
+        } catch { /* Keep the handle; never replace a resource whose close is unknown. */ }
+      }
+      this.deps.onError(error);
+      return { state: 'unproven' };
+    }
   }
 
   private async retireOwnedPage(

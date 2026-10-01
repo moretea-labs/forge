@@ -75,9 +75,9 @@ without human continuation and a validated terminal receipt.
 The native consumer must accept a causally completed tool-only turn even when
 ChatGPT renders no assistant prose and its last visible message role is user.
 Provider generation and cooldown still delay a new send, and dispatch admission
-still verifies the exact source effect. An owned observation tab survives sends
-and unknown-observation spacing until the enrolled task becomes terminal; poll
-eligibility is not resource retirement authority. A real b388b27c canary exposed
+still verifies the exact source effect. Browser resources have the disposable
+lifecycle defined below; task/effect history survives resource retirement.
+A real b388b27c canary exposed
 these consumer gaps after its first persisted CONTINUE, so source gates alone
 did not establish unattended continuation acceptance.
 
@@ -101,3 +101,29 @@ existing Browser backlog. An eventual CONTINUE/CONTINUE/DONE chain alone does
 not establish timely continuation. The previous 5a6fc9cb canary's 688,144 ms
 second-successor delay is failed timing evidence and remains in the incident
 record; it must not be erased or relabeled as successful timing acceptance.
+
+## Disposable browser resources
+
+The existing native Supervisor consumer owns tab retention and restoration.
+When browser work is suspended by durable cooldown or unknown-observation
+spacing, it may close its created canonical tab only after a readable snapshot
+proves that no provider generation is running. An unbound bootstrap's sole
+observation resource remains until binding or explicit task termination.
+An applied effect awaiting its model receipt remains eligible for observation.
+DONE, NEEDS_USER and explicit STOPPED retire owned resources; after restart the
+same owner reconstructs ownership from exact task identity and window.name.
+An adopted user tab loses only the Supervisor marker and stays open.
+
+When delivery or read-only observation is due, complete supported-browser
+inventory must prove the exact enrolled conversation absent before the owner
+opens its persisted conversation URL. An unreadable inventory, foreign owner,
+ambiguous exact candidate or unresolved resource close fails closed. At most one
+restoration per conversation is attempted in a consumer pass, with existing
+transport backoff after failure. Reopening a tab neither creates a ChatGPT
+conversation nor changes provider effect admission, generation or outcome.
+Outcome unknown is still read-only and never authorizes resend. No persistent
+state, extra lifecycle owner, schema or provider retry policy is added.
+
+The operator's three-goal consolidation explicitly stops historical duplicate
+tasks through the Supervisor API. It does not infer completion, clear effects,
+cancel another execution owner's claim or delete ControllerRound authority.
