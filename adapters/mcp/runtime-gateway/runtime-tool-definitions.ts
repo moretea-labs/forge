@@ -113,6 +113,8 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     expected_revision: { type: 'number', minimum: 1, description: 'Expected current semantic revision for requirement_revise, plan_revise, work_revise, or work_complete. Stale writers fail and return current state; Forge never performs an implicit merge.' },
     work_state: { type: 'string', enum: ['open', 'completed', 'cancelled'], description: 'Thin semantic Work state for work_revise.' },
     work_result_refs: { type: 'array', maxItems: 100, uniqueItems: true, items: { type: 'string', maxLength: 512 }, description: 'Model/user-selected result references for thin semantic Work; separate from mechanical evidence and delivery receipts.' },
+    semantic_parent_work_id: { type: 'string', minLength: 1, maxLength: 256, description: 'Optional objective-decomposition parent for primary semantic Work. Distinct from execution parentWorkId and continuation lineage.' },
+    depends_on_work_ids: { type: 'array', maxItems: 32, uniqueItems: true, items: { type: 'string', minLength: 1, maxLength: 256 }, description: 'Explicit semantic ordering dependencies for primary Work. No edge means siblings may proceed independently; this field never dispatches or blocks Scheduler execution by itself.' },
     requirement_revision: { type: 'number', minimum: 1, description: 'Optional Requirement semantic revision provenance for Plan/Work.' },
     plan_revision: { type: 'number', minimum: 1, description: 'Optional Plan semantic revision provenance referenced by Work.' },
     requirement_title: { type: 'string', description: 'Human-readable Requirement title for requirement_create.' },

@@ -25,18 +25,17 @@ const MAX_DEFAULT_TOOL_COUNT = 24;
 // tool. Adapter extraction may move implementation ownership without silently
 // changing names, descriptions, input schemas, or annotations.
 const EXPECTED_STABLE_CONTROLLER_TOOL_NAMES = [
-  'rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work',
+  'rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work', 'capability_execute',
   'repository_list', 'repository_get', 'repository_register', 'repository_command_execute',
   'read_repository_file', 'repository_safe_patch_apply', 'run_check', 'plugin_action_execute',
   'process_exec', 'process_get', 'process_wait', 'process_logs', 'process_cancel', 'result_read', 'result_search',
 ] as const;
-// Thin Forge Slice 3 (standalone Supervisor continuation): the bounded stable
-// tool names remain unchanged, while autonomous continuation metadata moves from
-// optional Work identity to Workflow Supervisor task identity. This is an
-// intentional served-schema ABI change and must invalidate stale Connector
-// schema snapshots without expanding the default ChatGPT tool surface.
-const EXPECTED_STABLE_TOOL_NAME_FINGERPRINT = '69e4191fe8f163fd';
-const EXPECTED_STABLE_TOOL_SCHEMA_FINGERPRINT = '19aae69a034c702e';
+// The stable bounded surface now includes the generic typed capability executor
+// already shipped on main. V3 Work objective relations intentionally extend only
+// the existing rh_work input schema; both changes must invalidate stale Connector
+// schema snapshots without adding a parallel execution or graph authority.
+const EXPECTED_STABLE_TOOL_NAME_FINGERPRINT = 'b25da75c1f774e66';
+const EXPECTED_STABLE_TOOL_SCHEMA_FINGERPRINT = '152873246a7e8b5d';
 
 const policy = runtimePolicy(process.cwd(), {
   profile: 'controller',

@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
-import { createWorkContract, getWorkContract, recordWorkEvidenceState, reviseWorkSemanticContext, transitionWorkContractPhase, workSemanticView } from '../../packages/kernel/work/api/index';
+import { createWorkContract, getWorkContract, listWorkSemanticRevisionRecords, recordWorkEvidenceState, reviseWorkSemanticContext, transitionWorkContractPhase, workSemanticView } from '../../packages/kernel/work/api/index';
 import { callRhWorkSemanticOperation } from '../../adapters/mcp/runtime-gateway/work-semantic-operations';
 
 const roots: string[] = [];
@@ -181,17 +181,126 @@ describe('thin semantic Work lifecycle', () => {
     expect(stored.status).toBe('completed');
   });
 
+  test('start persists normalized objective relations and deduplicates the same semantic create', async () => {
+    const options = store();
+    createOpenWork(options, 'work-create-parent');
+    createOpenWork(options, 'work-create-dependency');
+
+    const created = structured(await callRhWorkSemanticOperation(options, 'start', {
+      work_id: 'work-created-related',
+      objective: 'Create one related semantic Work.',
+      semantic_parent_work_id: 'work-create-parent',
+      depends_on_work_ids: ['work-create-dependency', 'work-create-dependency'],
+      request_id: 'work-created-related-request',
+    }));
+    expect(created.status).toBe('ok');
+    expect(created.data.work).toMatchObject({
+      revision: 1,
+      semanticParentWorkId: 'work-create-parent',
+      dependsOnWorkIds: ['work-create-dependency'],
+    });
+
+    const deduplicated = structured(await callRhWorkSemanticOperation(options, 'start', {
+      work_id: 'work-created-related',
+      objective: 'Create one related semantic Work.',
+      semantic_parent_work_id: 'work-create-parent',
+      depends_on_work_ids: ['work-create-dependency'],
+      request_id: 'work-created-related-request',
+    }));
+    expect(deduplicated.status).toBe('ok');
+    expect(deduplicated.data.deduplicated).toBe(true);
+  });
+
   test('work_revise exposes exactly one thin semantic state vocabulary', async () => {
     const options = store();
+    createOpenWork(options, 'work-parent');
+    createOpenWork(options, 'work-dependency');
     createOpenWork(options, 'work-vocabulary');
+
+    const related = structured(await callRhWorkSemanticOperation(options, 'work_revise', {
+      work_id: 'work-vocabulary',
+      expected_revision: 1,
+      semantic_parent_work_id: 'work-parent',
+      depends_on_work_ids: ['work-dependency'],
+    }));
+    expect(related.status).toBe('ok');
+    expect(related.data.work).toMatchObject({
+      state: 'open',
+      revision: 2,
+      semanticParentWorkId: 'work-parent',
+      dependsOnWorkIds: ['work-dependency'],
+    });
+    const detail = structured(await callRhWorkSemanticOperation(options, 'work_get', {
+      work_id: 'work-vocabulary',
+      detail_level: 'detail',
+    }));
+    expect(detail.data.objectiveGraph.current.edges).toEqual(expect.arrayContaining([
+      { kind: 'decomposition', fromWorkId: 'work-parent', toWorkId: 'work-vocabulary', workRevision: 2 },
+      { kind: 'dependency', fromWorkId: 'work-dependency', toWorkId: 'work-vocabulary', workRevision: 2 },
+    ]));
+    const cycle = structured(await callRhWorkSemanticOperation(options, 'work_revise', {
+      work_id: 'work-parent',
+      expected_revision: 1,
+      semantic_parent_work_id: 'work-vocabulary',
+    }));
+    expect(cycle.status).toBe('blocked');
+    expect(String(cycle.summary)).toContain('WORK_SEMANTIC_PARENT_CYCLE');
+
+    const historyBeforeRejectedRelations = listWorkSemanticRevisionRecords(options, 'work-vocabulary');
+    const missing = structured(await callRhWorkSemanticOperation(options, 'work_revise', {
+      work_id: 'work-vocabulary',
+      expected_revision: 2,
+      depends_on_work_ids: ['work-missing'],
+    }));
+    expect(missing.status).toBe('blocked');
+    expect(String(missing.summary)).toContain('WORK_OBJECTIVE_RELATION_NOT_FOUND');
+    expect(getWorkContract(options, 'work-vocabulary')?.semanticRevision).toBe(2);
+    expect(listWorkSemanticRevisionRecords(options, 'work-vocabulary')).toEqual(historyBeforeRejectedRelations);
+
+    const selfParent = structured(await callRhWorkSemanticOperation(options, 'work_revise', {
+      work_id: 'work-vocabulary',
+      expected_revision: 2,
+      semantic_parent_work_id: 'work-vocabulary',
+    }));
+    expect(selfParent.status).toBe('blocked');
+    expect(String(selfParent.summary)).toContain('WORK_SEMANTIC_PARENT_SELF_REFERENCE');
+    expect(getWorkContract(options, 'work-vocabulary')?.semanticRevision).toBe(2);
+    expect(listWorkSemanticRevisionRecords(options, 'work-vocabulary')).toEqual(historyBeforeRejectedRelations);
+
+    const selfDependency = structured(await callRhWorkSemanticOperation(options, 'work_revise', {
+      work_id: 'work-vocabulary',
+      expected_revision: 2,
+      depends_on_work_ids: ['work-vocabulary'],
+    }));
+    expect(selfDependency.status).toBe('blocked');
+    expect(String(selfDependency.summary)).toContain('WORK_DEPENDENCY_SELF_REFERENCE');
+    expect(getWorkContract(options, 'work-vocabulary')?.semanticRevision).toBe(2);
+    expect(listWorkSemanticRevisionRecords(options, 'work-vocabulary')).toEqual(historyBeforeRejectedRelations);
+
+    const dependencyCycle = structured(await callRhWorkSemanticOperation(options, 'work_revise', {
+      work_id: 'work-dependency',
+      expected_revision: 1,
+      depends_on_work_ids: ['work-vocabulary'],
+    }));
+    expect(dependencyCycle.status).toBe('blocked');
+    expect(String(dependencyCycle.summary)).toContain('WORK_DEPENDENCY_CYCLE');
+    expect(getWorkContract(options, 'work-dependency')?.semanticRevision).toBe(1);
+    expect(listWorkSemanticRevisionRecords(options, 'work-dependency')).toEqual([]);
 
     const revised = structured(await callRhWorkSemanticOperation(options, 'work_revise', {
       work_id: 'work-vocabulary',
-      expected_revision: 1,
+      expected_revision: 2,
       work_state: 'cancelled',
     }));
     expect(revised.status).toBe('ok');
     expect(revised.data.work.state).toBe('cancelled');
-    expect(workSemanticView(reviseWorkSemanticContext(options, 'work-vocabulary', { expectedRevision: 2 })).state).toBe('cancelled');
+    expect(listWorkSemanticRevisionRecords(options, 'work-vocabulary')).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        revision: 2,
+        semanticParentWorkId: 'work-parent',
+        dependsOnWorkIds: ['work-dependency'],
+      }),
+    ]));
+    expect(workSemanticView(reviseWorkSemanticContext(options, 'work-vocabulary', { expectedRevision: 3 })).state).toBe('cancelled');
   });
 });

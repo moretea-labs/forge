@@ -11,6 +11,9 @@ export interface CurrentTaskSemanticProjection {
   planId?: string;
   planStepId?: string;
   parentWorkId?: string;
+  /** Objective graph metadata is projected for clients but never expands exact current-task authority. */
+  semanticParentWorkId?: string;
+  dependsOnWorkIds: string[];
   predecessorWorkId?: string;
   supersedes: string[];
   supersededBy?: string;
@@ -31,6 +34,8 @@ export function currentTaskSemanticProjectionForWork(work: WorkContract): Curren
     ...(work.planId?.trim() ? { planId: work.planId.trim() } : {}),
     ...(work.planStepId?.trim() ? { planStepId: work.planStepId.trim() } : {}),
     ...(work.parentWorkId?.trim() ? { parentWorkId: work.parentWorkId.trim() } : {}),
+    ...(work.semanticParentWorkId?.trim() ? { semanticParentWorkId: work.semanticParentWorkId.trim() } : {}),
+    dependsOnWorkIds: [...new Set((work.dependsOnWorkIds ?? []).map((id) => id.trim()).filter(Boolean))].sort(),
     ...(work.predecessorWorkId?.trim() ? { predecessorWorkId: work.predecessorWorkId.trim() } : {}),
     supersedes: [...new Set((work.supersedes ?? []).map((id) => id.trim()).filter(Boolean))].sort(),
     ...(work.supersededBy?.trim() ? { supersededBy: work.supersededBy.trim() } : {}),

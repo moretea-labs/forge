@@ -40,6 +40,23 @@ describe('handoff and facade contracts', () => {
     expect(allowedFacadeOperations('rh_work')).not.toContain('controller_disposition');
   });
 
+  test('exposes Work objective relations only on the current typed rh_work schema', () => {
+    const rhWork = runtimeToolDefinitions.find((definition) => definition.name === 'rh_work');
+    const properties = rhWork?.inputSchema.properties as Record<string, any> | undefined;
+    expect(properties?.semantic_parent_work_id).toMatchObject({ type: 'string', minLength: 1, maxLength: 256 });
+    expect(properties?.depends_on_work_ids).toMatchObject({ type: 'array', maxItems: 32, uniqueItems: true });
+    expect(properties?.depends_on_work_ids?.items).toMatchObject({ type: 'string', minLength: 1, maxLength: 256 });
+
+    expect(normalizeRhWorkInputCompatibility({
+      operation: 'repair',
+      capability_id: `semantic.v1:${JSON.stringify({ operation: 'work_revise', work_id: 'WORK-1', expected_revision: 1, semantic_parent_work_id: 'WORK-0' })}`,
+    })).toMatchObject({
+      ok: false,
+      summary: 'FROZEN_MCP_SEMANTIC_V1_FIELD_UNSUPPORTED',
+      data: { operation: 'work_revise', field: 'semantic_parent_work_id' },
+    });
+  });
+
   test('keeps cognition cadence model-owned without adding another lifecycle', () => {
     const rhContext = runtimeToolDefinitions.find((definition) => definition.name === 'rh_context');
     const properties = rhContext?.inputSchema.properties as Record<string, any> | undefined;

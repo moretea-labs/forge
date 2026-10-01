@@ -6,6 +6,7 @@ import { withControllerLock } from '../../../../src/cli/repositories/locks';
 import { readJsonFile, sanitizeFileComponent, writeJsonAtomic } from '../../../../src/runtime/shared/json-files';
 import {
   listControlPlaneRecords,
+  listControlPlaneRecordsWithinTransaction,
   listControlPlaneRecordsExcludingPayloadTextValues,
   initializeControlPlanePayloadTextExclusionIndex,
   readControlPlaneRecord,
@@ -19,6 +20,7 @@ import {
   type WorkImplementationReviewRecord,
 } from '../domain/implementation-review';
 import { phaseIndex, suggestedActionsForStatus, transitionPhaseEvidence, validateWorkSemanticTransition, validateWorkSemantics } from '../domain/state-machine';
+import { normalizeWorkObjectiveRelationIds, validateWorkObjectiveRelationShape } from '../domain/objective-graph';
 import {
   WORK_PHASES,
   type EvidenceRef,
@@ -114,6 +116,8 @@ export interface CreateWorkSemanticInput {
   requirementRevision?: number;
   planId?: string;
   planRevision?: number;
+  semanticParentWorkId?: string;
+  dependsOnWorkIds?: string[];
   requestedBy?: 'chatgpt' | 'user' | 'system' | 'scheduler';
 }
 
@@ -123,6 +127,8 @@ export interface ReviseWorkSemanticInput {
   state?: SemanticWorkState;
   requirementRevision?: number;
   planRevision?: number;
+  semanticParentWorkId?: string;
+  dependsOnWorkIds?: string[];
   resultRefs?: string[];
 }
 
@@ -216,6 +222,8 @@ export function workSemanticView(work: WorkContract): WorkSemanticView {
     ...(Number.isInteger(work.requirementRevision) && Number(work.requirementRevision) > 0 ? { requirementRevision: Number(work.requirementRevision) } : {}),
     ...(work.planId?.trim() ? { planId: work.planId.trim() } : {}),
     ...(Number.isInteger(work.planRevision) && Number(work.planRevision) > 0 ? { planRevision: Number(work.planRevision) } : {}),
+    ...(work.semanticParentWorkId?.trim() ? { semanticParentWorkId: work.semanticParentWorkId.trim() } : {}),
+    ...(normalizeWorkObjectiveRelationIds(work.dependsOnWorkIds).length > 0 ? { dependsOnWorkIds: normalizeWorkObjectiveRelationIds(work.dependsOnWorkIds) } : {}),
     resultRefs,
     createdAt: work.createdAt,
     updatedAt: work.semanticUpdatedAt ?? work.createdAt,
@@ -224,6 +232,40 @@ export function workSemanticView(work: WorkContract): WorkSemanticView {
 
 function workSemanticRevisionKey(workId: string, revision: number): string {
   return `${sanitizeFileComponent(workId)}-r${revision}`;
+}
+
+function validateWorkObjectiveRelationIntegrity(candidate: WorkContract, contracts: readonly WorkContract[]): void {
+  validateWorkObjectiveRelationShape(candidate);
+  const parent = candidate.semanticParentWorkId?.trim();
+  const dependencies = normalizeWorkObjectiveRelationIds(candidate.dependsOnWorkIds);
+  if (!parent && dependencies.length === 0) return;
+  const byId = new Map(contracts.map((contract) => [contract.workId, contract] as const));
+  byId.set(candidate.workId, candidate);
+  for (const relatedWorkId of [...(parent ? [parent] : []), ...dependencies]) {
+    const related = byId.get(relatedWorkId);
+    if (!related) throw new Error(`WORK_OBJECTIVE_RELATION_NOT_FOUND: ${relatedWorkId}`);
+    if ((related.lifecycleRole ?? 'primary') !== 'primary') throw new Error(`WORK_OBJECTIVE_RELATION_TARGET_NOT_PRIMARY: ${relatedWorkId}`);
+  }
+  const seenParents = new Set<string>();
+  let parentCursor = parent;
+  while (parentCursor) {
+    if (parentCursor === candidate.workId) throw new Error('WORK_SEMANTIC_PARENT_CYCLE');
+    if (seenParents.has(parentCursor)) throw new Error('WORK_SEMANTIC_PARENT_TARGET_CYCLE');
+    seenParents.add(parentCursor);
+    parentCursor = byId.get(parentCursor)?.semanticParentWorkId?.trim();
+  }
+  const dependencyReachesCandidate = (workId: string, visiting: Set<string>): boolean => {
+    if (workId === candidate.workId) return true;
+    if (visiting.has(workId)) return false;
+    visiting.add(workId);
+    const work = byId.get(workId);
+    if (!work) return false;
+    return normalizeWorkObjectiveRelationIds(work.dependsOnWorkIds)
+      .some((dependency) => dependencyReachesCandidate(dependency, visiting));
+  };
+  for (const dependency of dependencies) {
+    if (dependencyReachesCandidate(dependency, new Set())) throw new Error('WORK_DEPENDENCY_CYCLE');
+  }
 }
 
 function workSemanticRevisionStorePath(options: WorkContractStoreOptions): string {
@@ -588,6 +630,8 @@ export function createWorkSemanticContext(options: WorkContractStoreOptions, inp
     ...(Number.isInteger(input.requirementRevision) ? { requirementRevision: input.requirementRevision } : {}),
     ...(input.planId?.trim() ? { planId: input.planId.trim() } : {}),
     ...(Number.isInteger(input.planRevision) ? { planRevision: input.planRevision } : {}),
+    ...(input.semanticParentWorkId !== undefined ? { semanticParentWorkId: input.semanticParentWorkId.trim() || undefined } : {}),
+    ...(input.dependsOnWorkIds !== undefined ? { dependsOnWorkIds: normalizeWorkObjectiveRelationIds(input.dependsOnWorkIds) } : {}),
     ...(input.requestId?.trim() ? { requestId: input.requestId.trim() } : {}),
   });
 }
@@ -633,6 +677,8 @@ export function createWorkContract(options: WorkContractStoreOptions, input: Cre
       workKind: input.workKind ?? 'repository_change',
       lifecycleRole: input.lifecycleRole ?? 'primary',
       parentWorkId: input.parentWorkId?.trim() || undefined,
+      semanticParentWorkId: input.semanticParentWorkId?.trim() || undefined,
+      dependsOnWorkIds: normalizeWorkObjectiveRelationIds(input.dependsOnWorkIds),
       predecessorWorkId: predecessorWorkId && predecessorWorkId !== 'unknown' ? predecessorWorkId : undefined,
       supersedes: input.supersedes?.map((value) => sanitizeFileComponent(value)).filter((value) => value !== 'unknown').slice(0, 50),
       supersededBy: input.supersededBy ? sanitizeFileComponent(input.supersededBy) : undefined,
@@ -703,12 +749,19 @@ export function createWorkContract(options: WorkContractStoreOptions, input: Cre
 
     if (sqliteBacked(options)) {
       withControlPlaneTransaction(options.controllerHome, (database) => {
-        if (readControlPlaneRecordWithinTransaction<WorkContract>(database, 'work_contract', workContractStoreScopeKey(options), contract.workId)) {
+        const scope = workContractStoreScopeKey(options);
+        if (readControlPlaneRecordWithinTransaction<WorkContract>(database, 'work_contract', scope, contract.workId)) {
           throw new Error(`work contract already exists: ${contract.workId}`);
+        }
+        if (contract.semanticParentWorkId?.trim() || contract.dependsOnWorkIds?.length) {
+          const relationContracts = listControlPlaneRecordsWithinTransaction<WorkContract>(database, {
+            namespace: 'work_contract', scope, limit: 5_000,
+          }).map((record) => canonicalizeStoredWorkContract(record.value));
+          validateWorkObjectiveRelationIntegrity(contract, relationContracts);
         }
         writeControlPlaneRecordWithinTransaction(database, {
           namespace: 'work_contract',
-          scope: workContractStoreScopeKey(options),
+          scope,
           key: contract.workId,
           schemaVersion: 3,
           value: contract,
@@ -722,6 +775,9 @@ export function createWorkContract(options: WorkContractStoreOptions, input: Cre
     if (store.contracts.some((existing) => existing.workId === contract.workId)) {
       throw new Error(`work contract already exists: ${contract.workId}`);
     }
+    if (contract.semanticParentWorkId?.trim() || contract.dependsOnWorkIds?.length) {
+      validateWorkObjectiveRelationIntegrity(contract, store.contracts);
+    }
     const nextStore: WorkContractStore = {
       schemaVersion: 3,
       updatedAt: contract.updatedAt,
@@ -730,7 +786,8 @@ export function createWorkContract(options: WorkContractStoreOptions, input: Cre
     writeWorkContractStore(options, nextStore);
     return contract;
   };
-  return withExactWorkContractWrite(options, input.workId, create);
+  const relationAware = Boolean(input.semanticParentWorkId?.trim() || input.dependsOnWorkIds?.length);
+  return withExactWorkContractWrite(options, input.workId, () => relationAware ? withWorkContractStoreWrite(options, create) : create());
 }
 
 interface WorkRequestIndexRecord {
@@ -1012,7 +1069,8 @@ export function reviseWorkSemanticContext(
     const authoritativeOptions = authoritativeExistingWorkStoreOptions(options, workIdInput);
     return withWorkContractStoreWrite(authoritativeOptions, () => {
     const workId = sanitizeFileComponent(workIdInput);
-    const applyRevision = (current: WorkContract, at: string): WorkContract => {
+    const relationRevisionRequested = input.semanticParentWorkId !== undefined || input.dependsOnWorkIds !== undefined;
+    const applyRevision = (current: WorkContract, at: string, relationContracts: readonly WorkContract[] = []): WorkContract => {
       const semanticRevision = currentWorkSemanticRevision(current);
       if (semanticRevision !== input.expectedRevision) {
         throw new Error(`WORK_REVISION_CONFLICT:${workId}:expected=${input.expectedRevision}:actual=${semanticRevision}`);
@@ -1029,7 +1087,10 @@ export function reviseWorkSemanticContext(
         return value;
       };
       const nextSemanticState = input.state ?? currentSemanticState;
-      return validateWorkSemantics({
+      if (currentSemanticState !== 'open' && (input.semanticParentWorkId !== undefined || input.dependsOnWorkIds !== undefined)) {
+        throw new Error(`WORK_OBJECTIVE_RELATION_TERMINAL_IMMUTABLE:${workId}:${currentSemanticState}`);
+      }
+      const next = validateWorkSemantics({
         ...current,
         objective,
         semanticRevision: semanticRevision + 1,
@@ -1040,9 +1101,13 @@ export function reviseWorkSemanticContext(
           : {}),
         ...(input.requirementRevision !== undefined ? { requirementRevision: positiveRevision(input.requirementRevision, 'WORK_REQUIREMENT_REVISION_INVALID') } : {}),
         ...(input.planRevision !== undefined ? { planRevision: positiveRevision(input.planRevision, 'WORK_PLAN_REVISION_INVALID') } : {}),
+        ...(input.semanticParentWorkId !== undefined ? { semanticParentWorkId: input.semanticParentWorkId.trim() || undefined } : {}),
+        ...(input.dependsOnWorkIds !== undefined ? { dependsOnWorkIds: normalizeWorkObjectiveRelationIds(input.dependsOnWorkIds) } : {}),
         ...(input.resultRefs !== undefined ? { semanticResultRefs: [...new Set(input.resultRefs.map(String).map((value) => value.trim()).filter(Boolean))].slice(0, 100) } : {}),
         updatedAt: at,
       });
+      if (relationRevisionRequested) validateWorkObjectiveRelationIntegrity(next, relationContracts);
+      return next;
     };
 
     if (sqliteBacked(authoritativeOptions)) {
@@ -1052,7 +1117,12 @@ export function reviseWorkSemanticContext(
         if (!currentRecord) throw new Error(`work contract not found: ${workId}`);
         const current = canonicalizeStoredWorkContract(currentRecord.value);
         const at = nowIso(authoritativeOptions);
-        const next = applyRevision(current, at);
+        const relationContracts = relationRevisionRequested
+          ? listControlPlaneRecordsWithinTransaction<WorkContract>(database, {
+              namespace: 'work_contract', scope, limit: 5_000,
+            }).map((record) => canonicalizeStoredWorkContract(record.value))
+          : [];
+        const next = applyRevision(current, at, relationContracts);
         const semanticRevision = currentWorkSemanticRevision(current);
         const revisionKey = workSemanticRevisionKey(workId, semanticRevision);
         if (!readControlPlaneRecordWithinTransaction<WorkSemanticRevisionRecord>(database, 'work_semantic_revision', scope, revisionKey)) {
@@ -1082,7 +1152,7 @@ export function reviseWorkSemanticContext(
     if (index < 0) throw new Error(`work contract not found: ${workId}`);
     const current = store.contracts[index]!;
     const at = nowIso(authoritativeOptions);
-    const next = applyRevision(current, at);
+    const next = applyRevision(current, at, relationRevisionRequested ? store.contracts : []);
     const archived = { schemaVersion: 1 as const, ...workSemanticView(current), recordedAt: at };
     const history = readWorkSemanticRevisionStore(authoritativeOptions);
     if (!history.records.some((record) => record.workId === workId && record.revision === archived.revision)) {

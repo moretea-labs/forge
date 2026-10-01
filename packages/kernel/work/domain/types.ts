@@ -79,6 +79,10 @@ export interface WorkSemanticView {
   requirementRevision?: number;
   planId?: string;
   planRevision?: number;
+  /** Objective decomposition parent. Distinct from execution-child parentWorkId and continuation lineage. */
+  semanticParentWorkId?: string;
+  /** Explicit semantic ordering dependencies. Absence/empty means siblings are independently runnable. */
+  dependsOnWorkIds?: string[];
   resultRefs: string[];
   createdAt: string;
   updatedAt: string;
@@ -426,6 +430,10 @@ export interface WorkContract {
   lifecycleRole?: 'primary' | 'execution_child';
   /** Optional objective-level parent when this Work is only an execution child. */
   parentWorkId?: string;
+  /** Objective decomposition parent for primary semantic Work. Never execution ownership or continuation lineage. */
+  semanticParentWorkId?: string;
+  /** Explicit objective ordering dependencies for primary semantic Work. Never inferred from Plan items. */
+  dependsOnWorkIds?: string[];
   /** Immediate prior primary Work in the same semantic continuation lineage. Relationship evidence only; never execution or deletion authority. */
   predecessorWorkId?: string;
   /** Historical predecessors explicitly replaced by this Work. Relationship evidence only; never deletion authority. */

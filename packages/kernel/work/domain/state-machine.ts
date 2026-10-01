@@ -1,4 +1,5 @@
 import { assertImplementationReviewHistoryAppendOnly, validateImplementationReviewRecord } from './implementation-review';
+import { normalizeWorkObjectiveRelationIds, validateWorkObjectiveRelationShape } from './objective-graph';
 import {
   WORK_PHASES,
   isDirectEditWorkCompletionReceipt,
@@ -73,6 +74,7 @@ export function transitionPhaseEvidence(
 
 export function validateWorkSemantics(contract: WorkContract): WorkContract {
   if (!contract.objective.trim()) throw new Error('WORK_OBJECTIVE_REQUIRED');
+  validateWorkObjectiveRelationShape(contract);
   if (contract.semanticState === 'completed' || contract.semanticState === 'cancelled') {
     return contract;
   }
@@ -237,6 +239,14 @@ export function validateWorkSemanticTransition(
   }
   if (current.parentWorkId !== next.parentWorkId) {
     throw new Error('WORK_SEMANTICS_TRANSITION_INVALID: parentWorkId is immutable');
+  }
+  if (current.semanticParentWorkId !== next.semanticParentWorkId) {
+    throw new Error('WORK_SEMANTICS_TRANSITION_INVALID: semanticParentWorkId requires semantic CAS');
+  }
+  const currentDependencies = normalizeWorkObjectiveRelationIds(current.dependsOnWorkIds).sort();
+  const nextDependencies = normalizeWorkObjectiveRelationIds(next.dependsOnWorkIds).sort();
+  if (currentDependencies.length !== nextDependencies.length || currentDependencies.some((id, index) => id !== nextDependencies[index])) {
+    throw new Error('WORK_SEMANTICS_TRANSITION_INVALID: dependsOnWorkIds requires semantic CAS');
   }
   if (current.predecessorWorkId !== next.predecessorWorkId) {
     throw new Error('WORK_SEMANTICS_TRANSITION_INVALID: predecessorWorkId is immutable');

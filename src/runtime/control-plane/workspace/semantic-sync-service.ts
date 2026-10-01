@@ -98,6 +98,8 @@ export interface WorkSemanticView {
   requirementId?: string;
   planId?: string;
   planStepId?: string;
+  semanticParentWorkId?: string;
+  dependsOnWorkIds?: string[];
   predecessorWorkId?: string;
   supersedes?: string[];
   supersededBy?: string;
@@ -207,6 +209,8 @@ export function projectWorkSemantic(work: WorkContract): WorkSemanticView {
     ...(work.requirementId ? { requirementId: work.requirementId } : {}),
     ...(work.planId ? { planId: work.planId } : {}),
     ...(work.planStepId ? { planStepId: work.planStepId } : {}),
+    ...(work.semanticParentWorkId ? { semanticParentWorkId: work.semanticParentWorkId } : {}),
+    ...(work.dependsOnWorkIds?.length ? { dependsOnWorkIds: [...work.dependsOnWorkIds] } : {}),
     ...(work.predecessorWorkId ? { predecessorWorkId: work.predecessorWorkId } : {}),
     ...(work.supersedes ? { supersedes: [...work.supersedes] } : {}),
     ...(work.supersededBy ? { supersededBy: work.supersededBy } : {}),

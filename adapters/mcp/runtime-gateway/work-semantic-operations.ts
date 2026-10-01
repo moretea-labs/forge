@@ -4,6 +4,9 @@ import {
   createWorkSemanticContext,
   getWorkContract,
   listWorkSemanticRevisionRecords,
+  readWorkContractStore,
+  normalizeWorkObjectiveRelationIds,
+  projectWorkObjectiveGraph,
   reviseWorkSemanticContext,
   workSemanticView,
   type WorkContractStoreOptions,
@@ -30,9 +33,15 @@ function semanticCreateMatches(existing: ReturnType<typeof getWorkContract>, arg
   const objective = String(args.objective ?? '').trim();
   const requirementId = typeof args.requirement_id === 'string' ? args.requirement_id.trim() : '';
   const planId = typeof args.plan_id === 'string' ? args.plan_id.trim() : '';
+  const semanticParentWorkId = typeof args.semantic_parent_work_id === 'string' ? args.semantic_parent_work_id.trim() : '';
+  const dependsOnWorkIds = normalizeWorkObjectiveRelationIds(Array.isArray(args.depends_on_work_ids) ? args.depends_on_work_ids.map(String) : []).sort();
+  const existingDependencies = normalizeWorkObjectiveRelationIds(existing.dependsOnWorkIds).sort();
   return existing.objective === objective
     && (existing.requirementId ?? '') === requirementId
     && (existing.planId ?? '') === planId
+    && (existing.semanticParentWorkId ?? '') === semanticParentWorkId
+    && existingDependencies.length === dependsOnWorkIds.length
+    && existingDependencies.every((id, index) => id === dependsOnWorkIds[index])
     && (existing.requestId ?? '') === requestId;
 }
 
@@ -70,6 +79,8 @@ export async function callRhWorkSemanticOperation(
         ...(typeof args.requirement_revision === 'number' ? { requirementRevision: args.requirement_revision } : {}),
         ...(typeof args.plan_id === 'string' && args.plan_id.trim() ? { planId: args.plan_id.trim() } : {}),
         ...(typeof args.plan_revision === 'number' ? { planRevision: args.plan_revision } : {}),
+        ...(typeof args.semantic_parent_work_id === 'string' ? { semanticParentWorkId: args.semantic_parent_work_id } : {}),
+        ...(Array.isArray(args.depends_on_work_ids) ? { dependsOnWorkIds: args.depends_on_work_ids.map(String) } : {}),
         ...(requestId ? { requestId } : {}),
       });
       return result(buildFacadeResult({
@@ -95,11 +106,18 @@ export async function callRhWorkSemanticOperation(
       status: 'not_found', summary: `Work ${workId || '(missing)'} not found.`, data: { workId },
     }) as unknown as Record<string, unknown>, true);
     const semantic = workSemanticView(work);
+    const detail = args.detail_level === 'detail';
+    const revisionHistory = detail ? listWorkSemanticRevisionRecords(store, semantic.workId, 100) : [];
+    const objectiveGraph = detail ? projectWorkObjectiveGraph(
+      readWorkContractStore(store).contracts.map(workSemanticView),
+      listWorkSemanticRevisionRecords(store, undefined, 200),
+      semantic.workId,
+    ) : undefined;
     return result(buildFacadeResult({
       summary: `Work ${semantic.workId} retrieved at semantic revision ${semantic.revision}.`,
       data: {
         work: semantic,
-        ...(args.detail_level === 'detail' ? { revisionHistory: listWorkSemanticRevisionRecords(store, semantic.workId, 100) } : {}),
+        ...(detail ? { revisionHistory, objectiveGraph } : {}),
       },
       detailLevel: args.detail_level === 'detail' ? 'detail' : 'summary',
     }) as unknown as Record<string, unknown>);
@@ -116,6 +134,8 @@ export async function callRhWorkSemanticOperation(
       ...(targetState ? { state: targetState } : {}),
       ...(typeof args.requirement_revision === 'number' ? { requirementRevision: args.requirement_revision } : {}),
       ...(typeof args.plan_revision === 'number' ? { planRevision: args.plan_revision } : {}),
+      ...(operation === 'work_revise' && typeof args.semantic_parent_work_id === 'string' ? { semanticParentWorkId: args.semantic_parent_work_id } : {}),
+      ...(operation === 'work_revise' && Array.isArray(args.depends_on_work_ids) ? { dependsOnWorkIds: args.depends_on_work_ids.map(String) } : {}),
       ...(Array.isArray(args.work_result_refs) ? { resultRefs: args.work_result_refs.map(String) } : {}),
     });
     const semantic = workSemanticView(revised);
