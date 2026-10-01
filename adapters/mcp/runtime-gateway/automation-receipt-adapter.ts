@@ -24,6 +24,10 @@ export function isAutomationReceiptCompatibilityCall(args: Record<string, unknow
   return typeof args.capability_id === 'string' && args.capability_id.trim().startsWith(AUTOMATION_RECEIPT_CAPABILITY_PREFIX);
 }
 
+export function automationReceiptControllerTypeAllowed(controllerType: MultiRepositoryMcpToolContext['controllerType']): boolean {
+  return controllerType === undefined || controllerType === 'chatgpt';
+}
+
 export function automationMetadata(args: Record<string, unknown>): { status: AutomationStatus; taskId: string } | undefined {
   const type = args.automation_type;
   const status = args.automation_status;
@@ -42,7 +46,13 @@ export async function persistAutomationReceipt(
   outcome: CallToolResult | undefined,
 ): Promise<void> {
   if (!metadata || outcome?.isError) return;
-  if (ctx.controllerType !== 'chatgpt') throw new Error('AUTOMATION_CONTROLLER_TYPE_INVALID');
+  // Some frozen ChatGPT connector transports predate request-scoped controllerType.
+  // An explicit non-ChatGPT identity is authoritative and must fail closed, but an
+  // absent compatibility field must not override the stronger Supervisor authority
+  // below: exact task, bound conversation, and latest applied causal effect.
+  if (!automationReceiptControllerTypeAllowed(ctx.controllerType)) {
+    throw new Error('AUTOMATION_CONTROLLER_TYPE_INVALID');
+  }
   const forgeHome = resolveWorkflowSupervisorForgeHome(ctx.controllerHome);
   const task = await getWorkflowSupervisorTask(forgeHome, metadata.taskId);
   if (!task) throw new Error('AUTOMATION_SUPERVISOR_TASK_REQUIRED');

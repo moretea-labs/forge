@@ -6,7 +6,7 @@ import { WorkflowSupervisorControlPlane } from '../../supervisor/control-plane';
 import { forgeWorkflowSupervisorValidators } from '../../supervisor/forge-validators';
 import { WorkflowSupervisorStore } from '../../supervisor/store';
 import { renderSupervisorPrompt } from '../../supervisor/protocol';
-import { automationMetadata } from '../../adapters/mcp/runtime-gateway/automation-receipt-adapter';
+import { automationMetadata, automationReceiptControllerTypeAllowed } from '../../adapters/mcp/runtime-gateway/automation-receipt-adapter';
 import { normalizeRhWorkInputCompatibility } from '../../adapters/mcp/runtime-gateway/work-input-compatibility';
 import { callWorkAdapter } from '../../adapters/mcp/runtime-gateway/work-adapter';
 import { runtimeToolDefinitions } from '../../adapters/mcp/runtime-gateway/runtime-tool-definitions';
@@ -32,6 +32,10 @@ describe('Workflow Supervisor automation receipts', () => {
     expect(automationMetadata({ capability_id: 'automation.receipt:done:forge:repo:test-work' })).toEqual({
       status: 'done', taskId: 'forge:repo:test-work',
     });
+    expect(automationReceiptControllerTypeAllowed(undefined)).toBe(true);
+    expect(automationReceiptControllerTypeAllowed('chatgpt')).toBe(true);
+    expect(automationReceiptControllerTypeAllowed('codex')).toBe(false);
+    expect(automationReceiptControllerTypeAllowed('human')).toBe(false);
   });
 
   test('accepts the frozen-schema automation receipt carrier without repository admission', async () => {
