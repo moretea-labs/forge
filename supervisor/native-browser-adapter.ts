@@ -611,7 +611,6 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     }
     let poll = this.control.browserPoll({ conversationId: task.conversationId, conversationUrl: task.conversationUrl });
     if (poll.terminal) return;
-    let recoveryAuthorized = poll.command?.kind === 'recovery';
     // Restore only the enrolled exact conversation when delivery/observation is
     // due. A transport tab is disposable; it is never a new conversation/effect.
     const ensured = await this.ensurePage(task);
@@ -671,23 +670,22 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     if (!poll.command) {
       // Provider failure evidence is scoped to the latest turn plus current
       // live status regions. Historical page text must never poison a later turn.
-      // The latest committed role being user is not itself a busy signal: if
-      // provider activity keeps changing, the digest below resets idle grace;
-      // if activity stops changing, the existing bounded recovery path closes
-      // a provider turn that died without ever committing an assistant message.
-      const providerObservation = this.control.browserObserveProviderTurn({
+      // The latest committed role being user leaves the provider turn unresolved.
+      // Only an actual settled assistant or explicit failure permits recovery.
+      this.control.browserObserveProviderTurn({
         conversationId: task.conversationId,
         conversationUrl: task.conversationUrl,
-        generating: providerFailureCode ? false : providerBusy,
+        // Tool waits may render no Stop button and no assistant role. A user-only
+        // latest turn is unresolved, not a settled assistant turn.
+        generating: providerFailureCode ? false : providerBusy || latestRoleStillUser,
         latestAssistantResponse: snapshot.latestAssistantResponse,
         providerActivityText: snapshot.providerActivityText,
         providerFailureCode: providerFailureCode === CHATGPT_AUTOMATION_RATE_LIMITED ? undefined : providerFailureCode,
         observedAtMs: this.deps.nowMs(),
         graceMs: this.deps.providerIdleGraceMs,
       });
-      recoveryAuthorized = providerObservation.state === 'recovery_reserved';
-      if (providerBusy && !providerFailureCode && !recoveryAuthorized) return;
-      if (latestRoleStillUser && !providerFailureCode && !recoveryAuthorized) return;
+      if (providerBusy && !providerFailureCode) return;
+      if (latestRoleStillUser && !providerFailureCode) return;
       poll = this.control.browserPoll({ conversationId: task.conversationId, conversationUrl: task.conversationUrl });
     }
     // Recovery stays on the already-attached exact tab. Transport loss is
@@ -700,8 +698,8 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       ? Boolean(this.control.getEffect(poll.command.effectId)?.sourceCompletionFingerprint)
       : false;
     const commandMutationBlocked = providerBackpressureMs > 0
-      || (providerBusy && !providerFailureCode && !recoveryAuthorized)
-      || (latestRoleStillUser && !providerFailureCode && !recoveryAuthorized && !completedSource);
+      || (providerBusy && !providerFailureCode)
+      || (latestRoleStillUser && !providerFailureCode && !completedSource);
     // Only a fresh send mutates the provider. Reconciliation is read-only,
     // regardless of whether the current provider turn appears idle.
     if (poll.command?.mode === 'send' && commandMutationBlocked) return;
@@ -1164,33 +1162,9 @@ export class WorkflowSupervisorNativeBrowserAdapter {
         : { code: result.reason, message: result.reason }),
     );
     let snapshot = await this.deps.snapshot(page, { includeUserHistory: true, includePageText: true });
-    // A recovery effect may be authorized because an enrolled provider turn stayed
-    // visually `generating` without observable progress for the bounded stale
-    // window. Do not type into a live composer. Stop only that exact Forge-owned
-    // conversation turn, verify the provider left generating state, then continue
-    // through the normal effect dispatch/reconciliation fence.
-    if (command.mode === 'send' && command.kind === 'recovery' && snapshot.isGenerating) {
-      const stopped = await page.evaluate<boolean>(`(() => {
-        const visible = (element) => Boolean(element && element.getClientRects && element.getClientRects().length);
-        const root = Array.from(document.querySelectorAll('main')).filter(visible).pop() || document;
-        const stop = [
-          '[data-testid="stop-button"]',
-          '[data-testid*="stop-button"]',
-          'button[aria-label*="Stop"]',
-          'button[aria-label*="停止"]',
-        ].flatMap((selector) => Array.from(root.querySelectorAll(selector))).find(visible);
-        if (!(stop instanceof HTMLElement)) return false;
-        stop.click();
-        return true;
-      })()`);
-      if (!stopped) return;
-      for (let attempt = 1; attempt <= MAX_LOCAL_OBSERVATION_ATTEMPTS; attempt += 1) {
-        await this.deps.sleep(localObservationDelayMs(attempt, 250, 1_000));
-        snapshot = await this.deps.snapshot(page, { includeUserHistory: true, includePageText: true });
-        if (!snapshot.isGenerating) break;
-      }
-      if (snapshot.isGenerating) return;
-    }
+    // Recovery authorizes a new effect, never cancellation of a live turn. A
+    // provider can resume after the observation that reserved this recovery.
+    if (command.mode === 'send' && snapshot.isGenerating) return;
     let mode = command.mode;
     if (mode === 'send') {
       const begin = this.control.browserBeginEffect({

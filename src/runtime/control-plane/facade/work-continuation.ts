@@ -43,7 +43,7 @@ function boundedText(value: string | undefined, maximum: number): string | undef
 function nextSafeAction(contract: WorkContract, reconciliationRequired: boolean): string {
   if (reconciliationRequired) return 'Inspect the recorded reconciliation and decide whether to accept, reject, or supersede it; do not infer completion.';
   if (contract.evidenceState === 'stale' || contract.evidenceState === 'contradictory') return 'Re-run required validation against the current bound revision before finalization.';
-  if (contract.status === 'open' || contract.status === 'ready') return 'Claim controller ownership before starting mutating execution.';
+  if (contract.status === 'open' || contract.status === 'ready') return 'Execute the next authorized step within this Work scope; inspect existing writer and process conflicts before mutating shared resources.';
   if (contract.status === 'running') return 'Inspect the bound Work and its durable process/check evidence; do not resubmit the same request ID.';
   if (contract.status === 'completed') return 'Read the completion receipt and retain the exact revision evidence; no further mutation is implied.';
   if (contract.status === 'failed') return 'Inspect failure evidence and choose an explicit repair, reconciliation, or stop action.';

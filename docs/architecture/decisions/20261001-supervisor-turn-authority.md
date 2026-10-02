@@ -145,8 +145,12 @@ Current provider status regions include localized disconnect/delivery-timeout
 messages. A status region is evidence; arbitrary chat prose is not.
 
 A reserved recovery remains authorized across consumer passes and provider
-cooldown. Its exact owned stale turn is stopped and verified before submission;
-the original applied prompt is never replayed. A dispatch function returning
+cooldown, but never authorizes stopping a live turn. Unchanged reasoning/tool
+activity and local wait expiry do not prove provider termination. A latest user
+role without a settled assistant remains unresolved even if the Stop button is
+absent. Only a settled idle assistant or explicit provider failure admits the
+existing bounded recovery; a resumed live provider delays its dispatch. The
+original applied prompt is never replayed. A dispatch function returning
 without clicking Send supplies a dispatch-owner negative proof. Browser observers
 still cannot turn absence or a transport exception into that proof.
 
@@ -165,3 +169,38 @@ negative proof only from the current dispatch's persisted native pre-send reason
 never a browser snapshot or generic exception. Remove this reader after those
 historical effects reconcile; new producers write the negative proof directly.
 The same whole-Runtime release/rollback and existing Supervisor retention apply.
+
+## Productive turns and frozen tool context (20261002)
+
+Every newly rendered Supervisor prompt includes the existing `@forge` tool
+invocation used by the ordinary ChatGPT delivery adapter. Normal continuations
+retain conversation context instead of repeating the full historical objective,
+and ask for the next unfinished product change or acceptance check. Unchanged
+infrastructure summaries do not satisfy a work checkpoint. Model judgment owns
+which coherent wave advances the authorized objective; no keyword/count/score
+gate, claim bypass, forced code mutation or automatic goal completion is added.
+The read-only Work continuation projection directs open Work toward its next
+authorized scoped step rather than prescribing a retired model-facing claim
+operation. Existing execution admission and writer/resource fences still apply.
+
+The receipt instruction includes the exact two-field `rh_work` JSON carrier.
+Existing frozen clients' optional `repo_id` and `reason` annotations are bounded
+strings and stripped at the compatibility boundary; neither can select a task,
+effect, conversation, terminal outcome or repository mutation. Unknown fields
+and unsafe keys still fail closed. The existing canonical Supervisor derives
+receipt identity and reserves the successor transactionally. No schema, writer,
+tool, extra receipt parser or replay authority is introduced.
+
+An explicitly launched child ChatGPT Work already goes through
+`ensureWorkflowSupervisorEnrollmentForWork`: a distinct canonical conversation
+gets its own existing task/effect journal, while a reused conversation returns
+its original owner. Subsequent turns and accepted termination use the same
+Supervisor and disposable tab cleanup. Prompt guidance requires enrollment
+before a handoff; it does not create child conversations or a second parent
+lifecycle. Existing typed Work relations carry decomposition when needed.
+
+Verification extends retained compatibility, provider-wait and continuation
+scenarios. Whole-Runtime activation follows canonical gates; actual productive
+successive turns remain separate live acceptance evidence. Original exhausted
+records are preserved and may only receive the existing explicit operator
+recovery after the exact provider turn is proven settled or failed.

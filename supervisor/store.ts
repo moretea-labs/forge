@@ -706,19 +706,16 @@ export class WorkflowSupervisorStore {
         return { state: input.generating ? 'generating' : 'idle_pending' };
       }
       const unchangedSinceMs = Date.parse(String(latest?.occurred_at ?? ''));
-      // A live provider may legitimately spend much longer reasoning than an idle
-      // page needs to settle. Only classify `generating` as stale after five idle
-      // grace windows, capped by the existing ten-minute mechanical bound.
-      const unchangedGraceMs = input.generating ? Math.min(10 * 60_000, graceMs * 5) : graceMs;
-      if (!Number.isFinite(unchangedSinceMs) || input.observedAtMs - unchangedSinceMs < unchangedGraceMs) {
+      // No visible change is not proof that a live turn ended. Reasoning/tool
+      // waits may exceed every local observation timeout. Only a settled idle
+      // turn or explicit provider failure admits recovery.
+      if (input.generating) return { state: 'generating' };
+      if (!Number.isFinite(unchangedSinceMs) || input.observedAtMs - unchangedSinceMs < graceMs) {
         return { state: input.generating ? 'generating' : 'idle_pending' };
       }
 
-      // A provider turn that still advertises `generating` but has produced no
-      // observable assistant/activity change for the full grace window is stale,
-      // not healthy progress. Reuse the same exactly-once recovery path as an idle
-      // turn: the already-applied source effect is never replayed, and a recovery
-      // effect itself is never recursively recovered.
+      // The settled turn missed its receipt. Resume once without replaying its
+      // applied effect; a recovery effect cannot recursively recover itself.
       if (isProviderResume) {
         statement(db, 'INSERT OR IGNORE INTO events(task_id,event_key,kind,effect_id,payload_json,occurred_at) VALUES (?,?,?,?,?,?)', (s) => s.run(input.taskId, `assistant-recovery-exhausted:${effect.effectId}`, 'assistant_recovery_exhausted', effect.effectId, json({ assistant_digest: digest, exactly_once_resume: true, stale_generation: input.generating }), observedAt));
         return { state: 'exhausted' };

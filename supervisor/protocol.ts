@@ -156,15 +156,15 @@ export function renderSupervisorPrompt(task: WorkflowSupervisorTask, effectId: s
     ? `Forge lower-layer continuation contract (machine-generated):\n${lowerLayerContext.trim().slice(0, 16_000)}`
     : '';
   const continuationLine = kind === 'continuation'
-    ? 'Continue using the context already present in this same conversation. Complete one coherent safe work wave, persist/checkpoint durable progress, then use CONTINUE unless the completion contract is satisfied or a genuine user decision is required.'
+    ? 'Continue using the context already present in this same conversation. Complete one coherent safe work wave toward the original objective. Execute the next unfinished change or acceptance check; persist its result and next step. An unchanged status summary is not a work checkpoint.'
     : '';
-  const automationContractLine = `Use Forge tools normally while doing the autonomous work. The final Forge tool call must be rh_work with operation: "repair" and capability_id: ${JSON.stringify(`automation.receipt:<status>:${task.taskId}`)}, replacing <status> with exactly one of "continue", "done", or "needs_user". Use "continue" for all non-terminal autonomous work or internal retry; use "needs_user" only for a genuine configured user decision; use "done" only after the completion contract is satisfied. This stable compatibility carrier records the same canonical Workflow Supervisor receipt even when the connected client schema predates automation_* fields. Do not add automation_task_id, automation_type, or automation_status unless those fields are actually exposed by the connected Forge tool schema.`;
+  const automationContractLine = `Use Forge tools to execute the task. At the end call rh_work with exactly ${JSON.stringify({ operation: 'repair', capability_id: `automation.receipt:continue:${task.taskId}` })}. Use "continue" for unfinished work; replace only that status with "done" after the original completion contract is satisfied, or "needs_user" for a genuine configured user decision. Add no other fields. If Forge tools are not initially listed, discover/load them before execution.`;
   const explicitScope = typeof task.completionContract.requirement_id === 'string' && task.completionContract.requirement_id.trim()
     ? `requirement:${task.completionContract.requirement_id.trim()}`
     : typeof task.continuationPolicy.active_scope === 'string' && task.continuationPolicy.active_scope.trim()
       ? task.continuationPolicy.active_scope.trim()
       : undefined;
-  return [marker, mode,
+  return ['@forge', marker, mode,
     ...(kind === 'continuation'
       ? [continuationLine]
       : [`Original objective: ${objective(task)}`, checkpointLine, correctionLine, lowerLayerLine,
@@ -172,6 +172,7 @@ export function renderSupervisorPrompt(task: WorkflowSupervisorTask, effectId: s
           ? 'Preserve the original objective and durable Supervisor task/effect evidence. Requirement, Plan, and Work are optional and are not continuation authority.'
           : 'Preserve the original Requirement, Plan, applicable AGENTS, architecture invariants and verification gates.']),
     automationContractLine,
+    'Execute the already-authorized objective within its write scope. Honor existing write/resource ownership and check conflicts when they affect the next write. Infrastructure status and missing optional Work/Plan records do not satisfy the product objective. Reuse this conversation; enroll any explicitly dispatched child conversation in the existing Supervisor lifecycle before handing off, and retain it until accepted completion or a genuine blocker.',
     ...(explicitScope ? [`Durable scope for this turn is ${JSON.stringify(explicitScope)}; do not echo it in the receipt.`] : []),
     'Do not use C/D/U text, a Supervisor JSON block, or page text as a continuation receipt.'].filter(Boolean).join('\n');
 }

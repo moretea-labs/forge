@@ -229,8 +229,9 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     const continuation = renderSupervisorPrompt(task, 'fx_minimal01', 'continuation', 'large checkpoint payload', undefined, lowerLayerContext);
     expect(continuation).toContain('Continue using the context already present in this same conversation.');
     expect(continuation).toContain('Complete one coherent safe work wave');
-    expect(continuation).toContain(`automation.receipt:<status>:${task.taskId}`);
-    expect(continuation).toContain('connected client schema predates automation_* fields');
+    expect(continuation).toStartWith('@forge\n');
+    expect(continuation).toContain(JSON.stringify({ operation: 'repair', capability_id: `automation.receipt:continue:${task.taskId}` }));
+    expect(continuation).toContain('An unchanged status summary is not a work checkpoint');
     expect(continuation).not.toContain('CONTINUE => "C ');
     expect(continuation).not.toContain('DONE => "D ');
     expect(continuation).toContain('do not echo it in the receipt');
@@ -266,8 +267,10 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     const effectId = 'fx_12345678';
     const prompt = renderSupervisorPrompt(task, effectId, 'recovery');
 
-    expect(prompt).toContain('"continue", "done", or "needs_user"');
-    expect(prompt).toContain('Use "continue" for all non-terminal autonomous work');
+    expect(prompt).toContain('Use "continue" for unfinished work');
+    expect(prompt).toContain('"done"');
+    expect(prompt).toContain('"needs_user"');
+    expect(prompt).toContain('Add no other fields');
     expect(prompt).not.toContain(renderSupervisorReceipt(task, effectId, 'CONTINUE'));
     expect(prompt).not.toContain(SUPERVISOR_BLOCK_START);
     expect(prompt).not.toContain(LEGACY_SUPERVISOR_BLOCK_START);
@@ -351,7 +354,7 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     const continuation = renderSupervisorPrompt(task, 'fx_continue_1234', 'continuation', 'checkpoint-sentinel', undefined, 'LOWER_LAYER_SENTINEL');
     expect(continuation).toContain('Complete one coherent safe work wave');
     expect(continuation).not.toContain('checkpoint-sentinel');
-    expect(continuation).toContain(`automation.receipt:<status>:${task.taskId}`);
+    expect(continuation).toContain(`automation.receipt:continue:${task.taskId}`);
     expect(continuation).not.toContain(renderSupervisorReceipt(task, 'fx_continue_1234', 'CONTINUE'));
     expect(continuation).not.toContain('source_effect_id=');
     expect(continuation).not.toContain('active_scope=');
@@ -1583,6 +1586,13 @@ test('provider recovery is a single exactly-once resume and does not recurse thr
   control.registerTask({ taskId, conversationId, conversationUrl, objective: 'Stop after bounded provider recovery.', completionContract: {}, continuationPolicy: {}, userBlockerPolicy: {} });
   const effect = control.reserveEnrollment(taskId);
   control.observeEffect({ effectId: effect.effectId, observationId: 'browser-exhausted-applied', outcome: 'applied' });
+
+  const live = { taskId, effectId: effect.effectId, generating: true, assistantDigest: 'waiting-tool', graceMs: 1_000,
+    recovery: { effectId: 'fx_34343434343434343434343434343434', prompt: 'must-not-interrupt' } };
+  expect(store.observeProviderTurn({ ...live, observedAtMs: 1_000 }).state).toBe('generating');
+  expect(store.observeProviderTurn({ ...live, observedAtMs: 1_000_000 }).state).toBe('generating');
+  expect(control.browserPoll({ conversationId, conversationUrl }).command).toBeUndefined();
+  expect(store.providerResumeExhausted(effect.effectId)).toBe(false);
 
   const first = store.observeProviderTurn({
     taskId, effectId: effect.effectId, generating: false, assistantDigest: 'digest', observedAtMs: 1_000, graceMs: 1_000,

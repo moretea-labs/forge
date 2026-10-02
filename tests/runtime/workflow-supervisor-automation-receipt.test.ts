@@ -41,7 +41,11 @@ describe('Workflow Supervisor automation receipts', () => {
   test('accepts the frozen-schema automation receipt carrier without repository admission', async () => {
     const input = { operation: 'repair', capability_id: 'automation.receipt:continue:forge:repo:test-work' };
     expect(normalizeRhWorkInputCompatibility(input)).toMatchObject({ ok: true, operation: 'repair' });
-    const response = await callWorkAdapter({ controllerHome: '/tmp/unused-for-automation-receipt' } as any, input);
+    const annotated = { ...input, repo_id: 'transport-context-only', reason: 'work checkpoint' };
+    expect(normalizeRhWorkInputCompatibility(annotated)).toEqual({ ok: true, operation: 'repair', args: input });
+    expect(normalizeRhWorkInputCompatibility({ ...input, source_effect_id: 'fx_untrusted' })).toMatchObject({ ok: false });
+    expect(normalizeRhWorkInputCompatibility({ ...input, reason: {} })).toMatchObject({ ok: false });
+    const response = await callWorkAdapter({ controllerHome: '/tmp/unused-for-automation-receipt' } as any, annotated);
     expect(response.isError).not.toBe(true);
     expect(response.structuredContent).toMatchObject({
       status: 'ok',
@@ -148,8 +152,8 @@ describe('Workflow Supervisor automation receipts', () => {
     expect(first).toMatchObject({ action: 'CONTINUE', terminal: false });
     expect(replay).toMatchObject({ action: 'CONTINUE', terminal: false });
     expect(store.getEffectByOriginKey(`completion:${(first as { completionFingerprint: string }).completionFingerprint}`)).toBeDefined();
-    expect(renderSupervisorPrompt(task, effect.effectId, 'enrollment')).toContain(`automation.receipt:<status>:${task.taskId}`);
-    expect(renderSupervisorPrompt(task, effect.effectId, 'enrollment')).toContain('connected client schema predates automation_* fields');
+    expect(renderSupervisorPrompt(task, effect.effectId, 'enrollment')).toContain(`automation.receipt:continue:${task.taskId}`);
+    expect(renderSupervisorPrompt(task, effect.effectId, 'enrollment')).toStartWith('@forge\n');
     expect(renderSupervisorPrompt(task, effect.effectId, 'enrollment')).not.toContain('CONTINUE => "C ');
     store.close();
   });
