@@ -999,6 +999,12 @@ describe('runtime observability', () => {
 
       expect(classifyForgeIncidentForRepair(makeIncident(1))).toMatchObject({ eligible: true, rootCode: 'CONTROLLER_AUTHENTICATED_SESSION_REQUIRED' });
       expect(classifyForgeIncidentForRepair({ ...makeIncident(1), code: 'TOOL_NOT_FOUND' })).toMatchObject({ eligible: false });
+      expect(classifyForgeIncidentForRepair({
+        ...makeIncident(1),
+        tool: 'plugin_action_execute',
+        code: 'PLUGIN_BROWSER_DIAGNOSTICS_UNAVAILABLE',
+        message: 'Console and failed-request diagnostics require a Playwright/CDP-controlled page; native Apple Events sessions do not expose browser diagnostic events.',
+      })).toMatchObject({ eligible: false, reason: 'expected provider capability limitation PLUGIN_BROWSER_DIAGNOSTICS_UNAVAILABLE' });
 
       let repairWorkId: string | undefined;
       for (let index = 1; index <= 4; index += 1) {

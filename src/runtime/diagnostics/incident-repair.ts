@@ -70,6 +70,13 @@ function transportFailureMessage(message: string): boolean {
 export function classifyForgeIncidentForRepair(incident: McpIncident): ForgeIncidentRepairClassification {
   const code = incident.code.trim().toUpperCase();
   if (!code) return { eligible: false, reason: 'incident code is empty' };
+  // Browser diagnostics on the native Apple Events provider are intentionally
+  // unsupported and already fail closed at the plugin boundary. Repeating that
+  // expected capability limitation is not evidence of a Forge infrastructure
+  // defect and must not manufacture recurrent repair Work.
+  if (code === 'PLUGIN_BROWSER_DIAGNOSTICS_UNAVAILABLE') {
+    return { eligible: false, reason: `expected provider capability limitation ${code}` };
+  }
 
   const rootCode = (() => {
     if (code === 'MCP_REQUEST_EXCEPTION' && transportFailureMessage(incident.message)) return 'MCP_TRANSPORT_UNAVAILABLE';
