@@ -38,6 +38,27 @@ function saveStore(controllerHome: string, store: UserRequestStoreData): void {
   renameSync(temporary, path);
 }
 
+function canonicalRequestIndex(requests: readonly UserRequest[], requestId: string): number {
+  let selected = -1;
+  let selectedAt = Number.NEGATIVE_INFINITY;
+  for (let index = 0; index < requests.length; index += 1) {
+    const request = requests[index]!;
+    if (request.requestId !== requestId) continue;
+    const updatedAt = Date.parse(request.updatedAt);
+    const comparableAt = Number.isFinite(updatedAt) ? updatedAt : Number.NEGATIVE_INFINITY;
+    if (selected < 0 || comparableAt >= selectedAt) {
+      selected = index;
+      selectedAt = comparableAt;
+    }
+  }
+  return selected;
+}
+
+function canonicalUserRequests(requests: readonly UserRequest[]): UserRequest[] {
+  const requestIds = [...new Set(requests.map((request) => request.requestId))];
+  return requestIds.map((requestId) => requests[canonicalRequestIndex(requests, requestId)]!);
+}
+
 /**
  * Creates or coalesces a UserActionRequest / UserDecisionRequest.
  * If an active (pending) request exists with the exact same rootCauseKey,
@@ -48,7 +69,31 @@ export function recordUserRequest(controllerHome: string, input: CreateUserReque
   if (!rootCauseKey) throw new Error('USER_REQUEST_ROOT_CAUSE_KEY_REQUIRED');
 
   const store = loadStore(controllerHome);
-  // Coalescing: return matching pending request
+  const explicitRequestId = input.requestId?.trim();
+  if (explicitRequestId) {
+    const identityMatches = store.requests.filter((request) => request.requestId === explicitRequestId);
+    if (identityMatches.some((request) => request.rootCauseKey !== rootCauseKey)) {
+      throw new Error(`USER_REQUEST_ID_CONFLICT: ${explicitRequestId}`);
+    }
+    if (identityMatches.length) {
+      const existingIndex = canonicalRequestIndex(store.requests, explicitRequestId);
+      const existing = store.requests[existingIndex]!;
+      if (existing.status !== 'pending' || !input.presentation) return structuredClone(existing);
+      const merged = {
+        ...existing,
+        presentation: { ...(existing.presentation ?? {}), ...input.presentation },
+      };
+      if (JSON.stringify(merged.presentation) !== JSON.stringify(existing.presentation ?? {})) {
+        merged.updatedAt = (input.now ?? new Date()).toISOString();
+        store.requests[existingIndex] = merged;
+        saveStore(controllerHome, store);
+        return structuredClone(merged);
+      }
+      return structuredClone(existing);
+    }
+  }
+
+  // Coalescing: return matching pending request for the same semantic root cause.
   const existingIndex = store.requests.findIndex(
     (r) => r.status === 'pending' && r.rootCauseKey === rootCauseKey,
   );
@@ -70,7 +115,7 @@ export function recordUserRequest(controllerHome: string, input: CreateUserReque
   }
 
   const now = (input.now ?? new Date()).toISOString();
-  const requestId = input.requestId?.trim() || `usrreq_${randomUUID().replaceAll('-', '')}`;
+  const requestId = explicitRequestId || `usrreq_${randomUUID().replaceAll('-', '')}`;
   const record: UserRequest = {
     schemaVersion: 1,
     requestId,
@@ -99,33 +144,38 @@ export function resolveUserRequest(controllerHome: string, input: ResolveUserReq
   if (!requestId || !decision || !resolvedBy) throw new Error('RESOLVE_USER_REQUEST_ARGS_REQUIRED');
 
   const store = loadStore(controllerHome);
-  const index = store.requests.findIndex((r) => r.requestId === requestId);
-  if (index < 0) throw new Error(`USER_REQUEST_NOT_FOUND: ${requestId}`);
-  const current = store.requests[index]!;
-  if (current.status !== 'pending') return structuredClone(current);
-
+  const matchingIndexes = store.requests.flatMap((request, index) => request.requestId === requestId ? [index] : []);
+  if (!matchingIndexes.length) throw new Error(`USER_REQUEST_NOT_FOUND: ${requestId}`);
+  const canonicalIndex = canonicalRequestIndex(store.requests, requestId);
   const now = (input.now ?? new Date()).toISOString();
-  const updated: UserRequest = {
-    ...current,
-    status: 'resolved',
-    resolution: { decision, resolvedBy, resolvedAt: now },
-    updatedAt: now,
-  };
-  store.requests[index] = updated;
-  saveStore(controllerHome, store);
-  return updated;
+  let changed = false;
+  for (const index of matchingIndexes) {
+    const current = store.requests[index]!;
+    if (current.status !== 'pending') continue;
+    store.requests[index] = {
+      ...current,
+      status: 'resolved',
+      resolution: { decision, resolvedBy, resolvedAt: now },
+      updatedAt: now,
+    };
+    changed = true;
+  }
+  if (changed) saveStore(controllerHome, store);
+  const resolvedCanonicalIndex = canonicalRequestIndex(store.requests, requestId);
+  return structuredClone(store.requests[resolvedCanonicalIndex >= 0 ? resolvedCanonicalIndex : canonicalIndex]!);
 }
 
 export function getUserRequest(controllerHome: string, requestId: string): UserRequest | undefined {
   const normalized = requestId.trim();
   if (!normalized) return undefined;
-  const record = loadStore(controllerHome).requests.find((request) => request.requestId === normalized);
-  return record ? structuredClone(record) : undefined;
+  const store = loadStore(controllerHome);
+  const index = canonicalRequestIndex(store.requests, normalized);
+  return index >= 0 ? structuredClone(store.requests[index]!) : undefined;
 }
 
 export function listUserRequests(controllerHome: string, status?: 'pending' | 'resolved' | 'cancelled' | 'all'): UserRequest[] {
   const store = loadStore(controllerHome);
-  return store.requests
+  return canonicalUserRequests(store.requests)
     .filter((r) => !status || status === 'all' || r.status === status)
     .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))
     .map((r) => structuredClone(r));

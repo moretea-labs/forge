@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { mkdirSync, mkdtempSync, rmSync } from 'fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
@@ -7,9 +7,11 @@ import {
   listCanonicalGrants,
   recordCanonicalGrant,
   revokeCanonicalGrant,
+  getUserRequest,
   listUserRequests,
   recordUserRequest,
   resolveUserRequest,
+  userRequestStorePath,
   recordOwnedResource,
   listOwnedResources,
   markOwnedResourceCleaned,
@@ -175,6 +177,64 @@ describe('Thin capability substrate', () => {
     expect(resolved.resolution?.decision).toBe('user signed in successfully');
 
     expect(listUserRequests(controllerHome, 'pending')).toHaveLength(0);
+  });
+
+  test('Step 4b: requestId remains one authority across legacy duplicate rows', () => {
+    const controllerHome = tempHome();
+    const path = userRequestStorePath(controllerHome);
+    mkdirSync(join(controllerHome, 'system', 'user-requests'), { recursive: true });
+    writeFileSync(path, `${JSON.stringify({
+      schemaVersion: 1,
+      requests: [
+        {
+          schemaVersion: 1,
+          requestId: 'duplicate-decision',
+          kind: 'user_decision_request',
+          rootCauseKey: 'legacy-root-a',
+          title: 'Older duplicate',
+          summary: 'Older compatibility row.',
+          actionRequired: 'product_decision',
+          status: 'pending',
+          createdAt: '2026-10-01T00:00:00.000Z',
+          updatedAt: '2026-10-01T00:00:00.000Z',
+        },
+        {
+          schemaVersion: 1,
+          requestId: 'duplicate-decision',
+          kind: 'user_decision_request',
+          rootCauseKey: 'legacy-root-b',
+          title: 'Newer duplicate',
+          summary: 'Newer compatibility row.',
+          actionRequired: 'product_decision',
+          status: 'pending',
+          createdAt: '2026-10-01T00:00:01.000Z',
+          updatedAt: '2026-10-01T00:00:01.000Z',
+        },
+      ],
+    }, null, 2)}\n`);
+
+    expect(listUserRequests(controllerHome, 'pending')).toHaveLength(1);
+    expect(getUserRequest(controllerHome, 'duplicate-decision')?.title).toBe('Newer duplicate');
+    expect(() => recordUserRequest(controllerHome, {
+      requestId: 'duplicate-decision',
+      kind: 'user_decision_request',
+      rootCauseKey: 'new-conflicting-root',
+      title: 'Conflicting request',
+      summary: 'Must fail closed instead of creating a second authority.',
+      actionRequired: 'product_decision',
+    })).toThrow('USER_REQUEST_ID_CONFLICT');
+
+    const resolved = resolveUserRequest(controllerHome, {
+      requestId: 'duplicate-decision',
+      decision: 'superseded by canonical decision',
+      resolvedBy: 'chatgpt',
+    });
+    expect(resolved.status).toBe('resolved');
+    expect(listUserRequests(controllerHome, 'pending')).toHaveLength(0);
+    expect(listUserRequests(controllerHome, 'resolved')).toHaveLength(1);
+    const persisted = JSON.parse(readFileSync(path, 'utf8')) as { requests: Array<{ status: string }> };
+    expect(persisted.requests).toHaveLength(2);
+    expect(persisted.requests.every((request) => request.status === 'resolved')).toBe(true);
   });
 
   test('Step 5 & 2: complete records semantic decision and enables finalization without verify/review gates', async () => {
