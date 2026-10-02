@@ -176,7 +176,13 @@ Every newly rendered Supervisor prompt includes the existing `@forge` tool
 invocation used by the ordinary ChatGPT delivery adapter. Normal continuations
 retain conversation context instead of repeating the full historical objective,
 and ask for the next unfinished product change or acceptance check. Unchanged
-infrastructure summaries do not satisfy a work checkpoint. Model judgment owns
+infrastructure summaries do not satisfy a work checkpoint.
+Normal turns carry the existing registered repository identity and name the
+direct read/edit/command/check tools. Semantic Work records are not execution.
+Missing implementation requires a scoped architecture decision and implementation,
+rather than repeated substrate discovery. This adds prompt context only, with no
+dispatch authority, schema, lifecycle or heuristic productivity gate.
+Model judgment owns
 which coherent wave advances the authorized objective; no keyword/count/score
 gate, claim bypass, forced code mutation or automatic goal completion is added.
 The read-only Work continuation projection directs open Work toward its next

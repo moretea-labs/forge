@@ -159,6 +159,9 @@ export function renderSupervisorPrompt(task: WorkflowSupervisorTask, effectId: s
     ? 'Continue using the context already present in this same conversation. Complete one coherent safe work wave toward the original objective. Execute the next unfinished change or acceptance check; persist its result and next step. An unchanged status summary is not a work checkpoint.'
     : '';
   const automationContractLine = `Use Forge tools to execute the task. At the end call rh_work with exactly ${JSON.stringify({ operation: 'repair', capability_id: `automation.receipt:continue:${task.taskId}` })}. Use "continue" for unfinished work; replace only that status with "done" after the original completion contract is satisfied, or "needs_user" for a genuine configured user decision. Add no other fields. If Forge tools are not initially listed, discover/load them before execution.`;
+  const repoId = typeof task.completionContract.repo_id === 'string'
+    ? task.completionContract.repo_id.trim()
+    : typeof task.continuationPolicy.repo_id === 'string' ? task.continuationPolicy.repo_id.trim() : '';
   const explicitScope = typeof task.completionContract.requirement_id === 'string' && task.completionContract.requirement_id.trim()
     ? `requirement:${task.completionContract.requirement_id.trim()}`
     : typeof task.continuationPolicy.active_scope === 'string' && task.continuationPolicy.active_scope.trim()
@@ -172,6 +175,8 @@ export function renderSupervisorPrompt(task: WorkflowSupervisorTask, effectId: s
           ? 'Preserve the original objective and durable Supervisor task/effect evidence. Requirement, Plan, and Work are optional and are not continuation authority.'
           : 'Preserve the original Requirement, Plan, applicable AGENTS, architecture invariants and verification gates.']),
     automationContractLine,
+    ...(repoId ? [`Repository context: repo_id=${JSON.stringify(repoId)}. Pass it to repository reads, commands, patches and checks; omit it only from the final receipt.`] : []),
+    'Use rh_context for source discovery, repository_safe_patch_apply for edits, repository_command_execute for commands and run_check for registered checks. rh_work records semantic context; it does not execute implementation. Discover the direct tools before assuming execution is unavailable. When the required implementation is absent, decide its minimal boundary from the accepted requirements and architecture, then implement it within scope; do not repeatedly inspect unrelated infrastructure.',
     'Execute the already-authorized objective within its write scope. Honor existing write/resource ownership and check conflicts when they affect the next write. Infrastructure status and missing optional Work/Plan records do not satisfy the product objective. Reuse this conversation; enroll any explicitly dispatched child conversation in the existing Supervisor lifecycle before handing off, and retain it until accepted completion or a genuine blocker.',
     ...(explicitScope ? [`Durable scope for this turn is ${JSON.stringify(explicitScope)}; do not echo it in the receipt.`] : []),
     'Do not use C/D/U text, a Supervisor JSON block, or page text as a continuation receipt.'].filter(Boolean).join('\n');

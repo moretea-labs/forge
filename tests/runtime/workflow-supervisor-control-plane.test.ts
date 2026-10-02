@@ -220,7 +220,7 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
       conversationId: '11111111-2222-3333-4444-555555555555',
       conversationUrl: 'https://chatgpt.com/c/11111111-2222-3333-4444-555555555555',
       objective: 'A deliberately distinctive original objective that must not be repeated during normal continuation.',
-      completionContract: { requirement_id: 'REQ-minimal-continuation' },
+      completionContract: { requirement_id: 'REQ-minimal-continuation', repo_id: 'repo-minimal-continuation' },
       continuationPolicy: {},
       userBlockerPolicy: {},
       createdAt: '2026-01-01T00:00:00.000Z',
@@ -232,6 +232,10 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     expect(continuation).toStartWith('@forge\n');
     expect(continuation).toContain(JSON.stringify({ operation: 'repair', capability_id: `automation.receipt:continue:${task.taskId}` }));
     expect(continuation).toContain('An unchanged status summary is not a work checkpoint');
+    expect(continuation).toContain('repo_id="repo-minimal-continuation"');
+    expect(continuation).toContain('repository_safe_patch_apply');
+    expect(continuation).toContain('repository_command_execute');
+    expect(continuation).toContain('rh_work records semantic context; it does not execute implementation');
     expect(continuation).not.toContain('CONTINUE => "C ');
     expect(continuation).not.toContain('DONE => "D ');
     expect(continuation).toContain('do not echo it in the receipt');
