@@ -513,6 +513,48 @@ describe('CodeGraph read provider', () => {
     expect(pack.coverage.materialization.symbols).toBe(1);
   });
 
+  test('splits an oversized matched symbol on exact line boundaries instead of character-truncating source', () => {
+    const root = contextRepo();
+    const path = 'src/oversized-symbol.ts';
+    const prefix = Array.from({ length: 250 }, (_, index) => `export const prefix${index} = ${index};`);
+    const body = Array.from({ length: 40 }, (_, index) => `  const local${index} = "${'x'.repeat(40)}";`);
+    writeFileSync(join(root, path), [
+      ...prefix,
+      'export function oversizedFunction() {',
+      ...body,
+      '  return local39;',
+      '}',
+      '',
+    ].join('\n'));
+
+    const options = {
+      repoRoot: root,
+      policy: getMcpPolicy('controller'),
+      path,
+      hitLines: [270],
+      reasons: ['oversized-symbol-test'],
+      maxSnippets: 20,
+      maxCharsPerSnippet: 500,
+    };
+    const complete = materializeSource(options);
+    expect(complete.length).toBeGreaterThan(1);
+    expect(complete.every((snippet) => snippet.materialization === 'symbol')).toBe(true);
+    expect(complete.every((snippet) => snippet.truncated === false)).toBe(true);
+    expect(complete.some((snippet) => snippet.content.includes('<snippet truncated>'))).toBe(false);
+    expect(complete[0]?.startLine).toBe(251);
+    expect(complete.at(-1)?.endLine).toBe(293);
+    for (let index = 1; index < complete.length; index += 1) {
+      expect(complete[index]?.startLine).toBe((complete[index - 1]?.endLine ?? 0) + 1);
+    }
+
+    const limited = materializeSource({ ...options, maxSnippets: 1 });
+    expect(limited).toHaveLength(1);
+    expect(limited[0]?.truncated).toBe(true);
+    expect(limited[0]?.endLine).toBeLessThan(293);
+    expect(limited[0]?.content.includes('<snippet truncated>')).toBe(false);
+    expect(limited[0]?.content.split(/\r?\n/).length).toBe((limited[0]?.endLine ?? 0) - (limited[0]?.startLine ?? 1) + 1);
+  });
+
   test('keeps broad lexical discovery when an exact known file is paired with impact analysis', () => {
     const root = contextRepo();
     writeFileSync(join(root, 'src/reminder.ts'), 'export const scheduleReminder = true;\n');

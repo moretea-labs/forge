@@ -1165,6 +1165,9 @@ describe('scheduled external Controller wake', () => {
     expect(scheduledPrompt).toContain(`只推进 origin Work ${workId} 的既定范围`);
     expect(scheduledPrompt).toContain('ROUND4_EXPLICITLY_WAITS_AFTER_EXTERNAL_EVALUATOR_BOUNDARY');
     expect(scheduledPrompt).toContain('ROUND4_TERMINAL_OBLIGATION: when the external evaluator boundary is reached, use wait rather than goal_complete.');
+    expect(scheduledPrompt).toContain('不要把本轮先消耗在重复读取 Requirement/Plan/Work/UserRequest');
+    expect(scheduledPrompt).toContain('仅汇报状态、重复读取 lifecycle、刷新进度');
+    expect(scheduledPrompt).not.toContain('先重新读取最新 Forge Requirement/Plan/Work/UserRequest');
     const dispatched = finishControllerRoundRelayDispatch(store, {
       workId,
       ok: true,

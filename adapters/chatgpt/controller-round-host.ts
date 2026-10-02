@@ -35,7 +35,7 @@ export function buildChatgptControllerRoundPrompt(
     : '- 当前没有 active linked Handoff';
   return [
     `继续 Forge ${snapshot.requirement ? `Requirement ${snapshot.requirement.requirementId}` : `Work ${snapshot.originWorkId}`}，repo=${snapshot.repoId}。`,
-    '先重新读取最新 Forge Requirement/Plan/Work/UserRequest 语义事实；下面快照只用于恢复上下文，不能代替 durable semantic state。',
+    '下面快照来自本轮 claim-time durable state，用它直接恢复上下文。只有某个事实的新鲜度会实质改变下一次具体 domain action 时，才针对性重新读取；不要把本轮先消耗在重复读取 Requirement/Plan/Work/UserRequest 或 lifecycle bookkeeping 上。',
     requirementLine,
     `关联 Work 快照：\n${workLines}`,
     'origin Work 的 objective 与 acceptanceCriteria 是需要显式检查的 durable semantic contract；语义结论只来自最新事实与模型判断。',
@@ -51,6 +51,7 @@ export function buildChatgptControllerRoundPrompt(
     ...(terminalOriginGuidance ? [terminalOriginGuidance] : []),
     'Provider/session binding、transport recovery、dedupe、retry 和 continuation bookkeeping 由 Forge 内部维护，不属于模型工作流，也不是 Requirement/Plan/Work 的第二套语义权威。',
     '执行与验证直接使用当前 domain capability；只有 durable 语义实际变化时才更新 Requirement/Plan/Work。Forge 不替模型推断语义 next step。',
+    '如果 origin Work 尚未完成且没有真实 UserRequest/外部 blocker，本轮结束前必须完成至少一个直接推进 objective 的具体 domain action，例如源码修改、进程/检查、typed external effect，或对实现决策有实质作用的源码调查。仅汇报状态、重复读取 lifecycle、刷新进度或说明“下一步要做什么”不算推进。',
     '仓库工程、安全、权限和资源 fence 始终有效。若真实外部条件或用户判断阻塞，记录精确 UserRequest/Handoff；不要为了机械续跑创建 sibling Work、PlanStep 或额外 lifecycle。',
     'Presentation-only progress：持续较久或包含多轮工具调用时，在关键阶段用 1–2 句 user-visible 进度说明已确认结果、下一件事或真实 blocker。不要逐工具播报，不要输出 private reasoning / chain-of-thought。',
   ].join('\n');

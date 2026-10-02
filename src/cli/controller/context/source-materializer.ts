@@ -69,11 +69,6 @@ export function clearSourceSymbolIndexCacheForTest(): void {
   sourceSymbolIndexCacheMisses = 0;
 }
 
-function boundedContent(content: string, maxChars: number): { content: string; truncated: boolean } {
-  if (content.length <= maxChars) return { content, truncated: false };
-  return { content: `${content.slice(0, maxChars)}\n... <snippet truncated>`, truncated: true };
-}
-
 function plainSource(numbered: string): string {
   return numbered
     .split(/\r?\n/)
@@ -147,23 +142,74 @@ function materializedSnippet(
   materialization: SourceMaterializationKind,
   symbol?: SymbolRange,
 ): MaterializedSourceSnippet {
-  const numbered = sliceNumbered(full.content, range.startLine, range.endLine);
-  const redacted = redactMcpText(numbered);
-  const bounded = boundedContent(redacted.text, options.maxCharsPerSnippet);
+  let low = range.startLine;
+  let high = range.endLine;
+  let exactEndLine = range.startLine - 1;
+  let exactContent = '';
+  let exactRedactions: Array<{ type: string; count: number }> = [];
+  while (low <= high) {
+    const candidateEndLine = Math.floor((low + high) / 2);
+    const redacted = redactMcpText(sliceNumbered(full.content, range.startLine, candidateEndLine));
+    if (redacted.text.length <= options.maxCharsPerSnippet) {
+      exactEndLine = candidateEndLine;
+      exactContent = redacted.text;
+      exactRedactions = redacted.redactions;
+      low = candidateEndLine + 1;
+    } else {
+      high = candidateEndLine - 1;
+    }
+  }
+  // Source evidence is line-addressed. Never character-cut content while still
+  // reporting the original endLine. A single unusually long line stays intact
+  // so the reported source range remains truthful; outer response budgets remain
+  // the hard transport fence.
+  if (exactEndLine < range.startLine) {
+    const redacted = redactMcpText(sliceNumbered(full.content, range.startLine, range.startLine));
+    exactEndLine = range.startLine;
+    exactContent = redacted.text;
+    exactRedactions = redacted.redactions;
+  }
   return {
     path: full.path,
     startLine: range.startLine,
-    endLine: range.endLine,
+    endLine: exactEndLine,
     totalLines: full.totalLines,
     sha256: full.sha256,
-    content: bounded.content,
-    truncated: bounded.truncated,
-    redactions: redacted.redactions,
+    content: exactContent,
+    truncated: exactEndLine < range.endLine,
+    redactions: exactRedactions,
     reason: options.reasons.join(', '),
     cacheHit: full.cacheHit,
     materialization,
     ...(symbol ? { symbol: { kind: symbol.kind, name: symbol.name, enclosing: symbol.enclosing } } : {}),
   };
+}
+
+function materializedRange(
+  full: ReturnType<typeof readRepositoryRange>,
+  range: { startLine: number; endLine: number },
+  options: MaterializeSourceOptions,
+  materialization: SourceMaterializationKind,
+  maxSnippets: number,
+  symbol?: SymbolRange,
+): MaterializedSourceSnippet[] {
+  const snippets: MaterializedSourceSnippet[] = [];
+  let startLine = range.startLine;
+  while (startLine <= range.endLine && snippets.length < maxSnippets) {
+    const snippet = materializedSnippet(
+      full,
+      { startLine, endLine: range.endLine },
+      options,
+      materialization,
+      symbol,
+    );
+    snippets.push({ ...snippet, truncated: false });
+    startLine = snippet.endLine + 1;
+  }
+  if (startLine <= range.endLine && snippets.length > 0) {
+    snippets[snippets.length - 1] = { ...snippets[snippets.length - 1]!, truncated: true };
+  }
+  return snippets;
 }
 
 /**
@@ -200,7 +246,14 @@ export function materializeSource(options: MaterializeSourceOptions): Materializ
     const key = `${range.startLine}:${range.endLine}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    snippets.push(materializedSnippet(full, range, options, symbol ? 'symbol' : 'line_window', symbol));
+    snippets.push(...materializedRange(
+      full,
+      range,
+      options,
+      symbol ? 'symbol' : 'line_window',
+      options.maxSnippets - snippets.length,
+      symbol,
+    ));
   }
   return snippets;
 }
