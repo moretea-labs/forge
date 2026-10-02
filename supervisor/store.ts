@@ -755,7 +755,12 @@ export class WorkflowSupervisorStore {
     // observations, including transport exceptions, are never negative proof.
     const row = this.read((db) => {
       const dispatch = effectDispatchLedger(db, effectId);
-      return statement(db, "SELECT payload_json FROM events WHERE effect_id=? AND kind='effect_unknown' AND event_id>? ORDER BY event_id LIMIT 1", (s) => s.get(effectId, dispatch.lastEventId)) as { payload_json?: string } | undefined;
+      const owner = statement(db, "SELECT payload_json FROM events WHERE event_id=? AND kind='effect_dispatch_started'", (s) => s.get(dispatch.lastEventId)) as { payload_json?: string } | undefined;
+      if (parsedObject(owner?.payload_json).surface !== 'macos-native') return undefined;
+      // Other observers can report a transport error while the native sender
+      // is still preparing. Only that generation's dispatch owner can prove
+      // it returned before clicking Send.
+      return statement(db, "SELECT payload_json FROM events WHERE effect_id=? AND kind='effect_unknown' AND event_id>? AND json_extract(payload_json,'$.surface')='macos-native' ORDER BY event_id LIMIT 1", (s) => s.get(effectId, dispatch.lastEventId)) as { payload_json?: string } | undefined;
     });
     const evidence = parsedObject(row?.payload_json);
     const beforeSend = new Set(['composer_missing', 'composer_not_empty', 'composer_selection_unavailable', 'composer_text_insertion_rejected', 'composer_text_unconfirmed', 'composer_submit_mismatch', 'send_button_missing']);

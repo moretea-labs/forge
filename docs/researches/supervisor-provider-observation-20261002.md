@@ -17,6 +17,10 @@ conversations:
 - iOS task `supervisor:three-goals-avela-release-20261001` retains the unsent
   recovery `fx_c7836cf4e8cc62fe8a052296b0fa392e`. Its first current-dispatch native
   observation explicitly recorded `composer_missing`, before any Send click.
+  A concurrent extension observer reported a message-port error first; that
+  observer is not the native dispatch owner and cannot supersede its no-click
+  return. Historical reconstruction requires the generation's dispatch-start
+  record to name the native owner, then reads that owner's first observation.
   The original applied enrollment has iOS candidate/regression work in its
   reasoning region. Changing the task objective did not settle the effect.
 - The current UI has both hidden SSR and visible hydrated `main` surfaces.
