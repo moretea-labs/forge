@@ -20,7 +20,6 @@ const RECURRENCE_THRESHOLD = 3;
 const INCIDENT_TAIL_BYTES = 256 * 1024;
 const INCIDENT_WORK_PREFIX = 'forge-incident-repair';
 const ACTIONABLE_FAILURE_EVENT = 'forge_actionable_failure_observed';
-const TERMINAL_WORK_STATUSES = new Set(['completed', 'failed', 'cancelled']);
 
 export interface ForgeIncidentRepairClassification {
   eligible: boolean;
@@ -392,10 +391,10 @@ function registerRecurringForgeRepair(input: {
   const lockResource = `incident-repair-${classification.fingerprint}`;
   return withControllerLock(input.controllerHome, { scope: 'global', resource: lockResource }, lockResource, () => {
     const store = { controllerHome: input.controllerHome, repoId: repairRepository.repoId };
-    const matching = listWorkContracts({ ...store, status: 'all', limit: 500 })
+    const matching = listWorkContracts({ ...store, state: 'all', limit: 500 })
       .filter((work) => requestGeneration(work.requestId, base) !== undefined)
       .sort((left, right) => (requestGeneration(left.requestId, base) ?? 0) - (requestGeneration(right.requestId, base) ?? 0));
-    const active = [...matching].reverse().find((work) => !TERMINAL_WORK_STATUSES.has(work.status));
+    const active = [...matching].reverse().find((work) => work.semanticState === 'open');
     const recentEvidence = input.evidence.slice(-RECURRENCE_THRESHOLD);
 
     if (active) {
@@ -438,7 +437,7 @@ function registerRecurringForgeRepair(input: {
       };
     }
 
-    const created = listWorkContracts({ ...store, status: 'all', limit: 500 }).find((work) => work.requestId === requestId);
+    const created = listWorkContracts({ ...store, state: 'all', limit: 500 }).find((work) => work.requestId === requestId);
     if (!created) return {
       eligible: true, recurrent: true, occurrenceCount: input.occurrenceCount,
       fingerprint: classification.fingerprint, rootCode: classification.rootCode,
@@ -448,7 +447,7 @@ function registerRecurringForgeRepair(input: {
 
     if (predecessor) appendWorkEvidence(store, created.workId, {
       title: 'incident repair predecessor',
-      summary: `Recurrent root ${classification.rootCode} created successor generation ${generation} after terminal Work ${predecessor.workId} (${predecessor.status}).`,
+      summary: `Recurrent root ${classification.rootCode} created successor generation ${generation} after terminal Work ${predecessor.workId} (${predecessor.semanticState}).`,
       detailLevel: 'summary',
     });
     for (const evidence of recentEvidence) appendWorkEvidence(store, created.workId, evidence);

@@ -80,7 +80,7 @@ describe('thin semantic Work lifecycle', () => {
     expect(stored.implementationReviews ?? []).toEqual([]);
   });
 
-  test('completes a Work with work_complete alone, without verify, review or finalize phases', async () => {
+  test('completes a Work with complete alone, without verify, review or finalize phases', async () => {
     const options = store();
     createWorkContract(options, {
       workId: 'work-semantic-close',
@@ -93,11 +93,11 @@ describe('thin semantic Work lifecycle', () => {
       checks: [],
       constraints: { requireHandoffOnAmbiguity: true },
       requestedBy: 'chatgpt',
-      status: 'running',
+      dispatchState: 'running',
     });
     expect(workSemanticView(getWorkContract(options, 'work-semantic-close')!).state).toBe('open');
 
-    const completed = structured(await callRhWorkSemanticOperation(options, 'work_complete', {
+    const completed = structured(await callRhWorkSemanticOperation(options, 'complete', {
       work_id: 'work-semantic-close',
       expected_revision: 1,
       work_result_refs: ['artifact://external/outcome'],
@@ -106,32 +106,32 @@ describe('thin semantic Work lifecycle', () => {
     expect(completed.data.work).toMatchObject({ workId: 'work-semantic-close', state: 'completed', revision: 2 });
 
     const stored = getWorkContract(options, 'work-semantic-close')!;
-    expect(stored.status).toBe('completed');
+    expect(stored.semanticState).toBe('completed');
     expect(stored.semanticResultRefs).toEqual(['artifact://external/outcome']);
     // No verification, implementation review or finalize phase was required.
     expect(stored.checkRefs).toEqual([]);
     expect(stored.implementationReviews ?? []).toEqual([]);
   });
 
-  test('rejects a stale work_complete without writing and returns current semantic state', async () => {
+  test('rejects a stale complete without writing and returns current semantic state', async () => {
     const options = store();
     createOpenWork(options, 'work-stale-close', { workKind: 'remote_effect', objective: 'Remain open until the model closes it.' });
 
-    const stale = structured(await callRhWorkSemanticOperation(options, 'work_complete', {
+    const stale = structured(await callRhWorkSemanticOperation(options, 'complete', {
       work_id: 'work-stale-close',
       expected_revision: 7,
     }));
     expect(stale.status).toBe('blocked');
     expect(String(stale.summary)).toContain('WORK_REVISION_CONFLICT');
     expect(stale.data.currentWork).toMatchObject({ workId: 'work-stale-close', state: 'open', revision: 1 });
-    expect(getWorkContract(options, 'work-stale-close')?.status).not.toBe('completed');
+    expect(getWorkContract(options, 'work-stale-close')?.semanticState).toBe('open');
   });
 
   test('semantic completion never requires a delivery/cleanup receipt, evidence, review or controller round', async () => {
     const options = store();
     createOpenWork(options, 'work-no-mechanics');
 
-    const completed = structured(await callRhWorkSemanticOperation(options, 'work_complete', {
+    const completed = structured(await callRhWorkSemanticOperation(options, 'complete', {
       work_id: 'work-no-mechanics',
       expected_revision: 1,
       work_result_refs: ['git:commit:abcdef0'],
@@ -153,21 +153,21 @@ describe('thin semantic Work lifecycle', () => {
     const options = store();
     createOpenWork(options, 'work-mechanical-axes');
 
-    // Drive the legacy mechanical projection into a blocked/ready shape. None of
+    // Drive the mechanical execution projection into a blocked/ready shape. None of
     // these writes may become the semantic Work state.
     transitionWorkContractPhase(options, 'work-mechanical-axes', {
       phase: 'verification',
-      status: 'blocked',
       state: 'blocked',
+      dispatchState: 'blocked',
       summary: 'Mechanical verification blocker observed.',
     });
     recordWorkEvidenceState(options, 'work-mechanical-axes', 'partial');
 
-    const blocked = structured(await callRhWorkSemanticOperation(options, 'work_get', { work_id: 'work-mechanical-axes' }));
+    const blocked = structured(await callRhWorkSemanticOperation(options, 'get', { work_id: 'work-mechanical-axes' }));
     expect(blocked.data.work).toMatchObject({ workId: 'work-mechanical-axes', state: 'open', revision: 1 });
     expect(JSON.stringify(blocked.data.work)).not.toMatch(/blocked|ready|failed|running/);
 
-    const completed = structured(await callRhWorkSemanticOperation(options, 'work_complete', {
+    const completed = structured(await callRhWorkSemanticOperation(options, 'complete', {
       work_id: 'work-mechanical-axes',
       expected_revision: 1,
     }));
@@ -176,9 +176,9 @@ describe('thin semantic Work lifecycle', () => {
 
     const stored = getWorkContract(options, 'work-mechanical-axes')!;
     expect(workSemanticView(stored).state).toBe('completed');
-    // The legacy mechanical projection is still recorded for migration reads,
+    // The mechanical execution projection is still recorded for migration reads,
     // but it never decided or blocked the semantic close.
-    expect(stored.status).toBe('completed');
+    expect(stored.semanticState).toBe('completed');
   });
 
   test('start persists normalized objective relations and deduplicates the same semantic create', async () => {
@@ -211,13 +211,13 @@ describe('thin semantic Work lifecycle', () => {
     expect(deduplicated.data.deduplicated).toBe(true);
   });
 
-  test('work_revise exposes exactly one thin semantic state vocabulary', async () => {
+  test('revise exposes exactly one thin semantic state vocabulary', async () => {
     const options = store();
     createOpenWork(options, 'work-parent');
     createOpenWork(options, 'work-dependency');
     createOpenWork(options, 'work-vocabulary');
 
-    const related = structured(await callRhWorkSemanticOperation(options, 'work_revise', {
+    const related = structured(await callRhWorkSemanticOperation(options, 'revise', {
       work_id: 'work-vocabulary',
       expected_revision: 1,
       semantic_parent_work_id: 'work-parent',
@@ -230,7 +230,7 @@ describe('thin semantic Work lifecycle', () => {
       semanticParentWorkId: 'work-parent',
       dependsOnWorkIds: ['work-dependency'],
     });
-    const detail = structured(await callRhWorkSemanticOperation(options, 'work_get', {
+    const detail = structured(await callRhWorkSemanticOperation(options, 'get', {
       work_id: 'work-vocabulary',
       detail_level: 'detail',
     }));
@@ -238,7 +238,7 @@ describe('thin semantic Work lifecycle', () => {
       { kind: 'decomposition', fromWorkId: 'work-parent', toWorkId: 'work-vocabulary', workRevision: 2 },
       { kind: 'dependency', fromWorkId: 'work-dependency', toWorkId: 'work-vocabulary', workRevision: 2 },
     ]));
-    const cycle = structured(await callRhWorkSemanticOperation(options, 'work_revise', {
+    const cycle = structured(await callRhWorkSemanticOperation(options, 'revise', {
       work_id: 'work-parent',
       expected_revision: 1,
       semantic_parent_work_id: 'work-vocabulary',
@@ -247,7 +247,7 @@ describe('thin semantic Work lifecycle', () => {
     expect(String(cycle.summary)).toContain('WORK_SEMANTIC_PARENT_CYCLE');
 
     const historyBeforeRejectedRelations = listWorkSemanticRevisionRecords(options, 'work-vocabulary');
-    const missing = structured(await callRhWorkSemanticOperation(options, 'work_revise', {
+    const missing = structured(await callRhWorkSemanticOperation(options, 'revise', {
       work_id: 'work-vocabulary',
       expected_revision: 2,
       depends_on_work_ids: ['work-missing'],
@@ -257,7 +257,7 @@ describe('thin semantic Work lifecycle', () => {
     expect(getWorkContract(options, 'work-vocabulary')?.semanticRevision).toBe(2);
     expect(listWorkSemanticRevisionRecords(options, 'work-vocabulary')).toEqual(historyBeforeRejectedRelations);
 
-    const selfParent = structured(await callRhWorkSemanticOperation(options, 'work_revise', {
+    const selfParent = structured(await callRhWorkSemanticOperation(options, 'revise', {
       work_id: 'work-vocabulary',
       expected_revision: 2,
       semantic_parent_work_id: 'work-vocabulary',
@@ -267,7 +267,7 @@ describe('thin semantic Work lifecycle', () => {
     expect(getWorkContract(options, 'work-vocabulary')?.semanticRevision).toBe(2);
     expect(listWorkSemanticRevisionRecords(options, 'work-vocabulary')).toEqual(historyBeforeRejectedRelations);
 
-    const selfDependency = structured(await callRhWorkSemanticOperation(options, 'work_revise', {
+    const selfDependency = structured(await callRhWorkSemanticOperation(options, 'revise', {
       work_id: 'work-vocabulary',
       expected_revision: 2,
       depends_on_work_ids: ['work-vocabulary'],
@@ -277,7 +277,7 @@ describe('thin semantic Work lifecycle', () => {
     expect(getWorkContract(options, 'work-vocabulary')?.semanticRevision).toBe(2);
     expect(listWorkSemanticRevisionRecords(options, 'work-vocabulary')).toEqual(historyBeforeRejectedRelations);
 
-    const dependencyCycle = structured(await callRhWorkSemanticOperation(options, 'work_revise', {
+    const dependencyCycle = structured(await callRhWorkSemanticOperation(options, 'revise', {
       work_id: 'work-dependency',
       expected_revision: 1,
       depends_on_work_ids: ['work-vocabulary'],
@@ -287,7 +287,7 @@ describe('thin semantic Work lifecycle', () => {
     expect(getWorkContract(options, 'work-dependency')?.semanticRevision).toBe(1);
     expect(listWorkSemanticRevisionRecords(options, 'work-dependency')).toEqual([]);
 
-    const revised = structured(await callRhWorkSemanticOperation(options, 'work_revise', {
+    const revised = structured(await callRhWorkSemanticOperation(options, 'revise', {
       work_id: 'work-vocabulary',
       expected_revision: 2,
       work_state: 'cancelled',

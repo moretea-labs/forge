@@ -204,32 +204,37 @@ function scheduleNeedsAttention(schedule: RepositorySchedule): boolean {
   return Boolean(schedule.pausedReason && /(?:fail|error|auth|login|block|attention|maximum)/i.test(schedule.pausedReason));
 }
 
-function scheduleStatus(schedule: RepositorySchedule, workStatus?: string): ConsoleAutomationView['status'] {
-  if (workStatus === 'completed' || /is terminal \(completed\)/i.test(schedule.pausedReason ?? '')) return 'completed';
-  if (workStatus === 'failed') return 'attention';
+function scheduleStatus(schedule: RepositorySchedule, workState?: string): ConsoleAutomationView['status'] {
+  if (workState === 'completed' || /is terminal \(completed\)/i.test(schedule.pausedReason ?? '')) return 'completed';
+  if (workState === 'cancelled') return 'paused';
   if (schedule.enabled) return scheduleNeedsAttention(schedule) ? 'attention' : 'enabled';
   return scheduleNeedsAttention(schedule) ? 'attention' : 'paused';
 }
 
-function workBinding(controllerHome: string, repoId: string, schedule: RepositorySchedule): { id?: string; objective?: string; status?: string } {
+function workBinding(controllerHome: string, repoId: string, schedule: RepositorySchedule): { id?: string; objective?: string; state?: string; failed?: boolean } {
   const value = schedule.action.arguments?.work_id;
   const workId = typeof value === 'string' && value.trim() ? value.trim() : undefined;
   if (!workId) return {};
   const work = getWorkContract({ controllerHome, repoId }, workId);
-  return { id: workId, objective: work?.objective, status: work?.status };
+  return {
+    id: workId,
+    objective: work?.objective,
+    state: work?.semanticState,
+    failed: work ? work.evidenceState === 'failed' || work.phaseEvidence[work.phase].state === 'failed' : false,
+  };
 }
 
-function displayPauseReason(schedule: RepositorySchedule, workStatus?: string): string | undefined {
-  if (workStatus === 'completed' || /is terminal \(completed\)/i.test(schedule.pausedReason ?? '')) return '关联工作已经完成，这个自动任务不会再触发。';
+function displayPauseReason(schedule: RepositorySchedule, workState?: string): string | undefined {
+  if (workState === 'completed' || /is terminal \(completed\)/i.test(schedule.pausedReason ?? '')) return '关联工作已经完成，这个自动任务不会再触发。';
   if (schedule.lastObservationStatus === 'auth_required') return '目标登录状态已失效，完成重新登录后即可恢复。';
   if (schedule.consecutiveFailures >= schedule.policy.maxFailures || /maximum consecutive failures/i.test(schedule.pausedReason ?? '')) return '连续执行失败达到上限，已自动暂停。修复问题后可以恢复任务。';
   if (/canary completed/i.test(schedule.pausedReason ?? '')) return '验收任务已经完成。';
   return schedule.pausedReason;
 }
 
-function attentionMessage(schedule: RepositorySchedule, workStatus?: string): string | undefined {
+function attentionMessage(schedule: RepositorySchedule, workFailed = false): string | undefined {
   if (schedule.lastObservationStatus === 'auth_required') return '需要重新登录后才能继续自动执行。';
-  if (workStatus === 'failed') return '关联工作执行失败，需要检查失败原因后再恢复。';
+  if (workFailed) return '关联工作执行失败，需要检查失败原因后再恢复。';
   if (schedule.consecutiveFailures >= schedule.policy.maxFailures) return '连续执行失败达到上限，任务已自动暂停。';
   return undefined;
 }
@@ -256,7 +261,7 @@ export function listConsoleAutomations(controllerHome: string, repositories: Rep
         repositoryName: repository.displayName,
         name: schedule.name,
         summary: scheduleSummary(mode),
-        status: scheduleStatus(schedule, work.status),
+        status: scheduleStatus(schedule, work.state),
         schedule: triggerLabel(schedule),
         timezone: schedule.trigger.timezone,
         delivery: scheduleDelivery(schedule, mode),
@@ -274,10 +279,10 @@ export function listConsoleAutomations(controllerHome: string, repositories: Rep
         lastRunAt: last?.updatedAt ?? schedule.lastTriggeredAt,
         lastResult: observationResult(schedule, last),
         nextRunHint: nextScheduleHint(schedule),
-        pausedReason: displayPauseReason(schedule, work.status),
-        attentionMessage: attentionMessage(schedule, work.status),
+        pausedReason: displayPauseReason(schedule, work.state),
+        attentionMessage: attentionMessage(schedule, work.failed),
         history: occurrenceHistory(occurrences),
-        actions: scheduleStatus(schedule, work.status) === 'completed' ? [] : schedule.enabled ? ['run', 'pause'] : ['resume'],
+        actions: scheduleStatus(schedule, work.state) === 'completed' ? [] : schedule.enabled ? ['run', 'pause'] : ['resume'],
       });
     }
 

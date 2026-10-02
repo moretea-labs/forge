@@ -1,4 +1,4 @@
-import type { WorkContract, WorkContractStore, WorkContractStatus } from '../domain/types';
+import type { SemanticWorkState, WorkContract, WorkContractStore } from '../domain/types';
 
 export interface WorkContractStoreLocation {
   controllerHome?: string;
@@ -17,5 +17,5 @@ export interface WorkContractStoreOptions extends WorkContractStoreLocation {
 export interface WorkContractPersistencePort {
   read(options: WorkContractStoreOptions): WorkContractStore;
   get(options: WorkContractStoreOptions, workId: string): WorkContract | undefined;
-  list(options: WorkContractStoreOptions & { status?: WorkContractStatus | 'active' | 'all'; limit?: number }): WorkContract[];
+  list(options: WorkContractStoreOptions & { state?: SemanticWorkState | 'active' | 'all'; limit?: number }): WorkContract[];
 }

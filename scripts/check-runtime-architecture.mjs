@@ -372,20 +372,20 @@ for (const path of [
   'adapters/mcp/frozen-client-semantic-compatibility.ts',
 ]) requireMissing(path);
 requireText(
-  'adapters/mcp/runtime-gateway/work-input-compatibility.ts',
+  'adapters/mcp/runtime-gateway/work-input-wire-migration.ts',
   "const FROZEN_SEMANTIC_V1_PREFIX = 'semantic.v1:';",
 );
 requireText(
-  'adapters/mcp/runtime-gateway/work-input-compatibility.ts',
+  'adapters/mcp/runtime-gateway/work-input-wire-migration.ts',
   "const FROZEN_CURRENT_CONVERSATION_ENROLLMENT = 'controller.current_conversation.enroll';",
 );
 forbid(
-  'adapters/mcp/runtime-gateway/work-input-compatibility.ts',
+  'adapters/mcp/runtime-gateway/work-input-wire-migration.ts',
   /schedule\.delete:|work\.review:|controller\.(?:authority|provider|disposition|round):|plan\.step\.retry:/,
   'the bounded frozen-session decoder must not restore retired lifecycle carriers',
 );
 for (const path of sourceFiles('adapters/mcp')) {
-  if (path === 'adapters/mcp/runtime-gateway/work-input-compatibility.ts') continue;
+  if (path === 'adapters/mcp/runtime-gateway/work-input-wire-migration.ts') continue;
   forbid(path, /semantic\.v1:/, 'semantic.v1 frozen-session decoding must have exactly one transport owner');
 }
 
@@ -879,7 +879,8 @@ forbid(
 // Thin Work authority: semantic state is open/completed/cancelled. Review and
 // verification may exist as evidence/capabilities, never as generic Work/Git
 // admission authority. The old delivery/finalizer modules are intentionally gone.
-requireText('packages/kernel/work/domain/types.ts', "export type SemanticWorkState = 'open' | 'completed' | 'cancelled';");
+requireText('packages/kernel/work/domain/types.ts', "export const SEMANTIC_WORK_STATES = ['open', 'completed', 'cancelled'] as const;");
+requireText('packages/kernel/work/domain/types.ts', 'export type SemanticWorkState = (typeof SEMANTIC_WORK_STATES)[number];');
 requireText('packages/kernel/work/api/index.ts', "export * from '../application/work-service'");
 requireText('src/cli/repositories/selected-path-actions.ts', 'beforeCommitGuard');
 requireMissing('src/runtime/control-plane/execution/direct-edit-work-completion.ts');
@@ -1439,7 +1440,6 @@ forbid(
   'Execution Worker must invoke control-plane Work application services directly, never MCP transport',
 );
 requireText('src/runtime/execution/workers/executor.ts', '__from_durable_worker');
-requireText('adapters/mcp/runtime-gateway/work-compat-adapter.ts', 'managedProcessOperationDigest');
 forbid(
   'adapters/mcp/runtime-gateway/runtime-tools.ts',
   /\bcreateExecutionJob\b/,
@@ -1880,8 +1880,9 @@ for (const path of [...sourceFiles('src'), ...sourceFiles('adapters')]) {
 // Thin semantic Work lifecycle: Work is open/completed/cancelled and
 // work.complete is a mechanical durable close. Review findings are durable
 // observations, never a completion gate.
-requireText('packages/kernel/work/domain/types.ts', "export type SemanticWorkState = 'open' | 'completed' | 'cancelled';");
-requireText('adapters/mcp/runtime-gateway/work-semantic-operations.ts', "'work_get', 'work_revise', 'work_complete'");
+requireText('packages/kernel/work/domain/types.ts', "export const SEMANTIC_WORK_STATES = ['open', 'completed', 'cancelled'] as const;");
+requireText('packages/kernel/work/domain/types.ts', 'export type SemanticWorkState = (typeof SEMANTIC_WORK_STATES)[number];');
+requireText('adapters/mcp/runtime-gateway/work-semantic-operations.ts', "const RH_WORK_SEMANTIC_OPERATIONS = new Set(['start', 'get', 'revise', 'complete']);");
 for (const path of [
   'packages/kernel/work/domain/state-machine.ts',
   'src/runtime/control-plane/execution/work-evidence-policy.ts',
@@ -1971,11 +1972,6 @@ forbid(
   'packages/kernel/scheduler/infrastructure/schedule-store.ts',
   /repeated_infrastructure_failure|activeScheduleFailureHandoff|stableScheduleFailureHandoffId|resolveRecoveredScheduleFailureHandoffs/,
   'mechanical Scheduler failures must remain runtime/backoff facts and must not create human-request authority',
-);
-forbid(
-  'src/runtime/control-plane/execution/work-task-receipt.ts',
-  /completeWorkWithReceipt|recordWorkDeliveryReceipt/,
-  'legacy Issue/Task acceptance may project an already-completed Work but must never write Work delivery/completion authority',
 );
 {
   const workStoreSource = text('packages/kernel/work/infrastructure/work-contract-store.ts');

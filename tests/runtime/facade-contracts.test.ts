@@ -7,7 +7,7 @@ import { allowedFacadeOperations, validateSuggestedNextActions } from '../../src
 import { buildSuperControllerInvocation, type ThinLauncherRequest } from '../../src/runtime/control-plane/launcher/thin-launcher';
 import { RH_WORK_MODEL_OPERATIONS, isRhWorkAcceptedOperation } from '../../src/runtime/control-plane/facade/rh-work-operation-contract';
 import { runtimeToolDefinitions } from '../../src/runtime/gateway/mcp/runtime-tool-definitions';
-import { normalizeRhWorkInputCompatibility } from '../../adapters/mcp/runtime-gateway/work-input-compatibility';
+import { normalizeRhWorkInputWireMigration } from '../../adapters/mcp/runtime-gateway/work-input-wire-migration';
 import { CONTROLLER_LEARNING_SIGNAL_ENVELOPE_MAX_ITEMS } from '../../src/runtime/context/automatic-learning';
 import {
   FACADE_TOOLS,
@@ -61,7 +61,7 @@ describe('handoff and facade contracts', () => {
     expect(properties?.depends_on_work_ids).toMatchObject({ type: 'array', maxItems: 32, uniqueItems: true });
     expect(properties?.depends_on_work_ids?.items).toMatchObject({ type: 'string', minLength: 1, maxLength: 256 });
 
-    expect(normalizeRhWorkInputCompatibility({
+    expect(normalizeRhWorkInputWireMigration({
       operation: 'repair',
       capability_id: `semantic.v1:${JSON.stringify({ operation: 'work_revise', work_id: 'WORK-1', expected_revision: 1, semantic_parent_work_id: 'WORK-0' })}`,
     })).toMatchObject({
@@ -135,7 +135,7 @@ describe('handoff and facade contracts', () => {
   });
 
   test('keeps frozen MCP carriers bounded and transport-only', () => {
-    const semantic = normalizeRhWorkInputCompatibility({
+    const semantic = normalizeRhWorkInputWireMigration({
       operation: 'repair',
       repo_id: 'repo-current',
       request_id: 'frozen-semantic-read',
@@ -143,16 +143,16 @@ describe('handoff and facade contracts', () => {
     });
     expect(semantic).toMatchObject({
       ok: true,
-      operation: 'work_get',
+      operation: 'get',
       args: {
-        operation: 'work_get',
+        operation: 'get',
         repo_id: 'repo-current',
         request_id: 'frozen-semantic-read',
         work_id: 'WORK-1',
       },
     });
 
-    expect(normalizeRhWorkInputCompatibility({
+    expect(normalizeRhWorkInputWireMigration({
       operation: 'repair',
       work_id: 'WORK-OUTER',
       capability_id: `semantic.v1:${JSON.stringify({ operation: 'work_get', work_id: 'WORK-INNER' })}`,
@@ -162,7 +162,7 @@ describe('handoff and facade contracts', () => {
       data: { operation: 'work_get', field: 'work_id' },
     });
 
-    expect(normalizeRhWorkInputCompatibility({
+    expect(normalizeRhWorkInputWireMigration({
       operation: 'repair',
       capability_id: `semantic.v1:${JSON.stringify({ operation: 'work_get', work_id: 'WORK-1', lifecycle_phase: 'review' })}`,
     })).toMatchObject({
@@ -171,7 +171,7 @@ describe('handoff and facade contracts', () => {
       data: { operation: 'work_get', field: 'lifecycle_phase' },
     });
 
-    expect(normalizeRhWorkInputCompatibility({
+    expect(normalizeRhWorkInputWireMigration({
       operation: 'repair',
       capability_id: `semantic.v1:${'x'.repeat(8 * 1024 + 1)}`,
     })).toMatchObject({
@@ -179,7 +179,7 @@ describe('handoff and facade contracts', () => {
       summary: 'FROZEN_MCP_SEMANTIC_V1_TOO_LARGE',
     });
 
-    const enrollment = normalizeRhWorkInputCompatibility({
+    const enrollment = normalizeRhWorkInputWireMigration({
       operation: 'repair',
       repo_id: 'repo-current',
       work_id: 'WORK-1',
@@ -198,7 +198,7 @@ describe('handoff and facade contracts', () => {
       },
     });
 
-    expect(normalizeRhWorkInputCompatibility({
+    expect(normalizeRhWorkInputWireMigration({
       operation: 'repair',
       work_id: 'WORK-1',
       controller_type: 'codex',
@@ -209,7 +209,7 @@ describe('handoff and facade contracts', () => {
       data: { field: 'controller_type' },
     });
 
-    const retiredLifecycle = normalizeRhWorkInputCompatibility({
+    const retiredLifecycle = normalizeRhWorkInputWireMigration({
       operation: 'repair',
       capability_id: `semantic.v1:${JSON.stringify({ operation: 'review', work_id: 'WORK-1' })}`,
     });

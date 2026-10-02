@@ -90,7 +90,7 @@ function seedWorkHandle(controllerHome: string, repository: ReturnType<typeof se
     checks: [],
     constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
     requestedBy: 'chatgpt',
-    status: 'running',
+    dispatchState: 'running',
   });
   return writeWorkHandle(controllerHome, {
     schemaVersion: 1,
@@ -708,7 +708,7 @@ describe('repository command execution lifecycle', () => {
       forbiddenPaths: [],
       checks: [],
       requestedBy: 'chatgpt',
-      status: 'running',
+      dispatchState: 'running',
     });
 
     const delivered = await pushExactWorkRemoteDelivery({
@@ -767,7 +767,7 @@ describe('repository command execution lifecycle', () => {
       forbiddenPaths: [],
       checks: [],
       requestedBy: 'chatgpt',
-      status: 'running',
+      dispatchState: 'running',
     });
     cancelWorkContract({ controllerHome, repoId: repository.repoId }, workId, { summary: 'Explicitly terminalize the Work before proving remote delivery is fenced.' });
 

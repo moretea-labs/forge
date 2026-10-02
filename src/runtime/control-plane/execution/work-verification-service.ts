@@ -25,7 +25,7 @@ import { executionIdentityForRepository } from './execution-identity';
 import { commandFingerprint, effectiveVerificationEvidence, verificationInputFingerprint, workspaceValidationFingerprint } from './verification-evidence';
 import { resolveWorkVerificationContext } from './work-verification-context';
 import { listWorkBoundRepositoryProcessEvidence } from './work-process-evidence';
-import { changedPaths as workChangedPaths, changedPathsFromUnbornBase } from './work-task-receipt';
+import { changedPaths as workChangedPaths, changedPathsFromUnbornBase } from './work-revision-diff';
 import { readWorkHandle, workDeliveryBaseRevision } from './work-handle-store';
 
 export interface ExecuteWorkVerificationInput {
@@ -630,7 +630,7 @@ export async function executeWorkVerification(input: ExecuteWorkVerificationInpu
     }), true);
   }
 
-  if (workId && (!workContract || workContract.status === 'completed' || workContract.status === 'cancelled' || workContract.status === 'failed')) {
+  if (workId && (!workContract || workContract.semanticState !== 'open')) {
     const facade = recordWorkCheckEvidence({ store, workId, checkId, availableChecks: checks });
     return result(facade, facade.status === 'failed');
   }
@@ -779,7 +779,7 @@ export async function executeWorkVerification(input: ExecuteWorkVerificationInpu
       && workContract
       && workContract.checks.includes(normalizedCheckId)
       && !workContract.completionReceipt
-      && workContract.status === 'running',
+      && workContract.dispatchState === 'running',
     );
 
     const executed = await runPersistedCheckViaProcessRuntime({

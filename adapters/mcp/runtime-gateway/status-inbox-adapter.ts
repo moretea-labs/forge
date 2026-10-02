@@ -77,7 +77,7 @@ export function summarizeWorkListItem(job: ExecutionJob): Record<string, unknown
     createdAt: job.createdAt,
     updatedAt: job.updatedAt,
     suggestedNextAction: digest.suggestedNextActions[0],
-    detailPointer: { tool: 'work_get', work_id: job.jobId },
+    detailPointer: { tool: 'rh_work', operation: 'get', work_id: job.jobId },
   };
 }
 
@@ -270,7 +270,7 @@ export async function callStatusInboxAdapter(
           : { contracts: [], invalid: [] };
         const activeWorkSnapshot = activeWorkProjection.contracts.map((entry) => ({
           workId: entry.workId,
-          status: entry.status,
+          state: entry.semanticState,
           objective: entry.objective.slice(0, 160),
           semantics: buildWorkContinuationSnapshot(entry).semantics,
           nextSafeAction: buildWorkContinuationSnapshot(entry).nextSafeAction,

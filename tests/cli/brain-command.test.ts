@@ -5,7 +5,7 @@ import { join } from 'path';
 import { spawnSync } from 'child_process';
 import { runBrainPromote } from '../../src/cli/commands/brain';
 import { registerRepository } from '../../src/cli/repositories/registry';
-import { createWorkContract, recordWorkCompletionReceipt } from '../../packages/kernel/work/api/index';
+import { createWorkContract, recordWorkCompletionReceipt, reviseWorkSemanticContext } from '../../packages/kernel/work/api/index';
 
 function git(repo: string, ...args: string[]) {
   const result = spawnSync('git', args, { cwd: repo, encoding: 'utf-8' });
@@ -69,13 +69,13 @@ describe('brain terminal workflow promotion', () => {
       const workId = 'work-brain-nonterminal';
       createWorkContract({ controllerHome, repoId: repository.repoId }, {
         workId, repoId: repository.repoId, objective: 'Not terminal yet', acceptanceCriteria: [],
-        allowedPaths: [], forbiddenPaths: [], checks: [], constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'running',
+        allowedPaths: [], forbiddenPaths: [], checks: [], constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', dispatchState: 'running',
         scopeRef: { schemaVersion: 1, kind: 'project', id: 'project-brain-modern' },
       });
       const result = runBrainPromote({ repo, controllerHome, workId, slug: 'modern-nonterminal', category: 'references', dryRun: true });
       expect(result.written).toBe(false);
       expect(result.sources).toEqual([]);
-      expect(result.issues.map(item => item.message).join('\n')).toContain('completed Work with a durable completion receipt');
+      expect(result.issues.map(item => item.message).join('\n')).toContain('semantically completed Work');
       expect(result.issues.map(item => item.message).join('\n')).not.toContain('Git history');
     } finally {
       rmSync(repo, { recursive: true, force: true });
@@ -100,7 +100,7 @@ describe('brain terminal workflow promotion', () => {
       const store = { controllerHome, repoId: repository.repoId };
       createWorkContract(store, {
         workId, repoId: repository.repoId, objective: 'Produce one durable learning result', acceptanceCriteria: ['terminal evidence exists'],
-        allowedPaths: [], forbiddenPaths: [], checks: [], constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'running',
+        allowedPaths: [], forbiddenPaths: [], checks: [], constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', dispatchState: 'running',
         workKind: 'local_effect', scopeRef: { schemaVersion: 1, kind: 'project', id: 'project-brain-modern' },
       });
       const recordedAt = '2026-09-08T00:00:00.000Z';
@@ -108,10 +108,11 @@ describe('brain terminal workflow promotion', () => {
         schemaVersion: 1, receiptId: 'REC-brain-terminal', source: 'local_effect', workId,
         operation: 'capture_learning_result', target: { kind: 'controller_local', id: 'brain-learning-result' }, changed: true, recordedAt,
       }, 'completed_local', 'local_effect');
+      reviseWorkSemanticContext(store, workId, { expectedRevision: 1, state: 'completed', resultRefs: ['REC-brain-terminal'] });
       const result = runBrainPromote({ repo, controllerHome, workId, slug: 'modern-terminal', category: 'references', dryRun: true });
       expect(result.issues).toEqual([]);
       expect(result.written).toBe(false);
-      expect(result.sources).toEqual([`work:${workId}`, 'completion:REC-brain-terminal']);
+      expect(result.sources).toEqual([`work:${workId}`, 'REC-brain-terminal', 'completion:REC-brain-terminal']);
       expect(result.sources.some(source => source.startsWith('git:'))).toBe(false);
     } finally {
       rmSync(repo, { recursive: true, force: true });

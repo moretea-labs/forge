@@ -82,7 +82,7 @@ test('reconciles an explicitly named generic run_check Process into the exact Wo
     checks: [checkId],
     constraints: { requireHandoffOnAmbiguity: true },
     requestedBy: 'chatgpt',
-    status: 'running',
+    dispatchState: 'running',
   });
 
   const statusBefore = {

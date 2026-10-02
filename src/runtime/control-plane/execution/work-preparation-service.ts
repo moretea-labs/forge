@@ -9,7 +9,7 @@ import { ensureManagedWorkspace } from '../../execution/managed-workspace';
 import { readRepositoryAccessPolicy } from '../governance/access-policy';
 import { activateWorkContract, appendWorkEvidence, failWorkContract, getWorkContract, recordWorkEvidenceState, updateWorkContract } from '../../../../packages/kernel/work/api/index';
 import { admitPreparedRepositoryWorkContract } from '../facade/repository-work-admission';
-import { isTerminalWorkContractStatus, type WorkReconciliationRecord } from '../facade/types';
+import { isTerminalSemanticWorkState, type WorkReconciliationRecord } from '../facade/types';
 import { updateExecutionSession, type ExecutionSessionContext } from './session-store';
 import { currentPermissionSnapshotVersion, validateWorkHandle, WorkHandleValidationError } from './validation';
 import { assertExecutionIdentity, executionIdentityFromCoordinates } from './execution-identity';
@@ -145,7 +145,7 @@ function adoptExistingWorkHead(
 
   const contract = contractFor(ctx, handle);
   if (!contract || contract.repoId !== handle.repositoryId) throw new Error('WORK_HEAD_ADOPTION_CONTRACT_MISSING');
-  if (isTerminalWorkContractStatus(contract.status) || contract.completionReceipt) {
+  if (isTerminalSemanticWorkState(contract.semanticState) || contract.completionReceipt) {
     throw new Error('WORK_HEAD_ADOPTION_CONTRACT_TERMINAL');
   }
   // expectedHead can predate unrelated commits that landed on the source checkout
@@ -240,7 +240,7 @@ function invalidateActiveWork(ctx: McpExecutionContext, session: ExecutionSessio
   const handle = readWorkHandle(ctx.controllerHome, session.activeRepositoryId, session.activeWorkId);
   if (!handle || handle.state === 'cleaned') return;
   const contract = contractFor(ctx, handle);
-  if (contract?.status === 'completed') return;
+  if (contract?.semanticState === 'completed') return;
   markWorkHandleFailed(ctx.controllerHome, handle, reason);
 }
 
@@ -339,18 +339,17 @@ export function prepareWork(ctx: McpExecutionContext, args: Record<string, unkno
     if (existingHandle) {
       const existingContract = getWorkContract({ controllerHome: ctx.controllerHome, repoId: repository.repoId }, createdWorkId);
       if (!existingContract) throw new Error(`WORK_PREPARE_RESULT_LOST: ${requestId} has a Work handle without its WorkContract`);
-      const terminal = isTerminalWorkContractStatus(existingContract.status)
-        && !(existingContract.status === 'failed' && request.status === 'claimed');
+      const terminal = isTerminalSemanticWorkState(existingContract.semanticState);
       if (terminal) {
         return {
           session: requireSession(ctx, args),
           work: compactHandle(existingHandle),
           reused: true,
           terminal: true,
-          workContractStatus: existingContract.status,
+          workContractStatus: existingContract.semanticState,
         };
       }
-      if (existingContract.status === 'open' || existingContract.status === 'failed') {
+      if (existingContract.semanticState === 'open') {
         activateWorkContract(
           { controllerHome: ctx.controllerHome, repoId: repository.repoId },
           createdWorkId,
@@ -376,8 +375,8 @@ export function prepareWork(ctx: McpExecutionContext, args: Record<string, unkno
     if (request.status === 'prepared') {
       throw new Error(`WORK_PREPARE_RESULT_LOST: ${requestId} completed without a readable Work handle`);
     }
-    if (contract && (contract.status === 'completed' || contract.status === 'cancelled')) {
-      throw new Error(`WORK_PREPARE_REQUEST_TERMINAL: ${requestId} belongs to ${contract.status} Work ${createdWorkId}`);
+    if (contract && (contract.semanticState === 'completed' || contract.semanticState === 'cancelled')) {
+      throw new Error(`WORK_PREPARE_REQUEST_TERMINAL: ${requestId} belongs to ${contract.semanticState} Work ${createdWorkId}`);
     }
     if (!contract) {
       contract = admitPreparedRepositoryWorkContract(

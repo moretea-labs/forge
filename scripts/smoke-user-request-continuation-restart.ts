@@ -83,7 +83,7 @@ async function runPhase(root: string, phase: string): Promise<void> {
       checks: [],
       constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
       requestedBy: 'chatgpt',
-      status: 'running',
+      dispatchState: 'running',
     });
     const owner = claimControllerSession(store, {
       workId: WORK_ID,

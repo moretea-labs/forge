@@ -14,8 +14,8 @@ export interface WorkContinuationSnapshot {
     worktreeRef?: string;
   };
   semantics: {
+    state: WorkContract['semanticState'];
     phase: WorkContract['phase'];
-    status: WorkContract['status'];
     workKind: WorkContract['workKind'];
     dispatchState: WorkContract['dispatchState'];
     evidenceState: WorkContract['evidenceState'];
@@ -43,16 +43,16 @@ function boundedText(value: string | undefined, maximum: number): string | undef
 function nextSafeAction(contract: WorkContract, reconciliationRequired: boolean): string {
   if (reconciliationRequired) return 'Inspect the recorded reconciliation and decide whether to accept, reject, or supersede it; do not infer completion.';
   if (contract.evidenceState === 'stale' || contract.evidenceState === 'contradictory') return 'Re-run required validation against the current bound revision before finalization.';
-  if (contract.status === 'open' || contract.status === 'ready') return 'Execute the next authorized step within this Work scope; inspect existing writer and process conflicts before mutating shared resources.';
-  if (contract.status === 'running') return 'Inspect the bound Work and its durable process/check evidence; do not resubmit the same request ID.';
-  if (contract.status === 'completed') return 'Read the completion receipt and retain the exact revision evidence; no further mutation is implied.';
-  if (contract.status === 'failed') return 'Inspect failure evidence and choose an explicit repair, reconciliation, or stop action.';
-  return 'Inspect retained evidence before any further action.';
+  if (contract.semanticState === 'completed') return 'Read retained result/evidence references; no further mutation is implied.';
+  if (contract.semanticState === 'cancelled') return 'This Work is cancelled and cannot be reopened; create an explicit successor Work if the objective must continue.';
+  if (contract.dispatchState === 'running' || contract.dispatchState === 'launching' || contract.dispatchState === 'claimed') return 'Inspect the bound Work and its durable process/check evidence; do not resubmit the same request ID.';
+  if (contract.evidenceState === 'failed' || contract.phaseEvidence[contract.phase].state === 'failed') return 'Inspect failure evidence and choose an explicit repair, reconciliation, or stop action.';
+  return 'Execute the next authorized step within this Work scope; inspect existing writer and process conflicts before mutating shared resources.';
 }
 
 /**
  * Redacted, bounded state needed by a fresh controller session. This is a
- * projection only: it never upgrades a status or interprets a reconciliation
+ * projection only: it never changes semantic state or interprets a reconciliation
  * as completion.
  */
 export function buildWorkContinuationSnapshot(contract: WorkContract): WorkContinuationSnapshot {
@@ -82,8 +82,8 @@ export function buildWorkContinuationSnapshot(contract: WorkContract): WorkConti
       worktreeRef: contract.worktreeRef,
     },
     semantics: {
+      state: contract.semanticState,
       phase: contract.phase,
-      status: contract.status,
       workKind: contract.workKind,
       dispatchState: contract.dispatchState,
       evidenceState: contract.evidenceState,

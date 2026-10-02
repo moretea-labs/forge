@@ -13,7 +13,7 @@ import { findControlPlaneRecordsByKey, readControlPlaneRecord } from '../../../s
 import { result } from './result-adapter';
 import { selected } from './shared-adapter';
 import { invalidFacadeOperation } from './status-inbox-adapter';
-import { normalizeRhWorkInputCompatibility } from './work-input-compatibility';
+import { normalizeRhWorkInputWireMigration } from './work-input-wire-migration';
 import { callRhWorkScheduleAdapter, isRhWorkScheduleOperation } from './scheduler-adapter';
 import { callRhWorkRequirementOperation, isRhWorkRequirementOperation } from './work-requirement-operations';
 import { callRhWorkSemanticOperation, semanticWorkId } from './work-semantic-operations';
@@ -160,7 +160,7 @@ async function callRepositoryBoundStart(
 }
 
 function semanticStableSpec(operation: string) {
-  if (operation === 'work_get' || operation === 'work_revise' || operation === 'work_complete') {
+  if (operation === 'get' || operation === 'revise' || operation === 'complete') {
     return { namespace: 'work_contract', idField: 'work_id', kind: 'work' as const };
   }
   if (operation === 'plan_get' || operation === 'plan_revise') {
@@ -248,17 +248,17 @@ export async function callWorkAdapter(
   ctx: MultiRepositoryMcpToolContext,
   input: Record<string, unknown>,
 ): Promise<CallToolResult> {
-  const compatibility = normalizeRhWorkInputCompatibility(input);
-  if (!compatibility.ok) {
+  const wireMigration = normalizeRhWorkInputWireMigration(input);
+  if (!wireMigration.ok) {
     return result(buildFacadeResult({
       status: 'blocked',
-      summary: compatibility.summary,
-      data: compatibility.data,
+      summary: wireMigration.summary,
+      data: wireMigration.data,
     }) as unknown as Record<string, unknown>, true);
   }
 
-  const args = compatibility.args;
-  const operation = compatibility.operation;
+  const args = wireMigration.args;
+  const operation = wireMigration.operation;
   if (!isRhWorkAcceptedOperation(operation)) return invalidFacadeOperation('rh_work', operation);
 
   if (operation === 'repair' && isAutomationReceiptCompatibilityCall(args)) {

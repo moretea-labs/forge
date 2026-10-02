@@ -745,10 +745,6 @@
       "module": "workflow",
       "resource": "git-worktree"
     },
-    "tests/runtime/work-task-receipt.test.ts": {
-      "module": "workflow",
-      "resource": "temp-isolated"
-    },
     "tests/runtime/work-terminal-cleanup.test.ts": {
       "module": "workflow",
       "resource": "git-worktree"

@@ -27,7 +27,7 @@ export function buildChatgptControllerRoundPrompt(
     }).join('\n')
     : '- 未找到关联 Work 快照';
   const originWork = snapshot.works.find((work) => work.workId === snapshot.originWorkId);
-  const terminalOriginGuidance = originWork?.status === 'completed'
+  const terminalOriginGuidance = originWork?.state === 'completed'
     ? `origin Work ${snapshot.originWorkId} 的持久状态已完成。不要重新打开它；重新读取 Requirement/Plan/Work 语义事实，由模型决定是否仍有新的明确工作。`
     : undefined;
   const handoffLines = snapshot.handoffs.length > 0

@@ -128,17 +128,14 @@ function mapSuggested(actions: SuggestedNextAction[] = []): SuggestedActionViewM
   });
 }
 
-function workStatusLabel(status: WorkContract['status']): { label: string; tone: PlainStatusTone; phase: UserFacingPhase } {
-  switch (status) {
-    case 'running': return { label: '进行中', tone: 'blue', phase: 'running' };
-    case 'open': return { label: '待开始', tone: 'gray', phase: 'queued' };
-    case 'blocked': return { label: '已阻塞', tone: 'red', phase: 'blocked' };
-    case 'ready': return { label: '需要你审阅', tone: 'amber', phase: 'needs_attention' };
-    case 'completed': return { label: '已完成', tone: 'green', phase: 'succeeded' };
-    case 'failed': return { label: '未通过验收', tone: 'red', phase: 'failed' };
-    case 'cancelled': return { label: '已停止', tone: 'gray', phase: 'cancelled' };
-    default: return { label: String(status), tone: 'gray', phase: 'running' };
-  }
+function workStatusLabel(work: WorkContract): { label: string; tone: PlainStatusTone; phase: UserFacingPhase } {
+  if (work.semanticState === 'completed') return { label: '已完成', tone: 'green', phase: 'succeeded' };
+  if (work.semanticState === 'cancelled') return { label: '已停止', tone: 'gray', phase: 'cancelled' };
+  if (work.evidenceState === 'failed' || work.phaseEvidence[work.phase].state === 'failed') return { label: '执行失败', tone: 'red', phase: 'failed' };
+  if (work.dispatchState === 'blocked' || work.phaseEvidence[work.phase].state === 'blocked') return { label: '已阻塞', tone: 'red', phase: 'blocked' };
+  if (work.phase === 'review' && work.phaseEvidence.review.state === 'active') return { label: '需要你审阅', tone: 'amber', phase: 'needs_attention' };
+  if (['claimed', 'launching', 'running'].includes(work.dispatchState)) return { label: '进行中', tone: 'blue', phase: 'running' };
+  return { label: '待继续', tone: 'gray', phase: 'queued' };
 }
 
 const ERROR_COPY: Record<UserFacingErrorClass, { title: string; explanation: string; nextActions: string[] }> = {
@@ -279,17 +276,18 @@ function progressSteps(work: WorkContract): WorkSummaryViewModel['progressSteps'
   const hasPass = checks.some((entry) => entry.outcome === 'valid_pass');
   const hasFail = checks.some((entry) => entry.outcome === 'valid_fail');
   const hasDelegate = Boolean(work.workerRef);
-  const review = work.status === 'ready';
-  const done = work.status === 'completed';
-  const failed = work.status === 'failed';
-  const cancelled = work.status === 'cancelled';
+  const review = work.phase === 'review' && work.phaseEvidence.review.state === 'active';
+  const done = work.semanticState === 'completed';
+  const failed = work.evidenceState === 'failed' || work.phaseEvidence[work.phase].state === 'failed';
+  const cancelled = work.semanticState === 'cancelled';
+  const executing = ['claimed', 'launching', 'running'].includes(work.dispatchState);
   return [
-    { label: '已开始', done: true, active: work.status === 'running' && !hasDelegate && !hasPass },
+    { label: '已开始', done: true, active: executing && !hasDelegate && !hasPass },
     { label: '已委派助手', done: hasDelegate, active: hasDelegate && !hasPass && !review },
     { label: '已提出修改', done: hasDelegate || hasPass || hasFail, active: false },
     { label: '已验证', done: hasPass || hasFail, active: hasFail && !review },
     { label: '等待审阅', done: review || done, active: review },
-    { label: done ? '已完成' : failed ? '验收失败' : cancelled ? '已停止' : '收尾', done: done || failed || cancelled, active: false },
+    { label: done ? '已完成' : failed ? '执行失败' : cancelled ? '已停止' : '收尾', done: done || cancelled, active: false },
   ];
 }
 
@@ -323,26 +321,27 @@ export function mapWorkSummary(
   work: WorkContract,
   opts: { controllerHome?: string; repoId?: string } = {},
 ): WorkSummaryViewModel {
-  const status = workStatusLabel(work.status);
+  const status = workStatusLabel(work);
   const verification = latestVerification(work);
   const suggested = mapSuggested(work.suggestedNextActions);
   const nextAction = suggested[0]?.label
-    ?? (work.status === 'ready' ? '请审阅后继续或收尾'
-      : work.status === 'running' ? '继续或运行检查'
-        : work.status === 'completed' ? '任务已完成'
-          : work.status === 'failed' ? '查看失败原因并决定是否重试'
-            : '查看任务状态');
+    ?? (work.semanticState === 'completed' ? '任务已完成'
+      : work.semanticState === 'cancelled' ? '任务已停止'
+        : status.phase === 'needs_attention' ? '请审阅后继续或收尾'
+          : status.phase === 'running' ? '继续或运行检查'
+            : status.phase === 'failed' ? '查看失败原因并决定是否重试'
+              : '查看任务状态');
   const storeOpts = opts.controllerHome && opts.repoId
     ? { controllerHome: opts.controllerHome, repoId: opts.repoId }
     : null;
   const changedFiles = summarizeChangedFiles(extractChangedPathsFromWork(work, storeOpts));
   let error: ConsoleErrorViewModel | undefined;
-  if (work.status === 'failed') {
+  if (status.phase === 'failed') {
     error = describeConsoleError(
       verification?.isInfrastructureIssue ? 'infrastructure_failure' : 'acceptance_failure',
       verification?.summary,
     );
-  } else if (work.status === 'blocked' || work.status === 'ready') {
+  } else if (status.phase === 'blocked' || status.phase === 'needs_attention') {
     error = describeConsoleError(
       'handoff_required',
       work.suggestedNextActions[0]?.reason,
@@ -351,7 +350,7 @@ export function mapWorkSummary(
   const latestSummary = verification?.summary
     || work.evidenceRefs[0]?.summary
     || work.evidenceRefs[0]?.title
-    || (work.status === 'running' ? '任务执行中…' : status.label);
+    || (status.phase === 'running' ? '任务执行中…' : status.label);
   return {
     id: work.workId,
     repoId: work.repoId,
@@ -380,7 +379,9 @@ export function mapWorkSummary(
     primaryActionLabel: suggested[0]?.label,
     advanced: {
       workId: work.workId,
-      status: work.status,
+      state: work.semanticState,
+      dispatchState: work.dispatchState,
+      evidenceState: work.evidenceState,
       checkIds: work.checks,
       handoffRefs: work.handoffRefs,
     },
@@ -941,8 +942,8 @@ export async function buildCommandCenter(
     repoId: ctx.repository.repoId,
   });
   const currentRepository = repositories.find((entry) => entry.current) ?? mapRepositoryCard(ctx.repository, true);
-  const activeWork = listWorkContracts({ ...store(ctx), status: 'active', limit: 20 }).map(mapWork);
-  const allRecent = listWorkContracts({ ...store(ctx), status: 'all', limit: 12 }).map(mapWork);
+  const activeWork = listWorkContracts({ ...store(ctx), state: 'active', limit: 20 }).map(mapWork);
+  const allRecent = listWorkContracts({ ...store(ctx), state: 'all', limit: 12 }).map(mapWork);
   const handoffs = listHandoffItems({ ...store(ctx), status: 'pending', limit: 20 }).map(mapHandoffCard);
   const plugins = listConsolePlugins(ctx);
   const pluginSummary = buildPluginSummary(plugins);
@@ -1205,8 +1206,8 @@ export function getConsoleWork(ctx: ConsoleFacadeContext, workId: string): WorkS
     : undefined;
 }
 
-export function listConsoleWork(ctx: ConsoleFacadeContext, status: 'active' | 'all' = 'active'): WorkSummaryViewModel[] {
-  return listWorkContracts({ ...store(ctx), status, limit: 50 }).map((work) =>
+export function listConsoleWork(ctx: ConsoleFacadeContext, state: 'active' | 'all' = 'active'): WorkSummaryViewModel[] {
+  return listWorkContracts({ ...store(ctx), state, limit: 50 }).map((work) =>
     mapWorkSummary(work, { controllerHome: ctx.controllerHome, repoId: ctx.repository.repoId }));
 }
 

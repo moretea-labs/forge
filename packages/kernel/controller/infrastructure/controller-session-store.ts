@@ -15,6 +15,7 @@ import {
   type SqliteDatabase,
 } from '../../../../src/runtime/control-plane/persistence/sqlite-store';
 import { type ControllerSession, type ControllerSessionStore, type ControllerType } from '../domain/types';
+import { getWorkContract, semanticWorkState } from '../../work/api/index';
 
 export interface ControllerSessionStoreOptions {
   controllerHome: string;
@@ -26,6 +27,13 @@ export interface ControllerSessionStoreOptions {
 const SESSION_STORE_NAMESPACE = 'controller_session_claim_store';
 const SESSION_STORE_KEY = 'index';
 const SESSION_STORE_SCHEMA_VERSION = 1;
+
+function assertControllerWorkClaimable(options: ControllerSessionStoreOptions, workId: string): void {
+  const work = getWorkContract({ controllerHome: options.controllerHome, repoId: options.repoId }, workId);
+  if (!work) return;
+  const state = semanticWorkState(work);
+  if (state !== 'open') throw new Error(`WORK_CONTROLLER_CLAIM_TERMINAL: ${workId}:${state}`);
+}
 
 export type ClaimedControllerSession = ControllerSession & { claimGeneration: number };
 
@@ -615,6 +623,7 @@ export function claimControllerSession(
     { scope: 'global', resource: 'controller-session-store' },
     `controller-claim:${input.controllerId}:${input.sessionId}`,
     () => {
+      assertControllerWorkClaimable(options, input.workId);
       const store = read(options);
       const current = activeSession(store, input.workId, optionsNowMs(options));
       const previous = current ?? store.sessions
@@ -641,6 +650,7 @@ function resumableControllerSessionPrevious(
   input: ControllerSessionClaimInput & { principalId: string; controllerInstanceId: string },
   database?: SqliteDatabase,
 ): ControllerSession | undefined {
+  assertControllerWorkClaimable(options, input.workId);
   const currentNowMs = optionsNowMs(options);
   const current = activeSession(store, input.workId, currentNowMs);
   assertExpectedGeneration(input, current);

@@ -2,7 +2,7 @@ import { readForgeInstanceIdentity } from '../../../../packages/kernel/identity/
 import { resolveProjectForRepositoryPlacement } from '../workspace/workspace-store';
 import type { ScopeRef } from '../../../../packages/kernel/identity/api/index';
 import { recordExperience, recordOutcomeObservation, type ExperienceRecord, type ExperienceStorePort, type OutcomeObservation, type OutcomeObservationStorePort } from '../../../../packages/kernel/memory/api/index';
-import { getWorkContract, isTerminalWorkContractStatus, type WorkContract } from '../../../../packages/kernel/work/api/index';
+import { getWorkContract, isTerminalSemanticWorkState, type WorkContract } from '../../../../packages/kernel/work/api/index';
 import { getControllerRoundRelay } from '../../../../packages/kernel/controller/api/index';
 import { readExecutionArtifact } from '../../evidence/artifact-store';
 import { readExecutionEvidence } from '../../evidence/evidence-store';
@@ -137,7 +137,7 @@ export function assertMemoryWriteAuthority(input: { controllerHome: string; repo
   if (!identity?.workId?.trim()) throw new Error('EXPERIENCE_WORK_IDENTITY_REQUIRED');
   const current = getWorkContract(input, identity.workId);
   const source = getWorkContract(input, sourceWorkId);
-  if (!current || isTerminalWorkContractStatus(current.status) || !source
+  if (!current || isTerminalSemanticWorkState(current.semanticState) || !source
     || current.workId !== source.workId
     || !matchesExperienceScope(current, scope, input.controllerHome)
     || !matchesExperienceScope(source, scope, input.controllerHome)) {
@@ -159,7 +159,7 @@ function assertClosedRoundLearningWriteAuthority(
     throw new Error('EXPERIENCE_CLOSED_ROUND_AUTHORITY_MISMATCH');
   }
   const work = getWorkContract(input, authority.workId);
-  if (!work || isTerminalWorkContractStatus(work.status) || !matchesExperienceScope(work, scope, input.controllerHome)) {
+  if (!work || isTerminalSemanticWorkState(work.semanticState) || !matchesExperienceScope(work, scope, input.controllerHome)) {
     throw new Error('EXPERIENCE_CLOSED_ROUND_WORK_SCOPE_MISMATCH');
   }
   const relay = getControllerRoundRelay(input, authority.workId);

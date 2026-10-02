@@ -11,7 +11,6 @@ import {
   type EvidenceState,
   type SuggestedNextAction,
   type WorkContract,
-  type WorkContractStatus,
   type WorkPhase,
   type WorkPhaseEvidence,
   type WorkPhaseEvidenceMap,
@@ -25,7 +24,7 @@ export function transitionPhaseEvidence(
   current: Pick<WorkContract, 'phaseEvidence' | 'evidenceRefs'>,
   targetPhase: WorkPhase,
   input: {
-    status: WorkContractStatus;
+    state?: WorkPhaseEvidence['state'];
     summary: string;
     evidenceRefs?: EvidenceRef[];
     recordedAt: string;
@@ -57,13 +56,7 @@ export function transitionPhaseEvidence(
     }
   }
   phaseEvidence[targetPhase] = {
-    state: input.status === 'failed'
-      ? 'failed'
-      : input.status === 'cancelled'
-        ? 'skipped'
-        : input.status === 'blocked' || input.status === 'ready'
-          ? 'blocked'
-          : 'active',
+    state: input.state ?? 'active',
     source,
     summary: input.summary.trim().slice(0, 1_000) || `Work entered ${targetPhase}.`,
     evidenceRefs,
@@ -75,22 +68,7 @@ export function transitionPhaseEvidence(
 export function validateWorkSemantics(contract: WorkContract): WorkContract {
   if (!contract.objective.trim()) throw new Error('WORK_OBJECTIVE_REQUIRED');
   validateWorkObjectiveRelationShape(contract);
-  if (contract.semanticState === 'completed' || contract.semanticState === 'cancelled') {
-    return contract;
-  }
-  if (contract.semanticRevision) {
-    if (contract.status === 'completed' && !contract.completionReceipt) {
-      throw new Error('WORK_COMPLETION_RECEIPT_REQUIRED');
-    }
-    return contract;
-  }
-  if (contract.status === 'completed' && !contract.completionReceipt) {
-    throw new Error('WORK_COMPLETION_RECEIPT_REQUIRED');
-  }
-  // Legacy phase/evidence checkpoints are compatibility projections, not
-  // semantic Work authority. Current semantic rows already bypass this path;
-  // legacy migration must not resurrect phase progression as a completion or
-  // admission gate.
+  if (!['open', 'completed', 'cancelled'].includes(contract.semanticState)) throw new Error('WORK_SEMANTIC_STATE_INVALID');
   for (const review of contract.implementationReviews ?? []) validateImplementationReviewRecord(review);
   if (contract.completionReceipt) {
     const receipt = contract.completionReceipt;
@@ -145,21 +123,15 @@ export function validateWorkSemantics(contract: WorkContract): WorkContract {
       if (contract.completionOutcome !== 'completed_local') throw new Error('WORK_COMPLETION_RECEIPT_LOCAL_EFFECT_OUTCOME_REQUIRED');
       if (!receipt.operation.trim() || !receipt.target.id.trim()) throw new Error('WORK_COMPLETION_RECEIPT_LOCAL_EFFECT_TARGET_REQUIRED');
     }
-    if (contract.status !== 'completed') throw new Error('WORK_COMPLETION_RECEIPT_REQUIRES_COMPLETED_WORK');
-    // Completion receipts remain mechanical evidence. They do not need a
-    // matching legacy phase checkpoint to be valid.
+    // Delivery/effect receipts are mechanical evidence. They never require or imply semantic completion.
   }
   const outcome = contract.completionOutcome;
   if (!outcome) return contract;
-  if (contract.status !== 'completed' || !contract.completionReceipt) {
-    throw new Error(`WORK_SEMANTICS_INVALID: ${outcome} requires a completed Work receipt`);
+  if (!contract.completionReceipt) {
+    throw new Error(`WORK_SEMANTICS_INVALID: ${outcome} requires a delivery/effect receipt`);
   }
-  if (contract.dispatchState !== 'terminal') {
-    throw new Error(`WORK_SEMANTICS_INVALID: ${outcome} requires terminal dispatch`);
-  }
-  if (contract.evidenceState !== 'valid') {
-    throw new Error(`WORK_SEMANTICS_INVALID: ${outcome} requires valid evidence`);
-  }
+  // completionOutcome classifies the attached delivery/effect receipt only.
+  // Dispatch and generic evidence axes remain independent execution observations.
   if (outcome === 'completed_changed' && contract.workKind !== 'repository_change') {
     throw new Error('WORK_SEMANTICS_INVALID: completed_changed requires repository_change WorkKind');
   }
@@ -208,24 +180,12 @@ const EVIDENCE_TRANSITIONS: Readonly<Record<EvidenceState, readonly EvidenceStat
 export function validateWorkSemanticTransition(
   current: WorkContract,
   next: WorkContract,
-  options: { allowRetainedCancelledResume?: boolean; allowPhaseRegression?: boolean } = {},
+  options: { allowPhaseRegression?: boolean } = {},
 ): WorkContract {
-  const retryingFailedWork = current.status === 'failed'
-    && !current.completionOutcome
-    && ['claimed', 'launching', 'running', 'blocked'].includes(next.dispatchState);
-  const resumingRetainedCancelledWork = options.allowRetainedCancelledResume === true
-    && current.status === 'cancelled'
-    && current.dispatchState === 'terminal'
-    && current.phaseEvidence[current.phase].state === 'skipped'
-    && !current.completionReceipt
-    && !current.completionOutcome
-    && next.status === 'running'
-    && next.dispatchState === 'running'
-    && next.phase === 'implementation';
   if (phaseIndex(next.phase) < phaseIndex(current.phase) && options.allowPhaseRegression !== true) {
     throw new Error(`WORK_SEMANTICS_TRANSITION_INVALID: phase ${current.phase} -> ${next.phase} requires explicit regression authority`);
   }
-  if (!retryingFailedWork && !resumingRetainedCancelledWork && !DISPATCH_TRANSITIONS[current.dispatchState].includes(next.dispatchState)) {
+  if (!DISPATCH_TRANSITIONS[current.dispatchState].includes(next.dispatchState)) {
     throw new Error(`WORK_SEMANTICS_TRANSITION_INVALID: dispatch ${current.dispatchState} -> ${next.dispatchState}`);
   }
   if (!EVIDENCE_TRANSITIONS[current.evidenceState].includes(next.evidenceState)) {
@@ -255,7 +215,7 @@ export function validateWorkSemanticTransition(
   return next;
 }
 
-export function suggestedActionsForStatus(status: WorkContractStatus, actions: readonly SuggestedNextAction[]): SuggestedNextAction[] {
-  if (status === 'completed' || status === 'cancelled') return [];
+export function suggestedActionsForSemanticState(state: 'open' | 'completed' | 'cancelled', actions: readonly SuggestedNextAction[]): SuggestedNextAction[] {
+  if (state !== 'open') return [];
   return actions.slice(0, 8);
 }

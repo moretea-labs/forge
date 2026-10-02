@@ -396,8 +396,9 @@ describe('rh_work Requirement bootstrap', () => {
       objective: 'A second semantic Plan may share the same descriptive scope label.',
       plan_items: [{ id: 'item-c', objective: 'Remain independent working memory.', dependencies: [] }],
     }));
-    expect(sameLabel.status).toBe('ok');
-    expect(sameLabel.data.plan).toMatchObject({ planId: 'PLAN-THIN-CREATE-PARALLEL', revision: 1 });
+    expect(sameLabel.status).toBe('blocked');
+    expect(sameLabel.summary).toContain('PLAN_SEMANTIC_LINEAGE_ALREADY_EXISTS:thin-plan-create:PLAN-THIN-CREATE');
+    expect(getPlanContract({ controllerHome, repoId: repository.repoId }, 'PLAN-THIN-CREATE-PARALLEL')).toBeUndefined();
 
     const revised = structured(await callRuntimeTool(ctx, 'rh_work', {
       operation: 'plan_revise',
@@ -450,7 +451,7 @@ describe('rh_work Requirement bootstrap', () => {
     createWorkContract(store, {
       workId: 'work-active-scope', repoId: repository.repoId, planId, planStepId: 'stage', planSourceRevision: sourceRevision,
       objective: 'Deliver without replacing Work authority.', acceptanceCriteria: ['The same Work remains authoritative.'],
-      allowedPaths: ['src/**'], forbiddenPaths: [], checks: ['package:check:type'], constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'running',
+      allowedPaths: ['src/**'], forbiddenPaths: [], checks: ['package:check:type'], constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', dispatchState: 'running',
     });
 
     // Plan-scoped repair is a read-only fact now: it neither replans the Plan nor

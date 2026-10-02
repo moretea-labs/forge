@@ -53,7 +53,7 @@ function fixture() {
     constraints: { requireHandoffOnAmbiguity: true },
     requestedBy: 'chatgpt',
     workKind: 'local_effect',
-    status: 'running',
+    dispatchState: 'running',
     phase: 'implementation',
   });
   const ctx = {

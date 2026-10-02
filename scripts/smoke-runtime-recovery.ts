@@ -148,13 +148,13 @@ try {
     'completed_no_change',
   );
   const delivered = getWorkContract({ controllerHome, repoId: repository.repoId }, accepted.contract.workId);
-  assert(delivered?.status !== 'completed', 'delivery receipt must not implicitly complete semantic Work');
+  assert(delivered?.semanticState !== 'completed', 'delivery receipt must not implicitly complete semantic Work');
   reviseWorkSemanticContext(
     { controllerHome, repoId: repository.repoId },
     accepted.contract.workId,
     { expectedRevision: Number(delivered?.semanticRevision ?? 1), state: 'completed', resultRefs: [`receipt:${completionReceiptId}`] },
   );
-  assert(getWorkContract({ controllerHome, repoId: repository.repoId }, accepted.contract.workId)?.status === 'completed', 'explicit semantic Work completion was not persisted');
+  assert(getWorkContract({ controllerHome, repoId: repository.repoId }, accepted.contract.workId)?.semanticState === 'completed', 'explicit semantic Work completion was not persisted');
   assert(listExecutionJobs(controllerHome, repository.repoId, 20).length === 0, 'runtime recovery created an ExecutionJob');
 
   const scheduleInput = {

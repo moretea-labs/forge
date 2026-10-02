@@ -18,7 +18,7 @@ export interface CompleteRemoteEffectProcessInput {
 
 /**
  * Record one trusted repository remote-effect Process receipt as Work evidence.
- * This never changes semantic Work state; the model/user decides completion via work_complete.
+ * This never changes semantic Work state; the model/user decides completion via complete.
  */
 export function recordRemoteEffectWorkProcessReceipt(
   options: WorkContractStoreOptions,
@@ -95,7 +95,6 @@ export {
   failWorkContract,
   cancelWorkContract,
   recordCancelledWorkCleanupCompleted,
-  resumeRetainedCancelledWorkContract,
   recordWorkScopeEvidence,
   transitionWorkContractPhase,
   recordWorkImplementationReview,

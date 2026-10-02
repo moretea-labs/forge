@@ -341,13 +341,16 @@ describe('execution identity pre-spawn guard', () => {
 
   test('rejects archived checkout lifecycle unless explicitly allowed', () => {
     const fx = dualRepoFixture();
+    const linkedWorktree = join(fx.root, 'repo-a-archived-worktree');
+    const worktreeResult = spawnSync('git', ['-C', fx.repoARoot, 'worktree', 'add', '-b', 'archived-checkout', linkedWorktree], { encoding: 'utf8' });
+    expect(worktreeResult.status).toBe(0);
     const withCheckout = addRepositoryCheckout({
       controllerHome: fx.controllerHome,
       repoId: fx.repoA.repoId,
-      path: fx.repoB.canonicalRoot,
+      path: linkedWorktree,
       activate: false,
     });
-    const addedCheckout = withCheckout.checkouts.find((checkout) => checkout.canonicalRoot === fx.repoB.canonicalRoot);
+    const addedCheckout = withCheckout.checkouts.find((checkout) => checkout.canonicalRoot === realpathSync(linkedWorktree));
     expect(addedCheckout).toBeTruthy();
     setRepositoryCheckoutLifecycle({
       controllerHome: fx.controllerHome,
@@ -372,7 +375,7 @@ describe('execution identity pre-spawn guard', () => {
     expect(() => assertExecutionIdentity({
       controllerHome: fx.controllerHome,
       identity,
-      cwd: fx.repoBRoot,
+      cwd: linkedWorktree,
     })).toThrow(/CHECKOUT_NOT_ACTIVE/);
   });
 
@@ -476,31 +479,14 @@ describe('execution identity pre-spawn guard', () => {
     expect(drift?.safeAutomaticRepair).toBe(false);
   });
 
-  test('rejects an independently rooted checkout with exact Git common-directory evidence', () => {
+  test('rejects an independently rooted repository before it can become a checkout identity', () => {
     const fx = dualRepoFixture();
-    const withCheckout = addRepositoryCheckout({
+    expect(() => addRepositoryCheckout({
       controllerHome: fx.controllerHome,
       repoId: fx.repoA.repoId,
       path: fx.repoB.canonicalRoot,
       activate: false,
-    });
-    const addedCheckout = withCheckout.checkouts.find((checkout) => checkout.canonicalRoot === fx.repoB.canonicalRoot);
-    expect(addedCheckout).toBeTruthy();
-    const selected = selectRepositoryCheckout(withCheckout, addedCheckout!.checkoutId);
-    const identity = executionIdentityForRepository(selected);
-    try {
-      assertExecutionIdentity({
-        controllerHome: fx.controllerHome,
-        identity,
-        cwd: fx.repoBRoot,
-      });
-      throw new Error('expected GIT_COMMON_DIR_MISMATCH');
-    } catch (error) {
-      expect(error).toBeInstanceOf(ExecutionIdentityError);
-      expect((error as ExecutionIdentityError).code).toBe('GIT_COMMON_DIR_MISMATCH');
-      expect((error as ExecutionIdentityError).details.driftKind).toBe('repository_common_dir_drift');
-      expect((error as ExecutionIdentityError).details.safeAutomaticRepair).toBe('false');
-    }
+    })).toThrow(/CHECKOUT_REPOSITORY_MISMATCH/);
   });
 
   test('WorkHandle identity ignores mutable repository checkout projection', () => {
@@ -815,7 +801,7 @@ describe('repository Work delivery target authority', () => {
       constraints: { requireHandoffOnAmbiguity: true },
       requestedBy: 'chatgpt',
       workKind: 'repository_change',
-      status: 'running',
+      dispatchState: 'running',
       phase: 'implementation',
     });
     const handle = ensureRepositoryWorkHandle({

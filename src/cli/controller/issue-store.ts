@@ -30,9 +30,6 @@ import { completionEvidenceComplete, executionScopesConflict, taskExecutionPolic
 import { resolveCompletionTargetBranch } from './completion-target';
 import { listControllerChecks } from './check-runner';
 import { normalizeCheckIds } from '../../runtime/control-plane/facade/check-normalization';
-import { getWorkContract } from '../../../packages/kernel/work/api/index';
-import { projectControllerTaskFromWork } from '../../runtime/control-plane/facade/work-task-projection';
-import type { WorkContract } from '../../runtime/control-plane/facade/types';
 import { resolveRepoPreferredControllerHome } from '../repositories/controller-home';
 import { markControllerContextProjectionDirty } from '../../runtime/projections/controller-context';
 import {
@@ -239,32 +236,8 @@ export function getIssue(repoRoot: string, id: string): ControllerIssue {
   return issue;
 }
 
-function projectIssueTasksFromWork(repoRoot: string, issue: ControllerIssue): ControllerTask[] {
-  const controllerHomes = [...new Set([
-    resolveRepoPreferredControllerHome(repoRoot),
-    join(repoRoot, '_ops', 'controller-home'),
-  ])];
-  return issue.tasks.map((task) => {
-    if (!task.workId) return task;
-    const repoId = task.repoId ?? issue.repoId;
-    if (!repoId) return task.status === 'done' ? task : { ...task, status: 'launch_blocked' };
-    for (const controllerHome of controllerHomes) {
-      try {
-        const work = getWorkContract({ controllerHome, repoId }, task.workId);
-        if (!work || (work.issueId && work.issueId !== issue.id) || (work.taskId && work.taskId !== task.id)) continue;
-        if (work.status === 'completed' && !work.completionReceipt) continue;
-        return projectControllerTaskFromWork(task, work);
-      } catch {
-        // A compatibility read never manufactures state from an unavailable
-        // Work authority. Try the bounded repo-local authority, then close.
-      }
-    }
-    return task.status === 'done' ? task : { ...task, status: 'launch_blocked' };
-  });
-}
-
 export function projectIssueEffectiveView(repoRoot: string, issue: ControllerIssue) {
-  const projectedIssue = { ...issue, tasks: projectIssueTasksFromWork(repoRoot, issue) };
+  const projectedIssue = issue;
   const states = resolveIssueTaskStates(projectedIssue, readIssueRunEvidence(repoRoot, projectedIssue));
   return {
     ...projectedIssue,
@@ -938,63 +911,6 @@ export function bindTaskToWork(
     issueId: issue.id,
     taskId: task.id,
     details: { workId: normalizedWorkId },
-  });
-  return written;
-}
-
-/**
- * Pre-cutover compatibility writer retained only for an unmigrated repository.
- * Once the SQLite migration marker exists this function fails before reading or
- * mutating legacy Issue/Task files; Work remains the sole execution writer.
- */
-export function projectTaskFromWork(
-  repoRoot: string,
-  issueIdValue: string,
-  taskId: string,
-  work: WorkContract,
-  input: { verification?: TaskVerification; note?: string } = {},
-): ControllerIssue {
-  assertLegacyIssueWritesAllowed(repoRoot, { id: issueIdValue });
-  const issue = getIssue(repoRoot, issueIdValue);
-  const task = issue.tasks.find((entry) => entry.id === taskId);
-  if (!task) throw new Error(`task not found: ${issueIdValue}/${taskId}`);
-  if (!task.workId || task.workId !== work.workId) {
-    throw new Error(`TASK_WORK_PROJECTION_IDENTITY_MISMATCH: ${task.workId ?? 'unbound'} != ${work.workId}`);
-  }
-  if (task.repoId && task.repoId !== work.repoId) {
-    throw new Error(`TASK_WORK_PROJECTION_REPO_MISMATCH: ${task.repoId} != ${work.repoId}`);
-  }
-  if (work.issueId && work.issueId !== issue.id) throw new Error(`TASK_WORK_PROJECTION_ISSUE_MISMATCH: ${work.issueId} != ${issue.id}`);
-  if (work.taskId && work.taskId !== task.id) throw new Error(`TASK_WORK_PROJECTION_TASK_MISMATCH: ${work.taskId} != ${task.id}`);
-  if (input.verification?.completionReceipt && input.verification.completionReceipt.receiptId !== work.completionReceipt?.receiptId) {
-    throw new Error('TASK_WORK_PROJECTION_RECEIPT_MISMATCH');
-  }
-  const projected = projectControllerTaskFromWork(task, work);
-  if (projected.status === 'done' && !work.completionReceipt) {
-    throw new Error('TASK_WORK_PROJECTION_COMPLETION_RECEIPT_REQUIRED');
-  }
-  task.repoId = work.repoId;
-  task.objective = projected.objective;
-  task.status = projected.status;
-  task.allowedPaths = projected.allowedPaths;
-  task.forbiddenPaths = projected.forbiddenPaths;
-  task.checks = projected.checks;
-  task.acceptanceCriteria = projected.acceptanceCriteria;
-  task.risk = projected.risk;
-  task.verification = input.verification ?? projected.verification;
-  if (input.note?.trim()) task.notes.push(input.note.trim());
-  task.updatedAt = new Date().toISOString();
-  issue.updatedAt = task.updatedAt;
-  refreshReadiness(repoRoot, issue);
-  const written = writeIssue(repoRoot, issue);
-  tryAppendControllerWorklogEvent(repoRoot, {
-    category: 'task',
-    action: 'task_projected_from_work',
-    summary: `Projected ${task.id} from Work ${work.workId} (${work.phase}/${work.status}).`,
-    issueId: issue.id,
-    taskId: task.id,
-    statusTo: task.status,
-    details: { workId: work.workId, phase: work.phase, workStatus: work.status, receiptId: work.completionReceipt?.receiptId },
   });
   return written;
 }

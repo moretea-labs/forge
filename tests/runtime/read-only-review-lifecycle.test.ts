@@ -86,7 +86,7 @@ describe('recoverable read-only review lifecycle', () => {
     });
 
     const completed = completeSemanticWork(context.workStore, workId!);
-    expect(completed.status).toBe('completed');
+    expect(completed.semanticState).toBe('completed');
     expect(completed.workKind).toBe('read_only_review');
     expect(completed.completionReceipt).toBeUndefined();
   });
@@ -116,7 +116,7 @@ describe('recoverable read-only review lifecycle', () => {
     expect(persisted.scopeEvidence?.actualChangedPaths).toEqual([]);
 
     const completed = completeSemanticWork(context.workStore, workId);
-    expect(completed.status).toBe('completed');
+    expect(completed.semanticState).toBe('completed');
     expect(completed.readOnlyReviewEvidence?.findings).toEqual([
       'HIGH: two-tier cache invalidation can certify stale data under a new revision',
     ]);
@@ -135,7 +135,7 @@ describe('recoverable read-only review lifecycle', () => {
     context.sourceRevision = 'revision-r2';
     context.workspaceFingerprint = 'workspace-r2';
     const completed = completeSemanticWork(context.workStore, workId);
-    expect(completed.status).toBe('completed');
+    expect(completed.semanticState).toBe('completed');
     expect(completed.readOnlyReviewEvidence?.sourceRevision).not.toBe(context.sourceRevision);
   });
 
@@ -151,7 +151,7 @@ describe('recoverable read-only review lifecycle', () => {
     expect(stopped.status).toBe('ok');
     expect(stopped.data).not.toHaveProperty('cleanupPending');
     expect(stopped.data).not.toHaveProperty('worktreeDeleted');
-    expect(getWorkContract(context.workStore, originalId)?.status).toBe('cancelled');
+    expect(getWorkContract(context.workStore, originalId)?.semanticState).toBe('cancelled');
 
     const replacement = routeWorkStart(context, {
       objective: 'READ-ONLY Clean Review R1 replacement. No edits.',
@@ -203,7 +203,7 @@ describe('recoverable read-only review lifecycle', () => {
     // The receipt carries the no-change delivery fact; it never terminalizes Work.
     expect(semanticWorkState(completed)).toBe('open');
     const closed = completeSemanticWork(context.workStore, workId);
-    expect(closed.status).toBe('completed');
+    expect(closed.semanticState).toBe('completed');
     expect(closed.completionReceipt?.source).toBe('read_only_review');
     expect(getWorkContract(context.workStore, workId)?.readOnlyReviewEvidence?.findings)
       .toEqual(['HIGH: correctness finding']);
@@ -273,7 +273,7 @@ describe('public rh_work read-only review adapter', () => {
     });
 
     const completed = completeSemanticWork(context.workStore, workId!);
-    expect(completed.status).toBe('completed');
+    expect(completed.semanticState).toBe('completed');
     expect(completed.workKind).toBe('read_only_review');
     expect(completed.completionReceipt).toBeUndefined();
   });

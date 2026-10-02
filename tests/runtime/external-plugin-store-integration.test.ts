@@ -71,7 +71,7 @@ function fixture(enabled = true, exposure?: 'product' | 'provider', includeSlowM
   return { controllerHome, socketPath };
 }
 
-async function startExternalProviderFixture(root: string, socketPath: string, logPath: string, driftPath?: string): Promise<void> {
+async function startExternalProviderFixture(root: string, socketPath: string, logPath: string, driftPath?: string, pluginId = 'desktop_operator'): Promise<void> {
   const scriptPath = join(root, 'provider.cjs');
   writeFileSync(scriptPath, `
 const fs = require('fs');
@@ -79,6 +79,7 @@ const net = require('net');
 const socketPath = process.argv[2];
 const logPath = process.argv[3];
 const driftPath = process.argv[4];
+const providerPluginId = ${JSON.stringify(pluginId)};
 try { fs.unlinkSync(socketPath); } catch (_) {}
 const server = net.createServer((socket) => {
   let buffer = '';
@@ -91,7 +92,7 @@ const server = net.createServer((socket) => {
     let result;
     if (request.method === 'manifest') {
       result = {
-        id: 'desktop_operator', name: 'Forge Desktop Operator', version: fs.existsSync(driftPath) ? '0.2.0' : '0.1.0',
+        id: providerPluginId, name: 'Forge Desktop Operator', version: fs.existsSync(driftPath) ? '0.2.0' : '0.1.0',
         protocolVersion: '1.0', mode: 'external', scope: 'controller', provider: 'local-macos',
         capabilities: ['desktop-observe'], actions: ['desktop_status', 'desktop_mutate_slow'],
       };
@@ -307,7 +308,7 @@ describe('pre-existing local-effect plugin receipt binding', () => {
     const beforeSemanticComplete = getWorkContract(context.workStore, firstWorkId)!;
     const semanticComplete = await callRhWorkSemanticOperation(
       context.workStore,
-      'work_complete',
+      'complete',
       {
         work_id: firstWorkId,
         expected_revision: beforeSemanticComplete.semanticRevision,
@@ -316,7 +317,7 @@ describe('pre-existing local-effect plugin receipt binding', () => {
     );
     expect(semanticComplete?.isError).toBeFalsy();
     expect(getWorkContract(context.workStore, firstWorkId)).toMatchObject({
-      status: 'completed', semanticState: 'completed', workKind: 'local_effect',
+      semanticState: 'completed', workKind: 'local_effect',
     });
 
     const replayed = await submitControllerPluginAction(controllerHome, {
@@ -381,9 +382,10 @@ describe('plugin management external registration lifecycle', () => {
     roots.push(controllerHome);
     const socketPath = join(controllerHome, 'provider.sock');
     const logPath = join(controllerHome, 'provider.log');
-    await startExternalProviderFixture(controllerHome, socketPath, logPath);
+    const pluginId = 'external_desktop_fixture';
+    await startExternalProviderFixture(controllerHome, socketPath, logPath, undefined, pluginId);
     const registration = {
-      pluginId: 'desktop_operator', providerPluginId: 'desktop_operator', displayName: 'Forge Desktop Operator', provider: 'local-macos',
+      pluginId, providerPluginId: pluginId, displayName: 'Forge Desktop Operator', provider: 'local-macos',
       pluginVersion: '0.1.0', protocolVersion: '1.0', scope: 'controller' as const, enabled: true,
       transport: { kind: 'unix_socket_jsonl' as const, socketPath, healthTimeoutMs: 1_000, actionTimeoutMs: 2_000 },
       permissions: [{ scope: 'desktop.observe', mode: 'read' as const, description: 'Observe desktop.', granted: true, required: true }],
@@ -400,22 +402,22 @@ describe('plugin management external registration lifecycle', () => {
     const preview = await submitControllerPluginAction(controllerHome, {
       pluginId: 'plugin_management', actionId: 'preview_registration', requestId: 'plugin-management-preview', args: { registration }, origin: { surface: 'mcp', actor: 'test' },
     });
-    expect((preview.result!.result as Record<string, unknown>).preview).toMatchObject({ pluginId: 'desktop_operator', currentRevision: 0, nextRevision: 1, wouldChange: true });
+    expect((preview.result!.result as Record<string, unknown>).preview).toMatchObject({ pluginId, currentRevision: 0, nextRevision: 1, wouldChange: true });
 
     const installed = await submitControllerPluginAction(controllerHome, {
       pluginId: 'plugin_management', actionId: 'install_registration', requestId: 'plugin-management-install', args: { registration, expected_revision: 0 },
       confirmAuthorization: true, confirmationText: 'install external registration', origin: { surface: 'mcp', actor: 'test' },
     });
-    expect((installed.result!.result as Record<string, unknown>).registration).toMatchObject({ pluginId: 'desktop_operator', revision: 1, enabled: true });
+    expect((installed.result!.result as Record<string, unknown>).registration).toMatchObject({ pluginId, revision: 1, enabled: true });
 
     const listed = await submitControllerPluginAction(controllerHome, {
       pluginId: 'plugin_management', actionId: 'list_registrations', requestId: 'plugin-management-list', args: {}, origin: { surface: 'mcp', actor: 'test' },
     });
-    expect(((listed.result!.result as Record<string, unknown>).registrations as Array<{ pluginId: string }>).map((entry) => entry.pluginId)).toContain('desktop_operator');
-    const externalManifest = getControllerPluginManifest(controllerHome, 'desktop_operator');
+    expect(((listed.result!.result as Record<string, unknown>).registrations as Array<{ pluginId: string }>).map((entry) => entry.pluginId)).toContain(pluginId);
+    const externalManifest = getControllerPluginManifest(controllerHome, pluginId);
     expect(externalManifest.health).toMatchObject({ state: 'ready', ready: true });
     const action = await submitControllerPluginAction(controllerHome, {
-      pluginId: 'desktop_operator', actionId: 'desktop_status', requestId: 'plugin-management-execute', args: {}, origin: { surface: 'mcp', actor: 'test' },
+      pluginId, actionId: 'desktop_status', requestId: 'plugin-management-execute', args: {}, origin: { surface: 'mcp', actor: 'test' },
     });
     expect(action.result!.result).toMatchObject({ observed: true });
 
@@ -432,17 +434,17 @@ describe('plugin management external registration lifecycle', () => {
     })).rejects.toThrow('EXTERNAL_PLUGIN_REGISTRATION_REVISION_CONFLICT');
 
     const disabled = await submitControllerPluginAction(controllerHome, {
-      pluginId: 'plugin_management', actionId: 'disable_registration', requestId: 'plugin-management-disable', args: { plugin_id: 'desktop_operator', expected_revision: 2 },
+      pluginId: 'plugin_management', actionId: 'disable_registration', requestId: 'plugin-management-disable', args: { plugin_id: pluginId, expected_revision: 2 },
       confirmAuthorization: true, confirmationText: 'disable external registration', origin: { surface: 'mcp', actor: 'test' },
     });
     expect((disabled.result!.result as Record<string, unknown>).registration).toMatchObject({ revision: 3, enabled: false });
-    expect(getControllerPluginManifest(controllerHome, 'desktop_operator').enabled).toBe(false);
+    expect(getControllerPluginManifest(controllerHome, pluginId).enabled).toBe(false);
 
     const removed = await submitControllerPluginAction(controllerHome, {
-      pluginId: 'plugin_management', actionId: 'remove_registration', requestId: 'plugin-management-remove', args: { plugin_id: 'desktop_operator', expected_revision: 3 },
+      pluginId: 'plugin_management', actionId: 'remove_registration', requestId: 'plugin-management-remove', args: { plugin_id: pluginId, expected_revision: 3 },
       confirmAuthorization: true, confirmationText: 'remove-external-plugin-registration', origin: { surface: 'mcp', actor: 'test' },
     });
-    expect((removed.result!.result as Record<string, unknown>).removed).toMatchObject({ pluginId: 'desktop_operator', revision: 3 });
+    expect((removed.result!.result as Record<string, unknown>).removed).toMatchObject({ pluginId, revision: 3 });
     const after = await submitControllerPluginAction(controllerHome, {
       pluginId: 'plugin_management', actionId: 'list_registrations', requestId: 'plugin-management-list-after-remove', args: {}, origin: { surface: 'mcp', actor: 'test' },
     });
@@ -767,12 +769,12 @@ describe('Resend first-party plugin', () => {
 
     const semanticComplete = await callRhWorkSemanticOperation(
       { controllerHome, repoId: repository.repoId },
-      'work_complete',
+      'complete',
       { work_id: workId, expected_revision: delivered.semanticRevision, work_result_refs: [submitted.receipt.receiptId] },
     );
     expect(semanticComplete?.isError).toBeFalsy();
     const completed = getWorkContract({ controllerHome, repoId: repository.repoId }, workId)!;
-    expect(completed).toMatchObject({ status: 'completed', semanticState: 'completed', workKind: 'remote_effect' });
+    expect(completed).toMatchObject({ semanticState: 'completed', workKind: 'remote_effect' });
 
     const deduplicated = await submitAssistantPluginAction(controllerHome, repository, {
       pluginId: 'resend', actionId: 'send_email', requestId: 'remote-effect-send', workId,
@@ -828,12 +830,12 @@ describe('Resend first-party plugin', () => {
 
     const semanticComplete = await callRhWorkSemanticOperation(
       { controllerHome, repoId: repository.repoId },
-      'work_complete',
+      'complete',
       { work_id: workId, expected_revision: replayed.semanticRevision, work_result_refs: [intermediate.receipt.receiptId] },
     );
     expect(semanticComplete?.isError).toBeFalsy();
     expect(getWorkContract({ controllerHome, repoId: repository.repoId }, workId)).toMatchObject({
-      status: 'completed', semanticState: 'completed',
+      semanticState: 'completed',
       completionReceipt: { source: 'remote_effect', receiptId: intermediate.receipt.receiptId },
     });
   });

@@ -422,12 +422,11 @@ export function recoverTerminalWorkHandle(
     updatedAt: recordedAt,
     cleanupResponsibility: { owner: 'work_finalizer', registeredAt: recordedAt },
     finalization: {
-      validation: contract.status === 'failed' ? 'failed' : 'done',
+      validation: 'done',
       commit: 'skipped',
       merge: delivered ? 'done' : 'skipped',
       branchCleanup: 'pending',
       worktreeCleanup: 'pending',
-      ...(contract.status === 'failed' ? { lastError: 'Recovered failed terminal Work for cleanup.' } : {}),
     },
   });
 }
@@ -1090,7 +1089,7 @@ function reconcileCancelledCleanupProjection(
   contract: WorkContract,
   receipt: WorkCleanupReceipt,
 ): void {
-  if (contract.status !== 'cancelled' || receipt.complete !== true) return;
+  if (contract.semanticState !== 'cancelled' || receipt.complete !== true) return;
   if (contract.phase === 'cleanup' && contract.phaseEvidence.cleanup.state === 'satisfied'
     && contract.phaseEvidence.cleanup.receiptId === receipt.receiptId) return;
   recordCancelledWorkCleanupCompleted(
@@ -1216,13 +1215,16 @@ export async function reconcileTerminalWorkCleanups(
         report.skippedNonTerminal.push(originalHandle.workId);
         continue;
       }
-      // Stable semantic Work CAS is not a cleanup authorization. A model can
+      // Stable semantic Work CAS is not cleanup authorization. A model can
       // close/cancel working context without implicitly granting filesystem
-      // deletion. Legacy delivery receipts and explicit cleanup requests remain
-      // separate mechanical authorities.
-      if ((contract.semanticState === 'completed' || contract.semanticState === 'cancelled')
-        && !contract.completionReceipt
-        && !originalHandle.cleanupReceipt) {
+      // deletion. Cleanup requires separate mechanical evidence: a delivery
+      // receipt, an existing cleanup receipt, or explicit technical cancellation
+      // that terminalized dispatch through cancelWorkContract. Pure semantic
+      // `cancelled`/`completed` revisions therefore retain resources.
+      const cleanupAuthorized = Boolean(contract.completionReceipt)
+        || Boolean(originalHandle.cleanupReceipt)
+        || (contract.semanticState === 'cancelled' && contract.dispatchState === 'terminal');
+      if (!cleanupAuthorized) {
         report.skippedRetained.push(originalHandle.workId);
         markOwnedResourceRetained(controllerHome, managedWorkspaceOwnedResourceId(repository.repoId, originalHandle.checkoutId));
         markOwnedResourceRetained(controllerHome, managedBranchOwnedResourceId(repository.repoId, originalHandle.checkoutId));

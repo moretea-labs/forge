@@ -7,7 +7,7 @@ import {
   readActiveWorkCandidates,
   type WorkContract,
 } from '../../../../packages/kernel/work/api/index';
-import { isTerminalWorkContractStatus } from '../facade/types';
+import { isTerminalSemanticWorkState } from '../facade/types';
 import { listWorkHandles } from './work-handle-store';
 
 export interface WorkLifecycleAttention {
@@ -248,7 +248,7 @@ export function collectWorkLifecycleAttention(
 
   for (const contract of contracts) {
     const handle = handlesByWork.get(contract.workId);
-    const terminal = isTerminalWorkContractStatus(contract.status);
+    const terminal = isTerminalSemanticWorkState(contract.semanticState);
     if (!terminal) {
       // Repository lifecycle attention is release-facing. A source-neutral Work
       // (for example local UI automation) may legitimately remain active while
@@ -259,7 +259,7 @@ export function collectWorkLifecycleAttention(
         findings.push(attention(
           'work_active',
           contract.workId,
-          `Work ${contract.workId} is ${contract.status} in ${contract.phase}; continue, block with a handoff, or finalize it explicitly.`,
+          `Work ${contract.workId} is ${contract.semanticState} in ${contract.phase}; continue, block with a handoff, or finalize it explicitly.`,
         ));
       }
       if (contract.workKind === 'repository_change' && !handle) {
@@ -279,14 +279,14 @@ export function collectWorkLifecycleAttention(
       continue;
     }
 
-    if (contract.status === 'completed' && !contract.completionReceipt) {
+    if (contract.semanticState === 'completed' && !contract.completionReceipt) {
       findings.push(attention(
         'completed_work_receipt_missing',
         contract.workId,
         `Completed Work ${contract.workId} has no Completion Receipt.`,
       ));
     }
-    if (contract.status === 'completed' && contract.completionReceipt?.source === 'controller_work') {
+    if (contract.semanticState === 'completed' && contract.completionReceipt?.source === 'controller_work') {
       const receiptTargetRevision = contract.completionReceipt.targetRevision?.trim();
       const receiptTargetBranch = contract.completionReceipt.targetBranch?.trim() || targetBranch;
       if (!receiptTargetRevision || exactCommitReachableFromTarget(
@@ -331,7 +331,7 @@ export function collectWorkLifecycleAttention(
     handles
       .filter((handle) => {
         const contract = contractsByWork.get(handle.workContractId ?? handle.workId);
-        return contract ? !isTerminalWorkContractStatus(contract.status) : false;
+        return contract ? !isTerminalSemanticWorkState(contract.semanticState) : false;
       })
       .map((handle) => handle.branch),
   );

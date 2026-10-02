@@ -807,11 +807,10 @@ function postFinalizeAttributionFixture() {
     constraints: { requireHandoffOnAmbiguity: true },
     requestedBy: 'chatgpt',
     workKind: 'completed_no_change',
-    status: 'running',
+    dispatchState: 'running',
   });
   transitionWorkContractPhase({ controllerHome, repoId: repository.repoId }, workId, {
     phase: 'verification',
-    status: 'running',
     state: 'satisfied',
     summary: 'No-change fixture verification is complete before implementation review.',
   });

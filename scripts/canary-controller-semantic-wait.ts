@@ -64,7 +64,7 @@ try {
     checks: [],
     constraints: { requireHandoffOnAmbiguity: true },
     requestedBy: 'chatgpt',
-    status: 'ready',
+    phase: 'verification',
   });
 
   const owner = claimControllerSession(store, {

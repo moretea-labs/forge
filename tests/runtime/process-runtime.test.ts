@@ -205,7 +205,7 @@ function createFixtureWork(
     checks: [],
     constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
     requestedBy: 'chatgpt',
-    status: 'running',
+    dispatchState: 'running',
   });
 }
 
@@ -1137,7 +1137,7 @@ describe('run_check Process Runtime facade', () => {
       checks: [],
       constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
       requestedBy: 'chatgpt',
-      status: 'running',
+      dispatchState: 'running',
     });
 
     const result = await runPersistedCheckViaProcessRuntime({

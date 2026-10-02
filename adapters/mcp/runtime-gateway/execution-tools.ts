@@ -103,7 +103,7 @@ function inspectWork(ctx: MultiRepositoryMcpToolContext, args: Record<string, un
     git: { status, diff: { nameOnly: diff.nameOnly, stat: diff.stat, patch: diff.patch, truncated: diff.truncated } },
     workContract: contract ? {
       workId: contract.workId,
-      status: contract.status,
+      state: contract.semanticState,
       objective: contract.objective,
       checks: contract.checks,
       acceptanceCriteria: contract.acceptanceCriteria,

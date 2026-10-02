@@ -14,7 +14,7 @@ import {
 import { buildFacadeResult } from '../../../src/runtime/control-plane/facade';
 import { result } from './result-adapter';
 
-const RH_WORK_SEMANTIC_OPERATIONS = new Set(['start', 'work_get', 'work_revise', 'work_complete']);
+const RH_WORK_SEMANTIC_OPERATIONS = new Set(['start', 'get', 'revise', 'complete']);
 
 export function semanticWorkId(store: WorkContractStoreOptions, args: Record<string, unknown>): string {
   const explicit = typeof args.work_id === 'string' ? args.work_id.trim() : '';
@@ -100,7 +100,7 @@ export async function callRhWorkSemanticOperation(
       }) as unknown as Record<string, unknown>, true);
     }
   }
-  if (operation === 'work_get') {
+  if (operation === 'get') {
     const work = workId ? getWorkContract(store, workId) : undefined;
     if (!work) return result(buildFacadeResult({
       status: 'not_found', summary: `Work ${workId || '(missing)'} not found.`, data: { workId },
@@ -124,7 +124,7 @@ export async function callRhWorkSemanticOperation(
   }
 
   const expectedRevision = Number(args.expected_revision);
-  const targetState = operation === 'work_complete'
+  const targetState = operation === 'complete'
     ? 'completed'
     : (args.work_state === 'open' || args.work_state === 'completed' || args.work_state === 'cancelled' ? args.work_state : undefined);
   try {
@@ -134,8 +134,8 @@ export async function callRhWorkSemanticOperation(
       ...(targetState ? { state: targetState } : {}),
       ...(typeof args.requirement_revision === 'number' ? { requirementRevision: args.requirement_revision } : {}),
       ...(typeof args.plan_revision === 'number' ? { planRevision: args.plan_revision } : {}),
-      ...(operation === 'work_revise' && typeof args.semantic_parent_work_id === 'string' ? { semanticParentWorkId: args.semantic_parent_work_id } : {}),
-      ...(operation === 'work_revise' && Array.isArray(args.depends_on_work_ids) ? { dependsOnWorkIds: args.depends_on_work_ids.map(String) } : {}),
+      ...(operation === 'revise' && typeof args.semantic_parent_work_id === 'string' ? { semanticParentWorkId: args.semantic_parent_work_id } : {}),
+      ...(operation === 'revise' && Array.isArray(args.depends_on_work_ids) ? { dependsOnWorkIds: args.depends_on_work_ids.map(String) } : {}),
       ...(Array.isArray(args.work_result_refs) ? { resultRefs: args.work_result_refs.map(String) } : {}),
     });
     const semantic = workSemanticView(revised);

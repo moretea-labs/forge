@@ -91,7 +91,7 @@ export function prepareControllerRoundOccurrence(
   const canonicalRelayScopeId = requestedRelayScopeId
     ?? (work.requirementId ? `requirement:${work.requirementId}` : `goal:${work.workId}`);
 
-  // A failed/cancelled predecessor may leave the Requirement scope pointing at
+  // A cancelled predecessor may leave the Requirement scope pointing at
   // its last ControllerRound after the Work itself has already terminalized.
   // Retire only that exact terminal/no-owner relay before preparing the current
   // Work. This is mechanical cleanup, not Requirement-level authority inheritance.
@@ -99,7 +99,7 @@ export function prepareControllerRoundOccurrence(
     const scopedRelay = getRequirementControllerRoundRelay(options, work.requirementId);
     if (scopedRelay && scopedRelay.originWorkId !== work.workId) {
       const scopedWork = getWorkContract(options, scopedRelay.originWorkId);
-      if (scopedWork && ['failed', 'cancelled'].includes(scopedWork.status) && !getControllerSession(options, scopedWork.workId)) {
+      if (scopedWork?.semanticState === 'cancelled' && !getControllerSession(options, scopedWork.workId)) {
         reconcileControllerRoundAfterTerminalWork(options, {
           workId: scopedWork.workId,
           actor: `controller-continuation-terminal-scope-reconcile:${work.workId}`,

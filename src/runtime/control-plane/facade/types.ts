@@ -78,11 +78,11 @@ import type { HandoffStatus } from '../../../../packages/protocols/handoff/index
 
 // Kernel V2: Work domain contracts are owned by packages/kernel/work/domain.
 export {
-  WORK_CONTRACT_STATUSES,
+  SEMANTIC_WORK_STATES,
   WORK_PHASES,
   WORK_PHASE_EVIDENCE_STATES,
   WORK_RISKS,
-  TERMINAL_WORK_CONTRACT_STATUSES,
+  TERMINAL_SEMANTIC_WORK_STATES,
   WORK_KINDS,
   DISPATCH_STATES,
   EVIDENCE_STATES,
@@ -94,10 +94,10 @@ export {
   isReadOnlyReviewCompletionReceipt,
   isRemoteEffectCompletionReceipt,
   isDirectEditWorkCompletionReceipt,
-  isTerminalWorkContractStatus,
+  isTerminalSemanticWorkState,
 } from '../../../../packages/kernel/work/domain/types';
 export type {
-  WorkContractStatus,
+  SemanticWorkState,
   WorkPhase,
   WorkPhaseEvidenceState,
   WorkPhaseEvidence,
@@ -159,7 +159,7 @@ export interface HandoffCurrentState {
   changedFiles?: string[];
   checks?: Array<{ checkId: string; ok: boolean; summary?: string; outcome?: VerificationOutcome }>;
   /** Bounded durable Work semantics for a fresh controller session. */
-  workSemantics?: Pick<WorkContract, 'phase' | 'status' | 'workKind' | 'dispatchState' | 'evidenceState' | 'completionOutcome'>;
+  workSemantics?: Pick<WorkContract, 'semanticState' | 'phase' | 'workKind' | 'dispatchState' | 'evidenceState' | 'completionOutcome'>;
   reconciliationRequired?: boolean;
   nextSafeAction?: string;
 }

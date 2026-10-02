@@ -51,7 +51,7 @@ function work(input: {
       ? { required: true, reason: 'Concurrency test isolated fixture.' }
       : { required: false, reason: 'Concurrency test shared-checkout fixture.' },
     requestedBy: 'chatgpt',
-    status: 'running',
+    dispatchState: 'running',
     planId: 'PLAN-CONCURRENCY',
     planStepId: input.stepId,
     workKind: input.workKind,

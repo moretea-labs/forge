@@ -47,7 +47,7 @@ function createRunningWork(controllerHome: string, input: { workId: string; plan
     checks: [],
     constraints: { requireHandoffOnAmbiguity: true },
     requestedBy: 'chatgpt',
-    status: 'running',
+    dispatchState: 'running',
     baseRevision: 'abc123',
     planSourceRevision: input.planId ? 'abc123' : undefined,
     requirementId: input.requirementId,
@@ -154,7 +154,7 @@ describe('autonomous Work liveness reconciliation', () => {
     createWorkSemanticContext({ controllerHome, scopeKey: 'semantic' }, {
       workId: 'WORK-INCOMPLETE-DISPATCH', objective: 'Resume canonical semantic authority omitted by the repo projection.',
     });
-    expect(listWorkContracts({ ...store, status: 'active' })).toEqual([]);
+    expect(listWorkContracts({ ...store, state: 'active' })).toEqual([]);
     expect(getWorkContract(store, 'WORK-INCOMPLETE-DISPATCH')?.semanticState).toBe('open');
     const binding = bindReleasedChatgptController(controllerHome, 'WORK-INCOMPLETE-DISPATCH');
     const prepared = prepareControllerRoundOccurrence(store, {

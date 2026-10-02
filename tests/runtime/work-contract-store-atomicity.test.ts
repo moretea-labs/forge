@@ -39,7 +39,7 @@ function fixture(suffix: string) {
     constraints: { requireHandoffOnAmbiguity: true },
     requestedBy: 'chatgpt',
     workKind: 'repository_change',
-    status: 'running',
+    dispatchState: 'running',
     phase: 'implementation',
   });
   return { controllerHome, repoId, workId };
@@ -245,7 +245,7 @@ test('persists the exact historical v3 review-gap migration once without making 
     checks: [],
     constraints: { requireHandoffOnAmbiguity: true },
     requestedBy: 'chatgpt',
-    status: 'running',
+    dispatchState: 'running',
   });
   const malformedRecord = readControlPlaneRecord<WorkContract>(fx.controllerHome, 'work_contract', fx.repoId, malformedId)!;
   const malformed = structuredClone(malformedRecord.value);

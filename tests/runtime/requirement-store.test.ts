@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'fs';
 import { join } from 'path';
 import { backupControlPlaneDatabase, restoreControlPlaneDatabase } from '../../src/runtime/control-plane/persistence/sqlite-store';
 import { createRequirement, readRequirement, updateRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
-import { createWorkContract, listWorkContracts, recordWorkCompletionReceipt, recordWorkEvidenceState, recordWorkImplementationReview, supersedeWorkContract, transitionWorkContractPhase, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { cancelWorkContract, createWorkContract, listWorkContracts, recordWorkCompletionReceipt, recordWorkEvidenceState, recordWorkImplementationReview, supersedeWorkContract, transitionWorkContractPhase, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { implementationReviewChangedPathDigest } from '../../packages/kernel/work/api/index';
 import { executionPlacement, scopeRef, semanticRecordMetadata } from '../../packages/kernel/identity/api/index';
 import { createPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
@@ -13,6 +13,14 @@ const homes: string[] = [];
 afterEach(() => {
   for (const home of homes.splice(0)) rmSync(home, { recursive: true, force: true });
 });
+
+function createCancelledWork(
+  options: Parameters<typeof createWorkContract>[0],
+  input: Parameters<typeof createWorkContract>[1],
+) {
+  const created = createWorkContract(options, input);
+  return cancelWorkContract(options, created.workId, { summary: 'test fixture semantic cancellation' });
+}
 
 test('keeps user Requirement lifecycle separate from its active technical plan', () => {
   const home = mkdtempSync(join('/tmp', 'forge-requirement-'));
@@ -54,7 +62,7 @@ test('keeps superseded Work as durable history while removing it from the curren
     checks: [],
     constraints: { requireHandoffOnAmbiguity: true },
     requestedBy: 'chatgpt',
-    status: 'running',
+    dispatchState: 'running',
   });
   make('work-lineage-old');
   make('work-lineage-new');
@@ -65,13 +73,14 @@ test('keeps superseded Work as durable history while removing it from the curren
     reason: 'same-root successor verified',
   });
   expect(linked.predecessor).toMatchObject({
-    status: 'running',
+    semanticState: 'open',
+    dispatchState: 'running',
     supersededBy: 'work-lineage-new',
     supersessionReason: 'same-root successor verified',
   });
   expect(linked.successor.supersedes).toEqual(['work-lineage-old']);
-  expect(listWorkContracts({ ...options, status: 'active' }).map((work) => work.workId)).toEqual(['work-lineage-new']);
-  expect(listWorkContracts({ ...options, status: 'all' }).map((work) => work.workId).sort()).toEqual(['work-lineage-new', 'work-lineage-old']);
+  expect(listWorkContracts({ ...options, state: 'active' }).map((work) => work.workId)).toEqual(['work-lineage-new']);
+  expect(listWorkContracts({ ...options, state: 'all' }).map((work) => work.workId).sort()).toEqual(['work-lineage-new', 'work-lineage-old']);
   make('work-lineage-other');
   expect(() => supersedeWorkContract(options, {
     workId: 'work-lineage-old',
@@ -120,7 +129,7 @@ test('historical cancelled Work evidence cannot reopen a reviewed Requirement ou
   updateRequirement(options, { requirementId: 'req-reviewed', action: 'activate', mutate: (current) => ({ ...current, state: 'active' }) });
   updateRequirement(options, { requirementId: 'req-reviewed', action: 'reviewed_done', mutate: (current) => ({ ...current, state: 'done' }) });
 
-  const work = createWorkContract({ controllerHome: home, repoId: 'repo-reviewed' }, {
+  const work = createCancelledWork({ controllerHome: home, repoId: 'repo-reviewed' }, {
     workId: 'work-historical-cancelled',
     repoId: 'repo-reviewed',
     requirementId: 'req-reviewed',
@@ -131,9 +140,8 @@ test('historical cancelled Work evidence cannot reopen a reviewed Requirement ou
     checks: [],
     constraints: { requireHandoffOnAmbiguity: true },
     requestedBy: 'chatgpt',
-    status: 'cancelled',
   });
-  expect(work.status).toBe('cancelled');
+  expect(work.semanticState).toBe('cancelled');
   expect(work.completionReceipt).toBeUndefined();
   expect(readRequirement(options, 'req-reviewed')?.value.state).toBe('done');
   expect(() => updateRequirement(options, {
@@ -143,7 +151,7 @@ test('historical cancelled Work evidence cannot reopen a reviewed Requirement ou
   })).toThrow(/REQUIREMENT_STATE_TRANSITION_INVALID/);
 
   const retained = recordWorkEvidenceState({ controllerHome: home, repoId: 'repo-reviewed' }, work.workId, 'failed');
-  expect(retained.status).toBe('cancelled');
+  expect(retained.semanticState).toBe('cancelled');
   expect(readRequirement(options, 'req-reviewed')?.value.state).toBe('done');
 });
 

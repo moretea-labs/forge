@@ -208,7 +208,7 @@ function suggestedForWorkIdentity(workId: string, checks: string[], extras: Sugg
   const semanticRead: SuggestedNextAction = {
     label: 'Read current Work semantic context',
     tool: 'rh_work',
-    operation: 'work_get',
+    operation: 'get',
     payload: { work_id: workId },
     risk: 'readonly',
     confidence: 'high',
@@ -696,7 +696,7 @@ export function startGoalWorkloop(
       ? [{
           label: 'Inspect existing Work',
           tool: 'rh_work',
-          operation: 'work_get',
+          operation: 'get',
           payload: { work_id: target.workId },
           risk: 'readonly',
           confidence: explicitRelatedWork ? 'high' : 'medium',
@@ -748,7 +748,7 @@ export function startGoalWorkloop(
         work: summarizeWorkContract(selected),
       },
       evidenceRefs: selected.evidenceRefs,
-      suggestedNextActions: [{ label: 'Read existing Work context', tool: 'rh_work', operation: 'work_get', payload: { work_id: selected.workId }, risk: 'readonly', confidence: 'high' }],
+      suggestedNextActions: [{ label: 'Read existing Work context', tool: 'rh_work', operation: 'get', payload: { work_id: selected.workId }, risk: 'readonly', confidence: 'high' }],
       rawAvailable: false,
     });
   }
@@ -841,7 +841,7 @@ export function startGoalWorkloop(
     // repository-change Work's semantic identity. Pure external actions with no
     // repository-change signal remain remote_effect and keep plugin receipt semantics.
     workKind: resolvedWorkKind,
-    status: 'running',
+    dispatchState: 'running',
     phase: 'implementation',
     issueId: input.issueId,
     taskId: input.taskId,
@@ -1211,7 +1211,6 @@ export function continueGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
       detailLevel: 'summary',
     });
     transitionWorkContractPhase(ctx.workStore, work.workId, {
-      status: 'running',
       phase: 'implementation',
       state: 'active',
       summary: `Controller chose bounded ${decision} after acceptance failure; implementation may resume before re-verification.`,
@@ -1264,7 +1263,6 @@ export function continueGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
   // Infrastructure issues: suggest self-healing, not acceptance failure.
   if (history.infrastructureIssues.length > 0) {
     transitionWorkContractPhase(ctx.workStore, work.workId, {
-      status: 'running',
       phase: 'implementation',
       state: 'active',
       summary: `Infrastructure issues require repair: ${history.infrastructureIssues.join(', ')}.`,
@@ -1313,7 +1311,6 @@ export function continueGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
       },
     ]).actions;
     transitionWorkContractPhase(ctx.workStore, work.workId, {
-      status: 'running',
       phase: 'implementation',
       state: 'active',
       summary: implementationEvidence.reasons.join(' '),
@@ -1390,7 +1387,6 @@ export function continueGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
       },
     ]).actions;
     transitionWorkContractPhase(ctx.workStore, work.workId, {
-      status: 'running',
       phase: work.workKind === 'read_only_review' ? 'verification' : 'implementation',
       state: 'active',
       summary: work.workKind === 'read_only_review'

@@ -467,7 +467,7 @@ function mechanicalStateFingerprint(
     .map((entry) => ({
       workId: entry.workId,
       parentWorkId: entry.parentWorkId,
-      status: entry.status,
+      state: entry.semanticState,
       phase: entry.phase,
       dispatchState: entry.dispatchState,
       evidenceState: entry.evidenceState,
@@ -606,8 +606,8 @@ export function bindControllerRoundSuccessorWork(
 ): ControllerRoundRelayRecord {
   const predecessor = getWorkContract(options, input.workId);
   if (!predecessor) throw new Error(`WORK_NOT_FOUND: ${input.workId}`);
-  if (predecessor.status !== 'completed') {
-    throw new Error(`CONTROLLER_RELAY_SUCCESSOR_PREDECESSOR_NOT_COMPLETED: ${predecessor.workId}:${predecessor.status}`);
+  if (semanticWorkState(predecessor) !== 'completed') {
+    throw new Error(`CONTROLLER_RELAY_SUCCESSOR_PREDECESSOR_NOT_COMPLETED: ${predecessor.workId}:${semanticWorkState(predecessor)}`);
   }
   const initial = readRelayRecord(options, predecessor.workId);
   if (!initial) throw new Error(`CONTROLLER_RELAY_ROUND_NOT_OPEN: ${predecessor.workId}`);
@@ -832,7 +832,7 @@ export function submitControllerRoundDisposition(
     }
     const terminalAuthorityId = bounded(input.terminalAuthorityId, 256);
     const providerWaitTerminalGoalComplete = terminal
-      && work.status === 'completed'
+      && semanticWorkState(work) === 'completed'
       && input.disposition === 'goal_complete'
       && existing.value.status === 'waiting_for_user'
       && controllerRoundBlockerClass(existing.value) === 'provider_user_action_required';
@@ -844,16 +844,16 @@ export function submitControllerRoundDisposition(
       throw new Error(`CONTROLLER_RELAY_ROUND_NOT_CLAIMED: ${existing.value.status}`);
     }
     const terminalSuccessor = terminal
-      && work.status === 'completed'
+      && semanticWorkState(work) === 'completed'
       && input.disposition === 'continue_immediately'
       && existing.value.successorWorkId
       ? assertControllerRoundSuccessorLineage(options, work, existing.value.successorWorkId)
       : undefined;
     const terminalRoundClosureAllowed = terminal
-      && work.status === 'completed'
+      && semanticWorkState(work) === 'completed'
       && (input.disposition === 'goal_complete' || Boolean(terminalSuccessor));
     if (terminal && !terminalRoundClosureAllowed) {
-      throw new Error(`CONTROLLER_RELAY_WORK_TERMINAL: ${work.status}`);
+      throw new Error(`CONTROLLER_RELAY_WORK_TERMINAL: ${semanticWorkState(work)}`);
     }
 
     const liveOwner = getControllerSession(options, work.workId);
@@ -1009,13 +1009,13 @@ export function settleControllerRoundAfterTurn(
     const work = getWorkContract(options, input.workId);
     if (!work) throw new Error(`WORK_NOT_FOUND: ${input.workId}`);
     const at = nowIso(options);
-    const successor = work.status === 'completed' && current.value.successorWorkId
+    const successor = semanticWorkState(work) === 'completed' && current.value.successorWorkId
       ? getWorkContract(options, current.value.successorWorkId)
       : undefined;
     const terminalSuccessorContinuation = Boolean(successor && semanticWorkState(successor) === 'open');
     if (semanticWorkState(work) !== 'open' && !terminalSuccessorContinuation) {
       return applyControllerRoundTransition(options, current, {
-        type: 'terminal_work_observed', at, error: `Controller turn settled after terminal Work ${work.status}`,
+        type: 'terminal_work_observed', at, error: `Controller turn settled after terminal Work ${semanticWorkState(work)}`,
       });
     }
     const semanticWork = successor ?? work;
@@ -1103,8 +1103,8 @@ export function beginControllerRoundRelayAfterRelease(
     const at = nowIso(options);
     if (record.successorWorkId) {
       const predecessor = getWorkContract(options, input.workId);
-      if (!predecessor || predecessor.status !== 'completed') {
-        throw new Error(`CONTROLLER_RELAY_SUCCESSOR_PREDECESSOR_NOT_COMPLETED: ${input.workId}:${predecessor?.status ?? 'missing'}`);
+      if (!predecessor || semanticWorkState(predecessor) !== 'completed') {
+        throw new Error(`CONTROLLER_RELAY_SUCCESSOR_PREDECESSOR_NOT_COMPLETED: ${input.workId}:${predecessor ? semanticWorkState(predecessor) : 'missing'}`);
       }
       const successor = assertControllerRoundSuccessorLineage(options, predecessor, record.successorWorkId);
       const successorStateFingerprint = mechanicalStateFingerprint(options, successor, record.requirementId, record.relayScopeId, record.handoffId);
@@ -1175,10 +1175,10 @@ export function reconcileControllerRoundAfterAbandonedRelease(
     }
     const work = getWorkContract(options, input.workId);
     // Completed Work still requires semantic goal_complete or a valid terminal
-    // successor. Failed/cancelled Work has no legal semantic continuation, so
+    // successor. Cancelled Work has no legal semantic continuation, so
     // its exact released controller epoch may mechanically abandon the claimed
     // round and free the relay scope for later recovery/replanning.
-    if (!work || work.status === 'completed') return undefined;
+    if (!work || semanticWorkState(work) === 'completed') return undefined;
 
     return applyControllerRoundTransition(options, current, {
       type: 'abandoned_release_observed', at: nowIso(options), error: CONTROLLER_RELAY_ABANDONED_RELEASE_ERROR,
@@ -1188,7 +1188,7 @@ export function reconcileControllerRoundAfterAbandonedRelease(
 
 /**
  * Mechanically retire any surviving ControllerRound once Work lifecycle authority
- * is durably failed/cancelled and no Controller lease remains. This is cleanup,
+ * is durably cancelled and no Controller lease remains. This is cleanup,
  * not a semantic disposition: completed Work is intentionally excluded.
  */
 export function reconcileControllerRoundAfterTerminalWork(
@@ -1198,7 +1198,7 @@ export function reconcileControllerRoundAfterTerminalWork(
   const initial = readRelayRecord(options, input.workId);
   if (!initial) return undefined;
   const work = getWorkContract(options, input.workId);
-  if (!work || !['failed', 'cancelled'].includes(work.status)) return undefined;
+  if (!work || semanticWorkState(work) !== 'cancelled') return undefined;
   if (getControllerSession(options, input.workId)) {
     throw new Error(`CONTROLLER_RELAY_TERMINAL_WORK_ACTIVE_CLAIM: ${input.workId}`);
   }
@@ -1207,7 +1207,7 @@ export function reconcileControllerRoundAfterTerminalWork(
     const current = readRelayRecord(options, input.workId);
     if (!current) return undefined;
     const currentWork = getWorkContract(options, input.workId);
-    if (!currentWork || !['failed', 'cancelled'].includes(currentWork.status)) return undefined;
+    if (!currentWork || semanticWorkState(currentWork) !== 'cancelled') return undefined;
     if (getControllerSession(options, input.workId)) {
       throw new Error(`CONTROLLER_RELAY_TERMINAL_WORK_ACTIVE_CLAIM: ${input.workId}`);
     }
@@ -1465,7 +1465,7 @@ export function recoverControllerRoundRelayAuthority(
   const work = getWorkContract(options, workId);
   if (!work) throw new Error(`WORK_NOT_FOUND: ${workId}`);
   if (semanticWorkState(work) !== 'open') {
-    throw new Error(`WORK_CONTROLLER_AUTHORITY_RECOVERY_TERMINAL: ${workId}:${work.status}`);
+    throw new Error(`WORK_CONTROLLER_AUTHORITY_RECOVERY_TERMINAL: ${workId}:${semanticWorkState(work)}`);
   }
   const initial = readRelayRecord(options, workId);
   if (!initial) throw new Error(`WORK_CONTROLLER_AUTHORITY_RECOVERY_RELAY_REQUIRED: ${workId}`);
@@ -1865,7 +1865,7 @@ export interface ControllerRoundContextSnapshot {
   };
   works: Array<{
     workId: string;
-    status: string;
+    state: string;
     phase: string;
     updatedAt: string;
     objective: string;
@@ -1917,7 +1917,7 @@ export function readControllerRoundContextSnapshot(
       const origin = work.workId === record.originWorkId;
       return {
         workId: work.workId,
-        status: work.status,
+        state: semanticWorkState(work),
         phase: work.phase,
         updatedAt: work.updatedAt,
         objective: work.objective.slice(0, origin

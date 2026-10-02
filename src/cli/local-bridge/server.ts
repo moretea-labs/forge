@@ -1201,15 +1201,15 @@ export async function startLocalBridgeServer(
           repositoryName: repository.displayName,
         })),
       ).sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
-      const statusOf = (item: (typeof items)[number]) => String(item.advanced?.status ?? "");
+      const stateOf = (item: (typeof items)[number]) => String(item.advanced?.state ?? "");
       response.json({
         schemaVersion: 1,
         generatedAt: new Date().toISOString(),
         summary: {
           total: items.length,
-          open: items.filter((item) => ["open", "running", "ready"].includes(statusOf(item))).length,
-          needsAttention: items.filter((item) => ["blocked", "failed"].includes(statusOf(item))).length,
-          completed: items.filter((item) => ["completed", "cancelled"].includes(statusOf(item))).length,
+          open: items.filter((item) => stateOf(item) === "open").length,
+          needsAttention: items.filter((item) => ["blocked", "failed", "needs_attention"].includes(item.phase)).length,
+          completed: items.filter((item) => ["completed", "cancelled"].includes(stateOf(item))).length,
         },
         repositories: repositories.map((repository) => ({ repoId: repository.repoId, repositoryName: repository.displayName })),
         items,

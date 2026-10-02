@@ -36,7 +36,7 @@ describe('assistant context for Controller Work', () => {
         forbiddenPaths: [],
         checks: [],
         requestedBy: 'chatgpt',
-        status: 'running',
+        dispatchState: 'running',
       });
 
       const authority: CognitiveWriteAuthorityPort = {

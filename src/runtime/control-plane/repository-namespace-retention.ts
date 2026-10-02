@@ -5,7 +5,7 @@ import { listRepositories } from '../../cli/repositories/registry';
 import { listActiveExecutionJobs } from '../execution/jobs/store';
 import { listActiveProcessIds } from '../execution/process-runtime/store';
 import { listActiveLeases } from '../resources/leases/store';
-import { isTerminalWorkContractStatus, readWorkContractStore } from '../../../packages/kernel/work/api/index';
+import { isTerminalSemanticWorkState, readWorkContractStore } from '../../../packages/kernel/work/api/index';
 import { listControlPlaneRecords } from './persistence/sqlite-store';
 import { measureReclaimablePath } from './lifecycle-retention-metrics';
 
@@ -88,7 +88,7 @@ function activeAuthorityBlockers(controllerHome: string, repoId: string): string
 
   const workStore = readWorkContractStore({ controllerHome, repoId });
   for (const work of workStore.contracts) {
-    if (!isTerminalWorkContractStatus(work.status)) {
+    if (!isTerminalSemanticWorkState(work.semanticState)) {
       blockers.push('active_work');
       break;
     }

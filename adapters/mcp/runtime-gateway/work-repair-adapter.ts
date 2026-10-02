@@ -181,7 +181,7 @@ export async function runFacadeRepair(
     }
     const boundWork = step.workId ? getWorkContract(store, step.workId) : undefined;
     const facade = buildFacadeResult({
-      summary: `PLAN_STEP_AUTHORED_FACT: ${planId}/${planStepId} is ${step.status}${boundWork ? ` and records terminal-or-active Work ${boundWork.workId} (${boundWork.status})` : ''}. Repair does not mutate model-authored Plan progress; revise the stable Plan explicitly with expected_revision when this fact should change it.`,
+      summary: `PLAN_STEP_AUTHORED_FACT: ${planId}/${planStepId} is ${step.status}${boundWork ? ` and records terminal-or-active Work ${boundWork.workId} (${boundWork.semanticState})` : ''}. Repair does not mutate model-authored Plan progress; revise the stable Plan explicitly with expected_revision when this fact should change it.`,
       data: {
         operation: repairOperation,
         dryRun,
@@ -189,7 +189,7 @@ export async function runFacadeRepair(
         planStepId,
         planItemStatus: step.status,
         recordedWorkId: step.workId ?? null,
-        ...(boundWork ? { workStatus: boundWork.status } : {}),
+        ...(boundWork ? { workState: boundWork.semanticState } : {}),
         repaired: false,
         repairRequired: false,
         compatibilityNoop: true,

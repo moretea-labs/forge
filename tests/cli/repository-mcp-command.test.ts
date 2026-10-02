@@ -14,7 +14,7 @@ import { getLocalBridgeJob, readLocalBridgeJobOutput, readLocalBridgeJobOutputSn
 import { routeDurableMcpCall } from "../../src/runtime/gateway/mcp/router";
 import { waitRepositoryCommandProcess } from "../../src/runtime/execution/process-runtime/command-facade";
 import { getExecutionJob, listExecutionJobs } from "../../src/runtime/execution/jobs/store";
-import { createWorkContract, getWorkContract } from "../../src/runtime/control-plane/facade/work-contract-store";
+import { cancelWorkContract, createWorkContract, failWorkContract, getWorkContract } from "../../src/runtime/control-plane/facade/work-contract-store";
 import { claimControllerSession } from "../../src/runtime/control-plane/facade/controller-session-store";
 import { readWorkHandle } from "../../src/runtime/control-plane/execution/work-handle-store";
 import { startExecutionSession, updateExecutionSession } from "../../src/runtime/control-plane/execution/session-store";
@@ -296,7 +296,7 @@ describe("repository MCP command tools", () => {
         checks: [],
         constraints: { requireHandoffOnAmbiguity: true },
         requestedBy: "chatgpt",
-        status: "running",
+        dispatchState: "running",
       });
       const caller = { sessionId: "session-active-bound", principalId: "principal-active-bound", controllerInstanceId: "runtime-active-bound" };
       claimControllerSession({ controllerHome, repoId: repository.repoId }, {
@@ -370,7 +370,7 @@ describe("repository MCP command tools", () => {
         checks: [],
         constraints: { requireHandoffOnAmbiguity: true },
         requestedBy: "chatgpt",
-        status: "running",
+        dispatchState: "running",
       });
       const caller = { sessionId: "session-process-request-id", principalId: "principal-process-request-id", controllerInstanceId: "runtime-process-request-id" };
       claimControllerSession({ controllerHome, repoId: repository.repoId }, {
@@ -439,7 +439,7 @@ describe("repository MCP command tools", () => {
         checks: [],
         constraints: { requireHandoffOnAmbiguity: true },
         requestedBy: "chatgpt",
-        status: "running",
+        dispatchState: "running",
       });
       const caller = { sessionId: "session-raw-commit-scope", principalId: "principal-raw-commit-scope", controllerInstanceId: "runtime-raw-commit-scope" };
       claimControllerSession({ controllerHome, repoId: repository.repoId }, {
@@ -522,8 +522,8 @@ describe("repository MCP command tools", () => {
         checks: [],
         constraints: { requireHandoffOnAmbiguity: true },
         requestedBy: "chatgpt",
-        status: "failed",
       });
+      failWorkContract({ controllerHome, repoId: repository.repoId }, workId, { phase: 'implementation', summary: 'Fixture records failed execution while semantic Work remains open.' });
       const caller = { sessionId: "session-terminal", principalId: "principal-terminal", controllerInstanceId: "runtime-terminal" };
       startExecutionSession(controllerHome, caller);
       updateExecutionSession(controllerHome, caller, {
@@ -571,7 +571,7 @@ describe("repository MCP command tools", () => {
       createWorkContract({ controllerHome, repoId: repository.repoId }, {
         workId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId, objective: "Only mutate the Work-owned source subtree.", acceptanceCriteria: [],
         allowedPaths: ["src/**"], forbiddenPaths: ["src/secret/**"], checks: [],
-        constraints: { requireHandoffOnAmbiguity: true }, requestedBy: "chatgpt", status: "running",
+        constraints: { requireHandoffOnAmbiguity: true }, requestedBy: "chatgpt", dispatchState: "running",
       });
       const caller = { sessionId: "session-patch-scope", principalId: "principal-patch-scope", controllerInstanceId: "runtime-patch-scope" };
       claimControllerSession({ controllerHome, repoId: repository.repoId }, {
@@ -632,7 +632,7 @@ describe("repository MCP command tools", () => {
       createWorkContract({ controllerHome, repoId: repository.repoId }, {
         workId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId, workKind: "remote_effect", objective: "Perform a remote effect, then legitimately repair source under the same Work.",
         acceptanceCriteria: [], allowedPaths: ["src/**"], forbiddenPaths: [], checks: [],
-        constraints: { requireHandoffOnAmbiguity: true }, requestedBy: "chatgpt", status: "running",
+        constraints: { requireHandoffOnAmbiguity: true }, requestedBy: "chatgpt", dispatchState: "running",
       });
       const caller = { sessionId: "session-effect-source", principalId: "principal-effect-source", controllerInstanceId: "runtime-effect-source" };
       claimControllerSession({ controllerHome, repoId: repository.repoId }, {
@@ -682,7 +682,7 @@ describe("repository MCP command tools", () => {
       createWorkContract({ controllerHome, repoId: repository.repoId }, {
         workId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId, workKind: "local_effect", objective: "Acquire repository authority before a local effect starts mutating source.",
         acceptanceCriteria: [], allowedPaths: [], forbiddenPaths: [], checks: [],
-        constraints: { requireHandoffOnAmbiguity: true }, requestedBy: "chatgpt", status: "running",
+        constraints: { requireHandoffOnAmbiguity: true }, requestedBy: "chatgpt", dispatchState: "running",
       });
       const caller = { sessionId: "session-effect-command", principalId: "principal-effect-command", controllerInstanceId: "runtime-effect-command" };
       claimControllerSession({ controllerHome, repoId: repository.repoId }, {
@@ -725,7 +725,7 @@ describe("repository MCP command tools", () => {
       createWorkContract({ controllerHome, repoId: repository.repoId }, {
         workId, repoId: repository.repoId, workKind: "investigation", objective: "Thin semantic Work uses concrete repository target at mutation time.",
         acceptanceCriteria: [], allowedPaths: ["src/**"], forbiddenPaths: [], checks: [],
-        constraints: { requireHandoffOnAmbiguity: true }, requestedBy: "chatgpt", status: "running",
+        constraints: { requireHandoffOnAmbiguity: true }, requestedBy: "chatgpt", dispatchState: "running",
       });
       const caller = { sessionId: "session-thin-target", principalId: "principal-thin-target", controllerInstanceId: "runtime-thin-target" };
       claimControllerSession({ controllerHome, repoId: repository.repoId }, {
@@ -771,7 +771,7 @@ describe("repository MCP command tools", () => {
       createWorkContract({ controllerHome, repoId: repository.repoId }, {
         workId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId, workKind: "local_effect", objective: "Run a local effect from repository context without changing repository source.",
         acceptanceCriteria: [], allowedPaths: [], forbiddenPaths: [], checks: [],
-        constraints: { requireHandoffOnAmbiguity: true }, requestedBy: "chatgpt", status: "running",
+        constraints: { requireHandoffOnAmbiguity: true }, requestedBy: "chatgpt", dispatchState: "running",
       });
       const caller = { sessionId: "session-effect-no-source", principalId: "principal-effect-no-source", controllerInstanceId: "runtime-effect-no-source" };
       claimControllerSession({ controllerHome, repoId: repository.repoId }, {
@@ -813,7 +813,7 @@ describe("repository MCP command tools", () => {
       createWorkContract({ controllerHome, repoId: repository.repoId }, {
         workId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId, workKind: "local_effect", objective: "Run a conservative write-risk Process without changing repository source.",
         acceptanceCriteria: [], allowedPaths: [], forbiddenPaths: [], checks: [],
-        constraints: { requireHandoffOnAmbiguity: true }, requestedBy: "chatgpt", status: "running",
+        constraints: { requireHandoffOnAmbiguity: true }, requestedBy: "chatgpt", dispatchState: "running",
       });
       const caller = { sessionId: "session-effect-running", principalId: "principal-effect-running", controllerInstanceId: "runtime-effect-running" };
       claimControllerSession({ controllerHome, repoId: repository.repoId }, {
@@ -865,8 +865,8 @@ describe("repository MCP command tools", () => {
         checks: [],
         constraints: { requireHandoffOnAmbiguity: true },
         requestedBy: "chatgpt",
-        status: "failed",
       });
+      failWorkContract({ controllerHome, repoId: repository.repoId }, workId, { phase: 'implementation', summary: 'Fixture records failed execution while semantic Work remains open.' });
       const caller = { sessionId: "session-terminal-readonly", principalId: "principal-terminal-readonly", controllerInstanceId: "runtime-terminal-readonly" };
       startExecutionSession(controllerHome, caller);
       updateExecutionSession(controllerHome, caller, {
@@ -937,7 +937,7 @@ describe("repository MCP command tools", () => {
         checks: [],
         constraints: { requireHandoffOnAmbiguity: true },
         requestedBy: "chatgpt",
-        status: "running",
+        dispatchState: "running",
       });
       claimControllerSession({ controllerHome, repoId: repository.repoId }, {
         workId: unrelatedWorkId,

@@ -338,7 +338,7 @@ describe('Stage7C upstream engineering authority', () => {
     const workId = (started.data as { work?: { workId?: string } }).work?.workId!;
     const before = getWorkContract(context.workStore, workId)!;
     const semanticScope = before.engineeringContext?.semanticScope;
-    const workCountBefore = listWorkContracts({ ...context.workStore, status: 'all' }).length;
+    const workCountBefore = listWorkContracts({ ...context.workStore, state: 'all' }).length;
 
     // Forge never decomposes work on the model's behalf: an unrelated blocker
     // without an explicit owning Work is refused and creates no Work at all.
@@ -353,7 +353,7 @@ describe('Stage7C upstream engineering authority', () => {
     });
     expect(undeclared.status).toBe('blocked');
     expect(undeclared.summary).toContain('ENGINEERING_BLOCKER_LINKED_WORK_REQUIRED');
-    expect(listWorkContracts({ ...context.workStore, status: 'all' })).toHaveLength(workCountBefore);
+    expect(listWorkContracts({ ...context.workStore, state: 'all' })).toHaveLength(workCountBefore);
     expect(getWorkContract(context.workStore, workId)?.engineeringContext?.semanticScope).toEqual(semanticScope);
 
     // The caller declares the owning Work explicitly and links it by exact id.

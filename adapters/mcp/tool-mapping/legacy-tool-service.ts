@@ -73,7 +73,6 @@ import {
 } from "../../../src/cli/controller/check-runner";
 import { normalizeCheckIds } from '../../../src/runtime/control-plane/facade/check-normalization';
 import { buildExecutionDiagnostics, buildRequirementBoard } from '../../../src/runtime/control-plane/facade/requirement-board';
-import { acceptVerifiedTaskFromControllerWork } from '../../../src/runtime/control-plane/execution/work-task-receipt';
 import { getWorkContract } from '../../../packages/kernel/work/api';
 import { admitDirectEditWorkContract } from '../../../src/runtime/control-plane/facade/repository-work-admission';
 import { listCapabilityDescriptors, summarizeCapabilityGroups } from '../../../src/runtime/control-plane/facade/capability-registry';
@@ -4325,18 +4324,12 @@ export async function callMcpTool(
         if (!task) return errorResult("TASK_NOT_FOUND", `task not found: ${issueId}/${taskId}`);
         if (task.status === "done") return textResult(projectIssueEffectiveView(ctx.repoRoot, current));
         if (task.status !== "verified" || !task.verification) return errorResult("TASK_NOT_VERIFIED", `task has not passed its risk-adaptive verification requirements (current: ${task.status})`);
-        const workId = typeof args.work_id === "string" ? args.work_id.trim() : "";
-        const issue = workId
-          ? acceptVerifiedTaskFromControllerWork({
-              controllerHome: resolveRepoPreferredControllerHome(ctx.repoRoot),
-              repoId: ctx.repoId ?? String(args.repo_id ?? "").trim(),
-              repoRoot: ctx.repoRoot,
-              issueId,
-              taskId,
-              workId,
-              note: typeof args.note === "string" ? args.note : undefined,
-            }).issue
-          : acceptVerifiedTask(ctx.repoRoot, issueId, taskId, typeof args.note === "string" ? args.note : "Accepted after required verification evidence.");
+        const issue = acceptVerifiedTask(
+          ctx.repoRoot,
+          issueId,
+          taskId,
+          typeof args.note === "string" ? args.note : "Accepted after required verification evidence.",
+        );
         audit(ctx, name, "ok", args, `tasks/issues/${issue.id}`);
         return textResult(projectIssueEffectiveView(ctx.repoRoot, issue));
       }

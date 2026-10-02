@@ -20,8 +20,8 @@ function expectedActionRisk(action: SuggestedNextAction): SuggestedNextAction['r
       return 'readonly';
     case 'plan_create':
     case 'plan_revise':
-    case 'work_revise':
-    case 'work_complete':
+    case 'revise':
+    case 'complete':
     case 'workflow_execute':
     case 'workflow_reconcile':
     case 'learning_record':
@@ -31,7 +31,7 @@ function expectedActionRisk(action: SuggestedNextAction): SuggestedNextAction['r
       return 'workspace_write';
     case 'plan_get':
     case 'plan_list':
-    case 'work_get':
+    case 'get':
       return 'readonly';
     default:
       return undefined;

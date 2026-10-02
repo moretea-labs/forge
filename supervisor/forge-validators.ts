@@ -1,5 +1,5 @@
 import { isLegacyMachineRequirementWait, readRequirement } from '../src/runtime/control-plane/persistence/requirement-store';
-import { getWorkContract, isTerminalWorkContractStatus } from '../packages/kernel/work/api/index';
+import { getWorkContract, isTerminalSemanticWorkState } from '../packages/kernel/work/api/index';
 import type { WorkflowContractValidation, WorkflowSupervisorProposal, WorkflowSupervisorTask, WorkflowSupervisorValidators } from './types';
 
 function contractText(task: WorkflowSupervisorTask, key: string): string | undefined {
@@ -44,7 +44,7 @@ export function forgeWorkflowSupervisorValidators(): WorkflowSupervisorValidator
       }
       if (task.completionContract.kind === 'forge_work_done') {
         const work = workFor(task);
-        return work && isTerminalWorkContractStatus(work.status)
+        return work && isTerminalSemanticWorkState(work.semanticState)
           ? { valid: true, reason: 'work_terminal_committed' }
           : unsupported('work_not_terminal');
       }
@@ -62,7 +62,7 @@ export function forgeWorkflowSupervisorValidators(): WorkflowSupervisorValidator
       }
       if (task.userBlockerPolicy.kind === 'forge_work_waiting_for_user') {
         const work = workFor(task);
-        return { valid: work?.status === 'blocked', reason: work?.status === 'blocked' ? 'work_blocked_committed' : 'work_not_blocked' };
+        return { valid: work?.dispatchState === 'blocked', reason: work?.dispatchState === 'blocked' ? 'work_blocked_committed' : 'work_not_blocked' };
       }
       if (!['forge_requirement_waiting_for_user', 'forge_dynamic_requirement_waiting_for_user'].includes(String(task.userBlockerPolicy.kind ?? ''))) return unsupported('user_blocker_policy_kind_unsupported');
       const requirement = requirementFor(task, proposal);

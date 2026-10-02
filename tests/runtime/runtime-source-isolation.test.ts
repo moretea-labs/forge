@@ -125,7 +125,7 @@ function createProjectionWork(
     acceptanceCriteria: ['Runtime facade reads remain available.'],
     constraints: { requireHandoffOnAmbiguity: true, workspaceMode: 'isolated', requireWorktree: true },
     requestedBy: 'chatgpt',
-    status: 'running',
+    dispatchState: 'running',
     allowedPaths: [],
     forbiddenPaths: [],
     checks: [],
@@ -185,7 +185,7 @@ describe('runtime source isolation', () => {
       plan_id: planId,
     }));
     const work = structured(await callRuntimeTool(unscoped, 'rh_work', {
-      operation: 'work_get',
+      operation: 'get',
       work_id: workId,
     }));
 
@@ -206,7 +206,7 @@ describe('runtime source isolation', () => {
       objective: 'Revise Plan directly by stable id without repository selection.',
     }));
     const revisedWork = structured(await callRuntimeTool(unscoped, 'rh_work', {
-      operation: 'work_revise',
+      operation: 'revise',
       work_id: workId,
       expected_revision: 1,
       objective: 'Revise Work directly by stable id without repository selection.',
@@ -220,7 +220,7 @@ describe('runtime source isolation', () => {
     expect(revisedWorkData?.work).toMatchObject({ workId, revision: 2 });
 
     const staleWork = structured(await callRuntimeTool(unscoped, 'rh_work', {
-      operation: 'work_revise',
+      operation: 'revise',
       work_id: workId,
       expected_revision: 1,
       objective: 'A stale semantic writer must not overwrite revision 2.',
@@ -278,7 +278,7 @@ describe('runtime source isolation', () => {
     expect((ambiguousPlanGet.data as { scopes?: string[] })?.scopes).toEqual([repoA.repoId, repoB.repoId].sort());
 
     const ambiguousWorkGet = structured(await callRuntimeTool(unscopedCtx, 'rh_work', {
-      operation: 'work_get',
+      operation: 'get',
       work_id: sharedWorkId,
     }));
     expect(ambiguousWorkGet.status).toBe('blocked');
@@ -303,7 +303,7 @@ describe('runtime source isolation', () => {
     expect((planB.data as { plan?: { goal?: string } })?.plan?.goal).toBe('Goal in Repo B');
 
     const workA = structured(await callRuntimeTool(unscopedCtx, 'rh_work', {
-      operation: 'work_get',
+      operation: 'get',
       work_id: sharedWorkId,
       repo_id: repoA.repoId,
     }));
@@ -323,7 +323,7 @@ describe('runtime source isolation', () => {
     expect(missingInC.summary).toContain(repoC.repoId);
 
     const missingWorkInC = structured(await callRuntimeTool(unscopedCtx, 'rh_work', {
-      operation: 'work_get',
+      operation: 'get',
       work_id: sharedWorkId,
       repo_id: repoC.repoId,
     }));
@@ -341,7 +341,7 @@ describe('runtime source isolation', () => {
     expect(ambiguousRevisePlan.summary).toContain('SEMANTIC_ID_SCOPE_AMBIGUOUS');
 
     const ambiguousReviseWork = structured(await callRuntimeTool(unscopedCtx, 'rh_work', {
-      operation: 'work_revise',
+      operation: 'revise',
       work_id: sharedWorkId,
       expected_revision: 1,
       objective: 'Cannot revise ambiguously',
@@ -361,7 +361,7 @@ describe('runtime source isolation', () => {
     expect((revisedPlanB.data as { plan?: { revision?: number } })?.plan?.revision).toBe(2);
 
     const revisedWorkA = structured(await callRuntimeTool(unscopedCtx, 'rh_work', {
-      operation: 'work_revise',
+      operation: 'revise',
       work_id: sharedWorkId,
       repo_id: repoA.repoId,
       expected_revision: 1,
@@ -372,7 +372,7 @@ describe('runtime source isolation', () => {
 
     // Assert Repo B work is still revision 1
     const workBAfter = structured(await callRuntimeTool(unscopedCtx, 'rh_work', {
-      operation: 'work_get',
+      operation: 'get',
       work_id: sharedWorkId,
       repo_id: repoB.repoId,
     }));

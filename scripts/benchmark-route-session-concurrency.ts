@@ -448,7 +448,6 @@ async function main(): Promise<void> {
           checks: [],
           constraints: { requireHandoffOnAmbiguity: true },
           requestedBy: 'chatgpt',
-          status: 'open',
         });
         timing.storageTimeMs = elapsed(storageStarted);
         timing.wallClockMs = elapsed(started);

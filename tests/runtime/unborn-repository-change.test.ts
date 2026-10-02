@@ -5,7 +5,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { continueGoalWorkloop, routeWorkStart } from '../../src/runtime/control-plane/facade/goal-workloop';
 import { getWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
-import { changedPathsFromUnbornBase } from '../../src/runtime/control-plane/execution/work-task-receipt';
+import { changedPathsFromUnbornBase } from '../../src/runtime/control-plane/execution/work-revision-diff';
 
 const roots: string[] = [];
 

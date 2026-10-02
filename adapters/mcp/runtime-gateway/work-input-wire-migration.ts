@@ -1,7 +1,7 @@
 import { isDeepStrictEqual } from 'node:util';
 import { AUTOMATION_RECEIPT_CAPABILITY_PREFIX } from './automation-receipt-adapter';
 
-export type RhWorkInputCompatibilityResult =
+export type RhWorkInputWireMigrationResult =
   | {
       ok: true;
       args: Record<string, unknown>;
@@ -11,7 +11,7 @@ export type RhWorkInputCompatibilityResult =
     }
   | { ok: false; summary: string; data: Record<string, unknown> };
 
-function failure(summary: string, data: Record<string, unknown> = {}): RhWorkInputCompatibilityResult {
+function failure(summary: string, data: Record<string, unknown> = {}): RhWorkInputWireMigrationResult {
   return { ok: false, summary, data };
 }
 
@@ -136,19 +136,26 @@ function unsupportedInputField(input: Record<string, unknown>, allowed: Readonly
 function translateFrozenSemanticV1(
   outer: Record<string, unknown>,
   semantic: Record<string, unknown>,
-): RhWorkInputCompatibilityResult {
-  const operation = typeof semantic.operation === 'string' ? semantic.operation.trim() : '';
-  const allowed = FROZEN_SEMANTIC_V1_FIELDS[operation];
-  if (!allowed) return failure('FROZEN_MCP_SEMANTIC_V1_OPERATION_UNSUPPORTED', { operation });
+): RhWorkInputWireMigrationResult {
+  const frozenOperation = typeof semantic.operation === 'string' ? semantic.operation.trim() : '';
+  const allowed = FROZEN_SEMANTIC_V1_FIELDS[frozenOperation];
+  if (!allowed) return failure('FROZEN_MCP_SEMANTIC_V1_OPERATION_UNSUPPORTED', { operation: frozenOperation });
+  const operation = frozenOperation === 'work_get'
+    ? 'get'
+    : frozenOperation === 'work_revise'
+      ? 'revise'
+      : frozenOperation === 'work_complete'
+        ? 'complete'
+        : frozenOperation;
 
   const semanticUnsupported = unsupportedInputField(semantic, allowed);
   if (semanticUnsupported) {
-    return failure('FROZEN_MCP_SEMANTIC_V1_FIELD_UNSUPPORTED', { operation, field: semanticUnsupported });
+    return failure('FROZEN_MCP_SEMANTIC_V1_FIELD_UNSUPPORTED', { operation: frozenOperation, field: semanticUnsupported });
   }
   const outerAllowed = new Set([...allowed, 'capability_id']);
   const outerUnsupported = unsupportedInputField(outer, outerAllowed);
   if (outerUnsupported) {
-    return failure('FROZEN_MCP_SEMANTIC_V1_FIELD_UNSUPPORTED', { operation, field: outerUnsupported });
+    return failure('FROZEN_MCP_SEMANTIC_V1_FIELD_UNSUPPORTED', { operation: frozenOperation, field: outerUnsupported });
   }
 
   for (const field of allowed) {
@@ -156,7 +163,7 @@ function translateFrozenSemanticV1(
     if (Object.prototype.hasOwnProperty.call(semantic, field)
       && Object.prototype.hasOwnProperty.call(outer, field)
       && !isDeepStrictEqual(semantic[field], outer[field])) {
-      return failure('FROZEN_MCP_SEMANTIC_V1_FIELD_CONFLICT', { operation, field });
+      return failure('FROZEN_MCP_SEMANTIC_V1_FIELD_CONFLICT', { operation: frozenOperation, field });
     }
   }
 
@@ -179,7 +186,7 @@ function translateFrozenSemanticV1(
  * advertises these pre-Thin carriers and release reconnect canaries prove there
  * are no supported frozen-session consumers.
  */
-export function normalizeRhWorkInputCompatibility(input: Record<string, unknown>): RhWorkInputCompatibilityResult {
+export function normalizeRhWorkInputWireMigration(input: Record<string, unknown>): RhWorkInputWireMigrationResult {
   const unsafeKey = unsafeObjectKey(input);
   if (unsafeKey) return failure('FROZEN_MCP_INPUT_UNSAFE_KEY', { key: unsafeKey });
 

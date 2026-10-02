@@ -1041,7 +1041,7 @@ export async function callRuntimeObservationAdapter(ctx: MultiRepositoryMcpToolC
                   ? 'Raw job state is intentionally not returned through MCP. Use the bounded job summary, events, and get_artifact with artifactId (ART-...), not evidenceId (EVD-...).'
                   : jobSummary.terminal
                     ? String(jobSummary.summary ?? '')
-                    : 'Historical Job is still active. Continue independent work; read it only if an observation can change the next decision, and use work_wait only when this exact result becomes a dependency. Do not periodically poll.',
+                    : 'Historical Job is still active. Continue independent work; read it only if an observation can change the next decision, and join only the exact underlying managed process when this result becomes a dependency. Do not periodically poll.',
               }, jobSummary.phase === 'failed' || jobSummary.phase === 'timed_out');
             }
       case 'get_artifact': {

@@ -335,11 +335,11 @@ describe('Goal authority convergence', () => {
       checks: ['package:check:type'],
       constraints: { requireHandoffOnAmbiguity: true },
       requestedBy: 'chatgpt',
-      status: 'running',
+      dispatchState: 'running',
       baseRevision: 'rev-a',
     });
     const recordedAt = '2026-09-05T00:00:00.000Z';
-    transitionWorkContractPhase({ controllerHome, repoId }, workId, { status: 'running', phase: 'verification', state: 'satisfied', summary: 'Exact no-change delivery verified.' });
+    transitionWorkContractPhase({ controllerHome, repoId }, workId, { phase: 'verification', state: 'satisfied', summary: 'Exact no-change delivery verified.' });
     recordWorkImplementationReview({ controllerHome, repoId }, workId, {
       schemaVersion: 1,
       reviewId: 'REV-goal-authority',

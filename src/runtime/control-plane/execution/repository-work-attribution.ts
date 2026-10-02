@@ -45,7 +45,7 @@ export function assertNoBoundExecutionSessionMutation(
   const work = getWorkContract({ controllerHome, repoId: target.repoId }, workId);
   if (!work) throw new Error(`WORK_ATTRIBUTION_INVALID: ${workId}`);
   if (semanticWorkState(work) !== 'open') {
-    throw new Error(`WORK_ATTRIBUTION_TERMINAL: ${work.workId}:${work.status}`);
+    throw new Error(`WORK_ATTRIBUTION_TERMINAL: ${work.workId}:${work.semanticState}`);
   }
   throw new Error(`WORK_ATTRIBUTION_REQUIRED: ${work.workId}; active execution session mutations must pass work_id explicitly`);
 }
@@ -74,7 +74,7 @@ export function resolveClaimedRepositoryWorkId(
       && (!executionSession.activeCheckoutId || executionSession.activeCheckoutId === target.activeCheckoutId)) {
       const work = getWorkContract({ controllerHome, repoId: target.repoId }, workId);
       if (work && semanticWorkState(work) !== 'open') {
-        throw new Error(`WORK_ATTRIBUTION_TERMINAL: ${work.workId}:${work.status}`);
+        throw new Error(`WORK_ATTRIBUTION_TERMINAL: ${work.workId}:${work.semanticState}`);
       }
       if (work) return workId;
     }

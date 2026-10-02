@@ -1,6 +1,6 @@
 import { existsSync, lstatSync, opendirSync, statSync, unlinkSync } from 'fs';
 import { join, relative } from 'path';
-import { isTerminalWorkContractStatus, type WorkContract } from '../../../../packages/kernel/work/api/index';
+import { isTerminalSemanticWorkState, type WorkContract } from '../../../../packages/kernel/work/api/index';
 import { listControlPlaneRecords } from '../../control-plane/persistence/sqlite-store';
 import { processLogDir } from './store';
 import { readPersistedCheckResultReceipt } from './check-result';
@@ -50,7 +50,7 @@ export function cleanupPersistedCheckResults(
   }
   for (const record of workRecords) {
     const work = record.value;
-    if (isTerminalWorkContractStatus(work.status)) continue;
+    if (isTerminalSemanticWorkState(work.semanticState)) continue;
     for (const verification of work.checkRefs ?? []) {
       const key = verification.receipt?.checkCacheKey?.trim();
       if (key) protectedCacheKeys.add(key);

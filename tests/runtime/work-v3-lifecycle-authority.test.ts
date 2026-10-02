@@ -34,7 +34,7 @@ describe('Work v3 lifecycle authority', () => {
       objective: 'Original semantic objective.',
       acceptanceCriteria: [],
       allowedPaths: [], forbiddenPaths: [], checks: [],
-      constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'running',
+      constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', workKind: 'local_effect', dispatchState: 'running',
     });
     const createdSemantic = workSemanticView(created);
     expect(createdSemantic).toMatchObject({
@@ -88,7 +88,7 @@ describe('Work v3 lifecycle authority', () => {
     expect(redelivered.completionReceipt?.receiptId).toBe('mechanical-completion-receipt-2');
     expect(workSemanticView(redelivered)).toMatchObject({ revision: 2, state: 'open' });
     const semanticallyCompleted = reviseWorkSemanticContext(store, workId, { expectedRevision: 2, state: 'completed' });
-    expect(semanticallyCompleted.status).toBe('completed');
+    expect(semanticallyCompleted.semanticState).toBe('completed');
     expect(workSemanticView(semanticallyCompleted)).toMatchObject({ revision: 3, state: 'completed' });
     expect(isCurrentWorkContract(semanticallyCompleted)).toBe(false);
   });
@@ -107,7 +107,7 @@ describe('Work v3 lifecycle authority', () => {
       allowedPaths: [], forbiddenPaths: [], checks: [],
       constraints: { requireHandoffOnAmbiguity: true },
       requestedBy: 'chatgpt',
-      status: 'running',
+      dispatchState: 'running',
     });
 
     const storePath = workContractStorePath(store);
@@ -190,7 +190,7 @@ describe('Work v3 lifecycle authority', () => {
       constraints: { requireHandoffOnAmbiguity: true },
       requestedBy: 'chatgpt',
       workKind: 'remote_effect',
-      status: 'running',
+      dispatchState: 'running',
     });
 
     const path = workContractStorePath(store);
@@ -205,23 +205,22 @@ describe('Work v3 lifecycle authority', () => {
 
     const migrated = readWorkContractStore(store).contracts[0]!;
     expect(migrated).toMatchObject({
-      schemaVersion: 3,
+      schemaVersion: 4,
       workId,
-      status: 'open',
+      semanticState: 'open',
       workKind: 'remote_effect',
       phase: 'implementation',
-      // Thin migration projects the canonical authored Work state to `status`.
-      // Legacy mechanical phase/dispatch/evidence survive only as compatibility
-      // evidence and never become semantic transition authority.
+      // Legacy mechanical phase/dispatch/evidence are migrated once into explicit
+      // mechanical facts and never become semantic transition authority.
       dispatchState: 'not_dispatched',
       evidenceState: 'none',
     });
     const persisted = JSON.parse(readFileSync(path, 'utf8')) as any;
-    expect(persisted.schemaVersion).toBe(3);
-    expect(persisted.contracts[0]).toMatchObject({ schemaVersion: 3, phase: 'implementation', dispatchState: 'not_dispatched', evidenceState: 'none' });
+    expect(persisted.schemaVersion).toBe(4);
+    expect(persisted.contracts[0]).toMatchObject({ schemaVersion: 4, semanticState: 'open', phase: 'implementation', dispatchState: 'not_dispatched', evidenceState: 'none' });
 
-    // @ts-expect-error Lifecycle status is intentionally excluded from metadata-only writes.
-    expect(() => updateWorkContract(store, workId, { status: 'ready' })).toThrow('WORK_LIFECYCLE_REQUIRES_TRANSITION_API');
+    // @ts-expect-error Retired status is rejected rather than translated into semantic authority.
+    expect(() => updateWorkContract(store, workId, { status: 'ready' })).toThrow('WORK_RETIRED_FIELD_REJECTED: status');
     // @ts-expect-error Evidence lifecycle is intentionally excluded from metadata-only writes.
     expect(() => updateWorkContract(store, workId, { evidenceState: 'valid' })).toThrow('WORK_LIFECYCLE_REQUIRES_TRANSITION_API');
     // @ts-expect-error Work kind is lifecycle semantics and requires an explicit semantic transition API.
@@ -230,10 +229,10 @@ describe('Work v3 lifecycle authority', () => {
     const withEvidence = recordWorkEvidenceState(store, workId, 'partial');
     expect(withEvidence).toMatchObject({ phase: 'implementation', dispatchState: 'not_dispatched', evidenceState: 'partial' });
     const cancelled = cancelWorkContract(store, workId, { summary: 'Explicit canonical cancellation.' });
-    expect(cancelled).toMatchObject({ status: 'cancelled', phase: 'implementation', dispatchState: 'terminal', evidenceState: 'partial' });
+    expect(cancelled).toMatchObject({ semanticState: 'cancelled', phase: 'implementation', dispatchState: 'terminal', evidenceState: 'partial' });
     expect(readWorkContractStore(store).contracts[0]).toMatchObject({
-      schemaVersion: 3,
-      status: 'cancelled',
+      schemaVersion: 4,
+      semanticState: 'cancelled',
       phase: 'implementation',
       dispatchState: 'terminal',
       evidenceState: 'partial',

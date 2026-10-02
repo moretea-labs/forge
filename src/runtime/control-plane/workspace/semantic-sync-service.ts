@@ -91,7 +91,7 @@ export interface WorkSemanticView {
   semanticScope: ReturnType<typeof semanticScopeRefForWork>;
   objective: string;
   acceptanceCriteria: string[];
-  status: WorkContract['status'];
+  state: WorkContract['semanticState'];
   phase: WorkContract['phase'];
   workKind: WorkContract['workKind'];
   lifecycleRole?: WorkContract['lifecycleRole'];
@@ -202,7 +202,7 @@ export function projectWorkSemantic(work: WorkContract): WorkSemanticView {
     semanticScope: semanticScopeRefForWork(work),
     objective: work.objective,
     acceptanceCriteria: [...work.acceptanceCriteria],
-    status: work.status,
+    state: work.semanticState,
     phase: work.phase,
     workKind: work.workKind,
     ...(work.lifecycleRole ? { lifecycleRole: work.lifecycleRole } : {}),

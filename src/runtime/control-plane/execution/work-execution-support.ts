@@ -210,15 +210,15 @@ export function terminalCleanupOutcome(
 ): WorkTerminalOutcome | undefined {
   if (handle.cleanupReceipt) return handle.cleanupReceipt.terminalOutcome;
   const contract = contractFor(ctx, handle);
-  if (contract?.status === 'cancelled') return 'cancelled';
-  if (contract?.status === 'completed') return 'completed_cleanup';
+  if (contract?.semanticState === 'cancelled') return 'cancelled';
+  if (contract?.semanticState === 'completed') return 'completed_cleanup';
   const reason = `${handle.failureReason ?? ''} ${handle.finalization.lastError ?? ''}`.toLowerCase();
-  if (contract?.status === 'blocked' && reason.includes('terminal')) return 'blocked_terminal';
+  if (contract?.dispatchState === 'blocked' && reason.includes('terminal')) return 'blocked_terminal';
   // `failed` is a retryable execution-handle state (its transition table allows
   // failed -> validating/editing). Do not reinterpret it as terminal cleanup
   // unless the durable Work itself is terminal. `failed_terminal_cleanup` is
   // the explicit point of no return for resource cleanup reconciliation.
-  if (contract?.status === 'failed' || handle.state === 'failed_terminal_cleanup') {
+  if (contract?.evidenceState === 'failed' || handle.state === 'failed_terminal_cleanup') {
     if (reason.includes('infrastructure') || reason.includes('timed out') || reason.includes('unavailable')) {
       return 'infrastructure_failed';
     }
@@ -296,15 +296,14 @@ export async function reconcileTerminalCleanup(
       { controllerHome: ctx.controllerHome, repoId: persisted.repositoryId },
       persisted.workContractId ?? persisted.workId,
     );
-    if (terminalContract && (terminalContract.status === 'cancelled' || terminalContract.status === 'failed') && terminalContract.phase !== 'cleanup') {
+    if (terminalContract && (terminalContract.semanticState === 'cancelled') && terminalContract.phase !== 'cleanup') {
       transitionWorkContractPhase(
         { controllerHome: ctx.controllerHome, repoId: persisted.repositoryId },
         terminalContract.workId,
         {
           phase: 'cleanup',
-          status: terminalContract.status,
           state: 'satisfied',
-          summary: `Terminal cleanup ${cleaned.receipt.receiptId} completed; terminal Work status ${terminalContract.status} was preserved.`,
+          summary: `Terminal cleanup ${cleaned.receipt.receiptId} completed; semantic Work state ${terminalContract.semanticState} was preserved.`,
           evidenceRefs: terminalContract.evidenceRefs,
         },
       );

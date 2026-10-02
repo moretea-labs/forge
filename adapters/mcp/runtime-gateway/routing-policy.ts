@@ -73,7 +73,7 @@ export function isSelfManagedDurableTool(name: string): boolean {
 const DIRECT_HOT_READ_TOOLS = new Set([
   'get_task_run', 'get_task_run_events', 'get_task_run_log',
   'get_job', 'list_jobs',
-  'work_get', 'work_list', 'work_status_digest', 'work_result_summary',
+  'work_status_digest', 'work_result_summary',
   'controller_ready', 'repository_runtime_snapshot',
   'rh_status', 'rh_context', 'rh_inbox',
   'repository_git_status', 'repository_git_diff', 'git_diff_paths',

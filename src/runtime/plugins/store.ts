@@ -26,7 +26,7 @@ import {
   recordWorkCompletionReceipt,
   updateWorkContract,
 } from '../../../packages/kernel/work/api/index';
-import { isTerminalWorkContractStatus, type RemoteEffectCompletionReceipt, type WorkContract } from '../control-plane/facade/types';
+import { isTerminalSemanticWorkState, type RemoteEffectCompletionReceipt, type WorkContract } from '../control-plane/facade/types';
 import type {
   AssistantPluginAdapter,
   AssistantPluginActionDescriptor,
@@ -1306,13 +1306,13 @@ function remoteEffectWorkForPluginAction(
   if (work.checks.length > 0) {
     throw new Error(`WORK_PLUGIN_RECEIPT_BINDING_CHECKS_PRESENT: ${workId} declares repository checks and cannot be completed by a plugin receipt alone`);
   }
-  if (isTerminalWorkContractStatus(work.status)) {
+  if (isTerminalSemanticWorkState(work.semanticState)) {
     const receiptAlreadyBound = Boolean(receiptId) && (
       work.completionReceipt?.receiptId === receiptId
       || work.evidenceRefs.some((evidence) => evidence.evidenceId === receiptId)
     );
-    if (work.status === 'completed' && receiptAlreadyBound) return work;
-    throw new Error(`WORK_PLUGIN_RECEIPT_BINDING_TERMINAL: ${workId} is ${work.status}`);
+    if (work.semanticState === 'completed' && receiptAlreadyBound) return work;
+    throw new Error(`WORK_PLUGIN_RECEIPT_BINDING_TERMINAL: ${workId} is ${work.semanticState}`);
   }
   return work;
 }
@@ -1328,8 +1328,8 @@ function attributedWorkForPluginAction(
   const workRepoId = workAttributionRepoId(scope, request);
   const work = getWorkContract({ controllerHome, repoId: workRepoId }, workId);
   if (!work) throw new Error(`WORK_PLUGIN_ATTRIBUTION_NOT_FOUND: ${workRepoId}:${workId}`);
-  if (isTerminalWorkContractStatus(work.status)) {
-    throw new Error(`WORK_PLUGIN_ATTRIBUTION_TERMINAL: ${workId} is ${work.status}`);
+  if (isTerminalSemanticWorkState(work.semanticState)) {
+    throw new Error(`WORK_PLUGIN_ATTRIBUTION_TERMINAL: ${workId} is ${work.semanticState}`);
   }
   return work;
 }
@@ -1348,7 +1348,7 @@ function bindLocalEffectReceiptToAttributedWork(
   if (!attributed) throw new Error(`WORK_PLUGIN_ATTRIBUTION_NOT_FOUND: ${workRepoId}:${request.workId.trim()}`);
   if (attributed.workKind !== 'local_effect' || action.readOnly || action.risk === 'readonly') return attributed;
   if (attributed.evidenceRefs.some((evidence) => evidence.evidenceId === receipt.receiptId)) return attributed;
-  if (isTerminalWorkContractStatus(attributed.status)) return attributed;
+  if (isTerminalSemanticWorkState(attributed.semanticState)) return attributed;
   return appendWorkEvidence({ controllerHome, repoId: workRepoId }, attributed.workId, {
     evidenceId: receipt.receiptId,
     title: 'typed local plugin effect completed',

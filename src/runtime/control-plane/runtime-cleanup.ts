@@ -17,7 +17,7 @@ import { migrateManagedWorkspacePhysicalDependenciesToCanonical } from '../execu
 import { cleanupStaleCodegraphLocators } from '../context/codegraph-cache-boundary';
 import { listActiveLeases } from '../resources/leases/store';
 import { cleanupScheduleOccurrenceHistory } from '../../../packages/kernel/scheduler/api/index';
-import { isTerminalWorkContractStatus, readWorkContractStore } from '../../../packages/kernel/work/api/index';
+import { isTerminalSemanticWorkState, readWorkContractStore } from '../../../packages/kernel/work/api/index';
 import { assertOwnedResourceCleanupTarget, listOwnedResources, markOwnedResourceCleaned, type OwnedResource } from '../../../packages/kernel/identity/api/index';
 import { appendJsonLine, readJsonFile, writeJsonAtomic } from '../shared/json-files';
 import { cleanupControllerReleaseHistory } from './release-retention';
@@ -1224,7 +1224,7 @@ export function cleanupControllerRuntimeState(
         let protectedWorkIds: string[];
         try {
           protectedWorkIds = readWorkContractStore({ controllerHome: home, repoId: repository.repoId }).contracts
-            .filter((contract) => !isTerminalWorkContractStatus(contract.status))
+            .filter((contract) => !isTerminalSemanticWorkState(contract.semanticState))
             .map((contract) => contract.workId);
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);

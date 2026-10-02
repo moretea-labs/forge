@@ -807,7 +807,7 @@ function scanRetainedWorktreeCandidates(
         kind: 'retained_migrated_work',
         id: migrated.work.workId,
         path: normalized,
-        status: migrated.work.status,
+        status: migrated.work.semanticState,
         safe: false,
         reason: completed
           ? 'A terminal Work from a retired Controller Home still owns a Git worktree and requires completion/cleanup reconciliation under the current Controller before lifecycle health can be reported.'
@@ -856,7 +856,7 @@ function scanRetainedWorktreeCandidates(
       kind: 'retained_migrated_work',
       id: migrated.work.workId,
       path: normalized,
-      status: migrated.work.status,
+      status: migrated.work.semanticState,
       safe: false,
       reason: 'A terminal Work retained by a migrated Controller Home still has preserved filesystem state, but Git no longer reports it as a registered worktree. Manual lifecycle reconciliation is required; automatic cleanup is forbidden.',
       suggestedAction: 'full_maintenance_pass',
@@ -973,7 +973,7 @@ function scanStaleWorkContractCandidates(
         kind: 'stale_work_contract' as const,
         id: contract.workId,
         path: source.path,
-        status: contract.status,
+        status: contract.semanticState,
         safe: legacyRemotePlacement ? source.safeToCancel : false,
         reason: legacyRemotePlacement ? source.detail : staleWorkCandidateReason(source),
         ageMinutes,

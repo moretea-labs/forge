@@ -29,7 +29,7 @@ function work(controllerHome: string, workId: string, updatedAt: string, extra: 
     checks: [],
     constraints: { requireHandoffOnAmbiguity: true },
     requestedBy: 'chatgpt',
-    status: 'running',
+    dispatchState: 'running',
     createdAt: updatedAt,
     updatedAt,
     ...extra,
@@ -62,13 +62,12 @@ describe('exact Work authority reconciliation', () => {
     const observed = getWorkContract({ controllerHome, repoId: 'repo-a' }, 'WORK-OLD');
     expect(observed?.evidenceRefs.map((entry) => entry.title)).toEqual(['prior implementation evidence']);
     expect(observed).toMatchObject({
-      status: 'running',
       semanticState: 'open',
       dispatchState: 'running',
       phase: 'implementation',
     });
-    expect(listWorkContracts({ controllerHome, repoId: 'repo-a', status: 'active', limit: 20 }).map((entry) => entry.workId)).toContain('WORK-OLD');
-    expect(listWorkContracts({ controllerHome, repoId: 'repo-a', status: 'all', limit: 20 }).map((entry) => entry.workId)).toContain('WORK-OLD');
+    expect(listWorkContracts({ controllerHome, repoId: 'repo-a', state: 'active', limit: 20 }).map((entry) => entry.workId)).toContain('WORK-OLD');
+    expect(listWorkContracts({ controllerHome, repoId: 'repo-a', state: 'all', limit: 20 }).map((entry) => entry.workId)).toContain('WORK-OLD');
   });
 
   test('does not retire a fresh ownerless Work inside the grace period', () => {
@@ -77,7 +76,7 @@ describe('exact Work authority reconciliation', () => {
     const result = reconcileOwnerlessWorkAuthorities({ controllerHome, repoId: 'repo-a', nowMs: Date.parse('2026-09-04T04:00:00.000Z'), graceMs: 60 * 60_000 });
     expect(result.workIds).toEqual([]);
     expect(result.skippedByReason.grace_period).toBe(1);
-    expect(getWorkContract({ controllerHome, repoId: 'repo-a' }, 'WORK-FRESH')?.status).toBe('running');
+    expect(getWorkContract({ controllerHome, repoId: 'repo-a' }, 'WORK-FRESH')?.semanticState).toBe('open');
   });
 
   test('current Plan authority protects stale Work from ownerless retirement', () => {
@@ -88,6 +87,6 @@ describe('exact Work authority reconciliation', () => {
     const result = reconcileOwnerlessWorkAuthorities({ controllerHome, repoId: 'repo-a', nowMs: Date.parse('2026-09-04T04:00:00.000Z'), graceMs: 60 * 60_000 });
     expect(result.workIds).toEqual([]);
     expect(result.skippedByReason.current_plan).toBe(1);
-    expect(getWorkContract({ controllerHome, repoId: 'repo-a' }, 'WORK-PLAN')?.status).toBe('running');
+    expect(getWorkContract({ controllerHome, repoId: 'repo-a' }, 'WORK-PLAN')?.semanticState).toBe('open');
   });
 });

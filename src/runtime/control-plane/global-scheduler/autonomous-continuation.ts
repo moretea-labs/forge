@@ -95,7 +95,7 @@ export async function runSchedulerAutonomousContinuationReconciliation(input: {
     const store = { controllerHome: input.controllerHome, repoId: repository.repoId };
     let works: ReturnType<typeof listWorkContracts>;
     try {
-      const candidates = new Map(listWorkContracts({ ...store, status: 'active', limit: 100 })
+      const candidates = new Map(listWorkContracts({ ...store, state: 'active', limit: 100 })
         .map((work) => [work.workId, work]));
       // Semantic Work authority is Forge-scoped; the repository list is only
       // an execution projection. Existing relay references must use the same

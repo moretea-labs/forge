@@ -246,7 +246,7 @@ export async function launchSuperController(
     `Work: ${work.workId}`,
     `Objective: ${work.objective}`,
     `Acceptance: ${work.acceptanceCriteria.join('; ') || 'none declared'}`,
-    `Current status: ${work.status}`,
+    `Semantic state: ${work.semanticState}; dispatch: ${work.dispatchState}`,
     handoff ? `Handoff: ${handoff.summary}\nNext: ${handoff.recommendedContinuationPrompt ?? handoff.recommendedPrompt}` : '',
     request.continuationPrompt?.trim() ? `Continuation: ${request.continuationPrompt.trim()}` : '',
     `Forge maintains provider/session binding, transport recovery, effect dedupe, and retry bookkeeping internally. Continue this exact Work using repository capabilities; pass work_id=${work.workId} when durable source attribution is needed, validate with normal capability evidence, and update semantic Work only when objective/result state changes. Surface genuine human decisions through the existing user-request/inbox path.`,

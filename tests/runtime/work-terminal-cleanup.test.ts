@@ -29,6 +29,14 @@ afterEach(() => {
   while (roots.length > 0) rmSync(roots.pop()!, { recursive: true, force: true });
 });
 
+function createCancelledWork(
+  options: Parameters<typeof createWorkContract>[0],
+  input: Parameters<typeof createWorkContract>[1],
+): WorkContract {
+  const created = createWorkContract(options, input);
+  return cancelWorkContract(options, created.workId, { summary: 'test fixture semantic cancellation' });
+}
+
 function git(root: string, args: string[]): string {
   const result = spawnSync('git', ['-C', root, ...args], {
     encoding: 'utf8',
@@ -115,7 +123,7 @@ describe('terminal Work cleanup', () => {
 
   test('periodic reconciler retires a preserved branch residue from a cleaned complete terminal Work', async () => {
     const fx = fixture('cleaned-branch-residue');
-    createWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
+    createCancelledWork({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
       workId: fx.handle.workId,
       repoId: fx.repository.repoId,
       objective: 'Retire a historically retained branch after preservation is durable.',
@@ -125,7 +133,6 @@ describe('terminal Work cleanup', () => {
       forbiddenPaths: [],
       checks: [],
       requestedBy: 'chatgpt',
-      status: 'cancelled',
       phase: 'cleanup',
     });
     writeFileSync(join(fx.workspace.root!, 'preserved.txt'), 'preserved unique content\n');
@@ -175,7 +182,7 @@ describe('terminal Work cleanup', () => {
 
   test('periodic reconciler completes branch retirement after deletion wins a crash race with receipt persistence', async () => {
     const fx = fixture('cleaned-branch-crash-window');
-    createWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
+    createCancelledWork({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
       workId: fx.handle.workId,
       repoId: fx.repository.repoId,
       objective: 'Reconcile a branch deletion that completed before its final cleanup receipt write.',
@@ -185,7 +192,6 @@ describe('terminal Work cleanup', () => {
       forbiddenPaths: [],
       checks: [],
       requestedBy: 'chatgpt',
-      status: 'cancelled',
       phase: 'cleanup',
     });
     writeFileSync(join(fx.workspace.root!, 'preserved-crash.txt'), 'preserved before crash\n');
@@ -233,7 +239,7 @@ describe('terminal Work cleanup', () => {
 
   test('periodic reconciler leaves an already settled cleaned terminal Work as a no-op', async () => {
     const fx = fixture('cleaned-no-residue');
-    createWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
+    createCancelledWork({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
       workId: fx.handle.workId,
       repoId: fx.repository.repoId,
       objective: 'Already settled cleaned Work must not be reprocessed.',
@@ -243,7 +249,6 @@ describe('terminal Work cleanup', () => {
       forbiddenPaths: [],
       checks: [],
       requestedBy: 'chatgpt',
-      status: 'cancelled',
       phase: 'cleanup',
     });
     const cleaned = await cleanupTerminalWork({
@@ -265,7 +270,7 @@ describe('terminal Work cleanup', () => {
     expect(cleanedHandle?.state).toBe('cleaned');
     expect(cleanedHandle?.cleanupReceipt?.complete).toBe(true);
     expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, fx.handle.workId)).toMatchObject({
-      status: 'cancelled',
+      semanticState: 'cancelled',
       phase: 'cleanup',
       phaseEvidence: {
         implementation: { state: 'satisfied' },
@@ -279,7 +284,7 @@ describe('terminal Work cleanup', () => {
 
   test('periodic reconciler never reclaims a cancelled Work explicitly retained by terminal resource disposition', async () => {
     const fx = fixture('retained-cancelled');
-    createWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
+    createCancelledWork({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
       workId: fx.handle.workId,
       repoId: fx.repository.repoId,
       objective: 'Explicitly retained cancelled Work must not be reclaimed by periodic cleanup.',
@@ -289,7 +294,6 @@ describe('terminal Work cleanup', () => {
       forbiddenPaths: [],
       checks: [],
       requestedBy: 'chatgpt',
-      status: 'cancelled',
       phase: 'cleanup',
     });
     const retained = writeWorkHandle(fx.controllerHome, {
@@ -335,7 +339,7 @@ describe('terminal Work cleanup', () => {
       forbiddenPaths: [],
       checks: [],
       requestedBy: 'chatgpt',
-      status: 'running',
+      dispatchState: 'running',
       phase: 'implementation',
     });
     cancelWorkContract(
@@ -377,7 +381,7 @@ describe('terminal Work cleanup', () => {
       forbiddenPaths: [],
       checks: [],
       requestedBy: 'chatgpt',
-      status: 'running',
+      dispatchState: 'running',
       phase: 'implementation',
     });
     const malformedRecord = readControlPlaneRecord<WorkContract>(
@@ -431,7 +435,7 @@ describe('terminal Work cleanup', () => {
       forbiddenPaths: [],
       checks: [],
       requestedBy: 'chatgpt',
-      status: 'running',
+      dispatchState: 'running',
       phase: 'implementation',
     });
     cancelWorkContract(
@@ -440,7 +444,7 @@ describe('terminal Work cleanup', () => {
       { summary: 'Ownerless execution authority expired before implementation completed.' },
     );
     expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, fx.handle.workId)).toMatchObject({
-      status: 'cancelled',
+      semanticState: 'cancelled',
       phase: 'implementation',
       phaseEvidence: {
         implementation: { state: 'skipped' },
@@ -471,7 +475,7 @@ describe('terminal Work cleanup', () => {
       forbiddenPaths: [],
       checks: [],
       requestedBy: 'chatgpt',
-      status: 'running',
+      dispatchState: 'running',
       phase: 'implementation',
     });
     failWorkContract(
@@ -489,7 +493,7 @@ describe('terminal Work cleanup', () => {
       { summary: 'Retire failed technical authority without rewriting failure history.' },
     );
     expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, fx.handle.workId)).toMatchObject({
-      status: 'cancelled',
+      semanticState: 'cancelled',
       phase: 'implementation',
       phaseEvidence: { implementation: { state: 'failed', summary: 'Implementation failed with authoritative evidence.' } },
     });
@@ -499,7 +503,7 @@ describe('terminal Work cleanup', () => {
     const cleanedHandle = readWorkHandle(fx.controllerHome, fx.repository.repoId, fx.handle.workId);
     expect(cleanedHandle?.cleanupReceipt?.complete).toBe(true);
     expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, fx.handle.workId)).toMatchObject({
-      status: 'cancelled',
+      semanticState: 'cancelled',
       phase: 'cleanup',
       phaseEvidence: {
         implementation: { state: 'failed', summary: 'Implementation failed with authoritative evidence.' },
@@ -531,15 +535,16 @@ describe('terminal Work cleanup', () => {
       forbiddenPaths: [],
       checks: [],
       requestedBy: 'chatgpt',
-      status: 'running',
+      dispatchState: 'running',
       phase: 'delivery',
       checkoutId: workspace.checkoutId,
       worktreeRef: workspace.root,
       baseRevision: revision,
     });
     const now = new Date().toISOString();
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
     recordWorkCompletionReceipt(
-      { controllerHome: fx.controllerHome, repoId: fx.repository.repoId },
+      store,
       workId,
       {
         schemaVersion: 1,
@@ -561,6 +566,7 @@ describe('terminal Work cleanup', () => {
       'completed_changed',
       'repository_change',
     );
+    reviseWorkSemanticContext(store, workId, { expectedRevision: 1, state: 'completed', resultRefs: ['receipt-missing-handle-contract-only'] });
     expect(readWorkHandle(fx.controllerHome, fx.repository.repoId, workId)).toBeUndefined();
     expect(existsSync(workspace.root!)).toBe(true);
 
@@ -574,7 +580,8 @@ describe('terminal Work cleanup', () => {
 
   test('periodic reconciler does not repair branch drift from semantic cancellation alone', async () => {
     const fx = fixture('periodic-branch-drift');
-    createWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    createWorkContract(store, {
       workId: fx.handle.workId,
       repoId: fx.repository.repoId,
       objective: 'Semantic cancellation must not authorize branch mutation or cleanup.',
@@ -584,9 +591,10 @@ describe('terminal Work cleanup', () => {
       forbiddenPaths: [],
       checks: [],
       requestedBy: 'chatgpt',
-      status: 'cancelled',
+      dispatchState: 'running',
       phase: 'cleanup',
     });
+    reviseWorkSemanticContext(store, fx.handle.workId, { expectedRevision: 1, state: 'cancelled' });
     const actualBranch = 'cleanup/periodic-branch-drift';
     git(fx.workspace.root!, ['branch', '-m', actualBranch]);
 
@@ -612,7 +620,7 @@ describe('terminal Work cleanup', () => {
       forbiddenPaths: [],
       checks: [],
       requestedBy: 'chatgpt',
-      status: 'running',
+      dispatchState: 'running',
       phase: 'implementation',
     });
     reviseWorkSemanticContext(store, fx.handle.workId, { expectedRevision: 1, state: 'completed', resultRefs: ['result:semantic-only'] });
@@ -636,7 +644,7 @@ describe('terminal Work cleanup', () => {
       forbiddenPaths: [],
       checks: [],
       requestedBy: 'chatgpt',
-      status: 'running',
+      dispatchState: 'running',
       phase: 'implementation',
     });
 
@@ -1091,7 +1099,7 @@ describe('terminal Work cleanup', () => {
     const fx = fixture('cancelled-owner');
     const now = new Date().toISOString();
     const otherWorkId = 'work-cancelled-stale-owner';
-    createWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
+    createCancelledWork({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
       workId: otherWorkId,
       repoId: fx.repository.repoId,
       objective: 'Cancelled auxiliary cleanup ownership must not retain the checkout.',
@@ -1101,7 +1109,6 @@ describe('terminal Work cleanup', () => {
       forbiddenPaths: [],
       checks: [],
       requestedBy: 'chatgpt',
-      status: 'cancelled',
       phase: 'cleanup',
     });
     writeWorkHandle(fx.controllerHome, {
@@ -1137,7 +1144,7 @@ describe('terminal Work cleanup', () => {
       forbiddenPaths: [],
       checks: [],
       requestedBy: 'chatgpt',
-      status: 'running',
+      dispatchState: 'running',
       phase: 'cleanup',
     });
     const revision = fx.workspace.baseRevision!;
@@ -1175,13 +1182,15 @@ describe('terminal Work cleanup', () => {
       verifiedAt: now,
       recordedAt: now,
     };
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
     recordWorkCompletionReceipt(
-      { controllerHome: fx.controllerHome, repoId: fx.repository.repoId },
+      store,
       otherWorkId,
       receipt,
       'completed_changed',
       'repository_change',
     );
+    reviseWorkSemanticContext(store, otherWorkId, { expectedRevision: 1, state: 'completed', resultRefs: [receipt.receiptId] });
     writeWorkHandle(fx.controllerHome, {
       ...fx.handle,
       recordRevision: undefined,

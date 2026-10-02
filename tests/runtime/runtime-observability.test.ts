@@ -326,7 +326,6 @@ describe('runtime observability', () => {
         allowedPaths: [],
         forbiddenPaths: [],
         checks: [],
-        status: 'open',
       });
 
       expect(collectWorkLifecycleAttention(controllerHome, repository)).not.toContainEqual(expect.objectContaining({
@@ -360,7 +359,7 @@ describe('runtime observability', () => {
         allowedPaths: ['README.md'],
         forbiddenPaths: [],
         checks: [],
-        status: 'running',
+        dispatchState: 'running',
       });
       expect(collectWorkLifecycleAttention(controllerHome, repository)).toContainEqual(expect.objectContaining({
         jobId: `lifecycle:work_active:${repositoryWorkId}`,
@@ -532,19 +531,24 @@ describe('runtime observability', () => {
       const now = new Date().toISOString();
       const store = { controllerHome, repoId: repository.repoId };
 
-      const baseWork = (workId: string, status: 'ready' | 'cancelled' = 'ready') => createWorkContract(store, {
-        workId,
-        repoId: repository.repoId,
-        checkoutId,
-        objective: `audit fixture ${workId}`,
-        acceptanceCriteria: [],
-        constraints: { requireHandoffOnAmbiguity: true },
-        requestedBy: 'system',
-        allowedPaths: [],
-        forbiddenPaths: [],
-        checks: [],
-        status,
-      });
+      const baseWork = (workId: string, state: 'ready' | 'cancelled' = 'ready') => {
+        const work = createWorkContract(store, {
+          workId,
+          repoId: repository.repoId,
+          checkoutId,
+          objective: `audit fixture ${workId}`,
+          acceptanceCriteria: [],
+          constraints: { requireHandoffOnAmbiguity: true },
+          requestedBy: 'system',
+          allowedPaths: [],
+          forbiddenPaths: [],
+          checks: [],
+          ...(state === 'ready' ? { phase: 'verification' as const } : {}),
+        });
+        return state === 'cancelled'
+          ? cancelWorkContract(store, workId, { summary: 'Audit fixture explicitly cancels terminal Work.' })
+          : work;
+      };
       const handle = (workId: string, finalization: WorkHandleState['finalization']): WorkHandleState => ({
         schemaVersion: 1,
         workId,
@@ -589,7 +593,7 @@ describe('runtime observability', () => {
       });
       const approveNoChangeCompletion = (workId: string, sourceRevision: string) => {
         transitionWorkContractPhase(store, workId, {
-          phase: 'verification', status: 'running', state: 'satisfied',
+          phase: 'verification', state: 'satisfied', dispatchState: 'terminal',
           summary: 'The exact audit fixture candidate was verified before review.',
         });
         recordWorkImplementationReview(store, workId, {
@@ -1028,14 +1032,14 @@ describe('runtime observability', () => {
         }
       }
 
-      const works = listWorkContracts({ controllerHome, repoId: repository.repoId, status: 'all', limit: 100 })
+      const works = listWorkContracts({ controllerHome, repoId: repository.repoId, state: 'all', limit: 100 })
         .filter((work) => work.requestId?.startsWith('forge-incident-repair:'));
       expect(works).toHaveLength(1);
       expect(works[0]).toMatchObject({
         workId: repairWorkId,
         requestedBy: 'system',
         workKind: 'investigation',
-        status: 'open',
+        semanticState: 'open',
       });
       expect(works[0]?.evidenceRefs.filter((entry) => entry.evidenceId?.startsWith('MCPINC-')).length).toBe(4);
       const schedules = listWorkContinuationSchedules(controllerHome, repository.repoId, { workId: repairWorkId });
@@ -1054,7 +1058,7 @@ describe('runtime observability', () => {
       expect(successor).toMatchObject({ eligible: true, recurrent: true, reusedExistingWork: false, repairRepoId: repository.repoId });
       expect(successor.workId).toBeTruthy();
       expect(successor.workId).not.toBe(repairWorkId);
-      const generations = listWorkContracts({ controllerHome, repoId: repository.repoId, status: 'all', limit: 100 })
+      const generations = listWorkContracts({ controllerHome, repoId: repository.repoId, state: 'all', limit: 100 })
         .filter((work) => work.requestId?.startsWith('forge-incident-repair:'))
         .sort((left, right) => (left.requestId ?? '').localeCompare(right.requestId ?? ''));
       expect(generations).toHaveLength(2);

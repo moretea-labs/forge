@@ -77,7 +77,7 @@ function loadScopedWork(options: RequirementBoardOptions): WorkContract[] {
   return listWorkContracts({
     controllerHome: options.controllerHome,
     repoId: options.repoId,
-    status: 'all',
+    state: 'all',
     limit: 100,
   });
 }
@@ -224,7 +224,7 @@ function summarizeDiagnosticWork(work: WorkContract): Record<string, unknown> {
       worktreeRef: work.worktreeRef,
       handoffRefs: work.handoffRefs.slice(-3),
     },
-    detailPointer: { tool: 'work_get', arguments: { work_id: work.workId, include_events: true } },
+    detailPointer: { tool: 'rh_work', arguments: { operation: 'get', work_id: work.workId, detail_level: 'detail' } },
   };
 }
 
@@ -292,7 +292,7 @@ export function buildExecutionDiagnostics(
     maintenanceFindingTruncatedCount: Math.max(0, requirements.filter((requirement) => requirement.needsAttention).length - maintenanceFindings.length),
     projectionWarnings,
     technicalDetailPointers: [
-      { tool: 'work_list', arguments: { limit: 50 } },
+      { tool: 'rh_context', arguments: { operation: 'list', detail_level: 'detail' } },
       { tool: 'controller_ready', arguments: {} },
       { tool: 'workflow_watchdog_report', arguments: { include_processes: true } },
       { tool: 'get_project_governance', arguments: {} },

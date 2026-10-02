@@ -77,7 +77,7 @@ function fixture(status: 'succeeded' | 'failed' | 'timed_out', options: {
     checks: [checkId],
     constraints: { requireHandoffOnAmbiguity: true },
     requestedBy: 'chatgpt',
-    status: 'running',
+    dispatchState: 'running',
   });
   const handle = writeWorkHandle(controllerHome, {
     schemaVersion: 1,
@@ -166,11 +166,11 @@ describe('Work validation receipt convergence', () => {
     expect(result.handle.finalization.validation).toBe('done');
     expect(result.handle.validationRun).toBeUndefined();
     expect(result.handle.validatedInputFingerprint).toBe('validation-fingerprint');
-    expect(contractFor(fx)).toMatchObject({ status: 'running', phase: 'review', evidenceState: 'valid' });
+    expect(contractFor(fx)).toMatchObject({ semanticState: 'open', phase: 'implementation', dispatchState: 'running', evidenceState: 'valid' });
 
     const repeated = reconcileWorkValidation(fx.controllerHome, result.handle);
     expect(repeated).toMatchObject({ outcome: 'not_validating', changed: false, handle: { state: 'editing' } });
-    expect(contractFor(fx)).toMatchObject({ status: 'running', phase: 'review', evidenceState: 'valid' });
+    expect(contractFor(fx)).toMatchObject({ semanticState: 'open', phase: 'implementation', dispatchState: 'running', evidenceState: 'valid' });
   });
   test('accepts the producer cacheKey for the exact Work verification snapshot after authority-only worktree drift', () => {
     const snapshotControllerHome = mkdtempSync(join(tmpdir(), 'forge-work-validation-cache-key-controller-'));
@@ -423,22 +423,22 @@ describe('Work validation receipt convergence', () => {
       infrastructureFailure: 0,
       errors: [],
     });
-    expect(contractFor(fx)).toMatchObject({ status: 'running', phase: 'review', evidenceState: 'valid' });
+    expect(contractFor(fx)).toMatchObject({ semanticState: 'open', phase: 'implementation', dispatchState: 'running', evidenceState: 'valid' });
   });
 
-  test('accepted check failure is terminal for WorkHandle and WorkContract verification', () => {
+  test('accepted check failure terminates the WorkHandle validation attempt without terminalizing semantic Work', () => {
     const fx = fixture('failed');
     const result = reconcileWorkValidation(fx.controllerHome, fx.handle);
     expect(result).toMatchObject({ outcome: 'failed', changed: true, handle: { state: 'failed' } });
     expect(result.handle.finalization.validation).toBe('failed');
-    expect(contractFor(fx)).toMatchObject({ status: 'failed', phase: 'implementation', dispatchState: 'terminal', evidenceState: 'failed' });
+    expect(contractFor(fx)).toMatchObject({ semanticState: 'open', phase: 'implementation', dispatchState: 'running', evidenceState: 'partial' });
   });
 
   test('bare Process exit failure without semantic Check evidence is infrastructure failure, not valid_fail', () => {
     const fx = fixture('failed', { omitCheckResultReceipt: true });
     const result = reconcileWorkValidation(fx.controllerHome, fx.handle);
     expect(result).toMatchObject({ outcome: 'infrastructure_failure', changed: true, handle: { state: 'failed' } });
-    expect(contractFor(fx)).toMatchObject({ status: 'running', phase: 'verification', evidenceState: 'partial' });
+    expect(contractFor(fx)).toMatchObject({ semanticState: 'open', phase: 'implementation', dispatchState: 'running', evidenceState: 'partial' });
   });
 
   test('contradictory Process success and semantic failure evidence fails closed as infrastructure', () => {
@@ -446,7 +446,7 @@ describe('Work validation receipt convergence', () => {
     const result = reconcileWorkValidation(fx.controllerHome, fx.handle);
     expect(result).toMatchObject({ outcome: 'infrastructure_failure', changed: true, handle: { state: 'failed' } });
     expect(result.summary).toContain('contradict');
-    expect(contractFor(fx)).toMatchObject({ status: 'running', phase: 'verification', evidenceState: 'partial' });
+    expect(contractFor(fx)).toMatchObject({ semanticState: 'open', phase: 'implementation', dispatchState: 'running', evidenceState: 'partial' });
   });
 
   test('authorizes delivery only for valid evidence bound to the exact current input', () => {
@@ -478,13 +478,13 @@ describe('Work validation receipt convergence', () => {
     const timedOutResult = reconcileWorkValidation(timedOut.controllerHome, timedOut.handle);
     expect(timedOutResult).toMatchObject({ outcome: 'infrastructure_failure', handle: { state: 'failed' } });
     expect(timedOutResult.handle.finalization.validation).toBe('failed'); expect(timedOutResult.handle.validationRun).toBeUndefined();
-    expect(contractFor(timedOut)).toMatchObject({ status: 'running', phase: 'verification', evidenceState: 'partial' });
+    expect(contractFor(timedOut)).toMatchObject({ semanticState: 'open', phase: 'implementation', dispatchState: 'running', evidenceState: 'partial' });
 
     const missing = fixture('succeeded', { createProcess: false });
     const missingResult = reconcileWorkValidation(missing.controllerHome, missing.handle);
     expect(missingResult).toMatchObject({ outcome: 'infrastructure_failure', handle: { state: 'failed' } });
     expect(missingResult.handle.validationRun).toBeUndefined();
-    expect(contractFor(missing)).toMatchObject({ status: 'running', phase: 'verification', evidenceState: 'partial' });
+    expect(contractFor(missing)).toMatchObject({ semanticState: 'open', phase: 'implementation', dispatchState: 'running', evidenceState: 'partial' });
   });
 });
 
@@ -589,7 +589,7 @@ describe('workspace-bound validation identity', () => {
       forbiddenPaths: [],
       checks: [],
       requestedBy: 'chatgpt',
-      status: 'running',
+      dispatchState: 'running',
     });
 
     const storePath = workContractStorePath({ root });
@@ -627,7 +627,7 @@ describe('workspace-bound validation identity', () => {
       forbiddenPaths: [],
       checks: [],
       requestedBy: 'chatgpt',
-      status: 'running',
+      dispatchState: 'running',
     });
 
     const storePath = workContractStorePath({ root });

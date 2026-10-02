@@ -117,7 +117,9 @@ export interface WorkSummaryViewModel {
   primaryActionLabel?: string;
   advanced?: {
     workId: string;
-    status: string;
+    state: string;
+    dispatchState: string;
+    evidenceState: string;
     checkIds: string[];
     handoffRefs: string[];
   };

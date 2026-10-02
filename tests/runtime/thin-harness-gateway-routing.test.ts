@@ -636,7 +636,7 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
       constraints: { requireHandoffOnAmbiguity: true },
       requestedBy: 'chatgpt',
       workKind: 'repository_change',
-      status: 'running',
+      dispatchState: 'running',
       phase: 'implementation',
     });
     const requestSemanticFingerprint = verificationInputFingerprint({
@@ -851,7 +851,7 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
       checks: ['isolated'],
       constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
       requestedBy: 'chatgpt',
-      status: 'running',
+      dispatchState: 'running',
     });
 
     const run = await runPersistedCheckViaProcessRuntime({
@@ -1057,7 +1057,7 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
       checks: ['verify'],
       constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
       requestedBy: 'chatgpt',
-      status: 'running',
+      dispatchState: 'running',
     });
     const binding = {
       workId,

@@ -99,7 +99,7 @@ export function admitDirectEditWorkContract(
     acceptanceCriteria: [],
     constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
     risk: 'low',
-    status: 'running',
+    dispatchState: 'running',
     phase: 'implementation',
     issueId: input.issueId,
     taskId: input.taskId,

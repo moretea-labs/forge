@@ -4,7 +4,7 @@ import { resolveEphemeralWorkspaceTarget } from '../../../src/cli/repositories/e
 import { commandExecutionScopeKey, type RepositoryCommandScopeTarget } from '../../../src/cli/repositories/command-scope';
 import { executionIdentityForWork, type ResolvedExecutionIdentity } from '../../../src/runtime/control-plane/execution/execution-identity';
 import { assertNoBoundExecutionSessionMutation, resolveClaimedRepositoryWorkId, resolveExplicitClaimedRepositoryWork, type RepositoryWorkAttributionCaller } from '../../../src/runtime/control-plane/execution/repository-work-attribution';
-import { getWorkContract, semanticWorkState } from '../../../packages/kernel/work/api';
+import { getWorkContract, semanticWorkState, type WorkContract } from '../../../packages/kernel/work/api';
 import { assertWorkPathsWithinScope } from '../../../src/runtime/control-plane/execution/work-path-scope';
 import { assertCanonicalRepositoryMutationWorkHandleAvailable, ensureRepositoryMutationWorkHandle, markRepositoryMutationStarted } from '../../../src/runtime/control-plane/execution/work-handle-authority';
 import { executeRepositoryCommand, previewRepositoryCommandExecution } from '../../../src/cli/repositories/command-executor';
@@ -370,7 +370,7 @@ function rawDefaultBranchMergeCommand(repository: ReturnType<typeof resolveRepos
 
 interface HistoricalReadOnlyWorkContext {
   workId: string;
-  status: string;
+  state: WorkContract['semanticState'];
   mode: 'historical_read_only_observation';
   attribution: 'not_active_work';
 }
@@ -388,7 +388,7 @@ function historicalReadOnlyWorkContext(
   if (classification.risk !== 'readonly') return undefined;
   return {
     workId: work.workId,
-    status: work.status,
+    state: work.semanticState,
     mode: 'historical_read_only_observation',
     attribution: 'not_active_work',
   };

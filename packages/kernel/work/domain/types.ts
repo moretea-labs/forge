@@ -55,19 +55,9 @@ export interface PolicyDecision {
 }
 
 /** Canonical Kernel Work domain contracts. */
-export const WORK_CONTRACT_STATUSES = [
-  'open',
-  'running',
-  'blocked',
-  'ready',
-  'completed',
-  'failed',
-  'cancelled',
-] as const;
-export type WorkContractStatus = (typeof WORK_CONTRACT_STATUSES)[number];
-
+export const SEMANTIC_WORK_STATES = ['open', 'completed', 'cancelled'] as const;
 /** Thin semantic Work state. Execution/runtime conditions never add states here. */
-export type SemanticWorkState = 'open' | 'completed' | 'cancelled';
+export type SemanticWorkState = (typeof SEMANTIC_WORK_STATES)[number];
 
 export interface WorkSemanticView {
   workId: string;
@@ -114,13 +104,12 @@ export type WorkPhaseEvidenceMap = Record<WorkPhase, WorkPhaseEvidence>;
 export const WORK_RISKS = ['readonly', 'low', 'medium', 'high', 'destructive'] as const;
 export type WorkRisk = (typeof WORK_RISKS)[number];
 
-export const TERMINAL_WORK_CONTRACT_STATUSES: readonly WorkContractStatus[] = [
+export const TERMINAL_SEMANTIC_WORK_STATES: readonly SemanticWorkState[] = [
   'completed',
-  'failed',
   'cancelled',
 ] as const;
 
-/** Independent semantic axes; `status` remains a compatibility projection. */
+/** Independent execution/evidence classifications; none are Work lifecycle state. */
 export const WORK_KINDS = [
   'repository_change',
   'completed_no_change',
@@ -384,15 +373,15 @@ export interface WorkReconciliationRecord {
 }
 
 export interface WorkContract {
-  schemaVersion: 1 | 2 | 3;
+  schemaVersion: 1 | 2 | 3 | 4;
   workId: string;
   /** Portable semantic scope. New records derive this from Requirement/Plan/Work identity, never local repository registration. */
   scopeRef?: ScopeRef;
-  /** Replaceable node-local placement. repoId/checkoutId below remain compatibility fields during V2 migration. */
+  /** Replaceable node-local execution placement; never part of semantic Work identity. */
   executionPlacement?: ExecutionPlacement;
-  /** @deprecated Node-local placement compatibility field; do not use as semantic Work identity. */
+  /** Repository relationship used for local execution lookup; never semantic lifecycle authority. */
   repoId: string;
-  /** @deprecated Node-local placement compatibility field. Optional only for legacy/current-workspace records. */
+  /** Optional checkout relationship for local execution placement. */
   checkoutId?: string;
   principalId?: string;
   controllerInstanceId?: string;
@@ -405,8 +394,8 @@ export interface WorkContract {
   semanticRevision?: number;
   /** Timestamp of the authored semantic content; mechanical Work writes must not change it. */
   semanticUpdatedAt?: string;
-  /** Explicit thin semantic state once authored through the semantic API. Legacy rows derive it from terminal compatibility state. */
-  semanticState?: SemanticWorkState;
+  /** The single authored Work lifecycle state. Execution/runtime conditions never add states here. */
+  semanticState: SemanticWorkState;
   /** Optional provenance links to the Requirement/Plan semantic revisions used when this Work was authored. */
   requirementRevision?: number;
   planRevision?: number;
@@ -420,11 +409,11 @@ export interface WorkContract {
   engineeringContext?: EngineeringContextReceipt;
   /** Actionable concurrency wait projection. Absence means no currently known semantic/resource blocker. */
   executionConcurrency?: WorkExecutionConcurrencyProjection;
-  /** Legacy repository-execution phase projection. Never semantic Work authority. */
+  /** Repository-execution phase observation. Never semantic Work authority. */
   phase: WorkPhase;
-  /** Legacy mechanical phase evidence retained for repository delivery compatibility only. */
+  /** Mechanical phase evidence for execution/delivery observation only. */
   phaseEvidence: WorkPhaseEvidenceMap;
-  /** Legacy execution classification. Semantic Work identity/state never depends on this field. */
+  /** Execution/result classification. Semantic Work identity/state never depends on this field. */
   workKind: WorkKind;
   /** Primary is an objective-level business execution lane; execution_child is a resumable low-level operation handle owned by a primary Work or standalone caller. */
   lifecycleRole?: 'primary' | 'execution_child';
@@ -442,19 +431,18 @@ export interface WorkContract {
   supersededBy?: string;
   /** Bounded durable reason for the supersession edge. */
   supersessionReason?: string;
-  /** Mechanical/legacy projections; none may advance semanticState. */
+  /** Mechanical execution/evidence projections; none may advance semanticState. */
   dispatchState: DispatchState;
   evidenceState: EvidenceState;
   completionOutcome?: CompletionOutcome;
-  status: WorkContractStatus;
   createdAt: string;
   updatedAt: string;
-  /** @deprecated Prefer Requirement/Plan/Work links; kept for compatibility reads only. */
+  /** Optional historical Issue/Task relationship identifiers; never lifecycle authority. */
   issueId?: string;
   taskId?: string;
   /** Stable Requirement authority that this Work may complete. */
   requirementId?: string;
-  /** Work-owned completion receipt. Legacy Task receipts are projections only. */
+  /** Work-owned delivery/effect receipt. It never determines semantic completion. */
   completionReceipt?: WorkCompletionReceipt;
   /** Provenance for complex work dispatched from a durable PlanContract step. */
   planId?: string;
@@ -530,7 +518,7 @@ export function semanticScopeRefForWork(
   return { schemaVersion: 1, kind: 'work', id: work.workId.trim() };
 }
 
-/** Resolve replaceable execution placement from explicit V2 placement or compatibility fields. */
+/** Resolve replaceable execution placement from explicit placement or stored repository relationships. */
 export function executionPlacementForWork(
   work: Pick<WorkContract, 'executionPlacement' | 'repoId' | 'checkoutId'>,
 ): ExecutionPlacement {
@@ -543,11 +531,11 @@ export function executionPlacementForWork(
 }
 
 export interface WorkContractStore {
-  schemaVersion: 1 | 2 | 3;
+  schemaVersion: 1 | 2 | 3 | 4;
   updatedAt: string;
   contracts: WorkContract[];
 }
 
-export function isTerminalWorkContractStatus(status: WorkContractStatus): boolean {
-  return TERMINAL_WORK_CONTRACT_STATUSES.includes(status);
+export function isTerminalSemanticWorkState(state: SemanticWorkState): boolean {
+  return TERMINAL_SEMANTIC_WORK_STATES.includes(state);
 }

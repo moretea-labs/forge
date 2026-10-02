@@ -35,7 +35,6 @@ import { cognitionReadPort } from '../../src/runtime/control-plane/persistence/c
 import { callRuntimeTool } from '../../src/runtime/gateway/mcp/runtime-tools';
 import { createHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
 import { writeProjectIdentity, writeProjectPlacement, writeWorkspaceIdentity } from '../../src/runtime/control-plane/workspace/workspace-store';
-import { callRhWorkControllerOperation } from '../../adapters/mcp/runtime-gateway/work-controller-operations';
 import type { MultiRepositoryMcpToolContext } from '../../adapters/mcp/multi-repository';
 
 const roots: string[] = [];
@@ -113,7 +112,7 @@ function fixture(name: string, options: { knowledge?: boolean } = {}) {
     forbiddenPaths: [],
     checks: [],
     requestedBy: 'chatgpt',
-    status: 'running',
+    dispatchState: 'running',
   });
   return {
     controllerHome, repoRoot, repository, store, workId, workspaceId, forgeInstanceId: instance.instanceId,
@@ -537,6 +536,17 @@ describe('connected assistant learning loops', () => {
     };
 
     const sourceRoundId = round.relay.relayScopeId + ':' + round.relay.roundCount;
+    const observed = submitControllerRoundDisposition(fx.store, {
+      workId: fx.workId,
+      identity: relayIdentity(round.owner),
+      disposition: 'continue_immediately',
+      relayScopeId: round.relay.relayScopeId,
+      ...(round.bundle ? {
+        assistantContextDigest: round.bundle.snapshot.digest,
+        assistantContextUsage: contextUsage(round.bundle),
+      } : {}),
+    });
+    expect(observed.status).toBe('pending_release');
     const persisted = persistAutomaticControllerRoundLearning({
       controllerHome: fx.controllerHome,
       repoId: fx.repository.repoId,
@@ -648,16 +658,6 @@ describe('connected assistant learning loops', () => {
     fx.setNow(sourceNow);
     const round = claimInitialRound(fx, 1);
     const sourceRoundId = `${round.relay.relayScopeId}:${round.relay.roundCount}`;
-    const sourceCtx = {
-      controllerHome: fx.controllerHome,
-      repoRoot: fx.repoRoot,
-      principalId: round.owner.principalId ?? round.owner.controllerId,
-      sessionId: round.owner.sessionId,
-      controllerInstanceId: round.owner.controllerInstanceId,
-      controllerType: 'chatgpt' as const,
-      policy: getMcpPolicy('controller', { repoRoot: fx.repoRoot }),
-      toolset: 'core',
-    } as unknown as MultiRepositoryMcpToolContext;
     const signal = {
       scope_kind: 'workspace',
       kind: 'principle',
@@ -671,22 +671,26 @@ describe('connected assistant learning loops', () => {
       confidence: 0.96,
       utility: 0.9,
     };
-    const sourceDisposition = await callRhWorkControllerOperation(sourceCtx, fx.repository, 'controller_disposition', {
-      work_id: fx.workId,
+    const sourceDisposition = submitControllerRoundDisposition(fx.store, {
+      workId: fx.workId,
+      identity: relayIdentity(round.owner),
       disposition: 'continue_immediately',
-      controller_authority_id: round.relay.authorityId,
-      relay_scope_id: round.relay.relayScopeId,
-      learning_signals: [signal],
+      relayScopeId: round.relay.relayScopeId,
       ...(round.bundle ? {
-        assistant_context_digest: round.bundle.snapshot.digest,
-        assistant_context_usage: contextUsage(round.bundle),
+        assistantContextDigest: round.bundle.snapshot.digest,
+        assistantContextUsage: contextUsage(round.bundle),
       } : {}),
     });
-    expect(sourceDisposition).toBeTruthy();
-    const sourcePayload = sourceDisposition!.structuredContent as Record<string, any>;
-    expect(sourcePayload.status, JSON.stringify(sourcePayload)).toBe('ok');
-    expect(sourcePayload.data.automaticLearning.storedMemoryIds).toHaveLength(1);
-    const learnedId = sourcePayload.data.automaticLearning.storedMemoryIds[0] as string;
+    expect(sourceDisposition.status).toBe('pending_release');
+    const automaticLearning = persistAutomaticControllerRoundLearning({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      workId: fx.workId,
+      sourceRoundId,
+      controllerSignals: parseControllerLearningSignalDrafts([signal]),
+    });
+    expect(automaticLearning.storedMemoryIds).toHaveLength(1);
+    const learnedId = automaticLearning.storedMemoryIds[0] as string;
     const learnedItemId = memoryAddressKey({
       scope: { schemaVersion: 1, kind: 'workspace', id: fx.workspaceId },
       id: learnedId,
@@ -740,7 +744,7 @@ describe('connected assistant learning loops', () => {
       objective: 'Design mobile settings so controls, visible state, and flow make operation understandable; reserve explanatory copy for invisible rules and consequences.',
       acceptanceCriteria: [],
       constraints: { workspaceMode: 'current', requireWorktree: false },
-      allowedPaths: [], forbiddenPaths: [], checks: [], requestedBy: 'chatgpt', status: 'running',
+      allowedPaths: [], forbiddenPaths: [], checks: [], requestedBy: 'chatgpt', dispatchState: 'running',
     });
     const consumerIdentity = {
       controllerId: 'chatgpt-product-consumer', controllerType: 'chatgpt' as const,
@@ -876,7 +880,7 @@ describe('connected assistant learning loops', () => {
     expect(['supports', 'analogous_to']).toContain(relation!);
   });
 
-  test('surfaces model-authored learning persistence failure after durable disposition without rolling back it', async () => {
+  test('keeps durable disposition committed when subsequent model-authored learning persistence fails', () => {
     const fx = fixture('transport-learning-warning', { knowledge: false });
     const workId = 'work-transport-learning-warning-unbound';
     createWorkContract(fx.store, {
@@ -891,7 +895,7 @@ describe('connected assistant learning loops', () => {
       forbiddenPaths: [],
       checks: [],
       requestedBy: 'chatgpt',
-      status: 'running',
+      dispatchState: 'running',
     });
     fx.setNow(new Date().toISOString());
     const unboundFx = { ...fx, workId };
@@ -915,23 +919,24 @@ describe('connected assistant learning loops', () => {
         checkoutId: fx.repository.activeCheckoutId,
       },
     });
-    const ctx = {
-      controllerHome: fx.controllerHome,
-      repoRoot: fx.repoRoot,
-      principalId: round.owner.principalId ?? round.owner.controllerId,
-      sessionId: round.owner.sessionId,
-      controllerInstanceId: round.owner.controllerInstanceId,
-      controllerType: 'chatgpt' as const,
-      policy: getMcpPolicy('controller', { repoRoot: fx.repoRoot }),
-      toolset: 'core',
-    } as unknown as MultiRepositoryMcpToolContext;
-
-    const result = await callRhWorkControllerOperation(ctx, fx.repository, 'controller_disposition', {
-      work_id: workId,
+    const sourceRoundId = `${round.relay.relayScopeId}:${round.relay.roundCount}`;
+    const relay = submitControllerRoundDisposition(fx.store, {
+      workId,
+      identity: relayIdentity(round.owner),
       disposition: 'wait',
-      controller_authority_id: round.relay.authorityId,
-      relay_scope_id: round.relay.relayScopeId,
-      learning_signals: [{
+      relayScopeId: round.relay.relayScopeId,
+      ...(round.bundle ? {
+        assistantContextDigest: round.bundle.snapshot.digest,
+        assistantContextUsage: contextUsage(round.bundle),
+      } : {}),
+    });
+    expect(relay).toMatchObject({ originWorkId: workId, disposition: 'wait', status: 'waiting' });
+    expect(() => persistAutomaticControllerRoundLearning({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      workId,
+      sourceRoundId,
+      controllerSignals: parseControllerLearningSignalDrafts([{
         scope_kind: 'project',
         kind: 'principle',
         valence: 'neutral',
@@ -943,30 +948,8 @@ describe('connected assistant learning loops', () => {
         salience: 0.7,
         confidence: 0.65,
         utility: 0.6,
-      }],
-      ...(round.bundle ? {
-        assistant_context_digest: round.bundle.snapshot.digest,
-        assistant_context_usage: contextUsage(round.bundle),
-      } : {}),
-    });
-    expect(result).toBeTruthy();
-    const payload = result!.structuredContent as Record<string, any>;
-    expect(payload.status).toBe('ok');
-    expect(payload.warnings).toEqual([
-      expect.stringContaining('Model-authored learning persistence failed after the Controller disposition was durably recorded: PROJECT_PLACEMENT_AMBIGUOUS'),
-    ]);
-    expect(payload.data.automaticLearning).toEqual({
-      storedMemoryIds: [],
-      consolidatedMemoryIds: [],
-      promotedMemoryIds: [],
-      requirementCandidateIds: [],
-      skipped: [],
-    });
-    expect(payload.data.relay).toMatchObject({
-      originWorkId: workId,
-      disposition: 'wait',
-      status: 'waiting',
-    });
+      }]),
+    })).toThrow('PROJECT_PLACEMENT_AMBIGUOUS');
     expect(getControllerRoundRelay(fx.store, workId)).toMatchObject({
       originWorkId: workId,
       disposition: 'wait',
@@ -1039,19 +1022,19 @@ describe('connected assistant learning loops', () => {
     const round = claimInitialRound(fx, 1);
     const baselineFingerprint = readControllerRoundSemanticStateFingerprint(fx.store, fx.workId);
 
-    createHandoffItem(fx.store, {
+    expect(() => createHandoffItem(fx.store, {
       id: 'HND-UNBOUND-NOISE', repoId: fx.repository.repoId,
       title: 'old repository-level attention', severity: 'needs_review', reason: 'legacy unrelated attention',
-      summary: 'This repository-level handoff is not part of the current Work lineage.',
+      summary: 'This repository-level handoff is not a user action or decision request.',
       currentState: { repoId: fx.repository.repoId, statusSummary: 'unrelated repository attention' },
       evidenceRefs: [], recommendedDecision: 'review elsewhere', recommendedPrompt: 'review elsewhere', suggestedNextActions: [],
-    });
+    })).toThrow('HANDOFF_USER_REQUEST_REQUIRED');
     expect(readControllerRoundSemanticStateFingerprint(fx.store, fx.workId)).toBe(baselineFingerprint);
     expect(readControllerRoundContextSnapshot(fx.store, round.relay).handoffs.map((handoff) => handoff.id)).not.toContain('HND-UNBOUND-NOISE');
 
     createHandoffItem(fx.store, {
       id: 'HND-CURRENT-WORK', repoId: fx.repository.repoId, workId: fx.workId,
-      title: 'current Work attention', severity: 'needs_review', reason: 'current Work needs a bounded decision',
+      title: 'current Work attention', severity: 'needs_review', creationReason: 'ambiguous_outcome', reason: 'current Work needs a bounded decision',
       summary: 'This handoff belongs to the current Work.',
       currentState: { repoId: fx.repository.repoId, workId: fx.workId, statusSummary: 'current Work attention' },
       evidenceRefs: [], recommendedDecision: 'review current Work', recommendedPrompt: 'review current Work', suggestedNextActions: [],
@@ -1061,7 +1044,7 @@ describe('connected assistant learning loops', () => {
 
     createHandoffItem(fx.store, {
       id: 'HND-EXPLICIT-USER', repoId: fx.repository.repoId,
-      title: 'explicit user decision', severity: 'needs_review', reason: 'current round explicitly waits for this user decision',
+      title: 'explicit user decision', severity: 'needs_review', creationReason: 'ambiguous_outcome', reason: 'current round explicitly waits for this user decision',
       summary: 'Unbound handoff is relevant only because the current round explicitly references it.',
       currentState: { repoId: fx.repository.repoId, statusSummary: 'waiting for explicit user decision' },
       evidenceRefs: [], recommendedDecision: 'decide', recommendedPrompt: 'decide and resume', suggestedNextActions: [],

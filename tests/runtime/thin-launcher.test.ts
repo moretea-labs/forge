@@ -63,7 +63,7 @@ function launcherFixture() {
     checks: [],
     constraints: { requireHandoffOnAmbiguity: true },
     requestedBy: 'chatgpt',
-    status: 'running',
+    dispatchState: 'running',
   });
   return { root, controllerHome, repoId, workId, store };
 }

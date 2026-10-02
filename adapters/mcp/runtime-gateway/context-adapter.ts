@@ -17,7 +17,7 @@ import { buildControllerContextPackInSidecar } from "../../../src/runtime/contex
 import { listControllerChecks } from "../../../src/cli/controller/check-runner";
 import { getAssistantPluginManifest, getControllerPluginManifest, listAssistantPluginManifests, listControllerPluginManifests } from "../../../src/runtime/plugins/store";
 import { allowedFacadeOperations, buildFacadeResult, listCapabilityDescriptors, getCapabilityDescriptor, getCoreCapabilityExecutionSchema, getPluginActionCapabilitySchema, searchCapabilityDescriptors, summarizeCapabilityGroups, listHandoffAttentionItems, listHandoffItems, normalizeCheckIds, summarizeHandoffItem, buildWorkContinuationSnapshot, getPlanContract, planSemanticView, FACADE_TOOLS } from "../../../src/runtime/control-plane/facade";
-import { currentTaskLineageWorkIds, currentTaskSemanticProjectionForWork, getWorkContract, readActiveWorkCandidates, readWorkContractStore, workSemanticView, type InvalidActiveWorkCandidate } from "../../../packages/kernel/work/api/index";
+import { currentTaskLineageWorkIds, currentTaskSemanticProjectionForWork, getWorkContract, readActiveWorkCandidates, readWorkContractStore, workSemanticView, type InvalidActiveWorkCandidate, type WorkContract } from "../../../packages/kernel/work/api/index";
 import { readRequirement, requirementSemanticView } from '../../../src/runtime/control-plane/persistence/requirement-store';
 import { readForgeInstanceIdentity, type ScopeRef } from "../../../packages/kernel/identity/api/index";
 import { memoryAddressKey } from "../../../packages/kernel/cognition/api/index";
@@ -48,11 +48,11 @@ const RESUME_CONTEXT_HUMAN_REQUEST_REASONS = new Set([
 ]);
 
 function isRecentRhContextWork(
-  contract: { status: string; updatedAt?: string },
+  contract: Pick<WorkContract, 'semanticState' | 'dispatchState' | 'updatedAt'>,
   cutoffMs: number,
 ): boolean {
-  if (contract.status === 'running') return true;
-  if (contract.status !== 'ready' && contract.status !== 'open' && contract.status !== 'blocked') return false;
+  if (contract.semanticState !== 'open') return false;
+  if (contract.dispatchState === 'running' || contract.dispatchState === 'launching' || contract.dispatchState === 'claimed') return true;
   return timestampIsRecent(contract.updatedAt, cutoffMs);
 }
 
@@ -1017,7 +1017,7 @@ export async function callContextAdapter(ctx: MultiRepositoryMcpToolContext, nam
       work: work
         ? {
             workId: work.workId,
-            status: work.status,
+            state: work.semanticState,
             objective: work.objective.slice(0, 160),
             continuation: buildWorkContinuationSnapshot(work),
           }
@@ -1033,7 +1033,7 @@ export async function callContextAdapter(ctx: MultiRepositoryMcpToolContext, nam
         relation: 'repository_inventory' as const,
         relevance: ['ownership', 'conflict', 'release_admission'] as const,
         workId: entry.workId,
-        status: entry.status,
+        state: entry.semanticState,
       })),
       invalidActiveWork: activeWorkProjection.invalid.slice(0, 3).map(summarizeInvalidActiveWorkCandidate),
       activeAttention: attention,
@@ -1102,7 +1102,7 @@ export async function callContextAdapter(ctx: MultiRepositoryMcpToolContext, nam
         relation: 'repository_inventory' as const,
         relevance: ['ownership', 'conflict', 'release_admission'] as const,
         workId: entry.workId,
-        status: entry.status,
+        state: entry.semanticState,
       })),
       invalidActiveWork: activeWorkProjection.invalid.slice(0, 10).map(summarizeInvalidActiveWorkCandidate),
       recentExecutionJobs: recentJobs.map(summarizeWorkListItem),

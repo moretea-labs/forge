@@ -177,7 +177,7 @@ describe('Thin capability substrate', () => {
     expect(listUserRequests(controllerHome, 'pending')).toHaveLength(0);
   });
 
-  test('Step 5 & 2: work_complete records semantic decision and enables finalization without verify/review gates', async () => {
+  test('Step 5 & 2: complete records semantic decision and enables finalization without verify/review gates', async () => {
     const controllerHome = tempHome();
     const repoId = 'repo-work-complete-test';
     const store = { controllerHome, repoId };
@@ -191,14 +191,14 @@ describe('Thin capability substrate', () => {
       allowedPaths: [], forbiddenPaths: [], checks: [],
       constraints: { requireHandoffOnAmbiguity: true },
       requestedBy: 'chatgpt',
-      status: 'running',
+      dispatchState: 'running',
     });
 
     const initial = getWorkContract(store, workId)!;
     expect(isCurrentWorkContract(initial)).toBe(true);
 
-    // Call work_complete directly via rh_work semantic operations
-    const completeResult = await callRhWorkSemanticOperation(store, 'work_complete', {
+    // Call complete directly via rh_work semantic operations
+    const completeResult = await callRhWorkSemanticOperation(store, 'complete', {
       work_id: workId,
       expected_revision: 1,
       work_result_refs: ['git:commit:12345678', 'doc:summary:complete'],
@@ -207,7 +207,7 @@ describe('Thin capability substrate', () => {
     expect(completeResult?.isError).toBeFalsy();
     const completedWork = getWorkContract(store, workId)!;
     expect(workSemanticView(completedWork).state).toBe('completed');
-    expect(completedWork.status).toBe('completed');
+    expect(completedWork.semanticState).toBe('completed');
     expect(isCurrentWorkContract(completedWork)).toBe(false);
     expect(workSemanticView(completedWork).resultRefs).toEqual(['git:commit:12345678', 'doc:summary:complete']);
 

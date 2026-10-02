@@ -509,7 +509,7 @@ export function runSelfHealingLoop(ctx: SelfHealingContext, input: SelfHealingIn
       ...(input.workId ? [{
         label: 'Read current Work semantic state',
         tool: 'rh_work' as const,
-        operation: 'work_get',
+        operation: 'get',
         payload: { work_id: input.workId },
         risk: 'readonly' as const,
         confidence: 'medium' as const,

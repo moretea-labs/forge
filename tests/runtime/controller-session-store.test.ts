@@ -13,7 +13,7 @@ import {
 } from '../../src/runtime/control-plane/facade/controller-session-store';
 import { bindControllerOwnershipForInvocation, recoverDirectControllerAuthority } from '../../src/runtime/control-plane/execution/controller-authority-recovery';
 import { invalidateExecutionSession, startExecutionSession } from '../../src/runtime/control-plane/execution/session-store';
-import { createWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { createWorkContract, reviseWorkSemanticContext } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { acknowledgeControllerRoundClaim, beginInitialControllerRoundDispatch, claimStalledControllerRoundRelays, finishControllerRoundRelayDispatch, getControllerRoundRelay } from '../../packages/kernel/controller/api/index';
 
 const roots: string[] = [];
@@ -124,7 +124,7 @@ describe('controller Work ownership fencing', () => {
       checks: [],
       constraints: { requireHandoffOnAmbiguity: true },
       requestedBy: 'chatgpt',
-      status: 'running',
+      dispatchState: 'running',
     });
     const opened = beginInitialControllerRoundDispatch(staleStore, {
       workId: 'work-owner',
@@ -177,16 +177,17 @@ describe('controller Work ownership fencing', () => {
       checks: [],
       constraints: { requireHandoffOnAmbiguity: true },
       requestedBy: 'chatgpt',
-      status: 'failed',
+      dispatchState: 'terminal', evidenceState: 'failed',
     });
+    reviseWorkSemanticContext(store, 'work-owner', { expectedRevision: 1, state: 'cancelled' });
     startExecutionSession(home, { sessionId: 'session-a', principalId: 'principal-a', controllerInstanceId: 'instance-a' });
     startExecutionSession(home, { sessionId: 'session-b', principalId: 'principal-a', controllerInstanceId: 'instance-a' });
 
     expect(() => claimControllerSession(store, claimInput('session-a', 'principal-a', 'instance-a')))
-      .toThrow(/WORK_CONTROLLER_CLAIM_TERMINAL: work-owner:failed/);
+      .toThrow(/WORK_CONTROLLER_CLAIM_TERMINAL: work-owner:cancelled/);
     expect(getControllerSession(store, 'work-owner')).toBeUndefined();
     expect(() => resumeControllerSession(store, claimInput('session-b', 'principal-a', 'instance-a')))
-      .toThrow(/WORK_CONTROLLER_CLAIM_TERMINAL: work-owner:failed/);
+      .toThrow(/WORK_CONTROLLER_CLAIM_TERMINAL: work-owner:cancelled/);
     expect(getControllerSession(store, 'work-owner')).toBeUndefined();
   });
 
@@ -229,7 +230,7 @@ describe('controller Work ownership fencing', () => {
       checks: [],
       constraints: { requireHandoffOnAmbiguity: true },
       requestedBy: 'chatgpt',
-      status: 'running',
+      dispatchState: 'running',
     });
     const opened = beginInitialControllerRoundDispatch(store, {
       workId: 'work-owner',
@@ -312,7 +313,7 @@ describe('controller Work ownership fencing', () => {
     createWorkContract(store, {
       workId: 'work-owner', repoId: 'repo-a', objective: 'preserve authority on recovery failure',
       acceptanceCriteria: ['failed recovery does not rotate durable authority'], allowedPaths: [], forbiddenPaths: [], checks: [],
-      constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'running',
+      constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', dispatchState: 'running',
     });
     startExecutionSession(home, { sessionId: 'session-old', principalId: 'principal-a', controllerInstanceId: 'instance-a' });
     const originalAuthority = mintControllerSessionAuthority();
@@ -348,7 +349,7 @@ describe('controller Work ownership fencing', () => {
     createWorkContract(store, {
       workId: 'work-owner', repoId: 'repo-a', objective: 'recover direct controller authority',
       acceptanceCriteria: ['same semantic owner survives transport loss'], allowedPaths: [], forbiddenPaths: [], checks: [],
-      constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'running',
+      constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', dispatchState: 'running',
     });
     startExecutionSession(home, { sessionId: 'session-old', principalId: 'principal-a', controllerInstanceId: 'instance-a' });
     const originalAuthority = mintControllerSessionAuthority();

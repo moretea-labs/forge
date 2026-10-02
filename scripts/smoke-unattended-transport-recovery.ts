@@ -112,7 +112,7 @@ try {
     checks: [],
     constraints: { requireHandoffOnAmbiguity: true },
     requestedBy: 'chatgpt',
-    status: 'running',
+    dispatchState: 'running',
     baseRevision: 'abc123',
   } as Parameters<typeof createWorkContract>[1]);
 

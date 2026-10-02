@@ -47,7 +47,7 @@ export function reconcileOwnerlessWorkAuthorities(
 ): OwnerlessWorkAuthorityReconcileResult {
   const nowMs = options.nowMs ?? Date.now();
   const graceMs = Math.max(5 * 60_000, Math.trunc(options.graceMs ?? DEFAULT_OWNERLESS_WORK_GRACE_MS));
-  const works = listWorkContracts({ controllerHome: options.controllerHome, repoId: options.repoId, status: 'active', limit: 100 });
+  const works = listWorkContracts({ controllerHome: options.controllerHome, repoId: options.repoId, state: 'active', limit: 100 });
   const currentPlanIds = new Set(listPlanContracts({ controllerHome: options.controllerHome, repoId: options.repoId, status: 'active', limit: 100 }).map((plan) => plan.planId));
   const activeSessionWorkIds = new Set(listControllerSessions({ controllerHome: options.controllerHome, repoId: options.repoId }).map((session) => session.workId));
   const activeLeaseWorkIds = new Set(listActiveLeases(options.controllerHome, options.repoId).map((lease) => lease.workId).filter((workId): workId is string => Boolean(workId)));
@@ -73,7 +73,7 @@ export function reconcileOwnerlessWorkAuthorities(
 
     const handle = handles.get(work.workId);
     const terminalHandleMismatch = Boolean(handle && TERMINAL_HANDLE_STATES.has(handle.state));
-    if (work.status === 'blocked' && !terminalHandleMismatch) { skip(skippedByReason, 'blocked_wait'); continue; }
+    if (work.dispatchState === 'blocked' && !terminalHandleMismatch) { skip(skippedByReason, 'blocked_wait'); continue; }
     const updatedMs = Date.parse(work.updatedAt);
     if (!Number.isFinite(updatedMs)) { skip(skippedByReason, 'invalid_updated_at'); continue; }
     if (!terminalHandleMismatch && nowMs - updatedMs < graceMs) { skip(skippedByReason, 'grace_period'); continue; }
