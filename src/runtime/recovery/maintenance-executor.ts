@@ -406,7 +406,11 @@ function scanRuntimeTempCandidates(
     minAgeMinutes: RUNTIME_TEMP_RETENTION_MINUTES,
     maxEntries: Math.max(maxCandidates * 3, 500),
   });
-  const ownershipStatus = explicitRoots ? 'explicit' as const : 'unknown' as const;
+  // scanRuntimeTempEntries is the mechanical temp-ownership fence: it only
+  // returns direct Forge-prefixed children of the approved temp roots, and
+  // removeRuntimeTempEntry revalidates root/name/symlink/age/process occupancy
+  // immediately before mutation. Explicit roots narrow scope; they do not create
+  // a second ownership authority.
   return scan.entries
     .filter((entry) => entry.cleanupCandidate)
     .slice(0, maxCandidates)
@@ -414,17 +418,15 @@ function scanRuntimeTempCandidates(
       kind: 'stale_runtime_temp_entry',
       id: `runtime-temp-${safeId(entry.path)}`,
       path: entry.path,
-      safe: entry.cleanupCandidate && ownershipStatus === 'explicit',
-      reason: ownershipStatus === 'unknown'
-        ? 'Temp entry has unknown durable ownership; it is protected until an owning lifecycle record or safe reconciliation proves eligibility.'
-        : entry.symbolicLink
-          ? 'Symbolic links are never eligible for automatic cleanup.'
-          : entry.occupiedByPid
-            ? `Temp entry is referenced by live process ${entry.occupiedByPid}.`
-            : `Forge temp entry is unoccupied, not a symbolic link, and ${entry.ageMinutes} minute(s) old.`,
+      safe: entry.cleanupCandidate,
+      reason: entry.symbolicLink
+        ? 'Symbolic links are never eligible for automatic cleanup.'
+        : entry.occupiedByPid
+          ? `Temp entry is referenced by live process ${entry.occupiedByPid}.`
+          : `Forge temp entry is unoccupied, not a symbolic link, and ${entry.ageMinutes} minute(s) old.`,
       ageMinutes: entry.ageMinutes,
       suggestedAction: 'full_maintenance_pass',
-      ownershipStatus,
+      ownershipStatus: 'explicit' as const,
     }));
 }
 

@@ -1261,6 +1261,35 @@ describe('runtime maintenance executor', () => {
     expect(getEditSession(fx.repoRoot, fx.sessionId).status).toBe('dirty');
   });
 
+  it('treats the default Forge temp namespace as mechanically owned without explicit roots', () => {
+    const { controllerHome, repository } = tempRepo();
+    const previousTmpdir = process.env.TMPDIR;
+    const defaultTempRoot = mkdtempSync(join(tmpdir(), 'forge-maintenance-default-temp-root-'));
+    temporaryRoots.push(defaultTempRoot);
+    const staleEntry = join(defaultTempRoot, 'forge-default-stale-entry');
+    const foreignEntry = join(defaultTempRoot, 'foreign-default-stale-entry');
+    mkdirSync(staleEntry, { recursive: true });
+    mkdirSync(foreignEntry, { recursive: true });
+    const old = new Date(Date.now() - 26 * 60 * 60 * 1_000);
+    utimesSync(staleEntry, old, old);
+    utimesSync(foreignEntry, old, old);
+
+    try {
+      process.env.TMPDIR = defaultTempRoot;
+      const status = buildRuntimeMaintenanceStatus(repository, controllerHome, { minAgeMinutes: 0, maxCandidates: 200 });
+      expect(status.candidates).toContainEqual(expect.objectContaining({
+        kind: 'stale_runtime_temp_entry',
+        path: staleEntry,
+        safe: true,
+        ownershipStatus: 'explicit',
+      }));
+      expect(status.candidates).not.toContainEqual(expect.objectContaining({ path: foreignEntry }));
+    } finally {
+      if (previousTmpdir === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = previousTmpdir;
+    }
+  });
+
   it('removes only stale direct forge temp entries during full maintenance', () => {
     const { root, controllerHome, repository } = tempRepo();
     const runtimeTempRoot = join(root, 'system-temp');
