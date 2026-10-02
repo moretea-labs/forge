@@ -181,6 +181,91 @@ describe('autonomous Work liveness reconciliation', () => {
     expect(getControllerRoundRelay(store, 'WORK-INCOMPLETE-DISPATCH')?.status).toBe('dispatching');
   });
 
+  test('re-enrolls Supervisor for an orphaned pending_release round without rewriting lower round state', async () => {
+    const controllerHome = home();
+    const store = { controllerHome, repoId: 'repo-a' };
+    const workId = 'WORK-PENDING-RELEASE-ORPHAN';
+    createRunningWork(controllerHome, { workId });
+    const binding = bindReleasedChatgptController(controllerHome, workId);
+    const prepared = prepareControllerRoundOccurrence(store, {
+      occurrenceId: 'pending-release-orphan-occurrence',
+      workId,
+      controllerBindingId: binding.bindingId,
+    });
+    finishControllerRoundRelayDispatch(store, { workId, ok: true });
+    const identity = {
+      controllerId: 'controller-a',
+      controllerType: 'chatgpt' as const,
+      principalId: 'controller-a',
+      controllerInstanceId: 'runtime-a',
+    };
+    const session = claimControllerSession(store, {
+      workId,
+      ...identity,
+      sessionId: `session-${workId}`,
+      leaseMs: 60_000,
+    });
+    acknowledgeControllerRoundClaim(store, { workId, session });
+    const pending = submitControllerRoundDisposition(store, {
+      workId,
+      relayScopeId: prepared.relay.relayScopeId,
+      identity: { ...identity, sessionId: session.sessionId },
+      disposition: 'continue_immediately',
+    });
+    releaseControllerSession(store, workId, identity.controllerId);
+    expect(pending.status).toBe('pending_release');
+
+    const enrollments = { count: 0 };
+    const result = await runSchedulerAutonomousContinuationReconciliation({
+      controllerHome,
+      nowMs: Date.parse('2026-10-02T10:00:00.000Z'),
+      repositories: [{ repoId: 'repo-a', canonicalRoot: controllerHome, localRoot: controllerHome }],
+      dependencies: enrollmentDependencies(enrollments),
+    });
+
+    expect(result).toMatchObject({ eligible: 1, supervisorEnrolled: 1, dispatched: 0, failed: 0 });
+    expect(enrollments.count).toBe(1);
+    expect(getControllerRoundRelay(store, workId)?.status).toBe('pending_release');
+  });
+
+  test('re-enrolls Supervisor for an abandoned claimed round without rewriting lower round state', async () => {
+    const controllerHome = home();
+    const store = { controllerHome, repoId: 'repo-a' };
+    const workId = 'WORK-CLAIMED-ORPHAN';
+    createRunningWork(controllerHome, { workId });
+    const binding = bindReleasedChatgptController(controllerHome, workId);
+    prepareControllerRoundOccurrence(store, {
+      occurrenceId: 'claimed-orphan-occurrence',
+      workId,
+      controllerBindingId: binding.bindingId,
+    });
+    finishControllerRoundRelayDispatch(store, { workId, ok: true });
+    const session = claimControllerSession(store, {
+      workId,
+      controllerId: 'controller-a',
+      controllerType: 'chatgpt',
+      sessionId: `session-${workId}`,
+      principalId: 'controller-a',
+      controllerInstanceId: 'runtime-a',
+      leaseMs: 60_000,
+    });
+    const claimed = acknowledgeControllerRoundClaim(store, { workId, session });
+    releaseControllerSession(store, workId, 'controller-a');
+    expect(claimed?.status).toBe('claimed');
+
+    const enrollments = { count: 0 };
+    const result = await runSchedulerAutonomousContinuationReconciliation({
+      controllerHome,
+      nowMs: Date.parse('2026-10-02T10:00:00.000Z'),
+      repositories: [{ repoId: 'repo-a', canonicalRoot: controllerHome, localRoot: controllerHome }],
+      dependencies: enrollmentDependencies(enrollments),
+    });
+
+    expect(result).toMatchObject({ eligible: 1, supervisorEnrolled: 1, dispatched: 0, failed: 0 });
+    expect(enrollments.count).toBe(1);
+    expect(getControllerRoundRelay(store, workId)?.status).toBe('claimed');
+  });
+
   test('skips a dispatching round once provider dispatch has physically started', async () => {
     const controllerHome = home();
     const store = { controllerHome, repoId: 'repo-a' };
