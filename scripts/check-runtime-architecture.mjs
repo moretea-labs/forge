@@ -2001,9 +2001,15 @@ for (const path of [
 ]) {
   forbid(path, /lifecycleClosed|finalStatus:\s*['"]completed['"]|directEditWorkCompletion/, 'mechanical delivery/finalize responses must not masquerade as semantic Work completion');
 }
-forbid(
+// Temporary migration assertion on automatic dispatch admission. Explicit
+// operator repair may reconstruct a historical dispatch-owner pre-click proof;
+// unknown observation reasons must never be automatic retry authority. Remove
+// this string fence when the existing effect admission contract is AST-fenced.
+forbidBetween(
   'supervisor/store.ts',
-  /effect_unknown[\s\S]{0,300}(composer_missing|send_button_missing)|latestRetryEvidenceEventId/,
+  'nextBrowserEffect(',
+  'effectDispatchBudget(',
+  /composer_missing|send_button_missing|latestRetryEvidenceEventId/,
   'dispatch generation may advance only from canonical effect_not_applied proof; effect_unknown never authorizes replay',
 );
 requireText('packages/kernel/controller/domain/controller-round-transition-policy.ts', "Pick<ControllerRoundRelayRecord, 'relayScopeId' | 'originWorkId' | 'roundCount'>");

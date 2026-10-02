@@ -134,3 +134,34 @@ membership. The existing discovery store validates both incoming and retained
 metadata against that route, including projects whose URLs omit a title slug;
 a conflicting observation cannot displace a proven title from another source.
 Discovery remains observation, never task enrollment or dispatch authority.
+
+## Provider observation and explicit recovery (20261002)
+
+The same native consumer reads the visible hydrated conversation surface.
+Hidden server-rendered copies, profile loading and unrelated page busy markers
+are not provider activity. Current-turn reasoning/tool text contributes only to
+the existing activity digest, even before an assistant role message exists.
+Current provider status regions include localized disconnect/delivery-timeout
+messages. A status region is evidence; arbitrary chat prose is not.
+
+A reserved recovery remains authorized across consumer passes and provider
+cooldown. Its exact owned stale turn is stopped and verified before submission;
+the original applied prompt is never replayed. A dispatch function returning
+without clicking Send supplies a dispatch-owner negative proof. Browser observers
+still cannot turn absence or a transport exception into that proof.
+
+After bounded automatic recovery stops, an explicit user recovery may reserve
+one causally keyed recovery of the current applied leaf. The local operator RPC
+requires exact task/source effect, a request id and reason; Native Messaging has
+no access to it. Duplicate calls reuse the same recovery. Existing exhausted
+events, provider generations and task/conversation identity are retained; the
+new recovery itself cannot recursively auto-recover. No schema, enum, process,
+readiness authority or recovery owner is added. Existing terminal states remain
+terminal and an unresolved unknown effect blocks this operation.
+
+Bounded migration exception: the pre-20261002 native adapter recorded its own
+returned pre-click failures as unknown. Explicit recovery may reconstruct a
+negative proof only from the current dispatch's persisted native pre-send reason,
+never a browser snapshot or generic exception. Remove this reader after those
+historical effects reconcile; new producers write the negative proof directly.
+The same whole-Runtime release/rollback and existing Supervisor retention apply.

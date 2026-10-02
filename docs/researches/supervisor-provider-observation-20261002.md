@@ -1,0 +1,49 @@
+# Four enrolled conversations stalled at the provider observation boundary
+
+Observed on 2026-10-02 (Asia/Shanghai), source/runtime f87c4a08.
+Repair Work: work-semantic-2371fcc14110.
+
+Facts from the canonical Supervisor journal and the exact signed-in ChatGPT
+conversations:
+
+- Forge task `supervisor:three-goals-forge-source-20261001` had CONTINUE receipts,
+  then `fx_9622394f756cdb2bcea2397abfc77ac8` was classified unknown. Its exact
+  committed user marker and subsequent assistant response are present in the
+  original conversation; read-only reconciliation can establish application.
+- Android task `supervisor:avela-android-development-20261001` and design task
+  `supervisor:three-goals-shenbaobao-design-20261001` exhausted their one automatic
+  recovery without a committed receipt. Both pages contain substantial reasoning
+  and tool work which the old final-message-only snapshot omitted from activity.
+- iOS task `supervisor:three-goals-avela-release-20261001` retains the unsent
+  recovery `fx_c7836cf4e8cc62fe8a052296b0fa392e`. Its first current-dispatch native
+  observation explicitly recorded `composer_missing`, before any Send click.
+  The original applied enrollment has iOS candidate/regression work in its
+  reasoning region. Changing the task objective did not settle the effect.
+- The current UI has both hidden SSR and visible hydrated `main` surfaces.
+  `aria-busy=true` on profile loading made the old global selector report model
+  generation. The current reasoning region has no assistant role key until a
+  final response commits. The disconnect banner is a `role=status` element,
+  which the old status selector omitted. Localized delivery timeout is also
+  observed. The old snapshot therefore cannot prove healthy or stale execution.
+- Persisted recovery commands were blocked again on later passes by the last
+  visible user role, despite their existing causal recovery authorization.
+
+Inference: incorrect observation caused premature recovery/stopping and missed
+later status changes; it does not imply the product tasks did no work. Whether
+their product changes meet acceptance must be decided in their original tasks.
+
+Correction: reuse the native adapter, Supervisor effect journal and provider
+failure classifier. Read visible current-turn activity, keep reserved recovery
+authorization, distinguish dispatch-owner no-click proof from unknown sends,
+and expose reasoned/idempotent local operator recovery after automatic exhaustion.
+No DB surgery, budget reset, task duplication, new auth session or provider owner.
+
+The separate CONTROLLER_CONTINUATION_ALREADY_DISPATCHING incident is already
+tracked as work-incident-f876753ee0085f49c7e370e3-g1. It is not the authority or
+root cause of these four Supervisor observation facts; do not absorb it here.
+
+Validation: retained Supervisor behavior cases cover exactly-once automatic
+recovery, operator idempotency, unknown refusal, bounded no-click retry and
+localized status classification. Real signed-in-page snapshots verify reasoning
+activity and status extraction. Compiler/governed checks and whole-Runtime
+activation precede four-task live acceptance; source PASS alone is insufficient.

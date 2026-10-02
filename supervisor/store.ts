@@ -732,6 +732,37 @@ export class WorkflowSupervisorStore {
   reserveEffect(input: { taskId: string; effectId: string; kind: WorkflowEffectKind; originKey: string; sourceCompletionFingerprint?: string; prompt: string }): WorkflowSupervisorEffect {
     return this.transaction((db) => this.reserveEffectWithin(db, input));
   }
+  reserveOperatorRecovery(input: { taskId: string; sourceEffectId: string; requestId: string; reason: string; effectId: string; prompt: string }): WorkflowSupervisorEffect {
+    return this.transaction((db) => {
+      if (oldestUnappliedEffect(db, input.taskId)) throw new Error('WORKFLOW_SUPERVISOR_RECOVERY_OUTCOME_UNKNOWN');
+      const source = statement(db, `SELECT e.* FROM effects e WHERE e.task_id = ?
+        AND EXISTS (SELECT 1 FROM events applied WHERE applied.effect_id=e.effect_id AND applied.kind='effect_applied')
+        AND NOT EXISTS (SELECT 1 FROM completions c WHERE c.source_effect_id=e.effect_id)
+        AND NOT EXISTS (SELECT 1 FROM effects child WHERE child.origin_key='provider-recovery:' || e.effect_id)
+        ORDER BY e.created_at DESC LIMIT 1`, (s) => s.get(input.taskId)) as Record<string, unknown> | undefined;
+      if (source?.effect_id !== input.sourceEffectId) throw new Error('WORKFLOW_SUPERVISOR_RECOVERY_SOURCE_CHANGED');
+      if (statement(db, "SELECT 1 FROM events WHERE task_id=? AND kind IN ('terminal_done','terminal_needs_user','terminal_stopped') LIMIT 1", (s) => s.get(input.taskId))) throw new Error('WORKFLOW_SUPERVISOR_TASK_TERMINAL');
+      const effect = this.reserveEffectWithin(db, { taskId: input.taskId, effectId: input.effectId, kind: 'recovery', originKey: `provider-recovery:${input.sourceEffectId}`, prompt: input.prompt });
+      statement(db, 'INSERT INTO events(task_id,event_key,kind,effect_id,payload_json,occurred_at) VALUES (?,?,?,?,?,?)', (s) => s.run(
+        input.taskId, `assistant-recovery-reserved:${input.sourceEffectId}`, 'assistant_recovery_reserved', input.sourceEffectId,
+        json({ recovery_effect_id: effect.effectId, requested_by: 'user', request_id: input.requestId, reason: input.reason, exactly_once_resume: true }), now()));
+      return effect;
+    });
+  }
+  reconcileNativePreSendFailure(effectId: string, requestId: string): boolean {
+    // Bounded compatibility repair for the pre-20261002 native dispatcher.
+    // These exact returned reasons occur before Send is clicked. Other unknown
+    // observations, including transport exceptions, are never negative proof.
+    const row = this.read((db) => {
+      const dispatch = effectDispatchLedger(db, effectId);
+      return statement(db, "SELECT payload_json FROM events WHERE effect_id=? AND kind='effect_unknown' AND event_id>? ORDER BY event_id LIMIT 1", (s) => s.get(effectId, dispatch.lastEventId)) as { payload_json?: string } | undefined;
+    });
+    const evidence = parsedObject(row?.payload_json);
+    const beforeSend = new Set(['composer_missing', 'composer_not_empty', 'composer_selection_unavailable', 'composer_text_insertion_rejected', 'composer_text_unconfirmed', 'composer_submit_mismatch', 'send_button_missing']);
+    if (evidence.surface !== 'macos-native' || evidence.reconciliation === true || !beforeSend.has(String(evidence.reason))) return false;
+    this.recordEffectNotAppliedProof(effectId, `operator-pre-send:${requestId}`, { ...evidence, send_clicked: false, requested_by: 'user', request_id: requestId, attestation: 'persisted_native_pre_send_return' });
+    return true;
+  }
   private reserveEffectWithin(db: Database, input: { taskId: string; effectId: string; kind: WorkflowEffectKind; originKey: string; sourceCompletionFingerprint?: string; prompt: string }): WorkflowSupervisorEffect {
     statement(db, 'INSERT OR IGNORE INTO effects(effect_id,task_id,kind,origin_key,source_completion_fingerprint,prompt_text,created_at) VALUES (?,?,?,?,?,?,?)', (s) => s.run(input.effectId, input.taskId, input.kind, input.originKey, input.sourceCompletionFingerprint ?? null, input.prompt, now()));
     const row = statement(db, 'SELECT * FROM effects WHERE origin_key = ?', (s) => s.get(input.originKey)) as Record<string, unknown> | undefined;

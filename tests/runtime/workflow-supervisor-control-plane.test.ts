@@ -1650,6 +1650,8 @@ test('Resume stream unavailable reserves exactly one same-conversation recovery 
   const failureCode = chatgptProviderPageFailure('Resume stream unavailable');
   expect(failureCode).toBe(CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE);
   expect(chatgptProviderPageFailure('ChatGPT stream recovery polling timed out')).toBe(CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE);
+  expect(chatgptProviderPageFailure('连接已中断，正在等待完整答复')).toBe(CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE);
+  expect(chatgptProviderPageFailure('消息传输超时。请重试。')).toBe('CHATGPT_AUTOMATION_MESSAGE_DELIVERY_TIMED_OUT');
   expect(classifyChatgptProviderFailure(failureCode!)).toBe('outcome_unknown');
 
   const observed = control.browserObserveProviderTurn({
@@ -1698,6 +1700,19 @@ test('Resume stream unavailable reserves exactly one same-conversation recovery 
   expect(exhausted.state).toBe('exhausted');
   expect(exhausted.recoveryEffect).toBeUndefined();
   expect(store.providerResumeExhausted(recovery.effectId)).toBe(true);
+  const operatorRequest = { taskId, sourceEffectId: recovery.effectId, requestId: 'user-recover-stream', reason: 'User requested recovery after observation repair.' };
+  expect(() => control.recoverTask({ ...operatorRequest, reason: '' })).toThrow('WORKFLOW_SUPERVISOR_RECOVERY_REASON_REQUIRED');
+  const operatorRecovery = control.recoverTask(operatorRequest).recoveryEffect;
+  expect(operatorRecovery.taskId).toBe(taskId);
+  expect(operatorRecovery.effectId).not.toBe(recovery.effectId);
+  expect(control.recoverTask(operatorRequest).recoveryEffect.effectId).toBe(operatorRecovery.effectId);
+  expect(store.providerResumeExhausted(recovery.effectId)).toBe(true);
+  expect(control.browserPoll({ conversationId, conversationUrl }).command).toMatchObject({ kind: 'recovery', mode: 'send', effectId: operatorRecovery.effectId });
+  store.recordEffectDispatchStarted(operatorRecovery.effectId, 1, 'operator-recovery-send');
+  expect(() => control.recoverTask({ ...operatorRequest, sourceEffectId: operatorRecovery.effectId })).toThrow('WORKFLOW_SUPERVISOR_RECOVERY_OUTCOME_UNKNOWN');
+  control.browserObserveDispatchFailure({ conversationId, conversationUrl, effectId: operatorRecovery.effectId, observationId: 'owner-no-click', dispatchGeneration: 1, reason: 'composer_missing' });
+  expect(store.nextBrowserEffect(taskId, { nowMs: Date.now() + 60_000 })).toMatchObject({ mode: 'send', generation: 2, effect: { effectId: operatorRecovery.effectId } });
+  expect(store.effectDispatchBudget(operatorRecovery.effectId).generations).toBe(1);
 });
 
 test('stream recovery stays on the attached exact tab and never creates a replacement', async () => {

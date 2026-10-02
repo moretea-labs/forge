@@ -59,6 +59,29 @@ export class WorkflowSupervisorControlPlane {
     this.hooks = hooks;
   }
   registerTask(input: WorkflowSupervisorTaskInput): WorkflowSupervisorTask { return this.store.registerTask(input); }
+  recoverTask(input: { taskId: string; sourceEffectId: string; requestId: string; reason: string }): { recoveryEffect: WorkflowSupervisorEffect } {
+    const task = this.requireTask(input.taskId);
+    requireNonTerminalTask(this.store, task.taskId);
+    if (!input.requestId.trim() || !input.reason.trim()) throw new Error('WORKFLOW_SUPERVISOR_RECOVERY_REASON_REQUIRED');
+    const origin = `provider-recovery:${input.sourceEffectId}`;
+    const existing = this.store.getEffectByOriginKey(origin);
+    if (existing?.taskId === task.taskId) return { recoveryEffect: existing };
+    const pending = this.store.currentUnappliedEffect(task.taskId);
+    if (pending) {
+      if (pending.effectId !== input.sourceEffectId) throw new Error('WORKFLOW_SUPERVISOR_RECOVERY_SOURCE_CHANGED');
+      // The old native dispatcher persisted its returned pre-click failure as
+      // unknown. Reclassify only that dispatch owner's positive mechanical
+      // evidence, never absence from a rendered browser snapshot.
+      if (!this.store.reconcileNativePreSendFailure(pending.effectId, input.requestId)) throw new Error('WORKFLOW_SUPERVISOR_RECOVERY_OUTCOME_UNKNOWN');
+      return { recoveryEffect: pending };
+    }
+    const source = this.store.latestAppliedLeafEffectWithoutCompletion(task.taskId);
+    if (source?.effectId !== input.sourceEffectId) throw new Error('WORKFLOW_SUPERVISOR_RECOVERY_SOURCE_CHANGED');
+    const id = stableEffectId(origin);
+    const prompt = renderSupervisorPrompt(task, id, 'recovery', undefined,
+      `The user explicitly requested recovery (${input.requestId}): ${input.reason}. Preserve the prior applied effect and all completed source work; read durable state and continue this same task. This is one operator-authorized recovery, not a reset of automatic recovery or dispatch budgets.`);
+    return { recoveryEffect: this.store.reserveOperatorRecovery({ ...input, effectId: id, prompt }) };
+  }
   reserveEnrollment(taskId: string, canonicalEffectId?: string): WorkflowSupervisorEffect {
     const task = this.requireTask(taskId);
     // A task that already reached a terminal supervisor action is not deliverable.
@@ -342,6 +365,17 @@ export class WorkflowSupervisorControlPlane {
       ...sanitizeBrowserEvidence(input.evidence), reconciliation: true, reason: 'not_applied_proof_incomplete',
     });
     return { recorded: true };
+  }
+  /** Dispatch-owner attestation. Not exposed through the browser observer RPC. */
+  browserObserveDispatchFailure(input: { conversationId: string; conversationUrl: string; effectId: string; observationId: string; dispatchGeneration: number; reason: string }): void {
+    const task = this.requireBrowserTask(input.conversationId, input.conversationUrl);
+    const effect = this.store.getEffect(input.effectId);
+    if (effect?.taskId !== task.taskId) throw new Error('WORKFLOW_SUPERVISOR_BROWSER_EFFECT_TASK_MISMATCH');
+    const dispatch = this.store.latestEffectDispatch(input.effectId);
+    if (dispatch?.generation !== input.dispatchGeneration) throw new Error('WORKFLOW_SUPERVISOR_DISPATCH_GENERATION_CHANGED');
+    this.store.recordEffectNotAppliedProof(input.effectId, input.observationId, {
+      surface: 'macos-native', reason: input.reason, send_clicked: false, dispatch_generation: input.dispatchGeneration,
+    });
   }
   browserObserveProviderTurn(input: { conversationId: string; conversationUrl: string; generating: boolean; latestAssistantResponse: string; providerActivityText?: string; providerFailureCode?: string; observedAtMs: number; graceMs: number }): { state: 'inactive' | 'none' | 'generating' | 'idle_pending' | 'recovery_reserved' | 'exhausted'; recoveryEffect?: WorkflowSupervisorEffect } {
     const task = this.requireBrowserTask(input.conversationId, input.conversationUrl);

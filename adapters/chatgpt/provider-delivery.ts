@@ -27,6 +27,8 @@ export function chatgptProviderPageFailure(
     normalized.includes('resume stream unavailable')
     || normalized.includes('tokenless_resume_unavailable')
     || normalized.includes('stream recovery polling timed out')
+    || normalized.includes('连接已中断，正在等待完整答复')
+    || normalized.includes('connection interrupted, waiting for the full response')
   ) {
     return CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE;
   }
@@ -37,7 +39,8 @@ export function chatgptProviderPageFailure(
   ) {
     return CHATGPT_AUTOMATION_RATE_LIMITED;
   }
-  return normalized.includes('message delivery timed out') && normalized.includes('please try again')
+  return ((normalized.includes('message delivery timed out') && normalized.includes('please try again'))
+    || (normalized.includes('消息传输超时') && normalized.includes('请重试')))
     ? CHATGPT_AUTOMATION_MESSAGE_DELIVERY_TIMED_OUT
     : undefined;
 }

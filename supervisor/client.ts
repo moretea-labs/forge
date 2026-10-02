@@ -61,6 +61,10 @@ export async function listWorkflowSupervisorTasks(forgeHome: string, activeOnly 
   const result = await rpc<{ tasks: WorkflowSupervisorTask[] }>(forgeHome, 'task_list', { active_only: activeOnly });
   return result.tasks;
 }
+/** Operator-only recovery; never exposed to the browser Native Messaging host. */
+export async function recoverWorkflowSupervisorTask(forgeHome: string, input: { taskId: string; sourceEffectId: string; requestId: string; reason: string }): Promise<{ recoveryEffect: WorkflowSupervisorEffect }> {
+  return await rpc(forgeHome, 'task_recover', { task_id: input.taskId, source_effect_id: input.sourceEffectId, request_id: input.requestId, reason: input.reason }, SUPERVISOR_RPC_MUTATION_TIMEOUT_MS);
+}
 
 export async function stopWorkflowSupervisorTask(
   forgeHome: string,

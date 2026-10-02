@@ -177,7 +177,8 @@ export async function defaultSnapshot(page: WorkflowSupervisorNativePage, option
   const includePageText = options.includePageText ?? true;
   return await page.evaluate<WorkflowSupervisorNativeSnapshot>(`(() => {
     const text = (node) => String(node?.innerText ?? node?.textContent ?? '').trim();
-    const nodes = (selector) => document.querySelectorAll(selector);
+    const root = Array.from(document.querySelectorAll('main')).filter(node => node.getClientRects().length).pop() || document;
+    const nodes = (selector) => root.querySelectorAll(selector);
     const semanticRole = (node) => {
       const explicit = node?.getAttribute?.('data-message-author-role');
       if (explicit === 'user' || explicit === 'assistant') return explicit;
@@ -196,15 +197,15 @@ export async function defaultSnapshot(page: WorkflowSupervisorNativePage, option
       const selector = role === 'user'
         ? '[data-message-author-role="user"], [data-chatgpt-search-unit-key$=":user"], [data-content-search-unit-key$=":user"]'
         : '[data-message-author-role="assistant"], [data-chatgpt-search-unit-key$=":assistant"], [data-content-search-unit-key$=":assistant"]';
-      const seen = new Set();
+      const seen = new Map();
       const entries = [];
       for (const node of Array.from(nodes(selector))) {
         const semanticKey = String(node?.getAttribute?.('data-chatgpt-search-unit-key') || node?.getAttribute?.('data-content-search-unit-key') || '');
         const messageIds = String(node?.getAttribute?.('data-chatgpt-search-message-ids') || node?.getAttribute?.('data-chatgpt-selection-message-id') || '');
         if (semanticKey || messageIds) {
-          const key = semanticKey + '|' + messageIds;
-          if (seen.has(key)) continue;
-          seen.add(key);
+          const key = semanticKey || messageIds;
+          if (seen.has(key)) { entries[seen.get(key)] = node; continue; }
+          seen.set(key, entries.length);
         }
         entries.push(node);
       }
@@ -226,15 +227,26 @@ export async function defaultSnapshot(page: WorkflowSupervisorNativePage, option
       '#prompt-textarea[contenteditable="true"]',
       'textarea[name="prompt"]',
       'div[role="textbox"][contenteditable="true"]',
-    ].map((selector) => document.querySelector(selector)).find((element) => Boolean(element && element.getClientRects && element.getClientRects().length));
+    ].flatMap((selector) => Array.from(nodes(selector))).find((element) => Boolean(element && element.getClientRects && element.getClientRects().length));
     const roleNodes = Array.from(nodes('[data-message-author-role="user"], [data-message-author-role="assistant"], [data-chatgpt-search-unit-key$=":user"], [data-chatgpt-search-unit-key$=":assistant"], [data-content-search-unit-key$=":user"], [data-content-search-unit-key$=":assistant"]'));
     const latestRoleNode = roleNodes.length ? roleNodes[roleNodes.length - 1] : undefined;
     const latestTurn = (() => {
       const turns = nodes('[data-testid^="conversation-turn-"]');
       if (turns.length) return text(turns[turns.length - 1]).slice(-${MAX_PROVIDER_ACTIVITY_CHARS});
+      // Current ChatGPT renders reasoning and tool activity before creating an
+      // assistant role message. Walk the latest user block's following siblings
+      // within its turn, never a whole-page/sidebar or historical-turn digest.
+      let userBlock = userEntries[userEntries.length - 1];
+      for (let depth = 0; userBlock && depth < 6; depth++, userBlock = userBlock.parentElement) {
+        if (userBlock.tagName === 'MAIN') break;
+        if (!userBlock.nextElementSibling) continue;
+        const activity = [];
+        for (let next = userBlock.nextElementSibling; next; next = next.nextElementSibling) activity.push(text(next));
+        return activity.join('\\n').slice(-${MAX_PROVIDER_ACTIVITY_CHARS});
+      }
       return messageText(latestRoleNode).slice(-${MAX_PROVIDER_ACTIVITY_CHARS});
     })();
-    const liveProviderStatus = Array.from(nodes('[role="alert"], [aria-live="assertive"], [aria-live="polite"]')).map(text).filter(Boolean).slice(-8).join('\\n');
+    const liveProviderStatus = Array.from(nodes('[role="alert"], [role="status"], [aria-live="assertive"], [aria-live="polite"]')).map(text).filter(Boolean).slice(-8).join('\\n');
     const snapshot = {
       url: String(location.href || ''),
       title: String(document.title || ''),
@@ -248,7 +260,7 @@ export async function defaultSnapshot(page: WorkflowSupervisorNativePage, option
       // "429" or "Too many requests" is not evidence that the provider failed.
       providerFailureText: liveProviderStatus.slice(-${MAX_PROVIDER_FAILURE_SCAN_CHARS}),
       latestTurnRole: semanticRole(latestRoleNode),
-      isGenerating: Boolean(document.querySelector('[data-testid="stop-button"], [data-testid*="stop-button"], button[aria-label*="Stop"], button[aria-label*="停止"], [data-testid*="stop"], [aria-busy="true"], [data-is-streaming="true"], [data-testid*="streaming"]')),
+      isGenerating: Array.from(nodes('[data-testid="stop-button"], [data-testid*="stop-button"], button[aria-label="Stop"], button[aria-label="Stop generating"], button[aria-label="停止"], button[aria-label="停止生成"], [data-is-streaming="true"]')).some(node => Boolean(node.getClientRects().length)),
     };
     if (includePageText) snapshot.pageText = String(document.body?.innerText ?? document.body?.textContent ?? '').trim().slice(-${MAX_PROVIDER_FAILURE_SCAN_CHARS});
     return snapshot;
@@ -275,6 +287,7 @@ export async function defaultDispatchPrompt(
     try {
       prepared = await page.evaluate<{ prepared: boolean; reason?: string }>(`(() => {
         const visible = (element) => Boolean(element && element.getClientRects && element.getClientRects().length);
+        const root = Array.from(document.querySelectorAll('main')).filter(visible).pop() || document;
         const value = (element) => String((element?.innerText ?? element?.textContent ?? '') || '');
         const normalizeValue = (input) => String(input || '').replace(/\\s+/g, ' ').trim();
         const expected = ${JSON.stringify(prompt)};
@@ -285,7 +298,7 @@ export async function defaultDispatchPrompt(
           '#prompt-textarea[contenteditable="true"]',
           '[data-testid="composer-text-input"][contenteditable="true"]',
           'div[role="textbox"][contenteditable="true"]',
-        ].map((selector) => document.querySelector(selector)).find(visible);
+        ].flatMap((selector) => Array.from(root.querySelectorAll(selector))).find(visible);
         if (!(composer instanceof HTMLElement) || !composer.isContentEditable) return { prepared: false, reason: 'composer_missing' };
         const current = normalizeValue(value(composer));
         if (resume) {
@@ -341,14 +354,15 @@ export async function defaultDispatchPrompt(
     // generation.
     const result = await page.evaluate<{ dispatched: boolean; reason?: string }>(`(() => {
       const visible = (element) => Boolean(element && element.getClientRects && element.getClientRects().length);
+      const root = Array.from(document.querySelectorAll('main')).filter(visible).pop() || document;
       const value = (element) => String((element?.innerText ?? element?.textContent ?? '') || '');
       const normalizeValue = (input) => String(input || '').replace(/\\s+/g, ' ').trim();
       const expected = ${JSON.stringify(prompt)};
-      const composer = document.querySelector('div#prompt-textarea[contenteditable="true"], #prompt-textarea[contenteditable="true"], [data-testid="composer-text-input"][contenteditable="true"], div[role="textbox"][contenteditable="true"]');
+      const composer = Array.from(root.querySelectorAll('div#prompt-textarea[contenteditable="true"], #prompt-textarea[contenteditable="true"], [data-testid="composer-text-input"][contenteditable="true"], div[role="textbox"][contenteditable="true"]')).find(visible);
       if (!(composer instanceof HTMLElement) || normalizeValue(value(composer)) !== normalizeValue(expected)) {
         return { dispatched: false, reason: 'composer_submit_mismatch' };
       }
-      const sendButton = document.querySelector('[data-testid="send-button"], button[aria-label="Send"], button[aria-label="发送"], button[data-testid*="send"], button[type="submit"]');
+      const sendButton = Array.from(root.querySelectorAll('[data-testid="send-button"], button[aria-label="Send"], button[aria-label="发送"], button[data-testid*="send"], button[type="submit"]')).find(visible);
       if (!(sendButton instanceof HTMLElement)
           || !visible(sendButton)
           || sendButton.hasAttribute('disabled')
@@ -597,7 +611,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     }
     let poll = this.control.browserPoll({ conversationId: task.conversationId, conversationUrl: task.conversationUrl });
     if (poll.terminal) return;
-    let recoveryAuthorized = false;
+    let recoveryAuthorized = poll.command?.kind === 'recovery';
     // Restore only the enrolled exact conversation when delivery/observation is
     // due. A transport tab is disposable; it is never a new conversation/effect.
     const ensured = await this.ensurePage(task);
@@ -1158,12 +1172,13 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     if (command.mode === 'send' && command.kind === 'recovery' && snapshot.isGenerating) {
       const stopped = await page.evaluate<boolean>(`(() => {
         const visible = (element) => Boolean(element && element.getClientRects && element.getClientRects().length);
+        const root = Array.from(document.querySelectorAll('main')).filter(visible).pop() || document;
         const stop = [
           '[data-testid="stop-button"]',
           '[data-testid*="stop-button"]',
           'button[aria-label*="Stop"]',
           'button[aria-label*="停止"]',
-        ].map((selector) => document.querySelector(selector)).find(visible);
+        ].flatMap((selector) => Array.from(root.querySelectorAll(selector))).find(visible);
         if (!(stop instanceof HTMLElement)) return false;
         stop.click();
         return true;
@@ -1231,17 +1246,13 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     // it must not steal the user's foreground browser/tab to obtain input focus.
     const dispatch = await dispatchPrompt();
     if (!dispatch.dispatched) {
-      this.control.browserObserveEffect({
+      this.control.browserObserveDispatchFailure({
         conversationId: command.conversationId,
         conversationUrl: command.conversationUrl,
         effectId: command.effectId,
         observationId: `native-observe-${randomUUID()}`,
-        outcome: 'unknown',
-        evidence: {
-          surface: 'macos-native',
-          reason: dispatch.reason ?? 'dispatch_failed',
-          observation_fingerprint: unknownObservationFingerprint(command.effectId, dispatch.reason ?? 'dispatch_failed', snapshot),
-        },
+        dispatchGeneration: command.dispatchGeneration,
+        reason: dispatch.reason ?? 'dispatch_failed',
       });
       return;
     }
