@@ -55,7 +55,7 @@ export async function persistAutomationReceipt(
   }
   const forgeHome = resolveWorkflowSupervisorForgeHome(ctx.controllerHome);
   const task = await getWorkflowSupervisorTask(forgeHome, metadata.taskId);
-  if (!task) throw new Error('AUTOMATION_SUPERVISOR_TASK_REQUIRED');
+  if (!task) throw new Error('AUTOMATION_SUPERVISOR_TASK_REQUIRED: Copy the complete task id from the current Supervisor prompt, including its suffix, and retry the receipt. Do not create a replacement task.');
   await recordWorkflowSupervisorAutomationReceipt(forgeHome, {
     taskId: task.taskId,
     conversationId: task.conversationId,

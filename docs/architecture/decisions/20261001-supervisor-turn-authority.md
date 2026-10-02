@@ -196,7 +196,7 @@ authorized scoped step rather than prescribing a retired model-facing claim
 operation. Existing execution admission and writer/resource fences still apply.
 
 The receipt instruction includes the exact two-field `rh_work` JSON carrier.
-Existing frozen clients' optional `repo_id` and `reason` annotations are bounded
+Existing frozen clients' optional `repo_id`, `checkout_id` and `reason` annotations are bounded
 strings and stripped at the compatibility boundary; neither can select a task,
 effect, conversation, terminal outcome or repository mutation. Unknown fields
 and unsafe keys still fail closed. The existing canonical Supervisor derives

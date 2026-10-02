@@ -217,11 +217,11 @@ export function normalizeRhWorkInputCompatibility(input: Record<string, unknown>
     // Frozen clients attach ordinary repository context and a reason. These are
     // transport annotations, never receipt/task/effect authority. Strip them;
     // the canonical Supervisor derives all causal identity from its own journal.
-    const allowed = new Set(['operation', 'capability_id', 'repo_id', 'reason']);
+    const allowed = new Set(['operation', 'capability_id', 'repo_id', 'checkout_id', 'reason']);
     const unsupported = unsupportedInputField(args, allowed);
     if (unsupported) return failure('FROZEN_MCP_AUTOMATION_RECEIPT_FIELD_UNSUPPORTED', { field: unsupported });
     if (requestedOperation !== 'repair') return failure('FROZEN_MCP_AUTOMATION_RECEIPT_OPERATION_INVALID', { operation: requestedOperation });
-    for (const field of ['repo_id', 'reason']) {
+    for (const field of ['repo_id', 'checkout_id', 'reason']) {
       if (args[field] !== undefined && (typeof args[field] !== 'string' || (args[field] as string).length > 2_000)) {
         return failure('FROZEN_MCP_AUTOMATION_RECEIPT_FIELD_INVALID', { field });
       }

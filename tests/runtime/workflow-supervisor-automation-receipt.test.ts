@@ -41,7 +41,7 @@ describe('Workflow Supervisor automation receipts', () => {
   test('accepts the frozen-schema automation receipt carrier without repository admission', async () => {
     const input = { operation: 'repair', capability_id: 'automation.receipt:continue:forge:repo:test-work' };
     expect(normalizeRhWorkInputCompatibility(input)).toMatchObject({ ok: true, operation: 'repair' });
-    const annotated = { ...input, repo_id: 'transport-context-only', reason: 'work checkpoint' };
+    const annotated = { ...input, repo_id: 'transport-context-only', checkout_id: 'transport-checkout-only', reason: 'work checkpoint' };
     expect(normalizeRhWorkInputCompatibility(annotated)).toEqual({ ok: true, operation: 'repair', args: input });
     expect(normalizeRhWorkInputCompatibility({ ...input, source_effect_id: 'fx_untrusted' })).toMatchObject({ ok: false });
     expect(normalizeRhWorkInputCompatibility({ ...input, reason: {} })).toMatchObject({ ok: false });
