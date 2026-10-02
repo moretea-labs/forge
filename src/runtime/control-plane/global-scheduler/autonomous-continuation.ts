@@ -60,6 +60,7 @@ function planlessOccurrenceId(workId: string, semanticRevision: number): string 
 
 function livenessMayReconcileExistingRound(record: ReturnType<typeof getControllerRoundRelay>): boolean {
   if (!record) return true;
+  if (record.status === 'pending_release' || record.status === 'claimed') return true;
   if (record.status === 'waiting') return true;
   if (record.status === 'dispatching') return !record.providerDispatchStartedAt;
   if (record.status === 'dispatched') return true;
