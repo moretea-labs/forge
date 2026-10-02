@@ -5,6 +5,7 @@ import { ensureControllerHome, scopedOperationRoot, SEMANTIC_SCOPE_KEY } from '.
 import { withControllerLock } from '../../../../src/cli/repositories/locks';
 import { readJsonFile, sanitizeFileComponent, writeJsonAtomic } from '../../../../src/runtime/shared/json-files';
 import {
+  listControlPlaneRecordKeys,
   listControlPlaneRecords,
   listControlPlaneRecordsWithinTransaction,
   listControlPlaneRecordsExcludingPayloadTextValues,
@@ -945,17 +946,29 @@ export function readActiveWorkCandidates(
   if (!sqliteBacked(options)) {
     return { contracts: listWorkContracts({ ...options, state: 'active', limit }), invalid: [] };
   }
+  const requestedScope = workContractStoreScopeKey(options);
   const records = listControlPlaneRecordsExcludingPayloadTextValues<WorkContract>(options.controllerHome, {
     namespace: 'work_contract',
-    scope: workContractStoreScopeKey(options),
+    scope: requestedScope,
     field: 'semanticState',
     excludedValues: TERMINAL_SEMANTIC_WORK_STATES,
     limit: 5_000,
   });
+  const semanticAuthorityWorkIds = requestedScope === SEMANTIC_SCOPE_KEY
+    ? new Set<string>()
+    : new Set(listControlPlaneRecordKeys(options.controllerHome, {
+        namespace: 'work_contract',
+        scope: SEMANTIC_SCOPE_KEY,
+        limit: 5_000,
+      }));
   const contracts: WorkContract[] = [];
   const invalid: InvalidActiveWorkCandidate[] = [];
   const migrations: Array<{ record: (typeof records)[number]; contract: WorkContract }> = [];
   for (const record of records) {
+    // Exact Work reads already prefer semantic scope over repository-scoped
+    // compatibility rows. Collection reads must preserve the same one-authority
+    // rule or a stale open compatibility shadow can resurrect terminal Work.
+    if (semanticAuthorityWorkIds.has(record.key)) continue;
     const raw = record.value;
     if (!rawWorkMayBeCurrent(raw)) continue;
     try {

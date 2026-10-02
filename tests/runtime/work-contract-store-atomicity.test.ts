@@ -6,7 +6,10 @@ import { join } from 'path';
 import { withControllerLock } from '../../src/cli/repositories/locks';
 import {
   createWorkContract,
+  createWorkSemanticContext,
   getWorkContract,
+  readActiveWorkCandidates,
+  reviseWorkSemanticContext,
   type VerificationRecord,
   type WorkContract,
 } from '../../packages/kernel/work/api/index';
@@ -14,6 +17,7 @@ import {
   readControlPlaneRecord,
   writeControlPlaneRecord,
 } from '../../src/runtime/control-plane/persistence/sqlite-store';
+import { SEMANTIC_SCOPE_KEY } from '../../src/cli/repositories/controller-home';
 
 const homes: string[] = [];
 
@@ -211,6 +215,39 @@ test('serializes cross-process scope evidence merges instead of overwriting a st
 
   const current = getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId)!;
   expect(new Set(current.scopeEvidence?.inspectedPaths ?? [])).toEqual(new Set(['src/alpha.ts', 'src/beta.ts']));
+});
+
+test('semantic Work authority shadows stale repository-scoped active compatibility rows', () => {
+  const controllerHome = mkdtempSync(join(tmpdir(), 'forge-work-authority-shadow-'));
+  homes.push(controllerHome);
+  const repoId = 'repo-work-authority-shadow';
+  const workId = 'work-authority-shadow';
+
+  createWorkContract({ controllerHome, repoId }, {
+    workId,
+    repoId,
+    objective: 'Legacy repository-scoped compatibility Work.',
+    acceptanceCriteria: [],
+    allowedPaths: [],
+    forbiddenPaths: [],
+    checks: [],
+    constraints: { requireHandoffOnAmbiguity: true },
+    requestedBy: 'chatgpt',
+    dispatchState: 'running',
+  });
+  createWorkSemanticContext({ controllerHome, scopeKey: SEMANTIC_SCOPE_KEY }, {
+    workId,
+    objective: 'Canonical semantic Work.',
+  });
+  reviseWorkSemanticContext({ controllerHome, repoId }, workId, {
+    expectedRevision: 1,
+    state: 'completed',
+    resultRefs: ['evidence:canonical-terminal'],
+  });
+
+  expect(getWorkContract({ controllerHome, repoId }, workId)?.semanticState).toBe('completed');
+  expect(readActiveWorkCandidates({ controllerHome, repoId, limit: 20 }).contracts.map((contract) => contract.workId)).not.toContain(workId);
+  expect(readControlPlaneRecord<WorkContract>(controllerHome, 'work_contract', repoId, workId)?.value.semanticState).toBe('open');
 });
 
 test('persists the exact historical v3 review-gap migration once without making phase evidence semantic authority', () => {

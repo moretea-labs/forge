@@ -571,6 +571,22 @@ export function readControlPlaneRecord<T>(controllerHome: string, namespace: str
     selectRecord<T>(database, namespace, scope, key));
 }
 
+export function listControlPlaneRecordKeys(
+  controllerHome: string,
+  input: { namespace: string; scope: string; limit?: number },
+): string[] {
+  const limit = Math.max(1, Math.min(Math.trunc(input.limit ?? 5_000), 5_000));
+  return withDatabaseForRead(controllerHome, (database) =>
+    withSqliteStatement(database, `
+      SELECT record_key
+      FROM control_plane_records
+      WHERE namespace = ? AND scope = ?
+      ORDER BY record_key ASC
+      LIMIT ?
+    `, (statement) => (statement.all(input.namespace, input.scope, limit) as Array<{ record_key: string }>)
+      .map((row) => row.record_key)));
+}
+
 export function writeControlPlaneRecord<T>(
   controllerHome: string,
   input: {
