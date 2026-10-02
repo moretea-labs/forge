@@ -1,0 +1,160 @@
+{
+  "schemaVersion": 1,
+  "id": "work-focus",
+  "name": "Work Focus",
+  "goal": "提供类似现代 coding agent 的专注视图：中间是当前 Work 的 focus/changes/evidence，右侧只显示必要机械事实。",
+  "primaryAction": "send-controller-instruction",
+  "constraints": [
+    "原生桌面 agent 工作台，不是网页聊天产品",
+    "Current Focus、变更和证据优先",
+    "Plan 仅可折叠上下文，不显示进度条",
+    "Runtime detail 可收起"
+  ],
+  "nodes": [
+    {
+      "id": "titlebar",
+      "component": "NativeTitlebar",
+      "props": {
+        "title": "Deliver MCP Assistant + Projects",
+        "subtitle": "forge · Work Focus",
+        "runtimeState": "Healthy",
+        "mode": "MCP",
+        "searchPlaceholder": "Command or search…",
+        "showTrafficLights": true
+      }
+    },
+    {
+      "id": "sidebar",
+      "component": "PrimarySidebar",
+      "props": {
+        "active": "Projects",
+        "assistantLabel": "Assistant",
+        "projects": [
+          "forge",
+          "Avela",
+          "Knowledge"
+        ],
+        "selectedProject": "forge",
+        "bottomItems": [
+          "Connections",
+          "Runtime"
+        ],
+        "collapsed": true
+      }
+    },
+    {
+      "id": "work-header",
+      "component": "WorkDetailHeader",
+      "props": {
+        "title": "Deliver MCP Assistant + Projects",
+        "workId": "work-mcp",
+        "semanticState": "Open",
+        "relationLabel": "Requirement child",
+        "controller": "ChatGPT",
+        "planTitle": "Forge V3 Desktop Client · r8",
+        "updatedLabel": "Live"
+      }
+    },
+    {
+      "id": "focus",
+      "component": "CurrentFocusCard",
+      "props": {
+        "summary": "Implement current/history Work graph projection without introducing a client-owned graph authority.",
+        "activity": "Reading protocol and desktop shell boundaries",
+        "controller": "ChatGPT",
+        "startedAt": "08:21",
+        "nextLikelyAction": "Apply coherent implementation batch"
+      }
+    },
+    {
+      "id": "plan",
+      "component": "PlanContextPanel",
+      "props": {
+        "title": "Plan context",
+        "revision": "r8",
+        "decisions": [
+          "No Plan progress machine",
+          "No shadow Work graph",
+          "Portable renderer"
+        ],
+        "currentFocus": "MCP Project Workbench",
+        "nextActions": [
+          "Current/history projection",
+          "Inspector facts",
+          "Keyboard polish"
+        ],
+        "historyCount": 8,
+        "executionProjection": "Descriptive context"
+      }
+    },
+    {
+      "id": "evidence",
+      "component": "EvidencePanel",
+      "props": {
+        "changedFiles": [
+          "packages/desktop-core/work.ts",
+          "apps/desktop/src/ProjectWorkbench.tsx",
+          "adapters/local-api/work-projection.ts"
+        ],
+        "checks": [
+          "typecheck passed",
+          "architecture passed"
+        ],
+        "artifacts": [
+          "diff +184 −27",
+          "semantic review"
+        ],
+        "receipts": [
+          "context closure",
+          "verification receipts"
+        ],
+        "sourceRevision": "candidate",
+        "compact": false
+      }
+    },
+    {
+      "id": "inspector",
+      "component": "RuntimeInspector",
+      "props": {
+        "runtime": "Healthy",
+        "recovery": "Ready",
+        "controllerConnection": "ChatGPT MCP",
+        "projectConnection": "forge",
+        "worktree": "managed worktree",
+        "processes": "2 recent",
+        "detailsCollapsed": true
+      }
+    },
+    {
+      "id": "composer",
+      "component": "AgentComposer",
+      "props": {
+        "placeholder": "Message controller…",
+        "scopeLabel": "Current Work",
+        "modeLabel": "MCP",
+        "suggestions": [
+          "Continue",
+          "Review diff",
+          "Run checks"
+        ],
+        "attachments": [
+          "Plan",
+          "Evidence"
+        ],
+        "shortcut": "⌘↵"
+      },
+      "interactionPatternId": "controller-composer",
+      "interactions": [
+        { "event": "submit", "actions": [{ "type": "emit_design_action", "actionId": "continue-work" }] }
+      ]
+    }
+  ],
+  "initialStateId": "focused",
+  "states": [
+    { "id": "focused", "name": "Focused", "meaning": "The selected canonical Work is open in a low-distraction work surface.", "primaryAction": "send-controller-instruction" },
+    { "id": "submitting", "name": "Submitting instruction", "meaning": "A controller instruction has been sent and the client is waiting for canonical acknowledgement.", "constraints": ["Do not synthesize Work progress from transport activity."] },
+    { "id": "degraded", "name": "Evidence degraded", "meaning": "The Work identity remains readable while some evidence/runtime facts are temporarily unavailable.", "primaryAction": "retry-evidence" }
+  ],
+  "viewport": { "kind": "desktop", "platform": "macos", "preset": "macbook-14", "width": 1440, "height": 960, "safeTop": 0, "safeBottom": 0 },
+  "quality": { "requiredStateIds": ["focused", "submitting", "degraded"], "minimumHitTarget": 36 }
+}

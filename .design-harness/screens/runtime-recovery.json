@@ -1,0 +1,122 @@
+{
+  "schemaVersion": 1,
+  "id": "runtime-recovery",
+  "name": "Runtime & Recovery",
+  "goal": "Runtime 健康或宕机时都能打开客户端，并通过 standalone Recovery start/restart/diagnose/repair；关闭客户端不停止 Runtime。",
+  "primaryAction": "repair-runtime",
+  "constraints": [
+    "Runtime health 是 global",
+    "Runtime down 时 UI 仍可用",
+    "所有修复动作经 Recovery authority",
+    "Connections 显示状态、权限与 last verified"
+  ],
+  "nodes": [
+    {
+      "id": "titlebar",
+      "component": "NativeTitlebar",
+      "props": {
+        "title": "Runtime",
+        "subtitle": "System",
+        "runtimeState": "Runtime unavailable",
+        "mode": "Recovery",
+        "searchPlaceholder": "Search settings…",
+        "showTrafficLights": true
+      }
+    },
+    {
+      "id": "sidebar",
+      "component": "PrimarySidebar",
+      "props": {
+        "active": "Runtime",
+        "assistantLabel": "Assistant",
+        "projects": [
+          "forge",
+          "Avela",
+          "Knowledge"
+        ],
+        "selectedProject": "",
+        "bottomItems": [
+          "Connections",
+          "Runtime",
+          "Settings"
+        ],
+        "collapsed": false
+      }
+    },
+    {
+      "id": "recovery",
+      "component": "RecoverySurface",
+      "props": {
+        "runtimeState": "Unavailable",
+        "recoveryState": "Recovery ready",
+        "headline": "Forge Runtime is not responding",
+        "body": "Your Work and Plans remain durable. The desktop client can repair or restart Runtime through standalone Recovery without becoming Runtime owner.",
+        "actions": [
+          "Diagnose",
+          "Restart Runtime",
+          "Repair",
+          "Open logs"
+        ],
+        "diagnosticSummary": "Last healthy 2 min ago · Controller Home readable · release bundle available"
+      },
+      "interactionPatternId": "system-recovery",
+      "interactions": [
+        { "event": "press", "actions": [{ "type": "emit_design_action", "actionId": "repair-runtime" }] }
+      ]
+    },
+    {
+      "id": "connections",
+      "component": "ConnectionList",
+      "props": {
+        "connections": [
+          {
+            "name": "ChatGPT MCP",
+            "state": "Connected",
+            "lastVerified": "1 min ago"
+          },
+          {
+            "name": "OpenAI local provider",
+            "state": "Configured",
+            "lastVerified": "Today"
+          },
+          {
+            "name": "GitHub",
+            "state": "Connected",
+            "lastVerified": "Today"
+          },
+          {
+            "name": "Computer",
+            "state": "Needs permission",
+            "lastVerified": "Yesterday"
+          }
+        ],
+        "selectedConnection": "ChatGPT MCP",
+        "showLastVerified": true,
+        "showPermissions": true
+      }
+    },
+    {
+      "id": "history",
+      "component": "HistoryTimeline",
+      "props": {
+        "entries": [
+          "08:14 Runtime healthy",
+          "08:19 Connection lost",
+          "08:20 Recovery health confirmed"
+        ],
+        "selectedEntry": "08:20 Recovery health confirmed",
+        "filter": "System",
+        "showRevisionIds": false
+      }
+    }
+  ],
+  "initialStateId": "unavailable",
+  "states": [
+    { "id": "healthy", "name": "Runtime healthy", "meaning": "Runtime and Recovery are both reachable; Recovery remains available but secondary.", "primaryAction": "diagnose-runtime" },
+    { "id": "unavailable", "name": "Runtime unavailable", "meaning": "Primary Runtime is unreachable while standalone Recovery remains available.", "primaryAction": "repair-runtime" },
+    { "id": "repairing", "name": "Recovery in progress", "meaning": "Recovery is executing a bounded repair/restart operation.", "constraints": ["Do not represent repair activity as a Work lifecycle state."] },
+    { "id": "recovery-degraded", "name": "Recovery degraded", "meaning": "Recovery itself cannot establish enough facts to repair safely.", "primaryAction": "open-diagnostics" }
+  ],
+  "viewport": { "kind": "desktop", "platform": "macos", "preset": "macbook-14", "width": 1440, "height": 960, "safeTop": 0, "safeBottom": 0 },
+  "quality": { "requiredStateIds": ["healthy", "unavailable", "repairing", "recovery-degraded"], "minimumHitTarget": 36 }
+}

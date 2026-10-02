@@ -1,0 +1,235 @@
+{
+  "schemaVersion": 1,
+  "id": "project-workbench",
+  "name": "Project Workbench",
+  "goal": "从 Project 一屏理解 Requirement 根、Independent Work、串并行 Work 图、当前 Work、其 Plan 与证据，并可直接继续工作。",
+  "primaryAction": "continue-selected-work",
+  "constraints": [
+    "MCP-first；Assistant 与 Projects 是一级入口",
+    "Work 是唯一执行/进度节点；不得显示 Plan 百分比或 PlanStep 状态",
+    "Requirement 只作为存在时的 goal root",
+    "Runtime 机械状态只进 inspector",
+    "WorkGraph 只表达 decomposition/dependency；continuation/supersession 进入 History",
+    "macOS day-mode 半透明 vibrancy，避免 Dashboard/KPI 风格"
+  ],
+  "nodes": [
+    {
+      "id": "titlebar",
+      "component": "NativeTitlebar",
+      "props": {
+        "title": "Forge",
+        "subtitle": "Projects / forge",
+        "runtimeState": "Runtime healthy",
+        "mode": "MCP",
+        "searchPlaceholder": "Search work, plans, files…",
+        "showTrafficLights": true
+      }
+    },
+    {
+      "id": "sidebar",
+      "component": "PrimarySidebar",
+      "props": {
+        "active": "Projects",
+        "assistantLabel": "Assistant",
+        "projects": [
+          "forge",
+          "Avela",
+          "Knowledge"
+        ],
+        "selectedProject": "forge",
+        "bottomItems": [
+          "Connections",
+          "Runtime",
+          "Settings"
+        ],
+        "collapsed": false
+      }
+    },
+    {
+      "id": "context",
+      "component": "ProjectContextBar",
+      "props": {
+        "projectName": "forge",
+        "repository": "moretea-labs/forge",
+        "branch": "main",
+        "worktree": "main worktree",
+        "sourceRevision": "design candidate",
+        "historyMode": "Current"
+      }
+    },
+    {
+      "id": "graph",
+      "component": "WorkGraph",
+      "props": {
+        "requirementTitle": "Forge V3 Desktop Client",
+        "requirementId": "REQ-forge-v3-desktop-client-20260930",
+        "nodes": [
+          {
+            "id": "work-ia",
+            "title": "Freeze MCP-first IA",
+            "state": "completed",
+            "depth": 0
+          },
+          {
+            "id": "work-foundation",
+            "title": "Desktop foundation",
+            "state": "open",
+            "depth": 1,
+            "relation": "decomposed"
+          },
+          {
+            "id": "work-bootstrap",
+            "title": "Runtime + Recovery bootstrap",
+            "state": "open",
+            "depth": 1,
+            "relation": "parallel"
+          },
+          {
+            "id": "work-mcp",
+            "title": "Assistant + Projects MCP",
+            "state": "open",
+            "depth": 1,
+            "relation": "depends-on foundation"
+          },
+          {
+            "id": "work-local",
+            "title": "Local conversations",
+            "state": "open",
+            "depth": 1,
+            "relation": "later"
+          },
+          {
+            "id": "work-connections",
+            "title": "Connections + macOS quality",
+            "state": "open",
+            "depth": 1,
+            "relation": "later"
+          }
+        ],
+        "selectedWorkId": "work-mcp",
+        "showDependencies": true,
+        "showHistory": false,
+        "independentLabel": "Independent Work"
+      },
+      "interactionPatternId": "work-selection",
+      "interactions": [
+        { "event": "select", "actions": [{ "type": "emit_design_action", "actionId": "select-work" }] }
+      ]
+    },
+    {
+      "id": "work-header",
+      "component": "WorkDetailHeader",
+      "props": {
+        "title": "Deliver MCP Assistant + Projects",
+        "workId": "work-mcp",
+        "semanticState": "Open",
+        "relationLabel": "Requirement child · depends on Desktop foundation",
+        "controller": "ChatGPT",
+        "planTitle": "Forge V3 Desktop Client · r8",
+        "updatedLabel": "Updated 12 min ago"
+      }
+    },
+    {
+      "id": "focus",
+      "component": "CurrentFocusCard",
+      "props": {
+        "summary": "Build the Project Workbench around canonical Requirement / Work / Plan projections.",
+        "activity": "Designing native client information architecture",
+        "controller": "ChatGPT",
+        "startedAt": "08:21",
+        "nextLikelyAction": "Implement portable desktop shell after design approval"
+      }
+    },
+    {
+      "id": "plan",
+      "component": "PlanContextPanel",
+      "props": {
+        "title": "Forge V3 Desktop Client",
+        "revision": "r8",
+        "decisions": [
+          "MCP first",
+          "Assistant + Projects top-level",
+          "Work is execution node",
+          "Plan is descriptive only"
+        ],
+        "currentFocus": "MCP Assistant + Projects",
+        "nextActions": [
+          "Desktop foundation",
+          "Runtime/Recovery bootstrap",
+          "MCP current/history projections"
+        ],
+        "historyCount": 8,
+        "executionProjection": "Executed when the bound Work is semantically completed"
+      }
+    },
+    {
+      "id": "evidence",
+      "component": "EvidencePanel",
+      "props": {
+        "changedFiles": [
+          "desktop/shell",
+          "protocol/work-projection",
+          "platform/macos"
+        ],
+        "checks": [
+          "architecture",
+          "desktop typecheck"
+        ],
+        "artifacts": [
+          "IA spec",
+          "design preview"
+        ],
+        "receipts": [
+          "Plan r8",
+          "Design Studio validation"
+        ],
+        "sourceRevision": "design candidate",
+        "compact": true
+      }
+    },
+    {
+      "id": "inspector",
+      "component": "RuntimeInspector",
+      "props": {
+        "runtime": "Healthy · local",
+        "recovery": "Ready",
+        "controllerConnection": "ChatGPT MCP · Connected",
+        "projectConnection": "forge · active",
+        "worktree": "kernel-v2/architecture",
+        "processes": "0 active",
+        "detailsCollapsed": false
+      }
+    },
+    {
+      "id": "composer",
+      "component": "AgentComposer",
+      "props": {
+        "placeholder": "Ask ChatGPT to continue this Work…",
+        "scopeLabel": "work-mcp",
+        "modeLabel": "MCP",
+        "suggestions": [
+          "Continue implementation",
+          "Review evidence",
+          "Open history"
+        ],
+        "attachments": [
+          "Plan r8"
+        ],
+        "shortcut": "⌘↵"
+      },
+      "interactionPatternId": "controller-composer",
+      "interactions": [
+        { "event": "submit", "actions": [{ "type": "emit_design_action", "actionId": "continue-work" }] }
+      ]
+    }
+  ],
+  "initialStateId": "normal",
+  "states": [
+    { "id": "normal", "name": "Ready", "meaning": "Canonical Project/Work projection is readable and a Work may be selected.", "primaryAction": "continue-selected-work" },
+    { "id": "loading", "name": "Loading projection", "meaning": "Forge canonical projection is being read; navigation and scope remain stable.", "constraints": ["Do not render unknown data as empty Work or zero progress."] },
+    { "id": "empty", "name": "No Work yet", "meaning": "The Project is valid but has no current Work projection.", "primaryAction": "ask-assistant" },
+    { "id": "degraded", "name": "Partial projection", "meaning": "Some canonical facts are unavailable while the rest of the client remains usable.", "primaryAction": "inspect-source" }
+  ],
+  "viewport": { "kind": "desktop", "platform": "macos", "preset": "macbook-14", "width": 1440, "height": 960, "safeTop": 0, "safeBottom": 0 },
+  "quality": { "requiredStateIds": ["normal", "loading", "empty", "degraded"], "minimumHitTarget": 36 }
+}

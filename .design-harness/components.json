@@ -1,0 +1,131 @@
+{
+  "schemaVersion": 1,
+  "components": [
+    {
+      "name": "NativeTitlebar",
+      "purpose": "macOS-native window chrome with contextual title, command search and global Runtime indicator.",
+      "allowedProps": ["title", "subtitle", "runtimeState", "mode", "searchPlaceholder", "showTrafficLights"],
+      "category": "navigation",
+      "interactionRole": "navigation",
+      "layout": { "axis": "horizontal", "width": "fill", "alignment": "center", "description": "Persistent native window chrome; search and health are secondary to current Work content." },
+      "accessibility": { "summary": "Expose window identity, search and global Runtime health as separate accessible elements.", "traits": ["static_text"] }
+    },
+    {
+      "name": "PrimarySidebar",
+      "purpose": "Stable product navigation where Assistant and Projects are first-class.",
+      "allowedProps": ["active", "assistantLabel", "projects", "selectedProject", "bottomItems", "collapsed"],
+      "category": "navigation",
+      "interactionRole": "navigation",
+      "layout": { "axis": "vertical", "width": "fill", "alignment": "stretch", "description": "Stable scope navigation; collapse may change density but not information architecture." },
+      "accessibility": { "summary": "Assistant, Projects and system destinations form one predictable navigation region.", "traits": ["summary"] }
+    },
+    {
+      "name": "ProjectContextBar",
+      "purpose": "Canonical repository and worktree context without duplicate project state.",
+      "allowedProps": ["projectName", "repository", "branch", "worktree", "sourceRevision", "historyMode"],
+      "category": "navigation",
+      "interactionRole": "display",
+      "layout": { "axis": "horizontal", "width": "fill", "alignment": "center", "description": "Compact scope facts above project content." },
+      "accessibility": { "summary": "Read repository, worktree and revision as contextual metadata rather than Work status.", "traits": ["static_text"] }
+    },
+    {
+      "name": "WorkGraph",
+      "purpose": "Read projection of Requirement roots, independent Work, decomposition and dependencies only; continuation/supersession belong to History.",
+      "allowedProps": ["requirementTitle", "requirementId", "nodes", "selectedWorkId", "showDependencies", "showHistory", "independentLabel"],
+      "category": "content",
+      "interactionRole": "selection",
+      "layout": { "axis": "vertical", "width": "fill", "alignment": "stretch", "description": "Navigable semantic graph with one selected Work and no progress percentages." },
+      "accessibility": { "summary": "Expose Requirement root, Work nodes and dependency labels as a selectable outline; do not rely on graph geometry alone.", "traits": ["summary"] }
+    },
+    {
+      "name": "WorkDetailHeader",
+      "purpose": "Selected Work identity and semantic state without progress percentage.",
+      "allowedProps": ["title", "workId", "semanticState", "relationLabel", "controller", "planTitle", "updatedLabel"],
+      "category": "content",
+      "interactionRole": "display",
+      "layout": { "axis": "vertical", "width": "fill", "alignment": "leading", "description": "The selected Work identity leads the detail hierarchy." },
+      "accessibility": { "summary": "Announce the Work title before semantic state and optional relation context.", "traits": ["header"] }
+    },
+    {
+      "name": "CurrentFocusCard",
+      "purpose": "Current controller activity without promoting mechanical runtime state to Work semantics.",
+      "allowedProps": ["summary", "activity", "controller", "startedAt", "nextLikelyAction"],
+      "category": "content",
+      "interactionRole": "display",
+      "layout": { "axis": "vertical", "width": "fill", "alignment": "leading", "description": "One concise current-focus block; avoid dashboard metrics." },
+      "accessibility": { "summary": "Read current semantic focus, then activity and likely next action.", "traits": ["summary"] }
+    },
+    {
+      "name": "PlanContextPanel",
+      "purpose": "Descriptive Plan context and revision history; never a progress state machine.",
+      "allowedProps": ["title", "revision", "decisions", "currentFocus", "nextActions", "historyCount", "executionProjection"],
+      "category": "content",
+      "interactionRole": "disclosure",
+      "layout": { "axis": "vertical", "width": "fill", "alignment": "leading", "description": "Secondary contextual panel that may collapse without hiding Work identity or action." },
+      "accessibility": { "summary": "Expose Plan as optional descriptive context and revision history, not completion progress.", "traits": ["summary"] }
+    },
+    {
+      "name": "EvidencePanel",
+      "purpose": "Files, checks, artifacts and receipts attributable to selected Work.",
+      "allowedProps": ["changedFiles", "checks", "artifacts", "receipts", "sourceRevision", "compact"],
+      "category": "content",
+      "interactionRole": "display",
+      "layout": { "axis": "vertical", "width": "fill", "alignment": "leading", "description": "Evidence is grouped by provenance and remains subordinate to current Work focus." },
+      "accessibility": { "summary": "Expose changed files, checks, artifacts and receipts with text labels rather than color-only success cues.", "traits": ["summary"] }
+    },
+    {
+      "name": "RuntimeInspector",
+      "purpose": "Global Runtime, Recovery, controller and connection facts separated from Work semantic state.",
+      "allowedProps": ["runtime", "recovery", "controllerConnection", "projectConnection", "worktree", "processes", "detailsCollapsed"],
+      "category": "content",
+      "interactionRole": "status",
+      "layout": { "axis": "vertical", "width": "fill", "alignment": "leading", "description": "Narrow mechanical-facts inspector that may collapse without changing Work semantics." },
+      "accessibility": { "summary": "Announce mechanical health facts explicitly and never encode Work success or failure through them.", "traits": ["summary"] }
+    },
+    {
+      "name": "AgentComposer",
+      "purpose": "Compact controller command composer for the current scope.",
+      "allowedProps": ["placeholder", "scopeLabel", "modeLabel", "suggestions", "attachments", "shortcut"],
+      "category": "control",
+      "interactionRole": "input",
+      "layout": { "axis": "vertical", "width": "fill", "alignment": "stretch", "description": "Persistent command composer near the current Work content; one dominant send action." },
+      "accessibility": { "summary": "Input identifies its current scope and exposes Send as an explicit button with keyboard shortcut as supplemental text.", "traits": ["button"] }
+    },
+    {
+      "name": "AssistantWorkList",
+      "purpose": "Forge-instance Work unrelated to a repository, grouped by current/history.",
+      "allowedProps": ["current", "history", "selectedWorkId", "emptyMessage"],
+      "category": "content",
+      "interactionRole": "selection",
+      "layout": { "axis": "vertical", "width": "fill", "alignment": "stretch", "description": "Current and historical Assistant Work are grouped without inventing a Project container." },
+      "accessibility": { "summary": "Expose current and historical Assistant Work as selectable lists with explicit group labels.", "traits": ["summary"] }
+    },
+    {
+      "name": "ConnectionList",
+      "purpose": "Productized connection status, permissions and last-verified facts.",
+      "allowedProps": ["connections", "selectedConnection", "showLastVerified", "showPermissions"],
+      "category": "content",
+      "interactionRole": "selection",
+      "layout": { "axis": "vertical", "width": "fill", "alignment": "stretch", "description": "Connection rows pair state with last-verified and permission details." },
+      "accessibility": { "summary": "Read connection name, explicit state and last-verified time; do not rely on colored dots alone.", "traits": ["summary"] }
+    },
+    {
+      "name": "RecoverySurface",
+      "purpose": "Standalone Recovery controls usable while Runtime is unavailable.",
+      "allowedProps": ["runtimeState", "recoveryState", "headline", "body", "actions", "diagnosticSummary"],
+      "category": "control",
+      "interactionRole": "primary_action",
+      "layout": { "axis": "vertical", "width": "fill", "alignment": "leading", "description": "Diagnosis context precedes bounded Recovery actions; destructive appearance is reserved for genuinely destructive operations." },
+      "accessibility": { "summary": "Announce Runtime and Recovery states before actions; every action has text and is keyboard reachable.", "traits": ["button", "summary"] }
+    },
+    {
+      "name": "HistoryTimeline",
+      "purpose": "Bounded Work/Plan revision and continuation history without a second authority.",
+      "allowedProps": ["entries", "selectedEntry", "filter", "showRevisionIds"],
+      "category": "content",
+      "interactionRole": "selection",
+      "layout": { "axis": "vertical", "width": "fill", "alignment": "stretch", "description": "Chronological history with text-first relation semantics." },
+      "accessibility": { "summary": "Read chronological entries and selected revision without depending on spatial timeline geometry.", "traits": ["summary"] }
+    }
+  ]
+}
