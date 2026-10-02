@@ -178,7 +178,21 @@ retain conversation context instead of repeating the full historical objective,
 and ask for the next unfinished product change or acceptance check. Unchanged
 infrastructure summaries do not satisfy a work checkpoint.
 Normal turns carry the existing registered repository identity and name the
-direct read/edit/command/check tools. Semantic Work records are not execution.
+direct read/edit/command/check tools. An explicitly registered checkout is carried
+with that identity, so concurrent platform tasks do not follow one mutable
+repository default. This is execution context, not checkout allocation or an
+authorization bypass; domain tools still validate the selected checkout and fences.
+Existing registration may fill this hint only once when it was initially absent
+and every task/conversation/repository/objective/policy/semantic obligation is
+unchanged. The existing Store transaction is the sole writer; conflicting
+checkout selections fail. One diagnostic event in the existing journal records
+the selected ids; retries of the original registration retain the selected hint.
+No schema, lifecycle enum, RPC, process or alternate routing
+authority is added. Effect prompts, unknowns, budgets and completion history are
+untouched; existing retention, backup and whole-Runtime rollback still apply.
+Semantic Work records are not execution.
+Retrieval readiness describes bounded evidence gaps; the model resolves relevant
+gaps and owns semantic sufficiency. It is not a second authorization/approval gate.
 Missing implementation requires a scoped architecture decision and implementation,
 rather than repeated substrate discovery. This adds prompt context only, with no
 dispatch authority, schema, lifecycle or heuristic productivity gate.

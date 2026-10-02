@@ -363,6 +363,28 @@ export class WorkflowSupervisorStore {
       const task = taskFromRow(row);
       const taskRepo = typeof task.completionContract.repo_id === 'string' ? task.completionContract.repo_id : task.continuationPolicy.repo_id;
       const inputRepo = typeof input.completionContract.repo_id === 'string' ? input.completionContract.repo_id : input.continuationPolicy.repo_id;
+      const { checkout_id: incomingCheckout, ...incomingCompletion } = input.completionContract;
+      const { checkout_id: selectedCheckout, ...selectedCompletion } = task.completionContract;
+      // Registration may fill an initially missing execution hint. It cannot
+      // replace a selected checkout or change task identity/semantic obligations.
+      const sameExecutionContextOwner = typeof taskRepo === 'string' && taskRepo === inputRepo
+        && task.conversationId === input.conversationId && task.conversationUrl === input.conversationUrl
+        && task.objective === input.objective
+        && json(selectedCompletion) === json(incomingCompletion)
+        && json(task.continuationPolicy) === json(input.continuationPolicy)
+        && json(task.userBlockerPolicy) === json(input.userBlockerPolicy);
+      // A retry of the original registration cannot erase the selected hint.
+      if (sameExecutionContextOwner && selectedCheckout !== undefined && incomingCheckout === undefined) return task;
+      const initialCheckoutContext = sameExecutionContextOwner && selectedCheckout === undefined
+        && task.continuationPolicy.checkout_id === undefined
+        && typeof incomingCheckout === 'string' && /^checkout_[a-zA-Z0-9_-]{8,120}$/.test(incomingCheckout);
+      if (initialCheckoutContext) {
+        statement(db, 'UPDATE tasks SET completion_contract_json = ? WHERE task_id = ?', s => s.run(json(input.completionContract), task.taskId));
+        statement(db, 'INSERT INTO events(task_id,event_key,kind,payload_json,occurred_at) VALUES (?,?,?,?,?)', s => s.run(
+          task.taskId, `task-checkout-context:${task.taskId}`, 'task_execution_context_enriched', json({ repo_id: taskRepo, checkout_id: incomingCheckout }), createdAt,
+        ));
+        return { ...task, completionContract: input.completionContract };
+      }
       const bootstrapUpgrade = task.continuationPolicy.bootstrap === true
         && input.continuationPolicy.bootstrap !== true
         && taskRepo === inputRepo
