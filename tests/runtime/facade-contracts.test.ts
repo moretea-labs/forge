@@ -36,6 +36,29 @@ describe('handoff and facade contracts', () => {
     expect(FACADE_TOOLS).toEqual(['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work', 'capability_execute']);
   });
 
+  test('exposes ControllerRound recovery through capability_execute without restoring rh_work lifecycle authority', () => {
+    const descriptor = listCapabilityDescriptors().find((entry) => entry.capabilityId === 'controller.round_recovery');
+    expect(descriptor).toMatchObject({
+      domain: 'controller', group: 'controller', operationClass: 'execute', risk: 'workspace_write',
+      exposedVia: 'capability_execute', schemaExposure: 'stable_static',
+    });
+    const schema = getCoreCapabilityExecutionSchema('controller.round_recovery') as {
+      executeWith?: string;
+      actions?: Record<string, { argumentsSchema?: { required?: string[]; properties?: Record<string, unknown> } }>;
+    } | undefined;
+    expect(schema?.executeWith).toBe('capability_execute');
+    expect(Object.keys(schema?.actions ?? {})).toEqual(['recover_and_dispose']);
+    expect(schema?.actions?.recover_and_dispose?.argumentsSchema?.required).toEqual(
+      expect.arrayContaining(['work_id', 'recovery_reason', 'disposition', 'user_directed']),
+    );
+    expect(searchCapabilityDescriptors('controller round authority recovery').map((entry) => entry.capabilityId)).toContain('controller.round_recovery');
+    const rhWork = runtimeToolDefinitions.find((definition) => definition.name === 'rh_work');
+    const properties = rhWork?.inputSchema.properties as Record<string, { enum?: string[] }> | undefined;
+    expect(properties?.operation?.enum).not.toContain('controller_authority_recover');
+    expect(properties).not.toHaveProperty('controller_authority_id');
+    expect(FACADE_TOOLS).toEqual(['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work', 'capability_execute']);
+  });
+
   test('keeps expensive maintenance inspection explicit on rh_status', () => {
     const rhStatus = runtimeToolDefinitions.find((definition) => definition.name === 'rh_status');
     const properties = rhStatus?.inputSchema.properties as Record<string, { description?: string }> | undefined;

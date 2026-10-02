@@ -98,6 +98,16 @@ const CORE_CAPABILITIES: CapabilityDescriptor[] = [
     summary: 'Start, inspect, stop, and verify standalone Workflow Supervisor tasks through the existing Supervisor single-writer authority; used for bounded cross-turn continuation and release-bound live proof without creating semantic Work or another public facade tool.',
   },
   {
+    capabilityId: 'controller.round_recovery',
+    domain: 'controller',
+    group: 'controller',
+    operationClass: 'execute',
+    risk: 'workspace_write',
+    exposedVia: 'capability_execute',
+    schemaExposure: 'stable_static',
+    summary: 'Recover one exact orphaned ControllerRound through the existing authority-rekey transaction, claim it with the authenticated current Runtime, apply only the caller-explicit disposition, and never replay the confirmed provider dispatch effect.',
+  },
+  {
     capabilityId: 'controller.work_contract',
     domain: 'controller',
     group: 'controller',
@@ -318,6 +328,30 @@ export function summarizeCapabilityGroups(manifests: readonly AssistantPluginMan
 }
 
 export function getCoreCapabilityExecutionSchema(capabilityId: string): Record<string, unknown> | undefined {
+  if (capabilityId === 'controller.round_recovery') {
+    return {
+      capabilityId,
+      executeWith: 'capability_execute',
+      actions: {
+        recover_and_dispose: {
+          readOnly: false,
+          risk: 'workspace_write',
+          argumentsSchema: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['work_id', 'recovery_reason', 'disposition', 'user_directed'],
+            properties: {
+              work_id: { type: 'string', minLength: 1, maxLength: 256 },
+              recovery_reason: { type: 'string', minLength: 1, maxLength: 1000 },
+              disposition: { type: 'string', enum: ['continue_immediately', 'wait', 'wait_for_user', 'goal_complete'] },
+              handoff_id: { type: 'string', minLength: 1, maxLength: 200 },
+              user_directed: { type: 'boolean', const: true },
+            },
+          },
+        },
+      },
+    };
+  }
   if (capabilityId === 'controller.workflow_supervisor') {
     return {
       capabilityId,
