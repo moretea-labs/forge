@@ -10,7 +10,8 @@ import {
   resolveHandoffItem,
 } from "../../src/runtime/control-plane/facade/handoff-inbox-store";
 import { handoffRequiresAttention } from "../../src/runtime/control-plane/facade/handoff-inbox-application";
-import { listUserRequests } from "../../packages/kernel/identity/api/index";
+import { listUserRequests, recordUserRequest } from "../../packages/kernel/identity/api/index";
+import { findCanonicalUserRequest, shouldUseCanonicalUserRequestInbox } from "../../adapters/mcp/runtime-gateway/status-inbox-adapter";
 
 describe("HandoffItem persistence authority", () => {
   test("controller-home inbox remains authoritative across session-cache changes and fresh reads", () => {
@@ -130,6 +131,50 @@ describe("HandoffItem persistence authority", () => {
       expect(handoffRequiresAttention(legacyOnly, resolver)).toBe(false);
       expect(handoffRequiresAttention(pendingProjection, resolver)).toBe(true);
       expect(handoffRequiresAttention(resolvedProjection, resolver)).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("rh_inbox keeps idempotency request_id separate from UserRequest identity", () => {
+    const root = mkdtempSync(join(tmpdir(), "forge-inbox-idempotency-"));
+    const controllerHome = join(root, "controller-home");
+    try {
+      const globalRequest = recordUserRequest(controllerHome, {
+        requestId: "desktop-plan-r8-approval",
+        kind: "user_decision_request",
+        rootCauseKey: "desktop-plan-r8-approval",
+        title: "Approve Desktop Plan r8",
+        summary: "Explicit product approval is required.",
+        actionRequired: "product_decision",
+        presentation: { legacyHandoffId: "legacy-desktop-plan-r8" },
+      });
+      const repoRequest = recordUserRequest(controllerHome, {
+        requestId: "repo-scoped-decision",
+        kind: "user_decision_request",
+        rootCauseKey: "repo-scoped-decision",
+        title: "Repo decision",
+        summary: "Repository-scoped decision.",
+        actionRequired: "product_decision",
+        targetScope: { scopeKind: "work", scopeId: "work-1", repoId: "repo-1", workId: "work-1" },
+      });
+
+      expect(findCanonicalUserRequest(controllerHome, {
+        handoff_id: globalRequest.requestId,
+        request_id: "idempotency-key-1",
+      })?.requestId).toBe(globalRequest.requestId);
+      expect(findCanonicalUserRequest(controllerHome, {
+        handoff_id: "legacy-desktop-plan-r8",
+        request_id: "idempotency-key-2",
+      })?.requestId).toBe(globalRequest.requestId);
+      expect(findCanonicalUserRequest(controllerHome, {
+        request_id: globalRequest.requestId,
+      })).toBeUndefined();
+
+      expect(shouldUseCanonicalUserRequestInbox("repo-1", "get", globalRequest)).toBe(true);
+      expect(shouldUseCanonicalUserRequestInbox("repo-1", "get", repoRequest)).toBe(false);
+      expect(shouldUseCanonicalUserRequestInbox("repo-1", "list", globalRequest)).toBe(false);
+      expect(shouldUseCanonicalUserRequestInbox(undefined, "list", undefined)).toBe(true);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

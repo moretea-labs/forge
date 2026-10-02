@@ -756,12 +756,23 @@ function summarizeUserRequest(request: UserRequest) {
   };
 }
 
-function findCanonicalUserRequest(controllerHome: string, args: Record<string, unknown>): UserRequest | undefined {
-  const requestId = typeof args.request_id === 'string' ? args.request_id.trim() : '';
-  if (requestId) return getUserRequest(controllerHome, requestId);
-  const legacyHandoffId = typeof args.handoff_id === 'string' ? args.handoff_id.trim() : '';
-  if (!legacyHandoffId) return undefined;
-  return listUserRequests(controllerHome, 'all').find((request) => request.presentation?.legacyHandoffId === legacyHandoffId);
+// `request_id` is Process Runtime idempotency/correlation only. UserRequest
+// selection stays on `handoff_id` so retry identity can never change Inbox semantics.
+export function findCanonicalUserRequest(controllerHome: string, args: Record<string, unknown>): UserRequest | undefined {
+  const handoffId = typeof args.handoff_id === 'string' ? args.handoff_id.trim() : '';
+  if (!handoffId) return undefined;
+  return getUserRequest(controllerHome, handoffId)
+    ?? listUserRequests(controllerHome, 'all').find((request) => request.presentation?.legacyHandoffId === handoffId);
+}
+
+export function shouldUseCanonicalUserRequestInbox(
+  repositoryRepoId: string | undefined,
+  operation: string,
+  request: UserRequest | undefined,
+): boolean {
+  if (!repositoryRepoId) return true;
+  if (operation === 'list' || operation === 'create') return false;
+  return Boolean(request && !request.targetScope?.repoId?.trim());
 }
 
 function callCanonicalUserRequestInbox(ctx: MultiRepositoryMcpToolContext, args: Record<string, unknown>, operation: string): CallToolResult {
@@ -771,7 +782,7 @@ function callCanonicalUserRequestInbox(ctx: MultiRepositoryMcpToolContext, args:
     return result(buildFacadeResult({
       summary: items.length ? `${items.length} pending UserRequest item(s).` : 'No pending UserRequest items.',
       data: { items: items.map(summarizeUserRequest) },
-      suggestedNextActions: items.slice(0, 1).map((item) => ({ label: `Read ${item.requestId}`, tool: 'rh_inbox', operation: 'get', payload: { request_id: item.requestId }, risk: 'readonly' as const })),
+      suggestedNextActions: items.slice(0, 1).map((item) => ({ label: `Read ${item.requestId}`, tool: 'rh_inbox', operation: 'get', payload: { handoff_id: item.requestId }, risk: 'readonly' as const })),
     }) as unknown as Record<string, unknown>);
   }
   if (operation === 'create') {
@@ -779,7 +790,7 @@ function callCanonicalUserRequestInbox(ctx: MultiRepositoryMcpToolContext, args:
     const summary = typeof args.summary === 'string' ? args.summary.trim() : typeof args.reason === 'string' ? args.reason.trim() : '';
     if (!title || !summary) throw new Error('USER_REQUEST_TITLE_SUMMARY_REQUIRED');
     const workId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
-    const explicitId = typeof args.request_id === 'string' ? args.request_id.trim() : typeof args.handoff_id === 'string' ? args.handoff_id.trim() : '';
+    const explicitId = typeof args.handoff_id === 'string' ? args.handoff_id.trim() : '';
     const actionRequired = (typeof args.action_required === 'string' ? args.action_required : 'product_decision') as 'login' | 'grant_permission' | 'confirm_destructive' | 'product_decision';
     const kind = (typeof args.request_kind === 'string' ? args.request_kind : actionRequired === 'product_decision' ? 'user_decision_request' : 'user_action_request') as 'user_action_request' | 'user_decision_request';
     const rootCauseKey = typeof args.root_cause_key === 'string' && args.root_cause_key.trim()
@@ -838,8 +849,11 @@ async function callInboxAdapter(ctx: MultiRepositoryMcpToolContext, args: Record
   const repository = selectedOptional(ctx, args);
   const operation = String(args.operation ?? 'list');
   if (!allowedFacadeOperations('rh_inbox').includes(operation)) return invalidFacadeOperation('rh_inbox', operation);
-  const canonicalRequestId = typeof args.request_id === 'string' && args.request_id.trim();
-  if (!repository || canonicalRequestId) return callCanonicalUserRequestInbox(ctx, args, operation);
+  const canonicalRequest = findCanonicalUserRequest(ctx.controllerHome, args);
+  if (shouldUseCanonicalUserRequestInbox(repository?.repoId, operation, canonicalRequest)) {
+    return callCanonicalUserRequestInbox(ctx, args, operation);
+  }
+  if (!repository) throw new Error('REPOSITORY_CONTEXT_REQUIRED_FOR_HANDOFF');
   const app = await runHandoffInboxApplication({
     operation: operation as 'get' | 'list' | 'ack' | 'accept' | 'resolve' | 'dismiss' | 'create',
     store: { controllerHome: ctx.controllerHome, repoId: repository.repoId },
