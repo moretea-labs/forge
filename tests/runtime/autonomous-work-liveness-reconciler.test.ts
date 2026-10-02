@@ -4,6 +4,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import {
   acknowledgeControllerRoundClaim,
+  beginControllerRoundProviderDispatch,
   beginInitialControllerRoundDispatch,
   bindControllerSessionBinding,
   claimControllerSession,
@@ -178,6 +179,46 @@ describe('autonomous Work liveness reconciliation', () => {
     expect(result).toMatchObject({ eligible: 1, supervisorEnrolled: 1, dispatched: 0, failed: 0 });
     expect(enrollments.count).toBe(1);
     expect(getControllerRoundRelay(store, 'WORK-INCOMPLETE-DISPATCH')?.status).toBe('dispatching');
+  });
+
+  test('skips a dispatching round once provider dispatch has physically started', async () => {
+    const controllerHome = home();
+    const store = { controllerHome, repoId: 'repo-a' };
+    const workId = 'WORK-PROVIDER-DISPATCH-STARTED';
+    createRunningWork(controllerHome, { workId });
+    const binding = bindReleasedChatgptController(controllerHome, workId);
+    const prepared = prepareControllerRoundOccurrence(store, {
+      occurrenceId: 'provider-dispatch-started-occurrence',
+      workId,
+      controllerBindingId: binding.bindingId,
+    });
+    expect(prepared.outcome).toBe('dispatched');
+    const started = beginControllerRoundProviderDispatch(store, {
+      workId,
+      authorityId: prepared.relay.authorityId!,
+      expectedUpdatedAt: prepared.relay.updatedAt,
+      bindingId: binding.bindingId,
+    });
+    expect(started.status).toBe('dispatching');
+    expect(started.providerDispatchStartedAt).toBeDefined();
+
+    const enrollments = { count: 0 };
+    const result = await runSchedulerAutonomousContinuationReconciliation({
+      controllerHome,
+      nowMs: Date.parse('2026-09-19T10:00:00.000Z'),
+      repositories: [{ repoId: 'repo-a', canonicalRoot: controllerHome, localRoot: controllerHome }],
+      dependencies: enrollmentDependencies(enrollments),
+    });
+
+    expect(result).toMatchObject({
+      eligible: 0,
+      supervisorEnrolled: 0,
+      dispatched: 0,
+      failed: 0,
+      skippedByReason: { controller_round_dispatching: 1 },
+    });
+    expect(enrollments.count).toBe(0);
+    expect(getControllerRoundRelay(store, workId)?.providerDispatchStartedAt).toBe(started.providerDispatchStartedAt);
   });
 
   test('enrolls Supervisor for a planless ownerless Work without inventing Plan authority', async () => {
