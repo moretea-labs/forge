@@ -9,7 +9,7 @@ import { getRepository, selectRepositoryCheckout, setRepositoryCheckoutLifecycle
 import type { RepositoryRecord } from '../../cli/repositories/types';
 import { rebuildRepositoryProjection } from '../projections/materialized-view';
 import { getWorkContract, readWorkContractStore, semanticWorkState, updateWorkContract } from '../../../packages/kernel/work/api/index';
-import { assertOwnedResourceCleanupTarget, markOwnedResourceCleaned } from '../../../packages/kernel/identity/api/index';
+import { assertOwnedResourceCleanupTarget, listOwnedResources, markOwnedResourceCleaned, type OwnedResource } from '../../../packages/kernel/identity/api/index';
 import { listPlanContracts } from '../control-plane/facade/plan-contract-store';
 import { readRequirement } from '../control-plane/persistence/requirement-store';
 import { listControlPlaneRecords, type ControlPlaneRecord } from '../control-plane/persistence/sqlite-store';
@@ -500,6 +500,121 @@ function looksLikeForgeManagedWorktree(path: string): boolean {
 
 type StaleWorkSourceState = NonNullable<RuntimeMaintenanceCandidate['sourceState']>;
 
+interface OwnedManagedWorktreeInspection {
+  safe: boolean;
+  path: string;
+  sourceState: StaleWorkSourceState;
+  detail: string;
+  workspaceResourceId?: string;
+  checkoutId?: string;
+  branch?: string;
+  canonicalBranch?: string;
+}
+
+function activeOwnedWorktreeResource(
+  controllerHome: string,
+  repoId: string,
+  path: string,
+): OwnedResource | undefined {
+  const target = resolve(path);
+  return listOwnedResources(controllerHome, { kind: 'worktree', status: 'active', repoId })
+    .find((resource) => resource.cleanupCapable === true && resolve(resource.targetRef) === target);
+}
+
+function inspectOwnedManagedWorktree(
+  repository: RuntimeMaintenanceRepository,
+  controllerHome: string,
+  pathInput: string,
+): OwnedManagedWorktreeInspection {
+  const path = resolve(pathInput);
+  if (!looksLikeForgeManagedWorktree(path)) {
+    return { safe: false, path, sourceState: 'source_state_unknown', detail: 'Managed worktree is outside Forge-managed storage; automatic cleanup is forbidden.' };
+  }
+  if (!existsSync(path)) {
+    return { safe: false, path, sourceState: 'source_state_unknown', detail: 'Owned managed worktree path is absent; registry/resource reconciliation is required before cleanup.' };
+  }
+  const workspaceResource = activeOwnedWorktreeResource(controllerHome, repository.repoId, path);
+  if (!workspaceResource) {
+    return { safe: false, path, sourceState: 'source_state_unknown', detail: 'No active cleanup-capable OwnedResource matches this managed worktree path.' };
+  }
+  try {
+    assertOwnedResourceCleanupTarget(controllerHome, {
+      resourceId: workspaceResource.resourceId,
+      kind: 'worktree',
+      targetRef: path,
+    });
+  } catch (error) {
+    return { safe: false, path, sourceState: 'source_state_unknown', detail: `Managed worktree OwnedResource failed exact identity validation: ${error instanceof Error ? error.message : String(error)}` };
+  }
+  const contractOwner = readWorkContractStore({ controllerHome, repoId: repository.repoId }).contracts.find((contract) =>
+    contract.worktreeRef && resolve(contract.worktreeRef) === path);
+  if (contractOwner) {
+    return { safe: false, path, sourceState: 'source_state_unknown', detail: `Managed worktree still has WorkContract owner ${contractOwner.workId}; cleanup must remain with that Work lifecycle.` };
+  }
+  let registered;
+  try { registered = getRepository(repository.repoId, controllerHome, { includeRemoved: true }); } catch (error) {
+    return { safe: false, path, sourceState: 'source_state_unknown', detail: `Repository registry could not be read for owned managed worktree: ${error instanceof Error ? error.message : String(error)}` };
+  }
+  const checkout = registered.checkouts.find((candidate) =>
+    candidate.worktree === true
+    && (candidate.lifecycle ?? 'active') === 'active'
+    && (resolve(candidate.canonicalRoot) === path || resolve(candidate.localRoot) === path));
+  if (!checkout) {
+    return { safe: false, path, sourceState: 'source_state_unknown', detail: 'Owned managed worktree has no active matching Repository Registry checkout.' };
+  }
+  if (registered.activeCheckoutId === checkout.checkoutId) {
+    return { safe: false, path, sourceState: 'source_state_unknown', detail: 'Owned managed worktree is unexpectedly the canonical active checkout; automatic cleanup is forbidden.' };
+  }
+  const status = runProcess('git', ['status', '--porcelain', '--untracked-files=all'], { cwd: path, timeoutMs: 10_000, maxOutputBytes: 500_000 });
+  if (!status.ok) {
+    return { safe: false, path, sourceState: 'source_state_unknown', detail: 'Owned managed worktree status could not be read.' };
+  }
+  if (status.stdout.trim()) {
+    return { safe: false, path, sourceState: 'dirty_worktree', detail: 'Owned managed worktree is dirty; unique source must be preserved.' };
+  }
+  const head = runProcess('git', ['rev-parse', 'HEAD'], { cwd: path, timeoutMs: 10_000, maxOutputBytes: 100_000 });
+  const branch = runProcess('git', ['branch', '--show-current'], { cwd: path, timeoutMs: 10_000, maxOutputBytes: 100_000 });
+  if (!head.ok || !head.stdout.trim() || !branch.ok || !branch.stdout.trim()) {
+    return { safe: false, path, sourceState: 'source_state_unknown', detail: 'Owned managed worktree HEAD/branch identity could not be resolved.' };
+  }
+  const branchName = branch.stdout.trim();
+  if (checkout.branch?.trim() && checkout.branch.trim() !== branchName) {
+    return { safe: false, path, sourceState: 'source_state_unknown', detail: 'Owned managed worktree branch no longer matches its Repository Registry checkout identity.' };
+  }
+  let canonical;
+  try { canonical = selectRepositoryCheckout(registered, registered.activeCheckoutId); } catch (error) {
+    return { safe: false, path, sourceState: 'source_state_unknown', detail: `Canonical repository checkout could not be resolved: ${error instanceof Error ? error.message : String(error)}` };
+  }
+  const canonicalBranch = runProcess('git', ['branch', '--show-current'], { cwd: canonical.canonicalRoot, timeoutMs: 10_000, maxOutputBytes: 100_000 });
+  if (!canonicalBranch.ok || !canonicalBranch.stdout.trim()) {
+    return { safe: false, path, sourceState: 'source_state_unknown', detail: 'Canonical integration branch could not be resolved for owned managed-worktree cleanup.' };
+  }
+  const canonicalBranchName = canonicalBranch.stdout.trim();
+  const contained = runProcess('git', ['merge-base', '--is-ancestor', head.stdout.trim(), `refs/heads/${canonicalBranchName}`], {
+    cwd: canonical.canonicalRoot,
+    timeoutMs: 10_000,
+    maxOutputBytes: 100_000,
+  });
+  if (!contained.ok) {
+    return {
+      safe: false,
+      path,
+      sourceState: 'unintegrated_commits',
+      detail: `Owned managed worktree HEAD ${head.stdout.trim()} is not contained in canonical branch ${canonicalBranchName}; source preservation remains required.`,
+    };
+  }
+  return {
+    safe: true,
+    path,
+    sourceState: 'clean_integrated',
+    workspaceResourceId: workspaceResource.resourceId,
+    checkoutId: checkout.checkoutId,
+    branch: branchName,
+    canonicalBranch: canonicalBranchName,
+    detail: `Canonical OwnedResource proves cleanup authority for a clean managed worktree whose HEAD ${head.stdout.trim()} is already contained in canonical branch ${canonicalBranchName}.`,
+  };
+}
+
 interface StaleWorkSourceInspection {
   safeToCancel: boolean;
   state: StaleWorkSourceState;
@@ -824,12 +939,28 @@ function scanRetainedWorktreeCandidates(
       continue;
     }
     if (!looksLikeForgeManagedWorktree(normalized)) continue;
+    const ownedResource = activeOwnedWorktreeResource(controllerHome, repository.repoId, normalized);
+    if (ownedResource) {
+      const inspection = inspectOwnedManagedWorktree(repository, controllerHome, normalized);
+      candidates.push({
+        kind: 'unowned_managed_worktree',
+        id: `managed-worktree:${basename(normalized)}`,
+        path: normalized,
+        safe: inspection.safe,
+        reason: inspection.detail,
+        suggestedAction: 'full_maintenance_pass',
+        ownershipStatus: 'explicit',
+        sourceState: inspection.sourceState,
+        disposition: inspection.safe ? undefined : 'source_preservation_required',
+      });
+      continue;
+    }
     candidates.push({
       kind: 'unowned_managed_worktree',
       id: `managed-worktree:${basename(normalized)}`,
       path: normalized,
       safe: false,
-      reason: 'Git reports a Forge-managed worktree for this repository, but the current Controller has no WorkContract ownership and no retained migration identity for it. Ownership must be reconciled before lifecycle health can be reported.',
+      reason: 'Git reports a Forge-managed worktree for this repository, but neither the current Work store, retained migration state, nor canonical OwnedResource authority owns it. Ownership must be reconciled before lifecycle health can be reported.',
       suggestedAction: 'full_maintenance_pass',
       ownershipStatus: 'unknown',
       disposition: 'ownership_reconciliation',
@@ -1059,6 +1190,114 @@ function detachLegacyRemoteEffectPlacement(
   }
 }
 
+function detachOwnedManagedWorktree(
+  repository: RuntimeMaintenanceRepository,
+  controllerHome: string,
+  candidate: RuntimeMaintenanceCandidate,
+): RuntimeMaintenanceCandidate & { applied: boolean; result: string } {
+  if (!candidate.path) return { ...candidate, applied: false, result: 'owned_managed_worktree_path_missing' };
+  const inspection = inspectOwnedManagedWorktree(repository, controllerHome, candidate.path);
+  if (!inspection.safe || !inspection.workspaceResourceId || !inspection.checkoutId || !inspection.branch || !inspection.canonicalBranch) {
+    return {
+      ...candidate,
+      safe: false,
+      reason: inspection.detail,
+      sourceState: inspection.sourceState,
+      disposition: 'source_preservation_required',
+      applied: false,
+      result: 'owned_managed_worktree_preserved',
+    };
+  }
+  try {
+    setRepositoryCheckoutLifecycle({
+      controllerHome,
+      repoId: repository.repoId,
+      checkoutId: inspection.checkoutId,
+      lifecycle: 'removed',
+      reason: 'Canonical OwnedResource cleanup reconciled a WorkContract-less managed worktree whose source is already integrated.',
+    });
+    const removed = runProcess('git', ['worktree', 'remove', '--force', inspection.path], {
+      cwd: repository.canonicalRoot,
+      timeoutMs: 60_000,
+      maxOutputBytes: 500_000,
+    });
+    if (!removed.ok && existsSync(inspection.path)) {
+      throw new Error(`OWNED_MANAGED_WORKTREE_REMOVE_FAILED: ${removed.stderr || removed.stdout}`);
+    }
+    markOwnedResourceCleaned(controllerHome, inspection.workspaceResourceId, 'forge:runtime-maintenance-owned-worktree');
+    if (inspection.branch !== inspection.canonicalBranch) {
+      try {
+        assertOwnedResourceCleanupTarget(controllerHome, {
+          resourceId: managedBranchOwnedResourceId(repository.repoId, inspection.checkoutId),
+          kind: 'git_branch',
+          targetRef: inspection.branch,
+          locator: managedBranchOwnedResourceLocator(repository.canonicalRoot, inspection.checkoutId, inspection.branch),
+        });
+      } catch {
+        return {
+          ...candidate,
+          safe: true,
+          reason: inspection.detail,
+          sourceState: 'clean_integrated',
+          disposition: undefined,
+          applied: true,
+          result: `owned_managed_worktree_detached_branch_retained:${inspection.branch}`,
+        };
+      }
+      const deleted = runProcess('git', ['branch', '--delete', inspection.branch], {
+        cwd: repository.canonicalRoot,
+        timeoutMs: 10_000,
+        maxOutputBytes: 100_000,
+      });
+      if (!deleted.ok) {
+        const forced = runProcess('git', ['branch', '--delete', '--force', inspection.branch], {
+          cwd: repository.canonicalRoot,
+          timeoutMs: 10_000,
+          maxOutputBytes: 100_000,
+        });
+        if (!forced.ok) {
+          return {
+            ...candidate,
+            safe: true,
+            reason: inspection.detail,
+            sourceState: 'clean_integrated',
+            disposition: undefined,
+            applied: true,
+            result: `owned_managed_worktree_detached_branch_retained:${inspection.branch}`,
+          };
+        }
+      }
+      markOwnedResourceCleaned(
+        controllerHome,
+        managedBranchOwnedResourceId(repository.repoId, inspection.checkoutId),
+        'forge:runtime-maintenance-owned-worktree',
+      );
+    }
+    return {
+      ...candidate,
+      safe: true,
+      reason: inspection.detail,
+      sourceState: 'clean_integrated',
+      disposition: undefined,
+      applied: true,
+      result: 'owned_managed_worktree_detached',
+    };
+  } catch (error) {
+    if (existsSync(inspection.path)) {
+      try {
+        setRepositoryCheckoutLifecycle({
+          controllerHome,
+          repoId: repository.repoId,
+          checkoutId: inspection.checkoutId,
+          lifecycle: 'active',
+          reason: 'Rollback failed OwnedResource managed-worktree cleanup.',
+        });
+      } catch { /* preserve primary failure */ }
+    }
+    throw error;
+  }
+}
+
 export function applyStaleWorkContractMaintenanceCandidate(
   repository: RuntimeMaintenanceRepository,
   controllerHome: string,
@@ -1248,7 +1487,7 @@ export function buildRuntimeMaintenanceStatus(
       'Pending approvals are not cancelled unless cancel_pending_approvals is explicitly enabled.',
       'System temp cleanup only removes direct forge-prefixed children of approved temp roots after a 24-hour retention period and a fresh process-occupancy check.',
       'Runtime lifecycle changes and source repair are outside the runtime maintenance executor.',
-      'Retained or unowned managed worktrees are review-only lifecycle blockers. Runtime maintenance never deletes or modifies their preserved implementation state.',
+      'Retained or unknown-ownership managed worktrees remain review-only lifecycle blockers. A WorkContract-less managed worktree is cleanup-eligible only when canonical OwnedResource identity is exact, the worktree is clean, and its HEAD is already contained in the canonical branch.',
     ],
   };
 }
@@ -1460,6 +1699,9 @@ export function applyRuntimeMaintenance(
       }
       if (candidate.kind === 'stale_work_contract') {
         return applyStaleWorkContractMaintenanceCandidate(repository, controllerHome, candidate);
+      }
+      if (candidate.kind === 'unowned_managed_worktree') {
+        return detachOwnedManagedWorktree(repository, controllerHome, candidate);
       }
       if (candidate.kind === 'stale_edit_session') {
         const cleaned = cleanupEditSession(repository.canonicalRoot, candidate.id, {

@@ -29,6 +29,8 @@ import { createPlanContract } from '../../src/runtime/control-plane/facade/plan-
 import { claimControllerSession, releaseControllerSession } from '../../src/runtime/control-plane/facade/controller-session-store';
 import { applyControllerHomeMigration } from '../../src/runtime/control-plane/persistence/controller-home-migration';
 import { writeWorkHandle } from '../../src/runtime/control-plane/execution/work-handle-store';
+import { getOwnedResource, recordOwnedResource } from '../../packages/kernel/identity/api/index';
+import { managedBranchOwnedResourceId, managedBranchOwnedResourceLocator, managedWorkspaceOwnedResourceId } from '../../src/runtime/execution/managed-workspace';
 import {
   applyExternalFilesystemGrant,
   buildWorkspaceAuthStatus,
@@ -608,6 +610,80 @@ describe('runtime maintenance executor', () => {
     const status = buildRuntimeMaintenanceStatus({ repoId: 'repo-owned', canonicalRoot: repoRoot }, controllerHome, { minAgeMinutes: 60, maxCandidates: 50 });
     expect(status.candidates).not.toContainEqual(expect.objectContaining({ kind: 'unowned_managed_worktree', path: worktree }));
     expect(status.candidates).not.toContainEqual(expect.objectContaining({ kind: 'retained_migrated_work', path: worktree }));
+  });
+
+  it('reconciles a clean integrated managed worktree from canonical OwnedResource authority when its WorkContract is absent', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-maintenance-owned-resource-worktree-'));
+    temporaryRoots.push(root);
+    const controllerHome = join(root, 'controller');
+    const repoRoot = join(root, 'repo');
+    mkdirSync(controllerHome, { recursive: true });
+    mkdirSync(repoRoot, { recursive: true });
+    execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repoRoot });
+    execFileSync('git', ['config', 'user.email', 'test@example.test'], { cwd: repoRoot });
+    execFileSync('git', ['config', 'user.name', 'Test'], { cwd: repoRoot });
+    writeFileSync(join(repoRoot, 'README.md'), '# owned resource worktree\n');
+    execFileSync('git', ['add', 'README.md'], { cwd: repoRoot });
+    execFileSync('git', ['commit', '-qm', 'initial'], { cwd: repoRoot });
+
+    const registered = registerRepository({ path: repoRoot, displayName: 'owned-resource-worktree', controllerHome });
+    const branch = 'work/owned-resource-orphan';
+    const worktree = join(controllerHome, 'managed-worktrees', registered.repoId, 'work-owned-resource-orphan');
+    mkdirSync(join(controllerHome, 'managed-worktrees', registered.repoId), { recursive: true });
+    execFileSync('git', ['worktree', 'add', '-q', '-b', branch, worktree, 'HEAD'], { cwd: repoRoot });
+    const withCheckout = addRepositoryCheckout({ repoId: registered.repoId, path: worktree, controllerHome });
+    const checkout = withCheckout.checkouts.find((candidate) => candidate.checkoutId !== registered.activeCheckoutId && candidate.worktree);
+    if (!checkout) throw new Error('owned-resource worktree fixture checkout missing');
+
+    const registeredWorktree = checkout.canonicalRoot;
+    recordOwnedResource(controllerHome, {
+      resourceId: managedWorkspaceOwnedResourceId(registered.repoId, checkout.checkoutId),
+      kind: 'worktree',
+      targetRef: registeredWorktree,
+      creator: 'forge:managed-workspace',
+      associatedWorkId: 'work-contract-intentionally-absent',
+      repoId: registered.repoId,
+      retentionIntent: 'temporary',
+    });
+    recordOwnedResource(controllerHome, {
+      resourceId: managedBranchOwnedResourceId(registered.repoId, checkout.checkoutId),
+      kind: 'git_branch',
+      targetRef: branch,
+      locator: managedBranchOwnedResourceLocator(repoRoot, checkout.checkoutId, branch),
+      creator: 'forge:managed-workspace',
+      associatedWorkId: 'work-contract-intentionally-absent',
+      repoId: registered.repoId,
+      retentionIntent: 'retain_on_failure',
+    });
+
+    const repository = { repoId: registered.repoId, canonicalRoot: registered.canonicalRoot, defaultBranch: 'main' };
+    const before = buildRuntimeMaintenanceStatus(repository, controllerHome, { minAgeMinutes: 0, maxCandidates: 50 });
+    expect(before.candidates).toContainEqual(expect.objectContaining({
+      kind: 'unowned_managed_worktree',
+      path: registeredWorktree,
+      safe: true,
+      ownershipStatus: 'explicit',
+      sourceState: 'clean_integrated',
+    }));
+
+    const applied = applyRuntimeMaintenance(repository, controllerHome, {
+      actionId: 'full_maintenance_pass',
+      confirmMaintenance: true,
+      minAgeMinutes: 0,
+      maxCandidates: 50,
+    });
+    expect(applied.applied).toContainEqual(expect.objectContaining({
+      kind: 'unowned_managed_worktree',
+      path: registeredWorktree,
+      applied: true,
+      result: 'owned_managed_worktree_detached',
+    }));
+    expect(existsSync(worktree)).toBe(false);
+    expect(execFileSync('git', ['branch', '--list', branch], { cwd: repoRoot, encoding: 'utf8' }).trim()).toBe('');
+    expect(getRepository(registered.repoId, controllerHome, { includeRemoved: true }).checkouts.find((candidate) => candidate.checkoutId === checkout.checkoutId)?.lifecycle).toBe('removed');
+    expect(getOwnedResource(controllerHome, managedWorkspaceOwnedResourceId(registered.repoId, checkout.checkoutId))?.status).toBe('released');
+    expect(getOwnedResource(controllerHome, managedBranchOwnedResourceId(registered.repoId, checkout.checkoutId))?.status).toBe('released');
+    expect(applied.summary.unownedManagedWorktrees).toBe(0);
   });
 
   it('terminalizes stale active Local Jobs without using Local Job tickets', () => {
