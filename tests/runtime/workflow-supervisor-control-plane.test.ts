@@ -1665,6 +1665,10 @@ test('Resume stream unavailable reserves exactly one same-conversation recovery 
   expect(failureCode).toBe(CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE);
   expect(chatgptProviderPageFailure('ChatGPT stream recovery polling timed out')).toBe(CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE);
   expect(chatgptProviderPageFailure('连接已中断，正在等待完整答复')).toBe(CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE);
+  expect(chatgptProviderPageFailure('分析已暂停')).toBe(CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE);
+  expect(chatgptProviderPageFailure('Analysis paused')).toBe(CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE);
+  expect(chatgptProviderPageFailure('已分析\n分析已暂停\n分析已暂停')).toBe(CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE);
+  expect(chatgptProviderPageFailure('Earlier the analysis paused; now the model is working.')).toBeUndefined();
   expect(chatgptProviderPageFailure('消息传输超时。请重试。')).toBe('CHATGPT_AUTOMATION_MESSAGE_DELIVERY_TIMED_OUT');
   expect(classifyChatgptProviderFailure(failureCode!)).toBe('outcome_unknown');
 

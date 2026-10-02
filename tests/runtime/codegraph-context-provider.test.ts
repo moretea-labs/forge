@@ -907,32 +907,32 @@ describe('CodeGraph read provider', () => {
     expect(pack.files.find((file) => file.path === 'src/service.ts')?.reasons).toContain('search:runService');
   });
 
-  test('runs lexical fallback when stale required structural candidates already saturate discovery', () => {
+  test('honors exact lexical queries when current structural candidates already saturate discovery', () => {
     const root = contextRepo();
     const noiseFiles = Array.from({ length: 16 }, (_, index) => `noise/changed-${index}.ts`);
     mkdirSync(join(root, 'noise'), { recursive: true });
     for (const path of noiseFiles) writeFileSync(join(root, path), `export const changed${path.match(/\d+/)?.[0] ?? 'x'} = true;\n`);
-    const stale = structuralResponse({
-      status: 'stale',
+    execFileSync('git', ['add', '.'], { cwd: root });
+    execFileSync('git', ['commit', '-qm', 'structural noise'], { cwd: root });
+    const current = structuralResponse({
+      status: 'ready',
       metadata: {
         initialized: true,
         lastIndexedAt: 1,
         buildVersion: '1.0.1',
         extractionVersion: 1,
         staleEngine: false,
-        changedFiles: { added: noiseFiles, modified: [], removed: [] },
+        changedFiles: { added: [], modified: [], removed: [] },
       },
-      result: { nodes: [], entryPoints: [], relatedFiles: [], truncated: false },
+      result: { nodes: [], entryPoints: [], relatedFiles: noiseFiles, truncated: false },
     });
     const pack = buildControllerContextPack(root, getMcpPolicy('controller'), {
       description: 'runService',
       searchTerms: ['runService'],
       structuralContext: 'required',
       maxFiles: 4,
-    }, { queryCodeGraph: () => stale });
-    expect(pack.structuralContext).toMatchObject({ requestedMode: 'required', status: 'stale', requiredSatisfied: false });
-    expect(pack.readiness).toMatchObject({ status: 'insufficient', readyForHighConfidenceMutation: false });
-    expect(pack.readiness.unresolvedReasonCodes).toContain('required_structural_context_unsatisfied');
+    }, { queryCodeGraph: () => current });
+    expect(pack.structuralContext).toMatchObject({ requestedMode: 'required', status: 'ready', requiredSatisfied: true });
     expect(pack.search.scannedFiles).toBeGreaterThan(0);
     expect(pack.files[0]?.path).toBe('src/service.ts');
     expect(pack.files[0]?.reasons).toContain('search:runService');

@@ -1266,11 +1266,11 @@ printf '{"ok":true}\\n'
     const business = tempRoot('forge-context-readiness-facade-');
     const controllerHome = tempRoot('forge-home-context-readiness-facade-');
     initGitRepo(business, 'context-readiness-facade');
-    writeFileSync(join(business, 'src', 'index.ts'), "import { helper } from './helper';\nexport const ENTRY_MARKER = helper;\n");
+    writeFileSync(join(business, 'src', 'index.ts'), "import { helper } from './helper';\nexport const ENTRY_MARKER = helper;\n" + '// Source evidence must survive the MCP facade.\n'.repeat(40) + 'export const END_OF_SOURCE_EVIDENCE = true;\n');
     writeFileSync(join(business, 'src', 'helper.ts'), 'export const helper = 42;\n');
     const repository = registerRepository({ path: business, controllerHome, displayName: 'Context Readiness Facade' });
     const payload = structured(await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_context', {
-      repo_id: repository.repoId, operation: 'search', query: 'ENTRY_MARKER', known_paths: ['src/index.ts'], retrieval_mode: 'review', structural_context: 'off', max_files: 4, max_snippets: 8,
+      repo_id: repository.repoId, operation: 'search', query: 'ENTRY_MARKER', known_paths: ['src/index.ts'], retrieval_mode: 'review', structural_context: 'off', max_files: 4, max_snippets: 8, detail_level: 'raw',
       semantic_navigation: [{ navigation: 'references', path: 'src/index.ts', line: 0, column: 1 }],
     }));
     const data = payload.data as { readiness?: { status?: string; readyForHighConfidenceMutation?: boolean; semantic?: { status?: string; reasonCodes?: string[] }; unresolvedReasonCodes?: string[] }; expansion?: { waveCount?: number; expansionPerformed?: boolean; materializedPaths?: string[] }; semanticNavigation?: { requested?: number; errors?: Array<{ code?: string }> } };
@@ -1281,6 +1281,11 @@ printf '{"ok":true}\\n'
     expect(data.semanticNavigation?.errors?.some((entry) => entry.code === 'SEMANTIC_NAVIGATION_REQUEST_INVALID')).toBe(true);
     expect(data.readiness).toMatchObject({ status: 'insufficient', readyForHighConfidenceMutation: false, semantic: { status: 'error' } });
     expect(data.readiness?.unresolvedReasonCodes).toContain('semantic.semantic_navigation_request_invalid');
+    expect(payload.detailLevel).toBe('raw');
+    const source = (payload.data as { files: Array<{ path: string; snippets: Array<{ content: string; truncated: boolean }> }> }).files.find(file => file.path === 'src/index.ts')?.snippets[0];
+    expect(source?.truncated).toBe(false);
+    expect(source?.content.length).toBeGreaterThan(1_000);
+    expect(source?.content).toContain('END_OF_SOURCE_EVIDENCE');
   });
 
   test('rh_context runtime-issued closure round-trips into engineering preconditions without depth corruption', async () => {

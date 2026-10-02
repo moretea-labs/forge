@@ -381,7 +381,7 @@ export function buildControllerContextPack(
   // though inventory itself was cached.
   const lexicalStartedAt = performance.now();
   const requiredStructuralFallbackNeedsLexical = structuralMode === "required" && !structuralContext.requiredSatisfied;
-  if (searchQueries.length > 0 && (requiredStructuralFallbackNeedsLexical || candidates.size < maxFiles * 3)) {
+  if (searchQueries.length > 0 && (requiredSearchQueries.length > 0 || requiredStructuralFallbackNeedsLexical || candidates.size < maxFiles * 3)) {
     const search = searchRepositoryMany(repoRoot, policy, {
       queries: searchQueries,
       files: scopedExactKnownFileSearch ? exactKnownFiles : undefined,

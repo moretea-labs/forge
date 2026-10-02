@@ -701,7 +701,7 @@ export async function callContextAdapter(ctx: MultiRepositoryMcpToolContext, nam
         },
         warnings,
         suggestedNextActions: [],
-        detailLevel: 'summary',
+        detailLevel: args.detail_level === 'detail' || args.detail_level === 'raw' ? args.detail_level : 'summary',
         rawAvailable: true,
       });
       // ContextClosureReceipt already enforces bounded paths, tests, skills, semantic providers,
@@ -709,6 +709,10 @@ export async function callContextAdapter(ctx: MultiRepositoryMcpToolContext, nam
       // but it must not corrupt this runtime-issued round-trip contract because rh_work validates
       // the exact full receipt digest supplied by the Controller during engineering re-entry.
       (facade.data as typeof facade.data & { contextClosure: typeof contextClosure }).contextClosure = contextClosure;
+      // Materialization already bounds and redacts source. Generic 1,000-character
+      // summary clipping must not corrupt bytes while retaining truncated=false,
+      // line ranges and hashes that describe the original complete snippet.
+      (facade.data as typeof facade.data & { files: typeof pack.files }).files = pack.files;
       if (cognitionAudit) {
         (facade.data as typeof facade.data & { cognitionAudit: typeof cognitionAudit }).cognitionAudit = cognitionAudit;
       }

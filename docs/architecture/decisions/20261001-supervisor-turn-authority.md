@@ -185,6 +185,12 @@ dispatch authority, schema, lifecycle or heuristic productivity gate.
 Model judgment owns
 which coherent wave advances the authorized objective; no keyword/count/score
 gate, claim bypass, forced code mutation or automatic goal completion is added.
+Context materialization owns bounded, redacted source bytes and their line/hash/
+truncation metadata; the MCP facade must preserve them together. Explicit code
+needles retain lexical coverage even when fuzzy structural candidates fill the
+discovery budget. Existing current-turn provider status also recognizes analysis
+paused as unavailable response delivery, retaining outcome-unknown classification
+and the same single bounded resume. A live generating surface still blocks Send.
 The read-only Work continuation projection directs open Work toward its next
 authorized scoped step rather than prescribing a retired model-facing claim
 operation. Existing execution admission and writer/resource fences still apply.
