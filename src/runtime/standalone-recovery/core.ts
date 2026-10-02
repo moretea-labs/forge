@@ -342,6 +342,26 @@ export interface VerifyStableRuntimeOptions extends RuntimeReleaseExecutionCanar
   probeMcpProtocol?: boolean;
 }
 
+/**
+ * Remote tunnel control-plane lookup is weaker evidence than the live data plane.
+ * Once the configured tunnel is locally healthy/ready with matching identities and
+ * the public MCP protocol succeeds end-to-end, a degraded/unknown control-plane
+ * lookup remains diagnostic instead of vetoing whole-Runtime verification.
+ * Any local health, readiness, identity, endpoint, or MCP failure still gates.
+ */
+export function isPrimaryTunnelControlPlaneOnlyDegradation(
+  probe: VerifyResult['probes'][string] | undefined,
+  mcpProtocolHealthy: boolean,
+): boolean {
+  if (!mcpProtocolHealthy || !probe || probe.ok) return false;
+  const observed = probe.value as Partial<OpenAiSecureTunnelRuntimeObservation> | undefined;
+  return observed?.healthy === true
+    && observed.ready === true
+    && observed.tunnelMatches === true
+    && observed.endpointMatches === true
+    && (observed.controlPlaneState === 'degraded' || observed.controlPlaneState === 'unknown');
+}
+
 /** Bounded, release-scoped explanation for a failed watchdog verification. */
 export interface RecoveryWatchdogDiagnosticEvidence {
   fingerprint: string;
@@ -1705,6 +1725,14 @@ export async function verifyStableRuntime(
     // authenticated MCP session completes end-to-end, that raw reachability
     // probe cannot independently veto full stable Runtime verification.
     .filter(([name]) => !(name === 'external_mcp_http' && mcpProtocolHealthy))
+    // The OpenAI tunnel control-plane lookup is likewise diagnostic when the
+    // local tunnel identity/readiness is exact and the stronger public MCP data
+    // plane has already completed end-to-end. Real tunnel/data-plane failures
+    // still remain in coreChecks and fail closed.
+    .filter(([name, entry]) => !(
+      name === 'primary_tunnel_runtime'
+      && isPrimaryTunnelControlPlaneOnlyDegradation(entry, mcpProtocolHealthy)
+    ))
     .every(([, entry]) => entry.ok);
   const runtimeHealthy = observation.running && observation.ready && !observation.stale;
   const coherent = Boolean(

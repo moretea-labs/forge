@@ -16,6 +16,7 @@ import {
   decideWatchdog,
   defaultPrimaryRuntimeServiceConfig,
   initializeStandaloneRecovery,
+  isPrimaryTunnelControlPlaneOnlyDegradation,
   loadRecoveryConfig,
   observeOpenAiTunnelLocalHealthFallback,
   recoveryCommandEnvironment,
@@ -1274,6 +1275,34 @@ test('standalone Recovery preserves a locally healthy tunnel as degraded when Op
     clientInstanceId,
   });
   expect(observed.controlPlaneDetail).toContain('lookup api.openai.com');
+});
+
+test('stable Runtime gates on tunnel data-plane failures but not control-plane-only degradation after MCP proof', () => {
+  const controlPlaneOnly = {
+    ok: false,
+    detail: 'remote lookup failed: EOF',
+    value: {
+      healthy: true,
+      ready: true,
+      tunnelMatches: true,
+      endpointMatches: true,
+      controlPlaneState: 'degraded',
+    },
+  };
+  expect(isPrimaryTunnelControlPlaneOnlyDegradation(controlPlaneOnly, true)).toBe(true);
+  expect(isPrimaryTunnelControlPlaneOnlyDegradation(controlPlaneOnly, false)).toBe(false);
+  expect(isPrimaryTunnelControlPlaneOnlyDegradation({
+    ...controlPlaneOnly,
+    value: { ...controlPlaneOnly.value, tunnelMatches: false },
+  }, true)).toBe(false);
+  expect(isPrimaryTunnelControlPlaneOnlyDegradation({
+    ...controlPlaneOnly,
+    value: { ...controlPlaneOnly.value, healthy: false },
+  }, true)).toBe(false);
+  expect(isPrimaryTunnelControlPlaneOnlyDegradation({
+    ...controlPlaneOnly,
+    value: { ...controlPlaneOnly.value, controlPlaneState: 'unknown' },
+  }, true)).toBe(true);
 });
 
 test('standalone Recovery repairs a Linux primary OpenAI Secure MCP Tunnel without restarting a healthy Connector', async () => {
