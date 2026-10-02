@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { normalizeCheckIds, classifyVerificationOutcome } from '../../src/runtime/control-plane/facade/check-normalization';
-import { listCapabilityDescriptors, searchCapabilityDescriptors, summarizeCapabilityGroups } from '../../src/runtime/control-plane/facade/capability-registry';
+import { getCoreCapabilityExecutionSchema, listCapabilityDescriptors, searchCapabilityDescriptors, summarizeCapabilityGroups } from '../../src/runtime/control-plane/facade/capability-registry';
 import { evaluatePolicyGate } from '../../src/runtime/control-plane/facade/policy-gate';
 import { buildFacadeResult } from '../../src/runtime/control-plane/facade/facade-result';
 import { allowedFacadeOperations, validateSuggestedNextActions } from '../../src/runtime/control-plane/facade/suggested-actions';
@@ -19,6 +19,20 @@ import {
 
 describe('handoff and facade contracts', () => {
   test('keeps the ChatGPT-facing facade small and stable', () => {
+    expect(FACADE_TOOLS).toEqual(['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work', 'capability_execute']);
+  });
+
+  test('exposes standalone Workflow Supervisor through capability_execute without widening the facade', () => {
+    const descriptor = listCapabilityDescriptors().find((entry) => entry.capabilityId === 'controller.workflow_supervisor');
+    expect(descriptor).toMatchObject({
+      domain: 'controller', group: 'controller', operationClass: 'execute', risk: 'workspace_write',
+      exposedVia: 'capability_execute', schemaExposure: 'stable_static',
+    });
+    const schema = getCoreCapabilityExecutionSchema('controller.workflow_supervisor') as { executeWith?: string; actions?: Record<string, unknown> } | undefined;
+    expect(schema?.executeWith).toBe('capability_execute');
+    expect(Object.keys(schema?.actions ?? {}).sort()).toEqual(['get', 'list', 'proof', 'start', 'stop']);
+    expect(searchCapabilityDescriptors('workflow supervisor continuation proof').map((entry) => entry.capabilityId)).toContain('controller.workflow_supervisor');
+    expect(runtimeToolDefinitions.some((definition) => definition.name === 'supervisor_task')).toBe(true);
     expect(FACADE_TOOLS).toEqual(['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work', 'capability_execute']);
   });
 

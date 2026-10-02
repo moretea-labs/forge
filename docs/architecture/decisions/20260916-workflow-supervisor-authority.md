@@ -211,6 +211,8 @@ The cross-turn dependency described in this section is superseded by [Supervisor
 
 The existing Scheduler remains only an execution/occurrence scheduler. Once an exact Requirement-backed ChatGPT conversation binding exists, lower Scheduler/maintenance/direct-continuation paths must not submit the next outer ChatGPT turn; Workflow Supervisor is the single outer writer.
 
+Standalone Supervisor lifecycle and release-bound live proof are reachable from the six-tool ChatGPT facade as the `controller.workflow_supervisor` core capability on `capability_execute`. Its `start/list/get/stop/proof` actions route into the same `WorkflowSupervisorControlPlane` adapter and dedicated Supervisor persistence. The retained internal/compatibility `supervisor_task` definition is not a second facade or authority; acceptance canaries reuse the same Supervisor writer instead of creating another lifecycle.
+
 No Supervisor state is added to Work, ControllerRound, relay, MCP session or existing declarative Workflow asset records in V1. Integration is through typed observations/read-only completion evidence and authorized execution effects.
 
 ## Stagnation and strategy evolution

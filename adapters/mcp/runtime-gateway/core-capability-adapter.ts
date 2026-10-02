@@ -3,6 +3,7 @@ import type { MultiRepositoryMcpToolContext } from '../multi-repository';
 import { commitSelectedPaths, selectedPathDiff, stageSelectedPaths } from '../../../src/cli/repositories/selected-path-actions';
 import { result } from './result-adapter';
 import { selected } from './shared-adapter';
+import { callWorkflowSupervisorAdapter } from './workflow-supervisor-adapter';
 
 function object(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
@@ -20,6 +21,15 @@ export async function callCoreCapabilityAdapter(
   const input = object(args.arguments);
 
   try {
+    if (capabilityId === 'controller.workflow_supervisor') {
+      const forwarded = await callWorkflowSupervisorAdapter(ctx, 'supervisor_task', {
+        ...input,
+        operation: action,
+        request_id: typeof args.request_id === 'string' ? args.request_id.trim() : '',
+        ...(typeof args.repo_id === 'string' && args.repo_id.trim() ? { repo_id: args.repo_id.trim() } : {}),
+      });
+      return forwarded ?? result({ error: { code: 'CORE_CAPABILITY_ROUTE_UNAVAILABLE', message: 'Workflow Supervisor capability route is unavailable.' } }, true);
+    }
     if (capabilityId !== 'repository.git') {
       return result({ error: { code: 'CORE_CAPABILITY_UNSUPPORTED', message: `Unsupported core capability: ${capabilityId || '<empty>'}` } }, true);
     }

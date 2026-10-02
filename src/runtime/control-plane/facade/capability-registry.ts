@@ -88,6 +88,16 @@ const CORE_CAPABILITIES: CapabilityDescriptor[] = [
     summary: 'Start an explicitly requested external Codex, Claude, or ChatGPT controller through launcher_start; provider identity, transport recovery, and mechanical binding remain internal.',
   },
   {
+    capabilityId: 'controller.workflow_supervisor',
+    domain: 'controller',
+    group: 'controller',
+    operationClass: 'execute',
+    risk: 'workspace_write',
+    exposedVia: 'capability_execute',
+    schemaExposure: 'stable_static',
+    summary: 'Start, inspect, stop, and verify standalone Workflow Supervisor tasks through the existing Supervisor single-writer authority; used for bounded cross-turn continuation and release-bound live proof without creating semantic Work or another public facade tool.',
+  },
+  {
     capabilityId: 'controller.work_contract',
     domain: 'controller',
     group: 'controller',
@@ -308,6 +318,60 @@ export function summarizeCapabilityGroups(manifests: readonly AssistantPluginMan
 }
 
 export function getCoreCapabilityExecutionSchema(capabilityId: string): Record<string, unknown> | undefined {
+  if (capabilityId === 'controller.workflow_supervisor') {
+    return {
+      capabilityId,
+      executeWith: 'capability_execute',
+      actions: {
+        start: {
+          readOnly: false,
+          risk: 'workspace_write',
+          argumentsSchema: {
+            type: 'object', additionalProperties: false, required: ['objective'],
+            properties: { objective: { type: 'string', minLength: 1, maxLength: 4000 } },
+          },
+        },
+        list: {
+          readOnly: true,
+          risk: 'readonly',
+          argumentsSchema: {
+            type: 'object', additionalProperties: false,
+            properties: { active_only: { type: 'boolean' } },
+          },
+        },
+        get: {
+          readOnly: true,
+          risk: 'readonly',
+          argumentsSchema: {
+            type: 'object', additionalProperties: false, required: ['task_id'],
+            properties: { task_id: { type: 'string', minLength: 1, maxLength: 256 } },
+          },
+        },
+        stop: {
+          readOnly: false,
+          risk: 'workspace_write',
+          argumentsSchema: {
+            type: 'object', additionalProperties: false, required: ['task_id'],
+            properties: {
+              task_id: { type: 'string', minLength: 1, maxLength: 256 },
+              reason: { type: 'string', maxLength: 2000 },
+            },
+          },
+        },
+        proof: {
+          readOnly: true,
+          risk: 'readonly',
+          argumentsSchema: {
+            type: 'object', additionalProperties: false, required: ['active_release_id', 'not_before'],
+            properties: {
+              active_release_id: { type: 'string', minLength: 1, maxLength: 256 },
+              not_before: { type: 'string', minLength: 1, maxLength: 128 },
+            },
+          },
+        },
+      },
+    };
+  }
   if (capabilityId !== 'repository.git') return undefined;
   return {
     capabilityId,

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { WorkflowSupervisorControlPlane } from '../../supervisor/control-plane';
@@ -10,6 +10,9 @@ import { automationMetadata, automationReceiptControllerTypeAllowed } from '../.
 import { normalizeRhWorkInputCompatibility } from '../../adapters/mcp/runtime-gateway/work-input-compatibility';
 import { callWorkAdapter } from '../../adapters/mcp/runtime-gateway/work-adapter';
 import { runtimeToolDefinitions } from '../../adapters/mcp/runtime-gateway/runtime-tool-definitions';
+import { callCoreCapabilityAdapter } from '../../adapters/mcp/runtime-gateway/core-capability-adapter';
+import { createWorkflowSupervisorServer } from '../../supervisor/server';
+import { workflowSupervisorSocketPath } from '../../supervisor/paths';
 
 const roots: string[] = [];
 afterEach(() => {
@@ -156,6 +159,42 @@ describe('Workflow Supervisor automation receipts', () => {
     expect(renderSupervisorPrompt(task, effect.effectId, 'enrollment')).toStartWith('@forge\n');
     expect(renderSupervisorPrompt(task, effect.effectId, 'enrollment')).not.toContain('CONTINUE => "C ');
     store.close();
+  });
+
+  test('routes standalone Supervisor start/list through capability_execute without a second handler', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-capability-'));
+    roots.push(root);
+    const supervisorRoot = join(root, 'supervisor');
+    mkdirSync(supervisorRoot, { recursive: true });
+    const store = new WorkflowSupervisorStore(supervisorRoot);
+    const control = new WorkflowSupervisorControlPlane(store, forgeWorkflowSupervisorValidators());
+    const socketPath = workflowSupervisorSocketPath(root);
+    const server = createWorkflowSupervisorServer({ controlPlane: control, socketPath });
+    await new Promise<void>((resolve, reject) => {
+      if (server.listening) { resolve(); return; }
+      server.once('error', reject);
+      server.once('listening', () => resolve());
+    });
+    try {
+      const ctx = { controllerHome: root, repoId: 'repo-forge' } as any;
+      const started = await callCoreCapabilityAdapter(ctx, 'capability_execute', {
+        capability_id: 'controller.workflow_supervisor', action: 'start', request_id: 'standalone-proof-capability-test', repo_id: 'repo-forge',
+        arguments: { objective: 'Prove the existing Supervisor authority is reachable through capability_execute.' },
+      });
+      expect(started?.isError).not.toBe(true);
+      expect(started?.structuredContent).toMatchObject({
+        task: { conversationId: expect.stringContaining('bootstrap:supervisor:'), continuationPolicy: { kind: 'standalone_supervisor', bootstrap: true, repo_id: 'repo-forge' } },
+        effect: { kind: 'enrollment' },
+      });
+      const listed = await callCoreCapabilityAdapter(ctx, 'capability_execute', {
+        capability_id: 'controller.workflow_supervisor', action: 'list', request_id: 'standalone-proof-capability-list-test', repo_id: 'repo-forge', arguments: {},
+      });
+      expect(listed?.structuredContent).toMatchObject({ count: 1, activeOnly: true });
+      expect(store.listTasks()).toHaveLength(1);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      store.close();
+    }
   });
 
   test('advances a standalone Supervisor task CONTINUE -> CONTINUE -> DONE without Work or Plan', async () => {
