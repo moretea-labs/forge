@@ -1,5 +1,5 @@
 import { listControllerSessions } from '../../../../packages/kernel/controller/api/index';
-import { listSchedules, listActiveOccurrences } from '../../../../packages/kernel/scheduler/api/index';
+import { listSchedules, listActiveOccurrences, scheduleOwnsWork } from '../../../../packages/kernel/scheduler/api/index';
 import { listWorkContracts } from '../../../../packages/kernel/work/api/index';
 import { listActiveLeases } from '../../resources/leases/store';
 import { listProcessRecords } from '../../execution/process-runtime/store';
@@ -22,12 +22,6 @@ export interface OwnerlessWorkAuthorityReconcileResult {
   retired: number;
   workIds: string[];
   skippedByReason: Record<string, number>;
-}
-
-function scheduleOwnsWork(schedule: ReturnType<typeof listSchedules>[number], workId: string): boolean {
-  if (schedule.action.resourceClaims?.some((claim) => claim.workId === workId)) return true;
-  const args = schedule.action.arguments ?? {};
-  return args.workId === workId || args.work_id === workId;
 }
 
 function skip(counts: Record<string, number>, reason: string): void {

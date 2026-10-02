@@ -19,6 +19,7 @@ import { buildJobOperationDigest } from '../../../src/runtime/control-plane/faca
 import { readActiveWorkCandidates, type InvalidActiveWorkCandidate } from "../../../packages/kernel/work/api/index";
 import { observeRuntimeStatus } from "../../../src/runtime/root/status";
 import { getControllerSession } from "../../../packages/kernel/controller/api/index";
+import { listActiveOccurrences, listSchedules, scheduleOwnsWork } from "../../../packages/kernel/scheduler/api/index";
 import { summarizeHandoffItem } from '../../../src/runtime/control-plane/facade';
 import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
 import { triggerResolvedHandoffContinuation } from '../../../src/runtime/workflow/schedules/work-continuation';
@@ -30,6 +31,28 @@ import { resolveWorkflowSupervisorForgeHome } from '../../../supervisor/paths';
 export { ageMs, probeLocalControllerHealth, localControllerDiagnosticMatchesRuntime, controllerReadinessEvidence, runtimeSourceSnapshotStatus } from './runtime-readiness-observation';
 export type { ControllerReadinessSignals } from './runtime-readiness-observation';
 
+export const PRIMARY_WORK_RUNTIME_ACTIVITIES = [
+  'running',
+  'waiting_for_user',
+  'scheduled',
+  'recoverable',
+  'needs_reconciliation',
+] as const;
+export type PrimaryWorkRuntimeActivity = (typeof PRIMARY_WORK_RUNTIME_ACTIVITIES)[number];
+
+/** Read-only runtime projection. These facts never mutate or extend semantic Work state. */
+export function primaryWorkRuntimeActivity(facts: {
+  running: boolean;
+  waitingForUser: boolean;
+  scheduled: boolean;
+  needsReconciliation: boolean;
+}): PrimaryWorkRuntimeActivity {
+  if (facts.running) return 'running';
+  if (facts.waitingForUser) return 'waiting_for_user';
+  if (facts.scheduled) return 'scheduled';
+  if (facts.needsReconciliation) return 'needs_reconciliation';
+  return 'recoverable';
+}
 
 export const GIT_IDENTITY_SAMPLE_TTL_MS = Math.max(1_000, Number(process.env.FORGE_GIT_IDENTITY_SAMPLE_TTL_MS ?? 3_000));
 
@@ -591,10 +614,54 @@ export async function callStatusInboxAdapter(
         .map((processId) => getProcessRecord(ctx.controllerHome, repository.repoId, processId))
         .filter((process): process is NonNullable<typeof process> => Boolean(process && isManagedProcessActive(process)));
       markDetailPhase('process_state');
-      const activeProcessWorkIds = new Set(activeProcessRecords.map((process) => process.workId).filter((workId): workId is string => Boolean(workId)));
-      const activeControllerWorkIds = new Set(activePrimaryWork.filter((contract) => Boolean(getControllerSession({ controllerHome: ctx.controllerHome, repoId: repository.repoId }, contract.workId))).map((contract) => contract.workId));
-      const executingPrimaryWorkIds = new Set([...activeProcessWorkIds, ...activeControllerWorkIds].filter((workId) => activePrimaryWork.some((contract) => contract.workId === workId)));
+      const activePrimaryWorkIds = new Set(activePrimaryWork.map((contract) => contract.workId));
+      const activeProcessWorkIds = new Set(
+        activeProcessRecords
+          .map((process) => process.workId)
+          .filter((workId): workId is string => Boolean(workId && activePrimaryWorkIds.has(workId))),
+      );
+      const activeControllerWorkIds = new Set(
+        activePrimaryWork
+          .filter((contract) => Boolean(getControllerSession({ controllerHome: ctx.controllerHome, repoId: repository.repoId }, contract.workId)))
+          .map((contract) => contract.workId),
+      );
+      const runningPrimaryWorkIds = new Set([...activeProcessWorkIds, ...activeControllerWorkIds]);
       markDetailPhase('controller_sessions');
+
+      const waitingForUserPrimaryWorkIds = new Set(
+        pendingHandoffAttention
+          .map((item) => item.workId?.trim())
+          .filter((workId): workId is string => Boolean(workId && activePrimaryWorkIds.has(workId))),
+      );
+      const schedules = listSchedules(ctx.controllerHome, repository.repoId);
+      const activeOccurrenceScheduleIds = new Set(
+        listActiveOccurrences(ctx.controllerHome, repository.repoId).map((occurrence) => occurrence.scheduleId),
+      );
+      const scheduledPrimaryWorkIds = new Set<string>();
+      for (const schedule of schedules) {
+        if (!schedule.enabled && !activeOccurrenceScheduleIds.has(schedule.scheduleId)) continue;
+        for (const workId of activePrimaryWorkIds) {
+          if (scheduleOwnsWork(schedule, workId)) scheduledPrimaryWorkIds.add(workId);
+        }
+      }
+      const primaryWorkActivities = activePrimaryWork.map((contract) => ({
+        workId: contract.workId,
+        activity: primaryWorkRuntimeActivity({
+          running: runningPrimaryWorkIds.has(contract.workId),
+          waitingForUser: waitingForUserPrimaryWorkIds.has(contract.workId),
+          scheduled: scheduledPrimaryWorkIds.has(contract.workId),
+          needsReconciliation: buildWorkContinuationSnapshot(contract).reconciliationRequired,
+        }),
+      }));
+      const primaryWorkActivityCounts: Record<PrimaryWorkRuntimeActivity, number> = {
+        running: 0,
+        waiting_for_user: 0,
+        scheduled: 0,
+        recoverable: 0,
+        needs_reconciliation: 0,
+      };
+      for (const projection of primaryWorkActivities) primaryWorkActivityCounts[projection.activity] += 1;
+      markDetailPhase('work_activity');
       const preferredFacadeTools = ['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work', 'capability_execute'] as const;
       const facade = buildFacadeResult({
         status: effectiveReady ? 'ok' : 'blocked',
@@ -633,8 +700,8 @@ export async function callStatusInboxAdapter(
           activePrimaryWorkCount: activePrimaryWork.length,
           activeExecutionChildCount: activeExecutionChildren.length,
           activeProcessCount: activeProcessRecords.length,
-          executingPrimaryWorkCount: executingPrimaryWorkIds.size,
-          waitingPrimaryWorkCount: Math.max(0, activePrimaryWork.length - executingPrimaryWorkIds.size),
+          primaryWorkActivityCounts,
+          primaryWorkActivities,
           activeContractCount: activeContracts.length,
           invalidActiveContractCount: activeWorkProjection.invalid.length,
           invalidActiveContracts: activeWorkProjection.invalid.slice(0, 10).map(summarizeInvalidActiveWorkCandidate),

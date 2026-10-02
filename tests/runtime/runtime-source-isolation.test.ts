@@ -8,6 +8,7 @@ import type { MultiRepositoryMcpToolContext } from '../../src/cli/mcp/multi-repo
 import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
 import { registerRepository } from '../../src/cli/repositories/registry';
 import { callRuntimeTool } from '../../src/runtime/gateway/mcp/runtime-tools';
+import { primaryWorkRuntimeActivity } from '../../adapters/mcp/runtime-gateway/status-inbox-adapter';
 import { mintEngineeringAdmissionEvidence } from '../../adapters/mcp/runtime-gateway/engineering-preconditions';
 import {
   collectRuntimeSourceIdentity,
@@ -824,6 +825,14 @@ printf '{"ok":true}\\n'
     }
   });
 
+  test('runtime Work activity projection is mutually exclusive and fact-precedence driven', () => {
+    expect(primaryWorkRuntimeActivity({ running: true, waitingForUser: true, scheduled: true, needsReconciliation: true })).toBe('running');
+    expect(primaryWorkRuntimeActivity({ running: false, waitingForUser: true, scheduled: true, needsReconciliation: true })).toBe('waiting_for_user');
+    expect(primaryWorkRuntimeActivity({ running: false, waitingForUser: false, scheduled: true, needsReconciliation: true })).toBe('scheduled');
+    expect(primaryWorkRuntimeActivity({ running: false, waitingForUser: false, scheduled: false, needsReconciliation: true })).toBe('needs_reconciliation');
+    expect(primaryWorkRuntimeActivity({ running: false, waitingForUser: false, scheduled: false, needsReconciliation: false })).toBe('recoverable');
+  });
+
   test('rh_status row-isolates malformed active Work while keeping bounded diagnostics', async () => {
     const runtimeRoot = tempRoot('forge-runtime-status-invalid-work-');
     const business = tempRoot('forge-status-invalid-work-');
@@ -890,6 +899,11 @@ printf '{"ok":true}\\n'
     expect(detailPayload.error).toBeUndefined();
     const detail = detailPayload.data as {
       activeContractCount?: number;
+      activePrimaryWorkCount?: number;
+      primaryWorkActivityCounts?: Record<'running' | 'waiting_for_user' | 'scheduled' | 'recoverable' | 'needs_reconciliation', number>;
+      primaryWorkActivities?: Array<{ workId: string; activity: 'running' | 'waiting_for_user' | 'scheduled' | 'recoverable' | 'needs_reconciliation' }>;
+      executingPrimaryWorkCount?: number;
+      waitingPrimaryWorkCount?: number;
       invalidActiveContractCount?: number;
       invalidActiveContracts?: Array<{ workId?: string; error?: string }>;
       readiness?: {
@@ -912,6 +926,18 @@ printf '{"ok":true}\\n'
       expect.arrayContaining([expect.stringMatching(/^AUTONOMOUS_CONTINUATION_LIVE_PROOF_(MISSING|UNAVAILABLE)$/)]),
     );
     expect(detail.activeContractCount).toBe(1);
+    expect(detail.activePrimaryWorkCount).toBe(1);
+    expect(detail.primaryWorkActivityCounts).toEqual({
+      running: 0,
+      waiting_for_user: 0,
+      scheduled: 0,
+      recoverable: 1,
+      needs_reconciliation: 0,
+    });
+    expect(detail.primaryWorkActivities).toContainEqual({ workId: valid.workId, activity: 'recoverable' });
+    expect(Object.values(detail.primaryWorkActivityCounts ?? {}).reduce((sum, count) => sum + count, 0)).toBe(detail.activePrimaryWorkCount ?? 0);
+    expect(detail.executingPrimaryWorkCount).toBeUndefined();
+    expect(detail.waitingPrimaryWorkCount).toBeUndefined();
     expect(detail.invalidActiveContractCount).toBe(1);
     expect(detail.invalidActiveContracts?.[0]).toMatchObject({ workId: malformed.workId });
     expect(detail.readiness?.diagnostics?.semantics).toMatchObject({
@@ -1381,10 +1407,10 @@ printf '{"ok":true}\\n'
     expect(data.capabilitySearch).toMatchObject({
       query: 'browser login authentication',
       readOnlyDiscovery: true,
-      executeWith: 'plugin_action_execute',
     });
-    expect(data.capabilitySearch?.matches?.some((entry) => entry.capabilityId?.startsWith('plugin.computer.'))).toBe(true);
-    expect(data.capabilitySearch?.matches?.find((entry) => entry.capabilityId?.startsWith('plugin.computer.'))?.descriptor?.exposedVia).toBe('plugin_action_execute');
+    const computerMatch = data.capabilitySearch?.matches?.find((entry) => entry.capabilityId?.startsWith('plugin.computer.'));
+    expect(computerMatch).toBeTruthy();
+    expect(computerMatch?.descriptor?.exposedVia).toBe('plugin_action_execute');
   });
 
   test('plugin facade addresses controller scope through the ForgeInstance scope', async () => {

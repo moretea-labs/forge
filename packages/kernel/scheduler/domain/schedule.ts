@@ -100,6 +100,13 @@ export interface RepositorySchedule {
   lastObservationStatus?: 'baseline' | 'unchanged' | 'changed' | 'keepalive' | 'auth_required';
 }
 
+/** Mechanical schedule-to-Work targeting only; never semantic Work lifecycle authority. */
+export function scheduleOwnsWork(schedule: Pick<RepositorySchedule, 'action'>, workId: string): boolean {
+  if (schedule.action.resourceClaims?.some((claim) => claim.workId === workId)) return true;
+  const args = schedule.action.arguments ?? {};
+  return args.workId === workId || args.work_id === workId;
+}
+
 export type ScheduleDecisionType =
   | 'nothing_to_do'
   | 'would_execute'
