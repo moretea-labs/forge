@@ -160,8 +160,9 @@ export function renderSupervisorPrompt(
     '@forge',
     renderEffectMarker(effectId),
     `目标：${objective(task)}`,
-    '继续。',
-    `At the end call rh_work with exactly ${receipt}. Use "continue" until the objective is complete ("done") or needs a user decision ("needs_user"). Add no other fields.`,
+    '现在直接完成当前最小未完成步骤；不要只分析、计划、汇报状态或回复“继续”。',
+    '回执前必须产生一个可验证结果：修改路径、检查结果、提交或发布回执之一。只有真实的外部决策阻塞才可不产出而使用 needs_user。',
+    `仅在已有结果或真实阻塞后调用 rh_work with exactly ${receipt}. Use "continue" until the objective is complete ("done") or needs a user decision ("needs_user"). Add no other fields.`,
     ...(repoId ? [`Repository context: repo_id=${JSON.stringify(repoId)}${checkoutId ? `, checkout_id=${JSON.stringify(checkoutId)}` : ''}.`] : []),
     'Do not use plain-text C/D/U or a Supervisor JSON block as the completion receipt.',
   ].join('\n');
