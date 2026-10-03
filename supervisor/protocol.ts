@@ -142,7 +142,6 @@ function objective(task: WorkflowSupervisorTask): string {
 }
 
 const SUPERVISOR_RESPONSE_FORMAT = [
-  '本轮直接完成当前最小步骤；不要只计划、汇报或等待。',
   '响应格式：',
   '结果：<本轮实际完成或明确阻塞>',
   '证据：<修改路径、检查结果、提交或发布回执；无则写“无”>',

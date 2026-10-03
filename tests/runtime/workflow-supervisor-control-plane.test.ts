@@ -279,6 +279,7 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     const continuation = renderSupervisorPrompt(task, 'fx_minimal01', 'continuation', 'large checkpoint payload', undefined, lowerLayerContext);
     expect(continuation).toStartWith('@forge\n');
     expect(continuation.split('\n')[2]).toBe('继续。');
+    expect(continuation.split('\n')[3]).toBe('响应格式：');
     expect(continuation).not.toContain(task.objective);
     expect(continuation).not.toContain('目标：');
     expect(continuation).toContain('响应格式：');
