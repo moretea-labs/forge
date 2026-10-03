@@ -66,15 +66,12 @@ function constraintsValue(value: unknown): WorkContractConstraints | undefined {
     allowMerge: booleanValue(record, 'allowMerge', 'allow_merge'),
     allowCleanup: booleanValue(record, 'allowCleanup', 'allow_cleanup'),
     allowDestructive: booleanValue(record, 'allowDestructive', 'allow_destructive'),
-    requireHandoffOnAmbiguity: booleanValue(record, 'requireHandoffOnAmbiguity', 'require_handoff_on_ambiguity'),
     accessMode: accessModeValue(record),
     workspaceMode: record.workspaceMode === 'current' || record.workspace_mode === 'current'
       ? 'current'
       : record.workspaceMode === 'isolated' || record.workspace_mode === 'isolated'
         ? 'isolated'
         : record.workspaceMode === 'auto' || record.workspace_mode === 'auto' ? 'auto' : undefined,
-    requireWorktree: booleanValue(record, 'requireWorktree', 'require_worktree'),
-    directMainProhibited: booleanValue(record, 'directMainProhibited', 'direct_main_prohibited'),
   };
   return Object.fromEntries(
     Object.entries(constraints).filter(([, entry]) => entry !== undefined),
@@ -96,7 +93,6 @@ function normalizeStartInput(ctx: GoalWorkloopContext, input: GoalWorkloopStartI
   return {
     ...input,
     constraints: {
-      requireHandoffOnAmbiguity: true,
       ...input.constraints,
       accessMode,
     },

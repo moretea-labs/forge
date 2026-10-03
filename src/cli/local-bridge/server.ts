@@ -101,7 +101,7 @@ import {
   forgeToolSurfaceFingerprint,
   defaultLocalAgentRunners,
 } from "../controller/runtime-config";
-import { taskExecutionPolicy, taskWriteScopesConflict } from "../controller/execution-policy";
+import { taskWriteScopesConflict } from "../controller/execution-policy";
 import { continueTaskAfterSuccessfulRun } from "../controller/execution-completion";
 import { applyCompletionDecision, completionDecisionQueues, finishCompletionBacklog, inspectCompletionBacklog } from "../controller/completion-backlog";
 import { finishEditSession, finishTaskRun } from "../controller/completion-orchestrator";
@@ -1985,7 +1985,6 @@ export async function startLocalBridgeServer(
         response.json(issue);
         return;
       }
-      const policy = taskExecutionPolicy(task);
       const confirmAcceptance = request.body?.confirmAcceptance === true;
       const reviewer = queryString(request.body?.reviewer) ?? "local-controller-human";
       const latestRunId = task.runIds.at(-1);
@@ -2032,8 +2031,8 @@ export async function startLocalBridgeServer(
           return { checkId, ok: false, summary: errorMessage(error) };
         }
       }));
-      if (policy.requiresAcceptanceEvidence && !confirmAcceptance) {
-        throw new Error(`${policy.executionClass} requires explicit acceptance evidence when no successful Run is linked`);
+      if (task.acceptanceCriteria.length > 0 && !confirmAcceptance) {
+        throw new Error('Explicit Task acceptance criteria require acceptance evidence when no successful Run is linked');
       }
       const at = new Date().toISOString();
       response.json(recordTaskVerification(repoRoot, issue.id, task.id, {

@@ -1018,8 +1018,6 @@ export function startConsoleWork(
     destructive?: boolean;
     accessMode?: AccessMode;
     workspaceMode?: 'current' | 'isolated' | 'auto';
-    requireWorktree?: boolean;
-    directMainProhibited?: boolean;
     approvalConfirmed?: boolean;
     checkIds?: string[];
   },
@@ -1169,8 +1167,6 @@ export async function approveConsoleHandoff(ctx: ConsoleFacadeContext, handoffId
     workspaceMode: payload.workspaceMode === 'current' || payload.workspaceMode === 'isolated' || payload.workspaceMode === 'auto'
       ? payload.workspaceMode
       : undefined,
-    requireWorktree: typeof payload.requireWorktree === 'boolean' ? payload.requireWorktree : undefined,
-    directMainProhibited: typeof payload.directMainProhibited === 'boolean' ? payload.directMainProhibited : undefined,
     approvalConfirmed: true,
     checkIds: strings(payload.checkIds),
   });

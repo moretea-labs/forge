@@ -122,7 +122,7 @@ describe('controller Work ownership fencing', () => {
       allowedPaths: [],
       forbiddenPaths: [],
       checks: [],
-      constraints: { requireHandoffOnAmbiguity: true },
+      constraints: {},
       requestedBy: 'chatgpt',
       dispatchState: 'running',
     });
@@ -175,7 +175,7 @@ describe('controller Work ownership fencing', () => {
       allowedPaths: [],
       forbiddenPaths: [],
       checks: [],
-      constraints: { requireHandoffOnAmbiguity: true },
+      constraints: {},
       requestedBy: 'chatgpt',
       dispatchState: 'terminal', evidenceState: 'failed',
     });
@@ -228,7 +228,7 @@ describe('controller Work ownership fencing', () => {
       allowedPaths: [],
       forbiddenPaths: [],
       checks: [],
-      constraints: { requireHandoffOnAmbiguity: true },
+      constraints: {},
       requestedBy: 'chatgpt',
       dispatchState: 'running',
     });
@@ -313,7 +313,7 @@ describe('controller Work ownership fencing', () => {
     createWorkContract(store, {
       workId: 'work-owner', repoId: 'repo-a', objective: 'preserve authority on recovery failure',
       acceptanceCriteria: ['failed recovery does not rotate durable authority'], allowedPaths: [], forbiddenPaths: [], checks: [],
-      constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', dispatchState: 'running',
+      constraints: {}, requestedBy: 'chatgpt', dispatchState: 'running',
     });
     startExecutionSession(home, { sessionId: 'session-old', principalId: 'principal-a', controllerInstanceId: 'instance-a' });
     const originalAuthority = mintControllerSessionAuthority();
@@ -349,7 +349,7 @@ describe('controller Work ownership fencing', () => {
     createWorkContract(store, {
       workId: 'work-owner', repoId: 'repo-a', objective: 'recover direct controller authority',
       acceptanceCriteria: ['same semantic owner survives transport loss'], allowedPaths: [], forbiddenPaths: [], checks: [],
-      constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', dispatchState: 'running',
+      constraints: {}, requestedBy: 'chatgpt', dispatchState: 'running',
     });
     startExecutionSession(home, { sessionId: 'session-old', principalId: 'principal-a', controllerInstanceId: 'instance-a' });
     const originalAuthority = mintControllerSessionAuthority();

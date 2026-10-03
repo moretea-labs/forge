@@ -446,7 +446,7 @@ async function main(): Promise<void> {
           allowedPaths: [],
           forbiddenPaths: [],
           checks: [],
-          constraints: { requireHandoffOnAmbiguity: true },
+          constraints: {},
           requestedBy: 'chatgpt',
         });
         timing.storageTimeMs = elapsed(storageStarted);

@@ -804,7 +804,7 @@ function postFinalizeAttributionFixture() {
     allowedPaths: [],
     forbiddenPaths: [],
     checks: [],
-    constraints: { requireHandoffOnAmbiguity: true },
+    constraints: {},
     requestedBy: 'chatgpt',
     workKind: 'completed_no_change',
     dispatchState: 'running',

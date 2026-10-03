@@ -77,7 +77,7 @@ function fallbackMutationClass(work: WorkContract): EngineeringMutationClass {
     || work.workKind === 'reconciliation'
     || work.workKind === 'superseded') return 'readonly';
   if (work.workKind === 'local_effect' || work.workKind === 'remote_effect') return 'external_effect';
-  if (work.worktreePolicy.required || work.constraints.workspaceMode === 'isolated' || work.constraints.requireWorktree === true) {
+  if (work.worktreePolicy.required || work.constraints.workspaceMode === 'isolated') {
     return 'isolated_write';
   }
   return 'integration_write';
@@ -99,7 +99,7 @@ function defaultLane(
   const hasMutableResourceIntent = resourceIntents.some((intent) => intent.mode !== 'read');
   if (hasMutableResourceIntent && (!requestedLane || !workExecutionLaneMutates(requestedLane))) {
     if (mutationClass === 'external_effect') return 'external_effect';
-    return work.worktreePolicy.required || work.constraints.workspaceMode === 'isolated' || work.constraints.requireWorktree === true
+    return work.worktreePolicy.required || work.constraints.workspaceMode === 'isolated'
       ? 'isolated_write'
       : 'integration_write';
   }
@@ -125,7 +125,7 @@ export function buildWorkExecutionConcurrencyContract(
     lane: defaultLane(work, mutationClass, resourceIntents, input.lane),
     resourceIntents,
     blockers: [...(input.blockers ?? [])],
-    isolation: work.worktreePolicy.required || work.constraints.workspaceMode === 'isolated' || work.constraints.requireWorktree === true
+    isolation: work.worktreePolicy.required || work.constraints.workspaceMode === 'isolated'
       ? 'isolated'
       : 'shared',
   };

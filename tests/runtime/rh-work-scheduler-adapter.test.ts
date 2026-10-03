@@ -50,7 +50,7 @@ function fixture() {
     allowedPaths: [],
     forbiddenPaths: [],
     checks: [],
-    constraints: { requireHandoffOnAmbiguity: true },
+    constraints: {},
     requestedBy: 'chatgpt',
     workKind: 'local_effect',
     dispatchState: 'running',

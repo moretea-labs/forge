@@ -798,7 +798,7 @@ describe('repository Work delivery target authority', () => {
       allowedPaths: [],
       forbiddenPaths: [],
       checks: [],
-      constraints: { requireHandoffOnAmbiguity: true },
+      constraints: {},
       requestedBy: 'chatgpt',
       workKind: 'repository_change',
       dispatchState: 'running',

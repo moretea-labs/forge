@@ -317,7 +317,7 @@ describe('runtime maintenance executor', () => {
       allowedPaths: ['**'],
       forbiddenPaths: [],
       checks: [],
-      constraints: { requireHandoffOnAmbiguity: true },
+      constraints: {},
       requestedBy: 'chatgpt',
       phase: 'verification',
       checkoutId: `checkout-${source}`,
@@ -368,7 +368,7 @@ describe('runtime maintenance executor', () => {
       workId, repoId: registered.repoId, workKind: 'remote_effect',
       objective: 'continue an external browser task without repository mutation',
       acceptanceCriteria: ['remote receipt exists'], allowedPaths: [], forbiddenPaths: [], checks: [],
-      constraints: { workspaceMode: 'isolated', requireWorktree: true, requireHandoffOnAmbiguity: true },
+      constraints: { workspaceMode: 'isolated' },
       requestedBy: 'user', dispatchState: 'running', checkoutId: checkout.checkoutId, worktreeRef: registeredWorktree, baseRevision,
       worktreePolicy: { required: true, reason: 'legacy placement inherited from unrelated repository state' },
     });
@@ -449,7 +449,7 @@ describe('runtime maintenance executor', () => {
         allowedPaths: ['src/**'],
         forbiddenPaths: [],
         checks: [],
-        constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
+        constraints: { workspaceMode: 'current' },
         requestedBy: 'chatgpt',
         ...(requestedWorkState === 'running' ? { dispatchState: 'running' as const } : {}),
       });
@@ -497,7 +497,7 @@ describe('runtime maintenance executor', () => {
     createWorkContract({ controllerHome: sourceHome, repoId: 'repo-retained' }, {
       workId: 'work-retained-migrated', repoId: 'repo-retained', objective: 'Preserved implementation that must remain reviewable after Controller Home migration.',
       acceptanceCriteria: ['preserve implementation'], allowedPaths: ['**'], forbiddenPaths: [], checks: [],
-      constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'user',
+      constraints: {}, requestedBy: 'user',
       checkoutId: 'checkout-retained', worktreeRef: retainedWorktree,
       continuationPrompt: 'Resume preserved implementation after migration.',
     });
@@ -539,7 +539,7 @@ describe('runtime maintenance executor', () => {
     createWorkContract({ controllerHome: sourceHome, repoId: 'repo-retained-root' }, {
       workId: 'work-retained-repository-root', repoId: 'repo-retained-root', objective: 'Historical terminal Work whose legacy worktreeRef was the repository root.',
       acceptanceCriteria: [], allowedPaths: ['**'], forbiddenPaths: [], checks: [],
-      constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'user',
+      constraints: {}, requestedBy: 'user',
       checkoutId: 'checkout-retained-root', worktreeRef: oldRepositoryRoot,
     });
     cancelWorkContract({ controllerHome: sourceHome, repoId: 'repo-retained-root' }, 'work-retained-repository-root', { summary: 'Historical fixture is terminal before Controller Home migration.' });
@@ -572,7 +572,7 @@ describe('runtime maintenance executor', () => {
     createWorkContract({ controllerHome: sourceHome, repoId: 'repo-empty-managed-residue' }, {
       workId: 'work-empty-managed-residue', repoId: 'repo-empty-managed-residue', objective: 'Historical Work whose managed directory is already empty and detached from Git.',
       acceptanceCriteria: [], allowedPaths: ['**'], forbiddenPaths: [], checks: [],
-      constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'user',
+      constraints: {}, requestedBy: 'user',
       checkoutId: 'checkout-empty-residue', worktreeRef: emptyManagedResidue,
     });
     cancelWorkContract({ controllerHome: sourceHome, repoId: 'repo-empty-managed-residue' }, 'work-empty-managed-residue', { summary: 'Historical fixture is terminal before Controller Home migration.' });
@@ -603,7 +603,7 @@ describe('runtime maintenance executor', () => {
     execFileSync('git', ['worktree', 'add', '-q', '-b', 'work/owned', worktree, 'HEAD'], { cwd: repoRoot });
     createWorkContract({ controllerHome, repoId: 'repo-owned' }, {
       workId: 'work-owned-current', repoId: 'repo-owned', objective: 'Current owned worktree',
-      acceptanceCriteria: [], allowedPaths: ['**'], forbiddenPaths: [], checks: [], constraints: { requireHandoffOnAmbiguity: true },
+      acceptanceCriteria: [], allowedPaths: ['**'], forbiddenPaths: [], checks: [], constraints: {},
       requestedBy: 'user', dispatchState: 'running', checkoutId: 'checkout-owned', worktreeRef: worktree,
     });
 
@@ -818,7 +818,7 @@ describe('runtime maintenance executor', () => {
     const retained = getWorkContract({ controllerHome, repoId: repository.repoId }, workId);
     expect(retained).toMatchObject({
       semanticState: 'open', workKind: 'remote_effect', checkoutId,
-      constraints: { workspaceMode: 'isolated', requireWorktree: true },
+      constraints: { workspaceMode: 'isolated' },
       worktreePolicy: {
         required: true,
         reason: 'legacy placement inherited from unrelated repository state',
@@ -864,7 +864,7 @@ describe('runtime maintenance executor', () => {
       allowedPaths: [],
       forbiddenPaths: [],
       checks: [],
-      constraints: { requireHandoffOnAmbiguity: true },
+      constraints: {},
       requestedBy: 'chatgpt',
       phase: 'verification',
     });
@@ -1137,7 +1137,7 @@ describe('runtime maintenance executor', () => {
     createWorkContract(store, {
       workId: 'work-stale-then-claimed', repoId: repository.repoId, objective: 'stale before controller reclaim',
       acceptanceCriteria: ['preserve late authority'], allowedPaths: [], forbiddenPaths: [], checks: [],
-      constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', phase: 'verification',
+      constraints: {}, requestedBy: 'chatgpt', phase: 'verification',
     });
     advanceWorkToCleanup(store, 'work-stale-then-claimed');
 
@@ -1182,7 +1182,7 @@ describe('runtime maintenance executor', () => {
       workId: 'work-plan-owned', repoId: repository.repoId, objective: 'authoritative old work',
       planId: 'PLAN-owned', planStepId: 'step-a', planSourceRevision: 'revision-a',
       acceptanceCriteria: ['finish plan'], allowedPaths: [], forbiddenPaths: [], checks: [],
-      constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', phase: 'verification',
+      constraints: {}, requestedBy: 'chatgpt', phase: 'verification',
     });
     createPlanContract({ controllerHome, repoId: repository.repoId, now: () => oldAt }, {
       planId: 'PLAN-owned', repoId: repository.repoId, scopeKey: 'owned-scope', sourceRevision: 'revision-a', goal: 'Own the old work',
@@ -1208,7 +1208,7 @@ describe('runtime maintenance executor', () => {
     createWorkContract(store, {
       workId: 'work-controller-owned', repoId: repository.repoId, objective: 'controller-owned old work',
       acceptanceCriteria: ['preserve ownership'], allowedPaths: [], forbiddenPaths: [], checks: [],
-      constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', phase: 'verification',
+      constraints: {}, requestedBy: 'chatgpt', phase: 'verification',
     });
     advanceWorkToCleanup(store, 'work-controller-owned');
     claimControllerSession({ controllerHome, repoId: repository.repoId }, {

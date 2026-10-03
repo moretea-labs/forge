@@ -47,7 +47,7 @@ function createRunningWork(controllerHome: string, input: { workId: string; plan
     allowedPaths: [],
     forbiddenPaths: [],
     checks: [],
-    constraints: { requireHandoffOnAmbiguity: true },
+    constraints: {},
     requestedBy: 'chatgpt',
     dispatchState: 'running',
     baseRevision: 'abc123',

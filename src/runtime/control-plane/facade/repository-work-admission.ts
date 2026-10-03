@@ -46,8 +46,6 @@ export function admitPreparedRepositoryWorkContract(
     constraints: {
       accessMode: input.accessMode,
       workspaceMode: input.isolated ? 'isolated' : 'current',
-      requireWorktree: input.isolated,
-      directMainProhibited: input.isolated,
       allowCommit: true,
       allowMerge: true,
       allowCleanup: true,
@@ -97,7 +95,7 @@ export function admitDirectEditWorkContract(
     workspaceFingerprint: input.workspaceFingerprint,
     objective: input.objective,
     acceptanceCriteria: [],
-    constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
+    constraints: { workspaceMode: 'current' },
     risk: 'low',
     dispatchState: 'running',
     phase: 'implementation',

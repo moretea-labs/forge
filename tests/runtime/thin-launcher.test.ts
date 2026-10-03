@@ -61,7 +61,7 @@ function launcherFixture() {
     allowedPaths: [],
     forbiddenPaths: [],
     checks: [],
-    constraints: { requireHandoffOnAmbiguity: true },
+    constraints: {},
     requestedBy: 'chatgpt',
     dispatchState: 'running',
   });

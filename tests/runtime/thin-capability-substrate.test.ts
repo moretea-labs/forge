@@ -249,7 +249,7 @@ describe('Thin capability substrate', () => {
       objective: 'Implement thin feature.',
       acceptanceCriteria: ['Must be thin and clean'],
       allowedPaths: [], forbiddenPaths: [], checks: [],
-      constraints: { requireHandoffOnAmbiguity: true },
+      constraints: {},
       requestedBy: 'chatgpt',
       dispatchState: 'running',
     });

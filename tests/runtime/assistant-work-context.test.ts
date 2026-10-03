@@ -31,7 +31,7 @@ describe('assistant context for Controller Work', () => {
         checkoutId: repository.activeCheckoutId,
         objective: 'Continue a durable Work without optional Project knowledge.',
         acceptanceCriteria: [],
-        constraints: { workspaceMode: 'current', requireWorktree: false },
+        constraints: { workspaceMode: 'current' },
         allowedPaths: [],
         forbiddenPaths: [],
         checks: [],

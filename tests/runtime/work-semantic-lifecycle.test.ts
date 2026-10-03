@@ -34,7 +34,7 @@ function createOpenWork(options: { controllerHome: string; repoId: string }, wor
     allowedPaths: [],
     forbiddenPaths: [],
     checks: [],
-    constraints: { requireHandoffOnAmbiguity: true },
+    constraints: {},
     requestedBy: 'chatgpt',
     ...overrides,
   });
@@ -91,7 +91,7 @@ describe('thin semantic Work lifecycle', () => {
       allowedPaths: [],
       forbiddenPaths: [],
       checks: [],
-      constraints: { requireHandoffOnAmbiguity: true },
+      constraints: {},
       requestedBy: 'chatgpt',
       dispatchState: 'running',
     });

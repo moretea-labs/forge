@@ -670,7 +670,7 @@ export function createWorkSemanticContext(options: WorkContractStoreOptions, inp
     repoId: options.repoId?.trim() ?? '',
     objective: input.objective,
     acceptanceCriteria: [],
-    constraints: { requireHandoffOnAmbiguity: true },
+    constraints: {},
     workKind: 'investigation',
     lifecycleRole: 'primary',
     requestedBy: input.requestedBy ?? 'chatgpt',
@@ -727,7 +727,7 @@ export function createWorkContract(options: WorkContractStoreOptions, input: Cre
       semanticUpdatedAt: input.updatedAt ?? at,
       semanticState: 'open',
       acceptanceCriteria: (input.acceptanceCriteria ?? []).slice(0, 20).map((item) => item.slice(0, 500)),
-      constraints: input.constraints ?? { requireHandoffOnAmbiguity: true },
+      constraints: input.constraints ?? {},
       risk: input.risk ?? 'medium',
       engineeringContext: input.engineeringContext,
       workKind: input.workKind ?? 'repository_change',
@@ -770,8 +770,8 @@ export function createWorkContract(options: WorkContractStoreOptions, input: Cre
       forbiddenPaths: (input.forbiddenPaths ?? []).slice(0, 50),
       checks: (input.checks ?? []).slice(0, 30),
       worktreePolicy: input.worktreePolicy ?? {
-        required: input.constraints?.requireWorktree === true || input.constraints?.workspaceMode === 'isolated',
-        reason: input.constraints?.requireWorktree === true || input.constraints?.workspaceMode === 'isolated'
+        required: input.constraints?.workspaceMode === 'isolated',
+        reason: input.constraints?.workspaceMode === 'isolated'
           ? 'Typed workspace placement requires an isolated worktree.'
           : undefined,
       },
@@ -923,7 +923,7 @@ export function acceptSubmittedWorkContract(
       acceptanceCriteria: input.acceptanceCriteria ?? [],
       workKind: input.workKind,
       risk: input.risk,
-      constraints: input.constraints ?? { requireHandoffOnAmbiguity: true },
+      constraints: input.constraints ?? {},
       allowedPaths: input.allowedPaths ?? [],
       forbiddenPaths: input.forbiddenPaths ?? [],
       checks: input.checks ?? [],
@@ -982,7 +982,6 @@ function workExecutionSemanticScopeKeys(contract: WorkContract): string[] {
 function workExecutionIsolation(contract: WorkContract): 'shared' | 'isolated' {
   return contract.worktreePolicy?.required === true
     || contract.constraints?.workspaceMode === 'isolated'
-    || contract.constraints?.requireWorktree === true
     ? 'isolated'
     : 'shared';
 }

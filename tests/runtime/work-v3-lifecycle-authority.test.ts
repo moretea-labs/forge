@@ -34,7 +34,7 @@ describe('Work v3 lifecycle authority', () => {
       objective: 'Original semantic objective.',
       acceptanceCriteria: [],
       allowedPaths: [], forbiddenPaths: [], checks: [],
-      constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', workKind: 'local_effect', dispatchState: 'running',
+      constraints: {}, requestedBy: 'chatgpt', workKind: 'local_effect', dispatchState: 'running',
     });
     const createdSemantic = workSemanticView(created);
     expect(createdSemantic).toMatchObject({
@@ -105,7 +105,7 @@ describe('Work v3 lifecycle authority', () => {
       objective: 'Initial objective.',
       acceptanceCriteria: [],
       allowedPaths: [], forbiddenPaths: [], checks: [],
-      constraints: { requireHandoffOnAmbiguity: true },
+      constraints: {},
       requestedBy: 'chatgpt',
       dispatchState: 'running',
     });
@@ -187,7 +187,7 @@ describe('Work v3 lifecycle authority', () => {
       allowedPaths: [],
       forbiddenPaths: [],
       checks: [],
-      constraints: { requireHandoffOnAmbiguity: true },
+      constraints: {},
       requestedBy: 'chatgpt',
       workKind: 'remote_effect',
       dispatchState: 'running',

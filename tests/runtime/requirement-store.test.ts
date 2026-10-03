@@ -60,7 +60,7 @@ test('keeps superseded Work as durable history while removing it from the curren
     allowedPaths: [],
     forbiddenPaths: [],
     checks: [],
-    constraints: { requireHandoffOnAmbiguity: true },
+    constraints: {},
     requestedBy: 'chatgpt',
     dispatchState: 'running',
   });
@@ -138,7 +138,7 @@ test('historical cancelled Work evidence cannot reopen a reviewed Requirement ou
     allowedPaths: [],
     forbiddenPaths: [],
     checks: [],
-    constraints: { requireHandoffOnAmbiguity: true },
+    constraints: {},
     requestedBy: 'chatgpt',
   });
   expect(work.semanticState).toBe('cancelled');

@@ -21,7 +21,7 @@ function store(repoId: string) {
 }
 
 describe('repository Work admission authority', () => {
-  test('canonicalizes isolated work_prepare semantics with a direct-main fence', () => {
+  test('records explicit isolated work_prepare placement without a second admission fence', () => {
     const location = store('repo-prepared-isolated');
     ensureForgeInstanceIdentity({ controllerHome: location.controllerHome, preferredInstanceId: 'forge-prepared' });
     const work = admitPreparedRepositoryWorkContract(location, {
@@ -36,7 +36,7 @@ describe('repository Work admission authority', () => {
       requestedBy: 'chatgpt',
       requestId: 'request-prepared-isolated',
     });
-    expect(work.constraints).toMatchObject({ workspaceMode: 'isolated', requireWorktree: true, directMainProhibited: true });
+    expect(work.constraints).toEqual(expect.objectContaining({ workspaceMode: 'isolated' }));
     expect(work.worktreePolicy.required).toBe(true);
     expect(work.executionPlacement).toMatchObject({ forgeInstanceId: 'forge-prepared', repositoryId: location.repoId });
   });
@@ -89,7 +89,7 @@ describe('repository Work admission authority', () => {
     });
     expect(work).toMatchObject({
       checkoutId: 'checkout-current',
-      constraints: { workspaceMode: 'current', requireWorktree: false },
+      constraints: { workspaceMode: 'current' },
       executionPlacement: { forgeInstanceId: 'forge-direct', repositoryId: location.repoId, checkoutId: 'checkout-current' },
     });
   });

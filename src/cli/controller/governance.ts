@@ -11,7 +11,7 @@ import {
 } from "./issue-store";
 import { clearCurrentIssue, loadControllerProjectState, saveControllerProjectState } from "./project-state";
 import type { ControllerIssue, ControllerTask } from "./types";
-import { completionEvidenceComplete, taskExecutionPolicy } from "./execution-policy";
+import { completionEvidenceComplete } from "./execution-policy";
 import { resolveCompletionTargetBranch } from "./completion-target";
 import { readIssueRunEvidence } from "./run-evidence";
 import { resolveEffectiveTaskState, resolveIssueTaskStates, resolveTaskDependencies, type EffectiveTaskState } from "./task-status-resolver";
@@ -200,8 +200,7 @@ function shouldAutoAcceptVerifiedTask(repoRoot: string, issue: ControllerIssue, 
     taskId: task.id,
     targetBranch: resolveCompletionTargetBranch(repoRoot),
   })) return false;
-  const policy = taskExecutionPolicy(task);
-  return policy.autoCompleteAfterSuccessfulRun && !policy.requiresHumanAcceptance;
+  return task.acceptanceCriteria.length === 0;
 }
 
 function taskQueueItem(issue: ControllerIssue, task: ControllerTask, state: EffectiveTaskState): ExecutionQueueItem | undefined {

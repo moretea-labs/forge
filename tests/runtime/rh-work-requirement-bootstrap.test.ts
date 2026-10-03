@@ -451,7 +451,7 @@ describe('rh_work Requirement bootstrap', () => {
     createWorkContract(store, {
       workId: 'work-active-scope', repoId: repository.repoId, planId, planStepId: 'stage', planSourceRevision: sourceRevision,
       objective: 'Deliver without replacing Work authority.', acceptanceCriteria: ['The same Work remains authoritative.'],
-      allowedPaths: ['src/**'], forbiddenPaths: [], checks: ['package:check:type'], constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', dispatchState: 'running',
+      allowedPaths: ['src/**'], forbiddenPaths: [], checks: ['package:check:type'], constraints: {}, requestedBy: 'chatgpt', dispatchState: 'running',
     });
 
     // Plan-scoped repair is a read-only fact now: it neither replans the Plan nor

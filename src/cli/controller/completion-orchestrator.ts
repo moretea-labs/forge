@@ -11,7 +11,7 @@ import { resolveRepoPreferredControllerHome } from '../repositories/controller-h
 import { withControllerLock } from '../repositories/locks';
 import { listActiveLeases } from '../../runtime/resources/leases/store';
 import { acceptVerifiedTask, getIssue, projectIssueEffectiveView, recordTaskVerification, updateTask } from './issue-store';
-import { cleanupEvidenceResourceBlockers, completionEvidenceComplete, taskExecutionPolicy } from './execution-policy';
+import { cleanupEvidenceResourceBlockers, completionEvidenceComplete } from './execution-policy';
 import { currentCompletionTarget, resolveCompletionTargetBranch } from './completion-target';
 import { runControllerCheck } from './check-runner';
 import type { CleanupEvidence, ControllerIssue, ControllerTask, IntegrationEvidence, TaskCommandEvidence, TaskVerification } from './types';
@@ -183,7 +183,6 @@ function verificationForRun(
   reviewer: string,
   evidence: { integrationEvidence?: IntegrationEvidence; cleanupEvidence?: CleanupEvidence; completionReceipt?: CompletionReceipt; acceptanceConfirmed?: boolean } = {},
 ): TaskVerification {
-  const policy = taskExecutionPolicy(task);
   const acceptanceResults = task.acceptanceCriteria.map((criterion) => evidence.acceptanceConfirmed
     ? {
       criterion,
@@ -204,8 +203,7 @@ function verificationForRun(
     integratedRevision: evidence.integrationEvidence?.targetRevision,
     reviewedDiffHash: hashArtifact(repoRoot, run.diffArtifactPath),
     reviewer,
-    checkResults: policy.autoRunDeclaredChecks
-      ? task.checks.map((checkId) => {
+    checkResults: task.checks.map((checkId) => {
         try {
           const result = runControllerCheck(repoRoot, checkId);
           return {
@@ -218,8 +216,7 @@ function verificationForRun(
         } catch (error) {
           return { checkId, ok: false, summary: error instanceof Error ? error.message : String(error) };
         }
-      })
-      : [],
+      }),
     commandEvidence: commandEvidenceForRun(run),
     acceptanceResults,
     verifiedAt: nowIso(),
@@ -233,8 +230,7 @@ function result(repoRoot: string, input: Omit<FinishTaskRunResult, 'issue'>): Fi
 }
 
 function canAutoFinish(task: ControllerTask): boolean {
-  const policy = taskExecutionPolicy(task);
-  return policy.autoCompleteAfterSuccessfulRun && !policy.requiresHumanAcceptance;
+  return task.acceptanceCriteria.length === 0;
 }
 
 function verifyAndMaybeAccept(input: {
@@ -247,16 +243,7 @@ function verifyAndMaybeAccept(input: {
   allowCompletion?: boolean;
 }): { issue: ControllerIssue; taskStatus: string } {
   const { repoRoot, run, task, decision, reviewer } = input;
-  const policy = taskExecutionPolicy(task);
   const allowHumanAcceptance = decision === 'approve_and_finish';
-  if (policy.requiresHumanAcceptance && !allowHumanAcceptance) {
-    updateTask(repoRoot, run.issueId, run.taskId, {
-      status: task.status === 'verified' ? 'verified' : task.status,
-      note: input.note ?? `Run ${run.runId} is ready but ${policy.executionClass} requires an explicit review decision.`,
-    });
-    const waiting = getIssue(repoRoot, run.issueId);
-    return { issue: waiting, taskStatus: taskForRun(waiting, run.taskId).status };
-  }
 
   const current = getIssue(repoRoot, run.issueId);
   const currentTask = taskForRun(current, run.taskId);
@@ -435,19 +422,6 @@ function finishEditSessionUnlocked(repoRoot: string, options: FinishEditSessionO
       taskStatus: taskForRun(updated, task.id).status,
       changedPaths: discardPaths,
       reason: 'Direct edit was rolled back and discarded.',
-    });
-  }
-
-  const policy = taskExecutionPolicy(task);
-  if (policy.requiresHumanAcceptance && decision !== 'approve_and_finish') {
-    return editResult(repoRoot, {
-      action: 'needs_decision',
-      sessionId: initialSession.sessionId,
-      issueId: issue.id,
-      taskId: task.id,
-      decision,
-      taskStatus: task.status,
-      reason: `${policy.executionClass} requires approve_and_finish, request_changes, or discard.`,
     });
   }
 
@@ -1162,19 +1136,6 @@ function finishTaskRunUnlocked(repoRoot: string, options: FinishTaskRunOptions):
       taskId: task.id,
       decision,
       taskStatus: taskForRun(updated, task.id).status,
-    });
-  }
-
-  const policy = taskExecutionPolicy(task);
-  if (policy.requiresHumanAcceptance && decision !== 'approve_and_finish') {
-    return result(repoRoot, {
-      action: 'needs_decision',
-      runId: run.runId,
-      issueId: issue.id,
-      taskId: task.id,
-      decision,
-      taskStatus: task.status,
-      reason: `${policy.executionClass} requires approve_and_finish, request_changes, or discard.`,
     });
   }
 

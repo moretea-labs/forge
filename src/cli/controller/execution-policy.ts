@@ -7,22 +7,13 @@ export type TaskExecutionClass =
   | 'high_risk_change'
   | 'destructive_change';
 
-export type ApprovalRequirement = 'auto' | 'confirm' | 'manual-only';
+export type ApprovalRequirement = 'auto' | 'manual-only';
 
 export interface TaskExecutionPolicy {
   risk: TaskRisk;
   executionClass: TaskExecutionClass;
   approval: ApprovalRequirement;
-  requiresScopedPaths: boolean;
-  requiresDiffEvidence: boolean;
-  requiresAnyVerificationEvidence: boolean;
-  requiresAcceptanceEvidence: boolean;
-  requiresHumanAcceptance: boolean;
-  autoRunDeclaredChecks: boolean;
-  autoCompleteAfterSuccessfulRun: boolean;
   warnings: string[];
-  sensitivePaths: string[];
-  destructiveSignals: string[];
 }
 
 export interface CompletionReceiptExpectation {
@@ -140,139 +131,39 @@ export function completionEvidenceComplete(
     && cleanup.noDirtyDiff);
 }
 
-const READ_ONLY_INTENT = /\b(read|inspect|analy[sz]e|audit|review|summari[sz]e|explain|diagnose|investigate|search|find|report|compare|trace)\b|只读|分析|审计|检查|排查|调查|搜索|查找|报告|对比|梳理/i;
-const CHANGE_INTENT = /\b(edit|change|modify|implement|fix|refactor|write|create|update|migrate|replace|delete|remove)\b|修改|实现|修复|重构|写入|创建|更新|迁移|替换|删除/i;
-const DESTRUCTIVE_INTENT = /\b(rm\s+-rf|reset\s+--hard|force[- ]?push|rewrite\s+history|drop\s+(table|database)|truncate\s+table|delete\s+all|purge|destroy|irreversible|production\s+data|prod\s+data)\b|强制推送|重写历史|清空数据库|删除全部|不可逆|生产数据/i;
-const SENSITIVE_PATH_PATTERNS: Array<[RegExp, string]> = [
-  [/(^|\/)\.github\/workflows(\/|$)/i, 'CI workflow'],
-  [/(^|\/)(deploy|infra|terraform|k8s|helm)(\/|$)/i, 'deployment or infrastructure'],
-  [/(^|\/)(migrations?|schema|database|db)(\/|$)/i, 'database or migration'],
-  [/(^|\/)(auth|security|permissions?|billing|payments?)(\/|$)/i, 'security or billing'],
-  [/(^|\/)(package-lock\.json|pnpm-lock\.yaml|yarn\.lock|bun\.lock)$/i, 'dependency lockfile'],
-];
-
 function normalizeRisk(value: TaskRisk | undefined): TaskRisk {
   return value ?? 'medium';
 }
 
-function sensitivePathLabels(paths: readonly string[]): string[] {
-  const labels = new Set<string>();
-  for (const path of paths) {
-    for (const [pattern, label] of SENSITIVE_PATH_PATTERNS) {
-      if (pattern.test(path)) labels.add(label);
-    }
-  }
-  return [...labels];
-}
-
-export function classifyTaskExecution(task: Pick<ControllerTask, 'objective' | 'title' | 'risk' | 'allowedPaths' | 'forbiddenPaths'>): {
+/**
+ * Legacy Task risk is explicit model-authored metadata only. Forge does not infer
+ * risk or destructive authority from objective text, path names, or keywords.
+ */
+export function classifyTaskExecution(task: Pick<ControllerTask, 'risk'>): {
   risk: TaskRisk;
   executionClass: TaskExecutionClass;
-  sensitivePaths: string[];
-  destructiveSignals: string[];
 } {
-  const text = `${task.title}\n${task.objective}`;
-  const paths = [...task.allowedPaths, ...task.forbiddenPaths];
-  const sensitivePaths = sensitivePathLabels(paths);
-  const destructiveSignals: string[] = [];
-  if (DESTRUCTIVE_INTENT.test(text)) destructiveSignals.push('destructive intent');
-  if (paths.some((path) => /(^|\/)(migrations?|database|db|prod|production)(\/|$)/i.test(path)) && /delete|drop|truncate|purge|清空|删除/i.test(text)) {
-    destructiveSignals.push('high-risk data mutation');
-  }
-
-  let risk = normalizeRisk(task.risk);
-  if (destructiveSignals.length > 0) risk = 'destructive';
-  else if (risk !== 'destructive' && sensitivePaths.length > 0 && (risk === 'readonly' || risk === 'low')) risk = 'medium';
-
-  if (risk === 'readonly') return { risk, executionClass: 'read_only', sensitivePaths, destructiveSignals };
-  if (risk === 'destructive') return { risk, executionClass: 'destructive_change', sensitivePaths, destructiveSignals };
-  if (risk === 'high') return { risk, executionClass: 'high_risk_change', sensitivePaths, destructiveSignals };
-  if (risk === 'medium') return { risk, executionClass: 'medium_risk_change', sensitivePaths, destructiveSignals };
-
-  const inferredReadOnly = READ_ONLY_INTENT.test(text) && !CHANGE_INTENT.test(text) && task.allowedPaths.length === 0;
-  return {
-    risk: inferredReadOnly ? 'readonly' : risk,
-    executionClass: inferredReadOnly ? 'read_only' : 'low_risk_change',
-    sensitivePaths,
-    destructiveSignals,
-  };
+  const risk = normalizeRisk(task.risk);
+  if (risk === 'readonly') return { risk, executionClass: 'read_only' };
+  if (risk === 'destructive') return { risk, executionClass: 'destructive_change' };
+  if (risk === 'high') return { risk, executionClass: 'high_risk_change' };
+  if (risk === 'medium') return { risk, executionClass: 'medium_risk_change' };
+  return { risk, executionClass: 'low_risk_change' };
 }
 
-export function taskExecutionPolicy(task: Pick<ControllerTask, 'objective' | 'title' | 'risk' | 'allowedPaths' | 'forbiddenPaths' | 'checks' | 'acceptanceCriteria'>): TaskExecutionPolicy {
+export function taskExecutionPolicy(task: Pick<ControllerTask, 'risk' | 'allowedPaths' | 'checks' | 'acceptanceCriteria'>): TaskExecutionPolicy {
   const classification = classifyTaskExecution(task);
   const warnings: string[] = [];
-  if (task.checks.length === 0) warnings.push('No named checks are declared; launch remains allowed and completion will rely on Run or reported command evidence.');
+  if (task.checks.length === 0) warnings.push('No named checks are declared; completion relies on concrete execution or delivery evidence when present.');
   if (task.acceptanceCriteria.length === 0) warnings.push('No Task-level acceptance criteria are declared.');
-  if (task.allowedPaths.length === 0 && classification.executionClass !== 'read_only') warnings.push('No allowed path scope is declared; runtime path and conflict guards remain authoritative.');
-
-  switch (classification.executionClass) {
-    case 'read_only':
-      return {
-        ...classification,
-        approval: 'auto',
-        requiresScopedPaths: false,
-        requiresDiffEvidence: false,
-        requiresAnyVerificationEvidence: false,
-        requiresAcceptanceEvidence: false,
-        requiresHumanAcceptance: false,
-        autoRunDeclaredChecks: false,
-        autoCompleteAfterSuccessfulRun: true,
-        warnings,
-      };
-    case 'low_risk_change':
-      return {
-        ...classification,
-        approval: 'auto',
-        requiresScopedPaths: false,
-        requiresDiffEvidence: false,
-        requiresAnyVerificationEvidence: false,
-        requiresAcceptanceEvidence: false,
-        requiresHumanAcceptance: false,
-        autoRunDeclaredChecks: task.checks.length > 0,
-        autoCompleteAfterSuccessfulRun: true,
-        warnings,
-      };
-    case 'medium_risk_change':
-      return {
-        ...classification,
-        approval: 'auto',
-        requiresScopedPaths: false,
-        requiresDiffEvidence: false,
-        requiresAnyVerificationEvidence: task.checks.length > 0,
-        requiresAcceptanceEvidence: task.acceptanceCriteria.length > 0,
-        requiresHumanAcceptance: false,
-        autoRunDeclaredChecks: task.checks.length > 0,
-        autoCompleteAfterSuccessfulRun: true,
-        warnings,
-      };
-    case 'high_risk_change':
-      return {
-        ...classification,
-        // V8 treats risk as execution metadata, not as a local approval gate.
-        approval: 'auto',
-        requiresScopedPaths: false,
-        requiresDiffEvidence: true,
-        requiresAnyVerificationEvidence: task.checks.length > 0,
-        requiresAcceptanceEvidence: task.acceptanceCriteria.length > 0,
-        requiresHumanAcceptance: true,
-        autoRunDeclaredChecks: task.checks.length > 0,
-        autoCompleteAfterSuccessfulRun: false,
-        warnings,
-      };
-    case 'destructive_change':
-      return {
-        ...classification,
-        approval: 'manual-only',
-        requiresScopedPaths: true,
-        requiresDiffEvidence: true,
-        requiresAnyVerificationEvidence: true,
-        requiresAcceptanceEvidence: true,
-        requiresHumanAcceptance: true,
-        autoRunDeclaredChecks: task.checks.length > 0,
-        autoCompleteAfterSuccessfulRun: false,
-        warnings,
-      };
-  }
+  if (task.allowedPaths.length === 0 && classification.executionClass !== 'read_only') warnings.push('No allowed path scope is declared; concrete runtime path and conflict guards remain authoritative.');
+  return {
+    ...classification,
+    // Only an explicitly authored destructive risk retains a legacy Task-level
+    // authorization boundary. Ordinary risk classes are descriptive metadata.
+    approval: classification.risk === 'destructive' ? 'manual-only' : 'auto',
+    warnings,
+  };
 }
 
 
@@ -336,7 +227,7 @@ export function taskAcceptanceOutcome(result: TaskAcceptanceResult | undefined):
   return result.ok ? 'passed' : 'failed';
 }
 
-export function verificationEvidencePassed(task: Pick<ControllerTask, 'checks' | 'acceptanceCriteria'>, verification: TaskVerification | undefined, policy: TaskExecutionPolicy): {
+export function verificationEvidencePassed(task: Pick<ControllerTask, 'checks' | 'acceptanceCriteria'>, verification: TaskVerification | undefined): {
   status: 'passed' | 'failed' | 'incomplete';
   ok: boolean;
   checksOk: boolean;
@@ -344,49 +235,41 @@ export function verificationEvidencePassed(task: Pick<ControllerTask, 'checks' |
   hasEvidence: boolean;
   reasons: string[];
 } {
+  const checksRequired = task.checks.length > 0;
+  const acceptanceRequired = task.acceptanceCriteria.length > 0;
   if (!verification) {
-    const ok = !policy.requiresAnyVerificationEvidence && !policy.requiresAcceptanceEvidence && !policy.requiresDiffEvidence;
+    const ok = !checksRequired && !acceptanceRequired;
     return {
       status: ok ? 'passed' : 'incomplete',
       ok,
-      checksOk: !policy.requiresAnyVerificationEvidence,
-      acceptanceOk: !policy.requiresAcceptanceEvidence,
+      checksOk: !checksRequired,
+      acceptanceOk: !acceptanceRequired,
       hasEvidence: false,
-      reasons: ok ? [] : ['No persisted verification evidence.'],
+      reasons: ok ? [] : ['Explicitly declared check or acceptance evidence is missing.'],
     };
   }
   const reportedCommands = verification.commandEvidence ?? [];
   const hasEvidence = verification.checkResults.length > 0 || reportedCommands.length > 0 || Boolean(verification.runId);
   const evidenceFailed = verification.checkResults.some((entry) => !entry.ok)
     || reportedCommands.some((entry) => !entry.ok);
-  const namedChecksComplete = task.checks.length === 0 || task.checks.every((checkId) =>
+  const namedChecksComplete = !checksRequired || task.checks.every((checkId) =>
     verification.checkResults.some((entry) => entry.checkId === checkId && entry.ok),
   );
-  const declaredChecksRequired = policy.autoRunDeclaredChecks && task.checks.length > 0;
-  const checksOk = !evidenceFailed && (declaredChecksRequired
-    ? namedChecksComplete
-    : policy.requiresAnyVerificationEvidence
-      ? hasEvidence
-      : true);
+  const checksOk = !evidenceFailed && namedChecksComplete;
 
   const acceptanceOutcomes = task.acceptanceCriteria.map((criterion) => taskAcceptanceOutcome(
     verification.acceptanceResults.find((entry) => entry.criterion === criterion),
   ));
-  const acceptanceFailed = policy.requiresAcceptanceEvidence && acceptanceOutcomes.some((outcome) => outcome === 'failed');
-  const acceptanceComplete = !policy.requiresAcceptanceEvidence
-    || task.acceptanceCriteria.length === 0
-    || acceptanceOutcomes.every((outcome) => outcome === 'passed');
+  const acceptanceFailed = acceptanceOutcomes.some((outcome) => outcome === 'failed');
+  const acceptanceComplete = !acceptanceRequired || acceptanceOutcomes.every((outcome) => outcome === 'passed');
   const acceptanceOk = acceptanceComplete && !acceptanceFailed;
-  const diffOk = !policy.requiresDiffEvidence || Boolean(verification.reviewedDiffHash || verification.integratedRevision);
   const failed = evidenceFailed || acceptanceFailed;
-  const complete = checksOk && acceptanceOk && diffOk;
+  const complete = checksOk && acceptanceOk;
   const status = failed ? 'failed' : complete ? 'passed' : 'incomplete';
   const reasons: string[] = [];
   if (evidenceFailed) reasons.push('One or more executed checks or reported commands failed.');
-  else if (!checksOk) reasons.push('Required named checks or equivalent command evidence are missing.');
+  else if (!checksOk) reasons.push('One or more explicitly declared checks are missing.');
   if (acceptanceFailed) reasons.push('One or more acceptance criteria explicitly failed.');
-  else if (!acceptanceOk) reasons.push('One or more acceptance criteria are missing or not evaluated.');
-  if (policy.requiresAnyVerificationEvidence && !hasEvidence) reasons.push('This risk class requires persisted verification evidence.');
-  if (!diffOk) reasons.push('This risk class requires reviewed Diff or integrated revision evidence.');
+  else if (!acceptanceOk) reasons.push('One or more explicitly declared acceptance criteria are missing or not evaluated.');
   return { status, ok: status === 'passed', checksOk, acceptanceOk, hasEvidence, reasons };
 }

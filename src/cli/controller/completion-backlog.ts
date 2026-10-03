@@ -145,11 +145,11 @@ function classifyTask(repoRoot: string, issue: ControllerIssue, task: Controller
   }
 
   if (run && FINISHABLE_RUN_STATUSES.has(run.status)) {
-    if (policy.requiresHumanAcceptance) {
+    if (task.acceptanceCriteria.length > 0) {
       return {
         ...base,
         action: 'needs_human_review',
-        reason: `${policy.executionClass} requires explicit review before finishing ${run.runId}.`,
+        reason: `Task declares acceptance criteria that require an explicit acceptance decision before finishing ${run.runId}.`,
         canAutoFinish: false,
         suggestedDecision: 'approve_and_finish',
       };
@@ -157,7 +157,7 @@ function classifyTask(repoRoot: string, issue: ControllerIssue, task: Controller
     return {
       ...base,
       action: 'auto_finish',
-      reason: `Run ${run.runId} is ${run.status} and policy allows automatic finish.`,
+      reason: `Run ${run.runId} is ${run.status} and the Task declares no semantic acceptance criteria, so automatic finish may proceed.`,
       canAutoFinish: true,
       suggestedDecision: 'auto',
     };

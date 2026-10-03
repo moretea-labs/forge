@@ -1,5 +1,4 @@
 import { createHash, randomUUID } from 'crypto';
-import { globMatches } from '../../../cli/mcp/paths';
 import {
   createHandoffItem,
   type HandoffInboxStoreOptions,
@@ -58,7 +57,6 @@ import type {
   WorkKind,
   WorkRisk,
 } from './types';
-import { resolveWorkspaceAdmissionConstraint } from '../routing/workspace-admission';
 
 export type GoalWorkloopOperation = 'start' | 'continue' | 'stop';
 
@@ -240,21 +238,10 @@ export function routeWorkStart(
   ctx: GoalWorkloopContext,
   input: GoalWorkloopStartInput,
 ): FacadeResult {
-  const placementResolution = resolveWorkspaceAdmissionConstraint(input.constraints);
-  if (placementResolution.ok === false) {
-    return buildFacadeResult({
-      status: 'blocked',
-      summary: `${placementResolution.code}: ${placementResolution.message}`,
-      data: { executionStarted: false, workContractCreated: false, placementConstraintConflict: true },
-      rawAvailable: false,
-    });
-  }
-  const placementConstraint = placementResolution.constraint;
+  const workspaceMode: 'current' | 'isolated' = input.constraints?.workspaceMode === 'isolated' || input.constraints?.workspaceMode === 'auto' ? 'isolated' : 'current';
   const canonicalConstraints: WorkContract['constraints'] = {
     ...(input.constraints ?? {}),
-    workspaceMode: placementConstraint.workspaceMode,
-    requireWorktree: placementConstraint.requireWorktree,
-    directMainProhibited: placementConstraint.directMainProhibited,
+    workspaceMode,
   };
   const strategyConflictRequiresApproval = input.constraints?.architectureStrategyChange === true
     || input.constraints?.conflictsWithThinHarnessPolicy === true
@@ -407,9 +394,7 @@ export function routeWorkStart(
               requiresApproval: input.request.requiresApproval === true || input.request.requiresUserApproval === true,
               destructive: input.request.destructive === true,
               accessMode: input.constraints?.accessMode,
-              workspaceMode: placementConstraint.workspaceMode,
-              requireWorktree: placementConstraint.requireWorktree,
-              directMainProhibited: placementConstraint.directMainProhibited,
+              workspaceMode,
               approvalConfirmed: true,
             },
           }
@@ -468,21 +453,10 @@ export function startGoalWorkloop(
   input: GoalWorkloopStartInput,
   policy?: PolicyDecision,
 ): FacadeResult {
-  const placementResolution = resolveWorkspaceAdmissionConstraint(input.constraints);
-  if (placementResolution.ok === false) {
-    return buildFacadeResult({
-      status: 'blocked',
-      summary: `${placementResolution.code}: ${placementResolution.message}`,
-      data: { executionStarted: false, workContractCreated: false, placementConstraintConflict: true },
-      rawAvailable: false,
-    });
-  }
-  const placementConstraint = placementResolution.constraint;
+  const workspaceMode: 'current' | 'isolated' = input.constraints?.workspaceMode === 'isolated' || input.constraints?.workspaceMode === 'auto' ? 'isolated' : 'current';
   const canonicalConstraints: WorkContract['constraints'] = {
     ...(input.constraints ?? {}),
-    workspaceMode: placementConstraint.workspaceMode,
-    requireWorktree: placementConstraint.requireWorktree,
-    directMainProhibited: placementConstraint.directMainProhibited,
+    workspaceMode,
   };
   const hasStrongAdmissionBinding = Boolean(input.planId || input.planStepId || input.requirementId || input.relatedWorkId || input.workRelation);
   if (hasStrongAdmissionBinding && !ctx.semanticAdmissionLocked) {
@@ -535,7 +509,6 @@ export function startGoalWorkloop(
   // capability admission is enforced by the concrete executor, never here.
   void engineeringMutation;
   const available = ctx.availableChecks ?? [];
-  const workspaceMode = placementConstraint.workspaceMode;
   const activeAdmissionSnapshot = readActiveWorkCandidates({ ...ctx.workStore, limit: 100 });
   const activeWorks = activeAdmissionSnapshot.contracts
     .filter((candidate) => (candidate.lifecycleRole ?? 'primary') === 'primary');
@@ -648,9 +621,7 @@ export function startGoalWorkloop(
       },
     });
   }
-  const newWorkWillBeIsolated = placementConstraint.requireWorktree
-    || placementConstraint.workspaceMode === 'isolated'
-    || input.workRelation === 'parallel';
+  const newWorkWillBeIsolated = workspaceMode === 'isolated';
   const invalidSharedWorkspaceOwner = !newWorkWillBeIsolated
     ? activeAdmissionSnapshot.invalid.find((candidate) => candidate.isolation === 'shared'
       && (!candidate.checkoutId || candidate.checkoutId === ctx.checkoutId))
@@ -759,33 +730,10 @@ export function startGoalWorkloop(
     );
   }
 
-  // Pure remote effects do not participate in repository workspace ownership.
-  // Semantic WorkContract state is also not workspace-writer authority: an open Work
-  // may be waiting, reviewing, or otherwise quiescent. Concrete mutation ownership is
-  // fenced later by WorkHandle/Process Lease authority at the mutation boundary.
-  // Admission isolates only for explicit placement, incompatible dirty paths, or an
-  // explicitly parallel Work relation.
-  const repositoryWorkspaceParticipant = resolvedWorkKind !== 'remote_effect';
-  const trustedDirtyPaths = ctx.workspaceChangedPaths
-    ? [...new Set(ctx.workspaceChangedPaths.map((path) => path.trim()).filter(Boolean))].sort()
-    : undefined;
-  const dirtyWorkspaceOwnershipConflict = repositoryWorkspaceParticipant
-    && input.request.workspaceDirty === true
-    && (
-      !trustedDirtyPaths
-      || trustedDirtyPaths.length === 0
-      || effectiveAllowedPaths.length === 0
-      || trustedDirtyPaths.some((path) => (
-        effectiveForbiddenPaths.some((pattern) => globMatches(pattern, path))
-        || !effectiveAllowedPaths.some((pattern) => globMatches(pattern, path))
-      ))
-    );
-  const automaticRepositoryIsolation = repositoryWorkspaceParticipant && (
-    dirtyWorkspaceOwnershipConflict
-    || requestedRelation === 'parallel'
-  );
-  const needsWorktree = placementConstraint.requireWorktree
-    || automaticRepositoryIsolation;
+  // Repository topology is caller-owned. Forge records the selected placement
+  // and lets concrete WorkHandle/Lease/Git authorities report real conflicts at
+  // the mutation boundary instead of inferring isolation from semantic context.
+  const needsWorktree = workspaceMode === 'isolated';
   const requestedWorkId = input.workId?.trim();
   if (requestedWorkId && !/^work-[a-z0-9][a-z0-9-]{0,199}$/i.test(requestedWorkId)) {
     return buildFacadeResult({
@@ -805,16 +753,11 @@ export function startGoalWorkloop(
     && input.request.remoteWrite === true;
   const effectiveConstraints: WorkContract['constraints'] = {
     ...canonicalConstraints,
-    ...(needsWorktree ? { workspaceMode: 'isolated' as const, requireWorktree: true } : {}),
     ...(remoteDeliveryRequired ? { remoteDeliveryRequired: true } : {}),
   };
-  const worktreeReason = placementConstraint.requireWorktree
-    ? 'Typed workspace placement requires isolated execution.'
-    : dirtyWorkspaceOwnershipConflict
-      ? 'Trusted repository observation found dirty paths outside or ambiguous to the Work path fence; isolated placement prevents unrelated changes from entering Work ownership or verification.'
-      : requestedRelation === 'parallel'
-        ? 'Explicit parallel Work relation requires isolated placement.'
-        : 'Current workspace is the stability-first default; isolation remains opt-in.';
+  const worktreeReason = needsWorktree
+    ? 'Caller explicitly selected isolated repository placement.'
+    : 'Caller selected the current repository checkout.';
   const forgeInstanceId = ctx.workStore.controllerHome
     ? readForgeInstanceIdentity(ctx.workStore.controllerHome)?.instanceId
     : undefined;

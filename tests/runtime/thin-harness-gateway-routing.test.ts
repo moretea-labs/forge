@@ -633,7 +633,7 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
       allowedPaths: ['src/**'],
       forbiddenPaths: [],
       checks: ['slow'],
-      constraints: { requireHandoffOnAmbiguity: true },
+      constraints: {},
       requestedBy: 'chatgpt',
       workKind: 'repository_change',
       dispatchState: 'running',
@@ -849,7 +849,7 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
       allowedPaths: ['tests/owned-untracked.test.ts'],
       forbiddenPaths: ['tests/protected-concurrent.test.ts'],
       checks: ['isolated'],
-      constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
+      constraints: { workspaceMode: 'current' },
       requestedBy: 'chatgpt',
       dispatchState: 'running',
     });
@@ -1055,7 +1055,7 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
       allowedPaths: ['src/**'],
       forbiddenPaths: ['concurrent/**'],
       checks: ['verify'],
-      constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
+      constraints: { workspaceMode: 'current' },
       requestedBy: 'chatgpt',
       dispatchState: 'running',
     });

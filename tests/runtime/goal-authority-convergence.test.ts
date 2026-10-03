@@ -333,7 +333,7 @@ describe('Goal authority convergence', () => {
       allowedPaths: ['src/**'],
       forbiddenPaths: [],
       checks: ['package:check:type'],
-      constraints: { requireHandoffOnAmbiguity: true },
+      constraints: {},
       requestedBy: 'chatgpt',
       dispatchState: 'running',
       baseRevision: 'rev-a',
