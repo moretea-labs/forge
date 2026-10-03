@@ -1,4 +1,4 @@
-import { parseCanonicalChatgptConversationIdentity } from '../adapters/chatgpt/conversation-identity';
+import { parseCanonicalChatgptConversationIdentity } from '../packages/plugin-runtime/computer';
 
 export interface ChatgptConversationIdentity {
   conversationId: string;

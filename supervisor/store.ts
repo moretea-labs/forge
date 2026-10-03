@@ -172,7 +172,6 @@ function oldestUnappliedEffect(db: Database, taskId: string): WorkflowSupervisor
 export const WORKFLOW_SUPERVISOR_MAX_DISPATCH_GENERATIONS = 3;
 export const WORKFLOW_SUPERVISOR_DISPATCH_RETRY_BASE_MS = 30_000;
 export const WORKFLOW_SUPERVISOR_DISPATCH_RETRY_MAX_MS = 10 * 60_000;
-export const WORKFLOW_SUPERVISOR_MAX_SAME_UNKNOWN_OBSERVATIONS = 3;
 export const WORKFLOW_SUPERVISOR_UNKNOWN_OBSERVATION_BASE_MS = 5_000;
 export const WORKFLOW_SUPERVISOR_UNKNOWN_OBSERVATION_MAX_MS = 60_000;
 
@@ -557,11 +556,10 @@ export class WorkflowSupervisorStore {
    *
    * A dispatch generation is only minted from the canonical negative proof that
    * the previous send never reached the conversation, and only while the effect
-   * stays inside its mechanical retry budget and retry window. When the budget
-   * is exhausted this returns `undefined`: the effect stops demanding browser
-   * attention so the adapter stops re-opening the conversation, and the
-   * ControllerRound recovery path reports the bounded failure instead of the
-   * Supervisor silently resending forever.
+   * stays inside its mechanical retry budget and retry window. Mutation retries
+   * retain a hard ceiling. Outcome-unknown reconciliation is read-only and stays
+   * eligible forever at a capped cadence so late provider evidence can recover
+   * the same effect without user intervention or another send.
    */
   nextBrowserEffect(
     taskId: string,
@@ -576,7 +574,6 @@ export class WorkflowSupervisorStore {
       const nowMs = options.nowMs ?? this.clockMs();
       if (!retryAuthorized) {
         const unknownLedger = effectUnknownObservationLedger(db, effect.effectId, ledger.lastEventId);
-        if (unknownLedger.sameFingerprintCount >= WORKFLOW_SUPERVISOR_MAX_SAME_UNKNOWN_OBSERVATIONS) return undefined;
         if (unknownLedger.sameFingerprintCount > 0
           && nowMs - unknownLedger.lastOccurredAtMs < unknownObservationDelayMs(unknownLedger.sameFingerprintCount)) {
           return undefined;
@@ -833,16 +830,10 @@ export class WorkflowSupervisorStore {
       const existing = statement(db, 'SELECT kind,payload_json FROM events WHERE event_key = ?', (s) => s.get(key)) as { kind?: string; payload_json?: string } | undefined;
       const payload = json(evidence);
       if (existing && (existing.kind !== kind || existing.payload_json !== payload)) throw new Error('WORKFLOW_SUPERVISOR_OBSERVATION_ID_CONFLICT');
-      if (outcome === 'unknown') {
-        const dispatch = effectDispatchLedger(db, effectId);
-        const unknownLedger = effectUnknownObservationLedger(db, effectId, dispatch.lastEventId);
-        const fingerprint = unknownObservationFingerprintFromObject(evidence);
-        if (fingerprint
-          && unknownLedger.fingerprint === fingerprint
-          && unknownLedger.sameFingerprintCount >= WORKFLOW_SUPERVISOR_MAX_SAME_UNKNOWN_OBSERVATIONS) {
-          return;
-        }
-      }
+      // Identical unknown observations remain append-only evidence at the capped
+      // reconciliation cadence. Permanently suppressing them freezes the last
+      // observation timestamp and makes a transient outcome-unknown state unable
+      // to discover late provider evidence after Runtime/browser recovery.
       statement(db, 'INSERT OR IGNORE INTO events(task_id,event_key,kind,effect_id,payload_json,occurred_at) VALUES (?,?,?,?,?,?)', (s) => s.run(effect.task_id, key, kind, effectId, payload, now()));
     });
   }

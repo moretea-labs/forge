@@ -8,12 +8,12 @@ import {
   inspectWorkflowSupervisorBrowserAdapter,
   workflowSupervisorExtensionIdFromManifestKey,
   type WorkflowSupervisorBrowserInstallation,
-} from '../../supervisor/browser-adapter-installer';
+} from '../../src/runtime/plugins/computer-chatgpt-browser-adapter-installer';
 import { WORKFLOW_SUPERVISOR_NATIVE_HOST_NAME } from '../../supervisor/native-messaging/host';
 import { buildLocalSystemPluginManifest, localSystemPluginAdapter } from '../../src/runtime/plugins/local-system-adapter';
 
 const roots: string[] = [];
-const sourceManifestPath = join(process.cwd(), 'supervisor', 'chrome-extension', 'manifest.json');
+const sourceManifestPath = join(process.cwd(), 'adapters', 'computer', 'chrome-extension', 'manifest.json');
 const sourceManifest = JSON.parse(readFileSync(sourceManifestPath, 'utf8')) as { key: string };
 const EXPECTED_EXTENSION_ID = 'glinahpcibpcfcimdcceplmfkgcjehin';
 
@@ -32,7 +32,7 @@ function fixture() {
   const root = temp('forge-supervisor-browser-adapter-');
   const controllerHome = join(root, 'controller');
   const releaseRoot = join(root, 'release');
-  const extensionSourcePath = join(releaseRoot, 'package', 'supervisor', 'chrome-extension');
+  const extensionSourcePath = join(releaseRoot, 'package', 'adapters', 'computer', 'chrome-extension');
   const nativeHostSourcePath = join(releaseRoot, 'forge-workflow-supervisor-native-host');
   const nativeMessagingRoot = join(root, 'native-hosts');
   mkdirSync(extensionSourcePath, { recursive: true });
@@ -144,7 +144,7 @@ describe('Workflow Supervisor browser adapter installer', () => {
     expect(manifest.allowed_origins).toEqual(['chrome-extension://' + EXPECTED_EXTENSION_ID + '/']);
   });
   test('contains no Chrome Preferences or profile-discovery dependency', () => {
-    const source = readFileSync(join(process.cwd(), 'supervisor', 'browser-adapter-installer.ts'), 'utf8');
+    const source = readFileSync(join(process.cwd(), 'src', 'runtime', 'plugins', 'computer-chatgpt-browser-adapter-installer.ts'), 'utf8');
     expect(source).not.toContain('Preferences');
     expect(source).not.toContain('Secure Preferences');
     expect(source).not.toContain('userDataRoot');
@@ -152,18 +152,16 @@ describe('Workflow Supervisor browser adapter installer', () => {
   });
 });
 
-describe('workflow supervisor Chrome extension conversation identity', () => {
+describe('Computer Chrome extension conversation identity', () => {
   function core(): {
     parseConversation(value: string): { conversationId: string; canonicalUrl: string } | null;
-    sameIdentity(a: unknown, b: unknown): boolean;
     sameConversation(a: unknown, b: unknown): boolean;
     projectId(value: string): string | null;
-    isCommittedAssistantResponse(text: string): boolean;
   } {
-    const source = readFileSync(join(process.cwd(), 'supervisor', 'chrome-extension', 'core.js'), 'utf8');
+    const source = readFileSync(join(process.cwd(), 'adapters', 'computer', 'chrome-extension', 'core.js'), 'utf8');
     const sandbox: Record<string, unknown> = {};
     new Function('globalThis', 'URL', source)(sandbox, URL);
-    return sandbox.ForgeWorkflowSupervisorChromeCore as ReturnType<typeof core>;
+    return sandbox.ForgeComputerChatgptCore as ReturnType<typeof core>;
   }
 
   test('treats a project-routed and a canonical route to one conversation as the same tab', () => {
@@ -175,23 +173,17 @@ describe('workflow supervisor Chrome extension conversation identity', () => {
     // Reuse follows the durable conversation id, so a redirect that drops the
     // project prefix no longer opens a duplicate tab on every refresh pass.
     expect(api.sameConversation(projectRoute, canonicalRoute)).toBe(true);
-    // Page-scoped message handling stays strict about the exact route it serves.
-    expect(api.sameIdentity(projectRoute, canonicalRoute)).toBe(false);
     expect(api.projectId(projectRoute.canonicalUrl)).toBe('g-p-abc123');
     expect(api.projectId('https://chatgpt.com/g/g-p-abc123-shen-bao-bao/project')).toBe('g-p-abc123');
     expect(api.projectId(canonicalRoute.canonicalUrl)).toBeNull();
     expect(api.projectId('https://example.com/g/g-p-abc123/project')).toBeNull();
   });
 
-  test('accepts compact receipts while retaining all legacy completion read formats', () => {
-    const api = core();
-    expect(api.isCommittedAssistantResponse('C a1b2c3d')).toBe(true);
-    expect(api.isCommittedAssistantResponse('D 0123456')).toBe(true);
-    expect(api.isCommittedAssistantResponse('C a1b2c3')).toBe(false);
-    expect(api.isCommittedAssistantResponse('status\nC a1b2c3d')).toBe(false);
-    expect(api.isCommittedAssistantResponse('status\nFORGE_WORKFLOW_SUPERVISOR_V1_BEGIN\n{}\nFORGE_WORKFLOW_SUPERVISOR_V1_END')).toBe(true);
-    expect(api.isCommittedAssistantResponse('status\n[[[FORGE_WORKFLOW_SUPERVISOR_V1]]]\n{}\n[[[END_FORGE_WORKFLOW_SUPERVISOR_V1]]]')).toBe(true);
-    expect(api.isCommittedAssistantResponse('status\n<<<FORGE_WORKFLOW_SUPERVISOR_V1>>>\n{}\n<<<END_FORGE_WORKFLOW_SUPERVISOR_V1>>>')).toBe(true);
+  test('contains no Workflow Supervisor receipt or effect parsing', () => {
+    const source = readFileSync(join(process.cwd(), 'adapters', 'computer', 'chrome-extension', 'core.js'), 'utf8');
+    expect(source).not.toContain('FORGE_WORKFLOW_SUPERVISOR');
+    expect(source).not.toContain('isCommittedAssistantResponse');
+    expect(source).not.toContain('promptHasEffect');
   });
 
   test('rejects non-ChatGPT or non-conversation routes instead of opening a tab for them', () => {
@@ -202,12 +194,11 @@ describe('workflow supervisor Chrome extension conversation identity', () => {
   });
 });
 
-describe('workflow supervisor Chrome extension browser-resource authority', () => {
+describe('Computer Chrome extension browser-resource authority', () => {
   interface FakeTab { id: number; url: string; title?: string; discarded?: boolean }
 
   function loadBackground(fixture: {
     tabs: FakeTab[];
-    tasks: Array<{ conversationId: string; conversationUrl: string }>;
     projects?: Array<{ title: string }>;
     scans?: Record<number, { pageUrl: string; projects: Array<{ title: string; url: string }>; conversations: Array<{ canonicalUrl: string }> }>;
   }) {
@@ -217,14 +208,26 @@ describe('workflow supervisor Chrome extension browser-resource authority', () =
     const discoveryUpdates: Array<{ conversations?: Array<Record<string, unknown>> }> = [];
     const tabMessages: Array<{ tabId: number; type: string }> = [];
     const onUpdated: Array<(tabId: number, changeInfo: { status?: string }, tab: FakeTab) => void> = [];
-    const extensionRoot = join(process.cwd(), 'supervisor', 'chrome-extension');
+    const extensionRoot = join(process.cwd(), 'adapters', 'computer', 'chrome-extension');
+    const nativeMessageListeners: Array<(response: { id: string; ok: boolean; result?: unknown }) => void> = [];
     const chrome = {
       runtime: {
         lastError: undefined as { message: string } | undefined,
-        sendNativeMessage(_host: string, message: { method: string; params?: { conversations?: Array<Record<string, unknown>> } }, callback: (response: unknown) => void) {
-          rpcMethods.push(message.method);
-          if (message.method === 'browser_discovery_update') discoveryUpdates.push(message.params ?? {});
-          callback({ ok: true, result: message.method === 'browser_tasks' ? { tasks: fixture.tasks } : message.method === 'browser_project_scopes' ? { projects: fixture.projects ?? [] } : {} });
+        connectNative() {
+          return {
+            postMessage(message: { id: string; method: string; params?: { conversations?: Array<Record<string, unknown>> } }) {
+              rpcMethods.push(message.method);
+              if (message.method === 'browser_discovery_update') discoveryUpdates.push(message.params ?? {});
+              const result = message.method === 'computer_extension_claim'
+                ? { command: null }
+                : message.method === 'browser_project_scopes'
+                  ? { projects: fixture.projects ?? [] }
+                  : {};
+              queueMicrotask(() => { for (const listener of nativeMessageListeners) listener({ id: message.id, ok: true, result }); });
+            },
+            onMessage: { addListener: (listener: (response: { id: string; ok: boolean; result?: unknown }) => void) => { nativeMessageListeners.push(listener); } },
+            onDisconnect: { addListener: () => undefined },
+          };
         },
         onMessage: { addListener: () => undefined },
         onInstalled: { addListener: () => undefined },
@@ -240,6 +243,8 @@ describe('workflow supervisor Chrome extension browser-resource authority', () =
           createCalls.push(properties);
           return { id: 9_999, url: (properties as { url?: string }).url };
         },
+        get: async (tabId: number) => fixture.tabs.find((tab) => tab.id === tabId),
+        remove: async () => undefined,
         reload: async (tabId: number) => { reloadCalls.push(tabId); },
         onUpdated: { addListener: (handler: (tabId: number, changeInfo: { status?: string }, tab: FakeTab) => void) => { onUpdated.push(handler); } },
         onActivated: { addListener: () => undefined },
@@ -253,9 +258,9 @@ describe('workflow supervisor Chrome extension browser-resource authority', () =
       new Function('globalThis', 'URL', readFileSync(join(extensionRoot, name), 'utf8'))(sandbox, URL);
     };
     new Function(
-      'chrome', 'importScripts', 'globalThis', 'URL', 'crypto', 'console', 'setTimeout', 'clearTimeout',
+      'chrome', 'importScripts', 'globalThis', 'URL', 'crypto', 'console', 'setTimeout', 'clearTimeout', 'setInterval',
       readFileSync(join(extensionRoot, 'background.js'), 'utf8'),
-    )(chrome, importScripts, sandbox, URL, globalThis.crypto, console, setTimeout, clearTimeout);
+    )(chrome, importScripts, sandbox, URL, globalThis.crypto, console, setTimeout, clearTimeout, () => 0);
     return { createCalls, reloadCalls, rpcMethods, discoveryUpdates, tabMessages, onUpdated };
   }
 
@@ -263,13 +268,12 @@ describe('workflow supervisor Chrome extension browser-resource authority', () =
     for (let index = 0; index < 8; index += 1) await new Promise((resolve) => setTimeout(resolve, 0));
   };
 
-  test('never opens a conversation tab for a task whose tab is not already open', async () => {
+  test('heartbeat and discovery never open a conversation tab without a Computer target command', async () => {
     const conversationId = '6ab216dc-ef5c-83e8-8137-5ef5f1b27e08';
     const conversationUrl = `https://chatgpt.com/g/g-p-6a922010db348191a84d1a5306c083e8-forge/c/${conversationId}`;
     const extension = loadBackground({
       // A different chatgpt.com tab is open; the task's own conversation is not.
       tabs: [{ id: 1, url: 'https://chatgpt.com/c/11111111-2222-3333-4444-555555555555', title: 'other' }],
-      tasks: [{ conversationId, conversationUrl }],
     });
 
     await settle();
@@ -278,17 +282,18 @@ describe('workflow supervisor Chrome extension browser-resource authority', () =
     await new Promise((resolve) => setTimeout(resolve, 2_200));
     await settle();
 
-    expect(extension.rpcMethods).toContain('browser_tasks');
+    expect(extension.rpcMethods).toContain('computer_extension_heartbeat');
+    expect(extension.rpcMethods).toContain('computer_extension_claim');
     expect(extension.rpcMethods).toContain('browser_discovery_update');
+    expect(extension.rpcMethods).not.toContain('browser_tasks');
     expect(extension.createCalls).toEqual([]);
   });
 
-  test('observes an existing conversation tab and refreshes a discarded one without creating anything', async () => {
+  test('observes existing conversation/project tabs without passive resource mutation', async () => {
     const conversationId = '6ab216dc-ef5c-83e8-8137-5ef5f1b27e08';
     const projectUrl = 'https://chatgpt.com/g/g-p-abc123/project';
     const extension = loadBackground({
       tabs: [{ id: 7, url: `https://chatgpt.com/c/${conversationId}`, title: 'chatgpt', discarded: true }, { id: 8, url: projectUrl }],
-      tasks: [{ conversationId, conversationUrl: `https://chatgpt.com/c/${conversationId}` }],
       projects: [{ title: '肾宝保' }],
       scans: { 8: {
         pageUrl: projectUrl, projects: [{ title: '肾宝保', url: projectUrl }],
@@ -302,7 +307,7 @@ describe('workflow supervisor Chrome extension browser-resource authority', () =
 
     await settle();
 
-    expect(extension.reloadCalls).toEqual([7]);
+    expect(extension.reloadCalls).toEqual([]);
     expect(extension.createCalls).toEqual([]);
     expect(extension.discoveryUpdates[0]?.conversations).toEqual([{
       conversation_id: conversationId, canonical_url: `https://chatgpt.com/c/${conversationId}`,

@@ -16,7 +16,7 @@ import {
 } from 'fs';
 import { dirname, extname, join, resolve } from 'path';
 import { forgeRuntimeServicePaths } from '../root/service';
-import { installWorkflowSupervisorBrowserAdapter, inspectWorkflowSupervisorBrowserAdapter } from '../../../supervisor/browser-adapter-installer';
+import { installWorkflowSupervisorBrowserAdapter, inspectWorkflowSupervisorBrowserAdapter } from './computer-chatgpt-browser-adapter-installer';
 import { createRecoveryConfig, loadRecoveryConfig, repairPublicTunnel } from '../standalone-recovery/core';
 import { activateRecoveryRelease, recoverySourceIdentity, stageRecoveryRelease } from '../standalone-recovery/installer';
 import { readCurrentRecoveryRelease, type RecoveryReleaseDescriptor } from '../standalone-recovery/release';

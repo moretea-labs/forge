@@ -42,7 +42,7 @@ const PACKAGE_RUNTIME_FILES = ['package.json'] as const;
 // projection for browser-extension installation plus two legacy Recovery
 // recognition sentinels; neither sentinel is executed when the compiled
 // Connector sidecar is present.
-const COMPILED_RUNTIME_PACKAGE_ROOTS = ['supervisor/chrome-extension'] as const;
+const COMPILED_RUNTIME_PACKAGE_ROOTS = ['adapters/computer/chrome-extension'] as const;
 const COMPILED_RUNTIME_PACKAGE_FILES = [
   'package.json',
   'src/cli/index.ts',
@@ -146,8 +146,8 @@ export function compiledRuntimePackageFileIndex(packageRoot = packageRuntimeSour
   for (const required of COMPILED_RUNTIME_PACKAGE_FILES) {
     if (!paths.has(required)) throw new Error(`COMPILED_RUNTIME_PACKAGE_SURFACE_INCOMPLETE: ${required}`);
   }
-  if (![...paths].some((path) => path.startsWith('supervisor/chrome-extension/'))) {
-    throw new Error('COMPILED_RUNTIME_PACKAGE_SURFACE_INCOMPLETE: supervisor/chrome-extension');
+  if (![...paths].some((path) => path.startsWith('adapters/computer/chrome-extension/'))) {
+    throw new Error('COMPILED_RUNTIME_PACKAGE_SURFACE_INCOMPLETE: adapters/computer/chrome-extension');
   }
   return records;
 }

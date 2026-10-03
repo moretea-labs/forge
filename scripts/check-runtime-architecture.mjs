@@ -281,6 +281,7 @@ forbid('src/runtime/control-plane/facade/plan-contract-store.ts', /approvePlanCo
 const MCP_GATEWAY_AUTHORITY_IMPORT_PATTERN = /(?:packages\/kernel\/|src\/runtime\/|src\/cli\/(?:repositories|editing)\/)/;
 
 function gatewayAuthorityImportInventoryFromSources(sources, importPattern = MCP_GATEWAY_AUTHORITY_IMPORT_PATTERN) {
+
   const ts = loadTypeScriptCompiler();
   if (!ts) return new Set();
   const records = new Set();
@@ -305,6 +306,26 @@ function runtimeToolSwitchCaseInventory(source) {
   const start = source.indexOf(marker);
   if (start < 0) return new Set();
   return new Set([...source.slice(start).matchAll(/case\s+['"]([^'"]+)['"]\s*:/g)].map((match) => match[1]));
+}
+
+const SUPERVISOR_CONCRETE_BROWSER_TRANSPORT_IMPORT_PATTERN = /(?:browser-macos-bridge|browser-adapter|chrome-extension|native-messaging)/;
+
+function supervisorConcreteBrowserTransportImportsFromSources(sources) {
+  return gatewayAuthorityImportInventoryFromSources(sources, SUPERVISOR_CONCRETE_BROWSER_TRANSPORT_IMPORT_PATTERN);
+}
+
+const supervisorComputerBoundaryFixture = process.env.FORGE_SUPERVISOR_COMPUTER_BOUNDARY_FIXTURE;
+if (supervisorComputerBoundaryFixture) {
+  const fixture = JSON.parse(supervisorComputerBoundaryFixture);
+  const sources = Array.isArray(fixture.sources) ? fixture.sources : [];
+  const actual = supervisorConcreteBrowserTransportImportsFromSources(sources);
+  if (actual.size > 0) {
+    console.error('[supervisor-computer-boundary-guardrail] FAILED');
+    for (const record of actual) console.error(`- Workflow Supervisor semantic code must depend on Computer target ports, never concrete Browser transports: ${record}`);
+    process.exit(1);
+  }
+  console.log('[supervisor-computer-boundary-guardrail] OK');
+  process.exit(0);
 }
 
 const MCP_RUNTIME_GATEWAY_AUTHORITY_IMPORT_DEBT = new Set([
@@ -350,6 +371,18 @@ requireExactShrinkingInventory(
   runtimeToolSwitchCaseInventory(text('adapters/mcp/runtime-gateway/runtime-tools.ts')),
   MCP_RUNTIME_TOOLS_SWITCH_CASE_DEBT,
 );
+const supervisorSemanticSources = sourceFiles('supervisor')
+  .filter((path) => !path.startsWith('supervisor/native-messaging/'))
+  .map((path) => ({ path, source: text(path) }));
+requireExactShrinkingDebt(
+  'Workflow Supervisor concrete Browser transport imports',
+  supervisorConcreteBrowserTransportImportsFromSources(supervisorSemanticSources),
+  new Set(),
+);
+for (const path of supervisorSemanticSources.map((entry) => entry.path)) {
+  forbid(path, /\b(?:windowId|tabId|window\.name)\b/, 'Workflow Supervisor semantic code must not own provider tab/window identity; Computer target authority owns provider bindings');
+}
+
 
 const MCP_PURE_TRANSPORT_FORBIDDEN_IMPORT_PATTERN = /(?:packages\/kernel\/|src\/runtime\/)/;
 requireExactShrinkingDebt(
@@ -1199,7 +1232,8 @@ requireText('src/runtime/root/workflow-supervisor-runtime.ts', 'startWorkflowSup
 requireText('src/runtime/root/workflow-supervisor-runtime.ts', 'new WorkflowSupervisorStore(forgeHome)');
 requireText('src/runtime/root/workflow-supervisor-runtime.ts', 'createWorkflowSupervisorServer');
 requireText('src/runtime/root/workflow-supervisor-runtime.ts', 'startWorkflowSupervisorNativeBrowserAdapter');
-requireText('supervisor/native-browser-adapter.ts', "surface: 'macos-native'");
+requireText('supervisor/native-browser-adapter.ts', 'targetPort: ComputerChatgptConversationTargetPort;');
+forbid('supervisor/native-browser-adapter.ts', /MacOs|AppleEvents|browser-macos-bridge|\bwindowId\b|\btabId\b|window\.name/, 'Workflow Supervisor browser consumer must depend only on the provider-neutral Computer ChatGPT target port');
 forbid('supervisor/native-browser-adapter.ts', /supervisor\/store|sqlite|scheduler|packages\/kernel\/(?:work|controller)|control-plane\/persistence/, 'Native Supervisor browser adapter is transport-only and must not own durable lifecycle, Scheduler, Work, Controller, or persistence authority');
 requireText('src/runtime/root/workflow-supervisor-composition.ts', 'resolveWorkflowSupervisorForgeHome(options.controllerHome)');
 forbid('src/runtime/root/workflow-supervisor-runtime.ts', /createPlatformServiceManagerHost|launchd|systemd|startDetached/, 'Workflow Supervisor reuses the Canonical Runtime process lifecycle and must not own a second OS service');
@@ -1209,21 +1243,26 @@ requireText('supervisor/control-plane.ts', 'await validator(task, parsed.proposa
 requireText('supervisor/protocol.ts', 'SUPERVISOR_BLOCK_END');
 requireText('supervisor/server.ts', 'createWorkflowSupervisorServer');
 forbid('supervisor/server.ts', /from ['"]\.\/store['"]|supervisor\.sqlite|BEGIN IMMEDIATE/, 'Supervisor transport must relay typed commands through the control plane and never own persistence');
-requireText('supervisor/chrome-extension/manifest.json', 'nativeMessaging');
-forbid('supervisor/chrome-extension/background.js', /browser_begin_effect|browser_observe_effect|forge-workflow-supervisor-effect/, 'Chrome extension is discovery/assistant-observation only; native macOS transport is the sole outbound Supervisor sender');
-requireText('supervisor/chrome-extension/content.js', 'FORGE_WORKFLOW_SUPERVISOR');
+requireText('adapters/computer/chrome-extension/manifest.json', 'nativeMessaging');
+requireText('adapters/computer/chrome-extension/background.js', 'computer_extension_claim');
+requireText('adapters/computer/chrome-extension/background.js', 'computer_extension_complete');
+requireText('adapters/computer/chrome-extension/background.js', 'chrome.runtime.connectNative');
+forbid('adapters/computer/chrome-extension/background.js', /browser_begin_effect|browser_observe_effect|browser_poll|browser_tasks|browser_observe_assistant|task_register|reserve_enrollment/, 'Computer Chrome provider must not consume or mutate Workflow Supervisor effect authority; it executes only typed Computer target commands');
+requireText('adapters/computer/chrome-extension/content.js', 'ForgeComputerChatgptCore');
+requireMissing('supervisor/chrome-extension');
 requireText('supervisor/native-messaging/host.ts', 'ALLOWED_BROWSER_METHODS');
-requireText('supervisor/native-messaging/host.ts', 'browser_observe_assistant');
+requireText('supervisor/native-messaging/host.ts', 'computer_extension_claim');
+forbid('supervisor/native-messaging/host.ts', /['"](?:browser_tasks|browser_poll|browser_begin_effect|browser_observe_effect|browser_observe_assistant)['"]/, 'Chrome Native Messaging transport must not expose Workflow Supervisor effect RPCs; extension traffic terminates at Computer target commands');
 requireText('supervisor/store.ts', 'recordEffectNotAppliedProof');
 requireText('supervisor/store.ts', '`effect-dispatch:${effectId}:${generation}`');
 requireText('supervisor/control-plane.ts', 'PERSISTED_BROWSER_EVIDENCE_KEYS');
 requireText('supervisor/control-plane.ts', "reason: 'not_applied_proof_incomplete'");
 requireText('supervisor/server.ts', "if (!['applied','unknown'].includes(outcome))");
-forbid('supervisor/chrome-extension/background.js', /chrome\.storage|supervisor\.sqlite|BEGIN IMMEDIATE/, 'Chrome recovery must reconstruct from daemon journal state rather than durable browser shadow state');
-forbid('supervisor/chrome-extension/content.js', /chrome\.storage|supervisor\.sqlite|BEGIN IMMEDIATE/, 'Chrome content reconciliation must remain an observation surface rather than durable recovery authority');
+forbid('adapters/computer/chrome-extension/background.js', /chrome\.storage|supervisor\.sqlite|BEGIN IMMEDIATE/, 'Computer Chrome provider must reconstruct provider bindings from live inventory and Computer target authority rather than browser shadow persistence');
+forbid('adapters/computer/chrome-extension/content.js', /chrome\.storage|supervisor\.sqlite|BEGIN IMMEDIATE/, 'Computer Chrome content script must remain a page capability surface rather than durable authority');
 forbid('supervisor/native-messaging/host.ts', /task_register|reserve_enrollment|supervisor\.sqlite|BEGIN IMMEDIATE|bun:sqlite|node:sqlite|from ['"][^'"]*(?:store|control-plane)['"]/, 'Chrome Native Messaging host must remain a stateless browser-method relay and never own Supervisor persistence/lifecycle');
-forbid('supervisor/chrome-extension/background.js', /task_register|reserve_enrollment|supervisor\.sqlite|BEGIN IMMEDIATE|chrome\.storage/, 'Chrome extension background must consume daemon-authorized browser commands and never become durable workflow authority');
-forbid('supervisor/chrome-extension/content.js', /task_register|reserve_enrollment|supervisor\.sqlite|BEGIN IMMEDIATE|chrome\.storage/, 'Chrome content script must observe/execute one exact page only and never own durable workflow state');
+forbid('adapters/computer/chrome-extension/background.js', /task_register|reserve_enrollment|supervisor\.sqlite|BEGIN IMMEDIATE|chrome\.storage/, 'Computer Chrome provider must never become durable workflow authority');
+forbid('adapters/computer/chrome-extension/content.js', /task_register|reserve_enrollment|supervisor\.sqlite|BEGIN IMMEDIATE|chrome\.storage/, 'Computer Chrome content script must observe/execute one exact page only and never own durable workflow state');
 
 requireMissing('docs/architecture/current/stable-external-runtime-supervisor.md');
 requireMissing('docs/architecture/modules/controller-runtime/stable-supervisor.md');

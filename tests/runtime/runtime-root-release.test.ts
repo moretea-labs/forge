@@ -50,7 +50,7 @@ function sourceFixture() {
   mkdirSync(join(root, 'src/runtime/shared'), { recursive: true });
   mkdirSync(join(root, 'src/cli/commands'), { recursive: true });
   mkdirSync(join(root, 'supervisor/native-messaging'), { recursive: true });
-  mkdirSync(join(root, 'supervisor/chrome-extension'), { recursive: true });
+  mkdirSync(join(root, 'adapters/computer/chrome-extension'), { recursive: true });
   mkdirSync(join(root, 'bin'), { recursive: true });
   mkdirSync(join(root, 'scripts'), { recursive: true });
   writeFileSync(join(root, 'README.md'), 'fixture\n');
@@ -63,7 +63,7 @@ function sourceFixture() {
   writeFileSync(join(root, 'src/runtime/plugins/browser-handoff-host.ts'), 'console.log("handoff");\n');
   writeFileSync(join(root, 'src/runtime/plugins/external-unix-socket-probe.cjs'), 'console.log("probe");\n');
   writeFileSync(join(root, 'supervisor/native-messaging/host.ts'), 'process.exit(0);\n');
-  for (const file of ['manifest.json', 'background.js', 'content.js', 'core.js']) writeFileSync(join(root, 'supervisor/chrome-extension', file), file === 'manifest.json' ? '{"manifest_version":3}\n' : '// supervisor extension fixture\n');
+  for (const file of ['manifest.json', 'background.js', 'content.js', 'core.js']) writeFileSync(join(root, 'adapters/computer/chrome-extension', file), file === 'manifest.json' ? '{"manifest_version":3}\n' : '// computer extension fixture\n');
   writeFileSync(join(root, 'scripts/stage-runtime-release.ts'), '// candidate-owned stager fixture\n');
   spawnSync('git', ['init', '-b', 'main'], { cwd: root, stdio: 'ignore' });
   spawnSync('git', ['config', 'user.email', 'forge-test@example.invalid'], { cwd: root, stdio: 'ignore' });
@@ -536,7 +536,7 @@ describe('runtime release materialization', () => {
     expect(existsSync(join(staged.releasePath, 'package', 'src', 'cli', 'index.ts'))).toBe(true);
     expect(existsSync(join(staged.releasePath, 'package', 'src', 'cli', 'commands', 'install.ts'))).toBe(true);
     expect(existsSync(join(staged.releasePath, 'package', 'src', 'runtime', 'shared', 'node-ts-loader.mjs'))).toBe(true);
-    expect(existsSync(join(staged.releasePath, 'package', 'supervisor', 'chrome-extension', 'background.js'))).toBe(true);
+    expect(existsSync(join(staged.releasePath, 'package', 'adapters', 'computer', 'chrome-extension', 'background.js'))).toBe(true);
     expect(staged.packageArtifactIdentity).toMatch(/^sha256:/);
     expect(manifest.packageRoot).toBe('package');
     expect(manifest.packageArtifactIdentity).toBe(staged.packageArtifactIdentity);

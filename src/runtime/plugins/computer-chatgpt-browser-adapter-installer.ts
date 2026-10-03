@@ -2,12 +2,12 @@ import { createHash, randomUUID } from 'crypto';
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { dirname, join } from 'path';
-import { resolveControllerHome } from '../src/cli/repositories/controller-home';
-import { loadRuntimeReleaseManifest } from '../src/runtime/root/release-manifest';
-import { readRuntimeReleaseAuthority } from '../src/runtime/root/release-store';
-import { ensureBrowserStateInControllerHome } from '../src/runtime/plugins/browser-session-store';
-import { renderWorkflowSupervisorNativeManifest } from './native-messaging/manifest';
-import { WORKFLOW_SUPERVISOR_NATIVE_HOST_NAME } from './native-messaging/host';
+import { resolveControllerHome } from '../../cli/repositories/controller-home';
+import { loadRuntimeReleaseManifest } from '../root/release-manifest';
+import { readRuntimeReleaseAuthority } from '../root/release-store';
+import { ensureBrowserStateInControllerHome } from './browser-session-store';
+import { renderWorkflowSupervisorNativeManifest } from '../../../supervisor/native-messaging/manifest';
+import { WORKFLOW_SUPERVISOR_NATIVE_HOST_NAME } from '../../../supervisor/native-messaging/host';
 
 const EXTENSION_FILES = ['manifest.json', 'background.js', 'content.js', 'core.js'] as const;
 const FORGE_NATIVE_MESSAGING_DECLARATION = 'forge-native-messaging-host.json';
@@ -92,7 +92,7 @@ function activeBrowserAdapterRelease(controllerHome: string): ActiveBrowserAdapt
   const releaseRoot = dirname(authority.active.manifestPath);
   return {
     releaseId: authority.active.releaseId,
-    extensionSourcePath: join(releaseRoot, manifest.packageRoot, 'supervisor', 'chrome-extension'),
+    extensionSourcePath: join(releaseRoot, manifest.packageRoot, 'adapters', 'computer', 'chrome-extension'),
     nativeHostSourcePath: join(releaseRoot, manifest.workflowSupervisorNativeHostEntrypoint),
     nativeHostArtifactIdentity: manifest.workflowSupervisorNativeHostArtifactIdentity,
   };

@@ -5,6 +5,7 @@ import { mkdirSync } from 'node:fs';
 import type { WorkflowSupervisorControlPlane } from './control-plane';
 import { parseChatgptConversationIdentity } from './chatgpt-conversation';
 import type { WorkflowSupervisorConsumerStatus, WorkflowSupervisorDiscoverySnapshot, WorkflowSupervisorDiscoveredConversation } from './types';
+import type { ComputerChatgptExtensionBrokerRpc, ComputerChatgptExtensionCommandResult, ComputerChatgptExtensionHeartbeat } from '../packages/plugin-runtime/computer';
 
 interface RpcRequest { id: string; method: string; params: Record<string, unknown> }
 const MAX_REQUEST_BYTES = 1024 * 1024;
@@ -265,7 +266,7 @@ function text(params: Record<string, unknown>, key: string): string { const valu
 function reply(socket: Socket, id: string, result: unknown): void { socket.write(`${JSON.stringify({ id, ok: true, result })}\n`); }
 function fail(socket: Socket, id: string, error: unknown): void { const message = error instanceof Error ? error.message : String(error); socket.write(`${JSON.stringify({ id, ok: false, error: { code: message.split(':')[0], message } })}\n`); }
 
-export function createWorkflowSupervisorServer(input: { controlPlane: WorkflowSupervisorControlPlane; socketPath: string; discovery?: WorkflowSupervisorEphemeralDiscovery; writer?: WorkflowSupervisorWriterIdentity; browserAdapterEnabled?: boolean; browserConsumerStatus?: () => WorkflowSupervisorConsumerStatus }): Server {
+export function createWorkflowSupervisorServer(input: { controlPlane: WorkflowSupervisorControlPlane; socketPath: string; discovery?: WorkflowSupervisorEphemeralDiscovery; writer?: WorkflowSupervisorWriterIdentity; browserAdapterEnabled?: boolean; browserConsumerStatus?: () => WorkflowSupervisorConsumerStatus; computerExtensionBroker?: ComputerChatgptExtensionBrokerRpc }): Server {
   const discovery = input.discovery ?? new WorkflowSupervisorEphemeralDiscovery();
   const server = createServer((socket) => {
     let buffer = Buffer.alloc(0); let chain = Promise.resolve();
@@ -277,7 +278,7 @@ export function createWorkflowSupervisorServer(input: { controlPlane: WorkflowSu
         const raw = buffer.subarray(0, newline).toString('utf8'); buffer = buffer.subarray(newline + 1);
         chain = chain.then(async () => {
           let id = 'invalid';
-          try { const req = request(JSON.parse(raw)); id = req.id; reply(socket, id, await dispatch(input.controlPlane, discovery, req, input.browserAdapterEnabled !== false, input.browserConsumerStatus)); } catch (error) { fail(socket, id, error); }
+          try { const req = request(JSON.parse(raw)); id = req.id; reply(socket, id, await dispatch(input.controlPlane, discovery, req, input.browserAdapterEnabled !== false, input.browserConsumerStatus, input.computerExtensionBroker)); } catch (error) { fail(socket, id, error); }
         });
         newline = buffer.indexOf(0x0a);
       }
@@ -306,9 +307,22 @@ export function createWorkflowSupervisorServer(input: { controlPlane: WorkflowSu
   return server;
 }
 
-async function dispatch(control: WorkflowSupervisorControlPlane, discovery: WorkflowSupervisorEphemeralDiscovery, req: RpcRequest, browserAdapterEnabled = true, browserConsumerStatus?: () => WorkflowSupervisorConsumerStatus): Promise<unknown> {
+async function dispatch(control: WorkflowSupervisorControlPlane, discovery: WorkflowSupervisorEphemeralDiscovery, req: RpcRequest, browserAdapterEnabled = true, browserConsumerStatus?: () => WorkflowSupervisorConsumerStatus, computerExtensionBroker?: ComputerChatgptExtensionBrokerRpc): Promise<unknown> {
   const p = req.params;
   if (req.method === 'health') return { status: 'ready', writer: 'workflow-supervisor-daemon' };
+  if (req.method === 'computer_extension_heartbeat') {
+    if (!computerExtensionBroker) throw new Error('COMPUTER_CHATGPT_EXTENSION_BROKER_UNAVAILABLE');
+    computerExtensionBroker.heartbeat(p as unknown as ComputerChatgptExtensionHeartbeat);
+    return { recorded: true };
+  }
+  if (req.method === 'computer_extension_claim') {
+    if (!computerExtensionBroker) throw new Error('COMPUTER_CHATGPT_EXTENSION_BROKER_UNAVAILABLE');
+    return { command: computerExtensionBroker.claim() ?? null };
+  }
+  if (req.method === 'computer_extension_complete') {
+    if (!computerExtensionBroker) throw new Error('COMPUTER_CHATGPT_EXTENSION_BROKER_UNAVAILABLE');
+    return { recorded: computerExtensionBroker.complete(text(p, 'command_id'), object(p.result) as unknown as ComputerChatgptExtensionCommandResult) };
+  }
   if (req.method === 'consumer_status') return browserConsumerStatus?.() ?? {
     enabled: browserAdapterEnabled,
     running: false,

@@ -1,24 +1,20 @@
 import { expect, test } from 'bun:test';
-import {
-  defaultDispatchPrompt,
-  type WorkflowSupervisorNativePage,
-} from '../../supervisor/native-browser-adapter';
+import { dispatchMacOsChatgptPrompt } from '../../src/runtime/plugins/computer-chatgpt-macos-target';
 
-test('classifies Chrome JavaScript permission rejection as pre-send not-applied', async () => {
+test('Computer provider classifies Chrome JavaScript permission rejection as pre-mutation not-applied', async () => {
   let evaluateCalls = 0;
   const permissionError = 'PLUGIN_BROWSER_JAVASCRIPT_PERMISSION_REQUIRED: Google Chrome allows tab/window automation, but DOM actions require Settings > Privacy > Apple Events > Allow JavaScript from Apple Events.';
-  const page: WorkflowSupervisorNativePage = {
+  const page = {
     evaluate: async <T>() => {
       evaluateCalls += 1;
       throw new Error(permissionError);
     },
-    waitForSelector: async () => undefined,
     tabRef: () => undefined,
   };
 
-  await expect(defaultDispatchPrompt(page, 'continue the Forge task')).resolves.toEqual({
-    dispatched: false,
-    reason: permissionError,
+  await expect(dispatchMacOsChatgptPrompt(page, 'continue the Forge task')).resolves.toEqual({
+    mutation: 'not_attempted',
+    reasonCode: 'PLUGIN_BROWSER_JAVASCRIPT_PERMISSION_REQUIRED',
   });
   expect(evaluateCalls).toBe(1);
 });

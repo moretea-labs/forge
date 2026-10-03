@@ -27,6 +27,17 @@ function runInteractionAuthorityFixture(sources: Array<{ path: string; source: s
   });
 }
 
+function runSupervisorComputerBoundaryFixture(sources: Array<{ path: string; source: string }>) {
+  return spawnSync(process.execPath, [script], {
+    cwd: root,
+    env: {
+      ...process.env,
+      FORGE_SUPERVISOR_COMPUTER_BOUNDARY_FIXTURE: JSON.stringify({ sources }),
+    },
+    encoding: 'utf8',
+  });
+}
+
 describe('Semantic Authority Guardrail', () => {
   test('rejects a new human-readable string branch in an authority-critical shape', () => {
     const violation = `src/runtime/control-plane/fake.ts::message.includes('network')`;
@@ -80,6 +91,30 @@ describe('Semantic Authority Guardrail', () => {
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('Browser/Desktop durable interaction authority must live only in Computer target authority');
     expect(result.stderr).toContain('BrowserSurfacePersistence');
+  });
+
+  test('rejects Workflow Supervisor imports of concrete Browser transports', () => {
+    const result = runSupervisorComputerBoundaryFixture([
+      {
+        path: 'supervisor/fake-consumer.ts',
+        source: `import { listMacOsBrowserTabs } from '../src/runtime/plugins/browser-macos-bridge';\nexport function run() { return listMacOsBrowserTabs; }`,
+      },
+    ]);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('Workflow Supervisor semantic code must depend on Computer target ports');
+    expect(result.stderr).toContain('browser-macos-bridge');
+  });
+
+  test('allows Workflow Supervisor to depend on the typed Computer target port', () => {
+    const result = runSupervisorComputerBoundaryFixture([
+      {
+        path: 'supervisor/fake-consumer.ts',
+        source: `import type { ComputerChatgptConversationTargetPort } from '../packages/plugin-runtime/computer';\nexport type Port = ComputerChatgptConversationTargetPort;`,
+      },
+    ]);
+
+    expect(result.status).toBe(0);
   });
 
   test('catches regex tests against check ids so naming cannot silently become lifecycle authority again', () => {

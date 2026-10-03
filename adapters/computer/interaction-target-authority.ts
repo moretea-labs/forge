@@ -84,10 +84,18 @@ function normalizeSurfaceStableIdentity(identity: ComputerSurfaceStableIdentity)
   if (identity.ownership !== 'plugin_owned' && identity.ownership !== 'user_owned' && identity.ownership !== 'provider_owned') {
     throw new Error(`COMPUTER_SURFACE_OWNERSHIP_INVALID: ${String(identity.ownership)}`);
   }
+  const resource = identity.resource ? {
+    namespace: identity.resource.namespace.trim(),
+    key: identity.resource.key.trim(),
+  } : undefined;
+  if (resource && (!/^[a-z0-9][a-z0-9._-]*$/i.test(resource.namespace) || resource.namespace.length > 128 || !resource.key || resource.key.length > 512)) {
+    throw new Error('COMPUTER_SURFACE_RESOURCE_IDENTITY_INVALID');
+  }
   return {
     surfaceType: identity.surfaceType,
     ownership: identity.ownership,
     ...(identity.application ? { application: normalizeStableIdentity(identity.application) } : {}),
+    ...(resource ? { resource } : {}),
   };
 }
 
@@ -223,6 +231,12 @@ function surfaceBindingIndexKey(binding: ComputerSurfaceProviderBinding | undefi
   return `binding-${digest40(`${binding.providerId}:${binding.browserProduct ?? ''}:${binding.windowId}:${binding.tabId}`)}`;
 }
 
+function surfaceStableIdentityIndexKey(identity: ComputerSurfaceStableIdentity): string | undefined {
+  const normalized = normalizeSurfaceStableIdentity(identity);
+  if (!normalized.resource) return undefined;
+  return `stable-${digest40(`${normalized.surfaceType}:${normalized.resource.namespace}:${normalized.resource.key}`)}`;
+}
+
 function surfaceAliasIndexKey(alias: string, repoId?: string): string {
   return repoId
     ? `alias-repo-${digest40(`${repoId}:${alias}`)}`
@@ -231,6 +245,8 @@ function surfaceAliasIndexKey(alias: string, repoId?: string): string {
 
 function surfaceIndexKeysForTarget(target: ComputerSurfaceTarget): string[] {
   const keys: string[] = [];
+  const stableKey = surfaceStableIdentityIndexKey(target.stableIdentity);
+  if (stableKey) keys.push(stableKey);
   const bindingKey = surfaceBindingIndexKey(target.providerBinding);
   if (bindingKey) keys.push(bindingKey);
   for (const alias of target.compatibilityAliases) {
@@ -241,12 +257,15 @@ function surfaceIndexKeysForTarget(target: ComputerSurfaceTarget): string[] {
 }
 
 function surfaceInputIndexKeys(input: {
+  stableIdentity: ComputerSurfaceStableIdentity;
   visibility: ComputerSurfaceVisibility;
   compatibilityAliases: string[];
   repositoryIds: string[];
   providerBinding?: ComputerSurfaceProviderBinding;
 }): string[] {
   const keys: string[] = [];
+  const stableKey = surfaceStableIdentityIndexKey(input.stableIdentity);
+  if (stableKey) keys.push(stableKey);
   const bindingKey = surfaceBindingIndexKey(input.providerBinding);
   if (bindingKey) keys.push(bindingKey);
   for (const alias of input.compatibilityAliases) {
@@ -353,6 +372,7 @@ function deleteSurfaceIndexes(
 function normalizedSurfaceTarget(target: ComputerSurfaceTarget): ComputerSurfaceTarget {
   return {
     ...target,
+    stableIdentity: normalizeSurfaceStableIdentity(target.stableIdentity),
     compatibilityAliases: normalizeCompatibilityAliases(target.compatibilityAliases),
     visibility: normalizeSurfaceVisibility(target.visibility),
     repositoryIds: normalizeRepositoryIds(target.repositoryIds),
@@ -362,6 +382,10 @@ function normalizedSurfaceTarget(target: ComputerSurfaceTarget): ComputerSurface
 }
 
 function surfaceConvergenceLockKey(input: ComputerSurfaceUpsertInput): string {
+  const stableIdentity = normalizeSurfaceStableIdentity(input.stableIdentity);
+  const stableKey = stableIdentity.resource
+    ? `stable:${stableIdentity.surfaceType}:${stableIdentity.resource.namespace}:${stableIdentity.resource.key}`
+    : undefined;
   const binding = input.providerBinding ? normalizeSurfaceProviderBinding(input.providerBinding) : undefined;
   const nativeKey = binding?.windowId && binding.tabId
     ? `binding:${binding.providerId}:${binding.browserProduct ?? ''}:${binding.windowId}:${binding.tabId}`
@@ -369,7 +393,7 @@ function surfaceConvergenceLockKey(input: ComputerSurfaceUpsertInput): string {
   const aliases = normalizeCompatibilityAliases(input.compatibilityAliases);
   const repositories = normalizeRepositoryIds(input.repositoryIds);
   const fallback = aliases[0] && repositories[0] ? `alias:${repositories[0]}:${aliases[0]}` : aliases[0] ? `alias:${aliases[0]}` : undefined;
-  const source = nativeKey ?? fallback;
+  const source = stableKey ?? nativeKey ?? fallback;
   if (!source) throw new Error('COMPUTER_SURFACE_CONVERGENCE_KEY_REQUIRED');
   return `surface-converge-${createHash('sha256').update(source).digest('hex').slice(0, 40)}`;
 }
@@ -552,7 +576,7 @@ export function createComputerInteractionTargetAuthority(
     const compatibilityRecords = normalizeCompatibilityRecords(rawInput.compatibilityRecords);
     const providerBinding = rawInput.providerBinding ? normalizeSurfaceProviderBinding(rawInput.providerBinding) : undefined;
     const lockKey = surfaceConvergenceLockKey(rawInput);
-    const inputIndexKeys = surfaceInputIndexKeys({ visibility, compatibilityAliases, repositoryIds, providerBinding });
+    const inputIndexKeys = surfaceInputIndexKeys({ stableIdentity, visibility, compatibilityAliases, repositoryIds, providerBinding });
     return persistence.transaction(controllerHome, (transaction) => {
       ensureSurfaceIndexes(transaction);
       const indexed = new Map<string, ComputerTargetPersistenceRecord<ComputerInteractionTargetEntry>>();
@@ -691,6 +715,21 @@ export function createComputerInteractionTargetAuthority(
       if (matches.length > 1) throw new Error(`COMPUTER_SURFACE_ALIAS_AMBIGUOUS: ${normalizedAlias}`);
       const target = matches[0]?.value.target;
       return target?.kind === 'surface' ? structuredClone(normalizedSurfaceTarget(target)) : undefined;
+    });
+  }
+
+  function findSurfaceByStableIdentity(controllerHome: string, rawIdentity: ComputerSurfaceStableIdentity, repoId?: string): ComputerSurfaceTarget | undefined {
+    const identity = normalizeSurfaceStableIdentity(rawIdentity);
+    const indexKey = surfaceStableIdentityIndexKey(identity);
+    if (!indexKey) return undefined;
+    const normalizedRepoId = repoId?.trim();
+    return persistence.transaction(controllerHome, (transaction) => {
+      ensureSurfaceIndexes(transaction);
+      const match = readIndexedSurfaceRecord(transaction, indexKey);
+      if (!match || match.value.status !== 'active' || match.value.target.kind !== 'surface') return undefined;
+      const target = normalizedSurfaceTarget(match.value.target);
+      if (normalizedRepoId && target.visibility !== 'controller' && !target.repositoryIds.includes(normalizedRepoId)) return undefined;
+      return structuredClone(target);
     });
   }
 
@@ -833,6 +872,10 @@ export function createComputerInteractionTargetAuthority(
             updatedAt: now(),
           }, 'computer_surface_target_bind_provider');
         },
+        clearBinding() {
+          const { providerBinding: _providerBinding, ...withoutBinding } = record.value.target;
+          return persist({ ...withoutBinding, updatedAt: now() }, 'computer_surface_target_clear_provider');
+        },
         mergeCompatibility(input) {
           const current = normalizedSurfaceTarget(record.value.target);
           const compatibilityAliases = normalizeCompatibilityAliases([
@@ -965,6 +1008,7 @@ export function createComputerInteractionTargetAuthority(
     getSurface,
     requireSurface,
     findSurfaceByAlias,
+    findSurfaceByStableIdentity,
     findSurfaceByProviderBinding,
     listSurfaces,
     listAllSurfaces,

@@ -11,7 +11,7 @@ import { createWorkContract, reviseWorkSemanticContext } from '../../packages/ke
 import { createRequirement, updateRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
 import { bindCurrentWorkflowSupervisorConversationForWork, forgeWorkflowSupervisorLifecycleHooks, inheritWorkflowSupervisorConversationBinding, workflowSupervisorBoundaryForWork, workflowSupervisorLowerLayerReadyForWork } from '../../src/runtime/root/workflow-supervisor-composition';
 import { WorkflowSupervisorControlPlane } from '../../supervisor/control-plane';
-import { WorkflowSupervisorNativeBrowserAdapter, type WorkflowSupervisorNativePage } from '../../supervisor/native-browser-adapter';
+import { WorkflowSupervisorNativeBrowserAdapter } from '../../supervisor/native-browser-adapter';
 import { LEGACY_SUPERVISOR_BLOCK_END, LEGACY_SUPERVISOR_BLOCK_START, parseSupervisorCompletion, renderSupervisorPrompt, renderSupervisorReceipt, supervisorReceiptChallenge, SUPERVISOR_BLOCK_END, SUPERVISOR_BLOCK_START } from '../../supervisor/protocol';
 import { WorkflowSupervisorStore } from '../../supervisor/store';
 import { createWorkflowSupervisorServer, reconcileWorkflowSupervisorSocket, WorkflowSupervisorEphemeralDiscovery } from '../../supervisor/server';
@@ -20,6 +20,7 @@ import { bindChatgptWorkConversation, getChatgptWorkConversationBinding, rebindC
 import { CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE, chatgptProviderPageFailure, classifyChatgptProviderFailure } from '../../adapters/chatgpt/provider-delivery';
 import { parseChatgptConversationIdentity } from '../../supervisor/chatgpt-conversation';
 import { setMacOsBrowserRuntimeHooksForTest, resetMacOsBrowserRuntimeHooksForTest } from '../../src/runtime/plugins/browser-macos-bridge';
+import { createTestChatgptTargetPort, type TestBrowserPage } from './helpers/computer-chatgpt-target-harness';
 
 const roots: string[] = [];
 afterEach(() => { resetMacOsBrowserRuntimeHooksForTest(); while (roots.length) rmSync(roots.pop()!, { recursive: true, force: true }); });
@@ -1421,13 +1422,12 @@ test('native consumer status exposes and clears a pre-dispatch due-effect transp
   let inventoryUnavailable = true;
   let owner = '';
   let createCalls = 0;
-  const page: WorkflowSupervisorNativePage = {
+  const page: TestBrowserPage = {
     evaluate: async () => undefined as never,
     waitForSelector: async () => undefined,
     tabRef: () => ({ windowId: 'consumer-window', tabId: 'consumer-tab' }),
   };
-  const adapter = new WorkflowSupervisorNativeBrowserAdapter(control, new WorkflowSupervisorEphemeralDiscovery(), {
-    platform: 'darwin',
+  const targetPort = createTestChatgptTargetPort({
     listTabs: async () => ({ entries: [], unavailableProducts: inventoryUnavailable ? ['chrome'] : [] }),
     reattach: async () => page,
     create: async (url) => { expect(url).toBe(conversationUrl); createCalls += 1; return page; },
@@ -1439,6 +1439,9 @@ test('native consumer status exposes and clears a pre-dispatch due-effect transp
       isGenerating: false, providerActivityText: '', providerFailureText: '',
     }),
     dispatchPrompt: async () => ({ dispatched: false, reason: 'test_pre_send_rejection' }),
+  });
+  const adapter = new WorkflowSupervisorNativeBrowserAdapter(control, new WorkflowSupervisorEphemeralDiscovery(), {
+    targetPort,
     nowMs: () => clock.nowMs,
     providerIdleGraceMs: 60_000,
     providerScopeKey: join(root, 'provider-scope'),
@@ -1516,13 +1519,16 @@ test('enrolled reconciliation reopens only its exact conversation and never repe
       return false;
     },
   });
-  const page: WorkflowSupervisorNativePage = {
+  const page: TestBrowserPage = {
     evaluate: async () => { throw new Error('reconciliation must not click provider controls'); },
     waitForSelector: async () => undefined,
     tabRef: () => ({ windowId: 'reconcile-window', tabId: 'reconcile-tab' }),
   };
-  const adapter = new WorkflowSupervisorNativeBrowserAdapter(control, new WorkflowSupervisorEphemeralDiscovery(), {
-    platform: 'darwin',
+  const targetPort = createTestChatgptTargetPort({
+    listTabs: async () => ({
+      entries: tabPresent ? [{ windowId: 'reconcile-window', tabId: 'reconcile-tab', active: false, url: conversationUrl, title: 'Existing conversation', browserProduct: 'chrome' }] : [],
+      unavailableProducts: inventoryUnavailable ? ['chrome'] : [],
+    }),
     reattach: async () => page,
     create: async (url) => { expect(url).toBe(conversationUrl); createCalls += 1; tabPresent = true; return page; },
     close: async () => { closeCalls += 1; tabPresent = false; },
@@ -1537,6 +1543,9 @@ test('enrolled reconciliation reopens only its exact conversation and never repe
       };
     },
     dispatchPrompt: async () => { throw new Error('unexpected dispatch'); },
+  });
+  const adapter = new WorkflowSupervisorNativeBrowserAdapter(control, new WorkflowSupervisorEphemeralDiscovery(), {
+    targetPort,
     nowMs: () => clock.nowMs,
     providerIdleGraceMs: 60_000,
     providerScopeKey: join(root, 'provider-scope'),
@@ -1569,24 +1578,25 @@ test('enrolled reconciliation reopens only its exact conversation and never repe
 
   expect(createCalls).toBe(1);
   expect(store.nextBrowserEffect(taskId)).toEqual(expect.objectContaining({ mode: 'reconcile', generation: 1 }));
-  // Durable observation timestamps use wall time. Return the fixture clock to
-  // that observation's cooldown before checking idle resource retirement.
-  clock.nowMs = Date.now();
+  // Computer keeps the semantic target and provider binding stable while the
+  // task is still active. Reconciliation re-observes the same target instead
+  // of closing and manufacturing replacement tabs.
+  expect(closeCalls).toBe(0);
+  expect(tabPresent).toBe(true);
+  expect(store.nextBrowserEffect(taskId)).toEqual(expect.objectContaining({ mode: 'reconcile', generation: 1 }));
+  // A second bounded reconciliation observation enters the existing unknown
+  // backoff; the Computer target stays attached instead of being retired.
   await adapter.runOnce();
-  expect(closeCalls).toBe(1);
-  expect(tabPresent).toBe(false);
   expect(store.nextBrowserEffect(taskId)).toBeUndefined();
 
-  // A stale exact tab can have an empty composer, or still show the sent draft.
-  // Neither authorizes another click in this generation or a new generation.
+  // An empty composer or retained draft never authorizes another click in this
+  // generation or a new generation.
   for (const draft of ['', effect.prompt]) {
     composerText = draft;
     clock.nowMs += 60_000;
     await adapter.runOnce();
     expect(store.effectDispatchBudget(effect.effectId).generations).toBe(1);
     expect(store.effectApplied(effect.effectId)).toBe(false);
-    clock.nowMs = Date.now();
-    await adapter.runOnce();
   }
   expect(snapshotCalls).toBeGreaterThan(0);
   submittedText = effect.prompt;
@@ -1594,8 +1604,8 @@ test('enrolled reconciliation reopens only its exact conversation and never repe
   await adapter.runOnce();
   expect(store.effectApplied(effect.effectId)).toBe(true);
   expect(store.effectDispatchBudget(effect.effectId).generations).toBe(1);
-  expect(createCalls).toBe(4);
-  expect(closeCalls).toBe(3);
+  expect(createCalls).toBe(1);
+  expect(closeCalls).toBe(0);
   expect(tabPresent).toBe(true);
   await adapter.close();
   store.close();
@@ -1651,7 +1661,7 @@ test('bootstrap does not require window.name and reconciles the exact effect mar
     completionContract: {}, continuationPolicy: { kind: 'standalone_supervisor', bootstrap: true }, userBlockerPolicy: {},
   });
   const effect = control.reserveEnrollment(taskId);
-  const page: WorkflowSupervisorNativePage = {
+  const page: TestBrowserPage = {
     evaluate: async <T>() => false as T,
     waitForSelector: async () => undefined,
     tabRef: () => ({ windowId: 'window-bootstrap', tabId: 'tab-bootstrap' }),
@@ -1660,8 +1670,7 @@ test('bootstrap does not require window.name and reconciles the exact effect mar
   let sentPrompt = '';
   let dispatchCount = 0;
   let closeCount = 0;
-  const adapter = new WorkflowSupervisorNativeBrowserAdapter(control, new WorkflowSupervisorEphemeralDiscovery(), {
-    platform: 'darwin',
+  const targetPort = createTestChatgptTargetPort({
     listTabs: async () => ({ entries: [{
       windowId: 'window-bootstrap', tabId: 'tab-bootstrap', active: false,
       url: canonical ? conversationUrl : projectUrl, title: 'Forge bootstrap', browserProduct: 'chrome',
@@ -1679,6 +1688,9 @@ test('bootstrap does not require window.name and reconciles the exact effect mar
       latestTurnRole: sentPrompt ? 'user' : undefined, isGenerating: false,
     }),
     dispatchPrompt: async (_page, prompt) => { sentPrompt = prompt; dispatchCount += 1; return { dispatched: true, confirmed: true }; },
+  });
+  const adapter = new WorkflowSupervisorNativeBrowserAdapter(control, new WorkflowSupervisorEphemeralDiscovery(), {
+    targetPort,
     nowMs: () => clock.nowMs,
     providerIdleGraceMs: 60_000,
     providerScopeKey: join(root, 'provider-scope'),
@@ -1978,7 +1990,7 @@ test('stream recovery stays on the attached exact tab and never creates a replac
   expect(store.recordEffectDispatchStarted(enrollment.effectId, 1, 'enrollment-dispatch', { surface: 'test' })).toBe(true);
   control.observeEffect({ effectId: enrollment.effectId, observationId: 'enrollment-applied', outcome: 'applied' });
 
-  const page = (tabId: string): WorkflowSupervisorNativePage => ({
+  const page = (tabId: string): TestBrowserPage => ({
     evaluate: async <T>() => false as T,
     waitForSelector: async () => undefined,
     tabRef: () => ({ windowId: 'window-1', tabId }),
@@ -1996,8 +2008,7 @@ test('stream recovery stays on the attached exact tab and never creates a replac
     providerFailureText: page === stalePage ? 'ChatGPT stream recovery polling timed out' : '',
     latestTurnRole: 'assistant' as const, isGenerating: false,
   });
-  const adapter = new WorkflowSupervisorNativeBrowserAdapter(control, new WorkflowSupervisorEphemeralDiscovery(), {
-    platform: 'darwin',
+  const targetPort = createTestChatgptTargetPort({
     listTabs: async () => ({ entries: [{ windowId: 'window-1', tabId: 'tab-1', url: conversationUrl, title: 'Forge recovery test', active: false, browserProduct: 'chrome' }], unavailableProducts: [] }),
     reattach: async () => stalePage,
     create: async (url) => { createdUrls.push(url); throw new Error('unexpected create'); },
@@ -2006,9 +2017,15 @@ test('stream recovery stays on the attached exact tab and never creates a replac
     writeOwner: async (page, owner) => { owners.set(page, owner); },
     snapshot: async (page) => snapshot(page),
     dispatchPrompt: async (page) => { dispatchedPages.push(page); return { dispatched: true, confirmed: true }; },
+  });
+  const adapter = new WorkflowSupervisorNativeBrowserAdapter(control, new WorkflowSupervisorEphemeralDiscovery(), {
+    targetPort,
     nowMs: () => nowMs,
+    providerIdleGraceMs: 60_000,
     providerScopeKey: join(root, 'provider-scope'),
     sleep: async () => undefined,
+    setInterval: () => 0 as unknown as ReturnType<typeof setInterval>,
+    clearInterval: () => undefined,
     onError: (error) => { throw error; },
   });
 
@@ -2022,9 +2039,9 @@ test('stream recovery stays on the attached exact tab and never creates a replac
 
   expect(createdUrls).toEqual([]);
   expect(dispatchedPages).toEqual([stalePage]);
-  // Provider cooldown can retire the disposable owned tab. The recovery still
-  // submits once on the attached exact conversation, without another resource.
-  expect(closed).toEqual([{ windowId: 'window-1', tabId: 'tab-1' }]);
+  // Provider cooldown never retires an active semantic target. The recovery
+  // submits once on the same exact conversation without manufacturing another tab.
+  expect(closed).toEqual([]);
   expect(store.latestEffectDispatch(enrollment.effectId)?.generation).toBe(1);
   control.stopTask('stream-recovery-tab');
   await adapter.runOnce();
@@ -2105,18 +2122,17 @@ test('automation tool receipt successor begins from the real assistant page base
   let nowMs = Date.now();
   let receiptDuringScan: (() => Promise<void>) | undefined;
   const scanEvents: string[] = [];
-  const backlogPages = ['unknown-tab-1', 'unknown-tab-2'].map((tabId): WorkflowSupervisorNativePage => ({
+  const backlogPages = ['unknown-tab-1', 'unknown-tab-2'].map((tabId): TestBrowserPage => ({
     evaluate: async () => { throw new Error('unknown reconciliation must never mutate'); },
     waitForSelector: async () => undefined,
     tabRef: () => ({ windowId: 'receipt-window', tabId }),
   }));
-  const page: WorkflowSupervisorNativePage = {
+  const page: TestBrowserPage = {
     evaluate: async () => { throw new Error('unexpected provider control'); },
     waitForSelector: async () => undefined,
     tabRef: () => ({ windowId: 'receipt-window', tabId: 'receipt-tab' }),
   };
-  const dependencies = {
-    platform: 'darwin' as const,
+  const targetPort = createTestChatgptTargetPort({
     listTabs: async () => ({ entries: [...(tabPresent ? [{
       windowId: 'receipt-window', tabId: 'receipt-tab', active: false,
       url: conversationUrl, title: 'Tool-only completed turn', browserProduct: 'chrome' as const,
@@ -2127,7 +2143,7 @@ test('automation tool receipt successor begins from the real assistant page base
     reattach: async (ref: { tabId: string }) => backlogPages.find((entry) => entry.tabRef()!.tabId === ref.tabId) ?? page,
     create: async () => { throw new Error('must retain the same conversation tab'); },
     close: async () => { closeCount += 1; tabPresent = false; },
-    readOwner: async (entry: WorkflowSupervisorNativePage) => {
+    readOwner: async (entry: TestBrowserPage) => {
       if (entry.tabRef()!.tabId === 'unknown-tab-2') {
         generating = false;
         nowMs += 1_500;
@@ -2135,8 +2151,8 @@ test('automation tool receipt successor begins from the real assistant page base
       }
       return entry === page ? owner : '';
     },
-    writeOwner: async (_page: WorkflowSupervisorNativePage, marker: string) => { owner = marker; },
-    snapshot: async (entry: WorkflowSupervisorNativePage) => {
+    writeOwner: async (_page: TestBrowserPage, marker: string) => { owner = marker; },
+    snapshot: async (entry: TestBrowserPage) => {
       if (entry !== page) {
         scanEvents.push(entry.tabRef()!.tabId);
         const receipt = receiptDuringScan;
@@ -2154,13 +2170,19 @@ test('automation tool receipt successor begins from the real assistant page base
         isGenerating: generating, providerActivityText: '', providerFailureText: '',
       };
     },
-    dispatchPrompt: async (_page: WorkflowSupervisorNativePage, prompt: string) => {
+    dispatchPrompt: async (_page: TestBrowserPage, prompt: string) => {
       dispatched.push(prompt); submittedText = prompt; scanEvents.push('successor-send');
       return { dispatched: true, confirmed: true };
     },
+  });
+  const dependencies = {
+    targetPort,
     nowMs: () => nowMs,
+    providerIdleGraceMs: 60_000,
     providerScopeKey: join(root, 'provider-scope'),
     sleep: async () => undefined,
+    setInterval: () => 0 as unknown as ReturnType<typeof setInterval>,
+    clearInterval: () => undefined,
     onError: (error: unknown) => { throw error; },
   };
   const adapter = new WorkflowSupervisorNativeBrowserAdapter(control, new WorkflowSupervisorEphemeralDiscovery(), dependencies);
@@ -2216,18 +2238,17 @@ test('automation tool receipt successor begins from the real assistant page base
     dispatchId: 'stale-bootstrap-after-stop', dispatchGeneration: 1,
   })).toThrow('WORKFLOW_SUPERVISOR_TASK_TERMINAL:STOPPED');
   await restarted.close();
-  // Runtime restart loses its attachment cache, not durable terminality or the
-  // browser's ownership marker. Reclaim a leaked owned tab without opening any.
+  // Runtime restart drops only in-memory attachment state. A terminal task has
+  // no Supervisor effect authority; cleanup of any leaked provider-owned tab is
+  // a Computer target-authority concern and is covered in Computer tests.
   tabPresent = true;
   const cleanup = new WorkflowSupervisorNativeBrowserAdapter(control, new WorkflowSupervisorEphemeralDiscovery(), dependencies);
   await cleanup.runOnce();
-  expect(closeCount).toBe(2);
-  expect(tabPresent).toBe(false);
-  // Matching URLs alone do not authorize closing user-owned tabs.
-  tabPresent = true;
+  expect(closeCount).toBe(1);
+  expect(tabPresent).toBe(true);
   owner = '';
   await cleanup.runOnce();
-  expect(closeCount).toBe(2);
+  expect(closeCount).toBe(1);
   expect(tabPresent).toBe(true);
   await cleanup.close();
   store.close();

@@ -8,9 +8,15 @@ import {
   reconcileWorkflowSupervisorSocket,
   WorkflowSupervisorEphemeralDiscovery,
 } from '../../../supervisor/server';
-import { startWorkflowSupervisorNativeBrowserAdapter, type WorkflowSupervisorNativeBrowserHandle } from '../../../supervisor/native-browser-adapter';
+import { startWorkflowSupervisorNativeBrowserAdapter, type WorkflowSupervisorNativeBrowserHandle, type WorkflowSupervisorTransportProjection } from '../../../supervisor/native-browser-adapter';
 import type { WorkflowSupervisorConsumerStatus } from '../../../supervisor/types';
 import { WorkflowSupervisorStore } from '../../../supervisor/store';
+import { createComputerInteractionTargetAuthority } from '../../../adapters/computer/interaction-target-authority';
+import { MacOsChatgptConversationTargetPort } from '../plugins/computer-chatgpt-macos-target';
+import { ChromeExtensionChatgptConversationTargetPort } from '../../../adapters/computer/chatgpt-extension-target';
+import { PreferredChatgptConversationTargetPort } from '../../../adapters/computer/chatgpt-target-router';
+import { createRuntimeComputerTargetPersistence } from './computer-target-persistence';
+import { listDirectActivities, listUserRequests, recordDirectActivity, recordUserRequest, resolveUserRequest } from '../../../packages/kernel/identity/api/index';
 import { getRuntimeWriteClaim } from './write-fence';
 
 export interface RuntimeWorkflowSupervisorHandle {
@@ -47,8 +53,55 @@ export async function startWorkflowSupervisorRuntime(
     forgeWorkflowSupervisorLifecycleHooks(controllerHome),
   );
   const discovery = new WorkflowSupervisorEphemeralDiscovery();
-  const browserAdapterEnabled = options.nativeBrowserAdapter !== false;
+  const browserAdapterEnabled = true;
+  const nativeBrowserAdapterEnabled = options.nativeBrowserAdapter !== false;
   let nativeBrowser: WorkflowSupervisorNativeBrowserHandle | undefined;
+  const transportActivityId = (taskId?: string): string => `workflow-supervisor-transport-${(taskId ?? 'instance').replace(/[^a-zA-Z0-9._-]/g, '_')}`;
+  const reportTransportState = (projection: WorkflowSupervisorTransportProjection): void => {
+    const activityId = transportActivityId(projection.taskId);
+    const existing = listDirectActivities(controllerHome, 200).find((item) => item.activityId === activityId);
+    const recovered = projection.state === 'recovered';
+    recordDirectActivity(controllerHome, {
+      activityId,
+      capabilityId: 'workflow-supervisor.transport',
+      kind: 'direct_execution',
+      targetScope: projection.taskId ? `workflow-supervisor-task:${projection.taskId}` : 'workflow-supervisor:instance',
+      principalId: 'forge-runtime',
+      status: recovered ? 'completed' : 'running',
+      startedAt: existing?.startedAt ?? projection.firstFailureAt ?? projection.observedAt,
+      ...(recovered ? { completedAt: projection.observedAt } : {}),
+      summary: recovered
+        ? 'Workflow Supervisor transport recovered; autonomous continuation resumed without user action.'
+        : `Workflow Supervisor transport is temporarily degraded and auto-recovering${projection.code ? ` (${projection.code})` : ''}. Durable task/effect progress is preserved.`,
+    });
+    if (recovered && projection.taskId) {
+      const prefix = `workflow-supervisor.transport-human:${projection.taskId}:`;
+      for (const request of listUserRequests(controllerHome, 'pending').filter((item) => item.rootCauseKey.startsWith(prefix))) {
+        resolveUserRequest(controllerHome, { requestId: request.requestId, decision: 'transport_recovered', resolvedBy: 'forge-runtime' });
+      }
+    }
+  };
+  const requestHumanAction = (input: { taskId: string; effectId?: string; action: 'login' | 'grant_permission'; code: string }): void => {
+    const actionLabel = input.action === 'login' ? 'sign in to ChatGPT' : 'restore browser automation permission';
+    recordUserRequest(controllerHome, {
+      kind: 'user_action_request',
+      rootCauseKey: `workflow-supervisor.transport-human:${input.taskId}:${input.action}`,
+      title: input.action === 'login' ? 'ChatGPT sign-in required' : 'Browser permission required',
+      summary: `Workflow Supervisor cannot continue this task until you ${actionLabel}. The task and effect ledger are preserved and will resume automatically afterward.`,
+      actionRequired: input.action,
+      targetScope: { scopeKind: 'workflow_supervisor_task', scopeId: input.taskId },
+      presentation: {
+        severity: 'blocked',
+        creationReason: 'workflow_supervisor_transport_human_boundary',
+        reason: input.code,
+        currentState: { taskId: input.taskId, ...(input.effectId ? { effectId: input.effectId } : {}), transportCode: input.code },
+      },
+    });
+  };
+  const targetAuthority = createComputerInteractionTargetAuthority(createRuntimeComputerTargetPersistence());
+  const extensionTargetPort = new ChromeExtensionChatgptConversationTargetPort(controllerHome, targetAuthority);
+  const appleEventsTargetPort = new MacOsChatgptConversationTargetPort(controllerHome, targetAuthority);
+  const targetPort = new PreferredChatgptConversationTargetPort(extensionTargetPort, appleEventsTargetPort);
   const browserConsumerStatus = (): WorkflowSupervisorConsumerStatus => nativeBrowser?.status() ?? {
     enabled: browserAdapterEnabled,
     running: false,
@@ -63,6 +116,7 @@ export async function startWorkflowSupervisorRuntime(
     discovery,
     browserAdapterEnabled,
     browserConsumerStatus,
+    computerExtensionBroker: extensionTargetPort,
     ...(writer ? { writer } : {}),
   });
   const done = once(server, 'close').then(() => undefined);
@@ -81,9 +135,20 @@ export async function startWorkflowSupervisorRuntime(
   reconcileCommittedContinuations();
   const reconciliationTimer = setInterval(reconcileCommittedContinuations, 2_000);
   reconciliationTimer.unref?.();
-  nativeBrowser = browserAdapterEnabled
-    ? startWorkflowSupervisorNativeBrowserAdapter(controlPlane, discovery, { providerScopeKey: controllerHome })
-    : undefined;
+  if (nativeBrowserAdapterEnabled) {
+    nativeBrowser = startWorkflowSupervisorNativeBrowserAdapter(controlPlane, discovery, {
+      targetPort,
+      nowMs: () => Date.now(),
+      providerIdleGraceMs: 60_000,
+      providerScopeKey: controllerHome,
+      sleep: async (ms) => { await new Promise((resolve) => setTimeout(resolve, ms)); },
+      setInterval: (handler, ms) => setInterval(handler, ms),
+      clearInterval: (timer) => clearInterval(timer),
+      onError: (error) => { process.stderr.write(`[workflow-supervisor-computer-target] ${error instanceof Error ? error.message : String(error)}\\n`); },
+      reportTransportState,
+      requestHumanAction,
+    });
+  }
   return {
     done,
     async close(): Promise<void> {

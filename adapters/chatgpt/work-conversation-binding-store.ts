@@ -1,7 +1,7 @@
 import { FORGE_INSTANCE_SCOPE_KEY } from '../../src/cli/repositories/controller-home';
 import { withControllerLock } from '../../src/cli/repositories/locks';
 import { readControlPlaneRecord, writeControlPlaneRecord } from '../../src/runtime/control-plane/persistence/sqlite-store';
-import { parseCanonicalChatgptConversationIdentity } from './conversation-identity';
+import { parseCanonicalChatgptConversationIdentity } from '../../packages/plugin-runtime/computer';
 
 const NAMESPACE = 'chatgpt_work_conversation_binding';
 

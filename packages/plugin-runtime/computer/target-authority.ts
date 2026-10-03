@@ -24,10 +24,19 @@ export type ComputerSurfaceVisibility = 'repositories' | 'controller';
  * Durable semantic description of a Computer surface. Mutable URL/title and
  * provider-specific tab/window handles are deliberately excluded.
  */
+export interface ComputerSurfaceResourceIdentity {
+  /** Stable semantic namespace, for example chatgpt.conversation. */
+  namespace: string;
+  /** Provider-independent durable resource key inside the namespace. */
+  key: string;
+}
+
 export interface ComputerSurfaceStableIdentity {
   surfaceType: ComputerSurfaceType;
   ownership: ComputerSurfaceOwnership;
   application?: ComputerApplicationStableIdentity;
+  /** Durable semantic identity. Provider tab/window/session ids never belong here. */
+  resource?: ComputerSurfaceResourceIdentity;
 }
 
 /**
@@ -101,6 +110,8 @@ export interface ComputerApplicationTargetLease {
 export interface ComputerSurfaceTargetLease {
   current(): ComputerSurfaceTarget;
   bind(binding: ComputerSurfaceProviderBinding): ComputerSurfaceTarget;
+  /** Provider attachment is rebuildable and may be cleared without changing target identity. */
+  clearBinding(): ComputerSurfaceTarget;
   mergeCompatibility(input: { compatibilityAliases?: string[]; repositoryIds?: string[] }): ComputerSurfaceTarget;
   putCompatibility(record: ComputerSurfaceCompatibilityRecord): ComputerSurfaceTarget;
   tombstone(): ComputerSurfaceTarget;
@@ -184,6 +195,7 @@ export interface ComputerInteractionTargetAuthorityPort {
   getSurface(controllerHome: string, targetId: string): ComputerSurfaceTarget | undefined;
   requireSurface(controllerHome: string, targetId: string): ComputerSurfaceTarget;
   findSurfaceByAlias(controllerHome: string, alias: string, repoId?: string): ComputerSurfaceTarget | undefined;
+  findSurfaceByStableIdentity(controllerHome: string, identity: ComputerSurfaceStableIdentity, repoId?: string): ComputerSurfaceTarget | undefined;
   findSurfaceByProviderBinding(controllerHome: string, binding: ComputerSurfaceProviderBinding): ComputerSurfaceTarget | undefined;
   listSurfaces(controllerHome: string, options?: { repoId?: string; limit?: number }): ComputerSurfaceTarget[];
   listAllSurfaces(controllerHome: string, options?: { repoId?: string }): ComputerSurfaceTarget[];
