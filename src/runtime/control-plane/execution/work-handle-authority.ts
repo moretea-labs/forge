@@ -5,7 +5,7 @@ import { repositoryGitStatus } from '../../../cli/repositories/structured-git';
 import { appendWorkEvidence, getWorkContract, recordWorkEvidenceState, semanticWorkState } from '../../../../packages/kernel/work/api/index';
 import { currentPermissionSnapshotVersion } from './validation';
 import { listWorkHandles, readWorkHandle, transitionWorkHandle, writeWorkHandle, type WorkHandleState } from './work-handle-store';
-import { gitIsAncestor, inspectDirectCanonicalPreMutationReconciliation } from './direct-canonical-work-reconciliation';
+import { gitIsAncestor } from './work-execution-support';
 
 export interface RepositoryWorkHandleControllerIdentity {
   sessionId: string;
@@ -267,56 +267,6 @@ function rearmRetainedMergedWorkForMutation(input: {
   return next;
 }
 
-function alignRepositoryMutationBase(input: {
-  controllerHome: string;
-  repository: RepositoryRecord;
-  workId: string;
-  contract: NonNullable<ReturnType<typeof getWorkContract>>;
-  handle: WorkHandleState;
-  freshlyMaterialized: boolean;
-}): WorkHandleState {
-  if (input.handle.managedWorktree || input.handle.state !== 'prepared') return input.handle;
-
-  const placement = resolveRepositoryWorkHandlePlacement({
-    controllerHome: input.controllerHome,
-    repositoryId: input.repository.repoId,
-    checkoutId: input.handle.checkoutId,
-    worktreeRef: input.contract.checkoutId === input.handle.checkoutId ? input.contract.worktreeRef : undefined,
-  });
-  // A managed checkout has its own source lineage and does not participate in
-  // shared-canonical target-base alignment.
-  if (placement.managedWorktree) return input.handle;
-
-  const targetBranch = input.handle.deliveryTargetBranch ?? placement.branch;
-  const inspection = inspectDirectCanonicalPreMutationReconciliation({
-    handle: input.handle,
-    root: placement.checkout.canonicalRoot,
-    targetBranch,
-    status: placement.status,
-    freshlyMaterialized: input.freshlyMaterialized,
-  });
-  if (inspection.reason === 'no_target_advance') return input.handle;
-  if (!inspection.alignable || !inspection.targetHead) {
-    throw new Error(`WORK_DIRECT_PRE_MUTATION_RECONCILIATION_BLOCKED: ${inspection.reason}`);
-  }
-
-  const aligned = transitionWorkHandle(input.controllerHome, input.handle, input.handle.state, {
-    deliveryBaseCommit: inspection.targetHead,
-    expectedHead: inspection.targetHead,
-    failureReason: undefined,
-  });
-  appendWorkEvidence(
-    { controllerHome: input.controllerHome, repoId: input.repository.repoId },
-    input.workId,
-    {
-      title: 'direct canonical pre-mutation target base aligned',
-      summary: `Before the first Work-owned repository mutation, canonical target ${targetBranch} advanced linearly ${inspection.previousDeliveryBase} -> ${inspection.targetHead} while the shared checkout remained clean. Forge advanced only deliveryBaseCommit/expectedHead; the Work remains prepared until the mutation surface proves that repository mutation actually started.`,
-      detailLevel: 'summary',
-    },
-  );
-  return aligned;
-}
-
 export function markRepositoryMutationStarted(input: {
   controllerHome: string;
   repository: RepositoryRecord;
@@ -375,7 +325,6 @@ export function ensureRepositoryMutationWorkHandle(input: {
   // lifecycle. Repository mutation is now admitted by the concrete target fence.
   void input.deferEffectPromotion;
 
-  const existingHandle = readWorkHandle(input.controllerHome, input.repository.repoId, input.workId);
   let handle = ensureRepositoryWorkHandle({
     controllerHome: input.controllerHome,
     repository: input.repository,
@@ -385,14 +334,6 @@ export function ensureRepositoryMutationWorkHandle(input: {
     allowEffectWork: true,
   });
   if (!handle) throw new Error(`WORK_REPOSITORY_MUTATION_HANDLE_REQUIRED: ${input.workId}`);
-  handle = alignRepositoryMutationBase({
-    controllerHome: input.controllerHome,
-    repository: input.repository,
-    workId: input.workId,
-    contract,
-    handle,
-    freshlyMaterialized: !existingHandle,
-  });
   handle = rearmRetainedMergedWorkForMutation({
     controllerHome: input.controllerHome,
     repository: input.repository,

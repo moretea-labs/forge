@@ -1,23 +1,18 @@
 import { createHash } from 'crypto';
-import { spawnSync } from 'child_process';
-import { resolve } from 'path';
 import type { McpExecutionContext } from '../../../../packages/protocols/mcp/execution-context';
-import type { RepositoryRecord } from '../../../cli/repositories/types';
 import { getRepository, resolveRepositorySelection, selectRepositoryCheckout } from '../../../cli/repositories/registry';
 import { repositoryGitStatus } from '../../../cli/repositories/structured-git';
 import { ensureManagedWorkspace } from '../../execution/managed-workspace';
 import { readRepositoryAccessPolicy } from '../governance/access-policy';
-import { activateWorkContract, appendWorkEvidence, failWorkContract, getWorkContract, recordWorkEvidenceState, updateWorkContract } from '../../../../packages/kernel/work/api/index';
+import { activateWorkContract, failWorkContract, getWorkContract } from '../../../../packages/kernel/work/api/index';
 import { admitPreparedRepositoryWorkContract } from '../facade/repository-work-admission';
-import { isTerminalSemanticWorkState, type WorkReconciliationRecord } from '../facade/types';
+import { isTerminalSemanticWorkState } from '../facade/types';
 import { updateExecutionSession, type ExecutionSessionContext } from './session-store';
-import { currentPermissionSnapshotVersion, validateWorkHandle, WorkHandleValidationError } from './validation';
-import { assertExecutionIdentity, executionIdentityFromCoordinates } from './execution-identity';
+import { currentPermissionSnapshotVersion, validateWorkHandle } from './validation';
 import { withWorkPrepareRequest } from './work-prepare-request-store';
-import { markWorkHandleFailed, newWorkId, readWorkHandle, transitionWorkHandle, writeWorkHandle, type WorkFinalizationStages, type WorkHandleState } from './work-handle-store';
-import { assertWorkPathsWithinScope } from './work-path-scope';
+import { markWorkHandleFailed, newWorkId, readWorkHandle, writeWorkHandle, type WorkFinalizationStages, type WorkHandleState } from './work-handle-store';
 import { createGoalDelegation } from '../governance/authorization';
-import { compactHandle, contractFor, findWorkHandle, gitChangedPaths, gitCommit, gitHead, gitMergeBase, identityFor, requireSession, selectWorkFinalizationTarget } from './work-execution-support';
+import { compactHandle, contractFor, findWorkHandle, gitHead, identityFor, requireSession } from './work-execution-support';
 
 function requireExplicitRepoId(args: Record<string, unknown>): string {
   const value = typeof args.repo_id === 'string' ? args.repo_id.trim() : '';
@@ -39,21 +34,7 @@ function initialStage(): WorkFinalizationStages {
   return { validation: 'pending', commit: 'pending', merge: 'pending', branchCleanup: 'pending', worktreeCleanup: 'pending' };
 }
 
-/**
- * A previous finalization request may have validated a Work and explicitly
- * skipped every effectful stage without delivering or cleaning anything. That
- * is retryable preparation history, not an irreversible finalization boundary.
- * Any done/failed effectful stage or retained finalization error stays fenced.
- */
-export function workHeadAdoptionFinalizationIsRetryable(stages: WorkFinalizationStages): boolean {
-  if (stages.validation === 'failed' || stages.lastError) return false;
-  return [stages.commit, stages.merge, stages.branchCleanup, stages.worktreeCleanup]
-    .every((stage) => stage === 'pending' || stage === 'skipped');
-}
 
-function normalizedRequiredString(args: Record<string, unknown>, key: string): string | undefined {
-  return typeof args[key] === 'string' && args[key].trim() ? args[key].trim() : undefined;
-}
 
 function boundedStringArray(value: unknown, limit: number): string[] {
   return Array.isArray(value) ? value.map(String).slice(0, limit) : [];
@@ -72,167 +53,6 @@ function workPrepareFingerprint(input: {
   needsDependencies: boolean;
 }): string {
   return createHash('sha256').update(JSON.stringify({ schemaVersion: 1, operation: 'work_prepare', ...input })).digest('hex');
-}
-
-function adoptExistingWorkHead(
-  ctx: McpExecutionContext,
-  session: ExecutionSessionContext,
-  repository: RepositoryRecord,
-  handle: WorkHandleState,
-  args: Record<string, unknown>,
-): Record<string, unknown> | undefined {
-  const previousInput = normalizedRequiredString(args, 'expected_previous_head');
-  const candidateInput = normalizedRequiredString(args, 'adopt_candidate_head');
-  if (!previousInput && !candidateInput) return undefined;
-  if (!previousInput || !candidateInput) {
-    throw new Error('WORK_HEAD_ADOPTION_ARGUMENTS_REQUIRED: expected_previous_head and adopt_candidate_head must be provided together');
-  }
-  const requestedCheckoutId = normalizedRequiredString(args, 'checkout_id');
-  if (!requestedCheckoutId) throw new Error('WORK_HEAD_ADOPTION_CHECKOUT_REQUIRED: checkout_id must be explicit');
-  if (repository.repoId !== handle.repositoryId) throw new Error('WORK_HEAD_ADOPTION_REPOSITORY_MISMATCH');
-  if (requestedCheckoutId !== handle.checkoutId || repository.activeCheckoutId !== handle.checkoutId) {
-    throw new Error(`WORK_HEAD_ADOPTION_CHECKOUT_MISMATCH: expected ${handle.checkoutId}, found ${requestedCheckoutId}`);
-  }
-  if (handle.principalId !== session.principalId) throw new Error('WORK_HANDLE_PRINCIPAL_MISMATCH: work handle belongs to another principal');
-  if (handle.state !== 'prepared' && handle.state !== 'editing') {
-    throw new Error(`WORK_HEAD_ADOPTION_STATE_INVALID: ${handle.state}`);
-  }
-  if (!workHeadAdoptionFinalizationIsRetryable(handle.finalization)) {
-    throw new Error('WORK_HEAD_ADOPTION_FINALIZATION_ALREADY_STARTED');
-  }
-
-  const registered = getRepository(handle.repositoryId, ctx.controllerHome, { includeRemoved: true });
-  const registeredCheckout = registered.checkouts.find((entry) => entry.checkoutId === handle.checkoutId);
-  const canonicalCheckout = handle.checkoutId === registered.activeCheckoutId
-    && resolve(handle.worktreePath) === resolve(registered.canonicalRoot)
-    && registeredCheckout?.worktree !== true;
-  const managedCheckout = handle.managedWorktree && registeredCheckout?.worktree === true;
-  if (!registeredCheckout || registeredCheckout.lifecycle !== 'active' || (!canonicalCheckout && !managedCheckout)) {
-    throw new Error('WORK_HEAD_ADOPTION_CHECKOUT_NOT_ACTIVE_OR_CANONICAL');
-  }
-  const worktreeRepository = selectRepositoryCheckout(registered, handle.checkoutId);
-  const guarded = assertExecutionIdentity({
-    controllerHome: ctx.controllerHome,
-    identity: executionIdentityFromCoordinates({
-      repositoryId: handle.repositoryId,
-      checkoutId: handle.checkoutId,
-      canonicalRoot: handle.worktreePath,
-      workId: handle.workId,
-      worktreePath: handle.worktreePath,
-      branch: handle.branch,
-    }),
-    cwd: handle.worktreePath,
-    requestedRepoId: repository.repoId,
-    requestedCheckoutId,
-  });
-  const status = repositoryGitStatus(worktreeRepository);
-  if (!status.clean) throw new Error('WORK_HEAD_ADOPTION_WORKTREE_DIRTY');
-
-  const previousHead = gitCommit(handle.worktreePath, previousInput, 'PREVIOUS_HEAD');
-  const candidateHead = gitCommit(handle.worktreePath, candidateInput, 'CANDIDATE_HEAD');
-  const authoritativePrevious = handle.expectedHead ? gitCommit(handle.worktreePath, handle.expectedHead, 'AUTHORITATIVE_PREVIOUS_HEAD') : undefined;
-  if (!authoritativePrevious || authoritativePrevious !== previousHead) {
-    throw new Error(`WORK_HEAD_ADOPTION_PREVIOUS_HEAD_MISMATCH: expected ${authoritativePrevious ?? 'missing'}, found ${previousHead}`);
-  }
-  if (guarded.currentHead !== candidateHead || status.head !== candidateHead) {
-    throw new Error(`WORK_HEAD_ADOPTION_CANDIDATE_NOT_CURRENT: expected current HEAD ${candidateHead}, found ${guarded.currentHead ?? status.head ?? 'missing'}`);
-  }
-  if (previousHead === candidateHead) throw new Error('WORK_HEAD_ADOPTION_SUCCESSOR_REQUIRED');
-  const ancestry = spawnSync('git', ['-C', handle.worktreePath, 'merge-base', '--is-ancestor', previousHead, candidateHead], {
-    encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10_000,
-  });
-  if (ancestry.status !== 0 || ancestry.error) throw new Error('WORK_HEAD_ADOPTION_NOT_DESCENDANT');
-
-  const contract = contractFor(ctx, handle);
-  if (!contract || contract.repoId !== handle.repositoryId) throw new Error('WORK_HEAD_ADOPTION_CONTRACT_MISSING');
-  if (isTerminalSemanticWorkState(contract.semanticState) || contract.completionReceipt) {
-    throw new Error('WORK_HEAD_ADOPTION_CONTRACT_TERMINAL');
-  }
-  // expectedHead can predate unrelated commits that landed on the source checkout
-  // before this Work was rebased. Scope adoption to the candidate's unique delta
-  // from the current source-checkout merge-base; otherwise those target-branch
-  // commits are incorrectly attributed to the Work and fail its allow-list.
-  const sourceRepository = selectWorkFinalizationTarget(registered, handle);
-  const sourceHead = handle.sourceCheckoutId && handle.sourceCheckoutId !== handle.checkoutId
-    ? repositoryGitStatus(sourceRepository).head
-    : undefined;
-  const scopeBaseHead = sourceHead ? gitMergeBase(handle.worktreePath, sourceHead, candidateHead) : previousHead;
-  const changedPaths = gitChangedPaths(handle.worktreePath, scopeBaseHead, candidateHead);
-  assertWorkPathsWithinScope(contract, changedPaths, {
-    forbidden: 'WORK_HEAD_ADOPTION_FORBIDDEN_PATH',
-    outOfScope: 'WORK_HEAD_ADOPTION_PATH_OUT_OF_SCOPE',
-  });
-
-  const reviewedAt = new Date().toISOString();
-  const reconciliationId = `RECNC-${createHash('sha256').update([
-    handle.repositoryId, handle.workId, previousHead, candidateHead, handle.checkoutId, handle.branch,
-  ].join('\0')).digest('hex').slice(0, 16)}`;
-  const reconciliation: WorkReconciliationRecord = {
-    schemaVersion: 1,
-    reconciliationId,
-    originalExpectedRevision: previousHead,
-    observedTargetRevision: candidateHead,
-    baseRevision: gitCommit(handle.worktreePath, handle.baseCommit ?? previousHead, 'BASE_HEAD'),
-    targetBranch: handle.branch,
-    reachable: true,
-    method: 'exact_commit',
-    comparedPaths: changedPaths,
-    reviewer: session.principalId.slice(0, 200),
-    reviewedAt,
-    unrecoverableStages: [],
-    cleanupOwnershipProof: `No cleanup was performed; checkout ${handle.checkoutId} remains owned by the registered Repository and WorkHandle.`,
-    rationale: 'Adopted an exact clean successor commit after repository, checkout, canonical/managed path, branch, ancestry, principal, and WorkContract path-scope verification. This reconciliation is not completion evidence.',
-    outcome: 'accepted_equivalence',
-  };
-
-  const adopted = transitionWorkHandle(ctx.controllerHome, handle, 'editing', {
-    deliveryBaseCommit: scopeBaseHead,
-    expectedHead: candidateHead,
-    failureReason: undefined,
-    finalization: initialStage(),
-    validationRun: undefined,
-    validatedInputFingerprint: undefined,
-  });
-  try {
-    recordWorkEvidenceState(
-      { controllerHome: ctx.controllerHome, repoId: handle.repositoryId },
-      contract.workId,
-      contract.checkRefs.length === 0
-        ? contract.evidenceState
-        : contract.evidenceState === 'valid' || contract.evidenceState === 'stale'
-          ? 'stale'
-          : 'partial',
-    );
-    updateWorkContract({ controllerHome: ctx.controllerHome, repoId: handle.repositoryId }, contract.workId, {
-      reconciliations: [reconciliation, ...contract.reconciliations.filter((entry) => entry.reconciliationId !== reconciliationId)],
-    });
-    appendWorkEvidence({ controllerHome: ctx.controllerHome, repoId: handle.repositoryId }, contract.workId, {
-      title: 'audited WorkHandle successor HEAD adoption',
-      summary: `${previousHead} -> ${candidateHead}; ${changedPaths.length} candidate-unique path(s) from scope base ${scopeBaseHead} remained within the WorkContract allow-list. Historical validation and completion receipts were not rewritten.`,
-      detailLevel: 'summary',
-    });
-  } catch (error) {
-    try {
-      writeWorkHandle(ctx.controllerHome, { ...handle, recordRevision: adopted.recordRevision });
-    } catch (rollbackError) {
-      throw new Error(`WORK_HEAD_ADOPTION_AUDIT_WRITE_FAILED_AND_ROLLBACK_FAILED: ${String(error)}; ${String(rollbackError)}`);
-    }
-    throw error;
-  }
-  const nextSession = updateExecutionSession(ctx.controllerHome, identityFor(ctx, args), {
-    activeRepositoryId: handle.repositoryId,
-    activeCheckoutId: handle.checkoutId,
-    activeWorkId: handle.workId,
-    permissionSnapshotVersion: handle.permissionSnapshotVersion,
-    lastValidatedAt: reviewedAt,
-  });
-  return {
-    session: nextSession,
-    work: compactHandle(adopted),
-    reused: true,
-    adopted: true,
-    adoption: { previousHead, candidateHead, changedPaths, reconciliationId },
-  };
 }
 
 function invalidateActiveWork(ctx: McpExecutionContext, session: ExecutionSessionContext, reason: string): void {
@@ -271,27 +91,7 @@ export function prepareWork(ctx: McpExecutionContext, args: Record<string, unkno
     const existing = readWorkHandle(ctx.controllerHome, repository.repoId, existingId)
       ?? findWorkHandle(ctx, session, { ...args, work_id: existingId, repo_id: repository.repoId });
     if (existing.principalId !== session.principalId) throw new Error('WORK_HANDLE_ACCESS_DENIED');
-    const adopted = adoptExistingWorkHead(ctx, session, repository, existing, args);
-    if (adopted) return adopted;
-    try {
-      validateWorkHandle(ctx.controllerHome, existing, identityFor(ctx, args), 'cheap', 'inspect');
-    } catch (error) {
-      if (!(error instanceof WorkHandleValidationError)
-        || error.code !== 'WORK_HANDLE_HEAD_CHANGED'
-        || existing.managedWorktree
-        || !existing.expectedHead
-        || existing.checkoutId !== repository.activeCheckoutId) throw error;
-      const candidateHead = gitHead(existing.worktreePath);
-      if (!candidateHead || candidateHead === existing.expectedHead) throw error;
-      const reconciled = adoptExistingWorkHead(ctx, session, repository, existing, {
-        ...args,
-        checkout_id: existing.checkoutId,
-        expected_previous_head: existing.expectedHead,
-        adopt_candidate_head: candidateHead,
-      });
-      if (reconciled) return reconciled;
-      throw error;
-    }
+    validateWorkHandle(ctx.controllerHome, existing, identityFor(ctx, args), 'cheap', 'inspect');
     updateExecutionSession(ctx.controllerHome, identityFor(ctx, args), { activeRepositoryId: existing.repositoryId, activeCheckoutId: existing.checkoutId, activeWorkId: existing.workId, permissionSnapshotVersion: existing.permissionSnapshotVersion });
     return { session: requireSession(ctx, args), work: compactHandle(existing), reused: true };
   }
@@ -310,7 +110,9 @@ export function prepareWork(ctx: McpExecutionContext, args: Record<string, unkno
   const baseCheckoutId = repository.activeCheckoutId;
   const baseStatus = repositoryGitStatus(repository);
   if (isolation === 'reuse' && !baseStatus.clean) throw new Error('WORKTREE_DIRTY: reuse was requested but the selected checkout is dirty; choose new_worktree or auto');
-  const useWorktree = isolation === 'new_worktree' || (isolation === 'auto' && !baseStatus.clean);
+  // A repository Work freezes its start revision on its own checkout. Sharing the
+  // canonical checkout is an explicit model choice (`reuse`), never the auto path.
+  const useWorktree = isolation !== 'reuse';
   const policy = readRepositoryAccessPolicy(ctx.controllerHome, repository.repoId);
   const fingerprint = workPrepareFingerprint({
     repoId: repository.repoId,

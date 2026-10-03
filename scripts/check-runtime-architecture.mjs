@@ -1647,8 +1647,8 @@ forbid(
 );
 forbid(
   'adapters/mcp/runtime-gateway/execution-tools.ts',
-  /function\s+(?:prepareWork|adoptExistingWorkHead)\s*\(/,
-  'MCP execution transport must delegate Work preparation/adoption to the control-plane application service',
+  /function\s+prepareWork\s*\(/,
+  'MCP execution transport must delegate Work preparation to the control-plane application service',
 );
 forbid(
   'adapters/mcp/runtime-gateway/execution-tools.ts',
@@ -1661,7 +1661,18 @@ forbid(
   'MCP execution transport must not own managed-workspace or WorkContract preparation admission',
 );
 requireText('src/runtime/control-plane/execution/work-preparation-service.ts', 'export function prepareWork(');
-requireText('src/runtime/control-plane/execution/work-preparation-service.ts', 'function adoptExistingWorkHead(');
+requireText('src/runtime/control-plane/execution/work-preparation-service.ts', "const useWorktree = isolation !== 'reuse';");
+forbid(
+  'src/runtime/control-plane/execution/work-preparation-service.ts',
+  /adoptExistingWorkHead|WORK_HEAD_ADOPTION_/,
+  'Work preparation must keep the start revision frozen; changed source HEADs are never adopted during implementation',
+);
+forbid(
+  'src/runtime/control-plane/execution/work-handle-authority.ts',
+  /alignRepositoryMutationBase|WORK_DIRECT_PRE_MUTATION_RECONCILIATION_/,
+  'Repository mutation authority must not advance a Work baseline to follow target-branch movement',
+);
+requireMissing('src/runtime/control-plane/execution/direct-canonical-work-reconciliation.ts');
 requireText('src/runtime/control-plane/execution/work-operation-service.ts', 'export async function executeWork(');
 requireText('src/runtime/control-plane/execution/work-operation-service.ts', 'export async function validateWork(');
 requireMissing('src/runtime/control-plane/execution/work-finalization-service.ts');
