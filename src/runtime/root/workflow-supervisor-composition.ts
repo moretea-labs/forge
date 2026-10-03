@@ -315,13 +315,19 @@ export async function bindCurrentWorkflowSupervisorConversationForWork(
   if (!work || semanticWorkState(work) !== 'open') return { status: 'not_eligible' };
   const forgeHome = resolveWorkflowSupervisorForgeHome(options.controllerHome);
   if (!existsSync(workflowSupervisorSocketPath(forgeHome))) return { status: 'daemon_unavailable', reason: 'WORKFLOW_SUPERVISOR_DAEMON_UNAVAILABLE' };
-  const current = await getWorkflowSupervisorCurrentConversation(forgeHome);
-  if (!current) return { status: 'current_conversation_unbound', reason: 'WORKFLOW_SUPERVISOR_CURRENT_CONVERSATION_UNBOUND' };
   const existing = getChatgptWorkConversationBinding(options, workId);
-  if (existing && existing.conversationId !== current.conversationId) {
-    throw new Error(`WORKFLOW_SUPERVISOR_CURRENT_CONVERSATION_CONFLICT:${workId}:${existing.conversationId}:${current.conversationId}`);
+  const current = await getWorkflowSupervisorCurrentConversation(forgeHome);
+  // Browser focus is ephemeral observation, not a second authority over an
+  // already-bound Work. When a durable exact binding exists, a missing current
+  // marker cannot revoke it; a fresh conflicting marker still fails closed.
+  if (existing) {
+    if (current && existing.conversationId !== current.conversationId) {
+      throw new Error(`WORKFLOW_SUPERVISOR_CURRENT_CONVERSATION_CONFLICT:${workId}:${existing.conversationId}:${current.conversationId}`);
+    }
+    return { status: 'bound', binding: existing };
   }
-  const binding = existing ?? bindChatgptWorkConversation(options, {
+  if (!current) return { status: 'current_conversation_unbound', reason: 'WORKFLOW_SUPERVISOR_CURRENT_CONVERSATION_UNBOUND' };
+  const binding = bindChatgptWorkConversation(options, {
     workId,
     conversationUrl: current.canonicalUrl,
     localAlias: current.title,

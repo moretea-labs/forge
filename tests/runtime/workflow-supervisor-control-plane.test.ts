@@ -9,12 +9,12 @@ import { registerRepository } from '../../src/cli/repositories/registry';
 import { acknowledgeControllerRoundClaim, beginInitialControllerRoundDispatch, claimStalledControllerRoundRelays, controllerRoundProviderEffectId, finishControllerRoundRelayDispatch, getControllerRoundRelay, getRequirementControllerRoundRelay, recoverControllerRoundRelayAuthority, submitControllerRoundDisposition } from '../../packages/kernel/controller/api/index';
 import { createWorkContract, reviseWorkSemanticContext } from '../../packages/kernel/work/api/index';
 import { createRequirement, updateRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
-import { forgeWorkflowSupervisorLifecycleHooks, inheritWorkflowSupervisorConversationBinding, workflowSupervisorBoundaryForWork, workflowSupervisorLowerLayerReadyForWork } from '../../src/runtime/root/workflow-supervisor-composition';
+import { bindCurrentWorkflowSupervisorConversationForWork, forgeWorkflowSupervisorLifecycleHooks, inheritWorkflowSupervisorConversationBinding, workflowSupervisorBoundaryForWork, workflowSupervisorLowerLayerReadyForWork } from '../../src/runtime/root/workflow-supervisor-composition';
 import { WorkflowSupervisorControlPlane } from '../../supervisor/control-plane';
 import { WorkflowSupervisorNativeBrowserAdapter, type WorkflowSupervisorNativePage } from '../../supervisor/native-browser-adapter';
 import { LEGACY_SUPERVISOR_BLOCK_END, LEGACY_SUPERVISOR_BLOCK_START, parseSupervisorCompletion, renderSupervisorPrompt, renderSupervisorReceipt, supervisorReceiptChallenge, SUPERVISOR_BLOCK_END, SUPERVISOR_BLOCK_START } from '../../supervisor/protocol';
 import { WorkflowSupervisorStore } from '../../supervisor/store';
-import { reconcileWorkflowSupervisorSocket, WorkflowSupervisorEphemeralDiscovery } from '../../supervisor/server';
+import { createWorkflowSupervisorServer, reconcileWorkflowSupervisorSocket, WorkflowSupervisorEphemeralDiscovery } from '../../supervisor/server';
 import { claimControllerSession, getControllerSession, releaseControllerSession } from '../../src/runtime/control-plane/facade/controller-session-store';
 import { bindChatgptWorkConversation, getChatgptWorkConversationBinding, rebindChatgptWorkConversation } from '../../adapters/chatgpt/work-conversation-binding-store';
 import { CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE, chatgptProviderPageFailure, classifyChatgptProviderFailure } from '../../adapters/chatgpt/provider-delivery';
@@ -520,6 +520,58 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
       canonicalUrl: `https://chatgpt.com/c/${nativeId}`,
       title: 'System foreground',
     });
+  });
+
+  test('reuses an exact durable Work conversation when no foreground browser current is observable', async () => {
+    const fx = fixture();
+    const boundWorkId = 'work-supervisor-existing-exact-binding';
+    const unboundWorkId = 'work-supervisor-first-binding-still-requires-current';
+    const create = (workId: string) => createWorkContract(fx.store, {
+      workId,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      objective: `Exercise current-conversation binding for ${workId}.`,
+      acceptanceCriteria: ['durable exact binding survives missing foreground observation'],
+      allowedPaths: [], forbiddenPaths: [], checks: [],
+      constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt', dispatchState: 'running',
+    });
+    create(boundWorkId);
+    create(unboundWorkId);
+    const conversationId = '34343434-5656-7878-9090-121212121212';
+    const existing = bindChatgptWorkConversation(fx.store, {
+      workId: boundWorkId,
+      conversationUrl: `https://chatgpt.com/c/${conversationId}`,
+    });
+
+    const supervisorRoot = join(fx.controllerHome, 'supervisor');
+    mkdirSync(supervisorRoot, { recursive: true });
+    const supervisorStore = new WorkflowSupervisorStore(supervisorRoot);
+    const control = new WorkflowSupervisorControlPlane(supervisorStore);
+    const server = createWorkflowSupervisorServer({
+      controlPlane: control,
+      socketPath: join(supervisorRoot, 'supervisor.sock'),
+      discovery: new WorkflowSupervisorEphemeralDiscovery(),
+      browserAdapterEnabled: true,
+    });
+    await new Promise<void>((resolve, reject) => {
+      if (server.listening) { resolve(); return; }
+      server.once('listening', () => resolve());
+      server.once('error', reject);
+    });
+    try {
+      expect(await bindCurrentWorkflowSupervisorConversationForWork(fx.store, boundWorkId)).toEqual({
+        status: 'bound',
+        binding: existing,
+      });
+      expect(await bindCurrentWorkflowSupervisorConversationForWork(fx.store, unboundWorkId)).toEqual({
+        status: 'current_conversation_unbound',
+        reason: 'WORKFLOW_SUPERVISOR_CURRENT_CONVERSATION_UNBOUND',
+      });
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      supervisorStore.close();
+    }
   });
 
   test('refuses to reserve enrollment for a terminal Supervisor task instead of reporting delivery that cannot happen', () => {
