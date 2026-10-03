@@ -294,7 +294,7 @@ describe("repository MCP command tools", () => {
         allowedPaths: [],
         forbiddenPaths: [],
         checks: [],
-        constraints: { requireHandoffOnAmbiguity: true },
+        constraints: {},
         requestedBy: "chatgpt",
         dispatchState: "running",
       });
@@ -368,7 +368,7 @@ describe("repository MCP command tools", () => {
         allowedPaths: ["tracked.txt"],
         forbiddenPaths: [],
         checks: [],
-        constraints: { requireHandoffOnAmbiguity: true },
+        constraints: {},
         requestedBy: "chatgpt",
         dispatchState: "running",
       });
@@ -437,7 +437,7 @@ describe("repository MCP command tools", () => {
         allowedPaths: ["tracked.txt"],
         forbiddenPaths: [],
         checks: [],
-        constraints: { requireHandoffOnAmbiguity: true },
+        constraints: {},
         requestedBy: "chatgpt",
         dispatchState: "running",
       });
@@ -520,7 +520,7 @@ describe("repository MCP command tools", () => {
         allowedPaths: [],
         forbiddenPaths: [],
         checks: [],
-        constraints: { requireHandoffOnAmbiguity: true },
+        constraints: {},
         requestedBy: "chatgpt",
       });
       failWorkContract({ controllerHome, repoId: repository.repoId }, workId, { phase: 'implementation', summary: 'Fixture records failed execution while semantic Work remains open.' });
@@ -571,7 +571,7 @@ describe("repository MCP command tools", () => {
       createWorkContract({ controllerHome, repoId: repository.repoId }, {
         workId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId, objective: "Only mutate the Work-owned source subtree.", acceptanceCriteria: [],
         allowedPaths: ["src/**"], forbiddenPaths: ["src/secret/**"], checks: [],
-        constraints: { requireHandoffOnAmbiguity: true }, requestedBy: "chatgpt", dispatchState: "running",
+        constraints: {}, requestedBy: "chatgpt", dispatchState: "running",
       });
       const caller = { sessionId: "session-patch-scope", principalId: "principal-patch-scope", controllerInstanceId: "runtime-patch-scope" };
       claimControllerSession({ controllerHome, repoId: repository.repoId }, {
@@ -632,7 +632,7 @@ describe("repository MCP command tools", () => {
       createWorkContract({ controllerHome, repoId: repository.repoId }, {
         workId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId, workKind: "remote_effect", objective: "Perform a remote effect, then legitimately repair source under the same Work.",
         acceptanceCriteria: [], allowedPaths: ["src/**"], forbiddenPaths: [], checks: [],
-        constraints: { requireHandoffOnAmbiguity: true }, requestedBy: "chatgpt", dispatchState: "running",
+        constraints: {}, requestedBy: "chatgpt", dispatchState: "running",
       });
       const caller = { sessionId: "session-effect-source", principalId: "principal-effect-source", controllerInstanceId: "runtime-effect-source" };
       claimControllerSession({ controllerHome, repoId: repository.repoId }, {
@@ -682,7 +682,7 @@ describe("repository MCP command tools", () => {
       createWorkContract({ controllerHome, repoId: repository.repoId }, {
         workId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId, workKind: "local_effect", objective: "Acquire repository authority before a local effect starts mutating source.",
         acceptanceCriteria: [], allowedPaths: [], forbiddenPaths: [], checks: [],
-        constraints: { requireHandoffOnAmbiguity: true }, requestedBy: "chatgpt", dispatchState: "running",
+        constraints: {}, requestedBy: "chatgpt", dispatchState: "running",
       });
       const caller = { sessionId: "session-effect-command", principalId: "principal-effect-command", controllerInstanceId: "runtime-effect-command" };
       claimControllerSession({ controllerHome, repoId: repository.repoId }, {
@@ -725,7 +725,7 @@ describe("repository MCP command tools", () => {
       createWorkContract({ controllerHome, repoId: repository.repoId }, {
         workId, repoId: repository.repoId, workKind: "investigation", objective: "Thin semantic Work uses concrete repository target at mutation time.",
         acceptanceCriteria: [], allowedPaths: ["src/**"], forbiddenPaths: [], checks: [],
-        constraints: { requireHandoffOnAmbiguity: true }, requestedBy: "chatgpt", dispatchState: "running",
+        constraints: {}, requestedBy: "chatgpt", dispatchState: "running",
       });
       const caller = { sessionId: "session-thin-target", principalId: "principal-thin-target", controllerInstanceId: "runtime-thin-target" };
       claimControllerSession({ controllerHome, repoId: repository.repoId }, {
@@ -771,7 +771,7 @@ describe("repository MCP command tools", () => {
       createWorkContract({ controllerHome, repoId: repository.repoId }, {
         workId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId, workKind: "local_effect", objective: "Run a local effect from repository context without changing repository source.",
         acceptanceCriteria: [], allowedPaths: [], forbiddenPaths: [], checks: [],
-        constraints: { requireHandoffOnAmbiguity: true }, requestedBy: "chatgpt", dispatchState: "running",
+        constraints: {}, requestedBy: "chatgpt", dispatchState: "running",
       });
       const caller = { sessionId: "session-effect-no-source", principalId: "principal-effect-no-source", controllerInstanceId: "runtime-effect-no-source" };
       claimControllerSession({ controllerHome, repoId: repository.repoId }, {
@@ -813,7 +813,7 @@ describe("repository MCP command tools", () => {
       createWorkContract({ controllerHome, repoId: repository.repoId }, {
         workId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId, workKind: "local_effect", objective: "Run a conservative write-risk Process without changing repository source.",
         acceptanceCriteria: [], allowedPaths: [], forbiddenPaths: [], checks: [],
-        constraints: { requireHandoffOnAmbiguity: true }, requestedBy: "chatgpt", dispatchState: "running",
+        constraints: {}, requestedBy: "chatgpt", dispatchState: "running",
       });
       const caller = { sessionId: "session-effect-running", principalId: "principal-effect-running", controllerInstanceId: "runtime-effect-running" };
       claimControllerSession({ controllerHome, repoId: repository.repoId }, {
@@ -863,7 +863,7 @@ describe("repository MCP command tools", () => {
         allowedPaths: ["work-edit.txt"],
         forbiddenPaths: [],
         checks: [],
-        constraints: { requireHandoffOnAmbiguity: true },
+        constraints: {},
         requestedBy: "chatgpt",
       });
       failWorkContract({ controllerHome, repoId: repository.repoId }, workId, { phase: 'implementation', summary: 'Fixture records failed execution while semantic Work remains open.' });
@@ -935,7 +935,7 @@ describe("repository MCP command tools", () => {
         allowedPaths: [],
         forbiddenPaths: [],
         checks: [],
-        constraints: { requireHandoffOnAmbiguity: true },
+        constraints: {},
         requestedBy: "chatgpt",
         dispatchState: "running",
       });

@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import type { AgentJobMeta } from '../agent-jobs/types';
 import { runControllerCheck } from './check-runner';
-import { cleanupEvidenceResourceBlockers, completionEvidenceComplete, taskExecutionPolicy } from './execution-policy';
+import { cleanupEvidenceResourceBlockers, completionEvidenceComplete } from './execution-policy';
 import { acceptVerifiedTask, getIssue, recordTaskVerification, updateTask } from './issue-store';
 import type { CompletionReceipt, CompletionReceiptSource, TaskCommandEvidence, TaskVerification } from './types';
 import { legacyIssueAuthorityRetired } from './legacy-issue-cutover';
@@ -92,9 +92,7 @@ export function continueTaskAfterSuccessfulRun(
   if (['done', 'cancelled', 'superseded'].includes(task.status)) {
     return { continued: false, status: task.status, reason: 'Task is already terminal.' };
   }
-  const policy = taskExecutionPolicy(task);
-  const checkResults = policy.autoRunDeclaredChecks
-    ? task.checks.map((checkId) => {
+  const checkResults = task.checks.map((checkId) => {
         try {
           const result = runControllerCheck(repoRoot, checkId);
           return {
@@ -105,8 +103,7 @@ export function continueTaskAfterSuccessfulRun(
         } catch (error) {
           return { checkId, ok: false, summary: error instanceof Error ? error.message : String(error) };
         }
-      })
-    : [];
+      });
 
   const commandEvidence: TaskCommandEvidence[] = [{
     command: ['forge', 'agent-run', run.runId],
@@ -148,7 +145,7 @@ export function continueTaskAfterSuccessfulRun(
     });
     return { continued: true, status, checkCount: checkResults.length };
   }
-  if (status === 'verified' && policy.autoCompleteAfterSuccessfulRun && !policy.requiresHumanAcceptance) {
+  if (status === 'verified' && task.acceptanceCriteria.length === 0) {
     const closureComplete = run.closureState === 'completed' && completionEvidenceComplete(verification, {
       issueId: run.issueId,
       taskId: run.taskId,

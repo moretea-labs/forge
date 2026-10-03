@@ -40,7 +40,7 @@ function fixture(suffix: string) {
     allowedPaths: ['src/**'],
     forbiddenPaths: [],
     checks: ['check:atomic-a', 'check:atomic-b'],
-    constraints: { requireHandoffOnAmbiguity: true },
+    constraints: {},
     requestedBy: 'chatgpt',
     workKind: 'repository_change',
     dispatchState: 'running',
@@ -231,7 +231,7 @@ test('semantic Work authority shadows stale repository-scoped active compatibili
     allowedPaths: [],
     forbiddenPaths: [],
     checks: [],
-    constraints: { requireHandoffOnAmbiguity: true },
+    constraints: {},
     requestedBy: 'chatgpt',
     dispatchState: 'running',
   });
@@ -280,7 +280,7 @@ test('persists the exact historical v3 review-gap migration once without making 
     allowedPaths: [],
     forbiddenPaths: [],
     checks: [],
-    constraints: { requireHandoffOnAmbiguity: true },
+    constraints: {},
     requestedBy: 'chatgpt',
     dispatchState: 'running',
   });

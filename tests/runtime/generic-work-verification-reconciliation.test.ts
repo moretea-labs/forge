@@ -80,7 +80,7 @@ test('reconciles an explicitly named generic run_check Process into the exact Wo
     allowedPaths: [],
     forbiddenPaths: [],
     checks: [checkId],
-    constraints: { requireHandoffOnAmbiguity: true },
+    constraints: {},
     requestedBy: 'chatgpt',
     dispatchState: 'running',
   });

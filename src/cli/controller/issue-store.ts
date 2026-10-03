@@ -482,12 +482,6 @@ function buildTaskReadiness(
     add('SUPERSEDED_DEPENDENCY_MIGRATION', 'warning', `Dependency ${migration.dependencyTaskId} was superseded by ${migration.replacementTaskIds.join(', ')}; replacement states are authoritative.`);
   }
 
-  if (policy.requiresScopedPaths && task.allowedPaths.length === 0) {
-    add('TASK_SCOPE_REQUIRED', 'blocker', `${policy.executionClass} requires an explicit allowed path scope.`);
-  }
-  if (policy.approval === 'confirm' && !options.approveRisk) {
-    add('RISK_CONFIRMATION_ADVISORY', 'warning', `${policy.executionClass} is marked for extra review, but local execution is not approval-gated in V8.`);
-  }
   if (policy.approval === 'manual-only' && !options.approveDestructive) {
     add('DESTRUCTIVE_APPROVAL_REQUIRED', 'blocker', 'A destructive or irreversible operation requires explicit authorization.');
   }
@@ -558,7 +552,7 @@ function refreshReadiness(repoRoot: string, issue: ControllerIssue): void {
     );
     task.status = nonApprovalBlockers.length === 0
       ? 'ready'
-      : nonApprovalBlockers.some((entry) => ['CANCELLED_DEPENDENCY', 'MISSING_DEPENDENCY', 'TASK_SCOPE_REQUIRED'].includes(entry.code))
+      : nonApprovalBlockers.some((entry) => ['CANCELLED_DEPENDENCY', 'MISSING_DEPENDENCY'].includes(entry.code))
         ? 'launch_blocked'
         : 'planned';
   }
@@ -1058,8 +1052,7 @@ function historicalTaskCompletionReceipt(
   verification: TaskVerification | undefined = task.verification,
 ): CompletionReceipt | undefined {
   if (!verification || taskHasActiveRun(repoRoot, task)) return undefined;
-  const policy = taskExecutionPolicy(task);
-  const outcome = verificationEvidencePassed(task, verification, policy);
+  const outcome = verificationEvidencePassed(task, verification);
   if (!outcome.ok) return undefined;
   const currentBranch = gitText(repoRoot, ['branch', '--show-current']);
   const targetBranch = verification.integrationEvidence?.targetBranch ?? resolveCompletionTargetBranch(repoRoot);
@@ -1175,13 +1168,9 @@ export function recordTaskVerification(
   if ((verification.commandEvidence ?? []).some((entry) => entry.command.length === 0 || entry.command.some((part) => !part.trim()))) {
     throw new Error('reported command evidence must contain a non-empty argv');
   }
-  const policy = taskExecutionPolicy(task);
-  if (policy.requiresScopedPaths && task.allowedPaths.length === 0) {
-    throw new Error(`${policy.executionClass} cannot be verified without an explicit allowed path scope`);
-  }
   const normalizedDeclaredChecks = normalizeCheckIds(task.checks, listControllerChecks(repoRoot));
   const verificationTask = { ...task, checks: normalizedDeclaredChecks.validCheckIds };
-  const outcome = verificationEvidencePassed(verificationTask, verification, policy);
+  const outcome = verificationEvidencePassed(verificationTask, verification);
   const successful = outcome.status === 'passed';
   if (doneEvidenceBackfill) {
     if (!successful) {

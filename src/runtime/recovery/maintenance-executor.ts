@@ -1154,7 +1154,7 @@ function detachLegacyRemoteEffectPlacement(
   updateWorkContract(store, current.workId, {
     checkoutId: inspection.canonicalCheckoutId,
     worktreeRef: undefined,
-    constraints: { ...current.constraints, workspaceMode: 'auto', requireWorktree: false },
+    constraints: { ...current.constraints, workspaceMode: 'current' },
     worktreePolicy: { required: false, reason: 'Legacy pure remote_effect repository placement detached by explicit runtime maintenance; external-effect execution has no repository source authority.' },
   });
   try {

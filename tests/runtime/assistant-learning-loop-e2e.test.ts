@@ -107,7 +107,7 @@ function fixture(name: string, options: { knowledge?: boolean } = {}) {
     scopeRef: { schemaVersion: 1, kind: 'project', id: 'project-learning-loop' },
     objective: '小红书 推广 真实指标 经验 下一轮使用，并根据执行证据持续改进。',
     acceptanceCriteria: ['Two learning loops close on durable evidence.'],
-    constraints: { workspaceMode: 'current', requireWorktree: false },
+    constraints: { workspaceMode: 'current' },
     allowedPaths: [],
     forbiddenPaths: [],
     checks: [],
@@ -743,7 +743,7 @@ describe('connected assistant learning loops', () => {
       scopeRef: { schemaVersion: 1, kind: 'project', id: 'project-product-principle-consumer' },
       objective: 'Design mobile settings so controls, visible state, and flow make operation understandable; reserve explanatory copy for invisible rules and consequences.',
       acceptanceCriteria: [],
-      constraints: { workspaceMode: 'current', requireWorktree: false },
+      constraints: { workspaceMode: 'current' },
       allowedPaths: [], forbiddenPaths: [], checks: [], requestedBy: 'chatgpt', dispatchState: 'running',
     });
     const consumerIdentity = {
@@ -890,7 +890,7 @@ describe('connected assistant learning loops', () => {
       scopeRef: { schemaVersion: 1, kind: 'work', id: workId },
       objective: 'Prove post-disposition learning failure is diagnostic only.',
       acceptanceCriteria: [],
-      constraints: { workspaceMode: 'current', requireWorktree: false },
+      constraints: { workspaceMode: 'current' },
       allowedPaths: [],
       forbiddenPaths: [],
       checks: [],

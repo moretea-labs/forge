@@ -100,7 +100,7 @@ export function buildCodexContextPack(input: CodexDelegationInput & { repoId: st
     target,
     objective: (input.objective || work?.objective || '').slice(0, 2_000),
     acceptanceCriteria: (input.acceptanceCriteria ?? work?.acceptanceCriteria ?? []).slice(0, 20),
-    constraints: input.constraints ?? work?.constraints ?? { requireHandoffOnAmbiguity: true },
+    constraints: input.constraints ?? work?.constraints ?? {},
     relevantFilesSummary: (input.relevantFilesSummary ?? []).slice(0, 30).map((entry) => entry.slice(0, 200)),
     policyBoundaries: (input.policyBoundaries ?? [
       `${target} is an external controller, not a Kernel-managed executor.`,

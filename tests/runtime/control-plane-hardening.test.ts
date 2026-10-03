@@ -885,7 +885,7 @@ describe('scheduled external Controller wake', () => {
     const workId = 'WORK-SOURCE-ROUND-CLOSE-WAIT';
     createWorkContract({ controllerHome, repoId: repository.repoId }, {
       workId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId, objective: 'Close a source ControllerRound without dispatching a successor.', acceptanceCriteria: ['Wait is durable after source reconciliation.'],
-      allowedPaths: ['**/*'], forbiddenPaths: [], checks: [], constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
+      allowedPaths: ['**/*'], forbiddenPaths: [], checks: [], constraints: { workspaceMode: 'current' },
       requestedBy: 'chatgpt', dispatchState: 'running',
     });
     const store = { controllerHome, repoId: repository.repoId };
@@ -929,7 +929,7 @@ describe('scheduled external Controller wake', () => {
     createWorkContract({ controllerHome, repoId: repository.repoId }, {
       workId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId, objective: 'Recover the same semantic round only after exact provider repair evidence.',
       acceptanceCriteria: [], allowedPaths: ['**/*'], forbiddenPaths: [], checks: [],
-      constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
+      constraints: { workspaceMode: 'current' },
       requestedBy: 'chatgpt', dispatchState: 'running',
     });
     const store = { controllerHome, repoId: repository.repoId };
@@ -1041,7 +1041,7 @@ describe('scheduled external Controller wake', () => {
     createWorkContract({ controllerHome, repoId: repository.repoId }, {
       workId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId, objective: 'Confirm provider delivery only when the exact controller actually claims the Work.',
       acceptanceCriteria: [], allowedPaths: ['**/*'], forbiddenPaths: [], checks: [],
-      constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
+      constraints: { workspaceMode: 'current' },
       requestedBy: 'chatgpt', dispatchState: 'running',
     });
     const store = { controllerHome, repoId: repository.repoId };
@@ -1077,7 +1077,7 @@ describe('scheduled external Controller wake', () => {
     createWorkContract({ controllerHome, repoId: repository.repoId }, {
       workId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId, objective: 'Retain exact assistant context usage evidence for the claimed round.',
       acceptanceCriteria: [], allowedPaths: ['**/*'], forbiddenPaths: [], checks: [],
-      constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
+      constraints: { workspaceMode: 'current' },
       requestedBy: 'chatgpt', dispatchState: 'running',
     });
     const store = { controllerHome, repoId: repository.repoId };
@@ -1149,7 +1149,7 @@ describe('scheduled external Controller wake', () => {
       allowedPaths: ['**/*'],
       forbiddenPaths: [],
       checks: [],
-      constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
+      constraints: { workspaceMode: 'current' },
       requestedBy: 'chatgpt',
       dispatchState: 'running',
     });
@@ -1264,7 +1264,7 @@ describe('scheduled external Controller wake', () => {
       allowedPaths: ['**/*'],
       forbiddenPaths: [],
       checks: [],
-      constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
+      constraints: { workspaceMode: 'current' },
       requestedBy: 'chatgpt',
       dispatchState: 'running',
     });
@@ -1335,7 +1335,7 @@ describe('scheduled external Controller wake', () => {
       allowedPaths: ['**/*'],
       forbiddenPaths: [],
       checks: [],
-      constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
+      constraints: { workspaceMode: 'current' },
       requestedBy: 'chatgpt',
       dispatchState: 'running',
     });
@@ -1463,7 +1463,7 @@ describe('scheduled external Controller wake', () => {
       allowedPaths: ['**/*'],
       forbiddenPaths: [],
       checks: [],
-      constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
+      constraints: { workspaceMode: 'current' },
       requestedBy: 'chatgpt',
       dispatchState: 'running',
     });
@@ -1490,7 +1490,7 @@ describe('scheduled external Controller wake', () => {
       workId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId, objective: 'Keep a failed ControllerRound fenced until an explicit legal resume or recovery contract is used.',
       acceptanceCriteria: ['A later external occurrence cannot reset or bypass a failed lineage.'],
       allowedPaths: ['**/*'], forbiddenPaths: [], checks: [],
-      constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', dispatchState: 'running',
+      constraints: { workspaceMode: 'current' }, requestedBy: 'chatgpt', dispatchState: 'running',
     });
     const store = { controllerHome, repoId: repository.repoId };
     const first = beginInitialControllerRoundDispatch(store, {
@@ -1532,7 +1532,7 @@ describe('scheduled external Controller wake', () => {
       allowedPaths: ['**/*'],
       forbiddenPaths: [],
       checks: [],
-      constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
+      constraints: { workspaceMode: 'current' },
       requestedBy: 'chatgpt',
       dispatchState: 'running',
     });
@@ -1601,7 +1601,7 @@ describe('scheduled external Controller wake', () => {
       allowedPaths: ['**/*'],
       forbiddenPaths: [],
       checks: [],
-      constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
+      constraints: { workspaceMode: 'current' },
       requestedBy: 'chatgpt',
       dispatchState: 'running',
     });
@@ -1639,7 +1639,7 @@ describe('scheduled external Controller wake', () => {
       allowedPaths: ['**/*'],
       forbiddenPaths: [],
       checks: [],
-      constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
+      constraints: { workspaceMode: 'current' },
       requestedBy: 'chatgpt',
       dispatchState: 'running',
     });
@@ -1697,7 +1697,7 @@ describe('scheduled external Controller wake', () => {
       allowedPaths: ['**/*'],
       forbiddenPaths: [],
       checks: [],
-      constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
+      constraints: { workspaceMode: 'current' },
       requestedBy: 'chatgpt',
       dispatchState: 'running',
     });
@@ -1783,7 +1783,7 @@ describe('scheduled external Controller wake', () => {
       allowedPaths: ['**/*'],
       forbiddenPaths: [],
       checks: [],
-      constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
+      constraints: { workspaceMode: 'current' },
       requestedBy: 'chatgpt',
       workKind: 'completed_no_change',
       dispatchState: 'running',
@@ -2026,7 +2026,7 @@ describe('scheduled external Controller wake', () => {
     writeFileSync(join(repoRoot, 'README.md'), 'scope\n'); execFileSync('git', ['add', '.'], { cwd: repoRoot }); execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: repoRoot });
     const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'schedule-stop-scope' });
     const workId = 'WORK-SCHEDULE-STOP-SCOPE';
-    const work = createWorkContract({ controllerHome, repoId: repository.repoId }, { workId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId, objective: 'Continue only this Work.', acceptanceCriteria: ['bounded continuation'], allowedPaths: ['**/*'], forbiddenPaths: [], checks: [], constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', dispatchState: 'running'});
+    const work = createWorkContract({ controllerHome, repoId: repository.repoId }, { workId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId, objective: 'Continue only this Work.', acceptanceCriteria: ['bounded continuation'], allowedPaths: ['**/*'], forbiddenPaths: [], checks: [], constraints: { workspaceMode: 'current' }, requestedBy: 'chatgpt', dispatchState: 'running'});
     const records = join(executionJobRoot(controllerHome, repository.repoId), 'records');
     mkdirSync(records, { recursive: true });
     const oldAt = new Date(Date.parse(work.createdAt) - 86_400_000).toISOString();

@@ -78,22 +78,22 @@ async function callRepositoryBoundStart(
 
   try {
     const rawConstraints = contextRecord(args.constraints);
-    const requestedWorkspaceMode: 'current' | 'isolated' | 'auto' = rawConstraints.workspace_mode === 'isolated' || rawConstraints.workspace_mode === 'auto' || rawConstraints.workspace_mode === 'current'
-      ? rawConstraints.workspace_mode
+    // Placement is caller-owned. Legacy `auto` is a stable mechanical spelling
+    // of the durable-Work isolated/frozen-base default; it never inspects dirty
+    // paths, risk, task text, or other semantic context to choose topology.
+    const requestedWorkspaceMode: 'current' | 'isolated' = rawConstraints.workspace_mode === 'isolated' || rawConstraints.workspace_mode === 'auto'
+      ? 'isolated'
       : 'current';
     const sourceStatus = repositoryGitStatus(repository);
     const requestedSourceRevision = typeof args.source_revision === 'string' ? args.source_revision.trim() : '';
-    if (requestedSourceRevision && sourceStatus.head && requestedWorkspaceMode !== 'isolated' && rawConstraints.require_worktree !== true && requestedSourceRevision !== sourceStatus.head) {
+    if (requestedSourceRevision && sourceStatus.head && requestedWorkspaceMode !== 'isolated' && requestedSourceRevision !== sourceStatus.head) {
       throw new Error(`WORK_SOURCE_REVISION_MISMATCH: expected ${requestedSourceRevision}, found ${sourceStatus.head}`);
     }
-    const requireWorktree = rawConstraints.require_worktree === true
-      || rawConstraints.direct_main_prohibited === true
-      || requestedWorkspaceMode === 'isolated'
-      || (requestedWorkspaceMode === 'auto' && !sourceStatus.clean);
+    const requiresIsolatedWorkspace = requestedWorkspaceMode === 'isolated';
     let checkoutId = repository.activeCheckoutId;
     let worktreeRef: string | undefined;
     let baseRevision = sourceStatus.head ?? undefined;
-    if (requireWorktree) {
+    if (requiresIsolatedWorkspace) {
       const workspace = ensureManagedWorkspace(ctx.controllerHome, repository, {
         requestId: workId,
         title: String(args.objective ?? workId),
@@ -108,13 +108,10 @@ async function callRepositoryBoundStart(
 
     const constraints = {
       ...contract.constraints,
-      workspaceMode: requireWorktree ? 'isolated' as const : requestedWorkspaceMode,
-      requireWorktree,
-      directMainProhibited: rawConstraints.direct_main_prohibited === true || requireWorktree,
+      workspaceMode: requestedWorkspaceMode,
       ...(rawConstraints.allow_commit === false ? { allowCommit: false } : rawConstraints.allow_commit === true ? { allowCommit: true } : {}),
       ...(rawConstraints.allow_merge === false ? { allowMerge: false } : rawConstraints.allow_merge === true ? { allowMerge: true } : {}),
       ...(rawConstraints.allow_cleanup === false ? { allowCleanup: false } : rawConstraints.allow_cleanup === true ? { allowCleanup: true } : {}),
-      ...(rawConstraints.require_handoff_on_ambiguity === false ? { requireHandoffOnAmbiguity: false } : rawConstraints.require_handoff_on_ambiguity === true ? { requireHandoffOnAmbiguity: true } : {}),
     };
     contract = updateWorkContract(store, workId, {
       checkoutId,

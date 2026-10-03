@@ -643,7 +643,6 @@ const required = [
   'src/runtime/execution/workers/worker-entry.ts',
   'src/runtime/execution/thin-harness/index.ts',
   'src/runtime/execution/thin-harness/execution-router.ts',
-  'src/runtime/control-plane/routing/workspace-admission.ts',
   'src/runtime/control-plane/facade/requirement-authority.ts',
   'src/runtime/control-plane/facade/repository-work-admission.ts',
   'src/runtime/control-plane/execution/retained-work-resume.ts',
@@ -1158,6 +1157,10 @@ forbid(
   /\bcreateWorkContract\s*\(/,
   'keep the legacy MCP surface as translation over canonical Work admission authority',
 );
+requireMissing('src/runtime/control-plane/routing/workspace-admission.ts');
+forbid('packages/kernel/work/domain/types.ts', /requireHandoffOnAmbiguity|requireWorktree|directMainProhibited/, 'retired Work placement/handoff policy fields must not return as durable authority');
+forbid('adapters/mcp/runtime-gateway/work-adapter.ts', /require_handoff_on_ambiguity|require_worktree|direct_main_prohibited/, 'retired placement/handoff wire flags must not drive repository topology');
+forbid('src/cli/controller/execution-policy.ts', /requiresHumanAcceptance|autoRunDeclaredChecks|autoCompleteAfterSuccessfulRun|requiresScopedPaths|requiresDiffEvidence|requiresAnyVerificationEvidence|requiresAcceptanceEvidence|READ_ONLY_INTENT|DESTRUCTIVE_INTENT|SENSITIVE_PATH_PATTERNS/, 'task risk/text/path classification must not decide workflow, placement, verification, scope, or acceptance authority');
 requireMissing('src/runtime/control-plane/daemon-entry.ts');
 requireMissing('scripts/smoke-runtime-control-plane.ts');
 requireMissing('src/cli/controller/lifecycle.ts');

@@ -27,7 +27,7 @@ function work(controllerHome: string, workId: string, updatedAt: string, extra: 
     allowedPaths: [],
     forbiddenPaths: [],
     checks: [],
-    constraints: { requireHandoffOnAmbiguity: true },
+    constraints: {},
     requestedBy: 'chatgpt',
     dispatchState: 'running',
     createdAt: updatedAt,

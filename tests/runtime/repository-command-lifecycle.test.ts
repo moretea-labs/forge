@@ -88,7 +88,7 @@ function seedWorkHandle(controllerHome: string, repository: ReturnType<typeof se
     allowedPaths: ['**'],
     forbiddenPaths: [],
     checks: [],
-    constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
+    constraints: { workspaceMode: 'current' },
     requestedBy: 'chatgpt',
     dispatchState: 'running',
   });
@@ -169,7 +169,7 @@ describe('repository command execution lifecycle', () => {
     createWorkContract({ controllerHome, repoId: repository.repoId }, {
       workId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId, workKind: 'repository_change',
       objective: 'Keep the canonical checkout owned while semantic Work is open.', acceptanceCriteria: [], allowedPaths: ['**'], forbiddenPaths: [], checks: [],
-      constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt',
+      constraints: { workspaceMode: 'current' }, requestedBy: 'chatgpt',
     });
     expect(() => assertCanonicalRepositoryMutationWorkHandleAvailable({
       controllerHome, repositoryId: repository.repoId, checkoutId: repository.activeCheckoutId, workId: 'work-new-owner',
@@ -703,7 +703,7 @@ describe('repository command execution lifecycle', () => {
       checkoutId: repository.activeCheckoutId,
       objective: 'Push exactly the delivered revision before terminalization.',
       acceptanceCriteria: ['Only the exact delivery revision reaches origin/main.'],
-      constraints: { requireHandoffOnAmbiguity: true },
+      constraints: {},
       allowedPaths: ['**/*'],
       forbiddenPaths: [],
       checks: [],
@@ -762,7 +762,7 @@ describe('repository command execution lifecycle', () => {
       checkoutId: repository.activeCheckoutId,
       objective: 'Fence post-finalize remote delivery.',
       acceptanceCriteria: ['Terminal Work cannot mutate origin.'],
-      constraints: { requireHandoffOnAmbiguity: true },
+      constraints: {},
       allowedPaths: ['**/*'],
       forbiddenPaths: [],
       checks: [],

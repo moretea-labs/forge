@@ -81,7 +81,7 @@ async function runPhase(root: string, phase: string): Promise<void> {
       allowedPaths: [],
       forbiddenPaths: [],
       checks: [],
-      constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
+      constraints: { workspaceMode: 'current' },
       requestedBy: 'chatgpt',
       dispatchState: 'running',
     });

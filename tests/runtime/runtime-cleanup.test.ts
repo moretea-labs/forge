@@ -215,7 +215,7 @@ describe('runtime cleanup', () => {
       workId: 'WORK-NAMESPACE-ACTIVE', repoId: repository.repoId, checkoutId: repository.checkouts[0]!.checkoutId,
       objective: 'protect namespace while Work is active',
       acceptanceCriteria: [], allowedPaths: [], forbiddenPaths: [], checks: [],
-      constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'system', phase: 'verification',
+      constraints: {}, requestedBy: 'system', phase: 'verification',
     });
     const namespace = repositoryControllerRoot(home, repository.repoId);
     mkdirSync(join(namespace, 'indexes'), { recursive: true });
@@ -326,7 +326,7 @@ describe('runtime cleanup', () => {
       workId: 'WORK-ACTIVE', repoId: repository.repoId, checkoutId: repository.checkouts[0]!.checkoutId,
       objective: 'protect terminal edit-session evidence while Work remains active',
       acceptanceCriteria: [], allowedPaths: [], forbiddenPaths: [], checks: [],
-      constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'system', phase: 'verification',
+      constraints: {}, requestedBy: 'system', phase: 'verification',
     });
     const storage = ensureRepositoryRuntimeStorage(repository, home);
     expect(storage.readyForExecution).toBe(true);

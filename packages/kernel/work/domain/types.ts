@@ -285,14 +285,10 @@ export interface WorkContractConstraints {
   allowMerge?: boolean;
   allowCleanup?: boolean;
   allowDestructive?: boolean;
-  requireHandoffOnAmbiguity?: boolean;
   /** Immutable execution-policy snapshot captured when work starts. */
   accessMode?: WorkAccessMode;
-  /** current is the stability-first default; isolated is opt-in or used for explicit parallelism. */
+  /** Explicit repository placement. `auto` is retained as the legacy durable-Work isolated/frozen-base default. */
   workspaceMode?: 'current' | 'isolated' | 'auto';
-  requireWorktree?: boolean;
-  /** Admission fence: repository mutation must not use the Direct Control/current-main lane. */
-  directMainProhibited?: boolean;
   /** True when a change alters the agreed architecture direction rather than only implementation details. */
   architectureStrategyChange?: boolean;
   /** True when the proposed change weakens the thin-harness / high-performance execution policy. */

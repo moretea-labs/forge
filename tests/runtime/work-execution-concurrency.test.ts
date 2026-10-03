@@ -46,7 +46,7 @@ function work(input: {
     checkoutId: `checkout-${input.workId}`,
     objective: `Exercise concurrency semantics for ${input.workId}.`,
     acceptanceCriteria: ['Concurrency semantics are deterministic.'],
-    constraints: { requireHandoffOnAmbiguity: true, workspaceMode: isolated ? 'isolated' : 'auto', requireWorktree: isolated },
+    constraints: { workspaceMode: isolated ? 'isolated' : 'current' },
     worktreePolicy: isolated
       ? { required: true, reason: 'Concurrency test isolated fixture.' }
       : { required: false, reason: 'Concurrency test shared-checkout fixture.' },
@@ -168,7 +168,7 @@ describe('Work execution concurrency', () => {
       acceptanceCriteria: ['Independent isolated Work starts without accepting malformed legacy authority.'],
       allowedPaths: ['adapters/mcp/runtime-gateway/runtime-tools.ts'],
       checks: [],
-      constraints: { requireHandoffOnAmbiguity: true, workspaceMode: 'isolated', requireWorktree: true },
+      constraints: { workspaceMode: 'isolated' },
       workKind: 'repository_change',
       workRelation: 'new_goal',
       request: { scopeClear: true, mutation: true, requiresRecovery: true, risk: 'local_repo_write' },
@@ -190,7 +190,7 @@ describe('Work execution concurrency', () => {
       acceptanceCriteria: ['Malformed exact authority is rejected.'],
       allowedPaths: [],
       checks: [],
-      constraints: { requireHandoffOnAmbiguity: true, workspaceMode: 'isolated', requireWorktree: true },
+      constraints: { workspaceMode: 'isolated' },
       workKind: 'repository_change',
       relatedWorkId: malformed.workId,
       workRelation: 'parallel',

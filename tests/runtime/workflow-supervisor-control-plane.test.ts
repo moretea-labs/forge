@@ -442,7 +442,7 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
       objective: `Exercise exact conversation lineage for ${workId}.`,
       acceptanceCriteria: ['only explicit predecessor lineage may inherit a conversation'],
       allowedPaths: [], forbiddenPaths: [], checks: [],
-      constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
+      constraints: { workspaceMode: 'current' },
       requestedBy: 'chatgpt', dispatchState: 'running',
     });
     create(predecessorWorkId);
@@ -574,7 +574,7 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
       objective: `Exercise current-conversation binding for ${workId}.`,
       acceptanceCriteria: ['durable exact binding survives missing foreground observation'],
       allowedPaths: [], forbiddenPaths: [], checks: [],
-      constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
+      constraints: { workspaceMode: 'current' },
       requestedBy: 'chatgpt', dispatchState: 'running',
     });
     create(boundWorkId);
@@ -842,7 +842,7 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     createWorkContract(fx.store, {
       workId, repoId: fx.repository.repoId, checkoutId: fx.repository.activeCheckoutId, requirementId, objective: 'Require a prepared ControllerRound before Supervisor enrollment.',
       acceptanceCriteria: ['missing lower-layer authority is not runnable'], allowedPaths: [], forbiddenPaths: [], checks: [],
-      constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', dispatchState: 'running',
+      constraints: { workspaceMode: 'current' }, requestedBy: 'chatgpt', dispatchState: 'running',
     });
 
     expect(workflowSupervisorLowerLayerReadyForWork(fx.store, workId)).toEqual({ ready: false, reason: 'CONTROLLER_ROUND_NOT_PREPARED' });
@@ -862,7 +862,7 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     const workId = 'work-supervisor-repeated-state-recovery';
     createWorkContract(fx.store, {
       workId, repoId: fx.repository.repoId, checkoutId: fx.repository.activeCheckoutId, objective: 'Exercise bounded repeated-state authority recovery.', acceptanceCriteria: ['recovery preserves lineage budgets'],
-      allowedPaths: [], forbiddenPaths: [], checks: [], constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', dispatchState: 'running',
+      allowedPaths: [], forbiddenPaths: [], checks: [], constraints: { workspaceMode: 'current' }, requestedBy: 'chatgpt', dispatchState: 'running',
     });
     const identity = { controllerId: 'supervisor-recovery-controller', controllerType: 'chatgpt' as const, principalId: 'supervisor-recovery-principal', controllerInstanceId: 'runtime-supervisor-recovery' };
     const store = fx.store;
@@ -901,7 +901,7 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
       objective: 'Prove repeated-state recovery is scoped to exact enrolled unattended continuation.',
       acceptanceCriteria: ['committed CONTINUE reserves successor without another user message'],
       allowedPaths: [], forbiddenPaths: [], checks: [],
-      constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
+      constraints: { workspaceMode: 'current' },
       requestedBy: 'chatgpt', dispatchState: 'running',
     });
     const identity = {
@@ -985,7 +985,7 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
       objective: 'Prove lower ControllerRound budget cannot terminate an exact enrolled outer Supervisor continuation.',
       acceptanceCriteria: ['committed CONTINUE reserves successor without resetting lower lineage history'],
       allowedPaths: [], forbiddenPaths: [], checks: [],
-      constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
+      constraints: { workspaceMode: 'current' },
       requestedBy: 'chatgpt', dispatchState: 'running',
     });
     const identity = {
@@ -1081,7 +1081,7 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
       objective: 'Settle one dispatch-confirmed Supervisor turn through retained controller identity.',
       acceptanceCriteria: ['committed CONTINUE reserves exactly one successor'],
       allowedPaths: [], forbiddenPaths: [], checks: [],
-      constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
+      constraints: { workspaceMode: 'current' },
       requestedBy: 'chatgpt', dispatchState: 'running',
     });
     const identity = {
@@ -1141,7 +1141,7 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     createWorkContract(fx.store, {
       workId, repoId: fx.repository.repoId, checkoutId: fx.repository.activeCheckoutId, requirementId, objective: 'Move autonomous execution onto a fresh conversation without retaining the predecessor writer.',
       acceptanceCriteria: ['old conversation becomes browser-inactive after rebind'], allowedPaths: [], forbiddenPaths: [], checks: [],
-      constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', dispatchState: 'running',
+      constraints: { workspaceMode: 'current' }, requestedBy: 'chatgpt', dispatchState: 'running',
     });
     beginInitialControllerRoundDispatch(fx.store, {
       workId, requirementId, identity: { controllerId: 'chatgpt-supervisor-test', controllerType: 'chatgpt', principalId: 'chatgpt-supervisor-test', controllerInstanceId: 'runtime-supervisor-test', sessionId: 'session-supervisor-test' },
@@ -1194,7 +1194,7 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     createWorkContract(fx.store, {
       workId, repoId: fx.repository.repoId, checkoutId: fx.repository.activeCheckoutId, requirementId, objective: 'Work cancellation is not Goal cancellation or provider completion.',
       acceptanceCriteria: ['only Goal cancellation revokes the original prompt chain'], allowedPaths: [], forbiddenPaths: [], checks: [],
-      constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', dispatchState: 'running',
+      constraints: { workspaceMode: 'current' }, requestedBy: 'chatgpt', dispatchState: 'running',
     });
     beginInitialControllerRoundDispatch(fx.store, {
       workId, requirementId, identity: { controllerId: 'chatgpt-supervisor-test', controllerType: 'chatgpt', principalId: 'chatgpt-supervisor-test', controllerInstanceId: 'runtime-supervisor-test', sessionId: 'session-supervisor-test' },
@@ -1235,7 +1235,7 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     createWorkContract(fx.store, {
       workId, repoId: fx.repository.repoId, checkoutId: fx.repository.activeCheckoutId, requirementId, objective: 'Complete the original Goal independently from this Work carrier.',
       acceptanceCriteria: ['Work completion never fabricates Supervisor terminality'], allowedPaths: [], forbiddenPaths: [], checks: [],
-      constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', workKind: 'completed_no_change', dispatchState: 'running',
+      constraints: { workspaceMode: 'current' }, requestedBy: 'chatgpt', workKind: 'completed_no_change', dispatchState: 'running',
     });
     beginInitialControllerRoundDispatch(fx.store, {
       workId, requirementId, identity: { controllerId: 'chatgpt-supervisor-test', controllerType: 'chatgpt', principalId: 'chatgpt-supervisor-test', controllerInstanceId: 'runtime-supervisor-test', sessionId: 'session-supervisor-test' },
@@ -1619,7 +1619,7 @@ test('reconciles a late applied Supervisor effect into the same outcome-unknown 
   createWorkContract({ controllerHome: fx.controllerHome, scopeKey: SEMANTIC_SCOPE_KEY }, {
     workId, repoId: fx.repository.repoId, checkoutId: fx.repository.activeCheckoutId, requirementId, objective: 'Prove an outcome-unknown provider dispatch converges when the same external effect is later observed applied.',
     acceptanceCriteria: ['same effect and authority become dispatched without replay'], allowedPaths: [], forbiddenPaths: [], checks: [],
-    constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', dispatchState: 'running',
+    constraints: { workspaceMode: 'current' }, requestedBy: 'chatgpt', dispatchState: 'running',
   });
   const initial = beginInitialControllerRoundDispatch(fx.store, {
     workId, requirementId,

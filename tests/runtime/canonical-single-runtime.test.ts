@@ -104,7 +104,7 @@ function workInput(workId: string, repoId = 'repo-test') {
     repoId,
     objective: `Execute ${workId}`,
     acceptanceCriteria: ['Work remains bounded.'],
-    constraints: { requireHandoffOnAmbiguity: true },
+    constraints: {},
     allowedPaths: ['src/**'],
     forbiddenPaths: [],
     checks: ['test'],

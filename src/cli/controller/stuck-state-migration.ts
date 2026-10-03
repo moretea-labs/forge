@@ -3,7 +3,7 @@ import { spawnSync } from 'child_process';
 import { createHash } from 'crypto';
 import { inspectCompletionBacklog, type CompletionBacklogItem } from './completion-backlog';
 import { getIssue, listIssues, updateIssue, updateTask } from './issue-store';
-import { completionEvidenceComplete, taskExecutionPolicy, verificationEvidencePassed } from './execution-policy';
+import { completionEvidenceComplete, verificationEvidencePassed } from './execution-policy';
 import type { CompletionReceipt, ControllerIssue, ControllerTask } from './types';
 import { resolveCompletionTargetBranch } from './completion-target';
 import { legacyIssueAuthorityRetired } from './legacy-issue-cutover';
@@ -174,8 +174,7 @@ function reachable(repoRoot: string, revision: string, branch: string): boolean 
 
 function historicalCompletionReceipt(repoRoot: string, issue: ControllerIssue, task: ControllerTask): CompletionReceipt | undefined {
   if (!task.verification) return undefined;
-  const policy = taskExecutionPolicy(task);
-  const outcome = verificationEvidencePassed(task, task.verification, policy);
+  const outcome = verificationEvidencePassed(task, task.verification);
   if (!outcome.ok) return undefined;
   const target = currentTarget(repoRoot);
   if (!target) return undefined;

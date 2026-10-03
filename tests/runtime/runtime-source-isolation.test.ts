@@ -124,7 +124,7 @@ function createProjectionWork(
     checkoutId: repository.activeCheckoutId,
     objective: `Project ${workId} through bounded Runtime facade reads.`,
     acceptanceCriteria: ['Runtime facade reads remain available.'],
-    constraints: { requireHandoffOnAmbiguity: true, workspaceMode: 'isolated', requireWorktree: true },
+    constraints: { workspaceMode: 'isolated' },
     requestedBy: 'chatgpt',
     dispatchState: 'running',
     allowedPaths: [],

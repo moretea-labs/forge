@@ -93,7 +93,7 @@ describe('rh_work repository admission', () => {
       request_id: 'repository-start-current',
       source_revision: sourceRevision,
       allowed_paths: ['src/**'],
-      constraints: { workspace_mode: 'current', require_worktree: false },
+      constraints: { workspace_mode: 'current' },
     }));
 
     expect(started.status).toBe('ok');
@@ -125,7 +125,7 @@ describe('rh_work repository admission', () => {
       request_id: 'repository-start-isolated',
       source_revision: sourceRevision,
       allowed_paths: ['src/**'],
-      constraints: { workspace_mode: 'isolated', require_worktree: true, direct_main_prohibited: true },
+      constraints: { workspace_mode: 'isolated' },
     }));
 
     expect(started.status).toBe('ok');
@@ -137,7 +137,60 @@ describe('rh_work repository admission', () => {
     });
     expect(getWorkContract({ controllerHome, repoId: repository.repoId }, workId)).toMatchObject({
       checkoutId: started.data.executionHandle.checkoutId,
-      constraints: { workspaceMode: 'isolated', requireWorktree: true, directMainProhibited: true },
+      constraints: { workspaceMode: 'isolated' },
     });
   });
+
+  test('retired placement flags cannot override explicit current placement', async () => {
+    const repoRoot = tempRoot('forge-rh-work-explicit-placement-repo-');
+    const controllerHome = tempRoot('forge-rh-work-explicit-placement-home-');
+    const sourceRevision = initRepo(repoRoot);
+    writeFileSync(join(repoRoot, 'src', 'dirty.ts'), 'export const dirty = true;\n');
+    ensureControllerHome(controllerHome);
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'Explicit placement fixture' });
+    const started = structured(await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_work', {
+      repo_id: repository.repoId,
+      operation: 'start',
+      objective: 'Preserve caller-selected current placement.',
+      request_id: 'repository-start-explicit-current',
+      source_revision: sourceRevision,
+      constraints: { workspace_mode: 'current', require_worktree: true, direct_main_prohibited: true },
+    }));
+
+    expect(started.status).toBe('ok');
+    expect(started.data.executionHandle).toMatchObject({
+      checkoutId: repository.activeCheckoutId,
+      managedWorktree: false,
+      state: 'prepared',
+    });
+    const workId = String(started.data.work.workId);
+    expect(getWorkContract({ controllerHome, repoId: repository.repoId }, workId)?.constraints).toEqual(
+      expect.objectContaining({ workspaceMode: 'current' }),
+    );
+  });
+
+  test('legacy auto placement mechanically selects isolated frozen-base execution without dirty heuristics', async () => {
+    const repoRoot = tempRoot('forge-rh-work-auto-isolated-repo-');
+    const controllerHome = tempRoot('forge-rh-work-auto-isolated-home-');
+    const sourceRevision = initRepo(repoRoot);
+    ensureControllerHome(controllerHome);
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'Auto isolated fixture' });
+    const started = structured(await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_work', {
+      repo_id: repository.repoId,
+      operation: 'start',
+      objective: 'Use the stable durable Work auto placement.',
+      request_id: 'repository-start-legacy-auto-isolated',
+      source_revision: sourceRevision,
+      constraints: { workspace_mode: 'auto' },
+    }));
+
+    expect(started.status).toBe('ok');
+    expect(started.data.executionHandle).toMatchObject({ managedWorktree: true, state: 'prepared' });
+    expect(started.data.executionHandle.checkoutId).not.toBe(repository.activeCheckoutId);
+    const workId = String(started.data.work.workId);
+    expect(getWorkContract({ controllerHome, repoId: repository.repoId }, workId)?.constraints).toEqual(
+      expect.objectContaining({ workspaceMode: 'isolated' }),
+    );
+  });
+
 });
