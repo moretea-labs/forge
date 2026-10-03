@@ -67,6 +67,7 @@ try {
     semanticKey: operation.semanticKey,
     operation,
     objective: 'Verify WorkContract and Process Runtime recovery without ExecutionJobs',
+    workKind: 'completed_no_change',
     checks: [],
   };
   const accepted = acceptSubmittedWorkContract(controllerHome, request);
