@@ -365,6 +365,10 @@
       "module": "controller",
       "resource": "controller-home-isolated"
     },
+    "tests/runtime/controller-progression-continuation.test.ts": {
+      "module": "controller",
+      "resource": "controller-home-isolated"
+    },
     "tests/runtime/browser-state-controller-home-boundary.test.ts": {
       "module": "browser",
       "resource": "controller-home-isolated"
