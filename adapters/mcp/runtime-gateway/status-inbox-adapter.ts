@@ -26,7 +26,7 @@ import { triggerResolvedHandoffContinuation } from '../../../src/runtime/workflo
 import { getUserRequest, listUserRequests, recordUserRequest, resolveUserRequest, type UserRequest } from '../../../packages/kernel/identity/api/index';
 import { controllerReadinessEvidence, runtimeSourceSnapshotStatus } from './runtime-readiness-observation';
 import { readRuntimeReleaseAuthority } from '../../../src/runtime/root/release-store';
-import { getWorkflowSupervisorContinuationProof } from '../../../supervisor/client';
+import { getWorkflowSupervisorConsumerStatus, getWorkflowSupervisorContinuationProof } from '../../../supervisor/client';
 import { resolveWorkflowSupervisorForgeHome } from '../../../supervisor/paths';
 export { ageMs, probeLocalControllerHealth, localControllerDiagnosticMatchesRuntime, controllerReadinessEvidence, runtimeSourceSnapshotStatus } from './runtime-readiness-observation';
 export type { ControllerReadinessSignals } from './runtime-readiness-observation';
@@ -522,10 +522,33 @@ export async function callStatusInboxAdapter(
           autonomousContinuationProofObservation = 'unavailable';
         }
       }
+      let autonomousContinuationConsumerStatus: Awaited<ReturnType<typeof getWorkflowSupervisorConsumerStatus>> | undefined;
+      let autonomousContinuationConsumerObservation: 'observed' | 'unavailable' = 'unavailable';
+      try {
+        autonomousContinuationConsumerStatus = await getWorkflowSupervisorConsumerStatus(
+          resolveWorkflowSupervisorForgeHome(ctx.controllerHome),
+        );
+        autonomousContinuationConsumerObservation = 'observed';
+      } catch {
+        autonomousContinuationConsumerObservation = 'unavailable';
+      }
+      const dueConsumerFailure = Boolean(
+        autonomousContinuationConsumerStatus?.dueCommand
+        && autonomousContinuationConsumerStatus.lastFailure
+        && (!autonomousContinuationConsumerStatus.lastFailure.effectId
+          || autonomousContinuationConsumerStatus.lastFailure.effectId === autonomousContinuationConsumerStatus.dueCommand.effectId),
+      );
+      const autonomousContinuationConsumerReady = autonomousContinuationConsumerObservation === 'observed'
+        && autonomousContinuationConsumerStatus?.enabled === true
+        && autonomousContinuationConsumerStatus.running === true
+        && autonomousContinuationConsumerStatus.lastTickStartedAt !== undefined
+        && autonomousContinuationConsumerStatus.stalled === false
+        && !dueConsumerFailure;
       const autonomousContinuationReady = readiness.ready
         && toolSurfaceReady
         && !sourceSnapshotStale
-        && autonomousContinuationProofObservation === 'proven';
+        && autonomousContinuationProofObservation === 'proven'
+        && autonomousContinuationConsumerReady;
       const autonomousContinuationBlockers = [...new Set([
         ...readinessReasons
           .map((reason) => reason.code)
@@ -535,6 +558,19 @@ export async function callStatusInboxAdapter(
           : [autonomousContinuationProofObservation === 'unavailable'
               ? 'AUTONOMOUS_CONTINUATION_LIVE_PROOF_UNAVAILABLE'
               : 'AUTONOMOUS_CONTINUATION_LIVE_PROOF_MISSING']),
+        ...(autonomousContinuationConsumerObservation === 'unavailable'
+          ? ['AUTONOMOUS_CONTINUATION_CONSUMER_STATUS_UNAVAILABLE']
+          : autonomousContinuationConsumerStatus?.enabled !== true
+            ? ['AUTONOMOUS_CONTINUATION_CONSUMER_DISABLED']
+            : autonomousContinuationConsumerStatus.running !== true
+              ? ['AUTONOMOUS_CONTINUATION_CONSUMER_NOT_RUNNING']
+              : autonomousContinuationConsumerStatus.lastTickStartedAt === undefined
+                ? ['AUTONOMOUS_CONTINUATION_CONSUMER_NOT_OBSERVED']
+                : autonomousContinuationConsumerStatus.stalled
+                  ? ['AUTONOMOUS_CONTINUATION_CONSUMER_STALLED']
+                  : dueConsumerFailure
+                    ? ['AUTONOMOUS_CONTINUATION_CONSUMER_DEGRADED']
+                    : []),
       ])];
       const readinessWithToolSurface = {
         ready: effectiveReady,
@@ -567,6 +603,10 @@ export async function callStatusInboxAdapter(
             // CONTINUE -> CONTINUE -> DONE spanning at least one Runtime reconnect.
             autonomousContinuationReady,
             autonomousContinuationBlockers,
+            autonomousContinuationConsumer: {
+              observation: autonomousContinuationConsumerObservation,
+              ...(autonomousContinuationConsumerStatus ? { status: autonomousContinuationConsumerStatus } : {}),
+            },
             autonomousContinuationProof: {
               observation: autonomousContinuationProofObservation,
               activeReleaseId: activeReleaseAuthority?.active.releaseId,

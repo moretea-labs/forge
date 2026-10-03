@@ -8,7 +8,8 @@ import {
   reconcileWorkflowSupervisorSocket,
   WorkflowSupervisorEphemeralDiscovery,
 } from '../../../supervisor/server';
-import { startWorkflowSupervisorNativeBrowserAdapter } from '../../../supervisor/native-browser-adapter';
+import { startWorkflowSupervisorNativeBrowserAdapter, type WorkflowSupervisorNativeBrowserHandle } from '../../../supervisor/native-browser-adapter';
+import type { WorkflowSupervisorConsumerStatus } from '../../../supervisor/types';
 import { WorkflowSupervisorStore } from '../../../supervisor/store';
 import { getRuntimeWriteClaim } from './write-fence';
 
@@ -46,11 +47,22 @@ export async function startWorkflowSupervisorRuntime(
     forgeWorkflowSupervisorLifecycleHooks(controllerHome),
   );
   const discovery = new WorkflowSupervisorEphemeralDiscovery();
+  const browserAdapterEnabled = options.nativeBrowserAdapter !== false;
+  let nativeBrowser: WorkflowSupervisorNativeBrowserHandle | undefined;
+  const browserConsumerStatus = (): WorkflowSupervisorConsumerStatus => nativeBrowser?.status() ?? {
+    enabled: browserAdapterEnabled,
+    running: false,
+    observedAt: new Date().toISOString(),
+    transportFailureStreak: 0,
+    providerBackpressureMs: 0,
+    stalled: false,
+  };
   const server = createWorkflowSupervisorServer({
     controlPlane,
     socketPath,
     discovery,
-    browserAdapterEnabled: options.nativeBrowserAdapter !== false,
+    browserAdapterEnabled,
+    browserConsumerStatus,
     ...(writer ? { writer } : {}),
   });
   const done = once(server, 'close').then(() => undefined);
@@ -69,9 +81,9 @@ export async function startWorkflowSupervisorRuntime(
   reconcileCommittedContinuations();
   const reconciliationTimer = setInterval(reconcileCommittedContinuations, 2_000);
   reconciliationTimer.unref?.();
-  const nativeBrowser = options.nativeBrowserAdapter === false
-    ? undefined
-    : startWorkflowSupervisorNativeBrowserAdapter(controlPlane, discovery, { providerScopeKey: controllerHome });
+  nativeBrowser = browserAdapterEnabled
+    ? startWorkflowSupervisorNativeBrowserAdapter(controlPlane, discovery, { providerScopeKey: controllerHome })
+    : undefined;
   return {
     done,
     async close(): Promise<void> {

@@ -16,7 +16,7 @@ import { parseChatgptConversationIdentity } from './chatgpt-conversation';
 import { WorkflowSupervisorControlPlane } from './control-plane';
 import { renderEffectMarker, sha256 } from './protocol';
 import type { WorkflowSupervisorEphemeralDiscovery } from './server';
-import type { WorkflowSupervisorBrowserCommand, WorkflowSupervisorBrowserTask } from './types';
+import type { WorkflowSupervisorBrowserCommand, WorkflowSupervisorBrowserTask, WorkflowSupervisorConsumerStatus } from './types';
 
 const OWNER_PREFIX = 'forge-workflow-supervisor:';
 const LEGACY_BROWSER_PLUGIN_OWNER_PREFIX = 'forge-browser-owned:';
@@ -89,6 +89,7 @@ export interface WorkflowSupervisorNativeBrowserInventory {
 }
 export interface WorkflowSupervisorNativeBrowserHandle {
   readonly adapter: WorkflowSupervisorNativeBrowserAdapter;
+  status(): WorkflowSupervisorConsumerStatus;
   close(): Promise<void>;
 }
 
@@ -96,6 +97,14 @@ function normalize(value: string): string { return value.replace(/\s+/g, ' ').tr
 function localObservationDelayMs(completedAttempts: number, baseMs: number, maxMs: number): number {
   const exponent = Math.max(0, Math.min(8, Math.trunc(completedAttempts) - 1));
   return Math.min(maxMs, baseMs * 2 ** exponent);
+}
+function consumerFailureCode(error: unknown, fallback: string): string {
+  const message = error instanceof Error ? error.message : String(error);
+  const candidate = message.split(':', 1)[0]?.trim() ?? '';
+  return /^WORKFLOW_SUPERVISOR_[A-Z0-9_]+$/.test(candidate) ? candidate : fallback;
+}
+function isoTime(value: number | undefined): string | undefined {
+  return value === undefined ? undefined : new Date(value).toISOString();
 }
 async function sleepMs(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
@@ -444,11 +453,89 @@ export class WorkflowSupervisorNativeBrowserAdapter {
   private readonly restoredThisPass = new Set<string>();
   private servicingFreshSend = false;
   private conversations: ObservedConversation[] = [];
+  private lastTickStartedAtMs?: number;
+  private lastTickCompletedAtMs?: number;
+  private lastCommandAttemptAtMs?: number;
+  private lastFailure?: { code: string; observedAtMs: number; taskId?: string; effectId?: string };
   constructor(
     private readonly control: WorkflowSupervisorControlPlane,
     private readonly discovery: WorkflowSupervisorEphemeralDiscovery,
     dependencies: Partial<WorkflowSupervisorNativeBrowserDependencies> = {},
   ) { this.deps = { ...DEFAULT_DEPENDENCIES, ...dependencies }; }
+
+  private noteFailure(code: string, task?: WorkflowSupervisorBrowserTask, effectId?: string): void {
+    this.lastFailure = {
+      code,
+      observedAtMs: this.deps.nowMs(),
+      ...(task ? { taskId: task.taskId } : {}),
+      ...(effectId ? { effectId } : {}),
+    };
+  }
+
+  private clearFailureForEffect(effectId: string): void {
+    if (!this.lastFailure) return;
+    if (!this.lastFailure.effectId || this.lastFailure.effectId === effectId) this.lastFailure = undefined;
+  }
+
+  private dueCommand(nowMs: number): WorkflowSupervisorConsumerStatus['dueCommand'] {
+    const candidates: NonNullable<WorkflowSupervisorConsumerStatus['dueCommand']>[] = [];
+    for (const task of this.control.browserTasks()) {
+      try {
+        const poll = task.conversationId.startsWith('bootstrap:')
+          ? this.control.bootstrapPoll(task.taskId)
+          : this.control.browserPoll({ conversationId: task.conversationId, conversationUrl: task.conversationUrl });
+        const command = poll.command;
+        if (!command) continue;
+        const effect = this.control.getEffect(command.effectId);
+        const createdAtMs = effect?.createdAt ? Date.parse(effect.createdAt) : Number.NaN;
+        candidates.push({
+          taskId: task.taskId,
+          conversationId: task.conversationId,
+          effectId: command.effectId,
+          mode: command.mode,
+          kind: command.kind,
+          ...(effect?.createdAt ? { createdAt: effect.createdAt } : {}),
+          ...(Number.isFinite(createdAtMs) ? { ageMs: Math.max(0, nowMs - createdAtMs) } : {}),
+        });
+      } catch {
+        // A malformed/stale task is already bounded by the control plane. Status
+        // remains a read projection and never repairs or invents an effect.
+      }
+    }
+    candidates.sort((left, right) => (right.ageMs ?? -1) - (left.ageMs ?? -1));
+    return candidates[0];
+  }
+
+  status(): WorkflowSupervisorConsumerStatus {
+    const nowMs = this.deps.nowMs();
+    const dueCommand = this.dueCommand(nowMs);
+    const stalled = Boolean(
+      this.inflight
+      && this.lastTickStartedAtMs !== undefined
+      && nowMs - this.lastTickStartedAtMs > MAX_TRANSPORT_BACKOFF_MS + DEFAULT_TIMEOUT_MS,
+    );
+    return {
+      enabled: true,
+      running: Boolean(this.timer) && !this.closed,
+      observedAt: new Date(nowMs).toISOString(),
+      ...(isoTime(this.lastTickStartedAtMs) ? { lastTickStartedAt: isoTime(this.lastTickStartedAtMs) } : {}),
+      ...(isoTime(this.lastTickCompletedAtMs) ? { lastTickCompletedAt: isoTime(this.lastTickCompletedAtMs) } : {}),
+      ...(isoTime(this.lastCommandAttemptAtMs) ? { lastCommandAttemptAt: isoTime(this.lastCommandAttemptAtMs) } : {}),
+      ...(this.nextRunAtMs > 0 ? { nextAttemptAt: new Date(this.nextRunAtMs).toISOString() } : {}),
+      transportFailureStreak: this.transportFailureStreak,
+      providerBackpressureMs: chatgptProviderBackpressureRemainingMs(this.deps.providerScopeKey, nowMs),
+      stalled,
+      ...(dueCommand ? { dueCommand } : {}),
+      ...(this.lastFailure ? {
+        lastFailure: {
+          code: this.lastFailure.code,
+          observedAt: new Date(this.lastFailure.observedAtMs).toISOString(),
+          ...(this.lastFailure.taskId ? { taskId: this.lastFailure.taskId } : {}),
+          ...(this.lastFailure.effectId ? { effectId: this.lastFailure.effectId } : {}),
+        },
+      } : {}),
+    };
+  }
 
   start(intervalMs = DEFAULT_INTERVAL_MS): void {
     if (this.timer || this.closed || this.deps.platform !== 'darwin') return;
@@ -456,7 +543,10 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     const idleIntervalMs = Math.max(activeIntervalMs, IDLE_INTERVAL_MS);
     const tick = () => {
       if (this.inflight || this.closed || this.deps.nowMs() < this.nextRunAtMs) return;
-      this.inflight = this.runOnce().catch(this.deps.onError).finally(() => {
+      this.inflight = this.runOnce().catch((error) => {
+        this.noteFailure(consumerFailureCode(error, 'WORKFLOW_SUPERVISOR_NATIVE_CONSUMER_FAILED'));
+        this.deps.onError(error);
+      }).finally(() => {
         const baseIntervalMs = this.lastRunHadTasks ? activeIntervalMs : idleIntervalMs;
         // A transport that cannot answer does not get polled at tick rate: each
         // failed attempt used to re-enter the same unprovable attach and create
@@ -487,13 +577,26 @@ export class WorkflowSupervisorNativeBrowserAdapter {
 
   async runOnce(): Promise<void> {
     if (this.deps.platform !== 'darwin' || this.closed) return;
+    this.lastTickStartedAtMs = this.deps.nowMs();
     this.inventory = undefined;
     this.freshSendCheckedAt.clear();
     this.restoredThisPass.clear();
     this.lastRunTransportUnavailable = false;
     const tasks = this.control.browserTasks();
     this.lastRunHadTasks = tasks.length > 0;
-    const inventory = await this.listInventory();
+    let inventory: WorkflowSupervisorNativeBrowserInventory;
+    try {
+      inventory = await this.listInventory();
+      if (this.lastFailure?.code === 'WORKFLOW_SUPERVISOR_NATIVE_INVENTORY_UNAVAILABLE' && !this.lastFailure.effectId) {
+        this.lastFailure = undefined;
+      }
+    } catch (error) {
+      this.lastRunTransportUnavailable = true;
+      this.noteFailure('WORKFLOW_SUPERVISOR_NATIVE_INVENTORY_UNAVAILABLE');
+      this.transportFailureStreak = Math.min(this.transportFailureStreak + 1, MAX_TRANSPORT_BACKOFF_STEPS);
+      this.lastTickCompletedAtMs = this.deps.nowMs();
+      throw error;
+    }
     await this.cleanupInactive(Infinity, true);
     const conversations: ObservedConversation[] = [];
     this.conversations = conversations;
@@ -567,6 +670,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     this.transportFailureStreak = this.lastRunTransportUnavailable
       ? Math.min(this.transportFailureStreak + 1, MAX_TRANSPORT_BACKOFF_STEPS)
       : 0;
+    this.lastTickCompletedAtMs = this.deps.nowMs();
   }
 
   /**
@@ -597,10 +701,13 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     const next = eligible.find(({ checkedAt }) => checkedAt === undefined || nowMs - checkedAt >= DEFAULT_INTERVAL_MS);
     if (!next) return;
     this.freshSendCheckedAt.set(next.effectId, nowMs);
+    this.lastCommandAttemptAtMs = nowMs;
     this.servicingFreshSend = true;
     try { await this.processTask(next.task); }
-    catch (error) { this.deps.onError(error); }
-    finally { this.servicingFreshSend = false; }
+    catch (error) {
+      this.noteFailure(consumerFailureCode(error, 'WORKFLOW_SUPERVISOR_NATIVE_COMMAND_FAILED'), next.task, next.effectId);
+      this.deps.onError(error);
+    } finally { this.servicingFreshSend = false; }
   }
 
   private async processTask(task: WorkflowSupervisorBrowserTask): Promise<void> {
@@ -611,10 +718,17 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     }
     let poll = this.control.browserPoll({ conversationId: task.conversationId, conversationUrl: task.conversationUrl });
     if (poll.terminal) return;
+    if (poll.command) this.lastCommandAttemptAtMs = this.deps.nowMs();
     // Restore only the enrolled exact conversation when delivery/observation is
     // due. A transport tab is disposable; it is never a new conversation/effect.
     const ensured = await this.ensurePage(task);
-    if (ensured.state !== 'ready') return;
+    if (ensured.state !== 'ready') {
+      if (ensured.state === 'unproven' && ensured.reasonCode && poll.command) {
+        this.noteFailure(ensured.reasonCode, task, poll.command.effectId);
+      }
+      return;
+    }
+    if (poll.command) this.clearFailureForEffect(poll.command.effectId);
     const page = ensured.page;
     const snapshot = ensured.snapshot
       ?? await this.deps.snapshot(page, { includeUserHistory: false, includePageText: false });
@@ -996,7 +1110,8 @@ export class WorkflowSupervisorNativeBrowserAdapter {
 
   private async ensurePage(task: WorkflowSupervisorBrowserTask): Promise<
     | { state: 'ready'; page: WorkflowSupervisorNativePage; snapshot?: WorkflowSupervisorNativeSnapshot }
-    | { state: 'missing' | 'unproven' }
+    | { state: 'missing' }
+    | { state: 'unproven'; reasonCode?: string }
   > {
     const cached = this.pages.get(task.conversationId);
     if (cached) {
@@ -1092,13 +1207,13 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     // that assertion authorizes creating one.
     if (inventory.unavailableProducts.length > 0) {
       this.lastRunTransportUnavailable = true;
-      return { state: 'unproven' };
+      return { state: 'unproven', reasonCode: 'WORKFLOW_SUPERVISOR_NATIVE_INVENTORY_INCOMPLETE' };
     }
     const cachedRef = cached?.tabRef() as TaggedBrowserTabRef | undefined;
     if (exactCandidateInspectionFailed || exactCandidates.length > 0
       || (cachedRef && inventory.entries.some((entry) => entry.windowId === cachedRef.windowId
         && entry.tabId === cachedRef.tabId
-        && (!cachedRef.browserProduct || entry.browserProduct === cachedRef.browserProduct)))) return { state: 'unproven' };
+        && (!cachedRef.browserProduct || entry.browserProduct === cachedRef.browserProduct)))) return { state: 'unproven', reasonCode: 'WORKFLOW_SUPERVISOR_EXACT_TAB_UNPROVEN' };
     this.pages.delete(task.conversationId);
     if (!this.control.browserTasks().some((entry) => entry.taskId === task.taskId)) return { state: 'missing' };
     if (this.restoredThisPass.has(task.conversationId)) return { state: 'unproven' };
@@ -1129,7 +1244,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
         } catch { /* Keep the handle; never replace a resource whose close is unknown. */ }
       }
       this.deps.onError(error);
-      return { state: 'unproven' };
+      return { state: 'unproven', reasonCode: 'WORKFLOW_SUPERVISOR_EXACT_TAB_RESTORE_FAILED' };
     }
   }
 
@@ -1280,5 +1395,5 @@ export function startWorkflowSupervisorNativeBrowserAdapter(
   const adapter = new WorkflowSupervisorNativeBrowserAdapter(control, discovery, dependencies);
   if ((dependencies.platform ?? process.platform) !== 'darwin') return undefined;
   adapter.start();
-  return { adapter, close: async () => { await adapter.close(); } };
+  return { adapter, status: () => adapter.status(), close: async () => { await adapter.close(); } };
 }

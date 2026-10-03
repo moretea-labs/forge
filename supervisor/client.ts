@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { createConnection } from 'node:net';
 import { workflowSupervisorSocketPath } from './paths';
-import type { WorkflowSupervisorAutomationStatus, WorkflowSupervisorContinuationProof, WorkflowSupervisorDiscoveredConversation, WorkflowSupervisorEffect, WorkflowSupervisorTask, WorkflowSupervisorTaskInput } from './types';
+import type { WorkflowSupervisorAutomationStatus, WorkflowSupervisorConsumerStatus, WorkflowSupervisorContinuationProof, WorkflowSupervisorDiscoveredConversation, WorkflowSupervisorEffect, WorkflowSupervisorTask, WorkflowSupervisorTaskInput } from './types';
 
 interface RpcResponse<T> { id: string; ok: boolean; result?: T; error?: { code?: string; message?: string } }
 
@@ -45,6 +45,10 @@ async function rpc<T>(forgeHome: string, method: string, params: Record<string, 
     });
     socket.once('connect', () => socket.write(`${JSON.stringify({ id, method, params })}\n`));
   });
+}
+
+export async function getWorkflowSupervisorConsumerStatus(forgeHome: string): Promise<WorkflowSupervisorConsumerStatus> {
+  return await rpc<WorkflowSupervisorConsumerStatus>(forgeHome, 'consumer_status', {});
 }
 
 export async function getWorkflowSupervisorCurrentConversation(forgeHome: string): Promise<WorkflowSupervisorDiscoveredConversation | undefined> {

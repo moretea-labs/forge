@@ -1384,6 +1384,88 @@ test('browserTasks prioritizes fresh sends ahead of older reconciliation work', 
   ]);
 });
 
+test('native consumer status exposes and clears a pre-dispatch due-effect transport blocker without changing effect authority', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-consumer-status-'));
+  roots.push(root);
+  const clock = { nowMs: Date.now() };
+  const store = new WorkflowSupervisorStore(join(root, 'supervisor-home'), { now: () => clock.nowMs });
+  const control = new WorkflowSupervisorControlPlane(store, {}, { browserTaskActive: () => true });
+  const taskId = 'consumer-status-task';
+  const conversationId = '43434343-5656-7878-9090-121212121212';
+  const conversationUrl = `https://chatgpt.com/c/${conversationId}`;
+  control.registerTask({
+    taskId, conversationId, conversationUrl,
+    objective: 'Expose native consumer liveness without becoming effect authority.',
+    completionContract: {}, continuationPolicy: {}, userBlockerPolicy: {},
+  });
+  const effect = control.reserveEnrollment(taskId);
+
+  let inventoryUnavailable = true;
+  let owner = '';
+  let createCalls = 0;
+  const page: WorkflowSupervisorNativePage = {
+    evaluate: async () => undefined as never,
+    waitForSelector: async () => undefined,
+    tabRef: () => ({ windowId: 'consumer-window', tabId: 'consumer-tab' }),
+  };
+  const adapter = new WorkflowSupervisorNativeBrowserAdapter(control, new WorkflowSupervisorEphemeralDiscovery(), {
+    platform: 'darwin',
+    listTabs: async () => ({ entries: [], unavailableProducts: inventoryUnavailable ? ['chrome'] : [] }),
+    reattach: async () => page,
+    create: async (url) => { expect(url).toBe(conversationUrl); createCalls += 1; return page; },
+    close: async () => undefined,
+    readOwner: async () => owner,
+    writeOwner: async (_page, marker) => { owner = marker; },
+    snapshot: async () => ({
+      url: conversationUrl, title: 'Consumer status', latestUserText: '', latestAssistantResponse: '',
+      isGenerating: false, providerActivityText: '', providerFailureText: '',
+    }),
+    dispatchPrompt: async () => ({ dispatched: false, reason: 'test_pre_send_rejection' }),
+    nowMs: () => clock.nowMs,
+    providerIdleGraceMs: 60_000,
+    providerScopeKey: join(root, 'provider-scope'),
+    sleep: async () => undefined,
+    setInterval: () => 0 as unknown as ReturnType<typeof setInterval>,
+    clearInterval: () => undefined,
+    onError: () => undefined,
+  });
+
+  await adapter.runOnce();
+  expect(adapter.status()).toMatchObject({
+    enabled: true,
+    running: false,
+    transportFailureStreak: 1,
+    stalled: false,
+    dueCommand: {
+      taskId,
+      conversationId,
+      effectId: effect.effectId,
+      mode: 'send',
+      kind: 'enrollment',
+    },
+    lastFailure: {
+      code: 'WORKFLOW_SUPERVISOR_NATIVE_INVENTORY_INCOMPLETE',
+      taskId,
+      effectId: effect.effectId,
+    },
+  });
+  expect(adapter.status().lastTickStartedAt).toBeDefined();
+  expect(adapter.status().lastTickCompletedAt).toBeDefined();
+  expect(store.nextBrowserEffect(taskId)).toEqual(expect.objectContaining({ mode: 'send', generation: 1 }));
+
+  inventoryUnavailable = false;
+  clock.nowMs += 1_000;
+  await adapter.runOnce();
+  const recovered = adapter.status();
+  expect(createCalls).toBe(1);
+  expect(recovered.transportFailureStreak).toBe(0);
+  expect(recovered.lastFailure).toBeUndefined();
+  expect(recovered.lastCommandAttemptAt).toBeDefined();
+  // Provider dispatch rejection remains owned by the existing durable effect ledger;
+  // the consumer projection neither replays nor marks the effect applied itself.
+  expect(store.nextBrowserEffect(taskId)?.mode).not.toBe('reconcile');
+});
+
 test('enrolled reconciliation reopens only its exact conversation and never repeats an ambiguous submission', async () => {
   const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-reconcile-no-create-'));
   roots.push(root);

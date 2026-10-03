@@ -69,6 +69,35 @@ export interface WorkflowSupervisorContinuationProof {
   lastCommittedAt: string;
 }
 
+/** Ephemeral operational projection for the single native Supervisor effect consumer. */
+export interface WorkflowSupervisorConsumerStatus {
+  enabled: boolean;
+  running: boolean;
+  observedAt: string;
+  lastTickStartedAt?: string;
+  lastTickCompletedAt?: string;
+  lastCommandAttemptAt?: string;
+  nextAttemptAt?: string;
+  transportFailureStreak: number;
+  providerBackpressureMs: number;
+  stalled: boolean;
+  dueCommand?: {
+    taskId: string;
+    conversationId: string;
+    effectId: string;
+    mode: 'send' | 'reconcile';
+    kind: WorkflowEffectKind;
+    createdAt?: string;
+    ageMs?: number;
+  };
+  lastFailure?: {
+    code: string;
+    observedAt: string;
+    taskId?: string;
+    effectId?: string;
+  };
+}
+
 export interface WorkflowContractValidation {
   valid: boolean;
   reason: string;
