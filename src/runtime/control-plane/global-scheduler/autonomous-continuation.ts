@@ -1,6 +1,7 @@
 import { createHash } from 'crypto';
 import type { RepositoryRecord } from '../../../cli/repositories/types';
 import {
+  beginControllerRoundRelayAfterRelease,
   controllerRoundBlockerClass,
   controllerSessionBlocksRecovery,
   getControllerRoundRelay,
@@ -150,6 +151,20 @@ export async function runSchedulerAutonomousContinuationReconciliation(input: {
 
       eligible += 1;
       try {
+        // A continue_immediately disposition closes the semantic turn as
+        // pending_release. Once its exact ControllerSession lease is gone,
+        // mechanically release that same round back to dispatching before
+        // Workflow Supervisor enrollment. Otherwise liveness repeatedly
+        // selects the orphan while the Supervisor lower-layer gate correctly
+        // rejects pending_release, leaving every scheduled occurrence as a
+        // no-op forever.
+        if (existingRound?.status === 'pending_release') {
+          beginControllerRoundRelayAfterRelease(store, {
+            workId: work.workId,
+            releasedSession: retainedSession,
+          });
+        }
+
         authorizeWake('external_controller_wake', {
           work_id: work.workId,
           controller_type: retainedSession.controllerType,

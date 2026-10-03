@@ -181,7 +181,7 @@ describe('autonomous Work liveness reconciliation', () => {
     expect(getControllerRoundRelay(store, 'WORK-INCOMPLETE-DISPATCH')?.status).toBe('dispatching');
   });
 
-  test('re-enrolls Supervisor for an orphaned pending_release round without rewriting lower round state', async () => {
+  test('releases an orphaned pending_release round back to dispatching before Supervisor enrollment', async () => {
     const controllerHome = home();
     const store = { controllerHome, repoId: 'repo-a' };
     const workId = 'WORK-PENDING-RELEASE-ORPHAN';
@@ -225,7 +225,7 @@ describe('autonomous Work liveness reconciliation', () => {
 
     expect(result).toMatchObject({ eligible: 1, supervisorEnrolled: 1, dispatched: 0, failed: 0 });
     expect(enrollments.count).toBe(1);
-    expect(getControllerRoundRelay(store, workId)?.status).toBe('pending_release');
+    expect(getControllerRoundRelay(store, workId)?.status).toBe('dispatching');
   });
 
   test('re-enrolls Supervisor for an abandoned claimed round without rewriting lower round state', async () => {
