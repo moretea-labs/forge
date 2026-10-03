@@ -573,19 +573,18 @@ export class WorkflowSupervisorControlPlane {
     // Text-parsed completions are causally anchored to the exact assistant page
     // response that produced the Supervisor receipt. Automation tool receipts are
     // different: their responseSha256 hashes the synthetic durable receipt carrier,
-    // not text rendered in ChatGPT. Requiring that synthetic hash to equal the
-    // visible assistant response makes every canonical CONTINUE successor fall
-    // into reconcile before a dispatch generation can begin. The tool-receipt path
-    // already derives the exact task, conversation, and latest applied source effect
-    // locally; retain those fences below while skipping only the inapplicable page-
-    // text hash comparison.
+    // not text rendered in ChatGPT. The page can also collapse the prior automated
+    // prompt to ordinary visible prose, so neither the response hash nor its effect
+    // marker is a valid prerequisite for delivering the already-reserved successor.
+    // The durable receipt has already bound task, conversation, and source effect;
+    // retain that local causal fence and skip only the unavailable page-text proof.
     const automationToolReceipt = completion.proposal.reason === 'automation_tool_receipt';
-    if (!automationToolReceipt && sha256(snapshot.latestAssistantResponse) !== completion.responseSha256) return false;
     const sourceEffect = this.store.getEffect(completion.sourceEffectId);
-    return Boolean(sourceEffect
-      && sourceEffect.taskId === task.taskId
-      && (normalizeBrowserText(snapshot.latestUserText) === normalizeBrowserText(sourceEffect.prompt)
-        || browserTextHasEffect(snapshot.latestUserText, sourceEffect.effectId)));
+    if (!sourceEffect || sourceEffect.taskId !== task.taskId) return false;
+    if (automationToolReceipt) return true;
+    if (sha256(snapshot.latestAssistantResponse) !== completion.responseSha256) return false;
+    return normalizeBrowserText(snapshot.latestUserText) === normalizeBrowserText(sourceEffect.prompt)
+      || browserTextHasEffect(snapshot.latestUserText, sourceEffect.effectId);
   }
 
   private requireTask(taskId: string): WorkflowSupervisorTask { const task = this.store.getTask(taskId); if (!task) throw new Error('WORKFLOW_SUPERVISOR_TASK_UNKNOWN'); return task; }
