@@ -49,9 +49,10 @@ import { snapshotControllerCheck } from '../../src/cli/controller/check-runner';
 import { readWorkHandle, writeWorkHandle } from '../../src/runtime/control-plane/execution/work-handle-store';
 import { verificationInputFingerprint, workspaceValidationFingerprint } from '../../src/runtime/control-plane/execution/verification-evidence';
 
-function git(root: string, args: string[]): void {
+function git(root: string, args: string[]): string {
   const result = spawnSync('git', ['-C', root, ...args], { encoding: 'utf-8' });
   if (result.status !== 0) throw new Error(result.stderr || `git ${args.join(' ')} failed`);
+  return String(result.stdout ?? '').trim();
 }
 
 function fixture() {
@@ -1492,6 +1493,82 @@ describe('work_validate persisted semantic identity', () => {
     });
     expect(continued?.isError).toBe(true);
     expect(JSON.stringify(continued?.structuredContent ?? continued)).toContain('WORK_HANDLE_HEAD_CHANGED');
+    expect(readWorkHandle(fx.controllerHome, fx.repository.repoId, work.workId)?.expectedHead).toBe(work.expectedHead);
+  });
+
+  test('explicit reuse can audit and adopt an already-advanced linear HEAD when dirty source is disjoint', async () => {
+    const fx = fixture();
+    roots.push(fx.root);
+
+    const started = await callExecutionTool(fx.ctx, 'session_start', {});
+    expect(started?.isError).not.toBe(true);
+    const session = (started?.structuredContent as { session: { sessionId: string } }).session;
+    const prepared = await callExecutionTool(fx.ctx, 'work_prepare', {
+      session_id: session.sessionId,
+      repo_id: fx.repository.repoId,
+      request_id: 'prepare-reuse-explicit-successor-adoption',
+      objective: 'Adopt only an explicitly reviewed linear successor baseline.',
+      acceptance_criteria: ['Unrelated dirty source survives successor adoption without becoming commit authority.'],
+      checks: [],
+      isolation: 'reuse',
+    });
+    expect(prepared?.isError).not.toBe(true);
+    const work = (prepared?.structuredContent as { work: { workId: string; baseCommit: string; deliveryBaseCommit: string; expectedHead: string } }).work;
+
+    writeFileSync(join(fx.repoRoot, 'src/lib.ts'), 'export const n = 2;\n');
+    git(fx.repoRoot, ['add', 'src/lib.ts']);
+    git(fx.repoRoot, ['commit', '-m', 'advance canonical for explicit adoption']);
+    const successor = git(fx.repoRoot, ['rev-parse', 'HEAD']);
+    writeFileSync(join(fx.repoRoot, 'scratch.txt'), 'unrelated dirty source\n');
+
+    const continued = await callExecutionTool(fx.ctx, 'work_prepare', {
+      session_id: session.sessionId,
+      repo_id: fx.repository.repoId,
+      checkout_id: fx.repository.activeCheckoutId,
+      work_id: work.workId,
+      expected_previous_head: work.expectedHead,
+      adopt_candidate_head: successor,
+    });
+    if (continued?.isError) throw new Error(JSON.stringify(continued.structuredContent ?? continued));
+    expect(continued?.structuredContent).toMatchObject({
+      reused: true,
+      adoptedSuccessor: { previousHead: work.expectedHead, currentHead: successor },
+      work: { workId: work.workId, baseCommit: work.baseCommit, deliveryBaseCommit: successor, expectedHead: successor },
+    });
+    expect(readFileSync(join(fx.repoRoot, 'scratch.txt'), 'utf8')).toBe('unrelated dirty source\n');
+  });
+
+  test('explicit successor adoption refuses committed/dirty path overlap', async () => {
+    const fx = fixture();
+    roots.push(fx.root);
+
+    const started = await callExecutionTool(fx.ctx, 'session_start', {});
+    const session = (started?.structuredContent as { session: { sessionId: string } }).session;
+    const prepared = await callExecutionTool(fx.ctx, 'work_prepare', {
+      session_id: session.sessionId,
+      repo_id: fx.repository.repoId,
+      request_id: 'prepare-reuse-successor-overlap',
+      objective: 'Refuse ambiguous successor adoption.',
+      checks: [],
+      isolation: 'reuse',
+    });
+    const work = (prepared?.structuredContent as { work: { workId: string; expectedHead: string } }).work;
+    writeFileSync(join(fx.repoRoot, 'src/lib.ts'), 'export const n = 2;\n');
+    git(fx.repoRoot, ['add', 'src/lib.ts']);
+    git(fx.repoRoot, ['commit', '-m', 'advance overlapping canonical path']);
+    const successor = git(fx.repoRoot, ['rev-parse', 'HEAD']);
+    writeFileSync(join(fx.repoRoot, 'src/lib.ts'), 'export const n = 3;\n');
+
+    const continued = await callExecutionTool(fx.ctx, 'work_prepare', {
+      session_id: session.sessionId,
+      repo_id: fx.repository.repoId,
+      checkout_id: fx.repository.activeCheckoutId,
+      work_id: work.workId,
+      expected_previous_head: work.expectedHead,
+      adopt_candidate_head: successor,
+    });
+    expect(continued?.isError).toBe(true);
+    expect(JSON.stringify(continued?.structuredContent ?? continued)).toContain('WORK_HANDLE_SUCCESSOR_ADOPTION_DIRTY_OVERLAP');
     expect(readWorkHandle(fx.controllerHome, fx.repository.repoId, work.workId)?.expectedHead).toBe(work.expectedHead);
   });
 

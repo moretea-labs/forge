@@ -1,4 +1,5 @@
 import { createHash } from 'crypto';
+import { spawnSync } from 'child_process';
 import type { McpExecutionContext } from '../../../../packages/protocols/mcp/execution-context';
 import { getRepository, resolveRepositorySelection, selectRepositoryCheckout } from '../../../cli/repositories/registry';
 import { repositoryGitStatus } from '../../../cli/repositories/structured-git';
@@ -12,7 +13,7 @@ import { currentPermissionSnapshotVersion, validateWorkHandle } from './validati
 import { withWorkPrepareRequest } from './work-prepare-request-store';
 import { markWorkHandleFailed, newWorkId, readWorkHandle, writeWorkHandle, type WorkFinalizationStages, type WorkHandleState } from './work-handle-store';
 import { createGoalDelegation } from '../governance/authorization';
-import { compactHandle, contractFor, findWorkHandle, gitHead, identityFor, requireSession } from './work-execution-support';
+import { compactHandle, contractFor, findWorkHandle, gitHead, gitIsAncestor, identityFor, requireSession } from './work-execution-support';
 
 function requireExplicitRepoId(args: Record<string, unknown>): string {
   const value = typeof args.repo_id === 'string' ? args.repo_id.trim() : '';
@@ -80,6 +81,73 @@ export function bindSessionRepository(ctx: McpExecutionContext, args: Record<str
   return { session: next, repository: { repoId: repository.repoId, checkoutId: repository.activeCheckoutId, canonicalRoot: repository.canonicalRoot, branch: repository.checkouts.find((entry) => entry.checkoutId === repository.activeCheckoutId)?.branch ?? null }, switched: switching };
 }
 
+function gitPathSet(root: string, args: string[], code: string): Set<string> {
+  const result = spawnSync('git', ['-C', root, ...args, '-z'], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: 10_000,
+  });
+  if (result.error || result.status !== 0) throw new Error(`${code}: ${result.error?.message ?? result.stderr?.trim() ?? `git ${args.join(' ')} failed`}`);
+  return new Set(String(result.stdout ?? '').split('\0').map((value) => value.trim()).filter(Boolean));
+}
+
+function currentDirtyPaths(root: string): Set<string> {
+  const paths = new Set<string>();
+  for (const path of gitPathSet(root, ['diff', '--name-only'], 'WORK_HANDLE_SUCCESSOR_ADOPTION_DIRTY_PATHS_UNAVAILABLE')) paths.add(path);
+  for (const path of gitPathSet(root, ['diff', '--cached', '--name-only'], 'WORK_HANDLE_SUCCESSOR_ADOPTION_DIRTY_PATHS_UNAVAILABLE')) paths.add(path);
+  for (const path of gitPathSet(root, ['ls-files', '--others', '--exclude-standard'], 'WORK_HANDLE_SUCCESSOR_ADOPTION_DIRTY_PATHS_UNAVAILABLE')) paths.add(path);
+  return paths;
+}
+
+function adoptExplicitSuccessorHead(
+  ctx: McpExecutionContext,
+  args: Record<string, unknown>,
+  repository: ReturnType<typeof selectedRepository>,
+  existing: WorkHandleState,
+): WorkHandleState | undefined {
+  const expectedPreviousHead = typeof args.expected_previous_head === 'string' ? args.expected_previous_head.trim() : '';
+  const adoptCandidateHead = typeof args.adopt_candidate_head === 'string' ? args.adopt_candidate_head.trim() : '';
+  if (!expectedPreviousHead && !adoptCandidateHead) return undefined;
+  if (!expectedPreviousHead || !adoptCandidateHead) {
+    throw new Error('WORK_HANDLE_SUCCESSOR_ADOPTION_PAIR_REQUIRED: expected_previous_head and adopt_candidate_head must be supplied together');
+  }
+  if (existing.managedWorktree) throw new Error('WORK_HANDLE_SUCCESSOR_ADOPTION_REUSE_ONLY: managed Worktrees already own their commit progression');
+  if (existing.state !== 'prepared' && existing.state !== 'editing') {
+    throw new Error(`WORK_HANDLE_SUCCESSOR_ADOPTION_STATE_INVALID: ${existing.state}`);
+  }
+  if (existing.expectedHead !== expectedPreviousHead) {
+    throw new Error(`WORK_HANDLE_SUCCESSOR_ADOPTION_PREVIOUS_HEAD_MISMATCH: expected ${existing.expectedHead ?? 'missing'}, received ${expectedPreviousHead}`);
+  }
+  if (existing.repositoryId !== repository.repoId || existing.checkoutId !== repository.activeCheckoutId) {
+    throw new Error('WORK_HANDLE_SUCCESSOR_ADOPTION_CHECKOUT_MISMATCH');
+  }
+  const root = existing.worktreePath;
+  const currentHead = gitHead(root);
+  if (!currentHead || currentHead !== adoptCandidateHead) {
+    throw new Error(`WORK_HANDLE_SUCCESSOR_ADOPTION_CURRENT_HEAD_MISMATCH: expected ${adoptCandidateHead}, found ${currentHead ?? 'missing'}`);
+  }
+  if (!gitIsAncestor(root, expectedPreviousHead, adoptCandidateHead)) {
+    throw new Error(`WORK_HANDLE_SUCCESSOR_ADOPTION_NONLINEAR: ${expectedPreviousHead} is not an ancestor of ${adoptCandidateHead}`);
+  }
+  const changedPaths = gitPathSet(root, ['diff', '--name-only', `${expectedPreviousHead}..${adoptCandidateHead}`], 'WORK_HANDLE_SUCCESSOR_ADOPTION_DIFF_UNAVAILABLE');
+  const dirtyPaths = currentDirtyPaths(root);
+  const overlap = [...changedPaths].filter((path) => dirtyPaths.has(path)).sort();
+  if (overlap.length > 0) {
+    throw new Error(`WORK_HANDLE_SUCCESSOR_ADOPTION_DIRTY_OVERLAP: ${overlap.slice(0, 20).join(',')}`);
+  }
+  const candidate: WorkHandleState = {
+    ...existing,
+    deliveryBaseCommit: adoptCandidateHead,
+    expectedHead: adoptCandidateHead,
+    validationRun: undefined,
+    validatedInputFingerprint: undefined,
+    finalization: initialStage(),
+    failureReason: undefined,
+  };
+  validateWorkHandle(ctx.controllerHome, candidate, identityFor(ctx, args), 'cheap', 'inspect');
+  return writeWorkHandle(ctx.controllerHome, candidate);
+}
+
 export function prepareWork(ctx: McpExecutionContext, args: Record<string, unknown>): Record<string, unknown> {
   const session = requireSession(ctx, args);
   const repository = selectedRepository(ctx, session, args, true);
@@ -91,9 +159,16 @@ export function prepareWork(ctx: McpExecutionContext, args: Record<string, unkno
     const existing = readWorkHandle(ctx.controllerHome, repository.repoId, existingId)
       ?? findWorkHandle(ctx, session, { ...args, work_id: existingId, repo_id: repository.repoId });
     if (existing.principalId !== session.principalId) throw new Error('WORK_HANDLE_ACCESS_DENIED');
-    validateWorkHandle(ctx.controllerHome, existing, identityFor(ctx, args), 'cheap', 'inspect');
-    updateExecutionSession(ctx.controllerHome, identityFor(ctx, args), { activeRepositoryId: existing.repositoryId, activeCheckoutId: existing.checkoutId, activeWorkId: existing.workId, permissionSnapshotVersion: existing.permissionSnapshotVersion });
-    return { session: requireSession(ctx, args), work: compactHandle(existing), reused: true };
+    const adopted = adoptExplicitSuccessorHead(ctx, args, repository, existing);
+    const active = adopted ?? existing;
+    if (!adopted) validateWorkHandle(ctx.controllerHome, active, identityFor(ctx, args), 'cheap', 'inspect');
+    updateExecutionSession(ctx.controllerHome, identityFor(ctx, args), { activeRepositoryId: active.repositoryId, activeCheckoutId: active.checkoutId, activeWorkId: active.workId, permissionSnapshotVersion: active.permissionSnapshotVersion });
+    return {
+      session: requireSession(ctx, args),
+      work: compactHandle(active),
+      reused: true,
+      ...(adopted ? { adoptedSuccessor: { previousHead: existing.expectedHead, currentHead: adopted.expectedHead } } : {}),
+    };
   }
 
   const requestId = typeof args.request_id === 'string' ? args.request_id.trim() : '';
