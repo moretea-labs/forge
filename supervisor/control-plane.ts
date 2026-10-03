@@ -301,7 +301,7 @@ export class WorkflowSupervisorControlPlane {
     const effect = this.store.getEffect(validateEffectId(input.effectId));
     if (!effect || effect.taskId !== task.taskId) throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_EFFECT_TASK_MISMATCH');
     if (input.outcome === 'not_applied') {
-      // This path is private to the native bootstrap adapter after its exact-tab
+      // This path is private to the provider dispatch adapter after its exact
       // dispatch function returned without clicking Send. It is therefore a
       // mechanical negative proof, unlike a missing post-send conversation
       // marker, which remains outcome-unknown and must reconcile.
@@ -366,15 +366,15 @@ export class WorkflowSupervisorControlPlane {
     });
     return { recorded: true };
   }
-  /** Dispatch-owner attestation. Not exposed through the browser observer RPC. */
-  browserObserveDispatchFailure(input: { conversationId: string; conversationUrl: string; effectId: string; observationId: string; dispatchGeneration: number; reason: string }): void {
+  /** Dispatch-owner attestation. Only the adapter that reserved this generation may call it. */
+  browserObserveDispatchFailure(input: { conversationId: string; conversationUrl: string; effectId: string; observationId: string; dispatchGeneration: number; reason: string; surface?: string }): void {
     const task = this.requireBrowserTask(input.conversationId, input.conversationUrl);
     const effect = this.store.getEffect(input.effectId);
     if (effect?.taskId !== task.taskId) throw new Error('WORKFLOW_SUPERVISOR_BROWSER_EFFECT_TASK_MISMATCH');
     const dispatch = this.store.latestEffectDispatch(input.effectId);
     if (dispatch?.generation !== input.dispatchGeneration) throw new Error('WORKFLOW_SUPERVISOR_DISPATCH_GENERATION_CHANGED');
     this.store.recordEffectNotAppliedProof(input.effectId, input.observationId, {
-      surface: 'macos-native', reason: input.reason, send_clicked: false, dispatch_generation: input.dispatchGeneration,
+      surface: input.surface?.trim().slice(0, 128) || 'macos-native', reason: input.reason, send_clicked: false, dispatch_generation: input.dispatchGeneration,
     });
   }
   browserObserveProviderTurn(input: { conversationId: string; conversationUrl: string; generating: boolean; latestAssistantResponse: string; providerActivityText?: string; providerFailureCode?: string; observedAtMs: number; graceMs: number }): { state: 'inactive' | 'none' | 'generating' | 'idle_pending' | 'recovery_reserved' | 'exhausted'; recoveryEffect?: WorkflowSupervisorEffect } {

@@ -59,6 +59,16 @@ try {
   assert.equal(control.browserTasks().length, 1);
   assert.equal(ALLOWED_BROWSER_METHODS.has('browser_discovery'), true);
   assert.equal(ALLOWED_BROWSER_METHODS.has('browser_discovery_update'), true);
+  for (const method of [
+    'browser_begin_effect',
+    'browser_observe_dispatch_failure',
+    'browser_observe_provider_turn',
+    'bootstrap_poll',
+    'bootstrap_project_url',
+    'bootstrap_begin_effect',
+    'bootstrap_observe_effect',
+    'bootstrap_bind_conversation',
+  ]) assert.equal(ALLOWED_BROWSER_METHODS.has(method), true, `${method} must be available to the extension transport`);
   assert.throws(() => discovery.update([{ conversation_id: conversationId, canonical_url: 'https://example.com/c/not-chatgpt' }]), /CHATGPT_URL_INVALID/);
 
   const coreSource = readFileSync(resolve('supervisor/chrome-extension/core.js'), 'utf8');
@@ -72,15 +82,23 @@ try {
   const discoverySource = backgroundSource.slice(backgroundSource.indexOf('async function publishDiscovery'), backgroundSource.indexOf('async function refreshAuthorizedTabs'));
   assert.ok(discoverySource.includes("browser_discovery_update"));
   for (const forbidden of ['task_register', 'reserve_enrollment', 'browser_begin_effect', 'forge-workflow-supervisor-effect']) assert.equal(discoverySource.includes(forbidden), false);
+  const establishedDeliverySource = backgroundSource.slice(backgroundSource.indexOf('async function serviceConversationTask'), backgroundSource.indexOf('async function reconcileBootstrapTask'));
+  assert.ok(establishedDeliverySource.includes("nativeRpc('browser_begin_effect'"));
+  assert.ok(establishedDeliverySource.includes("nativeRpc('browser_observe_dispatch_failure'"));
+  assert.equal(establishedDeliverySource.includes('tabCreate('), false);
+  const bootstrapDeliverySource = backgroundSource.slice(backgroundSource.indexOf('async function serviceBootstrapTask'), backgroundSource.indexOf('async function handlePage'));
+  assert.ok(bootstrapDeliverySource.includes("nativeRpc('bootstrap_begin_effect'"));
+  assert.ok(bootstrapDeliverySource.includes('tabCreate('));
   const taskRefreshSource = backgroundSource.slice(backgroundSource.indexOf("const result = await nativeRpc('browser_tasks')"), backgroundSource.indexOf('chrome.runtime.onMessage.addListener'));
   assert.ok(taskRefreshSource.includes('findConversationTab(tabs, target)'));
-  assert.equal(taskRefreshSource.includes('chrome.tabs.create('), false);
   assert.ok(taskRefreshSource.includes('if (tab.discarded && tab.id) { await chrome.tabs.reload(tab.id); continue; }'));
   assert.ok(backgroundSource.includes("core.sameConversation(core.parseConversation(candidate.url ?? ''), target)"));
   assert.ok(backgroundSource.includes("chrome.alarms.create(ALARM, { periodInMinutes: 1 })"));
+  for (const forbidden of ['osascript', 'Apple Events', 'computer.console.unlock', 'trusted_input']) assert.equal(backgroundSource.includes(forbidden), false);
   const contentSource = readFileSync(resolve('supervisor/chrome-extension/content.js'), 'utf8');
   assert.ok(contentSource.includes('new MutationObserver(notify).observe'));
   assert.ok(contentSource.includes('}, 200);'));
-  assert.ok(contentSource.includes('const assistantResponse = latestAssistant();'));
+  assert.ok(contentSource.includes('const assistantResponse = latestCommittedAssistant();'));
+  assert.ok(contentSource.includes('forge-workflow-supervisor-dispatch'));
   console.log('[workflow-supervisor-chrome-smoke] OK');
 } finally { rmSync(home, { recursive: true, force: true }); }

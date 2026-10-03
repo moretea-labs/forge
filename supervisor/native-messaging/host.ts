@@ -4,7 +4,24 @@ import { workflowSupervisorSocketPath } from '../paths';
 import { encodeNativeMessage, NativeMessageDecoder } from './protocol';
 
 export const WORKFLOW_SUPERVISOR_NATIVE_HOST_NAME = 'com.moretea.forge.workflow_supervisor';
-export const ALLOWED_BROWSER_METHODS = new Set(['health','browser_discovery','browser_discovery_update','browser_project_scopes','browser_tasks','browser_poll','browser_begin_effect','browser_observe_effect','browser_observe_assistant']);
+export const ALLOWED_BROWSER_METHODS = new Set([
+  'health',
+  'browser_discovery',
+  'browser_discovery_update',
+  'browser_project_scopes',
+  'browser_tasks',
+  'browser_poll',
+  'browser_begin_effect',
+  'browser_observe_effect',
+  'browser_observe_dispatch_failure',
+  'browser_observe_provider_turn',
+  'browser_observe_assistant',
+  'bootstrap_poll',
+  'bootstrap_project_url',
+  'bootstrap_begin_effect',
+  'bootstrap_observe_effect',
+  'bootstrap_bind_conversation',
+]);
 
 interface BrowserNativeRequest { id: string; method: string; params: Record<string, unknown> }
 function request(value: unknown): BrowserNativeRequest {

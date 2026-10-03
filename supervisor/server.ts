@@ -5,6 +5,7 @@ import { mkdirSync } from 'node:fs';
 import type { WorkflowSupervisorControlPlane } from './control-plane';
 import { parseChatgptConversationIdentity } from './chatgpt-conversation';
 import type { WorkflowSupervisorConsumerStatus, WorkflowSupervisorDiscoverySnapshot, WorkflowSupervisorDiscoveredConversation } from './types';
+import { chatgptProviderPageFailure } from '../adapters/chatgpt/provider-delivery';
 
 interface RpcRequest { id: string; method: string; params: Record<string, unknown> }
 const MAX_REQUEST_BYTES = 1024 * 1024;
@@ -329,8 +330,14 @@ async function dispatch(control: WorkflowSupervisorControlPlane, discovery: Work
   if (req.method === 'browser_project_scopes') return { projects: control.browserProjectScopes() };
   if (req.method === 'browser_tasks') return { tasks: control.browserTasks() };
   if (req.method === 'browser_poll') return control.browserPoll({ conversationId: text(p, 'conversation_id'), conversationUrl: text(p, 'conversation_url') });
+  if (req.method === 'bootstrap_poll') return control.bootstrapPoll(text(p, 'task_id'));
+  if (req.method === 'bootstrap_project_url') return { project_url: control.bootstrapProjectUrl(text(p, 'task_id')) };
+  if (req.method === 'bootstrap_begin_effect') return { started: control.bootstrapBeginEffect({ taskId: text(p, 'task_id'), effectId: text(p, 'effect_id'), dispatchId: text(p, 'dispatch_id'), dispatchGeneration: positiveInteger(p, 'dispatch_generation') }) };
+  if (req.method === 'bootstrap_observe_effect') { const outcome = text(p, 'outcome'); if (!['applied','not_applied','unknown'].includes(outcome)) throw new Error('WORKFLOW_SUPERVISOR_RPC_OUTCOME_INVALID'); control.bootstrapObserveEffect({ taskId: text(p, 'task_id'), effectId: text(p, 'effect_id'), observationId: text(p, 'observation_id'), outcome: outcome as 'applied'|'not_applied'|'unknown', evidence: object(p.evidence) }); return { recorded: true }; }
   if (req.method === 'browser_begin_effect') return control.browserBeginEffect({ conversationId: text(p, 'conversation_id'), conversationUrl: text(p, 'conversation_url'), effectId: text(p, 'effect_id'), dispatchId: text(p, 'dispatch_id'), dispatchGeneration: positiveInteger(p, 'dispatch_generation'), evidence: object(p.evidence) });
   if (req.method === 'browser_observe_effect') { const outcome = text(p, 'outcome'); if (!['applied','not_applied','unknown'].includes(outcome)) throw new Error('WORKFLOW_SUPERVISOR_RPC_OUTCOME_INVALID'); return control.browserObserveEffect({ conversationId: text(p, 'conversation_id'), conversationUrl: text(p, 'conversation_url'), effectId: text(p, 'effect_id'), observationId: text(p, 'observation_id'), outcome: outcome as 'applied'|'not_applied'|'unknown', evidence: object(p.evidence) }); }
+  if (req.method === 'browser_observe_dispatch_failure') { control.browserObserveDispatchFailure({ conversationId: text(p, 'conversation_id'), conversationUrl: text(p, 'conversation_url'), effectId: text(p, 'effect_id'), observationId: text(p, 'observation_id'), dispatchGeneration: positiveInteger(p, 'dispatch_generation'), reason: text(p, 'reason'), surface: 'chrome-extension' }); return { recorded: true }; }
+  if (req.method === 'browser_observe_provider_turn') return control.browserObserveProviderTurn({ conversationId: text(p, 'conversation_id'), conversationUrl: text(p, 'conversation_url'), generating: p.generating === true, latestAssistantResponse: stringValue(p.latest_assistant_response), providerActivityText: stringValue(p.provider_activity_text), providerFailureCode: chatgptProviderPageFailure(stringValue(p.provider_failure_text)), observedAtMs: safeInteger(p, 'observed_at_ms'), graceMs: positiveInteger(p, 'grace_ms') });
   if (req.method === 'browser_observe_assistant') return control.browserObserveAssistant({ conversationId: text(p, 'conversation_id'), conversationUrl: text(p, 'conversation_url'), responseText: text(p, 'response_text') });
   if (req.method === 'task_register') return control.registerTask({ taskId: text(p, 'task_id'), conversationId: text(p, 'conversation_id'), conversationUrl: text(p, 'conversation_url'), objective: text(p, 'objective'), completionContract: object(p.completion_contract), continuationPolicy: object(p.continuation_policy), userBlockerPolicy: object(p.user_blocker_policy) });
   if (req.method === 'task_list') return { tasks: control.listTasks(p.active_only === true) };
@@ -352,4 +359,6 @@ async function dispatch(control: WorkflowSupervisorControlPlane, discovery: Work
   throw new Error('WORKFLOW_SUPERVISOR_RPC_METHOD_UNKNOWN');
 }
 function object(value: unknown): Record<string, unknown> { return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}; }
+function stringValue(value: unknown): string { return typeof value === 'string' ? value : ''; }
+function safeInteger(params: Record<string, unknown>, key: string): number { const value = Number(params[key]); if (!Number.isSafeInteger(value) || value < 0) throw new Error(`WORKFLOW_SUPERVISOR_RPC_${key.toUpperCase()}_INVALID`); return value; }
 function positiveInteger(params: Record<string, unknown>, key: string): number { const value = Number(params[key]); if (!Number.isInteger(value) || value < 1 || value > 1_000_000) throw new Error(`WORKFLOW_SUPERVISOR_RPC_${key.toUpperCase()}_INVALID`); return value; }

@@ -47,7 +47,11 @@ export async function startWorkflowSupervisorRuntime(
     forgeWorkflowSupervisorLifecycleHooks(controllerHome),
   );
   const discovery = new WorkflowSupervisorEphemeralDiscovery();
-  const browserAdapterEnabled = options.nativeBrowserAdapter !== false;
+  // The Browser RPC surface is consumed by the installed Chrome/Vivaldi
+  // extension and is independent from the macOS Apple Events compatibility
+  // consumer. Native browser automation is explicit opt-in only.
+  const browserAdapterEnabled = true;
+  const nativeBrowserAdapterEnabled = options.nativeBrowserAdapter === true;
   let nativeBrowser: WorkflowSupervisorNativeBrowserHandle | undefined;
   const browserConsumerStatus = (): WorkflowSupervisorConsumerStatus => nativeBrowser?.status() ?? {
     enabled: browserAdapterEnabled,
@@ -81,7 +85,7 @@ export async function startWorkflowSupervisorRuntime(
   reconcileCommittedContinuations();
   const reconciliationTimer = setInterval(reconcileCommittedContinuations, 2_000);
   reconciliationTimer.unref?.();
-  nativeBrowser = browserAdapterEnabled
+  nativeBrowser = nativeBrowserAdapterEnabled
     ? startWorkflowSupervisorNativeBrowserAdapter(controlPlane, discovery, { providerScopeKey: controllerHome })
     : undefined;
   return {

@@ -3,6 +3,8 @@
   if (!core) throw new Error('FORGE_WORKFLOW_SUPERVISOR_CHROME_CORE_MISSING');
   const ASSISTANT = '[data-message-author-role="assistant"], [data-chatgpt-search-unit-key$=":assistant"], [data-content-search-unit-key$=":assistant"]';
   const USER = '[data-message-author-role="user"], [data-chatgpt-search-unit-key$=":user"], [data-content-search-unit-key$=":user"]';
+  const COMPOSER = '#prompt-textarea, [data-testid="prompt-textarea"], textarea[placeholder*="Message"], textarea[placeholder*="消息"], form [contenteditable="true"]';
+  const SEND = 'button[data-testid="send-button"], button[aria-label*="Send"], button[aria-label*="发送"]';
   const identity = () => core.parseConversation(location.href);
   const absoluteChatgptUrl = (href) => {
     try { const url = new URL(String(href ?? ''), location.href); return url.protocol === 'https:' && url.hostname === 'chatgpt.com' ? url.toString() : undefined; }
@@ -54,7 +56,9 @@
     }
     return result;
   };
-  const latestAssistant = () => { const nodes = roleNodes(ASSISTANT); const text = messageText(nodes[nodes.length - 1]); return core.isCommittedAssistantResponse(text) ? text : undefined; };
+  const latestUser = () => { const nodes = roleNodes(USER); return messageText(nodes[nodes.length - 1]); };
+  const latestAssistantText = () => { const nodes = roleNodes(ASSISTANT); return messageText(nodes[nodes.length - 1]); };
+  const latestCommittedAssistant = () => { const text = latestAssistantText(); return core.isCommittedAssistantResponse(text) ? text : undefined; };
   const latestTurnRole = () => {
     const nodes = document.querySelectorAll(`${USER}, ${ASSISTANT}`);
     const node = nodes.item(nodes.length - 1);
@@ -69,11 +73,66 @@
     document.querySelector('[data-testid="stop-button"], [data-testid*="stop-button"], button[aria-label*="Stop"], button[aria-label*="停止"], [data-testid*="stop"], [aria-busy="true"], [data-is-streaming="true"], [data-testid*="streaming"]')
     || latestTurnRole() === 'user'
   );
+  const composer = () => document.querySelector(COMPOSER);
+  const composerText = () => core.normalizeText(composer()?.value ?? composer()?.innerText ?? composer()?.textContent);
+  const pageSnapshot = () => ({
+    pageUrl: location.href,
+    title: document.title,
+    latestUserText: latestUser(),
+    latestAssistantResponse: latestAssistantText(),
+    latestTurnRole: latestTurnRole(),
+    providerTurnPending: providerTurnPending(),
+    composerText: composerText(),
+    providerFailureText: String(document.body?.innerText ?? '').slice(-250000),
+  });
+  const writeComposer = (node, prompt) => {
+    node.focus();
+    if (node instanceof HTMLTextAreaElement || node instanceof HTMLInputElement) {
+      const prototype = node instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+      const setter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
+      if (setter) setter.call(node, prompt); else node.value = prompt;
+      node.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: prompt }));
+      return;
+    }
+    if (node.isContentEditable) {
+      const selection = window.getSelection();
+      const range = document.createRange();
+      range.selectNodeContents(node);
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+      if (!document.execCommand('insertText', false, prompt)) {
+        node.textContent = prompt;
+        node.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: prompt }));
+      }
+      selection?.removeAllRanges();
+    }
+  };
+  const dispatchPrompt = async (prompt) => {
+    if (typeof prompt !== 'string' || !prompt.trim()) return { dispatched: false, reason: 'prompt_required' };
+    if (providerTurnPending()) return { dispatched: false, reason: 'provider_busy' };
+    const node = composer();
+    if (!node) return { dispatched: false, reason: 'composer_missing' };
+    const existing = composerText();
+    if (existing && existing !== core.normalizeText(prompt)) return { dispatched: false, reason: 'composer_not_empty' };
+    if (existing !== core.normalizeText(prompt)) writeComposer(node, prompt);
+    await new Promise((resolve) => setTimeout(resolve, 75));
+    if (composerText() !== core.normalizeText(prompt)) return { dispatched: false, reason: 'composer_write_unconfirmed' };
+    const send = document.querySelector(SEND);
+    if (!send) return { dispatched: false, reason: 'send_button_missing' };
+    if (send.disabled || send.getAttribute('aria-disabled') === 'true') return { dispatched: false, reason: 'send_button_disabled' };
+    send.click();
+    return { dispatched: true };
+  };
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (!message || message.type === 'forge-workflow-supervisor-scan') { notify(); sendResponse?.({ ok: true }); return false; }
     if (message.type === 'forge-workflow-supervisor-discovery-scan') {
       sendResponse({ projects: discoverProjectLinks(message.projectTitles), conversations: discoverConversationLinks(), pageUrl: location.href });
       return false;
+    }
+    if (message.type === 'forge-workflow-supervisor-snapshot') { sendResponse(pageSnapshot()); return false; }
+    if (message.type === 'forge-workflow-supervisor-dispatch') {
+      dispatchPrompt(String(message.prompt ?? '')).then(sendResponse, (error) => sendResponse({ dispatched: false, reason: String(error?.message ?? error) }));
+      return true;
     }
     return false;
   });
@@ -84,7 +143,7 @@
     timer = setTimeout(() => {
       const current = identity();
       if (!current) return;
-      const assistantResponse = latestAssistant();
+      const assistantResponse = latestCommittedAssistant();
       chrome.runtime.sendMessage({
         type: 'forge-workflow-supervisor-page',
         ...current,

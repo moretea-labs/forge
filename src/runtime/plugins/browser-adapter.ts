@@ -108,12 +108,12 @@ type WaitForSelectorState = 'attached' | 'detached' | 'visible' | 'hidden';
 type BrowserChannel = 'chromium' | 'chrome' | 'chrome-beta' | 'chrome-dev' | 'chrome-canary';
 type BrowserNativeAttachMode = 'auto' | 'disabled';
 
-const CURRENT_BROWSER_CONFIG_SCHEMA_VERSION = 2 as const;
+const CURRENT_BROWSER_CONFIG_SCHEMA_VERSION = 3 as const;
 const DEFAULT_USER_BROWSER_CHANNEL: BrowserChannel = 'chrome';
 const DEFAULT_USER_NATIVE_BROWSER_CANDIDATES: MacOsBrowserProduct[] = ['chrome', 'vivaldi'];
 
 interface BrowserPluginConfig {
-  schemaVersion: 2;
+  schemaVersion: 3;
   enabled: boolean;
   provider: 'playwright';
   browserMode?: BrowserMode;
@@ -132,7 +132,7 @@ interface BrowserPluginConfig {
 }
 
 type PersistedBrowserPluginConfig = Partial<Omit<BrowserPluginConfig, 'schemaVersion'>> & {
-  schemaVersion?: 1 | 2;
+  schemaVersion?: 1 | 2 | 3;
 };
 
 type BrowserSessionInventory = {
@@ -441,7 +441,7 @@ function normalizeConfig(raw: PersistedBrowserPluginConfig): BrowserPluginConfig
     schemaVersion: CURRENT_BROWSER_CONFIG_SCHEMA_VERSION,
     enabled: raw.enabled === true,
     provider: 'playwright',
-    browserMode: browserMode(raw.browserMode) ?? 'attach_preferred',
+    browserMode: browserMode(raw.browserMode) ?? 'managed_persistent',
     profileMode: browserProfileMode(raw.profileMode) ?? (normalizedProfileDir ? 'custom' : 'repo_local'),
     profileDir: normalizedProfileDir,
     profileDirectory: stringValue(raw.profileDirectory),
@@ -453,26 +453,28 @@ function normalizeConfig(raw: PersistedBrowserPluginConfig): BrowserPluginConfig
       ? Math.min(positiveNumber(raw.cdpDiscoveryTimeoutMs, DEFAULT_CDP_DISCOVERY_TIMEOUT_MS), MAX_CDP_DISCOVERY_TIMEOUT_MS)
       : undefined,
     cdpAttachFallback: browserCdpAttachFallback(raw.cdpAttachFallback) ?? 'fail_closed',
-    nativeAttachMode: browserNativeAttachMode(raw.nativeAttachMode) ?? 'auto',
+    nativeAttachMode: browserNativeAttachMode(raw.nativeAttachMode) ?? 'disabled',
     nativeBrowserCandidates: browserProductList(raw.nativeBrowserCandidates) ?? [...DEFAULT_USER_NATIVE_BROWSER_CANDIDATES],
     defaultTimeoutMs: typeof raw.defaultTimeoutMs === 'number' ? positiveNumber(raw.defaultTimeoutMs, DEFAULT_TIMEOUT_MS) : undefined,
   };
 }
 
 function migrateLegacyRepositoryConfig(raw: PersistedBrowserPluginConfig): PersistedBrowserPluginConfig {
-  if (raw.schemaVersion !== 1) return raw;
+  if (raw.schemaVersion === CURRENT_BROWSER_CONFIG_SCHEMA_VERSION) return raw;
+  const configuredCdp = Boolean(
+    stringValue(raw.cdpEndpoint)
+    || (stringList(raw.cdpEndpointCandidates)?.length ?? 0) > 0,
+  );
+  const legacyMode = browserMode(raw.browserMode) ?? 'attach_preferred';
   return {
+    ...raw,
     schemaVersion: CURRENT_BROWSER_CONFIG_SCHEMA_VERSION,
-    enabled: raw.enabled,
-    provider: 'playwright',
-    browserMode: 'attach_preferred',
-    profileMode: 'repo_local',
-    browserChannel: DEFAULT_USER_BROWSER_CHANNEL,
-    cdpAttachFallback: 'fail_closed',
-    nativeAttachMode: 'auto',
-    nativeBrowserCandidates: [...DEFAULT_USER_NATIVE_BROWSER_CANDIDATES],
-    defaultTimeoutMs: raw.defaultTimeoutMs,
-    cdpDiscoveryTimeoutMs: raw.cdpDiscoveryTimeoutMs,
+    // v1/v2 defaulted to attach_preferred + native auto and silently made
+    // Apple Events JavaScript a global Browser dependency whenever no CDP endpoint
+    // was configured. Preserve explicit CDP attachment, but retire native attach
+    // from migrated defaults; it remains available only when explicitly selected.
+    browserMode: legacyMode === 'attach_preferred' && !configuredCdp ? 'managed_persistent' : legacyMode,
+    nativeAttachMode: 'disabled',
   };
 }
 
