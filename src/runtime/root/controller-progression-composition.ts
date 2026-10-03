@@ -123,7 +123,14 @@ export async function reconcileControllerProgression(
         workId: input.workId,
         releasedSession: retainedSession,
       }) ?? getControllerRoundRelay(store, input.workId);
-      controllerRoundOccurrenceId = existingRound?.occurrenceId?.trim() || controllerRoundOccurrenceId;
+    }
+    // An already-open recoverable ControllerRound keeps its durable occurrence
+    // identity across Scheduler wake attempts. A fresh ScheduleOccurrence is
+    // trigger/evidence identity only; replacing the round occurrence here would
+    // manufacture a second open round and permanently self-block continuation.
+    if (existingRound?.occurrenceId?.trim()
+      && ['dispatching', 'dispatched', 'claimed'].includes(existingRound.status)) {
+      controllerRoundOccurrenceId = existingRound.occurrenceId.trim();
     }
     if (existingRound?.status === 'blocked'
       && controllerRoundBlockerClass(existingRound) === 'provider_dispatch_outcome_unknown') {
