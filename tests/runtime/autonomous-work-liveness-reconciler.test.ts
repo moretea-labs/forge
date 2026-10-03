@@ -24,6 +24,7 @@ import {
   createPlanSemanticContext,
 } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import { runSchedulerAutonomousContinuationReconciliation } from '../../src/runtime/control-plane/global-scheduler/autonomous-continuation';
+import { reconcileControllerProgression } from '../../src/runtime/root/controller-progression-composition';
 
 const roots: string[] = [];
 afterEach(() => {
@@ -226,6 +227,60 @@ describe('autonomous Work liveness reconciliation', () => {
     expect(result).toMatchObject({ eligible: 1, supervisorEnrolled: 1, dispatched: 0, failed: 0 });
     expect(enrollments.count).toBe(1);
     expect(getControllerRoundRelay(store, workId)?.status).toBe('dispatching');
+  });
+
+  test('reuses the durable ControllerRound occurrence when a new schedule wake finds pending_release', async () => {
+    const controllerHome = home();
+    const store = { controllerHome, repoId: 'repo-a' };
+    const workId = 'WORK-PENDING-RELEASE-SCHEDULE';
+    createRunningWork(controllerHome, { workId });
+    const binding = bindReleasedChatgptController(controllerHome, workId);
+    const prepared = prepareControllerRoundOccurrence(store, {
+      occurrenceId: 'original-controller-round-occurrence',
+      workId,
+      controllerBindingId: binding.bindingId,
+    });
+    finishControllerRoundRelayDispatch(store, { workId, ok: true });
+    const identity = {
+      controllerId: 'controller-a',
+      controllerType: 'chatgpt' as const,
+      principalId: 'controller-a',
+      controllerInstanceId: 'runtime-a',
+    };
+    const session = claimControllerSession(store, {
+      workId,
+      ...identity,
+      sessionId: `session-${workId}`,
+      leaseMs: 60_000,
+    });
+    acknowledgeControllerRoundClaim(store, { workId, session });
+    submitControllerRoundDisposition(store, {
+      workId,
+      relayScopeId: prepared.relay.relayScopeId,
+      identity: { ...identity, sessionId: session.sessionId },
+      disposition: 'continue_immediately',
+    });
+    releaseControllerSession(store, workId, identity.controllerId);
+
+    const enrollments = { count: 0 };
+    const result = await reconcileControllerProgression({
+      controllerHome,
+      repoId: 'repo-a',
+      repoRoot: controllerHome,
+    }, {
+      occurrenceId: 'new-schedule-occurrence',
+      workId,
+      scheduleName: 'manual continuation',
+    }, {
+      ensureSupervisorEnrollment: enrollmentDependencies(enrollments).ensureSupervisorEnrollment,
+    });
+
+    expect(result.status).toBe('chatgpt_enrolled');
+    expect(enrollments.count).toBe(1);
+    expect(getControllerRoundRelay(store, workId)).toMatchObject({
+      status: 'dispatching',
+      occurrenceId: 'original-controller-round-occurrence',
+    });
   });
 
   test('re-enrolls Supervisor for an abandoned claimed round without rewriting lower round state', async () => {

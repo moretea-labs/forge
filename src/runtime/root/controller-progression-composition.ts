@@ -1,4 +1,5 @@
 import {
+  beginControllerRoundRelayAfterRelease,
   controllerRoundBlockerClass,
   getControllerRoundRelay,
   getControllerWorkBinding,
@@ -110,7 +111,20 @@ export async function reconcileControllerProgression(
 
   if (retainedSession.controllerType === 'chatgpt') {
     const ensureSupervisorEnrollment = dependencies.ensureSupervisorEnrollment ?? ensureWorkflowSupervisorEnrollmentForWork;
-    const existingRound = getControllerRoundRelay(store, input.workId);
+    let existingRound = getControllerRoundRelay(store, input.workId);
+    let controllerRoundOccurrenceId = input.occurrenceId;
+    if (existingRound?.status === 'pending_release') {
+      // The semantic turn already chose continue_immediately. Once its exact
+      // ControllerSession lease has been released, reopen that same durable
+      // ControllerRound for dispatch before reserving another Supervisor effect.
+      // Schedule occurrence ids are trigger evidence, not a replacement
+      // ControllerRound identity for an already-open continuation chain.
+      existingRound = beginControllerRoundRelayAfterRelease(store, {
+        workId: input.workId,
+        releasedSession: retainedSession,
+      }) ?? getControllerRoundRelay(store, input.workId);
+      controllerRoundOccurrenceId = existingRound?.occurrenceId?.trim() || controllerRoundOccurrenceId;
+    }
     if (existingRound?.status === 'blocked'
       && controllerRoundBlockerClass(existingRound) === 'provider_dispatch_outcome_unknown') {
       const supervisorEnrollment = await ensureSupervisorEnrollment(store, input.workId);
@@ -125,7 +139,7 @@ export async function reconcileControllerProgression(
 
     const prepareOccurrence = dependencies.prepareOccurrence ?? prepareControllerRoundOccurrence;
     const prepared = prepareOccurrence(store, {
-      occurrenceId: input.occurrenceId,
+      occurrenceId: controllerRoundOccurrenceId,
       workId: input.workId,
       controllerBindingId: binding.bindingId,
       relayScopeId: input.relayScopeId,
