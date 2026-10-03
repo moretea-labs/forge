@@ -1250,9 +1250,11 @@ requireText('adapters/computer/chrome-extension/background.js', 'chrome.runtime.
 forbid('adapters/computer/chrome-extension/background.js', /browser_begin_effect|browser_observe_effect|browser_poll|browser_tasks|browser_observe_assistant|task_register|reserve_enrollment/, 'Computer Chrome provider must not consume or mutate Workflow Supervisor effect authority; it executes only typed Computer target commands');
 requireText('adapters/computer/chrome-extension/content.js', 'ForgeComputerChatgptCore');
 requireMissing('supervisor/chrome-extension');
+requireText('src/runtime/plugins/browser-adapter.ts', "browserMode: browserMode(raw.browserMode) ?? 'managed_persistent'");
+requireText('src/runtime/plugins/browser-adapter.ts', "nativeAttachMode: browserNativeAttachMode(raw.nativeAttachMode) ?? 'disabled'");
 requireText('supervisor/native-messaging/host.ts', 'ALLOWED_BROWSER_METHODS');
 requireText('supervisor/native-messaging/host.ts', 'computer_extension_claim');
-forbid('supervisor/native-messaging/host.ts', /['"](?:browser_tasks|browser_poll|browser_begin_effect|browser_observe_effect|browser_observe_assistant)['"]/, 'Chrome Native Messaging transport must not expose Workflow Supervisor effect RPCs; extension traffic terminates at Computer target commands');
+forbid('supervisor/native-messaging/host.ts', /['"](?:browser_tasks|browser_poll|browser_begin_effect|browser_observe_effect|browser_observe_dispatch_failure|browser_observe_provider_turn|browser_observe_assistant|bootstrap_poll|bootstrap_project_url|bootstrap_begin_effect|bootstrap_observe_effect|bootstrap_bind_conversation)['"]/, 'Chrome Native Messaging transport must not expose Workflow Supervisor effect RPCs; extension traffic terminates at Computer target commands');
 requireText('supervisor/store.ts', 'recordEffectNotAppliedProof');
 requireText('supervisor/store.ts', '`effect-dispatch:${effectId}:${generation}`');
 requireText('supervisor/control-plane.ts', 'PERSISTED_BROWSER_EVIDENCE_KEYS');
