@@ -80,6 +80,8 @@ export interface WorkflowSupervisorValidators {
   userBlockerPolicy(task: WorkflowSupervisorTask, proposal: WorkflowSupervisorProposal): Promise<WorkflowContractValidation>;
 }
 export interface WorkflowSupervisorLifecycleHooks {
+  /** Resolve the current canonical Work objective at prompt generation time. */
+  canonicalObjectiveForTask?(task: WorkflowSupervisorTask): string | undefined;
   /** Derived project identity used only for browser discovery; never a lifecycle authority. */
   projectScopeForTask?(task: WorkflowSupervisorTask): WorkflowSupervisorProjectScope | undefined;
   /** Build the one bounded enrollment task for a newly discovered project conversation. */

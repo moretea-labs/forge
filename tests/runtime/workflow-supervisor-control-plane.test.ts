@@ -89,6 +89,47 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     store.close();
   });
 
+  test('refreshes the canonical objective for each newly rendered Supervisor effect', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-canonical-objective-'));
+    roots.push(root);
+    const store = new WorkflowSupervisorStore(root);
+    let canonicalObjective = 'Current canonical objective v1.';
+    const control = new WorkflowSupervisorControlPlane(store, {
+      completionContract: async () => ({ valid: true, reason: 'ok' }),
+      userBlockerPolicy: async () => ({ valid: true, reason: 'ok' }),
+    }, {
+      canonicalObjectiveForTask: () => canonicalObjective,
+    });
+    const conversationId = '33333333-4444-5555-6666-777777777777';
+    control.registerTask({
+      taskId: 'canonical-objective-refresh',
+      conversationId,
+      conversationUrl: `https://chatgpt.com/c/${conversationId}`,
+      objective: 'Stale registration objective.',
+      completionContract: {},
+      continuationPolicy: {},
+      userBlockerPolicy: {},
+    });
+
+    const enrollment = control.reserveEnrollment('canonical-objective-refresh');
+    expect(control.getTask('canonical-objective-refresh')?.objective).toBe('Stale registration objective.');
+    expect(enrollment.prompt).toContain('Current canonical objective v1.');
+    expect(enrollment.prompt).not.toContain('Stale registration objective.');
+    control.observeEffect({ effectId: enrollment.effectId, observationId: 'canonical-objective-applied', outcome: 'applied' });
+
+    canonicalObjective = 'Current canonical objective v2.';
+    const recovery = control.recoverTask({
+      taskId: 'canonical-objective-refresh',
+      sourceEffectId: enrollment.effectId,
+      requestId: 'canonical-objective-recovery',
+      reason: 'Verify prompt refresh after the canonical Work objective changes.',
+    }).recoveryEffect;
+    expect(recovery.prompt).toContain('Current canonical objective v2.');
+    expect(recovery.prompt).not.toContain('Current canonical objective v1.');
+    expect(recovery.prompt).not.toContain('Stale registration objective.');
+    store.close();
+  });
+
   test('derives standalone project scope from Supervisor-owned Controller Home', () => {
     const fx = fixture();
     const supervisorStore = new WorkflowSupervisorStore(join(fx.root, 'standalone-project-scope'));

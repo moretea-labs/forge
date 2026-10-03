@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { parseChatgptConversationIdentity } from './chatgpt-conversation';
 import { parseSupervisorCompletion, renderEffectMarker, renderSupervisorPrompt, sha256, validateEffectId } from './protocol';
 import { WorkflowSupervisorStore } from './store';
-import type { WorkflowAssistantObservation, WorkflowAssistantObservationResult, WorkflowContractValidation, WorkflowSupervisorAutomationStatus, WorkflowSupervisorBrowserPollResult, WorkflowSupervisorBrowserTask, WorkflowSupervisorCompletion, WorkflowSupervisorDiscoveredConversation, WorkflowSupervisorEffect, WorkflowSupervisorLifecycleHooks, WorkflowSupervisorProjectScope, WorkflowSupervisorTask, WorkflowSupervisorTaskInput, WorkflowSupervisorValidators } from './types';
+import type { WorkflowAssistantObservation, WorkflowAssistantObservationResult, WorkflowContractValidation, WorkflowEffectKind, WorkflowSupervisorAutomationStatus, WorkflowSupervisorBrowserPollResult, WorkflowSupervisorBrowserTask, WorkflowSupervisorCompletion, WorkflowSupervisorDiscoveredConversation, WorkflowSupervisorEffect, WorkflowSupervisorLifecycleHooks, WorkflowSupervisorProjectScope, WorkflowSupervisorTask, WorkflowSupervisorTaskInput, WorkflowSupervisorValidators } from './types';
 
 function compactProjectIdentity(value: string): string {
   return value.normalize('NFKC').toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
@@ -78,7 +78,7 @@ export class WorkflowSupervisorControlPlane {
     const source = this.store.latestAppliedLeafEffectWithoutCompletion(task.taskId);
     if (source?.effectId !== input.sourceEffectId) throw new Error('WORKFLOW_SUPERVISOR_RECOVERY_SOURCE_CHANGED');
     const id = stableEffectId(origin);
-    const prompt = renderSupervisorPrompt(task, id, 'recovery', undefined,
+    const prompt = this.renderPrompt(task, id, 'recovery', undefined,
       `The user explicitly requested recovery (${input.requestId}): ${input.reason}. Preserve the prior applied effect and all completed source work; read durable state and continue this same task. This is one operator-authorized recovery, not a reset of automatic recovery or dispatch budgets.`);
     return { recoveryEffect: this.store.reserveOperatorRecovery({ ...input, effectId: id, prompt }) };
   }
@@ -108,7 +108,7 @@ export class WorkflowSupervisorControlPlane {
         if (existing.kind !== 'enrollment') throw new Error(`WORKFLOW_SUPERVISOR_EFFECT_KIND_CONFLICT:${originKey}`);
         effect = existing;
       } else {
-        effect = this.store.reserveEffect({ taskId, effectId: id, kind: 'enrollment', originKey, prompt: renderSupervisorPrompt(task, id, 'enrollment') });
+        effect = this.store.reserveEffect({ taskId, effectId: id, kind: 'enrollment', originKey, prompt: this.renderPrompt(task, id, 'enrollment') });
       }
     }
     const inheritedDispatch = this.hooks.inheritedEffectDispatch?.(task, effect);
@@ -395,7 +395,7 @@ export class WorkflowSupervisorControlPlane {
       providerFailureCode,
       observedAtMs: input.observedAtMs,
       graceMs: input.graceMs,
-      recovery: { effectId: recoveryId, prompt: renderSupervisorPrompt(task, recoveryId, 'recovery', undefined, recoveryReason) },
+      recovery: { effectId: recoveryId, prompt: this.renderPrompt(task, recoveryId, 'recovery', undefined, recoveryReason) },
     });
   }
   async browserObserveAssistant(input: { conversationId: string; conversationUrl: string; responseText: string }): Promise<WorkflowAssistantObservationResult> {
@@ -468,7 +468,7 @@ export class WorkflowSupervisorControlPlane {
     const validation = await validator(task, parsed.proposal);
     const correctionId = validation.valid ? undefined : stableEffectId(`completion:${completionFingerprint}`);
     const resolved = this.store.resolveTerminal({ completionFingerprint, taskId: task.taskId, action: parsed.proposal.action, accepted: validation.valid, reason: validation.reason,
-      ...(correctionId ? { correction: { effectId: correctionId, prompt: renderSupervisorPrompt(task, correctionId, 'correction', parsed.proposal.reason === 'compact_receipt' ? undefined : parsed.proposal.checkpoint, validation.reason) } } : {}) });
+      ...(correctionId ? { correction: { effectId: correctionId, prompt: this.renderPrompt(task, correctionId, 'correction', parsed.proposal.reason === 'compact_receipt' ? undefined : parsed.proposal.checkpoint, validation.reason) } } : {}) });
     return { action: parsed.proposal.action, completionFingerprint, terminal: validation.valid, ...(resolved.successorEffect ? { successorEffect: resolved.successorEffect } : {}), validation, deduplicated: committed.deduplicated || resolved.deduplicated };
   }
 
@@ -532,7 +532,7 @@ export class WorkflowSupervisorControlPlane {
     const correctionId = validation.valid ? undefined : stableEffectId(`completion:${completionFingerprint}`);
     const resolved = this.store.resolveTerminal({
       completionFingerprint, taskId: task.taskId, action: proposal.action, accepted: validation.valid, reason: validation.reason,
-      ...(correctionId ? { correction: { effectId: correctionId, prompt: renderSupervisorPrompt(task, correctionId, 'correction', proposal.checkpoint, validation.reason) } } : {}),
+      ...(correctionId ? { correction: { effectId: correctionId, prompt: this.renderPrompt(task, correctionId, 'correction', proposal.checkpoint, validation.reason) } } : {}),
     });
     return { action: proposal.action, completionFingerprint, terminal: validation.valid, ...(resolved.successorEffect ? { successorEffect: resolved.successorEffect } : {}), validation, deduplicated: committed.deduplicated || resolved.deduplicated };
   }
@@ -544,8 +544,21 @@ export class WorkflowSupervisorControlPlane {
     return this.store.commitCompletion(completion, {
       effectId: nextId,
       kind: 'continuation',
-      prompt: renderSupervisorPrompt(task, nextId, 'continuation', checkpoint),
+      prompt: this.renderPrompt(task, nextId, 'continuation', checkpoint),
     });
+  }
+
+  private renderPrompt(
+    task: WorkflowSupervisorTask,
+    effectId: string,
+    kind: WorkflowEffectKind,
+    checkpoint?: string,
+    correctionReason?: string,
+    lowerLayerContext?: string,
+  ): string {
+    const canonicalObjective = this.hooks.canonicalObjectiveForTask?.(task)?.trim();
+    const promptTask = canonicalObjective ? { ...task, objective: canonicalObjective } : task;
+    return renderSupervisorPrompt(promptTask, effectId, kind, checkpoint, correctionReason, lowerLayerContext);
   }
 
   private browserTaskActive(task: WorkflowSupervisorTask): boolean { return this.hooks.browserTaskActive?.(task) ?? true; }

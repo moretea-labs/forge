@@ -176,6 +176,15 @@ function createForgeWorkflowSupervisorBrowserTaskActive(controllerHome: string):
 export function forgeWorkflowSupervisorLifecycleHooks(controllerHome: string): WorkflowSupervisorLifecycleHooks {
   const browserTaskActive = createForgeWorkflowSupervisorBrowserTaskActive(controllerHome);
   return {
+    canonicalObjectiveForTask: (task) => {
+      const repoId = workflowSupervisorContractText(task, 'repo_id');
+      const workId = repoId ? workflowSupervisorOriginWorkId(task, repoId) : undefined;
+      const taskControllerHome = workflowSupervisorContractText(task, 'controller_home');
+      if (!repoId || !workId || (taskControllerHome && taskControllerHome !== controllerHome)) return undefined;
+      const work = getWorkContract({ controllerHome, repoId }, workId);
+      if (!work) throw new Error(`WORKFLOW_SUPERVISOR_CANONICAL_WORK_NOT_FOUND:${workId}`);
+      return work.objective;
+    },
     effectDispatchEvidence: () => {
       const claim = getRuntimeWriteClaim();
       return claim && !claim.unmanaged
