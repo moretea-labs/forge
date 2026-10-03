@@ -141,10 +141,18 @@ function objective(task: WorkflowSupervisorTask): string {
   return JSON.stringify(task.objective.slice(0, 8_000));
 }
 
+const SUPERVISOR_RESPONSE_FORMAT = [
+  '本轮直接完成当前最小步骤；不要只计划、汇报或等待。',
+  '响应格式：',
+  '结果：<本轮实际完成或明确阻塞>',
+  '证据：<修改路径、检查结果、提交或发布回执；无则写“无”>',
+  '下一步：<立即继续的最小步骤>',
+] as const;
+
 export function renderSupervisorPrompt(
   task: WorkflowSupervisorTask,
   effectId: string,
-  _kind: WorkflowEffectKind,
+  kind: WorkflowEffectKind,
   _checkpoint?: string,
   _correctionReason?: string,
   _lowerLayerContext?: string,
@@ -159,9 +167,8 @@ export function renderSupervisorPrompt(
   return [
     '@forge',
     renderEffectMarker(effectId),
-    `目标：${objective(task)}`,
-    '继续推进：直接完成当前最小步骤并给出可验证结果；不要只计划、汇报或选择等待。',
-    '未 done/needs_user 时，本轮结束即以 continue 回执，Supervisor 会自动派发下一轮。',
+    ...(kind === 'enrollment' ? [`目标：${objective(task)}`, '开始。'] : ['继续。']),
+    ...SUPERVISOR_RESPONSE_FORMAT,
     `有结果后，或确有外部决策阻塞时，调用 rh_work with exactly ${receipt}. Use "continue" until the objective is complete ("done") or needs a user decision ("needs_user"). Add no other fields.`,
     ...(repoId ? [`Repository context: repo_id=${JSON.stringify(repoId)}${checkoutId ? `, checkout_id=${JSON.stringify(checkoutId)}` : ''}.`] : []),
     'Do not use plain-text C/D/U or a Supervisor JSON block as the completion receipt.',
