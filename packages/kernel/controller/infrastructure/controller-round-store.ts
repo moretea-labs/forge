@@ -24,7 +24,7 @@ import {
   type ControllerSessionClaimInput,
 } from './controller-session-store';
 import { getHandoffItem, listHandoffItems } from '../../../../src/runtime/control-plane/facade/handoff-inbox-store';
-import { currentTaskLineageWorkIds, getWorkContract, readActiveWorkCandidates, readWorkContractStore, semanticWorkState, type WorkContract } from '../../work/api/index';
+import { currentTaskLineageWorkIds, getWorkContract, readActiveWorkCandidates, readWorkContractLineageSnapshot, readWorkContractStore, semanticWorkState, type WorkContract } from '../../work/api/index';
 import { isTerminalHandoffStatus } from '../../../protocols/handoff/index';
 import type { ControllerSession, ControllerType } from '../domain/types';
 import { deriveClosedRoundQualitySignals, type AssistantContextSnapshot, type AssistantContextUsage, type ClosedRoundObservation, type ExecutionQualityAdjustmentResult, type ExecutionQualityDecision, type ExecutionQualitySignal } from '../domain/execution-quality';
@@ -378,10 +378,28 @@ function requirementForRelay(options: ControllerRoundRelayStoreOptions, requirem
 function relevantWork(
   options: ControllerRoundRelayStoreOptions,
   record: Pick<ControllerRoundRelayRecord, 'relayScopeId' | 'originWorkId' | 'requirementId'>,
-  allWorkContracts: readonly WorkContract[] = readWorkContractStore({ controllerHome: options.controllerHome, repoId: options.repoId }).contracts,
+  allWorkContracts?: readonly WorkContract[],
 ): WorkContract[] {
-  const all = allWorkContracts;
-  const linkedWorkIds = currentTaskLineageWorkIds([record.originWorkId], all);
+  const snapshot = allWorkContracts ? undefined : readWorkContractLineageSnapshot({
+    controllerHome: options.controllerHome,
+    repoId: options.repoId,
+  });
+  const all = allWorkContracts ?? snapshot!.contracts;
+  const invalid = snapshot?.invalid ?? [];
+  const candidates = invalid.length === 0
+    ? all
+    : [...all, ...invalid.map((work) => ({
+      workId: work.workId,
+      parentWorkId: work.parentWorkId,
+      predecessorWorkId: work.predecessorWorkId,
+      supersedes: work.supersedes,
+      supersededBy: work.supersededBy,
+    } as WorkContract))];
+  const linkedWorkIds = currentTaskLineageWorkIds([record.originWorkId], candidates);
+  const relatedInvalid = invalid.find((work) => linkedWorkIds.has(work.workId));
+  if (relatedInvalid) {
+    throw new Error(`WORK_LINEAGE_CONTRACT_INVALID: ${relatedInvalid.workId}: ${relatedInvalid.error}`);
+  }
   return all
     .filter((work) => linkedWorkIds.has(work.workId))
     .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));

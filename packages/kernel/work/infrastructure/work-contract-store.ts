@@ -102,6 +102,18 @@ export interface ActiveWorkCandidateSnapshot {
   invalid: InvalidActiveWorkCandidate[];
 }
 
+export interface WorkContractLineageSnapshot {
+  contracts: WorkContract[];
+  invalid: Array<{
+    workId: string;
+    parentWorkId?: string;
+    predecessorWorkId?: string;
+    supersedes: string[];
+    supersededBy?: string;
+    error: string;
+  }>;
+}
+
 export interface WorkSemanticRevisionRecord extends WorkSemanticView {
   schemaVersion: 1;
   recordedAt: string;
@@ -529,6 +541,62 @@ export function readWorkContractStore(options: WorkContractStoreOptions): WorkCo
     });
   }
   return normalized;
+}
+
+/**
+ * Read valid Work rows without allowing an unrelated corrupt historical row to
+ * poison a lineage-scoped ControllerRound projection. Invalid rows retain only
+ * their identity and explicit lineage references so callers can fail closed if
+ * the malformed row may belong to the requested lineage.
+ */
+export function readWorkContractLineageSnapshot(options: WorkContractStoreOptions): WorkContractLineageSnapshot {
+  if (!sqliteBacked(options)) {
+    const store = readJsonFile<WorkContractStore>(workContractStorePath(options), emptyWorkContractStore(nowIso(options)));
+    const contracts: WorkContract[] = [];
+    const invalid: WorkContractLineageSnapshot['invalid'] = [];
+    for (const raw of store.contracts) {
+      try {
+        contracts.push(canonicalizeStoredWorkContract(raw));
+      } catch (error) {
+        invalid.push(lineageInvalidWork(raw, error));
+      }
+    }
+    return { contracts, invalid };
+  }
+
+  const records = listControlPlaneRecords<WorkContract>(options.controllerHome, {
+    namespace: 'work_contract',
+    scope: workContractStoreScopeKey(options),
+    limit: 5_000,
+  });
+  if (records.length === 0) return { contracts: readWorkContractStore(options).contracts, invalid: [] };
+
+  const contracts: WorkContract[] = [];
+  const invalid: WorkContractLineageSnapshot['invalid'] = [];
+  for (const record of records) {
+    try {
+      contracts.push(canonicalizeStoredWorkContract(record.value));
+    } catch (error) {
+      invalid.push(lineageInvalidWork(record.value, error, record.key));
+    }
+  }
+  return { contracts, invalid };
+}
+
+function lineageInvalidWork(
+  raw: WorkContract,
+  error: unknown,
+  recordKey?: string,
+): WorkContractLineageSnapshot['invalid'][number] {
+  const clean = (id: unknown): string | undefined => typeof id === 'string' && id.trim() ? id.trim() : undefined;
+  return {
+    workId: clean(raw.workId) ?? recordKey ?? '',
+    ...(clean(raw.parentWorkId) ? { parentWorkId: clean(raw.parentWorkId) } : {}),
+    ...(clean(raw.predecessorWorkId) ? { predecessorWorkId: clean(raw.predecessorWorkId) } : {}),
+    supersedes: Array.isArray(raw.supersedes) ? raw.supersedes.map(clean).filter((id): id is string => Boolean(id)) : [],
+    ...(clean(raw.supersededBy) ? { supersededBy: clean(raw.supersededBy) } : {}),
+    error: error instanceof Error ? error.message : String(error),
+  };
 }
 
 export function writeWorkContractStore(options: WorkContractStoreOptions, store: WorkContractStore): WorkContractStore {

@@ -11,7 +11,7 @@ import {
 import {
   currentTaskSemanticProjectionForWork,
   getWorkContract,
-  listWorkContracts,
+  readActiveWorkCandidates,
   semanticWorkState,
   workSemanticView,
 } from '../../../../packages/kernel/work/api/index';
@@ -94,16 +94,25 @@ export async function runSchedulerAutonomousContinuationReconciliation(input: {
   for (const repository of input.repositories) {
     if (materialized >= maxContinuations) break;
     const store = { controllerHome: input.controllerHome, repoId: repository.repoId };
-    let works: ReturnType<typeof listWorkContracts>;
+    let works: ReturnType<typeof readActiveWorkCandidates>['contracts'];
     try {
-      const candidates = new Map(listWorkContracts({ ...store, state: 'active', limit: 100 })
-        .map((work) => [work.workId, work]));
+      const active = readActiveWorkCandidates({ ...store, limit: 100 });
+      const candidates = new Map(active.contracts.map((work) => [work.workId, work]));
+      for (const invalid of active.invalid) {
+        skip(skippedByReason, 'invalid_work_contract');
+        console.error('[forge liveness] skipped invalid Work authority ' + repository.repoId + '/' + invalid.workId + ': ' + invalid.error);
+      }
       // Semantic Work authority is Forge-scoped; the repository list is only
       // an execution projection. Existing relay references must use the same
       // canonical lookup as launcher admission, never infer deletion from a list.
       for (const relay of listCurrentControllerRoundRelays(store, 100)) {
-        const work = getWorkContract(store, relay.originWorkId);
-        if (work) candidates.set(work.workId, work);
+        try {
+          const work = getWorkContract(store, relay.originWorkId);
+          if (work) candidates.set(work.workId, work);
+        } catch (error) {
+          skip(skippedByReason, 'invalid_relay_work_contract');
+          console.error('[forge liveness] skipped invalid relay Work authority ' + repository.repoId + '/' + relay.originWorkId + ':', error);
+        }
       }
       works = [...candidates.values()];
     } catch (error) {

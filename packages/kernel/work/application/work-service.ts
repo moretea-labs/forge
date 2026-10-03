@@ -79,6 +79,7 @@ export {
   acceptSubmittedWorkContract,
   listWorkContracts,
   readActiveWorkCandidates,
+  readWorkContractLineageSnapshot,
   initializeWorkCandidateIndex,
   isCurrentWorkContract,
   supersedeWorkContract,
@@ -110,6 +111,7 @@ export type {
   ListWorkContractOptions,
   InvalidActiveWorkCandidate,
   ActiveWorkCandidateSnapshot,
+  WorkContractLineageSnapshot,
   SupersedeWorkContractInput,
   WorkContractSummary,
   WorkSemanticRevisionRecord,
@@ -119,4 +121,3 @@ export type {
   WorkContractStoreOptions,
   WorkContractMetadataPatch,
 } from '../infrastructure/work-contract-store';
-

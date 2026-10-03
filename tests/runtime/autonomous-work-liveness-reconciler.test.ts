@@ -16,7 +16,7 @@ import {
   releaseControllerSession,
   submitControllerRoundDisposition,
 } from '../../packages/kernel/controller/api/index';
-import { cancelWorkContract, createWorkContract, createWorkSemanticContext, getWorkContract, listWorkContracts } from '../../packages/kernel/work/api/index';
+import { cancelWorkContract, createWorkContract, createWorkSemanticContext, getWorkContract, listWorkContracts, type WorkContract } from '../../packages/kernel/work/api/index';
 import { upsertChatgptControllerBinding } from '../../adapters/chatgpt/controller-binding-store';
 import { createRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
 import {
@@ -25,6 +25,7 @@ import {
 } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import { runSchedulerAutonomousContinuationReconciliation } from '../../src/runtime/control-plane/global-scheduler/autonomous-continuation';
 import { reconcileControllerProgression } from '../../src/runtime/root/controller-progression-composition';
+import { readControlPlaneRecord, writeControlPlaneRecord } from '../../src/runtime/control-plane/persistence/sqlite-store';
 
 const roots: string[] = [];
 afterEach(() => {
@@ -661,6 +662,45 @@ describe('autonomous Work liveness reconciliation', () => {
       roundCount: 2,
       blockedReason: 'round_budget_exhausted:2>1',
     });
+  });
+
+  test('isolates an invalid historical Work row without blocking valid autonomous continuation', async () => {
+    const controllerHome = home();
+    const store = { controllerHome, repoId: 'repo-a' };
+    const validWorkId = 'WORK-VALID-BESIDE-INVALID-HISTORY';
+    const invalidWorkId = 'WORK-INVALID-HISTORICAL-ROW';
+    createRunningWork(controllerHome, { workId: validWorkId });
+    bindReleasedChatgptController(controllerHome, validWorkId);
+    createRunningWork(controllerHome, { workId: invalidWorkId });
+    const invalidRecord = readControlPlaneRecord<WorkContract>(controllerHome, 'work_contract', 'repo-a', invalidWorkId)!;
+    const invalid = structuredClone(invalidRecord.value);
+    invalid.workKind = 'investigation';
+    invalid.completionOutcome = 'completed_changed';
+    // Intentionally persist a structurally invalid historical receipt so the
+    // scanner proves one corrupt legacy Work row cannot poison valid liveness.
+    invalid.completionReceipt = {
+      source: 'repository_change',
+      commit: 'deadbeef',
+      targetRevision: 'deadbeef',
+      changedPaths: ['src/legacy.ts'],
+    } as unknown as WorkContract['completionReceipt'];
+    writeControlPlaneRecord(controllerHome, {
+      namespace: 'work_contract', scope: 'repo-a', key: invalidWorkId, schemaVersion: 4,
+      value: invalid, action: 'fixture_invalid_historical_work', expectedRevision: invalidRecord.revision,
+    });
+
+    const enrollments = { count: 0 };
+    const result = await runSchedulerAutonomousContinuationReconciliation({
+      controllerHome,
+      nowMs: Date.parse('2026-10-03T00:00:00.000Z'),
+      repositories: [{ repoId: 'repo-a', canonicalRoot: controllerHome, localRoot: controllerHome }],
+      dependencies: enrollmentDependencies(enrollments),
+    });
+
+    expect(result).toMatchObject({ eligible: 1, supervisorEnrolled: 1, failed: 0 });
+    expect(result.skippedByReason.invalid_work_contract).toBe(1);
+    expect(enrollments.count).toBe(1);
+    expect(getControllerRoundRelay(store, validWorkId)?.status).toBe('dispatching');
   });
 
   test('does not dispatch while a live Controller still owns the Work', async () => {
