@@ -2074,7 +2074,11 @@ test('automation tool receipt successor begins from the real assistant page base
 
   // A tool-only completed turn can leave the last rendered role as user.
   // Exercise the actual consumer, including its exact owned resource lifetime.
-  let submittedText = sourceEffect.prompt;
+  // ChatGPT can compact an automated prompt to ordinary visible prose after
+  // recording its local tool receipt. The successor must still begin because
+  // the durable automation receipt is the causal anchor, not a retained DOM
+  // marker for the prior prompt.
+  let submittedText = '继续。';
   let owner = `forge-workflow-supervisor:created:${conversationId}`;
   let generating = true;
   let closeCount = 0;
