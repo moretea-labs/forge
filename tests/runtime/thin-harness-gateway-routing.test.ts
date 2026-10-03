@@ -1421,7 +1421,7 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
 });
 
 describe('work_validate persisted semantic identity', () => {
-  test('work_prepare reconciles a clean canonical checkout successor HEAD for the same Work', async () => {
+  test('work_prepare auto isolates a clean canonical checkout and keeps its start base frozen', async () => {
     const fx = fixture();
     roots.push(fx.root);
 
@@ -1431,38 +1431,68 @@ describe('work_validate persisted semantic identity', () => {
     const prepared = await callExecutionTool(fx.ctx, 'work_prepare', {
       session_id: session.sessionId,
       repo_id: fx.repository.repoId,
-      request_id: 'prepare-canonical-successor-head',
-      objective: 'Continue one Work across an accepted canonical source advancement.',
-      acceptance_criteria: ['A clean allowed-path descendant HEAD is reconciled without replacing the Work.'],
-      allowed_paths: ['src/**'],
+      request_id: 'prepare-auto-frozen-base',
+      objective: 'Keep repository Work isolated until delivery.',
+      acceptance_criteria: ['Canonical target movement does not change the Work base during implementation.'],
+      checks: [],
+      isolation: 'auto',
+    });
+    expect(prepared?.isError).not.toBe(true);
+    const work = (prepared?.structuredContent as {
+      work: { workId: string; checkoutId: string; managedWorktree: boolean; baseCommit: string; deliveryBaseCommit: string; expectedHead: string };
+    }).work;
+    expect(work.managedWorktree).toBe(true);
+    expect(work.checkoutId).not.toBe(fx.repository.activeCheckoutId);
+    const frozen = { baseCommit: work.baseCommit, deliveryBaseCommit: work.deliveryBaseCommit, expectedHead: work.expectedHead };
+
+    writeFileSync(join(fx.repoRoot, 'src/lib.ts'), 'export const n = 2;\n');
+    git(fx.repoRoot, ['add', 'src/lib.ts']);
+    git(fx.repoRoot, ['commit', '-m', 'advance canonical while Work is isolated']);
+
+    const continued = await callExecutionTool(fx.ctx, 'work_prepare', {
+      session_id: session.sessionId,
+      repo_id: fx.repository.repoId,
+      work_id: work.workId,
+    });
+    expect(continued?.isError).not.toBe(true);
+    expect(continued?.structuredContent).toMatchObject({
+      work: { workId: work.workId, managedWorktree: true, ...frozen },
+      reused: true,
+    });
+  });
+
+  test('explicit reuse rejects external HEAD drift instead of adopting a new implementation baseline', async () => {
+    const fx = fixture();
+    roots.push(fx.root);
+
+    const started = await callExecutionTool(fx.ctx, 'session_start', {});
+    expect(started?.isError).not.toBe(true);
+    const session = (started?.structuredContent as { session: { sessionId: string } }).session;
+    const prepared = await callExecutionTool(fx.ctx, 'work_prepare', {
+      session_id: session.sessionId,
+      repo_id: fx.repository.repoId,
+      request_id: 'prepare-reuse-frozen-base',
+      objective: 'Use the canonical checkout only as an explicit model choice.',
+      acceptance_criteria: ['External HEAD drift requires a new model decision instead of automatic adoption.'],
       checks: [],
       isolation: 'reuse',
     });
     expect(prepared?.isError).not.toBe(true);
     const work = (prepared?.structuredContent as { work: { workId: string; expectedHead: string } }).work;
-    const originalWorkId = work.workId;
-    const previousHead = work.expectedHead;
 
     writeFileSync(join(fx.repoRoot, 'src/lib.ts'), 'export const n = 2;\n');
     git(fx.repoRoot, ['add', 'src/lib.ts']);
-    git(fx.repoRoot, ['commit', '-m', 'accepted canonical source advancement']);
-    const candidateHead = spawnSync('git', ['-C', fx.repoRoot, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
+    git(fx.repoRoot, ['commit', '-m', 'external canonical advancement']);
 
     const continued = await callExecutionTool(fx.ctx, 'work_prepare', {
       session_id: session.sessionId,
       repo_id: fx.repository.repoId,
       checkout_id: fx.repository.activeCheckoutId,
-      work_id: originalWorkId,
+      work_id: work.workId,
     });
-    expect(continued?.isError).not.toBe(true);
-    expect(continued?.structuredContent).toMatchObject({
-      work: { workId: originalWorkId, expectedHead: candidateHead, managedWorktree: false },
-      reused: true,
-      adopted: true,
-      adoption: { previousHead, candidateHead, changedPaths: ['src/lib.ts'] },
-    });
-    expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, originalWorkId)?.workId)
-      .toBe(originalWorkId);
+    expect(continued?.isError).toBe(true);
+    expect(JSON.stringify(continued?.structuredContent ?? continued)).toContain('WORK_HANDLE_HEAD_CHANGED');
+    expect(readWorkHandle(fx.controllerHome, fx.repository.repoId, work.workId)?.expectedHead).toBe(work.expectedHead);
   });
 
   test('bounded attach settles a freshly launched short Check in one work_validate call', async () => {

@@ -68,34 +68,14 @@ export function gitHead(root: string): string | undefined {
   return gitRevision(root, 'HEAD');
 }
 
-export function gitCommit(root: string, revision: string, label: string): string {
-  const output = spawnSync('git', ['-C', root, 'rev-parse', '--verify', `${revision}^{commit}`], {
+export function gitIsAncestor(root: string, ancestor: string, descendant: string): boolean {
+  const result = spawnSync('git', ['-C', root, 'merge-base', '--is-ancestor', ancestor, descendant], {
     encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10_000,
   });
-  if (output.status !== 0 || output.error || typeof output.stdout !== 'string' || !output.stdout.trim()) {
-    throw new Error(`WORK_HEAD_ADOPTION_${label}_INVALID: ${revision}`);
+  if (result.error || (result.status !== 0 && result.status !== 1)) {
+    throw new Error(`WORK_GIT_ANCESTRY_UNAVAILABLE: ${ancestor} -> ${descendant}`);
   }
-  return output.stdout.trim();
-}
-
-export function gitChangedPaths(root: string, previousHead: string, candidateHead: string): string[] {
-  const output = spawnSync('git', ['-C', root, 'diff', '--name-only', '-z', previousHead, candidateHead], {
-    encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10_000, maxBuffer: 8 * 1024 * 1024,
-  });
-  if (output.status !== 0 || output.error || typeof output.stdout !== 'string') {
-    throw new Error('WORK_HEAD_ADOPTION_CHANGED_PATHS_UNAVAILABLE');
-  }
-  return [...new Set(output.stdout.split('\0').filter(Boolean))].sort((left, right) => left.localeCompare(right));
-}
-
-export function gitMergeBase(root: string, leftHead: string, rightHead: string): string {
-  const output = spawnSync('git', ['-C', root, 'merge-base', leftHead, rightHead], {
-    encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10_000,
-  });
-  if (output.status !== 0 || output.error || typeof output.stdout !== 'string' || !output.stdout.trim()) {
-    throw new Error('WORK_HEAD_ADOPTION_SCOPE_BASE_UNAVAILABLE');
-  }
-  return output.stdout.trim();
+  return result.status === 0;
 }
 
 export function selectWorkFinalizationTarget(

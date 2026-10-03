@@ -15,11 +15,11 @@ Treat ChatGPT as the controller and Forge as its repository execution layer. Cha
 
 ### Main checkout and worktree policy
 
-- `main` is the canonical local integration and default development branch. Normal investigation, implementation, review fixes, and focused verification run in the canonical `main` checkout.
-- Do not create a branch or managed worktree merely because work is durable, multi-step, recoverable, or represented by a WorkContract. Work lifecycle and Git workspace topology are separate concerns.
-- Create an isolated worktree only when there is a concrete concurrent-write/dirty-ownership conflict, explicitly parallel independent writers, or a verification/release operation whose correctness requires a frozen isolated source identity. The reason for isolation must be observable in routing/Work evidence.
-- When no such conflict exists, do not set `workspace_mode=isolated`, `require_worktree=true`, or `direct_main_prohibited=true`; prefer the current canonical checkout and serialize writes there.
-- Integrate completed isolated work promptly back to `main` and remove its managed worktree/branch after containment and cleanup are proven. Do not accumulate completed worktrees as standing development environments.
+- `main` is the canonical local integration branch. Bounded Direct Edit/investigation that does not need durable Work normally runs in the canonical checkout.
+- Work lifecycle and Git topology remain separate decisions: Forge never creates durable Work merely to obtain a branch. But once the model explicitly chooses a mutating durable repository Work, `isolation=auto` freezes that Work's start revision in a managed checkout so implementation does not share a moving integration branch.
+- Reusing the canonical checkout for durable repository Work is an explicit model choice (`isolation=reuse`), not the automatic path. If that shared checkout HEAD changes, Forge reports the drift; it must not adopt, rebase, merge, or advance the Work base on the model's behalf.
+- During implementation, a Work may advance only through its own checkout changes/commits. Target-branch advancement is considered at the delivery/finalization boundary, where integration/conflict handling happens once against the completed Work candidate.
+- Integrate completed isolated work promptly back to `main` at that delivery boundary and remove its managed worktree/branch after containment and cleanup are proven. Do not accumulate completed worktrees as standing development environments.
 
 ## Root-Cause-First Learning Discipline
 
