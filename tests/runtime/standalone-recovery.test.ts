@@ -3321,6 +3321,59 @@ describe('standalone recovery on canonical Runtime', () => {
     }
   });
 
+  test('rebinds a stale launchd contract to the current RuntimeReleaseAuthority before restart', async () => {
+    const home = controllerHome();
+    const previousHome = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      runtimeServiceConfig(home);
+      const activeManifest = manifest(home, 'release-current', 'artifact-current');
+      ensureActiveRuntimeRelease(home, activeManifest);
+      const paths = forgeRuntimeServicePaths(home);
+      mkdirSync(dirname(paths.installedPlistPath), { recursive: true });
+      writeFileSync(paths.installedPlistPath, '<plist><string>release-stale</string></plist>');
+      const config = createRecoveryConfig(home, {
+        primaryRuntimeService: { platform: 'launchd', postRestartVerifyTimeoutMs: 10_000 },
+      });
+      let launchdLoaded = true;
+      let readinessProbes = 0;
+      let strictProbes = 0;
+      const commands: string[][] = [];
+      const result = await restartPrimaryRuntime(config, {
+        platform: 'darwin',
+        currentUid: async () => 501,
+        runCommand: async (_command, args) => {
+          commands.push(args);
+          if (args[0] === 'bootout') launchdLoaded = false;
+          if (args[0] === 'bootstrap') launchdLoaded = true;
+          if (args[0] === 'print') return launchdLoaded
+            ? { ok: true, status: 0, stdout: 'loaded', stderr: '' }
+            : { ok: false, status: 3, stdout: '', stderr: 'service not found' };
+          return { ok: true, status: 0, stdout: '', stderr: '' };
+        },
+        runtimeRunning: () => launchdLoaded,
+        repairPrimaryConnectorBinding: async () => ({ ok: true, attempted: false, noOp: true, detail: 'connector already bound' }),
+        verifyLocal: async () => ++strictProbes >= 3
+          ? healthyVerify()
+          : { ...healthyVerify(), ok: false, runtime: { ok: false, running: false, ready: false, stale: false, reasonCodes: ['RUNTIME_UNAVAILABLE'] } },
+        observeLocal: async () => ++readinessProbes >= 2
+          ? healthyVerify()
+          : { ...healthyVerify(), ok: false, runtime: { ok: false, running: false, ready: false, stale: false, reasonCodes: ['RUNTIME_UNAVAILABLE'] } },
+        now: (() => { let value = 0; return () => value += 250; })(),
+        sleep: async () => undefined,
+      });
+      expect(result).toMatchObject({ ok: true, attempted: true });
+      const reboundLaunchContract = readFileSync(paths.installedPlistPath, 'utf8');
+      expect(reboundLaunchContract).toContain(join(home, 'runtime', 'releases', 'release-current', 'manifest.json'));
+      expect(reboundLaunchContract).not.toContain('release-stale');
+      expect(commands.some((args) => args.includes('bootout'))).toBe(true);
+      expect(commands.some((args) => args.includes('kickstart'))).toBe(true);
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+    }
+  });
+
   test('restarts an installed Linux systemd-user primary Runtime and requires whole-Runtime verification', async () => {
     const home = controllerHome();
     const previousHome = process.env.HOME;

@@ -3840,6 +3840,36 @@ export async function restartPrimaryRuntime(
       audit(config, 'primary_runtime_restart_quiescence_failed', { serviceTarget: service.target, detail: stopped.detail });
       return { ok: false, attempted: true, detail: stopped.detail, serviceTarget: service.target, verify: before } satisfies PrimaryRuntimeRestartResult;
     }
+    const activeAuthority = releaseAuthority(config);
+    if (activeAuthority) {
+      const repairConnectorBinding = dependencies.repairPrimaryConnectorBinding
+        ?? ((value: RecoveryConfig) => repairPrimaryConnectorBinding(value, platform));
+      const rebound = await rebindStartAndVerifyPrimaryRuntime({
+        config,
+        service,
+        runCommand,
+        now,
+        wait,
+        verifyLocal,
+        observeLocal,
+        ensureRuntimeLaunchContract: dependencies.ensureRuntimeLaunchContract,
+        contractFailureContext: 'before restart',
+        timeoutMs: configuredPrimaryRuntimeService(config).postRestartVerifyTimeoutMs ?? 30_000,
+        successDetail: 'Canonical Forge Runtime restarted and passed whole-Runtime verification',
+        afterRuntimeReady: async () => {
+          const connector = await repairConnectorBinding(config);
+          return connector.ok
+            ? { ok: true, detail: connector.detail }
+            : { ok: false, detail: `persistent Connector binding failed after Runtime readiness: ${connector.detail}` };
+        },
+      });
+      if (rebound.ok) {
+        audit(config, 'primary_runtime_restart_succeeded', { serviceTarget: service.target, release: rebound.verify.releases.active?.revision, launchContractRebound: true });
+        return { ok: true, attempted: true, detail: rebound.detail, serviceTarget: service.target, verify: rebound.verify } satisfies PrimaryRuntimeRestartResult;
+      }
+      audit(config, 'primary_runtime_restart_unverified', { serviceTarget: service.target, reasonCodes: rebound.verify.runtime.reasonCodes, detail: rebound.detail, launchContractRebound: true });
+      return { ok: false, attempted: true, detail: rebound.detail, serviceTarget: service.target, verify: rebound.verify } satisfies PrimaryRuntimeRestartResult;
+    }
     const started = await ensurePrimaryRuntimeServiceStarted(service, runCommand, 'restart');
     if (!started.ok) {
       audit(config, 'primary_runtime_restart_failed', { serviceTarget: service.target, detail: started.detail });
