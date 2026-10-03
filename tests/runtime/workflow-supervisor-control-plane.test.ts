@@ -495,6 +495,33 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     expect(discovery.currentConversation('chrome-extension')).toBeUndefined();
   });
 
+  test('prefers the fresh ChatGPT extension current observation over a conflicting native foreground observation', () => {
+    const discovery = new WorkflowSupervisorEphemeralDiscovery();
+    const extensionId = '11111111-2222-4333-8444-555555555555';
+    const nativeId = '66666666-7777-4888-8999-aaaaaaaaaaaa';
+    discovery.update([
+      { conversation_id: extensionId, canonical_url: `https://chatgpt.com/c/${extensionId}`, title: 'ChatGPT turn', is_current: true },
+    ], 'chrome-extension');
+    discovery.update([
+      { conversation_id: nativeId, canonical_url: `https://chatgpt.com/c/${nativeId}`, title: 'System foreground', is_current: true },
+    ], 'native-browser');
+
+    expect(discovery.currentConversation()).toEqual({
+      conversationId: extensionId,
+      canonicalUrl: `https://chatgpt.com/c/${extensionId}`,
+      title: 'ChatGPT turn',
+    });
+
+    discovery.update([
+      { conversation_id: extensionId, canonical_url: `https://chatgpt.com/c/${extensionId}`, title: 'ChatGPT turn' },
+    ], 'chrome-extension');
+    expect(discovery.currentConversation()).toEqual({
+      conversationId: nativeId,
+      canonicalUrl: `https://chatgpt.com/c/${nativeId}`,
+      title: 'System foreground',
+    });
+  });
+
   test('refuses to reserve enrollment for a terminal Supervisor task instead of reporting delivery that cannot happen', () => {
     const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-terminal-task-'));
     roots.push(root);

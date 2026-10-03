@@ -200,21 +200,44 @@ export class WorkflowSupervisorEphemeralDiscovery {
   }
   currentConversation(source?: string, maxAgeMs = 90_000): WorkflowSupervisorDiscoveredConversation | undefined {
     const now = Date.now();
-    const sources = source ? [source] : [...this.currentBySource.keys()];
+    const freshCurrent = (candidateSource: string): { conversationId: string; observedAtMs: number } | undefined => {
+      const current = this.currentBySource.get(candidateSource);
+      return current && now - current.observedAtMs <= maxAgeMs ? current : undefined;
+    };
+    const conversationFor = (candidateSource: string, conversationId: string): WorkflowSupervisorDiscoveredConversation | undefined => {
+      const conversation = (this.bySource.get(candidateSource) ?? []).find(entry => entry.conversationId === conversationId);
+      return conversation ? structuredClone(conversation) : undefined;
+    };
+
+    if (source) {
+      const current = freshCurrent(source);
+      return current ? conversationFor(source, current.conversationId) : undefined;
+    }
+
+    // The extension observes the active ChatGPT tab in the user's ChatGPT browser
+    // surface and refreshes on tab/window activity. Native discovery observes the
+    // system-frontmost browser and can legitimately disagree after the user moves
+    // focus while a provider turn is still running. Treating those two observation
+    // semantics as peer votes made exact current-conversation enrollment disappear.
+    // Prefer a fresh extension observation; native/other sources remain the fallback.
+    const extensionCurrent = freshCurrent('chrome-extension');
+    if (extensionCurrent) {
+      const extensionConversation = conversationFor('chrome-extension', extensionCurrent.conversationId);
+      if (extensionConversation) return extensionConversation;
+    }
+
+    const sources = [...this.currentBySource.keys()].filter(candidateSource => candidateSource !== 'chrome-extension');
     const currentIds = new Set<string>();
     for (const candidateSource of sources) {
-      const current = this.currentBySource.get(candidateSource);
-      if (!current || now - current.observedAtMs > maxAgeMs) continue;
-      currentIds.add(current.conversationId);
+      const current = freshCurrent(candidateSource);
+      if (current) currentIds.add(current.conversationId);
     }
-    // Chrome Extension and Native Browser may both report the same exact
-    // conversation. Different current conversations are ambiguous: binding
-    // must not guess which browser surface the user meant.
     if (currentIds.size !== 1) return undefined;
     const conversationId = [...currentIds][0]!;
     for (const candidateSource of sources) {
-      const conversation = (this.bySource.get(candidateSource) ?? []).find(entry => entry.conversationId === conversationId);
-      if (conversation) return structuredClone(conversation);
+      if (freshCurrent(candidateSource)?.conversationId !== conversationId) continue;
+      const conversation = conversationFor(candidateSource, conversationId);
+      if (conversation) return conversation;
     }
     return undefined;
   }
