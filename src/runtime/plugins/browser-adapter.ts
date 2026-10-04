@@ -1092,7 +1092,7 @@ interface BrowserOpenHandle {
 
 interface PageDiagnostics {
   consoleErrors: Array<{ type: string; text: string }>;
-  failedRequests: Array<{ url: string; status?: number; failure?: string }>;
+  failedRequests: Array<{ url: string; method?: string; status?: number; failure?: string }>;
   navigation?: { url: string; status?: number };
 }
 
@@ -1110,18 +1110,21 @@ function attachDiagnostics(page: PageLike): PageDiagnostics {
       }
     });
     page.on('requestfailed', (request) => {
-      const entry = request as { url?: () => string; failure?: () => { errorText?: string } | null };
+      const entry = request as { url?: () => string; method?: () => string; failure?: () => { errorText?: string } | null };
       diagnostics.failedRequests.push({
         url: typeof entry.url === 'function' ? entry.url() : '',
+        method: typeof entry.method === 'function' ? entry.method() : undefined,
         failure: typeof entry.failure === 'function' ? entry.failure()?.errorText : undefined,
       });
     });
     page.on('response', (response) => {
-      const entry = response as { url?: () => string; status?: () => number; ok?: () => boolean };
+      const entry = response as { url?: () => string; status?: () => number; ok?: () => boolean; request?: () => { method?: () => string } };
       const status = typeof entry.status === 'function' ? entry.status() : undefined;
       if (typeof status === 'number' && status >= 400) {
+        const request = typeof entry.request === 'function' ? entry.request() : undefined;
         diagnostics.failedRequests.push({
           url: typeof entry.url === 'function' ? entry.url() : '',
+          method: typeof request?.method === 'function' ? request.method() : undefined,
           status,
         });
       }

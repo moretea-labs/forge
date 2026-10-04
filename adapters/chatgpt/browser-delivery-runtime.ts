@@ -163,6 +163,7 @@ const CHATGPT_DELIVERY_FAILURE_PROBE_INTERVAL_MS = 1_000;
 
 interface BrowserFailedRequest {
   url?: string;
+  method?: string;
   status?: number;
   failure?: string;
 }
@@ -321,7 +322,21 @@ async function chatgptGenerationInProgress(
 }
 
 function failedRequestKey(request: BrowserFailedRequest): string {
-  return `${request.status ?? ''}|${request.url ?? ''}|${request.failure ?? ''}`;
+  return `${request.method?.toUpperCase() ?? ''}|${request.status ?? ''}|${request.url ?? ''}|${request.failure ?? ''}`;
+}
+
+/** Only provider requests causally inside the current send pipeline may classify that send as rate-limited. */
+export function chatgptFailedRequestIsCausalRateLimit(request: Pick<BrowserFailedRequest, 'url' | 'method' | 'status'>): boolean {
+  if (request.status !== 429 || request.method?.trim().toUpperCase() !== 'POST') return false;
+  try {
+    const url = new URL(request.url ?? '');
+    if (url.protocol !== 'https:' || url.hostname !== 'chatgpt.com') return false;
+    const path = url.pathname.toLowerCase();
+    return /^\/backend-api\/(?:f\/)?conversation(?:\/|$)/.test(path)
+      || path === '/backend-api/sentinel/chat-requirements';
+  } catch {
+    return false;
+  }
 }
 
 async function chatgptFailedRequestBaseline(
@@ -388,7 +403,7 @@ async function chatgptDeliveryFailureOnPage(
     seen.set(key, occurrence);
     const baselineCount = failedRequestBaseline.get(key) ?? 0;
     if (occurrence <= baselineCount) continue;
-    if (request.status === 429) return CHATGPT_AUTOMATION_RATE_LIMITED;
+    if (chatgptFailedRequestIsCausalRateLimit(request)) return CHATGPT_AUTOMATION_RATE_LIMITED;
   }
   return undefined;
 }

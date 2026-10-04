@@ -18,6 +18,7 @@ import { createWorkflowSupervisorServer, reconcileWorkflowSupervisorSocket, Work
 import { claimControllerSession, getControllerSession, releaseControllerSession } from '../../src/runtime/control-plane/facade/controller-session-store';
 import { bindChatgptWorkConversation, getChatgptWorkConversationBinding, rebindChatgptWorkConversation } from '../../adapters/chatgpt/work-conversation-binding-store';
 import { CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE, chatgptProviderPageFailure, classifyChatgptProviderFailure } from '../../adapters/chatgpt/provider-delivery';
+import { chatgptFailedRequestIsCausalRateLimit } from '../../adapters/chatgpt/browser-delivery-runtime';
 import { parseChatgptConversationIdentity } from '../../supervisor/chatgpt-conversation';
 import { setMacOsBrowserRuntimeHooksForTest, resetMacOsBrowserRuntimeHooksForTest } from '../../src/runtime/plugins/browser-macos-bridge';
 import { createTestChatgptTargetPort, type TestBrowserPage } from './helpers/computer-chatgpt-target-harness';
@@ -2075,6 +2076,15 @@ test('native adapter interrupts a digest-stalled generating turn only for the ex
   await adapter.runOnce();
   expect(dispatchModes).toEqual(['recover']);
   expect(store.latestEffectDispatch(source.effectId)?.generation).toBeUndefined();
+});
+
+test('429 network evidence is rate-limit authority only when it belongs to the current conversation submit pipeline', () => {
+  expect(chatgptFailedRequestIsCausalRateLimit({ method: 'GET', status: 429, url: 'https://chatgpt.com/backend-api/conversations?conversation_origin=tpp' })).toBe(false);
+  expect(chatgptFailedRequestIsCausalRateLimit({ method: 'POST', status: 429, url: 'https://chatgpt.com/backend-api/conversation' })).toBe(true);
+  expect(chatgptFailedRequestIsCausalRateLimit({ method: 'POST', status: 429, url: 'https://chatgpt.com/backend-api/f/conversation' })).toBe(true);
+  expect(chatgptFailedRequestIsCausalRateLimit({ method: 'POST', status: 429, url: 'https://chatgpt.com/backend-api/sentinel/chat-requirements' })).toBe(true);
+  expect(chatgptFailedRequestIsCausalRateLimit({ method: 'POST', status: 429, url: 'https://example.com/backend-api/conversation' })).toBe(false);
+  expect(chatgptFailedRequestIsCausalRateLimit({ status: 429, url: 'https://chatgpt.com/backend-api/conversation' })).toBe(false);
 });
 
 test('Resume stream unavailable reserves exactly one same-conversation recovery effect and never replays the applied effect', () => {
