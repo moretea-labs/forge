@@ -318,11 +318,11 @@ async function dispatch(control: WorkflowSupervisorControlPlane, discovery: Work
   }
   if (req.method === 'computer_extension_claim') {
     if (!computerExtensionBroker) throw new Error('COMPUTER_CHATGPT_EXTENSION_BROKER_UNAVAILABLE');
-    return { command: computerExtensionBroker.claim() ?? null };
+    return { command: computerExtensionBroker.claim(text(p, 'provider_instance_id')) ?? null };
   }
   if (req.method === 'computer_extension_complete') {
     if (!computerExtensionBroker) throw new Error('COMPUTER_CHATGPT_EXTENSION_BROKER_UNAVAILABLE');
-    return { recorded: computerExtensionBroker.complete(text(p, 'command_id'), object(p.result) as unknown as ComputerChatgptExtensionCommandResult) };
+    return { recorded: computerExtensionBroker.complete(text(p, 'provider_instance_id'), text(p, 'command_id'), object(p.result) as unknown as ComputerChatgptExtensionCommandResult) };
   }
   if (req.method === 'consumer_status') return browserConsumerStatus?.() ?? {
     enabled: browserAdapterEnabled,

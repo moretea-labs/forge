@@ -8,7 +8,14 @@ const DISCOVERY_MIN_INTERVAL_MS = 2_000;
 const RPC_TIMEOUT_MS = 30_000;
 const bootstrapTabs = new Map();
 const randomId = () => globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+const PROVIDER_INSTANCE_ID = randomId();
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+function browserProduct() {
+  const ua = String(globalThis.navigator?.userAgent ?? '');
+  if (/Vivaldi/i.test(ua)) return 'vivaldi';
+  if (/Chromium/i.test(ua)) return 'chromium';
+  return 'chrome';
+}
 
 let nativePort;
 const pendingNative = new Map();
@@ -72,11 +79,12 @@ function tabCreate(url) {
 function tabRemove(tabId) { return new Promise((resolve) => chrome.tabs.remove(tabId, () => resolve())); }
 function tabReload(tabId) { return new Promise((resolve) => chrome.tabs.reload(tabId, () => resolve())); }
 async function chatgptTabs() { return await chrome.tabs.query({ url: 'https://chatgpt.com/*' }); }
-function binding(tab) {
+function binding(tab, instanceId) {
   return {
     providerId: PROVIDER_ID,
+    providerSessionId: instanceId,
     observedAt: new Date().toISOString(),
-    browserProduct: 'chrome',
+    browserProduct: browserProduct(),
     windowId: String(tab.windowId),
     tabId: String(tab.id),
   };
@@ -130,13 +138,13 @@ function dispatchTransportNotReached(error) {
   const text = String(error?.message ?? error);
   return /Receiving end does not exist|Could not establish connection|No tab with id/i.test(text);
 }
-async function executeEnsure(command) {
+async function executeEnsure(command, instanceId) {
   let target;
   try {
     target = await resolveTarget(command.identity, true);
     const observation = await waitForContent(target.tab.id);
     const refreshed = await tabGet(target.tab.id);
-    return { kind: 'ensured', providerBinding: binding(refreshed), observation };
+    return { kind: 'ensured', providerBinding: binding(refreshed, instanceId), observation };
   } catch (error) {
     return {
       kind: 'failed',
@@ -146,13 +154,13 @@ async function executeEnsure(command) {
     };
   }
 }
-async function executeObserve(command) {
+async function executeObserve(command, instanceId) {
   try {
     const target = await resolveTarget(command.identity, false);
     if (!target) return { kind: 'failed', code: 'COMPUTER_CHATGPT_EXTENSION_TARGET_MISSING', retryable: true, failoverSafe: true };
     const observation = await snapshot(target.tab.id, command.options ?? {});
     const refreshed = await tabGet(target.tab.id);
-    return { kind: 'observation', providerBinding: binding(refreshed), observation };
+    return { kind: 'observation', providerBinding: binding(refreshed, instanceId), observation };
   } catch (error) {
     return { kind: 'failed', code: String(error?.message ?? error).split(':')[0] || 'COMPUTER_CHATGPT_EXTENSION_OBSERVE_FAILED', retryable: true, failoverSafe: true };
   }
@@ -178,7 +186,7 @@ async function executeDispatch(command) {
   }
   return { kind: 'dispatch', mutation: 'attempted', confirmed: false, ...(observation ? { observation } : {}) };
 }
-async function executeFindMarker(command) {
+async function executeFindMarker(command, instanceId) {
   const matches = [];
   for (const tab of await chatgptTabs()) {
     if (!tab.id) continue;
@@ -188,7 +196,7 @@ async function executeFindMarker(command) {
       if (!identity) continue;
       const texts = [observation.latestUserText, ...(Array.isArray(observation.userMessages) ? observation.userMessages : [])];
       if (!texts.some((text) => String(text ?? '').includes(command.marker))) continue;
-      matches.push({ identity: { namespace: 'chatgpt.conversation', conversationId: identity.conversationId, canonicalUrl: identity.canonicalUrl }, providerBinding: binding(tab), observation });
+      matches.push({ identity: { namespace: 'chatgpt.conversation', conversationId: identity.conversationId, canonicalUrl: identity.canonicalUrl }, providerBinding: binding(tab, instanceId), observation });
     } catch { /* an unreadable tab is not negative proof */ }
   }
   return { kind: 'marker_matches', matches };
@@ -201,16 +209,16 @@ async function executeClose(command) {
   }
   return { kind: 'closed' };
 }
-async function executeCommand(command) {
+async function executeCommand(command, instanceId) {
   if (!command || typeof command.commandId !== 'string') return { kind: 'failed', code: 'COMPUTER_CHATGPT_EXTENSION_COMMAND_INVALID', retryable: false, failoverSafe: true };
-  if (command.kind === 'ensure') return await executeEnsure(command);
-  if (command.kind === 'observe') return await executeObserve(command);
+  if (command.kind === 'ensure') return await executeEnsure(command, instanceId);
+  if (command.kind === 'observe') return await executeObserve(command, instanceId);
   if (command.kind === 'dispatch') return await executeDispatch(command);
-  if (command.kind === 'find_marker') return await executeFindMarker(command);
+  if (command.kind === 'find_marker') return await executeFindMarker(command, instanceId);
   if (command.kind === 'close') return await executeClose(command);
   return { kind: 'failed', code: 'COMPUTER_CHATGPT_EXTENSION_COMMAND_UNKNOWN', retryable: false, failoverSafe: true };
 }
-async function publishHeartbeat() {
+async function publishHeartbeat(instanceId) {
   const tabs = await chatgptTabs();
   const [current] = await chrome.tabs.query({ active: true, lastFocusedWindow: true, url: 'https://chatgpt.com/*' });
   const conversations = [];
@@ -222,22 +230,23 @@ async function publishHeartbeat() {
       canonicalUrl: identity.canonicalUrl,
       ...(String(tab.title ?? '').trim() ? { title: String(tab.title).trim().slice(0, 512) } : {}),
       ...(tab.id === current?.id ? { isCurrent: true } : {}),
-      providerBinding: binding(tab),
+      providerBinding: binding(tab, instanceId),
     });
   }
-  await nativeRpc('computer_extension_heartbeat', { providerId: PROVIDER_ID, observedAt: new Date().toISOString(), conversations });
+  await nativeRpc('computer_extension_heartbeat', { providerId: PROVIDER_ID, providerInstanceId: instanceId, observedAt: new Date().toISOString(), conversations });
 }
 let providerTickInFlight;
 async function providerTick() {
   if (providerTickInFlight) return await providerTickInFlight;
   providerTickInFlight = (async () => {
-    await publishHeartbeat();
+    const instanceId = PROVIDER_INSTANCE_ID;
+    await publishHeartbeat(instanceId);
     for (let index = 0; index < 8; index += 1) {
-      const claim = await nativeRpc('computer_extension_claim');
+      const claim = await nativeRpc('computer_extension_claim', { provider_instance_id: instanceId });
       const command = claim?.command;
       if (!command) break;
-      const result = await executeCommand(command);
-      await nativeRpc('computer_extension_complete', { command_id: command.commandId, result });
+      const result = await executeCommand(command, instanceId);
+      await nativeRpc('computer_extension_complete', { provider_instance_id: instanceId, command_id: command.commandId, result });
     }
   })().finally(() => { providerTickInFlight = undefined; });
   return await providerTickInFlight;
@@ -284,7 +293,7 @@ async function refreshDiscovery() {
     const title = String(tab.title ?? '').trim();
     conversations.push({ conversation_id: identity.conversationId, canonical_url: identity.canonicalUrl, ...projectByConversation.get(identity.conversationId), ...(title ? { title: title.slice(0, 512) } : {}), ...(tab.id === current?.id ? { is_current: true } : {}) });
   }
-  await nativeRpc('browser_discovery_update', { source: 'chrome-extension', conversations }).catch(() => undefined);
+  await nativeRpc('browser_discovery_update', { source: `chrome-extension:${PROVIDER_INSTANCE_ID}`, conversations }).catch(() => undefined);
 }
 let discoveryInFlight;
 let discoveryTimer;

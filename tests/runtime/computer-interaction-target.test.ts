@@ -325,7 +325,7 @@ describe('Computer durable InteractionTarget authority', () => {
     }
   });
 
-  test('keeps bootstrap promotion provider-owned and transfers the binding before tombstoning the bootstrap surface', async () => {
+  test('keeps extension provider ownership scoped to the exact browser instance through bootstrap promotion and dispatch', async () => {
     const controllerHome = mkdtempSync(join(tmpdir(), 'forge-computer-bootstrap-promotion-'));
     try {
       const extension = new ChromeExtensionChatgptConversationTargetPort(controllerHome, targetAuthority);
@@ -365,6 +365,7 @@ describe('Computer durable InteractionTarget authority', () => {
 
       const extensionBinding = {
         providerId: 'browser.chrome-extension',
+        providerSessionId: 'provider-profile-primary',
         observedAt: '2026-10-04T05:01:00.000Z',
         browserProduct: 'chrome',
         windowId: 'extension-window',
@@ -384,6 +385,84 @@ describe('Computer durable InteractionTarget authority', () => {
       expect(targetAuthority.getSurface(controllerHome, owned.targetId)).toBeUndefined();
       expect(targetAuthority.getSurface(controllerHome, promoted.target.targetId)?.providerBinding).toMatchObject(extensionBinding);
       expect(targetAuthority.findSurfaceByProviderBinding(controllerHome, extensionBinding)?.targetId).toBe(promoted.target.targetId);
+
+      const exactConversation = {
+        namespace: 'chatgpt.conversation' as const,
+        conversationId: 'conversation-exact-browser-instance',
+        canonicalUrl: 'https://chatgpt.com/c/conversation-exact-browser-instance',
+      };
+      extension.heartbeat({
+        providerId: 'browser.chrome-extension',
+        providerInstanceId: 'profile-logged-out',
+        observedAt: '2026-10-04T05:02:00.000Z',
+        conversations: [],
+      });
+      extension.heartbeat({
+        providerId: 'browser.chrome-extension',
+        providerInstanceId: 'profile-logged-in',
+        observedAt: '2026-10-04T05:02:00.000Z',
+        conversations: [{
+          conversationId: exactConversation.conversationId,
+          canonicalUrl: exactConversation.canonicalUrl,
+          isCurrent: true,
+          providerBinding: {
+            providerId: 'browser.chrome-extension',
+            providerSessionId: 'profile-logged-in',
+            observedAt: '2026-10-04T05:02:00.000Z',
+            browserProduct: 'vivaldi',
+            windowId: 'vivaldi-window',
+            tabId: 'vivaldi-tab',
+          },
+        }],
+      });
+      const exact = await extension.ensureExact(exactConversation);
+      expect(exact.state).toBe('ready');
+      if (exact.state !== 'ready') throw new Error('exact extension target not ready');
+      expect(targetAuthority.getSurface(controllerHome, exact.target.targetId)?.providerBinding).toMatchObject({
+        providerSessionId: 'profile-logged-in', browserProduct: 'vivaldi', tabId: 'vivaldi-tab',
+      });
+      const dispatch = exact.target.dispatch('continue exact conversation');
+      expect(extension.claim('profile-logged-out')).toBeUndefined();
+      const routedCommand = extension.claim('profile-logged-in');
+      expect(routedCommand?.kind).toBe('dispatch');
+      if (!routedCommand) throw new Error('exact provider did not receive command');
+      expect(extension.complete('profile-logged-out', routedCommand.commandId, { kind: 'dispatch', mutation: 'attempted', confirmed: true })).toBe(false);
+      expect(extension.complete('profile-logged-in', routedCommand.commandId, { kind: 'dispatch', mutation: 'attempted', confirmed: true })).toBe(true);
+      expect(await dispatch).toEqual({ mutation: 'attempted', confirmed: true });
+
+      extension.heartbeat({
+        providerId: 'browser.chrome-extension',
+        providerInstanceId: 'profile-logged-in',
+        observedAt: '2026-10-04T05:03:00.000Z',
+        conversations: [{
+          conversationId: exactConversation.conversationId,
+          canonicalUrl: exactConversation.canonicalUrl,
+          providerBinding: {
+            providerId: 'browser.chrome-extension',
+            providerSessionId: 'profile-logged-in',
+            observedAt: '2026-10-04T05:03:00.000Z',
+            browserProduct: 'vivaldi',
+            windowId: 'vivaldi-window',
+            tabId: 'vivaldi-tab',
+          },
+        }],
+      });
+      const missing = await extension.ensureExact({
+        namespace: 'chatgpt.conversation',
+        conversationId: 'conversation-missing-on-both-profiles',
+        canonicalUrl: 'https://chatgpt.com/c/conversation-missing-on-both-profiles',
+      });
+      expect(missing).toEqual({
+        state: 'unavailable',
+        failure: {
+          code: 'COMPUTER_CHATGPT_EXTENSION_PROVIDER_INSTANCE_AMBIGUOUS',
+          retryable: true,
+          phase: 'pre_mutation',
+          failoverSafe: false,
+        },
+      });
+      expect(extension.claim('profile-logged-out')).toBeUndefined();
+      expect(extension.claim('profile-logged-in')).toBeUndefined();
     } finally {
       rmSync(controllerHome, { recursive: true, force: true });
     }

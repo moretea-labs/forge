@@ -110,14 +110,16 @@ export type ComputerChatgptExtensionCommandResult =
 
 export interface ComputerChatgptExtensionHeartbeat {
   providerId: string;
+  /** Ephemeral browser/profile provider runtime identity; mechanical binding only. */
+  providerInstanceId: string;
   observedAt: string;
   conversations: Array<ComputerObservedChatgptConversation & { providerBinding?: ComputerSurfaceProviderBinding }>;
 }
 
 export interface ComputerChatgptExtensionBrokerRpc {
   heartbeat(input: ComputerChatgptExtensionHeartbeat): void;
-  claim(): ComputerChatgptExtensionCommand | undefined;
-  complete(commandId: string, result: ComputerChatgptExtensionCommandResult): boolean;
+  claim(providerInstanceId: string): ComputerChatgptExtensionCommand | undefined;
+  complete(providerInstanceId: string, commandId: string, result: ComputerChatgptExtensionCommandResult): boolean;
 }
 
 export interface ComputerChatgptConversationTargetPort {
