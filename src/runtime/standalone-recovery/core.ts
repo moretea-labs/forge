@@ -2728,6 +2728,8 @@ async function ensureLaunchdServiceStarted(service: LaunchdService, runCommand: 
 }
 
 export interface PrimaryRuntimeRecoveryDependencies {
+  /** Explicit operator restart may recycle an already-healthy Runtime; watchdog/internal recovery keeps healthy no-op semantics. */
+  forceHealthyRestart?: boolean;
   platform?: NodeJS.Platform;
   currentUid?: () => Promise<number | undefined>;
   runCommand?: CommandRunner;
@@ -3821,7 +3823,8 @@ export async function restartPrimaryRuntime(
   const verifyLocal = dependencies.verifyLocal ?? verifyLocalRuntime;
   const observeLocal = dependencies.observeLocal ?? (dependencies.verifyLocal ? dependencies.verifyLocal : observePrimaryRuntimeActivationReadiness);
   const initial = await verifyLocal(config);
-  if (initial.ok) return { ok: true, attempted: false, noOp: true, detail: 'Canonical Forge Runtime is already healthy', verify: initial };
+  const forceHealthyRestart = dependencies.forceHealthyRestart === true;
+  if (initial.ok && !forceHealthyRestart) return { ok: true, attempted: false, noOp: true, detail: 'Canonical Forge Runtime is already healthy', verify: initial };
   const platform = dependencies.platform ?? process.platform;
   const uid = await (dependencies.currentUid ?? currentUid)();
   const service = primaryRuntimeServiceOwner(config, platform, uid);
@@ -3832,7 +3835,7 @@ export async function restartPrimaryRuntime(
   const wait = dependencies.sleep ?? sleep;
   const locked = await withLock(config, { action: 'restart_primary_runtime' }, async () => {
     const before = await verifyLocal(config);
-    if (before.ok) return { ok: true, attempted: false, noOp: true, detail: 'Canonical Forge Runtime recovered before restart', serviceTarget: service.target, verify: before } satisfies PrimaryRuntimeRestartResult;
+    if (before.ok && !forceHealthyRestart) return { ok: true, attempted: false, noOp: true, detail: 'Canonical Forge Runtime recovered before restart', serviceTarget: service.target, verify: before } satisfies PrimaryRuntimeRestartResult;
     const runCommand = dependencies.runCommand ?? command;
     const runtimeRunning = dependencies.runtimeRunning ?? ((value: RecoveryConfig) => observeRuntimeStatus(value.controllerHome).running);
     const stopped = await stopPrimaryRuntimeForReleaseTransition({

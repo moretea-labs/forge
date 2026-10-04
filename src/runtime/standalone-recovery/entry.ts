@@ -219,7 +219,7 @@ async function cli(): Promise<void> {
     case 'list-releases': output(await listReleases(config)); return;
     case 'attest-known-good': output(await attestKnownGood(config)); return;
     case 'rollback-previous': output(await rollbackPrevious(config)); return;
-    case 'restart-primary-runtime': output(await restartPrimaryRuntime(config)); return;
+    case 'restart-primary-runtime': output(await restartPrimaryRuntime(config, { forceHealthyRestart: true })); return;
     case 'restart-primary-connector': output(await restartPrimaryConnector(config)); return;
     case 'recover-primary-runtime': output(await recoverPrimaryRuntime(config)); return;
     case 'activate-runtime-release': {
@@ -436,7 +436,7 @@ export const RECOVERY_TOOLS = [
   { name: 'verify_external_runtime', description: 'Verify the external primary MCP endpoint.', inputSchema: { type: 'object', additionalProperties: false } },
   { name: 'attest_known_good', description: 'Record the active release as known-good only after full independent verification succeeds.', inputSchema: mutationInputSchema() },
   { name: 'rollback_previous', description: 'While Canonical Runtime is stopped, atomically restore its attested previous whole-Runtime release and SQLite backup.', inputSchema: mutationInputSchema() },
-  { name: 'restart_primary_runtime', description: 'Restart the installed canonical Forge Runtime service only after exact Recovery machine identity matches.', inputSchema: mutationInputSchema() },
+  { name: 'restart_primary_runtime', description: 'Explicitly restart the installed canonical Forge Runtime service, including when currently healthy, then require whole-Runtime verification after exact Recovery machine identity matches.', inputSchema: mutationInputSchema() },
   { name: 'restart_primary_connector', description: 'Restart the explicitly configured primary OAuth/Connector service only after exact Recovery machine identity and local Canonical Runtime verification succeed.', inputSchema: mutationInputSchema() },
   { name: 'recover_primary_runtime', description: 'Stop the canonical Runtime, restore the attested previous whole-Runtime release and SQLite backup, restart it, and require verification.', inputSchema: mutationInputSchema() },
   { name: 'activate_runtime_release', description: 'Activate an already staged immutable Runtime release only if machine identity and caller-observed active release/authority revision are still current. Reverse activation of current.previous is rejected; use rollback_previous/recover_primary_runtime instead.', inputSchema: mutationInputSchema({ release_path: { type: 'string', minLength: 8, maxLength: 1024, description: 'Absolute path to the staged immutable Runtime release directory.' }, expected_active_release_id: { type: 'string', minLength: 1, maxLength: 256 }, expected_authority_revision: { type: 'integer', minimum: 1 } }, ['release_path', 'expected_active_release_id', 'expected_authority_revision']) },
@@ -773,7 +773,7 @@ export async function dispatchRecoveryTool(config: RecoveryConfig, name: string,
     case 'restart_primary_runtime': {
       if (!requestId(args.request_id)) throw new Error('RECOVERY_REQUEST_ID_REQUIRED');
       assertRecoveryGatewayMutationIdentity(config, args);
-      return mutationResponse(config, await restartPrimaryRuntime(config));
+      return mutationResponse(config, await restartPrimaryRuntime(config, { forceHealthyRestart: true }));
     }
     case 'restart_primary_connector': {
       if (!requestId(args.request_id)) throw new Error('RECOVERY_REQUEST_ID_REQUIRED');

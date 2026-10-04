@@ -3300,6 +3300,55 @@ describe('standalone recovery on canonical Runtime', () => {
     }).action).toBe('degraded');
   });
 
+  test('explicit healthy Runtime restart recycles the service while default recovery semantics remain no-op', async () => {
+    const home = controllerHome();
+    const previousHome = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      const paths = forgeRuntimeServicePaths(home);
+      mkdirSync(dirname(paths.installedPlistPath), { recursive: true });
+      writeFileSync(paths.installedPlistPath, '<plist/>');
+      const config = createRecoveryConfig(home, { primaryRuntimeService: { platform: 'launchd', postRestartVerifyTimeoutMs: 10_000 } });
+      const healthyNoOp = await restartPrimaryRuntime(config, { verifyLocal: async () => healthyVerify() });
+      expect(healthyNoOp).toMatchObject({ ok: true, attempted: false, noOp: true });
+
+      let launchdLoaded = true;
+      let strictProbes = 0;
+      let readinessProbes = 0;
+      const commands: string[][] = [];
+      const restarted = await restartPrimaryRuntime(config, {
+        forceHealthyRestart: true,
+        platform: 'darwin',
+        currentUid: async () => 501,
+        runCommand: async (_command, args) => {
+          commands.push(args);
+          if (args[0] === 'bootout') launchdLoaded = false;
+          if (args[0] === 'bootstrap') launchdLoaded = true;
+          if (args[0] === 'print') return launchdLoaded
+            ? { ok: true, status: 0, stdout: 'loaded', stderr: '' }
+            : { ok: false, status: 3, stdout: '', stderr: 'service not found' };
+          return { ok: true, status: 0, stdout: '', stderr: '' };
+        },
+        runtimeRunning: () => launchdLoaded,
+        repairPrimaryConnectorBinding: async () => ({ ok: true, attempted: false, noOp: true, detail: 'connector already bound' }),
+        verifyLocal: async () => { strictProbes += 1; return healthyVerify(); },
+        observeLocal: async () => { readinessProbes += 1; return healthyVerify(); },
+        now: (() => { let value = 0; return () => value += 250; })(),
+        sleep: async () => undefined,
+      });
+      expect(restarted).toMatchObject({ ok: true, attempted: true });
+      expect(strictProbes).toBeGreaterThanOrEqual(2);
+      expect(readinessProbes).toBeGreaterThanOrEqual(1);
+      const bootoutIndex = commands.findIndex((args) => args.includes('bootout'));
+      const kickstartIndex = commands.findIndex((args) => args.includes('kickstart'));
+      expect(bootoutIndex).toBeGreaterThanOrEqual(0);
+      expect(kickstartIndex).toBeGreaterThan(bootoutIndex);
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+    }
+  });
+
   test('restarts the installed primary Forge Runtime service with cheap readiness polling and one strict acceptance verification', async () => {
     const home = controllerHome();
     const previousHome = process.env.HOME;
