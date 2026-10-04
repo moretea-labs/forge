@@ -40,7 +40,7 @@ export interface TestComputerTargetHarnessDependencies {
   dispatchPrompt(
     page: TestBrowserPage,
     prompt: string,
-    options?: { mode?: 'send' | 'resume' },
+    options?: { mode?: 'send' | 'resume' | 'recover' },
   ): Promise<{ dispatched: boolean; confirmed?: boolean; reason?: string }>;
 }
 

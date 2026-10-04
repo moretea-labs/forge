@@ -395,13 +395,17 @@ export class WorkflowSupervisorNativeBrowserAdapter {
         generating: providerFailureCode ? false : providerBusy || latestRoleStillUser, latestAssistantResponse: snapshot.latestAssistantResponse,
         providerActivityText: snapshot.providerActivityText, providerFailureCode: providerFailureCode === CHATGPT_AUTOMATION_RATE_LIMITED ? undefined : providerFailureCode,
         observedAtMs: this.deps.nowMs(), graceMs: this.deps.providerIdleGraceMs });
-      if (providerBusy && !providerFailureCode) return;
-      if (latestRoleStillUser && !providerFailureCode) return;
       poll = this.control.browserPoll({ conversationId: task.conversationId, conversationUrl: task.conversationUrl });
+      const staleTurnRecovery = poll.command?.kind === 'recovery';
+      if (providerBusy && !providerFailureCode && !staleTurnRecovery) return;
+      if (latestRoleStillUser && !providerFailureCode && !staleTurnRecovery) return;
     }
     providerBackpressureMs = chatgptProviderBackpressureRemainingMs(this.deps.providerScopeKey, this.deps.nowMs());
     const completedSource = poll.command ? Boolean(this.control.getEffect(poll.command.effectId)?.sourceCompletionFingerprint) : false;
-    const commandMutationBlocked = providerBackpressureMs > 0 || (providerBusy && !providerFailureCode) || (latestRoleStillUser && !providerFailureCode && !completedSource);
+    const staleTurnRecovery = poll.command?.kind === 'recovery';
+    const commandMutationBlocked = providerBackpressureMs > 0
+      || (providerBusy && !providerFailureCode && !staleTurnRecovery)
+      || (latestRoleStillUser && !providerFailureCode && !completedSource && !staleTurnRecovery);
     if (poll.command?.mode === 'send' && commandMutationBlocked) return;
     if (poll.command) await this.executeCommand(target, poll.command, task);
   }
@@ -469,7 +473,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
 
   private async executeCommand(target: ComputerChatgptConversationTarget, command: WorkflowSupervisorBrowserCommand, task: WorkflowSupervisorBrowserTask): Promise<void> {
     let snapshot = await target.observe({ includeUserHistory: true, includePageText: true });
-    if (command.mode === 'send' && snapshot.isGenerating) return;
+    if (command.mode === 'send' && snapshot.isGenerating && command.kind !== 'recovery') return;
     let mode = command.mode;
     if (mode === 'send') {
       const begin = this.control.browserBeginEffect({ conversationId: command.conversationId, conversationUrl: command.conversationUrl, effectId: command.effectId,
@@ -495,7 +499,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     }
     let dispatch: Awaited<ReturnType<ComputerChatgptConversationTarget['dispatch']>>;
     try {
-      dispatch = await withChatgptProviderDispatchLane(this.deps.providerScopeKey, () => target.dispatch(command.prompt),
+      dispatch = await withChatgptProviderDispatchLane(this.deps.providerScopeKey, () => target.dispatch(command.prompt, command.kind === 'recovery' ? { mode: 'recover' } : undefined),
         (result) => result.mutation === 'attempted' ? { providerAccepted: result.confirmed === true } : { code: result.reasonCode, message: result.reasonCode });
     } catch (error) {
       this.control.browserObserveEffect({ conversationId: command.conversationId, conversationUrl: command.conversationUrl, effectId: command.effectId,

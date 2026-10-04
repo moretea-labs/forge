@@ -757,16 +757,16 @@ export class WorkflowSupervisorStore {
         return { state: input.generating ? 'generating' : 'idle_pending' };
       }
       const unchangedSinceMs = Date.parse(String(latest?.occurred_at ?? ''));
-      // No visible change is not proof that a live turn ended. Reasoning/tool
-      // waits may exceed every local observation timeout. Only a settled idle
-      // turn or explicit provider failure admits recovery.
-      if (input.generating) return { state: 'generating' };
       if (!Number.isFinite(unchangedSinceMs) || input.observedAtMs - unchangedSinceMs < graceMs) {
         return { state: input.generating ? 'generating' : 'idle_pending' };
       }
 
-      // The settled turn missed its receipt. Resume once without replaying its
-      // applied effect; a recovery effect cannot recursively recover itself.
+      // Progress, not the provider's visible "generating" control, is the
+      // liveness authority. A frozen page can leave that control present for
+      // hours after tool/output progress stopped. Once the assistant/activity
+      // digest is unchanged for the existing grace window, resume the same
+      // applied effect exactly once instead of treating "generating" as
+      // permanently healthy. A recovery effect itself never recurses.
       if (isProviderResume) {
         statement(db, 'INSERT OR IGNORE INTO events(task_id,event_key,kind,effect_id,payload_json,occurred_at) VALUES (?,?,?,?,?,?)', (s) => s.run(input.taskId, `assistant-recovery-exhausted:${effect.effectId}`, 'assistant_recovery_exhausted', effect.effectId, json({ assistant_digest: digest, exactly_once_resume: true, stale_generation: input.generating }), observedAt));
         return { state: 'exhausted' };

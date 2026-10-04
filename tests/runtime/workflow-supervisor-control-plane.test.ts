@@ -2009,34 +2009,27 @@ test('provider recovery is a single exactly-once resume and does not recurse thr
   control.observeEffect({ effectId: effect.effectId, observationId: 'browser-exhausted-applied', outcome: 'applied' });
 
   const live = { taskId, effectId: effect.effectId, generating: true, assistantDigest: 'waiting-tool', graceMs: 1_000,
-    recovery: { effectId: 'fx_34343434343434343434343434343434', prompt: 'must-not-interrupt' } };
+    recovery: { effectId: 'fx_34343434343434343434343434343434', prompt: 'recovery' } };
   expect(store.observeProviderTurn({ ...live, observedAtMs: 1_000 }).state).toBe('generating');
-  expect(store.observeProviderTurn({ ...live, observedAtMs: 1_000_000 }).state).toBe('generating');
-  expect(control.browserPoll({ conversationId, conversationUrl }).command).toBeUndefined();
+  // A changed digest proves progress and restarts the liveness window.
+  expect(store.observeProviderTurn({ ...live, assistantDigest: 'waiting-tool-progress', observedAtMs: 1_500 }).state).toBe('generating');
+  const resumed = store.observeProviderTurn({ ...live, assistantDigest: 'waiting-tool-progress', observedAtMs: 2_501 }).state;
+  expect(resumed).toBe('recovery_reserved');
+  expect(control.browserPoll({ conversationId, conversationUrl }).command).toMatchObject({ kind: 'recovery' });
   expect(store.providerResumeExhausted(effect.effectId)).toBe(false);
-
-  const first = store.observeProviderTurn({
-    taskId, effectId: effect.effectId, generating: false, assistantDigest: 'digest', observedAtMs: 1_000, graceMs: 1_000,
-    recovery: { effectId: 'fx_34343434343434343434343434343434', prompt: 'recovery' },
-  });
-  expect(first.state).toBe('idle_pending');
-  const resumed = store.observeProviderTurn({
-    taskId, effectId: effect.effectId, generating: false, assistantDigest: 'digest', observedAtMs: 2_001, graceMs: 1_000,
-    recovery: { effectId: 'fx_56565656565656565656565656565656', prompt: 'recovery' },
-  });
-  expect(resumed.state).toBe('recovery_reserved');
-  expect(resumed.recoveryEffect?.kind).toBe('recovery');
+  const recoveryEffect = store.observeProviderTurn({ ...live, assistantDigest: 'waiting-tool-progress', observedAtMs: 2_600 }).recoveryEffect!;
+  expect(recoveryEffect.kind).toBe('recovery');
   expect(control.browserTasks()).toHaveLength(1);
 
-  const resume = resumed.recoveryEffect!;
+  const resume = recoveryEffect;
   control.observeEffect({ effectId: resume.effectId, observationId: 'provider-resume-applied', outcome: 'applied' });
   const resumePending = store.observeProviderTurn({
-    taskId, effectId: resume.effectId, generating: false, assistantDigest: 'resume-digest', observedAtMs: 3_000, graceMs: 1_000,
+    taskId, effectId: resume.effectId, generating: true, assistantDigest: 'resume-digest', observedAtMs: 3_000, graceMs: 1_000,
     recovery: { effectId: 'fx_78787878787878787878787878787878', prompt: 'must-not-send' },
   });
-  expect(resumePending.state).toBe('idle_pending');
+  expect(resumePending.state).toBe('generating');
   const exhausted = store.observeProviderTurn({
-    taskId, effectId: resume.effectId, generating: false, assistantDigest: 'resume-digest', observedAtMs: 4_001, graceMs: 1_000,
+    taskId, effectId: resume.effectId, generating: true, assistantDigest: 'resume-digest', observedAtMs: 4_001, graceMs: 1_000,
     recovery: { effectId: 'fx_90909090909090909090909090909090', prompt: 'must-not-send' },
   });
   expect(exhausted.state).toBe('exhausted');
@@ -2051,6 +2044,37 @@ test('provider recovery is a single exactly-once resume and does not recurse thr
   expect(late.terminal).toBe(false);
   expect(late.successorEffect).toBeDefined();
   expect(store.getCompletionByResponseSha256(taskId, createHash('sha256').update(lateReceipt).digest('hex'))?.sourceEffectId).toBe(resume.effectId);
+});
+
+test('native adapter interrupts a digest-stalled generating turn only for the exactly-once recovery effect', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-stalled-generating-'));
+  roots.push(root);
+  const store = new WorkflowSupervisorStore(join(root, 'supervisor-home'));
+  const control = new WorkflowSupervisorControlPlane(store);
+  const conversationId = '45454545-5656-7878-9090-121212121212';
+  const conversationUrl = `https://chatgpt.com/c/${conversationId}`;
+  control.registerTask({ taskId: 'stalled-generating', conversationId, conversationUrl, objective: 'Resume a stalled provider turn.', completionContract: {}, continuationPolicy: {}, userBlockerPolicy: {} });
+  const source = control.reserveEnrollment('stalled-generating');
+  control.observeEffect({ effectId: source.effectId, observationId: 'stalled-generating-applied', outcome: 'applied' });
+  let nowMs = 0;
+  const dispatchModes: Array<string | undefined> = [];
+  const page: TestBrowserPage = { evaluate: async <T>() => false as T, tabRef: () => ({ windowId: 'window-1', tabId: 'tab-1' }) };
+  const targetPort = createTestChatgptTargetPort({
+    listTabs: async () => ({ entries: [{ windowId: 'window-1', tabId: 'tab-1', url: conversationUrl, title: 'stalled', active: true }], unavailableProducts: [] }),
+    reattach: async () => page, create: async () => page, close: async () => undefined,
+    snapshot: async () => ({ url: conversationUrl, title: 'stalled', latestUserText: '', latestAssistantResponse: '', providerActivityText: '', providerFailureText: '', latestTurnRole: 'assistant', isGenerating: true }),
+    dispatchPrompt: async (_page, _prompt, options) => { dispatchModes.push(options?.mode); return { dispatched: true, confirmed: true }; },
+  });
+  const adapter = new WorkflowSupervisorNativeBrowserAdapter(control, new WorkflowSupervisorEphemeralDiscovery(), {
+    targetPort, nowMs: () => nowMs, providerIdleGraceMs: 1_000, providerScopeKey: join(root, 'provider-scope'), sleep: async () => undefined,
+    setInterval: () => 0 as unknown as ReturnType<typeof setInterval>, clearInterval: () => undefined, onError: (error) => { throw error; },
+  });
+  await adapter.runOnce();
+  expect(dispatchModes).toEqual([]);
+  nowMs = 1_001;
+  await adapter.runOnce();
+  expect(dispatchModes).toEqual(['recover']);
+  expect(store.latestEffectDispatch(source.effectId)?.generation).toBeUndefined();
 });
 
 test('Resume stream unavailable reserves exactly one same-conversation recovery effect and never replays the applied effect', () => {

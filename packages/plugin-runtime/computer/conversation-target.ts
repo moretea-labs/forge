@@ -45,7 +45,7 @@ export interface ComputerChatgptConversationTarget {
   observe(options?: ComputerChatgptConversationObservationOptions): Promise<ComputerChatgptConversationObservation>;
   dispatch(
     prompt: string,
-    options?: { mode?: 'send' | 'resume' },
+    options?: { mode?: 'send' | 'resume' | 'recover' },
   ): Promise<
     | { mutation: 'not_attempted'; reasonCode: string }
     | { mutation: 'attempted'; confirmed?: boolean }
@@ -89,7 +89,7 @@ export interface ComputerChatgptConversationInventory {
 export type ComputerChatgptExtensionCommand =
   | { commandId: string; kind: 'ensure'; identity: ComputerChatgptTargetIdentity }
   | { commandId: string; kind: 'observe'; identity: ComputerChatgptTargetIdentity; options?: ComputerChatgptConversationObservationOptions }
-  | { commandId: string; kind: 'dispatch'; identity: ComputerChatgptTargetIdentity; prompt: string; mode?: 'send' | 'resume' }
+  | { commandId: string; kind: 'dispatch'; identity: ComputerChatgptTargetIdentity; prompt: string; mode?: 'send' | 'resume' | 'recover' }
   | { commandId: string; kind: 'find_marker'; marker: string; bootstrapKey?: string }
   | { commandId: string; kind: 'close'; identity: ComputerChatgptTargetIdentity };
 export type ComputerChatgptExtensionCommandInput = ComputerChatgptExtensionCommand extends infer Command

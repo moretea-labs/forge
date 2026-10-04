@@ -205,9 +205,33 @@ export async function observeMacOsChatgptPage(
 export async function dispatchMacOsChatgptPrompt(
   page: ComputerChatgptNativePage,
   prompt: string,
-  options: { mode?: 'send' | 'resume' } = {},
+  options: { mode?: 'send' | 'resume' | 'recover' } = {},
 ): Promise<{ mutation: 'not_attempted'; reasonCode: string } | { mutation: 'attempted'; confirmed?: boolean }> {
   const resume = options.mode === 'resume';
+  if (options.mode === 'recover') {
+    try {
+      const interrupted = await page.evaluate<boolean>(`(() => {
+        const visible = (element) => Boolean(element && element.getClientRects && element.getClientRects().length);
+        const stop = Array.from(document.querySelectorAll('[data-testid="stop-button"], [data-testid*="stop-button"], button[aria-label="Stop"], button[aria-label="Stop generating"], button[aria-label="停止"], button[aria-label="停止生成"]')).find(visible);
+        if (!(stop instanceof HTMLElement)) return false;
+        stop.click(); return true;
+      })()`);
+      if (interrupted) {
+        for (let attempt = 1; attempt <= MAX_LOCAL_OBSERVATION_ATTEMPTS; attempt += 1) {
+          await sleep(delayMs(attempt, 250, 1_000));
+          const generating = await page.evaluate<boolean>(`(() => Array.from(document.querySelectorAll('[data-testid="stop-button"], [data-testid*="stop-button"], button[aria-label="Stop"], button[aria-label="Stop generating"], button[aria-label="停止"], button[aria-label="停止生成"]')).some(element => Boolean(element && element.getClientRects && element.getClientRects().length)))()`);
+          if (!generating) break;
+          if (attempt >= MAX_LOCAL_OBSERVATION_ATTEMPTS) return { mutation: 'not_attempted', reasonCode: 'provider_recovery_stop_unconfirmed' };
+        }
+      }
+    } catch (error) {
+      const code = error instanceof AssistantPluginError ? error.code : String(error);
+      if (code === 'PLUGIN_BROWSER_JAVASCRIPT_PERMISSION_REQUIRED' || String(code).includes('PLUGIN_BROWSER_JAVASCRIPT_PERMISSION_REQUIRED')) {
+        return { mutation: 'not_attempted', reasonCode: 'PLUGIN_BROWSER_JAVASCRIPT_PERMISSION_REQUIRED' };
+      }
+      return { mutation: 'not_attempted', reasonCode: 'provider_recovery_stop_unavailable' };
+    }
+  }
   let prepared: { prepared: boolean; reason?: string } | undefined;
   for (let attempt = 1; attempt <= MAX_LOCAL_OBSERVATION_ATTEMPTS; attempt += 1) {
     try {

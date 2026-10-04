@@ -5,6 +5,7 @@
   const USER = '[data-message-author-role="user"], [data-chatgpt-search-unit-key$=":user"], [data-content-search-unit-key$=":user"]';
   const COMPOSER = '#prompt-textarea, [data-testid="prompt-textarea"], [data-testid="composer-text-input"], textarea[name="prompt"], textarea[placeholder*="Message"], textarea[placeholder*="消息"], form [contenteditable="true"], div[role="textbox"][contenteditable="true"]';
   const SEND = 'button[data-testid="send-button"], button[aria-label*="Send"], button[aria-label*="发送"], button[data-testid*="send"]';
+  const STOP = '[data-testid="stop-button"], [data-testid*="stop-button"], button[aria-label="Stop"], button[aria-label="Stop generating"], button[aria-label="停止"], button[aria-label="停止生成"]';
   const absoluteChatgptUrl = (href) => {
     try { const url = new URL(String(href ?? ''), location.href); return url.protocol === 'https:' && url.hostname === 'chatgpt.com' ? url.toString() : undefined; }
     catch { return undefined; }
@@ -66,7 +67,7 @@
     return undefined;
   };
   const isGenerating = () => Boolean(
-    document.querySelector('[data-testid="stop-button"], [data-testid*="stop-button"], button[aria-label*="Stop"], button[aria-label*="停止"], [data-testid*="stop"], [aria-busy="true"], [data-is-streaming="true"], [data-testid*="streaming"]')
+    document.querySelector(`${STOP}, [aria-busy="true"], [data-is-streaming="true"], [data-testid*="streaming"]`)
     || latestTurnRole() === 'user'
   );
   const composer = () => document.querySelector(COMPOSER);
@@ -114,9 +115,18 @@
       selection?.removeAllRanges();
     }
   };
-  const dispatchPrompt = async (prompt) => {
+  const dispatchPrompt = async (prompt, mode = 'send') => {
     if (typeof prompt !== 'string' || !prompt.trim()) return { dispatched: false, reason: 'prompt_required' };
-    if (isGenerating()) return { dispatched: false, reason: 'provider_busy' };
+    if (mode === 'recover') {
+      const stop = document.querySelector(STOP);
+      if (stop instanceof HTMLElement) {
+        stop.click();
+        for (let attempt = 0; attempt < 20 && document.querySelector(STOP); attempt += 1) {
+          await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+        if (document.querySelector(STOP)) return { dispatched: false, reason: 'provider_recovery_stop_unconfirmed' };
+      }
+    } else if (isGenerating()) return { dispatched: false, reason: 'provider_busy' };
     const node = composer();
     if (!node) return { dispatched: false, reason: 'composer_missing' };
     const expected = core.normalizeText(prompt);
@@ -139,7 +149,7 @@
     }
     if (message.type === 'forge-computer-chatgpt-snapshot') { sendResponse(pageSnapshot(message.options ?? {})); return false; }
     if (message.type === 'forge-computer-chatgpt-dispatch') {
-      dispatchPrompt(String(message.prompt ?? '')).then(sendResponse, (error) => sendResponse({ dispatched: false, reason: String(error?.message ?? error) }));
+      dispatchPrompt(String(message.prompt ?? ''), String(message.mode ?? 'send')).then(sendResponse, (error) => sendResponse({ dispatched: false, reason: String(error?.message ?? error) }));
       return true;
     }
     return false;
