@@ -9,6 +9,7 @@ import {
   gatewayRouteBehaviorSnapshot,
   routeDurableMcpCall,
 } from '../../src/runtime/gateway/mcp/router';
+import { executeGatewayRoutedOperation } from '../../adapters/mcp/runtime-gateway/gateway-execution-adapter';
 import { createMcpToolContext } from '../../src/cli/mcp/server';
 import { callMultiRepositoryTool } from '../../src/cli/mcp/multi-repository';
 import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
@@ -1213,6 +1214,89 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     expect((joinedPayload.validation as Record<string, unknown>).validationRequestId).toBe(validationRequestId);
     expect(getEditSession(fx.repoRoot, sessionId).status).toBe('checked');
     expect(readFileSync(sourcePath, 'utf8')).toBe(afterEdit);
+  });
+
+  test('verify_edit_session derives its Work binding from the durable edit session when the public schema has no work_id', async () => {
+    const fx = fixture();
+    roots.push(fx.root);
+    writeFileSync(join(fx.repoRoot, '.forge', 'checks.json'), JSON.stringify({
+      version: 1,
+      checks: {
+        verify: {
+          description: 'verify durable edit binding',
+          command: [process.execPath, '-e', 'process.exit(0)'],
+          timeoutMs: 10_000,
+          effects: { reads: ['src/lib.ts'] },
+        },
+      },
+    }, null, 2));
+    git(fx.repoRoot, ['add', '.forge/checks.json']);
+    git(fx.repoRoot, ['commit', '-m', 'configure verify edit binding']);
+
+    const workId = 'work-verify-edit-session-binding';
+    createWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
+      workId,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      objective: 'Verify the current bounded edit.',
+      acceptanceCriteria: ['Registered verify check passes.'],
+      allowedPaths: ['src/**'],
+      forbiddenPaths: [],
+      checks: ['verify'],
+      constraints: { workspaceMode: 'current' },
+      requestedBy: 'chatgpt',
+      dispatchState: 'running',
+    });
+    const principalId = fx.ctx.principalId ?? 'controller-http-client';
+    const boundCtx = { ...fx.ctx, principalId };
+    const binding = {
+      workId,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      principalId,
+      controllerInstanceId: boundCtx.controllerInstanceId,
+    };
+    const editStorage = ensureRepositoryRuntimeStorageBinding(fx.repository, 'edit-sessions', fx.controllerHome);
+    expect(['linked', 'already-linked', 'migrated', 'merged']).toContain(editStorage.status);
+    const session = beginEditSession(fx.repoRoot, {
+      purpose: 'verify edit session binding fallback',
+      allowedPaths: ['src/**'],
+      checks: ['verify'],
+      binding,
+    });
+    const before = readFileSync(join(fx.repoRoot, 'src', 'lib.ts'), 'utf8');
+    applyEditOperations(fx.repoRoot, getMcpPolicy('controller'), session.sessionId, [{
+      type: 'replace',
+      path: 'src/lib.ts',
+      expectedSha256: createHash('sha256').update(before).digest('hex'),
+      replacements: [{ oldText: 'n = 1', newText: 'n = 2' }],
+    }], { binding });
+
+    const requestId = 'verify-edit-session-binding-fallback';
+    const first = await executeGatewayRoutedOperation(boundCtx, 'verify_edit_session', {
+      repo_id: fx.repository.repoId,
+      checkout_id: fx.repository.activeCheckoutId,
+      session_id: session.sessionId,
+      check_ids: ['verify'],
+      request_id: requestId,
+      interactive_wait_ms: 0,
+    }, { path: 'fast', reasons: [] });
+    expect(first?.isError).not.toBe(true);
+    const firstPayload = first?.structuredContent as { processes?: Array<{ processId: string }>; completed?: boolean };
+    for (const process of firstPayload.processes ?? []) {
+      await waitForProcess(fx.controllerHome, fx.repository.repoId, process.processId, { timeoutMs: 10_000 });
+    }
+    const joined = await executeGatewayRoutedOperation(boundCtx, 'verify_edit_session', {
+      repo_id: fx.repository.repoId,
+      checkout_id: fx.repository.activeCheckoutId,
+      session_id: session.sessionId,
+      check_ids: ['verify'],
+      request_id: requestId,
+      interactive_wait_ms: 0,
+    }, { path: 'fast', reasons: [] });
+    expect(joined?.isError).not.toBe(true);
+    expect(joined?.structuredContent).toEqual(expect.objectContaining({ completed: true, ok: true }));
+    expect(getEditSession(fx.repoRoot, session.sessionId).status).toBe('checked');
   });
 
   test('durable edit-session validation binding rejects different Work, principal, or checkout', () => {

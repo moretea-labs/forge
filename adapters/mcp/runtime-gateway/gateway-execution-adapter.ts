@@ -20,11 +20,12 @@ async function runEditSessionValidationViaProcessRuntime(
   args: Record<string, unknown>,
 ): Promise<CallToolResult> {
   const resolved = resolveEditValidationRepository(repository, editSessionId);
+  const explicitWorkId = typeof args.work_id === 'string' && args.work_id.trim() ? args.work_id.trim() : undefined;
   const binding = claimedSessionEditBinding(ctx.controllerHome, resolved.repository, {
     sessionId: ctx.sessionId,
     principalId: ctx.principalId,
     controllerInstanceId: ctx.controllerInstanceId,
-  }, args.work_id);
+  }, explicitWorkId ?? resolved.session.workId);
   assertEditSessionDurableBinding(resolved.session, binding, { requireBoundIdentity: true });
   const validation = await startOrJoinEditValidation(ctx.controllerHome, resolved.repository, {
     editSessionId,
