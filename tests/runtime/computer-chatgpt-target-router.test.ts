@@ -38,6 +38,7 @@ function target(
 
 function port(input: {
   ensureExact: (identity: ComputerChatgptConversationIdentity) => Promise<ComputerChatgptTargetResult>;
+  promoteBootstrap?: ComputerChatgptConversationTargetPort['promoteBootstrap'];
 }): ComputerChatgptConversationTargetPort {
   const inventory: ComputerChatgptConversationInventory = { conversations: [], complete: true, unavailableProviders: [] };
   return {
@@ -45,7 +46,7 @@ function port(input: {
     ensureExact: input.ensureExact,
     openBootstrap: async () => ({ state: 'unavailable', failure: { code: 'unused', retryable: false, phase: 'pre_mutation' } }),
     findBySubmittedMarker: async () => [],
-    promoteBootstrap: async () => ({ state: 'unavailable', failure: { code: 'unused', retryable: false, phase: 'pre_mutation' } }),
+    promoteBootstrap: input.promoteBootstrap ?? (async () => ({ state: 'unavailable', failure: { code: 'unused', retryable: false, phase: 'pre_mutation' } })),
     cleanup: async () => undefined,
     release: async () => undefined,
     close: async () => undefined,
@@ -143,4 +144,35 @@ test('Computer target router refuses resource failover when primary open outcome
     },
   });
   expect(compatibilityEnsures).toBe(0);
+});
+
+test('Computer target router falls back bootstrap promotion only after primary proves another provider owns the target', async () => {
+  let compatibilityPromotions = 0;
+  const primary = port({
+    ensureExact: async () => ({ state: 'unavailable', failure: { code: 'unused', retryable: false, phase: 'pre_mutation' } }),
+    promoteBootstrap: async () => ({
+      state: 'unavailable',
+      failure: {
+        code: 'COMPUTER_CHATGPT_EXTENSION_BOOTSTRAP_PROVIDER_MISMATCH',
+        retryable: false,
+        phase: 'pre_mutation',
+        failoverSafe: true,
+      },
+    }),
+  });
+  const compatibility = port({
+    ensureExact: async () => ({ state: 'unavailable', failure: { code: 'unused', retryable: false, phase: 'pre_mutation' } }),
+    promoteBootstrap: async () => {
+      compatibilityPromotions += 1;
+      return { state: 'ready', target: target('compatibility-promoted', async () => ({ mutation: 'attempted' })) };
+    },
+  });
+
+  const router = new PreferredChatgptConversationTargetPort(primary, compatibility);
+  const result = await router.promoteBootstrap('foreign-bootstrap-target', identity);
+
+  expect(result.state).toBe('ready');
+  if (result.state !== 'ready') throw new Error('target not promoted');
+  expect(result.target.targetId).toBe('compatibility-promoted');
+  expect(compatibilityPromotions).toBe(1);
 });

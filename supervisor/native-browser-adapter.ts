@@ -430,9 +430,9 @@ export class WorkflowSupervisorNativeBrowserAdapter {
           const snapshot = await target.observe({ includeUserHistory: true, includePageText: false });
           const identity = parseChatgptConversationIdentity(snapshot.url);
           if (!snapshotTargetMarkerPresent(snapshot, command.effectId)) throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_EFFECT_MARKER_NOT_OBSERVED');
-          this.control.bindBootstrapConversation({ taskId: task.taskId, conversationId: identity.conversationId, conversationUrl: identity.canonicalUrl });
           const promoted = await this.deps.targetPort.promoteBootstrap(target.targetId, { namespace: 'chatgpt.conversation', conversationId: identity.conversationId, canonicalUrl: identity.canonicalUrl });
           if (promoted.state !== 'ready') throw new Error(promoted.failure.code);
+          this.control.bindBootstrapConversation({ taskId: task.taskId, conversationId: identity.conversationId, conversationUrl: identity.canonicalUrl });
           this.control.bootstrapObserveEffect({ taskId: task.taskId, effectId: command.effectId, observationId: `bootstrap-${randomUUID()}`, outcome: 'applied' });
           this.clearTaskFailure(task.taskId, command.effectId);
           return;
@@ -460,9 +460,9 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     let identity;
     try { identity = parseChatgptConversationIdentity(snapshot.url); } catch { observeUnknown('bootstrap_conversation_identity_unavailable'); return; }
     if (!snapshotTargetMarkerPresent(snapshot, command.effectId)) { observeUnknown('bootstrap_effect_marker_not_observed'); return; }
-    this.control.bindBootstrapConversation({ taskId: task.taskId, conversationId: identity.conversationId, conversationUrl: identity.canonicalUrl });
     const promoted = await this.deps.targetPort.promoteBootstrap(match.target.targetId, { namespace: 'chatgpt.conversation', conversationId: identity.conversationId, canonicalUrl: identity.canonicalUrl });
     if (promoted.state !== 'ready') { observeUnknown(promoted.failure.code); return; }
+    this.control.bindBootstrapConversation({ taskId: task.taskId, conversationId: identity.conversationId, conversationUrl: identity.canonicalUrl });
     this.control.bootstrapObserveEffect({ taskId: task.taskId, effectId: command.effectId, observationId: `bootstrap-reconcile-${randomUUID()}`, outcome: 'applied' });
     this.clearTaskFailure(task.taskId, command.effectId);
   }

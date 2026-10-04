@@ -14,6 +14,7 @@ import { callProtectedComputerAdapter, executeProtectedConsoleUnlockInvocation, 
 import { installExternalPluginRegistration } from '../../src/runtime/plugins/external-registration';
 import type { AssistantPluginActionExecutionInput } from '../../src/runtime/plugins/types';
 import { FORGE_INSTANCE_SCOPE_KEY } from '../../src/cli/repositories/controller-home';
+import { ChromeExtensionChatgptConversationTargetPort } from '../../adapters/computer/chatgpt-extension-target';
 
 interface ProviderFixture {
   controllerHome: string;
@@ -319,6 +320,70 @@ describe('Computer durable InteractionTarget authority', () => {
         { bundle_id: 'com.example.Editor', launch: false, activate: false },
         'target-unsupported-platform',
       ))).rejects.toThrow('PLUGIN_COMPUTER_DESKTOP_PLATFORM_UNSUPPORTED');
+    } finally {
+      rmSync(controllerHome, { recursive: true, force: true });
+    }
+  });
+
+  test('keeps bootstrap promotion provider-owned and transfers the binding before tombstoning the bootstrap surface', async () => {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-computer-bootstrap-promotion-'));
+    try {
+      const extension = new ChromeExtensionChatgptConversationTargetPort(controllerHome, targetAuthority);
+      const foreignBinding = {
+        providerId: 'browser.macos-apple-events',
+        observedAt: '2026-10-04T05:00:00.000Z',
+        browserProduct: 'vivaldi',
+        windowId: 'foreign-window',
+        tabId: 'foreign-tab',
+      };
+      const foreign = targetAuthority.createSurface(controllerHome, {
+        stableIdentity: {
+          surfaceType: 'browser-tab', ownership: 'provider_owned',
+          resource: { namespace: 'chatgpt.bootstrap', key: 'foreign-bootstrap' },
+        },
+        visibility: 'controller',
+        providerBinding: foreignBinding,
+      });
+      const conversation = {
+        namespace: 'chatgpt.conversation' as const,
+        conversationId: 'conversation-provider-owned',
+        canonicalUrl: 'https://chatgpt.com/c/conversation-provider-owned',
+      };
+
+      const rejected = await extension.promoteBootstrap(foreign.targetId, conversation);
+      expect(rejected).toEqual({
+        state: 'unavailable',
+        failure: {
+          code: 'COMPUTER_CHATGPT_EXTENSION_BOOTSTRAP_PROVIDER_MISMATCH',
+          retryable: false,
+          phase: 'pre_mutation',
+          failoverSafe: true,
+        },
+      });
+      await extension.release(foreign.targetId);
+      expect(targetAuthority.getSurface(controllerHome, foreign.targetId)?.providerBinding).toMatchObject(foreignBinding);
+
+      const extensionBinding = {
+        providerId: 'browser.chrome-extension',
+        observedAt: '2026-10-04T05:01:00.000Z',
+        browserProduct: 'chrome',
+        windowId: 'extension-window',
+        tabId: 'extension-tab',
+      };
+      const owned = targetAuthority.createSurface(controllerHome, {
+        stableIdentity: {
+          surfaceType: 'browser-tab', ownership: 'provider_owned',
+          resource: { namespace: 'chatgpt.bootstrap', key: 'extension-bootstrap' },
+        },
+        visibility: 'controller',
+        providerBinding: extensionBinding,
+      });
+      const promoted = await extension.promoteBootstrap(owned.targetId, conversation);
+      expect(promoted.state).toBe('ready');
+      if (promoted.state !== 'ready') throw new Error('bootstrap not promoted');
+      expect(targetAuthority.getSurface(controllerHome, owned.targetId)).toBeUndefined();
+      expect(targetAuthority.getSurface(controllerHome, promoted.target.targetId)?.providerBinding).toMatchObject(extensionBinding);
+      expect(targetAuthority.findSurfaceByProviderBinding(controllerHome, extensionBinding)?.targetId).toBe(promoted.target.targetId);
     } finally {
       rmSync(controllerHome, { recursive: true, force: true });
     }

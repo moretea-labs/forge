@@ -271,7 +271,12 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
   async promoteBootstrap(targetId: string, identity: ComputerChatgptConversationIdentity): Promise<ComputerChatgptTargetResult> {
     const previous = this.authority.getSurface(this.controllerHome, targetId);
     if (!previous) return failure('COMPUTER_CHATGPT_EXTENSION_BOOTSTRAP_TARGET_MISSING', { failoverSafe: false });
-    const record = await this.bindAsync(identity, previous.providerBinding);
+    const binding = previous.providerBinding;
+    if (binding && binding.providerId !== PROVIDER_ID) {
+      return failure('COMPUTER_CHATGPT_EXTENSION_BOOTSTRAP_PROVIDER_MISMATCH', { retryable: false, failoverSafe: true });
+    }
+    await this.authority.withSurfaceLease(this.controllerHome, targetId, async (lease) => { lease.clearBinding(); });
+    const record = await this.bindAsync(identity, binding);
     this.authority.tombstoneSurface(this.controllerHome, targetId);
     return { state: 'ready', target: this.target(identity, record) };
   }
@@ -294,7 +299,7 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
 
   async release(targetId: string): Promise<void> {
     const record = this.authority.getSurface(this.controllerHome, targetId);
-    if (!record) return;
+    if (!record || (record.providerBinding && record.providerBinding.providerId !== PROVIDER_ID)) return;
     const resource = record.stableIdentity.resource;
     const compatibility = record.compatibilityRecords.find((entry) => entry.namespace === 'chatgpt.target')?.value as Record<string, unknown> | undefined;
     const identity: ComputerChatgptTargetIdentity | undefined = resource?.namespace === 'chatgpt.conversation' && typeof compatibility?.canonicalUrl === 'string'

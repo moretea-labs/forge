@@ -469,7 +469,14 @@ export class MacOsChatgptConversationTargetPort implements ComputerChatgptConver
     if (!page) return failure(new Error('COMPUTER_CHATGPT_BOOTSTRAP_PROVIDER_BINDING_MISSING'), 'COMPUTER_CHATGPT_BOOTSTRAP_PROVIDER_BINDING_MISSING');
     const previous = this.authority.getSurface(this.controllerHome, targetId);
     if (!previous) return failure(new Error('COMPUTER_CHATGPT_BOOTSTRAP_TARGET_MISSING'), 'COMPUTER_CHATGPT_BOOTSTRAP_TARGET_MISSING');
+    if (previous.providerBinding && previous.providerBinding.providerId !== PROVIDER_ID) {
+      return {
+        state: 'unavailable',
+        failure: { code: 'COMPUTER_CHATGPT_BOOTSTRAP_PROVIDER_MISMATCH', retryable: false, phase: 'pre_mutation', failoverSafe: true },
+      };
+    }
     try {
+      await this.authority.withSurfaceLease(this.controllerHome, targetId, async (lease) => { lease.clearBinding(); });
       let record = this.upsert(identity, 'provider_owned');
       record = await this.bind(identity, record, page, 'provider_owned');
       this.pages.delete(targetId);
@@ -503,9 +510,10 @@ export class MacOsChatgptConversationTargetPort implements ComputerChatgptConver
 
   async release(targetId: string): Promise<void> {
     const record = this.authority.getSurface(this.controllerHome, targetId);
+    if (!record) { this.pages.delete(targetId); return; }
+    if (record.providerBinding && record.providerBinding.providerId !== PROVIDER_ID) return;
     const page = this.pages.get(targetId);
     this.pages.delete(targetId);
-    if (!record) return;
     if (page && record.stableIdentity.ownership === 'provider_owned') {
       const ref = page.tabRef(); if (ref) await closeMacOsBrowserOwnedTab(ref.browserProduct, ref, this.timeoutMs).catch(() => undefined);
     }
