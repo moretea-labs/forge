@@ -1215,21 +1215,12 @@ export async function reconcileTerminalWorkCleanups(
         report.skippedNonTerminal.push(originalHandle.workId);
         continue;
       }
-      // Stable semantic Work CAS is not cleanup authorization. A model can
-      // close/cancel working context without implicitly granting filesystem
-      // deletion. Cleanup requires separate mechanical evidence: a delivery
-      // receipt, an existing cleanup receipt, or explicit technical cancellation
-      // that terminalized dispatch through cancelWorkContract. Pure semantic
-      // `cancelled`/`completed` revisions therefore retain resources.
-      const cleanupAuthorized = Boolean(contract.completionReceipt)
-        || Boolean(originalHandle.cleanupReceipt)
-        || (contract.semanticState === 'cancelled' && contract.dispatchState === 'terminal');
-      if (!cleanupAuthorized) {
-        report.skippedRetained.push(originalHandle.workId);
-        markOwnedResourceRetained(controllerHome, managedWorkspaceOwnedResourceId(repository.repoId, originalHandle.checkoutId));
-        markOwnedResourceRetained(controllerHome, managedBranchOwnedResourceId(repository.repoId, originalHandle.checkoutId));
-        continue;
-      }
+      // Semantic terminality is the lifecycle authority that starts mechanical
+      // cleanup reconciliation. It is not deletion authority: work_finalizer must
+      // still prove exact Forge ownership, preserve dirty bytes/unique commits,
+      // settle live processes, and honor explicit retention before removing any
+      // physical resource. Completion/cleanup receipts are delivery/progress
+      // evidence, not a second permission gate that can strand terminal Work.
       if (cleanupRetainedByRequest(contract, originalHandle)) {
         report.skippedRetained.push(originalHandle.workId);
         continue;

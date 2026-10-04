@@ -578,13 +578,13 @@ describe('terminal Work cleanup', () => {
     expect(readWorkHandle(fx.controllerHome, fx.repository.repoId, workId)?.state).toBe('cleaned');
   });
 
-  test('periodic reconciler does not repair branch drift from semantic cancellation alone', async () => {
-    const fx = fixture('periodic-branch-drift');
+  test('periodic reconciler converges semantic cancellation without a separate cleanup receipt when resources are safe', async () => {
+    const fx = fixture('periodic-semantic-cancel');
     const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
     createWorkContract(store, {
       workId: fx.handle.workId,
       repoId: fx.repository.repoId,
-      objective: 'Semantic cancellation must not authorize branch mutation or cleanup.',
+      objective: 'Terminal cancellation starts work_finalizer reconciliation without becoming filesystem deletion authority.',
       acceptanceCriteria: [],
       constraints: {},
       allowedPaths: [],
@@ -595,25 +595,23 @@ describe('terminal Work cleanup', () => {
       phase: 'cleanup',
     });
     reviseWorkSemanticContext(store, fx.handle.workId, { expectedRevision: 1, state: 'cancelled' });
-    const actualBranch = 'cleanup/periodic-branch-drift';
-    git(fx.workspace.root!, ['branch', '-m', actualBranch]);
 
     const report = await reconcileTerminalWorkCleanups(fx.controllerHome, { minAgeMs: 0, maxWork: 5 });
-    expect(report.branchReconciled).toEqual([]);
-    expect(report.skippedRetained).toContain(fx.handle.workId);
-    expect(report.cleaned).not.toContain(fx.handle.workId);
-    expect(existsSync(fx.workspace.root!)).toBe(true);
-    expect(branchExists(fx.repositoryRoot, actualBranch)).toBe(true);
+    expect(report.skippedRetained).not.toContain(fx.handle.workId);
+    expect(report.cleaned).toContain(fx.handle.workId);
+    expect(existsSync(fx.workspace.root!)).toBe(false);
+    expect(branchExists(fx.repositoryRoot, fx.branch)).toBe(false);
+    expect(readWorkHandle(fx.controllerHome, fx.repository.repoId, fx.handle.workId)?.cleanupReceipt?.complete).toBe(true);
   });
 
-  test('periodic reconciler does not treat semantic work_complete as cleanup authorization', async () => {
+  test('periodic reconciler converges semantic completion without requiring a completion receipt', async () => {
     const fx = fixture('periodic-semantic-complete');
     const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
     createWorkContract(store, {
       workId: fx.handle.workId,
       repoId: fx.repository.repoId,
       checkoutId: fx.workspace.checkoutId!,
-      objective: 'Semantic completion must not imply filesystem cleanup.',
+      objective: 'Semantic completion starts work_finalizer reconciliation; mechanical cleanup proves deletion safety.',
       acceptanceCriteria: [],
       constraints: {},
       allowedPaths: [],
@@ -626,10 +624,40 @@ describe('terminal Work cleanup', () => {
     reviseWorkSemanticContext(store, fx.handle.workId, { expectedRevision: 1, state: 'completed', resultRefs: ['result:semantic-only'] });
 
     const report = await reconcileTerminalWorkCleanups(fx.controllerHome, { minAgeMs: 0, maxWork: 5 });
-    expect(report.skippedRetained).toContain(fx.handle.workId);
+    expect(report.skippedRetained).not.toContain(fx.handle.workId);
+    expect(report.cleaned).toContain(fx.handle.workId);
+    expect(existsSync(fx.workspace.root!)).toBe(false);
+    expect(branchExists(fx.repositoryRoot, fx.branch)).toBe(false);
+    expect(readWorkHandle(fx.controllerHome, fx.repository.repoId, fx.handle.workId)?.cleanupReceipt?.complete).toBe(true);
+  });
+
+  test('periodic reconciler preserves dirty bytes after semantic completion without a completion receipt', async () => {
+    const fx = fixture('periodic-semantic-complete-dirty');
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    createWorkContract(store, {
+      workId: fx.handle.workId,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.workspace.checkoutId!,
+      objective: 'Terminal semantics must never authorize deletion of dirty managed source.',
+      acceptanceCriteria: [],
+      constraints: {},
+      allowedPaths: [],
+      forbiddenPaths: [],
+      checks: [],
+      requestedBy: 'chatgpt',
+      dispatchState: 'running',
+      phase: 'implementation',
+    });
+    writeFileSync(join(fx.workspace.root!, 'dirty-semantic-only.txt'), 'preserve terminal dirty bytes\n');
+    reviseWorkSemanticContext(store, fx.handle.workId, { expectedRevision: 1, state: 'completed', resultRefs: ['result:semantic-only'] });
+
+    const report = await reconcileTerminalWorkCleanups(fx.controllerHome, { minAgeMs: 0, maxWork: 5 });
+    expect(report.skippedRetained).not.toContain(fx.handle.workId);
     expect(report.cleaned).not.toContain(fx.handle.workId);
+    expect(report.blocked.some((entry) => entry.workId === fx.handle.workId && entry.reason.includes('DIRTY_WORKTREE_RETAINED'))).toBe(true);
     expect(existsSync(fx.workspace.root!)).toBe(true);
-    expect(branchExists(fx.repositoryRoot, fx.branch)).toBe(true);
+    expect(readFileSync(join(fx.workspace.root!, 'dirty-semantic-only.txt'), 'utf8')).toBe('preserve terminal dirty bytes\n');
+    expect(readWorkHandle(fx.controllerHome, fx.repository.repoId, fx.handle.workId)?.cleanupReceipt?.blockers).toContain('DIRTY_WORKTREE_RETAINED');
   });
 
   test('periodic reconciler leaves non-terminal Work untouched', async () => {
