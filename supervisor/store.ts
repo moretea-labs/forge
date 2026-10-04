@@ -969,13 +969,72 @@ export class WorkflowSupervisorStore {
     });
   }
   /**
-   * Explicit operator move of a task's conversation binding. Standalone
-   * Supervisor tasks had no replacement path: an exact conversation that became
-   * permanently unusable could only stall the task forever. This reuses the
-   * existing task conversation authority and refuses whenever a submitted
-   * mutation in the old conversation is still outcome-unknown, because such an
-   * obligation must be reconciled rather than abandoned.
+   * Explicit operator switch of an exhausted task to a *fresh* conversation in
+   * its configured Project. This is the one path that legitimately opens a new
+   * chat: it exists for an exact conversation that is durably unusable, never as
+   * a reaction to provider backpressure. The whole move and its replacement
+   * enrollment turn commit in one transaction, so the task can never be left on
+   * a fresh conversation holding a prompt that assumes prior context.
    */
+  migrateToFreshConversation(input: {
+    taskId: string;
+    expectedConversationId: string;
+    requestId: string;
+    reason: string;
+    authorizedBy: string;
+    replacement: { effectId: string; prompt: string };
+  }): { task: WorkflowSupervisorTask; migrated: boolean; retiredEffectId?: string } {
+    return this.transaction((db) => {
+      const row = statement(db, 'SELECT * FROM tasks WHERE task_id = ?', (s) => s.get(input.taskId)) as Record<string, unknown> | undefined;
+      if (!row) throw new Error('WORKFLOW_SUPERVISOR_TASK_UNKNOWN');
+      const task = taskFromRow(row);
+      if (task.conversationId !== input.expectedConversationId) throw new Error('WORKFLOW_SUPERVISOR_MIGRATION_STALE');
+      if (statement(db, "SELECT 1 FROM events WHERE task_id=? AND kind IN ('terminal_done','terminal_needs_user','terminal_stopped') LIMIT 1", (s) => s.get(input.taskId))) {
+        throw new Error('WORKFLOW_SUPERVISOR_TASK_TERMINAL');
+      }
+      const targetConversationId = `bootstrap:${input.taskId}`;
+      if (task.conversationId === targetConversationId) throw new Error('WORKFLOW_SUPERVISOR_MIGRATION_ALREADY_PENDING');
+      const prior = statement(db, "SELECT COUNT(*) AS total FROM events WHERE task_id = ? AND kind = 'conversation_migrated'", (s) => s.get(input.taskId)) as { total?: number } | undefined;
+      if (Number(prior?.total ?? 0) >= WORKFLOW_SUPERVISOR_MAX_CONVERSATION_MIGRATIONS) throw new Error('WORKFLOW_SUPERVISOR_MIGRATION_BUDGET_EXHAUSTED');
+      // A submitted mutation whose outcome is unknown must be reconciled, never
+      // abandoned by moving the task elsewhere.
+      const pending = oldestUnappliedEffect(db, input.taskId);
+      if (pending) {
+        const ledger = effectDispatchLedger(db, pending.effectId);
+        const negativeProof = latestNotAppliedProofEventId(db, pending.effectId) > ledger.lastEventId;
+        if (ledger.generations > 0 && !negativeProof) throw new Error('WORKFLOW_SUPERVISOR_MIGRATION_OUTCOME_UNKNOWN');
+      }
+      const originKey = `fresh-conversation:${input.taskId}:${input.requestId}`;
+      const replacement = this.reserveEffectWithin(db, {
+        taskId: input.taskId, effectId: input.replacement.effectId, kind: 'enrollment', originKey, prompt: input.replacement.prompt,
+      });
+      if (pending && pending.effectId !== replacement.effectId) {
+        statement(db, 'INSERT OR IGNORE INTO events(task_id,event_key,kind,effect_id,payload_json,occurred_at) VALUES (?,?,?,?,?,?)', (s) => s.run(
+          input.taskId, `effect-retired-fresh-conversation:${pending.effectId}:${input.requestId}`, 'effect_outcome_unknown_superseded',
+          pending.effectId,
+          json({
+            request_id: input.requestId, authorized_by: input.authorizedBy, reason: input.reason,
+            generation: 0, replacement_effect_id: replacement.effectId, attestation: 'never_dispatched_fresh_conversation',
+          }), now()));
+      }
+      statement(db, 'UPDATE tasks SET conversation_id = ?, conversation_url = ? WHERE task_id = ?', (s) => s.run(targetConversationId, 'https://chatgpt.com/', input.taskId));
+      statement(db, 'INSERT INTO events(task_id,event_key,kind,payload_json,occurred_at) VALUES (?,?,?,?,?)', (s) => s.run(
+        input.taskId, `conversation-migrated:${input.taskId}:${input.requestId}`, 'conversation_migrated',
+        json({
+          from_conversation_id: task.conversationId, to_conversation_id: targetConversationId, to_conversation_url: 'https://chatgpt.com/',
+          fresh_conversation: true, replacement_effect_id: replacement.effectId,
+          request_id: input.requestId, authorized_by: input.authorizedBy, reason: input.reason,
+          ...(pending ? { retired_effect_id: pending.effectId } : {}),
+        }), now()));
+      const updated = statement(db, 'SELECT * FROM tasks WHERE task_id = ?', (s) => s.get(input.taskId)) as Record<string, unknown> | undefined;
+      if (!updated) throw new Error('WORKFLOW_SUPERVISOR_TASK_PERSIST_FAILED');
+      return {
+        task: taskFromRow(updated), migrated: true,
+        ...(pending && pending.effectId !== replacement.effectId ? { retiredEffectId: pending.effectId } : {}),
+      };
+    });
+  }
+
   migrateConversation(input: { taskId: string; expectedConversationId: string; conversationId: string; conversationUrl: string; requestId: string; reason: string; authorizedBy: string }): { task: WorkflowSupervisorTask; migrated: boolean } {
     return this.transaction((db) => {
       const row = statement(db, 'SELECT * FROM tasks WHERE task_id = ?', (s) => s.get(input.taskId)) as Record<string, unknown> | undefined;

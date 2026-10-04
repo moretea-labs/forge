@@ -223,10 +223,27 @@ export class WorkflowSupervisorControlPlane {
    * is replaced. Requires the caller's expected current conversation so a stale
    * decision cannot silently move a task that already advanced.
    */
-  migrateConversation(input: { taskId: string; expectedConversationId: string; conversationId: string; conversationUrl: string; requestId: string; reason: string; authorizedBy?: string }): { taskId: string; conversationId: string; conversationUrl: string; migrated: boolean } {
+  migrateConversation(input: { taskId: string; expectedConversationId: string; conversationId?: string; conversationUrl?: string; fresh?: boolean; requestId: string; reason: string; authorizedBy?: string }): { taskId: string; conversationId: string; conversationUrl: string; migrated: boolean; freshConversation?: boolean } {
     const task = this.requireTask(input.taskId);
     requireNonTerminalTask(this.store, task.taskId);
     if (!input.requestId.trim() || !input.reason.trim()) throw new Error('WORKFLOW_SUPERVISOR_MIGRATION_REASON_REQUIRED');
+    if (input.fresh === true) {
+      if (input.conversationId?.trim() || input.conversationUrl?.trim()) throw new Error('WORKFLOW_SUPERVISOR_MIGRATION_FRESH_CONVERSATION_CONFLICT');
+      const origin = `fresh-conversation:${task.taskId}:${input.requestId}`;
+      const effectId = stableEffectId(origin);
+      const migrated = this.store.migrateToFreshConversation({
+        taskId: task.taskId,
+        expectedConversationId: input.expectedConversationId,
+        requestId: input.requestId,
+        reason: input.reason,
+        authorizedBy: input.authorizedBy?.trim() || 'operator',
+        // A fresh conversation has no prior turns, so the replacement turn must
+        // carry the objective again instead of the bare "继续。" continuation.
+        replacement: { effectId, prompt: this.renderPrompt(task, effectId, 'enrollment') },
+      });
+      return { taskId: migrated.task.taskId, conversationId: migrated.task.conversationId, conversationUrl: migrated.task.conversationUrl, migrated: migrated.migrated, freshConversation: migrated.migrated };
+    }
+    if (!input.conversationId?.trim() || !input.conversationUrl?.trim()) throw new Error('WORKFLOW_SUPERVISOR_MIGRATION_CONVERSATION_REQUIRED');
     const identity = parseChatgptConversationIdentity(input.conversationUrl);
     if (identity.conversationId !== input.conversationId) throw new Error('WORKFLOW_SUPERVISOR_MIGRATION_CONVERSATION_MISMATCH');
     const migrated = this.store.migrateConversation({

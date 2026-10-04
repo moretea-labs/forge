@@ -100,14 +100,13 @@ export async function getWorkflowSupervisorTaskStall(forgeHome: string, taskId: 
  * design: it is never triggered automatically by provider backpressure.
  */
 export async function migrateWorkflowSupervisorConversation(forgeHome: string, input: {
-  taskId: string; expectedConversationId: string; conversationId: string; conversationUrl: string;
-  requestId: string; reason: string; authorizedBy?: string;
-}): Promise<{ taskId: string; conversationId: string; conversationUrl: string; migrated: boolean }> {
+  taskId: string; expectedConversationId: string; requestId: string; reason: string; authorizedBy?: string;
+} & ({ conversationId: string; conversationUrl: string; fresh?: false } | { fresh: true; conversationId?: never; conversationUrl?: never })
+): Promise<{ taskId: string; conversationId: string; conversationUrl: string; migrated: boolean; freshConversation?: boolean }> {
   return await rpc(forgeHome, 'task_migrate_conversation', {
     task_id: input.taskId,
     expected_conversation_id: input.expectedConversationId,
-    conversation_id: input.conversationId,
-    conversation_url: input.conversationUrl,
+    ...(input.fresh === true ? { fresh: true } : { conversation_id: input.conversationId, conversation_url: input.conversationUrl }),
     request_id: input.requestId,
     reason: input.reason,
     ...(input.authorizedBy?.trim() ? { authorized_by: input.authorizedBy.trim() } : {}),

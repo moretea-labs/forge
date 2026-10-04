@@ -2780,6 +2780,51 @@ describe('Workflow Supervisor operator recovery and conversation replacement', (
     store.close();
   });
 
+  test('a durably unusable conversation is replaced by a fresh one only through an explicit operator move', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-fresh-conversation-'));
+    roots.push(root);
+    const store = new WorkflowSupervisorStore(join(root, 'supervisor-home'));
+    const control = new WorkflowSupervisorControlPlane(store, {}, { browserTaskActive: () => true });
+    const conversationA = 'ddddddd1-1111-2222-3333-444444444444';
+    const conversationB = 'ddddddd2-1111-2222-3333-444444444444';
+    const url = (id: string): string => `https://chatgpt.com/c/${id}`;
+    const taskId = 'fresh-conversation-task';
+    control.registerTask({
+      taskId, conversationId: conversationA, conversationUrl: url(conversationA),
+      objective: 'Fresh conversation objective.', completionContract: {}, continuationPolicy: { kind: 'standalone_supervisor' }, userBlockerPolicy: {},
+    });
+    const pending = control.reserveEnrollment(taskId);
+    expect(control.migrateConversation({
+      taskId, expectedConversationId: conversationA, fresh: true, requestId: 'fresh-1',
+      reason: 'The exact conversation no longer renders any content for the provider.', authorizedBy: 'greyson',
+    })).toMatchObject({ migrated: true, conversationId: `bootstrap:${taskId}`, freshConversation: true });
+    expect(control.getTask(taskId)?.conversationUrl).toBe('https://chatgpt.com/');
+    // The replacement turn carries the objective again: a fresh conversation has
+    // no prior turns for a bare continuation to rely on.
+    const next = store.nextBrowserEffect(taskId);
+    expect(next).toMatchObject({ mode: 'send', generation: 1, effect: { kind: 'enrollment' } });
+    expect(next!.effect.effectId).not.toBe(pending.effectId);
+    expect(next!.effect.prompt).toContain('Fresh conversation objective.');
+    expect(store.currentUnappliedEffect(taskId)?.effectId).toBe(next!.effect.effectId);
+    expect(() => control.migrateConversation({
+      taskId, expectedConversationId: conversationA, fresh: true, requestId: 'fresh-stale', reason: 'stale decision',
+    })).toThrow('WORKFLOW_SUPERVISOR_MIGRATION_STALE');
+    // An unresolved submitted mutation is never abandoned by moving the task.
+    const blockedTaskId = 'fresh-conversation-blocked';
+    control.registerTask({
+      taskId: blockedTaskId, conversationId: conversationB, conversationUrl: url(conversationB),
+      objective: 'Blocked fresh conversation.', completionContract: {}, continuationPolicy: { kind: 'standalone_supervisor' }, userBlockerPolicy: {},
+    });
+    const blockedEffect = control.reserveEnrollment(blockedTaskId);
+    store.recordEffectDispatchStarted(blockedEffect.effectId, 1, 'uncertain-send', { surface: 'macos-native' });
+    store.recordEffectObservation(blockedEffect.effectId, 'unknown-after-send', 'unknown', { surface: 'macos-native', reconciliation: true, reason: 'outbound_not_confirmed' });
+    expect(() => control.migrateConversation({
+      taskId: blockedTaskId, expectedConversationId: conversationB, fresh: true, requestId: 'fresh-blocked',
+      reason: 'cannot abandon an unresolved submission',
+    })).toThrow('WORKFLOW_SUPERVISOR_MIGRATION_OUTCOME_UNKNOWN');
+    store.close();
+  });
+
   test('a task-local exact-conversation failure spaces its own retries instead of reopening the surface every tick', async () => {
     const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-target-spacing-'));
     roots.push(root);

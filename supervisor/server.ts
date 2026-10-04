@@ -368,8 +368,9 @@ async function dispatch(control: WorkflowSupervisorControlPlane, discovery: Work
   if (req.method === 'task_migrate_conversation') return control.migrateConversation({
     taskId: text(p, 'task_id'),
     expectedConversationId: text(p, 'expected_conversation_id'),
-    conversationId: text(p, 'conversation_id'),
-    conversationUrl: text(p, 'conversation_url'),
+    ...(typeof p.conversation_id === 'string' && p.conversation_id.trim() ? { conversationId: p.conversation_id.trim() } : {}),
+    ...(typeof p.conversation_url === 'string' && p.conversation_url.trim() ? { conversationUrl: p.conversation_url.trim() } : {}),
+    ...(p.fresh === true ? { fresh: true } : {}),
     requestId: text(p, 'request_id'),
     reason: text(p, 'reason'),
     ...(typeof p.authorized_by === 'string' && p.authorized_by.trim() ? { authorizedBy: p.authorized_by.trim() } : {}),
