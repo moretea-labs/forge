@@ -10,6 +10,7 @@ import {
   routeDurableMcpCall,
 } from '../../src/runtime/gateway/mcp/router';
 import { executeGatewayRoutedOperation } from '../../adapters/mcp/runtime-gateway/gateway-execution-adapter';
+import { callCoreCapabilityAdapter } from '../../adapters/mcp/runtime-gateway/core-capability-adapter';
 import { createMcpToolContext } from '../../src/cli/mcp/server';
 import { callMultiRepositoryTool } from '../../src/cli/mcp/multi-repository';
 import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
@@ -98,6 +99,185 @@ beforeEach(() => {
 
 afterEach(() => {
   while (roots.length > 0) rmSync(roots.pop()!, { recursive: true, force: true });
+});
+
+describe('repository.git Work delivery', () => {
+  test('fast-forwards validated isolated Work, cleans resources, and preserves semantic Work state', async () => {
+    const fx = fixture();
+    roots.push(fx.root);
+    const started = await callExecutionTool(fx.ctx, 'session_start', {});
+    const session = (started?.structuredContent as { session: { sessionId: string } }).session;
+    const prepared = await callExecutionTool(fx.ctx, 'work_prepare', {
+      session_id: session.sessionId,
+      repo_id: fx.repository.repoId,
+      request_id: 'prepare-capability-delivery-fast-forward',
+      objective: 'Deliver one validated isolated Work by fast-forward only.',
+      acceptance_criteria: ['Target contains the exact source commit and semantic completion remains separate.'],
+      checks: [],
+      isolation: 'new_worktree',
+    });
+    expect(prepared?.isError).not.toBe(true);
+    const work = (prepared?.structuredContent as { work: { workId: string } }).work;
+    const handle = readWorkHandle(fx.controllerHome, fx.repository.repoId, work.workId)!;
+    const workRoot = handle.worktreePath;
+    writeFileSync(join(workRoot, 'src', 'lib.ts'), 'export const n = 2;\n');
+    git(workRoot, ['add', 'src/lib.ts']);
+    git(workRoot, ['commit', '-m', 'validated delivery source']);
+    const sourceHead = git(workRoot, ['rev-parse', 'HEAD']);
+
+    const validated = await callExecutionTool(fx.ctx, 'work_validate', {
+      session_id: session.sessionId,
+      repo_id: fx.repository.repoId,
+      work_id: work.workId,
+      check_ids: [],
+      request_id: 'validate-capability-delivery-fast-forward',
+    });
+    expect(validated?.isError).not.toBe(true);
+    expect((validated?.structuredContent as { validation: { passed: boolean } }).validation.passed).toBe(true);
+
+    const delivered = await callCoreCapabilityAdapter(fx.ctx, 'capability_execute', {
+      repo_id: fx.repository.repoId,
+      capability_id: 'repository.git',
+      action: 'deliver_work',
+      request_id: 'deliver-capability-fast-forward',
+      arguments: { session_id: session.sessionId, work_id: work.workId },
+    });
+    if (delivered?.isError) throw new Error(JSON.stringify(delivered.structuredContent ?? delivered));
+    expect(git(fx.repoRoot, ['rev-parse', 'HEAD'])).toBe(sourceHead);
+    expect(existsSync(workRoot)).toBe(false);
+    const contract = getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, work.workId)!;
+    expect(contract.semanticState).toBe('open');
+    expect(contract.completionReceipt).toMatchObject({
+      source: 'controller_work',
+      workId: work.workId,
+      targetBranch: 'main',
+      targetRevision: sourceHead,
+      sourceRevision: sourceHead,
+      delivery: { status: 'integrated', strategy: 'work_fast_forward', reachable: true },
+      cleanup: { status: 'complete', blockers: [] },
+    });
+  });
+
+  test('fails closed when the durable target checkout is dirty', async () => {
+    const fx = fixture();
+    roots.push(fx.root);
+    const started = await callExecutionTool(fx.ctx, 'session_start', {});
+    const session = (started?.structuredContent as { session: { sessionId: string } }).session;
+    const prepared = await callExecutionTool(fx.ctx, 'work_prepare', {
+      session_id: session.sessionId,
+      repo_id: fx.repository.repoId,
+      request_id: 'prepare-capability-delivery-dirty-target',
+      objective: 'Do not overwrite a dirty delivery target.',
+      checks: [],
+      isolation: 'new_worktree',
+    });
+    const work = (prepared?.structuredContent as { work: { workId: string } }).work;
+    const handle = readWorkHandle(fx.controllerHome, fx.repository.repoId, work.workId)!;
+    writeFileSync(join(handle.worktreePath, 'src', 'lib.ts'), 'export const n = 2;\n');
+    git(handle.worktreePath, ['add', 'src/lib.ts']);
+    git(handle.worktreePath, ['commit', '-m', 'dirty-target delivery source']);
+    const sourceHead = git(handle.worktreePath, ['rev-parse', 'HEAD']);
+    const targetHead = git(fx.repoRoot, ['rev-parse', 'HEAD']);
+    const validated = await callExecutionTool(fx.ctx, 'work_validate', {
+      session_id: session.sessionId,
+      repo_id: fx.repository.repoId,
+      work_id: work.workId,
+      check_ids: [],
+      request_id: 'validate-capability-delivery-dirty-target',
+    });
+    expect((validated?.structuredContent as { validation: { passed: boolean } }).validation.passed).toBe(true);
+    writeFileSync(join(fx.repoRoot, 'scratch-target.txt'), 'uncommitted target bytes\n');
+
+    const delivered = await callCoreCapabilityAdapter(fx.ctx, 'capability_execute', {
+      repo_id: fx.repository.repoId,
+      capability_id: 'repository.git',
+      action: 'deliver_work',
+      request_id: 'deliver-capability-dirty-target',
+      arguments: { session_id: session.sessionId, work_id: work.workId },
+    });
+    expect(delivered?.isError).toBe(true);
+    expect(JSON.stringify(delivered?.structuredContent ?? delivered)).toContain('WORK_DELIVERY_TARGET_DIRTY');
+    expect(git(fx.repoRoot, ['rev-parse', 'HEAD'])).toBe(targetHead);
+    expect(git(handle.worktreePath, ['rev-parse', 'HEAD'])).toBe(sourceHead);
+    expect(existsSync(handle.worktreePath)).toBe(true);
+    expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, work.workId)?.completionReceipt).toBeUndefined();
+  });
+
+  test('requires validation authority for the exact committed source HEAD', async () => {
+    const fx = fixture();
+    roots.push(fx.root);
+    const started = await callExecutionTool(fx.ctx, 'session_start', {});
+    const session = (started?.structuredContent as { session: { sessionId: string } }).session;
+    const prepared = await callExecutionTool(fx.ctx, 'work_prepare', {
+      session_id: session.sessionId,
+      repo_id: fx.repository.repoId,
+      request_id: 'prepare-capability-delivery-stale-validation',
+      objective: 'Reject delivery when committed source moved after validation.',
+      checks: [],
+      isolation: 'new_worktree',
+    });
+    const work = (prepared?.structuredContent as { work: { workId: string } }).work;
+    const handle = readWorkHandle(fx.controllerHome, fx.repository.repoId, work.workId)!;
+    writeFileSync(join(handle.worktreePath, 'src', 'lib.ts'), 'export const n = 2;\n');
+    git(handle.worktreePath, ['add', 'src/lib.ts']);
+    git(handle.worktreePath, ['commit', '-m', 'validated source']);
+    const validated = await callExecutionTool(fx.ctx, 'work_validate', {
+      session_id: session.sessionId,
+      repo_id: fx.repository.repoId,
+      work_id: work.workId,
+      check_ids: [],
+      request_id: 'validate-capability-delivery-stale-validation',
+    });
+    expect((validated?.structuredContent as { validation: { passed: boolean } }).validation.passed).toBe(true);
+    writeFileSync(join(handle.worktreePath, 'src', 'lib.ts'), 'export const n = 3;\n');
+    git(handle.worktreePath, ['add', 'src/lib.ts']);
+    git(handle.worktreePath, ['commit', '-m', 'move source after validation']);
+    const movedHead = git(handle.worktreePath, ['rev-parse', 'HEAD']);
+    const targetHead = git(fx.repoRoot, ['rev-parse', 'HEAD']);
+
+    const delivered = await callCoreCapabilityAdapter(fx.ctx, 'capability_execute', {
+      repo_id: fx.repository.repoId,
+      capability_id: 'repository.git',
+      action: 'deliver_work',
+      request_id: 'deliver-capability-stale-validation',
+      arguments: { session_id: session.sessionId, work_id: work.workId },
+    });
+    expect(delivered?.isError).toBe(true);
+    expect(JSON.stringify(delivered?.structuredContent ?? delivered)).toContain('WORK_DELIVERY_CURRENT_VALIDATION_REQUIRED');
+    expect(git(fx.repoRoot, ['rev-parse', 'HEAD'])).toBe(targetHead);
+    expect(git(handle.worktreePath, ['rev-parse', 'HEAD'])).toBe(movedHead);
+    expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, work.workId)?.completionReceipt).toBeUndefined();
+  });
+
+  test('work_prepare durably binds delivery to the exact selected source checkout branch', async () => {
+    const fx = fixture();
+    roots.push(fx.root);
+    const parentRoot = join(fx.root, 'parent-delivery-checkout');
+    git(fx.repoRoot, ['worktree', 'add', '-b', 'parent-delivery', parentRoot, 'HEAD']);
+    const rotated = addRepositoryCheckout({
+      repoId: fx.repository.repoId,
+      path: parentRoot,
+      controllerHome: fx.controllerHome,
+      activate: true,
+    });
+    const started = await callExecutionTool(fx.ctx, 'session_start', {});
+    const session = (started?.structuredContent as { session: { sessionId: string } }).session;
+    const prepared = await callExecutionTool(fx.ctx, 'work_prepare', {
+      session_id: session.sessionId,
+      repo_id: fx.repository.repoId,
+      checkout_id: rotated.activeCheckoutId,
+      request_id: 'prepare-bound-parent-delivery-target',
+      objective: 'Bind one child Work to the exact selected parent checkout.',
+      checks: [],
+      isolation: 'new_worktree',
+    });
+    expect(prepared?.isError).not.toBe(true);
+    const work = (prepared?.structuredContent as { work: { workId: string } }).work;
+    const handle = readWorkHandle(fx.controllerHome, fx.repository.repoId, work.workId)!;
+    expect(handle.sourceCheckoutId).toBe(rotated.activeCheckoutId);
+    expect(handle.deliveryTargetBranch).toBe('parent-delivery');
+    expect(handle.deliveryTargetBranch).not.toBe(fx.repository.defaultBranch);
+  });
 });
 
 describe('Gateway Thin Harness routing before ExecutionJob', () => {

@@ -69,11 +69,12 @@ export function currentPermissionSnapshotVersion(controllerHome: string, repoId:
   return readRepositoryAccessPolicy(controllerHome, repoId).revision;
 }
 
-export function assertWorkHandleLifecycle(handle: WorkHandleState, operation: 'inspect' | 'execute' | 'validate'): void {
+export function assertWorkHandleLifecycle(handle: WorkHandleState, operation: 'inspect' | 'execute' | 'validate' | 'deliver'): void {
   const allowed: Record<typeof operation, readonly WorkHandleState['state'][]> = {
     inspect: ['prepared', 'editing', 'validating', 'committed', 'merged', 'failed', 'failed_terminal_cleanup', 'cleaned'],
     execute: ['prepared', 'editing'],
     validate: ['prepared', 'editing', 'validating', 'committed', 'merged', 'failed'],
+    deliver: ['editing', 'committed', 'merged', 'failed'],
   };
   if (!allowed[operation].includes(handle.state)) {
     fail('WORK_HANDLE_LIFECYCLE_INVALID', `${operation} is not valid while handle is ${handle.state}`);
@@ -85,7 +86,7 @@ export function validateWorkHandle(
   handle: WorkHandleState,
   identity: SessionIdentity,
   level: ValidationLevel,
-  operation: 'inspect' | 'execute' | 'validate',
+  operation: 'inspect' | 'execute' | 'validate' | 'deliver',
 ): ValidatedWorkHandle {
   const session = requireExecutionSession(controllerHome, identity);
   if (handle.principalId !== session.principalId) fail('WORK_HANDLE_PRINCIPAL_MISMATCH', 'work handle belongs to another principal');
@@ -125,7 +126,7 @@ export function validateWorkHandle(
   const currentBranch = gitText(root, ['branch', '--show-current']);
   const currentHead = gitText(root, ['rev-parse', '--verify', 'HEAD']);
   if (currentBranch !== handle.branch) fail('WORK_HANDLE_BRANCH_CHANGED', `expected ${handle.branch}, found ${currentBranch ?? 'detached'}`);
-  const managedWorkProgress = (operation === 'inspect' || operation === 'validate')
+  const managedWorkProgress = (operation === 'inspect' || operation === 'validate' || operation === 'deliver')
     && handle.managedWorktree
     && Boolean(handle.expectedHead && currentHead)
     && gitSucceeds(root, ['merge-base', '--is-ancestor', handle.expectedHead!, currentHead!]);

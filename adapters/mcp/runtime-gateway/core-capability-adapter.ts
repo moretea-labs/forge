@@ -1,6 +1,7 @@
 import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
 import { commitSelectedPaths, selectedPathDiff, stageSelectedPaths } from '../../../src/cli/repositories/selected-path-actions';
+import { deliverWork } from '../../../src/runtime/control-plane/execution/work-delivery-service';
 import { result } from './result-adapter';
 import { selected } from './shared-adapter';
 import { callWorkflowSupervisorAdapter } from './workflow-supervisor-adapter';
@@ -163,6 +164,13 @@ export async function callCoreCapabilityAdapter(
           checkoutId: repository.activeCheckoutId,
           ...committed,
         }, Boolean(committed.error));
+      }
+      case 'deliver_work': {
+        const delivered = await deliverWork(ctx, {
+          ...input,
+          repo_id: repository.repoId,
+        });
+        return result(delivered);
       }
       default:
         return result({ error: { code: 'CORE_CAPABILITY_ACTION_UNSUPPORTED', message: `Unsupported repository.git action: ${action || '<empty>'}` } }, true);

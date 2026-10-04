@@ -197,6 +197,8 @@ export function prepareWork(ctx: McpExecutionContext, args: Record<string, unkno
   const needsDependencies = args.needs_dependencies === true;
   const baseCheckoutId = repository.activeCheckoutId;
   const baseStatus = repositoryGitStatus(repository);
+  const deliveryTargetBranch = baseStatus.branch;
+  if (!deliveryTargetBranch) throw new Error(`WORK_DELIVERY_TARGET_DETACHED: source checkout ${baseCheckoutId} has no branch`);
   if (isolation === 'reuse' && !baseStatus.clean) throw new Error('WORKTREE_DIRTY: reuse was requested but the selected checkout is dirty; choose new_worktree or auto');
   // A repository Work freezes its start revision on its own checkout. Sharing the
   // canonical checkout is an explicit model choice (`reuse`), never the auto path.
@@ -313,7 +315,7 @@ export function prepareWork(ctx: McpExecutionContext, args: Record<string, unkno
       const handle: WorkHandleState = {
         schemaVersion: 1, workId: createdWorkId, sessionId: session.sessionId, principalId: session.principalId,
         repositoryId: repository.repoId, checkoutId: checkout.activeCheckoutId, worktreePath: checkout.canonicalRoot, branch,
-        sourceCheckoutId: baseCheckoutId, managedWorktree: workspace.managed, workContractId: contract.workId, goalId, delegationVersion: delegation.version,
+        sourceCheckoutId: baseCheckoutId, deliveryTargetBranch, managedWorktree: workspace.managed, workContractId: contract.workId, goalId, delegationVersion: delegation.version,
         baseCommit: workspace.baseRevision ?? head, deliveryBaseCommit: workspace.baseRevision ?? head, expectedHead: head, permissionSnapshotVersion: policy.revision,
         state: 'prepared', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), finalization: initialStage(),
         cleanupResponsibility: { owner: 'work_finalizer', registeredAt: new Date().toISOString() },

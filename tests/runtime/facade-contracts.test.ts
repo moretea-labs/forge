@@ -22,6 +22,23 @@ describe('handoff and facade contracts', () => {
     expect(FACADE_TOOLS).toEqual(['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work', 'capability_execute']);
   });
 
+  test('exposes Work delivery as a repository.git action without widening the top-level facade', () => {
+    const descriptor = listCapabilityDescriptors().find((entry) => entry.capabilityId === 'repository.git');
+    expect(descriptor).toMatchObject({
+      domain: 'repository', group: 'git', operationClass: 'write', risk: 'local_repo_write',
+      exposedVia: 'capability_execute', schemaExposure: 'stable_static',
+    });
+    const schema = getCoreCapabilityExecutionSchema('repository.git') as {
+      executeWith?: string;
+      actions?: Record<string, { argumentsSchema?: { required?: string[] } }>;
+    } | undefined;
+    expect(schema?.executeWith).toBe('capability_execute');
+    expect(Object.keys(schema?.actions ?? {}).sort()).toEqual(['commit_paths', 'deliver_work', 'diff_paths', 'stage_paths']);
+    expect(schema?.actions?.deliver_work?.argumentsSchema?.required).toEqual(['session_id', 'work_id']);
+    expect(runtimeToolDefinitions.some((definition) => definition.name === 'work_deliver')).toBe(false);
+    expect(FACADE_TOOLS).toHaveLength(6);
+  });
+
   test('exposes standalone Workflow Supervisor through capability_execute without widening the facade', () => {
     const descriptor = listCapabilityDescriptors().find((entry) => entry.capabilityId === 'controller.workflow_supervisor');
     expect(descriptor).toMatchObject({
