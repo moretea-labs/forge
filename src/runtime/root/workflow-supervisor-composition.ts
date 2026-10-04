@@ -182,8 +182,10 @@ export function forgeWorkflowSupervisorLifecycleHooks(controllerHome: string): W
       const taskControllerHome = workflowSupervisorContractText(task, 'controller_home');
       if (!repoId || !workId || (taskControllerHome && taskControllerHome !== controllerHome)) return undefined;
       const work = getWorkContract({ controllerHome, repoId }, workId);
-      if (!work) throw new Error(`WORKFLOW_SUPERVISOR_CANONICAL_WORK_NOT_FOUND:${workId}`);
-      return work.objective;
+      // A persisted Supervisor task/effect chain can outlive a retired Work.
+      // Keep its recorded objective for observation/reconciliation; absence must
+      // never manufacture a replacement Work or turn into a dispatch exception.
+      return work?.objective;
     },
     effectDispatchEvidence: () => {
       const claim = getRuntimeWriteClaim();
