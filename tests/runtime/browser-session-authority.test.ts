@@ -4,8 +4,10 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
 import {
+  browserProfileRootsForRuntime,
   buildBrowserPluginManifest,
   executeBrowserPluginAction,
+  reclaimOrphanedIsolatedBrowserProfiles,
   resetBrowserPluginRuntimeHooksForTest,
   resolveBrowserPluginAuthorizationContext,
   setBrowserPluginRuntimeHooksForTest,
@@ -54,6 +56,30 @@ function fixture() {
     repoB: join(root, 'repo-b'),
   };
 }
+
+test('reclaims only Forge-owned isolated browser profiles with no live owner', () => {
+  const fx = fixture();
+  const controllerHome = join(fx.controllerHome);
+  const repoProfile = join(controllerHome, 'repositories', 'repo_a', 'browser', 'profiles', 'isolated', 'browser_1');
+  const foreignProfile = join(fx.repoA, '.forge', 'browser', 'profiles', 'default');
+  const signals: Array<{ pid: number; signal: string }> = [];
+  setBrowserPluginRuntimeHooksForTest({
+    listProcesses: () => [
+      { pid: 11, command: `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome --user-data-dir=${repoProfile}` },
+      { pid: 12, command: `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome --type=renderer --user-data-dir=${repoProfile}` },
+      { pid: 13, command: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome --user-data-dir=/Users/example/Library/Application Support/Google/Chrome' },
+      { pid: 14, command: `/Applications/Vivaldi.app/Contents/MacOS/Vivaldi --user-data-dir=${foreignProfile}` },
+    ],
+    signalProcess: (pid, signal) => { signals.push({ pid, signal }); return true; },
+  });
+  const roots = browserProfileRootsForRuntime({ controllerHome, repoRoots: [fx.repoA] });
+  const result = reclaimOrphanedIsolatedBrowserProfiles({ profileRoots: roots, graceMs: 0 });
+  expect(result.terminated).toBe(1);
+  // The Forge-owned isolated profile is reclaimed; its child renderer is not
+  // signalled separately, and neither the user's Chrome profile nor a
+  // `.forge/browser/profiles/default` (non-isolated) profile is touched.
+  expect(signals.map((entry) => entry.pid)).toEqual([11]);
+});
 
 const SUPERVISOR_EXTENSION_KEY = 'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAxFzo1eixjsWsZbN1pBuyzdKinJSAAuzTRavD0xFQFwrTIEQ7hxxueEBEhifpGq9nplNnmxmZvIL7PJycEAYT8mrbyXBLCPR1jQBuL4YR775phnlNVpF3dHX5OWDHLWRnHRgOO1FibQ54fM2rKylr66+x+J6/4C7a9dpiSMuxf3fOStXA6wJb0d7A4E22Q1+GGfWgs0NCyVI5k4aczK+J5Ao61ZXKBr8Qw/FCmwhCcDgQdIpURgoMHkyvQH3ryYWocucjRhMVsU8H65adIIKFHkEhPJCiVY64L6bu6kNR2fpf0yJ1GvI5ota6Hf4NAEi7Yt7PL7i3ISyv3pPQWW1nIwIDAQAB';
 const SUPERVISOR_EXTENSION_ID = 'glinahpcibpcfcimdcceplmfkgcjehin';

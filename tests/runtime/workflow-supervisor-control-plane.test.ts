@@ -2052,9 +2052,13 @@ test('provider recovery is a single exactly-once resume and does not recurse thr
   });
   expect(exhausted.state).toBe('exhausted');
   expect(store.providerResumeExhausted(resume.effectId)).toBe(true);
-  // Exhaustion bounds recovery recursion; it does not abandon an already-applied
-  // provider turn whose assistant receipt may still arrive late.
-  expect(control.browserTasks()).toEqual([]);
+  // Exhaustion bounds recovery recursion: no further command and no second
+  // recovery effect. It does not abandon an already-applied provider turn whose
+  // assistant receipt may still arrive late, so the task stays observable as a
+  // read-only probe instead of disappearing from the queue.
+  expect(control.browserTasks()).toHaveLength(1);
+  expect(control.browserPoll({ conversationId, conversationUrl }).command).toBeUndefined();
+  expect(control.taskStall(taskId)).toMatchObject({ state: 'provider_resume_exhausted', effectId: resume.effectId });
 
   const lateReceipt = renderSupervisorReceipt(control.getTask(taskId)!, resume.effectId, 'CONTINUE');
   const late = await control.observeAssistantTurn({ taskId, conversationId, responseText: lateReceipt });

@@ -41,6 +41,8 @@ const USER_VISIBLE_DEGRADED_AFTER_MS = 30_000;
  * retry-spacing classification.
  */
 const TASK_TARGET_RETRY_BASE_MS = 30_000;
+/** Slow read-only probe cadence for an applied turn whose bounded resume is exhausted. */
+const AWAITING_RECEIPT_OBSERVATION_MS = 60_000;
 const TASK_TARGET_RETRY_MAX_MS = 10 * 60_000;
 export const TASK_TARGET_SPACED_FAILURE_CODES: ReadonlySet<string> = new Set([
   'COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE',
@@ -190,6 +192,8 @@ export class WorkflowSupervisorNativeBrowserAdapter {
   private firstTransportFailureAtMs?: number;
   private transportProjectionVisible = false;
   private readonly taskTransportFailures = new Map<string, TaskTransportFailure>();
+  /** Spacing for read-only observation of a turn whose bounded resume is exhausted. */
+  private readonly awaitingReceiptObservedAtMs = new Map<string, number>();
 
   constructor(
     private readonly control: WorkflowSupervisorControlPlane,
@@ -330,7 +334,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     this.timer = undefined;
     await this.inflight?.catch(() => undefined);
     await this.deps.targetPort.close().catch(() => undefined);
-    this.observedAssistant.clear(); this.providerFailureSeen.clear(); this.freshSendCheckedAt.clear(); this.taskTransportFailures.clear();
+    this.observedAssistant.clear(); this.providerFailureSeen.clear(); this.freshSendCheckedAt.clear(); this.taskTransportFailures.clear(); this.awaitingReceiptObservedAtMs.clear();
   }
 
   async runOnce(): Promise<void> {
@@ -415,6 +419,14 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     let poll = this.control.browserPoll({ conversationId: task.conversationId, conversationUrl: task.conversationUrl });
     if (poll.terminal) return;
     if (poll.command) this.lastCommandAttemptAtMs = this.deps.nowMs();
+    // A turn whose bounded resume is exhausted keeps one slow read-only probe so
+    // late evidence can still land, without polling an unchanged surface at the
+    // active tick rate and without minting any new provider turn.
+    if (!poll.command && this.control.taskStall(task.taskId).state === 'provider_resume_exhausted') {
+      const observedAt = this.awaitingReceiptObservedAtMs.get(task.taskId) ?? 0;
+      if (this.deps.nowMs() - observedAt < AWAITING_RECEIPT_OBSERVATION_MS) return;
+      this.awaitingReceiptObservedAtMs.set(task.taskId, this.deps.nowMs());
+    }
     const ensured = await this.deps.targetPort.ensureExact(identityForTask(task));
     if (ensured.state !== 'ready') { this.noteTargetUnavailable(task, poll.command?.effectId, ensured.failure); return; }
     const target = ensured.target;

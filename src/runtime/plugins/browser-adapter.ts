@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'crypto';
+import { spawnSync } from 'child_process';
 import { createRequire } from 'module';
 import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'fs';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'path';
@@ -11,6 +12,7 @@ import type {
 } from './types';
 import { AssistantPluginError, toAssistantPluginError } from './errors';
 import { listCanonicalGrants } from '../../../packages/kernel/identity/api/index';
+import { resolveRepoPreferredControllerHome } from '../../cli/repositories/controller-home';
 import { readRepositoryPluginConfig, writeRepositoryPluginConfig, type RepositoryPluginConfigContext } from './config-store';
 import {
   browserActions,
@@ -266,10 +268,29 @@ interface BrowserPluginRuntimeHooks {
   loadPlaywright(repoRoot?: string): PlaywrightRuntime;
   fetchJson(url: string, timeoutMs: number): Promise<unknown>;
   activateNativeBrowserApplication(input: AssistantPluginActionExecutionInput, product: MacOsBrowserProduct): Promise<void>;
+  /** Bounded process inventory used only to reclaim Forge-owned browser profiles. */
+  listProcesses(): Array<{ pid: number; command: string }>;
+  /** Signal one process; returns false when it already exited. */
+  signalProcess(pid: number, signal: NodeJS.Signals): boolean;
 }
 
 const defaultRuntimeHooks: BrowserPluginRuntimeHooks = {
   now: () => new Date().toISOString(),
+  listProcesses: () => {
+    const result = spawnSync('ps', ['-eo', 'pid=,command='], { encoding: 'utf8', timeout: 10_000, maxBuffer: 8 * 1024 * 1024 });
+    if (result.status !== 0 || typeof result.stdout !== 'string') return [];
+    const entries: Array<{ pid: number; command: string }> = [];
+    for (const line of result.stdout.split('\n')) {
+      const match = /^\s*(\d+)\s+(.*)$/.exec(line);
+      if (!match?.[1] || !match[2]) continue;
+      entries.push({ pid: Number(match[1]), command: match[2] });
+    }
+    return entries;
+  },
+  signalProcess: (pid, signal) => {
+    try { process.kill(pid, signal); return true; }
+    catch (error) { return (error as NodeJS.ErrnoException).code !== 'ESRCH'; }
+  },
   moduleAvailable: (name: string, repoRoot?: string) => {
     const anchors = [repoRoot ? join(repoRoot, 'package.json') : undefined, import.meta.url]
       .filter((value): value is string => Boolean(value));
@@ -1616,8 +1637,87 @@ async function evictManagedContext(key: string): Promise<void> {
   }
 }
 
+/**
+ * Forge-owned isolated/handoff browser profiles are per-session and cannot be
+ * shared, so a browser still running on one of those profiles while no managed
+ * context in this Runtime incarnation owns it is an orphan: the session that
+ * launched it is gone. Left alone it stays visible as a logged-out browser the
+ * user never opened and keeps a stale profile locked.
+ *
+ * Reclamation is mechanical and bounded: only processes whose own command line
+ * names a Forge-owned profile path are considered, browser child processes
+ * (`--type=`) are ignored so the main process is signalled once, and a profile
+ * with a live managed context is never touched.
+ */
+export function reclaimOrphanedIsolatedBrowserProfiles(input: { profileRoots: readonly string[]; graceMs?: number }): { terminated: number; details: string[] } {
+  const roots = input.profileRoots.map((root) => resolve(root)).filter(Boolean);
+  if (roots.length === 0) return { terminated: 0, details: [] };
+  const owned = (profileDir: string): boolean => {
+    const normalized = resolve(profileDir);
+    const isForgeProfile = /\/browser\/profiles\/(?:isolated|handoff)\//.test(normalized);
+    if (!isForgeProfile) return false;
+    return roots.some((root) => normalized === root || normalized.startsWith(`${root}${sep}`));
+  };
+  const liveOwners = new Set([...managedBrowserContexts.keys()].map((key) => resolve(key)));
+  const graceMs = Math.max(0, Math.min(30_000, input.graceMs ?? 2_000));
+  const targets: Array<{ pid: number; profileDir: string }> = [];
+  for (const entry of runtimeHooks.listProcesses()) {
+    if (entry.command.includes('--type=')) continue;
+    const match = /--user-data-dir=(?:"([^"]+)"|'([^']+)'|(\S+))/.exec(entry.command);
+    const profileDir = match?.[1] ?? match?.[2] ?? match?.[3];
+    if (!profileDir || !owned(profileDir)) continue;
+    if (liveOwners.has(resolve(profileDir))) continue;
+    targets.push({ pid: entry.pid, profileDir: resolve(profileDir) });
+  }
+  const details: string[] = [];
+  let terminated = 0;
+  for (const target of targets) {
+    runtimeHooks.signalProcess(target.pid, 'SIGTERM');
+    details.push(`SIGTERM ${target.pid} ${target.profileDir}`);
+    terminated += 1;
+  }
+  if (graceMs > 0 && targets.length > 0) {
+    const deadline = Date.now() + graceMs;
+    while (Date.now() < deadline) {
+      const remaining = new Set(targets
+        .filter((target) => runtimeHooks.listProcesses().some((entry) => entry.pid === target.pid && !entry.command.includes('--type=')))
+        .map((target) => target.pid));
+      if (remaining.size === 0) break;
+      sleepSyncMs(50);
+    }
+    for (const target of targets) {
+      const alive = runtimeHooks.listProcesses().some((entry) => entry.pid === target.pid && !entry.command.includes('--type='));
+      if (!alive) continue;
+      runtimeHooks.signalProcess(target.pid, 'SIGKILL');
+      details.push(`SIGKILL ${target.pid} ${target.profileDir}`);
+    }
+  }
+  return { terminated, details };
+}
+
+function sleepSyncMs(ms: number): void {
+  try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.max(0, Math.min(1_000, ms))); }
+  catch { /* best-effort bounded wait */ }
+}
+
+export function browserProfileRootsForRuntime(input: { controllerHome: string; repoRoots?: readonly string[] }): string[] {
+  const roots = new Set<string>();
+  const home = input.controllerHome.trim();
+  if (home) roots.add(join(resolve(home), 'repositories'));
+  for (const repoRoot of input.repoRoots ?? []) {
+    const trimmed = repoRoot.trim();
+    if (trimmed) roots.add(join(resolve(trimmed), '.forge'));
+  }
+  return [...roots];
+}
+
 async function closeManagedContextsForRepo(repoRoot: string, options: { strict?: boolean } = {}): Promise<void> {
   const canonicalRoot = resolve(repoRoot);
+  // Explicit session cleanup must also retire a browser whose session record is
+  // gone; otherwise the profile stays locked by a process nothing owns.
+  reclaimOrphanedIsolatedBrowserProfiles({
+    profileRoots: browserProfileRootsForRuntime({ controllerHome: resolveRepoPreferredControllerHome(canonicalRoot), repoRoots: [canonicalRoot] }),
+  });
   for (const [key, pending] of [...managedBrowserContexts.entries()]) {
     let state: ManagedBrowserContextState;
     try {

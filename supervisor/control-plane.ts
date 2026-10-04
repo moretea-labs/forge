@@ -321,7 +321,11 @@ export class WorkflowSupervisorControlPlane {
       // recovery effect. Rendered assistant text never decides the workflow;
       // only a persisted receipt does that.
       const pending = this.store.nextBrowserEffect(task.taskId);
-      const providerTurnAwaitingReceipt = Boolean(this.store.latestAppliedEffectWithoutCompletion(task.taskId));
+      // Any applied effect awaiting its receipt stays observable, including one
+      // whose bounded provider resume is already exhausted. Observation is
+      // read-only and mints nothing, so keeping it attached is what lets late
+      // provider/completion evidence resolve the turn instead of stranding it.
+      const providerTurnAwaitingReceipt = this.store.hasAppliedEffectAwaitingCompletion(task.taskId);
       if (!pending && !providerTurnAwaitingReceipt) return [];
       // Bootstrap has no exact conversation yet, so it cannot satisfy the
       // normal Work-boundary predicate. Its already-persisted enrollment effect

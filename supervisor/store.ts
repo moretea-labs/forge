@@ -694,6 +694,12 @@ export class WorkflowSupervisorStore {
     }
     const leaf = this.latestAppliedLeafEffectWithoutCompletion(taskId);
     if (leaf && this.providerResumeExhausted(leaf.effectId)) return { state: 'provider_resume_exhausted', effectId: leaf.effectId };
+    // An applied effect awaiting its receipt is a live obligation even when its
+    // bounded resume is exhausted and its recovery child was retired, so it is
+    // never reported as inert.
+    if (this.hasAppliedEffectAwaitingCompletion(taskId)) {
+      return { state: 'spaced', ...(leaf ? { effectId: leaf.effectId } : {}), reason: 'unknown_observation_spacing' };
+    }
     return { state: 'inert' };
   }
   /**

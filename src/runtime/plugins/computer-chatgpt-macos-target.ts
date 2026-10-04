@@ -106,6 +106,19 @@ function sameConversation(value: string, identity: ComputerChatgptConversationId
   return parseConversation(value)?.conversationId === identity.conversationId;
 }
 
+function macOsChatgptSessionUsable(observation: ComputerChatgptConversationObservation): boolean {
+  // A signed-in conversation renders a composer; a login wall renders neither a
+  // composer, nor generating state, nor any conversation text.
+  return observation.composerText !== undefined
+    || observation.isGenerating
+    || Boolean(observation.latestUserText.trim() || observation.latestAssistantResponse.trim() || observation.providerActivityText.trim());
+}
+function isChatgptUrl(value: string): boolean {
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === 'https:' && parsed.hostname === 'chatgpt.com';
+  } catch { return false; }
+}
 function projectMetadata(value: string): { projectTitle?: string; projectUrl?: string } {
   try {
     const parsed = new URL(value);
@@ -329,9 +342,38 @@ export class MacOsChatgptConversationTargetPort implements ComputerChatgptConver
     return taggedPage((await reattachMacOsBrowserOwnedPage(ref.browserProduct, ref, this.timeoutMs)).page, ref.browserProduct);
   }
 
-  private async create(url: string): Promise<ComputerChatgptNativePage> {
-    const { attachment } = await discoverMacOsBrowserAttachment([...PROVIDER_PRODUCTS], this.timeoutMs);
+  /**
+   * Opening a *new* ChatGPT tab must land in the browser that already hosts the
+   * user's signed-in ChatGPT session. Selecting by "frontmost" does not express
+   * identity: it can open the conversation in a browser profile that is not
+   * signed in, which both fails and leaves a foreign logged-out window behind.
+   * When no browser hosts any ChatGPT conversation we fail closed with a
+   * specific code instead of guessing; the caller surfaces one durable blocker.
+   */
+  private async create(url: string, preferredProduct?: MacOsBrowserProduct): Promise<ComputerChatgptNativePage> {
+    const inventory = await this.listTabs();
+    const conversationTabCounts = new Map<MacOsBrowserProduct, number>();
+    for (const entry of inventory.entries) {
+      if (!isChatgptUrl(entry.url)) continue;
+      conversationTabCounts.set(entry.browserProduct, (conversationTabCounts.get(entry.browserProduct) ?? 0) + 1);
+    }
+    const signedIn = [...conversationTabCounts.keys()];
+    // With no ChatGPT tab anywhere, stay on the browser this target was already
+    // bound to (it was the user's ChatGPT browser before); the post-create
+    // session check still closes it and blocks if that profile is signed out.
+    const candidates = signedIn.length > 0
+      ? (preferredProduct && signedIn.includes(preferredProduct) ? [preferredProduct] : signedIn)
+      : (preferredProduct ? [preferredProduct] : []);
+    if (candidates.length === 0) throw new Error('COMPUTER_CHATGPT_BROWSER_IDENTITY_UNAVAILABLE');
+    const ordered = preferredProduct && candidates.includes(preferredProduct)
+      ? [preferredProduct, ...candidates.filter((product) => product !== preferredProduct)]
+      : candidates;
+    const { attachment } = await discoverMacOsBrowserAttachment(ordered, this.timeoutMs);
     if (!attachment) throw new Error('COMPUTER_CHATGPT_BROWSER_UNAVAILABLE');
+    // The chosen browser must either host a ChatGPT session or be the product
+    // this target was already bound to.
+    if (signedIn.length > 0 && !signedIn.includes(attachment.metadata.product)) throw new Error('COMPUTER_CHATGPT_BROWSER_IDENTITY_UNAVAILABLE');
+    if (signedIn.length === 0 && preferredProduct && attachment.metadata.product !== preferredProduct) throw new Error('COMPUTER_CHATGPT_BROWSER_IDENTITY_UNAVAILABLE');
     return taggedPage((await createMacOsBrowserOwnedPageForProduct(attachment.metadata.product, url, attachment.attempts, this.timeoutMs)).page, attachment.metadata.product);
   }
 
@@ -441,10 +483,14 @@ export class MacOsChatgptConversationTargetPort implements ComputerChatgptConver
     if (inventory.unavailableProviders.length > 0) return failure(new Error('COMPUTER_CHATGPT_TARGET_INVENTORY_INCOMPLETE'), 'COMPUTER_CHATGPT_TARGET_INVENTORY_INCOMPLETE');
     let created: ComputerChatgptNativePage | undefined;
     try {
-      created = await this.create(identity.canonicalUrl);
+      created = await this.create(identity.canonicalUrl, record.providerBinding?.browserProduct as MacOsBrowserProduct | undefined);
       const updated = await this.bind(identity, record, created, 'provider_owned');
       const observation = await observeMacOsChatgptPage(created, { includeUserHistory: false, includePageText: false });
       if (!sameConversation(observation.url, identity)) throw new Error('COMPUTER_CHATGPT_RESTORED_TARGET_UNPROVEN');
+      // A created tab that renders a signed-out shell is not a usable surface.
+      // Close it instead of leaving a foreign logged-out window open, and let the
+      // caller report one durable identity blocker.
+      if (!macOsChatgptSessionUsable(observation)) throw new Error('COMPUTER_CHATGPT_BROWSER_IDENTITY_UNAVAILABLE');
       return { state: 'ready', target: this.target(identity, updated, created), observation };
     } catch (error) {
       if (created?.tabRef()) {
