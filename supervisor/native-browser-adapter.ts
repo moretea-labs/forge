@@ -276,8 +276,10 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       });
     };
     tick();
+    // This consumer is part of the persistent canonical Runtime, not optional
+    // background cleanup. Keep the timer referenced so provider continuation
+    // cannot silently stop while the Runtime and MCP listener remain healthy.
     this.timer = this.deps.setInterval(tick, activeIntervalMs);
-    this.timer.unref?.();
   }
 
   async close(): Promise<void> {

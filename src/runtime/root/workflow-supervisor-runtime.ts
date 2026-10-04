@@ -133,8 +133,10 @@ export async function startWorkflowSupervisorRuntime(
   // Reconcile before browser polling starts so a Runtime restart can finish a
   // previously committed CONTINUE without requiring another user/provider turn.
   reconcileCommittedContinuations();
+  // Reconciliation is a core Runtime responsibility. Keep this timer referenced
+  // for the whole Runtime lifetime instead of treating continuation delivery as
+  // best-effort background work.
   const reconciliationTimer = setInterval(reconcileCommittedContinuations, 2_000);
-  reconciliationTimer.unref?.();
   if (nativeBrowserAdapterEnabled) {
     nativeBrowser = startWorkflowSupervisorNativeBrowserAdapter(controlPlane, discovery, {
       targetPort,
