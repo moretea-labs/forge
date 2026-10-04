@@ -17,12 +17,15 @@ export interface PreparedRepositoryWorkAdmissionInput {
   repoId: string;
   objective: string;
   acceptanceCriteria: string[];
-  allowedPaths: string[];
   checks: string[];
   accessMode: AccessMode;
   isolated: boolean;
   requestedBy: WorkContract['requestedBy'];
   requestId: string;
+  /** Legacy ingress-only path hints; concrete mutation scope is EditSession-owned. */
+  allowedPaths?: string[];
+  /** Legacy ingress-only path hints; concrete mutation scope is EditSession-owned. */
+  forbiddenPaths?: string[];
 }
 
 /**
@@ -40,8 +43,6 @@ export function admitPreparedRepositoryWorkContract(
     executionPlacement: repositoryExecutionPlacement(store, input.repoId),
     objective: input.objective,
     acceptanceCriteria: input.acceptanceCriteria,
-    allowedPaths: input.allowedPaths,
-    forbiddenPaths: [],
     checks: input.checks,
     constraints: {
       accessMode: input.accessMode,
@@ -70,9 +71,12 @@ export interface DirectEditWorkAdmissionInput {
   objective: string;
   issueId?: string;
   taskId?: string;
-  allowedPaths: string[];
   checks: string[];
   requestedBy: WorkContract['requestedBy'];
+  /** Legacy ingress-only path hints; concrete mutation scope is EditSession-owned. */
+  allowedPaths?: string[];
+  /** Legacy ingress-only path hints; concrete mutation scope is EditSession-owned. */
+  forbiddenPaths?: string[];
 }
 
 /**
@@ -102,8 +106,6 @@ export function admitDirectEditWorkContract(
     issueId: input.issueId,
     taskId: input.taskId,
     scopeSummary: input.objective,
-    allowedPaths: input.allowedPaths,
-    forbiddenPaths: [],
     checks: input.checks,
     requestedBy: input.requestedBy,
     evidenceRefs: [],

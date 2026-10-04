@@ -12,6 +12,13 @@ Treat ChatGPT as the controller and Forge as its repository execution layer. Cha
 - Ordinary local risk levels are metadata, not permission gates. There is no approval queue and no `approve_risk` handshake. Only an explicitly destructive or irreversible operation requires authorization in the same request.
 - The Controller UI is hierarchical: Overview, Work, Activity, and Settings. Work is organized as Issue -> Task -> Execution instead of exposing every technical record as a top-level destination.
 - Hard runtime boundaries remain for secrets, credentials, Git internals, concurrent write conflicts, out-of-scope writes when a scope is declared, and remote or irreversible side effects.
+### Dirty checkout and cross-Work integration policy
+
+- A Work may keep uncommitted changes in its selected checkout while advancing its own candidate; dirty state is normal development state, not a Forge lifecycle condition.
+- Before integrating another Work/branch into that checkout, first converge the receiving Work's own changes into a coherent semantic commit. Cross-Work integration should therefore operate on explicit committed provenance, while implementation inside one Work may remain dirty until that boundary.
+- Do not auto-stash, auto-reset, auto-clean, or silently discard local changes to make integration possible. When committed histories conflict, use the merge base, both sides' commits/diffs, and the current Requirement/Plan/Work intent for semantic reconciliation rather than generic `ours`/`theirs` precedence.
+- This is model workflow guidance, not a request for new Forge merge states, policy engines, or code gates. Forge provides repository primitives and reports actual Git/concurrent-writer conflicts; the controller decides when and how to integrate.
+
 ## Root-Cause-First Learning Discipline
 
 - Treat a newly observed failure or inefficiency as evidence, not an automatic patch trigger. Accumulate and cluster related symptoms by violated invariant, semantic owner, authority, and lifecycle before changing source.

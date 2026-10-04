@@ -796,11 +796,8 @@ export async function executeWorkVerification(input: ExecuteWorkVerificationInpu
       requestSemanticFingerprint: verificationRequestFingerprint,
       workId: workId || undefined,
       commandId: input.requestId,
-      verificationSnapshot: workContract ? {
-        workId: workContract.workId,
-        allowedPaths: workContract.allowedPaths,
-        forbiddenPaths: workContract.forbiddenPaths,
-      } : undefined,
+      // A Work has semantic scope and evidence, not a mutable path fence.
+      // Candidate snapshot ownership is supplied only by a bound EditSession.
       allowDurableCheckExecution,
     });
 

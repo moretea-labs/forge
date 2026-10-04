@@ -345,7 +345,7 @@ function actions(): AssistantPluginActionDescriptor[] {
       description: 'Capture a simulator screenshot into controller artifact storage.',
       readOnly: false,
       risk: 'workspace_write',
-      confirmation: 'none',
+      confirmation: 'authorization',
       defaultTimeoutMs: 60_000,
       cancellable: true,
       idempotent: false,

@@ -122,7 +122,7 @@ describe('bounded Work candidate extension authority', () => {
 
     expect(continued.summary).toContain('requires implementation before verification');
     const work = getWorkContract(context.workStore, workId);
-    expect(work?.allowedPaths).toContain('src/discovered.ts');
+    expect(work?.scopeEvidence?.initialLikelyPaths).toContain('src/discovered.ts');
     expect(work?.engineeringContext?.designState).toBeUndefined();
     expect(work?.engineeringContext?.blockerDispositions?.at(-1)?.action).toBe('extend_candidate');
     expect(work?.evidenceRefs.some((entry) => entry.title === 'same-root candidate scope extension')).toBe(true);

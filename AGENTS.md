@@ -6,6 +6,8 @@ This repository self-hosts the Forge contract. Retired project-skill and project
 
 Treat ChatGPT as the controller and Forge as its repository execution layer. ChatGPT chooses how to inspect, plan, edit, verify, or delegate. Forge provides deterministic repository tools and does not impose an Agent-first workflow.
 
+- Scheduling, explicit workspace placement choice, integration timing, baseline activation, delivery, and acceptance are model decisions made from the user's current objective and live repository evidence. Forge supplies callable execution primitives and fixed mechanical compatibility mappings only; it must not infer, gate, override, or auto-advance semantic workflow decisions from a Work transition, executor completion, risk classification, policy, or heuristic. Repository rules guide the model; they are not a Forge workflow state machine.
+
 - Direct Edit is the default for understood work. One session may accept many patch batches, keep revision history, create savepoints, run checks, roll back selected revisions, and finalize one aggregate localized diff.
 - Tasks describe objectives, scope, checks, and acceptance criteria. They do not permanently bind Codex, Claude, or GitHub Copilot. The executor is selected when each Run starts.
 - Agents are optional implementation tools for broad exploration, large refactors, or compile/test/fix loops. They receive a high-level implementation contract; ChatGPT still reviews the result and decides what happens next.
@@ -13,13 +15,22 @@ Treat ChatGPT as the controller and Forge as its repository execution layer. Cha
 - The Controller UI is an auxiliary configuration/state utility behind ChatGPT: Overview, Work, Automations, Capabilities, Repositories, Settings, and System. It presents durable user-facing state and hides Issue/Task/Run internals unless diagnostics require them.
 - Hard runtime boundaries remain for secrets, credentials, Git internals, concurrent write conflicts, out-of-scope writes when a scope is declared, and remote or irreversible side effects.
 
-### Main checkout and worktree policy
+### Starting checkout and worktree policy
 
-- `main` is the canonical local integration branch. Bounded Direct Edit/investigation that does not need durable Work normally runs in the canonical checkout.
-- Work lifecycle and Git topology remain separate decisions: Forge never creates durable Work merely to obtain a branch. But once the model explicitly chooses a mutating durable repository Work, legacy/default `auto` placement means a managed isolated checkout with the Work's start revision frozen; explicit `current` means reuse the selected registered checkout.
-- Forge must not infer or rewrite placement from task size, risk text, dirty paths, parallel relations, recovery state, or other semantic context. `auto -> isolated` is a fixed mechanical placement contract, not a heuristic decision.
+- `main` is the canonical local integration branch. Bounded Direct Edit/investigation that does not need durable Work normally runs in the selected current checkout.
+- Work lifecycle and Git topology remain separate decisions: Forge never creates durable Work merely to obtain a branch. Once the model explicitly chooses a mutating durable repository Work, legacy/default `auto` placement mechanically means a managed isolated checkout with the Work start revision frozen; explicit `current` means reuse the selected registered checkout.
+- Forge must not infer or rewrite placement from task size, risk text, dirty paths, parallel relations, recovery state, or other semantic context. `auto -> isolated` is a fixed compatibility/mechanical placement contract, not a semantic heuristic.
 - During implementation, a Work may advance only through its own checkout changes/commits. Target-branch advancement is considered only at the delivery/finalization boundary; if an explicitly reused current checkout drifts, return the WorkHandle/Git conflict instead of adopting, rebasing, merging, or switching topology.
-- After successful delivery of isolated work, remove its managed worktree/branch only after containment and cleanup are proven. Do not accumulate completed worktrees as standing development environments.
+- An isolated worktree is containment, not a semantic integration authority. After successful delivery, remove its managed worktree/branch only after containment and cleanup are proven. Do not accumulate completed worktrees as standing development environments.
+- Do not inspect, activate, switch, certify, or otherwise mutate a source/runtime baseline merely because a Work changes phase or an executor exits. Baseline activation remains a separate model decision after the coherent candidate is reviewed and verified.
+
+### Dirty checkout and cross-Work integration policy
+
+- A Work may freely keep uncommitted changes in its selected checkout while it is implementing, reviewing, or repairing its own candidate. A dirty checkout is normal development state and is not itself a Forge error, lifecycle state, or reason to switch topology.
+- Do not integrate another Work/branch into a receiving checkout while that receiving Work still has uncommitted source changes. First converge the receiving Work's own changes into a coherent semantic commit so the integration boundary has explicit Git provenance; then merge/rebase/cherry-pick the other committed result as the model judges appropriate.
+- Do not auto-stash, auto-reset, auto-clean, or silently discard dirty changes to make integration possible. The current Work owns the decision to keep editing, commit, or deliberately discard its own changes.
+- When committed histories conflict, resolve semantically from the merge base, both sides' commits/diffs, and the current Requirement/Plan/Work objective. Preserve the current architecture and replay the other Work's intent onto it when implementation shape has changed; never use `ours`/`theirs`, timestamp, or commit order as a general semantic authority.
+- These are Controller/model workflow rules, not new Forge Kernel policy. Do not add merge lifecycle states, automatic integration policy, or repository guards merely to encode this procedure; Forge should expose the Git/worktree/diff/commit primitives and report real Git or concurrent-writer conflicts mechanically.
 
 ## Root-Cause-First Learning Discipline
 
@@ -116,9 +127,9 @@ For Kernel V2 and other architecture migrations, optimize for one coherent deliv
 - Default to end-to-end execution and minimize avoidable human intervention. Continue reversible, policy-allowed implementation, verification, cleanup, and delivery; stop only at a genuine user-only identity/legal/financial/strong-confirmation/irreversible boundary.
 - Work top-down: requirement/product intent -> product interaction when relevant -> architecture/authority -> implementation -> focused verification -> independent review -> delivery/terminal cleanup. Do not repeatedly patch symptoms while a higher-level contract remains wrong.
 - Direct execution is preferred for bounded understood work. Create durable Plan/Work only for real decomposition, continuity, scheduling, recovery, independent delivery, or external effects; durable Work/Plan authority by itself does not require an isolated checkout and does not create a Git commit boundary.
-- Repository placement is sticky once selected for a coherent delivery. Direct execution normally reuses the current main/integration checkout; mutating durable repository Work defaults through `auto` to one isolated frozen-base checkout and reuses that checkout across its implementation/review/verification rounds. Never switch placement mid-Work merely because target state changes.
+- Repository placement is sticky once selected for a coherent delivery. Direct execution reuses the explicitly selected current checkout; mutating durable repository Work defaults through legacy `auto` to one isolated frozen-base checkout and reuses that checkout across implementation/review/verification. Never switch placement mid-Work merely because target state changes.
 - For mutating durable repository Work, `auto` is the fixed isolated/frozen-base default; `current` is an explicit reuse choice. Do not let Forge infer topology from task size, risk text, dirty-path heuristics, parallel relations, recovery, or other semantic context; actual occupancy and Git identity conflicts are reported mechanically at execution time.
-- When isolation is necessary, record the concrete conflict/reason, merge or reconcile the result promptly once validated, and delete the temporary branch/worktree immediately after delivery. Do not accumulate completed managed worktrees.
+- After isolated delivery is selected and validated, integrate/reconcile at the delivery boundary and delete the temporary branch/worktree after containment and cleanup are proven. Do not accumulate completed managed worktrees.
 - For authenticated browser work, preserve the user's explicitly selected/signed-in browser identity; never silently create a replacement authentication state.
 - After a managed repository change is verified and committed/merged, push the delivered target branch promptly unless the user requested local-only delivery or a concrete safety/auth/branch-policy blocker exists.
 - Treat unrelated dirty work as ownership/placement evidence. Isolate or reconcile it; never absorb it merely to make the tree look clean.

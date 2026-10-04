@@ -10,7 +10,6 @@ import { ensureManagedWorkspace } from '../../execution/managed-workspace';
 import { getControllerSession } from '../../../../packages/kernel/controller/api/index';
 import { getWorkContract, recordWorkEvidenceState, transitionWorkContractPhase, updateWorkContract } from '../../../../packages/kernel/work/api/index';
 import { gitCommitAtRef, gitWorktreeSnapshot } from './work-lifecycle-audit';
-import { findWorkPathScopeViolation } from './work-path-scope';
 import { readWorkHandle, writeWorkHandle, type WorkHandleState } from './work-handle-store';
 import { hasSettledWorkDeliveryReceipt } from './work-completion-authority';
 
@@ -141,10 +140,6 @@ function restoreArchivedBlockedDeliveryCheckout(input: {
   if (!changed.ok) throw new Error(`WORK_CONTINUE_ARCHIVED_DELIVERY_DIFF_UNAVAILABLE: ${work.workId}`);
   const changedPaths = normalizedPaths(changed.stdout.split(/\r?\n/));
   if (changedPaths.length === 0) throw new Error(`WORK_CONTINUE_ARCHIVED_DELIVERY_ZERO_DELTA: ${work.workId}`);
-  const scopeViolation = findWorkPathScopeViolation(work, changedPaths);
-  if (scopeViolation) {
-    throw new Error(`WORK_CONTINUE_ARCHIVED_DELIVERY_SCOPE_VIOLATION: ${scopeViolation.kind}:${scopeViolation.path}`);
-  }
   const recordedChangedPaths = normalizedPaths(work.scopeEvidence?.actualChangedPaths ?? []);
   if (recordedChangedPaths.length > 0 && JSON.stringify(recordedChangedPaths) !== JSON.stringify(changedPaths)) {
     throw new Error(`WORK_CONTINUE_ARCHIVED_DELIVERY_PATH_IDENTITY_MISMATCH: ${work.workId}`);
@@ -300,10 +295,6 @@ function restoreArchivedPendingCandidateCheckout(input: {
       }
     }
   }
-  const scopeViolation = findWorkPathScopeViolation(work, workOwnedChangedPaths);
-  if (scopeViolation) {
-    throw new Error(`WORK_CONTINUE_COMMITTED_CANDIDATE_SCOPE_VIOLATION: ${scopeViolation.kind}:${scopeViolation.path}`);
-  }
   if (deliveryBaseCommit === baseRevision && JSON.stringify(recordedChangedPaths) !== JSON.stringify(candidateChangedPaths)) {
     throw new Error(`WORK_CONTINUE_COMMITTED_CANDIDATE_PATH_IDENTITY_MISMATCH: ${work.workId}`);
   }
@@ -341,7 +332,7 @@ function restoreArchivedPendingCandidateCheckout(input: {
     ...(deliveryBaseCommit !== baseRevision
       ? {
           scopeEvidence: {
-            initialLikelyPaths: work.scopeEvidence?.initialLikelyPaths ?? work.allowedPaths,
+            initialLikelyPaths: work.scopeEvidence?.initialLikelyPaths ?? [],
             inspectedPaths: work.scopeEvidence?.inspectedPaths ?? [],
             actualChangedPaths: workOwnedChangedPaths,
             recordedAt: at,

@@ -72,7 +72,7 @@ describe('Desktop Operator trusted external registration', () => {
     for (const action of input.actions.filter((action) => action.readOnly)) {
       expect(action.risk).toBe('readonly');
     }
-    for (const action of input.actions.filter((action) => ['desktop_permissions_request', 'desktop_press', 'desktop_pointer_click', 'desktop_pointer_drag', 'desktop_type_text', 'desktop_key', 'desktop_clipboard_write', 'desktop_copy', 'desktop_paste', 'desktop_open_url', 'desktop_batch'].includes(action.actionId))) {
+    for (const action of input.actions.filter((action) => ['desktop_permissions_request', 'desktop_press', 'desktop_pointer_click', 'desktop_pointer_drag', 'desktop_type_text', 'desktop_key', 'desktop_clipboard_write', 'desktop_copy', 'desktop_paste', 'desktop_open_url', 'desktop_batch', 'desktop_session_close'].includes(action.actionId))) {
       expect(action.risk).toBe('workspace_write');
       expect(action.confirmation).toBe('authorization');
     }

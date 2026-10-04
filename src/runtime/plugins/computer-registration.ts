@@ -297,7 +297,7 @@ function desktopProductActions(): AssistantPluginActionDescriptor[] {
       description: 'Read whether provider-local unattended console recovery is enrolled and available without exposing credential material.',
       readOnly: true,
       risk: 'readonly',
-      confirmation: 'none',
+      confirmation: 'authorization',
       defaultTimeoutMs: DEFAULT_CONSOLE_UNLOCK_TIMEOUT_MS,
       cancellable: true,
       idempotent: true,
@@ -313,7 +313,7 @@ function desktopProductActions(): AssistantPluginActionDescriptor[] {
       description: 'Recover an already-locked console using only the provider-local enrolled credential. No password or credential handle enters Forge.',
       readOnly: false,
       risk: 'workspace_write',
-      confirmation: 'none',
+      confirmation: 'authorization',
       defaultTimeoutMs: DEFAULT_CONSOLE_UNLOCK_TIMEOUT_MS,
       cancellable: true,
       idempotent: false,
@@ -1018,26 +1018,26 @@ export const computerPluginAdapter: AssistantPluginAdapter = {
       return executeBrowserPluginAction({ ...input, pluginId: 'browser' });
     }
     if (input.actionId === COMPUTER_CONSOLE_UNLOCK_PREPARE_ACTION) {
-      return executeProtectedConsoleUnlockPreparation({ confirmAuthorization: true, timeoutMs: input.timeoutMs }, input.controllerHome);
+      return executeProtectedConsoleUnlockPreparation({ confirmAuthorization: input.confirmAuthorization === true, timeoutMs: input.timeoutMs }, input.controllerHome);
     }
     if (input.actionId === COMPUTER_CONSOLE_UNLOCK_ACTION) {
       return executeProtectedConsoleUnlockInvocation({
         credentialHandle: typeof input.args.credential_handle === 'string' ? input.args.credential_handle : '',
-        confirmAuthorization: true,
+        confirmAuthorization: input.confirmAuthorization === true,
         timeoutMs: input.timeoutMs,
       }, input.controllerHome);
     }
     if (input.actionId === COMPUTER_CONSOLE_UNLOCK_ENROLL_ACTION) {
-      return executeProtectedConsoleUnlockLifecycle('console_unlock_enroll', { confirmAuthorization: true, timeoutMs: input.timeoutMs }, input.controllerHome);
+      return executeProtectedConsoleUnlockLifecycle('console_unlock_enroll', { confirmAuthorization: input.confirmAuthorization === true, timeoutMs: input.timeoutMs }, input.controllerHome);
     }
     if (input.actionId === COMPUTER_CONSOLE_UNLOCK_STATUS_ACTION) {
-      return executeProtectedConsoleUnlockLifecycle('console_unlock_status', { confirmAuthorization: true, timeoutMs: input.timeoutMs }, input.controllerHome);
+      return executeProtectedConsoleUnlockLifecycle('console_unlock_status', { confirmAuthorization: input.confirmAuthorization === true, timeoutMs: input.timeoutMs }, input.controllerHome);
     }
     if (input.actionId === COMPUTER_CONSOLE_UNLOCK_RECOVER_ACTION) {
-      return executeProtectedConsoleUnlockLifecycle('console_unlock_recover', { confirmAuthorization: true, timeoutMs: input.timeoutMs }, input.controllerHome);
+      return executeProtectedConsoleUnlockLifecycle('console_unlock_recover', { confirmAuthorization: input.confirmAuthorization === true, timeoutMs: input.timeoutMs }, input.controllerHome);
     }
     if (input.actionId === COMPUTER_CONSOLE_UNLOCK_REVOKE_ACTION) {
-      return executeProtectedConsoleUnlockLifecycle('console_unlock_revoke', { confirmAuthorization: true, timeoutMs: input.timeoutMs }, input.controllerHome);
+      return executeProtectedConsoleUnlockLifecycle('console_unlock_revoke', { confirmAuthorization: input.confirmAuthorization === true, timeoutMs: input.timeoutMs }, input.controllerHome);
     }
     if (input.actionId === DESKTOP_TARGET_CLOSE_ACTION) return closeDesktopTarget(input, optionalDesktopProvider(input));
     const provider = desktopProvider(input);

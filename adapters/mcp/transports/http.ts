@@ -206,6 +206,26 @@ function sendMcpToolSurfaceReset(
   });
 }
 
+/**
+ * A schema-fenced transport cannot be reused after the reset response. Delay
+ * retirement until Express has flushed the reconnect instruction, then release
+ * its session-local state. Work identity is Controller-owned, not transport-owned.
+ */
+function retireAfterToolSurfaceReset(
+  res: Response,
+  registry: HttpSessionRegistry,
+  sessionId: string,
+): void {
+  let retired = false;
+  const retire = (): void => {
+    if (retired) return;
+    retired = true;
+    void registry.close(sessionId, 'tool_surface_changed');
+  };
+  res.once('finish', retire);
+  res.once('close', retire);
+}
+
 export function mcpRequestError(error: unknown) {
   const rawMessage = error instanceof Error ? error.message : String(error);
   const retryable = /(?:\b502\b|\b503\b|\b429\b|ECONNRESET|ETIMEDOUT|EAI_AGAIN|CANONICAL_RUNTIME_TIMEOUT|server_busy|session_capacity|gateway)/i.test(rawMessage);
@@ -553,17 +573,16 @@ async function handleMcpPost(
               return;
             }
           }
-          // Keep the transport/session alive long enough for the host to observe
-          // the recoverable reset and issue a replacement initialize request.
-          // The initialize path explicitly supersedes this session afterward.
           sendMcpToolSurfaceReset(res, managed.toolSurfaceFingerprint, currentFingerprint);
+          retireAfterToolSurfaceReset(res, registry, sessionId);
           return;
         }
         if (toolCallOutsideSessionSchema(body, managed.toolNames)) {
           // A call against a newer discovery surface is the same recoverable
-          // schema-fence condition. Closing here can make hosts unregister the
-          // entire MCP namespace before they can reinitialize it.
+          // schema-fence condition: this transport must reinitialize before it
+          // can execute anything else.
           sendMcpToolSurfaceReset(res, managed.toolSurfaceFingerprint, currentFingerprint);
+          retireAfterToolSurfaceReset(res, registry, sessionId);
           return;
         }
         await managed.transport.handleRequest(req, res, body);
@@ -608,9 +627,8 @@ async function handleMcpGet(
         : undefined,
     );
     if (!mcpSessionToolSurfaceFingerprintIsCurrent(managed.toolSurfaceFingerprint, currentFingerprint)) {
-      // Preserve the existing SSE transport while asking the host to
-      // reinitialize. The replacement initialize owns supersession/cleanup.
       sendMcpToolSurfaceReset(res, managed.toolSurfaceFingerprint, currentFingerprint);
+      retireAfterToolSurfaceReset(res, registry, sessionId!);
       return;
     }
     await managed.transport.handleRequest(req, res);

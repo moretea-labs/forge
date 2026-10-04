@@ -29,12 +29,12 @@ export const executionToolDefinitions: McpToolDefinition[] = [
   definition('session_bind_repository', 'Explicitly bind the current session to one registered repository and checkout.', { session_id: sessionId, repo_id: repoId, checkout_id: { type: 'string' } }, ['repo_id'], false),
   definition('work_prepare', 'Prepare or reuse one controller-owned work handle and bind it to a WorkContract, checkout, branch, and permission snapshot.', {
     session_id: sessionId, repo_id: repoId, checkout_id: { type: 'string' }, work_id: workId,
-    objective: { type: 'string' }, goal_id: { type: 'string' }, acceptance_criteria: { type: 'array', items: { type: 'string' } }, allowed_paths: { type: 'array', items: { type: 'string' } }, checks: { type: 'array', items: { type: 'string' } },
+    objective: { type: 'string' }, goal_id: { type: 'string' }, acceptance_criteria: { type: 'array', items: { type: 'string' } }, checks: { type: 'array', items: { type: 'string' } },
     isolation: { type: 'string', enum: ['reuse', 'new_worktree', 'auto'] }, base_ref: { type: 'string' }, needs_dependencies: { type: 'boolean' },
     expected_previous_head: { type: 'string', description: 'Explicit prior WorkHandle HEAD required for audited successor adoption of an existing work_id.' },
-    adopt_candidate_head: { type: 'string', description: 'Explicit current successor commit to adopt after exact identity, ownership, cleanliness, ancestry, and path-scope validation.' },
+    adopt_candidate_head: { type: 'string', description: 'Explicit current successor commit to adopt after exact identity, ownership, cleanliness, and ancestry validation.' },
   }, [], false),
-  definition('work_inspect', 'Collect bounded Git, WorkContract, path, check, and readiness evidence through one work handle.', { session_id: sessionId, repo_id: repoId, work_id: workId, detail: { type: 'string', enum: ['summary', 'detail'] } }, ['work_id'], true),
+  definition('work_inspect', 'Collect bounded Git, WorkContract, changed-path, check, and readiness evidence through one work handle.', { session_id: sessionId, repo_id: repoId, work_id: workId, detail: { type: 'string', enum: ['summary', 'detail'] } }, ['work_id'], true),
   definition('work_execute', 'Execute approved, repository-scoped commands against a validated work handle while preserving the existing command policy and audit path.', {
     session_id: sessionId, controller_id: { type: 'string', description: 'Controller identity that holds the Work lease. Defaults to the authenticated principal.' }, repo_id: repoId, work_id: workId,
     command: { anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' }, minItems: 1 }] }, approval_token: { type: 'string' }, cwd: { type: 'string' }, timeout_ms: { type: 'number' }, max_output_bytes: { type: 'number' },
@@ -107,11 +107,10 @@ function inspectWork(ctx: MultiRepositoryMcpToolContext, args: Record<string, un
       objective: contract.objective,
       checks: contract.checks,
       acceptanceCriteria: contract.acceptanceCriteria,
-      allowedPaths: contract.allowedPaths,
       semantics: buildWorkContinuationSnapshot(contract).semantics,
     } : undefined,
     continuation: contract ? buildWorkContinuationSnapshot(contract) : undefined,
-    paths: { allowed: handle.workContractId ? contract?.allowedPaths ?? [] : [], relevant: diff.nameOnly },
+    paths: { changed: diff.nameOnly },
     checks: checks.map((checkId) => ({ checkId, registered: listControllerChecks(validated.worktreeRepository.canonicalRoot).some((check) => check.id === checkId) })),
     package: packageManifest ? { name: packageManifest.name, scripts: packageManifest.scripts } : undefined,
   };

@@ -439,7 +439,7 @@ export function desktopOperatorActions(): AssistantPluginActionDescriptor[] {
       description: 'Close one Desktop Operator interaction session. Application termination is disabled by default and requires an exact Controller-owned process id.',
       readOnly: false,
       risk: 'workspace_write',
-      confirmation: 'none',
+      confirmation: 'authorization',
       defaultTimeoutMs: 5_000,
       cancellable: true,
       idempotent: true,

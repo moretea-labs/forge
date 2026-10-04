@@ -460,9 +460,6 @@ export interface WorkContract {
   readOnlyReviewEvidence?: ReadOnlyReviewEvidence;
   /** Explicit Controller-reviewed acceptance bindings. Mechanical evidence attribution alone never writes this field. */
   semanticAcceptanceEvidence?: WorkSemanticAcceptanceEvidence[];
-  /** Explicit policy fence. This is not semantic completeness evidence. */
-  allowedPaths: string[];
-  forbiddenPaths: string[];
   checks: string[];
   worktreePolicy: WorktreePolicy;
   evidencePolicy: EvidencePolicy;

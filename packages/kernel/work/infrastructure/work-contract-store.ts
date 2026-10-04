@@ -77,6 +77,21 @@ export type CreateWorkContractInput = Omit<
   evidencePolicy?: WorkContract['evidencePolicy'];
   approvalPolicy?: WorkContract['approvalPolicy'];
   recoveryPolicy?: WorkContract['recoveryPolicy'];
+  /**
+   * Legacy ingress-only fields, accepted only so a pre-20261004 frozen MCP
+   * client can still submit without the retired fields being recreated on the
+   * persisted Work contract.
+   *
+   * Replacement owner: concrete mutation scope belongs to the EditSession (and
+   * the execution resource bound to it); a Work carries semantic scope and
+   * evidence only. Bounded consumers: frozen MCP clients whose advertised
+   * `work_prepare` schema still includes `allowed_paths`. Removal condition:
+   * delete these fields (and the matching `AcceptSubmittedWorkInput` pair) as
+   * soon as no supported client sends them; a non-empty value is never
+   * enforced and must never be treated as authorization evidence.
+   */
+  allowedPaths?: string[];
+  forbiddenPaths?: string[];
 };
 
 export interface ListWorkContractOptions extends WorkContractStoreOptions {
@@ -402,10 +417,17 @@ function migrateLegacyWorkContract(legacy: WorkContract): WorkContract {
             },
       }
     : legacyDefaults;
-  const { status: _retiredStatus, ...legacyWithoutStatus } = legacy as WorkContract & { status?: unknown };
+  const {
+    status: _retiredStatus,
+    allowedPaths: _retiredAllowedPaths,
+    forbiddenPaths: _retiredForbiddenPaths,
+    ...legacyWithoutRetiredFields
+  } = legacy as WorkContract & { status?: unknown; allowedPaths?: unknown; forbiddenPaths?: unknown };
   void _retiredStatus;
+  void _retiredAllowedPaths;
+  void _retiredForbiddenPaths;
   return validateWorkSemantics({
-    ...legacyWithoutStatus,
+    ...legacyWithoutRetiredFields,
     schemaVersion: 4,
     scopeRef: semanticScopeRefForWork(legacy),
     executionPlacement: executionPlacementForWork(legacy),
@@ -447,6 +469,8 @@ function storedWorkContractNeedsMigration(contract: WorkContract): boolean {
   return contract.schemaVersion !== 4
     || contract.semanticState === undefined
     || Object.prototype.hasOwnProperty.call(contract as object, 'status')
+    || Object.prototype.hasOwnProperty.call(contract as object, 'allowedPaths')
+    || Object.prototype.hasOwnProperty.call(contract as object, 'forbiddenPaths')
     || Boolean(legacyReviewGap);
 }
 
@@ -674,8 +698,6 @@ export function createWorkSemanticContext(options: WorkContractStoreOptions, inp
     workKind: 'investigation',
     lifecycleRole: 'primary',
     requestedBy: input.requestedBy ?? 'chatgpt',
-    allowedPaths: [],
-    forbiddenPaths: [],
     checks: [],
     ...(input.requirementId?.trim() ? { requirementId: input.requirementId.trim() } : {}),
     ...(Number.isInteger(input.requirementRevision) ? { requirementRevision: input.requirementRevision } : {}),
@@ -766,8 +788,6 @@ export function createWorkContract(options: WorkContractStoreOptions, input: Cre
         actualChangedPaths: [...new Set(input.scopeEvidence.actualChangedPaths)].slice(0, 500),
         recordedAt: input.scopeEvidence.recordedAt,
       } : undefined,
-      allowedPaths: (input.allowedPaths ?? []).slice(0, 50),
-      forbiddenPaths: (input.forbiddenPaths ?? []).slice(0, 50),
       checks: (input.checks ?? []).slice(0, 30),
       worktreePolicy: input.worktreePolicy ?? {
         required: input.constraints?.workspaceMode === 'isolated',
@@ -924,8 +944,6 @@ export function acceptSubmittedWorkContract(
       workKind: input.workKind,
       risk: input.risk,
       constraints: input.constraints ?? {},
-      allowedPaths: input.allowedPaths ?? [],
-      forbiddenPaths: input.forbiddenPaths ?? [],
       checks: input.checks ?? [],
       requestedBy: input.requestedBy ?? 'chatgpt',
       requestId,
@@ -1894,7 +1912,7 @@ export function recordWorkCompletionReceipt(
       completionOutcome,
       completionReceipt: receipt,
       scopeEvidence: {
-        initialLikelyPaths: current.scopeEvidence?.initialLikelyPaths ?? current.allowedPaths,
+        initialLikelyPaths: current.scopeEvidence?.initialLikelyPaths ?? [],
         inspectedPaths: current.scopeEvidence?.inspectedPaths ?? [],
         actualChangedPaths: [...new Set(receiptChangedPaths)].slice(0, 500),
         recordedAt,
@@ -1914,7 +1932,9 @@ export interface AcceptSubmittedWorkInput {
   controllerInstanceId?: string;
   workKind?: WorkKind;
   risk?: WorkRisk;
+  /** Compatibility input only; execution scope is owned by EditSession/resources. */
   allowedPaths?: string[];
+  /** Compatibility input only; execution scope is owned by EditSession/resources. */
   forbiddenPaths?: string[];
   checks?: string[];
   acceptanceCriteria?: string[];

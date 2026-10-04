@@ -122,7 +122,10 @@ function normalizeAgentMeta(
       : meta.worktree === repoRoot
         ? "workspace"
         : "worktree");
-  meta.autoIntegrate = meta.autoIntegrate ?? meta.executionMode === "worktree";
+  // Integration is an explicit model decision. Historical worktree Runs may
+  // retain this field for read compatibility, but a missing value must never
+  // turn a completed execution into a workflow transition.
+  meta.autoIntegrate = meta.autoIntegrate ?? false;
   meta.closureState = meta.closureState ?? (
     meta.provider === "local" && meta.executionMode === "worktree"
       ? meta.worktreeCleanedAt
@@ -1261,7 +1264,8 @@ function baseMeta(
     eventsPath: relative(opts.repoRoot, paths.eventsPath).replace(/\\/g, "/"),
     timeoutMs: opts.timeoutMs,
     startupDeadlineAt: new Date(Date.now() + agentStartupTimeoutMs()).toISOString(),
-    autoIntegrate: executionMode === "worktree",
+    // A worktree contains concurrent writes; it does not authorize delivery.
+    autoIntegrate: false,
     progress: {
       phase: "starting",
       currentActivity: "已受理，等待异步启动",

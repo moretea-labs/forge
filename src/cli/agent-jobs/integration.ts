@@ -13,9 +13,6 @@ import {
   type EditOperation,
   type EditSession,
 } from "../editing/edit-session";
-import { getIssue, updateTask } from "../controller/issue-store";
-import { readTaskRunEvidence } from "../controller/run-evidence";
-import { resolveEffectiveTaskState } from "../controller/task-status-resolver";
 import { resolveMcpPath } from "../mcp/paths";
 import type { McpPolicy } from "../mcp/types";
 import { getAgentJob, markAgentJobClosure, markAgentJobIntegrated, markAgentJobIntegrationReview } from "./job-manager";
@@ -513,17 +510,18 @@ export function integrateAgentJob(
     /* unbound legacy single-runtime */
   }
   let run: AgentJobMeta = getAgentJob(repoRoot, runId);
-  const autoFinalizing = run.status === "running" &&
-    run.autoIntegrate === true &&
-    run.executionMode === "worktree" &&
-    (run.progress?.phase === "finalizing" || run.closureState === "ready_to_integrate");
-  const userResolvableIntegration = run.status === "waiting_for_user" &&
-    run.autoIntegrate === true &&
-    run.executionMode === "worktree" &&
-    Boolean(run.autoIntegrationError);
-  if (run.status !== "succeeded" && !autoFinalizing && !userResolvableIntegration)
+  // Integration is an explicit decision, so an ordinary Run must have finished
+  // successfully. One state is still integrable: a Run that a previous explicit
+  // integration attempt preserved after a failure or a required review. That
+  // preserved worktree is the durable product of that attempt, and refusing to
+  // retry it stranded the isolated work with no path forward.
+  const preservedIntegrationRetry = run.status === "waiting_for_user"
+    && run.executionMode === "worktree"
+    && (run.closureState === "preserved" || run.closureState === "integration_blocked")
+    && Boolean(run.autoIntegrationError || run.preservationReason);
+  if (run.status !== "succeeded" && !preservedIntegrationRetry)
     throw new Error(
-      `only succeeded, auto-finalizing, or preserved waiting_for_user Runs can be integrated (current: ${run.status})`,
+      `only a succeeded Run (or an explicitly preserved integration attempt) can be integrated (current: ${run.status})`,
     );
   if (run.provider !== "local")
     throw new Error(
@@ -531,7 +529,7 @@ export function integrateAgentJob(
     );
   if (run.worktree === repoRoot || !run.branch || !run.baseRevision)
     throw new Error(
-      "Run did not use an isolated Git worktree; its changes are already in the main working tree",
+      "Run did not use an isolated Git worktree; its changes are already in the dispatch checkout",
     );
   if (run.integratedSessionId) {
     const existing = getEditSession(repoRoot, run.integratedSessionId);
@@ -548,28 +546,12 @@ export function integrateAgentJob(
 
   run = markAgentJobClosure(repoRoot, runId, {
     state: "integrating",
-    details: "Applying isolated Run changes to the canonical workspace.",
+    details: "Applying isolated Run changes to the dispatch checkout.",
   });
-
-  const issue = getIssue(repoRoot, run.issueId);
-  const task = issue.tasks.find((entry) => entry.id === run.taskId);
-  if (!task) throw new Error(`task not found: ${run.issueId}/${run.taskId}`);
-  const state = resolveEffectiveTaskState({ issue, task, runs: readTaskRunEvidence(repoRoot, task) });
-  const taskReady = autoFinalizing || userResolvableIntegration
-    ? !state.terminal && !state.inactive && ["review", "ready_to_integrate", "integrating", "integration_blocked", "integrated", "verified"].includes(task.status)
-    : !state.terminal && !state.inactive && ["review", "ready_to_integrate", "integrating", "integration_blocked", "verified"].includes(state.effectiveStatus);
-  if (!taskReady)
-    throw new Error(
-      `task must be active and in review before integration (declared: ${task.status}, effective: ${state.effectiveStatus})`,
-    );
 
   const initialPlan = planFromCurrentWorkspace(repoRoot, run, policy);
   if (initialPlan.changedPaths.length === 0)
     throw new Error("task worktree has no changes to integrate");
-  if (initialPlan.changedPaths.length > 25)
-    throw new Error(
-      `task changed ${initialPlan.changedPaths.length} files; split or manually integrate work larger than 25 files`,
-    );
   if (initialPlan.conflicts.length > 0)
     throw createReviewPacket(
       repoRoot,
@@ -578,10 +560,9 @@ export function integrateAgentJob(
       initialPlan.conflicts,
     );
 
-  const allowedPaths =
-    task.allowedPaths.length > 0
-      ? task.allowedPaths
-      : initialPlan.changedPaths;
+  const allowedPaths = run.allowedPaths?.length
+    ? run.allowedPaths
+    : initialPlan.changedPaths;
   if (initialPlan.operations.length === 0) {
     const applied = finalizeAlreadyIntegratedSession(
       repoRoot,
@@ -591,10 +572,6 @@ export function integrateAgentJob(
     markAgentJobIntegrated(repoRoot, runId, applied.sessionId, {
       changedFiles: initialPlan.changedPaths,
       changeOutcome: "already_integrated",
-    });
-    updateTask(repoRoot, run.issueId, run.taskId, {
-      status: "integrated",
-      note: `${runId} already matched the main workspace and was recorded through edit session ${applied.sessionId}; run focused checks and record verification before acceptance.`,
     });
     return {
       session: applied,
@@ -644,10 +621,6 @@ export function integrateAgentJob(
           changedFiles: refreshedPlan.changedPaths,
           changeOutcome: "already_integrated",
         });
-        updateTask(repoRoot, run.issueId, run.taskId, {
-          status: "integrated",
-          note: `${runId} became already integrated while finish was running and was recorded through edit session ${alreadyIntegrated.sessionId}; run focused checks and record verification before acceptance.`,
-        });
         return {
           session: alreadyIntegrated,
           changedPaths: refreshedPlan.changedPaths,
@@ -682,10 +655,6 @@ export function integrateAgentJob(
   markAgentJobIntegrated(repoRoot, runId, applied.sessionId, {
     changedFiles: initialPlan.operations.map((operation) => operation.path),
     changeOutcome: "changed",
-  });
-  updateTask(repoRoot, run.issueId, run.taskId, {
-    status: "integrated",
-    note: `${runId} integrated through edit session ${applied.sessionId}; run focused checks and record verification before acceptance.`,
   });
   return {
     session: applied,

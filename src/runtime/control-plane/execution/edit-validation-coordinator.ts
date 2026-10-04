@@ -452,10 +452,10 @@ export async function reconcileEditValidationRun(
           issueId: session.issueId,
           taskId: session.taskId,
         },
-        verificationSnapshot: work ? {
-          workId: work.workId,
-          allowedPaths: work.allowedPaths,
-          forbiddenPaths: work.forbiddenPaths,
+        verificationSnapshot: session.workId ? {
+          workId: session.workId,
+          allowedPaths: session.allowedPaths,
+          forbiddenPaths: [],
         } : undefined,
         leaseWaitMs: run.leaseWaitMs,
       });

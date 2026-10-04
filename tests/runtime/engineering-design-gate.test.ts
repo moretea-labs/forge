@@ -265,7 +265,7 @@ describe('Stage7C upstream engineering authority', () => {
 
     const bypass = continueGoalWorkloop(context, { workId: workId!, allowedPaths: ['src/**'] });
     expect(bypass.summary).not.toContain('ENGINEERING_DESIGN');
-    expect(getWorkContract(context.workStore, workId!)?.allowedPaths).toContain('src/**');
+    expect(getWorkContract(context.workStore, workId!)?.scopeEvidence?.initialLikelyPaths).toContain('src/**');
 
     const withoutSupersession = continueGoalWorkloop(context, { workId: workId!, verifiedEngineeringEvidence: trustedEngineeringEvidence('revision-a') });
     expect(withoutSupersession.summary).not.toContain('ENGINEERING_DESIGN');

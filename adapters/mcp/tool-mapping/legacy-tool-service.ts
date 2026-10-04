@@ -2342,7 +2342,7 @@ export function buildMcpToolDefinitions(
       {
         name: "integrate_task_run",
         description:
-          "Integrate one reviewed isolated Task Run into the main working tree through a rollback-capable edit session.",
+          "Explicitly integrate one completed isolated Task Run into this dispatch checkout through a rollback-capable edit session.",
         inputSchema: {
           type: "object",
           properties: { run_id: { type: "string" } },

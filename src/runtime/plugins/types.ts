@@ -90,6 +90,24 @@ export interface AssistantPluginManifest {
     duplicateStateAllowed: false;
     sourceOfTruth: string[];
   };
+  /**
+   * A temporary transport projection. It is descriptive only: the replacement
+   * owner remains the sole execution and persistence authority.
+   */
+  compatibility?: {
+    replacementOwner: string;
+    boundedConsumers: Array<{
+      surface: 'plugin_action_execute';
+      pluginId: string;
+      actionIds: string[];
+    }>;
+    removalCondition: {
+      kind: 'no_supported_frozen_contract_actions';
+      surface: 'plugin_action_execute';
+      pluginId: string;
+      actionIds: string[];
+    };
+  };
   enabled: boolean;
   lifecycle: {
     state: AssistantPluginLifecycleState;
@@ -140,6 +158,8 @@ export interface AssistantPluginActionRequest {
 
 export interface AssistantPluginActionExecutionInput {
   controllerHome: string;
+  /** Explicit per-invocation authorization for protected plugin actions. */
+  confirmAuthorization?: boolean;
   repoId: string;
   repoRoot: string;
   pluginId: string;

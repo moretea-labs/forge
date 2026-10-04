@@ -5,7 +5,6 @@ import { commandExecutionScopeKey, type RepositoryCommandScopeTarget } from '../
 import { executionIdentityForWork, type ResolvedExecutionIdentity } from '../../../src/runtime/control-plane/execution/execution-identity';
 import { assertNoBoundExecutionSessionMutation, resolveClaimedRepositoryWorkId, resolveExplicitClaimedRepositoryWork, type RepositoryWorkAttributionCaller } from '../../../src/runtime/control-plane/execution/repository-work-attribution';
 import { getWorkContract, semanticWorkState, type WorkContract } from '../../../packages/kernel/work/api';
-import { assertWorkPathsWithinScope } from '../../../src/runtime/control-plane/execution/work-path-scope';
 import { assertCanonicalRepositoryMutationWorkHandleAvailable, ensureRepositoryMutationWorkHandle, markRepositoryMutationStarted } from '../../../src/runtime/control-plane/execution/work-handle-authority';
 import { executeRepositoryCommand, previewRepositoryCommandExecution } from '../../../src/cli/repositories/command-executor';
 import { withControllerLock } from '../../../src/cli/repositories/locks';
@@ -37,7 +36,6 @@ import {
   repositoryGitMergeBranch,
   repositoryGitStatus,
   repositoryGitSwitchBranch,
-  resolveRepositoryGitCommitScope,
 } from '../../../src/cli/repositories/structured-git';
 import {
   readRepositoryGitStatusSample,
@@ -953,16 +951,6 @@ export async function callRepositoryTool(
       case 'repository_safe_patch_apply': {
         const repository = resolveRepositorySelectionForClaimedWork(controllerHome, args, repoIdValue, caller);
         const binding = safePatchEditBinding(controllerHome, repository, caller, args);
-        if (binding?.workId) {
-          const work = getWorkContract({ controllerHome, repoId: repository.repoId }, binding.workId);
-          if (!work) throw new Error(`WORK_NOT_FOUND: ${binding.workId}`);
-          const requestedPaths = buildSafePatchPlan(repository, { operations: args.operations, chunkSize: args.chunk_size })
-            .chunks.flatMap((chunk) => chunk.paths);
-          assertWorkPathsWithinScope(work, requestedPaths, {
-            forbidden: 'WORK_MUTATION_FORBIDDEN_PATH',
-            outOfScope: 'WORK_MUTATION_PATH_OUT_OF_SCOPE',
-          });
-        }
         const applied = withControllerLock(
           controllerHome,
           { scope: 'repository', repoId: repository.repoId },
@@ -1189,17 +1177,6 @@ export async function callRepositoryTool(
               60_000,
             );
           }
-        }
-        if (repository && executionIdentity.workId && (rawCommitScope.kind === 'staged_index' || rawCommitScope.kind === 'explicit_paths')) {
-          const work = getWorkContract({ controllerHome, repoId: commandExecutionScopeKey(commandTarget) }, executionIdentity.workId);
-          if (!work) throw new Error(`WORK_NOT_FOUND: ${executionIdentity.workId}`);
-          const commitScope = resolveRepositoryGitCommitScope(repository, {
-            paths: rawCommitScope.kind === 'explicit_paths' ? rawCommitScope.paths : undefined,
-          });
-          assertWorkPathsWithinScope(work, commitScope.paths, {
-            forbidden: 'WORK_COMMIT_STAGED_PATH_FORBIDDEN',
-            outOfScope: 'WORK_COMMIT_STAGED_PATH_OUT_OF_SCOPE',
-          });
         }
         // Compatibility boundary only: this facade owns repository-domain
         // context (target resolution, Git/source mutation fencing and legacy

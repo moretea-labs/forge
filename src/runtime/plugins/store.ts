@@ -994,7 +994,7 @@ export function isDirectNonPersistentPluginAction(action: AssistantPluginActionD
   // path and its reconciliation authority.
   if (action.readOnly) {
     return action.risk === 'readonly'
-      && action.confirmation === 'none'
+      && (action.confirmation === 'none' || action.confirmation === 'authorization')
       && action.idempotent === true;
   }
   return action.risk === 'workspace_write'

@@ -906,11 +906,11 @@ describe('protected Computer stable plugin transport', () => {
       }
       expect(prepare).toMatchObject({ readOnly: false, risk: 'workspace_write', confirmation: 'authorization', idempotent: false });
       expect(unlock).toMatchObject({ readOnly: false, risk: 'workspace_write', confirmation: 'authorization', idempotent: false });
-      expect(status).toMatchObject({ readOnly: true, risk: 'readonly', confirmation: 'none', idempotent: true });
+      expect(status).toMatchObject({ readOnly: true, risk: 'readonly', confirmation: 'authorization', idempotent: true });
       expect(isDirectPluginReadAction(status)).toBe(false);
-      expect(recover).toMatchObject({ readOnly: false, risk: 'workspace_write', confirmation: 'none', idempotent: false });
+      expect(recover).toMatchObject({ readOnly: false, risk: 'workspace_write', confirmation: 'authorization', idempotent: false });
 
-      expect(isDirectNonPersistentPluginAction({ ...status, confirmation: 'authorization' })).toBe(false);
+      expect(isDirectNonPersistentPluginAction({ ...status, confirmation: 'authorization' })).toBe(true);
       expect(isDirectNonPersistentPluginAction({ ...recover, risk: 'remote_write' })).toBe(false);
       expect(isDirectNonPersistentPluginAction({ ...recover, risk: 'destructive', confirmation: 'strong_confirmation' })).toBe(false);
 

@@ -35,7 +35,9 @@ const EXPECTED_STABLE_CONTROLLER_TOOL_NAMES = [
 // the existing rh_work input schema; both changes must invalidate stale Connector
 // schema snapshots without adding a parallel execution or graph authority.
 const EXPECTED_STABLE_TOOL_NAME_FINGERPRINT = 'b25da75c1f774e66';
-const EXPECTED_STABLE_TOOL_SCHEMA_FINGERPRINT = '152873246a7e8b5d';
+// rh_work now exposes semantic get / revise / complete operations. This is an
+// intentional contract revision and must force stale MCP sessions to reload.
+const EXPECTED_STABLE_TOOL_SCHEMA_FINGERPRINT = '754e74282d753b78';
 
 const policy = runtimePolicy(process.cwd(), {
   profile: 'controller',

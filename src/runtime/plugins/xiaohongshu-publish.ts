@@ -158,6 +158,22 @@ export function buildXiaohongshuPluginManifest(previousRevision = 0, previousUpd
         'browser-profile:authentication-and-session',
       ],
     },
+    compatibility: {
+      replacementOwner: 'Workflow Runtime (rh_work workflow_execute) and the versioned xiaohongshu Workflow assets',
+      boundedConsumers: [
+        {
+          surface: 'plugin_action_execute',
+          pluginId: PLUGIN_ID,
+          actionIds: ['get_publish_recipe', 'publish_note'],
+        },
+      ],
+      removalCondition: {
+        kind: 'no_supported_frozen_contract_actions',
+        surface: 'plugin_action_execute',
+        pluginId: PLUGIN_ID,
+        actionIds: ['get_publish_recipe', 'publish_note'],
+      },
+    },
     enabled: true,
     lifecycle: { state: 'enabled', reason: 'Compatibility translation is available; all publishing effects are Workflow-owned.' },
     health: health(), permissions: permissions(), capabilities: capabilities(), actions: actions(), updatedAt: previousUpdatedAt ?? now(),

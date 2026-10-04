@@ -692,12 +692,10 @@ export function startGoalWorkloop(
     const selected = requestedRelation === 'extend'
       ? updateWorkContract(ctx.workStore, deterministicTarget.workId, {
           acceptanceCriteria: [...new Set([...deterministicTarget.acceptanceCriteria, ...(input.acceptanceCriteria ?? [])])].slice(0, 30),
-          allowedPaths: [...new Set([...deterministicTarget.allowedPaths, ...(input.allowedPaths ?? [])])].slice(0, 50),
-          forbiddenPaths: [...new Set([...deterministicTarget.forbiddenPaths, ...(input.forbiddenPaths ?? [])])].slice(0, 50),
           checks: [...new Set([...deterministicTarget.checks, ...normalized.validCheckIds])].slice(0, 30),
           scopeEvidence: {
             initialLikelyPaths: [...new Set([
-              ...(deterministicTarget.scopeEvidence?.initialLikelyPaths ?? deterministicTarget.allowedPaths),
+              ...(deterministicTarget.scopeEvidence?.initialLikelyPaths ?? []),
               ...(input.initialLikelyPaths ?? input.allowedPaths ?? []),
             ])].slice(0, 100),
             inspectedPaths: deterministicTarget.scopeEvidence?.inspectedPaths ?? [],
@@ -1014,12 +1012,10 @@ export function continueGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
       });
     }
     work = updateWorkContract(ctx.workStore, work.workId, {
-      allowedPaths: [...new Set([...work.allowedPaths, ...(input.allowedPaths ?? [])])].slice(0, 50),
-      forbiddenPaths: [...new Set([...work.forbiddenPaths, ...(input.forbiddenPaths ?? [])])].slice(0, 50),
       checks: [...new Set([...work.checks, ...normalizedChecks.validCheckIds])].slice(0, 30),
       scopeEvidence: {
         initialLikelyPaths: [...new Set([
-          ...(work.scopeEvidence?.initialLikelyPaths ?? work.allowedPaths),
+          ...(work.scopeEvidence?.initialLikelyPaths ?? []),
           ...(input.allowedPaths ?? []),
         ])].slice(0, 100),
         inspectedPaths: work.scopeEvidence?.inspectedPaths ?? [],

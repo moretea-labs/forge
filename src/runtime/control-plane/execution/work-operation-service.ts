@@ -356,11 +356,8 @@ export async function validateWork(ctx: McpExecutionContext, args: Record<string
         workId: handle.workId,
         commandId: processRequestId,
         verificationBinding: { executionSessionId: session.sessionId },
-        verificationSnapshot: contract && contract.allowedPaths.length > 0 ? {
-          workId: contract.workId,
-          allowedPaths: contract.allowedPaths,
-          forbiddenPaths: contract.forbiddenPaths,
-        } : undefined,
+        // Work is not a path-scope owner. Only an EditSession can bind a
+        // candidate snapshot to concrete mutation scope.
       });
       if (executed.mode === 'durable') {
         checks.push({ checkId, ok: undefined, status: 'deferred', summary: executed.durable?.reason, durable: executed.durable });

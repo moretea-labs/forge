@@ -25,6 +25,16 @@ describe('xiaohongshu Workflow compatibility', () => {
     expect(listFirstPartyPluginAdapters().map(adapter => adapter.pluginId)).toContain('xiaohongshu');
     expect(manifest.health.ready).toBe(true);
     expect(manifest.authority.sourceOfTruth).toContain('source:assets/workflows/xiaohongshu/*.draft.json');
+    expect(manifest.compatibility).toMatchObject({
+      replacementOwner: expect.stringContaining('Workflow Runtime'),
+      boundedConsumers: [{
+        surface: 'plugin_action_execute', pluginId: 'xiaohongshu', actionIds: ['get_publish_recipe', 'publish_note'],
+      }],
+      removalCondition: {
+        kind: 'no_supported_frozen_contract_actions',
+        surface: 'plugin_action_execute', pluginId: 'xiaohongshu', actionIds: ['get_publish_recipe', 'publish_note'],
+      },
+    });
     expect(manifest.actions.map(action => action.actionId)).toEqual(['get_publish_recipe', 'publish_note']);
     for (const action of manifest.actions) {
       expect(action.readOnly).toBe(true);

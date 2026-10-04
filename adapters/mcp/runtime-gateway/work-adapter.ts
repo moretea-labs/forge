@@ -119,8 +119,6 @@ async function callRepositoryBoundStart(
       ...(baseRevision ? { baseRevision } : {}),
       ...(worktreeRef ? { worktreeRef } : {}),
       acceptanceCriteria: boundedStringList(args.acceptance_criteria, 20),
-      allowedPaths: boundedStringList(args.allowed_paths, 50),
-      forbiddenPaths: boundedStringList(args.forbidden_paths, 50),
       checks: boundedStringList(args.check_ids, 30),
       constraints,
     });

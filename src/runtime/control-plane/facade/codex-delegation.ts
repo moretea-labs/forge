@@ -110,8 +110,8 @@ export function buildCodexContextPack(input: CodexDelegationInput & { repoId: st
       'Output must be evidence / handoff / patch proposal / suggested_next_actions only.',
       'ChatGPT remains responsible for semantic review and explicit Work completion.',
     ]).slice(0, 20),
-    allowedPaths: (input.allowedPaths ?? work?.allowedPaths ?? []).slice(0, 50),
-    forbiddenPaths: (input.forbiddenPaths ?? work?.forbiddenPaths ?? ['.env', '_ops/secrets', '**/*secret*', '**/*token*']).slice(0, 50),
+    allowedPaths: (input.allowedPaths ?? []).slice(0, 50),
+    forbiddenPaths: (input.forbiddenPaths ?? ['.env', '_ops/secrets', '**/*secret*', '**/*token*']).slice(0, 50),
     currentEvidenceRefs: (input.evidenceRefs ?? work?.evidenceRefs ?? []).slice(0, 10),
     workContractState: work
       ? { workId: work.workId, state: work.semanticState, dispatchState: work.dispatchState }
