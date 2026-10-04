@@ -427,6 +427,14 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       if (this.deps.nowMs() - observedAt < AWAITING_RECEIPT_OBSERVATION_MS) return;
       this.awaitingReceiptObservedAtMs.set(task.taskId, this.deps.nowMs());
     }
+    // Acquiring a conversation the inventory does not already expose is a
+    // provider navigation/history read, not local observation. The ChatGPT rate
+    // limit is account-wide, so while explicit backpressure is active the answer
+    // is strictly fewer requests: keep an already-retained surface observable and
+    // never open another one. Cooldown is transient, so this defers rather than
+    // strands the task.
+    if (chatgptProviderBackpressureRemainingMs(this.deps.providerScopeKey, this.deps.nowMs()) > 0
+      && !this.conversations.some((conversation) => conversation.conversation_id === task.conversationId)) return;
     const ensured = await this.deps.targetPort.ensureExact(identityForTask(task));
     if (ensured.state !== 'ready') { this.noteTargetUnavailable(task, poll.command?.effectId, ensured.failure); return; }
     const target = ensured.target;
@@ -483,6 +491,10 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     if (!command) return;
     if (command.mode === 'reconcile') { await this.reconcileBootstrapTask(task, command); return; }
     if (command.mode !== 'send') return;
+    // Bootstrap opens a provider project surface and then submits the first
+    // prompt. Both are provider requests, so account-wide backpressure defers the
+    // whole attempt instead of racing it against an explicit rate limit.
+    if (chatgptProviderBackpressureRemainingMs(this.deps.providerScopeKey, this.deps.nowMs()) > 0) return;
     const opened = await this.deps.targetPort.openBootstrap(this.control.bootstrapProjectUrl(task.taskId), task.taskId);
     if (opened.state !== 'ready') { this.noteTargetUnavailable(task, command.effectId, opened.failure); return; }
     const target = opened.target;

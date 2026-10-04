@@ -6,9 +6,21 @@
   const COMPOSER = '#prompt-textarea, [data-testid="prompt-textarea"], [data-testid="composer-text-input"], textarea[name="prompt"], textarea[placeholder*="Message"], textarea[placeholder*="消息"], form [contenteditable="true"], div[role="textbox"][contenteditable="true"]';
   const SEND = 'button[data-testid="send-button"], button[aria-label*="Send"], button[aria-label*="发送"], button[data-testid*="send"]';
   const STOP = '[data-testid="stop-button"], [data-testid*="stop-button"], button[aria-label="Stop"], button[aria-label="Stop generating"], button[aria-label="停止"], button[aria-label="停止生成"]';
+  const TURN = '[data-testid^="conversation-turn-"]';
+  const PROVIDER_ACTIVITY_CHARS = 64 * 1024;
   const absoluteChatgptUrl = (href) => {
     try { const url = new URL(String(href ?? ''), location.href); return url.protocol === 'https:' && url.hostname === 'chatgpt.com' ? url.toString() : undefined; }
     catch { return undefined; }
+  };
+  const visible = (node) => Boolean(node?.getClientRects?.().length);
+  /**
+   * The hydrated conversation surface is the visible `main`. ChatGPT also
+   * renders hidden SSR shells, and reading those into role/progress extraction
+   * reports turns that the signed-in page is not actually showing.
+   */
+  const conversationRoot = () => {
+    const mains = Array.from(document.querySelectorAll('main')).filter(visible);
+    return mains.length ? mains[mains.length - 1] : document;
   };
   const discoverProjectLinks = (titles) => {
     const wanted = new Map((Array.isArray(titles) ? titles : []).map((title) => [core.normalizeText(title).toLocaleLowerCase(), core.normalizeText(title)]).filter(([key]) => key));
@@ -44,7 +56,7 @@
   const roleNodes = (selector) => {
     const seen = new Set();
     const result = [];
-    for (const node of document.querySelectorAll(selector)) {
+    for (const node of conversationRoot().querySelectorAll(selector)) {
       const semanticKey = String(node.getAttribute?.('data-chatgpt-search-unit-key') || node.getAttribute?.('data-content-search-unit-key') || '');
       const messageIds = String(node.getAttribute?.('data-chatgpt-search-message-ids') || node.getAttribute?.('data-chatgpt-selection-message-id') || '');
       if (semanticKey || messageIds) {
@@ -57,7 +69,7 @@
     return result;
   };
   const latestTurnRole = () => {
-    const nodes = document.querySelectorAll(`${USER}, ${ASSISTANT}`);
+    const nodes = conversationRoot().querySelectorAll(`${USER}, ${ASSISTANT}`);
     const node = nodes.item(nodes.length - 1);
     const explicit = node?.getAttribute?.('data-message-author-role');
     if (explicit === 'user' || explicit === 'assistant') return explicit;
@@ -66,10 +78,31 @@
     if (semanticKey.endsWith(':assistant')) return 'assistant';
     return undefined;
   };
-  const isGenerating = () => Boolean(
-    document.querySelector(`${STOP}, [aria-busy="true"], [data-is-streaming="true"], [data-testid*="streaming"]`)
-    || latestTurnRole() === 'user'
-  );
+  /**
+   * Provider generation evidence. A visible stop/stream control is searched
+   * page-wide because missing it would allow a concurrent submission, but it
+   * must be *visible*: the previous query accepted hidden SSR controls, and a
+   * page-global `aria-busy` also fires for unrelated profile/route loading, so
+   * `aria-busy` is trusted only inside the current conversation turn.
+   */
+  const isGenerating = () => {
+    if (Array.from(document.querySelectorAll(`${STOP}, [data-is-streaming="true"]`)).some(visible)) return true;
+    const turns = conversationRoot().querySelectorAll(TURN);
+    const current = turns.length ? turns[turns.length - 1] : undefined;
+    if (current && Array.from(current.querySelectorAll('[aria-busy="true"]')).some(visible)) return true;
+    return latestTurnRole() === 'user';
+  };
+  /**
+   * Live progress of the running provider turn. The last *committed* assistant
+   * answer cannot change while a new turn runs, so liveness has to read the live
+   * turn surface. Without it every turn that outlasts the quiet window was
+   * misread as stalled and earned a duplicate provider prompt.
+   */
+  const providerActivityText = () => {
+    const turns = conversationRoot().querySelectorAll(TURN);
+    const current = turns.length ? turns[turns.length - 1] : undefined;
+    return core.normalizeText(current?.innerText ?? current?.textContent).slice(-PROVIDER_ACTIVITY_CHARS);
+  };
   const composer = () => document.querySelector(COMPOSER);
   const composerText = () => core.normalizeText(composer()?.value ?? composer()?.innerText ?? composer()?.textContent);
   const pageSnapshot = (options = {}) => {
@@ -86,7 +119,7 @@
         assistantMessages: assistantNodes.map(messageText).filter(Boolean),
       } : {}),
       ...(composer() ? { composerText: composerText() } : {}),
-      providerActivityText: '',
+      providerActivityText: providerActivityText(),
       providerFailureText: bodyText.slice(-250000),
       ...(options.includePageText === true ? { pageText: bodyText.slice(-500000) } : {}),
       latestTurnRole: latestTurnRole(),

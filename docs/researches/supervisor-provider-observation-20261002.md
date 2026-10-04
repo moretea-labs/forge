@@ -74,3 +74,53 @@ spaced DOM observation. No new writer, persistent state, task, conversation,
 dispatch-budget reset or inference of non-submission is introduced. Terminal
 cleanup still retires owned tabs. Productive continuation of the original tasks
 remains the acceptance criterion; a harmless new probe is insufficient.
+
+## 2026-10-04: the liveness digest had no live signal
+
+Canonical Supervisor journal evidence on source `ac6021a1` (six-hour window):
+111 `effect_dispatch_started`, 36 `assistant_recovery_reserved` and 27
+`assistant_recovery_exhausted`, with every reservation carrying
+`stale_generation: true`. The committed receipts for those same turns arrived
+12-50 minutes after the send, so the turns being replaced were still working.
+The account-wide request volume that produced the conversation-read 429s was
+therefore mostly Forge's own duplicate prompts.
+
+Cause: the applied-turn liveness digest is
+`sha256(latestAssistantResponse + providerActivityText)`. The Computer Chrome
+content script reported `providerActivityText: ''` unconditionally, and
+`latestAssistantResponse` is the previous *committed* answer, which cannot
+change while a new turn runs. The digest was constant for the entire life of
+every in-flight turn, so any turn that outlasted the quiet window (60s, then
+180s) was classified stalled and earned a duplicate recovery prompt. Widening
+the window reduced but could not remove the false positive: the window was
+measured against a signal that never moved.
+
+Two smaller defects sat in the same page observation. Role and message
+extraction read the whole document, so hidden SSR shells could supply turns the
+signed-in page was not showing, and `isGenerating()` accepted any page-global
+`aria-busy="true"`, which unrelated profile/route loading also sets. A third
+defect was ordering: `ensureExact` ran before the provider-pressure gate, so a
+missing exact conversation could still be opened (a provider history read)
+while shared backpressure was active.
+
+Correction: the Chrome content script observes the visible hydrated `main`
+surface, reports the live current-turn text as `providerActivityText`, and
+scopes generation evidence to the current turn. The quiet window moves to the
+store's existing bounded maximum (10 minutes), which is still shorter than an
+observed real turn. Computer target acquisition now respects the shared
+provider backpressure cooldown instead of opening a conversation while the
+account is explicitly rate limited. No new writer, owner, state, budget or
+provider path is introduced: the macOS provider already reported live
+current-turn activity and localized status, so this is contract parity for the
+Computer extension provider.
+
+Verification: a local synthetic-DOM comparison of the previous and current
+content script (not committed) shows the old script reported an empty activity
+string that never changed as the live turn progressed, while the new script
+reports and tracks the current turn text; the same comparison shows the old
+script reporting `isGenerating` for an unrelated page-global `aria-busy` and the
+new script not doing so. Retained Supervisor behavior cases, the Computer target
+tests, the Chrome adapter smoke and the compiler checks pass. The synthetic page
+was built from the recorded DOM roles, so residual uncertainty remains about how
+often ChatGPT's own reasoning surface keeps the last turn text moving between
+tokens: a genuinely silent 10-minute turn still earns its one bounded resume.

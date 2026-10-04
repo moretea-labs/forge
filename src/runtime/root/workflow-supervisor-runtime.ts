@@ -142,14 +142,14 @@ export async function startWorkflowSupervisorRuntime(
       targetPort,
       nowMs: () => Date.now(),
       // Liveness authority for one applied provider turn. Live evidence: these
-      // Supervisor turns stay visibly quiet for several minutes while the model
-      // reasons or runs tools, so a 60s window classified working turns as
-      // stalled, minted a duplicate recovery prompt, and then declared the
-      // effect exhausted while its real turn was still running (the committed
-      // receipt only arrived minutes later). A silent frozen page is still
-      // bounded: an actual provider failure is classified from page text, and
-      // this threshold only widens the quiet period before recovery.
-      providerIdleGraceMs: 180_000,
+      // Supervisor turns run for 10-50 minutes, so any quiet window shorter than
+      // that reserved duplicate recovery prompts on turns that were still
+      // working (60s and then 3 minutes both fired in production). This is the
+      // existing bounded maximum, and the digest itself now tracks live turn
+      // activity, so the window only elapses on a genuinely silent surface. A
+      // real provider failure is classified from provider failure text
+      // independently of this threshold.
+      providerIdleGraceMs: 10 * 60_000,
       providerScopeKey: controllerHome,
       sleep: async (ms) => { await new Promise((resolve) => setTimeout(resolve, ms)); },
       setInterval: (handler, ms) => setInterval(handler, ms),
