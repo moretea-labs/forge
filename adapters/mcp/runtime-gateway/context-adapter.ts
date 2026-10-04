@@ -6,6 +6,7 @@ import { buildContextClosureReceipt } from "../../../src/runtime/context/context
 import { codegraphRepositoryCacheRoot } from "../../../src/runtime/context/codegraph-cache-boundary";
 import type { MultiRepositoryMcpToolContext } from "../multi-repository";
 import { result } from "./result-adapter";
+import { boundedRuntimeResult } from "./bounded-result-runtime";
 import { selected } from "./shared-adapter";
 import { resolveMcpPath } from "../paths";
 import { freshGitIdentity } from "../../../src/cli/repository/inspector";
@@ -709,10 +710,38 @@ export async function callContextAdapter(ctx: MultiRepositoryMcpToolContext, nam
       // but it must not corrupt this runtime-issued round-trip contract because rh_work validates
       // the exact full receipt digest supplied by the Controller during engineering re-entry.
       (facade.data as typeof facade.data & { contextClosure: typeof contextClosure }).contextClosure = contextClosure;
-      // Materialization already bounds and redacts source. Generic 1,000-character
-      // summary clipping must not corrupt bytes while retaining truncated=false,
-      // line ranges and hashes that describe the original complete snippet.
-      (facade.data as typeof facade.data & { files: typeof pack.files }).files = pack.files;
+      // Individual snippets are bounded, but broad searches can still aggregate
+      // a very large direct MCP payload. Keep ContextClosure authority inline and
+      // externalize only the heavy file collection through the existing Result Store.
+      const boundedFiles = boundedRuntimeResult({
+        controllerHome: ctx.controllerHome,
+        repoId: repository.repoId,
+        sessionId: ctx.sessionId,
+        principalId: ctx.principalId,
+        controllerInstanceId: ctx.controllerInstanceId,
+        workId: typeof args.work_id === 'string' ? args.work_id.trim() || undefined : undefined,
+      }, pack.files);
+      const data = facade.data as typeof facade.data & {
+        files: typeof pack.files;
+        filesResult?: unknown;
+        filesTruncated?: boolean;
+        fileCount?: number;
+        filePreview?: Array<{ path: string; reasons: string[]; hitLines: number[]; snippetCount: number }>;
+      };
+      if (boundedFiles.externalized) {
+        data.files = [];
+        data.filesResult = boundedFiles.value;
+        data.filesTruncated = true;
+        data.fileCount = pack.files.length;
+        data.filePreview = pack.files.slice(0, 10).map((file) => ({
+          path: file.path,
+          reasons: file.reasons.slice(0, 4),
+          hitLines: file.hitLines.slice(0, 12),
+          snippetCount: file.snippetCount,
+        }));
+      } else {
+        data.files = pack.files;
+      }
       if (cognitionAudit) {
         (facade.data as typeof facade.data & { cognitionAudit: typeof cognitionAudit }).cognitionAudit = cognitionAudit;
       }

@@ -13,6 +13,7 @@ import { executeAssistantPluginActionApplication } from '../../../src/runtime/pl
 import { mcpPluginExecutionOrigin } from '../../../src/runtime/plugins/execution-origin';
 import type { AssistantPluginManifest } from '../../../src/runtime/plugins/types';
 import { result, resultWithPluginArtifactImages } from './result-adapter';
+import { boundedRuntimeResult } from './bounded-result-runtime';
 import { selected } from './shared-adapter';
 
 type PluginTransportScope =
@@ -201,6 +202,15 @@ export async function callPluginAdapter(
       });
 
       if (application.kind === 'direct_read') {
+        const resultScopeRepoId = scope.kind === 'repository' ? scope.repository.repoId : FORGE_INSTANCE_SCOPE_KEY;
+        const boundedPluginResult = boundedRuntimeResult({
+          controllerHome: ctx.controllerHome,
+          repoId: resultScopeRepoId,
+          sessionId: ctx.sessionId,
+          principalId: ctx.principalId,
+          controllerInstanceId: ctx.controllerInstanceId,
+          workId,
+        }, application.result);
         const value = {
           accepted: true,
           direct: true,
@@ -216,7 +226,7 @@ export async function callPluginAdapter(
           observationReceiptId: application.receipt.receiptId,
           evidenceRef: application.receipt.receiptId,
           resultDigest: application.receipt.resultDigest,
-          result: application.result,
+          result: boundedPluginResult.value,
           detail: {
             tool: 'rh_context',
             arguments: {
@@ -228,12 +238,20 @@ export async function callPluginAdapter(
         return resultWithPluginArtifactImages(
           value,
           ctx.controllerHome,
-          scope.kind === 'repository' ? scope.repository.repoId : FORGE_INSTANCE_SCOPE_KEY,
+          resultScopeRepoId,
           application.result,
         );
       }
 
       if (application.kind === 'direct_non_persistent') {
+        const boundedPluginResult = boundedRuntimeResult({
+          controllerHome: ctx.controllerHome,
+          repoId: scope.kind === 'repository' ? scope.repository.repoId : FORGE_INSTANCE_SCOPE_KEY,
+          sessionId: ctx.sessionId,
+          principalId: ctx.principalId,
+          controllerInstanceId: ctx.controllerInstanceId,
+          workId,
+        }, application.result);
         return result({
           accepted: true,
           direct: true,
@@ -248,7 +266,7 @@ export async function callPluginAdapter(
           },
           scope: pluginScopeLabel(scope),
           requestId,
-          result: application.result,
+          result: boundedPluginResult.value,
           detail: {
             tool: 'rh_context',
             arguments: {

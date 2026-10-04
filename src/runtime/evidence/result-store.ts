@@ -254,6 +254,11 @@ export function readControllerResult(input: {
     const items = source.slice(cursor, cursor + limit);
     return { record: sanitized.record, items, cursor, ...(cursor + items.length < source.length ? { nextCursor: cursor + items.length } : {}), truncated: cursor + items.length < source.length };
   }
+  if (value && typeof value === 'object') {
+    const source = JSON.stringify(value, null, 2);
+    const items = source.slice(cursor, cursor + limit * 4_096);
+    return { record: sanitized.record, items, cursor, ...(cursor + items.length < source.length ? { nextCursor: cursor + items.length } : {}), truncated: cursor + items.length < source.length };
+  }
   return { record: sanitized.record, items: value, cursor, truncated: false };
 }
 

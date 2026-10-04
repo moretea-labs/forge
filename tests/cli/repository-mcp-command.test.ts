@@ -18,9 +18,52 @@ import { cancelWorkContract, createWorkContract, failWorkContract, getWorkContra
 import { claimControllerSession } from "../../src/runtime/control-plane/facade/controller-session-store";
 import { readWorkHandle } from "../../src/runtime/control-plane/execution/work-handle-store";
 import { startExecutionSession, updateExecutionSession } from "../../src/runtime/control-plane/execution/session-store";
+import { readControllerResult } from "../../src/runtime/evidence/result-store";
+import { boundedRuntimeResult } from "../../adapters/mcp/runtime-gateway/bounded-result-runtime";
 import { applyExternalFilesystemGrant, previewExternalFilesystemGrant } from "../../src/runtime/safe-tooling/external-filesystem";
 import { terminateProcessesByCommand, waitForNoProcessesByCommand } from "../runtime/process-hygiene";
 import { clearGitIdentityCacheForTest, clearGitSnapshotCacheForTest, gitSnapshot, gitSnapshotPerformanceSnapshot } from "../../src/cli/repository/inspector";
+
+test('oversized direct MCP values externalize through the existing paginated Result Store', () => {
+  const controllerHome = mkdtempSync(join(tmpdir(), 'forge-direct-result-'));
+  try {
+    const small = boundedRuntimeResult({
+      controllerHome,
+      sessionId: 'session-direct-result-small',
+      principalId: 'test-principal',
+      controllerInstanceId: 'runtime-test',
+    }, { ok: true });
+    expect(small.externalized).toBe(false);
+    expect(small.value).toEqual({ ok: true });
+
+    const bounded = boundedRuntimeResult({
+      controllerHome,
+      repoId: 'repo-test',
+      sessionId: 'session-direct-result-large',
+      principalId: 'test-principal',
+      controllerInstanceId: 'runtime-test',
+    }, { payload: 'x'.repeat(80 * 1024), marker: 'tail-marker' });
+    expect(bounded.externalized).toBe(true);
+    const pointer = bounded.value as { resultRef: string; sessionId: string; byteLength: number; preview: string };
+    expect(pointer.resultRef).toStartWith('result://');
+    expect(pointer.byteLength).toBeGreaterThan(64 * 1024);
+    expect(pointer.preview.length).toBeLessThanOrEqual(4_096);
+    const first = readControllerResult({
+      controllerHome,
+      resultRef: pointer.resultRef,
+      sessionId: pointer.sessionId,
+      principalId: 'test-principal',
+      cursor: 0,
+      limit: 1,
+    });
+    expect(typeof first.items).toBe('string');
+    expect(first.truncated).toBe(true);
+    expect(String(first.items)).toContain('"payload"');
+    expect(first.nextCursor).toBeGreaterThan(0);
+  } finally {
+    rmSync(controllerHome, { recursive: true, force: true });
+  }
+});
 
 function git(root: string, args: string[]): void {
   const result = spawnSync("git", ["-C", root, ...args], { encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] });
