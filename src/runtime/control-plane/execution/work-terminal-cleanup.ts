@@ -358,6 +358,12 @@ export interface TerminalWorkCleanupReconcileReport {
   truncated: boolean;
 }
 
+function contractCompletedNoChange(contract: WorkContract): boolean {
+  if (contract.workKind === 'completed_no_change' || contract.completionOutcome === 'completed_no_change') return true;
+  const receipt = contract.completionReceipt;
+  return Boolean(receipt && isRepositoryCompletionReceipt(receipt) && receipt.delivery.kind === 'no_change');
+}
+
 function terminalOutcomeForContract(contract: WorkContract): WorkTerminalOutcome {
   if (semanticWorkState(contract) === 'cancelled') return 'cancelled';
   if (semanticWorkState(contract) === 'completed') return 'completed_cleanup';
@@ -398,7 +404,8 @@ export function recoverTerminalWorkHandle(
   const contained = targetExists
     ? git(repository.canonicalRoot, ['merge-base', '--is-ancestor', head.stdout, `refs/heads/${targetBranch}`]).ok
     : false;
-  const delivered = semanticWorkState(contract) === 'completed' && contained;
+  const completedNoChange = contractCompletedNoChange(contract);
+  const delivered = semanticWorkState(contract) === 'completed' && contained && !completedNoChange;
   const recordedAt = nowIso();
   return writeWorkHandle(controllerHome, {
     schemaVersion: 1,
@@ -417,7 +424,9 @@ export function recoverTerminalWorkHandle(
     expectedHead: head.stdout,
     permissionSnapshotVersion: 1,
     state: delivered ? 'merged' : 'failed_terminal_cleanup',
-    failureReason: delivered ? undefined : 'Recovered terminal Work ownership for cleanup; target-branch containment was not proven.',
+    failureReason: delivered || completedNoChange
+      ? undefined
+      : 'Recovered terminal Work ownership for cleanup; target-branch containment was not proven.',
     createdAt: contract.createdAt || recordedAt,
     updatedAt: recordedAt,
     cleanupResponsibility: { owner: 'work_finalizer', registeredAt: recordedAt },
@@ -749,8 +758,19 @@ export async function cleanupTerminalWork(input: TerminalWorkCleanupInput): Prom
   const targetBranch = resolveWorkDeliveryTargetBranch(input.handle, repository.defaultBranch, input.targetBranch);
   const deleteBranch = input.deleteBranch !== false;
   let current = input.handle;
-  const landed = current.state === 'merged' || current.finalization.merge === 'done';
-  const preservedFailure = (input.failureReason ?? current.failureReason ?? current.finalization.lastError ?? 'terminal work cleanup').slice(0, 1_000);
+  const contract = getWorkContract(
+    { controllerHome: input.controllerHome, repoId: current.repositoryId },
+    current.workContractId ?? current.workId,
+  );
+  const completedNoChange = Boolean(contract && contractCompletedNoChange(contract));
+  // `merged` is delivery truth, not a generic terminal-cleanup waypoint. Historical
+  // no-change handles may carry merge=done/state=merged from the retired finalizer;
+  // normalize that stale projection before any destructive cleanup attempt.
+  const landed = !completedNoChange && (current.state === 'merged' || current.finalization.merge === 'done');
+  const successfulCompletion = completedNoChange || input.terminalOutcome === 'completed_cleanup';
+  const preservedFailure = successfulCompletion
+    ? undefined
+    : (input.failureReason ?? current.failureReason ?? current.finalization.lastError ?? 'terminal work cleanup').slice(0, 1_000);
   const receipt = current.cleanupReceipt ?? newReceipt(current, targetBranch, input.terminalOutcome);
 
   if (
@@ -826,7 +846,11 @@ export async function cleanupTerminalWork(input: TerminalWorkCleanupInput): Prom
       ? 'failed' as const
       : current.finalization.validation,
     commit: current.finalization.commit === 'pending' ? 'skipped' as const : current.finalization.commit,
-    merge: landed ? 'done' as const : current.finalization.merge === 'pending' ? 'skipped' as const : current.finalization.merge,
+    merge: completedNoChange
+      ? 'skipped' as const
+      : landed
+        ? 'done' as const
+        : current.finalization.merge === 'pending' ? 'skipped' as const : current.finalization.merge,
     lastError: preservedFailure,
   };
   if (landed) {

@@ -578,6 +578,54 @@ describe('terminal Work cleanup', () => {
     expect(readWorkHandle(fx.controllerHome, fx.repository.repoId, workId)?.state).toBe('cleaned');
   });
 
+  test('periodic recovery reconstructs completed no-change Work as cleanup-pending rather than merged', async () => {
+    const fx = fixture('recover-no-change');
+    const workId = 'work-terminal-cleanup-recover-no-change';
+    const branch = 'work/terminal-cleanup-recover-no-change';
+    const workspace = ensureManagedWorkspace(fx.controllerHome, getRepository(fx.repository.repoId, fx.controllerHome), {
+      requestId: 'terminal-cleanup-recover-no-change',
+      title: 'Terminal Cleanup Recover No Change',
+      branchName: branch,
+    });
+    const revision = workspace.baseRevision!;
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    createWorkContract(store, {
+      workId,
+      repoId: fx.repository.repoId,
+      checkoutId: workspace.checkoutId!,
+      worktreeRef: workspace.root!,
+      baseRevision: revision,
+      objective: 'Recovered no-change Work must not manufacture merged delivery truth.',
+      acceptanceCriteria: [],
+      constraints: {},
+      allowedPaths: [],
+      forbiddenPaths: [],
+      checks: [],
+      requestedBy: 'chatgpt',
+      workKind: 'completed_no_change',
+      dispatchState: 'running',
+      phase: 'cleanup',
+    });
+    reviseWorkSemanticContext(store, workId, { expectedRevision: 1, state: 'completed' });
+    const dirtyPath = join(workspace.root!, 'recover-no-change-dirty.txt');
+    writeFileSync(dirtyPath, 'cleanup must remain retryable\n');
+
+    const blocked = await reconcileTerminalWorkCleanups(fx.controllerHome, { minAgeMs: 0, maxWork: 10 });
+    expect(blocked.cleaned).not.toContain(workId);
+    expect(blocked.blocked.some((entry) => entry.workId === workId && entry.reason.includes('DIRTY_WORKTREE_RETAINED'))).toBe(true);
+    const recovered = readWorkHandle(fx.controllerHome, fx.repository.repoId, workId);
+    expect(recovered?.state).toBe('failed_terminal_cleanup');
+    expect(recovered?.finalization.merge).toBe('skipped');
+    expect(recovered?.failureReason).toBeUndefined();
+
+    rmSync(dirtyPath, { force: true });
+    const retried = await reconcileTerminalWorkCleanups(fx.controllerHome, { minAgeMs: 0, maxWork: 10 });
+    expect(retried.cleaned).toContain(workId);
+    expect(readWorkHandle(fx.controllerHome, fx.repository.repoId, workId)?.state).toBe('cleaned');
+    expect(existsSync(workspace.root!)).toBe(false);
+    expect(branchExists(fx.repositoryRoot, branch)).toBe(false);
+  });
+
   test('periodic reconciler converges semantic cancellation without a separate cleanup receipt when resources are safe', async () => {
     const fx = fixture('periodic-semantic-cancel');
     const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
@@ -982,6 +1030,69 @@ describe('terminal Work cleanup', () => {
     expect(result.receipt.blockers.join('\n')).toContain('unbound process');
     expect(existsSync(fx.workspace.root!)).toBe(true);
     expect(branchExists(fx.repositoryRoot, fx.branch)).toBe(true);
+  });
+
+  test('does not preserve a stale merged projection for completed no-change Work and retries cleanup on the same handle', async () => {
+    const fx = fixture('no-change-stale-merged');
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    createWorkContract(store, {
+      workId: fx.handle.workId,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.workspace.checkoutId!,
+      objective: 'No-change delivery remains distinct from merged delivery while physical cleanup is pending.',
+      acceptanceCriteria: [],
+      constraints: {},
+      allowedPaths: [],
+      forbiddenPaths: [],
+      checks: [],
+      requestedBy: 'chatgpt',
+      workKind: 'completed_no_change',
+      dispatchState: 'running',
+      phase: 'cleanup',
+    });
+    reviseWorkSemanticContext(store, fx.handle.workId, { expectedRevision: 1, state: 'completed' });
+    const staleMerged = writeWorkHandle(fx.controllerHome, {
+      ...fx.handle,
+      state: 'merged',
+      failureReason: undefined,
+      finalization: {
+        ...fx.handle.finalization,
+        validation: 'done',
+        commit: 'skipped',
+        merge: 'done',
+        lastError: undefined,
+      },
+    });
+    const dirtyPath = join(fx.workspace.root!, 'pending-no-change-cleanup.txt');
+    writeFileSync(dirtyPath, 'retain until cleanup can retry\n');
+
+    const blocked = await cleanupTerminalWork({
+      controllerHome: fx.controllerHome,
+      handle: staleMerged,
+      targetBranch: 'main',
+      deleteBranch: true,
+      terminalOutcome: 'completed_cleanup',
+    });
+    expect(blocked.handle.state).toBe('failed_terminal_cleanup');
+    expect(blocked.handle.finalization.merge).toBe('skipped');
+    expect(blocked.handle.failureReason).toBeUndefined();
+    expect(blocked.receipt.complete).toBe(false);
+    expect(blocked.receipt.blockers).toContain('DIRTY_WORKTREE_RETAINED');
+    expect(existsSync(fx.workspace.root!)).toBe(true);
+
+    rmSync(dirtyPath, { force: true });
+    const retried = await cleanupTerminalWork({
+      controllerHome: fx.controllerHome,
+      handle: blocked.handle,
+      targetBranch: 'main',
+      deleteBranch: true,
+      terminalOutcome: 'completed_cleanup',
+    });
+    expect(retried.handle.state).toBe('cleaned');
+    expect(retried.handle.finalization.merge).toBe('skipped');
+    expect(retried.receipt.complete).toBe(true);
+    expect(existsSync(fx.workspace.root!)).toBe(false);
+    expect(branchExists(fx.repositoryRoot, fx.branch)).toBe(false);
   });
 
   test('preserves merged delivery state when cleanup is blocked by another live process', async () => {
