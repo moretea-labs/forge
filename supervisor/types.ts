@@ -104,6 +104,20 @@ export interface WorkflowContractValidation {
   evidence?: string[];
 }
 
+/**
+ * Derived, read-only classification of a non-terminal task's causal position.
+ * A mechanically exhausted effect used to make its task silently leave the
+ * delivery queue with no durable projection; this makes that state visible and
+ * names the exact operator action that can move the task forward.
+ */
+export type WorkflowSupervisorTaskStall =
+  | { state: 'terminal' }
+  | { state: 'deliverable'; effectId: string; mode: 'send' | 'reconcile'; generation: number }
+  | { state: 'spaced'; effectId: string; reason: 'retry_spacing' | 'unknown_observation_spacing' }
+  | { state: 'retryable'; effectId: string; generations: number; maxGenerations: number }
+  | { state: 'provider_resume_exhausted'; effectId: string }
+  | { state: 'inert' };
+
 export interface WorkflowSupervisorValidators {
   completionContract(task: WorkflowSupervisorTask, proposal: WorkflowSupervisorProposal): Promise<WorkflowContractValidation>;
   userBlockerPolicy(task: WorkflowSupervisorTask, proposal: WorkflowSupervisorProposal): Promise<WorkflowContractValidation>;

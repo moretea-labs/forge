@@ -59,28 +59,95 @@ export class WorkflowSupervisorControlPlane {
     this.hooks = hooks;
   }
   registerTask(input: WorkflowSupervisorTaskInput): WorkflowSupervisorTask { return this.store.registerTask(input); }
-  recoverTask(input: { taskId: string; sourceEffectId: string; requestId: string; reason: string }): { recoveryEffect: WorkflowSupervisorEffect } {
+  /**
+   * Explicit operator recovery. It is deliberately evidence-classified rather
+   * than a generic "try again": each class names the durable mechanical fact
+   * that makes exactly one bounded next step safe, and none of them can replay
+   * a submission whose outcome is unknown.
+   *
+   * - proven-un-applied effect at its retry ceiling -> refund the mechanical
+   *   budget once and re-dispatch that same effect;
+   * - unknown-outcome effect -> read-only reclassification only, unless the
+   *   operator explicitly authorizes retiring it so a *fresh* turn can run;
+   * - applied effect whose single provider resume is exhausted -> reserve one
+   *   new, separately identified recovery turn on the same conversation.
+   */
+  recoverTask(input: {
+    taskId: string;
+    sourceEffectId?: string;
+    requestId: string;
+    reason: string;
+    /** Explicit operator authority required to retire an outcome-unknown effect. */
+    supersedeUnknown?: boolean;
+    authorizedBy?: string;
+  }): { recoveryEffect: WorkflowSupervisorEffect; action: 'retry_authorized' | 'recovery_reserved' | 'unknown_superseded' } {
     const task = this.requireTask(input.taskId);
     requireNonTerminalTask(this.store, task.taskId);
     if (!input.requestId.trim() || !input.reason.trim()) throw new Error('WORKFLOW_SUPERVISOR_RECOVERY_REASON_REQUIRED');
-    const origin = `provider-recovery:${input.sourceEffectId}`;
-    const existing = this.store.getEffectByOriginKey(origin);
-    if (existing?.taskId === task.taskId) return { recoveryEffect: existing };
+    const authorizedBy = input.authorizedBy?.trim() || 'operator';
+    // Identity-stable replay first: an operator recovery already reserved for
+    // this exact source effect is the durable answer, whether or not it has
+    // since been dispatched.
+    const legacyOrigin = input.sourceEffectId ? `provider-recovery:${input.sourceEffectId}` : undefined;
+    const existingLegacy = legacyOrigin ? this.store.getEffectByOriginKey(legacyOrigin) : undefined;
+    if (existingLegacy?.taskId === task.taskId) return { recoveryEffect: existingLegacy, action: 'recovery_reserved' };
+    // The same explicit supersession decision is one durable fact; replaying it
+    // returns its replacement instead of failing on the now-retired source.
+    const supersedeOrigin = `operator-recovery:${input.sourceEffectId ?? ''}:${input.requestId}`;
+    const existingSupersede = this.store.getEffectByOriginKey(supersedeOrigin);
+    if (existingSupersede?.taskId === task.taskId) return { recoveryEffect: existingSupersede, action: 'unknown_superseded' };
     const pending = this.store.currentUnappliedEffect(task.taskId);
+    if (input.sourceEffectId && pending && pending.effectId !== input.sourceEffectId) {
+      throw new Error('WORKFLOW_SUPERVISOR_RECOVERY_SOURCE_CHANGED');
+    }
     if (pending) {
-      if (pending.effectId !== input.sourceEffectId) throw new Error('WORKFLOW_SUPERVISOR_RECOVERY_SOURCE_CHANGED');
-      // The old native dispatcher persisted its returned pre-click failure as
-      // unknown. Reclassify only that dispatch owner's positive mechanical
-      // evidence, never absence from a rendered browser snapshot.
-      if (!this.store.reconcileNativePreSendFailure(pending.effectId, input.requestId)) throw new Error('WORKFLOW_SUPERVISOR_RECOVERY_OUTCOME_UNKNOWN');
-      return { recoveryEffect: pending };
+      // Read-only reclassification first: a dispatch-owner pre-send return is a
+      // stronger fact than any operator decision and makes the effect retryable
+      // through the normal mechanical path.
+      if (this.store.reconcileNativePreSendFailure(pending.effectId, input.requestId)) {
+        return { recoveryEffect: pending, action: 'retry_authorized' };
+      }
+      try {
+        this.store.authorizeOperatorRetry({ effectId: pending.effectId, requestId: input.requestId, reason: input.reason, authorizedBy });
+        return { recoveryEffect: pending, action: 'retry_authorized' };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (message !== 'WORKFLOW_SUPERVISOR_RECOVERY_OUTCOME_UNKNOWN') throw error;
+        if (input.supersedeUnknown !== true) throw error;
+      }
+      // The operator explicitly decided to stop waiting on an unknown
+      // submission. Record that decision durably and reserve one *new* turn in
+      // the same transaction; the unknown effect is never resent and never
+      // silently discarded.
+      const origin = `operator-recovery:${pending.effectId}:${input.requestId}`;
+      const supersededId = stableEffectId(origin);
+      const prompt = this.renderPrompt(task, supersededId, 'recovery', undefined,
+        `The operator explicitly superseded outcome-unknown effect ${pending.effectId} (${input.requestId}): ${input.reason}. That effect is retired and must never be resent; read durable Forge state and continue this same task with one fresh turn.`);
+      const superseded = this.store.supersedeUnknownEffect({
+        effectId: pending.effectId, requestId: input.requestId, reason: input.reason, authorizedBy,
+        replacement: { effectId: supersededId, prompt },
+      });
+      return { recoveryEffect: superseded.recoveryEffect, action: 'unknown_superseded' };
     }
     const source = this.store.latestAppliedLeafEffectWithoutCompletion(task.taskId);
-    if (source?.effectId !== input.sourceEffectId) throw new Error('WORKFLOW_SUPERVISOR_RECOVERY_SOURCE_CHANGED');
+    if (!source || (input.sourceEffectId && source.effectId !== input.sourceEffectId)) throw new Error('WORKFLOW_SUPERVISOR_RECOVERY_SOURCE_CHANGED');
+    const origin = `provider-recovery:${source.effectId}`;
     const id = stableEffectId(origin);
+    if (this.store.providerResumeExhausted(source.effectId)) {
+      // The automatic resume ceiling is the exact mechanical fact that permits
+      // a further operator turn; without it this path must not exist.
+      const prompt = this.renderPrompt(task, id, 'recovery', undefined,
+        `The operator explicitly requested recovery (${input.requestId}): ${input.reason}. The single bounded provider resume for applied effect ${source.effectId} is exhausted; the source effect remains applied and must not be replayed. Read durable Forge state and continue this same task.`);
+      return { recoveryEffect: this.store.reserveOperatorProviderRecovery({
+        taskId: task.taskId, sourceEffectId: source.effectId, requestId: input.requestId, reason: input.reason,
+        authorizedBy, originKey: origin, effectId: id, prompt,
+      }), action: 'recovery_reserved' };
+    }
     const prompt = this.renderPrompt(task, id, 'recovery', undefined,
       `The user explicitly requested recovery (${input.requestId}): ${input.reason}. Preserve the prior applied effect and all completed source work; read durable state and continue this same task. This is one operator-authorized recovery, not a reset of automatic recovery or dispatch budgets.`);
-    return { recoveryEffect: this.store.reserveOperatorRecovery({ ...input, effectId: id, prompt }) };
+    return { recoveryEffect: this.store.reserveOperatorRecovery({
+      taskId: task.taskId, sourceEffectId: source.effectId, requestId: input.requestId, reason: input.reason, effectId: id, prompt,
+    }), action: 'recovery_reserved' };
   }
   reserveEnrollment(taskId: string, canonicalEffectId?: string): WorkflowSupervisorEffect {
     const task = this.requireTask(taskId);
@@ -147,6 +214,35 @@ export class WorkflowSupervisorControlPlane {
     return task;
   }
   getEffect(id: string): WorkflowSupervisorEffect | undefined { return this.store.getEffect(validateEffectId(id)); }
+  /** Read-only stall classification for one task; no lifecycle authority. */
+  taskStall(taskId: string): ReturnType<WorkflowSupervisorStore['taskStall']> { return this.store.taskStall(this.requireTask(taskId).taskId); }
+  /**
+   * Explicit operator move of one task's exact conversation. Chatting in a new
+   * conversation is never an automatic answer to provider backpressure: a 429 is
+   * answered by fewer requests, and only a conversation that is durably unusable
+   * is replaced. Requires the caller's expected current conversation so a stale
+   * decision cannot silently move a task that already advanced.
+   */
+  migrateConversation(input: { taskId: string; expectedConversationId: string; conversationId: string; conversationUrl: string; requestId: string; reason: string; authorizedBy?: string }): { taskId: string; conversationId: string; conversationUrl: string; migrated: boolean } {
+    const task = this.requireTask(input.taskId);
+    requireNonTerminalTask(this.store, task.taskId);
+    if (!input.requestId.trim() || !input.reason.trim()) throw new Error('WORKFLOW_SUPERVISOR_MIGRATION_REASON_REQUIRED');
+    const identity = parseChatgptConversationIdentity(input.conversationUrl);
+    if (identity.conversationId !== input.conversationId) throw new Error('WORKFLOW_SUPERVISOR_MIGRATION_CONVERSATION_MISMATCH');
+    const migrated = this.store.migrateConversation({
+      taskId: task.taskId,
+      expectedConversationId: input.expectedConversationId,
+      conversationId: identity.conversationId,
+      conversationUrl: identity.canonicalUrl,
+      requestId: input.requestId,
+      reason: input.reason,
+      authorizedBy: input.authorizedBy?.trim() || 'operator',
+    });
+    return {
+      taskId: migrated.task.taskId, conversationId: migrated.task.conversationId,
+      conversationUrl: migrated.task.conversationUrl, migrated: migrated.migrated,
+    };
+  }
   /** Mechanical provider re-dispatch budget for one effect, used by recovery to surface exhaustion. */
   effectDispatchBudget(effectId: string): ReturnType<WorkflowSupervisorStore['effectDispatchBudget']> {
     return this.store.effectDispatchBudget(validateEffectId(effectId));
@@ -381,6 +477,11 @@ export class WorkflowSupervisorControlPlane {
     if (dispatch?.generation !== input.dispatchGeneration) throw new Error('WORKFLOW_SUPERVISOR_DISPATCH_GENERATION_CHANGED');
     this.store.recordEffectNotAppliedProof(input.effectId, input.observationId, {
       surface: input.surface?.trim().slice(0, 128) || 'macos-native', reason: input.reason, send_clicked: false, dispatch_generation: input.dispatchGeneration,
+      // This call is the dispatch owner's own mechanical return, produced before
+      // any Send click. Marking it as a pre-send rejection is what lets the one
+      // bounded budget refund apply, exactly as the bootstrap path does; without
+      // it a purely local obstacle permanently exhausted the effect.
+      pre_send_rejection: true,
     });
   }
   browserObserveProviderTurn(input: { conversationId: string; conversationUrl: string; generating: boolean; latestAssistantResponse: string; providerActivityText?: string; providerFailureCode?: string; observedAtMs: number; graceMs: number }): { state: 'inactive' | 'none' | 'generating' | 'idle_pending' | 'recovery_reserved' | 'exhausted'; recoveryEffect?: WorkflowSupervisorEffect } {

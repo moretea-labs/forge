@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { createConnection } from 'node:net';
 import { workflowSupervisorSocketPath } from './paths';
-import type { WorkflowSupervisorAutomationStatus, WorkflowSupervisorConsumerStatus, WorkflowSupervisorContinuationProof, WorkflowSupervisorDiscoveredConversation, WorkflowSupervisorEffect, WorkflowSupervisorTask, WorkflowSupervisorTaskInput, WorkflowSupervisorTerminalState } from './types';
+import type { WorkflowSupervisorAutomationStatus, WorkflowSupervisorConsumerStatus, WorkflowSupervisorContinuationProof, WorkflowSupervisorDiscoveredConversation, WorkflowSupervisorEffect, WorkflowSupervisorTask, WorkflowSupervisorTaskInput, WorkflowSupervisorTaskStall, WorkflowSupervisorTerminalState } from './types';
 
 interface RpcResponse<T> { id: string; ok: boolean; result?: T; error?: { code?: string; message?: string } }
 
@@ -78,8 +78,40 @@ export async function listWorkflowSupervisorTasks(forgeHome: string, activeOnly 
   return result.tasks;
 }
 /** Operator-only recovery; never exposed to the browser Native Messaging host. */
-export async function recoverWorkflowSupervisorTask(forgeHome: string, input: { taskId: string; sourceEffectId: string; requestId: string; reason: string }): Promise<{ recoveryEffect: WorkflowSupervisorEffect }> {
-  return await rpc(forgeHome, 'task_recover', { task_id: input.taskId, source_effect_id: input.sourceEffectId, request_id: input.requestId, reason: input.reason }, SUPERVISOR_RPC_MUTATION_TIMEOUT_MS);
+export async function recoverWorkflowSupervisorTask(forgeHome: string, input: { taskId: string; sourceEffectId?: string; requestId: string; reason: string; supersedeUnknown?: boolean; authorizedBy?: string }): Promise<{ recoveryEffect: WorkflowSupervisorEffect; action: 'retry_authorized' | 'recovery_reserved' | 'unknown_superseded' }> {
+  return await rpc(forgeHome, 'task_recover', {
+    task_id: input.taskId,
+    ...(input.sourceEffectId?.trim() ? { source_effect_id: input.sourceEffectId.trim() } : {}),
+    request_id: input.requestId,
+    reason: input.reason,
+    ...(input.supersedeUnknown === true ? { supersede_unknown: true } : {}),
+    ...(input.authorizedBy?.trim() ? { authorized_by: input.authorizedBy.trim() } : {}),
+  }, SUPERVISOR_RPC_MUTATION_TIMEOUT_MS);
+}
+
+/** Read-only stall classification; derived from the effect ledger, not new state. */
+export async function getWorkflowSupervisorTaskStall(forgeHome: string, taskId: string): Promise<WorkflowSupervisorTaskStall> {
+  return await rpc<WorkflowSupervisorTaskStall>(forgeHome, 'task_stall', { task_id: taskId });
+}
+
+/**
+ * Operator-only conversation migration for a standalone Supervisor task whose
+ * exact conversation became permanently unusable. It is explicit and bounded by
+ * design: it is never triggered automatically by provider backpressure.
+ */
+export async function migrateWorkflowSupervisorConversation(forgeHome: string, input: {
+  taskId: string; expectedConversationId: string; conversationId: string; conversationUrl: string;
+  requestId: string; reason: string; authorizedBy?: string;
+}): Promise<{ taskId: string; conversationId: string; conversationUrl: string; migrated: boolean }> {
+  return await rpc(forgeHome, 'task_migrate_conversation', {
+    task_id: input.taskId,
+    expected_conversation_id: input.expectedConversationId,
+    conversation_id: input.conversationId,
+    conversation_url: input.conversationUrl,
+    request_id: input.requestId,
+    reason: input.reason,
+    ...(input.authorizedBy?.trim() ? { authorized_by: input.authorizedBy.trim() } : {}),
+  }, SUPERVISOR_RPC_MUTATION_TIMEOUT_MS);
 }
 
 export async function stopWorkflowSupervisorTask(

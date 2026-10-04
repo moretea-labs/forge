@@ -3,6 +3,7 @@ import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contra
 import {
   getWorkflowSupervisorContinuationProof,
   getWorkflowSupervisorTask,
+  getWorkflowSupervisorTaskStall,
   listWorkflowSupervisorTasks,
   registerWorkflowSupervisorTask,
   reserveWorkflowSupervisorEnrollment,
@@ -70,9 +71,12 @@ export async function callWorkflowSupervisorAdapter(
     const id = textArg(args, 'task_id');
     if (!id) throw new Error('WORKFLOW_SUPERVISOR_TASK_ID_REQUIRED');
     const task = await getWorkflowSupervisorTask(forgeHome, id);
-    return result(task
-      ? { task, summary: `Supervisor task ${id} retrieved.` }
-      : { taskId: id, status: 'not_found', summary: `Supervisor task ${id} not found.` }, !task);
+    if (!task) return result({ taskId: id, status: 'not_found', summary: `Supervisor task ${id} not found.` }, true);
+    // Derived read-only projection: an effect that exhausted its mechanical
+    // retry/resume budget used to make the task silently leave the delivery
+    // queue. The stall state names the exact operator action that can move it.
+    const stall = await getWorkflowSupervisorTaskStall(forgeHome, id).catch(() => undefined);
+    return result({ task, ...(stall ? { stall } : {}), summary: `Supervisor task ${id} retrieved${stall ? ` (${stall.state})` : ''}.` });
   }
 
   if (operation === 'proof') {

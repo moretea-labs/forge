@@ -1,7 +1,8 @@
 import { createRequire } from 'node:module';
 import { mkdirSync } from 'node:fs';
 import { resolveWorkflowSupervisorForgeHome, workflowSupervisorDatabasePathValue, workflowSupervisorRootPath } from './paths';
-import type { WorkflowEffectKind, WorkflowEffectOutcome, WorkflowSupervisorCompletion, WorkflowSupervisorContinuationProof, WorkflowSupervisorDiscoverySnapshot, WorkflowSupervisorDiscoveredConversation, WorkflowSupervisorEffect, WorkflowSupervisorTask, WorkflowSupervisorTaskInput, WorkflowSupervisorTerminalState } from './types';
+import type { WorkflowEffectKind, WorkflowEffectOutcome, WorkflowSupervisorCompletion, WorkflowSupervisorContinuationProof, WorkflowSupervisorDiscoverySnapshot, WorkflowSupervisorDiscoveredConversation, WorkflowSupervisorEffect, WorkflowSupervisorTask, WorkflowSupervisorTaskInput, WorkflowSupervisorTaskStall, WorkflowSupervisorTerminalState } from './types';
+export type { WorkflowSupervisorTaskStall } from './types';
 
 interface Statement { get(...params: unknown[]): unknown; all(...params: unknown[]): unknown[]; run(...params: unknown[]): unknown; finalize?(): void }
 interface Database { exec(sql: string): void; prepare(sql: string): Statement; close(): void }
@@ -152,10 +153,26 @@ function latestNotAppliedProofEventId(db: Database, effectId: string): number {
   return Number(notApplied?.event_id ?? 0);
 }
 
+/** A durable operator supersession retires an effect from the causal obligation; it is never replayed. */
+function effectSuperseded(db: Database, effectId: string): boolean {
+  return Boolean(statement(db, "SELECT 1 AS ok FROM events WHERE effect_id = ? AND kind = 'effect_outcome_unknown_superseded' LIMIT 1", (s) => s.get(effectId)));
+}
+
+function providerResumeExhaustedWithin(db: Database, effectId: string): boolean {
+  return Boolean(statement(db, "SELECT 1 AS ok FROM events WHERE effect_id = ? AND kind = 'assistant_recovery_exhausted' LIMIT 1", (s) => s.get(effectId)));
+}
+
+function operatorAuthorizedRefundCount(db: Database, effectId: string): number {
+  const row = statement(db, "SELECT COUNT(*) AS total FROM events WHERE effect_id = ? AND kind = 'effect_dispatch_budget_refunded' AND json_extract(payload_json,'$.reason') = 'operator_authorized_retry'", (s) => s.get(effectId)) as { total?: number } | undefined;
+  return Number(row?.total ?? 0);
+}
+
 function oldestUnappliedEffect(db: Database, taskId: string): WorkflowSupervisorEffect | undefined {
   const row = statement(db, `SELECT e.* FROM effects e
     WHERE e.task_id = ? AND NOT EXISTS (
       SELECT 1 FROM events applied WHERE applied.effect_id = e.effect_id AND applied.kind = 'effect_applied'
+    ) AND NOT EXISTS (
+      SELECT 1 FROM events superseded WHERE superseded.effect_id = e.effect_id AND superseded.kind = 'effect_outcome_unknown_superseded'
     ) ORDER BY e.created_at, e.effect_id LIMIT 1`, (s) => s.get(taskId)) as Record<string, unknown> | undefined;
   return row ? effectFromRow(row) : undefined;
 }
@@ -174,6 +191,21 @@ export const WORKFLOW_SUPERVISOR_DISPATCH_RETRY_BASE_MS = 30_000;
 export const WORKFLOW_SUPERVISOR_DISPATCH_RETRY_MAX_MS = 10 * 60_000;
 export const WORKFLOW_SUPERVISOR_UNKNOWN_OBSERVATION_BASE_MS = 5_000;
 export const WORKFLOW_SUPERVISOR_UNKNOWN_OBSERVATION_MAX_MS = 60_000;
+/**
+ * An explicit operator recovery may refund the mechanical retry budget for an
+ * effect whose latest dispatch carries a mechanical pre-send negative proof.
+ * That is a safety statement about *this* effect, not a reset of provider
+ * budgets, so it stays bounded: exceeding it requires a new explicit decision
+ * rather than another silent attempt.
+ */
+export const WORKFLOW_SUPERVISOR_MAX_OPERATOR_REFUNDS = 2;
+/**
+ * A standalone Supervisor task's conversation is its delivery surface. If that
+ * exact conversation becomes permanently unusable, an explicit operator may
+ * move the task to a replacement conversation. The budget keeps a transient
+ * provider problem from turning into a conversation-hopping loop.
+ */
+export const WORKFLOW_SUPERVISOR_MAX_CONVERSATION_MIGRATIONS = 2;
 
 /** Spaced retries keep a persistent local obstacle from becoming a request storm. */
 export function workflowSupervisorDispatchRetryDelayMs(generation: number): number {
@@ -189,6 +221,7 @@ export interface WorkflowSupervisorEffectDispatchBudget {
   retryDelayMs?: number;
   exhausted: boolean;
 }
+
 
 interface EffectDispatchLedger {
   generations: number;
@@ -634,6 +667,113 @@ export class WorkflowSupervisorStore {
       };
     });
   }
+  /**
+   * Read-only classification of why a non-terminal task is or is not advancing.
+   * It derives only from the existing effect/observation ledger, so it adds no
+   * second durable state and no new lifecycle authority.
+   */
+  taskStall(taskId: string): WorkflowSupervisorTaskStall {
+    if (this.terminalAction(taskId)) return { state: 'terminal' };
+    const next = this.nextBrowserEffect(taskId);
+    if (next) {
+      if (next.mode === 'send') return { state: 'deliverable', effectId: next.effect.effectId, mode: 'send', generation: next.generation };
+      return { state: 'spaced', effectId: next.effect.effectId, reason: 'unknown_observation_spacing' };
+    }
+    const pending = this.currentUnappliedEffect(taskId);
+    if (pending) {
+      const ledger = this.read((db) => ({ ...effectDispatchLedger(db, pending.effectId), proof: latestNotAppliedProofEventId(db, pending.effectId) }));
+      const ceiling = WORKFLOW_SUPERVISOR_MAX_DISPATCH_GENERATIONS + ledger.budgetRefunds;
+      const retryAuthorized = ledger.generations === 0 || ledger.proof > ledger.lastEventId;
+      // An exhausted retry ceiling is the operator-facing state: no amount of
+      // waiting can mint another generation. Everything else is ordinary
+      // mechanical spacing and needs no operator action.
+      if (retryAuthorized && ledger.generations >= ceiling) {
+        return { state: 'retryable', effectId: pending.effectId, generations: ledger.generations, maxGenerations: ceiling };
+      }
+      return { state: 'spaced', effectId: pending.effectId, reason: retryAuthorized ? 'retry_spacing' : 'unknown_observation_spacing' };
+    }
+    const leaf = this.latestAppliedLeafEffectWithoutCompletion(taskId);
+    if (leaf && this.providerResumeExhausted(leaf.effectId)) return { state: 'provider_resume_exhausted', effectId: leaf.effectId };
+    return { state: 'inert' };
+  }
+  /**
+   * Explicit operator authority to continue a *mechanically proven* un-applied
+   * effect after its retry ceiling. The proof is the dispatch owner's persisted
+   * pre-send negative result, never page absence, so this can never replay a
+   * submitted mutation. Idempotent per request id and bounded per effect.
+   */
+  authorizeOperatorRetry(input: { effectId: string; requestId: string; reason: string; authorizedBy: string }): { refunds: number; generations: number; deduplicated: boolean } {
+    return this.transaction((db) => {
+      const effect = statement(db, 'SELECT task_id FROM effects WHERE effect_id = ?', (s) => s.get(input.effectId)) as { task_id?: string } | undefined;
+      if (!effect?.task_id) throw new Error('WORKFLOW_SUPERVISOR_EFFECT_UNKNOWN');
+      if (statement(db, "SELECT 1 AS ok FROM events WHERE effect_id = ? AND kind = 'effect_applied' LIMIT 1", (s) => s.get(input.effectId))) {
+        throw new Error('WORKFLOW_SUPERVISOR_EFFECT_ALREADY_APPLIED');
+      }
+      if (statement(db, "SELECT 1 AS ok FROM events WHERE effect_id = ? AND kind = 'effect_outcome_unknown_superseded' LIMIT 1", (s) => s.get(input.effectId))) {
+        throw new Error('WORKFLOW_SUPERVISOR_RECOVERY_EFFECT_SUPERSEDED');
+      }
+      const ledger = effectDispatchLedger(db, input.effectId);
+      if (ledger.generations === 0 || latestNotAppliedProofEventId(db, input.effectId) <= ledger.lastEventId) {
+        throw new Error('WORKFLOW_SUPERVISOR_RECOVERY_OUTCOME_UNKNOWN');
+      }
+      const key = `effect-dispatch-operator-refund:${input.effectId}:${input.requestId}`;
+      const existing = statement(db, 'SELECT 1 AS ok FROM events WHERE event_key = ?', (s) => s.get(key));
+      if (existing) return { refunds: operatorAuthorizedRefundCount(db, input.effectId), generations: ledger.generations, deduplicated: true };
+      if (operatorAuthorizedRefundCount(db, input.effectId) >= WORKFLOW_SUPERVISOR_MAX_OPERATOR_REFUNDS) {
+        throw new Error('WORKFLOW_SUPERVISOR_RECOVERY_REFUND_BUDGET_EXHAUSTED');
+      }
+      statement(db, 'INSERT INTO events(task_id,event_key,kind,effect_id,payload_json,occurred_at) VALUES (?,?,?,?,?,?)', (s) => s.run(
+        effect.task_id!, key, 'effect_dispatch_budget_refunded', input.effectId,
+        json({
+          reason: 'operator_authorized_retry', request_id: input.requestId, authorized_by: input.authorizedBy,
+          reason_text: input.reason, prior_generations: ledger.generations, attestation: 'mechanical_pre_send_negative_proof',
+        }), now()));
+      return { refunds: operatorAuthorizedRefundCount(db, input.effectId), generations: ledger.generations, deduplicated: false };
+    });
+  }
+  /**
+   * Explicit operator authority to retire an effect whose submission outcome is
+   * genuinely unknown. It is never resent; the durable fact records who decided
+   * to stop waiting, and the replacement turn is reserved in the same
+   * transaction so the task can never sit in a half-superseded state. Requires
+   * the caller to have stated the intent.
+   */
+  supersedeUnknownEffect(input: {
+    effectId: string;
+    requestId: string;
+    reason: string;
+    authorizedBy: string;
+    replacement: { effectId: string; prompt: string };
+  }): { superseded: boolean; recoveryEffect: WorkflowSupervisorEffect } {
+    const originKey = `operator-recovery:${input.effectId}:${input.requestId}`;
+    return this.transaction((db) => {
+      const effect = statement(db, 'SELECT task_id FROM effects WHERE effect_id = ?', (s) => s.get(input.effectId)) as { task_id?: string } | undefined;
+      if (!effect?.task_id) throw new Error('WORKFLOW_SUPERVISOR_EFFECT_UNKNOWN');
+      const taskId = effect.task_id;
+      const reserve = (): WorkflowSupervisorEffect => this.reserveEffectWithin(db, {
+        taskId, effectId: input.replacement.effectId, kind: 'recovery', originKey, prompt: input.replacement.prompt,
+      });
+      const existingReplacement = statement(db, 'SELECT * FROM effects WHERE origin_key = ?', (s) => s.get(originKey)) as Record<string, unknown> | undefined;
+      if (existingReplacement) return { superseded: true, recoveryEffect: effectFromRow(existingReplacement) };
+      if (statement(db, "SELECT 1 AS ok FROM events WHERE effect_id = ? AND kind = 'effect_applied' LIMIT 1", (s) => s.get(input.effectId))) {
+        throw new Error('WORKFLOW_SUPERVISOR_EFFECT_ALREADY_APPLIED');
+      }
+      const ledger = effectDispatchLedger(db, input.effectId);
+      if (ledger.generations === 0) throw new Error('WORKFLOW_SUPERVISOR_SUPERSEDE_NOT_DISPATCHED');
+      if (latestNotAppliedProofEventId(db, input.effectId) > ledger.lastEventId) {
+        throw new Error('WORKFLOW_SUPERVISOR_SUPERSEDE_NOT_APPLIED_PROVEN');
+      }
+      const key = `effect-outcome-unknown-superseded:${input.effectId}:${input.requestId}`;
+      statement(db, 'INSERT OR IGNORE INTO events(task_id,event_key,kind,effect_id,payload_json,occurred_at) VALUES (?,?,?,?,?,?)', (s) => s.run(
+        taskId, key, 'effect_outcome_unknown_superseded', input.effectId,
+        json({
+          request_id: input.requestId, authorized_by: input.authorizedBy, reason: input.reason,
+          generation: ledger.lastGeneration, replacement_effect_id: input.replacement.effectId,
+          attestation: 'explicit_operator_authorization',
+        }), now()));
+      return { superseded: true, recoveryEffect: reserve() };
+    });
+  }
   terminalAction(taskId: string): WorkflowSupervisorTerminalState | undefined {
     return this.read((db) => {
       const row = statement(db, "SELECT kind FROM events WHERE task_id = ? AND kind IN ('terminal_done','terminal_needs_user','terminal_stopped') ORDER BY event_id DESC LIMIT 1", (s) => s.get(taskId)) as { kind?: string } | undefined;
@@ -795,6 +935,81 @@ export class WorkflowSupervisorStore {
         input.taskId, `assistant-recovery-reserved:${input.sourceEffectId}`, 'assistant_recovery_reserved', input.sourceEffectId,
         json({ recovery_effect_id: effect.effectId, requested_by: 'user', request_id: input.requestId, reason: input.reason, exactly_once_resume: true }), now()));
       return effect;
+    });
+  }
+  /**
+   * Explicit operator recovery for an applied effect whose one bounded provider
+   * resume was already exhausted. The source effect stays applied and completed
+   * history is untouched; this only reserves one new, separately identified
+   * provider turn, so it can never replay the source mutation.
+   */
+  reserveOperatorProviderRecovery(input: { taskId: string; sourceEffectId: string; requestId: string; reason: string; authorizedBy: string; originKey: string; effectId: string; prompt: string }): WorkflowSupervisorEffect {
+    return this.transaction((db) => {
+      if (oldestUnappliedEffect(db, input.taskId)) throw new Error('WORKFLOW_SUPERVISOR_RECOVERY_OUTCOME_UNKNOWN');
+      if (statement(db, "SELECT 1 FROM events WHERE task_id=? AND kind IN ('terminal_done','terminal_needs_user','terminal_stopped') LIMIT 1", (s) => s.get(input.taskId))) {
+        throw new Error('WORKFLOW_SUPERVISOR_TASK_TERMINAL');
+      }
+      const source = statement(db, `SELECT e.* FROM effects e WHERE e.task_id = ? AND e.effect_id = ?
+        AND EXISTS (SELECT 1 FROM events applied WHERE applied.effect_id=e.effect_id AND applied.kind='effect_applied')
+        AND NOT EXISTS (SELECT 1 FROM completions c WHERE c.source_effect_id=e.effect_id)
+        LIMIT 1`, (s) => s.get(input.taskId, input.sourceEffectId)) as Record<string, unknown> | undefined;
+      if (!source) throw new Error('WORKFLOW_SUPERVISOR_RECOVERY_SOURCE_CHANGED');
+      // This class exists precisely because the bounded automatic resume ran
+      // out. Without that durable fact there is no authorization here.
+      if (!providerResumeExhaustedWithin(db, input.sourceEffectId)) throw new Error('WORKFLOW_SUPERVISOR_RECOVERY_NOT_EXHAUSTED');
+      const originKey = input.originKey;
+      const effect = this.reserveEffectWithin(db, { taskId: input.taskId, effectId: input.effectId, kind: 'recovery', originKey, prompt: input.prompt });
+      statement(db, 'INSERT OR IGNORE INTO events(task_id,event_key,kind,effect_id,payload_json,occurred_at) VALUES (?,?,?,?,?,?)', (s) => s.run(
+        input.taskId, `assistant-recovery-reserved:${originKey}`, 'assistant_recovery_reserved', input.sourceEffectId,
+        json({
+          recovery_effect_id: effect.effectId, requested_by: 'user', authorized_by: input.authorizedBy,
+          request_id: input.requestId, reason: input.reason, exactly_once_resume: true, operator_authorized: true,
+        }), now()));
+      return effect;
+    });
+  }
+  /**
+   * Explicit operator move of a task's conversation binding. Standalone
+   * Supervisor tasks had no replacement path: an exact conversation that became
+   * permanently unusable could only stall the task forever. This reuses the
+   * existing task conversation authority and refuses whenever a submitted
+   * mutation in the old conversation is still outcome-unknown, because such an
+   * obligation must be reconciled rather than abandoned.
+   */
+  migrateConversation(input: { taskId: string; expectedConversationId: string; conversationId: string; conversationUrl: string; requestId: string; reason: string; authorizedBy: string }): { task: WorkflowSupervisorTask; migrated: boolean } {
+    return this.transaction((db) => {
+      const row = statement(db, 'SELECT * FROM tasks WHERE task_id = ?', (s) => s.get(input.taskId)) as Record<string, unknown> | undefined;
+      if (!row) throw new Error('WORKFLOW_SUPERVISOR_TASK_UNKNOWN');
+      const task = taskFromRow(row);
+      if (task.conversationId !== input.expectedConversationId) throw new Error('WORKFLOW_SUPERVISOR_MIGRATION_STALE');
+      if (statement(db, "SELECT 1 FROM events WHERE task_id=? AND kind IN ('terminal_done','terminal_needs_user','terminal_stopped') LIMIT 1", (s) => s.get(input.taskId))) {
+        throw new Error('WORKFLOW_SUPERVISOR_TASK_TERMINAL');
+      }
+      if (task.conversationId === input.conversationId) {
+        if (task.conversationUrl !== input.conversationUrl) throw new Error('WORKFLOW_SUPERVISOR_MIGRATION_CONVERSATION_CONFLICT');
+        return { task, migrated: false };
+      }
+      const conflict = statement(db, 'SELECT task_id FROM tasks WHERE conversation_id = ? AND task_id <> ?', (s) => s.get(input.conversationId, input.taskId)) as { task_id?: string } | undefined;
+      if (conflict) throw new Error('WORKFLOW_SUPERVISOR_MIGRATION_CONVERSATION_CONFLICT');
+      const prior = statement(db, "SELECT COUNT(*) AS total FROM events WHERE task_id = ? AND kind = 'conversation_migrated'", (s) => s.get(input.taskId)) as { total?: number } | undefined;
+      if (Number(prior?.total ?? 0) >= WORKFLOW_SUPERVISOR_MAX_CONVERSATION_MIGRATIONS) throw new Error('WORKFLOW_SUPERVISOR_MIGRATION_BUDGET_EXHAUSTED');
+      const pending = oldestUnappliedEffect(db, input.taskId);
+      if (pending) {
+        const ledger = effectDispatchLedger(db, pending.effectId);
+        const negativeProof = latestNotAppliedProofEventId(db, pending.effectId) > ledger.lastEventId;
+        if (ledger.generations > 0 && !negativeProof) throw new Error('WORKFLOW_SUPERVISOR_MIGRATION_OUTCOME_UNKNOWN');
+      }
+      statement(db, 'UPDATE tasks SET conversation_id = ?, conversation_url = ? WHERE task_id = ?', (s) => s.run(input.conversationId, input.conversationUrl, input.taskId));
+      statement(db, 'INSERT INTO events(task_id,event_key,kind,payload_json,occurred_at) VALUES (?,?,?,?,?)', (s) => s.run(
+        input.taskId, `conversation-migrated:${input.taskId}:${input.requestId}`, 'conversation_migrated',
+        json({
+          from_conversation_id: task.conversationId, to_conversation_id: input.conversationId, to_conversation_url: input.conversationUrl,
+          request_id: input.requestId, authorized_by: input.authorizedBy, reason: input.reason,
+          ...(pending ? { pending_effect_id: pending.effectId } : {}),
+        }), now()));
+      const updated = statement(db, 'SELECT * FROM tasks WHERE task_id = ?', (s) => s.get(input.taskId)) as Record<string, unknown> | undefined;
+      if (!updated) throw new Error('WORKFLOW_SUPERVISOR_TASK_PERSIST_FAILED');
+      return { task: taskFromRow(updated), migrated: true };
     });
   }
   reconcileNativePreSendFailure(effectId: string, requestId: string): boolean {

@@ -245,6 +245,12 @@ export async function dispatchMacOsChatgptPrompt(
           .flatMap((selector) => Array.from(root.querySelectorAll(selector))).find(visible);
         if (!(composer instanceof HTMLElement) || !composer.isContentEditable) return { prepared: false, reason: 'composer_missing' };
         const current = norm(value(composer));
+        // A *previous attempt of this exact effect* may have inserted this same
+        // prompt and then failed before clicking Send. That draft is this turn's
+        // own text, not a foreign user draft: reusing it is the same logical
+        // send. Treating it as occupied burned a generation without ever
+        // reaching the provider.
+        if (current && current === expectedNorm) return { prepared: true };
         if (resume) { if (!current) return { prepared: false, reason: 'composer_resume_empty' }; if (current !== expectedNorm) return { prepared: false, reason: 'composer_resume_mismatch' }; }
         else {
           if (current) return { prepared: false, reason: 'composer_not_empty' };

@@ -2628,3 +2628,209 @@ test('bounds and spaces provider re-dispatch of one un-applied effect, then rele
   expect(store.recordEffectDispatchStarted(effect.effectId, 4, 'dispatch-budget-4')).toBe(false);
   expect(store.latestEffectDispatch(effect.effectId)?.generation).toBe(3);
 });
+
+describe('Workflow Supervisor operator recovery and conversation replacement', () => {
+  test('a mechanically exhausted un-applied effect never becomes silently inert and needs one bounded operator grant', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-operator-retry-'));
+    roots.push(root);
+    const store = new WorkflowSupervisorStore(join(root, 'supervisor-home'));
+    const control = new WorkflowSupervisorControlPlane(store, {}, { browserTaskActive: () => true });
+    const conversationId = 'aaaaaaa1-1111-2222-3333-444444444444';
+    const conversationUrl = `https://chatgpt.com/c/${conversationId}`;
+    const taskId = 'operator-retry-exhaustion';
+    control.registerTask({
+      taskId, conversationId, conversationUrl, objective: 'Operator retry after a purely local obstacle.',
+      completionContract: {}, continuationPolicy: { kind: 'standalone_supervisor' }, userBlockerPolicy: {},
+    });
+    const effect = control.reserveEnrollment(taskId);
+    const ownerReturn = (generation: number, reason: string): void => {
+      store.recordEffectDispatchStarted(effect.effectId, generation, `owner-${generation}`, { surface: 'macos-native' });
+      control.browserObserveDispatchFailure({
+        conversationId, conversationUrl, effectId: effect.effectId,
+        observationId: `owner-no-click-${generation}`, dispatchGeneration: generation, reason,
+      });
+    };
+    ownerReturn(1, 'composer_missing');
+    ownerReturn(2, 'send_button_missing');
+    ownerReturn(3, 'composer_missing');
+    // Every failure above is the dispatch owner's own pre-send return, so the
+    // one bounded automatic refund must apply instead of exhausting the effect.
+    expect(store.effectDispatchBudget(effect.effectId)).toMatchObject({ generations: 3, exhausted: false });
+    expect(store.nextBrowserEffect(taskId, { nowMs: Date.now() + 600_000 })).toMatchObject({ mode: 'send', generation: 4 });
+    ownerReturn(4, 'composer_missing');
+    expect(store.nextBrowserEffect(taskId, { nowMs: Date.now() + 600_000 })).toBeUndefined();
+    // Exhaustion is visible as a derived projection instead of an empty queue.
+    expect(control.taskStall(taskId)).toMatchObject({ state: 'retryable', effectId: effect.effectId, generations: 4, maxGenerations: 4 });
+    expect(() => control.recoverTask({ taskId, sourceEffectId: effect.effectId, requestId: '', reason: 'missing request id' }))
+      .toThrow('WORKFLOW_SUPERVISOR_RECOVERY_REASON_REQUIRED');
+    const recovered = control.recoverTask({ taskId, sourceEffectId: effect.effectId, requestId: 'op-retry-1', reason: 'The local composer obstacle was fixed.' });
+    expect(recovered.action).toBe('retry_authorized');
+    expect(recovered.recoveryEffect.effectId).toBe(effect.effectId);
+    expect(store.nextBrowserEffect(taskId, { nowMs: Date.now() + 600_000 })).toMatchObject({ mode: 'send', generation: 5 });
+    // Idempotent per request id, and the explicit budget stays bounded.
+    expect(control.recoverTask({ taskId, sourceEffectId: effect.effectId, requestId: 'op-retry-1', reason: 'repeat' }).recoveryEffect.effectId).toBe(effect.effectId);
+    control.recoverTask({ taskId, sourceEffectId: effect.effectId, requestId: 'op-retry-2', reason: 'Second explicit grant.' });
+    expect(() => control.recoverTask({ taskId, sourceEffectId: effect.effectId, requestId: 'op-retry-3', reason: 'Third explicit grant.' }))
+      .toThrow('WORKFLOW_SUPERVISOR_RECOVERY_REFUND_BUDGET_EXHAUSTED');
+    store.close();
+  });
+
+  test('an outcome-unknown submission is retired only by an explicit operator decision and is never resent', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-unknown-supersede-'));
+    roots.push(root);
+    const store = new WorkflowSupervisorStore(join(root, 'supervisor-home'));
+    const control = new WorkflowSupervisorControlPlane(store, {}, { browserTaskActive: () => true });
+    const conversationId = 'aaaaaaa2-1111-2222-3333-444444444444';
+    const conversationUrl = `https://chatgpt.com/c/${conversationId}`;
+    const taskId = 'unknown-supersede-task';
+    control.registerTask({
+      taskId, conversationId, conversationUrl, objective: 'Retire an unknown submission explicitly.',
+      completionContract: {}, continuationPolicy: { kind: 'standalone_supervisor' }, userBlockerPolicy: {},
+    });
+    const effect = control.reserveEnrollment(taskId);
+    store.recordEffectDispatchStarted(effect.effectId, 1, 'uncertain-send', { surface: 'macos-native' });
+    store.recordEffectObservation(effect.effectId, 'unknown-after-send', 'unknown', {
+      surface: 'macos-native', reconciliation: true, reason: 'outbound_not_confirmed',
+    });
+    // Observation alone never authorizes a re-send.
+    expect(store.nextBrowserEffect(taskId, { nowMs: Date.now() + 60_000 })).toMatchObject({ mode: 'reconcile', effect: { effectId: effect.effectId } });
+    expect(() => control.recoverTask({ taskId, sourceEffectId: effect.effectId, requestId: 'unknown-1', reason: 'Observation-only request.' }))
+      .toThrow('WORKFLOW_SUPERVISOR_RECOVERY_OUTCOME_UNKNOWN');
+    expect(store.effectApplied(effect.effectId)).toBe(false);
+    const superseded = control.recoverTask({
+      taskId, sourceEffectId: effect.effectId, requestId: 'unknown-1',
+      reason: 'Operator decided to stop waiting on the unknown submission.', supersedeUnknown: true, authorizedBy: 'greyson',
+    });
+    expect(superseded.action).toBe('unknown_superseded');
+    expect(superseded.recoveryEffect.effectId).not.toBe(effect.effectId);
+    // The successor is the only live obligation; the retired effect keeps its
+    // single dispatch generation and is never replayed.
+    expect(store.nextBrowserEffect(taskId)).toMatchObject({ mode: 'send', effect: { effectId: superseded.recoveryEffect.effectId } });
+    expect(store.effectDispatchBudget(effect.effectId).generations).toBe(1);
+    expect(store.effectApplied(effect.effectId)).toBe(false);
+    expect(control.taskStall(taskId)).toMatchObject({ state: 'deliverable', effectId: superseded.recoveryEffect.effectId, mode: 'send' });
+    expect(control.recoverTask({
+      taskId, sourceEffectId: effect.effectId, requestId: 'unknown-1',
+      reason: 'repeat of the same explicit decision', supersedeUnknown: true,
+    }).recoveryEffect.effectId).toBe(superseded.recoveryEffect.effectId);
+    store.close();
+  });
+
+  test('conversation replacement is explicit, CAS-fenced, bounded, and refuses an unresolved submission', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-conversation-migration-'));
+    roots.push(root);
+    const store = new WorkflowSupervisorStore(join(root, 'supervisor-home'));
+    const control = new WorkflowSupervisorControlPlane(store, {}, { browserTaskActive: () => true });
+    const conversationA = 'bbbbbbb1-1111-2222-3333-444444444444';
+    const conversationB = 'bbbbbbb2-1111-2222-3333-444444444444';
+    const conversationC = 'bbbbbbb3-1111-2222-3333-444444444444';
+    const conversationD = 'bbbbbbb4-1111-2222-3333-444444444444';
+    const conversationE = 'bbbbbbb5-1111-2222-3333-444444444444';
+    const conversationF = 'bbbbbbb6-1111-2222-3333-444444444444';
+    const url = (id: string): string => `https://chatgpt.com/c/${id}`;
+    control.registerTask({
+      taskId: 'migration-a', conversationId: conversationA, conversationUrl: url(conversationA), objective: 'Move a task whose conversation is unusable.',
+      completionContract: {}, continuationPolicy: { kind: 'standalone_supervisor' }, userBlockerPolicy: {},
+    });
+    expect(control.migrateConversation({
+      taskId: 'migration-a', expectedConversationId: conversationA, conversationId: conversationB, conversationUrl: url(conversationB),
+      requestId: 'migrate-1', reason: 'The exact conversation is durably unreadable.',
+    })).toMatchObject({ migrated: true, conversationId: conversationB });
+    // A stale expectation cannot move a task that already advanced.
+    expect(() => control.migrateConversation({
+      taskId: 'migration-a', expectedConversationId: conversationA, conversationId: conversationC, conversationUrl: url(conversationC),
+      requestId: 'migrate-stale', reason: 'stale decision',
+    })).toThrow('WORKFLOW_SUPERVISOR_MIGRATION_STALE');
+    control.registerTask({
+      taskId: 'migration-owner', conversationId: conversationC, conversationUrl: url(conversationC), objective: 'Owns its own conversation.',
+      completionContract: {}, continuationPolicy: { kind: 'standalone_supervisor' }, userBlockerPolicy: {},
+    });
+    expect(() => control.migrateConversation({
+      taskId: 'migration-a', expectedConversationId: conversationB, conversationId: conversationC, conversationUrl: url(conversationC),
+      requestId: 'migrate-conflict', reason: 'another task already owns it',
+    })).toThrow('WORKFLOW_SUPERVISOR_MIGRATION_CONVERSATION_CONFLICT');
+    control.migrateConversation({
+      taskId: 'migration-a', expectedConversationId: conversationB, conversationId: conversationD, conversationUrl: url(conversationD),
+      requestId: 'migrate-2', reason: 'Second explicit replacement.',
+    });
+    expect(() => control.migrateConversation({
+      taskId: 'migration-a', expectedConversationId: conversationD, conversationId: conversationE, conversationUrl: url(conversationE),
+      requestId: 'migrate-3', reason: 'Third replacement must be refused.',
+    })).toThrow('WORKFLOW_SUPERVISOR_MIGRATION_BUDGET_EXHAUSTED');
+
+    control.registerTask({
+      taskId: 'migration-unknown', conversationId: conversationF, conversationUrl: url(conversationF), objective: 'A submitted mutation stays in place.',
+      completionContract: {}, continuationPolicy: { kind: 'standalone_supervisor' }, userBlockerPolicy: {},
+    });
+    const unknownEffect = control.reserveEnrollment('migration-unknown');
+    store.recordEffectDispatchStarted(unknownEffect.effectId, 1, 'uncertain-send', { surface: 'macos-native' });
+    store.recordEffectObservation(unknownEffect.effectId, 'unknown-after-send', 'unknown', { surface: 'macos-native', reconciliation: true, reason: 'outbound_not_confirmed' });
+    expect(() => control.migrateConversation({
+      taskId: 'migration-unknown', expectedConversationId: conversationF, conversationId: conversationE, conversationUrl: url(conversationE),
+      requestId: 'migrate-unknown', reason: 'cannot abandon an unresolved submission',
+    })).toThrow('WORKFLOW_SUPERVISOR_MIGRATION_OUTCOME_UNKNOWN');
+    // A mechanically proven un-applied effect is safe to carry to the replacement.
+    store.recordEffectNotAppliedProof(unknownEffect.effectId, 'owner-no-click', {
+      surface: 'macos-native', reason: 'composer_missing', send_clicked: false, dispatch_generation: 1, pre_send_rejection: true,
+    });
+    expect(control.migrateConversation({
+      taskId: 'migration-unknown', expectedConversationId: conversationF, conversationId: conversationE, conversationUrl: url(conversationE),
+      requestId: 'migrate-proven', reason: 'The submission never left the composer.',
+    })).toMatchObject({ migrated: true, conversationId: conversationE, conversationUrl: url(conversationE) });
+    store.close();
+  });
+
+  test('a task-local exact-conversation failure spaces its own retries instead of reopening the surface every tick', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-target-spacing-'));
+    roots.push(root);
+    const clock = { nowMs: Date.now() };
+    const store = new WorkflowSupervisorStore(join(root, 'supervisor-home'), { now: () => clock.nowMs });
+    const control = new WorkflowSupervisorControlPlane(store, {}, { browserTaskActive: () => true });
+    const taskId = 'target-spacing-task';
+    const conversationId = 'ccccccc1-1111-2222-3333-444444444444';
+    const conversationUrl = `https://chatgpt.com/c/${conversationId}`;
+    control.registerTask({
+      taskId, conversationId, conversationUrl, objective: 'Space exact-conversation retries.',
+      completionContract: {}, continuationPolicy: { kind: 'standalone_supervisor' }, userBlockerPolicy: {},
+    });
+    control.reserveEnrollment(taskId);
+    let snapshotCalls = 0;
+    const page: TestBrowserPage = { evaluate: async () => undefined as never, tabRef: () => ({ windowId: 'spacing-window', tabId: 'spacing-tab' }) };
+    const targetPort = createTestChatgptTargetPort({
+      listTabs: async () => ({ entries: [{ windowId: 'spacing-window', tabId: 'spacing-tab', active: true, frontmost: true, url: conversationUrl, title: 'spacing' }] }),
+      reattach: async () => page,
+      create: async () => { throw new Error('a spaced task must not manufacture a replacement tab'); },
+      close: async () => undefined,
+      // The exact URL is present but the provider has not rendered the
+      // conversation yet: transport evidence, never send evidence.
+      snapshot: async () => {
+        snapshotCalls += 1;
+        return { url: conversationUrl, title: 'spacing', latestUserText: '', latestAssistantResponse: '', isGenerating: false, providerActivityText: '', providerFailureText: '' };
+      },
+      dispatchPrompt: async () => { throw new Error('unexpected dispatch'); },
+    });
+    const adapter = new WorkflowSupervisorNativeBrowserAdapter(control, new WorkflowSupervisorEphemeralDiscovery(), {
+      targetPort, nowMs: () => clock.nowMs, providerIdleGraceMs: 60_000, providerScopeKey: join(root, 'provider-scope'),
+      sleep: async () => undefined, setInterval: () => 0 as unknown as ReturnType<typeof setInterval>, clearInterval: () => undefined, onError: () => undefined,
+    });
+    await adapter.runOnce();
+    expect(snapshotCalls).toBe(1);
+    expect(adapter.status().lastFailure?.code).toBe('COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE');
+    // Inside the spacing window the retained surface is not touched at all.
+    clock.nowMs += 10_000;
+    await adapter.runOnce();
+    expect(snapshotCalls).toBe(1);
+    // After the base interval exactly one more bounded observation happens.
+    clock.nowMs += 20_000;
+    await adapter.runOnce();
+    expect(snapshotCalls).toBe(2);
+    // The second identical failure grows the spacing: 30s is no longer enough.
+    clock.nowMs += 30_000;
+    await adapter.runOnce();
+    expect(snapshotCalls).toBe(2);
+    clock.nowMs += 30_000;
+    await adapter.runOnce();
+    expect(snapshotCalls).toBe(3);
+    store.close();
+  });
+});
