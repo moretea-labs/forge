@@ -1001,6 +1001,86 @@ describe('browser session compatibility on Computer target authority', () => {
     });
   });
 
+  test('managed extension install preserves existing extensions in a custom user profile', async () => {
+    const { controllerHome, repoA } = fixture();
+    mkdirSync(join(repoA, '.forge', 'plugins'), { recursive: true });
+    const extensionPath = extensionFixture(repoA);
+    const canonicalExtensionPath = realpathSync(extensionPath);
+    const userDataDir = join(repoA, 'vivaldi-user-data');
+    mkdirSync(join(userDataDir, 'Default'), { recursive: true });
+    writeFileSync(join(userDataDir, 'Local State'), '{}');
+    writeFileSync(join(userDataDir, 'Default', 'Preferences'), '{}');
+    const configured = await executeBrowserPluginAction({
+      controllerHome, repoId: 'repo-a', repoRoot: repoA, pluginId: 'browser',
+      requestId: 'extension-custom-profile-configure', actionId: 'configure',
+      args: {
+        enabled: true,
+        browser_mode: 'managed_persistent',
+        profile_mode: 'custom',
+        profile_dir: userDataDir,
+        profile_directory: 'Default',
+        browser_executable_path: '/Applications/Vivaldi.app/Contents/MacOS/Vivaldi',
+        clear_browser_channel: true,
+        cdp_attach_fallback: 'fail_closed',
+        native_attach_mode: 'disabled',
+      },
+      origin: { surface: 'mcp', actor: 'test' },
+    });
+    const configuredBrowser = configured.config as Record<string, unknown>;
+    expect(configuredBrowser).toMatchObject({
+      profileMode: 'custom',
+      profileDir: userDataDir,
+      profileDirectory: 'Default',
+      executablePath: '/Applications/Vivaldi.app/Contents/MacOS/Vivaldi',
+    });
+    expect(configuredBrowser.browserChannel).toBeUndefined();
+    const nativeHostPath = join(repoA, 'forge-native-host');
+    writeFileSync(nativeHostPath, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    writeFileSync(join(extensionPath, 'forge-native-messaging-host.json'), JSON.stringify({
+      name: 'com.moretea.forge.fixture',
+      description: 'fixture',
+      path: nativeHostPath,
+      type: 'stdio',
+      allowed_origins: ['chrome-extension://' + SUPERVISOR_EXTENSION_ID + '/'],
+    }));
+    let launchOptions: Record<string, unknown> | undefined;
+    let launchedProfileDir = '';
+    setBrowserPluginRuntimeHooksForTest({
+      moduleAvailable: () => true,
+      loadPlaywright: () => ({
+        chromium: {
+          launchPersistentContext: async (_dir: string, options: Record<string, unknown>) => {
+            launchedProfileDir = _dir;
+            launchOptions = options;
+            return {
+              pages: () => [],
+              newPage: async () => { throw new Error('page creation is not required'); },
+              close: async () => undefined,
+              serviceWorkers: () => [{ url: () => 'chrome-extension://' + SUPERVISOR_EXTENSION_ID + '/background.js' }],
+            };
+          },
+        },
+      }),
+    });
+    const result = await executeBrowserPluginAction({
+      controllerHome, repoId: 'repo-a', repoRoot: repoA, pluginId: 'browser',
+      requestId: 'extension-custom-profile-install', actionId: 'install_unpacked_extension',
+      args: { extension_path: extensionPath }, origin: { surface: 'mcp', actor: 'test' },
+    });
+    expect(launchedProfileDir).toBe(userDataDir);
+    expect(launchOptions?.ignoreDefaultArgs).toEqual(['--disable-extensions']);
+    expect(launchOptions?.args).toEqual([
+      '--profile-directory=Default',
+      '--load-extension=' + canonicalExtensionPath,
+    ]);
+    expect((launchOptions?.args as string[]).some((arg) => arg.startsWith('--disable-extensions-except='))).toBe(false);
+    expect(result).toMatchObject({
+      provider: 'playwright-persistent-context',
+      extension: { id: SUPERVISOR_EXTENSION_ID, path: canonicalExtensionPath, enabled: true },
+      verified: true,
+    });
+  });
+
   test('rejects managed native messaging declarations whose allowed origin does not match the stable extension id', async () => {
     const { controllerHome, repoA } = fixture();
     mkdirSync(join(repoA, '.forge', 'plugins'), { recursive: true });

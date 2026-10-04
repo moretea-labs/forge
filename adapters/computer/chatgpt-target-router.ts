@@ -8,10 +8,6 @@ import type {
   ComputerChatgptTargetResult,
 } from '../../packages/plugin-runtime/computer';
 
-function canFailover(result: ComputerChatgptTargetResult): boolean {
-  return result.state === 'unavailable' && result.failure.phase === 'pre_mutation' && result.failure.failoverSafe !== false;
-}
-
 function identityOf(target: ComputerChatgptConversationTarget): ComputerChatgptTargetIdentity {
   return target.identity;
 }
@@ -38,16 +34,7 @@ export class PreferredChatgptConversationTargetPort implements ComputerChatgptCo
           throw primaryError;
         }
       },
-      dispatch: async (prompt, options) => {
-        const result = await primaryTarget.dispatch(prompt, options);
-        if (result.mutation === 'attempted') return result;
-        let fallbackTarget = compatibilityTarget;
-        if (!fallbackTarget && identity.namespace === 'chatgpt.conversation') {
-          const fallback = await this.compatibility.ensureExact(identity);
-          if (fallback.state === 'ready') fallbackTarget = fallback.target;
-        }
-        return fallbackTarget ? await fallbackTarget.dispatch(prompt, options) : result;
-      },
+      dispatch: async (prompt, options) => await primaryTarget.dispatch(prompt, options),
     };
   }
 
@@ -68,18 +55,12 @@ export class PreferredChatgptConversationTargetPort implements ComputerChatgptCo
 
   async ensureExact(identity: ComputerChatgptConversationIdentity): Promise<ComputerChatgptTargetResult> {
     const primary = await this.primary.ensureExact(identity);
-    if (primary.state === 'ready') return { ...primary, target: this.wrap(primary.target) };
-    if (!canFailover(primary)) return primary;
-    const compatibility = await this.compatibility.ensureExact(identity);
-    if (compatibility.state !== 'ready') return compatibility;
-    return compatibility;
+    return primary.state === 'ready' ? { ...primary, target: this.wrap(primary.target) } : primary;
   }
 
   async openBootstrap(projectUrl: string, bootstrapKey: string): Promise<ComputerChatgptTargetResult> {
     const primary = await this.primary.openBootstrap(projectUrl, bootstrapKey);
-    if (primary.state === 'ready') return { ...primary, target: this.wrap(primary.target) };
-    if (!canFailover(primary)) return primary;
-    return await this.compatibility.openBootstrap(projectUrl, bootstrapKey);
+    return primary.state === 'ready' ? { ...primary, target: this.wrap(primary.target) } : primary;
   }
 
   async findBySubmittedMarker(marker: string, bootstrapKey?: string, betweenObservations?: () => Promise<void>): Promise<ComputerChatgptTargetResult[]> {
@@ -90,9 +71,7 @@ export class PreferredChatgptConversationTargetPort implements ComputerChatgptCo
 
   async promoteBootstrap(targetId: string, identity: ComputerChatgptConversationIdentity): Promise<ComputerChatgptTargetResult> {
     const primary = await this.primary.promoteBootstrap(targetId, identity);
-    if (primary.state === 'ready') return { ...primary, target: this.wrap(primary.target) };
-    if (!canFailover(primary)) return primary;
-    return await this.compatibility.promoteBootstrap(targetId, identity);
+    return primary.state === 'ready' ? { ...primary, target: this.wrap(primary.target) } : primary;
   }
 
   async cleanup(activeResourceKeys: readonly string[]): Promise<void> {

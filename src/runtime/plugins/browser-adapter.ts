@@ -458,6 +458,8 @@ function resolveProfileSelection(repoRoot: string, profileDir: string, profileDi
 
 function normalizeConfig(raw: PersistedBrowserPluginConfig): BrowserPluginConfig {
   const normalizedProfileDir = stringValue(raw.profileDir);
+  const normalizedExecutablePath = stringValue(raw.executablePath);
+  const normalizedBrowserChannel = browserChannel(raw.browserChannel);
   return {
     schemaVersion: CURRENT_BROWSER_CONFIG_SCHEMA_VERSION,
     enabled: raw.enabled === true,
@@ -466,8 +468,8 @@ function normalizeConfig(raw: PersistedBrowserPluginConfig): BrowserPluginConfig
     profileMode: browserProfileMode(raw.profileMode) ?? (normalizedProfileDir ? 'custom' : 'repo_local'),
     profileDir: normalizedProfileDir,
     profileDirectory: stringValue(raw.profileDirectory),
-    browserChannel: browserChannel(raw.browserChannel) ?? DEFAULT_USER_BROWSER_CHANNEL,
-    executablePath: stringValue(raw.executablePath),
+    browserChannel: normalizedBrowserChannel ?? (normalizedExecutablePath ? undefined : DEFAULT_USER_BROWSER_CHANNEL),
+    executablePath: normalizedExecutablePath,
     cdpEndpoint: stringValue(raw.cdpEndpoint),
     cdpEndpointCandidates: stringList(raw.cdpEndpointCandidates)?.slice(0, MAX_BROWSER_CDP_ENDPOINT_CANDIDATES),
     cdpDiscoveryTimeoutMs: typeof raw.cdpDiscoveryTimeoutMs === 'number'
@@ -1608,7 +1610,8 @@ function launchOptionsForRepo(repoRoot: string, config: BrowserPluginConfig, pro
   const extensionPaths = [...(managedExtensionPaths.get(managedContextKey(profile)) ?? [])].sort();
   const args = [
     ...(profile.profileDirectory ? [`--profile-directory=${profile.profileDirectory}`] : []),
-    ...(extensionPaths.length > 0 ? [`--disable-extensions-except=${extensionPaths.join(',')}`, `--load-extension=${extensionPaths.join(',')}`] : []),
+    ...(extensionPaths.length > 0 && config.profileMode !== 'custom' ? [`--disable-extensions-except=${extensionPaths.join(',')}`] : []),
+    ...(extensionPaths.length > 0 ? [`--load-extension=${extensionPaths.join(',')}`] : []),
   ];
   return {
     headless: false,
@@ -3684,7 +3687,7 @@ async function executeBrowserPluginActionInternal(
           profileMode: nextProfileMode,
           profileDir: nextProfileMode === 'repo_local' ? undefined : nextProfileDir,
           profileDirectory: nextProfileMode === 'repo_local' ? undefined : nextProfileDirectory,
-          browserChannel: nextBrowserChannel ?? 'chromium',
+          browserChannel: nextBrowserChannel ?? (nextExecutablePath ? undefined : 'chromium'),
           executablePath: nextExecutablePath,
           cdpEndpoint: nextCdpEndpoint,
           cdpEndpointCandidates: nextCdpEndpointCandidates,

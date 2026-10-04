@@ -53,7 +53,7 @@ function port(input: {
   };
 }
 
-test('Computer target router falls back only after primary proves dispatch was not attempted', async () => {
+test('Computer target router never transfers a not-attempted mutation to the compatibility provider', async () => {
   let compatibilityEnsures = 0;
   let compatibilityDispatches = 0;
   const primary = port({
@@ -78,9 +78,9 @@ test('Computer target router falls back only after primary proves dispatch was n
   const ready = await router.ensureExact(identity);
   expect(ready.state).toBe('ready');
   if (ready.state !== 'ready') throw new Error('target not ready');
-  expect(await ready.target.dispatch('prompt')).toEqual({ mutation: 'attempted', confirmed: true });
-  expect(compatibilityEnsures).toBe(1);
-  expect(compatibilityDispatches).toBe(1);
+  expect(await ready.target.dispatch('prompt')).toEqual({ mutation: 'not_attempted', reasonCode: 'extension_pre_mutation_rejection' });
+  expect(compatibilityEnsures).toBe(0);
+  expect(compatibilityDispatches).toBe(0);
 });
 
 test('Computer target router never crosses providers after primary may have mutated the conversation', async () => {
@@ -111,6 +111,39 @@ test('Computer target router never crosses providers after primary may have muta
   expect(await ready.target.dispatch('prompt')).toEqual({ mutation: 'attempted' });
   expect(compatibilityEnsures).toBe(0);
   expect(compatibilityDispatches).toBe(0);
+});
+
+
+test('Computer target router keeps extension absence unavailable instead of opening through compatibility transport', async () => {
+  let compatibilityEnsures = 0;
+  const primary = port({
+    ensureExact: async () => ({
+      state: 'unavailable',
+      failure: {
+        code: 'COMPUTER_CHATGPT_EXTENSION_NOT_CONNECTED',
+        retryable: true,
+        phase: 'pre_mutation',
+        failoverSafe: true,
+      },
+    }),
+  });
+  const compatibility = port({
+    ensureExact: async () => {
+      compatibilityEnsures += 1;
+      return { state: 'ready', target: target('compatibility', async () => ({ mutation: 'attempted' })) };
+    },
+  });
+  const router = new PreferredChatgptConversationTargetPort(primary, compatibility);
+  expect(await router.ensureExact(identity)).toEqual({
+    state: 'unavailable',
+    failure: {
+      code: 'COMPUTER_CHATGPT_EXTENSION_NOT_CONNECTED',
+      retryable: true,
+      phase: 'pre_mutation',
+      failoverSafe: true,
+    },
+  });
+  expect(compatibilityEnsures).toBe(0);
 });
 
 test('Computer target router refuses resource failover when primary open outcome is unknown', async () => {
@@ -146,7 +179,7 @@ test('Computer target router refuses resource failover when primary open outcome
   expect(compatibilityEnsures).toBe(0);
 });
 
-test('Computer target router falls back bootstrap promotion only after primary proves another provider owns the target', async () => {
+test('Computer target router does not transfer bootstrap promotion to the compatibility provider', async () => {
   let compatibilityPromotions = 0;
   const primary = port({
     ensureExact: async () => ({ state: 'unavailable', failure: { code: 'unused', retryable: false, phase: 'pre_mutation' } }),
@@ -171,8 +204,14 @@ test('Computer target router falls back bootstrap promotion only after primary p
   const router = new PreferredChatgptConversationTargetPort(primary, compatibility);
   const result = await router.promoteBootstrap('foreign-bootstrap-target', identity);
 
-  expect(result.state).toBe('ready');
-  if (result.state !== 'ready') throw new Error('target not promoted');
-  expect(result.target.targetId).toBe('compatibility-promoted');
-  expect(compatibilityPromotions).toBe(1);
+  expect(result).toEqual({
+    state: 'unavailable',
+    failure: {
+      code: 'COMPUTER_CHATGPT_EXTENSION_BOOTSTRAP_PROVIDER_MISMATCH',
+      retryable: false,
+      phase: 'pre_mutation',
+      failoverSafe: true,
+    },
+  });
+  expect(compatibilityPromotions).toBe(0);
 });
