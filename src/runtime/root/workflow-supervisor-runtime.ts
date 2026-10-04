@@ -141,7 +141,15 @@ export async function startWorkflowSupervisorRuntime(
     nativeBrowser = startWorkflowSupervisorNativeBrowserAdapter(controlPlane, discovery, {
       targetPort,
       nowMs: () => Date.now(),
-      providerIdleGraceMs: 60_000,
+      // Liveness authority for one applied provider turn. Live evidence: these
+      // Supervisor turns stay visibly quiet for several minutes while the model
+      // reasons or runs tools, so a 60s window classified working turns as
+      // stalled, minted a duplicate recovery prompt, and then declared the
+      // effect exhausted while its real turn was still running (the committed
+      // receipt only arrived minutes later). A silent frozen page is still
+      // bounded: an actual provider failure is classified from page text, and
+      // this threshold only widens the quiet period before recovery.
+      providerIdleGraceMs: 180_000,
       providerScopeKey: controllerHome,
       sleep: async (ms) => { await new Promise((resolve) => setTimeout(resolve, ms)); },
       setInterval: (handler, ms) => setInterval(handler, ms),
