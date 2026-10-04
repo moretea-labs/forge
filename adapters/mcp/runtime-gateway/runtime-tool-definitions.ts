@@ -4,17 +4,10 @@ import { RH_WORK_MODEL_OPERATIONS } from '../../../src/runtime/control-plane/fac
 import { CONTROLLER_LEARNING_SIGNAL_ENVELOPE_MAX_ITEMS } from '../../../src/runtime/context/automatic-learning';
 
 function definition(name: string, description: string, properties: Record<string, unknown>, required: string[] = [], readOnly = true): McpToolDefinition {
-  const automationProperties = {
-    // Workflow Supervisor task/effect authority is independent from optional
-    // Requirement/Plan/Work semantic context.
-    automation_task_id: { type: 'string', description: 'Required with autonomous_continuation metadata; identifies the already-bound Workflow Supervisor task.' },
-    automation_type: { type: 'string', enum: ['autonomous_continuation'], description: 'Required on every Forge call made by a Supervisor-controlled autonomous ChatGPT turn.' },
-    automation_status: { type: 'string', enum: ['working', 'continue', 'done', 'needs_user'], description: 'Use working on intermediate calls; the final autonomous call records continue, done, or needs_user.' },
-  };
   return {
     name,
     description,
-    inputSchema: { type: 'object', properties: { ...properties, ...automationProperties }, ...(required.length ? { required } : {}), additionalProperties: false },
+    inputSchema: { type: 'object', properties, ...(required.length ? { required } : {}), additionalProperties: false },
     annotations: { readOnlyHint: readOnly, openWorldHint: false, destructiveHint: false },
   };
 }

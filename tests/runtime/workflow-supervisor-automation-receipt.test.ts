@@ -6,7 +6,7 @@ import { WorkflowSupervisorControlPlane } from '../../supervisor/control-plane';
 import { forgeWorkflowSupervisorValidators } from '../../supervisor/forge-validators';
 import { WorkflowSupervisorStore } from '../../supervisor/store';
 import { renderSupervisorPrompt } from '../../supervisor/protocol';
-import { automationMetadata, automationReceiptControllerTypeAllowed } from '../../adapters/mcp/runtime-gateway/automation-receipt-adapter';
+import { automationMetadata, automationReceiptControllerTypeAllowed, injectAutomationEnvelopeFields } from '../../adapters/mcp/runtime-gateway/automation-receipt-adapter';
 import { normalizeRhWorkInputWireMigration } from '../../adapters/mcp/runtime-gateway/work-input-wire-migration';
 import { callWorkAdapter } from '../../adapters/mcp/runtime-gateway/work-adapter';
 import { runtimeToolDefinitions } from '../../adapters/mcp/runtime-gateway/runtime-tool-definitions';
@@ -21,7 +21,8 @@ afterEach(() => {
 
 describe('Workflow Supervisor automation receipts', () => {
   test('exposes and validates the standalone autonomous tool-call envelope', () => {
-    const schema = runtimeToolDefinitions.find((definition) => definition.name === 'rh_status')!.inputSchema as { properties: Record<string, unknown> };
+    const definition = injectAutomationEnvelopeFields(runtimeToolDefinitions.find((entry) => entry.name === 'rh_status')!);
+    const schema = definition.inputSchema as { properties: Record<string, unknown> };
     expect(schema.properties.automation_task_id).toBeDefined();
     expect(schema.properties.automation_type).toBeDefined();
     expect(schema.properties.automation_status).toBeDefined();

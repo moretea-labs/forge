@@ -1,5 +1,7 @@
 import { readFileSync } from 'fs';
 import { FORGE_TOOL_SURFACE, FORGE_VERSION, forgeToolSurfaceFingerprint } from '../src/cli/controller/runtime-config';
+import { injectAutomationEnvelopeFields } from '../adapters/mcp/runtime-gateway/automation-receipt-adapter';
+import { injectDurableCommandFields } from '../src/runtime/gateway/mcp/router';
 import { runtimePolicy } from '../src/cli/mcp/multi-repository';
 import { buildMcpToolDefinitions } from '../src/cli/mcp/tools';
 import { accessToolDefinitions } from '../src/cli/mcp/access-tools';
@@ -35,9 +37,10 @@ const EXPECTED_STABLE_CONTROLLER_TOOL_NAMES = [
 // the existing rh_work input schema; both changes must invalidate stale Connector
 // schema snapshots without adding a parallel execution or graph authority.
 const EXPECTED_STABLE_TOOL_NAME_FINGERPRINT = 'b25da75c1f774e66';
-// rh_work now exposes semantic get / revise / complete operations. This is an
-// intentional contract revision and must force stale MCP sessions to reload.
-const EXPECTED_STABLE_TOOL_SCHEMA_FINGERPRINT = '754e74282d753b78';
+// Every public object-schema tool now carries the Workflow Supervisor automation
+// envelope through the shared tools/list materialization path. This intentional
+// contract revision must invalidate stale Connector schema snapshots.
+const EXPECTED_STABLE_TOOL_SCHEMA_FINGERPRINT = '9dc57fe91b1bd06f';
 
 const policy = runtimePolicy(process.cwd(), {
   profile: 'controller',
@@ -65,7 +68,9 @@ const advancedNames: string[] = [...ADVANCED_CONTROLLER_TOOL_NAMES];
 const catalogNames: string[] = [...STABLE_CONTROLLER_TOOL_NAMES];
 const preferredNames: string[] = [...PREFERRED_FACADE_TOOL_NAMES];
 const defaultFingerprint = forgeToolSurfaceFingerprint(defaultNames);
-const stableDefinitions = defaultNames.map((name) => definitionByName.get(name)).filter((tool) => tool !== undefined);
+const stableDefinitions = defaultNames
+  .map((name) => definitionByName.get(name)).filter((tool) => tool !== undefined)
+  .map((tool) => injectAutomationEnvelopeFields(injectDurableCommandFields(tool)));
 const stableSchemaFingerprint = forgeToolSurfaceFingerprint(stableDefinitions);
 const catalogFingerprint = forgeToolSurfaceFingerprint(catalogNames);
 const fullFingerprint = forgeToolSurfaceFingerprint(fullNames);

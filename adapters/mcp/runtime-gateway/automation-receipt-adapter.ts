@@ -1,4 +1,4 @@
-import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
+import type { CallToolResult, McpToolDefinition } from '../../../packages/protocols/mcp/tool-contract';
 import { getWorkflowSupervisorTask, recordWorkflowSupervisorAutomationReceipt } from '../../../supervisor/client';
 import { resolveWorkflowSupervisorForgeHome } from '../../../supervisor/paths';
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
@@ -6,6 +6,28 @@ import type { MultiRepositoryMcpToolContext } from '../multi-repository';
 type AutomationStatus = 'working' | 'continue' | 'done' | 'needs_user';
 
 export const AUTOMATION_RECEIPT_CAPABILITY_PREFIX = 'automation.receipt:';
+
+const AUTOMATION_TOOL_PROPERTIES: Record<string, unknown> = {
+  automation_task_id: { type: 'string', description: 'Required with autonomous_continuation metadata; identifies the already-bound Workflow Supervisor task.' },
+  automation_type: { type: 'string', enum: ['autonomous_continuation'], description: 'Required on every Forge call made by a Supervisor-controlled autonomous ChatGPT turn.' },
+  automation_status: { type: 'string', enum: ['working', 'continue', 'done', 'needs_user'], description: 'Use working on intermediate calls; the final autonomous call records continue, done, or needs_user.' },
+};
+
+export function injectAutomationEnvelopeFields(definition: McpToolDefinition): McpToolDefinition {
+  const schema = definition.inputSchema as {
+    type?: unknown;
+    properties?: Record<string, unknown>;
+    [key: string]: unknown;
+  };
+  if (!schema || schema.type !== 'object') return definition;
+  return {
+    ...definition,
+    inputSchema: {
+      ...schema,
+      properties: { ...(schema.properties ?? {}), ...AUTOMATION_TOOL_PROPERTIES },
+    },
+  };
+}
 
 function compatibilityAutomationMetadata(args: Record<string, unknown>): { status: AutomationStatus; taskId: string } | undefined {
   const capabilityId = typeof args.capability_id === 'string' ? args.capability_id.trim() : '';
