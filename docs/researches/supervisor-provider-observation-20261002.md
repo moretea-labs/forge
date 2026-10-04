@@ -51,3 +51,26 @@ recovery, operator idempotency, unknown refusal, bounded no-click retry and
 localized status classification. Real signed-in-page snapshots verify reasoning
 activity and status extraction. Compiler/governed checks and whole-Runtime
 activation precede four-task live acceptance; source PASS alone is insufficient.
+
+## 2026-10-04: loaded URL mistaken for loaded conversation
+
+The three active original conversations rendered "Could not load this ChatGPT
+conversation" with no message content or composer. The Android page's resource
+timing showed HTTP 429 on its exact `/backend-api/conversations/<id>` history
+read, including after one explicit same-page Retry. This is not evidence that a
+prompt was submitted or that model execution failed. The paused design task is
+outside this repair scope.
+
+The native consumer used the currently due task projection for resource cleanup.
+An unknown effect disappears from that projection during its observation delay,
+so the consumer closed its tab and reopened the same URL on the next due tick.
+This creates repeated history requests; it plausibly amplifies the observed 429,
+but does not prove the provider's original reason for rate limiting.
+
+Correction: retain exact conversation resources for nonterminal tasks through
+observation spacing and refuse to treat an empty conversation shell as effect or
+provider-turn evidence. Use the existing task-local transport diagnostic and
+spaced DOM observation. No new writer, persistent state, task, conversation,
+dispatch-budget reset or inference of non-submission is introduced. Terminal
+cleanup still retires owned tabs. Productive continuation of the original tasks
+remains the acceptance criterion; a harmless new probe is insufficient.

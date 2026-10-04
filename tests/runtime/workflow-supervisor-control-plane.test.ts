@@ -1539,7 +1539,7 @@ test('native consumer status exposes and clears a pre-dispatch due-effect transp
     writeOwner: async (_page, marker) => { owner = marker; },
     snapshot: async () => ({
       url: conversationUrl, title: 'Consumer status', latestUserText: '', latestAssistantResponse: '',
-      isGenerating: false, providerActivityText: '', providerFailureText: '',
+      composerText: '', isGenerating: false, providerActivityText: '', providerFailureText: '',
     }),
     dispatchPrompt: async () => ({ dispatched: false, reason: 'test_pre_send_rejection' }),
   });
@@ -1635,7 +1635,7 @@ test('task-local exact-target failure does not back off or starve an independent
     snapshot: async (current) => ({
       url: current === goodPage ? goodConversationUrl : badConversationUrl,
       title: current === goodPage ? 'good exact target' : 'bad duplicate',
-      latestUserText: '', latestAssistantResponse: '', isGenerating: false,
+      latestUserText: '', latestAssistantResponse: '', composerText: '', isGenerating: false,
       providerActivityText: '', providerFailureText: '',
     }),
     dispatchPrompt: async (current) => {
@@ -1692,6 +1692,7 @@ test('enrolled reconciliation reopens only its exact conversation and never repe
   let composerText = '';
   let submittedText = '';
   let snapshotCalls = 0;
+  let conversationLoaded = false;
   setMacOsBrowserRuntimeHooksForTest({
     platform: 'darwin', appExists: () => true,
     processRunning: async () => {
@@ -1719,7 +1720,7 @@ test('enrolled reconciliation reopens only its exact conversation and never repe
       return {
         url: conversationUrl, title: 'Existing conversation',
         latestUserText: submittedText, latestAssistantResponse: '',
-        composerText, isGenerating: false, providerActivityText: '', providerFailureText: '',
+        ...(conversationLoaded ? { composerText } : {}), isGenerating: false, providerActivityText: '', providerFailureText: '',
       };
     },
     dispatchPrompt: async () => { throw new Error('unexpected dispatch'); },
@@ -1756,14 +1757,24 @@ test('enrolled reconciliation reopens only its exact conversation and never repe
   expect(control.browserPoll({ conversationId, conversationUrl }).command?.mode).toBe('reconcile');
   await adapter.runOnce();
 
+  expect(adapter.status().lastFailure?.code).toBe('COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE');
+  expect(store.effectDispatchBudget(effect.effectId).generations).toBe(1);
+  expect(store.effectApplied(effect.effectId)).toBe(false);
+  conversationLoaded = true;
+  clock.nowMs += 30_000;
+  await adapter.runOnce();
+  // Event timestamps use wall time; align the injected eligibility clock with
+  // the just-recorded observation before exercising its cooldown.
+  clock.nowMs = Date.now();
+
   expect(createCalls).toBe(1);
-  expect(store.nextBrowserEffect(taskId)).toEqual(expect.objectContaining({ mode: 'reconcile', generation: 1 }));
+  expect(store.nextBrowserEffect(taskId)).toBeUndefined();
   // Computer keeps the semantic target and provider binding stable while the
   // task is still active. Reconciliation re-observes the same target instead
   // of closing and manufacturing replacement tabs.
   expect(closeCalls).toBe(0);
   expect(tabPresent).toBe(true);
-  expect(store.nextBrowserEffect(taskId)).toEqual(expect.objectContaining({ mode: 'reconcile', generation: 1 }));
+  expect(store.nextBrowserEffect(taskId)).toBeUndefined();
   // A second bounded reconciliation observation enters the existing unknown
   // backoff; the Computer target stays attached instead of being retired.
   await adapter.runOnce();
@@ -1771,6 +1782,12 @@ test('enrolled reconciliation reopens only its exact conversation and never repe
 
   // An empty composer or retained draft never authorizes another click in this
   // generation or a new generation.
+  // A tick during observation spacing must also keep the exact attachment:
+  // closing it here reloads provider history on every subsequent observation.
+  await adapter.runOnce();
+  expect(closeCalls).toBe(0);
+  expect(createCalls).toBe(1);
+  expect(tabPresent).toBe(true);
   for (const draft of ['', effect.prompt]) {
     composerText = draft;
     clock.nowMs += 60_000;
@@ -2217,7 +2234,7 @@ test('stream recovery stays on the attached exact tab and never creates a replac
   const snapshot = (page: unknown) => ({
     url: conversationUrl,
     title: 'Forge recovery test',
-    latestUserText: '', latestAssistantResponse: '', providerActivityText: '',
+    latestUserText: '', latestAssistantResponse: '', composerText: '', providerActivityText: '',
     providerFailureText: page === stalePage ? 'ChatGPT stream recovery polling timed out' : '',
     latestTurnRole: 'assistant' as const, isGenerating: false,
   });

@@ -118,6 +118,13 @@ function identityForTask(task: WorkflowSupervisorBrowserTask): ComputerChatgptCo
   if (parsed.conversationId !== task.conversationId) throw new Error('WORKFLOW_SUPERVISOR_CONVERSATION_IDENTITY_MISMATCH');
   return { namespace: 'chatgpt.conversation', conversationId: parsed.conversationId, canonicalUrl: parsed.canonicalUrl };
 }
+function conversationContentAvailable(snapshot: ComputerChatgptConversationObservation): boolean {
+  // Navigation can commit the exact URL before ChatGPT loads the conversation.
+  // An empty/error shell is transport evidence, never evidence about a send or
+  // about whether the model stopped working.
+  return snapshot.composerText !== undefined || snapshot.isGenerating
+    || Boolean(snapshot.latestUserText.trim() || snapshot.latestAssistantResponse.trim() || snapshot.providerActivityText.trim());
+}
 function projectMetadataFromConversationUrl(value: string): { projectTitle?: string; projectUrl?: string } {
   try {
     const parsed = new URL(value);
@@ -315,7 +322,10 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     } else if (inventory.complete) {
       this.clearTransportFailure();
     }
-    const activeResourceKeys = tasks.map((task) => task.conversationId.startsWith('bootstrap:') ? `chatgpt.bootstrap:${task.taskId}` : `chatgpt.conversation:${task.conversationId}`);
+    // Due-work omits tasks during observation/retry spacing. Retention follows
+    // task lifetime; otherwise every cooldown closes the tab and the next
+    // observation reloads the same conversation from the provider.
+    const activeResourceKeys = this.control.listTasks(true).map((task) => task.conversationId.startsWith('bootstrap:') ? `chatgpt.bootstrap:${task.taskId}` : `chatgpt.conversation:${task.conversationId}`);
     await this.deps.targetPort.cleanup(activeResourceKeys).catch((error) => this.deps.onError(error));
     for (const task of tasks) {
       if (this.closed) break;
@@ -359,16 +369,20 @@ export class WorkflowSupervisorNativeBrowserAdapter {
   }
 
   private async processTask(task: WorkflowSupervisorBrowserTask): Promise<void> {
+    const transportFailure = this.taskTransportFailures.get(task.taskId);
+    if (transportFailure?.code === 'COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE'
+      && this.deps.nowMs() - transportFailure.observedAtMs < 30_000) return;
     if (task.conversationId.startsWith('bootstrap:')) { await this.bootstrapTask(task); return; }
     let poll = this.control.browserPoll({ conversationId: task.conversationId, conversationUrl: task.conversationUrl });
     if (poll.terminal) return;
     if (poll.command) this.lastCommandAttemptAtMs = this.deps.nowMs();
     const ensured = await this.deps.targetPort.ensureExact(identityForTask(task));
     if (ensured.state !== 'ready') { this.noteTargetUnavailable(task, poll.command?.effectId, ensured.failure); return; }
-    this.clearTaskFailure(task.taskId, poll.command?.effectId);
     const target = ensured.target;
     const snapshot = ensured.observation ?? await target.observe({ includeUserHistory: false, includePageText: false });
     if (!exactConversation(snapshot, task)) { this.noteTargetUnavailable(task, poll.command?.effectId, { code: 'WORKFLOW_SUPERVISOR_EXACT_CONVERSATION_UNPROVEN' }); return; }
+    if (!conversationContentAvailable(snapshot)) { this.noteTargetUnavailable(task, poll.command?.effectId, { code: 'COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE' }); return; }
+    this.clearTaskFailure(task.taskId, poll.command?.effectId);
     this.conversations.push({ conversation_id: task.conversationId, canonical_url: task.conversationUrl,
       ...(snapshot.title.trim() ? { title: snapshot.title.trim().slice(0, 512) } : {}), ...projectMetadataFromConversationUrl(snapshot.url) });
     const providerBusy = snapshot.isGenerating;
@@ -475,6 +489,10 @@ export class WorkflowSupervisorNativeBrowserAdapter {
 
   private async executeCommand(target: ComputerChatgptConversationTarget, command: WorkflowSupervisorBrowserCommand, task: WorkflowSupervisorBrowserTask): Promise<void> {
     let snapshot = await target.observe({ includeUserHistory: true, includePageText: true });
+    if (!exactConversation(snapshot, task) || !conversationContentAvailable(snapshot)) {
+      this.noteTargetUnavailable(task, command.effectId, { code: 'COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE' });
+      return;
+    }
     if (command.mode === 'send' && snapshot.isGenerating && command.kind !== 'recovery') return;
     let mode = command.mode;
     if (mode === 'send') {

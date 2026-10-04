@@ -818,6 +818,10 @@
       "module": "browser",
       "resource": "pure"
     },
+    "tests/runtime/computer-chatgpt-target-router.test.ts": {
+      "module": "browser",
+      "resource": "pure"
+    },
     "tests/runtime/computer-interaction-target.test.ts": {
       "module": "browser",
       "resource": "controller-home-isolated"

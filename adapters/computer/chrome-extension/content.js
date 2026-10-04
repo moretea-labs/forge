@@ -85,7 +85,7 @@
         userMessages: userNodes.map(messageText).filter(Boolean),
         assistantMessages: assistantNodes.map(messageText).filter(Boolean),
       } : {}),
-      composerText: composerText(),
+      ...(composer() ? { composerText: composerText() } : {}),
       providerActivityText: '',
       providerFailureText: bodyText.slice(-250000),
       ...(options.includePageText === true ? { pageText: bodyText.slice(-500000) } : {}),
