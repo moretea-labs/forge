@@ -62,6 +62,8 @@ import { createRecoveryHttpTransport, type RecoveryHttpTransport } from './http-
 import { observeRecoveryWatchdogHealth } from './watchdog-heartbeat';
 import { RECOVERY_DAEMON_LABEL } from './service-labels';
 import { resolveWorkflowSupervisorForgeHome, workflowSupervisorSocketPath } from '../../../supervisor/paths';
+import { getWorkflowSupervisorContinuationProof } from '../../../supervisor/client';
+import type { WorkflowSupervisorContinuationProof } from '../../../supervisor/types';
 import { reconcileStoppedWorkflowSupervisorSocket } from '../../../supervisor/server';
 import {
   migrateStoppedRepoLocalControllerHomeStorage,
@@ -2743,6 +2745,11 @@ export interface PrimaryRuntimeRecoveryDependencies {
 export interface RuntimeReleaseKnownGoodDependencies extends RuntimePerformanceDependencies {
   /** Test/host seam for the existing whole-Runtime rollback transaction. */
   rollback?: PrimaryRuntimeRecoveryDependencies;
+  /** Exact active-release live continuation proof; production defaults to the Supervisor single-writer ledger. */
+  continuationProof?: (
+    forgeHome: string,
+    input: { repoId?: string; activeReleaseId: string; notBefore: string },
+  ) => Promise<WorkflowSupervisorContinuationProof | undefined>;
 }
 
 export interface RuntimeReleaseActivationGuard {
@@ -6142,6 +6149,7 @@ export async function promoteConfiguredRuntimeReleaseSessionKnownGood(
   if (!candidateRelease) return { ok: false, attempted: false, noOp: true, detail: 'RELEASE_SESSION_CANDIDATE_RELEASE_REQUIRED', releaseSession: initial };
 
   let attested: ReleaseEvidence;
+  let continuationProof: WorkflowSupervisorContinuationProof;
   try {
     const active = activeAuthorityRelease(config);
     if (
@@ -6150,6 +6158,29 @@ export async function promoteConfiguredRuntimeReleaseSessionKnownGood(
       || active.artifactIdentity !== candidateRelease.artifactIdentity
       || active.manifestSha256 !== candidateRelease.manifestSha256
     ) throw new Error('RELEASE_SESSION_SOAK_RUNTIME_IDENTITY_MISMATCH');
+
+    const activeAuthority = readRuntimeReleaseAuthority(config.controllerHome);
+    if (
+      !activeAuthority
+      || activeAuthority.active.releaseId !== candidateRelease.releaseId
+      || activeAuthority.active.artifactIdentity !== candidateRelease.artifactIdentity
+      || activeAuthority.active.manifestSha256 !== candidateRelease.manifestSha256
+    ) throw new Error('RELEASE_SESSION_SOAK_RUNTIME_IDENTITY_MISMATCH');
+    try {
+      const proof = await (dependencies.continuationProof ?? getWorkflowSupervisorContinuationProof)(
+        resolveWorkflowSupervisorForgeHome(config.controllerHome),
+        {
+          ...(candidateRelease.sourceRepositoryId ? { repoId: candidateRelease.sourceRepositoryId } : {}),
+          activeReleaseId: candidateRelease.releaseId,
+          notBefore: activeAuthority.committedAt,
+        },
+      );
+      if (!proof) throw new Error('RELEASE_SESSION_AUTONOMOUS_CONTINUATION_PROOF_MISSING');
+      continuationProof = proof;
+    } catch (error) {
+      if (error instanceof Error && error.message === 'RELEASE_SESSION_AUTONOMOUS_CONTINUATION_PROOF_MISSING') throw error;
+      throw new Error(`RELEASE_SESSION_AUTONOMOUS_CONTINUATION_PROOF_UNAVAILABLE: ${error instanceof Error ? error.message : String(error)}`);
+    }
 
     const existingAttestation = matchingKnownGood(config, active);
     if (existingAttestation) {
@@ -6247,11 +6278,18 @@ export async function promoteConfiguredRuntimeReleaseSessionKnownGood(
       sessionId,
       expectedRevision: session.revision,
       phase: 'known_good',
-      receipts: [{
-        id: 'known_good',
-        kind: 'known_good',
-        summary: `release ${attested.revision} passed soak/performance observation and owns recoverable bundle ${attested.recoveryBundle!.attestationId}`,
-      }],
+      receipts: [
+        {
+          id: 'supervisor_continuation_proof',
+          kind: 'soak',
+          summary: `Supervisor task ${continuationProof.taskId} proved CONTINUE -> CONTINUE -> DONE on active release ${continuationProof.activeReleaseId} across Runtime instances ${continuationProof.runtimeInstanceIds.join(',')}`,
+        },
+        {
+          id: 'known_good',
+          kind: 'known_good',
+          summary: `release ${attested.revision} passed soak/performance observation and owns recoverable bundle ${attested.recoveryBundle!.attestationId}`,
+        },
+      ],
     });
     audit(config, 'release_session_known_good', {
       sessionId,

@@ -9,7 +9,7 @@ import { registerRepository } from '../../src/cli/repositories/registry';
 import { acknowledgeControllerRoundClaim, beginInitialControllerRoundDispatch, claimStalledControllerRoundRelays, controllerRoundProviderEffectId, finishControllerRoundRelayDispatch, getControllerRoundRelay, getRequirementControllerRoundRelay, recoverControllerRoundRelayAuthority, submitControllerRoundDisposition } from '../../packages/kernel/controller/api/index';
 import { createWorkContract, reviseWorkSemanticContext } from '../../packages/kernel/work/api/index';
 import { createRequirement, updateRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
-import { bindCurrentWorkflowSupervisorConversationForWork, forgeWorkflowSupervisorLifecycleHooks, inheritWorkflowSupervisorConversationBinding, workflowSupervisorBoundaryForWork, workflowSupervisorLowerLayerReadyForWork } from '../../src/runtime/root/workflow-supervisor-composition';
+import { bindCurrentWorkflowSupervisorConversationForWork, ensureWorkflowSupervisorEnrollmentForWork, forgeWorkflowSupervisorLifecycleHooks, inheritWorkflowSupervisorConversationBinding, workflowSupervisorBoundaryForWork, workflowSupervisorLowerLayerReadyForWork } from '../../src/runtime/root/workflow-supervisor-composition';
 import { WorkflowSupervisorControlPlane } from '../../supervisor/control-plane';
 import { WorkflowSupervisorNativeBrowserAdapter } from '../../supervisor/native-browser-adapter';
 import { LEGACY_SUPERVISOR_BLOCK_END, LEGACY_SUPERVISOR_BLOCK_START, parseSupervisorCompletion, renderSupervisorPrompt, renderSupervisorReceipt, supervisorReceiptChallenge, SUPERVISOR_BLOCK_END, SUPERVISOR_BLOCK_START } from '../../supervisor/protocol';
@@ -287,7 +287,10 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     expect(continuation).toContain('结果：<本轮实际完成或明确阻塞>');
     expect(continuation).toContain('证据：<修改路径、检查结果、提交或发布回执；无则写“无”>');
     expect(continuation).toContain('下一步：<立即继续的最小步骤>');
-    expect(continuation).toContain(JSON.stringify({ operation: 'repair', capability_id: `automation.receipt:continue:${task.taskId}` }));
+    expect(continuation).toContain(`automation_task_id=${JSON.stringify(task.taskId)}`);
+    expect(continuation).toContain('automation_type="autonomous_continuation"');
+    expect(continuation).toContain('automation_status="working"');
+    expect(continuation).not.toContain('automation.receipt:');
     expect(continuation).toContain('repo_id="repo-minimal-continuation"');
     expect(continuation).toContain('checkout_id="checkout_ios_candidate"');
     expect(continuation).not.toContain('Complete one coherent safe work wave');
@@ -296,7 +299,7 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     expect(continuation).not.toContain('CONTINUE => "C ');
     expect(continuation).not.toContain('source_effect_id=');
     expect(continuation).not.toContain('conversation_id=');
-    expect(continuation).not.toContain('task_id=');
+    expect(continuation).not.toContain('\ntask_id=');
     expect(continuation).not.toContain('active_scope=');
     expect(continuation).not.toContain('Original objective:');
     expect(continuation).not.toContain('large checkpoint payload');
@@ -335,16 +338,20 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     const effectId = 'fx_12345678';
     const prompt = renderSupervisorPrompt(task, effectId, 'recovery');
 
-    expect(prompt).toContain('有结果后，或确有外部决策阻塞时，调用 rh_work');
-    expect(prompt).toContain('Use "continue" until the objective is complete');
+    expect(prompt).toContain(`automation_task_id=${JSON.stringify(task.taskId)}`);
+    expect(prompt).toContain('automation_type="autonomous_continuation"');
+    expect(prompt).toContain('automation_status="working"');
+    expect(prompt).not.toContain('automation.receipt:');
+    expect(prompt).toContain('automation_status 改为 "continue"');
+    expect(prompt).toContain('整体完成时用 "done"');
+    expect(prompt).toContain('外部决策时用 "needs_user"');
     expect(prompt).toContain('"done"');
     expect(prompt).toContain('"needs_user"');
-    expect(prompt).toContain('Add no other fields');
     expect(prompt).not.toContain(renderSupervisorReceipt(task, effectId, 'CONTINUE'));
     expect(prompt).not.toContain(SUPERVISOR_BLOCK_START);
     expect(prompt).not.toContain(LEGACY_SUPERVISOR_BLOCK_START);
     expect(prompt).not.toContain('conversation_id=');
-    expect(prompt).not.toContain('task_id=');
+    expect(prompt).not.toContain('\ntask_id=');
     expect(prompt).not.toContain('supervisor_state=');
 
     const compact = parseSupervisorCompletion(renderSupervisorReceipt(task, effectId, 'CONTINUE'), { task, effectId });
@@ -425,7 +432,9 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     expect(continuation).not.toContain(task.objective);
     expect(continuation).toContain('响应格式：');
     expect(continuation).not.toContain('checkpoint-sentinel');
-    expect(continuation).toContain(`automation.receipt:continue:${task.taskId}`);
+    expect(continuation).toContain(`automation_task_id=${JSON.stringify(task.taskId)}`);
+    expect(continuation).toContain('automation_type="autonomous_continuation"');
+    expect(continuation).not.toContain('automation.receipt:');
     expect(continuation).not.toContain(renderSupervisorReceipt(task, 'fx_continue_1234', 'CONTINUE'));
     expect(continuation).not.toContain('source_effect_id=');
     expect(continuation).not.toContain('active_scope=');
@@ -631,6 +640,99 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
       supervisorStore.close();
+    }
+  });
+
+  test('reuses enrolled exact Supervisor authority without requiring another ControllerRound', async () => {
+    const fx = fixture();
+    const workId = 'work-supervisor-existing-authority-no-round';
+    const conversationId = '45454545-6767-8989-1010-232323232323';
+    const conversationUrl = `https://chatgpt.com/c/${conversationId}`;
+    createWorkContract(fx.store, {
+      workId,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      objective: 'Continue an already-enrolled exact conversation after lower ControllerRound state is gone.',
+      acceptanceCriteria: ['Supervisor remains the outer-turn authority after enrollment'],
+      allowedPaths: [], forbiddenPaths: [], checks: [],
+      constraints: { workspaceMode: 'current' },
+      requestedBy: 'chatgpt', dispatchState: 'running',
+    });
+    bindChatgptWorkConversation(fx.store, { workId, conversationUrl });
+    expect(workflowSupervisorLowerLayerReadyForWork(fx.store, workId)).toEqual({
+      ready: false,
+      reason: 'CONTROLLER_ROUND_NOT_PREPARED',
+    });
+
+    const supervisorRoot = join(fx.controllerHome, 'supervisor');
+    mkdirSync(supervisorRoot, { recursive: true });
+    const supervisorStore = new WorkflowSupervisorStore(supervisorRoot);
+    const control = new WorkflowSupervisorControlPlane(supervisorStore);
+    const taskId = `forge:${fx.repository.repoId}:conversation:${conversationId}`;
+    control.registerTask({
+      taskId,
+      conversationId,
+      conversationUrl,
+      objective: 'Continue the exact enrolled conversation.',
+      completionContract: { kind: 'forge_work_done', controller_home: fx.controllerHome, repo_id: fx.repository.repoId, work_id: workId },
+      continuationPolicy: { kind: 'forge_goal_outer_turn', exact_conversation_id: conversationId, exact_conversation_url: conversationUrl, outer_turn_owner: 'workflow_supervisor' },
+      userBlockerPolicy: { kind: 'forge_work_waiting_for_user', controller_home: fx.controllerHome, repo_id: fx.repository.repoId, work_id: workId },
+    });
+    const enrollment = control.reserveEnrollment(taskId);
+    const server = createWorkflowSupervisorServer({
+      controlPlane: control,
+      socketPath: join(supervisorRoot, 'supervisor.sock'),
+      discovery: new WorkflowSupervisorEphemeralDiscovery(),
+      browserAdapterEnabled: true,
+    });
+    await new Promise<void>((resolve, reject) => {
+      if (server.listening) { resolve(); return; }
+      server.once('listening', () => resolve());
+      server.once('error', reject);
+    });
+    try {
+      expect(await ensureWorkflowSupervisorEnrollmentForWork(fx.store, workId)).toEqual({
+        status: 'enrolled',
+        taskId,
+        effectId: enrollment.effectId,
+      });
+      expect(workflowSupervisorLowerLayerReadyForWork(fx.store, workId)).toEqual({
+        ready: false,
+        reason: 'CONTROLLER_ROUND_NOT_PREPARED',
+      });
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      supervisorStore.close();
+    }
+  });
+
+  test('reconciles a registered non-terminal task that crashed before enrollment reservation', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-missing-enrollment-'));
+    roots.push(root);
+    const store = new WorkflowSupervisorStore(join(root, 'supervisor'));
+    try {
+      const control = new WorkflowSupervisorControlPlane(store);
+      const conversationId = '56565656-7878-9090-1212-343434343434';
+      const conversationUrl = `https://chatgpt.com/c/${conversationId}`;
+      const task = control.registerTask({
+        taskId: 'supervisor:missing-enrollment',
+        conversationId,
+        conversationUrl,
+        objective: 'Recover the registration-to-enrollment crash boundary.',
+        completionContract: {},
+        continuationPolicy: { kind: 'standalone_supervisor' },
+        userBlockerPolicy: {},
+      });
+      expect(store.currentUnappliedEffect(task.taskId)).toBeUndefined();
+      expect(control.browserTasks()).toEqual([]);
+
+      expect(await control.reconcileCommittedContinuations()).toEqual({ scanned: 1, reconciled: 1 });
+      const enrollment = store.getEffectByOriginKey(`enrollment:${task.taskId}`);
+      expect(enrollment).toMatchObject({ taskId: task.taskId, kind: 'enrollment' });
+      expect(control.browserTasks()).toEqual([{ taskId: task.taskId, conversationId, conversationUrl }]);
+      expect(await control.reconcileCommittedContinuations()).toEqual({ scanned: 0, reconciled: 0 });
+    } finally {
+      store.close();
     }
   });
 
@@ -1485,6 +1587,83 @@ test('native consumer status exposes and clears a pre-dispatch due-effect transp
   // Provider dispatch rejection remains owned by the existing durable effect ledger;
   // the consumer projection neither replays nor marks the effect applied itself.
   expect(store.nextBrowserEffect(taskId)?.mode).not.toBe('reconcile');
+});
+
+test('task-local exact-target failure does not back off or starve an independent Supervisor task', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-task-transport-isolation-'));
+  roots.push(root);
+  const clock = { nowMs: Date.now() };
+  const store = new WorkflowSupervisorStore(join(root, 'supervisor-home'), { now: () => clock.nowMs });
+  const control = new WorkflowSupervisorControlPlane(store, {}, { browserTaskActive: () => true });
+  const badConversationId = '11111111-aaaa-2222-bbbb-333333333333';
+  const goodConversationId = '44444444-cccc-5555-dddd-666666666666';
+  const badConversationUrl = `https://chatgpt.com/c/${badConversationId}`;
+  const goodConversationUrl = `https://chatgpt.com/c/${goodConversationId}`;
+  control.registerTask({
+    taskId: 'a-bad-target-task', conversationId: badConversationId, conversationUrl: badConversationUrl,
+    objective: 'Remain isolated when exact target proof is ambiguous.', completionContract: {}, continuationPolicy: {}, userBlockerPolicy: {},
+  });
+  const badEffect = control.reserveEnrollment('a-bad-target-task');
+  control.registerTask({
+    taskId: 'b-good-target-task', conversationId: goodConversationId, conversationUrl: goodConversationUrl,
+    objective: 'Continue even while a sibling exact target is unavailable.', completionContract: {}, continuationPolicy: {}, userBlockerPolicy: {},
+  });
+  control.reserveEnrollment('b-good-target-task');
+
+  const page = (windowId: string, tabId: string): TestBrowserPage => ({
+    evaluate: async () => undefined as never,
+    waitForSelector: async () => undefined,
+    tabRef: () => ({ windowId, tabId }),
+  });
+  const badPage1 = page('bad-window-1', 'bad-tab-1');
+  const badPage2 = page('bad-window-2', 'bad-tab-2');
+  const goodPage = page('good-window', 'good-tab');
+  const pages = new Map([
+    ['bad-tab-1', badPage1], ['bad-tab-2', badPage2], ['good-tab', goodPage],
+  ]);
+  let goodDispatchCalls = 0;
+  const targetPort = createTestChatgptTargetPort({
+    listTabs: async () => ({ entries: [
+      { windowId: 'bad-window-1', tabId: 'bad-tab-1', active: false, url: badConversationUrl, title: 'bad duplicate 1' },
+      { windowId: 'bad-window-2', tabId: 'bad-tab-2', active: false, url: badConversationUrl, title: 'bad duplicate 2' },
+      { windowId: 'good-window', tabId: 'good-tab', active: false, url: goodConversationUrl, title: 'good exact target' },
+    ] }),
+    reattach: async (ref) => pages.get(ref.tabId)!,
+    create: async () => { throw new Error('no new tab should be created'); },
+    close: async () => undefined,
+    snapshot: async (current) => ({
+      url: current === goodPage ? goodConversationUrl : badConversationUrl,
+      title: current === goodPage ? 'good exact target' : 'bad duplicate',
+      latestUserText: '', latestAssistantResponse: '', isGenerating: false,
+      providerActivityText: '', providerFailureText: '',
+    }),
+    dispatchPrompt: async (current) => {
+      if (current === goodPage) goodDispatchCalls += 1;
+      return { dispatched: false, reason: 'test_pre_send_rejection' };
+    },
+  });
+  const adapter = new WorkflowSupervisorNativeBrowserAdapter(control, new WorkflowSupervisorEphemeralDiscovery(), {
+    targetPort,
+    nowMs: () => clock.nowMs,
+    providerIdleGraceMs: 60_000,
+    providerScopeKey: join(root, 'provider-scope'),
+    sleep: async () => undefined,
+    setInterval: () => 0 as unknown as ReturnType<typeof setInterval>,
+    clearInterval: () => undefined,
+    onError: () => undefined,
+  });
+
+  await adapter.runOnce();
+  expect(goodDispatchCalls).toBe(1);
+  expect(adapter.status()).toMatchObject({
+    transportFailureStreak: 0,
+    lastFailure: {
+      code: 'COMPUTER_CHATGPT_EXACT_TARGET_UNPROVEN',
+      taskId: 'a-bad-target-task',
+      effectId: badEffect.effectId,
+    },
+  });
+  expect(store.nextBrowserEffect('a-bad-target-task')).toEqual(expect.objectContaining({ mode: 'send', generation: 1 }));
 });
 
 test('enrolled reconciliation reopens only its exact conversation and never repeats an ambiguous submission', async () => {

@@ -103,6 +103,20 @@ import { createRecoveryHttpTransport } from '../../src/runtime/standalone-recove
 
 import { measureRuntimePerformance, assertRuntimePerformanceEvidence, readRuntimeCpu, RECOVERY_RUNAWAY_MEAN_CPU_PERCENT, RECOVERY_RUNAWAY_P95_CPU_PERCENT } from '../../src/runtime/standalone-recovery/performance';
 
+function supervisorContinuationProofDependency() {
+  return async (_forgeHome: string, input: { repoId?: string; activeReleaseId: string; notBefore: string }) => ({
+    taskId: 'supervisor:test-live-proof',
+    conversationId: 'test-live-proof-conversation',
+    activeReleaseId: input.activeReleaseId,
+    actions: ['CONTINUE', 'CONTINUE', 'DONE'] as ['CONTINUE', 'CONTINUE', 'DONE'],
+    completionFingerprints: ['completion-1', 'completion-2', 'completion-3'] as [string, string, string],
+    sourceEffectIds: ['effect-1', 'effect-2', 'effect-3'] as [string, string, string],
+    runtimeInstanceIds: ['runtime-before-reconnect', 'runtime-after-reconnect'],
+    firstCommittedAt: input.notBefore,
+    lastCommittedAt: new Date(Math.max(Date.parse(input.notBefore), Date.now())).toISOString(),
+  });
+}
+
 function idleCpuDependencies() {
   let elapsed = 0;
   const base = Date.now() - 60_000;
@@ -2390,14 +2404,27 @@ describe('standalone recovery on canonical Runtime', () => {
 
     const failing = await failingPublicGatewayServer();
     const reconcileConfig = createRecoveryConfig(home, { publicMcpUrl: failing.endpoint });
+    const missingProof = await promoteConfiguredRuntimeReleaseSessionKnownGood(
+      reconcileConfig,
+      sessionId,
+      { ...idleCpuDependencies(), continuationProof: async () => undefined },
+      'known-good-proof-missing',
+    );
+    expect(missingProof).toMatchObject({ ok: false, attempted: true, releaseSession: { phase: 'soaking' } });
+    expect(missingProof.detail).toContain('RELEASE_SESSION_AUTONOMOUS_CONTINUATION_PROOF_MISSING');
+    expect(failing.requests).toHaveLength(0);
+
     const promoted = await promoteConfiguredRuntimeReleaseSessionKnownGood(
       reconcileConfig,
       sessionId,
-      idleCpuDependencies(),
+      { ...idleCpuDependencies(), continuationProof: supervisorContinuationProofDependency() },
       'known-good-reconcile',
     );
 
     expect(promoted).toMatchObject({ ok: true, attempted: true, releaseSession: { phase: 'known_good' } });
+    expect(promoted.releaseSession?.receipts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'supervisor_continuation_proof', kind: 'soak' }),
+    ]));
     expect(failing.requests).toHaveLength(0);
   });
 
@@ -2494,6 +2521,7 @@ describe('standalone recovery on canonical Runtime', () => {
       let clock = 0;
       const config = createRecoveryConfig(home, { publicMcpUrl: runtime.endpoint, primaryRuntimeService: { platform: 'launchd' } });
       const promoted = await promoteConfiguredRuntimeReleaseSessionKnownGood(config, sessionId, {
+        continuationProof: supervisorContinuationProofDependency(),
         readCpu: () => ({ cpuMs: cpuMs += 5_000, processStartTime: 'fixture-process-start' }),
         monotonicNow: () => elapsed,
         wallNow: () => Date.now() - 60_000 + elapsed,

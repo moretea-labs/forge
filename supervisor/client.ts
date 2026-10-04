@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { createConnection } from 'node:net';
 import { workflowSupervisorSocketPath } from './paths';
-import type { WorkflowSupervisorAutomationStatus, WorkflowSupervisorConsumerStatus, WorkflowSupervisorContinuationProof, WorkflowSupervisorDiscoveredConversation, WorkflowSupervisorEffect, WorkflowSupervisorTask, WorkflowSupervisorTaskInput } from './types';
+import type { WorkflowSupervisorAutomationStatus, WorkflowSupervisorConsumerStatus, WorkflowSupervisorContinuationProof, WorkflowSupervisorDiscoveredConversation, WorkflowSupervisorEffect, WorkflowSupervisorTask, WorkflowSupervisorTaskInput, WorkflowSupervisorTerminalState } from './types';
 
 interface RpcResponse<T> { id: string; ok: boolean; result?: T; error?: { code?: string; message?: string } }
 
@@ -59,6 +59,18 @@ export async function getWorkflowSupervisorCurrentConversation(forgeHome: string
 export async function getWorkflowSupervisorTask(forgeHome: string, taskId: string): Promise<WorkflowSupervisorTask | undefined> {
   const task = await rpc<WorkflowSupervisorTask | null>(forgeHome, 'task_get', { task_id: taskId });
   return task ?? undefined;
+}
+
+export async function getWorkflowSupervisorTaskByConversationId(
+  forgeHome: string,
+  conversationId: string,
+): Promise<{ task: WorkflowSupervisorTask; terminal?: WorkflowSupervisorTerminalState } | undefined> {
+  const result = await rpc<{ task: WorkflowSupervisorTask; terminal?: WorkflowSupervisorTerminalState } | null>(
+    forgeHome,
+    'task_get_by_conversation',
+    { conversation_id: conversationId },
+  );
+  return result ?? undefined;
 }
 
 export async function listWorkflowSupervisorTasks(forgeHome: string, activeOnly = false): Promise<WorkflowSupervisorTask[]> {

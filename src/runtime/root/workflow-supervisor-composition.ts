@@ -14,7 +14,7 @@ import {
   type ChatgptWorkConversationBinding,
 } from '../../../adapters/chatgpt/work-conversation-binding-store';
 import { readRequirement } from '../control-plane/persistence/requirement-store';
-import { getWorkflowSupervisorCurrentConversation, registerWorkflowSupervisorTask, reserveWorkflowSupervisorEnrollment } from '../../../supervisor/client';
+import { getWorkflowSupervisorCurrentConversation, getWorkflowSupervisorTaskByConversationId, registerWorkflowSupervisorTask, reserveWorkflowSupervisorEnrollment } from '../../../supervisor/client';
 import { resolveWorkflowSupervisorForgeHome, workflowSupervisorSocketPath } from '../../../supervisor/paths';
 import type { WorkflowSupervisorLifecycleHooks, WorkflowSupervisorTask } from '../../../supervisor/types';
 import { getRuntimeWriteClaim } from './write-fence';
@@ -356,6 +356,36 @@ export async function ensureWorkflowSupervisorEnrollmentForWork(
   // Supervisor task already owning that conversation, including across successor Work.
   const taskId = taskIdForWork(options.repoId, workId);
   if (!existsSync(workflowSupervisorSocketPath(forgeHome))) return { status: 'daemon_unavailable', taskId };
+
+  // Once an exact conversation is already owned by a Supervisor task, that
+  // task is the outer-turn authority. ControllerRound is only first-admission
+  // execution context and must not regain veto power over later continuation.
+  // Read before any lower-layer admission check so a blocked/exhausted old
+  // Round cannot strand an already-enrolled exact conversation.
+  if (boundary.status === 'outer_turn') {
+    const existingAuthority = await getWorkflowSupervisorTaskByConversationId(forgeHome, boundary.conversationId);
+    if (existingAuthority) {
+      const existingRepoId = typeof existingAuthority.task.completionContract.repo_id === 'string'
+        ? existingAuthority.task.completionContract.repo_id
+        : existingAuthority.task.continuationPolicy.repo_id;
+      if (typeof existingRepoId === 'string' && existingRepoId !== options.repoId) {
+        throw new Error(`WORKFLOW_SUPERVISOR_TASK_REPOSITORY_CONFLICT:${boundary.conversationId}`);
+      }
+      if (existingAuthority.terminal) {
+        // Terminal Supervisor authority must never be resurrected by a lower
+        // ControllerRound. Report the outer-turn boundary as already owned so
+        // Scheduler/Controller composition cannot create another provider turn.
+        return {
+          status: 'enrolled',
+          taskId: existingAuthority.task.taskId,
+          reason: `WORKFLOW_SUPERVISOR_TASK_TERMINAL:${existingAuthority.terminal}`,
+        };
+      }
+      const effect = await reserveWorkflowSupervisorEnrollment(forgeHome, existingAuthority.task.taskId);
+      return { status: 'enrolled', taskId: existingAuthority.task.taskId, effectId: effect.effectId };
+    }
+  }
+
   const lowerLayer = workflowSupervisorLowerLayerReadyForWork(options, workId);
   if (!lowerLayer.ready) return { status: 'lower_layer_not_ready', reason: lowerLayer.reason };
   const work = getWorkContract(options, workId);

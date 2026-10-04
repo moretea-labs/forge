@@ -38,6 +38,14 @@ type ObservedConversation = {
   is_current?: boolean;
 };
 
+type TaskTransportFailure = {
+  code: string;
+  observedAtMs: number;
+  firstFailureAtMs: number;
+  effectId?: string;
+  projectionVisible: boolean;
+};
+
 export interface WorkflowSupervisorTransportProjection {
   taskId?: string;
   effectId?: string;
@@ -142,6 +150,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
   private lastFailure?: { code: string; observedAtMs: number; taskId?: string; effectId?: string };
   private firstTransportFailureAtMs?: number;
   private transportProjectionVisible = false;
+  private readonly taskTransportFailures = new Map<string, TaskTransportFailure>();
 
   constructor(
     private readonly control: WorkflowSupervisorControlPlane,
@@ -163,26 +172,53 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     }
   }
 
-  private clearTransportFailure(taskId?: string, effectId?: string): void {
-    const recoveredTaskId = taskId ?? this.lastFailure?.taskId;
-    const recoveredEffectId = effectId ?? this.lastFailure?.effectId;
+  private clearTransportFailure(): void {
     this.lastFailure = undefined;
     if (this.firstTransportFailureAtMs !== undefined) {
       const nowMs = this.deps.nowMs();
-      if (this.transportProjectionVisible) this.deps.reportTransportState?.({
-        state: 'recovered',
-        ...(recoveredTaskId ? { taskId: recoveredTaskId } : {}),
-        ...(recoveredEffectId ? { effectId: recoveredEffectId } : {}),
-        observedAt: new Date(nowMs).toISOString(),
-      });
+      if (this.transportProjectionVisible) this.deps.reportTransportState?.({ state: 'recovered', observedAt: new Date(nowMs).toISOString() });
       this.firstTransportFailureAtMs = undefined;
       this.transportProjectionVisible = false;
     }
   }
 
+  private noteTaskFailure(code: string, task: WorkflowSupervisorBrowserTask, effectId?: string): void {
+    const nowMs = this.deps.nowMs();
+    const previous = this.taskTransportFailures.get(task.taskId);
+    const failure: TaskTransportFailure = {
+      code,
+      observedAtMs: nowMs,
+      firstFailureAtMs: previous?.firstFailureAtMs ?? nowMs,
+      ...(effectId ? { effectId } : previous?.effectId ? { effectId: previous.effectId } : {}),
+      projectionVisible: previous?.projectionVisible ?? false,
+    };
+    if (!failure.projectionVisible && nowMs - failure.firstFailureAtMs >= USER_VISIBLE_DEGRADED_AFTER_MS) {
+      failure.projectionVisible = true;
+      this.deps.reportTransportState?.({
+        state: 'degraded', code, taskId: task.taskId,
+        ...(failure.effectId ? { effectId: failure.effectId } : {}),
+        firstFailureAt: new Date(failure.firstFailureAtMs).toISOString(), observedAt: new Date(nowMs).toISOString(),
+      });
+    }
+    this.taskTransportFailures.set(task.taskId, failure);
+  }
+
+  private clearTaskFailure(taskId: string, effectId?: string): void {
+    const failure = this.taskTransportFailures.get(taskId);
+    if (!failure) return;
+    this.taskTransportFailures.delete(taskId);
+    const recoveredEffectId = effectId ?? failure.effectId;
+    if (failure.projectionVisible) this.deps.reportTransportState?.({
+      state: 'recovered', taskId,
+      ...(recoveredEffectId ? { effectId: recoveredEffectId } : {}),
+      observedAt: new Date(this.deps.nowMs()).toISOString(),
+    });
+  }
+
   private noteTargetUnavailable(task: WorkflowSupervisorBrowserTask, effectId: string | undefined, failure: { code: string; humanAction?: 'login' | 'grant_permission' }): void {
-    this.lastRunTransportUnavailable = true;
-    this.noteFailure(failure.code, task, effectId);
+    // Exact-target failure is task-local. It must not back off unrelated
+    // Supervisor conversations; only provider-wide inventory/backpressure does.
+    this.noteTaskFailure(failure.code, task, effectId);
     if (failure.humanAction) this.deps.requestHumanAction?.({ taskId: task.taskId, ...(effectId ? { effectId } : {}), action: failure.humanAction, code: failure.code });
   }
 
@@ -206,6 +242,10 @@ export class WorkflowSupervisorNativeBrowserAdapter {
   status(): WorkflowSupervisorConsumerStatus {
     const nowMs = this.deps.nowMs();
     const dueCommand = this.dueCommand(nowMs);
+    const dueTaskFailure = dueCommand ? this.taskTransportFailures.get(dueCommand.taskId) : undefined;
+    const projectedFailure = dueTaskFailure
+      ? { code: dueTaskFailure.code, observedAtMs: dueTaskFailure.observedAtMs, taskId: dueCommand!.taskId, ...(dueTaskFailure.effectId ? { effectId: dueTaskFailure.effectId } : {}) }
+      : this.lastFailure;
     const stalled = Boolean(this.inflight && this.lastTickStartedAtMs !== undefined && nowMs - this.lastTickStartedAtMs > MAX_TRANSPORT_BACKOFF_MS + 10_000);
     return {
       enabled: true, running: Boolean(this.timer) && !this.closed, observedAt: new Date(nowMs).toISOString(),
@@ -216,8 +256,8 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       transportFailureStreak: this.transportFailureStreak,
       providerBackpressureMs: chatgptProviderBackpressureRemainingMs(this.deps.providerScopeKey, nowMs), stalled,
       ...(dueCommand ? { dueCommand } : {}),
-      ...(this.lastFailure ? { lastFailure: { code: this.lastFailure.code, observedAt: new Date(this.lastFailure.observedAtMs).toISOString(),
-        ...(this.lastFailure.taskId ? { taskId: this.lastFailure.taskId } : {}), ...(this.lastFailure.effectId ? { effectId: this.lastFailure.effectId } : {}) } } : {}),
+      ...(projectedFailure ? { lastFailure: { code: projectedFailure.code, observedAt: new Date(projectedFailure.observedAtMs).toISOString(),
+        ...(projectedFailure.taskId ? { taskId: projectedFailure.taskId } : {}), ...(projectedFailure.effectId ? { effectId: projectedFailure.effectId } : {}) } } : {}),
     };
   }
 
@@ -246,7 +286,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     this.timer = undefined;
     await this.inflight?.catch(() => undefined);
     await this.deps.targetPort.close().catch(() => undefined);
-    this.observedAssistant.clear(); this.providerFailureSeen.clear(); this.freshSendCheckedAt.clear();
+    this.observedAssistant.clear(); this.providerFailureSeen.clear(); this.freshSendCheckedAt.clear(); this.taskTransportFailures.clear();
   }
 
   async runOnce(): Promise<void> {
@@ -267,7 +307,12 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     this.conversations = inventory.conversations.map((conversation) => ({ conversation_id: conversation.conversationId, canonical_url: conversation.canonicalUrl,
       ...(conversation.title ? { title: conversation.title } : {}), ...(conversation.projectTitle ? { projectTitle: conversation.projectTitle } : {}),
       ...(conversation.projectUrl ? { projectUrl: conversation.projectUrl } : {}), ...(conversation.isCurrent ? { is_current: true } : {}) }));
-    if (!inventory.complete && tasks.length > 0) this.lastRunTransportUnavailable = true;
+    if (!inventory.complete && tasks.length > 0) {
+      this.lastRunTransportUnavailable = true;
+      this.noteFailure('WORKFLOW_SUPERVISOR_NATIVE_INVENTORY_INCOMPLETE');
+    } else if (inventory.complete) {
+      this.clearTransportFailure();
+    }
     const activeResourceKeys = tasks.map((task) => task.conversationId.startsWith('bootstrap:') ? `chatgpt.bootstrap:${task.taskId}` : `chatgpt.conversation:${task.conversationId}`);
     await this.deps.targetPort.cleanup(activeResourceKeys).catch((error) => this.deps.onError(error));
     for (const task of tasks) {
@@ -277,7 +322,10 @@ export class WorkflowSupervisorNativeBrowserAdapter {
         const poll = task.conversationId.startsWith('bootstrap:') ? this.control.bootstrapPoll(task.taskId) : this.control.browserPoll({ conversationId: task.conversationId, conversationUrl: task.conversationUrl });
         if (poll.terminal || poll.command?.mode === 'send') continue;
         await this.processTask(task);
-      } catch (error) { this.deps.onError(error); }
+      } catch (error) {
+        this.noteTaskFailure(consumerFailureCode(error, 'WORKFLOW_SUPERVISOR_COMPUTER_TARGET_COMMAND_FAILED'), task);
+        this.deps.onError(error);
+      }
     }
     await this.serviceFreshSend();
     this.discovery.update(this.conversations, 'computer-browser');
@@ -304,7 +352,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     if (!next) return;
     this.freshSendCheckedAt.set(next.effectId, nowMs); this.lastCommandAttemptAtMs = nowMs; this.servicingFreshSend = true;
     try { await this.processTask(next.task); }
-    catch (error) { this.noteFailure(consumerFailureCode(error, 'WORKFLOW_SUPERVISOR_COMPUTER_TARGET_COMMAND_FAILED'), next.task, next.effectId); this.deps.onError(error); }
+    catch (error) { this.noteTaskFailure(consumerFailureCode(error, 'WORKFLOW_SUPERVISOR_COMPUTER_TARGET_COMMAND_FAILED'), next.task, next.effectId); this.deps.onError(error); }
     finally { this.servicingFreshSend = false; }
   }
 
@@ -315,7 +363,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     if (poll.command) this.lastCommandAttemptAtMs = this.deps.nowMs();
     const ensured = await this.deps.targetPort.ensureExact(identityForTask(task));
     if (ensured.state !== 'ready') { this.noteTargetUnavailable(task, poll.command?.effectId, ensured.failure); return; }
-    this.clearTransportFailure(task.taskId, poll.command?.effectId);
+    this.clearTaskFailure(task.taskId, poll.command?.effectId);
     const target = ensured.target;
     const snapshot = ensured.observation ?? await target.observe({ includeUserHistory: false, includePageText: false });
     if (!exactConversation(snapshot, task)) { this.noteTargetUnavailable(task, poll.command?.effectId, { code: 'WORKFLOW_SUPERVISOR_EXACT_CONVERSATION_UNPROVEN' }); return; }
@@ -386,14 +434,13 @@ export class WorkflowSupervisorNativeBrowserAdapter {
           const promoted = await this.deps.targetPort.promoteBootstrap(target.targetId, { namespace: 'chatgpt.conversation', conversationId: identity.conversationId, canonicalUrl: identity.canonicalUrl });
           if (promoted.state !== 'ready') throw new Error(promoted.failure.code);
           this.control.bootstrapObserveEffect({ taskId: task.taskId, effectId: command.effectId, observationId: `bootstrap-${randomUUID()}`, outcome: 'applied' });
-          this.clearTransportFailure(task.taskId, command.effectId);
+          this.clearTaskFailure(task.taskId, command.effectId);
           return;
         } catch (error) { reason = error instanceof Error ? error.message : String(error); if (attempt < MAX_LOCAL_OBSERVATION_ATTEMPTS) await this.deps.sleep(localObservationDelayMs(attempt, 1_000, 4_000)); }
       }
       this.control.bootstrapObserveEffect({ taskId: task.taskId, effectId: command.effectId, observationId: `bootstrap-${randomUUID()}`, outcome: 'unknown', evidence: { reconciliation: true, reason } });
     } catch (error) {
       this.control.bootstrapObserveEffect({ taskId: task.taskId, effectId: command.effectId, observationId: `bootstrap-${randomUUID()}`, outcome: 'unknown', evidence: { reconciliation: true, reason: error instanceof Error ? error.message : String(error) } });
-      this.lastRunTransportUnavailable = true;
       throw error;
     }
   }
@@ -417,7 +464,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     const promoted = await this.deps.targetPort.promoteBootstrap(match.target.targetId, { namespace: 'chatgpt.conversation', conversationId: identity.conversationId, canonicalUrl: identity.canonicalUrl });
     if (promoted.state !== 'ready') { observeUnknown(promoted.failure.code); return; }
     this.control.bootstrapObserveEffect({ taskId: task.taskId, effectId: command.effectId, observationId: `bootstrap-reconcile-${randomUUID()}`, outcome: 'applied' });
-    this.clearTransportFailure(task.taskId, command.effectId);
+    this.clearTaskFailure(task.taskId, command.effectId);
   }
 
   private async executeCommand(target: ComputerChatgptConversationTarget, command: WorkflowSupervisorBrowserCommand, task: WorkflowSupervisorBrowserTask): Promise<void> {
@@ -454,7 +501,6 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       this.control.browserObserveEffect({ conversationId: command.conversationId, conversationUrl: command.conversationUrl, effectId: command.effectId,
         observationId: `computer-observe-${randomUUID()}`, outcome: 'unknown',
         evidence: { surface: 'computer-chatgpt-target', target_id: target.targetId, reconciliation: true, reason: consumerFailureCode(error, 'provider_dispatch_exception') } });
-      this.lastRunTransportUnavailable = true;
       throw error;
     }
     if (dispatch.mutation === 'not_attempted') {

@@ -90,6 +90,19 @@ describe('Recovery ReleaseSession', () => {
       expectedRevision: session.revision,
       transaction: { ...migrationTransaction, candidateReleaseId: 'different-candidate' },
     })).toThrow('RELEASE_SESSION_REVISION_FENCED');
+
+    let acceptance = advanceReleaseSession({ controllerHome: home, sessionId: activationRetry.sessionId, expectedRevision: activationRetry.revision, phase: 'cutover_committed' });
+    acceptance = advanceReleaseSession({ controllerHome: home, sessionId: acceptance.sessionId, expectedRevision: acceptance.revision, phase: 'soaking' });
+    expect(() => advanceReleaseSession({ controllerHome: home, sessionId: acceptance.sessionId, expectedRevision: acceptance.revision, phase: 'known_good' }))
+      .toThrow('RELEASE_SESSION_SOAK_GATES_INCOMPLETE');
+    acceptance = advanceReleaseSession({
+      controllerHome: home,
+      sessionId: acceptance.sessionId,
+      expectedRevision: acceptance.revision,
+      phase: 'known_good',
+      receipts: [{ id: 'supervisor_continuation_proof', kind: 'soak', summary: 'exact active release CONTINUE -> CONTINUE -> DONE across reconnect' }],
+    });
+    expect(acceptance.phase).toBe('known_good');
   });
 
   test('lists durable sessions and exposes Candidate B retirement only from durable phase', () => {

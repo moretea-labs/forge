@@ -155,7 +155,10 @@ describe('Workflow Supervisor automation receipts', () => {
     expect(first).toMatchObject({ action: 'CONTINUE', terminal: false });
     expect(replay).toMatchObject({ action: 'CONTINUE', terminal: false });
     expect(store.getEffectByOriginKey(`completion:${(first as { completionFingerprint: string }).completionFingerprint}`)).toBeDefined();
-    expect(renderSupervisorPrompt(task, effect.effectId, 'enrollment')).toContain(`automation.receipt:continue:${task.taskId}`);
+    expect(renderSupervisorPrompt(task, effect.effectId, 'enrollment')).toContain(`automation_task_id=${JSON.stringify(task.taskId)}`);
+    expect(renderSupervisorPrompt(task, effect.effectId, 'enrollment')).toContain('automation_type="autonomous_continuation"');
+    expect(renderSupervisorPrompt(task, effect.effectId, 'enrollment')).toContain('automation_status="working"');
+    expect(renderSupervisorPrompt(task, effect.effectId, 'enrollment')).not.toContain('automation.receipt:');
     expect(renderSupervisorPrompt(task, effect.effectId, 'enrollment')).toStartWith('@forge\n');
     expect(renderSupervisorPrompt(task, effect.effectId, 'enrollment')).not.toContain('CONTINUE => "C ');
     store.close();

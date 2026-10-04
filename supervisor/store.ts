@@ -460,6 +460,38 @@ export class WorkflowSupervisorStore {
   }
   getTaskByConversationId(conversationId: string): WorkflowSupervisorTask | undefined { return this.read((db) => { const row = statement(db, 'SELECT * FROM tasks WHERE conversation_id = ?', (s) => s.get(conversationId)); return row ? taskFromRow(row as Record<string, unknown>) : undefined; }); }
   listTasks(): WorkflowSupervisorTask[] { return this.read((db) => statement(db, 'SELECT * FROM tasks ORDER BY created_at, task_id', (s) => s.all()).map((row) => taskFromRow(row as Record<string, unknown>))); }
+  listTasksWithoutCausalObligation(limit = 16): WorkflowSupervisorTask[] {
+    const boundedLimit = Math.max(1, Math.min(Math.trunc(limit), 128));
+    return this.read((db) => statement(db, `SELECT t.* FROM tasks t
+      WHERE NOT EXISTS (
+        SELECT 1 FROM events terminal
+        WHERE terminal.task_id = t.task_id
+          AND terminal.kind IN ('terminal_done','terminal_needs_user','terminal_stopped')
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM effects e
+        WHERE e.task_id = t.task_id
+          AND NOT EXISTS (
+            SELECT 1 FROM events applied
+            WHERE applied.effect_id = e.effect_id AND applied.kind = 'effect_applied'
+          )
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM effects e
+        WHERE e.task_id = t.task_id
+          AND EXISTS (
+            SELECT 1 FROM events applied
+            WHERE applied.effect_id = e.effect_id AND applied.kind = 'effect_applied'
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM completions c
+            WHERE c.task_id = e.task_id AND c.source_effect_id = e.effect_id
+          )
+      )
+      ORDER BY t.created_at, t.task_id
+      LIMIT ?`, (s) => s.all(boundedLimit))
+      .map((row) => taskFromRow(row as Record<string, unknown>)));
+  }
   getEffect(effectId: string): WorkflowSupervisorEffect | undefined { return this.read((db) => { const row = statement(db, 'SELECT * FROM effects WHERE effect_id = ?', (s) => s.get(effectId)); return row ? effectFromRow(row as Record<string, unknown>) : undefined; }); }
   currentUnappliedEffect(taskId: string): WorkflowSupervisorEffect | undefined { return this.read((db) => oldestUnappliedEffect(db, taskId)); }
   getEffectByOriginKey(originKey: string): WorkflowSupervisorEffect | undefined { return this.read((db) => { const row = statement(db, 'SELECT * FROM effects WHERE origin_key = ?', (s) => s.get(originKey)); return row ? effectFromRow(row as Record<string, unknown>) : undefined; }); }

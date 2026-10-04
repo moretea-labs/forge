@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { parseChatgptConversationIdentity } from './chatgpt-conversation';
 import { parseSupervisorCompletion, renderEffectMarker, renderSupervisorPrompt, sha256, validateEffectId } from './protocol';
 import { WorkflowSupervisorStore } from './store';
-import type { WorkflowAssistantObservation, WorkflowAssistantObservationResult, WorkflowContractValidation, WorkflowEffectKind, WorkflowSupervisorAutomationStatus, WorkflowSupervisorBrowserPollResult, WorkflowSupervisorBrowserTask, WorkflowSupervisorCompletion, WorkflowSupervisorDiscoveredConversation, WorkflowSupervisorEffect, WorkflowSupervisorLifecycleHooks, WorkflowSupervisorProjectScope, WorkflowSupervisorTask, WorkflowSupervisorTaskInput, WorkflowSupervisorValidators } from './types';
+import type { WorkflowAssistantObservation, WorkflowAssistantObservationResult, WorkflowContractValidation, WorkflowEffectKind, WorkflowSupervisorAutomationStatus, WorkflowSupervisorBrowserPollResult, WorkflowSupervisorBrowserTask, WorkflowSupervisorCompletion, WorkflowSupervisorDiscoveredConversation, WorkflowSupervisorEffect, WorkflowSupervisorLifecycleHooks, WorkflowSupervisorProjectScope, WorkflowSupervisorTask, WorkflowSupervisorTaskInput, WorkflowSupervisorTerminalState, WorkflowSupervisorValidators } from './types';
 
 function compactProjectIdentity(value: string): string {
   return value.normalize('NFKC').toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
@@ -126,6 +126,12 @@ export class WorkflowSupervisorControlPlane {
     this.store.recordEffectObservation(validateEffectId(input.effectId), input.observationId, input.outcome, input.evidence);
   }
   getTask(taskId: string): WorkflowSupervisorTask | undefined { return this.store.getTask(taskId); }
+  getTaskByConversationId(conversationId: string): { task: WorkflowSupervisorTask; terminal?: WorkflowSupervisorTerminalState } | undefined {
+    const task = this.store.getTaskByConversationId(conversationId);
+    if (!task) return undefined;
+    const terminal = this.store.terminalAction(task.taskId);
+    return { task, ...(terminal ? { terminal } : {}) };
+  }
   listTasks(activeOnly = false): WorkflowSupervisorTask[] {
     const tasks = this.store.listTasks();
     return activeOnly ? tasks.filter((task) => !this.store.terminalAction(task.taskId)) : tasks;
@@ -418,7 +424,46 @@ export class WorkflowSupervisorControlPlane {
       const committed = this.reserveContinuation(task, completion);
       if (committed.successorEffect) reconciled += 1;
     }
-    return { scanned: completions.length, reconciled };
+
+    // A non-terminal Supervisor task must always have one derivable causal
+    // obligation: an unapplied effect, an applied effect awaiting completion,
+    // or a committed completion whose successor/terminal resolution can be
+    // reconstructed from durable facts. Registration is intentionally a
+    // separate transaction from effect reservation, so a Runtime crash between
+    // them must converge here instead of leaving an "active" inert task.
+    const inertTasks = this.store.listTasksWithoutCausalObligation(limit);
+    for (const task of inertTasks) {
+      if (this.store.terminalAction(task.taskId)) continue;
+      const latest = this.store.getLatestCompletion(task.taskId);
+      if (!latest) {
+        this.reserveEnrollment(task.taskId);
+        reconciled += 1;
+        continue;
+      }
+      if (latest.action === 'CONTINUE') {
+        const committed = this.reserveContinuation(task, latest);
+        if (committed.successorEffect) reconciled += 1;
+        continue;
+      }
+      const validator = latest.action === 'DONE' ? this.validators.completionContract : this.validators.userBlockerPolicy;
+      const validation = await validator(task, latest.proposal);
+      const correctionId = validation.valid ? undefined : stableEffectId(`completion:${latest.completionFingerprint}`);
+      this.store.resolveTerminal({
+        completionFingerprint: latest.completionFingerprint,
+        taskId: task.taskId,
+        action: latest.action,
+        accepted: validation.valid,
+        reason: validation.reason,
+        ...(correctionId ? {
+          correction: {
+            effectId: correctionId,
+            prompt: this.renderPrompt(task, correctionId, 'correction', latest.proposal.checkpoint, validation.reason),
+          },
+        } : {}),
+      });
+      reconciled += 1;
+    }
+    return { scanned: completions.length + inertTasks.length, reconciled };
   }
 
   async observeAssistantTurn(input: WorkflowAssistantObservation): Promise<WorkflowAssistantObservationResult> {

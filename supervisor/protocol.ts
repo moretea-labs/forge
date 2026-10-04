@@ -162,13 +162,13 @@ export function renderSupervisorPrompt(
   const checkoutId = typeof task.completionContract.checkout_id === 'string'
     ? task.completionContract.checkout_id.trim()
     : typeof task.continuationPolicy.checkout_id === 'string' ? task.continuationPolicy.checkout_id.trim() : '';
-  const receipt = JSON.stringify({ operation: 'repair', capability_id: `automation.receipt:continue:${task.taskId}` });
+  const automationIdentity = `automation_task_id=${JSON.stringify(task.taskId)}, automation_type="autonomous_continuation"`;
   return [
     '@forge',
     renderEffectMarker(effectId),
     ...(kind === 'enrollment' ? [`目标：${objective(task)}`, '开始。'] : ['继续。']),
     ...SUPERVISOR_RESPONSE_FORMAT,
-    `有结果后，或确有外部决策阻塞时，调用 rh_work with exactly ${receipt}. Use "continue" until the objective is complete ("done") or needs a user decision ("needs_user"). Add no other fields.`,
+    `这是 Supervisor autonomous turn。每次 Forge 工具调用都带 ${automationIdentity}, automation_status="working"。本轮最后一次 Forge 工具调用必须仍带同一 task/type，并把 automation_status 改为 "continue"；仅当目标整体完成时用 "done"，确需用户外部决策时用 "needs_user"。不要再发送 receipt-only 的 rh_work repair / automation.receipt compatibility 调用。`,
     ...(repoId ? [`Repository context: repo_id=${JSON.stringify(repoId)}${checkoutId ? `, checkout_id=${JSON.stringify(checkoutId)}` : ''}.`] : []),
     'Do not use plain-text C/D/U or a Supervisor JSON block as the completion receipt.',
   ].join('\n');

@@ -10,10 +10,12 @@ reserves the next fixed prompt for CONTINUE. DONE and NEEDS_USER retain their
 configured semantic validators; STOPPED remains explicit operator authority.
 
 The first Work-bound enrollment still requires authenticated launcher admission,
-canonical Work lookup and a prepared ControllerRound. Once enrolled, the existing
-Supervisor task/effect/completion journal is the only cross-turn authority.
-Neither Work absence/turnover nor ControllerRound status/budget is a second gate
-on a committed CONTINUE. Supervisor must not manufacture Controller claims,
+canonical Work lookup and a prepared ControllerRound. Before consulting that lower
+admission gate, the Runtime checks whether the exact conversation already has a
+Supervisor task. Once enrolled, that existing task/effect/completion journal is the
+only cross-turn authority and is reused even if its original ControllerRound is now
+closed, exhausted or absent. Neither Work absence/turnover nor ControllerRound
+status/budget is a second gate on a committed CONTINUE. Supervisor must not manufacture Controller claims,
 release another owner's lease, rotate round authority, or rearm lower budgets to
 make an outer prompt runnable. Normal MCP execution still enforces principal,
 Controller ownership, Work scope, resource and write fences independently.
@@ -42,13 +44,13 @@ orphan deletion, a new relay index, or a second cleanup lifecycle.
 | Identity / scope | Exact enrolled task + conversation + causal effect; Work is execution context. |
 | Authority / authorization | Supervisor owns prompts; authenticated MCP and Controller own repository mutations. No lease or capability is synthesized by receipt processing. |
 | Concurrency / fencing | Existing effect dispatch transaction, unique causal successor, Runtime write claim and provider lane remain. Rebind is checked again at dispatch admission. |
-| Persistence / replay | Existing Supervisor SQLite schema and append-only event journal; completion replay repairs the same successor after restart. No new table, enum or writer. |
+| Persistence / replay | Existing Supervisor SQLite schema and append-only event journal; every nonterminal task must mechanically derive one causal obligation (unapplied effect, applied effect awaiting completion, or committed completion awaiting successor/terminal settlement). Restart reconciliation repairs the same obligation without a new table, enum or writer. |
 | Unknown / recovery | Existing bounded provider attempts and independently spaced unknown observations. Retired Work does not suppress read-only effect reconciliation. |
 | Lifecycle / retention | Supervisor terminal receipts/operator stop own task termination; existing retention/backup policies remain. Missing Work is not semantic terminality. |
 | Evidence / privacy | Existing causal completion hashes, allowlisted provider evidence and redaction; no page-body persistence added. |
-| Capacity / time / performance | Existing send lane, bounded scanner, retry cooldown and observation budgets; remove per-turn whole-Requirement and session/round mutation chains. |
+| Capacity / time / performance | Existing send lane, bounded scanner and observation budgets. Provider-wide inventory/backpressure may delay the consumer globally; exact-conversation target failures are task-local and cannot back off unrelated Supervisor tasks. |
 | Topology / portability | Same in-process Runtime/Supervisor owner and native Browser adapter; no process, credential flow or platform dependency added. |
-| Release / rollback | One compatible whole-Runtime candidate; no component activation or manual live database repair. |
+| Release / rollback | ReleaseSession verifies isolated Candidate B, then cutover retains rollback authority during soak. The new Stable release cannot become known-good until the Supervisor ledger proves exact-active-release CONTINUE → CONTINUE → DONE across a Runtime reconnect. No component activation or manual live database repair. |
 
 ## Predecessor obligations
 
@@ -209,13 +211,16 @@ The read-only Work continuation projection directs open Work toward its next
 authorized scoped step rather than prescribing a retired model-facing claim
 operation. Existing execution admission and writer/resource fences still apply.
 
-The receipt instruction includes the exact two-field `rh_work` JSON carrier.
-Existing frozen clients' optional `repo_id`, `checkout_id` and `reason` annotations are bounded
-strings and stripped at the compatibility boundary; neither can select a task,
-effect, conversation, terminal outcome or repository mutation. Unknown fields
-and unsafe keys still fail closed. The existing canonical Supervisor derives
-receipt identity and reserves the successor transactionally. No schema, writer,
-tool, extra receipt parser or replay authority is introduced.
+Newly rendered Supervisor prompts use the typed outer automation metadata already
+present on Forge tools: exact `automation_task_id`,
+`automation_type=autonomous_continuation`, and `automation_status`. Intermediate
+calls use `working`; the final Forge call for the turn uses `continue`, `done` or
+`needs_user`. Receipt processing still derives the exact source effect from the
+canonical Supervisor task and reserves the successor transactionally; tool payloads
+do not choose another task/effect/conversation. The historical
+`rh_work repair` / `automation.receipt:*` parser remains a bounded migration reader
+only for prompts already issued before cutover and must not be used by new prompt
+producers or become a second replay authority.
 
 An explicitly launched child ChatGPT Work already goes through
 `ensureWorkflowSupervisorEnrollmentForWork`: a distinct canonical conversation
