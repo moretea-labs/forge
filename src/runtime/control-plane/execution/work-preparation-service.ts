@@ -4,6 +4,7 @@ import type { McpExecutionContext } from '../../../../packages/protocols/mcp/exe
 import { getRepository, resolveRepositorySelection, selectRepositoryCheckout } from '../../../cli/repositories/registry';
 import { repositoryGitStatus } from '../../../cli/repositories/structured-git';
 import { ensureManagedWorkspace } from '../../execution/managed-workspace';
+import { listRecoverableProcessRecords } from '../../execution/process-runtime/store';
 import { readRepositoryAccessPolicy } from '../governance/access-policy';
 import { activateWorkContract, failWorkContract, getWorkContract } from '../../../../packages/kernel/work/api/index';
 import { admitPreparedRepositoryWorkContract } from '../facade/repository-work-admission';
@@ -111,7 +112,6 @@ function adoptExplicitSuccessorHead(
   if (!expectedPreviousHead || !adoptCandidateHead) {
     throw new Error('WORK_HANDLE_SUCCESSOR_ADOPTION_PAIR_REQUIRED: expected_previous_head and adopt_candidate_head must be supplied together');
   }
-  if (existing.managedWorktree) throw new Error('WORK_HANDLE_SUCCESSOR_ADOPTION_REUSE_ONLY: managed Worktrees already own their commit progression');
   if (existing.state !== 'prepared' && existing.state !== 'editing') {
     throw new Error(`WORK_HANDLE_SUCCESSOR_ADOPTION_STATE_INVALID: ${existing.state}`);
   }
@@ -131,9 +131,22 @@ function adoptExplicitSuccessorHead(
   }
   const changedPaths = gitPathSet(root, ['diff', '--name-only', `${expectedPreviousHead}..${adoptCandidateHead}`], 'WORK_HANDLE_SUCCESSOR_ADOPTION_DIFF_UNAVAILABLE');
   const dirtyPaths = currentDirtyPaths(root);
-  const overlap = [...changedPaths].filter((path) => dirtyPaths.has(path)).sort();
-  if (overlap.length > 0) {
-    throw new Error(`WORK_HANDLE_SUCCESSOR_ADOPTION_DIRTY_OVERLAP: ${overlap.slice(0, 20).join(',')}`);
+  if (existing.managedWorktree) {
+    if (dirtyPaths.size > 0) {
+      throw new Error(`WORK_HANDLE_SUCCESSOR_ADOPTION_MANAGED_DIRTY: ${[...dirtyPaths].sort().slice(0, 20).join(',')}`);
+    }
+    const blockingProcesses = listRecoverableProcessRecords(ctx.controllerHome, existing.repositoryId)
+      .filter((record) => record.workId === existing.workId)
+      .map((record) => record.processId)
+      .sort();
+    if (blockingProcesses.length > 0) {
+      throw new Error(`WORK_HANDLE_SUCCESSOR_ADOPTION_ACTIVE_PROCESS: ${blockingProcesses.slice(0, 20).join(',')}`);
+    }
+  } else {
+    const overlap = [...changedPaths].filter((path) => dirtyPaths.has(path)).sort();
+    if (overlap.length > 0) {
+      throw new Error(`WORK_HANDLE_SUCCESSOR_ADOPTION_DIRTY_OVERLAP: ${overlap.slice(0, 20).join(',')}`);
+    }
   }
   const candidate: WorkHandleState = {
     ...existing,

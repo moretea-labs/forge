@@ -12,7 +12,7 @@ import {
 import { createMcpToolContext } from '../../src/cli/mcp/server';
 import { callMultiRepositoryTool } from '../../src/cli/mcp/multi-repository';
 import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
-import { addRepositoryCheckout, registerRepository } from '../../src/cli/repositories/registry';
+import { addRepositoryCheckout, getRepository, registerRepository, selectRepositoryCheckout } from '../../src/cli/repositories/registry';
 import { repositoryGitStatus } from '../../src/cli/repositories/structured-git';
 import { ensureRepositoryRuntimeStorageBinding } from '../../src/cli/repositories/runtime-storage';
 import { listExecutionJobs } from '../../src/runtime/execution/jobs/store';
@@ -1569,6 +1569,84 @@ describe('work_validate persisted semantic identity', () => {
     });
     expect(continued?.isError).toBe(true);
     expect(JSON.stringify(continued?.structuredContent ?? continued)).toContain('WORK_HANDLE_SUCCESSOR_ADOPTION_DIRTY_OVERLAP');
+    expect(readWorkHandle(fx.controllerHome, fx.repository.repoId, work.workId)?.expectedHead).toBe(work.expectedHead);
+  });
+
+  test('explicit managed Work recovery adopts only a clean linear descendant after missed head settlement', async () => {
+    const fx = fixture();
+    roots.push(fx.root);
+
+    const started = await callExecutionTool(fx.ctx, 'session_start', {});
+    expect(started?.isError).not.toBe(true);
+    const session = (started?.structuredContent as { session: { sessionId: string } }).session;
+    const prepared = await callExecutionTool(fx.ctx, 'work_prepare', {
+      session_id: session.sessionId,
+      repo_id: fx.repository.repoId,
+      request_id: 'prepare-managed-explicit-successor-recovery',
+      objective: 'Recover one missed managed Work head settlement without replaying the mutation.',
+      checks: [],
+      isolation: 'new_worktree',
+    });
+    expect(prepared?.isError).not.toBe(true);
+    const work = (prepared?.structuredContent as { work: { workId: string; checkoutId: string; expectedHead: string } }).work;
+    const registered = getRepository(fx.repository.repoId, fx.controllerHome);
+    const worktree = selectRepositoryCheckout(registered, work.checkoutId);
+
+    writeFileSync(join(worktree.canonicalRoot, 'src/lib.ts'), 'export const n = 2;\n');
+    git(worktree.canonicalRoot, ['add', 'src/lib.ts']);
+    git(worktree.canonicalRoot, ['commit', '-m', 'managed commit outside settlement callback']);
+    const successor = git(worktree.canonicalRoot, ['rev-parse', 'HEAD']);
+    expect(readWorkHandle(fx.controllerHome, fx.repository.repoId, work.workId)?.expectedHead).toBe(work.expectedHead);
+
+    const continued = await callExecutionTool(fx.ctx, 'work_prepare', {
+      session_id: session.sessionId,
+      repo_id: fx.repository.repoId,
+      checkout_id: work.checkoutId,
+      work_id: work.workId,
+      expected_previous_head: work.expectedHead,
+      adopt_candidate_head: successor,
+    });
+    if (continued?.isError) throw new Error(JSON.stringify(continued.structuredContent ?? continued));
+    expect(continued?.structuredContent).toMatchObject({
+      reused: true,
+      adoptedSuccessor: { previousHead: work.expectedHead, currentHead: successor },
+      work: { workId: work.workId, expectedHead: successor },
+    });
+  });
+
+  test('explicit managed Work recovery refuses any dirty managed worktree', async () => {
+    const fx = fixture();
+    roots.push(fx.root);
+
+    const started = await callExecutionTool(fx.ctx, 'session_start', {});
+    const session = (started?.structuredContent as { session: { sessionId: string } }).session;
+    const prepared = await callExecutionTool(fx.ctx, 'work_prepare', {
+      session_id: session.sessionId,
+      repo_id: fx.repository.repoId,
+      request_id: 'prepare-managed-explicit-successor-dirty-refusal',
+      objective: 'Refuse ambiguous managed Work head recovery.',
+      checks: [],
+      isolation: 'new_worktree',
+    });
+    const work = (prepared?.structuredContent as { work: { workId: string; checkoutId: string; expectedHead: string } }).work;
+    const registered = getRepository(fx.repository.repoId, fx.controllerHome);
+    const worktree = selectRepositoryCheckout(registered, work.checkoutId);
+    writeFileSync(join(worktree.canonicalRoot, 'src/lib.ts'), 'export const n = 2;\n');
+    git(worktree.canonicalRoot, ['add', 'src/lib.ts']);
+    git(worktree.canonicalRoot, ['commit', '-m', 'managed recovery candidate']);
+    const successor = git(worktree.canonicalRoot, ['rev-parse', 'HEAD']);
+    writeFileSync(join(worktree.canonicalRoot, 'scratch.txt'), 'dirty\n');
+
+    const continued = await callExecutionTool(fx.ctx, 'work_prepare', {
+      session_id: session.sessionId,
+      repo_id: fx.repository.repoId,
+      checkout_id: work.checkoutId,
+      work_id: work.workId,
+      expected_previous_head: work.expectedHead,
+      adopt_candidate_head: successor,
+    });
+    expect(continued?.isError).toBe(true);
+    expect(JSON.stringify(continued?.structuredContent ?? continued)).toContain('WORK_HANDLE_SUCCESSOR_ADOPTION_MANAGED_DIRTY');
     expect(readWorkHandle(fx.controllerHome, fx.repository.repoId, work.workId)?.expectedHead).toBe(work.expectedHead);
   });
 
