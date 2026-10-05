@@ -2275,9 +2275,19 @@ function customVivaldiExtensionInstall(config: BrowserPluginConfig, repoRoot: st
   return basename(executable).toLowerCase() === 'vivaldi' ? { executable } : undefined;
 }
 
-function processUserDataDir(command: string): string | undefined {
-  const match = /--user-data-dir=(?:"([^"]+)"|'([^']+)'|(\S+))/.exec(command);
-  return match?.[1] ?? match?.[2] ?? match?.[3];
+function processUsesUserDataDir(command: string, profileDir: string): boolean {
+  const expected = resolve(profileDir);
+  const forms = [
+    `--user-data-dir=${expected}`,
+    `--user-data-dir="${expected}"`,
+    `--user-data-dir='${expected}'`,
+  ];
+  return forms.some((form) => {
+    const index = command.indexOf(form);
+    if (index < 0) return false;
+    const next = command[index + form.length];
+    return next === undefined || /\s/.test(next);
+  });
 }
 
 function exactCustomVivaldiProfileOwner(
@@ -2292,9 +2302,9 @@ function exactCustomVivaldiProfileOwner(
   if (!Number.isInteger(pid) || pid <= 0) return undefined;
   const process = runtimeHooks.listProcesses().find((entry) => entry.pid === pid && !entry.command.includes('--type='));
   if (!process || !process.command.includes(executable)) return undefined;
-  const explicitProfileDir = processUserDataDir(process.command);
-  if (explicitProfileDir) {
-    if (resolve(explicitProfileDir) !== resolve(profile.profileDir)) return undefined;
+  const hasExplicitProfileDir = process.command.includes('--user-data-dir=');
+  if (hasExplicitProfileDir) {
+    if (!processUsesUserDataDir(process.command, profile.profileDir)) return undefined;
   } else {
     const defaultVivaldiProfileDir = resolve(join(homedir(), 'Library', 'Application Support', 'Vivaldi'));
     if (resolve(profile.profileDir) !== defaultVivaldiProfileDir) return undefined;
