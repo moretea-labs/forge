@@ -1,7 +1,8 @@
 import { createHash, randomUUID } from 'crypto';
 import { spawn, spawnSync } from 'child_process';
 import { createRequire } from 'module';
-import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'fs';
+import { homedir } from 'os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'path';
 import type {
   AssistantPluginActionExecutionInput,
@@ -2240,6 +2241,53 @@ function customVivaldiExtensionInstall(config: BrowserPluginConfig, repoRoot: st
   return basename(executable).toLowerCase() === 'vivaldi' ? { executable } : undefined;
 }
 
+function processUserDataDir(command: string): string | undefined {
+  const match = /--user-data-dir=(?:"([^"]+)"|'([^']+)'|(\S+))/.exec(command);
+  return match?.[1] ?? match?.[2] ?? match?.[3];
+}
+
+function exactCustomVivaldiProfileOwner(
+  executable: string,
+  profile: BrowserProfileSelection,
+): { pid: number; command: string } | undefined {
+  let lockTarget: string;
+  try { lockTarget = readlinkSync(join(profile.profileDir, 'SingletonLock')); }
+  catch { return undefined; }
+  const pidText = /(?:^|-)(\d+)$/.exec(lockTarget.trim())?.[1];
+  const pid = pidText ? Number(pidText) : 0;
+  if (!Number.isInteger(pid) || pid <= 0) return undefined;
+  const process = runtimeHooks.listProcesses().find((entry) => entry.pid === pid && !entry.command.includes('--type='));
+  if (!process || !process.command.includes(executable)) return undefined;
+  const explicitProfileDir = processUserDataDir(process.command);
+  if (explicitProfileDir) {
+    if (resolve(explicitProfileDir) !== resolve(profile.profileDir)) return undefined;
+  } else {
+    const defaultVivaldiProfileDir = resolve(join(homedir(), 'Library', 'Application Support', 'Vivaldi'));
+    if (resolve(profile.profileDir) !== defaultVivaldiProfileDir) return undefined;
+  }
+  return process;
+}
+
+async function gracefullyRestartExactCustomVivaldiOwner(
+  executable: string,
+  profile: BrowserProfileSelection,
+  timeoutMs: number,
+): Promise<{ restarted: boolean; pid?: number }> {
+  const owner = exactCustomVivaldiProfileOwner(executable, profile);
+  if (!owner) return { restarted: false };
+  runtimeHooks.signalProcess(owner.pid, 'SIGTERM');
+  const deadline = Date.now() + Math.max(500, Math.min(timeoutMs, 10_000));
+  while (Date.now() < deadline) {
+    const alive = runtimeHooks.listProcesses().some((entry) => entry.pid === owner.pid && !entry.command.includes('--type='));
+    if (!alive) return { restarted: true, pid: owner.pid };
+    await delay(50);
+  }
+  throw new AssistantPluginError('PLUGIN_BROWSER_PROFILE_IN_USE', 'The exact Vivaldi custom-profile owner did not exit after a bounded graceful restart request.', {
+    retryable: true,
+    details: { pid: owner.pid, profileDir: profile.profileDir },
+  });
+}
+
 async function installExtensionThroughCustomVivaldiCdpPort(
   input: AssistantPluginActionExecutionInput,
   runtime: PlaywrightRuntime,
@@ -2253,6 +2301,8 @@ async function installExtensionThroughCustomVivaldiCdpPort(
   if (!vivaldi || typeof connectOverCDP !== 'function') {
     throw new AssistantPluginError('PLUGIN_BROWSER_EXTENSION_CONTROL_UNAVAILABLE', 'Custom Vivaldi unpacked-extension install requires TCP CDP attach support.', { retryable: true });
   }
+  const timeoutMs = positiveNumber(input.args.timeout_ms, config.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS);
+  await gracefullyRestartExactCustomVivaldiOwner(vivaldi.executable, profile, timeoutMs);
   const activePortPath = join(profile.profileDir, 'DevToolsActivePort');
   let previousPortFile: { content: string; mtimeMs: number } | undefined;
   try {
@@ -2268,7 +2318,6 @@ async function installExtensionThroughCustomVivaldiCdpPort(
     '--enable-unsafe-extension-debugging',
     '--no-first-run',
     '--no-default-browser-check',
-    'about:blank',
   ];
   const launched = runtimeHooks.launchProcess(vivaldi.executable, args);
   const pid = launched.pid;
@@ -2278,7 +2327,6 @@ async function installExtensionThroughCustomVivaldiCdpPort(
   let browser: BrowserLike | undefined;
   let keepBrowser = false;
   try {
-    const timeoutMs = positiveNumber(input.args.timeout_ms, config.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS);
     const deadline = Date.now() + timeoutMs;
     let port: number | undefined;
     while (Date.now() < deadline) {
