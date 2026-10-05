@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'crypto';
 import { spawn, spawnSync } from 'child_process';
 import { createRequire } from 'module';
+import { createServer as createNetServer } from 'net';
 import { existsSync, mkdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'path';
@@ -276,6 +277,8 @@ interface BrowserPluginRuntimeHooks {
   signalProcess(pid: number, signal: NodeJS.Signals): boolean;
   /** Launch one browser process without claiming its lifecycle through Playwright. */
   launchProcess(executable: string, args: string[]): { pid?: number };
+  /** Allocate one currently-free loopback TCP port for an immediately following browser launch. */
+  allocateLoopbackPort(): Promise<number>;
 }
 
 const defaultRuntimeHooks: BrowserPluginRuntimeHooks = {
@@ -301,6 +304,20 @@ const defaultRuntimeHooks: BrowserPluginRuntimeHooks = {
     child.unref();
     return { pid: child.pid };
   },
+  allocateLoopbackPort: () => new Promise<number>((resolvePort, rejectPort) => {
+    const server = createNetServer();
+    server.unref();
+    server.once('error', rejectPort);
+    server.listen({ host: '127.0.0.1', port: 0, exclusive: true }, () => {
+      const address = server.address();
+      const port = typeof address === 'object' && address ? address.port : 0;
+      server.close((error) => {
+        if (error) return rejectPort(error);
+        if (!Number.isInteger(port) || port <= 0 || port > 65_535) return rejectPort(new Error('BROWSER_LOOPBACK_PORT_ALLOCATION_FAILED'));
+        resolvePort(port);
+      });
+    });
+  }),
   moduleAvailable: (name: string, repoRoot?: string) => {
     const anchors = [repoRoot ? join(repoRoot, 'package.json') : undefined, import.meta.url]
       .filter((value): value is string => Boolean(value));
@@ -1616,6 +1633,23 @@ async function discoverCdpEndpoint(endpoint: string, timeoutMs: number): Promise
   };
 }
 
+async function waitForCdpEndpoint(endpoint: string, timeoutMs: number): Promise<CdpAttachAttempt> {
+  const deadline = Date.now() + Math.max(250, timeoutMs);
+  let lastError: unknown;
+  while (Date.now() < deadline) {
+    try {
+      return await discoverCdpEndpoint(endpoint, Math.max(100, Math.min(500, deadline - Date.now())));
+    } catch (error) {
+      lastError = error;
+      await delay(50);
+    }
+  }
+  throw new AssistantPluginError('PLUGIN_BROWSER_EXTENSION_CONTROL_UNAVAILABLE', 'Vivaldi did not expose the allocated loopback CDP endpoint after launch.', {
+    retryable: true,
+    details: { endpoint, error: lastError instanceof Error ? lastError.message : String(lastError ?? 'unknown') },
+  });
+}
+
 function launchOptionsForRepo(repoRoot: string, config: BrowserPluginConfig, profile: BrowserProfileSelection): Record<string, unknown> {
   const extensionPaths = [...(managedExtensionPaths.get(managedContextKey(profile)) ?? [])].sort();
   const args = [
@@ -2303,18 +2337,13 @@ async function installExtensionThroughCustomVivaldiCdpPort(
   }
   const timeoutMs = positiveNumber(input.args.timeout_ms, config.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS);
   await gracefullyRestartExactCustomVivaldiOwner(vivaldi.executable, profile, timeoutMs);
-  const activePortPath = join(profile.profileDir, 'DevToolsActivePort');
-  let previousPortFile: { content: string; mtimeMs: number } | undefined;
-  try {
-    if (existsSync(activePortPath)) previousPortFile = { content: readFileSync(activePortPath, 'utf8'), mtimeMs: statSync(activePortPath).mtimeMs };
-  } catch {
-    // A concurrently disappearing stale DevToolsActivePort is equivalent to no prior endpoint.
-  }
+  const port = await runtimeHooks.allocateLoopbackPort();
+  const endpoint = `http://127.0.0.1:${port}`;
   const args = [
     `--user-data-dir=${profile.profileDir}`,
     ...(profile.profileDirectory ? [`--profile-directory=${profile.profileDirectory}`] : []),
     '--remote-debugging-address=127.0.0.1',
-    '--remote-debugging-port=0',
+    `--remote-debugging-port=${port}`,
     '--enable-unsafe-extension-debugging',
     '--no-first-run',
     '--no-default-browser-check',
@@ -2327,34 +2356,8 @@ async function installExtensionThroughCustomVivaldiCdpPort(
   let browser: BrowserLike | undefined;
   let keepBrowser = false;
   try {
-    const deadline = Date.now() + timeoutMs;
-    let port: number | undefined;
-    while (Date.now() < deadline) {
-      try {
-        if (existsSync(activePortPath)) {
-          const content = readFileSync(activePortPath, 'utf8');
-          const mtimeMs = statSync(activePortPath).mtimeMs;
-          const fresh = !previousPortFile || content !== previousPortFile.content || mtimeMs > previousPortFile.mtimeMs;
-          const firstLine = content.split(/\r?\n/, 1)[0]?.trim();
-          const parsed = Number(firstLine);
-          if (fresh && Number.isInteger(parsed) && parsed > 0 && parsed <= 65_535) {
-            port = parsed;
-            break;
-          }
-        }
-      } catch {
-        // Browser writes DevToolsActivePort atomically enough for a bounded retry.
-      }
-      await delay(50);
-    }
-    if (!port) {
-      throw new AssistantPluginError('PLUGIN_BROWSER_EXTENSION_CONTROL_UNAVAILABLE', 'Vivaldi did not publish a fresh DevToolsActivePort for the spawned custom-profile process.', {
-        retryable: true,
-        details: { pid, activePortPath },
-      });
-    }
-    const endpoint = `http://127.0.0.1:${port}`;
-    browser = await connectOverCDP.call(runtime.chromium, endpoint, { timeout: Math.max(1_000, Math.min(timeoutMs, 30_000)) });
+    const discovered = await waitForCdpEndpoint(endpoint, timeoutMs);
+    browser = await connectOverCDP.call(runtime.chromium, discovered.discoveredEndpoint ?? endpoint, { timeout: Math.max(1_000, Math.min(timeoutMs, 30_000)) });
     const context = browser.contexts()[0];
     if (!context) {
       throw new AssistantPluginError('PLUGIN_BROWSER_EXTENSION_CONTROL_UNAVAILABLE', 'Vivaldi CDP attach returned no browser context for the custom profile.', { retryable: true, details: { pid, endpoint } });
