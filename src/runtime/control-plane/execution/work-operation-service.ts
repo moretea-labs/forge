@@ -7,6 +7,7 @@ import { listControllerChecks, readLatestControllerCheckEvidence } from '../../.
 import { readRepositoryAccessPolicy } from '../governance/access-policy';
 import { appendVerificationRecord } from '../../../../packages/kernel/work/api/index';
 import { validateWorkHandle } from './validation';
+import { changedPaths as revisionChangedPaths } from './work-revision-diff';
 import { commandFingerprint, effectiveVerificationEvidence, verificationInputFingerprint, workspaceValidationFingerprint, workValidationInputFingerprint } from './verification-evidence';
 import { executionIdentityForWork } from './execution-identity';
 import { markWorkHandleFailed, transitionWorkHandle, type WorkHandleState } from './work-handle-store';
@@ -237,7 +238,17 @@ export async function validateWork(ctx: McpExecutionContext, args: Record<string
   const validated = validateWorkHandle(ctx.controllerHome, handle, identityFor(ctx, args), 'full', 'validate');
   const contract = contractFor(ctx, handle);
   const changed = repositoryGitDiff(validated.worktreeRepository, { maxBytes: 64 * 1024 });
-  const changedPaths = Array.isArray(changed.nameOnly) ? changed.nameOnly.map(String) : [];
+  const workspaceChangedPaths = Array.isArray(changed.nameOnly) ? changed.nameOnly.map(String) : [];
+  const validationStatus = repositoryGitStatus(validated.worktreeRepository);
+  const validationHead = validationStatus.head
+    ?? handle.expectedHead
+    ?? handle.baseCommit
+    ?? 'unknown';
+  const baseRevision = handle.deliveryBaseCommit ?? handle.baseCommit;
+  const committedChangedPaths = baseRevision && validationHead !== 'unknown'
+    ? revisionChangedPaths(validated.worktreeRepository.canonicalRoot, baseRevision, validationHead)
+    : [];
+  const changedPaths = [...new Set([...committedChangedPaths, ...workspaceChangedPaths])].sort();
   const requestedChecks = Array.isArray(args.check_ids)
     ? args.check_ids.map(String).filter(Boolean)
     : selectDefaultWorkValidationChecks(contract, changedPaths);
@@ -248,11 +259,6 @@ export async function validateWork(ctx: McpExecutionContext, args: Record<string
   const validationInvocationId = typeof args.request_id === 'string' && args.request_id.trim()
     ? args.request_id.trim()
     : `validate-${session.sessionId}-${handle.workId}-${Date.now()}-${randomUUID().slice(0, 8)}`;
-  const validationStatus = repositoryGitStatus(validated.worktreeRepository);
-  const validationHead = validationStatus.head
-    ?? handle.expectedHead
-    ?? handle.baseCommit
-    ?? 'unknown';
   const workspaceFingerprint = workspaceValidationFingerprint(
     validated.worktreeRepository.canonicalRoot,
     validationStatus,

@@ -28,6 +28,7 @@ import {
 } from './work-handle-store';
 import { hasCurrentWorkValidationAuthority } from './work-validation-reconciler';
 import { workspaceValidationFingerprint, workValidationInputFingerprint } from './verification-evidence';
+import { selectDefaultWorkValidationChecks } from './work-operation-service';
 import { changedPaths } from './work-revision-diff';
 import { compactHandle, identityFor, makeBoundedWorkResult, requireSession, workForSession } from './work-execution-support';
 import { validateWorkHandle } from './validation';
@@ -384,10 +385,15 @@ export async function deliverWork(ctx: McpExecutionContext, args: Record<string,
     'SOURCE_REVISION',
   );
   const workspaceFingerprint = workspaceValidationFingerprint(validated.worktreeRepository.canonicalRoot, sourceStatus);
+  const validationBaseRevision = handle.deliveryBaseCommit ?? handle.baseCommit;
+  const validationChangedPaths = validationBaseRevision
+    ? changedPaths(validated.worktreeRepository.canonicalRoot, validationBaseRevision, sourceRevision)
+    : [];
+  const expectedValidationChecks = selectDefaultWorkValidationChecks(contract, validationChangedPaths);
   const expectedValidationFingerprint = workValidationInputFingerprint(
     sourceRevision,
     workspaceFingerprint,
-    contract.checks,
+    expectedValidationChecks,
   );
   if (!hasCurrentWorkValidationAuthority({
     finalizationValidation: handle.finalization.validation,

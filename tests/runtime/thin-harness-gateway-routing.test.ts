@@ -77,6 +77,11 @@ function fixture() {
         command: [process.execPath, '-e', 'setTimeout(() => { console.log("slow-ok"); process.exit(0); }, 1200)'],
         timeoutMs: 10_000,
       },
+      'type-focused': {
+        description: 'fast TypeScript focused check',
+        command: [process.execPath, '-e', 'process.exit(0)'],
+        timeoutMs: 10_000,
+      },
     },
   }, null, 2));
   git(repoRoot, ['add', '.']);
@@ -156,6 +161,53 @@ describe('repository.git Work delivery', () => {
       delivery: { status: 'integrated', strategy: 'work_fast_forward', reachable: true },
       cleanup: { status: 'complete', blockers: [] },
     });
+  });
+
+  test('uses committed Work changes for default validation and delivery fingerprint identity', async () => {
+    const fx = fixture();
+    roots.push(fx.root);
+    const started = await callExecutionTool(fx.ctx, 'session_start', {});
+    const session = (started?.structuredContent as { session: { sessionId: string } }).session;
+    const prepared = await callExecutionTool(fx.ctx, 'work_prepare', {
+      session_id: session.sessionId,
+      repo_id: fx.repository.repoId,
+      request_id: 'prepare-capability-delivery-default-validation',
+      objective: 'Validate and deliver committed TypeScript changes with one shared check selection.',
+      checks: ['type-focused'],
+      isolation: 'new_worktree',
+    });
+    expect(prepared?.isError).not.toBe(true);
+    const work = (prepared?.structuredContent as { work: { workId: string } }).work;
+    const handle = readWorkHandle(fx.controllerHome, fx.repository.repoId, work.workId)!;
+    writeFileSync(join(handle.worktreePath, 'src', 'lib.ts'), 'export const n = 2;\n');
+    git(handle.worktreePath, ['add', 'src/lib.ts']);
+    git(handle.worktreePath, ['commit', '-m', 'committed default-validation source']);
+    const sourceHead = git(handle.worktreePath, ['rev-parse', 'HEAD']);
+
+    const validated = await callExecutionTool(fx.ctx, 'work_validate', {
+      session_id: session.sessionId,
+      repo_id: fx.repository.repoId,
+      work_id: work.workId,
+      interactive_wait_ms: 5_000,
+      request_id: 'validate-capability-delivery-default-validation',
+    });
+    expect(validated?.isError).not.toBe(true);
+    const validation = (validated?.structuredContent as {
+      validation: { passed: boolean; changedPaths: string[]; checks: Array<{ checkId: string; status: string }> };
+    }).validation;
+    expect(validation.passed).toBe(true);
+    expect(validation.changedPaths).toContain('src/lib.ts');
+    expect(validation.checks).toEqual([expect.objectContaining({ checkId: 'type-focused', status: 'passed' })]);
+
+    const delivered = await callCoreCapabilityAdapter(fx.ctx, 'capability_execute', {
+      repo_id: fx.repository.repoId,
+      capability_id: 'repository.git',
+      action: 'deliver_work',
+      request_id: 'deliver-capability-default-validation',
+      arguments: { session_id: session.sessionId, work_id: work.workId },
+    });
+    if (delivered?.isError) throw new Error(JSON.stringify(delivered.structuredContent ?? delivered));
+    expect(git(fx.repoRoot, ['rev-parse', 'HEAD'])).toBe(sourceHead);
   });
 
   test('fails closed when the durable target checkout is dirty', async () => {
