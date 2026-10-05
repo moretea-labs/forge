@@ -34,7 +34,7 @@ describe('handoff and facade contracts', () => {
     } | undefined;
     expect(schema?.executeWith).toBe('capability_execute');
     expect(Object.keys(schema?.actions ?? {}).sort()).toEqual(['commit_paths', 'deliver_work', 'diff_paths', 'stage_paths']);
-    expect(schema?.actions?.deliver_work?.argumentsSchema?.required).toEqual(['session_id', 'work_id']);
+    expect(schema?.actions?.deliver_work?.argumentsSchema?.required).toEqual(['work_id']);
     expect(runtimeToolDefinitions.some((definition) => definition.name === 'work_deliver')).toBe(false);
     expect(FACADE_TOOLS).toHaveLength(6);
   });

@@ -2,6 +2,7 @@ import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contra
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
 import { commitSelectedPaths, selectedPathDiff, stageSelectedPaths } from '../../../src/cli/repositories/selected-path-actions';
 import { deliverWork } from '../../../src/runtime/control-plane/execution/work-delivery-service';
+import { startOrResumeSession } from './execution-tools';
 import { result } from './result-adapter';
 import { selected } from './shared-adapter';
 import { callWorkflowSupervisorAdapter } from './workflow-supervisor-adapter';
@@ -166,6 +167,7 @@ export async function callCoreCapabilityAdapter(
         }, Boolean(committed.error));
       }
       case 'deliver_work': {
+        startOrResumeSession(ctx);
         const delivered = await deliverWork(ctx, {
           ...input,
           repo_id: repository.repoId,

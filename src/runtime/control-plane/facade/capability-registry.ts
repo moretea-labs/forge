@@ -470,7 +470,7 @@ export function getCoreCapabilityExecutionSchema(capabilityId: string): Record<s
         argumentsSchema: {
           type: 'object',
           additionalProperties: false,
-          required: ['session_id', 'work_id'],
+          required: ['work_id'],
           properties: {
             session_id: { type: 'string', minLength: 1, maxLength: 256 },
             work_id: { type: 'string', minLength: 1, maxLength: 256 },

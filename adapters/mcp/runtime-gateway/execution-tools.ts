@@ -70,7 +70,7 @@ function failure(error: unknown): CallToolResult {
   return result({ error: { code, message } }, true);
 }
 
-function startOrResumeSession(ctx: MultiRepositoryMcpToolContext): ExecutionSessionContext {
+export function startOrResumeSession(ctx: MultiRepositoryMcpToolContext): ExecutionSessionContext {
   const permissionVersion = ctx.explicitRepository ? currentPermissionSnapshotVersion(ctx.controllerHome, ctx.explicitRepository.repoId) : 0;
   return startExecutionSession(ctx.controllerHome, {
     sessionId: ctx.sessionId,
