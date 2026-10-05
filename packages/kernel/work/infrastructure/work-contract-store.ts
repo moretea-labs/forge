@@ -1605,7 +1605,7 @@ export function updateWorkContract(
   return updateWorkContractInternal(options, workId, patch, false);
 }
 
-/** Explicit semantic transition used only when an effect Work begins governed repository mutation. */
+/** Explicit execution-classification transition when an open Work begins governed repository mutation. */
 export function promoteWorkToRepositoryChange(
   options: WorkContractStoreOptions,
   workId: string,
@@ -1615,7 +1615,7 @@ export function promoteWorkToRepositoryChange(
       throw new Error(`WORK_KIND_PROMOTION_TERMINAL: ${workId}`);
     }
     if (current.workKind === 'repository_change') return undefined;
-    if (current.workKind !== 'local_effect' && current.workKind !== 'remote_effect') {
+    if (!['investigation', 'local_effect', 'remote_effect'].includes(current.workKind)) {
       throw new Error(`WORK_KIND_PROMOTION_INVALID: ${workId}:${current.workKind}`);
     }
     return { workKind: 'repository_change' };

@@ -392,14 +392,18 @@ export function ensureRunningRepositoryWorkCheckout(
   const store = { controllerHome, repoId: repository.repoId };
   const work = getWorkContract(store, workId);
   if (!work || work.semanticState !== 'open') return { reconstructedCheckout: false };
-  if (work.workKind !== 'repository_change' || work.worktreePolicy.required !== true) return { reconstructedCheckout: false };
+  if (work.workKind !== 'repository_change') return { reconstructedCheckout: false };
+  const handle = readWorkHandle(controllerHome, repository.repoId, workId);
+  const hasManagedPlacement = handle?.managedWorktree === true
+    && Boolean(handle.checkoutId?.trim())
+    && Boolean(handle.worktreePath?.trim());
+  if (work.worktreePolicy.required !== true && !hasManagedPlacement) return { reconstructedCheckout: false };
   // A settled physical delivery may intentionally outlive its managed checkout
   // while semantic Work remains open. Do not reconstruct or reject source that
   // the finalizer has already integrated and cleaned; Controller semantic
   // judgment is the only remaining authority.
   if (hasSettledWorkDeliveryReceipt(work)) return { reconstructedCheckout: false };
 
-  const handle = readWorkHandle(controllerHome, repository.repoId, workId);
   const recordedCheckoutId = handle?.checkoutId?.trim() || work.checkoutId?.trim();
   const recordedWorktree = handle?.worktreePath?.trim() || work.worktreeRef?.trim();
   if (!recordedCheckoutId || !recordedWorktree) return { reconstructedCheckout: false };

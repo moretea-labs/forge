@@ -9,6 +9,7 @@ import {
   createWorkSemanticContext,
   getWorkContract,
   readActiveWorkCandidates,
+  promoteWorkToRepositoryChange,
   reviseWorkSemanticContext,
   type VerificationRecord,
   type WorkContract,
@@ -48,6 +49,30 @@ function fixture(suffix: string) {
   });
   return { controllerHome, repoId, workId };
 }
+
+test('explicitly promotes an open investigation Work before governed repository mutation', () => {
+  const controllerHome = mkdtempSync(join(tmpdir(), 'forge-work-promotion-investigation-'));
+  homes.push(controllerHome);
+  const repoId = 'repo-work-promotion-investigation';
+  const workId = 'work-promotion-investigation';
+  createWorkContract({ controllerHome, repoId }, {
+    workId,
+    repoId,
+    objective: 'Investigate first, then explicitly begin governed repository mutation.',
+    acceptanceCriteria: [],
+    checks: [],
+    constraints: {},
+    requestedBy: 'chatgpt',
+    workKind: 'investigation',
+    dispatchState: 'running',
+    phase: 'implementation',
+  });
+
+  const promoted = promoteWorkToRepositoryChange({ controllerHome, repoId }, workId);
+  expect(promoted.workKind).toBe('repository_change');
+  expect(promoted.semanticState).toBe('open');
+  expect(getWorkContract({ controllerHome, repoId }, workId)?.workKind).toBe('repository_change');
+});
 
 function verificationRecord(input: {
   repoId: string;

@@ -47,6 +47,7 @@ import {
   startOrJoinEditValidation,
 } from '../../src/runtime/control-plane/execution/edit-validation-coordinator';
 import { createWorkContract, getWorkContract, reviseWorkSemanticContext } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { updateWorkContract as updateKernelWorkContract } from '../../packages/kernel/work/api/index';
 import { snapshotControllerCheck } from '../../src/cli/controller/check-runner';
 import { readWorkHandle, writeWorkHandle } from '../../src/runtime/control-plane/execution/work-handle-store';
 import { verificationInputFingerprint, workspaceValidationFingerprint } from '../../src/runtime/control-plane/execution/verification-evidence';
@@ -153,6 +154,9 @@ describe('repository.direct_edit capability', () => {
     expect(prepared?.isError).not.toBe(true);
     const work = (prepared?.structuredContent as { work: { workId: string } }).work;
     const handle = readWorkHandle(fx.controllerHome, fx.repository.repoId, work.workId)!;
+    updateKernelWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, work.workId, {
+      worktreePolicy: { required: false, reason: 'legacy semantic placement policy predates the canonical managed WorkHandle' },
+    });
     writeWorkHandle(fx.controllerHome, {
       ...handle,
       state: 'failed',
