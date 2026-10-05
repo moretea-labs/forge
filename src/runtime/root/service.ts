@@ -62,17 +62,29 @@ export function forgeRuntimeServicePaths(controllerHome: string): ForgeRuntimeSe
   };
 }
 
-export function validateForgeRuntimeServiceConfig(input: ForgeRuntimeServiceConfig): ForgeRuntimeServiceConfig {
+export interface ForgeRuntimeServiceConfigValidationOptions {
+  /** A materialized immutable release may discard a stale development repository overlay. */
+  missingRepositoryRoot?: 'error' | 'omit';
+}
+
+export function validateForgeRuntimeServiceConfig(
+  input: ForgeRuntimeServiceConfig,
+  options: ForgeRuntimeServiceConfigValidationOptions = {},
+): ForgeRuntimeServiceConfig {
   if (input.schemaVersion !== 1) throw new Error('FORGE_RUNTIME_SERVICE_CONFIG_VERSION_UNSUPPORTED');
   const controllerHome = resolve(input.controllerHome);
-  const repositoryRoot = input.repositoryRoot?.trim() ? resolve(input.repositoryRoot) : undefined;
+  const configuredRepositoryRoot = input.repositoryRoot?.trim() ? resolve(input.repositoryRoot) : undefined;
+  const repositoryRoot = configuredRepositoryRoot && existsSync(configuredRepositoryRoot) ? configuredRepositoryRoot : undefined;
   const authTokenFile = resolve(input.authTokenFile);
   if (!input.host.trim()) throw new Error('FORGE_RUNTIME_SERVICE_HOST_REQUIRED');
   if (!Number.isInteger(input.port) || input.port < 1 || input.port > 65_535) throw new Error('FORGE_RUNTIME_SERVICE_PORT_INVALID');
-  if (repositoryRoot && !existsSync(repositoryRoot)) throw new Error(`FORGE_RUNTIME_SERVICE_REPOSITORY_MISSING: ${repositoryRoot}`);
+  if (configuredRepositoryRoot && !repositoryRoot && options.missingRepositoryRoot !== 'omit') {
+    throw new Error(`FORGE_RUNTIME_SERVICE_REPOSITORY_MISSING: ${configuredRepositoryRoot}`);
+  }
   if (!existsSync(authTokenFile)) throw new Error(`FORGE_RUNTIME_SERVICE_AUTH_TOKEN_MISSING: ${authTokenFile}`);
+  const { repositoryRoot: _configuredRepositoryRoot, ...rest } = input;
   return {
-    ...input,
+    ...rest,
     controllerHome,
     ...(repositoryRoot ? { repositoryRoot } : {}),
     host: input.host.trim(),
@@ -81,8 +93,11 @@ export function validateForgeRuntimeServiceConfig(input: ForgeRuntimeServiceConf
   };
 }
 
-export function readForgeRuntimeServiceConfig(path: string): ForgeRuntimeServiceConfig {
-  return validateForgeRuntimeServiceConfig(JSON.parse(readFileSync(resolve(path), 'utf8')) as ForgeRuntimeServiceConfig);
+export function readForgeRuntimeServiceConfig(
+  path: string,
+  options: ForgeRuntimeServiceConfigValidationOptions = {},
+): ForgeRuntimeServiceConfig {
+  return validateForgeRuntimeServiceConfig(JSON.parse(readFileSync(resolve(path), 'utf8')) as ForgeRuntimeServiceConfig, options);
 }
 
 interface RuntimeReleaseAuthorityRecord {
@@ -183,7 +198,7 @@ export function activeRuntimeLaunchSpec(controllerHome: string): ActiveRuntimeLa
   const home = resolveControllerHome(controllerHome);
   const active = readActiveRuntimeRelease(home);
   if (!active) return undefined;
-  const config = readForgeRuntimeServiceConfig(forgeRuntimeServicePaths(home).configPath);
+  const config = readForgeRuntimeServiceConfig(forgeRuntimeServicePaths(home).configPath, { missingRepositoryRoot: 'omit' });
   if (config.controllerHome !== home) throw new Error('FORGE_RUNTIME_SERVICE_HOME_MISMATCH');
   const manifestArguments = active.manifest.arguments ?? [];
   if (!Array.isArray(manifestArguments) || !manifestArguments.every((argument) => typeof argument === 'string')) {

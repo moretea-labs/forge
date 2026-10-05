@@ -93,6 +93,26 @@ describe('Stable A and Candidate B execution lanes', () => {
     });
   });
 
+  test('drops a missing Stable development repository overlay from Candidate B service config', () => {
+    const fx = stableFixture();
+    const stablePaths = forgeRuntimeServicePaths(fx.stableHome);
+    const stableConfig = JSON.parse(readFileSync(stablePaths.configPath, 'utf8')) as Record<string, unknown>;
+    stableConfig.repositoryRoot = join(fx.root, 'deleted-development-worktree');
+    writeFileSync(stablePaths.configPath, `${JSON.stringify(stableConfig)}\n`);
+
+    const candidateHome = join(fx.root, 'candidate-without-stale-overlay');
+    const result = createCandidateExecutionLane({
+      stableControllerHome: fx.stableHome,
+      candidateControllerHome: candidateHome,
+      candidatePort: 8766,
+      sessionId: 'release-session-stale-overlay',
+    });
+    const candidateConfig = JSON.parse(readFileSync(forgeRuntimeServicePaths(result.candidate.controllerHome).configPath, 'utf8')) as Record<string, unknown>;
+    expect(candidateConfig.repositoryRoot).toBeUndefined();
+    expect(candidateConfig.controllerHome).toBe(resolve(candidateHome));
+    expect(candidateConfig.port).toBe(8766);
+  });
+
   test('rejects any Candidate identity that would share Stable A authority', () => {
     const fx = stableFixture();
     const stable = readStableExecutionLane(fx.stableHome);

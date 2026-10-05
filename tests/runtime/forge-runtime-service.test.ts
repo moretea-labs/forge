@@ -10,6 +10,7 @@ import {
   ensureForgeRuntimeLaunchAgentContract,
   forgeRuntimeServicePaths,
   renderForgeRuntimeLaunchAgent,
+  readForgeRuntimeServiceConfig,
   syncForgeRuntimeActiveEntrypoint,
   validateForgeRuntimeServiceConfig,
   writeForgeRuntimeServiceConfig,
@@ -1101,6 +1102,53 @@ describe('Forge Runtime service', () => {
       ['--user', 'restart', 'com.moretea.forge.runtime.test.service'],
     ]);
   });
+  test('materialized launch omits a missing development repository overlay while strict config reads reject it', () => {
+    const fx = fixture();
+    const paths = forgeRuntimeServicePaths(fx.home);
+    const missingRepo = join(fx.root, 'deleted-development-worktree');
+    const releaseRoot = join(fx.home, 'runtime', 'releases', 'release-stale-overlay');
+    mkdirSync(releaseRoot, { recursive: true });
+    const entry = join(releaseRoot, 'forge-runtime');
+    const manifestPath = join(releaseRoot, 'manifest.json');
+    writeFileSync(entry, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    writeFileSync(manifestPath, `${JSON.stringify({
+      schemaVersion: 1,
+      releaseId: 'release-stale-overlay',
+      entrypoint: 'forge-runtime',
+      controllerHome: fx.home,
+      artifactIdentity: 'sha256:stale-overlay',
+      releaseRevision: 'release-stale-overlay-revision',
+      sourceCommit: 'stale-overlay-source',
+      cleanWorkspace: true,
+      arguments: [],
+      configurationSchemaVersion: 1,
+      databaseSchemaCompatibility: { minimum: 1, maximum: 1 },
+      workerProtocolVersion: 1,
+      createdAt: new Date().toISOString(),
+    })}\n`);
+    mkdirSync(join(fx.home, 'runtime', 'releases'), { recursive: true });
+    writeFileSync(join(fx.home, 'runtime', 'releases', 'authority.json'), `${JSON.stringify({
+      schemaVersion: 2,
+      status: 'committed',
+      active: { releaseId: 'release-stale-overlay', manifestPath, artifactIdentity: 'sha256:stale-overlay' },
+    })}\n`);
+    mkdirSync(paths.serviceRoot, { recursive: true });
+    writeFileSync(paths.configPath, `${JSON.stringify({
+      schemaVersion: 1,
+      controllerHome: fx.home,
+      repositoryRoot: missingRepo,
+      host: '127.0.0.1',
+      port: 8765,
+      authTokenFile: fx.token,
+    })}\n`);
+
+    expect(() => readForgeRuntimeServiceConfig(paths.configPath)).toThrow(`FORGE_RUNTIME_SERVICE_REPOSITORY_MISSING: ${missingRepo}`);
+    expect(readForgeRuntimeServiceConfig(paths.configPath, { missingRepositoryRoot: 'omit' }).repositoryRoot).toBeUndefined();
+    const launch = activeRuntimeLaunchSpec(fx.home);
+    expect(launch?.args).not.toContain('--repo');
+    expect(launch?.args).toContain('--release-manifest');
+  });
+
   test('validates the service config before installation', () => {
     const fx = fixture();
     const config = validateForgeRuntimeServiceConfig({

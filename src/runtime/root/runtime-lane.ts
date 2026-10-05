@@ -49,7 +49,7 @@ function candidateTokenPath(controllerHome: string): string {
 export function readStableExecutionLane(controllerHome: string): StableExecutionLane {
   const home = resolve(controllerHome);
   const paths = forgeRuntimeServicePaths(home);
-  const config = readForgeRuntimeServiceConfig(paths.configPath);
+  const config = readForgeRuntimeServiceConfig(paths.configPath, { missingRepositoryRoot: 'omit' });
   return {
     schemaVersion: 1,
     kind: 'stable',
@@ -138,7 +138,7 @@ export function createCandidateExecutionLane(input: {
     createPrivateCandidateToken(stable.authTokenFile, candidate.authTokenFile);
     const database = backupControlPlaneDatabase(stable.controllerHome, candidate.databaseSnapshotPath);
     writeForgeRuntimeServiceConfig(candidateServiceConfig(
-      readForgeRuntimeServiceConfig(forgeRuntimeServicePaths(stable.controllerHome).configPath),
+      readForgeRuntimeServiceConfig(forgeRuntimeServicePaths(stable.controllerHome).configPath, { missingRepositoryRoot: 'omit' }),
       candidate,
     ));
     assertCandidateExecutionLaneIsolation(stable, candidate);
