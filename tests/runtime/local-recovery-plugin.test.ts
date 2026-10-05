@@ -34,7 +34,9 @@ describe('local_recovery managed transport provider', () => {
     };
     const result = await executeAction('stage_and_activate_runtime_release', {}, { controllerHome: '/tmp/controller' }, {
       callRecoveryTool,
-      loadRecoveryConfig: () => ({ controllerHome: '/tmp/controller', primaryRuntimeSourceRepositoryId: 'repo_fixture' }),
+      loadRecoveryConfig: () => ({ controllerHome: '/tmp/controller', primaryRuntimeSourceRoot: '/tmp', primaryRuntimeSourceRepositoryId: 'repo_fixture' }),
+      getRepository: () => ({ repoId: 'repo_fixture', enabled: true, canonicalRoot: '/tmp' }),
+      findRegisteredRepositoryByCheckoutRoot: () => ({ repoId: 'repo_fixture' }),
       requestId: 'bootstrap-cutover-1',
     });
     expect(result).toEqual({ ok: true, staged: { releaseId: 'candidate' } });
@@ -44,7 +46,9 @@ describe('local_recovery managed transport provider', () => {
 
     await executeAction('advance_runtime_release_session', {}, { controllerHome: '/tmp/controller' }, {
       callRecoveryTool,
-      loadRecoveryConfig: () => ({ controllerHome: '/tmp/controller', primaryRuntimeSourceRepositoryId: 'repo_fixture' }),
+      loadRecoveryConfig: () => ({ controllerHome: '/tmp/controller', primaryRuntimeSourceRoot: '/tmp', primaryRuntimeSourceRepositoryId: 'repo_fixture' }),
+      getRepository: () => ({ repoId: 'repo_fixture', enabled: true, canonicalRoot: '/tmp' }),
+      findRegisteredRepositoryByCheckoutRoot: () => ({ repoId: 'repo_fixture' }),
       requestId: 'release-advance-1',
     });
     expect(calls).toHaveLength(2);
@@ -71,11 +75,64 @@ describe('local_recovery managed transport provider', () => {
 
     let persisted = false;
     const existing = ensureSourceRepositoryProvenance('/tmp/controller', {
-      loadRecoveryConfig: () => ({ controllerHome: '/tmp/controller', primaryRuntimeSourceRoot: '/workspace/source', primaryRuntimeSourceRepositoryId: 'repo_existing' }),
+      loadRecoveryConfig: () => ({ controllerHome: '/tmp/controller', primaryRuntimeSourceRoot: '/tmp', primaryRuntimeSourceRepositoryId: 'repo_existing' }),
+      getRepository: () => ({ repoId: 'repo_existing', enabled: true, canonicalRoot: '/var' }),
+      findRegisteredRepositoryByCheckoutRoot: () => ({ repoId: 'repo_existing' }),
       createRecoveryConfig: () => { persisted = true; return {}; },
     });
     expect(existing.primaryRuntimeSourceRepositoryId).toBe('repo_existing');
+    expect(existing.primaryRuntimeSourceRoot).toBe('/tmp');
     expect(persisted).toBe(false);
+  });
+
+  test('rejects an existing source root that belongs to a different registered repository', () => {
+    expect(() => ensureSourceRepositoryProvenance('/tmp/controller', {
+      loadRecoveryConfig: () => ({ controllerHome: '/tmp/controller', primaryRuntimeSourceRoot: '/tmp', primaryRuntimeSourceRepositoryId: 'repo_expected' }),
+      getRepository: () => ({ repoId: 'repo_expected', enabled: true, canonicalRoot: '/var' }),
+      findRegisteredRepositoryByCheckoutRoot: () => ({ repoId: 'repo_other' }),
+    })).toThrow(/source root is not an active registered checkout of its configured repository id/);
+  });
+
+  test('repairs a stale configured source root from the authoritative registered repository id', () => {
+    const writes: unknown[] = [];
+    const result = ensureSourceRepositoryProvenance('/tmp/controller', {
+      loadRecoveryConfig: () => ({
+        controllerHome: '/tmp/controller',
+        primaryRuntimeSourceRoot: '/tmp/deleted-transient-forge-worktree',
+        primaryRuntimeSourceRepositoryId: 'repo_fixture',
+      }),
+      getRepository: (repoId: string, controllerHome: string) => {
+        expect(repoId).toBe('repo_fixture');
+        expect(controllerHome).toBe('/tmp/controller');
+        return { repoId, enabled: true, canonicalRoot: '/tmp' };
+      },
+      createRecoveryConfig: (controllerHome: string, patch: object) => {
+        writes.push({ controllerHome, patch });
+        return { controllerHome, primaryRuntimeSourceRoot: '/tmp', primaryRuntimeSourceRepositoryId: 'repo_fixture' };
+      },
+    });
+    expect(result).toMatchObject({ primaryRuntimeSourceRoot: '/tmp', primaryRuntimeSourceRepositoryId: 'repo_fixture' });
+    expect(writes).toEqual([{
+      controllerHome: '/tmp/controller',
+      patch: { primaryRuntimeSourceRoot: '/tmp', primaryRuntimeSourceRepositoryId: 'repo_fixture' },
+    }]);
+  });
+
+  test('fails closed when configured repository authority or its canonical root is unavailable', () => {
+    expect(() => ensureSourceRepositoryProvenance('/tmp/controller', {
+      loadRecoveryConfig: () => ({ controllerHome: '/tmp/controller', primaryRuntimeSourceRoot: '/tmp/stale', primaryRuntimeSourceRepositoryId: 'repo_missing' }),
+      getRepository: () => { throw new Error('repository not found'); },
+    })).toThrow(/source repository id is not one enabled registered repository/);
+
+    expect(() => ensureSourceRepositoryProvenance('/tmp/controller', {
+      loadRecoveryConfig: () => ({ controllerHome: '/tmp/controller', primaryRuntimeSourceRoot: '/tmp/stale', primaryRuntimeSourceRepositoryId: 'repo_disabled' }),
+      getRepository: () => ({ repoId: 'repo_disabled', enabled: false, canonicalRoot: '/tmp' }),
+    })).toThrow(/source repository id is not one enabled registered repository/);
+
+    expect(() => ensureSourceRepositoryProvenance('/tmp/controller', {
+      loadRecoveryConfig: () => ({ controllerHome: '/tmp/controller', primaryRuntimeSourceRoot: '/tmp/stale', primaryRuntimeSourceRepositoryId: 'repo_missing_root' }),
+      getRepository: () => ({ repoId: 'repo_missing_root', enabled: true, canonicalRoot: '/tmp/forge-canonical-root-that-does-not-exist' }),
+    })).toThrow(/canonical root is unavailable/);
   });
 
   test('rejects every caller-controlled mutation parameter before Recovery dispatch', async () => {

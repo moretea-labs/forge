@@ -4,7 +4,7 @@ import { existsSync, readFileSync } from 'fs';
 import { isAbsolute, join, resolve } from 'path';
 import { pathToFileURL } from 'url';
 import { resolveControllerHome } from '../src/cli/repositories/controller-home.ts';
-import { findRegisteredRepositoryByCheckoutRoot } from '../src/cli/repositories/registry.ts';
+import { findRegisteredRepositoryByCheckoutRoot, getRepository } from '../src/cli/repositories/registry.ts';
 import { createRecoveryConfig, gatewayToken, loadRecoveryConfig } from '../src/runtime/standalone-recovery/core.ts';
 
 export const PLUGIN_ID = 'local_recovery';
@@ -174,9 +174,42 @@ export function ensureSourceRepositoryProvenance(controllerHome, injected = {}) 
   const loadConfig = injected.loadRecoveryConfig ?? loadRecoveryConfig;
   const persistConfig = injected.createRecoveryConfig ?? createRecoveryConfig;
   const findRepository = injected.findRegisteredRepositoryByCheckoutRoot ?? findRegisteredRepositoryByCheckoutRoot;
+  const readRepository = injected.getRepository ?? getRepository;
   const recoveryConfig = loadConfig(controllerHome);
-  if (typeof recoveryConfig.primaryRuntimeSourceRepositoryId === 'string' && recoveryConfig.primaryRuntimeSourceRepositoryId.trim()) return recoveryConfig;
+  const repositoryId = typeof recoveryConfig.primaryRuntimeSourceRepositoryId === 'string'
+    ? recoveryConfig.primaryRuntimeSourceRepositoryId.trim()
+    : '';
   const sourceRoot = typeof recoveryConfig.primaryRuntimeSourceRoot === 'string' ? recoveryConfig.primaryRuntimeSourceRoot.trim() : '';
+
+  if (repositoryId) {
+    let repository;
+    try {
+      repository = readRepository(repositoryId, controllerHome);
+    } catch {
+      throw providerError('LOCAL_RECOVERY_SOURCE_REPOSITORY_UNRESOLVED', 'Configured primary Runtime source repository id is not one enabled registered repository.');
+    }
+    if (!repository || repository.repoId !== repositoryId || repository.enabled === false || repository.removedAt) {
+      throw providerError('LOCAL_RECOVERY_SOURCE_REPOSITORY_UNRESOLVED', 'Configured primary Runtime source repository id is not one enabled registered repository.');
+    }
+    const canonicalRoot = typeof repository.canonicalRoot === 'string' && repository.canonicalRoot.trim()
+      ? resolve(repository.canonicalRoot.trim())
+      : '';
+    if (!canonicalRoot || !isAbsolute(canonicalRoot) || !existsSync(canonicalRoot)) {
+      throw providerError('LOCAL_RECOVERY_SOURCE_CANONICAL_ROOT_UNAVAILABLE', 'Configured primary Runtime source repository canonical root is unavailable.');
+    }
+    if (sourceRoot && existsSync(resolve(sourceRoot))) {
+      const owner = findRepository(sourceRoot, controllerHome);
+      if (!owner?.repoId || owner.repoId !== repositoryId) {
+        throw providerError('LOCAL_RECOVERY_SOURCE_REPOSITORY_MISMATCH', 'Configured primary Runtime source root is not an active registered checkout of its configured repository id.');
+      }
+      return recoveryConfig;
+    }
+    return persistConfig(controllerHome, {
+      primaryRuntimeSourceRoot: canonicalRoot,
+      primaryRuntimeSourceRepositoryId: repositoryId,
+    });
+  }
+
   if (!sourceRoot) throw providerError('LOCAL_RECOVERY_SOURCE_ROOT_UNAVAILABLE', 'Installed Recovery config does not identify the primary Runtime source root.');
   const repository = findRepository(sourceRoot, controllerHome);
   if (!repository?.repoId) throw providerError('LOCAL_RECOVERY_SOURCE_REPOSITORY_UNRESOLVED', 'Configured primary Runtime source root is not owned by one registered repository.');
