@@ -2021,7 +2021,7 @@ test('reconciles a late applied Supervisor effect into the same outcome-unknown 
   });
 });
 
-test('provider recovery is a single exactly-once resume and does not recurse through Scheduler policy', async () => {
+test('provider recovery uses the full bounded two-resume budget without replaying the applied source', async () => {
   const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-browser-exhausted-'));
   roots.push(root);
   const store = new WorkflowSupervisorStore(join(root, 'supervisor-home'));
@@ -2029,50 +2029,56 @@ test('provider recovery is a single exactly-once resume and does not recurse thr
   const taskId = 'task-browser-exhausted';
   const conversationId = '34343434-5656-7878-9090-121212121212';
   const conversationUrl = `https://chatgpt.com/c/${conversationId}`;
-  control.registerTask({ taskId, conversationId, conversationUrl, objective: 'Stop after bounded provider recovery.', completionContract: {}, continuationPolicy: {}, userBlockerPolicy: {} });
+  control.registerTask({ taskId, conversationId, conversationUrl, objective: 'Stop only after the bounded provider recovery budget.', completionContract: {}, continuationPolicy: {}, userBlockerPolicy: {} });
   const effect = control.reserveEnrollment(taskId);
   control.observeEffect({ effectId: effect.effectId, observationId: 'browser-exhausted-applied', outcome: 'applied' });
 
   const live = { taskId, effectId: effect.effectId, generating: true, assistantDigest: 'waiting-tool', graceMs: 1_000,
-    recovery: { effectId: 'fx_34343434343434343434343434343434', prompt: 'recovery' } };
+    recovery: { effectId: 'fx_34343434343434343434343434343434', prompt: 'recovery-1' } };
   expect(store.observeProviderTurn({ ...live, observedAtMs: 1_000 }).state).toBe('generating');
-  // A changed digest proves progress and restarts the liveness window.
   expect(store.observeProviderTurn({ ...live, assistantDigest: 'waiting-tool-progress', observedAtMs: 1_500 }).state).toBe('generating');
-  const resumed = store.observeProviderTurn({ ...live, assistantDigest: 'waiting-tool-progress', observedAtMs: 2_501 }).state;
-  expect(resumed).toBe('recovery_reserved');
-  expect(control.browserPoll({ conversationId, conversationUrl }).command).toMatchObject({ kind: 'recovery' });
+  expect(store.observeProviderTurn({ ...live, assistantDigest: 'waiting-tool-progress', observedAtMs: 2_501 }).state).toBe('recovery_reserved');
+  const firstRecovery = store.observeProviderTurn({ ...live, assistantDigest: 'waiting-tool-progress', observedAtMs: 2_600 }).recoveryEffect!;
+  expect(firstRecovery.kind).toBe('recovery');
+  expect(control.browserPoll({ conversationId, conversationUrl }).command).toMatchObject({ kind: 'recovery', effectId: firstRecovery.effectId });
   expect(store.providerResumeExhausted(effect.effectId)).toBe(false);
-  const recoveryEffect = store.observeProviderTurn({ ...live, assistantDigest: 'waiting-tool-progress', observedAtMs: 2_600 }).recoveryEffect!;
-  expect(recoveryEffect.kind).toBe('recovery');
-  expect(control.browserTasks()).toHaveLength(1);
 
-  const resume = recoveryEffect;
-  control.observeEffect({ effectId: resume.effectId, observationId: 'provider-resume-applied', outcome: 'applied' });
-  const resumePending = store.observeProviderTurn({
-    taskId, effectId: resume.effectId, generating: true, assistantDigest: 'resume-digest', observedAtMs: 3_000, graceMs: 1_000,
-    recovery: { effectId: 'fx_78787878787878787878787878787878', prompt: 'must-not-send' },
+  control.observeEffect({ effectId: firstRecovery.effectId, observationId: 'provider-resume-1-applied', outcome: 'applied' });
+  expect(store.observeProviderTurn({
+    taskId, effectId: firstRecovery.effectId, generating: true, assistantDigest: 'resume-1-digest', observedAtMs: 3_000, graceMs: 1_000,
+    recovery: { effectId: 'fx_78787878787878787878787878787878', prompt: 'recovery-2' },
+  }).state).toBe('generating');
+  const secondReserved = store.observeProviderTurn({
+    taskId, effectId: firstRecovery.effectId, generating: true, assistantDigest: 'resume-1-digest', observedAtMs: 4_001, graceMs: 1_000,
+    recovery: { effectId: 'fx_90909090909090909090909090909090', prompt: 'recovery-2' },
   });
-  expect(resumePending.state).toBe('generating');
+  expect(secondReserved.state).toBe('recovery_reserved');
+  const secondRecovery = secondReserved.recoveryEffect!;
+  expect(secondRecovery.effectId).not.toBe(firstRecovery.effectId);
+  expect(store.providerResumeExhausted(firstRecovery.effectId)).toBe(false);
+  expect(control.browserPoll({ conversationId, conversationUrl }).command).toMatchObject({ kind: 'recovery', effectId: secondRecovery.effectId });
+
+  control.observeEffect({ effectId: secondRecovery.effectId, observationId: 'provider-resume-2-applied', outcome: 'applied' });
+  expect(store.observeProviderTurn({
+    taskId, effectId: secondRecovery.effectId, generating: true, assistantDigest: 'resume-2-digest', observedAtMs: 5_000, graceMs: 1_000,
+    recovery: { effectId: 'fx_12121212121212121212121212121212', prompt: 'must-not-send' },
+  }).state).toBe('generating');
   const exhausted = store.observeProviderTurn({
-    taskId, effectId: resume.effectId, generating: true, assistantDigest: 'resume-digest', observedAtMs: 4_001, graceMs: 1_000,
-    recovery: { effectId: 'fx_90909090909090909090909090909090', prompt: 'must-not-send' },
+    taskId, effectId: secondRecovery.effectId, generating: true, assistantDigest: 'resume-2-digest', observedAtMs: 6_001, graceMs: 1_000,
+    recovery: { effectId: 'fx_56565656565656565656565656565656', prompt: 'must-not-send' },
   });
   expect(exhausted.state).toBe('exhausted');
-  expect(store.providerResumeExhausted(resume.effectId)).toBe(true);
-  // Exhaustion bounds recovery recursion: no further command and no second
-  // recovery effect. It does not abandon an already-applied provider turn whose
-  // assistant receipt may still arrive late, so the task stays observable as a
-  // read-only probe instead of disappearing from the queue.
+  expect(store.providerResumeExhausted(secondRecovery.effectId)).toBe(true);
   expect(control.browserTasks()).toHaveLength(1);
   expect(control.browserPoll({ conversationId, conversationUrl }).command).toBeUndefined();
-  expect(control.taskStall(taskId)).toMatchObject({ state: 'provider_resume_exhausted', effectId: resume.effectId });
+  expect(control.taskStall(taskId)).toMatchObject({ state: 'provider_resume_exhausted', effectId: secondRecovery.effectId });
 
-  const lateReceipt = renderSupervisorReceipt(control.getTask(taskId)!, resume.effectId, 'CONTINUE');
+  const lateReceipt = renderSupervisorReceipt(control.getTask(taskId)!, secondRecovery.effectId, 'CONTINUE');
   const late = await control.observeAssistantTurn({ taskId, conversationId, responseText: lateReceipt });
   expect(late.action).toBe('CONTINUE');
   expect(late.terminal).toBe(false);
   expect(late.successorEffect).toBeDefined();
-  expect(store.getCompletionByResponseSha256(taskId, createHash('sha256').update(lateReceipt).digest('hex'))?.sourceEffectId).toBe(resume.effectId);
+  expect(store.getCompletionByResponseSha256(taskId, createHash('sha256').update(lateReceipt).digest('hex'))?.sourceEffectId).toBe(secondRecovery.effectId);
 });
 
 test('native adapter interrupts a digest-stalled generating turn only for the exactly-once recovery effect', async () => {
@@ -2115,7 +2121,7 @@ test('429 network evidence is rate-limit authority only when it belongs to the c
   expect(chatgptFailedRequestIsCausalRateLimit({ status: 429, url: 'https://chatgpt.com/backend-api/conversation' })).toBe(false);
 });
 
-test('Resume stream unavailable reserves exactly one same-conversation recovery effect and never replays the applied effect', () => {
+test('Resume stream unavailable uses a bounded same-conversation recovery chain and never replays the applied effect', () => {
   const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-stream-unavailable-'));
   roots.push(root);
   const store = new WorkflowSupervisorStore(join(root, 'supervisor-home'));
@@ -2187,23 +2193,33 @@ test('Resume stream unavailable reserves exactly one same-conversation recovery 
   expect(() => store.recordEffectDispatchStarted(effect.effectId, 2, 'dispatch-enrollment-2'))
     .toThrow('WORKFLOW_SUPERVISOR_EFFECT_ALREADY_APPLIED');
 
-  // A provider failure on the recovery resume itself terminates the chain instead
-  // of recursively producing unlimited recovery effects.
-  control.observeEffect({ effectId: recovery.effectId, observationId: 'recovery-applied', outcome: 'applied' });
-  const exhausted = control.browserObserveProviderTurn({
+  // A provider failure on the first recovery uses the second and final automatic
+  // recovery turn. Only a failure on that second recovery exhausts the chain.
+  control.observeEffect({ effectId: recovery.effectId, observationId: 'recovery-1-applied', outcome: 'applied' });
+  const secondReserved = control.browserObserveProviderTurn({
     conversationId, conversationUrl, generating: false, latestAssistantResponse: '',
     providerFailureCode: failureCode!, observedAtMs: 3_000, graceMs: 1_000,
   });
+  expect(secondReserved.state).toBe('recovery_reserved');
+  const secondRecovery = secondReserved.recoveryEffect!;
+  expect(secondRecovery.effectId).not.toBe(recovery.effectId);
+  expect(store.providerResumeExhausted(recovery.effectId)).toBe(false);
+  expect(control.browserPoll({ conversationId, conversationUrl }).command).toMatchObject({ kind: 'recovery', mode: 'send', effectId: secondRecovery.effectId });
+  control.observeEffect({ effectId: secondRecovery.effectId, observationId: 'recovery-2-applied', outcome: 'applied' });
+  const exhausted = control.browserObserveProviderTurn({
+    conversationId, conversationUrl, generating: false, latestAssistantResponse: '',
+    providerFailureCode: failureCode!, observedAtMs: 4_000, graceMs: 1_000,
+  });
   expect(exhausted.state).toBe('exhausted');
   expect(exhausted.recoveryEffect).toBeUndefined();
-  expect(store.providerResumeExhausted(recovery.effectId)).toBe(true);
-  const operatorRequest = { taskId, sourceEffectId: recovery.effectId, requestId: 'user-recover-stream', reason: 'User requested recovery after observation repair.' };
+  expect(store.providerResumeExhausted(secondRecovery.effectId)).toBe(true);
+  const operatorRequest = { taskId, sourceEffectId: secondRecovery.effectId, requestId: 'user-recover-stream', reason: 'User requested recovery after observation repair.' };
   expect(() => control.recoverTask({ ...operatorRequest, reason: '' })).toThrow('WORKFLOW_SUPERVISOR_RECOVERY_REASON_REQUIRED');
   const operatorRecovery = control.recoverTask(operatorRequest).recoveryEffect;
   expect(operatorRecovery.taskId).toBe(taskId);
   expect(operatorRecovery.effectId).not.toBe(recovery.effectId);
   expect(control.recoverTask(operatorRequest).recoveryEffect.effectId).toBe(operatorRecovery.effectId);
-  expect(store.providerResumeExhausted(recovery.effectId)).toBe(true);
+  expect(store.providerResumeExhausted(secondRecovery.effectId)).toBe(true);
   expect(control.browserPoll({ conversationId, conversationUrl }).command).toMatchObject({ kind: 'recovery', mode: 'send', effectId: operatorRecovery.effectId });
   store.recordEffectDispatchStarted(operatorRecovery.effectId, 1, 'operator-recovery-send', { surface: 'macos-native' });
   store.recordEffectObservation(operatorRecovery.effectId, 'extension-transport-unknown', 'unknown', { reason: 'The message port closed before a response was received.' });
@@ -2238,16 +2254,23 @@ test('public supervisor_task recover routes exhausted provider resume through th
     taskId, effectId: source.effectId, generating: false, assistantDigest: '',
     providerFailureCode: CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE,
     observedAtMs: 1_000, graceMs: 1_000,
-    recovery: { effectId: 'fx_34343434343434343434343434343434', prompt: 'automatic resume' },
+    recovery: { effectId: 'fx_34343434343434343434343434343434', prompt: 'automatic resume 1' },
   }).recoveryEffect!;
-  control.observeEffect({ effectId: automatic.effectId, observationId: 'public-recover-automatic-applied', outcome: 'applied' });
-  expect(store.observeProviderTurn({
+  control.observeEffect({ effectId: automatic.effectId, observationId: 'public-recover-automatic-1-applied', outcome: 'applied' });
+  const automaticSecond = store.observeProviderTurn({
     taskId, effectId: automatic.effectId, generating: false, assistantDigest: '',
     providerFailureCode: CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE,
     observedAtMs: 2_000, graceMs: 1_000,
-    recovery: { effectId: 'fx_56565656565656565656565656565656', prompt: 'must not recurse' },
+    recovery: { effectId: 'fx_56565656565656565656565656565656', prompt: 'automatic resume 2' },
+  }).recoveryEffect!;
+  control.observeEffect({ effectId: automaticSecond.effectId, observationId: 'public-recover-automatic-2-applied', outcome: 'applied' });
+  expect(store.observeProviderTurn({
+    taskId, effectId: automaticSecond.effectId, generating: false, assistantDigest: '',
+    providerFailureCode: CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE,
+    observedAtMs: 3_000, graceMs: 1_000,
+    recovery: { effectId: 'fx_78787878787878787878787878787878', prompt: 'must not recurse' },
   }).state).toBe('exhausted');
-  expect(store.providerResumeExhausted(automatic.effectId)).toBe(true);
+  expect(store.providerResumeExhausted(automaticSecond.effectId)).toBe(true);
 
   const definition = runtimeToolDefinitions.find((entry) => entry.name === 'supervisor_task');
   expect(JSON.stringify(definition?.inputSchema)).toContain('"recover"');
@@ -2268,15 +2291,15 @@ test('public supervisor_task recover routes exhausted provider resume through th
     await callWorkflowSupervisorAdapter(ctx, 'supervisor_task', {
       operation: 'recover',
       task_id: taskId,
-      source_effect_id: automatic.effectId,
+      source_effect_id: automaticSecond.effectId,
       request_id: 'public-provider-recover-request',
       reason: 'Operator explicitly requested continuation after bounded provider resume exhaustion.',
       authorized_by: 'test-operator',
     });
-    const recovered = store.getEffectByOriginKey(`provider-recovery:${automatic.effectId}`);
+    const recovered = store.getEffectByOriginKey(`provider-recovery:${automaticSecond.effectId}`);
     expect(recovered).toMatchObject({ taskId, kind: 'recovery' });
-    expect(recovered?.effectId).not.toBe(automatic.effectId);
-    expect(store.providerResumeExhausted(automatic.effectId)).toBe(true);
+    expect(recovered?.effectId).not.toBe(automaticSecond.effectId);
+    expect(store.providerResumeExhausted(automaticSecond.effectId)).toBe(true);
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     store.close();

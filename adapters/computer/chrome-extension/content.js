@@ -8,6 +8,7 @@
   const STOP = '[data-testid="stop-button"], [data-testid*="stop-button"], button[aria-label="Stop"], button[aria-label="Stop generating"], button[aria-label="停止"], button[aria-label="停止生成"]';
   const TURN = '[data-testid^="conversation-turn-"]';
   const PROVIDER_ACTIVITY_CHARS = 64 * 1024;
+  const PROVIDER_FAILURE_CHARS = 250_000;
   const absoluteChatgptUrl = (href) => {
     try { const url = new URL(String(href ?? ''), location.href); return url.protocol === 'https:' && url.hostname === 'chatgpt.com' ? url.toString() : undefined; }
     catch { return undefined; }
@@ -103,6 +104,13 @@
     const current = turns.length ? turns[turns.length - 1] : undefined;
     return core.normalizeText(current?.innerText ?? current?.textContent).slice(-PROVIDER_ACTIVITY_CHARS);
   };
+  const providerFailureText = () => Array.from(document.querySelectorAll('[role="alert"], [role="status"], [aria-live="assertive"], [aria-live="polite"]'))
+    .filter(visible)
+    .map((node) => core.normalizeText(node.innerText ?? node.textContent))
+    .filter(Boolean)
+    .slice(-8)
+    .join('\n')
+    .slice(-PROVIDER_FAILURE_CHARS);
   const composer = () => document.querySelector(COMPOSER);
   const composerText = () => core.normalizeText(composer()?.value ?? composer()?.innerText ?? composer()?.textContent);
   const pageSnapshot = (options = {}) => {
@@ -120,7 +128,7 @@
       } : {}),
       ...(composer() ? { composerText: composerText() } : {}),
       providerActivityText: providerActivityText(),
-      providerFailureText: bodyText.slice(-250000),
+      providerFailureText: providerFailureText(),
       ...(options.includePageText === true ? { pageText: bodyText.slice(-500000) } : {}),
       latestTurnRole: latestTurnRole(),
       isGenerating: isGenerating(),

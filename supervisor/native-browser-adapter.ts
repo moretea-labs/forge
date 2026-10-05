@@ -175,6 +175,8 @@ function projectMetadataFromConversationUrl(value: string): { projectTitle?: str
 export class WorkflowSupervisorNativeBrowserAdapter {
   private readonly observedAssistant = new Map<string, string>();
   private readonly providerFailureSeen = new Map<string, string>();
+  /** A recovery sent while an error surface is still visible must not inherit that stale error as its own failure. */
+  private readonly providerFailureAwaitingClear = new Map<string, string>();
   private readonly freshSendCheckedAt = new Map<string, number>();
   private timer?: ReturnType<typeof setInterval>;
   private inflight?: Promise<void>;
@@ -334,7 +336,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     this.timer = undefined;
     await this.inflight?.catch(() => undefined);
     await this.deps.targetPort.close().catch(() => undefined);
-    this.observedAssistant.clear(); this.providerFailureSeen.clear(); this.freshSendCheckedAt.clear(); this.taskTransportFailures.clear(); this.awaitingReceiptObservedAtMs.clear();
+    this.observedAssistant.clear(); this.providerFailureSeen.clear(); this.providerFailureAwaitingClear.clear(); this.freshSendCheckedAt.clear(); this.taskTransportFailures.clear(); this.awaitingReceiptObservedAtMs.clear();
   }
 
   async runOnce(): Promise<void> {
@@ -446,10 +448,15 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       ...(snapshot.title.trim() ? { title: snapshot.title.trim().slice(0, 512) } : {}), ...projectMetadataFromConversationUrl(snapshot.url) });
     const providerBusy = snapshot.isGenerating;
     const latestRoleStillUser = snapshot.latestTurnRole === 'user';
-    const providerFailureCode = chatgptProviderPageFailure(snapshot.providerFailureText);
+    const observedProviderFailureCode = chatgptProviderPageFailure(snapshot.providerFailureText);
+    const providerFailureAwaitingClear = this.providerFailureAwaitingClear.get(task.conversationId);
+    if (!observedProviderFailureCode) this.providerFailureAwaitingClear.delete(task.conversationId);
+    const providerFailureCode = observedProviderFailureCode && observedProviderFailureCode !== providerFailureAwaitingClear
+      ? observedProviderFailureCode
+      : undefined;
     const priorProviderFailure = this.providerFailureSeen.get(task.conversationId);
-    if (!providerFailureCode) this.providerFailureSeen.delete(task.conversationId);
-    else if (priorProviderFailure !== providerFailureCode) { noteChatgptProviderBackpressure(this.deps.providerScopeKey, providerFailureCode, this.deps.nowMs()); this.providerFailureSeen.set(task.conversationId, providerFailureCode); }
+    if (!observedProviderFailureCode) this.providerFailureSeen.delete(task.conversationId);
+    else if (priorProviderFailure !== observedProviderFailureCode) { noteChatgptProviderBackpressure(this.deps.providerScopeKey, observedProviderFailureCode, this.deps.nowMs()); this.providerFailureSeen.set(task.conversationId, observedProviderFailureCode); }
     let providerBackpressureMs = chatgptProviderBackpressureRemainingMs(this.deps.providerScopeKey, this.deps.nowMs());
     if (poll.command?.mode !== 'reconcile' && providerFailureCode === CHATGPT_AUTOMATION_RATE_LIMITED && providerBackpressureMs > 0) return;
     if (!poll.command && !providerBusy && snapshot.latestTurnRole === 'assistant' && snapshot.latestAssistantResponse.trim()) {
@@ -482,7 +489,12 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       || (providerBusy && !providerFailureCode && !staleTurnRecovery)
       || (latestRoleStillUser && !providerFailureCode && !completedSource && !staleTurnRecovery);
     if (poll.command?.mode === 'send' && commandMutationBlocked) return;
-    if (poll.command) await this.executeCommand(target, poll.command, task);
+    if (poll.command) {
+      if (poll.command.kind === 'recovery' && observedProviderFailureCode) {
+        this.providerFailureAwaitingClear.set(task.conversationId, observedProviderFailureCode);
+      }
+      await this.executeCommand(target, poll.command, task);
+    }
   }
 
   private async bootstrapTask(task: WorkflowSupervisorBrowserTask): Promise<void> {

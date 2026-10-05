@@ -162,6 +162,23 @@ function providerResumeExhaustedWithin(db: Database, effectId: string): boolean 
   return Boolean(statement(db, "SELECT 1 AS ok FROM events WHERE effect_id = ? AND kind = 'assistant_recovery_exhausted' LIMIT 1", (s) => s.get(effectId)));
 }
 
+function providerRecoveryDepthWithin(db: Database, effectId: string): number {
+  let currentEffectId = effectId;
+  let depth = 0;
+  const seen = new Set<string>();
+  while (true) {
+    if (seen.has(currentEffectId)) throw new Error('WORKFLOW_SUPERVISOR_PROVIDER_RECOVERY_CHAIN_CORRUPT');
+    seen.add(currentEffectId);
+    const row = statement(db, 'SELECT kind,origin_key FROM effects WHERE effect_id = ?', (s) => s.get(currentEffectId)) as { kind?: string; origin_key?: string } | undefined;
+    if (!row) throw new Error('WORKFLOW_SUPERVISOR_PROVIDER_RECOVERY_CHAIN_CORRUPT');
+    const originKey = String(row.origin_key ?? '');
+    if (row.kind !== 'recovery' || !originKey.startsWith('provider-recovery:')) return depth;
+    depth += 1;
+    currentEffectId = originKey.slice('provider-recovery:'.length).trim();
+    if (!currentEffectId) throw new Error('WORKFLOW_SUPERVISOR_PROVIDER_RECOVERY_CHAIN_CORRUPT');
+  }
+}
+
 function operatorAuthorizedRefundCount(db: Database, effectId: string): number {
   const row = statement(db, "SELECT COUNT(*) AS total FROM events WHERE effect_id = ? AND kind = 'effect_dispatch_budget_refunded' AND json_extract(payload_json,'$.reason') = 'operator_authorized_retry'", (s) => s.get(effectId)) as { total?: number } | undefined;
   return Number(row?.total ?? 0);
@@ -187,6 +204,14 @@ function oldestUnappliedEffect(db: Database, taskId: string): WorkflowSupervisor
  * hard ceiling: one normal submission plus at most two causally authorized retries.
  */
 export const WORKFLOW_SUPERVISOR_MAX_DISPATCH_GENERATIONS = 3;
+/**
+ * Once a provider has accepted a Supervisor effect, recovery never replays that
+ * source mutation. It may emit at most two separately identified recovery turns,
+ * matching the repository-wide three-provider-attempt ceiling (initial turn plus
+ * two causal retries). The depth is derived from effect origin links, not stored
+ * as another lifecycle state.
+ */
+export const WORKFLOW_SUPERVISOR_MAX_PROVIDER_RECOVERY_TURNS = 2;
 export const WORKFLOW_SUPERVISOR_DISPATCH_RETRY_BASE_MS = 30_000;
 export const WORKFLOW_SUPERVISOR_DISPATCH_RETRY_MAX_MS = 10 * 60_000;
 export const WORKFLOW_SUPERVISOR_UNKNOWN_OBSERVATION_BASE_MS = 5_000;
@@ -906,8 +931,7 @@ export class WorkflowSupervisorStore {
       const applied = statement(db, "SELECT 1 AS ok FROM events WHERE effect_id = ? AND kind = 'effect_applied' LIMIT 1", (s) => s.get(effect.effectId));
       const completed = statement(db, 'SELECT 1 AS ok FROM completions WHERE task_id = ? AND source_effect_id = ? LIMIT 1', (s) => s.get(input.taskId, effect.effectId));
       if (!applied || completed) return { state: 'none' };
-      const effectOrigin = String(row.origin_key ?? '');
-      const isProviderResume = effect.kind === 'recovery' && effectOrigin.startsWith('provider-recovery:');
+      const providerRecoveryDepth = providerRecoveryDepthWithin(db, effect.effectId);
       const recoveryOrigin = `provider-recovery:${effect.effectId}`;
       const providerFailureCode = input.providerFailureCode?.trim().slice(0, 128);
       if (providerFailureCode) {
@@ -923,8 +947,8 @@ export class WorkflowSupervisorStore {
       const existingRecovery = statement(db, 'SELECT * FROM effects WHERE origin_key = ?', (s) => s.get(recoveryOrigin)) as Record<string, unknown> | undefined;
       if (existingRecovery) return { state: 'recovery_reserved', recoveryEffect: effectFromRow(existingRecovery) };
       if (providerFailureCode) {
-        if (isProviderResume) {
-          statement(db, 'INSERT OR IGNORE INTO events(task_id,event_key,kind,effect_id,payload_json,occurred_at) VALUES (?,?,?,?,?,?)', (s) => s.run(input.taskId, `assistant-recovery-exhausted:${effect.effectId}`, 'assistant_recovery_exhausted', effect.effectId, json({ assistant_digest: digest, provider_failure_code: providerFailureCode, exactly_once_resume: true }), observedAt));
+        if (providerRecoveryDepth >= WORKFLOW_SUPERVISOR_MAX_PROVIDER_RECOVERY_TURNS) {
+          statement(db, 'INSERT OR IGNORE INTO events(task_id,event_key,kind,effect_id,payload_json,occurred_at) VALUES (?,?,?,?,?,?)', (s) => s.run(input.taskId, `assistant-recovery-exhausted:${effect.effectId}`, 'assistant_recovery_exhausted', effect.effectId, json({ assistant_digest: digest, provider_failure_code: providerFailureCode, exactly_once_resume: true, recovery_depth: providerRecoveryDepth, max_recovery_turns: WORKFLOW_SUPERVISOR_MAX_PROVIDER_RECOVERY_TURNS }), observedAt));
           return { state: 'exhausted' };
         }
         const recoveryEffect = this.reserveEffectWithin(db, { taskId: input.taskId, effectId: input.recovery.effectId, kind: 'recovery', originKey: recoveryOrigin, prompt: input.recovery.prompt });
@@ -951,11 +975,11 @@ export class WorkflowSupervisorStore {
       // Progress, not the provider's visible "generating" control, is the
       // liveness authority. A frozen page can leave that control present for
       // hours after tool/output progress stopped. Once the assistant/activity
-      // digest is unchanged for the existing grace window, resume the same
-      // applied effect exactly once instead of treating "generating" as
-      // permanently healthy. A recovery effect itself never recurses.
-      if (isProviderResume) {
-        statement(db, 'INSERT OR IGNORE INTO events(task_id,event_key,kind,effect_id,payload_json,occurred_at) VALUES (?,?,?,?,?,?)', (s) => s.run(input.taskId, `assistant-recovery-exhausted:${effect.effectId}`, 'assistant_recovery_exhausted', effect.effectId, json({ assistant_digest: digest, exactly_once_resume: true, stale_generation: input.generating }), observedAt));
+      // digest is unchanged for the existing grace window, reserve the next
+      // separately identified recovery turn without replaying the applied source.
+      // The causal chain is bounded to two automatic recovery turns.
+      if (providerRecoveryDepth >= WORKFLOW_SUPERVISOR_MAX_PROVIDER_RECOVERY_TURNS) {
+        statement(db, 'INSERT OR IGNORE INTO events(task_id,event_key,kind,effect_id,payload_json,occurred_at) VALUES (?,?,?,?,?,?)', (s) => s.run(input.taskId, `assistant-recovery-exhausted:${effect.effectId}`, 'assistant_recovery_exhausted', effect.effectId, json({ assistant_digest: digest, exactly_once_resume: true, stale_generation: input.generating, recovery_depth: providerRecoveryDepth, max_recovery_turns: WORKFLOW_SUPERVISOR_MAX_PROVIDER_RECOVERY_TURNS }), observedAt));
         return { state: 'exhausted' };
       }
       const recoveryEffect = this.reserveEffectWithin(db, { taskId: input.taskId, effectId: input.recovery.effectId, kind: 'recovery', originKey: recoveryOrigin, prompt: input.recovery.prompt });
