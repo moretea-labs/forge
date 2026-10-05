@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
@@ -1135,6 +1135,7 @@ describe('browser session compatibility on Computer target authority', () => {
     mkdirSync(join(userDataDir, 'Default'), { recursive: true });
     writeFileSync(join(userDataDir, 'Local State'), '{}');
     writeFileSync(join(userDataDir, 'Default', 'Preferences'), '{}');
+    symlinkSync('test-host-3131', join(userDataDir, 'SingletonLock'));
     writeFileSync(join(repoA, '.forge', 'plugins', 'browser.json'), JSON.stringify({
       schemaVersion: 3, enabled: true, provider: 'playwright', browserMode: 'managed_persistent',
       profileMode: 'custom', profileDir: userDataDir, profileDirectory: 'Default',
@@ -1170,14 +1171,16 @@ describe('browser session compatibility on Computer target authority', () => {
         },
       }),
     };
+    let existingOwnerAlive = true;
     setBrowserPluginRuntimeHooksForTest({
       moduleAvailable: () => true,
+      listProcesses: () => existingOwnerAlive ? [{ pid: 3131, command: `/Applications/Vivaldi.app/Contents/MacOS/Vivaldi --user-data-dir=${userDataDir}` }] : [],
       launchProcess: (executable, args) => {
         launched.push({ executable, args });
         writeFileSync(join(userDataDir, 'DevToolsActivePort'), '9345\n/devtools/browser/test\n');
         return { pid: 4242 };
       },
-      signalProcess: (pid, signal) => { signalled.push([pid, signal]); return true; },
+      signalProcess: (pid, signal) => { signalled.push([pid, signal]); if (pid === 3131) existingOwnerAlive = false; return true; },
       loadPlaywright: () => ({
         chromium: {
           launchPersistentContext: async () => { throw new Error('Vivaldi extension install must not use remote-debugging-pipe'); },
@@ -1202,11 +1205,42 @@ describe('browser session compatibility on Computer target authority', () => {
     expect(launched[0]?.args.some((arg) => arg === '--remote-debugging-pipe')).toBe(false);
     expect(methods).toEqual(['Extensions.getExtensions', 'Extensions.loadUnpacked', 'Extensions.getExtensions']);
     expect(disconnected).toBe(1);
-    expect(signalled).toEqual([]);
+    expect(signalled).toEqual([[3131, 'SIGTERM']]);
     expect(result).toMatchObject({
       provider: 'playwright-cdp-vivaldi-custom', endpoint: 'http://127.0.0.1:9345', verified: true,
       extension: { id: SUPERVISOR_EXTENSION_ID, path: canonicalExtensionPath, enabled: true, runtimeTarget: 'chrome-extension://' + SUPERVISOR_EXTENSION_ID + '/background.js' },
     });
+  });
+
+  test('custom Vivaldi extension install never terminates an ambiguous different-profile owner', async () => {
+    const { controllerHome, repoA } = fixture();
+    mkdirSync(join(repoA, '.forge', 'plugins'), { recursive: true });
+    const extensionPath = extensionFixture(repoA);
+    const userDataDir = join(repoA, 'vivaldi-user-data-ambiguous-owner');
+    mkdirSync(join(userDataDir, 'Default'), { recursive: true });
+    writeFileSync(join(userDataDir, 'Local State'), '{}');
+    writeFileSync(join(userDataDir, 'Default', 'Preferences'), '{}');
+    symlinkSync('test-host-6262', join(userDataDir, 'SingletonLock'));
+    writeFileSync(join(repoA, '.forge', 'plugins', 'browser.json'), JSON.stringify({
+      schemaVersion: 3, enabled: true, provider: 'playwright', browserMode: 'managed_persistent',
+      profileMode: 'custom', profileDir: userDataDir, profileDirectory: 'Default',
+      executablePath: '/Applications/Vivaldi.app/Contents/MacOS/Vivaldi',
+      cdpAttachFallback: 'fail_closed', nativeAttachMode: 'disabled',
+    }));
+    const signalled: Array<[number, NodeJS.Signals]> = [];
+    setBrowserPluginRuntimeHooksForTest({
+      moduleAvailable: () => true,
+      listProcesses: () => [{ pid: 6262, command: '/Applications/Vivaldi.app/Contents/MacOS/Vivaldi --user-data-dir=/tmp/different-vivaldi-profile' }],
+      launchProcess: () => ({ pid: 7272 }),
+      signalProcess: (pid, signal) => { signalled.push([pid, signal]); return true; },
+      loadPlaywright: () => ({ chromium: { launchPersistentContext: async () => { throw new Error('must not launch through Playwright'); }, connectOverCDP: async () => { throw new Error('must not attach without a fresh endpoint'); } } }),
+    });
+    await expect(executeBrowserPluginAction({
+      controllerHome, repoId: 'repo-a', repoRoot: repoA, pluginId: 'browser',
+      requestId: 'vivaldi-custom-ambiguous-owner', actionId: 'install_unpacked_extension',
+      args: { extension_path: extensionPath, timeout_ms: 25 }, origin: { surface: 'mcp', actor: 'test' },
+    })).rejects.toMatchObject({ code: 'PLUGIN_BROWSER_EXTENSION_CONTROL_UNAVAILABLE' });
+    expect(signalled).toEqual([[7272, 'SIGTERM']]);
   });
 
   test('custom Vivaldi extension install terminates only its spawned process when TCP CDP attach fails', async () => {
