@@ -4,6 +4,7 @@ import {
   COMPUTER_OBSERVE_CAPABILITY,
 } from '../../../../packages/protocols/computer/index';
 import type { AssistantPluginManifest } from '../../plugins/types';
+import { EDIT_OPERATION_INPUT_SCHEMA } from '../../../cli/editing/edit-operation-contract';
 import { FACADE_TOOLS, type CapabilityDescriptor, type CapabilityDomain, type CapabilityExecutionSurface, type CapabilityGroupSummary, type CapabilityOperationClass, type CapabilityRisk, type FacadeTool } from './types';
 
 const CORE_CAPABILITIES: CapabilityDescriptor[] = [
@@ -13,9 +14,9 @@ const CORE_CAPABILITIES: CapabilityDescriptor[] = [
     group: 'repository-core',
     operationClass: 'write',
     risk: 'local_repo_write',
-    exposedVia: 'rh_work',
+    exposedVia: 'capability_execute',
     schemaExposure: 'stable_static',
-    summary: 'Apply bounded direct edits, patches, selected-path staging, selected commits, and targeted checks through repository-native safety fences.',
+    summary: 'Plan and apply bounded repository edits through the existing Safe Patch/EditSession authority, with optional targeted validation and no second editing engine.',
   },
   {
     capabilityId: 'controller.handoff_inbox',
@@ -424,6 +425,52 @@ export function getCoreCapabilityExecutionSchema(capabilityId: string): Record<s
             properties: {
               active_release_id: { type: 'string', minLength: 1, maxLength: 256 },
               not_before: { type: 'string', minLength: 1, maxLength: 128 },
+            },
+          },
+        },
+      },
+    };
+  }
+  if (capabilityId === 'repository.direct_edit') {
+    return {
+      capabilityId,
+      executeWith: 'capability_execute',
+      actions: {
+        plan: {
+          readOnly: true,
+          risk: 'readonly',
+          argumentsSchema: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['operations'],
+            properties: {
+              operations: { type: 'array', minItems: 1, maxItems: 100, items: EDIT_OPERATION_INPUT_SCHEMA },
+              chunk_size: { type: 'number', minimum: 1, maximum: 100 },
+            },
+          },
+        },
+        apply: {
+          readOnly: false,
+          risk: 'local_repo_write',
+          argumentsSchema: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              work_id: { type: 'string', minLength: 1, maxLength: 256 },
+              session_id: { type: 'string', minLength: 1, maxLength: 256 },
+              purpose: { type: 'string', maxLength: 2000 },
+              operations: { type: 'array', minItems: 1, maxItems: 100, items: EDIT_OPERATION_INPUT_SCHEMA },
+              chunk_size: { type: 'number', minimum: 1, maximum: 100 },
+              expected_revision: { type: 'number', minimum: 0 },
+              allowed_paths: { type: 'array', maxItems: 128, items: { type: 'string', minLength: 1, maxLength: 1024 } },
+              continue_on_error: { type: 'boolean' },
+              refresh_fingerprints: { type: 'boolean' },
+              recover_stale_session: { type: 'boolean' },
+              check_ids: { type: 'array', maxItems: 32, items: { type: 'string', minLength: 1, maxLength: 256 } },
+              check_timeout_ms: { type: 'number', minimum: 1 },
+              lease_wait_ms: { type: 'number', minimum: 0 },
+              validation_request_id: { type: 'string', minLength: 1, maxLength: 256 },
+              validation_only: { type: 'boolean' },
             },
           },
         },

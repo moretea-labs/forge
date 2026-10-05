@@ -39,6 +39,24 @@ describe('handoff and facade contracts', () => {
     expect(FACADE_TOOLS).toHaveLength(6);
   });
 
+  test('exposes repository.direct_edit through capability_execute without duplicating the edit engine', () => {
+    const descriptor = listCapabilityDescriptors().find((entry) => entry.capabilityId === 'repository.direct_edit');
+    expect(descriptor).toMatchObject({
+      domain: 'repository', group: 'repository-core', operationClass: 'write', risk: 'local_repo_write',
+      exposedVia: 'capability_execute', schemaExposure: 'stable_static',
+    });
+    const schema = getCoreCapabilityExecutionSchema('repository.direct_edit') as {
+      executeWith?: string;
+      actions?: Record<string, { argumentsSchema?: { required?: string[]; properties?: Record<string, unknown> } }>;
+    } | undefined;
+    expect(schema?.executeWith).toBe('capability_execute');
+    expect(Object.keys(schema?.actions ?? {}).sort()).toEqual(['apply', 'plan']);
+    expect(schema?.actions?.plan?.argumentsSchema?.required).toEqual(['operations']);
+    expect(schema?.actions?.apply?.argumentsSchema?.properties).toHaveProperty('work_id');
+    expect(schema?.actions?.apply?.argumentsSchema?.properties).toHaveProperty('validation_only');
+    expect(FACADE_TOOLS).toHaveLength(6);
+  });
+
   test('exposes exact Work validation through capability_execute without widening the top-level facade', () => {
     const descriptor = listCapabilityDescriptors().find((entry) => entry.capabilityId === 'repository.validation');
     expect(descriptor).toMatchObject({

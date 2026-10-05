@@ -106,6 +106,39 @@ afterEach(() => {
   while (roots.length > 0) rmSync(roots.pop()!, { recursive: true, force: true });
 });
 
+describe('repository.direct_edit capability', () => {
+  test('routes apply through the existing Safe Patch/EditSession owner', async () => {
+    const fx = fixture();
+    roots.push(fx.root);
+
+    const edited = await callCoreCapabilityAdapter(fx.ctx, 'capability_execute', {
+      repo_id: fx.repository.repoId,
+      capability_id: 'repository.direct_edit',
+      action: 'apply',
+      request_id: 'direct-edit-capability-apply',
+      arguments: {
+        purpose: 'Exercise the canonical direct-edit capability route.',
+        operations: [{
+          type: 'replace',
+          path: 'src/lib.ts',
+          replacements: [{ old_text: 'export const n = 1;', new_text: 'export const n = 2;' }],
+        }],
+      },
+    });
+
+    if (edited?.isError) throw new Error(JSON.stringify(edited.structuredContent ?? edited));
+    const payload = edited?.structuredContent as {
+      status?: string;
+      reviewEvidence?: { source?: string; sessionId?: string; patchPreview?: string };
+    };
+    expect(payload.status).toBe('applied');
+    expect(payload.reviewEvidence).toMatchObject({ source: 'edit_session' });
+    expect(payload.reviewEvidence?.sessionId).toBeTruthy();
+    expect(payload.reviewEvidence?.patchPreview).toContain('export const n = 2;');
+    expect(readFileSync(join(fx.repoRoot, 'src', 'lib.ts'), 'utf-8')).toBe('export const n = 2;\n');
+  });
+});
+
 describe('repository.git Work delivery', () => {
   test('fast-forwards validated isolated Work, cleans resources, and preserves semantic Work state', async () => {
     const fx = fixture();

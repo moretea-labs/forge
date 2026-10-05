@@ -1,5 +1,6 @@
 import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
+import { callRepositoryTool } from '../tool-mapping/repository-tools';
 import { commitSelectedPaths, selectedPathDiff, stageSelectedPaths } from '../../../src/cli/repositories/selected-path-actions';
 import { deliverWork } from '../../../src/runtime/control-plane/execution/work-delivery-service';
 import { validateWork } from '../../../src/runtime/control-plane/execution/work-operation-service';
@@ -134,6 +135,28 @@ export async function callCoreCapabilityAdapter(
         providerDispatchEffectPreserved: before.providerDispatchEffectId === after?.providerDispatchEffectId,
         providerRedispatched: false,
       });
+    }
+    if (capabilityId === 'repository.direct_edit') {
+      const toolName = action === 'plan'
+        ? 'repository_safe_patch_plan'
+        : action === 'apply'
+          ? 'repository_safe_patch_apply'
+          : undefined;
+      if (!toolName) {
+        return result({ error: { code: 'CORE_CAPABILITY_ACTION_UNSUPPORTED', message: `Unsupported repository.direct_edit action: ${action || '<empty>'}` } }, true);
+      }
+      const forwarded = await callRepositoryTool(ctx.controllerHome, toolName, {
+        ...input,
+        ...(typeof args.repo_id === 'string' && args.repo_id.trim() ? { repo_id: args.repo_id.trim() } : {}),
+        ...(typeof args.checkout_id === 'string' && args.checkout_id.trim() ? { checkout_id: args.checkout_id.trim() } : {}),
+      }, {
+        sessionId: ctx.sessionId,
+        principalId: ctx.principalId,
+        controllerInstanceId: ctx.controllerInstanceId,
+      });
+      return forwarded ?? result({
+        error: { code: 'CORE_CAPABILITY_ROUTE_UNAVAILABLE', message: 'Repository direct-edit capability route is unavailable.' },
+      }, true);
     }
     if (capabilityId === 'repository.validation') {
       if (action !== 'validate_work') {
