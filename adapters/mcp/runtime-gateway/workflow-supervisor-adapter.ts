@@ -5,6 +5,7 @@ import {
   getWorkflowSupervisorTask,
   getWorkflowSupervisorTaskStall,
   listWorkflowSupervisorTasks,
+  recoverWorkflowSupervisorTask,
   registerWorkflowSupervisorTask,
   reserveWorkflowSupervisorEnrollment,
   stopWorkflowSupervisorTask,
@@ -65,6 +66,24 @@ export async function callWorkflowSupervisorAdapter(
     if (!id) throw new Error('WORKFLOW_SUPERVISOR_TASK_ID_REQUIRED');
     const stopped = await stopWorkflowSupervisorTask(forgeHome, id, textArg(args, 'reason') || 'Stopped by operator request.');
     return result({ ...stopped, summary: `Supervisor task ${id} stopped.` });
+  }
+
+  if (operation === 'recover') {
+    const id = textArg(args, 'task_id');
+    const requestId = textArg(args, 'request_id');
+    const reason = textArg(args, 'reason');
+    if (!id) throw new Error('WORKFLOW_SUPERVISOR_TASK_ID_REQUIRED');
+    if (!requestId) throw new Error('WORKFLOW_SUPERVISOR_REQUEST_ID_REQUIRED');
+    if (!reason) throw new Error('WORKFLOW_SUPERVISOR_RECOVERY_REASON_REQUIRED');
+    const recovered = await recoverWorkflowSupervisorTask(forgeHome, {
+      taskId: id,
+      sourceEffectId: textArg(args, 'source_effect_id') || undefined,
+      requestId,
+      reason,
+      authorizedBy: textArg(args, 'authorized_by') || 'operator',
+      ...(args.supersede_unknown === true ? { supersedeUnknown: true } : {}),
+    });
+    return result({ ...recovered, summary: `Supervisor task ${id} recovery ${recovered.action}.` });
   }
 
   if (operation === 'get') {

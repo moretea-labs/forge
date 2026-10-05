@@ -22,6 +22,8 @@ import { chatgptFailedRequestIsCausalRateLimit } from '../../adapters/chatgpt/br
 import { parseChatgptConversationIdentity } from '../../supervisor/chatgpt-conversation';
 import { setMacOsBrowserRuntimeHooksForTest, resetMacOsBrowserRuntimeHooksForTest } from '../../src/runtime/plugins/browser-macos-bridge';
 import { createTestChatgptTargetPort, type TestBrowserPage } from './helpers/computer-chatgpt-target-harness';
+import { callWorkflowSupervisorAdapter } from '../../adapters/mcp/runtime-gateway/workflow-supervisor-adapter';
+import { runtimeToolDefinitions } from '../../adapters/mcp/runtime-gateway/runtime-tool-definitions';
 
 const roots: string[] = [];
 afterEach(() => { resetMacOsBrowserRuntimeHooksForTest(); while (roots.length) rmSync(roots.pop()!, { recursive: true, force: true }); });
@@ -2206,6 +2208,74 @@ test('Resume stream unavailable reserves exactly one same-conversation recovery 
   control.browserObserveDispatchFailure({ conversationId, conversationUrl, effectId: operatorRecovery.effectId, observationId: 'owner-no-click', dispatchGeneration: 1, reason: 'composer_missing' });
   expect(store.nextBrowserEffect(taskId, { nowMs: Date.now() + 60_000 })).toMatchObject({ mode: 'send', generation: 2, effect: { effectId: operatorRecovery.effectId } });
   expect(store.effectDispatchBudget(operatorRecovery.effectId).generations).toBe(1);
+});
+
+test('public supervisor_task recover routes exhausted provider resume through the canonical single writer', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-public-recover-'));
+  roots.push(root);
+  const controllerHome = join(root, 'controller');
+  ensureControllerHome(controllerHome);
+  const supervisorRoot = join(controllerHome, 'supervisor');
+  mkdirSync(supervisorRoot, { recursive: true });
+  const store = new WorkflowSupervisorStore(supervisorRoot);
+  const control = new WorkflowSupervisorControlPlane(store);
+  const taskId = 'task-public-provider-recover';
+  const conversationId = '34343434-1212-5656-7878-909090909090';
+  const conversationUrl = `https://chatgpt.com/c/${conversationId}`;
+  control.registerTask({
+    taskId, conversationId, conversationUrl,
+    objective: 'Recover an exhausted provider resume through the public Supervisor facade.',
+    completionContract: {}, continuationPolicy: {}, userBlockerPolicy: {},
+  });
+  const source = control.reserveEnrollment(taskId);
+  control.observeEffect({ effectId: source.effectId, observationId: 'public-recover-source-applied', outcome: 'applied' });
+  const automatic = store.observeProviderTurn({
+    taskId, effectId: source.effectId, generating: false, assistantDigest: '',
+    providerFailureCode: CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE,
+    observedAtMs: 1_000, graceMs: 1_000,
+    recovery: { effectId: 'fx_34343434343434343434343434343434', prompt: 'automatic resume' },
+  }).recoveryEffect!;
+  control.observeEffect({ effectId: automatic.effectId, observationId: 'public-recover-automatic-applied', outcome: 'applied' });
+  expect(store.observeProviderTurn({
+    taskId, effectId: automatic.effectId, generating: false, assistantDigest: '',
+    providerFailureCode: CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE,
+    observedAtMs: 2_000, graceMs: 1_000,
+    recovery: { effectId: 'fx_56565656565656565656565656565656', prompt: 'must not recurse' },
+  }).state).toBe('exhausted');
+  expect(store.providerResumeExhausted(automatic.effectId)).toBe(true);
+
+  const definition = runtimeToolDefinitions.find((entry) => entry.name === 'supervisor_task');
+  expect(JSON.stringify(definition?.inputSchema)).toContain('"recover"');
+
+  const server = createWorkflowSupervisorServer({
+    controlPlane: control,
+    socketPath: join(supervisorRoot, 'supervisor.sock'),
+    discovery: new WorkflowSupervisorEphemeralDiscovery(),
+    browserAdapterEnabled: true,
+  });
+  await new Promise<void>((resolve, reject) => {
+    if (server.listening) { resolve(); return; }
+    server.once('listening', () => resolve());
+    server.once('error', reject);
+  });
+  try {
+    const ctx = { controllerHome } as unknown as Parameters<typeof callWorkflowSupervisorAdapter>[0];
+    await callWorkflowSupervisorAdapter(ctx, 'supervisor_task', {
+      operation: 'recover',
+      task_id: taskId,
+      source_effect_id: automatic.effectId,
+      request_id: 'public-provider-recover-request',
+      reason: 'Operator explicitly requested continuation after bounded provider resume exhaustion.',
+      authorized_by: 'test-operator',
+    });
+    const recovered = store.getEffectByOriginKey(`provider-recovery:${automatic.effectId}`);
+    expect(recovered).toMatchObject({ taskId, kind: 'recovery' });
+    expect(recovered?.effectId).not.toBe(automatic.effectId);
+    expect(store.providerResumeExhausted(automatic.effectId)).toBe(true);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    store.close();
+  }
 });
 
 test('stream recovery stays on the attached exact tab and never creates a replacement', async () => {
