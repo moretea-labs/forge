@@ -1131,7 +1131,7 @@ describe('browser session compatibility on Computer target authority', () => {
     mkdirSync(join(repoA, '.forge', 'plugins'), { recursive: true });
     const extensionPath = extensionFixture(repoA);
     const canonicalExtensionPath = realpathSync(extensionPath);
-    const userDataDir = join(repoA, 'vivaldi-user-data');
+    const userDataDir = join(repoA, 'Application Support', 'Vivaldi');
     mkdirSync(join(userDataDir, 'Default'), { recursive: true });
     writeFileSync(join(userDataDir, 'Local State'), '{}');
     writeFileSync(join(userDataDir, 'Default', 'Preferences'), '{}');
