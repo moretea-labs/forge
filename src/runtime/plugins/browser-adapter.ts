@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'crypto';
-import { spawnSync } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
 import { createRequire } from 'module';
 import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'fs';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'path';
@@ -273,6 +273,8 @@ interface BrowserPluginRuntimeHooks {
   listProcesses(): Array<{ pid: number; command: string }>;
   /** Signal one process; returns false when it already exited. */
   signalProcess(pid: number, signal: NodeJS.Signals): boolean;
+  /** Launch one browser process without claiming its lifecycle through Playwright. */
+  launchProcess(executable: string, args: string[]): { pid?: number };
 }
 
 const defaultRuntimeHooks: BrowserPluginRuntimeHooks = {
@@ -291,6 +293,12 @@ const defaultRuntimeHooks: BrowserPluginRuntimeHooks = {
   signalProcess: (pid, signal) => {
     try { process.kill(pid, signal); return true; }
     catch (error) { return (error as NodeJS.ErrnoException).code !== 'ESRCH'; }
+  },
+  launchProcess: (executable, args) => {
+    const child = spawn(executable, args, { stdio: 'ignore', detached: true });
+    child.once('error', () => undefined);
+    child.unref();
+    return { pid: child.pid };
   },
   moduleAvailable: (name: string, repoRoot?: string) => {
     const anchors = [repoRoot ? join(repoRoot, 'package.json') : undefined, import.meta.url]
@@ -2226,6 +2234,100 @@ async function loadAndVerifyUnpackedExtension(
   return exact;
 }
 
+function customVivaldiExtensionInstall(config: BrowserPluginConfig, repoRoot: string): { executable: string } | undefined {
+  if (config.profileMode !== 'custom' || !config.executablePath) return undefined;
+  const executable = resolveConfiguredPath(repoRoot, config.executablePath);
+  return basename(executable).toLowerCase() === 'vivaldi' ? { executable } : undefined;
+}
+
+async function installExtensionThroughCustomVivaldiCdpPort(
+  input: AssistantPluginActionExecutionInput,
+  runtime: PlaywrightRuntime,
+  config: BrowserPluginConfig,
+  profile: BrowserProfileSelection,
+  extensionPath: string,
+  expectedId: string,
+): Promise<Record<string, unknown>> {
+  const vivaldi = customVivaldiExtensionInstall(config, input.repoRoot);
+  const connectOverCDP = runtime.chromium.connectOverCDP;
+  if (!vivaldi || typeof connectOverCDP !== 'function') {
+    throw new AssistantPluginError('PLUGIN_BROWSER_EXTENSION_CONTROL_UNAVAILABLE', 'Custom Vivaldi unpacked-extension install requires TCP CDP attach support.', { retryable: true });
+  }
+  const activePortPath = join(profile.profileDir, 'DevToolsActivePort');
+  let previousPortFile: { content: string; mtimeMs: number } | undefined;
+  try {
+    if (existsSync(activePortPath)) previousPortFile = { content: readFileSync(activePortPath, 'utf8'), mtimeMs: statSync(activePortPath).mtimeMs };
+  } catch {
+    // A concurrently disappearing stale DevToolsActivePort is equivalent to no prior endpoint.
+  }
+  const args = [
+    `--user-data-dir=${profile.profileDir}`,
+    ...(profile.profileDirectory ? [`--profile-directory=${profile.profileDirectory}`] : []),
+    '--remote-debugging-address=127.0.0.1',
+    '--remote-debugging-port=0',
+    '--enable-unsafe-extension-debugging',
+    '--no-first-run',
+    '--no-default-browser-check',
+    'about:blank',
+  ];
+  const launched = runtimeHooks.launchProcess(vivaldi.executable, args);
+  const pid = launched.pid;
+  if (!pid || !Number.isInteger(pid) || pid <= 0) {
+    throw new AssistantPluginError('PLUGIN_BROWSER_EXTENSION_CONTROL_UNAVAILABLE', 'Vivaldi launcher did not return a process identity for bounded cleanup.', { retryable: true });
+  }
+  let browser: BrowserLike | undefined;
+  let keepBrowser = false;
+  try {
+    const timeoutMs = positiveNumber(input.args.timeout_ms, config.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS);
+    const deadline = Date.now() + timeoutMs;
+    let port: number | undefined;
+    while (Date.now() < deadline) {
+      try {
+        if (existsSync(activePortPath)) {
+          const content = readFileSync(activePortPath, 'utf8');
+          const mtimeMs = statSync(activePortPath).mtimeMs;
+          const fresh = !previousPortFile || content !== previousPortFile.content || mtimeMs > previousPortFile.mtimeMs;
+          const firstLine = content.split(/\r?\n/, 1)[0]?.trim();
+          const parsed = Number(firstLine);
+          if (fresh && Number.isInteger(parsed) && parsed > 0 && parsed <= 65_535) {
+            port = parsed;
+            break;
+          }
+        }
+      } catch {
+        // Browser writes DevToolsActivePort atomically enough for a bounded retry.
+      }
+      await delay(50);
+    }
+    if (!port) {
+      throw new AssistantPluginError('PLUGIN_BROWSER_EXTENSION_CONTROL_UNAVAILABLE', 'Vivaldi did not publish a fresh DevToolsActivePort for the spawned custom-profile process.', {
+        retryable: true,
+        details: { pid, activePortPath },
+      });
+    }
+    const endpoint = `http://127.0.0.1:${port}`;
+    browser = await connectOverCDP(endpoint, { timeout: Math.max(1_000, Math.min(timeoutMs, 30_000)) });
+    const context = browser.contexts()[0];
+    if (!context) {
+      throw new AssistantPluginError('PLUGIN_BROWSER_EXTENSION_CONTROL_UNAVAILABLE', 'Vivaldi CDP attach returned no browser context for the custom profile.', { retryable: true, details: { pid, endpoint } });
+    }
+    const prefix = `chrome-extension://${expectedId}/`;
+    let runtimeTarget = extensionTargets(context).find((candidate) => candidate.startsWith(prefix));
+    const verifiedExtension = await managedCdpInstallExtension(input, context, extensionPath, expectedId, Boolean(runtimeTarget));
+    if (!runtimeTarget) runtimeTarget = await waitForManagedExtension(context, expectedId, timeoutMs);
+    keepBrowser = true;
+    return {
+      provider: 'playwright-cdp-vivaldi-custom',
+      endpoint,
+      extension: { ...verifiedExtension, runtimeTarget },
+      verified: true,
+    };
+  } finally {
+    await browser?.disconnect?.();
+    if (!keepBrowser) runtimeHooks.signalProcess(pid, 'SIGTERM');
+  }
+}
+
 async function managedCdpInstallExtension(
   input: AssistantPluginActionExecutionInput,
   context: BrowserContextLike,
@@ -3806,14 +3908,18 @@ async function executeBrowserPluginActionInternal(
           throw new AssistantPluginError('PLUGIN_BROWSER_DEPENDENCY_UNAVAILABLE', 'Managed unpacked-extension install requires Playwright.', { retryable: false });
         }
         const profile = selectedProfile(current, input.repoRoot, 'managed_persistent');
+        const nativeHostChanged = projectManagedNativeMessagingHost(profile.profileDir, extension.nativeHost);
+        const runtime = runtimeHooks.loadPlaywright(input.repoRoot);
+        if (customVivaldiExtensionInstall(current, input.repoRoot)) {
+          return await installExtensionThroughCustomVivaldiCdpPort(input, runtime, current, profile, extension.path, extension.expectedId);
+        }
         const key = managedContextKey(profile);
         const paths = managedExtensionPaths.get(key) ?? new Set<string>();
         const changed = !paths.has(extension.path);
-        const nativeHostChanged = projectManagedNativeMessagingHost(profile.profileDir, extension.nativeHost);
         paths.add(extension.path);
         managedExtensionPaths.set(key, paths);
         if (changed || nativeHostChanged) await evictManagedContext(key);
-        const state = await managedContextState(runtimeHooks.loadPlaywright(input.repoRoot), input.repoRoot, current, profile);
+        const state = await managedContextState(runtime, input.repoRoot, current, profile);
         const prefix = `chrome-extension://${extension.expectedId}/`;
         let runtimeTarget = extensionTargets(state.context).find((candidate) => candidate.startsWith(prefix));
         const verifiedExtension = await managedCdpInstallExtension(input, state.context, extension.path, extension.expectedId, Boolean(runtimeTarget));

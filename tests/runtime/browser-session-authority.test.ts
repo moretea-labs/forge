@@ -1126,12 +1126,132 @@ describe('browser session compatibility on Computer target authority', () => {
     expect(detached).toBe(1);
   });
 
-  test('managed extension install preserves existing extensions in a custom user profile', async () => {
+  test('custom Vivaldi extension install uses a fresh TCP CDP port and leaves the verified browser running', async () => {
     const { controllerHome, repoA } = fixture();
     mkdirSync(join(repoA, '.forge', 'plugins'), { recursive: true });
     const extensionPath = extensionFixture(repoA);
     const canonicalExtensionPath = realpathSync(extensionPath);
     const userDataDir = join(repoA, 'vivaldi-user-data');
+    mkdirSync(join(userDataDir, 'Default'), { recursive: true });
+    writeFileSync(join(userDataDir, 'Local State'), '{}');
+    writeFileSync(join(userDataDir, 'Default', 'Preferences'), '{}');
+    writeFileSync(join(repoA, '.forge', 'plugins', 'browser.json'), JSON.stringify({
+      schemaVersion: 3, enabled: true, provider: 'playwright', browserMode: 'managed_persistent',
+      profileMode: 'custom', profileDir: userDataDir, profileDirectory: 'Default',
+      executablePath: '/Applications/Vivaldi.app/Contents/MacOS/Vivaldi',
+      cdpAttachFallback: 'fail_closed', nativeAttachMode: 'disabled',
+    }));
+    const launched: Array<{ executable: string; args: string[] }> = [];
+    const signalled: Array<[number, NodeJS.Signals]> = [];
+    const methods: string[] = [];
+    let disconnected = 0;
+    let runtimeTargetVisible = false;
+    let browser: any;
+    const context: any = {
+      pages: () => [], newPage: async () => { throw new Error('not needed'); }, close: async () => undefined,
+      browser: () => browser,
+      serviceWorkers: () => runtimeTargetVisible ? [{ url: () => 'chrome-extension://' + SUPERVISOR_EXTENSION_ID + '/background.js' }] : [],
+    };
+    browser = {
+      contexts: () => [context],
+      disconnect: () => { disconnected += 1; },
+      newBrowserCDPSession: async () => ({
+        send: async (method: string, params?: Record<string, unknown>) => {
+          methods.push(method);
+          if (method === 'Extensions.getExtensions') {
+            return { extensions: runtimeTargetVisible ? [{ id: SUPERVISOR_EXTENSION_ID, path: canonicalExtensionPath, enabled: true }] : [] };
+          }
+          if (method === 'Extensions.loadUnpacked') {
+            expect(params).toEqual({ path: canonicalExtensionPath });
+            runtimeTargetVisible = true;
+            return { id: SUPERVISOR_EXTENSION_ID };
+          }
+          throw new Error('unexpected method ' + method);
+        },
+      }),
+    };
+    setBrowserPluginRuntimeHooksForTest({
+      moduleAvailable: () => true,
+      launchProcess: (executable, args) => {
+        launched.push({ executable, args });
+        writeFileSync(join(userDataDir, 'DevToolsActivePort'), '9345\n/devtools/browser/test\n');
+        return { pid: 4242 };
+      },
+      signalProcess: (pid, signal) => { signalled.push([pid, signal]); return true; },
+      loadPlaywright: () => ({
+        chromium: {
+          launchPersistentContext: async () => { throw new Error('Vivaldi extension install must not use remote-debugging-pipe'); },
+          connectOverCDP: async (endpoint) => {
+            expect(endpoint).toBe('http://127.0.0.1:9345');
+            return browser;
+          },
+        },
+      }),
+    });
+    const result = await executeBrowserPluginAction({
+      controllerHome, repoId: 'repo-a', repoRoot: repoA, pluginId: 'browser',
+      requestId: 'vivaldi-custom-cdp-port-install', actionId: 'install_unpacked_extension',
+      args: { extension_path: extensionPath, timeout_ms: 5_000 }, origin: { surface: 'mcp', actor: 'test' },
+    });
+    expect(launched).toHaveLength(1);
+    expect(launched[0]?.executable).toBe('/Applications/Vivaldi.app/Contents/MacOS/Vivaldi');
+    expect(launched[0]?.args).toContain('--remote-debugging-port=0');
+    expect(launched[0]?.args).toContain('--remote-debugging-address=127.0.0.1');
+    expect(launched[0]?.args).toContain('--enable-unsafe-extension-debugging');
+    expect(launched[0]?.args).toContain('--profile-directory=Default');
+    expect(launched[0]?.args.some((arg) => arg === '--remote-debugging-pipe')).toBe(false);
+    expect(methods).toEqual(['Extensions.getExtensions', 'Extensions.loadUnpacked', 'Extensions.getExtensions']);
+    expect(disconnected).toBe(1);
+    expect(signalled).toEqual([]);
+    expect(result).toMatchObject({
+      provider: 'playwright-cdp-vivaldi-custom', endpoint: 'http://127.0.0.1:9345', verified: true,
+      extension: { id: SUPERVISOR_EXTENSION_ID, path: canonicalExtensionPath, enabled: true, runtimeTarget: 'chrome-extension://' + SUPERVISOR_EXTENSION_ID + '/background.js' },
+    });
+  });
+
+  test('custom Vivaldi extension install terminates only its spawned process when TCP CDP attach fails', async () => {
+    const { controllerHome, repoA } = fixture();
+    mkdirSync(join(repoA, '.forge', 'plugins'), { recursive: true });
+    const extensionPath = extensionFixture(repoA);
+    const userDataDir = join(repoA, 'vivaldi-user-data-failure');
+    mkdirSync(join(userDataDir, 'Default'), { recursive: true });
+    writeFileSync(join(userDataDir, 'Local State'), '{}');
+    writeFileSync(join(userDataDir, 'Default', 'Preferences'), '{}');
+    writeFileSync(join(repoA, '.forge', 'plugins', 'browser.json'), JSON.stringify({
+      schemaVersion: 3, enabled: true, provider: 'playwright', browserMode: 'managed_persistent',
+      profileMode: 'custom', profileDir: userDataDir, profileDirectory: 'Default',
+      executablePath: '/Applications/Vivaldi.app/Contents/MacOS/Vivaldi',
+      cdpAttachFallback: 'fail_closed', nativeAttachMode: 'disabled',
+    }));
+    const signalled: Array<[number, NodeJS.Signals]> = [];
+    setBrowserPluginRuntimeHooksForTest({
+      moduleAvailable: () => true,
+      launchProcess: () => {
+        writeFileSync(join(userDataDir, 'DevToolsActivePort'), '9456\n/devtools/browser/test\n');
+        return { pid: 5252 };
+      },
+      signalProcess: (pid, signal) => { signalled.push([pid, signal]); return true; },
+      loadPlaywright: () => ({
+        chromium: {
+          launchPersistentContext: async () => { throw new Error('must not launch through Playwright'); },
+          connectOverCDP: async () => { throw new Error('attach failed'); },
+        },
+      }),
+    });
+    await expect(executeBrowserPluginAction({
+      controllerHome, repoId: 'repo-a', repoRoot: repoA, pluginId: 'browser',
+      requestId: 'vivaldi-custom-cdp-port-install-failure', actionId: 'install_unpacked_extension',
+      args: { extension_path: extensionPath, timeout_ms: 5_000 }, origin: { surface: 'mcp', actor: 'test' },
+    })).rejects.toThrow('attach failed');
+    expect(signalled).toEqual([[5252, 'SIGTERM']]);
+  });
+
+  test('managed extension install preserves existing extensions in a custom user profile', async () => {
+    const { controllerHome, repoA } = fixture();
+    mkdirSync(join(repoA, '.forge', 'plugins'), { recursive: true });
+    const extensionPath = extensionFixture(repoA);
+    const canonicalExtensionPath = realpathSync(extensionPath);
+    const userDataDir = join(repoA, 'chrome-user-data-extension-preservation');
     mkdirSync(join(userDataDir, 'Default'), { recursive: true });
     writeFileSync(join(userDataDir, 'Local State'), '{}');
     writeFileSync(join(userDataDir, 'Default', 'Preferences'), '{}');
@@ -1144,7 +1264,7 @@ describe('browser session compatibility on Computer target authority', () => {
         profile_mode: 'custom',
         profile_dir: userDataDir,
         profile_directory: 'Default',
-        browser_executable_path: '/Applications/Vivaldi.app/Contents/MacOS/Vivaldi',
+        browser_executable_path: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
         clear_browser_channel: true,
         cdp_attach_fallback: 'fail_closed',
         native_attach_mode: 'disabled',
@@ -1156,7 +1276,7 @@ describe('browser session compatibility on Computer target authority', () => {
       profileMode: 'custom',
       profileDir: userDataDir,
       profileDirectory: 'Default',
-      executablePath: '/Applications/Vivaldi.app/Contents/MacOS/Vivaldi',
+      executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
     });
     expect(configuredBrowser.browserChannel).toBeUndefined();
     const nativeHostPath = join(repoA, 'forge-native-host');
