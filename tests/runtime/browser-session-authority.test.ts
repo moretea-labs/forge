@@ -1146,56 +1146,45 @@ describe('browser session compatibility on Computer target authority', () => {
     const launched: Array<{ executable: string; args: string[] }> = [];
     const signalled: Array<[number, NodeJS.Signals]> = [];
     const methods: string[] = [];
-    let disconnected = 0;
+    let detached = 0;
     let runtimeTargetVisible = false;
-    let browser: any;
-    const context: any = {
-      pages: () => [], newPage: async () => { throw new Error('not needed'); }, close: async () => undefined,
-      browser: () => browser,
-      serviceWorkers: () => runtimeTargetVisible ? [{ url: () => 'chrome-extension://' + SUPERVISOR_EXTENSION_ID + '/background.js' }] : [],
-    };
-    browser = {
-      contexts: () => [context],
-      disconnect: () => { disconnected += 1; },
-      newBrowserCDPSession: async () => ({
-        send: async (method: string, params?: Record<string, unknown>) => {
-          methods.push(method);
-          if (method === 'Extensions.getExtensions') {
-            return { extensions: runtimeTargetVisible ? [{ id: SUPERVISOR_EXTENSION_ID, path: canonicalExtensionPath, enabled: true }] : [] };
-          }
-          if (method === 'Extensions.loadUnpacked') {
-            expect(params).toEqual({ path: canonicalExtensionPath });
-            runtimeTargetVisible = true;
-            return { id: SUPERVISOR_EXTENSION_ID };
-          }
-          throw new Error('unexpected method ' + method);
-        },
-      }),
+    const nativeCdpSession = {
+      send: async (method: string, params?: Record<string, unknown>) => {
+        methods.push(method);
+        if (method === 'Extensions.getExtensions') {
+          return { extensions: runtimeTargetVisible ? [{ id: SUPERVISOR_EXTENSION_ID, path: canonicalExtensionPath, enabled: true }] : [] };
+        }
+        if (method === 'Extensions.loadUnpacked') {
+          expect(params).toEqual({ path: canonicalExtensionPath });
+          runtimeTargetVisible = true;
+          return { id: SUPERVISOR_EXTENSION_ID };
+        }
+        if (method === 'Target.getTargets') {
+          return { targetInfos: runtimeTargetVisible ? [{ url: 'chrome-extension://' + SUPERVISOR_EXTENSION_ID + '/background.js' }] : [] };
+        }
+        throw new Error('unexpected method ' + method);
+      },
+      detach: async () => { detached += 1; },
     };
     let existingOwnerAlive = true;
     setBrowserPluginRuntimeHooksForTest({
-      moduleAvailable: () => true,
+      moduleAvailable: () => false,
       listProcesses: () => existingOwnerAlive ? [{ pid: 3131, command: `/Applications/Vivaldi.app/Contents/MacOS/Vivaldi --user-data-dir=${userDataDir}` }] : [],
       allocateLoopbackPort: async () => 9345,
       fetchJson: async (url) => {
         expect(url).toBe('http://127.0.0.1:9345/json/version');
-        return { Browser: 'Vivaldi/test' };
+        return { Browser: 'Vivaldi/test', webSocketDebuggerUrl: 'ws://127.0.0.1:9345/devtools/browser/test' };
+      },
+      connectBrowserCdp: async (endpoint) => {
+        expect(endpoint).toBe('ws://127.0.0.1:9345/devtools/browser/test');
+        return nativeCdpSession;
       },
       launchProcess: (executable, args) => {
         launched.push({ executable, args });
         return { pid: 4242 };
       },
       signalProcess: (pid, signal) => { signalled.push([pid, signal]); if (pid === 3131) existingOwnerAlive = false; return true; },
-      loadPlaywright: () => ({
-        chromium: {
-          launchPersistentContext: async () => { throw new Error('Vivaldi extension install must not use remote-debugging-pipe'); },
-          connectOverCDP: async function (this: { connectOverCDP: unknown }, endpoint: string) {
-            expect(typeof this.connectOverCDP).toBe('function');
-            expect(endpoint).toBe('http://127.0.0.1:9345');
-            return browser;
-          },
-        },
-      }),
+      loadPlaywright: () => { throw new Error('custom Vivaldi extension install must not load Playwright'); },
     });
     const result = await executeBrowserPluginAction({
       controllerHome, repoId: 'repo-a', repoRoot: repoA, pluginId: 'browser',
@@ -1210,11 +1199,11 @@ describe('browser session compatibility on Computer target authority', () => {
     expect(launched[0]?.args).toContain('--enable-unsafe-extension-debugging');
     expect(launched[0]?.args).toContain('--profile-directory=Default');
     expect(launched[0]?.args.some((arg) => arg === '--remote-debugging-pipe')).toBe(false);
-    expect(methods).toEqual(['Extensions.getExtensions', 'Extensions.loadUnpacked', 'Extensions.getExtensions']);
-    expect(disconnected).toBe(1);
+    expect(methods).toEqual(['Extensions.getExtensions', 'Target.getTargets', 'Extensions.loadUnpacked', 'Extensions.getExtensions', 'Target.getTargets']);
+    expect(detached).toBe(1);
     expect(signalled).toEqual([[3131, 'SIGTERM']]);
     expect(result).toMatchObject({
-      provider: 'playwright-cdp-vivaldi-custom', endpoint: 'http://127.0.0.1:9345', verified: true,
+      provider: 'native-cdp-vivaldi-custom', endpoint: 'http://127.0.0.1:9345', verified: true,
       extension: { id: SUPERVISOR_EXTENSION_ID, path: canonicalExtensionPath, enabled: true, runtimeTarget: 'chrome-extension://' + SUPERVISOR_EXTENSION_ID + '/background.js' },
     });
   });
@@ -1236,13 +1225,14 @@ describe('browser session compatibility on Computer target authority', () => {
     }));
     const signalled: Array<[number, NodeJS.Signals]> = [];
     setBrowserPluginRuntimeHooksForTest({
-      moduleAvailable: () => true,
+      moduleAvailable: () => false,
       listProcesses: () => [{ pid: 6262, command: '/Applications/Vivaldi.app/Contents/MacOS/Vivaldi --user-data-dir=/tmp/different-vivaldi-profile' }],
       allocateLoopbackPort: async () => 9346,
       fetchJson: async () => { throw new Error('not ready'); },
       launchProcess: () => ({ pid: 7272 }),
       signalProcess: (pid, signal) => { signalled.push([pid, signal]); return true; },
-      loadPlaywright: () => ({ chromium: { launchPersistentContext: async () => { throw new Error('must not launch through Playwright'); }, connectOverCDP: async () => { throw new Error('must not attach without a fresh endpoint'); } } }),
+      connectBrowserCdp: async () => { throw new Error('must not attach without a reachable endpoint'); },
+      loadPlaywright: () => { throw new Error('custom Vivaldi extension install must not load Playwright'); },
     });
     await expect(executeBrowserPluginAction({
       controllerHome, repoId: 'repo-a', repoRoot: repoA, pluginId: 'browser',
@@ -1268,20 +1258,16 @@ describe('browser session compatibility on Computer target authority', () => {
     }));
     const signalled: Array<[number, NodeJS.Signals]> = [];
     setBrowserPluginRuntimeHooksForTest({
-      moduleAvailable: () => true,
+      moduleAvailable: () => false,
       allocateLoopbackPort: async () => 9456,
       fetchJson: async (url) => {
         expect(url).toBe('http://127.0.0.1:9456/json/version');
-        return { Browser: 'Vivaldi/test' };
+        return { Browser: 'Vivaldi/test', webSocketDebuggerUrl: 'ws://127.0.0.1:9456/devtools/browser/test' };
       },
+      connectBrowserCdp: async () => { throw new Error('attach failed'); },
       launchProcess: () => ({ pid: 5252 }),
       signalProcess: (pid, signal) => { signalled.push([pid, signal]); return true; },
-      loadPlaywright: () => ({
-        chromium: {
-          launchPersistentContext: async () => { throw new Error('must not launch through Playwright'); },
-          connectOverCDP: async () => { throw new Error('attach failed'); },
-        },
-      }),
+      loadPlaywright: () => { throw new Error('custom Vivaldi extension install must not load Playwright'); },
     });
     await expect(executeBrowserPluginAction({
       controllerHome, repoId: 'repo-a', repoRoot: repoA, pluginId: 'browser',

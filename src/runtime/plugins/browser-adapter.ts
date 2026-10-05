@@ -185,6 +185,91 @@ type BrowserCdpSessionLike = {
   send(method: string, params?: Record<string, unknown>): Promise<unknown>;
   detach?(): Promise<void>;
 };
+
+function connectNativeBrowserCdp(endpoint: string, timeoutMs: number): Promise<BrowserCdpSessionLike> {
+  const boundedTimeoutMs = Math.max(250, Math.min(timeoutMs, 30_000));
+  return new Promise<BrowserCdpSessionLike>((resolveSession, rejectSession) => {
+    const socket = new WebSocket(endpoint);
+    const pending = new Map<number, {
+      resolve(value: unknown): void;
+      reject(error: Error): void;
+      timer: ReturnType<typeof setTimeout>;
+    }>();
+    let nextId = 1;
+    let connectSettled = false;
+
+    const failPending = (error: Error) => {
+      for (const request of pending.values()) {
+        clearTimeout(request.timer);
+        request.reject(error);
+      }
+      pending.clear();
+    };
+    const failConnect = (error: Error) => {
+      if (connectSettled) return;
+      connectSettled = true;
+      clearTimeout(connectTimer);
+      rejectSession(error);
+    };
+    const connectTimer = setTimeout(() => {
+      failConnect(new Error(`Browser CDP WebSocket did not open within ${boundedTimeoutMs}ms.`));
+      try { socket.close(); } catch { /* best-effort bounded cleanup */ }
+    }, boundedTimeoutMs);
+
+    socket.onopen = () => {
+      if (connectSettled) return;
+      connectSettled = true;
+      clearTimeout(connectTimer);
+      resolveSession({
+        send: (method, params) => new Promise<unknown>((resolveResult, rejectResult) => {
+          const id = nextId++;
+          const timer = setTimeout(() => {
+            pending.delete(id);
+            rejectResult(new Error(`Browser CDP method ${method} timed out after ${boundedTimeoutMs}ms.`));
+          }, boundedTimeoutMs);
+          pending.set(id, { resolve: resolveResult, reject: rejectResult, timer });
+          try {
+            socket.send(JSON.stringify({ id, method, ...(params ? { params } : {}) }));
+          } catch (error) {
+            clearTimeout(timer);
+            pending.delete(id);
+            rejectResult(error instanceof Error ? error : new Error(String(error)));
+          }
+        }),
+        detach: async () => {
+          failPending(new Error('Browser CDP session detached.'));
+          try { socket.close(); } catch { /* best-effort bounded cleanup */ }
+        },
+      });
+    };
+    socket.onmessage = (event) => {
+      if (typeof event.data !== 'string') return;
+      let message: { id?: unknown; result?: unknown; error?: { message?: unknown } };
+      try { message = JSON.parse(event.data) as typeof message; }
+      catch { return; }
+      if (!Number.isInteger(message.id)) return;
+      const request = pending.get(Number(message.id));
+      if (!request) return;
+      pending.delete(Number(message.id));
+      clearTimeout(request.timer);
+      if (message.error) {
+        request.reject(new Error(typeof message.error.message === 'string' ? message.error.message : 'Browser CDP command failed.'));
+      } else {
+        request.resolve(message.result);
+      }
+    };
+    socket.onerror = () => {
+      const error = new Error('Browser CDP WebSocket transport failed.');
+      failConnect(error);
+      failPending(error);
+    };
+    socket.onclose = () => {
+      const error = new Error('Browser CDP WebSocket transport closed.');
+      failConnect(error);
+      failPending(error);
+    };
+  });
+}
 type BrowserContextLike = {
   pages(): PageLike[];
   newPage(): Promise<PageLike>;
@@ -279,6 +364,8 @@ interface BrowserPluginRuntimeHooks {
   launchProcess(executable: string, args: string[]): { pid?: number };
   /** Allocate one currently-free loopback TCP port for an immediately following browser launch. */
   allocateLoopbackPort(): Promise<number>;
+  /** Open one bounded browser-level CDP session without a Playwright browser/context adapter. */
+  connectBrowserCdp(endpoint: string, timeoutMs: number): Promise<BrowserCdpSessionLike>;
 }
 
 const defaultRuntimeHooks: BrowserPluginRuntimeHooks = {
@@ -318,6 +405,7 @@ const defaultRuntimeHooks: BrowserPluginRuntimeHooks = {
       });
     });
   }),
+  connectBrowserCdp: connectNativeBrowserCdp,
   moduleAvailable: (name: string, repoRoot?: string) => {
     const anchors = [repoRoot ? join(repoRoot, 'package.json') : undefined, import.meta.url]
       .filter((value): value is string => Boolean(value));
@@ -1650,6 +1738,27 @@ async function waitForCdpEndpoint(endpoint: string, timeoutMs: number): Promise<
   });
 }
 
+async function browserCdpExtensionTarget(session: BrowserCdpSessionLike, extensionId: string): Promise<string | undefined> {
+  const response = await session.send('Target.getTargets') as { targetInfos?: Array<{ url?: unknown }> };
+  const prefix = `chrome-extension://${extensionId}/`;
+  return (response.targetInfos ?? [])
+    .map((target) => typeof target.url === 'string' ? target.url : '')
+    .find((url) => url.startsWith(prefix));
+}
+
+async function waitForBrowserCdpExtensionTarget(session: BrowserCdpSessionLike, extensionId: string, timeoutMs: number): Promise<string> {
+  const deadline = Date.now() + Math.min(Math.max(timeoutMs, 250), 10_000);
+  while (Date.now() <= deadline) {
+    const target = await browserCdpExtensionTarget(session, extensionId);
+    if (target) return target;
+    await delay(100);
+  }
+  throw new AssistantPluginError('PLUGIN_BROWSER_EXTENSION_POSTCONDITION_FAILED', 'Browser-level CDP did not expose an exact runtime target for the requested extension id.', {
+    retryable: true,
+    details: { extensionId },
+  });
+}
+
 function launchOptionsForRepo(repoRoot: string, config: BrowserPluginConfig, profile: BrowserProfileSelection): Record<string, unknown> {
   const extensionPaths = [...(managedExtensionPaths.get(managedContextKey(profile)) ?? [])].sort();
   const args = [
@@ -2334,16 +2443,14 @@ async function gracefullyRestartExactCustomVivaldiOwner(
 
 async function installExtensionThroughCustomVivaldiCdpPort(
   input: AssistantPluginActionExecutionInput,
-  runtime: PlaywrightRuntime,
   config: BrowserPluginConfig,
   profile: BrowserProfileSelection,
   extensionPath: string,
   expectedId: string,
 ): Promise<Record<string, unknown>> {
   const vivaldi = customVivaldiExtensionInstall(config, input.repoRoot);
-  const connectOverCDP = runtime.chromium.connectOverCDP;
-  if (!vivaldi || typeof connectOverCDP !== 'function') {
-    throw new AssistantPluginError('PLUGIN_BROWSER_EXTENSION_CONTROL_UNAVAILABLE', 'Custom Vivaldi unpacked-extension install requires TCP CDP attach support.', { retryable: true });
+  if (!vivaldi) {
+    throw new AssistantPluginError('PLUGIN_BROWSER_EXTENSION_CONTROL_UNAVAILABLE', 'Custom Vivaldi unpacked-extension install requires the configured Vivaldi executable.', { retryable: true });
   }
   const timeoutMs = positiveNumber(input.args.timeout_ms, config.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS);
   await gracefullyRestartExactCustomVivaldiOwner(vivaldi.executable, profile, timeoutMs);
@@ -2363,28 +2470,31 @@ async function installExtensionThroughCustomVivaldiCdpPort(
   if (!pid || !Number.isInteger(pid) || pid <= 0) {
     throw new AssistantPluginError('PLUGIN_BROWSER_EXTENSION_CONTROL_UNAVAILABLE', 'Vivaldi launcher did not return a process identity for bounded cleanup.', { retryable: true });
   }
-  let browser: BrowserLike | undefined;
+  let session: BrowserCdpSessionLike | undefined;
   let keepBrowser = false;
   try {
     const discovered = await waitForCdpEndpoint(endpoint, timeoutMs);
-    browser = await connectOverCDP.call(runtime.chromium, discovered.discoveredEndpoint ?? endpoint, { timeout: Math.max(1_000, Math.min(timeoutMs, 30_000)) });
-    const context = browser.contexts()[0];
-    if (!context) {
-      throw new AssistantPluginError('PLUGIN_BROWSER_EXTENSION_CONTROL_UNAVAILABLE', 'Vivaldi CDP attach returned no browser context for the custom profile.', { retryable: true, details: { pid, endpoint } });
+    const browserEndpoint = discovered.discoveredEndpoint ?? endpoint;
+    session = await runtimeHooks.connectBrowserCdp(browserEndpoint, Math.max(1_000, Math.min(timeoutMs, 30_000)));
+    const listed = await session.send('Extensions.getExtensions') as { extensions?: BrowserExtensionInfo[] };
+    let verifiedExtension = (listed.extensions ?? []).find((entry) => {
+      if (entry.id !== expectedId || entry.enabled !== true) return false;
+      try { return realpathSync(entry.path) === extensionPath; } catch { return false; }
+    });
+    let runtimeTarget = await browserCdpExtensionTarget(session, expectedId);
+    if (!verifiedExtension || !runtimeTarget) {
+      verifiedExtension = await loadAndVerifyUnpackedExtension(session, extensionPath, expectedId, input.args.enable_in_incognito === true);
+      if (!runtimeTarget) runtimeTarget = await waitForBrowserCdpExtensionTarget(session, expectedId, timeoutMs);
     }
-    const prefix = `chrome-extension://${expectedId}/`;
-    let runtimeTarget = extensionTargets(context).find((candidate) => candidate.startsWith(prefix));
-    const verifiedExtension = await managedCdpInstallExtension(input, context, extensionPath, expectedId, Boolean(runtimeTarget));
-    if (!runtimeTarget) runtimeTarget = await waitForManagedExtension(context, expectedId, timeoutMs);
     keepBrowser = true;
     return {
-      provider: 'playwright-cdp-vivaldi-custom',
+      provider: 'native-cdp-vivaldi-custom',
       endpoint,
       extension: { ...verifiedExtension, runtimeTarget },
       verified: true,
     };
   } finally {
-    await browser?.disconnect?.();
+    await session?.detach?.().catch(() => undefined);
     if (!keepBrowser) runtimeHooks.signalProcess(pid, 'SIGTERM');
   }
 }
@@ -3965,15 +4075,15 @@ async function executeBrowserPluginActionInternal(
             ? 'Selected Browser mode does not provide managed unpacked-extension control.'
             : 'Managed unpacked-extension verification requires a stable manifest key.', { retryable: false });
         }
+        const profile = selectedProfile(current, input.repoRoot, 'managed_persistent');
+        const nativeHostChanged = projectManagedNativeMessagingHost(profile.profileDir, extension.nativeHost);
+        if (customVivaldiExtensionInstall(current, input.repoRoot)) {
+          return await installExtensionThroughCustomVivaldiCdpPort(input, current, profile, extension.path, extension.expectedId);
+        }
         if (!runtimeHooks.moduleAvailable('playwright', input.repoRoot)) {
           throw new AssistantPluginError('PLUGIN_BROWSER_DEPENDENCY_UNAVAILABLE', 'Managed unpacked-extension install requires Playwright.', { retryable: false });
         }
-        const profile = selectedProfile(current, input.repoRoot, 'managed_persistent');
-        const nativeHostChanged = projectManagedNativeMessagingHost(profile.profileDir, extension.nativeHost);
         const runtime = runtimeHooks.loadPlaywright(input.repoRoot);
-        if (customVivaldiExtensionInstall(current, input.repoRoot)) {
-          return await installExtensionThroughCustomVivaldiCdpPort(input, runtime, current, profile, extension.path, extension.expectedId);
-        }
         const key = managedContextKey(profile);
         const paths = managedExtensionPaths.get(key) ?? new Set<string>();
         const changed = !paths.has(extension.path);
