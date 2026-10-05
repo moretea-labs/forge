@@ -118,8 +118,6 @@ async function awaitExternalControllerStartup(
     const closeStartupPipes = () => {
       child.stdout?.off('data', captureStdout);
       child.stderr?.off('data', captureStderr);
-      child.stdout?.destroy();
-      child.stderr?.destroy();
     };
     const persistDiagnostics = () => {
       if (!stdoutTail && !stderrTail) return;
