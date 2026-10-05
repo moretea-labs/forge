@@ -167,10 +167,8 @@ export function renderSupervisorPrompt(
     '@forge',
     renderEffectMarker(effectId),
     ...(kind === 'enrollment' ? [`目标：${objective(task)}`, '开始。'] : ['继续。']),
-    ...SUPERVISOR_RESPONSE_FORMAT,
-    `这是 Supervisor autonomous turn。每次 Forge 工具调用都带 ${automationIdentity}, automation_status="working"。本轮最后一次 Forge 工具调用必须仍带同一 task/type，并把 automation_status 改为 "continue"；仅当目标整体完成时用 "done"，确需用户外部决策时用 "needs_user"。不要再发送 receipt-only 的 rh_work repair / automation.receipt compatibility 调用。`,
+    `最后一次 Forge 调用携带 ${automationIdentity}, automation_status="continue"；完成用 "done"，需用户用 "needs_user"。`,
     ...(repoId ? [`Repository context: repo_id=${JSON.stringify(repoId)}${checkoutId ? `, checkout_id=${JSON.stringify(checkoutId)}` : ''}.`] : []),
-    'Do not use plain-text C/D/U or a Supervisor JSON block as the completion receipt.',
   ].join('\n');
 }
 

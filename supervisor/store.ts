@@ -231,19 +231,7 @@ export const WORKFLOW_SUPERVISOR_MAX_OPERATOR_REFUNDS = 2;
  * provider problem from turning into a conversation-hopping loop.
  */
 export const WORKFLOW_SUPERVISOR_MAX_CONVERSATION_MIGRATIONS = 2;
-/**
- * A successful outer turn is not by itself progress. Live evidence: one Work
- * task produced 440 consecutive CONTINUE receipts in eight hours (~one provider
- * turn every 85 seconds) whose only Forge call was a read-only status query, so
- * the chain re-authorized itself without changing anything and the ChatGPT
- * account, not the Work, paid for it. Provider turns of one task are therefore
- * spaced, and a chain that stops changing canonical Work state is bounded and
- * surfaced instead of continued.
- */
 export const WORKFLOW_SUPERVISOR_MIN_TURN_INTERVAL_MS = 3 * 60_000;
-export const WORKFLOW_SUPERVISOR_MAX_NO_PROGRESS_TURNS = 12;
-/** Recorded inside the existing completion proposal evidence; no new state owner. */
-export const WORKFLOW_SUPERVISOR_NO_PROGRESS_EVIDENCE = 'no_work_evidence';
 
 /** Spaced retries keep a persistent local obstacle from becoming a request storm. */
 export function workflowSupervisorDispatchRetryDelayMs(generation: number): number {
@@ -645,24 +633,6 @@ export class WorkflowSupervisorStore {
         }
       }
       return undefined;
-    });
-  }
-  /**
-   * Consecutive CONTINUE completions of one task that carried no mechanical Work
-   * change. Derived from the durable completion ledger, so a Runtime restart or a
-   * re-derived task cannot reset the bound.
-   */
-  consecutiveNoProgressTurns(taskId: string): number {
-    return this.read((db) => {
-      const rows = statement(db, 'SELECT * FROM completions WHERE task_id = ? ORDER BY committed_at DESC, completion_fingerprint DESC', (s) => s.all(taskId)) as Record<string, unknown>[];
-      let count = 0;
-      for (const row of rows) {
-        const completion = completionFromRow(row);
-        if (completion.action !== 'CONTINUE') break;
-        if (!completion.proposal.evidence.includes(WORKFLOW_SUPERVISOR_NO_PROGRESS_EVIDENCE)) break;
-        count += 1;
-      }
-      return count;
     });
   }
   latestEffectDispatch(effectId: string): { eventId: number; generation: number; evidence: Record<string, unknown> } | undefined {

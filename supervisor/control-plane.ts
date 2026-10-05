@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { parseChatgptConversationIdentity } from './chatgpt-conversation';
 import { parseSupervisorCompletion, renderEffectMarker, renderSupervisorPrompt, sha256, validateEffectId } from './protocol';
-import { WORKFLOW_SUPERVISOR_MAX_NO_PROGRESS_TURNS, WORKFLOW_SUPERVISOR_NO_PROGRESS_EVIDENCE, WorkflowSupervisorStore } from './store';
+import { WorkflowSupervisorStore } from './store';
 import type { WorkflowAssistantObservation, WorkflowAssistantObservationResult, WorkflowContractValidation, WorkflowEffectKind, WorkflowSupervisorAutomationStatus, WorkflowSupervisorBrowserPollResult, WorkflowSupervisorBrowserTask, WorkflowSupervisorCompletion, WorkflowSupervisorDiscoveredConversation, WorkflowSupervisorEffect, WorkflowSupervisorLifecycleHooks, WorkflowSupervisorProjectScope, WorkflowSupervisorTask, WorkflowSupervisorTaskInput, WorkflowSupervisorTerminalState, WorkflowSupervisorValidators } from './types';
 
 function compactProjectIdentity(value: string): string {
@@ -675,13 +675,12 @@ export class WorkflowSupervisorControlPlane {
       throw new Error('WORKFLOW_SUPERVISOR_CAUSAL_EFFECT_NOT_APPLIED');
     }
     const action = input.status === 'continue' ? 'CONTINUE' : input.status === 'done' ? 'DONE' : 'NEEDS_USER';
-    const noProgress = action === 'CONTINUE' && this.automationTurnChangedNothing(task, sourceEffect.effectId);
     const proposal = {
       action: action as 'CONTINUE' | 'DONE' | 'NEEDS_USER',
       sourceEffectId: sourceEffect.effectId,
       checkpoint: `automation:${receiptForEffect}`,
       reason: 'automation_tool_receipt',
-      evidence: noProgress ? [WORKFLOW_SUPERVISOR_NO_PROGRESS_EVIDENCE] : [],
+      evidence: [],
       conversationId: task.conversationId,
       taskId: task.taskId,
       supervisorState: action === 'CONTINUE' ? 'running' as const : action === 'DONE' ? 'done' as const : 'needs_user' as const,
@@ -690,18 +689,6 @@ export class WorkflowSupervisorControlPlane {
     const completionFingerprint = sha256(jsonIdentity(task.taskId, task.conversationId, sourceEffect.effectId, responseSha256, controlBlockSha256));
     const completion: WorkflowSupervisorCompletion = { completionFingerprint, taskId: task.taskId, sourceEffectId: sourceEffect.effectId, action: proposal.action, responseSha256, controlBlockSha256, proposal, committedAt: new Date().toISOString() };
     if (proposal.action === 'CONTINUE') {
-      const noProgressTurns = noProgress ? this.store.consecutiveNoProgressTurns(task.taskId) + 1 : 0;
-      // A chain that keeps answering "continue" without changing any canonical
-      // Work state is provider activity, not progress. Bound it once and surface
-      // the operator decision instead of minting another provider turn.
-      if (noProgress && noProgressTurns >= WORKFLOW_SUPERVISOR_MAX_NO_PROGRESS_TURNS) {
-        const committed = this.store.commitCompletion(completion);
-        const resolved = this.store.resolveTerminal({
-          completionFingerprint, taskId: task.taskId, action: 'NEEDS_USER', accepted: true,
-          reason: `WORKFLOW_SUPERVISOR_NO_PROGRESS: ${noProgressTurns} consecutive provider turns changed no canonical Work state.`,
-        });
-        return { action: 'NEEDS_USER', completionFingerprint, terminal: true, deduplicated: committed.deduplicated || resolved.deduplicated };
-      }
       const committed = this.reserveContinuation(task, completion);
       return { action: 'CONTINUE', completionFingerprint, terminal: false, successorEffect: committed.successorEffect!, deduplicated: committed.deduplicated };
     }

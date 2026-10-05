@@ -283,16 +283,12 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     const continuation = renderSupervisorPrompt(task, 'fx_minimal01', 'continuation', 'large checkpoint payload', undefined, lowerLayerContext);
     expect(continuation).toStartWith('@forge\n');
     expect(continuation.split('\n')[2]).toBe('继续。');
-    expect(continuation.split('\n')[3]).toBe('响应格式：');
+    expect(continuation.split('\n')[3]).toContain('automation_status="continue"');
     expect(continuation).not.toContain(task.objective);
     expect(continuation).not.toContain('目标：');
-    expect(continuation).toContain('响应格式：');
-    expect(continuation).toContain('结果：<本轮实际完成或明确阻塞>');
-    expect(continuation).toContain('证据：<修改路径、检查结果、提交或发布回执；无则写“无”>');
-    expect(continuation).toContain('下一步：<立即继续的最小步骤>');
     expect(continuation).toContain(`automation_task_id=${JSON.stringify(task.taskId)}`);
     expect(continuation).toContain('automation_type="autonomous_continuation"');
-    expect(continuation).toContain('automation_status="working"');
+    expect(continuation).toContain('automation_status="continue"');
     expect(continuation).not.toContain('automation.receipt:');
     expect(continuation).toContain('repo_id="repo-minimal-continuation"');
     expect(continuation).toContain('checkout_id="checkout_ios_candidate"');
@@ -313,7 +309,7 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     const recovery = renderSupervisorPrompt(task, 'fx_recover01', 'recovery', 'restore checkpoint', 'recover durable state', lowerLayerContext);
     expect(recovery.split('\n')[2]).toBe('继续。');
     expect(recovery).not.toContain(task.objective);
-    expect(recovery).toContain('响应格式：');
+    expect(recovery).toContain('automation_status="continue"');
     expect(recovery).not.toContain('restore checkpoint');
     expect(recovery).not.toContain('recover durable state');
     expect(recovery).not.toContain(lowerLayerContext);
@@ -324,7 +320,7 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     const enrollment = renderSupervisorPrompt(task, 'fx_1234567890abcdef', 'enrollment');
     expect(enrollment.split('\n')[2]).toBe(`目标：${JSON.stringify(task.objective)}`);
     expect(enrollment.split('\n')[3]).toBe('开始。');
-    expect(enrollment).toContain('响应格式：');
+    expect(enrollment).toContain('automation_status="continue"');
   });
 
   test('pins the exact assistant action enum and validates compact causal receipts while retaining legacy reads', () => {
@@ -343,11 +339,11 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
 
     expect(prompt).toContain(`automation_task_id=${JSON.stringify(task.taskId)}`);
     expect(prompt).toContain('automation_type="autonomous_continuation"');
-    expect(prompt).toContain('automation_status="working"');
+    expect(prompt).toContain('automation_status="continue"');
     expect(prompt).not.toContain('automation.receipt:');
-    expect(prompt).toContain('automation_status 改为 "continue"');
-    expect(prompt).toContain('整体完成时用 "done"');
-    expect(prompt).toContain('外部决策时用 "needs_user"');
+    expect(prompt).toContain('最后一次 Forge 调用');
+    expect(prompt).toContain('完成用 "done"');
+    expect(prompt).toContain('需用户用 "needs_user"');
     expect(prompt).toContain('"done"');
     expect(prompt).toContain('"needs_user"');
     expect(prompt).not.toContain(renderSupervisorReceipt(task, effectId, 'CONTINUE'));
@@ -433,7 +429,7 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     const continuation = renderSupervisorPrompt(task, 'fx_continue_1234', 'continuation', 'checkpoint-sentinel', undefined, 'LOWER_LAYER_SENTINEL');
     expect(continuation.split('\n')[2]).toBe('继续。');
     expect(continuation).not.toContain(task.objective);
-    expect(continuation).toContain('响应格式：');
+    expect(continuation).toContain('automation_status="continue"');
     expect(continuation).not.toContain('checkpoint-sentinel');
     expect(continuation).toContain(`automation_task_id=${JSON.stringify(task.taskId)}`);
     expect(continuation).toContain('automation_type="autonomous_continuation"');
@@ -447,7 +443,7 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     const recovery = renderSupervisorPrompt(task, 'fx_recovery_1234', 'recovery', 'checkpoint-sentinel', 'recover causally', 'LOWER_LAYER_SENTINEL');
     expect(recovery.split('\n')[2]).toBe('继续。');
     expect(recovery).not.toContain(task.objective);
-    expect(recovery).toContain('响应格式：');
+    expect(recovery).toContain('automation_status="continue"');
     expect(recovery).not.toContain('checkpoint-sentinel');
     expect(recovery).not.toContain('LOWER_LAYER_SENTINEL');
     expect(recovery).not.toContain('Preserve the original Requirement');
