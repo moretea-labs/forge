@@ -122,6 +122,9 @@ describe('MCP canonical Runtime proxy routing', () => {
     expect(canonicalRuntimeToolCallIsReplaySafe('repository_command_execute', { ...args, request_id: '' })).toBe(false);
     expect(canonicalRuntimeToolCallIsReplaySafe('rh_work', args)).toBe(false);
     expect(canonicalRuntimeToolCallIsReplaySafe('computer_console_unlock_prepare', { confirm_authorization: true })).toBe(false);
+    for (const name of ['computer_console_unlock_enroll', 'computer_console_unlock_status', 'computer_console_unlock_recover', 'computer_console_unlock_revoke']) {
+      expect(canonicalRuntimeToolCallIsReplaySafe(name, { confirm_authorization: true })).toBe(false);
+    }
     expect(canonicalRuntimeToolCallIsReplaySafe('computer_console_unlock', { credential_handle: '11111111-1111-4111-8111-111111111111', confirm_authorization: true })).toBe(false);
     expect(canonicalRuntimeToolCallFailureIsTransient(new SdkError(SdkErrorCode.ConnectionClosed, 'connection closed'))).toBe(true);
     expect(canonicalRuntimeToolCallFailureIsTransient(Object.assign(new Error('socket reset'), { code: 'ECONNRESET' }))).toBe(true);

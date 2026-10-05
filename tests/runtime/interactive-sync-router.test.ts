@@ -41,14 +41,32 @@ describe('interactive sync routing policy', () => {
     }, { definition: unlockDefinition })).toMatchObject({ path: 'direct', reasons: ['bounded_direct_control_write'] });
   });
 
+  test('protected console lifecycle tools stay on the same direct non-durable boundary', () => {
+    for (const name of [
+      'computer_console_unlock_enroll',
+      'computer_console_unlock_status',
+      'computer_console_unlock_recover',
+      'computer_console_unlock_revoke',
+    ]) {
+      const definition = runtimeToolDefinitions.find((tool) => tool.name === name);
+      expect(definition).toBeDefined();
+      expect(classifyGatewayExecutionPath(name, { confirm_authorization: true }, { definition })).toMatchObject({
+        path: 'direct', reasons: ['bounded_direct_control_write'],
+      });
+    }
+  });
+
   test('stable connector surface stays identical to the bounded default surface', () => {
     expect(STABLE_CONTROLLER_TOOL_NAMES).toEqual(DEFAULT_CONTROLLER_TOOL_NAMES);
-    expect(STABLE_CONTROLLER_TOOL_NAMES).toHaveLength(20);
+    expect(STABLE_CONTROLLER_TOOL_NAMES).toHaveLength(DEFAULT_CONTROLLER_TOOL_NAMES.length);
     expect(STABLE_CONTROLLER_TOOL_NAMES).toContain('repository_safe_patch_apply');
     expect(STABLE_CONTROLLER_TOOL_NAMES).toContain('plugin_action_execute');
     const stableNames = new Set<string>(STABLE_CONTROLLER_TOOL_NAMES);
     expect(stableNames.has('computer_console_unlock_prepare')).toBe(false);
     expect(stableNames.has('computer_console_unlock')).toBe(false);
+    for (const name of ['computer_console_unlock_enroll', 'computer_console_unlock_status', 'computer_console_unlock_recover', 'computer_console_unlock_revoke']) {
+      expect(stableNames.has(name)).toBe(false);
+    }
     expect(STABLE_CONTROLLER_TOOL_NAMES).not.toContain('repository_git_create_branch');
     expect(STABLE_CONTROLLER_TOOL_NAMES).not.toContain('work_wait');
     expect(STABLE_CONTROLLER_TOOL_NAMES).not.toContain('git_commit_paths');

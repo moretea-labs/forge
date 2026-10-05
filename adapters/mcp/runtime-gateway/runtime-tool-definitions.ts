@@ -371,6 +371,22 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     confirm_authorization: { type: 'boolean', description: 'Must be true to authorize this exact one-shot console unlock invocation.' },
     timeout_ms: { type: 'number', description: 'Bounded provider/postcondition timeout in milliseconds. Defaults to 15000 and is capped at 30000.' },
   }, ['credential_handle', 'confirm_authorization'], false),
+  definition('computer_console_unlock_enroll', 'Enroll provider-local device-only protected console recovery. Credential material never enters ChatGPT, Forge Runtime, plugin receipts, or replayable jobs. Requires confirm_authorization=true for every invocation.', {
+    confirm_authorization: { type: 'boolean', description: 'Must be true to authorize this exact provider-local enrollment invocation.' },
+    timeout_ms: { type: 'number', description: 'Bounded provider timeout in milliseconds. Defaults to 15000 and is capped at 30000.' },
+  }, ['confirm_authorization'], false),
+  definition('computer_console_unlock_status', 'Read protected console recovery enrollment and availability without exposing provider-local credential material. Requires confirm_authorization=true for every invocation.', {
+    confirm_authorization: { type: 'boolean', description: 'Must be true to authorize this exact protected status invocation.' },
+    timeout_ms: { type: 'number', description: 'Bounded provider timeout in milliseconds. Defaults to 15000 and is capped at 30000.' },
+  }, ['confirm_authorization'], false),
+  definition('computer_console_unlock_recover', 'Recover a locked macOS console using only previously enrolled provider-local device-only credential material. No credential is transported through ChatGPT or Forge Runtime. Requires confirm_authorization=true for every invocation.', {
+    confirm_authorization: { type: 'boolean', description: 'Must be true to authorize this exact one-shot recovery invocation.' },
+    timeout_ms: { type: 'number', description: 'Bounded provider/postcondition timeout in milliseconds. Defaults to 15000 and is capped at 30000.' },
+  }, ['confirm_authorization'], false),
+  definition('computer_console_unlock_revoke', 'Revoke provider-local protected console recovery enrollment. Requires confirm_authorization=true for every invocation.', {
+    confirm_authorization: { type: 'boolean', description: 'Must be true to authorize this exact provider-local revocation invocation.' },
+    timeout_ms: { type: 'number', description: 'Bounded provider timeout in milliseconds. Defaults to 15000 and is capped at 30000.' },
+  }, ['confirm_authorization'], false),
   definition('capability_execute', 'Execute one typed Forge core capability through its canonical substrate owner. Discover the exact action schema with rh_context capability_id first. This stable facade prevents one top-level MCP tool per atomic repository operation; plugin capabilities continue to use plugin_action_execute.', {
     repo_id: repoId,
     checkout_id: { type: 'string', description: 'Optional exact checkout identity.' },

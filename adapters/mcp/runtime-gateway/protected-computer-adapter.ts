@@ -1,6 +1,7 @@
 import { COMPUTER_CONSOLE_UNLOCK_CAPABILITY } from '../../../packages/protocols/computer/index';
 import {
   executeProtectedConsoleUnlockInvocation,
+  executeProtectedConsoleUnlockLifecycle,
   executeProtectedConsoleUnlockPreparation,
 } from '../../../src/runtime/plugins/computer-registration';
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
@@ -18,7 +19,7 @@ function protectedErrorCode(error: unknown): string {
   return /^([A-Z][A-Z0-9_]+)(?::|$)/.exec(message)?.[1] ?? 'COMPUTER_CONSOLE_UNLOCK_FAILED';
 }
 
-export { executeProtectedConsoleUnlockInvocation, executeProtectedConsoleUnlockPreparation };
+export { executeProtectedConsoleUnlockInvocation, executeProtectedConsoleUnlockLifecycle, executeProtectedConsoleUnlockPreparation };
 export type {
   ProtectedConsoleUnlockInvocationInput,
   ProtectedConsoleUnlockPreparationInput,
@@ -29,7 +30,13 @@ export async function callProtectedComputerAdapter(
   name: string,
   args: Record<string, unknown>,
 ): Promise<CallToolResult | undefined> {
-  if (name !== 'computer_console_unlock_prepare' && name !== 'computer_console_unlock') return undefined;
+  const lifecycleAction = {
+    computer_console_unlock_enroll: 'console_unlock_enroll',
+    computer_console_unlock_status: 'console_unlock_status',
+    computer_console_unlock_recover: 'console_unlock_recover',
+    computer_console_unlock_revoke: 'console_unlock_revoke',
+  }[name] as 'console_unlock_enroll' | 'console_unlock_status' | 'console_unlock_recover' | 'console_unlock_revoke' | undefined;
+  if (name !== 'computer_console_unlock_prepare' && name !== 'computer_console_unlock' && !lifecycleAction) return undefined;
   if (name === 'computer_console_unlock' && args.credential_handle === undefined && typeof args.credential === 'string') {
     if (args.credential === FROZEN_CLIENT_PREPARE_CARRIER) {
       name = 'computer_console_unlock_prepare';
@@ -47,9 +54,14 @@ export async function callProtectedComputerAdapter(
       }, true);
     }
   }
-  const action = name === 'computer_console_unlock_prepare' ? 'prepare_unlock_console' : 'unlock_console';
+  const action = lifecycleAction ?? (name === 'computer_console_unlock_prepare' ? 'prepare_unlock_console' : 'unlock_console');
   try {
-    const payload = name === 'computer_console_unlock_prepare'
+    const payload = lifecycleAction
+      ? await executeProtectedConsoleUnlockLifecycle(lifecycleAction, {
+          confirmAuthorization: args.confirm_authorization === true,
+          timeoutMs: typeof args.timeout_ms === 'number' ? args.timeout_ms : undefined,
+        }, ctx.controllerHome)
+      : name === 'computer_console_unlock_prepare'
       ? await executeProtectedConsoleUnlockPreparation({
           confirmAuthorization: args.confirm_authorization === true,
           timeoutMs: typeof args.timeout_ms === 'number' ? args.timeout_ms : undefined,

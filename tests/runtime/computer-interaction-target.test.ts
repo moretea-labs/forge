@@ -250,6 +250,14 @@ async function providerFixture(): Promise<ProviderFixture> {
           state.lastConsoleHandle = typeof params.credential_handle === 'string' ? params.credential_handle : undefined;
           state.lastConsoleAuthorization = params.authorization && typeof params.authorization === 'object' ? params.authorization as Record<string, unknown> : undefined;
           result = { unlocked: true, verified: true, postcondition: 'console_unlocked' };
+        } else if (actionId === 'console_unlock_enroll') {
+          result = { available: true, enrolled: true, persistence: 'macos_keychain_device_only' };
+        } else if (actionId === 'console_unlock_status') {
+          result = { available: true, enrolled: true, persistence: 'macos_keychain_device_only' };
+        } else if (actionId === 'console_unlock_recover') {
+          result = { available: true, enrolled: true, recovered: true, unlocked: true, verified: true, postcondition: 'console_unlocked' };
+        } else if (actionId === 'console_unlock_revoke') {
+          result = { available: false, enrolled: false, revoked: true, persistence: 'macos_keychain_device_only' };
         } else if (actionId === 'desktop_press') {
           if (typeof params.interaction_id !== 'string' || !sessions.has(params.interaction_id)) {
             fail('SESSION_NOT_FOUND', 'Desktop session was not found');
@@ -929,6 +937,29 @@ describe('protected Computer console unlock composition', () => {
     expect(rejected?.structuredContent).toMatchObject({
       accepted: false,
       error: { code: 'COMPUTER_CONSOLE_UNLOCK_FROZEN_CLIENT_CARRIER_INVALID' },
+    });
+    disposeRuntimeComputerComposition();
+  });
+
+  test('routes protected console lifecycle through the same explicit non-secret boundary', async () => {
+    const fixture = await providerFixture();
+    const ctx = { controllerHome: fixture.controllerHome } as any;
+
+    for (const [tool, action] of [
+      ['computer_console_unlock_enroll', 'console_unlock_enroll'],
+      ['computer_console_unlock_status', 'console_unlock_status'],
+      ['computer_console_unlock_recover', 'console_unlock_recover'],
+      ['computer_console_unlock_revoke', 'console_unlock_revoke'],
+    ] as const) {
+      const response = await callProtectedComputerAdapter(ctx, tool, { confirm_authorization: true, timeout_ms: 5_000 });
+      expect(response?.structuredContent).toMatchObject({ accepted: true, action });
+    }
+
+    const rejected = await callProtectedComputerAdapter(ctx, 'computer_console_unlock_status', { confirm_authorization: false, timeout_ms: 5_000 });
+    expect(rejected?.structuredContent).toMatchObject({
+      accepted: false,
+      action: 'console_unlock_status',
+      error: { code: 'COMPUTER_CONSOLE_UNLOCK_EXPLICIT_AUTHORIZATION_REQUIRED' },
     });
     disposeRuntimeComputerComposition();
   });

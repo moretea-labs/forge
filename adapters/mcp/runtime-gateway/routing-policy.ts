@@ -14,6 +14,10 @@ const DIRECT_CONTROL_WRITE_TOOLS = new Set([
   // Neither may be promoted into Process/ExecutionJob persistence or replay.
   'computer_console_unlock_prepare',
   'computer_console_unlock',
+  'computer_console_unlock_enroll',
+  'computer_console_unlock_status',
+  'computer_console_unlock_recover',
+  'computer_console_unlock_revoke',
 ]);
 
 const THIN_ROUTED_TOOLS = new Set([
