@@ -1070,6 +1070,9 @@ describe('browser session compatibility on Computer target authority', () => {
     expect(launchedProfileDir).toBe(userDataDir);
     expect(launchOptions?.ignoreDefaultArgs).toEqual([
       '--disable-extensions',
+      '--disable-component-extensions-with-background-pages',
+      '--disable-default-apps',
+      '--disable-sync',
       '--use-mock-keychain',
       '--password-store=basic',
     ]);
@@ -1085,7 +1088,7 @@ describe('browser session compatibility on Computer target authority', () => {
     });
   });
 
-  test('ordinary managed browsing preserves native password storage for a custom user profile', async () => {
+  test('ordinary managed browsing preserves real browser profile semantics for a custom user profile', async () => {
     const { controllerHome, repoA } = fixture();
     mkdirSync(join(repoA, '.forge', 'plugins'), { recursive: true });
     const userDataDir = join(repoA, 'chrome-user-data');
@@ -1129,7 +1132,14 @@ describe('browser session compatibility on Computer target authority', () => {
       args: { session_id: 'ordinary-custom-profile-managed', url: 'https://example.com/' },
       origin: { surface: 'mcp', actor: 'test' },
     });
-    expect(launchOptions?.ignoreDefaultArgs).toEqual(['--use-mock-keychain', '--password-store=basic']);
+    expect(launchOptions?.ignoreDefaultArgs).toEqual([
+      '--disable-extensions',
+      '--disable-component-extensions-with-background-pages',
+      '--disable-default-apps',
+      '--disable-sync',
+      '--use-mock-keychain',
+      '--password-store=basic',
+    ]);
     expect(launchOptions?.args).toEqual(['--profile-directory=Default']);
   });
 

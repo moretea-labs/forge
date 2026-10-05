@@ -1613,10 +1613,19 @@ function launchOptionsForRepo(repoRoot: string, config: BrowserPluginConfig, pro
     ...(extensionPaths.length > 0 && config.profileMode !== 'custom' ? [`--disable-extensions-except=${extensionPaths.join(',')}`] : []),
     ...(extensionPaths.length > 0 ? [`--load-extension=${extensionPaths.join(',')}`] : []),
   ];
-  const ignoreDefaultArgs = [
-    ...(extensionPaths.length > 0 ? ['--disable-extensions'] : []),
-    ...(config.profileMode === 'custom' ? ['--use-mock-keychain', '--password-store=basic'] : []),
+  const customProfileDefaultArgsToPreserve = [
+    '--disable-extensions',
+    '--disable-component-extensions-with-background-pages',
+    '--disable-default-apps',
+    '--disable-sync',
+    '--use-mock-keychain',
+    '--password-store=basic',
   ];
+  const ignoreDefaultArgs = config.profileMode === 'custom'
+    ? customProfileDefaultArgsToPreserve
+    : extensionPaths.length > 0
+      ? ['--disable-extensions']
+      : [];
   return {
     headless: false,
     acceptDownloads: true,
