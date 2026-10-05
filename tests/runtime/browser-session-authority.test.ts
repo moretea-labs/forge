@@ -1068,7 +1068,11 @@ describe('browser session compatibility on Computer target authority', () => {
       args: { extension_path: extensionPath }, origin: { surface: 'mcp', actor: 'test' },
     });
     expect(launchedProfileDir).toBe(userDataDir);
-    expect(launchOptions?.ignoreDefaultArgs).toEqual(['--disable-extensions']);
+    expect(launchOptions?.ignoreDefaultArgs).toEqual([
+      '--disable-extensions',
+      '--use-mock-keychain',
+      '--password-store=basic',
+    ]);
     expect(launchOptions?.args).toEqual([
       '--profile-directory=Default',
       '--load-extension=' + canonicalExtensionPath,
@@ -1079,6 +1083,54 @@ describe('browser session compatibility on Computer target authority', () => {
       extension: { id: SUPERVISOR_EXTENSION_ID, path: canonicalExtensionPath, enabled: true },
       verified: true,
     });
+  });
+
+  test('ordinary managed browsing preserves native password storage for a custom user profile', async () => {
+    const { controllerHome, repoA } = fixture();
+    mkdirSync(join(repoA, '.forge', 'plugins'), { recursive: true });
+    const userDataDir = join(repoA, 'chrome-user-data');
+    mkdirSync(join(userDataDir, 'Default'), { recursive: true });
+    writeFileSync(join(userDataDir, 'Local State'), '{}');
+    writeFileSync(join(userDataDir, 'Default', 'Preferences'), '{}');
+    writeFileSync(join(repoA, '.forge', 'plugins', 'browser.json'), JSON.stringify({
+      schemaVersion: 3, enabled: true, provider: 'playwright', browserMode: 'managed_persistent',
+      profileMode: 'custom', profileDir: userDataDir, profileDirectory: 'Default',
+      executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+      cdpAttachFallback: 'fail_closed', nativeAttachMode: 'disabled',
+    }));
+    let launchOptions: Record<string, unknown> | undefined;
+    setBrowserPluginRuntimeHooksForTest({
+      moduleAvailable: () => true,
+      loadPlaywright: () => ({
+        chromium: {
+          launchPersistentContext: async (_dir: string, options: Record<string, unknown>) => {
+            launchOptions = options;
+            const page = {
+              url: () => 'https://example.com/',
+              title: async () => 'Example',
+              goto: async () => undefined,
+              evaluate: async <T>() => undefined as T,
+              screenshot: async () => Buffer.from(''),
+              click: async () => undefined,
+              fill: async () => undefined,
+              press: async () => undefined,
+              waitForSelector: async () => undefined,
+              bringToFront: async () => undefined,
+              close: async () => undefined,
+            };
+            return { pages: () => [page], newPage: async () => page, close: async () => undefined };
+          },
+        },
+      }),
+    });
+    await executeBrowserPluginAction({
+      controllerHome, repoId: 'repo-a', repoRoot: repoA, pluginId: 'browser',
+      requestId: 'ordinary-custom-profile-managed', actionId: 'create_session',
+      args: { session_id: 'ordinary-custom-profile-managed', url: 'https://example.com/' },
+      origin: { surface: 'mcp', actor: 'test' },
+    });
+    expect(launchOptions?.ignoreDefaultArgs).toEqual(['--use-mock-keychain', '--password-store=basic']);
+    expect(launchOptions?.args).toEqual(['--profile-directory=Default']);
   });
 
   test('rejects managed native messaging declarations whose allowed origin does not match the stable extension id', async () => {

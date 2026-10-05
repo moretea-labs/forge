@@ -1613,13 +1613,17 @@ function launchOptionsForRepo(repoRoot: string, config: BrowserPluginConfig, pro
     ...(extensionPaths.length > 0 && config.profileMode !== 'custom' ? [`--disable-extensions-except=${extensionPaths.join(',')}`] : []),
     ...(extensionPaths.length > 0 ? [`--load-extension=${extensionPaths.join(',')}`] : []),
   ];
+  const ignoreDefaultArgs = [
+    ...(extensionPaths.length > 0 ? ['--disable-extensions'] : []),
+    ...(config.profileMode === 'custom' ? ['--use-mock-keychain', '--password-store=basic'] : []),
+  ];
   return {
     headless: false,
     acceptDownloads: true,
     viewport: { width: 1280, height: 900 },
     ...(config.executablePath ? { executablePath: resolveConfiguredPath(repoRoot, config.executablePath) } : {}),
     ...(!config.executablePath && extensionPaths.length === 0 && config.browserChannel && config.browserChannel !== 'chromium' ? { channel: config.browserChannel } : {}),
-    ...(extensionPaths.length > 0 ? { ignoreDefaultArgs: ['--disable-extensions'] } : {}),
+    ...(ignoreDefaultArgs.length > 0 ? { ignoreDefaultArgs } : {}),
     ...(args.length > 0 ? { args } : {}),
   };
 }
