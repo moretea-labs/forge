@@ -4,7 +4,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSy
 import { tmpdir } from 'os';
 import { delimiter, dirname, join, relative } from 'path';
 import { spawnSync } from 'child_process';
-import { FORGE_MACOS_RUNTIME_SIGNING_IDENTIFIER, assertRuntimeReleaseExecutionCanaries, assertRuntimeReleaseFiles, stageRuntimeRelease, stageRuntimeReleaseFromCandidateSource, withRuntimeReleaseSourceSnapshot, type MacOSRuntimeCodeSigning } from '../../src/runtime/root/release-materialize';
+import { FORGE_MACOS_RUNTIME_SIGNING_IDENTIFIER, assertRuntimeReleaseExecutionCanaries, assertRuntimeReleaseFiles, macOSRuntimeSigningMayRetryWithoutTimestamp, stageRuntimeRelease, stageRuntimeReleaseFromCandidateSource, withRuntimeReleaseSourceSnapshot, type MacOSRuntimeCodeSigning } from '../../src/runtime/root/release-materialize';
 import { runtimeReleaseCanaryEnvironment } from '../../src/runtime/root/release-execution-canary';
 import { loadRuntimeReleaseManifest } from '../../src/runtime/root/release-manifest';
 import { resolveCompiledRuntimeBundle } from '../../src/runtime/root/release-loader';
@@ -263,6 +263,16 @@ describe('persistent Gateway release retention', () => {
       expect(report.skippedByReason.authority_unavailable).toBe(1);
       expect(report.errors.some((entry) => entry.includes('package connector release authority'))).toBe(true);
     }
+  });
+});
+
+describe('macOS Runtime signing timestamp fallback', () => {
+  test('permits fallback only for explicit timestamp-service unavailability', () => {
+    expect(macOSRuntimeSigningMayRetryWithoutTimestamp('The timestamp service is not available.')).toBe(true);
+    expect(macOSRuntimeSigningMayRetryWithoutTimestamp('/tmp/forge-runtime: The timestamp service is not available.')).toBe(true);
+    expect(macOSRuntimeSigningMayRetryWithoutTimestamp('CSSMERR_TP_CERT_EXPIRED')).toBe(false);
+    expect(macOSRuntimeSigningMayRetryWithoutTimestamp('errSecInternalComponent')).toBe(false);
+    expect(macOSRuntimeSigningMayRetryWithoutTimestamp('RUNTIME_RELEASE_MACOS_SIGNING_TEAM_CHANGED')).toBe(false);
   });
 });
 

@@ -228,6 +228,10 @@ function inspectMacOSRuntimeCodeSigning(executable: string): MacOSRuntimeCodeSig
   return parseMacOSRuntimeCodeSigning({ identifier, teamIdentifier, authority, designatedRequirement }, 'RUNTIME_RELEASE_MACOS_SIGNATURE_INVALID')!;
 }
 
+export function macOSRuntimeSigningMayRetryWithoutTimestamp(detail: string): boolean {
+  return /(?:^|\n).*timestamp service is not available\.?\s*$/im.test(detail);
+}
+
 function defaultSignMacOSRuntime(input: { executable: string; controllerHome: string }): MacOSRuntimeCodeSigning {
   const identities = runProcess('security', ['find-identity', '-v', '-p', 'codesigning'], { timeoutMs: 30_000, maxOutputBytes: 128 * 1024 });
   if (!identities.ok) throw new Error(`RUNTIME_RELEASE_MACOS_SIGNING_IDENTITY_LOOKUP_FAILED: ${identities.stderr || identities.stdout || identities.error}`.slice(0, 2_000));
@@ -250,9 +254,16 @@ function defaultSignMacOSRuntime(input: { executable: string; controllerHome: st
     selected = eligible[0];
   }
   if (expectedTeam && selected.teamIdentifier !== expectedTeam) throw new Error('RUNTIME_RELEASE_MACOS_SIGNING_TEAM_CHANGED');
-  const signed = runProcess('codesign', [
-    '--force', '--sign', selected.hash, '--identifier', FORGE_MACOS_RUNTIME_SIGNING_IDENTIFIER, '--options', 'runtime', input.executable,
-  ], { timeoutMs: 120_000, maxOutputBytes: 128 * 1024 });
+  const signingArgs = [
+    '--force', '--sign', selected.hash, '--identifier', FORGE_MACOS_RUNTIME_SIGNING_IDENTIFIER, '--options', 'runtime',
+  ];
+  let signed = runProcess('codesign', [...signingArgs, input.executable], { timeoutMs: 120_000, maxOutputBytes: 128 * 1024 });
+  if (!signed.ok) {
+    const detail = `${signed.stderr ?? ''}\n${signed.stdout ?? ''}\n${signed.error ?? ''}`;
+    if (macOSRuntimeSigningMayRetryWithoutTimestamp(detail)) {
+      signed = runProcess('codesign', [...signingArgs, '--timestamp=none', input.executable], { timeoutMs: 120_000, maxOutputBytes: 128 * 1024 });
+    }
+  }
   if (!signed.ok) throw new Error(`RUNTIME_RELEASE_MACOS_SIGNING_FAILED: ${signed.stderr || signed.stdout || signed.error}`.slice(0, 2_000));
   const inspected = inspectMacOSRuntimeCodeSigning(input.executable);
   if (inspected.teamIdentifier !== selected.teamIdentifier) throw new Error('RUNTIME_RELEASE_MACOS_SIGNING_TEAM_MISMATCH');
