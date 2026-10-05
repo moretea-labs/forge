@@ -53,3 +53,4 @@ tests/runtime/context-plane.test.ts
 # Supervisor service unit tests use synthetic homeDir placeholders for PATH assembly.
 # Local monitor bridge defaults may reference a development repository id.
 scripts/run-mobile-monitor-bridge.ts
+tests/runtime/browser-session-authority.test.ts # Intentional placeholder user profile used to prove foreign Chrome profiles are never reclaimed.

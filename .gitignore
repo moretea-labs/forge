@@ -126,6 +126,7 @@ _ops/
 .env.*
 !.env.example
 # OS metadata
+.design-harness/tokens.json
 # External references
 # Operations
 # Local operations state

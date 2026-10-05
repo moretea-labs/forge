@@ -4,10 +4,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { WorkflowSupervisorControlPlane } from '../supervisor/control-plane';
 import { SUPERVISOR_BLOCK_END, SUPERVISOR_BLOCK_START } from '../supervisor/protocol';
-import { WorkflowSupervisorStore } from '../supervisor/store';
+import { WORKFLOW_SUPERVISOR_MIN_TURN_INTERVAL_MS, WorkflowSupervisorStore } from '../supervisor/store';
 
 const home = mkdtempSync(join(tmpdir(), 'forge-supervisor-recovery-'));
 let mechanicalNowMs = Date.now();
+const TURN_ADVANCE_MS = WORKFLOW_SUPERVISOR_MIN_TURN_INTERVAL_MS + 1_000;
 const validators = { completionContract: async () => ({ valid: true, reason: 'ok' }), userBlockerPolicy: async () => ({ valid: true, reason: 'ok' }) };
 const control = () => new WorkflowSupervisorControlPlane(new WorkflowSupervisorStore(home, { now: () => mechanicalNowMs }), validators);
 const block = (
@@ -52,6 +53,7 @@ try {
   const turn1 = await supervisor.browserObserveAssistant({ conversationId, conversationUrl, responseText: response1 });
   const continuation = turn1.successorEffect!;
 
+  mechanicalNowMs += TURN_ADVANCE_MS;
   poll = supervisor.browserPoll({ conversationId, conversationUrl });
   assert.equal(poll.command?.effectId, continuation.effectId); assert.equal(poll.command?.dispatchGeneration, 1);
   assert.equal(supervisor.browserBeginEffect({ conversationId, conversationUrl, effectId: continuation.effectId, dispatchId: 'continue-g1', dispatchGeneration: 1, evidence: { latest_user_text: enrollment.prompt, latest_assistant_response: response1 } }).started, true);
@@ -73,6 +75,7 @@ try {
   const turn2b = await supervisor.browserObserveAssistant({ conversationId, conversationUrl, responseText: response2 });
   assert.equal(turn2a.successorEffect?.effectId, turn2b.successorEffect?.effectId); assert.equal(turn2b.deduplicated, true);
   const terminalEffect = turn2a.successorEffect!;
+  mechanicalNowMs += TURN_ADVANCE_MS;
   poll = supervisor.browserPoll({ conversationId, conversationUrl });
   assert.equal(supervisor.browserBeginEffect({ conversationId, conversationUrl, effectId: terminalEffect.effectId, dispatchId: 'terminal-g1', dispatchGeneration: poll.command!.dispatchGeneration, evidence: { latest_user_text: continuation.prompt, latest_assistant_response: response2 } }).started, true);
   supervisor.browserObserveEffect({ conversationId, conversationUrl, effectId: terminalEffect.effectId, observationId: 'terminal-applied', outcome: 'applied', evidence: { exact_user_message: true } });

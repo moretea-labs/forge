@@ -422,7 +422,7 @@ export async function runPersistedCheckViaProcessRuntime(
       issueId: input.verificationBinding?.issueId,
       taskId: input.verificationBinding?.taskId,
       checkResultReceiptPath,
-      workVerificationSnapshot: Boolean(verificationSnapshot),
+      ...(verificationSnapshot ? { workVerificationSnapshot: true } : {}),
     },
     signal: input.signal,
   });

@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WorkflowSupervisorControlPlane } from '../supervisor/control-plane';
 import { SUPERVISOR_BLOCK_END, SUPERVISOR_BLOCK_START } from '../supervisor/protocol';
-import { WorkflowSupervisorStore } from '../supervisor/store';
+import { WORKFLOW_SUPERVISOR_MIN_TURN_INTERVAL_MS, WorkflowSupervisorStore } from '../supervisor/store';
 
 const TASK_ID = 'process-restart-proof-task';
 const CONVERSATION_ID = '11111111-aaaa-bbbb-cccc-222222222222';
@@ -21,6 +21,7 @@ function arg(name: string): string | undefined {
 }
 
 const mechanicalNowMs = Number(arg('--now-ms') ?? Date.now());
+const TURN_ADVANCE_MS = WORKFLOW_SUPERVISOR_MIN_TURN_INTERVAL_MS + 1_000;
 
 function control(home: string): WorkflowSupervisorControlPlane {
   return new WorkflowSupervisorControlPlane(new WorkflowSupervisorStore(home, { now: () => mechanicalNowMs }), {
@@ -248,7 +249,11 @@ async function main(): Promise<void> {
       'done-3',
       'quiescent',
     ].entries()) {
-      const child = spawnSync(process.execPath, [script, '--phase', nextPhase, '--home', home, '--now-ms', String(baseNowMs + index * 30_000)], {
+      // A successor send is intentionally throttled from the receipt that
+      // authorized it. Advance the deterministic clock by that contract
+      // interval so this restart smoke verifies recovery, not a rate-limit
+      // rejection.
+      const child = spawnSync(process.execPath, [script, '--phase', nextPhase, '--home', home, '--now-ms', String(baseNowMs + index * TURN_ADVANCE_MS)], {
         cwd: process.cwd(),
         encoding: 'utf8',
         stdio: ['ignore', 'pipe', 'pipe'],

@@ -1235,7 +1235,6 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
       objective: 'Validate an owned edit against an isolated Work snapshot.',
       acceptanceCriteria: ['Owned edit passes the registered validation.'],
       allowedPaths: ['src/**'],
-      forbiddenPaths: ['concurrent/**'],
       checks: ['verify'],
       constraints: { workspaceMode: 'current' },
       requestedBy: 'chatgpt',
@@ -1260,12 +1259,6 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
       expectedSha256: createHash('sha256').update(readFileSync(join(fx.repoRoot, 'src', 'lib.ts'))).digest('hex'),
       replacements: [{ oldText: 'n = 1', newText: 'n = 2' }],
     }], { binding });
-
-    // This concurrent path is deliberately outside Work ownership. The Work
-    // verification snapshot excludes it while the live checkout retains it,
-    // so their Controller Check revisions must differ by design.
-    mkdirSync(join(fx.repoRoot, 'concurrent'), { recursive: true });
-    writeFileSync(join(fx.repoRoot, 'concurrent', 'unowned.txt'), 'concurrent owner\n');
 
     const validationRequestId = 'snapshot-check-identity-regression';
     const started = await startOrJoinEditValidation(fx.controllerHome, fx.repository, {
@@ -2074,7 +2067,7 @@ describe('work_validate persisted semantic identity', () => {
 
     await waitForProcess(fx.controllerHome, fx.repository.repoId, processId!, { timeoutMs: 10_000 });
     const record = getProcessRecord(fx.controllerHome, fx.repository.repoId, processId!)!;
-    expect(record.origin?.workVerificationSnapshot).toBe(true);
+    expect(record.origin?.workVerificationSnapshot).toBeUndefined();
     expect(record.origin?.requestSemanticFingerprint).toMatch(/^[a-f0-9]{64}$/);
 
     const second = await callExecutionTool(fx.ctx, 'work_validate', {

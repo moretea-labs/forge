@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { WorkflowSupervisorControlPlane } from '../supervisor/control-plane';
 import { SUPERVISOR_BLOCK_END, SUPERVISOR_BLOCK_START } from '../supervisor/protocol';
-import { WorkflowSupervisorStore } from '../supervisor/store';
+import { WORKFLOW_SUPERVISOR_MIN_TURN_INTERVAL_MS, WorkflowSupervisorStore } from '../supervisor/store';
 import { NativeMessageDecoder, encodeNativeMessage } from '../supervisor/native-messaging/protocol';
 import { renderWorkflowSupervisorNativeManifest } from '../supervisor/native-messaging/manifest';
 import { ALLOWED_BROWSER_METHODS } from '../supervisor/native-messaging/host';
@@ -12,7 +12,9 @@ import { WorkflowSupervisorEphemeralDiscovery } from '../supervisor/server';
 
 const home = mkdtempSync(join(tmpdir(), 'forge-supervisor-chrome-'));
 try {
-  const control = new WorkflowSupervisorControlPlane(new WorkflowSupervisorStore(home), { completionContract: async () => ({ valid: true, reason: 'ok' }), userBlockerPolicy: async () => ({ valid: true, reason: 'ok' }) });
+  let mechanicalNowMs = Date.now();
+  const turnAdvanceMs = WORKFLOW_SUPERVISOR_MIN_TURN_INTERVAL_MS + 1_000;
+  const control = new WorkflowSupervisorControlPlane(new WorkflowSupervisorStore(home, { now: () => mechanicalNowMs }), { completionContract: async () => ({ valid: true, reason: 'ok' }), userBlockerPolicy: async () => ({ valid: true, reason: 'ok' }) });
   const conversationId = 'WEB:11111111-2222-3333-4444-555555555555';
   const conversationUrl = `https://chatgpt.com/c/${conversationId}`;
   control.registerTask({ taskId: 'task-1', conversationId, conversationUrl, objective: 'Keep implementing the original Forge goal.', completionContract: {}, continuationPolicy: {}, userBlockerPolicy: {} });
@@ -26,6 +28,7 @@ try {
   const response = `Work remains.\n${SUPERVISOR_BLOCK_START}\n${JSON.stringify({ action: 'CONTINUE', source_effect_id: enrollment.effectId, checkpoint: 'step 4', reason: 'more work', evidence: ['receipt'], conversation_id: conversationId, task_id: 'task-1', supervisor_state: 'running', active_scope: 'goal:task-1' })}\n${SUPERVISOR_BLOCK_END}`;
   const observed = await control.browserObserveAssistant({ conversationId, conversationUrl, responseText: response });
   assert.equal(observed.action, 'CONTINUE'); assert.ok(observed.successorEffect);
+  mechanicalNowMs += turnAdvanceMs;
   poll = control.browserPoll({ conversationId, conversationUrl }); assert.equal(poll.command?.effectId, observed.successorEffect?.effectId); assert.equal(poll.command?.mode, 'send');
   const projectRoutePoll = control.browserPoll({ conversationId, conversationUrl: `https://chatgpt.com/g/not-the-same/c/${conversationId}` });
   assert.equal(projectRoutePoll.command?.effectId, observed.successorEffect?.effectId);
