@@ -596,18 +596,19 @@ export class WorkflowSupervisorStore {
         if (input.repoId?.trim() && taskRepoId !== input.repoId.trim()) continue;
         const completionRows = statement(db, 'SELECT * FROM completions WHERE task_id = ? AND committed_at >= ? ORDER BY committed_at, completion_fingerprint', (s) => s.all(task.taskId, input.notBefore)) as Record<string, unknown>[];
         const completions = completionRows.map(completionFromRow);
-        for (let index = 0; index + 2 < completions.length; index += 1) {
+        // Release acceptance proves continuation liveness, not semantic task completion.
+        // Requiring DONE here deadlocks a long-running Supervisor goal against its own known-good gate.
+        for (let index = 0; index + 1 < completions.length; index += 1) {
           const first = completions[index]!;
           const second = completions[index + 1]!;
-          const third = completions[index + 2]!;
-          if (first.action !== 'CONTINUE' || second.action !== 'CONTINUE' || third.action !== 'DONE') continue;
-          const rows = [first, second, third].map((completion) => statement(db, 'SELECT * FROM effects WHERE effect_id = ?', (s) => s.get(completion.sourceEffectId)) as Record<string, unknown> | undefined);
+          if (first.action !== 'CONTINUE' || second.action !== 'CONTINUE') continue;
+          const rows = [first, second].map((completion) => statement(db, 'SELECT * FROM effects WHERE effect_id = ?', (s) => s.get(completion.sourceEffectId)) as Record<string, unknown> | undefined);
           if (rows.some((row) => !row)) continue;
-          const [firstEffect, secondEffect, thirdEffect] = rows.map((row) => effectFromRow(row!)) as [WorkflowSupervisorEffect, WorkflowSupervisorEffect, WorkflowSupervisorEffect];
-          if (secondEffect.sourceCompletionFingerprint !== first.completionFingerprint || thirdEffect.sourceCompletionFingerprint !== second.completionFingerprint) continue;
+          const [firstEffect, secondEffect] = rows.map((row) => effectFromRow(row!)) as [WorkflowSupervisorEffect, WorkflowSupervisorEffect];
+          if (secondEffect.sourceCompletionFingerprint !== first.completionFingerprint) continue;
           const runtimeInstanceIds: string[] = [];
           let valid = true;
-          for (const effect of [firstEffect, secondEffect, thirdEffect]) {
+          for (const effect of [firstEffect, secondEffect]) {
             const dispatchRows = statement(db, "SELECT payload_json FROM events WHERE effect_id = ? AND kind = 'effect_dispatch_started' AND occurred_at >= ? ORDER BY event_id", (s) => s.all(effect.effectId, input.notBefore)) as Array<{ payload_json?: string }>;
             if (dispatchRows.length !== 1) { valid = false; break; }
             const evidence = parsedObject(dispatchRows[0]?.payload_json);
@@ -620,15 +621,13 @@ export class WorkflowSupervisorStore {
           }
           const minimumRuntimeInstances = task.continuationPolicy.kind === 'standalone_supervisor' ? 1 : 2;
           if (!valid || new Set(runtimeInstanceIds).size < minimumRuntimeInstances) continue;
-          const terminalDone = statement(db, "SELECT 1 AS ok FROM events WHERE task_id = ? AND completion_fingerprint = ? AND kind = 'terminal_done' AND occurred_at >= ? LIMIT 1", (s) => s.get(task.taskId, third.completionFingerprint, input.notBefore));
-          if (!terminalDone) continue;
           return {
             taskId: task.taskId, conversationId: task.conversationId, activeReleaseId,
-            actions: ['CONTINUE', 'CONTINUE', 'DONE'],
-            completionFingerprints: [first.completionFingerprint, second.completionFingerprint, third.completionFingerprint],
-            sourceEffectIds: [first.sourceEffectId, second.sourceEffectId, third.sourceEffectId],
+            actions: ['CONTINUE', 'CONTINUE'],
+            completionFingerprints: [first.completionFingerprint, second.completionFingerprint],
+            sourceEffectIds: [first.sourceEffectId, second.sourceEffectId],
             runtimeInstanceIds: [...new Set(runtimeInstanceIds)],
-            firstCommittedAt: first.committedAt, lastCommittedAt: third.committedAt,
+            firstCommittedAt: first.committedAt, lastCommittedAt: second.committedAt,
           };
         }
       }

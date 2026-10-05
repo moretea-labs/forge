@@ -61,9 +61,9 @@ export interface WorkflowSupervisorContinuationProof {
   taskId: string;
   conversationId: string;
   activeReleaseId: string;
-  actions: ['CONTINUE', 'CONTINUE', 'DONE'];
-  completionFingerprints: [string, string, string];
-  sourceEffectIds: [string, string, string];
+  actions: ['CONTINUE', 'CONTINUE'];
+  completionFingerprints: [string, string];
+  sourceEffectIds: [string, string];
   runtimeInstanceIds: string[];
   firstCommittedAt: string;
   lastCommittedAt: string;

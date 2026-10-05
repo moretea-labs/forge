@@ -933,7 +933,13 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
       proposal: { action: 'CONTINUE' as const, sourceEffectId: second.effectId, checkpoint: 'round-2', reason: 'continue', evidence: [], conversationId, taskId, supervisorState: 'running' as const },
       committedAt: new Date().toISOString(),
     };
-    const third = store.commitCompletion(secondCompletion, { effectId: 'fx_33333333333333333333333333333333', kind: 'continuation', prompt: 'round three' }).successorEffect!;
+    const secondResult = store.commitCompletion(secondCompletion, { effectId: 'fx_33333333333333333333333333333333', kind: 'continuation', prompt: 'round three' });
+    expect(control.continuationProof({ repoId: 'repo-proof', activeReleaseId: releaseId, notBefore })).toMatchObject({
+      taskId, conversationId, activeReleaseId: releaseId,
+      actions: ['CONTINUE', 'CONTINUE'],
+      runtimeInstanceIds: ['runtime-a', 'runtime-b'],
+    });
+    const third = secondResult.successorEffect!;
     expect(store.recordEffectDispatchStarted(third.effectId, 1, 'dispatch-3', { active_release_id: releaseId, runtime_instance_id: 'runtime-b' })).toBe(true);
     store.recordEffectObservation(third.effectId, 'applied-3', 'applied');
     const thirdCompletion = {
@@ -948,7 +954,7 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     expect(control.continuationProof({ repoId: 'repo-proof', activeReleaseId: 'other-release', notBefore })).toBeUndefined();
     expect(control.continuationProof({ repoId: 'repo-proof', activeReleaseId: releaseId, notBefore })).toMatchObject({
       taskId, conversationId, activeReleaseId: releaseId,
-      actions: ['CONTINUE', 'CONTINUE', 'DONE'],
+      actions: ['CONTINUE', 'CONTINUE'],
       runtimeInstanceIds: ['runtime-a', 'runtime-b'],
     });
     store.close();

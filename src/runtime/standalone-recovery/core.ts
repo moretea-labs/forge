@@ -6355,7 +6355,7 @@ export async function promoteConfiguredRuntimeReleaseSessionKnownGood(
         {
           id: 'supervisor_continuation_proof',
           kind: 'soak',
-          summary: `Supervisor task ${continuationProof.taskId} proved CONTINUE -> CONTINUE -> DONE on active release ${continuationProof.activeReleaseId} across Runtime instances ${continuationProof.runtimeInstanceIds.join(',')}`,
+          summary: `Supervisor task ${continuationProof.taskId} proved ${continuationProof.actions.join(' -> ')} on active release ${continuationProof.activeReleaseId} across Runtime instances ${continuationProof.runtimeInstanceIds.join(',')}`,
         },
         {
           id: 'known_good',
