@@ -12,6 +12,7 @@
       "docs/architecture/decisions/**"
     ],
     "source": [
+      "apps/**",
       "packages/**",
       "src/**",
       "adapters/**",
@@ -69,6 +70,13 @@
       "version": "1",
       "kinds": [
         "typescript"
+      ]
+    },
+    {
+      "id": "rust-engineering",
+      "version": "1",
+      "kinds": [
+        "rust"
       ]
     }
   ],
