@@ -118,6 +118,21 @@ function deliveryTargetCheckout(
   return { target, targetStatus, targetBranch };
 }
 
+function workHandleHasTerminalSemanticAuthority(
+  controllerHome: string,
+  repositoryId: string,
+  workId: string,
+): boolean {
+  try {
+    const contract = getWorkContract({ controllerHome, repoId: repositoryId }, workId);
+    if (!contract) return false;
+    const state = semanticWorkState(contract);
+    return state === 'completed' || state === 'cancelled';
+  } catch {
+    return false;
+  }
+}
+
 function assertTargetMutationAvailable(
   controllerHome: string,
   handle: WorkHandleState,
@@ -135,7 +150,8 @@ function assertTargetMutationAvailable(
     .find((other) => other.workId !== handle.workId
       && other.checkoutId === targetCheckoutId
       && other.state !== 'cleaned'
-      && other.state !== 'failed');
+      && other.state !== 'failed'
+      && !workHandleHasTerminalSemanticAuthority(controllerHome, handle.repositoryId, other.workId));
   if (blockingWork) {
     throw new Error(`WORK_DELIVERY_TARGET_WORK_ACTIVE: ${blockingWork.workId}`);
   }
