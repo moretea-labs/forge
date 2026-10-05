@@ -76,8 +76,8 @@ describe('local_recovery managed transport provider', () => {
     let persisted = false;
     const existing = ensureSourceRepositoryProvenance('/tmp/controller', {
       loadRecoveryConfig: () => ({ controllerHome: '/tmp/controller', primaryRuntimeSourceRoot: '/tmp', primaryRuntimeSourceRepositoryId: 'repo_existing' }),
-      getRepository: () => ({ repoId: 'repo_existing', enabled: true, canonicalRoot: '/var' }),
-      findRegisteredRepositoryByCheckoutRoot: () => ({ repoId: 'repo_existing' }),
+      getRepository: () => ({ repoId: 'repo_existing', enabled: true, canonicalRoot: '/tmp' }),
+      findRegisteredRepositoryByCheckoutRoot: () => { throw new Error('root owner lookup must not run when repoId authority exists'); },
       createRecoveryConfig: () => { persisted = true; return {}; },
     });
     expect(existing.primaryRuntimeSourceRepositoryId).toBe('repo_existing');
@@ -85,12 +85,22 @@ describe('local_recovery managed transport provider', () => {
     expect(persisted).toBe(false);
   });
 
-  test('rejects an existing source root that belongs to a different registered repository', () => {
-    expect(() => ensureSourceRepositoryProvenance('/tmp/controller', {
+  test('projects an existing different source root back to the authoritative repository canonical root', () => {
+    const writes: unknown[] = [];
+    const result = ensureSourceRepositoryProvenance('/tmp/controller', {
       loadRecoveryConfig: () => ({ controllerHome: '/tmp/controller', primaryRuntimeSourceRoot: '/tmp', primaryRuntimeSourceRepositoryId: 'repo_expected' }),
       getRepository: () => ({ repoId: 'repo_expected', enabled: true, canonicalRoot: '/var' }),
-      findRegisteredRepositoryByCheckoutRoot: () => ({ repoId: 'repo_other' }),
-    })).toThrow(/source root is not an active registered checkout of its configured repository id/);
+      findRegisteredRepositoryByCheckoutRoot: () => { throw new Error('root owner lookup must not run when repoId authority exists'); },
+      createRecoveryConfig: (controllerHome: string, patch: object) => {
+        writes.push({ controllerHome, patch });
+        return { controllerHome, primaryRuntimeSourceRoot: '/var', primaryRuntimeSourceRepositoryId: 'repo_expected' };
+      },
+    });
+    expect(result).toMatchObject({ primaryRuntimeSourceRoot: '/var', primaryRuntimeSourceRepositoryId: 'repo_expected' });
+    expect(writes).toEqual([{
+      controllerHome: '/tmp/controller',
+      patch: { primaryRuntimeSourceRoot: '/var', primaryRuntimeSourceRepositoryId: 'repo_expected' },
+    }]);
   });
 
   test('repairs a stale configured source root from the authoritative registered repository id', () => {
