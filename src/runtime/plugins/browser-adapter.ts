@@ -2354,7 +2354,7 @@ async function installExtensionThroughCustomVivaldiCdpPort(
       });
     }
     const endpoint = `http://127.0.0.1:${port}`;
-    browser = await connectOverCDP(endpoint, { timeout: Math.max(1_000, Math.min(timeoutMs, 30_000)) });
+    browser = await connectOverCDP.call(runtime.chromium, endpoint, { timeout: Math.max(1_000, Math.min(timeoutMs, 30_000)) });
     const context = browser.contexts()[0];
     if (!context) {
       throw new AssistantPluginError('PLUGIN_BROWSER_EXTENSION_CONTROL_UNAVAILABLE', 'Vivaldi CDP attach returned no browser context for the custom profile.', { retryable: true, details: { pid, endpoint } });

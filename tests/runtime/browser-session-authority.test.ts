@@ -1184,7 +1184,8 @@ describe('browser session compatibility on Computer target authority', () => {
       loadPlaywright: () => ({
         chromium: {
           launchPersistentContext: async () => { throw new Error('Vivaldi extension install must not use remote-debugging-pipe'); },
-          connectOverCDP: async (endpoint) => {
+          connectOverCDP: async function (this: { connectOverCDP: unknown }, endpoint: string) {
+            expect(typeof this.connectOverCDP).toBe('function');
             expect(endpoint).toBe('http://127.0.0.1:9345');
             return browser;
           },
