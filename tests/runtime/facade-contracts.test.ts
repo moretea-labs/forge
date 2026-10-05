@@ -39,6 +39,23 @@ describe('handoff and facade contracts', () => {
     expect(FACADE_TOOLS).toHaveLength(6);
   });
 
+  test('exposes exact Work validation through capability_execute without widening the top-level facade', () => {
+    const descriptor = listCapabilityDescriptors().find((entry) => entry.capabilityId === 'repository.validation');
+    expect(descriptor).toMatchObject({
+      domain: 'repository', group: 'repository-core', operationClass: 'execute', risk: 'workspace_write',
+      exposedVia: 'capability_execute', schemaExposure: 'stable_static',
+    });
+    const schema = getCoreCapabilityExecutionSchema('repository.validation') as {
+      executeWith?: string;
+      actions?: Record<string, { argumentsSchema?: { required?: string[]; properties?: Record<string, unknown> } }>;
+    } | undefined;
+    expect(schema?.executeWith).toBe('capability_execute');
+    expect(Object.keys(schema?.actions ?? {})).toEqual(['validate_work']);
+    expect(schema?.actions?.validate_work?.argumentsSchema?.required).toEqual(['work_id']);
+    expect(schema?.actions?.validate_work?.argumentsSchema?.properties).not.toHaveProperty('commands');
+    expect(FACADE_TOOLS).toHaveLength(6);
+  });
+
   test('exposes standalone Workflow Supervisor through capability_execute without widening the facade', () => {
     const descriptor = listCapabilityDescriptors().find((entry) => entry.capabilityId === 'controller.workflow_supervisor');
     expect(descriptor).toMatchObject({

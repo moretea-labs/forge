@@ -128,6 +128,16 @@ const CORE_CAPABILITIES: CapabilityDescriptor[] = [
     summary: 'Persist model-authored Plan working memory with stable identity and semantic revision/CAS; Plan items do not own execution, checks, or acceptance.',
   },
   {
+    capabilityId: 'repository.validation',
+    domain: 'repository',
+    group: 'repository-core',
+    operationClass: 'execute',
+    risk: 'workspace_write',
+    exposedVia: 'capability_execute',
+    schemaExposure: 'stable_static',
+    summary: 'Refresh exact Work validation authority through the existing Work validation owner without adding a top-level MCP tool or command execution surface.',
+  },
+  {
     capabilityId: 'repository.git',
     domain: 'repository',
     group: 'git',
@@ -414,6 +424,29 @@ export function getCoreCapabilityExecutionSchema(capabilityId: string): Record<s
             properties: {
               active_release_id: { type: 'string', minLength: 1, maxLength: 256 },
               not_before: { type: 'string', minLength: 1, maxLength: 128 },
+            },
+          },
+        },
+      },
+    };
+  }
+  if (capabilityId === 'repository.validation') {
+    return {
+      capabilityId,
+      executeWith: 'capability_execute',
+      actions: {
+        validate_work: {
+          readOnly: false,
+          risk: 'workspace_write',
+          argumentsSchema: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['work_id'],
+            properties: {
+              session_id: { type: 'string', minLength: 1, maxLength: 256 },
+              work_id: { type: 'string', minLength: 1, maxLength: 256 },
+              check_ids: { type: 'array', maxItems: 32, items: { type: 'string', minLength: 1, maxLength: 256 } },
+              interactive_wait_ms: { type: 'number', minimum: 0, maximum: 30000 },
             },
           },
         },

@@ -2,6 +2,7 @@ import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contra
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
 import { commitSelectedPaths, selectedPathDiff, stageSelectedPaths } from '../../../src/cli/repositories/selected-path-actions';
 import { deliverWork } from '../../../src/runtime/control-plane/execution/work-delivery-service';
+import { validateWork } from '../../../src/runtime/control-plane/execution/work-operation-service';
 import { startOrResumeSession } from './execution-tools';
 import { result } from './result-adapter';
 import { selected } from './shared-adapter';
@@ -133,6 +134,21 @@ export async function callCoreCapabilityAdapter(
         providerDispatchEffectPreserved: before.providerDispatchEffectId === after?.providerDispatchEffectId,
         providerRedispatched: false,
       });
+    }
+    if (capabilityId === 'repository.validation') {
+      if (action !== 'validate_work') {
+        return result({ error: { code: 'CORE_CAPABILITY_ACTION_UNSUPPORTED', message: `Unsupported repository.validation action: ${action || '<empty>'}` } }, true);
+      }
+      const repository = selected(ctx, args);
+      const sessionId = typeof input.session_id === 'string' && input.session_id.trim()
+        ? input.session_id.trim()
+        : startOrResumeSession(ctx).sessionId;
+      return result(await validateWork(ctx, {
+        ...input,
+        session_id: sessionId,
+        repo_id: repository.repoId,
+        request_id: typeof args.request_id === 'string' ? args.request_id.trim() : '',
+      }));
     }
     if (capabilityId !== 'repository.git') {
       return result({ error: { code: 'CORE_CAPABILITY_UNSUPPORTED', message: `Unsupported core capability: ${capabilityId || '<empty>'}` } }, true);
