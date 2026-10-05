@@ -197,13 +197,7 @@ export function ensureSourceRepositoryProvenance(controllerHome, injected = {}) 
     if (!canonicalRoot || !isAbsolute(canonicalRoot) || !existsSync(canonicalRoot)) {
       throw providerError('LOCAL_RECOVERY_SOURCE_CANONICAL_ROOT_UNAVAILABLE', 'Configured primary Runtime source repository canonical root is unavailable.');
     }
-    if (sourceRoot && existsSync(resolve(sourceRoot))) {
-      const owner = findRepository(sourceRoot, controllerHome);
-      if (!owner?.repoId || owner.repoId !== repositoryId) {
-        throw providerError('LOCAL_RECOVERY_SOURCE_REPOSITORY_MISMATCH', 'Configured primary Runtime source root is not an active registered checkout of its configured repository id.');
-      }
-      return recoveryConfig;
-    }
+    if (sourceRoot && resolve(sourceRoot) === canonicalRoot) return recoveryConfig;
     return persistConfig(controllerHome, {
       primaryRuntimeSourceRoot: canonicalRoot,
       primaryRuntimeSourceRepositoryId: repositoryId,
