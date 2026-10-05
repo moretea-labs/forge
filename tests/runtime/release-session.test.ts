@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { RELEASE_SESSION_PHASES, advanceReleaseSession, createReleaseSession, listReleaseSessions, migrateReleaseSessionState, readReleaseSession, recordReleaseSessionTransaction, releaseSessionCandidateIsRetired, type ReleaseSessionCandidateRelease, type ReleaseSessionStableRelease, type ReleaseSessionTransaction } from '../../src/runtime/release/release-session';
+import { RELEASE_SESSION_PHASES, advanceReleaseSession, createReleaseSession, listReleaseSessions, migrateReleaseSessionState, readReleaseSession, recordReleaseSessionTransaction, releaseSessionCandidateIsRetired, releaseSessionIsSoakingSupersededByStableAuthority, type ReleaseSessionCandidateRelease, type ReleaseSessionStableRelease, type ReleaseSessionTransaction } from '../../src/runtime/release/release-session';
 import type { RuntimeReleaseAuthority } from '../../src/runtime/root/release-store';
 import { advanceConfiguredRuntimeRelease, decideConfiguredRuntimeReleaseAction, decideConfiguredRuntimeReleaseReconciliation } from '../../src/runtime/release/release-coordinator';
 import { cancelConfiguredRuntimeReleaseSession, createRecoveryConfig } from '../../src/runtime/standalone-recovery/core';
@@ -247,6 +247,54 @@ describe('Recovery ReleaseSession', () => {
     expect(first.phase).toBe('failed');
     expect(() => createReleaseSession({ controllerHome: home, sessionId: second.sessionId, stable, stableRelease, candidate: second, sourceRevision: 'def456' }))
       .not.toThrow();
+  });
+
+  test('recognizes only a strictly newer different Runtime authority as superseding a soaking session', () => {
+    const home = mkdtempSync(join(tmpdir(), 'forge-release-session-emergency-supersession-'));
+    roots.push(home);
+    const { stable, stableRelease, candidate, candidateRelease } = lanes(home);
+    let session = createReleaseSession({ controllerHome: home, sessionId: candidate.sessionId, stable, stableRelease, candidate, sourceRevision: 'abc123' });
+    session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'built', candidateRelease });
+    session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'static_verified', receipts: ['type', 'runtime_architecture', 'architecture_sync', 'bootstrap'].map((id) => ({ id, kind: 'static_gate' as const, summary: id })) });
+    session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'candidate_booted' });
+    session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'candidate_verified', receipts: ['recovery', 'mcp', 'scheduler', 'supervisor', 'controller'].map((id) => ({ id, kind: 'candidate_canary' as const, summary: id })) });
+    session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'cutover_eligible' });
+    session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'cutover_attempting' });
+    session = recordReleaseSessionTransaction({
+      controllerHome: home,
+      sessionId: session.sessionId,
+      expectedRevision: session.revision,
+      transaction: {
+        schemaVersion: 1,
+        operationId: 'emergency-supersession-cutover',
+        candidateReleaseId: candidateRelease.releaseId,
+        cutoverAuthorityRevision: 8,
+        rollbackRelease: {
+          releaseId: stableRelease.releaseId,
+          artifactIdentity: stableRelease.artifactIdentity,
+          manifestPath: join(home, 'stable-manifest.json'),
+          manifestSha256: stableRelease.manifestSha256,
+          workerProtocolVersion: stableRelease.workerProtocolVersion,
+          publishedAt: new Date().toISOString(),
+          databaseBackup: { path: join(home, 'rollback.sqlite'), schemaVersion: 1, createdAt: new Date().toISOString(), auditEventCount: 1, recordCount: 1, databaseSha256: 'a'.repeat(64) },
+        },
+        startedAt: new Date().toISOString(),
+      },
+    });
+    session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'cutover_committed' });
+    session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'soaking' });
+
+    const exactCandidateAtSameRevision: ReleaseSessionStableRelease = { ...stableRelease, authorityRevision: 8, releaseId: candidateRelease.releaseId, artifactIdentity: candidateRelease.artifactIdentity, manifestSha256: candidateRelease.manifestSha256 };
+    expect(releaseSessionIsSoakingSupersededByStableAuthority(session, exactCandidateAtSameRevision)).toBe(false);
+    expect(releaseSessionIsSoakingSupersededByStableAuthority(session, { ...exactCandidateAtSameRevision, authorityRevision: 9 })).toBe(false);
+    expect(releaseSessionIsSoakingSupersededByStableAuthority(session, { ...exactCandidateAtSameRevision, releaseId: 'emergency-release' })).toBe(false);
+    expect(releaseSessionIsSoakingSupersededByStableAuthority(session, {
+      ...exactCandidateAtSameRevision,
+      authorityRevision: 9,
+      releaseId: 'emergency-release',
+      artifactIdentity: 'sha256:emergency',
+      manifestSha256: 'emergency-manifest',
+    })).toBe(true);
   });
 
   test('permits exactly one repair successor over a soaking current-Stable predecessor and prioritizes the successor', () => {

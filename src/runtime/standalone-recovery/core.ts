@@ -82,6 +82,7 @@ import {
   readReleaseSession,
   recordReleaseSessionTransaction,
   releaseSessionIsSoakingPredecessorOfStable,
+  releaseSessionIsSoakingSupersededByStableAuthority,
   type ReleaseSession,
   type ReleaseSessionCandidateRelease,
   type ReleaseSessionStableRelease,
@@ -4830,10 +4831,40 @@ export async function prepareConfiguredRuntimeReleaseSession(
             releaseSession: existing,
           };
         }
-        // A newer source is allowed to prepare against the exact release that
-        // this predecessor already cut over. The predecessor remains soaking
-        // so its rollback authority survives until the successor commits.
-        continue;
+        if (candidateIsCurrentStable) {
+          // A newer source is allowed to prepare against the exact release that
+          // this predecessor already cut over. The predecessor remains soaking
+          // so its rollback authority survives until the successor commits.
+          continue;
+        }
+        if (releaseSessionIsSoakingSupersededByStableAuthority(existing, stableRelease)) {
+          const superseded = advanceReleaseSession({
+            controllerHome: config.controllerHome,
+            sessionId: existing.sessionId,
+            expectedRevision: existing.revision,
+            phase: 'failed',
+            receipts: [{
+              id: 'soak_superseded_by_runtime_authority',
+              kind: 'soak',
+              summary: `Soaking release ${existing.candidateRelease?.releaseId ?? 'unknown'} was superseded by active Runtime authority ${stableRelease.releaseId}@${stableRelease.authorityRevision}`.slice(0, 500),
+            }],
+          });
+          audit(config, 'release_session_soak_superseded_by_runtime_authority', {
+            sessionId: existing.sessionId,
+            priorCutoverAuthorityRevision: existing.transaction?.cutoverAuthorityRevision,
+            activeAuthorityRevision: stableRelease.authorityRevision,
+            activeReleaseId: stableRelease.releaseId,
+          });
+          cleanupRetiredCandidateLane(config, superseded);
+          continue;
+        }
+        return {
+          ok: false as const,
+          attempted: false,
+          noOp: true,
+          detail: `RELEASE_SESSION_SOAK_RUNTIME_IDENTITY_MISMATCH: ${existing.sessionId}`,
+          releaseSession: existing,
+        };
       }
       const superseded = await cancelReleaseSessionUnderLock(
         config,

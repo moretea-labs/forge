@@ -462,6 +462,31 @@ export function releaseSessionIsSoakingPredecessorOfStable(
 }
 
 /**
+ * Emergency Recovery may publish a later whole-Runtime authority outside the
+ * original soaking ReleaseSession. The old session is superseded only when the
+ * active authority revision has strictly advanced beyond its cutover and the
+ * active stable identity is no longer that exact candidate. Equal/older or
+ * partially-matching identities remain ambiguous and must stay fail-closed.
+ */
+export function releaseSessionIsSoakingSupersededByStableAuthority(
+  session: ReleaseSession,
+  stableRelease: ReleaseSessionStableRelease,
+): boolean {
+  const candidate = session.candidateRelease;
+  const transaction = session.transaction;
+  if (
+    session.phase !== 'soaking'
+    || !candidate
+    || !transaction
+    || transaction.candidateReleaseId !== candidate.releaseId
+    || stableRelease.authorityRevision <= transaction.cutoverAuthorityRevision
+  ) return false;
+  return candidate.releaseId !== stableRelease.releaseId
+    || candidate.artifactIdentity !== stableRelease.artifactIdentity
+    || candidate.manifestSha256 !== stableRelease.manifestSha256;
+}
+
+/**
  * Durable semantic proof that Candidate B is no longer required as a mutable
  * Controller Home. This does not itself authorize deletion: cleanup must still
  * prove the exact fenced path and absence of a live Runtime owner.
