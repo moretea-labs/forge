@@ -6,6 +6,8 @@ import { executionIdentityForWork, type ResolvedExecutionIdentity } from '../../
 import { assertNoBoundExecutionSessionMutation, resolveClaimedRepositoryWorkId, resolveExplicitClaimedRepositoryWork, type RepositoryWorkAttributionCaller } from '../../../src/runtime/control-plane/execution/repository-work-attribution';
 import { getWorkContract, semanticWorkState, type WorkContract } from '../../../packages/kernel/work/api';
 import { assertCanonicalRepositoryMutationWorkHandleAvailable, ensureRepositoryMutationWorkHandle, markRepositoryMutationStarted } from '../../../src/runtime/control-plane/execution/work-handle-authority';
+import { readWorkHandle } from '../../../src/runtime/control-plane/execution/work-handle-store';
+import { ensureRunningRepositoryWorkCheckout } from '../../../src/runtime/control-plane/execution/retained-work-resume';
 import { executeRepositoryCommand, previewRepositoryCommandExecution } from '../../../src/cli/repositories/command-executor';
 import { withControllerLock } from '../../../src/cli/repositories/locks';
 import {
@@ -337,21 +339,49 @@ function resolveRepositorySelectionForClaimedWork(
 ): ReturnType<typeof resolveRepositorySelection> {
   const checkoutId = typeof args.checkout_id === 'string' ? args.checkout_id.trim() : '';
   const explicitWorkId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
-  const repository = resolveRepositorySelection({
+  let repository = resolveRepositorySelection({
     repoId: repoIdValue || undefined,
     checkoutId: checkoutId || undefined,
     controllerHome,
     allowSoleRepository: true,
   });
-  if (!explicitWorkId || checkoutId) return repository;
+  if (!explicitWorkId) return repository;
+  const recordedWork = getWorkContract({ controllerHome, repoId: repository.repoId }, explicitWorkId);
+  const recordedHandle = readWorkHandle(controllerHome, repository.repoId, explicitWorkId);
+  const workCheckoutId = recordedHandle?.checkoutId?.trim() || recordedWork?.checkoutId?.trim();
+  if (!checkoutId && workCheckoutId && workCheckoutId !== repository.activeCheckoutId) {
+    repository = resolveRepositorySelection({
+      repoId: repository.repoId,
+      checkoutId: workCheckoutId,
+      controllerHome,
+      allowSoleRepository: true,
+    });
+  }
   const work = resolveExplicitClaimedRepositoryWork(controllerHome, repository, caller, explicitWorkId);
-  if (!work?.checkoutId || work.checkoutId === repository.activeCheckoutId) return repository;
-  return resolveRepositorySelection({
-    repoId: repository.repoId,
-    checkoutId: work.checkoutId,
-    controllerHome,
-    allowSoleRepository: true,
-  });
+  if (!work) return repository;
+  const principalId = caller?.principalId?.trim();
+  const sessionId = caller?.sessionId?.trim();
+  const controllerInstanceId = caller?.controllerInstanceId?.trim();
+  if (principalId && sessionId && controllerInstanceId) {
+    ensureRunningRepositoryWorkCheckout({
+      controllerHome,
+      repository,
+      workId: work.workId,
+      identity: { principalId, sessionId, controllerInstanceId },
+    });
+    const refreshedWork = getWorkContract({ controllerHome, repoId: repository.repoId }, work.workId);
+    const refreshedHandle = readWorkHandle(controllerHome, repository.repoId, work.workId);
+    const refreshedCheckoutId = refreshedHandle?.checkoutId?.trim() || refreshedWork?.checkoutId?.trim();
+    if (refreshedCheckoutId && refreshedCheckoutId !== repository.activeCheckoutId) {
+      repository = resolveRepositorySelection({
+        repoId: repository.repoId,
+        checkoutId: refreshedCheckoutId,
+        controllerHome,
+        allowSoleRepository: true,
+      });
+    }
+  }
+  return repository;
 }
 
 function rawDefaultBranchMergeCommand(repository: ReturnType<typeof resolveRepositorySelection>, command: unknown): boolean {

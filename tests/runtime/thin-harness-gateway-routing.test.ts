@@ -137,6 +137,68 @@ describe('repository.direct_edit capability', () => {
     expect(payload.reviewEvidence?.patchPreview).toContain('export const n = 2;');
     expect(readFileSync(join(fx.repoRoot, 'src', 'lib.ts'), 'utf-8')).toBe('export const n = 2;\n');
   });
+  test('resumes a failed preserved managed WorkHandle in place before a Work-bound safe patch', async () => {
+    const fx = fixture();
+    roots.push(fx.root);
+    const started = await callExecutionTool(fx.ctx, 'session_start', {});
+    const session = (started?.structuredContent as { session: { sessionId: string } }).session;
+    const prepared = await callExecutionTool(fx.ctx, 'work_prepare', {
+      session_id: session.sessionId,
+      repo_id: fx.repository.repoId,
+      request_id: 'prepare-direct-edit-failed-resume',
+      objective: 'Resume one preserved managed checkout after a recoverable validation failure.',
+      checks: [],
+      isolation: 'new_worktree',
+    });
+    expect(prepared?.isError).not.toBe(true);
+    const work = (prepared?.structuredContent as { work: { workId: string } }).work;
+    const handle = readWorkHandle(fx.controllerHome, fx.repository.repoId, work.workId)!;
+    writeWorkHandle(fx.controllerHome, {
+      ...handle,
+      state: 'failed',
+      failureReason: 'fixture validation failed',
+      validatedInputFingerprint: 'stale-fixture-validation',
+      finalization: {
+        ...handle.finalization,
+        validation: 'failed',
+        commit: 'pending',
+        merge: 'pending',
+        branchCleanup: 'pending',
+        worktreeCleanup: 'pending',
+      },
+      updatedAt: new Date().toISOString(),
+    });
+    const semantic = getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, work.workId)!;
+    const caller = {
+      sessionId: handle.sessionId,
+      principalId: handle.principalId,
+      controllerInstanceId: semantic.controllerInstanceId ?? 'runtime-direct-edit-resume-test',
+    };
+
+    const edited = await callRepositoryTool(fx.controllerHome, 'repository_safe_patch_apply', {
+      repo_id: fx.repository.repoId,
+      checkout_id: handle.checkoutId,
+      work_id: work.workId,
+      purpose: 'Continue editing after a recoverable validation failure.',
+      operations: [{
+        type: 'replace',
+        path: 'src/lib.ts',
+        replacements: [{ old_text: 'export const n = 1;', new_text: 'export const n = 2;' }],
+      }],
+    }, caller);
+    if (edited?.isError) throw new Error(JSON.stringify(edited.structuredContent ?? edited));
+    expect((edited?.structuredContent as { status?: string }).status).toBe('applied');
+    expect(readFileSync(join(handle.worktreePath, 'src', 'lib.ts'), 'utf-8')).toBe('export const n = 2;\n');
+    const resumedHandle = readWorkHandle(fx.controllerHome, fx.repository.repoId, work.workId)!;
+    expect(resumedHandle).toMatchObject({
+      checkoutId: handle.checkoutId,
+      worktreePath: handle.worktreePath,
+      state: 'editing',
+      finalization: { validation: 'pending', commit: 'pending', merge: 'pending' },
+    });
+    expect(resumedHandle.failureReason).toBeUndefined();
+  });
+
 });
 
 describe('repository.git Work delivery', () => {
