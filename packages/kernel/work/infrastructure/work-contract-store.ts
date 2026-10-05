@@ -426,6 +426,19 @@ function migrateLegacyWorkContract(legacy: WorkContract): WorkContract {
   void _retiredStatus;
   void _retiredAllowedPaths;
   void _retiredForbiddenPaths;
+  // Before Work kind and completion outcome were made a single typed contract,
+  // delivery-reconciliation records retained their operational label even after
+  // a repository receipt proved that they advanced the target revision. The
+  // current contract rightly rejects that combination. Preserve the receipt and
+  // semantic terminal state, but migrate the obsolete label to the current
+  // repository-change classification so terminal history remains readable and
+  // cannot poison scheduler relay discovery forever.
+  const workKind = legacy.workKind === 'reconciliation'
+    && legacy.completionOutcome === 'completed_changed'
+    && legacy.completionReceipt
+    && isRepositoryCompletionReceipt(legacy.completionReceipt)
+    ? 'repository_change' as const
+    : legacy.workKind ?? 'repository_change';
   return validateWorkSemantics({
     ...legacyWithoutRetiredFields,
     schemaVersion: 4,
@@ -437,7 +450,7 @@ function migrateLegacyWorkContract(legacy: WorkContract): WorkContract {
     phase,
     phaseEvidence,
     risk: legacy.risk ?? 'medium',
-    workKind: legacy.workKind ?? 'repository_change',
+    workKind,
     dispatchState: legacy.dispatchState ?? 'not_dispatched',
     evidenceState: legacy.evidenceState ?? 'none',
     suggestedNextActions: suggestedActionsForSemanticState(semanticState, legacy.suggestedNextActions ?? []),
@@ -453,20 +466,20 @@ function validateCanonicalWorkContract(contract: WorkContract): WorkContract {
   return validateWorkSemantics(contract);
 }
 
-function storedWorkContractNeedsMigration(contract: WorkContract): boolean {
+function storedWorkContractNeedsMigration(contract: WorkContract, persistedSchemaVersion: number = contract.schemaVersion): boolean {
   const phaseEvidence = contract.phaseEvidence as Partial<WorkPhaseEvidenceMap> | undefined;
   // Some pre-review-checkpoint rows were stamped with the current outer
   // schema while omitting only `review`. That exact historical shape remains
   // migration-compatible, but it must be persisted once rather than inferred
   // repeatedly by the normal read path.
-  const legacyReviewGap = contract.schemaVersion === 3
+  const legacyReviewGap = persistedSchemaVersion === 3
     && phaseEvidence
     && !phaseEvidence.review
     && phaseEvidence.implementation
     && phaseEvidence.verification
     && phaseEvidence.delivery
     && phaseEvidence.cleanup;
-  return contract.schemaVersion !== 4
+  return persistedSchemaVersion !== 4
     || contract.semanticState === undefined
     || Object.prototype.hasOwnProperty.call(contract as object, 'status')
     || Object.prototype.hasOwnProperty.call(contract as object, 'allowedPaths')
@@ -474,10 +487,22 @@ function storedWorkContractNeedsMigration(contract: WorkContract): boolean {
     || Boolean(legacyReviewGap);
 }
 
-function canonicalizeStoredWorkContract(contract: WorkContract): WorkContract {
-  return storedWorkContractNeedsMigration(contract)
-    ? migrateLegacyWorkContract(contract)
-    : validateCanonicalWorkContract(contract);
+function workContractAtPersistedSchema(contract: WorkContract, persistedSchemaVersion: number): WorkContract {
+  return contract.schemaVersion === persistedSchemaVersion
+    ? contract
+    : { ...contract, schemaVersion: persistedSchemaVersion as WorkContract['schemaVersion'] };
+}
+
+function canonicalizeStoredWorkContract(contract: WorkContract, persistedSchemaVersion: number = contract.schemaVersion): WorkContract {
+  // The control-plane record envelope is the persisted schema authority. Some
+  // historical writers advanced the payload first, leaving it stamped v4 under
+  // a v3 envelope. Read it as the envelope declares so the one-way migration
+  // repairs the whole stored row rather than accepting a partially migrated
+  // contract indefinitely.
+  const persisted = workContractAtPersistedSchema(contract, persistedSchemaVersion);
+  return storedWorkContractNeedsMigration(persisted, persistedSchemaVersion)
+    ? migrateLegacyWorkContract(persisted)
+    : validateCanonicalWorkContract(persisted);
 }
 
 /**
@@ -493,14 +518,14 @@ function normalizeWorkContractStore(store: WorkContractStore): WorkContractStore
   // v1-v3 rows are a one-way schema migration into v4. v4 rows are validated as-is;
   // retired status is never inferred or exposed during normal reads.
   // Removal condition: delete this migration branch after supported Controller Homes report zero schema<4 Work rows across one full release boundary.
-  return { schemaVersion: 4, updatedAt: store.updatedAt, contracts: store.contracts.map(canonicalizeStoredWorkContract) };
+  return { schemaVersion: 4, updatedAt: store.updatedAt, contracts: store.contracts.map((contract) => canonicalizeStoredWorkContract(contract)) };
 }
 
 export function readWorkContractStore(options: WorkContractStoreOptions): WorkContractStore {
   if (!sqliteBacked(options)) {
     const raw = readJsonFile<WorkContractStore>(workContractStorePath(options), emptyWorkContractStore(nowIso(options)));
     const normalized = normalizeWorkContractStore(raw);
-    if (raw.schemaVersion !== 4 || raw.contracts.some(storedWorkContractNeedsMigration)) {
+    if (raw.schemaVersion !== 4 || raw.contracts.some((contract) => storedWorkContractNeedsMigration(contract))) {
       writeJsonAtomic(workContractStorePath(options), normalized);
     }
     return normalized;
@@ -514,11 +539,11 @@ export function readWorkContractStore(options: WorkContractStoreOptions): WorkCo
     const normalized = normalizeWorkContractStore({
       schemaVersion: 4,
       updatedAt: records[0]?.updatedAt ?? nowIso(options),
-      contracts: records.map((record) => record.value),
+      contracts: records.map((record) => workContractAtPersistedSchema(record.value, record.schemaVersion)),
     });
     const legacyRows = records
       .map((record, index) => ({ record, contract: normalized.contracts[index]! }))
-      .filter(({ record }) => storedWorkContractNeedsMigration(record.value));
+      .filter(({ record }) => storedWorkContractNeedsMigration(record.value, record.schemaVersion));
     if (legacyRows.length > 0) {
       withControlPlaneTransaction(options.controllerHome, (database) => {
         for (const { record, contract } of legacyRows) {
@@ -599,7 +624,7 @@ export function readWorkContractLineageSnapshot(options: WorkContractStoreOption
   const invalid: WorkContractLineageSnapshot['invalid'] = [];
   for (const record of records) {
     try {
-      contracts.push(canonicalizeStoredWorkContract(record.value));
+      contracts.push(canonicalizeStoredWorkContract(record.value, record.schemaVersion));
     } catch (error) {
       invalid.push(lineageInvalidWork(record.value, error, record.key));
     }
@@ -1057,8 +1082,8 @@ export function readActiveWorkCandidates(
     const raw = record.value;
     if (!rawWorkMayBeCurrent(raw)) continue;
     try {
-      const normalized = canonicalizeStoredWorkContract(raw);
-      if (storedWorkContractNeedsMigration(raw)) migrations.push({ record, contract: normalized });
+      const normalized = canonicalizeStoredWorkContract(raw, record.schemaVersion);
+      if (storedWorkContractNeedsMigration(raw, record.schemaVersion)) migrations.push({ record, contract: normalized });
       if (isCurrentWorkContract(normalized)) contracts.push(normalized);
     } catch (error) {
       invalid.push({
@@ -1252,8 +1277,8 @@ function readExactSqliteWorkContract(
 ): WorkContract | undefined {
   const exact = readControlPlaneRecord<WorkContract>(options.controllerHome, 'work_contract', scope, sanitizedId);
   if (!exact) return undefined;
-  const canonical = canonicalizeStoredWorkContract(exact.value);
-  if (storedWorkContractNeedsMigration(exact.value)) {
+  const canonical = canonicalizeStoredWorkContract(exact.value, exact.schemaVersion);
+  if (storedWorkContractNeedsMigration(exact.value, exact.schemaVersion)) {
     withControlPlaneTransaction(options.controllerHome, (database) => {
       writeControlPlaneRecordWithinTransaction(database, {
         namespace: 'work_contract',
