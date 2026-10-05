@@ -167,9 +167,12 @@ export async function callCoreCapabilityAdapter(
         }, Boolean(committed.error));
       }
       case 'deliver_work': {
-        startOrResumeSession(ctx);
+        const sessionId = typeof input.session_id === 'string' && input.session_id.trim()
+          ? input.session_id.trim()
+          : startOrResumeSession(ctx).sessionId;
         const delivered = await deliverWork(ctx, {
           ...input,
+          session_id: sessionId,
           repo_id: repository.repoId,
         });
         return result(delivered);
