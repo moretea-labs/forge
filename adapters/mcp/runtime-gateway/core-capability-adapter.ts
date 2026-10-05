@@ -145,14 +145,18 @@ export async function callCoreCapabilityAdapter(
       if (!toolName) {
         return result({ error: { code: 'CORE_CAPABILITY_ACTION_UNSUPPORTED', message: `Unsupported repository.direct_edit action: ${action || '<empty>'}` } }, true);
       }
+      const workId = action === 'apply' && typeof input.work_id === 'string' ? input.work_id.trim() : '';
+      const callerSession = workId && (!ctx.sessionId || !ctx.principalId || !ctx.controllerInstanceId)
+        ? startOrResumeSession(ctx)
+        : undefined;
       const forwarded = await callRepositoryTool(ctx.controllerHome, toolName, {
         ...input,
         ...(typeof args.repo_id === 'string' && args.repo_id.trim() ? { repo_id: args.repo_id.trim() } : {}),
         ...(typeof args.checkout_id === 'string' && args.checkout_id.trim() ? { checkout_id: args.checkout_id.trim() } : {}),
       }, {
-        sessionId: ctx.sessionId,
-        principalId: ctx.principalId,
-        controllerInstanceId: ctx.controllerInstanceId,
+        sessionId: callerSession?.sessionId ?? ctx.sessionId,
+        principalId: callerSession?.principalId ?? ctx.principalId,
+        controllerInstanceId: callerSession?.controllerInstanceId ?? ctx.controllerInstanceId,
       });
       return forwarded ?? result({
         error: { code: 'CORE_CAPABILITY_ROUTE_UNAVAILABLE', message: 'Repository direct-edit capability route is unavailable.' },
