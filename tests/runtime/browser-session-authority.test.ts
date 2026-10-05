@@ -1135,6 +1135,7 @@ describe('browser session compatibility on Computer target authority', () => {
     mkdirSync(join(userDataDir, 'Default'), { recursive: true });
     writeFileSync(join(userDataDir, 'Local State'), '{}');
     writeFileSync(join(userDataDir, 'Default', 'Preferences'), '{}');
+    writeFileSync(join(userDataDir, 'DevToolsActivePort'), '49399\n/devtools/browser/stale\n');
     symlinkSync('test-host-3131', join(userDataDir, 'SingletonLock'));
     writeFileSync(join(repoA, '.forge', 'plugins', 'browser.json'), JSON.stringify({
       schemaVersion: 3, enabled: true, provider: 'playwright', browserMode: 'managed_persistent',
@@ -1175,9 +1176,13 @@ describe('browser session compatibility on Computer target authority', () => {
     setBrowserPluginRuntimeHooksForTest({
       moduleAvailable: () => true,
       listProcesses: () => existingOwnerAlive ? [{ pid: 3131, command: `/Applications/Vivaldi.app/Contents/MacOS/Vivaldi --user-data-dir=${userDataDir}` }] : [],
+      allocateLoopbackPort: async () => 9345,
+      fetchJson: async (url) => {
+        expect(url).toBe('http://127.0.0.1:9345/json/version');
+        return { Browser: 'Vivaldi/test' };
+      },
       launchProcess: (executable, args) => {
         launched.push({ executable, args });
-        writeFileSync(join(userDataDir, 'DevToolsActivePort'), '9345\n/devtools/browser/test\n');
         return { pid: 4242 };
       },
       signalProcess: (pid, signal) => { signalled.push([pid, signal]); if (pid === 3131) existingOwnerAlive = false; return true; },
@@ -1199,7 +1204,8 @@ describe('browser session compatibility on Computer target authority', () => {
     });
     expect(launched).toHaveLength(1);
     expect(launched[0]?.executable).toBe('/Applications/Vivaldi.app/Contents/MacOS/Vivaldi');
-    expect(launched[0]?.args).toContain('--remote-debugging-port=0');
+    expect(launched[0]?.args).toContain('--remote-debugging-port=9345');
+    expect(launched[0]?.args).not.toContain('--remote-debugging-port=0');
     expect(launched[0]?.args).toContain('--remote-debugging-address=127.0.0.1');
     expect(launched[0]?.args).toContain('--enable-unsafe-extension-debugging');
     expect(launched[0]?.args).toContain('--profile-directory=Default');
@@ -1232,6 +1238,8 @@ describe('browser session compatibility on Computer target authority', () => {
     setBrowserPluginRuntimeHooksForTest({
       moduleAvailable: () => true,
       listProcesses: () => [{ pid: 6262, command: '/Applications/Vivaldi.app/Contents/MacOS/Vivaldi --user-data-dir=/tmp/different-vivaldi-profile' }],
+      allocateLoopbackPort: async () => 9346,
+      fetchJson: async () => { throw new Error('not ready'); },
       launchProcess: () => ({ pid: 7272 }),
       signalProcess: (pid, signal) => { signalled.push([pid, signal]); return true; },
       loadPlaywright: () => ({ chromium: { launchPersistentContext: async () => { throw new Error('must not launch through Playwright'); }, connectOverCDP: async () => { throw new Error('must not attach without a fresh endpoint'); } } }),
@@ -1261,10 +1269,12 @@ describe('browser session compatibility on Computer target authority', () => {
     const signalled: Array<[number, NodeJS.Signals]> = [];
     setBrowserPluginRuntimeHooksForTest({
       moduleAvailable: () => true,
-      launchProcess: () => {
-        writeFileSync(join(userDataDir, 'DevToolsActivePort'), '9456\n/devtools/browser/test\n');
-        return { pid: 5252 };
+      allocateLoopbackPort: async () => 9456,
+      fetchJson: async (url) => {
+        expect(url).toBe('http://127.0.0.1:9456/json/version');
+        return { Browser: 'Vivaldi/test' };
       },
+      launchProcess: () => ({ pid: 5252 }),
       signalProcess: (pid, signal) => { signalled.push([pid, signal]); return true; },
       loadPlaywright: () => ({
         chromium: {
