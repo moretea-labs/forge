@@ -9,7 +9,7 @@ import { markRepositoryProjectionDirty } from '../../projections/invalidation';
 import { touchSchedulerWakeSignal } from '../../control-plane/global-scheduler/wake-signal';
 import { claimsConflict } from '../claims/conflicts';
 import { appendRuntimeEvent } from '../../evidence/event-ledger';
-import { assertRuntimeMayWrite, assertRuntimeMayWriteOrThrow } from '../../root/write-fence';
+import { assertRuntimeMayWrite, assertRuntimeMayWriteOrThrow, isRuntimeWriteFenceError } from '../../root/write-fence';
 import type {
   ExecutionLease,
   LeaseAcquisitionOptions,
@@ -309,7 +309,7 @@ export function renewExecutionLeases(
   try {
     assertRuntimeMayWriteOrThrow('renew_lease', controllerHome);
   } catch (error) {
-    if (error instanceof Error && error.message.startsWith('WRITER_FENCED:')) throw error;
+    if (isRuntimeWriteFenceError(error)) throw error;
     /* unbound legacy */
   }
   return withControllerLock(controllerHome, { scope: 'global', resource: 'execution-leases' }, `lease-renew:${ownerJobId}`, () => {
@@ -341,7 +341,7 @@ export function releaseExecutionLeases(
   try {
     assertRuntimeMayWriteOrThrow('release_lease', controllerHome);
   } catch (error) {
-    if (error instanceof Error && error.message.startsWith('WRITER_FENCED:')) throw error;
+    if (isRuntimeWriteFenceError(error)) throw error;
     /* unbound legacy */
   }
   return withControllerLock(controllerHome, { scope: 'global', resource: 'execution-leases' }, `lease-release:${ownerJobId}`, () => {
@@ -396,7 +396,7 @@ export function releaseExactExecutionLeases(
   try {
     assertRuntimeMayWriteOrThrow('release_lease', controllerHome);
   } catch (error) {
-    if (error instanceof Error && error.message.startsWith('WRITER_FENCED:')) throw error;
+    if (isRuntimeWriteFenceError(error)) throw error;
     /* unbound legacy */
   }
   return withControllerLock(controllerHome, { scope: 'global', resource: 'execution-leases' }, `lease-release-exact:${ownerJobId}`, () => {

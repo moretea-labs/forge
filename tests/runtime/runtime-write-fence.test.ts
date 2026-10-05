@@ -12,9 +12,11 @@ import {
 } from '../../src/runtime/root/release-store';
 import {
   assertRuntimeMayWrite,
+  assertRuntimeMayWriteOrThrow,
   bindInheritedRuntimeWriteClaimFromEnvironment,
   bindRuntimeWriteClaim,
   clearRuntimeWriteClaimForTests,
+  isRuntimeWriteFenceError,
   runtimeWriteClaimEnvironment,
 } from '../../src/runtime/root/write-fence';
 
@@ -72,6 +74,29 @@ describe('Canonical Runtime write fence', () => {
       allowed: false,
       reason: 'runtime_instance_fenced',
     });
+    replacement.release();
+  });
+
+  test('throws one typed WRITER_FENCED error while preserving the legacy diagnostic message', () => {
+    const fx = fixture();
+    const parent = bindRuntimeWriteClaim({ controllerHome: fx.home, owner: fx.owner.record, authority: fx.authority });
+    const env = runtimeWriteClaimEnvironment(parent);
+    clearRuntimeWriteClaimForTests();
+    bindInheritedRuntimeWriteClaimFromEnvironment(env, fx.home);
+    fx.owner.release();
+    const replacement = acquireRuntimeOwnership(fx.home, 'runtime-b');
+    try {
+      assertRuntimeMayWriteOrThrow('renew_lease', fx.home);
+      throw new Error('expected Runtime write fence');
+    } catch (error) {
+      expect(isRuntimeWriteFenceError(error)).toBe(true);
+      expect(error).toMatchObject({
+        code: 'WRITER_FENCED',
+        action: 'renew_lease',
+        reason: 'runtime_instance_fenced',
+        message: 'WRITER_FENCED:renew_lease:runtime_instance_fenced',
+      });
+    }
     replacement.release();
   });
 

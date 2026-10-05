@@ -329,11 +329,29 @@ export function assertRuntimeMayWrite(
   return { allowed: true, owner, authority };
 }
 
+export class RuntimeWriteFenceError extends Error {
+  readonly code = 'WRITER_FENCED' as const;
+
+  constructor(
+    readonly action: RuntimeWriteAction,
+    readonly reason: string,
+  ) {
+    super(`WRITER_FENCED:${action}:${reason}`);
+    this.name = 'RuntimeWriteFenceError';
+  }
+}
+
+export function isRuntimeWriteFenceError(error: unknown): error is RuntimeWriteFenceError {
+  return Boolean(error
+    && typeof error === 'object'
+    && (error as { code?: unknown }).code === 'WRITER_FENCED');
+}
+
 export function assertRuntimeMayWriteOrThrow(
   action: RuntimeWriteAction,
   controllerHomeOverride?: string,
 ): RuntimeReleaseAuthority | undefined {
   const check = assertRuntimeMayWrite(action, controllerHomeOverride);
-  if (!check.allowed) throw new Error(`WRITER_FENCED:${action}:${check.reason ?? 'denied'}`);
+  if (!check.allowed) throw new RuntimeWriteFenceError(action, check.reason ?? 'denied');
   return check.authority;
 }

@@ -17,7 +17,7 @@ import { resolveMcpPath } from "../mcp/paths";
 import type { McpPolicy } from "../mcp/types";
 import { getAgentJob, markAgentJobClosure, markAgentJobIntegrated, markAgentJobIntegrationReview } from "./job-manager";
 import type { AgentJobMeta, AgentJobPreservationReason } from "./types";
-import { assertRuntimeMayWriteOrThrow } from "../../runtime/root/write-fence";
+import { assertRuntimeMayWriteOrThrow, isRuntimeWriteFenceError } from "../../runtime/root/write-fence";
 
 type IntegrationChangeOutcome = "changed" | "already_integrated";
 
@@ -506,7 +506,7 @@ export function integrateAgentJob(
       ?? undefined;
     assertRuntimeMayWriteOrThrow('integrate_worktree', controllerHome);
   } catch (error) {
-    if (error instanceof Error && error.message.startsWith('WRITER_FENCED:')) throw error;
+    if (isRuntimeWriteFenceError(error)) throw error;
     /* unbound legacy single-runtime */
   }
   let run: AgentJobMeta = getAgentJob(repoRoot, runId);

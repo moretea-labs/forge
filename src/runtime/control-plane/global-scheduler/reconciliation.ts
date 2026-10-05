@@ -17,6 +17,7 @@ import { operationReceiptMatchesJobOwnership, readOperationReceipt } from '../..
 import { releaseExecutionLeases, renewExecutionLeases } from '../../resources/leases/store';
 import { isProcessAlive, terminateProcessTree, terminateProcessTreeSync, type ProcessTreeTerminationResult } from '../../shared/process-tree';
 import { settleScheduledExecution } from '../../../../packages/kernel/scheduler/api/index';
+import { isRuntimeWriteFenceError } from '../../root/write-fence';
 
 const WORKER_HEARTBEAT_STALE_MS = 45_000;
 
@@ -64,7 +65,7 @@ function recordIsolatedReconciliationFailure(job: ExecutionJob, error: unknown):
   // Losing the canonical write fence is a Runtime-wide invariant violation,
   // not corrupt state owned by one historical Job. Preserve the Scheduler's
   // fatal path so Runtime Root can stop the complete Runtime.
-  if (message.startsWith('WRITER_FENCED:')) throw error;
+  if (isRuntimeWriteFenceError(error)) throw error;
   process.stderr.write(`${JSON.stringify({
     event: 'forge_scheduler_execution_job_reconciliation_isolated',
     repoId: job.repoId,

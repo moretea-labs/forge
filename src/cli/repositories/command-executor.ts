@@ -24,7 +24,7 @@ import type { RepositoryRecord } from './types';
 import { readRepositoryAccessPolicy } from '../../runtime/control-plane/governance/access-policy';
 import { invalidateRepositoryReadCaches } from '../repository/inspector';
 import { assertResolvedAuthorization, decideAuthorization, type AuthorizationDecision } from '../../runtime/control-plane/governance/authorization';
-import { assertRuntimeMayWriteOrThrow } from '../../runtime/root/write-fence';
+import { assertRuntimeMayWriteOrThrow, isRuntimeWriteFenceError } from '../../runtime/root/write-fence';
 import { commandEnvironment, runCanonicalCommand, type RepositoryCommandAsyncHooks, type SpawnCommandResult } from './command-process';
 import {
   changedSnapshotPaths,
@@ -445,7 +445,7 @@ export function executeRepositoryCommand(
     try {
       assertRuntimeMayWriteOrThrow('remote_side_effect', controllerHome);
     } catch (error) {
-      if (error instanceof Error && error.message.startsWith('WRITER_FENCED:')) throw error;
+      if (isRuntimeWriteFenceError(error)) throw error;
       /* unbound legacy */
     }
   }

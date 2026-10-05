@@ -15,7 +15,7 @@ import {
 } from '../../../cli/repositories/registry';
 import { repositoryGitStatus } from '../../../cli/repositories/structured-git';
 import { listActiveLeases } from '../../resources/leases/store';
-import { assertRuntimeMayWriteOrThrow } from '../../root/write-fence';
+import { assertRuntimeMayWriteOrThrow, isRuntimeWriteFenceError } from '../../root/write-fence';
 import { cleanupTerminalWork } from './work-terminal-cleanup';
 import { recordWorkDeliveryReceipt } from './work-completion-authority';
 import {
@@ -318,7 +318,7 @@ export async function deliverWork(ctx: McpExecutionContext, args: Record<string,
   try {
     assertRuntimeMayWriteOrThrow('integrate_worktree', ctx.controllerHome);
   } catch (error) {
-    if (error instanceof Error && error.message.startsWith('WRITER_FENCED:')) throw error;
+    if (isRuntimeWriteFenceError(error)) throw error;
     // Test and legacy controller homes can be intentionally unbound to a packaged Runtime.
   }
 
