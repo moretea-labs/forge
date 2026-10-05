@@ -1610,6 +1610,7 @@ function launchOptionsForRepo(repoRoot: string, config: BrowserPluginConfig, pro
   const extensionPaths = [...(managedExtensionPaths.get(managedContextKey(profile)) ?? [])].sort();
   const args = [
     ...(profile.profileDirectory ? [`--profile-directory=${profile.profileDirectory}`] : []),
+    ...(extensionPaths.length > 0 ? ['--enable-unsafe-extension-debugging'] : []),
     ...(extensionPaths.length > 0 && config.profileMode !== 'custom' ? [`--disable-extensions-except=${extensionPaths.join(',')}`] : []),
     ...(extensionPaths.length > 0 ? [`--load-extension=${extensionPaths.join(',')}`] : []),
   ];

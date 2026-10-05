@@ -984,6 +984,7 @@ describe('browser session compatibility on Computer target authority', () => {
     expect(launchOptions?.channel).toBeUndefined();
     expect(launchOptions?.ignoreDefaultArgs).toEqual(['--disable-extensions']);
     expect(launchOptions?.args).toEqual([
+      '--enable-unsafe-extension-debugging',
       '--disable-extensions-except=' + canonicalExtensionPath,
       '--load-extension=' + canonicalExtensionPath,
     ]);
@@ -1078,6 +1079,7 @@ describe('browser session compatibility on Computer target authority', () => {
     ]);
     expect(launchOptions?.args).toEqual([
       '--profile-directory=Default',
+      '--enable-unsafe-extension-debugging',
       '--load-extension=' + canonicalExtensionPath,
     ]);
     expect((launchOptions?.args as string[]).some((arg) => arg.startsWith('--disable-extensions-except='))).toBe(false);
@@ -1141,6 +1143,7 @@ describe('browser session compatibility on Computer target authority', () => {
       '--password-store=basic',
     ]);
     expect(launchOptions?.args).toEqual(['--profile-directory=Default']);
+    expect((launchOptions?.args as string[]).includes('--enable-unsafe-extension-debugging')).toBe(false);
   });
 
   test('rejects managed native messaging declarations whose allowed origin does not match the stable extension id', async () => {
