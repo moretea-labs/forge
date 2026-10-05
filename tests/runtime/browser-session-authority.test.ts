@@ -998,8 +998,6 @@ describe('browser session compatibility on Computer target authority', () => {
     expect(launchOptions?.ignoreDefaultArgs).toEqual(['--disable-extensions']);
     expect(launchOptions?.args).toEqual([
       '--enable-unsafe-extension-debugging',
-      '--disable-extensions-except=' + canonicalExtensionPath,
-      '--load-extension=' + canonicalExtensionPath,
     ]);
     expect(methods).toEqual(['Extensions.getExtensions']);
     const projectedHost = JSON.parse(readFileSync(join(launchedProfileDir, 'NativeMessagingHosts', 'com.moretea.forge.fixture.json'), 'utf8')) as Record<string, unknown>;
@@ -1074,8 +1072,6 @@ describe('browser session compatibility on Computer target authority', () => {
     expect(detached).toBe(1);
     expect(launchOptions?.args).toEqual([
       '--enable-unsafe-extension-debugging',
-      '--disable-extensions-except=' + canonicalExtensionPath,
-      '--load-extension=' + canonicalExtensionPath,
     ]);
     expect(result).toMatchObject({
       provider: 'playwright-persistent-context',
@@ -1222,9 +1218,9 @@ describe('browser session compatibility on Computer target authority', () => {
     expect(launchOptions?.args).toEqual([
       '--profile-directory=Default',
       '--enable-unsafe-extension-debugging',
-      '--load-extension=' + canonicalExtensionPath,
     ]);
     expect((launchOptions?.args as string[]).some((arg) => arg.startsWith('--disable-extensions-except='))).toBe(false);
+    expect((launchOptions?.args as string[]).some((arg) => arg.startsWith('--load-extension='))).toBe(false);
     expect(result).toMatchObject({
       provider: 'playwright-persistent-context',
       extension: { id: SUPERVISOR_EXTENSION_ID, path: canonicalExtensionPath, enabled: true },
