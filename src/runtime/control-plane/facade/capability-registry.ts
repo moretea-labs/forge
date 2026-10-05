@@ -95,7 +95,7 @@ const CORE_CAPABILITIES: CapabilityDescriptor[] = [
     risk: 'workspace_write',
     exposedVia: 'capability_execute',
     schemaExposure: 'stable_static',
-    summary: 'Start, inspect, stop, and verify standalone Workflow Supervisor tasks through the existing Supervisor single-writer authority; used for bounded cross-turn continuation and release-bound live proof without creating semantic Work or another public facade tool.',
+    summary: 'Start, inspect, recover, stop, and verify standalone Workflow Supervisor tasks through the existing Supervisor single-writer authority; used for bounded cross-turn continuation and release-bound live proof without creating semantic Work or another public facade tool.',
   },
   {
     capabilityId: 'controller.round_recovery',
@@ -379,6 +379,20 @@ export function getCoreCapabilityExecutionSchema(capabilityId: string): Record<s
           argumentsSchema: {
             type: 'object', additionalProperties: false, required: ['task_id'],
             properties: { task_id: { type: 'string', minLength: 1, maxLength: 256 } },
+          },
+        },
+        recover: {
+          readOnly: false,
+          risk: 'workspace_write',
+          argumentsSchema: {
+            type: 'object', additionalProperties: false, required: ['task_id', 'reason'],
+            properties: {
+              task_id: { type: 'string', minLength: 1, maxLength: 256 },
+              reason: { type: 'string', minLength: 1, maxLength: 2000 },
+              source_effect_id: { type: 'string', minLength: 1, maxLength: 256 },
+              supersede_unknown: { type: 'boolean' },
+              authorized_by: { type: 'string', minLength: 1, maxLength: 256 },
+            },
           },
         },
         stop: {

@@ -45,9 +45,18 @@ describe('handoff and facade contracts', () => {
       domain: 'controller', group: 'controller', operationClass: 'execute', risk: 'workspace_write',
       exposedVia: 'capability_execute', schemaExposure: 'stable_static',
     });
-    const schema = getCoreCapabilityExecutionSchema('controller.workflow_supervisor') as { executeWith?: string; actions?: Record<string, unknown> } | undefined;
+    const schema = getCoreCapabilityExecutionSchema('controller.workflow_supervisor') as {
+      executeWith?: string;
+      actions?: Record<string, { argumentsSchema?: { required?: string[]; properties?: Record<string, unknown> } }>;
+    } | undefined;
     expect(schema?.executeWith).toBe('capability_execute');
-    expect(Object.keys(schema?.actions ?? {}).sort()).toEqual(['get', 'list', 'proof', 'start', 'stop']);
+    expect(Object.keys(schema?.actions ?? {}).sort()).toEqual(['get', 'list', 'proof', 'recover', 'start', 'stop']);
+    expect(schema?.actions?.recover?.argumentsSchema?.required).toEqual(['task_id', 'reason']);
+    expect(schema?.actions?.recover?.argumentsSchema?.properties).toEqual(expect.objectContaining({
+      source_effect_id: expect.any(Object),
+      supersede_unknown: expect.any(Object),
+      authorized_by: expect.any(Object),
+    }));
     expect(searchCapabilityDescriptors('workflow supervisor continuation proof').map((entry) => entry.capabilityId)).toContain('controller.workflow_supervisor');
     expect(runtimeToolDefinitions.some((definition) => definition.name === 'supervisor_task')).toBe(true);
     expect(FACADE_TOOLS).toEqual(['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work', 'capability_execute']);
