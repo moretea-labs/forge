@@ -2,6 +2,7 @@ import {
   advanceReleaseSession,
   listReleaseSessions,
   readReleaseSession,
+  releaseSessionIsSoakingPredecessorOfStable,
   releaseSessionIsTerminal,
   type ReleaseSession,
 } from './release-session';
@@ -93,6 +94,18 @@ export function activeRuntimeReleaseSessions(controllerHome: string): ReleaseSes
     .filter((session) => !releaseSessionIsTerminal(session));
 }
 
+function coordinatorSession(active: ReleaseSession[]): ReleaseSession | undefined {
+  if (active.length <= 1) return active[0];
+  if (active.length === 2) {
+    const successors = active.filter((successor) => active.some((predecessor) =>
+      predecessor.sessionId !== successor.sessionId
+      && predecessor.sourceRevision !== successor.sourceRevision
+      && releaseSessionIsSoakingPredecessorOfStable(predecessor, successor.stableRelease)));
+    if (successors.length === 1) return successors[0];
+  }
+  throw new Error(`RELEASE_SESSION_MULTIPLE_ACTIVE: ${active.map((session) => `${session.sessionId}:${session.phase}`).join(',')}`);
+}
+
 function runtimeReleaseActionForSession(session: ReleaseSession): RuntimeReleaseCoordinatorAction {
   switch (session.phase) {
     case 'source_frozen': return 'prepare';
@@ -113,10 +126,7 @@ function runtimeReleaseActionForSession(session: ReleaseSession): RuntimeRelease
 
 export function decideConfiguredRuntimeReleaseAction(controllerHome: string): RuntimeReleaseCoordinatorDecision {
   const active = activeRuntimeReleaseSessions(controllerHome);
-  if (active.length > 1) {
-    throw new Error(`RELEASE_SESSION_MULTIPLE_ACTIVE: ${active.map((session) => `${session.sessionId}:${session.phase}`).join(',')}`);
-  }
-  const session = active[0];
+  const session = coordinatorSession(active);
   if (!session) return { action: 'prepare' };
   return { action: runtimeReleaseActionForSession(session), session };
 }
@@ -134,10 +144,7 @@ export function decideConfiguredRuntimeReleaseReconciliation(
 ): RuntimeReleaseReconciliationDecision {
   const sessions = completeRuntimeReleaseSessions(controllerHome);
   const active = sessions.filter((session) => !releaseSessionIsTerminal(session));
-  if (active.length > 1) {
-    throw new Error(`RELEASE_SESSION_MULTIPLE_ACTIVE: ${active.map((session) => `${session.sessionId}:${session.phase}`).join(',')}`);
-  }
-  const session = active[0];
+  const session = coordinatorSession(active);
   if (session) {
     return { required: true, reason: 'active_session', action: runtimeReleaseActionForSession(session), session };
   }

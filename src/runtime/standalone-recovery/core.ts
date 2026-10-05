@@ -81,6 +81,7 @@ import {
   listReleaseSessions,
   readReleaseSession,
   recordReleaseSessionTransaction,
+  releaseSessionIsSoakingPredecessorOfStable,
   type ReleaseSession,
   type ReleaseSessionCandidateRelease,
   type ReleaseSessionStableRelease,
@@ -4819,11 +4820,8 @@ export async function prepareConfiguredRuntimeReleaseSession(
         };
       }
       if (existing.phase === 'soaking') {
-        const candidate = existing.candidateRelease;
-        const candidateIsCurrentStable = Boolean(candidate
-          && candidate.releaseId === stableRelease.releaseId
-          && candidate.artifactIdentity === stableRelease.artifactIdentity);
-        if (candidateIsCurrentStable) {
+        const candidateIsCurrentStable = releaseSessionIsSoakingPredecessorOfStable(existing, stableRelease);
+        if (candidateIsCurrentStable && existing.sourceRevision === sourceRevision) {
           return {
             ok: false as const,
             attempted: false,
@@ -4832,6 +4830,9 @@ export async function prepareConfiguredRuntimeReleaseSession(
             releaseSession: existing,
           };
         }
+        // A newer source is allowed to prepare against the exact release that
+        // this predecessor already cut over. The predecessor remains soaking
+        // so its rollback authority survives until the successor commits.
         continue;
       }
       const superseded = await cancelReleaseSessionUnderLock(
@@ -5401,6 +5402,40 @@ export async function bootAndVerifyConfiguredRuntimeReleaseSessionCandidate(
 }
 
 
+function terminalizeSupersededSoakingPredecessor(config: RecoveryConfig, successor: ReleaseSession): ReleaseSession | undefined {
+  const inventory = listReleaseSessions(config.controllerHome, { maxEntries: 512 });
+  if (inventory.truncated || inventory.invalidSessionFiles.length > 0) {
+    throw new Error(`RELEASE_SESSION_INVENTORY_INCOMPLETE: truncated=${inventory.truncated}; invalid=${inventory.invalidSessionFiles.join(',') || 'none'}`);
+  }
+  const predecessors = inventory.sessions.filter((existing) =>
+    existing.sessionId !== successor.sessionId
+    && existing.sourceRevision !== successor.sourceRevision
+    && releaseSessionIsSoakingPredecessorOfStable(existing, successor.stableRelease));
+  if (predecessors.length > 1) {
+    throw new Error(`RELEASE_SESSION_MULTIPLE_SOAKING_PREDECESSORS: ${predecessors.map((entry) => entry.sessionId).join(',')}`);
+  }
+  const predecessor = predecessors[0];
+  if (!predecessor) return undefined;
+  const terminal = advanceReleaseSession({
+    controllerHome: config.controllerHome,
+    sessionId: predecessor.sessionId,
+    expectedRevision: predecessor.revision,
+    phase: 'failed',
+    receipts: [{
+      id: `successor_cutover:${successor.sessionId}`,
+      kind: 'soak',
+      summary: `superseded without known-good promotion after successor ${successor.sessionId} committed a cutover from Stable A ${successor.stableRelease.releaseId}`,
+    }],
+  });
+  audit(config, 'release_session_soaking_predecessor_superseded', {
+    predecessorSessionId: predecessor.sessionId,
+    predecessorReleaseId: predecessor.candidateRelease?.releaseId,
+    successorSessionId: successor.sessionId,
+    successorReleaseId: successor.candidateRelease?.releaseId,
+  });
+  return terminal;
+}
+
 export async function cutoverConfiguredRuntimeReleaseSession(
   config: RecoveryConfig,
   sessionId: string,
@@ -5485,6 +5520,10 @@ export async function cutoverConfiguredRuntimeReleaseSession(
             }],
           });
         }
+        // Stable A now owns the successor and its transaction can roll back to
+        // the predecessor release. Only at this durable boundary may the older
+        // soaking session surrender its independent rollback/acceptance path.
+        terminalizeSupersededSoakingPredecessor(config, session);
         session = advanceReleaseSession({
           controllerHome: config.controllerHome,
           sessionId,

@@ -437,6 +437,31 @@ export function releaseSessionIsTerminal(session: ReleaseSession): boolean {
 }
 
 /**
+ * A soaking ReleaseSession may temporarily remain non-terminal while a repair
+ * successor is prepared.  This relation is deliberately stricter than generic
+ * release equality: the predecessor must have durably cut over the exact
+ * release/authority revision that the successor freezes as Stable A.  It
+ * therefore preserves the predecessor's rollback authority until the successor
+ * itself has committed a replacement cutover without permitting arbitrary
+ * multiple active ReleaseSessions.
+ */
+export function releaseSessionIsSoakingPredecessorOfStable(
+  session: ReleaseSession,
+  stableRelease: ReleaseSessionStableRelease,
+): boolean {
+  const candidate = session.candidateRelease;
+  const transaction = session.transaction;
+  return session.phase === 'soaking'
+    && Boolean(candidate)
+    && Boolean(transaction)
+    && transaction!.candidateReleaseId === candidate!.releaseId
+    && transaction!.cutoverAuthorityRevision === stableRelease.authorityRevision
+    && candidate!.releaseId === stableRelease.releaseId
+    && candidate!.artifactIdentity === stableRelease.artifactIdentity
+    && candidate!.manifestSha256 === stableRelease.manifestSha256;
+}
+
+/**
  * Durable semantic proof that Candidate B is no longer required as a mutable
  * Controller Home. This does not itself authorize deletion: cleanup must still
  * prove the exact fenced path and absence of a live Runtime owner.
@@ -461,7 +486,12 @@ export function createReleaseSession(input: {
     throw new Error(`RELEASE_SESSION_INVENTORY_INCOMPLETE: truncated=${inventory.truncated}; invalid=${inventory.invalidSessionFiles.join(',') || 'none'}`);
   }
   const active = inventory.sessions.filter((session) => !releaseSessionIsTerminal(session));
-  if (active.length > 0) {
+  const sourceRevision = input.sourceRevision.trim();
+  const allowedRepairPredecessor = active.length === 1
+    && active[0] !== undefined
+    && releaseSessionIsSoakingPredecessorOfStable(active[0], input.stableRelease)
+    && active[0].sourceRevision !== sourceRevision;
+  if (active.length > 0 && !allowedRepairPredecessor) {
     throw new Error(`RELEASE_SESSION_ACTIVE_EXISTS: ${active.map((session) => `${session.sessionId}:${session.phase}`).join(',')}`);
   }
   if (resolve(input.stable.controllerHome) === resolve(input.candidate.controllerHome)) throw new Error('RELEASE_SESSION_LANE_COLLISION');
@@ -473,7 +503,7 @@ export function createReleaseSession(input: {
     stable: input.stable,
     stableRelease: input.stableRelease,
     candidate: input.candidate,
-    sourceRevision: input.sourceRevision.trim(),
+    sourceRevision,
     phase: 'source_frozen',
     revision: 1,
     receipts: [{ id: `source:${sessionId}`, kind: 'source', recordedAt: timestamp, summary: `source frozen at ${input.sourceRevision.trim()}` }],

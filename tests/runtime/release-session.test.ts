@@ -249,6 +249,71 @@ describe('Recovery ReleaseSession', () => {
       .not.toThrow();
   });
 
+  test('permits exactly one repair successor over a soaking current-Stable predecessor and prioritizes the successor', () => {
+    const home = mkdtempSync(join(tmpdir(), 'forge-release-session-successor-'));
+    roots.push(home);
+    const { stable, stableRelease, candidate, candidateRelease } = lanes(home);
+    let predecessor = createReleaseSession({ controllerHome: home, sessionId: candidate.sessionId, stable, stableRelease, candidate, sourceRevision: 'abc123' });
+    predecessor = advanceReleaseSession({ controllerHome: home, sessionId: predecessor.sessionId, expectedRevision: predecessor.revision, phase: 'built', candidateRelease });
+    predecessor = advanceReleaseSession({ controllerHome: home, sessionId: predecessor.sessionId, expectedRevision: predecessor.revision, phase: 'static_verified', receipts: ['type', 'runtime_architecture', 'architecture_sync', 'bootstrap'].map((id) => ({ id, kind: 'static_gate' as const, summary: id })) });
+    predecessor = advanceReleaseSession({ controllerHome: home, sessionId: predecessor.sessionId, expectedRevision: predecessor.revision, phase: 'candidate_booted' });
+    predecessor = advanceReleaseSession({ controllerHome: home, sessionId: predecessor.sessionId, expectedRevision: predecessor.revision, phase: 'candidate_verified', receipts: ['recovery', 'mcp', 'scheduler', 'supervisor', 'controller'].map((id) => ({ id, kind: 'candidate_canary' as const, summary: id })) });
+    predecessor = advanceReleaseSession({ controllerHome: home, sessionId: predecessor.sessionId, expectedRevision: predecessor.revision, phase: 'cutover_eligible' });
+    predecessor = advanceReleaseSession({ controllerHome: home, sessionId: predecessor.sessionId, expectedRevision: predecessor.revision, phase: 'cutover_attempting' });
+    predecessor = recordReleaseSessionTransaction({
+      controllerHome: home,
+      sessionId: predecessor.sessionId,
+      expectedRevision: predecessor.revision,
+      transaction: {
+        schemaVersion: 1,
+        operationId: 'predecessor-cutover',
+        candidateReleaseId: candidateRelease.releaseId,
+        cutoverAuthorityRevision: 8,
+        rollbackRelease: {
+          releaseId: stableRelease.releaseId,
+          artifactIdentity: stableRelease.artifactIdentity,
+          manifestPath: join(home, 'stable-manifest.json'),
+          manifestSha256: stableRelease.manifestSha256,
+          workerProtocolVersion: stableRelease.workerProtocolVersion,
+          publishedAt: new Date().toISOString(),
+          databaseBackup: { path: join(home, 'rollback.sqlite'), schemaVersion: 1, createdAt: new Date().toISOString(), auditEventCount: 1, recordCount: 1, databaseSha256: 'a'.repeat(64) },
+        },
+        startedAt: new Date().toISOString(),
+      },
+    });
+    predecessor = advanceReleaseSession({ controllerHome: home, sessionId: predecessor.sessionId, expectedRevision: predecessor.revision, phase: 'cutover_committed' });
+    predecessor = advanceReleaseSession({ controllerHome: home, sessionId: predecessor.sessionId, expectedRevision: predecessor.revision, phase: 'soaking' });
+
+    const successorStableRelease = { ...stableRelease, authorityRevision: 8, releaseId: candidateRelease.releaseId, artifactIdentity: candidateRelease.artifactIdentity, manifestSha256: candidateRelease.manifestSha256 };
+    const successorCandidate: CandidateExecutionLane = {
+      ...candidate,
+      sessionId: 'release-session-successor-1234',
+      controllerHome: join(home, 'candidate-successor'),
+      serviceLabel: 'candidate-successor',
+      port: 8767,
+      databaseSnapshotPath: join(home, 'candidate-successor', 'control-plane.sqlite'),
+    };
+    const successor = createReleaseSession({
+      controllerHome: home,
+      sessionId: successorCandidate.sessionId,
+      stable,
+      stableRelease: successorStableRelease,
+      candidate: successorCandidate,
+      sourceRevision: 'def456',
+    });
+    expect(decideConfiguredRuntimeReleaseAction(home)).toMatchObject({ action: 'prepare', session: { sessionId: successor.sessionId } });
+    expect(decideConfiguredRuntimeReleaseReconciliation(home, () => { throw new Error('source must remain lazy'); })).toMatchObject({
+      required: true,
+      reason: 'active_session',
+      action: 'prepare',
+      session: { sessionId: successor.sessionId },
+    });
+
+    const thirdCandidate: CandidateExecutionLane = { ...successorCandidate, sessionId: 'release-session-third-123456', controllerHome: join(home, 'candidate-third'), serviceLabel: 'candidate-third', port: 8768, databaseSnapshotPath: join(home, 'candidate-third', 'control-plane.sqlite') };
+    expect(() => createReleaseSession({ controllerHome: home, sessionId: thirdCandidate.sessionId, stable, stableRelease: successorStableRelease, candidate: thirdCandidate, sourceRevision: 'ghi789' }))
+      .toThrow('RELEASE_SESSION_ACTIVE_EXISTS');
+  });
+
   test('derives the next normal release action only from durable ReleaseSession phase', () => {
     const home = mkdtempSync(join(tmpdir(), 'forge-release-session-coordinator-'));
     roots.push(home);
