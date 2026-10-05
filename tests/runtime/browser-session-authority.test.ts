@@ -959,6 +959,7 @@ describe('browser session compatibility on Computer target authority', () => {
     }));
     let launchOptions: Record<string, unknown> | undefined;
     let launchedProfileDir = '';
+    const methods: string[] = [];
     setBrowserPluginRuntimeHooksForTest({
       moduleAvailable: () => true,
       loadPlaywright: () => ({
@@ -970,6 +971,18 @@ describe('browser session compatibility on Computer target authority', () => {
               pages: () => [],
               newPage: async () => { throw new Error('page creation is not required'); },
               close: async () => undefined,
+              browser: () => ({
+                contexts: () => [],
+                newBrowserCDPSession: async () => ({
+                  send: async (method: string) => {
+                    methods.push(method);
+                    if (method === 'Extensions.getExtensions') {
+                      return { extensions: [{ id: SUPERVISOR_EXTENSION_ID, path: canonicalExtensionPath, enabled: true }] };
+                    }
+                    throw new Error('loadUnpacked must not run when the exact extension and runtime target are already present');
+                  },
+                }),
+              }),
               serviceWorkers: () => [{ url: () => 'chrome-extension://' + SUPERVISOR_EXTENSION_ID + '/background.js' }],
             };
           },
@@ -988,6 +1001,7 @@ describe('browser session compatibility on Computer target authority', () => {
       '--disable-extensions-except=' + canonicalExtensionPath,
       '--load-extension=' + canonicalExtensionPath,
     ]);
+    expect(methods).toEqual(['Extensions.getExtensions']);
     const projectedHost = JSON.parse(readFileSync(join(launchedProfileDir, 'NativeMessagingHosts', 'com.moretea.forge.fixture.json'), 'utf8')) as Record<string, unknown>;
     expect(projectedHost).toMatchObject({
       name: 'com.moretea.forge.fixture',
@@ -1000,6 +1014,120 @@ describe('browser session compatibility on Computer target authority', () => {
       extension: { id: SUPERVISOR_EXTENSION_ID, path: canonicalExtensionPath, enabled: true },
       verified: true,
     });
+  });
+
+  test('managed extension install uses launched browser-level CDP when command-line side-load has no runtime target', async () => {
+    const { controllerHome, repoA } = fixture();
+    mkdirSync(join(repoA, '.forge', 'plugins'), { recursive: true });
+    const extensionPath = extensionFixture(repoA);
+    const canonicalExtensionPath = realpathSync(extensionPath);
+    writeFileSync(join(repoA, '.forge', 'plugins', 'browser.json'), JSON.stringify({
+      schemaVersion: 2, enabled: true, provider: 'playwright', browserMode: 'managed_persistent',
+      profileMode: 'repo_local', browserChannel: 'chrome', cdpAttachFallback: 'fail_closed', nativeAttachMode: 'disabled',
+    }));
+    const methods: string[] = [];
+    let detached = 0;
+    let runtimeTargetVisible = false;
+    let launchOptions: Record<string, unknown> | undefined;
+    setBrowserPluginRuntimeHooksForTest({
+      moduleAvailable: () => true,
+      loadPlaywright: () => ({
+        chromium: {
+          launchPersistentContext: async (_dir: string, options: Record<string, unknown>) => {
+            launchOptions = options;
+            return {
+              pages: () => [],
+              newPage: async () => { throw new Error('page creation is not required'); },
+              close: async () => undefined,
+              browser: () => ({
+                contexts: () => [],
+                newBrowserCDPSession: async () => ({
+                  send: async (method: string, params?: Record<string, unknown>) => {
+                    methods.push(method);
+                    if (method === 'Extensions.loadUnpacked') {
+                      expect(params).toEqual({ path: canonicalExtensionPath });
+                      runtimeTargetVisible = true;
+                      return { id: SUPERVISOR_EXTENSION_ID };
+                    }
+                    if (method === 'Extensions.getExtensions') {
+                      return { extensions: [{ id: SUPERVISOR_EXTENSION_ID, name: 'Forge extension fixture', version: '1.0.0', path: canonicalExtensionPath, enabled: true }] };
+                    }
+                    throw new Error('unexpected method ' + method);
+                  },
+                  detach: async () => { detached += 1; },
+                }),
+              }),
+              serviceWorkers: () => runtimeTargetVisible
+                ? [{ url: () => 'chrome-extension://' + SUPERVISOR_EXTENSION_ID + '/background.js' }]
+                : [],
+            };
+          },
+        },
+      }),
+    });
+    const result = await executeBrowserPluginAction({
+      controllerHome, repoId: 'repo-a', repoRoot: repoA, pluginId: 'browser',
+      requestId: 'extension-managed-cdp-install', actionId: 'install_unpacked_extension',
+      args: { extension_path: extensionPath }, origin: { surface: 'mcp', actor: 'test' },
+    });
+    expect(methods).toEqual(['Extensions.getExtensions', 'Extensions.loadUnpacked', 'Extensions.getExtensions']);
+    expect(detached).toBe(1);
+    expect(launchOptions?.args).toEqual([
+      '--enable-unsafe-extension-debugging',
+      '--disable-extensions-except=' + canonicalExtensionPath,
+      '--load-extension=' + canonicalExtensionPath,
+    ]);
+    expect(result).toMatchObject({
+      provider: 'playwright-persistent-context',
+      extension: {
+        id: SUPERVISOR_EXTENSION_ID,
+        path: canonicalExtensionPath,
+        enabled: true,
+        runtimeTarget: 'chrome-extension://' + SUPERVISOR_EXTENSION_ID + '/background.js',
+      },
+      verified: true,
+    });
+  });
+
+  test('managed extension install rejects a browser-returned id that differs from the stable manifest id', async () => {
+    const { controllerHome, repoA } = fixture();
+    mkdirSync(join(repoA, '.forge', 'plugins'), { recursive: true });
+    const extensionPath = extensionFixture(repoA);
+    writeFileSync(join(repoA, '.forge', 'plugins', 'browser.json'), JSON.stringify({
+      schemaVersion: 2, enabled: true, provider: 'playwright', browserMode: 'managed_persistent',
+      profileMode: 'repo_local', browserChannel: 'chrome', cdpAttachFallback: 'fail_closed', nativeAttachMode: 'disabled',
+    }));
+    let detached = 0;
+    setBrowserPluginRuntimeHooksForTest({
+      moduleAvailable: () => true,
+      loadPlaywright: () => ({
+        chromium: {
+          launchPersistentContext: async () => ({
+            pages: () => [],
+            newPage: async () => { throw new Error('page creation is not required'); },
+            close: async () => undefined,
+            browser: () => ({
+              contexts: () => [],
+              newBrowserCDPSession: async () => ({
+                send: async (method: string) => {
+                  if (method === 'Extensions.getExtensions') return { extensions: [] };
+                  if (method === 'Extensions.loadUnpacked') return { id: 'a'.repeat(32) };
+                  throw new Error('unexpected method ' + method);
+                },
+                detach: async () => { detached += 1; },
+              }),
+            }),
+            serviceWorkers: () => [],
+          }),
+        },
+      }),
+    });
+    await expect(executeBrowserPluginAction({
+      controllerHome, repoId: 'repo-a', repoRoot: repoA, pluginId: 'browser',
+      requestId: 'extension-managed-cdp-id-mismatch', actionId: 'install_unpacked_extension',
+      args: { extension_path: extensionPath }, origin: { surface: 'mcp', actor: 'test' },
+    })).rejects.toMatchObject({ code: 'PLUGIN_BROWSER_EXTENSION_POSTCONDITION_FAILED', retryable: false });
+    expect(detached).toBe(1);
   });
 
   test('managed extension install preserves existing extensions in a custom user profile', async () => {
@@ -1046,6 +1174,7 @@ describe('browser session compatibility on Computer target authority', () => {
     }));
     let launchOptions: Record<string, unknown> | undefined;
     let launchedProfileDir = '';
+    const methods: string[] = [];
     setBrowserPluginRuntimeHooksForTest({
       moduleAvailable: () => true,
       loadPlaywright: () => ({
@@ -1057,6 +1186,18 @@ describe('browser session compatibility on Computer target authority', () => {
               pages: () => [],
               newPage: async () => { throw new Error('page creation is not required'); },
               close: async () => undefined,
+              browser: () => ({
+                contexts: () => [],
+                newBrowserCDPSession: async () => ({
+                  send: async (method: string) => {
+                    methods.push(method);
+                    if (method === 'Extensions.getExtensions') {
+                      return { extensions: [{ id: SUPERVISOR_EXTENSION_ID, path: canonicalExtensionPath, enabled: true }] };
+                    }
+                    throw new Error('loadUnpacked must not run when the exact extension and runtime target are already present');
+                  },
+                }),
+              }),
               serviceWorkers: () => [{ url: () => 'chrome-extension://' + SUPERVISOR_EXTENSION_ID + '/background.js' }],
             };
           },
@@ -1068,6 +1209,7 @@ describe('browser session compatibility on Computer target authority', () => {
       requestId: 'extension-custom-profile-install', actionId: 'install_unpacked_extension',
       args: { extension_path: extensionPath }, origin: { surface: 'mcp', actor: 'test' },
     });
+    expect(methods).toEqual(['Extensions.getExtensions']);
     expect(launchedProfileDir).toBe(userDataDir);
     expect(launchOptions?.ignoreDefaultArgs).toEqual([
       '--disable-extensions',
