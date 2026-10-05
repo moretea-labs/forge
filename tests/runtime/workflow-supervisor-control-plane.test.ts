@@ -1129,7 +1129,11 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     releaseControllerSession(fx.store, workId, identity.controllerId);
     bindChatgptWorkConversation(fx.store, { workId, conversationUrl });
 
-    const supervisorStore = new WorkflowSupervisorStore(join(fx.root, 'round-budget-reconcile-supervisor'));
+    // Successive outer turns of one task are spaced, so this test advances the
+    // store clock past the minimum interval instead of asserting instant
+    // deliverability of a just-authorized continuation.
+    let storeClockMs = Date.now() + 10 * 60_000;
+    const supervisorStore = new WorkflowSupervisorStore(join(fx.root, 'round-budget-reconcile-supervisor'), { now: () => storeClockMs });
     const control = new WorkflowSupervisorControlPlane(supervisorStore, {}, forgeWorkflowSupervisorLifecycleHooks(fx.controllerHome));
     const taskId = `forge:${fx.repository.repoId}:work:${workId}`;
     control.registerTask({
@@ -1168,6 +1172,7 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     // Every completion owns one successor; lower authority/history stay fixed.
     let currentEffect = successor!;
     for (let turn = 0; turn < 12; turn += 1) {
+      storeClockMs += 4 * 60_000;
       expect(control.browserPoll({ conversationId, conversationUrl }).command?.effectId).toBe(currentEffect.effectId);
       control.browserObserveEffect({
         conversationId, conversationUrl, effectId: currentEffect.effectId,
@@ -2384,7 +2389,11 @@ test('browserTasks keeps an applied external effect observable while lower Contr
 test('automation tool receipt successor begins from the real assistant page baseline', async () => {
   const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-automation-successor-baseline-'));
   roots.push(root);
-  const store = new WorkflowSupervisorStore(join(root, 'supervisor-home'));
+  // The successor of a completion becomes deliverable only after the spacing
+  // interval, so this test advances the store clock instead of requiring an
+  // immediate send after the authorizing completion.
+  let storeClockMs = Date.now();
+  const store = new WorkflowSupervisorStore(join(root, 'supervisor-home'), { now: () => storeClockMs });
   const control = new WorkflowSupervisorControlPlane(store);
   const taskId = 'task-automation-successor-baseline';
   const conversationId = '67676767-7878-8989-9090-121212121212';
@@ -2493,6 +2502,7 @@ test('automation tool receipt successor begins from the real assistant page base
   await adapter.runOnce();
   expect(dispatched).toEqual([]);
   generating = false;
+  storeClockMs += 4 * 60_000;
   await adapter.runOnce();
   expect(dispatched).toEqual([successor!.prompt]);
   expect(store.latestEffectDispatch(successor!.effectId)?.generation).toBe(1);

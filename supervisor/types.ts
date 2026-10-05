@@ -132,7 +132,15 @@ export interface WorkflowSupervisorLifecycleHooks {
   /** Admission for a new send only. Never suppress observation of an already-started effect. */
   browserTaskActive?(task: WorkflowSupervisorTask): boolean;
   /** Mechanical provenance attached to outbound effect dispatch evidence. */
-  effectDispatchEvidence?(): Record<string, unknown>;
+  effectDispatchEvidence?(input: { task: WorkflowSupervisorTask; effectId: string }): Record<string, unknown>;
+  /**
+   * Mechanical projection of the canonical Work the turn is meant to advance.
+   * Comparison of the value captured at dispatch with the value observed at
+   * receipt is the only structural proof that a provider turn changed anything.
+   * Absent means the lower layer exposes no such signal, which is never treated
+   * as progress or as its absence.
+   */
+  workProgressFingerprint?(task: WorkflowSupervisorTask): string | undefined;
   /** Existing lower-layer evidence that this exact reserved effect may already have been dispatched outside Supervisor. */
   inheritedEffectDispatch?(
     task: WorkflowSupervisorTask,

@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { parseChatgptConversationIdentity } from './chatgpt-conversation';
 import { parseSupervisorCompletion, renderEffectMarker, renderSupervisorPrompt, sha256, validateEffectId } from './protocol';
-import { WorkflowSupervisorStore } from './store';
+import { WORKFLOW_SUPERVISOR_MAX_NO_PROGRESS_TURNS, WORKFLOW_SUPERVISOR_NO_PROGRESS_EVIDENCE, WorkflowSupervisorStore } from './store';
 import type { WorkflowAssistantObservation, WorkflowAssistantObservationResult, WorkflowContractValidation, WorkflowEffectKind, WorkflowSupervisorAutomationStatus, WorkflowSupervisorBrowserPollResult, WorkflowSupervisorBrowserTask, WorkflowSupervisorCompletion, WorkflowSupervisorDiscoveredConversation, WorkflowSupervisorEffect, WorkflowSupervisorLifecycleHooks, WorkflowSupervisorProjectScope, WorkflowSupervisorTask, WorkflowSupervisorTaskInput, WorkflowSupervisorTerminalState, WorkflowSupervisorValidators } from './types';
 
 function compactProjectIdentity(value: string): string {
@@ -416,7 +416,7 @@ export class WorkflowSupervisorControlPlane {
     if (!pending || pending.effect.effectId !== validateEffectId(input.effectId) || pending.mode !== 'send') return false;
     return this.store.recordEffectDispatchStarted(input.effectId, input.dispatchGeneration, input.dispatchId, {
       surface: 'computer-bootstrap',
-      ...(this.hooks.effectDispatchEvidence?.() ?? {}),
+      ...(this.hooks.effectDispatchEvidence?.({ task, effectId: input.effectId }) ?? {}),
     });
   }
   bootstrapObserveEffect(input: { taskId: string; effectId: string; observationId: string; outcome: 'applied' | 'not_applied' | 'unknown'; evidence?: Record<string, unknown> }): void {
@@ -464,7 +464,7 @@ export class WorkflowSupervisorControlPlane {
       baseline_user_sha256: browserTextSha256(snapshot.latestUserText),
       baseline_assistant_sha256: sha256(snapshot.latestAssistantResponse),
       baseline_has_source_completion: Boolean(pending.effect.sourceCompletionFingerprint),
-      ...(this.hooks.effectDispatchEvidence?.() ?? {}),
+      ...(this.hooks.effectDispatchEvidence?.({ task, effectId }) ?? {}),
     };
     const started = this.store.recordEffectDispatchStarted(effectId, input.dispatchGeneration, input.dispatchId, dispatchEvidence);
     return { started, mode: started ? 'send' : 'reconcile', generation: input.dispatchGeneration };
@@ -675,12 +675,13 @@ export class WorkflowSupervisorControlPlane {
       throw new Error('WORKFLOW_SUPERVISOR_CAUSAL_EFFECT_NOT_APPLIED');
     }
     const action = input.status === 'continue' ? 'CONTINUE' : input.status === 'done' ? 'DONE' : 'NEEDS_USER';
+    const noProgress = action === 'CONTINUE' && this.automationTurnChangedNothing(task, sourceEffect.effectId);
     const proposal = {
       action: action as 'CONTINUE' | 'DONE' | 'NEEDS_USER',
       sourceEffectId: sourceEffect.effectId,
       checkpoint: `automation:${receiptForEffect}`,
       reason: 'automation_tool_receipt',
-      evidence: [],
+      evidence: noProgress ? [WORKFLOW_SUPERVISOR_NO_PROGRESS_EVIDENCE] : [],
       conversationId: task.conversationId,
       taskId: task.taskId,
       supervisorState: action === 'CONTINUE' ? 'running' as const : action === 'DONE' ? 'done' as const : 'needs_user' as const,
@@ -689,6 +690,18 @@ export class WorkflowSupervisorControlPlane {
     const completionFingerprint = sha256(jsonIdentity(task.taskId, task.conversationId, sourceEffect.effectId, responseSha256, controlBlockSha256));
     const completion: WorkflowSupervisorCompletion = { completionFingerprint, taskId: task.taskId, sourceEffectId: sourceEffect.effectId, action: proposal.action, responseSha256, controlBlockSha256, proposal, committedAt: new Date().toISOString() };
     if (proposal.action === 'CONTINUE') {
+      const noProgressTurns = noProgress ? this.store.consecutiveNoProgressTurns(task.taskId) + 1 : 0;
+      // A chain that keeps answering "continue" without changing any canonical
+      // Work state is provider activity, not progress. Bound it once and surface
+      // the operator decision instead of minting another provider turn.
+      if (noProgress && noProgressTurns >= WORKFLOW_SUPERVISOR_MAX_NO_PROGRESS_TURNS) {
+        const committed = this.store.commitCompletion(completion);
+        const resolved = this.store.resolveTerminal({
+          completionFingerprint, taskId: task.taskId, action: 'NEEDS_USER', accepted: true,
+          reason: `WORKFLOW_SUPERVISOR_NO_PROGRESS: ${noProgressTurns} consecutive provider turns changed no canonical Work state.`,
+        });
+        return { action: 'NEEDS_USER', completionFingerprint, terminal: true, deduplicated: committed.deduplicated || resolved.deduplicated };
+      }
       const committed = this.reserveContinuation(task, completion);
       return { action: 'CONTINUE', completionFingerprint, terminal: false, successorEffect: committed.successorEffect!, deduplicated: committed.deduplicated };
     }
@@ -731,6 +744,19 @@ export class WorkflowSupervisorControlPlane {
   private browserTaskActive(task: WorkflowSupervisorTask): boolean { return this.hooks.browserTaskActive?.(task) ?? true; }
   private browserTaskActiveForExternalEffect(task: WorkflowSupervisorTask): boolean {
     return this.store.hasAppliedEffectAwaitingCompletion(task.taskId) || this.browserTaskActive(task);
+  }
+
+  /**
+   * Progress is a mechanical change in the canonical Work this turn is meant to
+   * advance, never the provider's willingness to answer again. Both endpoints of
+   * the comparison are durable facts: the Work projection captured in this
+   * effect's dispatch evidence and the current projection. A missing signal on
+   * either side is unknown, so it proves neither progress nor its absence.
+   */
+  private automationTurnChangedNothing(task: WorkflowSupervisorTask, effectId: string): boolean {
+    const dispatched = boundedBrowserText(this.store.latestEffectDispatch(effectId)?.evidence.work_progress_fingerprint, 256);
+    const current = boundedBrowserText(this.hooks.workProgressFingerprint?.(task), 256);
+    return Boolean(dispatched && current && dispatched === current);
   }
 
   private browserSnapshotMatchesSource(task: WorkflowSupervisorTask, effect: WorkflowSupervisorEffect, snapshot: { latestUserText: string; latestAssistantResponse: string }): boolean {

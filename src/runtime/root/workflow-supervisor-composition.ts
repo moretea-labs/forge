@@ -1,4 +1,5 @@
 import { existsSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { getRepository } from '../../cli/repositories/registry';
 import { getWorkContract, semanticWorkState } from '../../../packages/kernel/work/api/index';
 import {
@@ -138,6 +139,35 @@ function workflowSupervisorOriginWorkId(task: WorkflowSupervisorTask, repoId: st
     ?? (task.taskId.startsWith(legacyWorkPrefix) ? task.taskId.slice(legacyWorkPrefix.length) || undefined : undefined);
 }
 
+/**
+ * Mechanical Work projection used to decide whether a provider turn advanced
+ * anything. `updatedAt` is deliberately excluded: mechanical Supervisor and
+ * Controller bookkeeping touches the record every turn, while only a real Work
+ * mutation (authored revision/state, phase evidence, execution evidence,
+ * observable changed paths, or a delivery receipt) means the turn did work.
+ */
+function workflowSupervisorWorkProgressFingerprint(controllerHome: string, task: WorkflowSupervisorTask): string | undefined {
+  const repoId = workflowSupervisorContractText(task, 'repo_id');
+  const taskControllerHome = workflowSupervisorContractText(task, 'controller_home');
+  if (!repoId || (taskControllerHome && taskControllerHome !== controllerHome)) return undefined;
+  const workId = workflowSupervisorOriginWorkId(task, repoId);
+  if (!workId) return undefined;
+  const work = getWorkContract({ controllerHome, repoId }, workId);
+  if (!work) return undefined;
+  return createHash('sha256').update(JSON.stringify({
+    semanticRevision: work.semanticRevision ?? null,
+    semanticState: work.semanticState,
+    phase: work.phase,
+    phaseEvidence: work.phaseEvidence,
+    dispatchState: work.dispatchState,
+    evidenceState: work.evidenceState,
+    completionOutcome: work.completionOutcome ?? null,
+    completionReceipt: work.completionReceipt ?? null,
+    evidenceRefs: work.evidenceRefs,
+    changedPaths: work.scopeEvidence?.actualChangedPaths ?? [],
+  })).digest('hex');
+}
+
 function workflowSupervisorProjectAliases(task: WorkflowSupervisorTask): string[] {
   const requirementId = workflowSupervisorContractText(task, 'requirement_id');
   if (!requirementId) return [];
@@ -187,17 +217,22 @@ export function forgeWorkflowSupervisorLifecycleHooks(controllerHome: string): W
       // never manufacture a replacement Work or turn into a dispatch exception.
       return work?.objective;
     },
-    effectDispatchEvidence: () => {
+    effectDispatchEvidence: ({ task }) => {
       const claim = getRuntimeWriteClaim();
-      return claim && !claim.unmanaged
-        ? {
-            runtime_instance_id: claim.runtimeInstanceId,
-            runtime_fencing_generation: claim.fencingGeneration,
-            active_release_id: claim.releaseId,
-            active_release_authority_revision: claim.releaseAuthorityRevision,
-          }
-        : {};
+      const progress = workflowSupervisorWorkProgressFingerprint(controllerHome, task);
+      return {
+        ...(claim && !claim.unmanaged
+          ? {
+              runtime_instance_id: claim.runtimeInstanceId,
+              runtime_fencing_generation: claim.fencingGeneration,
+              active_release_id: claim.releaseId,
+              active_release_authority_revision: claim.releaseAuthorityRevision,
+            }
+          : {}),
+        ...(progress ? { work_progress_fingerprint: progress } : {}),
+      };
     },
+    workProgressFingerprint: (task) => workflowSupervisorWorkProgressFingerprint(controllerHome, task),
     inheritedEffectDispatch: (task, effect) => {
       if (effect.kind !== 'enrollment') return undefined;
       const repoId = workflowSupervisorContractText(task, 'repo_id');
