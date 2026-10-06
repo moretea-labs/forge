@@ -18,6 +18,12 @@ interface RawRecoveryVerification {
   probes?: Record<string, { ok?: boolean }>;
 }
 
+interface RawRecoveryHistory {
+  events?: Array<{ at?: string; event?: string; ok?: boolean }>;
+  bounded?: boolean;
+  truncated?: boolean;
+}
+
 const PROBE_LABELS: Record<string, string> = {
   runtime_status: '运行时状态',
   recovery_known_good_recoverability: '已验证版本可恢复性',
@@ -33,6 +39,24 @@ const PROBE_LABELS: Record<string, string> = {
   mcp_tools_list: 'MCP 工具列表',
   mcp_read_only_call: 'MCP 只读调用',
   mcp_session_close: 'MCP 会话关闭',
+};
+
+const RECOVERY_EVENT_LABELS: Record<string, string> = {
+  verify: '运行时验证',
+  network_transport_incident_observed: '连接异常',
+  primary_runtime_restart_succeeded: '运行时重启完成',
+  primary_runtime_restart_unverified: '运行时重启待验证',
+  primary_runtime_restart_failed: '运行时重启失败',
+  primary_runtime_recovery_succeeded: '运行时恢复完成',
+  primary_runtime_recovery_unverified: '运行时恢复待验证',
+  primary_runtime_recovery_service_contract_failed: '运行时恢复服务异常',
+  primary_runtime_recovery_rollback_failed: '运行时恢复回滚失败',
+  rollback_succeeded: '回滚完成',
+  rollback_failed: '回滚失败',
+  runtime_release_activation_succeeded: '运行时版本激活完成',
+  runtime_release_activation_failed: '运行时版本激活失败',
+  known_good_attested: '版本已验证可恢复',
+  reconnect_main: '主连接检查',
 };
 
 const WATCHDOG_DECISIONS: Record<string, string> = {
@@ -71,7 +95,19 @@ function runtimeLabel(status: RawRecoveryStatus): { label: string; detail: strin
   return { label: '运行时未运行', detail: '主运行时当前未运行；独立恢复网关仍可用于诊断和恢复。' };
 }
 
-function projectStatus(status: RawRecoveryStatus): RuntimeRecoveryProjection {
+function projectHistory(raw: RawRecoveryHistory): RuntimeRecoveryProjection['history'] {
+  return (raw.events ?? []).flatMap((entry) => {
+    if (!entry.at || !entry.event) return [];
+    return [{
+      at: entry.at,
+      event: entry.event,
+      label: RECOVERY_EVENT_LABELS[entry.event] ?? '恢复事件',
+      ...(typeof entry.ok === 'boolean' ? { ok: entry.ok } : {}),
+    }];
+  });
+}
+
+function projectStatus(status: RawRecoveryStatus, history: RuntimeRecoveryProjection['history']): RuntimeRecoveryProjection {
   const runtime = runtimeLabel(status);
   const decision = status.recoveryWatchdog?.lastDecision;
   const observedAt = status.snapshot?.observedAt ?? status.observedAt;
@@ -98,6 +134,7 @@ function projectStatus(status: RawRecoveryStatus): RuntimeRecoveryProjection {
       ...(observedAt ? { observedAt } : {}),
       reasonCount: Array.isArray(status.reasonCodes) ? status.reasonCodes.length : 0,
     },
+    history,
     diagnostics: null,
   };
 }
@@ -122,13 +159,18 @@ export function unavailableRecoveryProjection(detail: string): RuntimeRecoveryPr
   return {
     recovery: { available: false, label: '独立恢复不可用', detail },
     runtime: { running: false, ready: false, stale: false, label: '运行时状态未知', detail: '当前无法通过独立恢复确认主运行时状态。', reasonCount: 0 },
+    history: [],
     diagnostics: null,
   };
 }
 
 export async function readRecoveryStatus(): Promise<RuntimeRecoveryProjection> {
   try {
-    return projectStatus(await invoke<RawRecoveryStatus>('read_recovery_status'));
+    const [status, history] = await Promise.all([
+      invoke<RawRecoveryStatus>('read_recovery_status'),
+      invoke<RawRecoveryHistory>('read_recovery_history'),
+    ]);
+    return projectStatus(status, projectHistory(history));
   } catch (error) {
     throw localizeRecoveryError(error);
   }

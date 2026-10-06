@@ -18,6 +18,7 @@ The initial macOS shell exposes three first-class surfaces: Assistant, Projects/
 - Runtime reads enter through typed projection/query contracts. Runtime mutations enter through existing typed Runtime/Controller capabilities and preserve their CAS, effect, authorization and outcome-unknown semantics.
 - Tauri owns desktop shell mechanics only. Starting or closing the UI must not mint another Forge Runtime, Recovery, Scheduler or Supervisor authority.
 - A disconnected UI is an adapter availability state. It does not redefine Work, Scheduler or Runtime semantic state.
+- Runtime/Recovery history is projected from the standalone Recovery authority's bounded canonical audit tail. The projection exposes event/time and a bounded outcome bit only, omits arbitrary audit detail and local paths, and is never persisted or reconstructed by the desktop client.
 
 ## Foundation layout
 

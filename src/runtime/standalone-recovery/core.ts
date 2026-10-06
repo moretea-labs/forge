@@ -2,7 +2,7 @@ import { assertRuntimePerformanceEvidence, measureRuntimePerformance, samePerfor
 import { runBoundedChild } from '../shared/bounded-child-supervisor';
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'crypto';
 import { spawn, spawnSync } from 'child_process';
-import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'fs';
+import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'fs';
 import { homedir, hostname } from 'os';
 import { createServer as createNetServer } from 'net';
 import { basename, delimiter, dirname, isAbsolute, join, resolve } from 'path';
@@ -841,6 +841,75 @@ function audit(config: RecoveryConfig, event: string, detail: Record<string, unk
   const line = JSON.stringify({ at: new Date().toISOString(), event, detail });
   mkdirSync(dirname(auditPath(config)), { recursive: true, mode: 0o700 });
   writeFileSync(auditPath(config), `${line}\n`, { encoding: 'utf8', mode: 0o600, flag: 'a' });
+}
+
+export interface RecoveryHistoryEvent {
+  at: string;
+  event: string;
+  ok?: boolean;
+}
+
+const RECOVERY_HISTORY_MAX_EVENTS = 50;
+const RECOVERY_HISTORY_MAX_BYTES = 256 * 1024;
+
+/**
+ * Bounded read-only projection of the canonical Recovery audit. The projection
+ * intentionally omits arbitrary detail payloads, filesystem paths, request ids,
+ * service targets, and other mechanics that the desktop does not need.
+ */
+export function listRecoveryHistory(
+  config: RecoveryConfig,
+  requestedLimit = 20,
+): { events: RecoveryHistoryEvent[]; bounded: true; truncated: boolean } {
+  const limit = Number.isFinite(requestedLimit)
+    ? Math.max(1, Math.min(Math.trunc(requestedLimit), RECOVERY_HISTORY_MAX_EVENTS))
+    : 20;
+  const path = auditPath(config);
+  if (!existsSync(path)) return { events: [], bounded: true, truncated: false };
+
+  const size = statSync(path).size;
+  if (size <= 0) return { events: [], bounded: true, truncated: false };
+  const start = Math.max(0, size - RECOVERY_HISTORY_MAX_BYTES);
+  const length = size - start;
+  const buffer = Buffer.alloc(length);
+  const fd = openSync(path, 'r');
+  let read = 0;
+  try {
+    while (read < length) {
+      const count = readSync(fd, buffer, read, length - read, start + read);
+      if (count <= 0) break;
+      read += count;
+    }
+  } finally {
+    closeSync(fd);
+  }
+
+  let text = buffer.subarray(0, read).toString('utf8');
+  if (start > 0) {
+    const firstNewline = text.indexOf('\n');
+    text = firstNewline >= 0 ? text.slice(firstNewline + 1) : '';
+  }
+  const parsed: RecoveryHistoryEvent[] = [];
+  for (const line of text.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    try {
+      const value = JSON.parse(trimmed) as { at?: unknown; event?: unknown; detail?: unknown };
+      if (typeof value.at !== 'string' || typeof value.event !== 'string') continue;
+      const detail = value.detail && typeof value.detail === 'object' && !Array.isArray(value.detail)
+        ? value.detail as Record<string, unknown>
+        : undefined;
+      parsed.push({
+        at: value.at,
+        event: value.event,
+        ...(typeof detail?.ok === 'boolean' ? { ok: detail.ok } : {}),
+      });
+    } catch {
+      // A partially written final line is not a durable audit event yet.
+    }
+  }
+  const truncated = start > 0 || parsed.length > limit;
+  return { events: parsed.slice(-limit).reverse(), bounded: true, truncated };
 }
 
 const WATCHDOG_DIAGNOSTIC_LIMIT = 32;

@@ -154,6 +154,13 @@ export interface RecoveryProbeProjection {
   ok: boolean;
 }
 
+export interface RecoveryHistoryEntryProjection {
+  at: string;
+  event: string;
+  label: string;
+  ok?: boolean;
+}
+
 export interface RuntimeRecoveryProjection {
   recovery: {
     available: boolean;
@@ -177,6 +184,7 @@ export interface RuntimeRecoveryProjection {
     observedAt?: string;
     reasonCount: number;
   };
+  history: RecoveryHistoryEntryProjection[];
   diagnostics: {
     checkedAt?: string;
     ok: boolean;

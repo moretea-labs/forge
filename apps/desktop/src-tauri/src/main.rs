@@ -222,6 +222,11 @@ async fn read_recovery_status() -> Result<Value, String> {
 }
 
 #[tauri::command]
+async fn read_recovery_history() -> Result<Value, String> {
+    call_recovery_tool("list_recovery_history", json!({ "limit": 20 })).await
+}
+
+#[tauri::command]
 async fn verify_recovery_runtime() -> Result<Value, String> {
     call_recovery_tool("verify_stable_runtime", json!({})).await
 }
@@ -392,6 +397,7 @@ fn main() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             read_recovery_status,
+            read_recovery_history,
             verify_recovery_runtime,
             perform_recovery_action,
             read_projects,

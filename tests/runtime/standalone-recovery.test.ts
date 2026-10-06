@@ -24,6 +24,7 @@ import {
   recoveryConfigPath,
   recoveryCommandPath,
   resolveRecoveryPackageConnectorExecutable,
+  listRecoveryHistory,
   listReleases,
   pinRuntimeRelease,
   promoteConfiguredRuntimeReleaseSessionKnownGood,
@@ -377,6 +378,43 @@ test('Recovery command PATH includes the standard user binary directory outside 
   expect(recoveryCommandPath('/usr/bin:/bin', 'linux', '/home/forge-user')).toBe('/home/forge-user/.local/bin:/usr/bin:/bin');
   expect(recoveryCommandPath('/home/forge-user/.local/bin:/usr/bin', 'linux', '/home/forge-user')).toBe('/home/forge-user/.local/bin:/usr/bin');
   expect(recoveryCommandPath('C:\\Windows\\System32', 'win32', 'C:\\Users\\forge')).toBe('C:\\Windows\\System32');
+});
+
+test('Recovery history exposes only bounded sanitized newest audit facts', async () => {
+  const home = controllerHome();
+  const config = createRecoveryConfig(home);
+  const auditDirectory = join(home, 'recovery', 'audit');
+  mkdirSync(auditDirectory, { recursive: true });
+  writeFileSync(join(auditDirectory, 'recovery.jsonl'), [
+    JSON.stringify({ at: '2026-10-06T00:00:00.000Z', event: 'verify', detail: { ok: true, path: '/private/controller-home' } }),
+    JSON.stringify({ at: '2026-10-06T00:01:00.000Z', event: 'rollback_failed', detail: { ok: false, request_id: 'secret-request' } }),
+    JSON.stringify({ at: '2026-10-06T00:02:00.000Z', event: 'primary_runtime_restart_succeeded', detail: { ok: true, target: 'private-service-target' } }),
+    '{"at":"partial-final-line"',
+  ].join('\n'));
+
+  const history = listRecoveryHistory(config, 2);
+  expect(history).toEqual({
+    bounded: true,
+    truncated: true,
+    events: [
+      { at: '2026-10-06T00:02:00.000Z', event: 'primary_runtime_restart_succeeded', ok: true },
+      { at: '2026-10-06T00:01:00.000Z', event: 'rollback_failed', ok: false },
+    ],
+  });
+  expect(JSON.stringify(history)).not.toContain('/private/controller-home');
+  expect(JSON.stringify(history)).not.toContain('secret-request');
+  expect(JSON.stringify(history)).not.toContain('private-service-target');
+
+  expect(await dispatchRecoveryTool(config, 'list_recovery_history', { limit: 1 })).toEqual({
+    bounded: true,
+    truncated: true,
+    events: [{ at: '2026-10-06T00:02:00.000Z', event: 'primary_runtime_restart_succeeded', ok: true }],
+  });
+  expect(RECOVERY_TOOLS.find((tool) => tool.name === 'list_recovery_history')?.inputSchema).toMatchObject({
+    type: 'object',
+    properties: { limit: { type: 'integer', minimum: 1, maximum: 50 } },
+    additionalProperties: false,
+  });
 });
 
 function controllerHome(): string {

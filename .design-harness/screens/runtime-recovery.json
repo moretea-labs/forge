@@ -46,6 +46,10 @@
       "component": "RecoveryHistoryDisclosure",
       "props": {
         "entries": ["08:14 运行时正常", "08:19 连接中断", "08:20 恢复能力健康确认"],
+        "source": "standalone Recovery canonical audit via list_recovery_history",
+        "bounded": true,
+        "sanitized": true,
+        "clientPersisted": false,
         "collapsedByDefault": true,
         "showRevisionIds": false
       }

@@ -567,6 +567,23 @@ function RuntimeView({
           </div>
         </details>
 
+        {projection && projection.history.length > 0 && (
+          <details className="detail-section">
+            <summary>最近恢复记录 · {projection.history.length}</summary>
+            <ol className="history-list">
+              {projection.history.map((entry, index) => (
+                <li key={`${entry.at}-${entry.event}-${index}`}>
+                  <div className="history-meta">
+                    <strong>{entry.label}</strong>
+                    <span>{formatTimestamp(entry.at)}</span>
+                    {entry.ok !== undefined && <span>{entry.ok ? '正常' : '异常'}</span>}
+                  </div>
+                </li>
+              ))}
+            </ol>
+          </details>
+        )}
+
         {projection?.diagnostics && (
           <details className="detail-section" open>
             <summary>诊断 · {projection.diagnostics.passed} 通过 / {projection.diagnostics.failed} 异常</summary>

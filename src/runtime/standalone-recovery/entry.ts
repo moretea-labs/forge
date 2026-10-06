@@ -20,6 +20,7 @@ import {
   RECOVERY_INTERNAL_PERFORMANCE_COMMAND,
   diagnose,
   gatewayToken,
+  listRecoveryHistory,
   listReleases,
   pinRuntimeRelease,
   prepareConfiguredRuntimeReleaseSession,
@@ -431,6 +432,7 @@ function mutationInputSchema(
 
 export const RECOVERY_TOOLS = [
   { name: 'runtime_status', description: 'Read canonical Runtime ownership, readiness, endpoint, release observation, and exact Recovery machine identity.', inputSchema: { type: 'object', additionalProperties: false } },
+  { name: 'list_recovery_history', description: 'Read a bounded sanitized tail of canonical standalone Recovery audit events.', inputSchema: { type: 'object', properties: { limit: { type: 'integer', minimum: 1, maximum: 50 } }, additionalProperties: false } },
   { name: 'list_releases', description: 'Read active, previous, and known-good whole-Runtime release evidence.', inputSchema: { type: 'object', additionalProperties: false } },
   { name: 'verify_stable_runtime', description: 'Run independent stable runtime verification.', inputSchema: { type: 'object', additionalProperties: false } },
   { name: 'verify_external_runtime', description: 'Verify the external primary MCP endpoint.', inputSchema: { type: 'object', additionalProperties: false } },
@@ -748,6 +750,7 @@ function assertRecoveryGatewayMutationIdentity(config: RecoveryConfig, args: Rec
 export async function dispatchRecoveryTool(config: RecoveryConfig, name: string, args: Record<string, unknown>): Promise<unknown> {
   switch (name) {
     case 'runtime_status': return runtimeStatus(config);
+    case 'list_recovery_history': return listRecoveryHistory(config, typeof args.limit === 'number' ? args.limit : 20);
     case 'list_releases': return listReleases(config);
     case 'verify_stable_runtime': return verifyStableRuntime(config);
     case 'verify_external_runtime': {
