@@ -697,13 +697,14 @@ function RuntimeView({
   onRefresh,
   onDiagnose,
   onRestart,
+  onRecover,
   onRefreshConnection,
   onRepairConnection,
 }: {
   projection: RuntimeRecoveryProjection | null;
   loading: boolean;
   error: string | null;
-  action: 'diagnose' | 'restart' | null;
+  action: 'diagnose' | 'restart' | 'recover' | null;
   connection: ControllerConnectionProjection | null;
   connectionLoading: boolean;
   connectionError: string | null;
@@ -711,10 +712,15 @@ function RuntimeView({
   onRefresh: () => Promise<void>;
   onDiagnose: () => Promise<void>;
   onRestart: () => Promise<void>;
+  onRecover: () => Promise<void>;
   onRefreshConnection: () => Promise<void>;
   onRepairConnection: () => Promise<void>;
 }) {
   const disabled = loading || action !== null || !projection?.recovery.available;
+  const runtimeRunning = projection?.runtime.running === true;
+  const runtimeReady = projection?.runtime.ready === true;
+  const restartLabel = runtimeRunning ? '重启运行时' : '启动运行时';
+  const restartPendingLabel = runtimeRunning ? '重启中…' : '启动中…';
   return (
     <main className="main-pane runtime-pane">
       <div className="content-column narrow-column">
@@ -737,7 +743,10 @@ function RuntimeView({
           <div className="runtime-actions">
             <button className="plain-action" type="button" disabled={loading || action !== null} onClick={() => void onRefresh()}>刷新</button>
             <button className="plain-action" type="button" disabled={disabled} onClick={() => void onDiagnose()}>{action === 'diagnose' ? '诊断中…' : '诊断'}</button>
-            <button className="plain-action" type="button" disabled={disabled} onClick={() => void onRestart()}>{action === 'restart' ? '重启中…' : '重启运行时'}</button>
+            <button className="plain-action" type="button" disabled={disabled} onClick={() => void onRestart()}>{action === 'restart' ? restartPendingLabel : restartLabel}</button>
+            {!runtimeReady && projection?.recovery.available && (
+              <button className="plain-action" type="button" disabled={disabled} onClick={() => void onRecover()}>{action === 'recover' ? '恢复中…' : '深度恢复'}</button>
+            )}
           </div>
         </section>
 
@@ -839,7 +848,7 @@ export function App() {
   const [recoveryProjection, setRecoveryProjection] = useState<RuntimeRecoveryProjection | null>(null);
   const [recoveryLoading, setRecoveryLoading] = useState(false);
   const [recoveryError, setRecoveryError] = useState<string | null>(null);
-  const [recoveryAction, setRecoveryAction] = useState<'diagnose' | 'restart' | null>(null);
+  const [recoveryAction, setRecoveryAction] = useState<'diagnose' | 'restart' | 'recover' | null>(null);
   const [connectionProjection, setConnectionProjection] = useState<ControllerConnectionProjection | null>(null);
   const [connectionLoading, setConnectionLoading] = useState(false);
   const [connectionError, setConnectionError] = useState<string | null>(null);
@@ -1032,12 +1041,31 @@ export function App() {
   }, [recoveryProjection]);
 
   const handleRestartRuntime = useCallback(async () => {
-    const confirmed = window.confirm('将通过独立恢复服务重启主运行时，现有运行时连接会短暂中断。是否继续？');
+    const starting = recoveryProjection?.runtime.running !== true;
+    const confirmed = window.confirm(starting
+      ? '将通过独立恢复服务启动主运行时，并在启动后执行完整运行时验证。是否继续？'
+      : '将通过独立恢复服务重启主运行时，现有运行时连接会短暂中断。是否继续？');
     if (!confirmed) return;
     setRecoveryAction('restart');
     setRecoveryError(null);
     try {
       await performRecoveryAction('restart_runtime');
+      setRecoveryProjection(await readRecoveryStatus());
+    } catch (cause) {
+      setRecoveryError(cause instanceof Error ? cause.message : String(cause));
+      await refreshRecovery();
+    } finally {
+      setRecoveryAction(null);
+    }
+  }, [recoveryProjection?.runtime.running, refreshRecovery]);
+
+  const handleRecoverRuntime = useCallback(async () => {
+    const confirmed = window.confirm('深度恢复可能进入 Runtime release 恢复或回滚事务。仅当普通启动/重启无法恢复主运行时时继续。是否执行？');
+    if (!confirmed) return;
+    setRecoveryAction('recover');
+    setRecoveryError(null);
+    try {
+      await performRecoveryAction('recover_runtime');
       setRecoveryProjection(await readRecoveryStatus());
     } catch (cause) {
       setRecoveryError(cause instanceof Error ? cause.message : String(cause));
@@ -1097,6 +1125,7 @@ export function App() {
           onRefresh={refreshRecovery}
           onDiagnose={handleDiagnose}
           onRestart={handleRestartRuntime}
+          onRecover={handleRecoverRuntime}
           onRefreshConnection={refreshConnection}
           onRepairConnection={handleRepairConnection}
         />

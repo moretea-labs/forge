@@ -2,13 +2,14 @@
   "schemaVersion": 1,
   "id": "runtime-recovery",
   "name": "运行时与恢复",
-  "goal": "在单一主工作区中查看运行时、独立恢复与控制器连接事实；主运行时不可用时仍可诊断或显式重启，并能理解连接设置下一步，不把系统机械状态铺成仪表盘。",
+  "goal": "在单一主工作区中查看运行时、独立恢复与控制器连接事实；主运行时不可用时仍可诊断、显式启动/重启，必要时进入有警示的深度恢复，并能理解连接设置下一步，不把系统机械状态铺成仪表盘。",
   "primaryAction": "diagnose-runtime",
   "constraints": [
     "macOS 系统标题栏拥有窗口 chrome，WebView 不绘制 traffic lights 或伪标题栏",
     "轻量侧栏 + 单主工作区，不使用状态卡 Dashboard 或常驻右侧检查器",
     "运行时不可用时界面仍可通过独立恢复使用",
-    "诊断和重启动作只调用独立恢复权威，客户端不创建生命周期状态机",
+    "诊断、启动/重启和深度恢复只调用独立恢复权威，客户端不创建生命周期状态机；启动与重启是同一 restart_primary_runtime 动作的状态化文案",
+    "recover_primary_runtime 可能进入 release recovery/rollback，只在 Runtime 未就绪时作为有明确风险确认的深度恢复动作展示，不等价于普通启动",
     "连接状态只投影 Forge setup authority；仅 Forge-owned Connector 可通过既有 setup owner 刷新，外部 tunnel/client 前置条件保持显式",
     "版本、进程、探针、控制器与远程传输等机械事实通过按需详情展示"
   ],
@@ -33,13 +34,14 @@
         "recoveryState": "恢复能力可用",
         "headline": "Forge 运行时没有响应",
         "body": "桌面客户端继续通过独立恢复读取权威状态，不接管运行时生命周期。",
-        "actions": ["刷新", "诊断", "重启运行时"],
+        "actions": ["刷新", "诊断", "启动运行时 / 重启运行时", "深度恢复（仅未就绪）"],
         "detailsDisclosure": ["进程 ID", "发布版本", "最近观察", "探针结果"]
       },
       "interactionPatternId": "system-recovery",
       "interactions": [
         {"event": "diagnose", "actions": [{"type": "emit_design_action", "actionId": "diagnose-runtime"}]},
-        {"event": "restart", "actions": [{"type": "emit_design_action", "actionId": "restart-runtime"}]}
+        {"event": "start-or-restart", "actions": [{"type": "emit_design_action", "actionId": "restart-runtime"}]},
+        {"event": "recover", "actions": [{"type": "emit_design_action", "actionId": "recover-runtime"}]}
       ]
     },
     {
