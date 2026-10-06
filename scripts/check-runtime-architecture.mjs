@@ -43,11 +43,20 @@ function forbidBetween(path, startNeedle, endNeedle, expression, description) {
   }
   if (expression.test(source.slice(start, end))) failures.push(`${path} violates ${description}`);
 }
+const GENERATED_SOURCE_DIRECTORY_NAMES = new Set([
+  'node_modules',
+  'dist',
+  'build',
+  'coverage',
+  'target',
+]);
+
 function sourceFiles(directory) {
   const absolute = resolve(root, directory);
   if (!existsSync(absolute)) return [];
   const files = [];
   for (const entry of readdirSync(absolute, { withFileTypes: true })) {
+    if (entry.isDirectory() && GENERATED_SOURCE_DIRECTORY_NAMES.has(entry.name)) continue;
     const path = `${directory}/${entry.name}`;
     if (entry.isDirectory()) files.push(...sourceFiles(path));
     else if (entry.isFile() && path.endsWith('.ts')) files.push(path);

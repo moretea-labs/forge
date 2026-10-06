@@ -1,10 +1,11 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   designPreviewProjection,
   disconnectedProjection,
   type AutomaticContinuationTaskProjection,
   type ForgeDesktopProjection,
 } from './runtime-projection';
+import { readAutomaticContinuations, switchAutomaticContinuationConversation, tauriRuntimeAvailable } from './runtime-client';
 
 const PROJECTS = ['forge', 'Avela', 'Knowledge'] as const;
 const SYSTEM_NAV = ['Connections', 'Runtime', 'Settings'] as const;
@@ -28,11 +29,15 @@ function statusTone(status: AutomaticContinuationTaskProjection['status']): stri
 function AutomaticContinuationPanel({
   task,
   preview,
+  onSwitch,
 }: {
   task: AutomaticContinuationTaskProjection;
   preview: boolean;
+  onSwitch?: (task: AutomaticContinuationTaskProjection) => Promise<void>;
 }) {
   const [switchPreviewed, setSwitchPreviewed] = useState(false);
+  const [switching, setSwitching] = useState(false);
+  const [switchError, setSwitchError] = useState<string | null>(null);
   const conversation = task.conversation;
   const canSwitch = Boolean(conversation) && !['completed', 'stopped', 'switching_conversation'].includes(task.status);
 
@@ -67,13 +72,23 @@ function AutomaticContinuationPanel({
         <button
           className="secondary-action"
           type="button"
-          disabled={!canSwitch || !preview}
-          onClick={() => setSwitchPreviewed(true)}
-          title={preview ? 'Preview the explicit fresh-conversation migration action' : 'Available when the Runtime command bridge is connected'}
+          disabled={!canSwitch || switching || (!preview && !onSwitch)}
+          onClick={async () => {
+            setSwitchError(null);
+            if (preview) { setSwitchPreviewed(true); return; }
+            if (!onSwitch) return;
+            setSwitching(true);
+            try { await onSwitch(task); }
+            catch (error) { setSwitchError(error instanceof Error ? error.message : String(error)); }
+            finally { setSwitching(false); }
+          }}
+          title={preview ? 'Preview the explicit fresh-conversation migration action' : 'Move this task through the canonical Workflow Supervisor migration capability'}
         >
-          {switchPreviewed ? 'Fresh conversation requested' : 'Use new conversation'}
+          {switching ? 'Switching…' : switchPreviewed ? 'Fresh conversation requested' : 'Use new conversation'}
         </button>
       </div>
+
+      {switchError && <div className="inline-notice error">Switch failed: {switchError}</div>}
 
       {switchPreviewed && (
         <div className="inline-notice">
@@ -104,7 +119,7 @@ function Sidebar({ projectName }: { projectName?: string }) {
   );
 }
 
-function WorkSurface({ projection, preview }: { projection: ForgeDesktopProjection; preview: boolean }) {
+function WorkSurface({ projection, preview, onSwitch }: { projection: ForgeDesktopProjection; preview: boolean; onSwitch?: (task: AutomaticContinuationTaskProjection) => Promise<void> }) {
   const work = projection.work;
   return (
     <section className="workspace">
@@ -136,7 +151,7 @@ function WorkSurface({ projection, preview }: { projection: ForgeDesktopProjecti
             </section>
 
             {projection.automaticContinuations.map((task) => (
-              <AutomaticContinuationPanel key={task.taskId} task={task} preview={preview} />
+              <AutomaticContinuationPanel key={task.taskId} task={task} preview={preview} onSwitch={onSwitch} />
             ))}
 
             {projection.automaticContinuations.length === 0 && (
@@ -156,12 +171,23 @@ function WorkSurface({ projection, preview }: { projection: ForgeDesktopProjecti
               </div>
             </section>
           </>
+        ) : projection.automaticContinuations.length > 0 ? (
+          <div className="global-continuations">
+            <header className="work-header">
+              <div className="section-kicker">Forge instance</div>
+              <h1>Automatic continuation tasks</h1>
+              <p className="section-copy">Live Workflow Supervisor projection. Opening or switching a conversation does not create a client-owned task state.</p>
+            </header>
+            {projection.automaticContinuations.map((task) => (
+              <AutomaticContinuationPanel key={task.taskId} task={task} preview={preview} onSwitch={onSwitch} />
+            ))}
+          </div>
         ) : (
           <div className="disconnected-state">
             <div className="section-kicker">Forge V3 Desktop</div>
-            <h1>Runtime projection is not connected</h1>
+            <h1>{projection.runtime.status === 'connected' ? 'No active automatic continuation tasks' : 'Runtime projection is not connected'}</h1>
             <p>{projection.runtime.detail}</p>
-            <code>?preview=1</code><span> opens the explicit design preview without turning fixture data into Runtime truth.</span>
+            {!tauriRuntimeAvailable() && <><code>?preview=1</code><span> opens the explicit design preview without turning fixture data into Runtime truth.</span></>}
           </div>
         )}
       </div>
@@ -201,7 +227,40 @@ function RuntimeInspector({ projection }: { projection: ForgeDesktopProjection }
 
 export function App() {
   const preview = useMemo(previewEnabled, []);
-  const projection = preview ? designPreviewProjection : disconnectedProjection;
+  const [projection, setProjection] = useState<ForgeDesktopProjection>(preview ? designPreviewProjection : disconnectedProjection);
+
+  const refreshAutomaticContinuations = useCallback(async () => {
+    if (preview || !tauriRuntimeAvailable()) return;
+    try {
+      const automaticContinuations = await readAutomaticContinuations();
+      setProjection({
+        ...disconnectedProjection,
+        source: 'runtime',
+        runtime: {
+          status: 'connected',
+          label: 'Runtime connected',
+          detail: 'Automatic continuation tasks are projected from the canonical Workflow Supervisor through Runtime MCP.',
+        },
+        automaticContinuations,
+      });
+    } catch (error) {
+      setProjection({
+        ...disconnectedProjection,
+        runtime: {
+          status: 'degraded',
+          label: 'Runtime unavailable',
+          detail: error instanceof Error ? error.message : String(error),
+        },
+      });
+    }
+  }, [preview]);
+
+  useEffect(() => { void refreshAutomaticContinuations(); }, [refreshAutomaticContinuations]);
+
+  const handleSwitch = useCallback(async (task: AutomaticContinuationTaskProjection) => {
+    await switchAutomaticContinuationConversation(task);
+    await refreshAutomaticContinuations();
+  }, [refreshAutomaticContinuations]);
 
   return (
     <main className="app-frame">
@@ -213,7 +272,7 @@ export function App() {
       </header>
       <div className="app-body">
         <Sidebar projectName={projection.project?.name} />
-        <WorkSurface projection={projection} preview={preview} />
+        <WorkSurface projection={projection} preview={preview} onSwitch={preview ? undefined : handleSwitch} />
         <RuntimeInspector projection={projection} />
       </div>
     </main>

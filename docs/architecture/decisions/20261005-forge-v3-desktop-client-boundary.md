@@ -25,6 +25,12 @@ The initial shell is conversation-first and exposes the V3 information architect
 
 `apps/desktop/src-tauri` is the fresh Tauri 2 shell. Platform-specific code remains behind this shell/provider boundary so Windows support can be added without changing semantic ownership.
 
+## Runtime transport
+
+The desktop shell reaches Canonical Runtime through its existing loopback MCP HTTP transport. The Tauri process resolves the installed Controller Home and Runtime service configuration, reads the Runtime bearer token only inside the native process, and issues stateless MCP `tools/call` requests. The token is never projected into the webview. Desktop mutations therefore still enter through `capability_execute`; the current automatic-continuation conversation switch calls `controller.workflow_supervisor.switch_to_fresh_conversation` and preserves the Supervisor CAS/effect fences.
+
+The bridge is intentionally typed and narrow. It currently exposes automatic-continuation projection and explicit fresh-conversation migration only; it does not expose Controller Home persistence, a generic database API, or a client-owned retry/session engine.
+
 ## Verification
 
 This foundation is acceptable when:

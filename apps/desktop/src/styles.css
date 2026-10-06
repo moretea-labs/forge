@@ -99,3 +99,6 @@ h2 { margin: 6px 0 8px; font-size: 15px; letter-spacing: -.01em; }
   .native-titlebar { grid-template-columns: 110px minmax(220px, 1fr) 300px; }
   .runtime-chip { display: none; }
 }
+
+.global-continuations { max-width: 860px; margin: 0 auto; }
+.inline-notice.error { background: #f7e9e7; color: #8a4942; }
