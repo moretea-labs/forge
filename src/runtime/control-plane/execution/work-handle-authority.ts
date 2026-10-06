@@ -201,6 +201,76 @@ export function assertManagedRepositoryMutationAuthority(input: {
   }
 }
 
+export function rearmFailedPreservedWorkHandle(input: {
+  controllerHome: string;
+  repository: RepositoryRecord;
+  workId: string;
+  contract: NonNullable<ReturnType<typeof getWorkContract>>;
+  handle: WorkHandleState;
+  principalId: string;
+  sessionId: string;
+}): WorkHandleState {
+  const { handle } = input;
+  if (!handle.managedWorktree || handle.state !== 'failed') return handle;
+  const validationRecoverable = handle.finalization.validation === 'pending'
+    || handle.finalization.validation === 'failed';
+  if (!validationRecoverable
+    || handle.finalization.commit !== 'pending'
+    || handle.finalization.merge !== 'pending'
+    || handle.finalization.branchCleanup !== 'pending'
+    || handle.finalization.worktreeCleanup !== 'pending'
+    || handle.cleanupReceipt
+    || input.contract.completionReceipt
+    || input.contract.completionOutcome) {
+    return handle;
+  }
+  if (handle.principalId !== input.principalId) {
+    throw new Error(`WORK_REPOSITORY_MUTATION_PRINCIPAL_MISMATCH: ${input.workId}`);
+  }
+  const placement = resolveRepositoryWorkHandlePlacement({
+    controllerHome: input.controllerHome,
+    repositoryId: input.repository.repoId,
+    checkoutId: handle.checkoutId,
+    worktreeRef: handle.worktreePath,
+  });
+  if (!placement.managedWorktree || placement.registeredCheckout.lifecycle !== 'active') {
+    throw new Error(`WORK_REPOSITORY_MUTATION_FAILED_CHECKOUT_NOT_ACTIVE: ${input.workId}`);
+  }
+  if (resolve(placement.checkout.canonicalRoot) !== resolve(handle.worktreePath)
+    || placement.branch !== handle.branch
+    || (handle.expectedHead && placement.status.head !== handle.expectedHead)) {
+    throw new Error(`WORK_REPOSITORY_MUTATION_FAILED_CHECKOUT_OWNERSHIP_MISMATCH: ${input.workId}`);
+  }
+  if (input.contract.evidenceState === 'valid') {
+    recordWorkEvidenceState(
+      { controllerHome: input.controllerHome, repoId: input.repository.repoId },
+      input.workId,
+      'stale',
+    );
+  }
+  const next = writeWorkHandle(input.controllerHome, {
+    ...handle,
+    principalId: input.principalId,
+    sessionId: input.sessionId,
+    state: 'editing',
+    validationRun: undefined,
+    validatedInputFingerprint: undefined,
+    failureReason: undefined,
+    finalization: { ...handle.finalization, validation: 'pending' },
+    updatedAt: new Date().toISOString(),
+  });
+  appendWorkEvidence(
+    { controllerHome: input.controllerHome, repoId: input.repository.repoId },
+    input.workId,
+    {
+      title: 'failed retained Work re-armed for same-Work mutation',
+      summary: `Re-armed preserved managed checkout ${handle.checkoutId} after proving the Work remained open, commit/merge/cleanup had not started, and exact checkout/path/branch/HEAD ownership still matched.`,
+      detailLevel: 'summary',
+    },
+  );
+  return next;
+}
+
 function rearmRetainedMergedWorkForMutation(input: {
   controllerHome: string;
   repository: RepositoryRecord;
@@ -334,6 +404,15 @@ export function ensureRepositoryMutationWorkHandle(input: {
     allowEffectWork: true,
   });
   if (!handle) throw new Error(`WORK_REPOSITORY_MUTATION_HANDLE_REQUIRED: ${input.workId}`);
+  handle = rearmFailedPreservedWorkHandle({
+    controllerHome: input.controllerHome,
+    repository: input.repository,
+    workId: input.workId,
+    contract,
+    handle,
+    principalId,
+    sessionId: provenanceSessionId,
+  });
   handle = rearmRetainedMergedWorkForMutation({
     controllerHome: input.controllerHome,
     repository: input.repository,

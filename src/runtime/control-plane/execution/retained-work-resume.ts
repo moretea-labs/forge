@@ -11,6 +11,7 @@ import { getControllerSession } from '../../../../packages/kernel/controller/api
 import { getWorkContract, recordWorkEvidenceState, transitionWorkContractPhase, updateWorkContract } from '../../../../packages/kernel/work/api/index';
 import { gitCommitAtRef, gitWorktreeSnapshot } from './work-lifecycle-audit';
 import { readWorkHandle, writeWorkHandle, type WorkHandleState } from './work-handle-store';
+import { rearmFailedPreservedWorkHandle } from './work-handle-authority';
 import { hasSettledWorkDeliveryReceipt } from './work-completion-authority';
 
 export interface RetainedWorkResumeIdentity {
@@ -416,43 +417,14 @@ export function ensureRunningRepositoryWorkCheckout(
   const worktreePresent = existsSync(recordedWorktree);
   if (checkoutActive && worktreePresent) {
     if (!handle || handle.state !== 'failed') return { reconstructedCheckout: false };
-    if (handle.repositoryId !== repository.repoId || (handle.workContractId && handle.workContractId !== workId)) {
-      throw new Error(`WORK_CONTINUE_HANDLE_IDENTITY_MISMATCH: ${workId}`);
-    }
-    if (handle.principalId !== identity.principalId) throw new Error(`WORK_CONTINUE_HANDLE_PRINCIPAL_MISMATCH: ${workId}`);
-    if (handle.checkoutId !== recordedCheckoutId || resolve(handle.worktreePath) !== resolve(recordedWorktree)) {
-      throw new Error(`WORK_CONTINUE_CHECKOUT_OWNERSHIP_MISMATCH: ${workId}`);
-    }
-    if (handle.managedWorktree !== true
-      || handle.finalization.validation !== 'failed'
-      || handle.finalization.commit !== 'pending'
-      || handle.finalization.merge !== 'pending'
-      || handle.finalization.branchCleanup !== 'pending'
-      || handle.finalization.worktreeCleanup !== 'pending'
-      || handle.cleanupReceipt
-      || work.completionReceipt
-      || work.completionOutcome) {
-      throw new Error(`WORK_CONTINUE_FAILED_HANDLE_DELIVERY_OR_CLEANUP_CONFLICT: ${workId}`);
-    }
-    if (checkoutRecord && resolve(checkoutRecord.canonicalRoot) !== resolve(recordedWorktree)) {
-      throw new Error(`WORK_CONTINUE_CHECKOUT_OWNERSHIP_MISMATCH: ${workId}`);
-    }
-    const retainedSnapshot = gitWorktreeSnapshot(recordedWorktree);
-    if (!retainedSnapshot
-      || (handle.branch && retainedSnapshot.branch !== handle.branch)
-      || (handle.expectedHead && retainedSnapshot.head !== handle.expectedHead)) {
-      throw new Error(`WORK_CONTINUE_FAILED_CHECKOUT_PHYSICAL_CONFLICT: ${workId}`);
-    }
-    writeWorkHandle(controllerHome, {
-      ...handle,
+    rearmFailedPreservedWorkHandle({
+      controllerHome,
+      repository,
+      workId,
+      contract: work,
+      handle,
       principalId: identity.principalId,
       sessionId: identity.sessionId,
-      state: 'editing',
-      validationRun: undefined,
-      validatedInputFingerprint: undefined,
-      failureReason: undefined,
-      finalization: { ...handle.finalization, validation: 'pending' },
-      updatedAt: new Date().toISOString(),
     });
     return { reconstructedCheckout: false };
   }

@@ -164,7 +164,7 @@ describe('repository.direct_edit capability', () => {
       validatedInputFingerprint: 'stale-fixture-validation',
       finalization: {
         ...handle.finalization,
-        validation: 'failed',
+        validation: 'pending',
         commit: 'pending',
         merge: 'pending',
         branchCleanup: 'pending',
@@ -172,21 +172,19 @@ describe('repository.direct_edit capability', () => {
       },
       updatedAt: new Date().toISOString(),
     });
-    const edited = await callCoreCapabilityAdapter(fx.ctx, 'capability_execute', {
+    const edited = await callRepositoryTool(fx.controllerHome, 'repository_safe_patch_apply', {
       repo_id: fx.repository.repoId,
       checkout_id: handle.checkoutId,
-      capability_id: 'repository.direct_edit',
-      action: 'apply',
-      request_id: 'direct-edit-capability-failed-resume',
-      arguments: {
-        work_id: work.workId,
-        purpose: 'Continue editing after a recoverable validation failure.',
-        operations: [{
-          type: 'replace',
-          path: 'src/lib.ts',
-          replacements: [{ old_text: 'export const n = 1;', new_text: 'export const n = 2;' }],
-        }],
-      },
+      work_id: work.workId,
+      purpose: 'Continue editing after a recoverable pre-delivery failure.',
+      operations: [{
+        type: 'replace',
+        path: 'src/lib.ts',
+        replacements: [{ old_text: 'export const n = 1;', new_text: 'export const n = 2;' }],
+      }],
+    }, {
+      sessionId: handle.sessionId,
+      principalId: handle.principalId,
     });
     if (edited?.isError) throw new Error(JSON.stringify(edited.structuredContent ?? edited));
     expect((edited?.structuredContent as { status?: string }).status).toBe('applied');
