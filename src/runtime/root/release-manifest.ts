@@ -131,8 +131,11 @@ export function loadRuntimeReleaseManifest(
   if (value.configurationSchemaVersion !== 1) {
     throw new Error('RELEASE_MANIFEST_INVALID: configurationSchemaVersion must be 1');
   }
+  // Pre-scope compiled releases were portable and omitted both fields. Legacy
+  // package releases always persisted controllerHome, so preserve that binding
+  // while accepting the immutable compiled artifact format already in use.
   const deploymentScope = value.deploymentScope === undefined
-    ? 'controller-home'
+    ? (value.controllerHome === undefined ? 'portable' : 'controller-home')
     : requireString(value.deploymentScope, 'deploymentScope');
   if (deploymentScope !== 'controller-home' && deploymentScope !== 'portable') {
     throw new Error(`RELEASE_MANIFEST_INVALID: deploymentScope must be portable when present, got ${deploymentScope}`);
