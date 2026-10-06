@@ -83,6 +83,19 @@ function executionPhaseLabel(phase: string): string {
   return labels[phase] ?? phase;
 }
 
+function phaseEvidenceStateLabel(state: string): string {
+  const labels: Record<string, string> = {
+    active: '进行中',
+    pending: '待处理',
+    completed: '已完成',
+    passed: '已通过',
+    failed: '失败',
+    blocked: '阻塞',
+    skipped: '已跳过',
+  };
+  return labels[state] ?? state;
+}
+
 function statusTone(status: AutomaticContinuationTaskProjection['status']): string {
   if (status === 'needs_user') return 'attention';
   if (status === 'completed' || status === 'stopped') return 'quiet';
@@ -430,7 +443,7 @@ function WorkView({
             <div><span>依赖</span><strong>{work.dependsOnWorkIds.length > 0 ? `${work.dependsOnWorkIds.length} 个` : '无'}</strong></div>
             <div><span>需求</span><strong className="mono">{work.requirementId ? compactId(work.requirementId) : '未绑定'}</strong></div>
             <div><span>计划</span><strong className="mono">{work.planId ? compactId(work.planId) : '未绑定'}</strong></div>
-            <div><span>检出</span><strong>{projection.project?.worktree ?? '未知'}</strong></div>
+            <div><span>Repository 当前检出</span><strong>{projection.project ? `${projection.project.worktree} · ${compactId(projection.project.checkoutId)}` : '未知'}</strong></div>
             <div><span>更新时间</span><strong>{work.updatedAt ? new Date(work.updatedAt).toLocaleString('zh-CN') : '未知'}</strong></div>
           </div>
           {work.dependsOnWorkIds.length > 0 && <p className="detail-text">依赖：{work.dependsOnWorkIds.map(compactId).join('、')}</p>}
@@ -462,37 +475,79 @@ function WorkView({
 
         {work.executionEvidence && (
           <details className="detail-section">
-            <summary>执行与验证 · {work.executionEvidence.verifications.length} 条检查记录</summary>
+            <summary>执行与验证 · {executionPhaseLabel(work.executionEvidence.phase)} · {work.executionEvidence.checks.length} 个检查 / {work.executionEvidence.verifications.length} 条验证</summary>
             <div className="detail-grid">
               <div><span>阶段</span><strong>{executionPhaseLabel(work.executionEvidence.phase)}</strong></div>
               <div><span>调度</span><strong className="mono">{work.executionEvidence.dispatchState}</strong></div>
               <div><span>证据</span><strong className="mono">{work.executionEvidence.evidenceState}</strong></div>
               <div><span>类型</span><strong className="mono">{work.executionEvidence.workKind}</strong></div>
+              <div><span>完成结果</span><strong className="mono">{work.executionEvidence.completionOutcome ?? '未记录'}</strong></div>
+              <div><span>证据引用</span><strong>{work.executionEvidence.evidenceRefs.length}</strong></div>
             </div>
-            {work.executionEvidence.verifications.length > 0 && (
-              <div className="verification-list">
-                {work.executionEvidence.verifications.map((verification, index) => (
-                  <div className="verification-item" key={`${verification.checkId}-${verification.recordedAt}-${index}`}>
-                    <div className="verification-heading">
-                      <strong className="mono">{verification.checkId}</strong>
-                      <span>{verificationOutcomeLabel(verification.outcome)}</span>
-                      <span>{formatTimestamp(verification.recordedAt)}</span>
-                    </div>
-                    <p>{verification.summary}</p>
-                    {verification.sourceRevision && <span className="verification-source mono">版本 {compactId(verification.sourceRevision)}</span>}
-                  </div>
-                ))}
-              </div>
+
+            {work.executionEvidence.checks.length > 0 && (
+              <section className="evidence-subsection" aria-label="声明检查">
+                <div className="evidence-subheading">声明检查</div>
+                <div className="check-chip-list">
+                  {work.executionEvidence.checks.map((checkId) => <code key={checkId}>{checkId}</code>)}
+                </div>
+              </section>
             )}
+
+            {work.executionEvidence.phaseEvidence.length > 0 && (
+              <section className="evidence-subsection" aria-label="阶段证据">
+                <div className="evidence-subheading">阶段证据</div>
+                <div className="phase-evidence-list">
+                  {work.executionEvidence.phaseEvidence.map((phaseEvidence, index) => (
+                    <div className="phase-evidence-item" key={`${phaseEvidence.phase}-${phaseEvidence.recordedAt}-${index}`}>
+                      <div className="phase-evidence-heading">
+                        <strong>{executionPhaseLabel(phaseEvidence.phase)}</strong>
+                        <span>{phaseEvidenceStateLabel(phaseEvidence.state)}</span>
+                        {phaseEvidence.source && <span>{phaseEvidence.source}</span>}
+                        <span>{formatTimestamp(phaseEvidence.recordedAt)}</span>
+                      </div>
+                      <p>{phaseEvidence.summary}</p>
+                      <div className="phase-evidence-meta">
+                        {phaseEvidence.receiptId && <span className="mono">receipt {compactId(phaseEvidence.receiptId)}</span>}
+                        {phaseEvidence.evidenceRefs.length > 0 && <span>证据 {phaseEvidence.evidenceRefs.length}</span>}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            )}
+
+            {work.executionEvidence.verifications.length > 0 && (
+              <section className="evidence-subsection" aria-label="验证记录">
+                <div className="evidence-subheading">验证记录</div>
+                <div className="verification-list">
+                  {work.executionEvidence.verifications.map((verification, index) => (
+                    <div className="verification-item" key={`${verification.checkId}-${verification.recordedAt}-${index}`}>
+                      <div className="verification-heading">
+                        <strong className="mono">{verification.checkId}</strong>
+                        <span>{verificationOutcomeLabel(verification.outcome)}</span>
+                        <span>{formatTimestamp(verification.recordedAt)}</span>
+                      </div>
+                      <p>{verification.summary}</p>
+                      {verification.sourceRevision && <span className="verification-source mono">版本 {compactId(verification.sourceRevision)}</span>}
+                    </div>
+                  ))}
+                </div>
+              </section>
+            )}
+
             {work.executionEvidence.evidenceRefs.length > 0 && (
-              <div className="evidence-ref-list">
-                {work.executionEvidence.evidenceRefs.map((evidence, index) => (
-                  <div key={`${evidence.evidenceId ?? evidence.artifactId ?? evidence.title}-${index}`}>
-                    <strong>{evidence.title}</strong>
-                    {evidence.summary && <span>{evidence.summary}</span>}
-                  </div>
-                ))}
-              </div>
+              <section className="evidence-subsection" aria-label="证据引用">
+                <div className="evidence-subheading">证据引用</div>
+                <div className="evidence-ref-list">
+                  {work.executionEvidence.evidenceRefs.map((evidence, index) => (
+                    <div key={`${evidence.evidenceId ?? evidence.artifactId ?? evidence.title}-${index}`}>
+                      <strong>{evidence.title}</strong>
+                      {evidence.summary && <span>{evidence.summary}</span>}
+                    </div>
+                  ))}
+                </div>
+              </section>
             )}
           </details>
         )}

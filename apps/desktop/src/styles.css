@@ -224,13 +224,23 @@ a { color: inherit; }
 .history-meta strong { color: #625c55; font-size: 9px; font-weight: 620; }
 .history-list p { margin: 4px 0 0; color: #686159; font-size: 10px; line-height: 1.55; }
 .history-count { display: inline-block; margin-top: 4px; color: #9a948c; font-size: 9px; }
-.verification-list { display: grid; gap: 10px; margin-top: 14px; }
+.evidence-subsection { margin-top: 15px; padding-top: 12px; border-top: 1px solid rgba(74, 67, 59, .07); }
+.evidence-subheading { margin-bottom: 8px; color: #8d867e; font-size: 9px; font-weight: 620; text-transform: uppercase; letter-spacing: .04em; }
+.check-chip-list { display: flex; flex-wrap: wrap; gap: 5px; }
+.check-chip-list code { padding: 4px 6px; border-radius: 5px; background: #f1efeb; color: #6f6962; font-size: 8px; }
+.phase-evidence-list { display: grid; gap: 10px; }
+.phase-evidence-item { padding-left: 10px; border-left: 1px solid rgba(74, 67, 59, .12); }
+.phase-evidence-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; color: #918a82; font-size: 9px; }
+.phase-evidence-heading strong { color: #625c55; font-weight: 620; }
+.phase-evidence-item p { margin: 4px 0 0; color: #69625b; font-size: 10px; line-height: 1.55; }
+.phase-evidence-meta { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; color: #9a948c; font-size: 8px; }
+.verification-list { display: grid; gap: 10px; }
 .verification-item { padding-left: 10px; border-left: 1px solid rgba(74, 67, 59, .12); }
 .verification-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; color: #918a82; font-size: 9px; }
 .verification-heading strong { color: #625c55; font-weight: 620; }
 .verification-item p { margin: 4px 0 0; color: #69625b; font-size: 10px; line-height: 1.55; }
 .verification-source { display: inline-block; margin-top: 4px; color: #9a948c; font-size: 9px; }
-.evidence-ref-list { display: grid; gap: 6px; margin-top: 13px; padding-top: 10px; border-top: 1px solid rgba(74, 67, 59, .07); }
+.evidence-ref-list { display: grid; gap: 6px; }
 .evidence-ref-list div { display: grid; grid-template-columns: minmax(110px, auto) minmax(0, 1fr); gap: 10px; font-size: 9px; }
 .evidence-ref-list strong { color: #625c55; font-weight: 600; }
 .evidence-ref-list span { color: #8f8880; line-height: 1.45; }
