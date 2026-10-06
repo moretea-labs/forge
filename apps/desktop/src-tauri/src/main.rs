@@ -394,6 +394,17 @@ async fn switch_automatic_continuation_conversation(
 }
 
 #[tauri::command]
+async fn read_local_provider_status() -> Result<Value, String> {
+    Ok(json!({
+        "status": "not_configured",
+        "label": "本地模型尚未连接",
+        "detail": "当前桌面边界已就绪，但尚未安装本地会话 provider adapter。不会为了聊天隐式创建 Work 或 ControllerRound。",
+        "streaming": false,
+        "tools": false
+    }))
+}
+
+#[tauri::command]
 async fn read_connection_status() -> Result<Value, String> {
     call_runtime_tool("capability_execute", json!({
         "capability_id": "controller.connection",
@@ -429,6 +440,7 @@ fn main() {
             read_plan_detail,
             continue_work,
             read_automatic_continuations,
+            read_local_provider_status,
             read_connection_status,
             repair_connection,
             switch_automatic_continuation_conversation

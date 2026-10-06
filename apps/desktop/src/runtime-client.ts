@@ -142,6 +142,14 @@ export interface ProjectCatalogProjection {
   preferredRepoId?: string;
 }
 
+export interface LocalProviderStatusProjection {
+  status: 'ready' | 'not_configured' | 'unavailable';
+  label: string;
+  detail: string;
+  streaming: boolean;
+  tools: boolean;
+}
+
 export function tauriRuntimeAvailable(): boolean {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 }
@@ -207,6 +215,14 @@ function graphNode(work: RawWorkView): WorkGraphNodeProjection {
     ...(work.semanticParentWorkId ? { semanticParentWorkId: work.semanticParentWorkId } : {}),
     dependsOnWorkIds: work.dependsOnWorkIds ?? [],
   };
+}
+
+export async function readLocalProviderStatus(): Promise<LocalProviderStatusProjection> {
+  try {
+    return await invoke<LocalProviderStatusProjection>('read_local_provider_status');
+  } catch (error) {
+    throw localizeRuntimeError(error);
+  }
 }
 
 export async function readConnectionStatus(): Promise<ControllerConnectionProjection> {

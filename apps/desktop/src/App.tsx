@@ -14,12 +14,15 @@ import {
   continueWork,
   readAutomaticContinuations,
   readConnectionStatus,
+  readLocalProviderStatus,
   readProjects,
   readProjectWorkspace,
   repairConnection,
   switchAutomaticContinuationConversation,
   tauriRuntimeAvailable,
+  type LocalProviderStatusProjection,
 } from './runtime-client';
+import { LocalConversationSurface } from './local-conversation';
 import {
   performRecoveryAction,
   readRecoveryStatus,
@@ -491,26 +494,46 @@ function WorkView({
 
 function AssistantView({
   tasks,
+  projects,
+  provider,
+  providerLoading,
+  providerError,
   preview,
   onSwitch,
+  onRefreshProvider,
 }: {
   tasks: AutomaticContinuationTaskProjection[];
+  projects: ProjectListItemProjection[];
+  provider: LocalProviderStatusProjection | null;
+  providerLoading: boolean;
+  providerError: string | null;
   preview: boolean;
   onSwitch?: (task: AutomaticContinuationTaskProjection) => Promise<void>;
+  onRefreshProvider: () => Promise<void>;
 }) {
   return (
     <main className="main-pane assistant-pane">
-      <div className="content-column">
-        <header className="work-hero">
+      <div className="content-column assistant-content">
+        <header className="work-hero assistant-hero">
           <div className="breadcrumb">Forge</div>
           <h1>助手</h1>
-          <p>查看跨项目自动推进任务，打开对应会话或继续处理。</p>
+          <p>本地会话属于桌面客户端；需要长期执行的工作仍由 Forge 的 canonical Work 与 Controller authority 承担。</p>
         </header>
-        {tasks.length > 0 ? tasks.map((task) => (
-          <AutomaticContinuationRow key={task.taskId} task={task} preview={preview} onSwitch={onSwitch} />
-        )) : (
-          <div className="empty-copy inline-empty"><p>当前没有活动的自动推进任务。</p></div>
-        )}
+        <LocalConversationSurface
+          projects={projects}
+          provider={provider}
+          providerLoading={providerLoading}
+          providerError={providerError}
+          onRefreshProvider={onRefreshProvider}
+        />
+        <section className="assistant-automation" aria-label="自动推进">
+          <div className="assistant-section-heading"><strong>自动推进</strong><span>canonical Workflow Supervisor</span></div>
+          {tasks.length > 0 ? tasks.map((task) => (
+            <AutomaticContinuationRow key={task.taskId} task={task} preview={preview} onSwitch={onSwitch} />
+          )) : (
+            <div className="empty-copy inline-empty"><p>当前没有活动的自动推进任务。</p></div>
+          )}
+        </section>
       </div>
     </main>
   );
@@ -675,6 +698,9 @@ export function App() {
   const [connectionLoading, setConnectionLoading] = useState(false);
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [connectionAction, setConnectionAction] = useState<'repair' | null>(null);
+  const [localProvider, setLocalProvider] = useState<LocalProviderStatusProjection | null>(null);
+  const [localProviderLoading, setLocalProviderLoading] = useState(false);
+  const [localProviderError, setLocalProviderError] = useState<string | null>(null);
 
   const refreshRecovery = useCallback(async () => {
     if (preview || !tauriRuntimeAvailable()) return;
@@ -688,6 +714,20 @@ export function App() {
       setRecoveryError(message);
     } finally {
       setRecoveryLoading(false);
+    }
+  }, [preview]);
+
+  const refreshLocalProvider = useCallback(async () => {
+    if (preview || !tauriRuntimeAvailable()) return;
+    setLocalProviderLoading(true);
+    setLocalProviderError(null);
+    try {
+      setLocalProvider(await readLocalProviderStatus());
+    } catch (cause) {
+      setLocalProvider(null);
+      setLocalProviderError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setLocalProviderLoading(false);
     }
   }, [preview]);
 
@@ -767,6 +807,7 @@ export function App() {
   }, [preview, refreshConnection, refreshRecovery]);
 
   useEffect(() => { void bootstrapRuntime(); }, [bootstrapRuntime]);
+  useEffect(() => { void refreshLocalProvider(); }, [refreshLocalProvider]);
 
   const handleSelectProject = useCallback(async (project: ProjectListItemProjection) => {
     setActiveView('project');
@@ -871,7 +912,16 @@ export function App() {
       />
 
       {activeView === 'assistant' ? (
-        <AssistantView tasks={projection.automaticContinuations} preview={preview} onSwitch={preview ? undefined : handleSwitch} />
+        <AssistantView
+          tasks={projection.automaticContinuations}
+          projects={projects}
+          provider={localProvider}
+          providerLoading={localProviderLoading}
+          providerError={localProviderError}
+          preview={preview}
+          onSwitch={preview ? undefined : handleSwitch}
+          onRefreshProvider={refreshLocalProvider}
+        />
       ) : activeView === 'runtime' ? (
         <RuntimeView
           projection={recoveryProjection}

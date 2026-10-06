@@ -40,6 +40,14 @@ Continuing a selected Work is an explicit user mutation routed through `rh_work(
 
 The shipped desktop UI is Chinese-first. Domain IDs, repository names, user-authored objectives and external product names remain verbatim canonical data, while navigation, labels, states, actions, errors and explanatory copy are rendered in Chinese.
 
+## Local conversation boundary
+
+Local Thread is client-owned interaction data, not a Forge semantic lifecycle record. The desktop may persist a bounded local transcript plus presentation metadata and an optional canonical repository id reference, but it must not copy Requirement, Plan, Work, Runtime or connection records into that store as mutable truth.
+
+Current Kernel `ControllerSession` / `ControllerRound` contracts are intentionally Work-bound. Local conversation therefore must not manufacture a Work merely to obtain a controller binding, and it must not reinterpret Workflow Supervisor or `launcher_start` as a general chat-session authority. Provider status and invocation live behind a typed desktop provider adapter; when credentials are introduced they remain in native secure storage and are never projected into the renderer. The provider/controller loop may call the existing Runtime MCP capabilities as tools, while Forge continues to own only those capability effects and canonical semantic facts.
+
+The first Local slice exposes this boundary explicitly: client-local thread create/select/archive and optional Project attachment are functional, while provider execution remains unavailable until one real provider adapter is installed. The UI must report that absence truthfully rather than emit synthetic assistant output or silently fall back to a retired Local Bridge/browser-profile path.
+
 ## Runtime and Recovery surface
 
 The Runtime screen must remain usable when Canonical Runtime is unavailable. The native Tauri adapter therefore has a second narrow transport path to the already-authoritative Standalone Recovery Gateway at its configured loopback MCP endpoint. It reads the Recovery configuration and bearer token only inside the native process; Recovery credentials are never projected into the webview.
