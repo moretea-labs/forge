@@ -65,6 +65,60 @@ export interface ProjectRequirementProjection {
   updatedAt?: string;
 }
 
+export type WorkVerificationOutcome = 'valid_pass' | 'valid_fail' | 'invalid_check_id' | 'infrastructure_failure' | 'skipped' | 'superseded';
+
+export interface WorkEvidenceRefProjection {
+  evidenceId?: string;
+  artifactId?: string;
+  title: string;
+  summary?: string;
+  detailLevel?: 'summary' | 'detail' | 'raw';
+}
+
+export interface WorkVerificationProjection {
+  checkId: string;
+  outcome: WorkVerificationOutcome;
+  summary: string;
+  recordedAt: string;
+  sourceRevision?: string;
+  startedAt?: string;
+  completedAt?: string;
+  staleReason?: string;
+  evidenceRef?: WorkEvidenceRefProjection;
+  receipt?: {
+    receiptId: string;
+    processId: string;
+    status: 'passed' | 'failed' | 'timed_out' | 'cancelled';
+    runtimeStatus: 'succeeded' | 'failed' | 'timed_out' | 'cancelled';
+    ok: boolean;
+    timedOut: boolean;
+    cancelled: boolean;
+    reusedExecution?: boolean;
+    startedAt: string;
+    finishedAt: string;
+  };
+}
+
+export interface WorkExecutionEvidenceProjection {
+  dispatchState: string;
+  evidenceState: string;
+  phase: string;
+  workKind: string;
+  completionOutcome?: string;
+  checks: string[];
+  phaseEvidence: Array<{
+    phase: string;
+    state: string;
+    source?: string;
+    summary: string;
+    evidenceRefs: WorkEvidenceRefProjection[];
+    recordedAt: string;
+    receiptId?: string;
+  }>;
+  evidenceRefs: WorkEvidenceRefProjection[];
+  verifications: WorkVerificationProjection[];
+}
+
 export interface WorkRevisionProjection {
   revision: number;
   objective: string;
@@ -170,6 +224,7 @@ export interface ForgeDesktopProjection {
     updatedAt?: string;
     resultRefs: string[];
     revisionHistory: WorkRevisionProjection[];
+    executionEvidence?: WorkExecutionEvidenceProjection;
   } | null;
   requirement: ProjectRequirementProjection | null;
   plan: ProjectPlanProjection | null;
@@ -252,6 +307,19 @@ export const designPreviewProjection = Object.freeze<ForgeDesktopProjection>({
     planId: 'PLAN-forge-v3-desktop-client-20260930-r1',
     updatedAt: '2026-10-06T03:40:00.000Z',
     resultRefs: ['path:apps/desktop', 'adr:forge-v3-desktop-client-boundary'],
+    executionEvidence: {
+      dispatchState: 'running',
+      evidenceState: 'valid',
+      phase: 'verification',
+      workKind: 'repository_change',
+      checks: ['check:v3-client'],
+      phaseEvidence: [
+        { phase: 'implementation', state: 'satisfied', source: 'recorded', summary: '桌面事实投影代码已形成。', evidenceRefs: [], recordedAt: '2026-10-06T03:50:00.000Z' },
+        { phase: 'verification', state: 'active', source: 'recorded', summary: '正在收敛桌面检查证据。', evidenceRefs: [], recordedAt: '2026-10-06T04:00:00.000Z' },
+      ],
+      evidenceRefs: [{ title: 'desktop-build', summary: '生产构建通过。', detailLevel: 'summary' }],
+      verifications: [{ checkId: 'check:v3-client', outcome: 'valid_pass', summary: '桌面客户端检查通过。', recordedAt: '2026-10-06T04:00:00.000Z', sourceRevision: '设计预览' }],
+    },
     revisionHistory: [
       {
         revision: 2,

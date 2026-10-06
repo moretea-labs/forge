@@ -7,6 +7,7 @@ import type {
   PlanRevisionProjection,
   ProjectRequirementProjection,
   UserRequestProjection,
+  WorkExecutionEvidenceProjection,
   WorkRevisionProjection,
   WorkGraphEdgeProjection,
   WorkGraphNodeProjection,
@@ -123,6 +124,7 @@ interface RawWorkDetailResult {
   data?: {
     work?: RawWorkView;
     revisionHistory?: RawWorkView[];
+    executionEvidence?: WorkExecutionEvidenceProjection;
     objectiveGraph?: {
       current?: {
         nodes?: RawWorkView[];
@@ -352,6 +354,7 @@ export async function readProjectWorkspace(
         ...(selectedWork.updatedAt ? { updatedAt: selectedWork.updatedAt } : {}),
         resultRefs: selectedWork.resultRefs ?? [],
         revisionHistory: workRevisionHistory,
+        ...(detail?.data?.executionEvidence ? { executionEvidence: detail.data.executionEvidence } : {}),
       } : null,
       requirement,
       plan,

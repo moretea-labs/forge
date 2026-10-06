@@ -53,6 +53,29 @@ function semanticStateLabel(state: WorkSemanticState): string {
   return '进行中';
 }
 
+function verificationOutcomeLabel(outcome: string): string {
+  const labels: Record<string, string> = {
+    valid_pass: '通过',
+    valid_fail: '未通过',
+    invalid_check_id: '检查无效',
+    infrastructure_failure: '基础设施异常',
+    skipped: '已跳过',
+    superseded: '已被替代',
+  };
+  return labels[outcome] ?? outcome;
+}
+
+function executionPhaseLabel(phase: string): string {
+  const labels: Record<string, string> = {
+    implementation: '实现',
+    verification: '验证',
+    review: '审查',
+    delivery: '交付',
+    cleanup: '清理',
+  };
+  return labels[phase] ?? phase;
+}
+
 function statusTone(status: AutomaticContinuationTaskProjection['status']): string {
   if (status === 'needs_user') return 'attention';
   if (status === 'completed' || status === 'stopped') return 'quiet';
@@ -311,6 +334,43 @@ function WorkView({
             <p className="detail-text">{projection.plan.goal}</p>
             {projection.plan.items.length > 0 && (
               <ul className="fact-list">{projection.plan.items.map((item) => <li key={item.id}>{item.objective}</li>)}</ul>
+            )}
+          </details>
+        )}
+
+        {work.executionEvidence && (
+          <details className="detail-section">
+            <summary>执行与验证 · {work.executionEvidence.verifications.length} 条检查记录</summary>
+            <div className="detail-grid">
+              <div><span>阶段</span><strong>{executionPhaseLabel(work.executionEvidence.phase)}</strong></div>
+              <div><span>调度</span><strong className="mono">{work.executionEvidence.dispatchState}</strong></div>
+              <div><span>证据</span><strong className="mono">{work.executionEvidence.evidenceState}</strong></div>
+              <div><span>类型</span><strong className="mono">{work.executionEvidence.workKind}</strong></div>
+            </div>
+            {work.executionEvidence.verifications.length > 0 && (
+              <div className="verification-list">
+                {work.executionEvidence.verifications.map((verification, index) => (
+                  <div className="verification-item" key={`${verification.checkId}-${verification.recordedAt}-${index}`}>
+                    <div className="verification-heading">
+                      <strong className="mono">{verification.checkId}</strong>
+                      <span>{verificationOutcomeLabel(verification.outcome)}</span>
+                      <span>{formatTimestamp(verification.recordedAt)}</span>
+                    </div>
+                    <p>{verification.summary}</p>
+                    {verification.sourceRevision && <span className="verification-source mono">版本 {compactId(verification.sourceRevision)}</span>}
+                  </div>
+                ))}
+              </div>
+            )}
+            {work.executionEvidence.evidenceRefs.length > 0 && (
+              <div className="evidence-ref-list">
+                {work.executionEvidence.evidenceRefs.map((evidence, index) => (
+                  <div key={`${evidence.evidenceId ?? evidence.artifactId ?? evidence.title}-${index}`}>
+                    <strong>{evidence.title}</strong>
+                    {evidence.summary && <span>{evidence.summary}</span>}
+                  </div>
+                ))}
+              </div>
             )}
           </details>
         )}

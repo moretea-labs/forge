@@ -191,6 +191,16 @@ a { color: inherit; }
 .history-meta strong { color: #625c55; font-size: 9px; font-weight: 620; }
 .history-list p { margin: 4px 0 0; color: #686159; font-size: 10px; line-height: 1.55; }
 .history-count { display: inline-block; margin-top: 4px; color: #9a948c; font-size: 9px; }
+.verification-list { display: grid; gap: 10px; margin-top: 14px; }
+.verification-item { padding-left: 10px; border-left: 1px solid rgba(74, 67, 59, .12); }
+.verification-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; color: #918a82; font-size: 9px; }
+.verification-heading strong { color: #625c55; font-weight: 620; }
+.verification-item p { margin: 4px 0 0; color: #69625b; font-size: 10px; line-height: 1.55; }
+.verification-source { display: inline-block; margin-top: 4px; color: #9a948c; font-size: 9px; }
+.evidence-ref-list { display: grid; gap: 6px; margin-top: 13px; padding-top: 10px; border-top: 1px solid rgba(74, 67, 59, .07); }
+.evidence-ref-list div { display: grid; grid-template-columns: minmax(110px, auto) minmax(0, 1fr); gap: 10px; font-size: 9px; }
+.evidence-ref-list strong { color: #625c55; font-weight: 600; }
+.evidence-ref-list span { color: #8f8880; line-height: 1.45; }
 .result-list { display: grid; gap: 6px; }
 .result-list code { padding: 7px 8px; border-radius: 6px; background: #f1efeb; color: #716b64; font-size: 9px; overflow-wrap: anywhere; }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
