@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { WorkflowSupervisorControlPlane } from '../../supervisor/control-plane';
 import { forgeWorkflowSupervisorValidators } from '../../supervisor/forge-validators';
 import { WorkflowSupervisorStore } from '../../supervisor/store';
-import { renderSupervisorPrompt } from '../../supervisor/protocol';
+import { renderSupervisorPrompt, SUPERVISOR_TURN_BLOCK_END, SUPERVISOR_TURN_BLOCK_START } from '../../supervisor/protocol';
 import { automationMetadata, automationReceiptControllerTypeAllowed, injectAutomationEnvelopeFields } from '../../adapters/mcp/runtime-gateway/automation-receipt-adapter';
 import { normalizeRhWorkInputWireMigration } from '../../adapters/mcp/runtime-gateway/work-input-wire-migration';
 import { callWorkAdapter } from '../../adapters/mcp/runtime-gateway/work-adapter';
@@ -18,6 +18,14 @@ const roots: string[] = [];
 afterEach(() => {
   while (roots.length) rmSync(roots.pop()!, { recursive: true, force: true });
 });
+
+function parseSupervisorTurn(prompt: string): Record<string, any> {
+  const lines = prompt.split('\n');
+  const start = lines.indexOf(SUPERVISOR_TURN_BLOCK_START);
+  const end = lines.indexOf(SUPERVISOR_TURN_BLOCK_END);
+  if (start < 0 || end !== start + 2) throw new Error('SUPERVISOR_TURN_ENVELOPE_MISSING');
+  return JSON.parse(lines[start + 1]!);
+}
 
 describe('Workflow Supervisor automation receipts', () => {
   test('exposes and validates the standalone autonomous tool-call envelope', () => {
@@ -156,12 +164,16 @@ describe('Workflow Supervisor automation receipts', () => {
     expect(first).toMatchObject({ action: 'CONTINUE', terminal: false });
     expect(replay).toMatchObject({ action: 'CONTINUE', terminal: false });
     expect(store.getEffectByOriginKey(`completion:${(first as { completionFingerprint: string }).completionFingerprint}`)).toBeDefined();
-    expect(renderSupervisorPrompt(task, effect.effectId, 'enrollment')).toContain(`automation_task_id=${JSON.stringify(task.taskId)}`);
-    expect(renderSupervisorPrompt(task, effect.effectId, 'enrollment')).toContain('automation_type="autonomous_continuation"');
-    expect(renderSupervisorPrompt(task, effect.effectId, 'enrollment')).toContain('automation_status="continue"');
-    expect(renderSupervisorPrompt(task, effect.effectId, 'enrollment')).not.toContain('automation.receipt:');
-    expect(renderSupervisorPrompt(task, effect.effectId, 'enrollment')).toStartWith('@forge\n');
-    expect(renderSupervisorPrompt(task, effect.effectId, 'enrollment')).not.toContain('CONTINUE => "C ');
+    const enrollmentPrompt = renderSupervisorPrompt(task, effect.effectId, 'enrollment');
+    expect(parseSupervisorTurn(enrollmentPrompt).automation).toEqual({
+      automation_task_id: task.taskId,
+      automation_type: 'autonomous_continuation',
+      intermediate_status: 'working',
+      final_statuses: ['continue', 'done', 'needs_user'],
+    });
+    expect(enrollmentPrompt).not.toContain('automation.receipt:');
+    expect(enrollmentPrompt).toStartWith('@forge\n');
+    expect(enrollmentPrompt).not.toContain('CONTINUE => "C ');
     store.close();
   });
 

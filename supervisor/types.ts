@@ -6,6 +6,26 @@ export type WorkflowSupervisorAutomationStatus = 'working' | 'continue' | 'done'
 export type WorkflowEffectKind = 'enrollment' | 'continuation' | 'correction' | 'recovery';
 export type WorkflowEffectOutcome = 'applied' | 'not_applied' | 'unknown';
 
+/** Minimal machine-readable context carried into one autonomous provider turn. */
+export interface WorkflowSupervisorTurnEnvelope {
+  schema_version: 1;
+  task_id: string;
+  effect_id: string;
+  kind: WorkflowEffectKind;
+  objective: string;
+  checkpoint?: string;
+  repository?: {
+    repo_id: string;
+    checkout_id?: string;
+  };
+  automation: {
+    automation_task_id: string;
+    automation_type: 'autonomous_continuation';
+    intermediate_status: 'working';
+    final_statuses: ['continue', 'done', 'needs_user'];
+  };
+}
+
 export interface WorkflowSupervisorProposal {
   action: WorkflowSupervisorAction;
   sourceEffectId: string;

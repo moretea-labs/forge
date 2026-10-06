@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { WorkflowEffectKind, WorkflowSupervisorProposal, WorkflowSupervisorState, WorkflowSupervisorTask } from './types';
+import type { WorkflowEffectKind, WorkflowSupervisorProposal, WorkflowSupervisorState, WorkflowSupervisorTask, WorkflowSupervisorTurnEnvelope } from './types';
 
 // Newly-rendered Supervisor turns use one compact causal receipt because the
 // provider/browser output path can truncate longer machine-shaped payloads. Older
@@ -12,6 +12,8 @@ export const LEGACY_BRACKET_SUPERVISOR_BLOCK_END = '[[[END_FORGE_WORKFLOW_SUPERV
 export const LEGACY_SUPERVISOR_BLOCK_START = '<<<FORGE_WORKFLOW_SUPERVISOR_V1>>>';
 export const LEGACY_SUPERVISOR_BLOCK_END = '<<<END_FORGE_WORKFLOW_SUPERVISOR_V1>>>';
 export const EFFECT_MARKER_PREFIX = '<<<FORGE_WORKFLOW_EFFECT_V1:';
+export const SUPERVISOR_TURN_BLOCK_START = 'FORGE_WORKFLOW_TURN_V1_BEGIN';
+export const SUPERVISOR_TURN_BLOCK_END = 'FORGE_WORKFLOW_TURN_V1_END';
 const EFFECT_ID = /^(?:fx|crpe)_[a-zA-Z0-9_-]{8,120}$/;
 const MAX_RESPONSE = 512 * 1024;
 const SUPERVISOR_BLOCK_MARKERS = [
@@ -137,17 +139,6 @@ export function parseSupervisorCompletion(
   };
 }
 
-function objective(task: WorkflowSupervisorTask): string {
-  return JSON.stringify(task.objective.slice(0, 8_000));
-}
-
-const SUPERVISOR_RESPONSE_FORMAT = [
-  '响应格式：',
-  '结果：<本轮实际完成或明确阻塞>',
-  '证据：<修改路径、检查结果、提交或发布回执；无则写“无”>',
-  '下一步：<立即继续的最小步骤>',
-] as const;
-
 export function renderSupervisorPrompt(
   task: WorkflowSupervisorTask,
   effectId: string,
@@ -162,20 +153,28 @@ export function renderSupervisorPrompt(
   const checkoutId = typeof task.completionContract.checkout_id === 'string'
     ? task.completionContract.checkout_id.trim()
     : typeof task.continuationPolicy.checkout_id === 'string' ? task.continuationPolicy.checkout_id.trim() : '';
-  const automationIdentity = `automation_task_id=${JSON.stringify(task.taskId)}, automation_type="autonomous_continuation"`;
+  const checkpoint = typeof _checkpoint === 'string' ? _checkpoint.trim().slice(0, 2_000) : '';
+  const envelope: WorkflowSupervisorTurnEnvelope = {
+    schema_version: 1,
+    task_id: task.taskId,
+    effect_id: validateEffectId(effectId),
+    kind,
+    objective: task.objective.slice(0, 8_000),
+    ...(checkpoint ? { checkpoint } : {}),
+    ...(repoId ? { repository: { repo_id: repoId, ...(checkoutId ? { checkout_id: checkoutId } : {}) } } : {}),
+    automation: {
+      automation_task_id: task.taskId,
+      automation_type: 'autonomous_continuation',
+      intermediate_status: 'working',
+      final_statuses: ['continue', 'done', 'needs_user'],
+    },
+  };
   return [
     '@forge',
     renderEffectMarker(effectId),
-    ...(kind === 'enrollment'
-      ? [`目标：${objective(task)}`, '开始。']
-      : [
-        '继续当前 Supervisor 任务。',
-        `目标：${objective(task)}`,
-        '从当前 durable Forge facts 和当前会话恢复真实进度；不要重复已完成工作。模型自行判断本轮最有价值的推进方式。本提示不新增额外工作范围、步骤、gate 或完成条件，也不得缩小原任务范围。',
-        ...(typeof _checkpoint === 'string' && _checkpoint.trim() ? [`上一轮 checkpoint（仅作连续性线索，不限制本轮范围）：${JSON.stringify(_checkpoint.trim().slice(0, 2_000))}`] : []),
-      ]),
-    `最后一次 Forge 调用携带 ${automationIdentity}, automation_status="continue"；完成用 "done"，需用户用 "needs_user"。`,
-    ...(repoId ? [`Repository context: repo_id=${JSON.stringify(repoId)}${checkoutId ? `, checkout_id=${JSON.stringify(checkoutId)}` : ''}.`] : []),
+    SUPERVISOR_TURN_BLOCK_START,
+    JSON.stringify(envelope),
+    SUPERVISOR_TURN_BLOCK_END,
   ].join('\n');
 }
 
