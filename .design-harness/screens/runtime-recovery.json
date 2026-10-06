@@ -1,25 +1,25 @@
 {
   "schemaVersion": 1,
   "id": "runtime-recovery",
-  "name": "Runtime & Recovery",
-  "goal": "Runtime 健康或宕机时都能打开客户端，并通过 standalone Recovery start/restart/diagnose/repair；关闭客户端不停止 Runtime。",
+  "name": "运行时与恢复",
+  "goal": "运行时健康或宕机时都能打开客户端，并通过独立恢复能力启动、重启、诊断和修复；关闭客户端不停止运行时。",
   "primaryAction": "repair-runtime",
   "constraints": [
-    "Runtime health 是 global",
-    "Runtime down 时 UI 仍可用",
-    "所有修复动作经 Recovery authority",
-    "Connections 显示状态、权限与 last verified"
+    "运行时健康状态是全局事实",
+    "运行时不可用时界面仍可使用",
+    "所有修复动作都经恢复权威执行",
+    "连接页面显示状态、权限与最近验证时间"
   ],
   "nodes": [
     {
       "id": "titlebar",
       "component": "NativeTitlebar",
       "props": {
-        "title": "Runtime",
-        "subtitle": "System",
-        "runtimeState": "Runtime unavailable",
-        "mode": "Recovery",
-        "searchPlaceholder": "Search settings…",
+        "title": "运行时",
+        "subtitle": "系统",
+        "runtimeState": "运行时不可用",
+        "mode": "恢复",
+        "searchPlaceholder": "搜索设置…",
         "showTrafficLights": true
       }
     },
@@ -27,8 +27,8 @@
       "id": "sidebar",
       "component": "PrimarySidebar",
       "props": {
-        "active": "Runtime",
-        "assistantLabel": "Assistant",
+        "active": "运行时",
+        "assistantLabel": "助手",
         "projects": [
           "forge",
           "Avela",
@@ -36,9 +36,9 @@
         ],
         "selectedProject": "",
         "bottomItems": [
-          "Connections",
-          "Runtime",
-          "Settings"
+          "连接",
+          "运行时",
+          "设置"
         ],
         "collapsed": false
       }
@@ -47,17 +47,17 @@
       "id": "recovery",
       "component": "RecoverySurface",
       "props": {
-        "runtimeState": "Unavailable",
-        "recoveryState": "Recovery ready",
-        "headline": "Forge Runtime is not responding",
-        "body": "Your Work and Plans remain durable. The desktop client can repair or restart Runtime through standalone Recovery without becoming Runtime owner.",
+        "runtimeState": "不可用",
+        "recoveryState": "恢复能力可用",
+        "headline": "Forge 运行时没有响应",
+        "body": "你的工作与计划仍然持久保存。桌面客户端可以通过独立恢复能力修复或重启运行时，而不会成为运行时权威。",
         "actions": [
-          "Diagnose",
-          "Restart Runtime",
-          "Repair",
-          "Open logs"
+          "诊断",
+          "重启运行时",
+          "修复",
+          "打开日志"
         ],
-        "diagnosticSummary": "Last healthy 2 min ago · Controller Home readable · release bundle available"
+        "diagnosticSummary": "2 分钟前最后正常 · Controller Home 可读 · 发布包可用"
       },
       "interactionPatternId": "system-recovery",
       "interactions": [
@@ -71,23 +71,23 @@
         "connections": [
           {
             "name": "ChatGPT MCP",
-            "state": "Connected",
-            "lastVerified": "1 min ago"
+            "state": "已连接",
+            "lastVerified": "1 分钟前"
           },
           {
-            "name": "OpenAI local provider",
-            "state": "Configured",
-            "lastVerified": "Today"
+            "name": "OpenAI 本地提供方",
+            "state": "已配置",
+            "lastVerified": "今天"
           },
           {
             "name": "GitHub",
-            "state": "Connected",
-            "lastVerified": "Today"
+            "state": "已连接",
+            "lastVerified": "今天"
           },
           {
-            "name": "Computer",
-            "state": "Needs permission",
-            "lastVerified": "Yesterday"
+            "name": "电脑控制",
+            "state": "需要权限",
+            "lastVerified": "昨天"
           }
         ],
         "selectedConnection": "ChatGPT MCP",
@@ -100,22 +100,22 @@
       "component": "HistoryTimeline",
       "props": {
         "entries": [
-          "08:14 Runtime healthy",
-          "08:19 Connection lost",
-          "08:20 Recovery health confirmed"
+          "08:14 运行时正常",
+          "08:19 连接中断",
+          "08:20 恢复能力健康确认"
         ],
-        "selectedEntry": "08:20 Recovery health confirmed",
-        "filter": "System",
+        "selectedEntry": "08:20 恢复能力健康确认",
+        "filter": "系统",
         "showRevisionIds": false
       }
     }
   ],
   "initialStateId": "unavailable",
   "states": [
-    { "id": "healthy", "name": "Runtime healthy", "meaning": "Runtime and Recovery are both reachable; Recovery remains available but secondary.", "primaryAction": "diagnose-runtime" },
-    { "id": "unavailable", "name": "Runtime unavailable", "meaning": "Primary Runtime is unreachable while standalone Recovery remains available.", "primaryAction": "repair-runtime" },
-    { "id": "repairing", "name": "Recovery in progress", "meaning": "Recovery is executing a bounded repair/restart operation.", "constraints": ["Do not represent repair activity as a Work lifecycle state."] },
-    { "id": "recovery-degraded", "name": "Recovery degraded", "meaning": "Recovery itself cannot establish enough facts to repair safely.", "primaryAction": "open-diagnostics" }
+    { "id": "healthy", "name": "运行时正常", "meaning": "运行时与恢复能力均可达；恢复能力保持可用但处于辅助位置。", "primaryAction": "diagnose-runtime" },
+    { "id": "unavailable", "name": "运行时不可用", "meaning": "主运行时不可达，但独立恢复能力仍可使用。", "primaryAction": "repair-runtime" },
+    { "id": "repairing", "name": "正在恢复", "meaning": "恢复能力正在执行有界修复或重启操作。", "constraints": ["不要把修复活动表示为工作生命周期状态。"] },
+    { "id": "recovery-degraded", "name": "恢复能力降级", "meaning": "恢复能力自身无法建立足够事实以安全修复。", "primaryAction": "open-diagnostics" }
   ],
   "viewport": { "kind": "desktop", "platform": "macos", "preset": "macbook-14", "width": 1440, "height": 960, "safeTop": 0, "safeBottom": 0 },
   "quality": { "requiredStateIds": ["healthy", "unavailable", "repairing", "recovery-degraded"], "minimumHitTarget": 36 }

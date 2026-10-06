@@ -1,15 +1,15 @@
 {
   "schemaVersion": 1,
   "id": "project-workbench",
-  "name": "Project Workbench",
-  "goal": "从 Project 一屏理解 Requirement 根、Independent Work、串并行 Work 图、当前 Work、其 Plan 与证据，并可直接继续工作。",
+  "name": "项目工作台",
+  "goal": "从项目一屏理解需求根、独立工作、串并行工作图、当前工作、其计划与证据，并可直接继续工作。",
   "primaryAction": "continue-selected-work",
   "constraints": [
-    "MCP-first；Assistant 与 Projects 是一级入口",
-    "Work 是唯一执行/进度节点；不得显示 Plan 百分比或 PlanStep 状态",
-    "Requirement 只作为存在时的 goal root",
-    "Runtime 机械状态只进 inspector",
-    "WorkGraph 只表达 decomposition/dependency；continuation/supersession 进入 History",
+    "MCP 优先；助手与项目是一级入口",
+    "工作是唯一执行/进度节点；不得显示计划百分比或计划步骤状态",
+    "需求仅在存在时作为目标根",
+    "运行时机械状态只进入检查器",
+    "工作图只表达拆分与依赖；继续与替代关系进入历史",
     "macOS day-mode 半透明 vibrancy，避免 Dashboard/KPI 风格"
   ],
   "nodes": [
@@ -18,10 +18,10 @@
       "component": "NativeTitlebar",
       "props": {
         "title": "Forge",
-        "subtitle": "Projects / forge",
-        "runtimeState": "Runtime healthy",
+        "subtitle": "项目 / forge",
+        "runtimeState": "运行时正常",
         "mode": "MCP",
-        "searchPlaceholder": "Search work, plans, files…",
+        "searchPlaceholder": "搜索工作、计划、文件…",
         "showTrafficLights": true
       }
     },
@@ -29,8 +29,8 @@
       "id": "sidebar",
       "component": "PrimarySidebar",
       "props": {
-        "active": "Projects",
-        "assistantLabel": "Assistant",
+        "active": "项目",
+        "assistantLabel": "助手",
         "projects": [
           "forge",
           "Avela",
@@ -38,9 +38,9 @@
         ],
         "selectedProject": "forge",
         "bottomItems": [
-          "Connections",
-          "Runtime",
-          "Settings"
+          "连接",
+          "运行时",
+          "设置"
         ],
         "collapsed": false
       }
@@ -52,64 +52,64 @@
         "projectName": "forge",
         "repository": "moretea-labs/forge",
         "branch": "main",
-        "worktree": "main worktree",
-        "sourceRevision": "design candidate",
-        "historyMode": "Current"
+        "worktree": "主工作树",
+        "sourceRevision": "设计候选",
+        "historyMode": "当前"
       }
     },
     {
       "id": "graph",
       "component": "WorkGraph",
       "props": {
-        "requirementTitle": "Forge V3 Desktop Client",
+        "requirementTitle": "Forge V3 桌面客户端",
         "requirementId": "REQ-forge-v3-desktop-client-20260930",
         "nodes": [
           {
             "id": "work-ia",
-            "title": "Freeze MCP-first IA",
+            "title": "冻结 MCP 优先信息架构",
             "state": "completed",
             "depth": 0
           },
           {
             "id": "work-foundation",
-            "title": "Desktop foundation",
+            "title": "桌面客户端基础",
             "state": "open",
             "depth": 1,
-            "relation": "decomposed"
+            "relation": "拆分"
           },
           {
             "id": "work-bootstrap",
-            "title": "Runtime + Recovery bootstrap",
+            "title": "运行时与恢复引导",
             "state": "open",
             "depth": 1,
-            "relation": "parallel"
+            "relation": "并行"
           },
           {
             "id": "work-mcp",
-            "title": "Assistant + Projects MCP",
+            "title": "助手与项目 MCP",
             "state": "open",
             "depth": 1,
-            "relation": "depends-on foundation"
+            "relation": "依赖桌面基础"
           },
           {
             "id": "work-local",
-            "title": "Local conversations",
+            "title": "本地会话",
             "state": "open",
             "depth": 1,
-            "relation": "later"
+            "relation": "后续"
           },
           {
             "id": "work-connections",
-            "title": "Connections + macOS quality",
+            "title": "连接与 macOS 体验",
             "state": "open",
             "depth": 1,
-            "relation": "later"
+            "relation": "后续"
           }
         ],
         "selectedWorkId": "work-mcp",
         "showDependencies": true,
         "showHistory": false,
-        "independentLabel": "Independent Work"
+        "independentLabel": "独立工作"
       },
       "interactionPatternId": "work-selection",
       "interactions": [
@@ -120,46 +120,46 @@
       "id": "work-header",
       "component": "WorkDetailHeader",
       "props": {
-        "title": "Deliver MCP Assistant + Projects",
+        "title": "交付 MCP 助手与项目",
         "workId": "work-mcp",
-        "semanticState": "Open",
-        "relationLabel": "Requirement child · depends on Desktop foundation",
+        "semanticState": "进行中",
+        "relationLabel": "需求子工作 · 依赖桌面基础",
         "controller": "ChatGPT",
-        "planTitle": "Forge V3 Desktop Client · r8",
-        "updatedLabel": "Updated 12 min ago"
+        "planTitle": "Forge V3 桌面客户端 · r8",
+        "updatedLabel": "12 分钟前更新"
       }
     },
     {
       "id": "focus",
       "component": "CurrentFocusCard",
       "props": {
-        "summary": "Build the Project Workbench around canonical Requirement / Work / Plan projections.",
-        "activity": "Designing native client information architecture",
+        "summary": "围绕权威需求、工作与计划投影构建项目工作台。",
+        "activity": "正在设计原生客户端信息架构",
         "controller": "ChatGPT",
         "startedAt": "08:21",
-        "nextLikelyAction": "Implement portable desktop shell after design approval"
+        "nextLikelyAction": "设计验收后实现可移植桌面壳层"
       }
     },
     {
       "id": "plan",
       "component": "PlanContextPanel",
       "props": {
-        "title": "Forge V3 Desktop Client",
+        "title": "Forge V3 桌面客户端",
         "revision": "r8",
         "decisions": [
-          "MCP first",
-          "Assistant + Projects top-level",
-          "Work is execution node",
-          "Plan is descriptive only"
+          "MCP 优先",
+          "助手与项目为一级入口",
+          "工作是执行节点",
+          "计划仅作为描述性上下文"
         ],
-        "currentFocus": "MCP Assistant + Projects",
+        "currentFocus": "MCP 助手与项目",
         "nextActions": [
-          "Desktop foundation",
-          "Runtime/Recovery bootstrap",
-          "MCP current/history projections"
+          "桌面客户端基础",
+          "运行时与恢复引导",
+          "MCP 当前与历史投影"
         ],
         "historyCount": 8,
-        "executionProjection": "Executed when the bound Work is semantically completed"
+        "executionProjection": "绑定工作在语义上完成时视为执行完成"
       }
     },
     {
@@ -172,18 +172,18 @@
           "platform/macos"
         ],
         "checks": [
-          "architecture",
-          "desktop typecheck"
+          "架构检查",
+          "桌面类型检查"
         ],
         "artifacts": [
-          "IA spec",
-          "design preview"
+          "信息架构规范",
+          "设计预览"
         ],
         "receipts": [
-          "Plan r8",
-          "Design Studio validation"
+          "计划 r8",
+          "设计工作室验证"
         ],
-        "sourceRevision": "design candidate",
+        "sourceRevision": "设计候选",
         "compact": true
       }
     },
@@ -191,12 +191,12 @@
       "id": "inspector",
       "component": "RuntimeInspector",
       "props": {
-        "runtime": "Healthy · local",
-        "recovery": "Ready",
-        "controllerConnection": "ChatGPT MCP · Connected",
-        "projectConnection": "forge · active",
+        "runtime": "正常 · 本机",
+        "recovery": "可用",
+        "controllerConnection": "ChatGPT MCP · 已连接",
+        "projectConnection": "forge · 活动中",
         "worktree": "kernel-v2/architecture",
-        "processes": "0 active",
+        "processes": "0 个活动进程",
         "detailsCollapsed": false
       }
     },
@@ -204,13 +204,13 @@
       "id": "composer",
       "component": "AgentComposer",
       "props": {
-        "placeholder": "Ask ChatGPT to continue this Work…",
+        "placeholder": "让 ChatGPT 继续当前工作…",
         "scopeLabel": "work-mcp",
         "modeLabel": "MCP",
         "suggestions": [
-          "Continue implementation",
-          "Review evidence",
-          "Open history"
+          "继续实现",
+          "查看证据",
+          "打开历史"
         ],
         "attachments": [
           "Plan r8"
@@ -225,10 +225,10 @@
   ],
   "initialStateId": "normal",
   "states": [
-    { "id": "normal", "name": "Ready", "meaning": "Canonical Project/Work projection is readable and a Work may be selected.", "primaryAction": "continue-selected-work" },
-    { "id": "loading", "name": "Loading projection", "meaning": "Forge canonical projection is being read; navigation and scope remain stable.", "constraints": ["Do not render unknown data as empty Work or zero progress."] },
-    { "id": "empty", "name": "No Work yet", "meaning": "The Project is valid but has no current Work projection.", "primaryAction": "ask-assistant" },
-    { "id": "degraded", "name": "Partial projection", "meaning": "Some canonical facts are unavailable while the rest of the client remains usable.", "primaryAction": "inspect-source" }
+    { "id": "normal", "name": "就绪", "meaning": "权威项目/工作投影可读取，并且可以选择工作。", "primaryAction": "continue-selected-work" },
+    { "id": "loading", "name": "正在加载投影", "meaning": "正在读取 Forge 权威投影；导航和范围保持稳定。", "constraints": ["不要把未知数据渲染为空工作或零进度。"] },
+    { "id": "empty", "name": "暂无工作", "meaning": "项目有效，但当前没有工作投影。", "primaryAction": "ask-assistant" },
+    { "id": "degraded", "name": "部分投影", "meaning": "部分权威事实暂不可用，其余客户端功能仍可使用。", "primaryAction": "inspect-source" }
   ],
   "viewport": { "kind": "desktop", "platform": "macos", "preset": "macbook-14", "width": 1440, "height": 960, "safeTop": 0, "safeBottom": 0 },
   "quality": { "requiredStateIds": ["normal", "loading", "empty", "degraded"], "minimumHitTarget": 36 }

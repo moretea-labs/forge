@@ -1,24 +1,24 @@
 {
   "schemaVersion": 1,
   "id": "assistant-global",
-  "name": "Assistant Global",
-  "goal": "展示 Forge-instance 范围、与任何 Project 无关的 Work，不把它们伪装成仓库项目。",
+  "name": "全局助手",
+  "goal": "展示 Forge 实例范围、与任何项目无关的工作，不把它们伪装成仓库项目。",
   "primaryAction": "open-or-create-assistant-work",
   "constraints": [
-    "Assistant 与 Projects 同级",
-    "不得要求每个 Work 都有 Requirement 或 Plan",
-    "Local conversation 不得隐式创建 Requirement/Plan/Work"
+    "助手与项目同级",
+    "不得要求每个工作都有需求或计划",
+    "本地会话不得隐式创建需求、计划或工作"
   ],
   "nodes": [
     {
       "id": "titlebar",
       "component": "NativeTitlebar",
       "props": {
-        "title": "Assistant",
-        "subtitle": "Forge instance",
-        "runtimeState": "Runtime healthy",
+        "title": "助手",
+        "subtitle": "Forge 实例",
+        "runtimeState": "运行时正常",
         "mode": "MCP",
-        "searchPlaceholder": "Search Assistant work…",
+        "searchPlaceholder": "搜索助手工作…",
         "showTrafficLights": true
       }
     },
@@ -26,8 +26,8 @@
       "id": "sidebar",
       "component": "PrimarySidebar",
       "props": {
-        "active": "Assistant",
-        "assistantLabel": "Assistant",
+        "active": "助手",
+        "assistantLabel": "助手",
         "projects": [
           "forge",
           "Avela",
@@ -35,9 +35,9 @@
         ],
         "selectedProject": "",
         "bottomItems": [
-          "Connections",
-          "Runtime",
-          "Settings"
+          "连接",
+          "运行时",
+          "设置"
         ],
         "collapsed": false
       }
@@ -47,16 +47,16 @@
       "component": "AssistantWorkList",
       "props": {
         "current": [
-          "Daily Forge release summary",
-          "Cross-project promotion ledger",
-          "Mac maintenance"
+          "Forge 每日发布摘要",
+          "跨项目推广台账",
+          "Mac 维护"
         ],
         "history": [
-          "September automation cleanup",
-          "Connection audit"
+          "九月自动化清理",
+          "连接审计"
         ],
         "selectedWorkId": "assistant-release-summary",
-        "emptyMessage": "Assistant Work can exist without a Project, Requirement or Plan."
+        "emptyMessage": "助手工作可以独立存在，不要求绑定项目、需求或计划。"
       },
       "interactions": [
         { "event": "select", "actions": [{ "type": "emit_design_action", "actionId": "select-work" }] }
@@ -66,36 +66,36 @@
       "id": "work-header",
       "component": "WorkDetailHeader",
       "props": {
-        "title": "Daily Forge release summary",
+        "title": "Forge 每日发布摘要",
         "workId": "assistant-release-summary",
-        "semanticState": "Open",
-        "relationLabel": "Assistant-global Work",
+        "semanticState": "进行中",
+        "relationLabel": "全局助手工作",
         "controller": "ChatGPT",
-        "planTitle": "No Plan",
-        "updatedLabel": "Today 08:00"
+        "planTitle": "无计划",
+        "updatedLabel": "今天 08:00"
       }
     },
     {
       "id": "focus",
       "component": "CurrentFocusCard",
       "props": {
-        "summary": "Summarize new release and runtime facts across projects.",
-        "activity": "Waiting for next scheduled occurrence",
+        "summary": "汇总跨项目的新发布与运行时事实。",
+        "activity": "等待下一次计划触发",
         "controller": "ChatGPT",
         "startedAt": "08:00",
-        "nextLikelyAction": "Wake at next schedule"
+        "nextLikelyAction": "在下一次计划触发时唤醒"
       }
     },
     {
       "id": "inspector",
       "component": "RuntimeInspector",
       "props": {
-        "runtime": "Healthy",
-        "recovery": "Ready",
+        "runtime": "正常",
+        "recovery": "可用",
         "controllerConnection": "ChatGPT MCP",
-        "projectConnection": "None",
-        "worktree": "None",
-        "processes": "0 active",
+        "projectConnection": "无",
+        "worktree": "无",
+        "processes": "0 个活动进程",
         "detailsCollapsed": false
       }
     },
@@ -103,13 +103,13 @@
       "id": "composer",
       "component": "AgentComposer",
       "props": {
-        "placeholder": "Ask Assistant…",
-        "scopeLabel": "Assistant",
+        "placeholder": "询问助手…",
+        "scopeLabel": "助手",
         "modeLabel": "MCP",
         "suggestions": [
-          "Create independent Work",
-          "Show history",
-          "Open schedule"
+          "创建独立工作",
+          "查看历史",
+          "打开计划任务"
         ],
         "attachments": [],
         "shortcut": "⌘↵"
@@ -122,9 +122,9 @@
   ],
   "initialStateId": "ready",
   "states": [
-    { "id": "ready", "name": "Assistant ready", "meaning": "Forge-instance Work can be selected or continued without repository scope.", "primaryAction": "open-or-create-assistant-work" },
-    { "id": "empty", "name": "No Assistant Work", "meaning": "No Forge-instance Work exists; local conversation can still remain lifecycle-free.", "primaryAction": "start-local-conversation" },
-    { "id": "loading", "name": "Loading Assistant Work", "meaning": "Assistant Work projection is loading while the global scope remains known." }
+    { "id": "ready", "name": "助手就绪", "meaning": "无需仓库范围即可选择或继续 Forge 实例级工作。", "primaryAction": "open-or-create-assistant-work" },
+    { "id": "empty", "name": "暂无助手工作", "meaning": "当前没有 Forge 实例级工作；本地会话仍可保持无生命周期。", "primaryAction": "start-local-conversation" },
+    { "id": "loading", "name": "正在加载助手工作", "meaning": "正在加载助手工作投影，同时全局范围仍保持明确。" }
   ],
   "viewport": { "kind": "desktop", "platform": "macos", "preset": "macbook-14", "width": 1440, "height": 960, "safeTop": 0, "safeBottom": 0 },
   "quality": { "requiredStateIds": ["ready", "empty", "loading"], "minimumHitTarget": 36 }

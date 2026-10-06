@@ -12,6 +12,7 @@ struct RuntimeServiceConfig {
     controller_home: String,
     host: String,
     port: u16,
+    repository_root: Option<String>,
     auth_token_file: String,
 }
 
@@ -131,6 +132,80 @@ async fn read_automatic_continuations() -> Result<Value, String> {
 }
 
 #[tauri::command]
+async fn read_projects() -> Result<Value, String> {
+    let config = runtime_config()?;
+    let result = call_runtime_tool("repository_list", json!({
+        "include_removed": false,
+        "request_id": request_id("projects-list")
+    })).await?;
+    let preferred_repo_id = config.repository_root.as_deref().and_then(|repository_root| {
+        result.get("repositories").and_then(Value::as_array).and_then(|repositories| {
+            repositories.iter().find_map(|repository| {
+                let root_matches = repository.get("canonicalRoot").and_then(Value::as_str) == Some(repository_root)
+                    || repository.get("localRoot").and_then(Value::as_str) == Some(repository_root);
+                root_matches.then(|| repository.get("repoId").and_then(Value::as_str)).flatten()
+            })
+        })
+    });
+    let repositories = result.get("repositories").and_then(Value::as_array)
+        .map(|items| items.iter().map(|repository| json!({
+            "repoId": repository.get("repoId").and_then(Value::as_str),
+            "displayName": repository.get("displayName").and_then(Value::as_str),
+            "checkoutId": repository.get("checkoutId").and_then(Value::as_str),
+            "remoteUrl": repository.get("remoteUrl").and_then(Value::as_str),
+            "defaultBranch": repository.get("defaultBranch").and_then(Value::as_str)
+        })).collect::<Vec<_>>())
+        .unwrap_or_default();
+    Ok(json!({
+        "repositories": repositories,
+        "preferredRepoId": preferred_repo_id
+    }))
+}
+
+#[tauri::command]
+async fn read_project_overview(repo_id: String) -> Result<Value, String> {
+    if repo_id.trim().is_empty() {
+        return Err("FORGE_DESKTOP_REPOSITORY_REQUIRED".to_string());
+    }
+    call_runtime_tool("rh_status", json!({
+        "repo_id": repo_id,
+        "operation": "list",
+        "detail_level": "summary",
+        "request_id": request_id("project-overview")
+    })).await
+}
+
+#[tauri::command]
+async fn read_work_detail(repo_id: String, work_id: String) -> Result<Value, String> {
+    if repo_id.trim().is_empty() || work_id.trim().is_empty() {
+        return Err("FORGE_DESKTOP_WORK_DETAIL_ARGUMENT_REQUIRED".to_string());
+    }
+    call_runtime_tool("rh_work", json!({
+        "repo_id": repo_id,
+        "operation": "get",
+        "work_id": work_id,
+        "detail_level": "detail",
+        "request_id": request_id("work-detail")
+    })).await
+}
+
+#[tauri::command]
+async fn continue_work(repo_id: String, work_id: String, prompt: String) -> Result<Value, String> {
+    if repo_id.trim().is_empty() || work_id.trim().is_empty() || prompt.trim().is_empty() {
+        return Err("FORGE_DESKTOP_CONTINUE_WORK_ARGUMENT_REQUIRED".to_string());
+    }
+    call_runtime_tool("rh_work", json!({
+        "repo_id": repo_id,
+        "operation": "launcher_start",
+        "work_id": work_id,
+        "controller_type": "chatgpt",
+        "transport_conversation": "bound",
+        "continuation_prompt": prompt,
+        "request_id": request_id("continue-work")
+    })).await
+}
+
+#[tauri::command]
 async fn switch_automatic_continuation_conversation(
     task_id: String,
     expected_conversation_id: String,
@@ -155,6 +230,10 @@ async fn switch_automatic_continuation_conversation(
 fn main() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
+            read_projects,
+            read_project_overview,
+            read_work_detail,
+            continue_work,
             read_automatic_continuations,
             switch_automatic_continuation_conversation
         ])

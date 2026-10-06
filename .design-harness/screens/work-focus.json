@@ -1,14 +1,14 @@
 {
   "schemaVersion": 1,
   "id": "work-focus",
-  "name": "Work Focus",
+  "name": "工作专注视图",
   "goal": "提供类似现代 coding agent 的专注视图：中间是当前 Work 的 focus/changes/evidence，右侧只显示必要机械事实。",
   "primaryAction": "send-controller-instruction",
   "constraints": [
     "原生桌面 agent 工作台，不是网页聊天产品",
-    "Current Focus、变更和证据优先",
-    "Plan 仅可折叠上下文，不显示进度条",
-    "Runtime detail 可收起",
+    "当前焦点、变更和证据优先",
+    "计划仅作为可折叠上下文，不显示进度条",
+    "运行时详情可收起",
     "自动推进任务显示 exact conversation link；切换新会话只能调用 canonical Supervisor migration，客户端不能直接改绑定。"
   ],
   "nodes": [
@@ -16,11 +16,11 @@
       "id": "titlebar",
       "component": "NativeTitlebar",
       "props": {
-        "title": "Deliver MCP Assistant + Projects",
-        "subtitle": "forge · Work Focus",
-        "runtimeState": "Healthy",
+        "title": "交付 MCP 助手与项目",
+        "subtitle": "forge · 工作专注视图",
+        "runtimeState": "正常",
         "mode": "MCP",
-        "searchPlaceholder": "Command or search…",
+        "searchPlaceholder": "输入命令或搜索…",
         "showTrafficLights": true
       }
     },
@@ -28,8 +28,8 @@
       "id": "sidebar",
       "component": "PrimarySidebar",
       "props": {
-        "active": "Projects",
-        "assistantLabel": "Assistant",
+        "active": "项目",
+        "assistantLabel": "助手",
         "projects": [
           "forge",
           "Avela",
@@ -37,8 +37,8 @@
         ],
         "selectedProject": "forge",
         "bottomItems": [
-          "Connections",
-          "Runtime"
+          "连接",
+          "运行时"
         ],
         "collapsed": true
       }
@@ -47,45 +47,45 @@
       "id": "work-header",
       "component": "WorkDetailHeader",
       "props": {
-        "title": "Deliver MCP Assistant + Projects",
+        "title": "交付 MCP 助手与项目",
         "workId": "work-mcp",
-        "semanticState": "Open",
-        "relationLabel": "Requirement child",
+        "semanticState": "进行中",
+        "relationLabel": "需求子工作",
         "controller": "ChatGPT",
-        "planTitle": "Forge V3 Desktop Client · r8",
-        "updatedLabel": "Live"
+        "planTitle": "Forge V3 桌面客户端 · r8",
+        "updatedLabel": "实时"
       }
     },
     {
       "id": "focus",
       "component": "CurrentFocusCard",
       "props": {
-        "summary": "Implement current/history Work graph projection without introducing a client-owned graph authority.",
-        "activity": "Reading protocol and desktop shell boundaries",
+        "summary": "实现当前/历史工作图投影，不引入客户端自有图权威。",
+        "activity": "正在读取协议与桌面壳层边界",
         "controller": "ChatGPT",
         "startedAt": "08:21",
-        "nextLikelyAction": "Apply coherent implementation batch"
+        "nextLikelyAction": "应用一致的实现批次"
       }
     },
     {
       "id": "plan",
       "component": "PlanContextPanel",
       "props": {
-        "title": "Plan context",
+        "title": "计划上下文",
         "revision": "r8",
         "decisions": [
-          "No Plan progress machine",
-          "No shadow Work graph",
-          "Portable renderer"
+          "不建立计划进度状态机",
+          "不建立影子工作图",
+          "可移植渲染层"
         ],
-        "currentFocus": "MCP Project Workbench",
+        "currentFocus": "MCP 项目工作台",
         "nextActions": [
-          "Current/history projection",
-          "Inspector facts",
-          "Keyboard polish"
+          "当前/历史投影",
+          "检查器事实",
+          "键盘交互优化"
         ],
         "historyCount": 8,
-        "executionProjection": "Descriptive context"
+        "executionProjection": "描述性上下文"
       }
     },
     {
@@ -94,13 +94,13 @@
       "props": {
         "taskId": "forge:repo-forge:work:work-mcp",
         "workId": "work-mcp",
-        "objective": "Continue the selected Work until delivery or an explicit user blocker.",
-        "status": "Running",
-        "detail": "Workflow Supervisor owns the outer turn.",
-        "conversationId": "exact ChatGPT conversation id",
-        "conversationUrl": "canonical ChatGPT conversation URL",
-        "nextAction": "Continue in the same exact conversation unless the user explicitly switches.",
-        "switchActionState": "Available when no unresolved provider outcome blocks migration"
+        "objective": "继续所选工作，直到完成交付或出现明确的用户阻塞。",
+        "status": "推进中",
+        "detail": "自动推进监督器负责外层推进轮次。",
+        "conversationId": "精确 ChatGPT 会话 ID",
+        "conversationUrl": "权威 ChatGPT 会话 URL",
+        "nextAction": "默认继续同一个精确会话，除非用户显式切换。",
+        "switchActionState": "不存在未决 provider outcome 阻塞迁移时可用"
       },
       "interactionPatternId": "automatic-continuation-inspection",
       "interactions": [
@@ -118,18 +118,18 @@
           "adapters/local-api/work-projection.ts"
         ],
         "checks": [
-          "typecheck passed",
-          "architecture passed"
+          "类型检查通过",
+          "架构检查通过"
         ],
         "artifacts": [
           "diff +184 −27",
-          "semantic review"
+          "语义审查"
         ],
         "receipts": [
-          "context closure",
-          "verification receipts"
+          "上下文闭合",
+          "验证回执"
         ],
-        "sourceRevision": "candidate",
+        "sourceRevision": "候选版本",
         "compact": false
       }
     },
@@ -137,12 +137,12 @@
       "id": "inspector",
       "component": "RuntimeInspector",
       "props": {
-        "runtime": "Healthy",
-        "recovery": "Ready",
+        "runtime": "正常",
+        "recovery": "可用",
         "controllerConnection": "ChatGPT MCP",
         "projectConnection": "forge",
-        "worktree": "managed worktree",
-        "processes": "2 recent",
+        "worktree": "受管工作树",
+        "processes": "最近 2 个",
         "detailsCollapsed": true
       }
     },
@@ -150,17 +150,17 @@
       "id": "composer",
       "component": "AgentComposer",
       "props": {
-        "placeholder": "Message controller…",
-        "scopeLabel": "Current Work",
+        "placeholder": "向控制器发送指令…",
+        "scopeLabel": "当前工作",
         "modeLabel": "MCP",
         "suggestions": [
-          "Continue",
-          "Review diff",
-          "Run checks"
+          "继续",
+          "查看差异",
+          "运行检查"
         ],
         "attachments": [
-          "Plan",
-          "Evidence"
+          "计划",
+          "证据"
         ],
         "shortcut": "⌘↵"
       },
@@ -172,9 +172,9 @@
   ],
   "initialStateId": "focused",
   "states": [
-    { "id": "focused", "name": "Focused", "meaning": "The selected canonical Work is open in a low-distraction work surface.", "primaryAction": "send-controller-instruction" },
-    { "id": "submitting", "name": "Submitting instruction", "meaning": "A controller instruction has been sent and the client is waiting for canonical acknowledgement.", "constraints": ["Do not synthesize Work progress from transport activity."] },
-    { "id": "degraded", "name": "Evidence degraded", "meaning": "The Work identity remains readable while some evidence/runtime facts are temporarily unavailable.", "primaryAction": "retry-evidence" }
+    { "id": "focused", "name": "专注中", "meaning": "所选权威工作已在低干扰工作界面中打开。", "primaryAction": "send-controller-instruction" },
+    { "id": "submitting", "name": "正在提交指令", "meaning": "控制器指令已发送，客户端正在等待权威确认。", "constraints": ["不要根据传输活动推断工作进度。"] },
+    { "id": "degraded", "name": "证据降级", "meaning": "工作身份仍可读取，但部分证据或运行时事实暂不可用。", "primaryAction": "retry-evidence" }
   ],
   "viewport": { "kind": "desktop", "platform": "macos", "preset": "macbook-14", "width": 1440, "height": 960, "safeTop": 0, "safeBottom": 0 },
   "quality": { "requiredStateIds": ["focused", "submitting", "degraded"], "minimumHitTarget": 36 }

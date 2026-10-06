@@ -31,6 +31,14 @@ The desktop shell reaches Canonical Runtime through its existing loopback MCP HT
 
 The bridge is intentionally typed and narrow. It currently exposes automatic-continuation projection and explicit fresh-conversation migration only; it does not expose Controller Home persistence, a generic database API, or a client-owned retry/session engine.
 
+## Project Workbench projection
+
+The V3 Project Workbench remains projection-only. Project navigation reads the canonical Repository Registry through `repository_list`; a selected project's bounded current Work/Plan summary comes from `rh_status(list)`; the selected Work and its decomposition/dependency graph come from `rh_work(get, detail)`. Selecting a Project or Work changes only transient desktop presentation state. The client does not persist or reconstruct Work graph authority.
+
+Continuing a selected Work is an explicit user mutation routed through `rh_work(launcher_start)` with the selected repository and Work identities. The desktop does not create its own controller session, retry loop, conversation authority, or lifecycle transition.
+
+The shipped desktop UI is Chinese-first. Domain IDs, repository names, user-authored objectives and external product names remain verbatim canonical data, while navigation, labels, states, actions, errors and explanatory copy are rendered in Chinese.
+
 ## Verification
 
 This foundation is acceptable when:

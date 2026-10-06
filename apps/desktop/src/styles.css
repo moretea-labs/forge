@@ -102,3 +102,29 @@ h2 { margin: 6px 0 8px; font-size: 15px; letter-spacing: -.01em; }
 
 .global-continuations { max-width: 860px; margin: 0 auto; }
 .inline-notice.error { background: #f7e9e7; color: #8a4942; }
+
+.project-list { display: grid; gap: 3px; max-height: min(52vh, 520px); overflow: auto; padding-right: 2px; }
+.project-list .scope-item { width: 100%; min-width: 0; }
+.project-list .scope-item span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.work-graph-surface { padding: 15px 16px; }
+.work-graph-list { display: grid; gap: 7px; margin-top: 12px; }
+.work-node { width: 100%; border: 1px solid transparent; background: #f8f6f2; border-radius: 10px; padding: 10px 11px; display: grid; grid-template-columns: 9px minmax(0, 1fr) auto; gap: 10px; align-items: center; text-align: left; color: #514c45; }
+.work-node:hover { background: #f1eee8; }
+.work-node.selected { border-color: rgba(62,103,78,.25); background: #edf3ee; }
+.work-state-dot { width: 7px; height: 7px; border-radius: 50%; background: #8f8980; }
+.work-state-dot.open { background: #4b936b; }
+.work-state-dot.completed { background: #7d8a82; }
+.work-state-dot.cancelled { background: #b07c64; }
+.work-node-main { min-width: 0; display: grid; gap: 4px; }
+.work-node-main strong { font-size: 10px; line-height: 1.35; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.work-node-main .mono { color: #9a948c; font-size: 8px; }
+.work-node-meta { display: flex; justify-content: flex-end; gap: 6px; flex-wrap: wrap; max-width: 230px; }
+.work-node-meta span { color: #827b72; font-size: 8px; background: rgba(255,255,255,.72); border-radius: 999px; padding: 3px 6px; }
+.context-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 12px; }
+.context-grid > div { min-width: 0; display: grid; gap: 5px; padding: 10px; border-radius: 9px; background: #f7f5f1; }
+.context-grid strong { font-size: 9px; overflow-wrap: anywhere; }
+.plan-goal { margin-top: 12px; }
+.result-ref-list { display: grid; gap: 6px; margin-top: 12px; }
+.result-ref { display: block; padding: 8px 9px; border-radius: 8px; background: #f7f5f1; color: #777169; font-size: 9px; overflow-wrap: anywhere; }
+.empty-inline { margin-top: 12px; color: #969087; font-size: 10px; line-height: 1.55; }
+.composer-error { padding: 0 14px 4px; color: #9a5149; font-size: 9px; }
