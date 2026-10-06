@@ -139,7 +139,7 @@ async fn call_stateless_mcp_tool(
         .post(endpoint)
         .header("Authorization", format!("Bearer {token}"))
         .header("Content-Type", "application/json")
-        .header("Accept", "application/json")
+        .header("Accept", "application/json, text/event-stream")
         .header("MCP-Protocol-Version", MCP_PROTOCOL_VERSION)
         .header("MCP-Method", "tools/call")
         .json(&body)
