@@ -2,32 +2,20 @@
   "schemaVersion": 1,
   "id": "project-workbench",
   "name": "项目工作台",
-  "goal": "从项目一屏理解需求根、独立工作、串并行工作图、当前工作、其计划与证据，并可直接继续工作。",
+  "goal": "以轻量侧栏选择项目和工作，主区只聚焦当前工作/会话；计划、证据、运行时细节按需展开。",
   "primaryAction": "continue-selected-work",
   "constraints": [
-    "MCP 优先；助手与项目是一级入口",
-    "工作是唯一执行/进度节点；不得显示计划百分比或计划步骤状态",
-    "需求仅在存在时作为目标根",
-    "运行时机械状态只进入检查器",
-    "工作图只表达拆分与依赖；继续与替代关系进入历史",
-    "macOS day-mode 半透明 vibrancy，避免 Dashboard/KPI 风格"
+    "macOS 系统标题栏负责窗口 chrome，WebView 不绘制红黄绿按钮或伪标题栏",
+    "默认布局只有轻量侧栏 + 单主工作区，不使用三栏 Dashboard",
+    "工作选择放在侧栏，主区不常驻工作图或全量依赖图",
+    "工作是唯一执行/进度节点；计划只作为按需上下文，不显示计划百分比或计划步骤状态",
+    "运行时与恢复是独立主页面，不常驻右侧检查器",
+    "自动推进任务展示绑定会话与切换新会话动作，详细 ID 与机械状态按需展开"
   ],
   "nodes": [
     {
-      "id": "titlebar",
-      "component": "NativeTitlebar",
-      "props": {
-        "title": "Forge",
-        "subtitle": "项目 / forge",
-        "runtimeState": "运行时正常",
-        "mode": "MCP",
-        "searchPlaceholder": "搜索工作、计划、文件…",
-        "showTrafficLights": true
-      }
-    },
-    {
       "id": "sidebar",
-      "component": "PrimarySidebar",
+      "component": "MacSidebar",
       "props": {
         "active": "项目",
         "assistantLabel": "助手",
@@ -37,84 +25,10 @@
           "Knowledge"
         ],
         "selectedProject": "forge",
-        "bottomItems": [
-          "连接",
-          "运行时",
-          "设置"
-        ],
+        "workListPlacement": "sidebar",
+        "runtimePlacement": "sidebar-footer",
         "collapsed": false
       }
-    },
-    {
-      "id": "context",
-      "component": "ProjectContextBar",
-      "props": {
-        "projectName": "forge",
-        "repository": "moretea-labs/forge",
-        "branch": "main",
-        "worktree": "主工作树",
-        "sourceRevision": "设计候选",
-        "historyMode": "当前"
-      }
-    },
-    {
-      "id": "graph",
-      "component": "WorkGraph",
-      "props": {
-        "requirementTitle": "Forge V3 桌面客户端",
-        "requirementId": "REQ-forge-v3-desktop-client-20260930",
-        "nodes": [
-          {
-            "id": "work-ia",
-            "title": "冻结 MCP 优先信息架构",
-            "state": "completed",
-            "depth": 0
-          },
-          {
-            "id": "work-foundation",
-            "title": "桌面客户端基础",
-            "state": "open",
-            "depth": 1,
-            "relation": "拆分"
-          },
-          {
-            "id": "work-bootstrap",
-            "title": "运行时与恢复引导",
-            "state": "open",
-            "depth": 1,
-            "relation": "并行"
-          },
-          {
-            "id": "work-mcp",
-            "title": "助手与项目 MCP",
-            "state": "open",
-            "depth": 1,
-            "relation": "依赖桌面基础"
-          },
-          {
-            "id": "work-local",
-            "title": "本地会话",
-            "state": "open",
-            "depth": 1,
-            "relation": "后续"
-          },
-          {
-            "id": "work-connections",
-            "title": "连接与 macOS 体验",
-            "state": "open",
-            "depth": 1,
-            "relation": "后续"
-          }
-        ],
-        "selectedWorkId": "work-mcp",
-        "showDependencies": true,
-        "showHistory": false,
-        "independentLabel": "独立工作"
-      },
-      "interactionPatternId": "work-selection",
-      "interactions": [
-        { "event": "select", "actions": [{ "type": "emit_design_action", "actionId": "select-work" }] }
-      ]
     },
     {
       "id": "work-header",
@@ -159,7 +73,8 @@
           "MCP 当前与历史投影"
         ],
         "historyCount": 8,
-        "executionProjection": "绑定工作在语义上完成时视为执行完成"
+        "executionProjection": "绑定工作在语义上完成时视为执行完成",
+        "collapsedByDefault": true
       }
     },
     {
@@ -184,20 +99,8 @@
           "设计工作室验证"
         ],
         "sourceRevision": "设计候选",
-        "compact": true
-      }
-    },
-    {
-      "id": "inspector",
-      "component": "RuntimeInspector",
-      "props": {
-        "runtime": "正常 · 本机",
-        "recovery": "可用",
-        "controllerConnection": "ChatGPT MCP · 已连接",
-        "projectConnection": "forge · 活动中",
-        "worktree": "kernel-v2/architecture",
-        "processes": "0 个活动进程",
-        "detailsCollapsed": false
+        "compact": true,
+        "collapsedByDefault": true
       }
     },
     {
@@ -215,21 +118,68 @@
         "attachments": [
           "Plan r8"
         ],
-        "shortcut": "⌘↵"
+        "shortcut": "⌘↵",
+        "floatingBottomComposer": true
       },
       "interactionPatternId": "controller-composer",
       "interactions": [
-        { "event": "submit", "actions": [{ "type": "emit_design_action", "actionId": "continue-work" }] }
+        {
+          "event": "submit",
+          "actions": [
+            {
+              "type": "emit_design_action",
+              "actionId": "continue-work"
+            }
+          ]
+        }
       ]
     }
   ],
   "initialStateId": "normal",
   "states": [
-    { "id": "normal", "name": "就绪", "meaning": "权威项目/工作投影可读取，并且可以选择工作。", "primaryAction": "continue-selected-work" },
-    { "id": "loading", "name": "正在加载投影", "meaning": "正在读取 Forge 权威投影；导航和范围保持稳定。", "constraints": ["不要把未知数据渲染为空工作或零进度。"] },
-    { "id": "empty", "name": "暂无工作", "meaning": "项目有效，但当前没有工作投影。", "primaryAction": "ask-assistant" },
-    { "id": "degraded", "name": "部分投影", "meaning": "部分权威事实暂不可用，其余客户端功能仍可使用。", "primaryAction": "inspect-source" }
+    {
+      "id": "normal",
+      "name": "就绪",
+      "meaning": "权威项目/工作投影可读取，并且可以选择工作。",
+      "primaryAction": "continue-selected-work"
+    },
+    {
+      "id": "loading",
+      "name": "正在加载投影",
+      "meaning": "正在读取 Forge 权威投影；导航和范围保持稳定。",
+      "constraints": [
+        "不要把未知数据渲染为空工作或零进度。"
+      ]
+    },
+    {
+      "id": "empty",
+      "name": "暂无工作",
+      "meaning": "项目有效，但当前没有工作投影。",
+      "primaryAction": "ask-assistant"
+    },
+    {
+      "id": "degraded",
+      "name": "部分投影",
+      "meaning": "部分权威事实暂不可用，其余客户端功能仍可使用。",
+      "primaryAction": "inspect-source"
+    }
   ],
-  "viewport": { "kind": "desktop", "platform": "macos", "preset": "macbook-14", "width": 1440, "height": 960, "safeTop": 0, "safeBottom": 0 },
-  "quality": { "requiredStateIds": ["normal", "loading", "empty", "degraded"], "minimumHitTarget": 36 }
+  "viewport": {
+    "kind": "desktop",
+    "platform": "macos",
+    "preset": "macbook-14",
+    "width": 1440,
+    "height": 960,
+    "safeTop": 0,
+    "safeBottom": 0
+  },
+  "quality": {
+    "requiredStateIds": [
+      "normal",
+      "loading",
+      "empty",
+      "degraded"
+    ],
+    "minimumHitTarget": 36
+  }
 }

@@ -2,31 +2,19 @@
   "schemaVersion": 1,
   "id": "work-focus",
   "name": "工作专注视图",
-  "goal": "提供类似现代 coding agent 的专注视图：中间是当前 Work 的 focus/changes/evidence，右侧只显示必要机械事实。",
+  "goal": "提供类似 Codex 的 macOS 专注工作面：左侧只负责任务/项目导航，中央只处理当前工作和会话，次级信息按需展开。",
   "primaryAction": "send-controller-instruction",
   "constraints": [
-    "原生桌面 agent 工作台，不是网页聊天产品",
-    "当前焦点、变更和证据优先",
-    "计划仅作为可折叠上下文，不显示进度条",
-    "运行时详情可收起",
-    "自动推进任务显示 exact conversation link；切换新会话只能调用 canonical Supervisor migration，客户端不能直接改绑定。"
+    "macOS 系统标题栏拥有窗口 chrome；不在 WebView 重复绘制 traffic lights",
+    "轻量侧栏 + 单主工作区，不使用常驻右侧检查器",
+    "当前工作与绑定会话优先；计划、证据、ID 通过 disclosure 按需查看",
+    "运行时机械事实不占用当前工作主视图",
+    "自动推进任务显示 exact conversation link；切换新会话只能调用 canonical Supervisor migration"
   ],
   "nodes": [
     {
-      "id": "titlebar",
-      "component": "NativeTitlebar",
-      "props": {
-        "title": "交付 MCP 助手与项目",
-        "subtitle": "forge · 工作专注视图",
-        "runtimeState": "正常",
-        "mode": "MCP",
-        "searchPlaceholder": "输入命令或搜索…",
-        "showTrafficLights": true
-      }
-    },
-    {
       "id": "sidebar",
-      "component": "PrimarySidebar",
+      "component": "MacSidebar",
       "props": {
         "active": "项目",
         "assistantLabel": "助手",
@@ -36,16 +24,15 @@
           "Knowledge"
         ],
         "selectedProject": "forge",
-        "bottomItems": [
-          "连接",
-          "运行时"
-        ],
-        "collapsed": true
+        "selectedWork": "work-mcp",
+        "workListPlacement": "sidebar",
+        "runtimePlacement": "sidebar-footer",
+        "collapsed": false
       }
     },
     {
       "id": "work-header",
-      "component": "WorkDetailHeader",
+      "component": "FocusedWorkHeader",
       "props": {
         "title": "交付 MCP 助手与项目",
         "workId": "work-mcp",
@@ -54,17 +41,6 @@
         "controller": "ChatGPT",
         "planTitle": "Forge V3 桌面客户端 · r8",
         "updatedLabel": "实时"
-      }
-    },
-    {
-      "id": "focus",
-      "component": "CurrentFocusCard",
-      "props": {
-        "summary": "实现当前/历史工作图投影，不引入客户端自有图权威。",
-        "activity": "正在读取协议与桌面壳层边界",
-        "controller": "ChatGPT",
-        "startedAt": "08:21",
-        "nextLikelyAction": "应用一致的实现批次"
       }
     },
     {
@@ -81,16 +57,17 @@
         "currentFocus": "MCP 项目工作台",
         "nextActions": [
           "当前/历史投影",
-          "检查器事实",
+          "按需详情",
           "键盘交互优化"
         ],
         "historyCount": 8,
-        "executionProjection": "描述性上下文"
+        "executionProjection": "描述性上下文",
+        "collapsedByDefault": true
       }
     },
     {
       "id": "automatic-continuation",
-      "component": "AutomaticContinuationPanel",
+      "component": "AutomaticContinuationRow",
       "props": {
         "taskId": "forge:repo-forge:work:work-mcp",
         "workId": "work-mcp",
@@ -104,8 +81,24 @@
       },
       "interactionPatternId": "automatic-continuation-inspection",
       "interactions": [
-        { "event": "open_conversation", "actions": [{ "type": "emit_design_action", "actionId": "open-automatic-continuation-conversation" }] },
-        { "event": "switch_conversation", "actions": [{ "type": "emit_design_action", "actionId": "switch-automatic-continuation-conversation" }] }
+        {
+          "event": "open_conversation",
+          "actions": [
+            {
+              "type": "emit_design_action",
+              "actionId": "open-automatic-continuation-conversation"
+            }
+          ]
+        },
+        {
+          "event": "switch_conversation",
+          "actions": [
+            {
+              "type": "emit_design_action",
+              "actionId": "switch-automatic-continuation-conversation"
+            }
+          ]
+        }
       ]
     },
     {
@@ -130,20 +123,8 @@
           "验证回执"
         ],
         "sourceRevision": "候选版本",
-        "compact": false
-      }
-    },
-    {
-      "id": "inspector",
-      "component": "RuntimeInspector",
-      "props": {
-        "runtime": "正常",
-        "recovery": "可用",
-        "controllerConnection": "ChatGPT MCP",
-        "projectConnection": "forge",
-        "worktree": "受管工作树",
-        "processes": "最近 2 个",
-        "detailsCollapsed": true
+        "compact": true,
+        "collapsedByDefault": true
       }
     },
     {
@@ -162,20 +143,61 @@
           "计划",
           "证据"
         ],
-        "shortcut": "⌘↵"
+        "shortcut": "⌘↵",
+        "floatingBottomComposer": true
       },
       "interactionPatternId": "controller-composer",
       "interactions": [
-        { "event": "submit", "actions": [{ "type": "emit_design_action", "actionId": "continue-work" }] }
+        {
+          "event": "submit",
+          "actions": [
+            {
+              "type": "emit_design_action",
+              "actionId": "continue-work"
+            }
+          ]
+        }
       ]
     }
   ],
   "initialStateId": "focused",
   "states": [
-    { "id": "focused", "name": "专注中", "meaning": "所选权威工作已在低干扰工作界面中打开。", "primaryAction": "send-controller-instruction" },
-    { "id": "submitting", "name": "正在提交指令", "meaning": "控制器指令已发送，客户端正在等待权威确认。", "constraints": ["不要根据传输活动推断工作进度。"] },
-    { "id": "degraded", "name": "证据降级", "meaning": "工作身份仍可读取，但部分证据或运行时事实暂不可用。", "primaryAction": "retry-evidence" }
+    {
+      "id": "focused",
+      "name": "专注中",
+      "meaning": "所选权威工作已在低干扰工作界面中打开。",
+      "primaryAction": "send-controller-instruction"
+    },
+    {
+      "id": "submitting",
+      "name": "正在提交指令",
+      "meaning": "控制器指令已发送，客户端正在等待权威确认。",
+      "constraints": [
+        "不要根据传输活动推断工作进度。"
+      ]
+    },
+    {
+      "id": "degraded",
+      "name": "证据降级",
+      "meaning": "工作身份仍可读取，但部分证据或运行时事实暂不可用。",
+      "primaryAction": "retry-evidence"
+    }
   ],
-  "viewport": { "kind": "desktop", "platform": "macos", "preset": "macbook-14", "width": 1440, "height": 960, "safeTop": 0, "safeBottom": 0 },
-  "quality": { "requiredStateIds": ["focused", "submitting", "degraded"], "minimumHitTarget": 36 }
+  "viewport": {
+    "kind": "desktop",
+    "platform": "macos",
+    "preset": "macbook-14",
+    "width": 1440,
+    "height": 960,
+    "safeTop": 0,
+    "safeBottom": 0
+  },
+  "quality": {
+    "requiredStateIds": [
+      "focused",
+      "submitting",
+      "degraded"
+    ],
+    "minimumHitTarget": 36
+  }
 }

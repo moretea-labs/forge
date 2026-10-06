@@ -51,6 +51,44 @@ export interface ProjectPlanProjection {
   requirementId?: string;
 }
 
+export interface RecoveryProbeProjection {
+  id: string;
+  label: string;
+  ok: boolean;
+}
+
+export interface RuntimeRecoveryProjection {
+  recovery: {
+    available: boolean;
+    label: string;
+    detail: string;
+    host?: string;
+    platform?: string;
+    releaseRevision?: string;
+    watchdogDecision?: string;
+    watchdogUpdatedAt?: string;
+  };
+  runtime: {
+    running: boolean;
+    ready: boolean;
+    stale: boolean;
+    label: string;
+    detail: string;
+    pid?: number;
+    releaseId?: string;
+    endpoint?: string;
+    observedAt?: string;
+    reasonCount: number;
+  };
+  diagnostics: {
+    checkedAt?: string;
+    ok: boolean;
+    passed: number;
+    failed: number;
+    probes: RecoveryProbeProjection[];
+  } | null;
+}
+
 export interface ForgeDesktopProjection {
   source: ProjectionSource;
   runtime: {

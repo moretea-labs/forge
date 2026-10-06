@@ -39,6 +39,22 @@ Continuing a selected Work is an explicit user mutation routed through `rh_work(
 
 The shipped desktop UI is Chinese-first. Domain IDs, repository names, user-authored objectives and external product names remain verbatim canonical data, while navigation, labels, states, actions, errors and explanatory copy are rendered in Chinese.
 
+## Runtime and Recovery surface
+
+The Runtime screen must remain usable when Canonical Runtime is unavailable. The native Tauri adapter therefore has a second narrow transport path to the already-authoritative Standalone Recovery Gateway at its configured loopback MCP endpoint. It reads the Recovery configuration and bearer token only inside the native process; Recovery credentials are never projected into the webview.
+
+This is not a fallback Runtime and does not start, stop, repair, or roll back any process directly. Readiness and diagnostics call Recovery's `runtime_status` and `verify_stable_runtime`. Explicit user mutations are limited to named Recovery tools such as `restart_primary_runtime` and `recover_primary_runtime`. Before a mutation, the adapter re-reads `runtime_status` and hydrates the exact host/platform/ControllerHome/Recovery-release/target-Runtime fencing identity exposed by Recovery itself; Standalone Recovery remains the authority that validates or rejects the operation.
+
+No client retry loop or inferred recovery lifecycle is introduced. The UI may own only transient loading/error/confirmation state around one explicit command, then it re-reads Recovery authority after completion.
+
+## macOS presentation model
+
+The macOS client uses the system-owned decorated window. The webview must not draw duplicate traffic-light controls or treat an application toolbar as a synthetic title bar. Window close/minimize/zoom chrome remains owned by macOS/Tauri.
+
+The primary V3 layout is intentionally sparse: one lightweight navigation sidebar and one main work surface. Work selection lives in the sidebar; the main surface is reserved for the selected Work/conversation and its immediate actions. Plan, evidence, IDs, runtime mechanics, and other secondary facts are disclosed on demand rather than occupying a permanent inspector column. Runtime/Recovery is a dedicated main surface rather than a dashboard side panel.
+
+This follows the desktop-agent interaction model of task/session navigation plus a focused work area. It explicitly rejects a three-column web-dashboard composition as the default macOS product architecture.
+
 ## Verification
 
 This foundation is acceptable when:
