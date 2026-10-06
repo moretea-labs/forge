@@ -250,16 +250,55 @@ function WorkView({
           <p>{work.objective}</p>
         </div>
 
+        <div className="fact-strip" aria-label="当前 Forge 事实">
+          <div><span>工作</span><strong>{semanticStateLabel(work.semanticState)} · r{work.revision}</strong></div>
+          <div><span>代码</span><strong>{projection.project?.dirty ? '有未提交修改' : '工作区干净'}</strong></div>
+          <div><span>分支</span><strong>{projection.project?.branch ?? '未知'}</strong></div>
+          <div><span>版本</span><strong className="mono">{projection.project?.sourceRevision ? compactId(projection.project.sourceRevision) : '未知'}</strong></div>
+        </div>
+
+        {work.nextSafeAction && (
+          <div className="next-fact"><span>Forge 下一安全动作</span><p>{work.nextSafeAction}</p></div>
+        )}
+
         <details className="detail-section">
-          <summary>上下文</summary>
+          <summary>工程上下文</summary>
           <div className="detail-grid">
             <div><span>工作</span><strong className="mono">{compactId(work.workId)}</strong></div>
+            <div><span>工作修订</span><strong>r{work.revision}</strong></div>
+            <div><span>父工作</span><strong className="mono">{work.semanticParentWorkId ? compactId(work.semanticParentWorkId) : '无'}</strong></div>
+            <div><span>依赖</span><strong>{work.dependsOnWorkIds.length > 0 ? `${work.dependsOnWorkIds.length} 个` : '无'}</strong></div>
             <div><span>需求</span><strong className="mono">{work.requirementId ? compactId(work.requirementId) : '未绑定'}</strong></div>
             <div><span>计划</span><strong className="mono">{work.planId ? compactId(work.planId) : '未绑定'}</strong></div>
-            <div><span>分支</span><strong>{projection.project?.branch ?? '未知'}</strong></div>
+            <div><span>检出</span><strong>{projection.project?.worktree ?? '未知'}</strong></div>
+            <div><span>更新时间</span><strong>{work.updatedAt ? new Date(work.updatedAt).toLocaleString('zh-CN') : '未知'}</strong></div>
           </div>
-          {projection.plan && <p className="detail-text">{projection.plan.goal}</p>}
+          {work.dependsOnWorkIds.length > 0 && <p className="detail-text">依赖：{work.dependsOnWorkIds.map(compactId).join('、')}</p>}
         </details>
+
+        {projection.requirement && (
+          <details className="detail-section">
+            <summary>需求 · {projection.requirement.title}</summary>
+            <div className="detail-grid">
+              <div><span>状态</span><strong>{projection.requirement.state === 'open' ? '进行中' : projection.requirement.state}</strong></div>
+              <div><span>修订</span><strong>r{projection.requirement.revision}</strong></div>
+            </div>
+            <p className="detail-text">{projection.requirement.outcomeStatement}</p>
+            {projection.requirement.acceptanceCriteria.length > 0 && (
+              <ul className="fact-list">{projection.requirement.acceptanceCriteria.map((criterion) => <li key={criterion}>{criterion}</li>)}</ul>
+            )}
+          </details>
+        )}
+
+        {projection.plan && (
+          <details className="detail-section">
+            <summary>计划 · r{projection.plan.revision}</summary>
+            <p className="detail-text">{projection.plan.goal}</p>
+            {projection.plan.items.length > 0 && (
+              <ul className="fact-list">{projection.plan.items.map((item) => <li key={item.id}>{item.objective}</li>)}</ul>
+            )}
+          </details>
+        )}
 
         <details className="detail-section">
           <summary>结果与证据 {work.resultRefs.length > 0 ? `· ${work.resultRefs.length}` : ''}</summary>

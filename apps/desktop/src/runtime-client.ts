@@ -4,6 +4,7 @@ import type {
   ForgeDesktopProjection,
   ProjectListItemProjection,
   ProjectPlanProjection,
+  ProjectRequirementProjection,
   WorkGraphEdgeProjection,
   WorkGraphNodeProjection,
   WorkSemanticState,
@@ -49,11 +50,31 @@ interface RawPlanSummary {
   requirementId?: string;
   goal: string;
   status: string;
+  updatedAt?: string;
+  items?: Array<{ id: string; objective: string }>;
+}
+
+interface RawRequirement {
+  requirementId: string;
+  revision: number;
+  title: string;
+  outcomeStatement: string;
+  state: string;
+  acceptanceCriteria?: string[];
+  updatedAt?: string;
+}
+
+interface RawRequirementDetailResult {
+  data?: { requirement?: RawRequirement };
+}
+
+interface RawPlanDetailResult {
+  data?: { plan?: RawPlanSummary };
 }
 
 interface RawProjectOverviewResult {
   data?: {
-    repositoryState?: { branch?: string; head?: string | null };
+    repositoryState?: { branch?: string; head?: string | null; dirty?: boolean };
     controllerSnapshot?: {
       activeWork?: RawWorkSummary[];
       activePlans?: RawPlanSummary[];
@@ -63,6 +84,7 @@ interface RawProjectOverviewResult {
 
 interface RawWorkView {
   workId: string;
+  revision?: number;
   objective: string;
   state: WorkSemanticState;
   semanticParentWorkId?: string;
@@ -70,6 +92,7 @@ interface RawWorkView {
   requirementId?: string;
   planId?: string;
   resultRefs?: string[];
+  updatedAt?: string;
 }
 
 interface RawWorkDetailResult {
@@ -186,7 +209,7 @@ export async function readAutomaticContinuations(): Promise<AutomaticContinuatio
 export async function readProjectWorkspace(
   project: ProjectListItemProjection,
   selectedWorkId?: string,
-): Promise<Pick<ForgeDesktopProjection, 'project' | 'workGraph' | 'work' | 'plan'>> {
+): Promise<Pick<ForgeDesktopProjection, 'project' | 'workGraph' | 'work' | 'requirement' | 'plan'>> {
   try {
     const overview = await invoke<RawProjectOverviewResult>('read_project_overview', { repoId: project.repoId });
     const repositoryState = overview.data?.repositoryState;
@@ -200,21 +223,42 @@ export async function readProjectWorkspace(
     }
 
     const selectedWork = detail?.data?.work;
+    const selectedSummary = selectedWork ? activeWork.find((work) => work.workId === selectedWork.workId) : undefined;
     const graph = detail?.data?.objectiveGraph?.current;
     const nodes = new Map<string, WorkGraphNodeProjection>();
     for (const work of activeWork) nodes.set(work.workId, graphNode(work));
     for (const work of graph?.nodes ?? []) nodes.set(work.workId, graphNode(work));
     if (selectedWork) nodes.set(selectedWork.workId, graphNode(selectedWork));
 
-    const selectedPlan = selectedWork?.planId
+    const [requirementDetail, planDetail] = await Promise.all([
+      selectedWork?.requirementId
+        ? invoke<RawRequirementDetailResult>('read_requirement_detail', { repoId: project.repoId, requirementId: selectedWork.requirementId })
+        : Promise.resolve(undefined),
+      selectedWork?.planId
+        ? invoke<RawPlanDetailResult>('read_plan_detail', { repoId: project.repoId, planId: selectedWork.planId })
+        : Promise.resolve(undefined),
+    ]);
+    const rawRequirement = requirementDetail?.data?.requirement;
+    const requirement: ProjectRequirementProjection | null = rawRequirement ? {
+      requirementId: rawRequirement.requirementId,
+      revision: rawRequirement.revision,
+      title: rawRequirement.title,
+      outcomeStatement: rawRequirement.outcomeStatement,
+      state: rawRequirement.state,
+      acceptanceCriteria: rawRequirement.acceptanceCriteria ?? [],
+      ...(rawRequirement.updatedAt ? { updatedAt: rawRequirement.updatedAt } : {}),
+    } : null;
+    const selectedPlan = planDetail?.data?.plan ?? (selectedWork?.planId
       ? activePlans.find((plan) => plan.planId === selectedWork.planId)
-      : undefined;
+      : undefined);
     const plan: ProjectPlanProjection | null = selectedPlan ? {
       planId: selectedPlan.planId,
       revision: selectedPlan.revision,
       goal: selectedPlan.goal,
       status: selectedPlan.status,
       ...(selectedPlan.requirementId ? { requirementId: selectedPlan.requirementId } : {}),
+      ...(selectedPlan.updatedAt ? { updatedAt: selectedPlan.updatedAt } : {}),
+      items: selectedPlan.items ?? [],
     } : null;
 
     return {
@@ -225,6 +269,7 @@ export async function readProjectWorkspace(
         branch: repositoryState?.branch ?? project.defaultBranch ?? '未知分支',
         worktree: project.checkoutId ? '已选择检出' : '未选择检出',
         sourceRevision: repositoryState?.head ?? '未知版本',
+        dirty: Boolean(repositoryState?.dirty),
       },
       workGraph: {
         nodes: [...nodes.values()],
@@ -233,15 +278,21 @@ export async function readProjectWorkspace(
       },
       work: selectedWork ? {
         workId: selectedWork.workId,
+        revision: selectedWork.revision ?? 1,
         title: selectedWork.objective,
         objective: selectedWork.objective,
         semanticState: selectedWork.state,
         relationLabel: selectedWork.semanticParentWorkId ? '子工作' : '当前工作',
         currentFocus: selectedWork.objective,
+        ...(selectedSummary?.nextSafeAction ? { nextSafeAction: selectedSummary.nextSafeAction } : {}),
+        ...(selectedWork.semanticParentWorkId ? { semanticParentWorkId: selectedWork.semanticParentWorkId } : {}),
+        dependsOnWorkIds: selectedWork.dependsOnWorkIds ?? [],
         ...(selectedWork.requirementId ? { requirementId: selectedWork.requirementId } : {}),
         ...(selectedWork.planId ? { planId: selectedWork.planId } : {}),
+        ...(selectedWork.updatedAt ? { updatedAt: selectedWork.updatedAt } : {}),
         resultRefs: selectedWork.resultRefs ?? [],
       } : null,
+      requirement,
       plan,
     };
   } catch (error) {

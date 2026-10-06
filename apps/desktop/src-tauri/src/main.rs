@@ -302,6 +302,34 @@ async fn read_work_detail(repo_id: String, work_id: String) -> Result<Value, Str
 }
 
 #[tauri::command]
+async fn read_requirement_detail(repo_id: String, requirement_id: String) -> Result<Value, String> {
+    if repo_id.trim().is_empty() || requirement_id.trim().is_empty() {
+        return Err("FORGE_DESKTOP_REQUIREMENT_DETAIL_ARGUMENT_REQUIRED".to_string());
+    }
+    call_runtime_tool("rh_work", json!({
+        "repo_id": repo_id,
+        "operation": "requirement_get",
+        "requirement_id": requirement_id,
+        "detail_level": "detail",
+        "request_id": request_id("requirement-detail")
+    })).await
+}
+
+#[tauri::command]
+async fn read_plan_detail(repo_id: String, plan_id: String) -> Result<Value, String> {
+    if repo_id.trim().is_empty() || plan_id.trim().is_empty() {
+        return Err("FORGE_DESKTOP_PLAN_DETAIL_ARGUMENT_REQUIRED".to_string());
+    }
+    call_runtime_tool("rh_work", json!({
+        "repo_id": repo_id,
+        "operation": "plan_get",
+        "plan_id": plan_id,
+        "detail_level": "detail",
+        "request_id": request_id("plan-detail")
+    })).await
+}
+
+#[tauri::command]
 async fn continue_work(repo_id: String, work_id: String, prompt: String) -> Result<Value, String> {
     if repo_id.trim().is_empty() || work_id.trim().is_empty() || prompt.trim().is_empty() {
         return Err("FORGE_DESKTOP_CONTINUE_WORK_ARGUMENT_REQUIRED".to_string());
@@ -348,6 +376,8 @@ fn main() {
             read_projects,
             read_project_overview,
             read_work_detail,
+            read_requirement_detail,
+            read_plan_detail,
             continue_work,
             read_automatic_continuations,
             switch_automatic_continuation_conversation

@@ -159,8 +159,14 @@ a { color: inherit; }
 .compact-details dt { color: #9c968f; font-size: 9px; }
 .compact-details dd { margin: 0; font-size: 9px; overflow-wrap: anywhere; }
 
-.work-body-copy { color: #4f4b45; font-size: 12px; line-height: 1.7; margin-bottom: 28px; }
+.work-body-copy { color: #4f4b45; font-size: 12px; line-height: 1.7; margin-bottom: 24px; }
 .work-body-copy p { margin: 0; }
+.fact-strip { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 18px; padding: 12px 0 18px; border-top: 1px solid rgba(74, 67, 59, .09); }
+.fact-strip div { display: grid; gap: 3px; min-width: 0; }
+.fact-strip span, .next-fact span { color: #a09a92; font-size: 9px; }
+.fact-strip strong { min-width: 0; color: #5e5952; font-size: 10px; font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.next-fact { padding: 0 0 16px; }
+.next-fact p { margin: 4px 0 0; color: #5f5952; font-size: 10px; line-height: 1.55; }
 .detail-section { padding: 14px 0; }
 .detail-section:last-of-type { border-bottom: 1px solid rgba(74, 67, 59, .09); }
 .detail-section[open] summary { margin-bottom: 13px; color: #555049; }
@@ -169,6 +175,8 @@ a { color: inherit; }
 .detail-grid span { color: #a09a92; font-size: 9px; }
 .detail-grid strong { color: #5e5952; font-size: 10px; font-weight: 540; overflow-wrap: anywhere; }
 .detail-text { margin: 11px 0 0; color: #777169; font-size: 10px; line-height: 1.6; }
+.fact-list { margin: 10px 0 0; padding-left: 18px; color: #6d675f; font-size: 10px; line-height: 1.6; }
+.fact-list li + li { margin-top: 4px; }
 .result-list { display: grid; gap: 6px; }
 .result-list code { padding: 7px 8px; border-radius: 6px; background: #f1efeb; color: #716b64; font-size: 9px; overflow-wrap: anywhere; }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
@@ -220,4 +228,5 @@ a { color: inherit; }
   .app-shell { grid-template-columns: 206px minmax(0, 1fr); }
   .composer-wrap { left: 206px; }
   .content-column { width: min(720px, calc(100% - 48px)); }
+  .fact-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }

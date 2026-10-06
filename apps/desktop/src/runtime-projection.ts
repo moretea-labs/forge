@@ -43,12 +43,24 @@ export interface WorkGraphEdgeProjection {
   toWorkId: string;
 }
 
+export interface ProjectRequirementProjection {
+  requirementId: string;
+  revision: number;
+  title: string;
+  outcomeStatement: string;
+  state: string;
+  acceptanceCriteria: string[];
+  updatedAt?: string;
+}
+
 export interface ProjectPlanProjection {
   planId: string;
   revision: number;
   goal: string;
   status: string;
   requirementId?: string;
+  updatedAt?: string;
+  items: Array<{ id: string; objective: string }>;
 }
 
 export interface RecoveryProbeProjection {
@@ -104,6 +116,7 @@ export interface ForgeDesktopProjection {
     branch: string;
     worktree: string;
     sourceRevision: string;
+    dirty: boolean;
   } | null;
   workGraph: {
     nodes: WorkGraphNodeProjection[];
@@ -112,15 +125,21 @@ export interface ForgeDesktopProjection {
   };
   work: {
     workId: string;
+    revision: number;
     title: string;
     objective: string;
     semanticState: WorkSemanticState;
     relationLabel?: string;
     currentFocus?: string;
+    nextSafeAction?: string;
+    semanticParentWorkId?: string;
+    dependsOnWorkIds: string[];
     requirementId?: string;
     planId?: string;
+    updatedAt?: string;
     resultRefs: string[];
   } | null;
+  requirement: ProjectRequirementProjection | null;
   plan: ProjectPlanProjection | null;
   automaticContinuations: AutomaticContinuationTaskProjection[];
 }
@@ -140,6 +159,7 @@ export const disconnectedProjection = Object.freeze<ForgeDesktopProjection>({
   project: null,
   workGraph: { nodes: [], edges: [], truncated: false },
   work: null,
+  requirement: null,
   plan: null,
   automaticContinuations: [],
 });
@@ -166,6 +186,7 @@ export const designPreviewProjection = Object.freeze<ForgeDesktopProjection>({
     branch: 'main',
     worktree: '主检出',
     sourceRevision: '设计预览',
+    dirty: false,
   },
   workGraph: {
     nodes: [
@@ -184,14 +205,28 @@ export const designPreviewProjection = Object.freeze<ForgeDesktopProjection>({
   },
   work: {
     workId: 'work-mcp',
+    revision: 3,
     title: '接通项目、Work 与自动推进的 Runtime 投影',
     objective: '围绕 Forge canonical projection 完成项目工作台，不在客户端复制 Work 生命周期或图权威。',
     semanticState: 'open',
     relationLabel: '当前工作',
     currentFocus: '项目列表、Work 选择、依赖关系与会话继续全部通过现有 MCP 权威读取和执行。',
+    nextSafeAction: '继续把 Forge canonical facts 投影到当前工作面。',
+    semanticParentWorkId: 'work-ia',
+    dependsOnWorkIds: ['work-foundation'],
     requirementId: 'REQ-forge-v3-desktop-client-20260930',
     planId: 'PLAN-forge-v3-desktop-client-20260930-r1',
+    updatedAt: '2026-10-06T03:40:00.000Z',
     resultRefs: ['path:apps/desktop', 'adr:forge-v3-desktop-client-boundary'],
+  },
+  requirement: {
+    requirementId: 'REQ-forge-v3-desktop-client-20260930',
+    revision: 1,
+    title: 'Forge V3 Desktop Client',
+    outcomeStatement: '交付第一方 macOS Forge 客户端，同时保持 Forge Runtime 与语义事实的单一权威。',
+    state: 'open',
+    acceptanceCriteria: ['macOS 日间模式', '客户端不复制 Forge 语义权威'],
+    updatedAt: '2026-09-30T11:38:34.129Z',
   },
   plan: {
     planId: 'PLAN-forge-v3-desktop-client-20260930-r1',
@@ -199,6 +234,11 @@ export const designPreviewProjection = Object.freeze<ForgeDesktopProjection>({
     goal: '交付 Forge V3 桌面客户端，并保持 Runtime / Controller 单一权威。',
     status: 'draft',
     requirementId: 'REQ-forge-v3-desktop-client-20260930',
+    updatedAt: '2026-10-04T11:45:31.464Z',
+    items: [
+      { id: 'v3-4-runtime-recovery-bootstrap', objective: '完成运行时与恢复纵向闭环' },
+      { id: 'v3-5-mcp-assistant-projects', objective: '完成 Assistant、Projects 与 Work 的真实事实投影' },
+    ],
   },
   automaticContinuations: [
     {

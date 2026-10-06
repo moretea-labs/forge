@@ -7,7 +7,8 @@
   "constraints": [
     "macOS 系统标题栏拥有窗口 chrome；不在 WebView 重复绘制 traffic lights",
     "轻量侧栏 + 单主工作区，不使用常驻右侧检查器",
-    "当前工作与绑定会话优先；计划、证据、ID 通过 disclosure 按需查看",
+    "当前工作与绑定会话优先；关键 Forge 事实以紧凑文本投影，计划、证据、ID 通过 disclosure 按需查看",
+    "关键事实只能来自 canonical Runtime/Supervisor/Requirement/Plan/Work/Repository 投影，客户端不得推断或复制 authority",
     "运行时机械事实不占用当前工作主视图",
     "自动推进任务显示 exact conversation link；切换新会话只能调用 canonical Supervisor migration"
   ],
@@ -41,6 +42,22 @@
         "controller": "ChatGPT",
         "planTitle": "Forge V3 桌面客户端 · r8",
         "updatedLabel": "实时"
+      }
+    },
+    {
+      "id": "forge-facts",
+      "component": "ForgeFactStrip",
+      "props": {
+        "facts": [
+          "Work semantic state + semantic revision",
+          "Repository dirty/clean",
+          "Git branch + source revision",
+          "Work nextSafeAction when canonical Runtime provides it"
+        ],
+        "requirementDisclosure": "Requirement title/outcome/acceptance criteria from rh_work(requirement_get)",
+        "planDisclosure": "Plan goal/revision/items from rh_work(plan_get)",
+        "workDisclosure": "Work parent/dependencies/update time from rh_work(get)",
+        "clientInference": false
       }
     },
     {
