@@ -209,13 +209,21 @@ export function forgeWorkflowSupervisorLifecycleHooks(controllerHome: string): W
   return {
     canonicalObjectiveForTask: (task) => {
       const repoId = workflowSupervisorContractText(task, 'repo_id');
-      const workId = repoId ? workflowSupervisorOriginWorkId(task, repoId) : undefined;
+      const requirementId = workflowSupervisorContractText(task, 'requirement_id');
       const taskControllerHome = workflowSupervisorContractText(task, 'controller_home');
-      if (!repoId || !workId || (taskControllerHome && taskControllerHome !== controllerHome)) return undefined;
+      if (!repoId || (taskControllerHome && taskControllerHome !== controllerHome)) return undefined;
+      // Requirement is the durable Goal root. Its outcome is therefore the
+      // canonical Supervisor goal; a Work objective is lower-layer execution
+      // context and must not become a permanent outer-turn instruction surface.
+      if (requirementId) {
+        const outcome = readRequirement({ controllerHome }, requirementId)?.value.outcomeStatement?.trim();
+        if (outcome) return outcome;
+      }
+      const workId = workflowSupervisorOriginWorkId(task, repoId);
+      if (!workId) return undefined;
       const work = getWorkContract({ controllerHome, repoId }, workId);
-      // A persisted Supervisor task/effect chain can outlive a retired Work.
-      // Keep its recorded objective for observation/reconciliation; absence must
-      // never manufacture a replacement Work or turn into a dispatch exception.
+      // Legacy / independent Work without Requirement authority keeps the
+      // existing fallback. Absence never manufactures a replacement Work.
       return work?.objective;
     },
     effectDispatchEvidence: ({ task }) => {

@@ -8,7 +8,7 @@ import { ensureControllerHome, SEMANTIC_SCOPE_KEY } from '../../src/cli/reposito
 import { registerRepository } from '../../src/cli/repositories/registry';
 import { acknowledgeControllerRoundClaim, beginInitialControllerRoundDispatch, claimStalledControllerRoundRelays, controllerRoundProviderEffectId, finishControllerRoundRelayDispatch, getControllerRoundRelay, getRequirementControllerRoundRelay, recoverControllerRoundRelayAuthority, submitControllerRoundDisposition } from '../../packages/kernel/controller/api/index';
 import { createWorkContract, reviseWorkSemanticContext } from '../../packages/kernel/work/api/index';
-import { createRequirement, updateRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
+import { createRequirement, reviseRequirementSemantic, updateRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
 import { bindCurrentWorkflowSupervisorConversationForWork, ensureWorkflowSupervisorEnrollmentForWork, forgeWorkflowSupervisorLifecycleHooks, inheritWorkflowSupervisorConversationBinding, workflowSupervisorBoundaryForWork, workflowSupervisorLowerLayerReadyForWork } from '../../src/runtime/root/workflow-supervisor-composition';
 import { WorkflowSupervisorControlPlane } from '../../supervisor/control-plane';
 import { WorkflowSupervisorNativeBrowserAdapter } from '../../supervisor/native-browser-adapter';
@@ -140,6 +140,53 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     expect(recovery.prompt).not.toContain('Current canonical objective v1.');
     expect(recovery.prompt).not.toContain('Stale registration objective.');
     store.close();
+  });
+
+  test('uses the Requirement outcome as canonical Supervisor goal instead of the Work execution objective', () => {
+    const fx = fixture();
+    const requirementId = 'REQ-supervisor-outcome-authority';
+    const workId = 'work-supervisor-outcome-authority';
+    createRequirement({ controllerHome: fx.controllerHome }, {
+      requirementId,
+      title: 'Supervisor outcome authority',
+      outcomeStatement: 'Deliver the durable requirement outcome v1.',
+    });
+    createWorkContract(fx.store, {
+      workId,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      requirementId,
+      objective: 'Inspect only file A and stop after one check.',
+      acceptanceCriteria: ['Requirement outcome remains the outer-turn goal'],
+      allowedPaths: [], forbiddenPaths: [], checks: [],
+      constraints: { workspaceMode: 'current' },
+      requestedBy: 'chatgpt', dispatchState: 'running',
+    });
+    const hooks = forgeWorkflowSupervisorLifecycleHooks(fx.controllerHome);
+    const task = {
+      taskId: 'task-supervisor-outcome-authority',
+      conversationId: '44444444-5555-6666-7777-888888888888',
+      conversationUrl: 'https://chatgpt.com/c/44444444-5555-6666-7777-888888888888',
+      objective: 'Historical task registration objective.',
+      completionContract: {
+        controller_home: fx.controllerHome,
+        repo_id: fx.repository.repoId,
+        requirement_id: requirementId,
+        work_id: workId,
+      },
+      continuationPolicy: { kind: 'forge_goal_outer_turn' },
+      userBlockerPolicy: {},
+      createdAt: '2026-01-01T00:00:00.000Z',
+    };
+
+    expect(hooks.canonicalObjectiveForTask?.(task)).toBe('Deliver the durable requirement outcome v1.');
+    expect(hooks.canonicalObjectiveForTask?.(task)).not.toBe('Inspect only file A and stop after one check.');
+
+    reviseRequirementSemantic({ controllerHome: fx.controllerHome }, requirementId, {
+      expectedRevision: 1,
+      outcomeStatement: 'Deliver the durable requirement outcome v2.',
+    });
+    expect(hooks.canonicalObjectiveForTask?.(task)).toBe('Deliver the durable requirement outcome v2.');
   });
 
   test('derives standalone project scope from Supervisor-owned Controller Home', () => {
