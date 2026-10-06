@@ -393,6 +393,26 @@ async fn switch_automatic_continuation_conversation(
     })).await
 }
 
+#[tauri::command]
+async fn read_connection_status() -> Result<Value, String> {
+    call_runtime_tool("capability_execute", json!({
+        "capability_id": "controller.connection",
+        "action": "get",
+        "arguments": {},
+        "request_id": request_id("connection-status")
+    })).await
+}
+
+#[tauri::command]
+async fn repair_connection() -> Result<Value, String> {
+    call_runtime_tool("capability_execute", json!({
+        "capability_id": "controller.connection",
+        "action": "repair_connector",
+        "arguments": {},
+        "request_id": request_id("connection-repair")
+    })).await
+}
+
 fn main() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
@@ -409,6 +429,8 @@ fn main() {
             read_plan_detail,
             continue_work,
             read_automatic_continuations,
+            read_connection_status,
+            repair_connection,
             switch_automatic_continuation_conversation
         ])
         .run(tauri::generate_context!())

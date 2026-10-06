@@ -3,6 +3,7 @@ import {
   designPreviewProjection,
   disconnectedProjection,
   type AutomaticContinuationTaskProjection,
+  type ControllerConnectionProjection,
   type ForgeDesktopProjection,
   type ProjectListItemProjection,
   type RuntimeRecoveryProjection,
@@ -12,8 +13,10 @@ import {
 import {
   continueWork,
   readAutomaticContinuations,
+  readConnectionStatus,
   readProjects,
   readProjectWorkspace,
+  repairConnection,
   switchAutomaticContinuationConversation,
   tauriRuntimeAvailable,
 } from './runtime-client';
@@ -518,17 +521,29 @@ function RuntimeView({
   loading,
   error,
   action,
+  connection,
+  connectionLoading,
+  connectionError,
+  connectionAction,
   onRefresh,
   onDiagnose,
   onRestart,
+  onRefreshConnection,
+  onRepairConnection,
 }: {
   projection: RuntimeRecoveryProjection | null;
   loading: boolean;
   error: string | null;
   action: 'diagnose' | 'restart' | null;
+  connection: ControllerConnectionProjection | null;
+  connectionLoading: boolean;
+  connectionError: string | null;
+  connectionAction: 'repair' | null;
   onRefresh: () => Promise<void>;
   onDiagnose: () => Promise<void>;
   onRestart: () => Promise<void>;
+  onRefreshConnection: () => Promise<void>;
+  onRepairConnection: () => Promise<void>;
 }) {
   const disabled = loading || action !== null || !projection?.recovery.available;
   return (
@@ -556,6 +571,49 @@ function RuntimeView({
             <button className="plain-action" type="button" disabled={disabled} onClick={() => void onRestart()}>{action === 'restart' ? '重启中…' : '重启运行时'}</button>
           </div>
         </section>
+
+        {connectionError && <div className="inline-error standalone-error">连接读取失败：{connectionError}</div>}
+
+        <section className="runtime-summary" aria-label="Forge 连接">
+          <div className="runtime-primary-row">
+            <span className={`health-dot ${connection?.ready ? 'connected' : connection?.configured ? 'degraded' : 'not_connected'}`} />
+            <div>
+              <strong>{connection?.ready ? '控制器连接已就绪' : connection?.configured ? '控制器连接需要处理' : connectionLoading ? '正在读取连接状态' : '连接尚未配置'}</strong>
+              <p>{connection?.controller.detail ?? '连接状态来自 Forge setup authority；客户端不保存配置副本。'}</p>
+            </div>
+          </div>
+          <div className="runtime-actions">
+            <button className="plain-action" type="button" disabled={connectionLoading || connectionAction !== null} onClick={() => void onRefreshConnection()}>刷新连接</button>
+            {connection?.repair.available && (
+              <button className="plain-action" type="button" disabled={connectionLoading || connectionAction !== null} onClick={() => void onRepairConnection()}>
+                {connectionAction === 'repair' ? '修复中…' : connection.repair.label}
+              </button>
+            )}
+          </div>
+        </section>
+
+        {connection && (
+          <details className="detail-section" open>
+            <summary>连接详情</summary>
+            <div className="detail-grid">
+              <div><span>主控制器</span><strong>{connection.profile?.primaryController ?? '未配置'}</strong></div>
+              <div><span>控制器</span><strong>{connection.profile?.controllers.join('、') || '未配置'}</strong></div>
+              <div><span>远程传输</span><strong>{connection.tunnel.provider}</strong></div>
+              <div><span>总体状态</span><strong>{connection.ready ? '已就绪' : '需要处理'}</strong></div>
+            </div>
+            <div className="diagnostic-list simple-diagnostics">
+              <div className="diagnostic-item">
+                <span>{connection.controller.title}</span>
+                <strong className={connection.controller.ready ? 'diagnostic-state pass' : 'diagnostic-state fail'}>{connection.controller.ready ? '就绪' : '需处理'}</strong>
+              </div>
+              <div className="diagnostic-item">
+                <span>{connection.tunnel.title}</span>
+                <strong className={connection.tunnel.ready ? 'diagnostic-state pass' : 'diagnostic-state fail'}>{connection.tunnel.ready ? '就绪' : '需处理'}</strong>
+              </div>
+            </div>
+            {!connection.ready && <p className="detail-text">{connection.controller.ready ? connection.tunnel.detail : connection.controller.detail}</p>}
+          </details>
+        )}
 
         <details className="detail-section" open>
           <summary>状态详情</summary>
@@ -613,6 +671,10 @@ export function App() {
   const [recoveryLoading, setRecoveryLoading] = useState(false);
   const [recoveryError, setRecoveryError] = useState<string | null>(null);
   const [recoveryAction, setRecoveryAction] = useState<'diagnose' | 'restart' | null>(null);
+  const [connectionProjection, setConnectionProjection] = useState<ControllerConnectionProjection | null>(null);
+  const [connectionLoading, setConnectionLoading] = useState(false);
+  const [connectionError, setConnectionError] = useState<string | null>(null);
+  const [connectionAction, setConnectionAction] = useState<'repair' | null>(null);
 
   const refreshRecovery = useCallback(async () => {
     if (preview || !tauriRuntimeAvailable()) return;
@@ -626,6 +688,20 @@ export function App() {
       setRecoveryError(message);
     } finally {
       setRecoveryLoading(false);
+    }
+  }, [preview]);
+
+  const refreshConnection = useCallback(async () => {
+    if (preview || !tauriRuntimeAvailable()) return;
+    setConnectionLoading(true);
+    setConnectionError(null);
+    try {
+      setConnectionProjection(await readConnectionStatus());
+    } catch (cause) {
+      setConnectionProjection(null);
+      setConnectionError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setConnectionLoading(false);
     }
   }, [preview]);
 
@@ -686,9 +762,9 @@ export function App() {
         runtime: { status: 'degraded', label: '运行时不可用', detail: cause instanceof Error ? cause.message : String(cause) },
       });
       setActiveView('runtime');
-      void refreshRecovery();
+      void Promise.all([refreshRecovery(), refreshConnection()]);
     }
-  }, [preview, refreshRecovery]);
+  }, [preview, refreshConnection, refreshRecovery]);
 
   useEffect(() => { void bootstrapRuntime(); }, [bootstrapRuntime]);
 
@@ -725,8 +801,21 @@ export function App() {
 
   const handleOpenRuntime = useCallback(async () => {
     setActiveView('runtime');
-    await refreshRecovery();
-  }, [refreshRecovery]);
+    await Promise.all([refreshRecovery(), refreshConnection()]);
+  }, [refreshConnection, refreshRecovery]);
+
+  const handleRepairConnection = useCallback(async () => {
+    setConnectionAction('repair');
+    setConnectionError(null);
+    try {
+      setConnectionProjection(await repairConnection());
+    } catch (cause) {
+      setConnectionError(cause instanceof Error ? cause.message : String(cause));
+      await refreshConnection();
+    } finally {
+      setConnectionAction(null);
+    }
+  }, [refreshConnection]);
 
   const handleDiagnose = useCallback(async () => {
     setRecoveryAction('diagnose');
@@ -789,9 +878,15 @@ export function App() {
           loading={recoveryLoading}
           error={recoveryError}
           action={recoveryAction}
+          connection={connectionProjection}
+          connectionLoading={connectionLoading}
+          connectionError={connectionError}
+          connectionAction={connectionAction}
           onRefresh={refreshRecovery}
           onDiagnose={handleDiagnose}
           onRestart={handleRestartRuntime}
+          onRefreshConnection={refreshConnection}
+          onRepairConnection={handleRepairConnection}
         />
       ) : (
         <WorkView

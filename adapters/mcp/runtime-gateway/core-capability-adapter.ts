@@ -17,6 +17,7 @@ import {
 } from '../../../packages/kernel/controller/api/index';
 import { recoverControllerAuthority } from '../../../src/runtime/control-plane/execution/controller-authority-recovery';
 import { authenticatedFacadeControllerIdentity, runtimeIdentitySnapshot } from './controller-authority-adapter';
+import { readControllerConnectionSnapshot, repairControllerConnection } from '../../../src/runtime/control-plane/facade/controller-connection';
 
 function object(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
@@ -34,6 +35,11 @@ export async function callCoreCapabilityAdapter(
   const input = object(args.arguments);
 
   try {
+    if (capabilityId === 'controller.connection') {
+      if (action === 'get') return result({ ...readControllerConnectionSnapshot(ctx.controllerHome) });
+      if (action === 'repair_connector') return result(repairControllerConnection(ctx.controllerHome));
+      return result({ error: { code: 'CORE_CAPABILITY_ACTION_UNSUPPORTED', message: `Unsupported controller.connection action: ${action || '<empty>'}` } }, true);
+    }
     if (capabilityId === 'controller.workflow_supervisor') {
       const forwarded = await callWorkflowSupervisorAdapter(ctx, 'supervisor_task', {
         ...input,

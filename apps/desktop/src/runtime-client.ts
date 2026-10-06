@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import type {
   AutomaticContinuationTaskProjection,
+  ControllerConnectionProjection,
   ForgeDesktopProjection,
   ProjectListItemProjection,
   ProjectPlanProjection,
@@ -206,6 +207,24 @@ function graphNode(work: RawWorkView): WorkGraphNodeProjection {
     ...(work.semanticParentWorkId ? { semanticParentWorkId: work.semanticParentWorkId } : {}),
     dependsOnWorkIds: work.dependsOnWorkIds ?? [],
   };
+}
+
+export async function readConnectionStatus(): Promise<ControllerConnectionProjection> {
+  try {
+    return await invoke<ControllerConnectionProjection>('read_connection_status');
+  } catch (error) {
+    throw localizeRuntimeError(error);
+  }
+}
+
+export async function repairConnection(): Promise<ControllerConnectionProjection> {
+  try {
+    const result = await invoke<{ connection?: ControllerConnectionProjection }>('repair_connection');
+    if (!result.connection) throw new Error('FORGE_DESKTOP_CONNECTION_RESULT_INVALID');
+    return result.connection;
+  } catch (error) {
+    throw localizeRuntimeError(error);
+  }
 }
 
 export async function readProjects(): Promise<ProjectCatalogProjection> {

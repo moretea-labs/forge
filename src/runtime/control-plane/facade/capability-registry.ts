@@ -39,6 +39,16 @@ const CORE_CAPABILITIES: CapabilityDescriptor[] = [
     summary: 'Read bounded controller, queue, worker, projection, plugin, and readiness status.',
   },
   {
+    capabilityId: 'controller.connection',
+    domain: 'controller',
+    group: 'controller',
+    operationClass: 'execute',
+    risk: 'workspace_write',
+    exposedVia: 'capability_execute',
+    schemaExposure: 'stable_static',
+    summary: 'Read product-safe controller and tunnel connection state, and refresh the existing Forge Connector through setup authority without creating another configuration owner.',
+  },
+  {
     capabilityId: 'repository.context',
     domain: 'repository',
     group: 'repository-core',
@@ -339,6 +349,24 @@ export function summarizeCapabilityGroups(manifests: readonly AssistantPluginMan
 }
 
 export function getCoreCapabilityExecutionSchema(capabilityId: string): Record<string, unknown> | undefined {
+  if (capabilityId === 'controller.connection') {
+    return {
+      capabilityId,
+      executeWith: 'capability_execute',
+      actions: {
+        get: {
+          readOnly: true,
+          risk: 'readonly',
+          argumentsSchema: { type: 'object', additionalProperties: false, properties: {} },
+        },
+        repair_connector: {
+          readOnly: false,
+          risk: 'workspace_write',
+          argumentsSchema: { type: 'object', additionalProperties: false, properties: {} },
+        },
+      },
+    };
+  }
   if (capabilityId === 'controller.round_recovery') {
     return {
       capabilityId,

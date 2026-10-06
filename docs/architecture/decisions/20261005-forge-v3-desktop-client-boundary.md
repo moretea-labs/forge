@@ -30,7 +30,7 @@ The initial macOS shell exposes three first-class surfaces: Assistant, Projects/
 
 The desktop shell reaches Canonical Runtime through its existing loopback MCP HTTP transport. The Tauri process resolves the installed Controller Home and Runtime service configuration, reads the Runtime bearer token only inside the native process, and issues stateless MCP `tools/call` requests. The token is never projected into the webview. Desktop mutations therefore still enter through `capability_execute`; the current automatic-continuation conversation switch calls `controller.workflow_supervisor.switch_to_fresh_conversation` and preserves the Supervisor CAS/effect fences.
 
-The bridge is intentionally typed and narrow. It exposes only the product facts/actions needed by the current macOS surfaces: Repository Registry projection, bounded repository/runtime status, selected Work detail, Requirement detail, Plan detail, pending UserRequest projection, automatic-continuation projection, explicit Work continuation, and explicit fresh-conversation migration. Each command forwards to an existing Forge facade/tool; it does not expose Controller Home persistence, a generic database API, or a client-owned retry/session engine.
+The bridge is intentionally typed and narrow. It exposes only the product facts/actions needed by the current macOS surfaces: Repository Registry projection, bounded repository/runtime status, selected Work detail, Requirement detail, Plan detail, pending UserRequest projection, automatic-continuation projection, controller/tunnel connection projection, explicit Work continuation, explicit fresh-conversation migration, and bounded connection repair. Each command forwards to an existing Forge facade/tool; it does not expose Controller Home persistence, a generic database API, or a client-owned retry/session engine.
 
 ## Project Workbench projection
 
@@ -47,6 +47,8 @@ The Runtime screen must remain usable when Canonical Runtime is unavailable. The
 This is not a fallback Runtime and does not start, stop, repair, or roll back any process directly. Readiness and diagnostics call Recovery's `runtime_status` and `verify_stable_runtime`. Explicit user mutations are limited to named Recovery tools such as `restart_primary_runtime` and `recover_primary_runtime`. Before a mutation, the adapter re-reads `runtime_status` and hydrates the exact host/platform/ControllerHome/Recovery-release/target-Runtime fencing identity exposed by Recovery itself; Standalone Recovery remains the authority that validates or rejects the operation.
 
 No client retry loop or inferred recovery lifecycle is introduced. The UI may own only transient loading/error/confirmation state around one explicit command, then it re-reads Recovery authority after completion.
+
+Controller and remote-transport setup is projected separately through the typed `controller.connection` capability. That facade derives product-safe status from the existing setup-profile authority (`readSetupProfile`, `resolveControllerGuidance`, and `resolveTunnelGuidance`) and does not persist a second connection model. Its only automatic mutation, `repair_connector`, delegates to the existing `runMcpSetupChatgpt` owner for the Forge-managed loopback Connector. OpenAI Secure Tunnel, Cloudflare, Tailscale, client installation, login, tunnel identity, and other external prerequisites remain explicit setup requirements rather than being silently repaired by the desktop client. Tauri and the webview never read or write setup files directly.
 
 ## macOS presentation model
 

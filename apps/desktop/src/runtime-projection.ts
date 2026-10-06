@@ -194,6 +194,34 @@ export interface RuntimeRecoveryProjection {
   } | null;
 }
 
+export interface ControllerConnectionProjection {
+  schemaVersion: 1;
+  configured: boolean;
+  ready: boolean;
+  profile?: {
+    primaryController: string;
+    controllers: string[];
+    tunnelProvider: string;
+  };
+  controller: {
+    ready: boolean;
+    controller?: string;
+    title: string;
+    detail: string;
+  };
+  tunnel: {
+    ready: boolean;
+    provider: string;
+    title: string;
+    detail: string;
+  };
+  repair: {
+    available: boolean;
+    action: 'repair_connector';
+    label: string;
+  };
+}
+
 export interface ForgeDesktopProjection {
   source: ProjectionSource;
   runtime: {

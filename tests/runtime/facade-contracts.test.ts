@@ -57,6 +57,23 @@ describe('handoff and facade contracts', () => {
     expect(FACADE_TOOLS).toHaveLength(6);
   });
 
+  test('exposes controller connection setup through capability_execute without creating a new facade tool', () => {
+    const descriptor = listCapabilityDescriptors().find((entry) => entry.capabilityId === 'controller.connection');
+    expect(descriptor).toMatchObject({
+      domain: 'controller', group: 'controller', operationClass: 'execute', risk: 'workspace_write',
+      exposedVia: 'capability_execute', schemaExposure: 'stable_static',
+    });
+    const schema = getCoreCapabilityExecutionSchema('controller.connection') as {
+      executeWith?: string;
+      actions?: Record<string, { readOnly?: boolean; risk?: string }>;
+    } | undefined;
+    expect(schema?.executeWith).toBe('capability_execute');
+    expect(Object.keys(schema?.actions ?? {}).sort()).toEqual(['get', 'repair_connector']);
+    expect(schema?.actions?.get).toMatchObject({ readOnly: true, risk: 'readonly' });
+    expect(schema?.actions?.repair_connector).toMatchObject({ readOnly: false, risk: 'workspace_write' });
+    expect(FACADE_TOOLS).toHaveLength(6);
+  });
+
   test('exposes exact Work validation through capability_execute without widening the top-level facade', () => {
     const descriptor = listCapabilityDescriptors().find((entry) => entry.capabilityId === 'repository.validation');
     expect(descriptor).toMatchObject({

@@ -5,6 +5,7 @@ import { join } from 'path';
 import { closeSetupSession, openSetupSession, readSetupSession, type InitHookReport } from '../../src/cli/commands/init-hook';
 import { configureSetupProfile, resolveTunnelGuidance, setupConnectorAuthMode, type SetupPlatformSnapshot } from '../../src/cli/commands/setup-profile';
 import { runMcpSetupChatgpt } from '../../src/cli/mcp/setup';
+import { readControllerConnectionSnapshot, repairControllerConnection } from '../../src/runtime/control-plane/facade/controller-connection';
 
 const platform: SetupPlatformSnapshot = { platform: 'linux', arch: 'x64', environment: 'linux', serviceManager: 'systemd-user', commands: { brew: false, cloudflared: false, tailscale: false, tunnelClient: false, systemctl: true, winget: false } };
 function report(target: InitHookReport['target'] = 'none', status: InitHookReport['status'] = 'ok', action = false): InitHookReport {
@@ -89,6 +90,27 @@ describe('Forge setup session', () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
+
+  test('projects connection setup and repairs only the Forge-owned ChatGPT Connector boundary', () => {
+    const root = temp('forge-setup-connection-projection-'); try {
+      const setupRoot = join(root, 'setup'), controllerHome = join(root, 'controller');
+      configureSetupProfile({ setupRoot, controller: 'chatgpt', tunnel: 'openai', tunnelId: 'tunnel_0123456789abcdef0123456789abcdef' });
+      const before = readControllerConnectionSnapshot(controllerHome, { setupRoot, platform });
+      expect(before).toMatchObject({
+        configured: true,
+        ready: false,
+        controller: { controller: 'chatgpt', ready: false },
+        repair: { available: true, action: 'repair_connector' },
+      });
+      const repaired = repairControllerConnection(controllerHome, { setupRoot, platform });
+      expect(repaired.connection.controller.ready).toBe(true);
+      expect(repaired.connection.tunnel).toMatchObject({ provider: 'openai', ready: false, title: 'Install OpenAI tunnel-client' });
+      expect(repaired.connection.repair.available).toBe(false);
+      const localConfig = JSON.parse(require('fs').readFileSync(join(controllerHome, 'mcp', 'mcp.local.json'), 'utf8'));
+      expect(localConfig.auth.mode).toBe('none');
+      expect(localConfig.chatgpt.endpoint).toBeUndefined();
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
 
   test('ChatGPT setup records a distinct loopback Connector endpoint for remote transports', () => {
     const root = temp('forge-setup-connector-endpoint-'); try {

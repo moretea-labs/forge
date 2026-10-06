@@ -2,14 +2,15 @@
   "schemaVersion": 1,
   "id": "runtime-recovery",
   "name": "运行时与恢复",
-  "goal": "在单一主工作区中查看运行时与独立恢复事实；主运行时不可用时仍可诊断或显式重启，不把系统机械状态铺成仪表盘。",
+  "goal": "在单一主工作区中查看运行时、独立恢复与控制器连接事实；主运行时不可用时仍可诊断或显式重启，并能理解连接设置下一步，不把系统机械状态铺成仪表盘。",
   "primaryAction": "diagnose-runtime",
   "constraints": [
     "macOS 系统标题栏拥有窗口 chrome，WebView 不绘制 traffic lights 或伪标题栏",
     "轻量侧栏 + 单主工作区，不使用状态卡 Dashboard 或常驻右侧检查器",
     "运行时不可用时界面仍可通过独立恢复使用",
     "诊断和重启动作只调用独立恢复权威，客户端不创建生命周期状态机",
-    "版本、进程、探针等机械事实通过按需详情展示"
+    "连接状态只投影 Forge setup authority；仅 Forge-owned Connector 可通过既有 setup owner 刷新，外部 tunnel/client 前置条件保持显式",
+    "版本、进程、探针、控制器与远程传输等机械事实通过按需详情展示"
   ],
   "nodes": [
     {
@@ -39,6 +40,21 @@
       "interactions": [
         {"event": "diagnose", "actions": [{"type": "emit_design_action", "actionId": "diagnose-runtime"}]},
         {"event": "restart", "actions": [{"type": "emit_design_action", "actionId": "restart-runtime"}]}
+      ]
+    },
+    {
+      "id": "connections",
+      "component": "ConnectionList",
+      "props": {
+        "connections": ["控制器连接 · 来自 controller.connection", "远程传输 · 来自 setup authority"],
+        "selectedConnection": "",
+        "showLastVerified": false,
+        "showPermissions": false
+      },
+      "interactionPatternId": "system-recovery",
+      "interactions": [
+        {"event": "refresh", "actions": [{"type": "emit_design_action", "actionId": "refresh-connection"}]},
+        {"event": "repair-forge-connector", "actions": [{"type": "emit_design_action", "actionId": "repair-forge-connector"}]}
       ]
     },
     {

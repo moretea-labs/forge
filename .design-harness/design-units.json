@@ -67,7 +67,7 @@
         "profileIds": ["desktop-standard", "desktop-accessible"],
         "artifactRefs": ["runtime-recovery-unavailable-standard"],
         "notes": [
-          "Authority: mechanical Runtime/Recovery facts remain visually and semantically separate from Work status; standalone Recovery is the only repair owner.",
+          "Authority: mechanical Runtime/Recovery/connection facts remain visually and semantically separate from Work status; standalone Recovery exclusively owns Runtime lifecycle repair, while Forge Connector refresh delegates to the existing setup authority.",
           "Failure-state review: healthy, unavailable, repairing and recovery-degraded are Screen states only and never become Work lifecycle states.",
           "Visual/accessibility: the unavailable candidate makes system condition, retained durable data and Recovery actions explicit in text; accessible-profile pixel review is still pending."
         ]
