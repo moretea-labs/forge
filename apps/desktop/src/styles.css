@@ -39,6 +39,10 @@ a { color: inherit; }
 .work-section-title { margin-top: 20px; }
 .sidebar-list { display: grid; gap: 2px; }
 .work-list { min-height: 0; overflow: auto; padding-bottom: 10px; }
+.sidebar-history { margin: 8px 0 0; padding: 7px 0 0; border-top: 1px solid rgba(74, 67, 59, .07); }
+.sidebar-history summary { margin: 0 9px 6px; cursor: pointer; color: #9b958d; font-size: 10px; font-weight: 560; user-select: none; }
+.history-work-list { max-height: 210px; overflow: auto; }
+.sidebar-history .work-row { opacity: .82; }
 .sidebar-footer { border-top: 1px solid rgba(74, 67, 59, .08); padding-top: 8px; }
 
 .nav-row,

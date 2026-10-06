@@ -7,7 +7,7 @@
   "constraints": [
     "macOS 系统标题栏负责窗口 chrome，WebView 不绘制红黄绿按钮或伪标题栏",
     "默认布局只有轻量侧栏 + 单主工作区，不使用三栏 Dashboard",
-    "工作选择放在侧栏，列表直接来自 rh_work(list) canonical current semantic Work；不得从 rh_status 的机械活动摘要反推 Work 列表",
+    "工作选择放在侧栏，当前与最近终态历史都直接来自 rh_work(list) canonical semantic Work；历史默认折叠，不得从 rh_status 的机械活动摘要反推 Work 列表",
     "工作是唯一执行/进度节点；计划只作为按需上下文，不显示计划百分比或计划步骤状态",
     "运行时与恢复是独立主页面，不常驻右侧检查器",
     "自动推进任务展示绑定会话与切换新会话动作，详细 ID 与机械状态按需展开"
@@ -27,7 +27,8 @@
         "selectedProject": "forge",
         "workListPlacement": "sidebar",
         "projectSource": "repository_list + rh_status(list) repositoryState",
-        "workSource": "rh_work(list) current semantic Work",
+        "workSource": "rh_work(list) current semantic Work + bounded recent terminal history",
+        "historyPlacement": "collapsed sidebar disclosure; terminal Work remains selectable for exact detail/history inspection",
         "runtimePlacement": "sidebar-footer",
         "collapsed": false
       }

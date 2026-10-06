@@ -97,6 +97,7 @@ interface RawProjectOverviewResult {
 interface RawWorkListResult {
   data?: {
     works?: RawWorkView[];
+    recentHistory?: RawWorkView[];
     bounded?: boolean;
   };
 }
@@ -233,7 +234,7 @@ export async function readAutomaticContinuations(): Promise<AutomaticContinuatio
 export async function readProjectWorkspace(
   project: ProjectListItemProjection,
   selectedWorkId?: string,
-): Promise<Pick<ForgeDesktopProjection, 'project' | 'workGraph' | 'work' | 'requirement' | 'plan' | 'userRequests'>> {
+): Promise<Pick<ForgeDesktopProjection, 'project' | 'workGraph' | 'recentWorkHistory' | 'work' | 'requirement' | 'plan' | 'userRequests'>> {
   try {
     const [overview, workList] = await Promise.all([
       invoke<RawProjectOverviewResult>('read_project_overview', { repoId: project.repoId }),
@@ -254,6 +255,9 @@ export async function readProjectWorkspace(
     for (const work of activeWork) nodes.set(work.workId, graphNode(work));
     for (const work of graph?.nodes ?? []) nodes.set(work.workId, graphNode(work));
     if (selectedWork) nodes.set(selectedWork.workId, graphNode(selectedWork));
+    const recentWorkHistory = (workList.data?.recentHistory ?? [])
+      .filter((work) => !nodes.has(work.workId))
+      .map(graphNode);
 
     const [requirementDetail, planDetail, userRequestResult] = await Promise.all([
       selectedWork?.requirementId
@@ -329,6 +333,7 @@ export async function readProjectWorkspace(
         edges: graph?.edges ?? [],
         truncated: graph?.truncated ?? false,
       },
+      recentWorkHistory,
       work: selectedWork ? {
         workId: selectedWork.workId,
         revision: selectedWork.revision ?? 1,

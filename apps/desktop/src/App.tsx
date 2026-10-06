@@ -86,6 +86,7 @@ function statusTone(status: AutomaticContinuationTaskProjection['status']): stri
 function Sidebar({
   projects,
   workNodes,
+  recentWorkNodes,
   selectedRepoId,
   selectedWorkId,
   activeView,
@@ -98,6 +99,7 @@ function Sidebar({
 }: {
   projects: ProjectListItemProjection[];
   workNodes: WorkGraphNodeProjection[];
+  recentWorkNodes: WorkGraphNodeProjection[];
   selectedRepoId?: string;
   selectedWorkId?: string;
   activeView: AppView;
@@ -132,26 +134,52 @@ function Sidebar({
           ))}
         </div>
 
-        {activeView === 'project' && workNodes.length > 0 && (
+        {activeView === 'project' && (workNodes.length > 0 || recentWorkNodes.length > 0) && (
           <>
-            <div className="sidebar-section-title work-section-title">工作</div>
-            <div className="sidebar-list work-list">
-              {workNodes.map((work) => (
-                <button
-                  key={work.workId}
-                  className={work.workId === selectedWorkId ? 'work-row active' : 'work-row'}
-                  type="button"
-                  onClick={() => onSelectWork?.(work.workId)}
-                  title={work.objective}
-                >
-                  <span className={`work-state-dot ${work.state}`} aria-hidden="true" />
-                  <span className="work-row-copy">
-                    <strong>{work.objective}</strong>
-                    <span>{semanticStateLabel(work.state)}</span>
-                  </span>
-                </button>
-              ))}
-            </div>
+            {workNodes.length > 0 && (
+              <>
+                <div className="sidebar-section-title work-section-title">工作</div>
+                <div className="sidebar-list work-list">
+                  {workNodes.map((work) => (
+                    <button
+                      key={work.workId}
+                      className={work.workId === selectedWorkId ? 'work-row active' : 'work-row'}
+                      type="button"
+                      onClick={() => onSelectWork?.(work.workId)}
+                      title={work.objective}
+                    >
+                      <span className={`work-state-dot ${work.state}`} aria-hidden="true" />
+                      <span className="work-row-copy">
+                        <strong>{work.objective}</strong>
+                        <span>{semanticStateLabel(work.state)}</span>
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+            {recentWorkNodes.length > 0 && (
+              <details className="sidebar-history">
+                <summary>历史 · {recentWorkNodes.length}</summary>
+                <div className="sidebar-list history-work-list">
+                  {recentWorkNodes.map((work) => (
+                    <button
+                      key={work.workId}
+                      className={work.workId === selectedWorkId ? 'work-row active' : 'work-row'}
+                      type="button"
+                      onClick={() => onSelectWork?.(work.workId)}
+                      title={work.objective}
+                    >
+                      <span className={`work-state-dot ${work.state}`} aria-hidden="true" />
+                      <span className="work-row-copy">
+                        <strong>{work.objective}</strong>
+                        <span>{semanticStateLabel(work.state)}</span>
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </details>
+            )}
           </>
         )}
       </div>
@@ -724,6 +752,7 @@ export function App() {
       <Sidebar
         projects={projects}
         workNodes={activeView === 'project' ? projection.workGraph.nodes : []}
+        recentWorkNodes={activeView === 'project' ? projection.recentWorkHistory : []}
         selectedRepoId={selectedRepoId}
         selectedWorkId={selectedWorkId}
         activeView={activeView}

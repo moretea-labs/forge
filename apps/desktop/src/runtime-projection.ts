@@ -208,6 +208,7 @@ export interface ForgeDesktopProjection {
     edges: WorkGraphEdgeProjection[];
     truncated: boolean;
   };
+  recentWorkHistory: WorkGraphNodeProjection[];
   work: {
     workId: string;
     revision: number;
@@ -246,6 +247,7 @@ export const disconnectedProjection = Object.freeze<ForgeDesktopProjection>({
   projects: [],
   project: null,
   workGraph: { nodes: [], edges: [], truncated: false },
+  recentWorkHistory: [],
   work: null,
   requirement: null,
   plan: null,
@@ -292,6 +294,10 @@ export const designPreviewProjection = Object.freeze<ForgeDesktopProjection>({
     ],
     truncated: false,
   },
+  recentWorkHistory: [
+    { workId: 'work-release-v2', objective: '完成上一轮 Runtime 发布候选验证', state: 'completed', dependsOnWorkIds: [] },
+    { workId: 'work-retired-prototype', objective: '退休旧桌面原型', state: 'cancelled', dependsOnWorkIds: [] },
+  ],
   work: {
     workId: 'work-mcp',
     revision: 3,
