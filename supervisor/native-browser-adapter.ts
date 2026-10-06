@@ -475,7 +475,10 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       poll = this.control.browserPoll({ conversationId: task.conversationId, conversationUrl: task.conversationUrl });
       if (poll.terminal) return;
     }
-    if (!poll.command) {
+    // A queued continuation must not hide a visible failure from the preceding
+    // provider turn. Observe the error first so the existing bounded recovery
+    // chain owns it instead of repeatedly attempting the queued send.
+    if (!poll.command || providerFailureCode) {
       this.control.browserObserveProviderTurn({ conversationId: task.conversationId, conversationUrl: task.conversationUrl,
         generating: providerFailureCode ? false : providerBusy || latestRoleStillUser, latestAssistantResponse: snapshot.latestAssistantResponse,
         providerActivityText: snapshot.providerActivityText, providerFailureCode: providerFailureCode === CHATGPT_AUTOMATION_RATE_LIMITED ? undefined : providerFailureCode,
