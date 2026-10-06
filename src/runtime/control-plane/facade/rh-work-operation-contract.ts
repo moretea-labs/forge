@@ -9,6 +9,7 @@
 export const RH_WORK_OPERATIONS = [
   'start',
   'repair',
+  'list',
   'get',
   'revise',
   'complete',
@@ -45,6 +46,7 @@ export const RH_WORK_OPERATIONS = [
 export const RH_WORK_MODEL_OPERATIONS = [
   'start',
   'repair',
+  'list',
   'get',
   'revise',
   'complete',

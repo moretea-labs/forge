@@ -17,6 +17,7 @@ import { normalizeRhWorkInputWireMigration } from './work-input-wire-migration';
 import { callRhWorkScheduleAdapter, isRhWorkScheduleOperation } from './scheduler-adapter';
 import { callRhWorkRequirementOperation, isRhWorkRequirementOperation } from './work-requirement-operations';
 import { callRhWorkSemanticOperation, semanticWorkId } from './work-semantic-operations';
+import { callRhWorkListProjection } from './work-list-projection';
 import {
   callRhWorkPlanCreateOperation,
   callRhWorkPlanCreateWithoutRepository,
@@ -286,6 +287,9 @@ export async function callWorkAdapter(
   const repository = selected(ctx, args);
   if (operation === 'start') return callRepositoryBoundStart(ctx, repository, args);
   const store = { controllerHome: ctx.controllerHome, repoId: repository.repoId };
+
+  const workList = callRhWorkListProjection(store, operation, args);
+  if (workList) return workList;
 
   if (isRhWorkScheduleOperation(operation)) {
     return callRhWorkScheduleAdapter(ctx, repository, operation, args);

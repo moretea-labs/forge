@@ -41,14 +41,6 @@ interface ProjectListResult {
   preferredRepoId?: string | null;
 }
 
-interface RawWorkSummary {
-  workId: string;
-  state: WorkSemanticState;
-  objective: string;
-  nextSafeAction?: string;
-  semantics?: { state?: WorkSemanticState };
-}
-
 interface RawPlanSummary {
   planId: string;
   revision: number;
@@ -99,10 +91,13 @@ interface RawUserRequestListResult {
 interface RawProjectOverviewResult {
   data?: {
     repositoryState?: { branch?: string; head?: string | null; dirty?: boolean };
-    controllerSnapshot?: {
-      activeWork?: RawWorkSummary[];
-      activePlans?: RawPlanSummary[];
-    };
+  };
+}
+
+interface RawWorkListResult {
+  data?: {
+    works?: RawWorkView[];
+    bounded?: boolean;
   };
 }
 
@@ -197,16 +192,13 @@ function projectTask(task: RawSupervisorTask): AutomaticContinuationTaskProjecti
   };
 }
 
-function graphNode(work: RawWorkView | RawWorkSummary): WorkGraphNodeProjection {
-  const detailed = work as RawWorkView;
-  const summary = work as RawWorkSummary;
+function graphNode(work: RawWorkView): WorkGraphNodeProjection {
   return {
     workId: work.workId,
     objective: work.objective,
     state: work.state,
-    ...(detailed.semanticParentWorkId ? { semanticParentWorkId: detailed.semanticParentWorkId } : {}),
-    dependsOnWorkIds: detailed.dependsOnWorkIds ?? [],
-    ...(summary.nextSafeAction ? { nextSafeAction: summary.nextSafeAction } : {}),
+    ...(work.semanticParentWorkId ? { semanticParentWorkId: work.semanticParentWorkId } : {}),
+    dependsOnWorkIds: work.dependsOnWorkIds ?? [],
   };
 }
 
@@ -243,10 +235,12 @@ export async function readProjectWorkspace(
   selectedWorkId?: string,
 ): Promise<Pick<ForgeDesktopProjection, 'project' | 'workGraph' | 'work' | 'requirement' | 'plan' | 'userRequests'>> {
   try {
-    const overview = await invoke<RawProjectOverviewResult>('read_project_overview', { repoId: project.repoId });
+    const [overview, workList] = await Promise.all([
+      invoke<RawProjectOverviewResult>('read_project_overview', { repoId: project.repoId }),
+      invoke<RawWorkListResult>('read_project_work_list', { repoId: project.repoId }),
+    ]);
     const repositoryState = overview.data?.repositoryState;
-    const activeWork = overview.data?.controllerSnapshot?.activeWork ?? [];
-    const activePlans = overview.data?.controllerSnapshot?.activePlans ?? [];
+    const activeWork = workList.data?.works ?? [];
     const targetWorkId = selectedWorkId ?? activeWork[0]?.workId;
 
     let detail: RawWorkDetailResult | undefined;
@@ -255,7 +249,6 @@ export async function readProjectWorkspace(
     }
 
     const selectedWork = detail?.data?.work;
-    const selectedSummary = selectedWork ? activeWork.find((work) => work.workId === selectedWork.workId) : undefined;
     const graph = detail?.data?.objectiveGraph?.current;
     const nodes = new Map<string, WorkGraphNodeProjection>();
     for (const work of activeWork) nodes.set(work.workId, graphNode(work));
@@ -301,9 +294,7 @@ export async function readProjectWorkspace(
       ...(revision.updatedAt ? { updatedAt: revision.updatedAt } : {}),
       ...(revision.recordedAt ? { recordedAt: revision.recordedAt } : {}),
     }));
-    const selectedPlan = planDetail?.data?.plan ?? (selectedWork?.planId
-      ? activePlans.find((plan) => plan.planId === selectedWork.planId)
-      : undefined);
+    const selectedPlan = planDetail?.data?.plan;
     const planRevisionHistory: PlanRevisionProjection[] = (planDetail?.data?.revisionHistory ?? []).map((revision) => ({
       revision: revision.revision,
       goal: revision.goal,
@@ -346,7 +337,6 @@ export async function readProjectWorkspace(
         semanticState: selectedWork.state,
         relationLabel: selectedWork.semanticParentWorkId ? '子工作' : '当前工作',
         currentFocus: selectedWork.objective,
-        ...(selectedSummary?.nextSafeAction ? { nextSafeAction: selectedSummary.nextSafeAction } : {}),
         ...(selectedWork.semanticParentWorkId ? { semanticParentWorkId: selectedWork.semanticParentWorkId } : {}),
         dependsOnWorkIds: selectedWork.dependsOnWorkIds ?? [],
         ...(selectedWork.requirementId ? { requirementId: selectedWork.requirementId } : {}),

@@ -288,6 +288,17 @@ async fn read_project_overview(repo_id: String) -> Result<Value, String> {
 }
 
 #[tauri::command]
+async fn read_project_work_list(repo_id: String) -> Result<Value, String> {
+    if repo_id.trim().is_empty() { return Err("FORGE_DESKTOP_REPOSITORY_REQUIRED".to_string()); }
+    call_runtime_tool("rh_work", json!({
+        "repo_id": repo_id,
+        "operation": "list",
+        "limit": 100,
+        "request_id": request_id("project-work-list")
+    })).await
+}
+
+#[tauri::command]
 async fn read_work_detail(repo_id: String, work_id: String) -> Result<Value, String> {
     if repo_id.trim().is_empty() || work_id.trim().is_empty() {
         return Err("FORGE_DESKTOP_WORK_DETAIL_ARGUMENT_REQUIRED".to_string());
@@ -385,6 +396,7 @@ fn main() {
             perform_recovery_action,
             read_projects,
             read_project_overview,
+            read_project_work_list,
             read_work_detail,
             read_user_requests,
             read_requirement_detail,
