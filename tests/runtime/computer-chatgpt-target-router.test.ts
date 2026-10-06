@@ -114,7 +114,7 @@ test('Computer target router never crosses providers after primary may have muta
 });
 
 
-test('Computer target router keeps extension absence unavailable instead of opening through compatibility transport', async () => {
+test('Computer target router uses the native transport when extension absence is safely pre-mutation', async () => {
   let compatibilityEnsures = 0;
   const primary = port({
     ensureExact: async () => ({
@@ -134,16 +134,9 @@ test('Computer target router keeps extension absence unavailable instead of open
     },
   });
   const router = new PreferredChatgptConversationTargetPort(primary, compatibility);
-  expect(await router.ensureExact(identity)).toEqual({
-    state: 'unavailable',
-    failure: {
-      code: 'COMPUTER_CHATGPT_EXTENSION_NOT_CONNECTED',
-      retryable: true,
-      phase: 'pre_mutation',
-      failoverSafe: true,
-    },
-  });
-  expect(compatibilityEnsures).toBe(0);
+  const result = await router.ensureExact(identity);
+  expect(result.state).toBe('ready');
+  expect(compatibilityEnsures).toBe(1);
 });
 
 test('Computer target router refuses resource failover when primary open outcome is unknown', async () => {

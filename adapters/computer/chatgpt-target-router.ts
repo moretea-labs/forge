@@ -55,7 +55,15 @@ export class PreferredChatgptConversationTargetPort implements ComputerChatgptCo
 
   async ensureExact(identity: ComputerChatgptConversationIdentity): Promise<ComputerChatgptTargetResult> {
     const primary = await this.primary.ensureExact(identity);
-    return primary.state === 'ready' ? { ...primary, target: this.wrap(primary.target) } : primary;
+    if (primary.state === 'ready') return { ...primary, target: this.wrap(primary.target) };
+    // An extension that is not connected has made no browser mutation. Reuse
+    // the already available native browser target rather than stranding a due
+    // Supervisor continuation behind an optional transport.
+    if (primary.failure.failoverSafe === true) {
+      const compatibility = await this.compatibility.ensureExact(identity);
+      if (compatibility.state === 'ready') return { ...compatibility, target: this.wrap(compatibility.target) };
+    }
+    return primary;
   }
 
   async openBootstrap(projectUrl: string, bootstrapKey: string): Promise<ComputerChatgptTargetResult> {
