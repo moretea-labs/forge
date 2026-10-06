@@ -1872,6 +1872,83 @@ test('legacy stage-and-activate ABI only prepares isolated Candidate B and never
   });
 });
 
+test('ReleaseSession preparation retries cleanup for a terminal Candidate B lane left after interrupted retirement', async () => {
+  const home = controllerHome();
+  const sourceRoot = join(home, 'source');
+  committedRecoverySource(sourceRoot);
+  const baseline = verifiedManifest(home, 'release-baseline-terminal-lane-cleanup');
+  ensureActiveRuntimeRelease(home, baseline.path);
+  const runtime = await runtimeServer();
+  writeMainToken(home);
+  startObservedRuntime(home, runtime.endpoint, 'release-baseline-terminal-lane-cleanup', baseline.artifactIdentity);
+  const config = createRecoveryConfig(home, {
+    primaryRuntimeSourceRoot: sourceRoot,
+    primaryRuntimeSourceRepositoryId: 'repo_terminal_lane_cleanup',
+  });
+
+  let buildIndex = 0;
+  const stage = (input: { controllerHome: string; sourceRoot: string; sourceRepositoryId?: string }) => {
+    buildIndex += 1;
+    const releaseId = `release-terminal-lane-cleanup-${buildIndex}`;
+    const releasePath = join(input.controllerHome, 'runtime', 'releases', releaseId);
+    mkdirSync(releasePath, { recursive: true });
+    const runtimePath = join(releasePath, 'forge-runtime');
+    writeFileSync(runtimePath, `#!/bin/sh\n# ${releaseId}\nexit 0\n`, { mode: 0o700 });
+    const artifactIdentity = `sha256:${createHash('sha256').update(readFileSync(runtimePath)).digest('hex')}`;
+    const sourceCommit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: input.sourceRoot, encoding: 'utf8' }).trim();
+    const manifestPath = join(releasePath, 'manifest.json');
+    writeFileSync(manifestPath, `${JSON.stringify({
+      schemaVersion: 1,
+      releaseId,
+      artifactIdentity,
+      entrypoint: 'forge-runtime',
+      arguments: [],
+      configurationSchemaVersion: 1,
+      deploymentScope: 'portable',
+      databaseSchemaCompatibility: { minimum: 1, maximum: 1 },
+      workerProtocolVersion: 1,
+      sourceCommit,
+      createdAt: '2026-10-06T00:00:00.000Z',
+    }, null, 2)}\n`);
+    return {
+      controllerHome: input.controllerHome,
+      releasePath,
+      manifestPath,
+      releaseId,
+      artifactIdentity,
+      manifestSha256: createHash('sha256').update(readFileSync(manifestPath)).digest('hex'),
+      sourceCommit,
+      ...(input.sourceRepositoryId ? { sourceRepositoryId: input.sourceRepositoryId } : {}),
+    };
+  };
+
+  const first = await stageAndActivateConfiguredRuntimeRelease(config, { stage }, 'terminal-lane-cleanup-first');
+  expect(first).toMatchObject({ ok: true, releaseSession: { phase: 'built' } });
+  let terminal = first.releaseSession!;
+  const leakedCandidateHome = terminal.candidate.controllerHome;
+  terminal = advanceReleaseSession({
+    controllerHome: home,
+    sessionId: terminal.sessionId,
+    expectedRevision: terminal.revision,
+    phase: 'failed',
+    receipts: [{ id: 'simulated_interrupted_retirement', kind: 'build', summary: 'semantic terminal commit won before physical lane cleanup' }],
+  });
+  expect(existsSync(leakedCandidateHome)).toBe(true);
+
+  writeFileSync(join(sourceRoot, 'README.md'), 'recovery source v2\n');
+  execFileSync('git', ['add', 'README.md'], { cwd: sourceRoot });
+  execFileSync('git', ['-c', 'user.name=Forge Test', '-c', 'user.email=forge-test@example.invalid', 'commit', '-qm', 'recovery source v2'], { cwd: sourceRoot });
+
+  const second = await stageAndActivateConfiguredRuntimeRelease(config, {
+    stage: (input) => {
+      expect(existsSync(leakedCandidateHome)).toBe(false);
+      return stage(input);
+    },
+  }, 'terminal-lane-cleanup-second');
+  expect(second).toMatchObject({ ok: true, releaseSession: { phase: 'built' } });
+  expect(second.releaseSession?.sessionId).not.toBe(terminal.sessionId);
+});
+
 test('watchdog defers Recovery self-repair while an attributable mutation lock is live', async () => {
   const home = controllerHome();
   const activeManifest = manifest(home, 'release-watchdog-mutation', 'artifact-watchdog-mutation');

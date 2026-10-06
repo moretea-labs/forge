@@ -81,6 +81,7 @@ import {
   listReleaseSessions,
   readReleaseSession,
   recordReleaseSessionTransaction,
+  releaseSessionCandidateIsRetired,
   releaseSessionIsSoakingPredecessorOfStable,
   releaseSessionIsSoakingSupersededByStableAuthority,
   type ReleaseSession,
@@ -4788,6 +4789,12 @@ export async function prepareConfiguredRuntimeReleaseSession(
     }
     let resumableMatchingSession: ReleaseSession | undefined;
     for (const existing of [...inventory.sessions].sort((left, right) => left.updatedAt.localeCompare(right.updatedAt))) {
+      // Candidate B becomes disposable once the semantic ReleaseSession says it
+      // is retired. Cleanup is deliberately retried here because process death
+      // can happen after the phase CAS but before the physical lane removal. The
+      // remover is session/path fenced and idempotent, so this reconciles leaked
+      // bytes without creating another retention authority.
+      if (releaseSessionCandidateIsRetired(existing)) cleanupRetiredCandidateLane(config, existing);
       if (existing.phase === 'failed' || existing.phase === 'rolled_back' || existing.phase === 'known_good') continue;
       const preparationReusablePhase = existing.phase === 'source_frozen'
         || existing.phase === 'built'
