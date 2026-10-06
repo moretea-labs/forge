@@ -2,130 +2,63 @@
   "schemaVersion": 1,
   "id": "assistant-global",
   "name": "全局助手",
-  "goal": "展示 Forge 实例范围、与任何项目无关的工作，不把它们伪装成仓库项目。",
-  "primaryAction": "open-or-create-assistant-work",
+  "goal": "以简洁任务列表展示 Forge 实例级自动推进工作，直接打开绑定会话或显式切换新会话，不把它们伪装成项目。",
+  "primaryAction": "open-automatic-continuation-conversation",
   "constraints": [
     "助手与项目同级",
-    "不得要求每个工作都有需求或计划",
-    "本地会话不得隐式创建需求、计划或工作"
+    "macOS 系统标题栏拥有窗口 chrome，默认只有轻量侧栏与单主工作区",
+    "助手主区优先展示活动自动推进任务与绑定会话，不常驻检查器或机械状态",
+    "不得要求每个实例级任务都有项目、需求或计划",
+    "切换新会话只能调用 canonical Supervisor migration"
   ],
   "nodes": [
     {
-      "id": "titlebar",
-      "component": "NativeTitlebar",
-      "props": {
-        "title": "助手",
-        "subtitle": "Forge 实例",
-        "runtimeState": "运行时正常",
-        "mode": "MCP",
-        "searchPlaceholder": "搜索助手工作…",
-        "showTrafficLights": true
-      }
-    },
-    {
       "id": "sidebar",
-      "component": "PrimarySidebar",
+      "component": "MacSidebar",
       "props": {
         "active": "助手",
         "assistantLabel": "助手",
-        "projects": [
-          "forge",
-          "Avela",
-          "Knowledge"
-        ],
+        "projects": ["forge", "Avela", "Knowledge"],
         "selectedProject": "",
-        "bottomItems": [
-          "连接",
-          "运行时",
-          "设置"
-        ],
+        "runtimePlacement": "sidebar-footer",
         "collapsed": false
       }
     },
     {
-      "id": "work-list",
-      "component": "AssistantWorkList",
+      "id": "automatic-continuations",
+      "component": "AutomaticContinuationList",
       "props": {
-        "current": [
-          "Forge 每日发布摘要",
-          "跨项目推广台账",
-          "Mac 维护"
+        "headline": "助手",
+        "body": "查看跨项目自动推进任务，打开对应会话或继续处理。",
+        "tasks": [
+          {
+            "title": "Forge 每日发布摘要",
+            "status": "推进中",
+            "conversationLink": "权威 ChatGPT 会话 URL",
+            "actions": ["打开绑定会话", "切换到新会话"]
+          },
+          {
+            "title": "跨项目推广台账",
+            "status": "等待中",
+            "conversationLink": "权威 ChatGPT 会话 URL",
+            "actions": ["打开绑定会话", "切换到新会话"]
+          }
         ],
-        "history": [
-          "九月自动化清理",
-          "连接审计"
-        ],
-        "selectedWorkId": "assistant-release-summary",
-        "emptyMessage": "助手工作可以独立存在，不要求绑定项目、需求或计划。"
+        "detailsCollapsedByDefault": true,
+        "emptyMessage": "当前没有活动的自动推进任务。"
       },
       "interactions": [
-        { "event": "select", "actions": [{ "type": "emit_design_action", "actionId": "select-work" }] }
-      ]
-    },
-    {
-      "id": "work-header",
-      "component": "WorkDetailHeader",
-      "props": {
-        "title": "Forge 每日发布摘要",
-        "workId": "assistant-release-summary",
-        "semanticState": "进行中",
-        "relationLabel": "全局助手工作",
-        "controller": "ChatGPT",
-        "planTitle": "无计划",
-        "updatedLabel": "今天 08:00"
-      }
-    },
-    {
-      "id": "focus",
-      "component": "CurrentFocusCard",
-      "props": {
-        "summary": "汇总跨项目的新发布与运行时事实。",
-        "activity": "等待下一次计划触发",
-        "controller": "ChatGPT",
-        "startedAt": "08:00",
-        "nextLikelyAction": "在下一次计划触发时唤醒"
-      }
-    },
-    {
-      "id": "inspector",
-      "component": "RuntimeInspector",
-      "props": {
-        "runtime": "正常",
-        "recovery": "可用",
-        "controllerConnection": "ChatGPT MCP",
-        "projectConnection": "无",
-        "worktree": "无",
-        "processes": "0 个活动进程",
-        "detailsCollapsed": false
-      }
-    },
-    {
-      "id": "composer",
-      "component": "AgentComposer",
-      "props": {
-        "placeholder": "询问助手…",
-        "scopeLabel": "助手",
-        "modeLabel": "MCP",
-        "suggestions": [
-          "创建独立工作",
-          "查看历史",
-          "打开计划任务"
-        ],
-        "attachments": [],
-        "shortcut": "⌘↵"
-      },
-      "interactionPatternId": "controller-composer",
-      "interactions": [
-        { "event": "submit", "actions": [{ "type": "emit_design_action", "actionId": "continue-work" }] }
+        {"event": "open_conversation", "actions": [{"type": "emit_design_action", "actionId": "open-automatic-continuation-conversation"}]},
+        {"event": "switch_conversation", "actions": [{"type": "emit_design_action", "actionId": "switch-automatic-continuation-conversation"}]}
       ]
     }
   ],
   "initialStateId": "ready",
   "states": [
-    { "id": "ready", "name": "助手就绪", "meaning": "无需仓库范围即可选择或继续 Forge 实例级工作。", "primaryAction": "open-or-create-assistant-work" },
-    { "id": "empty", "name": "暂无助手工作", "meaning": "当前没有 Forge 实例级工作；本地会话仍可保持无生命周期。", "primaryAction": "start-local-conversation" },
-    { "id": "loading", "name": "正在加载助手工作", "meaning": "正在加载助手工作投影，同时全局范围仍保持明确。" }
+    {"id": "ready", "name": "助手就绪", "meaning": "活动自动推进任务及其精确会话绑定可直接检查。", "primaryAction": "open-automatic-continuation-conversation"},
+    {"id": "empty", "name": "暂无自动推进任务", "meaning": "当前没有活动自动推进任务。"},
+    {"id": "loading", "name": "正在加载助手任务", "meaning": "正在读取 Supervisor 权威投影。"}
   ],
-  "viewport": { "kind": "desktop", "platform": "macos", "preset": "macbook-14", "width": 1440, "height": 960, "safeTop": 0, "safeBottom": 0 },
-  "quality": { "requiredStateIds": ["ready", "empty", "loading"], "minimumHitTarget": 36 }
+  "viewport": {"kind": "desktop", "platform": "macos", "preset": "macbook-14", "width": 1440, "height": 960, "safeTop": 0, "safeBottom": 0},
+  "quality": {"requiredStateIds": ["ready", "empty", "loading"], "minimumHitTarget": 36}
 }

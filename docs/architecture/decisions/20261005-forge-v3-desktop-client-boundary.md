@@ -8,7 +8,7 @@ Authority: [`../CURRENT.md`](../CURRENT.md)
 
 Forge V3 introduces a fresh cross-platform desktop client under `apps/desktop`. The client is a presentation and interaction adapter over the existing Forge Runtime and Controller authorities; it is not a second control plane and does not reuse the retired Local Bridge web frontend as product architecture.
 
-The initial shell is conversation-first and exposes the V3 information architecture: New Thread, Search, Projects, Recent Threads, Activity, Schedules, Needs You, Connections, Plugins, Instances and Settings. The thread inspector projects Goal, Plan, Changes, Evidence and Resources. These surfaces are views over canonical Runtime facts rather than independent client state machines.
+The initial macOS shell exposes three first-class surfaces: Assistant, Projects/Work, and Runtime/Recovery. A lightweight sidebar selects scope and Work; the single main surface shows the selected task/conversation and immediate actions. Plan, evidence, IDs and mechanical Runtime facts are disclosed on demand rather than occupying a permanent inspector. These surfaces are views over canonical Runtime facts rather than independent client state machines.
 
 ## Authority boundary
 
