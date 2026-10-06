@@ -448,7 +448,10 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       ...(snapshot.title.trim() ? { title: snapshot.title.trim().slice(0, 512) } : {}), ...projectMetadataFromConversationUrl(snapshot.url) });
     const providerBusy = snapshot.isGenerating;
     const latestRoleStillUser = snapshot.latestTurnRole === 'user';
-    const observedProviderFailureCode = chatgptProviderPageFailure(snapshot.providerFailureText);
+    const observedProviderFailureCode = chatgptProviderPageFailure([
+      snapshot.providerFailureText,
+      snapshot.providerActivityText,
+    ].filter(Boolean).join('\n'));
     const providerFailureAwaitingClear = this.providerFailureAwaitingClear.get(task.conversationId);
     if (!observedProviderFailureCode) this.providerFailureAwaitingClear.delete(task.conversationId);
     const providerFailureCode = observedProviderFailureCode && observedProviderFailureCode !== providerFailureAwaitingClear
