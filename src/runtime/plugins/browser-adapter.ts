@@ -2761,6 +2761,7 @@ async function openNativeAttachedContext(
         zeroWindowAttempt.product,
         target.url,
         discovered.attempts,
+        undefined,
         timeout,
       );
       page = created.page as unknown as PageLike;

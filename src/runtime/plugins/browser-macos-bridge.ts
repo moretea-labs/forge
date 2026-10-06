@@ -287,6 +287,42 @@ export async function assertMacOsBrowserApplicationRunning(
   }
 }
 
+/**
+ * Start only the browser family already chosen by the Computer target. This
+ * is deliberately narrower than a generic browser launch: it never guesses a
+ * product, profile, or authentication identity. The caller must have a
+ * durable preferred product and must still verify the resulting ChatGPT page
+ * before any provider mutation.
+ */
+export async function ensureMacOsBrowserApplicationRunning(
+  product: MacOsBrowserProduct,
+  timeoutMs = DEFAULT_NATIVE_TIMEOUT_MS,
+): Promise<void> {
+  const browser = browserDefinition(product);
+  if (runtimeHooks.platform !== 'darwin') throw new AssistantPluginError(
+    'PLUGIN_BROWSER_NATIVE_APP_UNSUPPORTED_PLATFORM',
+    `Native ${browser.appName} Apple Events are unavailable on ${runtimeHooks.platform}.`,
+    { retryable: false, details: { browserProduct: product } },
+  );
+  if (!browser.appPaths.some((path) => runtimeHooks.appExists(path))) throw new AssistantPluginError(
+    'PLUGIN_BROWSER_NATIVE_APP_NOT_INSTALLED',
+    `${browser.appName} is not installed.`,
+    { retryable: false, details: { browserProduct: product } },
+  );
+  if (await runtimeHooks.processRunning(browser.processName, timeoutMs)) return;
+  await execFileText('/usr/bin/open', ['-a', browser.appName], timeoutMs);
+  const deadline = Date.now() + Math.max(1_000, timeoutMs);
+  while (Date.now() < deadline) {
+    if (await runtimeHooks.processRunning(browser.processName, Math.min(1_000, timeoutMs))) return;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new AssistantPluginError(
+    'PLUGIN_BROWSER_NATIVE_APP_START_TIMEOUT',
+    `${browser.appName} did not become available after Forge started the remembered browser family.`,
+    { retryable: true, details: { browserProduct: product } },
+  );
+}
+
 async function captureBrowserAutomation(
   region: { x: number; y: number; width: number; height: number },
   path: string,
@@ -597,11 +633,22 @@ activate
 `);
 }
 
-function createOwnedTabScript(browser: MacOsBrowserDefinition): string {
+function createOwnedTabScript(browser: MacOsBrowserDefinition, preferredWindowId?: string): string {
   return `on run argv
 set targetUrl to item 1 of argv
 ${browserTellScript(browser, `
-if (count of windows) is 0 then
+set preferredWindowId to "${preferredWindowId ?? ''}"
+set targetWindow to missing value
+if preferredWindowId is not "" then
+  repeat with candidateWindow in windows
+    if ((id of candidateWindow) as text) is preferredWindowId then
+      set targetWindow to candidateWindow
+      exit repeat
+    end if
+  end repeat
+end if
+if targetWindow is missing value and (count of windows) is greater than 0 then set targetWindow to front window
+if targetWindow is missing value then
   set targetWindow to make new window
   set targetTab to active tab of targetWindow
   set URL of targetTab to targetUrl
@@ -1666,12 +1713,13 @@ export async function createMacOsBrowserOwnedPageForProduct(
   product: MacOsBrowserProduct,
   url: string,
   attempts: MacOsBrowserAttachAttempt[],
+  preferredWindowId?: string,
   timeoutMs = DEFAULT_NATIVE_TIMEOUT_MS,
 ): Promise<{ page: MacOsAppleEventsPage; attachment: MacOsBrowserAttachment }> {
   const browser = browserDefinition(product);
   const creationEvidence = await runCreateTabAutomation(
     { action: 'create_tab', product, url },
-    createOwnedTabScript(browser),
+    createOwnedTabScript(browser, preferredWindowId),
     [url],
     timeoutMs,
   );

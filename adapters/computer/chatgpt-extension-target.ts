@@ -58,6 +58,16 @@ function providerInstanceId(value: unknown): string | undefined {
   return normalized && normalized.length <= 256 ? normalized : undefined;
 }
 
+function conversationContentAvailable(observation: ComputerChatgptConversationObservation): boolean {
+  // A matching URL is not enough: an extension can observe the navigation
+  // shell before ChatGPT hydrates the conversation, or after the browser has
+  // lost the content script. Treat that as transport-unavailable so the
+  // preferred target router can try the native browser attachment without
+  // sending anything through the empty surface.
+  return observation.composerText !== undefined || observation.isGenerating
+    || Boolean(observation.latestUserText.trim() || observation.latestAssistantResponse.trim() || observation.providerActivityText.trim());
+}
+
 function failure(code: string, input: { retryable?: boolean; failoverSafe?: boolean; humanAction?: 'login' | 'grant_permission' } = {}): ComputerChatgptTargetResult {
   return {
     state: 'unavailable',
@@ -302,6 +312,9 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
       { failoverSafe: !response.claimed },
     );
     if (response.result.kind === 'ensured') {
+      if (response.result.observation && !conversationContentAvailable(response.result.observation)) {
+        return failure('COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE', { failoverSafe: true });
+      }
       const record = await this.bindAsync(identity, response.result.providerBinding, selected.instanceId);
       return { state: 'ready', target: this.target(identity, record, selected.instanceId), ...(response.result.observation ? { observation: response.result.observation } : {}) };
     }

@@ -950,6 +950,10 @@
       "module": "workflow",
       "resource": "controller-home-isolated"
     },
+    "tests/runtime/workflow-supervisor-conversation-switch.test.ts": {
+      "module": "workflow",
+      "resource": "controller-home-isolated"
+    },
     "tests/runtime/workflow-supervisor-native-browser.test.ts": {
       "module": "browser",
       "resource": "pure"

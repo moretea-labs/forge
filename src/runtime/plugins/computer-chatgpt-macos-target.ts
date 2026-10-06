@@ -19,6 +19,7 @@ import {
   closeMacOsBrowserOwnedTab,
   createMacOsBrowserOwnedPageForProduct,
   discoverMacOsBrowserAttachment,
+  ensureMacOsBrowserApplicationRunning,
   listMacOsBrowserTabs,
   reattachMacOsBrowserOwnedPage,
   type MacOsAppleEventsPage,
@@ -36,6 +37,7 @@ const MAX_PROVIDER_ACTIVITY_CHARS = 64 * 1024;
 const OWNER_PREFIX = 'forge-computer-chatgpt:';
 const LEGACY_SUPERVISOR_OWNER_PREFIX = 'forge-workflow-supervisor:';
 const LEGACY_BROWSER_OWNER_PREFIX = 'forge-browser-owned:';
+const BROWSER_PREFERENCE_RECORD = 'chatgpt.browser-preference';
 
 type TaggedTab = MacOsBrowserTabInventoryEntry & { browserProduct: MacOsBrowserProduct };
 type TaggedRef = MacOsBrowserTabRef & { browserProduct: MacOsBrowserProduct };
@@ -93,6 +95,14 @@ function providerBinding(page: ComputerChatgptNativePage, targetId: string, owne
 
 function productForBinding(binding: ComputerSurfaceProviderBinding): MacOsBrowserProduct | undefined {
   return binding.browserProduct === 'chrome' || binding.browserProduct === 'vivaldi' ? binding.browserProduct : undefined;
+}
+
+function preferredBrowserFromRecord(record: ComputerSurfaceTarget): { product?: MacOsBrowserProduct; windowId?: string } {
+  const preference = record.compatibilityRecords.find((entry) => entry.namespace === BROWSER_PREFERENCE_RECORD)?.value;
+  return {
+    ...(preference?.browserProduct === 'chrome' || preference?.browserProduct === 'vivaldi' ? { product: preference.browserProduct } : {}),
+    ...(typeof preference?.windowId === 'string' && preference.windowId.trim() ? { windowId: preference.windowId.trim() } : {}),
+  };
 }
 
 function parseConversation(value: string): ComputerChatgptConversationIdentity | undefined {
@@ -352,7 +362,7 @@ export class MacOsChatgptConversationTargetPort implements ComputerChatgptConver
    * When no browser hosts any ChatGPT conversation we fail closed with a
    * specific code instead of guessing; the caller surfaces one durable blocker.
    */
-  private async create(url: string, preferredProduct?: MacOsBrowserProduct): Promise<ComputerChatgptNativePage> {
+  private async create(url: string, preferredProduct?: MacOsBrowserProduct, preferredWindowId?: string): Promise<ComputerChatgptNativePage> {
     const inventory = await this.listTabs();
     const conversationTabCounts = new Map<MacOsBrowserProduct, number>();
     for (const entry of inventory.entries) {
@@ -370,13 +380,24 @@ export class MacOsChatgptConversationTargetPort implements ComputerChatgptConver
     const ordered = preferredProduct && candidates.includes(preferredProduct)
       ? [preferredProduct, ...candidates.filter((product) => product !== preferredProduct)]
       : candidates;
-    const { attachment } = await discoverMacOsBrowserAttachment(ordered, this.timeoutMs);
+    let discovered = await discoverMacOsBrowserAttachment(ordered, this.timeoutMs);
+    if (!discovered.attachment && preferredProduct) {
+      // The product choice is durable target evidence, so starting that exact
+      // browser family is safe and avoids requiring the user to reopen it.
+      // Authentication and exact page usability remain separate postconditions.
+      await ensureMacOsBrowserApplicationRunning(preferredProduct, this.timeoutMs);
+      discovered = await discoverMacOsBrowserAttachment([preferredProduct], this.timeoutMs);
+    }
+    const attachment = discovered.attachment;
     if (!attachment) throw new Error('COMPUTER_CHATGPT_BROWSER_UNAVAILABLE');
     // The chosen browser must either host a ChatGPT session or be the product
     // this target was already bound to.
     if (signedIn.length > 0 && !signedIn.includes(attachment.metadata.product)) throw new Error('COMPUTER_CHATGPT_BROWSER_IDENTITY_UNAVAILABLE');
     if (signedIn.length === 0 && preferredProduct && attachment.metadata.product !== preferredProduct) throw new Error('COMPUTER_CHATGPT_BROWSER_IDENTITY_UNAVAILABLE');
-    return taggedPage((await createMacOsBrowserOwnedPageForProduct(attachment.metadata.product, url, attachment.attempts, this.timeoutMs)).page, attachment.metadata.product);
+    const windowId = preferredWindowId && inventory.entries.some((entry) => entry.browserProduct === attachment.metadata.product && entry.windowId === preferredWindowId)
+      ? preferredWindowId
+      : undefined;
+    return taggedPage((await createMacOsBrowserOwnedPageForProduct(attachment.metadata.product, url, attachment.attempts, windowId, this.timeoutMs)).page, attachment.metadata.product);
   }
 
   private upsert(identity: ComputerChatgptTargetIdentity, ownership: 'provider_owned' | 'user_owned', binding?: ComputerSurfaceProviderBinding): ComputerSurfaceTarget {
@@ -391,7 +412,12 @@ export class MacOsChatgptConversationTargetPort implements ComputerChatgptConver
           ? { namespace: identity.namespace, conversationId: identity.conversationId, canonicalUrl: identity.canonicalUrl }
           : { namespace: identity.namespace, bootstrapKey: identity.bootstrapKey, projectUrl: identity.projectUrl },
         updatedAt: new Date().toISOString(),
-      }],
+      }, ...(binding?.browserProduct ? [{
+        namespace: BROWSER_PREFERENCE_RECORD,
+        schemaVersion: 1,
+        value: { browserProduct: binding.browserProduct, providerId: PROVIDER_ID, ...(binding.windowId ? { windowId: binding.windowId } : {}) },
+        updatedAt: new Date().toISOString(),
+      }] : [])],
       reactivate: true,
     }).target;
   }
@@ -445,7 +471,9 @@ export class MacOsChatgptConversationTargetPort implements ComputerChatgptConver
       this.pages.delete(record.targetId);
     }
     const binding = record.providerBinding;
-    const product = binding ? productForBinding(binding) : undefined;
+    const preferredBrowser = preferredBrowserFromRecord(record);
+    const product = (binding ? productForBinding(binding) : undefined) ?? preferredBrowser.product;
+    const preferredWindowId = binding?.windowId ?? preferredBrowser.windowId;
     if (binding?.providerId === PROVIDER_ID && product && binding.windowId && binding.tabId) {
       try {
         const page = await this.reattach({ browserProduct: product, windowId: binding.windowId, tabId: binding.tabId });
@@ -485,7 +513,7 @@ export class MacOsChatgptConversationTargetPort implements ComputerChatgptConver
     if (inventory.unavailableProviders.length > 0) return failure(new Error('COMPUTER_CHATGPT_TARGET_INVENTORY_INCOMPLETE'), 'COMPUTER_CHATGPT_TARGET_INVENTORY_INCOMPLETE');
     let created: ComputerChatgptNativePage | undefined;
     try {
-      created = await this.create(identity.canonicalUrl, record.providerBinding?.browserProduct as MacOsBrowserProduct | undefined);
+      created = await this.create(identity.canonicalUrl, product, preferredWindowId);
       const updated = await this.bind(identity, record, created, 'provider_owned');
       const observation = await observeMacOsChatgptPage(created, { includeUserHistory: false, includePageText: false });
       if (!sameConversation(observation.url, identity)) throw new Error('COMPUTER_CHATGPT_RESTORED_TARGET_UNPROVEN');

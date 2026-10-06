@@ -476,6 +476,61 @@ describe('Computer durable InteractionTarget authority', () => {
     }
   });
 
+  test('does not treat an extension navigation shell as a sendable conversation', async () => {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-computer-extension-shell-'));
+    try {
+      const extension = new ChromeExtensionChatgptConversationTargetPort(controllerHome, targetAuthority);
+      const identity = {
+        namespace: 'chatgpt.conversation' as const,
+        conversationId: 'conversation-extension-shell',
+        canonicalUrl: 'https://chatgpt.com/c/conversation-extension-shell',
+      };
+      extension.heartbeat({
+        providerId: 'browser.chrome-extension',
+        providerInstanceId: 'profile-primary',
+        observedAt: '2026-10-04T05:04:00.000Z',
+        conversations: [],
+      });
+
+      const ensuredPromise = extension.ensureExact(identity);
+      const command = extension.claim('profile-primary');
+      expect(command?.kind).toBe('ensure');
+      if (!command) throw new Error('extension ensure command was not claimed');
+      expect(extension.complete('profile-primary', command.commandId, {
+        kind: 'ensured',
+        providerBinding: {
+          providerId: 'browser.chrome-extension',
+          providerSessionId: 'profile-primary',
+          browserProduct: 'chrome',
+          windowId: 'window-shell',
+          tabId: 'tab-shell',
+          observedAt: '2026-10-04T05:04:01.000Z',
+        },
+        observation: {
+          url: identity.canonicalUrl,
+          title: 'ChatGPT',
+          latestUserText: '',
+          latestAssistantResponse: '',
+          providerActivityText: '',
+          providerFailureText: '',
+          composerText: undefined,
+          isGenerating: false,
+        },
+      })).toBe(true);
+      await expect(ensuredPromise).resolves.toEqual({
+        state: 'unavailable',
+        failure: {
+          code: 'COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE',
+          retryable: true,
+          phase: 'pre_mutation',
+          failoverSafe: true,
+        },
+      });
+    } finally {
+      rmSync(controllerHome, { recursive: true, force: true });
+    }
+  });
+
   test('owns browser surfaces in the same durable authority while treating session and tab handles as compatibility/binding data', async () => {
     const controllerHome = mkdtempSync(join(tmpdir(), 'forge-computer-surface-target-'));
     try {
