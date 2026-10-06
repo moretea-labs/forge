@@ -65,7 +65,7 @@ export interface ThinLauncherDependencies {
   resolveProviderMcpBootstrap?: typeof resolveProviderMcpBootstrap;
 }
 
-function launcherProcessEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+export function launcherProcessEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const repositoryEnv = repositoryChildProcessEnvironment(env);
   return {
     ...env,
@@ -74,7 +74,7 @@ function launcherProcessEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 }
 
 export function resolveLauncherExecutable(
-  request: ThinLauncherRequest,
+  request: Pick<ThinLauncherRequest, 'controllerType' | 'executable' | 'cwd'>,
   env: NodeJS.ProcessEnv = process.env,
 ): string {
   if (request.controllerType === 'chatgpt') {
@@ -177,6 +177,52 @@ async function awaitExternalControllerStartup(
   });
 }
 
+export interface CodexControllerInvocationRequest {
+  executable: string;
+  prompt: string;
+  mcpBootstrap: ProviderMcpBootstrap;
+  sandbox: 'read-only' | 'workspace-write';
+  args?: string[];
+  resumeSessionId?: string;
+  json?: boolean;
+}
+
+export function buildCodexControllerInvocation(
+  request: CodexControllerInvocationRequest,
+): { executable: string; args: string[] } {
+  const prefix = [
+    '--ask-for-approval', 'never',
+    // Every Codex controller gets an invocation-scoped Forge MCP transport and
+    // never inherits an unrelated globally configured Forge tool surface.
+    '--disable', 'apps',
+    ...codexMcpConfigArgs(request.mcpBootstrap),
+    'exec',
+  ];
+  if (request.resumeSessionId?.trim()) {
+    return {
+      executable: request.executable,
+      args: [
+        ...prefix,
+        'resume', '--ignore-user-config',
+        ...(request.json ? ['--json'] : []),
+        ...(request.args ?? []),
+        request.resumeSessionId.trim(),
+        request.prompt,
+      ],
+    };
+  }
+  return {
+    executable: request.executable,
+    args: [
+      ...prefix,
+      '--ignore-user-config', '--sandbox', request.sandbox,
+      ...(request.json ? ['--json'] : []),
+      ...(request.args ?? []),
+      request.prompt,
+    ],
+  };
+}
+
 export function buildSuperControllerInvocation(
   request: ThinLauncherRequest,
   executable: string,
@@ -185,20 +231,13 @@ export function buildSuperControllerInvocation(
 ): { executable: string; args: string[] } {
   if (request.controllerType === 'codex') {
     if (!mcpBootstrap) throw new Error('LAUNCHER_CODEX_FORGE_MCP_REQUIRED');
-    return {
+    return buildCodexControllerInvocation({
       executable,
-      args: [
-        '--ask-for-approval', 'never',
-        // A launched Codex controller must use the reservation-scoped Forge MCP
-        // transport below, never a globally configured Codex App that happens to
-        // expose another Forge tool surface under a shared principal.
-        '--disable', 'apps',
-        ...codexMcpConfigArgs(mcpBootstrap),
-        'exec', '--ignore-user-config', '--sandbox', 'workspace-write',
-        ...(request.args ?? []),
-        prompt,
-      ],
-    };
+      prompt,
+      mcpBootstrap,
+      sandbox: 'workspace-write',
+      args: request.args,
+    });
   }
   if (request.controllerType === 'claude') {
     if (!(request.args ?? []).includes('--mcp-config')) {

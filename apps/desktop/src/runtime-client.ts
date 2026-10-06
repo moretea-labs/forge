@@ -143,11 +143,21 @@ export interface ProjectCatalogProjection {
 }
 
 export interface LocalProviderStatusProjection {
+  provider?: 'codex';
   status: 'ready' | 'not_configured' | 'unavailable';
   label: string;
   detail: string;
   streaming: boolean;
   tools: boolean;
+}
+
+export interface LocalConversationSendProjection {
+  provider: 'codex';
+  status: 'completed';
+  conversationId: string;
+  providerSessionId: string;
+  output: string;
+  toolActivityCount: number;
 }
 
 export function tauriRuntimeAvailable(): boolean {
@@ -220,6 +230,24 @@ function graphNode(work: RawWorkView): WorkGraphNodeProjection {
 export async function readLocalProviderStatus(): Promise<LocalProviderStatusProjection> {
   try {
     return await invoke<LocalProviderStatusProjection>('read_local_provider_status');
+  } catch (error) {
+    throw localizeRuntimeError(error);
+  }
+}
+
+export async function sendLocalConversation(input: {
+  conversationId: string;
+  providerSessionId?: string;
+  prompt: string;
+  repoId?: string;
+}): Promise<LocalConversationSendProjection> {
+  try {
+    return await invoke<LocalConversationSendProjection>('send_local_conversation', {
+      conversationId: input.conversationId,
+      providerSessionId: input.providerSessionId,
+      prompt: input.prompt,
+      repoId: input.repoId,
+    });
   } catch (error) {
     throw localizeRuntimeError(error);
   }

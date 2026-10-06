@@ -18,11 +18,12 @@ import {
   readProjects,
   readProjectWorkspace,
   repairConnection,
+  sendLocalConversation,
   switchAutomaticContinuationConversation,
   tauriRuntimeAvailable,
   type LocalProviderStatusProjection,
 } from './runtime-client';
-import { LocalConversationSurface } from './local-conversation';
+import { LocalConversationSurface, type LocalConversationReply, type LocalConversationThread } from './local-conversation';
 import {
   performRecoveryAction,
   readRecoveryStatus,
@@ -501,6 +502,7 @@ function AssistantView({
   preview,
   onSwitch,
   onRefreshProvider,
+  onSendLocal,
 }: {
   tasks: AutomaticContinuationTaskProjection[];
   projects: ProjectListItemProjection[];
@@ -510,6 +512,7 @@ function AssistantView({
   preview: boolean;
   onSwitch?: (task: AutomaticContinuationTaskProjection) => Promise<void>;
   onRefreshProvider: () => Promise<void>;
+  onSendLocal: (input: { thread: LocalConversationThread; prompt: string }) => Promise<LocalConversationReply>;
 }) {
   return (
     <main className="main-pane assistant-pane">
@@ -525,6 +528,7 @@ function AssistantView({
           providerLoading={providerLoading}
           providerError={providerError}
           onRefreshProvider={onRefreshProvider}
+          onSend={onSendLocal}
         />
         <section className="assistant-automation" aria-label="自动推进">
           <div className="assistant-section-heading"><strong>自动推进</strong><span>canonical Workflow Supervisor</span></div>
@@ -731,6 +735,16 @@ export function App() {
     }
   }, [preview]);
 
+  const sendLocal = useCallback(async ({ thread, prompt }: { thread: LocalConversationThread; prompt: string }): Promise<LocalConversationReply> => {
+    const result = await sendLocalConversation({
+      conversationId: thread.id,
+      providerSessionId: thread.providerSessionId,
+      prompt,
+      repoId: thread.projectRepoId,
+    });
+    return { content: result.output, providerSessionId: result.providerSessionId };
+  }, []);
+
   const refreshConnection = useCallback(async () => {
     if (preview || !tauriRuntimeAvailable()) return;
     setConnectionLoading(true);
@@ -921,6 +935,7 @@ export function App() {
           preview={preview}
           onSwitch={preview ? undefined : handleSwitch}
           onRefreshProvider={refreshLocalProvider}
+          onSendLocal={sendLocal}
         />
       ) : activeView === 'runtime' ? (
         <RuntimeView

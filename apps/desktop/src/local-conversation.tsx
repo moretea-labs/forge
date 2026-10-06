@@ -18,6 +18,7 @@ export interface LocalConversationThread {
   id: string;
   title: string;
   projectRepoId?: string;
+  providerSessionId?: string;
   createdAt: string;
   updatedAt: string;
   archived: boolean;
@@ -26,6 +27,7 @@ export interface LocalConversationThread {
 
 export interface LocalConversationReply {
   content: string;
+  providerSessionId?: string;
   messages?: LocalConversationMessage[];
 }
 
@@ -136,6 +138,7 @@ export function LocalConversationSurface({
       const assistantMessage: LocalConversationMessage = { id: localId('message'), role: 'assistant', content: reply.content, createdAt: repliedAt };
       setThreads((current) => current.map((thread) => thread.id === selectedThread.id ? {
         ...thread,
+        ...(reply.providerSessionId ? { providerSessionId: reply.providerSessionId } : {}),
         updatedAt: repliedAt,
         messages: [...thread.messages, ...(reply.messages ?? []), assistantMessage],
       } : thread));
@@ -177,7 +180,7 @@ export function LocalConversationSurface({
         <span className={`health-dot ${provider?.status === 'ready' ? 'connected' : 'degraded'}`} />
         <div>
           <strong>{providerLoading ? '正在读取本地模型连接' : provider?.label ?? '本地模型不可用'}</strong>
-          <p>{providerError ?? provider?.detail ?? '本地会话使用独立的 provider adapter；不会为了聊天隐式创建 Work。'}</p>
+          <p>{providerError ?? provider?.detail ?? '本地会话由 Controller provider adapter 执行；不会为了聊天隐式创建 Work。'}</p>
         </div>
         <button className="plain-action" type="button" disabled={providerLoading} onClick={() => void onRefreshProvider()}>刷新</button>
       </div>

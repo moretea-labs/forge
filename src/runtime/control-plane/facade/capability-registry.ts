@@ -49,6 +49,16 @@ const CORE_CAPABILITIES: CapabilityDescriptor[] = [
     summary: 'Read product-safe controller and tunnel connection state, and refresh the existing Forge Connector through setup authority without creating another configuration owner.',
   },
   {
+    capabilityId: 'controller.local_conversation',
+    domain: 'controller',
+    group: 'controller',
+    operationClass: 'execute',
+    risk: 'workspace_write',
+    exposedVia: 'capability_execute',
+    schemaExposure: 'stable_static',
+    summary: 'Run one Work-independent local controller conversation through the existing Codex provider and current Forge Runtime MCP capabilities; conversation transport never creates semantic Work implicitly.',
+  },
+  {
     capabilityId: 'repository.context',
     domain: 'repository',
     group: 'repository-core',
@@ -363,6 +373,34 @@ export function getCoreCapabilityExecutionSchema(capabilityId: string): Record<s
           readOnly: false,
           risk: 'workspace_write',
           argumentsSchema: { type: 'object', additionalProperties: false, properties: {} },
+        },
+      },
+    };
+  }
+  if (capabilityId === 'controller.local_conversation') {
+    return {
+      capabilityId,
+      executeWith: 'capability_execute',
+      actions: {
+        status: {
+          readOnly: true,
+          risk: 'readonly',
+          argumentsSchema: { type: 'object', additionalProperties: false, properties: {} },
+        },
+        send: {
+          readOnly: false,
+          risk: 'workspace_write',
+          argumentsSchema: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['conversation_id', 'prompt'],
+            properties: {
+              conversation_id: { type: 'string', minLength: 1, maxLength: 160 },
+              provider_session_id: { type: 'string', minLength: 1, maxLength: 160 },
+              prompt: { type: 'string', minLength: 1, maxLength: 20_000 },
+              timeout_ms: { type: 'number', minimum: 5_000, maximum: 600_000 },
+            },
+          },
         },
       },
     };

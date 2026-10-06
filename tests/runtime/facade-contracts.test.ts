@@ -4,7 +4,8 @@ import { getCoreCapabilityExecutionSchema, listCapabilityDescriptors, searchCapa
 import { evaluatePolicyGate } from '../../src/runtime/control-plane/facade/policy-gate';
 import { buildFacadeResult } from '../../src/runtime/control-plane/facade/facade-result';
 import { allowedFacadeOperations, validateSuggestedNextActions } from '../../src/runtime/control-plane/facade/suggested-actions';
-import { buildSuperControllerInvocation, type ThinLauncherRequest } from '../../src/runtime/control-plane/launcher/thin-launcher';
+import { buildCodexControllerInvocation, buildSuperControllerInvocation, type ThinLauncherRequest } from '../../src/runtime/control-plane/launcher/thin-launcher';
+import { parseCodexConversationJsonl } from '../../src/runtime/control-plane/launcher/local-conversation-controller';
 import { RH_WORK_MODEL_OPERATIONS, isRhWorkAcceptedOperation } from '../../src/runtime/control-plane/facade/rh-work-operation-contract';
 import { runtimeToolDefinitions } from '../../src/runtime/gateway/mcp/runtime-tool-definitions';
 import { normalizeRhWorkInputWireMigration } from '../../adapters/mcp/runtime-gateway/work-input-wire-migration';
@@ -71,6 +72,23 @@ describe('handoff and facade contracts', () => {
     expect(Object.keys(schema?.actions ?? {}).sort()).toEqual(['get', 'repair_connector']);
     expect(schema?.actions?.get).toMatchObject({ readOnly: true, risk: 'readonly' });
     expect(schema?.actions?.repair_connector).toMatchObject({ readOnly: false, risk: 'workspace_write' });
+    expect(FACADE_TOOLS).toHaveLength(6);
+  });
+
+  test('exposes Work-independent local controller conversation through capability_execute without widening the facade', () => {
+    const descriptor = listCapabilityDescriptors().find((entry) => entry.capabilityId === 'controller.local_conversation');
+    expect(descriptor).toMatchObject({
+      domain: 'controller', group: 'controller', operationClass: 'execute', risk: 'workspace_write',
+      exposedVia: 'capability_execute', schemaExposure: 'stable_static',
+    });
+    const schema = getCoreCapabilityExecutionSchema('controller.local_conversation') as {
+      executeWith?: string;
+      actions?: Record<string, { readOnly?: boolean; risk?: string; argumentsSchema?: { required?: string[] } }>;
+    } | undefined;
+    expect(schema?.executeWith).toBe('capability_execute');
+    expect(Object.keys(schema?.actions ?? {}).sort()).toEqual(['send', 'status']);
+    expect(schema?.actions?.status).toMatchObject({ readOnly: true, risk: 'readonly' });
+    expect(schema?.actions?.send?.argumentsSchema?.required).toEqual(['conversation_id', 'prompt']);
     expect(FACADE_TOOLS).toHaveLength(6);
   });
 
@@ -647,6 +665,34 @@ describe('Thin Launcher external Controller invocation', () => {
     expect(codex.args.join(' ')).toContain('X-Forge-Forwarded-Controller-Type');
     expect(codex.args.join(' ')).toContain('external:codex:reservation-1');
     expect(codex.args.join(' ')).not.toContain('secret-not-for-argv');
+
+    const local = buildCodexControllerInvocation({
+      executable: 'codex',
+      prompt: 'local question',
+      mcpBootstrap: bootstrap,
+      sandbox: 'read-only',
+      json: true,
+    });
+    expect(local.args).toContain('read-only');
+    expect(local.args).toContain('--json');
+    expect(local.args).not.toContain('workspace-write');
+    const resumed = buildCodexControllerInvocation({
+      executable: 'codex',
+      prompt: 'follow up',
+      mcpBootstrap: bootstrap,
+      sandbox: 'read-only',
+      resumeSessionId: '01a1102c-2c50-76d3-ae32-478a4b24788b',
+      json: true,
+    });
+    expect(resumed.args).toContain('resume');
+    expect(resumed.args).toContain('01a1102c-2c50-76d3-ae32-478a4b24788b');
+    expect(resumed.args).not.toContain('workspace-write');
+
+    expect(parseCodexConversationJsonl([
+      JSON.stringify({ type: 'thread.started', thread_id: 'thread-1' }),
+      JSON.stringify({ type: 'item.completed', item: { type: 'mcp_tool_call', name: 'forge.rh_status' } }),
+      JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'done' } }),
+    ].join('\n'))).toEqual({ providerSessionId: 'thread-1', output: 'done', toolActivityCount: 1 });
 
     expect(() => buildSuperControllerInvocation(
       request({ controllerType: 'claude', args: ['--max-budget-usd', '1'] }),

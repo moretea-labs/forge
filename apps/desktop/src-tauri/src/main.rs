@@ -395,13 +395,40 @@ async fn switch_automatic_continuation_conversation(
 
 #[tauri::command]
 async fn read_local_provider_status() -> Result<Value, String> {
-    Ok(json!({
-        "status": "not_configured",
-        "label": "本地模型尚未连接",
-        "detail": "当前桌面边界已就绪，但尚未安装本地会话 provider adapter。不会为了聊天隐式创建 Work 或 ControllerRound。",
-        "streaming": false,
-        "tools": false
-    }))
+    call_runtime_tool("capability_execute", json!({
+        "capability_id": "controller.local_conversation",
+        "action": "status",
+        "arguments": {},
+        "request_id": request_id("local-conversation-status")
+    })).await
+}
+
+#[tauri::command]
+async fn send_local_conversation(
+    conversation_id: String,
+    provider_session_id: Option<String>,
+    prompt: String,
+    repo_id: Option<String>,
+) -> Result<Value, String> {
+    if conversation_id.trim().is_empty() || prompt.trim().is_empty() {
+        return Err("FORGE_DESKTOP_LOCAL_CONVERSATION_ARGUMENT_REQUIRED".to_string());
+    }
+    let mut request = json!({
+        "capability_id": "controller.local_conversation",
+        "action": "send",
+        "arguments": {
+            "conversation_id": conversation_id,
+            "prompt": prompt
+        },
+        "request_id": request_id("local-conversation-send")
+    });
+    if let Some(provider_session_id) = provider_session_id.filter(|value| !value.trim().is_empty()) {
+        request["arguments"]["provider_session_id"] = Value::String(provider_session_id);
+    }
+    if let Some(repo_id) = repo_id.filter(|value| !value.trim().is_empty()) {
+        request["repo_id"] = Value::String(repo_id);
+    }
+    call_runtime_tool("capability_execute", request).await
 }
 
 #[tauri::command]
@@ -441,6 +468,7 @@ fn main() {
             continue_work,
             read_automatic_continuations,
             read_local_provider_status,
+            send_local_conversation,
             read_connection_status,
             repair_connection,
             switch_automatic_continuation_conversation
