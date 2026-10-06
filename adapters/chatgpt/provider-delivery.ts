@@ -29,6 +29,7 @@ export function chatgptProviderPageFailure(
     || normalized.includes('stream recovery polling timed out')
     || normalized.includes('连接已中断，正在等待完整答复')
     || normalized.includes('connection interrupted, waiting for the full response')
+    || (normalized.includes('出了点问题') && normalized.includes('请重试'))
     // A standalone current status is termination evidence. The same words in
     // ordinary chat prose or a historical whole-page transcript are not.
     || /^(?:已分析\s+)?(?:分析已暂停|analysis paused)(?:\s+(?:分析已暂停|analysis paused))*$/.test(normalized)
