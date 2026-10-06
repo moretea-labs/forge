@@ -1872,7 +1872,7 @@ test('legacy stage-and-activate ABI only prepares isolated Candidate B and never
   });
 });
 
-test('ReleaseSession preparation retries cleanup for a terminal Candidate B lane left after interrupted retirement', async () => {
+test('ReleaseSession preparation reconciles terminal and orphan Candidate B lanes before capacity admission', async () => {
   const home = controllerHome();
   const sourceRoot = join(home, 'source');
   committedRecoverySource(sourceRoot);
@@ -1947,6 +1947,26 @@ test('ReleaseSession preparation retries cleanup for a terminal Candidate B lane
   }, 'terminal-lane-cleanup-second');
   expect(second).toMatchObject({ ok: true, releaseSession: { phase: 'built' } });
   expect(second.releaseSession?.sessionId).not.toBe(terminal.sessionId);
+
+  const orphan = second.releaseSession!;
+  const orphanCandidateHome = orphan.candidate.controllerHome;
+  const orphanAuthorityPath = join(home, 'recovery', 'state', 'release-sessions', `${orphan.sessionId}.json`);
+  expect(existsSync(orphanAuthorityPath)).toBe(true);
+  rmSync(orphanAuthorityPath, { force: true });
+  expect(existsSync(orphanCandidateHome)).toBe(true);
+
+  writeFileSync(join(sourceRoot, 'README.md'), 'recovery source v3\n');
+  execFileSync('git', ['add', 'README.md'], { cwd: sourceRoot });
+  execFileSync('git', ['-c', 'user.name=Forge Test', '-c', 'user.email=forge-test@example.invalid', 'commit', '-qm', 'recovery source v3'], { cwd: sourceRoot });
+
+  const third = await stageAndActivateConfiguredRuntimeRelease(config, {
+    stage: (input) => {
+      expect(existsSync(orphanCandidateHome)).toBe(false);
+      return stage(input);
+    },
+  }, 'orphan-lane-cleanup-third');
+  expect(third).toMatchObject({ ok: true, releaseSession: { phase: 'built' } });
+  expect(third.releaseSession?.sessionId).not.toBe(orphan.sessionId);
 });
 
 test('watchdog defers Recovery self-repair while an attributable mutation lock is live', async () => {

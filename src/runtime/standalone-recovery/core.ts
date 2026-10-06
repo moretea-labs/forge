@@ -4787,6 +4787,7 @@ export async function prepareConfiguredRuntimeReleaseSession(
         detail: `RELEASE_SESSION_INVENTORY_INCOMPLETE: truncated=${inventory.truncated}; invalid=${inventory.invalidSessionFiles.join(',') || 'none'}`,
       };
     }
+    await reconcileOrphanCandidateLanes(config, stable, inventory.sessions);
     let resumableMatchingSession: ReleaseSession | undefined;
     for (const existing of [...inventory.sessions].sort((left, right) => left.updatedAt.localeCompare(right.updatedAt))) {
       // Candidate B becomes disposable once the semantic ReleaseSession says it
@@ -5214,11 +5215,10 @@ function cleanupRetiredCandidateLane(config: RecoveryConfig, session: ReleaseSes
   }
 }
 
-async function stopReleaseSessionCandidateService(
-  session: ReleaseSession,
+async function stopCandidateServiceAtHome(
+  home: string,
   runCommand: CommandRunner = command,
 ): Promise<ReleaseSessionCandidateRetirement> {
-  const home = session.candidate.controllerHome;
   try {
     if (process.platform === 'darwin') {
       try {
@@ -5262,6 +5262,101 @@ async function stopReleaseSessionCandidateService(
     return { ok: false, detail: 'RELEASE_SESSION_CANDIDATE_STILL_RUNNING_AFTER_RETIREMENT' };
   }
   return { ok: true, detail: 'Candidate B persistent service is absent and its Runtime process is not running' };
+}
+
+async function stopReleaseSessionCandidateService(
+  session: ReleaseSession,
+  runCommand: CommandRunner = command,
+): Promise<ReleaseSessionCandidateRetirement> {
+  return stopCandidateServiceAtHome(session.candidate.controllerHome, runCommand);
+}
+
+async function reconcileOrphanCandidateLanes(
+  config: RecoveryConfig,
+  stable: ReturnType<typeof readStableExecutionLane>,
+  sessions: ReleaseSession[],
+): Promise<void> {
+  const candidateRoot = resolve(dirname(resolve(config.controllerHome)), 'candidate-runtime-lanes');
+  if (!existsSync(candidateRoot)) return;
+  const knownHomes = new Set(sessions.map((session) => resolve(session.candidate.controllerHome)));
+  const entries = readdirSync(candidateRoot, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .sort((left, right) => left.name.localeCompare(right.name));
+  if (entries.length > 512) throw new Error(`RELEASE_SESSION_CANDIDATE_LANE_INVENTORY_INCOMPLETE: ${entries.length}`);
+
+  for (const entry of entries) {
+    const candidateHome = resolve(candidateRoot, entry.name);
+    if (knownHomes.has(candidateHome)) continue;
+    try {
+      // Reuse ReleaseSession's own id parser as the identity fence. A directory
+      // whose name is not a valid session id is visible debt, not delete authority.
+      if (readReleaseSession(config.controllerHome, entry.name)) continue;
+    } catch (error) {
+      audit(config, 'release_session_orphan_candidate_identity_invalid', {
+        candidateControllerHome: candidateHome,
+        detail: error instanceof Error ? error.message : String(error),
+      });
+      continue;
+    }
+
+    let candidateConfig;
+    try {
+      candidateConfig = readForgeRuntimeServiceConfig(forgeRuntimeServicePaths(candidateHome).configPath, { missingRepositoryRoot: 'omit' });
+    } catch (error) {
+      audit(config, 'release_session_orphan_candidate_service_contract_unproven', {
+        sessionId: entry.name,
+        candidateControllerHome: candidateHome,
+        detail: error instanceof Error ? error.message : String(error),
+      });
+      continue;
+    }
+    if (resolve(candidateConfig.controllerHome) !== candidateHome || candidateConfig.port === stable.port) {
+      audit(config, 'release_session_orphan_candidate_service_contract_mismatch', {
+        sessionId: entry.name,
+        candidateControllerHome: candidateHome,
+        configuredControllerHome: candidateConfig.controllerHome,
+        configuredPort: candidateConfig.port,
+        stablePort: stable.port,
+      });
+      continue;
+    }
+
+    let running = true;
+    try {
+      running = observeRuntimeStatus(candidateHome).running;
+    } catch (error) {
+      audit(config, 'release_session_orphan_candidate_owner_unknown', {
+        sessionId: entry.name,
+        candidateControllerHome: candidateHome,
+        detail: error instanceof Error ? error.message : String(error),
+      });
+      continue;
+    }
+    if (running) {
+      audit(config, 'release_session_orphan_candidate_active_owner', { sessionId: entry.name, candidateControllerHome: candidateHome });
+      continue;
+    }
+
+    const retirement = await stopCandidateServiceAtHome(candidateHome);
+    if (!retirement.ok) {
+      audit(config, 'release_session_orphan_candidate_service_retirement_failed', {
+        sessionId: entry.name,
+        candidateControllerHome: candidateHome,
+        detail: retirement.detail,
+      });
+      continue;
+    }
+    try {
+      removeRetiredCandidateExecutionLane(stable, { controllerHome: candidateHome, sessionId: entry.name });
+      audit(config, 'release_session_orphan_candidate_lane_cleaned', { sessionId: entry.name, candidateControllerHome: candidateHome });
+    } catch (error) {
+      audit(config, 'release_session_orphan_candidate_lane_cleanup_failed', {
+        sessionId: entry.name,
+        candidateControllerHome: candidateHome,
+        detail: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
 }
 
 function candidateCanaryReceipts(

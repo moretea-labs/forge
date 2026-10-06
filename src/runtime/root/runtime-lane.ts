@@ -176,7 +176,7 @@ export function assertCandidateExecutionLaneIsolation(
  */
 export function removeRetiredCandidateExecutionLane(
   stable: StableExecutionLane,
-  candidate: CandidateExecutionLane,
+  candidate: Pick<CandidateExecutionLane, 'controllerHome' | 'sessionId'>,
 ): void {
   const stableHome = resolve(stable.controllerHome);
   const candidateHome = resolve(candidate.controllerHome);
