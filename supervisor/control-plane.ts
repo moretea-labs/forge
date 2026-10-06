@@ -59,6 +59,39 @@ export class WorkflowSupervisorControlPlane {
     this.hooks = hooks;
   }
   registerTask(input: WorkflowSupervisorTaskInput): WorkflowSupervisorTask { return this.store.registerTask(input); }
+  reviseTaskObjective(input: {
+    taskId: string;
+    objective: string;
+    expectedObjectiveSha256: string;
+    requestId: string;
+    authorizedBy?: string;
+  }): { task: WorkflowSupervisorTask; changed: boolean; deduplicated: boolean; objectiveSha256: string; refreshedEffect?: WorkflowSupervisorEffect } {
+    const task = this.requireTask(input.taskId);
+    requireNonTerminalTask(this.store, task.taskId);
+    const objective = input.objective.trim();
+    if (!objective || objective.length > 8_000) throw new Error('WORKFLOW_SUPERVISOR_OBJECTIVE_INVALID');
+    if (!/^[0-9a-f]{64}$/i.test(input.expectedObjectiveSha256)) throw new Error('WORKFLOW_SUPERVISOR_OBJECTIVE_REVISION_EXPECTED_SHA_INVALID');
+    if (!input.requestId.trim()) throw new Error('WORKFLOW_SUPERVISOR_OBJECTIVE_REVISION_REQUEST_REQUIRED');
+    const pending = this.store.currentUnappliedEffect(task.taskId);
+    let refreshEffect: { effectId: string; expectedPrompt: string; prompt: string } | undefined;
+    if (pending && !this.store.latestEffectDispatch(pending.effectId)) {
+      const source = pending.sourceCompletionFingerprint ? this.store.getCompletion(pending.sourceCompletionFingerprint) : undefined;
+      const checkpoint = source?.proposal.reason === 'compact_receipt' ? undefined : source?.proposal.checkpoint;
+      refreshEffect = {
+        effectId: pending.effectId,
+        expectedPrompt: pending.prompt,
+        prompt: this.renderPrompt({ ...task, objective }, pending.effectId, pending.kind, checkpoint),
+      };
+    }
+    return this.store.reviseTaskObjective({
+      taskId: task.taskId,
+      objective,
+      expectedObjectiveSha256: input.expectedObjectiveSha256.toLowerCase(),
+      requestId: input.requestId.trim(),
+      authorizedBy: input.authorizedBy?.trim() || 'operator',
+      ...(refreshEffect ? { refreshEffect } : {}),
+    });
+  }
   /**
    * Explicit operator recovery. It is deliberately evidence-classified rather
    * than a generic "try again": each class names the durable mechanical fact

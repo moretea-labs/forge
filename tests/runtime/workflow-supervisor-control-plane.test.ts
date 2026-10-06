@@ -189,6 +189,68 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     expect(hooks.canonicalObjectiveForTask?.(task)).toBe('Deliver the durable requirement outcome v2.');
   });
 
+  test('revises an active task outcome in place and refreshes only an undispatched effect prompt', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-objective-revise-'));
+    roots.push(root);
+    const store = new WorkflowSupervisorStore(root);
+    const control = new WorkflowSupervisorControlPlane(store);
+    const originalObjective = 'Legacy objective with execution-detail baggage.';
+    const task = control.registerTask({
+      taskId: 'task-objective-revise',
+      conversationId: '19191919-2828-3737-4646-555555555555',
+      conversationUrl: 'https://chatgpt.com/c/19191919-2828-3737-4646-555555555555',
+      objective: originalObjective,
+      completionContract: {}, continuationPolicy: { kind: 'standalone_supervisor' }, userBlockerPolicy: {},
+    });
+    const effect = control.reserveEnrollment(task.taskId, 'fx_objective_revise_1234');
+    const originalSha = createHash('sha256').update(originalObjective).digest('hex');
+    const revised = control.reviseTaskObjective({
+      taskId: task.taskId,
+      objective: 'Deliver the current product outcome until complete or genuinely blocked.',
+      expectedObjectiveSha256: originalSha,
+      requestId: 'objective-revise-1',
+      authorizedBy: 'user',
+    });
+    expect(revised).toMatchObject({ changed: true, deduplicated: false, task: { taskId: task.taskId, conversationId: task.conversationId } });
+    expect(revised.refreshedEffect?.effectId).toBe(effect.effectId);
+    expect(parseSupervisorTurn(revised.refreshedEffect!.prompt)).toMatchObject({
+      schema_version: 2,
+      identity: { task_id: task.taskId, effect_id: effect.effectId, kind: 'enrollment' },
+      goal: { role: 'outcome', objective: 'Deliver the current product outcome until complete or genuinely blocked.' },
+    });
+    expect(revised.refreshedEffect!.prompt).not.toContain(originalObjective);
+
+    const duplicate = control.reviseTaskObjective({
+      taskId: task.taskId,
+      objective: revised.task.objective,
+      expectedObjectiveSha256: originalSha,
+      requestId: 'objective-revise-1',
+      authorizedBy: 'user',
+    });
+    expect(duplicate.deduplicated).toBe(true);
+    expect(duplicate.refreshedEffect?.effectId).toBe(effect.effectId);
+
+    store.recordEffectDispatchStarted(effect.effectId, 1, 'dispatch-after-revise');
+    const promptAfterDispatch = store.getEffect(effect.effectId)!.prompt;
+    const second = control.reviseTaskObjective({
+      taskId: task.taskId,
+      objective: 'Deliver the refined outcome without encoding an execution plan.',
+      expectedObjectiveSha256: revised.objectiveSha256,
+      requestId: 'objective-revise-2',
+      authorizedBy: 'user',
+    });
+    expect(second.changed).toBe(true);
+    expect(second.refreshedEffect).toBeUndefined();
+    expect(store.getEffect(effect.effectId)!.prompt).toBe(promptAfterDispatch);
+    expect(() => control.reviseTaskObjective({
+      taskId: task.taskId,
+      objective: 'Conflicting writer outcome.',
+      expectedObjectiveSha256: originalSha,
+      requestId: 'objective-revise-conflict',
+    })).toThrow('WORKFLOW_SUPERVISOR_OBJECTIVE_REVISION_CONFLICT');
+    store.close();
+  });
+
   test('derives standalone project scope from Supervisor-owned Controller Home', () => {
     const fx = fixture();
     const supervisorStore = new WorkflowSupervisorStore(join(fx.root, 'standalone-project-scope'));

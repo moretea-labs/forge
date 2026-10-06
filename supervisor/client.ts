@@ -61,6 +61,18 @@ export async function getWorkflowSupervisorTask(forgeHome: string, taskId: strin
   return task ?? undefined;
 }
 
+export async function reviseWorkflowSupervisorTaskObjective(forgeHome: string, input: {
+  taskId: string; objective: string; expectedObjectiveSha256: string; requestId: string; authorizedBy?: string;
+}): Promise<{ task: WorkflowSupervisorTask; changed: boolean; deduplicated: boolean; objectiveSha256: string; refreshedEffect?: WorkflowSupervisorEffect }> {
+  return await rpc(forgeHome, 'task_revise_objective', {
+    task_id: input.taskId,
+    objective: input.objective,
+    expected_objective_sha256: input.expectedObjectiveSha256,
+    request_id: input.requestId,
+    ...(input.authorizedBy?.trim() ? { authorized_by: input.authorizedBy.trim() } : {}),
+  }, SUPERVISOR_RPC_MUTATION_TIMEOUT_MS);
+}
+
 export async function getWorkflowSupervisorTaskByConversationId(
   forgeHome: string,
   conversationId: string,

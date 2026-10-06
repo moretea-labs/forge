@@ -8,6 +8,7 @@ import {
   migrateWorkflowSupervisorConversation,
   recoverWorkflowSupervisorTask,
   registerWorkflowSupervisorTask,
+  reviseWorkflowSupervisorTaskObjective,
   reserveWorkflowSupervisorEnrollment,
   stopWorkflowSupervisorTask,
 } from '../../../supervisor/client';
@@ -60,6 +61,25 @@ export async function callWorkflowSupervisorAdapter(
     const activeOnly = args.active_only !== false;
     const tasks = await listWorkflowSupervisorTasks(forgeHome, activeOnly);
     return result({ tasks, count: tasks.length, activeOnly, summary: `${tasks.length} Supervisor task(s) listed.` });
+  }
+
+  if (operation === 'revise') {
+    const id = textArg(args, 'task_id');
+    const objective = textArg(args, 'objective');
+    const expectedObjectiveSha256 = textArg(args, 'expected_objective_sha256');
+    const requestId = textArg(args, 'request_id');
+    if (!id) throw new Error('WORKFLOW_SUPERVISOR_TASK_ID_REQUIRED');
+    if (!objective) throw new Error('WORKFLOW_SUPERVISOR_OBJECTIVE_REQUIRED');
+    if (!expectedObjectiveSha256) throw new Error('WORKFLOW_SUPERVISOR_OBJECTIVE_REVISION_EXPECTED_SHA_REQUIRED');
+    if (!requestId) throw new Error('WORKFLOW_SUPERVISOR_REQUEST_ID_REQUIRED');
+    const revised = await reviseWorkflowSupervisorTaskObjective(forgeHome, {
+      taskId: id,
+      objective,
+      expectedObjectiveSha256,
+      requestId,
+      authorizedBy: textArg(args, 'authorized_by') || 'operator',
+    });
+    return result({ ...revised, summary: `Supervisor task ${id} objective ${revised.changed ? 'revised' : 'confirmed'} in place.` });
   }
 
   if (operation === 'stop') {

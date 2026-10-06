@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
+import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -206,6 +207,27 @@ describe('Workflow Supervisor automation receipts', () => {
         capability_id: 'controller.workflow_supervisor', action: 'list', request_id: 'standalone-proof-capability-list-test', repo_id: 'repo-forge', arguments: {},
       });
       expect(listed?.structuredContent).toMatchObject({ count: 1, activeOnly: true });
+      const startedTask = (started?.structuredContent as any).task;
+      const startedEffect = (started?.structuredContent as any).effect;
+      const revised = await callCoreCapabilityAdapter(ctx, 'capability_execute', {
+        capability_id: 'controller.workflow_supervisor', action: 'revise', request_id: 'standalone-proof-capability-revise-test', repo_id: 'repo-forge',
+        arguments: {
+          task_id: startedTask.taskId,
+          objective: 'Deliver the standalone Supervisor outcome through the V2 goal envelope.',
+          expected_objective_sha256: createHash('sha256').update(startedTask.objective).digest('hex'),
+          authorized_by: 'user',
+        },
+      });
+      expect(revised?.isError).not.toBe(true);
+      expect(revised?.structuredContent).toMatchObject({
+        changed: true,
+        task: { taskId: startedTask.taskId, conversationId: startedTask.conversationId, objective: 'Deliver the standalone Supervisor outcome through the V2 goal envelope.' },
+        refreshedEffect: { effectId: startedEffect.effectId },
+      });
+      expect(parseSupervisorTurn((revised?.structuredContent as any).refreshedEffect.prompt)).toMatchObject({
+        schema_version: 2,
+        goal: { role: 'outcome', objective: 'Deliver the standalone Supervisor outcome through the V2 goal envelope.' },
+      });
       expect(store.listTasks()).toHaveLength(1);
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));

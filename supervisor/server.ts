@@ -354,6 +354,13 @@ async function dispatch(control: WorkflowSupervisorControlPlane, discovery: Work
   if (req.method === 'browser_observe_provider_turn') return control.browserObserveProviderTurn({ conversationId: text(p, 'conversation_id'), conversationUrl: text(p, 'conversation_url'), generating: p.generating === true, latestAssistantResponse: stringValue(p.latest_assistant_response), providerActivityText: stringValue(p.provider_activity_text), providerFailureCode: chatgptProviderPageFailure(stringValue(p.provider_failure_text)), observedAtMs: safeInteger(p, 'observed_at_ms'), graceMs: positiveInteger(p, 'grace_ms') });
   if (req.method === 'browser_observe_assistant') return control.browserObserveAssistant({ conversationId: text(p, 'conversation_id'), conversationUrl: text(p, 'conversation_url'), responseText: text(p, 'response_text') });
   if (req.method === 'task_register') return control.registerTask({ taskId: text(p, 'task_id'), conversationId: text(p, 'conversation_id'), conversationUrl: text(p, 'conversation_url'), objective: text(p, 'objective'), completionContract: object(p.completion_contract), continuationPolicy: object(p.continuation_policy), userBlockerPolicy: object(p.user_blocker_policy) });
+  if (req.method === 'task_revise_objective') return control.reviseTaskObjective({
+    taskId: text(p, 'task_id'),
+    objective: text(p, 'objective'),
+    expectedObjectiveSha256: text(p, 'expected_objective_sha256'),
+    requestId: text(p, 'request_id'),
+    ...(typeof p.authorized_by === 'string' && p.authorized_by.trim() ? { authorizedBy: p.authorized_by.trim() } : {}),
+  });
   if (req.method === 'task_list') return { tasks: control.listTasks(p.active_only === true) };
   if (req.method === 'task_stop') return control.stopTask(text(p, 'task_id'), typeof p.reason === 'string' && p.reason.trim() ? p.reason.trim() : 'Stopped by operator request.');
   if (req.method === 'task_recover') return control.recoverTask({

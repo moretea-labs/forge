@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { mkdirSync } from 'node:fs';
 import { resolveWorkflowSupervisorForgeHome, workflowSupervisorDatabasePathValue, workflowSupervisorRootPath } from './paths';
@@ -20,6 +21,7 @@ function statement<T>(db: Database, sql: string, fn: (statement: Statement) => T
   try { return fn(prepared); } finally { prepared.finalize?.(); }
 }
 function now(): string { return new Date().toISOString(); }
+function objectiveSha256(value: string): string { return createHash('sha256').update(value).digest('hex'); }
 function projectMetadataFromConversationUrl(value: string, observedTitle?: string, observedUrl?: string): { projectTitle?: string; projectUrl: string } | undefined {
   try {
     const parsed = new URL(value);
@@ -497,6 +499,86 @@ export class WorkflowSupervisorStore {
         throw new Error('WORKFLOW_SUPERVISOR_TASK_ID_CONFLICT');
       }
       return task;
+    });
+  }
+  reviseTaskObjective(input: {
+    taskId: string;
+    objective: string;
+    expectedObjectiveSha256: string;
+    requestId: string;
+    authorizedBy: string;
+    refreshEffect?: { effectId: string; expectedPrompt: string; prompt: string };
+  }): { task: WorkflowSupervisorTask; changed: boolean; deduplicated: boolean; objectiveSha256: string; refreshedEffect?: WorkflowSupervisorEffect } {
+    return this.transaction((db) => {
+      const objective = input.objective.trim();
+      if (!objective || objective.length > 8_000) throw new Error('WORKFLOW_SUPERVISOR_OBJECTIVE_INVALID');
+      if (!/^[0-9a-f]{64}$/i.test(input.expectedObjectiveSha256)) throw new Error('WORKFLOW_SUPERVISOR_OBJECTIVE_REVISION_EXPECTED_SHA_INVALID');
+      if (!input.requestId.trim()) throw new Error('WORKFLOW_SUPERVISOR_OBJECTIVE_REVISION_REQUEST_REQUIRED');
+      const targetSha = objectiveSha256(objective);
+      const eventKey = `task-objective-revise:${input.taskId}:${input.requestId}`;
+      const existingEvent = statement(db, 'SELECT payload_json FROM events WHERE event_key = ?', (s) => s.get(eventKey)) as { payload_json?: string } | undefined;
+      if (existingEvent) {
+        const payload = parsedObject(existingEvent.payload_json);
+        if (boundedText(payload.objective_sha256) !== targetSha) throw new Error('WORKFLOW_SUPERVISOR_OBJECTIVE_REVISION_REQUEST_CONFLICT');
+        const taskRow = statement(db, 'SELECT * FROM tasks WHERE task_id = ?', (s) => s.get(input.taskId)) as Record<string, unknown> | undefined;
+        if (!taskRow) throw new Error('WORKFLOW_SUPERVISOR_TASK_UNKNOWN');
+        const refreshedEffectId = boundedText(payload.refreshed_effect_id);
+        const refreshedRow = refreshedEffectId
+          ? statement(db, 'SELECT * FROM effects WHERE effect_id = ?', (s) => s.get(refreshedEffectId)) as Record<string, unknown> | undefined
+          : undefined;
+        return {
+          task: taskFromRow(taskRow),
+          changed: payload.changed === true,
+          deduplicated: true,
+          objectiveSha256: targetSha,
+          ...(refreshedRow ? { refreshedEffect: effectFromRow(refreshedRow) } : {}),
+        };
+      }
+      const row = statement(db, 'SELECT * FROM tasks WHERE task_id = ?', (s) => s.get(input.taskId)) as Record<string, unknown> | undefined;
+      if (!row) throw new Error('WORKFLOW_SUPERVISOR_TASK_UNKNOWN');
+      const terminal = statement(db, "SELECT kind FROM events WHERE task_id = ? AND kind IN ('terminal_done','terminal_needs_user','terminal_stopped') ORDER BY event_id DESC LIMIT 1", (s) => s.get(input.taskId)) as { kind?: string } | undefined;
+      if (terminal?.kind) throw new Error('WORKFLOW_SUPERVISOR_TASK_TERMINAL');
+      const task = taskFromRow(row);
+      const currentSha = objectiveSha256(task.objective);
+      if (currentSha !== input.expectedObjectiveSha256.toLowerCase()) throw new Error('WORKFLOW_SUPERVISOR_OBJECTIVE_REVISION_CONFLICT');
+
+      let refreshedEffect: WorkflowSupervisorEffect | undefined;
+      if (input.refreshEffect) {
+        const effectRow = statement(db, 'SELECT * FROM effects WHERE effect_id = ?', (s) => s.get(input.refreshEffect!.effectId)) as Record<string, unknown> | undefined;
+        if (!effectRow) throw new Error('WORKFLOW_SUPERVISOR_EFFECT_UNKNOWN');
+        const effect = effectFromRow(effectRow);
+        if (effect.taskId !== input.taskId) throw new Error('WORKFLOW_SUPERVISOR_EFFECT_TASK_CONFLICT');
+        if (effect.prompt !== input.refreshEffect.expectedPrompt) throw new Error('WORKFLOW_SUPERVISOR_EFFECT_PROMPT_CONFLICT');
+        const dispatched = effectDispatchLedger(db, effect.effectId).generations > 0;
+        const applied = Boolean(statement(db, "SELECT 1 AS ok FROM events WHERE effect_id = ? AND kind = 'effect_applied' LIMIT 1", (s) => s.get(effect.effectId)));
+        const superseded = effectSuperseded(db, effect.effectId);
+        if (!dispatched && !applied && !superseded) {
+          statement(db, 'UPDATE effects SET prompt_text = ? WHERE effect_id = ?', (s) => s.run(input.refreshEffect!.prompt, effect.effectId));
+          const updatedEffect = statement(db, 'SELECT * FROM effects WHERE effect_id = ?', (s) => s.get(effect.effectId)) as Record<string, unknown> | undefined;
+          if (!updatedEffect) throw new Error('WORKFLOW_SUPERVISOR_EFFECT_UNKNOWN');
+          refreshedEffect = effectFromRow(updatedEffect);
+        }
+      }
+
+      const changed = task.objective !== objective;
+      if (changed) statement(db, 'UPDATE tasks SET objective = ? WHERE task_id = ?', (s) => s.run(objective, input.taskId));
+      statement(db, 'INSERT INTO events(task_id,event_key,kind,payload_json,occurred_at) VALUES (?,?,?,?,?)', (s) => s.run(
+        input.taskId,
+        eventKey,
+        'task_objective_revised',
+        json({
+          request_id: input.requestId,
+          authorized_by: input.authorizedBy,
+          previous_objective_sha256: currentSha,
+          objective_sha256: targetSha,
+          changed,
+          ...(refreshedEffect ? { refreshed_effect_id: refreshedEffect.effectId } : {}),
+        }),
+        now(),
+      ));
+      const updatedTask = statement(db, 'SELECT * FROM tasks WHERE task_id = ?', (s) => s.get(input.taskId)) as Record<string, unknown> | undefined;
+      if (!updatedTask) throw new Error('WORKFLOW_SUPERVISOR_TASK_PERSIST_FAILED');
+      return { task: taskFromRow(updatedTask), changed, deduplicated: false, objectiveSha256: targetSha, ...(refreshedEffect ? { refreshedEffect } : {}) };
     });
   }
   getTask(taskId: string): WorkflowSupervisorTask | undefined { return this.read((db) => { const row = statement(db, 'SELECT * FROM tasks WHERE task_id = ?', (s) => s.get(taskId)); return row ? taskFromRow(row as Record<string, unknown>) : undefined; }); }
