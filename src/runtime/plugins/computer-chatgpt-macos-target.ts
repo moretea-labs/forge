@@ -199,7 +199,9 @@ export async function observeMacOsChatgptPage(
     const latestRoleNode = roleNodes.length ? roleNodes[roleNodes.length - 1] : undefined;
     const turns = nodes('[data-testid^="conversation-turn-"]');
     const providerActivityText = turns.length ? text(turns[turns.length - 1]).slice(-${MAX_PROVIDER_ACTIVITY_CHARS}) : messageText(latestRoleNode).slice(-${MAX_PROVIDER_ACTIVITY_CHARS});
-    const liveProviderStatus = Array.from(nodes('[role="alert"], [role="status"], [aria-live="assertive"], [aria-live="polite"]')).map(text).filter(Boolean).slice(-8).join('\\n');
+    const liveStatusNodes = Array.from(nodes('[role="alert"], [role="status"], [aria-live="assertive"], [aria-live="polite"]'));
+    const retryErrorNodes = Array.from(nodes('button')).filter((node) => /(?:请重试|try again)/i.test(text(node))).map((node) => node.parentElement || node);
+    const liveProviderStatus = [...liveStatusNodes, ...retryErrorNodes].map(text).filter(Boolean).slice(-8).join('\\n');
     const result = {
       url: String(location.href || ''), title: String(document.title || ''),
       latestUserText: userTexts ? userTexts.join('\\n') : latest(userEntries),
