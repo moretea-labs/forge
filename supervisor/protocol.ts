@@ -166,7 +166,14 @@ export function renderSupervisorPrompt(
   return [
     '@forge',
     renderEffectMarker(effectId),
-    ...(kind === 'enrollment' ? [`目标：${objective(task)}`, '开始。'] : ['继续。']),
+    ...(kind === 'enrollment'
+      ? [`目标：${objective(task)}`, '开始。']
+      : [
+        '继续当前 Supervisor 任务。',
+        `目标：${objective(task)}`,
+        '从当前 durable Forge facts 和当前会话恢复真实进度；不要重复已完成工作。模型自行判断本轮最有价值的推进方式。本提示不新增额外工作范围、步骤、gate 或完成条件，也不得缩小原任务范围。',
+        ...(typeof _checkpoint === 'string' && _checkpoint.trim() ? [`上一轮 checkpoint（仅作连续性线索，不限制本轮范围）：${JSON.stringify(_checkpoint.trim().slice(0, 2_000))}`] : []),
+      ]),
     `最后一次 Forge 调用携带 ${automationIdentity}, automation_status="continue"；完成用 "done"，需用户用 "needs_user"。`,
     ...(repoId ? [`Repository context: repo_id=${JSON.stringify(repoId)}${checkoutId ? `, checkout_id=${JSON.stringify(checkoutId)}` : ''}.`] : []),
   ].join('\n');
