@@ -48,12 +48,12 @@
     },
     {
       "name": "CurrentFocusCard",
-      "purpose": "Current controller activity without promoting mechanical runtime state to Work semantics.",
-      "allowedProps": ["summary", "activity", "controller", "startedAt", "nextLikelyAction"],
+      "purpose": "Bounded canonical Work continuation guidance without client-inferred activity or lifecycle state.",
+      "allowedProps": ["continuationPrompt", "nextSafeAction", "reconciliationRequired"],
       "category": "content",
       "interactionRole": "display",
-      "layout": { "axis": "vertical", "width": "fill", "alignment": "leading", "description": "One concise current-focus block; avoid dashboard metrics." },
-      "accessibility": { "summary": "Read current semantic focus, then activity and likely next action.", "traits": ["summary"] }
+      "layout": { "axis": "vertical", "width": "fill", "alignment": "leading", "description": "One concise continuation block sourced from canonical Work detail; avoid dashboard metrics or inferred controller activity." },
+      "accessibility": { "summary": "Read the canonical continuation prompt and next safe action when present.", "traits": ["summary"] }
     },
     {
       "name": "PlanContextPanel",

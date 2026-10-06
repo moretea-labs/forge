@@ -50,11 +50,9 @@
       "id": "focus",
       "component": "CurrentFocusCard",
       "props": {
-        "summary": "围绕权威需求、工作与计划投影构建项目工作台。",
-        "activity": "正在设计原生客户端信息架构",
-        "controller": "ChatGPT",
-        "startedAt": "08:21",
-        "nextLikelyAction": "设计验收后实现可移植桌面壳层"
+        "continuationPrompt": "来自 rh_work(get, detail).continuation.continuationPrompt；无该 canonical 事实时不生成替代文案。",
+        "nextSafeAction": "来自 rh_work(get, detail).continuation.nextSafeAction。",
+        "reconciliationRequired": "直接来自 canonical continuation projection；客户端不自行判断。"
       }
     },
     {

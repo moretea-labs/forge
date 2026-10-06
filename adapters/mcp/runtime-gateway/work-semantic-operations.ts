@@ -12,6 +12,7 @@ import {
   type WorkContractStoreOptions,
 } from '../../../packages/kernel/work/api/index';
 import { buildFacadeResult } from '../../../src/runtime/control-plane/facade';
+import { buildWorkContinuationSnapshot } from '../../../src/runtime/control-plane/facade/work-continuation';
 import { result } from './result-adapter';
 import { projectWorkExecutionEvidence } from './work-detail-projection';
 
@@ -118,7 +119,12 @@ export async function callRhWorkSemanticOperation(
       summary: `Work ${semantic.workId} retrieved at semantic revision ${semantic.revision}.`,
       data: {
         work: semantic,
-        ...(detail ? { revisionHistory, objectiveGraph, executionEvidence: projectWorkExecutionEvidence(work) } : {}),
+        ...(detail ? {
+          revisionHistory,
+          objectiveGraph,
+          executionEvidence: projectWorkExecutionEvidence(work),
+          continuation: buildWorkContinuationSnapshot(work),
+        } : {}),
       },
       detailLevel: args.detail_level === 'detail' ? 'detail' : 'summary',
     }) as unknown as Record<string, unknown>);

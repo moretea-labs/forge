@@ -149,6 +149,30 @@ describe('thin semantic Work lifecycle', () => {
     expect(stored.reconciliations ?? []).toEqual([]);
   });
 
+  test('detail read projects bounded canonical continuation facts without widening semantic Work state', async () => {
+    const options = store();
+    createOpenWork(options, 'work-continuation-detail', {
+      continuationPrompt: 'Continue from the exact canonical facts   and preserve authority boundaries.',
+      dispatchState: 'running',
+    });
+
+    const detail = structured(await callRhWorkSemanticOperation(options, 'get', {
+      work_id: 'work-continuation-detail',
+      detail_level: 'detail',
+    }));
+    expect(detail.data.continuation).toMatchObject({
+      schemaVersion: 1,
+      workId: 'work-continuation-detail',
+      repoId: options.repoId,
+      continuationPrompt: 'Continue from the exact canonical facts and preserve authority boundaries.',
+      reconciliationRequired: false,
+      nextSafeAction: 'Inspect the bound Work and its durable process/check evidence; do not resubmit the same request ID.',
+    });
+    expect(detail.data.work).toMatchObject({ workId: 'work-continuation-detail', state: 'open', revision: 1 });
+    expect(detail.data.work).not.toHaveProperty('continuationPrompt');
+    expect(detail.data.work).not.toHaveProperty('nextSafeAction');
+  });
+
   test('mechanical lifecycle axes (running/blocked/failed/ready) stay non-authoritative and are not caller-visible Work state', async () => {
     const options = store();
     createOpenWork(options, 'work-mechanical-axes');

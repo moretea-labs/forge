@@ -224,7 +224,7 @@ export interface ForgeDesktopProjection {
     objective: string;
     semanticState: WorkSemanticState;
     relationLabel?: string;
-    currentFocus?: string;
+    continuationPrompt?: string;
     nextSafeAction?: string;
     semanticParentWorkId?: string;
     dependsOnWorkIds: string[];
@@ -313,7 +313,7 @@ export const designPreviewProjection = Object.freeze<ForgeDesktopProjection>({
     objective: '围绕 Forge canonical projection 完成项目工作台，不在客户端复制 Work 生命周期或图权威。',
     semanticState: 'open',
     relationLabel: '当前工作',
-    currentFocus: '项目列表、Work 选择、依赖关系与会话继续全部通过现有 MCP 权威读取和执行。',
+    continuationPrompt: '项目列表、Work 选择、依赖关系与会话继续全部通过现有 MCP 权威读取和执行。',
     nextSafeAction: '继续把 Forge canonical facts 投影到当前工作面。',
     semanticParentWorkId: 'work-ia',
     dependsOnWorkIds: ['work-foundation'],

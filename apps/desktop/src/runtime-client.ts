@@ -121,6 +121,11 @@ interface RawWorkDetailResult {
     work?: RawWorkView;
     revisionHistory?: RawWorkView[];
     executionEvidence?: WorkExecutionEvidenceProjection;
+    continuation?: {
+      continuationPrompt?: string;
+      nextSafeAction?: string;
+      reconciliationRequired?: boolean;
+    };
     objectiveGraph?: {
       current?: {
         nodes?: RawWorkView[];
@@ -341,7 +346,8 @@ export async function readProjectWorkspace(
         objective: selectedWork.objective,
         semanticState: selectedWork.state,
         relationLabel: selectedWork.semanticParentWorkId ? '子工作' : '当前工作',
-        currentFocus: selectedWork.objective,
+        ...(detail?.data?.continuation?.continuationPrompt ? { continuationPrompt: detail.data.continuation.continuationPrompt } : {}),
+        ...(detail?.data?.continuation?.nextSafeAction ? { nextSafeAction: detail.data.continuation.nextSafeAction } : {}),
         ...(selectedWork.semanticParentWorkId ? { semanticParentWorkId: selectedWork.semanticParentWorkId } : {}),
         dependsOnWorkIds: selectedWork.dependsOnWorkIds ?? [],
         ...(selectedWork.requirementId ? { requirementId: selectedWork.requirementId } : {}),

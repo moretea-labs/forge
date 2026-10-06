@@ -293,7 +293,7 @@ function WorkView({
         <header className="work-hero">
           <div className="breadcrumb">{projection.project?.name ?? '项目'} / {semanticStateLabel(work.semanticState)}</div>
           <h1>{work.title}</h1>
-          {work.currentFocus && work.currentFocus !== work.title && <p>{work.currentFocus}</p>}
+          {work.continuationPrompt && <p>{work.continuationPrompt}</p>}
         </header>
 
         {continuations.map((task) => (

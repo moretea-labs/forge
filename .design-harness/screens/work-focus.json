@@ -52,11 +52,11 @@
           "Work semantic state + semantic revision",
           "Repository dirty/clean",
           "Git branch + source revision",
-          "Work nextSafeAction when canonical Runtime provides it"
+          "Work continuationPrompt / nextSafeAction from canonical rh_work(get, detail) continuation projection"
         ],
         "requirementDisclosure": "Requirement title/outcome/acceptance criteria from rh_work(requirement_get)",
         "planDisclosure": "Plan goal/revision/items and canonical revisionHistory from rh_work(plan_get, detail)",
-        "workDisclosure": "Work parent/dependencies/update time and canonical revisionHistory from rh_work(get, detail)",
+        "workDisclosure": "Work parent/dependencies/update time/revisionHistory plus bounded canonical continuation facts from rh_work(get, detail); no client inference",
         "executionEvidenceDisclosure": "rh_work(get, detail) 直接投影 WorkContract 的 dispatch/evidence/phase/checkRefs/evidenceRefs；客户端不得解析 resultRefs 推导检查结果",
         "attentionProjection": "仅展示 targetScope.workId 精确匹配当前 Work 的 pending UserRequest；来源为 rh_inbox(list)",
         "clientInference": false
