@@ -302,6 +302,16 @@ async fn read_work_detail(repo_id: String, work_id: String) -> Result<Value, Str
 }
 
 #[tauri::command]
+async fn read_user_requests() -> Result<Value, String> {
+    call_runtime_tool("rh_inbox", json!({
+        "operation": "list",
+        "detail_level": "summary",
+        "limit": 100,
+        "request_id": request_id("user-requests-list")
+    })).await
+}
+
+#[tauri::command]
 async fn read_requirement_detail(repo_id: String, requirement_id: String) -> Result<Value, String> {
     if repo_id.trim().is_empty() || requirement_id.trim().is_empty() {
         return Err("FORGE_DESKTOP_REQUIREMENT_DETAIL_ARGUMENT_REQUIRED".to_string());
@@ -376,6 +386,7 @@ fn main() {
             read_projects,
             read_project_overview,
             read_work_detail,
+            read_user_requests,
             read_requirement_detail,
             read_plan_detail,
             continue_work,

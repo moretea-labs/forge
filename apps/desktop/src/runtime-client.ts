@@ -5,6 +5,7 @@ import type {
   ProjectListItemProjection,
   ProjectPlanProjection,
   ProjectRequirementProjection,
+  UserRequestProjection,
   WorkGraphEdgeProjection,
   WorkGraphNodeProjection,
   WorkSemanticState,
@@ -17,6 +18,7 @@ interface RawSupervisorTask {
   objective: string;
   completionContract?: Record<string, unknown>;
   continuationPolicy?: Record<string, unknown>;
+  createdAt?: string;
 }
 
 interface SupervisorListResult {
@@ -70,6 +72,21 @@ interface RawRequirementDetailResult {
 
 interface RawPlanDetailResult {
   data?: { plan?: RawPlanSummary };
+}
+
+interface RawUserRequest {
+  requestId: string;
+  kind: 'user_action_request' | 'user_decision_request';
+  title: string;
+  summary: string;
+  actionRequired: 'login' | 'grant_permission' | 'confirm_destructive' | 'product_decision';
+  status: string;
+  targetScope?: { repoId?: string; workId?: string };
+  updatedAt?: string;
+}
+
+interface RawUserRequestListResult {
+  data?: { items?: RawUserRequest[] };
 }
 
 interface RawProjectOverviewResult {
@@ -144,6 +161,8 @@ function localizeRuntimeError(error: unknown): Error {
 function projectTask(task: RawSupervisorTask): AutomaticContinuationTaskProjection {
   const switching = task.conversationId.startsWith('bootstrap:');
   const workId = textField(task.completionContract, 'work_id') ?? textField(task.continuationPolicy, 'work_id');
+  const repoId = textField(task.completionContract, 'repo_id') ?? textField(task.continuationPolicy, 'repo_id');
+  const requirementId = textField(task.completionContract, 'requirement_id');
   const exactConversation = !switching && /\/c\//.test(task.conversationUrl);
   return {
     taskId: task.taskId,
@@ -162,6 +181,9 @@ function projectTask(task: RawSupervisorTask): AutomaticContinuationTaskProjecti
     nextAction: switching
       ? '等待新会话的接管消息被观察并完成绑定。'
       : '继续已绑定会话，或显式切换到新的 ChatGPT 会话。',
+    ...(repoId ? { repoId } : {}),
+    ...(requirementId ? { requirementId } : {}),
+    ...(task.createdAt ? { createdAt: task.createdAt } : {}),
   };
 }
 
@@ -209,7 +231,7 @@ export async function readAutomaticContinuations(): Promise<AutomaticContinuatio
 export async function readProjectWorkspace(
   project: ProjectListItemProjection,
   selectedWorkId?: string,
-): Promise<Pick<ForgeDesktopProjection, 'project' | 'workGraph' | 'work' | 'requirement' | 'plan'>> {
+): Promise<Pick<ForgeDesktopProjection, 'project' | 'workGraph' | 'work' | 'requirement' | 'plan' | 'userRequests'>> {
   try {
     const overview = await invoke<RawProjectOverviewResult>('read_project_overview', { repoId: project.repoId });
     const repositoryState = overview.data?.repositoryState;
@@ -230,13 +252,14 @@ export async function readProjectWorkspace(
     for (const work of graph?.nodes ?? []) nodes.set(work.workId, graphNode(work));
     if (selectedWork) nodes.set(selectedWork.workId, graphNode(selectedWork));
 
-    const [requirementDetail, planDetail] = await Promise.all([
+    const [requirementDetail, planDetail, userRequestResult] = await Promise.all([
       selectedWork?.requirementId
         ? invoke<RawRequirementDetailResult>('read_requirement_detail', { repoId: project.repoId, requirementId: selectedWork.requirementId })
         : Promise.resolve(undefined),
       selectedWork?.planId
         ? invoke<RawPlanDetailResult>('read_plan_detail', { repoId: project.repoId, planId: selectedWork.planId })
         : Promise.resolve(undefined),
+      invoke<RawUserRequestListResult>('read_user_requests'),
     ]);
     const rawRequirement = requirementDetail?.data?.requirement;
     const requirement: ProjectRequirementProjection | null = rawRequirement ? {
@@ -248,6 +271,18 @@ export async function readProjectWorkspace(
       acceptanceCriteria: rawRequirement.acceptanceCriteria ?? [],
       ...(rawRequirement.updatedAt ? { updatedAt: rawRequirement.updatedAt } : {}),
     } : null;
+    const userRequests: UserRequestProjection[] = selectedWork
+      ? (userRequestResult.data?.items ?? [])
+        .filter((item) => item.status === 'pending' && item.targetScope?.workId === selectedWork.workId)
+        .map((item) => ({
+          requestId: item.requestId,
+          kind: item.kind,
+          title: item.title,
+          summary: item.summary,
+          actionRequired: item.actionRequired,
+          ...(item.updatedAt ? { updatedAt: item.updatedAt } : {}),
+        }))
+      : [];
     const selectedPlan = planDetail?.data?.plan ?? (selectedWork?.planId
       ? activePlans.find((plan) => plan.planId === selectedWork.planId)
       : undefined);
@@ -294,6 +329,7 @@ export async function readProjectWorkspace(
       } : null,
       requirement,
       plan,
+      userRequests,
     };
   } catch (error) {
     throw localizeRuntimeError(error);

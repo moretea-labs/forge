@@ -8,6 +8,7 @@
     "助手与项目同级",
     "macOS 系统标题栏拥有窗口 chrome，默认只有轻量侧栏与单主工作区",
     "助手主区优先展示活动自动推进任务与绑定会话，不常驻检查器或机械状态",
+    "Supervisor 任务详情可按需展示其权威 repo/requirement/createdAt 绑定，不由客户端推断",
     "不得要求每个实例级任务都有项目、需求或计划",
     "切换新会话只能调用 canonical Supervisor migration"
   ],
@@ -35,6 +36,9 @@
             "title": "Forge 每日发布摘要",
             "status": "推进中",
             "conversationLink": "权威 ChatGPT 会话 URL",
+            "repoId": "Supervisor completion/continuation contract 中的 repo_id（如存在）",
+            "requirementId": "Supervisor completion contract 中的 requirement_id（如存在）",
+            "createdAt": "Supervisor 权威创建时间",
             "actions": ["打开绑定会话", "切换到新会话"]
           },
           {

@@ -17,6 +17,18 @@ export interface AutomaticContinuationTaskProjection {
     title?: string;
   } | null;
   nextAction?: string;
+  repoId?: string;
+  requirementId?: string;
+  createdAt?: string;
+}
+
+export interface UserRequestProjection {
+  requestId: string;
+  kind: 'user_action_request' | 'user_decision_request';
+  title: string;
+  summary: string;
+  actionRequired: 'login' | 'grant_permission' | 'confirm_destructive' | 'product_decision';
+  updatedAt?: string;
 }
 
 export interface ProjectListItemProjection {
@@ -141,6 +153,7 @@ export interface ForgeDesktopProjection {
   } | null;
   requirement: ProjectRequirementProjection | null;
   plan: ProjectPlanProjection | null;
+  userRequests: UserRequestProjection[];
   automaticContinuations: AutomaticContinuationTaskProjection[];
 }
 
@@ -161,6 +174,7 @@ export const disconnectedProjection = Object.freeze<ForgeDesktopProjection>({
   work: null,
   requirement: null,
   plan: null,
+  userRequests: [],
   automaticContinuations: [],
 });
 
@@ -240,6 +254,16 @@ export const designPreviewProjection = Object.freeze<ForgeDesktopProjection>({
       { id: 'v3-5-mcp-assistant-projects', objective: '完成 Assistant、Projects 与 Work 的真实事实投影' },
     ],
   },
+  userRequests: [
+    {
+      requestId: 'preview-user-request',
+      kind: 'user_decision_request',
+      title: '确认下一阶段产品方向',
+      summary: '这是设计预览中的 UserRequest 示例；正式客户端只展示 Forge Inbox 的真实 pending 请求。',
+      actionRequired: 'product_decision',
+      updatedAt: '2026-10-06T03:40:00.000Z',
+    },
+  ],
   automaticContinuations: [
     {
       taskId: 'forge:repo-preview:work:work-mcp',
@@ -255,6 +279,9 @@ export const designPreviewProjection = Object.freeze<ForgeDesktopProjection>({
         title: 'Forge V3 客户端开发',
       },
       nextAction: '继续当前会话，或显式切换到新的 ChatGPT 会话。',
+      repoId: 'repo-preview-forge',
+      requirementId: 'REQ-forge-v3-desktop-client-20260930',
+      createdAt: '2026-10-01T14:09:52.665Z',
     },
   ],
 });

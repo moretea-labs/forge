@@ -196,7 +196,10 @@ function AutomaticContinuationRow({
         <dl>
           <div><dt>任务</dt><dd className="mono">{task.taskId}</dd></div>
           {task.workId && <div><dt>工作</dt><dd className="mono">{task.workId}</dd></div>}
+          {task.repoId && <div><dt>项目</dt><dd className="mono">{task.repoId}</dd></div>}
+          {task.requirementId && <div><dt>需求</dt><dd className="mono">{task.requirementId}</dd></div>}
           {conversation && <div><dt>会话</dt><dd className="mono">{conversation.conversationId}</dd></div>}
+          {task.createdAt && <div><dt>创建</dt><dd>{new Date(task.createdAt).toLocaleString('zh-CN')}</dd></div>}
           <div><dt>状态</dt><dd>{task.detail}</dd></div>
         </dl>
       </details>
@@ -259,6 +262,18 @@ function WorkView({
 
         {work.nextSafeAction && (
           <div className="next-fact"><span>Forge 下一安全动作</span><p>{work.nextSafeAction}</p></div>
+        )}
+
+        {projection.userRequests.length > 0 && (
+          <section className="attention-inline" aria-label="需要你处理">
+            <div className="attention-heading">需要你处理 · {projection.userRequests.length}</div>
+            {projection.userRequests.map((request) => (
+              <div className="attention-item" key={request.requestId}>
+                <strong>{request.title}</strong>
+                <p>{request.summary}</p>
+              </div>
+            ))}
+          </section>
         )}
 
         <details className="detail-section">

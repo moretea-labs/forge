@@ -57,7 +57,18 @@
         "requirementDisclosure": "Requirement title/outcome/acceptance criteria from rh_work(requirement_get)",
         "planDisclosure": "Plan goal/revision/items from rh_work(plan_get)",
         "workDisclosure": "Work parent/dependencies/update time from rh_work(get)",
+        "attentionProjection": "仅展示 targetScope.workId 精确匹配当前 Work 的 pending UserRequest；来源为 rh_inbox(list)",
         "clientInference": false
+      }
+    },
+    {
+      "id": "needs-user",
+      "component": "InlineUserRequestProjection",
+      "props": {
+        "visibility": "only-when-exact-current-work-has-pending-request",
+        "content": ["title", "summary"],
+        "mutatesInbox": false,
+        "noGlobalInboxDump": true
       }
     },
     {

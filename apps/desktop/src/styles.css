@@ -167,6 +167,11 @@ a { color: inherit; }
 .fact-strip strong { min-width: 0; color: #5e5952; font-size: 10px; font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .next-fact { padding: 0 0 16px; }
 .next-fact p { margin: 4px 0 0; color: #5f5952; font-size: 10px; line-height: 1.55; }
+.attention-inline { margin: 0 0 8px; padding: 12px 0 14px; border-top: 1px solid rgba(183, 120, 63, .24); border-bottom: 1px solid rgba(183, 120, 63, .18); }
+.attention-heading { color: #9a6536; font-size: 10px; font-weight: 610; margin-bottom: 8px; }
+.attention-item + .attention-item { margin-top: 10px; }
+.attention-item strong { color: #5d5147; font-size: 10px; font-weight: 600; }
+.attention-item p { margin: 4px 0 0; color: #776c62; font-size: 10px; line-height: 1.55; }
 .detail-section { padding: 14px 0; }
 .detail-section:last-of-type { border-bottom: 1px solid rgba(74, 67, 59, .09); }
 .detail-section[open] summary { margin-bottom: 13px; color: #555049; }
