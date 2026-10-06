@@ -12,8 +12,8 @@ export const LEGACY_BRACKET_SUPERVISOR_BLOCK_END = '[[[END_FORGE_WORKFLOW_SUPERV
 export const LEGACY_SUPERVISOR_BLOCK_START = '<<<FORGE_WORKFLOW_SUPERVISOR_V1>>>';
 export const LEGACY_SUPERVISOR_BLOCK_END = '<<<END_FORGE_WORKFLOW_SUPERVISOR_V1>>>';
 export const EFFECT_MARKER_PREFIX = '<<<FORGE_WORKFLOW_EFFECT_V1:';
-export const SUPERVISOR_TURN_BLOCK_START = 'FORGE_WORKFLOW_TURN_V1_BEGIN';
-export const SUPERVISOR_TURN_BLOCK_END = 'FORGE_WORKFLOW_TURN_V1_END';
+export const SUPERVISOR_TURN_BLOCK_START = 'FORGE_WORKFLOW_TURN_V2_BEGIN';
+export const SUPERVISOR_TURN_BLOCK_END = 'FORGE_WORKFLOW_TURN_V2_END';
 const EFFECT_ID = /^(?:fx|crpe)_[a-zA-Z0-9_-]{8,120}$/;
 const MAX_RESPONSE = 512 * 1024;
 const SUPERVISOR_BLOCK_MARKERS = [
@@ -155,12 +155,17 @@ export function renderSupervisorPrompt(
     : typeof task.continuationPolicy.checkout_id === 'string' ? task.continuationPolicy.checkout_id.trim() : '';
   const checkpoint = typeof _checkpoint === 'string' ? _checkpoint.trim().slice(0, 2_000) : '';
   const envelope: WorkflowSupervisorTurnEnvelope = {
-    schema_version: 1,
-    task_id: task.taskId,
-    effect_id: validateEffectId(effectId),
-    kind,
-    objective: task.objective.slice(0, 8_000),
-    ...(checkpoint ? { checkpoint } : {}),
+    schema_version: 2,
+    identity: {
+      task_id: task.taskId,
+      effect_id: validateEffectId(effectId),
+      kind,
+    },
+    goal: {
+      role: 'outcome',
+      objective: task.objective.slice(0, 8_000),
+    },
+    ...(checkpoint ? { continuity: { role: 'advisory' as const, summary: checkpoint } } : {}),
     ...(repoId ? { repository: { repo_id: repoId, ...(checkoutId ? { checkout_id: checkoutId } : {}) } } : {}),
     automation: {
       automation_task_id: task.taskId,

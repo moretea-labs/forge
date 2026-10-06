@@ -8,12 +8,22 @@ export type WorkflowEffectOutcome = 'applied' | 'not_applied' | 'unknown';
 
 /** Minimal machine-readable context carried into one autonomous provider turn. */
 export interface WorkflowSupervisorTurnEnvelope {
-  schema_version: 1;
-  task_id: string;
-  effect_id: string;
-  kind: WorkflowEffectKind;
-  objective: string;
-  checkpoint?: string;
+  schema_version: 2;
+  identity: {
+    task_id: string;
+    effect_id: string;
+    kind: WorkflowEffectKind;
+  };
+  /** Semantic outcome to pursue. It is context, not an execution-plan DSL. */
+  goal: {
+    role: 'outcome';
+    objective: string;
+  };
+  /** Prior-turn continuity is evidence for orientation, never an execution constraint. */
+  continuity?: {
+    role: 'advisory';
+    summary: string;
+  };
   repository?: {
     repo_id: string;
     checkout_id?: string;

@@ -136,7 +136,7 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
       requestId: 'canonical-objective-recovery',
       reason: 'Verify prompt refresh after the canonical Work objective changes.',
     }).recoveryEffect;
-    expect(parseSupervisorTurn(recovery.prompt).objective).toBe('Current canonical objective v2.');
+    expect(parseSupervisorTurn(recovery.prompt).goal).toEqual({ role: 'outcome', objective: 'Current canonical objective v2.' });
     expect(recovery.prompt).not.toContain('Current canonical objective v1.');
     expect(recovery.prompt).not.toContain('Stale registration objective.');
     store.close();
@@ -290,12 +290,20 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     const continuation = renderSupervisorPrompt(task, 'fx_minimal01', 'continuation', 'large checkpoint payload', undefined, lowerLayerContext);
     expect(continuation).toStartWith('@forge\n<<<FORGE_WORKFLOW_EFFECT_V1:fx_minimal01>>>\n');
     expect(parseSupervisorTurn(continuation)).toEqual({
-      schema_version: 1,
-      task_id: task.taskId,
-      effect_id: 'fx_minimal01',
-      kind: 'continuation',
-      objective: task.objective,
-      checkpoint: 'large checkpoint payload',
+      schema_version: 2,
+      identity: {
+        task_id: task.taskId,
+        effect_id: 'fx_minimal01',
+        kind: 'continuation',
+      },
+      goal: {
+        role: 'outcome',
+        objective: task.objective,
+      },
+      continuity: {
+        role: 'advisory',
+        summary: 'large checkpoint payload',
+      },
       repository: { repo_id: 'repo-minimal-continuation', checkout_id: 'checkout_ios_candidate' },
       automation: {
         automation_task_id: task.taskId,
@@ -316,17 +324,28 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     expect(continuation).not.toContain('"next_action"');
 
     const recovery = renderSupervisorPrompt(task, 'fx_recover01', 'recovery', 'restore checkpoint', 'recover durable state', lowerLayerContext);
-    expect(parseSupervisorTurn(recovery)).toMatchObject({ kind: 'recovery', objective: task.objective, checkpoint: 'restore checkpoint' });
+    expect(parseSupervisorTurn(recovery)).toMatchObject({
+      identity: { kind: 'recovery' },
+      goal: { role: 'outcome', objective: task.objective },
+      continuity: { role: 'advisory', summary: 'restore checkpoint' },
+    });
     expect(recovery).not.toContain('recover durable state');
     expect(recovery).not.toContain(lowerLayerContext);
 
     const correction = renderSupervisorPrompt(task, 'fx_correct01', 'correction', 'ignored checkpoint', 'ignored correction', lowerLayerContext);
-    expect(parseSupervisorTurn(correction)).toMatchObject({ kind: 'correction', objective: task.objective, checkpoint: 'ignored checkpoint' });
+    expect(parseSupervisorTurn(correction)).toMatchObject({
+      identity: { kind: 'correction' },
+      goal: { role: 'outcome', objective: task.objective },
+      continuity: { role: 'advisory', summary: 'ignored checkpoint' },
+    });
     expect(correction).not.toContain('ignored correction');
 
     const enrollment = renderSupervisorPrompt(task, 'fx_1234567890abcdef', 'enrollment');
-    expect(parseSupervisorTurn(enrollment)).toMatchObject({ kind: 'enrollment', objective: task.objective });
-    expect(parseSupervisorTurn(enrollment).checkpoint).toBeUndefined();
+    expect(parseSupervisorTurn(enrollment)).toMatchObject({
+      identity: { kind: 'enrollment' },
+      goal: { role: 'outcome', objective: task.objective },
+    });
+    expect(parseSupervisorTurn(enrollment).continuity).toBeUndefined();
   });
 
   test('pins the exact assistant action enum and validates compact causal receipts while retaining legacy reads', () => {
@@ -433,12 +452,10 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     };
     const continuation = renderSupervisorPrompt(task, 'fx_continue_1234', 'continuation', 'checkpoint-sentinel', undefined, 'LOWER_LAYER_SENTINEL');
     expect(parseSupervisorTurn(continuation)).toMatchObject({
-      schema_version: 1,
-      task_id: task.taskId,
-      effect_id: 'fx_continue_1234',
-      kind: 'continuation',
-      objective: task.objective,
-      checkpoint: 'checkpoint-sentinel',
+      schema_version: 2,
+      identity: { task_id: task.taskId, effect_id: 'fx_continue_1234', kind: 'continuation' },
+      goal: { role: 'outcome', objective: task.objective },
+      continuity: { role: 'advisory', summary: 'checkpoint-sentinel' },
       automation: { automation_type: 'autonomous_continuation' },
     });
     expect(continuation).not.toContain('automation.receipt:');
@@ -447,7 +464,11 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     expect(continuation).not.toContain('REQ-minimal-prompt');
 
     const recovery = renderSupervisorPrompt(task, 'fx_recovery_1234', 'recovery', 'checkpoint-sentinel', 'recover causally', 'LOWER_LAYER_SENTINEL');
-    expect(parseSupervisorTurn(recovery)).toMatchObject({ kind: 'recovery', objective: task.objective, checkpoint: 'checkpoint-sentinel' });
+    expect(parseSupervisorTurn(recovery)).toMatchObject({
+      identity: { kind: 'recovery' },
+      goal: { role: 'outcome', objective: task.objective },
+      continuity: { role: 'advisory', summary: 'checkpoint-sentinel' },
+    });
     expect(recovery).not.toContain('recover causally');
     expect(recovery).not.toContain('LOWER_LAYER_SENTINEL');
   });
