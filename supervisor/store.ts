@@ -1008,6 +1008,18 @@ export class WorkflowSupervisorStore {
       return effect;
     });
   }
+  freshConversationMigrationContext(taskId: string): { fromConversationId: string; requestId: string } | undefined {
+    return this.read((db) => {
+      const row = statement(db, "SELECT payload_json FROM events WHERE task_id = ? AND kind = 'conversation_migrated' ORDER BY event_id DESC LIMIT 1", (s) => s.get(taskId)) as { payload_json?: string } | undefined;
+      const payload = parsedObject(row?.payload_json);
+      if (payload.fresh_conversation !== true || payload.to_conversation_id !== `bootstrap:${taskId}`) return undefined;
+      const fromConversationId = typeof payload.from_conversation_id === 'string' ? payload.from_conversation_id.trim() : '';
+      const requestId = typeof payload.request_id === 'string' ? payload.request_id.trim() : '';
+      if (!fromConversationId || !requestId) return undefined;
+      return { fromConversationId, requestId };
+    });
+  }
+
   /**
    * Explicit operator switch of an exhausted task to a *fresh* conversation in
    * its configured Project. This is the one path that legitimately opens a new

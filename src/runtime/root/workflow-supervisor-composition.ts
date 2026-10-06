@@ -12,6 +12,7 @@ import {
 import {
   bindChatgptWorkConversation,
   getChatgptWorkConversationBinding,
+  rebindChatgptWorkConversation,
   type ChatgptWorkConversationBinding,
 } from '../../../adapters/chatgpt/work-conversation-binding-store';
 import { readRequirement } from '../control-plane/persistence/requirement-store';
@@ -288,14 +289,23 @@ export function forgeWorkflowSupervisorLifecycleHooks(controllerHome: string): W
       } catch { return undefined; }
     },
     browserTaskActive,
-    bootstrapConversationBound: (task) => {
+    bootstrapConversationBound: (task, context) => {
       const repoId = workflowSupervisorContractText(task, 'repo_id');
       const workId = workflowSupervisorContractText(task, 'work_id');
       const taskControllerHome = workflowSupervisorContractText(task, 'controller_home');
       if (!repoId || !workId || taskControllerHome !== controllerHome) return;
       const existing = getChatgptWorkConversationBinding({ controllerHome, repoId }, workId);
-      if (existing && (existing.conversationId !== task.conversationId || existing.conversationUrl !== task.conversationUrl)) {
-        throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_WORK_CONVERSATION_CONFLICT');
+      if (existing && existing.conversationId !== task.conversationId) {
+        if (!context?.migratedFromConversationId || context.migratedFromConversationId !== existing.conversationId) {
+          throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_WORK_CONVERSATION_CONFLICT');
+        }
+        rebindChatgptWorkConversation({ controllerHome, repoId }, {
+          workId,
+          previousConversationId: existing.conversationId,
+          conversationUrl: task.conversationUrl,
+          localAlias: existing.localAlias,
+        });
+        return;
       }
       if (!existing) {
         bindChatgptWorkConversation({ controllerHome, repoId }, {

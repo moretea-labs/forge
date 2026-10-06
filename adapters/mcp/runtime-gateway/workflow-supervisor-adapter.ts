@@ -5,6 +5,7 @@ import {
   getWorkflowSupervisorTask,
   getWorkflowSupervisorTaskStall,
   listWorkflowSupervisorTasks,
+  migrateWorkflowSupervisorConversation,
   recoverWorkflowSupervisorTask,
   registerWorkflowSupervisorTask,
   reserveWorkflowSupervisorEnrollment,
@@ -66,6 +67,28 @@ export async function callWorkflowSupervisorAdapter(
     if (!id) throw new Error('WORKFLOW_SUPERVISOR_TASK_ID_REQUIRED');
     const stopped = await stopWorkflowSupervisorTask(forgeHome, id, textArg(args, 'reason') || 'Stopped by operator request.');
     return result({ ...stopped, summary: `Supervisor task ${id} stopped.` });
+  }
+
+  if (operation === 'switch_to_fresh_conversation') {
+    const id = textArg(args, 'task_id');
+    const expectedConversationId = textArg(args, 'expected_conversation_id');
+    const requestId = textArg(args, 'request_id');
+    const reason = textArg(args, 'reason');
+    if (!id) throw new Error('WORKFLOW_SUPERVISOR_TASK_ID_REQUIRED');
+    if (!expectedConversationId) throw new Error('WORKFLOW_SUPERVISOR_MIGRATION_EXPECTED_CONVERSATION_REQUIRED');
+    if (!requestId) throw new Error('WORKFLOW_SUPERVISOR_REQUEST_ID_REQUIRED');
+    if (!reason) throw new Error('WORKFLOW_SUPERVISOR_MIGRATION_REASON_REQUIRED');
+    const migrated = await migrateWorkflowSupervisorConversation(forgeHome, {
+      taskId: id, expectedConversationId, requestId, reason, fresh: true,
+      authorizedBy: textArg(args, 'authorized_by') || 'operator',
+    });
+    return result({
+      ...migrated,
+      status: migrated.migrated ? 'switching_to_fresh_conversation' : 'unchanged',
+      summary: migrated.migrated
+        ? `Supervisor task ${id} reserved a fresh conversation and will bind it after the enrollment send is observed.`
+        : `Supervisor task ${id} conversation was unchanged.`,
+    });
   }
 
   if (operation === 'recover') {

@@ -392,6 +392,19 @@ export function getCoreCapabilityExecutionSchema(capabilityId: string): Record<s
             properties: { task_id: { type: 'string', minLength: 1, maxLength: 256 } },
           },
         },
+        switch_to_fresh_conversation: {
+          readOnly: false,
+          risk: 'workspace_write',
+          argumentsSchema: {
+            type: 'object', additionalProperties: false, required: ['task_id', 'expected_conversation_id', 'reason'],
+            properties: {
+              task_id: { type: 'string', minLength: 1, maxLength: 256 },
+              expected_conversation_id: { type: 'string', minLength: 1, maxLength: 256 },
+              reason: { type: 'string', minLength: 1, maxLength: 2000 },
+              authorized_by: { type: 'string', minLength: 1, maxLength: 256 },
+            },
+          },
+        },
         recover: {
           readOnly: false,
           risk: 'workspace_write',

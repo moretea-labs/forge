@@ -126,6 +126,15 @@
       "interactionRole": "selection",
       "layout": { "axis": "vertical", "width": "fill", "alignment": "stretch", "description": "Chronological history with text-first relation semantics." },
       "accessibility": { "summary": "Read chronological entries and selected revision without depending on spatial timeline geometry.", "traits": ["summary"] }
+    },
+    {
+      "name": "AutomaticContinuationPanel",
+      "purpose": "Read-only projection of a Workflow Supervisor automatic-continuation task, including exact bound ChatGPT conversation, plus the explicit canonical action to move the same task to a fresh conversation.",
+      "allowedProps": ["taskId", "workId", "objective", "status", "detail", "conversationId", "conversationUrl", "nextAction", "switchActionState"],
+      "category": "content",
+      "interactionRole": "control",
+      "layout": { "axis": "vertical", "width": "fill", "alignment": "stretch", "description": "Task identity and current exact conversation are visible together; switch action is secondary and never mutates client-owned state as authority." },
+      "accessibility": { "summary": "Announce task state, expose the bound conversation as a link, and provide an explicit Use new conversation button with its current availability.", "traits": ["summary", "button"] }
     }
   ]
 }

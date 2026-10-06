@@ -8,7 +8,8 @@
     "原生桌面 agent 工作台，不是网页聊天产品",
     "Current Focus、变更和证据优先",
     "Plan 仅可折叠上下文，不显示进度条",
-    "Runtime detail 可收起"
+    "Runtime detail 可收起",
+    "自动推进任务显示 exact conversation link；切换新会话只能调用 canonical Supervisor migration，客户端不能直接改绑定。"
   ],
   "nodes": [
     {
@@ -86,6 +87,26 @@
         "historyCount": 8,
         "executionProjection": "Descriptive context"
       }
+    },
+    {
+      "id": "automatic-continuation",
+      "component": "AutomaticContinuationPanel",
+      "props": {
+        "taskId": "forge:repo-forge:work:work-mcp",
+        "workId": "work-mcp",
+        "objective": "Continue the selected Work until delivery or an explicit user blocker.",
+        "status": "Running",
+        "detail": "Workflow Supervisor owns the outer turn.",
+        "conversationId": "exact ChatGPT conversation id",
+        "conversationUrl": "canonical ChatGPT conversation URL",
+        "nextAction": "Continue in the same exact conversation unless the user explicitly switches.",
+        "switchActionState": "Available when no unresolved provider outcome blocks migration"
+      },
+      "interactionPatternId": "automatic-continuation-inspection",
+      "interactions": [
+        { "event": "open_conversation", "actions": [{ "type": "emit_design_action", "actionId": "open-automatic-continuation-conversation" }] },
+        { "event": "switch_conversation", "actions": [{ "type": "emit_design_action", "actionId": "switch-automatic-continuation-conversation" }] }
+      ]
     },
     {
       "id": "evidence",

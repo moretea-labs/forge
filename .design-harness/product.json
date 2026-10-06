@@ -10,7 +10,8 @@
       "Project 页面展示 Forge canonical projection，不在客户端重建 graph/lifecycle authority。",
       "Continuation、supersession 与 revision history 属于 History，不进入目标 Work Graph。",
       "Runtime、Recovery、connection、process 是机械事实，不应伪装为 Work 语义状态。",
-      "Assistant-global Work 可以不属于任何 Project、Requirement 或 Plan。"
+      "Assistant-global Work 可以不属于任何 Project、Requirement 或 Plan。",
+      "自动推进任务的会话绑定是 Workflow Supervisor / Work canonical fact；客户端只投影 task 状态和 exact conversation link，切换新会话必须走显式、CAS-fenced 的 Supervisor migration。"
     ],
     "primaryTasks": [
       "从 Project 找到并继续当前 Work",
@@ -20,7 +21,8 @@
     "secondaryTasks": [
       "查看 Plan/Requirement 作为当前 Work 的可选上下文",
       "查看 evidence、history、connections 与 Runtime facts",
-      "在 Work Focus 中专注处理一个 Work"
+      "在 Work Focus 中专注处理一个 Work",
+      "预览自动推进任务、打开其绑定会话，并显式切换到新的 ChatGPT 会话继续同一任务"
     ],
     "informationHierarchy": [
       { "role": "primary_meaning", "description": "当前 scope 与当前 Work：用户首先要知道自己在哪、正在推进什么。", "priority": "primary" },
@@ -45,7 +47,8 @@
       { "id": "open-runtime", "semantics": "进入 Runtime/Recovery 系统面，不改变任何 Work state。", "patternId": "system-recovery" },
       { "id": "repair-runtime", "semantics": "通过 standalone Recovery authority 发起诊断/重启/修复。", "patternId": "system-recovery" },
       { "id": "open-assistant", "semantics": "切换到 Forge-instance Assistant scope。", "patternId": "stable-scope-navigation" },
-      { "id": "open-project", "semantics": "切换到 repository Project scope。", "patternId": "stable-scope-navigation" }
+      { "id": "open-project", "semantics": "切换到 repository Project scope。", "patternId": "stable-scope-navigation" },
+      { "id": "switch-automatic-continuation-conversation", "semantics": "用户显式要求把一个自动推进任务迁移到 fresh ChatGPT conversation；客户端携带当前 conversationId 作为 CAS fence 调用 canonical Workflow Supervisor capability，不能直接改 binding。", "patternId": "automatic-continuation-inspection" }
     ],
     "screenFamily": "desktop agent workspace",
     "nonGoals": [
@@ -94,6 +97,14 @@
           "commitBoundary": { "kind": "durable_write", "description": "真正副作用由 Forge/MCP 的 canonical capability 承担；客户端只发起请求并展示 receipt。" },
           "result": "控制器收到当前 Work scope 的下一条用户指令。",
           "to": { "screenId": "work-focus", "stateId": "focused" }
+        },
+        {
+          "id": "switch-automatic-continuation-conversation",
+          "from": { "screenId": "work-focus", "stateId": "focused" },
+          "trigger": { "interactionId": "switch-automatic-continuation-conversation", "event": "press" },
+          "commitBoundary": { "kind": "durable_write", "description": "客户端调用 canonical Workflow Supervisor migration，并携带当前 exact conversationId 作为 CAS fence；客户端本身不写 binding。" },
+          "result": "同一自动推进任务迁移到 fresh ChatGPT conversation；新会话被真实观察后，Work binding 收敛到该 exact conversation。",
+          "to": { "screenId": "work-focus", "stateId": "focused" }
         }
       ]
     },
@@ -140,6 +151,7 @@
     { "id": "controller-composer", "name": "Controller Composer", "semanticPurpose": "向当前 scope 的控制器发出指令，副作用仍由 Forge/MCP capability 承担。", "status": "golden_candidate", "validatedFlowIds": ["project-work-flow", "assistant-global-flow"], "siblingEvidence": ["Project Work Focus and Assistant Global share the same command semantics."], "canonicalComponent": "AgentComposer" },
     { "id": "work-focus", "name": "Work Focus", "semanticPurpose": "对同一 Work identity 提供低干扰专注视图。", "status": "local", "validatedFlowIds": ["project-work-flow"], "siblingEvidence": [] },
     { "id": "history-inspection", "name": "History Inspection", "semanticPurpose": "承载 continuation/supersession/revision history，避免污染目标 Work Graph。", "status": "local", "validatedFlowIds": ["project-work-flow"], "siblingEvidence": [] },
+    { "id": "automatic-continuation-inspection", "name": "Automatic Continuation Inspection", "semanticPurpose": "投影 Workflow Supervisor task 与 exact ChatGPT conversation，并把显式 fresh-conversation migration 交还 canonical capability 执行。", "status": "local", "validatedFlowIds": ["project-work-flow"], "siblingEvidence": [], "canonicalComponent": "AutomaticContinuationPanel" },
     { "id": "system-recovery", "name": "Standalone Recovery", "semanticPurpose": "Runtime down 时仍通过独立 Recovery authority 诊断和修复。", "status": "golden_candidate", "validatedFlowIds": ["runtime-recovery-flow"], "siblingEvidence": ["RuntimeInspector and Runtime & Recovery surface use the same mechanical-state vocabulary."], "canonicalComponent": "RecoverySurface" }
   ],
   "golden": {

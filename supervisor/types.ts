@@ -153,7 +153,10 @@ export interface WorkflowSupervisorLifecycleHooks {
     observation: { observationId: string; evidence?: Record<string, unknown> },
   ): void;
   /** Atomically project a newly-created Computer conversation into Work binding authority. */
-  bootstrapConversationBound?(task: WorkflowSupervisorTask): void;
+  bootstrapConversationBound?(
+    task: WorkflowSupervisorTask,
+    context?: { migratedFromConversationId?: string; migrationRequestId?: string },
+  ): void;
 }
 
 export interface WorkflowAssistantObservation {

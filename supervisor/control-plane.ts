@@ -209,8 +209,12 @@ export class WorkflowSupervisorControlPlane {
   bindBootstrapConversation(input: { taskId: string; conversationId: string; conversationUrl: string }): WorkflowSupervisorTask {
     const identity = parseChatgptConversationIdentity(input.conversationUrl);
     if (identity.conversationId !== input.conversationId) throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_CONVERSATION_MISMATCH');
+    const pendingMigration = this.store.freshConversationMigrationContext(input.taskId);
     const task = this.store.bindBootstrapConversation(input.taskId, identity.conversationId, identity.canonicalUrl);
-    this.hooks.bootstrapConversationBound?.(task);
+    this.hooks.bootstrapConversationBound?.(task, pendingMigration ? {
+      migratedFromConversationId: pendingMigration.fromConversationId,
+      migrationRequestId: pendingMigration.requestId,
+    } : undefined);
     return task;
   }
   getEffect(id: string): WorkflowSupervisorEffect | undefined { return this.store.getEffect(validateEffectId(id)); }
