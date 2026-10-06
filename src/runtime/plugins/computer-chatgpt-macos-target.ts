@@ -38,6 +38,14 @@ const OWNER_PREFIX = 'forge-computer-chatgpt:';
 const LEGACY_SUPERVISOR_OWNER_PREFIX = 'forge-workflow-supervisor:';
 const LEGACY_BROWSER_OWNER_PREFIX = 'forge-browser-owned:';
 const BROWSER_PREFERENCE_RECORD = 'chatgpt.browser-preference';
+const BROWSER_PREFERENCE_KEY = 'default';
+const BROWSER_CREATE_COOLDOWN_MS = 60_000;
+
+const BROWSER_PREFERENCE_IDENTITY = {
+  surfaceType: 'browser-page' as const,
+  ownership: 'provider_owned' as const,
+  resource: { namespace: 'chatgpt.browser-preference', key: BROWSER_PREFERENCE_KEY },
+};
 
 type TaggedTab = MacOsBrowserTabInventoryEntry & { browserProduct: MacOsBrowserProduct };
 type TaggedRef = MacOsBrowserTabRef & { browserProduct: MacOsBrowserProduct };
@@ -93,8 +101,8 @@ function providerBinding(page: ComputerChatgptNativePage, targetId: string, owne
   };
 }
 
-function productForBinding(binding: ComputerSurfaceProviderBinding): MacOsBrowserProduct | undefined {
-  return binding.browserProduct === 'chrome' || binding.browserProduct === 'vivaldi' ? binding.browserProduct : undefined;
+function productForBinding(binding: ComputerSurfaceProviderBinding | undefined): MacOsBrowserProduct | undefined {
+  return binding?.browserProduct === 'chrome' || binding?.browserProduct === 'vivaldi' ? binding.browserProduct : undefined;
 }
 
 function preferredBrowserFromRecord(record: ComputerSurfaceTarget): { product?: MacOsBrowserProduct; windowId?: string } {
@@ -328,6 +336,8 @@ export async function dispatchMacOsChatgptPrompt(
 
 export class MacOsChatgptConversationTargetPort implements ComputerChatgptConversationTargetPort {
   private readonly pages = new Map<string, ComputerChatgptNativePage>();
+  private readonly createInFlight = new Map<string, Promise<ComputerChatgptNativePage>>();
+  private readonly createCooldownUntil = new Map<string, number>();
   constructor(
     private readonly controllerHome: string,
     private readonly authority: ComputerInteractionTargetAuthorityPort,
@@ -398,6 +408,47 @@ export class MacOsChatgptConversationTargetPort implements ComputerChatgptConver
       ? preferredWindowId
       : undefined;
     return taggedPage((await createMacOsBrowserOwnedPageForProduct(attachment.metadata.product, url, attachment.attempts, windowId, this.timeoutMs)).page, attachment.metadata.product);
+  }
+
+  private async createSingleFlight(url: string, preferredProduct?: MacOsBrowserProduct, preferredWindowId?: string): Promise<ComputerChatgptNativePage> {
+    const key = `${preferredProduct ?? 'unknown'}:${url}`;
+    const existing = this.createInFlight.get(key);
+    if (existing) return existing;
+    const cooldownUntil = this.createCooldownUntil.get(key) ?? 0;
+    if (cooldownUntil > Date.now()) throw new Error('COMPUTER_CHATGPT_TARGET_CREATE_COOLDOWN');
+    const operation = this.create(url, preferredProduct, preferredWindowId)
+      .catch((error) => {
+        this.createCooldownUntil.set(key, Date.now() + BROWSER_CREATE_COOLDOWN_MS);
+        throw error;
+      })
+      .finally(() => { this.createInFlight.delete(key); });
+    this.createInFlight.set(key, operation);
+    return operation;
+  }
+
+  private preferredBrowser(): { product?: MacOsBrowserProduct; windowId?: string } {
+    const record = this.authority.findSurfaceByStableIdentity(this.controllerHome, BROWSER_PREFERENCE_IDENTITY);
+    return record ? preferredBrowserFromRecord(record) : {};
+  }
+
+  private rememberBrowser(binding: TaggedRef | undefined): void {
+    const product = binding?.browserProduct;
+    if (!product) return;
+    this.authority.upsertSurface(this.controllerHome, {
+      stableIdentity: BROWSER_PREFERENCE_IDENTITY,
+      visibility: 'controller',
+      compatibilityRecords: [{
+        namespace: BROWSER_PREFERENCE_RECORD,
+        schemaVersion: 1,
+        value: {
+          browserProduct: product,
+          providerId: PROVIDER_ID,
+          ...(binding.windowId ? { windowId: binding.windowId } : {}),
+        },
+        updatedAt: new Date().toISOString(),
+      }],
+      reactivate: true,
+    });
   }
 
   private upsert(identity: ComputerChatgptTargetIdentity, ownership: 'provider_owned' | 'user_owned', binding?: ComputerSurfaceProviderBinding): ComputerSurfaceTarget {
@@ -472,8 +523,9 @@ export class MacOsChatgptConversationTargetPort implements ComputerChatgptConver
     }
     const binding = record.providerBinding;
     const preferredBrowser = preferredBrowserFromRecord(record);
-    const product = (binding ? productForBinding(binding) : undefined) ?? preferredBrowser.product;
-    const preferredWindowId = binding?.windowId ?? preferredBrowser.windowId;
+    const rememberedBrowser = this.preferredBrowser();
+    const product = (binding ? productForBinding(binding) : undefined) ?? preferredBrowser.product ?? rememberedBrowser.product;
+    const preferredWindowId = binding?.windowId ?? preferredBrowser.windowId ?? rememberedBrowser.windowId;
     if (binding?.providerId === PROVIDER_ID && product && binding.windowId && binding.tabId) {
       try {
         const page = await this.reattach({ browserProduct: product, windowId: binding.windowId, tabId: binding.tabId });
@@ -513,8 +565,9 @@ export class MacOsChatgptConversationTargetPort implements ComputerChatgptConver
     if (inventory.unavailableProviders.length > 0) return failure(new Error('COMPUTER_CHATGPT_TARGET_INVENTORY_INCOMPLETE'), 'COMPUTER_CHATGPT_TARGET_INVENTORY_INCOMPLETE');
     let created: ComputerChatgptNativePage | undefined;
     try {
-      created = await this.create(identity.canonicalUrl, product, preferredWindowId);
+      created = await this.createSingleFlight(identity.canonicalUrl, product, preferredWindowId);
       const updated = await this.bind(identity, record, created, 'provider_owned');
+      this.rememberBrowser(created.tabRef());
       const observation = await observeMacOsChatgptPage(created, { includeUserHistory: false, includePageText: false });
       if (!sameConversation(observation.url, identity)) throw new Error('COMPUTER_CHATGPT_RESTORED_TARGET_UNPROVEN');
       // A created tab that renders a signed-out shell is not a usable surface.
@@ -538,8 +591,10 @@ export class MacOsChatgptConversationTargetPort implements ComputerChatgptConver
     const cached = this.pages.get(record.targetId);
     if (cached) return { state: 'ready', target: this.target(identity, record, cached) };
     try {
-      const page = await this.create(projectUrl);
+      const preferred = this.preferredBrowser();
+      const page = await this.createSingleFlight(projectUrl, preferred.product, preferred.windowId);
       record = await this.bind(identity, record, page, 'provider_owned');
+      this.rememberBrowser(page.tabRef());
       return { state: 'ready', target: this.target(identity, record, page) };
     } catch (error) { return failure(error, 'COMPUTER_CHATGPT_BOOTSTRAP_TARGET_UNAVAILABLE'); }
   }
