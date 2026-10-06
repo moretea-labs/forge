@@ -2,11 +2,13 @@
   "schemaVersion": 1,
   "id": "project-workbench",
   "name": "项目工作台",
-  "goal": "以轻量侧栏选择项目和工作，主区只聚焦当前工作/会话；计划、证据、运行时细节按需展开。",
+  "goal": "以明确 Local / MCP 模式切换进入工作区；MCP 先建立 Repository/Worktree 范围，再从轻量侧栏选择 Work，计划、证据和运行时细节按需展开。",
   "primaryAction": "continue-selected-work",
   "constraints": [
     "macOS 系统标题栏负责窗口 chrome，WebView 不绘制红黄绿按钮或伪标题栏",
     "默认布局只有轻量侧栏 + 单主工作区，不使用三栏 Dashboard",
+    "Local / MCP 是一级模式切换但只是客户端导航状态；切换 MCP 不创建或复制任何 Forge 语义状态",
+    "选择 Project 先展示 canonical Repository/Worktree 与 Work inventory；只有选择具体 Work 后才进入 Work focus",
     "工作选择放在侧栏，当前与最近终态历史都直接来自 rh_work(list) canonical semantic Work；历史默认折叠，不得从 rh_status 的机械活动摘要反推 Work 列表",
     "工作是唯一执行/进度节点；计划只作为按需上下文，不显示计划百分比或计划步骤状态",
     "运行时与恢复是独立主页面，不常驻右侧检查器",
@@ -18,6 +20,8 @@
       "component": "MacSidebar",
       "props": {
         "active": "项目",
+        "mode": "mcp",
+        "modeSwitch": ["local", "mcp"],
         "assistantLabel": "助手",
         "projects": [
           "forge",
@@ -141,7 +145,7 @@
     {
       "id": "normal",
       "name": "就绪",
-      "meaning": "权威项目/工作投影可读取，并且可以选择工作。",
+      "meaning": "权威 Repository/Worktree 与工作投影可读取；Project overview 和 Work focus 都来自同一 canonical Forge projection。",
       "primaryAction": "continue-selected-work"
     },
     {

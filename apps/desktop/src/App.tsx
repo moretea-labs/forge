@@ -100,6 +100,7 @@ function Sidebar({
   runtimeLabel,
   runtimeStatus,
   onOpenAssistant,
+  onOpenMcp,
   onSelectProject,
   onSelectWork,
   onOpenRuntime,
@@ -113,6 +114,7 @@ function Sidebar({
   runtimeLabel: string;
   runtimeStatus: string;
   onOpenAssistant: () => void;
+  onOpenMcp: () => void;
   onSelectProject?: (project: ProjectListItemProjection) => void;
   onSelectWork?: (workId: string) => void;
   onOpenRuntime?: () => void;
@@ -120,6 +122,11 @@ function Sidebar({
   return (
     <aside className="sidebar">
       <div className="sidebar-main">
+        <div className="mode-switch" role="group" aria-label="Forge 工作模式">
+          <button className={activeView === 'assistant' ? 'active' : ''} type="button" onClick={onOpenAssistant}>Local</button>
+          <button className={activeView !== 'assistant' ? 'active' : ''} type="button" onClick={onOpenMcp}>MCP</button>
+        </div>
+
         <button className={activeView === 'assistant' ? 'nav-row active' : 'nav-row'} type="button" onClick={onOpenAssistant}>
           <span className="nav-symbol">✦</span>
           <span>助手</span>
@@ -270,11 +277,13 @@ function WorkView({
   preview,
   onSwitch,
   onContinue,
+  onSelectWork,
 }: {
   projection: ForgeDesktopProjection;
   preview: boolean;
   onSwitch?: (task: AutomaticContinuationTaskProjection) => Promise<void>;
   onContinue?: (prompt: string) => Promise<void>;
+  onSelectWork?: (workId: string) => void;
 }) {
   const work = projection.work;
   const [draft, setDraft] = useState('');
@@ -282,11 +291,67 @@ function WorkView({
   const [sendError, setSendError] = useState<string | null>(null);
 
   if (!work) {
+    const project = projection.project;
+    if (!project) {
+      return (
+        <main className="main-pane empty-main">
+          <div className="empty-copy">
+            <h1>选择一个项目</h1>
+            <p>从左侧项目列表进入 MCP 工作区。</p>
+          </div>
+        </main>
+      );
+    }
     return (
-      <main className="main-pane empty-main">
-        <div className="empty-copy">
-          <h1>{projection.project ? '选择一个工作' : '选择一个项目'}</h1>
-          <p>{projection.project ? '从左侧工作列表选择要继续的工作。' : '从左侧项目列表开始。'}</p>
+      <main className="main-pane work-pane">
+        <div className="content-column">
+          <header className="work-hero mcp-project-hero">
+            <div className="breadcrumb">MCP / Repository</div>
+            <h1>{project.name}</h1>
+            <p>{project.repository}</p>
+          </header>
+
+          <div className="mcp-overview-status" aria-label="MCP 工作区状态">
+            <div><span className={`health-dot ${projection.runtime.status}`} /><strong>MCP Workspace</strong></div>
+            <span>{projection.runtime.label}</span>
+          </div>
+
+          <div className="fact-strip" aria-label="Repository 事实">
+            <div><span>分支</span><strong>{project.branch}</strong></div>
+            <div><span>检出</span><strong>{project.worktree}</strong></div>
+            <div><span>代码</span><strong>{project.dirty ? '有未提交修改' : '工作区干净'}</strong></div>
+            <div><span>版本</span><strong className="mono">{compactId(project.sourceRevision)}</strong></div>
+          </div>
+
+          <section className="mcp-work-overview" aria-label="MCP Work">
+            <div className="mcp-work-overview-heading">
+              <div><strong>Work</strong><span>canonical rh_work projection</span></div>
+              <span>{projection.workGraph.nodes.length} 个当前节点</span>
+            </div>
+            {projection.workGraph.nodes.length > 0 ? (
+              <div className="mcp-work-overview-list">
+                {projection.workGraph.nodes.map((node) => (
+                  <button className="mcp-work-overview-row" type="button" key={node.workId} disabled={!onSelectWork} onClick={() => onSelectWork?.(node.workId)}>
+                    <span className={`work-state-dot ${node.state}`} aria-hidden="true" />
+                    <span className="mcp-work-overview-copy"><strong>{node.objective}</strong><small>{semanticStateLabel(node.state)}{node.activity ? ` · ${node.activity}` : ''}</small></span>
+                    <span className="mono mcp-work-id">{compactId(node.workId)}</span>
+                  </button>
+                ))}
+              </div>
+            ) : <div className="empty-copy inline-empty"><p>这个项目当前没有 canonical Work。Repository 与 Runtime 事实仍可独立查看。</p></div>}
+          </section>
+
+          <details className="detail-section" open>
+            <summary>Repository / Worktree</summary>
+            <div className="detail-grid">
+              <div><span>Repository ID</span><strong className="mono">{project.repoId}</strong></div>
+              <div><span>Repository</span><strong>{project.repository}</strong></div>
+              <div><span>Branch</span><strong>{project.branch}</strong></div>
+              <div><span>Checkout</span><strong>{project.worktree}</strong></div>
+              <div><span>Source revision</span><strong className="mono">{project.sourceRevision}</strong></div>
+              <div><span>Runtime source</span><strong>{projection.runtime.label}</strong></div>
+            </div>
+          </details>
         </div>
       </main>
     );
@@ -298,7 +363,7 @@ function WorkView({
     <main className="main-pane work-pane">
       <div className="content-column">
         <header className="work-hero">
-          <div className="breadcrumb">{projection.project?.name ?? '项目'} / {semanticStateLabel(work.semanticState)}</div>
+          <div className="breadcrumb">MCP / {projection.project?.name ?? '项目'} / {semanticStateLabel(work.semanticState)}</div>
           <h1>{work.title}</h1>
           {work.continuationPrompt && <p>{work.continuationPrompt}</p>}
         </header>
@@ -854,6 +919,10 @@ export function App() {
     setActiveView('assistant');
   }, []);
 
+  const handleOpenMcp = useCallback(() => {
+    setActiveView('project');
+  }, []);
+
   const handleOpenRuntime = useCallback(async () => {
     setActiveView('runtime');
     await Promise.all([refreshRecovery(), refreshConnection()]);
@@ -920,6 +989,7 @@ export function App() {
         runtimeLabel={runtimeLabel}
         runtimeStatus={runtimeStatus}
         onOpenAssistant={handleOpenAssistant}
+        onOpenMcp={handleOpenMcp}
         onSelectProject={preview ? undefined : handleSelectProject}
         onSelectWork={preview ? undefined : handleSelectWork}
         onOpenRuntime={preview ? undefined : handleOpenRuntime}
@@ -959,6 +1029,7 @@ export function App() {
           preview={preview}
           onSwitch={preview ? undefined : handleSwitch}
           onContinue={preview ? undefined : handleContinue}
+          onSelectWork={preview ? undefined : (workId) => { void handleSelectWork(workId); }}
         />
       )}
     </div>

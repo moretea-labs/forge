@@ -310,7 +310,7 @@ export async function readProjectWorkspace(
     ]);
     const repositoryState = overview.data?.repositoryState;
     const activeWork = workList.data?.works ?? [];
-    const targetWorkId = selectedWorkId ?? activeWork[0]?.workId;
+    const targetWorkId = selectedWorkId;
 
     let detail: RawWorkDetailResult | undefined;
     if (targetWorkId) {
