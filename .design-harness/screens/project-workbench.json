@@ -9,6 +9,7 @@
     "默认布局只有轻量侧栏 + 单主工作区，不使用三栏 Dashboard",
     "Local / MCP 是一级模式切换但只是客户端导航状态；切换 MCP 不创建或复制任何 Forge 语义状态",
     "选择 Project 先展示 canonical Repository/Worktree 与 Work inventory；只有选择具体 Work 后才进入 Work focus",
+    "Active checkout/worktree inventory 来自 repository_get(detail) 并在 native bridge 做字段裁剪与 bounded projection；历史 checkout 不常驻 WebView",
     "工作选择放在侧栏，当前与最近终态历史都直接来自 rh_work(list) canonical semantic Work；历史默认折叠，不得从 rh_status 的机械活动摘要反推 Work 列表",
     "工作是唯一执行/进度节点；计划只作为按需上下文，不显示计划百分比或计划步骤状态",
     "运行时与恢复是独立主页面，不常驻右侧检查器",
@@ -30,7 +31,7 @@
         ],
         "selectedProject": "forge",
         "workListPlacement": "sidebar",
-        "projectSource": "repository_list + rh_status(list) repositoryState",
+        "projectSource": "repository_list + repository_get(detail) bounded active checkout projection + rh_status(list) repositoryState",
         "workSource": "rh_work(list) current semantic Work + bounded recent terminal history",
         "historyPlacement": "collapsed sidebar disclosure; terminal Work remains selectable for exact detail/history inspection",
         "runtimePlacement": "sidebar-footer",
@@ -145,7 +146,7 @@
     {
       "id": "normal",
       "name": "就绪",
-      "meaning": "权威 Repository/Worktree 与工作投影可读取；Project overview 和 Work focus 都来自同一 canonical Forge projection。",
+      "meaning": "权威 Repository/active Worktree 与工作投影可读取；完整 checkout 历史仍留在 Repository Registry，不复制到客户端状态。",
       "primaryAction": "continue-selected-work"
     },
     {

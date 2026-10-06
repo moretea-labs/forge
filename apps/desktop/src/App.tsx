@@ -347,10 +347,32 @@ function WorkView({
               <div><span>Repository ID</span><strong className="mono">{project.repoId}</strong></div>
               <div><span>Repository</span><strong>{project.repository}</strong></div>
               <div><span>Branch</span><strong>{project.branch}</strong></div>
-              <div><span>Checkout</span><strong>{project.worktree}</strong></div>
+              <div><span>Checkout</span><strong className="mono">{project.checkoutId}</strong></div>
+              <div><span>Checkout type</span><strong>{project.worktree}</strong></div>
+              <div><span>Path</span><strong className="mono">{project.checkoutPath}</strong></div>
               <div><span>Source revision</span><strong className="mono">{project.sourceRevision}</strong></div>
               <div><span>Runtime source</span><strong>{projection.runtime.label}</strong></div>
             </div>
+          </details>
+
+          <details className="detail-section" open>
+            <summary>Active Worktrees · {project.activeCheckoutCount}/{project.checkoutCount}</summary>
+            <div className="checkout-list">
+              {project.checkouts.map((checkout) => (
+                <div className="checkout-row" key={checkout.checkoutId}>
+                  <span className={`health-dot ${checkout.active ? 'connected' : 'not_connected'}`} aria-hidden="true" />
+                  <div className="checkout-copy">
+                    <strong>{checkout.branch ?? 'detached HEAD'}</strong>
+                    <span className="mono">{checkout.path}</span>
+                  </div>
+                  <div className="checkout-meta">
+                    <span>{checkout.active ? '当前' : checkout.kind === 'worktree' ? 'worktree' : '主检出'}</span>
+                    <span className="mono">{compactId(checkout.checkoutId)}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+            {project.checkoutListTruncated && <p className="detail-text">Active checkout 数量超过桌面投影上限；完整 checkout 历史仍由 Repository Registry 持有。</p>}
           </details>
         </div>
       </main>

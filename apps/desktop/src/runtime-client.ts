@@ -5,6 +5,7 @@ import type {
   ForgeDesktopProjection,
   ProjectListItemProjection,
   ProjectPlanProjection,
+  ProjectCheckoutProjection,
   PlanRevisionProjection,
   ProjectRequirementProjection,
   UserRequestProjection,
@@ -92,6 +93,23 @@ interface RawUserRequestListResult {
 interface RawProjectOverviewResult {
   data?: {
     repositoryState?: { branch?: string; head?: string | null; dirty?: boolean };
+  };
+}
+
+interface RawProjectRepositoryResult {
+  repository?: {
+    activeCheckoutId?: string;
+    checkoutCount?: number;
+    activeCheckoutCount?: number;
+    truncated?: boolean;
+    checkouts?: Array<{
+      checkoutId?: string;
+      path?: string;
+      branch?: string | null;
+      worktree?: boolean;
+      lifecycle?: 'active' | 'archived' | 'removed';
+      active?: boolean;
+    }>;
   };
 }
 
@@ -304,11 +322,27 @@ export async function readProjectWorkspace(
   selectedWorkId?: string,
 ): Promise<Pick<ForgeDesktopProjection, 'project' | 'workGraph' | 'recentWorkHistory' | 'work' | 'requirement' | 'plan' | 'userRequests'>> {
   try {
-    const [overview, workList] = await Promise.all([
+    const [overview, repositoryDetail, workList] = await Promise.all([
       invoke<RawProjectOverviewResult>('read_project_overview', { repoId: project.repoId }),
+      invoke<RawProjectRepositoryResult>('read_project_repository', { repoId: project.repoId }),
       invoke<RawWorkListResult>('read_project_work_list', { repoId: project.repoId }),
     ]);
     const repositoryState = overview.data?.repositoryState;
+    const repository = repositoryDetail.repository;
+    if (!repository?.activeCheckoutId || !Array.isArray(repository.checkouts)) {
+      throw new Error('FORGE_DESKTOP_REPOSITORY_DETAIL_INVALID');
+    }
+    const checkouts: ProjectCheckoutProjection[] = repository.checkouts.map((checkout) => ({
+      checkoutId: checkout.checkoutId ?? '未知检出',
+      path: checkout.path ?? '未知路径',
+      ...(checkout.branch ? { branch: checkout.branch } : {}),
+      kind: checkout.worktree ? 'worktree' : 'primary',
+      lifecycle: checkout.lifecycle ?? 'active',
+      active: checkout.active === true,
+    }));
+    const activeCheckout = checkouts.find((checkout) => checkout.active)
+      ?? checkouts.find((checkout) => checkout.checkoutId === repository.activeCheckoutId);
+    if (!activeCheckout) throw new Error('FORGE_DESKTOP_REPOSITORY_ACTIVE_CHECKOUT_MISSING');
     const activeWork = workList.data?.works ?? [];
     const targetWorkId = selectedWorkId;
 
@@ -391,8 +425,14 @@ export async function readProjectWorkspace(
         repoId: project.repoId,
         name: project.name,
         repository: project.repository,
-        branch: repositoryState?.branch ?? project.defaultBranch ?? '未知分支',
-        worktree: project.checkoutId ? '已选择检出' : '未选择检出',
+        branch: repositoryState?.branch ?? activeCheckout.branch ?? project.defaultBranch ?? '未知分支',
+        worktree: activeCheckout.kind === 'worktree' ? 'Git worktree' : '主检出',
+        checkoutId: repository.activeCheckoutId,
+        checkoutPath: activeCheckout.path,
+        checkoutCount: repository.checkoutCount ?? checkouts.length,
+        activeCheckoutCount: repository.activeCheckoutCount ?? checkouts.length,
+        checkoutListTruncated: repository.truncated === true,
+        checkouts,
         sourceRevision: repositoryState?.head ?? '未知版本',
         dirty: Boolean(repositoryState?.dirty),
       },

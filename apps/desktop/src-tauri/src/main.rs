@@ -293,6 +293,49 @@ async fn read_project_overview(repo_id: String) -> Result<Value, String> {
 }
 
 #[tauri::command]
+async fn read_project_repository(repo_id: String) -> Result<Value, String> {
+    if repo_id.trim().is_empty() { return Err("FORGE_DESKTOP_REPOSITORY_REQUIRED".to_string()); }
+    let result = call_runtime_tool("repository_get", json!({
+        "repo_id": repo_id,
+        "detail_level": "detail",
+        "request_id": request_id("project-repository")
+    })).await?;
+    let repository = result.get("repository").and_then(Value::as_object)
+        .ok_or_else(|| "FORGE_DESKTOP_REPOSITORY_DETAIL_INVALID".to_string())?;
+    let active_checkout_id = repository.get("activeCheckoutId").and_then(Value::as_str)
+        .ok_or_else(|| "FORGE_DESKTOP_REPOSITORY_ACTIVE_CHECKOUT_MISSING".to_string())?;
+    let all_checkouts = repository.get("checkouts").and_then(Value::as_array)
+        .ok_or_else(|| "FORGE_DESKTOP_REPOSITORY_CHECKOUTS_INVALID".to_string())?;
+    let active_checkout_count = all_checkouts.iter().filter(|checkout| {
+        checkout.get("lifecycle").and_then(Value::as_str).unwrap_or("active") == "active"
+    }).count();
+    let checkouts = all_checkouts.iter().filter(|checkout| {
+        let checkout_id = checkout.get("checkoutId").and_then(Value::as_str).unwrap_or("");
+        checkout_id == active_checkout_id
+            || checkout.get("lifecycle").and_then(Value::as_str).unwrap_or("active") == "active"
+    }).take(40).map(|checkout| {
+        let checkout_id = checkout.get("checkoutId").and_then(Value::as_str).unwrap_or("");
+        json!({
+            "checkoutId": checkout_id,
+            "path": checkout.get("localRoot").and_then(Value::as_str),
+            "branch": checkout.get("branch").and_then(Value::as_str),
+            "worktree": checkout.get("worktree").and_then(Value::as_bool).unwrap_or(false),
+            "lifecycle": checkout.get("lifecycle").and_then(Value::as_str).unwrap_or("active"),
+            "active": checkout_id == active_checkout_id
+        })
+    }).collect::<Vec<_>>();
+    Ok(json!({
+        "repository": {
+            "activeCheckoutId": active_checkout_id,
+            "checkoutCount": all_checkouts.len(),
+            "activeCheckoutCount": active_checkout_count,
+            "checkouts": checkouts,
+            "truncated": active_checkout_count > checkouts.len()
+        }
+    }))
+}
+
+#[tauri::command]
 async fn read_project_work_list(repo_id: String) -> Result<Value, String> {
     if repo_id.trim().is_empty() { return Err("FORGE_DESKTOP_REPOSITORY_REQUIRED".to_string()); }
     call_runtime_tool("rh_work", json!({
@@ -460,6 +503,7 @@ fn main() {
             perform_recovery_action,
             read_projects,
             read_project_overview,
+            read_project_repository,
             read_project_work_list,
             read_work_detail,
             read_user_requests,

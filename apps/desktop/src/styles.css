@@ -184,6 +184,13 @@ a { color: inherit; }
 .mcp-work-overview-copy strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; font-weight: 570; }
 .mcp-work-overview-copy small { color: #9a948c; font-size: 9px; }
 .mcp-work-id { max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #a09a92; font-size: 8px; }
+.checkout-list { display: grid; gap: 4px; }
+.checkout-row { display: grid; grid-template-columns: 8px minmax(0, 1fr) auto; align-items: center; gap: 9px; min-height: 44px; padding: 7px 0; }
+.checkout-row + .checkout-row { border-top: 1px solid rgba(74, 67, 59, .06); }
+.checkout-copy { min-width: 0; display: grid; gap: 3px; }
+.checkout-copy strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #5a554e; font-size: 10px; font-weight: 570; }
+.checkout-copy span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #9b958e; font-size: 8px; }
+.checkout-meta { display: grid; justify-items: end; gap: 3px; color: #948e86; font-size: 8px; }
 
 .work-body-copy { color: #4f4b45; font-size: 12px; line-height: 1.7; margin-bottom: 24px; }
 .work-body-copy p { margin: 0; }

@@ -222,6 +222,15 @@ export interface ControllerConnectionProjection {
   };
 }
 
+export interface ProjectCheckoutProjection {
+  checkoutId: string;
+  path: string;
+  branch?: string;
+  kind: 'primary' | 'worktree';
+  lifecycle: 'active' | 'archived' | 'removed';
+  active: boolean;
+}
+
 export interface ForgeDesktopProjection {
   source: ProjectionSource;
   runtime: {
@@ -236,6 +245,12 @@ export interface ForgeDesktopProjection {
     repository: string;
     branch: string;
     worktree: string;
+    checkoutId: string;
+    checkoutPath: string;
+    checkoutCount: number;
+    activeCheckoutCount: number;
+    checkoutListTruncated: boolean;
+    checkouts: ProjectCheckoutProjection[];
     sourceRevision: string;
     dirty: boolean;
   } | null;
@@ -312,6 +327,15 @@ export const designPreviewProjection = Object.freeze<ForgeDesktopProjection>({
     repository: 'moretea-labs/forge',
     branch: 'main',
     worktree: '主检出',
+    checkoutId: 'checkout-preview-main',
+    checkoutPath: '/Users/example/DevProjects/forge',
+    checkoutCount: 2,
+    activeCheckoutCount: 2,
+    checkoutListTruncated: false,
+    checkouts: [
+      { checkoutId: 'checkout-preview-main', path: '/Users/example/DevProjects/forge', branch: 'main', kind: 'primary', lifecycle: 'active', active: true },
+      { checkoutId: 'checkout-preview-work', path: '/Users/example/.forge/controller/managed-worktrees/forge/work-preview', branch: 'work/forge-v3-client', kind: 'worktree', lifecycle: 'active', active: false },
+    ],
     sourceRevision: '设计预览',
     dirty: false,
   },
