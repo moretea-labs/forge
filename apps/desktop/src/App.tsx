@@ -315,6 +315,42 @@ function WorkView({
           </details>
         )}
 
+        {(work.revisionHistory.length > 0 || (projection.plan?.revisionHistory.length ?? 0) > 0) && (
+          <details className="detail-section">
+            <summary>修订历史 · Work {work.revisionHistory.length} / Plan {projection.plan?.revisionHistory.length ?? 0}</summary>
+            <div className="history-groups">
+              {work.revisionHistory.length > 0 && (
+                <section className="history-group" aria-label="Work 修订历史">
+                  <div className="history-heading">Work</div>
+                  <ol className="history-list">
+                    {work.revisionHistory.map((revision) => (
+                      <li key={`work-${revision.revision}`}>
+                        <div className="history-meta"><strong>r{revision.revision}</strong><span>{semanticStateLabel(revision.state)}</span><span>{revision.recordedAt ? new Date(revision.recordedAt).toLocaleString('zh-CN') : '时间未知'}</span></div>
+                        <p>{revision.objective}</p>
+                        {revision.resultRefs.length > 0 && <span className="history-count">结果引用 {revision.resultRefs.length}</span>}
+                      </li>
+                    ))}
+                  </ol>
+                </section>
+              )}
+              {(projection.plan?.revisionHistory.length ?? 0) > 0 && (
+                <section className="history-group" aria-label="Plan 修订历史">
+                  <div className="history-heading">Plan</div>
+                  <ol className="history-list">
+                    {projection.plan?.revisionHistory.map((revision) => (
+                      <li key={`plan-${revision.revision}`}>
+                        <div className="history-meta"><strong>r{revision.revision}</strong><span>{revision.status}</span><span>{revision.recordedAt ? new Date(revision.recordedAt).toLocaleString('zh-CN') : '时间未知'}</span></div>
+                        <p>{revision.goal}</p>
+                        {revision.items.length > 0 && <span className="history-count">计划项 {revision.items.length}</span>}
+                      </li>
+                    ))}
+                  </ol>
+                </section>
+              )}
+            </div>
+          </details>
+        )}
+
         <details className="detail-section">
           <summary>结果与证据 {work.resultRefs.length > 0 ? `· ${work.resultRefs.length}` : ''}</summary>
           {work.resultRefs.length > 0 ? (

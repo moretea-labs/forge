@@ -55,8 +55,8 @@
           "Work nextSafeAction when canonical Runtime provides it"
         ],
         "requirementDisclosure": "Requirement title/outcome/acceptance criteria from rh_work(requirement_get)",
-        "planDisclosure": "Plan goal/revision/items from rh_work(plan_get)",
-        "workDisclosure": "Work parent/dependencies/update time from rh_work(get)",
+        "planDisclosure": "Plan goal/revision/items and canonical revisionHistory from rh_work(plan_get, detail)",
+        "workDisclosure": "Work parent/dependencies/update time and canonical revisionHistory from rh_work(get, detail)",
         "attentionProjection": "仅展示 targetScope.workId 精确匹配当前 Work 的 pending UserRequest；来源为 rh_inbox(list)",
         "clientInference": false
       }
@@ -128,6 +128,16 @@
           ]
         }
       ]
+    },
+    {
+      "id": "semantic-history",
+      "component": "SemanticRevisionHistory",
+      "props": {
+        "sources": ["Work revisionHistory", "Plan revisionHistory"],
+        "presentation": "collapsed disclosure with revision, authored state/status, recordedAt, objective/goal and bounded counts",
+        "currentRevisionDuplicated": false,
+        "clientComputedProgress": false
+      }
     },
     {
       "id": "evidence",

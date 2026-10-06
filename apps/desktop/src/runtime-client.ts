@@ -4,8 +4,10 @@ import type {
   ForgeDesktopProjection,
   ProjectListItemProjection,
   ProjectPlanProjection,
+  PlanRevisionProjection,
   ProjectRequirementProjection,
   UserRequestProjection,
+  WorkRevisionProjection,
   WorkGraphEdgeProjection,
   WorkGraphNodeProjection,
   WorkSemanticState,
@@ -53,6 +55,7 @@ interface RawPlanSummary {
   goal: string;
   status: string;
   updatedAt?: string;
+  recordedAt?: string;
   items?: Array<{ id: string; objective: string }>;
 }
 
@@ -71,7 +74,10 @@ interface RawRequirementDetailResult {
 }
 
 interface RawPlanDetailResult {
-  data?: { plan?: RawPlanSummary };
+  data?: {
+    plan?: RawPlanSummary;
+    revisionHistory?: RawPlanSummary[];
+  };
 }
 
 interface RawUserRequest {
@@ -110,11 +116,13 @@ interface RawWorkView {
   planId?: string;
   resultRefs?: string[];
   updatedAt?: string;
+  recordedAt?: string;
 }
 
 interface RawWorkDetailResult {
   data?: {
     work?: RawWorkView;
+    revisionHistory?: RawWorkView[];
     objectiveGraph?: {
       current?: {
         nodes?: RawWorkView[];
@@ -283,9 +291,25 @@ export async function readProjectWorkspace(
           ...(item.updatedAt ? { updatedAt: item.updatedAt } : {}),
         }))
       : [];
+    const workRevisionHistory: WorkRevisionProjection[] = (detail?.data?.revisionHistory ?? []).map((revision) => ({
+      revision: revision.revision ?? 1,
+      objective: revision.objective,
+      state: revision.state,
+      resultRefs: revision.resultRefs ?? [],
+      ...(revision.updatedAt ? { updatedAt: revision.updatedAt } : {}),
+      ...(revision.recordedAt ? { recordedAt: revision.recordedAt } : {}),
+    }));
     const selectedPlan = planDetail?.data?.plan ?? (selectedWork?.planId
       ? activePlans.find((plan) => plan.planId === selectedWork.planId)
       : undefined);
+    const planRevisionHistory: PlanRevisionProjection[] = (planDetail?.data?.revisionHistory ?? []).map((revision) => ({
+      revision: revision.revision,
+      goal: revision.goal,
+      status: revision.status,
+      ...(revision.updatedAt ? { updatedAt: revision.updatedAt } : {}),
+      ...(revision.recordedAt ? { recordedAt: revision.recordedAt } : {}),
+      items: revision.items ?? [],
+    }));
     const plan: ProjectPlanProjection | null = selectedPlan ? {
       planId: selectedPlan.planId,
       revision: selectedPlan.revision,
@@ -294,6 +318,7 @@ export async function readProjectWorkspace(
       ...(selectedPlan.requirementId ? { requirementId: selectedPlan.requirementId } : {}),
       ...(selectedPlan.updatedAt ? { updatedAt: selectedPlan.updatedAt } : {}),
       items: selectedPlan.items ?? [],
+      revisionHistory: planRevisionHistory,
     } : null;
 
     return {
@@ -326,6 +351,7 @@ export async function readProjectWorkspace(
         ...(selectedWork.planId ? { planId: selectedWork.planId } : {}),
         ...(selectedWork.updatedAt ? { updatedAt: selectedWork.updatedAt } : {}),
         resultRefs: selectedWork.resultRefs ?? [],
+        revisionHistory: workRevisionHistory,
       } : null,
       requirement,
       plan,

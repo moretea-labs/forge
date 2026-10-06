@@ -65,6 +65,24 @@ export interface ProjectRequirementProjection {
   updatedAt?: string;
 }
 
+export interface WorkRevisionProjection {
+  revision: number;
+  objective: string;
+  state: WorkSemanticState;
+  resultRefs: string[];
+  updatedAt?: string;
+  recordedAt?: string;
+}
+
+export interface PlanRevisionProjection {
+  revision: number;
+  goal: string;
+  status: string;
+  updatedAt?: string;
+  recordedAt?: string;
+  items: Array<{ id: string; objective: string }>;
+}
+
 export interface ProjectPlanProjection {
   planId: string;
   revision: number;
@@ -73,6 +91,7 @@ export interface ProjectPlanProjection {
   requirementId?: string;
   updatedAt?: string;
   items: Array<{ id: string; objective: string }>;
+  revisionHistory: PlanRevisionProjection[];
 }
 
 export interface RecoveryProbeProjection {
@@ -150,6 +169,7 @@ export interface ForgeDesktopProjection {
     planId?: string;
     updatedAt?: string;
     resultRefs: string[];
+    revisionHistory: WorkRevisionProjection[];
   } | null;
   requirement: ProjectRequirementProjection | null;
   plan: ProjectPlanProjection | null;
@@ -232,6 +252,24 @@ export const designPreviewProjection = Object.freeze<ForgeDesktopProjection>({
     planId: 'PLAN-forge-v3-desktop-client-20260930-r1',
     updatedAt: '2026-10-06T03:40:00.000Z',
     resultRefs: ['path:apps/desktop', 'adr:forge-v3-desktop-client-boundary'],
+    revisionHistory: [
+      {
+        revision: 2,
+        objective: '接通项目与 Work 的 Runtime 投影。',
+        state: 'open',
+        resultRefs: ['path:apps/desktop'],
+        updatedAt: '2026-10-05T17:20:00.000Z',
+        recordedAt: '2026-10-06T03:40:00.000Z',
+      },
+      {
+        revision: 1,
+        objective: '建立桌面 MCP 项目工作台。',
+        state: 'open',
+        resultRefs: [],
+        updatedAt: '2026-10-05T11:40:00.000Z',
+        recordedAt: '2026-10-05T17:20:00.000Z',
+      },
+    ],
   },
   requirement: {
     requirementId: 'REQ-forge-v3-desktop-client-20260930',
@@ -252,6 +290,16 @@ export const designPreviewProjection = Object.freeze<ForgeDesktopProjection>({
     items: [
       { id: 'v3-4-runtime-recovery-bootstrap', objective: '完成运行时与恢复纵向闭环' },
       { id: 'v3-5-mcp-assistant-projects', objective: '完成 Assistant、Projects 与 Work 的真实事实投影' },
+    ],
+    revisionHistory: [
+      {
+        revision: 10,
+        goal: '交付 MCP-first Forge V3 桌面客户端。',
+        status: 'draft',
+        updatedAt: '2026-10-04T11:45:31.464Z',
+        recordedAt: '2026-10-06T03:59:33.960Z',
+        items: [{ id: 'v3-5-mcp-assistant-projects', objective: '交付 MCP Assistant 与 Projects。' }],
+      },
     ],
   },
   userRequests: [
