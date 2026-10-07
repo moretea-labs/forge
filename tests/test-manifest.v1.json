@@ -826,6 +826,10 @@
       "module": "browser",
       "resource": "controller-home-isolated"
     },
+    "tests/runtime/computer-chatgpt-macos-target.test.ts": {
+      "module": "browser",
+      "resource": "controller-home-isolated"
+    },
     "tests/runtime/context-closure.test.ts": {
       "module": "controller",
       "resource": "temp-isolated"
