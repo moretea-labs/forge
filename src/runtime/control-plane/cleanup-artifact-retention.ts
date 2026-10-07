@@ -371,9 +371,9 @@ export function cleanupWorkPreservationArtifacts(
     // WorkHandle metadata is not physical-retention authority. Discover direct
     // preservation directories as well so a missing or drifted handle cannot
     // make an owned bundle immortal. This pass remains fail-closed: only the
-    // canonical direct child containing one bundle is considered (including
-    // the legacy manual-reconciliation.bundle name); symlinks and extra
-    // content are retained, and source containment still requires proof.
+    // canonical direct child containing exactly branch.bundle is considered;
+    // symlinks and extra content are retained, and source containment still
+    // requires proof.
     const artifactRoot = join(repositoryControllerRoot(controllerHome, repositoryId), 'cleanup-artifacts');
     let artifactEntries;
     try {
@@ -426,9 +426,17 @@ export function cleanupWorkPreservationArtifacts(
         skip(report, 'bundle_metadata_conflict');
         continue;
       }
-      const timestamp = handle?.cleanupReceipt
-        ? retentionTimestamp(handle.cleanupReceipt, bundlePath)
-        : statSync(bundlePath).mtimeMs;
+      let timestamp: number | undefined;
+      try {
+        timestamp = handle?.cleanupReceipt
+          ? retentionTimestamp(handle.cleanupReceipt, bundlePath)
+          : statSync(bundlePath).mtimeMs;
+      } catch (error) {
+        report.retained += 1;
+        skip(report, 'physical_bundle_unreadable');
+        report.errors.push(`${repositoryId}:${entry.name}: ${error instanceof Error ? error.message : String(error)}`);
+        continue;
+      }
       if (timestamp === undefined || nowMs - timestamp < graceMs) {
         report.retained += 1;
         skip(report, 'retention_grace');
