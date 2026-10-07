@@ -356,6 +356,20 @@ export function cleanupGeneratedRepositoryCheckoutCaches(
     const offset = ((Math.trunc(options.rootStartIndex ?? 0) % roots.length) + roots.length) % roots.length;
     roots.push(...roots.splice(0, offset));
   }
+  const rawRoots = roots.map((root) => resolve(root));
+  const canonicalRoots = roots.map((root) => canonical(root));
+  const processCommandsForRoot = (root: string): string[] => {
+    const rawRoot = resolve(root);
+    const canonicalRoot = canonical(root);
+    return processCommands.filter((command) => {
+      const referencedRootIndexes = rawRoots
+        .map((candidate, index) => command.includes(candidate) || command.includes(canonicalRoots[index]!) ? index : -1)
+        .filter((index) => index >= 0);
+      if (referencedRootIndexes.length === 0) return true;
+      return referencedRootIndexes.some((index) => rawRoots[index] === rawRoot || canonicalRoots[index] === canonicalRoot);
+    });
+  };
+
   const aggregate: RepositoryGeneratedCacheRetentionReport = {
     rootsInspected: 0,
     inspected: 0,
@@ -374,7 +388,7 @@ export function cleanupGeneratedRepositoryCheckoutCaches(
     }
     const report = cleanupGeneratedRepositoryCaches(root, {
       ...options,
-      processCommands,
+      processCommands: processCommandsForRoot(root),
       maxEntries: remainingEntries,
       maxRemovals: remainingRemovals,
     });

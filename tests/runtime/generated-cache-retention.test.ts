@@ -82,20 +82,26 @@ describe('generated repository cache retention', () => {
   test('reclaims stale generated caches from active managed worktrees with one repository budget', () => {
     const canonicalRoot = repository();
     const activeWorktreeRoot = repository();
+    const siblingWorktreeRoot = repository();
     const removedWorktreeRoot = repository();
     const activeCache = join(activeWorktreeRoot, '.repo-harness', 'ios-build', 'DerivedData-generic-simulator');
+    const siblingCache = join(siblingWorktreeRoot, '.repo-harness', 'ios-build', 'DerivedData-generic-simulator');
     const removedCache = join(removedWorktreeRoot, '.repo-harness', 'ios-build', 'DerivedData-generic-simulator');
     mkdirSync(activeCache, { recursive: true });
+    mkdirSync(siblingCache, { recursive: true });
     mkdirSync(removedCache, { recursive: true });
     writeFileSync(join(activeCache, 'cache.bin'), 'cache');
+    writeFileSync(join(siblingCache, 'cache.bin'), 'cache');
     writeFileSync(join(removedCache, 'cache.bin'), 'cache');
     age(activeCache);
+    age(siblingCache);
     age(removedCache);
 
     const report = cleanupGeneratedRepositoryCheckoutCaches({
       canonicalRoot,
       checkouts: [
         { localRoot: activeWorktreeRoot, worktree: true, lifecycle: 'active' },
+        { localRoot: siblingWorktreeRoot, worktree: true, lifecycle: 'active' },
         { localRoot: removedWorktreeRoot, worktree: true, lifecycle: 'removed' },
       ],
     }, {
@@ -103,13 +109,15 @@ describe('generated repository cache retention', () => {
       graceMs: 60_000,
       maxEntries: 100,
       maxRemovals: 10,
-      processCommands: [],
+      processCommands: [`xcodebuild -project ${join(activeWorktreeRoot, 'ios', 'App.xcodeproj')} -derivedDataPath ${activeCache}`],
     });
 
-    expect(existsSync(activeCache)).toBe(false);
+    expect(existsSync(activeCache)).toBe(true);
+    expect(existsSync(siblingCache)).toBe(false);
     expect(existsSync(removedCache)).toBe(true);
-    expect(report.rootsInspected).toBe(2);
-    expect(report.removedPaths.some((path) => path.includes(activeWorktreeRoot))).toBe(true);
+    expect(report.rootsInspected).toBe(3);
+    expect(report.removedPaths.some((path) => path.includes(siblingWorktreeRoot))).toBe(true);
+    expect(report.skippedByReason.active_process).toBe(1);
   });
 
   test('rotates repository roots so an earlier root cannot permanently starve a managed worktree', () => {
