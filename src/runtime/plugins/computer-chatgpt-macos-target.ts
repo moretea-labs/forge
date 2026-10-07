@@ -347,7 +347,11 @@ export class MacOsChatgptConversationTargetPort implements ComputerChatgptConver
   private async listTabs(): Promise<{ entries: TaggedTab[]; unavailableProviders: string[] }> {
     const inspected = await Promise.all(PROVIDER_PRODUCTS.map(async (product) => {
       try {
-        const inventory = await listMacOsBrowserTabs(product, this.timeoutMs);
+        // Exact conversation identity is proven from stable windowId/tabId/url
+        // inventory. Do not precede it with the optional foreground-tab probe:
+        // a blocked Vivaldi Apple Events front-window read would otherwise hold
+        // the global browser serialization lane and strand Supervisor recovery.
+        const inventory = await listMacOsBrowserTabs(product, this.timeoutMs, { correctFrontmost: false });
         return { entries: inventory.tabs.map((tab): TaggedTab => ({ ...tab, browserProduct: product })) };
       } catch (error) {
         if (error instanceof AssistantPluginError && error.code === 'PLUGIN_BROWSER_NATIVE_APP_NOT_RUNNING') return { entries: [] as TaggedTab[] };

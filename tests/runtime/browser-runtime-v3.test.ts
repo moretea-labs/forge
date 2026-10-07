@@ -614,6 +614,41 @@ describe('Browser Runtime V3 routing', () => {
     expect(executions).toBe(3);
   });
 
+  test('can read stable tab inventory without the optional frontmost inspection', async () => {
+    const scripts: string[] = [];
+    const fieldSeparator = String.fromCharCode(31);
+    setMacOsBrowserRuntimeHooksForTest({
+      platform: 'darwin',
+      appExists: () => true,
+      processRunning: async () => true,
+      runAppleScript: async (script) => {
+        scripts.push(script);
+        if (script.includes('set targetWindow to front window')) {
+          throw new Error('frontmost inspection must not run');
+        }
+        return [
+          'false',
+          ['7', '9', 'false', 'false', 'https://chatgpt.com/c/stable-inventory', 'ChatGPT'].join(fieldSeparator),
+        ].join(nativeSeparator);
+      },
+    });
+
+    const inventory = await listMacOsBrowserTabs('vivaldi', 1_000, { correctFrontmost: false });
+    expect(inventory).toEqual({
+      product: 'vivaldi',
+      truncated: false,
+      tabs: [{
+        windowId: '7',
+        tabId: '9',
+        active: false,
+        frontmost: false,
+        url: 'https://chatgpt.com/c/stable-inventory',
+        title: 'ChatGPT',
+      }],
+    });
+    expect(scripts).toHaveLength(1);
+  });
+
   test('never compiles an Apple Events browser script for a browser that is not already running', async () => {
     const scripts: string[] = [];
     setMacOsBrowserRuntimeHooksForTest({

@@ -1581,15 +1581,28 @@ async function resolveCurrentMacOsBrowserTabRef(
   return { windowId: match.windowId, tabId: match.tabId };
 }
 
+export interface MacOsBrowserTabInventoryOptions {
+  /**
+   * Correct stale active/frontmost bits through one extra foreground metadata
+   * read. Exact-target callers that only need stable windowId/tabId/url identity
+   * can disable this optional probe so a blocked foreground Apple Events read
+   * cannot starve the inventory itself.
+   */
+  correctFrontmost?: boolean;
+}
+
 export async function listMacOsBrowserTabs(
   product: MacOsBrowserProduct,
   timeoutMs = DEFAULT_NATIVE_TIMEOUT_MS,
+  options: MacOsBrowserTabInventoryOptions = {},
 ): Promise<MacOsBrowserTabInventory> {
   const browser = browserDefinition(product);
-  // Capture the frontmost tab before reading the stable inventory. Some older
-  // brokers expose stale active/frontmost bits in list_tabs, while metadata
-  // still identifies the actual frontmost tab and URL.
-  const inspected = await inspectBrowser(product, timeoutMs);
+  // Capture the frontmost tab before reading the stable inventory when callers
+  // need corrected UI-current metadata. Exact-target identity does not depend on
+  // this optional foreground probe.
+  const inspected = options.correctFrontmost === false
+    ? undefined
+    : await inspectBrowser(product, timeoutMs);
   const raw = await runBrowserAutomationText(
     { action: 'list_tabs', product },
     listTabsScript(browser),
@@ -1597,6 +1610,7 @@ export async function listMacOsBrowserTabs(
     timeoutMs,
   );
   const inventory = parseTabInventory(product, raw);
+  if (!inspected) return inventory;
   const metadata = inspected.metadata;
   const current = metadata?.frontmost === true && metadata.active !== false
     ? { windowId: metadata.windowId, tabId: metadata.tabId, url: metadata.url.trim() }
