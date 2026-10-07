@@ -283,7 +283,7 @@ export async function runSchedulerPeriodicCleanup(input: {
   if (plan.deepRetentionRepositoryIndex === undefined) return;
   const repo = input.repositories[plan.deepRetentionRepositoryIndex]!;
   try {
-    const generated = cleanupGeneratedRepositoryCheckoutCaches(repo, { nowMs: input.nowMs });
+    const generated = cleanupGeneratedRepositoryCheckoutCaches(repo, { nowMs: input.nowMs, rootStartIndex: plan.periodicSequence });
     if (generated.errors.length > 0) {
       console.error(`[forge cleanup] generated-cache retention reported ${generated.errors.length} error(s) for ${repo.repoId}`);
     }

@@ -25,6 +25,7 @@ export interface GeneratedCacheRetentionOptions {
   maxEntries?: number;
   maxRemovals?: number;
   processCommands?: string[];
+  rootStartIndex?: number;
 }
 
 export interface GeneratedCacheRetentionReport {
@@ -347,6 +348,10 @@ export function cleanupGeneratedRepositoryCheckoutCaches(
       .filter((checkout) => checkout.worktree && (checkout.lifecycle ?? 'active') === 'active')
       .map((checkout) => checkout.localRoot),
   ].filter((root, index, values) => values.findIndex((item) => canonical(item) === canonical(root)) === index);
+  if (roots.length > 1) {
+    const offset = ((Math.trunc(options.rootStartIndex ?? 0) % roots.length) + roots.length) % roots.length;
+    roots.push(...roots.splice(0, offset));
+  }
   const aggregate: RepositoryGeneratedCacheRetentionReport = {
     rootsInspected: 0,
     inspected: 0,

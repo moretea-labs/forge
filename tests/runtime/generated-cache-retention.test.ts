@@ -112,6 +112,36 @@ describe('generated repository cache retention', () => {
     expect(report.removedPaths.some((path) => path.includes(activeWorktreeRoot))).toBe(true);
   });
 
+  test('rotates repository roots so an earlier root cannot permanently starve a managed worktree', () => {
+    const canonicalRoot = repository();
+    const activeWorktreeRoot = repository();
+    const canonicalCache = join(canonicalRoot, '.forge', 'ios', 'DerivedData', 'canonical');
+    const activeCache = join(activeWorktreeRoot, '.forge', 'ios', 'DerivedData', 'worktree');
+    mkdirSync(canonicalCache, { recursive: true });
+    mkdirSync(activeCache, { recursive: true });
+    writeFileSync(join(canonicalCache, 'cache.bin'), 'cache');
+    writeFileSync(join(activeCache, 'cache.bin'), 'cache');
+    age(canonicalCache);
+    age(activeCache);
+
+    const report = cleanupGeneratedRepositoryCheckoutCaches({
+      canonicalRoot,
+      checkouts: [{ localRoot: activeWorktreeRoot, worktree: true, lifecycle: 'active' }],
+    }, {
+      nowMs: Date.parse('2026-08-25T12:00:00.000Z'),
+      graceMs: 60_000,
+      maxEntries: 1,
+      maxRemovals: 1,
+      processCommands: [],
+      rootStartIndex: 1,
+    });
+
+    expect(existsSync(activeCache)).toBe(false);
+    expect(existsSync(canonicalCache)).toBe(true);
+    expect(report.rootsInspected).toBe(1);
+    expect(report.budgetExhausted).toBe(true);
+  });
+
   test('scans bounded browser artifact roots before high-cardinality cache trees', () => {
     const root = repository();
     const upload = join(root, '.forge', 'browser', 'uploads', 'stale.zip');
