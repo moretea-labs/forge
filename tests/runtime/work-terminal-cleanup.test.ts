@@ -973,16 +973,24 @@ describe('terminal Work cleanup', () => {
     const delivered = git(fx.repositoryRoot, ['rev-parse', 'HEAD']);
     git(fx.repositoryRoot, ['update-ref', 'refs/remotes/origin/main', delivered]);
 
-    const report = cleanupControllerRuntimeState(fx.controllerHome, {
+    const firstReport = cleanupControllerRuntimeState(fx.controllerHome, {
       cleanupArtifactRetentionGraceMs: 0,
-      maxEntries: 1_000,
+      maxEntries: 1,
       maxRemovals: 50,
+      periodicSequence: 0,
     });
+    const secondReport = cleanupControllerRuntimeState(fx.controllerHome, {
+      cleanupArtifactRetentionGraceMs: 0,
+      maxEntries: 1,
+      maxRemovals: 50,
+      periodicSequence: 8,
+    });
+    const removedPaths = [...firstReport.removedCleanupArtifactPaths, ...secondReport.removedCleanupArtifactPaths];
 
     expect(existsSync(bundlePath)).toBe(false);
     expect(existsSync(orphanDirectory)).toBe(false);
-    expect(report.removedCleanupArtifactPaths.some((path) => path.endsWith(`${fx.handle.workId}/branch.bundle`))).toBe(true);
-    expect(report.removedCleanupArtifactPaths.some((path) => path.endsWith('orphan-contained-bundle/branch.bundle'))).toBe(true);
+    expect(removedPaths.some((path) => path.endsWith(`${fx.handle.workId}/branch.bundle`))).toBe(true);
+    expect(removedPaths.some((path) => path.endsWith('orphan-contained-bundle/branch.bundle'))).toBe(true);
     const after = readWorkHandle(fx.controllerHome, fx.repository.repoId, fx.handle.workId)!;
     expect(after.cleanupReceipt?.preservation.bundlePath).toBeUndefined();
     expect(after.cleanupReceipt?.preservation.bundleRetirement).toMatchObject({

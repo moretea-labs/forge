@@ -37,6 +37,7 @@ export interface CleanupArtifactRetentionOptions {
   graceMs?: number;
   maxEntries?: number;
   maxRemovals?: number;
+  scanSequence?: number;
 }
 
 export interface CleanupArtifactRetentionReport {
@@ -281,15 +282,27 @@ export function cleanupWorkPreservationArtifacts(
   } catch {
     return report;
   }
+  const scanSequence = Math.trunc(options.scanSequence ?? Math.floor(nowMs / 60_000));
+  if (repositoryIds.length > 1) {
+    const offset = ((scanSequence % repositoryIds.length) + repositoryIds.length) % repositoryIds.length;
+    repositoryIds.push(...repositoryIds.splice(0, offset));
+  }
+  let handleInspected = 0;
+  let physicalInspected = 0;
 
-  outer: for (const repositoryId of repositoryIds) {
+  for (const repositoryId of repositoryIds) {
     let repository;
     try {
       repository = getRepository(repositoryId, controllerHome, { includeRemoved: true });
     } catch {
       continue;
     }
-    const repositoryHandles = listWorkHandles(controllerHome, repositoryId);
+    const repositoryHandles = listWorkHandles(controllerHome, repositoryId)
+      .sort((left, right) => left.workId.localeCompare(right.workId));
+    if (repositoryHandles.length > 1) {
+      const offset = ((scanSequence % repositoryHandles.length) + repositoryHandles.length) % repositoryHandles.length;
+      repositoryHandles.push(...repositoryHandles.splice(0, offset));
+    }
     for (let handle of repositoryHandles) {
       const receipt = handle.cleanupReceipt;
       const bundlePath = receipt?.preservation.bundlePath;
@@ -303,10 +316,11 @@ export function cleanupWorkPreservationArtifacts(
         }
       }
       if (!receipt || !bundlePath) continue;
-      if (report.inspected >= maxEntries) {
+      if (handleInspected >= maxEntries) {
         report.budgetExhausted = true;
-        break outer;
+        break;
       }
+      handleInspected += 1;
       report.inspected += 1;
       const expectedPath = resolve(expectedBundlePath(controllerHome, handle));
       if (resolve(bundlePath) !== expectedPath) {
@@ -378,7 +392,12 @@ export function cleanupWorkPreservationArtifacts(
     let artifactEntries;
     try {
       if (!lstatSync(artifactRoot).isDirectory()) continue;
-      artifactEntries = readdirSync(artifactRoot, { withFileTypes: true });
+      artifactEntries = readdirSync(artifactRoot, { withFileTypes: true })
+        .sort((left, right) => left.name.localeCompare(right.name));
+      if (artifactEntries.length > 1) {
+        const offset = ((scanSequence % artifactEntries.length) + artifactEntries.length) % artifactEntries.length;
+        artifactEntries.push(...artifactEntries.splice(0, offset));
+      }
     } catch {
       continue;
     }
@@ -390,12 +409,15 @@ export function cleanupWorkPreservationArtifacts(
     }));
     for (const entry of artifactEntries) {
       if (!entry.isDirectory()) continue;
-      if (report.inspected >= maxEntries) {
-        report.budgetExhausted = true;
-        break outer;
-      }
       const directoryPath = join(artifactRoot, entry.name);
       const handle = handles.get(entry.name);
+      const canonicalBundlePath = resolve(join(directoryPath, 'branch.bundle'));
+      if (referencedBundlePaths.has(canonicalBundlePath)) continue;
+      if (physicalInspected >= maxEntries) {
+        report.budgetExhausted = true;
+        break;
+      }
+      physicalInspected += 1;
       report.inspected += 1;
       let contents: string[];
       let bundlePath: string;
@@ -419,7 +441,6 @@ export function cleanupWorkPreservationArtifacts(
         report.errors.push(`${repositoryId}:${entry.name}: ${error instanceof Error ? error.message : String(error)}`);
         continue;
       }
-      if (referencedBundlePaths.has(resolve(bundlePath))) continue;
       if (handle?.cleanupReceipt?.preservation.bundlePath
         && resolve(handle.cleanupReceipt.preservation.bundlePath) !== resolve(bundlePath)) {
         report.retained += 1;

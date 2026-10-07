@@ -1094,6 +1094,7 @@ export function cleanupControllerRuntimeState(
   const errors: string[] = [];
   const skippedByReason: Record<string, number> = {};
   const sequence = options.periodicSequence ?? Math.floor(nowMs / 60_000);
+  const removalCycleSequence = Math.floor(sequence / REMOVAL_PHASES.length);
   const removalPhases = cleanupRemovalPhaseOrder(options.reason ?? 'manual', sequence);
   const periodic = (options.reason ?? 'manual') === 'periodic';
   const retiredOwnerlessWorkAuthorities: string[] = [];
@@ -1173,6 +1174,7 @@ export function cleanupControllerRuntimeState(
         graceMs: options.cleanupArtifactRetentionGraceMs,
         maxEntries,
         maxRemovals: removalBudget.remaining,
+        scanSequence: removalCycleSequence,
       });
       removalBudget.remaining = Math.max(0, removalBudget.remaining - artifactRetention.attempted);
       if (artifactRetention.budgetExhausted) removalBudget.exhausted = true;
