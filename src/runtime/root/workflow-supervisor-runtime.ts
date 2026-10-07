@@ -8,7 +8,7 @@ import {
   reconcileWorkflowSupervisorSocket,
   WorkflowSupervisorEphemeralDiscovery,
 } from '../../../supervisor/server';
-import { startWorkflowSupervisorNativeBrowserAdapter, type WorkflowSupervisorNativeBrowserHandle, type WorkflowSupervisorTransportProjection } from '../../../supervisor/native-browser-adapter';
+import { startWorkflowSupervisorNativeBrowserAdapter, type WorkflowSupervisorNativeBrowserHandle, type WorkflowSupervisorStallProjection, type WorkflowSupervisorTransportProjection } from '../../../supervisor/native-browser-adapter';
 import type { WorkflowSupervisorConsumerStatus } from '../../../supervisor/types';
 import { WorkflowSupervisorStore } from '../../../supervisor/store';
 import { createComputerInteractionTargetAuthority } from '../../../adapters/computer/interaction-target-authority';
@@ -80,6 +80,31 @@ export async function startWorkflowSupervisorRuntime(
         resolveUserRequest(controllerHome, { requestId: request.requestId, decision: 'transport_recovered', resolvedBy: 'forge-runtime' });
       }
     }
+  };
+  const stallActivityId = (taskId: string): string => `workflow-supervisor-stall-${taskId.replace(/[^a-zA-Z0-9._-]/g, '_')}`;
+  const reportTaskStall = (projection: WorkflowSupervisorStallProjection): void => {
+    const activityId = stallActivityId(projection.taskId);
+    const existing = listDirectActivities(controllerHome, 200).find((item) => item.activityId === activityId);
+    const exhausted = projection.state === 'exhausted';
+    if (!exhausted && !existing) return;
+    const budget = projection.generations !== undefined && projection.maxGenerations !== undefined
+      ? ` (${projection.generations}/${projection.maxGenerations})`
+      : '';
+    recordDirectActivity(controllerHome, {
+      activityId,
+      capabilityId: 'workflow-supervisor.continuation',
+      kind: 'direct_execution',
+      targetScope: `workflow-supervisor-task:${projection.taskId}`,
+      principalId: 'forge-runtime',
+      status: exhausted ? 'running' : 'completed',
+      startedAt: existing?.startedAt ?? projection.observedAt,
+      ...(!exhausted ? { completedAt: projection.observedAt } : {}),
+      summary: exhausted
+        ? projection.stallKind === 'provider_resume_exhausted'
+          ? 'Workflow Supervisor exhausted bounded provider-resume attempts. The committed effect is preserved; only read-only reconciliation for late receipt evidence continues, and no duplicate provider turn will be sent.'
+          : `Workflow Supervisor exhausted bounded automatic dispatch generations${budget}. The task/effect remains durable, but automatic sending is paused until explicit recovery or new authoritative evidence; no duplicate provider turn will be sent.`
+        : 'Workflow Supervisor continuation stall cleared; the durable task/effect can progress again.',
+    });
   };
   const requestHumanAction = (input: { taskId: string; effectId?: string; action: 'login' | 'grant_permission'; code: string }): void => {
     const actionLabel = input.action === 'login' ? 'sign in to ChatGPT' : 'restore browser automation permission';
@@ -156,6 +181,7 @@ export async function startWorkflowSupervisorRuntime(
       clearInterval: (timer) => clearInterval(timer),
       onError: (error) => { process.stderr.write(`[workflow-supervisor-computer-target] ${error instanceof Error ? error.message : String(error)}\\n`); },
       reportTransportState,
+      reportTaskStall,
       requestHumanAction,
     });
   }

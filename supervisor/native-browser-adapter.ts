@@ -89,6 +89,16 @@ export interface WorkflowSupervisorTransportProjection {
   observedAt: string;
 }
 
+export interface WorkflowSupervisorStallProjection {
+  taskId: string;
+  effectId: string;
+  state: 'exhausted' | 'recovered';
+  stallKind: 'retryable' | 'provider_resume_exhausted';
+  generations?: number;
+  maxGenerations?: number;
+  observedAt: string;
+}
+
 export interface WorkflowSupervisorComputerBrowserDependencies {
   targetPort: ComputerChatgptConversationTargetPort;
   nowMs(): number;
@@ -99,6 +109,7 @@ export interface WorkflowSupervisorComputerBrowserDependencies {
   clearInterval(timer: ReturnType<typeof setInterval>): void;
   onError(error: unknown): void;
   reportTransportState?(projection: WorkflowSupervisorTransportProjection): void;
+  reportTaskStall?(projection: WorkflowSupervisorStallProjection): void;
   requestHumanAction?(input: {
     taskId: string;
     effectId?: string;
@@ -194,6 +205,8 @@ export class WorkflowSupervisorNativeBrowserAdapter {
   private firstTransportFailureAtMs?: number;
   private transportProjectionVisible = false;
   private readonly taskTransportFailures = new Map<string, TaskTransportFailure>();
+  /** Derived projection cache only; Supervisor store remains the stall authority. */
+  private readonly projectedTaskStalls = new Map<string, Omit<WorkflowSupervisorStallProjection, 'taskId' | 'state' | 'observedAt'>>();
   /** Spacing for read-only observation of a turn whose bounded resume is exhausted. */
   private readonly awaitingReceiptObservedAtMs = new Map<string, number>();
 
@@ -270,6 +283,47 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     if (failure.humanAction) this.deps.requestHumanAction?.({ taskId: task.taskId, ...(effectId ? { effectId } : {}), action: failure.humanAction, code: failure.code });
   }
 
+  private syncTaskStallProjections(): void {
+    const activeTaskIds = new Set<string>();
+    const observedAt = new Date(this.deps.nowMs()).toISOString();
+    for (const task of this.control.listTasks(true)) {
+      activeTaskIds.add(task.taskId);
+      let stall: ReturnType<WorkflowSupervisorControlPlane['taskStall']>;
+      try { stall = this.control.taskStall(task.taskId); }
+      catch (error) { this.deps.onError(error); continue; }
+      if (stall.state === 'retryable' || stall.state === 'provider_resume_exhausted') {
+        const next = {
+          effectId: stall.effectId,
+          stallKind: stall.state,
+          ...(stall.state === 'retryable' ? { generations: stall.generations, maxGenerations: stall.maxGenerations } : {}),
+        } as Omit<WorkflowSupervisorStallProjection, 'taskId' | 'state' | 'observedAt'>;
+        const prior = this.projectedTaskStalls.get(task.taskId);
+        const unchanged = prior?.effectId === next.effectId
+          && prior.stallKind === next.stallKind
+          && prior.generations === next.generations
+          && prior.maxGenerations === next.maxGenerations;
+        if (!unchanged) {
+          try { this.deps.reportTaskStall?.({ taskId: task.taskId, state: 'exhausted', observedAt, ...next }); }
+          catch (error) { this.deps.onError(error); }
+          this.projectedTaskStalls.set(task.taskId, next);
+        }
+        continue;
+      }
+      const prior = this.projectedTaskStalls.get(task.taskId);
+      if (prior) {
+        try { this.deps.reportTaskStall?.({ taskId: task.taskId, state: 'recovered', observedAt, ...prior }); }
+        catch (error) { this.deps.onError(error); }
+        this.projectedTaskStalls.delete(task.taskId);
+      }
+    }
+    for (const [taskId, prior] of this.projectedTaskStalls) {
+      if (activeTaskIds.has(taskId)) continue;
+      try { this.deps.reportTaskStall?.({ taskId, state: 'recovered', observedAt, ...prior }); }
+      catch (error) { this.deps.onError(error); }
+      this.projectedTaskStalls.delete(taskId);
+    }
+  }
+
   private dueCommand(nowMs: number): WorkflowSupervisorConsumerStatus['dueCommand'] {
     const candidates: NonNullable<WorkflowSupervisorConsumerStatus['dueCommand']>[] = [];
     for (const task of this.control.browserTasks()) {
@@ -336,13 +390,14 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     this.timer = undefined;
     await this.inflight?.catch(() => undefined);
     await this.deps.targetPort.close().catch(() => undefined);
-    this.observedAssistant.clear(); this.providerFailureSeen.clear(); this.providerFailureAwaitingClear.clear(); this.freshSendCheckedAt.clear(); this.taskTransportFailures.clear(); this.awaitingReceiptObservedAtMs.clear();
+    this.observedAssistant.clear(); this.providerFailureSeen.clear(); this.providerFailureAwaitingClear.clear(); this.freshSendCheckedAt.clear(); this.taskTransportFailures.clear(); this.projectedTaskStalls.clear(); this.awaitingReceiptObservedAtMs.clear();
   }
 
   async runOnce(): Promise<void> {
     if (this.closed) return;
     this.lastTickStartedAtMs = this.deps.nowMs();
     this.freshSendCheckedAt.clear(); this.lastRunTransportUnavailable = false;
+    this.syncTaskStallProjections();
     const tasks = this.control.browserTasks();
     this.lastRunHadTasks = tasks.length > 0;
     let inventory;

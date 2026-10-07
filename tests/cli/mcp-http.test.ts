@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { createHash, randomBytes } from 'crypto';
 import { createServer } from 'net';
+import { EventEmitter } from 'events';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -9,7 +10,7 @@ import { mcpControllerHomeOAuthPath, mcpControllerHomeTokenPath } from '../../sr
 import { runMcpSetupChatgpt } from '../../src/cli/mcp/setup';
 import { mergeNoProxy, withDirectNetworkProxyBypass } from '../../src/cli/mcp/proxy-env';
 import { McpSessionRegistry } from '../../adapters/mcp/transports/session-registry';
-import { createMcpHttpSessionRegistry } from '../../adapters/mcp/transports/http';
+import { admitMcpPost, createMcpHttpSessionRegistry, mcpRequestError } from '../../adapters/mcp/transports/http';
 import { recentMcpTransportEvidence } from '../../adapters/mcp/transports/http-observation';
 import { readExecutionSession, startExecutionSession } from '../../src/runtime/control-plane/execution/session-store';
 
@@ -106,6 +107,64 @@ function isolatedMcpProcessEnv(
 }
 
 describe('mcp http transport', () => {
+  test('projects Runtime cutover as outcome-unknown reconciliation rather than retry', () => {
+    expect(mcpRequestError(new Error('MCP_RUNTIME_CUTOVER_OUTCOME_UNKNOWN: cutover'))).toEqual({
+      status: 503,
+      body: {
+        error: 'runtime_cutover_outcome_unknown',
+        code: 'MCP_RUNTIME_CUTOVER_OUTCOME_UNKNOWN',
+        message: 'The Canonical Runtime changed after this request was admitted. Reconcile the original request/effect identity before retrying.',
+        recoverable: true,
+        retryable: false,
+        sessionPreserved: true,
+        action: 'reconcile',
+      },
+    });
+  });
+
+  test('bounds MCP POST ingress with one shared capacity authority', () => {
+    const stats = { initializing: 0, activePosts: 31, rejectedOverload: 0 };
+    const response = () => {
+      const emitter = new EventEmitter();
+      let statusCode = 200;
+      let body: unknown;
+      const res = Object.assign(emitter, {
+        setHeader: () => undefined,
+        status(code: number) {
+          statusCode = code;
+          return res;
+        },
+        json(value: unknown) {
+          body = value;
+          emitter.emit('finish');
+          return res;
+        },
+      });
+      return {
+        res: res as unknown as import('express').Response,
+        statusCode: () => statusCode,
+        body: () => body,
+        finish: () => emitter.emit('finish'),
+      };
+    };
+
+    const admitted = response();
+    expect(admitMcpPost(stats, admitted.res)).toBe(true);
+    expect(stats.activePosts).toBe(32);
+
+    const rejected = response();
+    expect(admitMcpPost(stats, rejected.res)).toBe(false);
+    expect(rejected.statusCode()).toBe(503);
+    expect(rejected.body()).toMatchObject({ code: 'MCP_SERVER_BUSY', action: 'retry' });
+    expect(stats.rejectedOverload).toBe(1);
+    expect(stats.activePosts).toBe(32);
+
+    admitted.finish();
+    expect(stats.activePosts).toBe(31);
+    admitted.finish();
+    expect(stats.activePosts).toBe(31);
+  });
+
   test('transport session retirement does not invalidate durable execution session authority', async () => {
     const root = mkdtempSync(join(tmpdir(), 'forge-mcp-transport-durable-session-'));
     try {
@@ -428,6 +487,7 @@ describe('mcp http transport', () => {
 
         const postProbeHealth = await fetch(`http://127.0.0.1:${port}/health`).then((response) => response.json());
         expect(postProbeHealth.sessions.active).toBe(0);
+        expect(postProbeHealth.sessions.activePosts).toBe(0);
 
         const initialized = await fetch(`http://127.0.0.1:${port}/mcp`, {
           method: 'POST',

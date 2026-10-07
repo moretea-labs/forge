@@ -18,6 +18,7 @@ import {
   chatgptHostSessionIdFromMcpMeta,
   canonicalRuntimeProxyLaneLimit,
   canonicalRuntimeReleaseHandoffInProgress,
+  canonicalRuntimeToolCallFailureIsCutoverOutcomeUnknown,
   canonicalRuntimeToolCallFailureIsTransient,
   canonicalRuntimeToolCallIsReplaySafe,
   createCanonicalRuntimeProxy,
@@ -37,7 +38,12 @@ import {
   mcpSessionToolSurfaceFingerprintIsCurrent,
   resolveMcpSessionCurrentFingerprint,
 } from '../../src/cli/mcp/transports/http';
-import { closeRuntimeMcpTransportResources, startRuntimeMcpTransport } from '../../src/runtime/root/mcp-transport';
+import {
+  RUNTIME_MCP_CUTOVER_OUTCOME_UNKNOWN,
+  RUNTIME_MCP_REQUEST_DRAIN_TIMEOUT_MS,
+  closeRuntimeMcpTransportResources,
+  startRuntimeMcpTransport,
+} from '../../src/runtime/root/mcp-transport';
 import { writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
 import { registerRepository } from '../../src/cli/repositories/registry';
 import {
@@ -133,11 +139,19 @@ describe('MCP canonical Runtime proxy routing', () => {
       'expired inner Runtime session',
       { status: 404, statusText: 'Not Found' },
     ))).toBe(true);
-    expect(canonicalRuntimeToolCallFailureIsTransient(new SdkHttpError(
+    const cutoverOutcomeUnknown = new SdkHttpError(
       SdkErrorCode.ConnectionClosed,
-      'semantic HTTP failure',
+      'runtime cutover outcome unknown',
+      { status: 409, statusText: 'Conflict' },
+    );
+    expect(canonicalRuntimeToolCallFailureIsTransient(cutoverOutcomeUnknown)).toBe(false);
+    expect(canonicalRuntimeToolCallFailureIsCutoverOutcomeUnknown(cutoverOutcomeUnknown)).toBe(true);
+    expect(canonicalRuntimeToolCallFailureIsCutoverOutcomeUnknown(new SdkHttpError(
+      SdkErrorCode.ConnectionClosed,
+      'semantic HTTP conflict',
       { status: 409, statusText: 'Conflict' },
     ))).toBe(false);
+    expect(canonicalRuntimeToolCallFailureIsCutoverOutcomeUnknown(new Error('Connection closed'))).toBe(false);
     expect(canonicalRuntimeToolCallFailureIsTransient(new Error('WORK_CONTROLLER_CLAIM_REQUIRED'))).toBe(false);
 
     let calls = 0;
@@ -166,6 +180,24 @@ describe('MCP canonical Runtime proxy routing', () => {
     })).rejects.toThrow('Connection closed');
     expect(unkeyedCalls).toBe(1);
     expect(unkeyedReconnects).toBe(0);
+
+    let cutoverCalls = 0;
+    let cutoverReconnects = 0;
+    await expect(callCanonicalRuntimeToolWithReplay({
+      name: 'repository_command_execute',
+      args,
+      call: async () => {
+        cutoverCalls += 1;
+        throw new SdkHttpError(
+          SdkErrorCode.ConnectionClosed,
+          'runtime cutover outcome unknown',
+          { status: 409, statusText: 'Conflict' },
+        );
+      },
+      reconnect: async () => { cutoverReconnects += 1; },
+    })).rejects.toThrow(RUNTIME_MCP_CUTOVER_OUTCOME_UNKNOWN);
+    expect(cutoverCalls).toBe(1);
+    expect(cutoverReconnects).toBe(0);
   });
 
   test('does not replay keyed Work commands for non-transient failures or beyond one retry', async () => {
@@ -555,6 +587,64 @@ describe('MCP canonical Runtime proxy routing', () => {
     }
   });
 
+  test('settles a real in-flight Runtime tool POST as cutover outcome-unknown before socket teardown', async () => {
+    const runtimeToken = 'runtime-cutover-token';
+    let releaseCall!: () => void;
+    let markCallStarted!: () => void;
+    const callStarted = new Promise<void>((resolve) => { markCallStarted = resolve; });
+    const callReleased = new Promise<void>((resolve) => { releaseCall = resolve; });
+    const runtimeTransport = await startRuntimeMcpTransport({
+      host: '127.0.0.1',
+      port: 0,
+      authToken: runtimeToken,
+      requestDrainTimeoutMs: 10,
+      readiness: () => ({
+        ready: true,
+        reasonCodes: [],
+        observedAt: new Date().toISOString(),
+        diagnostics: {
+          database: { outcome: 'pass' },
+          scheduler: { outcome: 'pass' },
+          releaseCoherence: { outcome: 'pass' },
+          mcpEndToEnd: { outcome: 'pass' },
+        },
+      }),
+      createServer: () => {
+        const server = new Server(
+          { name: 'fixture-runtime-cutover', version: '1.0.0' },
+          { capabilities: { tools: { listChanged: false } } },
+        );
+        server.setRequestHandler('tools/call', async () => {
+          markCallStarted();
+          await callReleased;
+          return { content: [{ type: 'text', text: 'late result' }] };
+        });
+        return server;
+      },
+    });
+    const transport = new StreamableHTTPClientTransport(new URL(runtimeTransport.endpoint), {
+      requestInit: { headers: { Authorization: `Bearer ${runtimeToken}` } },
+    });
+    const client = new Client({ name: 'cutover-client', version: '1.0.0' }, { capabilities: {} });
+    await client.connect(transport);
+
+    try {
+      const activeCall = client.callTool({ name: 'block', arguments: {} });
+      await callStarted;
+      const closing = runtimeTransport.close();
+      let observed: unknown;
+      try { await activeCall; } catch (error) { observed = error; }
+      expect(observed).toBeDefined();
+      expect(canonicalRuntimeToolCallFailureIsCutoverOutcomeUnknown(observed)).toBe(true);
+      releaseCall();
+      await closing;
+    } finally {
+      releaseCall();
+      await client.close().catch(() => undefined);
+      await runtimeTransport.close().catch(() => undefined);
+    }
+  });
+
   test('accepts only bounded internal Runtime forwarding identity metadata', () => {
     expect(canonicalRuntimeForwardingIdentity({
       forgeRuntimeForwarding: {
@@ -608,10 +698,41 @@ describe('MCP canonical Runtime proxy routing', () => {
     expect(events).toEqual(['listener', 'request-drain', 'session', 'force']);
   });
 
+  test('settles over-budget Runtime requests before session and socket teardown', async () => {
+    const events: string[] = [];
+    let releaseRequest!: () => void;
+    let releaseListener!: () => void;
+    const requestDrain = new Promise<void>((resolve) => { releaseRequest = resolve; });
+    const listenerClosed = new Promise<void>((resolve) => { releaseListener = resolve; });
+    await closeRuntimeMcpTransportResources({
+      closeListener: async () => {
+        events.push('listener');
+        await listenerClosed;
+      },
+      waitForRequestDrain: async () => {
+        events.push('request-drain');
+        await requestDrain;
+      },
+      settleActiveRequests: () => {
+        events.push('settle');
+        releaseRequest();
+      },
+      closeSessions: [async () => { events.push('session'); }],
+      forceCloseConnections: () => {
+        events.push('force');
+        releaseListener();
+      },
+      requestDrainTimeoutMs: 5,
+      sessionCloseTimeoutMs: 1_000,
+    });
+    expect(events).toEqual(['listener', 'request-drain', 'settle', 'session', 'force']);
+  });
+
   test('keeps loopback connect fail-fast without capping valid tool work at five seconds', () => {
     expect(CANONICAL_RUNTIME_CONNECT_TIMEOUT_MS).toBe(5_000);
     expect(CANONICAL_RUNTIME_TOOL_CALL_TIMEOUT_MS).toBeGreaterThan(CANONICAL_RUNTIME_CONNECT_TIMEOUT_MS);
     expect(CANONICAL_RUNTIME_TOOL_CALL_TIMEOUT_MS).toBe(120_000);
+    expect(RUNTIME_MCP_REQUEST_DRAIN_TIMEOUT_MS).toBe(5_000);
   });
 
   test('recognizes only recent Canonical Runtime release handoff states', () => {

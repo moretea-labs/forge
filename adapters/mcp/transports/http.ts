@@ -38,6 +38,7 @@ import {
 import { McpSessionRegistry, type ClosableMcpTransport, type McpSessionRegistryOptions, type McpSessionRoute } from './session-registry';
 import { getConfiguredPublicOrigin, getPublicOrigin, registerMcpOAuthHttpRoutes } from './oauth-http';
 import { registerMcpHttpObservationRoutes } from './http-observation';
+import { RUNTIME_MCP_CUTOVER_OUTCOME_UNKNOWN } from '../../../src/runtime/root/mcp-transport';
 export { isAllowedMcpOAuthRedirectUri, isIncompleteOAuthAuthorizeRequest } from './oauth-http';
 import {
   connectionIdentity,
@@ -228,6 +229,20 @@ function retireAfterToolSurfaceReset(
 
 export function mcpRequestError(error: unknown) {
   const rawMessage = error instanceof Error ? error.message : String(error);
+  if (rawMessage.includes(RUNTIME_MCP_CUTOVER_OUTCOME_UNKNOWN)) {
+    return {
+      status: 503 as const,
+      body: {
+        error: 'runtime_cutover_outcome_unknown' as const,
+        code: RUNTIME_MCP_CUTOVER_OUTCOME_UNKNOWN,
+        message: 'The Canonical Runtime changed after this request was admitted. Reconcile the original request/effect identity before retrying.',
+        recoverable: true as const,
+        retryable: false as const,
+        sessionPreserved: true as const,
+        action: 'reconcile' as const,
+      },
+    };
+  }
   const retryable = /(?:\b502\b|\b503\b|\b429\b|ECONNRESET|ETIMEDOUT|EAI_AGAIN|CANONICAL_RUNTIME_TIMEOUT|server_busy|session_capacity|gateway)/i.test(rawMessage);
   return {
     status: (retryable ? 503 : 500) as 500 | 503,
@@ -343,6 +358,36 @@ const MCP_STREAM_LEASE_MS = positiveIntegerEnv('FORGE_MCP_STREAM_LEASE_MS', 30 *
 const MCP_SESSION_ABSOLUTE_LIFETIME_MS = positiveIntegerEnv('FORGE_MCP_SESSION_ABSOLUTE_LIFETIME_MS', 2 * 60 * 60_000);
 const MCP_ACTIVE_POST_STALL_MS = positiveIntegerEnv('FORGE_MCP_ACTIVE_POST_STALL_MS', 10 * 60_000);
 
+export function admitMcpPost(stats: McpRuntimeStats, res: Response): boolean {
+  if (stats.activePosts >= MAX_ACTIVE_POSTS) {
+    stats.rejectedOverload += 1;
+    res.setHeader('retry-after', '1');
+    res.status(503).json({
+      error: 'server_busy',
+      code: 'MCP_SERVER_BUSY',
+      message: 'Too many MCP requests are active; retry shortly',
+      recoverable: true,
+      retryable: true,
+      sessionPreserved: true,
+      action: 'retry',
+    });
+    return false;
+  }
+
+  stats.activePosts += 1;
+  let released = false;
+  const release = (): void => {
+    if (released) return;
+    released = true;
+    stats.activePosts = Math.max(0, stats.activePosts - 1);
+    res.off('finish', release);
+    res.off('close', release);
+  };
+  res.once('finish', release);
+  res.once('close', release);
+  return true;
+}
+
 type McpToolContext = ReturnType<typeof createMcpToolContext>;
 type HttpSessionRegistry = McpSessionRegistry<NodeStreamableHTTPServerTransport, McpToolContext>;
 
@@ -413,6 +458,7 @@ async function handleMcpPost(
     res.status(400).json({ error: 'invalid JSON request body' });
     return;
   }
+  if (!admitMcpPost(stats, res)) return;
   if (modernHandler) {
     const webRequest = await toWebRequest(req, body);
     if (!(await isLegacyRequest(webRequest, body))) {
@@ -426,7 +472,7 @@ async function handleMcpPost(
       res.setHeader('Mcp-Session-Reset', 'reinitialized');
       res.setHeader('x-forge-session-reset', 'reinitialized');
     }
-    if (stats.initializing >= MAX_INITIALIZING_SESSIONS || stats.activePosts >= MAX_ACTIVE_POSTS) {
+    if (stats.initializing >= MAX_INITIALIZING_SESSIONS) {
       stats.rejectedOverload += 1;
       res.setHeader('retry-after', '1');
       res.status(503).json({
@@ -441,7 +487,6 @@ async function handleMcpPost(
       return;
     }
     stats.initializing += 1;
-    stats.activePosts += 1;
     let transport: NodeStreamableHTTPServerTransport | undefined;
     let reservationId: string | undefined;
     let initializedSessionId: string | undefined;
@@ -537,8 +582,7 @@ async function handleMcpPost(
     } finally {
       if (initializedSessionId) registry.endPost(initializedSessionId);
       if (reservationId) registry.releaseInitialize(reservationId);
-      stats.initializing -= 1;
-      stats.activePosts -= 1;
+      stats.initializing = Math.max(0, stats.initializing - 1);
       if (!transport?.sessionId) await transport?.close().catch(() => undefined);
     }
     return;
@@ -546,14 +590,13 @@ async function handleMcpPost(
   if (sessionId) {
     const managed = registry.get(sessionId);
     if (managed && managed.route === route && managed.principalId === principalFromRequest(req)) {
-      if (managed.inFlightPosts >= MAX_POSTS_PER_SESSION || stats.activePosts >= MAX_ACTIVE_POSTS) {
+      if (managed.inFlightPosts >= MAX_POSTS_PER_SESSION) {
         stats.rejectedOverload += 1;
         res.setHeader('retry-after', '1');
         res.status(429).json({ error: 'session_busy', message: 'Too many MCP requests are active; retry shortly' });
         return;
       }
       registry.beginPost(sessionId);
-      stats.activePosts += 1;
       try {
         const currentFingerprint = await resolveMcpSessionCurrentFingerprint(
           currentToolSurfaceFingerprint(),
@@ -588,7 +631,6 @@ async function handleMcpPost(
         await managed.transport.handleRequest(req, res, body);
       } finally {
         registry.endPost(sessionId);
-        stats.activePosts -= 1;
       }
       return;
     }

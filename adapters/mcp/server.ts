@@ -28,6 +28,7 @@ import { getRuntimeWriteClaim } from '../../src/runtime/root/write-fence';
 import { recordMcpIncident, recordMcpTiming, type McpTimingTrace } from '../../src/runtime/diagnostics/mcp-timing';
 import { maybeRegisterMcpIncidentRepair } from '../../src/runtime/diagnostics/incident-repair';
 import { FORGE_VERSION, forgeToolSurfaceFingerprint } from '../../src/cli/controller/runtime-config';
+import { RUNTIME_MCP_CUTOVER_OUTCOME_UNKNOWN } from '../../src/runtime/root/mcp-transport';
 
 export type { McpServerOptions } from './multi-repository';
 export { buildMultiRepositoryToolDefinitions, callMultiRepositoryTool } from './multi-repository';
@@ -511,6 +512,20 @@ export function canonicalRuntimeToolCallIsReplaySafe(name: string, args: Record<
   return Boolean(workId && requestId);
 }
 
+export function canonicalRuntimeToolCallFailureIsCutoverOutcomeUnknown(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const record = error as { code?: unknown; message?: unknown; data?: unknown };
+  const message = typeof record.message === 'string' ? record.message : '';
+  if (SdkHttpError.isInstance(error)) {
+    return error.status === 409 && (
+      message.includes(RUNTIME_MCP_CUTOVER_OUTCOME_UNKNOWN)
+      || message.toLowerCase().includes('runtime cutover outcome unknown')
+      || JSON.stringify(record.data ?? '').includes(RUNTIME_MCP_CUTOVER_OUTCOME_UNKNOWN)
+    );
+  }
+  return record.code === -32000 && message === RUNTIME_MCP_CUTOVER_OUTCOME_UNKNOWN;
+}
+
 export function canonicalRuntimeToolCallFailureIsTransient(error: unknown): boolean {
   if (SdkHttpError.isInstance(error)) return error.status === 404;
   if (SdkError.isInstance(error)) {
@@ -537,6 +552,9 @@ export async function callCanonicalRuntimeToolWithReplay<T>(input: {
   try {
     return await input.call();
   } catch (error) {
+    if (canonicalRuntimeToolCallFailureIsCutoverOutcomeUnknown(error)) {
+      throw new Error(`${RUNTIME_MCP_CUTOVER_OUTCOME_UNKNOWN}: Canonical Runtime entered cutover after request admission; reconcile the original request/effect identity before retrying.`);
+    }
     if (!canonicalRuntimeToolCallIsReplaySafe(input.name, input.args)
       || !canonicalRuntimeToolCallFailureIsTransient(error)) {
       throw error;

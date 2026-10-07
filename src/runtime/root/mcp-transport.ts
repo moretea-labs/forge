@@ -13,11 +13,19 @@ interface ManagedSession {
   activeStreams: number;
 }
 
+type RuntimeMcpRequestId = string | number;
+interface ActiveRuntimeMcpPost {
+  response: Response;
+  requestIds: RuntimeMcpRequestId[];
+  transport?: NodeStreamableHTTPServerTransport;
+}
+
 export interface RuntimeMcpSessionSnapshot {
   active: number;
   maximum: number;
   initializing: number;
   protected: number;
+  activeRequests: number;
   capacityAvailable: number;
   capacityEvictions: number;
 }
@@ -47,6 +55,8 @@ export interface StartRuntimeMcpTransportOptions {
   onFatal?: (error: Error) => void;
   /** Internal Runtime sessions are bounded even if a Gateway dies without DELETE. */
   maximumSessions?: number;
+  /** Test/embedded override; production defaults to the bounded cutover grace. */
+  requestDrainTimeoutMs?: number;
 }
 
 function authorized(request: Request, configuredToken: string): boolean {
@@ -76,6 +86,15 @@ function observesToolSurface(body: unknown): boolean {
   });
 }
 
+function runtimeMcpRequestIds(body: unknown): RuntimeMcpRequestId[] {
+  const values = Array.isArray(body) ? body : [body];
+  return values.flatMap((value) => {
+    if (!value || typeof value !== 'object') return [];
+    const id = (value as Record<string, unknown>).id;
+    return typeof id === 'string' || typeof id === 'number' ? [id] : [];
+  });
+}
+
 function parseBody(body: unknown): unknown {
   if (!Buffer.isBuffer(body)) return body;
   try { return JSON.parse(body.toString('utf8')); } catch {
@@ -95,7 +114,16 @@ function authMiddleware(token: string) {
 }
 
 const SESSION_CLOSE_TIMEOUT_MS = 1_000;
-const REQUEST_DRAIN_TIMEOUT_MS = 250;
+/**
+ * Cutover first withdraws admission, then gives already-admitted requests a
+ * bounded grace period that still fits inside the primary service stop budget.
+ * Requests that outlive it are explicitly settled as outcome-unknown before
+ * session/socket teardown, so an outer controller turn is never left waiting on
+ * a connection the Runtime is intentionally destroying.
+ */
+export const RUNTIME_MCP_REQUEST_DRAIN_TIMEOUT_MS = 5_000;
+const CUTOVER_SETTLEMENT_DRAIN_TIMEOUT_MS = 250;
+export const RUNTIME_MCP_CUTOVER_OUTCOME_UNKNOWN = 'MCP_RUNTIME_CUTOVER_OUTCOME_UNKNOWN';
 export const DEFAULT_RUNTIME_MCP_MAX_SESSIONS = 64;
 
 function boundedRuntimeMcpMaximumSessions(value: number | undefined): number {
@@ -112,31 +140,41 @@ function closeServer(server: NodeHttpServer): Promise<void> {
   });
 }
 
-function boundedDrain(wait: Promise<void>, timeoutMs: number): Promise<void> {
-  if (timeoutMs <= 0) return Promise.resolve();
-  return Promise.race([
-    wait.catch(() => undefined),
+async function boundedDrain(wait: Promise<void>, timeoutMs: number): Promise<boolean> {
+  if (timeoutMs <= 0) return false;
+  let drained = false;
+  await Promise.race([
+    wait.then(() => { drained = true; }).catch(() => undefined),
     new Promise<void>((resolve) => setTimeout(resolve, timeoutMs)),
   ]);
+  return drained;
 }
 
 export async function closeRuntimeMcpTransportResources(input: {
   closeListener: () => Promise<void>;
   closeSessions: Array<() => Promise<void>>;
   waitForRequestDrain?: () => Promise<void>;
+  settleActiveRequests?: () => void | Promise<void>;
   forceCloseConnections?: () => void;
   requestDrainTimeoutMs?: number;
   sessionCloseTimeoutMs?: number;
 }): Promise<void> {
-  // Withdraw the TCP listener first so no new request can enter. Allow ordinary
-  // short MCP calls to finish before closing their session transport; long SSE
-  // streams remain bounded and are force-closed after the drain window.
+  // Withdraw the listener first so no new request can enter. Existing calls get
+  // one bounded grace window. If that expires, settle still-open POST responses
+  // as explicit cutover/outcome-unknown before closing session transports. This
+  // preserves the no-blind-replay contract while preventing a controller turn
+  // from being stranded on a socket the Runtime is about to destroy.
   const listenerClose = input.closeListener();
   void listenerClose.catch(() => undefined);
-  await boundedDrain(
-    input.waitForRequestDrain?.() ?? Promise.resolve(),
-    Math.max(0, input.requestDrainTimeoutMs ?? REQUEST_DRAIN_TIMEOUT_MS),
+  const requestDrain = input.waitForRequestDrain?.() ?? Promise.resolve();
+  const drained = await boundedDrain(
+    requestDrain,
+    Math.max(0, input.requestDrainTimeoutMs ?? RUNTIME_MCP_REQUEST_DRAIN_TIMEOUT_MS),
   );
+  if (!drained) {
+    await input.settleActiveRequests?.();
+    await boundedDrain(requestDrain, CUTOVER_SETTLEMENT_DRAIN_TIMEOUT_MS);
+  }
   const sessionDrain = Promise.allSettled(input.closeSessions.map(async (close) => await close()));
   await boundedDrain(sessionDrain.then(() => undefined), Math.max(0, input.sessionCloseTimeoutMs ?? SESSION_CLOSE_TIMEOUT_MS));
   input.forceCloseConnections?.();
@@ -152,12 +190,14 @@ export async function startRuntimeMcpTransport(
   let initializingSessions = 0;
   let capacityEvictions = 0;
   let activeRequests = 0;
+  const activePosts = new Map<Response, ActiveRuntimeMcpPost>();
 
   const sessionSnapshot = (): RuntimeMcpSessionSnapshot => ({
     active: sessions.size,
     maximum: maximumSessions,
     initializing: initializingSessions,
     protected: [...sessions.values()].filter((session) => session.activePosts > 0).length,
+    activeRequests,
     capacityAvailable: Math.max(0, maximumSessions - sessions.size - initializingSessions),
     capacityEvictions,
   });
@@ -192,7 +232,7 @@ export async function startRuntimeMcpTransport(
       managed.lastActivityAt = Date.now();
     }
   };
-  const requestDrainWaiters = new Set<() => void>();
+  const postDrainWaiters = new Set<() => void>();
   const app = express();
   app.disable('x-powered-by');
   app.use((_req, res, next) => {
@@ -202,18 +242,17 @@ export async function startRuntimeMcpTransport(
       if (settled) return;
       settled = true;
       activeRequests = Math.max(0, activeRequests - 1);
-      if (activeRequests === 0) {
-        for (const resolve of requestDrainWaiters) resolve();
-        requestDrainWaiters.clear();
-      }
     };
     res.once('finish', settle);
     res.once('close', settle);
     next();
   });
-  const waitForRequestDrain = (): Promise<void> => activeRequests === 0
+  // Only POST requests can represent an in-flight tool mutation/read result that
+  // must settle before cutover. Long-lived GET/SSE streams are transport-only and
+  // must not consume the cutover grace window.
+  const waitForRequestDrain = (): Promise<void> => activePosts.size === 0
     ? Promise.resolve()
-    : new Promise<void>((resolve) => requestDrainWaiters.add(resolve));
+    : new Promise<void>((resolve) => postDrainWaiters.add(resolve));
   app.get('/ready', (_req, res) => {
     const readiness = options.readiness();
     res.status(readiness.ready ? 200 : 503).json(readiness);
@@ -221,12 +260,24 @@ export async function startRuntimeMcpTransport(
 
   const requireAuth = authMiddleware(options.authToken);
   app.post('/mcp', requireAuth, express.raw({ type: '*/*', limit: '1mb' }), (req, res) => {
+    const activePost: ActiveRuntimeMcpPost = { response: res, requestIds: [] };
+    activePosts.set(res, activePost);
+    const releasePostResponse = (): void => {
+      activePosts.delete(res);
+      if (activePosts.size === 0) {
+        for (const resolve of postDrainWaiters) resolve();
+        postDrainWaiters.clear();
+      }
+    };
+    res.once('finish', releasePostResponse);
+    res.once('close', releasePostResponse);
     void (async () => {
       let body: unknown;
       try { body = parseBody(req.body); } catch (error) {
         res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
         return;
       }
+      activePost.requestIds = runtimeMcpRequestIds(body);
       if (observesToolSurface(body)) options.onToolSurfaceObservation?.();
       const requestedSessionId = req.headers['mcp-session-id'];
       const sessionId = typeof requestedSessionId === 'string' ? requestedSessionId : undefined;
@@ -265,6 +316,7 @@ export async function startRuntimeMcpTransport(
             });
           },
         });
+        activePost.transport = transport;
         transport.onclose = () => {
           if (transport.sessionId) sessions.delete(transport.sessionId);
         };
@@ -293,10 +345,15 @@ export async function startRuntimeMcpTransport(
         res.status(404).json({ error: 'mcp_session_not_found' });
         return;
       }
+      activePost.transport = managed.transport;
       await withManagedSessionRequest(managed, 'post', async () => await managed.transport.handleRequest(req, res, body));
     })().catch((error: unknown) => {
       if (!res.headersSent) res.status(500).json({ error: 'mcp_request_failed' });
       console.error('[forge-runtime mcp] request failed:', error);
+    }).finally(() => {
+      releasePostResponse();
+      res.off('finish', releasePostResponse);
+      res.off('close', releasePostResponse);
     });
   });
   app.get('/mcp', requireAuth, (req, res) => {
@@ -362,6 +419,7 @@ export async function startRuntimeMcpTransport(
       await closeRuntimeMcpTransportResources({
         closeListener: async () => await closeServer(httpServer),
         waitForRequestDrain,
+        requestDrainTimeoutMs: options.requestDrainTimeoutMs,
         // Snapshot sessions only after the request drain: an initialize request
         // already in flight may register its session while shutdown is starting.
         closeSessions: [async () => {
@@ -369,6 +427,41 @@ export async function startRuntimeMcpTransport(
           await Promise.allSettled(activeSessions.map(async ({ transport }) => await transport.close().catch(() => undefined)));
           sessions.clear();
         }],
+        settleActiveRequests: async () => {
+          for (const active of activePosts.values()) {
+            let protocolSettled = false;
+            if (active.transport && active.requestIds.length > 0) {
+              const outcomes = await Promise.allSettled(active.requestIds.map(async (id) => {
+                await active.transport!.send({
+                  jsonrpc: '2.0',
+                  id,
+                  error: {
+                    code: -32000,
+                    message: RUNTIME_MCP_CUTOVER_OUTCOME_UNKNOWN,
+                    data: {
+                      outcome: 'unknown',
+                      recoverable: true,
+                      retryable: false,
+                      action: 'reconcile',
+                    },
+                  },
+                });
+              }));
+              protocolSettled = outcomes.some((outcome) => outcome.status === 'fulfilled');
+            }
+            if (protocolSettled) continue;
+            const response = active.response;
+            if (response.destroyed || response.writableEnded || response.headersSent) continue;
+            response.status(409).json({
+              error: 'runtime_cutover_outcome_unknown',
+              code: RUNTIME_MCP_CUTOVER_OUTCOME_UNKNOWN,
+              message: 'Canonical Runtime entered cutover after this request was admitted. The request outcome is unknown; reconcile by request/effect identity before any retry.',
+              recoverable: true,
+              retryable: false,
+              action: 'reconcile',
+            });
+          }
+        },
         forceCloseConnections: () => httpServer.closeAllConnections?.(),
       });
     },

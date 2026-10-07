@@ -2873,7 +2873,7 @@ test('bounds and spaces provider re-dispatch of one un-applied effect, then rele
 });
 
 describe('Workflow Supervisor operator recovery and conversation replacement', () => {
-  test('a mechanically exhausted un-applied effect never becomes silently inert and needs one bounded operator grant', () => {
+  test('a mechanically exhausted un-applied effect never becomes silently inert and needs one bounded operator grant', async () => {
     const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-operator-retry-'));
     roots.push(root);
     const store = new WorkflowSupervisorStore(join(root, 'supervisor-home'));
@@ -2904,17 +2904,53 @@ describe('Workflow Supervisor operator recovery and conversation replacement', (
     expect(store.nextBrowserEffect(taskId, { nowMs: Date.now() + 600_000 })).toBeUndefined();
     // Exhaustion is visible as a derived projection instead of an empty queue.
     expect(control.taskStall(taskId)).toMatchObject({ state: 'retryable', effectId: effect.effectId, generations: 4, maxGenerations: 4 });
+    const stallProjections: Array<Record<string, unknown>> = [];
+    const page: TestBrowserPage = {
+      evaluate: async () => undefined as never,
+      tabRef: () => ({ windowId: 'stall-window', tabId: 'stall-tab' }),
+    };
+    const targetPort = createTestChatgptTargetPort({
+      listTabs: async () => ({ entries: [{ windowId: 'stall-window', tabId: 'stall-tab', active: true, frontmost: true, url: conversationUrl, title: 'stall' }] }),
+      reattach: async () => page,
+      create: async () => page,
+      close: async () => undefined,
+      snapshot: async () => ({
+        url: conversationUrl, title: 'stall', latestUserText: 'prior user', latestAssistantResponse: '',
+        composerText: '', isGenerating: true, providerActivityText: 'working', providerFailureText: '',
+      }),
+      dispatchPrompt: async () => { throw new Error('stall projection test must not dispatch'); },
+    });
+    const adapter = new WorkflowSupervisorNativeBrowserAdapter(control, new WorkflowSupervisorEphemeralDiscovery(), {
+      targetPort,
+      nowMs: () => Date.now(),
+      providerIdleGraceMs: 60_000,
+      providerScopeKey: join(root, 'provider-scope'),
+      sleep: async () => undefined,
+      setInterval: () => 0 as unknown as ReturnType<typeof setInterval>,
+      clearInterval: () => undefined,
+      onError: () => undefined,
+      reportTaskStall: (projection) => { stallProjections.push(projection as unknown as Record<string, unknown>); },
+    });
+    await adapter.runOnce();
+    expect(stallProjections).toContainEqual(expect.objectContaining({
+      taskId, effectId: effect.effectId, state: 'exhausted', stallKind: 'retryable', generations: 4, maxGenerations: 4,
+    }));
     expect(() => control.recoverTask({ taskId, sourceEffectId: effect.effectId, requestId: '', reason: 'missing request id' }))
       .toThrow('WORKFLOW_SUPERVISOR_RECOVERY_REASON_REQUIRED');
     const recovered = control.recoverTask({ taskId, sourceEffectId: effect.effectId, requestId: 'op-retry-1', reason: 'The local composer obstacle was fixed.' });
     expect(recovered.action).toBe('retry_authorized');
     expect(recovered.recoveryEffect.effectId).toBe(effect.effectId);
     expect(store.nextBrowserEffect(taskId, { nowMs: Date.now() + 600_000 })).toMatchObject({ mode: 'send', generation: 5 });
+    await adapter.runOnce();
+    expect(stallProjections).toContainEqual(expect.objectContaining({
+      taskId, effectId: effect.effectId, state: 'recovered', stallKind: 'retryable',
+    }));
     // Idempotent per request id, and the explicit budget stays bounded.
     expect(control.recoverTask({ taskId, sourceEffectId: effect.effectId, requestId: 'op-retry-1', reason: 'repeat' }).recoveryEffect.effectId).toBe(effect.effectId);
     control.recoverTask({ taskId, sourceEffectId: effect.effectId, requestId: 'op-retry-2', reason: 'Second explicit grant.' });
     expect(() => control.recoverTask({ taskId, sourceEffectId: effect.effectId, requestId: 'op-retry-3', reason: 'Third explicit grant.' }))
       .toThrow('WORKFLOW_SUPERVISOR_RECOVERY_REFUND_BUDGET_EXHAUSTED');
+    await adapter.close();
     store.close();
   });
 
