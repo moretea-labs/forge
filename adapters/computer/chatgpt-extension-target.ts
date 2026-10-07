@@ -297,7 +297,21 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
     if (exact.length === 1) {
       const candidate = exact[0]!;
       const record = await this.bindAsync(identity, candidate.entry.providerBinding, candidate.instanceId);
-      return { state: 'ready', target: this.target(identity, record, candidate.instanceId) };
+      const target = this.target(identity, record, candidate.instanceId);
+      try {
+        const observation = await target.observe({ includeUserHistory: false, includePageText: false });
+        if (!conversationContentAvailable(observation)) {
+          return failure('COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE', { failoverSafe: true });
+        }
+        return { state: 'ready', target, observation };
+      } catch (error) {
+        return failure(
+          error instanceof Error && error.message.trim()
+            ? error.message.trim()
+            : 'COMPUTER_CHATGPT_EXTENSION_OBSERVATION_UNAVAILABLE',
+          { failoverSafe: true },
+        );
+      }
     }
     const selected = this.selectProviderInstance(this.preferredProviderInstance(identity));
     if (!selected.instanceId) {

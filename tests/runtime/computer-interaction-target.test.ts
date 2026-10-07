@@ -423,7 +423,29 @@ describe('Computer durable InteractionTarget authority', () => {
           },
         }],
       });
-      const exact = await extension.ensureExact(exactConversation);
+      const exactPromise = extension.ensureExact(exactConversation);
+      expect(extension.claim('profile-logged-out')).toBeUndefined();
+      let exactObservation;
+      for (let attempt = 0; attempt < 50 && !exactObservation; attempt += 1) {
+        exactObservation = extension.claim('profile-logged-in');
+        if (!exactObservation) await Bun.sleep(1);
+      }
+      expect(exactObservation?.kind).toBe('observe');
+      if (!exactObservation) throw new Error('exact provider did not receive observation command');
+      expect(extension.complete('profile-logged-in', exactObservation.commandId, {
+        kind: 'observation',
+        observation: {
+          url: exactConversation.canonicalUrl,
+          title: 'Exact conversation',
+          latestUserText: '',
+          latestAssistantResponse: '',
+          providerActivityText: '',
+          providerFailureText: '',
+          composerText: '',
+          isGenerating: false,
+        },
+      })).toBe(true);
+      const exact = await exactPromise;
       expect(exact.state).toBe('ready');
       if (exact.state !== 'ready') throw new Error('exact extension target not ready');
       expect(targetAuthority.getSurface(controllerHome, exact.target.targetId)?.providerBinding).toMatchObject({
@@ -471,6 +493,69 @@ describe('Computer durable InteractionTarget authority', () => {
       });
       expect(extension.claim('profile-logged-out')).toBeUndefined();
       expect(extension.claim('profile-logged-in')).toBeUndefined();
+    } finally {
+      rmSync(controllerHome, { recursive: true, force: true });
+    }
+  });
+
+  test('does not trust an exact heartbeat entry until conversation content is observable', async () => {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-computer-extension-heartbeat-shell-'));
+    try {
+      const extension = new ChromeExtensionChatgptConversationTargetPort(controllerHome, targetAuthority);
+      const identity = {
+        namespace: 'chatgpt.conversation' as const,
+        conversationId: 'conversation-heartbeat-shell',
+        canonicalUrl: 'https://chatgpt.com/c/conversation-heartbeat-shell',
+      };
+      extension.heartbeat({
+        providerId: 'browser.chrome-extension',
+        providerInstanceId: 'profile-primary',
+        observedAt: '2026-10-04T05:03:30.000Z',
+        conversations: [{
+          conversationId: identity.conversationId,
+          canonicalUrl: identity.canonicalUrl,
+          isCurrent: true,
+          providerBinding: {
+            providerId: 'browser.chrome-extension',
+            providerSessionId: 'profile-primary',
+            observedAt: '2026-10-04T05:03:30.000Z',
+            browserProduct: 'chrome',
+            windowId: 'window-heartbeat-shell',
+            tabId: 'tab-heartbeat-shell',
+          },
+        }],
+      });
+
+      const ensuredPromise = extension.ensureExact(identity);
+      let command;
+      for (let attempt = 0; attempt < 50 && !command; attempt += 1) {
+        command = extension.claim('profile-primary');
+        if (!command) await Bun.sleep(1);
+      }
+      expect(command?.kind).toBe('observe');
+      if (!command) throw new Error('extension exact observation command was not claimed');
+      expect(extension.complete('profile-primary', command.commandId, {
+        kind: 'observation',
+        observation: {
+          url: identity.canonicalUrl,
+          title: 'ChatGPT',
+          latestUserText: '',
+          latestAssistantResponse: '',
+          providerActivityText: '',
+          providerFailureText: '',
+          composerText: undefined,
+          isGenerating: false,
+        },
+      })).toBe(true);
+      await expect(ensuredPromise).resolves.toEqual({
+        state: 'unavailable',
+        failure: {
+          code: 'COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE',
+          retryable: true,
+          phase: 'pre_mutation',
+          failoverSafe: true,
+        },
+      });
     } finally {
       rmSync(controllerHome, { recursive: true, force: true });
     }
