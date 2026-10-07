@@ -332,6 +332,34 @@ describe('Unified Process Runtime', () => {
     }));
   });
 
+  test('canonical Runtime incarnation generation is preserved in ephemeral lease ownership', () => {
+    const fx = fixture();
+    const runtime = bindCanonicalRuntime(fx.controllerHome, 'runtime-generation-env');
+    const previousRuntimeInstance = process.env.FORGE_RUNTIME_INSTANCE_ID;
+    const previousGeneration = process.env.FORGE_RUNTIME_INCARNATION_GENERATION;
+    try {
+      process.env.FORGE_RUNTIME_INSTANCE_ID = runtime.claim.runtimeInstanceId;
+      process.env.FORGE_RUNTIME_INCARNATION_GENERATION = String(runtime.claim.fencingGeneration);
+      const acquired = acquireExecutionLeases(
+        fx.controllerHome,
+        fx.repository.repoId,
+        'plugin:generation-env-fixture',
+        [{ resourceKey: 'provider-state:generation-env-fixture', mode: 'write', repoId: fx.repository.repoId }],
+        { ttlMs: 300_000, visibility: 'ephemeral', notifyScheduler: false, invalidateProjection: false, emitRuntimeEvent: false },
+      );
+      expect(acquired.acquired).toBe(true);
+      expect(acquired.leases[0]?.ownerIdentity?.controllerInstanceId).toBe(runtime.claim.runtimeInstanceId);
+      expect(acquired.leases[0]?.ownerIdentity?.controllerGeneration).toBe(String(runtime.claim.fencingGeneration));
+    } finally {
+      if (previousRuntimeInstance === undefined) delete process.env.FORGE_RUNTIME_INSTANCE_ID;
+      else process.env.FORGE_RUNTIME_INSTANCE_ID = previousRuntimeInstance;
+      if (previousGeneration === undefined) delete process.env.FORGE_RUNTIME_INCARNATION_GENERATION;
+      else process.env.FORGE_RUNTIME_INCARNATION_GENERATION = previousGeneration;
+      runtime.owner.release();
+      clearRuntimeWriteClaimForTests();
+    }
+  });
+
   test('reclaims an ephemeral lease immediately after its canonical Runtime owner is fenced', () => {
     const fx = fixture();
     const firstRuntime = bindCanonicalRuntime(fx.controllerHome, 'runtime-before-cutover');
