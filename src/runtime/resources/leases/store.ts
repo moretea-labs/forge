@@ -9,7 +9,7 @@ import { markRepositoryProjectionDirty } from '../../projections/invalidation';
 import { touchSchedulerWakeSignal } from '../../control-plane/global-scheduler/wake-signal';
 import { claimsConflict } from '../claims/conflicts';
 import { appendRuntimeEvent } from '../../evidence/event-ledger';
-import { assertRuntimeMayWrite, assertRuntimeMayWriteOrThrow, isRuntimeWriteFenceError } from '../../root/write-fence';
+import { assertRuntimeMayWrite, assertRuntimeMayWriteOrThrow, getRuntimeWriteClaim, isRuntimeWriteFenceError } from '../../root/write-fence';
 import type {
   ExecutionLease,
   LeaseAcquisitionOptions,
@@ -30,6 +30,16 @@ function counterPath(controllerHome: string, repoId: string, resourceKey: string
   return join(leaseRoot(controllerHome, repoId), 'counters', `${hash}.json`);
 }
 function expired(lease: ExecutionLease): boolean { return Date.parse(lease.expiresAt) <= Date.now(); }
+
+function fencedEphemeralOwner(lease: ExecutionLease): boolean {
+  if (lease.visibility !== 'ephemeral' || !lease.ownerIdentity) return false;
+  const current = getRuntimeWriteClaim();
+  if (!current || current.unmanaged) return false;
+  const ownerInstanceId = lease.ownerIdentity.controllerInstanceId?.trim();
+  const ownerGeneration = lease.ownerIdentity.controllerGeneration?.trim();
+  if (!ownerInstanceId || !ownerGeneration || ownerGeneration === 'unbound') return false;
+  return ownerInstanceId !== current.runtimeInstanceId;
+}
 
 function validateClaimScopes(repoId: string, claims: ResourceClaimSpec[]): void {
   const checkoutIds = new Set<string>();
@@ -152,7 +162,7 @@ function listAllActiveLeases(controllerHome: string): ExecutionLease[] {
       if (!lease?.leaseId || !lease.repoId || !lease.resourceKey || !lease.ownerJobId) {
         throw new Error('required lease identity is missing');
       }
-      if (expired(lease)) removeFile(path);
+      if (expired(lease) || fencedEphemeralOwner(lease)) removeFile(path);
       else leases.push(lease);
     } catch (error) {
       throw new Error(`LEASE_STORE_CORRUPT: ${path}: ${error instanceof Error ? error.message : String(error)}`);

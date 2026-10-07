@@ -331,6 +331,109 @@ describe('Unified Process Runtime', () => {
     }));
   });
 
+  test('reclaims an ephemeral lease immediately after its canonical Runtime owner is fenced', () => {
+    const fx = fixture();
+    const firstRuntime = bindCanonicalRuntime(fx.controllerHome, 'runtime-before-cutover');
+    const resourceKey = `provider-state:local_recovery`;
+    const first = acquireExecutionLeases(
+      fx.controllerHome,
+      fx.repository.repoId,
+      'plugin:release-before-cutover',
+      [{ resourceKey, mode: 'write', repoId: fx.repository.repoId }],
+      {
+        ttlMs: 300_000,
+        visibility: 'ephemeral',
+        notifyScheduler: false,
+        invalidateProjection: false,
+        emitRuntimeEvent: false,
+        ownerIdentity: {
+          repositoryId: fx.repository.repoId,
+          checkoutId: 'controller-system',
+          worktreeId: 'controller-system',
+          branch: 'workflow-plugin-action',
+          principalId: 'test',
+          controllerInstanceId: firstRuntime.claim.runtimeInstanceId,
+          controllerGeneration: String(firstRuntime.claim.fencingGeneration),
+        },
+      },
+    );
+    expect(first.acquired).toBe(true);
+    expect(listActiveLeases(fx.controllerHome, fx.repository.repoId)).toHaveLength(1);
+
+    const nextAuthority = publishRuntimeRelease(
+      fx.controllerHome,
+      runtimeManifest(fx.controllerHome, 'release-after-cutover', 'artifact-after-cutover'),
+      'ephemeral-lease-cutover-test',
+    );
+    firstRuntime.owner.release();
+    clearRuntimeWriteClaimForTests();
+    const secondOwner = acquireRuntimeOwnership(fx.controllerHome, 'runtime-after-cutover');
+    bindRuntimeWriteClaim({ controllerHome: fx.controllerHome, owner: secondOwner.record, authority: nextAuthority });
+    try {
+      expect(listActiveLeases(fx.controllerHome, fx.repository.repoId)).toHaveLength(0);
+      const reacquired = acquireExecutionLeases(
+        fx.controllerHome,
+        fx.repository.repoId,
+        'plugin:release-after-cutover',
+        [{ resourceKey, mode: 'write', repoId: fx.repository.repoId }],
+        { ttlMs: 300_000, visibility: 'ephemeral', notifyScheduler: false, invalidateProjection: false, emitRuntimeEvent: false },
+      );
+      expect(reacquired.acquired).toBe(true);
+    } finally {
+      secondOwner.release();
+      clearRuntimeWriteClaimForTests();
+    }
+  });
+
+  test('keeps durable leases fenced across a canonical Runtime owner change', () => {
+    const fx = fixture();
+    const firstRuntime = bindCanonicalRuntime(fx.controllerHome, 'runtime-durable-before-cutover');
+    const resourceKey = `provider-state:durable-fixture`;
+    const first = acquireExecutionLeases(
+      fx.controllerHome,
+      fx.repository.repoId,
+      'durable:before-cutover',
+      [{ resourceKey, mode: 'write', repoId: fx.repository.repoId }],
+      {
+        ttlMs: 300_000,
+        ownerIdentity: {
+          repositoryId: fx.repository.repoId,
+          checkoutId: 'controller-system',
+          worktreeId: 'controller-system',
+          branch: 'workflow-plugin-action',
+          principalId: 'test',
+          controllerInstanceId: firstRuntime.claim.runtimeInstanceId,
+          controllerGeneration: String(firstRuntime.claim.fencingGeneration),
+        },
+      },
+    );
+    expect(first.acquired).toBe(true);
+
+    const nextAuthority = publishRuntimeRelease(
+      fx.controllerHome,
+      runtimeManifest(fx.controllerHome, 'release-durable-after-cutover', 'artifact-durable-after-cutover'),
+      'durable-lease-cutover-test',
+    );
+    firstRuntime.owner.release();
+    clearRuntimeWriteClaimForTests();
+    const secondOwner = acquireRuntimeOwnership(fx.controllerHome, 'runtime-durable-after-cutover');
+    bindRuntimeWriteClaim({ controllerHome: fx.controllerHome, owner: secondOwner.record, authority: nextAuthority });
+    try {
+      const blocked = acquireExecutionLeases(
+        fx.controllerHome,
+        fx.repository.repoId,
+        'durable:after-cutover',
+        [{ resourceKey, mode: 'write', repoId: fx.repository.repoId }],
+        { ttlMs: 300_000 },
+      );
+      expect(blocked.acquired).toBe(false);
+      expect(blocked.blockers).toContainEqual(expect.objectContaining({ ownerJobId: 'durable:before-cutover', resourceKey }));
+    } finally {
+      secondOwner.release();
+      clearRuntimeWriteClaimForTests();
+    }
+  });
+
   test('short command returns completed direct handle without re-exec', async () => {
     const fx = fixture();
     const handle = await spawnManagedProcess({
