@@ -2,7 +2,7 @@ import { spawn, spawnSync } from 'child_process';
 import { existsSync, statSync } from 'fs';
 import { dirname, isAbsolute, resolve } from 'path';
 import { MAX_PLUGIN_ACTION_TIMEOUT_MS } from '../../../packages/plugin-runtime/external/index';
-import { AssistantPluginError } from './errors';
+import { AssistantPluginError, type AssistantPluginEffectOutcome } from './errors';
 
 export const MANAGED_PLUGIN_PROTOCOL_VERSION = 1;
 const DEFAULT_MAX_REQUEST_BYTES = 1_048_576;
@@ -60,12 +60,14 @@ export interface ManagedPluginProcessRequest {
   actionId: string;
   input: Record<string, unknown>;
   timeoutMs?: number;
+  effectOutcomeOnTimeout?: AssistantPluginEffectOutcome;
   signal?: AbortSignal;
 }
 
-function managedError(code: string, message: string, options: { retryable?: boolean; details?: Record<string, unknown> } = {}): AssistantPluginError {
+function managedError(code: string, message: string, options: { retryable?: boolean; effectOutcome?: AssistantPluginEffectOutcome; details?: Record<string, unknown> } = {}): AssistantPluginError {
   return new AssistantPluginError(code, message, {
     retryable: options.retryable ?? true,
+    effectOutcome: options.effectOutcome,
     details: options.details,
   });
 }
@@ -257,6 +259,7 @@ export async function executeManagedPluginProcess(
     let stdoutBytes = 0;
     let stderr = '';
     let handshakeReceived = false;
+    let requestDispatched = false;
     let settled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let killTimer: ReturnType<typeof setTimeout> | undefined;
@@ -298,6 +301,7 @@ export async function executeManagedPluginProcess(
         if (!handshakeReceived) {
           validateHandshake(parsed, spec);
           handshakeReceived = true;
+          requestDispatched = true;
           child.stdin.end(`${requestEnvelope}\n`);
           return;
         }
@@ -318,7 +322,10 @@ export async function executeManagedPluginProcess(
     };
 
     timer = setTimeout(() => {
-      fail(managedError('PLUGIN_MANAGED_PROCESS_TIMEOUT', 'Managed plugin helper timed out.', { retryable: true }));
+      fail(managedError('PLUGIN_MANAGED_PROCESS_TIMEOUT', 'Managed plugin helper timed out.', {
+        retryable: true,
+        effectOutcome: requestDispatched ? request.effectOutcomeOnTimeout : 'failed',
+      }));
     }, boundedTimeout(spec, request));
     request.signal?.addEventListener('abort', onAbort, { once: true });
 

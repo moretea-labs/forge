@@ -110,18 +110,36 @@ describe('managed plugin process adapter', () => {
     }), 'PLUGIN_MANAGED_PROCESS_PROTOCOL_ERROR');
   });
 
-  test('times out and terminates a helper that never responds', async () => {
+  test('marks a timeout after helper dispatch as outcome_unknown when requested', async () => {
     const path = protocolHelper(`setTimeout(() => {}, 5_000);`);
-    await expectPluginError(executeManagedPluginProcess({
+    const error = await expectPluginError(executeManagedPluginProcess({
       pluginId: 'fixture',
       helperPath: path,
       requiredCapabilities: ['echo'],
       timeoutMs: 100,
     }, {
-      requestId: 'managed-timeout',
+      requestId: 'managed-timeout-after-dispatch',
       actionId: 'echo',
       input: {},
+      effectOutcomeOnTimeout: 'outcome_unknown',
     }), 'PLUGIN_MANAGED_PROCESS_TIMEOUT');
+    expect(error.effectOutcome).toBe('outcome_unknown');
+  });
+
+  test('keeps a timeout before helper dispatch classified as failed', async () => {
+    const path = helper(`setTimeout(() => {}, 5_000);`);
+    const error = await expectPluginError(executeManagedPluginProcess({
+      pluginId: 'fixture',
+      helperPath: path,
+      requiredCapabilities: ['echo'],
+      timeoutMs: 100,
+    }, {
+      requestId: 'managed-timeout-before-dispatch',
+      actionId: 'echo',
+      input: {},
+      effectOutcomeOnTimeout: 'outcome_unknown',
+    }), 'PLUGIN_MANAGED_PROCESS_TIMEOUT');
+    expect(error.effectOutcome).toBe('failed');
   });
 
   test('reports a helper crash after a valid handshake', async () => {

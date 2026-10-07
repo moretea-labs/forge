@@ -200,11 +200,13 @@ async function callProvider(
       signal,
     }));
   }
+  const descriptor = registration.actions.find((action) => action.actionId === actionId);
   return await (dependencies.managedCall ?? executeManagedPluginProcess)(managedSpec(registration), {
     requestId,
     actionId,
     input: args,
     timeoutMs: providerActionTimeoutMs(registration, actionId, timeoutMs),
+    effectOutcomeOnTimeout: descriptor && !descriptor.readOnly ? 'outcome_unknown' : 'failed',
     signal,
   });
 }

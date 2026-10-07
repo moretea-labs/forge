@@ -81,6 +81,7 @@ describe('external plugin adapter', () => {
   test('preserves the registered action timeout through managed provider execution and lets an explicit timeout override it', async () => {
     const base = registration();
     const observedTimeouts: Array<number | undefined> = [];
+    const observedTimeoutOutcomes: Array<string | undefined> = [];
     const managedRegistration = registration({
       pluginId: 'fixture_provider',
       providerPluginId: 'fixture_provider',
@@ -94,11 +95,12 @@ describe('external plugin adapter', () => {
         actionTimeoutMs: 30_000,
       },
       capabilities: [{ ...base.capabilities[0]!, actions: ['long_action'] }],
-      actions: [{ ...base.actions[0]!, actionId: 'long_action', defaultTimeoutMs: 240_000 }],
+      actions: [{ ...base.actions[0]!, actionId: 'long_action', readOnly: false, defaultTimeoutMs: 240_000 }],
     });
     const adapter = createExternalPluginAdapter(managedRegistration, {
       managedCall: async (_spec, request) => {
         observedTimeouts.push(request.timeoutMs);
+        observedTimeoutOutcomes.push(request.effectOutcomeOnTimeout);
         return { ok: true };
       },
     });
@@ -117,6 +119,7 @@ describe('external plugin adapter', () => {
     await adapter.executeAction({ ...input, requestId: 'managed-explicit-timeout', timeoutMs: 45_000 });
 
     expect(observedTimeouts).toEqual([240_000, 45_000]);
+    expect(observedTimeoutOutcomes).toEqual(['outcome_unknown', 'outcome_unknown']);
   });
 
   test('derives ready Forge manifest policy from registration while provider proves identity and health', () => {
