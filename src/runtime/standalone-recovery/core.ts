@@ -5130,11 +5130,22 @@ export async function verifyConfiguredRuntimeReleaseSessionStaticGates(
         for (const gate of RELEASE_SESSION_STATIC_GATES) {
           assertStableReleaseSessionIdentityCurrent(config, stableRelease);
           const startedAt = Date.now();
-          const result = spawnSync(resolveBunExecutable(), gate.args, {
+          const bunExecutable = resolveBunExecutable();
+          const boundedRunner = join(frozenSourceRoot, 'scripts', 'run-bounded-command.mjs');
+          const result = spawnSync(bunExecutable, [
+            boundedRunner,
+            '--timeout-ms', String(gate.timeoutMs),
+            '--',
+            bunExecutable,
+            ...gate.args,
+          ], {
             cwd: frozenSourceRoot,
             env: { ...runtimeAuthorityFreeEnvironment(process.env), PATH: recoveryCommandPath() },
             encoding: 'utf8',
-            timeout: gate.timeoutMs,
+            // The inner bounded runner owns the command process group and gets a
+            // brief escalation window to terminate descendants before this
+            // outer Recovery watchdog is allowed to intervene.
+            timeout: gate.timeoutMs + 15_000,
             maxBuffer: 8 * 1024 * 1024,
           });
           const durationMs = Date.now() - startedAt;
