@@ -49,6 +49,11 @@ if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || commandArgs.length === 0) {
   });
   child.once('close', (code) => {
     clearTimeout(timeout);
+    // The direct child can exit on SIGTERM while a stubborn descendant remains
+    // alive in its detached process group. Before dropping the escalation timer,
+    // synchronously send SIGKILL to that process group once more so timeout
+    // completion cannot orphan compiler/test descendants.
+    if (timedOut && process.platform !== 'win32') stop('SIGKILL');
     if (escalation) clearTimeout(escalation);
     process.exitCode = launchFailed ? 1 : (timedOut ? 124 : code ?? 1);
   });
