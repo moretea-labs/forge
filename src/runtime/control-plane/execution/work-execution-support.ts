@@ -6,7 +6,7 @@ import { resolveLegacyWorkContractIdentity } from './execution-identity';
 import type { ExecutionSessionContext, SessionIdentity } from './session-store';
 import { currentControllerInstanceId, requireExecutionSession, updateExecutionSession } from './session-store';
 import type { WorkHandleState, WorkTerminalOutcome } from './work-handle-store';
-import { readWorkHandle, writeWorkHandle } from './work-handle-store';
+import { readWorkHandle, rebindWorkHandleControllerIdentity, writeWorkHandle } from './work-handle-store';
 import { cleanupTerminalWork } from './work-terminal-cleanup';
 import { spawnSync } from 'child_process';
 import { writeControllerResult } from '../../evidence/result-store';
@@ -164,8 +164,12 @@ export function workForSession(
   options: { reconcileValidation?: boolean } = {},
 ): WorkHandleState {
   let handle = findWorkHandle(ctx, session, args);
-  if (handle.principalId !== session.principalId) {
-    throw new Error('WORK_HANDLE_PRINCIPAL_MISMATCH: work handle belongs to another principal');
+  if (handle.principalId !== session.principalId || handle.sessionId !== session.sessionId) {
+    handle = rebindWorkHandleControllerIdentity(
+      ctx.controllerHome,
+      handle,
+      { principalId: session.principalId, sessionId: session.sessionId },
+    );
   }
   if (options.reconcileValidation !== false) handle = reconcileWorkValidation(ctx.controllerHome, handle).handle;
   if (

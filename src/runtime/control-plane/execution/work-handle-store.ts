@@ -376,6 +376,23 @@ export function writeWorkHandle(controllerHome: string, handle: WorkHandleState)
   return { ...record.value, recordRevision: record.revision };
 }
 
+/**
+ * Refresh legacy controller identity fields as provenance only. Repository
+ * mutation authority remains WorkHandle CAS plus concrete checkout/resource fences.
+ */
+export function rebindWorkHandleControllerIdentity(
+  controllerHome: string,
+  handle: WorkHandleState,
+  identity: { principalId: string; sessionId: string },
+): WorkHandleState {
+  if (handle.principalId === identity.principalId && handle.sessionId === identity.sessionId) return handle;
+  return writeWorkHandle(controllerHome, {
+    ...handle,
+    principalId: identity.principalId,
+    sessionId: identity.sessionId,
+  });
+}
+
 const TRANSITIONS: Record<WorkHandleStateName, readonly WorkHandleStateName[]> = {
   prepared: ['editing', 'validating', 'committed', 'failed', 'failed_terminal_cleanup'],
   editing: ['validating', 'committed', 'merged', 'failed', 'failed_terminal_cleanup'],

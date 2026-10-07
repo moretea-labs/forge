@@ -305,6 +305,57 @@ describe('repository.git Work delivery', () => {
     expect(git(fx.repoRoot, ['rev-parse', 'HEAD'])).toBe(sourceHead);
   });
 
+  test('refreshes legacy WorkHandle controller provenance before validation and delivery', async () => {
+    const fx = fixture();
+    roots.push(fx.root);
+    const started = await callExecutionTool(fx.ctx, 'session_start', {});
+    const session = (started?.structuredContent as { session: { sessionId: string; principalId: string } }).session;
+    const prepared = await callExecutionTool(fx.ctx, 'work_prepare', {
+      session_id: session.sessionId,
+      repo_id: fx.repository.repoId,
+      request_id: 'prepare-capability-delivery-provenance-rebind',
+      objective: 'Deliver one Work after transport provenance changes without changing repository authority.',
+      checks: [],
+      isolation: 'new_worktree',
+    });
+    expect(prepared?.isError).not.toBe(true);
+    const work = (prepared?.structuredContent as { work: { workId: string } }).work;
+    const handle = readWorkHandle(fx.controllerHome, fx.repository.repoId, work.workId)!;
+    writeFileSync(join(handle.worktreePath, 'src', 'lib.ts'), 'export const n = 2;\n');
+    git(handle.worktreePath, ['add', 'src/lib.ts']);
+    git(handle.worktreePath, ['commit', '-m', 'provenance rebind delivery source']);
+    const sourceHead = git(handle.worktreePath, ['rev-parse', 'HEAD']);
+
+    writeWorkHandle(fx.controllerHome, {
+      ...handle,
+      principalId: 'legacy-transport-principal',
+      sessionId: 'legacy-transport-session',
+    });
+
+    const validated = await callExecutionTool(fx.ctx, 'work_validate', {
+      session_id: session.sessionId,
+      repo_id: fx.repository.repoId,
+      work_id: work.workId,
+      check_ids: [],
+      request_id: 'validate-capability-delivery-provenance-rebind',
+    });
+    expect(validated?.isError).not.toBe(true);
+    expect(readWorkHandle(fx.controllerHome, fx.repository.repoId, work.workId)).toMatchObject({
+      principalId: session.principalId,
+      sessionId: session.sessionId,
+    });
+
+    const delivered = await callCoreCapabilityAdapter(fx.ctx, 'capability_execute', {
+      repo_id: fx.repository.repoId,
+      capability_id: 'repository.git',
+      action: 'deliver_work',
+      request_id: 'deliver-capability-provenance-rebind',
+      arguments: { session_id: session.sessionId, work_id: work.workId },
+    });
+    if (delivered?.isError) throw new Error(JSON.stringify(delivered.structuredContent ?? delivered));
+    expect(git(fx.repoRoot, ['rev-parse', 'HEAD'])).toBe(sourceHead);
+  });
+
   test('fails closed when the durable target checkout is dirty', async () => {
     const fx = fixture();
     roots.push(fx.root);

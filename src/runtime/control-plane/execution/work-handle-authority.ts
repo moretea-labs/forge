@@ -424,23 +424,3 @@ export function ensureRepositoryMutationWorkHandle(input: {
   return { handle };
 }
 
-/**
- * Refreshes legacy WorkHandle principal/session fields as provenance only.
- * These fields do not grant or deny repository mutation authority; WorkHandle
- * CAS plus concrete checkout/resource fences preserve fail-closed concurrency.
- */
-export function rebindRepositoryWorkHandleControllerIdentity(input: {
-  controllerHome: string;
-  repositoryId: string;
-  workId: string;
-  identity: RepositoryWorkHandleControllerIdentity;
-}): WorkHandleState | undefined {
-  const existing = readWorkHandle(input.controllerHome, input.repositoryId, input.workId);
-  if (!existing) return undefined;
-  if (existing.principalId === input.identity.principalId && existing.sessionId === input.identity.sessionId) return existing;
-  return writeWorkHandle(input.controllerHome, {
-    ...existing,
-    principalId: input.identity.principalId,
-    sessionId: input.identity.sessionId,
-  });
-}
