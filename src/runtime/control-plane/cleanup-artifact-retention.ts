@@ -38,6 +38,7 @@ export interface CleanupArtifactRetentionOptions {
   maxEntries?: number;
   maxRemovals?: number;
   scanSequence?: number;
+  repositoryIds?: readonly string[];
 }
 
 export interface CleanupArtifactRetentionReport {
@@ -275,8 +276,9 @@ export function cleanupWorkPreservationArtifacts(
   const repositoriesRoot = join(controllerHome, 'repositories');
   let repositoryIds: string[] = [];
   try {
+    const repositoryFilter = options.repositoryIds ? new Set(options.repositoryIds.map((id) => id.trim()).filter(Boolean)) : undefined;
     repositoryIds = readdirSync(repositoriesRoot, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory())
+      .filter((entry) => entry.isDirectory() && (!repositoryFilter || repositoryFilter.has(entry.name)))
       .map((entry) => entry.name)
       .sort();
   } catch {

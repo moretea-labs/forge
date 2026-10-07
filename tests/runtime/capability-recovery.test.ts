@@ -893,7 +893,7 @@ describe('runtime maintenance executor', () => {
     });
     expect(existsSync(staleCache)).toBe(false);
     expect(applied.generatedCacheGc?.removedPaths.some((path) => path.endsWith('.repo-harness/maintenance/DerivedData'))).toBe(true);
-    expect(applied.releaseHistoryGc).toBeDefined();
+    expect(applied.cleanupArtifactGc).toBeDefined();
     expect(applied.applied).toContainEqual(expect.objectContaining({
       kind: 'stale_work_contract',
       id: 'work-stale-ready',

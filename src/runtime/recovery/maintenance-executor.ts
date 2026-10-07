@@ -30,7 +30,7 @@ import {
 import { gcTerminalProcesses, type ProcessGcResult } from '../execution/process-runtime/gc';
 import { cleanupStaleWorkVerificationSnapshots, type WorkVerificationSnapshotRetentionReport } from '../control-plane/execution/work-verification-snapshot';
 import { cleanupGeneratedRepositoryCheckoutCaches, type RepositoryGeneratedCacheRetentionReport } from '../control-plane/generated-cache-retention';
-import { cleanupControllerReleaseHistory, type ReleaseRetentionReport } from '../control-plane/release-retention';
+import { cleanupWorkPreservationArtifacts, type CleanupArtifactRetentionReport } from '../control-plane/cleanup-artifact-retention';
 import {
   cleanupRuntimeQuarantine,
   quarantineRuntimePath,
@@ -155,7 +155,7 @@ export interface RuntimeMaintenanceApplyResult extends Omit<RuntimeMaintenanceSt
   verificationSnapshotGc?: WorkVerificationSnapshotRetentionReport;
   quarantineGc?: RuntimeQuarantineRetentionReport;
   generatedCacheGc?: RepositoryGeneratedCacheRetentionReport;
-  releaseHistoryGc?: ReleaseRetentionReport;
+  cleanupArtifactGc?: CleanupArtifactRetentionReport;
   projection?: unknown;
 }
 
@@ -1748,7 +1748,7 @@ export function applyRuntimeMaintenance(
     })
     : undefined;
   let generatedCacheGc: RepositoryGeneratedCacheRetentionReport | undefined;
-  let releaseHistoryGc: ReleaseRetentionReport | undefined;
+  let cleanupArtifactGc: CleanupArtifactRetentionReport | undefined;
   if (options.actionId === 'full_maintenance_pass') {
     let cacheRepository: Parameters<typeof cleanupGeneratedRepositoryCheckoutCaches>[0] = {
       canonicalRoot: repository.canonicalRoot,
@@ -1764,8 +1764,10 @@ export function applyRuntimeMaintenance(
       maxEntries: Math.max(1_000, (options.maxCandidates ?? 50) * 20),
       maxRemovals: Math.max(1, options.maxCandidates ?? 50),
     });
-    releaseHistoryGc = cleanupControllerReleaseHistory(controllerHome, {
+    cleanupArtifactGc = cleanupWorkPreservationArtifacts(controllerHome, {
+      maxEntries: Math.max(1_000, (options.maxCandidates ?? 50) * 20),
       maxRemovals: Math.max(1, options.maxCandidates ?? 50),
+      repositoryIds: [repository.repoId],
     });
   }
 
@@ -1788,7 +1790,7 @@ export function applyRuntimeMaintenance(
     verificationSnapshotGc,
     quarantineGc,
     generatedCacheGc,
-    releaseHistoryGc,
+    cleanupArtifactGc,
     projection,
   };
 }
