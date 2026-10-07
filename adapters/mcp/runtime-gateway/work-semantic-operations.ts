@@ -15,6 +15,8 @@ import { buildFacadeResult } from '../../../src/runtime/control-plane/facade';
 import { buildWorkContinuationSnapshot } from '../../../src/runtime/control-plane/facade/work-continuation';
 import { result } from './result-adapter';
 import { projectWorkExecutionEvidence } from './work-detail-projection';
+import { readWorkHandle } from '../../../src/runtime/control-plane/execution/work-handle-store';
+import { reconcileSingleTerminalWorkCleanup } from '../../../src/runtime/control-plane/execution/work-terminal-cleanup';
 
 const RH_WORK_SEMANTIC_OPERATIONS = new Set(['start', 'get', 'revise', 'complete']);
 
@@ -146,9 +148,35 @@ export async function callRhWorkSemanticOperation(
       ...(Array.isArray(args.work_result_refs) ? { resultRefs: args.work_result_refs.map(String) } : {}),
     });
     const semantic = workSemanticView(revised);
+    let resourceReconciliation: Awaited<ReturnType<typeof reconcileSingleTerminalWorkCleanup>> | undefined;
+    if (
+      operation === 'complete'
+      && store.controllerHome
+      && revised.repoId?.trim()
+      && readWorkHandle(store.controllerHome, revised.repoId, revised.workId)
+    ) {
+      try {
+        resourceReconciliation = await reconcileSingleTerminalWorkCleanup(
+          store.controllerHome,
+          revised.repoId,
+          revised.workId,
+        );
+      } catch (error) {
+        resourceReconciliation = {
+          status: 'blocked',
+          workId: revised.workId,
+          reason: error instanceof Error ? error.message : String(error),
+        };
+      }
+    }
     return result(buildFacadeResult({
       summary: `Work ${semantic.workId} revised atomically to semantic revision ${semantic.revision}.`,
-      data: { work: semantic, expectedRevision, semanticRevision: semantic.revision },
+      data: {
+        work: semantic,
+        expectedRevision,
+        semanticRevision: semantic.revision,
+        ...(resourceReconciliation ? { resourceReconciliation } : {}),
+      },
     }) as unknown as Record<string, unknown>);
   } catch (error) {
     const current = workId ? getWorkContract(store, workId) : undefined;

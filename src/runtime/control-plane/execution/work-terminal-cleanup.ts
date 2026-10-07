@@ -1199,7 +1199,14 @@ export async function reconcileTerminalWorkCleanups(
     truncated: false,
   };
 
-  const repositories = listRepositories(controllerHome).filter((repository) => repository.enabled && !repository.removedAt);
+  const maintenanceEpoch = Math.floor(nowMs / 60_000);
+  const repositories = listRepositories(controllerHome)
+    .filter((repository) => repository.enabled && !repository.removedAt)
+    .sort((left, right) => {
+      const leftOrder = hashText(`${maintenanceEpoch}\0${left.repoId}`);
+      const rightOrder = hashText(`${maintenanceEpoch}\0${right.repoId}`);
+      return leftOrder.localeCompare(rightOrder) || left.repoId.localeCompare(right.repoId);
+    });
   outer: for (const repository of repositories) {
     const handles = listWorkHandles(controllerHome, repository.repoId, 10_000)
       .filter((handle) => handle.managedWorktree);

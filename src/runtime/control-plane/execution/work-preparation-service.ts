@@ -7,7 +7,7 @@ import { ensureManagedWorkspace } from '../../execution/managed-workspace';
 import { listRecoverableProcessRecords } from '../../execution/process-runtime/store';
 import { readRepositoryAccessPolicy } from '../governance/access-policy';
 import { activateWorkContract, failWorkContract, getWorkContract } from '../../../../packages/kernel/work/api/index';
-import { admitPreparedRepositoryWorkContract } from '../facade/repository-work-admission';
+import { admitPreparedRepositoryWorkContract, materializeRepositoryWorkPlacement } from '../facade/repository-work-admission';
 import { isTerminalSemanticWorkState } from '../facade/types';
 import { updateExecutionSession, type ExecutionSessionContext } from './session-store';
 import { currentPermissionSnapshotVersion, validateWorkHandle } from './validation';
@@ -307,8 +307,23 @@ export function prepareWork(ctx: McpExecutionContext, args: Record<string, unkno
           prepareDependencies: needsDependencies,
         })
         : { mode: 'current' as const, checkoutId: baseCheckoutId, root: repository.canonicalRoot, branch: baseStatus.branch ?? 'detached', baseRevision: baseStatus.head ?? undefined, managed: false };
+      if (workspace.managed) {
+        const materialized = materializeRepositoryWorkPlacement(
+          { controllerHome: ctx.controllerHome, repoId: repository.repoId },
+          contract.workId,
+          () => workspace,
+        );
+        if (!materialized) throw new Error(`WORK_PLACEMENT_MATERIALIZATION_LOST: ${contract.workId}`);
+        contract = materialized;
+      }
       const refreshed = getRepository(repository.repoId, ctx.controllerHome);
       const checkout = selectRepositoryCheckout(refreshed, workspace.checkoutId);
+      if (workspace.managed && (
+        contract.checkoutId !== checkout.activeCheckoutId
+        || contract.worktreeRef !== checkout.canonicalRoot
+      )) {
+        throw new Error(`WORK_PLACEMENT_IDENTITY_DRIFT: contract=${contract.checkoutId ?? 'missing'}:${contract.worktreeRef ?? 'missing'}; checkout=${checkout.activeCheckoutId}:${checkout.canonicalRoot}`);
+      }
       const branch = workspace.branch || repositoryGitStatus(checkout).branch;
       if (!branch) throw new Error('WORKTREE_DETACHED: selected worktree has no branch');
       const head = gitHead(checkout.canonicalRoot);

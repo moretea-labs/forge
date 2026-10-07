@@ -2058,6 +2058,85 @@ describe('work_validate persisted semantic identity', () => {
     });
   });
 
+  test('isolated work_prepare persists one checkout identity across WorkContract and WorkHandle', async () => {
+    const fx = fixture();
+    roots.push(fx.root);
+
+    const started = await callExecutionTool(fx.ctx, 'session_start', {});
+    expect(started?.isError).not.toBe(true);
+    const session = (started?.structuredContent as { session: { sessionId: string } }).session;
+    const prepared = await callExecutionTool(fx.ctx, 'work_prepare', {
+      session_id: session.sessionId,
+      repo_id: fx.repository.repoId,
+      request_id: 'prepare-identity-convergence',
+      objective: 'Bind one exact managed checkout identity.',
+      acceptance_criteria: [],
+      checks: [],
+      isolation: 'new_worktree',
+    });
+    expect(prepared?.isError).not.toBe(true);
+    const work = (prepared?.structuredContent as {
+      work: { workId: string; checkoutId: string; managedWorktree: boolean };
+    }).work;
+    const handle = readWorkHandle(fx.controllerHome, fx.repository.repoId, work.workId)!;
+    const contract = getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, work.workId)!;
+
+    expect(work.managedWorktree).toBe(true);
+    expect(handle.checkoutId).toBe(work.checkoutId);
+    expect(contract).toMatchObject({
+      checkoutId: work.checkoutId,
+      worktreeRef: handle.worktreePath,
+      executionPlacement: {
+        repositoryId: fx.repository.repoId,
+        checkoutId: work.checkoutId,
+      },
+    });
+  });
+
+  test('semantic Work completion immediately reconciles its exact managed worktree resources', async () => {
+    const fx = fixture();
+    roots.push(fx.root);
+
+    const started = await callExecutionTool(fx.ctx, 'session_start', {});
+    expect(started?.isError).not.toBe(true);
+    const session = (started?.structuredContent as { session: { sessionId: string } }).session;
+    const prepared = await callExecutionTool(fx.ctx, 'work_prepare', {
+      session_id: session.sessionId,
+      repo_id: fx.repository.repoId,
+      request_id: 'prepare-immediate-completion-cleanup',
+      objective: 'Complete and release one clean managed worktree.',
+      acceptance_criteria: [],
+      checks: [],
+      isolation: 'new_worktree',
+    });
+    expect(prepared?.isError).not.toBe(true);
+    const work = (prepared?.structuredContent as {
+      work: { workId: string; checkoutId: string; managedWorktree: boolean };
+    }).work;
+    const before = readWorkHandle(fx.controllerHome, fx.repository.repoId, work.workId)!;
+    expect(existsSync(before.worktreePath)).toBe(true);
+
+    const completed = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'complete',
+      work_id: work.workId,
+      expected_revision: 1,
+    });
+    expect(completed?.isError).not.toBe(true);
+    expect(completed?.structuredContent).toMatchObject({
+      status: 'ok',
+      data: {
+        work: { workId: work.workId, state: 'completed' },
+        resourceReconciliation: { status: 'cleaned', workId: work.workId },
+      },
+    });
+    expect(existsSync(before.worktreePath)).toBe(false);
+    expect(readWorkHandle(fx.controllerHome, fx.repository.repoId, work.workId)).toMatchObject({
+      state: 'cleaned',
+      checkoutId: work.checkoutId,
+    });
+  });
+
   test('explicit reuse rejects external HEAD drift instead of adopting a new implementation baseline', async () => {
     const fx = fixture();
     roots.push(fx.root);
