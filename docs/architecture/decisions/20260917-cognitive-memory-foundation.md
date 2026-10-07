@@ -23,7 +23,7 @@ Cognitive Memory remains advisory. Hard invariants continue to live in normal re
 
 The Cognitive Plane owns knowledge representation, association, consolidation and model projection. It does **not** own Requirement, Plan, Work, ControllerRound, Scheduler, safety, authorization, acceptance or repository lifecycle decisions. A cognitive record can advise a Controller; it cannot terminalize Work, bypass fencing or mutate hard policy.
 
-Cognitive writes pass through an application `CognitiveWriteAuthorityPort` supplied by trusted composition. Controller-origin writes reuse the existing exact Work/Controller-round authority and evidence checks. Persistence helpers are not a transport-facing write authority. MCP does not receive a parallel `memory.*` lifecycle.
+Cognitive writes pass through an application `CognitiveWriteAuthorityPort` supplied by trusted composition. Controller-origin writes reuse reachable semantic Work/Requirement/Project/Workspace placement plus evidence checks; ordinary model-authored learning may be carried as optional `cognition_settlement` metadata on the successful MCP tool outcome that closes a meaningful task boundary. The MCP server settles it only after the primary result, so a learning failure cannot turn an already-applied repository/process/external effect into a retry signal. Persistence helpers are not a transport-facing write authority. MCP does not receive a parallel `memory.*` lifecycle.
 
 ## Canonical storage
 

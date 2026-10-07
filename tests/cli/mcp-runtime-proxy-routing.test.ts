@@ -57,6 +57,96 @@ import {
   transitionWorkContractPhase,
 } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { implementationReviewChangedPathDigest, reviseWorkSemanticContext } from '../../packages/kernel/work/api/index';
+import { cognitionReadPort } from '../../src/runtime/control-plane/persistence/cognition-store';
+
+describe('MCP ordinary tool cognition settlement', () => {
+  test('exposes and settles model-authored learning after a successful repository tool outcome', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-mcp-cognition-settlement-'));
+    const controllerHome = join(root, 'controller');
+    const repoRoot = join(root, 'repo');
+    mkdirSync(repoRoot, { recursive: true });
+    runPostFinalizeGit(repoRoot, ['init', '-b', 'main']);
+    runPostFinalizeGit(repoRoot, ['config', 'user.name', 'Forge Cognition Test']);
+    runPostFinalizeGit(repoRoot, ['config', 'user.email', 'forge-cognition@example.test']);
+    writeFileSync(join(repoRoot, 'README.md'), 'ordinary cognition settlement\n');
+    runPostFinalizeGit(repoRoot, ['add', 'README.md']);
+    runPostFinalizeGit(repoRoot, ['commit', '-m', 'init']);
+    const repository = registerRepository({ path: repoRoot, controllerHome, defaultBranch: 'main' });
+    const workId = 'WORK-MCP-COGNITION-SETTLEMENT';
+    createWorkContract({ controllerHome, repoId: repository.repoId }, {
+      workId,
+      repoId: repository.repoId,
+      checkoutId: repository.activeCheckoutId,
+      objective: 'Prove ordinary repository work can settle reusable cognition.',
+      acceptanceCriteria: ['successful repository outcome persists model-authored learning'],
+      allowedPaths: [],
+      forbiddenPaths: [],
+      checks: [],
+      constraints: {},
+      requestedBy: 'chatgpt',
+      dispatchState: 'running',
+    });
+
+    const context = {
+      ...createMcpToolContext({ controllerHome, profile: 'controller' }),
+      principalId: 'controller-http-client',
+      sessionId: 'session-mcp-cognition-settlement',
+      controllerInstanceId: 'runtime-mcp-cognition-settlement',
+      controllerType: 'chatgpt' as const,
+    };
+    const server = createForgeMcpServerFromContext(context);
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    const client = new Client({ name: 'mcp-cognition-settlement', version: '1.0.0' }, { capabilities: {} });
+    await client.connect(clientTransport);
+    try {
+      const listed = await client.listTools();
+      const repositoryRead = listed.tools.find(tool => tool.name === 'read_repository_file');
+      expect((repositoryRead?.inputSchema as any)?.properties?.cognition_settlement).toBeDefined();
+
+      const result = await client.callTool({
+        name: 'read_repository_file',
+        arguments: {
+          repo_id: repository.repoId,
+          path: 'README.md',
+          work_id: workId,
+          cognition_settlement: {
+            work_id: workId,
+            learning_signals: [{
+              scope_kind: 'work',
+              kind: 'principle',
+              valence: 'positive',
+              summary: 'Ordinary repository outcomes can settle reusable learning without a separate learning lifecycle.',
+              concepts: ['mcp.cognition.settlement', 'ordinary-work'],
+              facets: ['architecture'],
+              admission_source: 'controller_observation',
+              portability: 'local',
+              salience: 0.9,
+              confidence: 0.9,
+              utility: 0.9,
+            }],
+          },
+        },
+      });
+      expect(result.isError).not.toBe(true);
+      expect(result.structuredContent).toMatchObject({
+        cognitionSettlement: { recorded: true, storedMemoryIds: [expect.any(String)] },
+      });
+      const stored = cognitionReadPort(controllerHome).exactByConcept(
+        [{ schemaVersion: 1, kind: 'work', id: workId }],
+        ['mcp.cognition.settlement'],
+        4,
+      );
+      expect(stored).toHaveLength(1);
+      expect(stored[0]?.provenance.sourceWorkId).toBe(workId);
+      expect(stored[0]?.provenance.sourceRoundId).toBeUndefined();
+    } finally {
+      await client.close();
+      await server.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
 
 describe('MCP canonical Runtime proxy routing', () => {
   test('bounds inner Runtime proxy lanes and leases them exclusively under concurrency', async () => {

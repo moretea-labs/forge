@@ -2,7 +2,7 @@
 
 ### Technical design baseline
 
-This authority applies one default design rule across new architecture and refactors: **Forge is thin but capable — stateless in coordination, stateful in facts, optimistic in concurrency, and explicit in effects.** The model/controller owns reasoning, workflow policy, validation strategy and semantic completion; Forge owns durable facts, execution capabilities, mechanical correctness and recoverable effects.
+This authority applies one default design rule across new architecture and refactors: **Forge is thin but capable — stateless in coordination, stateful in facts, optimistic in concurrency, and explicit in effects.** The model/controller owns reasoning, workflow policy, validation strategy and semantic completion; Forge owns durable facts, execution capabilities, mechanical correctness and recoverable effects. Cognitive learning follows the same split: the model authors reusable semantic deltas and usage judgments, while the shared MCP transport may settle that bounded advisory metadata after any successful meaningful ordinary tool outcome; routine micro-steps do not create a learning lifecycle.
 
 - **One fact, one authority.** Do not repair ambiguity with mirrored status, a compatibility owner, a second lifecycle, or another orchestration store. Composition services should remain stateless over existing authorities whenever practical.
 - **Classify state explicitly.** Durable semantic facts survive restart; runtime handles/connections are ephemeral; summaries, indexes and status views are rebuildable projections. Transport or execution identity must never become semantic identity.
