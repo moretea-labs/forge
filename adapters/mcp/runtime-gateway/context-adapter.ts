@@ -27,8 +27,7 @@ import { getControllerSession } from "../../../packages/kernel/controller/api/in
 import { resolveProjectForRepositoryPlacement } from "../../../src/runtime/control-plane/workspace/workspace-store";
 import { cognitiveScopesForWork } from "../../../src/runtime/control-plane/persistence/experience-store";
 import { activateCognitiveMemory, auditCognitiveMemory } from "../../../src/runtime/control-plane/persistence/cognition-store";
-import { cognitiveUsageFeedbackForContext } from "../../../src/runtime/context/assistant-work-context";
-import { resolveCognitiveAttention } from '../../../src/runtime/context/cognitive-attention';
+import { cognitiveUsageFeedbackForContext, resolveCognitiveAttention } from "../../../src/runtime/context/cognitive-attention";
 import { invalidFacadeOperation, repositoryExecutionReadiness, summarizeInvalidActiveWorkCandidate, summarizeWorkListItem } from './status-inbox-adapter';
 import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
 

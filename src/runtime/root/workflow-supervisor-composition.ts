@@ -20,7 +20,7 @@ import { getWorkflowSupervisorCurrentConversation, getWorkflowSupervisorTaskByCo
 import { resolveWorkflowSupervisorForgeHome, workflowSupervisorSocketPath } from '../../../supervisor/paths';
 import type { WorkflowSupervisorLifecycleHooks, WorkflowSupervisorTask } from '../../../supervisor/types';
 import { getRuntimeWriteClaim } from './write-fence';
-import { renderAssistantWorkContext } from '../context/assistant-work-context';
+import { renderCognitiveAttentionForWork } from '../context/cognitive-attention';
 
 export type WorkflowSupervisorBoundary =
   | { status: 'not_eligible' }
@@ -233,7 +233,7 @@ export function forgeWorkflowSupervisorLifecycleHooks(controllerHome: string): W
       if (!repoId || (taskControllerHome && taskControllerHome !== controllerHome)) return undefined;
       const workId = workflowSupervisorOriginWorkId(task, repoId);
       if (!workId) return undefined;
-      return renderAssistantWorkContext({ controllerHome, repoId, workId, query: task.objective });
+      return renderCognitiveAttentionForWork({ controllerHome, repoId, workId, query: task.objective, maxItems: 6, maxBytes: 8 * 1024 });
     },
     effectDispatchEvidence: ({ task }) => {
       const claim = getRuntimeWriteClaim();

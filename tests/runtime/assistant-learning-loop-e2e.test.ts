@@ -30,13 +30,15 @@ import { writeWorkflowRunCheckpoint } from '../../src/runtime/control-plane/pers
 import { createRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
 import { prepareControllerAssistantContextBundle } from '../../src/runtime/root/controller-round-composition';
 import { schedulePublicationOutcomeCollection } from '../../src/runtime/root/assistant-learning-loop';
-import { cognitiveUsageFeedbackForContext, prepareAssistantWorkContext, recordControllerExperience, recordControllerOutcome } from '../../src/runtime/context/assistant-work-context';
+import { prepareAssistantWorkContext, recordControllerExperience, recordControllerOutcome } from '../../src/runtime/context/assistant-work-context';
+import { cognitiveUsageFeedbackForContext } from '../../src/runtime/context/cognitive-attention';
 import { parseControllerLearningSignalDrafts, persistAutomaticControllerRoundLearning } from '../../src/runtime/context/automatic-learning';
 import { cognitionReadPort } from '../../src/runtime/control-plane/persistence/cognition-store';
 import { callRuntimeTool } from '../../src/runtime/gateway/mcp/runtime-tools';
 import { createHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
 import { writeProjectIdentity, writeProjectPlacement, writeWorkspaceIdentity } from '../../src/runtime/control-plane/workspace/workspace-store';
 import type { MultiRepositoryMcpToolContext } from '../../adapters/mcp/multi-repository';
+import { settleCognitionAfterTool } from '../../adapters/mcp/runtime-gateway/cognition-settlement';
 
 const roots: string[] = [];
 afterEach(() => {
@@ -1308,10 +1310,9 @@ describe('direct model-authored learning without Work lifecycle', () => {
     expect(stored).toHaveLength(2);
     expect(stored.every(memory => !memory.provenance.sourceWorkId && !memory.provenance.sourceRoundId)).toBe(true);
 
-    const naturalRecall = await callRuntimeTool(ctx, 'rh_context', {
+    const ordinaryArgs = {
       repo_id: fx.repository.repoId,
-      operation: 'list',
-      query: 'forge cognition',
+      work_id: fx.workId,
       cognition_settlement: {
         work_id: fx.workId,
         learning_signals: [{
@@ -1321,6 +1322,42 @@ describe('direct model-authored learning without Work lifecycle', () => {
           admission_source: 'controller_observation', portability: 'local', salience: 0.9, confidence: 0.9, utility: 0.9,
         }],
       },
+    };
+    const ordinaryOutcome = settleCognitionAfterTool(ctx, 'repository_git_status', ordinaryArgs, {
+      content: [{ type: 'text', text: '{"ok":true}' }],
+      structuredContent: { ok: true },
+    });
+    expect((ordinaryOutcome?.structuredContent as Record<string, any>).cognitionSettlement).toMatchObject({
+      recorded: true,
+      storedMemoryIds: [expect.any(String)],
+    });
+
+    const primarySuccessWithSettlementFailure = settleCognitionAfterTool(ctx, 'repository_git_status', {
+      repo_id: fx.repository.repoId,
+      cognition_settlement: {
+        learning_signals: [{
+          scope_kind: 'work', kind: 'invalid-without-work', valence: 'neutral',
+          summary: 'This intentionally unreachable scope exercises non-blocking settlement failure.',
+          concepts: ['settlement.failure'], facets: [],
+          admission_source: 'controller_observation', portability: 'local', salience: 0.5, confidence: 0.5, utility: 0.5,
+        }],
+      },
+    }, {
+      content: [{ type: 'text', text: '{"ok":true}' }],
+      structuredContent: { ok: true },
+    });
+    expect(primarySuccessWithSettlementFailure?.isError).not.toBe(true);
+    expect(primarySuccessWithSettlementFailure?.structuredContent).toMatchObject({
+      ok: true,
+      cognitionSettlement: { recorded: false, error: { code: 'COGNITION_LEARNING_SCOPE_UNREACHABLE' } },
+      warnings: [expect.stringContaining('COGNITION_SETTLEMENT_FAILED')],
+    });
+
+    const naturalRecall = await callRuntimeTool(ctx, 'rh_context', {
+      repo_id: fx.repository.repoId,
+      work_id: fx.workId,
+      operation: 'list',
+      query: 'forge cognition',
     });
     expect(naturalRecall?.isError).not.toBe(true);
     const naturalPayload = naturalRecall?.structuredContent as Record<string, any>;
@@ -1328,7 +1365,8 @@ describe('direct model-authored learning without Work lifecycle', () => {
     const workMemories = cognitionReadPort(fx.controllerHome).exactByConcept(
       [{ schemaVersion: 1, kind: 'work', id: fx.workId }], ['ordinary-work'], 4,
     );
-    expect(workMemories[0]?.provenance).toMatchObject({ sourceWorkId: fx.workId, sourceRoundId: `work:${fx.workId}:learning` });
+    expect(workMemories[0]?.provenance).toMatchObject({ sourceWorkId: fx.workId });
+    expect(workMemories[0]?.provenance.sourceRoundId).toBeUndefined();
 
     const requirementId = 'REQ-direct-learning-reachable';
     const requirementWorkId = 'work-direct-learning-requirement';
@@ -1359,6 +1397,17 @@ describe('direct model-authored learning without Work lifecycle', () => {
       [{ schemaVersion: 1, kind: 'requirement', id: requirementId }], ['requirement.reachable'], 4,
     );
     expect(requirementMemories[0]?.provenance.sourceWorkId).toBe(requirementWorkId);
+    const requirementFeedback = await callRuntimeTool(ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'learning_feedback',
+      work_id: requirementWorkId,
+      learning_feedback: [{
+        memory_address: memoryAddressKey({ scope: requirementMemories[0]!.scope, id: requirementMemories[0]!.id }),
+        decision: 'used',
+        reason: 'The Requirement-scoped memory directly informed the subsequent requirement decision.',
+      }],
+    });
+    expect(requirementFeedback?.isError).not.toBe(true);
   });
 
   test('rejects unavailable direct-learning evidence before writing any memory', async () => {

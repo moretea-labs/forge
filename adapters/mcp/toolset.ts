@@ -12,6 +12,7 @@ import { executionToolDefinitions } from './runtime-gateway/execution-tools';
 import { processToolDefinitions } from './runtime-gateway/process-tools';
 import { injectDurableCommandFields } from './runtime-gateway/router';
 import { injectAutomationEnvelopeFields } from './runtime-gateway/automation-receipt-adapter';
+import { injectCognitionSettlementFields } from './runtime-gateway/cognition-settlement';
 import { DEFAULT_CONTROLLER_TOOL_NAMES, PREFERRED_FACADE_TOOL_NAMES, STABLE_CONTROLLER_TOOL_NAMES } from './toolset-names';
 export { BOOTSTRAP_CONTROLLER_TOOL_NAMES, CORE_CONTROLLER_TOOL_NAMES, DEFAULT_CONTROLLER_TOOL_NAMES, PREFERRED_FACADE_TOOL_NAMES, STABLE_CONTROLLER_TOOL_NAMES } from './toolset-names';
 import type { McpToolset } from './types';
@@ -200,7 +201,7 @@ function buildStaticControllerExposureSnapshot(
     .filter((definition): definition is McpToolDefinition => Boolean(definition))
     // Fingerprint the exact definitions that ListTools returns. Shared transport
     // contracts are injected here once rather than re-declared by domain registries.
-    .map((definition) => injectAutomationEnvelopeFields(injectDurableCommandFields(definition)));
+    .map((definition) => injectCognitionSettlementFields(injectAutomationEnvelopeFields(injectDurableCommandFields(definition))));
   const actualToolNames = definitions.map((tool) => tool.name);
   const actualSet = new Set(actualToolNames);
   const expectedSet = new Set(expectedToolNames);
@@ -272,7 +273,7 @@ export function clearControllerExposureCacheForTest(): void {
 export function allControllerToolDefinitions(ctx: MultiRepositoryMcpToolContext): McpToolDefinition[] {
   return uniqueDefinitions(
     runtimeToolDefinitions.concat(executionToolDefinitions, processToolDefinitions, accessToolDefinitions, repositoryToolDefinitions, buildMultiRepositoryToolDefinitions(ctx)),
-  ).definitions.map((definition) => injectAutomationEnvelopeFields(injectDurableCommandFields(definition)));
+  ).definitions.map((definition) => injectCognitionSettlementFields(injectAutomationEnvelopeFields(injectDurableCommandFields(definition))));
 }
 
 export function controllerExposureSnapshot(ctx: MultiRepositoryMcpToolContext): ControllerExposureSnapshot {

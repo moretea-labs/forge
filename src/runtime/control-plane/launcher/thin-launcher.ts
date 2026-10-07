@@ -16,7 +16,7 @@ import type { ControllerType } from '../facade/types';
 import { codexMcpConfigArgs, resolveProviderMcpBootstrap, type ProviderMcpBootstrap } from './provider-mcp-bootstrap';
 import { repositoryChildProcessEnvironment } from '../../shared/process-environment';
 import { redactProcessOutput } from '../../../effects/process-runner';
-import { renderAssistantWorkContext } from '../../context/assistant-work-context';
+import { renderCognitiveAttentionForWork } from '../../context/cognitive-attention';
 
 export interface ThinLauncherRequest {
   controllerType: Exclude<ControllerType, 'human'>;
@@ -280,11 +280,13 @@ export async function launchSuperController(
     ttlMs: request.launchReservationMs,
   });
   const handoff = request.handoffId ? getHandoffItem(stores.handoff, request.handoffId) : undefined;
-  const cognition = renderAssistantWorkContext({
+  const cognition = renderCognitiveAttentionForWork({
     controllerHome: stores.work.controllerHome,
     repoId: work.repoId,
     workId: work.workId,
     query: work.objective,
+    maxItems: 6,
+    maxBytes: 8 * 1024,
   });
   const prompt = [
     `Work: ${work.workId}`,

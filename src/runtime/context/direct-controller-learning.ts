@@ -103,7 +103,7 @@ function directLearningAuthority(input: {
         || memory.provenance.sourceKind !== 'controller'
         || memory.provenance.sourceId !== input.sourceId
         || memory.provenance.sourceWorkId !== input.sourceWorkId
-        || Boolean(memory.provenance.sourceRoundId) !== Boolean(input.sourceWorkId)) {
+        || memory.provenance.sourceRoundId) {
         throw new Error('COGNITION_DIRECT_LEARNING_AUTHORITY_INVALID');
       }
       if (memory.scope.kind === 'workspace' && !memory.facets.includes('portability.portable')) {
@@ -127,11 +127,11 @@ function directLearningAuthority(input: {
 }
 
 /**
- * Persist semantic learning selected by the model outside Work lifecycle.
+ * Persist semantic learning selected by the model without creating a learning lifecycle.
  *
- * The caller supplies only meaning. Forge derives source identity/time and limits writes
- * to the repository's semantic Project, or to Workspace for explicit portable human
- * teaching. Work/ControllerRound authority is intentionally absent.
+ * The caller supplies meaning plus an optional already-existing Work identity. Forge derives
+ * reachable semantic scope, source identity and time. Work provenance never fabricates a
+ * ControllerRound; ControllerRound authority remains intentionally absent.
  */
 export interface DirectControllerLearningFeedbackDraft {
   memoryAddress: string;
@@ -266,7 +266,6 @@ export function persistDirectControllerLearning(input: {
       provenance: {
         ...draft.provenance,
         sourceWorkId: input.workId,
-        sourceRoundId: `work:${input.workId}:learning`,
       },
     } : draft;
   });

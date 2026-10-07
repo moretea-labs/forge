@@ -2,75 +2,17 @@ import { getRepository } from '../../cli/repositories/registry';
 import { configuredBrainRoot } from '../../cli/commands/brain-root';
 import { getWorkContract, semanticWorkState } from '../../../packages/kernel/work/api/index';
 import type { ScopeRef } from '../../../packages/kernel/identity/api/index';
-import { getControllerRoundRelay, listCurrentControllerRoundRelays } from '../../../packages/kernel/controller/api/index';
+import { getControllerRoundRelay } from '../../../packages/kernel/controller/api/index';
 import { recordExperience, recordOutcomeObservation, queryExperiences, type ExperienceApplicability, type ExperienceDraft, type ExperienceRecord, type OutcomeObservation } from '../../../packages/kernel/memory/api/index';
-import { memoryAddressKey, memoryUnitFromExperience, parseMemoryAddressKey, recordCognitiveMemory, recordCognitiveMemoryEdge, type CognitiveUsageFeedback, type CognitiveWriteAuthorityPort, type MemoryEdgeDraft, type MemoryProvenance, type MemoryUnit, type MemoryUnitDraft } from '../../../packages/kernel/cognition/api/index';
+import { memoryUnitFromExperience, recordCognitiveMemory, recordCognitiveMemoryEdge, type CognitiveWriteAuthorityPort, type MemoryEdgeDraft, type MemoryProvenance, type MemoryUnit, type MemoryUnitDraft } from '../../../packages/kernel/cognition/api/index';
 import { assertMemoryWriteAuthority, canonicalWorkflowEvidenceAvailable, cognitiveScopesForWork, controllerExperienceStore, controllerOutcomeObservationStore, experienceScopesForWork, type ExperienceWriteIdentity } from '../control-plane/persistence/experience-store';
-import { cognitionMemoryStore, readCognitiveUsageFeedback } from '../control-plane/persistence/cognition-store';
+import { cognitionMemoryStore } from '../control-plane/persistence/cognition-store';
 import { listControlPlaneRecords } from '../control-plane/persistence/sqlite-store';
 import { WORKFLOW_RUN_NAMESPACE, type WorkflowRunRecord } from '../control-plane/persistence/workflow-run-store';
 import { loadProjectEngineeringContract } from './project-engineering-contract';
 import { fileKnowledgeSourcePort, renderAssistantContext, resolveAssistantContext, type AssistantContextResolution } from './assistant-context';
 import { applyCognitiveSkillCanary } from './cognitive-skill-canary';
-import { resolveCognitiveAttention } from './cognitive-attention';
-
-/**
- * Canonical truth remains ControllerRound observationWindow. This is a bounded,
- * rebuildable retrieval projection computed on demand, not a second usage store.
- */
-export function cognitiveUsageFeedbackForContext(input: {
-  controllerHome: string;
-  repoId: string;
-  scopes: readonly ScopeRef[];
-  projectId?: string;
-}): CognitiveUsageFeedback[] {
-  const allowedScopes = new Set(input.scopes.map(scope => `${scope.kind}:${scope.id}`));
-  const feedback = new Map<string, CognitiveUsageFeedback>();
-  const seen = new Set<string>();
-  for (const relay of listCurrentControllerRoundRelays({ controllerHome: input.controllerHome, repoId: input.repoId }, 100)) {
-    for (const observation of (relay.observationWindow ?? []).slice(-8)) {
-      if (input.projectId && observation.assistantContext?.projectId !== input.projectId) continue;
-      const delivered = new Set((observation.assistantContext?.items ?? [])
-        .filter(item => item.kind === 'knowledge')
-        .map(item => item.itemId));
-      for (const usage of observation.assistantContextUsage ?? []) {
-        if (usage.kind !== 'knowledge' || !delivered.has(usage.itemId)) continue;
-        const address = parseMemoryAddressKey(usage.itemId);
-        if (!address || !allowedScopes.has(`${address.scope.kind}:${address.scope.id}`)) continue;
-        const observationKey = `${observation.roundRef}:${usage.kind}:${usage.itemId}`;
-        if (seen.has(observationKey)) continue;
-        seen.add(observationKey);
-        const key = memoryAddressKey(address);
-        const current = feedback.get(key) ?? { address, usedCount: 0, rejectedCount: 0, conflictCount: 0, staleCount: 0 };
-        if (usage.decision === 'used') current.usedCount += 1;
-        else {
-          current.rejectedCount += 1;
-          if (usage.rejectionKind === 'stale') current.staleCount += 1;
-          else if (usage.rejectionKind === 'contradicted') current.conflictCount += 1;
-        }
-        feedback.set(key, current);
-      }
-    }
-  }
-  for (const direct of readCognitiveUsageFeedback(input.controllerHome, input.scopes)) {
-    const key = memoryAddressKey(direct.address);
-    const current = feedback.get(key) ?? {
-      address: direct.address,
-      usedCount: 0,
-      rejectedCount: 0,
-      conflictCount: 0,
-      staleCount: 0,
-    };
-    current.usedCount += direct.usedCount;
-    current.rejectedCount += direct.rejectedCount;
-    current.conflictCount += direct.conflictCount;
-    current.staleCount += direct.staleCount;
-    feedback.set(key, current);
-  }
-  return [...feedback.values()]
-    .sort((left, right) => memoryAddressKey(left.address).localeCompare(memoryAddressKey(right.address)))
-    .slice(0, 256);
-}
+import { cognitiveUsageFeedbackForContext, resolveCognitiveAttention } from './cognitive-attention';
 
 function cleanApplicability(value: ExperienceApplicability | undefined): ExperienceApplicability | undefined {
   if (!value) return undefined;

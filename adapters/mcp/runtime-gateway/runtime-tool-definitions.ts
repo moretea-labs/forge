@@ -12,22 +12,8 @@ function definition(name: string, description: string, properties: Record<string
   };
 }
 const repoId = { type: 'string', description: 'Stable repository id.' };
-const cognitionSettlement = {
-  cognition_settlement: {
-    type: 'object',
-    additionalProperties: false,
-    properties: {
-      work_id: { type: 'string', description: 'Optional selected Work; reachable Work/Requirement provenance is derived by Forge.' },
-      learning_signals: { type: 'array', maxItems: CONTROLLER_LEARNING_SIGNAL_ENVELOPE_MAX_ITEMS, items: { type: 'object' }, description: 'Optional model-authored reusable learning settled after this ordinary tool outcome through the canonical Cognitive writer.' },
-      learning_feedback: { type: 'array', maxItems: 32, items: { type: 'object' }, description: 'Optional model-authored recall usage feedback settled through the canonical usage writer.' },
-    },
-    description: 'Optional bounded advisory cognition settlement at an ordinary MCP outcome boundary. It creates no lifecycle and grants no authority.',
-  },
-};
-
 export const runtimeToolDefinitions: McpToolDefinition[] = [
   definition('rh_status', 'Preferred ChatGPT facade: bounded controller status, capability readiness, and self-healing diagnose/repair.', {
-    ...cognitionSettlement,
     repo_id: repoId,
     operation: { type: 'string', enum: ['list', 'get', 'repair'], description: 'Defaults to get.' },
     detail_level: { type: 'string', enum: ['summary', 'detail'], description: 'Defaults to summary.' },
@@ -39,7 +25,6 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     destructive: { type: 'boolean' },
   }),
   definition('rh_inbox', 'Preferred ChatGPT facade: instance-level UserRequest inbox for genuine human actions/decisions. Repository-scoped handoff_id remains a legacy compatibility lookup.', {
-    ...cognitionSettlement,
     repo_id: { ...repoId, description: 'Optional legacy repository context. Omit for canonical instance-level UserRequest operations.' },
     operation: { type: 'string', enum: ['list', 'get', 'ack', 'accept', 'resolve', 'dismiss', 'create'], description: 'Defaults to list (pending).' },
     request_id: { type: 'string', description: 'Canonical instance-level UserRequest id.' },
@@ -59,7 +44,6 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     limit: { type: 'number' },
   }),
   definition('rh_context', 'Preferred ChatGPT facade and default repository code-discovery/read path. Semantic task/capability queries can also recall an initial bounded, relevance-gated Cognitive advisory working set when Project/Workspace scope is available. That first pack is an attention envelope, never a claim that the top N items are cognitively complete. Reuse it through routine micro-steps; when the model judges prior context insufficient, progressively narrow/expand recall with another semantic query or explicit knowledge audit. Start broad once to combine heuristic lexical discovery, current raw source, and optional CodeGraph structural evidence with few round trips. Natural-language lexical terms are discovery hints: do not require every guessed term to match and do not repeat the same broad search merely because a heuristic term missed. After credible files or symbols are found, derive follow-up paths/symbols from the returned source and prefer known_paths, compiler semantic_navigation/@tsnav for TypeScript, or structural relationships before another broad lexical pass. Call rh_context repeatedly only when that progressive expansion can materially improve correctness; follow-ups reuse session-scoped evidence when source identity is unchanged. Shell rg/grep/sed/cat loops are fallback-only when this Context Plane cannot supply the needed evidence.', {
-    ...cognitionSettlement,
     repo_id: repoId,
     checkout_id: { type: 'string', description: 'Optional checkout identity for repositories with multiple worktrees.' },
     operation: { type: 'string', enum: ['list', 'get', 'search'], description: 'Defaults to get. Use search as the default code-location path when an exact file is unknown.' },
@@ -106,7 +90,6 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     detail_level: { type: 'string', enum: ['summary', 'detail', 'raw'], description: 'Defaults to summary; raw is still bounded.' },
   }),
   definition('rh_work', 'Preferred ChatGPT facade for optional durable Requirement/Plan/Work semantic context, explicit recovery, scheduling/workflow intent, and external controller launch. Ordinary execution and validation use direct domain capabilities; provider/session binding, retries, transport recovery, dedupe, and other mechanical bookkeeping stay internal.', {
-    ...cognitionSettlement,
     repo_id: repoId,
     checkout_id: { type: 'string', description: 'Optional checkout identity for exact Work and Plan source selection.' },
     operation: { type: 'string', enum: [...RH_WORK_MODEL_OPERATIONS], description: 'Defaults to start. list reads current semantic Work plus a bounded recent terminal history for the selected repository; start creates semantic Work context only. Requirement, Plan, and Work remain model-authored durable semantic records; execution and validation use direct capabilities. Work completion is an explicit semantic update rather than an execution phase transition.' },
@@ -405,7 +388,6 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     timeout_ms: { type: 'number', description: 'Bounded provider timeout in milliseconds. Defaults to 15000 and is capped at 30000.' },
   }, ['confirm_authorization'], false),
   definition('capability_execute', 'Execute one typed Forge core capability through its canonical substrate owner. Discover the exact action schema with rh_context capability_id first. This stable facade prevents one top-level MCP tool per atomic repository operation; plugin capabilities continue to use plugin_action_execute.', {
-    ...cognitionSettlement,
     repo_id: repoId,
     checkout_id: { type: 'string', description: 'Optional exact checkout identity.' },
     capability_id: { type: 'string', description: 'Exact core capability identity returned by rh_context.' },

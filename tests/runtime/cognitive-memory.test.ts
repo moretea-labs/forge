@@ -147,6 +147,61 @@ describe('generic cognitive memory', () => {
     expect(opportunistic.items.map(item => item.memory.id)).not.toContain(weak.id);
   });
 
+  test('lets natural-language parts cue one structured concept without widening arbitrary ASCII overlap', () => {
+    const fx = fixture();
+    const structured = recordCognitiveMemory(fx.store, fx.authority, {
+      ...draft(
+        'mem:structured-alias',
+        'A long architecture note about bounded retrieval, model-authored learning, provenance, task boundaries, and semantic memory projection.',
+        ['forge.cognition'],
+        'E-1',
+      ),
+      confidence: 0.9,
+      utility: 0.9,
+    });
+    const plainOverlap = recordCognitiveMemory(fx.store, fx.authority, {
+      ...draft(
+        'mem:plain-two-word-overlap',
+        'This long note contains forge and cognition among many unrelated operational words but has no structured concept identity.',
+        ['unrelated.architecture'],
+        'E-2',
+      ),
+      confidence: 0.99,
+      utility: 0.99,
+    });
+    const pack = activateCognitiveMemory(
+      fx.controllerHome,
+      [scope],
+      'forge cognition',
+      { now: at, maxItems: 8, minCueScore: 0.12 },
+    );
+    expect(pack.items.map(item => item.memory.id)).toContain(structured.id);
+    expect(pack.items.map(item => item.memory.id)).not.toContain(plainOverlap.id);
+  });
+
+  test('lets each reachable scope contribute candidates before global ranking', () => {
+    const fx = fixture();
+    const workspaceScope = { schemaVersion: 1 as const, kind: 'workspace' as const, id: 'workspace-cognition' };
+    for (let index = 0; index < 12; index++) {
+      recordCognitiveMemory(fx.store, fx.authority, {
+        ...draft(`mem:project-noise-${index}`, `Cognition helper note ${index} for a different project-local concern.`, [`project.noise.${index}`], 'E-1'),
+      });
+    }
+    const portable = recordCognitiveMemory(fx.store, fx.authority, {
+      ...draft('mem:workspace-target', 'Forge cognition uses one bounded advisory working set.', ['forge.cognition'], 'E-2'),
+      scope: workspaceScope,
+      confidence: 0.95,
+      utility: 0.95,
+    });
+    const pack = activateCognitiveMemory(
+      fx.controllerHome,
+      [scope, workspaceScope],
+      'forge cognition',
+      { now: at, maxItems: 8, maxCandidates: 8, minCueScore: 0.12 },
+    );
+    expect(pack.items.map(item => item.memory.id)).toContain(portable.id);
+  });
+
   test('does not penalize long CJK distilled memory when multiple current-task cues match', () => {
     const fx = fixture();
     const relevant = recordCognitiveMemory(fx.store, fx.authority, {
@@ -374,6 +429,17 @@ describe('generic cognitive memory', () => {
     expect(consolidated.edges.filter(edge => edge.relation === 'derived_from')).toHaveLength(3);
     const sourcePack = activateCognitiveMemory(fx.controllerHome, [scope], 'learning.success', { now: '2026-09-18T00:00:00.000Z' });
     expect(sourcePack.items.some(item => item.memory.id === 'mem:s1')).toBe(true);
+
+    const storedConsolidated = recordCognitiveMemory(fx.store, fx.authority, candidate!.memory);
+    for (const edge of consolidated.edges) recordCognitiveMemoryEdge(fx.store, fx.authority, edge);
+    const familyPack = activateCognitiveMemory(
+      fx.controllerHome,
+      [scope],
+      'learning success workflow common',
+      { now: '2026-09-18T00:00:00.000Z', minCueScore: 0.12, maxItems: 8 },
+    );
+    const familyIds = new Set([storedConsolidated.id, ...sources.map(item => item.id)]);
+    expect(familyPack.items.filter(item => familyIds.has(item.memory.id))).toHaveLength(1);
   });
 
   test('encodes success and knowledge as first-class learning signals instead of failure-only lessons', () => {

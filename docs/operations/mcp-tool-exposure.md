@@ -1,6 +1,6 @@
 # MCP tool exposure profiles
 
-The stable `rh_status`, `rh_inbox`, `rh_context`, `rh_work`, and `capability_execute` boundaries accept an optional bounded `cognition_settlement` envelope. Model-authored learning and feedback are mechanically routed to the same Cognitive writers used by `rh_work learning_record/learning_feedback`; the envelope is not a lifecycle or authority surface.
+Every Controller MCP tool definition receives the same optional bounded `cognition_settlement` transport field at the final exposure layer, including ordinary repository/edit/process tools as well as the `rh_*` facade. The model emits it only at a meaningful successful outcome boundary; routine micro-steps omit it. Model-authored learning and feedback are mechanically routed to the same Cognitive writers used by `rh_work learning_record/learning_feedback`. Settlement runs after the primary tool succeeds, so a cognition-write defect is returned as explicit settlement metadata/warning rather than converting an already-applied primary effect into a retryable failure. The envelope is not a lifecycle or authority surface.
 
 Controller MCP uses one stable default schema so ChatGPT can reliably read, edit, run checks, use Git, delegate to local Agents, coordinate durable Goal/Work, capture iOS evidence, and recover from failures without a permission switch hiding tools.
 

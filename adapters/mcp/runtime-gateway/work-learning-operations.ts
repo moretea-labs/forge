@@ -58,6 +58,7 @@ export function callRhWorkLearningOperation(
         principalId: ctx.principalId,
         sessionId: ctx.sessionId,
         controllerInstanceId: ctx.controllerInstanceId,
+        workId: typeof args.work_id === 'string' && args.work_id.trim() ? args.work_id.trim() : undefined,
       });
       return result(buildFacadeResult({
         summary: `Recorded ${recorded.observationIds.length} lifecycle-free Cognitive usage feedback observation(s).`,

@@ -71,33 +71,60 @@ function boundedUnitScore(value: number | undefined, label: string): number {
   return value;
 }
 
-function associativeLexicalCueScore(memory: MemoryUnit, terms: ReadonlySet<string>, allowQueryCoverage = false): number {
+function cognitiveQueryTerms(text: string): Set<string> {
+  const terms = cognitiveTerms(text);
+  const rawTokens = text.toLocaleLowerCase('en-US').match(/[a-z0-9_.:/-]+/g) ?? [];
+  const explicitPlainTerms = new Set(rawTokens.filter(token => !/[._:/-]/.test(token)));
+  for (const token of rawTokens) {
+    if (!/[._:/-]/.test(token)) continue;
+    for (const part of token.split(/[._:/-]+/).filter(Boolean)) {
+      // A structured query token is already an exact concept cue. Its parts
+      // should not independently widen the query to sibling concepts unless the
+      // user also supplied those parts as ordinary natural-language terms.
+      if (!explicitPlainTerms.has(part)) terms.delete(part);
+    }
+  }
+  return terms;
+}
+
+function associativeLexicalCueScore(memory: MemoryUnit, terms: ReadonlySet<string>, allowCjkQueryCoverage = false): number {
   if (!terms.size) return 0;
   const haystack = cognitiveTerms(`${memory.canonicalText}\n${memory.concepts.join(' ')}\n${memory.facets.join(' ')}`);
   if (!haystack.size) return 0;
   let matches = 0;
   for (const term of terms) if (haystack.has(term)) matches += 1;
-  // Automatic recall still rejects a single generic overlap, but a long
-  // distilled memory must not become harder to recall merely because it has
-  // more explanatory text. This especially matters for CJK bigram terms,
-  // where one useful paragraph naturally has a much larger haystack. Require
-  // at least two direct cue units before query coverage can qualify a memory;
-  // otherwise retain the symmetric specificity score used for short/exact cues.
   const queryCoverage = matches / terms.size;
   const memoryCoverage = matches / haystack.size;
-  // For ASCII lexical cues require bidirectional specificity: the query must
-  // meaningfully identify the memory and the memory must meaningfully explain
-  // the query. CJK bigram tokenization naturally makes the memory side much
-  // larger, so a CJK query with multiple direct cue units may use bounded query
-  // coverage instead. This remains candidate discovery, never semantic authority.
   const bidirectionalSpecificity = Math.min(queryCoverage, memoryCoverage);
-  const multiCueQueryCoverage = allowQueryCoverage && matches >= 2 ? queryCoverage : 0;
+  // CJK bigram tokenization naturally makes a useful memory's haystack large.
+  // Keep the historical multi-cue exception only for CJK; ASCII natural-language
+  // concept access is handled below through canonical structured concept aliases.
+  const multiCueQueryCoverage = allowCjkQueryCoverage && matches >= 2 ? queryCoverage : 0;
   return Math.max(bidirectionalSpecificity, multiCueQueryCoverage);
 }
 
+function structuredConceptAliasCueScore(memory: MemoryUnit, queryTerms: ReadonlySet<string>): number {
+  let best = 0;
+  for (const concept of memory.concepts) {
+    if (!/[._:/-]/.test(concept)) continue;
+    const parts = concept.toLocaleLowerCase('en-US').split(/[._:/-]+/).filter(Boolean);
+    if (parts.length < 2) continue;
+    let matches = 0;
+    for (const part of parts) if (queryTerms.has(part)) matches += 1;
+    // Two independently supplied parts are required. This lets natural language
+    // such as "forge cognition" reach forge.cognition without granting the same
+    // privilege to arbitrary two-word prose overlap.
+    if (matches >= 2) best = Math.max(best, matches / parts.length);
+  }
+  return best;
+}
+
 function retrievalCueScore(item: ActivationItem, queryTerms: ReadonlySet<string>, query: string): number {
-  const multiCueQuery = queryTerms.size >= 2;
-  let score = associativeLexicalCueScore(item.memory, queryTerms, multiCueQuery);
+  const hasCjkQuery = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/u.test(query);
+  let score = Math.max(
+    associativeLexicalCueScore(item.memory, queryTerms, hasCjkQuery),
+    structuredConceptAliasCueScore(item.memory, queryTerms),
+  );
   for (const reason of item.reasons) {
     if (reason.signal === 'exact' || reason.signal === 'semantic') {
       score = Math.max(score, reason.score);
@@ -107,6 +134,33 @@ function retrievalCueScore(item: ActivationItem, queryTerms: ReadonlySet<string>
   // cannot by itself make a memory enter opportunistic awareness. Deliberate
   // memory audit leaves minCueScore at zero and still sees graph expansion.
   return score;
+}
+
+function fairScopedRead(
+  scopes: readonly ScopeRef[],
+  limit: number,
+  read: (scope: ScopeRef, limit: number) => MemoryUnit[],
+): MemoryUnit[] {
+  if (scopes.length <= 1) return scopes.length ? read(scopes[0]!, limit) : [];
+  const perScope = Math.max(1, Math.ceil(limit / scopes.length));
+  const lanes = scopes.map(scope => read(scope, perScope));
+  const seen = new Set<string>();
+  const result: MemoryUnit[] = [];
+  for (let offset = 0; result.length < limit; offset++) {
+    let advanced = false;
+    for (const lane of lanes) {
+      const memory = lane[offset];
+      if (!memory) continue;
+      advanced = true;
+      const key = memoryAddressKey(memoryAddressOf(memory));
+      if (seen.has(key)) continue;
+      seen.add(key);
+      result.push(memory);
+      if (result.length >= limit) break;
+    }
+    if (!advanced) break;
+  }
+  return result;
 }
 
 function active(memory: MemoryUnit, now: number): boolean {
@@ -168,7 +222,7 @@ export function activateMemory(
   if (!Number.isFinite(now)) throw new Error('COGNITION_ACTIVATION_TIME_INVALID');
   const activeAt = new Date(now).toISOString();
 
-  const queryTerms = cognitiveTerms(query.slice(0, 8_192));
+  const queryTerms = cognitiveQueryTerms(query.slice(0, 8_192));
   const inferredConcepts = [...queryTerms].filter(term => /[._:/-]/.test(term));
   const seedConcepts = [...new Set([...(options.seedConcepts ?? []), ...inferredConcepts])].slice(0, 64);
   const candidates = new Map<string, ActivationItem>();
@@ -205,7 +259,11 @@ export function activateMemory(
   }
 
   if (seedConcepts.length) {
-    for (const memory of port.exactByConcept(scopes, seedConcepts, Math.min(maxCandidates, 64), activeAt)) {
+    for (const memory of fairScopedRead(
+      scopes,
+      Math.min(maxCandidates, 64),
+      (scope, limit) => port.exactByConcept([scope], seedConcepts, limit, activeAt),
+    )) {
       if (!active(memory, now)) continue;
       const hits = memory.concepts.filter(concept => seedConcepts.includes(concept)).length;
       const score = Math.min(1, hits / Math.max(1, seedConcepts.length));
@@ -215,7 +273,11 @@ export function activateMemory(
     }
   }
 
-  for (const memory of port.lexical(scopes, [...queryTerms].slice(0, 96), Math.min(maxCandidates, 128), activeAt)) {
+  for (const memory of fairScopedRead(
+    scopes,
+    Math.min(maxCandidates, 128),
+    (scope, limit) => port.lexical([scope], [...queryTerms].slice(0, 96), limit, activeAt),
+  )) {
     if (!active(memory, now)) continue;
     const score = lexicalScore(memory, queryTerms);
     if (!score) continue;
@@ -265,11 +327,59 @@ export function activateMemory(
     frontier = next;
   }
 
+  // Consolidated representations and their retained sources form one retrieval
+  // family. Usage is aggregated mechanically across that family so rejecting a
+  // source cannot be bypassed by its semantically identical consolidated copy.
+  const familyRootByAddress = new Map<string, string>();
+  const familyMembers = new Map<string, Set<string>>();
+  const consolidatedCandidates = [...candidates.values()]
+    .filter(item => item.memory.facets.includes('consolidated'))
+    .slice(0, 64);
+  if (consolidatedCandidates.length) {
+    for (const item of consolidatedCandidates) {
+      const root = memoryAddressKey(memoryAddressOf(item.memory));
+      familyRootByAddress.set(root, root);
+      familyMembers.set(root, new Set([root]));
+    }
+    for (const { edge, from, memory } of port.neighbors(
+      consolidatedCandidates.map(item => memoryAddressOf(item.memory)),
+      256,
+      activeAt,
+    )) {
+      if (edge.relation !== 'derived_from') continue;
+      const root = memoryAddressKey(from);
+      const source = memoryAddressKey(memoryAddressOf(memory));
+      if (!familyMembers.has(root)) continue;
+      familyRootByAddress.set(source, root);
+      familyMembers.get(root)!.add(source);
+    }
+  }
+
+  const usageFor = (memory: MemoryUnit): CognitiveUsageFeedback | undefined => {
+    const address = memoryAddressOf(memory);
+    const key = memoryAddressKey(address);
+    const root = familyRootByAddress.get(key);
+    const members = root ? familyMembers.get(root) : undefined;
+    if (!members) return usageByAddress.get(key);
+    let usedCount = 0, rejectedCount = 0, conflictCount = 0, staleCount = 0;
+    for (const member of members) {
+      const feedback = usageByAddress.get(member);
+      if (!feedback) continue;
+      usedCount += feedback.usedCount;
+      rejectedCount += feedback.rejectedCount;
+      conflictCount += feedback.conflictCount;
+      staleCount += feedback.staleCount;
+    }
+    return usedCount || rejectedCount || conflictCount || staleCount
+      ? { address, usedCount, rejectedCount, conflictCount, staleCount }
+      : undefined;
+  };
+
   for (const item of candidates.values()) {
     const recency = recencyScore(item.memory, now);
     const confidenceContribution = item.memory.confidence * 0.25;
     const storedConflictPenalty = Math.min(0.2, item.memory.counterEvidenceRefs.length * 0.04);
-    const feedback = usageByAddress.get(memoryAddressKey(memoryAddressOf(item.memory)));
+    const feedback = usageFor(item.memory);
     const usedBoost = Math.min(0.3, (feedback?.usedCount ?? 0) * 0.06);
     const rejectedPenalty = Math.min(0.25, (feedback?.rejectedCount ?? 0) * 0.05);
     const feedbackConflictPenalty = Math.min(0.2, ((feedback?.conflictCount ?? 0) + (feedback?.staleCount ?? 0)) * 0.08);
@@ -298,26 +408,19 @@ export function activateMemory(
     b.score - a.score
     || b.memory.provenance.recordedAt.localeCompare(a.memory.provenance.recordedAt)
     || memoryAddressKey(memoryAddressOf(a.memory)).localeCompare(memoryAddressKey(memoryAddressOf(b.memory))));
-  const consolidatedSources = new Set<string>();
-  const consolidated = ranked.filter(item =>
-    item.memory.facets.includes('consolidated')
-    && retrievalCueScore(item, queryTerms, query) >= minCueScore).slice(0, 64);
-  if (consolidated.length) {
-    for (const { edge, memory } of port.neighbors(consolidated.map(item => memoryAddressOf(item.memory)), 256, activeAt)) {
-      if (edge.relation === 'derived_from') consolidatedSources.add(memoryAddressKey(memoryAddressOf(memory)));
-    }
-  }
+  const eligible = ranked.filter(item => retrievalCueScore(item, queryTerms, query) >= minCueScore);
   const items: ActivationItem[] = [];
+  const seenFamilies = new Set<string>();
   let estimatedBytes = 0;
-  for (const item of ranked) {
-    // A consolidated view and its retained provenance are one retrieval family.
-    // Conflicts/supersession remain separate because only derived_from is folded.
-    if (consolidatedSources.has(memoryAddressKey(memoryAddressOf(item.memory)))) continue;
-    // Opportunistic recall should behave like an associative cue, not like a
-    // list of globally high-confidence memories. Confidence/utility rank a
-    // relevant memory after it is cued; they must not make a weakly related
-    // memory "come to mind" by themselves.
-    if (retrievalCueScore(item, queryTerms, query) < minCueScore) continue;
+  for (const item of eligible) {
+    // A consolidated view and retained derived_from sources consume one slot.
+    // Choose the highest-ranked eligible representative; a non-cued consolidated
+    // item can never hide an otherwise eligible source. Conflict/supersession
+    // remain separate because they are not members of this representation family.
+    const addressKey = memoryAddressKey(memoryAddressOf(item.memory));
+    const familyKey = familyRootByAddress.get(addressKey) ?? addressKey;
+    if (seenFamilies.has(familyKey)) continue;
+    seenFamilies.add(familyKey);
     const size = Buffer.byteLength(JSON.stringify({
       address: memoryAddressLabel(memoryAddressOf(item.memory)),
       facets: item.memory.facets,

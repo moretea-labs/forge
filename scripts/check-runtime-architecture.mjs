@@ -2079,6 +2079,20 @@ forbid(
 requireText('src/runtime/root/workflow-supervisor-composition.ts', 'reserveWorkflowSupervisorEnrollment(forgeHome, registeredTask.taskId, lowerLayer.providerEffectId)');
 requireText('src/runtime/root/workflow-supervisor-composition.ts', 'providerDispatchEffectId: effect.effectId');
 requireText('supervisor/protocol.ts', '(?:fx|crpe)_');
+// Cognitive Plane stays one advisory application path: all Controller tools expose the
+// same optional settlement metadata, the MCP server settles it after the primary
+// outcome, and Supervisor/external launchers consume Cognition-only projections.
+requireText('adapters/mcp/toolset.ts', 'injectCognitionSettlementFields(injectAutomationEnvelopeFields(injectDurableCommandFields(definition)))');
+requireText('adapters/mcp/server.ts', 'settleCognitionAfterTool(ctx, name, args, localResult)');
+forbid('adapters/mcp/runtime-gateway/runtime-tools.ts', /settleCognitionEnvelope/, 'cognition settlement belongs to the canonical all-tool MCP boundary, not the rh_* facade only');
+requireText('src/runtime/root/workflow-supervisor-composition.ts', 'renderCognitiveAttentionForWork');
+requireText('src/runtime/control-plane/launcher/thin-launcher.ts', 'renderCognitiveAttentionForWork');
+forbid('src/runtime/root/workflow-supervisor-composition.ts', /renderAssistantWorkContext/, 'Supervisor prompts may receive bounded Cognition, not the legacy lower-layer AssistantWorkContext blob');
+forbid('src/runtime/control-plane/launcher/thin-launcher.ts', /renderAssistantWorkContext/, 'external controller prompts may receive bounded Cognition, not the legacy lower-layer AssistantWorkContext blob');
+requireText('packages/kernel/cognition/application/activation-service.ts', 'structuredConceptAliasCueScore');
+requireText('packages/kernel/cognition/application/activation-service.ts', 'fairScopedRead');
+requireText('packages/kernel/cognition/application/activation-service.ts', 'seenFamilies');
+
 for (const path of [
   'adapters/mcp/runtime-gateway/work-learning-operations.ts',
   'src/runtime/control-plane/persistence/experience-store.ts',

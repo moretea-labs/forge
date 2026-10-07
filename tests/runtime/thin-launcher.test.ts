@@ -11,6 +11,8 @@ import {
   type ThinLauncherRequest,
 } from '../../src/runtime/control-plane/launcher/thin-launcher';
 import { getExternalControllerLaunchReservation, readExternalControllerLaunchReservationRecord } from '../../src/runtime/control-plane/launcher/launch-reservation-store';
+import { recordCognitiveMemory } from '../../packages/kernel/cognition/api/index';
+import { cognitionMemoryStore } from '../../src/runtime/control-plane/persistence/cognition-store';
 
 const roots: string[] = [];
 const launchedPids: number[] = [];
@@ -44,6 +46,27 @@ function codexBootstrap() {
     sessionId: 'external-session:codex:test-reservation',
     env: process.env,
   };
+}
+
+function seedLauncherCognition(controllerHome: string, workId: string): void {
+  const store = cognitionMemoryStore(controllerHome);
+  recordCognitiveMemory(store, {
+    assertMemoryWrite() {},
+    assertEdgeWrite() {},
+    evidenceAvailable() { return true; },
+  }, {
+    id: 'mem:launcher-cognition',
+    scope: { schemaVersion: 1, kind: 'work', id: workId },
+    facets: ['knowledge', 'architecture'],
+    canonicalText: 'External Controller launcher tasks should receive the same bounded advisory cognition working set.',
+    concepts: ['external.controller.cognition'],
+    provenance: { sourceKind: 'external', sourceId: 'thin-launcher-test', recordedAt: '2026-01-01T00:00:00.000Z', evidenceRefs: [] },
+    confidence: 0.9,
+    utility: 0.9,
+    tier: 'warm',
+    validFrom: '2026-01-01T00:00:00.000Z',
+    counterEvidenceRefs: [],
+  });
 }
 
 function launcherFixture() {
@@ -123,6 +146,7 @@ describe('Thin Launcher startup observability', () => {
 
   test('returns only after a live child survives the startup grace', async () => {
     const fx = launcherFixture();
+    seedLauncherCognition(fx.controllerHome, fx.workId);
     const launched = await launchSuperController({ work: fx.store, handoff: fx.store }, {
       controllerType: 'grok',
       executable: process.execPath,
@@ -136,6 +160,7 @@ describe('Thin Launcher startup observability', () => {
     expect(launched.prompt).toContain(`work_id=${fx.workId}`);
     expect(launched.prompt).toContain('Forge maintains provider/session binding');
     expect(launched.prompt).toContain('Advisory cognition (bounded; never authority)');
+    expect(launched.prompt).toContain('External Controller launcher tasks should receive the same bounded advisory cognition working set.');
     expect(launched.prompt).not.toContain('controller_claim');
     expect(launched.prompt).not.toContain('controllerAuthorityId');
     expect(getExternalControllerLaunchReservation(fx.store, fx.workId)).toMatchObject({

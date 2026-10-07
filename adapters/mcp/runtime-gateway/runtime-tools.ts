@@ -23,7 +23,6 @@ export {
 } from './runtime-tool-definitions';
 import { callWorkAdapter, runFacadeRepair } from './work-adapter';
 import { automationMetadata, persistAutomationReceipt } from './automation-receipt-adapter';
-import { settleCognitionEnvelope } from './cognition-settlement';
 
 async function callRuntimeToolUnchecked(ctx: MultiRepositoryMcpToolContext, name: string, args: Record<string, unknown>): Promise<CallToolResult | undefined> {
   try {
@@ -72,10 +71,6 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
   const metadata = automationMetadata(args);
   const outcome = await callRuntimeToolUnchecked(ctx, name, args);
   await persistAutomationReceipt(ctx, name, metadata, outcome);
-  // Explicit learning operations already use this same canonical writer.
-  if (!(name === 'rh_work' && ['learning_record', 'learning_feedback'].includes(String(args.operation ?? '')))) {
-    settleCognitionEnvelope(ctx, args);
-  }
   return outcome;
 }
 

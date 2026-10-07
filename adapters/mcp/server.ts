@@ -19,6 +19,7 @@ import { callExecutionTool } from './runtime-gateway/execution-tools';
 import { callProcessTool } from './runtime-gateway/process-tools';
 import { injectDurableCommandFields, isGatewayIsolatedTool, routeDurableMcpCall } from './runtime-gateway/router';
 import { controllerExposureSnapshot, isControllerToolExposed } from './toolset';
+import { settleCognitionAfterTool } from './runtime-gateway/cognition-settlement';
 import { randomUUID } from 'crypto';
 import { readFileSync } from 'fs';
 import { join } from 'path';
@@ -1058,23 +1059,27 @@ export function createForgeMcpServerFromContext(
           if (runtimeProxy && runtimeSchema) return runtimeProxy.callTool(ctx, name, forwardedArgs, phaseTimings);
           if (runtimeProxy && observeRuntimeStatus(ctx.controllerHome).ready) return runtimeProxy.callTool(ctx, name, forwardedArgs, phaseTimings);
         }
-        const accessResult = callAccessTool(ctx, name, args);
-        if (accessResult) return accessResult;
-        const executionResult = await callExecutionTool(ctx, name, args);
-        if (executionResult) return executionResult;
-        const processResult = await callProcessTool(ctx, name, args);
-        if (processResult) return processResult;
-        if (isGatewayIsolatedTool(name)) {
-          const isolatedResult = await routeDurableMcpCall(ctx, name, args, { allowReadOnly: true, forceDurable: true });
-          if (isolatedResult) return isolatedResult;
-        }
-        const runtimeResult = await callRuntimeTool(ctx, name, args);
-        if (runtimeResult) return runtimeResult;
-        const durableResult = await routeDurableMcpCall(ctx, name, args);
-        if (durableResult) return durableResult;
-        const repositoryResult = await callRepositoryToolWithPostFinalizeAttribution(ctx.controllerHome, name, args, ctx);
-        if (repositoryResult) return repositoryResult;
-        return callMultiRepositoryTool(ctx, name, args);
+        const executeLocalTool = async (): Promise<CallToolResult> => {
+          const accessResult = callAccessTool(ctx, name, args);
+          if (accessResult) return accessResult;
+          const executionResult = await callExecutionTool(ctx, name, args);
+          if (executionResult) return executionResult;
+          const processResult = await callProcessTool(ctx, name, args);
+          if (processResult) return processResult;
+          if (isGatewayIsolatedTool(name)) {
+            const isolatedResult = await routeDurableMcpCall(ctx, name, args, { allowReadOnly: true, forceDurable: true });
+            if (isolatedResult) return isolatedResult;
+          }
+          const runtimeResult = await callRuntimeTool(ctx, name, args);
+          if (runtimeResult) return runtimeResult;
+          const durableResult = await routeDurableMcpCall(ctx, name, args);
+          if (durableResult) return durableResult;
+          const repositoryResult = await callRepositoryToolWithPostFinalizeAttribution(ctx.controllerHome, name, args, ctx);
+          if (repositoryResult) return repositoryResult;
+          return await callMultiRepositoryTool(ctx, name, args);
+        };
+        const localResult = await executeLocalTool();
+        return settleCognitionAfterTool(ctx, name, args, localResult) ?? localResult;
       });
     }
     return callMcpTool(ctx, name, args);
