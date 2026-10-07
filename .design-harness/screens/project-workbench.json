@@ -11,11 +11,12 @@
     "选择 Project 先展示 canonical Repository/Worktree 与 Work inventory；只有选择具体 Work 后才进入 Work focus",
     "Active checkout/worktree inventory 来自 repository_get(detail) 并在 native bridge 做字段裁剪与 bounded projection；历史 checkout 不常驻 WebView",
     "Work 本身是 semantic scope，不从 Project active checkout 推断执行 placement；没有 canonical Work execution checkout 时明确标注 Repository 当前检出",
-    "执行面直接渲染 rh_work(get, detail) 的 checks、phaseEvidence、completionOutcome、verifications 与 evidenceRefs，不从 resultRefs 反推执行状态",
+    "执行面直接渲染 rh_work(get, detail) 的 checks、phaseEvidence、completionOutcome、verifications 与 evidenceRefs；verification timing/stale reason/bounded receipt/evidence identity 可展开审计，不从 resultRefs 反推执行状态或自行判断 freshness",
     "工作选择放在侧栏，当前与最近终态历史都直接来自 rh_work(list) canonical semantic Work；历史默认折叠，不得从 rh_status 的机械活动摘要反推 Work 列表",
     "工作是唯一执行/进度节点；计划只作为按需上下文，不显示计划百分比或计划步骤状态",
     "运行时与恢复是独立主页面，不常驻右侧检查器",
-    "自动推进任务展示绑定会话与切换新会话动作，详细 ID 与机械状态按需展开"
+    "自动推进任务展示绑定会话与切换新会话动作，详细 ID 与机械状态按需展开",
+    "MCP 提供显式刷新动作，一次性重读 canonical projections；刷新失败保留上一次成功投影并显示局部错误，不把读取失败改写为 Runtime health"
   ],
   "nodes": [
     {
@@ -82,7 +83,7 @@
         ],
         "historyCount": 8,
         "executionProjection": "绑定工作在语义上完成时视为执行完成",
-        "collapsedByDefault": true
+        "collapsedByDefault": false
       }
     },
     {
@@ -98,7 +99,8 @@
           "来自 executionEvidence.checks 的声明检查",
           "来自 executionEvidence.verifications 的验证记录"
         ],
-        "phaseEvidence": "直接来自 executionEvidence.phaseEvidence，保留 phase/state/source/summary/recordedAt/receipt/evidence refs，不计算阶段进度。",
+        "phaseEvidence": "直接来自 executionEvidence.phaseEvidence，保留 phase/state/source/summary/recordedAt/receipt/evidence refs，并允许展开 bounded evidence title/summary/identity；不计算阶段进度。",
+        "verificationReceipts": "直接展示 canonical verification 的 source revision、started/completed time、stale reason、bounded receipt status/runtimeStatus/reusedExecution 与 evidence ref；不解析本地 artifact path。",
         "completionOutcome": "仅在 canonical executionEvidence.completionOutcome 存在时展示；缺失时显示未记录。",
         "artifacts": [
           "信息架构规范",
@@ -110,7 +112,7 @@
         ],
         "sourceRevision": "设计候选",
         "compact": true,
-        "collapsedByDefault": true
+        "collapsedByDefault": false
       }
     },
     {

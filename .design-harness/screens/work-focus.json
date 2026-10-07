@@ -7,10 +7,11 @@
   "constraints": [
     "macOS 系统标题栏拥有窗口 chrome；不在 WebView 重复绘制 traffic lights",
     "轻量侧栏 + 单主工作区，不使用常驻右侧检查器",
-    "当前工作与绑定会话优先；关键 Forge 事实以紧凑文本投影，计划、证据、ID 通过 disclosure 按需查看",
+    "当前工作与绑定会话优先；Work/Plan/Evidence/Repository 关键状态先用紧凑 operational summary 投影，详细 ID、历史与原始 evidence refs 再按需 disclosure",
     "关键事实只能来自 canonical Runtime/Supervisor/Requirement/Plan/Work/Repository 投影，客户端不得推断或复制 authority",
     "运行时机械事实不占用当前工作主视图",
-    "自动推进任务显示 exact conversation link；切换新会话只能调用 canonical Supervisor migration"
+    "自动推进任务显示 exact conversation link；切换新会话只能调用 canonical Supervisor migration",
+    "显式刷新 MCP 只重读当前 canonical projections；失败保留旧投影并展示瞬态错误，不创建轮询/重试 authority"
   ],
   "nodes": [
     {
@@ -136,8 +137,8 @@
       "props": {
         "source": "canonical WorkContract detail projection",
         "facts": ["phase", "dispatchState", "evidenceState", "workKind", "verification records", "evidence refs"],
-        "receiptProjection": "bounded product-safe fields only; no artifactPath/local filesystem leakage",
-        "collapsedByDefault": true,
+        "receiptProjection": "bounded product-safe fields only; show receipt id/status/runtimeStatus/reusedExecution/timing and evidence title/summary/identity, with no artifactPath/local filesystem leakage",
+        "collapsedByDefault": false,
         "neverChangesSemanticState": true,
         "noResultRefParsing": true
       }

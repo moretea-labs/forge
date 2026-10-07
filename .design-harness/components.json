@@ -66,12 +66,12 @@
     },
     {
       "name": "EvidencePanel",
-      "purpose": "Files, checks, artifacts and receipts attributable to selected Work.",
-      "allowedProps": ["changedFiles", "checks", "artifacts", "receipts", "sourceRevision", "compact"],
+      "purpose": "Canonical checks, phase evidence, verification freshness and bounded receipts attributable to selected Work.",
+      "allowedProps": ["changedFiles", "checks", "phaseEvidence", "verificationReceipts", "evidenceRefs", "artifacts", "receipts", "sourceRevision", "compact", "collapsedByDefault"],
       "category": "content",
       "interactionRole": "display",
       "layout": { "axis": "vertical", "width": "fill", "alignment": "leading", "description": "Evidence is grouped by provenance and remains subordinate to current Work focus." },
-      "accessibility": { "summary": "Expose changed files, checks, artifacts and receipts with text labels rather than color-only success cues.", "traits": ["summary"] }
+      "accessibility": { "summary": "Expose checks, phase state, stale reasons, receipt status and evidence identity with text labels rather than color-only success cues.", "traits": ["summary"] }
     },
     {
       "name": "RuntimeInspector",

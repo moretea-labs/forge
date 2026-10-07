@@ -48,6 +48,7 @@
       { "id": "repair-runtime", "semantics": "通过 standalone Recovery authority 发起诊断/重启/修复。", "patternId": "system-recovery" },
       { "id": "open-assistant", "semantics": "切换到 Forge-instance Assistant scope。", "patternId": "stable-scope-navigation" },
       { "id": "open-project", "semantics": "切换到 repository Project scope。", "patternId": "stable-scope-navigation" },
+      { "id": "refresh-mcp", "semantics": "用户显式一次性重读 Repository Registry、Repository/Worktree、Work/Plan/Evidence 与 Supervisor canonical projection；客户端不轮询、不重试、不维护同步 authority。", "patternId": "mcp-projection-refresh" },
       { "id": "switch-automatic-continuation-conversation", "semantics": "用户显式要求把一个自动推进任务迁移到 fresh ChatGPT conversation；客户端携带当前 conversationId 作为 CAS fence 调用 canonical Workflow Supervisor capability，不能直接改 binding。", "patternId": "automatic-continuation-inspection" }
     ],
     "screenFamily": "desktop agent workspace",
@@ -88,6 +89,22 @@
           "trigger": { "interactionId": "focus-work", "event": "press" },
           "commitBoundary": { "kind": "local_state", "description": "只切换视图，不创建新的 Work 或 graph。" },
           "result": "进入同一 Work identity 的专注视图。",
+          "to": { "screenId": "work-focus", "stateId": "focused" }
+        },
+        {
+          "id": "refresh-project-workbench",
+          "from": { "screenId": "project-workbench", "stateId": "normal" },
+          "trigger": { "interactionId": "refresh-mcp", "event": "press" },
+          "commitBoundary": { "kind": "local_state", "description": "只用新的 canonical read projection 替换客户端瞬态视图；不创建同步 lifecycle 或写 Forge authority。" },
+          "result": "Repository/Worktree、Work inventory 与 Runtime/MCP read projection 被重新读取；失败时保留上一次成功投影并显示局部错误。",
+          "to": { "screenId": "project-workbench", "stateId": "normal" }
+        },
+        {
+          "id": "refresh-work-focus",
+          "from": { "screenId": "work-focus", "stateId": "focused" },
+          "trigger": { "interactionId": "refresh-mcp", "event": "press" },
+          "commitBoundary": { "kind": "local_state", "description": "只重读当前 Project/Work 的 canonical facts 与 Supervisor projection；不推断 Runtime health。" },
+          "result": "当前 Work、Plan、execution evidence 与 continuation projection 被刷新；失败不覆盖已有 canonical projection。",
           "to": { "screenId": "work-focus", "stateId": "focused" }
         },
         {
@@ -152,6 +169,7 @@
     { "id": "work-focus", "name": "Work Focus", "semanticPurpose": "对同一 Work identity 提供低干扰专注视图。", "status": "local", "validatedFlowIds": ["project-work-flow"], "siblingEvidence": [] },
     { "id": "history-inspection", "name": "History Inspection", "semanticPurpose": "承载 continuation/supersession/revision history，避免污染目标 Work Graph。", "status": "local", "validatedFlowIds": ["project-work-flow"], "siblingEvidence": [] },
     { "id": "automatic-continuation-inspection", "name": "Automatic Continuation Inspection", "semanticPurpose": "投影 Workflow Supervisor task 与 exact ChatGPT conversation，并把显式 fresh-conversation migration 交还 canonical capability 执行。", "status": "local", "validatedFlowIds": ["project-work-flow"], "siblingEvidence": [], "canonicalComponent": "AutomaticContinuationPanel" },
+    { "id": "mcp-projection-refresh", "name": "Explicit MCP Projection Refresh", "semanticPurpose": "显式重读 canonical MCP projections，只更新客户端瞬态视图，不建立轮询、重试或同步 authority。", "status": "local", "validatedFlowIds": ["project-work-flow"], "siblingEvidence": [] },
     { "id": "system-recovery", "name": "Standalone Recovery", "semanticPurpose": "Runtime down 时仍通过独立 Recovery authority 诊断和修复。", "status": "golden_candidate", "validatedFlowIds": ["runtime-recovery-flow"], "siblingEvidence": ["RuntimeInspector and Runtime & Recovery surface use the same mechanical-state vocabulary."], "canonicalComponent": "RecoverySurface" }
   ],
   "golden": {
