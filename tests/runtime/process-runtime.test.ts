@@ -74,6 +74,7 @@ import { ensureActiveRuntimeRelease, publishRuntimeRelease } from '../../src/run
 import {
   bindRuntimeWriteClaim,
   clearRuntimeWriteClaimForTests,
+  currentRuntimeWriteClaimEnvironment,
 } from '../../src/runtime/root/write-fence';
 import { defaultProcessIdentityProbe, executableFingerprint } from '../../src/runtime/shared/process-identity';
 import { ensureRepositoryRuntimeStorage } from '../../src/cli/repositories/runtime-storage';
@@ -369,7 +370,12 @@ describe('Unified Process Runtime', () => {
     clearRuntimeWriteClaimForTests();
     const secondOwner = acquireRuntimeOwnership(fx.controllerHome, 'runtime-after-cutover');
     bindRuntimeWriteClaim({ controllerHome: fx.controllerHome, owner: secondOwner.record, authority: nextAuthority });
+    const inheritedRuntimeEnvironment = currentRuntimeWriteClaimEnvironment(fx.controllerHome);
+    clearRuntimeWriteClaimForTests();
+    for (const [key, value] of Object.entries(inheritedRuntimeEnvironment)) process.env[key] = value;
     try {
+      // Plugin actions execute in a sidecar with only inherited Runtime authority;
+      // there is no pre-bound in-process write claim until the fence is checked.
       expect(listActiveLeases(fx.controllerHome, fx.repository.repoId)).toHaveLength(0);
       const reacquired = acquireExecutionLeases(
         fx.controllerHome,
@@ -382,6 +388,7 @@ describe('Unified Process Runtime', () => {
     } finally {
       secondOwner.release();
       clearRuntimeWriteClaimForTests();
+      for (const key of Object.keys(inheritedRuntimeEnvironment)) delete process.env[key];
     }
   });
 

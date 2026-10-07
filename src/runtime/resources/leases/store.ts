@@ -31,10 +31,15 @@ function counterPath(controllerHome: string, repoId: string, resourceKey: string
 }
 function expired(lease: ExecutionLease): boolean { return Date.parse(lease.expiresAt) <= Date.now(); }
 
-function fencedEphemeralOwner(lease: ExecutionLease): boolean {
-  if (lease.visibility !== 'ephemeral' || !lease.ownerIdentity) return false;
+function currentManagedRuntimeClaim(controllerHome: string) {
+  const fence = assertRuntimeMayWrite(undefined, controllerHome);
+  if (!fence.allowed) return undefined;
   const current = getRuntimeWriteClaim();
-  if (!current || current.unmanaged) return false;
+  return current && !current.unmanaged ? current : undefined;
+}
+
+function fencedEphemeralOwner(lease: ExecutionLease, current: ReturnType<typeof getRuntimeWriteClaim>): boolean {
+  if (lease.visibility !== 'ephemeral' || !lease.ownerIdentity || !current || current.unmanaged) return false;
   const ownerInstanceId = lease.ownerIdentity.controllerInstanceId?.trim();
   const ownerGeneration = lease.ownerIdentity.controllerGeneration?.trim();
   if (!ownerInstanceId || !ownerGeneration || ownerGeneration === 'unbound') return false;
@@ -154,6 +159,7 @@ export function resetLeaseSideEffectMetrics(): void {
 function listAllActiveLeases(controllerHome: string): ExecutionLease[] {
   const root = activeRoot(controllerHome, '__instance__');
   if (!existsSync(root)) return [];
+  const currentRuntime = currentManagedRuntimeClaim(controllerHome);
   const leases: ExecutionLease[] = [];
   for (const name of readdirSync(root).filter((entry) => entry.endsWith('.json'))) {
     const path = join(root, name);
@@ -162,7 +168,7 @@ function listAllActiveLeases(controllerHome: string): ExecutionLease[] {
       if (!lease?.leaseId || !lease.repoId || !lease.resourceKey || !lease.ownerJobId) {
         throw new Error('required lease identity is missing');
       }
-      if (expired(lease) || fencedEphemeralOwner(lease)) removeFile(path);
+      if (expired(lease) || fencedEphemeralOwner(lease, currentRuntime)) removeFile(path);
       else leases.push(lease);
     } catch (error) {
       throw new Error(`LEASE_STORE_CORRUPT: ${path}: ${error instanceof Error ? error.message : String(error)}`);
