@@ -138,7 +138,11 @@ export function cleanupStaleWorkVerificationSnapshots(
     return report;
   }
   for (const entry of entries) {
-    if (!entry.isDirectory() || !entry.name.startsWith('snapshot-')) continue;
+    // The canonical root is the ownership boundary. Historical producers did
+    // not all use the snapshot-* prefix, so name shape must not make stale
+    // physical evidence invisible. Dirent.isDirectory() deliberately excludes
+    // symlinks before any recursive removal is considered.
+    if (!entry.isDirectory()) continue;
     if (report.inspected >= maxEntries) { report.truncated = true; skip('scan_budget_exhausted'); break; }
     report.inspected += 1;
     const path = join(root, entry.name);

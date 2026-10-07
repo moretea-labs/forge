@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, rmSync, statSync } from 'fs';
+import { existsSync, lstatSync, readdirSync, rmdirSync, rmSync, statSync } from 'fs';
 import { spawnSync } from 'child_process';
 import { join, relative, resolve } from 'path';
 import { repositoryControllerRoot } from '../../cli/repositories/controller-home';
@@ -190,6 +190,48 @@ function retentionTimestamp(receipt: WorkCleanupReceipt, bundlePath: string): nu
   }
 }
 
+function bundleProtectedRevision(repositoryRoot: string, bundlePath: string): string | undefined {
+  if (!git(repositoryRoot, ['bundle', 'verify', bundlePath]).ok) return undefined;
+  const heads = git(repositoryRoot, ['bundle', 'list-heads', bundlePath]);
+  if (!heads.ok) return undefined;
+  const revisions = [...new Set(heads.stdout.split('\n').map((line) => line.trim().split(/\s+/, 1)[0]).filter((value) => /^[a-f0-9]{40,64}$/i.test(value ?? '')))];
+  return revisions.length === 1 ? revisions[0] : undefined;
+}
+
+function proveOrphanBundleContained(
+  repositoryRoot: string,
+  bundlePath: string,
+  targetBranch: string,
+): { contained: boolean; reason: string } {
+  const protectedRevision = bundleProtectedRevision(repositoryRoot, bundlePath);
+  if (!protectedRevision) return { contained: false, reason: 'orphan_bundle_invalid_or_ambiguous' };
+  if (!revision(repositoryRoot, protectedRevision)) {
+    return { contained: false, reason: 'orphan_protected_revision_unavailable' };
+  }
+  const targetRevision = revision(repositoryRoot, `refs/heads/${targetBranch}`);
+  if (!targetRevision) return { contained: false, reason: 'orphan_target_revision_unavailable' };
+  const remoteRevision = revision(repositoryRoot, `refs/remotes/origin/${targetBranch}`);
+  if (!remoteRevision) return { contained: false, reason: 'orphan_remote_revision_unavailable' };
+  // Anchor the inferred delta against the durable remote target. Using the
+  // local target here could collapse the delta to empty when only the local
+  // branch contains the preserved tip, falsely treating an undelivered bundle
+  // as redundant.
+  const base = git(repositoryRoot, ['merge-base', protectedRevision, remoteRevision]);
+  if (!base.ok || !base.stdout) return { contained: false, reason: 'orphan_merge_base_unavailable' };
+  const paths = changedPaths(repositoryRoot, base.stdout, protectedRevision);
+  if (!paths) return { contained: false, reason: 'orphan_diff_unavailable' };
+  for (const path of paths) {
+    const protectedEntry = treeEntry(repositoryRoot, protectedRevision, path);
+    const targetEntry = treeEntry(repositoryRoot, targetRevision, path);
+    const remoteEntry = treeEntry(repositoryRoot, remoteRevision, path);
+    if (protectedEntry === undefined || targetEntry === undefined || remoteEntry === undefined
+      || protectedEntry !== targetEntry || protectedEntry !== remoteEntry) {
+      return { contained: false, reason: 'orphan_content_mismatch' };
+    }
+  }
+  return { contained: true, reason: paths.length === 0 ? 'orphan_no_source_delta' : 'orphan_target_and_remote_content_contained' };
+}
+
 function retirementFromProof(
   proof: WorkPreservationContainmentProof,
   status: 'eligible' | 'removed' | 'not_needed',
@@ -247,12 +289,8 @@ export function cleanupWorkPreservationArtifacts(
     } catch {
       continue;
     }
-    for (let handle of listWorkHandles(controllerHome, repositoryId)) {
-      if (report.inspected >= maxEntries) {
-        report.budgetExhausted = true;
-        break outer;
-      }
-      report.inspected += 1;
+    const repositoryHandles = listWorkHandles(controllerHome, repositoryId);
+    for (let handle of repositoryHandles) {
       const receipt = handle.cleanupReceipt;
       const bundlePath = receipt?.preservation.bundlePath;
       const retirement = receipt?.preservation.bundleRetirement;
@@ -265,6 +303,11 @@ export function cleanupWorkPreservationArtifacts(
         }
       }
       if (!receipt || !bundlePath) continue;
+      if (report.inspected >= maxEntries) {
+        report.budgetExhausted = true;
+        break outer;
+      }
+      report.inspected += 1;
       const expectedPath = resolve(expectedBundlePath(controllerHome, handle));
       if (resolve(bundlePath) !== expectedPath) {
         report.retained += 1;
@@ -303,6 +346,7 @@ export function cleanupWorkPreservationArtifacts(
         handle = writeWorkHandle(controllerHome, { ...handle, cleanupReceipt: eligibleReceipt, updatedAt: nowIso });
         const measurement = existsSync(bundlePath) ? measureReclaimablePath(bundlePath) : { bytes: 0, entries: 0, complete: true };
         if (existsSync(bundlePath)) rmSync(bundlePath, { force: true });
+        try { rmdirSync(join(bundlePath, '..')); } catch { /* Preserve non-empty or concurrently changed directories. */ }
         if (measurement.complete) report.reclaimedBytes += measurement.bytes;
         else report.unknownReclaimedByteCount += 1;
         const currentReceipt = handle.cleanupReceipt!;
@@ -321,6 +365,134 @@ export function cleanupWorkPreservationArtifacts(
         report.removedPaths.push(relative(controllerHome, bundlePath).replace(/\\/g, '/'));
       } catch (error) {
         report.errors.push(`${handle.workId}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+
+    // WorkHandle metadata is not physical-retention authority. Discover direct
+    // preservation directories as well so a missing or drifted handle cannot
+    // make an owned bundle immortal. This pass remains fail-closed: only the
+    // canonical direct child containing one bundle is considered (including
+    // the legacy manual-reconciliation.bundle name); symlinks and extra
+    // content are retained, and source containment still requires proof.
+    const artifactRoot = join(repositoryControllerRoot(controllerHome, repositoryId), 'cleanup-artifacts');
+    let artifactEntries;
+    try {
+      if (!lstatSync(artifactRoot).isDirectory()) continue;
+      artifactEntries = readdirSync(artifactRoot, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    const physicalHandles = repositoryHandles;
+    const handles = new Map(physicalHandles.map((handle) => [handle.workId, handle]));
+    const referencedBundlePaths = new Set(physicalHandles.flatMap((handle) => {
+      const path = handle.cleanupReceipt?.preservation.bundlePath;
+      return path ? [resolve(path)] : [];
+    }));
+    for (const entry of artifactEntries) {
+      if (!entry.isDirectory()) continue;
+      if (report.inspected >= maxEntries) {
+        report.budgetExhausted = true;
+        break outer;
+      }
+      const directoryPath = join(artifactRoot, entry.name);
+      const handle = handles.get(entry.name);
+      report.inspected += 1;
+      let contents: string[];
+      let bundlePath: string;
+      try {
+        contents = readdirSync(directoryPath).sort();
+        if (contents.length !== 1 || contents[0] !== 'branch.bundle') {
+          report.retained += 1;
+          skip(report, 'physical_bundle_unrecognized_content');
+          continue;
+        }
+        bundlePath = join(directoryPath, 'branch.bundle');
+        const bundleStat = lstatSync(bundlePath);
+        if (!bundleStat.isFile() || bundleStat.isSymbolicLink()) {
+          report.retained += 1;
+          skip(report, 'physical_bundle_unrecognized_content');
+          continue;
+        }
+      } catch (error) {
+        report.retained += 1;
+        skip(report, 'physical_bundle_unreadable');
+        report.errors.push(`${repositoryId}:${entry.name}: ${error instanceof Error ? error.message : String(error)}`);
+        continue;
+      }
+      if (referencedBundlePaths.has(resolve(bundlePath))) continue;
+      if (handle?.cleanupReceipt?.preservation.bundlePath
+        && resolve(handle.cleanupReceipt.preservation.bundlePath) !== resolve(bundlePath)) {
+        report.retained += 1;
+        skip(report, 'bundle_metadata_conflict');
+        continue;
+      }
+      const timestamp = handle?.cleanupReceipt
+        ? retentionTimestamp(handle.cleanupReceipt, bundlePath)
+        : statSync(bundlePath).mtimeMs;
+      if (timestamp === undefined || nowMs - timestamp < graceMs) {
+        report.retained += 1;
+        skip(report, 'retention_grace');
+        continue;
+      }
+
+      const receipt = handle?.cleanupReceipt;
+      const handleProof = handle && receipt?.complete
+        ? proveWorkPreservationContained(repository.canonicalRoot, handle, receipt.targetBranch)
+        : undefined;
+      const orphanProof = !handle && repository.defaultBranch
+        ? proveOrphanBundleContained(repository.canonicalRoot, bundlePath, repository.defaultBranch)
+        : undefined;
+      if (handle && (!receipt?.complete || !handleProof?.contained)) {
+        report.retained += 1;
+        skip(report, !receipt?.complete ? 'physical_bundle_incomplete_handle' : `containment_${handleProof!.reason}`);
+        continue;
+      }
+      if (!handle && !orphanProof?.contained) {
+        report.retained += 1;
+        skip(report, orphanProof?.reason ?? (repository.defaultBranch
+          ? 'orphan_source_containment_unproven'
+          : 'orphan_target_branch_unavailable'));
+        continue;
+      }
+      report.eligible += 1;
+      if (remaining <= 0) {
+        report.budgetExhausted = true;
+        skip(report, 'cleanup_budget_exhausted');
+        continue;
+      }
+      report.attempted += 1;
+      remaining -= 1;
+      try {
+        const measurement = measureReclaimablePath(bundlePath);
+        if (handle && receipt && handleProof) {
+          const eligibleReceipt: WorkCleanupReceipt = {
+            ...receipt,
+            preservation: { ...receipt.preservation, bundlePath, bundleRetirement: retirementFromProof(handleProof, 'eligible', nowIso) },
+            updatedAt: nowIso,
+          };
+          const updated = writeWorkHandle(controllerHome, { ...handle, cleanupReceipt: eligibleReceipt, updatedAt: nowIso });
+          rmSync(bundlePath, { force: true });
+          const removedReceipt: WorkCleanupReceipt = {
+            ...updated.cleanupReceipt!,
+            preservation: {
+              ...updated.cleanupReceipt!.preservation,
+              bundlePath: undefined,
+              bundleSha256: undefined,
+              bundleRetirement: retirementFromProof(handleProof, 'removed', nowIso),
+              recoveryInstructions: `Preservation bundle retired after ${handleProof.reason}; exact proof is stored in cleanupReceipt.preservation.bundleRetirement.`,
+            },
+            updatedAt: nowIso,
+          };
+          writeWorkHandle(controllerHome, { ...updated, cleanupReceipt: removedReceipt, updatedAt: nowIso });
+        } else {
+          rmSync(bundlePath, { force: true });
+        }
+        try { rmdirSync(directoryPath); } catch { /* Preserve concurrently populated directories. */ }
+        if (measurement.complete) report.reclaimedBytes += measurement.bytes;
+        else report.unknownReclaimedByteCount += 1;
+        report.removedPaths.push(relative(controllerHome, bundlePath).replace(/\\/g, '/'));
+      } catch (error) {
+        report.errors.push(`${repositoryId}:${entry.name}: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
   }

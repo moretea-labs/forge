@@ -76,21 +76,31 @@ describe('runtime cleanup', () => {
     const active = join(root, 'snapshot-active-a');
     const stale = join(root, 'snapshot-stale-b');
     const fresh = join(root, 'snapshot-fresh-c');
+    const legacyUnmarked = join(root, 'work-active-legacy-name');
+    const invalidMarker = join(root, 'legacy-invalid-marker');
     for (const path of [active, stale, fresh]) mkdirSync(join(path, '.ai/harness/controller'), { recursive: true });
+    mkdirSync(legacyUnmarked, { recursive: true });
+    mkdirSync(join(invalidMarker, '.ai/harness/controller'), { recursive: true });
     writeFileSync(join(active, '.ai/harness/controller/work-verification-snapshot.json'), JSON.stringify({ schemaVersion: 1, workId: 'work-active' }));
     writeFileSync(join(stale, '.ai/harness/controller/work-verification-snapshot.json'), JSON.stringify({ schemaVersion: 1, workId: 'work-stale' }));
     writeFileSync(join(fresh, '.ai/harness/controller/work-verification-snapshot.json'), JSON.stringify({ schemaVersion: 1, workId: 'work-fresh' }));
     writeFileSync(join(stale, 'payload.bin'), 'reclaim-me');
+    writeFileSync(join(invalidMarker, '.ai/harness/controller/work-verification-snapshot.json'), '{invalid');
     age(active); age(stale);
+    age(legacyUnmarked, 25 * 60 * 60_000);
+    age(invalidMarker, 25 * 60 * 60_000);
 
     const report = cleanupStaleWorkVerificationSnapshots(home, 'repo-snapshots', { protectedWorkIds: ['work-active'], maxEntries: 10, maxRemovals: 10 });
 
     expect(existsSync(active)).toBe(true);
     expect(existsSync(fresh)).toBe(true);
     expect(existsSync(stale)).toBe(false);
+    expect(existsSync(legacyUnmarked)).toBe(false);
+    expect(existsSync(invalidMarker)).toBe(true);
     expect(report.protected).toBe(1);
     expect(report.skippedByReason.active_work).toBe(1);
-    expect(report.removedPaths).toEqual(['snapshot-stale-b']);
+    expect(report.removedPaths).toEqual(['snapshot-stale-b', 'work-active-legacy-name']);
+    expect(report.skippedByReason.invalid_marker).toBe(1);
     expect(report.reclaimedBytes).toBeGreaterThanOrEqual(Buffer.byteLength('reclaim-me'));
     expect(report.policyVersion).toBe('runtime-lifecycle-retention-v1');
   });
@@ -1215,4 +1225,3 @@ describe('runtime cleanup', () => {
     }
   });
 });
-

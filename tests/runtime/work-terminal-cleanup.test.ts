@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
-import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
+import { ensureControllerHome, repositoryControllerRoot } from '../../src/cli/repositories/controller-home';
 import { getRepository, registerRepository } from '../../src/cli/repositories/registry';
 import type { CompletionReceipt } from '../../src/cli/controller/types';
 import { cancelWorkContract, createWorkContract, failWorkContract, getWorkContract, recordWorkCompletionReceipt, reviseWorkSemanticContext } from '../../src/runtime/control-plane/facade/work-contract-store';
@@ -955,7 +955,21 @@ describe('terminal Work cleanup', () => {
     const bundlePath = cleaned.receipt.preservation.bundlePath!;
     expect(existsSync(bundlePath)).toBe(true);
 
-    git(fx.repositoryRoot, ['cherry-pick', head]);
+    const orphanDirectory = join(repositoryControllerRoot(fx.controllerHome, fx.repository.repoId), 'cleanup-artifacts', 'orphan-contained-bundle');
+    const orphanBundlePath = join(orphanDirectory, 'branch.bundle');
+    mkdirSync(orphanDirectory, { recursive: true });
+    writeFileSync(orphanBundlePath, readFileSync(bundlePath));
+
+    // Simulate metadata drift independently from the physical canonical path.
+    writeWorkHandle(fx.controllerHome, {
+      ...cleaned.handle,
+      cleanupReceipt: {
+        ...cleaned.receipt,
+        preservation: { ...cleaned.receipt.preservation, bundlePath: undefined },
+      },
+    });
+
+    git(fx.repositoryRoot, ['reset', '--hard', head]);
     const delivered = git(fx.repositoryRoot, ['rev-parse', 'HEAD']);
     git(fx.repositoryRoot, ['update-ref', 'refs/remotes/origin/main', delivered]);
 
@@ -966,7 +980,9 @@ describe('terminal Work cleanup', () => {
     });
 
     expect(existsSync(bundlePath)).toBe(false);
+    expect(existsSync(orphanDirectory)).toBe(false);
     expect(report.removedCleanupArtifactPaths.some((path) => path.endsWith(`${fx.handle.workId}/branch.bundle`))).toBe(true);
+    expect(report.removedCleanupArtifactPaths.some((path) => path.endsWith('orphan-contained-bundle/branch.bundle'))).toBe(true);
     const after = readWorkHandle(fx.controllerHome, fx.repository.repoId, fx.handle.workId)!;
     expect(after.cleanupReceipt?.preservation.bundlePath).toBeUndefined();
     expect(after.cleanupReceipt?.preservation.bundleRetirement).toMatchObject({
@@ -999,6 +1015,33 @@ describe('terminal Work cleanup', () => {
     expect(existsSync(bundlePath)).toBe(true);
     expect(report.removedCleanupArtifactPaths).not.toContain(bundlePath);
     expect(report.cycle.skippedByReason.cleanup_artifact_containment_remote_revision_unavailable).toBeGreaterThan(0);
+  });
+
+  test('periodic cleanup retains an unreferenced physical bundle when remote source containment is unproven', async () => {
+    const fx = fixture('retain-orphan-without-remote-proof');
+    writeFileSync(join(fx.workspace.root!, 'orphan-local-only.txt'), 'local-only orphan content\n');
+    git(fx.workspace.root!, ['add', 'orphan-local-only.txt']);
+    git(fx.workspace.root!, ['commit', '-m', 'feat: local-only orphan content']);
+    const head = git(fx.workspace.root!, ['rev-parse', 'HEAD']);
+    const current = writeWorkHandle(fx.controllerHome, { ...fx.handle, expectedHead: head });
+    const cleaned = await cleanup(fx, current);
+    const sourceBundle = cleaned.receipt.preservation.bundlePath!;
+    const orphanDirectory = join(repositoryControllerRoot(fx.controllerHome, fx.repository.repoId), 'cleanup-artifacts', 'orphan-uncontained-bundle');
+    const orphanBundlePath = join(orphanDirectory, 'branch.bundle');
+    mkdirSync(orphanDirectory, { recursive: true });
+    writeFileSync(orphanBundlePath, readFileSync(sourceBundle));
+    git(fx.repositoryRoot, ['reset', '--hard', head]);
+    git(fx.repositoryRoot, ['update-ref', 'refs/remotes/origin/main', fx.handle.baseCommit!]);
+
+    const report = cleanupControllerRuntimeState(fx.controllerHome, {
+      cleanupArtifactRetentionGraceMs: 0,
+      maxEntries: 1_000,
+      maxRemovals: 50,
+    });
+
+    expect(existsSync(orphanBundlePath)).toBe(true);
+    expect(report.removedCleanupArtifactPaths).not.toContain(expect.stringContaining('orphan-uncontained-bundle/branch.bundle'));
+    expect(report.cycle.skippedByReason.cleanup_artifact_orphan_content_mismatch).toBeGreaterThan(0);
   });
 
   test('fails closed while another Work Process owns the checkout', async () => {
