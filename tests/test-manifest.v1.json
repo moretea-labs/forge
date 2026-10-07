@@ -717,6 +717,10 @@
       "module": "controller",
       "resource": "process-tree"
     },
+    "tests/runtime/recovery-watchdog-health.test.ts": {
+      "module": "process-runtime",
+      "resource": "pure"
+    },
     "tests/runtime/standalone-recovery.test.ts": {
       "module": "process-runtime",
       "resource": "process-tree"

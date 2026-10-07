@@ -151,7 +151,10 @@ export function evaluateRecoveryWatchdogHealth(input: {
   return { ok: true, detail: 'Recovery Watchdog heartbeat, PID, and immutable release identity are current', pulseAgeMs, heartbeat, runtimeIdentity, currentReleaseRevision: current.releaseRevision };
 }
 
-export function observeRecoveryWatchdogHealth(controllerHome: string): RecoveryWatchdogHealth {
+export function observeRecoveryWatchdogHealth(controllerHome: string, enabled = true): RecoveryWatchdogHealth {
+  if (!enabled) {
+    return { ok: true, detail: 'Recovery Watchdog is disabled by the configured install profile' };
+  }
   return evaluateRecoveryWatchdogHealth({
     heartbeat: readRecoveryWatchdogHeartbeat(controllerHome),
     runtimeIdentity: readRecoveryRuntimeIdentity(controllerHome, 'daemon'),

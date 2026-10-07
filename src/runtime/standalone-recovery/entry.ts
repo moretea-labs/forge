@@ -1120,9 +1120,10 @@ async function startGateway(config: RecoveryConfig, daemonIdentity?: RecoveryRun
       return;
     }
     if (request.method === 'GET' && matchesAnyPath(request.url, ['/health', '/recovery/health'])) {
-      const watchdog = config.installProfile === 'self-healing'
-        ? observeRecoveryWatchdogHealth(config.controllerHome)
-        : { ok: true, detail: 'Recovery monitor disabled by gateway install profile' };
+      const watchdog = observeRecoveryWatchdogHealth(
+        config.controllerHome,
+        config.installProfile === 'self-healing',
+      );
       json(response, 200, {
         status: watchdog.ok ? 'ok' : 'degraded',
         service: 'forge-standalone-recovery',

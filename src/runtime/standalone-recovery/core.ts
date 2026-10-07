@@ -1772,7 +1772,10 @@ export async function verifyStableRuntime(
   const primaryConnectorLocal = await probePrimaryConnectorLocal(config, transport);
   if (primaryConnectorLocal) probes.primary_connector_local = primaryConnectorLocal;
   if (config.gateway) probes.recovery_gateway = await probe(transport, `http://${config.gateway.host}:${config.gateway.port}/health`);
-  const watchdogHealth = observeRecoveryWatchdogHealth(config.controllerHome);
+  const watchdogHealth = observeRecoveryWatchdogHealth(
+    config.controllerHome,
+    config.installProfile === 'self-healing',
+  );
   probes.recovery_watchdog = {
     ok: watchdogHealth.ok,
     detail: watchdogHealth.detail,
@@ -2349,7 +2352,10 @@ async function observeBoundedRuntimeHealth(
     if (primaryConnectorLocal) probes.primary_connector_local = primaryConnectorLocal;
   }
   if (config.gateway) probes.recovery_gateway = await probe(transport, `http://${config.gateway.host}:${config.gateway.port}/health`);
-  const watchdogHealth = observeRecoveryWatchdogHealth(config.controllerHome);
+  const watchdogHealth = observeRecoveryWatchdogHealth(
+    config.controllerHome,
+    config.installProfile === 'self-healing',
+  );
   probes.recovery_watchdog = {
     ok: watchdogHealth.ok,
     detail: watchdogHealth.detail,
