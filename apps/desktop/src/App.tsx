@@ -329,12 +329,28 @@ function WorkView({
             <span>{projection.runtime.label}</span>
           </div>
 
-          <div className="fact-strip" aria-label="Repository 事实">
-            <div><span>分支</span><strong>{project.branch}</strong></div>
-            <div><span>检出</span><strong>{project.worktree}</strong></div>
-            <div><span>代码</span><strong>{project.dirty ? '有未提交修改' : '工作区干净'}</strong></div>
-            <div><span>版本</span><strong className="mono">{compactId(project.sourceRevision)}</strong></div>
-          </div>
+          <section className="mcp-summary-grid" aria-label="MCP 操作概览">
+            <div className="mcp-summary-card">
+              <span>Repository</span>
+              <strong>{project.dirty ? '有未提交修改' : '工作区干净'}</strong>
+              <small>{project.branch} · {compactId(project.sourceRevision)}</small>
+            </div>
+            <div className="mcp-summary-card">
+              <span>Work</span>
+              <strong>{projection.workGraph.nodes.length} 个当前节点</strong>
+              <small>{projection.recentWorkHistory.length > 0 ? projection.recentWorkHistory.length + ' 个近期历史' : '无近期历史'}</small>
+            </div>
+            <div className="mcp-summary-card">
+              <span>Worktree</span>
+              <strong>{project.activeCheckoutCount}/{project.checkoutCount} active</strong>
+              <small>{project.worktree} · {compactId(project.checkoutId)}</small>
+            </div>
+            <div className="mcp-summary-card">
+              <span>Runtime / MCP</span>
+              <strong>{projection.runtime.label}</strong>
+              <small>{projection.runtime.status === 'connected' ? 'canonical Runtime projection' : projection.runtime.detail}</small>
+            </div>
+          </section>
 
           <section className="mcp-work-overview" aria-label="MCP Work">
             <div className="mcp-work-overview-heading">
@@ -411,12 +427,28 @@ function WorkView({
           <p>{work.objective}</p>
         </div>
 
-        <div className="fact-strip" aria-label="当前 Forge 事实">
-          <div><span>工作</span><strong>{semanticStateLabel(work.semanticState)} · r{work.revision}</strong></div>
-          <div><span>代码</span><strong>{projection.project?.dirty ? '有未提交修改' : '工作区干净'}</strong></div>
-          <div><span>分支</span><strong>{projection.project?.branch ?? '未知'}</strong></div>
-          <div><span>版本</span><strong className="mono">{projection.project?.sourceRevision ? compactId(projection.project.sourceRevision) : '未知'}</strong></div>
-        </div>
+        <section className="mcp-summary-grid work-summary-grid" aria-label="MCP Work 操作概览">
+          <div className="mcp-summary-card">
+            <span>Work</span>
+            <strong>{semanticStateLabel(work.semanticState)} · r{work.revision}</strong>
+            <small className="mono">{compactId(work.workId)}</small>
+          </div>
+          <div className="mcp-summary-card">
+            <span>Plan</span>
+            <strong>{projection.plan ? 'r' + projection.plan.revision + ' · ' + projection.plan.status : '未绑定'}</strong>
+            <small>{projection.plan ? projection.plan.items.length + ' 个计划项' : 'Work 可独立存在'}</small>
+          </div>
+          <div className="mcp-summary-card">
+            <span>Evidence</span>
+            <strong>{work.executionEvidence ? executionPhaseLabel(work.executionEvidence.phase) + ' · ' + work.executionEvidence.evidenceState : '暂无执行证据'}</strong>
+            <small>{work.executionEvidence ? work.executionEvidence.verifications.length + ' 条验证 · ' + work.executionEvidence.checks.length + ' 个检查' : 'canonical Work 未提供 evidence projection'}</small>
+          </div>
+          <div className="mcp-summary-card">
+            <span>Repository</span>
+            <strong>{projection.project?.dirty ? '有未提交修改' : '工作区干净'}</strong>
+            <small>{projection.project?.branch ?? '未知分支'} · {projection.project?.sourceRevision ? compactId(projection.project.sourceRevision) : '未知版本'}</small>
+          </div>
+        </section>
 
         {work.nextSafeAction && (
           <div className="next-fact"><span>Forge 下一安全动作</span><p>{work.nextSafeAction}</p></div>
@@ -464,7 +496,7 @@ function WorkView({
         )}
 
         {projection.plan && (
-          <details className="detail-section">
+          <details className="detail-section" open>
             <summary>计划 · r{projection.plan.revision}</summary>
             <p className="detail-text">{projection.plan.goal}</p>
             {projection.plan.items.length > 0 && (
@@ -474,7 +506,7 @@ function WorkView({
         )}
 
         {work.executionEvidence && (
-          <details className="detail-section">
+          <details className="detail-section" open>
             <summary>执行与验证 · {executionPhaseLabel(work.executionEvidence.phase)} · {work.executionEvidence.checks.length} 个检查 / {work.executionEvidence.verifications.length} 条验证</summary>
             <div className="detail-grid">
               <div><span>阶段</span><strong>{executionPhaseLabel(work.executionEvidence.phase)}</strong></div>

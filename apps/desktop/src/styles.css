@@ -336,3 +336,52 @@ a { color: inherit; }
 .assistant-section-heading { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 14px; }
 .assistant-section-heading strong { font-size: 11px; font-weight: 610; }
 .assistant-section-heading span { color: #a09a92; font-size: 9px; }
+
+
+.mcp-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin: 4px 0 20px;
+}
+.mcp-summary-card {
+  min-width: 0;
+  padding: 11px 10px 10px;
+  border: 1px solid rgba(74, 67, 59, .09);
+  border-radius: 9px;
+  background: rgba(255,255,255,.46);
+}
+.mcp-summary-card > span {
+  display: block;
+  margin-bottom: 6px;
+  color: #9d978f;
+  font-size: 8px;
+  font-weight: 620;
+  letter-spacing: .035em;
+  text-transform: uppercase;
+}
+.mcp-summary-card > strong {
+  display: block;
+  min-width: 0;
+  color: #555049;
+  font-size: 10px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mcp-summary-card > small {
+  display: block;
+  margin-top: 4px;
+  color: #9a948c;
+  font-size: 8px;
+  line-height: 1.4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.work-summary-grid { margin-bottom: 22px; }
+
+@media (max-width: 1080px) {
+  .mcp-summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
