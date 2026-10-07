@@ -38,10 +38,14 @@ import {
   submitAssistantPluginAction,
 } from '../../src/runtime/plugins/store';
 import { FORGE_INSTANCE_SCOPE_KEY } from '../../src/cli/repositories/controller-home';
+import { acquireRuntimeOwnership } from '../../src/runtime/root/ownership';
+import { ensureActiveRuntimeRelease } from '../../src/runtime/root/release-store';
+import { bindRuntimeWriteClaim, clearRuntimeWriteClaimForTests } from '../../src/runtime/root/write-fence';
 
 const roots: string[] = [];
 const children: ChildProcess[] = [];
 afterEach(() => {
+  clearRuntimeWriteClaimForTests();
   for (const child of children.splice(0)) child.kill('SIGTERM');
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
@@ -127,6 +131,49 @@ process.on('SIGTERM', () => server.close(() => process.exit(0)));
 }
 
 describe('plugin action resource replay fencing', () => {
+  test('successful provider effect survives old-Runtime lease cleanup fencing and the successor reclaims immediately', async () => {
+    const { controllerHome, socketPath } = fixture(true, undefined, true);
+    const logPath = join(controllerHome, 'provider-cutover-fence.log');
+    await startExternalProviderFixture(controllerHome, socketPath, logPath);
+    const manifestPath = join(controllerHome, 'runtime-cutover-fixture.manifest.json');
+    writeFileSync(manifestPath, JSON.stringify({
+      schemaVersion: 1,
+      releaseId: 'release-cutover-fixture',
+      artifactIdentity: 'artifact-cutover-fixture',
+      entrypoint: 'forge-runtime',
+      arguments: [],
+      configurationSchemaVersion: 1,
+      controllerHome,
+      databaseSchemaCompatibility: { minimum: 1, maximum: 1 },
+      workerProtocolVersion: 1,
+      createdAt: new Date().toISOString(),
+    }));
+    const oldOwner = acquireRuntimeOwnership(controllerHome, 'runtime-plugin-old');
+    const authority = ensureActiveRuntimeRelease(controllerHome, manifestPath);
+    bindRuntimeWriteClaim({ controllerHome, owner: oldOwner.record, authority });
+
+    const first = submitControllerPluginAction(controllerHome, {
+      pluginId: 'desktop_operator', actionId: 'desktop_mutate_slow', requestId: 'cutover-fenced-cleanup-first',
+      args: {}, origin: { surface: 'mcp', actor: 'test' },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    oldOwner.release();
+    const replacement = acquireRuntimeOwnership(controllerHome, 'runtime-plugin-new');
+    const completed = await first;
+    expect(completed.receipt.status).toBe('succeeded');
+
+    clearRuntimeWriteClaimForTests();
+    bindRuntimeWriteClaim({ controllerHome, owner: replacement.record, authority });
+    const second = await submitControllerPluginAction(controllerHome, {
+      pluginId: 'desktop_operator', actionId: 'desktop_mutate_slow', requestId: 'cutover-fenced-cleanup-second',
+      args: {}, origin: { surface: 'mcp', actor: 'test' },
+    });
+    expect(second.receipt.status).toBe('succeeded');
+    const executes = readFileSync(logPath, 'utf8').trim().split('\n').filter((line) => line === 'execute');
+    expect(executes).toHaveLength(2);
+    replacement.release();
+  });
+
   test('concurrent same-request replay contends instead of executing the non-idempotent action twice', async () => {
     const { controllerHome, socketPath } = fixture(true, undefined, true);
     const logPath = join(controllerHome, 'provider-replay.log');

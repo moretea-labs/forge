@@ -20,6 +20,7 @@ import {
 } from './capability-authorization-grants';
 import { markControllerContextProjectionDirty } from '../projections/controller-context';
 import { acquireExecutionLeases, releaseExactExecutionLeases } from '../resources/leases/store';
+import { isRuntimeWriteFenceError } from '../root/write-fence';
 import {
   appendWorkEvidence,
   getWorkContract,
@@ -607,7 +608,16 @@ async function withAssistantPluginResourceLeases<T>(
     throw error;
   } finally {
     if (!retainForReconciliation) {
-      releaseExactExecutionLeases(controllerHome, scope.scopeKey, ownerJobId, expected, { visibility: 'ephemeral' });
+      try {
+        releaseExactExecutionLeases(controllerHome, scope.scopeKey, ownerJobId, expected, { visibility: 'ephemeral' });
+      } catch (error) {
+        // A successful provider effect can rotate Runtime authority (for example
+        // a fenced Runtime cutover). The old sidecar must not release leases
+        // after it is fenced, but that cleanup denial must not overwrite the
+        // already-known provider result. The canonical successor Runtime can
+        // reclaim this ephemeral lease from its fenced owner immediately.
+        if (!isRuntimeWriteFenceError(error)) throw error;
+      }
     }
   }
 }
