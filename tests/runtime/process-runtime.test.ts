@@ -32,6 +32,7 @@ import {
 } from '../../src/runtime/execution/process-runtime';
 import { createProcessRecord, listProcessRecords, updateProcessRecord } from '../../src/runtime/execution/process-runtime/store';
 import { resolveProcessRunnerEntryPath, resolveProcessRunnerInvocation } from '../../src/runtime/execution/process-runtime/runtime';
+import { forgeInstanceExecutionTarget, recordProcessHandleIndexEntry } from '../../src/runtime/execution/process-runtime/handle-index';
 import {
   claimRunnerStarted,
   runProcessRunnerFromDescriptor,
@@ -1972,6 +1973,52 @@ describe('run_check Process Runtime facade', () => {
     );
     expect(terminal).toMatchObject({ completed: true, ok: true });
     clearLightweightProcessMemoryForTest();
+  });
+
+  test('reattaches durable ForgeInstance processes and reconciles a dead runner with no receipt', async () => {
+    const fx = fixture();
+    const processId = 'proc_instance_dead_runner_fixture';
+    const startedAt = new Date(Date.now() - 60_000).toISOString();
+    const stdoutPath = join(processLogDir(fx.controllerHome, 'instance'), `${processId}.stdout.log`);
+    const stderrPath = join(processLogDir(fx.controllerHome, 'instance'), `${processId}.stderr.log`);
+    mkdirSync(processLogDir(fx.controllerHome, 'instance'), { recursive: true });
+    writeFileSync(stdoutPath, 'sidecar completed\n', 'utf8');
+    writeFileSync(stderrPath, '', 'utf8');
+    createProcessRecord({
+      schemaVersion: 1,
+      processId,
+      repoId: 'instance',
+      principalId: 'controller-http-client',
+      controllerHome: fx.controllerHome,
+      status: 'running',
+      route: 'managed',
+      command: { kind: 'argv', executable: process.execPath, args: ['-e', 'process.exit(0)'], cwd: fx.repoRoot },
+      resourceClaims: [],
+      interactiveWaitMs: 750,
+      timeoutMs: 30_000,
+      maxOutputBytes: 65_536,
+      startedAt,
+      updatedAt: startedAt,
+      terminalFenceToken: 1,
+      identity: { pid: 999_999, processStartTime: 'Mon Jan  1 00:00:00 2001', executableFingerprint: 'dead-runner' },
+      stdoutPath,
+      stderrPath,
+      exitReceiptPath: join(processLogDir(fx.controllerHome, 'instance'), `${processId}.exit.json`),
+      logPath: stdoutPath,
+      terminalWritten: false,
+    });
+    recordProcessHandleIndexEntry(fx.controllerHome, {
+      processId,
+      lane: 'managed',
+      target: forgeInstanceExecutionTarget(fx.controllerHome),
+      principalId: 'controller-http-client',
+      commandId: 'plugin-action:fixture',
+    });
+
+    expect(getRepositoryCommandProcess(fx.controllerHome, undefined, processId)).toMatchObject({ processId, completed: true, status: 'completed_unknown' });
+    expect(readRepositoryCommandProcessLogs(fx.controllerHome, undefined, processId)?.stdout).toContain('sidecar completed');
+    const terminal = await waitRepositoryCommandProcess(fx.controllerHome, undefined, processId, { timeoutMs: 500 });
+    expect(terminal).toMatchObject({ processId, completed: true, status: 'completed_unknown' });
   });
 
   test('returns a lightweight handle before starting long build/test preparation', async () => {

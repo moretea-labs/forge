@@ -607,11 +607,7 @@ export function getRepositoryCommandProcess(
   const scopeKey = resolveCommandProcessScopeKey(controllerHome, repoId, processId);
   if (!scopeKey) return undefined;
   if (!isLightweightProcessId(processId)) {
-    // Instance-scoped commands are lightweight handles; repository-scoped
-    // durable processes keep their existing store.
-    return isForgeInstanceProcessScopeKey(scopeKey)
-      ? undefined
-      : getProcessHandle(controllerHome, scopeKey, processId);
+    return getProcessHandle(controllerHome, scopeKey, processId);
   }
   return getLightweightProcessHandle(controllerHome, scopeKey, processId);
 }
@@ -625,7 +621,6 @@ export async function waitRepositoryCommandProcess(
   const scopeKey = resolveCommandProcessScopeKey(controllerHome, repoId, processId);
   if (!scopeKey) throw new Error(`PROCESS_NOT_FOUND: ${processId}`);
   if (!isLightweightProcessId(processId)) {
-    if (isForgeInstanceProcessScopeKey(scopeKey)) throw new Error(`PROCESS_NOT_FOUND: ${processId}`);
     return waitForProcess(controllerHome, scopeKey, processId, options);
   }
   return waitForLightweightProcess(controllerHome, scopeKey, processId, options);
@@ -639,7 +634,6 @@ export async function cancelRepositoryCommandProcess(
   const scopeKey = resolveCommandProcessScopeKey(controllerHome, repoId, processId);
   if (!scopeKey) throw new Error(`PROCESS_NOT_FOUND: ${processId}`);
   if (!isLightweightProcessId(processId)) {
-    if (isForgeInstanceProcessScopeKey(scopeKey)) throw new Error(`PROCESS_NOT_FOUND: ${processId}`);
     return cancelProcess(controllerHome, scopeKey, processId);
   }
   return cancelLightweightProcess(controllerHome, scopeKey, processId);
@@ -654,7 +648,6 @@ export function readRepositoryCommandProcessLogs(
   const scopeKey = resolveCommandProcessScopeKey(controllerHome, repoId, processId);
   if (!scopeKey) return undefined;
   if (!isLightweightProcessId(processId)) {
-    if (isForgeInstanceProcessScopeKey(scopeKey)) return undefined;
     return readProcessLogs(controllerHome, scopeKey, processId, maxBytes);
   }
   return readLightweightProcessLogs(controllerHome, scopeKey, processId, maxBytes);
