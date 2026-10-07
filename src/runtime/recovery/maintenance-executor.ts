@@ -29,6 +29,8 @@ import {
 } from './local-jobs-repair';
 import { gcTerminalProcesses, type ProcessGcResult } from '../execution/process-runtime/gc';
 import { cleanupStaleWorkVerificationSnapshots, type WorkVerificationSnapshotRetentionReport } from '../control-plane/execution/work-verification-snapshot';
+import { cleanupGeneratedRepositoryCheckoutCaches, type RepositoryGeneratedCacheRetentionReport } from '../control-plane/generated-cache-retention';
+import { cleanupControllerReleaseHistory, type ReleaseRetentionReport } from '../control-plane/release-retention';
 import {
   cleanupRuntimeQuarantine,
   quarantineRuntimePath,
@@ -152,6 +154,8 @@ export interface RuntimeMaintenanceApplyResult extends Omit<RuntimeMaintenanceSt
   processGc?: ProcessGcResult;
   verificationSnapshotGc?: WorkVerificationSnapshotRetentionReport;
   quarantineGc?: RuntimeQuarantineRetentionReport;
+  generatedCacheGc?: RepositoryGeneratedCacheRetentionReport;
+  releaseHistoryGc?: ReleaseRetentionReport;
   projection?: unknown;
 }
 
@@ -1743,6 +1747,27 @@ export function applyRuntimeMaintenance(
       additionalRoots: [runtimeLegacyCheckQuarantineRoot(controllerHome, repository.repoId)],
     })
     : undefined;
+  let generatedCacheGc: RepositoryGeneratedCacheRetentionReport | undefined;
+  let releaseHistoryGc: ReleaseRetentionReport | undefined;
+  if (options.actionId === 'full_maintenance_pass') {
+    let cacheRepository: Parameters<typeof cleanupGeneratedRepositoryCheckoutCaches>[0] = {
+      canonicalRoot: repository.canonicalRoot,
+      checkouts: [],
+    };
+    try {
+      cacheRepository = getRepository(repository.repoId, controllerHome, { includeRemoved: true });
+    } catch {
+      // Embedded/test repositories may not be present in the Controller registry.
+      // The explicit maintenance action still safely covers their canonical root.
+    }
+    generatedCacheGc = cleanupGeneratedRepositoryCheckoutCaches(cacheRepository, {
+      maxEntries: Math.max(1_000, (options.maxCandidates ?? 50) * 20),
+      maxRemovals: Math.max(1, options.maxCandidates ?? 50),
+    });
+    releaseHistoryGc = cleanupControllerReleaseHistory(controllerHome, {
+      maxRemovals: Math.max(1, options.maxCandidates ?? 50),
+    });
+  }
 
   if (options.actionId === 'runtime_storage_finalize_relocation' || options.actionId === 'full_maintenance_pass' || applied.some((candidate) => candidate.applied) || runtimeStorageRepairApply) {
     rebuildActiveIndex(repository.canonicalRoot);
@@ -1762,6 +1787,8 @@ export function applyRuntimeMaintenance(
     processGc,
     verificationSnapshotGc,
     quarantineGc,
+    generatedCacheGc,
+    releaseHistoryGc,
     projection,
   };
 }

@@ -879,12 +879,21 @@ describe('runtime maintenance executor', () => {
       disposition: 'semantic_completion_required',
     }));
 
+    const staleCache = join(repository.canonicalRoot, '.repo-harness', 'maintenance', 'DerivedData');
+    mkdirSync(staleCache, { recursive: true });
+    writeFileSync(join(staleCache, 'cache.bin'), 'cache');
+    const old = new Date('2025-01-01T00:00:00.000Z');
+    utimesSync(staleCache, old, old);
+
     const applied = applyRuntimeMaintenance(repository, controllerHome, {
       actionId: 'full_maintenance_pass',
       confirmMaintenance: true,
       minAgeMinutes: 1,
       maxCandidates: 50,
     });
+    expect(existsSync(staleCache)).toBe(false);
+    expect(applied.generatedCacheGc?.removedPaths.some((path) => path.endsWith('.repo-harness/maintenance/DerivedData'))).toBe(true);
+    expect(applied.releaseHistoryGc).toBeDefined();
     expect(applied.applied).toContainEqual(expect.objectContaining({
       kind: 'stale_work_contract',
       id: 'work-stale-ready',
