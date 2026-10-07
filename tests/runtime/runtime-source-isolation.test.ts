@@ -22,6 +22,8 @@ import {
   rotateRuntimeGeneration,
 } from '../../src/runtime/control-plane/runtime-generation';
 import { writeJsonAtomic } from '../../src/runtime/shared/json-files';
+import { MAX_PLUGIN_ACTION_TIMEOUT_MS } from '../../packages/plugin-runtime/external';
+import { PLUGIN_ACTION_SIDECAR_SETTLEMENT_GRACE_MS, pluginActionSidecarTimeoutMs } from '../../src/runtime/plugins/action-application';
 import {
   resolveLightweightPluginActionRuntimeInvocation,
   startLightweightPluginAction,
@@ -1411,6 +1413,12 @@ printf '{"ok":true}\\n'
     const computerMatch = data.capabilitySearch?.matches?.find((entry) => entry.capabilityId?.startsWith('plugin.computer.'));
     expect(computerMatch).toBeTruthy();
     expect(computerMatch?.descriptor?.exposedVia).toBe('plugin_action_execute');
+  });
+
+  test('plugin sidecar deadline leaves bounded settlement time after the provider deadline', () => {
+    expect(PLUGIN_ACTION_SIDECAR_SETTLEMENT_GRACE_MS).toBe(30_000);
+    expect(pluginActionSidecarTimeoutMs(240_000)).toBe(270_000);
+    expect(pluginActionSidecarTimeoutMs(MAX_PLUGIN_ACTION_TIMEOUT_MS)).toBe(MAX_PLUGIN_ACTION_TIMEOUT_MS + 30_000);
   });
 
   test('plugin facade addresses controller scope through the ForgeInstance scope', async () => {

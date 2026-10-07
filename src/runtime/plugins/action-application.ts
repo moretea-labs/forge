@@ -25,6 +25,12 @@ import type {
   AssistantPluginManifest,
 } from './types';
 
+export const PLUGIN_ACTION_SIDECAR_SETTLEMENT_GRACE_MS = 30_000;
+
+export function pluginActionSidecarTimeoutMs(providerTimeoutMs: number): number {
+  return providerTimeoutMs + PLUGIN_ACTION_SIDECAR_SETTLEMENT_GRACE_MS;
+}
+
 export type AssistantPluginActionApplicationResult =
   | {
       kind: 'direct_read';
@@ -123,19 +129,20 @@ export async function executeAssistantPluginActionApplication(input: {
       ? input.request.timeoutMs!
       : action.defaultTimeoutMs;
     const timeoutMs = Math.min(Math.max(1_000, Math.trunc(requestedTimeoutMs)), MAX_PLUGIN_ACTION_TIMEOUT_MS);
+    const sidecarTimeoutMs = pluginActionSidecarTimeoutMs(timeoutMs);
     let { handle } = input.scope.kind === 'controller'
       ? await startManagedControllerPluginAction({
           controllerHome: input.controllerHome,
           request: input.request,
           interactiveWaitMs: input.interactiveWaitMs,
-          timeoutMs,
+          timeoutMs: sidecarTimeoutMs,
         })
       : await startManagedPluginAction({
           controllerHome: input.controllerHome,
           repository: input.scope.repository,
           request: input.request,
           interactiveWaitMs: input.interactiveWaitMs,
-          timeoutMs,
+          timeoutMs: sidecarTimeoutMs,
         });
     if (!handle.completed && input.wait === true) {
       handle = input.scope.kind === 'controller'
