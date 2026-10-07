@@ -1761,6 +1761,7 @@ export function applyRuntimeMaintenance(
       // The explicit maintenance action still safely covers their canonical root.
     }
     generatedCacheGc = cleanupGeneratedRepositoryCheckoutCaches(cacheRepository, {
+      graceMs: 60_000,
       maxEntries: Math.max(1_000, (options.maxCandidates ?? 50) * 20),
       maxRemovals: Math.max(1, options.maxCandidates ?? 50),
     });

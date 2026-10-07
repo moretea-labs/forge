@@ -882,7 +882,7 @@ describe('runtime maintenance executor', () => {
     const staleCache = join(repository.canonicalRoot, '.repo-harness', 'maintenance', 'DerivedData');
     mkdirSync(staleCache, { recursive: true });
     writeFileSync(join(staleCache, 'cache.bin'), 'cache');
-    const old = new Date('2025-01-01T00:00:00.000Z');
+    const old = new Date(Date.now() - 2 * 60_000);
     utimesSync(staleCache, old, old);
 
     const applied = applyRuntimeMaintenance(repository, controllerHome, {

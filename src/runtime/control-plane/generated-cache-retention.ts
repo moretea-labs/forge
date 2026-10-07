@@ -185,6 +185,10 @@ function directChildFiles(root: string, budget: { remaining: number }): string[]
   return found;
 }
 
+function isDerivedDataDirectoryName(name: string): boolean {
+  return name === 'DerivedData' || name.startsWith('DerivedData-');
+}
+
 function nestedDerivedDataDirectories(root: string, maxDepth: number, budget: { remaining: number }): string[] {
   if (!existsSync(root) || budget.remaining <= 0) return [];
   const found: string[] = [];
@@ -197,7 +201,7 @@ function nestedDerivedDataDirectories(root: string, maxDepth: number, budget: { 
       budget.remaining -= 1;
       if (!entry.isDirectory()) continue;
       const path = join(dir, String(entry.name));
-      if (String(entry.name) === 'DerivedData') {
+      if (isDerivedDataDirectoryName(String(entry.name))) {
         found.push(path);
         continue;
       }

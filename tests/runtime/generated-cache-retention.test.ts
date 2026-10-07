@@ -83,8 +83,8 @@ describe('generated repository cache retention', () => {
     const canonicalRoot = repository();
     const activeWorktreeRoot = repository();
     const removedWorktreeRoot = repository();
-    const activeCache = join(activeWorktreeRoot, '.repo-harness', 'ios-build', 'DerivedData');
-    const removedCache = join(removedWorktreeRoot, '.repo-harness', 'ios-build', 'DerivedData');
+    const activeCache = join(activeWorktreeRoot, '.repo-harness', 'ios-build', 'DerivedData-generic-simulator');
+    const removedCache = join(removedWorktreeRoot, '.repo-harness', 'ios-build', 'DerivedData-generic-simulator');
     mkdirSync(activeCache, { recursive: true });
     mkdirSync(removedCache, { recursive: true });
     writeFileSync(join(activeCache, 'cache.bin'), 'cache');
