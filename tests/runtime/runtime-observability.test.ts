@@ -940,6 +940,7 @@ describe('runtime observability', () => {
         requestId,
         layer: 'public_gateway',
         startedAt: '2026-08-14T13:00:00.000Z',
+        hostConversationSessionId: 'chat-session-fixture',
         outcome: 'error',
         errorCode: 'PUBLIC_STABLE_ENDPOINT_UNHEALTHY',
         repoId: 'repo-fixture',
@@ -964,6 +965,7 @@ describe('runtime observability', () => {
         requestId,
         layer: 'public_gateway',
         startedAt: '2026-08-14T13:00:00.000Z',
+        hostConversationSessionId: 'chat-session-fixture',
         outcome: 'error',
         repoId: 'repo-fixture',
         workId: 'work-fixture',
@@ -1173,7 +1175,11 @@ describe('runtime observability', () => {
     const client = new Client({ name: 'runtime-observability', version: '1.0.0' }, { capabilities: {} });
     await client.connect(clientTransport);
     try {
-      const result = await client.callTool({ name: 'no_such_runtime_tool', arguments: {} });
+      const result = await client.callTool({
+        name: 'no_such_runtime_tool',
+        arguments: {},
+        _meta: { 'openai/session': 'chat-session-trace' },
+      });
       const structured = result.structuredContent as Record<string, unknown> | undefined;
       const meta = structured?.responseMeta as Record<string, unknown> | undefined;
       expect(meta?.traceId).toBeTruthy();
@@ -1183,10 +1189,11 @@ describe('runtime observability', () => {
         .trim().split('\n').map((line) => JSON.parse(line) as { traceId: string; code: string });
       expect(incidents.some((entry) => entry.traceId === traceId && entry.code === 'TOOL_NOT_FOUND')).toBe(true);
       const timings = readFileSync(join(controllerHome, 'audit', 'mcp-timings.jsonl'), 'utf8')
-        .trim().split('\n').map((line) => JSON.parse(line) as { traceId: string; requestId?: string; layer?: string; startedAt?: string });
+        .trim().split('\n').map((line) => JSON.parse(line) as { traceId: string; requestId?: string; layer?: string; startedAt?: string; hostConversationSessionId?: string });
       const timing = timings.find((entry) => entry.traceId === traceId);
       expect(timing).toMatchObject({ layer: 'public_gateway' });
       expect(timing?.requestId).toBe(String(meta?.requestId ?? ''));
+      expect(timing?.hostConversationSessionId).toBe('chat-session-trace');
       expect(Number.isNaN(Date.parse(timing?.startedAt ?? ''))).toBe(false);
     } finally {
       await client.close();

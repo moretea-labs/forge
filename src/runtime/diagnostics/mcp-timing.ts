@@ -36,6 +36,8 @@ export interface McpTimingTrace {
   gatewayProxyConnectionState?: 'reused' | 'cold_connect' | 'coalesced_connect' | 'identity_reconnect';
   totalToolDurationMs: number;
   sessionId?: string;
+  /** Request-scoped ChatGPT conversation correlation from MCP host metadata; diagnostic only, never semantic authority. */
+  hostConversationSessionId?: string;
   repoId?: string;
   workId?: string;
   processId?: string;
