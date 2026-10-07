@@ -79,6 +79,7 @@ export function planSchedulerPeriodicMaintenance(input: {
   repositoryCount: number;
 }): {
   periodicSequence: number;
+  deepRetentionSequence: number;
   runRetention: boolean;
   runDeepRetention: boolean;
   processGcRepositoryIndex?: number;
@@ -89,13 +90,15 @@ export function planSchedulerPeriodicMaintenance(input: {
   const retentionEvery = Math.max(1, Math.ceil(PERIODIC_RETENTION_INTERVAL_MS / cleanupIntervalMs));
   const deepRetentionEvery = Math.max(retentionEvery, Math.ceil(PERIODIC_DEEP_RETENTION_INTERVAL_MS / cleanupIntervalMs));
   const repositoryCount = Math.max(0, Math.trunc(input.repositoryCount));
+  const deepRetentionSequence = Math.floor(periodicSequence / deepRetentionEvery);
   return {
     periodicSequence,
+    deepRetentionSequence,
     runRetention: periodicSequence % retentionEvery === 0,
     runDeepRetention: periodicSequence % deepRetentionEvery === 0,
     processGcRepositoryIndex: repositoryCount > 0 ? periodicSequence % repositoryCount : undefined,
     deepRetentionRepositoryIndex: repositoryCount > 0 && periodicSequence % deepRetentionEvery === 0
-      ? Math.floor(periodicSequence / deepRetentionEvery) % repositoryCount
+      ? deepRetentionSequence % repositoryCount
       : undefined,
   };
 }
@@ -283,7 +286,7 @@ export async function runSchedulerPeriodicCleanup(input: {
   if (plan.deepRetentionRepositoryIndex === undefined) return;
   const repo = input.repositories[plan.deepRetentionRepositoryIndex]!;
   try {
-    const generated = cleanupGeneratedRepositoryCheckoutCaches(repo, { nowMs: input.nowMs, rootStartIndex: plan.periodicSequence });
+    const generated = cleanupGeneratedRepositoryCheckoutCaches(repo, { nowMs: input.nowMs, rootStartIndex: plan.deepRetentionSequence });
     if (generated.errors.length > 0) {
       console.error(`[forge cleanup] generated-cache retention reported ${generated.errors.length} error(s) for ${repo.repoId}`);
     }
