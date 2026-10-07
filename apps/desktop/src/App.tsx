@@ -288,12 +288,18 @@ function AutomaticContinuationRow({
 function WorkView({
   projection,
   preview,
+  refreshing,
+  refreshError,
+  onRefresh,
   onSwitch,
   onContinue,
   onSelectWork,
 }: {
   projection: ForgeDesktopProjection;
   preview: boolean;
+  refreshing: boolean;
+  refreshError: string | null;
+  onRefresh?: () => Promise<void>;
   onSwitch?: (task: AutomaticContinuationTaskProjection) => Promise<void>;
   onContinue?: (prompt: string) => Promise<void>;
   onSelectWork?: (workId: string) => void;
@@ -326,8 +332,15 @@ function WorkView({
 
           <div className="mcp-overview-status" aria-label="MCP 工作区状态">
             <div><span className={`health-dot ${projection.runtime.status}`} /><strong>MCP Workspace</strong></div>
-            <span>{projection.runtime.label}</span>
+            <div className="mcp-status-actions">
+              <span>{projection.runtime.label}</span>
+              <button className="plain-action" type="button" disabled={!onRefresh || refreshing} onClick={() => void onRefresh?.()}>
+                {refreshing ? '刷新中…' : '刷新 MCP'}
+              </button>
+            </div>
           </div>
+
+          {refreshError && <div className="inline-error mcp-refresh-error">刷新失败：{refreshError}</div>}
 
           <section className="mcp-summary-grid" aria-label="MCP 操作概览">
             <div className="mcp-summary-card">
@@ -413,11 +426,18 @@ function WorkView({
   return (
     <main className="main-pane work-pane">
       <div className="content-column">
-        <header className="work-hero">
-          <div className="breadcrumb">MCP / {projection.project?.name ?? '项目'} / {semanticStateLabel(work.semanticState)}</div>
-          <h1>{work.title}</h1>
-          {work.continuationPrompt && <p>{work.continuationPrompt}</p>}
+        <header className="work-hero mcp-work-hero">
+          <div className="mcp-work-hero-copy">
+            <div className="breadcrumb">MCP / {projection.project?.name ?? '项目'} / {semanticStateLabel(work.semanticState)}</div>
+            <h1>{work.title}</h1>
+            {work.continuationPrompt && <p>{work.continuationPrompt}</p>}
+          </div>
+          <button className="plain-action" type="button" disabled={!onRefresh || refreshing} onClick={() => void onRefresh?.()}>
+            {refreshing ? '刷新中…' : '刷新 MCP'}
+          </button>
         </header>
+
+        {refreshError && <div className="inline-error mcp-refresh-error">刷新失败：{refreshError}</div>}
 
         {continuations.map((task) => (
           <AutomaticContinuationRow key={task.taskId} task={task} preview={preview} onSwitch={onSwitch} />
@@ -888,6 +908,8 @@ export function App() {
   const [localProvider, setLocalProvider] = useState<LocalProviderStatusProjection | null>(null);
   const [localProviderLoading, setLocalProviderLoading] = useState(false);
   const [localProviderError, setLocalProviderError] = useState<string | null>(null);
+  const [mcpRefreshing, setMcpRefreshing] = useState(false);
+  const [mcpRefreshError, setMcpRefreshError] = useState<string | null>(null);
 
   const refreshRecovery = useCallback(async () => {
     if (preview || !tauriRuntimeAvailable()) return;
@@ -1005,6 +1027,45 @@ export function App() {
 
   useEffect(() => { void bootstrapRuntime(); }, [bootstrapRuntime]);
   useEffect(() => { void refreshLocalProvider(); }, [refreshLocalProvider]);
+
+  const refreshMcp = useCallback(async () => {
+    if (preview || !tauriRuntimeAvailable() || mcpRefreshing) return;
+    setMcpRefreshing(true);
+    setMcpRefreshError(null);
+    try {
+      const [catalog, automaticContinuations] = await Promise.all([readProjects(), readAutomaticContinuations()]);
+      setProjects(catalog.projects);
+      const selectedProject = catalog.projects.find((project) => project.repoId === selectedRepoId)
+        ?? catalog.projects.find((project) => project.repoId === catalog.preferredRepoId)
+        ?? catalog.projects[0];
+      if (!selectedProject) {
+        setSelectedRepoId(undefined);
+        setSelectedWorkId(undefined);
+        setProjection({
+          ...disconnectedProjection,
+          source: 'runtime',
+          runtime: { status: 'connected', label: '运行时已连接', detail: '当前没有已注册项目。' },
+          projects: [],
+          automaticContinuations,
+        });
+        return;
+      }
+      const workspace = await readProjectWorkspace(selectedProject, selectedWorkId);
+      setSelectedRepoId(selectedProject.repoId);
+      setSelectedWorkId(workspace.work?.workId);
+      setProjection({
+        source: 'runtime',
+        runtime: { status: 'connected', label: '运行时已连接', detail: '刚刚从 Forge Runtime 重新读取。' },
+        projects: catalog.projects,
+        ...workspace,
+        automaticContinuations,
+      });
+    } catch (cause) {
+      setMcpRefreshError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setMcpRefreshing(false);
+    }
+  }, [mcpRefreshing, preview, selectedRepoId, selectedWorkId]);
 
   const handleSelectProject = useCallback(async (project: ProjectListItemProjection) => {
     setActiveView('project');
@@ -1165,6 +1226,9 @@ export function App() {
         <WorkView
           projection={projection}
           preview={preview}
+          refreshing={mcpRefreshing}
+          refreshError={mcpRefreshError}
+          onRefresh={preview ? undefined : refreshMcp}
           onSwitch={preview ? undefined : handleSwitch}
           onContinue={preview ? undefined : handleContinue}
           onSelectWork={preview ? undefined : (workId) => { void handleSelectWork(workId); }}

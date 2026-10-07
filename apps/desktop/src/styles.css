@@ -385,3 +385,41 @@ a { color: inherit; }
 @media (max-width: 1080px) {
   .mcp-summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
+
+
+.mcp-status-actions {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+.mcp-status-actions > span {
+  color: #918b83;
+  font-size: 9px;
+}
+.mcp-work-hero {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+}
+.mcp-work-hero-copy {
+  min-width: 0;
+  flex: 1;
+}
+.mcp-work-hero-copy > p {
+  margin: 10px 0 0;
+  color: #777169;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.mcp-work-hero > .plain-action {
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
+
+.mcp-refresh-error {
+  margin: -8px 0 14px;
+  padding: 8px 10px;
+  border-radius: 7px;
+  background: #f6ebe9;
+}
