@@ -1985,6 +1985,11 @@ test('ReleaseSession preparation reconciles terminal and orphan Candidate B lane
   }, 'terminal-lane-cleanup-second');
   expect(second).toMatchObject({ ok: true, releaseSession: { phase: 'built' } });
   expect(second.releaseSession?.sessionId).not.toBe(terminal.sessionId);
+  const recoveryAuditPath = join(home, 'recovery', 'audit', 'recovery.jsonl');
+  const terminalCleanupAuditCount = () => readFileSync(recoveryAuditPath, 'utf8')
+    .split('\n')
+    .filter((line) => line.includes('release_session_candidate_lane_cleaned') && line.includes(terminal.sessionId)).length;
+  expect(terminalCleanupAuditCount()).toBe(1);
 
   const orphan = second.releaseSession!;
   const orphanCandidateHome = orphan.candidate.controllerHome;
@@ -2005,6 +2010,7 @@ test('ReleaseSession preparation reconciles terminal and orphan Candidate B lane
   }, 'orphan-lane-cleanup-third');
   expect(third).toMatchObject({ ok: true, releaseSession: { phase: 'built' } });
   expect(third.releaseSession?.sessionId).not.toBe(orphan.sessionId);
+  expect(terminalCleanupAuditCount()).toBe(1);
 });
 
 test('watchdog defers Recovery self-repair while an attributable mutation lock is live', async () => {

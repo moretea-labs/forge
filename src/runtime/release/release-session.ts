@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto';
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from 'fs';
 import { dirname, join, resolve } from 'path';
 import { assertStorageHeadroom } from '../shared/storage-capacity';
 import type { CandidateExecutionLane, StableExecutionLane } from '../root/runtime-lane';
@@ -130,6 +130,7 @@ function writeSession(path: string, session: ReleaseSession): void {
   const temporary = `${path}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
   writeFileSync(temporary, content, { encoding: 'utf8', mode: 0o600 });
   renameSync(temporary, path);
+  invalidateCompleteReleaseSessionInventory(dirname(path));
 }
 
 function sameStableRelease(session: Pick<ReleaseSession, 'stableRelease'>, release: RuntimePublishedRelease): boolean {
@@ -385,8 +386,75 @@ export interface ReleaseSessionInventory {
   truncated: boolean;
 }
 
+interface CompleteReleaseSessionInventoryCacheEntry {
+  revision: string;
+  inventory: ReleaseSessionInventory;
+}
+
+const completeReleaseSessionInventoryCache = new Map<string, CompleteReleaseSessionInventoryCacheEntry>();
+
+function releaseSessionInventoryRoot(controllerHome: string): string {
+  return dirname(sessionPath(controllerHome, 'release-session-inventory'));
+}
+
+function invalidateCompleteReleaseSessionInventory(root: string): void {
+  completeReleaseSessionInventoryCache.delete(resolve(root));
+}
+
+function copyReleaseSessionInventory(inventory: ReleaseSessionInventory): ReleaseSessionInventory {
+  return {
+    sessions: [...inventory.sessions],
+    invalidSessionFiles: [...inventory.invalidSessionFiles],
+    inspected: inventory.inspected,
+    truncated: inventory.truncated,
+  };
+}
+
 /**
- * Bounded read-only inventory for ReleaseSession authority.
+ * Complete ReleaseSession authority inventory. The JSON files remain the single
+ * durable authority; this cache is process-local and is invalidated by every
+ * atomic session write. Directory metadata also invalidates cache entries when
+ * another Recovery process replaces a session file.
+ */
+export function listCompleteReleaseSessions(controllerHome: string): ReleaseSessionInventory {
+  const root = releaseSessionInventoryRoot(controllerHome);
+  if (!existsSync(root)) {
+    invalidateCompleteReleaseSessionInventory(root);
+    return { sessions: [], invalidSessionFiles: [], inspected: 0, truncated: false };
+  }
+  const names = readdirSync(root)
+    .filter((name) => name.endsWith('.json'))
+    .sort();
+  const directory = statSync(root);
+  const revision = [directory.mtimeMs, directory.ctimeMs, names.length, names[0] ?? '', names[names.length - 1] ?? ''].join(':');
+  const cacheKey = resolve(root);
+  const cached = completeReleaseSessionInventoryCache.get(cacheKey);
+  if (cached?.revision === revision) return copyReleaseSessionInventory(cached.inventory);
+
+  const sessions: ReleaseSession[] = [];
+  const invalidSessionFiles: string[] = [];
+  for (const name of names) {
+    const sessionId = name.slice(0, -'.json'.length);
+    try {
+      const session = readReleaseSession(controllerHome, sessionId);
+      if (session) sessions.push(session);
+      else invalidSessionFiles.push(name);
+    } catch {
+      invalidSessionFiles.push(name);
+    }
+  }
+  const inventory: ReleaseSessionInventory = {
+    sessions,
+    invalidSessionFiles,
+    inspected: names.length,
+    truncated: false,
+  };
+  completeReleaseSessionInventoryCache.set(cacheKey, { revision, inventory });
+  return copyReleaseSessionInventory(inventory);
+}
+
+/**
+ * Bounded read-only inventory for diagnostic/projection consumers.
  * The release domain owns phase progression. Recovery may execute fenced
  * Runtime mutations, but it is not the semantic owner of normal release intent.
  */
@@ -394,7 +462,7 @@ export function listReleaseSessions(
   controllerHome: string,
   options: { maxEntries?: number } = {},
 ): ReleaseSessionInventory {
-  const root = dirname(sessionPath(controllerHome, 'release-session-inventory'));
+  const root = releaseSessionInventoryRoot(controllerHome);
   if (!existsSync(root)) return { sessions: [], invalidSessionFiles: [], inspected: 0, truncated: false };
   const maxEntries = Math.max(1, Math.floor(options.maxEntries ?? 512));
   const names = readdirSync(root)
@@ -506,9 +574,9 @@ export function createReleaseSession(input: {
   const sessionId = validSessionId(input.sessionId);
   const path = sessionPath(input.controllerHome, sessionId);
   if (existsSync(path)) throw new Error('RELEASE_SESSION_ALREADY_EXISTS');
-  const inventory = listReleaseSessions(input.controllerHome, { maxEntries: 512 });
-  if (inventory.truncated || inventory.invalidSessionFiles.length > 0) {
-    throw new Error(`RELEASE_SESSION_INVENTORY_INCOMPLETE: truncated=${inventory.truncated}; invalid=${inventory.invalidSessionFiles.join(',') || 'none'}`);
+  const inventory = listCompleteReleaseSessions(input.controllerHome);
+  if (inventory.invalidSessionFiles.length > 0) {
+    throw new Error(`RELEASE_SESSION_INVENTORY_INCOMPLETE: invalid=${inventory.invalidSessionFiles.join(',')}`);
   }
   const active = inventory.sessions.filter((session) => !releaseSessionIsTerminal(session));
   const sourceRevision = input.sourceRevision.trim();

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { RELEASE_SESSION_PHASES, advanceReleaseSession, createReleaseSession, listReleaseSessions, migrateReleaseSessionState, readReleaseSession, recordReleaseSessionTransaction, releaseSessionCandidateIsRetired, releaseSessionIsSoakingSupersededByStableAuthority, type ReleaseSessionCandidateRelease, type ReleaseSessionStableRelease, type ReleaseSessionTransaction } from '../../src/runtime/release/release-session';
+import { RELEASE_SESSION_PHASES, advanceReleaseSession, createReleaseSession, listCompleteReleaseSessions, listReleaseSessions, migrateReleaseSessionState, readReleaseSession, recordReleaseSessionTransaction, releaseSessionCandidateIsRetired, releaseSessionIsSoakingSupersededByStableAuthority, type ReleaseSessionCandidateRelease, type ReleaseSessionStableRelease, type ReleaseSessionTransaction } from '../../src/runtime/release/release-session';
 import type { RuntimeReleaseAuthority } from '../../src/runtime/root/release-store';
 import { advanceConfiguredRuntimeRelease, decideConfiguredRuntimeReleaseAction, decideConfiguredRuntimeReleaseReconciliation } from '../../src/runtime/release/release-coordinator';
 import { cancelConfiguredRuntimeReleaseSession, createRecoveryConfig } from '../../src/runtime/standalone-recovery/core';
@@ -116,9 +116,16 @@ describe('Recovery ReleaseSession', () => {
       invalidSessionFiles: [],
       sessions: [{ sessionId: candidate.sessionId, phase: 'source_frozen' }],
     });
+    expect(listCompleteReleaseSessions(home)).toMatchObject({
+      inspected: 1,
+      truncated: false,
+      invalidSessionFiles: [],
+      sessions: [{ sessionId: candidate.sessionId, phase: 'source_frozen' }],
+    });
     expect(releaseSessionCandidateIsRetired(session)).toBe(false);
     session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'failed' });
     expect(releaseSessionCandidateIsRetired(session)).toBe(true);
+    expect(listCompleteReleaseSessions(home).sessions).toMatchObject([{ sessionId: candidate.sessionId, phase: 'failed' }]);
   });
 
   test('retires a superseded Candidate B before cutover without inventing another lifecycle state', async () => {

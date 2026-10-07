@@ -86,11 +86,17 @@ records remain audit history only and have no retention or rollback authority.
 
 ## ReleaseSession state
 
-`Recovery/state/release-sessions/<id>.json` is the current bounded storage path
-for the ReleaseSession transaction journal; that path is not authority. The
+`Recovery/state/release-sessions/<id>.json` is the durable storage path for the
+ReleaseSession transaction journal; that path is not a second authority. The
 ReleaseSession domain owns semantic phase progression and a per-record revision
 CAS, while the executing Recovery provider holds the existing mutation lock for
-physical operations. A stateless ReleaseCoordinator derives the next action
+physical operations. Authority decisions read the complete journal through a
+process-local cache that is invalidated by atomic session writes and directory
+changes; bounded inventories are diagnostic/projection surfaces only and may
+never decide whether an active or prior-attempt session exists. Terminal session
+records remain durable evidence, while their Candidate B homes are physically
+retired once; an already-absent home is an idempotent no-op and is not emitted as
+a fresh cleanup event. A stateless ReleaseCoordinator derives the next action
 from the persisted phase and has no second daemon, scheduler, Work, or durable
 coordinator state. Only one non-terminal ReleaseSession may exist per Forge
 instance. An interrupted `source_frozen` preparation resumes that same session

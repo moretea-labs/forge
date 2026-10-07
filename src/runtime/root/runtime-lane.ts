@@ -177,7 +177,7 @@ export function assertCandidateExecutionLaneIsolation(
 export function removeRetiredCandidateExecutionLane(
   stable: StableExecutionLane,
   candidate: Pick<CandidateExecutionLane, 'controllerHome' | 'sessionId'>,
-): void {
+): boolean {
   const stableHome = resolve(stable.controllerHome);
   const candidateHome = resolve(candidate.controllerHome);
   const candidateRoot = resolve(dirname(stableHome), 'candidate-runtime-lanes');
@@ -185,5 +185,7 @@ export function removeRetiredCandidateExecutionLane(
   if (resolve(dirname(candidateHome)) !== candidateRoot || basename(candidateHome) !== candidate.sessionId) {
     throw new Error('RUNTIME_CANDIDATE_CLEANUP_PATH_INVALID');
   }
+  if (!existsSync(candidateHome)) return false;
   rmSync(candidateHome, { recursive: true, force: true });
+  return true;
 }

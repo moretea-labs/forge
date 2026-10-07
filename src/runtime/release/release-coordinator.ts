@@ -1,6 +1,6 @@
 import {
   advanceReleaseSession,
-  listReleaseSessions,
+  listCompleteReleaseSessions,
   readReleaseSession,
   releaseSessionIsSoakingPredecessorOfStable,
   releaseSessionIsTerminal,
@@ -82,9 +82,9 @@ export interface RuntimeReleaseReconciliationDecision {
 const MAX_AUTONOMOUS_RELEASE_ADVANCES = 8;
 
 function completeRuntimeReleaseSessions(controllerHome: string): ReleaseSession[] {
-  const inventory = listReleaseSessions(controllerHome, { maxEntries: 512 });
-  if (inventory.truncated || inventory.invalidSessionFiles.length > 0) {
-    throw new Error(`RELEASE_SESSION_INVENTORY_INCOMPLETE: truncated=${inventory.truncated}; invalid=${inventory.invalidSessionFiles.join(',') || 'none'}`);
+  const inventory = listCompleteReleaseSessions(controllerHome);
+  if (inventory.invalidSessionFiles.length > 0) {
+    throw new Error(`RELEASE_SESSION_INVENTORY_INCOMPLETE: invalid=${inventory.invalidSessionFiles.join(',') || 'none'}`);
   }
   return inventory.sessions;
 }

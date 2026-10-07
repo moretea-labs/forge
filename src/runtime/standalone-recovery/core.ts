@@ -78,7 +78,7 @@ import { createCandidateExecutionLane, readStableExecutionLane } from '../root/r
 import {
   advanceReleaseSession,
   createReleaseSession,
-  listReleaseSessions,
+  listCompleteReleaseSessions,
   readReleaseSession,
   recordReleaseSessionTransaction,
   releaseSessionCandidateIsRetired,
@@ -1594,7 +1594,7 @@ async function persistOpenAiTransportIncidentEvidence(input: {
       ? observeOpenAiTunnelRuntime(primaryTunnel)
       : Promise.resolve(undefined),
   ]);
-  const activeReleaseSessions = listReleaseSessions(input.config.controllerHome, { maxEntries: 64 }).sessions
+  const activeReleaseSessions = listCompleteReleaseSessions(input.config.controllerHome).sessions
     .filter((session) => !['known_good', 'rolled_back', 'failed'].includes(session.phase))
     .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))
     .slice(0, 3)
@@ -2401,9 +2401,8 @@ async function observeWatchdogHealthTier(
   // probe must stop opening Connector MCP sessions or it will continuously
   // refresh the very activity timestamp that the fence is waiting to drain.
   // An incomplete inventory fails closed by retaining the normal probe.
-  const inventory = listReleaseSessions(config.controllerHome, { maxEntries: 512 });
-  const cutoverQuietWindowRequired = !inventory.truncated
-    && inventory.invalidSessionFiles.length === 0
+  const inventory = listCompleteReleaseSessions(config.controllerHome);
+  const cutoverQuietWindowRequired = inventory.invalidSessionFiles.length === 0
     && inventory.sessions.some((session) => (
       session.phase === 'cutover_eligible'
       || session.phase === 'cutover_attempting'
@@ -3988,13 +3987,13 @@ export async function recoverPrimaryRuntime(
 
   const releaseAuthoritySnapshot = releaseAuthority(config);
   if (releaseAuthoritySnapshot) {
-    const inventory = listReleaseSessions(config.controllerHome, { maxEntries: 512 });
-    if (inventory.truncated || inventory.invalidSessionFiles.length > 0) {
+    const inventory = listCompleteReleaseSessions(config.controllerHome);
+    if (inventory.invalidSessionFiles.length > 0) {
       return {
         ok: false,
         attempted: false,
         noOp: true,
-        detail: `RELEASE_SESSION_INVENTORY_INCOMPLETE: truncated=${inventory.truncated}; invalid=${inventory.invalidSessionFiles.join(',') || 'none'}`,
+        detail: `RELEASE_SESSION_INVENTORY_INCOMPLETE: invalid=${inventory.invalidSessionFiles.join(',') || 'none'}`,
         verify: initial,
       };
     }
@@ -4847,13 +4846,13 @@ export async function prepareConfiguredRuntimeReleaseSession(
     // ReleaseSession owns semantic progression. This Recovery lock serializes only
     // physical preparation. Resume the exact source_frozen session after an
     // interruption instead of inventing a second release authority.
-    const inventory = listReleaseSessions(config.controllerHome, { maxEntries: 512 });
-    if (inventory.truncated || inventory.invalidSessionFiles.length > 0) {
+    const inventory = listCompleteReleaseSessions(config.controllerHome);
+    if (inventory.invalidSessionFiles.length > 0) {
       return {
         ok: false as const,
         attempted: false,
         noOp: true,
-        detail: `RELEASE_SESSION_INVENTORY_INCOMPLETE: truncated=${inventory.truncated}; invalid=${inventory.invalidSessionFiles.join(',') || 'none'}`,
+        detail: `RELEASE_SESSION_INVENTORY_INCOMPLETE: invalid=${inventory.invalidSessionFiles.join(',') || 'none'}`,
       };
     }
     await reconcileOrphanCandidateLanes(config, stable, inventory.sessions);
@@ -5265,13 +5264,20 @@ interface ReleaseSessionCandidateRetirement {
 
 function cleanupRetiredCandidateLane(config: RecoveryConfig, session: ReleaseSession): ReleaseSessionCandidateRetirement {
   try {
-    removeRetiredCandidateExecutionLane(session.stable, session.candidate);
-    audit(config, 'release_session_candidate_lane_cleaned', {
-      sessionId: session.sessionId,
-      candidateControllerHome: session.candidate.controllerHome,
-      phase: session.phase,
-    });
-    return { ok: true, detail: 'Candidate B Controller Home was removed after terminal ReleaseSession cleanup' };
+    const removed = removeRetiredCandidateExecutionLane(session.stable, session.candidate);
+    if (removed) {
+      audit(config, 'release_session_candidate_lane_cleaned', {
+        sessionId: session.sessionId,
+        candidateControllerHome: session.candidate.controllerHome,
+        phase: session.phase,
+      });
+    }
+    return {
+      ok: true,
+      detail: removed
+        ? 'Candidate B Controller Home was removed after terminal ReleaseSession cleanup'
+        : 'Candidate B Controller Home was already absent after terminal ReleaseSession cleanup',
+    };
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     audit(config, 'release_session_candidate_lane_cleanup_failed', {
@@ -5416,8 +5422,10 @@ async function reconcileOrphanCandidateLanes(
       continue;
     }
     try {
-      removeRetiredCandidateExecutionLane(stable, { controllerHome: candidateHome, sessionId: entry.name });
-      audit(config, 'release_session_orphan_candidate_lane_cleaned', { sessionId: entry.name, candidateControllerHome: candidateHome });
+      const removed = removeRetiredCandidateExecutionLane(stable, { controllerHome: candidateHome, sessionId: entry.name });
+      if (removed) {
+        audit(config, 'release_session_orphan_candidate_lane_cleaned', { sessionId: entry.name, candidateControllerHome: candidateHome });
+      }
     } catch (error) {
       audit(config, 'release_session_orphan_candidate_lane_cleanup_failed', {
         sessionId: entry.name,
@@ -5605,9 +5613,9 @@ export async function bootAndVerifyConfiguredRuntimeReleaseSessionCandidate(
 
 
 function terminalizeSupersededSoakingPredecessor(config: RecoveryConfig, successor: ReleaseSession): ReleaseSession | undefined {
-  const inventory = listReleaseSessions(config.controllerHome, { maxEntries: 512 });
-  if (inventory.truncated || inventory.invalidSessionFiles.length > 0) {
-    throw new Error(`RELEASE_SESSION_INVENTORY_INCOMPLETE: truncated=${inventory.truncated}; invalid=${inventory.invalidSessionFiles.join(',') || 'none'}`);
+  const inventory = listCompleteReleaseSessions(config.controllerHome);
+  if (inventory.invalidSessionFiles.length > 0) {
+    throw new Error(`RELEASE_SESSION_INVENTORY_INCOMPLETE: invalid=${inventory.invalidSessionFiles.join(',') || 'none'}`);
   }
   const predecessors = inventory.sessions.filter((existing) =>
     existing.sessionId !== successor.sessionId

@@ -143,9 +143,10 @@ describe('Stable A and Candidate B execution lanes', () => {
     mkdirSync(join(candidateHome, 'runtime'), { recursive: true });
     writeFileSync(join(candidateHome, 'runtime', 'marker'), 'candidate');
 
-    removeRetiredCandidateExecutionLane(stable, candidate);
+    expect(removeRetiredCandidateExecutionLane(stable, candidate)).toBe(true);
 
     expect(existsSync(candidateHome)).toBe(false);
+    expect(removeRetiredCandidateExecutionLane(stable, candidate)).toBe(false);
     expect(() => removeRetiredCandidateExecutionLane(stable, {
       ...candidate,
       controllerHome: join(fx.root, 'other', candidate.sessionId),
