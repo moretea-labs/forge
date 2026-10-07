@@ -347,7 +347,7 @@ function grantCoversPath(grant: ExternalFilesystemGrant, canonicalPath: string, 
 }
 
 function operationForToken(words: string[], index: number, external: string, cwd: string, root: string): RepositoryCommandExternalPathOperation | 'external_write' | 'unsupported' {
-  const program = words[0]?.toLowerCase();
+  const program = words[0]?.split(/[\\/]/).at(-1)?.toLowerCase();
   if (!program) return 'unsupported';
   if (program === 'cp' || program === 'install') {
     const operands = words.slice(1).filter((word) => word && !word.startsWith('-'));

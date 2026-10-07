@@ -1405,6 +1405,13 @@ describe("repository MCP command tools", () => {
       expect(acceptedRead.status).toBe("preview");
       expect(acceptedRead.externalPathUsages[0].operation).toBe("external_read");
 
+      const acceptedAbsoluteExecutableRead = await json(callRepositoryTool(controllerHome, "repository_command_preview", {
+        repo_id: repository.repoId,
+        command: ["/usr/bin/tail", "-n", "1", join(externalRoot, "note.txt")],
+      }));
+      expect(acceptedAbsoluteExecutableRead.status).toBe("preview");
+      expect(acceptedAbsoluteExecutableRead.externalPathUsages[0].operation).toBe("external_read");
+
       const deniedCopy = await json(callRepositoryTool(controllerHome, "repository_command_preview", {
         repo_id: repository.repoId,
         command: `cp ${join(externalRoot, "note.txt")} copied.txt`,
