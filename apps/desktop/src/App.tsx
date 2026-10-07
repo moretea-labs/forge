@@ -563,6 +563,17 @@ function WorkView({
                         {phaseEvidence.receiptId && <span className="mono">receipt {compactId(phaseEvidence.receiptId)}</span>}
                         {phaseEvidence.evidenceRefs.length > 0 && <span>证据 {phaseEvidence.evidenceRefs.length}</span>}
                       </div>
+                      {phaseEvidence.evidenceRefs.length > 0 && (
+                        <div className="nested-evidence-list" aria-label="阶段证据引用">
+                          {phaseEvidence.evidenceRefs.map((evidence, evidenceIndex) => (
+                            <div className="nested-evidence-item" key={`${evidence.evidenceId ?? evidence.artifactId ?? evidence.title}-${evidenceIndex}`}>
+                              <strong>{evidence.title}</strong>
+                              {evidence.summary && <span>{evidence.summary}</span>}
+                              <small className="mono">{evidence.evidenceId ?? evidence.artifactId ?? evidence.detailLevel}</small>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -581,7 +592,28 @@ function WorkView({
                         <span>{formatTimestamp(verification.recordedAt)}</span>
                       </div>
                       <p>{verification.summary}</p>
-                      {verification.sourceRevision && <span className="verification-source mono">版本 {compactId(verification.sourceRevision)}</span>}
+                      <div className="verification-meta">
+                        {verification.sourceRevision && <span className="mono">版本 {compactId(verification.sourceRevision)}</span>}
+                        {verification.startedAt && <span>开始 {formatTimestamp(verification.startedAt)}</span>}
+                        {verification.completedAt && <span>完成 {formatTimestamp(verification.completedAt)}</span>}
+                        {verification.receipt && <span className="mono">receipt {compactId(verification.receipt.receiptId)}</span>}
+                      </div>
+                      {verification.staleReason && <div className="verification-warning">证据已陈旧：{verification.staleReason}</div>}
+                      {verification.receipt && (
+                        <div className="verification-receipt">
+                          <span>执行 {verification.receipt.status}</span>
+                          <span>Runtime {verification.receipt.runtimeStatus}</span>
+                          <span>{verification.receipt.reusedExecution ? '复用已有执行' : '本次执行'}</span>
+                          <span>{formatTimestamp(verification.receipt.startedAt)} → {formatTimestamp(verification.receipt.finishedAt)}</span>
+                        </div>
+                      )}
+                      {verification.evidenceRef && (
+                        <div className="nested-evidence-item verification-evidence">
+                          <strong>{verification.evidenceRef.title}</strong>
+                          {verification.evidenceRef.summary && <span>{verification.evidenceRef.summary}</span>}
+                          <small className="mono">{verification.evidenceRef.evidenceId ?? verification.evidenceRef.artifactId ?? verification.evidenceRef.detailLevel}</small>
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -596,6 +628,7 @@ function WorkView({
                     <div key={`${evidence.evidenceId ?? evidence.artifactId ?? evidence.title}-${index}`}>
                       <strong>{evidence.title}</strong>
                       {evidence.summary && <span>{evidence.summary}</span>}
+                      <small className="mono">{evidence.evidenceId ?? evidence.artifactId ?? evidence.detailLevel}</small>
                     </div>
                   ))}
                 </div>

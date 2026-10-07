@@ -423,3 +423,54 @@ a { color: inherit; }
   border-radius: 7px;
   background: #f6ebe9;
 }
+
+
+.nested-evidence-list {
+  display: grid;
+  gap: 6px;
+  margin-top: 8px;
+}
+.nested-evidence-item,
+.verification-receipt {
+  display: grid;
+  gap: 3px;
+  padding: 8px 9px;
+  border: 1px solid rgba(74, 67, 59, .08);
+  border-radius: 7px;
+  background: rgba(255,255,255,.42);
+}
+.nested-evidence-item strong {
+  color: #5b554e;
+  font-size: 9px;
+  font-weight: 620;
+}
+.nested-evidence-item span,
+.nested-evidence-item small,
+.verification-receipt span {
+  color: #8d867e;
+  font-size: 8px;
+  line-height: 1.45;
+}
+.verification-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  margin-top: 6px;
+  color: #8f8981;
+  font-size: 8px;
+}
+.verification-warning {
+  margin-top: 7px;
+  padding: 7px 8px;
+  border-radius: 6px;
+  background: #f7ece8;
+  color: #8b554b;
+  font-size: 9px;
+  line-height: 1.45;
+}
+.verification-receipt {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 7px;
+}
+.verification-evidence { margin-top: 7px; }
+.evidence-ref-list small { display: block; margin-top: 3px; color: #918b83; font-size: 8px; }
