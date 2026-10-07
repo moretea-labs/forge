@@ -16,6 +16,7 @@ import type { ControllerType } from '../facade/types';
 import { codexMcpConfigArgs, resolveProviderMcpBootstrap, type ProviderMcpBootstrap } from './provider-mcp-bootstrap';
 import { repositoryChildProcessEnvironment } from '../../shared/process-environment';
 import { redactProcessOutput } from '../../../effects/process-runner';
+import { renderAssistantWorkContext } from '../../context/assistant-work-context';
 
 export interface ThinLauncherRequest {
   controllerType: Exclude<ControllerType, 'human'>;
@@ -279,6 +280,12 @@ export async function launchSuperController(
     ttlMs: request.launchReservationMs,
   });
   const handoff = request.handoffId ? getHandoffItem(stores.handoff, request.handoffId) : undefined;
+  const cognition = renderAssistantWorkContext({
+    controllerHome: stores.work.controllerHome,
+    repoId: work.repoId,
+    workId: work.workId,
+    query: work.objective,
+  });
   const prompt = [
     `Work: ${work.workId}`,
     `Objective: ${work.objective}`,
@@ -286,6 +293,7 @@ export async function launchSuperController(
     `Semantic state: ${work.semanticState}; dispatch: ${work.dispatchState}`,
     handoff ? `Handoff: ${handoff.summary}\nNext: ${handoff.recommendedContinuationPrompt ?? handoff.recommendedPrompt}` : '',
     request.continuationPrompt?.trim() ? `Continuation: ${request.continuationPrompt.trim()}` : '',
+    cognition ? `Advisory cognition (bounded; never authority):\n${cognition}` : '',
     `Forge maintains provider/session binding, transport recovery, effect dedupe, and retry bookkeeping internally. Continue this exact Work using repository capabilities; pass work_id=${work.workId} when durable source attribution is needed, validate with normal capability evidence, and update semantic Work only when objective/result state changes. Surface genuine human decisions through the existing user-request/inbox path.`,
   ].filter(Boolean).join('\n');
   try {

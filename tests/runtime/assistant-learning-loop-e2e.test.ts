@@ -27,6 +27,7 @@ import { getMcpPolicy } from '../../src/cli/mcp/policy';
 import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
 import { registerRepository } from '../../src/cli/repositories/registry';
 import { writeWorkflowRunCheckpoint } from '../../src/runtime/control-plane/persistence/workflow-run-store';
+import { createRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
 import { prepareControllerAssistantContextBundle } from '../../src/runtime/root/controller-round-composition';
 import { schedulePublicationOutcomeCollection } from '../../src/runtime/root/assistant-learning-loop';
 import { cognitiveUsageFeedbackForContext, prepareAssistantWorkContext, recordControllerExperience, recordControllerOutcome } from '../../src/runtime/context/assistant-work-context';
@@ -1155,7 +1156,7 @@ describe('direct model-authored learning without Work lifecycle', () => {
     expect(recalled?.isError).not.toBe(true);
     const recalledPayload = recalled?.structuredContent as Record<string, any>;
     expect(recalledPayload.data.learningRecall).toMatchObject({
-      scopePolicy: 'narrow_scopes_then_workspace_fallback',
+      scopePolicy: 'unified_relevance_with_narrow_scope_prior',
       progressiveAttention: {
         workingSetBounded: true,
         moreCandidatesAvailable: expect.any(Boolean),
@@ -1170,7 +1171,7 @@ describe('direct model-authored learning without Work lifecycle', () => {
       }),
     ]));
     expect(recalledPayload.data.learningRecall.items.some((item: any) =>
-      String(item.memoryId).includes(workspaceMemoryId))).toBe(false);
+      String(item.memoryId).includes(workspaceMemoryId))).toBe(true);
     const recalledItem = recalledPayload.data.learningRecall.items.find((item: any) =>
       String(item.memoryId).includes(memoryId));
     expect(recalledItem).toBeTruthy();
@@ -1256,7 +1257,7 @@ describe('direct model-authored learning without Work lifecycle', () => {
           kind: 'principle',
           valence: 'positive',
           summary: 'Generic model learning should use Cognitive memory without requiring Work lifecycle authority.',
-          concepts: ['cognition.learning', 'thin-forge', 'lifecycle-decoupling'],
+          concepts: ['forge.cognition', 'cognition.learning', 'thin-forge', 'lifecycle-decoupling'],
           facets: ['architecture', 'learning'],
           admission_source: 'explicit_human',
           portability: 'local',
@@ -1269,7 +1270,7 @@ describe('direct model-authored learning without Work lifecycle', () => {
           kind: 'principle',
           valence: 'positive',
           summary: 'Advisory memory provenance should remain independent from ControllerRound unless the learning actually came from a Work round.',
-          concepts: ['cognition.learning', 'thin-forge', 'lifecycle-decoupling'],
+          concepts: ['forge.cognition', 'cognition.learning', 'thin-forge', 'lifecycle-decoupling'],
           facets: ['architecture', 'learning'],
           admission_source: 'explicit_human',
           portability: 'local',
@@ -1306,6 +1307,58 @@ describe('direct model-authored learning without Work lifecycle', () => {
     );
     expect(stored).toHaveLength(2);
     expect(stored.every(memory => !memory.provenance.sourceWorkId && !memory.provenance.sourceRoundId)).toBe(true);
+
+    const naturalRecall = await callRuntimeTool(ctx, 'rh_context', {
+      repo_id: fx.repository.repoId,
+      operation: 'list',
+      query: 'forge cognition',
+      cognition_settlement: {
+        work_id: fx.workId,
+        learning_signals: [{
+          scope_kind: 'work', kind: 'principle', valence: 'positive',
+          summary: 'Ordinary task outcomes settle reusable learning through the shared MCP envelope.',
+          concepts: ['forge.cognition', 'ordinary-work'], facets: ['architecture'],
+          admission_source: 'controller_observation', portability: 'local', salience: 0.9, confidence: 0.9, utility: 0.9,
+        }],
+      },
+    });
+    expect(naturalRecall?.isError).not.toBe(true);
+    const naturalPayload = naturalRecall?.structuredContent as Record<string, any>;
+    expect(naturalPayload.data.learningRecall.items.some((item: any) => item.concepts.includes('forge.cognition'))).toBe(true);
+    const workMemories = cognitionReadPort(fx.controllerHome).exactByConcept(
+      [{ schemaVersion: 1, kind: 'work', id: fx.workId }], ['ordinary-work'], 4,
+    );
+    expect(workMemories[0]?.provenance).toMatchObject({ sourceWorkId: fx.workId, sourceRoundId: `work:${fx.workId}:learning` });
+
+    const requirementId = 'REQ-direct-learning-reachable';
+    const requirementWorkId = 'work-direct-learning-requirement';
+    createRequirement({ controllerHome: fx.controllerHome }, {
+      requirementId,
+      title: 'Reachable requirement learning',
+      outcomeStatement: 'The selected Work makes its Requirement learning scope reachable.',
+    });
+    createWorkContract(fx.store, {
+      workId: requirementWorkId, repoId: fx.repository.repoId, checkoutId: fx.repository.activeCheckoutId,
+      requirementId, objective: 'Settle Requirement-scoped learning.', acceptanceCriteria: [],
+      constraints: { workspaceMode: 'current' }, allowedPaths: [], forbiddenPaths: [], checks: [],
+      requestedBy: 'chatgpt', dispatchState: 'running',
+    });
+    const requirementLearning = await callRuntimeTool(ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'learning_record',
+      work_id: requirementWorkId,
+      learning_signals: [{
+        scope_kind: 'requirement', kind: 'product-model', valence: 'positive',
+        summary: 'Requirement learning remains advisory and uses server-derived Work provenance.',
+        concepts: ['requirement.reachable'], facets: ['product'], admission_source: 'controller_observation',
+        portability: 'local', salience: 0.8, confidence: 0.8, utility: 0.8,
+      }],
+    });
+    expect(requirementLearning?.isError).not.toBe(true);
+    const requirementMemories = cognitionReadPort(fx.controllerHome).exactByConcept(
+      [{ schemaVersion: 1, kind: 'requirement', id: requirementId }], ['requirement.reachable'], 4,
+    );
+    expect(requirementMemories[0]?.provenance.sourceWorkId).toBe(requirementWorkId);
   });
 
   test('rejects unavailable direct-learning evidence before writing any memory', async () => {

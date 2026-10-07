@@ -13,6 +13,8 @@ import { FORGE_INSTANCE_SCOPE_KEY } from '../../cli/repositories/controller-home
 import type { RepositoryRecord } from '../../cli/repositories/types';
 import { cognitionMemoryStore, cognitionReadPort, recordCognitiveUsageObservation, type CognitiveUsageRejectionKind } from '../control-plane/persistence/cognition-store';
 import { resolveProjectForRepositoryPlacement } from '../control-plane/workspace/workspace-store';
+import { getWorkContract } from '../../../packages/kernel/work/api/index';
+import { cognitiveScopesForWork } from '../control-plane/persistence/experience-store';
 import { findPluginActionReceipt } from '../plugins/store';
 import {
   associateStoredMemories,
@@ -35,7 +37,13 @@ function sameScope(left: ScopeRef, right: ScopeRef): boolean {
 export function directLearningScopes(
   controllerHome: string,
   repository: Pick<RepositoryRecord, 'repoId' | 'activeCheckoutId'>,
+  workId?: string,
 ): ScopeRef[] {
+  if (workId) {
+    const work = getWorkContract({ controllerHome, repoId: repository.repoId }, workId);
+    if (!work) throw new Error(`WORK_NOT_FOUND: ${workId}`);
+    return cognitiveScopesForWork(work, controllerHome);
+  }
   const instance = readForgeInstanceIdentity(controllerHome);
   if (!instance) throw new Error('COGNITION_DIRECT_LEARNING_FORGE_INSTANCE_REQUIRED');
   const project = resolveProjectForRepositoryPlacement({
@@ -86,6 +94,7 @@ function directLearningAuthority(input: {
   scopes: readonly ScopeRef[];
   principalId?: string;
   sourceId: string;
+  sourceWorkId?: string;
 }): CognitiveWriteAuthorityPort {
   const scopeAllowed = (scope: ScopeRef) => input.scopes.some(candidate => sameScope(candidate, scope));
   return {
@@ -93,8 +102,8 @@ function directLearningAuthority(input: {
       if (!scopeAllowed(memory.scope)
         || memory.provenance.sourceKind !== 'controller'
         || memory.provenance.sourceId !== input.sourceId
-        || memory.provenance.sourceWorkId
-        || memory.provenance.sourceRoundId) {
+        || memory.provenance.sourceWorkId !== input.sourceWorkId
+        || Boolean(memory.provenance.sourceRoundId) !== Boolean(input.sourceWorkId)) {
         throw new Error('COGNITION_DIRECT_LEARNING_AUTHORITY_INVALID');
       }
       if (memory.scope.kind === 'workspace' && !memory.facets.includes('portability.portable')) {
@@ -144,13 +153,14 @@ export function recordDirectControllerLearningFeedback(input: {
   sessionId?: string;
   controllerInstanceId?: string;
   now?: string;
+  workId?: string;
 }): DirectControllerLearningFeedbackResult {
   if (!input.feedback.length || input.feedback.length > 32) throw new Error('COGNITION_DIRECT_FEEDBACK_ITEMS_INVALID');
   const principalId = input.principalId?.trim();
   if (!principalId) throw new Error('COGNITION_DIRECT_FEEDBACK_PRINCIPAL_REQUIRED');
   const interactionId = input.sessionId?.trim() || input.controllerInstanceId?.trim();
   if (!interactionId) throw new Error('COGNITION_DIRECT_FEEDBACK_SESSION_REQUIRED');
-  const scopes = directLearningScopes(input.controllerHome, input.repository);
+  const scopes = directLearningScopes(input.controllerHome, input.repository, input.workId);
   const allowedScopes = new Set(scopes.map(scope => `${scope.kind}:${scope.id}`));
   const now = input.now ?? new Date().toISOString();
   const read = cognitionReadPort(input.controllerHome);
@@ -201,12 +211,13 @@ export function persistDirectControllerLearning(input: {
   sessionId?: string;
   controllerInstanceId?: string;
   controllerType?: string;
+  workId?: string;
   now?: string;
 }): DirectControllerLearningResult {
   if (!input.signals.length || input.signals.length > CONTROLLER_LEARNING_SIGNAL_ENVELOPE_MAX_ITEMS) {
     throw new Error('COGNITION_DIRECT_LEARNING_SIGNALS_INVALID');
   }
-  const scopes = directLearningScopes(input.controllerHome, input.repository);
+  const scopes = directLearningScopes(input.controllerHome, input.repository, input.workId);
   const observedAt = input.now ?? new Date().toISOString();
   const sourceId = directSourceId(input);
   const projectScope = scopes.find(scope => scope.kind === 'project')!;
@@ -218,16 +229,14 @@ export function persistDirectControllerLearning(input: {
     scopes,
     principalId: input.principalId,
     sourceId,
+    sourceWorkId: input.workId,
   });
 
   const drafts = input.signals.map(signal => {
-    const scope = signal.scopeKind === 'project'
-      ? projectScope
-      : signal.scopeKind === 'workspace'
-        ? workspaceScope
-        : undefined;
+    const scope = scopes.find(candidate => candidate.kind === signal.scopeKind)
+      ?? (signal.scopeKind === 'project' ? projectScope : signal.scopeKind === 'workspace' ? workspaceScope : undefined);
     if (!scope) {
-      throw new Error(`COGNITION_DIRECT_LEARNING_SCOPE_REQUIRES_WORK: ${signal.scopeKind}`);
+      throw new Error(`COGNITION_LEARNING_SCOPE_UNREACHABLE: ${signal.scopeKind}`);
     }
     const id = semanticSignalId(signal, scope);
     const learning: LearningSignal = {
@@ -251,7 +260,15 @@ export function persistDirectControllerLearning(input: {
       counterEvidenceRefs: [...new Set(signal.counterEvidenceRefs)],
       ...(signal.expiresAt ? { expiresAt: signal.expiresAt } : {}),
     };
-    return memoryDraftFromLearningSignal(learning);
+    const draft = memoryDraftFromLearningSignal(learning);
+    return input.workId ? {
+      ...draft,
+      provenance: {
+        ...draft.provenance,
+        sourceWorkId: input.workId,
+        sourceRoundId: `work:${input.workId}:learning`,
+      },
+    } : draft;
   });
 
   // Validate all evidence before any write so a multi-signal call cannot partially commit.

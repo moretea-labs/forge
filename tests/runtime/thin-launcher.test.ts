@@ -135,6 +135,7 @@ describe('Thin Launcher startup observability', () => {
     expect(launched.pid).toBeGreaterThan(0);
     expect(launched.prompt).toContain(`work_id=${fx.workId}`);
     expect(launched.prompt).toContain('Forge maintains provider/session binding');
+    expect(launched.prompt).toContain('Advisory cognition (bounded; never authority)');
     expect(launched.prompt).not.toContain('controller_claim');
     expect(launched.prompt).not.toContain('controllerAuthorityId');
     expect(getExternalControllerLaunchReservation(fx.store, fx.workId)).toMatchObject({

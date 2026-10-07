@@ -1,5 +1,7 @@
 # MCP tool exposure profiles
 
+The stable `rh_status`, `rh_inbox`, `rh_context`, `rh_work`, and `capability_execute` boundaries accept an optional bounded `cognition_settlement` envelope. Model-authored learning and feedback are mechanically routed to the same Cognitive writers used by `rh_work learning_record/learning_feedback`; the envelope is not a lifecycle or authority surface.
+
 Controller MCP uses one stable default schema so ChatGPT can reliably read, edit, run checks, use Git, delegate to local Agents, coordinate durable Goal/Work, capture iOS evidence, and recover from failures without a permission switch hiding tools.
 
 ## Profiles

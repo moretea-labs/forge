@@ -20,6 +20,7 @@ import { getWorkflowSupervisorCurrentConversation, getWorkflowSupervisorTaskByCo
 import { resolveWorkflowSupervisorForgeHome, workflowSupervisorSocketPath } from '../../../supervisor/paths';
 import type { WorkflowSupervisorLifecycleHooks, WorkflowSupervisorTask } from '../../../supervisor/types';
 import { getRuntimeWriteClaim } from './write-fence';
+import { renderAssistantWorkContext } from '../context/assistant-work-context';
 
 export type WorkflowSupervisorBoundary =
   | { status: 'not_eligible' }
@@ -225,6 +226,14 @@ export function forgeWorkflowSupervisorLifecycleHooks(controllerHome: string): W
       // Legacy / independent Work without Requirement authority keeps the
       // existing fallback. Absence never manufactures a replacement Work.
       return work?.objective;
+    },
+    advisoryCognitionForTask: (task) => {
+      const repoId = workflowSupervisorContractText(task, 'repo_id');
+      const taskControllerHome = workflowSupervisorContractText(task, 'controller_home');
+      if (!repoId || (taskControllerHome && taskControllerHome !== controllerHome)) return undefined;
+      const workId = workflowSupervisorOriginWorkId(task, repoId);
+      if (!workId) return undefined;
+      return renderAssistantWorkContext({ controllerHome, repoId, workId, query: task.objective });
     },
     effectDispatchEvidence: ({ task }) => {
       const claim = getRuntimeWriteClaim();

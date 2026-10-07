@@ -28,6 +28,10 @@ export interface WorkflowSupervisorTurnEnvelope {
     repo_id: string;
     checkout_id?: string;
   };
+  cognition?: {
+    role: 'advisory';
+    projection: string;
+  };
   automation: {
     automation_task_id: string;
     automation_type: 'autonomous_continuation';
@@ -155,6 +159,8 @@ export interface WorkflowSupervisorValidators {
 export interface WorkflowSupervisorLifecycleHooks {
   /** Resolve the current canonical Work objective at prompt generation time. */
   canonicalObjectiveForTask?(task: WorkflowSupervisorTask): string | undefined;
+  /** Bounded cognition only; never carries lower-layer authority or lifecycle state. */
+  advisoryCognitionForTask?(task: WorkflowSupervisorTask): string | undefined;
   /** Derived project identity used only for browser discovery; never a lifecycle authority. */
   projectScopeForTask?(task: WorkflowSupervisorTask): WorkflowSupervisorProjectScope | undefined;
   /** Build the one bounded enrollment task for a newly discovered project conversation. */

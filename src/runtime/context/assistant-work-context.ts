@@ -6,12 +6,13 @@ import { getControllerRoundRelay, listCurrentControllerRoundRelays } from '../..
 import { recordExperience, recordOutcomeObservation, queryExperiences, type ExperienceApplicability, type ExperienceDraft, type ExperienceRecord, type OutcomeObservation } from '../../../packages/kernel/memory/api/index';
 import { memoryAddressKey, memoryUnitFromExperience, parseMemoryAddressKey, recordCognitiveMemory, recordCognitiveMemoryEdge, type CognitiveUsageFeedback, type CognitiveWriteAuthorityPort, type MemoryEdgeDraft, type MemoryProvenance, type MemoryUnit, type MemoryUnitDraft } from '../../../packages/kernel/cognition/api/index';
 import { assertMemoryWriteAuthority, canonicalWorkflowEvidenceAvailable, cognitiveScopesForWork, controllerExperienceStore, controllerOutcomeObservationStore, experienceScopesForWork, type ExperienceWriteIdentity } from '../control-plane/persistence/experience-store';
-import { activateCognitiveMemory, cognitionMemoryStore, readCognitiveUsageFeedback } from '../control-plane/persistence/cognition-store';
+import { cognitionMemoryStore, readCognitiveUsageFeedback } from '../control-plane/persistence/cognition-store';
 import { listControlPlaneRecords } from '../control-plane/persistence/sqlite-store';
 import { WORKFLOW_RUN_NAMESPACE, type WorkflowRunRecord } from '../control-plane/persistence/workflow-run-store';
 import { loadProjectEngineeringContract } from './project-engineering-contract';
 import { fileKnowledgeSourcePort, renderAssistantContext, resolveAssistantContext, type AssistantContextResolution } from './assistant-context';
 import { applyCognitiveSkillCanary } from './cognitive-skill-canary';
+import { resolveCognitiveAttention } from './cognitive-attention';
 
 /**
  * Canonical truth remains ControllerRound observationWindow. This is a bounded,
@@ -146,35 +147,16 @@ export function prepareAssistantWorkContext(input: {
     ...(boundProject ? { projectId: boundProject } : {}),
   });
   const transientMemories = experiences.records.map(memoryUnitFromExperience);
-  const narrowCognitiveScopes = cognitiveScopes.filter(scope => scope.kind !== 'workspace');
-  const workspaceCognitiveScopes = cognitiveScopes.filter(scope => scope.kind === 'workspace');
-  const recallOptions = {
+  const activation = resolveCognitiveAttention({
+    controllerHome: input.controllerHome,
+    scopes: cognitiveScopes,
+    query,
     now,
     maxItems: 6,
-    maxCandidates: 48,
-    maxGraphDepth: 1,
     maxBytes: 12 * 1024,
-    minCueScore: 0.12,
     transientMemories,
     usageFeedback,
-  };
-  const localActivation = activateCognitiveMemory(
-    input.controllerHome,
-    narrowCognitiveScopes.length ? narrowCognitiveScopes : workspaceCognitiveScopes,
-    query,
-    recallOptions,
-  );
-  // ControllerRound creation is already a meaningful task boundary. Keep the
-  // automatic cue set small and local; portable Workspace guidance is fallback
-  // only when Work/Requirement/Project memory has no qualifying cue.
-  const activation = localActivation.items.length > 0 || workspaceCognitiveScopes.length === 0
-    ? localActivation
-    : activateCognitiveMemory(input.controllerHome, workspaceCognitiveScopes, query, {
-        ...recallOptions,
-        maxItems: 4,
-        maxCandidates: 32,
-        transientMemories: [],
-      });
+  });
   const context = resolveAssistantContext({ ...(boundProject ? { projectId: boundProject } : {}), query,
     sources,
     knowledge: fileKnowledgeSourcePort({ repoRoot, brainRoot: configuredBrainRoot(), sourceRevision: 'working-tree' }),

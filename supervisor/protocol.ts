@@ -146,6 +146,7 @@ export function renderSupervisorPrompt(
   _checkpoint?: string,
   _correctionReason?: string,
   _lowerLayerContext?: string,
+  advisoryCognition?: string,
 ): string {
   const repoId = typeof task.completionContract.repo_id === 'string'
     ? task.completionContract.repo_id.trim()
@@ -154,6 +155,7 @@ export function renderSupervisorPrompt(
     ? task.completionContract.checkout_id.trim()
     : typeof task.continuationPolicy.checkout_id === 'string' ? task.continuationPolicy.checkout_id.trim() : '';
   const checkpoint = typeof _checkpoint === 'string' ? _checkpoint.trim().slice(0, 2_000) : '';
+  const cognition = advisoryCognition?.trim().slice(0, 8_000) ?? '';
   const envelope: WorkflowSupervisorTurnEnvelope = {
     schema_version: 2,
     identity: {
@@ -167,6 +169,7 @@ export function renderSupervisorPrompt(
     },
     ...(checkpoint ? { continuity: { role: 'advisory' as const, summary: checkpoint } } : {}),
     ...(repoId ? { repository: { repo_id: repoId, ...(checkoutId ? { checkout_id: checkoutId } : {}) } } : {}),
+    ...(cognition ? { cognition: { role: 'advisory' as const, projection: cognition } } : {}),
     automation: {
       automation_task_id: task.taskId,
       automation_type: 'autonomous_continuation',

@@ -233,10 +233,18 @@ const COGNITIVE_ENGLISH_FUNCTION_WORDS = new Set([
 ]);
 
 export function cognitiveTerms(text: string): Set<string> {
-  const terms = new Set(
-    (text.toLocaleLowerCase('en-US').match(/[a-z0-9_.:/-]+/g) ?? [])
-      .filter(term => !COGNITIVE_ENGLISH_FUNCTION_WORDS.has(term)),
-  );
+  const terms = new Set<string>();
+  for (const token of text.toLocaleLowerCase('en-US').match(/[a-z0-9_.:/-]+/g) ?? []) {
+    if (!COGNITIVE_ENGLISH_FUNCTION_WORDS.has(token)) terms.add(token);
+    // Structured concepts are canonical identities, but their lexical parts
+    // are a rebuildable retrieval projection. Thus `forge cognition` can cue
+    // `forge.cognition` without inventing a keyword ontology.
+    if (/[._:/-]/.test(token)) {
+      for (const part of token.split(/[._:/-]+/).filter(Boolean)) {
+        if (!COGNITIVE_ENGLISH_FUNCTION_WORDS.has(part)) terms.add(part);
+      }
+    }
+  }
   for (const run of text.match(/\p{Script=Han}+/gu) ?? []) {
     const chars = [...run];
     if (chars.length === 1) terms.add(run);

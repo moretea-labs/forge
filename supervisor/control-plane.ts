@@ -762,7 +762,8 @@ export class WorkflowSupervisorControlPlane {
   ): string {
     const canonicalObjective = this.hooks.canonicalObjectiveForTask?.(task)?.trim();
     const promptTask = canonicalObjective ? { ...task, objective: canonicalObjective } : task;
-    return renderSupervisorPrompt(promptTask, effectId, kind, checkpoint, correctionReason, lowerLayerContext);
+    const cognition = this.hooks.advisoryCognitionForTask?.(promptTask);
+    return renderSupervisorPrompt(promptTask, effectId, kind, checkpoint, correctionReason, lowerLayerContext, cognition);
   }
 
   private browserTaskActive(task: WorkflowSupervisorTask): boolean { return this.hooks.browserTaskActive?.(task) ?? true; }

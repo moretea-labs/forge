@@ -28,11 +28,11 @@ import { resolveProjectForRepositoryPlacement } from "../../../src/runtime/contr
 import { cognitiveScopesForWork } from "../../../src/runtime/control-plane/persistence/experience-store";
 import { activateCognitiveMemory, auditCognitiveMemory } from "../../../src/runtime/control-plane/persistence/cognition-store";
 import { cognitiveUsageFeedbackForContext } from "../../../src/runtime/context/assistant-work-context";
+import { resolveCognitiveAttention } from '../../../src/runtime/context/cognitive-attention';
 import { invalidFacadeOperation, repositoryExecutionReadiness, summarizeInvalidActiveWorkCandidate, summarizeWorkListItem } from './status-inbox-adapter';
 import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
 
 const RH_CONTEXT_RECENT_ACTIVITY_WINDOW_MS = 24 * 60 * 60 * 1_000;
-const RH_CONTEXT_AUTOMATIC_RECALL_MIN_CUE_SCORE = 0.12;
 const RH_CONTEXT_AUTOMATIC_RECALL_LIMIT = 4;
 
 function timestampIsRecent(value: string | undefined, cutoffMs: number): boolean {
@@ -198,32 +198,19 @@ function rhContextLearningRecall(
     scopes: resolved.scopes,
     ...(resolved.projectId ? { projectId: resolved.projectId } : {}),
   });
-  const recallOptions = {
+  const activation = resolveCognitiveAttention({
+    controllerHome: ctx.controllerHome,
+    scopes: resolved.scopes,
+    query: query.slice(0, 4_000),
+    now: new Date().toISOString(),
     maxItems: Math.min(8, Math.max(1, limit)),
-    maxCandidates: 48,
-    maxGraphDepth: 1,
     maxBytes: 12 * 1024,
-    minCueScore: RH_CONTEXT_AUTOMATIC_RECALL_MIN_CUE_SCORE,
     usageFeedback: usage,
-  };
-  const narrowScopes = resolved.scopes.filter(scope => scope.kind !== 'workspace');
-  const workspaceScopes = resolved.scopes.filter(scope => scope.kind === 'workspace');
-  const localActivation = activateCognitiveMemory(
-    ctx.controllerHome,
-    narrowScopes.length ? narrowScopes : workspaceScopes,
-    query.slice(0, 4_000),
-    recallOptions,
-  );
-  // Ordinary recall behaves like attention: prefer exact task/project experience.
-  // Portable Workspace memory is a fallback when the narrower semantic context
-  // has no qualifying cue, not an extra stream of background advice.
-  const activation = localActivation.items.length > 0 || workspaceScopes.length === 0
-    ? localActivation
-    : activateCognitiveMemory(ctx.controllerHome, workspaceScopes, query.slice(0, 4_000), recallOptions);
+  });
   return {
     advisoryOnly: true,
     authorityBoundary: 'Learned context may guide model decisions but never grants execution, lifecycle, or acceptance authority.',
-    scopePolicy: 'narrow_scopes_then_workspace_fallback',
+    scopePolicy: 'unified_relevance_with_narrow_scope_prior',
     scopes: resolved.scopes,
     items: activation.items.map(entry => ({
       memoryId: memoryAddressKey({ scope: entry.memory.scope, id: entry.memory.id }),

@@ -51,6 +51,8 @@ export interface ActivationOptions {
   transientMemories?: readonly MemoryUnit[];
   /** Rebuildable retrieval feedback derived from canonical ControllerRound observations. */
   usageFeedback?: readonly CognitiveUsageFeedback[];
+  /** Small relevance prior; all scopes still compete in one candidate set. */
+  scopePriors?: Partial<Record<ScopeRef['kind'], number>>;
 }
 
 const DEFAULT_ITEMS = 16;
@@ -69,7 +71,7 @@ function boundedUnitScore(value: number | undefined, label: string): number {
   return value;
 }
 
-function associativeLexicalCueScore(memory: MemoryUnit, terms: ReadonlySet<string>, allowCjkQueryCoverage = false): number {
+function associativeLexicalCueScore(memory: MemoryUnit, terms: ReadonlySet<string>, allowQueryCoverage = false): number {
   if (!terms.size) return 0;
   const haystack = cognitiveTerms(`${memory.canonicalText}\n${memory.concepts.join(' ')}\n${memory.facets.join(' ')}`);
   if (!haystack.size) return 0;
@@ -89,13 +91,13 @@ function associativeLexicalCueScore(memory: MemoryUnit, terms: ReadonlySet<strin
   // larger, so a CJK query with multiple direct cue units may use bounded query
   // coverage instead. This remains candidate discovery, never semantic authority.
   const bidirectionalSpecificity = Math.min(queryCoverage, memoryCoverage);
-  const multiCueQueryCoverage = allowCjkQueryCoverage && matches >= 2 ? queryCoverage : 0;
+  const multiCueQueryCoverage = allowQueryCoverage && matches >= 2 ? queryCoverage : 0;
   return Math.max(bidirectionalSpecificity, multiCueQueryCoverage);
 }
 
 function retrievalCueScore(item: ActivationItem, queryTerms: ReadonlySet<string>, query: string): number {
-  const hasCjkQuery = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/u.test(query);
-  let score = associativeLexicalCueScore(item.memory, queryTerms, hasCjkQuery);
+  const multiCueQuery = queryTerms.size >= 2;
+  let score = associativeLexicalCueScore(item.memory, queryTerms, multiCueQuery);
   for (const reason of item.reasons) {
     if (reason.signal === 'exact' || reason.signal === 'semantic') {
       score = Math.max(score, reason.score);
@@ -273,6 +275,7 @@ export function activateMemory(
     const feedbackConflictPenalty = Math.min(0.2, ((feedback?.conflictCount ?? 0) + (feedback?.staleCount ?? 0)) * 0.08);
     const usageAdjustment = usedBoost - rejectedPenalty - feedbackConflictPenalty;
     item.score += recency * 0.15 + item.memory.utility * 0.25 + confidenceContribution - storedConflictPenalty + usageAdjustment;
+    item.score += options.scopePriors?.[item.memory.scope.kind] ?? 0;
     addReason(item, { signal: 'recency', score: recency, detail: 'temporal-decay' });
     addReason(item, { signal: 'utility', score: item.memory.utility, detail: 'stored-utility' });
     addReason(item, { signal: 'confidence', score: item.memory.confidence, detail: 'stored-confidence' });
@@ -295,9 +298,21 @@ export function activateMemory(
     b.score - a.score
     || b.memory.provenance.recordedAt.localeCompare(a.memory.provenance.recordedAt)
     || memoryAddressKey(memoryAddressOf(a.memory)).localeCompare(memoryAddressKey(memoryAddressOf(b.memory))));
+  const consolidatedSources = new Set<string>();
+  const consolidated = ranked.filter(item =>
+    item.memory.facets.includes('consolidated')
+    && retrievalCueScore(item, queryTerms, query) >= minCueScore).slice(0, 64);
+  if (consolidated.length) {
+    for (const { edge, memory } of port.neighbors(consolidated.map(item => memoryAddressOf(item.memory)), 256, activeAt)) {
+      if (edge.relation === 'derived_from') consolidatedSources.add(memoryAddressKey(memoryAddressOf(memory)));
+    }
+  }
   const items: ActivationItem[] = [];
   let estimatedBytes = 0;
   for (const item of ranked) {
+    // A consolidated view and its retained provenance are one retrieval family.
+    // Conflicts/supersession remain separate because only derived_from is folded.
+    if (consolidatedSources.has(memoryAddressKey(memoryAddressOf(item.memory)))) continue;
     // Opportunistic recall should behave like an associative cue, not like a
     // list of globally high-confidence memories. Confidence/utility rank a
     // relevant memory after it is cued; they must not make a weakly related

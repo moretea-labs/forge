@@ -81,6 +81,7 @@ export function callRhWorkLearningOperation(
         sessionId: ctx.sessionId,
         controllerInstanceId: ctx.controllerInstanceId,
         controllerType: ctx.controllerType,
+        workId: typeof args.work_id === 'string' && args.work_id.trim() ? args.work_id.trim() : undefined,
       });
       return result(buildFacadeResult({
         summary: `Recorded ${learning.storedMemoryIds.length} model-authored advisory learning item(s) without creating Work lifecycle.`,

@@ -396,7 +396,7 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
       createdAt: '2026-01-01T00:00:00.000Z',
     };
     const lowerLayerContext = 'controller_authority_id=opaque-previous-turn-token';
-    const continuation = renderSupervisorPrompt(task, 'fx_minimal01', 'continuation', 'large checkpoint payload', undefined, lowerLayerContext);
+    const continuation = renderSupervisorPrompt(task, 'fx_minimal01', 'continuation', 'large checkpoint payload', undefined, lowerLayerContext, 'Relevant prior cognition.');
     expect(continuation).toStartWith('@forge\n<<<FORGE_WORKFLOW_EFFECT_V1:fx_minimal01>>>\n');
     expect(parseSupervisorTurn(continuation)).toEqual({
       schema_version: 2,
@@ -414,6 +414,7 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
         summary: 'large checkpoint payload',
       },
       repository: { repo_id: 'repo-minimal-continuation', checkout_id: 'checkout_ios_candidate' },
+      cognition: { role: 'advisory', projection: 'Relevant prior cognition.' },
       automation: {
         automation_task_id: task.taskId,
         automation_type: 'autonomous_continuation',
