@@ -324,7 +324,11 @@ export function selectTests(
     files: selected,
     reason: explicitTestFiles.length > 0
       ? 'explicit test files'
-      : noChanges ? 'no changes detected; core smoke only' : `changed paths mapped to ${[...changedModules].sort().join(', ')}`,
+      : gate === 'full' ? 'full non-destructive suite'
+      : gate === 'infrastructure' ? 'infrastructure suite'
+      : gate === 'fault' ? 'fault-injection suite'
+      : noChanges ? 'no changes detected; core smoke only'
+      : `changed paths mapped to ${[...changedModules].sort().join(', ')}`,
   };
 }
 
