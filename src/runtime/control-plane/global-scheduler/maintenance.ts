@@ -1,6 +1,6 @@
 import type { RepositoryRecord } from '../../../cli/repositories/types';
 import { cleanupRuntimeComputerInteractionTargets } from '../../root/computer-target-composition';
-import { cleanupControllerHomeBrowserArtifacts, cleanupGeneratedRepositoryCaches, cleanupIdleXCTestDevices } from '../generated-cache-retention';
+import { cleanupControllerHomeBrowserArtifacts, cleanupGeneratedRepositoryCheckoutCaches, cleanupIdleXCTestDevices } from '../generated-cache-retention';
 import {
   cleanupRuntimeBrowserSessionTombstones,
   closeRuntimeBrowserSessionLegacyImportCutover,
@@ -283,7 +283,7 @@ export async function runSchedulerPeriodicCleanup(input: {
   if (plan.deepRetentionRepositoryIndex === undefined) return;
   const repo = input.repositories[plan.deepRetentionRepositoryIndex]!;
   try {
-    const generated = cleanupGeneratedRepositoryCaches(repo.canonicalRoot, { nowMs: input.nowMs });
+    const generated = cleanupGeneratedRepositoryCheckoutCaches(repo, { nowMs: input.nowMs });
     if (generated.errors.length > 0) {
       console.error(`[forge cleanup] generated-cache retention reported ${generated.errors.length} error(s) for ${repo.repoId}`);
     }

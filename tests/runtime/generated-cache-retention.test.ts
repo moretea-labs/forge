@@ -3,7 +3,7 @@ import { execFileSync } from 'child_process';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { cleanupControllerHomeBrowserArtifacts, cleanupGeneratedRepositoryCaches } from '../../src/runtime/control-plane/generated-cache-retention';
+import { cleanupControllerHomeBrowserArtifacts, cleanupGeneratedRepositoryCaches, cleanupGeneratedRepositoryCheckoutCaches } from '../../src/runtime/control-plane/generated-cache-retention';
 
 const roots: string[] = [];
 
@@ -77,6 +77,39 @@ describe('generated repository cache retention', () => {
     expect(report.removedPaths).toContain('.forge/browser/screenshots/stale.png');
     expect(report.skippedByReason.active_process ?? 0).toBeGreaterThanOrEqual(1);
     expect(report.skippedByReason.tracked_content ?? 0).toBeGreaterThanOrEqual(2);
+  });
+
+  test('reclaims stale generated caches from active managed worktrees with one repository budget', () => {
+    const canonicalRoot = repository();
+    const activeWorktreeRoot = repository();
+    const removedWorktreeRoot = repository();
+    const activeCache = join(activeWorktreeRoot, '.repo-harness', 'ios-build', 'DerivedData');
+    const removedCache = join(removedWorktreeRoot, '.repo-harness', 'ios-build', 'DerivedData');
+    mkdirSync(activeCache, { recursive: true });
+    mkdirSync(removedCache, { recursive: true });
+    writeFileSync(join(activeCache, 'cache.bin'), 'cache');
+    writeFileSync(join(removedCache, 'cache.bin'), 'cache');
+    age(activeCache);
+    age(removedCache);
+
+    const report = cleanupGeneratedRepositoryCheckoutCaches({
+      canonicalRoot,
+      checkouts: [
+        { localRoot: activeWorktreeRoot, worktree: true, lifecycle: 'active' },
+        { localRoot: removedWorktreeRoot, worktree: true, lifecycle: 'removed' },
+      ],
+    }, {
+      nowMs: Date.parse('2026-08-25T12:00:00.000Z'),
+      graceMs: 60_000,
+      maxEntries: 100,
+      maxRemovals: 10,
+      processCommands: [],
+    });
+
+    expect(existsSync(activeCache)).toBe(false);
+    expect(existsSync(removedCache)).toBe(true);
+    expect(report.rootsInspected).toBe(2);
+    expect(report.removedPaths.some((path) => path.includes(activeWorktreeRoot))).toBe(true);
   });
 
   test('scans bounded browser artifact roots before high-cardinality cache trees', () => {

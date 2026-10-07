@@ -37,6 +37,19 @@ export interface GeneratedCacheRetentionReport {
   budgetExhausted: boolean;
 }
 
+export interface GeneratedCacheRepositoryRootSet {
+  canonicalRoot: string;
+  checkouts: ReadonlyArray<{
+    localRoot: string;
+    worktree: boolean;
+    lifecycle?: 'active' | 'removed' | 'archived';
+  }>;
+}
+
+export interface RepositoryGeneratedCacheRetentionReport extends GeneratedCacheRetentionReport {
+  rootsInspected: number;
+}
+
 export type BrowserDisposableArtifactKind = 'screenshots' | 'downloads' | 'diagnostics';
 
 export interface BrowserArtifactRetentionOptions {
@@ -311,6 +324,66 @@ export function cleanupGeneratedRepositoryCaches(
   }
 
   return report;
+}
+
+/**
+ * Apply the same generated-cache policy to the canonical checkout and every
+ * active managed worktree, sharing one scan/removal budget across the whole
+ * repository. Work lifecycle is intentionally not cache authority: stale but
+ * recoverable Work may keep its source checkout while rebuildable caches age
+ * out independently. Active build/test processes are still protected by
+ * cleanupGeneratedRepositoryCaches().
+ */
+export function cleanupGeneratedRepositoryCheckoutCaches(
+  repository: GeneratedCacheRepositoryRootSet,
+  options: GeneratedCacheRetentionOptions = {},
+): RepositoryGeneratedCacheRetentionReport {
+  let remainingEntries = Math.max(1, Math.floor(options.maxEntries ?? DEFAULT_SCAN_BUDGET));
+  let remainingRemovals = Math.max(1, Math.floor(options.maxRemovals ?? DEFAULT_REMOVAL_BUDGET));
+  const processCommands = options.processCommands ?? collectProcessCommands();
+  const roots = [
+    repository.canonicalRoot,
+    ...repository.checkouts
+      .filter((checkout) => checkout.worktree && (checkout.lifecycle ?? 'active') === 'active')
+      .map((checkout) => checkout.localRoot),
+  ].filter((root, index, values) => values.findIndex((item) => canonical(item) === canonical(root)) === index);
+  const aggregate: RepositoryGeneratedCacheRetentionReport = {
+    rootsInspected: 0,
+    inspected: 0,
+    eligible: 0,
+    removedPaths: [],
+    retainedPaths: [],
+    skippedByReason: {},
+    errors: [],
+    budgetExhausted: false,
+  };
+
+  for (const root of roots) {
+    if (remainingEntries <= 0 || remainingRemovals <= 0) {
+      aggregate.budgetExhausted = true;
+      break;
+    }
+    const report = cleanupGeneratedRepositoryCaches(root, {
+      ...options,
+      processCommands,
+      maxEntries: remainingEntries,
+      maxRemovals: remainingRemovals,
+    });
+    aggregate.rootsInspected += 1;
+    aggregate.inspected += report.inspected;
+    aggregate.eligible += report.eligible;
+    aggregate.removedPaths.push(...report.removedPaths.map((path) => `${root}:${path}`));
+    aggregate.retainedPaths.push(...report.retainedPaths.map((path) => `${root}:${path}`));
+    for (const [reason, count] of Object.entries(report.skippedByReason)) {
+      aggregate.skippedByReason[reason] = (aggregate.skippedByReason[reason] ?? 0) + count;
+    }
+    aggregate.errors.push(...report.errors.map((error) => `${root}:${error}`));
+    remainingEntries = Math.max(0, remainingEntries - report.inspected);
+    remainingRemovals = Math.max(0, remainingRemovals - report.removedPaths.length);
+    aggregate.budgetExhausted ||= report.budgetExhausted;
+  }
+  if (remainingEntries <= 0 || remainingRemovals <= 0) aggregate.budgetExhausted = true;
+  return aggregate;
 }
 
 function emptyBrowserArtifactClassReport(): BrowserArtifactClassRetentionReport {
