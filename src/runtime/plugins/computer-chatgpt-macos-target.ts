@@ -52,12 +52,16 @@ type TaggedRef = MacOsBrowserTabRef & { browserProduct: MacOsBrowserProduct };
 
 interface ComputerChatgptNativePage {
   evaluate<T>(expression: string | ((...args: unknown[]) => unknown), arg?: unknown): Promise<T>;
+  foregroundState?(): Promise<{ frontmost: boolean; active: boolean }>;
+  bringToFront?(): Promise<void>;
   tabRef(): TaggedRef | undefined;
 }
 
 function taggedPage(page: MacOsAppleEventsPage, product: MacOsBrowserProduct): ComputerChatgptNativePage {
   return {
     evaluate: page.evaluate.bind(page),
+    foregroundState: page.foregroundState.bind(page),
+    bringToFront: page.bringToFront.bind(page),
     tabRef: () => {
       const ref = page.tabRef();
       return ref ? { ...ref, browserProduct: product } : undefined;
@@ -88,7 +92,12 @@ function targetAlias(identity: ComputerChatgptTargetIdentity): string {
 }
 
 function ownerToken(targetId: string): string { return `${OWNER_PREFIX}${targetId}`; }
-function providerBinding(page: ComputerChatgptNativePage, targetId: string, ownership: 'provider_owned' | 'user_owned'): ComputerSurfaceProviderBinding {
+function providerBinding(
+  page: ComputerChatgptNativePage,
+  targetId: string,
+  ownership: 'provider_owned' | 'user_owned',
+  ownerMarkerObserved = false,
+): ComputerSurfaceProviderBinding {
   const ref = page.tabRef();
   if (!ref) throw new Error('COMPUTER_CHATGPT_TARGET_PROVIDER_BINDING_UNPROVEN');
   return {
@@ -97,7 +106,7 @@ function providerBinding(page: ComputerChatgptNativePage, targetId: string, owne
     browserProduct: ref.browserProduct,
     windowId: ref.windowId,
     tabId: ref.tabId,
-    ...(ownership === 'provider_owned' ? { ownerToken: ownerToken(targetId) } : {}),
+    ...(ownership === 'provider_owned' && ownerMarkerObserved ? { ownerToken: ownerToken(targetId) } : {}),
   };
 }
 
@@ -477,21 +486,52 @@ export class MacOsChatgptConversationTargetPort implements ComputerChatgptConver
     }).target;
   }
 
+  private async prepareProviderOwnedPage(record: ComputerSurfaceTarget, page: ComputerChatgptNativePage): Promise<void> {
+    if (record.stableIdentity.ownership !== 'provider_owned') return;
+    if (!page.foregroundState || !page.bringToFront) throw new Error('COMPUTER_CHATGPT_INTERACTION_READINESS_UNAVAILABLE');
+    const state = await page.foregroundState();
+    if (!state.frontmost || !state.active) await page.bringToFront();
+  }
+
+  private async observeTarget(
+    record: ComputerSurfaceTarget,
+    page: ComputerChatgptNativePage,
+    options: ComputerChatgptConversationObservationOptions = {},
+  ): Promise<ComputerChatgptConversationObservation> {
+    await this.prepareProviderOwnedPage(record, page);
+    return await observeMacOsChatgptPage(page, options);
+  }
+
   private target(identity: ComputerChatgptTargetIdentity, record: ComputerSurfaceTarget, page: ComputerChatgptNativePage): ComputerChatgptConversationTarget {
     return {
       targetId: record.targetId,
       identity,
-      observe: async (options) => await observeMacOsChatgptPage(page, options),
-      dispatch: async (prompt, options) => await dispatchMacOsChatgptPrompt(page, prompt, options),
+      observe: async (options) => await this.observeTarget(record, page, options),
+      dispatch: async (prompt, options) => {
+        await this.prepareProviderOwnedPage(record, page);
+        return await dispatchMacOsChatgptPrompt(page, prompt, options);
+      },
     };
   }
 
   private async bind(identity: ComputerChatgptTargetIdentity, record: ComputerSurfaceTarget, page: ComputerChatgptNativePage, ownership: 'provider_owned' | 'user_owned'): Promise<ComputerSurfaceTarget> {
-    if (ownership === 'provider_owned') {
-      await page.evaluate(`(() => { window.name = ${JSON.stringify(ownerToken(record.targetId))}; return window.name; })()`);
-    }
-    const updated = this.upsert(identity, ownership, providerBinding(page, record.targetId, ownership));
+    // Stable tab identity is the reconnect authority. Persist it before any
+    // fallible DOM/foreground work so a successfully created physical tab can
+    // never become an untracked ghost merely because Apple Events JS stalls.
+    let updated = this.upsert(identity, ownership, providerBinding(page, record.targetId, ownership));
     this.pages.set(updated.targetId, page);
+    if (ownership === 'provider_owned') {
+      try {
+        await this.prepareProviderOwnedPage(updated, page);
+        await page.evaluate(`(() => { window.name = ${JSON.stringify(ownerToken(record.targetId))}; return window.name; })()`);
+        // ownerToken is rebuildable provider observation, not semantic
+        // identity. Record it only after the marker was actually observed.
+        updated = this.upsert(identity, ownership, providerBinding(page, record.targetId, ownership, true));
+      } catch {
+        // The durable exact-tab binding remains canonical. Interaction paths
+        // retry readiness later instead of creating a second provider-owned tab.
+      }
+    }
     return updated;
   }
 
@@ -520,7 +560,7 @@ export class MacOsChatgptConversationTargetPort implements ComputerChatgptConver
     const cached = this.pages.get(record.targetId);
     if (cached) {
       try {
-        const observation = await observeMacOsChatgptPage(cached, { includeUserHistory: false, includePageText: false });
+        const observation = await this.observeTarget(record, cached, { includeUserHistory: false, includePageText: false });
         if (sameConversation(observation.url, identity)) return { state: 'ready', target: this.target(identity, record, cached), observation };
       } catch { /* rebuild from provider binding/inventory */ }
       this.pages.delete(record.targetId);
@@ -533,7 +573,7 @@ export class MacOsChatgptConversationTargetPort implements ComputerChatgptConver
     if (binding?.providerId === PROVIDER_ID && product && binding.windowId && binding.tabId) {
       try {
         const page = await this.reattach({ browserProduct: product, windowId: binding.windowId, tabId: binding.tabId });
-        const observation = await observeMacOsChatgptPage(page, { includeUserHistory: false, includePageText: false });
+        const observation = await this.observeTarget(record, page, { includeUserHistory: false, includePageText: false });
         if (sameConversation(observation.url, identity)) {
           this.pages.set(record.targetId, page);
           return { state: 'ready', target: this.target(identity, record, page), observation };
@@ -572,7 +612,7 @@ export class MacOsChatgptConversationTargetPort implements ComputerChatgptConver
       created = await this.createSingleFlight(identity.canonicalUrl, product, preferredWindowId);
       const updated = await this.bind(identity, record, created, 'provider_owned');
       this.rememberBrowser(created.tabRef());
-      const observation = await observeMacOsChatgptPage(created, { includeUserHistory: false, includePageText: false });
+      const observation = await this.observeTarget(updated, created, { includeUserHistory: false, includePageText: false });
       if (!sameConversation(observation.url, identity)) throw new Error('COMPUTER_CHATGPT_RESTORED_TARGET_UNPROVEN');
       // A created tab that renders a signed-out shell is not a usable surface.
       // Close it instead of leaving a foreign logged-out window open, and let the
@@ -594,6 +634,27 @@ export class MacOsChatgptConversationTargetPort implements ComputerChatgptConver
     let record = this.upsert(identity, 'provider_owned');
     const cached = this.pages.get(record.targetId);
     if (cached) return { state: 'ready', target: this.target(identity, record, cached) };
+
+    const binding = record.providerBinding;
+    const boundProduct = productForBinding(binding);
+    if (binding?.providerId === PROVIDER_ID && boundProduct && binding.windowId && binding.tabId) {
+      try {
+        const page = await this.reattach({ browserProduct: boundProduct, windowId: binding.windowId, tabId: binding.tabId });
+        this.pages.set(record.targetId, page);
+        return { state: 'ready', target: this.target(identity, record, page) };
+      } catch (error) {
+        const bindingProvenGone = error instanceof AssistantPluginError
+          && error.code === 'PLUGIN_BROWSER_NATIVE_TAB_IDENTITY_UNPROVEN'
+          && error.details?.candidateCount === 0
+          && error.details?.inventoryTruncated === false;
+        if (!bindingProvenGone) {
+          return failure(error, 'COMPUTER_CHATGPT_BOOTSTRAP_TARGET_REATTACH_FAILED');
+        }
+        await this.clearBinding(record).catch(() => undefined);
+        record = this.upsert(identity, 'provider_owned');
+      }
+    }
+
     try {
       const preferred = this.preferredBrowser();
       const page = await this.createSingleFlight(projectUrl, preferred.product, preferred.windowId);
@@ -646,7 +707,7 @@ export class MacOsChatgptConversationTargetPort implements ComputerChatgptConver
       record = await this.bind(identity, record, page, 'provider_owned');
       this.pages.delete(targetId);
       this.authority.tombstoneSurface(this.controllerHome, targetId);
-      const observation = await observeMacOsChatgptPage(page, { includeUserHistory: false, includePageText: false });
+      const observation = await this.observeTarget(record, page, { includeUserHistory: false, includePageText: false });
       return { state: 'ready', target: this.target(identity, record, page), observation };
     } catch (error) { return failure(error, 'COMPUTER_CHATGPT_BOOTSTRAP_PROMOTION_FAILED'); }
   }
