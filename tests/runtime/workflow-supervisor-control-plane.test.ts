@@ -18,7 +18,7 @@ import { createWorkflowSupervisorServer, reconcileWorkflowSupervisorSocket, Work
 import { claimControllerSession, getControllerSession, releaseControllerSession } from '../../src/runtime/control-plane/facade/controller-session-store';
 import { bindChatgptWorkConversation, getChatgptWorkConversationBinding, rebindChatgptWorkConversation } from '../../adapters/chatgpt/work-conversation-binding-store';
 import { CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE, chatgptProviderPageFailure, classifyChatgptProviderFailure } from '../../adapters/chatgpt/provider-delivery';
-import { chatgptComposerRetainsPrompt, chatgptFailedRequestIsCausalRateLimit } from '../../adapters/chatgpt/browser-delivery-runtime';
+import { chatgptComposerRetainsPrompt, chatgptFailedRequestIsCausalRateLimit, chatgptForgePluginMentionBound, chatgptOutboundMessageMatchesPrompt } from '../../adapters/chatgpt/browser-delivery-runtime';
 import { parseChatgptConversationIdentity } from '../../supervisor/chatgpt-conversation';
 import { setMacOsBrowserRuntimeHooksForTest, resetMacOsBrowserRuntimeHooksForTest } from '../../src/runtime/plugins/browser-macos-bridge';
 import { createTestChatgptTargetPort, type TestBrowserPage } from './helpers/computer-chatgpt-target-harness';
@@ -60,6 +60,24 @@ describe('ChatGPT Supervisor composer pre-send verification', () => {
     expect(chatgptComposerRetainsPrompt(undefined, payload)).toBe(false);
     expect(chatgptComposerRetainsPrompt('@forge', payload)).toBe(false);
     expect(chatgptComposerRetainsPrompt(payload.slice(1), payload)).toBe(false);
+  });
+});
+
+describe('ChatGPT Supervisor structured plugin mention', () => {
+  const payload = '@forge\n<<<FORGE_WORKFLOW_EFFECT_V1:fx_example01>>>\nFORGE_WORKFLOW_TURN_V2_BEGIN';
+  const mainChip = '<span app-mention-name="forge-current-1-8-1" app-mention-display-name="Forge Current 1.8.1" contenteditable="false">Forge Current 1.8.1</span>';
+  const recoveryChip = '<span app-mention-name="forge-recovery" app-mention-display-name="Forge Recovery" contenteditable="false">Forge Recovery</span>';
+  test('accepts only an exact single main-Forge app chip with the complete prompt', () => {
+    expect(chatgptForgePluginMentionBound(`<p>${mainChip} ${payload}</p>`, `Forge Current 1.8.1 ${payload}`, payload)).toBe(true);
+    expect(chatgptForgePluginMentionBound(`<p>${mainChip} ${payload}</p>`, `Forge Current 1.8.1 @forge`, payload)).toBe(false);
+    expect(chatgptForgePluginMentionBound(`<p>@forge ${payload}</p>`, `@forge ${payload}`, payload)).toBe(false);
+    expect(chatgptForgePluginMentionBound(`<p>${recoveryChip} ${payload}</p>`, `Forge Recovery ${payload}`, payload)).toBe(false);
+    expect(chatgptForgePluginMentionBound(`<p>${mainChip}${recoveryChip} ${payload}</p>`, `Forge Current 1.8.1 Forge Recovery ${payload}`, payload)).toBe(false);
+  });
+  test('accepts the provider-visible chip prefix only after a verified selection', () => {
+    expect(chatgptOutboundMessageMatchesPrompt(`Forge Current 1.8.1 ${payload}`, payload, { boundForgePlugin: true })).toBe(true);
+    expect(chatgptOutboundMessageMatchesPrompt(`Forge Current 1.8.1 ${payload}`, payload)).toBe(false);
+    expect(chatgptOutboundMessageMatchesPrompt(`Forge Recovery ${payload}`, payload, { boundForgePlugin: true })).toBe(false);
   });
 });
 

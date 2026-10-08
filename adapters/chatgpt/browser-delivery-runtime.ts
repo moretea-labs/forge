@@ -16,6 +16,14 @@ import {
 } from './provider-delivery';
 
 const DEFAULT_CHATGPT_AUTOMATION_PLUGIN_MENTION = '@forge';
+// The ChatGPT plugin's owned manifest currently names the canonical main app
+// `forge-current-1-8-1` (visible label `Forge Current 1.8.1`). A text alias
+// `@forge` is NOT a bound plugin and Forge Recovery is a different app.
+const CHATGPT_FORGE_PLUGIN_SLUG = 'forge-current-1-8-1';
+const CHATGPT_FORGE_PLUGIN_LABEL = 'Forge Current 1.8.1';
+const CHATGPT_PLUGIN_PICKER_BUTTON = 'button[aria-label="添加文件等内容"], button[aria-label="Add files and more"]';
+const CHATGPT_PLUGIN_PICKER_OPTIONS = '[data-mention-section-id="plugins"] [data-mention-section-items] > button';
+
 
 type ChatgptBrowserActionOrigin = Pick<ExecutionJobOrigin, 'surface' | 'actor'>;
 interface ChatgptBrowserActionContext {
@@ -173,13 +181,19 @@ type ChatgptFailedRequestBaseline = Map<string, number>;
 export function chatgptOutboundMessageMatchesPrompt(
   messageText: string,
   prompt: string,
-  options: { truncated?: boolean } = {},
+  options: { truncated?: boolean; boundForgePlugin?: boolean } = {},
 ): boolean {
   const message = normalizeChatgptOutboundText(messageText);
   const normalizedPrompt = normalizeChatgptOutboundText(prompt);
   if (!message || !normalizedPrompt) return false;
-  if (message === normalizedPrompt) return true;
-  if (CHATGPT_OUTBOUND_MESSAGE_UI_SUFFIXES.some((suffix) => message === `${normalizedPrompt} ${suffix}`)) return true;
+  const candidatePrompts = [normalizedPrompt,
+    ...(options.boundForgePlugin ? [
+      `${CHATGPT_FORGE_PLUGIN_LABEL} ${normalizedPrompt}`,
+      `${CHATGPT_FORGE_PLUGIN_SLUG} ${normalizedPrompt}`,
+    ] : []),
+  ];
+  if (candidatePrompts.some((candidate) => message === candidate)) return true;
+  if (candidatePrompts.some((candidate) => CHATGPT_OUTBOUND_MESSAGE_UI_SUFFIXES.some((suffix) => message === `${candidate} ${suffix}`))) return true;
   // Browser text extraction is deliberately bounded. A large ControllerRound
   // prompt can exceed that bound, so requiring exact equality makes successful
   // submissions mechanically unverifiable. Accept only an explicitly reported
@@ -187,7 +201,7 @@ export function chatgptOutboundMessageMatchesPrompt(
   // remains insufficient evidence.
   return options.truncated === true
     && message.length >= MIN_TRUNCATED_CHATGPT_OUTBOUND_PREFIX_CHARS
-    && normalizedPrompt.startsWith(message);
+    && candidatePrompts.some((candidate) => candidate.startsWith(message));
 }
 
 export function chatgptAutomationDeliveryFailure(
@@ -239,6 +253,75 @@ async function currentChatgptComposerText(
     timeout_ms: Math.min(timeoutMs ?? 3_000, 3_000),
   }, timeoutMs).catch(() => undefined);
   return typeof result?.text === 'string' ? result.text : undefined;
+}
+
+/** A real ChatGPT plugin mention is a non-editable ProseMirror app chip, not @ text. */
+export function chatgptForgePluginMentionBound(
+  composerHtml: string | undefined,
+  composerText: string | undefined,
+  prompt: string,
+): boolean {
+  if (!composerHtml || !composerText) return false;
+  const chips = [...composerHtml.matchAll(/\bapp-mention-name="([^"]+)"/g)].map((match) => match[1]);
+  if (chips.length !== 1 || chips[0] !== CHATGPT_FORGE_PLUGIN_SLUG) return false;
+  const normalized = normalizeChatgptOutboundText(composerText);
+  const payload = normalizeChatgptOutboundText(prompt);
+  return normalized === `${CHATGPT_FORGE_PLUGIN_LABEL} ${payload}`
+    || normalized === `${CHATGPT_FORGE_PLUGIN_SLUG} ${payload}`;
+}
+
+/** Browser owns DOM actions; Supervisor remains the only effect and delivery owner. */
+async function bindChatgptForgePluginMention(
+  controllerHome: string,
+  workId: string,
+  browserSessionId: string,
+  prompt: string,
+  targetUrl: string,
+  timeoutMs?: number,
+): Promise<void> {
+  const baseArgs = { session_id: browserSessionId, timeout_ms: timeoutMs ?? 60_000 };
+  const state = await controllerBrowserAction(controllerHome, workId, 'get_attribute', {
+    ...baseArgs, selector: CHATGPT_PLUGIN_PICKER_BUTTON, attribute: 'data-state',
+  }, timeoutMs);
+  if (state.value !== 'open') {
+    await controllerBrowserAction(controllerHome, workId, 'click', {
+      ...baseArgs, selector: CHATGPT_PLUGIN_PICKER_BUTTON,
+    }, timeoutMs);
+  }
+  const open = await controllerBrowserAction(controllerHome, workId, 'get_attribute', {
+    ...baseArgs, selector: CHATGPT_PLUGIN_PICKER_BUTTON, attribute: 'data-state',
+  }, timeoutMs);
+  if (open.value !== 'open') {
+    throw new ChatgptProviderDeliveryError('CHATGPT_AUTOMATION_PLUGIN_PICKER_UNAVAILABLE',
+      `CHATGPT_AUTOMATION_PLUGIN_PICKER_UNAVAILABLE:${targetUrl}`, { conversationUrl: targetUrl });
+  }
+  const entries = await controllerBrowserAction(controllerHome, workId, 'query_all', {
+    ...baseArgs, selector: CHATGPT_PLUGIN_PICKER_OPTIONS, limit: 80,
+  }, timeoutMs);
+  const names = queryMatches(entries).map(matchText);
+  const index = names.findIndex((name) => name === CHATGPT_FORGE_PLUGIN_LABEL
+    || name.startsWith(`${CHATGPT_FORGE_PLUGIN_LABEL} `));
+  if (index < 0 || names.filter((name) => name === CHATGPT_FORGE_PLUGIN_LABEL
+    || name.startsWith(`${CHATGPT_FORGE_PLUGIN_LABEL} `)).length !== 1) {
+    throw new ChatgptProviderDeliveryError('CHATGPT_AUTOMATION_PLUGIN_NOT_IN_PICKER',
+      `CHATGPT_AUTOMATION_PLUGIN_NOT_IN_PICKER:${CHATGPT_FORGE_PLUGIN_SLUG}:${targetUrl}`,
+      { conversationUrl: targetUrl });
+  }
+  // The option order was observed from this exact open picker. Never select
+  // another Forge-prefixed app as a fallback; verify the resulting app chip.
+  await controllerBrowserAction(controllerHome, workId, 'click', {
+    ...baseArgs, selector: `${CHATGPT_PLUGIN_PICKER_OPTIONS}:nth-of-type(${index + 1})`,
+  }, timeoutMs);
+  const [html, composerText] = await Promise.all([
+    controllerBrowserAction(controllerHome, workId, 'get_html', {
+      ...baseArgs, selector: CHATGPT_PROMPT_SELECTOR, max_chars: MAX_CHATGPT_OUTBOUND_VERIFICATION_CHARS,
+    }, timeoutMs),
+    currentChatgptComposerText(controllerHome, workId, browserSessionId, timeoutMs),
+  ]);
+  if (!chatgptForgePluginMentionBound(typeof html.text === 'string' ? html.text : undefined, composerText, prompt)) {
+    throw new ChatgptProviderDeliveryError('CHATGPT_AUTOMATION_PLUGIN_MENTION_UNVERIFIED',
+      `CHATGPT_AUTOMATION_PLUGIN_MENTION_UNVERIFIED:${targetUrl}`, { conversationUrl: targetUrl });
+  }
 }
 
 async function latestChatgptUserMessage(
@@ -963,6 +1046,12 @@ export async function submitChatgptPrompt(
     );
   }
 
+  // The immutable effect marker alone is not enough: choose the exact main
+  // Forge app and verify its structured mention before sending the payload.
+  await bindChatgptForgePluginMention(
+    controllerHome, workId, browserSessionId, renderedPrompt, targetUrl, timeoutMs,
+  );
+
   let observedUrl = targetUrl;
   let submitOutcomeUnknown = false;
   let observedNewOutbound = false;
@@ -1043,7 +1132,7 @@ export async function submitChatgptPrompt(
       if (isNewOutbound) {
         observedNewOutbound = true;
         const fullText = await fullChatgptMessageText(controllerHome, workId, browserSessionId, latest, timeoutMs);
-        const outboundConfirmed = chatgptOutboundMessageMatchesPrompt(fullText.text, renderedPrompt, { truncated: fullText.truncated });
+        const outboundConfirmed = chatgptOutboundMessageMatchesPrompt(fullText.text, renderedPrompt, { truncated: fullText.truncated, boundForgePlugin: true });
         const hasConversationIdentity = /\/c\/[^/?#]+/.test(observedUrl);
         if (outboundConfirmed && hasConversationIdentity) {
           const [latestAssistant, generationInProgress] = await Promise.all([
