@@ -444,6 +444,28 @@ describe('Browser Runtime V3 routing', () => {
     expect(calls).toEqual(['preferred']);
   });
 
+  test('preserves native browser broker timeout and contention identities for Supervisor retry spacing', async () => {
+    const url = 'https://example.com/native-broker-failure';
+    const metadata = [
+      'false', url, 'Native Broker', '0', '0', '1200', '800', '7', '9', 'true', 'true',
+    ].join(nativeSeparator);
+    let code = 'BROWSER_AUTOMATION_TIMEOUT';
+    setMacOsBrowserRuntimeHooksForTest({
+      platform: 'darwin',
+      appExists: () => true,
+      processRunning: async () => true,
+      runAppleScript: async (script) => {
+        if (script.includes('execute targetTab javascript')) throw new Error(`${code}: bounded provider request failed`);
+        return metadata;
+      },
+    });
+    const attached = await reattachMacOsBrowserOwnedPage('vivaldi', { windowId: '7', tabId: '9' }, 1_000);
+    for (const expectedCode of ['BROWSER_AUTOMATION_TIMEOUT', 'BROWSER_AUTOMATION_SERIALIZATION_BUSY']) {
+      code = expectedCode;
+      await expect(attached.page.evaluate('document.title')).rejects.toMatchObject({ code: expectedCode });
+    }
+  });
+
   test('uses a real idempotent click transition for macOS check and uncheck', async () => {
     const url = 'https://example.com/react-checkbox';
     const javaScriptCalls: string[] = [];

@@ -46,6 +46,11 @@ const AWAITING_RECEIPT_OBSERVATION_MS = 60_000;
 const TASK_TARGET_RETRY_MAX_MS = 10 * 60_000;
 export const TASK_TARGET_SPACED_FAILURE_CODES: ReadonlySet<string> = new Set([
   'COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE',
+  // Desktop Operator has already bounded and reaped the Apple Events holder.
+  // Space this task's next native attempt instead of immediately recontending
+  // the one global browser lane on another Supervisor tick.
+  'BROWSER_AUTOMATION_TIMEOUT',
+  'BROWSER_AUTOMATION_SERIALIZATION_BUSY',
   'WORKFLOW_SUPERVISOR_EXACT_CONVERSATION_UNPROVEN',
   'COMPUTER_CHATGPT_EXACT_TARGET_UNPROVEN',
   'COMPUTER_CHATGPT_EXACT_TARGET_AMBIGUOUS',
@@ -396,7 +401,9 @@ export class WorkflowSupervisorNativeBrowserAdapter {
   async runOnce(): Promise<void> {
     if (this.closed) return;
     this.lastTickStartedAtMs = this.deps.nowMs();
-    this.freshSendCheckedAt.clear(); this.lastRunTransportUnavailable = false;
+    // Preserve fresh-send fairness across ticks. serviceFreshSend prunes
+    // retired effect ids; resetting here repeatedly favors the first task.
+    this.lastRunTransportUnavailable = false;
     this.syncTaskStallProjections();
     const tasks = this.control.browserTasks();
     this.lastRunHadTasks = tasks.length > 0;

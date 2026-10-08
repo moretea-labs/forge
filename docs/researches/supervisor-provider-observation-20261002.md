@@ -124,3 +124,16 @@ tests, the Chrome adapter smoke and the compiler checks pass. The synthetic page
 was built from the recorded DOM roles, so residual uncertainty remains about how
 often ChatGPT's own reasoning surface keeps the last turn text moving between
 tokens: a genuinely silent 10-minute turn still earns its one bounded resume.
+
+## 2026-10-08 native Apple Events contention follow-up
+
+Live exact-tab metadata completed in 368 ms for the retained Forge conversation in Vivaldi (correct URL, active and frontmost). The subsequent minimal DOM request was rejected as `BROWSER_AUTOMATION_SERIALIZATION_BUSY` while a separate `osascript` holder was executing against another tab in the same browser. The known Desktop Operator timeout path now bounds and reaps that holder; this does **not** prove that the Forge conversation was successfully rendered or delivered.
+
+The native browser bridge must preserve the broker's distinct `BROWSER_AUTOMATION_TIMEOUT` and `BROWSER_AUTOMATION_SERIALIZATION_BUSY` codes. Supervisor spaces only the affected task using its existing failure ledger; it must not interpret either rejection as provider acceptance or retry the same task every tick. The existing fresh-send fairness map must survive tick boundaries and prune retired effects in its existing service routine. Active Runtime live acceptance still requires an independent `CONTINUE → CONTINUE → DONE` receipt, not just local tests.
+
+
+### Exact conversation binding integrity (2026-10-08)
+
+The same transient native observation failure was also treated as identity revocation in `MacOsChatgptConversationTargetPort.ensureExact`. Cached and durably reattached exact tabs were deleted or unbound on a DOM timeout/busy result; a newly created tab could also be closed and unbound when its first observation failed after the stable binding was already persisted. The resulting tab scan and possible fresh creation did not have positive evidence that the originally bound tab was gone.
+
+The correction keeps the existing Computer target authority. A native tab is positively absent only when `PLUGIN_BROWSER_NATIVE_TAB_IDENTITY_UNPROVEN` reports `candidateCount=0` with `inventoryTruncated=false`; an observed different conversation URL is also a positive mismatch. All other observation failures return the native failure code while preserving the exact binding, including after first successful creation. Existing binding-clear and native-close failures must not silently authorize a duplicate tab. Regression tests cover cached and reattach failures, first-observation failure, confirmed native absence, and task-local retry spacing. Active release acceptance remains subject to independently observed `CONTINUE → CONTINUE → DONE` receipts.

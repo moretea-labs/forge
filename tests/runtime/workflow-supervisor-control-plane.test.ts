@@ -11,7 +11,7 @@ import { createWorkContract, reviseWorkSemanticContext } from '../../packages/ke
 import { createRequirement, reviseRequirementSemantic, updateRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
 import { bindCurrentWorkflowSupervisorConversationForWork, ensureWorkflowSupervisorEnrollmentForWork, forgeWorkflowSupervisorLifecycleHooks, inheritWorkflowSupervisorConversationBinding, workflowSupervisorBoundaryForWork, workflowSupervisorLowerLayerReadyForWork } from '../../src/runtime/root/workflow-supervisor-composition';
 import { WorkflowSupervisorControlPlane } from '../../supervisor/control-plane';
-import { WorkflowSupervisorNativeBrowserAdapter } from '../../supervisor/native-browser-adapter';
+import { TASK_TARGET_SPACED_FAILURE_CODES, WorkflowSupervisorNativeBrowserAdapter } from '../../supervisor/native-browser-adapter';
 import { LEGACY_SUPERVISOR_BLOCK_END, LEGACY_SUPERVISOR_BLOCK_START, parseSupervisorCompletion, renderSupervisorPrompt, renderSupervisorReceipt, supervisorReceiptChallenge, SUPERVISOR_BLOCK_END, SUPERVISOR_BLOCK_START, SUPERVISOR_TURN_BLOCK_END, SUPERVISOR_TURN_BLOCK_START } from '../../supervisor/protocol';
 import { WorkflowSupervisorStore } from '../../supervisor/store';
 import { createWorkflowSupervisorServer, reconcileWorkflowSupervisorSocket, WorkflowSupervisorEphemeralDiscovery } from '../../supervisor/server';
@@ -1733,6 +1733,12 @@ test('native consumer status exposes and clears a pre-dispatch due-effect transp
   expect(store.nextBrowserEffect(taskId)?.mode).not.toBe('reconcile');
 });
 
+test('native Apple Events timeout and lock contention use existing task-local spacing', () => {
+  expect(TASK_TARGET_SPACED_FAILURE_CODES.has('BROWSER_AUTOMATION_TIMEOUT')).toBe(true);
+  expect(TASK_TARGET_SPACED_FAILURE_CODES.has('BROWSER_AUTOMATION_SERIALIZATION_BUSY')).toBe(true);
+  expect(TASK_TARGET_SPACED_FAILURE_CODES.has('PLUGIN_BROWSER_NATIVE_OPERATION_FAILED')).toBe(false);
+});
+
 test('task-local exact-target failure does not back off or starve an independent Supervisor task', async () => {
   const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-task-transport-isolation-'));
   roots.push(root);
@@ -3103,6 +3109,46 @@ describe('Workflow Supervisor operator recovery and conversation replacement', (
       reason: 'cannot abandon an unresolved submission',
     })).toThrow('WORKFLOW_SUPERVISOR_MIGRATION_OUTCOME_UNKNOWN');
     store.close();
+  });
+
+  test('native broker timeout and busy failures back off the affected send across ticks', async () => {
+    for (const code of ['BROWSER_AUTOMATION_TIMEOUT', 'BROWSER_AUTOMATION_SERIALIZATION_BUSY']) {
+      const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-native-broker-spacing-'));
+      roots.push(root);
+      const clock = { nowMs: Date.now() };
+      const store = new WorkflowSupervisorStore(join(root, 'supervisor-home'), { now: () => clock.nowMs });
+      const control = new WorkflowSupervisorControlPlane(store, {}, { browserTaskActive: () => true });
+      const taskId = 'native-broker-failure';
+      const conversationId = 'ccccccc2-1111-2222-3333-444444444444';
+      const conversationUrl = `https://chatgpt.com/c/${conversationId}`;
+      control.registerTask({
+        taskId, conversationId, conversationUrl, objective: 'Do not hot-loop one unavailable native tab.',
+        completionContract: {}, continuationPolicy: { kind: 'standalone_supervisor' }, userBlockerPolicy: {},
+      });
+      control.reserveEnrollment(taskId);
+      let attempts = 0;
+      const targetPort = {
+        inventory: async () => ({ conversations: [], complete: true, unavailableProviders: [] }),
+        cleanup: async () => undefined,
+        ensureExact: async () => { attempts += 1; throw new Error(`${code}: native broker still unavailable`); },
+        close: async () => undefined,
+      } as any;
+      const adapter = new WorkflowSupervisorNativeBrowserAdapter(control, new WorkflowSupervisorEphemeralDiscovery(), {
+        targetPort, nowMs: () => clock.nowMs, providerIdleGraceMs: 60_000, providerScopeKey: join(root, 'provider-scope'),
+        sleep: async () => undefined, setInterval: () => 0 as unknown as ReturnType<typeof setInterval>,
+        clearInterval: () => undefined, onError: () => undefined,
+      });
+      await adapter.runOnce();
+      expect(attempts).toBe(1);
+      expect(adapter.status().lastFailure?.code).toBe(code);
+      clock.nowMs += 10_000;
+      await adapter.runOnce();
+      expect(attempts).toBe(1);
+      clock.nowMs += 20_000;
+      await adapter.runOnce();
+      expect(attempts).toBe(2);
+      store.close();
+    }
   });
 
   test('a task-local exact-conversation failure spaces its own retries instead of reopening the surface every tick', async () => {
