@@ -15,7 +15,6 @@ import {
   type ChatgptProviderPageFailureCode,
 } from './provider-delivery';
 
-const DEFAULT_CHATGPT_AUTOMATION_PLUGIN_MENTION = '@forge';
 // The ChatGPT plugin's owned manifest currently names the canonical main app
 // `forge-current-1-8-1` (visible label `Forge Current 1.8.1`). A text alias
 // `@forge` is NOT a bound plugin and Forge Recovery is a different app.
@@ -40,11 +39,11 @@ export function withChatgptBrowserActionOrigin<T>(
   return chatgptBrowserActionOrigin.run({ origin, authorizationGrantRefs }, operation);
 }
 
-function withForgePluginMention(prompt: string): string {
-  const value = prompt.trim();
+/** Strip the legacy text trigger; only a real ChatGPT app chip selects Forge. */
+export function chatgptSupervisorPromptBody(prompt: string): string {
+  const value = prompt.trim().replace(/^@forge(?:[ \t]*\r?\n|[ \t]+|$)/i, '').trim();
   if (!value) throw new Error('CHATGPT_AUTOMATION_PROMPT_REQUIRED');
-  if (/^@forge(?:\s|$)/i.test(value)) return value;
-  return `${DEFAULT_CHATGPT_AUTOMATION_PLUGIN_MENTION} ${value}`;
+  return value;
 }
 
 // ChatGPT's composer is a ProseMirror textbox; the historical #prompt-textarea id is no longer stable.
@@ -255,6 +254,21 @@ async function currentChatgptComposerText(
   return typeof result?.text === 'string' ? result.text : undefined;
 }
 
+async function currentChatgptComposerHtml(
+  controllerHome: string,
+  workId: string,
+  browserSessionId: string,
+  timeoutMs?: number,
+): Promise<string | undefined> {
+  const result = await controllerBrowserAction(controllerHome, workId, 'get_html', {
+    session_id: browserSessionId,
+    selector: CHATGPT_PROMPT_SELECTOR,
+    max_chars: MAX_CHATGPT_OUTBOUND_VERIFICATION_CHARS,
+    timeout_ms: Math.min(timeoutMs ?? 3_000, 3_000),
+  }, timeoutMs).catch(() => undefined);
+  return typeof result?.text === 'string' && result.truncated !== true ? result.text : undefined;
+}
+
 /** A real ChatGPT plugin mention is a non-editable ProseMirror app chip, not @ text. */
 export function chatgptForgePluginMentionBound(
   composerHtml: string | undefined,
@@ -312,13 +326,11 @@ async function bindChatgptForgePluginMention(
   await controllerBrowserAction(controllerHome, workId, 'click', {
     ...baseArgs, selector: `${CHATGPT_PLUGIN_PICKER_OPTIONS}:nth-of-type(${index + 1})`,
   }, timeoutMs);
-  const [html, composerText] = await Promise.all([
-    controllerBrowserAction(controllerHome, workId, 'get_html', {
-      ...baseArgs, selector: CHATGPT_PROMPT_SELECTOR, max_chars: MAX_CHATGPT_OUTBOUND_VERIFICATION_CHARS,
-    }, timeoutMs),
+  const [composerHtml, composerText] = await Promise.all([
+    currentChatgptComposerHtml(controllerHome, workId, browserSessionId, timeoutMs),
     currentChatgptComposerText(controllerHome, workId, browserSessionId, timeoutMs),
   ]);
-  if (!chatgptForgePluginMentionBound(typeof html.text === 'string' ? html.text : undefined, composerText, prompt)) {
+  if (!chatgptForgePluginMentionBound(composerHtml, composerText, prompt)) {
     throw new ChatgptProviderDeliveryError('CHATGPT_AUTOMATION_PLUGIN_MENTION_UNVERIFIED',
       `CHATGPT_AUTOMATION_PLUGIN_MENTION_UNVERIFIED:${targetUrl}`, { conversationUrl: targetUrl });
   }
@@ -1008,7 +1020,7 @@ export async function submitChatgptPrompt(
   targetUrl: string,
   timeoutMs?: number,
 ): Promise<string> {
-  const renderedPrompt = withForgePluginMention(prompt);
+  const renderedPrompt = chatgptSupervisorPromptBody(prompt);
   const [before, beforeAssistant, failedRequestBaseline, preexistingPageFailure] = await Promise.all([
     latestChatgptUserMessage(controllerHome, workId, browserSessionId, timeoutMs)
       .catch((): { selector?: string; preview: string; url?: string } => ({ selector: undefined, preview: '', url: targetUrl })),
@@ -1083,16 +1095,14 @@ export async function submitChatgptPrompt(
         observedNewOutbound = chatgptMessageObservationChanged(before, latestAfterUnknown);
       }
       const hasConversationIdentity = /\/c\/[^/?#]+/.test(observedUrl);
-      const composerText = await currentChatgptComposerText(
-        controllerHome,
-        workId,
-        browserSessionId,
-        timeoutMs,
-      );
+      const [composerHtml, composerText] = await Promise.all([
+        currentChatgptComposerHtml(controllerHome, workId, browserSessionId, timeoutMs),
+        currentChatgptComposerText(controllerHome, workId, browserSessionId, timeoutMs),
+      ]);
       if (
         !observedNewOutbound
         && !hasConversationIdentity
-        && chatgptComposerRetainsPrompt(composerText, renderedPrompt)
+        && chatgptForgePluginMentionBound(composerHtml, composerText, renderedPrompt)
       ) {
         try {
           const resumed = await controllerBrowserAction(controllerHome, workId, 'click', {
