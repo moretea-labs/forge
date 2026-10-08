@@ -159,6 +159,13 @@ function projectMetadata(value: string): { projectTitle?: string; projectUrl?: s
   } catch { return {}; }
 }
 
+function boundTabProvenGone(error: unknown): boolean {
+  return error instanceof AssistantPluginError
+    && error.code === 'PLUGIN_BROWSER_NATIVE_TAB_IDENTITY_UNPROVEN'
+    && error.details?.candidateCount === 0
+    && error.details?.inventoryTruncated === false;
+}
+
 function failure(error: unknown, fallback: string): ComputerChatgptTargetResult {
   const code = error instanceof AssistantPluginError ? error.code : (() => {
     const message = error instanceof Error ? error.message : String(error);
@@ -562,7 +569,10 @@ export class MacOsChatgptConversationTargetPort implements ComputerChatgptConver
       try {
         const observation = await this.observeTarget(record, cached, { includeUserHistory: false, includePageText: false });
         if (sameConversation(observation.url, identity)) return { state: 'ready', target: this.target(identity, record, cached), observation };
-      } catch { /* rebuild from provider binding/inventory */ }
+      } catch (error) {
+        // Transient native observation failure cannot revoke durable tab identity.
+        if (!boundTabProvenGone(error)) return failure(error, 'COMPUTER_CHATGPT_TARGET_RESTORE_FAILED');
+      }
       this.pages.delete(record.targetId);
     }
     const binding = record.providerBinding;
@@ -578,8 +588,13 @@ export class MacOsChatgptConversationTargetPort implements ComputerChatgptConver
           this.pages.set(record.targetId, page);
           return { state: 'ready', target: this.target(identity, record, page), observation };
         }
-      } catch { /* provider binding is disposable */ }
-      await this.clearBinding(record).catch(() => undefined);
+      } catch (error) {
+        // Only confirmed absence (or a successfully observed URL mismatch)
+        // permits retiring a bound tab, never a busy/timeout DOM read.
+        if (!boundTabProvenGone(error)) return failure(error, 'COMPUTER_CHATGPT_TARGET_RESTORE_FAILED');
+      }
+      try { await this.clearBinding(record); }
+      catch (error) { return failure(error, 'COMPUTER_CHATGPT_TARGET_BINDING_CLEAR_FAILED'); }
       record = this.upsert(identity, record.stableIdentity.ownership === 'user_owned' ? 'user_owned' : 'provider_owned');
     }
     const inventory = await this.listTabs();
@@ -608,9 +623,11 @@ export class MacOsChatgptConversationTargetPort implements ComputerChatgptConver
     if (exact.length > 0) return failure(new Error('COMPUTER_CHATGPT_EXACT_TARGET_UNPROVEN'), 'COMPUTER_CHATGPT_EXACT_TARGET_UNPROVEN');
     if (inventory.unavailableProviders.length > 0) return failure(new Error('COMPUTER_CHATGPT_TARGET_INVENTORY_INCOMPLETE'), 'COMPUTER_CHATGPT_TARGET_INVENTORY_INCOMPLETE');
     let created: ComputerChatgptNativePage | undefined;
+    let bound = false;
     try {
       created = await this.createSingleFlight(identity.canonicalUrl, product, preferredWindowId);
       const updated = await this.bind(identity, record, created, 'provider_owned');
+      bound = true;
       this.rememberBrowser(created.tabRef());
       const observation = await this.observeTarget(updated, created, { includeUserHistory: false, includePageText: false });
       if (!sameConversation(observation.url, identity)) throw new Error('COMPUTER_CHATGPT_RESTORED_TARGET_UNPROVEN');
@@ -620,11 +637,20 @@ export class MacOsChatgptConversationTargetPort implements ComputerChatgptConver
       if (!macOsChatgptSessionUsable(observation)) throw new Error('COMPUTER_CHATGPT_BROWSER_IDENTITY_UNAVAILABLE');
       return { state: 'ready', target: this.target(identity, updated, created), observation };
     } catch (error) {
-      if (created?.tabRef()) {
-        const ref = created.tabRef()!;
-        await closeMacOsBrowserOwnedTab(ref.browserProduct, ref, this.timeoutMs).catch(() => undefined);
+      const code = error instanceof Error ? error.message.split(':', 1)[0] : '';
+      const provenInvalid = code === 'COMPUTER_CHATGPT_RESTORED_TARGET_UNPROVEN'
+        || code === 'COMPUTER_CHATGPT_BROWSER_IDENTITY_UNAVAILABLE';
+      // Once the new physical tab is bound, transient DOM failures retain
+      // its canonical identity for the next attempt, not a replacement tab.
+      if (!bound || provenInvalid) {
+        if (created?.tabRef()) {
+          const ref = created.tabRef()!;
+          try { await closeMacOsBrowserOwnedTab(ref.browserProduct, ref, this.timeoutMs); }
+          catch (closeError) { return failure(closeError, 'COMPUTER_CHATGPT_TARGET_RETIRE_FAILED'); }
+        }
+        try { await this.clearBinding(record); }
+        catch (clearError) { return failure(clearError, 'COMPUTER_CHATGPT_TARGET_BINDING_CLEAR_FAILED'); }
       }
-      await this.clearBinding(record).catch(() => undefined);
       return failure(error, 'COMPUTER_CHATGPT_TARGET_RESTORE_FAILED');
     }
   }
@@ -643,14 +669,11 @@ export class MacOsChatgptConversationTargetPort implements ComputerChatgptConver
         this.pages.set(record.targetId, page);
         return { state: 'ready', target: this.target(identity, record, page) };
       } catch (error) {
-        const bindingProvenGone = error instanceof AssistantPluginError
-          && error.code === 'PLUGIN_BROWSER_NATIVE_TAB_IDENTITY_UNPROVEN'
-          && error.details?.candidateCount === 0
-          && error.details?.inventoryTruncated === false;
-        if (!bindingProvenGone) {
+        if (!boundTabProvenGone(error)) {
           return failure(error, 'COMPUTER_CHATGPT_BOOTSTRAP_TARGET_REATTACH_FAILED');
         }
-        await this.clearBinding(record).catch(() => undefined);
+        try { await this.clearBinding(record); }
+        catch (clearError) { return failure(clearError, 'COMPUTER_CHATGPT_TARGET_BINDING_CLEAR_FAILED'); }
         record = this.upsert(identity, 'provider_owned');
       }
     }

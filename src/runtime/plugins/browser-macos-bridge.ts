@@ -946,7 +946,11 @@ export class MacOsAppleEventsPage {
       return await runBrowserAutomationText(effectiveRequest, effectiveScript, args, timeoutMs);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      throw new AssistantPluginError('PLUGIN_BROWSER_NATIVE_OPERATION_FAILED', `${this.browser.appName} Apple Events operation failed: ${message}`, {
+      // Keep the broker's bounded timeout/serialization identity visible to
+      // the sole Supervisor retry policy. Flattening both to the generic
+      // operation error makes a blocked tab hot-loop against the global lane.
+      const brokerFailure = /\b(BROWSER_AUTOMATION_TIMEOUT|BROWSER_AUTOMATION_SERIALIZATION_BUSY)\b/.exec(message)?.[1];
+      throw new AssistantPluginError(brokerFailure ?? 'PLUGIN_BROWSER_NATIVE_OPERATION_FAILED', `${this.browser.appName} Apple Events operation failed: ${message}`, {
         retryable: true,
         details: { browserProduct: this.browser.product, bundleId: this.browser.bundleId },
       });
