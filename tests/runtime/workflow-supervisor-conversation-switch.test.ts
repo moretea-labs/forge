@@ -172,6 +172,11 @@ describe('Workflow Supervisor fresh conversation switch', () => {
     }
     expect(effect.kind).toBe('enrollment');
     expect(store.getTask(taskId)?.conversationId).toBe(`bootstrap:${taskId}`);
+    // A fresh logical chat cannot be a source retired two migrations ago.
+    expect(() => control.bindBootstrapConversation({
+      taskId, conversationId: oldConversationId,
+      conversationUrl: `https://chatgpt.com/c/${oldConversationId}`,
+    })).toThrow('WORKFLOW_SUPERVISOR_FRESH_CONVERSATION_REBOUND_SOURCE');
     const thirdId = '90909090-aaaa-bbbb-cccc-111111111111';
     control.bindBootstrapConversation({
       taskId, conversationId: thirdId, conversationUrl: `https://chatgpt.com/c/${thirdId}`,

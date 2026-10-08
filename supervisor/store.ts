@@ -591,15 +591,14 @@ export class WorkflowSupervisorStore {
         if (task.conversationId === conversationId && task.conversationUrl === conversationUrl) return task;
         throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_ALREADY_BOUND');
       }
-      // A fresh migration must not rebind the very conversation it retired.
-      // The existing migration event is the only durable source of authority.
-      const migration = statement(db, "SELECT payload_json FROM events WHERE task_id = ? AND kind = 'conversation_migrated' ORDER BY event_id DESC LIMIT 1", (s) => s.get(taskId)) as { payload_json?: string } | undefined;
-      const migrationFact = parsedObject(migration?.payload_json);
-      if (migrationFact.fresh_conversation === true
-        && migrationFact.to_conversation_id === task.conversationId
-        && migrationFact.from_conversation_id === conversationId) {
-        throw new Error('WORKFLOW_SUPERVISOR_FRESH_CONVERSATION_REBOUND_SOURCE');
-      }
+      // The migration event ledger is the sole authority for previously used
+      // source conversations. Do not rebind any retired source, including one
+      // from an earlier 15-turn rotation (not only the immediately prior chat).
+      const retired = statement(db, `SELECT 1 AS ok FROM events
+        WHERE task_id=? AND kind='conversation_migrated'
+          AND json_extract(payload_json,'$.from_conversation_id')=? LIMIT 1`,
+        (s) => s.get(taskId, conversationId));
+      if (retired) throw new Error('WORKFLOW_SUPERVISOR_FRESH_CONVERSATION_REBOUND_SOURCE');
       const conflict = statement(db, 'SELECT task_id FROM tasks WHERE conversation_id = ? AND task_id <> ?', (s) => s.get(conversationId, taskId)) as { task_id?: string } | undefined;
       if (conflict) throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_CONVERSATION_CONFLICT');
       statement(db, 'UPDATE tasks SET conversation_id = ?, conversation_url = ? WHERE task_id = ?', (s) => s.run(conversationId, conversationUrl, taskId));
