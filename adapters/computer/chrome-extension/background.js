@@ -168,6 +168,17 @@ async function executeObserve(command, instanceId) {
 async function executeDispatch(command) {
   const target = await resolveTarget(command.identity, false).catch(() => undefined);
   if (!target) return { kind: 'dispatch', mutation: 'not_attempted', reasonCode: 'COMPUTER_CHATGPT_EXTENSION_TARGET_MISSING' };
+  // An old tab may still contain a pre-upgrade content script after the
+  // extension/runtime has been upgraded. Probe the *exact target tab* before
+  // submitting; a background/version heartbeat alone cannot prove it.
+  if (command.reasoning !== undefined) {
+    let capability;
+    try { capability = await tabMessage(target.tab.id, { type: 'forge-computer-chatgpt-capabilities' }); }
+    catch { return { kind: 'dispatch', mutation: 'not_attempted', reasonCode: 'COMPUTER_CHATGPT_REASONING_PREFLIGHT_UNAVAILABLE' }; }
+    if (capability?.reasoningPreflight !== 'verified_before_send_v1') {
+      return { kind: 'dispatch', mutation: 'not_attempted', reasonCode: 'COMPUTER_CHATGPT_REASONING_PREFLIGHT_UNSUPPORTED' };
+    }
+  }
   let result;
   try { result = await tabMessage(target.tab.id, { type: 'forge-computer-chatgpt-dispatch', prompt: command.prompt, mode: command.mode, reasoning: command.reasoning }); }
   catch (error) {
@@ -176,6 +187,12 @@ async function executeDispatch(command) {
       : { kind: 'dispatch', mutation: 'attempted' };
   }
   if (result?.dispatched !== true) return { kind: 'dispatch', mutation: 'not_attempted', reasonCode: String(result?.reason ?? 'COMPUTER_CHATGPT_EXTENSION_PRE_MUTATION_REJECTION') };
+  // A changed/stale implementation between preflight and send may have clicked
+  // without attesting the reasoning choice. It is still a possible mutation,
+  // never a safe not_attempted result or verified reasoning claim.
+  if (command.reasoning !== undefined && !['medium', 'high', 'xhigh'].includes(result.reasoningVerified)) {
+    return { kind: 'dispatch', mutation: 'attempted', confirmed: false };
+  }
   let observation;
   for (let attempt = 1; attempt <= 4; attempt += 1) {
     await sleep(attempt * 200);

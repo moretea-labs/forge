@@ -282,6 +282,12 @@
       return false;
     }
     if (message.type === 'forge-computer-chatgpt-snapshot') { sendResponse(pageSnapshot(message.options ?? {})); return false; }
+    // Read-only exact-tab capability attestation. A stale content script must
+    // never receive an xhigh-required send that it would silently ignore.
+    if (message.type === 'forge-computer-chatgpt-capabilities') {
+      sendResponse({ reasoningPreflight: 'verified_before_send_v1' });
+      return false;
+    }
     if (message.type === 'forge-computer-chatgpt-dispatch') {
       dispatchPrompt(String(message.prompt ?? ''), String(message.mode ?? 'send'), message.reasoning).then(sendResponse, (error) => sendResponse({ dispatched: false, reason: String(error?.message ?? error) }));
       return true;

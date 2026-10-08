@@ -109,14 +109,25 @@ function fixture(options: {
   };
   runInNewContext(coreSource, context);
   runInNewContext(contentSource, context);
+  const capabilities = () => new Promise<Record<string, unknown>>((resolve) => {
+    if (!onMessage) throw new Error('missing content-script message listener');
+    onMessage({ type: 'forge-computer-chatgpt-capabilities' }, {}, (value) => resolve(value as Record<string, unknown>));
+  });
   const dispatch = async (reasoning?: string) => {
     return await new Promise<Record<string, unknown>>((resolve) => {
       if (!onMessage) throw new Error('missing content-script message listener');
       onMessage({ type: 'forge-computer-chatgpt-dispatch', prompt: 'source delivery', reasoning }, {}, (value) => resolve(value as Record<string, unknown>));
     });
   };
-  return { dispatch, state, textarea };
+  return { dispatch, capabilities, state, textarea };
 }
+
+test('content script advertises exact-tab reasoning preflight without mutating the page', async () => {
+  const f = fixture({ controlPresent: false });
+  expect(await f.capabilities()).toMatchObject({ reasoningPreflight: 'verified_before_send_v1' });
+  expect(f.state.controlClicks).toBe(0);
+  expect(f.state.sendClicks).toBe(0);
+});
 
 test('Supervisor xhigh selects and verifies the composer option before inserting or sending', async () => {
   const f = fixture({ optionLabel: 'Extra High' });
