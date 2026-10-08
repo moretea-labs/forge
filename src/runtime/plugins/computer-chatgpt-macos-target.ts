@@ -268,6 +268,8 @@ export async function dispatchMacOsChatgptPrompt(
   // Apple Events has no verified reasoning selector. Never silently submit
   // a Supervisor effect under the unproven maximum-effort claim.
   if (options.reasoning) return { mutation: 'not_attempted', reasonCode: 'COMPUTER_CHATGPT_REASONING_UNSUPPORTED_BY_PROVIDER' };
+  const supervisor = /^@forge\s+<<<FORGE_WORKFLOW_EFFECT_V1:fx_[a-zA-Z0-9_-]+>>>/.test(prompt.trim());
+  const submittedPrompt = supervisor ? prompt.trim().replace(/^@forge\s+/, '') : prompt;
   const resume = options.mode === 'resume';
   if (options.mode === 'recover') {
     try {
@@ -301,7 +303,7 @@ export async function dispatchMacOsChatgptPrompt(
         const root = Array.from(document.querySelectorAll('main')).filter(visible).pop() || document;
         const value = (element) => String((element?.innerText ?? element?.textContent ?? '') || '');
         const norm = (input) => String(input || '').replace(/\\s+/g, ' ').trim();
-        const expected = ${JSON.stringify(prompt)}; const expectedNorm = norm(expected); const resume = ${JSON.stringify(resume)};
+        const expected = ${JSON.stringify(submittedPrompt)}; const expectedNorm = norm(expected); const resume = ${JSON.stringify(resume)};
         const composer = ['div#prompt-textarea[contenteditable="true"]','#prompt-textarea[contenteditable="true"]','[data-testid="composer-text-input"][contenteditable="true"]','div[role="textbox"][contenteditable="true"]']
           .flatMap((selector) => Array.from(root.querySelectorAll(selector))).find(visible);
         if (!(composer instanceof HTMLElement) || !composer.isContentEditable) return { prepared: false, reason: 'composer_missing' };
@@ -335,6 +337,53 @@ export async function dispatchMacOsChatgptPrompt(
     await sleep(delayMs(attempt, 2_000, 4_000));
   }
   if (!prepared?.prepared) return { mutation: 'not_attempted', reasonCode: prepared?.reason ?? 'composer_prepare_failed' };
+  // A literal '@forge' is not an app invocation. Before Send, bind the exact
+  // main Forge chip on the existing tab and verify that no app was substituted.
+  if (supervisor) {
+    try {
+      const initial = await page.evaluate<{ bound: boolean; opened: boolean; reason?: string }>(`(() => {
+        const norm = (x) => String(x || '').replace(/\\s+/g, ' ').trim();
+        const expected = ${JSON.stringify(submittedPrompt)};
+        const composer = document.querySelector('[data-composer-markdown][role="textbox"][contenteditable="true"], #prompt-textarea[contenteditable="true"], div[role="textbox"][contenteditable="true"]');
+        if (!(composer instanceof HTMLElement)) return { bound: false, opened: false, reason: 'composer_missing' };
+        const chips = Array.from(composer.querySelectorAll('[app-mention-name]'));
+        if (chips.length === 1 && chips[0].getAttribute('app-mention-name') === 'forge-current-1-8-1'
+          && norm(composer.innerText) === norm('Forge Current 1.8.1 ' + expected)) return { bound: true, opened: false };
+        if (chips.length || norm(composer.innerText) !== norm(expected)) return { bound: false, opened: false, reason: 'composer_binding_mismatch' };
+        const picker = document.querySelector('button[aria-label="添加文件等内容"], button[aria-label="Add files and more"]');
+        if (!(picker instanceof HTMLElement)) return { bound: false, opened: false, reason: 'forge_app_picker_missing' };
+        if (picker.getAttribute('data-state') !== 'open') picker.click();
+        return { bound: false, opened: true };
+      })()`);
+      if (!initial.bound) {
+        if (!initial.opened) return { mutation: 'not_attempted', reasonCode: initial.reason ?? 'forge_app_picker_missing' };
+        await sleep(150);
+        const picked = await page.evaluate<boolean>(`(() => {
+          const norm = (x) => String(x || '').replace(/\\s+/g, ' ').trim();
+          const options = Array.from(document.querySelectorAll('[data-mention-section-id="plugins"] [data-mention-section-items] > button'));
+          const matches = options.filter((node) => { const label = norm(node.innerText ?? node.textContent); return label === 'Forge Current 1.8.1' || label.startsWith('Forge Current 1.8.1 '); });
+          if (matches.length !== 1) return false;
+          matches[0].click(); return true;
+        })()`);
+        if (!picked) return { mutation: 'not_attempted', reasonCode: 'COMPUTER_CHATGPT_FORGE_APP_AMBIGUOUS_OR_UNAVAILABLE' };
+        await sleep(150);
+        const verified = await page.evaluate<boolean>(`(() => {
+          const norm = (x) => String(x || '').replace(/\\s+/g, ' ').trim();
+          const expected = ${JSON.stringify(submittedPrompt)};
+          const composer = document.querySelector('[data-composer-markdown][role="textbox"][contenteditable="true"], #prompt-textarea[contenteditable="true"], div[role="textbox"][contenteditable="true"]');
+          if (!(composer instanceof HTMLElement)) return false;
+          const chips = Array.from(composer.querySelectorAll('[app-mention-name]'));
+          return chips.length === 1 && chips[0].getAttribute('app-mention-name') === 'forge-current-1-8-1'
+            && norm(composer.innerText) === norm('Forge Current 1.8.1 ' + expected);
+        })()`);
+        if (!verified) return { mutation: 'not_attempted', reasonCode: 'COMPUTER_CHATGPT_FORGE_APP_CHIP_UNVERIFIED' };
+      }
+    } catch {
+      // No Send was clicked: an unavailable UI/Apple Events transport is a
+      // mechanical negative proof, not an outcome-unknown provider mutation.
+      return { mutation: 'not_attempted', reasonCode: 'COMPUTER_CHATGPT_FORGE_APP_BINDING_UNAVAILABLE' };
+    }
+  }
   for (let attempt = 1; attempt <= MAX_LOCAL_OBSERVATION_ATTEMPTS; attempt += 1) {
     let result: { dispatched: boolean; reason?: string };
     try {
@@ -342,9 +391,13 @@ export async function dispatchMacOsChatgptPrompt(
       const visible = (element) => Boolean(element && element.getClientRects && element.getClientRects().length);
       const root = Array.from(document.querySelectorAll('main')).filter(visible).pop() || document;
       const value = (element) => String((element?.innerText ?? element?.textContent ?? '') || '');
-      const norm = (input) => String(input || '').replace(/\\s+/g, ' ').trim(); const expected = ${JSON.stringify(prompt)};
+      const norm = (input) => String(input || '').replace(/\\s+/g, ' ').trim(); const expected = ${JSON.stringify(submittedPrompt)}; const supervisor = ${JSON.stringify(supervisor)};
       const composer = Array.from(root.querySelectorAll('div#prompt-textarea[contenteditable="true"], #prompt-textarea[contenteditable="true"], [data-testid="composer-text-input"][contenteditable="true"], div[role="textbox"][contenteditable="true"]')).find(visible);
-      if (!(composer instanceof HTMLElement) || norm(value(composer)) !== norm(expected)) return { dispatched: false, reason: 'composer_submit_mismatch' };
+      if (!(composer instanceof HTMLElement)) return { dispatched: false, reason: 'composer_submit_mismatch' };
+      if (supervisor) {
+        const chips = Array.from(composer.querySelectorAll('[app-mention-name]'));
+        if (chips.length !== 1 || chips[0].getAttribute('app-mention-name') !== 'forge-current-1-8-1' || norm(value(composer)) !== norm('Forge Current 1.8.1 ' + expected)) return { dispatched: false, reason: 'COMPUTER_CHATGPT_FORGE_APP_CHIP_UNVERIFIED' };
+      } else if (norm(value(composer)) !== norm(expected)) return { dispatched: false, reason: 'composer_submit_mismatch' };
       const sendButton = Array.from(root.querySelectorAll('[data-testid="send-button"], button[aria-label="Send"], button[aria-label="发送"], button[data-testid*="send"], button[type="submit"]')).find(visible);
       if (!(sendButton instanceof HTMLElement) || sendButton.hasAttribute('disabled') || sendButton.getAttribute('aria-disabled') === 'true') return { dispatched: false, reason: 'send_button_missing' };
       sendButton.click(); return { dispatched: true };

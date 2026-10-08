@@ -18,7 +18,7 @@ export class PreferredChatgptConversationTargetPort implements ComputerChatgptCo
     private readonly compatibility: ComputerChatgptConversationTargetPort,
   ) {}
 
-  private wrap(primaryTarget: ComputerChatgptConversationTarget, compatibilityTarget?: ComputerChatgptConversationTarget): ComputerChatgptConversationTarget {
+  private wrap(primaryTarget: ComputerChatgptConversationTarget, compatibilityTarget?: ComputerChatgptConversationTarget, nativeCompatibility = false): ComputerChatgptConversationTarget {
     const identity = identityOf(primaryTarget);
     return {
       targetId: primaryTarget.targetId,
@@ -34,7 +34,11 @@ export class PreferredChatgptConversationTargetPort implements ComputerChatgptCo
           throw primaryError;
         }
       },
-      dispatch: async (prompt, options) => await primaryTarget.dispatch(prompt, options),
+      // Only the explicitly selected native fallback lacks a verified reasoning selector.
+      // Preserve a single sender and every other dispatch option; never retry a
+      // possibly submitted effect through a different provider.
+      dispatch: async (prompt, options) => await primaryTarget.dispatch(prompt,
+        nativeCompatibility && options?.reasoning ? { ...options, reasoning: undefined } : options),
     };
   }
 
@@ -61,7 +65,7 @@ export class PreferredChatgptConversationTargetPort implements ComputerChatgptCo
     // Supervisor continuation behind an optional transport.
     if (primary.failure.failoverSafe === true) {
       const compatibility = await this.compatibility.ensureExact(identity);
-      if (compatibility.state === 'ready') return { ...compatibility, target: this.wrap(compatibility.target) };
+      if (compatibility.state === 'ready') return { ...compatibility, target: this.wrap(compatibility.target, undefined, true) };
     }
     return primary;
   }
@@ -74,7 +78,8 @@ export class PreferredChatgptConversationTargetPort implements ComputerChatgptCo
   async findBySubmittedMarker(marker: string, bootstrapKey?: string, betweenObservations?: () => Promise<void>): Promise<ComputerChatgptTargetResult[]> {
     const primary = await this.primary.findBySubmittedMarker(marker, bootstrapKey, betweenObservations);
     if (primary.length > 0) return primary.map((result) => result.state === 'ready' ? { ...result, target: this.wrap(result.target) } : result);
-    return await this.compatibility.findBySubmittedMarker(marker, bootstrapKey, betweenObservations);
+    return (await this.compatibility.findBySubmittedMarker(marker, bootstrapKey, betweenObservations))
+      .map((result) => result.state === 'ready' ? { ...result, target: this.wrap(result.target, undefined, true) } : result);
   }
 
   async promoteBootstrap(targetId: string, identity: ComputerChatgptConversationIdentity): Promise<ComputerChatgptTargetResult> {

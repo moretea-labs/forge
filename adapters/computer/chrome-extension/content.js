@@ -271,9 +271,17 @@
     } else if (isGenerating()) return { dispatched: false, reason: 'provider_busy' };
     const node = composer();
     if (!node) return { dispatched: false, reason: 'composer_missing' };
-    const expected = core.normalizeText(prompt);
+    const supervisor = /^@forge\s+<<<FORGE_WORKFLOW_EFFECT_V1:fx_[a-zA-Z0-9_-]+>>>/.test(prompt.trim());
+    const payload = supervisor ? prompt.trim().replace(/^@forge\s+/, '') : prompt;
+    const expected = core.normalizeText(payload);
+    const boundText = core.normalizeText(`Forge Current 1.8.1 ${payload}`);
+    const boundChip = () => {
+      const chips = Array.from(node.querySelectorAll('[app-mention-name]'));
+      return chips.length === 1 && chips[0]?.getAttribute('app-mention-name') === 'forge-current-1-8-1'
+        && composerText() === boundText;
+    };
     const existing = composerText();
-    if (existing && existing !== expected) return { dispatched: false, reason: 'composer_not_empty' };
+    if (existing && existing !== expected && !(supervisor && boundChip())) return { dispatched: false, reason: 'composer_not_empty' };
     let reasoningVerified;
     if (reasoning !== undefined) {
       const checked = await ensureReasoning(reasoning);
@@ -281,10 +289,28 @@
       reasoningVerified = checked.level;
     }
     if (!exactConversationIsCurrent()) return { dispatched: false, reason: 'target_identity_changed' };
-    if (existing !== expected) writeComposer(node, prompt);
+    if (existing !== expected && !(supervisor && boundChip())) writeComposer(node, payload);
     await new Promise((resolve) => setTimeout(resolve, 75));
     if (!exactConversationIsCurrent()) return { dispatched: false, reason: 'target_identity_changed' };
-    if (composerText() !== expected) return { dispatched: false, reason: 'composer_write_unconfirmed' };
+    if (supervisor) {
+      if (!boundChip()) {
+        if (composerText() !== expected) return { dispatched: false, reason: 'composer_write_unconfirmed' };
+        const picker = document.querySelector('button[aria-label="添加文件等内容"], button[aria-label="Add files and more"]');
+        if (!(picker instanceof HTMLElement)) return { dispatched: false, reason: 'COMPUTER_CHATGPT_PLUGIN_PICKER_UNAVAILABLE' };
+        if (picker.getAttribute('data-state') !== 'open') picker.click();
+        await sleep(100);
+        if (picker.getAttribute('data-state') !== 'open') return { dispatched: false, reason: 'COMPUTER_CHATGPT_PLUGIN_PICKER_UNAVAILABLE' };
+        const entries = Array.from(document.querySelectorAll('[data-mention-section-id="plugins"] [data-mention-section-items] > button'));
+        const selected = entries.filter((entry) => {
+          const label = core.normalizeText(entry.innerText ?? entry.textContent);
+          return label === 'Forge Current 1.8.1' || label.startsWith('Forge Current 1.8.1 ');
+        });
+        if (selected.length !== 1) return { dispatched: false, reason: 'COMPUTER_CHATGPT_FORGE_APP_AMBIGUOUS_OR_UNAVAILABLE' };
+        selected[0].click();
+        await sleep(100);
+      }
+      if (!boundChip()) return { dispatched: false, reason: 'COMPUTER_CHATGPT_FORGE_APP_CHIP_UNVERIFIED' };
+    } else if (composerText() !== expected) return { dispatched: false, reason: 'composer_write_unconfirmed' };
     const send = document.querySelector(SEND);
     if (!send) return { dispatched: false, reason: 'send_button_missing' };
     if (send.disabled || send.getAttribute('aria-disabled') === 'true') return { dispatched: false, reason: 'send_button_disabled' };

@@ -9,12 +9,15 @@ const contentSource = readFileSync(join(extensionRoot, 'content.js'), 'utf8');
 
 class FakeTextArea {
   value = '';
+  chipNames: string[] = [];
   disabled = false;
   getClientRects() { return [{}]; }
   focus() {}
   dispatchEvent() { return true; }
   getAttribute() { return null; }
+  querySelectorAll() { return this.chipNames.map((name) => ({ getAttribute: () => name })); }
 }
+class FakeHTMLElement {}
 
 function fixture(options: {
   startingLabel?: string;
@@ -26,11 +29,24 @@ function fixture(options: {
   sliderMax?: number;
   acknowledgeSlider?: boolean;
   navigateAfterOptionClick?: string;
+  forgeAppLabel?: string;
 } = {}) {
   const state = { controlClicks: 0, optionClicks: 0, sendClicks: 0, controlLabel: options.startingLabel ?? 'GPT-6 High', menuOpen: false };
   const location = { href: 'https://chatgpt.com/c/12345678-1234-1234-1234-123456789abc' };
   let onMessage: ((message: Record<string, unknown>, sender: unknown, respond: (value: unknown) => void) => unknown) | undefined;
   const textarea = new FakeTextArea();
+  let pickerOpen = false;
+  const picker = Object.assign(new FakeHTMLElement(), {
+    getAttribute: () => pickerOpen ? 'open' : null,
+    click() { pickerOpen = true; },
+  });
+  const forgeOption = Object.assign(new FakeHTMLElement(), {
+    get innerText() { return options.forgeAppLabel; },
+    click() {
+      textarea.value = `${options.forgeAppLabel} ${textarea.value}`;
+      textarea.chipNames = [options.forgeAppLabel === 'Forge Current 1.8.1' ? 'forge-current-1-8-1' : 'forge-recovery'];
+    },
+  });
   const visible = () => [{}];
   const control = options.controlPresent === false ? undefined : {
     getClientRects: visible,
@@ -81,11 +97,13 @@ function fixture(options: {
     body: { innerText: '' },
     querySelectorAll(selector: string) {
       if (selector === 'main') return [main];
+      if (selector.includes('[data-mention-section-id="plugins"]')) return pickerOpen && options.forgeAppLabel ? [forgeOption] : [];
       if (selector.includes('[role="menuitemradio"]')) return state.menuOpen && option ? [option] : [];
       if (selector.includes('[role="slider"]')) return state.menuOpen && slider ? [slider] : [];
       return [];
     },
     querySelector(selector: string) {
+      if (selector.includes('Add files and more') || selector.includes('添加文件等内容')) return options.forgeAppLabel ? picker : null;
       if (selector.includes('prompt-textarea') || selector.includes('composer-text-input')) return textarea;
       if (selector.includes('send-button')) return { disabled: false, getAttribute: () => null, click() { state.sendClicks += 1; } };
       return null;
@@ -96,6 +114,7 @@ function fixture(options: {
     location,
     URL,
     HTMLTextAreaElement: FakeTextArea,
+    HTMLElement: FakeHTMLElement,
     HTMLInputElement: class {},
     InputEvent: class {},
     KeyboardEvent: class { constructor(public type: string, public options: { key: string }) {} get key() { return this.options.key; } },
@@ -116,14 +135,42 @@ function fixture(options: {
     if (!onMessage) throw new Error('missing content-script message listener');
     onMessage({ type: 'forge-computer-chatgpt-capabilities' }, {}, (value) => resolve(value as Record<string, unknown>));
   });
-  const dispatch = async (reasoning?: string, expectedConversationId?: string) => {
+  const dispatch = async (reasoning?: string, expectedConversationId?: string, prompt = 'source delivery') => {
     return await new Promise<Record<string, unknown>>((resolve) => {
       if (!onMessage) throw new Error('missing content-script message listener');
-      onMessage({ type: 'forge-computer-chatgpt-dispatch', prompt: 'source delivery', reasoning, expectedConversationId }, {}, (value) => resolve(value as Record<string, unknown>));
+      onMessage({ type: 'forge-computer-chatgpt-dispatch', prompt, reasoning, expectedConversationId }, {}, (value) => resolve(value as Record<string, unknown>));
     });
   };
   return { dispatch, capabilities, state, textarea, location };
 }
+
+test('Supervisor effect cannot send as literal @forge when the real app picker is unavailable', async () => {
+  const f = fixture({ controlPresent: false });
+  const prompt = '@forge\n<<<FORGE_WORKFLOW_EFFECT_V1:fx_test_browser_123456789>>>\nFORGE_WORKFLOW_TURN_V2_BEGIN';
+  expect(await f.dispatch(undefined, undefined, prompt)).toMatchObject({
+    dispatched: false, reason: 'COMPUTER_CHATGPT_PLUGIN_PICKER_UNAVAILABLE',
+  });
+  expect(f.state.sendClicks).toBe(0);
+  expect(f.textarea.value).not.toContain('@forge');
+});
+
+test('Supervisor sends exactly once only after the real main Forge app chip was selected and verified', async () => {
+  const f = fixture({ controlPresent: false, forgeAppLabel: 'Forge Current 1.8.1' });
+  const prompt = '@forge\n<<<FORGE_WORKFLOW_EFFECT_V1:fx_test_browser_123456789>>>\nFORGE_WORKFLOW_TURN_V2_BEGIN';
+  expect(await f.dispatch(undefined, undefined, prompt)).toMatchObject({ dispatched: true });
+  expect(f.state.sendClicks).toBe(1);
+  expect(f.textarea.chipNames).toEqual(['forge-current-1-8-1']);
+  expect(f.textarea.value).toBe('Forge Current 1.8.1 <<<FORGE_WORKFLOW_EFFECT_V1:fx_test_browser_123456789>>>\nFORGE_WORKFLOW_TURN_V2_BEGIN');
+});
+
+test('Supervisor refuses Forge Recovery instead of selecting a similarly named app', async () => {
+  const f = fixture({ controlPresent: false, forgeAppLabel: 'Forge Recovery' });
+  const prompt = '@forge\n<<<FORGE_WORKFLOW_EFFECT_V1:fx_test_browser_123456789>>>\nFORGE_WORKFLOW_TURN_V2_BEGIN';
+  expect(await f.dispatch(undefined, undefined, prompt)).toMatchObject({
+    dispatched: false, reason: 'COMPUTER_CHATGPT_FORGE_APP_AMBIGUOUS_OR_UNAVAILABLE',
+  });
+  expect(f.state.sendClicks).toBe(0);
+});
 
 test('content script advertises exact-tab reasoning preflight without mutating the page', async () => {
   const f = fixture({ controlPresent: false });

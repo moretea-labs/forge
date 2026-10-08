@@ -19,6 +19,24 @@ test('Computer provider classifies Chrome JavaScript permission rejection as pre
   expect(evaluateCalls).toBe(1);
 });
 
+test('native Supervisor send refuses a plain @forge draft without a verified main-app chip', async () => {
+  let calls = 0;
+  const page = {
+    evaluate: async <T>(source: string) => {
+      calls += 1;
+      if (source.includes('const expectedNorm')) return { prepared: true } as T;
+      if (source.includes('const chips')) return { bound: false, opened: false, reason: 'forge_app_picker_missing' } as T;
+      throw new Error('Send must not be reached without a bound app');
+    },
+    tabRef: () => undefined,
+  };
+  const prompt = '@forge\n<<<FORGE_WORKFLOW_EFFECT_V1:fx_test_native_123456789>>>\nFORGE_WORKFLOW_TURN_V2_BEGIN';
+  expect(await dispatchMacOsChatgptPrompt(page, prompt)).toEqual({
+    mutation: 'not_attempted', reasonCode: 'forge_app_picker_missing',
+  });
+  expect(calls).toBe(2);
+});
+
 test('Apple Events compatibility provider never claims an unverified requested reasoning level', async () => {
   let evaluateCalls = 0;
   const page = {

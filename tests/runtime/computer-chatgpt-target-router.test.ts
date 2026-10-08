@@ -139,6 +139,21 @@ test('Computer target router uses the native transport when extension absence is
   expect(compatibilityEnsures).toBe(1);
 });
 
+test('native fallback honors mode but omits only unsupported reasoning, with no second dispatch', async () => {
+  const calls: Array<{ prompt: string; options: unknown }> = [];
+  const primary = port({ ensureExact: async () => ({ state: 'unavailable', failure: {
+    code: 'COMPUTER_CHATGPT_EXTENSION_NOT_CONNECTED', retryable: true, phase: 'pre_mutation', failoverSafe: true,
+  } }) });
+  const native = port({ ensureExact: async () => ({ state: 'ready', target: target('native', async (prompt, options) => {
+    calls.push({ prompt, options }); return { mutation: 'attempted', confirmed: true };
+  }) }) });
+  const selected = await new PreferredChatgptConversationTargetPort(primary, native).ensureExact(identity);
+  expect(selected.state).toBe('ready');
+  if (selected.state !== 'ready') throw new Error('target unavailable');
+  expect(await selected.target.dispatch('exact effect', { mode: 'recover', reasoning: 'xhigh' })).toMatchObject({ mutation: 'attempted' });
+  expect(calls).toEqual([{ prompt: 'exact effect', options: { mode: 'recover', reasoning: undefined } }]);
+});
+
 test('Computer target router refuses resource failover when primary open outcome is unknown', async () => {
   let compatibilityEnsures = 0;
   const primary = port({
