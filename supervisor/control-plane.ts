@@ -542,7 +542,7 @@ export class WorkflowSupervisorControlPlane {
       pre_send_rejection: true,
     });
   }
-  browserObserveProviderTurn(input: { conversationId: string; conversationUrl: string; generating: boolean; latestAssistantResponse: string; providerActivityText?: string; providerFailureCode?: string; observedAtMs: number; graceMs: number }): { state: 'inactive' | 'none' | 'generating' | 'idle_pending' | 'recovery_reserved' | 'exhausted'; recoveryEffect?: WorkflowSupervisorEffect } {
+  browserObserveProviderTurn(input: { conversationId: string; conversationUrl: string; generating: boolean; latestAssistantResponse: string; providerActivityText?: string; providerFailureCode?: string; receiptMissing?: boolean; observedAtMs: number; graceMs: number }): { state: 'inactive' | 'none' | 'generating' | 'idle_pending' | 'recovery_reserved' | 'exhausted'; recoveryEffect?: WorkflowSupervisorEffect } {
     const task = this.requireBrowserTask(input.conversationId, input.conversationUrl);
     if (!this.browserTaskActiveForExternalEffect(task)) return { state: 'inactive' };
     const sourceEffect = this.store.latestAppliedEffectWithoutCompletion(task.taskId);
@@ -556,6 +556,7 @@ export class WorkflowSupervisorControlPlane {
       taskId: task.taskId,
       effectId: sourceEffect.effectId,
       generating: input.generating,
+      receiptMissing: input.receiptMissing === true,
       assistantDigest: sha256(`${input.latestAssistantResponse}\n${input.providerActivityText ?? ''}`),
       providerFailureCode,
       observedAtMs: input.observedAtMs,

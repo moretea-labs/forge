@@ -2222,6 +2222,27 @@ test('completed idle provider turn remains a receipt obligation, not a reason to
   store.close();
 });
 
+test('stable text-only assistant reply permits one bounded recovery without replaying source', () => {
+  const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-missing-receipt-'));
+  roots.push(root);
+  const store = new WorkflowSupervisorStore(join(root, 'supervisor-home'));
+  const control = new WorkflowSupervisorControlPlane(store);
+  const taskId = 'task-text-only-receipt';
+  const conversationId = '78787878-5656-3434-1212-909090909091';
+  control.registerTask({ taskId, conversationId, conversationUrl: `https://chatgpt.com/c/${conversationId}`, objective: 'Settle an exact receipt.', completionContract: {}, continuationPolicy: {}, userBlockerPolicy: {} });
+  const applied = control.reserveEnrollment(taskId);
+  control.observeEffect({ effectId: applied.effectId, observationId: 'text-only-applied', outcome: 'applied' });
+  const recoveryEffectId = 'fx_90909090909090909090909090909998';
+  const sample = { taskId, effectId: applied.effectId, generating: false, receiptMissing: true, assistantDigest: 'rendered-text-only-response', graceMs: 1_000,
+    recovery: { effectId: recoveryEffectId, prompt: 'settle missing typed receipt without replaying source' } };
+  expect(store.observeProviderTurn({ ...sample, observedAtMs: 1_000 }).state).toBe('idle_pending');
+  expect(store.observeProviderTurn({ ...sample, observedAtMs: 30_000 }).state).toBe('recovery_reserved');
+  expect(store.observeProviderTurn({ ...sample, observedAtMs: 40_000 }).recoveryEffect?.effectId).toBe(recoveryEffectId);
+  expect(store.getLatestCompletion(taskId)).toBeUndefined();
+  expect(store.nextBrowserEffect(taskId)?.effect.effectId).toBe(recoveryEffectId);
+  store.close();
+});
+
 test('provider recovery uses the full bounded two-resume budget without replaying the applied source', async () => {
   const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-browser-exhausted-'));
   roots.push(root);

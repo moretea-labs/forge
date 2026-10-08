@@ -15,7 +15,7 @@ import {
 } from '../adapters/chatgpt/provider-delivery';
 import { parseChatgptConversationIdentity } from './chatgpt-conversation';
 import { WorkflowSupervisorControlPlane } from './control-plane';
-import { renderEffectMarker, sha256 } from './protocol';
+import { hasCommittedSupervisorEnvelope, renderEffectMarker, sha256 } from './protocol';
 import type { WorkflowSupervisorEphemeralDiscovery } from './server';
 import type {
   WorkflowSupervisorBrowserCommand,
@@ -544,9 +544,15 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     else if (priorProviderFailure !== observedProviderFailureCode) { noteChatgptProviderBackpressure(this.deps.providerScopeKey, observedProviderFailureCode, this.deps.nowMs()); this.providerFailureSeen.set(task.conversationId, observedProviderFailureCode); }
     let providerBackpressureMs = chatgptProviderBackpressureRemainingMs(this.deps.providerScopeKey, this.deps.nowMs());
     if (poll.command?.mode !== 'reconcile' && providerFailureCode === CHATGPT_AUTOMATION_RATE_LIMITED && providerBackpressureMs > 0) return;
+    let missingReceiptForAppliedTurn = false;
     if (!poll.command && !providerBusy && snapshot.latestTurnRole === 'assistant' && snapshot.latestAssistantResponse.trim()) {
       const responseFingerprint = sha256(snapshot.latestAssistantResponse);
-      if (this.observedAssistant.get(task.conversationId) !== responseFingerprint) {
+      const pending = this.control.taskStall(task.taskId);
+      // Text-only replies are not receipts. Observe their stable idle digest,
+      // but avoid generating an identical parser error on every browser tick.
+      missingReceiptForAppliedTurn = !hasCommittedSupervisorEnvelope(snapshot.latestAssistantResponse)
+        && 'effectId' in pending && Boolean(pending.effectId && targetMarkerPresent(snapshot.latestUserText, pending.effectId));
+      if (!missingReceiptForAppliedTurn && this.observedAssistant.get(task.conversationId) !== responseFingerprint) {
         try { await this.control.browserObserveAssistant({ conversationId: task.conversationId, conversationUrl: task.conversationUrl, responseText: snapshot.latestAssistantResponse }); this.observedAssistant.set(task.conversationId, responseFingerprint); }
         catch (error) {
           const message = error instanceof Error ? error.message : String(error);
@@ -563,7 +569,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     if (!poll.command || providerFailureCode) {
       this.control.browserObserveProviderTurn({ conversationId: task.conversationId, conversationUrl: task.conversationUrl,
         generating: providerFailureCode ? false : providerBusy || latestRoleStillUser, latestAssistantResponse: snapshot.latestAssistantResponse,
-        providerActivityText: snapshot.providerActivityText, providerFailureCode: providerFailureCode === CHATGPT_AUTOMATION_RATE_LIMITED ? undefined : providerFailureCode,
+        providerActivityText: snapshot.providerActivityText, receiptMissing: missingReceiptForAppliedTurn, providerFailureCode: providerFailureCode === CHATGPT_AUTOMATION_RATE_LIMITED ? undefined : providerFailureCode,
         observedAtMs: this.deps.nowMs(), graceMs: this.deps.providerIdleGraceMs });
       poll = this.control.browserPoll({ conversationId: task.conversationId, conversationUrl: task.conversationUrl });
       const staleTurnRecovery = poll.command?.kind === 'recovery';

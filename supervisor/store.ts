@@ -974,6 +974,7 @@ export class WorkflowSupervisorStore {
     generating: boolean;
     assistantDigest: string;
     providerFailureCode?: string;
+    receiptMissing?: boolean;
     observedAtMs: number;
     graceMs: number;
     recovery: { effectId: string; prompt: string };
@@ -1031,13 +1032,10 @@ export class WorkflowSupervisorStore {
         return { state: input.generating ? 'generating' : 'idle_pending' };
       }
 
-      // A provider that has gone idle may already have produced a complete
-      // answer without the required automation receipt. Do not interpret that
-      // as a hung generation and inject another provider prompt. The existing
-      // applied effect remains an observation obligation until a causal receipt
-      // arrives; only genuinely still-generating inactivity is auto-resumed.
-      // Explicit provider-failure evidence remains handled above even if idle.
-      if (!input.generating) return { state: 'idle_pending' };
+      // Ordinary idle text cannot authorize recovery. Only a stable, exact
+      // assistant response proven to lack its receipt can reserve the existing
+      // bounded, separately identified recovery; never replay the source effect.
+      if (!input.generating && !input.receiptMissing) return { state: 'idle_pending' };
 
       // Progress, not the provider's visible "generating" control, is the
       // liveness authority. A frozen page can leave that control present for
