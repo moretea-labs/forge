@@ -5,6 +5,8 @@ import { join } from 'path';
 import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
 import { createWorkContract, getWorkContract, listWorkSemanticRevisionRecords, recordWorkEvidenceState, reviseWorkSemanticContext, transitionWorkContractPhase, workSemanticView } from '../../packages/kernel/work/api/index';
 import { callRhWorkSemanticOperation } from '../../adapters/mcp/runtime-gateway/work-semantic-operations';
+import { createRequirement, reviseRequirementSemantic } from '../../src/runtime/control-plane/persistence/requirement-store';
+import { createPlanSemanticContext, revisePlanSemanticContext } from '../../src/runtime/control-plane/facade/plan-contract-store';
 
 const roots: string[] = [];
 afterEach(() => {
@@ -233,6 +235,117 @@ describe('thin semantic Work lifecycle', () => {
     }));
     expect(deduplicated.status).toBe('ok');
     expect(deduplicated.data.deduplicated).toBe(true);
+  });
+
+
+  test('binds latest referenced Requirement/Plan heads, exposes drift without adopting, and explicitly adopts historical versions through Work CAS', async () => {
+    const options = store();
+    createRequirement({ controllerHome: options.controllerHome }, {
+      requirementId: 'req-version-selection', title: 'Versioned Requirement', outcomeStatement: 'Outcome r1',
+    });
+    createPlanSemanticContext(options, {
+      planId: 'plan-version-selection', requirementId: 'req-version-selection', goal: 'Plan v1',
+    });
+    const first = structured(await callRhWorkSemanticOperation(options, 'start', {
+      work_id: 'work-version-selection', objective: 'Preserve adopted semantic versions.', plan_id: 'plan-version-selection',
+      request_id: 'work-version-selection-create',
+    }));
+    expect(first.status).toBe('ok');
+    expect(first.data.work).toMatchObject({
+      requirementId: 'req-version-selection', requirementRevision: 1, planId: 'plan-version-selection', planRevision: 1,
+    });
+    expect(structured(await callRhWorkSemanticOperation(options, 'start', {
+      work_id: 'work-version-selection', objective: 'Preserve adopted semantic versions.', plan_id: 'plan-version-selection',
+      request_id: 'work-version-selection-create',
+    })).data.deduplicated).toBe(true);
+
+    reviseRequirementSemantic({ controllerHome: options.controllerHome }, 'req-version-selection', {
+      expectedRevision: 1, outcomeStatement: 'Outcome r2',
+    });
+    revisePlanSemanticContext(options, 'plan-version-selection', { expectedRevision: 1, goal: 'Plan v2' });
+    const observed = structured(await callRhWorkSemanticOperation(options, 'get', {
+      work_id: 'work-version-selection', detail_level: 'detail',
+    }));
+    expect(observed.data.versionBinding).toMatchObject({
+      requirement: { adoptedRevision: 1, currentRevision: 2, updateAvailable: true,
+        adopted: { outcomeStatement: 'Outcome r1' }, current: { outcomeStatement: 'Outcome r2' } },
+      plan: { adoptedRevision: 1, currentRevision: 2, updateAvailable: true,
+        adopted: { goal: 'Plan v1' }, current: { goal: 'Plan v2' } },
+    });
+    expect(getWorkContract(options, 'work-version-selection')?.semanticRevision).toBe(1);
+
+    const adopted = structured(await callRhWorkSemanticOperation(options, 'revise', {
+      work_id: 'work-version-selection', expected_revision: 1, requirement_revision: 2, plan_revision: 2,
+    }));
+    expect(adopted.status).toBe('ok');
+    expect(adopted.data.work).toMatchObject({ revision: 2, requirementRevision: 2, planRevision: 2 });
+    expect(adopted.data.versionBinding).toMatchObject({
+      requirement: { adoptedRevision: 2, currentRevision: 2, updateAvailable: false },
+      plan: { adoptedRevision: 2, currentRevision: 2, updateAvailable: false },
+    });
+    const history = listWorkSemanticRevisionRecords(options, 'work-version-selection');
+    expect(history).toEqual(expect.arrayContaining([
+      expect.objectContaining({ revision: 1, requirementRevision: 1, planRevision: 1 }),
+    ]));
+
+    const reverted = structured(await callRhWorkSemanticOperation(options, 'revise', {
+      work_id: 'work-version-selection', expected_revision: 2, requirement_revision: 1, plan_revision: 1,
+    }));
+    expect(reverted.status).toBe('ok');
+    expect(reverted.data.work).toMatchObject({ revision: 3, requirementRevision: 1, planRevision: 1 });
+    expect(listWorkSemanticRevisionRecords(options, 'work-version-selection')).toEqual(expect.arrayContaining([
+      expect.objectContaining({ revision: 2, requirementRevision: 2, planRevision: 2 }),
+    ]));
+  });
+
+  test('rejects nonexistent/mismatched semantic bases and stale or terminal switches without writing history', async () => {
+    const options = store();
+    createRequirement({ controllerHome: options.controllerHome }, {
+      requirementId: 'req-valid', title: 'Valid Requirement', outcomeStatement: 'Valid outcome',
+    });
+    createRequirement({ controllerHome: options.controllerHome }, {
+      requirementId: 'req-other', title: 'Other Requirement', outcomeStatement: 'Other outcome',
+    });
+    createPlanSemanticContext(options, {
+      planId: 'plan-valid', requirementId: 'req-valid', goal: 'Valid plan',
+    });
+    for (const [args, code] of [
+      [{ work_id: 'invalid-mismatch', requirement_id: 'req-other', plan_id: 'plan-valid' }, 'WORK_PLAN_REQUIREMENT_MISMATCH'],
+      [{ work_id: 'invalid-plan-version', plan_id: 'plan-valid', plan_revision: 99 }, 'WORK_PLAN_REVISION_NOT_FOUND'],
+      [{ work_id: 'invalid-requirement-version', requirement_id: 'req-valid', requirement_revision: 99 }, 'WORK_REQUIREMENT_REVISION_NOT_FOUND'],
+      [{ work_id: 'invalid-orphan-version', plan_revision: 2 }, 'WORK_PLAN_ID_REQUIRED_FOR_REVISION'],
+    ] as const) {
+      const response = structured(await callRhWorkSemanticOperation(options, 'start', {
+        ...args, objective: 'Should never persist this Work.',
+      }));
+      expect(response.status).toBe('blocked');
+      expect(response.summary).toContain(code);
+      expect(getWorkContract(options, args.work_id)).toBeUndefined();
+    }
+    const started = structured(await callRhWorkSemanticOperation(options, 'start', {
+      work_id: 'work-valid-switch', objective: 'Switch only to existing revisions.', plan_id: 'plan-valid',
+    }));
+    expect(started.status).toBe('ok');
+    const beforeHistory = listWorkSemanticRevisionRecords(options, 'work-valid-switch');
+    const nonexistent = structured(await callRhWorkSemanticOperation(options, 'revise', {
+      work_id: 'work-valid-switch', expected_revision: 1, plan_revision: 7,
+    }));
+    expect(nonexistent.summary).toContain('WORK_PLAN_REVISION_NOT_FOUND');
+    const stale = structured(await callRhWorkSemanticOperation(options, 'revise', {
+      work_id: 'work-valid-switch', expected_revision: 8, requirement_revision: 1,
+    }));
+    expect(stale.summary).toContain('WORK_REVISION_CONFLICT');
+    expect(getWorkContract(options, 'work-valid-switch')?.semanticRevision).toBe(1);
+    expect(listWorkSemanticRevisionRecords(options, 'work-valid-switch')).toEqual(beforeHistory);
+    const completed = structured(await callRhWorkSemanticOperation(options, 'complete', {
+      work_id: 'work-valid-switch', expected_revision: 1,
+    }));
+    expect(completed.status).toBe('ok');
+    const terminal = structured(await callRhWorkSemanticOperation(options, 'revise', {
+      work_id: 'work-valid-switch', expected_revision: 2, plan_revision: 1,
+    }));
+    expect(terminal.summary).toContain('WORK_TERMINAL_BASIS_IMMUTABLE');
+    expect(getWorkContract(options, 'work-valid-switch')?.semanticRevision).toBe(2);
   });
 
   test('revise exposes exactly one thin semantic state vocabulary', async () => {

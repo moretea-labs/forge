@@ -9,9 +9,12 @@ import {
   projectWorkObjectiveGraph,
   reviseWorkSemanticContext,
   workSemanticView,
+  semanticWorkState,
   type WorkContractStoreOptions,
 } from '../../../packages/kernel/work/api/index';
 import { buildFacadeResult } from '../../../src/runtime/control-plane/facade';
+import { getPlanContract, currentPlanSemanticRevision, getPlanSemanticRevisionRecord, planSemanticView } from '../../../src/runtime/control-plane/facade/plan-contract-store';
+import { readRequirement, currentRequirementSemanticRevision, getRequirementRevisionRecord, requirementSemanticView } from '../../../src/runtime/control-plane/persistence/requirement-store';
 import { buildWorkContinuationSnapshot } from '../../../src/runtime/control-plane/facade/work-continuation';
 import { result } from './result-adapter';
 import { projectWorkExecutionEvidence } from './work-detail-projection';
@@ -19,6 +22,61 @@ import { readWorkHandle } from '../../../src/runtime/control-plane/execution/wor
 import { reconcileSingleTerminalWorkCleanup } from '../../../src/runtime/control-plane/execution/work-terminal-cleanup';
 
 const RH_WORK_SEMANTIC_OPERATIONS = new Set(['start', 'get', 'revise', 'complete']);
+
+/** Resolve semantic version references against existing canonical heads/history. */
+function workBasis(store: WorkContractStoreOptions, x: { requirementId?: string; requirementRevision?: number; planId?: string; planRevision?: number }) {
+  const plan = x.planId ? getPlanContract(store, x.planId) : undefined;
+  if (x.planId && !plan) throw new Error(`WORK_PLAN_NOT_FOUND: ${x.planId}`);
+  if (x.requirementId && plan?.requirementId && x.requirementId !== plan.requirementId) {
+    throw new Error(`WORK_PLAN_REQUIREMENT_MISMATCH: ${x.planId} belongs to ${plan.requirementId}, not ${x.requirementId}`);
+  }
+  const requirementId = x.requirementId || plan?.requirementId;
+  if (x.requirementRevision !== undefined && !requirementId) throw new Error('WORK_REQUIREMENT_ID_REQUIRED_FOR_REVISION');
+  if (x.planRevision !== undefined && !x.planId) throw new Error('WORK_PLAN_ID_REQUIRED_FOR_REVISION');
+  if (requirementId && !store.controllerHome) throw new Error('WORK_REQUIREMENT_STORE_UNAVAILABLE');
+  const requirement = requirementId ? readRequirement({ controllerHome: store.controllerHome! }, requirementId)?.value : undefined;
+  if (requirementId && !requirement) throw new Error(`WORK_REQUIREMENT_NOT_FOUND: ${requirementId}`);
+  for (const [kind, revision] of [['REQUIREMENT', x.requirementRevision], ['PLAN', x.planRevision]] as const) {
+    if (revision !== undefined && (!Number.isInteger(revision) || revision < 1)) throw new Error(`WORK_${kind}_REVISION_INVALID`);
+  }
+  const requirementRevision = requirement ? x.requirementRevision ?? currentRequirementSemanticRevision(requirement) : undefined;
+  const planRevision = plan ? x.planRevision ?? currentPlanSemanticRevision(plan) : undefined;
+  if (requirement && requirementRevision !== currentRequirementSemanticRevision(requirement)
+    && !getRequirementRevisionRecord({ controllerHome: store.controllerHome! }, requirementId!, requirementRevision!)) {
+    throw new Error(`WORK_REQUIREMENT_REVISION_NOT_FOUND: ${requirementId}:r${requirementRevision}`);
+  }
+  if (plan && planRevision !== currentPlanSemanticRevision(plan)
+    && !getPlanSemanticRevisionRecord(store, x.planId!, planRevision!)) {
+    throw new Error(`WORK_PLAN_REVISION_NOT_FOUND: ${x.planId}:r${planRevision}`);
+  }
+  return { requirementId, requirementRevision, planId: x.planId, planRevision };
+}
+
+/** On-demand projection for manual and automated continuation; never adopts a head. */
+function versionBinding(store: WorkContractStoreOptions, work: NonNullable<ReturnType<typeof getWorkContract>>, detail: boolean) {
+  const req = work.requirementId && store.controllerHome
+    ? readRequirement({ controllerHome: store.controllerHome }, work.requirementId)?.value : undefined;
+  const plan = work.planId ? getPlanContract(store, work.planId) : undefined;
+  const reqHead = req ? requirementSemanticView(req) : undefined;
+  const planHead = plan ? planSemanticView(plan) : undefined;
+  const reqAdopted = detail && reqHead && work.requirementRevision !== reqHead.revision
+    ? getRequirementRevisionRecord({ controllerHome: store.controllerHome! }, work.requirementId!, work.requirementRevision!) : undefined;
+  const planAdopted = detail && planHead && work.planRevision !== planHead.revision
+    ? getPlanSemanticRevisionRecord(store, work.planId!, work.planRevision!) : undefined;
+  return {
+    ...(work.requirementId ? { requirement: {
+      id: work.requirementId, adoptedRevision: work.requirementRevision, currentRevision: reqHead?.revision,
+      updateAvailable: Boolean(reqHead && work.requirementRevision !== reqHead.revision),
+      ...(detail ? { current: reqHead, adopted: reqAdopted ?? (work.requirementRevision === reqHead?.revision ? reqHead : undefined) } : {}),
+    } } : {}),
+    ...(work.planId ? { plan: {
+      id: work.planId, adoptedRevision: work.planRevision, currentRevision: planHead?.revision,
+      updateAvailable: Boolean(planHead && work.planRevision !== planHead.revision),
+      ...(detail ? { current: planHead, adopted: planAdopted ?? (work.planRevision === planHead?.revision ? planHead : undefined) } : {}),
+    } } : {}),
+  };
+}
+
 
 export function semanticWorkId(store: WorkContractStoreOptions, args: Record<string, unknown>): string {
   const explicit = typeof args.work_id === 'string' ? args.work_id.trim() : '';
@@ -41,7 +99,9 @@ function semanticCreateMatches(existing: ReturnType<typeof getWorkContract>, arg
   const dependsOnWorkIds = normalizeWorkObjectiveRelationIds(Array.isArray(args.depends_on_work_ids) ? args.depends_on_work_ids.map(String) : []).sort();
   const existingDependencies = normalizeWorkObjectiveRelationIds(existing.dependsOnWorkIds).sort();
   return existing.objective === objective
-    && (existing.requirementId ?? '') === requirementId
+    && (planId && !requirementId ? true : (existing.requirementId ?? '') === requirementId)
+    && (args.requirement_revision === undefined || existing.requirementRevision === args.requirement_revision)
+    && (args.plan_revision === undefined || existing.planRevision === args.plan_revision)
     && (existing.planId ?? '') === planId
     && (existing.semanticParentWorkId ?? '') === semanticParentWorkId
     && existingDependencies.length === dependsOnWorkIds.length
@@ -75,14 +135,17 @@ export async function callRhWorkSemanticOperation(
       }) as unknown as Record<string, unknown>);
     }
     try {
+      const basis = workBasis(store, {
+        requirementId: typeof args.requirement_id === 'string' ? args.requirement_id.trim() || undefined : undefined,
+        requirementRevision: typeof args.requirement_revision === 'number' ? args.requirement_revision : undefined,
+        planId: typeof args.plan_id === 'string' ? args.plan_id.trim() || undefined : undefined,
+        planRevision: typeof args.plan_revision === 'number' ? args.plan_revision : undefined,
+      });
       const created = createWorkSemanticContext(store, {
         workId,
         objective,
         requestedBy: 'chatgpt',
-        ...(typeof args.requirement_id === 'string' && args.requirement_id.trim() ? { requirementId: args.requirement_id.trim() } : {}),
-        ...(typeof args.requirement_revision === 'number' ? { requirementRevision: args.requirement_revision } : {}),
-        ...(typeof args.plan_id === 'string' && args.plan_id.trim() ? { planId: args.plan_id.trim() } : {}),
-        ...(typeof args.plan_revision === 'number' ? { planRevision: args.plan_revision } : {}),
+        ...basis,
         ...(typeof args.semantic_parent_work_id === 'string' ? { semanticParentWorkId: args.semantic_parent_work_id } : {}),
         ...(Array.isArray(args.depends_on_work_ids) ? { dependsOnWorkIds: args.depends_on_work_ids.map(String) } : {}),
         ...(requestId ? { requestId } : {}),
@@ -121,6 +184,7 @@ export async function callRhWorkSemanticOperation(
       summary: `Work ${semantic.workId} retrieved at semantic revision ${semantic.revision}.`,
       data: {
         work: semantic,
+        versionBinding: versionBinding(store, work, detail),
         ...(detail ? {
           revisionHistory,
           objectiveGraph,
@@ -137,12 +201,22 @@ export async function callRhWorkSemanticOperation(
     ? 'completed'
     : (args.work_state === 'open' || args.work_state === 'completed' || args.work_state === 'cancelled' ? args.work_state : undefined);
   try {
+    const current = getWorkContract(store, workId);
+    const choosingVersion = typeof args.requirement_revision === 'number' || typeof args.plan_revision === 'number';
+    if (choosingVersion && !current) throw new Error(`WORK_NOT_FOUND: ${workId}`);
+    if (choosingVersion && current && semanticWorkState(current) !== 'open') throw new Error(`WORK_TERMINAL_BASIS_IMMUTABLE: ${workId}`);
+    const basis = choosingVersion ? workBasis(store, {
+      requirementId: current?.requirementId,
+      requirementRevision: typeof args.requirement_revision === 'number' ? args.requirement_revision : undefined,
+      planId: current?.planId,
+      planRevision: typeof args.plan_revision === 'number' ? args.plan_revision : undefined,
+    }) : undefined;
     const revised = reviseWorkSemanticContext(store, workId, {
       expectedRevision,
       ...(typeof args.objective === 'string' ? { objective: args.objective } : {}),
       ...(targetState ? { state: targetState } : {}),
-      ...(typeof args.requirement_revision === 'number' ? { requirementRevision: args.requirement_revision } : {}),
-      ...(typeof args.plan_revision === 'number' ? { planRevision: args.plan_revision } : {}),
+      ...(typeof args.requirement_revision === 'number' ? { requirementRevision: basis?.requirementRevision } : {}),
+      ...(typeof args.plan_revision === 'number' ? { planRevision: basis?.planRevision } : {}),
       ...(operation === 'revise' && typeof args.semantic_parent_work_id === 'string' ? { semanticParentWorkId: args.semantic_parent_work_id } : {}),
       ...(operation === 'revise' && Array.isArray(args.depends_on_work_ids) ? { dependsOnWorkIds: args.depends_on_work_ids.map(String) } : {}),
       ...(Array.isArray(args.work_result_refs) ? { resultRefs: args.work_result_refs.map(String) } : {}),
@@ -175,6 +249,7 @@ export async function callRhWorkSemanticOperation(
         work: semantic,
         expectedRevision,
         semanticRevision: semantic.revision,
+        versionBinding: versionBinding(store, revised, false),
         ...(resourceReconciliation ? { resourceReconciliation } : {}),
       },
     }) as unknown as Record<string, unknown>);

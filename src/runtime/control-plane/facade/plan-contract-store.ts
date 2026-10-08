@@ -15,6 +15,7 @@ import {
 } from './semantic-admission';
 import {
   listControlPlaneRecords,
+  readControlPlaneRecord,
   readControlPlaneRecordWithinTransaction,
   withControlPlaneTransaction,
   writeControlPlaneRecordWithinTransaction,
@@ -408,6 +409,30 @@ function appendJsonPlanRevisionRecord(options: PlanContractStoreOptions, record:
     throw new Error(`PLAN_REVISION_ALREADY_EXISTS: ${record.planId}:r${record.revision}`);
   }
   writeJsonAtomic(path, { schemaVersion: 1, updatedAt: record.recordedAt, revisions: [record, ...store.revisions] });
+}
+
+/** Exact historical lookup; revision-list limits are not version-existence gates. */
+export function getPlanSemanticRevisionRecord(
+  options: PlanContractStoreOptions,
+  planId: string,
+  revision: number,
+): PlanSemanticRevisionRecord | undefined {
+  if (!Number.isInteger(revision) || revision < 1) return undefined;
+  const normalizedPlanId = sanitizeFileComponent(planId);
+  const record = sqliteBacked(options)
+    ? readControlPlaneRecord<PlanSemanticRevisionRecord>(
+      options.controllerHome, 'plan_semantic_revision', requirePlanContractStoreScopeKey(options),
+      planRevisionRecordKey(normalizedPlanId, revision),
+    )?.value
+    : readJsonFile<PlanSemanticRevisionStore>(
+      planSemanticRevisionStorePath(options), { schemaVersion: 1, updatedAt: nowIso(options), revisions: [] },
+    ).revisions.find((entry) => entry.planId === normalizedPlanId && entry.revision === revision);
+  return record ? {
+    ...record,
+    semanticScope: record.semanticScope ?? (record.requirementId
+      ? { schemaVersion: 1, kind: 'requirement', id: record.requirementId }
+      : { schemaVersion: 1, kind: 'plan', id: record.planId }),
+  } : undefined;
 }
 
 export function listPlanSemanticRevisionRecords(options: PlanContractStoreOptions, planId?: string): PlanSemanticRevisionRecord[] {

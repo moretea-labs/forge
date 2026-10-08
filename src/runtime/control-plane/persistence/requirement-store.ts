@@ -162,6 +162,22 @@ export function listRequirements(
   });
 }
 
+/** Exact historical lookup, independent of global revision-list limits. */
+export function getRequirementRevisionRecord(
+  options: RequirementStoreOptions,
+  requirementId: string,
+  revision: number,
+): RequirementRevisionRecord | undefined {
+  if (!Number.isInteger(revision) || revision < 1) return undefined;
+  const record = readControlPlaneRecord<RequirementRevisionRecord>(
+    options.controllerHome, REVISION_NAMESPACE, SCOPE, requirementRevisionKey(requirementId, revision),
+  )?.value;
+  return record ? {
+    ...record,
+    semanticScope: record.semanticScope ?? { schemaVersion: 1, kind: 'requirement', id: record.requirementId },
+  } : undefined;
+}
+
 export function listRequirementRevisionRecords(
   options: RequirementStoreOptions,
   requirementId?: string,

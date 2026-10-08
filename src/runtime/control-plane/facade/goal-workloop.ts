@@ -581,9 +581,12 @@ export function startGoalWorkloop(
       data: { executionStarted: false, workContractCreated: false, predecessorWorkId: terminalContinuationSource.workId, predecessorRequirementId, requestedRequirementId },
     });
   }
-  // The Plan's Requirement tag is provenance metadata, not admission authority:
-  // the caller's explicit Requirement (or the predecessor's) decides the Work.
-  const effectiveRequirementId = requestedRequirementId || predecessorRequirementId;
+  // A selected Plan supplies its Requirement when no explicit/predecessor link exists.
+  // Requirement membership alone never selects sibling Plans or successor Works.
+  const effectiveRequirementId = requestedRequirementId || predecessorRequirementId || plan?.requirementId;
+  if (plan?.requirementId && effectiveRequirementId && plan.requirementId !== effectiveRequirementId) {
+    return buildFacadeResult({ status: 'blocked', summary: `WORK_PLAN_REQUIREMENT_MISMATCH: ${resolvedPlanId} belongs to ${plan.requirementId}, not ${effectiveRequirementId}.`, data: { executionStarted: false, workContractCreated: false } });
+  }
   const effectiveRequirementRecord = effectiveRequirementId && ctx.workStore.controllerHome ? readRequirement({ controllerHome: ctx.workStore.controllerHome }, effectiveRequirementId) : undefined;
   if (
     effectiveRequirementId
