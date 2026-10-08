@@ -2053,10 +2053,21 @@ test('bootstrap does not require window.name and reconciles the exact effect mar
     onError: (error) => { throw error; },
   });
 
+  // A reused Project bootstrap tab that already shows a /c/<id> is NOT a
+  // fresh conversation. Reject before external mutation and preserve effect 1.
+  canonical = true;
   await adapter.runOnce();
-  // The send outcome is still unknown until the canonical conversation route
-  // and exact effect marker become observable. Do not re-poll on the next tick.
-  expect(store.nextBrowserEffect(taskId)).toBeUndefined();
+  expect(dispatchCount).toBe(0);
+  expect(store.latestEffectDispatch(effect.effectId)).toBeUndefined();
+  expect(control.getTask(taskId)?.conversationId).toBe(`bootstrap:${taskId}`);
+  expect(closeCount).toBe(1);
+
+  canonical = false;
+  clock.nowMs += 30_000;
+  await adapter.runOnce();
+  // After send, preserve the exact source effect in reconciliation mode.
+  // No additional message may be dispatched while its outcome is unknown.
+  expect(store.nextBrowserEffect(taskId)).toMatchObject({ mode: 'reconcile' });
   expect(dispatchCount).toBe(1);
 
   canonical = true;
@@ -2067,7 +2078,7 @@ test('bootstrap does not require window.name and reconciles the exact effect mar
   expect(store.nextBrowserEffect(taskId)).toBeUndefined();
   expect(store.latestEffectDispatch(effect.effectId)?.generation).toBe(1);
   expect(dispatchCount).toBe(1);
-  expect(closeCount).toBe(0);
+  expect(closeCount).toBe(1);
 });
 
 test('reconciles a late applied Supervisor effect into the same outcome-unknown ControllerRound without replay', () => {
@@ -2334,6 +2345,10 @@ test('Resume stream unavailable uses a bounded same-conversation recovery chain 
   expect(chatgptProviderPageFailure('Analysis paused')).toBe(CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE);
   expect(chatgptProviderPageFailure('已分析\n分析已暂停\n分析已暂停')).toBe(CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE);
   expect(chatgptProviderPageFailure('出了点问题。请重试')).toBe(CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE);
+  expect(chatgptProviderPageFailure('你已达到此对话的长度上限，你可以开始新聊天以继续对话。'))
+    .toBe('CHATGPT_AUTOMATION_CONVERSATION_LIMIT_REACHED');
+  expect(chatgptProviderPageFailure("You've reached the maximum length for this conversation."))
+    .toBe('CHATGPT_AUTOMATION_CONVERSATION_LIMIT_REACHED');
   expect(chatgptProviderPageFailure('Earlier the analysis paused; now the model is working.')).toBeUndefined();
   expect(chatgptProviderPageFailure('消息传输超时。请重试。')).toBe('CHATGPT_AUTOMATION_MESSAGE_DELIVERY_TIMED_OUT');
   expect(classifyChatgptProviderFailure(failureCode!)).toBe('outcome_unknown');
@@ -2485,6 +2500,87 @@ test('public supervisor_task recover routes exhausted provider resume through th
     await new Promise<void>((resolve) => server.close(() => resolve()));
     store.close();
   }
+});
+
+test('a terminal conversation capacity banner migrates the same Supervisor but quoted activity text cannot', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-capacity-migration-'));
+  roots.push(root);
+  const store = new WorkflowSupervisorStore(join(root, 'supervisor-home'));
+  const control = new WorkflowSupervisorControlPlane(store, {}, {
+    browserTaskActive: () => true,
+    projectScopeForTask: () => ({ title: 'Avela' }),
+  });
+  const taskId = 'supervisor:capacity-test';
+  const conversationId = 'abcabcab-1234-5678-90ab-cdefabcdefab';
+  const conversationUrl = `https://chatgpt.com/c/${conversationId}`;
+  control.registerTask({
+    taskId, conversationId, conversationUrl,
+    objective: 'Continue one durable task even after terminal provider capacity.',
+    completionContract: {}, continuationPolicy: { kind: 'standalone_supervisor' }, userBlockerPolicy: {},
+  });
+  control.recordBrowserDiscovery('capacity-test', [{
+    conversationId, canonicalUrl: conversationUrl, title: 'Avela',
+    projectTitle: 'Avela', projectUrl: 'https://chatgpt.com/g/g-p-123456789abcdef0/project',
+  }]);
+  const effect = control.reserveEnrollment(taskId);
+  expect(store.recordEffectDispatchStarted(effect.effectId, 1, 'capacity-original-send')).toBe(true);
+  control.observeEffect({ effectId: effect.effectId, observationId: 'capacity-applied', outcome: 'applied' });
+
+  const warning = '你已达到此对话的长度上限，你可以开始新聊天以继续对话。';
+  let activeStatus = '';
+  const page: TestBrowserPage = {
+    evaluate: async <T>() => false as T,
+    waitForSelector: async () => undefined,
+    tabRef: () => ({ windowId: 'window-capacity', tabId: 'tab-capacity' }),
+  };
+  const targetPort = createTestChatgptTargetPort({
+    listTabs: async () => ({ entries: [{
+      windowId: 'window-capacity', tabId: 'tab-capacity',
+      url: conversationUrl, title: 'Avela', active: true, browserProduct: 'chrome',
+    }], unavailableProducts: [] }),
+    reattach: async () => page,
+    create: async () => ({
+      evaluate: async <T>() => false as T,
+      waitForSelector: async () => undefined,
+      tabRef: () => ({ windowId: 'window-fresh', tabId: 'tab-fresh' }),
+    }),
+    close: async () => undefined,
+    readOwner: async () => '',
+    writeOwner: async () => undefined,
+    snapshot: async (observedPage) => ({
+      url: observedPage === page ? conversationUrl : 'https://chatgpt.com/g/g-p-123456789abcdef0/project',
+      title: 'Avela',
+      latestUserText: observedPage === page ? 'Original durable effect already submitted.' : '',
+      latestAssistantResponse: '', providerActivityText: observedPage === page ? warning : '',
+      providerFailureText: observedPage === page ? activeStatus : '',
+      latestTurnRole: 'user' as const,
+      isGenerating: false,
+    }),
+    // A separate NEW enrollment may be attempted; the old applied source
+    // must never be dispatched again and its generation remains exactly one.
+    dispatchPrompt: async (targetPage) => {
+      if (targetPage === page) throw new Error('CAPACITY_MUST_NOT_REPLAY_APPLIED_EFFECT');
+      return { dispatched: false, confirmed: false };
+    },
+  });
+  const adapter = new WorkflowSupervisorNativeBrowserAdapter(control, new WorkflowSupervisorEphemeralDiscovery(), {
+    targetPort,
+    nowMs: () => Date.now(),
+    providerIdleGraceMs: 60_000,
+    providerScopeKey: join(root, 'provider-scope'),
+    sleep: async () => undefined,
+    setInterval: () => 0 as unknown as ReturnType<typeof setInterval>,
+    clearInterval: () => undefined,
+    onError: (error) => { throw error; },
+  });
+  await adapter.runOnce();
+  expect(store.getTask(taskId)?.conversationId).toBe(conversationId);
+  activeStatus = warning;
+  await adapter.runOnce();
+  expect(store.getTask(taskId)?.conversationId).toBe(`bootstrap:${taskId}`);
+  expect(store.latestEffectDispatch(effect.effectId)?.generation).toBe(1);
+  expect(store.getEffectByOriginKey(`fresh-conversation:${taskId}:capacity:${conversationId}`)?.kind).toBe('enrollment');
+  store.close();
 });
 
 test('stream recovery stays on the attached exact tab and never creates a replacement', async () => {

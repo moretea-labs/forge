@@ -7,6 +7,7 @@ import type {
 } from '../packages/plugin-runtime/computer';
 import {
   CHATGPT_AUTOMATION_RATE_LIMITED,
+  CHATGPT_AUTOMATION_CONVERSATION_LIMIT_REACHED,
   chatgptProviderBackpressureRemainingMs,
   chatgptProviderPageFailure,
   noteChatgptProviderBackpressure,
@@ -60,6 +61,7 @@ export const TASK_TARGET_SPACED_FAILURE_CODES: ReadonlySet<string> = new Set([
   'COMPUTER_CHATGPT_BOOTSTRAP_TARGET_UNAVAILABLE',
   'COMPUTER_CHATGPT_EXTENSION_TARGET_OPEN_OUTCOME_UNKNOWN',
   'COMPUTER_CHATGPT_EXTENSION_BOOTSTRAP_OPEN_OUTCOME_UNKNOWN',
+  'WORKFLOW_SUPERVISOR_BOOTSTRAP_EXISTING_CONVERSATION',
 ]);
 function taskTargetRetryDelayMs(streak: number): number {
   const exponent = Math.max(0, Math.min(6, Math.trunc(streak) - 1));
@@ -510,15 +512,33 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       ...(snapshot.title.trim() ? { title: snapshot.title.trim().slice(0, 512) } : {}), ...projectMetadataFromConversationUrl(snapshot.url) });
     const providerBusy = snapshot.isGenerating;
     const latestRoleStillUser = snapshot.latestTurnRole === 'user';
-    const observedProviderFailureCode = chatgptProviderPageFailure([
-      snapshot.providerFailureText,
-      snapshot.providerActivityText,
-    ].filter(Boolean).join('\n'));
+    // Capacity is only authoritative on dedicated live provider UI. A model
+    // can quote the same phrase in an ordinary assistant turn; historical
+    // transcript text must never trigger automatic conversation migration.
+    const liveFailure = chatgptProviderPageFailure(snapshot.providerFailureText);
+    const turnFailure = chatgptProviderPageFailure(snapshot.providerActivityText);
+    const observedProviderFailureCode = liveFailure
+      ?? (turnFailure === CHATGPT_AUTOMATION_CONVERSATION_LIMIT_REACHED ? undefined : turnFailure);
     const providerFailureAwaitingClear = this.providerFailureAwaitingClear.get(task.conversationId);
     if (!observedProviderFailureCode) this.providerFailureAwaitingClear.delete(task.conversationId);
     const providerFailureCode = observedProviderFailureCode && observedProviderFailureCode !== providerFailureAwaitingClear
       ? observedProviderFailureCode
       : undefined;
+    if (observedProviderFailureCode === CHATGPT_AUTOMATION_CONVERSATION_LIMIT_REACHED) {
+      // This conversation cannot produce another meaningful turn. Unlike a
+      // provider 429, fresh migration is justified by an explicit terminal
+      // capacity message on the exact bound provider surface. The existing
+      // Supervisor CAS transaction preserves already-applied source effects.
+      this.control.migrateConversation({
+        taskId: task.taskId,
+        expectedConversationId: task.conversationId,
+        fresh: true,
+        requestId: `capacity:${task.conversationId}`,
+        reason: 'live_provider_conversation_capacity_exhausted',
+        authorizedBy: 'user-authorized-automatic-conversation-rotation',
+      });
+      return;
+    }
     const priorProviderFailure = this.providerFailureSeen.get(task.conversationId);
     if (!observedProviderFailureCode) this.providerFailureSeen.delete(task.conversationId);
     else if (priorProviderFailure !== observedProviderFailureCode) { noteChatgptProviderBackpressure(this.deps.providerScopeKey, observedProviderFailureCode, this.deps.nowMs()); this.providerFailureSeen.set(task.conversationId, observedProviderFailureCode); }
@@ -578,6 +598,22 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     const opened = await this.deps.targetPort.openBootstrap(this.control.bootstrapProjectUrl(task.taskId), task.taskId);
     if (opened.state !== 'ready') { this.noteTargetUnavailable(task, command.effectId, opened.failure); return; }
     const target = opened.target;
+    // Bootstrap must originate on the Project/new-composer surface. A retained
+    // provider tab can silently reopen the exhausted /c/<id>; sending there
+    // burns a fresh effect and can make the migration bind its old source.
+    // Reject before beginning an external effect, release the stale target and
+    // retain the same unspent enrollment for a later exact-target attempt.
+    const beforeSend = opened.observation ?? await target.observe({ includeUserHistory: false, includePageText: false });
+    let preexistingConversation = false;
+    try { parseChatgptConversationIdentity(beforeSend.url); preexistingConversation = true; }
+    catch { /* A Project page without a conversation id is the expected entry. */ }
+    if (preexistingConversation) {
+      await this.deps.targetPort.release(target.targetId).catch(() => undefined);
+      this.noteTargetUnavailable(task, command.effectId, {
+        code: 'WORKFLOW_SUPERVISOR_BOOTSTRAP_EXISTING_CONVERSATION',
+      });
+      return;
+    }
     if (!this.control.bootstrapBeginEffect({ taskId: task.taskId, effectId: command.effectId, dispatchId: `bootstrap-${randomUUID()}`, dispatchGeneration: command.dispatchGeneration })) return;
     try {
       const dispatch = await withChatgptProviderDispatchLane(this.deps.providerScopeKey, () => target.dispatch(command.prompt, { reasoning: 'xhigh' }),

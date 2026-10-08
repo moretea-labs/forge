@@ -90,6 +90,12 @@ describe('Workflow Supervisor fresh conversation switch', () => {
     });
 
     expect(getChatgptWorkConversationBinding(fx.store, fx.workId)?.conversationId).toBe(oldConversationId);
+    // The provider Project root can resolve back to its old chat. It must not
+    // consume a fresh-migration enrollment or change the bound Work identity.
+    expect(() => control.bindBootstrapConversation({
+      taskId, conversationId: oldConversationId, conversationUrl: oldUrl,
+    })).toThrow('WORKFLOW_SUPERVISOR_FRESH_CONVERSATION_REBOUND_SOURCE');
+    expect(control.getTask(taskId)?.conversationId).toBe('bootstrap:' + taskId);
     control.bindBootstrapConversation({ taskId, conversationId: newConversationId, conversationUrl: newUrl });
     expect(getChatgptWorkConversationBinding(fx.store, fx.workId)).toMatchObject({
       workId: fx.workId,
@@ -104,6 +110,90 @@ describe('Workflow Supervisor fresh conversation switch', () => {
     });
     expect(getChatgptWorkConversationBinding(fx.store, fx.workId)?.conversationId).toBe(newConversationId);
     supervisorStore.close();
+  });
+
+  test('rotates one standalone Supervisor atomically only after 15 confirmed CONTINUE receipts', async () => {
+    const fx = fixture();
+    const oldConversationId = '12121212-aaaa-bbbb-cccc-343434343434';
+    const taskId = 'supervisor:standalone-receipt-rotation';
+    const store = new WorkflowSupervisorStore(fx.controllerHome);
+    const control = new WorkflowSupervisorControlPlane(store);
+    control.registerTask({
+      taskId,
+      conversationId: oldConversationId,
+      conversationUrl: `https://chatgpt.com/c/${oldConversationId}`,
+      objective: 'Deliver useful work across conversation boundaries.',
+      completionContract: { repo_id: fx.repoId },
+      continuationPolicy: { kind: 'standalone_supervisor' },
+      userBlockerPolicy: {},
+    });
+    let effect = control.reserveEnrollment(taskId);
+    for (let n = 1; n <= 15; n += 1) {
+      expect(store.recordEffectDispatchStarted(effect.effectId, 1, `round-${n}`)).toBe(true);
+      control.observeEffect({ effectId: effect.effectId, observationId: `applied-${n}`, outcome: 'applied' });
+      const result = await control.observeAutomationReceipt({
+        taskId, conversationId: oldConversationId, status: 'continue', receiptId: `receipt-${n}`,
+      });
+      expect(result).toMatchObject({ action: 'CONTINUE', terminal: false });
+      if (!('successorEffect' in result) || !result.successorEffect) throw new Error('MISSING_CONTINUATION_EFFECT');
+      effect = result.successorEffect;
+      if (n < 15) {
+        expect(effect.kind).toBe('continuation');
+        expect(store.getTask(taskId)?.conversationId).toBe(oldConversationId);
+      }
+    }
+    expect(effect.kind).toBe('enrollment');
+    expect(store.getTask(taskId)?.conversationId).toBe(`bootstrap:${taskId}`);
+    expect(store.getTask(taskId)?.taskId).toBe(taskId);
+    expect(store.currentUnappliedEffect(taskId)?.effectId).toBe(effect.effectId);
+    const freshId = '56565656-dddd-eeee-ffff-787878787878';
+    expect(() => control.bindBootstrapConversation({
+      taskId, conversationId: oldConversationId,
+      conversationUrl: `https://chatgpt.com/c/${oldConversationId}`,
+    })).toThrow('WORKFLOW_SUPERVISOR_FRESH_CONVERSATION_REBOUND_SOURCE');
+    control.bindBootstrapConversation({
+      taskId, conversationId: freshId, conversationUrl: `https://chatgpt.com/c/${freshId}`,
+    });
+    expect(store.getTask(taskId)?.conversationId).toBe(freshId);
+    // A healthy second window must be eligible to rotate again. Migration
+    // budgets limit *consecutive failed* moves, never lifetime conversations.
+    for (let n = 16; n <= 30; n += 1) {
+      expect(store.recordEffectDispatchStarted(effect.effectId, 1, `round-${n}`)).toBe(true);
+      control.observeEffect({ effectId: effect.effectId, observationId: `applied-${n}`, outcome: 'applied' });
+      const result = await control.observeAutomationReceipt({
+        taskId, conversationId: freshId, status: 'continue', receiptId: `receipt-${n}`,
+      });
+      if (!('successorEffect' in result) || !result.successorEffect) throw new Error('MISSING_SUCCESSOR_IN_SECOND_WINDOW');
+      effect = result.successorEffect;
+      if (n < 30) {
+        expect(effect.kind).toBe('continuation');
+        expect(store.getTask(taskId)?.conversationId).toBe(freshId);
+      }
+    }
+    expect(effect.kind).toBe('enrollment');
+    expect(store.getTask(taskId)?.conversationId).toBe(`bootstrap:${taskId}`);
+    const thirdId = '90909090-aaaa-bbbb-cccc-111111111111';
+    control.bindBootstrapConversation({
+      taskId, conversationId: thirdId, conversationUrl: `https://chatgpt.com/c/${thirdId}`,
+    });
+    expect(store.getTask(taskId)?.conversationId).toBe(thirdId);
+    // One further operator-authorized move without another receipt is allowed,
+    // but a third consecutive failed migration cannot churn conversations.
+    expect(control.migrateConversation({
+      taskId, expectedConversationId: thirdId, fresh: true,
+      requestId: 'post-second-cycle-capacity', reason: 'Provider declared terminal capacity.',
+      authorizedBy: 'test-operator',
+    })).toMatchObject({ migrated: true, freshConversation: true });
+    const fourthId = 'abababab-1212-3434-5656-cdcdcdcdcdcd';
+    control.bindBootstrapConversation({
+      taskId, conversationId: fourthId, conversationUrl: `https://chatgpt.com/c/${fourthId}`,
+    });
+    expect(() => control.migrateConversation({
+      taskId, expectedConversationId: fourthId, fresh: true,
+      requestId: 'third-failed-hop', reason: 'A third move without progress must stop.',
+      authorizedBy: 'test-operator',
+    })).toThrow('WORKFLOW_SUPERVISOR_MIGRATION_BUDGET_EXHAUSTED');
+    store.close();
   });
 
   test('does not allow an unrelated bootstrap bind to replace the canonical Work conversation', () => {

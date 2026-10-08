@@ -749,6 +749,10 @@ export class WorkflowSupervisorControlPlane {
       effectId: nextId,
       kind: 'continuation',
       prompt: this.renderPrompt(task, nextId, 'continuation', checkpoint),
+      // Rebuild from the same durable goal in a new logical conversation after
+      // a complete 15-receipt cycle; never migrate an uncompleted mutation.
+      ...(task.continuationPolicy.kind === 'standalone_supervisor'
+        ? { freshEnrollmentPrompt: this.renderPrompt(task, nextId, 'enrollment') } : {}),
     });
   }
 

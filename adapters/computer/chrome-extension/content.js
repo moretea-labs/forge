@@ -104,13 +104,22 @@
     const current = turns.length ? turns[turns.length - 1] : undefined;
     return core.normalizeText(current?.innerText ?? current?.textContent).slice(-PROVIDER_ACTIVITY_CHARS);
   };
-  const providerFailureText = () => Array.from(document.querySelectorAll('[role="alert"], [role="status"], [aria-live="assertive"], [aria-live="polite"]'))
-    .filter(visible)
-    .map((node) => core.normalizeText(node.innerText ?? node.textContent))
-    .filter(Boolean)
-    .slice(-8)
-    .join('\n')
-    .slice(-PROVIDER_FAILURE_CHARS);
+  const providerFailureText = () => {
+    // The conversation-capacity banner is not always an ARIA alert.
+    // Read visible, short, non-message status nodes only; ordinary conversation
+    // history must never be interpreted as a current provider failure.
+    const status = Array.from(document.querySelectorAll('[role="alert"], [role="status"], [aria-live="assertive"], [aria-live="polite"]'))
+      .filter(visible);
+    const capacity = Array.from(conversationRoot().querySelectorAll('p, span, div'))
+      .filter((node) => visible(node) && !node.closest(TURN) && !node.closest('[data-message-author-role]'))
+      .filter((node) => {
+        const text = core.normalizeText(node.innerText ?? node.textContent);
+        return text.length <= 250 && /(?:你已达到此对话的长度上限|此对话已达到长度上限|you(?:'ve| have) reached the (?:maximum length for this conversation|conversation length limit)|this conversation has reached its maximum length)/i.test(text);
+      });
+    return [...status, ...capacity]
+      .map((node) => core.normalizeText(node.innerText ?? node.textContent))
+      .filter(Boolean).slice(-8).join('\n').slice(-PROVIDER_FAILURE_CHARS);
+  };
   const composer = () => document.querySelector(COMPOSER);
   const composerText = () => core.normalizeText(composer()?.value ?? composer()?.innerText ?? composer()?.textContent);
   const pageSnapshot = (options = {}) => {

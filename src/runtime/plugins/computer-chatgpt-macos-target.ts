@@ -235,7 +235,16 @@ export async function observeMacOsChatgptPage(
     const providerActivityText = turns.length ? text(turns[turns.length - 1]).slice(-${MAX_PROVIDER_ACTIVITY_CHARS}) : messageText(latestRoleNode).slice(-${MAX_PROVIDER_ACTIVITY_CHARS});
     const liveStatusNodes = Array.from(nodes('[role="alert"], [role="status"], [aria-live="assertive"], [aria-live="polite"]'));
     const retryErrorNodes = Array.from(nodes('button')).filter((node) => /(?:请重试|try again)/i.test(text(node))).map((node) => node.parentElement || node);
-    const liveProviderStatus = [...liveStatusNodes, ...retryErrorNodes].map(text).filter(Boolean).slice(-8).join('\\n');
+    // Detect only visible, short provider chrome outside message turns.
+    // The length-limit banner can lack aria-live on macOS native surfaces.
+    const capacityNodes = Array.from(nodes('p, span, div'))
+      .filter((node) => node.getClientRects?.().length
+        && !node.closest?.('[data-testid^="conversation-turn-"], [data-message-author-role]'))
+      .filter((node) => {
+        const value = text(node);
+        return value.length <= 250 && /(?:你已达到此对话的长度上限|此对话已达到长度上限|you(?:'ve| have) reached the (?:maximum length for this conversation|conversation length limit)|this conversation has reached its maximum length)/i.test(value);
+      });
+    const liveProviderStatus = [...liveStatusNodes, ...retryErrorNodes, ...capacityNodes].map(text).filter(Boolean).slice(-8).join('\\n');
     const result = {
       url: String(location.href || ''), title: String(document.title || ''),
       latestUserText: userTexts ? userTexts.join('\\n') : latest(userEntries),

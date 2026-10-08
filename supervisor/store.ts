@@ -591,6 +591,15 @@ export class WorkflowSupervisorStore {
         if (task.conversationId === conversationId && task.conversationUrl === conversationUrl) return task;
         throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_ALREADY_BOUND');
       }
+      // A fresh migration must not rebind the very conversation it retired.
+      // The existing migration event is the only durable source of authority.
+      const migration = statement(db, "SELECT payload_json FROM events WHERE task_id = ? AND kind = 'conversation_migrated' ORDER BY event_id DESC LIMIT 1", (s) => s.get(taskId)) as { payload_json?: string } | undefined;
+      const migrationFact = parsedObject(migration?.payload_json);
+      if (migrationFact.fresh_conversation === true
+        && migrationFact.to_conversation_id === task.conversationId
+        && migrationFact.from_conversation_id === conversationId) {
+        throw new Error('WORKFLOW_SUPERVISOR_FRESH_CONVERSATION_REBOUND_SOURCE');
+      }
       const conflict = statement(db, 'SELECT task_id FROM tasks WHERE conversation_id = ? AND task_id <> ?', (s) => s.get(conversationId, taskId)) as { task_id?: string } | undefined;
       if (conflict) throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_CONVERSATION_CONFLICT');
       statement(db, 'UPDATE tasks SET conversation_id = ?, conversation_url = ? WHERE task_id = ?', (s) => s.run(conversationId, conversationUrl, taskId));
@@ -1136,7 +1145,13 @@ export class WorkflowSupervisorStore {
       }
       const targetConversationId = `bootstrap:${input.taskId}`;
       if (task.conversationId === targetConversationId) throw new Error('WORKFLOW_SUPERVISOR_MIGRATION_ALREADY_PENDING');
-      const prior = statement(db, "SELECT COUNT(*) AS total FROM events WHERE task_id = ? AND kind = 'conversation_migrated'", (s) => s.get(input.taskId)) as { total?: number } | undefined;
+      // Bound repeated unsuccessful moves, not the lifetime of a healthy task.
+      // A genuine completion reopens the budget for its next 15-turn rotation.
+      const prior = statement(db, `SELECT COUNT(*) AS total FROM events
+        WHERE task_id = ? AND kind = 'conversation_migrated'
+          AND event_id > COALESCE(
+            (SELECT MAX(event_id) FROM events WHERE task_id = ? AND kind = 'assistant_completion'), 0
+          )`, (s) => s.get(input.taskId, input.taskId)) as { total?: number } | undefined;
       if (Number(prior?.total ?? 0) >= WORKFLOW_SUPERVISOR_MAX_CONVERSATION_MIGRATIONS) throw new Error('WORKFLOW_SUPERVISOR_MIGRATION_BUDGET_EXHAUSTED');
       // A submitted mutation whose outcome is unknown must be reconciled, never
       // abandoned by moving the task elsewhere.
@@ -1192,7 +1207,13 @@ export class WorkflowSupervisorStore {
       }
       const conflict = statement(db, 'SELECT task_id FROM tasks WHERE conversation_id = ? AND task_id <> ?', (s) => s.get(input.conversationId, input.taskId)) as { task_id?: string } | undefined;
       if (conflict) throw new Error('WORKFLOW_SUPERVISOR_MIGRATION_CONVERSATION_CONFLICT');
-      const prior = statement(db, "SELECT COUNT(*) AS total FROM events WHERE task_id = ? AND kind = 'conversation_migrated'", (s) => s.get(input.taskId)) as { total?: number } | undefined;
+      // Bound repeated unsuccessful moves, not the lifetime of a healthy task.
+      // A genuine completion reopens the budget for its next 15-turn rotation.
+      const prior = statement(db, `SELECT COUNT(*) AS total FROM events
+        WHERE task_id = ? AND kind = 'conversation_migrated'
+          AND event_id > COALESCE(
+            (SELECT MAX(event_id) FROM events WHERE task_id = ? AND kind = 'assistant_completion'), 0
+          )`, (s) => s.get(input.taskId, input.taskId)) as { total?: number } | undefined;
       if (Number(prior?.total ?? 0) >= WORKFLOW_SUPERVISOR_MAX_CONVERSATION_MIGRATIONS) throw new Error('WORKFLOW_SUPERVISOR_MIGRATION_BUDGET_EXHAUSTED');
       const pending = oldestUnappliedEffect(db, input.taskId);
       if (pending) {
@@ -1306,7 +1327,7 @@ export class WorkflowSupervisorStore {
     });
   }
 
-  commitCompletion(input: WorkflowSupervisorCompletion, successor?: { effectId: string; kind: WorkflowEffectKind; prompt: string }): { completion: WorkflowSupervisorCompletion; successorEffect?: WorkflowSupervisorEffect; deduplicated: boolean } {
+  commitCompletion(input: WorkflowSupervisorCompletion, successor?: { effectId: string; kind: WorkflowEffectKind; prompt: string; freshEnrollmentPrompt?: string }): { completion: WorkflowSupervisorCompletion; successorEffect?: WorkflowSupervisorEffect; deduplicated: boolean } {
     return this.transaction((db) => {
       const task = statement(db, 'SELECT 1 AS ok FROM tasks WHERE task_id = ?', (s) => s.get(input.taskId));
       if (!task) throw new Error('WORKFLOW_SUPERVISOR_TASK_UNKNOWN');
@@ -1330,13 +1351,47 @@ export class WorkflowSupervisorStore {
         if (priorSuccessorRow) {
           const priorSuccessor = effectFromRow(priorSuccessorRow);
           if (priorSuccessor.taskId !== input.taskId) throw new Error(`WORKFLOW_SUPERVISOR_EFFECT_TASK_CONFLICT:${originKey}`);
-          if (priorSuccessor.kind !== successor.kind) throw new Error(`WORKFLOW_SUPERVISOR_EFFECT_KIND_CONFLICT:${originKey}`);
+          if (priorSuccessor.kind !== successor.kind && !(successor.freshEnrollmentPrompt && priorSuccessor.kind === 'enrollment')) {
+            throw new Error(`WORKFLOW_SUPERVISOR_EFFECT_KIND_CONFLICT:${originKey}`);
+          }
           if ((priorSuccessor.sourceCompletionFingerprint ?? '') !== input.completionFingerprint) {
             throw new Error(`WORKFLOW_SUPERVISOR_EFFECT_SOURCE_CONFLICT:${originKey}`);
           }
           successorEffect = priorSuccessor;
         } else {
-          successorEffect = this.reserveEffectWithin(db, { taskId: input.taskId, effectId: successor.effectId, kind: successor.kind, originKey, sourceCompletionFingerprint: input.completionFingerprint, prompt: successor.prompt });
+          // User-authorized periodic rotation is a mechanical cadence over
+          // completed CONTINUE receipts, never sends, elapsed time or Work state.
+          // The completion, fresh enrollment, binding change and migration
+          // evidence commit atomically in the existing Supervisor journal.
+          const current = statement(db, 'SELECT * FROM tasks WHERE task_id = ?', (s) => s.get(input.taskId)) as Record<string, unknown>;
+          const currentTask = taskFromRow(current);
+          const lastMigration = statement(db, "SELECT MAX(event_id) AS id FROM events WHERE task_id=? AND kind='conversation_migrated'", (s) => s.get(input.taskId)) as { id?: number };
+          const completedSinceMigration = statement(db, `SELECT COUNT(*) AS total FROM events e
+            JOIN completions c ON c.completion_fingerprint=e.completion_fingerprint
+            WHERE e.task_id=? AND e.kind='assistant_completion' AND e.event_id>? AND c.action='CONTINUE'`,
+            (s) => s.get(input.taskId, lastMigration?.id ?? 0)) as { total?: number };
+          const rotate = successor.freshEnrollmentPrompt !== undefined
+            && currentTask.continuationPolicy.kind === 'standalone_supervisor'
+            && !currentTask.conversationId.startsWith('bootstrap:')
+            && (completedSinceMigration.total ?? 0) >= 15;
+          successorEffect = this.reserveEffectWithin(db, {
+            taskId: input.taskId, effectId: successor.effectId,
+            kind: rotate ? 'enrollment' : successor.kind, originKey,
+            sourceCompletionFingerprint: input.completionFingerprint,
+            prompt: rotate ? successor.freshEnrollmentPrompt! : successor.prompt,
+          });
+          if (rotate) {
+            const sourceConversationId = currentTask.conversationId;
+            const bootstrapConversationId = `bootstrap:${input.taskId}`;
+            statement(db, 'UPDATE tasks SET conversation_id=?, conversation_url=? WHERE task_id=?',
+              (s) => s.run(bootstrapConversationId, 'https://chatgpt.com/', input.taskId));
+            statement(db, 'INSERT INTO events(task_id,event_key,kind,payload_json,occurred_at) VALUES (?,?,?,?,?)', (s) => s.run(
+              input.taskId, `conversation-migrated:auto:${input.completionFingerprint}`, 'conversation_migrated',
+              json({ from_conversation_id: sourceConversationId, to_conversation_id: bootstrapConversationId,
+                to_conversation_url: 'https://chatgpt.com/', fresh_conversation: true,
+                replacement_effect_id: successorEffect!.effectId, request_id: `automatic-receipt:${input.completionFingerprint}`,
+                authorized_by: 'user-configured-standalone-rotation', reason: '15_confirmed_continue_receipts' }), now()));
+          }
         }
       }
       return { completion: input, ...(successorEffect ? { successorEffect } : {}), deduplicated: Boolean(existing) };

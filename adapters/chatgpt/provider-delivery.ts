@@ -8,11 +8,13 @@ export const CHATGPT_AUTOMATION_MESSAGE_DELIVERY_TIMED_OUT = 'CHATGPT_AUTOMATION
 export const CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE = 'CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE';
 export const CHATGPT_AUTOMATION_RATE_LIMITED = 'CHATGPT_AUTOMATION_RATE_LIMITED';
 export const CHATGPT_AUTOMATION_RATE_LIMITED_AFTER_SUBMIT = 'CHATGPT_AUTOMATION_RATE_LIMITED_AFTER_SUBMIT';
+export const CHATGPT_AUTOMATION_CONVERSATION_LIMIT_REACHED = 'CHATGPT_AUTOMATION_CONVERSATION_LIMIT_REACHED';
 
 export type ChatgptProviderPageFailureCode =
   | typeof CHATGPT_AUTOMATION_MESSAGE_DELIVERY_TIMED_OUT
   | typeof CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE
-  | typeof CHATGPT_AUTOMATION_RATE_LIMITED;
+  | typeof CHATGPT_AUTOMATION_RATE_LIMITED
+  | typeof CHATGPT_AUTOMATION_CONVERSATION_LIMIT_REACHED;
 
 function normalizeChatgptProviderPageText(value: string): string {
   return value.replace(/\s+/g, ' ').trim().toLowerCase();
@@ -23,6 +25,16 @@ export function chatgptProviderPageFailure(
   bodyText: string | undefined,
 ): ChatgptProviderPageFailureCode | undefined {
   const normalized = normalizeChatgptProviderPageText(bodyText ?? '');
+  // Dedicated live provider-status text only. Callers must not pass an
+  // unrestricted historical conversation transcript into this classifier.
+  if (normalized.includes('你已达到此对话的长度上限')
+    || normalized.includes('此对话已达到长度上限')
+    || normalized.includes('you have reached the maximum length for this conversation')
+    || normalized.includes("you've reached the maximum length for this conversation")
+    || normalized.includes('this conversation has reached its maximum length')
+    || normalized.includes('you have reached the conversation length limit')) {
+    return CHATGPT_AUTOMATION_CONVERSATION_LIMIT_REACHED;
+  }
   if (
     normalized.includes('resume stream unavailable')
     || normalized.includes('tokenless_resume_unavailable')
