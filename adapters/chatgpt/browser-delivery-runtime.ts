@@ -949,6 +949,20 @@ export async function submitChatgptPrompt(
     post_action_wait_ms: 100,
   }, timeoutMs);
 
+  // Browser fill can report success even when the live ProseMirror composer did
+  // not retain the intended payload. Never send or trigger Enter fallback on
+  // an unverified draft; the owning effect must remain unreplayed.
+  const verifiedComposerText = await currentChatgptComposerText(
+    controllerHome, workId, browserSessionId, timeoutMs,
+  );
+  if (!chatgptComposerRetainsPrompt(verifiedComposerText, renderedPrompt)) {
+    throw new ChatgptProviderDeliveryError(
+      'CHATGPT_AUTOMATION_COMPOSER_UNVERIFIED',
+      `CHATGPT_AUTOMATION_COMPOSER_UNVERIFIED:${targetUrl}`,
+      { conversationUrl: targetUrl },
+    );
+  }
+
   let observedUrl = targetUrl;
   let submitOutcomeUnknown = false;
   let observedNewOutbound = false;

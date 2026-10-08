@@ -375,3 +375,5 @@ Research notes, tasks, reviews, archived architecture pages, plans and Git histo
 - CodeGraph may be structurally stale between index refreshes; current raw source and changed-file overlays remain authoritative.
 
 These items belong on the roadmap, not in parallel current-architecture documents.
+
+ChatGPT Supervisor browser submission requires a positive read-back of the exact ProseMirror composer payload after Browser `fill` and before Send/Enter. A transport-level successful `fill`/keyboard receipt alone is not completion; a missing/mismatched composer observation fails closed without submitting the existing effect. This verifies payload retention only, **not** ChatGPT's structured plugin-mention binding: literal `@forge` is insufficient evidence of plugin selection, and provider-specific mention selection/attestation remains an outstanding acceptance requirement.

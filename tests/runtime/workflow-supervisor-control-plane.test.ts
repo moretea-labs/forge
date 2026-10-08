@@ -18,7 +18,7 @@ import { createWorkflowSupervisorServer, reconcileWorkflowSupervisorSocket, Work
 import { claimControllerSession, getControllerSession, releaseControllerSession } from '../../src/runtime/control-plane/facade/controller-session-store';
 import { bindChatgptWorkConversation, getChatgptWorkConversationBinding, rebindChatgptWorkConversation } from '../../adapters/chatgpt/work-conversation-binding-store';
 import { CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE, chatgptProviderPageFailure, classifyChatgptProviderFailure } from '../../adapters/chatgpt/provider-delivery';
-import { chatgptFailedRequestIsCausalRateLimit } from '../../adapters/chatgpt/browser-delivery-runtime';
+import { chatgptComposerRetainsPrompt, chatgptFailedRequestIsCausalRateLimit } from '../../adapters/chatgpt/browser-delivery-runtime';
 import { parseChatgptConversationIdentity } from '../../supervisor/chatgpt-conversation';
 import { setMacOsBrowserRuntimeHooksForTest, resetMacOsBrowserRuntimeHooksForTest } from '../../src/runtime/plugins/browser-macos-bridge';
 import { createTestChatgptTargetPort, type TestBrowserPage } from './helpers/computer-chatgpt-target-harness';
@@ -52,6 +52,16 @@ function fixture() {
   const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'supervisor-terminal-reconcile' });
   return { root, controllerHome, repoRoot, repository, store: { controllerHome, repoId: repository.repoId } };
 }
+
+describe('ChatGPT Supervisor composer pre-send verification', () => {
+  const payload = '@forge\n<<<FORGE_WORKFLOW_EFFECT_V1:fx_example01>>>\nFORGE_WORKFLOW_TURN_V2_BEGIN';
+  test('requires an exact observed composer payload before send', () => {
+    expect(chatgptComposerRetainsPrompt(payload, payload)).toBe(true);
+    expect(chatgptComposerRetainsPrompt(undefined, payload)).toBe(false);
+    expect(chatgptComposerRetainsPrompt('@forge', payload)).toBe(false);
+    expect(chatgptComposerRetainsPrompt(payload.slice(1), payload)).toBe(false);
+  });
+});
 
 describe('Workflow Supervisor canonical lifecycle projection', () => {
   test('rejects ChatGPT local temporary conversation ids as non-canonical bootstrap identity', () => {
