@@ -1,9 +1,16 @@
 import type { RepositorySchedule } from '../../../../packages/kernel/scheduler/api/index';
+import {
+  DEFAULT_CHATGPT_AUTOMATION_MODEL,
+  DEFAULT_CHATGPT_AUTOMATION_REASONING,
+  DEFAULT_CHATGPT_AUTOMATION_TAB_POLICY,
+} from '../../../../adapters/chatgpt/provider-delivery';
 
 export const CHATGPT_AUTOMATION_EXECUTION_PROFILE = 'chatgpt_browser_v1';
-export const CHATGPT_AUTOMATION_DEFAULT_MODEL = 'gpt-5.6';
-export const CHATGPT_AUTOMATION_DEFAULT_REASONING = 'medium';
-export const CHATGPT_AUTOMATION_DEFAULT_TAB_POLICY = 'auto';
+// Missing legacy Schedule preferences inherit the single provider defaults.
+// Explicit saved preferences remain authoritative and are never overwritten.
+export const CHATGPT_AUTOMATION_DEFAULT_MODEL = DEFAULT_CHATGPT_AUTOMATION_MODEL;
+export const CHATGPT_AUTOMATION_DEFAULT_REASONING = DEFAULT_CHATGPT_AUTOMATION_REASONING;
+export const CHATGPT_AUTOMATION_DEFAULT_TAB_POLICY = DEFAULT_CHATGPT_AUTOMATION_TAB_POLICY;
 
 export interface ChatgptAutomationScheduleMigrationResult {
   changed: boolean;
