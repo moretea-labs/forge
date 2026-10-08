@@ -18,7 +18,7 @@ import { createWorkflowSupervisorServer, reconcileWorkflowSupervisorSocket, Work
 import { claimControllerSession, getControllerSession, releaseControllerSession } from '../../src/runtime/control-plane/facade/controller-session-store';
 import { bindChatgptWorkConversation, getChatgptWorkConversationBinding, rebindChatgptWorkConversation } from '../../adapters/chatgpt/work-conversation-binding-store';
 import { CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE, chatgptProviderPageFailure, classifyChatgptProviderFailure } from '../../adapters/chatgpt/provider-delivery';
-import { chatgptBrowserObservationMatchesTarget, chatgptComposerRetainsPrompt, chatgptFailedRequestIsCausalRateLimit, chatgptForgePluginMentionBound, chatgptOutboundMessageMatchesPrompt, chatgptSupervisorPromptBody } from '../../adapters/chatgpt/browser-delivery-runtime';
+import { chatgptBrowserObservationMatchesTarget, chatgptComposerRetainsPrompt, chatgptFailedRequestIsCausalRateLimit, chatgptForgePluginMentionBound, chatgptForgePluginPickerIndex, chatgptOutboundMessageMatchesPrompt, chatgptSupervisorPromptBody } from '../../adapters/chatgpt/browser-delivery-runtime';
 import { parseChatgptConversationIdentity } from '../../supervisor/chatgpt-conversation';
 import { setMacOsBrowserRuntimeHooksForTest, resetMacOsBrowserRuntimeHooksForTest } from '../../src/runtime/plugins/browser-macos-bridge';
 import { createTestChatgptTargetPort, type TestBrowserPage } from './helpers/computer-chatgpt-target-harness';
@@ -67,6 +67,7 @@ describe('ChatGPT Supervisor structured plugin mention', () => {
   const payload = '<<<FORGE_WORKFLOW_EFFECT_V1:fx_example01>>>\nFORGE_WORKFLOW_TURN_V2_BEGIN';
   const legacyDeveloperChip = '<span app-mention-name="forge-current-1-8-1" app-mention-display-name="Forge Current 1.8.1" contenteditable="false">Forge Current 1.8.1</span>';
   const unboundForgeChip = '<span plugin-mention-name="dev-6ac09022b26081918f20ff868c773824" contenteditable="false">forge</span>';
+  const mainChip = '<span app-mention-name="forge" app-mention-path="app://asdk_app_6ac09022b26081918f20ff868c773824" contenteditable="false">forge</span>';
   const recoveryChip = '<span app-mention-name="forge-recovery" app-mention-display-name="Forge Recovery" contenteditable="false">Forge Recovery</span>';
   test('removes only the legacy leading @forge text trigger and preserves the effect payload', () => {
     expect(chatgptSupervisorPromptBody(`@forge\n${payload}`)).toBe(payload);
@@ -74,6 +75,16 @@ describe('ChatGPT Supervisor structured plugin mention', () => {
     expect(chatgptSupervisorPromptBody(payload)).toBe(payload);
     expect(chatgptSupervisorPromptBody(`Keep @forge in the explanation. ${payload}`)).toBe(`Keep @forge in the explanation. ${payload}`);
     expect(() => chatgptSupervisorPromptBody('@forge')).toThrow('CHATGPT_AUTOMATION_PROMPT_REQUIRED');
+  });
+  test('normalizes live suggestion line breaks and refuses lookalikes or ambiguity', () => {
+    expect(chatgptForgePluginPickerIndex(['Forge Recovery\nRecovery', 'forge\nCurrent Forge 1.8.1 controller runtime', 'forge-cloud'])).toBe(1);
+    expect(chatgptForgePluginPickerIndex(['Forge Recovery', 'forge-cloud'])).toBeUndefined();
+    expect(chatgptForgePluginPickerIndex(['forge\nCurrent Forge 1.8.1', 'forge\nAnother connected app'])).toBeUndefined();
+  });
+  test('accepts only the exact installed main Forge app chip with the full payload', () => {
+    expect(chatgptForgePluginMentionBound(`<p>${payload}</p><p>${mainChip}</p>`, `${payload} forge`, payload)).toBe(true);
+    expect(chatgptForgePluginMentionBound(`<p>${payload}</p><p>${mainChip}</p>`, `${payload.slice(1)} forge`, payload)).toBe(false);
+    expect(chatgptForgePluginMentionBound(`<p>${payload}</p><p>${mainChip}${mainChip}</p>`, `${payload} forge forge`, payload)).toBe(false);
   });
   test('rejects the legacy developer package, unbound chip, literal text, and Recovery app', () => {
     expect(chatgptForgePluginMentionBound(`<p>${legacyDeveloperChip} ${payload}</p>`, `Forge Current 1.8.1 ${payload}`, payload)).toBe(false);

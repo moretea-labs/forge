@@ -16,8 +16,8 @@ class FakeTextArea {
   dispatchEvent() { return true; }
   getAttribute() { return null; }
   querySelectorAll() { return this.chipNames.map((name) => ({ getAttribute(attribute: string) {
-    if (attribute === 'plugin-mention-name') return name;
-    if (attribute === 'plugin-mention-path' && name === 'dev-6ac09022b26081918f20ff868c773824') return 'plugin://dev-6ac09022b26081918f20ff868c773824@openai-curated-remote';
+    if (attribute === 'app-mention-name') return name;
+    if (attribute === 'app-mention-path' && name === 'forge') return 'app://asdk_app_6ac09022b26081918f20ff868c773824';
     return null;
   } })); }
 }
@@ -47,8 +47,8 @@ function fixture(options: {
   const forgeOption = Object.assign(new FakeHTMLElement(), {
     get innerText() { return options.forgeAppLabel; },
     click() {
-      textarea.value = textarea.value.replace(/ @forge$/, ' forge');
-      textarea.chipNames = [options.forgeAppLabel === 'forge' ? 'dev-6ac09022b26081918f20ff868c773824' : 'forge-recovery'];
+      textarea.value = textarea.value.replace(/\n@forge$/, ' forge');
+      textarea.chipNames = [options.forgeAppLabel === 'forge' ? 'forge' : 'forge-recovery'];
     },
   });
   const visible = () => [{}];
@@ -170,7 +170,7 @@ test('Supervisor sends exactly once only after the real main Forge app chip was 
   const prompt = '@forge\n<<<FORGE_WORKFLOW_EFFECT_V1:fx_test_browser_123456789>>>\nFORGE_WORKFLOW_TURN_V2_BEGIN';
   expect(await f.dispatch(undefined, undefined, prompt)).toMatchObject({ dispatched: true });
   expect(f.state.sendClicks).toBe(1);
-  expect(f.textarea.chipNames).toEqual(['dev-6ac09022b26081918f20ff868c773824']);
+  expect(f.textarea.chipNames).toEqual(['forge']);
   expect(f.textarea.value).toBe('<<<FORGE_WORKFLOW_EFFECT_V1:fx_test_browser_123456789>>>\nFORGE_WORKFLOW_TURN_V2_BEGIN forge');
 });
 

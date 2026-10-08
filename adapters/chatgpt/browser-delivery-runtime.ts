@@ -17,10 +17,10 @@ import {
 
 // The installed/connected primary Forge plugin is `forge`, not the separate
 // Plugin Creator package `forge-current-1-8-1` or the Forge Recovery app.
-// Live ChatGPT: plugin-mention-name and plugin://, NOT app-mention-name/app://.
-const CHATGPT_FORGE_PLUGIN_SLUG = 'dev-6ac09022b26081918f20ff868c773824';
+// Live ChatGPT selection yields an exact app:// ProseMirror Forge chip.
+const CHATGPT_FORGE_PLUGIN_SLUG = 'forge';
 const CHATGPT_FORGE_PLUGIN_LABEL = 'forge';
-const CHATGPT_FORGE_PLUGIN_PATH = `plugin://${CHATGPT_FORGE_PLUGIN_SLUG}@openai-curated-remote`;
+const CHATGPT_FORGE_PLUGIN_PATH = 'app://asdk_app_6ac09022b26081918f20ff868c773824';
 const CHATGPT_PLUGIN_PICKER_OPTIONS = '[data-mention-section-id="plugins"] [data-mention-section-items] > button';
 
 
@@ -275,10 +275,20 @@ export function chatgptForgePluginMentionBound(
   if (!composerHtml || !composerText) return false;
   const chips = [...composerHtml.matchAll(/\b(?:plugin|app)-mention-name="([^"]+)"/g)].map((match) => match[1]);
   if (chips.length !== 1 || chips[0] !== CHATGPT_FORGE_PLUGIN_SLUG
-    || !composerHtml.includes(`plugin-mention-path="${CHATGPT_FORGE_PLUGIN_PATH}"`)) return false;
+    || !composerHtml.includes(`app-mention-path="${CHATGPT_FORGE_PLUGIN_PATH}"`)) return false;
   const normalized = normalizeChatgptOutboundText(composerText);
   const payload = normalizeChatgptOutboundText(prompt);
   return normalized === `${payload} ${CHATGPT_FORGE_PLUGIN_LABEL}`;
+}
+
+/** Return the single exact main-Forge suggestion after normalizing UI line breaks. */
+export function chatgptForgePluginPickerIndex(labels: string[]): number | undefined {
+  const matches = labels.flatMap((label, index) => {
+    const value = normalizeChatgptOutboundText(label);
+    return value === CHATGPT_FORGE_PLUGIN_LABEL || value.startsWith(`${CHATGPT_FORGE_PLUGIN_LABEL} `)
+      ? [index] : [];
+  });
+  return matches.length === 1 ? matches[0] : undefined;
 }
 
 /** Browser owns DOM actions; Supervisor remains the only effect and delivery owner. */
@@ -291,11 +301,8 @@ async function bindChatgptForgePluginMention(
   timeoutMs?: number,
 ): Promise<void> {
   const baseArgs = { session_id: browserSessionId, timeout_ms: timeoutMs ?? 60_000 };
-  // App picker (+) lists app:// entries but not this installed plugin://
-  // entry. Invoke ChatGPT's @ autocomplete through the editor instead.
-  await controllerBrowserAction(controllerHome, workId, 'type', {
-    ...baseArgs, selector: CHATGPT_PROMPT_SELECTOR, text: ' @',
-  }, timeoutMs);
+  // The payload and final standalone @ paragraph were inserted together.
+  // ProseMirror drops the leading whitespace of a later ` @` insertion.
   await controllerBrowserAction(controllerHome, workId, 'type', {
     ...baseArgs, selector: CHATGPT_PROMPT_SELECTOR, text: CHATGPT_FORGE_PLUGIN_LABEL,
     post_action_wait_ms: 120,
@@ -303,11 +310,8 @@ async function bindChatgptForgePluginMention(
   const entries = await controllerBrowserAction(controllerHome, workId, 'query_all', {
     ...baseArgs, selector: CHATGPT_PLUGIN_PICKER_OPTIONS, limit: 80,
   }, timeoutMs);
-  const names = queryMatches(entries).map(matchText);
-  const index = names.findIndex((name) => name === CHATGPT_FORGE_PLUGIN_LABEL
-    || name.startsWith(`${CHATGPT_FORGE_PLUGIN_LABEL} `));
-  if (index < 0 || names.filter((name) => name === CHATGPT_FORGE_PLUGIN_LABEL
-    || name.startsWith(`${CHATGPT_FORGE_PLUGIN_LABEL} `)).length !== 1) {
+  const index = chatgptForgePluginPickerIndex(queryMatches(entries).map(matchText));
+  if (index === undefined) {
     throw new ChatgptProviderDeliveryError('CHATGPT_AUTOMATION_PLUGIN_NOT_IN_PICKER',
       `CHATGPT_AUTOMATION_PLUGIN_NOT_IN_PICKER:${CHATGPT_FORGE_PLUGIN_SLUG}:${targetUrl}`,
       { conversationUrl: targetUrl });
@@ -1068,10 +1072,11 @@ export async function submitChatgptPrompt(
       { conversationUrl: targetUrl },
     );
   }
+  const mentionTriggerDraft = `${renderedPrompt}\n@`;
   await controllerBrowserAction(controllerHome, workId, 'fill', {
     session_id: browserSessionId,
     selector: CHATGPT_PROMPT_SELECTOR,
-    text: renderedPrompt,
+    text: mentionTriggerDraft,
     timeout_ms: timeoutMs ?? 60_000,
     post_action_wait_ms: 100,
   }, timeoutMs);
@@ -1082,7 +1087,7 @@ export async function submitChatgptPrompt(
   const verifiedComposerText = await currentChatgptComposerText(
     controllerHome, workId, browserSessionId, timeoutMs,
   );
-  if (!chatgptComposerRetainsPrompt(verifiedComposerText, renderedPrompt)) {
+  if (!chatgptComposerRetainsPrompt(verifiedComposerText, mentionTriggerDraft)) {
     throw new ChatgptProviderDeliveryError(
       'CHATGPT_AUTOMATION_COMPOSER_UNVERIFIED',
       `CHATGPT_AUTOMATION_COMPOSER_UNVERIFIED:${targetUrl}`,

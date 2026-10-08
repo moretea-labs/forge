@@ -274,16 +274,18 @@
     const supervisor = /^@forge\s+<<<FORGE_WORKFLOW_EFFECT_V1:fx_[a-zA-Z0-9_-]+>>>/.test(prompt.trim());
     const payload = supervisor ? prompt.trim().replace(/^@forge\s+/, '') : prompt;
     const expected = core.normalizeText(payload);
+    const triggerDraft = `${payload}\n@`;
+    const triggerText = core.normalizeText(triggerDraft);
     const boundText = core.normalizeText(`${payload} forge`);
     const boundChip = () => {
       const chips = Array.from(node.querySelectorAll('[plugin-mention-name], [app-mention-name]'));
       return chips.length === 1
-        && chips[0]?.getAttribute('plugin-mention-name') === 'dev-6ac09022b26081918f20ff868c773824'
-        && chips[0]?.getAttribute('plugin-mention-path') === 'plugin://dev-6ac09022b26081918f20ff868c773824@openai-curated-remote'
+        && chips[0]?.getAttribute('app-mention-name') === 'forge'
+        && chips[0]?.getAttribute('app-mention-path') === 'app://asdk_app_6ac09022b26081918f20ff868c773824'
         && composerText() === boundText;
     };
     const existing = composerText();
-    if (existing && existing !== expected && !(supervisor && boundChip())) return { dispatched: false, reason: 'composer_not_empty' };
+    if (existing && existing !== expected && !(supervisor && (existing === triggerText || boundChip()))) return { dispatched: false, reason: 'composer_not_empty' };
     let reasoningVerified;
     if (reasoning !== undefined) {
       const checked = await ensureReasoning(reasoning);
@@ -291,21 +293,20 @@
       reasoningVerified = checked.level;
     }
     if (!exactConversationIsCurrent()) return { dispatched: false, reason: 'target_identity_changed' };
-    if (existing !== expected && !(supervisor && boundChip())) writeComposer(node, payload);
+    if (supervisor && !boundChip()) writeComposer(node, triggerDraft);
+    else if (existing !== expected && !boundChip()) writeComposer(node, payload);
     await new Promise((resolve) => setTimeout(resolve, 75));
     if (!exactConversationIsCurrent()) return { dispatched: false, reason: 'target_identity_changed' };
     if (supervisor) {
       if (!boundChip()) {
-        if (composerText() !== expected) return { dispatched: false, reason: 'composer_write_unconfirmed' };
-        // The + menu lists app:// choices, not this installed plugin://.
-        // Invoke @ autocomplete using the real ProseMirror transaction.
+        if (composerText() !== triggerText) return { dispatched: false, reason: 'composer_write_unconfirmed' };
+        // The final standalone @ paragraph was inserted together with the
+        // payload; typing ` @` later drops the space in live ProseMirror.
         node.focus();
         const selection = window.getSelection();
         if (!selection) return { dispatched: false, reason: 'COMPUTER_CHATGPT_PLUGIN_SELECTION_UNAVAILABLE' };
         const range = document.createRange(); range.selectNodeContents(node); range.collapse(false);
         selection.removeAllRanges(); selection.addRange(range);
-        if (!document.execCommand('insertText', false, ' @')) return { dispatched: false, reason: 'COMPUTER_CHATGPT_PLUGIN_SELECTION_UNAVAILABLE' };
-        await sleep(100);
         if (!document.execCommand('insertText', false, 'forge')) return { dispatched: false, reason: 'COMPUTER_CHATGPT_PLUGIN_SELECTION_UNAVAILABLE' };
         await sleep(150);
         const entries = Array.from(document.querySelectorAll('[data-mention-section-items] > button'));

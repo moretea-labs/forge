@@ -304,6 +304,8 @@ export async function dispatchMacOsChatgptPrompt(
         const value = (element) => String((element?.innerText ?? element?.textContent ?? '') || '');
         const norm = (input) => String(input || '').replace(/\\s+/g, ' ').trim();
         const expected = ${JSON.stringify(submittedPrompt)}; const expectedNorm = norm(expected); const resume = ${JSON.stringify(resume)};
+        const draft = ${JSON.stringify(supervisor)} ? expected + String.fromCharCode(10) + '@' : expected;
+        const draftNorm = norm(draft);
         const composer = ['div#prompt-textarea[contenteditable="true"]','#prompt-textarea[contenteditable="true"]','[data-testid="composer-text-input"][contenteditable="true"]','div[role="textbox"][contenteditable="true"]']
           .flatMap((selector) => Array.from(root.querySelectorAll(selector))).find(visible);
         if (!(composer instanceof HTMLElement) || !composer.isContentEditable) return { prepared: false, reason: 'composer_missing' };
@@ -313,16 +315,16 @@ export async function dispatchMacOsChatgptPrompt(
         // own text, not a foreign user draft: reusing it is the same logical
         // send. Treating it as occupied burned a generation without ever
         // reaching the provider.
-        if (current && current === expectedNorm) return { prepared: true };
-        if (resume) { if (!current) return { prepared: false, reason: 'composer_resume_empty' }; if (current !== expectedNorm) return { prepared: false, reason: 'composer_resume_mismatch' }; }
+        if (current && (current === expectedNorm || current === draftNorm)) return { prepared: true };
+        if (resume) { if (!current) return { prepared: false, reason: 'composer_resume_empty' }; if (current !== expectedNorm && current !== draftNorm) return { prepared: false, reason: 'composer_resume_mismatch' }; }
         else {
           if (current) return { prepared: false, reason: 'composer_not_empty' };
           composer.focus({ preventScroll: true });
           const selection = window.getSelection(); if (!selection) return { prepared: false, reason: 'composer_selection_unavailable' };
           const range = document.createRange(); range.selectNodeContents(composer); range.deleteContents(); range.collapse(true); selection.removeAllRanges(); selection.addRange(range);
-          if (!document.execCommand('insertText', false, expected)) return { prepared: false, reason: 'composer_text_insertion_rejected' };
+          if (!document.execCommand('insertText', false, draft)) return { prepared: false, reason: 'composer_text_insertion_rejected' };
         }
-        return norm(value(composer)) === expectedNorm ? { prepared: true } : { prepared: false, reason: 'composer_text_unconfirmed' };
+        return norm(value(composer)) === draftNorm ? { prepared: true } : { prepared: false, reason: 'composer_text_unconfirmed' };
       })()`);
     } catch (error) {
       const code = error instanceof AssistantPluginError ? error.code : String(error);
@@ -348,16 +350,26 @@ export async function dispatchMacOsChatgptPrompt(
         if (!(composer instanceof HTMLElement)) return { bound: false, opened: false, reason: 'composer_missing' };
         const chips = Array.from(composer.querySelectorAll('[plugin-mention-name], [app-mention-name]'));
         if (chips.length === 1
-          && chips[0].getAttribute('plugin-mention-name') === 'dev-6ac09022b26081918f20ff868c773824'
-          && chips[0].getAttribute('plugin-mention-path') === 'plugin://dev-6ac09022b26081918f20ff868c773824@openai-curated-remote'
+          && chips[0].getAttribute('app-mention-name') === 'forge'
+          && chips[0].getAttribute('app-mention-path') === 'app://asdk_app_6ac09022b26081918f20ff868c773824'
           && norm(composer.innerText) === norm(expected + ' forge')) return { bound: true, opened: false };
-        if (chips.length || norm(composer.innerText) !== norm(expected)) return { bound: false, opened: false, reason: 'composer_binding_mismatch' };
+        const triggerDraft = norm(expected + String.fromCharCode(10) + '@');
+        const current = norm(composer.innerText);
+        if (chips.length || (current !== norm(expected) && current !== triggerDraft)) return { bound: false, opened: false, reason: 'composer_binding_mismatch' };
+        if (current === norm(expected)) {
+          composer.focus({ preventScroll: true });
+          const selection = window.getSelection();
+          if (!selection) return { bound: false, opened: false, reason: 'forge_plugin_selection_unavailable' };
+          const range = document.createRange(); range.selectNodeContents(composer); range.deleteContents(); range.collapse(true);
+          selection.removeAllRanges(); selection.addRange(range);
+          if (!document.execCommand('insertText', false, expected + String.fromCharCode(10) + '@')) return { bound: false, opened: false, reason: 'forge_plugin_selection_unavailable' };
+          if (norm(composer.innerText) !== triggerDraft) return { bound: false, opened: false, reason: 'composer_binding_mismatch' };
+        }
         composer.focus({ preventScroll: true });
         const selection = window.getSelection();
         if (!selection) return { bound: false, opened: false, reason: 'forge_plugin_selection_unavailable' };
-        const range = document.createRange(); range.selectNodeContents(composer); range.collapse(false);
-        selection.removeAllRanges(); selection.addRange(range);
-        if (!document.execCommand('insertText', false, ' @')) return { bound: false, opened: false, reason: 'forge_plugin_selection_unavailable' };
+        const caret = document.createRange(); caret.selectNodeContents(composer); caret.collapse(false);
+        selection.removeAllRanges(); selection.addRange(caret);
         return { bound: false, opened: true };
       })()`);
       if (!initial.bound) {
@@ -381,8 +393,8 @@ export async function dispatchMacOsChatgptPrompt(
           const composer = document.querySelector('[data-composer-markdown][role="textbox"][contenteditable="true"], #prompt-textarea[contenteditable="true"], div[role="textbox"][contenteditable="true"]');
           if (!(composer instanceof HTMLElement)) return false;
           const chips = Array.from(composer.querySelectorAll('[plugin-mention-name], [app-mention-name]'));
-          return chips.length === 1 && chips[0].getAttribute('plugin-mention-name') === 'dev-6ac09022b26081918f20ff868c773824'
-            && chips[0].getAttribute('plugin-mention-path') === 'plugin://dev-6ac09022b26081918f20ff868c773824@openai-curated-remote'
+          return chips.length === 1 && chips[0].getAttribute('app-mention-name') === 'forge'
+            && chips[0].getAttribute('app-mention-path') === 'app://asdk_app_6ac09022b26081918f20ff868c773824'
             && norm(composer.innerText) === norm(expected + ' forge');
         })()`);
         if (!verified) return { mutation: 'not_attempted', reasonCode: 'COMPUTER_CHATGPT_FORGE_PLUGIN_CHIP_UNVERIFIED' };
@@ -405,7 +417,7 @@ export async function dispatchMacOsChatgptPrompt(
       if (!(composer instanceof HTMLElement)) return { dispatched: false, reason: 'composer_submit_mismatch' };
       if (supervisor) {
         const chips = Array.from(composer.querySelectorAll('[plugin-mention-name], [app-mention-name]'));
-        if (chips.length !== 1 || chips[0].getAttribute('plugin-mention-name') !== 'dev-6ac09022b26081918f20ff868c773824' || chips[0].getAttribute('plugin-mention-path') !== 'plugin://dev-6ac09022b26081918f20ff868c773824@openai-curated-remote' || norm(value(composer)) !== norm(expected + ' forge')) return { dispatched: false, reason: 'COMPUTER_CHATGPT_FORGE_PLUGIN_CHIP_UNVERIFIED' };
+        if (chips.length !== 1 || chips[0].getAttribute('app-mention-name') !== 'forge' || chips[0].getAttribute('app-mention-path') !== 'app://asdk_app_6ac09022b26081918f20ff868c773824' || norm(value(composer)) !== norm(expected + ' forge')) return { dispatched: false, reason: 'COMPUTER_CHATGPT_FORGE_PLUGIN_CHIP_UNVERIFIED' };
       } else if (norm(value(composer)) !== norm(expected)) return { dispatched: false, reason: 'composer_submit_mismatch' };
       const sendButton = Array.from(root.querySelectorAll('[data-testid="send-button"], button[aria-label="Send"], button[aria-label="发送"], button[data-testid*="send"], button[type="submit"]')).find(visible);
       if (!(sendButton instanceof HTMLElement) || sendButton.hasAttribute('disabled') || sendButton.getAttribute('aria-disabled') === 'true') return { dispatched: false, reason: 'send_button_missing' };
