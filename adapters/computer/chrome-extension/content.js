@@ -274,10 +274,12 @@
     const supervisor = /^@forge\s+<<<FORGE_WORKFLOW_EFFECT_V1:fx_[a-zA-Z0-9_-]+>>>/.test(prompt.trim());
     const payload = supervisor ? prompt.trim().replace(/^@forge\s+/, '') : prompt;
     const expected = core.normalizeText(payload);
-    const boundText = core.normalizeText(`Forge Current 1.8.1 ${payload}`);
+    const boundText = core.normalizeText(`${payload} forge`);
     const boundChip = () => {
-      const chips = Array.from(node.querySelectorAll('[app-mention-name]'));
-      return chips.length === 1 && chips[0]?.getAttribute('app-mention-name') === 'forge-current-1-8-1'
+      const chips = Array.from(node.querySelectorAll('[plugin-mention-name], [app-mention-name]'));
+      return chips.length === 1
+        && chips[0]?.getAttribute('plugin-mention-name') === 'dev-6ac09022b26081918f20ff868c773824'
+        && chips[0]?.getAttribute('plugin-mention-path') === 'plugin://dev-6ac09022b26081918f20ff868c773824@openai-curated-remote'
         && composerText() === boundText;
     };
     const existing = composerText();
@@ -295,21 +297,31 @@
     if (supervisor) {
       if (!boundChip()) {
         if (composerText() !== expected) return { dispatched: false, reason: 'composer_write_unconfirmed' };
-        const picker = document.querySelector('button[aria-label="添加文件等内容"], button[aria-label="Add files and more"]');
-        if (!(picker instanceof HTMLElement)) return { dispatched: false, reason: 'COMPUTER_CHATGPT_PLUGIN_PICKER_UNAVAILABLE' };
-        if (picker.getAttribute('data-state') !== 'open') picker.click();
+        // The + menu lists app:// choices, not this installed plugin://.
+        // Invoke @ autocomplete using the real ProseMirror transaction.
+        node.focus();
+        const selection = window.getSelection();
+        if (!selection) return { dispatched: false, reason: 'COMPUTER_CHATGPT_PLUGIN_SELECTION_UNAVAILABLE' };
+        const range = document.createRange(); range.selectNodeContents(node); range.collapse(false);
+        selection.removeAllRanges(); selection.addRange(range);
+        if (!document.execCommand('insertText', false, ' @')) return { dispatched: false, reason: 'COMPUTER_CHATGPT_PLUGIN_SELECTION_UNAVAILABLE' };
         await sleep(100);
-        if (picker.getAttribute('data-state') !== 'open') return { dispatched: false, reason: 'COMPUTER_CHATGPT_PLUGIN_PICKER_UNAVAILABLE' };
-        const entries = Array.from(document.querySelectorAll('[data-mention-section-id="plugins"] [data-mention-section-items] > button'));
+        if (!document.execCommand('insertText', false, 'forge')) return { dispatched: false, reason: 'COMPUTER_CHATGPT_PLUGIN_SELECTION_UNAVAILABLE' };
+        await sleep(150);
+        const entries = Array.from(document.querySelectorAll('[data-mention-section-items] > button'));
         const selected = entries.filter((entry) => {
           const label = core.normalizeText(entry.innerText ?? entry.textContent);
-          return label === 'Forge Current 1.8.1' || label.startsWith('Forge Current 1.8.1 ');
+          return label === 'forge' || label.startsWith('forge Current Forge 1.8.1');
         });
-        if (selected.length !== 1) return { dispatched: false, reason: 'COMPUTER_CHATGPT_FORGE_APP_AMBIGUOUS_OR_UNAVAILABLE' };
+        if (selected.length !== 1) {
+          writeComposer(node, payload);
+          return { dispatched: false, reason: 'COMPUTER_CHATGPT_FORGE_PLUGIN_UNAVAILABLE' };
+        }
+        if (!exactConversationIsCurrent()) return { dispatched: false, reason: 'target_identity_changed' };
         selected[0].click();
-        await sleep(100);
+        await sleep(150);
       }
-      if (!boundChip()) return { dispatched: false, reason: 'COMPUTER_CHATGPT_FORGE_APP_CHIP_UNVERIFIED' };
+      if (!boundChip()) return { dispatched: false, reason: 'COMPUTER_CHATGPT_FORGE_PLUGIN_CHIP_UNVERIFIED' };
     } else if (composerText() !== expected) return { dispatched: false, reason: 'composer_write_unconfirmed' };
     const send = document.querySelector(SEND);
     if (!send) return { dispatched: false, reason: 'send_button_missing' };

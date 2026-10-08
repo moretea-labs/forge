@@ -346,42 +346,51 @@ export async function dispatchMacOsChatgptPrompt(
         const expected = ${JSON.stringify(submittedPrompt)};
         const composer = document.querySelector('[data-composer-markdown][role="textbox"][contenteditable="true"], #prompt-textarea[contenteditable="true"], div[role="textbox"][contenteditable="true"]');
         if (!(composer instanceof HTMLElement)) return { bound: false, opened: false, reason: 'composer_missing' };
-        const chips = Array.from(composer.querySelectorAll('[app-mention-name]'));
-        if (chips.length === 1 && chips[0].getAttribute('app-mention-name') === 'forge-current-1-8-1'
-          && norm(composer.innerText) === norm('Forge Current 1.8.1 ' + expected)) return { bound: true, opened: false };
+        const chips = Array.from(composer.querySelectorAll('[plugin-mention-name], [app-mention-name]'));
+        if (chips.length === 1
+          && chips[0].getAttribute('plugin-mention-name') === 'dev-6ac09022b26081918f20ff868c773824'
+          && chips[0].getAttribute('plugin-mention-path') === 'plugin://dev-6ac09022b26081918f20ff868c773824@openai-curated-remote'
+          && norm(composer.innerText) === norm(expected + ' forge')) return { bound: true, opened: false };
         if (chips.length || norm(composer.innerText) !== norm(expected)) return { bound: false, opened: false, reason: 'composer_binding_mismatch' };
-        const picker = document.querySelector('button[aria-label="添加文件等内容"], button[aria-label="Add files and more"]');
-        if (!(picker instanceof HTMLElement)) return { bound: false, opened: false, reason: 'forge_app_picker_missing' };
-        if (picker.getAttribute('data-state') !== 'open') picker.click();
+        composer.focus({ preventScroll: true });
+        const selection = window.getSelection();
+        if (!selection) return { bound: false, opened: false, reason: 'forge_plugin_selection_unavailable' };
+        const range = document.createRange(); range.selectNodeContents(composer); range.collapse(false);
+        selection.removeAllRanges(); selection.addRange(range);
+        if (!document.execCommand('insertText', false, ' @')) return { bound: false, opened: false, reason: 'forge_plugin_selection_unavailable' };
         return { bound: false, opened: true };
       })()`);
       if (!initial.bound) {
-        if (!initial.opened) return { mutation: 'not_attempted', reasonCode: initial.reason ?? 'forge_app_picker_missing' };
+        if (!initial.opened) return { mutation: 'not_attempted', reasonCode: initial.reason ?? 'forge_plugin_selection_unavailable' };
+        await sleep(150);
+        const typed = await page.evaluate<boolean>(`(() => document.execCommand('insertText', false, 'forge'))()`);
+        if (!typed) return { mutation: 'not_attempted', reasonCode: 'COMPUTER_CHATGPT_FORGE_PLUGIN_SELECTION_UNAVAILABLE' };
         await sleep(150);
         const picked = await page.evaluate<boolean>(`(() => {
           const norm = (x) => String(x || '').replace(/\\s+/g, ' ').trim();
-          const options = Array.from(document.querySelectorAll('[data-mention-section-id="plugins"] [data-mention-section-items] > button'));
-          const matches = options.filter((node) => { const label = norm(node.innerText ?? node.textContent); return label === 'Forge Current 1.8.1' || label.startsWith('Forge Current 1.8.1 '); });
+          const options = Array.from(document.querySelectorAll('[data-mention-section-items] > button'));
+          const matches = options.filter((node) => { const label = norm(node.innerText ?? node.textContent); return label === 'forge' || label.startsWith('forge Current Forge 1.8.1'); });
           if (matches.length !== 1) return false;
           matches[0].click(); return true;
         })()`);
-        if (!picked) return { mutation: 'not_attempted', reasonCode: 'COMPUTER_CHATGPT_FORGE_APP_AMBIGUOUS_OR_UNAVAILABLE' };
+        if (!picked) return { mutation: 'not_attempted', reasonCode: 'COMPUTER_CHATGPT_FORGE_PLUGIN_UNAVAILABLE' };
         await sleep(150);
         const verified = await page.evaluate<boolean>(`(() => {
           const norm = (x) => String(x || '').replace(/\\s+/g, ' ').trim();
           const expected = ${JSON.stringify(submittedPrompt)};
           const composer = document.querySelector('[data-composer-markdown][role="textbox"][contenteditable="true"], #prompt-textarea[contenteditable="true"], div[role="textbox"][contenteditable="true"]');
           if (!(composer instanceof HTMLElement)) return false;
-          const chips = Array.from(composer.querySelectorAll('[app-mention-name]'));
-          return chips.length === 1 && chips[0].getAttribute('app-mention-name') === 'forge-current-1-8-1'
-            && norm(composer.innerText) === norm('Forge Current 1.8.1 ' + expected);
+          const chips = Array.from(composer.querySelectorAll('[plugin-mention-name], [app-mention-name]'));
+          return chips.length === 1 && chips[0].getAttribute('plugin-mention-name') === 'dev-6ac09022b26081918f20ff868c773824'
+            && chips[0].getAttribute('plugin-mention-path') === 'plugin://dev-6ac09022b26081918f20ff868c773824@openai-curated-remote'
+            && norm(composer.innerText) === norm(expected + ' forge');
         })()`);
-        if (!verified) return { mutation: 'not_attempted', reasonCode: 'COMPUTER_CHATGPT_FORGE_APP_CHIP_UNVERIFIED' };
+        if (!verified) return { mutation: 'not_attempted', reasonCode: 'COMPUTER_CHATGPT_FORGE_PLUGIN_CHIP_UNVERIFIED' };
       }
     } catch {
       // No Send was clicked: an unavailable UI/Apple Events transport is a
       // mechanical negative proof, not an outcome-unknown provider mutation.
-      return { mutation: 'not_attempted', reasonCode: 'COMPUTER_CHATGPT_FORGE_APP_BINDING_UNAVAILABLE' };
+      return { mutation: 'not_attempted', reasonCode: 'COMPUTER_CHATGPT_FORGE_PLUGIN_BINDING_UNAVAILABLE' };
     }
   }
   for (let attempt = 1; attempt <= MAX_LOCAL_OBSERVATION_ATTEMPTS; attempt += 1) {
@@ -395,8 +404,8 @@ export async function dispatchMacOsChatgptPrompt(
       const composer = Array.from(root.querySelectorAll('div#prompt-textarea[contenteditable="true"], #prompt-textarea[contenteditable="true"], [data-testid="composer-text-input"][contenteditable="true"], div[role="textbox"][contenteditable="true"]')).find(visible);
       if (!(composer instanceof HTMLElement)) return { dispatched: false, reason: 'composer_submit_mismatch' };
       if (supervisor) {
-        const chips = Array.from(composer.querySelectorAll('[app-mention-name]'));
-        if (chips.length !== 1 || chips[0].getAttribute('app-mention-name') !== 'forge-current-1-8-1' || norm(value(composer)) !== norm('Forge Current 1.8.1 ' + expected)) return { dispatched: false, reason: 'COMPUTER_CHATGPT_FORGE_APP_CHIP_UNVERIFIED' };
+        const chips = Array.from(composer.querySelectorAll('[plugin-mention-name], [app-mention-name]'));
+        if (chips.length !== 1 || chips[0].getAttribute('plugin-mention-name') !== 'dev-6ac09022b26081918f20ff868c773824' || chips[0].getAttribute('plugin-mention-path') !== 'plugin://dev-6ac09022b26081918f20ff868c773824@openai-curated-remote' || norm(value(composer)) !== norm(expected + ' forge')) return { dispatched: false, reason: 'COMPUTER_CHATGPT_FORGE_PLUGIN_CHIP_UNVERIFIED' };
       } else if (norm(value(composer)) !== norm(expected)) return { dispatched: false, reason: 'composer_submit_mismatch' };
       const sendButton = Array.from(root.querySelectorAll('[data-testid="send-button"], button[aria-label="Send"], button[aria-label="发送"], button[data-testid*="send"], button[type="submit"]')).find(visible);
       if (!(sendButton instanceof HTMLElement) || sendButton.hasAttribute('disabled') || sendButton.getAttribute('aria-disabled') === 'true') return { dispatched: false, reason: 'send_button_missing' };

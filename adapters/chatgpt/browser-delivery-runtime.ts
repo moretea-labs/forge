@@ -15,12 +15,12 @@ import {
   type ChatgptProviderPageFailureCode,
 } from './provider-delivery';
 
-// The ChatGPT plugin's owned manifest currently names the canonical main app
-// `forge-current-1-8-1` (visible label `Forge Current 1.8.1`). A text alias
-// `@forge` is NOT a bound plugin and Forge Recovery is a different app.
-const CHATGPT_FORGE_PLUGIN_SLUG = 'forge-current-1-8-1';
-const CHATGPT_FORGE_PLUGIN_LABEL = 'Forge Current 1.8.1';
-const CHATGPT_PLUGIN_PICKER_BUTTON = 'button[aria-label="添加文件等内容"], button[aria-label="Add files and more"]';
+// The installed/connected primary Forge plugin is `forge`, not the separate
+// Plugin Creator package `forge-current-1-8-1` or the Forge Recovery app.
+// Live ChatGPT: plugin-mention-name and plugin://, NOT app-mention-name/app://.
+const CHATGPT_FORGE_PLUGIN_SLUG = 'dev-6ac09022b26081918f20ff868c773824';
+const CHATGPT_FORGE_PLUGIN_LABEL = 'forge';
+const CHATGPT_FORGE_PLUGIN_PATH = `plugin://${CHATGPT_FORGE_PLUGIN_SLUG}@openai-curated-remote`;
 const CHATGPT_PLUGIN_PICKER_OPTIONS = '[data-mention-section-id="plugins"] [data-mention-section-items] > button';
 
 
@@ -186,10 +186,7 @@ export function chatgptOutboundMessageMatchesPrompt(
   const normalizedPrompt = normalizeChatgptOutboundText(prompt);
   if (!message || !normalizedPrompt) return false;
   const candidatePrompts = [normalizedPrompt,
-    ...(options.boundForgePlugin ? [
-      `${CHATGPT_FORGE_PLUGIN_LABEL} ${normalizedPrompt}`,
-      `${CHATGPT_FORGE_PLUGIN_SLUG} ${normalizedPrompt}`,
-    ] : []),
+    ...(options.boundForgePlugin ? [`${normalizedPrompt} ${CHATGPT_FORGE_PLUGIN_LABEL}`] : []),
   ];
   if (candidatePrompts.some((candidate) => message === candidate)) return true;
   if (candidatePrompts.some((candidate) => CHATGPT_OUTBOUND_MESSAGE_UI_SUFFIXES.some((suffix) => message === `${candidate} ${suffix}`))) return true;
@@ -276,12 +273,12 @@ export function chatgptForgePluginMentionBound(
   prompt: string,
 ): boolean {
   if (!composerHtml || !composerText) return false;
-  const chips = [...composerHtml.matchAll(/\bapp-mention-name="([^"]+)"/g)].map((match) => match[1]);
-  if (chips.length !== 1 || chips[0] !== CHATGPT_FORGE_PLUGIN_SLUG) return false;
+  const chips = [...composerHtml.matchAll(/\b(?:plugin|app)-mention-name="([^"]+)"/g)].map((match) => match[1]);
+  if (chips.length !== 1 || chips[0] !== CHATGPT_FORGE_PLUGIN_SLUG
+    || !composerHtml.includes(`plugin-mention-path="${CHATGPT_FORGE_PLUGIN_PATH}"`)) return false;
   const normalized = normalizeChatgptOutboundText(composerText);
   const payload = normalizeChatgptOutboundText(prompt);
-  return normalized === `${CHATGPT_FORGE_PLUGIN_LABEL} ${payload}`
-    || normalized === `${CHATGPT_FORGE_PLUGIN_SLUG} ${payload}`;
+  return normalized === `${payload} ${CHATGPT_FORGE_PLUGIN_LABEL}`;
 }
 
 /** Browser owns DOM actions; Supervisor remains the only effect and delivery owner. */
@@ -294,21 +291,15 @@ async function bindChatgptForgePluginMention(
   timeoutMs?: number,
 ): Promise<void> {
   const baseArgs = { session_id: browserSessionId, timeout_ms: timeoutMs ?? 60_000 };
-  const state = await controllerBrowserAction(controllerHome, workId, 'get_attribute', {
-    ...baseArgs, selector: CHATGPT_PLUGIN_PICKER_BUTTON, attribute: 'data-state',
+  // App picker (+) lists app:// entries but not this installed plugin://
+  // entry. Invoke ChatGPT's @ autocomplete through the editor instead.
+  await controllerBrowserAction(controllerHome, workId, 'type', {
+    ...baseArgs, selector: CHATGPT_PROMPT_SELECTOR, text: ' @',
   }, timeoutMs);
-  if (state.value !== 'open') {
-    await controllerBrowserAction(controllerHome, workId, 'click', {
-      ...baseArgs, selector: CHATGPT_PLUGIN_PICKER_BUTTON,
-    }, timeoutMs);
-  }
-  const open = await controllerBrowserAction(controllerHome, workId, 'get_attribute', {
-    ...baseArgs, selector: CHATGPT_PLUGIN_PICKER_BUTTON, attribute: 'data-state',
+  await controllerBrowserAction(controllerHome, workId, 'type', {
+    ...baseArgs, selector: CHATGPT_PROMPT_SELECTOR, text: CHATGPT_FORGE_PLUGIN_LABEL,
+    post_action_wait_ms: 120,
   }, timeoutMs);
-  if (open.value !== 'open') {
-    throw new ChatgptProviderDeliveryError('CHATGPT_AUTOMATION_PLUGIN_PICKER_UNAVAILABLE',
-      `CHATGPT_AUTOMATION_PLUGIN_PICKER_UNAVAILABLE:${targetUrl}`, { conversationUrl: targetUrl });
-  }
   const entries = await controllerBrowserAction(controllerHome, workId, 'query_all', {
     ...baseArgs, selector: CHATGPT_PLUGIN_PICKER_OPTIONS, limit: 80,
   }, timeoutMs);

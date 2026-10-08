@@ -65,7 +65,8 @@ describe('ChatGPT Supervisor composer pre-send verification', () => {
 
 describe('ChatGPT Supervisor structured plugin mention', () => {
   const payload = '<<<FORGE_WORKFLOW_EFFECT_V1:fx_example01>>>\nFORGE_WORKFLOW_TURN_V2_BEGIN';
-  const mainChip = '<span app-mention-name="forge-current-1-8-1" app-mention-display-name="Forge Current 1.8.1" contenteditable="false">Forge Current 1.8.1</span>';
+  const legacyDeveloperChip = '<span app-mention-name="forge-current-1-8-1" app-mention-display-name="Forge Current 1.8.1" contenteditable="false">Forge Current 1.8.1</span>';
+  const unboundForgeChip = '<span plugin-mention-name="dev-6ac09022b26081918f20ff868c773824" contenteditable="false">forge</span>';
   const recoveryChip = '<span app-mention-name="forge-recovery" app-mention-display-name="Forge Recovery" contenteditable="false">Forge Recovery</span>';
   test('removes only the legacy leading @forge text trigger and preserves the effect payload', () => {
     expect(chatgptSupervisorPromptBody(`@forge\n${payload}`)).toBe(payload);
@@ -74,16 +75,17 @@ describe('ChatGPT Supervisor structured plugin mention', () => {
     expect(chatgptSupervisorPromptBody(`Keep @forge in the explanation. ${payload}`)).toBe(`Keep @forge in the explanation. ${payload}`);
     expect(() => chatgptSupervisorPromptBody('@forge')).toThrow('CHATGPT_AUTOMATION_PROMPT_REQUIRED');
   });
-  test('accepts only an exact single main-Forge app chip with the complete prompt', () => {
-    expect(chatgptForgePluginMentionBound(`<p>${mainChip} ${payload}</p>`, `Forge Current 1.8.1 ${payload}`, payload)).toBe(true);
-    expect(chatgptForgePluginMentionBound(`<p>${mainChip} ${payload}</p>`, `Forge Current 1.8.1 @forge`, payload)).toBe(false);
+  test('rejects the legacy developer package, unbound chip, literal text, and Recovery app', () => {
+    expect(chatgptForgePluginMentionBound(`<p>${legacyDeveloperChip} ${payload}</p>`, `Forge Current 1.8.1 ${payload}`, payload)).toBe(false);
+    expect(chatgptForgePluginMentionBound(`<p>${unboundForgeChip} ${payload}</p>`, `${payload} forge`, payload)).toBe(false);
     expect(chatgptForgePluginMentionBound(`<p>@forge ${payload}</p>`, `@forge ${payload}`, payload)).toBe(false);
     expect(chatgptForgePluginMentionBound(`<p>${recoveryChip} ${payload}</p>`, `Forge Recovery ${payload}`, payload)).toBe(false);
-    expect(chatgptForgePluginMentionBound(`<p>${mainChip}${recoveryChip} ${payload}</p>`, `Forge Current 1.8.1 Forge Recovery ${payload}`, payload)).toBe(false);
+    expect(chatgptForgePluginMentionBound(`<p>${legacyDeveloperChip}${recoveryChip} ${payload}</p>`, `Forge Current 1.8.1 Forge Recovery ${payload}`, payload)).toBe(false);
   });
-  test('accepts the provider-visible chip prefix only after a verified selection', () => {
-    expect(chatgptOutboundMessageMatchesPrompt(`Forge Current 1.8.1 ${payload}`, payload, { boundForgePlugin: true })).toBe(true);
-    expect(chatgptOutboundMessageMatchesPrompt(`Forge Current 1.8.1 ${payload}`, payload)).toBe(false);
+  test('accepts the installed plugin suffix only after a verified selection', () => {
+    expect(chatgptOutboundMessageMatchesPrompt(`${payload} forge`, payload, { boundForgePlugin: true })).toBe(true);
+    expect(chatgptOutboundMessageMatchesPrompt(`${payload} forge`, payload)).toBe(false);
+    expect(chatgptOutboundMessageMatchesPrompt(`Forge Current 1.8.1 ${payload}`, payload, { boundForgePlugin: true })).toBe(false);
     expect(chatgptOutboundMessageMatchesPrompt(`Forge Recovery ${payload}`, payload, { boundForgePlugin: true })).toBe(false);
   });
 });

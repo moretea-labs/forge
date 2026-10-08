@@ -1388,8 +1388,15 @@ export class MacOsAppleEventsPage {
         const prototype = element instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
         const setter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
         if (setter) setter.call(element, ${JSON.stringify(value)}); else element.value = ${JSON.stringify(value)};
-      } else if (element.isContentEditable) element.textContent = ${JSON.stringify(value)};
-      else throw new Error('Element does not accept text input.');
+      } else if (element.isContentEditable) {
+        element.focus();
+        const selection = window.getSelection();
+        if (!selection) throw new Error('Contenteditable selection unavailable.');
+        const range = document.createRange();
+        range.selectNodeContents(element); selection.removeAllRanges(); selection.addRange(range);
+        if (!document.execCommand('insertText', false, ${JSON.stringify(value)})) throw new Error('Contenteditable insertion rejected.');
+        return true;
+      } else throw new Error('Element does not accept text input.');
       element.dispatchEvent(new Event('input', { bubbles: true }));
       element.dispatchEvent(new Event('change', { bubbles: true }));
       return true;
@@ -1397,8 +1404,26 @@ export class MacOsAppleEventsPage {
   }
 
   async type(selector: string, text: string): Promise<void> {
-    const current = await this.evaluate<string>(selectorSource(selector, `return 'value' in element ? String(element.value || '') : String(element.textContent || '');`));
-    await this.fill(selector, `${current}${text}`);
+    await this.evaluate(selectorSource(selector, `
+      if ('value' in element) {
+        element.focus();
+        const value = String(element.value || '');
+        const prototype = element instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+        const setter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
+        if (setter) setter.call(element, value + ${JSON.stringify(text)}); else element.value = value + ${JSON.stringify(text)};
+        element.dispatchEvent(new Event('input', { bubbles: true }));
+        return true;
+      }
+      if (!element.isContentEditable) throw new Error('Element does not accept text input.');
+      element.focus();
+      const selection = window.getSelection();
+      if (!selection) throw new Error('Contenteditable selection unavailable.');
+      const range = document.createRange();
+      range.selectNodeContents(element); range.collapse(false);
+      selection.removeAllRanges(); selection.addRange(range);
+      if (!document.execCommand('insertText', false, ${JSON.stringify(text)})) throw new Error('Contenteditable insertion rejected.');
+      return true;
+    `));
   }
 
   async press(selector: string, key: string): Promise<void> {

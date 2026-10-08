@@ -15,7 +15,11 @@ class FakeTextArea {
   focus() {}
   dispatchEvent() { return true; }
   getAttribute() { return null; }
-  querySelectorAll() { return this.chipNames.map((name) => ({ getAttribute: () => name })); }
+  querySelectorAll() { return this.chipNames.map((name) => ({ getAttribute(attribute: string) {
+    if (attribute === 'plugin-mention-name') return name;
+    if (attribute === 'plugin-mention-path' && name === 'dev-6ac09022b26081918f20ff868c773824') return 'plugin://dev-6ac09022b26081918f20ff868c773824@openai-curated-remote';
+    return null;
+  } })); }
 }
 class FakeHTMLElement {}
 
@@ -43,8 +47,8 @@ function fixture(options: {
   const forgeOption = Object.assign(new FakeHTMLElement(), {
     get innerText() { return options.forgeAppLabel; },
     click() {
-      textarea.value = `${options.forgeAppLabel} ${textarea.value}`;
-      textarea.chipNames = [options.forgeAppLabel === 'Forge Current 1.8.1' ? 'forge-current-1-8-1' : 'forge-recovery'];
+      textarea.value = textarea.value.replace(/ @forge$/, ' forge');
+      textarea.chipNames = [options.forgeAppLabel === 'forge' ? 'dev-6ac09022b26081918f20ff868c773824' : 'forge-recovery'];
     },
   });
   const visible = () => [{}];
@@ -97,10 +101,16 @@ function fixture(options: {
     body: { innerText: '' },
     querySelectorAll(selector: string) {
       if (selector === 'main') return [main];
-      if (selector.includes('[data-mention-section-id="plugins"]')) return pickerOpen && options.forgeAppLabel ? [forgeOption] : [];
+      if (selector.includes('[data-mention-section-items]')) return pickerOpen && options.forgeAppLabel ? [forgeOption] : [];
       if (selector.includes('[role="menuitemradio"]')) return state.menuOpen && option ? [option] : [];
       if (selector.includes('[role="slider"]')) return state.menuOpen && slider ? [slider] : [];
       return [];
+    },
+    createRange() { return { selectNodeContents() {}, collapse() {} }; },
+    execCommand(_command: string, _show: boolean, value: string) {
+      textarea.value += value;
+      if (value === 'forge') pickerOpen = true;
+      return true;
     },
     querySelector(selector: string) {
       if (selector.includes('Add files and more') || selector.includes('添加文件等内容')) return options.forgeAppLabel ? picker : null;
@@ -111,6 +121,7 @@ function fixture(options: {
   };
   const context = {
     document,
+    window: { getSelection: () => ({ removeAllRanges() {}, addRange() {} }) },
     location,
     URL,
     HTMLTextAreaElement: FakeTextArea,
@@ -148,26 +159,26 @@ test('Supervisor effect cannot send as literal @forge when the real app picker i
   const f = fixture({ controlPresent: false });
   const prompt = '@forge\n<<<FORGE_WORKFLOW_EFFECT_V1:fx_test_browser_123456789>>>\nFORGE_WORKFLOW_TURN_V2_BEGIN';
   expect(await f.dispatch(undefined, undefined, prompt)).toMatchObject({
-    dispatched: false, reason: 'COMPUTER_CHATGPT_PLUGIN_PICKER_UNAVAILABLE',
+    dispatched: false, reason: 'COMPUTER_CHATGPT_FORGE_PLUGIN_UNAVAILABLE',
   });
   expect(f.state.sendClicks).toBe(0);
   expect(f.textarea.value).not.toContain('@forge');
 });
 
 test('Supervisor sends exactly once only after the real main Forge app chip was selected and verified', async () => {
-  const f = fixture({ controlPresent: false, forgeAppLabel: 'Forge Current 1.8.1' });
+  const f = fixture({ controlPresent: false, forgeAppLabel: 'forge' });
   const prompt = '@forge\n<<<FORGE_WORKFLOW_EFFECT_V1:fx_test_browser_123456789>>>\nFORGE_WORKFLOW_TURN_V2_BEGIN';
   expect(await f.dispatch(undefined, undefined, prompt)).toMatchObject({ dispatched: true });
   expect(f.state.sendClicks).toBe(1);
-  expect(f.textarea.chipNames).toEqual(['forge-current-1-8-1']);
-  expect(f.textarea.value).toBe('Forge Current 1.8.1 <<<FORGE_WORKFLOW_EFFECT_V1:fx_test_browser_123456789>>>\nFORGE_WORKFLOW_TURN_V2_BEGIN');
+  expect(f.textarea.chipNames).toEqual(['dev-6ac09022b26081918f20ff868c773824']);
+  expect(f.textarea.value).toBe('<<<FORGE_WORKFLOW_EFFECT_V1:fx_test_browser_123456789>>>\nFORGE_WORKFLOW_TURN_V2_BEGIN forge');
 });
 
 test('Supervisor refuses Forge Recovery instead of selecting a similarly named app', async () => {
   const f = fixture({ controlPresent: false, forgeAppLabel: 'Forge Recovery' });
   const prompt = '@forge\n<<<FORGE_WORKFLOW_EFFECT_V1:fx_test_browser_123456789>>>\nFORGE_WORKFLOW_TURN_V2_BEGIN';
   expect(await f.dispatch(undefined, undefined, prompt)).toMatchObject({
-    dispatched: false, reason: 'COMPUTER_CHATGPT_FORGE_APP_AMBIGUOUS_OR_UNAVAILABLE',
+    dispatched: false, reason: 'COMPUTER_CHATGPT_FORGE_PLUGIN_UNAVAILABLE',
   });
   expect(f.state.sendClicks).toBe(0);
 });
