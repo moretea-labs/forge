@@ -169,7 +169,7 @@ async function executeDispatch(command) {
   const target = await resolveTarget(command.identity, false).catch(() => undefined);
   if (!target) return { kind: 'dispatch', mutation: 'not_attempted', reasonCode: 'COMPUTER_CHATGPT_EXTENSION_TARGET_MISSING' };
   let result;
-  try { result = await tabMessage(target.tab.id, { type: 'forge-computer-chatgpt-dispatch', prompt: command.prompt, mode: command.mode }); }
+  try { result = await tabMessage(target.tab.id, { type: 'forge-computer-chatgpt-dispatch', prompt: command.prompt, mode: command.mode, reasoning: command.reasoning }); }
   catch (error) {
     return dispatchTransportNotReached(error)
       ? { kind: 'dispatch', mutation: 'not_attempted', reasonCode: 'COMPUTER_CHATGPT_EXTENSION_CONTENT_UNAVAILABLE' }
@@ -181,10 +181,10 @@ async function executeDispatch(command) {
     await sleep(attempt * 200);
     try {
       observation = await snapshot(target.tab.id, { includeUserHistory: false, includePageText: false });
-      if (normalize(observation.latestUserText) === normalize(command.prompt)) return { kind: 'dispatch', mutation: 'attempted', confirmed: true, observation };
+      if (normalize(observation.latestUserText) === normalize(command.prompt)) return { kind: 'dispatch', mutation: 'attempted', confirmed: true, ...(result.reasoningVerified ? { reasoningVerified: result.reasoningVerified } : {}), observation };
     } catch { /* mutation already happened; only confirmation is missing */ }
   }
-  return { kind: 'dispatch', mutation: 'attempted', confirmed: false, ...(observation ? { observation } : {}) };
+  return { kind: 'dispatch', mutation: 'attempted', confirmed: false, ...(result.reasoningVerified ? { reasoningVerified: result.reasoningVerified } : {}), ...(observation ? { observation } : {}) };
 }
 async function executeFindMarker(command, instanceId) {
   const matches = [];

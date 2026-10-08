@@ -257,7 +257,7 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
         throw new Error('COMPUTER_CHATGPT_EXTENSION_OBSERVATION_INVALID');
       },
       dispatch: async (prompt, options) => {
-        const response = await this.submit(instanceId, { kind: 'dispatch', identity, prompt, ...(options?.mode ? { mode: options.mode } : {}) });
+        const response = await this.submit(instanceId, { kind: 'dispatch', identity, prompt, ...(options?.mode ? { mode: options.mode } : {}), ...(options?.reasoning ? { reasoning: options.reasoning } : {}) });
         if (!response.result) {
           return response.claimed
             ? { mutation: 'attempted' as const }
@@ -265,7 +265,7 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
         }
         if (response.result.kind === 'dispatch') {
           return response.result.mutation === 'attempted'
-            ? { mutation: 'attempted' as const, ...(response.result.confirmed === undefined ? {} : { confirmed: response.result.confirmed }) }
+            ? { mutation: 'attempted' as const, ...(response.result.confirmed === undefined ? {} : { confirmed: response.result.confirmed }), ...(response.result.reasoningVerified ? { reasoningVerified: response.result.reasoningVerified } : {}) }
             : { mutation: 'not_attempted' as const, reasonCode: response.result.reasonCode };
         }
         if (response.result.kind === 'failed') return { mutation: 'not_attempted' as const, reasonCode: response.result.code };

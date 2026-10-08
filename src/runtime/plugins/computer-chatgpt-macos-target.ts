@@ -254,8 +254,11 @@ export async function observeMacOsChatgptPage(
 export async function dispatchMacOsChatgptPrompt(
   page: ComputerChatgptNativePage,
   prompt: string,
-  options: { mode?: 'send' | 'resume' | 'recover' } = {},
+  options: { mode?: 'send' | 'resume' | 'recover'; reasoning?: 'medium' | 'high' | 'xhigh' } = {},
 ): Promise<{ mutation: 'not_attempted'; reasonCode: string } | { mutation: 'attempted'; confirmed?: boolean }> {
+  // Apple Events has no verified reasoning selector. Never silently submit
+  // a Supervisor effect under the unproven maximum-effort claim.
+  if (options.reasoning) return { mutation: 'not_attempted', reasonCode: 'COMPUTER_CHATGPT_REASONING_UNSUPPORTED_BY_PROVIDER' };
   const resume = options.mode === 'resume';
   if (options.mode === 'recover') {
     try {
@@ -515,6 +518,7 @@ export class MacOsChatgptConversationTargetPort implements ComputerChatgptConver
       identity,
       observe: async (options) => await this.observeTarget(record, page, options),
       dispatch: async (prompt, options) => {
+        if (options?.reasoning) return { mutation: 'not_attempted', reasonCode: 'COMPUTER_CHATGPT_REASONING_UNSUPPORTED_BY_PROVIDER' };
         await this.prepareProviderOwnedPage(record, page);
         return await dispatchMacOsChatgptPrompt(page, prompt, options);
       },

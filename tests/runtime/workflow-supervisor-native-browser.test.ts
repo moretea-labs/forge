@@ -18,3 +18,19 @@ test('Computer provider classifies Chrome JavaScript permission rejection as pre
   });
   expect(evaluateCalls).toBe(1);
 });
+
+test('Apple Events compatibility provider never claims an unverified requested reasoning level', async () => {
+  let evaluateCalls = 0;
+  const page = {
+    evaluate: async <T>() => {
+      evaluateCalls += 1;
+      throw new Error('The page must not be inspected when the provider has no reasoning verifier');
+    },
+    tabRef: () => undefined,
+  };
+  await expect(dispatchMacOsChatgptPrompt(page, 'continue the Forge task', { reasoning: 'xhigh' })).resolves.toEqual({
+    mutation: 'not_attempted',
+    reasonCode: 'COMPUTER_CHATGPT_REASONING_UNSUPPORTED_BY_PROVIDER',
+  });
+  expect(evaluateCalls).toBe(0);
+});
