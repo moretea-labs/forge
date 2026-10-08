@@ -18,7 +18,7 @@ import { createWorkflowSupervisorServer, reconcileWorkflowSupervisorSocket, Work
 import { claimControllerSession, getControllerSession, releaseControllerSession } from '../../src/runtime/control-plane/facade/controller-session-store';
 import { bindChatgptWorkConversation, getChatgptWorkConversationBinding, rebindChatgptWorkConversation } from '../../adapters/chatgpt/work-conversation-binding-store';
 import { CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE, chatgptProviderPageFailure, classifyChatgptProviderFailure } from '../../adapters/chatgpt/provider-delivery';
-import { chatgptComposerRetainsPrompt, chatgptFailedRequestIsCausalRateLimit, chatgptForgePluginMentionBound, chatgptOutboundMessageMatchesPrompt, chatgptSupervisorPromptBody } from '../../adapters/chatgpt/browser-delivery-runtime';
+import { chatgptBrowserObservationMatchesTarget, chatgptComposerRetainsPrompt, chatgptFailedRequestIsCausalRateLimit, chatgptForgePluginMentionBound, chatgptOutboundMessageMatchesPrompt, chatgptSupervisorPromptBody } from '../../adapters/chatgpt/browser-delivery-runtime';
 import { parseChatgptConversationIdentity } from '../../supervisor/chatgpt-conversation';
 import { setMacOsBrowserRuntimeHooksForTest, resetMacOsBrowserRuntimeHooksForTest } from '../../src/runtime/plugins/browser-macos-bridge';
 import { createTestChatgptTargetPort, type TestBrowserPage } from './helpers/computer-chatgpt-target-harness';
@@ -85,6 +85,19 @@ describe('ChatGPT Supervisor structured plugin mention', () => {
     expect(chatgptOutboundMessageMatchesPrompt(`Forge Current 1.8.1 ${payload}`, payload, { boundForgePlugin: true })).toBe(true);
     expect(chatgptOutboundMessageMatchesPrompt(`Forge Current 1.8.1 ${payload}`, payload)).toBe(false);
     expect(chatgptOutboundMessageMatchesPrompt(`Forge Recovery ${payload}`, payload, { boundForgePlugin: true })).toBe(false);
+  });
+});
+
+describe('ChatGPT native tab identity pre-send fence', () => {
+  const target = 'https://chatgpt.com/g/g-p-forge/c/11111111-2222-3333-4444-555555555555';
+  test('accepts only the exact conversation and exact Browser session', () => {
+    const observation = { sessionId: 'browser_exact', url: target,
+      browserConnection: { tab: { url: target } } };
+    expect(chatgptBrowserObservationMatchesTarget(observation, 'browser_exact', target)).toBe(true);
+    expect(chatgptBrowserObservationMatchesTarget({ ...observation, sessionId: 'browser_other' }, 'browser_exact', target)).toBe(false);
+    expect(chatgptBrowserObservationMatchesTarget({ ...observation,
+      browserConnection: { tab: { url: 'https://chatgpt.com/g/g-p-avela/c/99999999-2222-3333-4444-555555555555' } } }, 'browser_exact', target)).toBe(false);
+    expect(chatgptBrowserObservationMatchesTarget({ sessionId: 'browser_exact' }, 'browser_exact', target)).toBe(false);
   });
 });
 

@@ -792,6 +792,42 @@ function chatgptUrlMatchesContinuationTarget(observedUrl: string, targetUrl: str
   }
 }
 
+/** The saved Browser session id is not proof of the live native tab identity. */
+export function chatgptBrowserObservationMatchesTarget(
+  observation: Record<string, unknown>,
+  browserSessionId: string,
+  targetUrl: string,
+): boolean {
+  const observedSessionId = stringField(observation.sessionId) ?? resultSessionId(observation);
+  if (observedSessionId && observedSessionId !== browserSessionId) return false;
+  const connection = observation.browserConnection;
+  const liveTab = connection && typeof connection === 'object'
+    ? (connection as Record<string, unknown>).tab : undefined;
+  const liveTabUrl = liveTab && typeof liveTab === 'object'
+    ? stringField((liveTab as Record<string, unknown>).url) : undefined;
+  const urls = [resultUrl(observation), liveTabUrl].filter((url): url is string => Boolean(url));
+  return urls.length > 0 && urls.every((url) => chatgptUrlMatchesContinuationTarget(url, targetUrl));
+}
+
+async function verifyChatgptExactSubmissionTab(
+  controllerHome: string,
+  workId: string,
+  browserSessionId: string,
+  targetUrl: string,
+  timeoutMs?: number,
+): Promise<void> {
+  const observed = await controllerBrowserAction(controllerHome, workId, 'get_text', {
+    session_id: browserSessionId,
+    selector: CHATGPT_PROMPT_SELECTOR,
+    max_chars: 1,
+    timeout_ms: Math.min(timeoutMs ?? 3_000, 3_000),
+  }, timeoutMs);
+  if (!chatgptBrowserObservationMatchesTarget(observed, browserSessionId, targetUrl)) {
+    throw new ChatgptProviderDeliveryError('CHATGPT_AUTOMATION_TARGET_IDENTITY_CHANGED',
+      `CHATGPT_AUTOMATION_TARGET_IDENTITY_CHANGED:${targetUrl}`, { conversationUrl: targetUrl });
+  }
+}
+
 function completeChatgptBrowserInventorySessions(
   inventory: Record<string, unknown>,
 ): ChatgptBrowserSessionInventoryItem[] | undefined {
@@ -1020,6 +1056,11 @@ export async function submitChatgptPrompt(
   targetUrl: string,
   timeoutMs?: number,
 ): Promise<string> {
+  // Verify the live native tab before reading/sending. The saved session may
+  // have retargeted while its Browser handle remained stable.
+  await verifyChatgptExactSubmissionTab(
+    controllerHome, workId, browserSessionId, targetUrl, timeoutMs,
+  );
   const renderedPrompt = chatgptSupervisorPromptBody(prompt);
   const [before, beforeAssistant, failedRequestBaseline, preexistingPageFailure] = await Promise.all([
     latestChatgptUserMessage(controllerHome, workId, browserSessionId, timeoutMs)
@@ -1062,6 +1103,12 @@ export async function submitChatgptPrompt(
   // Forge app and verify its structured mention before sending the payload.
   await bindChatgptForgePluginMention(
     controllerHome, workId, browserSessionId, renderedPrompt, targetUrl, timeoutMs,
+  );
+
+  // A popup or plugin-selection action can change the native tab. Re-attest
+  // immediately before Send, never infer identity from a successful click.
+  await verifyChatgptExactSubmissionTab(
+    controllerHome, workId, browserSessionId, targetUrl, timeoutMs,
   );
 
   let observedUrl = targetUrl;
