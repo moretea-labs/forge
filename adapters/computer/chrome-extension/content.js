@@ -243,14 +243,19 @@
     }
     return { verified: true, level: actualLevel };
   };
-  const dispatchPrompt = async (prompt, mode = 'send', reasoning) => {
+  const dispatchPrompt = async (prompt, mode = 'send', reasoning, expectedConversationId) => {
+    const exactConversationIsCurrent = () => !expectedConversationId
+      || core.parseConversation(location.href)?.conversationId === expectedConversationId;
+    if (!exactConversationIsCurrent()) return { dispatched: false, reason: 'target_identity_changed' };
     if (typeof prompt !== 'string' || !prompt.trim()) return { dispatched: false, reason: 'prompt_required' };
     if (mode === 'recover') {
       const stop = document.querySelector(STOP);
       if (stop instanceof HTMLElement) {
+        if (!exactConversationIsCurrent()) return { dispatched: false, reason: 'target_identity_changed' };
         stop.click();
         for (let attempt = 0; attempt < 20 && document.querySelector(STOP); attempt += 1) {
           await new Promise((resolve) => setTimeout(resolve, 100));
+          if (!exactConversationIsCurrent()) return { dispatched: false, reason: 'target_identity_changed' };
         }
         if (document.querySelector(STOP)) return { dispatched: false, reason: 'provider_recovery_stop_unconfirmed' };
       }
@@ -266,12 +271,15 @@
       if (!checked.verified) return { dispatched: false, reason: checked.reason };
       reasoningVerified = checked.level;
     }
+    if (!exactConversationIsCurrent()) return { dispatched: false, reason: 'target_identity_changed' };
     if (existing !== expected) writeComposer(node, prompt);
     await new Promise((resolve) => setTimeout(resolve, 75));
+    if (!exactConversationIsCurrent()) return { dispatched: false, reason: 'target_identity_changed' };
     if (composerText() !== expected) return { dispatched: false, reason: 'composer_write_unconfirmed' };
     const send = document.querySelector(SEND);
     if (!send) return { dispatched: false, reason: 'send_button_missing' };
     if (send.disabled || send.getAttribute('aria-disabled') === 'true') return { dispatched: false, reason: 'send_button_disabled' };
+    if (!exactConversationIsCurrent()) return { dispatched: false, reason: 'target_identity_changed' };
     send.click();
     return { dispatched: true, ...(reasoningVerified ? { reasoningVerified } : {}) };
   };
@@ -289,7 +297,8 @@
       return false;
     }
     if (message.type === 'forge-computer-chatgpt-dispatch') {
-      dispatchPrompt(String(message.prompt ?? ''), String(message.mode ?? 'send'), message.reasoning).then(sendResponse, (error) => sendResponse({ dispatched: false, reason: String(error?.message ?? error) }));
+      dispatchPrompt(String(message.prompt ?? ''), String(message.mode ?? 'send'), message.reasoning, message.expectedConversationId)
+        .then(sendResponse, (error) => sendResponse({ dispatched: false, reason: String(error?.message ?? error) }));
       return true;
     }
     return false;

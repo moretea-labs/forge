@@ -180,7 +180,11 @@ async function executeDispatch(command) {
     }
   }
   let result;
-  try { result = await tabMessage(target.tab.id, { type: 'forge-computer-chatgpt-dispatch', prompt: command.prompt, mode: command.mode, reasoning: command.reasoning }); }
+  try { result = await tabMessage(target.tab.id, {
+    type: 'forge-computer-chatgpt-dispatch', prompt: command.prompt, mode: command.mode,
+    reasoning: command.reasoning,
+    ...(command.identity?.namespace === 'chatgpt.conversation' ? { expectedConversationId: command.identity.conversationId } : {}),
+  }); }
   catch (error) {
     return dispatchTransportNotReached(error)
       ? { kind: 'dispatch', mutation: 'not_attempted', reasonCode: 'COMPUTER_CHATGPT_EXTENSION_CONTENT_UNAVAILABLE' }

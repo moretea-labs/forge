@@ -25,8 +25,10 @@ function fixture(options: {
   sliderValue?: number;
   sliderMax?: number;
   acknowledgeSlider?: boolean;
+  navigateAfterOptionClick?: string;
 } = {}) {
   const state = { controlClicks: 0, optionClicks: 0, sendClicks: 0, controlLabel: options.startingLabel ?? 'GPT-6 High', menuOpen: false };
+  const location = { href: 'https://chatgpt.com/c/12345678-1234-1234-1234-123456789abc' };
   let onMessage: ((message: Record<string, unknown>, sender: unknown, respond: (value: unknown) => void) => unknown) | undefined;
   const textarea = new FakeTextArea();
   const visible = () => [{}];
@@ -48,6 +50,7 @@ function fixture(options: {
     click() {
       state.optionClicks += 1;
       if (options.acknowledgeSelection !== false) state.controlLabel = `GPT-6 ${options.optionLabel}`;
+      if (options.navigateAfterOptionClick) location.href = options.navigateAfterOptionClick;
     },
   };
   let sliderValue = options.sliderValue;
@@ -90,7 +93,7 @@ function fixture(options: {
   };
   const context = {
     document,
-    location: { href: 'https://chatgpt.com/c/12345678-1234-1234-1234-123456789abc' },
+    location,
     URL,
     HTMLTextAreaElement: FakeTextArea,
     HTMLInputElement: class {},
@@ -113,13 +116,13 @@ function fixture(options: {
     if (!onMessage) throw new Error('missing content-script message listener');
     onMessage({ type: 'forge-computer-chatgpt-capabilities' }, {}, (value) => resolve(value as Record<string, unknown>));
   });
-  const dispatch = async (reasoning?: string) => {
+  const dispatch = async (reasoning?: string, expectedConversationId?: string) => {
     return await new Promise<Record<string, unknown>>((resolve) => {
       if (!onMessage) throw new Error('missing content-script message listener');
-      onMessage({ type: 'forge-computer-chatgpt-dispatch', prompt: 'source delivery', reasoning }, {}, (value) => resolve(value as Record<string, unknown>));
+      onMessage({ type: 'forge-computer-chatgpt-dispatch', prompt: 'source delivery', reasoning, expectedConversationId }, {}, (value) => resolve(value as Record<string, unknown>));
     });
   };
-  return { dispatch, capabilities, state, textarea };
+  return { dispatch, capabilities, state, textarea, location };
 }
 
 test('content script advertises exact-tab reasoning preflight without mutating the page', async () => {
@@ -153,14 +156,18 @@ test('unobservable reasoning fails closed before any prompt insertion or send', 
   expect(f.state.sendClicks).toBe(0);
 });
 
-test('disabled or unverified Extra High selection never dispatches', async () => {
+test('disabled, unverified, or stale-conversation Extra High selection never dispatches', async () => {
   const disabled = fixture({ optionLabel: 'Extra High', optionDisabled: true });
   expect(await disabled.dispatch('xhigh')).toMatchObject({ dispatched: false, reason: 'COMPUTER_CHATGPT_REASONING_OPTION_UNAVAILABLE' });
   const ignored = fixture({ optionLabel: 'Extra High', acknowledgeSelection: false });
   expect(await ignored.dispatch('xhigh')).toMatchObject({ dispatched: false, reason: 'COMPUTER_CHATGPT_REASONING_NOT_VERIFIED' });
+  const navigated = fixture({ optionLabel: 'Extra High', navigateAfterOptionClick: 'https://chatgpt.com/c/87654321-4321-4321-4321-cba987654321' });
+  expect(await navigated.dispatch('xhigh', '12345678-1234-1234-1234-123456789abc'))
+    .toMatchObject({ dispatched: false, reason: 'target_identity_changed' });
   expect(disabled.textarea.value).toBe('');
   expect(ignored.textarea.value).toBe('');
-  expect(disabled.state.sendClicks + ignored.state.sendClicks).toBe(0);
+  expect(navigated.textarea.value).toBe('');
+  expect(disabled.state.sendClicks + ignored.state.sendClicks + navigated.state.sendClicks).toBe(0);
 });
 
 test('slider needs an observed state transition rather than an untrusted write', async () => {

@@ -15,6 +15,8 @@ import { installExternalPluginRegistration } from '../../src/runtime/plugins/ext
 import type { AssistantPluginActionExecutionInput } from '../../src/runtime/plugins/types';
 import { FORGE_INSTANCE_SCOPE_KEY } from '../../src/cli/repositories/controller-home';
 import { ChromeExtensionChatgptConversationTargetPort } from '../../adapters/computer/chatgpt-extension-target';
+import { createRuntimeComputerTargetPersistence } from '../../src/runtime/root/computer-target-persistence';
+import type { ComputerInteractionTargetEntry } from '../../packages/plugin-runtime/computer/target-authority';
 
 interface ProviderFixture {
   controllerHome: string;
@@ -712,6 +714,99 @@ describe('Computer durable InteractionTarget authority', () => {
         stableIdentity: { surfaceType: 'browser-tab', ownership: 'user_owned' },
         compatibilityAliases: Array.from({ length: 65 }, (_, index) => `alias-${index}`),
       })).toThrow('COMPUTER_SURFACE_ALIAS_LIMIT_EXCEEDED');
+    } finally {
+      rmSync(controllerHome, { recursive: true, force: true });
+    }
+  });
+
+  test('terminated Computer Surface releases its physical tab without releasing stable identity', async () => {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-computer-surface-terminal-binding-'));
+    const stable = (key: string) => ({
+      surfaceType: 'browser-tab' as const,
+      ownership: 'provider_owned' as const,
+      resource: { namespace: 'chatgpt.bootstrap', key },
+    });
+    const binding = {
+      providerId: 'browser.chrome-extension',
+      browserProduct: 'chrome',
+      windowId: '123',
+      tabId: '456',
+      observedAt: '2026-10-08T06:00:00.000Z',
+    };
+    try {
+      const first = targetAuthority.upsertSurface(controllerHome, { stableIdentity: stable('task-a'), providerBinding: binding });
+      expect(targetAuthority.tombstoneSurface(controllerHome, first.target.targetId)).toBe(true);
+      const second = targetAuthority.upsertSurface(controllerHome, { stableIdentity: stable('task-b'), providerBinding: binding });
+      expect(second.created).toBe(true);
+      expect(second.target.targetId).not.toBe(first.target.targetId);
+      expect(targetAuthority.findSurfaceByProviderBinding(controllerHome, binding)?.targetId).toBe(second.target.targetId);
+      expect(() => targetAuthority.upsertSurface(controllerHome, {
+        stableIdentity: stable('task-c'), providerBinding: binding,
+      })).toThrow('COMPUTER_SURFACE_STABLE_IDENTITY_CONFLICT');
+      expect(targetAuthority.findSurfaceByStableIdentity(controllerHome, stable('task-b'))?.targetId).toBe(second.target.targetId);
+      expect(targetAuthority.findSurfaceByStableIdentity(controllerHome, stable('task-c'))).toBeUndefined();
+      const revived = targetAuthority.upsertSurface(controllerHome, {
+        stableIdentity: stable('task-a'), reactivate: true,
+      });
+      expect(revived.target.targetId).toBe(first.target.targetId);
+      expect(revived.target.providerBinding).toBeUndefined();
+      expect(targetAuthority.findSurfaceByProviderBinding(controllerHome, binding)?.targetId).toBe(second.target.targetId);
+      await targetAuthority.withSurfaceLease(controllerHome, second.target.targetId, async (lease) => { lease.tombstone(); });
+      const third = targetAuthority.upsertSurface(controllerHome, { stableIdentity: stable('task-c'), providerBinding: binding });
+      expect(targetAuthority.findSurfaceByProviderBinding(controllerHome, binding)?.targetId).toBe(third.target.targetId);
+    } finally {
+      rmSync(controllerHome, { recursive: true, force: true });
+    }
+  });
+
+  test('legacy terminal Computer Surface binding index is reclaimed without taking an active tab', async () => {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-computer-surface-legacy-binding-'));
+    const stable = (key: string) => ({
+      surfaceType: 'browser-tab' as const,
+      ownership: 'provider_owned' as const,
+      resource: { namespace: 'chatgpt.bootstrap', key },
+    });
+    const binding = {
+      providerId: 'browser.chrome-extension',
+      browserProduct: 'chrome',
+      windowId: '901',
+      tabId: '902',
+      observedAt: '2026-10-08T06:00:00.000Z',
+    };
+    try {
+      const first = targetAuthority.upsertSurface(controllerHome, { stableIdentity: stable('legacy'), providerBinding: binding });
+      const persistence = createRuntimeComputerTargetPersistence();
+      const previous = persistence.read<ComputerInteractionTargetEntry>(
+        controllerHome, 'computer_interaction_target', 'controller', first.target.targetId,
+      );
+      if (!previous) throw new Error('fixture Surface missing');
+      const tombstonedAt = '2026-10-08T06:01:00.000Z';
+      // Recreate an actual pre-fix tombstone: retained record and binding index.
+      persistence.write(controllerHome, {
+        namespace: 'computer_interaction_target', scope: 'controller', key: first.target.targetId,
+        schemaVersion: 1,
+        value: { schemaVersion: 1, status: 'tombstoned', target: first.target, tombstonedAt },
+        action: 'fixture_legacy_surface_terminal',
+        expectedRevision: previous.revision,
+      });
+      const second = targetAuthority.upsertSurface(controllerHome, { stableIdentity: stable('successor'), providerBinding: binding });
+      expect(second.created).toBe(true);
+      expect(targetAuthority.findSurfaceByProviderBinding(controllerHome, binding)?.targetId).toBe(second.target.targetId);
+      expect(targetAuthority.upsertSurface(controllerHome, {
+        stableIdentity: stable('legacy'), reactivate: true,
+      }).target.providerBinding).toBeUndefined();
+      expect(targetAuthority.findSurfaceByProviderBinding(controllerHome, binding)?.targetId).toBe(second.target.targetId);
+      const importedBinding = { ...binding, tabId: '903' };
+      const imported = targetAuthority.upsertSurface(controllerHome, {
+        stableIdentity: stable('imported'), providerBinding: importedBinding,
+        initialStatus: 'tombstoned',
+      });
+      expect(imported.status).toBe('tombstoned');
+      const next = targetAuthority.upsertSurface(controllerHome, {
+        stableIdentity: stable('import-successor'), providerBinding: importedBinding,
+      });
+      expect(next.created).toBe(true);
+      expect(targetAuthority.findSurfaceByProviderBinding(controllerHome, importedBinding)?.targetId).toBe(next.target.targetId);
     } finally {
       rmSync(controllerHome, { recursive: true, force: true });
     }
