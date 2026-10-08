@@ -488,6 +488,88 @@ describe('repository.git Work delivery', () => {
     expect(git(fx.repoRoot, ['rev-parse', 'HEAD'])).toBe(sourceHead);
   });
 
+  test('ignores an open foreign WorkHandle tied to the previous branch of the target checkout', async () => {
+    const fx = fixture();
+    roots.push(fx.root);
+    const started = await callExecutionTool(fx.ctx, 'session_start', {});
+    const session = (started?.structuredContent as { session: { sessionId: string } }).session;
+    const prepared = await callExecutionTool(fx.ctx, 'work_prepare', {
+      session_id: session.sessionId,
+      repo_id: fx.repository.repoId,
+      request_id: 'prepare-delivery-historical-branch-handle',
+      objective: 'Deliver committed source to the current branch despite an earlier checkout owner.',
+      checks: [],
+      isolation: 'new_worktree',
+    });
+    const work = (prepared?.structuredContent as { work: { workId: string } }).work;
+    const handle = readWorkHandle(fx.controllerHome, fx.repository.repoId, work.workId)!;
+    writeFileSync(join(handle.worktreePath, 'src', 'lib.ts'), 'export const n = 2;\n');
+    git(handle.worktreePath, ['add', 'src/lib.ts']);
+    git(handle.worktreePath, ['commit', '-m', 'delivery source']);
+    const sourceHead = git(handle.worktreePath, ['rev-parse', 'HEAD']);
+    const targetHead = git(fx.repoRoot, ['rev-parse', 'HEAD']);
+    const validated = await callExecutionTool(fx.ctx, 'work_validate', {
+      session_id: session.sessionId,
+      repo_id: fx.repository.repoId,
+      work_id: work.workId,
+      request_id: 'validate-delivery-historical-branch-handle',
+    });
+    expect((validated?.structuredContent as { validation: { passed: boolean } }).validation.passed).toBe(true);
+
+    const blockerId = 'work-historical-branch-owner';
+    createWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
+      workId: blockerId,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      baseRevision: targetHead,
+      objective: 'Still-open work for the checkout previous branch, not its current branch.',
+      acceptanceCriteria: [],
+      allowedPaths: [],
+      forbiddenPaths: [],
+      checks: [],
+      constraints: {},
+      requestedBy: 'chatgpt',
+      workKind: 'repository_change',
+      dispatchState: 'running',
+      phase: 'implementation',
+    });
+    const at = new Date().toISOString();
+    writeWorkHandle(fx.controllerHome, {
+      ...handle,
+      recordRevision: undefined,
+      workId: blockerId,
+      workContractId: blockerId,
+      checkoutId: fx.repository.activeCheckoutId,
+      worktreePath: fx.repoRoot,
+      branch: 'android/integration',
+      sourceCheckoutId: undefined,
+      deliveryTargetBranch: 'android/integration',
+      managedWorktree: false,
+      baseCommit: targetHead,
+      deliveryBaseCommit: targetHead,
+      expectedHead: targetHead,
+      state: 'editing',
+      createdAt: at,
+      updatedAt: at,
+      validationRun: undefined,
+      validatedInputFingerprint: undefined,
+      cleanupResponsibility: undefined,
+      cleanupReceipt: undefined,
+      terminalResourceDisposition: undefined,
+      finalization: { ...handle.finalization, validation: 'pending', commit: 'pending', merge: 'pending', branchCleanup: 'pending', worktreeCleanup: 'pending' },
+    });
+
+    const delivered = await callCoreCapabilityAdapter(fx.ctx, 'capability_execute', {
+      repo_id: fx.repository.repoId,
+      capability_id: 'repository.git',
+      action: 'deliver_work',
+      request_id: 'deliver-despite-unrelated-previous-branch-owner',
+      arguments: { session_id: session.sessionId, work_id: work.workId },
+    });
+    if (delivered?.isError) throw new Error(JSON.stringify(delivered.structuredContent ?? delivered));
+    expect(git(fx.repoRoot, ['rev-parse', 'HEAD'])).toBe(sourceHead);
+  });
+
   test('keeps an open or unproven foreign target WorkHandle as a delivery blocker', async () => {
     const fx = fixture();
     roots.push(fx.root);

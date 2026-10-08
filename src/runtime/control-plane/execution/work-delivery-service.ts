@@ -150,6 +150,7 @@ function assertTargetMutationAvailable(
   const blockingWork = listWorkHandles(controllerHome, handle.repositoryId)
     .find((other) => other.workId !== handle.workId
       && other.checkoutId === targetCheckoutId
+      && other.branch === targetBranch
       && other.state !== 'cleaned'
       && other.state !== 'failed'
       && !workHandleHasTerminalSemanticAuthority(controllerHome, handle.repositoryId, other.workId));
