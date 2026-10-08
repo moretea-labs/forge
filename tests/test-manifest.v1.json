@@ -822,6 +822,14 @@
       "module": "browser",
       "resource": "pure"
     },
+    "tests/runtime/computer-chatgpt-extension-preflight.test.ts": {
+      "module": "browser",
+      "resource": "pure"
+    },
+    "tests/runtime/computer-chatgpt-reasoning-control.test.ts": {
+      "module": "browser",
+      "resource": "pure"
+    },
     "tests/runtime/computer-chatgpt-target-router.test.ts": {
       "module": "browser",
       "resource": "pure"

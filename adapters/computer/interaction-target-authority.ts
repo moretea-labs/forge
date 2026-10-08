@@ -275,13 +275,20 @@ function surfaceInputIndexKeys(input: {
   return [...new Set(keys)];
 }
 
-function writeSurfaceIndexes(transaction: ComputerTargetPersistenceTransaction, target: ComputerSurfaceTarget): void {
-  for (const key of surfaceIndexKeysForTarget(target)) {
+function writeSurfaceIndexes(
+  transaction: ComputerTargetPersistenceTransaction,
+  target: ComputerSurfaceTarget,
+  status: 'active' | 'tombstoned' = 'active',
+): void {
+  // Terminal imports retain stable/alias identity, never a physical tab claim.
+  const indexed = status === 'tombstoned' ? { ...target, providerBinding: undefined } : target;
+  for (const key of surfaceIndexKeysForTarget(indexed)) {
     const current = transaction.read<ComputerSurfaceIndexRecord>(COMPUTER_TARGET_INDEX_NAMESPACE, COMPUTER_TARGET_SCOPE, key);
     if (current?.value.targetId === target.targetId) continue;
     if (current) {
       const referenced = transaction.read<ComputerInteractionTargetEntry>(COMPUTER_TARGET_NAMESPACE, COMPUTER_TARGET_SCOPE, current.value.targetId);
       if (referenced?.value.target.kind === 'surface'
+        && !(key.startsWith('binding-') && referenced.value.status === 'tombstoned')
         && surfaceIndexKeysForTarget(normalizedSurfaceTarget(referenced.value.target)).includes(key)) {
         throw new Error(`COMPUTER_SURFACE_INDEX_CONFLICT: ${key}`);
       }
@@ -310,7 +317,7 @@ function ensureSurfaceIndexes(transaction: ComputerTargetPersistenceTransaction)
     scope: COMPUTER_TARGET_SCOPE,
   });
   for (const record of surfaces) {
-    if (record.value.target.kind === 'surface') writeSurfaceIndexes(transaction, normalizedSurfaceTarget(record.value.target));
+    if (record.value.target.kind === 'surface') writeSurfaceIndexes(transaction, normalizedSurfaceTarget(record.value.target), record.value.status);
   }
   transaction.write({
     namespace: COMPUTER_TARGET_INDEX_NAMESPACE,
@@ -341,6 +348,7 @@ function readIndexedSurfaceRecord(
   if (!index) return undefined;
   const target = transaction.read<ComputerInteractionTargetEntry>(COMPUTER_TARGET_NAMESPACE, COMPUTER_TARGET_SCOPE, index.value.targetId);
   if (target?.value.target.kind === 'surface'
+    && (target.value.status === 'active' || !indexKey.startsWith('binding-'))
     && surfaceIndexKeysForTarget(normalizedSurfaceTarget(target.value.target)).includes(indexKey)) return target;
   transaction.delete({
     namespace: COMPUTER_TARGET_INDEX_NAMESPACE,
@@ -367,6 +375,26 @@ function deleteSurfaceIndexes(
       expectedRevision: index.revision,
     });
   }
+}
+
+// Tombstones retain stable/alias identities for explicit reactivation, but a
+// physical tab is no longer owned by a terminal Surface. Release only its
+// binding index atomically; never delete another Surface's replacement owner.
+function deleteSurfaceBindingIndex(
+  transaction: ComputerTargetPersistenceTransaction,
+  target: ComputerSurfaceTarget,
+): void {
+  const key = surfaceBindingIndexKey(target.providerBinding);
+  if (!key) return;
+  const index = transaction.read<ComputerSurfaceIndexRecord>(COMPUTER_TARGET_INDEX_NAMESPACE, COMPUTER_TARGET_SCOPE, key);
+  if (index?.value.targetId !== target.targetId) return;
+  transaction.delete({
+    namespace: COMPUTER_TARGET_INDEX_NAMESPACE,
+    scope: COMPUTER_TARGET_SCOPE,
+    key,
+    action: 'computer_surface_terminal_binding_release',
+    expectedRevision: index.revision,
+  });
 }
 
 function normalizedSurfaceTarget(target: ComputerSurfaceTarget): ComputerSurfaceTarget {
@@ -618,11 +646,19 @@ export function createComputerInteractionTargetAuthority(
           action: status === 'tombstoned' ? 'computer_surface_target_import_tombstone' : 'computer_surface_target_upsert_create',
           expectedRevision: null,
         });
-        writeSurfaceIndexes(transaction, target);
+        writeSurfaceIndexes(transaction, target, status);
         return { target: structuredClone(target), status, created: true };
       }
 
       const currentTarget = normalizedSurfaceTarget(existing.value.target as ComputerSurfaceTarget);
+      // The physical browser tab is not an authority to rename a durable
+      // conversation/bootstrap identity. Navigation requires an explicit
+      // provider-binding transfer, never an implicit Surface overwrite.
+      const previousStableKey = surfaceStableIdentityIndexKey(currentTarget.stableIdentity);
+      const requestedStableKey = surfaceStableIdentityIndexKey(stableIdentity);
+      if (previousStableKey && requestedStableKey && previousStableKey !== requestedStableKey) {
+        throw new Error(`COMPUTER_SURFACE_STABLE_IDENTITY_CONFLICT: ${lockKey}`);
+      }
       const compatibilityByNamespace = new Map(currentTarget.compatibilityRecords.map((record) => [record.namespace, record]));
       for (const record of compatibilityRecords) compatibilityByNamespace.set(record.namespace, record);
       const nextStatus = existing.value.status === 'tombstoned' && rawInput.reactivate === true ? 'active' : existing.value.status;
@@ -633,9 +669,12 @@ export function createComputerInteractionTargetAuthority(
         visibility: currentTarget.visibility === 'controller' || visibility === 'controller' ? 'controller' : 'repositories',
         repositoryIds: normalizeRepositoryIds([...currentTarget.repositoryIds, ...repositoryIds]),
         compatibilityRecords: normalizeCompatibilityRecords([...compatibilityByNamespace.values()]),
-        ...(providerBinding ? { providerBinding } : {}),
+        // Reactivation keeps the durable identity, not the terminated provider
+        // tab binding. A caller must present a fresh binding to reclaim it.
+        ...(existing.value.status === 'tombstoned' ? { providerBinding } : providerBinding ? { providerBinding } : {}),
         updatedAt: at,
       };
+      deleteSurfaceIndexes(transaction, currentTarget);
       transaction.write({
         namespace: COMPUTER_TARGET_NAMESPACE,
         scope: COMPUTER_TARGET_SCOPE,
@@ -650,7 +689,7 @@ export function createComputerInteractionTargetAuthority(
         action: nextStatus !== existing.value.status ? 'computer_surface_target_reactivate' : 'computer_surface_target_upsert',
         expectedRevision: existing.revision,
       });
-      writeSurfaceIndexes(transaction, target);
+      writeSurfaceIndexes(transaction, target, nextStatus);
       return { target: structuredClone(target), status: nextStatus, created: false };
     });
   }
@@ -815,6 +854,7 @@ export function createComputerInteractionTargetAuthority(
       const current = transaction.read<ComputerInteractionTargetEntry>(COMPUTER_TARGET_NAMESPACE, COMPUTER_TARGET_SCOPE, key);
       if (!current || current.value.status !== 'active' || current.value.target.kind !== 'surface') return false;
       const at = now();
+      deleteSurfaceBindingIndex(transaction, normalizedSurfaceTarget(current.value.target));
       transaction.write({
         namespace: COMPUTER_TARGET_NAMESPACE,
         scope: COMPUTER_TARGET_SCOPE,
@@ -907,14 +947,21 @@ export function createComputerInteractionTargetAuthority(
         tombstone() {
           const at = now();
           const target: ComputerSurfaceTarget = { ...record.value.target, updatedAt: at };
-          persistence.write(controllerHome, {
-            namespace: COMPUTER_TARGET_NAMESPACE,
-            scope: COMPUTER_TARGET_SCOPE,
-            key,
-            schemaVersion: 1,
-            value: { schemaVersion: 1, status: 'tombstoned', target, tombstonedAt: at },
-            action: 'computer_surface_target_tombstone',
-            expectedRevision: record.revision,
+          persistence.transaction(controllerHome, (transaction) => {
+            const current = transaction.read<ComputerInteractionTargetEntry>(COMPUTER_TARGET_NAMESPACE, COMPUTER_TARGET_SCOPE, key);
+            if (!current || current.value.status !== 'active' || current.value.target.kind !== 'surface' || current.revision !== record.revision) {
+              throw new Error(`COMPUTER_SURFACE_TARGET_CHANGED: ${key}`);
+            }
+            deleteSurfaceBindingIndex(transaction, normalizedSurfaceTarget(current.value.target));
+            transaction.write({
+              namespace: COMPUTER_TARGET_NAMESPACE,
+              scope: COMPUTER_TARGET_SCOPE,
+              key,
+              schemaVersion: 1,
+              value: { schemaVersion: 1, status: 'tombstoned', target, tombstonedAt: at },
+              action: 'computer_surface_target_tombstone',
+              expectedRevision: current.revision,
+            });
           });
           return structuredClone(target);
         },

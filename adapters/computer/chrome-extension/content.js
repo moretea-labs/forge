@@ -156,14 +156,106 @@
       selection?.removeAllRanges();
     }
   };
-  const dispatchPrompt = async (prompt, mode = 'send') => {
+  // Reasoning is a provider UI preference, not a Supervisor effect or workflow
+  // decision. Observe the concrete composer control and fail before inserting
+  // any prompt if the page does not acknowledge the requested level.
+  const reasoningLevel = (value) => {
+    const label = core.normalizeText(value).toLowerCase().replace(/[\s_-]+/g, '');
+    if (/extrahigh|xhigh|超高|极高/.test(label)) return 'xhigh';
+    if (/medium|中等/.test(label) || label === '中') return 'medium';
+    if (/high|高/.test(label)) return 'high';
+    return undefined;
+  };
+  const reasoningControl = () => {
+    const selectors = 'button[aria-haspopup="menu"], button[aria-haspopup="listbox"], [role="button"][aria-haspopup="menu"], button[data-testid*="model"], button[data-testid*="reasoning"]';
+    const candidates = Array.from(conversationRoot().querySelectorAll(selectors)).filter(visible);
+    return candidates.find((node) => {
+      const label = core.normalizeText((node.getAttribute?.('aria-label') ?? '') + ' ' + (node.innerText ?? node.textContent ?? ''));
+      const normalized = label.toLowerCase().replace(/[\s_-]+/g, '');
+      return /^gpt\d/.test(normalized) || normalized.includes('reasoning') || normalized.includes('thinking')
+        || normalized.includes('推理') || normalized.includes('思考') || reasoningLevel(label) !== undefined;
+    });
+  };
+  const reasoningControlLabel = (node) => core.normalizeText((node?.getAttribute?.('aria-label') ?? '') + ' ' + (node?.innerText ?? node?.textContent ?? ''));
+  const selectedReasoningOption = (level) => Array.from(document.querySelectorAll('[role="menuitemradio"], [role="option"], [role="radio"]'))
+    .filter(visible)
+    .find((node) => reasoningLevel(reasoningControlLabel(node)) === level
+      && (node.getAttribute('aria-checked') === 'true' || node.getAttribute('aria-selected') === 'true'));
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const ensureReasoning = async (level) => {
+    if (level !== 'medium' && level !== 'high' && level !== 'xhigh') {
+      return { verified: false, reason: 'COMPUTER_CHATGPT_REASONING_INVALID' };
+    }
+    const control = reasoningControl();
+    if (!control) return { verified: false, reason: 'COMPUTER_CHATGPT_REASONING_CONTROL_UNAVAILABLE' };
+    if (reasoningLevel(reasoningControlLabel(control)) === level) return { verified: true, level };
+    control.click();
+    await sleep(80);
+    const menuOptions = Array.from(document.querySelectorAll('[role="menuitemradio"], [role="option"], [role="radio"]'))
+      .filter(visible)
+      .map((node) => ({ node, level: reasoningLevel(reasoningControlLabel(node)), disabled: node.hasAttribute('disabled') || node.getAttribute('aria-disabled') === 'true' }));
+    // xhigh means highest *available*, not a claim that every plan exposes
+    // Extra High. Prefer it, then High, then Medium; record the actual level.
+    const menuLevel = level === 'xhigh'
+      ? ['xhigh', 'high', 'medium'].find((candidate) => menuOptions.some((item) => item.level === candidate && !item.disabled))
+      : level;
+    const option = menuOptions.find((item) => item.level === menuLevel);
+    if (option) {
+      if (option.disabled) return { verified: false, reason: 'COMPUTER_CHATGPT_REASONING_OPTION_DISABLED' };
+      option.node.click();
+      await sleep(80);
+      if (reasoningLevel(reasoningControlLabel(reasoningControl())) === menuLevel || selectedReasoningOption(menuLevel)) {
+        return { verified: true, level: menuLevel };
+      }
+      return { verified: false, reason: 'COMPUTER_CHATGPT_REASONING_NOT_VERIFIED' };
+    }
+    // Older ChatGPT layouts expose a five-position slider in the model menu.
+    // React must acknowledge each navigation by changing aria-valuenow; writing
+    // our own attribute would be a false verification.
+    const sliders = Array.from(document.querySelectorAll('[role="slider"][aria-valuenow]')).filter(visible);
+    if (sliders.length !== 1) return { verified: false, reason: 'COMPUTER_CHATGPT_REASONING_OPTION_UNAVAILABLE' };
+    const slider = sliders[0];
+    const max = Number(slider.getAttribute('aria-valuemax'));
+    const min = Number(slider.getAttribute('aria-valuemin') ?? '0');
+    const target = level === 'xhigh' ? max : level === 'high' ? 3 : 2;
+    const actualLevel = target === 4 ? 'xhigh' : target === 3 ? 'high' : target === 2 ? 'medium' : undefined;
+    let current = Number(slider.getAttribute('aria-valuenow'));
+    if (![min, max, current, target].every(Number.isInteger) || min < 0 || max > 4 || max < 2
+      || current < min || current > max || target < min || target > max || !actualLevel) {
+      return { verified: false, reason: 'COMPUTER_CHATGPT_REASONING_STATE_UNAVAILABLE' };
+    }
+    for (let step = 0; step < Math.abs(target - current); step += 1) {
+      slider.focus?.();
+      slider.dispatchEvent(new KeyboardEvent('keydown', { key: target > current ? 'ArrowRight' : 'ArrowLeft', bubbles: true }));
+      await sleep(40);
+      const next = Number(slider.getAttribute('aria-valuenow'));
+      if (next !== current + (target > current ? 1 : -1)) {
+        return { verified: false, reason: 'COMPUTER_CHATGPT_REASONING_NOT_VERIFIED' };
+      }
+      current = next;
+    }
+    if (Number(slider.getAttribute('aria-valuenow')) !== target) {
+      return { verified: false, reason: 'COMPUTER_CHATGPT_REASONING_NOT_VERIFIED' };
+    }
+    const valueText = slider.getAttribute('aria-valuetext');
+    if (valueText && reasoningLevel(valueText) !== actualLevel) {
+      return { verified: false, reason: 'COMPUTER_CHATGPT_REASONING_NOT_VERIFIED' };
+    }
+    return { verified: true, level: actualLevel };
+  };
+  const dispatchPrompt = async (prompt, mode = 'send', reasoning, expectedConversationId) => {
+    const exactConversationIsCurrent = () => !expectedConversationId
+      || core.parseConversation(location.href)?.conversationId === expectedConversationId;
+    if (!exactConversationIsCurrent()) return { dispatched: false, reason: 'target_identity_changed' };
     if (typeof prompt !== 'string' || !prompt.trim()) return { dispatched: false, reason: 'prompt_required' };
     if (mode === 'recover') {
       const stop = document.querySelector(STOP);
       if (stop instanceof HTMLElement) {
+        if (!exactConversationIsCurrent()) return { dispatched: false, reason: 'target_identity_changed' };
         stop.click();
         for (let attempt = 0; attempt < 20 && document.querySelector(STOP); attempt += 1) {
           await new Promise((resolve) => setTimeout(resolve, 100));
+          if (!exactConversationIsCurrent()) return { dispatched: false, reason: 'target_identity_changed' };
         }
         if (document.querySelector(STOP)) return { dispatched: false, reason: 'provider_recovery_stop_unconfirmed' };
       }
@@ -173,14 +265,23 @@
     const expected = core.normalizeText(prompt);
     const existing = composerText();
     if (existing && existing !== expected) return { dispatched: false, reason: 'composer_not_empty' };
+    let reasoningVerified;
+    if (reasoning !== undefined) {
+      const checked = await ensureReasoning(reasoning);
+      if (!checked.verified) return { dispatched: false, reason: checked.reason };
+      reasoningVerified = checked.level;
+    }
+    if (!exactConversationIsCurrent()) return { dispatched: false, reason: 'target_identity_changed' };
     if (existing !== expected) writeComposer(node, prompt);
     await new Promise((resolve) => setTimeout(resolve, 75));
+    if (!exactConversationIsCurrent()) return { dispatched: false, reason: 'target_identity_changed' };
     if (composerText() !== expected) return { dispatched: false, reason: 'composer_write_unconfirmed' };
     const send = document.querySelector(SEND);
     if (!send) return { dispatched: false, reason: 'send_button_missing' };
     if (send.disabled || send.getAttribute('aria-disabled') === 'true') return { dispatched: false, reason: 'send_button_disabled' };
+    if (!exactConversationIsCurrent()) return { dispatched: false, reason: 'target_identity_changed' };
     send.click();
-    return { dispatched: true };
+    return { dispatched: true, ...(reasoningVerified ? { reasoningVerified } : {}) };
   };
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (!message || message.type === 'forge-computer-chatgpt-scan') { notify(); sendResponse?.({ ok: true }); return false; }
@@ -189,8 +290,15 @@
       return false;
     }
     if (message.type === 'forge-computer-chatgpt-snapshot') { sendResponse(pageSnapshot(message.options ?? {})); return false; }
+    // Read-only exact-tab capability attestation. A stale content script must
+    // never receive an xhigh-required send that it would silently ignore.
+    if (message.type === 'forge-computer-chatgpt-capabilities') {
+      sendResponse({ reasoningPreflight: 'verified_before_send_v1' });
+      return false;
+    }
     if (message.type === 'forge-computer-chatgpt-dispatch') {
-      dispatchPrompt(String(message.prompt ?? ''), String(message.mode ?? 'send')).then(sendResponse, (error) => sendResponse({ dispatched: false, reason: String(error?.message ?? error) }));
+      dispatchPrompt(String(message.prompt ?? ''), String(message.mode ?? 'send'), message.reasoning, message.expectedConversationId)
+        .then(sendResponse, (error) => sendResponse({ dispatched: false, reason: String(error?.message ?? error) }));
       return true;
     }
     return false;

@@ -155,6 +155,15 @@ export function renderSupervisorPrompt(
     ? task.completionContract.checkout_id.trim()
     : typeof task.continuationPolicy.checkout_id === 'string' ? task.continuationPolicy.checkout_id.trim() : '';
   const checkpoint = typeof _checkpoint === 'string' ? _checkpoint.trim().slice(0, 2_000) : '';
+  // Recovery/correction context is model-facing advisory evidence, not another
+  // authority. Discarding it made a recovery look like the original request
+  // and allowed the model to repeat previously completed work.
+  const recoveryContext = kind === 'recovery' || kind === 'correction'
+    ? (typeof _correctionReason === 'string' ? _correctionReason.trim() : '') : '';
+  // Preserve both parts even when an older checkpoint occupies the full bound.
+  const continuity = recoveryContext
+    ? [checkpoint.slice(0, 950), recoveryContext.slice(0, 1_000)].filter(Boolean).join('\n')
+    : checkpoint;
   const cognition = advisoryCognition?.trim().slice(0, 8_000) ?? '';
   const envelope: WorkflowSupervisorTurnEnvelope = {
     schema_version: 2,
@@ -167,7 +176,7 @@ export function renderSupervisorPrompt(
       role: 'outcome',
       objective: task.objective.slice(0, 8_000),
     },
-    ...(checkpoint ? { continuity: { role: 'advisory' as const, summary: checkpoint } } : {}),
+    ...(continuity ? { continuity: { role: 'advisory' as const, summary: continuity } } : {}),
     ...(repoId ? { repository: { repo_id: repoId, ...(checkoutId ? { checkout_id: checkoutId } : {}) } } : {}),
     ...(cognition ? { cognition: { role: 'advisory' as const, projection: cognition } } : {}),
     automation: {
@@ -183,6 +192,10 @@ export function renderSupervisorPrompt(
     SUPERVISOR_TURN_BLOCK_START,
     JSON.stringify(envelope),
     SUPERVISOR_TURN_BLOCK_END,
+    // The tool receipt, not prose in the page, settles the same applied effect.
+    // One instruction for every turn: no new scheduler, no extra state, no
+    // unconditional CONTINUE when no real work has been done.
+    'FORGE_AUTONOMOUS_RECEIPT_V1: Use automation_task_id and automation_type from this envelope on Forge calls. Use automation_status=working during execution. After substantive progress, submit automation_status=continue in the final Forge call; use done only after the stated goal is met, or needs_user only for a genuine external decision/blocker. A text-only answer does not settle the turn. Do not report continue for a status-only or empty round.',
   ].join('\n');
 }
 

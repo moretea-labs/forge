@@ -437,18 +437,20 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     expect(parseSupervisorTurn(recovery)).toMatchObject({
       identity: { kind: 'recovery' },
       goal: { role: 'outcome', objective: task.objective },
-      continuity: { role: 'advisory', summary: 'restore checkpoint' },
+      continuity: { role: 'advisory', summary: 'restore checkpoint\nrecover durable state' },
     });
-    expect(recovery).not.toContain('recover durable state');
+    expect(recovery).toContain('FORGE_AUTONOMOUS_RECEIPT_V1');
+    expect(recovery).toContain('automation_status=working');
+    expect(recovery).toContain('automation_status=continue');
+    expect(recovery).toContain('Do not report continue for a status-only or empty round.');
     expect(recovery).not.toContain(lowerLayerContext);
 
     const correction = renderSupervisorPrompt(task, 'fx_correct01', 'correction', 'ignored checkpoint', 'ignored correction', lowerLayerContext);
     expect(parseSupervisorTurn(correction)).toMatchObject({
       identity: { kind: 'correction' },
       goal: { role: 'outcome', objective: task.objective },
-      continuity: { role: 'advisory', summary: 'ignored checkpoint' },
+      continuity: { role: 'advisory', summary: 'ignored checkpoint\nignored correction' },
     });
-    expect(correction).not.toContain('ignored correction');
 
     const enrollment = renderSupervisorPrompt(task, 'fx_1234567890abcdef', 'enrollment');
     expect(parseSupervisorTurn(enrollment)).toMatchObject({
@@ -478,6 +480,7 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
       intermediate_status: 'working',
       final_statuses: ['continue', 'done', 'needs_user'],
     });
+    expect(prompt).toContain('FORGE_AUTONOMOUS_RECEIPT_V1');
     expect(prompt).not.toContain('automation.receipt:');
     expect(prompt).not.toContain('最后一次 Forge 调用');
     expect(prompt).not.toContain(renderSupervisorReceipt(task, effectId, 'CONTINUE'));
@@ -577,10 +580,14 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     expect(parseSupervisorTurn(recovery)).toMatchObject({
       identity: { kind: 'recovery' },
       goal: { role: 'outcome', objective: task.objective },
-      continuity: { role: 'advisory', summary: 'checkpoint-sentinel' },
+      continuity: { role: 'advisory', summary: 'checkpoint-sentinel\nrecover causally' },
     });
-    expect(recovery).not.toContain('recover causally');
+    expect(recovery).toContain('recover causally');
     expect(recovery).not.toContain('LOWER_LAYER_SENTINEL');
+    const longRecovery = renderSupervisorPrompt(task, 'fx_recovery_long', 'recovery', 'checkpoint.'.repeat(250), 'preserve non-replay cause', 'LOWER_LAYER_SENTINEL');
+    const bounded = parseSupervisorTurn(longRecovery).continuity?.summary;
+    expect(bounded?.length).toBeLessThanOrEqual(2_000);
+    expect(bounded).toContain('preserve non-replay cause');
   });
 
   test('inherits a Supervisor conversation only across explicit predecessor lineage, never across Requirement siblings', () => {
@@ -2161,6 +2168,37 @@ test('reconciles a late applied Supervisor effect into the same outcome-unknown 
     authorityId: initial.authorityId,
     providerDispatchAttempt: reconciled.providerDispatchAttempt,
   });
+});
+
+test('completed idle provider turn remains a receipt obligation, not a reason to inject another prompt', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-idle-receipt-'));
+  roots.push(root);
+  const store = new WorkflowSupervisorStore(join(root, 'supervisor-home'));
+  const control = new WorkflowSupervisorControlPlane(store);
+  const taskId = 'task-idle-awaiting-receipt';
+  const conversationId = '78787878-5656-3434-1212-909090909090';
+  const conversationUrl = `https://chatgpt.com/c/${conversationId}`;
+  control.registerTask({ taskId, conversationId, conversationUrl, objective: 'Do real work and settle exactly one receipt.', completionContract: {}, continuationPolicy: {}, userBlockerPolicy: {} });
+  const applied = control.reserveEnrollment(taskId);
+  control.observeEffect({ effectId: applied.effectId, observationId: 'idle-receipt-applied', outcome: 'applied' });
+  const recoveryEffectId = 'fx_90909090909090909090909090909999';
+  const sample = {
+    taskId, effectId: applied.effectId, generating: false,
+    assistantDigest: 'finished-response-without-receipt', graceMs: 1_000,
+    recovery: { effectId: recoveryEffectId, prompt: 'must-not-replay-idle' },
+  };
+  expect(store.observeProviderTurn({ ...sample, observedAtMs: 1_000 }).state).toBe('idle_pending');
+  expect(store.observeProviderTurn({ ...sample, observedAtMs: 30_000 }).state).toBe('idle_pending');
+  expect(control.taskStall(taskId)).toMatchObject({
+    state: 'spaced', effectId: applied.effectId, reason: 'awaiting_completion_receipt',
+  });
+  expect(store.getEffect(recoveryEffectId)).toBeUndefined();
+  const settled = await control.observeAutomationReceipt({
+    taskId, conversationId, status: 'continue', receiptId: 'idle-receipt-final-call',
+  });
+  expect(settled).toMatchObject({ action: 'CONTINUE', terminal: false });
+  expect(store.getLatestCompletion(taskId)?.sourceEffectId).toBe(applied.effectId);
+  store.close();
 });
 
 test('provider recovery uses the full bounded two-resume budget without replaying the applied source', async () => {

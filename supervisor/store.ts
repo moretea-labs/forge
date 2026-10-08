@@ -815,7 +815,7 @@ export class WorkflowSupervisorStore {
     // bounded resume is exhausted and its recovery child was retired, so it is
     // never reported as inert.
     if (this.hasAppliedEffectAwaitingCompletion(taskId)) {
-      return { state: 'spaced', ...(leaf ? { effectId: leaf.effectId } : {}), reason: 'unknown_observation_spacing' };
+      return { state: 'spaced', ...(leaf ? { effectId: leaf.effectId } : {}), reason: 'awaiting_completion_receipt' };
     }
     return { state: 'inert' };
   }
@@ -1022,6 +1022,14 @@ export class WorkflowSupervisorStore {
       if (!Number.isFinite(unchangedSinceMs) || input.observedAtMs - unchangedSinceMs < graceMs) {
         return { state: input.generating ? 'generating' : 'idle_pending' };
       }
+
+      // A provider that has gone idle may already have produced a complete
+      // answer without the required automation receipt. Do not interpret that
+      // as a hung generation and inject another provider prompt. The existing
+      // applied effect remains an observation obligation until a causal receipt
+      // arrives; only genuinely still-generating inactivity is auto-resumed.
+      // Explicit provider-failure evidence remains handled above even if idle.
+      if (!input.generating) return { state: 'idle_pending' };
 
       // Progress, not the provider's visible "generating" control, is the
       // liveness authority. A frozen page can leave that control present for
