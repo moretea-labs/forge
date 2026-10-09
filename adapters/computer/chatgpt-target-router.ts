@@ -62,7 +62,10 @@ export class PreferredChatgptConversationTargetPort implements ComputerChatgptCo
     for (const entry of primary.conversations) byId.set(entry.conversationId, entry);
     return {
       conversations: [...byId.values()],
-      complete: primary.complete || compatibility.complete,
+      // Extension heartbeats cover only connected Chromium instances. Only the
+      // native inventory scans all supported browser families, so an extension
+      // heartbeat cannot prove global coverage when native enumeration is partial.
+      complete: compatibility.complete,
       unavailableProviders: [...new Set([...primary.unavailableProviders, ...compatibility.unavailableProviders])],
     };
   }

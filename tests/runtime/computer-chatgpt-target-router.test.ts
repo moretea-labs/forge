@@ -277,3 +277,32 @@ test('failed or foreign-target native observation never changes the bound sender
   expect(primaryDispatches).toBe(1);
   expect(nativeDispatches).toBe(0);
 });
+
+
+test('extension heartbeat completeness never hides an incomplete native browser scan', async () => {
+  const conversation = { conversationId: identity.conversationId, canonicalUrl: identity.canonicalUrl };
+  const primary = {
+    ...port({ ensureExact: async () => ({ state: 'unavailable', failure: { code: 'unused', retryable: false, phase: 'pre_mutation' } }) }),
+    inventory: async (): Promise<ComputerChatgptConversationInventory> => ({ conversations: [conversation], complete: true, unavailableProviders: [] }),
+  };
+  const native = {
+    ...port({ ensureExact: async () => ({ state: 'unavailable', failure: { code: 'unused', retryable: false, phase: 'pre_mutation' } }) }),
+    inventory: async (): Promise<ComputerChatgptConversationInventory> => ({ conversations: [], complete: false, unavailableProviders: ['computer-macos:vivaldi'] }),
+  };
+  const inventory = await new PreferredChatgptConversationTargetPort(primary, native).inventory();
+  expect(inventory).toEqual({ conversations: [conversation], complete: false, unavailableProviders: ['computer-macos:vivaldi'] });
+});
+
+test('complete native browser inventory remains complete when optional extension is unavailable', async () => {
+  const conversation = { conversationId: identity.conversationId, canonicalUrl: identity.canonicalUrl };
+  const primary = {
+    ...port({ ensureExact: async () => ({ state: 'unavailable', failure: { code: 'unused', retryable: false, phase: 'pre_mutation' } }) }),
+    inventory: async (): Promise<ComputerChatgptConversationInventory> => ({ conversations: [], complete: false, unavailableProviders: ['computer-extension'] }),
+  };
+  const native = {
+    ...port({ ensureExact: async () => ({ state: 'unavailable', failure: { code: 'unused', retryable: false, phase: 'pre_mutation' } }) }),
+    inventory: async (): Promise<ComputerChatgptConversationInventory> => ({ conversations: [conversation], complete: true, unavailableProviders: [] }),
+  };
+  const inventory = await new PreferredChatgptConversationTargetPort(primary, native).inventory();
+  expect(inventory).toEqual({ conversations: [conversation], complete: true, unavailableProviders: ['computer-extension'] });
+});
