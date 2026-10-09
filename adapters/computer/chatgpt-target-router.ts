@@ -66,6 +66,7 @@ export class PreferredChatgptConversationTargetPort implements ComputerChatgptCo
       // native inventory scans all supported browser families, so an extension
       // heartbeat cannot prove global coverage when native enumeration is partial.
       complete: compatibility.complete,
+      providerInventoryReady: primary.complete || compatibility.complete,
       unavailableProviders: [...new Set([...primary.unavailableProviders, ...compatibility.unavailableProviders])],
     };
   }

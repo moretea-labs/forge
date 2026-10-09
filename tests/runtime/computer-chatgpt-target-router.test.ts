@@ -290,7 +290,7 @@ test('extension heartbeat completeness never hides an incomplete native browser 
     inventory: async (): Promise<ComputerChatgptConversationInventory> => ({ conversations: [], complete: false, unavailableProviders: ['computer-macos:vivaldi'] }),
   };
   const inventory = await new PreferredChatgptConversationTargetPort(primary, native).inventory();
-  expect(inventory).toEqual({ conversations: [conversation], complete: false, unavailableProviders: ['computer-macos:vivaldi'] });
+  expect(inventory).toEqual({ conversations: [conversation], complete: false, providerInventoryReady: true, unavailableProviders: ['computer-macos:vivaldi'] });
 });
 
 test('complete native browser inventory remains complete when optional extension is unavailable', async () => {
@@ -304,5 +304,5 @@ test('complete native browser inventory remains complete when optional extension
     inventory: async (): Promise<ComputerChatgptConversationInventory> => ({ conversations: [conversation], complete: true, unavailableProviders: [] }),
   };
   const inventory = await new PreferredChatgptConversationTargetPort(primary, native).inventory();
-  expect(inventory).toEqual({ conversations: [conversation], complete: true, unavailableProviders: ['computer-extension'] });
+  expect(inventory).toEqual({ conversations: [conversation], complete: true, providerInventoryReady: true, unavailableProviders: ['computer-extension'] });
 });

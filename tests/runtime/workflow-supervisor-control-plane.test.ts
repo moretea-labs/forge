@@ -1854,6 +1854,7 @@ test('native consumer status exposes and clears a pre-dispatch due-effect transp
   const effect = control.reserveEnrollment(taskId);
 
   let inventoryUnavailable = true;
+  let otherProviderReady = false;
   let owner = '';
   let createCalls = 0;
   const page: TestBrowserPage = {
@@ -1875,7 +1876,7 @@ test('native consumer status exposes and clears a pre-dispatch due-effect transp
     dispatchPrompt: async () => ({ dispatched: false, reason: 'test_pre_send_rejection' }),
   });
   const adapter = new WorkflowSupervisorNativeBrowserAdapter(control, new WorkflowSupervisorEphemeralDiscovery(), {
-    targetPort,
+    targetPort: { ...targetPort, inventory: async () => ({ ...await targetPort.inventory(), providerInventoryReady: otherProviderReady }) },
     nowMs: () => clock.nowMs,
     providerIdleGraceMs: 60_000,
     providerScopeKey: join(root, 'provider-scope'),
@@ -1908,6 +1909,12 @@ test('native consumer status exposes and clears a pre-dispatch due-effect transp
   expect(adapter.status().lastTickCompletedAt).toBeDefined();
   expect(store.nextBrowserEffect(taskId)).toEqual(expect.objectContaining({ mode: 'send', generation: 1 }));
 
+  // An available extension must not erase native inventory loss, nor cause
+  // exponential transport backoff for already usable exact-target delivery.
+  otherProviderReady = true;
+  clock.nowMs += 1_000;
+  await adapter.runOnce();
+  expect(adapter.status().transportFailureStreak).toBe(0);
   inventoryUnavailable = false;
   clock.nowMs += 1_000;
   await adapter.runOnce();

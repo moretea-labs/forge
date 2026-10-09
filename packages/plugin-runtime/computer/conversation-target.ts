@@ -79,7 +79,10 @@ export interface ComputerObservedChatgptConversation {
 
 export interface ComputerChatgptConversationInventory {
   conversations: ComputerObservedChatgptConversation[];
+  /** Full coverage of all supported browser families, not only active providers. */
   complete: boolean;
+  /** At least one provider completed its own inventory; not exact-target/send proof. */
+  providerInventoryReady?: boolean;
   unavailableProviders: string[];
 }
 

@@ -428,7 +428,9 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       ...(conversation.title ? { title: conversation.title } : {}), ...(conversation.projectTitle ? { projectTitle: conversation.projectTitle } : {}),
       ...(conversation.projectUrl ? { projectUrl: conversation.projectUrl } : {}), ...(conversation.isCurrent ? { is_current: true } : {}) }));
     if (!inventory.complete && tasks.length > 0) {
-      this.lastRunTransportUnavailable = true;
+      // Partial cross-browser discovery is degraded evidence, but must not
+      // throttle an independently healthy provider's exact-target delivery.
+      this.lastRunTransportUnavailable = inventory.providerInventoryReady !== true;
       this.noteFailure('WORKFLOW_SUPERVISOR_NATIVE_INVENTORY_INCOMPLETE');
     } else if (inventory.complete) {
       this.clearTransportFailure();
