@@ -1,6 +1,6 @@
 # Forge Plugin Management
 
-Forge 1.5 introduces a public installation path for independently released providers while keeping the Controller trust boundary small. Official providers are **separate products** with their own repositories and releases; Forge owns how those providers are selected, installed, registered, authorized, and executed.
+Forge provides a public installation path for independently released providers while keeping the Controller trust boundary small. Official providers are **separate products** with their own repositories and releases; Forge owns how those providers are selected, installed, registered, authorized, and executed.
 
 ## Official catalog
 
@@ -13,6 +13,7 @@ forge plugin catalog
 | `desktop_operator` | [Forge Desktop Operator](https://github.com/moretea-labs/forge-desktop-operator) | `v0.4.5` | macOS |
 | `design` | [Forge Design](https://github.com/moretea-labs/forge-design) | `v0.3.0` | macOS, Linux, Windows |
 | `personal_knowledge` | [Personal Knowledge Assistant](https://github.com/moretea-labs/personal-knowledge-assistant) | `v0.2.1` | macOS, Linux, Windows |
+| `figma` | [Forge Figma Bridge](https://github.com/moretea-labs/forge-figma-bridge) | `v0.3.0` | macOS |
 
 Investment Decision System remains an independent product and is intentionally not a Forge plugin.
 
@@ -37,11 +38,22 @@ Generic provider administration remains available for diagnostics and non-Comput
 ```bash
 forge plugin install design
 forge plugin install personal_knowledge
+forge plugin install figma           # macOS, Figma bridge app/service required
 forge plugin install desktop_operator   # compatibility/advanced path on macOS
 forge plugin list --refresh
 ```
 
-Re-running `forge plugin install <id>` installs the version currently pinned by Forge. A catalog version change is a reviewed Forge source change; providers cannot silently self-update through a ChatGPT request.
+**Updating the Forge CLI does not automatically update external providers.** On macOS, use `forge computer update` after upgrading Forge; for other providers explicitly re-run `forge plugin install <id>` after checking `forge plugin catalog`. Re-running `forge plugin install <id>` installs the version currently pinned by Forge. A catalog version change is a reviewed Forge source change; providers cannot silently self-update through a ChatGPT request.
+
+## User workflow: install, configure, use
+
+1. Run `npm install -g @moretea-labs/forge@latest` and `forge setup next` to update the package/runtime connector contract.
+2. On macOS, run `forge computer setup` (or `forge computer update` for an existing provider), then `forge computer doctor` and `forge computer status --json`. Native Accessibility/Screen Recording permissions may require manual approval.
+3. Review `forge plugin catalog` and install only the extra providers you need, e.g. `forge plugin install design`, `forge plugin install personal_knowledge`, or `forge plugin install figma` on macOS.
+4. Run `forge plugin list --refresh`. A provider registration is not evidence that its app, socket, browser or service authentication is ready.
+5. Connect ChatGPT via the [MCP tutorial](tutorials/02-connect-chatgpt.md), then request a bounded outcome such as checking an open webpage, reviewing an authorized Finder folder, inspecting a design asset, or searching a configured local knowledge base. ChatGPT chooses typed actions, and Forge checks scope, authorization and evidence.
+
+See the [Computer and Plugins Wiki guide](wiki/Computer-and-Plugins.md) and the [Browser runbook](operations/controller-browser-plugin.md). Computer is currently backed by a macOS-only native provider; do not promise native desktop control on Linux/Windows. Browser and Figma readiness depend on the selected browser mode or running app-specific bridge.
 
 ## Trust boundary
 
