@@ -1,0 +1,3 @@
+User-agent: *
+Allow: /
+Sitemap: https://moretea-labs.github.io/forge/sitemap.xml

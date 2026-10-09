@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="description" content="{{ page.description | escape }}">
+<meta name="robots" content="index,follow">
+<meta property="og:type" content="website">
+<meta property="og:title" content="{{ page.title | escape }}">
+<meta property="og:description" content="{{ page.description | escape }}">
+<meta property="og:url" content="{{ page.url | absolute_url }}">
+<link rel="canonical" href="{{ page.url | absolute_url }}">
+<title>{{ page.title | escape }} | Forge</title>
+<style>
+:root{font:16px/1.65 system-ui,-apple-system,sans-serif;color:#182230;background:#fafafa}
+body{margin:0}header{background:#101828;padding:1rem 2rem}header a{color:white;font-weight:bold;text-decoration:none}
+.wrap{max-width:72rem;margin:auto;display:grid;grid-template-columns:14rem minmax(0,1fr);gap:2.5rem;padding:2rem}
+nav{display:flex;flex-direction:column;gap:.5rem}nav a{color:#175cd3;text-decoration:none}
+main{min-width:0;overflow-wrap:anywhere}a{color:#175cd3}h1,h2,h3{line-height:1.3}
+pre{overflow-x:auto;background:#eaecf0;border-radius:.5rem;padding:1rem}
+:not(pre)>code{background:#eaecf0;padding:.1em .25em;border-radius:.2rem}
+table{display:block;overflow-x:auto;border-collapse:collapse}th,td{border:1px solid #d0d5dd;padding:.5rem;text-align:left}
+footer{border-top:1px solid #d0d5dd;padding:1rem;text-align:center}
+@media(max-width:760px){.wrap{display:block}nav{padding-bottom:1.5rem;border-bottom:1px solid #ddd}}
+</style></head><body>
+<header><a href="/forge/">Forge — ChatGPT MCP documentation</a></header>
+<div class="wrap"><nav aria-label="Documentation"><a href="/forge/">Home</a>
+<a href="/forge/Quick-Start.html">Quick Start</a>
+<a href="/forge/Installation.html">Installation</a>
+<a href="/forge/Core-Concepts.html">Core Concepts</a>
+<a href="/forge/Work-Lifecycle.html">Work Lifecycle</a>
+<a href="/forge/Architecture.html">Architecture</a>
+<a href="/forge/Runtime-Architecture.html">Runtime Architecture</a>
+<a href="/forge/Implementation.html">Implementation</a>
+<a href="/forge/Operations.html">Operations</a>
+<a href="/forge/Integrations.html">Integrations</a>
+<a href="/forge/Computer-and-Plugins.html">Computer and Plugins</a>
+<a href="/forge/Computer-and-Plugins.zh-CN.html">Computer 中文使用指南</a>
+<a href="/forge/Troubleshooting.html">Troubleshooting</a>
+<a href="/forge/Security-Model.html">Security Model</a>
+<a href="/forge/Releases-and-Upgrades.html">Releases and Upgrades</a></nav><main>{{ content }}</main></div>
+<footer><a href="https://github.com/moretea-labs/forge">GitHub</a> ·
+<a href="https://www.npmjs.com/package/@moretea-labs/forge">npm</a> ·
+<a href="https://github.com/moretea-labs/forge/wiki">Wiki</a></footer></body></html>
