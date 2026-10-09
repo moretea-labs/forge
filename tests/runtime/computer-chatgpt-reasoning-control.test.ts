@@ -146,13 +146,19 @@ function fixture(options: {
     if (!onMessage) throw new Error('missing content-script message listener');
     onMessage({ type: 'forge-computer-chatgpt-capabilities' }, {}, (value) => resolve(value as Record<string, unknown>));
   });
+  const prepare = async (reasoning?: string, expectedConversationId?: string, prompt = 'source delivery') => {
+    return await new Promise<Record<string, unknown>>((resolve) => {
+      if (!onMessage) throw new Error('missing content-script message listener');
+      onMessage({ type: 'forge-computer-chatgpt-prepare', prompt, reasoning, expectedConversationId }, {}, (value) => resolve(value as Record<string, unknown>));
+    });
+  };
   const dispatch = async (reasoning?: string, expectedConversationId?: string, prompt = 'source delivery') => {
     return await new Promise<Record<string, unknown>>((resolve) => {
       if (!onMessage) throw new Error('missing content-script message listener');
       onMessage({ type: 'forge-computer-chatgpt-dispatch', prompt, reasoning, expectedConversationId }, {}, (value) => resolve(value as Record<string, unknown>));
     });
   };
-  return { dispatch, capabilities, state, textarea, location };
+  return { dispatch, prepare, capabilities, state, textarea, location };
 }
 
 test('Supervisor effect cannot send as literal @forge when the real app picker is unavailable', async () => {
@@ -172,6 +178,23 @@ test('Supervisor sends exactly once only after the real main Forge app chip was 
   expect(f.state.sendClicks).toBe(1);
   expect(f.textarea.chipNames).toEqual(['forge']);
   expect(f.textarea.value).toBe('<<<FORGE_WORKFLOW_EFFECT_V1:fx_test_browser_123456789>>>\nFORGE_WORKFLOW_TURN_V2_BEGIN forge');
+});
+
+test('Chrome Extension prepares and attests Forge app without sending before Supervisor authority', async () => {
+  const f = fixture({ controlPresent: false, forgeAppLabel: 'forge' });
+  const prompt = '@forge\n<<<FORGE_WORKFLOW_EFFECT_V1:fx_test_pre_send_123456789>>>\nFORGE_WORKFLOW_TURN_V2_BEGIN';
+  expect(await f.prepare(undefined, undefined, prompt)).toMatchObject({ prepared: true });
+  expect(f.state.sendClicks).toBe(0);
+  expect(f.textarea.chipNames).toEqual(['forge']);
+  expect(await f.dispatch(undefined, undefined, prompt)).toMatchObject({ dispatched: true });
+  expect(f.state.sendClicks).toBe(1);
+});
+
+test('Chrome Extension rejection before plugin binding never clicks Send', async () => {
+  const f = fixture({ controlPresent: false });
+  const prompt = '@forge\n<<<FORGE_WORKFLOW_EFFECT_V1:fx_test_pre_send_123456789>>>\nFORGE_WORKFLOW_TURN_V2_BEGIN';
+  expect(await f.prepare(undefined, undefined, prompt)).toMatchObject({ prepared: false, reason: 'COMPUTER_CHATGPT_FORGE_PLUGIN_UNAVAILABLE' });
+  expect(f.state.sendClicks).toBe(0);
 });
 
 test('Supervisor refuses Forge Recovery instead of selecting a similarly named app', async () => {

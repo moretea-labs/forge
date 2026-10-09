@@ -1717,6 +1717,82 @@ test('browserTasks prioritizes fresh sends ahead of older reconciliation work', 
   ]);
 });
 
+test('Supervisor preparation rejection is durably release-fenced and never spends a provider generation', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-pre-send-boundary-'));
+  roots.push(root);
+  const clock = { nowMs: Date.now() };
+  const release = { id: 'release-one' };
+  const store = new WorkflowSupervisorStore(join(root, 'supervisor-home'), { now: () => clock.nowMs, activeReleaseId: () => release.id });
+  const control = new WorkflowSupervisorControlPlane(store, {}, { browserTaskActive: () => true });
+  const taskId = 'pre-send-boundary-task';
+  const conversationId = '43434343-5656-7878-9090-131313131313';
+  const conversationUrl = `https://chatgpt.com/c/${conversationId}`;
+  control.registerTask({ taskId, conversationId, conversationUrl,
+    objective: 'Do not charge failed local preparation to a provider send.',
+    completionContract: {}, continuationPolicy: {}, userBlockerPolicy: {} });
+  const effect = control.reserveEnrollment(taskId);
+  let preparationReady = false;
+  let preparations = 0;
+  let sends = 0;
+  const page: TestBrowserPage = {
+    evaluate: async () => undefined as never,
+    tabRef: () => ({ windowId: 'pre-send-window', tabId: 'pre-send-tab' }),
+  };
+  const targetPort = createTestChatgptTargetPort({
+    listTabs: async () => ({ entries: [{ windowId: 'pre-send-window', tabId: 'pre-send-tab',
+      active: true, url: conversationUrl, title: 'Pre-send boundary', browserProduct: 'chrome' }] }),
+    reattach: async () => page,
+    create: async () => { throw new Error('Never create a replacement conversation'); },
+    close: async () => undefined,
+    snapshot: async () => ({ url: conversationUrl, title: 'Pre-send boundary', latestUserText: '',
+      latestAssistantResponse: '', composerText: '', isGenerating: false,
+      providerActivityText: '', providerFailureText: '' }),
+    preparePrompt: async () => { preparations++; return preparationReady
+      ? { ready: true as const } : { ready: false as const, reasonCode: 'FORGE_PLUGIN_NOT_BOUND' }; },
+    dispatchPrompt: async () => { sends++; return { dispatched: true, confirmed: true }; },
+  });
+  const deps = { targetPort, nowMs: () => clock.nowMs, providerIdleGraceMs: 60_000,
+    providerScopeKey: join(root, 'provider-scope'), sleep: async () => undefined,
+    setInterval: () => 0 as unknown as ReturnType<typeof setInterval>, clearInterval: () => undefined,
+    onError: () => undefined };
+  const adapter = new WorkflowSupervisorNativeBrowserAdapter(control, new WorkflowSupervisorEphemeralDiscovery(), deps);
+  for (let n = 0; n < 6; n++) { await adapter.runOnce(); clock.nowMs += 30 * 60_000; }
+  expect(preparations).toBe(1);
+  expect(sends).toBe(0);
+  expect(store.effectDispatchBudget(effect.effectId).generations).toBe(0);
+  expect(control.taskStall(taskId)).toMatchObject({ state: 'spaced', reason: 'pre_send_infrastructure_blocked' });
+  // Runtime restart must not reset the failed-preparation evidence.
+  const reopened = new WorkflowSupervisorStore(join(root, 'supervisor-home'), { now: () => clock.nowMs, activeReleaseId: () => release.id });
+  expect(reopened.nextBrowserEffect(taskId)).toBeUndefined();
+  reopened.close();
+  await adapter.close();
+  release.id = 'release-two';
+  // A repaired, independently booted Runtime is a new Computer observation
+  // opportunity, not a refunded provider mutation or replacement effect.
+  preparationReady = true;
+  const repaired = new WorkflowSupervisorNativeBrowserAdapter(control, new WorkflowSupervisorEphemeralDiscovery(), deps);
+  await repaired.runOnce();
+  expect(preparations).toBe(2);
+  expect(sends).toBe(1);
+  expect(store.latestEffectDispatch(effect.effectId)?.generation).toBe(1);
+  await repaired.close();
+  // Across unrelated deployments this effect remains capped at three distinct
+  // failing preparations, including after restarts; none spends provider budget.
+  const task2 = 'pre-send-bounded-task';
+  control.registerTask({ taskId: task2, conversationId: '43434343-5656-7878-9090-141414141414',
+    conversationUrl: 'https://chatgpt.com/c/43434343-5656-7878-9090-141414141414',
+    objective: 'Never permit infinite failed preparation', completionContract: {}, continuationPolicy: {}, userBlockerPolicy: {} });
+  const effect2 = control.reserveEnrollment(task2);
+  for (const id of ['release-three', 'release-four', 'release-five']) {
+    release.id = id;
+    control.recordProviderPreparationFailure({ taskId: task2, effectId: effect2.effectId, reasonCode: 'FORGE_PLUGIN_NOT_BOUND' });
+  }
+  release.id = 'release-six';
+  expect(store.nextBrowserEffect(task2)).toBeUndefined();
+  expect(store.effectDispatchBudget(effect2.effectId).generations).toBe(0);
+  store.close();
+});
+
 test('native consumer status exposes and clears a pre-dispatch due-effect transport blocker without changing effect authority', async () => {
   const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-consumer-status-'));
   roots.push(root);

@@ -482,6 +482,14 @@ export class WorkflowSupervisorControlPlane {
     this.observeEffect({ effectId: effect.effectId, observationId: input.observationId, outcome: input.outcome, evidence });
     if (input.outcome === 'applied') this.hooks.effectApplied?.(task, effect, { observationId: input.observationId, evidence });
   }
+  /** Local Computer preparation returned before Send intent; persist in the existing effect ledger. */
+  recordProviderPreparationFailure(input: { taskId: string; effectId: string; reasonCode: string }): void {
+    const task = this.requireTask(input.taskId);
+    const effect = this.store.getEffect(input.effectId);
+    if (effect?.taskId !== task.taskId) throw new Error('WORKFLOW_SUPERVISOR_PRE_SEND_EFFECT_TASK_MISMATCH');
+    this.store.recordEffectPreparationFailure(input.effectId, input.reasonCode);
+  }
+
   browserBeginEffect(input: { conversationId: string; conversationUrl: string; effectId: string; dispatchId: string; dispatchGeneration: number; evidence?: Record<string, unknown> }): { started: boolean; mode: 'send' | 'reconcile'; generation: number } {
     const task = this.requireBrowserTask(input.conversationId, input.conversationUrl);
     requireNonTerminalTask(this.store, task.taskId);

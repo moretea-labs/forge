@@ -43,6 +43,8 @@ export interface ComputerChatgptConversationTarget {
   targetId: string;
   identity: ComputerChatgptTargetIdentity;
   observe(options?: ComputerChatgptConversationObservationOptions): Promise<ComputerChatgptConversationObservation>;
+  /** UI-only preparation. Must never click Send or create a provider turn. */
+  prepare(prompt: string, options?: { mode?: 'send' | 'resume' | 'recover'; reasoning?: 'medium' | 'high' | 'xhigh' }): Promise<{ ready: true } | { ready: false; reasonCode: string }>;
   dispatch(
     prompt: string,
     options?: { mode?: 'send' | 'resume' | 'recover'; reasoning?: 'medium' | 'high' | 'xhigh' },
@@ -89,7 +91,7 @@ export interface ComputerChatgptConversationInventory {
 export type ComputerChatgptExtensionCommand =
   | { commandId: string; kind: 'ensure'; identity: ComputerChatgptTargetIdentity }
   | { commandId: string; kind: 'observe'; identity: ComputerChatgptTargetIdentity; options?: ComputerChatgptConversationObservationOptions }
-  | { commandId: string; kind: 'dispatch'; identity: ComputerChatgptTargetIdentity; prompt: string; mode?: 'send' | 'resume' | 'recover'; reasoning?: 'medium' | 'high' | 'xhigh' }
+  | { commandId: string; kind: 'dispatch' | 'prepare'; identity: ComputerChatgptTargetIdentity; prompt: string; mode?: 'send' | 'resume' | 'recover'; reasoning?: 'medium' | 'high' | 'xhigh' }
   | { commandId: string; kind: 'find_marker'; marker: string; bootstrapKey?: string }
   | { commandId: string; kind: 'close'; identity: ComputerChatgptTargetIdentity };
 export type ComputerChatgptExtensionCommandInput = ComputerChatgptExtensionCommand extends infer Command
@@ -102,6 +104,8 @@ export type ComputerChatgptExtensionCommandInput = ComputerChatgptExtensionComma
 export type ComputerChatgptExtensionCommandResult =
   | { kind: 'ensured'; providerBinding?: ComputerSurfaceProviderBinding; observation?: ComputerChatgptConversationObservation }
   | { kind: 'observation'; providerBinding?: ComputerSurfaceProviderBinding; observation: ComputerChatgptConversationObservation }
+  | { kind: 'prepared'; ready: true }
+  | { kind: 'prepared'; ready: false; reasonCode: string }
   | { kind: 'dispatch'; mutation: 'not_attempted'; reasonCode: string }
   | { kind: 'dispatch'; mutation: 'attempted'; confirmed?: boolean; reasoningVerified?: 'medium' | 'high' | 'xhigh'; observation?: ComputerChatgptConversationObservation }
   | { kind: 'marker_matches'; matches: Array<{ identity: ComputerChatgptConversationIdentity; providerBinding?: ComputerSurfaceProviderBinding; observation: ComputerChatgptConversationObservation }> }

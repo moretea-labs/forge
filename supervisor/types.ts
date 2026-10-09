@@ -147,7 +147,7 @@ export interface WorkflowContractValidation {
 export type WorkflowSupervisorTaskStall =
   | { state: 'terminal' }
   | { state: 'deliverable'; effectId: string; mode: 'send' | 'reconcile'; generation: number }
-  | { state: 'spaced'; effectId?: string; reason: 'retry_spacing' | 'unknown_observation_spacing' | 'awaiting_completion_receipt' }
+  | { state: 'spaced'; effectId?: string; reason: 'retry_spacing' | 'unknown_observation_spacing' | 'awaiting_completion_receipt' | 'pre_send_infrastructure_blocked' }
   | { state: 'retryable'; effectId: string; generations: number; maxGenerations: number }
   | { state: 'provider_resume_exhausted'; effectId: string }
   | { state: 'inert' };

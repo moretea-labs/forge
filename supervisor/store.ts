@@ -206,6 +206,9 @@ function oldestUnappliedEffect(db: Database, taskId: string): WorkflowSupervisor
  * hard ceiling: one normal submission plus at most two causally authorized retries.
  */
 export const WORKFLOW_SUPERVISOR_MAX_DISPATCH_GENERATIONS = 3;
+/** A broken preparation cannot silently poll forever across Runtime restarts. */
+export const WORKFLOW_SUPERVISOR_MAX_PREFLIGHT_RELEASE_ATTEMPTS = 3;
+
 /**
  * Once a provider has accepted a Supervisor effect, recovery never replays that
  * source mutation. It may emit at most two separately identified recovery turns,
@@ -326,15 +329,29 @@ function effectDispatchLedger(db: Database, effectId: string): EffectDispatchLed
     lastOccurredAtMs: Number.isFinite(lastOccurredAtMs) ? lastOccurredAtMs : 0,
   };
 }
+/** Derived entirely from the Supervisor effect event log; no second retry authority. */
+function effectPreflightFailureReleaseIds(db: Database, effectId: string): string[] {
+  const rows = statement(db, "SELECT payload_json FROM events WHERE effect_id = ? AND kind = 'effect_preflight_rejected' ORDER BY event_id", (s) => s.all(effectId)) as Array<{ payload_json?: string }>;
+  return rows.map((row) => String(parsedObject(row.payload_json).active_release_id ?? 'unidentified-runtime'));
+}
+
 export class WorkflowSupervisorStore {
   private readonly db: Database;
   private closed = false;
   /** Mechanical clock for provider retry spacing. Durable event timestamps keep wall-clock ISO. */
   private readonly clockMs: () => number;
+  private readonly activeReleaseId: () => string | undefined;
 
-  constructor(readonly forgeHome?: string, options: { now?: () => number } = {}) {
+  constructor(readonly forgeHome?: string, options: { now?: () => number; activeReleaseId?: () => string | undefined } = {}) {
     this.db = openDatabase(forgeHome);
     this.clockMs = options.now ?? Date.now;
+    this.activeReleaseId = options.activeReleaseId ?? (() => undefined);
+  }
+
+  private preflightBlocked(db: Database, effectId: string): boolean {
+    const tried = effectPreflightFailureReleaseIds(db, effectId);
+    return tried.length >= WORKFLOW_SUPERVISOR_MAX_PREFLIGHT_RELEASE_ATTEMPTS
+      || tried.includes(this.activeReleaseId()?.trim() || 'unidentified-runtime');
   }
 
   close(): void {
@@ -759,6 +776,7 @@ export class WorkflowSupervisorStore {
           : undefined;
         const committedAtMs = Date.parse(String(source?.committed_at ?? ''));
         if (Number.isFinite(committedAtMs) && nowMs - committedAtMs < WORKFLOW_SUPERVISOR_MIN_TURN_INTERVAL_MS) return undefined;
+        if (this.preflightBlocked(db, effect.effectId)) return undefined;
         return { effect, mode: 'send', generation: 1 };
       }
       const retryAuthorized = latestNotAppliedProofEventId(db, effect.effectId) > ledger.lastEventId;
@@ -771,6 +789,7 @@ export class WorkflowSupervisorStore {
         return { effect, mode: 'reconcile', generation: ledger.lastGeneration };
       }
       if (ledger.generations >= WORKFLOW_SUPERVISOR_MAX_DISPATCH_GENERATIONS + ledger.budgetRefunds) return undefined;
+      if (this.preflightBlocked(db, effect.effectId)) return undefined;
       if (nowMs - ledger.lastOccurredAtMs < workflowSupervisorDispatchRetryDelayMs(ledger.lastGeneration)) {
         return undefined;
       }
@@ -806,7 +825,8 @@ export class WorkflowSupervisorStore {
     }
     const pending = this.currentUnappliedEffect(taskId);
     if (pending) {
-      const ledger = this.read((db) => ({ ...effectDispatchLedger(db, pending.effectId), proof: latestNotAppliedProofEventId(db, pending.effectId) }));
+      const ledger = this.read((db) => ({ ...effectDispatchLedger(db, pending.effectId), proof: latestNotAppliedProofEventId(db, pending.effectId), preflightBlocked: this.preflightBlocked(db, pending.effectId) }));
+      if (ledger.preflightBlocked) return { state: 'spaced', effectId: pending.effectId, reason: 'pre_send_infrastructure_blocked' };
       const ceiling = WORKFLOW_SUPERVISOR_MAX_DISPATCH_GENERATIONS + ledger.budgetRefunds;
       const retryAuthorized = ledger.generations === 0 || ledger.proof > ledger.lastEventId;
       // An exhausted retry ceiling is the operator-facing state: no amount of
@@ -1265,6 +1285,25 @@ export class WorkflowSupervisorStore {
     return effect;
   }
 
+  /** Attest that no Send intent was reserved and the provider UI could not prepare. */
+  recordEffectPreparationFailure(effectId: string, reasonCode: string): void {
+    this.transaction((db) => {
+      const effect = statement(db, 'SELECT task_id FROM effects WHERE effect_id = ?', (s) => s.get(effectId)) as { task_id?: string } | undefined;
+      if (!effect?.task_id) throw new Error('WORKFLOW_SUPERVISOR_EFFECT_UNKNOWN');
+      const applied = statement(db, "SELECT 1 AS ok FROM events WHERE effect_id = ? AND kind = 'effect_applied' LIMIT 1", (s) => s.get(effectId));
+      const dispatch = effectDispatchLedger(db, effectId);
+      if (applied || (dispatch.generations > 0 && latestNotAppliedProofEventId(db, effectId) <= dispatch.lastEventId)) {
+        throw new Error('WORKFLOW_SUPERVISOR_PRE_SEND_FAILURE_OUTCOME_NOT_PROVEN');
+      }
+      const activeReleaseId = this.activeReleaseId()?.trim() || 'unidentified-runtime';
+      const key = `effect-preflight-rejected:${effectId}:${activeReleaseId}`;
+      statement(db, 'INSERT OR IGNORE INTO events(task_id,event_key,kind,effect_id,payload_json,occurred_at) VALUES (?,?,?,?,?,?)', (s) => s.run(
+        effect.task_id!, key, 'effect_preflight_rejected', effectId,
+        json({ active_release_id: activeReleaseId, reason: (boundedText(reasonCode) ?? 'COMPUTER_PREPARE_REJECTED').slice(0, 256), send_clicked: false, attestation: 'computer_prepare_returned_before_supervisor_send_intent' }), now(),
+      ));
+    });
+  }
+
   recordEffectDispatchStarted(effectId: string, generation: number, dispatchId: string, evidence: Record<string, unknown> = {}): boolean {
     if (!Number.isInteger(generation) || generation < 1 || generation > 1_000_000) throw new Error('WORKFLOW_SUPERVISOR_DISPATCH_GENERATION_INVALID');
     return this.transaction((db) => {
@@ -1273,7 +1312,7 @@ export class WorkflowSupervisorStore {
       const applied = statement(db, "SELECT 1 AS ok FROM events WHERE effect_id = ? AND kind = 'effect_applied' LIMIT 1", (s) => s.get(effectId));
       if (applied) throw new Error('WORKFLOW_SUPERVISOR_EFFECT_ALREADY_APPLIED');
       const refunds = statement(db, "SELECT event_id FROM events WHERE effect_id = ? AND kind = 'effect_dispatch_budget_refunded'", (s) => s.all(effectId)) as Array<{ event_id?: number }>;
-      if (generation > WORKFLOW_SUPERVISOR_MAX_DISPATCH_GENERATIONS + refunds.length) return false;
+      if (generation > WORKFLOW_SUPERVISOR_MAX_DISPATCH_GENERATIONS + refunds.length || this.preflightBlocked(db, effectId)) return false;
       const prior = statement(db, "SELECT event_id,payload_json FROM events WHERE effect_id = ? AND kind = 'effect_dispatch_started' ORDER BY event_id DESC LIMIT 1", (s) => s.get(effectId)) as { event_id?: number; payload_json?: string } | undefined;
       const currentGeneration = prior?.event_id ? storedGeneration(prior.payload_json) : 0;
       const retryAuthorized = !prior?.event_id || latestNotAppliedProofEventId(db, effectId) > Number(prior.event_id);

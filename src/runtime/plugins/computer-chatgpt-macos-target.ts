@@ -263,8 +263,8 @@ export async function observeMacOsChatgptPage(
 export async function dispatchMacOsChatgptPrompt(
   page: ComputerChatgptNativePage,
   prompt: string,
-  options: { mode?: 'send' | 'resume' | 'recover'; reasoning?: 'medium' | 'high' | 'xhigh' } = {},
-): Promise<{ mutation: 'not_attempted'; reasonCode: string } | { mutation: 'attempted'; confirmed?: boolean }> {
+  options: { mode?: 'send' | 'resume' | 'recover'; reasoning?: 'medium' | 'high' | 'xhigh'; prepareOnly?: boolean } = {},
+): Promise<{ mutation: 'not_attempted'; reasonCode: string } | { mutation: 'prepared' } | { mutation: 'attempted'; confirmed?: boolean }> {
   // Apple Events has no verified reasoning selector. Never silently submit
   // a Supervisor effect under the unproven maximum-effort claim.
   if (options.reasoning) return { mutation: 'not_attempted', reasonCode: 'COMPUTER_CHATGPT_REASONING_UNSUPPORTED_BY_PROVIDER' };
@@ -272,6 +272,10 @@ export async function dispatchMacOsChatgptPrompt(
   const submittedPrompt = supervisor ? prompt.trim().replace(/^@forge\s+/, '') : prompt;
   const resume = options.mode === 'resume';
   if (options.mode === 'recover') {
+    if (options.prepareOnly) {
+      const busy = await page.evaluate<boolean>(`(() => Array.from(document.querySelectorAll('[data-testid="stop-button"], [data-testid*="stop-button"]')).some(element => Boolean(element && element.getClientRects && element.getClientRects().length)))()`);
+      if (busy) return { mutation: 'not_attempted', reasonCode: 'provider_recovery_stop_pending' };
+    }
     try {
       const interrupted = await page.evaluate<boolean>(`(() => {
         const visible = (element) => Boolean(element && element.getClientRects && element.getClientRects().length);
@@ -310,6 +314,11 @@ export async function dispatchMacOsChatgptPrompt(
           .flatMap((selector) => Array.from(root.querySelectorAll(selector))).find(visible);
         if (!(composer instanceof HTMLElement) || !composer.isContentEditable) return { prepared: false, reason: 'composer_missing' };
         const current = norm(value(composer));
+        const chips = Array.from(composer.querySelectorAll('[plugin-mention-name], [app-mention-name]'));
+        if (${JSON.stringify(supervisor)} && chips.length === 1
+          && chips[0].getAttribute('app-mention-name') === 'forge'
+          && chips[0].getAttribute('app-mention-path') === 'app://asdk_app_6ac09022b26081918f20ff868c773824'
+          && current === norm(expected + ' forge')) return { prepared: true };
         // A *previous attempt of this exact effect* may have inserted this same
         // prompt and then failed before clicking Send. That draft is this turn's
         // own text, not a foreign user draft: reusing it is the same logical
@@ -404,6 +413,14 @@ export async function dispatchMacOsChatgptPrompt(
       // mechanical negative proof, not an outcome-unknown provider mutation.
       return { mutation: 'not_attempted', reasonCode: 'COMPUTER_CHATGPT_FORGE_PLUGIN_BINDING_UNAVAILABLE' };
     }
+  }
+  if (options.prepareOnly) {
+    const ready = await page.evaluate<boolean>(`(() => {
+      const root = Array.from(document.querySelectorAll('main')).filter(element => Boolean(element.getClientRects?.().length)).pop() || document;
+      return Array.from(root.querySelectorAll('[data-testid="send-button"], button[aria-label="Send"], button[aria-label="发送"], button[data-testid*="send"], button[type="submit"]'))
+        .some(element => Boolean(element.getClientRects?.().length) && !element.hasAttribute('disabled') && element.getAttribute('aria-disabled') !== 'true');
+    })()`);
+    return ready ? { mutation: 'prepared' } : { mutation: 'not_attempted', reasonCode: 'send_button_missing' };
   }
   for (let attempt = 1; attempt <= MAX_LOCAL_OBSERVATION_ATTEMPTS; attempt += 1) {
     let result: { dispatched: boolean; reason?: string };
@@ -600,10 +617,19 @@ export class MacOsChatgptConversationTargetPort implements ComputerChatgptConver
       targetId: record.targetId,
       identity,
       observe: async (options) => await this.observeTarget(record, page, options),
+      prepare: async (prompt, options) => {
+        if (options?.reasoning) return { ready: false, reasonCode: 'COMPUTER_CHATGPT_REASONING_UNSUPPORTED_BY_PROVIDER' };
+        await this.prepareProviderOwnedPage(record, page);
+        const result = await dispatchMacOsChatgptPrompt(page, prompt, { ...options, prepareOnly: true });
+        return result.mutation === 'prepared' ? { ready: true } : { ready: false,
+          reasonCode: result.mutation === 'not_attempted' ? result.reasonCode : 'COMPUTER_CHATGPT_PREPARE_MUTATION_UNEXPECTED' };
+      },
       dispatch: async (prompt, options) => {
         if (options?.reasoning) return { mutation: 'not_attempted', reasonCode: 'COMPUTER_CHATGPT_REASONING_UNSUPPORTED_BY_PROVIDER' };
         await this.prepareProviderOwnedPage(record, page);
-        return await dispatchMacOsChatgptPrompt(page, prompt, options);
+        const result = await dispatchMacOsChatgptPrompt(page, prompt, options);
+        return result.mutation === 'prepared'
+          ? { mutation: 'not_attempted', reasonCode: 'COMPUTER_CHATGPT_PREPARE_RESULT_IN_DISPATCH' } : result;
       },
     };
   }

@@ -46,7 +46,9 @@ export async function startWorkflowSupervisorRuntime(
     ? { runtimeInstanceId: claim.runtimeInstanceId, fencingGeneration: claim.fencingGeneration, pid: claim.ownerPid }
     : undefined;
   if (writer) await reconcileWorkflowSupervisorSocket({ socketPath, incoming: writer });
-  const store = new WorkflowSupervisorStore(forgeHome);
+  const store = new WorkflowSupervisorStore(forgeHome, {
+    activeReleaseId: () => getRuntimeWriteClaim()?.releaseId,
+  });
   const controlPlane = new WorkflowSupervisorControlPlane(
     store,
     forgeWorkflowSupervisorValidators(),

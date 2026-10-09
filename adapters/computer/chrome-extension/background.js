@@ -165,6 +165,30 @@ async function executeObserve(command, instanceId) {
     return { kind: 'failed', code: String(error?.message ?? error).split(':')[0] || 'COMPUTER_CHATGPT_EXTENSION_OBSERVE_FAILED', retryable: true, failoverSafe: true };
   }
 }
+async function executePrepare(command) {
+  const target = await resolveTarget(command.identity, false).catch(() => undefined);
+  if (!target) return { kind: 'prepared', ready: false, reasonCode: 'COMPUTER_CHATGPT_EXTENSION_TARGET_MISSING' };
+  if (command.reasoning !== undefined) {
+    let capability;
+    try { capability = await tabMessage(target.tab.id, { type: 'forge-computer-chatgpt-capabilities' }); }
+    catch { return { kind: 'prepared', ready: false, reasonCode: 'COMPUTER_CHATGPT_REASONING_PREFLIGHT_UNAVAILABLE' }; }
+    if (capability?.reasoningPreflight !== 'verified_before_send_v1')
+      return { kind: 'prepared', ready: false, reasonCode: 'COMPUTER_CHATGPT_REASONING_PREFLIGHT_UNSUPPORTED' };
+  }
+  try {
+    const result = await tabMessage(target.tab.id, {
+      type: 'forge-computer-chatgpt-prepare', prompt: command.prompt, mode: command.mode,
+      reasoning: command.reasoning,
+      ...(command.identity?.namespace === 'chatgpt.conversation' ? { expectedConversationId: command.identity.conversationId } : {}),
+    });
+    return result?.prepared === true
+      ? { kind: 'prepared', ready: true }
+      : { kind: 'prepared', ready: false, reasonCode: String(result?.reason ?? 'COMPUTER_CHATGPT_EXTENSION_PREPARE_REJECTED') };
+  } catch {
+    // A prepare command contains no Send action. Failure is not a submitted effect.
+    return { kind: 'prepared', ready: false, reasonCode: 'COMPUTER_CHATGPT_EXTENSION_PREPARE_UNAVAILABLE' };
+  }
+}
 async function executeDispatch(command) {
   const target = await resolveTarget(command.identity, false).catch(() => undefined);
   if (!target) return { kind: 'dispatch', mutation: 'not_attempted', reasonCode: 'COMPUTER_CHATGPT_EXTENSION_TARGET_MISSING' };
@@ -234,6 +258,7 @@ async function executeCommand(command, instanceId) {
   if (!command || typeof command.commandId !== 'string') return { kind: 'failed', code: 'COMPUTER_CHATGPT_EXTENSION_COMMAND_INVALID', retryable: false, failoverSafe: true };
   if (command.kind === 'ensure') return await executeEnsure(command, instanceId);
   if (command.kind === 'observe') return await executeObserve(command, instanceId);
+  if (command.kind === 'prepare') return await executePrepare(command);
   if (command.kind === 'dispatch') return await executeDispatch(command);
   if (command.kind === 'find_marker') return await executeFindMarker(command, instanceId);
   if (command.kind === 'close') return await executeClose(command);

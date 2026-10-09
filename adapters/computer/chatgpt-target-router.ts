@@ -34,6 +34,8 @@ export class PreferredChatgptConversationTargetPort implements ComputerChatgptCo
           throw primaryError;
         }
       },
+      prepare: async (prompt, options) => await primaryTarget.prepare(prompt,
+        nativeCompatibility && options?.reasoning ? { ...options, reasoning: undefined } : options),
       // Only the explicitly selected native fallback lacks a verified reasoning selector.
       // Preserve a single sender and every other dispatch option; never retry a
       // possibly submitted effect through a different provider.

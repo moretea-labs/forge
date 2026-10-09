@@ -37,6 +37,22 @@ test('native Supervisor send refuses a plain @forge draft without a verified mai
   expect(calls).toBe(2);
 });
 
+test('Mac native pre-send preparation never clicks Send or claims provider mutation', async () => {
+  let sendStageCalls = 0;
+  const page = {
+    evaluate: async <T>(source: string) => {
+      if (source.includes('const expectedNorm')) return { prepared: true } as T;
+      if (source.includes('const root') && source.includes('send-button') && !source.includes('sendButton.click')) return true as T;
+      sendStageCalls++;
+      throw new Error('No send-stage execution before Supervisor reserves effect authority');
+    },
+    tabRef: () => undefined,
+  };
+  expect(await dispatchMacOsChatgptPrompt(page, 'A prepared but unsent prompt', { prepareOnly: true }))
+    .toEqual({ mutation: 'prepared' });
+  expect(sendStageCalls).toBe(0);
+});
+
 test('Apple Events compatibility provider never claims an unverified requested reasoning level', async () => {
   let evaluateCalls = 0;
   const page = {

@@ -32,6 +32,7 @@ function target(
     targetId,
     identity,
     observe: async () => observation,
+    prepare: async () => ({ ready: true }),
     dispatch,
   };
 }

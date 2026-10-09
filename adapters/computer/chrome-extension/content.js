@@ -252,13 +252,14 @@
     }
     return { verified: true, level: actualLevel };
   };
-  const dispatchPrompt = async (prompt, mode = 'send', reasoning, expectedConversationId) => {
+  const dispatchPrompt = async (prompt, mode = 'send', reasoning, expectedConversationId, prepareOnly = false) => {
     const exactConversationIsCurrent = () => !expectedConversationId
       || core.parseConversation(location.href)?.conversationId === expectedConversationId;
     if (!exactConversationIsCurrent()) return { dispatched: false, reason: 'target_identity_changed' };
     if (typeof prompt !== 'string' || !prompt.trim()) return { dispatched: false, reason: 'prompt_required' };
     if (mode === 'recover') {
       const stop = document.querySelector(STOP);
+      if (prepareOnly && stop instanceof HTMLElement) return { prepared: false, reason: 'provider_recovery_stop_pending' };
       if (stop instanceof HTMLElement) {
         if (!exactConversationIsCurrent()) return { dispatched: false, reason: 'target_identity_changed' };
         stop.click();
@@ -328,6 +329,7 @@
     if (!send) return { dispatched: false, reason: 'send_button_missing' };
     if (send.disabled || send.getAttribute('aria-disabled') === 'true') return { dispatched: false, reason: 'send_button_disabled' };
     if (!exactConversationIsCurrent()) return { dispatched: false, reason: 'target_identity_changed' };
+    if (prepareOnly) return { prepared: true };
     send.click();
     return { dispatched: true, ...(reasoningVerified ? { reasoningVerified } : {}) };
   };
@@ -343,6 +345,13 @@
     if (message.type === 'forge-computer-chatgpt-capabilities') {
       sendResponse({ reasoningPreflight: 'verified_before_send_v1' });
       return false;
+    }
+    if (message.type === 'forge-computer-chatgpt-prepare') {
+      dispatchPrompt(String(message.prompt ?? ''), String(message.mode ?? 'send'), message.reasoning, message.expectedConversationId, true)
+        .then((result) => sendResponse(result?.prepared === true ? { prepared: true }
+          : { prepared: false, reason: String(result?.reason ?? 'COMPUTER_CHATGPT_PREPARE_REJECTED') }),
+          (error) => sendResponse({ prepared: false, reason: String(error?.message ?? error) }));
+      return true;
     }
     if (message.type === 'forge-computer-chatgpt-dispatch') {
       dispatchPrompt(String(message.prompt ?? ''), String(message.mode ?? 'send'), message.reasoning, message.expectedConversationId)

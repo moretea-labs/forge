@@ -256,6 +256,18 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
         if (response.result.kind === 'failed') throw new Error(response.result.code);
         throw new Error('COMPUTER_CHATGPT_EXTENSION_OBSERVATION_INVALID');
       },
+      prepare: async (prompt, options) => {
+        const response = await this.submit(instanceId, { kind: 'prepare', identity, prompt,
+          ...(options?.mode ? { mode: options.mode } : {}),
+          ...(options?.reasoning ? { reasoning: options.reasoning } : {}),
+        });
+        if (!response.result) return { ready: false, reasonCode: response.claimed
+          ? 'COMPUTER_CHATGPT_EXTENSION_PREPARE_OUTCOME_UNKNOWN' : 'COMPUTER_CHATGPT_EXTENSION_NOT_CONNECTED' };
+        if (response.result.kind === 'prepared') return response.result.ready
+          ? { ready: true } : { ready: false, reasonCode: response.result.reasonCode };
+        return { ready: false, reasonCode: response.result.kind === 'failed'
+          ? response.result.code : 'COMPUTER_CHATGPT_EXTENSION_PREPARE_INVALID' };
+      },
       dispatch: async (prompt, options) => {
         const response = await this.submit(instanceId, { kind: 'dispatch', identity, prompt, ...(options?.mode ? { mode: options.mode } : {}), ...(options?.reasoning ? { reasoning: options.reasoning } : {}) });
         if (!response.result) {

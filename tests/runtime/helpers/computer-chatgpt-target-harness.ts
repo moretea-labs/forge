@@ -37,6 +37,8 @@ export interface TestComputerTargetHarnessDependencies {
   readOwner?(page: TestBrowserPage): Promise<string>;
   writeOwner?(page: TestBrowserPage, marker: string): Promise<void>;
   snapshot(page: TestBrowserPage, options?: ComputerChatgptConversationObservationOptions): Promise<ComputerChatgptConversationObservation>;
+  /** Optional test-only UI-preparation attestation, prior to send accounting. */
+  preparePrompt?(page: TestBrowserPage, prompt: string): Promise<{ ready: true } | { ready: false; reasonCode: string }>;
   dispatchPrompt(
     page: TestBrowserPage,
     prompt: string,
@@ -78,6 +80,7 @@ export function createTestChatgptTargetPort(
     targetId: entry.targetId,
     identity: entry.identity,
     observe: async (options) => await deps.snapshot(entry.page, options),
+    prepare: async (prompt) => await deps.preparePrompt?.(entry.page, prompt) ?? { ready: true },
     dispatch: async (prompt, options) => {
       const result = await deps.dispatchPrompt(entry.page, prompt, options);
       return result.dispatched

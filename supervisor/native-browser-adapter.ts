@@ -45,6 +45,11 @@ const TASK_TARGET_RETRY_BASE_MS = 30_000;
 /** Slow read-only probe cadence for an applied turn whose bounded resume is exhausted. */
 const AWAITING_RECEIPT_OBSERVATION_MS = 60_000;
 const TASK_TARGET_RETRY_MAX_MS = 10 * 60_000;
+// Preparation may inspect/change a local draft, but never sends to ChatGPT.
+// Stop after bounded unsuccessful preflights; an unchanged failing provider
+// must not become either an infinite UI loop or a spent send generation.
+const SUPERVISOR_PRE_SEND_BLOCKED = 'WORKFLOW_SUPERVISOR_PRE_SEND_BLOCKED';
+
 export const TASK_TARGET_SPACED_FAILURE_CODES: ReadonlySet<string> = new Set([
   'COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE',
   // Desktop Operator has already bounded and reaped the Apple Events holder.
@@ -61,6 +66,7 @@ export const TASK_TARGET_SPACED_FAILURE_CODES: ReadonlySet<string> = new Set([
   'COMPUTER_CHATGPT_BOOTSTRAP_TARGET_UNAVAILABLE',
   'COMPUTER_CHATGPT_EXTENSION_TARGET_OPEN_OUTCOME_UNKNOWN',
   'COMPUTER_CHATGPT_EXTENSION_BOOTSTRAP_OPEN_OUTCOME_UNKNOWN',
+  SUPERVISOR_PRE_SEND_BLOCKED,
   'WORKFLOW_SUPERVISOR_BOOTSTRAP_EXISTING_CONVERSATION',
 ]);
 function taskTargetRetryDelayMs(streak: number): number {
@@ -478,6 +484,9 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     // failure, not just an unloaded page: the retained tab is re-observed at a
     // growing interval instead of being closed, re-opened, and reloaded.
     const transportFailure = this.taskTransportFailures.get(task.taskId);
+    // Derived from the durable effect log, not this adapter's process memory.
+    const stall = this.control.taskStall(task.taskId);
+    if (stall.state === 'spaced' && stall.reason === 'pre_send_infrastructure_blocked') return;
     if (transportFailure
       && TASK_TARGET_SPACED_FAILURE_CODES.has(transportFailure.code)
       && this.deps.nowMs() - transportFailure.observedAtMs < taskTargetRetryDelayMs(transportFailure.streak)) return;
@@ -507,7 +516,9 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     const snapshot = ensured.observation ?? await target.observe({ includeUserHistory: false, includePageText: false });
     if (!exactConversation(snapshot, task)) { this.noteTargetUnavailable(task, poll.command?.effectId, { code: 'WORKFLOW_SUPERVISOR_EXACT_CONVERSATION_UNPROVEN' }); return; }
     if (!conversationContentAvailable(snapshot)) { this.noteTargetUnavailable(task, poll.command?.effectId, { code: 'COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE' }); return; }
-    this.clearTaskFailure(task.taskId, poll.command?.effectId);
+    // Do not clear a pre-send failure merely because a conversation loaded:
+    // only a successful provider preparation proves the obstacle is gone.
+    if (transportFailure?.code !== SUPERVISOR_PRE_SEND_BLOCKED) this.clearTaskFailure(task.taskId, poll.command?.effectId);
     this.conversations.push({ conversation_id: task.conversationId, canonical_url: task.conversationUrl,
       ...(snapshot.title.trim() ? { title: snapshot.title.trim().slice(0, 512) } : {}), ...projectMetadataFromConversationUrl(snapshot.url) });
     const providerBusy = snapshot.isGenerating;
@@ -620,6 +631,19 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       });
       return;
     }
+    let prepared: Awaited<ReturnType<ComputerChatgptConversationTarget['prepare']>>;
+    try { prepared = await target.prepare(command.prompt, { reasoning: 'xhigh' }); }
+    catch (error) {
+      this.control.recordProviderPreparationFailure({ taskId: task.taskId, effectId: command.effectId, reasonCode: consumerFailureCode(error, 'COMPUTER_PREPARE_FAILED') });
+      this.noteTaskFailure(SUPERVISOR_PRE_SEND_BLOCKED, task, command.effectId); this.deps.onError(error); return;
+    }
+    if (!prepared.ready) {
+      this.control.recordProviderPreparationFailure({ taskId: task.taskId, effectId: command.effectId, reasonCode: consumerFailureCode(new Error(prepared.reasonCode), 'COMPUTER_PREPARE_REJECTED') });
+      this.noteTaskFailure(SUPERVISOR_PRE_SEND_BLOCKED, task, command.effectId);
+      this.deps.onError(new Error(prepared.reasonCode));
+      return;
+    }
+    this.clearTaskFailure(task.taskId, command.effectId);
     if (!this.control.bootstrapBeginEffect({ taskId: task.taskId, effectId: command.effectId, dispatchId: `bootstrap-${randomUUID()}`, dispatchGeneration: command.dispatchGeneration })) return;
     try {
       const dispatch = await withChatgptProviderDispatchLane(this.deps.providerScopeKey, () => target.dispatch(command.prompt, { reasoning: 'xhigh' }),
@@ -681,6 +705,21 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     if (command.mode === 'send' && snapshot.isGenerating && command.kind !== 'recovery') return;
     let mode = command.mode;
     if (mode === 'send') {
+      let prepared: Awaited<ReturnType<ComputerChatgptConversationTarget['prepare']>>;
+      try { prepared = await target.prepare(command.prompt, {
+        ...(command.kind === 'recovery' ? { mode: 'recover' as const } : {}), reasoning: 'xhigh',
+      }); }
+      catch (error) {
+      this.control.recordProviderPreparationFailure({ taskId: task.taskId, effectId: command.effectId, reasonCode: consumerFailureCode(error, 'COMPUTER_PREPARE_FAILED') });
+      this.noteTaskFailure(SUPERVISOR_PRE_SEND_BLOCKED, task, command.effectId); this.deps.onError(error); return;
+    }
+      if (!prepared.ready) {
+        this.control.recordProviderPreparationFailure({ taskId: task.taskId, effectId: command.effectId, reasonCode: consumerFailureCode(new Error(prepared.reasonCode), 'COMPUTER_PREPARE_REJECTED') });
+        this.noteTaskFailure(SUPERVISOR_PRE_SEND_BLOCKED, task, command.effectId);
+        this.deps.onError(new Error(prepared.reasonCode));
+        return;
+      }
+      this.clearTaskFailure(task.taskId, command.effectId);
       const begin = this.control.browserBeginEffect({ conversationId: command.conversationId, conversationUrl: command.conversationUrl, effectId: command.effectId,
         dispatchId: `computer-${randomUUID()}`, dispatchGeneration: command.dispatchGeneration,
         evidence: { surface: 'computer-chatgpt-target', target_id: target.targetId, latest_user_text: snapshot.latestUserText, latest_assistant_response: snapshot.latestAssistantResponse } });
