@@ -53,6 +53,16 @@ describe("public package release contract", () => {
     expect(notices).not.toContain("@modelcontextprotocol/sdk");
   });
 
+  test("keeps locked distribution artifacts on the public npm registry", () => {
+    const lock = JSON.parse(read("package-lock.json")) as { packages: Record<string, { resolved?: string; integrity?: string }> };
+    const artifacts = Object.values(lock.packages).filter((entry) => entry.resolved !== undefined);
+    expect(artifacts.length).toBeGreaterThan(0);
+    for (const artifact of artifacts) {
+      expect(artifact.resolved?.startsWith("https://registry.npmjs.org/")).toBe(true);
+      expect(artifact.integrity).toMatch(/^sha(?:1|256|384|512)-/);
+    }
+  });
+
   test("uses the content-addressed main gate for main and pull requests", () => {
     const workflow = read(".github/workflows/ci.yml");
     expect(workflow).toContain("name: CI");
