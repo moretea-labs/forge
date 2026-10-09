@@ -531,7 +531,7 @@ mod tests {
             "identity": {
                 "host": "machine.test",
                 "platform": "darwin",
-                "controllerHome": "/Users/test/.forge/controller",
+                "controllerHome": "/tmp/forge-recovery-test/controller",
                 "recovery": { "releaseRevision": "recovery-revision" },
                 "targetRuntime": { "id": "launchd:forge-runtime:release" }
             }
@@ -539,7 +539,7 @@ mod tests {
         let arguments = recovery_mutation_arguments(&status, "test-recovery").expect("identity should derive");
         assert_eq!(arguments.get("expected_host").and_then(Value::as_str), Some("machine.test"));
         assert_eq!(arguments.get("expected_platform").and_then(Value::as_str), Some("darwin"));
-        assert_eq!(arguments.get("expected_controller_home").and_then(Value::as_str), Some("/Users/test/.forge/controller"));
+        assert_eq!(arguments.get("expected_controller_home").and_then(Value::as_str), Some("/tmp/forge-recovery-test/controller"));
         assert_eq!(arguments.get("expected_recovery_release").and_then(Value::as_str), Some("recovery-revision"));
         assert_eq!(arguments.get("expected_target_runtime").and_then(Value::as_str), Some("launchd:forge-runtime:release"));
         assert!(arguments.get("request_id").and_then(Value::as_str).is_some());
