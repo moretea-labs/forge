@@ -224,6 +224,9 @@ describe('repository.git Work delivery', () => {
     git(workRoot, ['add', 'src/lib.ts']);
     git(workRoot, ['commit', '-m', 'validated delivery source']);
     const sourceHead = git(workRoot, ['rev-parse', 'HEAD']);
+    // Successor adoption moves integration baseline, but never erases Work delivery scope.
+    writeWorkHandle(fx.controllerHome, { ...readWorkHandle(fx.controllerHome, fx.repository.repoId, work.workId)!,
+      deliveryBaseCommit: sourceHead, expectedHead: sourceHead });
 
     const validated = await callExecutionTool(fx.ctx, 'work_validate', {
       session_id: session.sessionId,
@@ -253,7 +256,9 @@ describe('repository.git Work delivery', () => {
       targetBranch: 'main',
       targetRevision: sourceHead,
       sourceRevision: sourceHead,
-      delivery: { status: 'integrated', strategy: 'work_fast_forward', reachable: true },
+      baseRevision: handle.baseCommit,
+      changedPaths: ['src/lib.ts'],
+      delivery: { kind: 'commit', status: 'integrated', strategy: 'work_fast_forward', reachable: true },
       cleanup: { status: 'complete', blockers: [] },
     });
   });
