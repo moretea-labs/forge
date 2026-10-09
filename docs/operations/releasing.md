@@ -34,6 +34,8 @@ bun bin/forge.mjs --help
 
 The main gate reuses the focused task receipt and does not run the full suite. The release gate reuses that receipt, verifies package identity, documentation, licenses and notices, tracked-file hygiene and public export contents, then creates one tarball under `.ai/harness/artifacts/release/`. Isolated installation and publication consume that same tarball. `test:full` is a manual diagnostic only.
 
+The committed `package-lock.json` must resolve all distribution artifacts through the public `https://registry.npmjs.org/` origin with unchanged integrity checksums. Local npm mirrors and private CI package gateways must not become dependencies of the public source archive. An isolated install timeout is an incomplete release gate, not a passing smoke test.
+
 ## Bootstrap npm publication (only while the package does not exist)
 
 npm Trusted Publishing cannot be configured for a package that does not exist yet. The bootstrap publication therefore requires an npm maintainer for the `@moretea-labs` scope with two-factor authentication. Because this one-time local path has no OIDC provider, `NPM_RELEASE_BOOTSTRAP=1` disables provenance only for that bootstrap publish; `publishConfig.provenance` remains `true` for normal GitHub OIDC releases.
