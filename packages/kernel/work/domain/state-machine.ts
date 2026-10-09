@@ -135,8 +135,15 @@ export function validateWorkSemantics(contract: WorkContract): WorkContract {
   if (outcome === 'completed_changed' && contract.workKind !== 'repository_change') {
     throw new Error('WORK_SEMANTICS_INVALID: completed_changed requires repository_change WorkKind');
   }
-  if (outcome === 'completed_no_change' && !['completed_no_change', 'read_only_review'].includes(contract.workKind)) {
-    throw new Error('WORK_SEMANTICS_INVALID: completed_no_change requires completed_no_change or read_only_review WorkKind');
+  // An empty repository delivery is evidence, not authority to rewrite WorkKind.
+  const emptyRepositoryDelivery = contract.workKind === 'repository_change'
+    && isRepositoryCompletionReceipt(contract.completionReceipt)
+    && contract.completionReceipt.delivery.kind === 'no_change'
+    && contract.completionReceipt.changedPaths.length === 0;
+  if (outcome === 'completed_no_change'
+    && !['completed_no_change', 'read_only_review'].includes(contract.workKind)
+    && !emptyRepositoryDelivery) {
+    throw new Error('WORK_SEMANTICS_INVALID: completed_no_change requires a no-change WorkKind or proven empty repository delivery');
   }
   if (outcome === 'completed_no_change' && contract.workKind === 'read_only_review' && contract.completionReceipt?.source !== 'read_only_review') {
     throw new Error('WORK_SEMANTICS_INVALID: read_only_review completed_no_change requires a read_only_review completion receipt');

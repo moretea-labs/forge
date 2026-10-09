@@ -281,7 +281,7 @@ function recordDelivery(
     handle.workContractId ?? handle.workId,
     receipt,
     paths.length > 0 ? 'completed_changed' : 'completed_no_change',
-    paths.length > 0 ? 'repository_change' : 'completed_no_change',
+    'repository_change',
   );
   return receipt;
 }
@@ -351,9 +351,7 @@ export async function deliverWork(ctx: McpExecutionContext, args: Record<string,
   if (semanticWorkState(contract) !== 'open') {
     throw new Error(`WORK_DELIVERY_SEMANTIC_WORK_NOT_OPEN: ${semanticWorkState(contract)}`);
   }
-  if (contract.workKind !== 'repository_change'
-    && !(contract.workKind === 'completed_no_change' && contract.completionReceipt
-      && isRepositoryCompletionReceipt(contract.completionReceipt))) {
+  if (contract.workKind !== 'repository_change') {
     throw new Error(`WORK_DELIVERY_WORK_KIND_INVALID: ${contract.workKind}`);
   }
 

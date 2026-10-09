@@ -203,64 +203,81 @@ describe('repository.direct_edit capability', () => {
 
 describe('repository.git Work delivery', () => {
   test('fast-forwards validated isolated Work, cleans resources, and preserves semantic Work state', async () => {
-    const fx = fixture();
-    roots.push(fx.root);
-    const started = await callExecutionTool(fx.ctx, 'session_start', {});
-    const session = (started?.structuredContent as { session: { sessionId: string } }).session;
-    const prepared = await callExecutionTool(fx.ctx, 'work_prepare', {
-      session_id: session.sessionId,
-      repo_id: fx.repository.repoId,
-      request_id: 'prepare-capability-delivery-fast-forward',
-      objective: 'Deliver one validated isolated Work by fast-forward only.',
-      acceptance_criteria: ['Target contains the exact source commit and semantic completion remains separate.'],
-      checks: [],
-      isolation: 'new_worktree',
-    });
-    expect(prepared?.isError).not.toBe(true);
-    const work = (prepared?.structuredContent as { work: { workId: string } }).work;
-    const handle = readWorkHandle(fx.controllerHome, fx.repository.repoId, work.workId)!;
-    const workRoot = handle.worktreePath;
-    writeFileSync(join(workRoot, 'src', 'lib.ts'), 'export const n = 2;\n');
-    git(workRoot, ['add', 'src/lib.ts']);
-    git(workRoot, ['commit', '-m', 'validated delivery source']);
-    const sourceHead = git(workRoot, ['rev-parse', 'HEAD']);
-    // Successor adoption moves integration baseline, but never erases Work delivery scope.
-    writeWorkHandle(fx.controllerHome, { ...readWorkHandle(fx.controllerHome, fx.repository.repoId, work.workId)!,
-      deliveryBaseCommit: sourceHead, expectedHead: sourceHead });
+    for (const changed of [true, false]) {
+      const fx = fixture();
+      roots.push(fx.root);
+      const started = await callExecutionTool(fx.ctx, 'session_start', {});
+      const session = (started?.structuredContent as { session: { sessionId: string } }).session;
+      const prepared = await callExecutionTool(fx.ctx, 'work_prepare', {
+        session_id: session.sessionId,
+        repo_id: fx.repository.repoId,
+        request_id: 'prepare-capability-delivery-fast-forward',
+        objective: 'Deliver one validated isolated Work by fast-forward only.',
+        acceptance_criteria: ['Target contains the exact source commit and semantic completion remains separate.'],
+        checks: [],
+        isolation: 'new_worktree',
+      });
+      expect(prepared?.isError).not.toBe(true);
+      const work = (prepared?.structuredContent as { work: { workId: string } }).work;
+      const handle = readWorkHandle(fx.controllerHome, fx.repository.repoId, work.workId)!;
+      const workRoot = handle.worktreePath;
+      if (changed) {
+        writeFileSync(join(workRoot, 'src', 'lib.ts'), 'export const n = 2;\n');
+        git(workRoot, ['add', 'src/lib.ts']);
+        git(workRoot, ['commit', '-m', 'validated delivery source']);
+      }
+      const sourceHead = git(workRoot, ['rev-parse', 'HEAD']);
+      // Successor adoption moves integration baseline, but never erases Work delivery scope.
+      writeWorkHandle(fx.controllerHome, { ...readWorkHandle(fx.controllerHome, fx.repository.repoId, work.workId)!,
+        deliveryBaseCommit: sourceHead, expectedHead: sourceHead });
 
-    const validated = await callExecutionTool(fx.ctx, 'work_validate', {
-      session_id: session.sessionId,
-      repo_id: fx.repository.repoId,
-      work_id: work.workId,
-      check_ids: [],
-      request_id: 'validate-capability-delivery-fast-forward',
-    });
-    expect(validated?.isError).not.toBe(true);
-    expect((validated?.structuredContent as { validation: { passed: boolean } }).validation.passed).toBe(true);
+      const validated = await callExecutionTool(fx.ctx, 'work_validate', {
+        session_id: session.sessionId,
+        repo_id: fx.repository.repoId,
+        work_id: work.workId,
+        check_ids: [],
+        request_id: 'validate-capability-delivery-fast-forward',
+      });
+      expect(validated?.isError).not.toBe(true);
+      expect((validated?.structuredContent as { validation: { passed: boolean } }).validation.passed).toBe(true);
 
-    const delivered = await callCoreCapabilityAdapter(fx.ctx, 'capability_execute', {
-      repo_id: fx.repository.repoId,
-      capability_id: 'repository.git',
-      action: 'deliver_work',
-      request_id: 'deliver-capability-fast-forward',
-      arguments: { session_id: session.sessionId, work_id: work.workId },
-    });
-    if (delivered?.isError) throw new Error(JSON.stringify(delivered.structuredContent ?? delivered));
-    expect(git(fx.repoRoot, ['rev-parse', 'HEAD'])).toBe(sourceHead);
-    expect(existsSync(workRoot)).toBe(false);
-    const contract = getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, work.workId)!;
-    expect(contract.semanticState).toBe('open');
-    expect(contract.completionReceipt).toMatchObject({
-      source: 'controller_work',
-      workId: work.workId,
-      targetBranch: 'main',
-      targetRevision: sourceHead,
-      sourceRevision: sourceHead,
-      baseRevision: handle.baseCommit,
-      changedPaths: ['src/lib.ts'],
-      delivery: { kind: 'commit', status: 'integrated', strategy: 'work_fast_forward', reachable: true },
-      cleanup: { status: 'complete', blockers: [] },
-    });
+      const delivered = await callCoreCapabilityAdapter(fx.ctx, 'capability_execute', {
+        repo_id: fx.repository.repoId,
+        capability_id: 'repository.git',
+        action: 'deliver_work',
+        request_id: 'deliver-capability-fast-forward',
+        arguments: { session_id: session.sessionId, work_id: work.workId },
+      });
+      if (delivered?.isError) throw new Error(JSON.stringify(delivered.structuredContent ?? delivered));
+      expect(git(fx.repoRoot, ['rev-parse', 'HEAD'])).toBe(sourceHead);
+      expect(existsSync(workRoot)).toBe(false);
+      const contract = getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, work.workId)!;
+      expect(contract.semanticState).toBe('open');
+      expect(contract.completionReceipt).toMatchObject({
+        source: 'controller_work',
+        workId: work.workId,
+        targetBranch: 'main',
+        targetRevision: sourceHead,
+        sourceRevision: sourceHead,
+        baseRevision: handle.baseCommit,
+        changedPaths: changed ? ['src/lib.ts'] : [],
+        delivery: { kind: changed ? 'commit' : 'no_change', status: 'integrated',
+          strategy: changed ? 'work_fast_forward' : 'already_integrated', reachable: true },
+        cleanup: { status: 'complete', blockers: [] },
+      });
+      expect(contract.workKind).toBe('repository_change');
+      expect(contract.completionOutcome).toBe(changed ? 'completed_changed' : 'completed_no_change');
+      const reconciled = await callCoreCapabilityAdapter(fx.ctx, 'capability_execute', {
+        repo_id: fx.repository.repoId, capability_id: 'repository.git', action: 'deliver_work',
+        request_id: 'reconcile-capability-fast-forward',
+        arguments: { session_id: session.sessionId, work_id: work.workId },
+      });
+      if (reconciled?.isError) throw new Error(JSON.stringify(reconciled.structuredContent ?? reconciled));
+      const after = getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, work.workId)!;
+      expect(after.semanticState).toBe('open');
+      expect(after.completionReceipt?.receiptId).toBe(contract.completionReceipt?.receiptId);
+      expect(git(fx.repoRoot, ['rev-parse', 'HEAD'])).toBe(sourceHead);
+    }
   });
 
   test('uses committed Work changes for default validation and delivery fingerprint identity', async () => {
