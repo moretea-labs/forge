@@ -1717,6 +1717,50 @@ test('browserTasks prioritizes fresh sends ahead of older reconciliation work', 
   ]);
 });
 
+test('explicit operator repair re-arms one proven pre-send effect without minting generations or infinite retries', () => {
+  const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-operator-preflight-repair-'));
+  roots.push(root);
+  const release = { id: 'browser-release-one' };
+  const store = new WorkflowSupervisorStore(join(root, 'supervisor-home'), {
+    activeReleaseId: () => release.id,
+  });
+  const control = new WorkflowSupervisorControlPlane(store, {}, { browserTaskActive: () => true });
+  const taskId = 'operator-repaired-browser-task';
+  const conversationId = '28282828-3939-4848-9494-575757575757';
+  control.registerTask({ taskId, conversationId, conversationUrl: `https://chatgpt.com/c/${conversationId}`,
+    objective: 'Resume the same exact enrollment after fixing browser extension.',
+    completionContract: {}, continuationPolicy: {}, userBlockerPolicy: {},
+  });
+  const effect = control.reserveEnrollment(taskId);
+  store.recordEffectPreparationFailure(effect.effectId, 'COMPUTER_CHATGPT_EXTENSION_COMMAND_UNKNOWN');
+  expect(store.nextBrowserEffect(taskId)).toBeUndefined();
+  expect(store.effectDispatchBudget(effect.effectId).generations).toBe(0);
+  const input = { taskId, sourceEffectId: effect.effectId,
+    requestId: 'operator-repaired-browser-extension-20261009',
+    reason: 'Extension service worker reloaded and new provider is verified.',
+    authorizedBy: 'user',
+  };
+  const repaired = control.recoverTask(input);
+  expect(repaired.action).toBe('retry_authorized');
+  expect(repaired.recoveryEffect.effectId).toBe(effect.effectId);
+  expect(control.recoverTask(input).recoveryEffect.effectId).toBe(effect.effectId);
+  expect(store.nextBrowserEffect(taskId)?.effect.effectId).toBe(effect.effectId);
+  expect(store.effectDispatchBudget(effect.effectId).generations).toBe(0);
+  // This second local failure is a NEW durable failed preparation. The rearm
+  // does not turn INSERT OR IGNORE into an unlimited retry loophole.
+  store.recordEffectPreparationFailure(effect.effectId, 'COMPUTER_CHATGPT_FORGE_CHIP_NOT_BOUND');
+  expect(store.nextBrowserEffect(taskId)).toBeUndefined();
+  expect(() => control.recoverTask({ ...input, requestId: 'operator-attempt-two' }))
+    .toThrow('WORKFLOW_SUPERVISOR_PRE_SEND_OPERATOR_REARM_EXHAUSTED');
+  release.id = 'browser-release-two';
+  expect(store.nextBrowserEffect(taskId)?.effect.effectId).toBe(effect.effectId);
+  store.recordEffectPreparationFailure(effect.effectId, 'COMPUTER_PREPARE_FAILED');
+  release.id = 'browser-release-three';
+  expect(store.nextBrowserEffect(taskId)).toBeUndefined();
+  expect(store.effectDispatchBudget(effect.effectId).generations).toBe(0);
+  store.close();
+});
+
 test('Supervisor preparation rejection is durably release-fenced and never spends a provider generation', async () => {
   const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-pre-send-boundary-'));
   roots.push(root);

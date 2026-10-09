@@ -638,7 +638,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       this.noteTaskFailure(SUPERVISOR_PRE_SEND_BLOCKED, task, command.effectId); this.deps.onError(error); return;
     }
     if (!prepared.ready) {
-      this.control.recordProviderPreparationFailure({ taskId: task.taskId, effectId: command.effectId, reasonCode: consumerFailureCode(new Error(prepared.reasonCode), 'COMPUTER_PREPARE_REJECTED') });
+      this.control.recordProviderPreparationFailure({ taskId: task.taskId, effectId: command.effectId, reasonCode: prepared.reasonCode });
       this.noteTaskFailure(SUPERVISOR_PRE_SEND_BLOCKED, task, command.effectId);
       this.deps.onError(new Error(prepared.reasonCode));
       return;
@@ -714,7 +714,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       this.noteTaskFailure(SUPERVISOR_PRE_SEND_BLOCKED, task, command.effectId); this.deps.onError(error); return;
     }
       if (!prepared.ready) {
-        this.control.recordProviderPreparationFailure({ taskId: task.taskId, effectId: command.effectId, reasonCode: consumerFailureCode(new Error(prepared.reasonCode), 'COMPUTER_PREPARE_REJECTED') });
+        this.control.recordProviderPreparationFailure({ taskId: task.taskId, effectId: command.effectId, reasonCode: prepared.reasonCode });
         this.noteTaskFailure(SUPERVISOR_PRE_SEND_BLOCKED, task, command.effectId);
         this.deps.onError(new Error(prepared.reasonCode));
         return;

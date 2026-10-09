@@ -330,9 +330,9 @@ function effectDispatchLedger(db: Database, effectId: string): EffectDispatchLed
   };
 }
 /** Derived entirely from the Supervisor effect event log; no second retry authority. */
-function effectPreflightFailureReleaseIds(db: Database, effectId: string): string[] {
-  const rows = statement(db, "SELECT payload_json FROM events WHERE effect_id = ? AND kind = 'effect_preflight_rejected' ORDER BY event_id", (s) => s.all(effectId)) as Array<{ payload_json?: string }>;
-  return rows.map((row) => String(parsedObject(row.payload_json).active_release_id ?? 'unidentified-runtime'));
+function effectPreflightFailureReleaseIds(db: Database, effectId: string): Array<{ eventId: number; releaseId: string }> {
+  const rows = statement(db, "SELECT event_id,payload_json FROM events WHERE effect_id = ? AND kind = 'effect_preflight_rejected' ORDER BY event_id", (s) => s.all(effectId)) as Array<{ event_id?: number; payload_json?: string }>;
+  return rows.map((row) => ({ eventId: Number(row.event_id ?? 0), releaseId: String(parsedObject(row.payload_json).active_release_id ?? 'unidentified-runtime') }));
 }
 
 export class WorkflowSupervisorStore {
@@ -350,8 +350,14 @@ export class WorkflowSupervisorStore {
 
   private preflightBlocked(db: Database, effectId: string): boolean {
     const tried = effectPreflightFailureReleaseIds(db, effectId);
-    return tried.length >= WORKFLOW_SUPERVISOR_MAX_PREFLIGHT_RELEASE_ATTEMPTS
-      || tried.includes(this.activeReleaseId()?.trim() || 'unidentified-runtime');
+    if (tried.length >= WORKFLOW_SUPERVISOR_MAX_PREFLIGHT_RELEASE_ATTEMPTS) return true;
+    const releaseId = this.activeReleaseId()?.trim() || 'unidentified-runtime';
+    const lastFailure = tried.filter((entry) => entry.releaseId === releaseId).at(-1);
+    if (!lastFailure) return false;
+    // A verified operator repair may grant ONE extra pre-send observation on
+    // this same Runtime. The original provider-send generation stays at zero.
+    const rearm = statement(db, "SELECT event_id FROM events WHERE effect_id = ? AND kind = 'effect_preflight_operator_rearmed' ORDER BY event_id DESC LIMIT 1", (s) => s.get(effectId)) as { event_id?: number } | undefined;
+    return Number(rearm?.event_id ?? 0) <= lastFailure.eventId;
   }
 
   close(): void {
@@ -847,11 +853,38 @@ export class WorkflowSupervisorStore {
     }
     return { state: 'inert' };
   }
+  /** One operator-approved repair of a proven pre-send failure, never a provider retry refund. */
+  authorizeOperatorPreflightRetry(input: { effectId: string; requestId: string; reason: string; authorizedBy: string }): { deduplicated: boolean } {
+    return this.transaction((db) => {
+      const effect = statement(db, 'SELECT task_id FROM effects WHERE effect_id = ?', (s) => s.get(input.effectId)) as { task_id?: string } | undefined;
+      if (!effect?.task_id) throw new Error('WORKFLOW_SUPERVISOR_EFFECT_UNKNOWN');
+      if (statement(db, "SELECT 1 FROM events WHERE effect_id = ? AND kind IN ('effect_applied','effect_outcome_unknown_superseded') LIMIT 1", (s) => s.get(input.effectId))) {
+        throw new Error('WORKFLOW_SUPERVISOR_PRE_SEND_EFFECT_TERMINAL');
+      }
+      if (effectDispatchLedger(db, input.effectId).generations !== 0) throw new Error('WORKFLOW_SUPERVISOR_PRE_SEND_RECOVERY_SEND_ALREADY_RECORDED');
+      const key = `effect-preflight-operator-rearmed:${input.effectId}:${input.requestId}`;
+      if (statement(db, 'SELECT 1 FROM events WHERE event_key = ?', (s) => s.get(key))) return { deduplicated: true };
+      const failed = effectPreflightFailureReleaseIds(db, input.effectId);
+      const releaseId = this.activeReleaseId()?.trim() || 'unidentified-runtime';
+      if (failed.length >= WORKFLOW_SUPERVISOR_MAX_PREFLIGHT_RELEASE_ATTEMPTS) throw new Error('WORKFLOW_SUPERVISOR_PRE_SEND_ATTEMPTS_EXHAUSTED');
+      if (!failed.some((entry) => entry.releaseId === releaseId) || !this.preflightBlocked(db, input.effectId)) {
+        throw new Error('WORKFLOW_SUPERVISOR_PRE_SEND_RECOVERY_NOT_BLOCKED');
+      }
+      if (statement(db, "SELECT 1 FROM events WHERE effect_id = ? AND kind = 'effect_preflight_operator_rearmed' LIMIT 1", (s) => s.get(input.effectId))) {
+        throw new Error('WORKFLOW_SUPERVISOR_PRE_SEND_OPERATOR_REARM_EXHAUSTED');
+      }
+      statement(db, 'INSERT INTO events(task_id,event_key,kind,effect_id,payload_json,occurred_at) VALUES (?,?,?,?,?,?)', (s) => s.run(
+        effect.task_id!, key, 'effect_preflight_operator_rearmed', input.effectId,
+        json({ request_id: input.requestId, authorized_by: input.authorizedBy, reason: boundedText(input.reason)?.slice(0, 512), active_release_id: releaseId, attestation: 'operator_authorized_after_proven_no_send' }), now(),
+      ));
+      return { deduplicated: false };
+    });
+  }
+
   /**
-   * Explicit operator authority to continue a *mechanically proven* un-applied
-   * effect after its retry ceiling. The proof is the dispatch owner's persisted
-   * pre-send negative result, never page absence, so this can never replay a
-   * submitted mutation. Idempotent per request id and bounded per effect.
+   * Explicit operator authority to continue a mechanically proven un-applied
+   * send after its retry ceiling, without replaying an outcome-unknown mutation.
+   * This refund path is distinct from zero-generation UI preparation repair.
    */
   authorizeOperatorRetry(input: { effectId: string; requestId: string; reason: string; authorizedBy: string }): { refunds: number; generations: number; deduplicated: boolean } {
     return this.transaction((db) => {
@@ -1296,7 +1329,10 @@ export class WorkflowSupervisorStore {
         throw new Error('WORKFLOW_SUPERVISOR_PRE_SEND_FAILURE_OUTCOME_NOT_PROVEN');
       }
       const activeReleaseId = this.activeReleaseId()?.trim() || 'unidentified-runtime';
-      const key = `effect-preflight-rejected:${effectId}:${activeReleaseId}`;
+      // After one explicit repair the next real preparation failure MUST be
+      // recorded again; otherwise INSERT OR IGNORE could permit infinite retries.
+      const rearm = statement(db, "SELECT COUNT(*) AS count FROM events WHERE effect_id = ? AND kind = 'effect_preflight_operator_rearmed'", (s) => s.get(effectId)) as { count?: number } | undefined;
+      const key = `effect-preflight-rejected:${effectId}:${activeReleaseId}${Number(rearm?.count ?? 0) > 0 ? ':operator-rearmed' : ''}`;
       statement(db, 'INSERT OR IGNORE INTO events(task_id,event_key,kind,effect_id,payload_json,occurred_at) VALUES (?,?,?,?,?,?)', (s) => s.run(
         effect.task_id!, key, 'effect_preflight_rejected', effectId,
         json({ active_release_id: activeReleaseId, reason: (boundedText(reasonCode) ?? 'COMPUTER_PREPARE_REJECTED').slice(0, 256), send_clicked: false, attestation: 'computer_prepare_returned_before_supervisor_send_intent' }), now(),

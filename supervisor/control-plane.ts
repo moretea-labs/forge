@@ -134,6 +134,14 @@ export class WorkflowSupervisorControlPlane {
       throw new Error('WORKFLOW_SUPERVISOR_RECOVERY_SOURCE_CHANGED');
     }
     if (pending) {
+      if (this.store.effectDispatchBudget(pending.effectId).generations === 0) {
+        // Browser provider was repaired independently of Forge's source release.
+        // The old enrollment text and effect identity remain authoritative;
+        // rearm a single preparation without manufacturing a provider send.
+        this.store.authorizeOperatorPreflightRetry({ effectId: pending.effectId, requestId: input.requestId,
+          reason: input.reason, authorizedBy });
+        return { recoveryEffect: pending, action: 'retry_authorized' };
+      }
       // Read-only reclassification first: a dispatch-owner pre-send return is a
       // stronger fact than any operator decision and makes the effect retryable
       // through the normal mechanical path.
