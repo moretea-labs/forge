@@ -25,7 +25,7 @@ macOS and Linux are supported; WSL2 is the recommended Windows path. Native Wind
 - Runtime behavior: [Runtime Architecture](Runtime-Architecture)
 - Source implementation map: [Implementation](Implementation)
 - Run and recover the service: [Operations](Operations)
-- Computer and provider setup: [Computer and Plugins](Computer-and-Plugins)
+- Computer and provider setup: [Computer and Plugins](Computer-and-Plugins) · [中文教程](Computer-and-Plugins.zh-CN)
 - Optional capabilities: [Integrations](Integrations)
 - Diagnose a problem: [Troubleshooting](Troubleshooting)
 - Trust boundaries: [Security Model](Security-Model)
