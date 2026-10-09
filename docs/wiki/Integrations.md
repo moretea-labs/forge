@@ -14,6 +14,10 @@ Codex, Claude, and GitHub Copilot can implement bounded tasks when available. Ag
 
 GitHub operations cover issues, pull requests, checks, repository settings, Wiki synchronization, and releases. Remote writes remain explicit and should reference the exact local revision being published.
 
+## Computer, Desktop Operator, and official providers
+
+On macOS, the supported user interface to the native Desktop Operator is `forge computer setup|status|doctor|update`. The separately owned Browser capability covers browser session/DOM actions, while Desktop Operator provides native Computer operations. Forge Design, Personal Knowledge Assistant, and Figma Bridge use independently pinned official provider releases. Follow [Computer and Plugins](Computer-and-Plugins) to install, diagnose, and use them from ChatGPT.
+
 ## Browser and local system
 
 Browser and local-system plugins are optional controller capabilities. They use separate grants and do not turn repository access into unrestricted machine access.

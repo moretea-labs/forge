@@ -5,6 +5,8 @@
 <p align="center"><a href="https://github.com/moretea-labs/forge#english">English</a> · <a href="https://github.com/moretea-labs/forge#zh-cn">仓库首页中文</a> · <a href="docs/README.zh-CN.md">中文文档</a> · <a href="docs/operations/features.zh-CN.md">功能清单</a> · <a href="https://github.com/moretea-labs/forge/releases">版本发布</a></p>
 <p align="center"><img alt="CI" src="https://github.com/moretea-labs/forge/actions/workflows/ci.yml/badge.svg"> <img alt="Release" src="https://img.shields.io/github/v/release/moretea-labs/forge?include_prereleases&sort=semver"> <img alt="npm latest" src="https://img.shields.io/npm/v/%40moretea-labs%2Fforge?tag=latest&label=npm%20latest"> <img alt="License" src="https://img.shields.io/github/license/moretea-labs/forge"></p>
 
+**Forge 是本地优先的 ChatGPT MCP 执行工具**：通过权限受控的 Runtime，让 ChatGPT 操作电脑、Git 仓库、浏览器和已授权服务；也支持选择其他外部主控。
+
 **Forge 自己没有 AI 大脑。** 每次语义决策都由一个外部主控负责，Forge 负责执行、持久状态、权限和恢复。默认推荐 ChatGPT，也可以明确选择 Codex、Claude 或其他 MCP 客户端；可以配置多个控制入口，但同一时刻只有一个主控拥有语义控制权。
 
 选择 ChatGPT 时**不要求单独配置 OpenAI API Key，也不需要额外准备一套按 token 计费的模型预算**；仍受你的 ChatGPT 套餐和会话限制。没有选择 Codex/Claude，就不会把它们当成安装或就绪依赖。
@@ -68,7 +70,7 @@ npm install -g . --omit=optional --no-audit --no-fund
 
 ## 插件与能力
 
-Forge 内置本机、Browser、Desktop、iOS、GitHub、Gmail、Calendar、Tasks、App Store Connect、Resend 等类型化插件；公开 Provider 目录还提供 **Forge Desktop Operator**、**Forge Design**、**Personal Knowledge Assistant**。运行 `forge plugin catalog` 查看当前固定版本目录，详见[插件管理](docs/forge-plugin-management.md)和[功能清单](docs/operations/features.zh-CN.md)。
+Forge 内置本机、Browser、Desktop、iOS、GitHub、Gmail、Calendar、Tasks、App Store Connect、Resend 等类型化插件；公开 Provider 目录还提供 **Forge Desktop Operator**、**Forge Design**、**Personal Knowledge Assistant**。运行 `forge plugin catalog` 查看当前固定版本目录，CLI 升级不会自动更新这些 Provider。macOS Computer 使用 `forge computer update` 和 `forge computer doctor` 更新并检查，其他 Provider 需按官方 pin 重新安装。详见 [Computer 与插件安装指南](docs/wiki/Computer-and-Plugins.md)、[插件管理](docs/forge-plugin-management.md)和[功能清单](docs/operations/features.zh-CN.md)。
 
 ## 安全不是宣传词
 
@@ -76,6 +78,6 @@ Forge 把读取、普通本地写入、远程操作、破坏性操作、工作�
 
 ## 文档与项目
 
-[中文文档中心](docs/README.zh-CN.md) · [Wiki](docs/wiki/Home.md) · [SUPPORT.md](SUPPORT.md) · [CONTRIBUTING.md](CONTRIBUTING.md) · [CHANGELOG.md](CHANGELOG.md)
+[中文文档中心](docs/README.zh-CN.md) · [GitHub Wiki](https://github.com/moretea-labs/forge/wiki) · [Wiki 源码](docs/wiki/Home.md) · [SUPPORT.md](SUPPORT.md) · [CONTRIBUTING.md](CONTRIBUTING.md) · [CHANGELOG.md](CHANGELOG.md)
 
-当前稳定版本是 `1.7.0`，稳定安装使用 npm `latest`。
+当前稳定版本为 [`v1.8.1`](https://github.com/moretea-labs/forge/releases/tag/v1.8.1)，稳定安装使用 npm `latest`。

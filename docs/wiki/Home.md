@@ -1,6 +1,19 @@
-# Forge Wiki
+# Forge Wiki — ChatGPT MCP for local computer and software tasks
 
-Forge is a local-first action assistant that gives ChatGPT a durable, policy-bounded execution layer for local software work. The product is intentionally Direct-first: ordinary bounded work stays lightweight, while Process Runtime, Work, worktrees, scheduling, and Recovery exist for the cases that actually need lifecycle or isolation.
+Forge is a local-first, permission-scoped MCP action runtime for ChatGPT and other explicitly selected external controllers. It gives ChatGPT durable execution tools for local files, Git repositories, browsers, and authorized services—**without putting an additional AI agent inside Forge**. The product is intentionally Direct-first: ordinary bounded work stays lightweight, while Process Runtime, Work, worktrees, scheduling, and Recovery exist for the cases that actually need lifecycle or isolation.
+
+## Get started with the latest stable version
+
+Install [Forge v1.8.1](https://github.com/moretea-labs/forge/releases/tag/v1.8.1) from [npm](https://www.npmjs.com/package/@moretea-labs/forge):
+
+```bash
+npm install -g @moretea-labs/forge@latest
+forge setup
+forge setup configure --controller chatgpt --tunnel auto
+forge setup next
+```
+
+macOS and Linux are supported; WSL2 is the recommended Windows path. Native Windows remains a preview. For upgrades and service setup, see [Installation](Installation).
 
 ## Start here
 
@@ -12,6 +25,7 @@ Forge is a local-first action assistant that gives ChatGPT a durable, policy-bou
 - Runtime behavior: [Runtime Architecture](Runtime-Architecture)
 - Source implementation map: [Implementation](Implementation)
 - Run and recover the service: [Operations](Operations)
+- Computer and provider setup: [Computer and Plugins](Computer-and-Plugins)
 - Optional capabilities: [Integrations](Integrations)
 - Diagnose a problem: [Troubleshooting](Troubleshooting)
 - Trust boundaries: [Security Model](Security-Model)

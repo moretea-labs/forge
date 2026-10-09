@@ -2,7 +2,9 @@
 
 > Maintained documentation for the current Forge product and runtime. Executable behavior and [`architecture/CURRENT.md`](architecture/CURRENT.md) are authoritative for implementation facts and architecture contracts; historical notes are context, not active contracts.
 
-[中文文档中心](README.zh-CN.md) · [GitHub](https://github.com/moretea-labs/forge) · [Releases](https://github.com/moretea-labs/forge/releases) · [Support](../SUPPORT.md)
+[中文文档中心](README.zh-CN.md) · [GitHub Wiki](https://github.com/moretea-labs/forge/wiki) · [GitHub](https://github.com/moretea-labs/forge) · [Releases](https://github.com/moretea-labs/forge/releases) · [Support](../SUPPORT.md)
+
+Forge is a local-first ChatGPT MCP runtime for permission-scoped computer use, development, browser actions, and connected services. Current stable: [v1.8.1](https://github.com/moretea-labs/forge/releases/tag/v1.8.1) on npm `latest`. **The versioned repository docs are authoritative; GitHub Wiki mirrors `docs/wiki/`.**
 
 ## Start here
 
@@ -38,9 +40,10 @@ Forge is Direct-first: investigation does not create durable Work by itself, and
 - [Core Concepts](wiki/Core-Concepts.md)
 
 ### Integrate
+- [Computer and plugin setup](wiki/Computer-and-Plugins.md)
 - [Plugin management](forge-plugin-management.md)
 - [Browser provider](operations/controller-browser-plugin.md)
-- [Desktop provider](operations/controller-desktop-plugin.md)
+- [Computer / Desktop provider](wiki/Computer-and-Plugins.md)
 - [Local system assistant](operations/local-system-assistant.md)
 - [iOS development assistant](forge-ios-development-assistant.md)
 

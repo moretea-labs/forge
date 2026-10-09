@@ -4,9 +4,9 @@ This document records the intended public GitHub configuration for Forge. The re
 
 ## Repository metadata
 
-- **Description:** `Local-first action assistant for durable, reviewable software work.`
-- **Homepage:** `https://github.com/moretea-labs/forge/wiki`
-- **Topics:** `ai-agents`, `ai-assistant`, `chatgpt`, `mcp`, `local-first`, `developer-tools`, `automation`, `agentic-workflow`, `typescript`
+- **Description:** `Local-first ChatGPT MCP runtime for secure computer use, code, browser automation, and developer workflows.`
+- **Homepage:** `https://github.com/moretea-labs/forge/blob/main/docs/README.md` (public versioned docs; the Wiki remains linked from the README)
+- **Topics:** `chatgpt`, `mcp`, `model-context-protocol`, `local-first`, `ai-assistant`, `ai-agents`, `developer-tools`, `browser-automation`, `computer-use`, `coding-assistant`, `workflow-automation`, `typescript`
 - **Features:** Issues, Discussions, Wiki, security policy, and Private Vulnerability Reporting enabled.
 - **License:** MIT, with `NOTICE` and third-party notices preserved.
 
@@ -42,7 +42,7 @@ Use Issues for reproducible defects and scoped feature requests. Use Discussions
 
 ## Documentation ownership
 
-The GitHub Wiki is a presentation target. Versioned source lives under `docs/wiki/`. Deeper engineering detail remains under `docs/architecture/CURRENT.md` and `docs/operations/`.
+The GitHub Wiki is a presentation target. Versioned source lives under `docs/wiki/` and must be explicitly synchronized to the separate `forge.wiki.git` remote after reviewed changes. At low star counts, the Wiki cannot be relied upon for general search engine indexing: prioritize the GitHub About description/topics and repository README for GitHub search, and versioned docs for externally linked canonical content. Deeper engineering detail remains under `docs/architecture/CURRENT.md` and `docs/operations/`.
 
 Public documentation must distinguish current facts from historical evidence. Avoid hard-coding “next release” versions in operational runbooks; derive versions from `package.json` so routine releases do not leave stale docs behind.
 
