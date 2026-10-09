@@ -121,6 +121,9 @@ export interface WorkContractLineageSnapshot {
   contracts: WorkContract[];
   invalid: Array<{
     workId: string;
+    requirementId?: string;
+    semanticParentWorkId?: string;
+    dependsOnWorkIds?: string[];
     parentWorkId?: string;
     predecessorWorkId?: string;
     supersedes: string[];
@@ -640,6 +643,9 @@ function lineageInvalidWork(
   const clean = (id: unknown): string | undefined => typeof id === 'string' && id.trim() ? id.trim() : undefined;
   return {
     workId: clean(raw.workId) ?? recordKey ?? '',
+    ...(clean(raw.requirementId) ? { requirementId: clean(raw.requirementId) } : {}),
+    ...(clean(raw.semanticParentWorkId) ? { semanticParentWorkId: clean(raw.semanticParentWorkId) } : {}),
+    dependsOnWorkIds: Array.isArray(raw.dependsOnWorkIds) ? raw.dependsOnWorkIds.map(clean).filter((id): id is string => Boolean(id)) : [],
     ...(clean(raw.parentWorkId) ? { parentWorkId: clean(raw.parentWorkId) } : {}),
     ...(clean(raw.predecessorWorkId) ? { predecessorWorkId: clean(raw.predecessorWorkId) } : {}),
     supersedes: Array.isArray(raw.supersedes) ? raw.supersedes.map(clean).filter((id): id is string => Boolean(id)) : [],

@@ -14,6 +14,9 @@ import { runtimeToolDefinitions } from '../../adapters/mcp/runtime-gateway/runti
 import { callCoreCapabilityAdapter } from '../../adapters/mcp/runtime-gateway/core-capability-adapter';
 import { createWorkflowSupervisorServer } from '../../supervisor/server';
 import { workflowSupervisorSocketPath } from '../../supervisor/paths';
+import { createWorkSemanticContext, reviseWorkSemanticContext } from '../../packages/kernel/work/api/index';
+import { createRequirement, updateRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
+import { SEMANTIC_SCOPE_KEY } from '../../src/cli/repositories/controller-home';
 
 const roots: string[] = [];
 afterEach(() => {
@@ -238,6 +241,68 @@ describe('Workflow Supervisor automation receipts', () => {
   test('advances a standalone Supervisor task CONTINUE -> CONTINUE -> DONE without Work or Plan', async () => {
     const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-standalone-'));
     roots.push(root);
+    const validators = forgeWorkflowSupervisorValidators();
+    const options = { controllerHome: root, repoId: 'repo-proof' };
+    createRequirement({ controllerHome: root }, {
+      requirementId: 'REQ-LINEAGE', title: 'Bound goal', outcomeStatement: 'Close the bound Work.',
+    });
+    updateRequirement({ controllerHome: root }, {
+      requirementId: 'REQ-LINEAGE', action: 'fixture_activate',
+      mutate: (current) => ({ ...current, state: 'active' }),
+    });
+    updateRequirement({ controllerHome: root }, {
+      requirementId: 'REQ-LINEAGE', action: 'fixture_acceptance',
+      mutate: (current) => ({ ...current, state: 'done', semanticAcceptance: {
+        reviewer: 'test', rationale: 'goal accepted', planIds: [], acceptedAt: new Date().toISOString(),
+      } }),
+    });
+    const parent = createWorkSemanticContext(options, {
+      workId: 'lineage-parent', objective: 'Bound parent', requirementId: 'REQ-LINEAGE',
+    });
+    const child = createWorkSemanticContext(options, {
+      workId: 'lineage-child', objective: 'Bound child', semanticParentWorkId: parent.workId,
+    });
+    reviseWorkSemanticContext(options, parent.workId, { expectedRevision: 1, state: 'completed' });
+    const proposal = { action: 'DONE' as const, sourceEffectId: 'fx_fixture', checkpoint: 'done', reason: 'done', evidence: [] };
+    const validationTask = {
+      taskId: 'validator-fixture', conversationId: 'fixture', conversationUrl: 'https://chatgpt.com/c/fixture',
+      objective: 'Validate bound lineage', createdAt: new Date().toISOString(),
+      completionContract: { kind: 'forge_requirement_done', controller_home: root, repo_id: options.repoId, requirement_id: 'REQ-LINEAGE' },
+      continuationPolicy: {}, userBlockerPolicy: {},
+    };
+    expect((await validators.completionContract!(validationTask, proposal)).valid).toBe(false);
+    const workTask = { ...validationTask, completionContract: {
+      kind: 'forge_work_done', controller_home: root, repo_id: options.repoId, work_id: parent.workId,
+    } };
+    expect((await validators.completionContract!(workTask, proposal)).valid).toBe(false);
+    const modelBoundTask = { ...workTask, completionContract: { ...workTask.completionContract, kind: 'model_semantic_completion' } };
+    expect((await validators.completionContract!(modelBoundTask, proposal)).valid).toBe(false);
+    // A semantic CAS, rather than Process/commit/cleanup, settles the child.
+    reviseWorkSemanticContext(options, child.workId, { expectedRevision: 1, state: 'completed' });
+    expect((await validators.completionContract!(workTask, proposal)).valid).toBe(true);
+    expect((await validators.completionContract!(validationTask, proposal)).valid).toBe(true);
+    createWorkSemanticContext(options, { workId: 'unrelated-open', objective: 'Another goal stays open' });
+    expect((await validators.completionContract!(workTask, proposal)).valid).toBe(true);
+    expect((await validators.completionContract!(modelBoundTask, proposal)).valid).toBe(true);
+    const portable = { controllerHome: root, scopeKey: SEMANTIC_SCOPE_KEY };
+    createWorkSemanticContext(portable, { workId: parent.workId, objective: 'Canonical semantic parent', requirementId: 'REQ-LINEAGE' });
+    // A terminal repository compatibility row cannot hide a current semantic obligation.
+    expect((await validators.completionContract!(workTask, proposal)).valid).toBe(false);
+    reviseWorkSemanticContext(portable, parent.workId, { expectedRevision: 1, state: 'completed' });
+    expect((await validators.completionContract!(workTask, proposal)).valid).toBe(true);
+    const dependency = createWorkSemanticContext(portable, { workId: 'portable-dependency', objective: 'Declared prerequisite' });
+    createWorkSemanticContext(portable, {
+      workId: 'portable-child', objective: 'Portable child', semanticParentWorkId: parent.workId,
+      dependsOnWorkIds: [dependency.workId],
+    });
+    reviseWorkSemanticContext(portable, 'portable-child', { expectedRevision: 1, state: 'completed' });
+    const portableRequirementTask = { ...validationTask, completionContract: {
+      kind: 'forge_requirement_done', controller_home: root, requirement_id: 'REQ-LINEAGE',
+    } };
+    expect((await validators.completionContract!(portableRequirementTask, proposal)).valid).toBe(false);
+    reviseWorkSemanticContext(portable, dependency.workId, { expectedRevision: 1, state: 'completed' });
+    expect((await validators.completionContract!(portableRequirementTask, proposal)).valid).toBe(true);
+
     const store = new WorkflowSupervisorStore(root);
     const control = new WorkflowSupervisorControlPlane(store, forgeWorkflowSupervisorValidators());
     const task = control.registerTask({
