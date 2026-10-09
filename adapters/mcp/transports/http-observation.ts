@@ -1,4 +1,4 @@
-import type { Express } from 'express';
+import type { Express, Response } from 'express';
 import { NodeStreamableHTTPServerTransport } from '@modelcontextprotocol/node';
 import { createMcpToolContext } from '../server';
 import { loadMcpServiceRuntimeState, type McpHttpAuthMode } from '../auth';
@@ -26,7 +26,7 @@ type HttpSessionRegistry = McpSessionRegistry<NodeStreamableHTTPServerTransport,
 
 interface McpRuntimeStats {
   initializing: number;
-  activePosts: number;
+  activePostStartedAt: Map<Response, number>;
   rejectedOverload: number;
 }
 
@@ -190,6 +190,13 @@ export function registerMcpHttpObservationRoutes(input: McpHttpObservationRouteO
     if (health?.runtimeToolSurfaceFingerprint) res.setHeader('x-forge-runtime-tool-surface-fingerprint', health.runtimeToolSurfaceFingerprint);
     if (health?.toolSurfaceFingerprint) res.setHeader('x-forge-tool-surface-fingerprint', health.toolSurfaceFingerprint);
     const sessionSnapshot = sessionRegistry.snapshot();
+    // Legacy session age excludes modern stateless POSTs. The same response-
+    // owned admission map backs both capacity and this diagnostic; no second
+    // activity counter or release authority is introduced.
+    const oldestActivePostAt = runtimeStats.activePostStartedAt.size
+      ? Math.min(...runtimeStats.activePostStartedAt.values()) : undefined;
+    const oldestActivePostAgeMs = oldestActivePostAt === undefined
+      ? 0 : Math.max(0, Date.now() - oldestActivePostAt);
     const transportEvidence = runtimeControllerHome
       ? recentMcpTransportEvidence(readRecentMcpTransportEvents(runtimeControllerHome), startedAt)
       : { current: 'healthy' as const, recentStatus: 'stable' as const, gatewayStartedAt: startedAt, gatewayPid: process.pid };
@@ -237,7 +244,8 @@ export function registerMcpHttpObservationRoutes(input: McpHttpObservationRouteO
       sessions: {
         ...sessionSnapshot,
         initializing: runtimeStats.initializing,
-        activePosts: runtimeStats.activePosts,
+        activePosts: runtimeStats.activePostStartedAt.size,
+        oldestActivePostAgeMs,
         maximumActivePosts: maxActivePosts,
         rejectedOverload: runtimeStats.rejectedOverload,
       },
@@ -248,7 +256,7 @@ export function registerMcpHttpObservationRoutes(input: McpHttpObservationRouteO
     const sessionSnapshot = sessionRegistry.snapshot();
     const sessionCapacityReady = sessionSnapshot.acceptingNewSessions
       && runtimeStats.initializing < maxInitializingSessions
-      && runtimeStats.activePosts < maxActivePosts;
+      && runtimeStats.activePostStartedAt.size < maxActivePosts;
     res.status(sessionCapacityReady ? 200 : 503).json({
       ready: sessionCapacityReady,
       profile: toolContext.policy.profile,
@@ -257,7 +265,7 @@ export function registerMcpHttpObservationRoutes(input: McpHttpObservationRouteO
       runtimeCapacity: {
         initializing: runtimeStats.initializing,
         maximumInitializing: maxInitializingSessions,
-        activePosts: runtimeStats.activePosts,
+        activePosts: runtimeStats.activePostStartedAt.size,
         maximumActivePosts: maxActivePosts,
       },
     });
@@ -268,7 +276,7 @@ export function registerMcpHttpObservationRoutes(input: McpHttpObservationRouteO
     const sessionSnapshot = sessionRegistry.snapshot();
     const sessionCapacityReady = sessionSnapshot.acceptingNewSessions
       && runtimeStats.initializing < maxInitializingSessions
-      && runtimeStats.activePosts < maxActivePosts;
+      && runtimeStats.activePostStartedAt.size < maxActivePosts;
     if (!runtimeControllerHome) {
       res.status(sessionCapacityReady ? 200 : 503).json({
         ready: sessionCapacityReady,

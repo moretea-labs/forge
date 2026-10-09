@@ -339,7 +339,8 @@ function requireMcpHttpAuth(
 
 interface McpRuntimeStats {
   initializing: number;
-  activePosts: number;
+  /** Canonical HTTP POST admission owner; one entry per unfinished response. */
+  activePostStartedAt: Map<Response, number>;
   rejectedOverload: number;
 }
 
@@ -359,7 +360,7 @@ const MCP_SESSION_ABSOLUTE_LIFETIME_MS = positiveIntegerEnv('FORGE_MCP_SESSION_A
 const MCP_ACTIVE_POST_STALL_MS = positiveIntegerEnv('FORGE_MCP_ACTIVE_POST_STALL_MS', 10 * 60_000);
 
 export function admitMcpPost(stats: McpRuntimeStats, res: Response): boolean {
-  if (stats.activePosts >= MAX_ACTIVE_POSTS) {
+  if (stats.activePostStartedAt.size >= MAX_ACTIVE_POSTS) {
     stats.rejectedOverload += 1;
     res.setHeader('retry-after', '1');
     res.status(503).json({
@@ -374,12 +375,10 @@ export function admitMcpPost(stats: McpRuntimeStats, res: Response): boolean {
     return false;
   }
 
-  stats.activePosts += 1;
-  let released = false;
+  stats.activePostStartedAt.set(res, Date.now());
   const release = (): void => {
-    if (released) return;
-    released = true;
-    stats.activePosts = Math.max(0, stats.activePosts - 1);
+    if (!stats.activePostStartedAt.has(res)) return;
+    stats.activePostStartedAt.delete(res);
     res.off('finish', release);
     res.off('close', release);
   };
@@ -740,7 +739,7 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
       });
     },
   });
-  const runtimeStats: McpRuntimeStats = { initializing: 0, activePosts: 0, rejectedOverload: 0 };
+  const runtimeStats: McpRuntimeStats = { initializing: 0, activePostStartedAt: new Map(), rejectedOverload: 0 };
   const toolContext = createMcpToolContext({ ...opts, repo: repoRoot, controllerHome, profile });
   const baseOptions: McpServerOptions = {
     repo: repoRoot,

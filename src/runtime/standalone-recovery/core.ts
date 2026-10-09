@@ -3045,6 +3045,7 @@ export interface AutomaticReleaseCutoverReadiness {
   ready: boolean;
   activeSessions?: number;
   activePosts?: number;
+  oldestActivePostAgeMs?: number;
   activeStreams?: number;
   initializing?: number;
   latestActivityAgeMs?: number;
@@ -3087,7 +3088,7 @@ export async function probeReleaseCutoverReadiness(
       signal: controller.signal,
     });
     if (!response.ok) return { ready: false, detail: `primary Connector health returned HTTP ${response.status}` };
-    let payload: { sessions?: { active?: unknown; activePosts?: unknown; activeStreams?: unknown; initializing?: unknown; latestActivityAgeMs?: unknown } };
+    let payload: { sessions?: { active?: unknown; activePosts?: unknown; oldestActivePostAgeMs?: unknown; activeStreams?: unknown; initializing?: unknown; latestActivityAgeMs?: unknown } };
     try {
       payload = JSON.parse(response.body) as typeof payload;
     } catch {
@@ -3095,6 +3096,8 @@ export async function probeReleaseCutoverReadiness(
     }
     const activeSessions = Number(payload.sessions?.active);
     const activePosts = Number(payload.sessions?.activePosts);
+    const oldestActivePostAgeMs = payload.sessions?.oldestActivePostAgeMs === undefined
+      ? undefined : Number(payload.sessions.oldestActivePostAgeMs);
     const activeStreams = Number(payload.sessions?.activeStreams);
     const initializing = Number(payload.sessions?.initializing);
     const latestActivityAgeMs = Number(payload.sessions?.latestActivityAgeMs);
@@ -3109,6 +3112,8 @@ export async function probeReleaseCutoverReadiness(
     const evidence = {
       activeSessions,
       activePosts,
+      ...(oldestActivePostAgeMs !== undefined && Number.isFinite(oldestActivePostAgeMs)
+        ? { oldestActivePostAgeMs } : {}),
       ...(Number.isFinite(activeStreams) ? { activeStreams } : {}),
       initializing,
       ...(Number.isFinite(latestActivityAgeMs) ? { latestActivityAgeMs } : {}),
@@ -3117,7 +3122,7 @@ export async function probeReleaseCutoverReadiness(
       return {
         ready: false,
         ...evidence,
-        detail: `primary Connector is busy: activePosts=${activePosts}; activeStreams=${activeStreams}; initializing=${initializing}`,
+        detail: `primary Connector is busy: activePosts=${activePosts}; activeStreams=${activeStreams}; initializing=${initializing}${oldestActivePostAgeMs !== undefined && Number.isFinite(oldestActivePostAgeMs) ? `; oldestActivePostAgeMs=${oldestActivePostAgeMs}` : ''}`,
       };
     }
     if (activeSessions > 0 && (!Number.isFinite(latestActivityAgeMs) || latestActivityAgeMs < quietMs)) {
@@ -5946,6 +5951,7 @@ export async function cutoverConfiguredRuntimeReleaseSession(
           detail: readiness.detail,
           activeSessions: readiness.activeSessions,
           activePosts: readiness.activePosts,
+          oldestActivePostAgeMs: readiness.oldestActivePostAgeMs,
           activeStreams: readiness.activeStreams,
           initializing: readiness.initializing,
           latestActivityAgeMs: readiness.latestActivityAgeMs,

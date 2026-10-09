@@ -123,7 +123,8 @@ describe('mcp http transport', () => {
   });
 
   test('bounds MCP POST ingress with one shared capacity authority', () => {
-    const stats = { initializing: 0, activePosts: 31, rejectedOverload: 0 };
+    const stats = { initializing: 0, activePostStartedAt: new Map<import('express').Response, number>(), rejectedOverload: 0 };
+    for (let i = 0; i < 31; i++) stats.activePostStartedAt.set({} as import('express').Response, Date.now() - 1_000);
     const response = () => {
       const emitter = new EventEmitter();
       let statusCode = 200;
@@ -150,19 +151,27 @@ describe('mcp http transport', () => {
 
     const admitted = response();
     expect(admitMcpPost(stats, admitted.res)).toBe(true);
-    expect(stats.activePosts).toBe(32);
+    expect(stats.activePostStartedAt.size).toBe(32);
 
     const rejected = response();
     expect(admitMcpPost(stats, rejected.res)).toBe(false);
     expect(rejected.statusCode()).toBe(503);
     expect(rejected.body()).toMatchObject({ code: 'MCP_SERVER_BUSY', action: 'retry' });
     expect(stats.rejectedOverload).toBe(1);
-    expect(stats.activePosts).toBe(32);
+    expect(stats.activePostStartedAt.size).toBe(32);
 
     admitted.finish();
-    expect(stats.activePosts).toBe(31);
+    expect(stats.activePostStartedAt.size).toBe(31);
     admitted.finish();
-    expect(stats.activePosts).toBe(31);
+    expect(stats.activePostStartedAt.size).toBe(31);
+
+    const closed = response();
+    expect(admitMcpPost(stats, closed.res)).toBe(true);
+    expect(stats.activePostStartedAt.size).toBe(32);
+    closed.res.emit('close');
+    expect(stats.activePostStartedAt.size).toBe(31);
+    closed.res.emit('finish');
+    expect(stats.activePostStartedAt.size).toBe(31);
   });
 
   test('transport session retirement does not invalidate durable execution session authority', async () => {
@@ -488,6 +497,7 @@ describe('mcp http transport', () => {
         const postProbeHealth = await fetch(`http://127.0.0.1:${port}/health`).then((response) => response.json());
         expect(postProbeHealth.sessions.active).toBe(0);
         expect(postProbeHealth.sessions.activePosts).toBe(0);
+        expect(postProbeHealth.sessions.oldestActivePostAgeMs).toBe(0);
 
         const initialized = await fetch(`http://127.0.0.1:${port}/mcp`, {
           method: 'POST',
