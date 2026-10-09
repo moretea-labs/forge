@@ -305,9 +305,21 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
     const exact = fresh.flatMap(([instanceId, state]) => state.heartbeat.conversations
       .filter((entry) => entry.conversationId === identity.conversationId)
       .map((entry) => ({ instanceId, entry })));
-    if (exact.length > 1) return failure('COMPUTER_CHATGPT_EXTENSION_EXACT_TARGET_AMBIGUOUS', { failoverSafe: false });
-    if (exact.length === 1) {
-      const candidate = exact[0]!;
+    // Multiple tabs can show one conversation. Prefer the existing exact
+    // Computer binding over heartbeat focus or an arbitrary matching tab.
+    const binding = this.authority.findSurfaceByStableIdentity(this.controllerHome, stableIdentity(identity))?.providerBinding;
+    let candidates = exact;
+    if (exact.length > 1 && binding?.providerId === PROVIDER_ID && binding.windowId && binding.tabId) {
+      const bound = exact.filter(({ entry }) => entry.providerBinding?.windowId === binding.windowId
+        && entry.providerBinding?.tabId === binding.tabId
+        && (!binding.browserProduct || entry.providerBinding?.browserProduct === binding.browserProduct));
+      const sameInstance = bound.filter(({ instanceId }) => instanceId === binding.providerSessionId);
+      candidates = sameInstance.length ? sameInstance : bound;
+    }
+    // A stale binding must not turn two observed exact tabs into a third tab.
+    if (exact.length > 1 && candidates.length !== 1) return failure('COMPUTER_CHATGPT_EXTENSION_EXACT_TARGET_AMBIGUOUS', { failoverSafe: false });
+    if (candidates.length === 1) {
+      const candidate = candidates[0]!;
       const record = await this.bindAsync(identity, candidate.entry.providerBinding, candidate.instanceId);
       const target = this.target(identity, record, candidate.instanceId);
       try {

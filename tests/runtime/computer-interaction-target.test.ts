@@ -500,6 +500,105 @@ describe('Computer durable InteractionTarget authority', () => {
     }
   });
 
+
+  test('reuses persisted exact extension tab when the same conversation is open in multiple profiles', async () => {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-computer-extension-duplicate-tabs-'));
+    try {
+      const extension = new ChromeExtensionChatgptConversationTargetPort(controllerHome, targetAuthority);
+      const identity = {
+        namespace: 'chatgpt.conversation' as const,
+        conversationId: 'conversation-duplicate-tabs',
+        canonicalUrl: 'https://chatgpt.com/c/conversation-duplicate-tabs',
+      };
+      const bound = {
+        providerId: 'browser.chrome-extension',
+        providerSessionId: 'provider-pinned',
+        observedAt: '2026-10-09T05:00:00.000Z',
+        browserProduct: 'chrome',
+        windowId: 'window-pinned',
+        tabId: 'tab-pinned',
+      };
+      targetAuthority.createSurface(controllerHome, {
+        stableIdentity: { surfaceType: 'browser-tab', ownership: 'provider_owned',
+          resource: { namespace: identity.namespace, key: identity.conversationId } },
+        visibility: 'controller', providerBinding: bound,
+      });
+      for (const [providerInstanceId, windowId, tabId, isCurrent] of [
+        ['provider-foreign', 'window-foreign', 'tab-foreign', true],
+        ['provider-pinned', 'window-pinned', 'tab-pinned', false],
+      ] as const) {
+        extension.heartbeat({
+          providerId: 'browser.chrome-extension', providerInstanceId,
+          observedAt: '2026-10-09T05:01:00.000Z',
+          conversations: [{ conversationId: identity.conversationId, canonicalUrl: identity.canonicalUrl,
+            isCurrent, providerBinding: { ...bound, providerSessionId: providerInstanceId, windowId, tabId } }],
+        });
+      }
+      const pending = extension.ensureExact(identity);
+      expect(extension.claim('provider-foreign')).toBeUndefined();
+      let command;
+      for (let attempt = 0; attempt < 50 && !command; attempt += 1) {
+        command = extension.claim('provider-pinned');
+        if (!command) await Bun.sleep(1);
+      }
+      expect(command?.kind).toBe('observe');
+      if (!command) throw new Error('pinned extension target did not receive observation');
+      expect(extension.complete('provider-pinned', command.commandId, {
+        kind: 'observation',
+        observation: { url: identity.canonicalUrl, title: 'Pinned', latestUserText: '',
+          latestAssistantResponse: '', providerActivityText: '', providerFailureText: '',
+          composerText: '', isGenerating: false },
+      })).toBe(true);
+      const result = await pending;
+      expect(result.state).toBe('ready');
+      if (result.state !== 'ready') throw new Error('exact target not ready');
+      expect(targetAuthority.getSurface(controllerHome, result.target.targetId)?.providerBinding)
+        .toMatchObject({ providerSessionId: 'provider-pinned', tabId: 'tab-pinned' });
+      await extension.close();
+    } finally {
+      rmSync(controllerHome, { recursive: true, force: true });
+    }
+  });
+
+  test('rejects duplicate conversation tabs without a unique persisted provider binding', async () => {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-computer-extension-ambiguous-tabs-'));
+    try {
+      const extension = new ChromeExtensionChatgptConversationTargetPort(controllerHome, targetAuthority);
+      const identity = { namespace: 'chatgpt.conversation' as const,
+        conversationId: 'conversation-ambiguous', canonicalUrl: 'https://chatgpt.com/c/conversation-ambiguous' };
+      for (const [providerInstanceId, tabId] of [['profile-one', 'tab-one'], ['profile-two', 'tab-two']] as const) {
+        extension.heartbeat({ providerId: 'browser.chrome-extension', providerInstanceId,
+          observedAt: '2026-10-09T05:01:00.000Z',
+          conversations: [{ conversationId: identity.conversationId, canonicalUrl: identity.canonicalUrl,
+            providerBinding: { providerId: 'browser.chrome-extension', providerSessionId: providerInstanceId,
+              browserProduct: 'chrome', windowId: providerInstanceId, tabId, observedAt: '2026-10-09T05:01:00.000Z' } }],
+        });
+      }
+      expect(await extension.ensureExact(identity)).toMatchObject({
+        state: 'unavailable', failure: { code: 'COMPUTER_CHATGPT_EXTENSION_EXACT_TARGET_AMBIGUOUS', failoverSafe: false },
+      });
+      expect(extension.claim('profile-one')).toBeUndefined();
+      expect(extension.claim('profile-two')).toBeUndefined();
+      // Even a persisted binding is insufficient if none of the live exact tabs
+      // matches it. Never open a third tab while the true owner is ambiguous.
+      targetAuthority.createSurface(controllerHome, {
+        stableIdentity: { surfaceType: 'browser-tab', ownership: 'provider_owned',
+          resource: { namespace: identity.namespace, key: identity.conversationId } },
+        visibility: 'controller',
+        providerBinding: { providerId: 'browser.chrome-extension', providerSessionId: 'profile-stale',
+          browserProduct: 'chrome', windowId: 'stale-window', tabId: 'stale-tab', observedAt: '2026-10-09T05:01:00.000Z' },
+      });
+      expect(await extension.ensureExact(identity)).toMatchObject({
+        state: 'unavailable', failure: { code: 'COMPUTER_CHATGPT_EXTENSION_EXACT_TARGET_AMBIGUOUS', failoverSafe: false },
+      });
+      expect(extension.claim('profile-one')).toBeUndefined();
+      expect(extension.claim('profile-two')).toBeUndefined();
+      await extension.close();
+    } finally {
+      rmSync(controllerHome, { recursive: true, force: true });
+    }
+  });
+
   test('does not trust an exact heartbeat entry until conversation content is observable', async () => {
     const controllerHome = mkdtempSync(join(tmpdir(), 'forge-computer-extension-heartbeat-shell-'));
     try {

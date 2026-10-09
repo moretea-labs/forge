@@ -18,29 +18,37 @@ export class PreferredChatgptConversationTargetPort implements ComputerChatgptCo
     private readonly compatibility: ComputerChatgptConversationTargetPort,
   ) {}
 
-  private wrap(primaryTarget: ComputerChatgptConversationTarget, compatibilityTarget?: ComputerChatgptConversationTarget, nativeCompatibility = false): ComputerChatgptConversationTarget {
+  private wrap(primaryTarget: ComputerChatgptConversationTarget, nativeCompatibility = false): ComputerChatgptConversationTarget {
     const identity = identityOf(primaryTarget);
+    // Computer owns the stable target and its provider binding. A successful
+    // read-only reattach must update every subsequent operation on this target,
+    // not just return an observation from another provider.
+    let selectedTarget = primaryTarget;
+    let selectedNative = nativeCompatibility;
     return {
       targetId: primaryTarget.targetId,
       identity,
       observe: async (options?: ComputerChatgptConversationObservationOptions) => {
-        try { return await primaryTarget.observe(options); }
+        try { return await selectedTarget.observe(options); }
         catch (primaryError) {
-          if (compatibilityTarget) return await compatibilityTarget.observe(options);
-          if (identity.namespace === 'chatgpt.conversation') {
-            const fallback = await this.compatibility.ensureExact(identity);
-            if (fallback.state === 'ready') return await fallback.target.observe(options);
+          if (!selectedNative && identity.namespace === 'chatgpt.conversation') {
+            const rebound = await this.compatibility.ensureExact(identity);
+            if (rebound.state === 'ready' && rebound.target.targetId === primaryTarget.targetId) {
+              const observation = await rebound.target.observe(options);
+              selectedTarget = rebound.target;
+              selectedNative = true;
+              return observation;
+            }
           }
           throw primaryError;
         }
       },
-      prepare: async (prompt, options) => await primaryTarget.prepare(prompt,
-        nativeCompatibility && options?.reasoning ? { ...options, reasoning: undefined } : options),
-      // Only the explicitly selected native fallback lacks a verified reasoning selector.
-      // Preserve a single sender and every other dispatch option; never retry a
-      // possibly submitted effect through a different provider.
-      dispatch: async (prompt, options) => await primaryTarget.dispatch(prompt,
-        nativeCompatibility && options?.reasoning ? { ...options, reasoning: undefined } : options),
+      prepare: async (prompt, options) => await selectedTarget.prepare(prompt,
+        selectedNative && options?.reasoning ? { ...options, reasoning: undefined } : options),
+      // Never replay a possibly submitted effect through another provider.
+      // The only transport switch above is a verified read-only reattachment.
+      dispatch: async (prompt, options) => await selectedTarget.dispatch(prompt,
+        selectedNative && options?.reasoning ? { ...options, reasoning: undefined } : options),
     };
   }
 
@@ -67,7 +75,7 @@ export class PreferredChatgptConversationTargetPort implements ComputerChatgptCo
     // Supervisor continuation behind an optional transport.
     if (primary.failure.failoverSafe === true) {
       const compatibility = await this.compatibility.ensureExact(identity);
-      if (compatibility.state === 'ready') return { ...compatibility, target: this.wrap(compatibility.target, undefined, true) };
+      if (compatibility.state === 'ready') return { ...compatibility, target: this.wrap(compatibility.target, true) };
     }
     return primary;
   }
@@ -81,7 +89,7 @@ export class PreferredChatgptConversationTargetPort implements ComputerChatgptCo
     const primary = await this.primary.findBySubmittedMarker(marker, bootstrapKey, betweenObservations);
     if (primary.length > 0) return primary.map((result) => result.state === 'ready' ? { ...result, target: this.wrap(result.target) } : result);
     return (await this.compatibility.findBySubmittedMarker(marker, bootstrapKey, betweenObservations))
-      .map((result) => result.state === 'ready' ? { ...result, target: this.wrap(result.target, undefined, true) } : result);
+      .map((result) => result.state === 'ready' ? { ...result, target: this.wrap(result.target, true) } : result);
   }
 
   async promoteBootstrap(targetId: string, identity: ComputerChatgptConversationIdentity): Promise<ComputerChatgptTargetResult> {
