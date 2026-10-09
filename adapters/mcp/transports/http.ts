@@ -39,6 +39,7 @@ import { McpSessionRegistry, type ClosableMcpTransport, type McpSessionRegistryO
 import { getConfiguredPublicOrigin, getPublicOrigin, registerMcpOAuthHttpRoutes } from './oauth-http';
 import { registerMcpHttpObservationRoutes } from './http-observation';
 import { RUNTIME_MCP_CUTOVER_OUTCOME_UNKNOWN } from '../../../src/runtime/root/mcp-transport';
+import { packageConnectorCutoverDrainIsActive } from '../../../src/runtime/root/package-connector-service';
 export { isAllowedMcpOAuthRedirectUri, isIncompleteOAuthAuthorizeRequest } from './oauth-http';
 import {
   connectionIdentity,
@@ -359,7 +360,36 @@ const MCP_STREAM_LEASE_MS = positiveIntegerEnv('FORGE_MCP_STREAM_LEASE_MS', 30 *
 const MCP_SESSION_ABSOLUTE_LIFETIME_MS = positiveIntegerEnv('FORGE_MCP_SESSION_ABSOLUTE_LIFETIME_MS', 2 * 60 * 60_000);
 const MCP_ACTIVE_POST_STALL_MS = positiveIntegerEnv('FORGE_MCP_ACTIVE_POST_STALL_MS', 10 * 60_000);
 
-export function admitMcpPost(stats: McpRuntimeStats, res: Response): boolean {
+function sendReleaseCutoverDraining(res: Response): void {
+  res.setHeader('retry-after', '1');
+  res.status(503).json({
+    error: 'release_cutover_draining',
+    code: 'MCP_RELEASE_CUTOVER_DRAINING',
+    message: 'This Connector is draining admitted MCP requests for a Runtime release cutover; retry shortly.',
+    recoverable: true,
+    retryable: true,
+    sessionPreserved: true,
+    action: 'retry',
+  });
+}
+
+function connectorCutoverDrainActive(req: Request, controllerHome?: string): boolean {
+  if (!controllerHome || !req.socket.localPort) return false;
+  return packageConnectorCutoverDrainIsActive(
+    controllerHome,
+    `http://127.0.0.1:${req.socket.localPort}/mcp`,
+  );
+}
+
+export function admitMcpPost(
+  stats: McpRuntimeStats,
+  res: Response,
+  cutoverDrain?: { controllerHome: string; connectorEndpoint: string },
+): boolean {
+  if (cutoverDrain && packageConnectorCutoverDrainIsActive(cutoverDrain.controllerHome, cutoverDrain.connectorEndpoint)) {
+    sendReleaseCutoverDraining(res);
+    return false;
+  }
   if (stats.activePostStartedAt.size >= MAX_ACTIVE_POSTS) {
     stats.rejectedOverload += 1;
     res.setHeader('retry-after', '1');
@@ -457,7 +487,12 @@ async function handleMcpPost(
     res.status(400).json({ error: 'invalid JSON request body' });
     return;
   }
-  if (!admitMcpPost(stats, res)) return;
+  const connectorEndpoint = req.socket.localPort
+    ? `http://127.0.0.1:${req.socket.localPort}/mcp`
+    : undefined;
+  if (!admitMcpPost(stats, res, baseOptions.controllerHome && connectorEndpoint
+    ? { controllerHome: baseOptions.controllerHome, connectorEndpoint }
+    : undefined)) return;
   if (modernHandler) {
     const webRequest = await toWebRequest(req, body);
     if (!(await isLegacyRequest(webRequest, body))) {
@@ -644,7 +679,12 @@ async function handleMcpGet(
   route: McpSessionRoute,
   currentToolSurfaceFingerprint: () => string | undefined,
   resolveRuntimeSchema?: (context: McpToolContext) => Promise<CanonicalRuntimeToolSchema | undefined>,
+  controllerHome?: string,
 ): Promise<void> {
+  if (connectorCutoverDrainActive(req, controllerHome)) {
+    sendReleaseCutoverDraining(res);
+    return;
+  }
   const sessionId = req.headers['mcp-session-id'] as string | undefined;
   const managed = sessionId ? registry.get(sessionId) : undefined;
   if (!managed || managed.route !== route || managed.principalId !== principalFromRequest(req)) {
@@ -843,7 +883,7 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
     });
   });
   app.get('/mcp', requireMcpHttpAuth(authMode, authToken, oauthProvider, configuredPublicOrigin), (req, res) => {
-    handleMcpGet(req, res, sessionRegistry, '/mcp', currentRuntimeToolSurfaceFingerprint, resolveRuntimeSchema).catch((error: unknown) => {
+    handleMcpGet(req, res, sessionRegistry, '/mcp', currentRuntimeToolSurfaceFingerprint, resolveRuntimeSchema, controllerHome).catch((error: unknown) => {
       if (!res.headersSent) sendMcpRequestError(res, error);
     });
   });
@@ -861,7 +901,7 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
     });
   });
   app.get('/mcp-grok', requireMcpHttpAuth(authMode, authToken, oauthProvider, configuredPublicOrigin, '/mcp-grok'), (req, res) => {
-    handleMcpGet(req, res, sessionRegistry, '/mcp-grok', currentRuntimeToolSurfaceFingerprint, resolveRuntimeSchema).catch((error: unknown) => {
+    handleMcpGet(req, res, sessionRegistry, '/mcp-grok', currentRuntimeToolSurfaceFingerprint, resolveRuntimeSchema, controllerHome).catch((error: unknown) => {
       if (!res.headersSent) sendMcpRequestError(res, error);
     });
   });
@@ -879,7 +919,7 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
     });
   });
   app.get('/mcp-bearer', requireMcpHttpAuth('bearer', authToken, null, configuredPublicOrigin), (req, res) => {
-    handleMcpGet(req, res, sessionRegistry, '/mcp-bearer', currentRuntimeToolSurfaceFingerprint, resolveRuntimeSchema).catch((error: unknown) => {
+    handleMcpGet(req, res, sessionRegistry, '/mcp-bearer', currentRuntimeToolSurfaceFingerprint, resolveRuntimeSchema, controllerHome).catch((error: unknown) => {
       if (!res.headersSent) sendMcpRequestError(res, error);
     });
   });

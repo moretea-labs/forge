@@ -57,7 +57,15 @@ import {
   type RuntimeReleaseAuthority,
 } from '../root/release-store';
 import type { RuntimeReleaseManifest } from '../root/types';
-import { ensurePackageConnectorService, packageConnectorAuthMode, packageConnectorServicePaths, type PackageConnectorReleaseBinding } from '../root/package-connector-service';
+import {
+  armPackageConnectorCutoverDrain,
+  clearPackageConnectorCutoverDrain,
+  ensurePackageConnectorService,
+  packageConnectorAuthMode,
+  packageConnectorServicePaths,
+  readPackageConnectorServiceAuthority,
+  type PackageConnectorReleaseBinding,
+} from '../root/package-connector-service';
 import { createRecoveryHttpTransport, type RecoveryHttpTransport } from './http-transport';
 import { observeRecoveryWatchdogHealth } from './watchdog-heartbeat';
 import { RECOVERY_DAEMON_LABEL } from './service-labels';
@@ -3054,6 +3062,7 @@ export interface AutomaticReleaseCutoverReadiness {
 
 const AUTOMATIC_RELEASE_CUTOVER_QUIET_MS = 30_000;
 const AUTOMATIC_RELEASE_CUTOVER_HEALTH_TIMEOUT_MS = 2_000;
+const RELEASE_SESSION_CONNECTOR_DRAIN_WAIT_MS = 180_000;
 
 function primaryConnectorHealthEndpoint(config: RecoveryConfig): string | undefined {
   const localMcpUrl = config.primaryConnectorService?.localMcpUrl?.trim();
@@ -5917,80 +5926,94 @@ export async function cutoverConfiguredRuntimeReleaseSession(
       ) throw new Error('RELEASE_SESSION_STABLE_CHANGED_DURING_PROMOTION');
 
       // Connector quietness is a cutover invariant, not an automatic-release
-      // policy. Every caller, including explicit/local-recovery ReleaseSession
-      // progression, must prove that no MCP request/stream is active and that
-      // remaining sessions have been idle for the bounded quiet window before
-      // Stable A ownership can move. Otherwise a perfectly valid release switch
-      // can tear down the ChatGPT turn that requested it.
-      let readiness = await probeReleaseCutoverReadiness(config);
-      // The post-promotion verification above may itself create MCP activity
-      // on the primary Connector.  Give that activity a bounded opportunity
-      // to become quiet before deferring the session; otherwise every retry
-      // re-verifies the Runtime, refreshes latestActivityAgeMs, and can defer
-      // forever without ever reaching the cutover attempt.
-      const quietWaitDeadline = Date.now() + AUTOMATIC_RELEASE_CUTOVER_QUIET_MS + 5_000;
-      while (
-        !readiness.ready
-        && readiness.activePosts === 0
-        && readiness.activeStreams === 0
-        && readiness.initializing === 0
-        && Number.isFinite(readiness.latestActivityAgeMs)
-        && (readiness.latestActivityAgeMs ?? AUTOMATIC_RELEASE_CUTOVER_QUIET_MS) < AUTOMATIC_RELEASE_CUTOVER_QUIET_MS
-        && Date.now() < quietWaitDeadline
-      ) {
-        const remainingMs = Math.max(
-          50,
-          AUTOMATIC_RELEASE_CUTOVER_QUIET_MS - (readiness.latestActivityAgeMs ?? 0) + 25,
-        );
-        await sleep(Math.min(2_000, remainingMs));
-        readiness = await probeReleaseCutoverReadiness(config);
-      }
-      if (!readiness.ready) {
-        audit(config, 'release_session_cutover_deferred_for_mcp_activity', {
+      // policy. Passive observation alone can starve forever under continuous
+      // valid MCP traffic, so the existing Package Connector generation is
+      // mechanically fenced from admitting new POSTs while already-admitted
+      // responses drain. The marker is scoped to this exact Stable A Connector
+      // authority generation; Candidate/rollback rebinds change that generation
+      // and therefore remain able to perform post-cutover verification.
+      const connectorAuthority = readPackageConnectorServiceAuthority(config.controllerHome);
+      const connectorDrain = connectorAuthority
+        ? armPackageConnectorCutoverDrain({
+            controllerHome: config.controllerHome,
+            sessionId,
+            stableReleaseId: session.stableRelease.releaseId,
+            connectorAuthority,
+          })
+        : undefined;
+      try {
+        let readiness = await probeReleaseCutoverReadiness(config);
+        // The caller that requested cutover may itself still be one admitted MCP
+        // POST until a detached Recovery process takes over. Keep the fence up
+        // long enough for that response plus other already-admitted POSTs to
+        // settle, then preserve the existing 30s session-idle invariant.
+        const quietWaitDeadline = Date.now() + RELEASE_SESSION_CONNECTOR_DRAIN_WAIT_MS;
+        while (!readiness.ready && Date.now() < quietWaitDeadline) {
+          const hasInFlightActivity = (readiness.activePosts ?? 0) > 0
+            || (readiness.activeStreams ?? 0) > 0
+            || (readiness.initializing ?? 0) > 0;
+          const awaitingQuietWindow = readiness.activePosts === 0
+            && readiness.activeStreams === 0
+            && readiness.initializing === 0
+            && Number.isFinite(readiness.latestActivityAgeMs)
+            && (readiness.latestActivityAgeMs ?? AUTOMATIC_RELEASE_CUTOVER_QUIET_MS) < AUTOMATIC_RELEASE_CUTOVER_QUIET_MS;
+          if (!(connectorDrain && hasInFlightActivity) && !awaitingQuietWindow) break;
+          const remainingMs = awaitingQuietWindow
+            ? Math.max(50, AUTOMATIC_RELEASE_CUTOVER_QUIET_MS - (readiness.latestActivityAgeMs ?? 0) + 25)
+            : 500;
+          await sleep(Math.min(2_000, remainingMs));
+          readiness = await probeReleaseCutoverReadiness(config);
+        }
+        if (!readiness.ready) {
+          audit(config, 'release_session_cutover_deferred_for_mcp_activity', {
+            sessionId,
+            detail: readiness.detail,
+            activeSessions: readiness.activeSessions,
+            activePosts: readiness.activePosts,
+            oldestActivePostAgeMs: readiness.oldestActivePostAgeMs,
+            activeStreams: readiness.activeStreams,
+            initializing: readiness.initializing,
+            latestActivityAgeMs: readiness.latestActivityAgeMs,
+            connectorDrainArmed: Boolean(connectorDrain),
+            requestKind: requestId?.startsWith('recovery-auto-release:') ? 'automatic' : 'explicit',
+          });
+          return {
+            ok: true as const,
+            attempted: false,
+            noOp: true,
+            detail: `RELEASE_SESSION_CUTOVER_DEFERRED_FOR_MCP_ACTIVITY: ${readiness.detail}`,
+            releaseSession: session,
+          };
+        }
+
+        session = advanceReleaseSession({
+          controllerHome: config.controllerHome,
           sessionId,
-          detail: readiness.detail,
-          activeSessions: readiness.activeSessions,
-          activePosts: readiness.activePosts,
-          oldestActivePostAgeMs: readiness.oldestActivePostAgeMs,
-          activeStreams: readiness.activeStreams,
-          initializing: readiness.initializing,
-          latestActivityAgeMs: readiness.latestActivityAgeMs,
-          requestKind: requestId?.startsWith('recovery-auto-release:') ? 'automatic' : 'explicit',
+          expectedRevision: session.revision,
+          phase: 'cutover_attempting',
+          receipts: [{
+            id: 'cutover_attempt',
+            kind: 'cutover',
+            summary: `byte-identical Candidate B ${candidateRelease.releaseId} promoted to Stable A release storage; beginning the single fenced cutover attempt`,
+          }],
         });
-        return {
-          ok: true as const,
-          attempted: false,
-          noOp: true,
-          detail: `RELEASE_SESSION_CUTOVER_DEFERRED_FOR_MCP_ACTIVITY: ${readiness.detail}`,
-          releaseSession: session,
-        };
+
+        const activation = await activateRuntimeReleaseInternal(config, promoted.manifestPath, {}, {
+          ...(requestId?.trim() ? { requestId: requestId.trim() } : {}),
+          expectedAuthorityRevision: session.stableRelease.authorityRevision,
+          expectedActiveReleaseId: session.stableRelease.releaseId,
+          releaseSessionId: session.sessionId,
+        }, releaseSessionLock);
+
+        return reconcileCutoverAttempt(
+          activation.ok
+            ? 'cutover activation completed; reconciling canonical Runtime identity before phase progression'
+            : `cutover activation returned failure: ${activation.detail}`,
+          activation,
+        );
+      } finally {
+        if (connectorDrain) clearPackageConnectorCutoverDrain(config.controllerHome);
       }
-
-      session = advanceReleaseSession({
-        controllerHome: config.controllerHome,
-        sessionId,
-        expectedRevision: session.revision,
-        phase: 'cutover_attempting',
-        receipts: [{
-          id: 'cutover_attempt',
-          kind: 'cutover',
-          summary: `byte-identical Candidate B ${candidateRelease.releaseId} promoted to Stable A release storage; beginning the single fenced cutover attempt`,
-        }],
-      });
-
-      const activation = await activateRuntimeReleaseInternal(config, promoted.manifestPath, {}, {
-        ...(requestId?.trim() ? { requestId: requestId.trim() } : {}),
-        expectedAuthorityRevision: session.stableRelease.authorityRevision,
-        expectedActiveReleaseId: session.stableRelease.releaseId,
-        releaseSessionId: session.sessionId,
-      }, releaseSessionLock);
-
-      return reconcileCutoverAttempt(
-        activation.ok
-          ? 'cutover activation completed; reconciling canonical Runtime identity before phase progression'
-          : `cutover activation returned failure: ${activation.detail}`,
-        activation,
-      );
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
       const latest = readReleaseSession(config.controllerHome, sessionId) ?? session;

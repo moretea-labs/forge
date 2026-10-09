@@ -13,6 +13,12 @@ import { McpSessionRegistry } from '../../adapters/mcp/transports/session-regist
 import { admitMcpPost, createMcpHttpSessionRegistry, mcpRequestError } from '../../adapters/mcp/transports/http';
 import { recentMcpTransportEvidence } from '../../adapters/mcp/transports/http-observation';
 import { readExecutionSession, startExecutionSession } from '../../src/runtime/control-plane/execution/session-store';
+import {
+  armPackageConnectorCutoverDrain,
+  clearPackageConnectorCutoverDrain,
+  packageConnectorServicePaths,
+  type PackageConnectorServiceAuthority,
+} from '../../src/runtime/root/package-connector-service';
 
 function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -172,6 +178,53 @@ describe('mcp http transport', () => {
     expect(stats.activePostStartedAt.size).toBe(31);
     closed.res.emit('finish');
     expect(stats.activePostStartedAt.size).toBe(31);
+
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-mcp-cutover-drain-'));
+    try {
+      const endpoint = 'http://127.0.0.1:8767/mcp';
+      const connectorAuthority: PackageConnectorServiceAuthority = {
+        schemaVersion: 1,
+        endpoint,
+        releaseId: 'stable-release-a',
+        releaseRoot: join(controllerHome, 'runtime', 'releases', 'stable-release-a'),
+        packageRoot: join(controllerHome, 'runtime', 'releases', 'stable-release-a', 'package'),
+        mode: 'launchd',
+        persistent: true,
+        installedAt: '2026-10-09T20:00:00.000Z',
+      };
+      const connectorPaths = packageConnectorServicePaths(controllerHome);
+      mkdirSync(connectorPaths.serviceRoot, { recursive: true });
+      writeFileSync(connectorPaths.authorityPath, `${JSON.stringify(connectorAuthority, null, 2)}\n`);
+      armPackageConnectorCutoverDrain({
+        controllerHome,
+        sessionId: 'release-session-cutover-drain-12345678',
+        stableReleaseId: connectorAuthority.releaseId,
+        connectorAuthority,
+      });
+
+      const draining = response();
+      expect(admitMcpPost(stats, draining.res, { controllerHome, connectorEndpoint: endpoint })).toBe(false);
+      expect(draining.statusCode()).toBe(503);
+      expect(draining.body()).toMatchObject({ code: 'MCP_RELEASE_CUTOVER_DRAINING', action: 'retry' });
+      expect(stats.activePostStartedAt.size).toBe(31);
+
+      // The fence belongs to the exact old Connector service generation. A
+      // Candidate or rollback rebind changes installedAt before strict MCP
+      // verification, so the replacement process is not trapped behind the
+      // predecessor's drain marker even when it serves the same endpoint.
+      writeFileSync(connectorPaths.authorityPath, `${JSON.stringify({
+        ...connectorAuthority,
+        installedAt: '2026-10-09T20:01:00.000Z',
+      }, null, 2)}\n`);
+      const rebound = response();
+      expect(admitMcpPost(stats, rebound.res, { controllerHome, connectorEndpoint: endpoint })).toBe(true);
+      expect(stats.activePostStartedAt.size).toBe(32);
+      rebound.finish();
+      expect(stats.activePostStartedAt.size).toBe(31);
+    } finally {
+      clearPackageConnectorCutoverDrain(controllerHome);
+      rmSync(controllerHome, { recursive: true, force: true });
+    }
   });
 
   test('transport session retirement does not invalidate durable execution session authority', async () => {

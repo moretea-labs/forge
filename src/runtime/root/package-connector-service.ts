@@ -49,6 +49,16 @@ export interface PackageConnectorServiceResult {
   releaseRoot?: string;
 }
 
+export interface PackageConnectorCutoverDrainMarker {
+  schemaVersion: 1;
+  sessionId: string;
+  stableReleaseId: string;
+  connectorEndpoint: string;
+  connectorInstalledAt: string;
+  ownerPid: number;
+  armedAt: string;
+}
+
 export type PackageConnectorAuthMode = 'oauth' | 'none';
 
 function xml(value: string): string {
@@ -76,6 +86,114 @@ export function packageConnectorServicePaths(controllerHome: string, accountHome
     authorityPath: join(serviceRoot, 'authority.json'),
     activeEntrypointPath: join(serviceRoot, 'active-forge-mcp-gateway'),
   };
+}
+
+const PACKAGE_CONNECTOR_CUTOVER_DRAIN_TTL_MS = 10 * 60_000;
+
+export function packageConnectorCutoverDrainMarkerPath(controllerHome: string): string {
+  return join(packageConnectorServicePaths(controllerHome).serviceRoot, 'cutover-draining.json');
+}
+
+function removePackageConnectorCutoverDrainMarker(controllerHome: string): void {
+  rmSync(packageConnectorCutoverDrainMarkerPath(controllerHome), { force: true });
+}
+
+function livePackageConnectorCutoverDrainMarker(
+  controllerHome: string,
+  now = Date.now(),
+): PackageConnectorCutoverDrainMarker | undefined {
+  const path = packageConnectorCutoverDrainMarkerPath(controllerHome);
+  if (!existsSync(path)) return undefined;
+  try {
+    const marker = JSON.parse(readFileSync(path, 'utf8')) as Partial<PackageConnectorCutoverDrainMarker>;
+    const armedAt = typeof marker.armedAt === 'string' ? Date.parse(marker.armedAt) : Number.NaN;
+    if (
+      marker.schemaVersion !== 1
+      || typeof marker.sessionId !== 'string'
+      || !marker.sessionId.trim()
+      || typeof marker.stableReleaseId !== 'string'
+      || !marker.stableReleaseId.trim()
+      || typeof marker.connectorEndpoint !== 'string'
+      || !marker.connectorEndpoint.trim()
+      || typeof marker.connectorInstalledAt !== 'string'
+      || !marker.connectorInstalledAt.trim()
+      || !Number.isInteger(marker.ownerPid)
+      || Number(marker.ownerPid) <= 0
+      || !Number.isFinite(armedAt)
+      || now - armedAt > PACKAGE_CONNECTOR_CUTOVER_DRAIN_TTL_MS
+    ) {
+      removePackageConnectorCutoverDrainMarker(controllerHome);
+      return undefined;
+    }
+    try {
+      process.kill(Number(marker.ownerPid), 0);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EPERM') {
+        removePackageConnectorCutoverDrainMarker(controllerHome);
+        return undefined;
+      }
+    }
+    return marker as PackageConnectorCutoverDrainMarker;
+  } catch {
+    removePackageConnectorCutoverDrainMarker(controllerHome);
+    return undefined;
+  }
+}
+
+export function armPackageConnectorCutoverDrain(input: {
+  controllerHome: string;
+  sessionId: string;
+  stableReleaseId: string;
+  connectorAuthority: PackageConnectorServiceAuthority;
+}): PackageConnectorCutoverDrainMarker {
+  if (input.connectorAuthority.releaseId !== input.stableReleaseId) {
+    throw new Error(`PACKAGE_CONNECTOR_CUTOVER_DRAIN_STABLE_MISMATCH: expected ${input.stableReleaseId}, observed ${input.connectorAuthority.releaseId}`);
+  }
+  const currentAuthority = readPackageConnectorServiceAuthority(input.controllerHome);
+  if (
+    !currentAuthority
+    || currentAuthority.releaseId !== input.connectorAuthority.releaseId
+    || currentAuthority.endpoint !== input.connectorAuthority.endpoint
+    || currentAuthority.installedAt !== input.connectorAuthority.installedAt
+  ) {
+    throw new Error('PACKAGE_CONNECTOR_CUTOVER_DRAIN_AUTHORITY_CHANGED');
+  }
+  const marker: PackageConnectorCutoverDrainMarker = {
+    schemaVersion: 1,
+    sessionId: input.sessionId,
+    stableReleaseId: input.stableReleaseId,
+    connectorEndpoint: input.connectorAuthority.endpoint,
+    connectorInstalledAt: input.connectorAuthority.installedAt,
+    ownerPid: process.pid,
+    armedAt: new Date().toISOString(),
+  };
+  const path = packageConnectorCutoverDrainMarkerPath(input.controllerHome);
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  atomicWrite(path, `${JSON.stringify(marker, null, 2)}\n`, 0o600);
+  return marker;
+}
+
+export function clearPackageConnectorCutoverDrain(controllerHome: string): void {
+  removePackageConnectorCutoverDrainMarker(controllerHome);
+}
+
+export function packageConnectorCutoverDrainIsActive(
+  controllerHome: string,
+  connectorEndpoint: string,
+  now = Date.now(),
+): boolean {
+  const marker = livePackageConnectorCutoverDrainMarker(controllerHome, now);
+  if (!marker || marker.connectorEndpoint !== connectorEndpoint) return false;
+  let authority: PackageConnectorServiceAuthority | undefined;
+  try {
+    authority = readPackageConnectorServiceAuthority(controllerHome);
+  } catch {
+    return true;
+  }
+  if (!authority) return true;
+  return authority.releaseId === marker.stableReleaseId
+    && authority.endpoint === marker.connectorEndpoint
+    && authority.installedAt === marker.connectorInstalledAt;
 }
 
 export function readPackageConnectorServiceAuthority(controllerHome: string): PackageConnectorServiceAuthority | undefined {
