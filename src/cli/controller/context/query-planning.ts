@@ -47,11 +47,18 @@ export function pathNoisePenalty(path: string, intent: string, retrievalMode: Co
 export function textTokens(value: string): string[] {
   const split = value.replace(/([a-z0-9])([A-Z])/g, '$1 $2').split(/[^\p{L}\p{N}_./:-]+/u)
     .map((entry) => entry.trim()).filter(Boolean);
-  return Array.from(new Set(split
+  // Preserve full code needles before their broad camel-case fragments.
+  return Array.from(new Set([...codeShapedAnchors(value), ...split]
     .map((entry) => entry.replace(/^[\'"`]+|[\'"`]+$/g, ''))
     .filter((entry) => entry.length >= 3)
     .filter((entry) => !STOPWORDS.has(entry.toLowerCase()))
     .filter((entry) => !/^\d+$/.test(entry)))).slice(0, 12);
+}
+
+/** Split explicit multi-symbol input into independent exact needles before search. */
+export function explicitCodeQueries(searchTerms: readonly string[] | undefined): string[] {
+  // Camel-case fragments are hints, not separately mandatory matches.
+  return Array.from(new Set((searchTerms ?? []).flatMap(codeShapedAnchors))).slice(0, 4);
 }
 
 /** A caller-supplied symbol or path is an exact retrieval needle, not a broad hint. */

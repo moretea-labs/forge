@@ -328,6 +328,59 @@ function gitSearchFileInventoryAsync(repoRoot: string): Promise<string[] | null>
   });
 }
 
+/** Git provides a fast tracked-file location hint; the normal policy-checked
+ * source matcher remains the only authority for actual lexical hits. */
+function gitExactSearchCandidateArgs(needle: string, caseSensitive: boolean): string[] {
+  // Word-fenced Git candidates avoid a flood of longer-prefix symbols before
+  // policy-checked source matching enforces the actual exact code boundary.
+  return ['grep', '-l', '-z', '-F', '-w', ...(caseSensitive ? [] : ['-i']), '-e', needle, '--'];
+}
+
+function interleaveExactCandidatePaths(lists: readonly string[][], maxFiles: number): string[] {
+  const paths = new Set<string>();
+  const perQueryLimit = Math.min(8, maxFiles);
+  for (let index = 0; index < perQueryLimit; index += 1) {
+    for (const list of lists) {
+      const path = list[index];
+      if (path) paths.add(path);
+      if (paths.size >= maxFiles) return [...paths];
+    }
+  }
+  return [...paths];
+}
+
+function gitExactSearchCandidatePaths(repoRoot: string, queries: string[], caseSensitive: boolean, maxFiles: number): string[] {
+  const lists = queries.map((query) => {
+    try {
+      const result = runProcess('git', gitExactSearchCandidateArgs(query, caseSensitive), {
+        cwd: repoRoot, timeoutMs: 10_000, maxOutputBytes: SEARCH_GIT_INVENTORY_MAX_OUTPUT_BYTES,
+      });
+      return result.ok && !result.stdout.includes('[output truncated after')
+        ? result.stdout.split('\0').filter(Boolean)
+        : [];
+    } catch { return []; }
+  });
+  return interleaveExactCandidatePaths(lists, maxFiles);
+}
+
+async function gitExactSearchCandidatePathsAsync(repoRoot: string, queries: string[], caseSensitive: boolean, maxFiles: number): Promise<string[]> {
+  const lists = await Promise.all(queries.map((query) => new Promise<string[]>((resolve) => {
+    execFile('git', gitExactSearchCandidateArgs(query, caseSensitive), {
+      cwd: repoRoot, timeout: 10_000, maxBuffer: SEARCH_GIT_INVENTORY_MAX_OUTPUT_BYTES, encoding: 'utf8',
+    }, (error, stdout) => resolve(error || typeof stdout !== 'string' ? [] : stdout.split('\0').filter(Boolean)));
+  })));
+  return interleaveExactCandidatePaths(lists, maxFiles);
+}
+
+function prioritizeExactSearchCandidates(
+  inventory: { files: string[]; candidateCount: number; cacheHit: boolean },
+  hints: string[], includes: string[], excludes: string[], maxFiles: number,
+): typeof inventory {
+  if (!hints.length) return inventory;
+  const accepted = hints.filter((path) => isIncluded(path, includes) && !isExcluded(path, excludes));
+  return { ...inventory, files: [...new Set([...accepted, ...inventory.files])].slice(0, maxFiles) };
+}
+
 function binary(bytes: Buffer): boolean {
   return bytes.subarray(0, Math.min(bytes.length, 8000)).includes(0);
 }
@@ -711,6 +764,10 @@ export function searchRepositoryMany(
         cacheHit: false,
       }
     : searchInventory(repoRoot, includes, excludes, maxFiles, opts.cacheKey);
+  const prioritizedInventory = !directCandidates && requiredQueries.length && inventory.candidateCount > maxFiles
+    ? prioritizeExactSearchCandidates(inventory,
+        gitExactSearchCandidatePaths(repoRoot, requiredQueries, opts.caseSensitive === true, maxFiles), includes, excludes, maxFiles)
+    : inventory;
   const matchState = createSearchManyMatchState(
     queries,
     maxResultsPerQuery,
@@ -726,7 +783,7 @@ export function searchRepositoryMany(
   let skippedBinaryFiles = 0;
   const canonicalRepoRoot = realpathSync(repoRoot);
 
-  for (const path of inventory.files) {
+  for (const path of prioritizedInventory.files) {
     if (searchManyComplete(matchState)) break;
     const decision = resolveMcpPath(repoRoot, path, policy, 'read', canonicalRepoRoot);
     if (!decision.ok || !decision.absolutePath) {
@@ -759,7 +816,7 @@ export function searchRepositoryMany(
     skippedLargeFiles,
     skippedBinaryFiles,
     candidateCount: inventory.candidateCount,
-    inventoryFileCount: inventory.files.length,
+    inventoryFileCount: prioritizedInventory.files.length,
     inventoryCacheHit: inventory.cacheHit,
   });
   if (sessionCache) {
@@ -846,6 +903,10 @@ export async function searchRepositoryManyAsync(
         cacheHit: false,
       }
     : await searchInventoryAsync(repoRoot, includes, excludes, maxFiles, opts.cacheKey);
+  const prioritizedInventory = !directCandidates && requiredQueries.length && inventory.candidateCount > maxFiles
+    ? prioritizeExactSearchCandidates(inventory,
+        await gitExactSearchCandidatePathsAsync(repoRoot, requiredQueries, opts.caseSensitive === true, maxFiles), includes, excludes, maxFiles)
+    : inventory;
   const matchState = createSearchManyMatchState(
     queries,
     maxResultsPerQuery,
@@ -860,8 +921,8 @@ export async function searchRepositoryManyAsync(
   let skippedLargeFiles = 0;
   let skippedBinaryFiles = 0;
   const canonicalRepoRoot = realpathSync(repoRoot);
-  for (let offset = 0; offset < inventory.files.length && !searchManyComplete(matchState); offset += ASYNC_SEARCH_READ_BATCH_SIZE) {
-    const batchPaths = inventory.files.slice(offset, offset + ASYNC_SEARCH_READ_BATCH_SIZE);
+  for (let offset = 0; offset < prioritizedInventory.files.length && !searchManyComplete(matchState); offset += ASYNC_SEARCH_READ_BATCH_SIZE) {
+    const batchPaths = prioritizedInventory.files.slice(offset, offset + ASYNC_SEARCH_READ_BATCH_SIZE);
     const batch = await Promise.all(batchPaths.map((path) => readSearchCandidateAsync(repoRoot, policy, canonicalRepoRoot, path)));
     for (const candidate of batch) {
       if (searchManyComplete(matchState)) break;
@@ -891,7 +952,7 @@ export async function searchRepositoryManyAsync(
     skippedLargeFiles,
     skippedBinaryFiles,
     candidateCount: inventory.candidateCount,
-    inventoryFileCount: inventory.files.length,
+    inventoryFileCount: prioritizedInventory.files.length,
     inventoryCacheHit: inventory.cacheHit,
   });
   if (sessionCache) {

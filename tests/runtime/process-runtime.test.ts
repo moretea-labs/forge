@@ -26,6 +26,7 @@ import {
   readProcessLogs,
   runCheckViaProcessRuntime,
   spawnManagedProcess,
+  processRuntimeResourceDiagnostics,
   tryCompleteProcessRecord,
   waitForCheckProcess,
   waitForProcess,
@@ -1012,6 +1013,18 @@ describe('Unified Process Runtime', () => {
     expect(handle.route).toBe('managed');
     expect(handle.processId).toBeTruthy();
     expect(handle.pid).toBeTruthy();
+    expect(processRuntimeResourceDiagnostics().waiterCount).toBe(0);
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      const expiredWait = new AbortController();
+      const timedOut = await waitForProcess(fx.controllerHome, fx.repository.repoId, handle.processId, {
+        timeoutMs: 5,
+        signal: expiredWait.signal,
+      });
+      expect(timedOut.completed).toBe(false);
+      expect(processRuntimeResourceDiagnostics().waiterCount).toBe(0);
+      // A caller whose observation already ended cannot cancel the live command.
+      expiredWait.abort();
+    }
 
     const waited = await waitForProcess(fx.controllerHome, fx.repository.repoId, handle.processId, {
       timeoutMs: 10_000,
@@ -1808,6 +1821,7 @@ describe('run_check Process Runtime facade', () => {
       commandId,
     };
     const requestFingerprint = JSON.stringify({
+      scopeKey: input.repoId,
       repoId: input.repoId,
       executable: input.executable,
       args: input.args,
@@ -2198,7 +2212,9 @@ describe('fine-grained resource claims', () => {
     const probe = ['curl', 'http://127.0.0.1:38417/health'];
     expect(classifyRepositoryCommand(probe).risk).toBe('readonly');
     const probeClaims = claimsForRepositoryCommand(probe, 'repo1', 'co1');
-    expect(probeClaims).toEqual([{ resourceKey: 'network:repo1', mode: 'read' }]);
+    // Loopback health probes use the canonical host-service claim, not the
+    // retired repository-global network claim.
+    expect(probeClaims).toEqual([{ resourceKey: 'host-service:tcp-client:loopback', mode: 'read' }]);
     expect(serverClaims.some((left) => probeClaims.some((right) => resourceClaimsConflict(left, right)))).toBe(false);
 
     expect(claimsForRepositoryCommand(['python3', '-m', 'http.server', '8000', '--cgi'], 'repo1', 'co1'))
@@ -2451,6 +2467,7 @@ describe('Process Runtime real lease contention', () => {
       checkoutId: fx.repository.activeCheckoutId,
       executionIdentity: executionIdentityForRepository(fx.repository),
       workId: 'work-build-cache-holder',
+      origin: { surface: 'check', checkId: 'build-cache-holder' },
       command: {
         kind: 'argv',
         executable: 'node',
@@ -2475,6 +2492,7 @@ describe('Process Runtime real lease contention', () => {
       checkoutId: fx.repository.activeCheckoutId,
       executionIdentity: executionIdentityForRepository(fx.repository),
       workId: 'work-build-cache-short-budget',
+      origin: { surface: 'check', checkId: 'build-cache-short-budget' },
       command: {
         kind: 'argv',
         executable: 'node',
@@ -2502,6 +2520,7 @@ describe('Process Runtime real lease contention', () => {
       checkoutId: fx.repository.activeCheckoutId,
       executionIdentity: executionIdentityForRepository(fx.repository),
       workId: 'work-build-cache-waiter',
+      origin: { surface: 'check', checkId: 'build-cache-waiter' },
       command: {
         kind: 'argv',
         executable: 'node',
@@ -3552,6 +3571,7 @@ describe('process MCP live surface', () => {
   test('process tools are defined and process_get/wait/logs work without re-exec', async () => {
     expect(processToolDefinitions.map((t) => t.name).sort()).toEqual([
       'process_cancel',
+      'process_exec',
       'process_get',
       'process_logs',
       'process_wait',

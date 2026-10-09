@@ -1584,17 +1584,19 @@ export async function spawnManagedProcess(input: SpawnManagedProcessInput): Prom
   }
 
   const completed = await new Promise<ManagedProcessRecord | 'timeout'>((resolve) => {
-    const timer = setTimeout(() => resolve('timeout'), interactiveWaitMs);
-    timer.unref?.();
-    monitor.waiters.push((done) => {
+    const finish = (done: ManagedProcessRecord | 'timeout') => {
       clearTimeout(timer);
+      const index = monitor.waiters.indexOf(finish);
+      if (index >= 0) monitor.waiters.splice(index, 1);
       resolve(done);
-    });
+    };
+    const timer = setTimeout(() => finish('timeout'), interactiveWaitMs);
+    timer.unref?.();
+    monitor.waiters.push(finish);
     if (monitor.settled) {
       const current = getProcessRecord(input.controllerHome, input.repoId, processId);
       if (current?.terminalWritten) {
-        clearTimeout(timer);
-        resolve(current);
+        finish(current);
       }
     }
   });
@@ -1693,27 +1695,29 @@ export async function waitForProcess(
   if (monitor) {
     const waitMs = options.timeoutMs ?? existing.timeoutMs;
     const done = await new Promise<ManagedProcessRecord | 'timeout'>((resolve) => {
-      const timer = setTimeout(() => resolve('timeout'), Math.max(1, waitMs));
+      const finish = (record: ManagedProcessRecord | 'timeout') => {
+        clearTimeout(timer);
+        options.signal?.removeEventListener('abort', onAbort);
+        const index = monitor.waiters.indexOf(finish);
+        if (index >= 0) monitor.waiters.splice(index, 1);
+        resolve(record);
+      };
+      const timer = setTimeout(() => finish('timeout'), Math.max(1, waitMs));
       timer.unref?.();
       const onAbort = () => {
         clearTimeout(timer);
         void cancelProcess(controllerHome, repoId, processId).then(() => {
           const current = getProcessRecord(controllerHome, repoId, processId);
-          if (current) resolve(current);
-          else resolve('timeout');
+          if (current) finish(current);
+          else finish('timeout');
         });
       };
       options.signal?.addEventListener('abort', onAbort, { once: true });
-      monitor.waiters.push((record) => {
-        clearTimeout(timer);
-        options.signal?.removeEventListener('abort', onAbort);
-        resolve(record);
-      });
+      monitor.waiters.push(finish);
       if (monitor.settled) {
         const current = getProcessRecord(controllerHome, repoId, processId);
         if (current?.terminalWritten) {
-          clearTimeout(timer);
-          resolve(current);
+          finish(current);
         }
       }
     });

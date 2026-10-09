@@ -38,7 +38,7 @@ import {
   clamp,
   cleanList,
   gitStatusChangedPaths,
-  isCodeShapedTerm,
+  explicitCodeQueries,
   pathNoisePenalty,
   structuralIntentQuery,
   textTokens,
@@ -148,7 +148,8 @@ export function buildControllerContextPack(
     focus.task?.objective,
   ].filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0);
   const goal = goalParts.join("\n").trim();
-  const terms = cleanList([...(options.searchTerms ?? []), ...textTokens(goal)]).slice(0, 14);
+  const requiredSearchQueries = explicitCodeQueries(options.searchTerms);
+  const terms = cleanList([...requiredSearchQueries, ...(options.searchTerms ?? []), ...(options.searchTerms ?? []).flatMap(textTokens), ...textTokens(goal)]).slice(0, 14);
   const impactDomains = cleanList(options.impactDomains)
     .filter((domain): domain is ControllerContextImpactDomain => CONTROLLER_CONTEXT_IMPACT_DOMAINS.includes(domain as ControllerContextImpactDomain))
     .slice(0, 6);
@@ -168,9 +169,6 @@ export function buildControllerContextPack(
   ]).slice(0, 32);
   // Preserve the guarantee for explicit code symbols while broad natural-
   // language terms remain eligible for early discovery completion.
-  const requiredSearchQueries = cleanList(options.searchTerms)
-    .filter(isCodeShapedTerm)
-    .slice(0, 2);
   const impactCandidatePaths = new Map<ControllerContextImpactDomain, Set<string>>(impactDomains.map((domain) => [domain, new Set<string>()]));
   const candidates = new Map<string, { reasons: Set<string>; lines: Set<number> }>();
   const deniedPaths: Array<{ path: string; reason: string }> = [];
@@ -407,6 +405,7 @@ export function buildControllerContextPack(
     searchTruncated = searchTruncated || search.truncated;
     for (const hit of search.results) {
       if (!coveredByGlob(hit.path, searchIncludeGlobs) || excludeGlobs.some((glob) => globMatches(glob, hit.path))) continue;
+      if (candidates.size >= maxFiles * 3 && !candidates.has(hit.path) && !requiredSearchQueries.includes(hit.query)) continue;
       if (terms.includes(hit.query)) {
         addReason(candidates, hit.path, `search:${hit.query}`, hit.line);
       } else {
@@ -417,7 +416,6 @@ export function buildControllerContextPack(
           addReason(candidates, hit.path, `impact:${domain}:${hit.query}`, hit.line);
         }
       }
-      if (candidates.size >= maxFiles * 3) break;
     }
   }
 
@@ -453,12 +451,19 @@ export function buildControllerContextPack(
     || structuralMode !== "off"
     || impactDomains.length > 0;
   timingsMs.expansionBudgetMax = multiWaveEligible ? Math.min(6, Math.max(2, Math.ceil(maxFiles / 2))) : 0;
-  const rankedExactKnownCount = rankedCandidates.filter(isExactKnownCandidate).length;
+  // Reserve one best file per explicit symbol before broad hits can consume
+  // the result window. Caller-selected exact paths retain first priority.
+  const prioritizedCandidates = Array.from(new Map([
+    ...rankedCandidates.filter(isExactKnownCandidate),
+    ...requiredSearchQueries.flatMap((query) => rankedCandidates.filter((entry) => entry.reasons.includes(`search:${query}`)).slice(0, 1)),
+    ...rankedCandidates,
+  ].map((entry) => [entry.path, entry] as const)).values());
+  const rankedExactKnownCount = prioritizedCandidates.filter(isExactKnownCandidate).length;
   const initialCandidateLimit = multiWaveEligible
     ? Math.min(maxFiles, Math.max(rankedExactKnownCount, Math.max(1, maxFiles - timingsMs.expansionBudgetMax)))
     : maxFiles;
-  const selected = rankedCandidates.slice(0, initialCandidateLimit);
-  const deferredSelected = rankedCandidates.slice(initialCandidateLimit, maxFiles);
+  const selected = prioritizedCandidates.slice(0, initialCandidateLimit);
+  const deferredSelected = prioritizedCandidates.slice(initialCandidateLimit, maxFiles);
   const selectedExactKnownCount = selected.filter(isExactKnownCandidate).length;
   // Reserve at least one materialization for every selected exact known file.
   // This may raise a caller's inferred snippet budget, but never beyond the
@@ -477,7 +482,7 @@ export function buildControllerContextPack(
       status: selectedFiles.length > 0 ? "selected" as const : matchedFiles.length > 0 ? "matched_not_selected" as const : "no_evidence" as const,
     };
   });
-  for (const entry of rankedCandidates.slice(maxFiles)) omitted.push({ path: entry.path, reason: "max_files" });
+  for (const entry of prioritizedCandidates.slice(maxFiles)) omitted.push({ path: entry.path, reason: "max_files" });
 
   let remainingSnippets = maxSnippets;
   const files: ControllerContextPackFile[] = [];
@@ -1087,7 +1092,8 @@ export async function buildControllerContextPackAsync(
   const explicitKnownPaths = knownPaths.filter((path) => !looksLikeGlob(path));
   const includeGlobs = cleanList([...(options.includeGlobs ?? []), ...knownGlobs]);
   const excludeGlobs = cleanList([...DEFAULT_SEARCH_EXCLUDE_GLOBS, ...(options.excludeGlobs ?? [])]);
-  const terms = cleanList([...(options.searchTerms ?? []), ...textTokens(options.description ?? '')]).slice(0, 14);
+  const requiredSearchQueries = explicitCodeQueries(options.searchTerms);
+  const terms = cleanList([...requiredSearchQueries, ...(options.searchTerms ?? []), ...(options.searchTerms ?? []).flatMap(textTokens), ...textTokens(options.description ?? '')]).slice(0, 14);
   const impactDomains = cleanList(options.impactDomains)
     .filter((domain): domain is ControllerContextImpactDomain => CONTROLLER_CONTEXT_IMPACT_DOMAINS.includes(domain as ControllerContextImpactDomain))
     .slice(0, 6);
@@ -1112,9 +1118,6 @@ export async function buildControllerContextPackAsync(
     ...impactDomains.flatMap((domain) => IMPACT_DOMAIN_TERMS[domain]),
     ...terms.slice(1),
   ]).slice(0, 32);
-  const requiredSearchQueries = cleanList(options.searchTerms)
-    .filter(isCodeShapedTerm)
-    .slice(0, 2);
   const structuralQuery = structuralMode === 'off'
     ? ''
     : structuralIntentQuery(options.description ?? '', terms, impactDomains);
