@@ -105,27 +105,40 @@ async function waitForContent(tabId) {
   }
   throw lastError ?? new Error('COMPUTER_CHATGPT_TAB_NOT_READY');
 }
-function matchingTabs(tabs, identity) {
+function matchingTabs(tabs, identity, pinnedBinding) {
   if (identity?.namespace === 'chatgpt.conversation') {
     return tabs.filter((tab) => core.parseConversation(tab.url ?? '')?.conversationId === identity.conversationId);
   }
   if (identity?.namespace === 'chatgpt.bootstrap') {
-    const mapped = bootstrapTabs.get(identity.bootstrapKey);
-    const exact = mapped ? tabs.filter((tab) => tab.id === mapped) : [];
-    if (exact.length) return exact;
+    // The Project is a scope, not a tab identity. Multiple tasks share the
+    // same Project; adopting its arbitrary new-chat tab steals another task's
+    // binding and violates the Controller's unique Computer surface index.
     const projectId = core.projectId(identity.projectUrl);
-    return tabs.filter((tab) => String(tab.url ?? '') === identity.projectUrl || (projectId && core.projectId(tab.url ?? '') === projectId && !core.parseConversation(tab.url ?? '')));
+    const belongsToProject = (tab) => String(tab.url ?? '') === identity.projectUrl
+      || Boolean(projectId && core.projectId(tab.url ?? '') === projectId);
+    if (pinnedBinding?.providerId === PROVIDER_ID && pinnedBinding.tabId && pinnedBinding.windowId) {
+      const exact = tabs.filter((tab) => String(tab.id) === String(pinnedBinding.tabId)
+        && String(tab.windowId) === String(pinnedBinding.windowId));
+      if (exact.length && !belongsToProject(exact[0])) throw new Error('COMPUTER_CHATGPT_BOOTSTRAP_PINNED_TAB_IDENTITY_CHANGED');
+      return exact;
+    }
+    const mapped = bootstrapTabs.get(identity.bootstrapKey);
+    return mapped ? tabs.filter((tab) => tab.id === mapped && belongsToProject(tab)) : [];
   }
   return [];
 }
-async function resolveTarget(identity, createIfMissing) {
-  let tabs = await chatgptTabs();
-  let matches = matchingTabs(tabs, identity);
+async function resolveTarget(identity, createIfMissing, pinnedBinding) {
+  const tabs = await chatgptTabs();
+  const matches = matchingTabs(tabs, identity, pinnedBinding);
   if (matches.length > 1) throw new Error('COMPUTER_CHATGPT_EXTENSION_EXACT_TARGET_AMBIGUOUS');
   if (matches.length === 1) {
     const tab = matches[0];
     if (identity.namespace === 'chatgpt.bootstrap') bootstrapTabs.set(identity.bootstrapKey, tab.id);
     return { tab, created: false };
+  }
+  if (identity?.namespace === 'chatgpt.bootstrap' && pinnedBinding?.providerId === PROVIDER_ID
+    && pinnedBinding.tabId && pinnedBinding.windowId) {
+    throw new Error('COMPUTER_CHATGPT_BOOTSTRAP_PINNED_TAB_MISSING');
   }
   if (!createIfMissing) return undefined;
   const url = identity.namespace === 'chatgpt.conversation' ? identity.canonicalUrl : identity.projectUrl;
@@ -141,7 +154,7 @@ function dispatchTransportNotReached(error) {
 async function executeEnsure(command, instanceId) {
   let target;
   try {
-    target = await resolveTarget(command.identity, true);
+    target = await resolveTarget(command.identity, true, command.providerBinding);
     const observation = await waitForContent(target.tab.id);
     const refreshed = await tabGet(target.tab.id);
     return { kind: 'ensured', providerBinding: binding(refreshed, instanceId), observation };
@@ -156,7 +169,7 @@ async function executeEnsure(command, instanceId) {
 }
 async function executeObserve(command, instanceId) {
   try {
-    const target = await resolveTarget(command.identity, false);
+    const target = await resolveTarget(command.identity, false, command.providerBinding);
     if (!target) return { kind: 'failed', code: 'COMPUTER_CHATGPT_EXTENSION_TARGET_MISSING', retryable: true, failoverSafe: true };
     const observation = await snapshot(target.tab.id, command.options ?? {});
     const refreshed = await tabGet(target.tab.id);

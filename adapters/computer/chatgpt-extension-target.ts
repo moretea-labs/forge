@@ -247,7 +247,7 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
       targetId: record.targetId,
       identity,
       observe: async (options) => {
-        const response = await this.submit(instanceId, { kind: 'observe', identity, ...(options ? { options } : {}) });
+        const response = await this.submit(instanceId, { kind: 'observe', identity, ...(record.providerBinding ? { providerBinding: record.providerBinding } : {}), ...(options ? { options } : {}) });
         if (!response.result) throw new Error(response.claimed ? 'COMPUTER_CHATGPT_EXTENSION_OBSERVATION_OUTCOME_UNKNOWN' : 'COMPUTER_CHATGPT_EXTENSION_NOT_CONNECTED');
         if (response.result.kind === 'observation') {
           if (response.result.providerBinding) await this.bindAsync(identity, response.result.providerBinding, instanceId);
@@ -257,7 +257,7 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
         throw new Error('COMPUTER_CHATGPT_EXTENSION_OBSERVATION_INVALID');
       },
       prepare: async (prompt, options) => {
-        const response = await this.submit(instanceId, { kind: 'prepare', identity, prompt,
+        const response = await this.submit(instanceId, { kind: 'prepare', identity, ...(record.providerBinding ? { providerBinding: record.providerBinding } : {}), prompt,
           ...(options?.mode ? { mode: options.mode } : {}),
           ...(options?.reasoning ? { reasoning: options.reasoning } : {}),
         });
@@ -269,7 +269,7 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
           ? response.result.code : 'COMPUTER_CHATGPT_EXTENSION_PREPARE_INVALID' };
       },
       dispatch: async (prompt, options) => {
-        const response = await this.submit(instanceId, { kind: 'dispatch', identity, prompt, ...(options?.mode ? { mode: options.mode } : {}), ...(options?.reasoning ? { reasoning: options.reasoning } : {}) });
+        const response = await this.submit(instanceId, { kind: 'dispatch', identity, ...(record.providerBinding ? { providerBinding: record.providerBinding } : {}), prompt, ...(options?.mode ? { mode: options.mode } : {}), ...(options?.reasoning ? { reasoning: options.reasoning } : {}) });
         if (!response.result) {
           return response.claimed
             ? { mutation: 'attempted' as const }
@@ -332,7 +332,10 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
         { failoverSafe: !selected.ambiguous },
       );
     }
-    const response = await this.submit(selected.instanceId, { kind: 'ensure', identity });
+    const previous = this.authority.findSurfaceByStableIdentity(this.controllerHome, stableIdentity(identity));
+    const response = await this.submit(selected.instanceId, { kind: 'ensure', identity,
+      ...(previous?.providerBinding?.providerId === PROVIDER_ID ? { providerBinding: previous.providerBinding } : {}),
+    });
     if (!response.result) return failure(
       response.claimed ? 'COMPUTER_CHATGPT_EXTENSION_TARGET_OPEN_OUTCOME_UNKNOWN' : 'COMPUTER_CHATGPT_EXTENSION_NOT_CONNECTED',
       { failoverSafe: !response.claimed },
@@ -357,7 +360,12 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
         { failoverSafe: !selected.ambiguous },
       );
     }
-    const response = await this.submit(selected.instanceId, { kind: 'ensure', identity });
+    // Controller is the only durable owner of a tab binding. A restarted
+    // extension uses this exact attachment instead of claiming a Project tab.
+    const previous = this.authority.findSurfaceByStableIdentity(this.controllerHome, stableIdentity(identity));
+    const response = await this.submit(selected.instanceId, { kind: 'ensure', identity,
+      ...(previous?.providerBinding?.providerId === PROVIDER_ID ? { providerBinding: previous.providerBinding } : {}),
+    });
     if (!response.result) return failure(
       response.claimed ? 'COMPUTER_CHATGPT_EXTENSION_BOOTSTRAP_OPEN_OUTCOME_UNKNOWN' : 'COMPUTER_CHATGPT_EXTENSION_NOT_CONNECTED',
       { failoverSafe: !response.claimed },
@@ -420,7 +428,7 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
         ? (typeof compatibility?.canonicalUrl === 'string' ? { namespace: 'chatgpt.conversation', conversationId: resource.key, canonicalUrl: compatibility.canonicalUrl } : undefined)
         : (typeof compatibility?.projectUrl === 'string' ? { namespace: 'chatgpt.bootstrap', bootstrapKey: resource.key, projectUrl: compatibility.projectUrl } : undefined);
       const instanceId = providerInstanceId(record.providerBinding?.providerSessionId);
-      if (identity && instanceId && this.providerIsFresh(instanceId)) await this.submit(instanceId, { kind: 'close', identity }).catch(() => undefined);
+      if (identity && instanceId && this.providerIsFresh(instanceId)) await this.submit(instanceId, { kind: 'close', identity, providerBinding: record.providerBinding }).catch(() => undefined);
       await this.authority.withSurfaceLease(this.controllerHome, record.targetId, async (lease) => { lease.clearBinding(); }).catch(() => undefined);
       if (resource.namespace === 'chatgpt.bootstrap') this.authority.tombstoneSurface(this.controllerHome, record.targetId);
     }

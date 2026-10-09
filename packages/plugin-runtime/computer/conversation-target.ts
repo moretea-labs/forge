@@ -89,11 +89,11 @@ export interface ComputerChatgptConversationInventory {
  * transport replacement. They never decide effect admission or effect outcome.
  */
 export type ComputerChatgptExtensionCommand =
-  | { commandId: string; kind: 'ensure'; identity: ComputerChatgptTargetIdentity }
-  | { commandId: string; kind: 'observe'; identity: ComputerChatgptTargetIdentity; options?: ComputerChatgptConversationObservationOptions }
-  | { commandId: string; kind: 'dispatch' | 'prepare'; identity: ComputerChatgptTargetIdentity; prompt: string; mode?: 'send' | 'resume' | 'recover'; reasoning?: 'medium' | 'high' | 'xhigh' }
+  | { commandId: string; kind: 'ensure'; identity: ComputerChatgptTargetIdentity; providerBinding?: ComputerSurfaceProviderBinding }
+  | { commandId: string; kind: 'observe'; identity: ComputerChatgptTargetIdentity; providerBinding?: ComputerSurfaceProviderBinding; options?: ComputerChatgptConversationObservationOptions }
+  | { commandId: string; kind: 'dispatch' | 'prepare'; identity: ComputerChatgptTargetIdentity; providerBinding?: ComputerSurfaceProviderBinding; prompt: string; mode?: 'send' | 'resume' | 'recover'; reasoning?: 'medium' | 'high' | 'xhigh' }
   | { commandId: string; kind: 'find_marker'; marker: string; bootstrapKey?: string }
-  | { commandId: string; kind: 'close'; identity: ComputerChatgptTargetIdentity };
+  | { commandId: string; kind: 'close'; identity: ComputerChatgptTargetIdentity; providerBinding?: ComputerSurfaceProviderBinding };
 export type ComputerChatgptExtensionCommandInput = ComputerChatgptExtensionCommand extends infer Command
   ? Command extends { commandId: string }
     ? Omit<Command, 'commandId'>

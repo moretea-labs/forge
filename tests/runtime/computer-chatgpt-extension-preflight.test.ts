@@ -137,3 +137,76 @@ test('preflight cannot retroactively declare a send not attempted when execution
   expect(await f.dispatch('xhigh')).toMatchObject({ mutation: 'attempted', confirmed: false });
   expect(f.submissions).toBe(1);
 });
+
+function bootstrapFixture(initialTabs: Array<{ id: number; windowId: number; url: string }> = []) {
+  const tabs = [...initialTabs];
+  let nextTabId = 200;
+  const projectId = (value: string) => /\/g\/(g-p-[^/]+)/.exec(value)?.[1] ?? null;
+  const chrome = {
+    runtime: {
+      lastError: undefined,
+      connectNative() { return { onMessage: { addListener() {} }, onDisconnect: { addListener() {} }, postMessage() {} }; },
+      onMessage: { addListener() {} }, onInstalled: { addListener() {} }, onStartup: { addListener() {} },
+    },
+    tabs: {
+      async query() { return [...tabs]; },
+      create({ url }: { url: string }, callback: (value: { id: number; windowId: number; url: string }) => void) {
+        const tab = { id: nextTabId++, windowId: 8, url };
+        tabs.push(tab);
+        callback(tab);
+      },
+      onUpdated: { addListener() {} }, onActivated: { addListener() {} }, onRemoved: { addListener() {} },
+    },
+    alarms: { create() {}, onAlarm: { addListener() {} } },
+    windows: { onFocusChanged: { addListener() {} } },
+  };
+  const context = {
+    chrome, URL, Date, Math, importScripts() {},
+    ForgeComputerChatgptCore: {
+      parseConversation() { return null; }, projectId,
+      normalizeText(value: unknown) { return String(value ?? '').trim(); },
+    },
+    setTimeout() { return 1; }, clearTimeout() {}, setInterval() { return 1; },
+  };
+  runInNewContext(source + '\n;globalThis.__resolveTarget = resolveTarget;globalThis.__matchingTabs = matchingTabs;', context);
+  return {
+    tabs,
+    resolve: (identity: object, create: boolean, pinned?: object) =>
+      (context as typeof context & { __resolveTarget: (identity: object, create: boolean, pinned?: object) => Promise<{ tab: { id: number; windowId: number; url: string }; created: boolean }> }).__resolveTarget(identity, create, pinned),
+  };
+}
+
+test('two fresh Supervisor tasks in one Project receive distinct new tabs, never a borrowed Project tab', async () => {
+  const projectUrl = 'https://chatgpt.com/g/g-p-avela-project';
+  const fixture = bootstrapFixture([{ id: 41, windowId: 8, url: projectUrl }]);
+  const ios = { namespace: 'chatgpt.bootstrap', bootstrapKey: 'supervisor:ios', projectUrl };
+  const android = { namespace: 'chatgpt.bootstrap', bootstrapKey: 'supervisor:android', projectUrl };
+  const iosTab = await fixture.resolve(ios, true);
+  const androidTab = await fixture.resolve(android, true);
+  expect(iosTab.created).toBe(true);
+  expect(androidTab.created).toBe(true);
+  expect(iosTab.tab.id).not.toBe(41);
+  expect(androidTab.tab.id).not.toBe(41);
+  expect(androidTab.tab.id).not.toBe(iosTab.tab.id);
+});
+
+test('service-worker restart reattaches only the exact Controller-pinned bootstrap tab', async () => {
+  const projectUrl = 'https://chatgpt.com/g/g-p-avela-project';
+  const tabs = [
+    { id: 81, windowId: 8, url: projectUrl },
+    { id: 82, windowId: 8, url: projectUrl },
+  ];
+  const fixture = bootstrapFixture(tabs); // no ephemeral bootstrap map on this worker
+  const android = { namespace: 'chatgpt.bootstrap', bootstrapKey: 'supervisor:android', projectUrl };
+  const pin = { providerId: 'browser.chrome-extension', browserProduct: 'chrome',
+    providerSessionId: 'fresh-extension-instance', windowId: '8', tabId: '82' };
+  const recovered = await fixture.resolve(android, true, pin);
+  expect(recovered.created).toBe(false);
+  expect(recovered.tab.id).toBe(82);
+  expect(fixture.tabs).toHaveLength(2);
+  await expect(fixture.resolve(android, true, { ...pin, tabId: '999' }))
+    .rejects.toThrow('COMPUTER_CHATGPT_BOOTSTRAP_PINNED_TAB_MISSING');
+  await expect(fixture.resolve({ ...android, projectUrl: 'https://chatgpt.com/g/g-p-unrelated' }, true, { ...pin, tabId: '81' }))
+    .rejects.toThrow('COMPUTER_CHATGPT_BOOTSTRAP_PINNED_TAB_IDENTITY_CHANGED');
+  expect(fixture.tabs).toHaveLength(2);
+});
