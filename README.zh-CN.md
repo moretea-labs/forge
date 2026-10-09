@@ -78,6 +78,6 @@ Forge 把读取、普通本地写入、远程操作、破坏性操作、工作�
 
 ## 文档与项目
 
-[中文文档中心](docs/README.zh-CN.md) · [GitHub Wiki](https://github.com/moretea-labs/forge/wiki) · [Wiki 源码](docs/wiki/Home.md) · [SUPPORT.md](SUPPORT.md) · [CONTRIBUTING.md](CONTRIBUTING.md) · [CHANGELOG.md](CHANGELOG.md)
+[Computer 中文教程](https://moretea-labs.github.io/forge/Computer-and-Plugins.zh-CN.html) · [中文文档中心](docs/README.zh-CN.md) · [GitHub Wiki](https://github.com/moretea-labs/forge/wiki) · [Wiki 源码](docs/wiki/Home.md) · [SUPPORT.md](SUPPORT.md) · [CONTRIBUTING.md](CONTRIBUTING.md) · [CHANGELOG.md](CHANGELOG.md)
 
 当前稳定版本为 [`v1.8.1`](https://github.com/moretea-labs/forge/releases/tag/v1.8.1)，稳定安装使用 npm `latest`。

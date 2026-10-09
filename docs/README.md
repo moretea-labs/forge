@@ -2,7 +2,7 @@
 
 > Maintained documentation for the current Forge product and runtime. Executable behavior and [`architecture/CURRENT.md`](architecture/CURRENT.md) are authoritative for implementation facts and architecture contracts; historical notes are context, not active contracts.
 
-[中文文档中心](README.zh-CN.md) · [GitHub Wiki](https://github.com/moretea-labs/forge/wiki) · [GitHub](https://github.com/moretea-labs/forge) · [Releases](https://github.com/moretea-labs/forge/releases) · [Support](../SUPPORT.md)
+[Public documentation site](https://moretea-labs.github.io/forge/) · [中文文档中心](README.zh-CN.md) · [GitHub Wiki](https://github.com/moretea-labs/forge/wiki) · [GitHub](https://github.com/moretea-labs/forge) · [Releases](https://github.com/moretea-labs/forge/releases) · [Support](../SUPPORT.md)
 
 Forge is a local-first ChatGPT MCP runtime for permission-scoped computer use, development, browser actions, and connected services. Current stable: [v1.8.1](https://github.com/moretea-labs/forge/releases/tag/v1.8.1) on npm `latest`. **The versioned repository docs are authoritative; GitHub Wiki mirrors `docs/wiki/`.**
 

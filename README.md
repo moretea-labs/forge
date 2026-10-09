@@ -2,7 +2,7 @@
 
 <p align="center"><img src="docs/images/forge-banner.svg" alt="Forge — ChatGPT decides, Forge acts" width="1280"></p>
 <p align="center"><strong>Give ChatGPT real, controlled hands on your computer, code, browser, and services.</strong></p>
-<p align="center"><a href="#english">English</a> · <a href="#zh-cn">简体中文</a> · <a href="docs/README.md">Docs</a> · <a href="docs/operations/features.md">Features</a> · <a href="docs/forge-plugin-management.md">Plugins</a> · <a href="https://github.com/moretea-labs/forge/releases">Releases</a></p>
+<p align="center"><a href="#english">English</a> · <a href="#zh-cn">简体中文</a> · <a href="https://moretea-labs.github.io/forge/">Documentation Site</a> · <a href="docs/README.md">Docs</a> · <a href="docs/operations/features.md">Features</a> · <a href="docs/forge-plugin-management.md">Plugins</a> · <a href="https://github.com/moretea-labs/forge/releases">Releases</a></p>
 <p align="center"><img alt="CI" src="https://github.com/moretea-labs/forge/actions/workflows/ci.yml/badge.svg"> <img alt="Release" src="https://img.shields.io/github/v/release/moretea-labs/forge?include_prereleases&sort=semver"> <img alt="npm latest" src="https://img.shields.io/npm/v/%40moretea-labs%2Fforge?tag=latest&label=npm%20latest"> <img alt="License" src="https://img.shields.io/github/license/moretea-labs/forge"></p>
 
 **Forge is a local-first ChatGPT MCP action runtime** for permission-scoped computer use, software engineering, browser automation, and connected services. It is not an autonomous coding model or a hosted AI API.
@@ -67,7 +67,7 @@ Local read/write grants are explicit and expiring; remote or destructive effects
 
 <p align="center"><img src="docs/images/forge-banner-cn.svg" alt="Forge——ChatGPT 决策，Forge 执行" width="1280"></p>
 <p align="center"><strong>让 ChatGPT 真正、安全地操作你的电脑、代码、浏览器和外部服务。</strong></p>
-<p align="center"><a href="#english">English</a> · <a href="#zh-cn">简体中文</a> · <a href="docs/README.zh-CN.md">中文文档</a> · <a href="docs/operations/features.zh-CN.md">功能</a> · <a href="docs/forge-plugin-management.md">插件</a></p>
+<p align="center"><a href="#english">English</a> · <a href="#zh-cn">简体中文</a> · <a href="https://moretea-labs.github.io/forge/Computer-and-Plugins.zh-CN.html">中文 Computer 教程</a> · <a href="docs/README.zh-CN.md">中文文档</a> · <a href="docs/operations/features.zh-CN.md">功能</a> · <a href="docs/forge-plugin-management.md">插件</a></p>
 
 **Forge 是一个本地优先的 ChatGPT MCP 执行运行时**，将 AI 对话连接到有权限边界的电脑操作、代码开发、浏览器自动化和外部服务，而不是额外的在线 AI 模型。
 

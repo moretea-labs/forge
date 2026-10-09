@@ -42,7 +42,7 @@ Use Issues for reproducible defects and scoped feature requests. Use Discussions
 
 ## Documentation ownership
 
-The GitHub Wiki is a presentation target. Versioned source lives under `docs/wiki/` and must be explicitly synchronized to the separate `forge.wiki.git` remote after reviewed changes. At low star counts, the Wiki cannot be relied upon for general search engine indexing: prioritize the GitHub About description/topics and repository README for GitHub search, and versioned docs for externally linked canonical content. Deeper engineering detail remains under `docs/architecture/CURRENT.md` and `docs/operations/`.
+The GitHub Wiki is a presentation target. Versioned source lives under `docs/wiki/` and must be explicitly synchronized to the separate `forge.wiki.git` remote after reviewed changes. Public GitHub Pages at `https://moretea-labs.github.io/forge/` is a **generated publication artifact** created by `python3 docs/site/build-pages.py --output /tmp/forge-pages` from these same Markdown sources and published through the `gh-pages` branch. Do not hand-edit generated pages, and re-publish them after changing `docs/wiki/`. The GitHub Pages branch is not a second documentation authority. At low star counts, the Wiki cannot be relied upon for general search engine indexing: prioritize the GitHub About description/topics and repository README for GitHub search, and versioned docs for externally linked canonical content. Deeper engineering detail remains under `docs/architecture/CURRENT.md` and `docs/operations/`.
 
 Public documentation must distinguish current facts from historical evidence. Avoid hard-coding “next release” versions in operational runbooks; derive versions from `package.json` so routine releases do not leave stale docs behind.
 

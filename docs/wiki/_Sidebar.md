@@ -11,6 +11,7 @@
 - [Operations](Operations)
 - [Integrations](Integrations)
 - [Computer and Plugins](Computer-and-Plugins)
+- [Computer 中文使用指南](Computer-and-Plugins.zh-CN)
 - [Troubleshooting](Troubleshooting)
 - [Security Model](Security-Model)
 - [Releases and Upgrades](Releases-and-Upgrades)

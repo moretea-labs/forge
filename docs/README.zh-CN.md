@@ -2,7 +2,7 @@
 
 > 这里维护 Forge 当前产品与 Runtime 的公开文档。可执行代码与 [`architecture/CURRENT.md`](architecture/CURRENT.md) 分别提供当前实现事实与架构契约；历史设计与研究文档只提供背景，不覆盖当前契约。
 
-[English docs](README.md) · [GitHub Wiki](https://github.com/moretea-labs/forge/wiki) · [GitHub](https://github.com/moretea-labs/forge) · [版本发布](https://github.com/moretea-labs/forge/releases) · [支持](../SUPPORT.md)
+[公开在线文档](https://moretea-labs.github.io/forge/) · [Computer 中文教程](https://moretea-labs.github.io/forge/Computer-and-Plugins.zh-CN.html) · [English docs](README.md) · [GitHub Wiki](https://github.com/moretea-labs/forge/wiki) · [GitHub](https://github.com/moretea-labs/forge) · [版本发布](https://github.com/moretea-labs/forge/releases) · [支持](../SUPPORT.md)
 
 Forge 是本地优先的 ChatGPT MCP 执行工具，支持授权范围内的电脑、代码仓库、浏览器与服务操作。当前稳定版为 [v1.8.1](https://github.com/moretea-labs/forge/releases/tag/v1.8.1)，发布在 npm `latest`。**版本化文档是内容权威；GitHub Wiki 由 `docs/wiki/` 同步生成。**
 
