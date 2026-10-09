@@ -5,6 +5,7 @@ import { createServer as createNetServer } from 'net';
 import { existsSync, mkdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'path';
+import { fileURLToPath } from 'url';
 import type {
   AssistantPluginActionExecutionInput,
   AssistantPluginAuthorizationContext,
@@ -350,6 +351,15 @@ type PlaywrightRuntime = {
   };
 };
 
+export function browserDependencyRequireAnchors(repoRoot?: string, moduleUrl = import.meta.url): string[] {
+  const releasePackageManifest = join(dirname(fileURLToPath(moduleUrl)), 'package', 'package.json');
+  return [
+    existsSync(releasePackageManifest) ? releasePackageManifest : undefined,
+    repoRoot ? join(repoRoot, 'package.json') : undefined,
+    moduleUrl,
+  ].filter((anchor): anchor is string => typeof anchor === 'string');
+}
+
 interface BrowserPluginRuntimeHooks {
   now(): string;
   moduleAvailable(name: string, repoRoot?: string): boolean;
@@ -407,9 +417,7 @@ const defaultRuntimeHooks: BrowserPluginRuntimeHooks = {
   }),
   connectBrowserCdp: connectNativeBrowserCdp,
   moduleAvailable: (name: string, repoRoot?: string) => {
-    const anchors = [repoRoot ? join(repoRoot, 'package.json') : undefined, import.meta.url]
-      .filter((value): value is string => Boolean(value));
-    for (const anchor of anchors) {
+    for (const anchor of browserDependencyRequireAnchors(repoRoot)) {
       try {
         createRequire(anchor).resolve(name);
         return true;
@@ -420,16 +428,14 @@ const defaultRuntimeHooks: BrowserPluginRuntimeHooks = {
     return false;
   },
   loadPlaywright: (repoRoot?: string) => {
-    const anchors = [repoRoot ? join(repoRoot, 'package.json') : undefined, import.meta.url]
-      .filter((value): value is string => Boolean(value));
-    for (const anchor of anchors) {
+    for (const anchor of browserDependencyRequireAnchors(repoRoot)) {
       try {
         return createRequire(anchor)('playwright') as PlaywrightRuntime;
       } catch {
         // Try the next trusted dependency anchor.
       }
     }
-    throw new AssistantPluginError('PLUGIN_DEPENDENCY_MISSING', 'Browser plugin requires playwright. Run bun install before using browser actions.', {
+    throw new AssistantPluginError('PLUGIN_DEPENDENCY_MISSING', 'Browser plugin cannot resolve packaged Playwright or an authorized repository-local installation.', {
       retryable: false,
     });
   },

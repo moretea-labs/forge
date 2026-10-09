@@ -3,7 +3,10 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
+import { createRequire } from 'module';
+import { pathToFileURL } from 'url';
 import {
+  browserDependencyRequireAnchors,
   browserProfileRootsForRuntime,
   buildBrowserPluginManifest,
   executeBrowserPluginAction,
@@ -941,6 +944,22 @@ describe('browser session compatibility on Computer target authority', () => {
 
   test('managed extension install removes Playwright extension suppression and verifies the exact runtime target', async () => {
     const { controllerHome, repoA } = fixture();
+    const releaseRoot = join(repoA, 'runtime-release');
+    const packagedPlaywrightRoot = join(releaseRoot, 'package', 'node_modules', 'playwright');
+    mkdirSync(packagedPlaywrightRoot, { recursive: true });
+    writeFileSync(join(releaseRoot, 'package', 'package.json'), '{"name":"forge-runtime-package"}');
+    writeFileSync(join(packagedPlaywrightRoot, 'package.json'), '{"name":"playwright","main":"index.js"}');
+    writeFileSync(join(packagedPlaywrightRoot, 'index.js'), 'module.exports = { fromPackagedRuntime: true };');
+    writeFileSync(join(repoA, 'package.json'), '{"name":"repository-without-playwright"}');
+    const runtimeBundleUrl = pathToFileURL(join(releaseRoot, 'forge-runtime-bundle.js')).href;
+    const dependencyAnchors = browserDependencyRequireAnchors(repoA, runtimeBundleUrl);
+    expect(dependencyAnchors.slice(0, 2)).toEqual([
+      join(releaseRoot, 'package', 'package.json'),
+      join(repoA, 'package.json'),
+    ]);
+    expect(createRequire(dependencyAnchors[0]!)('playwright')).toEqual({ fromPackagedRuntime: true });
+    expect(() => createRequire(dependencyAnchors[1]!).resolve('playwright')).toThrow();
+
     mkdirSync(join(repoA, '.forge', 'plugins'), { recursive: true });
     const extensionPath = extensionFixture(repoA);
     writeFileSync(join(repoA, '.forge', 'plugins', 'browser.json'), JSON.stringify({
