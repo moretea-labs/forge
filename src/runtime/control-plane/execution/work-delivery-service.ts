@@ -4,7 +4,9 @@ import type { McpExecutionContext } from '../../../../packages/protocols/mcp/exe
 import {
   getWorkContract,
   isRepositoryCompletionReceipt,
+  reviseWorkSemanticContext,
   semanticWorkState,
+  workSemanticView,
   type CompletionMaintenanceWarning,
   type RepositoryCompletionReceipt,
 } from '../../../../packages/kernel/work/api/index';
@@ -239,6 +241,33 @@ function cleanupEvidence(receipt: WorkCleanupReceipt, recordedAt: string): Repos
   return { status: 'maintenance_warning', warnings, blockers: [], recordedAt };
 }
 
+/** Explicit model-selected semantic completion; physical Git delivery alone never closes Work. */
+function semanticCompletionAfterDelivery(
+  ctx: McpExecutionContext,
+  handle: WorkHandleState,
+  receipt: RepositoryCompletionReceipt,
+  completeWork: boolean,
+  expectedSemanticRevision: number,
+): Record<string, unknown> {
+  if (!completeWork) return { semanticCompletionRequired: true };
+  if (receipt.cleanup.status !== 'complete' || receipt.cleanup.blockers.length > 0) {
+    // Git can already be integrated. Leave the semantic Work open for recovery.
+    return { semanticCompletionRequired: true, semanticCompletionBlocked: 'WORK_DELIVERY_CLEANUP_INCOMPLETE' };
+  }
+  const store = { controllerHome: ctx.controllerHome, repoId: handle.repositoryId };
+  const workId = handle.workContractId ?? handle.workId;
+  const current = getWorkContract(store, workId);
+  if (!current || semanticWorkState(current) !== 'open') {
+    throw new Error(`WORK_DELIVERY_SEMANTIC_WORK_NOT_OPEN: ${current ? semanticWorkState(current) : 'missing'}`);
+  }
+  const completed = reviseWorkSemanticContext(store, workId, {
+    // Do not close a Work whose objective changed while Git delivery was running.
+    expectedRevision: expectedSemanticRevision,
+    state: 'completed',
+  });
+  return { semanticCompletionRequired: false, semanticWork: workSemanticView(completed) };
+}
+
 function recordDelivery(
   ctx: McpExecutionContext,
   handle: WorkHandleState,
@@ -293,6 +322,8 @@ async function reconcileDeliveredWork(
   targetBranch: string,
   targetRoot: string,
   sourceRevision: string,
+  completeWork: boolean,
+  expectedSemanticRevision: number,
 ): Promise<Record<string, unknown>> {
   const targetRevision = exactRevision(targetRoot, targetBranch, 'TARGET_HEAD');
   if (!git(targetRoot, ['merge-base', '--is-ancestor', sourceRevision, targetRevision]).ok) {
@@ -329,7 +360,7 @@ async function reconcileDeliveredWork(
     delivery: receipt,
     cleanup: cleanup.receipt,
     recoveredAfterDelivery: true,
-    semanticCompletionRequired: true,
+    ...semanticCompletionAfterDelivery(ctx, handle, receipt, completeWork, expectedSemanticRevision),
   });
 }
 
@@ -348,8 +379,11 @@ export async function deliverWork(ctx: McpExecutionContext, args: Record<string,
     handle.workContractId ?? handle.workId,
   );
   if (!contract) throw new Error(`WORK_CONTRACT_MISSING: ${handle.workContractId ?? handle.workId}`);
-  if (semanticWorkState(contract) !== 'open') {
-    throw new Error(`WORK_DELIVERY_SEMANTIC_WORK_NOT_OPEN: ${semanticWorkState(contract)}`);
+  const completeWork = args.complete_work === true;
+  const semanticState = semanticWorkState(contract);
+  const expectedSemanticRevision = workSemanticView(contract).revision;
+  if (semanticState !== 'open' && !(completeWork && semanticState === 'completed')) {
+    throw new Error(`WORK_DELIVERY_SEMANTIC_WORK_NOT_OPEN: ${semanticState}`);
   }
   if (contract.workKind !== 'repository_change') {
     throw new Error(`WORK_DELIVERY_WORK_KIND_INVALID: ${contract.workKind}`);
@@ -360,6 +394,22 @@ export async function deliverWork(ctx: McpExecutionContext, args: Record<string,
   const { target, targetStatus, targetBranch } = deliveryTargetCheckout(repository, handle, explicitTargetBranch);
   const targetRoot = target.canonicalRoot;
   const targetHead = exactRevision(targetRoot, targetStatus.head ?? 'HEAD', 'TARGET_HEAD');
+
+  // Repeated explicit delivery after a successful semantic close is read-only.
+  // Never rewrite a terminal Work receipt or reopen its managed worktree.
+  if (semanticState === 'completed') {
+    const receipt = contract.completionReceipt;
+    if (!receipt || !isRepositoryCompletionReceipt(receipt) || !receipt.sourceRevision
+      || receipt.delivery.status !== 'integrated' || receipt.cleanup.status !== 'complete'
+      || receipt.targetBranch !== targetBranch || receipt.sourceRevision !== handle.expectedHead
+      || !git(targetRoot, ['merge-base', '--is-ancestor', receipt.sourceRevision, targetHead]).ok) {
+      throw new Error('WORK_DELIVERY_TERMINAL_RECEIPT_UNPROVEN');
+    }
+    return makeBoundedWorkResult(ctx, session, handle.repositoryId, handle.workId, 'finalization', {
+      work: compactHandle(handle), delivery: receipt, cleanup: handle.cleanupReceipt,
+      recoveredAfterDelivery: true, semanticCompletionRequired: false, semanticWork: workSemanticView(contract),
+    });
+  }
 
   if (
     (handle.state === 'merged' || handle.state === 'failed_terminal_cleanup' || handle.state === 'cleaned')
@@ -372,6 +422,8 @@ export async function deliverWork(ctx: McpExecutionContext, args: Record<string,
       targetBranch,
       targetRoot,
       exactRevision(targetRoot, handle.expectedHead, 'SOURCE_REVISION'),
+      completeWork,
+      expectedSemanticRevision,
     );
   }
 
@@ -493,6 +545,6 @@ export async function deliverWork(ctx: McpExecutionContext, args: Record<string,
     work: compactHandle(refreshed),
     delivery: receipt,
     cleanup: cleanup.receipt,
-    semanticCompletionRequired: true,
+    ...semanticCompletionAfterDelivery(ctx, handle, receipt, completeWork, expectedSemanticRevision),
   });
 }
