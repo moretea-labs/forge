@@ -202,7 +202,7 @@ describe('repository.direct_edit capability', () => {
 });
 
 describe('repository.git Work delivery', () => {
-  test('fast-forwards validated isolated Work, cleans resources, and preserves semantic Work state', async () => {
+  test('fast-forwards validated isolated Work and optionally completes semantic Work in one call', async () => {
     for (const changed of [true, false]) {
       const fx = fixture();
       roots.push(fx.root);
@@ -213,7 +213,7 @@ describe('repository.git Work delivery', () => {
         repo_id: fx.repository.repoId,
         request_id: 'prepare-capability-delivery-fast-forward',
         objective: 'Deliver one validated isolated Work by fast-forward only.',
-        acceptance_criteria: ['Target contains the exact source commit and semantic completion remains separate.'],
+        acceptance_criteria: ['Target contains the exact source commit; semantic completion only occurs when explicitly requested.'],
         checks: [],
         isolation: 'new_worktree',
       });
@@ -246,13 +246,14 @@ describe('repository.git Work delivery', () => {
         capability_id: 'repository.git',
         action: 'deliver_work',
         request_id: 'deliver-capability-fast-forward',
-        arguments: { session_id: session.sessionId, work_id: work.workId },
+        arguments: { session_id: session.sessionId, work_id: work.workId, ...(changed ? { complete_work: true } : {}) },
       });
       if (delivered?.isError) throw new Error(JSON.stringify(delivered.structuredContent ?? delivered));
+      expect((delivered?.structuredContent as { semanticCompletionRequired: boolean }).semanticCompletionRequired).toBe(!changed);
       expect(git(fx.repoRoot, ['rev-parse', 'HEAD'])).toBe(sourceHead);
       expect(existsSync(workRoot)).toBe(false);
       const contract = getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, work.workId)!;
-      expect(contract.semanticState).toBe('open');
+      expect(contract.semanticState).toBe(changed ? 'completed' : 'open');
       expect(contract.completionReceipt).toMatchObject({
         source: 'controller_work',
         workId: work.workId,
@@ -270,11 +271,11 @@ describe('repository.git Work delivery', () => {
       const reconciled = await callCoreCapabilityAdapter(fx.ctx, 'capability_execute', {
         repo_id: fx.repository.repoId, capability_id: 'repository.git', action: 'deliver_work',
         request_id: 'reconcile-capability-fast-forward',
-        arguments: { session_id: session.sessionId, work_id: work.workId },
+        arguments: { session_id: session.sessionId, work_id: work.workId, ...(changed ? { complete_work: true } : {}) },
       });
       if (reconciled?.isError) throw new Error(JSON.stringify(reconciled.structuredContent ?? reconciled));
       const after = getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, work.workId)!;
-      expect(after.semanticState).toBe('open');
+      expect(after.semanticState).toBe(changed ? 'completed' : 'open');
       expect(after.completionReceipt?.receiptId).toBe(contract.completionReceipt?.receiptId);
       expect(git(fx.repoRoot, ['rev-parse', 'HEAD'])).toBe(sourceHead);
     }
@@ -413,7 +414,7 @@ describe('repository.git Work delivery', () => {
       capability_id: 'repository.git',
       action: 'deliver_work',
       request_id: 'deliver-capability-dirty-target',
-      arguments: { session_id: session.sessionId, work_id: work.workId },
+      arguments: { session_id: session.sessionId, work_id: work.workId, complete_work: true },
     });
     expect(delivered?.isError).toBe(true);
     expect(JSON.stringify(delivered?.structuredContent ?? delivered)).toContain('WORK_DELIVERY_TARGET_DIRTY');
@@ -734,7 +735,7 @@ describe('repository.git Work delivery', () => {
       capability_id: 'repository.git',
       action: 'deliver_work',
       request_id: 'deliver-capability-stale-validation',
-      arguments: { session_id: session.sessionId, work_id: work.workId },
+      arguments: { session_id: session.sessionId, work_id: work.workId, complete_work: true },
     });
     expect(delivered?.isError).toBe(true);
     expect(JSON.stringify(delivered?.structuredContent ?? delivered)).toContain('WORK_DELIVERY_CURRENT_VALIDATION_REQUIRED');

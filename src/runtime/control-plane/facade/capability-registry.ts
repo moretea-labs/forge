@@ -647,6 +647,7 @@ export function getCoreCapabilityExecutionSchema(capabilityId: string): Record<s
             session_id: { type: 'string', minLength: 1, maxLength: 256 },
             work_id: { type: 'string', minLength: 1, maxLength: 256 },
             target_branch: { type: 'string', minLength: 1, maxLength: 512 },
+            complete_work: { type: 'boolean' },
           },
         },
       },
