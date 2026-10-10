@@ -26,6 +26,7 @@ export interface GeneratedCacheRetentionOptions {
   maxRemovals?: number;
   processCommands?: string[];
   rootStartIndex?: number;
+  scanStartIndex?: number;
 }
 
 export interface GeneratedCacheRetentionReport {
@@ -95,6 +96,7 @@ export interface XCTestDeviceCleanupReport {
 
 interface Candidate {
   path: string;
+  cacheRoot?: string;
   kind:
     | 'forge_ios_derived_data'
     | 'harness_derived_data'
@@ -119,7 +121,7 @@ function pathInside(root: string, path: string): boolean {
   return rel !== '' && rel !== '..' && !rel.startsWith(`..${sep}`);
 }
 
-function collectProcessCommands(): string[] {
+function collectProcessCommands(): string[] | undefined {
   try {
     return execFileSync('ps', ['-axo', 'command='], {
       encoding: 'utf8',
@@ -127,7 +129,8 @@ function collectProcessCommands(): string[] {
       maxBuffer: 2 * 1024 * 1024,
     }).split('\n').map((line) => line.trim()).filter(Boolean);
   } catch {
-    return [];
+    // Missing process evidence is not proof that a cache is idle.
+    return undefined;
   }
 }
 
@@ -140,6 +143,19 @@ function commandReferencesPath(commands: readonly string[], repoRoot: string, pa
     || command.includes(canonicalAbsolute)
     || (rawRelative && command.includes(rawRelative))
     || (canonicalRelative && command.includes(canonicalRelative)));
+}
+
+function hasSymlinkAncestor(root: string, path: string): boolean {
+  const rel = relative(resolve(root), resolve(path));
+  if (!rel || rel === '..' || rel.startsWith(`..${sep}`)) return true;
+  let current = resolve(root);
+  try {
+    for (const part of rel.split(sep)) {
+      current = join(current, part);
+      if (lstatSync(current).isSymbolicLink()) return true;
+    }
+    return false;
+  } catch { return true; }
 }
 
 function containsTrackedFiles(repoRoot: string, path: string): boolean {
@@ -158,92 +174,106 @@ function containsTrackedFiles(repoRoot: string, path: string): boolean {
   }
 }
 
-function directChildDirectories(root: string, predicate: (name: string) => boolean, budget: { remaining: number }): string[] {
-  if (!existsSync(root) || budget.remaining <= 0) return [];
+const REBUILDABLE_XCODE_CHILDREN = [
+  'Build', 'ModuleCache.noindex', 'Index.noindex', 'CompilationCache.noindex',
+  'SDKExplicitPrecompiledModules', 'SDKStatCaches.noindex',
+] as const;
+
+function rotatedEntries(root: string, round: number) {
+  try {
+    const entries = readdirSync(root, { withFileTypes: true }).sort((a, b) => String(a.name).localeCompare(String(b.name)));
+    if (entries.length > 1) {
+      const offset = ((Math.trunc(round) % entries.length) + entries.length) % entries.length;
+      entries.push(...entries.splice(0, offset));
+    }
+    return entries;
+  } catch { return []; }
+}
+
+function directChildDirectories(root: string, predicate: (name: string) => boolean, budget: { remaining: number }, round = 0): string[] {
   const found: string[] = [];
-  let entries;
-  try { entries = readdirSync(root, { withFileTypes: true }); } catch { return found; }
-  for (const entry of entries) {
+  if (budget.remaining <= 0) return found;
+  for (const entry of rotatedEntries(root, round)) {
     if (budget.remaining <= 0) break;
     budget.remaining -= 1;
-    const name = String(entry.name);
-    if (entry.isDirectory() && predicate(name)) found.push(join(root, name));
+    if (entry.isDirectory() && predicate(String(entry.name))) found.push(join(root, String(entry.name)));
   }
   return found;
 }
 
 function directChildFiles(root: string, budget: { remaining: number }): string[] {
-  if (!existsSync(root) || budget.remaining <= 0) return [];
   const found: string[] = [];
-  let entries;
-  try { entries = readdirSync(root, { withFileTypes: true }); } catch { return found; }
-  for (const entry of entries) {
+  if (budget.remaining <= 0) return found;
+  for (const entry of rotatedEntries(root, 0)) {
     if (budget.remaining <= 0) break;
     budget.remaining -= 1;
-    if (entry.isFile()) found.push(join(root, entry.name));
+    if (entry.isFile()) found.push(join(root, String(entry.name)));
   }
   return found;
 }
 
-function isDerivedDataDirectoryName(name: string): boolean {
-  return name === 'DerivedData' || name.startsWith('DerivedData-');
+function isXcodeCacheRoot(root: string): boolean {
+  try {
+    const info = lstatSync(join(root, 'info.plist'));
+    return info.isFile() && !info.isSymbolicLink() && REBUILDABLE_XCODE_CHILDREN.some((name) => {
+      try { const stat = lstatSync(join(root, name)); return stat.isDirectory() && !stat.isSymbolicLink(); } catch { return false; }
+    });
+  } catch { return false; }
 }
 
-function nestedDerivedDataDirectories(root: string, maxDepth: number, budget: { remaining: number }): string[] {
-  if (!existsSync(root) || budget.remaining <= 0) return [];
+function nestedDerivedDataDirectories(root: string, maxDepth: number, budget: { remaining: number }, round: number): string[] {
   const found: string[] = [];
-  const visit = (dir: string, depth: number): void => {
+  const visit = (dir: string, depth: number, visitRound: number): void => {
     if (depth > maxDepth || budget.remaining <= 0) return;
-    let entries;
-    try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    const entries = rotatedEntries(dir, visitRound);
+    // Divide at each level rather than correlating parent/child rotations.
+    const childRound = Math.floor(visitRound / Math.max(1, entries.length));
     for (const entry of entries) {
       if (budget.remaining <= 0) return;
       budget.remaining -= 1;
-      if (!entry.isDirectory()) continue;
-      const path = join(dir, String(entry.name));
-      if (isDerivedDataDirectoryName(String(entry.name))) {
-        found.push(path);
-        continue;
-      }
-      visit(path, depth + 1);
+      const name = String(entry.name);
+      if (!entry.isDirectory() || ['.git', 'node_modules', 'SourcePackages', 'Logs', ...REBUILDABLE_XCODE_CHILDREN].includes(name) || name.endsWith('.xcresult')) continue;
+      const path = join(dir, name);
+      if (isXcodeCacheRoot(path)) found.push(path);
+      else visit(path, depth + 1, childRound);
     }
   };
-  visit(root, 0);
+  visit(root, 0, round);
   return found;
 }
 
-function discoverCandidates(repoRoot: string, maxEntries: number): { candidates: Candidate[]; inspected: number; truncated: boolean } {
+function discoverCandidates(repoRoot: string, maxEntries: number, scanRound: number): { candidates: Candidate[]; inspected: number; truncated: boolean } {
   const root = resolve(repoRoot);
   const budget = { remaining: Math.max(1, maxEntries) };
   const initial = budget.remaining;
   const candidates: Candidate[] = [];
-
-  // Browser artifacts are direct children of small, explicitly owned roots.
-  // Scan them before recursively walking potentially high-cardinality cache
-  // trees so cache history cannot starve their retention policy.
-  for (const path of directChildFiles(join(root, '.forge', 'browser', 'uploads'), budget)) {
-    candidates.push({ path, kind: 'forge_browser_upload' });
+  // Preserve browser staging priority. Cache namespace and nested entry rotations
+  // use independent visit ordinals, so protected early entries cannot starve peers.
+  for (const path of directChildFiles(join(root, '.forge', 'browser', 'uploads'), budget)) candidates.push({ path, kind: 'forge_browser_upload' });
+  for (const path of directChildFiles(join(root, '.forge', 'browser', 'screenshots'), budget)) candidates.push({ path, kind: 'forge_browser_screenshot' });
+  const namespaces: Array<{ root: string; kind: Candidate['kind']; depth?: number }> = [
+    { root: join(root, '.forge', 'ios', 'DerivedData'), kind: 'forge_ios_derived_data' },
+    { root: join(root, '.ai', 'harness'), kind: 'harness_derived_data' },
+    { root: join(root, '.repo-harness'), kind: 'repo_harness_derived_data', depth: 5 },
+    { root: join(root, '.tmp'), kind: 'tmp_derived_data', depth: 6 },
+  ];
+  const offset = ((Math.trunc(scanRound) % namespaces.length) + namespaces.length) % namespaces.length;
+  namespaces.push(...namespaces.splice(0, offset));
+  const entryRound = Math.floor(scanRound / namespaces.length);
+  for (const namespace of namespaces) {
+    const cacheRoots = namespace.depth === undefined
+      ? directChildDirectories(namespace.root, () => true, budget, entryRound).filter(isXcodeCacheRoot)
+      : nestedDerivedDataDirectories(namespace.root, namespace.depth, budget, entryRound);
+    for (const cacheRoot of cacheRoots) {
+      // Never remove the bucket: Logs, results, SourcePackages and unknown files
+      // are evidence/dependencies, not disposable build cache.
+      for (const name of REBUILDABLE_XCODE_CHILDREN) {
+        const path = join(cacheRoot, name);
+        if (existsSync(path)) candidates.push({ path, kind: namespace.kind, cacheRoot });
+      }
+    }
   }
-  for (const path of directChildFiles(join(root, '.forge', 'browser', 'screenshots'), budget)) {
-    candidates.push({ path, kind: 'forge_browser_screenshot' });
-  }
-  for (const path of directChildDirectories(join(root, '.forge', 'ios', 'DerivedData'), () => true, budget)) {
-    candidates.push({ path, kind: 'forge_ios_derived_data' });
-  }
-  for (const path of directChildDirectories(join(root, '.ai', 'harness'), (name) => name.startsWith('deriveddata-'), budget)) {
-    candidates.push({ path, kind: 'harness_derived_data' });
-  }
-  for (const path of nestedDerivedDataDirectories(join(root, '.repo-harness'), 5, budget)) {
-    candidates.push({ path, kind: 'repo_harness_derived_data' });
-  }
-  for (const path of nestedDerivedDataDirectories(join(root, '.tmp'), 6, budget)) {
-    candidates.push({ path, kind: 'tmp_derived_data' });
-  }
-  return {
-    candidates: candidates.filter((candidate, index, values) => values.findIndex((item) => resolve(item.path) === resolve(candidate.path)) === index),
-    inspected: initial - budget.remaining,
-    truncated: budget.remaining <= 0,
-  };
+  return { candidates, inspected: initial - budget.remaining, truncated: budget.remaining <= 0 };
 }
 
 function retentionGraceMs(candidate: Candidate, explicitGraceMs: number | undefined): number {
@@ -279,7 +309,7 @@ export function cleanupGeneratedRepositoryCaches(
   const maxEntries = Math.max(1, Math.floor(options.maxEntries ?? DEFAULT_SCAN_BUDGET));
   let remainingRemovals = Math.max(1, Math.floor(options.maxRemovals ?? DEFAULT_REMOVAL_BUDGET));
   const commands = options.processCommands ?? collectProcessCommands();
-  const discovered = discoverCandidates(repoRoot, maxEntries);
+  const discovered = discoverCandidates(repoRoot, maxEntries, options.scanStartIndex ?? 0);
   const report: GeneratedCacheRetentionReport = {
     inspected: discovered.inspected,
     eligible: 0,
@@ -290,26 +320,34 @@ export function cleanupGeneratedRepositoryCaches(
     budgetExhausted: discovered.truncated,
   };
 
+  if (commands === undefined) {
+    report.errors.push('process_inventory_unavailable: generated-cache reclamation skipped');
+    report.skippedByReason.process_inventory_unavailable = 1;
+    return report;
+  }
   for (const candidate of discovered.candidates) {
     const ownedRoot = candidateOwnedRoot(repoRoot, candidate);
     const fileCandidate = candidate.kind === 'forge_browser_upload' || candidate.kind === 'forge_browser_screenshot';
     try {
       const stat = lstatSync(candidate.path);
-      if ((fileCandidate ? !stat.isFile() : !stat.isDirectory()) || stat.isSymbolicLink() || !pathInside(ownedRoot, candidate.path)) {
+      if ((fileCandidate ? !stat.isFile() : !stat.isDirectory()) || stat.isSymbolicLink() || hasSymlinkAncestor(repoRoot, candidate.path) || !pathInside(ownedRoot, candidate.path)) {
         increment(report.skippedByReason, 'ownership_unproven');
         report.retainedPaths.push(relative(repoRoot, candidate.path));
         continue;
       }
-      if (nowMs - stat.mtimeMs < retentionGraceMs(candidate, options.graceMs)) {
+      const usedAt = candidate.cacheRoot ? Math.max(stat.mtimeMs, lstatSync(candidate.cacheRoot).mtimeMs) : stat.mtimeMs;
+      if (nowMs - usedAt < retentionGraceMs(candidate, options.graceMs)) {
         increment(report.skippedByReason, 'retention_grace');
         continue;
       }
-      if (commandReferencesPath(commands, repoRoot, candidate.path)) {
+      if (commandReferencesPath(commands, repoRoot, candidate.cacheRoot ?? candidate.path)
+        || (candidate.cacheRoot && commands.some((command) => /(?:^|[/\s])xcodebuild(?:\s|$)/.test(command)
+          && !/(?:^|\s)-derivedDataPath(?:\s|=)/.test(command)))) {
         increment(report.skippedByReason, 'active_process');
         report.retainedPaths.push(relative(repoRoot, candidate.path));
         continue;
       }
-      if (containsTrackedFiles(repoRoot, candidate.path)) {
+      if (containsTrackedFiles(repoRoot, candidate.cacheRoot ?? candidate.path)) {
         increment(report.skippedByReason, 'tracked_content');
         report.retainedPaths.push(relative(repoRoot, candidate.path));
         continue;
@@ -318,6 +356,12 @@ export function cleanupGeneratedRepositoryCaches(
       if (remainingRemovals <= 0) {
         report.budgetExhausted = true;
         increment(report.skippedByReason, 'cleanup_budget_exhausted');
+        continue;
+      }
+      // Recheck last-use immediately before removal: discovery and Git probes
+      // may overlap a cache reuse that refreshed the bucket after our first stat.
+      if (candidate.cacheRoot && lstatSync(candidate.cacheRoot).mtimeMs !== usedAt && nowMs - lstatSync(candidate.cacheRoot).mtimeMs < retentionGraceMs(candidate, options.graceMs)) {
+        increment(report.skippedByReason, 'retention_grace');
         continue;
       }
       remainingRemovals -= 1;
@@ -358,10 +402,10 @@ export function cleanupGeneratedRepositoryCheckoutCaches(
   }
   const rawRoots = roots.map((root) => resolve(root));
   const canonicalRoots = roots.map((root) => canonical(root));
-  const processCommandsForRoot = (root: string): string[] => {
+  const processCommandsForRoot = (root: string): string[] | undefined => {
     const rawRoot = resolve(root);
     const canonicalRoot = canonical(root);
-    return processCommands.filter((command) => {
+    return processCommands?.filter((command) => {
       const referencedRootIndexes = rawRoots
         .map((candidate, index) => command.includes(candidate) || command.includes(canonicalRoots[index]!) ? index : -1)
         .filter((index) => index >= 0);
@@ -381,6 +425,11 @@ export function cleanupGeneratedRepositoryCheckoutCaches(
     budgetExhausted: false,
   };
 
+  if (processCommands === undefined) {
+    aggregate.errors.push('process_inventory_unavailable: generated-cache reclamation skipped');
+    aggregate.skippedByReason.process_inventory_unavailable = 1;
+    return aggregate;
+  }
   for (const root of roots) {
     if (remainingEntries <= 0 || remainingRemovals <= 0) {
       aggregate.budgetExhausted = true;
@@ -389,6 +438,7 @@ export function cleanupGeneratedRepositoryCheckoutCaches(
     const report = cleanupGeneratedRepositoryCaches(root, {
       ...options,
       processCommands: processCommandsForRoot(root),
+      scanStartIndex: options.scanStartIndex ?? Math.floor((options.rootStartIndex ?? 0) / Math.max(1, roots.length)),
       maxEntries: remainingEntries,
       maxRemovals: remainingRemovals,
     });
@@ -565,6 +615,7 @@ export function cleanupIdleXCTestDevices(controllerHome: string): XCTestDeviceCl
   if (deviceDirectories <= 4) return { attempted: false, removedDevices: 0, skippedReason: 'below_cleanup_threshold' };
 
   const commands = collectProcessCommands();
+  if (commands === undefined) return { attempted: false, removedDevices: 0, skippedReason: 'process_inventory_unavailable' };
   if (commands.some((command) => /(?:^|\/)(?:xcodebuild|xctest|swiftc)(?:\s|$)/.test(command))) {
     return { attempted: false, removedDevices: 0, skippedReason: 'active_xcode_process' };
   }

@@ -1,5 +1,5 @@
 import { createHash } from 'crypto';
-import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, utimesSync, writeFileSync } from 'fs';
 import { basename, dirname, join, relative, resolve, sep } from 'path';
 import { spawnSync } from 'child_process';
 import type { RepositoryRecord } from '../../cli/repositories/types';
@@ -155,11 +155,24 @@ function sanitize(value: string): string {
 
 function stableBuildDerivedDataPath(
   repository: RepositoryRecord,
-  input: { workspace?: string; project?: string; scheme: string; configuration: string; destination: string },
+  input: { workspace?: string; project?: string; scheme: string; configuration: string; destinationPlatform: 'ios_simulator' | 'ios' },
 ): string {
-  const identity = JSON.stringify([input.workspace ?? '', input.project ?? '', input.scheme, input.configuration, input.destination]);
+  const identity = JSON.stringify([input.workspace ?? '', input.project ?? '', input.scheme, input.configuration, input.destinationPlatform]);
   const digest = createHash('sha256').update(identity).digest('hex').slice(0, 16);
   return join(safeArtifactDir(repository, 'DerivedData'), `build-${sanitize(input.scheme)}-${digest}`);
+}
+
+// Xcode owns invalidation within this checkout-local, platform/configuration bucket.
+// Device identity and test selectors affect execution, not the reusable build cache.
+function runCachedXcodeCommand(repository: RepositoryRecord, derivedDataPath: string, args: string[], timeoutMs: number): IosCommandResult {
+  const touch = (): void => { const usedAt = now(); utimesSync(derivedDataPath, usedAt, usedAt); };
+  touch();
+  try {
+    return runCommand('xcodebuild', args, { cwd: repository.canonicalRoot, timeoutMs });
+  } finally {
+    // Reuse may only modify descendants; keep last-use grace on the bucket itself.
+    touch();
+  }
 }
 
 function boundedText(value: string, maxBytes = 20_000): { content: string; truncated: boolean } {
@@ -427,7 +440,7 @@ export function iosAppBuild(repository: RepositoryRecord, input: {
     : udid
       ? `platform=iOS Simulator,id=${udid}`
       : `platform=iOS Simulator,name=${input.simulatorName ?? 'iPhone 16 Pro'}`;
-  const derivedDataPath = stableBuildDerivedDataPath(repository, { workspace, project, scheme, configuration, destination });
+  const derivedDataPath = stableBuildDerivedDataPath(repository, { workspace, project, scheme, configuration, destinationPlatform });
   const derivedDataReused = existsSync(derivedDataPath);
   mkdirSync(derivedDataPath, { recursive: true });
   const priorBuiltApps = derivedDataReused ? findBuiltApps(repository, derivedDataPath) : [];
@@ -445,7 +458,7 @@ export function iosAppBuild(repository: RepositoryRecord, input: {
       '-authenticationKeyIssuerID', authentication.issuerId,
     );
   }
-  const result = runCommand('xcodebuild', args, { cwd: repository.canonicalRoot, timeoutMs: input.timeoutMs ?? 10 * 60_000 });
+  const result = runCachedXcodeCommand(repository, derivedDataPath, args, input.timeoutMs ?? 10 * 60_000);
   const sensitiveValues = authentication
     ? [authentication.privateKeyPath, authentication.keyId, authentication.issuerId]
     : [];
@@ -509,8 +522,9 @@ export function iosXcodeTest(repository: RepositoryRecord, input: {
   if (!scheme) throw new Error('IOS_SCHEME_REQUIRED: provide scheme or share at least one Xcode scheme');
   const workspace = safeRepoRelativePath(repository.canonicalRoot, input.workspace ?? listedReady.workspace);
   const project = safeRepoRelativePath(repository.canonicalRoot, input.project ?? listedReady.project);
-  const derivedDataPath = join(safeArtifactDir(repository, 'DerivedData'), `tests-${sanitize(scheme)}`);
-  const resultBundlePath = join(safeArtifactDir(repository, 'test-results'), `${timestamp()}-${sanitize(scheme)}.xcresult`);
+  const configuration = input.configuration ?? 'Debug';
+  const derivedDataPath = stableBuildDerivedDataPath(repository, { workspace, project, scheme, configuration, destinationPlatform: 'ios_simulator' });
+  const resultBundlePath = join(safeArtifactDir(repository, 'test-results'), `${artifactStamp()}-${sanitize(scheme)}.xcresult`);
   mkdirSync(derivedDataPath, { recursive: true });
   const args = ['test'];
   if (workspace) args.push('-workspace', workspace);
@@ -531,7 +545,7 @@ export function iosXcodeTest(repository: RepositoryRecord, input: {
     if (normalized) args.push(`-only-testing:${normalized}`);
   }
   args.push('-derivedDataPath', derivedDataPath, '-resultBundlePath', resultBundlePath);
-  const result = runCommand('xcodebuild', args, { cwd: repository.canonicalRoot, timeoutMs: input.timeoutMs ?? 15 * 60_000 });
+  const result = runCachedXcodeCommand(repository, derivedDataPath, args, input.timeoutMs ?? 15 * 60_000);
   return {
     ready: result.ok,
     ok: result.ok,

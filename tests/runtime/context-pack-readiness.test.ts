@@ -3,7 +3,7 @@ import { execFileSync } from 'child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { buildControllerContextPack } from '../../src/cli/controller/context-pack';
+import { buildControllerContextPack, buildControllerContextPackAsync, type ControllerContextPackOptions } from '../../src/cli/controller/context-pack';
 import { getMcpPolicy } from '../../src/cli/mcp/policy';
 
 const roots: string[] = [];
@@ -75,4 +75,39 @@ test('treats lossless exact-known window materialization as sufficient despite l
   expect(pack.readiness.unresolvedReasonCodes).not.toContain('retrieval_truncated');
   expect(pack.readiness.status).toBe('ready');
   expect(pack.readiness.readyForHighConfidenceMutation).toBe(true);
+});
+
+test('retains separate explicit code symbols in sync and async discovery beyond the inventory cap', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'forge-context-multi-symbol-'));
+  roots.push(root);
+  execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: root });
+  execFileSync('git', ['config', 'user.email', 'context@example.test'], { cwd: root });
+  execFileSync('git', ['config', 'user.name', 'Context Test'], { cwd: root });
+  mkdirSync(join(root, 'src'), { recursive: true });
+  for (let index = 0; index < 840; index += 1) {
+    writeFileSync(join(root, `src/a-noise-${String(index).padStart(2, '0')}.ts`), `export const inspect = ${index};\n`);
+  }
+  for (let index = 0; index < 12; index += 1) {
+    writeFileSync(join(root, `src/b-prefix-${index}.ts`), `export const inspectResourceLeaseLegacy${index} = inspectWorkHandleLegacy${index};\n`);
+  }
+  writeFileSync(join(root, 'src/zz-first.ts'), 'export function inspectResourceLease() { return 1; }\n');
+  writeFileSync(join(root, 'src/zz-second.ts'), 'export function inspectWorkHandle() { return 2; }\n');
+  execFileSync('git', ['add', '.'], { cwd: root });
+  execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: root });
+
+  const options = {
+    description: 'inspect the two implementation symbols',
+    searchTerms: ['inspect inspectResourceLease inspectWorkHandle'],
+    retrievalMode: 'implementation',
+    structuralContext: 'off',
+    maxFiles: 2,
+    maxSnippets: 2,
+  } satisfies ControllerContextPackOptions;
+  const pack = buildControllerContextPack(root, getMcpPolicy('controller'), options);
+  expect(pack.files.map((file) => file.path)).toEqual(['src/zz-first.ts', 'src/zz-second.ts']);
+  expect(pack.files.every((file) => file.reasons.some((reason) => reason.startsWith('search:inspect')))).toBe(true);
+  expect(pack.search.scannedFiles).toBeLessThan(30);
+  const asyncPack = await buildControllerContextPackAsync(root, getMcpPolicy('controller'), options);
+  expect(asyncPack.files.map((file) => file.path)).toEqual(pack.files.map((file) => file.path));
+  expect(asyncPack.search.scannedFiles).toBeLessThan(30);
 });

@@ -133,7 +133,19 @@ from isolated B. `cutover_eligible` is impossible while A and B collide on Home
 or port. Before the first production activation, a transient failure to obtain a
 fresh Stable A verification leaves the same ReleaseSession `cutover_eligible` so
 the exact candidate can be retried after observation recovers; proven Stable A
-identity drift is a real precondition failure. `cutover_attempting` permits
+identity drift is a real precondition failure. After those exact pre-cutover
+checks and immutable Candidate promotion, Recovery may arm a bounded mechanical
+drain marker in the existing Package Connector service root. The marker is tied
+to the exact serving Stable A Connector generation (`releaseId`, `installedAt`,
+and endpoint) plus the Recovery owner lifetime; that generation rejects new MCP
+POST/stream admission with retryable 503 while already-admitted responses,
+initialization and the existing session-idle window drain. The zero-active
+request/stream gate is unchanged. A Candidate or rollback Connector rebind
+changes the service generation before strict MCP verification, so the
+replacement process is not trapped behind the predecessor marker. Recovery
+clears the marker on every cutover exit; owner-liveness and TTL checks bound any
+orphaned marker. This marker is transport fencing only, not ReleaseSession
+state, release intent or another lifecycle owner. `cutover_attempting` permits
 exactly one fenced production cutover; verified return to exact A terminalizes
 `rolled_back` and is never retried. If observation is interrupted after the
 rollback authority commit but before the ReleaseSession phase write,

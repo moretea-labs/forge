@@ -166,7 +166,14 @@ describe('iOS development simulator reliability', () => {
     expect(second.appPath?.endsWith('/New.app')).toBe(true);
     expect(second.newBuiltApps.some((entry: string) => entry.endsWith('/New.app'))).toBe(true);
     expect(otherConfiguration.derivedDataPath).not.toBe(first.derivedDataPath);
-    expect(otherDestination.derivedDataPath).not.toBe(first.derivedDataPath);
+    expect(otherDestination.derivedDataPath).toBe(first.derivedDataPath);
+    const physical = iosAppBuild(repo.record, { scheme: 'Old', udid: 'P1', destinationPlatform: 'ios' });
+    const testRun = iosXcodeTest(repo.record, { scheme: 'Old', udid: 'D2' });
+    const repeatTestRun = iosXcodeTest(repo.record, { scheme: 'Old', udid: 'D1', onlyTesting: ['OldTests/example'] });
+    if (!('derivedDataPath' in physical && 'derivedDataPath' in testRun && 'resultBundlePath' in testRun && 'resultBundlePath' in repeatTestRun)) throw new Error('expected cache evidence');
+    expect(physical.derivedDataPath).not.toBe(first.derivedDataPath);
+    expect(testRun.derivedDataPath).toBe(first.derivedDataPath);
+    expect(repeatTestRun.resultBundlePath).not.toBe(testRun.resultBundlePath);
   });
 
   test('builds an exact physical iOS destination with provisioning credentials inside the runner while redacting returned evidence', () => {
