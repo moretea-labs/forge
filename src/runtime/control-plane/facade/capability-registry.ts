@@ -648,6 +648,7 @@ export function getCoreCapabilityExecutionSchema(capabilityId: string): Record<s
             work_id: { type: 'string', minLength: 1, maxLength: 256 },
             target_branch: { type: 'string', minLength: 1, maxLength: 512 },
             complete_work: { type: 'boolean' },
+            allow_merge_commit: { type: 'boolean' },
           },
         },
       },

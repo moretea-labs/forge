@@ -1,4 +1,4 @@
-import { createHash } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { spawnSync } from 'child_process';
 import type { McpExecutionContext } from '../../../../packages/protocols/mcp/execution-context';
 import {
@@ -17,6 +17,8 @@ import {
 } from '../../../cli/repositories/registry';
 import { repositoryGitStatus } from '../../../cli/repositories/structured-git';
 import { listActiveLeases } from '../../resources/leases/store';
+import { withCheckoutMutationGate } from '../../execution/thin-harness/mutation-gate';
+import { runBoundedGit } from '../../execution/thin-harness/async-process';
 import { assertRuntimeMayWriteOrThrow, isRuntimeWriteFenceError } from '../../root/write-fence';
 import { cleanupTerminalWork } from './work-terminal-cleanup';
 import { recordWorkDeliveryReceipt } from './work-completion-authority';
@@ -143,9 +145,11 @@ function assertTargetMutationAvailable(
   targetBranch: string,
   expectedTargetHead: string,
   targetRoot: string,
+  ownedLeaseJobId?: string,
 ): void {
   const blockingLease = listActiveLeases(controllerHome, handle.repositoryId)
-    .find((lease) => lease.checkoutId === targetCheckoutId && lease.workId !== handle.workId);
+    .find((lease) => lease.checkoutId === targetCheckoutId
+      && lease.ownerJobId !== ownedLeaseJobId && lease.workId !== handle.workId);
   if (blockingLease) {
     throw new Error(`WORK_DELIVERY_TARGET_LEASE_ACTIVE: ${blockingLease.leaseId}`);
   }
@@ -380,6 +384,7 @@ export async function deliverWork(ctx: McpExecutionContext, args: Record<string,
   );
   if (!contract) throw new Error(`WORK_CONTRACT_MISSING: ${handle.workContractId ?? handle.workId}`);
   const completeWork = args.complete_work === true;
+  const allowMergeCommit = args.allow_merge_commit === true;
   const semanticState = semanticWorkState(contract);
   const expectedSemanticRevision = workSemanticView(contract).revision;
   if (semanticState !== 'open' && !(completeWork && semanticState === 'completed')) {
@@ -469,33 +474,94 @@ export async function deliverWork(ctx: McpExecutionContext, args: Record<string,
   if (git(targetRoot, ['merge-base', '--is-ancestor', sourceRevision, targetHead]).ok) {
     strategy = 'already_integrated';
   } else {
-    if (!git(targetRoot, ['merge-base', '--is-ancestor', targetHead, sourceRevision]).ok) {
+    const targetIsAncestor = git(targetRoot, ['merge-base', '--is-ancestor', targetHead, sourceRevision]).ok;
+    if (!targetIsAncestor && !allowMergeCommit) {
       throw new Error(`WORK_DELIVERY_NON_FAST_FORWARD: target ${targetHead} and source ${sourceRevision} diverged`);
     }
-    assertTargetMutationAvailable(
-      ctx.controllerHome,
-      handle,
-      target.activeCheckoutId,
-      targetBranch,
-      targetHead,
-      targetRoot,
-    );
-    if (handle.state !== 'committed') {
-      handle = transitionWorkHandle(ctx.controllerHome, handle, 'committed', {
-        expectedHead: sourceRevision,
-        failureReason: undefined,
-        finalization: { ...handle.finalization, commit: 'done', lastError: undefined },
-      });
+    // Only the actual Git write owns the shared target. An unrelated source Work
+    // never holds this lease throughout planning, review or build validation.
+    const gated = await withCheckoutMutationGate({
+      controllerHome: ctx.controllerHome,
+      repoId: handle.repositoryId,
+      checkoutId: target.activeCheckoutId,
+      repoRoot: targetRoot,
+      owner: `deliver-work:${handle.workId}:${randomUUID()}`,
+      ttlMs: 120_000,
+      ownership: { mutatesGitIndex: true, mutatesGitRefs: true },
+      ownerIdentity: {
+        repositoryId: handle.repositoryId,
+        checkoutId: target.activeCheckoutId,
+        worktreeId: targetRoot,
+        branch: targetBranch,
+        principalId: session.principalId,
+      },
+    }, async (gate, ownership) => {
+      assertTargetMutationAvailable(ctx.controllerHome, handle, target.activeCheckoutId,
+        targetBranch, targetHead, targetRoot, gate.ownerJobId);
+      ownership.assert();
+      const preview = !targetIsAncestor
+        ? await runBoundedGit(targetRoot, ['merge-tree', '--write-tree', targetHead, sourceRevision], {
+          timeoutMs: 30_000, maxOutputBytes: 128 * 1024, signal: ownership.signal,
+        })
+        : undefined;
+      if (preview && !preview.ok) {
+        throw new Error(`WORK_DELIVERY_MERGE_CONFLICT: ${preview.stderr || preview.stdout || 'merge-tree failed'}`);
+      }
+      if (handle.state !== 'committed') {
+        handle = transitionWorkHandle(ctx.controllerHome, handle, 'committed', {
+          expectedHead: sourceRevision,
+          failureReason: undefined,
+          finalization: { ...handle.finalization, commit: 'done', lastError: undefined },
+        });
+      }
+      ownership.assert();
+      const merged = await runBoundedGit(targetRoot,
+        targetIsAncestor
+          ? ['merge', '--ff-only', sourceRevision]
+          : ['merge', '--no-ff', '--no-edit', sourceRevision],
+        { timeoutMs: 60_000, maxOutputBytes: 128 * 1024, signal: ownership.signal });
+      if (!merged.ok) {
+        if (ownership.ownershipLost()) throw new Error('WORK_DELIVERY_MUTATION_OWNERSHIP_LOST');
+        // A conflicted merge must never strand the shared integration checkout.
+        // Abort only our own in-progress merge while retaining the same lease.
+        const mergeHead = git(targetRoot, ['rev-parse', '--verify', 'MERGE_HEAD']);
+        if (mergeHead.ok) {
+          const aborted = await runBoundedGit(targetRoot, ['merge', '--abort'], {
+            timeoutMs: 30_000, maxOutputBytes: 128 * 1024, signal: ownership.signal,
+          });
+          if (!aborted.ok) {
+            throw new Error(`WORK_DELIVERY_MERGE_ABORT_FAILED: ${aborted.stderr || aborted.stdout}; merge error: ${merged.stderr || merged.stdout}`);
+          }
+        }
+        throw new Error(`WORK_DELIVERY_GIT_MERGE_FAILED: ${merged.stderr || merged.stdout || 'git merge failed'}`);
+      }
+      ownership.assert();
+      const afterMergeStatus = git(targetRoot, ['status', '--porcelain=v1']);
+      if (!afterMergeStatus.ok || afterMergeStatus.stdout) {
+        throw new Error('WORK_DELIVERY_TARGET_DIRTY_AFTER_MERGE');
+      }
+      const newHead = exactRevision(targetRoot, 'HEAD', 'TARGET_HEAD');
+      if (targetIsAncestor && newHead !== sourceRevision) {
+        throw new Error(`WORK_DELIVERY_TARGET_HEAD_UNEXPECTED: expected ${sourceRevision}, found ${newHead}`);
+      }
+      if (!targetIsAncestor) {
+        const ancestry = git(targetRoot, ['rev-list', '--parents', '-n', '1', newHead]);
+        const [, firstParent, secondParent, ...extraParents] = ancestry.stdout.split(/\s+/);
+        if (!ancestry.ok || firstParent !== targetHead || secondParent !== sourceRevision || extraParents.length > 0) {
+          throw new Error('WORK_DELIVERY_MERGE_PARENT_MISMATCH');
+        }
+        const actualTree = git(targetRoot, ['rev-parse', `${newHead}^{tree}`]);
+        if (!actualTree.ok || actualTree.stdout !== preview!.stdout.split(/\s+/)[0]) {
+          throw new Error('WORK_DELIVERY_MERGE_TREE_MISMATCH');
+        }
+      }
+      return { newHead, mergeStrategy: (targetIsAncestor ? 'work_fast_forward' : 'work_merge_commit') as RepositoryCompletionReceipt['delivery']['strategy'] };
+    });
+    if (!gated.ok) {
+      throw new Error(`WORK_DELIVERY_TARGET_LEASE_ACTIVE: ${gated.busy.blockers.map((blocker) => blocker.owner).join(', ')}`);
     }
-    const merged = git(targetRoot, ['merge', '--ff-only', sourceRevision], 60_000);
-    if (!merged.ok) {
-      throw new Error(`WORK_DELIVERY_FAST_FORWARD_FAILED: ${merged.stderr || merged.stdout || 'git merge failed'}`);
-    }
-    integratedTargetHead = exactRevision(targetRoot, 'HEAD', 'TARGET_HEAD');
-    if (integratedTargetHead !== sourceRevision) {
-      throw new Error(`WORK_DELIVERY_TARGET_HEAD_UNEXPECTED: expected ${sourceRevision}, found ${integratedTargetHead}`);
-    }
-    strategy = 'work_fast_forward';
+    integratedTargetHead = gated.value.newHead;
+    strategy = gated.value.mergeStrategy;
   }
 
   if (!git(targetRoot, ['merge-base', '--is-ancestor', sourceRevision, integratedTargetHead]).ok) {

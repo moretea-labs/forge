@@ -279,6 +279,105 @@ describe('repository.git Work delivery', () => {
       expect(after.completionReceipt?.receiptId).toBe(contract.completionReceipt?.receiptId);
       expect(git(fx.repoRoot, ['rev-parse', 'HEAD'])).toBe(sourceHead);
     }
+
+    // Both Works branch from one baseline. A no-conflict target advancement must
+    // integrate with an explicit opt-in; a genuine content conflict must not
+    // modify the shared target, complete Work, or discard the managed source.
+    for (const conflict of [false, true]) {
+      const fx = fixture();
+      roots.push(fx.root);
+      const started = await callExecutionTool(fx.ctx, 'session_start', {});
+      const session = (started?.structuredContent as { session: { sessionId: string } }).session;
+      const prepared = await callExecutionTool(fx.ctx, 'work_prepare', {
+        session_id: session.sessionId,
+        repo_id: fx.repository.repoId,
+        request_id: `prepare-diverged-delivery-${conflict}`,
+        objective: 'Deliver an exact validated source after unrelated target advancement.',
+        checks: ['type-focused'],
+        isolation: 'new_worktree',
+      });
+      expect(prepared?.isError).not.toBe(true);
+      const work = (prepared?.structuredContent as { work: { workId: string } }).work;
+      const handle = readWorkHandle(fx.controllerHome, fx.repository.repoId, work.workId)!;
+      writeFileSync(join(handle.worktreePath, 'src', 'lib.ts'), 'export const n = 2;\n');
+      git(handle.worktreePath, ['add', 'src/lib.ts']);
+      git(handle.worktreePath, ['commit', '-m', 'parallel source']);
+      const sourceHead = git(handle.worktreePath, ['rev-parse', 'HEAD']);
+
+      const targetFile = conflict ? 'src/lib.ts' : 'README.md';
+      writeFileSync(join(fx.repoRoot, targetFile),
+        conflict ? 'export const n = 3;\n' : 'target independently advanced\n');
+      git(fx.repoRoot, ['add', targetFile]);
+      git(fx.repoRoot, ['commit', '-m', 'parallel integration advancement']);
+      const targetHead = git(fx.repoRoot, ['rev-parse', 'HEAD']);
+
+      const validated = await callExecutionTool(fx.ctx, 'work_validate', {
+        session_id: session.sessionId,
+        repo_id: fx.repository.repoId,
+        work_id: work.workId,
+        interactive_wait_ms: 5_000,
+        request_id: `validate-diverged-delivery-${conflict}`,
+      });
+      expect(validated?.isError).not.toBe(true);
+      expect((validated?.structuredContent as { validation: { passed: boolean } }).validation.passed).toBe(true);
+
+      const strict = await callCoreCapabilityAdapter(fx.ctx, 'capability_execute', {
+        repo_id: fx.repository.repoId,
+        capability_id: 'repository.git',
+        action: 'deliver_work',
+        request_id: `strict-diverged-delivery-${conflict}`,
+        arguments: { session_id: session.sessionId, work_id: work.workId, complete_work: true },
+      });
+      expect(strict?.isError).toBe(true);
+      expect(JSON.stringify(strict?.structuredContent ?? strict)).toContain('WORK_DELIVERY_NON_FAST_FORWARD');
+      expect(git(fx.repoRoot, ['rev-parse', 'HEAD'])).toBe(targetHead);
+
+      const delivered = await callCoreCapabilityAdapter(fx.ctx, 'capability_execute', {
+        repo_id: fx.repository.repoId,
+        capability_id: 'repository.git',
+        action: 'deliver_work',
+        request_id: `allowed-diverged-delivery-${conflict}`,
+        arguments: {
+          session_id: session.sessionId, work_id: work.workId,
+          complete_work: true, allow_merge_commit: true,
+        },
+      });
+      if (conflict) {
+        expect(delivered?.isError).toBe(true);
+        expect(JSON.stringify(delivered?.structuredContent ?? delivered)).toContain('WORK_DELIVERY_MERGE_CONFLICT');
+        expect(git(fx.repoRoot, ['rev-parse', 'HEAD'])).toBe(targetHead);
+        expect(git(fx.repoRoot, ['status', '--porcelain=v1'])).toBe('');
+        expect(existsSync(handle.worktreePath)).toBe(true);
+        expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, work.workId)?.semanticState).toBe('open');
+      } else {
+        if (delivered?.isError) throw new Error(JSON.stringify(delivered.structuredContent ?? delivered));
+        const mergedHead = git(fx.repoRoot, ['rev-parse', 'HEAD']);
+        expect(mergedHead).not.toBe(targetHead);
+        expect(git(fx.repoRoot, ['rev-list', '--parents', '-n', '1', mergedHead])).toBe(
+          `${mergedHead} ${targetHead} ${sourceHead}`,
+        );
+        expect(git(fx.repoRoot, ['status', '--porcelain=v1'])).toBe('');
+        expect(existsSync(handle.worktreePath)).toBe(false);
+        expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, work.workId)).toMatchObject({
+          semanticState: 'completed',
+          completionReceipt: {
+            sourceRevision: sourceHead,
+            targetRevision: mergedHead,
+            delivery: { strategy: 'work_merge_commit', status: 'integrated' },
+            cleanup: { status: 'complete' },
+          },
+        });
+        const repeated = await callCoreCapabilityAdapter(fx.ctx, 'capability_execute', {
+          repo_id: fx.repository.repoId,
+          capability_id: 'repository.git',
+          action: 'deliver_work',
+          request_id: 'repeat-diverged-delivery',
+          arguments: { session_id: session.sessionId, work_id: work.workId, complete_work: true, allow_merge_commit: true },
+        });
+        expect(repeated?.isError).not.toBe(true);
+        expect(git(fx.repoRoot, ['rev-parse', 'HEAD'])).toBe(mergedHead);
+      }
+    }
   });
 
   test('uses committed Work changes for default validation and delivery fingerprint identity', async () => {
