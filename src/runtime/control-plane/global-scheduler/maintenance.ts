@@ -80,6 +80,8 @@ export function planSchedulerPeriodicMaintenance(input: {
 }): {
   periodicSequence: number;
   deepRetentionSequence: number;
+  generatedCacheRepositoryIndex?: number;
+  generatedCacheRootStartIndex: number;
   runRetention: boolean;
   runDeepRetention: boolean;
   processGcRepositoryIndex?: number;
@@ -94,6 +96,9 @@ export function planSchedulerPeriodicMaintenance(input: {
   return {
     periodicSequence,
     deepRetentionSequence,
+    generatedCacheRepositoryIndex: repositoryCount > 0 && periodicSequence % retentionEvery === 0
+      ? Math.floor(periodicSequence / retentionEvery) % repositoryCount : undefined,
+    generatedCacheRootStartIndex: repositoryCount > 0 ? Math.floor(periodicSequence / retentionEvery / repositoryCount) : 0,
     runRetention: periodicSequence % retentionEvery === 0,
     runDeepRetention: periodicSequence % deepRetentionEvery === 0,
     processGcRepositoryIndex: repositoryCount > 0 ? periodicSequence % repositoryCount : undefined,
@@ -271,6 +276,21 @@ export async function runSchedulerPeriodicCleanup(input: {
     }
   }
 
+  // Cache production is much faster than evidence retention. Reuse the existing
+  // five-minute pass, one repository and one bounded budget per pass. The root
+  // ordinal advances per repository visit, not by the correlated global index.
+  if (plan.generatedCacheRepositoryIndex !== undefined) {
+    if (!runtimeMaintenanceAuthorityCurrent(input.controllerHome)) return;
+    const cacheRepo = input.repositories[plan.generatedCacheRepositoryIndex]!;
+    try {
+      const generated = cleanupGeneratedRepositoryCheckoutCaches(cacheRepo, {
+        nowMs: input.nowMs, rootStartIndex: plan.generatedCacheRootStartIndex,
+      });
+      if (generated.errors.length > 0) console.error(`[forge cleanup] generated-cache retention reported ${generated.errors.length} error(s) for ${cacheRepo.repoId}`);
+    } catch (error) {
+      console.error(`[forge cleanup] generated-cache retention failed for ${cacheRepo.repoId}:`, error);
+    }
+  }
   if (!plan.runDeepRetention) return;
   if (!runtimeMaintenanceAuthorityCurrent(input.controllerHome)) return;
 
@@ -285,14 +305,6 @@ export async function runSchedulerPeriodicCleanup(input: {
   }
   if (plan.deepRetentionRepositoryIndex === undefined) return;
   const repo = input.repositories[plan.deepRetentionRepositoryIndex]!;
-  try {
-    const generated = cleanupGeneratedRepositoryCheckoutCaches(repo, { nowMs: input.nowMs, rootStartIndex: plan.deepRetentionSequence });
-    if (generated.errors.length > 0) {
-      console.error(`[forge cleanup] generated-cache retention reported ${generated.errors.length} error(s) for ${repo.repoId}`);
-    }
-  } catch (error) {
-    console.error(`[forge cleanup] generated-cache retention failed for ${repo.repoId}:`, error);
-  }
   try {
     const browserArtifacts = cleanupControllerHomeBrowserArtifacts(input.controllerHome, repo.repoId, { nowMs: input.nowMs });
     if (browserArtifacts.errors.length > 0 || Object.values(browserArtifacts.classes).some((item) => item.overCapacity)) {

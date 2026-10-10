@@ -5,7 +5,16 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { cleanupControllerHomeBrowserArtifacts, cleanupGeneratedRepositoryCaches, cleanupGeneratedRepositoryCheckoutCaches } from '../../src/runtime/control-plane/generated-cache-retention';
 
+import { planSchedulerPeriodicMaintenance } from '../../src/runtime/control-plane/global-scheduler/maintenance';
+
 const roots: string[] = [];
+
+function xcodeCache(path: string): void {
+  mkdirSync(join(path, 'Build'), { recursive: true });
+  writeFileSync(join(path, 'info.plist'), 'Xcode cache identity');
+  writeFileSync(join(path, 'Build', 'cache.bin'), 'rebuildable');
+  age(join(path, 'Build'));
+}
 
 function repository(): string {
   const root = mkdtempSync(join(tmpdir(), 'forge-generated-cache-retention-'));
@@ -26,17 +35,22 @@ afterEach(() => {
 describe('generated repository cache retention', () => {
   test('removes stale caches and browser artifacts only from Forge-owned namespaces while preserving recent and tracked content', () => {
     const root = repository();
-    const stale = join(root, '.repo-harness', 'old-run', 'DerivedData');
+    const stale = join(root, '.repo-harness', 'old-run', 'custom-preview');
     const active = join(root, '.ai', 'harness', 'deriveddata-active');
     const tracked = join(root, '.forge', 'ios', 'DerivedData', 'tracked-build');
     const staleUpload = join(root, '.forge', 'browser', 'uploads', 'stale.zip');
     const staleScreenshot = join(root, '.forge', 'browser', 'screenshots', 'stale.png');
     const recentScreenshot = join(root, '.forge', 'browser', 'screenshots', 'recent.png');
     const trackedScreenshot = join(root, '.forge', 'browser', 'screenshots', 'tracked.png');
-    const resultBundle = join(root, '.repo-harness', 'old-run', 'result.xcresult');
-    mkdirSync(stale, { recursive: true });
-    mkdirSync(active, { recursive: true });
-    mkdirSync(tracked, { recursive: true });
+    const resultBundle = join(stale, 'Logs', 'Test', 'result.xcresult');
+    const dependencies = join(stale, 'SourcePackages');
+    const unknown = join(root, '.repo-harness', 'DerivedData-unknown');
+    mkdirSync(unknown, { recursive: true });
+    writeFileSync(join(unknown, 'keep.txt'), 'not proven rebuildable');
+    mkdirSync(dependencies, { recursive: true });
+    xcodeCache(stale);
+    xcodeCache(active);
+    xcodeCache(tracked);
     mkdirSync(resultBundle, { recursive: true });
     writeFileSync(join(stale, 'cache.bin'), 'cache');
     writeFileSync(join(active, 'cache.bin'), 'cache');
@@ -64,7 +78,10 @@ describe('generated repository cache retention', () => {
       maxRemovals: 10,
     });
 
-    expect(existsSync(stale)).toBe(false);
+    expect(existsSync(join(stale, 'Build'))).toBe(false);
+    expect(existsSync(stale)).toBe(true);
+    expect(existsSync(dependencies)).toBe(true);
+    expect(existsSync(unknown)).toBe(true);
     expect(existsSync(active)).toBe(true);
     expect(existsSync(tracked)).toBe(true);
     expect(existsSync(staleUpload)).toBe(false);
@@ -72,7 +89,7 @@ describe('generated repository cache retention', () => {
     expect(existsSync(recentScreenshot)).toBe(true);
     expect(existsSync(trackedScreenshot)).toBe(true);
     expect(existsSync(resultBundle)).toBe(true);
-    expect(report.removedPaths).toContain('.repo-harness/old-run/DerivedData');
+    expect(report.removedPaths).toContain('.repo-harness/old-run/custom-preview/Build');
     expect(report.removedPaths).toContain('.forge/browser/uploads/stale.zip');
     expect(report.removedPaths).toContain('.forge/browser/screenshots/stale.png');
     expect(report.skippedByReason.active_process ?? 0).toBeGreaterThanOrEqual(1);
@@ -87,9 +104,9 @@ describe('generated repository cache retention', () => {
     const activeCache = join(activeWorktreeRoot, '.repo-harness', 'ios-build', 'DerivedData-generic-simulator');
     const siblingCache = join(siblingWorktreeRoot, '.repo-harness', 'ios-build', 'DerivedData-generic-simulator');
     const removedCache = join(removedWorktreeRoot, '.repo-harness', 'ios-build', 'DerivedData-generic-simulator');
-    mkdirSync(activeCache, { recursive: true });
-    mkdirSync(siblingCache, { recursive: true });
-    mkdirSync(removedCache, { recursive: true });
+    xcodeCache(activeCache);
+    xcodeCache(siblingCache);
+    xcodeCache(removedCache);
     writeFileSync(join(activeCache, 'cache.bin'), 'cache');
     writeFileSync(join(siblingCache, 'cache.bin'), 'cache');
     writeFileSync(join(removedCache, 'cache.bin'), 'cache');
@@ -113,7 +130,7 @@ describe('generated repository cache retention', () => {
     });
 
     expect(existsSync(activeCache)).toBe(true);
-    expect(existsSync(siblingCache)).toBe(false);
+    expect(existsSync(join(siblingCache, 'Build'))).toBe(false);
     expect(existsSync(removedCache)).toBe(true);
     expect(report.rootsInspected).toBe(3);
     expect(report.removedPaths.some((path) => path.includes(siblingWorktreeRoot))).toBe(true);
@@ -125,8 +142,8 @@ describe('generated repository cache retention', () => {
     const activeWorktreeRoot = repository();
     const canonicalCache = join(canonicalRoot, '.forge', 'ios', 'DerivedData', 'canonical');
     const activeCache = join(activeWorktreeRoot, '.forge', 'ios', 'DerivedData', 'worktree');
-    mkdirSync(canonicalCache, { recursive: true });
-    mkdirSync(activeCache, { recursive: true });
+    xcodeCache(canonicalCache);
+    xcodeCache(activeCache);
     writeFileSync(join(canonicalCache, 'cache.bin'), 'cache');
     writeFileSync(join(activeCache, 'cache.bin'), 'cache');
     age(canonicalCache);
@@ -144,8 +161,30 @@ describe('generated repository cache retention', () => {
       rootStartIndex: 1,
     });
 
-    expect(existsSync(activeCache)).toBe(false);
-    expect(existsSync(canonicalCache)).toBe(true);
+    expect(existsSync(join(activeCache, 'Build'))).toBe(false);
+    expect(existsSync(join(canonicalCache, 'Build'))).toBe(true);
+    // Two repositories and two checkout roots previously visited only one
+    // parity of roots forever because both used the global sequence.
+    const visits = [0, 1, 2, 3].map((round) => planSchedulerPeriodicMaintenance({
+      nowMs: round * 5 * 60_000, cleanupIntervalMs: 60_000, repositoryCount: 2,
+    }));
+    expect(visits.map((visit) => [visit.generatedCacheRepositoryIndex, visit.generatedCacheRootStartIndex % 2]))
+      .toEqual([[0, 0], [1, 0], [0, 1], [1, 1]]);
+    // Advance entry rotation after a complete root/namespace cycle.
+    const protectedCache = join(activeWorktreeRoot, '.forge', 'ios', 'DerivedData', 'aaa-protected');
+    const lateCache = join(activeWorktreeRoot, '.forge', 'ios', 'DerivedData', 'zzz-late');
+    xcodeCache(protectedCache);
+    xcodeCache(lateCache);
+    age(protectedCache);
+    age(lateCache);
+    const next = cleanupGeneratedRepositoryCheckoutCaches({
+      canonicalRoot, checkouts: [{ localRoot: activeWorktreeRoot, worktree: true }],
+    }, { nowMs: Date.parse('2026-08-25T12:00:00.000Z'), graceMs: 60_000,
+      maxEntries: 1, maxRemovals: 1, rootStartIndex: 17, processCommands: [`xcodebuild -derivedDataPath ${protectedCache}`] });
+    expect(next.rootsInspected).toBe(1);
+    expect(existsSync(join(protectedCache, 'Build'))).toBe(true);
+    expect(existsSync(join(lateCache, 'Build'))).toBe(false);
+    expect(next.removedPaths.some((path) => path.endsWith('zzz-late/Build'))).toBe(true);
     expect(report.rootsInspected).toBe(1);
     expect(report.budgetExhausted).toBe(true);
   });
