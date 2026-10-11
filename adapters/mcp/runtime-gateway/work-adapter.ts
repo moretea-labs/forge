@@ -16,7 +16,7 @@ import { invalidFacadeOperation } from './status-inbox-adapter';
 import { normalizeRhWorkInputWireMigration } from './work-input-wire-migration';
 import { callRhWorkScheduleAdapter, isRhWorkScheduleOperation } from './scheduler-adapter';
 import { callRhWorkRequirementOperation, isRhWorkRequirementOperation } from './work-requirement-operations';
-import { callRhWorkSemanticOperation, semanticWorkId } from './work-semantic-operations';
+import { buildWorkSemanticFacadeResult, callRhWorkSemanticOperation, semanticWorkId } from './work-semantic-operations';
 import { callRhWorkListProjection } from './work-list-projection';
 import {
   callRhWorkPlanCreateOperation,
@@ -137,7 +137,7 @@ async function callRepositoryBoundStart(
       repository,
       sourceRevision: baseRevision,
     });
-    return result(buildFacadeResult({
+    return result(buildWorkSemanticFacadeResult({
       summary: `Work ${workId} admitted to repository execution on checkout ${checkoutId}.`,
       data: {
         work: workSemanticView(contract),
