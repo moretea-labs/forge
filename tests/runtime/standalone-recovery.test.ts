@@ -870,8 +870,10 @@ test('standalone Recovery restarts only the configured primary Connector service
   });
   const commands: string[][] = [];
   let observedLock: Record<string, unknown> | undefined;
+  let reconnectCalls = 0;
   const result = await restartPrimaryConnector(config, {
     requestId: 'recovery-gateway:test-primary-connector-restart',
+    forceHealthyRestart: true,
     platform: 'darwin',
     currentUid: async () => 501,
     verifyLocal: async () => healthyVerify(),
@@ -879,7 +881,13 @@ test('standalone Recovery restarts only the configured primary Connector service
       observedLock = JSON.parse(readFileSync(join(home, 'recovery', 'locks', 'operation.lock'), 'utf8')) as Record<string, unknown>;
       return { ok: true, attempted: false, noOp: true, detail: 'binding already current' };
     },
-    reconnect: async () => ({ ok: true, detail: 'public MCP reachable', verify: healthyVerify() }),
+    probeConnectorLocal: async () => ({ ok: true, detail: 'local Connector reachable' }),
+    probeConnectorOwnership: async () => ({ ok: true, detail: 'configured service owns listener' }),
+    reconnect: async () => {
+      reconnectCalls += 1;
+      if (reconnectCalls > 1) expect(commands).toContainEqual(['launchctl', 'kickstart', '-k', 'gui/501/com.moretea.forge.mcp-gateway']);
+      return { ok: true, detail: 'public MCP reachable', verify: healthyVerify() };
+    },
     runCommand: async (name, args) => {
       commands.push([name, ...args]);
       return { ok: true, status: 0, stdout: '', stderr: '' };
@@ -893,6 +901,7 @@ test('standalone Recovery restarts only the configured primary Connector service
   });
   expect(commands).toContainEqual(['launchctl', 'print', 'gui/501/com.moretea.forge.mcp-gateway']);
   expect(commands).toContainEqual(['launchctl', 'kickstart', '-k', 'gui/501/com.moretea.forge.mcp-gateway']);
+  expect(reconnectCalls).toBe(2);
 });
 
 test('standalone Recovery permits targeted Connector recovery when Runtime authority is healthy but gateway observation is stale', async () => {

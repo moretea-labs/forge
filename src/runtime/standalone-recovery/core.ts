@@ -2973,6 +2973,8 @@ function primaryRuntimeServiceContractMatches(config: RecoveryConfig, owner: Pri
 }
 
 export interface PrimaryConnectorRecoveryDependencies {
+  /** Explicit operator recovery; watchdog calls leave a healthy Connector alone. */
+  forceHealthyRestart?: boolean;
   /** Durable caller identity propagated into the Recovery mutation lock and audit trail. */
   requestId?: string;
   platform?: NodeJS.Platform;
@@ -3256,6 +3258,7 @@ export async function restartPrimaryConnector(
 ): Promise<PrimaryConnectorRestartResult> {
   const verifyLocal = dependencies.verifyLocal ?? verifyLocalRuntime;
   const initialLocal = await verifyLocal(config);
+  const forceHealthyRestart = dependencies.forceHealthyRestart === true;
   // `verifyLocalRuntime` also reports the Connector's own loopback probe.
   // That probe is expected to be false when this recovery action is needed,
   // so it must not prevent a healthy canonical Runtime from repairing the
@@ -3297,7 +3300,7 @@ export async function restartPrimaryConnector(
     let localConnector = await probeConnectorLocal(config);
     let connectorOwnership = localConnector?.ok ? await probeConnectorOwnership(config) : undefined;
     let observed = localConnector?.ok && connectorOwnership?.ok ? await reconnect(config) : undefined;
-    if (observed?.ok) {
+    if (observed?.ok && !forceHealthyRestart) {
       return {
         ok: true,
         attempted: bindingRepair.attempted,
@@ -3313,7 +3316,7 @@ export async function restartPrimaryConnector(
     // A healthy local OAuth endpoint proves the Connector is not the broken hop.
     // If a distinct primary tunnel is configured, skip the pointless Gateway
     // restart and repair the public hop directly.
-    const restartConnector = !localConnector?.ok || !connectorOwnership?.ok || !tunnelConfigured;
+    const restartConnector = forceHealthyRestart || !localConnector?.ok || !connectorOwnership?.ok || !tunnelConfigured;
     if (restartConnector) {
       const restarted = await ensurePrimaryConnectorServiceStarted(service, runCommand);
       if (!restarted.ok) {
@@ -3345,7 +3348,8 @@ export async function restartPrimaryConnector(
       }
     }
 
-    observed ??= await reconnect(config);
+    if (restartConnector) observed = await reconnect(config);
+    else observed ??= await reconnect(config);
     const primaryTunnel = configuredPrimaryPublicTunnel(config);
     if (!observed.ok && localConnector?.ok && connectorOwnership?.ok && primaryTunnel) {
       let tunnelRestarted: { ok: boolean; attempted: boolean; detail: string; serviceTarget: string } | undefined;
