@@ -1,6 +1,6 @@
 # 自动推进端到端架构收敛设计
 
-Status: R0 REVIEWED; G0a BLOCKED BY LIVE BROWSER; PRODUCTION IMPLEMENTATION NO-GO
+Status: R0 REVIEWED; G0a LIVE FORGE TOOL PASS; D1/D2 SOURCE CANDIDATE; G0b/G4 AND R2–R4 NOT YET ACCEPTED
 Date: 2026-10-11
 Owner: ChatGPT (semantic decisions) / Forge Controller (mechanical durability)
 Scope: Workflow Supervisor → Computer exact-conversation delivery → ChatGPT Forge App receipt
@@ -248,3 +248,32 @@ R1 批次聚焦可以直接由真实代码证明的契约缺口：`registerTask`
 ### R2 变更集审查补充
 
 对完整 diff 审核时发现 `store.reviseTaskObjective()` 还保留了 `trim()` + 独立长度校验。它是绕过 Controller 边界的真实持久 writer，必须同步迁移到 `validateSupervisorObjective()` 并**删除**旧判断，否则任务目标可能在持久修订时改变首尾字符。本次修正使用原模块内已存在的导入，没有增加新状态或抽象。R2 的全系统自动推进交付仍未通过：已有 Computer UI 的归一化全文 readback、真实 Forge MCP causal receipt、运行时版本更新、三轮连续推进还需要真实验收，不因本次协议回归绿灯提前宣称完成。
+
+## 13. G0a live Forge Tool proof 与 D2 bootstrap 路由审查（2026-10-11）
+
+G0a **PASS（仅单次真实工具调用）**：独立会话 https://chatgpt.com/c/6acb51da-dc20-83ea-89a8-4b77679225ba；真实页面从同一 DOM 节点确认 forge App 的 name/path 为 app://asdk_app_6ac09022b26081918f20ff868c773824；发送前全文含 G0A_BEGIN/G0A_END，经浏览器读取验证；一次发送回执 PLG-1791709656265-902e7a3d。会话中真实 MCP 工具调用 rh_status，traceId 4cb9a117-c0a7-484b-896e-22ff836ef5de，requestId mcp-call:258a2d55-f9a3-4a8d-ac2f-79b60b04296b，返回 status=ok、readiness.ready=true、HEAD=1d96a458a8238e75fd61ee1e4a8aed41709b531d。此证明的是被明确选择的 Forge App 和单次只读工具调用，不代表 Supervisor 三轮可无人推进。
+
+R2 现存路由核对：adapters/computer/chatgpt-target-router.ts 的 ensureExact 已允许 Extension 明确未触发浏览器变更时的原生 Computer 接管，但 openBootstrap 未执行同一证明规则。本批复用已有 ComputerChatgptConversationTargetPort 和 failoverSafe 证明条件；仅 pre_mutation 且 failoverSafe=true 可由现有 native provider 打开单个 bootstrap；已认领但结果未知时不跨 provider 重开。没有新增发送 writer/新状态/新 manager，原 Extension/Computer 生命周期不变。对应测试为 tests/runtime/computer-chatgpt-target-router.test.ts；完成整批 changeset 的 R2 review、运行时发布与 G0b/G4 仍待后续验收。
+
+R2 bootstrap 身份补充（同一 Work）：Mac native 的 createSingleFlight 原按 Project URL 聚合同发创建，两个不同 taskId 可能复用一张物理标签；现在对 bootstrap 改用独立 bootstrapKey（URL 仍仅用于导航），仅同一 Task 合并同一 in-flight 创建。Extension 明确报告 provider mismatch 时，Computer Router 仅将原 targetId 交给归属 native provider 进行身份提升，不再由 Extension 冒充 native writer，也不重开标签或重复发送；不满足明确 no-mutation 证明一律不迁移。Supervisor 在 marker 对账已返回 exact-conversation target 时直接绑定，不重复 promote 已变成精确会话的目标（避免 tombstone 自身 binding）。相关回归：computer-chatgpt-target-router.test.ts、computer-chatgpt-macos-target.test.ts、workflow-supervisor-control-plane.test.ts。R2 整体、G0b/G4 和 Runtime live release 仍需后续证明。
+
+### R2 provider-identity 与同次点击防线复核
+
+- 对已有 Controller Computer Surface binding 的 bootstrap，Chrome Extension 离线时不能把“本次尚未调用 Send”误当作“此 Task 从未创建标签”；保留原 Extension 绑定并拒绝 native 新建。若原绑定由 native provider 持有，Extension 在选取实例前就明确报告 provider mismatch，由 native 恢复该同一 targetId。Mac 原生 provider 也独立拒绝已存在的外来 provider binding。
+- Extension background 的 ensure 可能在 Chrome 创建标签后、拿到返回值前出错。未知 target 并不证明未创建标签；对 bootstrap，worker 已接到命令但执行失败时一律不得跨 provider 重建（即使本次没有新建，之前可能已有该 Task 的标签）。只有 Extension 根本未接到命令，且 Controller 无原有 binding，才允许 native 新建。对 exact-conversation 保留已有的已复用 tab 负证明分类。此收窄不增加 retry 或 authority。
+- native Computer 的每个 prepare 和 dispatch 都携带同一个既有 ComputerChatgptTargetIdentity，通过 Apple Events 在真实浏览器文档内校验 exact conversation ID，或 bootstrap 的确切 Project ID 且无现存 /c/ 会话。最终 Send 点击和 URL 证明在同一个 page.evaluate 内完成，用户在准备与发送之间切换会话时无 provider mutation。
+- 2026-10-11 开发候选针对 native/router/Extension/Controller Surface 的聚焦测试包含真实 JS 表达式模拟错位导航，类型检查通过。仅证明源代码与测试边界，不是实际发布、G0b 或 G4 的 live 回执.
+
+### R2 Prompt 全文 readback 与空白保真审查
+
+- Chrome Extension 与 Mac native 原先把用户消息/结构化 Supervisor effect prompt 的连续空格、制表符和换行压成单个空格。此比较不能证明原文未被静默更改。
+- 两条 provider 现仅对 CRLF/CR 做平台换行标准化，不压缩正文空白；Forge App chip 的独立身份检查保留，UI 选项标签的宽松归一化仅服务于选项匹配。
+- 两条真实 provider JavaScript 回归已验证：准备后丢失空格或换行时拒绝 Send，正文完全一致时允许一次 Send。Mac 最终 Send 的 URL、正文及 App chip 在同一个浏览器 JS 任务内校验。
+- 这些结果仍属于源码和模拟浏览器的测试证据，尚须 G0b live recovery、发布版本一致性、G4 三轮及三条既有业务 Task 验收；不可把该局部 PASS 误写为原始目标 DONE。
+
+### R2 G0b worker-restart calling chain proof (source/test boundary)
+
+- Extension `target.prepare/dispatch` 已携带稳定 `providerBinding`，但 background worker 原本调用 `resolveTarget(identity, false)` 丢弃了该证明；service-worker 重启后其临时 `bootstrapTabs` 映射为空，即使 Controller 还绑定了唯一标签也无法完成后续首发。现在两条 worker 操作都传入原始持久 binding，严格恢复同一 tabId，且不会借用同 Project 的其他标签。
+- 首发 prepare/dispatch 将目标 `expectedProjectId` 传给 content script；content script 在编辑前、最终 Send 前验证当前 Project 且不是现存 `/c/` 会话。新 worker 对精确标签先做 `bootstrapTargetGuard` capabilities 握手；旧 content script 未升级时直接拒绝，不可跨版本盲发。原有 reasoning 失败码保持不变。
+- 源码里两种 provider 的 Supervisor @forge 表示层处理不再对整个 `effect.prompt` 调用 `trim()`，避免截掉最后换行或空格；effect marker 与真实 App chip 检查仍独立保持。
+- 实际 background.js 和 content.js 在 VM 中的故障注入测试覆盖了 worker 映射丢失、Controller 精确绑定、混合新旧 content script、错误 Project、原有对话、Chrome 回调结果未知。测试证明可拒绝危险发送及正确恢复调用链，**尚不是实际浏览器关闭/worker 重启的 G0b live proof**。

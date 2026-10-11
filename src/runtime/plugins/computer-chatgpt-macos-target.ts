@@ -263,14 +263,32 @@ export async function observeMacOsChatgptPage(
 export async function dispatchMacOsChatgptPrompt(
   page: ComputerChatgptNativePage,
   prompt: string,
-  options: { mode?: 'send' | 'resume' | 'recover'; reasoning?: 'medium' | 'high' | 'xhigh'; prepareOnly?: boolean } = {},
+  options: { mode?: 'send' | 'resume' | 'recover'; reasoning?: 'medium' | 'high' | 'xhigh'; prepareOnly?: boolean; targetIdentity?: ComputerChatgptTargetIdentity } = {},
 ): Promise<{ mutation: 'not_attempted'; reasonCode: string } | { mutation: 'prepared' } | { mutation: 'attempted'; confirmed?: boolean }> {
   // Apple Events has no verified reasoning selector. Never silently submit
   // a Supervisor effect under the unproven maximum-effort claim.
   if (options.reasoning) return { mutation: 'not_attempted', reasonCode: 'COMPUTER_CHATGPT_REASONING_UNSUPPORTED_BY_PROVIDER' };
-  const supervisor = /^@forge\s+<<<FORGE_WORKFLOW_EFFECT_V1:fx_[a-zA-Z0-9_-]+>>>/.test(prompt.trim());
-  const submittedPrompt = supervisor ? prompt.trim().replace(/^@forge\s+/, '') : prompt;
+  const supervisor = /^@forge\s+<<<FORGE_WORKFLOW_EFFECT_V1:fx_[a-zA-Z0-9_-]+>>>/.test(prompt);
+  // The app mention is presentation metadata; never trim the immutable effect body.
+  const submittedPrompt = supervisor ? prompt.replace(/^@forge\s+/, '') : prompt;
   const resume = options.mode === 'resume';
+  // The location check is evaluated inside the SAME browser JavaScript action
+  // as the final Send click. A preflight observation alone cannot fence a
+  // user navigation that happens between prepare and dispatch.
+  const targetLocationProof = options.targetIdentity ? `(() => {
+    const expectedTarget = ${JSON.stringify(options.targetIdentity)};
+    const currentUrl = new URL(String(location.href || ''));
+    if (currentUrl.protocol !== 'https:' || currentUrl.hostname !== 'chatgpt.com') return false;
+    const parts = currentUrl.pathname.split('/').filter(Boolean);
+    if (expectedTarget.namespace === 'chatgpt.conversation') {
+      return parts.at(-2) === 'c' && parts.at(-1) === expectedTarget.conversationId;
+    }
+    const expectedParts = new URL(expectedTarget.projectUrl).pathname.split('/').filter(Boolean);
+    const projectId = (segments) => /^g-p-[a-z0-9]+/i.exec(segments[1] || '')?.[0];
+    return parts[0] === 'g' && expectedParts[0] === 'g'
+      && Boolean(projectId(parts)) && projectId(parts) === projectId(expectedParts)
+      && !parts.includes('c');
+  })()` : 'true';
   if (options.mode === 'recover') {
     if (options.prepareOnly) {
       const busy = await page.evaluate<boolean>(`(() => Array.from(document.querySelectorAll('[data-testid="stop-button"], [data-testid*="stop-button"]')).some(element => Boolean(element && element.getClientRects && element.getClientRects().length)))()`);
@@ -305,20 +323,21 @@ export async function dispatchMacOsChatgptPrompt(
       prepared = await page.evaluate<{ prepared: boolean; reason?: string }>(`(() => {
         const visible = (element) => Boolean(element && element.getClientRects && element.getClientRects().length);
         const root = Array.from(document.querySelectorAll('main')).filter(visible).pop() || document;
+        if (!(${targetLocationProof})) return { prepared: false, reason: 'COMPUTER_CHATGPT_EXACT_TARGET_UNPROVEN' };
         const value = (element) => String((element?.innerText ?? element?.textContent ?? '') || '');
-        const norm = (input) => String(input || '').replace(/\\s+/g, ' ').trim();
-        const expected = ${JSON.stringify(submittedPrompt)}; const expectedNorm = norm(expected); const resume = ${JSON.stringify(resume)};
+        const exact = (input) => String(input ?? '').replaceAll(String.fromCharCode(13,10), String.fromCharCode(10)).replaceAll(String.fromCharCode(13), String.fromCharCode(10));
+        const expected = ${JSON.stringify(submittedPrompt)}; const expectedNorm = exact(expected); const resume = ${JSON.stringify(resume)};
         const draft = ${JSON.stringify(supervisor)} ? expected + String.fromCharCode(10) + '@' : expected;
-        const draftNorm = norm(draft);
+        const draftNorm = exact(draft);
         const composer = ['div#prompt-textarea[contenteditable="true"]','#prompt-textarea[contenteditable="true"]','[data-testid="composer-text-input"][contenteditable="true"]','div[role="textbox"][contenteditable="true"]']
           .flatMap((selector) => Array.from(root.querySelectorAll(selector))).find(visible);
         if (!(composer instanceof HTMLElement) || !composer.isContentEditable) return { prepared: false, reason: 'composer_missing' };
-        const current = norm(value(composer));
+        const current = exact(value(composer));
         const chips = Array.from(composer.querySelectorAll('[plugin-mention-name], [app-mention-name]'));
         if (${JSON.stringify(supervisor)} && chips.length === 1
           && chips[0].getAttribute('app-mention-name') === 'forge'
           && chips[0].getAttribute('app-mention-path') === 'app://asdk_app_6ac09022b26081918f20ff868c773824'
-          && current === norm(expected + ' forge')) return { prepared: true };
+          && (current === exact(expected + ' forge') || current === exact(expected + String.fromCharCode(10) + 'forge'))) return { prepared: true };
         // A *previous attempt of this exact effect* may have inserted this same
         // prompt and then failed before clicking Send. That draft is this turn's
         // own text, not a foreign user draft: reusing it is the same logical
@@ -333,7 +352,7 @@ export async function dispatchMacOsChatgptPrompt(
           const range = document.createRange(); range.selectNodeContents(composer); range.deleteContents(); range.collapse(true); selection.removeAllRanges(); selection.addRange(range);
           if (!document.execCommand('insertText', false, draft)) return { prepared: false, reason: 'composer_text_insertion_rejected' };
         }
-        return norm(value(composer)) === draftNorm ? { prepared: true } : { prepared: false, reason: 'composer_text_unconfirmed' };
+        return exact(value(composer)) === draftNorm ? { prepared: true } : { prepared: false, reason: 'composer_text_unconfirmed' };
       })()`);
     } catch (error) {
       const code = error instanceof AssistantPluginError ? error.code : String(error);
@@ -353,26 +372,26 @@ export async function dispatchMacOsChatgptPrompt(
   if (supervisor) {
     try {
       const initial = await page.evaluate<{ bound: boolean; opened: boolean; reason?: string }>(`(() => {
-        const norm = (x) => String(x || '').replace(/\\s+/g, ' ').trim();
         const expected = ${JSON.stringify(submittedPrompt)};
+        const exact = (input) => String(input ?? '').replaceAll(String.fromCharCode(13,10), String.fromCharCode(10)).replaceAll(String.fromCharCode(13), String.fromCharCode(10));
         const composer = document.querySelector('[data-composer-markdown][role="textbox"][contenteditable="true"], #prompt-textarea[contenteditable="true"], div[role="textbox"][contenteditable="true"]');
         if (!(composer instanceof HTMLElement)) return { bound: false, opened: false, reason: 'composer_missing' };
         const chips = Array.from(composer.querySelectorAll('[plugin-mention-name], [app-mention-name]'));
         if (chips.length === 1
           && chips[0].getAttribute('app-mention-name') === 'forge'
           && chips[0].getAttribute('app-mention-path') === 'app://asdk_app_6ac09022b26081918f20ff868c773824'
-          && norm(composer.innerText) === norm(expected + ' forge')) return { bound: true, opened: false };
-        const triggerDraft = norm(expected + String.fromCharCode(10) + '@');
-        const current = norm(composer.innerText);
-        if (chips.length || (current !== norm(expected) && current !== triggerDraft)) return { bound: false, opened: false, reason: 'composer_binding_mismatch' };
-        if (current === norm(expected)) {
+          && (exact(composer.innerText) === exact(expected + ' forge') || exact(composer.innerText) === exact(expected + String.fromCharCode(10) + 'forge'))) return { bound: true, opened: false };
+        const triggerDraft = exact(expected + String.fromCharCode(10) + '@');
+        const current = exact(composer.innerText);
+        if (chips.length || (current !== exact(expected) && current !== triggerDraft)) return { bound: false, opened: false, reason: 'composer_binding_mismatch' };
+        if (current === exact(expected)) {
           composer.focus({ preventScroll: true });
           const selection = window.getSelection();
           if (!selection) return { bound: false, opened: false, reason: 'forge_plugin_selection_unavailable' };
           const range = document.createRange(); range.selectNodeContents(composer); range.deleteContents(); range.collapse(true);
           selection.removeAllRanges(); selection.addRange(range);
           if (!document.execCommand('insertText', false, expected + String.fromCharCode(10) + '@')) return { bound: false, opened: false, reason: 'forge_plugin_selection_unavailable' };
-          if (norm(composer.innerText) !== triggerDraft) return { bound: false, opened: false, reason: 'composer_binding_mismatch' };
+          if (exact(composer.innerText) !== triggerDraft) return { bound: false, opened: false, reason: 'composer_binding_mismatch' };
         }
         composer.focus({ preventScroll: true });
         const selection = window.getSelection();
@@ -397,14 +416,14 @@ export async function dispatchMacOsChatgptPrompt(
         if (!picked) return { mutation: 'not_attempted', reasonCode: 'COMPUTER_CHATGPT_FORGE_PLUGIN_UNAVAILABLE' };
         await sleep(150);
         const verified = await page.evaluate<boolean>(`(() => {
-          const norm = (x) => String(x || '').replace(/\\s+/g, ' ').trim();
           const expected = ${JSON.stringify(submittedPrompt)};
+          const exact = (input) => String(input ?? '').replaceAll(String.fromCharCode(13,10), String.fromCharCode(10)).replaceAll(String.fromCharCode(13), String.fromCharCode(10));
           const composer = document.querySelector('[data-composer-markdown][role="textbox"][contenteditable="true"], #prompt-textarea[contenteditable="true"], div[role="textbox"][contenteditable="true"]');
           if (!(composer instanceof HTMLElement)) return false;
           const chips = Array.from(composer.querySelectorAll('[plugin-mention-name], [app-mention-name]'));
           return chips.length === 1 && chips[0].getAttribute('app-mention-name') === 'forge'
             && chips[0].getAttribute('app-mention-path') === 'app://asdk_app_6ac09022b26081918f20ff868c773824'
-            && norm(composer.innerText) === norm(expected + ' forge');
+            && (exact(composer.innerText) === exact(expected + ' forge') || exact(composer.innerText) === exact(expected + String.fromCharCode(10) + 'forge'));
         })()`);
         if (!verified) return { mutation: 'not_attempted', reasonCode: 'COMPUTER_CHATGPT_FORGE_PLUGIN_CHIP_UNVERIFIED' };
       }
@@ -428,14 +447,15 @@ export async function dispatchMacOsChatgptPrompt(
       result = await page.evaluate<{ dispatched: boolean; reason?: string }>(`(() => {
       const visible = (element) => Boolean(element && element.getClientRects && element.getClientRects().length);
       const root = Array.from(document.querySelectorAll('main')).filter(visible).pop() || document;
+      if (!(${targetLocationProof})) return { dispatched: false, reason: 'COMPUTER_CHATGPT_EXACT_TARGET_UNPROVEN' };
       const value = (element) => String((element?.innerText ?? element?.textContent ?? '') || '');
-      const norm = (input) => String(input || '').replace(/\\s+/g, ' ').trim(); const expected = ${JSON.stringify(submittedPrompt)}; const supervisor = ${JSON.stringify(supervisor)};
+      const exact = (input) => String(input ?? '').replaceAll(String.fromCharCode(13,10), String.fromCharCode(10)).replaceAll(String.fromCharCode(13), String.fromCharCode(10)); const expected = ${JSON.stringify(submittedPrompt)}; const supervisor = ${JSON.stringify(supervisor)};
       const composer = Array.from(root.querySelectorAll('div#prompt-textarea[contenteditable="true"], #prompt-textarea[contenteditable="true"], [data-testid="composer-text-input"][contenteditable="true"], div[role="textbox"][contenteditable="true"]')).find(visible);
       if (!(composer instanceof HTMLElement)) return { dispatched: false, reason: 'composer_submit_mismatch' };
       if (supervisor) {
         const chips = Array.from(composer.querySelectorAll('[plugin-mention-name], [app-mention-name]'));
-        if (chips.length !== 1 || chips[0].getAttribute('app-mention-name') !== 'forge' || chips[0].getAttribute('app-mention-path') !== 'app://asdk_app_6ac09022b26081918f20ff868c773824' || norm(value(composer)) !== norm(expected + ' forge')) return { dispatched: false, reason: 'COMPUTER_CHATGPT_FORGE_PLUGIN_CHIP_UNVERIFIED' };
-      } else if (norm(value(composer)) !== norm(expected)) return { dispatched: false, reason: 'composer_submit_mismatch' };
+        if (chips.length !== 1 || chips[0].getAttribute('app-mention-name') !== 'forge' || chips[0].getAttribute('app-mention-path') !== 'app://asdk_app_6ac09022b26081918f20ff868c773824' || (exact(value(composer)) !== exact(expected + ' forge') && exact(value(composer)) !== exact(expected + String.fromCharCode(10) + 'forge'))) return { dispatched: false, reason: 'COMPUTER_CHATGPT_FORGE_PLUGIN_CHIP_UNVERIFIED' };
+      } else if (exact(value(composer)) !== exact(expected)) return { dispatched: false, reason: 'composer_submit_mismatch' };
       const sendButton = Array.from(root.querySelectorAll('[data-testid="send-button"], button[aria-label="Send"], button[aria-label="发送"], button[data-testid*="send"], button[type="submit"]')).find(visible);
       if (!(sendButton instanceof HTMLElement) || sendButton.hasAttribute('disabled') || sendButton.getAttribute('aria-disabled') === 'true') return { dispatched: false, reason: 'send_button_missing' };
       sendButton.click(); return { dispatched: true };
@@ -533,8 +553,10 @@ export class MacOsChatgptConversationTargetPort implements ComputerChatgptConver
     return taggedPage((await createMacOsBrowserOwnedPageForProduct(attachment.metadata.product, url, attachment.attempts, windowId, this.timeoutMs)).page, attachment.metadata.product);
   }
 
-  private async createSingleFlight(url: string, preferredProduct?: MacOsBrowserProduct, preferredWindowId?: string): Promise<ComputerChatgptNativePage> {
-    const key = `${preferredProduct ?? 'unknown'}:${url}`;
+  private async createSingleFlight(url: string, preferredProduct?: MacOsBrowserProduct, preferredWindowId?: string, resourceKey?: string): Promise<ComputerChatgptNativePage> {
+    // The Project URL is a navigation destination, not a logical bootstrap
+    // identity. Separate Supervisor tasks in one Project require separate tabs.
+    const key = `${preferredProduct ?? 'unknown'}:${resourceKey ?? url}`;
     const existing = this.createInFlight.get(key);
     if (existing) return existing;
     const cooldownUntil = this.createCooldownUntil.get(key) ?? 0;
@@ -620,14 +642,14 @@ export class MacOsChatgptConversationTargetPort implements ComputerChatgptConver
       prepare: async (prompt, options) => {
         if (options?.reasoning) return { ready: false, reasonCode: 'COMPUTER_CHATGPT_REASONING_UNSUPPORTED_BY_PROVIDER' };
         await this.prepareProviderOwnedPage(record, page);
-        const result = await dispatchMacOsChatgptPrompt(page, prompt, { ...options, prepareOnly: true });
+        const result = await dispatchMacOsChatgptPrompt(page, prompt, { ...options, targetIdentity: identity, prepareOnly: true });
         return result.mutation === 'prepared' ? { ready: true } : { ready: false,
           reasonCode: result.mutation === 'not_attempted' ? result.reasonCode : 'COMPUTER_CHATGPT_PREPARE_MUTATION_UNEXPECTED' };
       },
       dispatch: async (prompt, options) => {
         if (options?.reasoning) return { mutation: 'not_attempted', reasonCode: 'COMPUTER_CHATGPT_REASONING_UNSUPPORTED_BY_PROVIDER' };
         await this.prepareProviderOwnedPage(record, page);
-        const result = await dispatchMacOsChatgptPrompt(page, prompt, options);
+        const result = await dispatchMacOsChatgptPrompt(page, prompt, { ...options, targetIdentity: identity });
         return result.mutation === 'prepared'
           ? { mutation: 'not_attempted', reasonCode: 'COMPUTER_CHATGPT_PREPARE_RESULT_IN_DISPATCH' } : result;
       },
@@ -770,6 +792,10 @@ export class MacOsChatgptConversationTargetPort implements ComputerChatgptConver
 
   async openBootstrap(projectUrl: string, bootstrapKey: string): Promise<ComputerChatgptTargetResult> {
     const identity: ComputerChatgptBootstrapIdentity = { namespace: 'chatgpt.bootstrap', bootstrapKey, projectUrl };
+    const existing = this.authority.findSurfaceByStableIdentity(this.controllerHome, identityResource(identity));
+    if (existing?.providerBinding && existing.providerBinding.providerId !== PROVIDER_ID) {
+      return failure(new Error('COMPUTER_CHATGPT_BOOTSTRAP_FOREIGN_PROVIDER_BOUND'), 'COMPUTER_CHATGPT_BOOTSTRAP_FOREIGN_PROVIDER_BOUND');
+    }
     let record = this.upsert(identity, 'provider_owned');
     const cached = this.pages.get(record.targetId);
     if (cached) return { state: 'ready', target: this.target(identity, record, cached) };
@@ -793,7 +819,7 @@ export class MacOsChatgptConversationTargetPort implements ComputerChatgptConver
 
     try {
       const preferred = this.preferredBrowser();
-      const page = await this.createSingleFlight(projectUrl, preferred.product, preferred.windowId);
+      const page = await this.createSingleFlight(projectUrl, preferred.product, preferred.windowId, `bootstrap:${bootstrapKey}:${projectUrl}`);
       record = await this.bind(identity, record, page, 'provider_owned');
       this.rememberBrowser(page.tabRef());
       return { state: 'ready', target: this.target(identity, record, page) };

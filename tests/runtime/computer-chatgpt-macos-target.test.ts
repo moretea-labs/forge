@@ -127,6 +127,65 @@ test('bootstrap persists exact native binding before DOM owner marking and reuse
 });
 
 
+
+
+test('native bootstrap refuses a foreign extension-owned binding instead of opening a duplicate tab', async () => {
+  const controllerHome = mkdtempSync(join(tmpdir(), 'forge-bootstrap-foreign-provider-'));
+  const authority = runtimeComputerInteractionTargetAuthority();
+  const projectUrl = 'https://chatgpt.com/g/g-p-owned/project';
+  const bootstrapKey = 'supervisor:extension-owned';
+  const foreignBinding = { providerId: 'browser.chrome-extension', providerSessionId: 'extension-profile',
+    browserProduct: 'chrome', windowId: 'extension-window', tabId: 'extension-tab', observedAt: new Date().toISOString() };
+  const identity = { surfaceType: 'browser-tab' as const, ownership: 'provider_owned' as const,
+    resource: { namespace: 'chatgpt.bootstrap', key: bootstrapKey } };
+  try {
+    authority.upsertSurface(controllerHome, { stableIdentity: identity, visibility: 'controller', providerBinding: foreignBinding, reactivate: true });
+    const native = new MacOsChatgptConversationTargetPort(controllerHome, authority, 1_000);
+    let createCalls = 0;
+    (native as unknown as TestablePort).create = async () => {
+      createCalls += 1;
+      return testPage('incorrect-second-tab', () => undefined);
+    };
+    const result = await native.openBootstrap(projectUrl, bootstrapKey);
+    expect(result.state).toBe('unavailable');
+    if (result.state === 'unavailable') expect(result.failure.code).toBe('COMPUTER_CHATGPT_BOOTSTRAP_FOREIGN_PROVIDER_BOUND');
+    expect(createCalls).toBe(0);
+    expect(authority.findSurfaceByStableIdentity(controllerHome, identity)?.providerBinding).toMatchObject(foreignBinding);
+  } finally {
+    rmSync(controllerHome, { recursive: true, force: true });
+  }
+});
+
+test('two Supervisor bootstrap keys in one Project never share a native in-flight tab', async () => {
+  const controllerHome = mkdtempSync(join(tmpdir(), 'forge-bootstrap-isolated-flight-'));
+  const authority = runtimeComputerInteractionTargetAuthority();
+  const projectUrl = 'https://chatgpt.com/g/g-p-shared/project';
+  try {
+    const port = new MacOsChatgptConversationTargetPort(controllerHome, authority, 1_000);
+    let createCalls = 0;
+    (port as unknown as TestablePort).create = async (url) => {
+      expect(url).toBe(projectUrl);
+      createCalls += 1;
+      return testPage(`distinct-bootstrap-tab-${createCalls}`, () => undefined);
+    };
+    const [first, second] = await Promise.all([
+      port.openBootstrap(projectUrl, 'supervisor:first-task'),
+      port.openBootstrap(projectUrl, 'supervisor:second-task'),
+    ]);
+    expect(first.state).toBe('ready');
+    expect(second.state).toBe('ready');
+    expect(createCalls).toBe(2);
+    const binding = (key: string) => authority.findSurfaceByStableIdentity(controllerHome, {
+      surfaceType: 'browser-tab', ownership: 'provider_owned', resource: { namespace: 'chatgpt.bootstrap', key },
+    })?.providerBinding?.tabId;
+    expect(binding('supervisor:first-task')).toBe('distinct-bootstrap-tab-1');
+    expect(binding('supervisor:second-task')).toBe('distinct-bootstrap-tab-2');
+    expect(first.state === 'ready' ? first.target.targetId : '').not.toBe(second.state === 'ready' ? second.target.targetId : '');
+  } finally {
+    rmSync(controllerHome, { recursive: true, force: true });
+  }
+});
+
 test('ensureExact preserves the canonical tab on transient reattach and cached DOM failures', async () => {
   const controllerHome = mkdtempSync(join(tmpdir(), 'forge-exact-native-busy-'));
   const authority = runtimeComputerInteractionTargetAuthority();

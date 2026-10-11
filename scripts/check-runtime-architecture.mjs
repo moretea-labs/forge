@@ -1261,6 +1261,11 @@ requireText('adapters/computer/chrome-extension/background.js', 'computer_extens
 requireText('adapters/computer/chrome-extension/background.js', 'chrome.runtime.connectNative');
 forbid('adapters/computer/chrome-extension/background.js', /browser_begin_effect|browser_observe_effect|browser_poll|browser_tasks|browser_observe_assistant|task_register|reserve_enrollment/, 'Computer Chrome provider must not consume or mutate Workflow Supervisor effect authority; it executes only typed Computer target commands');
 requireText('adapters/computer/chrome-extension/content.js', 'ForgeComputerChatgptCore');
+requireText('adapters/computer/chrome-extension/content.js', "bootstrapTargetGuard: 'project-checked-before-send-v1'");
+requireText('adapters/computer/chrome-extension/content.js', 'exactComposerText(payload)');
+requireText('adapters/computer/chrome-extension/background.js', 'resolveTarget(command.identity, false, command.providerBinding)');
+forbid('adapters/computer/chrome-extension/background.js', /resolveTarget\(command\.identity,\s*false\)\.catch/, 'Extension worker must recover a pinned bootstrap from the durable Computer binding, not its ephemeral in-worker Map');
+forbid('adapters/computer/chrome-extension/content.js', /core\.normalizeText\(payload\)/, 'Provider pre-send evidence must preserve whitespace in immutable effect payload');
 requireMissing('supervisor/chrome-extension');
 requireText('src/runtime/plugins/browser-adapter.ts', "browserMode: browserMode(raw.browserMode) ?? 'managed_persistent'");
 requireText('src/runtime/plugins/browser-adapter.ts', "nativeAttachMode: browserNativeAttachMode(raw.nativeAttachMode) ?? 'disabled'");

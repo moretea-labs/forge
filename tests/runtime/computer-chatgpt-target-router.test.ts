@@ -188,7 +188,55 @@ test('Computer target router refuses resource failover when primary open outcome
   expect(compatibilityEnsures).toBe(0);
 });
 
-test('Computer target router does not transfer bootstrap promotion to the compatibility provider', async () => {
+
+test('bootstrap uses native Computer only when extension has proven it did not open a tab', async () => {
+  const projectUrl = 'https://chatgpt.com/g/g-p-project/project';
+  const bootstrapKey = 'supervisor:task-one';
+  let nativeOpens = 0;
+  let nativeDispatches = 0;
+  const primary = { ...port({ ensureExact: async () => ({ state: 'unavailable', failure: { code: 'unused', retryable: false, phase: 'pre_mutation' } }) }),
+    openBootstrap: async () => ({ state: 'unavailable' as const, failure: {
+      code: 'COMPUTER_CHATGPT_EXTENSION_NOT_CONNECTED', retryable: true, phase: 'pre_mutation' as const, failoverSafe: true,
+    } }),
+  };
+  const native = { ...port({ ensureExact: async () => ({ state: 'unavailable', failure: { code: 'unused', retryable: false, phase: 'pre_mutation' } }) }),
+    openBootstrap: async (_projectUrl: string, key: string) => {
+      nativeOpens += 1;
+      expect(_projectUrl).toBe(projectUrl);
+      expect(key).toBe(bootstrapKey);
+      return { state: 'ready' as const, target: target('bootstrap-native', async (_prompt, options) => {
+        nativeDispatches += 1;
+        expect(options).toEqual({ mode: 'send', reasoning: undefined });
+        return { mutation: 'attempted' as const, confirmed: true };
+      }) };
+    },
+  };
+  const opened = await new PreferredChatgptConversationTargetPort(primary, native).openBootstrap(projectUrl, bootstrapKey);
+  expect(opened.state).toBe('ready');
+  if (opened.state !== 'ready') throw new Error('bootstrap was not ready');
+  expect(await opened.target.dispatch('effect', { mode: 'send', reasoning: 'xhigh' })).toMatchObject({ mutation: 'attempted' });
+  expect(nativeOpens).toBe(1);
+  expect(nativeDispatches).toBe(1);
+});
+
+test('bootstrap unknown create outcome never opens a second native tab', async () => {
+  let nativeOpens = 0;
+  const primary = { ...port({ ensureExact: async () => ({ state: 'unavailable', failure: { code: 'unused', retryable: false, phase: 'pre_mutation' } }) }),
+    openBootstrap: async () => ({ state: 'unavailable' as const, failure: {
+      code: 'COMPUTER_CHATGPT_EXTENSION_BOOTSTRAP_OPEN_OUTCOME_UNKNOWN', retryable: true, phase: 'pre_mutation' as const, failoverSafe: false,
+    } }),
+  };
+  const native = { ...primary, openBootstrap: async () => {
+    nativeOpens += 1;
+    return { state: 'ready' as const, target: target('wrong-second-tab', async () => ({ mutation: 'attempted' as const })) };
+  } };
+  const opened = await new PreferredChatgptConversationTargetPort(primary, native).openBootstrap('https://chatgpt.com/g/g-p-project/project', 'task-two');
+  expect(opened).toEqual({ state: 'unavailable', failure: {
+    code: 'COMPUTER_CHATGPT_EXTENSION_BOOTSTRAP_OPEN_OUTCOME_UNKNOWN', retryable: true, phase: 'pre_mutation', failoverSafe: false,
+  } });
+  expect(nativeOpens).toBe(0);
+});
+test('Computer target router promotes bootstrap through its confirmed native owner', async () => {
   let compatibilityPromotions = 0;
   const primary = port({
     ensureExact: async () => ({ state: 'unavailable', failure: { code: 'unused', retryable: false, phase: 'pre_mutation' } }),
@@ -213,16 +261,8 @@ test('Computer target router does not transfer bootstrap promotion to the compat
   const router = new PreferredChatgptConversationTargetPort(primary, compatibility);
   const result = await router.promoteBootstrap('foreign-bootstrap-target', identity);
 
-  expect(result).toEqual({
-    state: 'unavailable',
-    failure: {
-      code: 'COMPUTER_CHATGPT_EXTENSION_BOOTSTRAP_PROVIDER_MISMATCH',
-      retryable: false,
-      phase: 'pre_mutation',
-      failoverSafe: true,
-    },
-  });
-  expect(compatibilityPromotions).toBe(0);
+  expect(result.state).toBe('ready');
+  expect(compatibilityPromotions).toBe(1);
 });
 
 test('read-only native reattachment switches subsequent preparation and dispatch to the same durable target', async () => {

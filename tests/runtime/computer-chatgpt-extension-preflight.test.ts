@@ -210,3 +210,88 @@ test('service-worker restart reattaches only the exact Controller-pinned bootstr
     .rejects.toThrow('COMPUTER_CHATGPT_BOOTSTRAP_PINNED_TAB_IDENTITY_CHANGED');
   expect(fixture.tabs).toHaveLength(2);
 });
+
+test('real Chrome content script preserves all prompt spaces and newlines during send readback', async () => {
+  const content = readFileSync(new URL('../../adapters/computer/chrome-extension/content.js', import.meta.url), 'utf8');
+  const prompt = 'alpha  beta\nline two';
+  const identity = { conversationId: '12345678-1234-1234-1234-123456789abc' };
+  const currentUrl = 'https://chatgpt.com/c/12345678-1234-1234-1234-123456789abc';
+  for (const [rendered, shouldSend] of [
+    ['alpha beta\nline two', false],
+    ['alpha  beta line two', false],
+    [prompt, true],
+  ] as const) {
+    const composer = { value: rendered };
+    const sendButton = { disabled: false, getAttribute: () => null, click: () => { sends += 1; } };
+    let sends = 0;
+    let listener: ((message: Record<string, unknown>, sender: unknown, respond: (value: unknown) => void) => boolean) | undefined;
+    const empty = Object.assign([], { item: () => undefined });
+    const document = {
+      documentElement: {},
+      querySelector: (selector: string) => selector.includes('#prompt-textarea') ? composer
+        : selector.includes('send-button') ? sendButton : null,
+      querySelectorAll: (_selector: string) => empty,
+    };
+    const context = {
+      document, location: { href: currentUrl }, URL, Date, Map, Promise,
+      ForgeComputerChatgptCore: {
+        parseConversation: (value: string) => value === currentUrl ? { conversationId: identity.conversationId } : undefined,
+        normalizeText: (value: unknown) => String(value ?? '').replace(/\s+/g, ' ').trim(),
+      },
+      chrome: { runtime: {
+        onMessage: { addListener: (fn: typeof listener) => { listener = fn; } },
+        sendMessage: () => undefined,
+      } },
+      MutationObserver: class { observe() {} },
+      setTimeout: (callback: () => void, ms: number) => { if (ms === 75) queueMicrotask(callback); return 1; },
+      clearTimeout: () => undefined,
+    };
+    runInNewContext(content, context);
+    if (!listener) throw new Error('content script listener was not installed');
+    const response = await new Promise<Record<string, unknown>>((resolve) => {
+      listener!({ type: 'forge-computer-chatgpt-dispatch', prompt, expectedConversationId: identity.conversationId }, null, (value) => resolve(value as Record<string, unknown>));
+    });
+    expect(response.dispatched).toBe(shouldSend);
+    expect(sends).toBe(shouldSend ? 1 : 0);
+  }
+});
+
+test('content script fences bootstrap sends to the exact Project and rejects migrated conversation URLs', async () => {
+  const source = readFileSync(new URL('../../adapters/computer/chrome-extension/content.js', import.meta.url), 'utf8');
+  const expectedProjectId = 'g-p-abc';
+  for (const [url, expectedReason] of [
+    ['https://chatgpt.com/g/g-p-other/project', 'target_identity_changed'],
+    ['https://chatgpt.com/g/g-p-abc-project/c/already-exists', 'target_identity_changed'],
+    ['https://chatgpt.com/g/g-p-abc-project/project', 'composer_missing'],
+  ]) {
+    let listener: ((message: Record<string, unknown>, sender: unknown, respond: (value: unknown) => void) => boolean) | undefined;
+    let clicks = 0;
+    const document = {
+      documentElement: {},
+      querySelector: () => null,
+      querySelectorAll: () => Object.assign([], { item: () => undefined }),
+    };
+    const ctx = {
+      URL, Date, Promise, location: { href: url }, document,
+      ForgeComputerChatgptCore: {
+        projectId: (href: string) => /^\/g\/(g-p-[a-z0-9]+)/i.exec(new URL(href).pathname)?.[1] ?? null,
+        parseConversation: (href: string) => /\/c\/[^/]+/.test(new URL(href).pathname) ? { conversationId: 'already-exists' } : undefined,
+        normalizeText: (value: unknown) => String(value ?? '').trim(),
+      },
+      chrome: { runtime: { onMessage: { addListener: (fn: typeof listener) => { listener = fn; } }, sendMessage: () => { clicks++; } } },
+      MutationObserver: class { observe() {} },
+      setTimeout: () => 1, clearTimeout: () => undefined,
+    };
+    runInNewContext(source, ctx);
+    if (!listener) throw new Error('No content listener');
+    const result = await new Promise<Record<string, unknown>>(resolve => {
+      listener!({
+        type: 'forge-computer-chatgpt-dispatch',
+        expectedProjectId,
+        prompt: '@forge <<<FORGE_WORKFLOW_EFFECT_V1:fx_safe>>> original\nbody',
+      }, null, (value) => resolve(value as Record<string, unknown>));
+    });
+    expect(result).toMatchObject({ dispatched: false, reason: expectedReason });
+    expect(clicks).toBe(0);
+  }
+});

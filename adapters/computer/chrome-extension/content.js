@@ -121,7 +121,9 @@
       .filter(Boolean).slice(-8).join('\n').slice(-PROVIDER_FAILURE_CHARS);
   };
   const composer = () => document.querySelector(COMPOSER);
-  const composerText = () => core.normalizeText(composer()?.value ?? composer()?.innerText ?? composer()?.textContent);
+  // Editor text is a provider payload, not a UI label: preserve its whitespace.
+  const exactComposerText = (value) => String(value ?? '').replace(/\r\n?/g, '\n');
+  const composerText = () => exactComposerText(composer()?.value ?? composer()?.innerText ?? composer()?.textContent);
   const pageSnapshot = (options = {}) => {
     const userNodes = roleNodes(USER);
     const assistantNodes = roleNodes(ASSISTANT);
@@ -252,9 +254,11 @@
     }
     return { verified: true, level: actualLevel };
   };
-  const dispatchPrompt = async (prompt, mode = 'send', reasoning, expectedConversationId, prepareOnly = false) => {
-    const exactConversationIsCurrent = () => !expectedConversationId
-      || core.parseConversation(location.href)?.conversationId === expectedConversationId;
+  const dispatchPrompt = async (prompt, mode = 'send', reasoning, expectedConversationId, prepareOnly = false, expectedProjectId) => {
+    const exactConversationIsCurrent = () => expectedConversationId
+      ? core.parseConversation(location.href)?.conversationId === expectedConversationId
+      : expectedProjectId ? core.projectId(location.href) === expectedProjectId && !core.parseConversation(location.href)
+        : true;
     if (!exactConversationIsCurrent()) return { dispatched: false, reason: 'target_identity_changed' };
     if (typeof prompt !== 'string' || !prompt.trim()) return { dispatched: false, reason: 'prompt_required' };
     if (mode === 'recover') {
@@ -272,18 +276,20 @@
     } else if (isGenerating()) return { dispatched: false, reason: 'provider_busy' };
     const node = composer();
     if (!node) return { dispatched: false, reason: 'composer_missing' };
-    const supervisor = /^@forge\s+<<<FORGE_WORKFLOW_EFFECT_V1:fx_[a-zA-Z0-9_-]+>>>/.test(prompt.trim());
-    const payload = supervisor ? prompt.trim().replace(/^@forge\s+/, '') : prompt;
-    const expected = core.normalizeText(payload);
+    const supervisor = /^@forge\s+<<<FORGE_WORKFLOW_EFFECT_V1:fx_[a-zA-Z0-9_-]+>>>/.test(prompt);
+    if (supervisor && !expectedConversationId && !expectedProjectId) return { dispatched: false, reason: 'target_identity_unavailable' };
+    const payload = supervisor ? prompt.replace(/^@forge\s+/, '') : prompt;
+    const expected = exactComposerText(payload);
     const triggerDraft = `${payload}\n@`;
-    const triggerText = core.normalizeText(triggerDraft);
-    const boundText = core.normalizeText(`${payload} forge`);
+    const triggerText = exactComposerText(triggerDraft);
+    const boundText = exactComposerText(`${payload} forge`);
+    const boundTextOnNextLine = exactComposerText(`${payload}\nforge`);
     const boundChip = () => {
       const chips = Array.from(node.querySelectorAll('[plugin-mention-name], [app-mention-name]'));
       return chips.length === 1
         && chips[0]?.getAttribute('app-mention-name') === 'forge'
         && chips[0]?.getAttribute('app-mention-path') === 'app://asdk_app_6ac09022b26081918f20ff868c773824'
-        && composerText() === boundText;
+        && (composerText() === boundText || composerText() === boundTextOnNextLine);
     };
     const existing = composerText();
     if (existing && existing !== expected && !(supervisor && (existing === triggerText || boundChip()))) return { dispatched: false, reason: 'composer_not_empty' };
@@ -343,18 +349,18 @@
     // Read-only exact-tab capability attestation. A stale content script must
     // never receive an xhigh-required send that it would silently ignore.
     if (message.type === 'forge-computer-chatgpt-capabilities') {
-      sendResponse({ reasoningPreflight: 'verified_before_send_v1' });
+      sendResponse({ reasoningPreflight: 'verified_before_send_v1', bootstrapTargetGuard: 'project-checked-before-send-v1' });
       return false;
     }
     if (message.type === 'forge-computer-chatgpt-prepare') {
-      dispatchPrompt(String(message.prompt ?? ''), String(message.mode ?? 'send'), message.reasoning, message.expectedConversationId, true)
+      dispatchPrompt(String(message.prompt ?? ''), String(message.mode ?? 'send'), message.reasoning, message.expectedConversationId, true, message.expectedProjectId)
         .then((result) => sendResponse(result?.prepared === true ? { prepared: true }
           : { prepared: false, reason: String(result?.reason ?? 'COMPUTER_CHATGPT_PREPARE_REJECTED') }),
           (error) => sendResponse({ prepared: false, reason: String(error?.message ?? error) }));
       return true;
     }
     if (message.type === 'forge-computer-chatgpt-dispatch') {
-      dispatchPrompt(String(message.prompt ?? ''), String(message.mode ?? 'send'), message.reasoning, message.expectedConversationId)
+      dispatchPrompt(String(message.prompt ?? ''), String(message.mode ?? 'send'), message.reasoning, message.expectedConversationId, false, message.expectedProjectId)
         .then(sendResponse, (error) => sendResponse({ dispatched: false, reason: String(error?.message ?? error) }));
       return true;
     }

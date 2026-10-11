@@ -691,8 +691,17 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     let identity;
     try { identity = parseChatgptConversationIdentity(snapshot.url); } catch { observeUnknown('bootstrap_conversation_identity_unavailable'); return; }
     if (!snapshotTargetMarkerPresent(snapshot, command.effectId)) { observeUnknown('bootstrap_effect_marker_not_observed'); return; }
-    const promoted = await this.deps.targetPort.promoteBootstrap(match.target.targetId, { namespace: 'chatgpt.conversation', conversationId: identity.conversationId, canonicalUrl: identity.canonicalUrl });
-    if (promoted.state !== 'ready') { observeUnknown(promoted.failure.code); return; }
+    // Marker recovery may already return a Computer target with this exact
+    // conversation identity. Promoting it again would tombstone its own binding.
+    // Only a still-bootstrap target needs the provider's identity transition.
+    if (match.target.identity.namespace === 'chatgpt.conversation') {
+      if (match.target.identity.conversationId !== identity.conversationId) {
+        observeUnknown('bootstrap_reconcile_target_identity_mismatch'); return;
+      }
+    } else {
+      const promoted = await this.deps.targetPort.promoteBootstrap(match.target.targetId, { namespace: 'chatgpt.conversation', conversationId: identity.conversationId, canonicalUrl: identity.canonicalUrl });
+      if (promoted.state !== 'ready') { observeUnknown(promoted.failure.code); return; }
+    }
     this.control.bindBootstrapConversation({ taskId: task.taskId, conversationId: identity.conversationId, conversationUrl: identity.canonicalUrl });
     this.control.bootstrapObserveEffect({ taskId: task.taskId, effectId: command.effectId, observationId: `bootstrap-reconcile-${randomUUID()}`, outcome: 'applied' });
     this.clearTaskFailure(task.taskId, command.effectId);

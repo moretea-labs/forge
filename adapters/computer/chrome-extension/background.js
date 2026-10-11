@@ -163,7 +163,10 @@ async function executeEnsure(command, instanceId) {
       kind: 'failed',
       code: String(error?.message ?? error).split(':')[0] || 'COMPUTER_CHATGPT_EXTENSION_ENSURE_FAILED',
       retryable: true,
-      failoverSafe: target?.created !== true,
+      // Bootstrap tabs can exist before this command even when no new tab was
+      // created now. A worker failure cannot prove that creating a different
+      // native tab would preserve the one-task/one-tab binding.
+      failoverSafe: command.identity.namespace !== 'chatgpt.bootstrap' && target?.created === false,
     };
   }
 }
@@ -179,20 +182,29 @@ async function executeObserve(command, instanceId) {
   }
 }
 async function executePrepare(command) {
-  const target = await resolveTarget(command.identity, false).catch(() => undefined);
+  const target = await resolveTarget(command.identity, false, command.providerBinding).catch(() => undefined);
   if (!target) return { kind: 'prepared', ready: false, reasonCode: 'COMPUTER_CHATGPT_EXTENSION_TARGET_MISSING' };
-  if (command.reasoning !== undefined) {
+  const expectedProjectId = command.identity?.namespace === 'chatgpt.bootstrap' ? core.projectId(command.identity.projectUrl) : undefined;
+  if (command.identity?.namespace === 'chatgpt.bootstrap' && !expectedProjectId)
+    return { kind: 'prepared', ready: false, reasonCode: 'COMPUTER_CHATGPT_BOOTSTRAP_PROJECT_UNPROVEN' };
+  if (command.reasoning !== undefined || expectedProjectId) {
     let capability;
     try { capability = await tabMessage(target.tab.id, { type: 'forge-computer-chatgpt-capabilities' }); }
-    catch { return { kind: 'prepared', ready: false, reasonCode: 'COMPUTER_CHATGPT_REASONING_PREFLIGHT_UNAVAILABLE' }; }
-    if (capability?.reasoningPreflight !== 'verified_before_send_v1')
+    catch { return { kind: 'prepared', ready: false, reasonCode: expectedProjectId
+      ? 'COMPUTER_CHATGPT_CONTENT_CAPABILITIES_UNAVAILABLE' : 'COMPUTER_CHATGPT_REASONING_PREFLIGHT_UNAVAILABLE' }; }
+    if (command.reasoning !== undefined && capability?.reasoningPreflight !== 'verified_before_send_v1')
       return { kind: 'prepared', ready: false, reasonCode: 'COMPUTER_CHATGPT_REASONING_PREFLIGHT_UNSUPPORTED' };
+    // Older content scripts ignore expectedProjectId. No bootstrap draft/send
+    // may cross this version boundary without target verification.
+    if (expectedProjectId && capability?.bootstrapTargetGuard !== 'project-checked-before-send-v1')
+      return { kind: 'prepared', ready: false, reasonCode: 'COMPUTER_CHATGPT_BOOTSTRAP_PROJECT_GUARD_UNSUPPORTED' };
   }
   try {
     const result = await tabMessage(target.tab.id, {
       type: 'forge-computer-chatgpt-prepare', prompt: command.prompt, mode: command.mode,
       reasoning: command.reasoning,
       ...(command.identity?.namespace === 'chatgpt.conversation' ? { expectedConversationId: command.identity.conversationId } : {}),
+      ...(expectedProjectId ? { expectedProjectId } : {}),
     });
     return result?.prepared === true
       ? { kind: 'prepared', ready: true }
@@ -203,24 +215,30 @@ async function executePrepare(command) {
   }
 }
 async function executeDispatch(command) {
-  const target = await resolveTarget(command.identity, false).catch(() => undefined);
+  const target = await resolveTarget(command.identity, false, command.providerBinding).catch(() => undefined);
   if (!target) return { kind: 'dispatch', mutation: 'not_attempted', reasonCode: 'COMPUTER_CHATGPT_EXTENSION_TARGET_MISSING' };
+  const expectedProjectId = command.identity?.namespace === 'chatgpt.bootstrap' ? core.projectId(command.identity.projectUrl) : undefined;
+  if (command.identity?.namespace === 'chatgpt.bootstrap' && !expectedProjectId)
+    return { kind: 'dispatch', mutation: 'not_attempted', reasonCode: 'COMPUTER_CHATGPT_BOOTSTRAP_PROJECT_UNPROVEN' };
   // An old tab may still contain a pre-upgrade content script after the
   // extension/runtime has been upgraded. Probe the *exact target tab* before
   // submitting; a background/version heartbeat alone cannot prove it.
-  if (command.reasoning !== undefined) {
+  if (command.reasoning !== undefined || expectedProjectId) {
     let capability;
     try { capability = await tabMessage(target.tab.id, { type: 'forge-computer-chatgpt-capabilities' }); }
-    catch { return { kind: 'dispatch', mutation: 'not_attempted', reasonCode: 'COMPUTER_CHATGPT_REASONING_PREFLIGHT_UNAVAILABLE' }; }
-    if (capability?.reasoningPreflight !== 'verified_before_send_v1') {
+    catch { return { kind: 'dispatch', mutation: 'not_attempted', reasonCode: expectedProjectId
+      ? 'COMPUTER_CHATGPT_CONTENT_CAPABILITIES_UNAVAILABLE' : 'COMPUTER_CHATGPT_REASONING_PREFLIGHT_UNAVAILABLE' }; }
+    if (command.reasoning !== undefined && capability?.reasoningPreflight !== 'verified_before_send_v1')
       return { kind: 'dispatch', mutation: 'not_attempted', reasonCode: 'COMPUTER_CHATGPT_REASONING_PREFLIGHT_UNSUPPORTED' };
-    }
+    if (expectedProjectId && capability?.bootstrapTargetGuard !== 'project-checked-before-send-v1')
+      return { kind: 'dispatch', mutation: 'not_attempted', reasonCode: 'COMPUTER_CHATGPT_BOOTSTRAP_PROJECT_GUARD_UNSUPPORTED' };
   }
   let result;
   try { result = await tabMessage(target.tab.id, {
     type: 'forge-computer-chatgpt-dispatch', prompt: command.prompt, mode: command.mode,
     reasoning: command.reasoning,
     ...(command.identity?.namespace === 'chatgpt.conversation' ? { expectedConversationId: command.identity.conversationId } : {}),
+    ...(expectedProjectId ? { expectedProjectId } : {}),
   }); }
   catch (error) {
     return dispatchTransportNotReached(error)

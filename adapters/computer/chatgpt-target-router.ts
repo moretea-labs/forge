@@ -86,7 +86,15 @@ export class PreferredChatgptConversationTargetPort implements ComputerChatgptCo
 
   async openBootstrap(projectUrl: string, bootstrapKey: string): Promise<ComputerChatgptTargetResult> {
     const primary = await this.primary.openBootstrap(projectUrl, bootstrapKey);
-    return primary.state === 'ready' ? { ...primary, target: this.wrap(primary.target) } : primary;
+    if (primary.state === 'ready') return { ...primary, target: this.wrap(primary.target) };
+    // Extension absence is a proven no-open, while a claimed but unanswered
+    // create may already have produced a tab. Only the former can use the
+    // existing native Computer provider without risking two bootstrap tabs.
+    if (primary.failure.phase === 'pre_mutation' && primary.failure.failoverSafe === true) {
+      const compatibility = await this.compatibility.openBootstrap(projectUrl, bootstrapKey);
+      if (compatibility.state === 'ready') return { ...compatibility, target: this.wrap(compatibility.target, true) };
+    }
+    return primary;
   }
 
   async findBySubmittedMarker(marker: string, bootstrapKey?: string, betweenObservations?: () => Promise<void>): Promise<ComputerChatgptTargetResult[]> {
@@ -98,7 +106,25 @@ export class PreferredChatgptConversationTargetPort implements ComputerChatgptCo
 
   async promoteBootstrap(targetId: string, identity: ComputerChatgptConversationIdentity): Promise<ComputerChatgptTargetResult> {
     const primary = await this.primary.promoteBootstrap(targetId, identity);
-    return primary.state === 'ready' ? { ...primary, target: this.wrap(primary.target) } : primary;
+    if (primary.state === 'ready') return { ...primary, target: this.wrap(primary.target) };
+    // A provider-mismatch refusal proves that this extension did not mutate
+    // the bootstrap binding. Ask the native owner to promote the SAME target;
+    // never open or send again, and reject a mismatched conversation identity.
+    if (primary.failure.code === 'COMPUTER_CHATGPT_EXTENSION_BOOTSTRAP_PROVIDER_MISMATCH'
+      && primary.failure.phase === 'pre_mutation' && primary.failure.failoverSafe === true) {
+      const native = await this.compatibility.promoteBootstrap(targetId, identity);
+      if (native.state === 'ready') {
+        if (native.target.identity.namespace !== 'chatgpt.conversation'
+          || native.target.identity.conversationId !== identity.conversationId) {
+          return { state: 'unavailable', failure: {
+            code: 'COMPUTER_CHATGPT_BOOTSTRAP_PROMOTION_IDENTITY_MISMATCH', retryable: false, phase: 'pre_mutation', failoverSafe: false,
+          } };
+        }
+        return { ...native, target: this.wrap(native.target, true) };
+      }
+      return native;
+    }
+    return primary;
   }
 
   async cleanup(activeResourceKeys: readonly string[]): Promise<void> {

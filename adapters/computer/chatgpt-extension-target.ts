@@ -365,29 +365,40 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
 
   async openBootstrap(projectUrl: string, bootstrapKey: string): Promise<ComputerChatgptTargetResult> {
     const identity: ComputerChatgptBootstrapIdentity = { namespace: 'chatgpt.bootstrap', bootstrapKey, projectUrl };
+    const previous = this.authority.findSurfaceByStableIdentity(this.controllerHome, stableIdentity(identity));
+    const binding = previous?.providerBinding;
+    // Existing bootstrap tab identity survives extension reconnects. A foreign
+    // provider owns its tab; extension must not create another one for the
+    // same task. Conversely, extension absence cannot authorize native tab
+    // creation while an extension-owned tab might still exist.
+    if (binding && binding.providerId !== PROVIDER_ID) {
+      return failure('COMPUTER_CHATGPT_EXTENSION_BOOTSTRAP_PROVIDER_MISMATCH', { retryable: false, failoverSafe: true });
+    }
     const selected = this.selectProviderInstance(this.preferredProviderInstance(identity));
     if (!selected.instanceId) {
       return failure(
         selected.ambiguous ? 'COMPUTER_CHATGPT_EXTENSION_PROVIDER_INSTANCE_AMBIGUOUS' : 'COMPUTER_CHATGPT_EXTENSION_NOT_CONNECTED',
-        { failoverSafe: !selected.ambiguous },
+        { failoverSafe: !selected.ambiguous && !binding },
       );
     }
-    // Controller is the only durable owner of a tab binding. A restarted
-    // extension uses this exact attachment instead of claiming a Project tab.
-    const previous = this.authority.findSurfaceByStableIdentity(this.controllerHome, stableIdentity(identity));
+    // Controller's exact tab attachment, not the Project URL, is recovery
+    // authority after a worker restart.
     const response = await this.submit(selected.instanceId, { kind: 'ensure', identity,
       ...(previous?.providerBinding?.providerId === PROVIDER_ID ? { providerBinding: previous.providerBinding } : {}),
     });
     if (!response.result) return failure(
       response.claimed ? 'COMPUTER_CHATGPT_EXTENSION_BOOTSTRAP_OPEN_OUTCOME_UNKNOWN' : 'COMPUTER_CHATGPT_EXTENSION_NOT_CONNECTED',
-      { failoverSafe: !response.claimed },
+      { failoverSafe: !response.claimed && !binding },
     );
     if (response.result.kind === 'ensured') {
       const record = await this.bindAsync(identity, response.result.providerBinding, selected.instanceId);
       return { state: 'ready', target: this.target(identity, record, selected.instanceId), ...(response.result.observation ? { observation: response.result.observation } : {}) };
     }
-    if (response.result.kind === 'failed') return failure(response.result.code, { retryable: response.result.retryable, failoverSafe: response.result.failoverSafe !== false, humanAction: response.result.humanAction });
-    return failure('COMPUTER_CHATGPT_EXTENSION_BOOTSTRAP_INVALID', { failoverSafe: true });
+    if (response.result.kind === 'failed') return failure(response.result.code, {
+      retryable: response.result.retryable, failoverSafe: response.result.failoverSafe === true && !binding,
+      humanAction: response.result.humanAction,
+    });
+    return failure('COMPUTER_CHATGPT_EXTENSION_BOOTSTRAP_INVALID', { failoverSafe: false });
   }
 
   async findBySubmittedMarker(marker: string, bootstrapKey?: string, betweenObservations?: () => Promise<void>): Promise<ComputerChatgptTargetResult[]> {

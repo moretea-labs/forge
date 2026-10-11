@@ -68,3 +68,113 @@ test('Apple Events compatibility provider never claims an unverified requested r
   });
   expect(evaluateCalls).toBe(0);
 });
+
+test('Mac native Computer refuses a foreign exact-conversation URL before editing a draft', async () => {
+  const expected = { namespace: 'chatgpt.conversation' as const,
+    conversationId: 'aaaa1111-bbbb-cccc-dddd-eeeeffffffff',
+    canonicalUrl: 'https://chatgpt.com/c/aaaa1111-bbbb-cccc-dddd-eeeeffffffff' };
+  let sendClicks = 0;
+  const page = {
+    evaluate: async <T>(source: string) => {
+      if (source.includes('sendButton.click()')) sendClicks += 1;
+      return new Function('document', 'location', `return ${source}`)(
+        { querySelectorAll: () => [] },
+        { href: 'https://chatgpt.com/c/foreign-conversation' },
+      ) as T;
+    },
+    tabRef: () => undefined,
+  };
+  expect(await dispatchMacOsChatgptPrompt(page, 'only for the expected conversation', {
+    targetIdentity: expected, prepareOnly: true,
+  })).toEqual({ mutation: 'not_attempted', reasonCode: 'COMPUTER_CHATGPT_EXACT_TARGET_UNPROVEN' });
+  expect(sendClicks).toBe(0);
+});
+
+test('Mac native Computer rechecks exact URL inside the same JavaScript action as Send', async () => {
+  const expected = { namespace: 'chatgpt.conversation' as const,
+    conversationId: 'aaaa1111-bbbb-cccc-dddd-eeeeffffffff',
+    canonicalUrl: 'https://chatgpt.com/c/aaaa1111-bbbb-cccc-dddd-eeeeffffffff' };
+  let finalSubmitEvaluations = 0;
+  const page = {
+    evaluate: async <T>(source: string) => {
+      if (source.includes('const expectedNorm')) return { prepared: true } as T;
+      if (source.includes('sendButton.click()')) {
+        finalSubmitEvaluations += 1;
+        // Simulate navigation after preflight, just before the DOM Send action.
+        return new Function('document', 'location', `return ${source}`)(
+          { querySelectorAll: () => [] },
+          { href: 'https://chatgpt.com/c/other-conversation' },
+        ) as T;
+      }
+      throw new Error('unexpected browser stage');
+    },
+    tabRef: () => undefined,
+  };
+  expect(await dispatchMacOsChatgptPrompt(page, 'only for expected', {
+    targetIdentity: expected,
+  })).toEqual({ mutation: 'not_attempted', reasonCode: 'COMPUTER_CHATGPT_EXACT_TARGET_UNPROVEN' });
+  expect(finalSubmitEvaluations).toBe(1);
+});
+
+test('Mac native bootstrap rejects the wrong Project and a pre-existing conversation before sending', async () => {
+  const expected = { namespace: 'chatgpt.bootstrap' as const,
+    bootstrapKey: 'supervisor:expected-task',
+    projectUrl: 'https://chatgpt.com/g/g-p-abcdef123456-forge/project' };
+  for (const href of ['https://chatgpt.com/g/g-p-999999-other/project',
+    'https://chatgpt.com/g/g-p-abcdef123456-forge/c/old-conversation']) {
+    const page = {
+      evaluate: async <T>(source: string) => new Function('document', 'location', `return ${source}`)(
+        { querySelectorAll: () => [] }, { href },
+      ) as T,
+      tabRef: () => undefined,
+    };
+    expect(await dispatchMacOsChatgptPrompt(page, 'bootstrap once', {
+      targetIdentity: expected, prepareOnly: true,
+    })).toEqual({ mutation: 'not_attempted', reasonCode: 'COMPUTER_CHATGPT_EXACT_TARGET_UNPROVEN' });
+  }
+});
+
+test('Mac native refuses Send when whitespace changed after prepare and permits an exact payload', async () => {
+  const prompt = 'alpha  beta\nline two';
+  const identity = { namespace: 'chatgpt.conversation' as const,
+    conversationId: 'abababab-1234-5678-9999-aaaaaaaaaaaa',
+    canonicalUrl: 'https://chatgpt.com/c/abababab-1234-5678-9999-aaaaaaaaaaaa' };
+  class FakeElement {
+    innerText = '';
+    isContentEditable = true;
+    disabled = false;
+    getClientRects() { return [1]; }
+    hasAttribute(_name: string) { return false; }
+    getAttribute(_name: string) { return null; }
+    querySelectorAll(_selector: string) { return []; }
+  }
+  for (const [rendered, expectedMutation] of [
+    ['alpha beta\nline two', 'not_attempted'],
+    ['alpha  beta line two', 'not_attempted'],
+    [prompt, 'attempted'],
+  ] as const) {
+    const composer = new FakeElement();
+    composer.innerText = rendered;
+    const send = new FakeElement();
+    let clicks = 0;
+    (send as FakeElement & { click: () => void }).click = () => { clicks += 1; };
+    const document = {
+      querySelectorAll: (selector: string) => selector === 'main' ? []
+        : selector.startsWith('div#prompt-textarea') ? [composer]
+        : selector.startsWith('[data-testid="send-button"]') ? [send] : [],
+    };
+    const page = {
+      evaluate: async <T>(source: string) => {
+        if (source.includes('const expectedNorm')) return { prepared: true } as T;
+        if (!source.includes('sendButton.click()')) throw new Error('unexpected page action');
+        return new Function('document', 'location', 'HTMLElement', `return ${source}`)(
+          document, { href: identity.canonicalUrl }, FakeElement,
+        ) as T;
+      },
+      tabRef: () => undefined,
+    };
+    const result = await dispatchMacOsChatgptPrompt(page, prompt, { targetIdentity: identity });
+    expect(result.mutation).toBe(expectedMutation);
+    expect(clicks).toBe(expectedMutation === 'attempted' ? 1 : 0);
+  }
+});

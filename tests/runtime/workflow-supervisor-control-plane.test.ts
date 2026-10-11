@@ -2262,6 +2262,9 @@ test('bootstrap does not require window.name and reconciles the exact effect mar
     }),
     dispatchPrompt: async (_page, prompt) => { sentPrompt = prompt; dispatchCount += 1; return { dispatched: true, confirmed: true }; },
   });
+  let redundantPromotions = 0;
+  const promote = targetPort.promoteBootstrap.bind(targetPort);
+  targetPort.promoteBootstrap = async (...args) => { redundantPromotions += 1; return await promote(...args); };
   const adapter = new WorkflowSupervisorNativeBrowserAdapter(control, new WorkflowSupervisorEphemeralDiscovery(), {
     targetPort,
     nowMs: () => clock.nowMs,
@@ -2299,6 +2302,7 @@ test('bootstrap does not require window.name and reconciles the exact effect mar
   expect(store.latestEffectDispatch(effect.effectId)?.generation).toBe(1);
   expect(dispatchCount).toBe(1);
   expect(closeCount).toBe(1);
+  expect(redundantPromotions).toBe(0);
 });
 
 test('reconciles a late applied Supervisor effect into the same outcome-unknown ControllerRound without replay', () => {

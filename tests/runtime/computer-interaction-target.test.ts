@@ -335,6 +335,46 @@ describe('Computer durable InteractionTarget authority', () => {
     }
   });
 
+
+  test('extension bootstrap keeps durable tab ownership when the worker is offline', async () => {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-bootstrap-extension-offline-'));
+    try {
+      const extension = new ChromeExtensionChatgptConversationTargetPort(controllerHome, targetAuthority);
+      const projectUrl = 'https://chatgpt.com/g/g-p-shared/project';
+      const nativeKey = 'supervisor:native-owner';
+      const extensionKey = 'supervisor:extension-owner';
+      const binding = { providerId: 'browser.chrome-extension', observedAt: new Date().toISOString(),
+        providerSessionId: 'old-profile', browserProduct: 'chrome', windowId: 'old-window', tabId: 'old-tab' };
+      targetAuthority.upsertSurface(controllerHome, { stableIdentity: {
+        surfaceType: 'browser-tab', ownership: 'provider_owned',
+        resource: { namespace: 'chatgpt.bootstrap', key: extensionKey },
+      }, visibility: 'controller', providerBinding: binding, reactivate: true });
+      targetAuthority.upsertSurface(controllerHome, { stableIdentity: {
+        surfaceType: 'browser-tab', ownership: 'provider_owned',
+        resource: { namespace: 'chatgpt.bootstrap', key: nativeKey },
+      }, visibility: 'controller', providerBinding: {
+        ...binding, providerId: 'browser.macos-apple-events',
+      }, reactivate: true });
+      const stillOwned = await extension.openBootstrap(projectUrl, extensionKey);
+      expect(stillOwned.state).toBe('unavailable');
+      if (stillOwned.state === 'unavailable') expect(stillOwned.failure.failoverSafe).toBe(false);
+      const foreign = await extension.openBootstrap(projectUrl, nativeKey);
+      expect(foreign).toMatchObject({ state: 'unavailable', failure: {
+        code: 'COMPUTER_CHATGPT_EXTENSION_BOOTSTRAP_PROVIDER_MISMATCH', failoverSafe: true,
+      } });
+      const fresh = await extension.openBootstrap(projectUrl, 'supervisor:fresh');
+      expect(fresh).toMatchObject({ state: 'unavailable', failure: {
+        code: 'COMPUTER_CHATGPT_EXTENSION_NOT_CONNECTED', failoverSafe: true,
+      } });
+      expect(targetAuthority.findSurfaceByStableIdentity(controllerHome, {
+        surfaceType: 'browser-tab', ownership: 'provider_owned',
+        resource: { namespace: 'chatgpt.bootstrap', key: extensionKey },
+      })?.providerBinding).toMatchObject(binding);
+    } finally {
+      rmSync(controllerHome, { recursive: true, force: true });
+    }
+  });
+
   test('keeps extension provider ownership scoped to the exact browser instance through bootstrap promotion and dispatch', async () => {
     const controllerHome = mkdtempSync(join(tmpdir(), 'forge-computer-bootstrap-promotion-'));
     try {
