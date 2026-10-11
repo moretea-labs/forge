@@ -179,7 +179,10 @@
   };
   const reasoningControl = () => {
     const selectors = 'button[aria-haspopup="menu"], button[aria-haspopup="listbox"], [role="button"][aria-haspopup="menu"], button[data-testid*="model"], button[data-testid*="reasoning"]';
-    const candidates = Array.from(conversationRoot().querySelectorAll(selectors)).filter(visible);
+    // ChatGPT mounts its model/reasoning picker in the visible app header,
+    // outside the conversation main. Keep message extraction main-scoped, but
+    // find this page-level control across the document without hidden shells.
+    const candidates = Array.from(document.querySelectorAll(selectors)).filter(visible);
     return candidates.find((node) => {
       const label = core.normalizeText((node.getAttribute?.('aria-label') ?? '') + ' ' + (node.innerText ?? node.textContent ?? ''));
       const normalized = label.toLowerCase().replace(/[\s_-]+/g, '');

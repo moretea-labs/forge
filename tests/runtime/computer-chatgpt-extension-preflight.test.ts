@@ -295,3 +295,57 @@ test('content script fences bootstrap sends to the exact Project and rejects mig
     expect(clicks).toBe(0);
   }
 });
+
+test('reasoning preflight finds the visible top-header model control outside main and records highest available level', async () => {
+  const content = readFileSync(new URL('../../adapters/computer/chrome-extension/content.js', import.meta.url), 'utf8');
+  // Exercise the genuine closure-scoped verifier without a provider Send.
+  const instrumented = content.replace(
+    '  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {',
+    '  globalThis.__testEnsureReasoning = ensureReasoning;\n  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {',
+  );
+  expect(instrumented).not.toBe(content);
+  let menuOpened = false;
+  let label = 'GPT-6';
+  let selected = '';
+  const visible = () => [1];
+  const headerButton = {
+    getClientRects: visible,
+    getAttribute: (name: string) => name === 'aria-label' ? label : null,
+    get innerText() { return label; },
+    click() { menuOpened = true; },
+  };
+  const option = (value: string) => ({
+    getClientRects: visible,
+    innerText: value,
+    hasAttribute: () => false,
+    getAttribute: (name: string) => name === 'aria-disabled' ? 'false' : null,
+    click() { selected = value; label = value; menuOpened = false; },
+  });
+  const main = { getClientRects: visible, querySelectorAll: () => [] };
+  const document = {
+    documentElement: {},
+    querySelectorAll: (selector: string) => selector === 'main' ? [main]
+      : selector.includes('[aria-haspopup="menu"]') ? [headerButton]
+        : selector.includes('menuitemradio') && menuOpened ? [option('High'), option('Medium')]
+          : [],
+  };
+  const context = {
+    document, location: { href: 'https://chatgpt.com/g/g-p-forge/project' }, URL,
+    ForgeComputerChatgptCore: {
+      normalizeText: (value: unknown) => String(value ?? '').replace(/\s+/g, ' ').trim(),
+      parseConversation: () => null,
+    },
+    chrome: { runtime: { onMessage: { addListener() {} }, sendMessage() {} } },
+    MutationObserver: class { observe() {} },
+    // Advance only the 80 ms menu-acknowledgement sleeps. The page's 200 ms
+    // discovery notification is unrelated to this reasoning-only regression.
+    setTimeout(callback: () => void, ms: number) { if (ms === 80) queueMicrotask(callback); return 1; }, clearTimeout() {},
+  };
+  runInNewContext(instrumented, context);
+  const verifier = (context as typeof context & {
+    __testEnsureReasoning: (level: string) => Promise<{ verified: boolean; level?: string; reason?: string }>
+  }).__testEnsureReasoning;
+  expect(typeof verifier).toBe('function');
+  expect(await verifier('xhigh')).toEqual({ verified: true, level: 'high' });
+  expect(selected).toBe('High');
+});

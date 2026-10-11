@@ -1263,6 +1263,7 @@ forbid('adapters/computer/chrome-extension/background.js', /browser_begin_effect
 requireText('adapters/computer/chrome-extension/content.js', 'ForgeComputerChatgptCore');
 requireText('adapters/computer/chrome-extension/content.js', "bootstrapTargetGuard: 'project-checked-before-send-v1'");
 requireText('adapters/computer/chrome-extension/content.js', 'exactComposerText(payload)');
+forbid('adapters/computer/chrome-extension/content.js', /conversationRoot\(\)\.querySelectorAll\(selectors\)/, 'The model/reasoning control is in the visible ChatGPT app header outside main; only message extraction belongs to the conversation root');
 requireText('adapters/computer/chrome-extension/background.js', 'resolveTarget(command.identity, false, command.providerBinding)');
 forbid('adapters/computer/chrome-extension/background.js', /resolveTarget\(command\.identity,\s*false\)\.catch/, 'Extension worker must recover a pinned bootstrap from the durable Computer binding, not its ephemeral in-worker Map');
 forbid('adapters/computer/chrome-extension/content.js', /core\.normalizeText\(payload\)/, 'Provider pre-send evidence must preserve whitespace in immutable effect payload');
