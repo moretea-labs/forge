@@ -1,50 +1,46 @@
-# Installation
+# Install Forge — ChatGPT MCP local action runtime
 
-## Supported paths
+Forge is a local-first MCP execution runtime. ChatGPT (or another explicitly selected external controller) makes decisions; Forge handles permission-scoped computer, repository, browser, and service operations. **Stable release: v1.8.1**, published to npm `latest`.
 
-### Source installation
+## Install from npm (recommended)
 
-This is the verified path while `@moretea-labs/forge` remains unpublished:
+Requirements: **Node.js 20.10+**, npm (or Bun), and a writable home directory. Git is only needed for software/repository operations.
 
 ```bash
+npm install -g @moretea-labs/forge@latest
+forge --version
+forge setup
+forge setup configure --controller chatgpt --tunnel auto
+forge setup next
+```
+
+You can also use `bun add -g @moretea-labs/forge`. For ChatGPT, setup prefers the OpenAI Secure MCP Tunnel; connection requires your ChatGPT account/session and appropriate authorization. Codex, Claude, and other MCP clients are optional external controllers.
+
+## Upgrade an existing install
+
+```bash
+npm install -g @moretea-labs/forge@latest
+forge --version
+forge setup next
+forge doctor
+```
+
+For an installed Package Runtime, use `forge runtime service install-package` to reconcile its service. Follow [Releases and Upgrades](Releases-and-Upgrades) and [release notes](https://github.com/moretea-labs/forge/releases/tag/v1.8.1).
+
+## Source development (not required for installation)
+
+```bash
+git clone https://github.com/moretea-labs/forge.git
+cd forge
 bun install --frozen-lockfile
 npm install -g . --omit=optional --no-audit --no-fund
 ```
 
-### npm RC channel
+## Supported platforms
 
-After the package is visibly published to npm:
+- **macOS:** supported user-level Package Runtime using launchd.
+- **Linux:** supported with systemd user service where available; portable-session fallback otherwise.
+- **Windows + WSL2:** recommended Windows path, using Linux instructions inside WSL2.
+- **Native Windows:** preview; check the explicitly supported CLI and portable Runtime scope.
 
-```bash
-npm install -g @moretea-labs/forge
-```
-
-Bun installs the same npm artifact:
-
-```bash
-bun add -g @moretea-labs/forge
-```
-
-Do not infer npm publication from a GitHub tag or prerelease alone.
-
-## Platforms
-
-- macOS and Linux are primary runtime hosts.
-- WSL2 is the recommended Windows host for the complete controller runtime.
-- Native Windows supports the documented CLI and command-shim surface; check the current matrix before relying on host-specific integrations.
-
-See [Platform Support](https://github.com/moretea-labs/forge/blob/main/docs/operations/platform-support.md).
-
-## Command compatibility
-
-Forge exposes only `forge`, `forge-hook`, and `forge-runtime`. State directories, environment variables, protocol identifiers, and release artifacts use the Forge namespace.
-
-## Verify installation
-
-```bash
-forge --version
-forge doctor
-forge repo list --json
-```
-
-A successful CLI launch is not enough to prove the MCP runtime is healthy; verify the connector separately when using ChatGPT.
+See the [platform support matrix](https://github.com/moretea-labs/forge/blob/main/docs/operations/platform-support.md). Forge publishes `forge`, `forge-hook`, and `forge-runtime`. A successful CLI version check alone does not prove MCP connectivity; complete the [ChatGPT connection tutorial](https://github.com/moretea-labs/forge/blob/main/docs/tutorials/02-connect-chatgpt.md) and verify the connector.

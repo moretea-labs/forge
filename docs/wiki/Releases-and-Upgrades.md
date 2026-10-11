@@ -1,34 +1,24 @@
-# Releases and Upgrades
+# Forge Releases and Upgrades
 
-## Release channels
+## Published stable release
 
-- `next`: release candidates
-- `latest`: stable releases only
+**Forge v1.8.1** was released on October 9, 2026. The canonical package is [`@moretea-labs/forge` on npm](https://www.npmjs.com/package/@moretea-labs/forge), and the matching [GitHub Release](https://github.com/moretea-labs/forge/releases/tag/v1.8.1) provides an immutable `v1.8.1` tag. npm `latest` is the stable channel; `next` is reserved for release candidates.
 
-The package version, Git tag, npm channel, GitHub prerelease state, and release notes must agree. GitHub Releases and npm publication are separate facts.
+## Install or upgrade to the latest stable
 
-## Release gate
+```bash
+npm install -g @moretea-labs/forge@latest
+forge --version
+forge setup next
+forge doctor
+```
 
-A release candidate must pass the repository's release-readiness check on the exact revision. The gate covers type checking, package identity, public documentation, platform contracts, MCP compatibility, public export, package creation, and tarball installation.
+When using the packaged persistent service, `forge runtime service install-package` reconciles the installed Package Runtime. Review [Installation](Installation) and [ChatGPT connection](https://github.com/moretea-labs/forge/blob/main/docs/tutorials/02-connect-chatgpt.md) for platform-specific setup. Updates do not remove the requirement to validate the authenticated MCP connector.
 
-## Stable runtime evidence
+## How releases are verified
 
-Before publication, build an immutable whole-Runtime release from a clean canonical source tree, activate it through the single Forge Runtime service, verify the complete authenticated MCP path, cold-restart that service, and confirm the active release authority still equals the intended commit. Record the fully verified release as known-good.
+Source version, package identity, immutable Git tag, npm dist-tag, and GitHub Release must agree. `check:release` checks source gates, packaging, licensing/open-source hygiene, and isolated installation; `check:release-published` checks npm registry metadata and downloaded tarball integrity against the local version and tag. Publication is performed by protected GitHub Actions with npm OIDC Trusted Publishing.
 
-## Upgrade principles
+Release readiness and active whole-Runtime activation are different authorities; do not infer a healthy local service just from successful package publication. Follow the [maintained release process](https://github.com/moretea-labs/forge/blob/main/docs/operations/releasing.md) for contributor instructions.
 
-- Keep the Forge-only command, state, environment, protocol, and release identity consistent across upgrades.
-- Read release notes before changing runtime or connector configuration.
-- Do not overwrite a healthy active release with a stale rollout operation.
-- Keep a verified rollback path before changing production runtime state.
-
-## Publication sequence
-
-1. Merge reviewed code and docs.
-2. Push the exact main revision.
-3. Wait for required CI and Windows checks on that revision.
-4. Synchronize reviewed Wiki source.
-5. Create the exact `v`-prefixed tag and GitHub prerelease.
-6. Verify npm separately; never claim publication without registry evidence.
-
-See the maintained [release process](https://github.com/moretea-labs/forge/blob/main/docs/operations/releasing.md).
+For the next release, derive its version from the then-current `package.json` rather than changing historical `v1.8.1` links.

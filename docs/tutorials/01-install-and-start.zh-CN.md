@@ -20,7 +20,7 @@ npm --version
 
 ## 2. 安装 Forge
 
-Release Candidate 使用 npm `next`：
+稳定版本使用 npm `latest`（当前已发布 `v1.8.1`）：
 
 ```bash
 npm install -g @moretea-labs/forge
