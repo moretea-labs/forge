@@ -42,7 +42,6 @@ import {
   runtimeStatus,
   verifyStableRuntime,
   verifyConfiguredRuntimeReleaseSessionStaticGates,
-  probeReleaseCutoverReadiness,
   watchdogTick,
   type WatchdogState,
   type RecoveryConfig,
@@ -995,6 +994,14 @@ async function runAutomaticReleaseReconciliationStep(
         : 'automatic release reconciliation failed';
     throw new Error(`RECOVERY_AUTOMATIC_RELEASE_STEP_FAILED: ${detail.slice(0, 500)}`);
   }
+  // An idle-window timeout is a legitimate no-cutover outcome, but not
+  // forward progress. Feed it into the existing phase/revision backoff so
+  // repeated drains cannot monopolize the Connector every 15 seconds.
+  if (parsed.decision?.action === 'cutover'
+    && typeof parsed.result?.detail === 'string'
+    && parsed.result.detail.startsWith('RELEASE_SESSION_CUTOVER_DEFERRED_FOR_MCP_ACTIVITY')) {
+    throw new Error(`RECOVERY_AUTOMATIC_RELEASE_CUTOVER_DEFERRED: ${parsed.result.detail.slice(0, 500)}`);
+  }
   if (parsed.decision?.action) {
     process.stdout.write(JSON.stringify({
       at: new Date().toISOString(),
@@ -1017,27 +1024,10 @@ async function startAutomaticReleaseReconciliation(config: RecoveryConfig): Prom
         () => configuredRuntimeReleaseSourceState(config),
       );
       observed.fingerprint = decision.required ? releaseReconciliationFingerprint(decision) : undefined;
-      if (decision.required && decision.action === 'cutover') {
-        const gate = await probeReleaseCutoverReadiness(config);
-        if (!gate.ready) {
-          process.stdout.write(JSON.stringify({
-            at: new Date().toISOString(),
-            action: 'automatic_release_cutover_deferred',
-            reason: gate.detail,
-            sessionId: decision.session?.sessionId,
-            phase: decision.session?.phase,
-            activeSessions: gate.activeSessions,
-            activePosts: gate.activePosts,
-            activeStreams: gate.activeStreams,
-            initializing: gate.initializing,
-            latestActivityAgeMs: gate.latestActivityAgeMs,
-          }) + '\n');
-        } else {
-          await runAutomaticReleaseReconciliationStep(config, observed, decision);
-        }
-      } else {
-        await runAutomaticReleaseReconciliationStep(config, observed, decision);
-      }
+      // ReleaseSession cutover owns the one Connector drain/quietness fence.
+      // A read-only busy pre-gate here would prevent that drain from ever
+      // starting under sustained MCP traffic, starving the verified candidate.
+      if (decision.required) await runAutomaticReleaseReconciliationStep(config, observed, decision);
     } catch (error) {
       failure = error instanceof Error ? error.message : String(error);
       process.stderr.write(`automatic release reconciliation failed: ${failure}\n`);

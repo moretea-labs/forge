@@ -1427,6 +1427,10 @@ requireText('src/runtime/standalone-recovery/core.ts', 'restartAttempts >= maxim
 requireText('src/runtime/standalone-recovery/core.ts', 'rollbackPreviousLocked');
 requireText('src/runtime/standalone-recovery/entry.ts', "'restart_primary_runtime'");
 requireText('src/runtime/standalone-recovery/entry.ts', "'recover_primary_runtime'");
+requireText('src/runtime/standalone-recovery/core.ts', 'armPackageConnectorCutoverDrain');
+requireText('src/runtime/standalone-recovery/entry.ts', "parsed.result.detail.startsWith('RELEASE_SESSION_CUTOVER_DEFERRED_FOR_MCP_ACTIVITY')");
+forbid('src/runtime/standalone-recovery/entry.ts', /if\s*\(decision\.required\s*&&\s*decision\.action\s*===\s*['"]cutover['"]\)\s*\{\s*const gate = await probeReleaseCutoverReadiness/, 'Automatic Recovery must enter the canonical fenced drain transaction rather than block cutover before the drain can be armed');
+
 forbid(
   'src/runtime/standalone-recovery/core.ts',
   /runtime-slots|active-slot|blue\/green|StableSupervisor|component rollback/i,
