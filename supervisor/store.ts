@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { mkdirSync } from 'node:fs';
 import { resolveWorkflowSupervisorForgeHome, workflowSupervisorDatabasePathValue, workflowSupervisorRootPath } from './paths';
+import { validateSupervisorObjective } from './protocol';
 import type { WorkflowEffectKind, WorkflowEffectOutcome, WorkflowSupervisorCompletion, WorkflowSupervisorContinuationProof, WorkflowSupervisorDiscoverySnapshot, WorkflowSupervisorDiscoveredConversation, WorkflowSupervisorEffect, WorkflowSupervisorTask, WorkflowSupervisorTaskInput, WorkflowSupervisorTaskStall, WorkflowSupervisorTerminalState } from './types';
 export type { WorkflowSupervisorTaskStall } from './types';
 
@@ -429,6 +430,7 @@ export class WorkflowSupervisorStore {
   }
 
   registerTask(input: WorkflowSupervisorTaskInput): WorkflowSupervisorTask {
+    validateSupervisorObjective(input.objective);
     return this.transaction((db) => {
       const createdAt = now();
       statement(db, 'INSERT OR IGNORE INTO tasks VALUES (?, ?, ?, ?, ?, ?, ?, ?)', (s) => s.run(input.taskId, input.conversationId, input.conversationUrl, input.objective, json(input.completionContract), json(input.continuationPolicy), json(input.userBlockerPolicy), createdAt));
@@ -533,8 +535,7 @@ export class WorkflowSupervisorStore {
     refreshEffect?: { effectId: string; expectedPrompt: string; prompt: string };
   }): { task: WorkflowSupervisorTask; changed: boolean; deduplicated: boolean; objectiveSha256: string; refreshedEffect?: WorkflowSupervisorEffect } {
     return this.transaction((db) => {
-      const objective = input.objective.trim();
-      if (!objective || objective.length > 8_000) throw new Error('WORKFLOW_SUPERVISOR_OBJECTIVE_INVALID');
+      const objective = validateSupervisorObjective(input.objective);
       if (!/^[0-9a-f]{64}$/i.test(input.expectedObjectiveSha256)) throw new Error('WORKFLOW_SUPERVISOR_OBJECTIVE_REVISION_EXPECTED_SHA_INVALID');
       if (!input.requestId.trim()) throw new Error('WORKFLOW_SUPERVISOR_OBJECTIVE_REVISION_REQUEST_REQUIRED');
       const targetSha = objectiveSha256(objective);

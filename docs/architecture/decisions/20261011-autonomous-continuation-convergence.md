@@ -236,3 +236,15 @@ R0 审核：**DESIGN REVIEWED；PRODUCTION IMPLEMENTATION NO-GO UNTIL G0a**。�
 使用现有 com.google.Chrome 原生附着能力，已成功在**同一 Chrome** 新开标签页并导航到 https://chatgpt.com/；窗口 AX 标题为 ChatGPT，说明不是 Chrome 程序未运行。然而页面 AXWebArea 只呈现浅层骨架（“跳转到内容”和空组），无可发送的 Composer；同一 Chrome 的其他 chatgpt.com 标签明确显示 Network error。既有 Browser Computer URL 查询也返回 chrome-error:。
 
 所以外部前提当前的准确分类是 **ChatGPT 页面/DOM 未能完整加载，或者 Browser 附着与站点访问不一致**，而不是“Forge 插件调用已被证明不可行”。本次新标签页访问没有写 ChatGPT 消息、没有创建独立业务 Conversation、没有点击 Send，没有 Forge Tool Receipt。禁止将 AX 页面标题 ChatGPT 当作 G0a PASS。下一步必须先以可观察的完整 ChatGPT 编辑器与登录态证明站点可用，才能启动隔离的真实 Forge App 调用试验。
+
+## 12. R1 实施批次审查（2026-10-11）
+
+用户明确要求基于最新 Forge/Computer 基线**集中修改后再统一验证**。该指令仅调整实施/验证粒度，不允许跳过 R2/R3/R4 真实功能验收。当前源码 `4c0d69bc`、运行 Runtime `49a9ee89`、Computer 插件修订 `124` 分开登记；`origin/main` 新增提交只涉及公开 Wiki/Computer 指引，不能把它当成更新后的可执行 Computer provider，也不在本 Work 合并无关文档。
+
+R1 批次聚焦可以直接由真实代码证明的契约缺口：`registerTask` 原来可存入超 8000 字符目标，而 `renderSupervisorPrompt` 悄悄 `slice`；`reviseTaskObjective` 另有独立长度检查；`chatgptForgePluginMentionBound` 可能把不同 HTML 元素上的 `app-mention-name` 和 `app-mention-path` 错认为同一真实 App。统一使用现有 protocol 中的 objective validator，并让存储准入、修订与渲染共享它；不新增 manager/state/数据库。原目标保留原始字符串（含换行、引号和多字节字符）；超限明确拒绝，不能假成功。Browser App 绑定的 name/path 必须来自同一个 chip 节点。
+
+**R1 Review: PASS for contract scope, pending batch checks and G0a live proof.** 安全缺陷修复不等于完整自动推进已经交付。下一次 R2 须核查调用者、无越界 direct writer、代码删除和 Browser 实际读取，不能以此批次为最终架构清理结论。
+
+### R2 变更集审查补充
+
+对完整 diff 审核时发现 `store.reviseTaskObjective()` 还保留了 `trim()` + 独立长度校验。它是绕过 Controller 边界的真实持久 writer，必须同步迁移到 `validateSupervisorObjective()` 并**删除**旧判断，否则任务目标可能在持久修订时改变首尾字符。本次修正使用原模块内已存在的导入，没有增加新状态或抽象。R2 的全系统自动推进交付仍未通过：已有 Computer UI 的归一化全文 readback、真实 Forge MCP causal receipt、运行时版本更新、三轮连续推进还需要真实验收，不因本次协议回归绿灯提前宣称完成。

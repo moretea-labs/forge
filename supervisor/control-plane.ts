@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { parseChatgptConversationIdentity } from './chatgpt-conversation';
-import { parseSupervisorCompletion, renderEffectMarker, renderSupervisorPrompt, sha256, validateEffectId } from './protocol';
+import { parseSupervisorCompletion, renderEffectMarker, renderSupervisorPrompt, sha256, validateEffectId, validateSupervisorObjective } from './protocol';
 import { WorkflowSupervisorStore } from './store';
 import type { WorkflowAssistantObservation, WorkflowAssistantObservationResult, WorkflowContractValidation, WorkflowEffectKind, WorkflowSupervisorAutomationStatus, WorkflowSupervisorBrowserPollResult, WorkflowSupervisorBrowserTask, WorkflowSupervisorCompletion, WorkflowSupervisorDiscoveredConversation, WorkflowSupervisorEffect, WorkflowSupervisorLifecycleHooks, WorkflowSupervisorProjectScope, WorkflowSupervisorTask, WorkflowSupervisorTaskInput, WorkflowSupervisorTerminalState, WorkflowSupervisorValidators } from './types';
 
@@ -68,8 +68,7 @@ export class WorkflowSupervisorControlPlane {
   }): { task: WorkflowSupervisorTask; changed: boolean; deduplicated: boolean; objectiveSha256: string; refreshedEffect?: WorkflowSupervisorEffect } {
     const task = this.requireTask(input.taskId);
     requireNonTerminalTask(this.store, task.taskId);
-    const objective = input.objective.trim();
-    if (!objective || objective.length > 8_000) throw new Error('WORKFLOW_SUPERVISOR_OBJECTIVE_INVALID');
+    const objective = validateSupervisorObjective(input.objective);
     if (!/^[0-9a-f]{64}$/i.test(input.expectedObjectiveSha256)) throw new Error('WORKFLOW_SUPERVISOR_OBJECTIVE_REVISION_EXPECTED_SHA_INVALID');
     if (!input.requestId.trim()) throw new Error('WORKFLOW_SUPERVISOR_OBJECTIVE_REVISION_REQUEST_REQUIRED');
     const pending = this.store.currentUnappliedEffect(task.taskId);

@@ -273,9 +273,11 @@ export function chatgptForgePluginMentionBound(
   prompt: string,
 ): boolean {
   if (!composerHtml || !composerText) return false;
-  const chips = [...composerHtml.matchAll(/\b(?:plugin|app)-mention-name="([^"]+)"/g)].map((match) => match[1]);
-  if (chips.length !== 1 || chips[0] !== CHATGPT_FORGE_PLUGIN_SLUG
-    || !composerHtml.includes(`app-mention-path="${CHATGPT_FORGE_PLUGIN_PATH}"`)) return false;
+  // Name and path must belong to ONE real app chip, never to different
+  // elements in the same composer HTML. A plain @forge is not an invocation.
+  const chips = [...composerHtml.matchAll(/<[^>]*\b(?:plugin|app)-mention-name="[^"]+"[^>]*>/g)].map((match) => match[0]);
+  if (chips.length !== 1 || !chips[0]!.includes(`app-mention-name="${CHATGPT_FORGE_PLUGIN_SLUG}"`)
+    || !chips[0]!.includes(`app-mention-path="${CHATGPT_FORGE_PLUGIN_PATH}"`)) return false;
   const normalized = normalizeChatgptOutboundText(composerText);
   const payload = normalizeChatgptOutboundText(prompt);
   return normalized === `${payload} ${CHATGPT_FORGE_PLUGIN_LABEL}`;

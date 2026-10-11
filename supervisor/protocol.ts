@@ -16,6 +16,14 @@ export const SUPERVISOR_TURN_BLOCK_START = 'FORGE_WORKFLOW_TURN_V2_BEGIN';
 export const SUPERVISOR_TURN_BLOCK_END = 'FORGE_WORKFLOW_TURN_V2_END';
 const EFFECT_ID = /^(?:fx|crpe)_[a-zA-Z0-9_-]{8,120}$/;
 const MAX_RESPONSE = 512 * 1024;
+export const MAX_SUPERVISOR_OBJECTIVE_CHARS = 8_000;
+
+/** A goal cannot be silently shortened between durable Task and sent effect. */
+export function validateSupervisorObjective(value: string): string {
+  if (typeof value !== 'string' || !value.trim()) throw new Error('WORKFLOW_SUPERVISOR_OBJECTIVE_REQUIRED');
+  if (value.length > MAX_SUPERVISOR_OBJECTIVE_CHARS) throw new Error('WORKFLOW_SUPERVISOR_OBJECTIVE_TOO_LARGE');
+  return value;
+}
 const SUPERVISOR_BLOCK_MARKERS = [
   { start: SUPERVISOR_BLOCK_START, end: SUPERVISOR_BLOCK_END },
   { start: LEGACY_BRACKET_SUPERVISOR_BLOCK_START, end: LEGACY_BRACKET_SUPERVISOR_BLOCK_END },
@@ -174,7 +182,7 @@ export function renderSupervisorPrompt(
     },
     goal: {
       role: 'outcome',
-      objective: task.objective.slice(0, 8_000),
+      objective: validateSupervisorObjective(task.objective),
     },
     ...(continuity ? { continuity: { role: 'advisory' as const, summary: continuity } } : {}),
     ...(repoId ? { repository: { repo_id: repoId, ...(checkoutId ? { checkout_id: checkoutId } : {}) } } : {}),

@@ -85,6 +85,9 @@ describe('ChatGPT Supervisor structured plugin mention', () => {
     expect(chatgptForgePluginMentionBound(`<p>${payload}</p><p>${mainChip}</p>`, `${payload} forge`, payload)).toBe(true);
     expect(chatgptForgePluginMentionBound(`<p>${payload}</p><p>${mainChip}</p>`, `${payload.slice(1)} forge`, payload)).toBe(false);
     expect(chatgptForgePluginMentionBound(`<p>${payload}</p><p>${mainChip}${mainChip}</p>`, `${payload} forge forge`, payload)).toBe(false);
+    // A forged name in one node and the valid app path in a separate node
+    // must not pass the same-chip authorization proof.
+    expect(chatgptForgePluginMentionBound(`<p>${payload}</p><span app-mention-name="forge">forge</span><span app-mention-path="app://asdk_app_6ac09022b26081918f20ff868c773824"></span>`, `${payload} forge`, payload)).toBe(false);
   });
   test('rejects the legacy developer package, unbound chip, literal text, and Recovery app', () => {
     expect(chatgptForgePluginMentionBound(`<p>${legacyDeveloperChip} ${payload}</p>`, `Forge Current 1.8.1 ${payload}`, payload)).toBe(false);
@@ -519,6 +522,35 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
       goal: { role: 'outcome', objective: task.objective },
     });
     expect(parseSupervisorTurn(enrollment).continuity).toBeUndefined();
+  });
+
+
+  test('does not truncate the exact 8k objective and rejects oversize enrollment before storage', () => {
+    const base = {
+      taskId: 'task-exact-objective-bound',
+      conversationId: 'ababcdcd-abcd-abcd-abcd-abcdefabcdef',
+      conversationUrl: 'https://chatgpt.com/c/ababcdcd-abcd-abcd-abcd-abcdefabcdef',
+      objective: 'A'.repeat(7_950) + '\n  精确保留字符和换行\n' + 'Z'.repeat(28),
+      completionContract: {},
+      continuationPolicy: {},
+      userBlockerPolicy: {},
+      createdAt: '2026-01-01T00:00:00.000Z',
+    };
+    expect(base.objective.length).toBeLessThanOrEqual(8_000);
+    const prompt = renderSupervisorPrompt(base, 'fx_12345678', 'enrollment');
+    expect(parseSupervisorTurn(prompt).goal.objective).toBe(base.objective);
+    expect(prompt.includes(JSON.stringify(base.objective))).toBe(true);
+    expect(() => renderSupervisorPrompt({ ...base, objective: 'x'.repeat(8_001) },
+      'fx_12345678', 'enrollment')).toThrow('WORKFLOW_SUPERVISOR_OBJECTIVE_TOO_LARGE');
+
+    const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-objective-bound-'));
+    roots.push(root);
+    const store = new WorkflowSupervisorStore(join(root, 'supervisor'));
+    expect(() => store.registerTask({ ...base, objective: 'x'.repeat(8_001) }))
+      .toThrow('WORKFLOW_SUPERVISOR_OBJECTIVE_TOO_LARGE');
+    expect(store.getTask(base.taskId)).toBeUndefined();
+    expect(store.registerTask(base).objective).toBe(base.objective);
+    store.close();
   });
 
   test('pins the exact assistant action enum and validates compact causal receipts while retaining legacy reads', () => {
