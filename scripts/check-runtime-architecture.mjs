@@ -1263,6 +1263,9 @@ forbid('adapters/computer/chrome-extension/background.js', /browser_begin_effect
 requireText('adapters/computer/chrome-extension/content.js', 'ForgeComputerChatgptCore');
 requireText('adapters/computer/chrome-extension/content.js', "bootstrapTargetGuard: 'project-checked-before-send-v1'");
 requireText('adapters/computer/chrome-extension/content.js', 'exactComposerText(payload)');
+requireText('adapters/computer/chrome-extension/content.js', '选择 chatgpt 模型');
+requireText('adapters/computer/chrome-extension/content.js', 'keyboardControl.dispatchEvent(new KeyboardEvent');
+forbid('adapters/computer/chrome-extension/content.js', /slider\.dispatchEvent\(new KeyboardEvent/, 'The aria-hidden GPT-6 slider is read-only evidence; the enclosing reasoning menuitem owns keyboard input');
 forbid('adapters/computer/chrome-extension/content.js', /conversationRoot\(\)\.querySelectorAll\(selectors\)/, 'The model/reasoning control is in the visible ChatGPT app header outside main; only message extraction belongs to the conversation root');
 requireText('adapters/computer/chrome-extension/background.js', 'resolveTarget(command.identity, false, command.providerBinding)');
 forbid('adapters/computer/chrome-extension/background.js', /resolveTarget\(command\.identity,\s*false\)\.catch/, 'Extension worker must recover a pinned bootstrap from the durable Computer binding, not its ephemeral in-worker Map');

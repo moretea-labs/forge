@@ -349,3 +349,76 @@ test('reasoning preflight finds the visible top-header model control outside mai
   expect(await verifier('xhigh')).toEqual({ verified: true, level: 'high' });
   expect(selected).toBe('High');
 });
+
+test('real GPT-6 Chinese picker verifies the strongest available three-step reasoning level via its keyboard-control parent', async () => {
+  const content = readFileSync(new URL('../../adapters/computer/chrome-extension/content.js', import.meta.url), 'utf8');
+  const instrumented = content.replace(
+    '  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {',
+    '  globalThis.__testEnsureReasoning = ensureReasoning;\n  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {',
+  );
+  let menuOpen = false;
+  let value = 1;
+  let focused = false;
+  let keypresses = 0;
+  const visible = () => [1];
+  const status = { innerText: '中，第 2 项，共 3 项。' };
+  const headerMode = {
+    getClientRects: visible, innerText: 'ChatGPT',
+    getAttribute: (key: string) => key === 'aria-label' ? '切换模式，当前模式：ChatGPT' : null,
+  };
+  const modelButton = {
+    getClientRects: visible, innerText: '中',
+    getAttribute: (key: string) => key === 'aria-label' ? '选择 ChatGPT 模型' : null,
+    click() { menuOpen = true; },
+  };
+  const menu = { querySelectorAll: (s: string) => s === '[role="status"]' ? [status] : [] };
+  const strength = {
+    getClientRects: visible,
+    getAttribute: (key: string) => key === 'aria-disabled' ? 'false' : null,
+    focus() { focused = true; },
+    closest: (s: string) => s === '[role="menu"]' ? menu : null,
+    dispatchEvent(event: { key?: string }) {
+      if (!focused || event.key !== 'ArrowRight') return;
+      keypresses += 1;
+      value = Math.min(2, value + 1);
+      status.innerText = '高，第 3 项，共 3 项。';
+      modelButton.innerText = '高';
+    },
+  };
+  const slider = {
+    getClientRects: visible,
+    getAttribute: (key: string) => key === 'aria-valuemin' ? '0'
+      : key === 'aria-valuemax' ? '2'
+        : key === 'aria-valuenow' ? String(value)
+          : key === 'aria-valuetext' ? null : null,
+    closest: (s: string) => s === '[data-reasoning-slider="true"]' ? strength
+      : s === '[aria-disabled="true"]' ? null : null,
+    dispatchEvent() { throw new Error('aria-hidden slider must not receive keyboard input'); },
+  };
+  const document = {
+    documentElement: {},
+    querySelectorAll: (selector: string) => selector === 'main' ? [{ getClientRects: visible, querySelectorAll: () => [] }]
+      : selector.includes('[aria-haspopup="menu"]') ? [headerMode, modelButton]
+        : selector.includes('[role="slider"][aria-valuenow]') && menuOpen ? [slider]
+          : selector.includes('menuitemradio') ? [] : [],
+  };
+  const context = {
+    document, location: { href: 'https://chatgpt.com/g/g-p-forge/project' }, URL,
+    ForgeComputerChatgptCore: {
+      normalizeText: (s: unknown) => String(s ?? '').replace(/\s+/g, ' ').trim(),
+      parseConversation: () => null,
+    },
+    chrome: { runtime: { onMessage: { addListener() {} }, sendMessage() {} } },
+    MutationObserver: class { observe() {} },
+    KeyboardEvent: class { key: string; constructor(_type: string, opts: { key: string }) { this.key = opts.key; } },
+    setTimeout(fn: () => void, ms: number) { if (ms === 80 || ms === 40) queueMicrotask(fn); return 1; },
+    clearTimeout() {},
+  };
+  runInNewContext(instrumented, context);
+  const verifier = (context as typeof context & {
+    __testEnsureReasoning: (level: string) => Promise<{ verified: boolean; level?: string; reason?: string }>
+  }).__testEnsureReasoning;
+  expect(await verifier('xhigh')).toEqual({ verified: true, level: 'high' });
+  expect(value).toBe(2);
+  expect(keypresses).toBe(1);
+});

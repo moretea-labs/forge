@@ -179,10 +179,15 @@
   };
   const reasoningControl = () => {
     const selectors = 'button[aria-haspopup="menu"], button[aria-haspopup="listbox"], [role="button"][aria-haspopup="menu"], button[data-testid*="model"], button[data-testid*="reasoning"]';
-    // ChatGPT mounts its model/reasoning picker in the visible app header,
-    // outside the conversation main. Keep message extraction main-scoped, but
-    // find this page-level control across the document without hidden shells.
+    // The visible model picker can live in the composer or the app header;
+    // unlike the separate ChatGPT/Work mode switch, it controls reasoning.
+    // Keep message extraction main-scoped and select the exact model control.
     const candidates = Array.from(document.querySelectorAll(selectors)).filter(visible);
+    const model = candidates.find((node) => {
+      const aria = core.normalizeText(node.getAttribute?.('aria-label') ?? '').toLowerCase();
+      return aria.includes('选择 chatgpt 模型') || aria.includes('select chatgpt model');
+    });
+    if (model) return model;
     return candidates.find((node) => {
       const label = core.normalizeText((node.getAttribute?.('aria-label') ?? '') + ' ' + (node.innerText ?? node.textContent ?? ''));
       const normalized = label.toLowerCase().replace(/[\s_-]+/g, '');
@@ -223,24 +228,33 @@
       }
       return { verified: false, reason: 'COMPUTER_CHATGPT_REASONING_NOT_VERIFIED' };
     }
-    // Older ChatGPT layouts expose a five-position slider in the model menu.
-    // React must acknowledge each navigation by changing aria-valuenow; writing
-    // our own attribute would be a false verification.
+    // GPT-6 currently exposes a three-position reasoning-strength control:
+    // the aria-hidden slider reports 0..2 but its outer menuitem owns keyboard
+    // input. Older layouts used 0..4. Never infer the level from a number alone:
+    // React must both update aria-valuenow and announce the resulting level.
     const sliders = Array.from(document.querySelectorAll('[role="slider"][aria-valuenow]')).filter(visible);
     if (sliders.length !== 1) return { verified: false, reason: 'COMPUTER_CHATGPT_REASONING_OPTION_UNAVAILABLE' };
     const slider = sliders[0];
+    const keyboardControl = slider.closest?.('[data-reasoning-slider="true"]') ?? slider;
+    if (keyboardControl.getAttribute?.('aria-disabled') === 'true' || slider.closest?.('[aria-disabled="true"]')) {
+      return { verified: false, reason: 'COMPUTER_CHATGPT_REASONING_OPTION_DISABLED' };
+    }
     const max = Number(slider.getAttribute('aria-valuemax'));
     const min = Number(slider.getAttribute('aria-valuemin') ?? '0');
-    const target = level === 'xhigh' ? max : level === 'high' ? 3 : 2;
-    const actualLevel = target === 4 ? 'xhigh' : target === 3 ? 'high' : target === 2 ? 'medium' : undefined;
+    const threePosition = min === 0 && max === 2;
+    const legacyFivePosition = min === 0 && max === 4;
+    const target = level === 'xhigh' ? max : level === 'high'
+      ? threePosition ? 2 : 3
+      : threePosition ? 1 : 2;
     let current = Number(slider.getAttribute('aria-valuenow'));
-    if (![min, max, current, target].every(Number.isInteger) || min < 0 || max > 4 || max < 2
-      || current < min || current > max || target < min || target > max || !actualLevel) {
+    if ((!threePosition && !legacyFivePosition) || ![min, max, current, target].every(Number.isInteger)
+      || current < min || current > max || target < min || target > max) {
       return { verified: false, reason: 'COMPUTER_CHATGPT_REASONING_STATE_UNAVAILABLE' };
     }
     for (let step = 0; step < Math.abs(target - current); step += 1) {
-      slider.focus?.();
-      slider.dispatchEvent(new KeyboardEvent('keydown', { key: target > current ? 'ArrowRight' : 'ArrowLeft', bubbles: true }));
+      const key = target > current ? 'ArrowRight' : 'ArrowLeft';
+      keyboardControl.focus?.();
+      keyboardControl.dispatchEvent(new KeyboardEvent('keydown', { key, code: key, bubbles: true, cancelable: true }));
       await sleep(40);
       const next = Number(slider.getAttribute('aria-valuenow'));
       if (next !== current + (target > current ? 1 : -1)) {
@@ -251,11 +265,16 @@
     if (Number(slider.getAttribute('aria-valuenow')) !== target) {
       return { verified: false, reason: 'COMPUTER_CHATGPT_REASONING_NOT_VERIFIED' };
     }
-    const valueText = slider.getAttribute('aria-valuetext');
-    if (valueText && reasoningLevel(valueText) !== actualLevel) {
+    const menu = keyboardControl.closest?.('[role="menu"]');
+    const announced = Array.from(menu?.querySelectorAll?.('[role="status"]') ?? [])
+      .map((node) => core.normalizeText(node.innerText ?? node.textContent).split(/[，,]/)[0]?.trim())
+      .map(reasoningLevel)
+      .find(Boolean);
+    const observedLevel = reasoningLevel(slider.getAttribute('aria-valuetext')) ?? announced;
+    if (!observedLevel || (level !== 'xhigh' && observedLevel !== level)) {
       return { verified: false, reason: 'COMPUTER_CHATGPT_REASONING_NOT_VERIFIED' };
     }
-    return { verified: true, level: actualLevel };
+    return { verified: true, level: observedLevel };
   };
   const dispatchPrompt = async (prompt, mode = 'send', reasoning, expectedConversationId, prepareOnly = false, expectedProjectId) => {
     const exactConversationIsCurrent = () => expectedConversationId
