@@ -84,11 +84,13 @@ describe('thin semantic Work lifecycle', () => {
 
   test('completes a Work with complete alone, without verify, review or finalize phases', async () => {
     const options = store();
+    const objective = 'Record one durable external outcome. '.repeat(40).trim();
+    const resultRefs = Array.from({ length: 100 }, (_, index) => `artifact://external/outcome-${index}`);
     createWorkContract(options, {
       workId: 'work-semantic-close',
       repoId: options.repoId,
       workKind: 'remote_effect',
-      objective: 'Record one durable external outcome.',
+      objective,
       acceptanceCriteria: ['Outcome is recorded'],
       allowedPaths: [],
       forbiddenPaths: [],
@@ -102,17 +104,40 @@ describe('thin semantic Work lifecycle', () => {
     const completed = structured(await callRhWorkSemanticOperation(options, 'complete', {
       work_id: 'work-semantic-close',
       expected_revision: 1,
-      work_result_refs: ['artifact://external/outcome'],
+      work_result_refs: resultRefs,
     }));
     expect(completed.status).toBe('ok');
     expect(completed.data.work).toMatchObject({ workId: 'work-semantic-close', state: 'completed', revision: 2 });
+    expect(completed.data.work.objective).toBe(objective);
+    expect(completed.data.work.resultRefs).toEqual(resultRefs);
 
     const stored = getWorkContract(options, 'work-semantic-close')!;
     expect(stored.semanticState).toBe('completed');
-    expect(stored.semanticResultRefs).toEqual(['artifact://external/outcome']);
+    expect(stored.semanticResultRefs).toEqual(resultRefs);
     // No verification, implementation review or finalize phase was required.
     expect(stored.checkRefs).toEqual([]);
     expect(stored.implementationReviews ?? []).toEqual([]);
+
+    const read = structured(await callRhWorkSemanticOperation(options, 'get', { work_id: stored.workId }));
+    const revised = structured(await callRhWorkSemanticOperation(options, 'revise', {
+      work_id: stored.workId,
+      expected_revision: read.data.work.revision,
+      objective: read.data.work.objective,
+      work_result_refs: read.data.work.resultRefs,
+    }));
+    expect(revised.data.work.objective).toBe(objective);
+    expect(revised.data.work.resultRefs).toEqual(resultRefs);
+    expect(getWorkContract(options, stored.workId)?.semanticResultRefs).toEqual(resultRefs);
+    const detail = structured(await callRhWorkSemanticOperation(options, 'get', {
+      work_id: stored.workId, detail_level: 'detail',
+    }));
+    expect(detail.data.revisionHistory.find((entry: { revision: number }) => entry.revision === 2).resultRefs).toEqual(resultRefs);
+    const stale = structured(await callRhWorkSemanticOperation(options, 'revise', {
+      work_id: stored.workId, expected_revision: 2,
+    }));
+    expect(stale.status).toBe('blocked');
+    expect(stale.data.currentWork.resultRefs).toEqual(resultRefs);
+    expect(stale.data.currentWork.objective).toBe(objective);
   });
 
   test('rejects a stale complete without writing and returns current semantic state', async () => {

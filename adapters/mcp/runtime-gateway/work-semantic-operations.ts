@@ -12,7 +12,7 @@ import {
   semanticWorkState,
   type WorkContractStoreOptions,
 } from '../../../packages/kernel/work/api/index';
-import { buildFacadeResult } from '../../../src/runtime/control-plane/facade';
+import { buildFacadeResult, type BuildFacadeResultOptions } from '../../../src/runtime/control-plane/facade';
 import { getPlanContract, currentPlanSemanticRevision, getPlanSemanticRevisionRecord, planSemanticView } from '../../../src/runtime/control-plane/facade/plan-contract-store';
 import { readRequirement, currentRequirementSemanticRevision, getRequirementRevisionRecord, requirementSemanticView } from '../../../src/runtime/control-plane/persistence/requirement-store';
 import { buildWorkContinuationSnapshot } from '../../../src/runtime/control-plane/facade/work-continuation';
@@ -22,6 +22,23 @@ import { readWorkHandle } from '../../../src/runtime/control-plane/execution/wor
 import { reconcileSingleTerminalWorkCleanup } from '../../../src/runtime/control-plane/execution/work-terminal-cleanup';
 
 const RH_WORK_SEMANTIC_OPERATIONS = new Set(['start', 'get', 'revise', 'complete']);
+
+type WorkSemanticFacadeData = Record<string, unknown> & {
+  work?: ReturnType<typeof workSemanticView>;
+  currentWork?: ReturnType<typeof workSemanticView>;
+  revisionHistory?: ReturnType<typeof listWorkSemanticRevisionRecords>;
+};
+
+export function buildWorkSemanticFacadeResult(options: BuildFacadeResultOptions<WorkSemanticFacadeData>) {
+  const facade = buildFacadeResult(options);
+  // These authored projections already have domain limits. Generic diagnostic
+  // clipping corrupts their read/revise round trip (100 refs become 50, and a
+  // valid objective becomes an ellipsis). Keep execution diagnostics bounded.
+  if (options.data.work) facade.data.work = options.data.work;
+  if (options.data.currentWork) facade.data.currentWork = options.data.currentWork;
+  if (options.data.revisionHistory) facade.data.revisionHistory = options.data.revisionHistory;
+  return facade;
+}
 
 /** Resolve semantic version references against existing canonical heads/history. */
 function workBasis(store: WorkContractStoreOptions, x: { requirementId?: string; requirementRevision?: number; planId?: string; planRevision?: number }) {
@@ -118,18 +135,18 @@ export async function callRhWorkSemanticOperation(
   const workId = operation === 'start' ? semanticWorkId(store, args) : String(args.work_id ?? '').trim();
   if (operation === 'start') {
     const objective = String(args.objective ?? '').trim();
-    if (!objective) return result(buildFacadeResult({
+    if (!objective) return result(buildWorkSemanticFacadeResult({
       status: 'blocked', summary: 'WORK_OBJECTIVE_REQUIRED', data: { workId },
     }) as unknown as Record<string, unknown>, true);
     const requestId = typeof args.request_id === 'string' ? args.request_id.trim() : '';
     const existing = getWorkContract(store, workId);
     if (existing) {
-      if (!semanticCreateMatches(existing, args, requestId)) return result(buildFacadeResult({
+      if (!semanticCreateMatches(existing, args, requestId)) return result(buildWorkSemanticFacadeResult({
         status: 'blocked',
         summary: `WORK_SEMANTIC_CREATE_CONFLICT: ${workId}`,
         data: { workId, currentWork: workSemanticView(existing) },
       }) as unknown as Record<string, unknown>, true);
-      return result(buildFacadeResult({
+      return result(buildWorkSemanticFacadeResult({
         summary: `Work ${workId} already exists; semantic create was deduplicated.`,
         data: { work: workSemanticView(existing), deduplicated: true },
       }) as unknown as Record<string, unknown>);
@@ -150,17 +167,17 @@ export async function callRhWorkSemanticOperation(
         ...(Array.isArray(args.depends_on_work_ids) ? { dependsOnWorkIds: args.depends_on_work_ids.map(String) } : {}),
         ...(requestId ? { requestId } : {}),
       });
-      return result(buildFacadeResult({
+      return result(buildWorkSemanticFacadeResult({
         summary: `Work ${workId} created as semantic context.`,
         data: { work: workSemanticView(created), deduplicated: false },
       }) as unknown as Record<string, unknown>);
     } catch (error) {
       const raced = getWorkContract(store, workId);
-      if (raced && semanticCreateMatches(raced, args, requestId)) return result(buildFacadeResult({
+      if (raced && semanticCreateMatches(raced, args, requestId)) return result(buildWorkSemanticFacadeResult({
         summary: `Work ${workId} already exists; semantic create was deduplicated.`,
         data: { work: workSemanticView(raced), deduplicated: true },
       }) as unknown as Record<string, unknown>);
-      return result(buildFacadeResult({
+      return result(buildWorkSemanticFacadeResult({
         status: 'blocked',
         summary: error instanceof Error ? error.message : String(error),
         data: { workId },
@@ -169,7 +186,7 @@ export async function callRhWorkSemanticOperation(
   }
   if (operation === 'get') {
     const work = workId ? getWorkContract(store, workId) : undefined;
-    if (!work) return result(buildFacadeResult({
+    if (!work) return result(buildWorkSemanticFacadeResult({
       status: 'not_found', summary: `Work ${workId || '(missing)'} not found.`, data: { workId },
     }) as unknown as Record<string, unknown>, true);
     const semantic = workSemanticView(work);
@@ -180,7 +197,7 @@ export async function callRhWorkSemanticOperation(
       listWorkSemanticRevisionRecords(store, undefined, 200),
       semantic.workId,
     ) : undefined;
-    return result(buildFacadeResult({
+    return result(buildWorkSemanticFacadeResult({
       summary: `Work ${semantic.workId} retrieved at semantic revision ${semantic.revision}.`,
       data: {
         work: semantic,
@@ -243,7 +260,7 @@ export async function callRhWorkSemanticOperation(
         };
       }
     }
-    return result(buildFacadeResult({
+    return result(buildWorkSemanticFacadeResult({
       summary: `Work ${semantic.workId} revised atomically to semantic revision ${semantic.revision}.`,
       data: {
         work: semantic,
@@ -255,7 +272,7 @@ export async function callRhWorkSemanticOperation(
     }) as unknown as Record<string, unknown>);
   } catch (error) {
     const current = workId ? getWorkContract(store, workId) : undefined;
-    return result(buildFacadeResult({
+    return result(buildWorkSemanticFacadeResult({
       status: 'blocked', summary: error instanceof Error ? error.message : String(error),
       data: { workId, expectedRevision, ...(current ? { currentWork: workSemanticView(current) } : {}) },
     }) as unknown as Record<string, unknown>, true);
