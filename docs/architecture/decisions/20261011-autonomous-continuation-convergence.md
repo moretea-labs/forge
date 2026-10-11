@@ -229,3 +229,10 @@ R0 审核：**DESIGN REVIEWED；PRODUCTION IMPLEMENTATION NO-GO UNTIL G0a**。�
 - 没有可验证的 ChatGPT composer，没有 Forge App 节点、发送前全文校验或工具调用回执。**本轮 0 次 Send，没有新 conversation、没有改变三条业务 Task、没有改旧 effect/发送预算。**
 
 判定：这是 **Browser/ChatGPT 可访问性与附着能力未满足**，不是“Forge 插件功能确定不可行”。先复核已登录 Chrome 的访问与 attach 支持，再用同一个 G0a 测试；不能因此在 Supervisor/Recovery 添加新补偿链，更不能用 mock 伪造 Go 结论。R0 生产实现仍 NO-GO，直到实际 Forge MCP receipt 出现。
+
+
+### G0a 原生 Chrome 交叉核验（同日）
+
+使用现有 com.google.Chrome 原生附着能力，已成功在**同一 Chrome** 新开标签页并导航到 https://chatgpt.com/；窗口 AX 标题为 ChatGPT，说明不是 Chrome 程序未运行。然而页面 AXWebArea 只呈现浅层骨架（“跳转到内容”和空组），无可发送的 Composer；同一 Chrome 的其他 chatgpt.com 标签明确显示 Network error。既有 Browser Computer URL 查询也返回 chrome-error:。
+
+所以外部前提当前的准确分类是 **ChatGPT 页面/DOM 未能完整加载，或者 Browser 附着与站点访问不一致**，而不是“Forge 插件调用已被证明不可行”。本次新标签页访问没有写 ChatGPT 消息、没有创建独立业务 Conversation、没有点击 Send，没有 Forge Tool Receipt。禁止将 AX 页面标题 ChatGPT 当作 G0a PASS。下一步必须先以可观察的完整 ChatGPT 编辑器与登录态证明站点可用，才能启动隔离的真实 Forge App 调用试验。
