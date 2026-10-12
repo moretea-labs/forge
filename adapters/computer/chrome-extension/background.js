@@ -95,9 +95,9 @@ async function snapshot(tabId, options = {}) {
 async function waitForContent(tabId, requireBootstrapUi = false) {
   let lastError;
   // Bootstrap is a new provider page: seeing its URL proves location, not
-  // that the React composer and reasoning picker are hydrated. Bound this
-  // pre-send wait below the broker's 12-second command timeout. A missing
-  // current content-script readiness receipt never authorizes Send.
+  // that the React composer is hydrated. The Supervisor uses the user's
+  // current reasoning setting, not the picker. Bound this wait below the
+  // broker's 12-second timeout; missing composer never authorizes Send.
   const attempts = requireBootstrapUi ? 20 : 40;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     try {
@@ -105,8 +105,7 @@ async function waitForContent(tabId, requireBootstrapUi = false) {
       if (tab?.discarded) await tabReload(tabId);
       const observation = await snapshot(tabId);
       if (typeof observation?.url === 'string' && observation.url
-        && (!requireBootstrapUi || (typeof observation.composerText === 'string'
-          && observation.reasoningControlReady === true))) return observation;
+        && (!requireBootstrapUi || typeof observation.composerText === 'string')) return observation;
     } catch (error) { lastError = error; }
     await sleep(250);
   }
@@ -114,7 +113,15 @@ async function waitForContent(tabId, requireBootstrapUi = false) {
 }
 function matchingTabs(tabs, identity, pinnedBinding) {
   if (identity?.namespace === 'chatgpt.conversation') {
-    return tabs.filter((tab) => core.parseConversation(tab.url ?? '')?.conversationId === identity.conversationId);
+    const exact = tabs.filter((tab) => core.parseConversation(tab.url ?? '')?.conversationId === identity.conversationId);
+    if (exact.length > 1 && pinnedBinding?.providerId === PROVIDER_ID && pinnedBinding.tabId && pinnedBinding.windowId) {
+      const pinned = exact.filter((tab) => String(tab.id) === String(pinnedBinding.tabId)
+        && String(tab.windowId) === String(pinnedBinding.windowId));
+      if (pinned.length === 1) return pinned;
+    }
+    // Duplicate exact URLs without a verifiable pin must never select an
+    // arbitrary foreground tab (or silently create another one).
+    return exact;
   }
   if (identity?.namespace === 'chatgpt.bootstrap') {
     // The Project is a scope, not a tab identity. Multiple tasks share the

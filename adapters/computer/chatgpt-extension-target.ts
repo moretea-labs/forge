@@ -186,8 +186,9 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
     if (preferredInstanceId && fresh.some(([instanceId]) => instanceId === preferredInstanceId)) {
       return { instanceId: preferredInstanceId, ambiguous: false };
     }
-    const current = fresh.filter(([, state]) => state.heartbeat.conversations.some((conversation) => conversation.isCurrent));
-    if (current.length === 1) return { instanceId: current[0]![0], ambiguous: false };
+    // Foreground tab is not a durable browser-principal binding. If more
+    // than one Extension instance is connected, require a known pin instead
+    // of guessing which profile should receive a new Supervisor effect.
     if (fresh.length === 1) return { instanceId: fresh[0]![0], ambiguous: false };
     return { ambiguous: fresh.length > 1 };
   }

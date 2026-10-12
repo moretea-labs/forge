@@ -376,3 +376,17 @@ Despite this source improvement the original Forge and iOS pre-send operator gra
 At the user's explicit request the three original Supervisor tasks were terminal-stopped through the canonical `supervisor_task stop` API only after each original effect ledger showed **zero dispatch generations and zero dispatch_started**. Three fresh standalone Supervisor tasks were registered instead, each with a separate Task ID, clean bootstrap effect, unchanged repository ownership, and a shorter current-goal objective. No old Work, Requirement, Plan or source commit was deleted or recreated. Fresh tasks are `supervisor:3ffffb37097d0926f2df4dfd` (Forge), `supervisor:ee55005515fd4a9968373909` (iOS), and `supervisor:de9f5e5fffe66ce8a5f58979` (Android). The deployed active Runtime 1791777422386-a3282542 reached healthy authorityRevision 831; Browser Adapter installation was projected onto it and its Chrome Extension was explicitly reloaded through the exact installed Chrome extension UI. Fresh task tabs were independently verified as Project-bound, empty and no-Send before refreshing their content scripts.
 
 An iOS new-task single operator preflight rearm yielded event 36914 `composer_write_unconfirmed`, `send_clicked=false`, generation zero. Read-only inspection of its exact provider editor and immutable new-effect prompt proved that the 1887-character intended `payload + "\n@"` had exactly five newlines and was written to six direct `<p>` blocks with text length 1882 before block separators. Reading the *same complete payload* via `HTMLElement.innerText` produced 1892 characters and ten newlines (two between each block), causing the strict provider pre-send comparator to reject a byte-perfect editor draft. All six real DOM children were plain paragraph elements with zero intra-paragraph newlines. The correct single read path reconstructs text from direct ProseMirror `P` blocks joined by exactly one newline; only genuinely whitespace-only empty editors collapse to empty. For other editor shapes the conservative existing observation remains, preventing invented exactness. Immutable effect payloads, plugin chip identity, exact Project checks, provider Send fence and unknown-result safety remain unchanged. The real content-script regression was RED under the old `innerText` logic; full tests, release and G0b/G4 live acceptance must still be executed before declaring autonomy delivered. New tasks remain the sole live continuation authority; never restart the stopped historical ones.
+
+
+## 14. 2026-10-12 最小发送链路减法（source candidate；未完成 live 验收）
+
+- Supervisor bootstrap 和后续 effect 不再强制 `xhigh`，使用 ChatGPT 会话当前档位；Computer 的显式 reasoning API 仍可供其他调用者使用。
+- Extension 新 tab 等待完整 composer hydrate，不再要求 reasoning picker；Forge 真实 App chip、完整 Prompt、effect CAS、unknown 禁重发保持不变。
+- 精确 conversation 存在多个标签页时，Chrome worker 优先验证 Controller 已绑定 tabId/windowId，否则拒绝；多个 Extension instance 时不再靠前台窗口推测 browser profile。
+- 没有证明纯文本提示在不绑定 Forge App 的情况下仍会调用 MCP，因此保留真实 App chip。ChatGPT 桌面 App 暂无更可靠外部发送通道的实测证据，不迁移。
+- 现有隔离真实 G0b/G4 和 3 条业务 Task 的 causal receipts 仍是最终验收条件，不以通过源码测试替代。
+
+
+### 2026-10-12 用户确定的验收策略
+
+本主线不再新增测试案例或循环运行大规模自动化测试；本轮新增的 extension-worker 测试修改已撤回。后续以安装到运行中 Chrome 的精确会话发送回执、真实 Forge MCP causal CONTINUE → CONTINUE → DONE、切换会话和独立生产任务实际推进作为验收依据。保留原有未改动测试及安全约束；不通过删除其他人的未提交测试修改制造 clean tree 或假绿。

@@ -634,7 +634,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       return;
     }
     let prepared: Awaited<ReturnType<ComputerChatgptConversationTarget['prepare']>>;
-    try { prepared = await target.prepare(command.prompt, { reasoning: 'xhigh' }); }
+    try { prepared = await target.prepare(command.prompt); }
     catch (error) {
       this.control.recordProviderPreparationFailure({ taskId: task.taskId, effectId: command.effectId, reasonCode: consumerFailureCode(error, 'COMPUTER_PREPARE_FAILED') });
       this.noteTaskFailure(SUPERVISOR_PRE_SEND_BLOCKED, task, command.effectId); this.deps.onError(error); return;
@@ -648,7 +648,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     this.clearTaskFailure(task.taskId, command.effectId);
     if (!this.control.bootstrapBeginEffect({ taskId: task.taskId, effectId: command.effectId, dispatchId: `bootstrap-${randomUUID()}`, dispatchGeneration: command.dispatchGeneration })) return;
     try {
-      const dispatch = await withChatgptProviderDispatchLane(this.deps.providerScopeKey, () => target.dispatch(command.prompt, { reasoning: 'xhigh' }),
+      const dispatch = await withChatgptProviderDispatchLane(this.deps.providerScopeKey, () => target.dispatch(command.prompt),
         (result) => result.mutation === 'attempted' ? { providerAccepted: result.confirmed === true } : { code: result.reasonCode, message: result.reasonCode });
       if (dispatch.mutation === 'not_attempted') {
         this.control.bootstrapObserveEffect({ taskId: task.taskId, effectId: command.effectId, observationId: `bootstrap-${randomUUID()}`, outcome: 'not_applied', evidence: { pre_send_rejection: true, reason: dispatch.reasonCode } });
@@ -718,7 +718,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     if (mode === 'send') {
       let prepared: Awaited<ReturnType<ComputerChatgptConversationTarget['prepare']>>;
       try { prepared = await target.prepare(command.prompt, {
-        ...(command.kind === 'recovery' ? { mode: 'recover' as const } : {}), reasoning: 'xhigh',
+        ...(command.kind === 'recovery' ? { mode: 'recover' as const } : {}),
       }); }
       catch (error) {
       this.control.recordProviderPreparationFailure({ taskId: task.taskId, effectId: command.effectId, reasonCode: consumerFailureCode(error, 'COMPUTER_PREPARE_FAILED') });
@@ -754,7 +754,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     }
     let dispatch: Awaited<ReturnType<ComputerChatgptConversationTarget['dispatch']>>;
     try {
-      dispatch = await withChatgptProviderDispatchLane(this.deps.providerScopeKey, () => target.dispatch(command.prompt, { ...(command.kind === 'recovery' ? { mode: 'recover' as const } : {}), reasoning: 'xhigh' }),
+      dispatch = await withChatgptProviderDispatchLane(this.deps.providerScopeKey, () => target.dispatch(command.prompt, { ...(command.kind === 'recovery' ? { mode: 'recover' as const } : {}) }),
         (result) => result.mutation === 'attempted' ? { providerAccepted: result.confirmed === true } : { code: result.reasonCode, message: result.reasonCode });
     } catch (error) {
       this.control.browserObserveEffect({ conversationId: command.conversationId, conversationUrl: command.conversationUrl, effectId: command.effectId,

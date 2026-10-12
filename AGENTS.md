@@ -6,6 +6,8 @@ This repository self-hosts the Forge contract. Retired project-skill and project
 
 Treat ChatGPT as the controller and Forge as its repository execution layer. ChatGPT chooses how to inspect, plan, edit, verify, or delegate. Forge provides deterministic repository tools and does not impose an Agent-first workflow.
 
+- **User-directed verification priority (2026-10-12):** Do not add new automated test cases or test files during normal Forge implementation unless the user explicitly changes this instruction. Prefer direct verification of the real requested workflow and inspect its actual effect/tool receipts; do not substitute expanded mock suites, repeated full test runs, or source-only green checks for a delivered product. Preserve existing unrelated tests, and never weaken exact-target/unknown-send protections to make live acceptance appear successful.
+
 - Scheduling, explicit workspace placement choice, integration timing, baseline activation, delivery, and acceptance are model decisions made from the user's current objective and live repository evidence. Forge supplies callable execution primitives and fixed mechanical compatibility mappings only; it must not infer, gate, override, or auto-advance semantic workflow decisions from a Work transition, executor completion, risk classification, policy, or heuristic. Repository rules guide the model; they are not a Forge workflow state machine.
 
 - Direct Edit is the default for understood work. One session may accept many patch batches, keep revision history, create savepoints, run checks, roll back selected revisions, and finalize one aggregate localized diff.
