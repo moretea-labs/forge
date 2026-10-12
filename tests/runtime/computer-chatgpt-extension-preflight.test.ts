@@ -368,8 +368,8 @@ test('real GPT-6 Chinese picker verifies the strongest available three-step reas
   };
   const modelButton = {
     getClientRects: visible, innerText: '中',
-    getAttribute: (key: string) => key === 'aria-label' ? '选择 ChatGPT 模型' : null,
-    click() { menuOpen = true; },
+    getAttribute: (key: string) => key === 'aria-label' ? '选择 ChatGPT 模型' : key === 'aria-expanded' ? String(menuOpen) : null,
+    click() { menuOpen = !menuOpen; },
   };
   const menu = { querySelectorAll: (s: string) => s === '[role="status"]' ? [status] : [] };
   const strength = {
@@ -421,4 +421,10 @@ test('real GPT-6 Chinese picker verifies the strongest available three-step reas
   expect(await verifier('xhigh')).toEqual({ verified: true, level: 'high' });
   expect(value).toBe(2);
   expect(keypresses).toBe(1);
+  // A previous preflight may leave the actual model menu open. Repeating the
+  // same prepare must read that live menu, not click the toggle and close it.
+  expect(menuOpen).toBe(true);
+  expect(await verifier('xhigh')).toEqual({ verified: true, level: 'high' });
+  expect(keypresses).toBe(1);
+  expect(menuOpen).toBe(true);
 });

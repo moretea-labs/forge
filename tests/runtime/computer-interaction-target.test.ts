@@ -375,6 +375,127 @@ describe('Computer durable InteractionTarget authority', () => {
     }
   });
 
+
+  test('missing pinned bootstrap tab is recoverable only by the same live Chrome provider instance', async () => {
+    for (const [owner, shouldRecover] of [['current', true], ['foreign', false]] as const) {
+      const home = mkdtempSync(join(tmpdir(), 'forge-extension-bootstrap-pin-'));
+      const key = 'supervisor:unspent-bootstrap';
+      const binding = { providerId: 'browser.chrome-extension', providerSessionId: owner,
+        observedAt: new Date().toISOString(), browserProduct: 'chrome',
+        windowId: 'window-old', tabId: 'tab-old' };
+      const identity = { surfaceType: 'browser-tab' as const, ownership: 'provider_owned' as const,
+        resource: { namespace: 'chatgpt.bootstrap', key } };
+      const saved = targetAuthority.createSurface(home, {
+        stableIdentity: identity, visibility: 'controller', providerBinding: binding,
+      });
+      const port = new ChromeExtensionChatgptConversationTargetPort(home, targetAuthority);
+      try {
+        port.heartbeat({ providerId: 'browser.chrome-extension', providerInstanceId: 'current',
+          observedAt: new Date().toISOString(), conversations: [] });
+        const pending = port.openBootstrap('https://chatgpt.com/g/g-p-test/project', key);
+        const first = port.claim('current');
+        expect(first?.kind).toBe('ensure');
+        if (first?.kind !== 'ensure') throw new Error('Missing initial exact-tab query');
+        expect(first.providerBinding).toMatchObject({ tabId: 'tab-old' });
+        expect(port.complete('current', first.commandId, { kind: 'failed',
+          code: 'COMPUTER_CHATGPT_BOOTSTRAP_PINNED_TAB_MISSING', retryable: true, failoverSafe: false })).toBe(true);
+        let second;
+        for (let attempt = 0; attempt < 30 && !second && shouldRecover; attempt += 1) {
+          second = port.claim('current');
+          if (!second) await Bun.sleep(1);
+        }
+        if (!shouldRecover) {
+          expect(await pending).toMatchObject({ state: 'unavailable', failure: {
+            code: 'COMPUTER_CHATGPT_BOOTSTRAP_PINNED_TAB_MISSING', failoverSafe: false } });
+          expect(port.claim('current')).toBeUndefined();
+          expect(targetAuthority.getSurface(home, saved.targetId)?.providerBinding).toMatchObject(binding);
+          continue;
+        }
+        expect(second?.kind).toBe('ensure');
+        if (second?.kind !== 'ensure') throw new Error('Missing same-provider fresh-tab attempt');
+        expect(second.providerBinding).toBeUndefined();
+        expect(targetAuthority.getSurface(home, saved.targetId)?.providerBinding).toBeUndefined();
+        expect(port.complete('current', second.commandId, {
+          kind: 'ensured', providerBinding: { ...binding, providerSessionId: 'current',
+            windowId: 'window-new', tabId: 'tab-new', observedAt: new Date().toISOString() },
+        })).toBe(true);
+        const resolved = await pending;
+        expect(resolved.state).toBe('ready');
+        if (resolved.state !== 'ready') throw new Error('Bootstrap was not restored');
+        expect(resolved.target.targetId).toBe(saved.targetId);
+        expect(targetAuthority.getSurface(home, saved.targetId)?.providerBinding).toMatchObject({ tabId: 'tab-new' });
+        expect(port.claim('current')).toBeUndefined();
+      } finally {
+        await port.close();
+        rmSync(home, { recursive: true, force: true });
+      }
+    }
+  });
+
+  test('claimed but interrupted bootstrap cannot clear a pinned binding or open another tab', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'forge-extension-bootstrap-unknown-'));
+    const binding = { providerId: 'browser.chrome-extension', providerSessionId: 'current',
+      observedAt: new Date().toISOString(), browserProduct: 'chrome', windowId: 'old-window', tabId: 'old-tab' };
+    const key = 'supervisor:unknown';
+    const saved = targetAuthority.createSurface(home, {
+      stableIdentity: { surfaceType: 'browser-tab', ownership: 'provider_owned',
+        resource: { namespace: 'chatgpt.bootstrap', key } },
+      visibility: 'controller', providerBinding: binding,
+    });
+    const port = new ChromeExtensionChatgptConversationTargetPort(home, targetAuthority);
+    try {
+      port.heartbeat({ providerId: 'browser.chrome-extension', providerInstanceId: 'current',
+        observedAt: new Date().toISOString(), conversations: [] });
+      const pending = port.openBootstrap('https://chatgpt.com/g/g-p-test/project', key);
+      const claimed = port.claim('current');
+      expect(claimed?.kind).toBe('ensure');
+      await port.close();
+      expect(await pending).toMatchObject({ state: 'unavailable', failure: {
+        code: 'COMPUTER_CHATGPT_EXTENSION_RUNTIME_CLOSED', failoverSafe: false } });
+      expect(targetAuthority.getSurface(home, saved.targetId)?.providerBinding).toMatchObject(binding);
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+
+
+  test('stale-tab recovery CAS never displaces a newer Computer provider binding', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'forge-extension-bootstrap-race-'));
+    const key = 'supervisor:bootstrap-concurrent-rebind';
+    const old = { providerId: 'browser.chrome-extension', providerSessionId: 'current',
+      observedAt: new Date().toISOString(), browserProduct: 'chrome',
+      windowId: 'window-old', tabId: 'tab-old' };
+    const saved = targetAuthority.createSurface(home, {
+      stableIdentity: { surfaceType: 'browser-tab', ownership: 'provider_owned',
+        resource: { namespace: 'chatgpt.bootstrap', key } },
+      visibility: 'controller', providerBinding: old,
+    });
+    const port = new ChromeExtensionChatgptConversationTargetPort(home, targetAuthority);
+    try {
+      port.heartbeat({ providerId: 'browser.chrome-extension', providerInstanceId: 'current',
+        observedAt: new Date().toISOString(), conversations: [] });
+      const pending = port.openBootstrap('https://chatgpt.com/g/g-p-test/project', key);
+      const claimed = port.claim('current');
+      expect(claimed?.kind).toBe('ensure');
+      if (!claimed) throw new Error('No initial command for stale-tab CAS');
+      // Another valid owner has already reattached the SAME durable target.
+      await targetAuthority.withSurfaceLease(home, saved.targetId, async lease => lease.bind({
+        ...old, windowId: 'window-new', tabId: 'tab-new',
+      }));
+      expect(port.complete('current', claimed.commandId, {
+        kind: 'failed', code: 'COMPUTER_CHATGPT_BOOTSTRAP_PINNED_TAB_MISSING',
+        retryable: true, failoverSafe: false,
+      })).toBe(true);
+      expect(await pending).toMatchObject({ state: 'unavailable', failure: {
+        code: 'COMPUTER_CHATGPT_BOOTSTRAP_PINNED_BINDING_CHANGED', failoverSafe: false,
+      } });
+      expect(targetAuthority.getSurface(home, saved.targetId)?.providerBinding)
+        .toMatchObject({ tabId: 'tab-new' });
+      expect(port.claim('current')).toBeUndefined();
+    } finally {
+      await port.close();
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   test('keeps extension provider ownership scoped to the exact browser instance through bootstrap promotion and dispatch', async () => {
     const controllerHome = mkdtempSync(join(tmpdir(), 'forge-computer-bootstrap-promotion-'));
     try {

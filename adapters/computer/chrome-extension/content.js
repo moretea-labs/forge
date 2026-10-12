@@ -208,8 +208,16 @@
     const control = reasoningControl();
     if (!control) return { verified: false, reason: 'COMPUTER_CHATGPT_REASONING_CONTROL_UNAVAILABLE' };
     if (reasoningLevel(reasoningControlLabel(control)) === level) return { verified: true, level };
-    control.click();
-    await sleep(80);
+    // Prepare can be retried without a Send. A previous preflight may leave
+    // this exact model picker expanded; clicking it again would close the
+    // menu and falsely report that the strength slider is unavailable.
+    if (control.getAttribute?.('aria-expanded') !== 'true') control.click();
+    // The menu is a React portal and need not mount within the first frame.
+    // Observe it for a bounded interval; never synthesize or infer controls.
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      await sleep(80);
+      if (Array.from(document.querySelectorAll('[role="slider"][aria-valuenow], [role="menuitemradio"], [role="option"], [role="radio"]')).some(visible)) break;
+    }
     const menuOptions = Array.from(document.querySelectorAll('[role="menuitemradio"], [role="option"], [role="radio"]'))
       .filter(visible)
       .map((node) => ({ node, level: reasoningLevel(reasoningControlLabel(node)), disabled: node.hasAttribute('disabled') || node.getAttribute('aria-disabled') === 'true' }));

@@ -363,7 +363,7 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
     return failure('COMPUTER_CHATGPT_EXTENSION_ENSURE_INVALID', { failoverSafe: true });
   }
 
-  async openBootstrap(projectUrl: string, bootstrapKey: string): Promise<ComputerChatgptTargetResult> {
+  async openBootstrap(projectUrl: string, bootstrapKey: string, recoverStalePin = true): Promise<ComputerChatgptTargetResult> {
     const identity: ComputerChatgptBootstrapIdentity = { namespace: 'chatgpt.bootstrap', bootstrapKey, projectUrl };
     const previous = this.authority.findSurfaceByStableIdentity(this.controllerHome, stableIdentity(identity));
     const binding = previous?.providerBinding;
@@ -394,10 +394,42 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
       const record = await this.bindAsync(identity, response.result.providerBinding, selected.instanceId);
       return { state: 'ready', target: this.target(identity, record, selected.instanceId), ...(response.result.observation ? { observation: response.result.observation } : {}) };
     }
-    if (response.result.kind === 'failed') return failure(response.result.code, {
-      retryable: response.result.retryable, failoverSafe: response.result.failoverSafe === true && !binding,
-      humanAction: response.result.humanAction,
-    });
+    if (response.result.kind === 'failed') {
+      // Only openBootstrap's pre-dispatch caller may rebuild a tab attachment.
+      // The SAME live Chrome provider has proved the Controller-pinned physical
+      // tab absent before creating a replacement. Preserve the durable target
+      // and lease/CAS-clear only that stale binding; never recover from an
+      // unknown tab-create result or by switching browser profiles/providers.
+      if (recoverStalePin && response.result.code === 'COMPUTER_CHATGPT_BOOTSTRAP_PINNED_TAB_MISSING'
+        && previous && binding?.providerId === PROVIDER_ID
+        && providerInstanceId(binding.providerSessionId) === selected.instanceId
+        && binding.windowId && binding.tabId) {
+        try {
+          await this.authority.withSurfaceLease(this.controllerHome, previous.targetId, async (lease) => {
+            const current = lease.current();
+            const attached = current.providerBinding;
+            if (current.stableIdentity.resource?.namespace !== identity.namespace
+              || current.stableIdentity.resource.key !== identity.bootstrapKey
+              || attached?.providerId !== binding.providerId
+              || attached.providerSessionId !== binding.providerSessionId
+              || attached.windowId !== binding.windowId || attached.tabId !== binding.tabId
+              || attached.browserProduct !== binding.browserProduct) {
+              throw new Error('COMPUTER_CHATGPT_BOOTSTRAP_PINNED_BINDING_CHANGED');
+            }
+            lease.clearBinding();
+          });
+        } catch {
+          return failure('COMPUTER_CHATGPT_BOOTSTRAP_PINNED_BINDING_CHANGED', { failoverSafe: false });
+        }
+        // Exactly one same-provider re-open. A claimed but unanswered tabCreate
+        // still reports outcome unknown and must never create another tab.
+        return await this.openBootstrap(projectUrl, bootstrapKey, false);
+      }
+      return failure(response.result.code, {
+        retryable: response.result.retryable, failoverSafe: response.result.failoverSafe === true && !binding,
+        humanAction: response.result.humanAction,
+      });
+    }
     return failure('COMPUTER_CHATGPT_EXTENSION_BOOTSTRAP_INVALID', { failoverSafe: false });
   }
 
