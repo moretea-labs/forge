@@ -837,7 +837,14 @@ export class WorkflowSupervisorStore {
     const pending = this.currentUnappliedEffect(taskId);
     if (pending) {
       const ledger = this.read((db) => ({ ...effectDispatchLedger(db, pending.effectId), proof: latestNotAppliedProofEventId(db, pending.effectId), preflightBlocked: this.preflightBlocked(db, pending.effectId) }));
-      if (ledger.preflightBlocked) return { state: 'spaced', effectId: pending.effectId, reason: 'pre_send_infrastructure_blocked' };
+      if (ledger.preflightBlocked) {
+        const failure = this.read((db) => statement(db,
+          "SELECT payload_json FROM events WHERE effect_id = ? AND kind = 'effect_preflight_rejected' ORDER BY event_id DESC LIMIT 1",
+          (s) => s.get(pending.effectId)) as { payload_json?: string } | undefined);
+        const reasonCode = boundedText(parsedObject(failure?.payload_json).reason)?.slice(0, 256);
+        return { state: 'spaced', effectId: pending.effectId, reason: 'pre_send_infrastructure_blocked',
+          ...(reasonCode ? { preflightReasonCode: reasonCode } : {}) };
+      }
       const ceiling = WORKFLOW_SUPERVISOR_MAX_DISPATCH_GENERATIONS + ledger.budgetRefunds;
       const retryAuthorized = ledger.generations === 0 || ledger.proof > ledger.lastEventId;
       // An exhausted retry ceiling is the operator-facing state: no amount of
