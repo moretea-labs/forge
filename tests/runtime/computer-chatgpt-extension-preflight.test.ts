@@ -221,7 +221,7 @@ test('real Chrome content script preserves all prompt spaces and newlines during
     ['alpha  beta line two', false],
     [prompt, true],
   ] as const) {
-    const composer = { value: rendered };
+    const composer = { value: rendered, querySelector: () => null };
     const sendButton = { disabled: false, getAttribute: () => null, click: () => { sends += 1; } };
     let sends = 0;
     let listener: ((message: Record<string, unknown>, sender: unknown, respond: (value: unknown) => void) => boolean) | undefined;

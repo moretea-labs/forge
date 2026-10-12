@@ -737,7 +737,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       if (!begin.started) mode = 'reconcile';
     }
     if (mode === 'reconcile') {
-      const exact = normalize(snapshot.latestUserText) === normalize(command.prompt);
+      const exact = normalize(snapshot.latestUserText) === normalize(command.prompt.replace(/^@forge\s+(?=<<<FORGE_WORKFLOW_EFFECT_V1:fx_[a-zA-Z0-9_-]+>>>)/, ''));
       const markerPresent = snapshotTargetMarkerPresent(snapshot, command.effectId);
       if (exact || markerPresent) {
         this.control.browserObserveEffect({ conversationId: command.conversationId, conversationUrl: command.conversationUrl, effectId: command.effectId,
@@ -775,7 +775,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     let exact = false; let markerPresent = false;
     for (let attempt = 1; attempt <= MAX_LOCAL_OBSERVATION_ATTEMPTS; attempt += 1) {
       snapshot = await target.observe({ includeUserHistory: true, includePageText: true });
-      exact = normalize(snapshot.latestUserText) === normalize(command.prompt); markerPresent = snapshotTargetMarkerPresent(snapshot, command.effectId);
+      exact = normalize(snapshot.latestUserText) === normalize(command.prompt.replace(/^@forge\s+(?=<<<FORGE_WORKFLOW_EFFECT_V1:fx_[a-zA-Z0-9_-]+>>>)/, '')); markerPresent = snapshotTargetMarkerPresent(snapshot, command.effectId);
       if (exact || markerPresent || attempt >= MAX_LOCAL_OBSERVATION_ATTEMPTS) break;
       await this.deps.sleep(localObservationDelayMs(attempt, 1_000, 4_000));
     }

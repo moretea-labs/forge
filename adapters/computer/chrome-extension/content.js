@@ -329,28 +329,20 @@
     } else if (isGenerating()) return { dispatched: false, reason: 'provider_busy' };
     const node = composer();
     if (!node) return { dispatched: false, reason: 'composer_missing' };
-    const supervisor = /^@forge\s+<<<FORGE_WORKFLOW_EFFECT_V1:fx_[a-zA-Z0-9_-]+>>>/.test(prompt);
+    // Project instructions select tools. No @forge UI mention is needed.
+    const supervisor = /^(?:@forge\s+)?<<<FORGE_WORKFLOW_EFFECT_V1:fx_[a-zA-Z0-9_-]+>>>/.test(prompt);
     if (supervisor && !expectedConversationId && !expectedProjectId) return { dispatched: false, reason: 'target_identity_unavailable' };
-    const payload = supervisor ? prompt.replace(/^@forge\s+/, '') : prompt;
+    // Strip only the exact legacy prefix on already-durable effects.
+    const payload = supervisor ? prompt.replace(/^@forge\s+(?=<<<FORGE_WORKFLOW_EFFECT_V1:fx_[a-zA-Z0-9_-]+>>>)/, '') : prompt;
     const expected = exactComposerText(payload);
-    const boundText = exactComposerText(`forge ${payload}`);
-    const hasForgeChip = () => {
-      const chips = Array.from(node.querySelectorAll('[plugin-mention-name], [app-mention-name]'));
-      return chips.length === 1
-        && chips[0]?.getAttribute('app-mention-name') === 'forge'
-        && chips[0]?.getAttribute('app-mention-path') === 'app://asdk_app_6ac09022b26081918f20ff868c773824';
-    };
-    const boundChip = () => hasForgeChip() && composerText() === boundText;
     const existing = composerText();
-    // Previous pre-send attempts may leave this exact effect's text in the
-    // Task-owned bootstrap tab. Never overwrite an unrelated user draft.
-    const ownedDrafts = supervisor ? [
-      expected, exactComposerText(`${payload}\n@`), exactComposerText(`${payload}\nforge`),
-    ] : [];
-    if (supervisor) {
-      if (existing && !boundChip() && !(hasForgeChip() && existing.trim() === 'forge')
-        && !ownedDrafts.includes(existing)) return { dispatched: false, reason: 'composer_not_empty' };
-    } else if (existing && existing !== expected) return { dispatched: false, reason: 'composer_not_empty' };
+    // A restored draft belongs to this effect only when it matches precisely.
+    // Never overwrite another task's draft or a human-authored message.
+    const ownedDrafts = supervisor
+      ? [expected, exactComposerText(payload + '\n@'), exactComposerText(payload + '\nforge'), exactComposerText('forge ' + payload)]
+      : [expected];
+    if (node.querySelector('[plugin-mention-name], [app-mention-name]')) return { dispatched: false, reason: 'composer_has_app_mention' };
+    if (existing && !ownedDrafts.includes(existing)) return { dispatched: false, reason: 'composer_not_empty' };
     let reasoningVerified;
     if (reasoning !== undefined) {
       const checked = await ensureReasoning(reasoning);
@@ -358,64 +350,10 @@
       reasoningVerified = checked.level;
     }
     if (!exactConversationIsCurrent()) return { dispatched: false, reason: 'target_identity_changed' };
-    if (supervisor) {
-      if (!boundChip()) {
-        if (!hasForgeChip()) {
-          if (existing) {
-            // Repair only a byte-for-byte match to our own unsent effect.
-            node.focus();
-            const selection = window.getSelection();
-            if (!selection) return { dispatched: false, reason: 'COMPUTER_CHATGPT_PLUGIN_SELECTION_UNAVAILABLE' };
-            const range = document.createRange(); range.selectNodeContents(node);
-            selection.removeAllRanges(); selection.addRange(range);
-            if (!document.execCommand('delete', false) || composerText()) return { dispatched: false, reason: 'composer_clear_unconfirmed' };
-            selection.removeAllRanges();
-          }
-          // Live ChatGPT opens App suggestions for a leading @, but not
-          // reliably for an @ appended after a long multiline payload.
-          writeComposer(node, '@');
-          await sleep(170);
-          if (composerText() !== '@') return { dispatched: false, reason: 'composer_write_unconfirmed' };
-          node.focus();
-          const selection = window.getSelection();
-          if (!selection) return { dispatched: false, reason: 'COMPUTER_CHATGPT_PLUGIN_SELECTION_UNAVAILABLE' };
-          const range = document.createRange(); range.selectNodeContents(node); range.collapse(false);
-          selection.removeAllRanges(); selection.addRange(range);
-          if (!document.execCommand('insertText', false, 'forge')) return { dispatched: false, reason: 'COMPUTER_CHATGPT_PLUGIN_SELECTION_UNAVAILABLE' };
-          let selected = [];
-          for (let attempt = 0; attempt < 6; attempt += 1) {
-            await sleep(130);
-            selected = Array.from(document.querySelectorAll('[data-mention-section-items] > button'))
-              .filter((entry) => entry.getClientRects().length > 0)
-              .filter((entry) => {
-                const label = core.normalizeText(entry.innerText ?? entry.textContent);
-                return label === 'forge' || label.startsWith('forge Current Forge ');
-              });
-            if (selected.length) break;
-          }
-          if (selected.length !== 1) return { dispatched: false, reason: 'COMPUTER_CHATGPT_FORGE_PLUGIN_UNAVAILABLE' };
-          if (!exactConversationIsCurrent()) return { dispatched: false, reason: 'target_identity_changed' };
-          selected[0].click();
-          await sleep(160);
-        }
-        if (!hasForgeChip() || composerText().trim() !== 'forge') return { dispatched: false, reason: 'COMPUTER_CHATGPT_FORGE_PLUGIN_CHIP_UNVERIFIED' };
-        // Append after the verified App chip. Rewriting the full editor would
-        // silently remove the chip and turn this into an unbound plain prompt.
-        node.focus();
-        const selection = window.getSelection();
-        if (!selection) return { dispatched: false, reason: 'COMPUTER_CHATGPT_PLUGIN_SELECTION_UNAVAILABLE' };
-        const range = document.createRange(); range.selectNodeContents(node); range.collapse(false);
-        selection.removeAllRanges(); selection.addRange(range);
-        if (!document.execCommand('insertText', false, payload)) return { dispatched: false, reason: 'composer_write_unconfirmed' };
-        await sleep(90);
-      }
-      if (!exactConversationIsCurrent()) return { dispatched: false, reason: 'target_identity_changed' };
-      if (!boundChip()) return { dispatched: false, reason: 'COMPUTER_CHATGPT_FORGE_PLUGIN_CHIP_UNVERIFIED' };
-    } else {
-      if (existing !== expected) writeComposer(node, payload);
-      await sleep(75);
-      if (composerText() !== expected) return { dispatched: false, reason: 'composer_write_unconfirmed' };
-    }
+    if (existing !== expected) writeComposer(node, payload);
+    await sleep(75);
+    if (!exactConversationIsCurrent()) return { dispatched: false, reason: 'target_identity_changed' };
+    if (composerText() !== expected) return { dispatched: false, reason: 'composer_write_unconfirmed' };
     const send = document.querySelector(SEND);
     if (!send) return { dispatched: false, reason: 'send_button_missing' };
     if (send.disabled || send.getAttribute('aria-disabled') === 'true') return { dispatched: false, reason: 'send_button_disabled' };

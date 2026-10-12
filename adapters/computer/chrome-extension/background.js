@@ -271,7 +271,7 @@ async function executeDispatch(command) {
     await sleep(attempt * 200);
     try {
       observation = await snapshot(target.tab.id, { includeUserHistory: false, includePageText: false });
-      if (normalize(observation.latestUserText) === normalize(command.prompt)) return { kind: 'dispatch', mutation: 'attempted', confirmed: true, ...(result.reasoningVerified ? { reasoningVerified: result.reasoningVerified } : {}), observation };
+      if (normalize(observation.latestUserText) === normalize(command.prompt.replace(/^@forge\s+(?=<<<FORGE_WORKFLOW_EFFECT_V1:fx_[a-zA-Z0-9_-]+>>>)/, ''))) return { kind: 'dispatch', mutation: 'attempted', confirmed: true, ...(result.reasoningVerified ? { reasoningVerified: result.reasoningVerified } : {}), observation };
     } catch { /* mutation already happened; only confirmation is missing */ }
   }
   return { kind: 'dispatch', mutation: 'attempted', confirmed: false, ...(result.reasoningVerified ? { reasoningVerified: result.reasoningVerified } : {}), ...(observation ? { observation } : {}) };

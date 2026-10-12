@@ -176,7 +176,7 @@ describe('Workflow Supervisor automation receipts', () => {
       final_statuses: ['continue', 'done', 'needs_user'],
     });
     expect(enrollmentPrompt).not.toContain('automation.receipt:');
-    expect(enrollmentPrompt).toStartWith('@forge\n');
+    expect(enrollmentPrompt).toStartWith('<<<FORGE_WORKFLOW_EFFECT_V1:');
     expect(enrollmentPrompt).not.toContain('CONTINUE => "C ');
     store.close();
   });

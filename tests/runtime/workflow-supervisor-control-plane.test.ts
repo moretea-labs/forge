@@ -461,7 +461,7 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     };
     const lowerLayerContext = 'controller_authority_id=opaque-previous-turn-token';
     const continuation = renderSupervisorPrompt(task, 'fx_minimal01', 'continuation', 'large checkpoint payload', undefined, lowerLayerContext, 'Relevant prior cognition.');
-    expect(continuation).toStartWith('@forge\n<<<FORGE_WORKFLOW_EFFECT_V1:fx_minimal01>>>\n');
+    expect(continuation).toStartWith('<<<FORGE_WORKFLOW_EFFECT_V1:fx_minimal01>>>\n');
     expect(parseSupervisorTurn(continuation)).toEqual({
       schema_version: 2,
       identity: {

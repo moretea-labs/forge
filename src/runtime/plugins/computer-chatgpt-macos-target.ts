@@ -268,9 +268,9 @@ export async function dispatchMacOsChatgptPrompt(
   // Apple Events has no verified reasoning selector. Never silently submit
   // a Supervisor effect under the unproven maximum-effort claim.
   if (options.reasoning) return { mutation: 'not_attempted', reasonCode: 'COMPUTER_CHATGPT_REASONING_UNSUPPORTED_BY_PROVIDER' };
-  const supervisor = /^@forge\s+<<<FORGE_WORKFLOW_EFFECT_V1:fx_[a-zA-Z0-9_-]+>>>/.test(prompt);
-  // The app mention is presentation metadata; never trim the immutable effect body.
-  const submittedPrompt = supervisor ? prompt.replace(/^@forge\s+/, '') : prompt;
+  const supervisor = /^(?:@forge\s+)?<<<FORGE_WORKFLOW_EFFECT_V1:fx_[a-zA-Z0-9_-]+>>>/.test(prompt);
+  // The Project supplies tool instructions; remove only a legacy text prefix.
+  const submittedPrompt = supervisor ? prompt.replace(/^@forge\s+(?=<<<FORGE_WORKFLOW_EFFECT_V1:fx_[a-zA-Z0-9_-]+>>>)/, '') : prompt;
   const resume = options.mode === 'resume';
   // The location check is evaluated inside the SAME browser JavaScript action
   // as the final Send click. A preflight observation alone cannot fence a
@@ -327,17 +327,13 @@ export async function dispatchMacOsChatgptPrompt(
         const value = (element) => String((element?.innerText ?? element?.textContent ?? '') || '');
         const exact = (input) => String(input ?? '').replaceAll(String.fromCharCode(13,10), String.fromCharCode(10)).replaceAll(String.fromCharCode(13), String.fromCharCode(10));
         const expected = ${JSON.stringify(submittedPrompt)}; const expectedNorm = exact(expected); const resume = ${JSON.stringify(resume)};
-        const draft = ${JSON.stringify(supervisor)} ? expected + String.fromCharCode(10) + '@' : expected;
-        const draftNorm = exact(draft);
+        const draft = expected;
+        const draftNorm = expectedNorm;
         const composer = ['div#prompt-textarea[contenteditable="true"]','#prompt-textarea[contenteditable="true"]','[data-testid="composer-text-input"][contenteditable="true"]','div[role="textbox"][contenteditable="true"]']
           .flatMap((selector) => Array.from(root.querySelectorAll(selector))).find(visible);
         if (!(composer instanceof HTMLElement) || !composer.isContentEditable) return { prepared: false, reason: 'composer_missing' };
+        if (composer.querySelector('[plugin-mention-name], [app-mention-name]')) return { prepared: false, reason: 'composer_has_app_mention' };
         const current = exact(value(composer));
-        const chips = Array.from(composer.querySelectorAll('[plugin-mention-name], [app-mention-name]'));
-        if (${JSON.stringify(supervisor)} && chips.length === 1
-          && chips[0].getAttribute('app-mention-name') === 'forge'
-          && chips[0].getAttribute('app-mention-path') === 'app://asdk_app_6ac09022b26081918f20ff868c773824'
-          && (current === exact(expected + ' forge') || current === exact(expected + String.fromCharCode(10) + 'forge'))) return { prepared: true };
         // A *previous attempt of this exact effect* may have inserted this same
         // prompt and then failed before clicking Send. That draft is this turn's
         // own text, not a foreign user draft: reusing it is the same logical
@@ -367,72 +363,7 @@ export async function dispatchMacOsChatgptPrompt(
     await sleep(delayMs(attempt, 2_000, 4_000));
   }
   if (!prepared?.prepared) return { mutation: 'not_attempted', reasonCode: prepared?.reason ?? 'composer_prepare_failed' };
-  // A literal '@forge' is not an app invocation. Before Send, bind the exact
-  // main Forge chip on the existing tab and verify that no app was substituted.
-  if (supervisor) {
-    try {
-      const initial = await page.evaluate<{ bound: boolean; opened: boolean; reason?: string }>(`(() => {
-        const expected = ${JSON.stringify(submittedPrompt)};
-        const exact = (input) => String(input ?? '').replaceAll(String.fromCharCode(13,10), String.fromCharCode(10)).replaceAll(String.fromCharCode(13), String.fromCharCode(10));
-        const composer = document.querySelector('[data-composer-markdown][role="textbox"][contenteditable="true"], #prompt-textarea[contenteditable="true"], div[role="textbox"][contenteditable="true"]');
-        if (!(composer instanceof HTMLElement)) return { bound: false, opened: false, reason: 'composer_missing' };
-        const chips = Array.from(composer.querySelectorAll('[plugin-mention-name], [app-mention-name]'));
-        if (chips.length === 1
-          && chips[0].getAttribute('app-mention-name') === 'forge'
-          && chips[0].getAttribute('app-mention-path') === 'app://asdk_app_6ac09022b26081918f20ff868c773824'
-          && (exact(composer.innerText) === exact(expected + ' forge') || exact(composer.innerText) === exact(expected + String.fromCharCode(10) + 'forge'))) return { bound: true, opened: false };
-        const triggerDraft = exact(expected + String.fromCharCode(10) + '@');
-        const current = exact(composer.innerText);
-        if (chips.length || (current !== exact(expected) && current !== triggerDraft)) return { bound: false, opened: false, reason: 'composer_binding_mismatch' };
-        if (current === exact(expected)) {
-          composer.focus({ preventScroll: true });
-          const selection = window.getSelection();
-          if (!selection) return { bound: false, opened: false, reason: 'forge_plugin_selection_unavailable' };
-          const range = document.createRange(); range.selectNodeContents(composer); range.deleteContents(); range.collapse(true);
-          selection.removeAllRanges(); selection.addRange(range);
-          if (!document.execCommand('insertText', false, expected + String.fromCharCode(10) + '@')) return { bound: false, opened: false, reason: 'forge_plugin_selection_unavailable' };
-          if (exact(composer.innerText) !== triggerDraft) return { bound: false, opened: false, reason: 'composer_binding_mismatch' };
-        }
-        composer.focus({ preventScroll: true });
-        const selection = window.getSelection();
-        if (!selection) return { bound: false, opened: false, reason: 'forge_plugin_selection_unavailable' };
-        const caret = document.createRange(); caret.selectNodeContents(composer); caret.collapse(false);
-        selection.removeAllRanges(); selection.addRange(caret);
-        return { bound: false, opened: true };
-      })()`);
-      if (!initial.bound) {
-        if (!initial.opened) return { mutation: 'not_attempted', reasonCode: initial.reason ?? 'forge_plugin_selection_unavailable' };
-        await sleep(150);
-        const typed = await page.evaluate<boolean>(`(() => document.execCommand('insertText', false, 'forge'))()`);
-        if (!typed) return { mutation: 'not_attempted', reasonCode: 'COMPUTER_CHATGPT_FORGE_PLUGIN_SELECTION_UNAVAILABLE' };
-        await sleep(150);
-        const picked = await page.evaluate<boolean>(`(() => {
-          const norm = (x) => String(x || '').replace(/\\s+/g, ' ').trim();
-          const options = Array.from(document.querySelectorAll('[data-mention-section-items] > button'));
-          const matches = options.filter((node) => { const label = norm(node.innerText ?? node.textContent); return label === 'forge' || label.startsWith('forge Current Forge 1.8.1'); });
-          if (matches.length !== 1) return false;
-          matches[0].click(); return true;
-        })()`);
-        if (!picked) return { mutation: 'not_attempted', reasonCode: 'COMPUTER_CHATGPT_FORGE_PLUGIN_UNAVAILABLE' };
-        await sleep(150);
-        const verified = await page.evaluate<boolean>(`(() => {
-          const expected = ${JSON.stringify(submittedPrompt)};
-          const exact = (input) => String(input ?? '').replaceAll(String.fromCharCode(13,10), String.fromCharCode(10)).replaceAll(String.fromCharCode(13), String.fromCharCode(10));
-          const composer = document.querySelector('[data-composer-markdown][role="textbox"][contenteditable="true"], #prompt-textarea[contenteditable="true"], div[role="textbox"][contenteditable="true"]');
-          if (!(composer instanceof HTMLElement)) return false;
-          const chips = Array.from(composer.querySelectorAll('[plugin-mention-name], [app-mention-name]'));
-          return chips.length === 1 && chips[0].getAttribute('app-mention-name') === 'forge'
-            && chips[0].getAttribute('app-mention-path') === 'app://asdk_app_6ac09022b26081918f20ff868c773824'
-            && (exact(composer.innerText) === exact(expected + ' forge') || exact(composer.innerText) === exact(expected + String.fromCharCode(10) + 'forge'));
-        })()`);
-        if (!verified) return { mutation: 'not_attempted', reasonCode: 'COMPUTER_CHATGPT_FORGE_PLUGIN_CHIP_UNVERIFIED' };
-      }
-    } catch {
-      // No Send was clicked: an unavailable UI/Apple Events transport is a
-      // mechanical negative proof, not an outcome-unknown provider mutation.
-      return { mutation: 'not_attempted', reasonCode: 'COMPUTER_CHATGPT_FORGE_PLUGIN_BINDING_UNAVAILABLE' };
-    }
-  }
+  // Project instructions, not an App chip, select the Forge capability.
   if (options.prepareOnly) {
     const ready = await page.evaluate<boolean>(`(() => {
       const root = Array.from(document.querySelectorAll('main')).filter(element => Boolean(element.getClientRects?.().length)).pop() || document;
@@ -452,10 +383,8 @@ export async function dispatchMacOsChatgptPrompt(
       const exact = (input) => String(input ?? '').replaceAll(String.fromCharCode(13,10), String.fromCharCode(10)).replaceAll(String.fromCharCode(13), String.fromCharCode(10)); const expected = ${JSON.stringify(submittedPrompt)}; const supervisor = ${JSON.stringify(supervisor)};
       const composer = Array.from(root.querySelectorAll('div#prompt-textarea[contenteditable="true"], #prompt-textarea[contenteditable="true"], [data-testid="composer-text-input"][contenteditable="true"], div[role="textbox"][contenteditable="true"]')).find(visible);
       if (!(composer instanceof HTMLElement)) return { dispatched: false, reason: 'composer_submit_mismatch' };
-      if (supervisor) {
-        const chips = Array.from(composer.querySelectorAll('[plugin-mention-name], [app-mention-name]'));
-        if (chips.length !== 1 || chips[0].getAttribute('app-mention-name') !== 'forge' || chips[0].getAttribute('app-mention-path') !== 'app://asdk_app_6ac09022b26081918f20ff868c773824' || (exact(value(composer)) !== exact(expected + ' forge') && exact(value(composer)) !== exact(expected + String.fromCharCode(10) + 'forge'))) return { dispatched: false, reason: 'COMPUTER_CHATGPT_FORGE_PLUGIN_CHIP_UNVERIFIED' };
-      } else if (exact(value(composer)) !== exact(expected)) return { dispatched: false, reason: 'composer_submit_mismatch' };
+       if (composer.querySelector('[plugin-mention-name], [app-mention-name]')
+         || exact(value(composer)) !== exact(expected)) return { dispatched: false, reason: 'composer_submit_mismatch' };
       const sendButton = Array.from(root.querySelectorAll('[data-testid="send-button"], button[aria-label="Send"], button[aria-label="发送"], button[data-testid*="send"], button[type="submit"]')).find(visible);
       if (!(sendButton instanceof HTMLElement) || sendButton.hasAttribute('disabled') || sendButton.getAttribute('aria-disabled') === 'true') return { dispatched: false, reason: 'send_button_missing' };
       sendButton.click(); return { dispatched: true };

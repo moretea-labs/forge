@@ -195,7 +195,6 @@ export function renderSupervisorPrompt(
     },
   };
   return [
-    '@forge',
     renderEffectMarker(effectId),
     SUPERVISOR_TURN_BLOCK_START,
     JSON.stringify(envelope),

@@ -15,6 +15,7 @@ class FakeTextArea {
   focus() {}
   dispatchEvent() { return true; }
   getAttribute() { return null; }
+  querySelector() { return this.chipNames.length ? {} : null; }
   querySelectorAll() { return this.chipNames.map((name) => ({ getAttribute(attribute: string) {
     if (attribute === 'app-mention-name') return name;
     if (attribute === 'app-mention-path' && name === 'forge') return 'app://asdk_app_6ac09022b26081918f20ff868c773824';
@@ -101,6 +102,7 @@ function fixture(options: {
     body: { innerText: '' },
     querySelectorAll(selector: string) {
       if (selector === 'main') return [main];
+      if (selector.includes('aria-haspopup') || selector.includes('data-testid*="model"') || selector.includes('data-testid*="reasoning"')) return control ? [control] : [];
       if (selector.includes('[data-mention-section-items]')) return pickerOpen && options.forgeAppLabel ? [forgeOption] : [];
       if (selector.includes('[role="menuitemradio"]')) return state.menuOpen && option ? [option] : [];
       if (selector.includes('[role="slider"]')) return state.menuOpen && slider ? [slider] : [];
@@ -161,49 +163,52 @@ function fixture(options: {
   return { dispatch, prepare, capabilities, state, textarea, location };
 }
 
-test('Supervisor effect cannot send as literal @forge when the real app picker is unavailable', async () => {
+test('Supervisor effect requires exact target identity before plain-text Send', async () => {
   const f = fixture({ controlPresent: false });
-  const prompt = '@forge\n<<<FORGE_WORKFLOW_EFFECT_V1:fx_test_browser_123456789>>>\nFORGE_WORKFLOW_TURN_V2_BEGIN';
+  const prompt = '<<<FORGE_WORKFLOW_EFFECT_V1:fx_test_browser_123456789>>>\nFORGE_WORKFLOW_TURN_V2_BEGIN';
   expect(await f.dispatch(undefined, undefined, prompt)).toMatchObject({
-    dispatched: false, reason: 'COMPUTER_CHATGPT_FORGE_PLUGIN_UNAVAILABLE',
+    dispatched: false, reason: 'target_identity_unavailable',
   });
   expect(f.state.sendClicks).toBe(0);
-  expect(f.textarea.value).not.toContain('@forge');
+  expect(f.textarea.value).toBe('');
 });
 
-test('Supervisor sends exactly once only after the real main Forge app chip was selected and verified', async () => {
+test('Supervisor sends a complete plain-text effect once without selecting any App', async () => {
   const f = fixture({ controlPresent: false, forgeAppLabel: 'forge' });
-  const prompt = '@forge\n<<<FORGE_WORKFLOW_EFFECT_V1:fx_test_browser_123456789>>>\nFORGE_WORKFLOW_TURN_V2_BEGIN';
-  expect(await f.dispatch(undefined, undefined, prompt)).toMatchObject({ dispatched: true });
+  const prompt = '<<<FORGE_WORKFLOW_EFFECT_V1:fx_test_browser_123456789>>>\nFORGE_WORKFLOW_TURN_V2_BEGIN';
+  expect(await f.dispatch(undefined, '12345678-1234-1234-1234-123456789abc', prompt)).toMatchObject({ dispatched: true });
   expect(f.state.sendClicks).toBe(1);
-  expect(f.textarea.chipNames).toEqual(['forge']);
-  expect(f.textarea.value).toBe('<<<FORGE_WORKFLOW_EFFECT_V1:fx_test_browser_123456789>>>\nFORGE_WORKFLOW_TURN_V2_BEGIN forge');
+  expect(f.textarea.chipNames).toEqual([]);
+  expect(f.textarea.value).toBe(prompt);
 });
 
-test('Chrome Extension prepares and attests Forge app without sending before Supervisor authority', async () => {
-  const f = fixture({ controlPresent: false, forgeAppLabel: 'forge' });
-  const prompt = '@forge\n<<<FORGE_WORKFLOW_EFFECT_V1:fx_test_pre_send_123456789>>>\nFORGE_WORKFLOW_TURN_V2_BEGIN';
-  expect(await f.prepare(undefined, undefined, prompt)).toMatchObject({ prepared: true });
-  expect(f.state.sendClicks).toBe(0);
-  expect(f.textarea.chipNames).toEqual(['forge']);
-  expect(await f.dispatch(undefined, undefined, prompt)).toMatchObject({ dispatched: true });
-  expect(f.state.sendClicks).toBe(1);
-});
-
-test('Chrome Extension rejection before plugin binding never clicks Send', async () => {
+test('Chrome Extension prepares the exact plain-text effect without sending before Supervisor authority', async () => {
   const f = fixture({ controlPresent: false });
-  const prompt = '@forge\n<<<FORGE_WORKFLOW_EFFECT_V1:fx_test_pre_send_123456789>>>\nFORGE_WORKFLOW_TURN_V2_BEGIN';
-  expect(await f.prepare(undefined, undefined, prompt)).toMatchObject({ prepared: false, reason: 'COMPUTER_CHATGPT_FORGE_PLUGIN_UNAVAILABLE' });
+  const prompt = '<<<FORGE_WORKFLOW_EFFECT_V1:fx_test_pre_send_123456789>>>\nFORGE_WORKFLOW_TURN_V2_BEGIN';
+  const conversationId = '12345678-1234-1234-1234-123456789abc';
+  expect(await f.prepare(undefined, conversationId, prompt)).toMatchObject({ prepared: true });
+  expect(f.state.sendClicks).toBe(0);
+  expect(f.textarea.chipNames).toEqual([]);
+  expect(await f.dispatch(undefined, conversationId, prompt)).toMatchObject({ dispatched: true });
+  expect(f.state.sendClicks).toBe(1);
+});
+
+test('Chrome Extension rejects an existing App mention before any Send', async () => {
+  const f = fixture({ controlPresent: false });
+  f.textarea.chipNames = ['forge'];
+  const prompt = '<<<FORGE_WORKFLOW_EFFECT_V1:fx_test_pre_send_123456789>>>\nFORGE_WORKFLOW_TURN_V2_BEGIN';
+  expect(await f.prepare(undefined, '12345678-1234-1234-1234-123456789abc', prompt))
+    .toMatchObject({ prepared: false, reason: 'composer_has_app_mention' });
   expect(f.state.sendClicks).toBe(0);
 });
 
-test('Supervisor refuses Forge Recovery instead of selecting a similarly named app', async () => {
+test('similarly named Recovery suggestion is not selected during plain-text Supervisor delivery', async () => {
   const f = fixture({ controlPresent: false, forgeAppLabel: 'Forge Recovery' });
-  const prompt = '@forge\n<<<FORGE_WORKFLOW_EFFECT_V1:fx_test_browser_123456789>>>\nFORGE_WORKFLOW_TURN_V2_BEGIN';
-  expect(await f.dispatch(undefined, undefined, prompt)).toMatchObject({
-    dispatched: false, reason: 'COMPUTER_CHATGPT_FORGE_PLUGIN_UNAVAILABLE',
-  });
-  expect(f.state.sendClicks).toBe(0);
+  const prompt = '<<<FORGE_WORKFLOW_EFFECT_V1:fx_test_browser_123456789>>>\nFORGE_WORKFLOW_TURN_V2_BEGIN';
+  expect(await f.dispatch(undefined, '12345678-1234-1234-1234-123456789abc', prompt))
+    .toMatchObject({ dispatched: true });
+  expect(f.textarea.chipNames).toEqual([]);
+  expect(f.state.sendClicks).toBe(1);
 });
 
 test('content script advertises exact-tab reasoning preflight without mutating the page', async () => {
@@ -258,8 +263,9 @@ test('slider needs an observed state transition rather than an untrusted write',
   expect(await refused.dispatch('xhigh')).toMatchObject({ dispatched: false, reason: 'COMPUTER_CHATGPT_REASONING_NOT_VERIFIED' });
   expect(refused.textarea.value).toBe('');
   expect(refused.state.sendClicks).toBe(0);
-  const highOnly = fixture({ sliderValue: 2, sliderMax: 3 });
-  expect(await highOnly.dispatch('xhigh')).toMatchObject({ dispatched: true, reasoningVerified: 'high' });
+  const unsupportedSlider = fixture({ sliderValue: 2, sliderMax: 3 });
+  expect(await unsupportedSlider.dispatch('xhigh')).toMatchObject({ dispatched: false, reason: 'COMPUTER_CHATGPT_REASONING_STATE_UNAVAILABLE' });
+  expect(unsupportedSlider.state.sendClicks).toBe(0);
 });
 
 test('when Extra High is absent the menu verifies High as the highest available level', async () => {
