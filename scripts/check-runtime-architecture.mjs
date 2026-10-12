@@ -1268,6 +1268,8 @@ requireText('adapters/computer/chrome-extension/content.js', 'ForgeComputerChatg
 requireText('adapters/computer/chrome-extension/content.js', "bootstrapTargetGuard: 'project-checked-before-send-v1'");
 requireText('adapters/computer/chrome-extension/content.js', 'exactComposerText(payload)');
 requireText('adapters/computer/chrome-extension/content.js', "return text.trim() ? text : '';");
+requireText('adapters/computer/chrome-extension/content.js', "blocks.every((block) => block.tagName === 'P')");
+requireText('adapters/computer/chrome-extension/content.js', "blocks.map((block) => {");
 requireText('adapters/computer/chrome-extension/content.js', '选择 chatgpt 模型');
 requireText('adapters/computer/chrome-extension/content.js', 'keyboardControl.dispatchEvent(new KeyboardEvent');
 requireText('adapters/computer/chrome-extension/content.js', "control.getAttribute?.('aria-expanded') !== 'true'");

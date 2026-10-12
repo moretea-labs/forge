@@ -398,9 +398,16 @@ test('real GPT-6 Chinese picker verifies the strongest available three-step reas
   };
   const empty = Object.assign([], { item: () => undefined });
   let composerDraft = '';
+  let editorParagraphs: string[] | undefined;
   const document = {
     documentElement: {}, body: { innerText: '' }, title: 'Forge project',
-    querySelector: (selector: string) => selector.includes('#prompt-textarea') ? { value: composerDraft } : null,
+    querySelector: (selector: string) => selector.includes('#prompt-textarea')
+      ? editorParagraphs ? {
+        isContentEditable: true,
+        innerText: editorParagraphs.join('\n\n'),
+        children: editorParagraphs.map((text) => ({ tagName: 'P', innerText: text, textContent: text })),
+      } : { value: composerDraft }
+      : null,
     querySelectorAll: (selector: string) => selector === 'main' ? [{ getClientRects: visible, querySelectorAll: () => empty }]
       : selector.includes('[aria-haspopup="menu"]') ? [headerMode, modelButton]
         : selector.includes('[role="slider"][aria-valuenow]') && menuOpen ? [slider]
@@ -446,4 +453,13 @@ test('real GPT-6 Chinese picker verifies the strongest available three-step reas
   // Once any payload exists, preserve its whitespace byte-for-byte.
   composerDraft = '  first\n\nsecond  ';
   expect(snapshot()).toMatchObject({ composerText: composerDraft });
+  // Real Chrome ProseMirror uses direct P blocks. HTMLElement.innerText
+  // inserts TWO newlines between blocks, although the original effect has
+  // exactly ONE; content script must reconstruct the original line breaks.
+  editorParagraphs = ['<<<EFFECT>>>', 'line two', 'line three', '@'];
+  expect(snapshot()).toMatchObject({ composerText: '<<<EFFECT>>>\nline two\nline three\n@' });
+  editorParagraphs = ['  leading', '', 'trailing  ', '@'];
+  expect(snapshot()).toMatchObject({ composerText: '  leading\n\ntrailing  \n@' });
+  editorParagraphs = [''];
+  expect(snapshot()).toMatchObject({ composerText: '' });
 });

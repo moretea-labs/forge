@@ -124,10 +124,23 @@
   // Editor text is a provider payload, not a UI label: preserve its whitespace.
   const exactComposerText = (value) => String(value ?? '').replace(/\r\n?/g, '\n');
   const composerText = () => {
-    const text = exactComposerText(composer()?.value ?? composer()?.innerText ?? composer()?.textContent);
-    // An empty hydrated ProseMirror paragraph may expose only a newline.
-    // Treat a whitespace-only editor as empty without normalizing or altering
-    // whitespace in a real provider prompt or already populated draft.
+    const editor = composer();
+    const blocks = editor?.isContentEditable ? Array.from(editor.children ?? []) : [];
+    // ChatGPT's ProseMirror writes one P block per entered newline but
+    // HTMLElement.innerText synthesizes TWO newlines between those blocks.
+    // Reconstruct the actual editor payload from its direct paragraphs rather
+    // than comparing synthetic layout whitespace to an immutable effect.
+    const observed = blocks.length > 0 && blocks.every((block) => block.tagName === 'P')
+      ? blocks.map((block) => {
+        const value = exactComposerText(block.innerText ?? block.textContent);
+        // An empty final <p><br></p> may expose one visual newline.
+        return value === '\n' && !String(block.textContent ?? '').trim() ? '' : value;
+      }).join('\n')
+      : editor?.value ?? editor?.innerText ?? editor?.textContent;
+    const text = exactComposerText(observed);
+    // Only whitespace-only *empty* editors collapse; all nonblank text,
+    // including leading/trailing spaces and intentional blank lines, remains
+    // byte-for-byte subject only to CRLF normalization.
     return text.trim() ? text : '';
   };
   const pageSnapshot = (options = {}) => {
