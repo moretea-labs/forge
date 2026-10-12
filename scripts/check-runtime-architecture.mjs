@@ -1258,6 +1258,10 @@ forbid('supervisor/server.ts', /from ['"]\.\/store['"]|supervisor\.sqlite|BEGIN 
 requireText('adapters/computer/chrome-extension/manifest.json', 'nativeMessaging');
 requireText('adapters/computer/chrome-extension/background.js', 'computer_extension_claim');
 requireText('adapters/computer/chrome-extension/background.js', 'computer_extension_complete');
+requireText('adapters/computer/chrome-extension/content.js', 'reasoningControlReady: Boolean(reasoningControl())');
+requireText('adapters/computer/chrome-extension/background.js', 'observation.reasoningControlReady === true');
+requireText('adapters/computer/chrome-extension/background.js', "command.identity.namespace === 'chatgpt.bootstrap'");
+forbid('adapters/computer/chrome-extension/background.js', /if \(typeof observation\?\.url === 'string' && observation\.url\) return observation/, 'New bootstrap URL does not attest composer/model hydration before pre-send preparation');
 requireText('adapters/computer/chrome-extension/background.js', 'chrome.runtime.connectNative');
 forbid('adapters/computer/chrome-extension/background.js', /browser_begin_effect|browser_observe_effect|browser_poll|browser_tasks|browser_observe_assistant|task_register|reserve_enrollment/, 'Computer Chrome provider must not consume or mutate Workflow Supervisor effect authority; it executes only typed Computer target commands');
 requireText('adapters/computer/chrome-extension/content.js', 'ForgeComputerChatgptCore');

@@ -92,14 +92,21 @@ function binding(tab, instanceId) {
 async function snapshot(tabId, options = {}) {
   return await tabMessage(tabId, { type: 'forge-computer-chatgpt-snapshot', options });
 }
-async function waitForContent(tabId) {
+async function waitForContent(tabId, requireBootstrapUi = false) {
   let lastError;
-  for (let attempt = 0; attempt < 40; attempt += 1) {
+  // Bootstrap is a new provider page: seeing its URL proves location, not
+  // that the React composer and reasoning picker are hydrated. Bound this
+  // pre-send wait below the broker's 12-second command timeout. A missing
+  // current content-script readiness receipt never authorizes Send.
+  const attempts = requireBootstrapUi ? 20 : 40;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
     try {
       const tab = await tabGet(tabId);
       if (tab?.discarded) await tabReload(tabId);
       const observation = await snapshot(tabId);
-      if (typeof observation?.url === 'string' && observation.url) return observation;
+      if (typeof observation?.url === 'string' && observation.url
+        && (!requireBootstrapUi || (typeof observation.composerText === 'string'
+          && observation.reasoningControlReady === true))) return observation;
     } catch (error) { lastError = error; }
     await sleep(250);
   }
@@ -155,7 +162,7 @@ async function executeEnsure(command, instanceId) {
   let target;
   try {
     target = await resolveTarget(command.identity, true, command.providerBinding);
-    const observation = await waitForContent(target.tab.id);
+    const observation = await waitForContent(target.tab.id, command.identity.namespace === 'chatgpt.bootstrap');
     const refreshed = await tabGet(target.tab.id);
     return { kind: 'ensured', providerBinding: binding(refreshed, instanceId), observation };
   } catch (error) {

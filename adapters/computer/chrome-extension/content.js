@@ -138,6 +138,10 @@
         assistantMessages: assistantNodes.map(messageText).filter(Boolean),
       } : {}),
       ...(composer() ? { composerText: composerText() } : {}),
+      // Read-only hydration attestation for a NEW Project bootstrap tab.
+      // URL/DOM shell visibility alone cannot prove that the React model
+      // picker has mounted or that the provider editor is send-ready.
+      reasoningControlReady: Boolean(reasoningControl()),
       providerActivityText: providerActivityText(),
       providerFailureText: providerFailureText(),
       ...(options.includePageText === true ? { pageText: bodyText.slice(-500000) } : {}),

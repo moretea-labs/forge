@@ -22,6 +22,8 @@ export interface ComputerChatgptConversationObservation {
   userMessages?: string[];
   assistantMessages?: string[];
   composerText?: string;
+  /** Read-only provider UI hydration receipt; never a Send/effect authority. */
+  reasoningControlReady?: boolean;
   providerActivityText: string;
   providerFailureText: string;
   pageText?: string;

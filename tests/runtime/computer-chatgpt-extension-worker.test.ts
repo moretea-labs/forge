@@ -2,6 +2,88 @@ import { expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 
+
+test('new bootstrap tab cannot pass the worker readiness gate from URL-only or editor-only hydration', async () => {
+  const src = readFileSync(new URL('../../adapters/computer/chrome-extension/background.js', import.meta.url), 'utf8');
+  const worker = src.slice(0, src.indexOf('chrome.runtime.onMessage.addListener('))
+    .replace("importScripts('core.js');", '')
+    + '\nglobalThis.__testEnsureHydrated = executeEnsure;';
+  const projectUrl = 'https://chatgpt.com/g/g-p-abc/project';
+  const tab = { id: 507, windowId: 8, url: projectUrl };
+  const snapshots = [
+    { url: projectUrl },
+    { url: projectUrl, composerText: '', reasoningControlReady: false },
+    { url: projectUrl, composerText: '', reasoningControlReady: true },
+  ];
+  let snapshotCount = 0;
+  let created = 0;
+  const sandbox = {
+    ForgeComputerChatgptCore: { projectId: () => 'g-p-abc', parseConversation: () => null },
+    navigator: { userAgent: 'Chrome' },
+    crypto: { randomUUID: () => 'model-ready-test' },
+    chrome: {
+      runtime: { lastError: null },
+      tabs: {
+        query: async () => [],
+        create: (_options: unknown, callback: (createdTab: typeof tab) => void) => {
+          created += 1; callback(tab);
+        },
+        get: (_id: number, callback: (liveTab: typeof tab) => void) => callback(tab),
+        sendMessage: (_id: number, message: { type: string }, callback: (value: unknown) => void) => {
+          if (message.type !== 'forge-computer-chatgpt-snapshot') {
+            throw new Error('Readiness only probes page snapshots; no Send or Prepare allowed');
+          }
+          callback(snapshots[Math.min(snapshotCount++, snapshots.length - 1)]);
+        },
+      },
+    },
+    URL, Date, Map, Promise, setTimeout: (callback: () => void) => { queueMicrotask(callback); return 1; },
+    clearTimeout() {},
+  };
+  runInNewContext(worker, sandbox);
+  const run = (sandbox as typeof sandbox & {
+    __testEnsureHydrated: (command: unknown, instance: string) => Promise<Record<string, unknown>>;
+  }).__testEnsureHydrated;
+  const result = await run({ kind: 'ensure',
+    identity: { namespace: 'chatgpt.bootstrap', bootstrapKey: 'supervisor:forge', projectUrl } }, 'real-chrome');
+  expect(result).toMatchObject({ kind: 'ensured', providerBinding: { tabId: '507', windowId: '8' } });
+  expect(created).toBe(1);
+  expect(snapshotCount).toBe(3);
+});
+
+test('unhydrated bootstrap remains bound to its one created tab without creating or sending again', async () => {
+  const src = readFileSync(new URL('../../adapters/computer/chrome-extension/background.js', import.meta.url), 'utf8');
+  const worker = src.slice(0, src.indexOf('chrome.runtime.onMessage.addListener('))
+    .replace("importScripts('core.js');", '')
+    + '\nglobalThis.__testEnsureHydrated = executeEnsure;';
+  const url = 'https://chatgpt.com/g/g-p-abc/project';
+  const tab = { id: 508, windowId: 8, url };
+  let created = 0;
+  let snapshots = 0;
+  const sandbox = {
+    ForgeComputerChatgptCore: { projectId: () => 'g-p-abc', parseConversation: () => null },
+    navigator: { userAgent: 'Chrome' }, crypto: { randomUUID: () => 'unready-test' },
+    chrome: { runtime: { lastError: null }, tabs: {
+      query: async () => [],
+      create: (_options: unknown, callback: (t: typeof tab) => void) => { created++; callback(tab); },
+      get: (_id: number, callback: (t: typeof tab) => void) => callback(tab),
+      sendMessage: (_id: number, message: { type: string }, callback: (v: unknown) => void) => {
+        if (message.type !== 'forge-computer-chatgpt-snapshot') throw new Error('Only snapshot allowed');
+        snapshots++;callback({ url, composerText: '', reasoningControlReady: false });
+      },
+    } },
+    URL, Date, Map, Promise, setTimeout: (fn: () => void) => { queueMicrotask(fn); return 1; }, clearTimeout() {},
+  };
+  runInNewContext(worker, sandbox);
+  const result = await (sandbox as typeof sandbox & {
+    __testEnsureHydrated: (command: unknown, instance: string) => Promise<Record<string, unknown>>;
+  }).__testEnsureHydrated({ kind: 'ensure',
+    identity: { namespace: 'chatgpt.bootstrap', bootstrapKey: 'supervisor:forge', projectUrl: url } }, 'real-chrome');
+  expect(result).toMatchObject({ kind: 'failed', code: 'COMPUTER_CHATGPT_TAB_NOT_READY', failoverSafe: false });
+  expect(created).toBe(1);
+  expect(snapshots).toBeGreaterThanOrEqual(8);
+});
+
 test('Chrome extension worker marks ambiguous bootstrap tabCreate outcomes as unsafe to fail over', async () => {
   const worker = readFileSync(new URL('../../adapters/computer/chrome-extension/background.js', import.meta.url), 'utf8');
   // Evaluate the genuine worker implementation up to its startup listeners,

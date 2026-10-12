@@ -354,12 +354,13 @@ test('real GPT-6 Chinese picker verifies the strongest available three-step reas
   const content = readFileSync(new URL('../../adapters/computer/chrome-extension/content.js', import.meta.url), 'utf8');
   const instrumented = content.replace(
     '  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {',
-    '  globalThis.__testEnsureReasoning = ensureReasoning;\n  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {',
+    '  globalThis.__testEnsureReasoning = ensureReasoning; globalThis.__testPageSnapshot = pageSnapshot;\n  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {',
   );
   let menuOpen = false;
   let value = 1;
   let focused = false;
   let keypresses = 0;
+  let pickerVisible = true;
   const visible = () => [1];
   const status = { innerText: '中，第 2 项，共 3 项。' };
   const headerMode = {
@@ -367,7 +368,7 @@ test('real GPT-6 Chinese picker verifies the strongest available three-step reas
     getAttribute: (key: string) => key === 'aria-label' ? '切换模式，当前模式：ChatGPT' : null,
   };
   const modelButton = {
-    getClientRects: visible, innerText: '中',
+    getClientRects: () => pickerVisible ? [1] : [], innerText: '中',
     getAttribute: (key: string) => key === 'aria-label' ? '选择 ChatGPT 模型' : key === 'aria-expanded' ? String(menuOpen) : null,
     click() { menuOpen = !menuOpen; },
   };
@@ -395,9 +396,11 @@ test('real GPT-6 Chinese picker verifies the strongest available three-step reas
       : s === '[aria-disabled="true"]' ? null : null,
     dispatchEvent() { throw new Error('aria-hidden slider must not receive keyboard input'); },
   };
+  const empty = Object.assign([], { item: () => undefined });
   const document = {
-    documentElement: {},
-    querySelectorAll: (selector: string) => selector === 'main' ? [{ getClientRects: visible, querySelectorAll: () => [] }]
+    documentElement: {}, body: { innerText: '' }, title: 'Forge project',
+    querySelector: (selector: string) => selector.includes('#prompt-textarea') ? { value: '' } : null,
+    querySelectorAll: (selector: string) => selector === 'main' ? [{ getClientRects: visible, querySelectorAll: () => empty }]
       : selector.includes('[aria-haspopup="menu"]') ? [headerMode, modelButton]
         : selector.includes('[role="slider"][aria-valuenow]') && menuOpen ? [slider]
           : selector.includes('menuitemradio') ? [] : [],
@@ -427,4 +430,10 @@ test('real GPT-6 Chinese picker verifies the strongest available three-step reas
   expect(await verifier('xhigh')).toEqual({ verified: true, level: 'high' });
   expect(keypresses).toBe(1);
   expect(menuOpen).toBe(true);
+  const snapshot = (context as typeof context & {
+    __testPageSnapshot: () => { composerText?: string; reasoningControlReady?: boolean };
+  }).__testPageSnapshot;
+  expect(snapshot()).toMatchObject({ composerText: '', reasoningControlReady: true });
+  pickerVisible = false;
+  expect(snapshot()).toMatchObject({ composerText: '', reasoningControlReady: false });
 });
