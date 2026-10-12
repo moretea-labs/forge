@@ -1281,6 +1281,8 @@ requireText('supervisor/native-messaging/host.ts', 'ALLOWED_BROWSER_METHODS');
 requireText('supervisor/native-messaging/host.ts', 'computer_extension_claim');
 forbid('supervisor/native-messaging/host.ts', /['"](?:browser_tasks|browser_poll|browser_begin_effect|browser_observe_effect|browser_observe_dispatch_failure|browser_observe_provider_turn|browser_observe_assistant|bootstrap_poll|bootstrap_project_url|bootstrap_begin_effect|bootstrap_observe_effect|bootstrap_bind_conversation)['"]/, 'Chrome Native Messaging transport must not expose Workflow Supervisor effect RPCs; extension traffic terminates at Computer target commands');
 requireText('supervisor/store.ts', 'recordEffectNotAppliedProof');
+requireText('supervisor/store.ts', 'tried.at(-1)?.eventId');
+requireText('supervisor/store.ts', 'WORKFLOW_SUPERVISOR_PRE_SEND_OPERATOR_REARM_EXHAUSTED');
 requireText('supervisor/store.ts', '`effect-dispatch:${effectId}:${generation}`');
 requireText('supervisor/control-plane.ts', 'PERSISTED_BROWSER_EVIDENCE_KEYS');
 requireText('supervisor/control-plane.ts', "reason: 'not_applied_proof_incomplete'");

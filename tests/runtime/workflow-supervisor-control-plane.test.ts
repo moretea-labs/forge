@@ -1866,6 +1866,21 @@ test('Supervisor preparation rejection is durably release-fenced and never spend
   release.id = 'release-six';
   expect(store.nextBrowserEffect(task2)).toBeUndefined();
   expect(store.effectDispatchBudget(effect2.effectId).generations).toBe(0);
+  // A verified replacement Runtime does not reset the three automatic
+  // preparations. One explicitly authorized, source-preserving preflight may
+  // proceed; a further failure re-blocks without spending a Send generation.
+  expect(store.authorizeOperatorPreflightRetry({ effectId: effect2.effectId,
+    requestId: 'verified-source-repair-on-release-six', authorizedBy: 'operator',
+    reason: 'Verified Computer preflight fix and original effect has zero Send generations',
+  })).toEqual({ deduplicated: false });
+  expect(store.nextBrowserEffect(task2)).toMatchObject({ mode: 'send', generation: 1 });
+  control.recordProviderPreparationFailure({ taskId: task2, effectId: effect2.effectId,
+    reasonCode: 'COMPUTER_STILL_NOT_READY' });
+  expect(store.nextBrowserEffect(task2)).toBeUndefined();
+  expect(store.effectDispatchBudget(effect2.effectId).generations).toBe(0);
+  expect(() => store.authorizeOperatorPreflightRetry({ effectId: effect2.effectId,
+    requestId: 'attempt-second-explicit-rearm', authorizedBy: 'operator', reason: 'repeat',
+  })).toThrow('WORKFLOW_SUPERVISOR_PRE_SEND_OPERATOR_REARM_EXHAUSTED');
   store.close();
 });
 

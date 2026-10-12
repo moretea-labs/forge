@@ -351,14 +351,18 @@ export class WorkflowSupervisorStore {
 
   private preflightBlocked(db: Database, effectId: string): boolean {
     const tried = effectPreflightFailureReleaseIds(db, effectId);
-    if (tried.length >= WORKFLOW_SUPERVISOR_MAX_PREFLIGHT_RELEASE_ATTEMPTS) return true;
     const releaseId = this.activeReleaseId()?.trim() || 'unidentified-runtime';
     const lastFailure = tried.filter((entry) => entry.releaseId === releaseId).at(-1);
-    if (!lastFailure) return false;
-    // A verified operator repair may grant ONE extra pre-send observation on
-    // this same Runtime. The original provider-send generation stays at zero.
+    // Three failed releases exhaust automatic re-preparation, not an
+    // operator's single explicit post-repair proof. The same durable event
+    // ledger still enforces one rearm at most and re-blocks after its failure.
     const rearm = statement(db, "SELECT event_id FROM events WHERE effect_id = ? AND kind = 'effect_preflight_operator_rearmed' ORDER BY event_id DESC LIMIT 1", (s) => s.get(effectId)) as { event_id?: number } | undefined;
-    return Number(rearm?.event_id ?? 0) <= lastFailure.eventId;
+    const rearmedEventId = Number(rearm?.event_id ?? 0);
+    if (tried.length >= WORKFLOW_SUPERVISOR_MAX_PREFLIGHT_RELEASE_ATTEMPTS) {
+      return rearmedEventId <= (tried.at(-1)?.eventId ?? 0);
+    }
+    if (!lastFailure) return false;
+    return rearmedEventId <= lastFailure.eventId;
   }
 
   close(): void {
@@ -867,12 +871,16 @@ export class WorkflowSupervisorStore {
       if (statement(db, 'SELECT 1 FROM events WHERE event_key = ?', (s) => s.get(key))) return { deduplicated: true };
       const failed = effectPreflightFailureReleaseIds(db, input.effectId);
       const releaseId = this.activeReleaseId()?.trim() || 'unidentified-runtime';
-      if (failed.length >= WORKFLOW_SUPERVISOR_MAX_PREFLIGHT_RELEASE_ATTEMPTS) throw new Error('WORKFLOW_SUPERVISOR_PRE_SEND_ATTEMPTS_EXHAUSTED');
-      if (!failed.some((entry) => entry.releaseId === releaseId) || !this.preflightBlocked(db, input.effectId)) {
-        throw new Error('WORKFLOW_SUPERVISOR_PRE_SEND_RECOVERY_NOT_BLOCKED');
-      }
+      // An operator may authorize ONE bounded no-Send re-observation after a
+      // verified repair, including on a successor Runtime after the automatic
+      // three-release cap. Never erase the prior failures or refund Send budget.
       if (statement(db, "SELECT 1 FROM events WHERE effect_id = ? AND kind = 'effect_preflight_operator_rearmed' LIMIT 1", (s) => s.get(input.effectId))) {
         throw new Error('WORKFLOW_SUPERVISOR_PRE_SEND_OPERATOR_REARM_EXHAUSTED');
+      }
+      if (!this.preflightBlocked(db, input.effectId)
+        || (failed.length < WORKFLOW_SUPERVISOR_MAX_PREFLIGHT_RELEASE_ATTEMPTS
+          && !failed.some((entry) => entry.releaseId === releaseId))) {
+        throw new Error('WORKFLOW_SUPERVISOR_PRE_SEND_RECOVERY_NOT_BLOCKED');
       }
       statement(db, 'INSERT INTO events(task_id,event_key,kind,effect_id,payload_json,occurred_at) VALUES (?,?,?,?,?,?)', (s) => s.run(
         effect.task_id!, key, 'effect_preflight_operator_rearmed', input.effectId,
