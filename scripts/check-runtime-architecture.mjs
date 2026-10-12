@@ -1259,7 +1259,8 @@ requireText('adapters/computer/chrome-extension/manifest.json', 'nativeMessaging
 requireText('adapters/computer/chrome-extension/background.js', 'computer_extension_claim');
 requireText('adapters/computer/chrome-extension/background.js', 'computer_extension_complete');
 requireText('adapters/computer/chrome-extension/content.js', 'reasoningControlReady: Boolean(reasoningControl())');
-requireText('adapters/computer/chrome-extension/background.js', 'observation.reasoningControlReady === true');
+requireText('adapters/computer/chrome-extension/background.js', "typeof observation.composerText === 'string'");
+forbid('adapters/computer/chrome-extension/background.js', /observation\.reasoningControlReady\s*===\s*true/, 'Bootstrap composer hydration must not depend on the optional reasoning picker');
 requireText('adapters/computer/chrome-extension/background.js', "command.identity.namespace === 'chatgpt.bootstrap'");
 forbid('adapters/computer/chrome-extension/background.js', /if \(typeof observation\?\.url === 'string' && observation\.url\) return observation/, 'New bootstrap URL does not attest composer/model hydration before pre-send preparation');
 requireText('adapters/computer/chrome-extension/background.js', 'chrome.runtime.connectNative');
