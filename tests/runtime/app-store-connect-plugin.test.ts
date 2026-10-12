@@ -199,6 +199,15 @@ describe('App Store Connect Xcode Cloud workflow actions', () => {
       expect(keyReadAttempts).toBe(3);
       expect(requestedUrl).toContain('/v1/ciProducts');
       expect(requestedUrl).toContain('6775778505');
+
+      const versions = await executeAppStoreConnectPluginAction(input(repoRoot, 'list_app_store_versions', {
+        app_id: 'app/id', limit: 7,
+      }));
+      expect(versions).toEqual({ data: [] });
+      const versionsUrl = new URL(requestedUrl);
+      expect(versionsUrl.pathname).toBe('/v1/apps/app%2Fid/appStoreVersions');
+      expect(versionsUrl.searchParams.get('limit')).toBe('7');
+      expect(versionsUrl.searchParams.has('filter[app]')).toBe(false);
     } finally {
       Object.defineProperty(fsPromises, 'readFile', { configurable: true, writable: true, value: originalReadFile });
       globalThis.fetch = originalFetch;
