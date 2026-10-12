@@ -123,7 +123,13 @@
   const composer = () => document.querySelector(COMPOSER);
   // Editor text is a provider payload, not a UI label: preserve its whitespace.
   const exactComposerText = (value) => String(value ?? '').replace(/\r\n?/g, '\n');
-  const composerText = () => exactComposerText(composer()?.value ?? composer()?.innerText ?? composer()?.textContent);
+  const composerText = () => {
+    const text = exactComposerText(composer()?.value ?? composer()?.innerText ?? composer()?.textContent);
+    // An empty hydrated ProseMirror paragraph may expose only a newline.
+    // Treat a whitespace-only editor as empty without normalizing or altering
+    // whitespace in a real provider prompt or already populated draft.
+    return text.trim() ? text : '';
+  };
   const pageSnapshot = (options = {}) => {
     const userNodes = roleNodes(USER);
     const assistantNodes = roleNodes(ASSISTANT);

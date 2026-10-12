@@ -397,9 +397,10 @@ test('real GPT-6 Chinese picker verifies the strongest available three-step reas
     dispatchEvent() { throw new Error('aria-hidden slider must not receive keyboard input'); },
   };
   const empty = Object.assign([], { item: () => undefined });
+  let composerDraft = '';
   const document = {
     documentElement: {}, body: { innerText: '' }, title: 'Forge project',
-    querySelector: (selector: string) => selector.includes('#prompt-textarea') ? { value: '' } : null,
+    querySelector: (selector: string) => selector.includes('#prompt-textarea') ? { value: composerDraft } : null,
     querySelectorAll: (selector: string) => selector === 'main' ? [{ getClientRects: visible, querySelectorAll: () => empty }]
       : selector.includes('[aria-haspopup="menu"]') ? [headerMode, modelButton]
         : selector.includes('[role="slider"][aria-valuenow]') && menuOpen ? [slider]
@@ -436,4 +437,13 @@ test('real GPT-6 Chinese picker verifies the strongest available three-step reas
   expect(snapshot()).toMatchObject({ composerText: '', reasoningControlReady: true });
   pickerVisible = false;
   expect(snapshot()).toMatchObject({ composerText: '', reasoningControlReady: false });
+  // A real empty ChatGPT ProseMirror paragraph presents innerText as a single
+  // newline. That blank UI must not be mistaken for another user's draft.
+  composerDraft = '\n';
+  expect(snapshot()).toMatchObject({ composerText: '' });
+  composerDraft = ' \n \t ';
+  expect(snapshot()).toMatchObject({ composerText: '' });
+  // Once any payload exists, preserve its whitespace byte-for-byte.
+  composerDraft = '  first\n\nsecond  ';
+  expect(snapshot()).toMatchObject({ composerText: composerDraft });
 });

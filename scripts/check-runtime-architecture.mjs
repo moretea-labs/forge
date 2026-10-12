@@ -1267,6 +1267,7 @@ forbid('adapters/computer/chrome-extension/background.js', /browser_begin_effect
 requireText('adapters/computer/chrome-extension/content.js', 'ForgeComputerChatgptCore');
 requireText('adapters/computer/chrome-extension/content.js', "bootstrapTargetGuard: 'project-checked-before-send-v1'");
 requireText('adapters/computer/chrome-extension/content.js', 'exactComposerText(payload)');
+requireText('adapters/computer/chrome-extension/content.js', "return text.trim() ? text : '';");
 requireText('adapters/computer/chrome-extension/content.js', '选择 chatgpt 模型');
 requireText('adapters/computer/chrome-extension/content.js', 'keyboardControl.dispatchEvent(new KeyboardEvent');
 requireText('adapters/computer/chrome-extension/content.js', "control.getAttribute?.('aria-expanded') !== 'true'");
