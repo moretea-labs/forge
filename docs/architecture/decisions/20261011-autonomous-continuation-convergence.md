@@ -390,3 +390,15 @@ An iOS new-task single operator preflight rearm yielded event 36914 `composer_wr
 ### 2026-10-12 用户确定的验收策略
 
 本主线不再新增测试案例或循环运行大规模自动化测试；本轮新增的 extension-worker 测试修改已撤回。后续以安装到运行中 Chrome 的精确会话发送回执、真实 Forge MCP causal CONTINUE → CONTINUE → DONE、切换会话和独立生产任务实际推进作为验收依据。保留原有未改动测试及安全约束；不通过删除其他人的未提交测试修改制造 clean tree 或假绿。
+
+### 2026-10-12 全新目标会话 / Chrome App mention 真机根因与源修复
+
+用户明确要求废弃旧 Supervisor 任务并改用新的独立目标会话。按 canonical Supervisor stop 回执，将 `supervisor:3ffffb37097d0926f2df4dfd`、`supervisor:ee55005515fd4a9968373909`、`supervisor:de9f5e5fffe66ce8a5f58979` 全部 STOPPED；不再恢复旧 tabs/effects。仅启动新的 `supervisor:37c1d807ce91731aa919b290`（Forge）、`supervisor:aafe5b660c19b13c6488657d`（iOS）、`supervisor:c764389c472e5e780a5c84cc`（Android），新 effect 分别为 `fx_e7e981f60452e9e07f0a4492c5088ed2`、`fx_78d916928144a66e732e2b19713d2521`、`fx_989fe32f7481cb46b75ad0b7c3261486`。三条任务的新 Chrome tabId 分别是 2095970480/2095970483/2095970486，均未产生 `effect_dispatch_started`（发送次数 0）。所有任务仍需等待真实首轮发送与完整三轮因果回执，不能仅凭注册成功宣称 ready。
+
+三条新 Project 页最初意外包含相同的 79 字符无关草稿 `Use Desktop Commander Remote to find the 5 largest files in my Downloads folder`。仅在精确 Task/effect/tabId、Project URL 和全文相等、0 Send 后清理各自新任务的该草稿。新首轮预检均返回 `composer_not_empty`、`send_clicked=false`。Forge 新任务唯一的一次 operator preflight rearm 后又返回 `COMPUTER_CHATGPT_FORGE_PLUGIN_UNAVAILABLE`，仍无 Send；未再次 rearm。
+
+真实 Chrome 页面、同一新 iOS Task 自有空编辑器上的**无发送探测**证明：在长篇 effect 正文尾部触发 `@forge` 时菜单缺失；空 ProseMirror 先输入单独 `@`，再输入 `forge`，页面正确显示 `[data-mention-section-items] > button` 中的唯一 `forge Current Forge 1.8.1 ...`；点击后编辑器出现 `app-mention-name="forge"`、`app-mention-path="app://asdk_app_6ac09022b26081918f20ff868c773824"` 的真实 App chip。然后在 chip 末尾追加两行受控文本，chip 保留，直接 P 段落可以按单换行重建精确内容。探测后验证删除全部探测文本和 App chip，未点击 Send。
+
+对应唯一 Extension content-script 源改动：删除“先长文本、最后 @forge”的旧操作，先激活 `@forge` 的真正菜单并验证**唯一主 Forge App chip**，再在其末尾插入完整且未经截断的 immutable effect payload；在 Send 前再次核对 Project/Conversation identity、chip path、准确正文、Send 控件。仅允许字节级匹配本 effect 的旧未提交草稿原位修复，不覆盖任意非空用户草稿；旧 effect 提交预算、unknown outcome fencing 和 Supervisor 单 writer 不变，没有新增状态、Manager 或第二发送通路。
+
+源码 `node --check` 与 `check-runtime-architecture.mjs` 通过；旧 `computer-chatgpt-reasoning-control.test.ts` fixture 与现行 exact Project guard 不一致、现有测试未通过；按用户指定不新增测试案例，也不以模拟测试代替真实生产验收。下一阶段仍必须先完成正常 code+release cutover、安装并重载精确 Chrome extension，以及新三任务真实 effect/browser/MCP receipt 后才可认定自主续跑可用。
