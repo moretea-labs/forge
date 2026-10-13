@@ -506,9 +506,11 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     expect(recovery).toContain('FORGE_AUTONOMOUS_RECEIPT_V1');
     expect(recovery).toContain('automation_status=working');
     expect(recovery).toContain('automation_status=continue');
-    expect(recovery).toContain('Do not report continue for a status-only or empty round.');
-    expect(recovery).toContain('EXECUTION PRIORITY: Resume the specific unfinished engineering action');
-    expect(recovery).toContain('Read-only status, Supervisor/transport audits');
+    expect(recovery).toContain('CONTINUE WORK: Continue the original goal');
+    expect(recovery).toContain('A successful tool call, check, commit or phase is not a reason to stop');
+    expect(recovery).toContain('Only when this assistant turn must hand off unfinished work');
+    expect(recovery).not.toContain('After substantive progress, submit automation_status=continue');
+    expect(recovery).not.toContain('EXECUTION PRIORITY:');
     expect(recovery).not.toContain(lowerLayerContext);
 
     const correction = renderSupervisorPrompt(task, 'fx_correct01', 'correction', 'ignored checkpoint', 'ignored correction', lowerLayerContext);
@@ -666,6 +668,10 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
       continuity: { role: 'advisory', summary: 'checkpoint-sentinel' },
       automation: { automation_type: 'autonomous_continuation' },
     });
+    const machineCheckpoint = renderSupervisorPrompt(task, 'fx_continue_machine', 'continuation', 'automation:supervisor:test:rh_work:continue:fx_before_machine');
+    expect(parseSupervisorTurn(machineCheckpoint).continuity).toBeUndefined();
+    expect(machineCheckpoint).toContain('CONTINUE WORK: Continue the original goal');
+    expect(machineCheckpoint).not.toContain('automation:supervisor:test:rh_work:continue:fx_before_machine');
     expect(continuation).not.toContain('automation.receipt:');
     expect(continuation).not.toContain(renderSupervisorReceipt(task, 'fx_continue_1234', 'CONTINUE'));
     expect(continuation).not.toContain('LOWER_LAYER_SENTINEL');

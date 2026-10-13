@@ -162,7 +162,11 @@ export function renderSupervisorPrompt(
   const checkoutId = typeof task.completionContract.checkout_id === 'string'
     ? task.completionContract.checkout_id.trim()
     : typeof task.continuationPolicy.checkout_id === 'string' ? task.continuationPolicy.checkout_id.trim() : '';
-  const checkpoint = typeof _checkpoint === 'string' ? _checkpoint.trim().slice(0, 2_000) : '';
+  // An automation receipt is a causal ledger key, not useful model-facing work
+  // continuity. The same conversation and canonical Forge Work already contain
+  // the actual completed work and unfinished engineering actions.
+  const rawCheckpoint = typeof _checkpoint === 'string' ? _checkpoint.trim() : '';
+  const checkpoint = /^(?:automation:|receipt:)/.test(rawCheckpoint) ? '' : rawCheckpoint.slice(0, 2_000);
   // Recovery/correction context is model-facing advisory evidence, not another
   // authority. Discarding it made a recovery look like the original request
   // and allowed the model to repeat previously completed work.
@@ -199,11 +203,10 @@ export function renderSupervisorPrompt(
     SUPERVISOR_TURN_BLOCK_START,
     JSON.stringify(envelope),
     SUPERVISOR_TURN_BLOCK_END,
-    // The tool receipt, not prose in the page, settles the same applied effect.
-    // One instruction for every turn: no new scheduler, no extra state, no
-    // unconditional CONTINUE when no real work has been done.
-    'FORGE_AUTONOMOUS_RECEIPT_V1: Use automation_task_id and automation_type from this envelope on Forge calls. Use automation_status=working during execution. After substantive progress, submit automation_status=continue in the final Forge call; use done only after the stated goal is met, or needs_user only for a genuine external decision/blocker. A text-only answer does not settle the turn. Do not report continue for a status-only or empty round.',
-    'EXECUTION PRIORITY: Resume the specific unfinished engineering action identified in the previous assistant turn, using this conversation and the existing authorized Forge Work as context. Implement the next safe code change, execute a relevant unverified check, or resolve a concrete current blocker before concluding this turn. Read-only status, Supervisor/transport audits, repeated source summaries, and editing Work descriptions are not by themselves substantive delivery. Avoid rechecking known healthy infrastructure or rerunning already-passed checks without a new reason. If an actionable step remains, do it now rather than issuing an early CONTINUE. Only report CONTINUE after recording a new verifiable engineering result (such as a changed path, check receipt, or materially resolved finding); state that result and its evidence in the answer. A true user-only blocker may use needs_user; do not claim DONE without accepted delivery.',
+    // One ordinary continuation request, plus the existing causal tool receipt.
+    // Work sequencing and when an assistant turn must end remain model decisions.
+    'CONTINUE WORK: Continue the original goal using this conversation, the previous assistant result, and existing authorized Forge Work. Decide and carry out as much useful engineering work as can be safely completed in this turn, moving through analysis, edits, verification, repairs and delivery when appropriate. A successful tool call, check, commit or phase is not a reason to stop; continue while safe work is actionable. If the conversation was rotated, re-establish context from canonical Work and source. Keep existing permissions, writer boundaries and unknown-send protections.',
+    'FORGE_AUTONOMOUS_RECEIPT_V1: Use the automation_task_id and automation_type from this envelope on Forge calls. Use automation_status=working on intermediate calls. Only when this assistant turn must hand off unfinished work, record automation_status=continue in the final Forge call; use done only after the completion contract is satisfied, or needs_user only for a genuine user-only blocker. A text-only answer does not settle the turn. Do not treat a single completed step as the end of the turn. Briefly state actual results and unfinished work for the next turn.',
   ].join('\n');
 }
 
