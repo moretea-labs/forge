@@ -215,9 +215,15 @@ Newly rendered Supervisor prompts use the typed outer automation metadata alread
 present on Forge tools: exact `automation_task_id`,
 `automation_type=autonomous_continuation`, and `automation_status`. Intermediate
 calls use `working`; the final Forge call for the turn uses `continue`, `done` or
-`needs_user`. Receipt processing still derives the exact source effect from the
-canonical Supervisor task and reserves the successor transactionally; tool payloads
-do not choose another task/effect/conversation. The historical
+`needs_user`. The provider-facing turn instruction explicitly prioritizes
+continuing the last unfinished authorized engineering action with a verifiable
+source/check/blocker-resolution result over status-only reporting. A read-only
+Supervisor/transport audit, unchanged Work description, or recycled source
+summary is not a delivered work wave. This remains **model-authored workflow
+guidance**, not a time quota, tool-count gate, automatic Work mutation, or
+second semantic completion authority. Receipt processing still derives the
+exact source effect from the canonical Supervisor task and reserves the successor
+transactionally; tool payloads do not choose another task/effect/conversation. The historical
 `rh_work repair` / `automation.receipt:*` parser remains a bounded migration reader
 only for prompts already issued before cutover and must not be used by new prompt
 producers or become a second replay authority.

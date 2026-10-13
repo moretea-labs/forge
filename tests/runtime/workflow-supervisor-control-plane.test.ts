@@ -507,6 +507,8 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     expect(recovery).toContain('automation_status=working');
     expect(recovery).toContain('automation_status=continue');
     expect(recovery).toContain('Do not report continue for a status-only or empty round.');
+    expect(recovery).toContain('EXECUTION PRIORITY: Resume the specific unfinished engineering action');
+    expect(recovery).toContain('Read-only status, Supervisor/transport audits');
     expect(recovery).not.toContain(lowerLayerContext);
 
     const correction = renderSupervisorPrompt(task, 'fx_correct01', 'correction', 'ignored checkpoint', 'ignored correction', lowerLayerContext);
