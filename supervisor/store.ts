@@ -3,7 +3,7 @@ import { createRequire } from 'node:module';
 import { mkdirSync } from 'node:fs';
 import { resolveWorkflowSupervisorForgeHome, workflowSupervisorDatabasePathValue, workflowSupervisorRootPath } from './paths';
 import { validateSupervisorObjective } from './protocol';
-import type { WorkflowEffectKind, WorkflowEffectOutcome, WorkflowSupervisorCompletion, WorkflowSupervisorContinuationProof, WorkflowSupervisorDiscoverySnapshot, WorkflowSupervisorDiscoveredConversation, WorkflowSupervisorEffect, WorkflowSupervisorTask, WorkflowSupervisorTaskInput, WorkflowSupervisorTaskStall, WorkflowSupervisorTerminalState } from './types';
+import type { WorkflowEffectKind, WorkflowEffectOutcome, WorkflowSupervisorCompletion, WorkflowSupervisorContinuationProof, WorkflowSupervisorDiscoverySnapshot, WorkflowSupervisorDiscoveredConversation, WorkflowSupervisorEffect, WorkflowSupervisorTask, WorkflowSupervisorTaskInput, WorkflowSupervisorTaskStall, WorkflowSupervisorTerminalState, WorkflowSupervisorPreflightComposerObservation } from './types';
 export type { WorkflowSupervisorTaskStall } from './types';
 
 interface Statement { get(...params: unknown[]): unknown; all(...params: unknown[]): unknown[]; run(...params: unknown[]): unknown; finalize?(): void }
@@ -841,9 +841,14 @@ export class WorkflowSupervisorStore {
         const failure = this.read((db) => statement(db,
           "SELECT payload_json FROM events WHERE effect_id = ? AND kind = 'effect_preflight_rejected' ORDER BY event_id DESC LIMIT 1",
           (s) => s.get(pending.effectId)) as { payload_json?: string } | undefined);
-        const reasonCode = boundedText(parsedObject(failure?.payload_json).reason)?.slice(0, 256);
+        const record = parsedObject(failure?.payload_json);
+        const reasonCode = boundedText(record.reason)?.slice(0, 256);
+        const diagnostic = record.composer_observation;
+        const preflightComposerObservation = diagnostic && typeof diagnostic === 'object' && !Array.isArray(diagnostic)
+          ? diagnostic as WorkflowSupervisorPreflightComposerObservation : undefined;
         return { state: 'spaced', effectId: pending.effectId, reason: 'pre_send_infrastructure_blocked',
-          ...(reasonCode ? { preflightReasonCode: reasonCode } : {}) };
+          ...(reasonCode ? { preflightReasonCode: reasonCode } : {}),
+          ...(preflightComposerObservation ? { preflightComposerObservation } : {}) };
       }
       const ceiling = WORKFLOW_SUPERVISOR_MAX_DISPATCH_GENERATIONS + ledger.budgetRefunds;
       const retryAuthorized = ledger.generations === 0 || ledger.proof > ledger.lastEventId;
@@ -1335,7 +1340,7 @@ export class WorkflowSupervisorStore {
   }
 
   /** Attest that no Send intent was reserved and the provider UI could not prepare. */
-  recordEffectPreparationFailure(effectId: string, reasonCode: string): void {
+  recordEffectPreparationFailure(effectId: string, reasonCode: string, composerObservation?: WorkflowSupervisorPreflightComposerObservation): void {
     this.transaction((db) => {
       const effect = statement(db, 'SELECT task_id FROM effects WHERE effect_id = ?', (s) => s.get(effectId)) as { task_id?: string } | undefined;
       if (!effect?.task_id) throw new Error('WORKFLOW_SUPERVISOR_EFFECT_UNKNOWN');
@@ -1351,7 +1356,7 @@ export class WorkflowSupervisorStore {
       const key = `effect-preflight-rejected:${effectId}:${activeReleaseId}${Number(rearm?.count ?? 0) > 0 ? ':operator-rearmed' : ''}`;
       statement(db, 'INSERT OR IGNORE INTO events(task_id,event_key,kind,effect_id,payload_json,occurred_at) VALUES (?,?,?,?,?,?)', (s) => s.run(
         effect.task_id!, key, 'effect_preflight_rejected', effectId,
-        json({ active_release_id: activeReleaseId, reason: (boundedText(reasonCode) ?? 'COMPUTER_PREPARE_REJECTED').slice(0, 256), send_clicked: false, attestation: 'computer_prepare_returned_before_supervisor_send_intent' }), now(),
+        json({ active_release_id: activeReleaseId, reason: (boundedText(reasonCode) ?? 'COMPUTER_PREPARE_REJECTED').slice(0, 256), send_clicked: false, attestation: 'computer_prepare_returned_before_supervisor_send_intent', ...(composerObservation ? { composer_observation: composerObservation } : {}) }), now(),
       ));
     });
   }

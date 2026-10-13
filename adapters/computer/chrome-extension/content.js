@@ -167,6 +167,7 @@
         assistantMessages: assistantNodes.map(messageText).filter(Boolean),
       } : {}),
       ...(composer() ? { composerText: composerText() } : {}),
+      composerSelectorVersion: 'visible-single-v2',
       // Read-only hydration attestation for a NEW Project bootstrap tab.
       // URL/DOM shell visibility alone cannot prove that the React model
       // picker has mounted or that the provider editor is send-ready.

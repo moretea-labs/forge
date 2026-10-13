@@ -19,21 +19,20 @@ test('Computer provider classifies Chrome JavaScript permission rejection as pre
   expect(evaluateCalls).toBe(1);
 });
 
-test('native Supervisor send refuses a plain @forge draft without a verified main-app chip', async () => {
+test('native Supervisor sends the plain-text effect without requiring an App chip', async () => {
   let calls = 0;
   const page = {
     evaluate: async <T>(source: string) => {
       calls += 1;
       if (source.includes('const expectedNorm')) return { prepared: true } as T;
-      if (source.includes('const chips')) return { bound: false, opened: false, reason: 'forge_app_picker_missing' } as T;
-      throw new Error('Send must not be reached without a bound app');
+      if (source.includes('const chips')) throw new Error('App chip picker must not be invoked');
+      if (source.includes('sendButton.click()')) return { dispatched: true } as T;
+      throw new Error('Unexpected native browser action');
     },
     tabRef: () => undefined,
   };
-  const prompt = '@forge\n<<<FORGE_WORKFLOW_EFFECT_V1:fx_test_native_123456789>>>\nFORGE_WORKFLOW_TURN_V2_BEGIN';
-  expect(await dispatchMacOsChatgptPrompt(page, prompt)).toEqual({
-    mutation: 'not_attempted', reasonCode: 'forge_app_picker_missing',
-  });
+  const prompt = '<<<FORGE_WORKFLOW_EFFECT_V1:fx_test_native_123456789>>>\nFORGE_WORKFLOW_TURN_V2_BEGIN';
+  expect(await dispatchMacOsChatgptPrompt(page, prompt)).toEqual({ mutation: 'attempted' });
   expect(calls).toBe(2);
 });
 
@@ -147,6 +146,7 @@ test('Mac native refuses Send when whitespace changed after prepare and permits 
     hasAttribute(_name: string) { return false; }
     getAttribute(_name: string) { return null; }
     querySelectorAll(_selector: string) { return []; }
+    querySelector(_selector: string) { return null; }
   }
   for (const [rendered, expectedMutation] of [
     ['alpha beta\nline two', 'not_attempted'],

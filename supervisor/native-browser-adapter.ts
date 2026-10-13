@@ -21,6 +21,7 @@ import type {
   WorkflowSupervisorBrowserCommand,
   WorkflowSupervisorBrowserTask,
   WorkflowSupervisorConsumerStatus,
+  WorkflowSupervisorPreflightComposerObservation,
 } from './types';
 
 const DEFAULT_INTERVAL_MS = 1_000;
@@ -166,6 +167,18 @@ function unknownObservationFingerprint(effectId: string, reason: string, snapsho
     latestTurnRole: snapshot.latestTurnRole ?? null,
     isGenerating: snapshot.isGenerating,
   }));
+}
+function preflightComposerObservation(snapshot: ComputerChatgptConversationObservation, effectId: string): WorkflowSupervisorPreflightComposerObservation {
+  const value = snapshot.composerText;
+  const selectorVersion = snapshot.composerSelectorVersion === 'visible-single-v2' ? snapshot.composerSelectorVersion : undefined;
+  if (typeof value !== 'string') return { chars: 0, fingerprint: '', classification: 'unavailable', ...(selectorVersion ? { selectorVersion } : {}) };
+  const marker = /^<<<FORGE_WORKFLOW_EFFECT_V1:(fx_[a-zA-Z0-9_-]+)>>>/.exec(value);
+  return {
+    chars: value.length,
+    fingerprint: sha256(`preflight-composer-v1:\0${value}`).slice(0, 24),
+    classification: !value.trim() ? 'empty' : marker ? (marker[1] === effectId ? 'current_effect' : 'other_effect') : 'unattributed',
+    ...(selectorVersion ? { selectorVersion } : {}),
+  };
 }
 function exactConversation(snapshot: ComputerChatgptConversationObservation, task: WorkflowSupervisorBrowserTask): boolean {
   try { return parseChatgptConversationIdentity(snapshot.url).conversationId === task.conversationId; }
@@ -636,11 +649,12 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     let prepared: Awaited<ReturnType<ComputerChatgptConversationTarget['prepare']>>;
     try { prepared = await target.prepare(command.prompt); }
     catch (error) {
-      this.control.recordProviderPreparationFailure({ taskId: task.taskId, effectId: command.effectId, reasonCode: consumerFailureCode(error, 'COMPUTER_PREPARE_FAILED') });
+      this.control.recordProviderPreparationFailure({ taskId: task.taskId, effectId: command.effectId, reasonCode: consumerFailureCode(error, 'COMPUTER_PREPARE_FAILED'), composerObservation: preflightComposerObservation(beforeSend, command.effectId) });
       this.noteTaskFailure(SUPERVISOR_PRE_SEND_BLOCKED, task, command.effectId); this.deps.onError(error); return;
     }
     if (!prepared.ready) {
-      this.control.recordProviderPreparationFailure({ taskId: task.taskId, effectId: command.effectId, reasonCode: prepared.reasonCode });
+      const observed = await target.observe({ includeUserHistory: false, includePageText: false }).catch(() => beforeSend);
+      this.control.recordProviderPreparationFailure({ taskId: task.taskId, effectId: command.effectId, reasonCode: prepared.reasonCode, composerObservation: preflightComposerObservation(observed, command.effectId) });
       this.noteTaskFailure(SUPERVISOR_PRE_SEND_BLOCKED, task, command.effectId);
       this.deps.onError(new Error(prepared.reasonCode));
       return;

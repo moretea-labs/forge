@@ -1875,7 +1875,10 @@ test('Supervisor preparation rejection is durably release-fenced and never spend
   })).toEqual({ deduplicated: false });
   expect(store.nextBrowserEffect(task2)).toMatchObject({ mode: 'send', generation: 1 });
   control.recordProviderPreparationFailure({ taskId: task2, effectId: effect2.effectId,
-    reasonCode: 'COMPUTER_STILL_NOT_READY' });
+    reasonCode: 'COMPUTER_STILL_NOT_READY', composerObservation: { chars: 37,
+      fingerprint: 'd47b8b0f40a7de521c8391bb', classification: 'unattributed', selectorVersion: 'visible-single-v2' } });
+  expect(control.taskStall(task2)).toMatchObject({ state: 'spaced', preflightReasonCode: 'COMPUTER_STILL_NOT_READY',
+    preflightComposerObservation: { chars: 37, classification: 'unattributed', selectorVersion: 'visible-single-v2' } });
   expect(store.nextBrowserEffect(task2)).toBeUndefined();
   expect(store.effectDispatchBudget(effect2.effectId).generations).toBe(0);
   expect(() => store.authorizeOperatorPreflightRetry({ effectId: effect2.effectId,

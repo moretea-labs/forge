@@ -22,6 +22,8 @@ export interface ComputerChatgptConversationObservation {
   userMessages?: string[];
   assistantMessages?: string[];
   composerText?: string;
+  /** Read-only content-script selector attestation; undefined on older loaded scripts. */
+  composerSelectorVersion?: 'visible-single-v2';
   /** Read-only provider UI hydration receipt; never a Send/effect authority. */
   reasoningControlReady?: boolean;
   providerActivityText: string;

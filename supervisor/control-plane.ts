@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { parseChatgptConversationIdentity } from './chatgpt-conversation';
 import { parseSupervisorCompletion, renderEffectMarker, renderSupervisorPrompt, sha256, validateEffectId, validateSupervisorObjective } from './protocol';
 import { WorkflowSupervisorStore } from './store';
-import type { WorkflowAssistantObservation, WorkflowAssistantObservationResult, WorkflowContractValidation, WorkflowEffectKind, WorkflowSupervisorAutomationStatus, WorkflowSupervisorBrowserPollResult, WorkflowSupervisorBrowserTask, WorkflowSupervisorCompletion, WorkflowSupervisorDiscoveredConversation, WorkflowSupervisorEffect, WorkflowSupervisorLifecycleHooks, WorkflowSupervisorProjectScope, WorkflowSupervisorTask, WorkflowSupervisorTaskInput, WorkflowSupervisorTerminalState, WorkflowSupervisorValidators } from './types';
+import type { WorkflowAssistantObservation, WorkflowAssistantObservationResult, WorkflowContractValidation, WorkflowEffectKind, WorkflowSupervisorAutomationStatus, WorkflowSupervisorBrowserPollResult, WorkflowSupervisorBrowserTask, WorkflowSupervisorCompletion, WorkflowSupervisorDiscoveredConversation, WorkflowSupervisorEffect, WorkflowSupervisorLifecycleHooks, WorkflowSupervisorProjectScope, WorkflowSupervisorTask, WorkflowSupervisorTaskInput, WorkflowSupervisorTerminalState, WorkflowSupervisorValidators, WorkflowSupervisorPreflightComposerObservation } from './types';
 
 function compactProjectIdentity(value: string): string {
   return value.normalize('NFKC').toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
@@ -490,11 +490,11 @@ export class WorkflowSupervisorControlPlane {
     if (input.outcome === 'applied') this.hooks.effectApplied?.(task, effect, { observationId: input.observationId, evidence });
   }
   /** Local Computer preparation returned before Send intent; persist in the existing effect ledger. */
-  recordProviderPreparationFailure(input: { taskId: string; effectId: string; reasonCode: string }): void {
+  recordProviderPreparationFailure(input: { taskId: string; effectId: string; reasonCode: string; composerObservation?: WorkflowSupervisorPreflightComposerObservation }): void {
     const task = this.requireTask(input.taskId);
     const effect = this.store.getEffect(input.effectId);
     if (effect?.taskId !== task.taskId) throw new Error('WORKFLOW_SUPERVISOR_PRE_SEND_EFFECT_TASK_MISMATCH');
-    this.store.recordEffectPreparationFailure(input.effectId, input.reasonCode);
+    this.store.recordEffectPreparationFailure(input.effectId, input.reasonCode, input.composerObservation);
   }
 
   browserBeginEffect(input: { conversationId: string; conversationUrl: string; effectId: string; dispatchId: string; dispatchGeneration: number; evidence?: Record<string, unknown> }): { started: boolean; mode: 'send' | 'reconcile'; generation: number } {

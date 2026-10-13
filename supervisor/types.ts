@@ -144,10 +144,18 @@ export interface WorkflowContractValidation {
  * delivery queue with no durable projection; this makes that state visible and
  * names the exact operator action that can move the task forward.
  */
+export interface WorkflowSupervisorPreflightComposerObservation {
+  /** Diagnostic of the existing editor before Send, never a draft writer or replay authority. */
+  chars: number;
+  fingerprint: string;
+  classification: 'empty' | 'current_effect' | 'other_effect' | 'unattributed' | 'unavailable';
+  selectorVersion?: string;
+}
+
 export type WorkflowSupervisorTaskStall =
   | { state: 'terminal' }
   | { state: 'deliverable'; effectId: string; mode: 'send' | 'reconcile'; generation: number }
-  | { state: 'spaced'; effectId?: string; reason: 'retry_spacing' | 'unknown_observation_spacing' | 'awaiting_completion_receipt' | 'pre_send_infrastructure_blocked'; preflightReasonCode?: string }
+  | { state: 'spaced'; effectId?: string; reason: 'retry_spacing' | 'unknown_observation_spacing' | 'awaiting_completion_receipt' | 'pre_send_infrastructure_blocked'; preflightReasonCode?: string; preflightComposerObservation?: WorkflowSupervisorPreflightComposerObservation }
   | { state: 'retryable'; effectId: string; generations: number; maxGenerations: number }
   | { state: 'provider_resume_exhausted'; effectId: string }
   | { state: 'inert' };
