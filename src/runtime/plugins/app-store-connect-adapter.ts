@@ -911,7 +911,7 @@ export async function executeAppStoreConnectPluginAction(input: AssistantPluginA
     case 'list_profiles':
       return apiRequest(config, { path: '/v1/profiles', query: { 'filter[name]': stringValue(input.args.name), 'filter[profileType]': stringValue(input.args.profile_type), limit: limit(input.args.limit) } });
     case 'list_app_store_versions':
-      return apiRequest(config, { path: '/v1/appStoreVersions', query: { 'filter[app]': appId(input.args, config), limit: limit(input.args.limit) } });
+      return apiRequest(config, { path: `/v1/apps/${encodeURIComponent(appId(input.args, config))}/appStoreVersions`, query: { limit: limit(input.args.limit) } });
     case 'list_app_store_version_localizations':
       return apiRequest(config, {
         path: `/v1/appStoreVersions/${encodeURIComponent(requiredArg(input.args, 'version_id'))}/appStoreVersionLocalizations`,
