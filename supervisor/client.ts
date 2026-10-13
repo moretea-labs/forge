@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { createConnection } from 'node:net';
 import { workflowSupervisorSocketPath } from './paths';
-import type { WorkflowSupervisorAutomationStatus, WorkflowSupervisorConsumerStatus, WorkflowSupervisorContinuationProof, WorkflowSupervisorDiscoveredConversation, WorkflowSupervisorEffect, WorkflowSupervisorTask, WorkflowSupervisorTaskInput, WorkflowSupervisorTaskStall, WorkflowSupervisorTerminalState } from './types';
+import type { WorkflowSupervisorConsumerStatus, WorkflowSupervisorContinuationProof, WorkflowSupervisorDiscoveredConversation, WorkflowSupervisorEffect, WorkflowSupervisorTask, WorkflowSupervisorTaskInput, WorkflowSupervisorTaskStall, WorkflowSupervisorTerminalState } from './types';
 
 interface RpcResponse<T> { id: string; ok: boolean; result?: T; error?: { code?: string; message?: string } }
 
@@ -160,18 +160,6 @@ export async function reserveWorkflowSupervisorEnrollment(forgeHome: string, tas
   return await rpc<WorkflowSupervisorEffect>(forgeHome, 'reserve_enrollment', {
     task_id: taskId,
     ...(canonicalEffectId?.trim() ? { effect_id: canonicalEffectId.trim() } : {}),
-  }, SUPERVISOR_RPC_MUTATION_TIMEOUT_MS);
-}
-
-export async function recordWorkflowSupervisorAutomationReceipt(
-  forgeHome: string,
-  input: { taskId: string; conversationId: string; status: WorkflowSupervisorAutomationStatus; receiptId: string },
-): Promise<unknown> {
-  return await rpc(forgeHome, 'automation_receipt', {
-    task_id: input.taskId,
-    conversation_id: input.conversationId,
-    automation_status: input.status,
-    receipt_id: input.receiptId,
   }, SUPERVISOR_RPC_MUTATION_TIMEOUT_MS);
 }
 

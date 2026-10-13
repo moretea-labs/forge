@@ -6,7 +6,7 @@ import type { WorkflowEffectKind, WorkflowSupervisorProposal, WorkflowSupervisor
 // block formats remain read-only compatibility for already-durable conversations.
 export const SUPERVISOR_BLOCK_START = 'FORGE_WORKFLOW_SUPERVISOR_V1_BEGIN';
 export const SUPERVISOR_BLOCK_END = 'FORGE_WORKFLOW_SUPERVISOR_V1_END';
-const COMPACT_RECEIPT = /^([CDU]) ([0-9a-f]{7})$/;
+const COMPACT_RECEIPT = /(?:^|\n)([CDU]) ([0-9a-f]{7})\s*$/;
 export const LEGACY_BRACKET_SUPERVISOR_BLOCK_START = '[[[FORGE_WORKFLOW_SUPERVISOR_V1]]]';
 export const LEGACY_BRACKET_SUPERVISOR_BLOCK_END = '[[[END_FORGE_WORKFLOW_SUPERVISOR_V1]]]';
 export const LEGACY_SUPERVISOR_BLOCK_START = '<<<FORGE_WORKFLOW_SUPERVISOR_V1>>>';
@@ -108,7 +108,7 @@ export function parseSupervisorCompletion(
         taskId: expected.task.taskId,
         supervisorState,
       },
-      controlBlock: responseText.trim(),
+      controlBlock: compact[0].trim(),
     };
   }
   const { start, end, startMarker, endMarker } = supervisorBlockEnvelope(responseText);
@@ -190,22 +190,17 @@ export function renderSupervisorPrompt(
     ...(continuity ? { continuity: { role: 'advisory' as const, summary: continuity } } : {}),
     ...(repoId ? { repository: { repo_id: repoId, ...(checkoutId ? { checkout_id: checkoutId } : {}) } } : {}),
     ...(cognition ? { cognition: { role: 'advisory' as const, projection: cognition } } : {}),
-    automation: {
-      automation_task_id: task.taskId,
-      automation_type: 'autonomous_continuation',
-      intermediate_status: 'working',
-      final_statuses: ['continue', 'done', 'needs_user'],
-    },
+    receipt: { challenge: supervisorReceiptChallenge(task, effectId) },
   };
   return [
     renderEffectMarker(effectId),
     SUPERVISOR_TURN_BLOCK_START,
     JSON.stringify(envelope),
     SUPERVISOR_TURN_BLOCK_END,
-    // One ordinary continuation request, plus the existing causal tool receipt.
+    // An ordinary outcome-led request plus a final-response receipt.
     // Work sequencing and when an assistant turn must end remain model decisions.
-    'CONTINUE WORK: Drive the user\'s original goal forward decisively. Use this conversation and live project evidence to select the most useful action, then do the work: investigate, change source, verify, fix, integrate or deliver as needed. Discover project rules and available execution paths through tools; do not assume a particular Work, checkout, phase or next step is mandatory. Other user or autonomous work may pursue the same goal: reuse results or proceed independently, checking ownership and changes before writing. Keep executing while meaningful authorized work is possible; do not substitute status checks, receipts or a single successful tool call for progress. Finish only when the goal is delivered or a concrete blocker requires a handoff. Briefly report actual results and the next actionable gap. Preserve user data, permissions and unknown-outcome protections.',
-    'FORGE_AUTONOMOUS_RECEIPT_V1: Include this envelope\'s automation_task_id and automation_type in Forge calls. Use automation_status=working on every intermediate call, including status checks and ordinary implementation/verification calls. Keep using tools within this ChatGPT turn while authorized engineering actions remain; Supervisor continuation is only for after this turn has actually reached its execution boundary, not a substitute for doing the next available action now. Only when concluding the current turn, use automation_status=continue on the final Forge call if work remains, automation_status=done only if the goal\'s completion contract is met, or automation_status=needs_user for a genuine user-only blocker. A receipt or text-only summary is not delivery.',
+    'CONTINUE WORK: Pursue the stated goal and deliver useful, verifiable work. Decide what to inspect, change, test and deliver from live evidence; no Work, Plan, phase, checkout, sequence or tool call is mandatory. Make real progress in this turn rather than ending after a status check. Respect actual ownership, permissions and irreversible-action boundaries.',
+    'END OF TURN: Only after you have finished the useful actions available in THIS ChatGPT response, give a brief evidence-based result and end your FINAL assistant message with exactly one separate last line: C ' + supervisorReceiptChallenge(task, effectId) + ' if work remains; D ' + supervisorReceiptChallenge(task, effectId) + ' only if the goal is delivered; or U ' + supervisorReceiptChallenge(task, effectId) + ' only for a genuine user-only blocker. Never put these markers in an intermediate message or tool call. Do not pass automation_status in MCP tool arguments; Supervisor commits only the completed final assistant reply.',
   ].join('\n');
 }
 

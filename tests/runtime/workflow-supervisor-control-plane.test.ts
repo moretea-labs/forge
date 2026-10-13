@@ -518,12 +518,7 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
       },
       repository: { repo_id: 'repo-minimal-continuation', checkout_id: 'checkout_ios_candidate' },
       cognition: { role: 'advisory', projection: 'Relevant prior cognition.' },
-      automation: {
-        automation_task_id: task.taskId,
-        automation_type: 'autonomous_continuation',
-        intermediate_status: 'working',
-        final_statuses: ['continue', 'done', 'needs_user'],
-      },
+      receipt: { challenge: supervisorReceiptChallenge(task, 'fx_minimal01') },
     });
     expect(continuation).not.toContain('继续当前 Supervisor 任务。');
     expect(continuation).not.toContain('目标：');
@@ -542,19 +537,11 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
       goal: { role: 'outcome', objective: task.objective },
       continuity: { role: 'advisory', summary: 'restore checkpoint\nrecover durable state' },
     });
-    expect(recovery).toContain('FORGE_AUTONOMOUS_RECEIPT_V1');
-    expect(recovery).toContain('automation_status=working');
-    expect(recovery).toContain('automation_status=continue');
-    expect(recovery).toContain('CONTINUE WORK: Drive the user\'s original goal forward decisively');
-    expect(recovery).toContain('Drive the user\'s original goal forward decisively');
-    expect(recovery).toContain('do not assume a particular Work, checkout, phase or next step is mandatory');
-    expect(recovery).toContain('Other user or autonomous work may pursue the same goal');
-    expect(recovery).toContain('Keep executing while meaningful authorized work is possible');
-    expect(recovery).toContain('A receipt or text-only summary is not delivery');
-    expect(recovery).toContain('use automation_status=continue on the final Forge call if work remains');
-    expect(recovery).toContain('automation_status=working on every intermediate call');
-    expect(recovery).toContain('automation_status=done only if the goal\'s completion contract is met');
-    expect(recovery).not.toContain('After substantive progress, submit automation_status=continue');
+    expect(recovery).toContain('END OF TURN:');
+    expect(recovery).toContain('no Work, Plan, phase, checkout, sequence or tool call is mandatory');
+    expect(recovery).toContain('only the completed final assistant reply');
+    expect(recovery).toContain('D ' + supervisorReceiptChallenge(task, 'fx_recover01'));
+    expect(recovery).not.toContain('automation_status=continue');
     expect(recovery).not.toContain('EXECUTION PRIORITY:');
     expect(recovery).not.toContain(lowerLayerContext);
 
@@ -616,16 +603,11 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     const effectId = 'fx_12345678';
     const prompt = renderSupervisorPrompt(task, effectId, 'recovery');
 
-    expect(parseSupervisorTurn(prompt).automation).toEqual({
-      automation_task_id: task.taskId,
-      automation_type: 'autonomous_continuation',
-      intermediate_status: 'working',
-      final_statuses: ['continue', 'done', 'needs_user'],
-    });
-    expect(prompt).toContain('FORGE_AUTONOMOUS_RECEIPT_V1');
+    expect(parseSupervisorTurn(prompt).receipt).toEqual({ challenge: supervisorReceiptChallenge(task, effectId) });
+    expect(prompt).toContain('END OF TURN:');
     expect(prompt).not.toContain('automation.receipt:');
     expect(prompt).not.toContain('最后一次 Forge 调用');
-    expect(prompt).not.toContain(renderSupervisorReceipt(task, effectId, 'CONTINUE'));
+    expect(prompt).toContain(renderSupervisorReceipt(task, effectId, 'CONTINUE'));
     expect(prompt).not.toContain(SUPERVISOR_BLOCK_START);
     expect(prompt).not.toContain(LEGACY_SUPERVISOR_BLOCK_START);
     expect(prompt).not.toContain('conversation_id=');
@@ -711,14 +693,14 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
       identity: { task_id: task.taskId, effect_id: 'fx_continue_1234', kind: 'continuation' },
       goal: { role: 'outcome', objective: task.objective },
       continuity: { role: 'advisory', summary: 'checkpoint-sentinel' },
-      automation: { automation_type: 'autonomous_continuation' },
+      receipt: { challenge: supervisorReceiptChallenge(task, 'fx_continue_1234') },
     });
     const machineCheckpoint = renderSupervisorPrompt(task, 'fx_continue_machine', 'continuation', 'automation:supervisor:test:rh_work:continue:fx_before_machine');
     expect(parseSupervisorTurn(machineCheckpoint).continuity).toBeUndefined();
-    expect(machineCheckpoint).toContain('CONTINUE WORK: Drive the user\'s original goal forward decisively');
+    expect(machineCheckpoint).toContain('CONTINUE WORK: Pursue the stated goal and deliver useful, verifiable work');
     expect(machineCheckpoint).not.toContain('automation:supervisor:test:rh_work:continue:fx_before_machine');
     expect(continuation).not.toContain('automation.receipt:');
-    expect(continuation).not.toContain(renderSupervisorReceipt(task, 'fx_continue_1234', 'CONTINUE'));
+    expect(continuation).toContain(renderSupervisorReceipt(task, 'fx_continue_1234', 'CONTINUE'));
     expect(continuation).not.toContain('LOWER_LAYER_SENTINEL');
     expect(continuation).not.toContain('REQ-minimal-prompt');
 
@@ -1537,13 +1519,10 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
         conversationId, conversationUrl, effectId: currentEffect.effectId,
         observationId: `budget-turn-${turn}`, outcome: 'applied',
       });
-      const continued = await control.observeAutomationReceipt({
-        taskId, conversationId, status: 'continue', receiptId: `rh_work:continue:${taskId}`,
-      });
+      const responseText = 'Meaningful progress.\n' + renderSupervisorReceipt(control.getTask(taskId)!, currentEffect.effectId, 'CONTINUE');
+      const continued = await control.observeAssistantTurn({ taskId, conversationId, responseText });
+      const replayed = await control.observeAssistantTurn({ taskId, conversationId, responseText });
       expect('successorEffect' in continued ? continued.successorEffect : undefined).toBeDefined();
-      const replayed = await control.observeAutomationReceipt({
-        taskId, conversationId, status: 'continue', receiptId: `rh_work:continue:${taskId}`,
-      });
       expect('successorEffect' in replayed ? replayed.successorEffect?.effectId : undefined)
         .toBe('successorEffect' in continued ? continued.successorEffect?.effectId : undefined);
       currentEffect = 'successorEffect' in continued ? continued.successorEffect! : currentEffect;
@@ -2569,9 +2548,8 @@ test('completed idle provider turn remains a receipt obligation, not a reason to
     state: 'spaced', effectId: applied.effectId, reason: 'awaiting_completion_receipt',
   });
   expect(store.getEffect(recoveryEffectId)).toBeUndefined();
-  const settled = await control.observeAutomationReceipt({
-    taskId, conversationId, status: 'continue', receiptId: 'idle-receipt-final-call',
-  });
+  const settled = await control.observeAssistantTurn({ taskId, conversationId,
+    responseText: 'Work recorded.\n' + renderSupervisorReceipt(control.getTask(taskId)!, applied.effectId, 'CONTINUE') });
   expect(settled).toMatchObject({ action: 'CONTINUE', terminal: false });
   expect(store.getLatestCompletion(taskId)?.sourceEffectId).toBe(applied.effectId);
   store.close();
@@ -3072,7 +3050,7 @@ test('browserTasks keeps an applied external effect observable while lower Contr
   expect(control.browserTasks()).toEqual([]);
 });
 
-test('automation tool receipt successor begins from the real assistant page baseline', async () => {
+test('final assistant receipt successor waits for observed provider idle before delivery', async () => {
   const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-automation-successor-baseline-'));
   roots.push(root);
   // The successor of a completion becomes deliverable only after the spacing
@@ -3088,7 +3066,7 @@ test('automation tool receipt successor begins from the real assistant page base
     taskId,
     conversationId,
     conversationUrl,
-    objective: 'Continue through a canonical automation tool receipt.',
+    objective: 'Continue only after an observable final reply completes.',
     completionContract: {},
     continuationPolicy: {},
     userBlockerPolicy: {},
@@ -3096,22 +3074,15 @@ test('automation tool receipt successor begins from the real assistant page base
 
   const sourceEffect = control.reserveEnrollment(taskId);
   control.observeEffect({ effectId: sourceEffect.effectId, observationId: 'automation-source-applied', outcome: 'applied' });
-  const continued = await control.observeAutomationReceipt({
-    taskId,
-    conversationId,
-    status: 'continue',
-    receiptId: `rh_work:continue:${taskId}`,
-  });
+  let visibleAssistant = 'Completed useful step.\n' + renderSupervisorReceipt(control.getTask(taskId)!, sourceEffect.effectId, 'CONTINUE');
+  const continued = await control.observeAssistantTurn({ taskId, conversationId, responseText: visibleAssistant });
   expect('successorEffect' in continued ? continued.successorEffect : undefined).toBeDefined();
   const successor = 'successorEffect' in continued ? continued.successorEffect! : undefined;
   expect(successor).toBeDefined();
 
-  // A tool-only completed turn can leave the last rendered role as user.
-  // Exercise the actual consumer, including its exact owned resource lifetime.
-  // ChatGPT can compact an automated prompt to ordinary visible prose after
-  // recording its local tool receipt. The successor must still begin because
-  // the durable automation receipt is the causal anchor, not a retained DOM
-  // marker for the prior prompt.
+  // The completed causal receipt is only authoritative at provider idle.
+  // In-flight generation must never trigger a successor send, even if a
+  // compatible prior receipt appears in the visible response.
   let submittedText = '继续。';
   let owner = `forge-workflow-supervisor:created:${conversationId}`;
   let generating = true;
@@ -3188,6 +3159,7 @@ test('automation tool receipt successor begins from the real assistant page base
   await adapter.runOnce();
   expect(dispatched).toEqual([]);
   generating = false;
+  nowMs += 1_500;
   storeClockMs += 4 * 60_000;
   await adapter.runOnce();
   expect(dispatched).toEqual([successor!.prompt]);
@@ -3208,7 +3180,8 @@ test('automation tool receipt successor begins from the real assistant page base
     dispatchId: 'old-bootstrap-dispatch', dispatchGeneration: 1,
   })).toBe(true);
   receiptDuringScan = async () => {
-    await control.observeAutomationReceipt({ taskId, conversationId, status: 'continue', receiptId: 'second-native-continue' });
+    visibleAssistant = 'Follow-up verified.\n' + renderSupervisorReceipt(control.getTask(taskId)!, store.latestAppliedEffectWithoutCompletion(taskId)!.effectId, 'CONTINUE');
+    await control.observeAssistantTurn({ taskId, conversationId, responseText: visibleAssistant });
     generating = true;
     scanEvents.push('continue-committed');
   };

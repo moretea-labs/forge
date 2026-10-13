@@ -10,6 +10,7 @@ import {
   getChatgptWorkConversationBinding,
 } from '../../adapters/chatgpt/work-conversation-binding-store';
 import { WorkflowSupervisorControlPlane } from '../../supervisor/control-plane';
+import { renderSupervisorReceipt } from '../../supervisor/protocol';
 import { WorkflowSupervisorStore } from '../../supervisor/store';
 
 const roots: string[] = [];
@@ -131,8 +132,8 @@ describe('Workflow Supervisor fresh conversation switch', () => {
     for (let n = 1; n <= 15; n += 1) {
       expect(store.recordEffectDispatchStarted(effect.effectId, 1, `round-${n}`)).toBe(true);
       control.observeEffect({ effectId: effect.effectId, observationId: `applied-${n}`, outcome: 'applied' });
-      const result = await control.observeAutomationReceipt({
-        taskId, conversationId: oldConversationId, status: 'continue', receiptId: `receipt-${n}`,
+      const result = await control.observeAssistantTurn({ taskId, conversationId: oldConversationId,
+        responseText: 'Delivered useful work.\n' + renderSupervisorReceipt(control.getTask(taskId)!, effect.effectId, 'CONTINUE'),
       });
       expect(result).toMatchObject({ action: 'CONTINUE', terminal: false });
       if (!('successorEffect' in result) || !result.successorEffect) throw new Error('MISSING_CONTINUATION_EFFECT');
@@ -160,8 +161,8 @@ describe('Workflow Supervisor fresh conversation switch', () => {
     for (let n = 16; n <= 30; n += 1) {
       expect(store.recordEffectDispatchStarted(effect.effectId, 1, `round-${n}`)).toBe(true);
       control.observeEffect({ effectId: effect.effectId, observationId: `applied-${n}`, outcome: 'applied' });
-      const result = await control.observeAutomationReceipt({
-        taskId, conversationId: freshId, status: 'continue', receiptId: `receipt-${n}`,
+      const result = await control.observeAssistantTurn({ taskId, conversationId: freshId,
+        responseText: 'Delivered useful work.\n' + renderSupervisorReceipt(control.getTask(taskId)!, effect.effectId, 'CONTINUE'),
       });
       if (!('successorEffect' in result) || !result.successorEffect) throw new Error('MISSING_SUCCESSOR_IN_SECOND_WINDOW');
       effect = result.successorEffect;

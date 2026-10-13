@@ -6,11 +6,7 @@ import { join } from 'node:path';
 import { WorkflowSupervisorControlPlane } from '../../supervisor/control-plane';
 import { forgeWorkflowSupervisorValidators } from '../../supervisor/forge-validators';
 import { WorkflowSupervisorStore } from '../../supervisor/store';
-import { renderSupervisorPrompt, SUPERVISOR_TURN_BLOCK_END, SUPERVISOR_TURN_BLOCK_START } from '../../supervisor/protocol';
-import { automationMetadata, automationReceiptControllerTypeAllowed, injectAutomationEnvelopeFields } from '../../adapters/mcp/runtime-gateway/automation-receipt-adapter';
-import { normalizeRhWorkInputWireMigration } from '../../adapters/mcp/runtime-gateway/work-input-wire-migration';
-import { callWorkAdapter } from '../../adapters/mcp/runtime-gateway/work-adapter';
-import { runtimeToolDefinitions } from '../../adapters/mcp/runtime-gateway/runtime-tool-definitions';
+import { renderSupervisorPrompt, renderSupervisorReceipt, supervisorReceiptChallenge, SUPERVISOR_TURN_BLOCK_END, SUPERVISOR_TURN_BLOCK_START } from '../../supervisor/protocol';
 import { callCoreCapabilityAdapter } from '../../adapters/mcp/runtime-gateway/core-capability-adapter';
 import { createWorkflowSupervisorServer } from '../../supervisor/server';
 import { workflowSupervisorSocketPath } from '../../supervisor/paths';
@@ -32,43 +28,6 @@ function parseSupervisorTurn(prompt: string): Record<string, any> {
 }
 
 describe('Workflow Supervisor automation receipts', () => {
-  test('exposes and validates the standalone autonomous tool-call envelope', () => {
-    const definition = injectAutomationEnvelopeFields(runtimeToolDefinitions.find((entry) => entry.name === 'rh_status')!);
-    const schema = definition.inputSchema as { properties: Record<string, unknown> };
-    expect(schema.properties.automation_task_id).toBeDefined();
-    expect(schema.properties.automation_type).toBeDefined();
-    expect(schema.properties.automation_status).toBeDefined();
-    expect(automationMetadata({
-      automation_type: 'autonomous_continuation', automation_status: 'continue', automation_task_id: 'TASK-1',
-    })).toEqual({ status: 'continue', taskId: 'TASK-1' });
-    expect(() => automationMetadata({ automation_type: 'autonomous_continuation', automation_status: 'continue' })).toThrow('AUTOMATION_TASK_ID_REQUIRED');
-    expect(automationMetadata({ capability_id: 'automation.receipt:continue:forge:repo:test-work' })).toEqual({
-      status: 'continue', taskId: 'forge:repo:test-work',
-    });
-    expect(automationMetadata({ capability_id: 'automation.receipt:done:forge:repo:test-work' })).toEqual({
-      status: 'done', taskId: 'forge:repo:test-work',
-    });
-    expect(automationReceiptControllerTypeAllowed(undefined)).toBe(true);
-    expect(automationReceiptControllerTypeAllowed('chatgpt')).toBe(true);
-    expect(automationReceiptControllerTypeAllowed('codex')).toBe(false);
-    expect(automationReceiptControllerTypeAllowed('human')).toBe(false);
-  });
-
-  test('accepts the frozen-schema automation receipt carrier without repository admission', async () => {
-    const input = { operation: 'repair', capability_id: 'automation.receipt:continue:forge:repo:test-work' };
-    expect(normalizeRhWorkInputWireMigration(input)).toMatchObject({ ok: true, operation: 'repair' });
-    const annotated = { ...input, repo_id: 'transport-context-only', checkout_id: 'transport-checkout-only', reason: 'work checkpoint' };
-    expect(normalizeRhWorkInputWireMigration(annotated)).toEqual({ ok: true, operation: 'repair', args: input });
-    expect(normalizeRhWorkInputWireMigration({ ...input, source_effect_id: 'fx_untrusted' })).toMatchObject({ ok: false });
-    expect(normalizeRhWorkInputWireMigration({ ...input, reason: {} })).toMatchObject({ ok: false });
-    const response = await callWorkAdapter({ controllerHome: '/tmp/unused-for-automation-receipt' } as any, annotated);
-    expect(response.isError).not.toBe(true);
-    expect(response.structuredContent).toMatchObject({
-      status: 'ok',
-      data: { automationReceiptCompatibility: true },
-    });
-  });
-
   test('resolves bootstrap inside the uniquely discovered repository ChatGPT Project', () => {
     const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-project-bootstrap-'));
     roots.push(root);
@@ -140,7 +99,7 @@ describe('Workflow Supervisor automation receipts', () => {
     store.close();
   });
 
-  test('persists a final MCP continue receipt once and reserves one successor without page text', async () => {
+  test('accepts completed final assistant reply and deduplicates causal continuation', async () => {
     const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-automation-receipt-'));
     roots.push(root);
     const store = new WorkflowSupervisorStore(root);
@@ -155,26 +114,15 @@ describe('Workflow Supervisor automation receipts', () => {
     const effect = control.reserveEnrollment(task.taskId);
     control.observeEffect({ effectId: effect.effectId, observationId: 'submitted', outcome: 'applied' });
 
-    expect(await control.observeAutomationReceipt({
-      taskId: task.taskId, conversationId: task.conversationId, status: 'working', receiptId: 'working-1',
-    })).toEqual({ recorded: true });
-    const first = await control.observeAutomationReceipt({
-      taskId: task.taskId, conversationId: task.conversationId, status: 'continue', receiptId: 'turn-1',
-    });
-    const replay = await control.observeAutomationReceipt({
-      taskId: task.taskId, conversationId: task.conversationId, status: 'continue', receiptId: 'turn-1',
-    });
+    const responseText = 'Implemented and verified a change.\n' + renderSupervisorReceipt(task, effect.effectId, 'CONTINUE');
+    const first = await control.observeAssistantTurn({ taskId: task.taskId, conversationId: task.conversationId, responseText });
+    const replay = await control.observeAssistantTurn({ taskId: task.taskId, conversationId: task.conversationId, responseText });
 
     expect(first).toMatchObject({ action: 'CONTINUE', terminal: false });
     expect(replay).toMatchObject({ action: 'CONTINUE', terminal: false });
     expect(store.getEffectByOriginKey(`completion:${(first as { completionFingerprint: string }).completionFingerprint}`)).toBeDefined();
     const enrollmentPrompt = renderSupervisorPrompt(task, effect.effectId, 'enrollment');
-    expect(parseSupervisorTurn(enrollmentPrompt).automation).toEqual({
-      automation_task_id: task.taskId,
-      automation_type: 'autonomous_continuation',
-      intermediate_status: 'working',
-      final_statuses: ['continue', 'done', 'needs_user'],
-    });
+    expect(parseSupervisorTurn(enrollmentPrompt).receipt).toEqual({ challenge: supervisorReceiptChallenge(task, effect.effectId) });
     expect(enrollmentPrompt).not.toContain('automation.receipt:');
     expect(enrollmentPrompt).toStartWith('<<<FORGE_WORKFLOW_EFFECT_V1:');
     expect(enrollmentPrompt).not.toContain('CONTINUE => "C ');
@@ -316,21 +264,18 @@ describe('Workflow Supervisor automation receipts', () => {
     });
     const firstEffect = control.reserveEnrollment(task.taskId);
     control.observeEffect({ effectId: firstEffect.effectId, observationId: 'applied-1', outcome: 'applied' });
-    const first = await control.observeAutomationReceipt({
-      taskId: task.taskId, conversationId: task.conversationId, status: 'continue', receiptId: 'round-1',
-    });
+    const first = await control.observeAssistantTurn({ taskId: task.taskId, conversationId: task.conversationId,
+      responseText: 'Useful work first.\n' + renderSupervisorReceipt(task, firstEffect.effectId, 'CONTINUE') });
     expect(first).toMatchObject({ action: 'CONTINUE', terminal: false });
     const secondEffect = (first as { successorEffect: { effectId: string } }).successorEffect;
     control.observeEffect({ effectId: secondEffect.effectId, observationId: 'applied-2', outcome: 'applied' });
-    const second = await control.observeAutomationReceipt({
-      taskId: task.taskId, conversationId: task.conversationId, status: 'continue', receiptId: 'round-2',
-    });
+    const second = await control.observeAssistantTurn({ taskId: task.taskId, conversationId: task.conversationId,
+      responseText: 'More verified work.\n' + renderSupervisorReceipt(task, secondEffect.effectId, 'CONTINUE') });
     expect(second).toMatchObject({ action: 'CONTINUE', terminal: false });
     const thirdEffect = (second as { successorEffect: { effectId: string } }).successorEffect;
     control.observeEffect({ effectId: thirdEffect.effectId, observationId: 'applied-3', outcome: 'applied' });
-    const third = await control.observeAutomationReceipt({
-      taskId: task.taskId, conversationId: task.conversationId, status: 'done', receiptId: 'round-3',
-    });
+    const third = await control.observeAssistantTurn({ taskId: task.taskId, conversationId: task.conversationId,
+      responseText: 'Goal delivered.\n' + renderSupervisorReceipt(task, thirdEffect.effectId, 'DONE') });
     expect(third).toMatchObject({
       action: 'DONE',
       terminal: true,

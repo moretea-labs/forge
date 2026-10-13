@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { parseChatgptConversationIdentity } from './chatgpt-conversation';
 import { parseSupervisorCompletion, renderEffectMarker, renderSupervisorPrompt, sha256, validateEffectId, validateSupervisorObjective } from './protocol';
 import { WorkflowSupervisorStore } from './store';
-import type { WorkflowAssistantObservation, WorkflowAssistantObservationResult, WorkflowContractValidation, WorkflowEffectKind, WorkflowSupervisorAutomationStatus, WorkflowSupervisorBrowserPollResult, WorkflowSupervisorBrowserTask, WorkflowSupervisorCompletion, WorkflowSupervisorDiscoveredConversation, WorkflowSupervisorEffect, WorkflowSupervisorLifecycleHooks, WorkflowSupervisorProjectScope, WorkflowSupervisorTask, WorkflowSupervisorTaskInput, WorkflowSupervisorTerminalState, WorkflowSupervisorValidators, WorkflowSupervisorPreflightComposerObservation } from './types';
+import type { WorkflowAssistantObservation, WorkflowAssistantObservationResult, WorkflowContractValidation, WorkflowEffectKind, WorkflowSupervisorBrowserPollResult, WorkflowSupervisorBrowserTask, WorkflowSupervisorCompletion, WorkflowSupervisorDiscoveredConversation, WorkflowSupervisorEffect, WorkflowSupervisorLifecycleHooks, WorkflowSupervisorProjectScope, WorkflowSupervisorTask, WorkflowSupervisorTaskInput, WorkflowSupervisorTerminalState, WorkflowSupervisorValidators, WorkflowSupervisorPreflightComposerObservation } from './types';
 
 function compactProjectIdentity(value: string): string {
   return value.normalize('NFKC').toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
@@ -692,71 +692,6 @@ export class WorkflowSupervisorControlPlane {
     return { action: parsed.proposal.action, completionFingerprint, terminal: validation.valid, ...(resolved.successorEffect ? { successorEffect: resolved.successorEffect } : {}), validation, deduplicated: committed.deduplicated || resolved.deduplicated };
   }
 
-  /**
-   * The autonomous transport records its final state through the Forge tool
-   * call, not through text rendered in the ChatGPT page.  The exact task and
-   * applied effect are derived locally; callers cannot select a different
-   * conversation or effect by supplying model-authored identifiers.
-   */
-  async observeAutomationReceipt(input: {
-    taskId: string;
-    conversationId: string;
-    status: WorkflowSupervisorAutomationStatus;
-    receiptId: string;
-  }): Promise<WorkflowAssistantObservationResult | { recorded: true }> {
-    if (input.status === 'working') return { recorded: true };
-    const task = this.requireTask(input.taskId);
-    if (task.conversationId !== input.conversationId) throw new Error('WORKFLOW_SUPERVISOR_CONVERSATION_MISMATCH');
-    const terminal = this.store.terminalAction(task.taskId);
-    if (terminal) throw new Error(`WORKFLOW_SUPERVISOR_TASK_TERMINAL:${terminal}`);
-    const expectedEffect = this.store.latestAppliedEffectWithoutCompletion(task.taskId)
-      ?? this.store.latestAppliedLeafEffectWithoutCompletion(task.taskId);
-    // A provider can reuse one tool name/status in successive outer turns.
-    // Include the locally selected effect in the durable receipt identity so a
-    // later `continue` cannot replay the first effect's completion.
-    const replayCompletion = expectedEffect ? undefined : this.store.getLatestCompletion(task.taskId);
-    if (!expectedEffect && (!replayCompletion
-      || replayCompletion.proposal.checkpoint !== `automation:${input.receiptId}:${replayCompletion.sourceEffectId}`)) {
-      throw new Error('WORKFLOW_SUPERVISOR_CAUSAL_EFFECT_NOT_APPLIED');
-    }
-    const receiptForEffect = `${input.receiptId}:${expectedEffect?.effectId ?? replayCompletion!.sourceEffectId}`;
-    const responseText = `automation:${input.status}:${receiptForEffect}`;
-    const responseSha256 = sha256(responseText);
-    const priorCompletion = expectedEffect ? undefined : this.store.getCompletionByResponseSha256(task.taskId, responseSha256);
-    const sourceEffect = expectedEffect ?? (priorCompletion ? this.store.getEffect(priorCompletion.sourceEffectId) : undefined);
-    if (!sourceEffect || sourceEffect.taskId !== task.taskId || !this.store.effectApplied(sourceEffect.effectId)) {
-      throw new Error('WORKFLOW_SUPERVISOR_CAUSAL_EFFECT_NOT_APPLIED');
-    }
-    const action = input.status === 'continue' ? 'CONTINUE' : input.status === 'done' ? 'DONE' : 'NEEDS_USER';
-    const proposal = {
-      action: action as 'CONTINUE' | 'DONE' | 'NEEDS_USER',
-      sourceEffectId: sourceEffect.effectId,
-      checkpoint: `automation:${receiptForEffect}`,
-      reason: 'automation_tool_receipt',
-      evidence: [],
-      conversationId: task.conversationId,
-      taskId: task.taskId,
-      supervisorState: action === 'CONTINUE' ? 'running' as const : action === 'DONE' ? 'done' as const : 'needs_user' as const,
-    };
-    const controlBlockSha256 = sha256(responseText);
-    const completionFingerprint = sha256(jsonIdentity(task.taskId, task.conversationId, sourceEffect.effectId, responseSha256, controlBlockSha256));
-    const completion: WorkflowSupervisorCompletion = { completionFingerprint, taskId: task.taskId, sourceEffectId: sourceEffect.effectId, action: proposal.action, responseSha256, controlBlockSha256, proposal, committedAt: new Date().toISOString() };
-    if (proposal.action === 'CONTINUE') {
-      const committed = this.reserveContinuation(task, completion);
-      return { action: 'CONTINUE', completionFingerprint, terminal: false, successorEffect: committed.successorEffect!, deduplicated: committed.deduplicated };
-    }
-    const committed = this.store.commitCompletion(completion);
-    const validation = proposal.action === 'DONE'
-      ? await this.validators.completionContract(task, proposal)
-      : await this.validators.userBlockerPolicy(task, proposal);
-    const correctionId = validation.valid ? undefined : stableEffectId(`completion:${completionFingerprint}`);
-    const resolved = this.store.resolveTerminal({
-      completionFingerprint, taskId: task.taskId, action: proposal.action, accepted: validation.valid, reason: validation.reason,
-      ...(correctionId ? { correction: { effectId: correctionId, prompt: this.renderPrompt(task, correctionId, 'correction', proposal.checkpoint, validation.reason) } } : {}),
-    });
-    return { action: proposal.action, completionFingerprint, terminal: validation.valid, ...(resolved.successorEffect ? { successorEffect: resolved.successorEffect } : {}), validation, deduplicated: committed.deduplicated || resolved.deduplicated };
-  }
-
   /** Model CONTINUE and its causal successor commit in the same authority transaction. */
   private reserveContinuation(task: WorkflowSupervisorTask, completion: WorkflowSupervisorCompletion) {
     const nextId = stableEffectId(`completion:${completion.completionFingerprint}`);
@@ -808,18 +743,18 @@ export class WorkflowSupervisorControlPlane {
     if (!effect.sourceCompletionFingerprint) return true;
     const completion = this.store.getCompletion(effect.sourceCompletionFingerprint);
     if (!completion || completion.taskId !== task.taskId) return false;
-    // Text-parsed completions are causally anchored to the exact assistant page
-    // response that produced the Supervisor receipt. Automation tool receipts are
-    // different: their responseSha256 hashes the synthetic durable receipt carrier,
-    // not text rendered in ChatGPT. The page can also collapse the prior automated
-    // prompt to ordinary visible prose, so neither the response hash nor its effect
-    // marker is a valid prerequisite for delivering the already-reserved successor.
-    // The durable receipt has already bound task, conversation, and source effect;
-    // retain that local causal fence and skip only the unavailable page-text proof.
-    const automationToolReceipt = completion.proposal.reason === 'automation_tool_receipt';
+    // A compact completion is committed only after observing the provider's
+    // finished assistant reply and checking its causal challenge. ChatGPT may
+    // subsequently collapse that historical reply or its original user marker;
+    // requiring the bytes to remain in the DOM would strand a valid successor.
+    // Persisted legacy tool receipts are read-only migration evidence; the MCP
+    // receipt writer has been retired. In both cases the committed completion,
+    // not a new heuristic, is the one authority for the successor.
+    const durableReceipt = completion.proposal.reason === 'compact_receipt'
+      || completion.proposal.reason === 'automation_tool_receipt';
     const sourceEffect = this.store.getEffect(completion.sourceEffectId);
     if (!sourceEffect || sourceEffect.taskId !== task.taskId) return false;
-    if (automationToolReceipt) return true;
+    if (durableReceipt) return true;
     if (sha256(snapshot.latestAssistantResponse) !== completion.responseSha256) return false;
     return normalizeBrowserText(snapshot.latestUserText) === normalizeBrowserText(sourceEffect.prompt)
       || browserTextHasEffect(snapshot.latestUserText, sourceEffect.effectId);

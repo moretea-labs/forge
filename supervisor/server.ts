@@ -386,11 +386,6 @@ async function dispatch(control: WorkflowSupervisorControlPlane, discovery: Work
   if (req.method === 'reserve_enrollment') return control.reserveEnrollment(text(p, 'task_id'), typeof p.effect_id === 'string' ? p.effect_id : undefined);
   if (req.method === 'observe_effect') { const outcome = text(p, 'outcome'); if (!['applied','unknown'].includes(outcome)) throw new Error('WORKFLOW_SUPERVISOR_RPC_OUTCOME_INVALID'); control.observeEffect({ effectId: text(p, 'effect_id'), observationId: text(p, 'observation_id'), outcome: outcome as 'applied'|'unknown', evidence: object(p.evidence) }); return { recorded: true }; }
   if (req.method === 'observe_assistant') return control.observeAssistantTurn({ taskId: text(p, 'task_id'), conversationId: text(p, 'conversation_id'), responseText: text(p, 'response_text') });
-  if (req.method === 'automation_receipt') {
-    const status = text(p, 'automation_status');
-    if (!['working', 'continue', 'done', 'needs_user'].includes(status)) throw new Error('WORKFLOW_SUPERVISOR_RPC_AUTOMATION_STATUS_INVALID');
-    return control.observeAutomationReceipt({ taskId: text(p, 'task_id'), conversationId: text(p, 'conversation_id'), status: status as import('./types').WorkflowSupervisorAutomationStatus, receiptId: text(p, 'receipt_id') });
-  }
   if (req.method === 'task_get') return control.getTask(text(p, 'task_id')) ?? null;
   if (req.method === 'task_get_by_conversation') return control.getTaskByConversationId(text(p, 'conversation_id')) ?? null;
   if (req.method === 'effect_get') return control.getEffect(text(p, 'effect_id')) ?? null;

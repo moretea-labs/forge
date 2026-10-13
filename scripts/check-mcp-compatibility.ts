@@ -1,6 +1,5 @@
 import { readFileSync } from 'fs';
 import { FORGE_TOOL_SURFACE, FORGE_VERSION, forgeToolSurfaceFingerprint } from '../src/cli/controller/runtime-config';
-import { injectAutomationEnvelopeFields } from '../adapters/mcp/runtime-gateway/automation-receipt-adapter';
 import { injectCognitionSettlementFields } from '../adapters/mcp/runtime-gateway/cognition-settlement';
 import { injectDurableCommandFields } from '../src/runtime/gateway/mcp/router';
 import { runtimePolicy } from '../src/cli/mcp/multi-repository';
@@ -39,9 +38,9 @@ const EXPECTED_STABLE_CONTROLLER_TOOL_NAMES = [
 // schema snapshots without adding a parallel execution or graph authority.
 const EXPECTED_STABLE_TOOL_NAME_FINGERPRINT = 'b25da75c1f774e66';
 // Every public object-schema tool carries shared transport metadata only through
-// the final tools/list materialization path. Automation and Cognition settlement
-// revisions intentionally invalidate stale Connector schema snapshots.
-const EXPECTED_STABLE_TOOL_SCHEMA_FINGERPRINT = '643521037647c28a';
+// the final tools/list materialization path. Tool schema revisions
+// intentionally invalidate stale Connector schema snapshots.
+const EXPECTED_STABLE_TOOL_SCHEMA_FINGERPRINT = '2ab9ad54e6cb2985';
 
 const policy = runtimePolicy(process.cwd(), {
   profile: 'controller',
@@ -71,7 +70,7 @@ const preferredNames: string[] = [...PREFERRED_FACADE_TOOL_NAMES];
 const defaultFingerprint = forgeToolSurfaceFingerprint(defaultNames);
 const stableDefinitions = defaultNames
   .map((name) => definitionByName.get(name)).filter((tool) => tool !== undefined)
-  .map((tool) => injectCognitionSettlementFields(injectAutomationEnvelopeFields(injectDurableCommandFields(tool))));
+  .map((tool) => injectCognitionSettlementFields(injectDurableCommandFields(tool)));
 const stableSchemaFingerprint = forgeToolSurfaceFingerprint(stableDefinitions);
 const catalogFingerprint = forgeToolSurfaceFingerprint(catalogNames);
 const fullFingerprint = forgeToolSurfaceFingerprint(fullNames);

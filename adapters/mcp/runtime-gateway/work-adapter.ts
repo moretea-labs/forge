@@ -27,7 +27,6 @@ import { callRhWorkWorkflowOperation } from './work-workflow-operations';
 import { callRhWorkLearningOperation } from './work-learning-operations';
 import { callRhWorkControllerOperation } from './work-controller-operations';
 import { runFacadeRepair } from './work-repair-adapter';
-import { isAutomationReceiptCompatibilityCall } from './automation-receipt-adapter';
 import { authenticatedFacadeControllerIdentity } from './controller-authority-adapter';
 
 export { runFacadeRepair };
@@ -256,13 +255,6 @@ export async function callWorkAdapter(
   const args = wireMigration.args;
   const operation = wireMigration.operation;
   if (!isRhWorkAcceptedOperation(operation)) return invalidFacadeOperation('rh_work', operation);
-
-  if (operation === 'repair' && isAutomationReceiptCompatibilityCall(args)) {
-    return result(buildFacadeResult({
-      summary: 'Workflow Supervisor automation receipt accepted for canonical persistence.',
-      data: { automationReceiptCompatibility: true },
-    }) as unknown as Record<string, unknown>);
-  }
 
   if (isRhWorkRequirementOperation(operation) && operation !== 'requirement_promote_candidate') {
     const requirement = await callRhWorkRequirementOperation(ctx, undefined, operation, args);

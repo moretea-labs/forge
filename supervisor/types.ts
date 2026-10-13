@@ -2,7 +2,6 @@ export type WorkflowSupervisorAction = 'CONTINUE' | 'DONE' | 'NEEDS_USER';
 export type WorkflowSupervisorState = 'running' | 'done' | 'needs_user';
 export type WorkflowSupervisorTerminalState = 'DONE' | 'NEEDS_USER' | 'STOPPED';
 /** Machine receipt attached to Forge MCP calls made by an autonomous ChatGPT turn. */
-export type WorkflowSupervisorAutomationStatus = 'working' | 'continue' | 'done' | 'needs_user';
 export type WorkflowEffectKind = 'enrollment' | 'continuation' | 'correction' | 'recovery';
 export type WorkflowEffectOutcome = 'applied' | 'not_applied' | 'unknown';
 
@@ -32,12 +31,8 @@ export interface WorkflowSupervisorTurnEnvelope {
     role: 'advisory';
     projection: string;
   };
-  automation: {
-    automation_task_id: string;
-    automation_type: 'autonomous_continuation';
-    intermediate_status: 'working';
-    final_statuses: ['continue', 'done', 'needs_user'];
-  };
+  /** Final assistant reply receipt. No intermediate MCP call can end a turn. */
+  receipt: { challenge: string };
 }
 
 export interface WorkflowSupervisorProposal {
