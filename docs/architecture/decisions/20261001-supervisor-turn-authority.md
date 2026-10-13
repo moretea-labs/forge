@@ -217,9 +217,15 @@ present on Forge tools: exact `automation_task_id`,
 calls use `working`; the final Forge call for the turn uses `continue`, `done` or
 `needs_user`. The provider-facing continuation is intentionally close to a
 human "continue working" request: the model reads the previous result and
-canonical Work, chooses the next useful actions and keeps executing while safe
-work remains. It must not interpret a single passing check, commit, or phase as
-a mandatory turn boundary. The existing prompt now directs attention to the last concrete unfinished engineering action (for example a failing test or review finding), not repeated unchanged status observations; if blocked, it asks for specific new evidence. This remains advisory model guidance, not a new scoring gate or a second Work/progress authority. When handing off, the model can name the exact next action and evidence in its normal answer and existing Work result references, without a new state field. An `automation:*` or `receipt:*` causal checkpoint
+live project evidence, chooses useful actions and keeps executing while meaningful
+authorized work remains. It does not prescribe an existing Work, checkout,
+sequence or phase as a mandatory path, nor treat one successful check or tool
+call as completion. Parallel user and autonomous efforts may share an outcome
+without sharing a Work; models assess ownership and live source evidence,
+while Forge enforces mechanical writer/resource boundaries at execution. The
+prompt discourages repeated status-only rounds and requests actual results and
+remaining gaps. This is model guidance, not a semantic scoring gate, new state
+store or second Work/progress authority. An `automation:*` or `receipt:*` causal checkpoint
 is retained in the durable completion ledger but omitted from model-facing
 `continuity.summary`: it is a transport reference, not an engineering handoff.
 Meaningful non-receipt checkpoints and recovery/correction reasons remain

@@ -12,6 +12,7 @@ import {
 import {
   bindChatgptWorkConversation,
   getChatgptWorkConversationBinding,
+  findUniqueChatgptWorkBindingForConversation,
   rebindChatgptWorkConversation,
   type ChatgptWorkConversationBinding,
 } from '../../../adapters/chatgpt/work-conversation-binding-store';
@@ -135,10 +136,17 @@ function workflowSupervisorContractText(task: WorkflowSupervisorTask, key: strin
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
-function workflowSupervisorOriginWorkId(task: WorkflowSupervisorTask, repoId: string): string | undefined {
+function workflowSupervisorOriginWorkId(task: WorkflowSupervisorTask, repoId: string, controllerHome: string): string | undefined {
   const legacyWorkPrefix = `forge:${repoId}:work:`;
-  return workflowSupervisorContractText(task, 'work_id')
+  const explicit = workflowSupervisorContractText(task, 'work_id')
     ?? (task.taskId.startsWith(legacyWorkPrefix) ? task.taskId.slice(legacyWorkPrefix.length) || undefined : undefined);
+  if (explicit) return explicit;
+  // Standalone Supervisor enrollment predates Work binding in the Task contract.
+  // Read the one canonical conversation binding, never parse Work IDs from
+  // objectives and never make ambiguous matches into a second authority.
+  if (task.continuationPolicy.kind !== 'standalone_supervisor') return undefined;
+  const matched = findUniqueChatgptWorkBindingForConversation({ controllerHome, repoId }, task.conversationId);
+  return matched && getWorkContract({ controllerHome, repoId }, matched.workId) ? matched.workId : undefined;
 }
 
 /**
@@ -152,7 +160,7 @@ function workflowSupervisorWorkProgressFingerprint(controllerHome: string, task:
   const repoId = workflowSupervisorContractText(task, 'repo_id');
   const taskControllerHome = workflowSupervisorContractText(task, 'controller_home');
   if (!repoId || (taskControllerHome && taskControllerHome !== controllerHome)) return undefined;
-  const workId = workflowSupervisorOriginWorkId(task, repoId);
+  const workId = workflowSupervisorOriginWorkId(task, repoId, controllerHome);
   if (!workId) return undefined;
   const work = getWorkContract({ controllerHome, repoId }, workId);
   if (!work) return undefined;
@@ -195,7 +203,7 @@ function createForgeWorkflowSupervisorBrowserTaskActive(controllerHome: string):
     const taskControllerHome = workflowSupervisorContractText(task, 'controller_home');
     if (!repoId || taskControllerHome !== controllerHome) return false;
     if (requirementId && readRequirement({ controllerHome }, requirementId)?.value.state === 'cancelled') return false;
-    const workId = workflowSupervisorOriginWorkId(task, repoId);
+    const workId = workflowSupervisorOriginWorkId(task, repoId, controllerHome);
     if (!requirementId && !workId) return false;
     // An existing task may outlive the Work that originally enrolled it. Its
     // durable task/effect chain still owns the original Goal; absence cannot
@@ -209,6 +217,9 @@ export function forgeWorkflowSupervisorLifecycleHooks(controllerHome: string): W
   const browserTaskActive = createForgeWorkflowSupervisorBrowserTaskActive(controllerHome);
   return {
     canonicalObjectiveForTask: (task) => {
+      // Standalone Supervisor owns its full objective; Work execution context
+      // must never silently replace the original autonomous business goal.
+      if (task.continuationPolicy.kind === 'standalone_supervisor') return undefined;
       const repoId = workflowSupervisorContractText(task, 'repo_id');
       const requirementId = workflowSupervisorContractText(task, 'requirement_id');
       const taskControllerHome = workflowSupervisorContractText(task, 'controller_home');
@@ -220,7 +231,7 @@ export function forgeWorkflowSupervisorLifecycleHooks(controllerHome: string): W
         const outcome = readRequirement({ controllerHome }, requirementId)?.value.outcomeStatement?.trim();
         if (outcome) return outcome;
       }
-      const workId = workflowSupervisorOriginWorkId(task, repoId);
+      const workId = workflowSupervisorOriginWorkId(task, repoId, controllerHome);
       if (!workId) return undefined;
       const work = getWorkContract({ controllerHome, repoId }, workId);
       // Legacy / independent Work without Requirement authority keeps the
@@ -231,9 +242,21 @@ export function forgeWorkflowSupervisorLifecycleHooks(controllerHome: string): W
       const repoId = workflowSupervisorContractText(task, 'repo_id');
       const taskControllerHome = workflowSupervisorContractText(task, 'controller_home');
       if (!repoId || (taskControllerHome && taskControllerHome !== controllerHome)) return undefined;
-      const workId = workflowSupervisorOriginWorkId(task, repoId);
+      const workId = workflowSupervisorOriginWorkId(task, repoId, controllerHome);
       if (!workId) return undefined;
-      return renderCognitiveAttentionForWork({ controllerHome, repoId, workId, query: task.objective, maxItems: 6, maxBytes: 8 * 1024 });
+      const cognitive = renderCognitiveAttentionForWork({ controllerHome, repoId, workId, query: task.objective, maxItems: 6, maxBytes: 5 * 1024 });
+      if (task.continuationPolicy.kind !== 'standalone_supervisor') return cognitive;
+      const work = getWorkContract({ controllerHome, repoId }, workId);
+      if (!work) return cognitive;
+      // Thin evidence, not a second task/goal authority. Recent semantic refs
+      // carry the concrete next step even when Cognitive recall is empty.
+      const refs = (work.semanticResultRefs ?? []).slice(-5).map((ref) => ref.slice(0, 500));
+      return [
+        `Canonical Work: ${workId} (read-only execution context; Supervisor objective remains authoritative).`,
+        `Work objective: ${work.objective.slice(0, 600)}`,
+        ...refs.map((ref) => `Work evidence: ${ref}`),
+        ...(cognitive ? [cognitive] : []),
+      ].join('\n').slice(0, 8_000);
     },
     effectDispatchEvidence: ({ task }) => {
       const claim = getRuntimeWriteClaim();
@@ -255,7 +278,7 @@ export function forgeWorkflowSupervisorLifecycleHooks(controllerHome: string): W
       if (effect.kind !== 'enrollment') return undefined;
       const repoId = workflowSupervisorContractText(task, 'repo_id');
       const requirementId = workflowSupervisorContractText(task, 'requirement_id');
-      const workId = repoId ? workflowSupervisorOriginWorkId(task, repoId) : undefined;
+      const workId = repoId ? workflowSupervisorOriginWorkId(task, repoId, controllerHome) : undefined;
       const taskControllerHome = workflowSupervisorContractText(task, 'controller_home');
       if (!repoId || (!requirementId && !workId) || taskControllerHome !== controllerHome) return undefined;
       const store = { controllerHome, repoId };
@@ -336,7 +359,7 @@ export function forgeWorkflowSupervisorLifecycleHooks(controllerHome: string): W
       if (effect.kind !== 'enrollment') return;
       const repoId = workflowSupervisorContractText(task, 'repo_id');
       const requirementId = workflowSupervisorContractText(task, 'requirement_id');
-      const workId = repoId ? workflowSupervisorOriginWorkId(task, repoId) : undefined;
+      const workId = repoId ? workflowSupervisorOriginWorkId(task, repoId, controllerHome) : undefined;
       const taskControllerHome = workflowSupervisorContractText(task, 'controller_home');
       if (!repoId || (!requirementId && !workId) || taskControllerHome !== controllerHome) return;
       const store = { controllerHome, repoId };

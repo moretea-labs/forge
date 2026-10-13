@@ -162,9 +162,8 @@ export function renderSupervisorPrompt(
   const checkoutId = typeof task.completionContract.checkout_id === 'string'
     ? task.completionContract.checkout_id.trim()
     : typeof task.continuationPolicy.checkout_id === 'string' ? task.continuationPolicy.checkout_id.trim() : '';
-  // An automation receipt is a causal ledger key, not useful model-facing work
-  // continuity. The same conversation and canonical Forge Work already contain
-  // the actual completed work and unfinished engineering actions.
+  // An automation receipt is a causal key, not an engineering handoff.
+  // Conversation context and live project evidence guide the next action.
   const rawCheckpoint = typeof _checkpoint === 'string' ? _checkpoint.trim() : '';
   const checkpoint = /^(?:automation:|receipt:)/.test(rawCheckpoint) ? '' : rawCheckpoint.slice(0, 2_000);
   // Recovery/correction context is model-facing advisory evidence, not another
@@ -205,8 +204,8 @@ export function renderSupervisorPrompt(
     SUPERVISOR_TURN_BLOCK_END,
     // One ordinary continuation request, plus the existing causal tool receipt.
     // Work sequencing and when an assistant turn must end remain model decisions.
-    'CONTINUE WORK: Continue the original goal through the most concrete unfinished engineering action supported by the previous assistant result, canonical Work, source and verification receipts. Resume that action first (for example a specific failing test, source defect, review finding or pending integration), then carry out as much other useful work as is safe in this turn. Do not repeat unchanged status checks or describe a CONTINUE receipt, Work revision, or successful tool call as engineering output. A check, commit or phase is not a reason to stop while safe work remains. If no engineering action is currently executable, identify the precise blocker and evidence instead of repeating a generic not-DONE summary. For the next turn, state the concrete unfinished action, its source/process/commit identity where known, and the last verified result; use existing Work result references for durable context when appropriate, never a new progress state. If the conversation rotated, restore context from canonical Work and source. Respect existing permissions, writer boundaries and unknown-send protections.',
-    'FORGE_AUTONOMOUS_RECEIPT_V1: Use the automation_task_id and automation_type from this envelope on Forge calls. Use automation_status=working on intermediate calls. Only when this assistant turn must hand off unfinished work, record automation_status=continue in the final Forge call; use done only after the completion contract is satisfied, or needs_user only for a genuine user-only blocker. A text-only answer does not settle the turn. Do not treat a single completed step as the end of the turn. Briefly state actual results and unfinished work for the next turn.',
+    'CONTINUE WORK: Drive the user\'s original goal forward decisively. Use this conversation and live project evidence to select the most useful action, then do the work: investigate, change source, verify, fix, integrate or deliver as needed. Discover project rules and available execution paths through tools; do not assume a particular Work, checkout, phase or next step is mandatory. Other user or autonomous work may pursue the same goal: reuse results or proceed independently, checking ownership and changes before writing. Keep executing while meaningful authorized work is possible; do not substitute status checks, receipts or a single successful tool call for progress. Finish only when the goal is delivered or a concrete blocker requires a handoff. Briefly report actual results and the next actionable gap. Preserve user data, permissions and unknown-outcome protections.',
+    'FORGE_AUTONOMOUS_RECEIPT_V1: Include this envelope\'s automation_task_id and automation_type in Forge calls. Use automation_status=working for intermediate calls; on the final Forge call use automation_status=continue for unfinished work, automation_status=done only when the completion contract is met, or automation_status=needs_user for a genuine user-only blocker. A receipt or text-only summary is not delivery.',
   ].join('\n');
 }
 

@@ -315,6 +315,45 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     store.close();
   });
 
+  test('standalone Supervisor uses only a uniquely bound canonical conversation to resume its Work', () => {
+    const fx = fixture();
+    const conversationId = 'b2222222-3333-4444-5555-666666666666';
+    const workId = 'work-standalone-resume-concrete';
+    const objective = 'Run the pending exact-target regression before continuing delivery.';
+    createWorkContract(fx.store, {
+      workId, repoId: fx.repository.repoId, checkoutId: fx.repository.activeCheckoutId,
+      objective, acceptanceCriteria: ['Regression passes'],
+      allowedPaths: [], forbiddenPaths: [], checks: [],
+      constraints: { workspaceMode: 'current' }, requestedBy: 'chatgpt', dispatchState: 'running',
+    });
+    const task = {
+      taskId: 'supervisor:standalone-resume-concrete',
+      conversationId,
+      conversationUrl: `https://chatgpt.com/c/${conversationId}`,
+      objective: 'Unfinished autonomous Forge delivery',
+      completionContract: { repo_id: fx.repository.repoId, controller_home: fx.controllerHome },
+      continuationPolicy: { kind: 'standalone_supervisor' },
+      userBlockerPolicy: {},
+      createdAt: '2026-01-01T00:00:00.000Z',
+    };
+    const hooks = forgeWorkflowSupervisorLifecycleHooks(fx.controllerHome);
+    expect(hooks.canonicalObjectiveForTask?.(task)).toBeUndefined();
+    bindChatgptWorkConversation(fx.store, { workId, conversationUrl: task.conversationUrl });
+    expect(hooks.canonicalObjectiveForTask?.(task)).toBeUndefined();
+    expect(hooks.advisoryCognitionForTask?.(task)).toContain(objective);
+    expect(hooks.workProgressFingerprint?.(task)).toMatch(/^[0-9a-f]{64}$/);
+    const siblingId = 'work-standalone-resume-ambiguous';
+    createWorkContract(fx.store, {
+      workId: siblingId, repoId: fx.repository.repoId, checkoutId: fx.repository.activeCheckoutId,
+      objective: 'Unrelated sibling', acceptanceCriteria: [],
+      allowedPaths: [], forbiddenPaths: [], checks: [],
+      constraints: { workspaceMode: 'current' }, requestedBy: 'chatgpt', dispatchState: 'running',
+    });
+    bindChatgptWorkConversation(fx.store, { workId: siblingId, conversationUrl: task.conversationUrl });
+    expect(hooks.canonicalObjectiveForTask?.(task)).toBeUndefined();
+    expect(hooks.workProgressFingerprint?.(task)).toBeUndefined();
+  });
+
   test('derives standalone project scope from Supervisor-owned Controller Home', () => {
     const fx = fixture();
     const supervisorStore = new WorkflowSupervisorStore(join(fx.root, 'standalone-project-scope'));
@@ -506,13 +545,14 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     expect(recovery).toContain('FORGE_AUTONOMOUS_RECEIPT_V1');
     expect(recovery).toContain('automation_status=working');
     expect(recovery).toContain('automation_status=continue');
-    expect(recovery).toContain('CONTINUE WORK: Continue the original goal');
-    expect(recovery).toContain('the most concrete unfinished engineering action');
-    expect(recovery).toContain('Do not repeat unchanged status checks');
-    expect(recovery).toContain('state the concrete unfinished action');
-    expect(recovery).toContain('A check, commit or phase is not a reason to stop');
-    expect(recovery).toContain('never a new progress state');
-    expect(recovery).toContain('Only when this assistant turn must hand off unfinished work');
+    expect(recovery).toContain('CONTINUE WORK: Drive the user\'s original goal forward decisively');
+    expect(recovery).toContain('Drive the user\'s original goal forward decisively');
+    expect(recovery).toContain('do not assume a particular Work, checkout, phase or next step is mandatory');
+    expect(recovery).toContain('Other user or autonomous work may pursue the same goal');
+    expect(recovery).toContain('Keep executing while meaningful authorized work is possible');
+    expect(recovery).toContain('A receipt or text-only summary is not delivery');
+    expect(recovery).toContain('automation_status=continue for unfinished work');
+    expect(recovery).toContain('automation_status=done only when the completion contract is met');
     expect(recovery).not.toContain('After substantive progress, submit automation_status=continue');
     expect(recovery).not.toContain('EXECUTION PRIORITY:');
     expect(recovery).not.toContain(lowerLayerContext);
@@ -674,7 +714,7 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     });
     const machineCheckpoint = renderSupervisorPrompt(task, 'fx_continue_machine', 'continuation', 'automation:supervisor:test:rh_work:continue:fx_before_machine');
     expect(parseSupervisorTurn(machineCheckpoint).continuity).toBeUndefined();
-    expect(machineCheckpoint).toContain('CONTINUE WORK: Continue the original goal');
+    expect(machineCheckpoint).toContain('CONTINUE WORK: Drive the user\'s original goal forward decisively');
     expect(machineCheckpoint).not.toContain('automation:supervisor:test:rh_work:continue:fx_before_machine');
     expect(continuation).not.toContain('automation.receipt:');
     expect(continuation).not.toContain(renderSupervisorReceipt(task, 'fx_continue_1234', 'CONTINUE'));

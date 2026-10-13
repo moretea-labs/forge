@@ -1,6 +1,6 @@
 import { FORGE_INSTANCE_SCOPE_KEY } from '../../src/cli/repositories/controller-home';
 import { withControllerLock } from '../../src/cli/repositories/locks';
-import { readControlPlaneRecord, writeControlPlaneRecord } from '../../src/runtime/control-plane/persistence/sqlite-store';
+import { listControlPlaneRecords, readControlPlaneRecord, writeControlPlaneRecord } from '../../src/runtime/control-plane/persistence/sqlite-store';
 import { parseCanonicalChatgptConversationIdentity } from '../../packages/plugin-runtime/computer';
 
 const NAMESPACE = 'chatgpt_work_conversation_binding';
@@ -108,6 +108,26 @@ export function getChatgptWorkConversationBinding(
 ): ChatgptWorkConversationBinding | undefined {
   const value = record(options, workId)?.value;
   return value ? canonicalizeBinding(options, value) : undefined;
+}
+
+/**
+ * Read-only inverse of the existing canonical Work conversation binding.
+ * Never infer an owner from objective prose or a partial/ambiguous inventory.
+ */
+export function findUniqueChatgptWorkBindingForConversation(
+  options: ChatgptWorkBindingStoreOptions,
+  conversationId: string,
+): ChatgptWorkConversationBinding | undefined {
+  const repoId = options.repoId?.trim();
+  if (!repoId || !conversationId.trim()) return undefined;
+  const limit = 5000;
+  const records = listControlPlaneRecords<ChatgptWorkConversationBinding>(options.controllerHome, {
+    namespace: NAMESPACE, scope: FORGE_INSTANCE_SCOPE_KEY, limit,
+  });
+  if (records.length >= limit) return undefined; // Coverage unknown: fail closed.
+  const matches = records.filter(({ value }) => value.repoId === repoId && value.conversationId === conversationId);
+  if (matches.length !== 1) return undefined;
+  return canonicalizeBinding(options, matches[0]!.value);
 }
 
 function writeBinding(
