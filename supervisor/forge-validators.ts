@@ -42,7 +42,8 @@ function boundWorkLineage(task: WorkflowSupervisorTask, requirementId?: string):
   // Repository rows are compatibility evidence; portable semantic rows win by identity.
   const scopes = repoId ? [repoId, SEMANTIC_SCOPE_KEY] : [SEMANTIC_SCOPE_KEY];
   const byId = new Map<string, { workId: string; requirementId?: string; parentWorkId?: string;
-    semanticParentWorkId?: string; dependsOnWorkIds?: string[]; semanticState?: SemanticWorkState; error?: string }>();
+    semanticParentWorkId?: string; dependsOnWorkIds?: string[]; predecessorWorkId?: string;
+    supersedes?: string[]; supersededBy?: string; semanticState?: SemanticWorkState; error?: string }>();
   for (const scopeKey of new Set(scopes)) {
     const snapshot = readWorkContractLineageSnapshot({ controllerHome, scopeKey });
     if (snapshot.contracts.length + snapshot.invalid.length >= 5_000) return unsupported('work_lineage_read_limit');
@@ -54,11 +55,12 @@ function boundWorkLineage(task: WorkflowSupervisorTask, requirementId?: string):
   while (expanded) {
     expanded = false;
     for (const work of byId.values()) {
-      if (relevant.has(work.parentWorkId ?? '') || relevant.has(work.semanticParentWorkId ?? '')) {
+      if (relevant.has(work.parentWorkId ?? '') || relevant.has(work.semanticParentWorkId ?? '')
+        || relevant.has(work.predecessorWorkId ?? '') || (work.supersedes ?? []).some((id) => relevant.has(id))) {
         if (!relevant.has(work.workId)) { relevant.add(work.workId); expanded = true; }
       }
       if (relevant.has(work.workId)) {
-        for (const dependency of work.dependsOnWorkIds ?? []) {
+        for (const dependency of [...(work.dependsOnWorkIds ?? []), ...(work.supersededBy ? [work.supersededBy] : [])]) {
           if (!relevant.has(dependency)) { relevant.add(dependency); expanded = true; }
         }
       }
@@ -83,9 +85,9 @@ export function forgeWorkflowSupervisorValidators(): WorkflowSupervisorValidator
       }
       if (task.completionContract.kind === 'forge_work_done') {
         const work = workFor(task);
-        return work && isTerminalSemanticWorkState(work.semanticState)
+        return work && work.semanticState === 'completed'
           ? boundWorkLineage(task) ?? { valid: true, reason: 'work_terminal_committed' }
-          : unsupported('work_not_terminal');
+          : unsupported('work_not_completed');
       }
       if (!['forge_requirement_done', 'forge_dynamic_requirement_done'].includes(String(task.completionContract.kind ?? ''))) return unsupported('completion_contract_kind_unsupported');
       const requirement = requirementFor(task, proposal);
