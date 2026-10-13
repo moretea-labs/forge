@@ -221,7 +221,7 @@ test('real Chrome content script preserves all prompt spaces and newlines during
     ['alpha  beta line two', false],
     [prompt, true],
   ] as const) {
-    const composer = { value: rendered, querySelector: () => null };
+    const composer = { value: rendered, querySelector: () => null, getClientRects: () => [{}] };
     const sendButton = { disabled: false, getAttribute: () => null, click: () => { sends += 1; } };
     let sends = 0;
     let listener: ((message: Record<string, unknown>, sender: unknown, respond: (value: unknown) => void) => boolean) | undefined;
@@ -230,7 +230,7 @@ test('real Chrome content script preserves all prompt spaces and newlines during
       documentElement: {},
       querySelector: (selector: string) => selector.includes('#prompt-textarea') ? composer
         : selector.includes('send-button') ? sendButton : null,
-      querySelectorAll: (_selector: string) => empty,
+      querySelectorAll: (selector: string) => selector.includes('#prompt-textarea') ? [composer] : empty,
     };
     const context = {
       document, location: { href: currentUrl }, URL, Date, Map, Promise,
@@ -403,12 +403,13 @@ test('real GPT-6 Chinese picker verifies the strongest available three-step reas
     documentElement: {}, body: { innerText: '' }, title: 'Forge project',
     querySelector: (selector: string) => selector.includes('#prompt-textarea')
       ? editorParagraphs ? {
-        isContentEditable: true,
+        isContentEditable: true, getClientRects: visible,
         innerText: editorParagraphs.join('\n\n'),
         children: editorParagraphs.map((text) => ({ tagName: 'P', innerText: text, textContent: text })),
-      } : { value: composerDraft }
+      } : { value: composerDraft, getClientRects: visible }
       : null,
-    querySelectorAll: (selector: string) => selector === 'main' ? [{ getClientRects: visible, querySelectorAll: () => empty }]
+    querySelectorAll: (selector: string) => selector.includes('#prompt-textarea') ? [document.querySelector(selector)]
+      : selector === 'main' ? [{ getClientRects: visible, querySelectorAll: () => empty }]
       : selector.includes('[aria-haspopup="menu"]') ? [headerMode, modelButton]
         : selector.includes('[role="slider"][aria-valuenow]') && menuOpen ? [slider]
           : selector.includes('menuitemradio') ? [] : [],

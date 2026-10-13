@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 
 
-test('new bootstrap tab cannot pass the worker readiness gate from URL-only or editor-only hydration', async () => {
+test('new bootstrap tab requires its hydrated editor, not a model picker, before preflight', async () => {
   const src = readFileSync(new URL('../../adapters/computer/chrome-extension/background.js', import.meta.url), 'utf8');
   const worker = src.slice(0, src.indexOf('chrome.runtime.onMessage.addListener('))
     .replace("importScripts('core.js');", '')
@@ -13,7 +13,6 @@ test('new bootstrap tab cannot pass the worker readiness gate from URL-only or e
   const snapshots = [
     { url: projectUrl },
     { url: projectUrl, composerText: '', reasoningControlReady: false },
-    { url: projectUrl, composerText: '', reasoningControlReady: true },
   ];
   let snapshotCount = 0;
   let created = 0;
@@ -48,7 +47,7 @@ test('new bootstrap tab cannot pass the worker readiness gate from URL-only or e
     identity: { namespace: 'chatgpt.bootstrap', bootstrapKey: 'supervisor:forge', projectUrl } }, 'real-chrome');
   expect(result).toMatchObject({ kind: 'ensured', providerBinding: { tabId: '507', windowId: '8' } });
   expect(created).toBe(1);
-  expect(snapshotCount).toBe(3);
+  expect(snapshotCount).toBe(2);
 });
 
 test('unhydrated bootstrap remains bound to its one created tab without creating or sending again', async () => {
@@ -69,7 +68,7 @@ test('unhydrated bootstrap remains bound to its one created tab without creating
       get: (_id: number, callback: (t: typeof tab) => void) => callback(tab),
       sendMessage: (_id: number, message: { type: string }, callback: (v: unknown) => void) => {
         if (message.type !== 'forge-computer-chatgpt-snapshot') throw new Error('Only snapshot allowed');
-        snapshots++;callback({ url, composerText: '', reasoningControlReady: false });
+        snapshots++;callback({ url, reasoningControlReady: false });
       },
     } },
     URL, Date, Map, Promise, setTimeout: (fn: () => void) => { queueMicrotask(fn); return 1; }, clearTimeout() {},

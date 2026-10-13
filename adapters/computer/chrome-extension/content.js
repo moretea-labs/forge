@@ -120,7 +120,17 @@
       .map((node) => core.normalizeText(node.innerText ?? node.textContent))
       .filter(Boolean).slice(-8).join('\n').slice(-PROVIDER_FAILURE_CHARS);
   };
-  const composer = () => document.querySelector(COMPOSER);
+  // Project pages can retain hidden SSR editors beside the live hydrated one.
+  // Resolve one visible editor, preferring the active main, or fail closed:
+  // a hidden editor's draft is not proof that the task-owned composer is busy.
+  const composer = () => {
+    const visibleEditors = Array.from(document.querySelectorAll(COMPOSER))
+      .filter((node) => visible(node) && !node.closest?.('[aria-hidden="true"], [hidden], [inert]'));
+    const root = conversationRoot();
+    const inMain = root === document ? [] : visibleEditors.filter((node) => root.contains?.(node));
+    const candidates = inMain.length ? inMain : visibleEditors;
+    return candidates.length === 1 ? candidates[0] : undefined;
+  };
   // Editor text is a provider payload, not a UI label: preserve its whitespace.
   const exactComposerText = (value) => String(value ?? '').replace(/\r\n?/g, '\n');
   const composerText = () => {

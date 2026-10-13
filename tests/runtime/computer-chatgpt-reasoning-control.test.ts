@@ -102,6 +102,7 @@ function fixture(options: {
     body: { innerText: '' },
     querySelectorAll(selector: string) {
       if (selector === 'main') return [main];
+      if (selector.includes('#prompt-textarea')) return [textarea];
       if (selector.includes('aria-haspopup') || selector.includes('data-testid*="model"') || selector.includes('data-testid*="reasoning"')) return control ? [control] : [];
       if (selector.includes('[data-mention-section-items]')) return pickerOpen && options.forgeAppLabel ? [forgeOption] : [];
       if (selector.includes('[role="menuitemradio"]')) return state.menuOpen && option ? [option] : [];
