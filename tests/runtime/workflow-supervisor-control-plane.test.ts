@@ -507,7 +507,11 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     expect(recovery).toContain('automation_status=working');
     expect(recovery).toContain('automation_status=continue');
     expect(recovery).toContain('CONTINUE WORK: Continue the original goal');
-    expect(recovery).toContain('A successful tool call, check, commit or phase is not a reason to stop');
+    expect(recovery).toContain('the most concrete unfinished engineering action');
+    expect(recovery).toContain('Do not repeat unchanged status checks');
+    expect(recovery).toContain('state the concrete unfinished action');
+    expect(recovery).toContain('A check, commit or phase is not a reason to stop');
+    expect(recovery).toContain('never a new progress state');
     expect(recovery).toContain('Only when this assistant turn must hand off unfinished work');
     expect(recovery).not.toContain('After substantive progress, submit automation_status=continue');
     expect(recovery).not.toContain('EXECUTION PRIORITY:');

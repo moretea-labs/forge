@@ -219,7 +219,7 @@ calls use `working`; the final Forge call for the turn uses `continue`, `done` o
 human "continue working" request: the model reads the previous result and
 canonical Work, chooses the next useful actions and keeps executing while safe
 work remains. It must not interpret a single passing check, commit, or phase as
-a mandatory turn boundary. An `automation:*` or `receipt:*` causal checkpoint
+a mandatory turn boundary. The existing prompt now directs attention to the last concrete unfinished engineering action (for example a failing test or review finding), not repeated unchanged status observations; if blocked, it asks for specific new evidence. This remains advisory model guidance, not a new scoring gate or a second Work/progress authority. When handing off, the model can name the exact next action and evidence in its normal answer and existing Work result references, without a new state field. An `automation:*` or `receipt:*` causal checkpoint
 is retained in the durable completion ledger but omitted from model-facing
 `continuity.summary`: it is a transport reference, not an engineering handoff.
 Meaningful non-receipt checkpoints and recovery/correction reasons remain
