@@ -93,7 +93,8 @@ function now(): string {
 
 function comparablePath(value: string): string {
   const resolved = resolve(value);
-  return process.platform === 'darwin' && resolved.startsWith('/var/')
+  // macOS /tmp and /var are symlinks into /private; compare both aliases canonically.
+  return process.platform === 'darwin' && (/^\/(?:tmp|var)(?:\/|$)/.test(resolved))
     ? `/private${resolved}`
     : resolved;
 }

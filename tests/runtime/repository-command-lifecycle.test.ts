@@ -75,6 +75,15 @@ function seedRepo(controllerHome: string, repoRoot: string) {
   return registerRepository({ path: repoRoot, controllerHome });
 }
 
+test('macOS temporary repository and Controller Home aliases are accepted consistently', () => {
+  if (process.platform !== 'darwin') return;
+  const root = tempRoot('forge-macos-temp-alias-');
+  const controllerHome = join(root, 'controller');
+  const repoRoot = join(root, 'repo');
+  const registered = seedRepo(controllerHome, repoRoot);
+  expect(registered.canonicalRoot).toContain('/private/tmp/');
+});
+
 function seedWorkHandle(controllerHome: string, repository: ReturnType<typeof seedRepo>, workId: string): WorkHandleState {
   const now = new Date().toISOString();
   const head = gitOutput(repository.canonicalRoot, ['rev-parse', 'HEAD']);
