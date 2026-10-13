@@ -551,8 +551,9 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     expect(recovery).toContain('Other user or autonomous work may pursue the same goal');
     expect(recovery).toContain('Keep executing while meaningful authorized work is possible');
     expect(recovery).toContain('A receipt or text-only summary is not delivery');
-    expect(recovery).toContain('automation_status=continue for unfinished work');
-    expect(recovery).toContain('automation_status=done only when the completion contract is met');
+    expect(recovery).toContain('use automation_status=continue on the final Forge call if work remains');
+    expect(recovery).toContain('automation_status=working on every intermediate call');
+    expect(recovery).toContain('automation_status=done only if the goal\'s completion contract is met');
     expect(recovery).not.toContain('After substantive progress, submit automation_status=continue');
     expect(recovery).not.toContain('EXECUTION PRIORITY:');
     expect(recovery).not.toContain(lowerLayerContext);

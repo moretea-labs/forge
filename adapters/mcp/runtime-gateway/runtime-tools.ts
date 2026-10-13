@@ -22,7 +22,6 @@ export {
   runtimeToolDefinitions,
 } from './runtime-tool-definitions';
 import { callWorkAdapter, runFacadeRepair } from './work-adapter';
-import { automationMetadata, persistAutomationReceipt } from './automation-receipt-adapter';
 
 async function callRuntimeToolUnchecked(ctx: MultiRepositoryMcpToolContext, name: string, args: Record<string, unknown>): Promise<CallToolResult | undefined> {
   try {
@@ -68,10 +67,7 @@ async function callRuntimeToolUnchecked(ctx: MultiRepositoryMcpToolContext, name
 }
 
 export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: string, args: Record<string, unknown>): Promise<CallToolResult | undefined> {
-  const metadata = automationMetadata(args);
-  const outcome = await callRuntimeToolUnchecked(ctx, name, args);
-  await persistAutomationReceipt(ctx, name, metadata, outcome);
-  return outcome;
+  return callRuntimeToolUnchecked(ctx, name, args);
 }
 
 export { runtimeIdentitySnapshot, dispatchedChatgptRelayAuthorizesStaleControllerRecovery, sessionlessFacadeControllerAuthorityMatches } from './controller-authority-adapter';

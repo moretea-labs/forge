@@ -15,6 +15,7 @@ import {
 import { callAccessTool } from './tool-mapping/access-tools';
 import { callRepositoryToolWithPostFinalizeAttribution } from './tool-mapping/post-finalize-work-attribution';
 import { callRuntimeTool } from './runtime-gateway/runtime-tools';
+import { automationMetadata, persistAutomationReceipt } from './runtime-gateway/automation-receipt-adapter';
 import { callExecutionTool } from './runtime-gateway/execution-tools';
 import { callProcessTool } from './runtime-gateway/process-tools';
 import { injectDurableCommandFields, isGatewayIsolatedTool, routeDurableMcpCall } from './runtime-gateway/router';
@@ -1078,7 +1079,11 @@ export function createForgeMcpServerFromContext(
           if (repositoryResult) return repositoryResult;
           return await callMultiRepositoryTool(ctx, name, args);
         };
+        const metadata = automationMetadata(args);
         const localResult = await executeLocalTool();
+        // The causal completion receipt belongs to the entire MCP dispatcher,
+        // not only one adapter. All successful tool lanes settle it uniformly.
+        await persistAutomationReceipt(ctx, name, metadata, localResult);
         return settleCognitionAfterTool(ctx, name, args, localResult) ?? localResult;
       });
     }
