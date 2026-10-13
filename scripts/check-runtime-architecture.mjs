@@ -1108,6 +1108,9 @@ requireText('adapters/controller-process/controller-host.ts', 'createProcessCont
 requireText('src/runtime/workflow/schedules/engine.ts', 'workflow_supervisor_owns_outer_turn');
 requireText('src/runtime/root/workflow-supervisor-composition.ts', 'registerWorkflowSupervisorTask');
 requireText('src/runtime/root/workflow-supervisor-composition.ts', 'reserveWorkflowSupervisorEnrollment');
+requireText('src/runtime/root/workflow-supervisor-composition.ts', 'getWorkflowSupervisorTask(forgeHome, taskId)');
+requireText('src/runtime/root/workflow-supervisor-composition.ts', "stall.state === 'terminal'");
+requireText('src/runtime/root/workflow-supervisor-composition.ts', 'WORKFLOW_SUPERVISOR_TASK_REQUIREMENT_CONFLICT');
 requireText('supervisor/entry.ts', 'forgeWorkflowSupervisorValidators()');
 forbid('supervisor/client.ts', /reserveWorkflowSupervisorSchedulerRecovery|reserve_scheduler_recovery/, 'Scheduler recovery is not a Supervisor RPC; reconciliation stays on the canonical effect ledger');
 forbid('supervisor/control-plane.ts', /reserveSchedulerRecovery/, 'Scheduler recovery must not regrow as a second Supervisor recovery authority');

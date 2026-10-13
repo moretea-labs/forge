@@ -884,6 +884,76 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     }
   });
 
+
+  test('does not resurrect a stopped Work bootstrap task or re-register a live one after Work wording changes', async () => {
+    const fx = fixture();
+    const stoppedWorkId = 'work-stopped-bootstrap-after-replacement';
+    const liveWorkId = 'work-existing-bootstrap-after-work-update';
+    for (const workId of [stoppedWorkId, liveWorkId]) {
+      createWorkContract(fx.store, {
+        workId, repoId: fx.repository.repoId, checkoutId: fx.repository.activeCheckoutId,
+        objective: 'Updated Work wording must not become an implicit Supervisor task revision.',
+        acceptanceCriteria: ['Existing Supervisor Task/effect remains the only outer-turn authority'],
+        allowedPaths: [], forbiddenPaths: [], checks: [],
+        constraints: { workspaceMode: 'current' },
+        requestedBy: 'chatgpt', dispatchState: 'running',
+      });
+    }
+    const supervisorRoot = join(fx.controllerHome, 'supervisor');
+    mkdirSync(supervisorRoot, { recursive: true });
+    const supervisorStore = new WorkflowSupervisorStore(supervisorRoot);
+    const control = new WorkflowSupervisorControlPlane(supervisorStore);
+    const register = (workId: string) => control.registerTask({
+      taskId: `forge:${fx.repository.repoId}:work:${workId}`,
+      conversationId: `bootstrap:${workId}`,
+      conversationUrl: 'https://chatgpt.com/',
+      objective: 'Original Supervisor goal must remain immutable without explicit CAS revision.',
+      completionContract: { kind: 'forge_work_done', controller_home: fx.controllerHome,
+        repo_id: fx.repository.repoId, work_id: workId },
+      continuationPolicy: { kind: 'forge_goal_outer_turn', bootstrap: true,
+        outer_turn_owner: 'workflow_supervisor' },
+      userBlockerPolicy: { kind: 'forge_work_waiting_for_user',
+        controller_home: fx.controllerHome, repo_id: fx.repository.repoId, work_id: workId },
+    });
+    const stopped = register(stoppedWorkId);
+    const stoppedEffect = control.reserveEnrollment(stopped.taskId);
+    expect(control.stopTask(stopped.taskId, 'Historical task explicitly replaced.').terminal).toBe('STOPPED');
+    const live = register(liveWorkId);
+    const liveEffect = control.reserveEnrollment(live.taskId);
+    const server = createWorkflowSupervisorServer({
+      controlPlane: control,
+      socketPath: join(supervisorRoot, 'supervisor.sock'),
+      discovery: new WorkflowSupervisorEphemeralDiscovery(),
+      browserAdapterEnabled: true,
+    });
+    await new Promise<void>((resolve, reject) => {
+      if (server.listening) { resolve(); return; }
+      server.once('listening', () => resolve());
+      server.once('error', reject);
+    });
+    try {
+      expect(workflowSupervisorBoundaryForWork(fx.store, stoppedWorkId).status).toBe('conversation_pending');
+      expect(workflowSupervisorBoundaryForWork(fx.store, liveWorkId).status).toBe('conversation_pending');
+      expect(await ensureWorkflowSupervisorEnrollmentForWork(fx.store, stoppedWorkId)).toEqual({
+        status: 'lower_layer_not_ready', reason: 'WORKFLOW_SUPERVISOR_TASK_TERMINAL',
+      });
+      expect(await ensureWorkflowSupervisorEnrollmentForWork(fx.store, liveWorkId)).toEqual({
+        status: 'enrolled', taskId: live.taskId, effectId: liveEffect.effectId,
+      });
+      expect(control.taskStall(stopped.taskId)).toMatchObject({ state: 'terminal' });
+      expect(supervisorStore.getEffectByOriginKey(`enrollment:${stopped.taskId}`)?.effectId)
+        .toBe(stoppedEffect.effectId);
+      expect(supervisorStore.getEffectByOriginKey(`enrollment:${live.taskId}`)?.effectId)
+        .toBe(liveEffect.effectId);
+      expect(supervisorStore.listTasks()).toHaveLength(2);
+      expect(control.getTask(stopped.taskId)?.objective).toBe(stopped.objective);
+      expect(control.getTask(live.taskId)?.objective).toBe(live.objective);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      supervisorStore.close();
+    }
+  });
+
   test('reuses enrolled exact Supervisor authority without requiring another ControllerRound', async () => {
     const fx = fixture();
     const workId = 'work-supervisor-existing-authority-no-round';

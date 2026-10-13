@@ -16,7 +16,7 @@ import {
   type ChatgptWorkConversationBinding,
 } from '../../../adapters/chatgpt/work-conversation-binding-store';
 import { readRequirement } from '../control-plane/persistence/requirement-store';
-import { getWorkflowSupervisorCurrentConversation, getWorkflowSupervisorTaskByConversationId, registerWorkflowSupervisorTask, reserveWorkflowSupervisorEnrollment } from '../../../supervisor/client';
+import { getWorkflowSupervisorCurrentConversation, getWorkflowSupervisorTask, getWorkflowSupervisorTaskByConversationId, getWorkflowSupervisorTaskStall, registerWorkflowSupervisorTask, reserveWorkflowSupervisorEnrollment } from '../../../supervisor/client';
 import { resolveWorkflowSupervisorForgeHome, workflowSupervisorSocketPath } from '../../../supervisor/paths';
 import type { WorkflowSupervisorLifecycleHooks, WorkflowSupervisorTask } from '../../../supervisor/types';
 import { getRuntimeWriteClaim } from './write-fence';
@@ -420,6 +420,39 @@ export async function ensureWorkflowSupervisorEnrollmentForWork(
   // Supervisor task already owning that conversation, including across successor Work.
   const taskId = taskIdForWork(options.repoId, workId);
   if (!existsSync(workflowSupervisorSocketPath(forgeHome))) return { status: 'daemon_unavailable', taskId };
+
+  // A Work-derived Supervisor id is a durable task reservation, not a
+  // registration template to rewrite on every Scheduler wake. In particular,
+  // an explicitly stopped historical task remains terminal even if its Work is
+  // still open, and a live bootstrap retains its original immutable objective
+  // and effect when the lower Work wording changes. Do not mint a replacement
+  // send, mutate Task identity, or use lower ControllerRound state to revive it.
+  const existingWorkTask = await getWorkflowSupervisorTask(forgeHome, taskId);
+  if (existingWorkTask) {
+    const existingRepoId = typeof existingWorkTask.completionContract.repo_id === 'string'
+      ? existingWorkTask.completionContract.repo_id
+      : existingWorkTask.continuationPolicy.repo_id;
+    const existingWorkId = existingWorkTask.completionContract.work_id;
+    if (existingRepoId !== options.repoId || existingWorkId !== workId) {
+      throw new Error('WORKFLOW_SUPERVISOR_TASK_ID_CONFLICT');
+    }
+    const stall = await getWorkflowSupervisorTaskStall(forgeHome, taskId);
+    if (stall.state === 'terminal') {
+      return { status: 'lower_layer_not_ready', reason: 'WORKFLOW_SUPERVISOR_TASK_TERMINAL' };
+    }
+    const ownedRequirementId = typeof existingWorkTask.completionContract.requirement_id === 'string'
+      ? existingWorkTask.completionContract.requirement_id : undefined;
+    if (ownedRequirementId !== getWorkContract(options, workId)?.requirementId) {
+      throw new Error('WORKFLOW_SUPERVISOR_TASK_REQUIREMENT_CONFLICT');
+    }
+    if (boundary.status === 'conversation_pending') {
+      if (existingWorkTask.continuationPolicy.kind !== 'forge_goal_outer_turn') {
+        throw new Error('WORKFLOW_SUPERVISOR_TASK_ID_CONFLICT');
+      }
+      const effect = await reserveWorkflowSupervisorEnrollment(forgeHome, taskId);
+      return { status: 'enrolled', taskId, effectId: effect.effectId };
+    }
+  }
 
   // Once an exact conversation is already owned by a Supervisor task, that
   // task is the outer-turn authority. ControllerRound is only first-admission
