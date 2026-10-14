@@ -9,7 +9,7 @@ The objective remains Computer responsiveness and the wider Forge execution work
 - The repaired Computer hot-path benchmark uses the advertised `computer.observe.v1` / `computer_execute` protocol. With 50 samples, warm dispatch p50 was 2.5ms and p95 11.1ms, with exactly one observe RPC per action and no warm handshakes, manifest/status probes, or connection creation. This isolated fixture measures dispatch, not native UI or remote transport latency.
 - A local authenticated MCP status sample (five calls) measured client p50 7.8ms / p95 18.0ms and server p50 5.8ms / p95 13.9ms. Local transport overhead is therefore different from the remote connector observations above.
 - The existing thin-harness MCP benchmark reported all acceptance fields true: fast paths created no ExecutionJobs, LocalJobs, workers, scheduler wakes, or projection invalidations.
-- The legacy Work-efficiency benchmark still fails before physical execution because it assumes `rh_work start` creates a worktree and uses retired `verify`, `continue`, `finalize`, and `work_complete` operations. It needs conversion to the existing semantic Work and repository execution capabilities; restoring retired production APIs is inappropriate.
+- The legacy Work-efficiency benchmark failed before physical execution because it assumed `rh_work start` creates a worktree and used retired `verify`, `continue`, `finalize`, and `work_complete` operations. Its script and package entry were retired: comparing a removed lifecycle does not measure the current product. The existing thin-harness MCP benchmark remains the maintained execution-overhead measurement; current Work delivery acceptance still requires the canonical repository capabilities. No production compatibility APIs were restored.
 
 ## Plugin failure evidence
 
@@ -37,4 +37,4 @@ The existing Supervisor store owns index creation during database open. The inde
 
 ## Remaining verification
 
-The live latency distribution, scheduler/cleanup cost, remote connector internal errors, and canonical Work benchmark still need investigation. A Finder diagnostic target was retired through the same original request after connector observation errors; its stored receipt confirmed success. Claude CLI review could not run because it was not logged in. Focused checks, source review and isolated acceptance are evidence, but do not substitute for independent candidate review and installed-Runtime acceptance.
+The live latency distribution, scheduler/cleanup cost, remote connector internal errors, and current canonical Work execution/delivery efficiency still need investigation. A Finder diagnostic target was retired through the same original request after connector observation errors; its stored receipt confirmed success. Claude CLI review could not run because it was not logged in. Focused checks, source review and isolated acceptance are evidence, but do not substitute for independent candidate review and installed-Runtime acceptance.
