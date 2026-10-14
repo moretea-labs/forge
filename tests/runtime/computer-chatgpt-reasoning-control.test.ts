@@ -89,10 +89,14 @@ function fixture(options: {
       if (options.acknowledgeSlider !== false) sliderValue = Number(sliderValue) + (e.key === 'ArrowRight' ? 1 : -1);
     },
   };
+  let submittedUser: { innerText: string } | undefined;
+  let onMutation: (() => void) | undefined;
   const main = {
     getClientRects: visible,
     querySelectorAll(selector: string) {
-      const nodes = selector.includes('aria-haspopup') || selector.includes('data-testid*="model"') ? (control ? [control] : []) : [];
+      const nodes = selector.includes('[data-message-author-role="user"]') && submittedUser
+        ? [submittedUser]
+        : selector.includes('aria-haspopup') || selector.includes('data-testid*="model"') ? (control ? [control] : []) : [];
       return Object.assign(nodes, { item(index: number) { return nodes[index] ?? null; } });
     },
   };
@@ -118,7 +122,11 @@ function fixture(options: {
     querySelector(selector: string) {
       if (selector.includes('Add files and more') || selector.includes('添加文件等内容')) return options.forgeAppLabel ? picker : null;
       if (selector.includes('prompt-textarea') || selector.includes('composer-text-input')) return textarea;
-      if (selector.includes('send-button')) return { disabled: false, getAttribute: () => null, click() { state.sendClicks += 1; } };
+      if (selector.includes('send-button')) return { disabled: false, getAttribute: () => null, click() {
+        state.sendClicks += 1;
+        submittedUser = { innerText: textarea.value };
+        queueMicrotask(() => onMutation?.());
+      } };
       return null;
     },
   };
@@ -132,7 +140,11 @@ function fixture(options: {
     HTMLInputElement: class {},
     InputEvent: class {},
     KeyboardEvent: class { constructor(public type: string, public options: { key: string }) {} get key() { return this.options.key; } },
-    MutationObserver: class { observe() {} },
+    MutationObserver: class {
+      constructor(private readonly callback: () => void) {}
+      observe() { onMutation = this.callback; }
+      disconnect() { onMutation = undefined; }
+    },
     chrome: {
       runtime: {
         onMessage: { addListener(fn: typeof onMessage) { onMessage = fn; } },
@@ -177,7 +189,7 @@ test('Supervisor effect requires exact target identity before plain-text Send', 
 test('Supervisor sends a complete plain-text effect once without selecting any App', async () => {
   const f = fixture({ controlPresent: false, forgeAppLabel: 'forge' });
   const prompt = '<<<FORGE_WORKFLOW_EFFECT_V1:fx_test_browser_123456789>>>\nFORGE_WORKFLOW_TURN_V2_BEGIN';
-  expect(await f.dispatch(undefined, '12345678-1234-1234-1234-123456789abc', prompt)).toMatchObject({ dispatched: true });
+  expect(await f.dispatch(undefined, '12345678-1234-1234-1234-123456789abc', prompt)).toMatchObject({ dispatched: true, confirmed: true });
   expect(f.state.sendClicks).toBe(1);
   expect(f.textarea.chipNames).toEqual([]);
   expect(f.textarea.value).toBe(prompt);

@@ -11,7 +11,7 @@ type Response = { kind: string; mutation: string; reasonCode?: string; reasoning
 type Scenario = {
   capability?: unknown;
   preflightTransportError?: boolean;
-  dispatch?: { dispatched: boolean; reasoningVerified?: string };
+  dispatch?: { dispatched: boolean; confirmed?: boolean; reasoningVerified?: string };
 };
 function fixture(scenario: Scenario) {
   const tab = { id: 42, windowId: 8, url, title: 'Test conversation' };
@@ -42,12 +42,11 @@ function fixture(scenario: Scenario) {
         }
         if (message.type === 'forge-computer-chatgpt-dispatch') {
           submissions += 1;
-          callback(scenario.dispatch ?? { dispatched: true, reasoningVerified: 'xhigh' });
+          callback(scenario.dispatch ?? { dispatched: true, confirmed: true, reasoningVerified: 'xhigh' });
           return;
         }
         if (message.type === 'forge-computer-chatgpt-snapshot') {
-          callback({ latestUserText: 'source delivery' });
-          return;
+          throw new Error('Send confirmation must not poll another page snapshot');
         }
         callback({});
       },
@@ -112,7 +111,7 @@ test('capability transport failure remains pre-mutation and never triggers an am
   expect(f.submissions).toBe(0);
 });
 
-test('exact target tab capability permits verified reasoning dispatch and observation', async () => {
+test('exact target tab capability permits verified reasoning dispatch with in-page commit acknowledgment', async () => {
   const f = fixture({ capability: { reasoningPreflight: 'verified_before_send_v1' } });
   expect(await f.dispatch('xhigh')).toMatchObject({
     mutation: 'attempted', confirmed: true, reasoningVerified: 'xhigh',
@@ -121,7 +120,6 @@ test('exact target tab capability permits verified reasoning dispatch and observ
   expect(f.messages).toEqual([
     'forge-computer-chatgpt-capabilities',
     'forge-computer-chatgpt-dispatch',
-    'forge-computer-chatgpt-snapshot',
   ]);
 });
 
@@ -242,8 +240,8 @@ test('real Chrome content script preserves all prompt spaces and newlines during
         onMessage: { addListener: (fn: typeof listener) => { listener = fn; } },
         sendMessage: () => undefined,
       } },
-      MutationObserver: class { observe() {} },
-      setTimeout: (callback: () => void, ms: number) => { if (ms === 75) queueMicrotask(callback); return 1; },
+      MutationObserver: class { observe() {} disconnect() {} },
+      setTimeout: (callback: () => void, ms: number) => { if (ms === 75 || ms === 2_000) queueMicrotask(callback); return 1; },
       clearTimeout: () => undefined,
     };
     runInNewContext(content, context);

@@ -160,7 +160,6 @@ async function resolveTarget(identity, createIfMissing, pinnedBinding) {
   if (identity.namespace === 'chatgpt.bootstrap') bootstrapTabs.set(identity.bootstrapKey, tab.id);
   return { tab, created: true };
 }
-function normalize(value) { return core.normalizeText(value); }
 function dispatchTransportNotReached(error) {
   const text = String(error?.message ?? error);
   return /Receiving end does not exist|Could not establish connection|No tab with id/i.test(text);
@@ -266,15 +265,10 @@ async function executeDispatch(command) {
   if (command.reasoning !== undefined && !['medium', 'high', 'xhigh'].includes(result.reasoningVerified)) {
     return { kind: 'dispatch', mutation: 'attempted', confirmed: false };
   }
-  let observation;
-  for (let attempt = 1; attempt <= 4; attempt += 1) {
-    await sleep(attempt * 200);
-    try {
-      observation = await snapshot(target.tab.id, { includeUserHistory: false, includePageText: false });
-      if (normalize(observation.latestUserText) === normalize(command.prompt.replace(/^@forge\s+(?=<<<FORGE_WORKFLOW_EFFECT_V1:fx_[a-zA-Z0-9_-]+>>>)/, ''))) return { kind: 'dispatch', mutation: 'attempted', confirmed: true, ...(result.reasoningVerified ? { reasoningVerified: result.reasoningVerified } : {}), observation };
-    } catch { /* mutation already happened; only confirmation is missing */ }
-  }
-  return { kind: 'dispatch', mutation: 'attempted', confirmed: false, ...(result.reasoningVerified ? { reasoningVerified: result.reasoningVerified } : {}), ...(observation ? { observation } : {}) };
+  // The content script observes the committed user turn within the same page.
+  // A missing/negative receipt is an outcome-unknown submission, not a retry grant.
+  return { kind: 'dispatch', mutation: 'attempted', confirmed: result.confirmed === true,
+    ...(result.reasoningVerified ? { reasoningVerified: result.reasoningVerified } : {}) };
 }
 async function executeFindMarker(command, instanceId) {
   const matches = [];
