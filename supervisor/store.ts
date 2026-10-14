@@ -92,6 +92,10 @@ function openDatabase(forgeHome?: string): Database {
       kind TEXT NOT NULL, effect_id TEXT, completion_fingerprint TEXT, payload_json TEXT NOT NULL, occurred_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS events_task_order ON events(task_id, event_id);
+    -- Terminal probes run for every task on the polling/reconciliation paths.
+    -- Index only terminal facts so an open task does not rescan its whole log.
+    CREATE INDEX IF NOT EXISTS events_terminal_task_order ON events(task_id, event_id)
+      WHERE kind IN ('terminal_done','terminal_needs_user','terminal_stopped');
     CREATE INDEX IF NOT EXISTS events_effect_kind_order ON events(effect_id, kind, event_id);
     CREATE TABLE IF NOT EXISTS discovered_conversations (
       source TEXT NOT NULL, conversation_id TEXT NOT NULL, canonical_url TEXT NOT NULL, title TEXT,
