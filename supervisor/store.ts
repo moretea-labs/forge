@@ -194,9 +194,13 @@ function oldestUnappliedEffect(db: Database, taskId: string): WorkflowSupervisor
     ) AND NOT EXISTS (
       SELECT 1 FROM events superseded WHERE superseded.effect_id = e.effect_id AND superseded.kind = 'effect_outcome_unknown_superseded'
     ) AND NOT (
-      e.kind = 'recovery' AND EXISTS (
+      e.kind = 'recovery' AND NOT EXISTS (
+        SELECT 1 FROM events started
+        WHERE started.effect_id = e.effect_id AND started.kind = 'effect_dispatch_started'
+      ) AND EXISTS (
         SELECT 1 FROM completions completed
-        WHERE e.origin_key = 'provider-recovery:' || completed.source_effect_id
+        WHERE completed.task_id = e.task_id
+          AND e.origin_key = 'provider-recovery:' || completed.source_effect_id
       )
     ) ORDER BY e.created_at, e.effect_id LIMIT 1`, (s) => s.get(taskId)) as Record<string, unknown> | undefined;
   return row ? effectFromRow(row) : undefined;
@@ -1374,6 +1378,11 @@ export class WorkflowSupervisorStore {
     return this.transaction((db) => {
       const effect = statement(db, 'SELECT task_id FROM effects WHERE effect_id = ?', (s) => s.get(effectId)) as { task_id?: string } | undefined;
       if (!effect?.task_id) throw new Error('WORKFLOW_SUPERVISOR_EFFECT_UNKNOWN');
+      // Completion and recovery Send compete in this same Store transaction.
+      // A command obtained before a late completion cannot revive its recovery.
+      if (statement(db, `SELECT 1 FROM effects e JOIN completions c
+        ON c.task_id = e.task_id AND e.origin_key = 'provider-recovery:' || c.source_effect_id
+        WHERE e.effect_id = ? AND e.kind = 'recovery' LIMIT 1`, (s) => s.get(effectId))) return false;
       const applied = statement(db, "SELECT 1 AS ok FROM events WHERE effect_id = ? AND kind = 'effect_applied' LIMIT 1", (s) => s.get(effectId));
       if (applied) throw new Error('WORKFLOW_SUPERVISOR_EFFECT_ALREADY_APPLIED');
       const refunds = statement(db, "SELECT event_id FROM events WHERE effect_id = ? AND kind = 'effect_dispatch_budget_refunded'", (s) => s.all(effectId)) as Array<{ event_id?: number }>;
@@ -1441,6 +1450,15 @@ export class WorkflowSupervisorStore {
         throw new Error('WORKFLOW_SUPERVISOR_SOURCE_EFFECT_COMPLETION_CONFLICT');
       }
       const existing = statement(db, 'SELECT completion_fingerprint FROM completions WHERE completion_fingerprint = ?', (s) => s.get(input.completionFingerprint));
+      // Once the recovery has a Send intent, its outcome may be unknown. A
+      // late source reply must not create a parallel successor or rotate away
+      // from that obligation. Exact historical completion replay stays inert.
+      if (!existing && statement(db, `SELECT 1 FROM effects child JOIN events started
+        ON started.effect_id = child.effect_id AND started.kind = 'effect_dispatch_started'
+        WHERE child.task_id = ? AND child.origin_key = ? LIMIT 1`,
+        (s) => s.get(input.taskId, 'provider-recovery:' + input.sourceEffectId))) {
+        throw new Error('WORKFLOW_SUPERVISOR_SOURCE_EFFECT_RECOVERY_DISPATCHED');
+      }
       if (!existing) statement(db, 'INSERT INTO completions VALUES (?,?,?,?,?,?,?,?)', (s) => s.run(input.completionFingerprint, input.taskId, input.sourceEffectId, input.action, input.responseSha256, input.controlBlockSha256, json(input.proposal), input.committedAt));
       statement(db, 'INSERT OR IGNORE INTO events(task_id,event_key,kind,effect_id,completion_fingerprint,payload_json,occurred_at) VALUES (?,?,?,?,?,?,?)', (s) => s.run(input.taskId, `completion:${input.completionFingerprint}`, 'assistant_completion', input.sourceEffectId, input.completionFingerprint, json(input.proposal), input.committedAt));
       let successorEffect: WorkflowSupervisorEffect | undefined;

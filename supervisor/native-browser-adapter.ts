@@ -579,7 +579,11 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     let providerBackpressureMs = chatgptProviderBackpressureRemainingMs(this.deps.providerScopeKey, this.deps.nowMs());
     if (poll.command?.mode !== 'reconcile' && providerFailureCode === CHATGPT_AUTOMATION_RATE_LIMITED && providerBackpressureMs > 0) return;
     let missingReceiptForAppliedTurn = false;
-    if (!poll.command && !providerBusy && snapshot.latestTurnRole === 'assistant' && snapshot.latestAssistantResponse.trim()) {
+    // A queued, never-dispatched recovery still leaves its source reply eligible
+    // for completion. Consume that reply before preparing an unnecessary Send.
+    const unsentRecovery = poll.command?.mode === 'send'
+      && poll.command.kind === 'recovery' && poll.command.dispatchGeneration === 1;
+    if ((!poll.command || unsentRecovery) && !providerBusy && snapshot.latestTurnRole === 'assistant' && snapshot.latestAssistantResponse.trim()) {
       const responseFingerprint = sha256(snapshot.latestAssistantResponse);
       const pending = this.control.taskStall(task.taskId);
       // Text-only replies are not receipts. Observe their stable idle digest,
