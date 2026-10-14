@@ -113,7 +113,8 @@
     const status = Array.from(document.querySelectorAll('[role="alert"], [role="status"], [aria-live="assertive"], [aria-live="polite"]'))
       .filter(visible);
     const capacity = Array.from(conversationRoot().querySelectorAll('p, span, div'))
-      .filter((node) => visible(node) && !node.closest(TURN) && !node.closest('[data-message-author-role]'))
+      // Exclude message subtrees before layout-dependent visibility reads.
+      .filter((node) => !node.closest(TURN) && !node.closest('[data-message-author-role]') && visible(node))
       .filter((node) => {
         const text = core.normalizeText(node.innerText ?? node.textContent);
         return text.length <= 250 && /(?:你已达到此对话的长度上限|此对话已达到长度上限|you(?:'ve| have) reached the (?:maximum length for this conversation|conversation length limit)|this conversation has reached its maximum length)/i.test(text);
@@ -135,8 +136,7 @@
   };
   // Editor text is a provider payload, not a UI label: preserve its whitespace.
   const exactComposerText = (value) => String(value ?? '').replace(/\r\n?/g, '\n');
-  const composerText = () => {
-    const editor = composer();
+  const composerText = (editor = composer()) => {
     const blocks = editor?.isContentEditable ? Array.from(editor.children ?? []) : [];
     // ChatGPT's ProseMirror writes one P block per entered newline but
     // HTMLElement.innerText synthesizes TWO newlines between those blocks.
@@ -158,7 +158,9 @@
   const pageSnapshot = (options = {}) => {
     const userNodes = roleNodes(USER);
     const assistantNodes = roleNodes(ASSISTANT);
-    const bodyText = String(document.body?.innerText ?? '');
+    // Reading innerText on the entire page can force layout on every poll.
+    // Only collect it when a caller explicitly requests the full page.
+    const editor = composer();
     return {
       url: location.href,
       title: document.title,
@@ -168,7 +170,7 @@
         userMessages: userNodes.map(messageText).filter(Boolean),
         assistantMessages: assistantNodes.map(messageText).filter(Boolean),
       } : {}),
-      ...(composer() ? { composerText: composerText() } : {}),
+      ...(editor ? { composerText: composerText(editor) } : {}),
       composerSelectorVersion: 'visible-single-v2',
       // Read-only hydration attestation for a NEW Project bootstrap tab.
       // URL/DOM shell visibility alone cannot prove that the React model
@@ -176,7 +178,7 @@
       reasoningControlReady: Boolean(reasoningControl()),
       providerActivityText: providerActivityText(),
       providerFailureText: providerFailureText(),
-      ...(options.includePageText === true ? { pageText: bodyText.slice(-500000) } : {}),
+      ...(options.includePageText === true ? { pageText: String(document.body?.innerText ?? '').slice(-500000) } : {}),
       latestTurnRole: latestTurnRole(),
       isGenerating: isGenerating(),
     };
