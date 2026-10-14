@@ -150,7 +150,8 @@ function adoptExplicitSuccessorHead(
   }
   const candidate: WorkHandleState = {
     ...existing,
-    deliveryBaseCommit: adoptCandidateHead,
+    // Successor adoption advances the Work candidate, not the delivery target.
+    // Preserve the canonical delivery base until authorized delivery or rebase.
     expectedHead: adoptCandidateHead,
     validationRun: undefined,
     validatedInputFingerprint: undefined,
