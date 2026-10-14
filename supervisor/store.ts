@@ -193,6 +193,11 @@ function oldestUnappliedEffect(db: Database, taskId: string): WorkflowSupervisor
       SELECT 1 FROM events applied WHERE applied.effect_id = e.effect_id AND applied.kind = 'effect_applied'
     ) AND NOT EXISTS (
       SELECT 1 FROM events superseded WHERE superseded.effect_id = e.effect_id AND superseded.kind = 'effect_outcome_unknown_superseded'
+    ) AND NOT (
+      e.kind = 'recovery' AND EXISTS (
+        SELECT 1 FROM completions completed
+        WHERE e.origin_key = 'provider-recovery:' || completed.source_effect_id
+      )
     ) ORDER BY e.created_at, e.effect_id LIMIT 1`, (s) => s.get(taskId)) as Record<string, unknown> | undefined;
   return row ? effectFromRow(row) : undefined;
 }
@@ -1020,7 +1025,10 @@ export class WorkflowSupervisorStore {
         WHERE e.task_id = ?
           AND EXISTS (SELECT 1 FROM events applied WHERE applied.effect_id = e.effect_id AND applied.kind = 'effect_applied')
           AND NOT EXISTS (SELECT 1 FROM completions c WHERE c.task_id = e.task_id AND c.source_effect_id = e.effect_id)
-          AND NOT EXISTS (SELECT 1 FROM effects child WHERE child.origin_key = 'provider-recovery:' || e.effect_id)
+          AND NOT EXISTS (SELECT 1 FROM effects child
+            WHERE child.origin_key = 'provider-recovery:' || e.effect_id
+              AND EXISTS (SELECT 1 FROM events started
+                WHERE started.effect_id = child.effect_id AND started.kind = 'effect_dispatch_started'))
         ORDER BY (SELECT MAX(event_id) FROM events applied WHERE applied.effect_id = e.effect_id AND applied.kind = 'effect_applied') DESC
         LIMIT 1`, (s) => s.get(taskId)) as Record<string, unknown> | undefined;
       return row ? effectFromRow(row) : undefined;

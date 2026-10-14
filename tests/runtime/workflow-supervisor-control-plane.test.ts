@@ -2555,7 +2555,7 @@ test('completed idle provider turn remains a receipt obligation, not a reason to
   store.close();
 });
 
-test('stable text-only assistant reply permits one bounded recovery without replaying source', () => {
+test('stable text-only assistant reply permits one bounded recovery without replaying source', async () => {
   const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-missing-receipt-'));
   roots.push(root);
   const store = new WorkflowSupervisorStore(join(root, 'supervisor-home'));
@@ -2573,6 +2573,18 @@ test('stable text-only assistant reply permits one bounded recovery without repl
   expect(store.observeProviderTurn({ ...sample, observedAtMs: 40_000 }).recoveryEffect?.effectId).toBe(recoveryEffectId);
   expect(store.getLatestCompletion(taskId)).toBeUndefined();
   expect(store.nextBrowserEffect(taskId)?.effect.effectId).toBe(recoveryEffectId);
+  // The recovery has never sent: a local draft blocks its preflight. A late
+  // completed reply from the already-applied source must supersede that
+  // unnecessary recovery, without clearing the draft or dispatching anything.
+  store.recordEffectPreparationFailure(recoveryEffectId, 'composer_not_empty');
+  expect(control.taskStall(taskId)).toMatchObject({ state: 'spaced', reason: 'pre_send_infrastructure_blocked' });
+  const late = await control.observeAssistantTurn({ taskId, conversationId,
+    responseText: 'Provider finished.\n' + renderSupervisorReceipt(control.getTask(taskId)!, applied.effectId, 'CONTINUE') });
+  expect(late).toMatchObject({ action: 'CONTINUE', terminal: false });
+  expect(store.getLatestCompletion(taskId)?.sourceEffectId).toBe(applied.effectId);
+  expect(store.currentUnappliedEffect(taskId)?.kind).toBe('continuation');
+  expect(store.currentUnappliedEffect(taskId)?.effectId).toBe(late.successorEffect?.effectId);
+  expect(store.effectApplied(recoveryEffectId)).toBe(false);
   store.close();
 });
 

@@ -501,7 +501,15 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     const transportFailure = this.taskTransportFailures.get(task.taskId);
     // Derived from the durable effect log, not this adapter's process memory.
     const stall = this.control.taskStall(task.taskId);
-    if (stall.state === 'spaced' && stall.reason === 'pre_send_infrastructure_blocked') return;
+    if (stall.state === 'spaced' && stall.reason === 'pre_send_infrastructure_blocked') {
+      // A blocked new recovery cannot authorize a Send, but it must not hide
+      // the completed final reply of its already-applied source effect.
+      // Probe read-only at the existing bounded receipt cadence.
+      if (!this.control.store.hasAppliedEffectAwaitingCompletion(task.taskId)) return;
+      const checkedAt = this.awaitingReceiptObservedAtMs.get(task.taskId) ?? 0;
+      if (this.deps.nowMs() - checkedAt < AWAITING_RECEIPT_OBSERVATION_MS) return;
+      this.awaitingReceiptObservedAtMs.set(task.taskId, this.deps.nowMs());
+    }
     if (transportFailure
       && TASK_TARGET_SPACED_FAILURE_CODES.has(transportFailure.code)
       && this.deps.nowMs() - transportFailure.observedAtMs < taskTargetRetryDelayMs(transportFailure.streak)) return;
