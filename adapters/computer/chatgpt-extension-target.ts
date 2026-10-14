@@ -444,15 +444,30 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
     })));
     await betweenObservations?.();
     const results: ComputerChatgptTargetResult[] = [];
-    const seen = new Set<string>();
+    const matchesByConversation = new Map<string, Array<{ instanceId: string; match: typeof responses[number]['response']['matches'][number] }>>();
     for (const { instanceId, response } of responses) {
       if (response.result?.kind !== 'marker_matches') continue;
       for (const match of response.result.matches) {
-        if (seen.has(match.identity.conversationId)) continue;
-        seen.add(match.identity.conversationId);
-        const record = await this.bindAsync(match.identity, match.providerBinding, instanceId);
-        results.push({ state: 'ready', target: this.target(match.identity, record, instanceId), observation: match.observation });
+        const entries = matchesByConversation.get(match.identity.conversationId) ?? [];
+        entries.push({ instanceId, match });
+        matchesByConversation.set(match.identity.conversationId, entries);
       }
+    }
+    for (const matches of matchesByConversation.values()) {
+      const first = matches[0]!;
+      const existing = this.authority.findSurfaceByStableIdentity(this.controllerHome, stableIdentity(first.match.identity))?.providerBinding;
+      const existingMatch = existing?.providerId === PROVIDER_ID
+        ? matches.find(({ instanceId, match }) => match.providerBinding?.windowId === existing.windowId
+          && match.providerBinding?.tabId === existing.tabId
+          && instanceId === existing.providerSessionId)
+        : undefined;
+      const candidate = existingMatch ?? (matches.length === 1 ? first : undefined);
+      // Same conversation + marker can exist in multiple physical tabs. Without
+      // an existing physical binding, the marker is not enough proof to choose a
+      // tab, so never create a new incorrect authority binding.
+      if (!candidate) continue;
+      const record = await this.bindAsync(candidate.match.identity, candidate.match.providerBinding, candidate.instanceId);
+      results.push({ state: 'ready', target: this.target(candidate.match.identity, record, candidate.instanceId), observation: candidate.match.observation });
     }
     return results;
   }
