@@ -114,20 +114,19 @@ export function getChatgptWorkConversationBinding(
  * Read-only inverse of the existing canonical Work conversation binding.
  * Never infer an owner from objective prose or a partial/ambiguous inventory.
  */
-export function findUniqueChatgptWorkBindingForConversation(
+export function listChatgptWorkBindingsForConversation(
   options: ChatgptWorkBindingStoreOptions,
   conversationId: string,
-): ChatgptWorkConversationBinding | undefined {
+): ChatgptWorkConversationBinding[] {
   const repoId = options.repoId?.trim();
-  if (!repoId || !conversationId.trim()) return undefined;
+  if (!repoId || !conversationId.trim()) return [];
   const limit = 5000;
   const records = listControlPlaneRecords<ChatgptWorkConversationBinding>(options.controllerHome, {
     namespace: NAMESPACE, scope: FORGE_INSTANCE_SCOPE_KEY, limit,
   });
-  if (records.length >= limit) return undefined; // Coverage unknown: fail closed.
-  const matches = records.filter(({ value }) => value.repoId === repoId && value.conversationId === conversationId);
-  if (matches.length !== 1) return undefined;
-  return canonicalizeBinding(options, matches[0]!.value);
+  if (records.length >= limit) return []; // Incomplete inventory cannot establish a unique active Work.
+  return records.filter(({ value }) => value.repoId === repoId && value.conversationId === conversationId)
+    .map(({ value }) => canonicalizeBinding(options, value));
 }
 
 function writeBinding(

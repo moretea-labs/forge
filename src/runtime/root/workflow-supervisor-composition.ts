@@ -12,7 +12,7 @@ import {
 import {
   bindChatgptWorkConversation,
   getChatgptWorkConversationBinding,
-  findUniqueChatgptWorkBindingForConversation,
+  listChatgptWorkBindingsForConversation,
   rebindChatgptWorkConversation,
   type ChatgptWorkConversationBinding,
 } from '../../../adapters/chatgpt/work-conversation-binding-store';
@@ -145,8 +145,14 @@ function workflowSupervisorOriginWorkId(task: WorkflowSupervisorTask, repoId: st
   // Read the one canonical conversation binding, never parse Work IDs from
   // objectives and never make ambiguous matches into a second authority.
   if (task.continuationPolicy.kind !== 'standalone_supervisor') return undefined;
-  const matched = findUniqueChatgptWorkBindingForConversation({ controllerHome, repoId }, task.conversationId);
-  return matched && getWorkContract({ controllerHome, repoId }, matched.workId) ? matched.workId : undefined;
+  const active = listChatgptWorkBindingsForConversation({ controllerHome, repoId }, task.conversationId)
+    .filter(({ workId }) => {
+      const work = getWorkContract({ controllerHome, repoId }, workId);
+      return work && semanticWorkState(work) === 'open';
+    });
+  // A terminal predecessor may retain the same conversation as its successor.
+  // Only a unique open Work is eligible; multiple live siblings remain ambiguous.
+  return active.length === 1 ? active[0]!.workId : undefined;
 }
 
 /**
