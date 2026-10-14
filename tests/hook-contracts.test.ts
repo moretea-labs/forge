@@ -64,11 +64,11 @@ describe("Hook contracts", () => {
     expect(script).toContain("hook_structured_error");
   });
 
-  test("post-tool observer should keep trace, CodeGraph session state, and plan annotation guards without budget probes", () => {
+  test("post-tool observer should keep trace and plan annotation guards without budget probes", () => {
     const script = read("assets/hooks/post-tool-observer.sh");
     expect(script).toContain(".claude/.session-id");
     expect(script).toContain("session_state_resolve_key");
-    expect(script).toContain("session_state_mark_codegraph_used");
+    expect(script).not.toContain("session_state_mark_codegraph_used");
     expect(script).toContain("workflow_trace_file");
     expect(script).toContain("[AnnotationGuard]");
     expect(script).not.toContain("WARN_FILE");
@@ -327,7 +327,7 @@ describe("Hook contracts", () => {
     expect(script).toContain("bash-output");
     expect(script).toContain("command -v rtk");
     expect(script).toContain("recommended_next_tool");
-    expect(script).toContain("codegraph_context");
+    expect(script).toContain("rh_context");
     expect(script).not.toContain("rtk $COMMAND_TEXT");
     expect(script).not.toContain("exec rtk");
   });

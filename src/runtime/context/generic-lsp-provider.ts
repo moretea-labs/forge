@@ -266,7 +266,7 @@ export class GenericLspSemanticProvider implements SemanticNavigationProvider {
       return requests.map(() => ({
         ok: false,
         code: 'LSP_SEMANTIC_READ_SCOPE_UNSUPPORTED',
-        message: `External ${this.descriptor.id} navigation is restricted to the controller read profile; use lexical/CodeGraph evidence under narrower read policies.`,
+        message: `External ${this.descriptor.id} navigation is restricted to the controller read profile; use bounded lexical/raw source evidence under narrower read policies.`,
       }));
     }
     const outcomes: Array<SemanticNavigationOutcome | undefined> = new Array(requests.length);

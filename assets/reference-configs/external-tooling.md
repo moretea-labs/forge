@@ -9,7 +9,6 @@ Optional enhancements:
 - `gbrain`: optional knowledge tooling;
 - `Mermaid` host skill: optional rendered diagrams; Markdown Mermaid remains sufficient;
 - Forge peer-review helpers (`codex-review`, `claude-review`): optional cross-model acceptance evidence;
-- CodeGraph host MCP/CLI: optional direct host integration. Forge's own `rh_context` structural backend uses the bundled CodeGraph runtime when available.
 
 `forge install` installs the Forge CLI/runtime and managed host adapters. It does **not** install Waza, Mermaid, or cross-review skills unless `--with-external-skills` is explicitly supplied. `forge setup` is the guided readiness workflow; `forge setup check` is the one-shot read-only report.
 
@@ -40,9 +39,6 @@ The detector intentionally avoids side-effecting commands. It does not run:
 - `npx skills update`
 - `gbrain serve`
 - `gbrain sync`
-- `codegraph init`
-- `codegraph sync`
-- `codegraph install`
 
 With `--check-updates`, Waza update checks fetch upstream GitHub raw
 `SKILL.md` and shared `rules/` files, then compare versions/hashes against each
@@ -118,12 +114,6 @@ CLI and does not ship the forge advisory command.
 check` may report its local state, but missing or stale `gbrain` must not
 create Agent repair/update actions or change the setup readiness result.
 
-### CodeGraph
-
-`CodeGraph` has two integration levels. Forge-internal structural retrieval is provided through `rh_context` and the bundled CodeGraph runtime when available. A global `codegraph` CLI or host MCP entry is optional and exists only for direct Codex/Claude use. Neither replaces workflow checks, tests, architecture evidence, or raw source reads.
-
-Forge packages a CodeGraph runtime for its own structural context provider and can ensure the repository index without requiring a user-global CLI. `forge tools configure codegraph` remains an explicit optional host integration.
-
 ### Runtime Ownership Boundary
 
 `forge setup check --target <host> --check-updates --json` reports the
@@ -150,66 +140,6 @@ script reports unsupported link-mode and tells the caller to use copy-mode.
 `AGENTIC_DEV_LINK_INSTALLED_COPIES=0` uses copy-mode and requires `rsync`; if
 `rsync` is missing, the script reports unsupported copy-mode instead of a
 generic command failure.
-
-Read-only check:
-
-```bash
-codegraph status .
-```
-
-Local index mutation:
-
-```bash
-codegraph init -i .
-codegraph sync .
-```
-
-Do not ask users to copy MCP TOML or Claude JSON by hand. The user-facing path
-is one terminal command, or explicit authorization for their agent to run the
-same command:
-
-```bash
-bun add -g @colbymchenry/codegraph && forge tools configure codegraph --target codex --location global
-```
-
-This delegates host-specific MCP config to CodeGraph's target adapters for
-Codex and Claude, so do not run CodeGraph setup automatically from
-`forge install`, `forge adopt`, or explicit tooling configuration. Restart Codex after the installer
-finishes so the MCP server is discovered; Claude Code should pick up its config
-according to its own settings reload behavior. If a launch environment still
-cannot find `codegraph`, an authorized agent should diagnose `PATH` and the
-`~/.local/bin/codegraph` shim. Do not make the user hand-edit MCP config as the
-fallback.
-
-For troubleshooting only, inspect host config snippets without writing:
-
-```bash
-codegraph install --print-config codex
-codegraph install --print-config claude
-```
-
-Project-local indexes are ignored runtime state:
-
-```bash
-codegraph init -i .
-codegraph status .
-```
-
-Before non-trivial code work, agents should sync the local index and use it for
-P1/P2 discovery:
-
-```bash
-codegraph sync .
-codegraph context "<task>"
-codegraph query <symbol> --json
-codegraph callers <symbol> --json
-codegraph callees <symbol> --json
-codegraph impact <symbol> --json
-```
-
-For this repo, do not treat `codegraph affected` as an authoritative test
-selector. Many tests execute scripts by path or subprocess rather than import
-edges, so run the repo verification commands instead.
 
 ### Bash Output Evidence and RTK
 
@@ -265,12 +195,6 @@ done
 ```bash
 gbrain check-update --json
 gbrain upgrade
-```
-
-### CodeGraph
-
-```bash
-bun add -g @colbymchenry/codegraph@latest && codegraph sync . && codegraph status .
 ```
 
 ## Manual Knowledge Sync

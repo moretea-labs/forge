@@ -1283,7 +1283,7 @@ pi_external_tooling_defaults_summary() {
 - Mode: optional-enhancements
 - Detection: setup/readiness only
 - Waza/gstack/gbrain/Mermaid: optional host enhancements; never required for Forge correctness
-- CodeGraph: Forge bundled structural backend; global CLI/MCP is optional host integration
+- Code location: ripgrep lexical source search with explicit language-service definition/reference navigation; no managed graph index
 - Auto-actions: never install, upgrade, serve, sync, or enable unrelated third-party tooling automatically
 EOF_EXTERNAL_TOOLING_DEFAULTS
 }

@@ -1,7 +1,6 @@
 import type { RepositoryReadSession } from '../../repository/inspector';
-import type { CodeGraphIndexMetadata, CodeGraphNodeSummary, CodeGraphReadProviderResponse } from '../../../runtime/context/codegraph-read-provider';
-import type { queryCodeGraphReadProvider, queryCodeGraphReadProviderAsync } from '../../../runtime/context/codegraph-read-provider';
 import type { MaterializedSourceSnippet } from './source-materializer';
+import type { StructuralIndexMetadata, StructuralNodeSummary, StructuralReadProviderResponse, unavailableStructuralProvider, unavailableStructuralProviderAsync } from './structural-provider';
 
 export const CONTEXT_PACK_SCHEMA_VERSION = 11;
 export type StructuralContextMode = 'off' | 'auto' | 'required';
@@ -37,8 +36,8 @@ export interface ControllerContextPackOptions {
 }
 
 export interface ControllerContextPackDependencies {
-  queryCodeGraph?: typeof queryCodeGraphReadProvider;
-  queryCodeGraphAsync?: typeof queryCodeGraphReadProviderAsync;
+  queryStructural?: typeof unavailableStructuralProvider;
+  queryStructuralAsync?: typeof unavailableStructuralProviderAsync;
 }
 
 export type ControllerContextPackSnippet = MaterializedSourceSnippet;
@@ -186,7 +185,7 @@ export interface ControllerContextPackProjection {
     };
   };
   structuralContext: {
-    provider: 'codegraph';
+    provider: 'none';
     requestedMode: StructuralContextMode;
     status: 'disabled' | 'ready' | 'stale' | 'unavailable' | 'degraded';
     requiredSatisfied: boolean;
@@ -194,11 +193,11 @@ export interface ControllerContextPackProjection {
     overlayChangedFiles: string[];
     baselineRevisionMatches: boolean;
     query?: string;
-    entryPoints: Array<Pick<CodeGraphNodeSummary, 'id' | 'kind' | 'name' | 'filePath' | 'startLine' | 'endLine'>>;
+    entryPoints: Array<Pick<StructuralNodeSummary, 'id' | 'kind' | 'name' | 'filePath' | 'startLine' | 'endLine'>>;
     relatedFiles: string[];
-    metadata?: Pick<CodeGraphIndexMetadata, 'initialized' | 'lastIndexedAt' | 'buildVersion' | 'extractionVersion' | 'staleEngine' | 'changedFiles' | 'ignoredChangedFileCount'>;
+    metadata?: Pick<StructuralIndexMetadata, 'initialized' | 'lastIndexedAt' | 'buildVersion' | 'extractionVersion' | 'staleEngine' | 'changedFiles' | 'ignoredChangedFileCount'>;
     fallbackReason?: string;
-    timingsMs?: CodeGraphReadProviderResponse['timingsMs'];
+    timingsMs?: StructuralReadProviderResponse['timingsMs'];
     truncated: boolean;
   };
   impactContext: {
@@ -212,7 +211,7 @@ export interface ControllerContextPackProjection {
     relevantChecks: string[];
     architectureContracts: string[];
     coverageGaps: string[];
-    relationSources: Array<'codegraph' | 'lexical' | 'forge_checks'>;
+    relationSources: Array<'structural' | 'lexical' | 'forge_checks'>;
     freshness: {
       structuralStatus: 'disabled' | 'ready' | 'stale' | 'unavailable' | 'degraded';
       lastIndexedAt?: number | null;

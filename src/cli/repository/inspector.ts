@@ -1,7 +1,5 @@
 import { createHash } from 'crypto';
-import { execFile } from 'child_process';
 import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, statSync } from 'fs';
-import { lstat as lstatAsync, readFile as readFileAsync, readdir as readdirAsync, stat as statAsync } from 'fs/promises';
 import { join, resolve } from 'path';
 import { runProcess } from '../../effects/process-runner';
 import { globMatches, resolveMcpPath } from '../mcp/paths';
@@ -306,28 +304,6 @@ function gitSearchFileInventory(repoRoot: string): string[] | null {
   }
 }
 
-function gitSearchFileInventoryAsync(repoRoot: string): Promise<string[] | null> {
-  return new Promise((resolve) => {
-    execFile(
-      'git',
-      ['ls-files', '-z', '--cached', '--others', '--exclude-standard'],
-      {
-        cwd: repoRoot,
-        timeout: 10_000,
-        maxBuffer: SEARCH_GIT_INVENTORY_MAX_OUTPUT_BYTES,
-        encoding: 'utf8',
-      },
-      (error, stdout) => {
-        if (error || typeof stdout !== 'string') {
-          resolve(null);
-          return;
-        }
-        resolve(parseGitSearchFileInventory(stdout));
-      },
-    );
-  });
-}
-
 /** Git provides a fast tracked-file location hint; the normal policy-checked
  * source matcher remains the only authority for actual lexical hits. */
 function gitExactSearchCandidateArgs(needle: string, caseSensitive: boolean): string[] {
@@ -363,15 +339,6 @@ function gitExactSearchCandidatePaths(repoRoot: string, queries: string[], caseS
   return interleaveExactCandidatePaths(lists, maxFiles);
 }
 
-async function gitExactSearchCandidatePathsAsync(repoRoot: string, queries: string[], caseSensitive: boolean, maxFiles: number): Promise<string[]> {
-  const lists = await Promise.all(queries.map((query) => new Promise<string[]>((resolve) => {
-    execFile('git', gitExactSearchCandidateArgs(query, caseSensitive), {
-      cwd: repoRoot, timeout: 10_000, maxBuffer: SEARCH_GIT_INVENTORY_MAX_OUTPUT_BYTES, encoding: 'utf8',
-    }, (error, stdout) => resolve(error || typeof stdout !== 'string' ? [] : stdout.split('\0').filter(Boolean)));
-  })));
-  return interleaveExactCandidatePaths(lists, maxFiles);
-}
-
 function prioritizeExactSearchCandidates(
   inventory: { files: string[]; candidateCount: number; cacheHit: boolean },
   hints: string[], includes: string[], excludes: string[], maxFiles: number,
@@ -401,36 +368,6 @@ function walk(repoRoot: string, root: string, maxFiles: number, excludes: string
     const child = root ? `${root}/${entry.name}` : entry.name;
     if (isExcluded(child, excludes) || isExcluded(`${child}/`, excludes)) continue;
     if (entry.isDirectory()) walk(repoRoot, child, maxFiles, excludes, output);
-    else if (entry.isFile()) output.push(child);
-  }
-}
-
-async function walkAsync(repoRoot: string, root: string, maxFiles: number, excludes: string[], output: string[]): Promise<void> {
-  if (output.length >= maxFiles) return;
-  const absolute = join(repoRoot, root);
-  let info;
-  try {
-    info = await lstatAsync(absolute);
-  } catch {
-    return;
-  }
-  if (info.isSymbolicLink()) return;
-  if (info.isFile()) {
-    output.push(root);
-    return;
-  }
-  if (!info.isDirectory()) return;
-  let entries;
-  try {
-    entries = await readdirAsync(absolute, { withFileTypes: true });
-  } catch {
-    return;
-  }
-  for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
-    if (output.length >= maxFiles) break;
-    const child = root ? `${root}/${entry.name}` : entry.name;
-    if (isExcluded(child, excludes) || isExcluded(`${child}/`, excludes)) continue;
-    if (entry.isDirectory()) await walkAsync(repoRoot, child, maxFiles, excludes, output);
     else if (entry.isFile()) output.push(child);
   }
 }
@@ -575,35 +512,6 @@ function searchInventory(
   return { files: candidates.slice(0, maxFiles), candidateCount: candidates.length, cacheHit };
 }
 
-async function searchInventoryAsync(
-  repoRoot: string,
-  includes: string[],
-  excludes: string[],
-  maxFiles: number,
-  cacheKey?: string,
-): Promise<{ files: string[]; candidateCount: number; cacheHit: boolean }> {
-  const inventoryKey = JSON.stringify({ repoRoot, excludes, cacheKey });
-  const now = Date.now();
-  const cachedInventory = searchFileInventoryCache.get(inventoryKey);
-  const cacheHit = Boolean(cachedInventory && now - cachedInventory.createdAt < SEARCH_FILE_INVENTORY_CACHE_TTL_MS);
-  let inventory: string[];
-  if (cacheHit) {
-    inventory = cachedInventory!.files;
-  } else {
-    const gitFiles = await gitSearchFileInventoryAsync(repoRoot);
-    if (gitFiles) {
-      inventory = gitFiles;
-    } else {
-      const walked: string[] = [];
-      await walkAsync(repoRoot, '', 20_000, excludes, walked);
-      inventory = walked;
-    }
-    searchFileInventoryCache.set(inventoryKey, { createdAt: now, files: inventory });
-  }
-  const candidates = inventory.filter((path) => isIncluded(path, includes) && !isExcluded(path, excludes));
-  return { files: candidates.slice(0, maxFiles), candidateCount: candidates.length, cacheHit };
-}
-
 interface SearchManyMatchState {
   queries: string[];
   needles: Array<{ query: string; needle: string }>;
@@ -660,29 +568,17 @@ function exactCodeNeedleMatches(haystack: string, needle: string): boolean {
   return new RegExp(`(?:^|[^\\p{L}\\p{N}_$])${escaped}(?=$|[^\\p{L}\\p{N}_$])`, 'u').test(haystack);
 }
 
-function matchSearchManySource(state: SearchManyMatchState, path: string, bytes: Buffer): void {
-  const raw = bytes.toString('utf-8');
-  const searchable = state.caseSensitive ? raw : raw.toLowerCase();
-  const activeNeedles = state.needles.filter(({ query, needle }) =>
-    (state.counts.get(query) ?? 0) < state.maxResultsPerQuery
-      && (state.requiredQueries.includes(query)
-        ? exactCodeNeedleMatches(searchable, needle)
-        : searchable.includes(needle)));
-  if (activeNeedles.length === 0) return;
-
-  const lines = raw.split(/\r?\n/);
-  for (let index = 0; index < lines.length; index += 1) {
-    const text = lines[index]!;
-    const haystack = state.caseSensitive ? text : text.toLowerCase();
-    for (const { query, needle } of activeNeedles) {
-      const matches = state.requiredQueries.includes(query)
-        ? exactCodeNeedleMatches(haystack, needle)
-        : haystack.includes(needle);
-      if ((state.counts.get(query) ?? 0) >= state.maxResultsPerQuery || !matches) continue;
-      state.results.push({ query, path, line: index + 1, text: text.slice(0, 500) });
-      state.matchedPaths.add(path);
-      state.counts.set(query, (state.counts.get(query) ?? 0) + 1);
-    }
+function matchSearchManyLine(state: SearchManyMatchState, path: string, line: number, text: string): void {
+  const haystack = state.caseSensitive ? text : text.toLowerCase();
+  for (const { query, needle } of state.needles) {
+    if ((state.counts.get(query) ?? 0) >= state.maxResultsPerQuery) continue;
+    const matches = state.requiredQueries.includes(query)
+      ? exactCodeNeedleMatches(haystack, needle)
+      : haystack.includes(needle);
+    if (!matches) continue;
+    state.results.push({ query, path, line, text: text.slice(0, 500) });
+    state.matchedPaths.add(path);
+    state.counts.set(query, (state.counts.get(query) ?? 0) + 1);
   }
 }
 
@@ -727,9 +623,57 @@ function finalizeSearchManyResult(input: {
 }
 
 /**
- * Internal Context Plane batch search. Every candidate file is policy-checked
- * and read at most once while all lexical terms are matched in the same pass.
- * The public search_repository tool remains the simpler single-query primitive.
+ * ripgrep owns literal matching and returns line-addressed evidence directly.
+ * The caller supplies only policy-checked paths; neither a repository-wide
+ * scan nor a second JavaScript file-content scan is permitted.
+ */
+function ripgrepCandidateLines(
+  repoRoot: string,
+  allowedPaths: readonly string[],
+  queries: readonly string[],
+  caseSensitive: boolean,
+  maxResultsPerQuery: number,
+): Map<string, Array<{ line: number; text: string }>> {
+  const found = new Map<string, Array<{ line: number; text: string }>>();
+  const searchDeadline = Date.now() + 15_000;
+  for (let offset = 0; offset < allowedPaths.length; offset += 128) {
+    const paths = allowedPaths.slice(offset, offset + 128);
+    const remainingMs = searchDeadline - Date.now();
+    if (remainingMs <= 0) throw new Error('RIPGREP_SEARCH_TIMEOUT: source discovery exceeded 15s total budget');
+    const result = runProcess('rg', [
+      '--json', '--fixed-strings', '--no-ignore', '--no-config', '--no-messages',
+      '--max-count', String(Math.min(Math.max(maxResultsPerQuery, 32), 500)),
+      ...(caseSensitive ? [] : ['--ignore-case']),
+      ...queries.flatMap((query) => ['-e', query]),
+      '--', ...paths,
+    ], { cwd: repoRoot, timeoutMs: Math.min(remainingMs, 5_000), maxOutputBytes: 16 * 1024 * 1024 });
+    if ((result.status !== 0 && result.status !== 1) || result.timedOut
+      || result.stdout.includes('[output truncated after')) {
+      throw new Error('RIPGREP_SEARCH_FAILED: ' + (result.error || result.stderr || String(result.status)));
+    }
+    for (const raw of result.stdout.split('\n')) {
+      if (!raw || raw[0] !== '{') continue;
+      const entry = JSON.parse(raw) as {
+        type?: string;
+        data?: { path?: { text?: string }; lines?: { text?: string }; line_number?: number };
+      };
+      if (entry.type !== 'match' || !entry.data) continue;
+      const path = entry.data.path?.text;
+      const line = entry.data.line_number;
+      const text = entry.data.lines?.text;
+      if (!path || !Number.isInteger(line) || typeof text !== 'string') continue;
+      const lines = found.get(path) ?? [];
+      lines.push({ line: line!, text: text.replace(/\r?\n$/, '') });
+      found.set(path, lines);
+    }
+  }
+  for (const lines of found.values()) lines.sort((a, b) => a.line - b.line);
+  return found;
+}
+
+/**
+ * Internal Context Plane discovery: ripgrep selects matching authorized files,
+ * then bounded source materialization owns line-level evidence and ranking.
  */
 export function searchRepositoryMany(
   repoRoot: string,
@@ -783,27 +727,25 @@ export function searchRepositoryMany(
   let skippedBinaryFiles = 0;
   const canonicalRepoRoot = realpathSync(repoRoot);
 
+  const authorizedCandidatePaths: string[] = [];
+  // No external search process may inspect a file before MCP read authorization.
   for (const path of prioritizedInventory.files) {
-    if (searchManyComplete(matchState)) break;
     const decision = resolveMcpPath(repoRoot, path, policy, 'read', canonicalRepoRoot);
-    if (!decision.ok || !decision.absolutePath) {
-      policyDeniedFiles += 1;
-      continue;
-    }
+    if (!decision.ok || !decision.absolutePath) { policyDeniedFiles += 1; continue; }
     const info = statSync(decision.absolutePath);
     if (!info.isFile()) continue;
-    const size = info.size;
-    if (size > policy.maxFileBytes) {
-      skippedLargeFiles += 1;
-      continue;
-    }
-    const bytes = readFileSync(decision.absolutePath);
-    if (binary(bytes)) {
-      skippedBinaryFiles += 1;
-      continue;
-    }
+    if (info.size > policy.maxFileBytes) { skippedLargeFiles += 1; continue; }
+    authorizedCandidatePaths.push(path);
+  }
+  const hitsByPath = authorizedCandidatePaths.length
+    ? ripgrepCandidateLines(repoRoot, authorizedCandidatePaths, queries, opts.caseSensitive === true, maxResultsPerQuery)
+    : new Map<string, Array<{ line: number; text: string }>>();
+  for (const path of authorizedCandidatePaths) {
+    if (searchManyComplete(matchState)) break;
+    const hits = hitsByPath.get(path);
+    if (!hits) continue;
     scannedFiles += 1;
-    matchSearchManySource(matchState, path, bytes);
+    for (const hit of hits) matchSearchManyLine(matchState, path, hit.line, hit.text);
   }
 
   // Consumers may bound distinct candidate files after this call. Preserve the
@@ -830,142 +772,20 @@ export function searchRepositoryMany(
   return payload;
 }
 
-// File reads are already bounded by policy/maxFiles. A wider batch keeps broad
-// Context scans from serializing dozens of filesystem waves while still
-// preserving original-order matching and early-stop semantics below.
-const ASYNC_SEARCH_READ_BATCH_SIZE = 64;
-
-type AsyncSearchCandidate =
-  | { path: string; kind: 'denied' }
-  | { path: string; kind: 'large' }
-  | { path: string; kind: 'binary' }
-  | { path: string; kind: 'nonfile' }
-  | { path: string; kind: 'source'; bytes: Buffer }
-  | { path: string; kind: 'error'; error: unknown };
-
-async function readSearchCandidateAsync(
-  repoRoot: string,
-  policy: McpPolicy,
-  canonicalRepoRoot: string,
-  path: string,
-): Promise<AsyncSearchCandidate> {
-  try {
-    const decision = resolveMcpPath(repoRoot, path, policy, 'read', canonicalRepoRoot);
-    if (!decision.ok || !decision.absolutePath) return { path, kind: 'denied' };
-    const info = await statAsync(decision.absolutePath);
-    if (!info.isFile()) return { path, kind: 'nonfile' };
-    const size = info.size;
-    if (size > policy.maxFileBytes) return { path, kind: 'large' };
-    const bytes = await readFileAsync(decision.absolutePath);
-    if (binary(bytes)) return { path, kind: 'binary' };
-    return { path, kind: 'source', bytes };
-  } catch (error) {
-    return { path, kind: 'error', error };
-  }
-}
-
 /**
- * Async Context Plane batch search with result semantics matching
- * searchRepositoryMany. Candidate reads happen in bounded batches, while policy
- * accounting, early-stop behavior, matching, and result ordering are consumed in
- * original repository order on the caller thread.
+ * Async Context Pack uses the same canonical ripgrep-backed search implementation.
+ * A second filesystem scanning implementation would diverge in policy, matching
+ * and ranking; this short-lived sidecar does not own a separate search engine.
  */
 export async function searchRepositoryManyAsync(
   repoRoot: string,
   policy: McpPolicy,
   opts: SearchRepositoryManyOptions,
 ): Promise<SearchRepositoryManyResult> {
-  const {
-    queries,
-    maxResultsPerQuery,
-    maxFiles,
-    includes,
-    excludes,
-    directCandidates,
-    completionMode,
-    discoveryTargetFiles,
-    discoveryMinQueryCoverage,
-    requiredQueries,
-    includeKey,
-    batchQueryKey,
-  } = searchRepositoryManyCacheIdentity(opts);
-  const sessionCache = bindSessionCache(repoRoot, opts.session);
-  if (sessionCache) {
-    const cached = sessionCache.getSearch(batchQueryKey, includeKey);
-    if (cached?.result && typeof cached.result === 'object') {
-      return { ...(cached.result as SearchRepositoryManyResult), cacheHit: true };
-    }
-  }
-  const inventory = directCandidates && directCandidates.length > 0
-    ? {
-        files: directCandidates.slice(0, maxFiles),
-        candidateCount: directCandidates.length,
-        cacheHit: false,
-      }
-    : await searchInventoryAsync(repoRoot, includes, excludes, maxFiles, opts.cacheKey);
-  const prioritizedInventory = !directCandidates && requiredQueries.length && inventory.candidateCount > maxFiles
-    ? prioritizeExactSearchCandidates(inventory,
-        await gitExactSearchCandidatePathsAsync(repoRoot, requiredQueries, opts.caseSensitive === true, maxFiles), includes, excludes, maxFiles)
-    : inventory;
-  const matchState = createSearchManyMatchState(
-    queries,
-    maxResultsPerQuery,
-    completionMode,
-    discoveryTargetFiles,
-    discoveryMinQueryCoverage,
-    requiredQueries,
-    opts.caseSensitive === true,
-  );
-  let scannedFiles = 0;
-  let policyDeniedFiles = 0;
-  let skippedLargeFiles = 0;
-  let skippedBinaryFiles = 0;
-  const canonicalRepoRoot = realpathSync(repoRoot);
-  for (let offset = 0; offset < prioritizedInventory.files.length && !searchManyComplete(matchState); offset += ASYNC_SEARCH_READ_BATCH_SIZE) {
-    const batchPaths = prioritizedInventory.files.slice(offset, offset + ASYNC_SEARCH_READ_BATCH_SIZE);
-    const batch = await Promise.all(batchPaths.map((path) => readSearchCandidateAsync(repoRoot, policy, canonicalRepoRoot, path)));
-    for (const candidate of batch) {
-      if (searchManyComplete(matchState)) break;
-      if (candidate.kind === 'denied') {
-        policyDeniedFiles += 1;
-        continue;
-      }
-      if (candidate.kind === 'large') {
-        skippedLargeFiles += 1;
-        continue;
-      }
-      if (candidate.kind === 'binary') {
-        skippedBinaryFiles += 1;
-        continue;
-      }
-      if (candidate.kind === 'nonfile') continue;
-      if (candidate.kind === 'error') throw candidate.error;
-      scannedFiles += 1;
-      matchSearchManySource(matchState, candidate.path, candidate.bytes);
-    }
-  }
-
-  const payload = finalizeSearchManyResult({
-    state: matchState,
-    scannedFiles,
-    policyDeniedFiles,
-    skippedLargeFiles,
-    skippedBinaryFiles,
-    candidateCount: inventory.candidateCount,
-    inventoryFileCount: prioritizedInventory.files.length,
-    inventoryCacheHit: inventory.cacheHit,
-  });
-  if (sessionCache) {
-    sessionCache.putSearch({
-      query: batchQueryKey,
-      includeKey,
-      result: payload,
-      scannedFiles,
-    });
-  }
-  return payload;
+  return searchRepositoryMany(repoRoot, policy, opts);
 }
 
+/** Single-query facade delegates to the canonical policy-checked rg engine. */
 export function searchRepository(repoRoot: string, policy: McpPolicy, opts: SearchRepositoryOptions & {
   session?: RepositoryReadSession;
 }): {
@@ -976,92 +796,25 @@ export function searchRepository(repoRoot: string, policy: McpPolicy, opts: Sear
   skippedLargeFiles: number;
   skippedBinaryFiles: number;
   truncated: boolean;
-  truncationReason?: "max_results" | "max_files";
+  truncationReason?: 'max_results' | 'max_files';
   cacheHit?: boolean;
 } {
-  const query = opts.query;
-  if (!query.trim()) throw new Error('search query is required');
-  const maxResults = Math.min(Math.max(opts.maxResults ?? 100, 1), 500);
-  const maxFiles = Math.min(Math.max(opts.maxFiles ?? 5000, 1), 20_000);
-  const includes = opts.includeGlobs ?? [];
-  // Explicit include globs opt into a targeted scan; MCP read policy remains the single authority.
-  const excludes = [...(includes.length === 0 ? DEFAULT_EXCLUDES : []), ...(opts.excludeGlobs ?? [])];
-  const includeKey = JSON.stringify({
-    includes,
-    excludes,
-    maxResults,
-    maxFiles,
-    caseSensitive: opts.caseSensitive === true,
+  const results = searchRepositoryMany(repoRoot, policy, {
+    queries: [opts.query],
+    includeGlobs: opts.includeGlobs,
+    excludeGlobs: opts.excludeGlobs,
+    maxResultsPerQuery: opts.maxResults,
+    maxFiles: opts.maxFiles,
+    caseSensitive: opts.caseSensitive,
     cacheKey: opts.cacheKey,
+    session: opts.session,
   });
-  const sessionCache = bindSessionCache(repoRoot, opts.session);
-  if (sessionCache) {
-    const cached = sessionCache.getSearch(query, includeKey);
-    if (cached && cached.result && typeof cached.result === 'object') {
-      return { ...(cached.result as ReturnType<typeof searchRepository>), cacheHit: true };
-    }
-  }
-  const inventory = searchInventory(repoRoot, includes, excludes, maxFiles, opts.cacheKey);
-  const files = inventory.files;
-  const needle = opts.caseSensitive ? query : query.toLowerCase();
-  const results: Array<{ path: string; line: number; text: string }> = [];
-  let scannedFiles = 0;
-  let policyDeniedFiles = 0;
-  let skippedLargeFiles = 0;
-  let skippedBinaryFiles = 0;
-  for (const path of files) {
-    if (results.length >= maxResults) break;
-    if (!isIncluded(path, includes) || isExcluded(path, excludes)) continue;
-    const decision = resolveMcpPath(repoRoot, path, policy, 'read');
-    if (!decision.ok || !decision.absolutePath) {
-      policyDeniedFiles += 1;
-      continue;
-    }
-    const info = statSync(decision.absolutePath);
-    if (!info.isFile()) continue;
-    const size = info.size;
-    if (size > policy.maxFileBytes) {
-      skippedLargeFiles += 1;
-      continue;
-    }
-    const bytes = readFileSync(decision.absolutePath);
-    if (binary(bytes)) {
-      skippedBinaryFiles += 1;
-      continue;
-    }
-    scannedFiles += 1;
-    const raw = bytes.toString('utf-8');
-    const lines = raw.split(/\r?\n/);
-    for (let index = 0; index < lines.length && results.length < maxResults; index += 1) {
-      const haystack = opts.caseSensitive ? lines[index] : lines[index].toLowerCase();
-      if (haystack.includes(needle)) results.push({ path, line: index + 1, text: lines[index].slice(0, 500) });
-    }
-  }
-  const truncationReason = results.length >= maxResults
-    ? 'max_results' as const
-    : inventory.candidateCount > files.length
-      ? 'max_files' as const
-      : undefined;
-  const payload = {
-    query,
-    results,
-    scannedFiles,
-    policyDeniedFiles,
-    skippedLargeFiles,
-    skippedBinaryFiles,
-    truncated: Boolean(truncationReason),
-    truncationReason,
-    cacheHit: inventory.cacheHit,
+  return {
+    ...results,
+    query: opts.query,
+    results: results.results.map(({ path, line, text }) => ({ path, line, text })),
+    truncationReason: results.truncationReason === 'discovery_budget' ? undefined : results.truncationReason,
   };
-  if (sessionCache) {
-    sessionCache.putSearch({
-      query,
-      includeKey,
-      result: payload,
-      scannedFiles,
-    });
-  }
-  return payload;
 }
 
 export function clearSearchFileInventoryCacheForTest(): void {

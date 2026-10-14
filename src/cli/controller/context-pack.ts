@@ -13,12 +13,6 @@ import { projectBoard } from "./issue-store";
 import { buildControllerTaskLedgerProjection } from "./task-ledger";
 import { legacyIssueAuthorityRetired } from "./legacy-issue-cutover";
 import {
-  queryCodeGraphReadProvider,
-  queryCodeGraphReadProviderAsync,
-  type CodeGraphNodeSummary,
-  type CodeGraphReadProviderResponse,
-} from "../../runtime/context/codegraph-read-provider";
-import {
   CONTEXT_PACK_SCHEMA_VERSION,
   CONTROLLER_CONTEXT_IMPACT_DOMAINS,
   type ControllerContextImpactDomain,
@@ -46,6 +40,11 @@ import {
 import { issueTaskFocus, ledgerTask } from './context/focus';
 import { addReason, coveredByGlob, expandKnownPath, looksLikeGlob, readableFile } from './context/known-paths';
 import { structuralResult } from './context/structural';
+import {
+  unavailableStructuralProvider,
+  unavailableStructuralProviderAsync,
+  type StructuralReadProviderResponse,
+} from './context/structural-provider';
 import { buildRepositoryInstructionContext } from './context/instruction-context';
 import { resolveRepositoryGovernance } from './context/rule-resolution';
 import { controllerCheckSelection, listControllerChecks } from './check-runner';
@@ -100,7 +99,7 @@ function resolveSourceReference(repoRoot: string, policy: McpPolicy, sourcePath:
 function contextPathPriority(path: string, reasons: string[]): number {
   const testBonus = /(^|\/)(__tests__|tests?|spec)(\/|$)|\.(test|spec)\.[^.]+$/i.test(path) ? 6 : 0;
   const sourceBonus = reasons.some((reason) => reason.startsWith('source-reference:')) ? 5 : 0;
-  const structuralBonus = reasons.some((reason) => reason.startsWith('codegraph:')) ? 3 : 0;
+  const structuralBonus = reasons.some((reason) => reason.startsWith('structural:')) ? 3 : 0;
   return testBonus + sourceBonus + structuralBonus;
 }
 
@@ -190,7 +189,7 @@ export function buildControllerContextPack(
   const baselineRevisionMatches = indexSource === "current_checkout" || gitSnapshot(structuralIndexRoot).head === git.head;
   const graphImpactFiles = new Set<string>();
   let structuralContext: ControllerContextPackProjection["structuralContext"] = {
-    provider: "codegraph",
+    provider: "none",
     requestedMode: structuralMode,
     status: "disabled",
     requiredSatisfied: structuralMode !== "required",
@@ -202,17 +201,17 @@ export function buildControllerContextPack(
     truncated: false,
   };
   const repositorySessionCache = getRepositoryReadSessionCache(repoRoot, options.session);
-  const queryCodeGraph = dependencies.queryCodeGraph ?? queryCodeGraphReadProvider;
-  const queryStructural = (queryRoot: string, request: Parameters<typeof queryCodeGraphReadProvider>[1]): CodeGraphReadProviderResponse => {
+  const structuralProvider = dependencies.queryStructural ?? unavailableStructuralProvider;
+  const queryStructural = (queryRoot: string, request: Parameters<typeof unavailableStructuralProvider>[1]): StructuralReadProviderResponse => {
     const key = JSON.stringify({ queryRoot, request });
     const cached = repositorySessionCache?.getStructural(key);
     if (cached && typeof cached === "object") {
       structuralCacheHits += 1;
-      return cached as CodeGraphReadProviderResponse;
+      return cached as StructuralReadProviderResponse;
     }
     structuralCacheMisses += 1;
-    const response = queryCodeGraph(queryRoot, request);
-    if (response.error?.code !== CODEGRAPH_PREFETCH_DEFERRED_CODE) {
+    const response = structuralProvider(queryRoot, request);
+    if (response.error?.code !== STRUCTURAL_PREFETCH_DEFERRED_CODE) {
       repositorySessionCache?.putStructural(key, response);
     }
     return response;
@@ -260,7 +259,7 @@ export function buildControllerContextPack(
         ? "stale"
         : structural.status;
       structuralContext = {
-        provider: "codegraph",
+        provider: "none",
         requestedMode: structuralMode,
         status: structuralStatus,
         requiredSatisfied: structuralMode !== "required" || structuralEvidenceCurrent,
@@ -302,12 +301,12 @@ export function buildControllerContextPack(
       // must never steer which raw source GPT sees first.
       if (structuralEvidenceCurrent) {
         for (const node of graph.nodes.slice(0, maxFiles * 6)) {
-          addStructuralPath(node.filePath, `codegraph:context:${node.kind}:${node.name}`, node.startLine);
+          addStructuralPath(node.filePath, `structural:context:${node.kind}:${node.name}`, node.startLine);
         }
         for (const node of graph.entryPoints) {
-          addStructuralPath(node.filePath, `codegraph:entry:${node.name}`, node.startLine);
+          addStructuralPath(node.filePath, `structural:entry:${node.name}`, node.startLine);
         }
-        for (const path of graph.relatedFiles.slice(0, maxFiles * 6)) addStructuralPath(path, "codegraph:related");
+        for (const path of graph.relatedFiles.slice(0, maxFiles * 6)) addStructuralPath(path, "structural:related");
         // Context search identifies the structural entry points. For a bounded
         // number of those files, enrich the same Context Plane call with direct
         // file dependencies/dependents. This is impact evidence, not a second
@@ -324,18 +323,18 @@ export function buildControllerContextPack(
             : [];
           for (const path of dependencies.slice(0, 40)) {
             graphImpactFiles.add(path);
-            addStructuralPath(path, `codegraph:dependency:${filePath}`);
+            addStructuralPath(path, `structural:dependency:${filePath}`);
           }
           for (const path of dependents.slice(0, 40)) {
             graphImpactFiles.add(path);
-            addStructuralPath(path, `codegraph:dependent:${filePath}`);
+            addStructuralPath(path, `structural:dependent:${filePath}`);
           }
         }
       }
-      for (const path of metadata?.changedFiles.removed ?? []) omitted.push({ path, reason: "codegraph reports file removed since index" });
+      for (const path of metadata?.changedFiles.removed ?? []) omitted.push({ path, reason: "structural provider reports file removed since index" });
       // A repository-baseline graph deliberately runs against another checkout.
       // Current worktree changes are still authoritative raw-source evidence,
-      // but they come from Git rather than stale CodeGraph metadata.
+      // but they come from Git rather than stale structural metadata.
       if (indexSource === "repository_baseline") {
         for (const path of gitStatusChangedPaths(git.status)) addStructuralPath(path, "worktree:changed-file", 1);
       }
@@ -514,8 +513,11 @@ export function buildControllerContextPack(
         path: entry.path,
         hitLines: entry.lines.length > 0 ? entry.lines : [1],
         reasons: entry.reasons,
-        maxSnippets: Math.min(fileSnippetBudget, remainingSnippets),
-        maxCharsPerSnippet,
+        // Discovery should cover multiple entry points rather than dump one huge file.
+        // Explicit known files retain their full evidence budget; only inferred
+        // candidates receive the cheap two-snippet discovery default.
+        maxSnippets: Math.min(options.maxSnippets === undefined && !exactKnown ? 2 : fileSnippetBudget, remainingSnippets),
+        maxCharsPerSnippet: exactKnown && options.maxCharsPerSnippet === undefined ? 8000 : maxCharsPerSnippet,
         session: options.session,
       });
       for (const snippet of snippets) {
@@ -539,7 +541,7 @@ export function buildControllerContextPack(
 
   // Evidence-closure eligible requests perform bounded internal waves after
   // Wave 1 raw source materialization. Each later wave derives concrete paths
-  // from the source that was just read plus current CodeGraph adjacency, then
+  // from the source that was just read plus current structural adjacency, then
   // materializes those paths in the same context request.
   const materializedPathSet = new Set(files.map((file) => file.path));
   let frontier = files.slice();
@@ -577,11 +579,11 @@ export function buildControllerContextPack(
           : [];
         for (const path of dependencies.slice(0, 40)) {
           graphImpactFiles.add(path);
-          addExpansionCandidate(path, `codegraph:dependency:${file.path}`);
+          addExpansionCandidate(path, `structural:dependency:${file.path}`);
         }
         for (const path of dependents.slice(0, 40)) {
           graphImpactFiles.add(path);
-          addExpansionCandidate(path, `codegraph:dependent:${file.path}`);
+          addExpansionCandidate(path, `structural:dependent:${file.path}`);
         }
       }
 
@@ -757,7 +759,7 @@ export function buildControllerContextPack(
     architectureContracts,
     coverageGaps: Array.from(new Set(coverageGaps)).slice(0, 40),
     relationSources: [
-      ...(structuralMode !== "off" ? ["codegraph" as const] : []),
+      ...(structuralMode !== "off" ? ["structural" as const] : []),
       ...(files.length > 0 ? ["lexical" as const] : []),
       ...(taskChecks.length > 0 ? ["forge_checks" as const] : []),
     ],
@@ -990,7 +992,7 @@ export function buildControllerContextPack(
         retrievalMode === "implementation"
           ? "The pack contains policy-approved current raw source with file SHA identities, but returned snippets are bounded evidence rather than proof of semantic completeness. After reading this evidence, derive new exact paths, symbols, tests, or relationships from the source itself. A guessed lexical term with no result is not by itself a reason to keep scanning or repeat the same broad query."
           : `Investigation mode performed ${timingsMs.waveCount} bounded evidence wave(s) inside this request; expansion budget ${timingsMs.expansionBudgetUsed}/${timingsMs.expansionBudgetMax}.`,
-        "Search/CodeGraph ranking is discovery evidence, not a business-semantics authority. readiness and impactContext make the bounded evidence surface and unresolved gaps explicit; ChatGPT still decides semantic sufficiency.",
+        "Search/structural ranking is discovery evidence, not a business-semantics authority. readiness and impactContext make the bounded evidence surface and unresolved gaps explicit; ChatGPT still decides semantic sufficiency.",
         instructionContext.contracts.length > 0
           ? `Applicable repository guidance was resolved hierarchically for selected source paths: ${instructionContext.contracts.map((entry) => entry.path).join(", ")}. These AGENTS.md/CLAUDE.md files are guidance-only evidence and do not define semantic scope.`
           : "No applicable AGENTS.md/CLAUDE.md guidance file was found for the selected source paths.",
@@ -998,15 +1000,15 @@ export function buildControllerContextPack(
         governanceContext.status === 'none'
           ? "No repository governance rule registry is present; existing guidance and explicit Task checks behave as before."
           : `Repository governance resolved ${governanceContext.activeRules.length} active rule(s), ${governanceContext.suppressedRules.length} suppressed rule(s), and ${governanceContext.recommendedCheckIds.length} recommended check(s) through bounded local matching. Recommendations are evidence only and never execute checks or create Work by themselves.`,
-        "CodeGraph structural evidence is discovery evidence. Raw source access still passes through Forge repository policy and current-file reads.",
-        structuralContext.status === "stale" ? "CodeGraph reports stale structural evidence. Treat graph relationships as hints and prefer the returned current raw source for changed files." : structuralContext.status === "unavailable" || structuralContext.status === "degraded" ? "Structural context was unavailable or degraded; bounded text search remains the fallback." : structuralContext.status === "ready" ? "CodeGraph structural context was queried read-only with index sync disabled." : "Structural context was not requested.",
+        "Structural evidence is discovery evidence. Raw source access still passes through Forge repository policy and current-file reads.",
+        structuralContext.status === "stale" ? "Structural provider reports stale evidence. Treat relationships as hints and prefer the returned current raw source for changed files." : structuralContext.status === "unavailable" || structuralContext.status === "degraded" ? "Structural context was unavailable or degraded; bounded text search remains the fallback." : structuralContext.status === "ready" ? "Structural context was queried read-only." : "Structural context was not requested.",
         "Run focused validation after a coherent edit batch; expensive full-suite checks belong at candidate/release boundaries unless debugging specifically needs them earlier.",
         taskChecks.length > 0 ? `Task checks advertised by the board: ${taskChecks.join(", ")}.` : "No task-specific checks were found in the compact ledger.",
       ],
     },
     next: [
       ...(structuralMode === "required" && !structuralContext.requiredSatisfied
-        ? ["Structural context was required but is not current/ready. Refresh CodeGraph explicitly or continue only with the degraded-plan warning visible."]
+        ? ["Structural context was required but is not current/ready. Continue only with the degraded-plan warning visible or use current raw source / semantic navigation instead."]
         : []),
       files.length > 0
         ? retrievalMode === "implementation"
@@ -1021,26 +1023,26 @@ export function buildControllerContextPack(
 
 /**
  * Broad first-call fan-in for the canonical rh_context path. Lexical retrieval
- * remains required evidence. Auto CodeGraph is opportunistic enrichment: it may
+ * remains required evidence. Auto structural retrieval is opportunistic enrichment: it may
  * finish inside the first-call latency budget, otherwise the request returns
  * bounded lexical/raw evidence while the same source-bound structural request
  * continues warming the session cache. Required structural mode still waits.
  */
 export const AUTO_STRUCTURAL_PREFETCH_BUDGET_MS = 100;
 export const AUTO_STRUCTURAL_PREFETCH_TIMEOUT_MS = 1_000;
-const CODEGRAPH_PREFETCH_DEFERRED_CODE = 'CODEGRAPH_PREFETCH_DEFERRED';
-const structuralPrefetchInflight = new Map<string, Promise<CodeGraphReadProviderResponse>>();
+const STRUCTURAL_PREFETCH_DEFERRED_CODE = 'STRUCTURAL_PREFETCH_DEFERRED';
+const structuralPrefetchInflight = new Map<string, Promise<StructuralReadProviderResponse>>();
 
-function codeGraphPrefetchDeferredResponse(elapsedMs: number): CodeGraphReadProviderResponse {
+function structuralPrefetchDeferredResponse(elapsedMs: number): StructuralReadProviderResponse {
   return {
     schemaVersion: 1,
-    provider: 'codegraph',
+    provider: 'none',
     operation: 'context',
     ok: false,
     status: 'degraded',
     error: {
-      code: CODEGRAPH_PREFETCH_DEFERRED_CODE,
-      message: `Optional CodeGraph enrichment exceeded the ${AUTO_STRUCTURAL_PREFETCH_BUDGET_MS}ms first-call budget and continues warming the source-bound session cache.`,
+      code: STRUCTURAL_PREFETCH_DEFERRED_CODE,
+      message: `Optional structural enrichment exceeded the ${AUTO_STRUCTURAL_PREFETCH_BUDGET_MS}ms first-call budget and continues warming the source-bound session cache.`,
     },
     timingsMs: { total: Math.round(elapsedMs * 100) / 100 },
   };
@@ -1066,10 +1068,10 @@ function cacheDeferredStructuralResult(
   sessionCache: ReturnType<typeof getRepositoryReadSessionCache>,
   structuralCacheKey: string,
   sourceIdentity: string | undefined,
-  response: CodeGraphReadProviderResponse,
+  response: StructuralReadProviderResponse,
 ): void {
   if (!sessionCache || !sourceIdentity) return;
-  if (response.error?.code === 'CODEGRAPH_TIMEOUT' || response.error?.code === CODEGRAPH_PREFETCH_DEFERRED_CODE) return;
+  if (response.error?.code === 'STRUCTURAL_TIMEOUT' || response.error?.code === STRUCTURAL_PREFETCH_DEFERRED_CODE) return;
   if (JSON.stringify(sessionCache.currentIdentity()) !== sourceIdentity) return;
   sessionCache.putStructural(structuralCacheKey, response);
 }
@@ -1081,7 +1083,7 @@ export async function buildControllerContextPackAsync(
   dependencies: ControllerContextPackDependencies = {},
 ): Promise<ControllerContextPackProjection> {
   const structuralMode = options.structuralContext ?? 'off';
-  if ((dependencies.queryCodeGraph && !dependencies.queryCodeGraphAsync) || !options.session || options.issueId || options.taskId) {
+  if ((dependencies.queryStructural && !dependencies.queryStructuralAsync) || !options.session || options.issueId || options.taskId) {
     return buildControllerContextPack(repoRoot, policy, options, dependencies);
   }
   const prefetchStartedAt = performance.now();
@@ -1134,7 +1136,7 @@ export async function buildControllerContextPackAsync(
   const sessionCache = getRepositoryReadSessionCache(repoRoot, options.session);
   const structuralSourceIdentity = sessionCache ? JSON.stringify(sessionCache.currentIdentity()) : undefined;
   const cachedStructural = structuralQuery
-    ? sessionCache?.peekStructural(structuralCacheKey) as CodeGraphReadProviderResponse | undefined
+    ? sessionCache?.peekStructural(structuralCacheKey) as StructuralReadProviderResponse | undefined
     : undefined;
   const lexicalOptions = searchQueries.length > 0
     ? (() => {
@@ -1171,18 +1173,18 @@ export async function buildControllerContextPackAsync(
     return pack;
   }
 
-  const noStructuralResponse: CodeGraphReadProviderResponse = {
+  const noStructuralResponse: StructuralReadProviderResponse = {
     schemaVersion: 1,
-    provider: 'codegraph',
+    provider: 'none',
     operation: 'context',
     ok: false,
     status: 'degraded',
-    error: { code: 'CODEGRAPH_QUERY_REQUIRED', message: 'No context query was provided.' },
+    error: { code: 'STRUCTURAL_QUERY_REQUIRED', message: 'No context query was provided.' },
     timingsMs: { total: 0 },
   };
   let structuralSettled = Boolean(cachedStructural) || !structuralQuery;
-  let structuralSettledValue: CodeGraphReadProviderResponse | undefined = cachedStructural || (!structuralQuery ? noStructuralResponse : undefined);
-  const queryCodeGraphAsync = dependencies.queryCodeGraphAsync ?? queryCodeGraphReadProviderAsync;
+  let structuralSettledValue: StructuralReadProviderResponse | undefined = cachedStructural || (!structuralQuery ? noStructuralResponse : undefined);
+  const queryStructuralAsync = dependencies.queryStructuralAsync ?? unavailableStructuralProviderAsync;
   const structuralInflightKey = structuralQuery && structuralSourceIdentity
     ? JSON.stringify({ structuralCacheKey, sourceIdentity: structuralSourceIdentity, structuralMode })
     : undefined;
@@ -1191,10 +1193,9 @@ export async function buildControllerContextPackAsync(
   const launchedStructuralPromise = cachedStructural
     ? Promise.resolve(cachedStructural)
     : structuralQuery
-      ? existingStructuralInflight ?? queryCodeGraphAsync(
+      ? existingStructuralInflight ?? queryStructuralAsync(
           structuralIndexRoot,
           structuralRequest,
-          structuralMode === 'auto' ? { timeoutMs: AUTO_STRUCTURAL_PREFETCH_TIMEOUT_MS } : {},
         )
       : Promise.resolve(noStructuralResponse);
   if (structuralInflightKey && structuralQuery && !cachedStructural && !existingStructuralInflight) {
@@ -1245,16 +1246,16 @@ export async function buildControllerContextPackAsync(
         prefetched = outcome.value;
       } else {
         structuralPrefetchDeferred = true;
-        prefetched = codeGraphPrefetchDeferredResponse(performance.now() - prefetchStartedAt);
+        prefetched = structuralPrefetchDeferredResponse(performance.now() - prefetchStartedAt);
       }
     }
   }
 
-  const fallbackQueryCodeGraph = dependencies.queryCodeGraph ?? queryCodeGraphReadProvider;
+  const fallbackQueryStructural = dependencies.queryStructural ?? unavailableStructuralProvider;
   const pack = buildControllerContextPack(repoRoot, policy, options, {
-    queryCodeGraph: (queryRoot, request) => request.operation === 'context' && queryRoot === structuralIndexRoot
+    queryStructural: (queryRoot, request) => request.operation === 'context' && queryRoot === structuralIndexRoot
       ? prefetched
-      : fallbackQueryCodeGraph(queryRoot, request),
+      : fallbackQueryStructural(queryRoot, request),
   });
   pack.timingsMs.parallelFirstPass = true;
   pack.timingsMs.parallelPrefetch = Math.round((performance.now() - prefetchStartedAt) * 100) / 100;

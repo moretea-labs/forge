@@ -311,7 +311,7 @@ describe('ReleaseSession candidate retention integration', () => {
 
     const report = cleanupControllerRuntimeState(home, {
       reason: 'periodic',
-      periodicSequence: 7,
+      periodicSequence: 6,
       nowMs: NOW,
       maxEntries: 10_000,
       maxRemovals: 10,
@@ -561,7 +561,7 @@ describe('runtime cleanup release integration', () => {
 
     const report = cleanupControllerRuntimeState(home, {
       reason: 'periodic',
-      periodicSequence: 7,
+      periodicSequence: 6,
       nowMs: NOW,
       maxEntries: 100,
       maxRemovals: 10,
@@ -596,7 +596,7 @@ describe('runtime cleanup release integration', () => {
 
     const report = cleanupControllerRuntimeState(home, {
       reason: 'periodic',
-      periodicSequence: 7,
+      periodicSequence: 6,
       nowMs: NOW,
       maxEntries: 100,
       maxRemovals: 1,

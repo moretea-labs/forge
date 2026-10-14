@@ -84,12 +84,6 @@ export interface RuntimeReleaseManifest {
   browserAutomationHelperEntrypoint?: 'browser-automation-helper';
   browserAutomationHelperArtifactIdentity?: string;
   browserAutomationHelperContractIdentity?: string;
-  codeGraphNodeEntrypoint?: 'codegraph-node';
-  codeGraphNodeArtifactIdentity?: string;
-  codeGraphSidecarEntrypoint?: 'codegraph-sidecar.cjs';
-  codeGraphSidecarArtifactIdentity?: string;
-  codeGraphLibraryRoot?: 'codegraph-lib';
-  codeGraphLibraryArtifactIdentity?: string;
   packageRoot?: 'package';
   packageArtifactIdentity?: string;
   controllerUiRoot?: 'ui-dist';

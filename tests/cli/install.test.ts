@@ -265,7 +265,6 @@ describe('install command (Phase 1B)', () => {
           'codex',
           '--no-cli',
           '--no-sync-skill',
-          '--no-codegraph',
         ],
         {
           cwd: ROOT,
@@ -285,7 +284,7 @@ describe('public CLI governance', () => {
   test('root help exposes product workflows and hides compatibility machinery', () => {
     const res = spawnSync('bun', [CLI, '--help'], { cwd: ROOT, encoding: 'utf8' }); expect(res.status).toBe(0);
     const names = res.stdout.split('\n').map((line) => line.trim()).filter((line) => /^[a-z][a-z-]*(?:\s|$)/.test(line)).map((line) => line.split(/\s+/)[0]);
-    for (const command of ['install', 'update', 'setup', 'adopt', 'repo', 'runtime', 'recovery', 'plugin', 'chatgpt', 'mcp', 'tools']) expect(names).toContain(command);
+    for (const command of ['install', 'update', 'setup', 'adopt', 'repo', 'runtime', 'recovery', 'plugin', 'chatgpt', 'mcp']) expect(names).toContain(command);
     for (const command of ['init', 'init-hook', 'hook', 'run', 'controller', 'migrate', 'brain', 'capability-context']) expect(names).not.toContain(command);
   });
   test('retired init entrypoint is rejected while hidden run remains callable', () => {

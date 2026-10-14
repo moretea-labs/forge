@@ -365,13 +365,6 @@ describe("check-agent-tooling", () => {
       expect(report.tools.gbrain.mcp_hosts.claude.status).toBe("disabled");
       expect(report.tools.gbrain.mcp_hosts.codex.status).toBe("disabled");
       expect(report.tools.gbrain.impact.knowledge_tasks).toBe("manual-only");
-      expect(report.tools.codegraph.status).toBe("partial");
-      expect(report.tools.codegraph.primary_host).toBe("codex");
-      expect(report.tools.codegraph.source).toBe("global");
-      expect(report.tools.codegraph.version).toBe("0.9.6");
-      expect(report.tools.codegraph.mcp_hosts.codex.status).toBe("configured");
-      expect(report.tools.codegraph.project_index.status).toBe("up-to-date");
-      expect(report.tools.codegraph.impact.code_navigation).toBe("missing");
     } finally {
       rmSync(envRoot.root, { recursive: true, force: true });
     }
@@ -459,69 +452,6 @@ describe("check-agent-tooling", () => {
       const report = JSON.parse(res.stdout);
       expect(report.tools.gbrain.status).toBe("warning");
       expect(report.tools.gbrain.reason).toContain("doctor status is warnings");
-    } finally {
-      rmSync(envRoot.root, { recursive: true, force: true });
-    }
-  }, 15000);
-
-  test("reports Claude CodeGraph MCP as deferred when alwaysLoad is missing", () => {
-    const envRoot = setupFakeEnvironment("check-agent-tooling-codegraph-claude-deferred");
-    try {
-      writeClaudeCodeGraphConfig(envRoot.home, false);
-      writeFakeNpx(envRoot.fakeBin);
-      writeFakeGbrain(envRoot.fakeBin);
-      writeFakeCodeGraph(envRoot.fakeBin);
-
-      const res = spawnSync("bash", [SCRIPT, "--json", "--host", "claude"], {
-        cwd: ROOT,
-        encoding: "utf-8",
-        env: {
-          ...process.env,
-          HOME: envRoot.home,
-          PATH: `${envRoot.fakeBin}:${process.env.PATH ?? ""}`,
-          AGENTIC_DEV_CODEGRAPH_LOCAL_BIN: join(envRoot.fakeBin, "codegraph"),
-        },
-      });
-
-      expect(res.status).toBe(0);
-      const report = JSON.parse(res.stdout);
-      expect(report.tools.codegraph.status).toBe("partial");
-      expect(report.tools.codegraph.reason).toContain("missing or deferred");
-      expect(report.tools.codegraph.mcp_hosts.claude.status).toBe("deferred");
-      expect(report.tools.codegraph.mcp_hosts.claude.always_load).toBe(false);
-      expect(report.tools.codegraph.mcp_hosts.claude.tool_search).toBe("deferred");
-      expect(report.tools.codegraph.mcp_hosts.claude.reason).toContain("alwaysLoad is not true");
-    } finally {
-      rmSync(envRoot.root, { recursive: true, force: true });
-    }
-  }, 15000);
-
-  test("reports Claude CodeGraph MCP as configured when alwaysLoad is true", () => {
-    const envRoot = setupFakeEnvironment("check-agent-tooling-codegraph-claude-always-load");
-    try {
-      writeClaudeCodeGraphConfig(envRoot.home, true);
-      writeFakeNpx(envRoot.fakeBin);
-      writeFakeGbrain(envRoot.fakeBin);
-      writeFakeCodeGraph(envRoot.fakeBin);
-
-      const res = spawnSync("bash", [SCRIPT, "--json", "--host", "claude"], {
-        cwd: ROOT,
-        encoding: "utf-8",
-        env: {
-          ...process.env,
-          HOME: envRoot.home,
-          PATH: `${envRoot.fakeBin}:${process.env.PATH ?? ""}`,
-          AGENTIC_DEV_CODEGRAPH_LOCAL_BIN: join(envRoot.fakeBin, "codegraph"),
-        },
-      });
-
-      expect(res.status).toBe(0);
-      const report = JSON.parse(res.stdout);
-      expect(report.tools.codegraph.status).toBe("present");
-      expect(report.tools.codegraph.mcp_hosts.claude.status).toBe("configured");
-      expect(report.tools.codegraph.mcp_hosts.claude.always_load).toBe(true);
-      expect(report.tools.codegraph.mcp_hosts.claude.tool_search).toBe("always-load");
-      expect(report.tools.codegraph.impact.code_navigation).toBe("full");
     } finally {
       rmSync(envRoot.root, { recursive: true, force: true });
     }
@@ -627,48 +557,12 @@ describe("check-agent-tooling", () => {
       expect(log).toContain("gbrain doctor --json --fast");
       expect(log).toContain("gbrain check-update --json");
       expect(log).toContain("gbrain integrations list --json");
-      expect(log).toContain("codegraph --version");
-      expect(log).toContain("codegraph status .");
       expect(log).not.toContain("setup");
       expect(log).not.toContain("skills check");
       expect(log).not.toContain("skills update");
       expect(log).not.toContain("gbrain serve");
       expect(log).not.toContain("gbrain sync");
       expect(log).not.toContain("gbrain upgrade");
-      expect(log).not.toContain("codegraph init");
-      expect(log).not.toContain("codegraph sync");
-      expect(log).not.toContain("codegraph install");
-    } finally {
-      rmSync(envRoot.root, { recursive: true, force: true });
-    }
-  }, 15000);
-
-  test("fails strict readiness when CodeGraph is not configured for Codex", () => {
-    const envRoot = setupFakeEnvironment("check-agent-tooling-codegraph-strict");
-    try {
-      mkdirSync(join(envRoot.home, ".codex"), { recursive: true });
-      writeFileSync(join(envRoot.home, ".codex", "config.toml"), "# no codegraph mcp\n");
-      writeFakeNpx(envRoot.fakeBin);
-      writeFakeGbrain(envRoot.fakeBin);
-      writeFakeCodeGraph(envRoot.fakeBin);
-
-      const res = spawnSync("bash", [SCRIPT, "--json", "--host", "codex", "--strict-readiness"], {
-        cwd: ROOT,
-        encoding: "utf-8",
-        env: {
-          ...process.env,
-          HOME: envRoot.home,
-          PATH: `${envRoot.fakeBin}:${process.env.PATH ?? ""}`,
-          AGENTIC_DEV_CODEGRAPH_ALLOW_REPO_LOCAL: "0",
-        },
-      });
-
-      expect(res.status).toBe(2);
-      const report = JSON.parse(res.stdout);
-      expect(report.tools.codegraph.status).toBe("partial");
-      expect(report.tools.codegraph.source).toBe("global");
-      expect(report.tools.codegraph.mcp_hosts.codex.status).toBe("missing");
-      expect(res.stderr).toContain("CodeGraph readiness is partial");
     } finally {
       rmSync(envRoot.root, { recursive: true, force: true });
     }
@@ -781,83 +675,5 @@ describe("check-agent-tooling", () => {
     }
   }, 15000);
 
-  test("prefers a local CodeGraph binary and reports global drift", () => {
-    const envRoot = setupFakeEnvironment("check-agent-tooling-codegraph-local");
-    const localBin = join(envRoot.root, "localbin");
-    try {
-      mkdirSync(localBin, { recursive: true });
-      mkdirSync(join(envRoot.home, ".codex"), { recursive: true });
-      writeFileSync(join(envRoot.home, ".codex", "config.toml"), "[mcp_servers.codegraph]\ncommand = \"codegraph\"\n");
-      writeFakeNpx(envRoot.fakeBin);
-      writeFakeGbrain(envRoot.fakeBin);
-      writeFakeCodeGraph(localBin, { version: "0.9.6" });
-      writeFakeCodeGraph(envRoot.fakeBin, { version: "0.8.0" });
 
-      const res = spawnSync("bash", [SCRIPT, "--json", "--host", "codex"], {
-        cwd: ROOT,
-        encoding: "utf-8",
-        env: {
-          ...process.env,
-          HOME: envRoot.home,
-          PATH: `${envRoot.fakeBin}:${process.env.PATH ?? ""}`,
-          AGENTIC_DEV_CODEGRAPH_LOCAL_BIN: join(localBin, "codegraph"),
-        },
-      });
-
-      expect(res.status).toBe(0);
-      const report = JSON.parse(res.stdout);
-      expect(report.tools.codegraph.status).toBe("present");
-      expect(report.tools.codegraph.source).toBe("local");
-      expect(report.tools.codegraph.local_version).toBe("0.9.6");
-      expect(report.tools.codegraph.global_version).toBe("0.8.0");
-      expect(report.tools.codegraph.drift).toEqual({ local: "0.9.6", global: "0.8.0", using: "local" });
-    } finally {
-      rmSync(envRoot.root, { recursive: true, force: true });
-    }
-  }, 15000);
-
-  test("uses the local CodeGraph platform bundle when the npm shim is unusable", () => {
-    const envRoot = setupFakeEnvironment("check-agent-tooling-codegraph-bundle");
-    const bundleBin = join(
-      envRoot.root,
-      "node_modules",
-      `@colbymchenry/codegraph-${process.platform}-${process.arch}`,
-      "bin"
-    );
-    const shimBin = join(envRoot.root, "node_modules", ".bin");
-    try {
-      mkdirSync(bundleBin, { recursive: true });
-      mkdirSync(shimBin, { recursive: true });
-      mkdirSync(join(envRoot.home, ".codex"), { recursive: true });
-      writeFileSync(join(envRoot.home, ".codex", "config.toml"), "[mcp_servers.codegraph]\ncommand = \"codegraph\"\n");
-      writeFileSync(
-        join(envRoot.root, "package.json"),
-        JSON.stringify({ devDependencies: { "@colbymchenry/codegraph": "1.0.1" } }, null, 2)
-      );
-      writeFakeNpx(envRoot.fakeBin);
-      writeFakeGbrain(envRoot.fakeBin);
-      writeFakeCodeGraph(bundleBin, { version: "1.0.1" });
-      writeExecutable(join(shimBin, "codegraph"), "#!/bin/bash\necho 'bad shim used' >&2\nexit 99\n");
-
-      const res = spawnSync("bash", [SCRIPT, "--json", "--host", "codex"], {
-        cwd: envRoot.root,
-        encoding: "utf-8",
-        env: {
-          ...process.env,
-          HOME: envRoot.home,
-          PATH: `${envRoot.fakeBin}:${process.env.PATH ?? ""}`,
-        },
-      });
-
-      expect(res.status).toBe(0);
-      const report = JSON.parse(res.stdout);
-      expect(report.tools.codegraph.status).toBe("present");
-      expect(report.tools.codegraph.source).toBe("local");
-      expect(report.tools.codegraph.bin_path).toContain(`@colbymchenry/codegraph-${process.platform}-${process.arch}`);
-      expect(report.tools.codegraph.local_version).toBe("1.0.1");
-      expect(report.tools.codegraph.project_index.status).toBe("up-to-date");
-    } finally {
-      rmSync(envRoot.root, { recursive: true, force: true });
-    }
-  }, 15000);
 });

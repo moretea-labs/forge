@@ -4,7 +4,6 @@ import { fileURLToPath } from "url";
 import { configureBrainRoot, defaultBrainRootChoice, expandHomePath } from "./brain-root";
 import { syncCrossReviewSkills } from "./init";
 import { runInstall, type InstallTargetSpec } from "./install";
-import { configureCodegraph } from "../tools/codegraph";
 import { runProcess as runBoundedProcess } from "../../effects/process-runner";
 
 export interface GlobalRuntimeOptions {
@@ -17,7 +16,6 @@ export interface GlobalRuntimeOptions {
   syncSkill?: boolean;
   hostAdapters?: boolean;
   externalSkills?: boolean;
-  codegraph?: boolean;
   brainRoot?: string;
   platform?: NodeJS.Platform;
 }
@@ -40,7 +38,6 @@ export interface GlobalRuntimeResult {
 }
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
-const CODEGRAPH_PACKAGE = "@colbymchenry/codegraph";
 const WAZA_SKILLS = ["think", "hunt", "check", "health"] as const;
 
 function defaultSourceRoot(): string {
@@ -231,40 +228,6 @@ function configureBrain(root: string | undefined, env?: NodeJS.ProcessEnv): Glob
   }
 }
 
-function ensureCodegraphCli(cwd: string, env?: NodeJS.ProcessEnv): GlobalRuntimeStep {
-  const check = runProcess("codegraph", ["--version"], cwd, env);
-  if (check.status === "ok") return withStepName(check, "ensure CodeGraph CLI", "present");
-  const install = commandAvailable("bun", cwd, env)
-    ? runProcess("bun", ["add", "-g", CODEGRAPH_PACKAGE], cwd, env)
-    : runProcess("npm", ["install", "-g", CODEGRAPH_PACKAGE, "--omit=optional", "--no-audit", "--no-fund"], cwd, env);
-  if (install.status !== "ok") return withStepName(install, "ensure CodeGraph CLI", CODEGRAPH_PACKAGE);
-  const recheck = runProcess("codegraph", ["--version"], cwd, env);
-  if (recheck.status === "ok") return withStepName(recheck, "ensure CodeGraph CLI", "installed");
-  return {
-    ...recheck,
-    step: "ensure CodeGraph CLI",
-    status: "failed",
-    detail: `${CODEGRAPH_PACKAGE} installed, but codegraph is not on PATH`,
-  };
-}
-
-function configureCodegraphMcp(cwd: string, target: InstallTargetSpec, env?: NodeJS.ProcessEnv): GlobalRuntimeStep {
-  try {
-    const result = configureCodegraph({ repoRoot: cwd, target, location: "global", env });
-    return {
-      step: "configure CodeGraph MCP",
-      status: result.actions.some((entry) => entry.status === "failed") ? "failed" : "ok",
-      detail: result.actions.map((entry) => `${entry.action}:${entry.status}`).join(", "),
-    };
-  } catch (error) {
-    return {
-      step: "configure CodeGraph MCP",
-      status: "failed",
-      stderr: String((error as Error).message ?? error),
-    };
-  }
-}
-
 export function runGlobalRuntimeSetup(opts: GlobalRuntimeOptions = {}): GlobalRuntimeResult {
   const sourceRoot = opts.sourceRoot ?? defaultSourceRoot();
   const cwd = opts.cwd ?? process.cwd();
@@ -293,23 +256,6 @@ export function runGlobalRuntimeSetup(opts: GlobalRuntimeOptions = {}): GlobalRu
   }
 
   steps.push(configureBrain(opts.brainRoot, env));
-
-  if (platform === "win32" && opts.codegraph !== false) {
-    steps.push({
-      step: "ensure CodeGraph CLI",
-      status: "skipped",
-      detail: "native Windows automatic CodeGraph setup is not release-validated; use WSL2 or configure it manually",
-    });
-    steps.push({ step: "configure CodeGraph MCP", status: "skipped", detail: "native Windows default" });
-  } else if (opts.codegraph !== false) {
-    const ensure = ensureCodegraphCli(cwd, env);
-    steps.push(ensure);
-    if (ensure.status === "ok") steps.push(configureCodegraphMcp(cwd, target, env));
-    else steps.push({ step: "configure CodeGraph MCP", status: "skipped", detail: "CodeGraph CLI install failed" });
-  } else {
-    steps.push({ step: "ensure CodeGraph CLI", status: "skipped", detail: "disabled" });
-    steps.push({ step: "configure CodeGraph MCP", status: "skipped", detail: "disabled" });
-  }
 
   const lines = steps.flatMap(renderStep);
   const failed = steps.some((step) => step.status === "failed");

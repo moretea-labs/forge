@@ -1,7 +1,7 @@
 # Architecture Domain: Verification
 
 > **Source**: `.ai/context/capabilities.json`
-> **Owner**: Regression tests, workflow gates, eval harness, CodeGraph readiness, and advisory tooling checks.
+> **Owner**: Regression tests, workflow gates, eval harness, and advisory tooling checks.
 
 ## Purpose
 
@@ -10,7 +10,6 @@ repos, command facades, hooks, migration helpers, and installed runtime copies.
 
 ## Capabilities
 
-- `verification-codegraph-readiness` -> `docs/architecture/modules/verification/codegraph-readiness.md`
 - `verification-evals-checks` -> `docs/architecture/modules/verification/evals-checks.md`
 
 ## Stable Rules
@@ -28,14 +27,12 @@ repos, command facades, hooks, migration helpers, and installed runtime copies.
 - `check-task-sync.sh` enforces that substantive repo changes update `tasks/`.
 - `check-task-workflow.sh --strict` is the repo-local harness readiness gate.
 - `sync-brain-docs.sh --check` verifies manifest-controlled repo-to-brain mirrors without making gbrain or MCP part of hook correctness.
-- External tooling probes remain read-only by default; CodeGraph readiness is required for agent code navigation, while other external tooling remains advisory.
-- This self-host repo may use a vendored CodeGraph dev dependency; generated downstream repos keep global CodeGraph MCP setup explicit unless policy opts in.
+- External tooling probes remain read-only by default. Agent code navigation uses current source and explicit LSP navigation; no graph index is required.
 
 ## Verification Surface
 
 - `bun test`
 - `bash scripts/check-task-sync.sh`
 - `bash scripts/check-task-workflow.sh --strict`
-- `bash scripts/ensure-codegraph.sh --check --json`
 - `bun scripts/inspect-project-state.ts --repo . --format text`
 - `bash scripts/migrate-project-template.sh --repo . --dry-run`

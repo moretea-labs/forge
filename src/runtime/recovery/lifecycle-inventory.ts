@@ -242,16 +242,6 @@ export const RUNTIME_LIFECYCLE_INVENTORY: readonly RuntimeLifecycleClassDefiniti
     closureStatus: 'existing_bounded', evidencePaths: ['src/runtime/recovery/quarantine-retention.ts','src/runtime/recovery/maintenance-executor.ts','src/runtime/recovery/local-jobs-repair.ts','tests/runtime/capability-recovery.test.ts'],
   }),
   lifecycle({
-    id: 'codegraph_cache', owner: 'Context / CodeGraph cache lifecycle', scope: 'repository', dataClass: 'cache',
-    storage: 'Controller Home tool-cache/codegraph or explicit external cache root',
-    terminalCondition: 'Index is stale, superseded, repository-retired or evicted as rebuildable cache.',
-    activeProtection: 'Only a live process-scoped Forge locator fences Controller Home cache deletion; unreadable, truncated, or ambiguous locator evidence fails closed. Raw source remains authority when cache is missing/stale.',
-    retentionCapacity: 'Forge-owned Controller Home indexes use a 7-day default idle grace, 512 MiB per-repository cap, 2 GiB Controller aggregate cap, and bounded oldest-first scan/removal budgets. Inactive caches may be rebuilt and evicted under age or capacity pressure; explicit external cache roots remain outside Forge cleanup authority.',
-    cleanupAuthority: 'Central Runtime cleanup owns rebuildable Controller Home CodeGraph eviction; no semantic authority is deleted and non-owned/symlink entries fail closed.',
-    recoverySemantics: 'Missing/stale cache degrades explicitly to lexical/raw-source evidence and rebuilds on demand; removal is idempotent and bounded by the shared cleanup budget.',
-    closureStatus: 'existing_bounded', evidencePaths: ['src/runtime/context/codegraph-cache-boundary.ts','src/runtime/control-plane/codegraph-cache-retention.ts','src/runtime/control-plane/runtime-cleanup.ts','tests/runtime/codegraph-cache-retention.test.ts'],
-  }),
-  lifecycle({
     id: 'operational_memory', owner: 'Kernel Memory shadow reducer', scope: 'controller', dataClass: 'derived',
     storage: 'Controller Home derived operational Memory records backed by retained Process evidence',
     terminalCondition: 'Support evidence expires/disappears, compatibility invalidates the prior, or the namespace is explicitly dropped.',

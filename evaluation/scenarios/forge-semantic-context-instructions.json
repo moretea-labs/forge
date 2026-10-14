@@ -46,7 +46,7 @@
       "command": "bun",
       "arguments": [
         "test",
-        "tests/runtime/codegraph-context-provider.test.ts"
+        "tests/runtime/context-pack-readiness.test.ts"
       ],
       "expectedExitCode": 0,
       "timeoutMs": 120000

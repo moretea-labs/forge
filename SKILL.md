@@ -40,8 +40,8 @@ Automatic routing remains authoritative when the user does not provide a mode di
 
 A leading mode directive is an opt-in instruction to ChatGPT's Forge router. It applies only to the current request, is removed from the objective before execution, and never bypasses permissions, Runtime authority, protected-path rules, approvals, or destructive/remote-write confirmation.
 
-- `-plan` or `/plan`: force the reviewed planning path. Planning is read-only: inspect repository state and call `rh_context` search with `structural_context=required` so CodeGraph symbol/reference/dependency/impact evidence is used when the index is ready; load only relevant architecture/ADR/design/README material, then create or revise the existing PlanContract. Review the PlanContract before approval. Do not start mutation until the reviewed plan is approved and execution is explicitly bound to an approved plan step. If CodeGraph is unavailable or stale, keep the degraded evidence warning visible and use bounded current-source context instead of pretending graph coverage exists.
-- `-debug` or `/debug`: force evidence-first debugging. Reproduce or characterize the failure, then prefer repeated `rh_context` search with `structural_context=auto` to isolate callers, dependencies, and the smallest causal surface before patching and focused verification. The directive does not force an Agent or durable Work; existing routing still chooses Direct, bounded Work, or an optional worker from the actual scope and risk.
+- `-plan` or `/plan`: review current raw source using rh_context with structural_context=off and explicit semantic_navigation when concrete symbol definitions, references, or implementations are needed; report missing language-service evidence instead of requiring any graph index. Keep normal Plan approval and scope rules.
+- `-debug` or `/debug`: reproduce the failure, use bounded lexical/raw-source discovery first, then explicit LSP navigation for known symbols; do not start CodeGraph or any index automatically. Keep normal Direct/Work selection rules.
 
 A bare directive with no objective should return/explain that mode's working contract and must not mutate repository state. Mode directives are not sticky across turns unless the user repeats them or explicitly asks to continue the same active Plan/Work.
 
@@ -304,7 +304,7 @@ Migration defaults:
 - keep Waza, gstack, gbrain, Mermaid, and cross-review host skills optional; detect them but never make normal Forge execution depend on them
 - `forge install` bootstraps only Forge-owned runtime and host adapters by default; install third-party host skills only with `--with-external-skills`
 - Forge task routing uses `/direct`, `/plan`, `/debug`, `/review`, `/release`, and `/scale`; optional host skills may refine those workflows when already installed
-- distinguish the bundled CodeGraph read backend used by `rh_context` from an optional global CodeGraph CLI/MCP integration; missing global CLI is not Runtime unready
+- The integrated CodeGraph index and its Runtime Sidecar are retired. Use current-source search and existing language-service navigation instead.
 
 ## Repo-Local Contract
 

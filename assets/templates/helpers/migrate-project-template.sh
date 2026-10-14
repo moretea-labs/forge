@@ -15,7 +15,7 @@ run_source_root() {
     echo "[migrate] bun is required to run Forge from source: $root" >&2
     exit 1
   }
-  exec bun "$root/src/cli/index.ts" adopt "$@" --no-codegraph --no-verify
+  exec bun "$root/src/cli/index.ts" adopt "$@" --no-verify
 }
 
 run_source_root "$SELF_SOURCE_ROOT" "$@"
@@ -24,7 +24,7 @@ if [[ -n "$SOURCE_ROOT" ]]; then
 fi
 
 if command -v forge >/dev/null 2>&1; then
-  exec forge adopt "$@" --no-codegraph --no-verify
+  exec forge adopt "$@" --no-verify
 fi
 
 echo "[migrate] Missing Forge CLI; set FORGE_SOURCE_ROOT to a Forge source checkout." >&2

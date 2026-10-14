@@ -31,11 +31,11 @@ describe("Bootstrap Script Contracts", () => {
     expect(skill).toContain("understood bounded work still defaults to Direct Edit");
     expect(skill).toContain("`-plan` or `/plan`");
     expect(skill).toContain("`-debug` or `/debug`");
-    expect(skill).toContain("Planning is read-only");
-    expect(skill).toContain("`structural_context=required`");
-    expect(skill).toContain("`structural_context=auto`");
-    expect(skill).toContain("existing PlanContract");
-    expect(skill).toContain("does not force an Agent or durable Work");
+    expect(skill).toContain("review current raw source");
+    expect(skill).toContain("structural_context=off");
+    expect(skill).toContain("explicit semantic_navigation");
+    expect(skill).toContain("normal Plan approval");
+    expect(skill).toContain("Direct/Work selection rules");
     expect(skill).toContain("never bypasses permissions");
     expect(skill).toContain("Mode directives are not sticky across turns");
   });

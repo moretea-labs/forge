@@ -421,18 +421,6 @@
       "module": "process-runtime",
       "resource": "pure"
     },
-    "tests/runtime/codegraph-controller-home-cache.test.ts": {
-      "module": "repository",
-      "resource": "temp-isolated"
-    },
-    "tests/runtime/codegraph-cache-retention.test.ts": {
-      "module": "process-runtime",
-      "resource": "temp-isolated"
-    },
-    "tests/runtime/codegraph-context-provider.test.ts": {
-      "module": "controller",
-      "resource": "git-worktree"
-    },
     "tests/runtime/control-plane-final-cutover.test.ts": {
       "module": "workflow",
       "resource": "controller-home-isolated"

@@ -465,15 +465,6 @@ export function isAgenticPackagingIntent(ctx: PromptIntentContext): boolean {
   return AGENTIC_PACKAGING.test(ctx.text);
 }
 
-const CODEGRAPH_ROUTE = re(
-  String.raw`(who calls|what calls|callers|callees|impact|impact radius|trace\s+(flow|path|call)|where\s.*(defined|definition)|definition of|symbol named|调用关系|谁调用|调用了谁|哪里定义|定义在哪|影响面|调用链|追踪(路径|调用|链)|从.*到.*怎么走)`,
-);
-
-export function isCodegraphRouteIntent(ctx: PromptIntentContext): boolean {
-  if (isTriggerQuestionPrompt(ctx)) return false;
-  return CODEGRAPH_ROUTE.test(ctx.text);
-}
-
 const GIT_STATUS_LINE = re(
   String.raw`^${SP}*(git\s+(status|log|show|diff|push|pull|commit)|status|commit|push|merge|提交|推送|合并|看状态|看看状态)(${SP}|$)`,
 );

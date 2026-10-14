@@ -61,7 +61,6 @@ import {
   scheduleLinuxControllerHomeMigration,
   type RecoveryControllerHomeMigrationPreflight,
 } from '../../runtime/standalone-recovery/controller-home-migration';
-import { configureCodegraph, ensureCodegraph } from '../tools/codegraph';
 import { isProcessAlive } from '../../runtime/shared/process-tree';
 import { systemdUserServicePid, systemdUserUnitName, systemdUserUnitPath } from '../controller/systemd-user';
 import { installWindowsHostRecoveryPlugin } from '../../runtime/plugins/windows-host-recovery-install';
@@ -749,13 +748,11 @@ export function buildRecoveryCommand(): Command {
     .requiredOption('--repo <path>', 'Forge source repository root used for Recovery and Runtime immutable releases')
     .requiredOption('--primary-connector-service-label <label>', 'Primary OAuth/Connector launchd label')
     .option('--primary-connector-service-plist <path>', 'Absolute primary OAuth/Connector launchd plist path')
-    .option('--configure-codegraph', 'Initialize/sync CodeGraph and configure repository-scoped MCP for Codex and Claude during the bootstrap')
     .action(async (opts: {
       controllerHome: string;
       repo: string;
       primaryConnectorServiceLabel: string;
       primaryConnectorServicePlist?: string;
-      configureCodegraph?: boolean;
     }) => {
       const home = resolveControllerHome(opts.controllerHome);
       const repoRoot = resolve(opts.repo);
@@ -793,18 +790,9 @@ export function buildRecoveryCommand(): Command {
         process.exitCode = 1;
         return;
       }
-      let codegraph: Record<string, unknown> | undefined;
-      let codegraphOk = true;
-      if (opts.configureCodegraph === true) {
-        const ensured = ensureCodegraph({ repoRoot, init: true, sync: true, host: 'both' });
-        const configured = configureCodegraph({ repoRoot, target: 'both', location: 'global' });
-        codegraphOk = !ensured.actions.some((entry) => entry.status === 'failed')
-          && !configured.actions.some((entry) => entry.status === 'failed');
-        codegraph = { ensured, configured };
-      }
       const connector = await restartPrimaryConnector(refreshed);
-      const ok = connector.ok && codegraphOk;
-      output({ ok, phase: !connector.ok ? 'connector_restart' : !codegraphOk ? 'codegraph_configuration' : 'complete', recovery: installed, runtime, ...(codegraph ? { codegraph } : {}), connector });
+      const ok = connector.ok;
+      output({ ok, phase: !connector.ok ? 'connector_restart' : 'complete', recovery: installed, runtime, connector });
       if (!ok) process.exitCode = 1;
     });
 

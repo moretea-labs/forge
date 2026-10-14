@@ -7,7 +7,6 @@ import { join } from 'path';
 import { performance } from 'perf_hooks';
 import { buildControllerContextPackAsync } from '../src/cli/controller/context-pack';
 import { getMcpPolicy } from '../src/cli/mcp/policy';
-import { closeCodeGraphReadProviderSessions } from '../src/runtime/context/codegraph-read-provider';
 import { clearAllSessionCachesForTest } from '../src/cli/repository/session-cache';
 import { startLightweightRepositoryCommand } from '../src/runtime/execution/process-runtime/lightweight-managed';
 import { registerRepository } from '../src/cli/repositories/registry';
@@ -141,6 +140,5 @@ try {
   process.stdout.write(`${JSON.stringify({ ...output, assertions, passed: Object.values(assertions).every(Boolean) }, null, 2)}\n`);
   if (!Object.values(assertions).every(Boolean)) process.exitCode = 1;
 } finally {
-  await closeCodeGraphReadProviderSessions();
   rmSync(sandboxRoot, { recursive: true, force: true });
 }

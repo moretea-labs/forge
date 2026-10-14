@@ -5,7 +5,6 @@ import type { McpPolicy, McpProfileName } from '../types';
 import { buildControllerContextPackAsync } from '../../../src/cli/controller/context-pack';
 import type { ControllerContextPackOptions } from '../../../src/cli/controller/context/types';
 import { PROCESS_RUNTIME_RELEASE_CANARY_ARG } from '../../../src/runtime/execution/process-runtime/canary';
-import { closeCodeGraphReadProviderSessions } from '../../../src/runtime/context/codegraph-read-provider';
 
 interface ContextPackEnvelope {
   schemaVersion: 1;
@@ -65,20 +64,13 @@ export async function runContextPackSidecar(
   if (envelope.schemaVersion !== 1 || typeof envelope.repoRoot !== 'string' || !envelope.repoRoot.trim()) {
     throw new Error('CONTEXT_PACK_REQUEST_INVALID');
   }
-  try {
-    const pack = await buildControllerContextPackAsync(
-      resolve(envelope.repoRoot),
-      policy(envelope.policy),
-      envelope.options && typeof envelope.options === 'object' ? envelope.options : {},
-    );
-    process.stdout.write(`${JSON.stringify({ schemaVersion: 1, pack })}\n`);
-    return 0;
-  } finally {
-    // The Context Pack async path may reuse a CodeGraph session for progressive
-    // waves. This process is intentionally disposable, so do not inherit the
-    // normal 30-second provider idle lifetime.
-    await closeCodeGraphReadProviderSessions();
-  }
+  const pack = await buildControllerContextPackAsync(
+    resolve(envelope.repoRoot),
+    policy(envelope.policy),
+    envelope.options && typeof envelope.options === 'object' ? envelope.options : {},
+  );
+  process.stdout.write(`${JSON.stringify({ schemaVersion: 1, pack })}\n`);
+  return 0;
 }
 
 if (import.meta.main) {

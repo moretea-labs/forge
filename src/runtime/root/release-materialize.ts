@@ -1,5 +1,4 @@
 import { createHash, randomUUID } from 'crypto';
-import { createRequire } from 'module';
 import { chmodSync, copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { dirname, join, relative, resolve } from 'path';
@@ -50,9 +49,6 @@ export interface StagedRuntimeRelease {
   periodicCleanupArtifactIdentity?: string;
   pluginActionSidecarArtifactIdentity?: string;
   externalPluginProbeArtifactIdentity?: string;
-  codeGraphNodeArtifactIdentity?: string;
-  codeGraphSidecarArtifactIdentity?: string;
-  codeGraphLibraryArtifactIdentity?: string;
   packageArtifactIdentity?: string;
   controllerUiArtifactIdentity?: string;
   macosCodeSigning?: MacOSRuntimeCodeSigning;
@@ -71,12 +67,6 @@ export interface RuntimeReleaseMaterializerDependencies {
   materializeRuntimeInterpreter?: (input: { sourceRoot: string; outputPath: string }) => { ok: boolean; stderr?: string; stdout?: string; error?: string };
   bundleNodeHost?: (input: { sourceRoot: string; outputPath: string; entryPath: string }) => { ok: boolean; stderr?: string; stdout?: string; error?: string };
   bundleProcessRunner?: (input: { sourceRoot: string; outputPath: string; entryPath: string }) => { ok: boolean; stderr?: string; stdout?: string; error?: string };
-  materializeCodeGraphRuntime?: (input: {
-    sourceRoot: string;
-    nodeOutputPath: string;
-    sidecarOutputPath: string;
-    libraryOutputPath: string;
-  }) => { ok: boolean; stderr?: string; stdout?: string; error?: string };
 }
 
 export interface CandidateRuntimeStageReceiptV1 {
@@ -450,9 +440,6 @@ export function stageRuntimeReleaseFromCandidateSource(input: {
     periodicCleanupArtifactIdentity: manifest.periodicCleanupArtifactIdentity,
     pluginActionSidecarArtifactIdentity: manifest.pluginActionSidecarArtifactIdentity,
     externalPluginProbeArtifactIdentity: manifest.externalPluginProbeArtifactIdentity,
-    codeGraphNodeArtifactIdentity: manifest.codeGraphNodeArtifactIdentity,
-    codeGraphSidecarArtifactIdentity: manifest.codeGraphSidecarArtifactIdentity,
-    codeGraphLibraryArtifactIdentity: manifest.codeGraphLibraryArtifactIdentity,
     packageArtifactIdentity: manifest.packageArtifactIdentity,
     controllerUiArtifactIdentity: manifest.controllerUiArtifactIdentity,
     ...(macosCodeSigning ? { macosCodeSigning } : {}),
@@ -524,32 +511,6 @@ function defaultBundleNodeScript(input: { sourceRoot: string; outputPath: string
     '--outfile',
     input.outputPath,
   ], { cwd: input.sourceRoot, timeoutMs: 300_000, maxOutputBytes: 512 * 1024 });
-}
-
-function defaultMaterializeCodeGraphRuntime(input: {
-  sourceRoot: string;
-  nodeOutputPath: string;
-  sidecarOutputPath: string;
-  libraryOutputPath: string;
-}): { ok: boolean; stderr?: string; stdout?: string; error?: string } {
-  try {
-    const sourceRequire = createRequire(join(input.sourceRoot, 'package.json'));
-    const platformPackage = `@colbymchenry/codegraph-${process.platform}-${process.arch}`;
-    const packageJson = sourceRequire.resolve(`${platformPackage}/package.json`);
-    const packageRoot = dirname(packageJson);
-    const nodeSource = join(packageRoot, process.platform === 'win32' ? 'node.exe' : 'node');
-    const librarySource = join(packageRoot, 'lib');
-    const sidecarSource = join(input.sourceRoot, 'src', 'runtime', 'context', 'codegraph-sidecar.cjs');
-    if (!existsSync(nodeSource) || !statSync(nodeSource).isFile()) throw new Error(`${platformPackage} Node runtime is missing`);
-    if (!existsSync(librarySource) || !statSync(librarySource).isDirectory()) throw new Error(`${platformPackage} library is missing`);
-    if (!existsSync(sidecarSource)) throw new Error('CodeGraph sidecar source is missing');
-    copyFileSync(nodeSource, input.nodeOutputPath);
-    copyFileSync(sidecarSource, input.sidecarOutputPath);
-    cpSync(librarySource, input.libraryOutputPath, { recursive: true, force: false });
-    return { ok: true };
-  } catch (error) {
-    return { ok: false, error: error instanceof Error ? error.message : String(error) };
-  }
 }
 
 export function stageRuntimeRelease(input: {
@@ -799,27 +760,6 @@ export function stageRuntimeRelease(input: {
     chmodSync(externalPluginProbePath, 0o700);
     const externalPluginProbeArtifactIdentity = `sha256:${sha256(externalPluginProbePath)}`;
 
-    const codeGraphNodeEntrypoint = 'codegraph-node' as const;
-    const codeGraphSidecarEntrypoint = 'codegraph-sidecar.cjs' as const;
-    const codeGraphLibraryRoot = 'codegraph-lib' as const;
-    const codeGraphNodePath = join(staging, codeGraphNodeEntrypoint);
-    const codeGraphSidecarPath = join(staging, codeGraphSidecarEntrypoint);
-    const codeGraphLibraryPath = join(staging, codeGraphLibraryRoot);
-    const codeGraphRuntime = (dependencies.materializeCodeGraphRuntime ?? defaultMaterializeCodeGraphRuntime)({
-      sourceRoot,
-      nodeOutputPath: codeGraphNodePath,
-      sidecarOutputPath: codeGraphSidecarPath,
-      libraryOutputPath: codeGraphLibraryPath,
-    });
-    if (!codeGraphRuntime.ok) {
-      throw new Error(`RUNTIME_RELEASE_CODEGRAPH_BUILD_FAILED: ${codeGraphRuntime.stderr || codeGraphRuntime.stdout || codeGraphRuntime.error}`.slice(0, 2_000));
-    }
-    chmodSync(codeGraphNodePath, 0o700);
-    chmodSync(codeGraphSidecarPath, 0o700);
-    const codeGraphNodeArtifactIdentity = `sha256:${sha256(codeGraphNodePath)}`;
-    const codeGraphSidecarArtifactIdentity = `sha256:${sha256(codeGraphSidecarPath)}`;
-    const codeGraphLibraryArtifactIdentity = `sha256:${sha256Directory(codeGraphLibraryPath)}`;
-
     // Keep the source-backed package projection during the Recovery migration.
     // The active standalone Recovery release can predate the compiled Connector
     // sidecar and still rebind the primary Connector through package/src/cli.
@@ -870,12 +810,6 @@ export function stageRuntimeRelease(input: {
       pluginActionSidecarArtifactIdentity,
       externalPluginProbeEntrypoint,
       externalPluginProbeArtifactIdentity,
-      codeGraphNodeEntrypoint,
-      codeGraphNodeArtifactIdentity,
-      codeGraphSidecarEntrypoint,
-      codeGraphSidecarArtifactIdentity,
-      codeGraphLibraryRoot,
-      codeGraphLibraryArtifactIdentity,
       packageRoot,
       packageArtifactIdentity,
       arguments: [],
@@ -917,9 +851,6 @@ export function stageRuntimeRelease(input: {
       periodicCleanupArtifactIdentity,
       pluginActionSidecarArtifactIdentity,
       externalPluginProbeArtifactIdentity,
-      codeGraphNodeArtifactIdentity,
-      codeGraphSidecarArtifactIdentity,
-      codeGraphLibraryArtifactIdentity,
       packageArtifactIdentity,
       manifestSha256: createHash('sha256').update(`${JSON.stringify(manifest, null, 2)}\n`).digest('hex'),
       sourceCommit,
@@ -1165,15 +1096,6 @@ export function assertRuntimeReleaseFiles(release: StagedRuntimeRelease, depende
   assertComponentFile({ path: join(release.releasePath, 'forge-periodic-cleanup'), identity: release.periodicCleanupArtifactIdentity, missingCode: 'RUNTIME_RELEASE_PERIODIC_CLEANUP_MISSING', executable: true });
   assertComponentFile({ path: join(release.releasePath, 'forge-plugin-action-sidecar'), identity: release.pluginActionSidecarArtifactIdentity, missingCode: 'RUNTIME_RELEASE_PLUGIN_ACTION_SIDECAR_MISSING', executable: true });
   assertComponentFile({ path: join(release.releasePath, 'external-unix-socket-probe.cjs'), identity: release.externalPluginProbeArtifactIdentity, missingCode: 'RUNTIME_RELEASE_EXTERNAL_PLUGIN_PROBE_MISSING', executable: true });
-  assertComponentFile({ path: join(release.releasePath, 'codegraph-node'), identity: release.codeGraphNodeArtifactIdentity, missingCode: 'RUNTIME_RELEASE_CODEGRAPH_NODE_MISSING', executable: true });
-  assertComponentFile({ path: join(release.releasePath, 'codegraph-sidecar.cjs'), identity: release.codeGraphSidecarArtifactIdentity, missingCode: 'RUNTIME_RELEASE_CODEGRAPH_SIDECAR_MISSING', executable: true });
-  if (release.codeGraphLibraryArtifactIdentity) {
-    const libraryRoot = join(release.releasePath, 'codegraph-lib');
-    if (!existsSync(join(libraryRoot, 'dist', 'index.js'))) {
-      throw new Error(`RUNTIME_RELEASE_CODEGRAPH_LIBRARY_MISSING: ${join(libraryRoot, 'dist', 'index.js')}`);
-    }
-    assertDirectoryIdentity(libraryRoot, release.codeGraphLibraryArtifactIdentity);
-  }
   if (release.packageArtifactIdentity) {
     const packageRoot = join(release.releasePath, 'package');
     assertDirectoryIdentity(packageRoot, release.packageArtifactIdentity);

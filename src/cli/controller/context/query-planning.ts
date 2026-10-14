@@ -1,8 +1,8 @@
 import type { ControllerContextImpactDomain, ControllerContextRetrievalMode } from './types';
 
 export const DEFAULT_MAX_FILES = 8;
-export const DEFAULT_MAX_SNIPPETS = 20;
-export const DEFAULT_MAX_CHARS_PER_SNIPPET = 8000;
+export const DEFAULT_MAX_SNIPPETS = 12;
+export const DEFAULT_MAX_CHARS_PER_SNIPPET = 1800;
 export const DEFAULT_SEARCH_EXCLUDE_GLOBS = [
   '.git/**', '_ops/**', '.forge/**', '.ai/harness/**', 'node_modules/**', 'dist/**', 'coverage/**', '**/*.bak',
 ] as const;
@@ -84,7 +84,7 @@ function codeShapedAnchors(value: string): string[] {
 }
 
 /**
- * CodeGraph's semantic query cost grows materially with long natural-language
+ * Structural providers' query cost grows materially with long natural-language
  * prompts. Keep short intents exact, but compact long intents around concrete
  * code anchors plus bounded semantic tokens. This affects only structural
  * discovery; lexical search and raw-source retrieval still consume the full

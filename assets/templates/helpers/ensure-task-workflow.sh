@@ -1012,20 +1012,6 @@ ARCHITECTURE_INDEX_EOF
     },
     "gbrain": {
       "mcp": "candidate-disabled"
-    },
-    "codegraph": {
-      "package": "@colbymchenry/codegraph",
-      "primary_host": "both",
-      "install_mode": "target-aware-mcp",
-      "codex_config_path": "~/.codex/config.toml",
-      "claude_config_path": "~/.claude.json",
-      "index_dir": ".codegraph",
-      "readiness": "forge-bundled-backend; host-mcp-optional",
-      "hook_policy": "do-not-block-hooks",
-      "install_command": "bun add -g @colbymchenry/codegraph && forge tools configure codegraph --target codex --location global",
-      "project_init_command": "codegraph init -i .",
-      "sync_command": "codegraph sync .",
-      "vendoring_policy": "do-not-add-package-dependency"
     }
   },
   "agentic_development": {

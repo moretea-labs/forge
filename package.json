@@ -179,7 +179,6 @@
     "check:portable-package": "node --test tests/node/*.test.mjs && npm run smoke:tarball-install"
   },
   "devDependencies": {
-    "@colbymchenry/codegraph": "1.0.1",
     "@types/bun": "latest",
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6"
@@ -196,12 +195,6 @@
   },
   "packageManager": "npm@10.0.0",
   "optionalDependencies": {
-    "@colbymchenry/codegraph-darwin-arm64": "1.0.1",
-    "@colbymchenry/codegraph-darwin-x64": "1.0.1",
-    "@colbymchenry/codegraph-linux-arm64": "1.0.1",
-    "@colbymchenry/codegraph-linux-x64": "1.0.1",
-    "@colbymchenry/codegraph-win32-arm64": "1.0.1",
-    "@colbymchenry/codegraph-win32-x64": "1.0.1",
     "agent-device": "0.20.2"
   }
 }

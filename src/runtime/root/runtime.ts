@@ -10,7 +10,6 @@ import {
   enableControlPlaneReadConnectionReuse,
   inspectControlPlaneDatabase,
 } from '../control-plane/persistence/sqlite-store';
-import { closeCodeGraphReadProviderSessions } from '../context/codegraph-read-provider';
 import { cancelAllLightweightProcesses } from '../execution/process-runtime/lightweight-managed';
 import {
   collectRuntimeSourceIdentity,
@@ -196,7 +195,7 @@ const DEFAULT_DEPENDENCIES: CanonicalRuntimeDependencies = {
   collectRuntimeSourceIdentity,
   rotateRuntimeGeneration,
   stopLightweightProcesses: cancelAllLightweightProcesses,
-  stopContextReadHelpers: closeCodeGraphReadProviderSessions,
+  stopContextReadHelpers: async () => {},
   computeToolSurfaceFingerprint: runtimeGatewayToolSurfaceFingerprint,
   ensureForgeInstanceIdentity,
   captureJscSamplingProfile: captureDefaultJscSamplingProfile,

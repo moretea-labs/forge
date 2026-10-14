@@ -50,7 +50,7 @@
 - Route knowledge sync and handoff retrieval to `gbrain`.
 - Register valuable repo-authored docs in `.ai/harness/brain-manifest.json` with `sync.direction=repo-to-brain`; `.ai/harness/scripts/sync-brain-docs.sh` and the PostEdit hook mirror only those explicit entries into the default brain vault.
 - Codex automation profile is runtime-referenced, not vendored: required skills are `health`, `check`, and `mermaid` from `~/.codex/skills`.
-- CodeGraph is required agent readiness for code navigation; keep `.codegraph/` ignored and use it for P1/P2 discovery, not hook correctness.
+- Code navigation uses bounded ripgrep discovery and explicit language-service symbol navigation; no graph index is required.
 - Treat third-party host skills as optional. Their installation state must not change Forge workflow correctness.
 - Use `docs/reference-configs/agentic-development-flow.md` for routing details and `docs/reference-configs/external-tooling.md` plus `bash .ai/harness/scripts/check-agent-tooling.sh --host both --check-updates` for environment checks.
 - If repo state conflicts with the task, use an isolated `codex/<task-slug>` worktree, validate with Forge `/review`, and merge back to `main` without unrelated dirty changes.

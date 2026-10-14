@@ -566,59 +566,6 @@ emit_agentic_packaging_hint() {
   fi
 }
 
-resolve_codegraph_bin() {
-  local common_git_dir canonical_root candidate
-  if [[ -x "node_modules/.bin/codegraph" ]]; then
-    printf '%s\n' "node_modules/.bin/codegraph"
-    return 0
-  fi
-
-  # Linked worktrees normally reuse the canonical checkout's dependency tree.
-  # Resolve it before falling back to a user-global CodeGraph installation.
-  common_git_dir="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
-  if [[ -n "$common_git_dir" ]]; then
-    canonical_root="$(dirname "$common_git_dir")"
-    candidate="$canonical_root/node_modules/.bin/codegraph"
-    if [[ -x "$candidate" ]]; then
-      printf '%s\n' "$candidate"
-      return 0
-    fi
-  fi
-
-  command -v codegraph 2>/dev/null || return 1
-}
-
-run_codegraph_init_command() {
-  local codegraph_bin status cursor_dir_existed cursor_rules_dir_existed cursor_rule_existed
-  codegraph_bin="$(resolve_codegraph_bin)" || return 127
-
-  cursor_dir_existed=false
-  cursor_rules_dir_existed=false
-  cursor_rule_existed=false
-  [[ -d ".cursor" ]] && cursor_dir_existed=true
-  [[ -d ".cursor/rules" ]] && cursor_rules_dir_existed=true
-  [[ -e ".cursor/rules/codegraph.mdc" ]] && cursor_rule_existed=true
-
-  set +e
-  CODEGRAPH_NO_DAEMON=1 "$codegraph_bin" init -i .
-  status=$?
-  set -e
-
-  if [[ "$cursor_rule_existed" == "false" && -f ".cursor/rules/codegraph.mdc" ]]; then
-    rm -f ".cursor/rules/codegraph.mdc"
-    [[ "$cursor_rules_dir_existed" == "false" ]] && rmdir ".cursor/rules" 2>/dev/null || true
-    [[ "$cursor_dir_existed" == "false" ]] && rmdir ".cursor" 2>/dev/null || true
-  fi
-
-  return "$status"
-}
-
-emit_codegraph_route_hint() {
-  if pg_fact CODEGRAPH_ROUTE || pg_fact NONTRIVIAL_CODE_TASK; then
-    echo "[CodegraphRoute] Structural code-navigation intent detected. Prefer Forge rh_context/semantic navigation or an already-configured structural provider; do not initialize repo-local .codegraph state from a prompt hook."
-  fi
-}
-
 modern_controller_home_workflow() {
   [[ -f "forge.config.json" ]]
 }
@@ -839,7 +786,6 @@ prompt_guard_engine_call
 if modern_controller_home_workflow; then
   emit_agentic_packaging_hint
   emit_forge_route_hint
-  emit_codegraph_route_hint
   emit_modern_controller_home_guidance
   exit 0
 fi
@@ -858,7 +804,6 @@ fi
 
 emit_agentic_packaging_hint
 emit_forge_route_hint
-emit_codegraph_route_hint
 emit_pending_orchestration_discussion
 
 implement_intent=0

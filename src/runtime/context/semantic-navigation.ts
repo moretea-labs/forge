@@ -45,7 +45,7 @@ const swiftProvider: SemanticNavigationProvider = {
       if (request.tsconfigPath) {
         invalid.set(index, { ok: false, code: 'SWIFT_SEMANTIC_TSCONFIG_UNSUPPORTED', message: 'tsconfig_path applies only to TypeScript semantic navigation.' });
       } else if (access.profile !== 'controller') {
-        invalid.set(index, { ok: false, code: 'SWIFT_SEMANTIC_READ_SCOPE_UNSUPPORTED', message: 'External SourceKit-LSP navigation is restricted to the controller read profile; use lexical/CodeGraph evidence under narrower read policies.' });
+        invalid.set(index, { ok: false, code: 'SWIFT_SEMANTIC_READ_SCOPE_UNSUPPORTED', message: 'External SourceKit-LSP navigation is restricted to the controller read profile; use bounded lexical/raw source evidence under narrower read policies.' });
       } else {
         eligible.push({ index, request });
       }

@@ -983,7 +983,7 @@ describe('terminal Work cleanup', () => {
       cleanupArtifactRetentionGraceMs: 0,
       maxEntries: 1,
       maxRemovals: 50,
-      periodicSequence: 8,
+      periodicSequence: 7,
     });
     const removedPaths = [...firstReport.removedCleanupArtifactPaths, ...secondReport.removedCleanupArtifactPaths];
 

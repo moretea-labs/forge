@@ -15,7 +15,6 @@ import { CLI_VERSION, formatStatus, runStatus } from './commands/status';
 import { formatDoctor, runDoctor } from './commands/doctor';
 import { buildSetupCommand, formatInitHook, runInitHook } from './commands/init-hook';
 import { formatMigratePlan, runMigrate } from './commands/migrate';
-import { buildToolsCommand } from './commands/tools';
 import { buildPluginCommand } from './commands/plugin';
 import { buildComputerCommand } from './commands/computer';
 import { buildBrainCommand } from './commands/brain';
@@ -76,7 +75,6 @@ interface GlobalRuntimeCommandOptions {
   syncSkill?: boolean;
   hooks?: string | false;
   withExternalSkills?: boolean;
-  codegraph?: boolean;
   brainRoot?: string;
   json?: boolean;
 }
@@ -94,7 +92,6 @@ function runGlobalRuntimeBootstrap(commandName: 'init' | 'install', rawOpts: Glo
     syncSkill: rawOpts.syncSkill !== false,
     hostAdapters: rawOpts.hooks !== false,
     externalSkills: rawOpts.withExternalSkills === true,
-    codegraph: rawOpts.codegraph !== false,
     brainRoot: rawOpts.brainRoot,
   });
   if (rawOpts.json === true) {
@@ -128,8 +125,6 @@ export function buildProgram(): Command {
     .option('--no-hooks', 'Skip global hook adapter installation')
     .option('--with-external-skills', 'Also bootstrap third-party Waza, Mermaid, and cross-review skills')
     .option('--no-external-skills', 'Compatibility no-op; update no longer bootstraps third-party skills by default')
-    .option('--configure-codegraph', 'Also configure CodeGraph CLI/MCP during runtime refresh')
-    .option('--no-codegraph', 'Compatibility no-op; update no longer configures CodeGraph by default')
     .option('--brain-root <path>', 'Brain vault root for manifest sync')
     .option('--repo <path>', 'Deprecated: use forge adopt --repo <path>')
     .option('--dry-run', 'Deprecated: use forge adopt --dry-run for repo-level planning')
@@ -148,8 +143,6 @@ export function buildProgram(): Command {
       syncSkill?: boolean;
       hooks?: string | false;
       withExternalSkills?: boolean;
-      codegraph?: boolean;
-      configureCodegraph?: boolean;
       brainRoot?: string;
       interactive?: boolean;
       json?: boolean;
@@ -190,7 +183,6 @@ export function buildProgram(): Command {
         syncSkill: rawOpts.syncSkill !== false,
         hostAdapters: rawOpts.hooks !== false,
         externalSkills: rawOpts.withExternalSkills === true,
-        codegraph: rawOpts.configureCodegraph === true,
         brainRoot: rawOpts.brainRoot,
       });
       if (rawOpts.json === true) {
@@ -214,12 +206,9 @@ export function buildProgram(): Command {
     .option('--no-host-adapters', 'Compatibility no-op; adopt never writes global Codex/Claude hook adapters')
     .option('--no-external-skills', 'Compatibility no-op; adopt never bootstraps user-level external skills')
     .option('--no-verify', 'Skip repo workflow verification after apply')
-    .option('--no-codegraph', 'Skip building the CodeGraph index and MCP readiness check')
     .option('--reclaim-runtime', 'Reclaim generated repo-local hook/helper runtime copies after replacement paths verify')
     .option('--compact', 'Compact repo surface; includes --reclaim-runtime plus package script rewrite')
     .option('--mode <mode>', 'Adoption mode: minimal|standard|self-host', 'standard')
-    .option('--configure-codegraph', 'Deprecated: user-level MCP config belongs to Forge update/setup')
-    .option('--sync-codegraph', 'Sync the CodeGraph index after ensure')
     .option('--brain-root <path>', 'Deprecated: user-level brain config belongs to Forge update/setup')
     .option('--brain-mode <mode>', 'Deprecated: adopt does not perform user-level brain sync', 'skip')
     .option('--interactive', 'Run the numbered interactive install planner')
@@ -235,12 +224,9 @@ export function buildProgram(): Command {
       hostAdapters?: boolean;
       withExternalSkills?: boolean;
       verify?: boolean;
-      codegraph?: boolean;
       reclaimRuntime?: boolean;
       compact?: boolean;
       mode?: string;
-      configureCodegraph?: boolean;
-      syncCodegraph?: boolean;
       brainRoot?: string;
       brainMode?: string;
       interactive?: boolean;
@@ -292,10 +278,6 @@ export function buildProgram(): Command {
       }
       if (!['minimal', 'standard', 'self-host'].includes(rawOpts.mode ?? 'standard')) {
         console.error('forge adopt: invalid --mode (expected: minimal, standard, self-host)');
-        process.exit(2);
-      }
-      if (rawOpts.configureCodegraph === true) {
-        console.error('forge adopt: --configure-codegraph writes user-level MCP config; run forge update instead');
         process.exit(2);
       }
       if (rawOpts.brainRoot || rawOpts.brainMode !== 'skip') {
@@ -351,9 +333,6 @@ export function buildProgram(): Command {
         hostAdapters: false,
         externalSkills: false,
         verify: rawOpts.verify !== false,
-        codegraph: rawOpts.codegraph !== false,
-        configureCodegraphMcp: false,
-        syncCodegraph: rawOpts.syncCodegraph === true,
         brainRoot: rawOpts.brainRoot,
         brainMode: rawOpts.brainMode as InitBrainMode,
       };
@@ -395,7 +374,6 @@ export function buildProgram(): Command {
     .option('--no-sync-skill', 'Skip refreshing Forge host skill aliases')
     .option('--no-hooks', 'Skip global hook adapter installation during full runtime install')
     .option('--with-external-skills', 'Also install optional third-party Waza/Mermaid skills and Forge cross-review helpers')
-    .option('--no-codegraph', 'Skip CodeGraph CLI/MCP configuration')
     .option('--brain-root <path>', 'Brain vault root to persist for Forge brain commands')
     .option('--json', 'Output JSON instead of human-readable text')
     .action((rawOpts: GlobalRuntimeCommandOptions & { location?: string }) => {
@@ -509,7 +487,6 @@ export function buildProgram(): Command {
       process.exit(rawOpts.strict === true && strictFailure ? 1 : 0);
     });
 
-  program.addCommand(buildToolsCommand());
   program.addCommand(buildPluginCommand());
   program.addCommand(buildComputerCommand());
   program.addCommand(buildBrainCommand(), { hidden: true });

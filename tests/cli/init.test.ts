@@ -155,7 +155,6 @@ describe("init command", () => {
         syncSkill: false,
         hostAdapters: false,
         externalSkills: false,
-        codegraph: false,
       });
 
       expect(result.exitCode).toBe(0);
@@ -222,7 +221,6 @@ describe("init command", () => {
         syncSkill: false,
         hostAdapters: false,
         externalSkills: false,
-        codegraph: false,
       });
 
       expect(result.exitCode).toBe(0);
@@ -258,7 +256,6 @@ describe("init command", () => {
         syncSkill: false,
         hostAdapters: false,
         verify: false,
-        codegraph: false,
         externalSkills: true,
         env: {
           ...process.env,
@@ -340,7 +337,6 @@ describe("init command", () => {
         hostAdapters: false,
         externalSkills: false,
         verify: false,
-        codegraph: false,
         brainRoot: join(tmp, "brain"),
         brainMode: "install-gbrain-cli",
         env: {
@@ -377,7 +373,6 @@ describe("init command", () => {
         hostAdapters: false,
         externalSkills: false,
         verify: false,
-        codegraph: false,
       });
 
       expect(result.exitCode).toBe(0);
@@ -405,7 +400,6 @@ describe("init command", () => {
           "--no-host-adapters",
           "--no-external-skills",
           "--no-verify",
-          "--no-codegraph",
           "--json",
         ],
         {
@@ -522,7 +516,7 @@ describe("init command", () => {
     expect(res.stdout).toContain("--repo <path>");
     expect(res.stdout).toContain("--dry-run");
     expect(res.stdout).toContain("--experimental-ts-apply");
-    expect(res.stdout).toContain("--no-codegraph");
+    expect(res.stdout).toContain("--dry-run");
   });
 
   test("CLI update rejects repo refresh flags with an adopt hint", () => {
@@ -568,7 +562,6 @@ describe("init command", () => {
           "--no-host-adapters",
           "--no-external-skills",
           "--no-verify",
-          "--no-codegraph",
           "--json",
         ],
         {
@@ -597,94 +590,6 @@ describe("init command", () => {
       rmSync(tmp, { recursive: true, force: true });
     }
   }, 15000);
-
-  test("configures CodeGraph MCP only when explicitly requested", () => {
-    const tmp = join(tmpdir(), `forge-init-configure-codegraph-${Date.now()}`);
-    const source = join(tmp, "source");
-    const repo = join(tmp, "repo");
-    const home = join(tmp, "home");
-    const fakeBin = join(tmp, "bin");
-    const logFile = join(tmp, "codegraph.log");
-    try {
-      mkdirSync(source, { recursive: true });
-      mkdirSync(repo, { recursive: true });
-      mkdirSync(home, { recursive: true });
-      mkdirSync(fakeBin, { recursive: true });
-      setupFakeSource(source);
-      writeFakeCodegraph(fakeBin, logFile);
-
-      const result = runInit({
-        repo,
-        sourceRoot: source,
-        syncSkill: false,
-        hostAdapters: false,
-        externalSkills: false,
-        verify: false,
-        configureCodegraphMcp: true,
-        env: {
-          ...process.env,
-          HOME: home,
-          PATH: `${fakeBin}${delimiter}${BASE_TEST_PATH}`,
-          AGENTIC_DEV_CODEGRAPH_ALLOW_REPO_LOCAL: "0",
-        },
-      });
-
-      expect(result.exitCode).toBe(0);
-      expect(result.steps.find((step) => step.step === "ensure codegraph index")?.detail).toContain(
-        "init-index:changed",
-      );
-      const configureStep = result.steps.find((step) => step.step === "configure codegraph mcp");
-      expect(configureStep?.status).toBe("ok");
-      expect(configureStep?.detail).toContain("configure-codex:changed");
-      expect(configureStep?.detail).toContain("configure-claude:changed");
-
-      const log = readFileSync(logFile, "utf-8");
-      expect(log).toContain("codegraph init -i .");
-      expect(log).toContain("codegraph install --target codex --location global --yes");
-      expect(log).toContain("codegraph install --target claude --location global --yes");
-    } finally {
-      rmSync(tmp, { recursive: true, force: true });
-    }
-  }, CODEGRAPH_INIT_TIMEOUT_MS);
-
-  test("adopt reports CodeGraph readiness exceptions as a structured failed step", () => {
-    const tmp = join(tmpdir(), `forge-init-codegraph-failure-${Date.now()}`);
-    const source = join(tmp, "source");
-    const repo = join(tmp, "repo");
-    const home = join(tmp, "home");
-    const fakeBin = join(tmp, "bin");
-    try {
-      mkdirSync(source, { recursive: true });
-      mkdirSync(repo, { recursive: true });
-      mkdirSync(home, { recursive: true });
-      mkdirSync(fakeBin, { recursive: true });
-      setupFakeSource(source);
-      makeExecutable(join(fakeBin, "node"), "#!/bin/bash\necho 'not json'\nexit 0\n");
-
-      const result = runInit({
-        repo,
-        sourceRoot: source,
-        syncSkill: false,
-        hostAdapters: false,
-        externalSkills: false,
-        verify: false,
-        codegraph: true,
-        env: {
-          ...process.env,
-          HOME: home,
-          PATH: `${fakeBin}${delimiter}${BASE_TEST_PATH}`,
-        },
-      });
-
-      const codegraphStep = result.steps.find((step) => step.step === "ensure codegraph index");
-      expect(result.exitCode).toBe(1);
-      expect(codegraphStep?.status).toBe("failed");
-      expect(codegraphStep?.detail).toBe("CodeGraph readiness check failed");
-      expect(codegraphStep?.stderr).toContain("JSON Parse error");
-    } finally {
-      rmSync(tmp, { recursive: true, force: true });
-    }
-  });
 
   test("writes global working rules as an idempotent managed block", () => {
     const tmp = join(tmpdir(), `forge-init-global-rules-${Date.now()}`);
@@ -844,8 +749,6 @@ describe("init command", () => {
       expect(result.steps.find((step) => step.step === "global working rules")?.status).toBe("ok");
       expect(result.steps.find((step) => step.step === "ensure brain root")?.detail).toBe(join(home, "Documents", "brain"));
       expect(readFileSync(join(home, ".codex", "AGENTS.md"), "utf-8")).toContain("Use English to report to user.");
-      expect(readFileSync(codegraphLog, "utf-8")).toContain("codegraph sync .");
-      expect(outputChunks.join("")).toContain("CodeGraph=required ensure --init --sync plus global MCP configure");
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }

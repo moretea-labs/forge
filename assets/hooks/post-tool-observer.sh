@@ -41,11 +41,6 @@ duration_ms="${duration_ms:-0}"
 run_id="${run_id:-unknown}"
 session_source="${session_source:-unknown}"
 
-case "$tool_name" in
-  mcp__codegraph__*|codegraph_*)
-    session_state_mark_codegraph_used "$SESSION_KEY" || true
-    ;;
-esac
 
 # An event source is explicit evidence. Inherited host variables are only a
 # fallback for payloads that omit it, such as local compatibility shims.

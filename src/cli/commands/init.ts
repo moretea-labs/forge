@@ -28,7 +28,6 @@ import {
   expandHomePath,
   type BrainRootChoice,
 } from "./brain-root";
-import { configureCodegraph, ensureCodegraph } from "../tools/codegraph";
 import { runProcess as runBoundedProcess } from "../../effects/process-runner";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
@@ -66,9 +65,6 @@ export interface InitCommandOptions {
   syncSkill?: boolean;
   hostAdapters?: boolean;
   externalSkills?: boolean;
-  codegraph?: boolean;
-  configureCodegraphMcp?: boolean;
-  syncCodegraph?: boolean;
   globalContext?: GlobalContextOptions;
   brainRoot?: string;
   brainMode?: InitBrainMode;
@@ -382,11 +378,6 @@ export function runInit(opts: InitCommandOptions = {}): InitCommandResult {
   const syncSkill = opts.syncSkill !== false;
   const hostAdapters = opts.hostAdapters !== false;
   const externalSkills = opts.externalSkills === true;
-  const configureCgMcp = opts.configureCodegraphMcp === true;
-  const syncCodegraph = opts.syncCodegraph === true;
-  // CodeGraph is an optional rebuildable tool cache. Ordinary adoption leaves it
-  // disabled; any explicit CodeGraph operation opts in and uses the Controller Home-backed compatibility link.
-  const codegraph = opts.codegraph === true || configureCgMcp || syncCodegraph;
   const brainMode = opts.brainMode ?? "skip";
   const target = opts.target ?? "both";
   const steps: InitStep[] = [];
@@ -474,60 +465,6 @@ export function runInit(opts: InitCommandOptions = {}): InitCommandResult {
         : apply
           ? "Forge did not apply cleanly"
           : "dry-run",
-    });
-  }
-
-  if (codegraph && apply) {
-    try {
-      const cg = ensureCodegraph({ repoRoot, init: true, sync: syncCodegraph, env: commandEnv, host: target });
-      const cgFailed = cg.actions.some((entry) => entry.status === "failed");
-      steps.push({
-        step: "ensure codegraph index",
-        status: cg.actions.length === 0 ? "skipped" : cgFailed ? "failed" : "ok",
-        detail:
-          cg.resolution.source === "missing"
-            ? "codegraph CLI not found; skipped (install via: forge tools ensure codegraph)"
-            : cg.actions.length > 0
-              ? cg.actions.map((entry) => `${entry.action}:${entry.status}`).join(", ")
-              : `index ${cg.status}`,
-      });
-
-      const mcpHosts =
-        (cg.raw as { mcp_hosts?: Record<string, { status?: string }> }).mcp_hosts ?? {};
-      const mcpConfigured =
-        cg.resolution.source !== "missing" &&
-        ["codex", "claude"].every((host) => mcpHosts[host]?.status === "configured");
-
-      if (cg.resolution.source !== "missing" && !mcpConfigured) {
-        if (configureCgMcp) {
-          const conf = configureCodegraph({ repoRoot, target, location: "global", env: commandEnv });
-          steps.push({
-            step: "configure codegraph mcp",
-            status: conf.actions.some((entry) => entry.status === "failed") ? "failed" : "ok",
-            detail: conf.actions.map((entry) => `${entry.action}:${entry.status}`).join(", "),
-          });
-        } else {
-          steps.push({
-            step: "codegraph mcp",
-            status: "skipped",
-            detail:
-              "not registered; run: forge tools configure codegraph --target both --location global",
-          });
-        }
-      }
-    } catch (error) {
-      steps.push({
-        step: "ensure codegraph index",
-        status: "failed",
-        detail: "CodeGraph readiness check failed",
-        stderr: error instanceof Error ? error.message : String(error),
-      });
-    }
-  } else {
-    steps.push({
-      step: "ensure codegraph index",
-      status: "skipped",
-      detail: codegraph ? "dry-run" : "disabled",
     });
   }
 
@@ -795,7 +732,6 @@ export async function runInteractiveInit(opts: InteractiveInitOptions = {}): Pro
       `reporting=${reportLanguageInstruction}`,
       `brainRoot=${resolvedBrainChoice.root}`,
       `brainMode=${brainMode}`,
-      "CodeGraph=required ensure --init --sync plus global MCP configure",
       `apply=${opts.apply === false ? "false" : "true"}`,
       `verify=${opts.verify === false ? "false" : "true"}`,
     ]));
@@ -817,9 +753,6 @@ export async function runInteractiveInit(opts: InteractiveInitOptions = {}): Pro
       repo: repoRoot,
       sourceRoot,
       target,
-      codegraph: true,
-      configureCodegraphMcp: true,
-      syncCodegraph: true,
       globalContext: { reportLanguageInstruction },
       brainRoot: resolvedBrainChoice.root,
       brainMode,

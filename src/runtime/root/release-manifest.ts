@@ -65,9 +65,6 @@ export const COMPILED_RUNTIME_RELEASE_COMPONENT_FIELDS = [
   'periodicCleanupEntrypoint', 'periodicCleanupArtifactIdentity',
   'pluginActionSidecarEntrypoint', 'pluginActionSidecarArtifactIdentity',
   'externalPluginProbeEntrypoint', 'externalPluginProbeArtifactIdentity',
-  'codeGraphNodeEntrypoint', 'codeGraphNodeArtifactIdentity',
-  'codeGraphSidecarEntrypoint', 'codeGraphSidecarArtifactIdentity',
-  'codeGraphLibraryRoot', 'codeGraphLibraryArtifactIdentity',
   'packageRoot', 'packageArtifactIdentity',
 ] as const satisfies readonly (keyof RuntimeReleaseManifest)[];
 
@@ -278,36 +275,6 @@ export function loadRuntimeReleaseManifest(
     };
   }
 
-  const codeGraphFields = [
-    value.codeGraphNodeEntrypoint,
-    value.codeGraphNodeArtifactIdentity,
-    value.codeGraphSidecarEntrypoint,
-    value.codeGraphSidecarArtifactIdentity,
-    value.codeGraphLibraryRoot,
-    value.codeGraphLibraryArtifactIdentity,
-  ];
-  const hasCodeGraphRuntime = codeGraphFields.some((entry) => entry !== undefined);
-  let codeGraphRuntime: Pick<RuntimeReleaseManifest,
-    'codeGraphNodeEntrypoint' | 'codeGraphNodeArtifactIdentity'
-    | 'codeGraphSidecarEntrypoint' | 'codeGraphSidecarArtifactIdentity'
-    | 'codeGraphLibraryRoot' | 'codeGraphLibraryArtifactIdentity'> | undefined;
-  if (hasCodeGraphRuntime) {
-    const nodeEntrypoint = requireString(value.codeGraphNodeEntrypoint, 'codeGraphNodeEntrypoint');
-    const sidecarEntrypoint = requireString(value.codeGraphSidecarEntrypoint, 'codeGraphSidecarEntrypoint');
-    const libraryRoot = requireString(value.codeGraphLibraryRoot, 'codeGraphLibraryRoot');
-    if (nodeEntrypoint !== 'codegraph-node' || sidecarEntrypoint !== 'codegraph-sidecar.cjs' || libraryRoot !== 'codegraph-lib') {
-      throw new Error('RELEASE_MANIFEST_INVALID: CodeGraph release paths must use the canonical co-located names');
-    }
-    codeGraphRuntime = {
-      codeGraphNodeEntrypoint: 'codegraph-node',
-      codeGraphNodeArtifactIdentity: requireSha256Identity(value.codeGraphNodeArtifactIdentity, 'codeGraphNodeArtifactIdentity'),
-      codeGraphSidecarEntrypoint: 'codegraph-sidecar.cjs',
-      codeGraphSidecarArtifactIdentity: requireSha256Identity(value.codeGraphSidecarArtifactIdentity, 'codeGraphSidecarArtifactIdentity'),
-      codeGraphLibraryRoot: 'codegraph-lib',
-      codeGraphLibraryArtifactIdentity: requireSha256Identity(value.codeGraphLibraryArtifactIdentity, 'codeGraphLibraryArtifactIdentity'),
-    };
-  }
-
   const argumentsValue = value.arguments;
   if (!Array.isArray(argumentsValue) || argumentsValue.some((item) => typeof item !== 'string')) {
     throw new Error('RELEASE_MANIFEST_INVALID: arguments must be a string array');
@@ -341,7 +308,6 @@ export function loadRuntimeReleaseManifest(
     ...(pluginActionSidecar ?? {}),
     ...(externalPluginProbe ?? {}),
     ...(browserAutomationHelper ?? {}),
-    ...(codeGraphRuntime ?? {}),
     ...(packageSnapshot ?? {}),
     ...(controllerUi ?? {}),
     arguments: argumentsValue as string[],

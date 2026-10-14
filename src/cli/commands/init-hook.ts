@@ -248,12 +248,12 @@ function parseActionCommand(detail: string): string | undefined {
 function doctorEntryRelevant(id: string, target: InitHookTarget): boolean {
   if (id === 'cli-on-path' || id === 'cli-version' || id === 'cli-update' || id === 'security-config') return true;
   if (target === 'none') return false;
-  if (id === 'repo-hook-scripts' || id === 'codegraph-readiness' || id === 'codegraph-index') return true;
+  if (id === 'repo-hook-scripts') return true;
   if (target === 'codex' || target === 'both') {
-    if (id === 'codex-adapter' || id === 'codex-trust-state' || id === 'codex-codegraph-mcp') return true;
+    if (id === 'codex-adapter' || id === 'codex-trust-state') return true;
   }
   if (target === 'claude' || target === 'both') {
-    if (id === 'claude-adapter' || id === 'claude-codegraph-mcp') return true;
+    if (id === 'claude-adapter') return true;
   }
   return false;
 }
@@ -296,7 +296,7 @@ function doctorChecks(
         verification: 'forge security scan --json',
       });
     } else if (
-      (entry.id === 'repo-hook-scripts' || entry.id.startsWith('codegraph-')) &&
+      entry.id === 'repo-hook-scripts' &&
       (entry.status === 'warn' || entry.status === 'fail')
     ) {
       const command = parseActionCommand(entry.detail);
@@ -454,7 +454,7 @@ function commandForToolGap(toolName: string, tool: ToolingTool, target: InitHook
     return normalizeToolCommand(tool.install_command, target);
   }
   if (toolName === 'codex_automation_profile') {
-    return 'forge install --target codex --no-cli --no-hooks --no-codegraph';
+    return 'forge install --target codex --no-cli --no-hooks';
   }
   return normalizeToolCommand(
     tool.sync_command ?? tool.ensure_command ?? tool.mcp_install_command ?? tool.install_command ?? tool.upgrade_command,

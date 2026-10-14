@@ -73,18 +73,6 @@ function sourceFixture() {
   return { root, controllerHome };
 }
 
-function materializeFakeCodeGraphRuntime(input: {
-  nodeOutputPath: string;
-  sidecarOutputPath: string;
-  libraryOutputPath: string;
-}) {
-  writeFileSync(input.nodeOutputPath, 'codegraph-node');
-  writeFileSync(input.sidecarOutputPath, 'codegraph-sidecar');
-  mkdirSync(join(input.libraryOutputPath, 'dist'), { recursive: true });
-  writeFileSync(join(input.libraryOutputPath, 'dist', 'index.js'), 'module.exports = {}');
-  return { ok: true };
-}
-
 function sha256Text(value: string): string {
   return createHash('sha256').update(value).digest('hex');
 }
@@ -340,7 +328,6 @@ describe('runtime release materialization', () => {
       materializeRuntimeInterpreter: materializeFakeRuntimeInterpreter,
         bundleNodeHost: ({ outputPath }) => { writeFileSync(outputPath, 'candidate-node-host'); return { ok: true }; },
         bundleProcessRunner: ({ outputPath }) => { writeFileSync(outputPath, 'candidate-process-runner'); return { ok: true }; },
-        materializeCodeGraphRuntime: materializeFakeCodeGraphRuntime,
       });
       writeFileSync(join(candidate.releasePath, 'future-sidecar-v2'), 'future');
       const manifest = JSON.parse(readFileSync(candidate.manifestPath, 'utf8')) as Record<string, unknown>;
@@ -375,7 +362,6 @@ describe('runtime release materialization', () => {
       materializeRuntimeInterpreter: materializeFakeRuntimeInterpreter,
         bundleNodeHost: ({ outputPath }) => { writeFileSync(outputPath, 'candidate-node-host'); return { ok: true }; },
         bundleProcessRunner: ({ outputPath }) => { writeFileSync(outputPath, 'candidate-process-runner'); return { ok: true }; },
-        materializeCodeGraphRuntime: materializeFakeCodeGraphRuntime,
       });
       const manifest = JSON.parse(readFileSync(candidate.manifestPath, 'utf8')) as Record<string, unknown>;
       delete manifest.processRunnerEntrypoint;
@@ -401,7 +387,6 @@ describe('runtime release materialization', () => {
       materializeRuntimeInterpreter: materializeFakeRuntimeInterpreter,
         bundleNodeHost: ({ outputPath }) => { writeFileSync(outputPath, 'candidate-node-host'); return { ok: true }; },
         bundleProcessRunner: ({ outputPath }) => { writeFileSync(outputPath, 'candidate-process-runner'); return { ok: true }; },
-        materializeCodeGraphRuntime: materializeFakeCodeGraphRuntime,
       });
       const manifest = JSON.parse(readFileSync(candidate.manifestPath, 'utf8')) as Record<string, unknown>;
       delete manifest.executionMode;
@@ -458,7 +443,6 @@ describe('runtime release materialization', () => {
         writeFileSync(outputPath, 'process-runner-bundle');
         return { ok: true };
       },
-      materializeCodeGraphRuntime: materializeFakeCodeGraphRuntime,
     });
 
     const hostPath = join(staged.releasePath, 'browser-node-bridge-host.js');
@@ -530,18 +514,6 @@ describe('runtime release materialization', () => {
     expect(manifest.contextPackArtifactIdentity).toBe(staged.contextPackArtifactIdentity);
     expect(manifest.externalPluginProbeEntrypoint).toBe('external-unix-socket-probe.cjs');
     expect(manifest.externalPluginProbeArtifactIdentity).toBe(staged.externalPluginProbeArtifactIdentity);
-    expect(existsSync(join(staged.releasePath, 'codegraph-node'))).toBe(true);
-    expect(existsSync(join(staged.releasePath, 'codegraph-sidecar.cjs'))).toBe(true);
-    expect(existsSync(join(staged.releasePath, 'codegraph-lib', 'dist', 'index.js'))).toBe(true);
-    expect(staged.codeGraphNodeArtifactIdentity).toMatch(/^sha256:/);
-    expect(staged.codeGraphSidecarArtifactIdentity).toMatch(/^sha256:/);
-    expect(staged.codeGraphLibraryArtifactIdentity).toMatch(/^sha256:/);
-    expect(manifest.codeGraphNodeEntrypoint).toBe('codegraph-node');
-    expect(manifest.codeGraphNodeArtifactIdentity).toBe(staged.codeGraphNodeArtifactIdentity);
-    expect(manifest.codeGraphSidecarEntrypoint).toBe('codegraph-sidecar.cjs');
-    expect(manifest.codeGraphSidecarArtifactIdentity).toBe(staged.codeGraphSidecarArtifactIdentity);
-    expect(manifest.codeGraphLibraryRoot).toBe('codegraph-lib');
-    expect(manifest.codeGraphLibraryArtifactIdentity).toBe(staged.codeGraphLibraryArtifactIdentity);
     expect(existsSync(join(staged.releasePath, 'package', 'package.json'))).toBe(true);
     expect(existsSync(join(staged.releasePath, 'package', 'src', 'cli', 'index.ts'))).toBe(true);
     expect(existsSync(join(staged.releasePath, 'package', 'src', 'cli', 'commands', 'install.ts'))).toBe(true);
@@ -554,12 +526,6 @@ describe('runtime release materialization', () => {
     expect(manifest.controllerUiRoot).toBeUndefined();
     expect(manifest.controllerUiArtifactIdentity).toBeUndefined();
     expect(loadRuntimeReleaseManifest(staged.manifestPath, controllerHome)).toMatchObject({
-      codeGraphNodeEntrypoint: 'codegraph-node',
-      codeGraphNodeArtifactIdentity: staged.codeGraphNodeArtifactIdentity,
-      codeGraphSidecarEntrypoint: 'codegraph-sidecar.cjs',
-      codeGraphSidecarArtifactIdentity: staged.codeGraphSidecarArtifactIdentity,
-      codeGraphLibraryRoot: 'codegraph-lib',
-      codeGraphLibraryArtifactIdentity: staged.codeGraphLibraryArtifactIdentity,
       packageRoot: 'package',
       packageArtifactIdentity: staged.packageArtifactIdentity,
     });
@@ -586,7 +552,6 @@ describe('runtime release materialization', () => {
       materializeRuntimeInterpreter: materializeFakeRuntimeInterpreter,
       bundleNodeHost: ({ outputPath }) => { writeFileSync(outputPath, 'node-host-bundle'); return { ok: true }; },
       bundleProcessRunner: ({ outputPath }) => { writeFileSync(outputPath, 'process-runner-bundle'); return { ok: true }; },
-      materializeCodeGraphRuntime: materializeFakeCodeGraphRuntime,
     });
 
     const first = materialize(1_700_000_000_001);
@@ -619,7 +584,6 @@ describe('runtime release materialization', () => {
       materializeRuntimeInterpreter: materializeFakeRuntimeInterpreter,
       bundleNodeHost: ({ outputPath }) => { writeFileSync(outputPath, 'unsigned-candidate-node-host'); return { ok: true }; },
       bundleProcessRunner: ({ outputPath }) => { writeFileSync(outputPath, 'unsigned-candidate-process-runner'); return { ok: true }; },
-      materializeCodeGraphRuntime: materializeFakeCodeGraphRuntime,
     });
     expect(() => stageRuntimeReleaseFromCandidateSource({ controllerHome, sourceRoot: root, sourceRepositoryId: 'repo_source_fixture' }, {
       platform: 'darwin',
@@ -672,26 +636,6 @@ describe('runtime release materialization', () => {
       .toThrow('browserAutomationHelperArtifactIdentity is required');
   });
 
-  test('rejects a partial CodeGraph runtime declaration in an immutable release manifest', () => {
-    const { root, controllerHome } = sourceFixture();
-    const manifestPath = join(root, 'partial-codegraph-manifest.json');
-    writeFileSync(manifestPath, `${JSON.stringify({
-      schemaVersion: 1,
-      releaseId: 'release-partial-codegraph',
-      artifactIdentity: 'sha256:runtime',
-      entrypoint: 'forge-runtime',
-      codeGraphNodeEntrypoint: 'codegraph-node',
-      arguments: [],
-      configurationSchemaVersion: 1,
-      controllerHome,
-      databaseSchemaCompatibility: { minimum: 1, maximum: 1 },
-      workerProtocolVersion: 1,
-      createdAt: new Date().toISOString(),
-    }, null, 2)}\n`);
-    expect(() => loadRuntimeReleaseManifest(manifestPath, controllerHome))
-      .toThrow('codeGraphSidecarEntrypoint is required');
-  });
-
   test('release assertion fails closed when the declared Browser Node bridge host is missing', () => {
     const { root, controllerHome } = sourceFixture();
     const staged = stageRuntimeRelease({ controllerHome, sourceRoot: root, sourceRepositoryId: 'repo_source_fixture' }, {
@@ -710,7 +654,6 @@ describe('runtime release materialization', () => {
         writeFileSync(outputPath, 'process-runner-bundle');
         return { ok: true };
       },
-      materializeCodeGraphRuntime: materializeFakeCodeGraphRuntime,
     });
     rmSync(join(staged.releasePath, 'browser-node-bridge-host.js'));
     expect(() => assertRuntimeReleaseFiles(staged)).toThrow('RUNTIME_RELEASE_BROWSER_NODE_HOST_MISSING');
@@ -734,7 +677,6 @@ describe('runtime release materialization', () => {
         writeFileSync(outputPath, 'process-runner-bundle');
         return { ok: true };
       },
-      materializeCodeGraphRuntime: materializeFakeCodeGraphRuntime,
     });
     rmSync(join(staged.releasePath, 'browser-handoff-host.js'));
     expect(() => assertRuntimeReleaseFiles(staged)).toThrow('RUNTIME_RELEASE_BROWSER_HANDOFF_HOST_MISSING');
@@ -749,7 +691,6 @@ describe('runtime release materialization', () => {
       materializeRuntimeInterpreter: materializeFakeRuntimeInterpreter,
       bundleNodeHost: ({ outputPath }) => { writeFileSync(outputPath, 'node-host-bundle'); return { ok: true }; },
       bundleProcessRunner: ({ outputPath }) => { writeFileSync(outputPath, 'process-runner-bundle'); return { ok: true }; },
-      materializeCodeGraphRuntime: materializeFakeCodeGraphRuntime,
     });
     writeFileSync(join(staged.releasePath, 'forge-runtime-bundle.js'), 'tampered-runtime-bundle');
     expect(() => resolveCompiledRuntimeBundle(['forge-runtime', '--release-manifest', staged.manifestPath]))
@@ -766,7 +707,6 @@ describe('runtime release materialization', () => {
       materializeRuntimeInterpreter: materializeFakeRuntimeInterpreter,
       bundleNodeHost: ({ outputPath }) => { writeFileSync(outputPath, 'node-host-bundle'); return { ok: true }; },
       bundleProcessRunner: ({ outputPath }) => { writeFileSync(outputPath, 'process-runner-bundle'); return { ok: true }; },
-      materializeCodeGraphRuntime: materializeFakeCodeGraphRuntime,
     });
     writeFileSync(join(staged.releasePath, 'package', 'src', 'cli', 'index.ts'), 'tampered-package-source');
     expect(() => assertRuntimeReleaseFiles(staged)).toThrow('RUNTIME_RELEASE_ARTIFACT_IDENTITY_MISMATCH');
@@ -781,7 +721,6 @@ describe('runtime release materialization', () => {
       materializeRuntimeInterpreter: materializeFakeRuntimeInterpreter,
       bundleNodeHost: ({ outputPath }) => { writeFileSync(outputPath, 'node-host-bundle'); return { ok: true }; },
       bundleProcessRunner: ({ outputPath }) => { writeFileSync(outputPath, 'process-runner-bundle'); return { ok: true }; },
-      materializeCodeGraphRuntime: materializeFakeCodeGraphRuntime,
     });
     writeFileSync(join(staged.releasePath, 'process-runner.js'), 'tampered-process-runner');
     expect(() => assertRuntimeReleaseFiles(staged)).toThrow('RUNTIME_RELEASE_ARTIFACT_IDENTITY_MISMATCH');
@@ -796,7 +735,6 @@ describe('runtime release materialization', () => {
       materializeRuntimeInterpreter: materializeFakeRuntimeInterpreter,
       bundleNodeHost: ({ outputPath }) => { writeFileSync(outputPath, 'node-host-bundle'); return { ok: true }; },
       bundleProcessRunner: ({ outputPath }) => { writeFileSync(outputPath, 'process-runner-bundle'); return { ok: true }; },
-      materializeCodeGraphRuntime: materializeFakeCodeGraphRuntime,
     });
     chmodSync(join(staged.releasePath, 'process-runner.js'), 0o600);
     expect(() => assertRuntimeReleaseFiles(staged)).toThrow('RUNTIME_RELEASE_ENTRYPOINT_NOT_EXECUTABLE');

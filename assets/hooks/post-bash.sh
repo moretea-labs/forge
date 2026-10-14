@@ -121,7 +121,7 @@ broad_command=false
 recommended_next_tool=""
 if post_bash_broad_command "$COMMAND_TEXT"; then
   broad_command=true
-  recommended_next_tool="codegraph_context"
+  recommended_next_tool="rh_context"
 fi
 output_line_count="$(post_bash_output_line_count "$TOOL_OUTPUT")"
 raw_output_bytes="$(post_bash_output_byte_count "$TOOL_OUTPUT")"

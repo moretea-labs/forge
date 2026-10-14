@@ -1,16 +1,13 @@
 import { createHash } from "crypto";
-import { existsSync } from "fs";
-import { join } from "path";
 import { defaultSemanticProviderRegistry, type SemanticNavigationKind, type SemanticNavigationRequest } from "../../../src/runtime/context/semantic-navigation";
 import { buildContextClosureReceipt } from "../../../src/runtime/context/context-closure";
-import { codegraphRepositoryCacheRoot } from "../../../src/runtime/context/codegraph-cache-boundary";
 import type { MultiRepositoryMcpToolContext } from "../multi-repository";
 import { result } from "./result-adapter";
 import { boundedRuntimeResult } from "./bounded-result-runtime";
 import { selected } from "./shared-adapter";
 import { resolveMcpPath } from "../paths";
 import { freshGitIdentity } from "../../../src/cli/repository/inspector";
-import { repositoryCheckoutLifecycle, repositorySummary, resolveRepositorySelection } from "../../../src/cli/repositories/registry";
+import { repositorySummary, resolveRepositorySelection } from "../../../src/cli/repositories/registry";
 import { getExecutionJob, listExecutionJobs } from "../../../src/runtime/execution/jobs/store";
 import { isManagedProcessActive, listProcessRecords, listRecoverableProcessRecords, processRuntimeResourceDiagnostics } from "../../../src/runtime/execution/process-runtime";
 import { CONTROLLER_CONTEXT_IMPACT_DOMAINS, type ControllerContextImpactDomain } from "../../../src/cli/controller/context/types";
@@ -467,31 +464,6 @@ async function rhContextSemanticNavigation(
   };
 }
 
-function codegraphIndexExists(controllerHome: string, root: string): boolean {
-  return existsSync(join(codegraphRepositoryCacheRoot(controllerHome, root), 'codegraph.db'))
-    || existsSync(join(root, '.codegraph', 'codegraph.db'));
-}
-
-/**
- * Managed worktrees borrow one repository baseline CodeGraph from a non-worktree
- * checkout. Dirty worktree bytes remain a raw/lexical overlay; they never create
- * a second structural-index authority merely because execution is isolated.
- * Repo-local `.codegraph` is retained only as a legacy-readable fallback.
- */
-export function resolveStructuralIndexRoot(
-  controllerHome: string,
-  repository: ReturnType<typeof resolveRepositorySelection>,
-): string | undefined {
-  const active = repository.checkouts.find((checkout) => checkout.checkoutId === repository.activeCheckoutId);
-  const nonWorktreeRoots = repository.checkouts
-    .filter((checkout) => checkout.checkoutId !== repository.activeCheckoutId && checkout.worktree !== true && repositoryCheckoutLifecycle(checkout) === 'active')
-    .map((checkout) => checkout.canonicalRoot);
-  const candidates = active?.worktree === true
-    ? [...nonWorktreeRoots, repository.canonicalRoot]
-    : [repository.canonicalRoot, ...nonWorktreeRoots];
-  return [...new Set(candidates)].find((root) => codegraphIndexExists(controllerHome, root));
-}
-
 export async function callContextAdapter(ctx: MultiRepositoryMcpToolContext, name: string, args: Record<string, unknown>): Promise<CallToolResult | undefined> {
   if (name !== 'rh_context') return undefined;
     const repository = selected(ctx, args);
@@ -543,11 +515,10 @@ export async function callContextAdapter(ctx: MultiRepositoryMcpToolContext, nam
         : 'implementation';
       const impactDomains = list(args.impact_domains)
         .filter((domain): domain is ControllerContextImpactDomain => CONTROLLER_CONTEXT_IMPACT_DOMAINS.includes(domain as ControllerContextImpactDomain));
+      // CodeGraph is opt-in. Ordinary source location never starts a graph index.
       const structuralContext = args.structural_context === 'off' || args.structural_context === 'auto' || args.structural_context === 'required'
         ? args.structural_context
-        : retrievalMode === 'plan' || retrievalMode === 'debug'
-          ? 'required'
-          : 'auto';
+        : 'off';
       const requestedCheckIds = list(args.requested_check_ids);
       // Source retrieval is the default Context responsibility. Check
       // readiness is only meaningful when the controller has named the
@@ -578,7 +549,6 @@ export async function callContextAdapter(ctx: MultiRepositoryMcpToolContext, nam
         maxFiles: typeof args.max_files === 'number' ? args.max_files : undefined,
         maxSnippets: typeof args.max_snippets === 'number' ? args.max_snippets : undefined,
         structuralContext,
-        structuralIndexRoot: structuralContext === 'off' ? undefined : resolveStructuralIndexRoot(ctx.controllerHome, repository),
         retrievalMode,
         impactDomains,
           session: rhContextReadSessionId(ctx)
@@ -680,7 +650,7 @@ export async function callContextAdapter(ctx: MultiRepositoryMcpToolContext, nam
           } : {}),
           retrievalPolicy: {
             defaultBackend: 'bounded_lexical',
-            structuralBackend: 'codegraph',
+            structuralBackend: 'retired',
             rawReadTool: 'read_repository_file',
             shellSearchFallbackOnly: true,
             executionReadiness: 'requested_check_ids_only',
