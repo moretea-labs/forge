@@ -5,7 +5,7 @@ import { CONTROLLER_SCOPE_REPO_ID, FORGE_INSTANCE_SCOPE_KEY, controllerSystemRoo
 import { cpSync, existsSync, lstatSync, mkdirSync, readdirSync, rmSync } from 'fs';
 import type { ExecutionJob, ResourceClaimSpec } from '../execution/jobs/types';
 import { appendRuntimeEvent } from '../evidence/event-ledger';
-import { redactSensitiveValue } from '../evidence/sensitive-output';
+import { redactSensitiveText, redactSensitiveValue } from '../evidence/sensitive-output';
 import { readJsonFile, sanitizeFileComponent, writeJsonAtomic } from '../shared/json-files';
 import { createFirstPartyPluginAdapterMap } from './first-party-registry';
 import { reconcileFirstPartyExternalPluginRegistration, reconcileFirstPartyExternalPluginRegistrations } from './first-party-external-registration';
@@ -1821,18 +1821,20 @@ async function submitPluginAction(
       ? error.effectOutcome
       : 'failed';
     const outcomeUnknown = effectOutcome === 'outcome_unknown';
-    const failure = redactSensitiveValue({
+    const failure: NonNullable<PluginActionReceipt['error']> = {
       code,
-      message,
-      ...(isAssistantPluginError(error) ? {
-        retryable: error.retryable,
-        ...(error.details ? { details: error.details } : {}),
-      } : {}),
-    }).value;
+      message: redactSensitiveText(message).text,
+      ...(isAssistantPluginError(error) ? { retryable: error.retryable } : {}),
+    };
     // Error evidence stays compact; oversized provider diagnostics must not
     // turn failure settlement into an unbounded persistence write.
-    if (failure.details && Buffer.byteLength(JSON.stringify(failure.details), 'utf8') > 8_192) {
-      delete failure.details;
+    if (isAssistantPluginError(error) && error.details) {
+      try {
+        const details = redactSensitiveValue(error.details).value;
+        if (Buffer.byteLength(JSON.stringify(details), 'utf8') <= 8_192) failure.details = details;
+      } catch {
+        // Non-JSON provider diagnostics cannot override the settled failure.
+      }
     }
     const outcomeResult = outcomeUnknown
       ? { outcome: 'outcome_unknown', error: failure }
