@@ -136,13 +136,18 @@ function workflowSupervisorContractText(task: WorkflowSupervisorTask, key: strin
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
-function workflowSupervisorOriginWorkId(task: WorkflowSupervisorTask, repoId: string, controllerHome: string): string | undefined {
+function workflowSupervisorOriginWorkId(
+  task: WorkflowSupervisorTask,
+  repoId: string,
+  controllerHome: string,
+  conversationId = task.conversationId,
+): string | undefined {
   const legacyWorkPrefix = `forge:${repoId}:work:`;
   const explicit = workflowSupervisorContractText(task, 'work_id')
     ?? (task.taskId.startsWith(legacyWorkPrefix) ? task.taskId.slice(legacyWorkPrefix.length) || undefined : undefined);
   const original = explicit ? getWorkContract({ controllerHome, repoId }, explicit) : undefined;
   if (explicit && (!original || semanticWorkState(original) === 'open')) return explicit;
-  const active = listChatgptWorkBindingsForConversation({ controllerHome, repoId }, task.conversationId)
+  const active = listChatgptWorkBindingsForConversation({ controllerHome, repoId }, conversationId)
     .map(({ workId }) => getWorkContract({ controllerHome, repoId }, workId))
     .filter((work): work is NonNullable<typeof work> => Boolean(work && semanticWorkState(work) === 'open'));
   // A terminal predecessor retains its audit and conversation binding. Only
@@ -341,16 +346,26 @@ export function forgeWorkflowSupervisorLifecycleHooks(controllerHome: string): W
     browserTaskActive,
     bootstrapConversationBound: (task, context) => {
       const repoId = workflowSupervisorContractText(task, 'repo_id');
-      const workId = workflowSupervisorContractText(task, 'work_id');
+      const declaredWorkId = workflowSupervisorContractText(task, 'work_id');
       const taskControllerHome = workflowSupervisorContractText(task, 'controller_home');
-      if (!repoId || !workId || taskControllerHome !== controllerHome) return;
-      const existing = getChatgptWorkConversationBinding({ controllerHome, repoId }, workId);
+      if (!repoId || taskControllerHome !== controllerHome) return;
+      // On migration, retain the sole active Work projection even for a
+      // standalone task without work_id or a completed predecessor. Prefer
+      // a binding already moved to the new conversation on duplicate callbacks.
+      const currentWorkId = workflowSupervisorOriginWorkId(task, repoId, controllerHome);
+      const bindingWorkId = context?.migratedFromConversationId
+        ? (currentWorkId && currentWorkId !== declaredWorkId
+          ? currentWorkId
+          : workflowSupervisorOriginWorkId(task, repoId, controllerHome, context.migratedFromConversationId) ?? declaredWorkId)
+        : declaredWorkId;
+      if (!bindingWorkId) return;
+      const existing = getChatgptWorkConversationBinding({ controllerHome, repoId }, bindingWorkId);
       if (existing && existing.conversationId !== task.conversationId) {
         if (!context?.migratedFromConversationId || context.migratedFromConversationId !== existing.conversationId) {
           throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_WORK_CONVERSATION_CONFLICT');
         }
         rebindChatgptWorkConversation({ controllerHome, repoId }, {
-          workId,
+          workId: bindingWorkId,
           previousConversationId: existing.conversationId,
           conversationUrl: task.conversationUrl,
           localAlias: existing.localAlias,
@@ -359,7 +374,7 @@ export function forgeWorkflowSupervisorLifecycleHooks(controllerHome: string): W
       }
       if (!existing) {
         bindChatgptWorkConversation({ controllerHome, repoId }, {
-          workId,
+          workId: bindingWorkId,
           conversationUrl: task.conversationUrl,
           localAlias: 'Forge autonomous execution',
         });
