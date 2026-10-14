@@ -29,8 +29,33 @@ export class PreferredChatgptConversationTargetPort implements ComputerChatgptCo
       targetId: primaryTarget.targetId,
       identity,
       observe: async (options?: ComputerChatgptConversationObservationOptions) => {
-        try { return await selectedTarget.observe(options); }
-        catch (primaryError) {
+        try {
+          const snapshot = await selectedTarget.observe(options);
+          // A previously loaded Chrome extension can still flatten assistant
+          // paragraphs after Runtime deploys the corrected content script.
+          // Only a trailing compact-receipt candidate warrants one read-only
+          // native reattachment. Supervisor still validates the exact challenge;
+          // no result here authorizes a second send or an identity change.
+          const flattenedReceipt = !selectedNative && identity.namespace === 'chatgpt.conversation'
+            && !snapshot.isGenerating && snapshot.latestTurnRole === 'assistant'
+            && /(?:^|[^\S\r\n])[CDU] [0-9a-f]{7}$/.test(snapshot.latestAssistantResponse.trim())
+            && !/(?:^|\n)[CDU] [0-9a-f]{7}$/.test(snapshot.latestAssistantResponse.trim());
+          if (flattenedReceipt) {
+            try {
+              const rebound = await this.compatibility.ensureExact(identity);
+              if (rebound.state === 'ready' && rebound.target.targetId === primaryTarget.targetId) {
+                const native = await rebound.target.observe(options);
+                if (!native.isGenerating && native.latestTurnRole === 'assistant'
+                  && /(?:^|\n)[CDU] [0-9a-f]{7}$/.test(native.latestAssistantResponse.trim())) {
+                  selectedTarget = rebound.target;
+                  selectedNative = true;
+                  return native;
+                }
+              }
+            } catch { /* Unavailable native evidence never changes the bound provider. */ }
+          }
+          return snapshot;
+        } catch (primaryError) {
           if (!selectedNative && identity.namespace === 'chatgpt.conversation') {
             const rebound = await this.compatibility.ensureExact(identity);
             if (rebound.state === 'ready' && rebound.target.targetId === primaryTarget.targetId) {

@@ -265,37 +265,43 @@ test('Computer target router promotes bootstrap through its confirmed native own
   expect(compatibilityPromotions).toBe(1);
 });
 
-test('read-only native reattachment switches subsequent preparation and dispatch to the same durable target', async () => {
-  let primaryDispatches = 0;
-  let nativePrepares = 0;
-  let nativeDispatches = 0;
-  const primaryTarget = {
-    ...target('shared-target', async () => { primaryDispatches += 1; return { mutation: 'attempted' as const }; }),
-    observe: async () => { throw new Error('EXTENSION_CONTENT_DISCONNECTED'); },
-  };
-  const nativeTarget = {
-    ...target('shared-target', async (_prompt: string, options) => {
-      nativeDispatches += 1;
-      expect(options).toEqual({ mode: 'recover', reasoning: undefined });
-      return { mutation: 'attempted' as const, confirmed: true };
-    }),
-    prepare: async (_prompt: string, options: Parameters<ComputerChatgptConversationTarget['prepare']>[1]) => {
-      nativePrepares += 1;
-      expect(options).toEqual({ mode: 'recover', reasoning: undefined });
-      return { ready: true as const };
-    },
-  };
-  const primary = port({ ensureExact: async () => ({ state: 'ready', target: primaryTarget }) });
-  const native = port({ ensureExact: async () => ({ state: 'ready', target: nativeTarget }) });
-  const ensured = await new PreferredChatgptConversationTargetPort(primary, native).ensureExact(identity);
-  expect(ensured.state).toBe('ready');
-  if (ensured.state !== 'ready') throw new Error('target not ready');
-  expect(await ensured.target.observe()).toEqual(observation);
-  expect(await ensured.target.prepare('exact effect', { mode: 'recover', reasoning: 'xhigh' })).toEqual({ ready: true });
-  expect(await ensured.target.dispatch('exact effect', { mode: 'recover', reasoning: 'xhigh' })).toMatchObject({ mutation: 'attempted', confirmed: true });
-  expect(primaryDispatches).toBe(0);
-  expect(nativePrepares).toBe(1);
-  expect(nativeDispatches).toBe(1);
+test('read-only native reattachment fixes disconnected and stale flattened-receipt extensions without a second send', async () => {
+  for (const primaryRead of ['disconnected', 'flattened_receipt'] as const) {
+    let primaryDispatches = 0;
+    let nativePrepares = 0;
+    let nativeDispatches = 0;
+    const primaryTarget = {
+      ...target('shared-target', async () => { primaryDispatches += 1; return { mutation: 'attempted' as const }; }),
+      observe: async () => {
+        if (primaryRead === 'disconnected') throw new Error('EXTENSION_CONTENT_DISCONNECTED');
+        return { ...observation, latestTurnRole: 'assistant' as const, latestAssistantResponse: 'Delivered work. C ef207b8' };
+      },
+    };
+    const nativeTarget = {
+      ...target('shared-target', async (_prompt: string, options) => {
+        nativeDispatches += 1;
+        expect(options).toEqual({ mode: 'recover', reasoning: undefined });
+        return { mutation: 'attempted' as const, confirmed: true };
+      }),
+      observe: async () => ({ ...observation, latestTurnRole: 'assistant' as const, latestAssistantResponse: 'Delivered work.\nC ef207b8' }),
+      prepare: async (_prompt: string, options: Parameters<ComputerChatgptConversationTarget['prepare']>[1]) => {
+        nativePrepares += 1;
+        expect(options).toEqual({ mode: 'recover', reasoning: undefined });
+        return { ready: true as const };
+      },
+    };
+    const primary = port({ ensureExact: async () => ({ state: 'ready', target: primaryTarget }) });
+    const native = port({ ensureExact: async () => ({ state: 'ready', target: nativeTarget }) });
+    const ensured = await new PreferredChatgptConversationTargetPort(primary, native).ensureExact(identity);
+    expect(ensured.state).toBe('ready');
+    if (ensured.state !== 'ready') throw new Error('target not ready');
+    expect((await ensured.target.observe()).latestAssistantResponse).toBe('Delivered work.\nC ef207b8');
+    expect(await ensured.target.prepare('exact effect', { mode: 'recover', reasoning: 'xhigh' })).toEqual({ ready: true });
+    expect(await ensured.target.dispatch('exact effect', { mode: 'recover', reasoning: 'xhigh' })).toMatchObject({ mutation: 'attempted', confirmed: true });
+    expect(primaryDispatches).toBe(0);
+    expect(nativePrepares).toBe(1);
+    expect(nativeDispatches).toBe(1);
+  }
 });
 
 test('failed or foreign-target native observation never changes the bound sender', async () => {
