@@ -444,7 +444,7 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
     })));
     await betweenObservations?.();
     const results: ComputerChatgptTargetResult[] = [];
-    const matchesByConversation = new Map<string, Array<{ instanceId: string; match: typeof responses[number]['response']['matches'][number] }>>();
+    const matchesByConversation = new Map<string, Array<{ instanceId: string; match: Extract<ComputerChatgptExtensionCommandResult, { kind: 'marker_matches' }>['matches'][number] }>>();
     for (const { instanceId, response } of responses) {
       if (response.result?.kind !== 'marker_matches') continue;
       for (const match of response.result.matches) {
