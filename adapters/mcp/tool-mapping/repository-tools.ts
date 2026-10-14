@@ -924,7 +924,7 @@ export async function callRepositoryTool(
       case 'repository_git_status': {
         const repository = resolveRepositorySelection({ repoId: repoIdValue || undefined, checkoutId: typeof args.checkout_id === 'string' ? args.checkout_id : undefined, controllerHome, allowSoleRepository: true });
         const status = args.refresh === true
-          ? writeRepositoryGitStatusSample(controllerHome, repository)
+          ? await writeRepositoryGitStatusSample(controllerHome, repository)
           : readRepositoryGitStatusSample(controllerHome, repository.repoId, repository.activeCheckoutId);
         return result({
           status: status ?? {
