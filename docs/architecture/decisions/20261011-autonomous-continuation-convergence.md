@@ -5,6 +5,39 @@ Date: 2026-10-11
 Owner: ChatGPT (semantic decisions) / Forge Controller (mechanical durability)
 Scope: Workflow Supervisor → Computer exact-conversation delivery → ChatGPT Forge App receipt
 
+## 2026-10-14 用户收敛指令（优先于下文历史阶段记录）
+
+交付目标只有一个：无需人工发送“继续”，自动完成多轮真实源码修改、检查与提交，并在 Runtime 重启/重连后从同一 Task 继续；未知发送结果不得重发，不得破坏已有工作。目前未验收。静态审查与修复由当前工作负责，实际运行、发布和验收由另一工作负责；静态通过不能代替其证据。
+
+### 冻结范围与事实基线
+
+- 审查起点为 `b596d0d3e`。它是源码基线，不是已验证可用的历史基线。冻结新增 Supervisor 状态、恢复策略、兼容层及自动化功能；只接受直接阻断最小闭环的共同根因修正，每次必须列明替代/删除的旧逻辑。
+- `1a03e0d17` 删除工具 automation receipt 写入路径，改为最终 assistant 回复结算。历史 completion 数量必须按这两种来源分开；尚无同场景对比证据证明某历史提交可作为可靠回退点。
+- 当前 `adapters/computer/chatgpt-target-router.ts` 的 `wrap` 会在扩展观察异常或回复换行缺失时读取 native，并改变后续 prepare/dispatch 的 provider。这是待收敛的双轨结构，不能把 targetId 相同当作已证明物理标签页相同。
+- 同一 URL 的多标签页必须核对现有 Computer binding 的 provider instance、tab/window 与实际目标。先查清唯一观察者和发送者，不能靠前台窗口猜测、合并两个页面的观察结果或新增备用通道解决。
+
+### 最小闭环与交付终点
+
+1. 使用一个 Forge 源码 Task 和一个明确绑定的会话，冻结初始 source commit、Runtime/extension 身份、原始目标、Task/effect 及物理 binding；不把无关业务 Task 纳入实验。
+2. 第一轮真实修改源码、执行与改动相关的检查并提交；最终 assistant 回复产生可验证的 CONTINUE。保留实际 commit、检查结果、最终回复与原 effect 的因果证据。
+3. Supervisor 自动预留并发送下一轮，第二轮再次产生真实源码改动和提交。期间不得人工发送“继续”、注入 completion 或手工派发来补齐链路。
+4. 在仍有真实剩余工作的情况下跨 Runtime 重启/重连，证明同一 Task 从既有账本继续，最终到达经验证的 DONE。保留重连前后 effect、dispatch generation、completion、commit 的对应关系，确认没有未知结果重发或丢失已有改动。
+5. 仅上述真实证据齐备才可宣布能力完成；Runtime 健康、Send 成功、模拟测试及静态检查均只证明各自局部性质。
+
+### 失败退出与替代关系
+
+一次验收失败后先保存从绑定、发送、最终回复到结算的完整因果证据，定位被违反的共同不变量；不立即发布下一个症状补丁。再次尝试必须有能够解释失败、替代旧结构且可被验收否证的修正。若同一方案重复失败且没有新的可验证根因，不再增加 recovery；由模型作出回退结构或更换传输路线的明确决定。此纪律是交付决策，不新增 Runtime 状态机或自动阈值。
+
+| 既有义务 | 本次处理 |
+| --- | --- |
+| 唯一 Task/Effect/Completion authority、精确目标、unknown 禁重发 | KEEP：沿用 Store 与 Computer 既有契约，不放宽保护 |
+| 扩展/native 自动兼容补洞 | CHANGE：收敛为同一绑定上的唯一观察和发送通道；先完成同场景身份与回执对比，再删除竞争路径，不保留隐形 fallback |
+| 工具回执计数作为完成证据 | DROP：仅最终回复加真实源码成果证明外层轮次完成；旧数据保留为历史证据 |
+| 首轮恢复三个业务 Task、更多自动化能力 | DEFER：本节 Forge 最小闭环验收通过后再决定，不能扩张本次范围 |
+| 发布、健康与测试通过作为自动推进完成声明 | DROP：以本节真实闭环为唯一产品验收 |
+
+如果 UI 路线不能可靠绑定会话和观察最终回复，必须评估稳定模型调用通道，比较工具执行、持久恢复、授权、运行方式和实际调用成本。该评估不授权偷偷切换付费通道，也不预设 UI 或 API 必然可靠。历史可用基线、唯一 provider 的最终选择与真实验收结果仍待证据，不在静态审查中猜定。
+
 ## 0. 用户目标与必须遵守的设计纪律
 
 最初目标只有一个：长期任务在已登录 ChatGPT 中持续执行，模型调用 Forge 干活，按 CONTINUE / DONE / NEEDS_USER 决定下一轮；不需要用户反复输入“继续”。目标不是构建第二个模型、第二套 Task/Work 状态机或第二套 Browser 业务执行架构。
