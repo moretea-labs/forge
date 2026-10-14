@@ -290,22 +290,34 @@ export async function callDesktopOperatorComputerBrowserAutomation(
 export function createDesktopOperatorComputerProvider(
   options: DesktopOperatorComputerProviderOptions = {},
 ): DesktopOperatorComputerProvider {
-  let active: { key: string; binding: DesktopOperatorComputerBinding } | undefined;
-  const binding = (): DesktopOperatorComputerBinding => {
+  let active: { key: string; binding: DesktopOperatorComputerBinding; observations?: DesktopOperatorComputerBinding } | undefined;
+  const binding = (observation = false): DesktopOperatorComputerBinding => {
     const endpoint = resolveDesktopOperatorComputerEndpoint(options);
     const key = endpointBindingKey(endpoint);
-    if (active?.key === key) return active.binding;
-    active?.binding.close();
-    active = { key, binding: createBinding(endpoint) };
+    if (active?.key !== key) {
+      active?.binding.close();
+      active?.observations?.close();
+      active = { key, binding: createBinding(endpoint) };
+    }
+    // Desktop Operator executes RPCs serially within each socket connection.
+    // A slow Browser RPC must not head-of-line block native snapshots/capture.
+    // Keep all input, console and legacy Browser requests on their original
+    // ordered stream; target/session locks still serialize observation epochs.
+    if (observation) return active.observations ??= createBinding(endpoint);
     return active.binding;
   };
   return {
     providerId: DESKTOP_OPERATOR_PROVIDER_PLUGIN_ID,
     capabilities: desktopOperatorComputerProviderCapabilities(options),
-    execute: async (request, timeoutMs) => await binding().execute(request, timeoutMs),
+    execute: async (request, timeoutMs) => await binding(
+      request.capability === COMPUTER_OBSERVE_CAPABILITY
+        || request.capability === COMPUTER_ELEMENT_OBSERVE_CAPABILITY
+        || request.capability === COMPUTER_CAPTURE_CAPABILITY,
+    ).execute(request, timeoutMs),
     executeBrowserCompatibility: async (request, timeoutMs) => await binding().executeBrowserCompatibility(request, timeoutMs),
     dispose: () => {
       active?.binding.close();
+      active?.observations?.close();
       active = undefined;
     },
   };

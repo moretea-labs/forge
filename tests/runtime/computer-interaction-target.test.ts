@@ -1248,7 +1248,6 @@ describe('Computer durable InteractionTarget authority', () => {
     ));
     expect(refreshed.snapshotRevision).toBe(3);
     expect(fixture.state.elementObserveCount).toBe(2);
-    expect(fixture.state.handshakeCount).toBe(1);
     expect(fixture.state.sessionOpenCount).toBe(1);
   });
 
