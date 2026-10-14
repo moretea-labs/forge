@@ -184,13 +184,13 @@ function assertNoUnmanagedControllerWorktreeLifecycle(command: CanonicalReposito
   };
   if (command.kind === 'argv') {
     if (isGitWorktreeAdd([command.executable!, ...(command.args ?? [])])) {
-      throw new Error('MANAGED_WORKSPACE_REQUIRED: repository_command_execute must not create an unmanaged temporary git worktree; use rh_work so Forge persists checkout/worktree ownership and terminal cleanup authority');
+      throw new Error('MANAGED_WORKSPACE_REQUIRED: execute_command must not create an unmanaged temporary git worktree; use rh_work so Forge persists checkout/worktree ownership and terminal cleanup authority');
     }
     return;
   }
   for (const segment of shellSegments(command.shellCommand ?? '')) {
     if (isGitWorktreeAdd(shellWords(segment))) {
-      throw new Error('MANAGED_WORKSPACE_REQUIRED: repository_command_execute must not create an unmanaged temporary git worktree; use rh_work so Forge persists checkout/worktree ownership and terminal cleanup authority');
+      throw new Error('MANAGED_WORKSPACE_REQUIRED: execute_command must not create an unmanaged temporary git worktree; use rh_work so Forge persists checkout/worktree ownership and terminal cleanup authority');
     }
   }
 }

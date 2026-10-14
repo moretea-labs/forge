@@ -244,25 +244,23 @@ export const repositoryToolDefinitions: McpToolDefinition[] = [
     validation_only: { type: 'boolean', description: 'When true, do not edit. Reconcile/reuse the existing session validation Processes identified by session_id/check_ids/validation_request_id.' },
     apply_mode: { type: 'string', enum: ['sync', 'async'], description: 'Defaults to sync for interactive development. Set async only for a separately durable operation.' },
   }),
-  definition('repository_command_preview', 'Preview one repository-scoped local command with classification, approval token, and Git snapshots.', {
+  definition('execute_command', 'Single terminal entry. Repository and authorized workspace commands need no Work or Plan. Explicit scope=host uses the existing ForgeInstance process:exec Grant. Process Runtime owns execution, process handles and timeouts; Git ownership checks remain mechanical.', {
     repo_id: repoId,
     checkout_id: { type: 'string', description: 'Optional checkout identity for repositories with multiple local clones.' },
-    command: { anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' }, minItems: 1 }], description: 'Legacy shell string or typed argv array. Typed argv executes without a shell.' },
+    work_id: { type: 'string', description: 'Optional Work provenance; ordinary commands never require a Work. Work-attributed effects require a stable request_id.' },
+    scope: { type: 'string', enum: ['repository', 'host'], description: 'Defaults to repository; host requires an explicit process:exec ForgeInstance Grant.' },
+    command: { anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' }, minItems: 1 }], description: 'Repository: typed argv or shell string; host: typed argv only.' },
+    shell_command: { type: 'string', description: 'Host shell only; mutually exclusive with command and requires scope=host.' },
+    request_id: { type: 'string', description: 'Stable invocation id for reconnect without duplicate effects.' },
     cwd: { type: 'string', description: 'Optional root-relative working directory.' },
     workspace_root: { type: 'string', description: 'Absolute existing local directory used as an ephemeral execution root. Mutually exclusive with repo_id/checkout_id; does not register or initialize the directory.' },
-  }, ['command'], true),
-  definition('repository_command_execute', 'Compatibility facade for commands whose domain context is a repository/workspace. Repository targeting, Git/source mutation fences, and compatibility response fields live here; Process Runtime owns command execution and process identity. New broad host-local command callers should use process_exec. Use rh_context for routine code discovery/reading; shell exploration is fallback-only.', {
-    repo_id: repoId,
-    checkout_id: { type: 'string', description: 'Optional checkout identity for repositories with multiple local clones.' },
-    work_id: { type: 'string', description: 'Optional durable Work identity. Workflow controllers should pass the exact claimed Work id so attribution survives transient MCP transport sessions.' },
-    command: { anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' }, minItems: 1 }], description: 'Legacy shell string or typed argv array. Typed argv executes without a shell.' },
-    cwd: { type: 'string', description: 'Optional root-relative working directory.' },
-    workspace_root: { type: 'string', description: 'Absolute existing local directory used as an ephemeral execution root. Mutually exclusive with repo_id/checkout_id; does not register or initialize the directory.' },
-    approval_token: { type: 'string', description: 'Exact approval token returned by repository_command_preview.' },
+    dry_run: { type: 'boolean', description: 'Preview without executing: returns command classification, approval token and Git snapshots for repository/workspace target.' },
+    approval_token: { type: 'string', description: 'Exact approval token returned by execute_command(dry_run=true).' },
     approval_request_id: { type: 'string', description: 'Resolved approvalRequestId returned by approval_resolve.' },
     timeout_ms: { type: 'number', description: 'Optional execution timeout in milliseconds.' },
-    max_output_bytes: { type: 'number', description: 'Optional cap for captured stdout/stderr.' },
-  }, ['command']),
+    max_output_bytes: { type: 'number', minimum: 1024, maximum: 1048576, description: 'Captured output limit 1024–1048576 bytes.' },
+    interactive_wait_ms: { type: 'number', description: 'Optional short attachment window; long-running processes return a handle.' },
+  }),
 
   // Thin Harness V1 is exposed through repository_workbench operations to keep the stable tool surface bounded.
 ];
@@ -591,33 +589,6 @@ function failure(error: unknown): RepositoryToolResult {
   return { ...result({ error: { code, message, ...(compactDetails !== undefined ? { details: compactDetails } : {}) } }), isError: true };
 }
 
-interface RepositoryExplorationGuidance {
-  code: 'FRAGMENTED_REPOSITORY_EXPLORATION';
-  recommendedTool: 'rh_context';
-  recommendedOperation: 'search';
-  message: string;
-}
-
-function fragmentedRepositoryExplorationGuidance(command: unknown): RepositoryExplorationGuidance | undefined {
-  if (typeof command !== 'string') return undefined;
-  const segments = command.split(/(?:&&|\|\||[;|])/g);
-  const readPrograms = new Set<string>();
-  let readStepCount = 0;
-  for (const segment of segments) {
-    const match = segment.trim().match(/^(?:(?:command|env)\s+)?(?:[A-Za-z_][A-Za-z0-9_]*=[^\s]+\s+)*(rg|grep|sed|cat|head|tail)\b/i);
-    if (!match) continue;
-    readStepCount += 1;
-    readPrograms.add(match[1]!.toLowerCase());
-  }
-  if (readStepCount < 2) return undefined;
-  return {
-    code: 'FRAGMENTED_REPOSITORY_EXPLORATION',
-    recommendedTool: 'rh_context',
-    recommendedOperation: 'search',
-    message: `Detected ${readStepCount} chained repository read steps (${[...readPrograms].join(', ')}). Prefer a broad rh_context request first, then repeat rh_context with selected paths or relationships when more evidence can improve correctness; keep shell search as fallback when the Context Plane cannot supply the needed evidence.`,
-  };
-}
-
 function compactProcessCommandPayload(input: {
   accepted?: boolean;
   mode: string;
@@ -644,7 +615,6 @@ function compactProcessCommandPayload(input: {
   /** summary (default) omits nested process / routing dumps; detail restores diagnostics. */
   detailLevel?: 'summary' | 'detail';
   includeFullProcess?: boolean;
-  guidance?: RepositoryExplorationGuidance;
 }): Record<string, unknown> {
   const output = compactCommandOutput(input.stdout, input.stderr, { ok: input.ok === true });
   const detail = input.detailLevel === 'detail' || input.includeFullProcess === true;
@@ -680,7 +650,6 @@ function compactProcessCommandPayload(input: {
       stderr: output.stderr ?? '',
       ...(output.stdoutTruncated ? { stdoutTruncated: true, stdoutBytes: output.stdoutBytes } : {}),
       ...(output.stderrTruncated ? { stderrTruncated: true, stderrBytes: output.stderrBytes } : {}),
-      ...(input.guidance ? { guidance: input.guidance, suggestedOperation: 'rh_context' } : {}),
     };
     if (completed && !ok) {
       payload.error = {
@@ -729,7 +698,6 @@ function compactProcessCommandPayload(input: {
       }
       : {}),
     durableSideEffects: effects,
-    ...(input.guidance ? { guidance: input.guidance, suggestedOperation: 'rh_context' } : {}),
     next: input.next,
     detailLevel: 'detail',
   };
@@ -771,7 +739,7 @@ export async function callRepositoryTool(
   args: Record<string, unknown>,
   caller?: RepositoryToolCallerContext,
 ): Promise<RepositoryToolResult | undefined> {
-  if (!name.startsWith('repository_') && name !== 'read_repository_file') return undefined;
+  if (!name.startsWith('repository_') && name !== 'read_repository_file' && name !== 'execute_command') return undefined;
   try {
     const repoIdValue = typeof args.repo_id === 'string' ? args.repo_id.trim() : '';
     switch (name) {
@@ -1089,32 +1057,32 @@ export async function callRepositoryTool(
         };
         return ok ? result(payload) : { ...result(payload), isError: true };
       }
-      case 'repository_command_preview': {
-        const target = resolveRepositoryCommandTarget(controllerHome, args, repoIdValue, caller);
-        const { commandTarget } = target;
-        const execution = withControllerLock(
-          controllerHome,
-          { scope: 'repository', repoId: commandExecutionScopeKey(commandTarget) },
-          'mcp:repository_command_preview',
-          () => executeRepositoryCommand(controllerHome, commandTarget, {
-            command: args.command as string | string[],
-            cwd: typeof args.cwd === 'string' ? args.cwd : undefined,
-            dryRun: true,
-            allowNonGitWorkspace: target.workspace !== undefined,
-          }),
-          60_000,
-        );
-        // Repository targets keep repoId/checkoutId. An arbitrary workspace target
-        // reports its workspace scope id and never a repository id.
-        const { repoId: _previewRepoId, checkoutId: _previewCheckoutId, ...workspacePreviewFields } = execution as unknown as Record<string, unknown>;
-        return result({
-          ...(commandTarget.repoId ? execution as unknown as Record<string, unknown> : workspacePreviewFields),
-          ...(commandTarget.repoId ? {} : { scopeId: commandExecutionScopeKey(commandTarget) }),
-          ...(target.workspace ? { workspace: target.workspace } : {}),
-        });
-      }
-      case 'repository_command_execute': {
-        const explorationGuidance = fragmentedRepositoryExplorationGuidance(args.command);
+      case 'execute_command': {
+        if (args.scope !== undefined && args.scope !== 'repository') throw new Error('COMMAND_SCOPE_INVALID: host scope uses the authorized host command lane');
+        if (args.shell_command !== undefined) throw new Error('COMMAND_SCOPE_INVALID: shell_command requires scope=host');
+        if (args.command === undefined) throw new Error('COMMAND_REQUIRED: repository commands require command');
+        if (args.dry_run === true) {
+          const target = resolveRepositoryCommandTarget(controllerHome, args, repoIdValue, caller);
+          const { commandTarget } = target;
+          const execution = withControllerLock(
+            controllerHome,
+            { scope: 'repository', repoId: commandExecutionScopeKey(commandTarget) },
+            'mcp:execute_command:preview',
+            () => executeRepositoryCommand(controllerHome, commandTarget, {
+              command: args.command as string | string[],
+              cwd: typeof args.cwd === 'string' ? args.cwd : undefined,
+              dryRun: true,
+              allowNonGitWorkspace: target.workspace !== undefined,
+            }),
+            60_000,
+          );
+          const { repoId: _previewRepoId, checkoutId: _previewCheckoutId, ...workspacePreviewFields } = execution as unknown as Record<string, unknown>;
+          return result({
+            ...(commandTarget.repoId ? execution as unknown as Record<string, unknown> : workspacePreviewFields),
+            ...(commandTarget.repoId ? {} : { scopeId: commandExecutionScopeKey(commandTarget) }),
+            ...(target.workspace ? { workspace: target.workspace } : {}),
+          });
+        }
         let target = resolveRepositoryCommandTarget(controllerHome, args, repoIdValue, caller);
         let { repository, commandTarget, executionIdentity, historicalWorkContext } = target;
         // Repository targets keep their established identity fields. An arbitrary
@@ -1181,7 +1149,7 @@ export async function callRepositoryTool(
             mutationAuthority = withControllerLock(
               controllerHome,
               { scope: 'repository', repoId: commandExecutionScopeKey(commandTarget) },
-              'mcp:repository_command_execute:mutation-authority',
+              'mcp:execute_command:mutation-authority',
               () => ensureRepositoryMutationWorkHandle({
                 controllerHome,
                 repository: repository!,
@@ -1201,7 +1169,7 @@ export async function callRepositoryTool(
             withControllerLock(
               controllerHome,
               { scope: 'repository', repoId: commandExecutionScopeKey(commandTarget) },
-              'mcp:repository_command_execute:unattributed-mutation-authority',
+              'mcp:execute_command:unattributed-mutation-authority',
               () => assertCanonicalRepositoryMutationWorkHandleAvailable({
                 controllerHome,
                 repositoryId: commandExecutionScopeKey(commandTarget),
@@ -1219,7 +1187,7 @@ export async function callRepositoryTool(
         // external durable boundary, not as a second command classifier.
         const routingDecision = forceDurable
           ? routeExecution({
-              operation: 'repository_command_execute',
+              operation: 'execute_command',
               mode: 'durable',
               timeoutMs,
               background: args.background === true || args.async === true,
@@ -1306,7 +1274,7 @@ export async function callRepositoryTool(
                   withControllerLock(
                     controllerHome,
                     { scope: 'repository', repoId: commandExecutionScopeKey(commandTarget) },
-                    'mcp:repository_command_execute:mutation-started',
+                    'mcp:execute_command:mutation-started',
                     () => markRepositoryMutationStarted({
                       controllerHome,
                       repository,
@@ -1345,7 +1313,7 @@ export async function callRepositoryTool(
                     message: authorization.decision === 'user_confirmation_required'
                       ? authorization.humanSummary
                       : authorization.reason,
-                    suggestedOperation: 'repository_command_preview',
+                    suggestedOperation: 'execute_command(dry_run=true)',
                   });
                 }
                 const completed = directWithoutHandle || handle?.completed === true;
@@ -1374,7 +1342,6 @@ export async function callRepositoryTool(
                   stdout: processResult.stdout,
                   stderr: processResult.stderr,
                   durableSideEffects: processResult.durableSideEffects,
-                  guidance: explorationGuidance,
                   next: directWithoutHandle
                     ? processResult.reason === 'readonly_fast_path'
                       ? 'Bounded readonly execution completed without Process record / Lease / Local Job / ExecutionJob / Worker.'
@@ -1416,7 +1383,7 @@ export async function callRepositoryTool(
             // Process Runtime is authoritative. Falling through could spawn the
             // same command again through the legacy Fast/Local Job path.
             if (process.env.FORGE_DEBUG_PROCESS_RUNTIME === '1') {
-              console.error('[repository_command_execute] process runtime error', error);
+              console.error('[execute_command] process runtime error', error);
             }
             return failure(error);
           }
@@ -1486,7 +1453,7 @@ export async function callRepositoryTool(
             }
           } catch (error) {
             if (process.env.FORGE_DEBUG_PROCESS_RUNTIME === '1') {
-              console.error('[repository_command_execute] durable worker inline process runtime error', error);
+              console.error('[execute_command] durable worker inline process runtime error', error);
             }
           }
         }
@@ -1496,7 +1463,7 @@ export async function callRepositoryTool(
           path: 'external_controller_required',
           routing: compactRoutingSummary({ path: 'durable', mode: 'durable', reasons: [routingDecision.reasons.join(','), 'local_bridge_execution_retired'] }),
           message: 'This command requires explicit external Controller handling; Local Bridge Jobs are retired for repository commands.',
-          suggestedOperation: 'Create or claim WorkContract, then use rh_work.launcher_start or a Process Runtime-compatible command.',
+          next: 'This execution boundary requires separate external authority; the model chooses an authorized domain capability or alternative command based on the task.',
           externalEffect: {
             outcome: 'not_started',
             ambiguousFailureOutcome: 'outcome_unknown',

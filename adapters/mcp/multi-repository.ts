@@ -284,8 +284,7 @@ export function repositoryScopedToolArgs(
   // checkout after validating the authenticated principal instead of inheriting
   // the repository's currently active checkout.
   const workOwnedCheckoutResolution = [
-    'repository_command_preview',
-    'repository_command_execute',
+    'execute_command',
     'repository_safe_patch_apply',
   ].includes(name)
     && typeof input.work_id === 'string'

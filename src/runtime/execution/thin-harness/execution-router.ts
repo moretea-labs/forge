@@ -317,7 +317,7 @@ export function routeExecution(input: RouteExecutionInput): ExecutionDecision {
   }
 
   if (commandLooksDestructive(input.command) || operation.includes('destructive')) {
-    if (input.approvalContinuation === true && operation === 'repository_command_execute') {
+    if (input.approvalContinuation === true && operation === 'execute_command') {
       return decisionBase({
         mode: 'durable',
         reasons: ['destructive_approval_continuation'],
@@ -325,7 +325,7 @@ export function routeExecution(input: RouteExecutionInput): ExecutionDecision {
         estimatedClass: 'unknown',
         requiresIsolation: true,
         requiresRecovery: false,
-        suggestedOperation: 'repository_command_execute through Durable Work / Local Job',
+        suggestedOperation: 'execute_command through Durable Work / Local Job',
         effects: {
           readsWorkspace: true,
           mutatesWorkspace: true,
@@ -342,7 +342,7 @@ export function routeExecution(input: RouteExecutionInput): ExecutionDecision {
       requiresIsolation: true,
       requiresRecovery: false,
       rejectCode: 'DESTRUCTIVE_REJECTED',
-      suggestedOperation: 'repository_command_preview + explicit strong confirmation via Durable Work',
+      suggestedOperation: 'execute_command(dry_run=true) + explicit strong confirmation via Durable Work',
       effects: {
         readsWorkspace: true,
         mutatesWorkspace: true,
@@ -381,7 +381,7 @@ export function routeExecution(input: RouteExecutionInput): ExecutionDecision {
 
   let commandEffectsValue: ExecutionEffects | undefined;
 
-  if (operation === 'repository_command_execute' || operation === 'run_short_command' || operation === 'run_focused_check') {
+  if (operation === 'execute_command' || operation === 'run_short_command' || operation === 'run_focused_check') {
     if (input.command !== undefined) {
       const classification = classifyRepositoryCommand(input.command, input.defaultBranch);
       const canonical = normalizeRepositoryCommand(input.command);
@@ -401,7 +401,7 @@ export function routeExecution(input: RouteExecutionInput): ExecutionDecision {
           requiresIsolation: true,
           requiresRecovery: false,
           rejectCode: 'UNSAFE_SHELL',
-          suggestedOperation: 'repository_command_preview',
+          suggestedOperation: 'execute_command(dry_run=true)',
           effects: commandEffectsValue,
         }, operation);
       }
@@ -411,7 +411,7 @@ export function routeExecution(input: RouteExecutionInput): ExecutionDecision {
       }
       if (classification.risk === 'remote_write') reasons.push('command_classified_remote_write');
       if (classification.risk === 'destructive') {
-        if (input.approvalContinuation === true && operation === 'repository_command_execute') {
+        if (input.approvalContinuation === true && operation === 'execute_command') {
           return decisionBase({
             mode: 'durable',
             reasons: ['destructive_approval_continuation', ...classification.reasons],
@@ -419,7 +419,7 @@ export function routeExecution(input: RouteExecutionInput): ExecutionDecision {
             estimatedClass: 'unknown',
             requiresIsolation: true,
             requiresRecovery: false,
-            suggestedOperation: 'repository_command_execute through Durable Work / Local Job',
+            suggestedOperation: 'execute_command through Durable Work / Local Job',
             effects: commandEffectsValue,
           }, operation);
         }
@@ -431,7 +431,7 @@ export function routeExecution(input: RouteExecutionInput): ExecutionDecision {
           requiresIsolation: true,
           requiresRecovery: false,
           rejectCode: 'DESTRUCTIVE_COMMAND',
-          suggestedOperation: 'repository_command_preview',
+          suggestedOperation: 'execute_command(dry_run=true)',
           effects: commandEffectsValue,
         }, operation);
       }
@@ -440,14 +440,14 @@ export function routeExecution(input: RouteExecutionInput): ExecutionDecision {
         reasons.push('not_a_strict_focused_check');
       }
       if (classification.risk === 'workspace_write' && !focused && !safeShellCombo) {
-        if (operation === 'repository_command_execute' || operation === 'run_short_command' || operation === 'run_focused_check') {
+        if (operation === 'execute_command' || operation === 'run_short_command' || operation === 'run_focused_check') {
           reasons.push('mutating_or_unfocused_command');
         }
       }
       if (classification.risk !== 'readonly' && !focused && !safeShellCombo && !FAST_OPERATIONS.has(operation)) {
         reasons.push('untrusted_or_unclassified_command');
       }
-    } else if (operation === 'repository_command_execute' || operation === 'run_focused_check') {
+    } else if (operation === 'execute_command' || operation === 'run_focused_check') {
       reasons.push('missing_command');
     }
   }
@@ -564,7 +564,7 @@ export function routeExecution(input: RouteExecutionInput): ExecutionDecision {
     }, operation);
   }
 
-  if (!FAST_OPERATIONS.has(operation) && operation !== 'repository_command_execute') {
+  if (!FAST_OPERATIONS.has(operation) && operation !== 'execute_command') {
     return decisionBase({
       mode: 'durable',
       reasons: ['operation_not_in_fast_allowlist'],
@@ -576,7 +576,7 @@ export function routeExecution(input: RouteExecutionInput): ExecutionDecision {
     }, operation);
   }
 
-  if (operation === 'repository_command_execute' || operation === 'run_short_command' || operation === 'run_focused_check') {
+  if (operation === 'execute_command' || operation === 'run_short_command' || operation === 'run_focused_check') {
     if (input.command === undefined) {
       return decisionBase({
         mode: 'durable',
@@ -585,7 +585,7 @@ export function routeExecution(input: RouteExecutionInput): ExecutionDecision {
         estimatedClass: 'unknown',
         requiresIsolation: false,
         requiresRecovery: false,
-        suggestedOperation: 'repository_command_execute via Durable Work',
+        suggestedOperation: 'execute_command via Durable Work',
       }, operation);
     }
     const classification = classifyRepositoryCommand(input.command, input.defaultBranch);
@@ -602,7 +602,7 @@ export function routeExecution(input: RouteExecutionInput): ExecutionDecision {
         estimatedClass: 'long',
         requiresIsolation: false,
         requiresRecovery: false,
-        suggestedOperation: 'repository_command_execute via Durable Work / Local Job',
+        suggestedOperation: 'execute_command via Durable Work / Local Job',
         effects,
       }, operation);
     }
@@ -632,7 +632,7 @@ export function routeExecution(input: RouteExecutionInput): ExecutionDecision {
       estimatedClass: 'long',
       requiresIsolation: false,
       requiresRecovery: false,
-      suggestedOperation: 'repository_command_execute via Durable Work / Local Job',
+      suggestedOperation: 'execute_command via Durable Work / Local Job',
       effects,
     }, operation);
   }
@@ -673,7 +673,7 @@ export function routeExecution(input: RouteExecutionInput): ExecutionDecision {
 function durableSuggestion(operation: string): string {
   if (operation === 'run_check' || operation === 'run_focused_check') return 'run_check through Durable Work';
   if (operation.includes('patch')) return 'repository_safe_patch_apply with apply_mode=async or Durable Work';
-  if (operation.includes('command')) return 'repository_command_execute through Durable Work / Local Job';
+  if (operation.includes('command')) return 'execute_command through Durable Work / Local Job';
   if (operation.includes('agent') || operation === 'quick_agent_session') return 'quick_agent_session / dispatch_task';
   return 'Durable Work (ExecutionJob path)';
 }

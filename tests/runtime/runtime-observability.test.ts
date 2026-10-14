@@ -992,7 +992,7 @@ describe('runtime observability', () => {
       const makeIncident = (index: number) => ({
         traceId: `trace-recurrent-${index}`,
         requestId: `request-recurrent-${index}`,
-        tool: index % 2 === 0 ? 'rh_work' : 'repository_command_execute',
+        tool: index % 2 === 0 ? 'rh_work' : 'execute_command',
         kind: 'tool_error' as const,
         code: 'CONTROLLER_AUTHENTICATED_SESSION_REQUIRED',
         message: 'reconnect or provide session_id through the authenticated MCP transport',
@@ -1105,6 +1105,7 @@ describe('runtime observability', () => {
 
   test('serves the bounded default tools/list and retains explicit Advanced compatibility plus full fallback', async () => {
     const controllerHome = mkdtempSync(join(tmpdir(), 'forge-core-tools-'));
+    const commandRepoRoot = mkdtempSync(join(tmpdir(), 'forge-command-tool-'));
     const listNames = async (toolset?: 'facade' | 'core' | 'advanced') => {
       const server = createForgeMcpServer({ controllerHome, profile: 'controller', ...(toolset ? { toolset } : {}) });
       const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -1129,14 +1130,17 @@ describe('runtime observability', () => {
       const defaultNames = await listNames();
       expect(defaultNames).toEqual([...DEFAULT_CONTROLLER_TOOL_NAMES]);
       expect(defaultNames).toEqual(expect.arrayContaining(['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work']));
-      expect(defaultNames).toContain('repository_command_execute');
+      expect(defaultNames).toContain('execute_command');
+      expect(defaultNames).not.toContain('repository_command_execute');
+      expect(defaultNames).not.toContain('process_exec');
+      expect(defaultNames).not.toContain('work_execute');
       expect(defaultNames).not.toContain('repository_git_status');
       expect(defaultNames).not.toContain('git_commit_paths');
 
       const facadeNames = await listNames('facade');
       expect(facadeNames).toEqual([...PREFERRED_FACADE_TOOL_NAMES]);
       expect(facadeNames).toEqual(['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work', 'capability_execute']);
-      expect(facadeNames).not.toContain('repository_command_execute');
+      expect(facadeNames).not.toContain('execute_command');
       expect(facadeNames).not.toContain('run_check');
 
       const coreNames = await listNames('core');
@@ -1144,7 +1148,7 @@ describe('runtime observability', () => {
 
       const advancedNames = await listNames('advanced');
       expect(advancedNames).toEqual(defaultNames);
-      expect(advancedNames).toContain('repository_command_execute');
+      expect(advancedNames).toContain('execute_command');
       expect(advancedNames).not.toContain('verify_edit_session');
       // Full compatibility profile still exposes the atomic Git handlers.
       const fullServer = createForgeMcpServer({ controllerHome, profile: 'controller', toolset: 'full' });
@@ -1157,12 +1161,38 @@ describe('runtime observability', () => {
         expect(fullNames).toContain('repository_git_status');
         expect(fullNames).toContain('git_commit_paths');
         expect(fullNames).toContain('verify_edit_session');
+        expect(fullNames).toContain('execute_command');
+        expect(fullNames).not.toContain('repository_command_execute');
+        expect(fullNames).not.toContain('process_exec');
+        expect(fullNames).not.toContain('work_execute');
         expect(fullNames.length).toBeGreaterThan(defaultNames.length);
+        const hostCall = await fullClient.callTool({ name: 'execute_command', arguments: { scope: 'host', command: ['echo', 'ungranted-host'] } });
+        expect(hostCall.isError).toBe(true);
+        // This isolated test Controller has no live ForgeInstance identity; a
+        // host command must stop before spawning or considering a Grant.
+        expect(JSON.stringify(hostCall.structuredContent)).toContain('HOST_PROCESS_TARGET_UNAVAILABLE');
+        // Exercise the public MCP schema/dispatch all the way through Process
+        // Runtime. Ordinary repository commands need neither a Work nor a Plan.
+        const initialized = spawnSync('git', ['init', '-b', 'main', commandRepoRoot], { encoding: 'utf8' });
+        expect(initialized.status).toBe(0);
+        spawnSync('git', ['-C', commandRepoRoot, 'config', 'user.name', 'Test']);
+        spawnSync('git', ['-C', commandRepoRoot, 'config', 'user.email', 'test@example.com']);
+        writeFileSync(join(commandRepoRoot, 'README.md'), 'command tool fixture\n');
+        spawnSync('git', ['-C', commandRepoRoot, 'add', '.']);
+        expect(spawnSync('git', ['-C', commandRepoRoot, 'commit', '-m', 'init']).status).toBe(0);
+        const repo = registerRepository({ path: commandRepoRoot, controllerHome });
+        const previewCall = await fullClient.callTool({ name: 'execute_command', arguments: { repo_id: repo.repoId, command: ['git', 'status', '--short'], dry_run: true } });
+        expect(previewCall.isError).not.toBe(true);
+        expect(previewCall.structuredContent).toMatchObject({ status: 'preview' });
+        const commandCall = await fullClient.callTool({ name: 'execute_command', arguments: { repo_id: repo.repoId, command: ['git', 'status', '--short'], timeout_ms: 10000 } });
+        expect(commandCall.isError).not.toBe(true);
+        expect(commandCall.structuredContent).toMatchObject({ accepted: true });
       } finally {
         await fullClient.close();
         await fullServer.close();
       }
     } finally {
+      rmSync(commandRepoRoot, { recursive: true, force: true });
       rmSync(controllerHome, { recursive: true, force: true });
     }
   });
@@ -1323,7 +1353,7 @@ describe('runtime observability', () => {
         expect(read).toBeTruthy();
         expect(JSON.parse(read?.content[0]?.text ?? '{}').content).toContain('fixture');
 
-        const command = await callRepositoryTool(controllerHome, 'repository_command_execute', {
+        const command = await callRepositoryTool(controllerHome, 'execute_command', {
           repo_id: repository.repoId,
           command: ['git', 'status', '--short'],
           timeout_ms: 5_000,

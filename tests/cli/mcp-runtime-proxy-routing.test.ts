@@ -214,8 +214,8 @@ describe('MCP canonical Runtime proxy routing', () => {
       request_id: 'stable-process-request',
       command: ['bun', 'x', 'tsc', '--noEmit'],
     };
-    expect(canonicalRuntimeToolCallIsReplaySafe('repository_command_execute', args)).toBe(true);
-    expect(canonicalRuntimeToolCallIsReplaySafe('repository_command_execute', { ...args, request_id: '' })).toBe(false);
+    expect(canonicalRuntimeToolCallIsReplaySafe('execute_command', args)).toBe(true);
+    expect(canonicalRuntimeToolCallIsReplaySafe('execute_command', { ...args, request_id: '' })).toBe(false);
     expect(canonicalRuntimeToolCallIsReplaySafe('rh_work', args)).toBe(false);
     expect(canonicalRuntimeToolCallIsReplaySafe('computer_console_unlock_prepare', { confirm_authorization: true })).toBe(false);
     for (const name of ['computer_console_unlock_enroll', 'computer_console_unlock_status', 'computer_console_unlock_recover', 'computer_console_unlock_revoke']) {
@@ -247,7 +247,7 @@ describe('MCP canonical Runtime proxy routing', () => {
     let calls = 0;
     let reconnects = 0;
     const result = await callCanonicalRuntimeToolWithReplay({
-      name: 'repository_command_execute',
+      name: 'execute_command',
       args,
       call: async () => {
         calls += 1;
@@ -263,7 +263,7 @@ describe('MCP canonical Runtime proxy routing', () => {
     let unkeyedCalls = 0;
     let unkeyedReconnects = 0;
     await expect(callCanonicalRuntimeToolWithReplay({
-      name: 'repository_command_execute',
+      name: 'execute_command',
       args: { ...args, request_id: '' },
       call: async () => { unkeyedCalls += 1; throw new Error('Connection closed'); },
       reconnect: async () => { unkeyedReconnects += 1; },
@@ -274,7 +274,7 @@ describe('MCP canonical Runtime proxy routing', () => {
     let cutoverCalls = 0;
     let cutoverReconnects = 0;
     await expect(callCanonicalRuntimeToolWithReplay({
-      name: 'repository_command_execute',
+      name: 'execute_command',
       args,
       call: async () => {
         cutoverCalls += 1;
@@ -295,7 +295,7 @@ describe('MCP canonical Runtime proxy routing', () => {
     let semanticCalls = 0;
     let semanticReconnects = 0;
     await expect(callCanonicalRuntimeToolWithReplay({
-      name: 'repository_command_execute',
+      name: 'execute_command',
       args,
       call: async () => { semanticCalls += 1; throw new Error('WORK_CONTROLLER_OWNERSHIP_MISMATCH'); },
       reconnect: async () => { semanticReconnects += 1; },
@@ -306,7 +306,7 @@ describe('MCP canonical Runtime proxy routing', () => {
     let repeatedCalls = 0;
     let repeatedReconnects = 0;
     await expect(callCanonicalRuntimeToolWithReplay({
-      name: 'repository_command_execute',
+      name: 'execute_command',
       args,
       call: async () => { repeatedCalls += 1; throw new SdkError(SdkErrorCode.ConnectionClosed, 'Connection closed'); },
       reconnect: async () => { repeatedReconnects += 1; },
@@ -1086,7 +1086,7 @@ describe('MCP post-finalize Work attribution', () => {
     try {
       const response = await callRepositoryToolWithPostFinalizeAttribution(
         fx.controllerHome,
-        'repository_command_execute',
+        'execute_command',
         {
           repo_id: fx.repository.repoId,
           work_id: fx.workId,
@@ -1105,7 +1105,7 @@ describe('MCP post-finalize Work attribution', () => {
 
       expect(await callPostFinalizeWorkReadOnlyCommand(
         fx.controllerHome,
-        'repository_command_execute',
+        'execute_command',
         {
           repo_id: fx.repository.repoId,
           work_id: fx.workId,
@@ -1131,13 +1131,13 @@ describe('MCP post-finalize Work attribution', () => {
       };
       expect(await callPostFinalizeWorkReadOnlyCommand(
         fx.controllerHome,
-        'repository_command_execute',
+        'execute_command',
         mutationArgs,
         fx.caller,
       )).toBeUndefined();
       expect(await callPostFinalizeWorkReadOnlyCommand(
         fx.controllerHome,
-        'repository_command_execute',
+        'execute_command',
         {
           repo_id: fx.repository.repoId,
           work_id: fx.workId,
@@ -1151,7 +1151,7 @@ describe('MCP post-finalize Work attribution', () => {
       try {
         const response = await callRepositoryToolWithPostFinalizeAttribution(
           fx.controllerHome,
-          'repository_command_execute',
+          'execute_command',
           mutationArgs,
           fx.caller,
         );

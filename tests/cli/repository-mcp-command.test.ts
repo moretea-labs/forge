@@ -263,15 +263,16 @@ describe("repository MCP command tools", () => {
   test("documents the facade-first shortest path without widening the tool surface", () => {
     const rhContext = runtimeToolDefinitions.find((tool) => tool.name === "rh_context");
     const rhWork = runtimeToolDefinitions.find((tool) => tool.name === "rh_work");
-    const command = repositoryToolDefinitions.find((tool) => tool.name === "repository_command_execute");
+    const command = repositoryToolDefinitions.find((tool) => tool.name === "execute_command");
     const safePatchPlan = repositoryToolDefinitions.find((tool) => tool.name === "repository_safe_patch_plan");
     const safePatchApply = repositoryToolDefinitions.find((tool) => tool.name === "repository_safe_patch_apply");
-    expect(rhContext?.description).toContain("default repository code-discovery/read path");
-    expect(rhContext?.description).toContain("fallback-only");
+    expect(rhContext?.description).toContain("model chooses");
+    expect(rhContext?.description).not.toContain("fallback-only");
     expect(rhWork?.description).toContain("optional durable Requirement/Plan/Work semantic context");
     expect(rhWork?.description).toContain("Ordinary execution and validation use direct domain capabilities");
     expect(rhWork?.description).toContain("stay internal");
-    expect(command?.description).toContain("Use rh_context for routine code discovery/reading");
+    expect(command?.description).toContain("Single terminal entry");
+    expect(repositoryToolDefinitions.some((tool) => tool.name === 'repository_command_execute')).toBe(false);
     const operationTypes = (tool: (typeof repositoryToolDefinitions)[number] | undefined): string[] | undefined => {
       const properties = tool?.inputSchema.properties as Record<string, unknown> | undefined;
       const operations = properties?.operations as { items?: { properties?: { type?: { enum?: string[] } } } } | undefined;
@@ -284,7 +285,7 @@ describe("repository MCP command tools", () => {
     }
   });
 
-  test("guides chained shell code browsing back to one rh_context search", async () => {
+  test("does not override model tool choice for chained terminal reads", async () => {
     const workspace = mkdtempSync(join(tmpdir(), "forge-mcp-fragmented-read-"));
     const controllerHome = join(workspace, "controller-home");
     const repoRoot = join(workspace, "sample-repo");
@@ -296,18 +297,14 @@ describe("repository MCP command tools", () => {
       git(repoRoot, ["add", "tracked.txt"]);
       git(repoRoot, ["commit", "-m", "init"]);
       const repository = registerRepository({ path: repoRoot, controllerHome });
-      const response = await json(callRepositoryTool(controllerHome, "repository_command_execute", {
+      const response = await json(callRepositoryTool(controllerHome, "execute_command", {
         repo_id: repository.repoId,
         command: "grep marker tracked.txt; cat tracked.txt",
         request_id: "fragmented-read-guidance",
       }));
       expect(response.ok).toBe(true);
-      expect(response.guidance).toMatchObject({
-        code: "FRAGMENTED_REPOSITORY_EXPLORATION",
-        recommendedTool: "rh_context",
-        recommendedOperation: "search",
-      });
-      expect(response.suggestedOperation).toBe("rh_context");
+      expect(response.guidance).toBeUndefined();
+      expect(response.suggestedOperation).toBeUndefined();
     } finally {
       await cleanupWorkspace([workspace, controllerHome, repoRoot]);
       rmSync(workspace, { recursive: true, force: true });
@@ -369,7 +366,7 @@ describe("repository MCP command tools", () => {
       });
       expect(existsSync(join(repoRoot, "should-not-exist.txt"))).toBe(false);
 
-      const blockedCommand = await json(callRepositoryTool(controllerHome, "repository_command_execute", {
+      const blockedCommand = await json(callRepositoryTool(controllerHome, "execute_command", {
         repo_id: repository.repoId,
         command: ["sh", "-c", "printf forbidden > also-should-not-exist.txt"],
         request_id: "active-bound-command-must-not-fall-back",
@@ -426,13 +423,13 @@ describe("repository MCP command tools", () => {
         leaseMs: 60_000,
       });
 
-      const preview = await json(callRepositoryTool(controllerHome, "repository_command_preview", {
+      const preview = await json(callRepositoryTool(controllerHome, "execute_command", { dry_run: true,
         repo_id: repository.repoId,
         command: "git add tracked.txt",
       }, caller));
       expect(typeof preview.approvalToken).toBe("string");
 
-      const missingKey = await json(callRepositoryTool(controllerHome, "repository_command_execute", {
+      const missingKey = await json(callRepositoryTool(controllerHome, "execute_command", {
         repo_id: repository.repoId,
         work_id: workId,
         command: "git add tracked.txt",
@@ -441,7 +438,7 @@ describe("repository MCP command tools", () => {
       expect(missingKey.error).toMatchObject({ code: "WORK_PROCESS_REQUEST_ID_REQUIRED" });
       expect(spawnSync("git", ["-C", repoRoot, "status", "--short"], { encoding: "utf8" }).stdout).toBe("");
 
-      const keyed = await json(callRepositoryTool(controllerHome, "repository_command_execute", {
+      const keyed = await json(callRepositoryTool(controllerHome, "execute_command", {
         repo_id: repository.repoId,
         work_id: workId,
         command: "git add tracked.txt",
@@ -500,7 +497,7 @@ describe("repository MCP command tools", () => {
       expect(blocked.error).toMatchObject({ code: "WORK_ATTRIBUTION_REQUIRED" });
       expect(existsSync(join(repoRoot, "should-not-exist.txt"))).toBe(false);
 
-      const blockedCommand = await json(callRepositoryTool(controllerHome, "repository_command_execute", {
+      const blockedCommand = await json(callRepositoryTool(controllerHome, "execute_command", {
         repo_id: repository.repoId,
         command: ["sh", "-c", "printf forbidden > also-should-not-exist.txt"],
         request_id: "terminal-bound-command-must-not-escape",
@@ -539,7 +536,7 @@ describe("repository MCP command tools", () => {
         principalId: caller.principalId, controllerInstanceId: caller.controllerInstanceId, leaseMs: 60_000,
       });
 
-      const observed = await json(callRepositoryTool(controllerHome, "repository_command_execute", {
+      const observed = await json(callRepositoryTool(controllerHome, "execute_command", {
         repo_id: repository.repoId, work_id: workId, command: ["git", "status", "--short"], request_id: "effect-readonly-before-source",
       }, caller));
       expect(observed.ok).toBe(true);
@@ -589,7 +586,7 @@ describe("repository MCP command tools", () => {
         principalId: caller.principalId, controllerInstanceId: caller.controllerInstanceId, leaseMs: 60_000,
       });
 
-      const mutated = await json(callRepositoryTool(controllerHome, "repository_command_execute", {
+      const mutated = await json(callRepositoryTool(controllerHome, "execute_command", {
         repo_id: repository.repoId, work_id: workId, command: ["touch", "effect-source.txt"], request_id: "effect-command-source-mutation",
       }, caller));
       expect(mutated.accepted).toBe(true);
@@ -678,7 +675,7 @@ describe("repository MCP command tools", () => {
         principalId: caller.principalId, controllerInstanceId: caller.controllerInstanceId, leaseMs: 60_000,
       });
 
-      const effect = await json(callRepositoryTool(controllerHome, "repository_command_execute", {
+      const effect = await json(callRepositoryTool(controllerHome, "execute_command", {
         repo_id: repository.repoId, work_id: workId, command: ["touch", externalPath], request_id: "effect-command-no-source-delta",
       }, caller));
       expect(effect.accepted).toBe(true);
@@ -720,7 +717,7 @@ describe("repository MCP command tools", () => {
         principalId: caller.principalId, controllerInstanceId: caller.controllerInstanceId, leaseMs: 60_000,
       });
 
-      const running = await json(callRepositoryTool(controllerHome, "repository_command_execute", {
+      const running = await json(callRepositoryTool(controllerHome, "execute_command", {
         repo_id: repository.repoId,
         work_id: workId,
         command: longCommand,
@@ -778,7 +775,7 @@ describe("repository MCP command tools", () => {
         principalId: caller.principalId, controllerInstanceId: caller.controllerInstanceId, leaseMs: 60_000,
       });
 
-      const observed = await json(callRepositoryTool(controllerHome, "repository_command_execute", {
+      const observed = await json(callRepositoryTool(controllerHome, "execute_command", {
         repo_id: repository.repoId,
         work_id: workId,
         command: ["git", "status", "--short"],
@@ -789,7 +786,7 @@ describe("repository MCP command tools", () => {
       expect(observed.historicalWorkContext).toBeUndefined();
       expect(observed.processId).toBeUndefined();
 
-      const blockedMutation = await json(callRepositoryTool(controllerHome, "repository_command_execute", {
+      const blockedMutation = await json(callRepositoryTool(controllerHome, "execute_command", {
         repo_id: repository.repoId,
         work_id: workId,
         command: ["touch", "should-not-exist.txt"],
@@ -859,7 +856,7 @@ describe("repository MCP command tools", () => {
       git(repoRoot, ["add", "direct-edit.txt"]);
       git(repoRoot, ["commit", "-m", "independent direct edit"]);
 
-      const merged = await json(callRepositoryTool(controllerHome, "repository_command_execute", {
+      const merged = await json(callRepositoryTool(controllerHome, "execute_command", {
         repo_id: repository.repoId,
         command: ["git", "merge", "feature/completed"],
         request_id: "merge-completed-unrelated-work",
@@ -885,7 +882,7 @@ describe("repository MCP command tools", () => {
       git(repoRoot, ["add", "explicit.txt"]);
       git(repoRoot, ["commit", "-m", "explicit work branch"]);
       git(repoRoot, ["switch", "main"]);
-      const explicitlyAttributed = await json(callRepositoryTool(controllerHome, "repository_command_execute", {
+      const explicitlyAttributed = await json(callRepositoryTool(controllerHome, "execute_command", {
         repo_id: repository.repoId,
         work_id: unrelatedWorkId,
         command: ["git", "merge", "feature/explicit-work"],
@@ -1139,7 +1136,7 @@ describe("repository MCP command tools", () => {
       // surface keeps source diagnostics / bootstrap behind explicit profiles.
       expect(capabilities.expectedTools).not.toContain("repository_latest_source_diagnose");
       expect(capabilities.expectedTools).not.toContain("repository_bootstrap_local_project");
-      expect(capabilities.expectedTools).toContain("repository_command_execute");
+      expect(capabilities.expectedTools).toContain("execute_command");
       expect(existsSync(join(richRoot, ".git"))).toBe(false);
     } finally {
       await cleanupWorkspace([workspace, controllerHome, staleRoot, richRoot]);
@@ -1190,7 +1187,7 @@ describe("repository MCP command tools", () => {
       const repository = registerRepository({ path: repoRoot, controllerHome });
       writeFileSync(join(repoRoot, "tracked.txt"), "v1\n");
 
-      const preview = callRepositoryTool(controllerHome, "repository_command_preview", {
+      const preview = callRepositoryTool(controllerHome, "execute_command", { dry_run: true,
         repo_id: repository.repoId,
         command: "git add tracked.txt",
       });
@@ -1199,7 +1196,7 @@ describe("repository MCP command tools", () => {
       expect(previewValue.classification.risk).toBe("workspace_write");
       expect(typeof previewValue.approvalToken).toBe("string");
 
-      const executed = callRepositoryTool(controllerHome, "repository_command_execute", {
+      const executed = callRepositoryTool(controllerHome, "execute_command", {
         repo_id: repository.repoId,
         command: "git add tracked.txt",
         approval_token: previewValue.approvalToken,
@@ -1237,7 +1234,7 @@ describe("repository MCP command tools", () => {
       expect(listRepositories(controllerHome)).toHaveLength(0);
       expect(existsSync(join(localRoot, ".git"))).toBe(false);
 
-      const preview = await json(callRepositoryTool(controllerHome, "repository_command_preview", {
+      const preview = await json(callRepositoryTool(controllerHome, "execute_command", { dry_run: true,
         workspace_root: localRoot,
         command: ["cat", "note.txt"],
       }));
@@ -1245,7 +1242,7 @@ describe("repository MCP command tools", () => {
       expect(preview.workspace).toMatchObject({ registered: false, root: realpathSync(localRoot) });
       expect(preview.workspace.workspaceId).toMatch(/^workspace_[a-f0-9]{24}$/);
 
-      const read = await json(callRepositoryTool(controllerHome, "repository_command_execute", {
+      const read = await json(callRepositoryTool(controllerHome, "execute_command", {
         workspace_root: localRoot,
         command: ["cat", "note.txt"],
         request_id: "ephemeral-read-1",
@@ -1255,13 +1252,13 @@ describe("repository MCP command tools", () => {
       expect(read.stdout).toContain("ephemeral hello");
       expect(read.workspace).toEqual(preview.workspace);
 
-      const writePreview = await json(callRepositoryTool(controllerHome, "repository_command_preview", {
+      const writePreview = await json(callRepositoryTool(controllerHome, "execute_command", { dry_run: true,
         workspace_root: localRoot,
         command: ["touch", "created-by-ephemeral.txt"],
       }));
       expect(writePreview.status).toBe("preview");
       expect(writePreview.approvalToken).toBeTruthy();
-      const write = await json(callRepositoryTool(controllerHome, "repository_command_execute", {
+      const write = await json(callRepositoryTool(controllerHome, "execute_command", {
         workspace_root: localRoot,
         command: ["touch", "created-by-ephemeral.txt"],
         approval_token: writePreview.approvalToken,
@@ -1273,7 +1270,7 @@ describe("repository MCP command tools", () => {
       expect(write.workspace).toEqual(preview.workspace);
       expect(write.authorization?.source).not.toBe("bounded_read_direct");
 
-      const deleteAttempt = await json(callRepositoryTool(controllerHome, "repository_command_execute", { workspace_root: localRoot, command: ["rm", "-f", "created-by-ephemeral.txt"], request_id: "ephemeral-delete-through-harness" }));
+      const deleteAttempt = await json(callRepositoryTool(controllerHome, "execute_command", { workspace_root: localRoot, command: ["rm", "-f", "created-by-ephemeral.txt"], request_id: "ephemeral-delete-through-harness" }));
       expect([deleteAttempt.accepted, deleteAttempt.status, deleteAttempt.authorization?.decision]).toEqual([true, "succeeded", "allow"]);
       expect(existsSync(join(localRoot, "created-by-ephemeral.txt"))).toBe(false);
 
@@ -1296,21 +1293,21 @@ describe("repository MCP command tools", () => {
       mkdirSync(outside, { recursive: true });
       writeFileSync(join(outside, "secret.txt"), "outside\n");
 
-      const conflict = await json(callRepositoryTool(controllerHome, "repository_command_execute", {
+      const conflict = await json(callRepositoryTool(controllerHome, "execute_command", {
         workspace_root: localRoot,
         repo_id: "repo_should_not_mix",
         command: ["pwd"],
       }));
       expect(conflict.error.code).toBe("EPHEMERAL_WORKSPACE_TARGET_CONFLICT");
 
-      const escape = await json(callRepositoryTool(controllerHome, "repository_command_execute", {
+      const escape = await json(callRepositoryTool(controllerHome, "execute_command", {
         workspace_root: localRoot,
         cwd: "../outside",
         command: ["pwd"],
       }));
       expect(escape.error.code).toMatch(/WORKSPACE_SCOPE_MISMATCH|COMMAND_SCOPE_DENIED/);
 
-      const durable = await json(callRepositoryTool(controllerHome, "repository_command_execute", {
+      const durable = await json(callRepositoryTool(controllerHome, "execute_command", {
         workspace_root: localRoot,
         command: ["cat", "missing.txt"],
         apply_mode: "async",
@@ -1342,7 +1339,7 @@ describe("repository MCP command tools", () => {
       const repository = registerRepository({ path: repoRoot, controllerHome });
       writeFileSync(join(repoRoot, "tracked.txt"), "v1\n");
 
-      const executed = callRepositoryTool(controllerHome, "repository_command_execute", {
+      const executed = callRepositoryTool(controllerHome, "execute_command", {
         repo_id: repository.repoId,
         command: "git add tracked.txt",
         approval_token: "wrong-token",
@@ -1378,7 +1375,7 @@ describe("repository MCP command tools", () => {
       writeFileSync(join(externalRoot, "note.txt"), "external note\n");
       const repository = registerRepository({ path: repoRoot, controllerHome });
 
-      const deniedRead = await json(callRepositoryTool(controllerHome, "repository_command_preview", {
+      const deniedRead = await json(callRepositoryTool(controllerHome, "execute_command", { dry_run: true,
         repo_id: repository.repoId,
         command: `cat ${join(externalRoot, "note.txt")}`,
       }));
@@ -1398,21 +1395,21 @@ describe("repository MCP command tools", () => {
         preview_ticket_id: readPreview.previewTicketId,
         confirm_authorization: true,
       });
-      const acceptedRead = await json(callRepositoryTool(controllerHome, "repository_command_preview", {
+      const acceptedRead = await json(callRepositoryTool(controllerHome, "execute_command", { dry_run: true,
         repo_id: repository.repoId,
         command: `cat ${join(externalRoot, "note.txt")}`,
       }));
       expect(acceptedRead.status).toBe("preview");
       expect(acceptedRead.externalPathUsages[0].operation).toBe("external_read");
 
-      const acceptedAbsoluteExecutableRead = await json(callRepositoryTool(controllerHome, "repository_command_preview", {
+      const acceptedAbsoluteExecutableRead = await json(callRepositoryTool(controllerHome, "execute_command", { dry_run: true,
         repo_id: repository.repoId,
         command: ["/usr/bin/tail", "-n", "1", join(externalRoot, "note.txt")],
       }));
       expect(acceptedAbsoluteExecutableRead.status).toBe("preview");
       expect(acceptedAbsoluteExecutableRead.externalPathUsages[0].operation).toBe("external_read");
 
-      const deniedCopy = await json(callRepositoryTool(controllerHome, "repository_command_preview", {
+      const deniedCopy = await json(callRepositoryTool(controllerHome, "execute_command", { dry_run: true,
         repo_id: repository.repoId,
         command: `cp ${join(externalRoot, "note.txt")} copied.txt`,
       }));
@@ -1432,7 +1429,7 @@ describe("repository MCP command tools", () => {
         preview_ticket_id: copyPreview.previewTicketId,
         confirm_authorization: true,
       });
-      const acceptedCopy = await json(callRepositoryTool(controllerHome, "repository_command_preview", {
+      const acceptedCopy = await json(callRepositoryTool(controllerHome, "execute_command", { dry_run: true,
         repo_id: repository.repoId,
         command: `cp ${join(externalRoot, "note.txt")} copied.txt`,
       }));
@@ -1496,25 +1493,25 @@ describe("repository MCP command tools", () => {
           expiresAt: "2000-01-01T00:00:00.000Z",
         }],
       }, null, 2)}\n`);
-      const expired = await json(callRepositoryTool(controllerHome, "repository_command_preview", {
+      const expired = await json(callRepositoryTool(controllerHome, "execute_command", { dry_run: true,
         repo_id: repository.repoId,
         command: `cat ${join(externalRoot, "note.txt")}`,
       }));
       expect(expired.error.code).toBe("EXTERNAL_FILESYSTEM_GRANT_REQUIRED");
 
-      const symlinkEscape = await json(callRepositoryTool(controllerHome, "repository_command_preview", {
+      const symlinkEscape = await json(callRepositoryTool(controllerHome, "execute_command", { dry_run: true,
         repo_id: repository.repoId,
         command: "cat escape-link.txt",
       }));
       expect(symlinkEscape.error.code).toBe("COMMAND_SCOPE_DENIED");
 
-      const sensitive = await json(callRepositoryTool(controllerHome, "repository_command_preview", {
+      const sensitive = await json(callRepositoryTool(controllerHome, "execute_command", { dry_run: true,
         repo_id: repository.repoId,
         command: `cat ${join(fakeSsh, "id_ed25519")}`,
       }));
       expect(sensitive.error.code).toBe("COMMAND_SCOPE_DENIED");
 
-      const externalWrite = await json(callRepositoryTool(controllerHome, "repository_command_preview", {
+      const externalWrite = await json(callRepositoryTool(controllerHome, "execute_command", { dry_run: true,
         repo_id: repository.repoId,
         command: `printf 'x' > ${join(externalRoot, "out.txt")}`,
       }));
@@ -1540,11 +1537,11 @@ describe("repository MCP command tools", () => {
       git(repoRoot, ["commit", "-m", "init"]);
 
       const repository = registerRepository({ path: repoRoot, controllerHome });
-      const preview = await json(callRepositoryTool(controllerHome, "repository_command_preview", {
+      const preview = await json(callRepositoryTool(controllerHome, "execute_command", { dry_run: true,
         repo_id: repository.repoId,
         command: "printf 'alpha\\n'",
       }));
-      const executed = await json(callRepositoryTool(controllerHome, "repository_command_execute", {
+      const executed = await json(callRepositoryTool(controllerHome, "execute_command", {
         repo_id: repository.repoId,
         command: "printf 'alpha\\n'",
         approval_token: preview.approvalToken,
@@ -1595,13 +1592,13 @@ describe("repository MCP command tools", () => {
 
       const repository = registerRepository({ path: repoRoot, controllerHome });
       const ctx = createMcpToolContext({ repo: repoRoot, controllerHome, profile: "controller" });
-      const durable = await routeDurableMcpCall(ctx, "repository_command_preview", {
+      const durable = await routeDurableMcpCall(ctx, "execute_command", { dry_run: true,
         repo_id: repository.repoId,
         command: "git status --short",
       });
       expect(durable).toBeUndefined();
 
-      const preview = await json(callRepositoryTool(controllerHome, "repository_command_preview", {
+      const preview = await json(callRepositoryTool(controllerHome, "execute_command", { dry_run: true,
         repo_id: repository.repoId,
         command: "git status --short",
       }));
@@ -1631,12 +1628,12 @@ describe("repository MCP command tools", () => {
       git(repoRoot, ["commit", "-m", "init"]);
 
       const repository = registerRepository({ path: repoRoot, controllerHome });
-      const preview = await json(callRepositoryTool(controllerHome, "repository_command_preview", {
+      const preview = await json(callRepositoryTool(controllerHome, "execute_command", { dry_run: true,
         repo_id: repository.repoId,
         command: longCommand,
       }));
       expect(preview.status).toBe("preview");
-      const executionPromise = callRepositoryTool(controllerHome, "repository_command_execute", {
+      const executionPromise = callRepositoryTool(controllerHome, "execute_command", {
         repo_id: repository.repoId,
         command: longCommand,
         approval_token: preview.approvalToken,

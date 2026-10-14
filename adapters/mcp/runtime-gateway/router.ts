@@ -212,11 +212,11 @@ export async function routeDurableMcpCall(
     }, true);
   }
 
-  // repository_command_execute has its own durable boundary: non-destructive
+  // execute_command has its own durable boundary: non-destructive
   // remote writes run through the durable Process Runtime, while destructive or
   // explicitly delegated commands are refused by the repository facade itself.
   // Do not intercept that tool with the retired ExecutionJob gate here.
-  if (classification.path === 'durable' && executionJobCreationRetired() && name !== 'repository_command_execute') {
+  if (classification.path === 'durable' && executionJobCreationRetired() && name !== 'execute_command') {
     return result({
       accepted: false,
       mode: 'external_controller_required',
@@ -227,8 +227,7 @@ export async function routeDurableMcpCall(
         ...(classification.decision ? { decision: classification.decision } : {}),
       },
       rejectCode: 'EXECUTION_JOB_RETIRED',
-      message: 'This operation requires an explicit external Controller or domain capability; the Kernel no longer creates ExecutionJobs or a Work-ownership phase.',
-      suggestedOperation: 'Create or resume semantic Work only when durable context is useful, then use the direct Process/domain capability or rh_work.launcher_start.',
+      message: 'This operation needs external Controller or authorized domain capability; Forge does not create Work/Plans or prescribe a workflow to fulfill it.',
     });
   }
 

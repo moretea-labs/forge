@@ -8,7 +8,7 @@ These features are part of the default local setup:
 
 - repository registration with stable `repoId` and `checkoutId` identities;
 - bounded repository inspection and context collection;
-- five preferred ChatGPT facade tools: `rh_status`, `rh_access`, `rh_inbox`, `rh_context`, and `rh_work`, plus a stable repair-capable default MCP schema;
+- five structured ChatGPT facade capabilities: `rh_status`, `rh_access`, `rh_inbox`, `rh_context`, and `rh_work`, plus a stable repair-capable default MCP schema;
 - Direct Edit sessions with path limits, SHA preconditions, revisions, savepoints, diffs, checks, and rollback;
 - durable Issue → Task → Run state and resumable evidence;
 - named verification checks instead of arbitrary remote shell access;
@@ -31,14 +31,13 @@ These features are part of the default local setup:
 
 ## Tool exposure
 
-The default `core` / `advanced` toolset exposes one bounded ChatGPT-facing schema of 19 tools: the five `rh_*` workflow facades (with code retrieval routed through `rh_context.search`), repository selection, `repository_command_execute`, exact source read, `repository_safe_patch_apply`, `run_check`, one typed `plugin_action_execute` dispatcher with plugin schemas routed through `rh_context`, managed process lifecycle, result retrieval, and approval resolution. Git / issue-task / edit-session / other plugin / browser / iOS / maintenance atomics remain registered as internal handlers and are reachable through the `full` compatibility profile when still supported. Retired lifecycles are removed rather than kept as dormant compatibility handlers. The MCP transport does not dynamically load domain schemas.
+The default `core` / `advanced` toolset exposes a bounded ChatGPT-facing schema of 20 tools: the five `rh_*` workflow facades (with optional semantic retrieval via `rh_context.search`), repository selection, a single `execute_command` for repository/workspace and explicitly granted ForgeInstance host commands (no Work/Plan prerequisite), exact source read, `repository_safe_patch_apply`, `run_check`, one typed `plugin_action_execute` dispatcher with plugin schemas routed through `rh_context`, managed process lifecycle, result retrieval, and approval resolution. Git / issue-task / edit-session / other plugin / browser / iOS / maintenance atomics remain registered as internal handlers and are reachable through the `full` compatibility profile when still supported. Retired lifecycles are removed rather than kept as dormant compatibility handlers. The MCP transport does not dynamically load domain schemas.
 
 ## Execution choices
 
-- Use Direct Edit for small or well-bounded changes.
-- Use durable Tasks when work must survive sessions, has dependencies, or needs formal review evidence.
-- Delegate to an Agent only when investigation or implementation breadth justifies it.
-- Use named checks to verify results before acceptance.
+- The model can choose direct terminal execution with `execute_command`, bounded source edits, structured retrieval, or domain capabilities without any required Work or Plan.
+- Durable Tasks, agents, and named checks remain optional capabilities for the model to select when they add value.
+- Forge enforces concrete execution authorization, resource isolation and write consistency, but does not choose the model's workflow.
 
 ## Authorization boundaries
 

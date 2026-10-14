@@ -12,7 +12,7 @@ import { resumeExecutionJobAfterApproval } from '../../../src/runtime/execution/
 import { recordMcpTiming, type McpTimingTrace } from '../../../src/runtime/diagnostics/mcp-timing';
 import { compactHandle, contractFor, identityFor, makeBoundedWorkResult, principalFor, requireSession, workForSession } from '../../../src/runtime/control-plane/execution/work-execution-support';
 import { bindSessionRepository, prepareWork } from '../../../src/runtime/control-plane/execution/work-preparation-service';
-import { executeWork, validateWork } from '../../../src/runtime/control-plane/execution/work-operation-service';
+import { validateWork } from '../../../src/runtime/control-plane/execution/work-operation-service';
 
 export { selectDefaultWorkValidationChecks } from '../../../src/runtime/control-plane/execution/work-operation-service';
 
@@ -35,11 +35,6 @@ export const executionToolDefinitions: McpToolDefinition[] = [
     adopt_candidate_head: { type: 'string', description: 'Explicit current successor commit to adopt after exact identity, ownership, cleanliness, and ancestry validation.' },
   }, [], false),
   definition('work_inspect', 'Collect bounded Git, WorkContract, changed-path, check, and readiness evidence through one work handle.', { session_id: sessionId, repo_id: repoId, work_id: workId, detail: { type: 'string', enum: ['summary', 'detail'] } }, ['work_id'], true),
-  definition('work_execute', 'Execute approved, repository-scoped commands against a validated work handle while preserving the existing command policy and audit path.', {
-    session_id: sessionId, controller_id: { type: 'string', description: 'Controller identity that holds the Work lease. Defaults to the authenticated principal.' }, repo_id: repoId, work_id: workId,
-    command: { anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' }, minItems: 1 }] }, approval_token: { type: 'string' }, cwd: { type: 'string' }, timeout_ms: { type: 'number' }, max_output_bytes: { type: 'number' },
-    commands: { type: 'array', items: { type: 'object' } }, approval_request_id: { type: 'string' },
-  }, ['work_id'], false),
   definition('work_validate', 'Run targeted checks or read-only validation commands against a work handle with full current-state validation.', {
     session_id: sessionId, controller_id: { type: 'string', description: 'Controller identity that holds the Work lease. Defaults to the authenticated principal.' }, repo_id: repoId, work_id: workId, check_ids: { type: 'array', items: { type: 'string' } }, commands: { type: 'array', items: { type: 'object' } }, interactive_wait_ms: { type: 'number', description: 'Optional bounded attach window for checks launched by this validation call. Defaults to asynchronous behavior.' },
   }, ['work_id'], false),
@@ -52,7 +47,6 @@ const executionToolNames = new Set(executionToolDefinitions.map((tool) => tool.n
 
 /** Repository execution and validation remain Process/WorkHandle operations; semantic Work completion is separate. */
 const DURABLE_WORK_OPERATION_NAMES = new Set([
-  'work_execute',
   'work_validate',
 ]);
 
@@ -131,7 +125,6 @@ export async function callExecutionTool(ctx: MultiRepositoryMcpToolContext, name
       case 'session_bind_repository': return result(bindSessionRepository(ctx, args));
       case 'work_prepare': return result(prepareWork(ctx, args));
       case 'work_inspect': return result(inspectWork(ctx, args));
-      case 'work_execute': return result(await executeWork(ctx, args));
       case 'work_validate': return result(await validateWork(ctx, args));
       case 'approval_resolve': {
         const session = requireSession(ctx, args);

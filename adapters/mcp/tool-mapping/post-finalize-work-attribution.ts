@@ -48,7 +48,7 @@ export async function callPostFinalizeWorkReadOnlyCommand(
   args: Record<string, unknown>,
   caller?: RepositoryToolCallerContext,
 ): Promise<CallToolResult | undefined> {
-  if (name !== 'repository_command_execute') return undefined;
+  if (name !== 'execute_command') return undefined;
   if (typeof args.workspace_root === 'string' && args.workspace_root.trim()) return undefined;
 
   const requestedWorkId = typeof args.work_id === 'string' ? args.work_id.trim() : '';

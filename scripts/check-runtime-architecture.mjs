@@ -1519,7 +1519,13 @@ forbid(
 requireText('adapters/mcp/runtime-gateway/router.ts', 'executionJobCreationRetired');
 requireText('adapters/mcp/runtime-gateway/router.ts', "'EXECUTION_JOB_RETIRED'");
 requireText('adapters/mcp/runtime-gateway/execution-tools.ts', 'isDurableWorkOperation');
-requireText('adapters/mcp/runtime-gateway/execution-tools.ts', "'work_execute'");
+forbid('adapters/mcp/runtime-gateway/execution-tools.ts', /'work_execute'/, 'A Work-bound execution helper must not be a second public command tool');
+requireText('adapters/mcp/tool-mapping/repository-tools.ts', "definition('execute_command'");
+requireText('adapters/mcp/toolset-names.ts', "'execute_command'");
+forbid('adapters/mcp/toolset-names.ts', /'process_exec'|'repository_command_execute'|'work_execute'/, 'Only execute_command is a public generic command entry');
+forbid('adapters/mcp/runtime-gateway/process-tools.ts', /definition\(\s*'process_exec'/, 'The host command must not re-expose a separate process_exec schema');
+forbid('adapters/mcp/tool-mapping/repository-tools.ts', /definition\('repository_command_preview'/, 'Command dry_run preview must use execute_command rather than a second tool');
+forbid('src/runtime/plugins/local-system-adapter.ts', /actionId:\s*'execute_command'/, 'Do not reintroduce a duplicate local_system generic terminal capability');
 requireText('adapters/mcp/runtime-gateway/execution-tools.ts', "'work_validate'");
 forbid('adapters/mcp/runtime-gateway/execution-tools.ts', /work_finalize/, 'execution tools must not restore a Work finalization operation');
 requireText('src/runtime/execution/workers/executor.ts', 'executeWork(runtimeContext');

@@ -169,7 +169,7 @@ export function buildControllerOperationalPlan(repoRoot: string, ledger: TaskLed
     mcpToolSchemaConvergence: {
       source: "mcp-tool-schema-convergence",
       readModels: ["controller_context", "rh_context", "work_status_digest", "prepare_transfer_artifacts"],
-      commandModels: ["rh_work", "run_check", "repository_command_execute", "plugin_action_execute", "repository_safe_patch_apply"],
+      commandModels: ["rh_work", "run_check", "execute_command", "plugin_action_execute", "repository_safe_patch_apply"],
       compatibilityRules: [
         "compact reads are default",
         "raw code and raw logs require explicit opt-in tools",

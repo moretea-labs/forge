@@ -28,19 +28,19 @@ const MAX_DEFAULT_TOOL_COUNT = 24;
 // changing names, descriptions, input schemas, or annotations.
 const EXPECTED_STABLE_CONTROLLER_TOOL_NAMES = [
   'rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work', 'capability_execute',
-  'repository_list', 'repository_get', 'repository_register', 'repository_command_execute',
+  'repository_list', 'repository_get', 'repository_register', 'execute_command',
   'read_repository_file', 'repository_safe_patch_apply', 'run_check', 'plugin_action_execute',
-  'process_exec', 'process_get', 'process_wait', 'process_logs', 'process_cancel', 'result_read', 'result_search',
+  'process_get', 'process_wait', 'process_logs', 'process_cancel', 'result_read', 'result_search',
 ] as const;
 // The stable bounded surface now includes the generic typed capability executor
 // already shipped on main. V3 Work objective relations intentionally extend only
 // the existing rh_work input schema; both changes must invalidate stale Connector
 // schema snapshots without adding a parallel execution or graph authority.
-const EXPECTED_STABLE_TOOL_NAME_FINGERPRINT = 'b25da75c1f774e66';
+const EXPECTED_STABLE_TOOL_NAME_FINGERPRINT = 'f22e635a213b45fa';
 // Every public object-schema tool carries shared transport metadata only through
 // the final tools/list materialization path. Tool schema revisions
 // intentionally invalidate stale Connector schema snapshots.
-const EXPECTED_STABLE_TOOL_SCHEMA_FINGERPRINT = '2ab9ad54e6cb2985';
+const EXPECTED_STABLE_TOOL_SCHEMA_FINGERPRINT = '9bd588d157f66fdf';
 
 const policy = runtimePolicy(process.cwd(), {
   profile: 'controller',

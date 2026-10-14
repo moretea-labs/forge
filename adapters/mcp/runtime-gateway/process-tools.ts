@@ -53,27 +53,10 @@ const repoIdProp = {
 };
 const processIdProp = {
   type: 'string',
-  description: 'Lightweight or durable process id returned by run_check / repository_command_execute.',
+  description: 'Process id returned by execute_command or run_check.',
 };
 
 export const processToolDefinitions: McpToolDefinition[] = [
-  definition(
-    'process_exec',
-    'Execute one command on the Forge instance itself: cwd is an execution argument and no repository, checkout, or Work is required. Requires an explicit broad `process:exec` canonical Grant for this ForgeInstance; Forge does not parse the command to prove path safety. Returns a process handle; attach with process_get/process_wait/process_logs/process_cancel using the handle only.',
-    {
-      command: { type: 'array', items: { type: 'string' }, maxItems: 512, description: 'Typed argv command; command[0] is the executable. Mutually exclusive with shell_command.' },
-      shell_command: { type: 'string', maxLength: 32_000, description: 'Explicit broad shell form. Mutually exclusive with command. Never parsed for path safety.' },
-      cwd: { type: 'string', description: 'Optional absolute working directory. With work_id and no cwd, Forge uses that Work handle\'s exact workspace/worktree as a convenience default; this never grants permission and explicit authorized cwd may be elsewhere.' },
-      timeout_ms: { type: 'number' },
-      interactive_wait_ms: { type: 'number' },
-      max_output_bytes: { type: 'number' },
-      request_id: { type: 'string', description: 'Stable invocation id. A retry with the same id attaches to the existing process instead of re-executing.' },
-      work_id: { type: 'string', description: 'Optional Work provenance; Work is never required to run a host command.' },
-    },
-    [],
-    false,
-    true,
-  ),
   definition(
     'run_check',
     'Run one focused repository check, or launch one resource-compatible check wave, through Process Runtime. Use check_id for the existing single-check behavior or check_ids for a batch; do not send both. Batch mode validates the existing check-scheduling resource model and starts every check in one compatible wave concurrently without waiting for completion or creating a second scheduler. Cross-wave, invalid, release, and multi-phase batches fail closed. Long ordinary checks return managed handles; attach only at a real dependency boundary.',
@@ -304,7 +287,6 @@ export async function callProcessTool(
   name: string,
   args: Record<string, unknown>,
 ): Promise<CallToolResult | undefined> {
-  if (name === 'process_exec') return callProcessExecTool(ctx, args);
   // run_check shares this module's public schema, but its execution authority is
   // the Gateway check facade in router.ts. Only attachment/lifecycle operations
   // consume an existing process_id here.
@@ -383,7 +365,7 @@ export async function callProcessTool(
 }
 
 /**
- * `process_exec` — the canonical host-local command lane.
+ * Host target of the single execute_command entry: canonical process:exec Grant.
  *
  * Repo-less by construction: the Forge instance is the target and `cwd` is an
  * execution argument. Authorization is one explicit canonical `process:exec`
@@ -406,7 +388,7 @@ function workDefaultCommandCwd(ctx: MultiRepositoryMcpToolContext, workId: strin
   return workspace || undefined;
 }
 
-async function callProcessExecTool(
+export async function executeAuthorizedHostCommand(
   ctx: MultiRepositoryMcpToolContext,
   args: Record<string, unknown>,
 ): Promise<CallToolResult> {

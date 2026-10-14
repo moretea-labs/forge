@@ -27,7 +27,7 @@ function processRecord(controllerHome: string, overrides: Partial<ManagedProcess
     command: { kind: 'argv', executable: 'node', args: ['-e', 'process.exit(0)'], cwd: '/tmp' },
     origin: {
       surface: 'command',
-      toolName: 'repository_command_execute',
+      toolName: 'execute_command',
       requestId: 'request-process-evidence',
       correlationId: workId,
     },
@@ -68,14 +68,14 @@ describe('Work-bound repository Process evidence', () => {
   test('rejects unrelated, failed, timed-out, active, malformed-origin, and unfenced terminal records', () => {
     const fx = fixture();
     const variants: Array<Partial<ManagedProcessRecord>> = [
-      { processId: 'proc-wrong-work', workId: 'work-other', origin: { surface: 'command', toolName: 'repository_command_execute', correlationId: 'work-other' } },
+      { processId: 'proc-wrong-work', workId: 'work-other', origin: { surface: 'command', toolName: 'execute_command', correlationId: 'work-other' } },
       { processId: 'proc-wrong-checkout', checkoutId: 'checkout-other' },
       { processId: 'proc-failed', status: 'failed', exitCode: 1 },
       { processId: 'proc-timed-out', status: 'timed_out', exitCode: undefined, timedOut: true },
       { processId: 'proc-active', status: 'running', exitCode: undefined, finishedAt: undefined, terminalWritten: false },
-      { processId: 'proc-check', origin: { surface: 'check', toolName: 'repository_command_execute', correlationId: fx.workId } },
+      { processId: 'proc-check', origin: { surface: 'check', toolName: 'execute_command', correlationId: fx.workId } },
       { processId: 'proc-wrong-tool', origin: { surface: 'command', toolName: 'other_tool', correlationId: fx.workId } },
-      { processId: 'proc-wrong-correlation', origin: { surface: 'command', toolName: 'repository_command_execute', correlationId: 'work-other' } },
+      { processId: 'proc-wrong-correlation', origin: { surface: 'command', toolName: 'execute_command', correlationId: 'work-other' } },
       { processId: 'proc-unfenced-terminal', terminalWritten: false },
     ];
     for (const variant of variants) createProcessRecord(processRecord(fx.controllerHome, variant));
@@ -99,7 +99,7 @@ describe('Work-bound repository Process evidence', () => {
       }],
       origin: {
         surface: 'command',
-        toolName: 'repository_command_execute',
+        toolName: 'execute_command',
         requestId: 'request-trusted-git-push',
         correlationId: fx.workId,
       },

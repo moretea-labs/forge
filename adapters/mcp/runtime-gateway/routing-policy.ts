@@ -7,7 +7,7 @@ import { classifyRepositoryCommandRoute } from '../../../src/runtime/execution/p
 import { isProcessIsolatedReadDiagnostic } from '../../../src/runtime/diagnostics/process-facade';
 
 /** Pure deterministic MCP Gateway placement policy. No execution or lifecycle mutation belongs here. */
-const DIRECT_REPOSITORY_TOOLS = new Set(['repository_list', 'repository_get', 'repository_workbench', 'repository_command_preview']);
+const DIRECT_REPOSITORY_TOOLS = new Set(['repository_list', 'repository_get', 'repository_workbench']);
 const DIRECT_CONTROL_WRITE_TOOLS = new Set([
   'runtime_maintenance_apply',
   // Protected credential preparation and physical input own their authorization boundary.
@@ -21,7 +21,7 @@ const DIRECT_CONTROL_WRITE_TOOLS = new Set([
 ]);
 
 const THIN_ROUTED_TOOLS = new Set([
-  'repository_command_execute',
+  'execute_command',
   'repository_safe_patch_apply',
   'repository_safe_patch_plan',
   'capability_execute',
@@ -128,8 +128,8 @@ const GATEWAY_ROUTE_BEHAVIOR_PROBES: ReadonlyArray<{
 }> = [
   { id: 'hot-read', operation: 'controller_ready', args: {} },
   { id: 'isolated-read-diagnostic', operation: 'workflow_watchdog_report', args: {} },
-  { id: 'readonly-command', operation: 'repository_command_execute', args: { command: ['git', 'status', '--short'] } },
-  { id: 'managed-local-command', operation: 'repository_command_execute', args: { command: ['bun', 'run', 'check:type'], timeout_ms: 120_000 } },
+  { id: 'readonly-command', operation: 'execute_command', args: { command: ['git', 'status', '--short'] } },
+  { id: 'managed-local-command', operation: 'execute_command', args: { command: ['bun', 'run', 'check:type'], timeout_ms: 120_000 } },
   { id: 'focused-check', operation: 'run_check', args: { check_id: 'package:check:type' } },
   { id: 'release-check', operation: 'run_check', args: { check_id: 'package:check:release' } },
   { id: 'interactive-write', operation: 'repository_safe_patch_apply', args: { operations: [] } },
@@ -311,7 +311,7 @@ export function classifyGatewayExecutionPath(
     };
   }
   const selfManagedProcessAsync = (
-    name === 'repository_command_execute'
+    name === 'execute_command'
     || name === 'run_check'
     || name === 'verify_edit_session'
   ) && (
@@ -394,11 +394,18 @@ export function classifyGatewayExecutionPath(
     };
   }
 
-  // repository_command_execute has one authoritative classifier. Process Runtime
-  // owns every local single-process command regardless of timeout. Async requests
-  // stay here and return a handle; explicit durable mode remains an external-
-  // Controller boundary.
-  if (name === 'repository_command_execute') {
+  // Host commands are already placed explicitly by the model and authorized
+  // by the ForgeInstance process:exec Grant. Never route them through a
+  // repository classifier or infer a Work/Plan from the shell command.
+  if (name === 'execute_command' && args.scope === 'host') {
+    return { path: 'fast', reasons: ['explicit_host_process_runtime'] };
+  }
+  if (name === 'execute_command' && args.dry_run === true) {
+    return { path: 'direct', reasons: ['explicit_command_preview_only'] };
+  }
+  // Repository commands use the existing Process Runtime classifier only for
+  // process handling and mechanical write protection.
+  if (name === 'execute_command') {
     const command = args.command;
     if (!(typeof command === 'string' || Array.isArray(command))) {
       return { path: 'reject', reasons: ['repository_command_missing'] };

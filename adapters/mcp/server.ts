@@ -16,7 +16,7 @@ import { callAccessTool } from './tool-mapping/access-tools';
 import { callRepositoryToolWithPostFinalizeAttribution } from './tool-mapping/post-finalize-work-attribution';
 import { callRuntimeTool } from './runtime-gateway/runtime-tools';
 import { callExecutionTool } from './runtime-gateway/execution-tools';
-import { callProcessTool } from './runtime-gateway/process-tools';
+import { callProcessTool, executeAuthorizedHostCommand } from './runtime-gateway/process-tools';
 import { injectDurableCommandFields, isGatewayIsolatedTool, routeDurableMcpCall } from './runtime-gateway/router';
 import { controllerExposureSnapshot, isControllerToolExposed } from './toolset';
 import { settleCognitionAfterTool } from './runtime-gateway/cognition-settlement';
@@ -507,7 +507,7 @@ export function sameCanonicalRuntimeProxyIdentity(
 }
 
 export function canonicalRuntimeToolCallIsReplaySafe(name: string, args: Record<string, unknown>): boolean {
-  if (name !== 'repository_command_execute') return false;
+  if (name !== 'execute_command') return false;
   const workId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
   const requestId = typeof args.request_id === 'string' ? args.request_id.trim() : '';
   return Boolean(workId && requestId);
@@ -1060,6 +1060,17 @@ export function createForgeMcpServerFromContext(
           if (runtimeProxy && observeRuntimeStatus(ctx.controllerHome).ready) return runtimeProxy.callTool(ctx, name, forwardedArgs, phaseTimings);
         }
         const executeLocalTool = async (): Promise<CallToolResult> => {
+          if (name === 'execute_command' && args.scope === 'host') {
+            if (args.dry_run === true) {
+              return { content: [{ type: 'text', text: 'HOST_COMMAND_PREVIEW_UNSUPPORTED: host command preview requires a separate explicit grant-aware facility' }], structuredContent: { error: { code: 'HOST_COMMAND_PREVIEW_UNSUPPORTED' } }, isError: true };
+            }
+            if (args.repo_id !== undefined || args.checkout_id !== undefined || args.workspace_root !== undefined) {
+              return { content: [{ type: 'text', text: 'COMMAND_SCOPE_CONFLICT: host execution cannot claim repository or workspace targeting' }], structuredContent: { error: { code: 'COMMAND_SCOPE_CONFLICT', message: 'Host execution cannot claim repository or workspace targeting' } }, isError: true };
+            }
+            // One exposed command, two existing authorization targets. The host
+            // lane checks its canonical ForgeInstance process:exec Grant itself.
+            return executeAuthorizedHostCommand(ctx, args);
+          }
           const accessResult = callAccessTool(ctx, name, args);
           if (accessResult) return accessResult;
           const executionResult = await callExecutionTool(ctx, name, args);

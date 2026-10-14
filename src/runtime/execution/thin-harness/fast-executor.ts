@@ -878,7 +878,7 @@ export async function executeFast(
       } else if (
         operation === 'run_short_command'
         || operation === 'run_focused_check'
-        || operation === 'repository_command_execute'
+        || operation === 'execute_command'
       ) {
         const command = request.input.command as string | string[];
         const preview = await trace.measure('policyMs', async () => previewRepositoryCommandExecutionAsync(ctx.repository, {

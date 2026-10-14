@@ -1057,7 +1057,7 @@ describe('Unified Process Runtime', () => {
       command,
       interactiveWaitMs: 25,
       timeoutMs: 10_000,
-      origin: { surface: 'command' as const, toolName: 'repository_command_execute', requestId },
+      origin: { surface: 'command' as const, toolName: 'execute_command', requestId },
     });
 
     const [first, retry] = await Promise.all([start(), start()]);
@@ -1955,7 +1955,7 @@ describe('run_check Process Runtime facade', () => {
   });
 
   test('gateway routes long local tests to Process Runtime regardless of timeout', () => {
-    const classification = classifyGatewayExecutionPath('repository_command_execute', {
+    const classification = classifyGatewayExecutionPath('execute_command', {
       command: ['bun', 'test', 'tests/runtime/process-runtime.test.ts'],
       timeout_ms: 600_000,
     });
@@ -2074,7 +2074,7 @@ describe('command classifier safe shell combinations', () => {
     const classification = classifyRepositoryCommand(cmd);
     expect(classification.risk === 'workspace_write' || classification.risk === 'readonly').toBe(true);
     const route = routeExecution({
-      operation: 'repository_command_execute',
+      operation: 'execute_command',
       command: cmd,
       timeoutMs: 5_000,
     });
@@ -3571,7 +3571,6 @@ describe('process MCP live surface', () => {
   test('process tools are defined and process_get/wait/logs work without re-exec', async () => {
     expect(processToolDefinitions.map((t) => t.name).sort()).toEqual([
       'process_cancel',
-      'process_exec',
       'process_get',
       'process_logs',
       'process_wait',

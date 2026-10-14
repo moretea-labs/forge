@@ -1,5 +1,5 @@
 /**
- * repository_command_execute → three explicit execution lanes.
+ * execute_command → three explicit execution lanes.
  *
  * - Ephemeral Direct: bounded ordinary reads and commands that finish inside
  *   the interactive budget.
@@ -345,7 +345,7 @@ export async function executeRepositoryCommandViaProcessRuntime(
       durableSideEffects: emptyEffects,
       suggestedOperation: decision.reason === 'standalone_recovery_lifecycle_required'
         ? 'Use the standalone Forge Recovery connector for canonical Runtime/connector lifecycle operations.'
-        : 'repository_command_execute via Durable Work / Local Job',
+        : 'execute_command via Durable Work / Local Job',
       externalEffect: decision.route === 'durable'
         ? {
             outcome: 'not_started',
@@ -550,7 +550,7 @@ export async function executeRepositoryCommandViaProcessRuntime(
     resourceClaims: toProcessClaims(claims),
     origin: {
       surface: 'command',
-      toolName: 'repository_command_execute',
+      toolName: 'execute_command',
       requestId: input.requestId,
       correlationId: input.workId,
     },

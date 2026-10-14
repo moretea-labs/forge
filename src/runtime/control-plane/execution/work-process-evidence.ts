@@ -27,7 +27,7 @@ function isSuccessfulWorkRepositoryProcess(
   return record.workId === input.workId
     && record.checkoutId === input.checkoutId
     && record.origin?.surface === 'command'
-    && record.origin.toolName === 'repository_command_execute'
+    && record.origin.toolName === 'execute_command'
     && record.origin.correlationId === input.workId
     && isManagedProcessTerminal(record)
     && record.terminalWritten === true
@@ -42,7 +42,7 @@ function isSuccessfulWorkRepositoryProcess(
  * Re-derive bounded completion evidence from the canonical durable Process store.
  *
  * This deliberately does not create a second evidence authority. A qualifying
- * record must be the terminal successful repository_command_execute Process for
+ * record must be the terminal successful execute_command Process for
  * the exact Work + checkout, and the command-origin correlation must still name
  * the same Work. Lightweight handles never enter listProcessRecords(), so they
  * cannot satisfy this contract.

@@ -344,27 +344,27 @@ async function main() {
       },
     })));
 
-    cases.push(await runCase(fixture, 'rg_search_command', 'repository_command_execute', () => ({
+    cases.push(await runCase(fixture, 'rg_search_command', 'execute_command', () => ({
       command: ['rg', 'export', 'src'],
       timeout_ms: 8_000,
     })));
 
-    cases.push(await runCase(fixture, 'git_status_command', 'repository_command_execute', () => ({
+    cases.push(await runCase(fixture, 'git_status_command', 'execute_command', () => ({
       command: ['git', 'status', '--short'],
       timeout_ms: 8_000,
     })));
 
-    cases.push(await runCase(fixture, 'git_diff_command', 'repository_command_execute', () => ({
+    cases.push(await runCase(fixture, 'git_diff_command', 'execute_command', () => ({
       command: ['git', 'diff', '--stat'],
       timeout_ms: 8_000,
     })));
 
-    cases.push(await runCase(fixture, 'git_log_command', 'repository_command_execute', () => ({
+    cases.push(await runCase(fixture, 'git_log_command', 'execute_command', () => ({
       command: ['git', 'log', '-n', '3', '--oneline'],
       timeout_ms: 8_000,
     })));
 
-    cases.push(await runCase(fixture, 'focused_readonly_command', 'repository_command_execute', () => ({
+    cases.push(await runCase(fixture, 'focused_readonly_command', 'execute_command', () => ({
       command: ['git', 'rev-parse', 'HEAD'],
       timeout_ms: 8_000,
     })));
@@ -410,7 +410,7 @@ async function main() {
       },
     })));
 
-    cases.push(await runCase(fixture, 'async_command_process_handle', 'repository_command_execute', () => ({
+    cases.push(await runCase(fixture, 'async_command_process_handle', 'execute_command', () => ({
       command: ['bun', '-e', 'await Bun.sleep(250); console.log("async-bench")'],
       apply_mode: 'async',
       request_id: `mcp-e2e-async-${Date.now()}-${Math.random()}`,

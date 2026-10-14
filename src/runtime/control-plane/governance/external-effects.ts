@@ -3,7 +3,7 @@ const EXPLICIT_AUTHORIZATION_OPERATIONS = new Set([
   'close_github_issue',
   'repository_remove',
   'repository_disable',
-  'repository_command_execute',
+  'execute_command',
   'configure_github_plugin',
 ]);
 

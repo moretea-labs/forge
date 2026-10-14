@@ -448,7 +448,7 @@ describe('execution identity pre-spawn guard', () => {
       status: 'applied',
     }));
 
-    const command = await callRepositoryTool(fx.controllerHome, 'repository_command_execute', {
+    const command = await callRepositoryTool(fx.controllerHome, 'execute_command', {
       repo_id: fx.repoA.repoId,
       checkout_id: checkout!.checkoutId,
       command: ['git', 'status', '--short'],

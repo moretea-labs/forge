@@ -128,7 +128,7 @@ async function main() {
       allowedPaths: ['src/**'],
     })));
     cases.push(await runCase('short_focused_command', () => executeFast(ctx, {
-      operation: 'repository_command_execute',
+      operation: 'execute_command',
       input: { command: ['git', 'status', '--short'] },
       timeoutMs: 10_000,
     })));

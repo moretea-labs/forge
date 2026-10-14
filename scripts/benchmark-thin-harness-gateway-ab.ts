@@ -426,7 +426,7 @@ async function main() {
 
     cases.push(await runCase(fixture, 'focused_command_facade', () => callRepositoryFacade(
       fixture,
-      'repository_command_execute',
+      'execute_command',
       {
         command: ['git', 'status', '--short'],
         timeout_ms: 10_000,
