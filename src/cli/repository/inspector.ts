@@ -1,6 +1,6 @@
 import { createHash } from 'crypto';
 import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, statSync } from 'fs';
-import { join, resolve } from 'path';
+import { delimiter, join, resolve } from 'path';
 import { runProcess } from '../../effects/process-runner';
 import { globMatches, resolveMcpPath } from '../mcp/paths';
 import type { McpPolicy } from '../mcp/types';
@@ -304,50 +304,6 @@ function gitSearchFileInventory(repoRoot: string): string[] | null {
   }
 }
 
-/** Git provides a fast tracked-file location hint; the normal policy-checked
- * source matcher remains the only authority for actual lexical hits. */
-function gitExactSearchCandidateArgs(needle: string, caseSensitive: boolean): string[] {
-  // Word-fenced Git candidates avoid a flood of longer-prefix symbols before
-  // policy-checked source matching enforces the actual exact code boundary.
-  return ['grep', '-l', '-z', '-F', '-w', ...(caseSensitive ? [] : ['-i']), '-e', needle, '--'];
-}
-
-function interleaveExactCandidatePaths(lists: readonly string[][], maxFiles: number): string[] {
-  const paths = new Set<string>();
-  const perQueryLimit = Math.min(8, maxFiles);
-  for (let index = 0; index < perQueryLimit; index += 1) {
-    for (const list of lists) {
-      const path = list[index];
-      if (path) paths.add(path);
-      if (paths.size >= maxFiles) return [...paths];
-    }
-  }
-  return [...paths];
-}
-
-function gitExactSearchCandidatePaths(repoRoot: string, queries: string[], caseSensitive: boolean, maxFiles: number): string[] {
-  const lists = queries.map((query) => {
-    try {
-      const result = runProcess('git', gitExactSearchCandidateArgs(query, caseSensitive), {
-        cwd: repoRoot, timeoutMs: 10_000, maxOutputBytes: SEARCH_GIT_INVENTORY_MAX_OUTPUT_BYTES,
-      });
-      return result.ok && !result.stdout.includes('[output truncated after')
-        ? result.stdout.split('\0').filter(Boolean)
-        : [];
-    } catch { return []; }
-  });
-  return interleaveExactCandidatePaths(lists, maxFiles);
-}
-
-function prioritizeExactSearchCandidates(
-  inventory: { files: string[]; candidateCount: number; cacheHit: boolean },
-  hints: string[], includes: string[], excludes: string[], maxFiles: number,
-): typeof inventory {
-  if (!hints.length) return inventory;
-  const accepted = hints.filter((path) => isIncluded(path, includes) && !isExcluded(path, excludes));
-  return { ...inventory, files: [...new Set([...accepted, ...inventory.files])].slice(0, maxFiles) };
-}
-
 function binary(bytes: Buffer): boolean {
   return bytes.subarray(0, Math.min(bytes.length, 8000)).includes(0);
 }
@@ -489,7 +445,6 @@ function searchInventory(
   repoRoot: string,
   includes: string[],
   excludes: string[],
-  maxFiles: number,
   cacheKey?: string,
 ): { files: string[]; candidateCount: number; cacheHit: boolean } {
   const inventoryKey = JSON.stringify({ repoRoot, excludes, cacheKey });
@@ -509,7 +464,10 @@ function searchInventory(
       return files;
     })();
   const candidates = inventory.filter((path) => isIncluded(path, includes) && !isExcluded(path, excludes));
-  return { files: candidates.slice(0, maxFiles), candidateCount: candidates.length, cacheHit };
+  // A lexical hit beyond the first N alphabetic Git paths is not optional.
+  // The bounded rg matcher owns result limits; inventory must retain all
+  // eligible source paths rather than silently losing the rest of the repo.
+  return { files: candidates, candidateCount: candidates.length, cacheHit };
 }
 
 interface SearchManyMatchState {
@@ -641,30 +599,43 @@ function ripgrepCandidateLines(
     const remainingMs = searchDeadline - Date.now();
     if (remainingMs <= 0) throw new Error('RIPGREP_SEARCH_TIMEOUT: source discovery exceeded 15s total budget');
     const result = runProcess('rg', [
-      '--json', '--fixed-strings', '--no-ignore', '--no-config', '--no-messages',
+      '--null', '--with-filename', '--line-number', '--no-heading', '--color', 'never', '--fixed-strings', '--no-ignore', '--no-config', '--no-messages',
       '--max-count', String(Math.min(Math.max(maxResultsPerQuery, 32), 500)),
       ...(caseSensitive ? [] : ['--ignore-case']),
       ...queries.flatMap((query) => ['-e', query]),
       '--', ...paths,
-    ], { cwd: repoRoot, timeoutMs: Math.min(remainingMs, 5_000), maxOutputBytes: 16 * 1024 * 1024 });
-    if ((result.status !== 0 && result.status !== 1) || result.timedOut
-      || result.stdout.includes('[output truncated after')) {
+    ], {
+      cwd: repoRoot,
+      // launchd/systemd often omit package-manager bins from PATH. A missing
+      // executable must never masquerade as rg exit 1 (no matches).
+      env: { PATH: [process.env.PATH, ...(process.platform === 'darwin' ? ['/opt/homebrew/bin', '/usr/local/bin'] : [])].filter(Boolean).join(delimiter) },
+      timeoutMs: Math.min(remainingMs, 5_000),
+      maxOutputBytes: 16 * 1024 * 1024,
+    });
+    if (result.error || (result.status !== 0 && result.status !== 1) || result.timedOut
+      || result.stdout.endsWith('\n[output truncated after 16777216 bytes]')) {
       throw new Error('RIPGREP_SEARCH_FAILED: ' + (result.error || result.stderr || String(result.status)));
     }
-    for (const raw of result.stdout.split('\n')) {
-      if (!raw || raw[0] !== '{') continue;
-      const entry = JSON.parse(raw) as {
-        type?: string;
-        data?: { path?: { text?: string }; lines?: { text?: string }; line_number?: number };
-      };
-      if (entry.type !== 'match' || !entry.data) continue;
-      const path = entry.data.path?.text;
-      const line = entry.data.line_number;
-      const text = entry.data.lines?.text;
-      if (!path || !Number.isInteger(line) || typeof text !== 'string') continue;
+    // NUL-framed paths survive the shared process redactor. JSON-lines did
+    // not: masking source text inside a JSON string invalidated its syntax.
+    let cursor = 0;
+    while (cursor < result.stdout.length) {
+      const filenameEnd = result.stdout.indexOf('\0', cursor);
+      const lineEnd = result.stdout.indexOf('\n', filenameEnd + 1);
+      const numberEnd = result.stdout.indexOf(':', filenameEnd + 1);
+      if (filenameEnd < cursor || lineEnd < 0 || numberEnd <= filenameEnd || numberEnd >= lineEnd) {
+        throw new Error('RIPGREP_SEARCH_INVALID_OUTPUT: malformed NUL/line-framed match');
+      }
+      const path = result.stdout.slice(cursor, filenameEnd);
+      const line = Number(result.stdout.slice(filenameEnd + 1, numberEnd));
+      if (!Number.isSafeInteger(line) || line <= 0) {
+        throw new Error('RIPGREP_SEARCH_INVALID_OUTPUT: malformed source line number');
+      }
+      const text = result.stdout.slice(numberEnd + 1, lineEnd).replace(/\r$/, '');
       const lines = found.get(path) ?? [];
-      lines.push({ line: line!, text: text.replace(/\r?\n$/, '') });
+      lines.push({ line, text });
       found.set(path, lines);
+      cursor = lineEnd + 1;
     }
   }
   for (const lines of found.values()) lines.sort((a, b) => a.line - b.line);
@@ -701,17 +672,9 @@ export function searchRepositoryMany(
       return { ...(cached.result as SearchRepositoryManyResult), cacheHit: true };
     }
   }
-  const inventory = directCandidates && directCandidates.length > 0
-    ? {
-        files: directCandidates.slice(0, maxFiles),
-        candidateCount: directCandidates.length,
-        cacheHit: false,
-      }
-    : searchInventory(repoRoot, includes, excludes, maxFiles, opts.cacheKey);
-  const prioritizedInventory = !directCandidates && requiredQueries.length && inventory.candidateCount > maxFiles
-    ? prioritizeExactSearchCandidates(inventory,
-        gitExactSearchCandidatePaths(repoRoot, requiredQueries, opts.caseSensitive === true, maxFiles), includes, excludes, maxFiles)
-    : inventory;
+  const inventory = directCandidates !== undefined
+    ? { files: directCandidates.slice(0, maxFiles), candidateCount: directCandidates.length, cacheHit: false }
+    : searchInventory(repoRoot, includes, excludes, opts.cacheKey);
   const matchState = createSearchManyMatchState(
     queries,
     maxResultsPerQuery,
@@ -729,7 +692,7 @@ export function searchRepositoryMany(
 
   const authorizedCandidatePaths: string[] = [];
   // No external search process may inspect a file before MCP read authorization.
-  for (const path of prioritizedInventory.files) {
+  for (const path of inventory.files) {
     const decision = resolveMcpPath(repoRoot, path, policy, 'read', canonicalRepoRoot);
     if (!decision.ok || !decision.absolutePath) { policyDeniedFiles += 1; continue; }
     const info = statSync(decision.absolutePath);
@@ -737,15 +700,44 @@ export function searchRepositoryMany(
     if (info.size > policy.maxFileBytes) { skippedLargeFiles += 1; continue; }
     authorizedCandidatePaths.push(path);
   }
-  const hitsByPath = authorizedCandidatePaths.length
-    ? ripgrepCandidateLines(repoRoot, authorizedCandidatePaths, queries, opts.caseSensitive === true, maxResultsPerQuery)
-    : new Map<string, Array<{ line: number; text: string }>>();
-  for (const path of authorizedCandidatePaths) {
-    if (searchManyComplete(matchState)) break;
+  const exactHits = authorizedCandidatePaths.length && requiredQueries.length
+    ? ripgrepCandidateLines(repoRoot, authorizedCandidatePaths, requiredQueries, opts.caseSensitive === true, maxResultsPerQuery)
+    : null;
+  const hasRequiredHit = (needle: string): boolean => exactHits !== null
+    && [...exactHits.values()].some((lines) => lines.some(({ text }) => exactCodeNeedleMatches(
+      opts.caseSensitive ? text : text.toLowerCase(),
+      opts.caseSensitive ? needle : needle.toLowerCase(),
+    )));
+  // A complete exact-symbol answer needs no broad recall-token pass. If an
+  // explicitly requested symbol is absent, fall back to ordinary discovery.
+  const hitsByPath = exactHits && requiredQueries.every(hasRequiredHit)
+    ? exactHits
+    : authorizedCandidatePaths.length
+      ? ripgrepCandidateLines(repoRoot, authorizedCandidatePaths, queries, opts.caseSensitive === true, maxResultsPerQuery)
+      : new Map<string, Array<{ line: number; text: string }>>();
+  // Exact symbol needles must not lose to broad recall-token matches that
+  // occur in earlier alphabetic paths.
+  const exactHit = (path: string): boolean => requiredQueries.some((needle) =>
+    (hitsByPath.get(path) ?? []).some((hit) => exactCodeNeedleMatches(
+      opts.caseSensitive ? hit.text : hit.text.toLowerCase(),
+      opts.caseSensitive ? needle : needle.toLowerCase(),
+    )));
+  const declarationHit = (path: string): boolean => requiredQueries.some((needle) =>
+    (hitsByPath.get(path) ?? []).some((hit) => {
+      const declared = /^(?:(?:export|declare|default|async)\s+)*(?:function|class|interface|type|const|let|enum)\s+([\w$]+)/.exec(hit.text.trimStart())?.[1];
+      return declared !== undefined && (opts.caseSensitive ? declared === needle : declared.toLowerCase() === needle.toLowerCase());
+    }));
+  const orderedPaths = requiredQueries.length
+    ? [...authorizedCandidatePaths].sort((left, right) =>
+        Number(declarationHit(right)) - Number(declarationHit(left))
+        || Number(exactHit(right)) - Number(exactHit(left)))
+    : authorizedCandidatePaths;
+  for (const path of orderedPaths) {
+    if (searchManyComplete(matchState) || matchState.matchedPaths.size >= maxFiles) break;
     const hits = hitsByPath.get(path);
     if (!hits) continue;
-    scannedFiles += 1;
     for (const hit of hits) matchSearchManyLine(matchState, path, hit.line, hit.text);
+    if (matchState.matchedPaths.has(path)) scannedFiles += 1;
   }
 
   // Consumers may bound distinct candidate files after this call. Preserve the
@@ -758,7 +750,7 @@ export function searchRepositoryMany(
     skippedLargeFiles,
     skippedBinaryFiles,
     candidateCount: inventory.candidateCount,
-    inventoryFileCount: prioritizedInventory.files.length,
+    inventoryFileCount: inventory.files.length,
     inventoryCacheHit: inventory.cacheHit,
   });
   if (sessionCache) {

@@ -28,6 +28,7 @@ repos, command facades, hooks, migration helpers, and installed runtime copies.
 - `check-task-workflow.sh --strict` is the repo-local harness readiness gate.
 - `sync-brain-docs.sh --check` verifies manifest-controlled repo-to-brain mirrors without making gbrain or MCP part of hook correctness.
 - External tooling probes remain read-only by default. Agent code navigation uses current source and explicit LSP navigation; no graph index is required.
+- Source discovery must authorize each file before invoking `rg`, search the eligible inventory rather than silently truncating its alphabetic prefix, and report missing search executables as errors rather than empty matches. `rg` match records use NUL-framed paths/line numbers so standard process-output redaction cannot corrupt JSON syntax. Caller-supplied exclude globs also apply to explicit known paths. `scannedFiles` counts files contributing accepted lexical evidence, not the complete set of candidate paths examined by ripgrep.
 
 ## Verification Surface
 

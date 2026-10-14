@@ -346,16 +346,17 @@ export function buildControllerContextPack(
   let exactKnownFileScope = explicitKnownPaths.length > 0;
   for (const path of explicitKnownPaths) {
     const expanded = expandKnownPath(repoRoot, policy, path, Math.max(maxFiles * 4, 40));
-    for (const file of expanded.files) {
+    const allowedFiles = expanded.files.filter((file) => !excludeGlobs.some((glob) => globMatches(glob, file)));
+    for (const file of allowedFiles) {
       addReason(candidates, file, expanded.directory ? `explicit-known-directory:${expanded.directory}` : "explicit-known-path");
     }
-    if (!expanded.directory && expanded.files.length === 1 && expanded.denied.length === 0 && !expanded.truncated) {
-      exactKnownFiles.push(expanded.files[0]!);
+    if (!expanded.directory && allowedFiles.length === 1 && expanded.denied.length === 0 && !expanded.truncated) {
+      exactKnownFiles.push(allowedFiles[0]!);
     } else {
       exactKnownFileScope = false;
     }
     deniedPaths.push(...expanded.denied);
-    scannedFiles += expanded.files.length;
+    scannedFiles += allowedFiles.length;
     searchTruncated = searchTruncated || expanded.truncated;
   }
   // Exact caller-selected files own a reserved file slot. The inferred-file
@@ -1103,8 +1104,9 @@ export async function buildControllerContextPackAsync(
   let exactKnownFileScope = explicitKnownPaths.length > 0;
   for (const path of explicitKnownPaths) {
     const expanded = expandKnownPath(repoRoot, policy, path, Math.max(requestedMaxFiles * 4, 40));
-    if (!expanded.directory && expanded.files.length === 1 && expanded.denied.length === 0 && !expanded.truncated) {
-      exactKnownFiles.push(expanded.files[0]!);
+    const allowedFiles = expanded.files.filter((file) => !excludeGlobs.some((glob) => globMatches(glob, file)));
+    if (!expanded.directory && allowedFiles.length === 1 && expanded.denied.length === 0 && !expanded.truncated) {
+      exactKnownFiles.push(allowedFiles[0]!);
     } else {
       exactKnownFileScope = false;
     }
