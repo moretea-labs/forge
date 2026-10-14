@@ -177,7 +177,11 @@ export async function executeWork(ctx: McpExecutionContext, args: Record<string,
   const head = gitHead(cheap.worktreeRepository.canonicalRoot);
   let nextHandle = handle;
   if (branch !== handle.branch) nextHandle = markWorkHandleFailed(ctx.controllerHome, handle, `command changed the bound branch to ${branch ?? 'detached'}`);
-  else nextHandle = transitionWorkHandle(ctx.controllerHome, handle, 'editing', { expectedHead: head, failureReason: undefined });
+  else if (handle.state !== 'editing' || handle.expectedHead !== head || handle.failureReason !== undefined) {
+    // A read-only command on an already-current Work must not consume a CAS
+    // revision (or rewrite the validation index) just to reaffirm the same HEAD.
+    nextHandle = transitionWorkHandle(ctx.controllerHome, handle, 'editing', { expectedHead: head, failureReason: undefined });
+  }
   const value = {
     work: compactHandle(nextHandle),
     commands: executions,

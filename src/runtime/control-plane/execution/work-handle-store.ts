@@ -304,6 +304,9 @@ function updateValidationIndexMembership(
   validating: boolean,
 ): void {
   const existing = readValidationIndex(controllerHome, repositoryId);
+  // The index describes pending validation membership, not WorkHandle activity.
+  // Other lifecycle writes do not change its membership or need an index CAS.
+  if (existing && existing.workIds.includes(workId) === validating) return;
   if (!existing) {
     // The WorkHandle write is already durable. Rebuild once from authoritative
     // handles so legacy repositories establish an exact index without a scan
