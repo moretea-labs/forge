@@ -141,7 +141,7 @@ export async function callPluginAdapter(
   switch (name) {
     case 'list_plugins': {
       const controllerPlugins = listControllerPluginManifests(ctx.controllerHome, {
-        forceRefresh: true,
+        preferStored: true,
       }).map(summarizePlugin);
       let repositoryPlugins: ReturnType<typeof summarizePlugin>[] = [];
       let repositoryId: string | undefined;
@@ -149,7 +149,7 @@ export async function callPluginAdapter(
         const repository = selected(ctx, args);
         repositoryId = repository.repoId;
         repositoryPlugins = listAssistantPluginManifests(ctx.controllerHome, repository, {
-          forceRefresh: true,
+          preferStored: true,
         }).map(summarizePlugin);
       }
       return result({

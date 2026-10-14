@@ -355,7 +355,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     max_candidates: { type: 'number' },
     confirm_repair: { type: 'boolean' },
   }, ['confirm_repair'], false),
-  definition('list_plugins', 'List repository plugins, or controller-scoped plugins when repo_id is omitted.', {
+  definition('list_plugins', 'List repository plugins, or controller-scoped plugins when repo_id is omitted. Uses registered manifest snapshots with last-observed health; missing snapshots are discovered live. Action execution independently validates provider identity and readiness.', {
     repo_id: repoId,
   }),
   definition('get_plugin', 'Read one repository or controller-scoped plugin manifest including action schemas and policy requirements.', {

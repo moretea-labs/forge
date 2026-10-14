@@ -2,6 +2,14 @@
 
 The objective remains Computer responsiveness and the wider Forge execution workflow. These measurements do not establish that all efficiency defects are resolved.
 
+## High-impact discovery correction, 2026-10-14 evening
+
+The installed known-good release `1791980111113-4a334346c8164328b8ccd5a264f1e969a2f87a3d` includes observation transport isolation. The older isolated candidate was retired by Recovery as superseded; it must not be cut over again.
+
+Canonical MCP timing evidence includes a `list_plugins` call taking 31,712.84ms. This is an observed outlier, not a proven typical duration. Inspection found that this read-only listing forcibly rebuilt every manifest, synchronously probing all providers and bypassing the existing discovery cache. On the actual Controller Home, a separate live comparison returned the same nine plugin IDs in 2,101.44ms with forced refresh and 19.69ms with the existing stored-discovery path. After routing the actual MCP adapter through that same path, five calls took 53.19ms cold, then 9.53, 6.70, 4.71 and 4.98ms, with all nine IDs preserved. These measurements show roughly 40x cold / 200–400x warm improvement for this sample; they do not prove all Browser outliers have the same cause.
+
+Decision: reuse `preferStored` discovery for both Controller and repository plugin lists, as existing local-bridge and capability-intent discovery already do. Missing snapshots retain the existing live discovery behavior so an unmaterialized plugin remains discoverable. The tool description explicitly identifies health as last-observed. Action execution still uses its separate live-manifest cache and validates provider identity/readiness; stored discovery cannot populate that execution cache. Registry/config mutations retain existing cache invalidation. There is no new cache, durable state, background probe, provider, lifecycle, authority, permission rule or rollback protocol. Existing stored-discovery invalidation, live execution and disabled-registration scenarios supply focused verification; no tests were added. Installed acceptance for this discovery correction remains pending.
+
 ## Current evidence
 
 - The observed installed Runtime was release `1791968531522-c8ea73e53af95a6214b3066689ed132bd2b34296`. Current source changes must not be reported as installed behavior without a separate reviewed release transaction.
