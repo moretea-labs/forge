@@ -21,7 +21,7 @@ import { projectTerminalCheckVerification } from '../../execution/process-runtim
 import { claimProcessInvocation, getProcessRecord } from '../../execution/process-runtime/store';
 import { runPersistedCheckViaProcessRuntime } from '../../execution/process-runtime/persisted-check';
 import { markWorkValidationCurrentFromReusedEvidence, markWorkValidationPending, projectWorkValidationOutcome } from './work-validation-reconciler';
-import { compactHandle, contractFor, gitHead, identityFor, makeBoundedWorkResult, reconcileTerminalCleanup, requireSession, terminalCleanupOutcome, workForSession } from './work-execution-support';
+import { compactHandle, contractFor, identityFor, makeBoundedWorkResult, reconcileTerminalCleanup, requireSession, terminalCleanupOutcome, workForSession } from './work-execution-support';
 
 function commandInputs(args: Record<string, unknown>): Array<Record<string, unknown>> {
   if (Array.isArray(args.commands)) return args.commands.filter((value): value is Record<string, unknown> => Boolean(value && typeof value === 'object' && !Array.isArray(value)));
@@ -173,8 +173,11 @@ export async function executeWork(ctx: McpExecutionContext, args: Record<string,
       }
       return ordered;
     })();
-  const branch = repositoryGitStatus(cheap.worktreeRepository).branch;
-  const head = gitHead(cheap.worktreeRepository.canonicalRoot);
+  // Reuse the exact post-command Git snapshot for both branch and HEAD.
+  // A second rev-parse can observe a different instant during concurrent writes.
+  const postCommandStatus = repositoryGitStatus(cheap.worktreeRepository);
+  const branch = postCommandStatus.branch;
+  const head = postCommandStatus.head ?? undefined;
   let nextHandle = handle;
   if (branch !== handle.branch) nextHandle = markWorkHandleFailed(ctx.controllerHome, handle, `command changed the bound branch to ${branch ?? 'detached'}`);
   else if (handle.state !== 'editing' || handle.expectedHead !== head || handle.failureReason !== undefined) {

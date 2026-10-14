@@ -185,7 +185,9 @@ export function repositoryGitStatus(repository: RepositoryRecord): RepositoryGit
     head: gitText(repository, ['rev-parse', '--verify', 'HEAD']),
     upstream: gitText(repository, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}']),
     porcelain,
-    shortStatus: runGit(repository, ['status', '--short', '--branch', '--untracked-files=all', '--', '.', ':(exclude).ai/harness/**']).stdout,
+    // Git porcelain v1 with --branch uses the same short-status layout. Reuse
+    // the authoritative status snapshot instead of spawning Git a second time.
+    shortStatus: porcelain,
     ...split,
     clean: split.staged.length === 0 && split.unstaged.length === 0 && split.untracked.length === 0,
   };
