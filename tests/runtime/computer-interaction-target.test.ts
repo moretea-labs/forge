@@ -679,7 +679,7 @@ describe('Computer durable InteractionTarget authority', () => {
         windowId: 'window-pinned',
         tabId: 'tab-pinned',
       };
-      targetAuthority.createSurface(controllerHome, {
+      const savedSurface = targetAuthority.createSurface(controllerHome, {
         stableIdentity: { surfaceType: 'browser-tab', ownership: 'provider_owned',
           resource: { namespace: identity.namespace, key: identity.conversationId } },
         visibility: 'controller', providerBinding: bound,
@@ -704,8 +704,14 @@ describe('Computer durable InteractionTarget authority', () => {
       }
       expect(command?.kind).toBe('observe');
       if (!command) throw new Error('pinned extension target did not receive observation');
+      const persistence = createRuntimeComputerTargetPersistence();
+      const before = persistence.read<ComputerInteractionTargetEntry>(
+        controllerHome, 'computer_interaction_target', 'controller', savedSurface.targetId,
+      );
+      expect(before).toBeDefined();
       expect(extension.complete('provider-pinned', command.commandId, {
         kind: 'observation',
+        providerBinding: { ...bound, observedAt: '2026-10-09T05:02:00.000Z' },
         observation: { url: identity.canonicalUrl, title: 'Pinned', latestUserText: '',
           latestAssistantResponse: '', providerActivityText: '', providerFailureText: '',
           composerText: '', isGenerating: false },
@@ -715,6 +721,10 @@ describe('Computer durable InteractionTarget authority', () => {
       if (result.state !== 'ready') throw new Error('exact target not ready');
       expect(targetAuthority.getSurface(controllerHome, result.target.targetId)?.providerBinding)
         .toMatchObject({ providerSessionId: 'provider-pinned', tabId: 'tab-pinned' });
+      const after = persistence.read<ComputerInteractionTargetEntry>(
+        controllerHome, 'computer_interaction_target', 'controller', savedSurface.targetId,
+      );
+      expect(after?.revision).toBe(before?.revision);
       await extension.close();
     } finally {
       rmSync(controllerHome, { recursive: true, force: true });

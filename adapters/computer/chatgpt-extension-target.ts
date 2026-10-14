@@ -251,7 +251,19 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
         const response = await this.submit(instanceId, { kind: 'observe', identity, ...(record.providerBinding ? { providerBinding: record.providerBinding } : {}), ...(options ? { options } : {}) });
         if (!response.result) throw new Error(response.claimed ? 'COMPUTER_CHATGPT_EXTENSION_OBSERVATION_OUTCOME_UNKNOWN' : 'COMPUTER_CHATGPT_EXTENSION_NOT_CONNECTED');
         if (response.result.kind === 'observation') {
-          if (response.result.providerBinding) await this.bindAsync(identity, response.result.providerBinding, instanceId);
+          if (response.result.providerBinding) {
+            const observed = normalizeBinding(response.result.providerBinding, instanceId);
+            const saved = this.authority.getSurface(this.controllerHome, record.targetId)?.providerBinding;
+            // A newer observedAt is not a new physical binding. Normal reads
+            // must not rewrite the Surface and its binding indexes on every poll.
+            if (!observed || !saved || saved.providerId !== observed.providerId
+              || saved.providerSessionId !== observed.providerSessionId
+              || saved.browserProduct !== observed.browserProduct
+              || saved.windowId !== observed.windowId || saved.tabId !== observed.tabId
+              || saved.ownerToken !== observed.ownerToken) {
+              await this.bindAsync(identity, response.result.providerBinding, instanceId);
+            }
+          }
           return response.result.observation;
         }
         if (response.result.kind === 'failed') throw new Error(response.result.code);
