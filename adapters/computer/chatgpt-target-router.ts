@@ -1,16 +1,10 @@
 import type {
   ComputerChatgptConversationIdentity,
   ComputerChatgptConversationInventory,
-  ComputerChatgptConversationObservationOptions,
   ComputerChatgptConversationTarget,
   ComputerChatgptConversationTargetPort,
-  ComputerChatgptTargetIdentity,
   ComputerChatgptTargetResult,
 } from '../../packages/plugin-runtime/computer';
-
-function identityOf(target: ComputerChatgptConversationTarget): ComputerChatgptTargetIdentity {
-  return target.identity;
-}
 
 export class PreferredChatgptConversationTargetPort implements ComputerChatgptConversationTargetPort {
   constructor(
@@ -19,61 +13,17 @@ export class PreferredChatgptConversationTargetPort implements ComputerChatgptCo
   ) {}
 
   private wrap(primaryTarget: ComputerChatgptConversationTarget, nativeCompatibility = false): ComputerChatgptConversationTarget {
-    const identity = identityOf(primaryTarget);
-    // Computer owns the stable target and its provider binding. A successful
-    // read-only reattach must update every subsequent operation on this target,
-    // not just return an observation from another provider.
-    let selectedTarget = primaryTarget;
-    let selectedNative = nativeCompatibility;
+    // Observation must not rediscover or rebind a logical conversation through
+    // another provider. One returned target owns observe, prepare and dispatch.
+    if (!nativeCompatibility) return primaryTarget;
     return {
       targetId: primaryTarget.targetId,
-      identity,
-      observe: async (options?: ComputerChatgptConversationObservationOptions) => {
-        try {
-          const snapshot = await selectedTarget.observe(options);
-          // A previously loaded Chrome extension can still flatten assistant
-          // paragraphs after Runtime deploys the corrected content script.
-          // Only a trailing compact-receipt candidate warrants one read-only
-          // native reattachment. Supervisor still validates the exact challenge;
-          // no result here authorizes a second send or an identity change.
-          const flattenedReceipt = !selectedNative && identity.namespace === 'chatgpt.conversation'
-            && !snapshot.isGenerating && snapshot.latestTurnRole === 'assistant'
-            && /(?:^|[^\S\r\n])[CDU] [0-9a-f]{7}$/.test(snapshot.latestAssistantResponse.trim())
-            && !/(?:^|\n)[CDU] [0-9a-f]{7}$/.test(snapshot.latestAssistantResponse.trim());
-          if (flattenedReceipt) {
-            try {
-              const rebound = await this.compatibility.ensureExact(identity);
-              if (rebound.state === 'ready' && rebound.target.targetId === primaryTarget.targetId) {
-                const native = await rebound.target.observe(options);
-                if (!native.isGenerating && native.latestTurnRole === 'assistant'
-                  && /(?:^|\n)[CDU] [0-9a-f]{7}$/.test(native.latestAssistantResponse.trim())) {
-                  selectedTarget = rebound.target;
-                  selectedNative = true;
-                  return native;
-                }
-              }
-            } catch { /* Unavailable native evidence never changes the bound provider. */ }
-          }
-          return snapshot;
-        } catch (primaryError) {
-          if (!selectedNative && identity.namespace === 'chatgpt.conversation') {
-            const rebound = await this.compatibility.ensureExact(identity);
-            if (rebound.state === 'ready' && rebound.target.targetId === primaryTarget.targetId) {
-              const observation = await rebound.target.observe(options);
-              selectedTarget = rebound.target;
-              selectedNative = true;
-              return observation;
-            }
-          }
-          throw primaryError;
-        }
-      },
-      prepare: async (prompt, options) => await selectedTarget.prepare(prompt,
-        selectedNative && options?.reasoning ? { ...options, reasoning: undefined } : options),
-      // Never replay a possibly submitted effect through another provider.
-      // The only transport switch above is a verified read-only reattachment.
-      dispatch: async (prompt, options) => await selectedTarget.dispatch(prompt,
-        selectedNative && options?.reasoning ? { ...options, reasoning: undefined } : options),
+      identity: primaryTarget.identity,
+      observe: async (options) => await primaryTarget.observe(options),
+      prepare: async (prompt, options) => await primaryTarget.prepare(prompt,
+        options?.reasoning ? { ...options, reasoning: undefined } : options),
+      dispatch: async (prompt, options) => await primaryTarget.dispatch(prompt,
+        options?.reasoning ? { ...options, reasoning: undefined } : options),
     };
   }
 
