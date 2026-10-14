@@ -314,13 +314,13 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
       const bound = exact.filter(({ entry }) => entry.providerBinding?.windowId === binding.windowId
         && entry.providerBinding?.tabId === binding.tabId
         && (!binding.browserProduct || entry.providerBinding?.browserProduct === binding.browserProduct));
-      const sameInstance = bound.filter(({ instanceId }) => instanceId === binding.providerSessionId);
-      candidates = sameInstance.length ? sameInstance : bound;
+      candidates = bound.filter(({ instanceId }) => instanceId === binding.providerSessionId);
     }
     // A stale binding must not turn two observed exact tabs into a third tab.
     if (exact.length > 1 && candidates.length !== 1) return failure('COMPUTER_CHATGPT_EXTENSION_EXACT_TARGET_AMBIGUOUS', { failoverSafe: false });
     if (candidates.length === 1) {
       const candidate = candidates[0]!;
+      if (!candidate.entry.providerBinding) return failure('COMPUTER_CHATGPT_EXTENSION_PHYSICAL_TAB_UNVERIFIED', { failoverSafe: false });
       const record = await this.bindAsync(identity, candidate.entry.providerBinding, candidate.instanceId);
       const target = this.target(identity, record, candidate.instanceId);
       try {
@@ -444,7 +444,8 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
     })));
     await betweenObservations?.();
     const results: ComputerChatgptTargetResult[] = [];
-    const matchesByConversation = new Map<string, Array<{ instanceId: string; match: Extract<ComputerChatgptExtensionCommandResult, { kind: 'marker_matches' }>['matches'][number] }>>();
+    type MarkerMatch = Extract<ComputerChatgptExtensionCommandResult, { kind: 'marker_matches' }>['matches'][number];
+    const matchesByConversation = new Map<string, Array<{ instanceId: string; match: MarkerMatch }>>();
     for (const { instanceId, response } of responses) {
       if (response.result?.kind !== 'marker_matches') continue;
       for (const match of response.result.matches) {
@@ -459,9 +460,10 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
       const existingMatch = existing?.providerId === PROVIDER_ID
         ? matches.find(({ instanceId, match }) => match.providerBinding?.windowId === existing.windowId
           && match.providerBinding?.tabId === existing.tabId
+          && match.providerBinding?.browserProduct === existing.browserProduct
           && instanceId === existing.providerSessionId)
         : undefined;
-      const candidate = existingMatch ?? (matches.length === 1 ? first : undefined);
+      const candidate = existingMatch ?? (matches.length === 1 && first.match.providerBinding ? first : undefined);
       // Same conversation + marker can exist in multiple physical tabs. Without
       // an existing physical binding, the marker is not enough proof to choose a
       // tab, so never create a new incorrect authority binding.

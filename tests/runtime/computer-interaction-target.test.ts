@@ -754,11 +754,55 @@ describe('Computer durable InteractionTarget authority', () => {
       });
       expect(extension.claim('profile-one')).toBeUndefined();
       expect(extension.claim('profile-two')).toBeUndefined();
+
+      // A marker shared by two physical tabs must not select the first response.
+      const findMarker = async () => {
+        const pending = extension.findBySubmittedMarker('<<<FORGE_TEST_MARKER>>>');
+        for (const [providerInstanceId, tabId] of [['profile-one', 'tab-one'], ['profile-two', 'tab-two']] as const) {
+          let command: ReturnType<typeof extension.claim>;
+          for (let attempt = 0; attempt < 50 && !command; attempt += 1) {
+            command = extension.claim(providerInstanceId);
+            if (!command) await Bun.sleep(1);
+          }
+          expect(command?.kind).toBe('find_marker');
+          if (!command) throw new Error('marker search not claimed by exact provider');
+          expect(extension.complete(providerInstanceId, command.commandId, {
+            kind: 'marker_matches',
+            matches: [{
+              identity,
+              providerBinding: { providerId: 'browser.chrome-extension', providerSessionId: providerInstanceId,
+                browserProduct: 'chrome', windowId: providerInstanceId, tabId,
+                observedAt: '2026-10-09T05:01:00.000Z' },
+              observation: { url: identity.canonicalUrl, title: 'Marker', latestUserText: '<<<FORGE_TEST_MARKER>>>',
+                latestAssistantResponse: '', providerActivityText: '', providerFailureText: '',
+                composerText: '', isGenerating: false },
+            }],
+          })).toBe(true);
+        }
+        return await pending;
+      };
+      expect(await findMarker()).toEqual([]);
+      const stored = targetAuthority.findSurfaceByStableIdentity(controllerHome, {
+        surfaceType: 'browser-tab', ownership: 'provider_owned',
+        resource: { namespace: identity.namespace, key: identity.conversationId },
+      });
+      if (!stored) throw new Error('missing pre-existing durable target');
+      await targetAuthority.withSurfaceLease(controllerHome, stored.targetId, async (lease) => {
+        lease.bind({ providerId: 'browser.chrome-extension', providerSessionId: 'profile-two',
+          browserProduct: 'chrome', windowId: 'profile-two', tabId: 'tab-two',
+          observedAt: '2026-10-09T05:01:00.000Z' });
+      });
+      const exactMarker = await findMarker();
+      expect(exactMarker).toHaveLength(1);
+      expect(exactMarker[0]?.state).toBe('ready');
+      expect(targetAuthority.getSurface(controllerHome, stored.targetId)?.providerBinding)
+        .toMatchObject({ providerSessionId: 'profile-two', tabId: 'tab-two' });
       await extension.close();
     } finally {
       rmSync(controllerHome, { recursive: true, force: true });
     }
   });
+
 
   test('does not trust an exact heartbeat entry until conversation content is observable', async () => {
     const controllerHome = mkdtempSync(join(tmpdir(), 'forge-computer-extension-heartbeat-shell-'));
