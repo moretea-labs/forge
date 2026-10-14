@@ -52,7 +52,9 @@
   const messageText = (node) => {
     if (!node) return '';
     const semanticContent = node.querySelector?.('[data-chatgpt-selection-message-id]');
-    return core.normalizeText(semanticContent?.innerText ?? semanticContent?.textContent ?? node.innerText ?? node.textContent);
+    // Message line boundaries carry the final Supervisor receipt. Normalizing
+    // them like UI labels destroys the protocol before the owner can parse it.
+    return String(semanticContent?.innerText ?? semanticContent?.textContent ?? node.innerText ?? node.textContent ?? '').trim();
   };
   const roleNodes = (selector) => {
     const seen = new Set();

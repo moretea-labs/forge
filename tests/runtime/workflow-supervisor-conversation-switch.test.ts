@@ -10,7 +10,7 @@ import {
   getChatgptWorkConversationBinding,
 } from '../../adapters/chatgpt/work-conversation-binding-store';
 import { WorkflowSupervisorControlPlane } from '../../supervisor/control-plane';
-import { renderSupervisorReceipt } from '../../supervisor/protocol';
+import { renderSupervisorReceipt, SUPERVISOR_TURN_BLOCK_START, SUPERVISOR_TURN_BLOCK_END } from '../../supervisor/protocol';
 import { WorkflowSupervisorStore } from '../../supervisor/store';
 
 const roots: string[] = [];
@@ -147,6 +147,9 @@ describe('Workflow Supervisor fresh conversation switch', () => {
     expect(store.getTask(taskId)?.conversationId).toBe(`bootstrap:${taskId}`);
     expect(store.getTask(taskId)?.taskId).toBe(taskId);
     expect(store.currentUnappliedEffect(taskId)?.effectId).toBe(effect.effectId);
+    // The first reply echoes the challenge sent before binding the fresh URL.
+    const sentEnvelope = JSON.parse(effect.prompt.split(SUPERVISOR_TURN_BLOCK_START)[1]!.split(SUPERVISOR_TURN_BLOCK_END)[0]!);
+    const bootstrapReceipt = `C ${sentEnvelope.receipt.challenge}`;
     const freshId = '56565656-dddd-eeee-ffff-787878787878';
     expect(() => control.bindBootstrapConversation({
       taskId, conversationId: oldConversationId,
@@ -162,7 +165,7 @@ describe('Workflow Supervisor fresh conversation switch', () => {
       expect(store.recordEffectDispatchStarted(effect.effectId, 1, `round-${n}`)).toBe(true);
       control.observeEffect({ effectId: effect.effectId, observationId: `applied-${n}`, outcome: 'applied' });
       const result = await control.observeAssistantTurn({ taskId, conversationId: freshId,
-        responseText: 'Delivered useful work.\n' + renderSupervisorReceipt(control.getTask(taskId)!, effect.effectId, 'CONTINUE'),
+        responseText: 'Delivered useful work.\n' + (n === 16 ? bootstrapReceipt : renderSupervisorReceipt(control.getTask(taskId)!, effect.effectId, 'CONTINUE')),
       });
       if (!('successorEffect' in result) || !result.successorEffect) throw new Error('MISSING_SUCCESSOR_IN_SECOND_WINDOW');
       effect = result.successorEffect;

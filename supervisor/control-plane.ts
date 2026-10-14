@@ -653,9 +653,10 @@ export class WorkflowSupervisorControlPlane {
     // original effect context for idempotent duplicate observation.
     const priorCompletion = expectedEffect ? undefined : this.store.getCompletionByResponseSha256(task.taskId, responseSha256);
     const expectedEffectId = expectedEffect?.effectId ?? priorCompletion?.sourceEffectId;
+    const receiptEffect = expectedEffect ?? (expectedEffectId ? this.store.getEffect(expectedEffectId) : undefined);
     const parsed = parseSupervisorCompletion(
       input.responseText,
-      expectedEffectId ? { task, effectId: expectedEffectId } : undefined,
+      expectedEffectId ? { task, effectId: expectedEffectId, prompt: receiptEffect?.prompt } : undefined,
     );
     const sourceEffect = this.store.getEffect(parsed.proposal.sourceEffectId);
     if (!sourceEffect || sourceEffect.taskId !== task.taskId || !this.store.effectApplied(sourceEffect.effectId)) throw new Error('WORKFLOW_SUPERVISOR_CAUSAL_EFFECT_NOT_APPLIED');

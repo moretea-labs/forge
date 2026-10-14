@@ -254,6 +254,45 @@ test('real Chrome content script preserves all prompt spaces and newlines during
     expect(response.dispatched).toBe(shouldSend);
     expect(sends).toBe(shouldSend ? 1 : 0);
   }
+  // The very same content-script snapshot must preserve the final assistant
+  // receipt's newline; UI-label normalization would flatten it to one line.
+  const instrumented = content.replace(
+    '  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {',
+    '  globalThis.__receiptSnapshot = pageSnapshot;\n  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {',
+  );
+  expect(instrumented).not.toBe(content);
+  const assistantText = 'Delivered useful work.\n\nC ef207b8';
+  const message = (role: string, value: string) => ({
+    innerText: value,
+    getAttribute: (name: string) => name === 'data-message-author-role' ? role : '',
+    querySelector: () => null,
+  });
+  const user = message('user', 'Source effect sent');
+  const assistant = message('assistant', assistantText);
+  const main = {
+    getClientRects: () => [1],
+    querySelectorAll: (selector: string) => {
+      const matches = selector.includes('conversation-turn') ? []
+        : selector.includes('data-message-author-role="user"') && selector.includes('data-message-author-role="assistant"') ? [user, assistant]
+          : selector.includes('data-message-author-role="user"') ? [user]
+            : selector.includes('data-message-author-role="assistant"') ? [assistant] : [];
+      return Object.assign(matches, { item: (index: number) => matches[index] });
+    },
+  };
+  const snapshotContext = {
+    document: { title: 'Forge', body: { innerText: '' }, documentElement: {},
+      querySelectorAll: (selector: string) => selector === 'main' ? [main] : [] },
+    location: { href: currentUrl }, URL,
+    ForgeComputerChatgptCore: { normalizeText: (v: unknown) => String(v ?? '').replace(/\s+/g, ' ').trim(),
+      parseConversation: () => null },
+    chrome: { runtime: { onMessage: { addListener() {} }, sendMessage() {} } },
+    MutationObserver: class { observe() {} },
+    setTimeout() { return 1; }, clearTimeout() {},
+  };
+  runInNewContext(instrumented, snapshotContext);
+  const snapshot = (snapshotContext as typeof snapshotContext & { __receiptSnapshot: () => { latestAssistantResponse: string; latestTurnRole: string } }).__receiptSnapshot();
+  expect(snapshot.latestAssistantResponse).toBe(assistantText);
+  expect(snapshot.latestTurnRole).toBe('assistant');
 });
 
 test('content script fences bootstrap sends to the exact Project and rejects migrated conversation URLs', async () => {

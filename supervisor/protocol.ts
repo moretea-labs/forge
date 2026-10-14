@@ -87,13 +87,30 @@ export function hasCommittedSupervisorEnvelope(responseText: string): boolean {
 
 export function parseSupervisorCompletion(
   responseText: string,
-  expected?: { task: Pick<WorkflowSupervisorTask, 'taskId' | 'conversationId'>; effectId: string },
+  expected?: { task: Pick<WorkflowSupervisorTask, 'taskId' | 'conversationId'>; effectId: string; prompt?: string },
 ): { proposal: WorkflowSupervisorProposal; controlBlock: string } {
   if (Buffer.byteLength(responseText, 'utf8') > MAX_RESPONSE) throw new Error('WORKFLOW_SUPERVISOR_RESPONSE_TOO_LARGE');
   const compact = COMPACT_RECEIPT.exec(responseText.trim());
   if (compact) {
     if (!expected) throw new Error('WORKFLOW_SUPERVISOR_COMPACT_RECEIPT_CONTEXT_REQUIRED');
-    const challenge = supervisorReceiptChallenge(expected.task, expected.effectId);
+    let challenge = supervisorReceiptChallenge(expected.task, expected.effectId);
+    // Bootstrap binding changes the Task's conversation identity after Send.
+    // Validate the challenge actually sent in the immutable effect, never a
+    // recomputation from that subsequently changed Task projection.
+    if (expected.prompt?.includes(SUPERVISOR_TURN_BLOCK_START)) {
+      const start = expected.prompt.indexOf(SUPERVISOR_TURN_BLOCK_START + '\n') + SUPERVISOR_TURN_BLOCK_START.length + 1;
+      const end = expected.prompt.indexOf('\n' + SUPERVISOR_TURN_BLOCK_END, start);
+      let envelope: WorkflowSupervisorTurnEnvelope;
+      try { envelope = JSON.parse(expected.prompt.slice(start, end)); }
+      catch { throw new Error('WORKFLOW_SUPERVISOR_EFFECT_RECEIPT_INVALID'); }
+      if (end < start || envelope?.schema_version !== 2
+        || envelope.identity?.task_id !== expected.task.taskId
+        || envelope.identity?.effect_id !== expected.effectId
+        || !/^[0-9a-f]{7}$/.test(envelope.receipt?.challenge ?? '')) {
+        throw new Error('WORKFLOW_SUPERVISOR_EFFECT_RECEIPT_INVALID');
+      }
+      challenge = envelope.receipt.challenge;
+    }
     if (compact[2] !== challenge) throw new Error('WORKFLOW_SUPERVISOR_COMPACT_RECEIPT_CHALLENGE_MISMATCH');
     const action = compact[1] === 'C' ? 'CONTINUE' : compact[1] === 'D' ? 'DONE' : 'NEEDS_USER';
     const supervisorState: WorkflowSupervisorState = action === 'CONTINUE' ? 'running' : action === 'DONE' ? 'done' : 'needs_user';
