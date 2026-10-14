@@ -540,7 +540,9 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     expect(recovery).toContain('END OF TURN:');
     expect(recovery).toContain('USE FORGE: 使用 forge');
     expect(recovery).toContain('实际调用一次 Forge 工具');
-    expect(recovery).toContain('NO_TOOL_RECEIPT');
+    expect(recovery).toContain('NO_TOOL_RECEIPT 只能写在正文中');
+    expect(recovery).toContain('临时无工具且仍需下一轮探测时同样以 C ' + supervisorReceiptChallenge(task, 'fx_recover01'));
+    expect(recovery).toContain('不能将 C 视为成功或进展');
     expect(recovery).toContain('工具不可用不等于用户必须介入');
     expect(recovery).toContain('only the completed final assistant reply');
     expect(recovery).toContain('D ' + supervisorReceiptChallenge(task, 'fx_recover01'));

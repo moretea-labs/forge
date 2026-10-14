@@ -225,9 +225,9 @@ export function renderSupervisorPrompt(
     SUPERVISOR_TURN_BLOCK_END,
     // Textual intent only: Project instructions and literal @forge are not proof
     // of an App binding. No browser/plugin UI mutation belongs in this renderer.
-    'USE FORGE: 使用 forge。当前任务需要真实工程能力时，请先在本会话实际可用的工具中找到并实际调用一次 Forge 工具，读取既有仓库/Work 的准确状态或相关源码，再继续执行目标。项目指令和普通文本 @forge 不能证明插件已启用；只有真实工具回执能证明。若未立即看到 Forge，先检查可用工具发现入口，不要直接推断整段对话没有 MCP。不要要求用户手动回复“使用forge”、操作 App 选择器或重新开会话；确实不能调用时写明 NO_TOOL_RECEIPT 及具体障碍，严禁虚构工具调用、diff、检查结果和提交。',
-    'DELIVER WORK: 以既有目标和实际源码证据选择最短实现路径。证据充分时直接实施必要的代码修改、按仓库规则复用现有检查并等待结果，形成可核验的产出；不强制新建 Work/Plan/测试案例或每轮都提交。不要在只有状态检查、计划或解释时结束本轮；工具仍可调用、工作仍可推进时，在本次回复中继续动手，不把机械下一步交给用户。保持单一仓库写入权限、exact target 和未知发送结果禁止重放。',
-    'END OF TURN: 仅在本次回复内可执行的实质工作已尽可能完成后，用已取得的真实工具回执简述成果和未完成事项。C ' + supervisorReceiptChallenge(task, effectId) + ' 仅表示已做实质推进但原目标仍未交付；D ' + supervisorReceiptChallenge(task, effectId) + ' 仅表示原目标真实交付；U ' + supervisorReceiptChallenge(task, effectId) + ' 仅用于经核实确需用户授权或输入才能排除的阻塞。工具不可用不等于用户必须介入；先检验本会话可用能力，不能把无工具回执的回答伪装为工程成果。最终助手消息必须以对应 C/D/U 回执单独占据最后一行。不得在中间回复或工具调用中提前输出回执；不要在 MCP 参数中传 automation_status，Supervisor 只结算已完成的最终助手回复（only the completed final assistant reply）。',
+    'USE FORGE: 使用 forge。第一步在工具真实可用时实际调用一次 Forge 工具（优先 rh_status，随后按任务调用 rh_context/rh_work/源码能力）。若未显示直连 Forge 工具，先查看真实可用工具发现入口：如有 functions.exec，就在 ALL_TOOLS 中按 mcp__forge__ 名称发现后通过 tools 调用；没有该入口也不能假装它存在。项目指令和纯文本 @forge 都不是插件已连接的证据。请完成这一次有限发现，不要循环分析工具、不要求用户发送“使用forge”或操作 App 选择器，不要伪造调用。如果确实没有任何可调用 Forge 工具，在正文写 NO_TOOL_RECEIPT 和具体可观察的缺口；不要虚构源码、测试、提交或发布成果。',
+    'DELIVER WORK: 根据本会话已验证的上下文与原目标，优先推进一个具体未完成交付点；只读取与这一 changeset/发布门禁有关的当前证据，不要每轮重复完整 Work 清单、全局状态和已通过的检查。可执行时直接实施、复用有效验证、复核 diff 并按现有 owner 合法交付；不必机械新建 Work/Plan/测试，也不要在只有状态检查、计划或解释时结束本轮。工具仍可调用且存在安全动作时继续动手；守住单一 writer、exact target、未知发送不重放和不可逆发布批准边界。',
+    'END OF TURN: 输出短而可核验的本轮实际产出、真实工具/检查/提交/外部操作回执及尚未完成的下一步。NO_TOOL_RECEIPT 只能写在正文中，绝不能代替末行回执；工具不可用不等于用户必须介入，临时无工具且仍需下一轮探测时同样以 C ' + supervisorReceiptChallenge(task, effectId) + ' 结束，但必须明确本轮零工程产出，不能将 C 视为成功或进展。D ' + supervisorReceiptChallenge(task, effectId) + ' 仅用于原目标真实交付；U ' + supervisorReceiptChallenge(task, effectId) + ' 仅用于经核实确需用户决定/授权的阻塞。每种情形都必须把对应 C/D/U 校验码单独放在最终助手回复的最后一行，不能追加 NO_TOOL_RECEIPT、解释或其他尾注。不得在中间消息/工具调用中提前输出回执，不要在 MCP 参数中传 automation_status；Supervisor 只结算已完成的最终助手回复（only the completed final assistant reply）。',
   ].join('\n');
 }
 
