@@ -334,15 +334,23 @@ export async function dispatchMacOsChatgptPrompt(
         if (!(composer instanceof HTMLElement) || !composer.isContentEditable) return { prepared: false, reason: 'composer_missing' };
         if (composer.querySelector('[plugin-mention-name], [app-mention-name]')) return { prepared: false, reason: 'composer_has_app_mention' };
         const current = exact(value(composer));
+        // An empty ProseMirror <p><br></p> may expose a layout newline in
+        // innerText. It is not a user draft; actual text, including whitespace
+        // outside this exact empty placeholder, remains protected.
+        const emptyPlaceholder = composer.children.length === 1
+          && composer.children[0].tagName === 'P'
+          && String(composer.children[0].textContent ?? '') === ''
+          && Boolean(composer.children[0].querySelector('br'));
+        const hasDraft = Boolean(current) && !emptyPlaceholder;
         // A *previous attempt of this exact effect* may have inserted this same
         // prompt and then failed before clicking Send. That draft is this turn's
         // own text, not a foreign user draft: reusing it is the same logical
         // send. Treating it as occupied burned a generation without ever
         // reaching the provider.
-        if (current && (current === expectedNorm || current === draftNorm)) return { prepared: true };
-        if (resume) { if (!current) return { prepared: false, reason: 'composer_resume_empty' }; if (current !== expectedNorm && current !== draftNorm) return { prepared: false, reason: 'composer_resume_mismatch' }; }
+        if (hasDraft && (current === expectedNorm || current === draftNorm)) return { prepared: true };
+        if (resume) { if (!hasDraft) return { prepared: false, reason: 'composer_resume_empty' }; if (current !== expectedNorm && current !== draftNorm) return { prepared: false, reason: 'composer_resume_mismatch' }; }
         else {
-          if (current) return { prepared: false, reason: 'composer_not_empty' };
+          if (hasDraft) return { prepared: false, reason: 'composer_not_empty' };
           composer.focus({ preventScroll: true });
           const selection = window.getSelection(); if (!selection) return { prepared: false, reason: 'composer_selection_unavailable' };
           const range = document.createRange(); range.selectNodeContents(composer); range.deleteContents(); range.collapse(true); selection.removeAllRanges(); selection.addRange(range);

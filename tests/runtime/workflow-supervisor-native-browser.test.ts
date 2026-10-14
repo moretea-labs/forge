@@ -50,6 +50,45 @@ test('Mac native pre-send preparation never clicks Send or claims provider mutat
   expect(await dispatchMacOsChatgptPrompt(page, 'A prepared but unsent prompt', { prepareOnly: true }))
     .toEqual({ mutation: 'prepared' });
   expect(sendStageCalls).toBe(0);
+
+  // ProseMirror can render an empty <p><br></p> as innerText="\n".
+  // That placeholder is not a draft and must not block a verified pre-send.
+  class FakeComposer {
+    innerText = '\n';
+    textContent = '';
+    isContentEditable = true;
+    children = [{ tagName: 'P', textContent: '', querySelector: (selector: string) => selector === 'br' ? {} : null }];
+    getClientRects() { return [1]; }
+    querySelector() { return null; }
+    focus() {}
+  }
+  const composer = new FakeComposer();
+  const selection = { removeAllRanges() {}, addRange() {} };
+  const document = {
+    querySelectorAll: (selector: string) => selector === 'main' ? []
+      : selector.startsWith('div#prompt-textarea') ? [composer]
+      : selector.startsWith('[data-testid="send-button"]') ? [{ getClientRects: () => [1], hasAttribute: () => false, getAttribute: () => null }]
+      : [],
+    createRange: () => ({ selectNodeContents() {}, deleteContents() { composer.innerText = ''; }, collapse() {} }),
+    execCommand: (_name: string, _show: boolean, value: string) => {
+      composer.innerText = value; composer.textContent = value; return true;
+    },
+  };
+  const emptyEditorPage = {
+    evaluate: async <T>(source: string) => new Function('document', 'window', 'HTMLElement', 'location', 'return ' + source)(
+      document, { getSelection: () => selection }, FakeComposer, { href: 'https://chatgpt.com/c/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' },
+    ) as T,
+    tabRef: () => undefined,
+  };
+  expect(await dispatchMacOsChatgptPrompt(emptyEditorPage, 'verified effect', { prepareOnly: true }))
+    .toEqual({ mutation: 'prepared' });
+  // A deliberate whitespace draft stays protected even with a trailing BR.
+  composer.innerText = '  ';
+  composer.textContent = '  ';
+  composer.children = [{ tagName: 'P', textContent: '  ', querySelector: (selector: string) => selector === 'br' ? {} : null }];
+  expect(await dispatchMacOsChatgptPrompt(emptyEditorPage, 'different effect', { prepareOnly: true }))
+    .toEqual({ mutation: 'not_attempted', reasonCode: 'composer_not_empty' });
+  expect(composer.innerText).toBe('  ');
 });
 
 test('Apple Events compatibility provider never claims an unverified requested reasoning level', async () => {
