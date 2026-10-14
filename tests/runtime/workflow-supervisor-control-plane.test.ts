@@ -538,7 +538,10 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
       continuity: { role: 'advisory', summary: 'restore checkpoint\nrecover durable state' },
     });
     expect(recovery).toContain('END OF TURN:');
-    expect(recovery).toContain('no Work, Plan, phase, checkout, sequence or tool call is mandatory');
+    expect(recovery).toContain('USE FORGE: 使用 forge');
+    expect(recovery).toContain('实际调用一次 Forge 工具');
+    expect(recovery).toContain('NO_TOOL_RECEIPT');
+    expect(recovery).toContain('工具不可用不等于用户必须介入');
     expect(recovery).toContain('only the completed final assistant reply');
     expect(recovery).toContain('D ' + supervisorReceiptChallenge(task, 'fx_recover01'));
     expect(recovery).not.toContain('automation_status=continue');
@@ -711,7 +714,8 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     });
     const machineCheckpoint = renderSupervisorPrompt(task, 'fx_continue_machine', 'continuation', 'automation:supervisor:test:rh_work:continue:fx_before_machine');
     expect(parseSupervisorTurn(machineCheckpoint).continuity).toBeUndefined();
-    expect(machineCheckpoint).toContain('CONTINUE WORK: Pursue the stated goal and deliver useful, verifiable work');
+    expect(machineCheckpoint).toContain('DELIVER WORK:');
+    expect(machineCheckpoint).toContain('不要在只有状态检查、计划或解释时结束本轮');
     expect(machineCheckpoint).not.toContain('automation:supervisor:test:rh_work:continue:fx_before_machine');
     expect(continuation).not.toContain('automation.receipt:');
     expect(continuation).toContain(renderSupervisorReceipt(task, 'fx_continue_1234', 'CONTINUE'));

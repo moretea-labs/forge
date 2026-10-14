@@ -223,10 +223,11 @@ export function renderSupervisorPrompt(
     SUPERVISOR_TURN_BLOCK_START,
     JSON.stringify(envelope),
     SUPERVISOR_TURN_BLOCK_END,
-    // An ordinary outcome-led request plus a final-response receipt.
-    // Work sequencing and when an assistant turn must end remain model decisions.
-    'CONTINUE WORK: Pursue the stated goal and deliver useful, verifiable work. Decide what to inspect, change, test and deliver from live evidence; no Work, Plan, phase, checkout, sequence or tool call is mandatory. Make real progress in this turn rather than ending after a status check. Respect actual ownership, permissions and irreversible-action boundaries.',
-    'END OF TURN: Only after you have finished the useful actions available in THIS ChatGPT response, give a brief evidence-based result and end your FINAL assistant message with exactly one separate last line: C ' + supervisorReceiptChallenge(task, effectId) + ' if work remains; D ' + supervisorReceiptChallenge(task, effectId) + ' only if the goal is delivered; or U ' + supervisorReceiptChallenge(task, effectId) + ' only for a genuine user-only blocker. Never put these markers in an intermediate message or tool call. Do not pass automation_status in MCP tool arguments; Supervisor commits only the completed final assistant reply.',
+    // Textual intent only: Project instructions and literal @forge are not proof
+    // of an App binding. No browser/plugin UI mutation belongs in this renderer.
+    'USE FORGE: 使用 forge。当前任务需要真实工程能力时，请先在本会话实际可用的工具中找到并实际调用一次 Forge 工具，读取既有仓库/Work 的准确状态或相关源码，再继续执行目标。项目指令和普通文本 @forge 不能证明插件已启用；只有真实工具回执能证明。若未立即看到 Forge，先检查可用工具发现入口，不要直接推断整段对话没有 MCP。不要要求用户手动回复“使用forge”、操作 App 选择器或重新开会话；确实不能调用时写明 NO_TOOL_RECEIPT 及具体障碍，严禁虚构工具调用、diff、检查结果和提交。',
+    'DELIVER WORK: 以既有目标和实际源码证据选择最短实现路径。证据充分时直接实施必要的代码修改、按仓库规则复用现有检查并等待结果，形成可核验的产出；不强制新建 Work/Plan/测试案例或每轮都提交。不要在只有状态检查、计划或解释时结束本轮；工具仍可调用、工作仍可推进时，在本次回复中继续动手，不把机械下一步交给用户。保持单一仓库写入权限、exact target 和未知发送结果禁止重放。',
+    'END OF TURN: 仅在本次回复内可执行的实质工作已尽可能完成后，用已取得的真实工具回执简述成果和未完成事项。C ' + supervisorReceiptChallenge(task, effectId) + ' 仅表示已做实质推进但原目标仍未交付；D ' + supervisorReceiptChallenge(task, effectId) + ' 仅表示原目标真实交付；U ' + supervisorReceiptChallenge(task, effectId) + ' 仅用于经核实确需用户授权或输入才能排除的阻塞。工具不可用不等于用户必须介入；先检验本会话可用能力，不能把无工具回执的回答伪装为工程成果。最终助手消息必须以对应 C/D/U 回执单独占据最后一行。不得在中间回复或工具调用中提前输出回执；不要在 MCP 参数中传 automation_status，Supervisor 只结算已完成的最终助手回复（only the completed final assistant reply）。',
   ].join('\n');
 }
 
