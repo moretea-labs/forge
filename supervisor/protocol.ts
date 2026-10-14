@@ -7,6 +7,15 @@ import type { WorkflowEffectKind, WorkflowSupervisorProposal, WorkflowSupervisor
 export const SUPERVISOR_BLOCK_START = 'FORGE_WORKFLOW_SUPERVISOR_V1_BEGIN';
 export const SUPERVISOR_BLOCK_END = 'FORGE_WORKFLOW_SUPERVISOR_V1_END';
 const COMPACT_RECEIPT = /(?:^|\n)([CDU]) ([0-9a-f]{7})\s*$/;
+// Older installed Chrome content scripts flattened an entire completed reply
+// into one line. The immutable Effect challenge remains the sole authority;
+// recover only its terminal token, never an inline token in multiline text.
+const FLATTENED_COMPACT_RECEIPT = /(?:^| )([CDU]) ([0-9a-f]{7})$/;
+function terminalCompactReceipt(responseText: string): RegExpExecArray | null {
+  const text = responseText.trim();
+  return COMPACT_RECEIPT.exec(text)
+    ?? (!/[\r\n]/.test(text) ? FLATTENED_COMPACT_RECEIPT.exec(text) : null);
+}
 export const LEGACY_BRACKET_SUPERVISOR_BLOCK_START = '[[[FORGE_WORKFLOW_SUPERVISOR_V1]]]';
 export const LEGACY_BRACKET_SUPERVISOR_BLOCK_END = '[[[END_FORGE_WORKFLOW_SUPERVISOR_V1]]]';
 export const LEGACY_SUPERVISOR_BLOCK_START = '<<<FORGE_WORKFLOW_SUPERVISOR_V1>>>';
@@ -81,7 +90,7 @@ function supervisorBlockEnvelope(responseText: string): { start: number; end: nu
 
 export function hasCommittedSupervisorEnvelope(responseText: string): boolean {
   if (Buffer.byteLength(responseText, 'utf8') > MAX_RESPONSE) return false;
-  if (COMPACT_RECEIPT.test(responseText.trim())) return true;
+  if (terminalCompactReceipt(responseText)) return true;
   try { supervisorBlockEnvelope(responseText); return true; } catch { return false; }
 }
 
@@ -90,7 +99,7 @@ export function parseSupervisorCompletion(
   expected?: { task: Pick<WorkflowSupervisorTask, 'taskId' | 'conversationId'>; effectId: string; prompt?: string },
 ): { proposal: WorkflowSupervisorProposal; controlBlock: string } {
   if (Buffer.byteLength(responseText, 'utf8') > MAX_RESPONSE) throw new Error('WORKFLOW_SUPERVISOR_RESPONSE_TOO_LARGE');
-  const compact = COMPACT_RECEIPT.exec(responseText.trim());
+  const compact = terminalCompactReceipt(responseText);
   if (compact) {
     if (!expected) throw new Error('WORKFLOW_SUPERVISOR_COMPACT_RECEIPT_CONTEXT_REQUIRED');
     let challenge = supervisorReceiptChallenge(expected.task, expected.effectId);

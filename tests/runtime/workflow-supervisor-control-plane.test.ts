@@ -12,7 +12,7 @@ import { createRequirement, reviseRequirementSemantic, updateRequirement } from 
 import { bindCurrentWorkflowSupervisorConversationForWork, ensureWorkflowSupervisorEnrollmentForWork, forgeWorkflowSupervisorLifecycleHooks, inheritWorkflowSupervisorConversationBinding, workflowSupervisorBoundaryForWork, workflowSupervisorLowerLayerReadyForWork } from '../../src/runtime/root/workflow-supervisor-composition';
 import { WorkflowSupervisorControlPlane } from '../../supervisor/control-plane';
 import { TASK_TARGET_SPACED_FAILURE_CODES, WorkflowSupervisorNativeBrowserAdapter } from '../../supervisor/native-browser-adapter';
-import { LEGACY_SUPERVISOR_BLOCK_END, LEGACY_SUPERVISOR_BLOCK_START, parseSupervisorCompletion, renderSupervisorPrompt, renderSupervisorReceipt, supervisorReceiptChallenge, SUPERVISOR_BLOCK_END, SUPERVISOR_BLOCK_START, SUPERVISOR_TURN_BLOCK_END, SUPERVISOR_TURN_BLOCK_START } from '../../supervisor/protocol';
+import { hasCommittedSupervisorEnvelope, LEGACY_SUPERVISOR_BLOCK_END, LEGACY_SUPERVISOR_BLOCK_START, parseSupervisorCompletion, renderSupervisorPrompt, renderSupervisorReceipt, supervisorReceiptChallenge, SUPERVISOR_BLOCK_END, SUPERVISOR_BLOCK_START, SUPERVISOR_TURN_BLOCK_END, SUPERVISOR_TURN_BLOCK_START } from '../../supervisor/protocol';
 import { WorkflowSupervisorStore } from '../../supervisor/store';
 import { createWorkflowSupervisorServer, reconcileWorkflowSupervisorSocket, WorkflowSupervisorEphemeralDiscovery } from '../../supervisor/server';
 import { claimControllerSession, getControllerSession, releaseControllerSession } from '../../src/runtime/control-plane/facade/controller-session-store';
@@ -620,6 +620,20 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
       taskId: task.taskId, supervisorState: 'running', reason: 'compact_receipt',
     });
     expect(() => parseSupervisorCompletion('C 0000000', { task, effectId })).toThrow('WORKFLOW_SUPERVISOR_COMPACT_RECEIPT_CHALLENGE_MISMATCH');
+
+    // The installed old extension collapsed newlines in an already-finished
+    // assistant reply. Retain one causal parser rather than rebind providers.
+    const completedReply = `本轮完成了实际检查。\n\nC ${supervisorReceiptChallenge(task, effectId)}`;
+    const flattened = completedReply.replace(/\s+/g, ' ').trim();
+    expect(hasCommittedSupervisorEnvelope(flattened)).toBe(true);
+    expect(parseSupervisorCompletion(flattened, { task, effectId, prompt }).proposal)
+      .toMatchObject({ action: 'CONTINUE', sourceEffectId: effectId });
+    expect(() => parseSupervisorCompletion('本轮完成。 C 0000000', { task, effectId, prompt }))
+      .toThrow('WORKFLOW_SUPERVISOR_COMPACT_RECEIPT_CHALLENGE_MISMATCH');
+    const inlineWithNewlines = `本轮完成了实际检查。\n仍在叙述 C ${supervisorReceiptChallenge(task, effectId)}`;
+    expect(hasCommittedSupervisorEnvelope(inlineWithNewlines)).toBe(false);
+    expect(() => parseSupervisorCompletion(inlineWithNewlines, { task, effectId, prompt }))
+      .toThrow('WORKFLOW_SUPERVISOR_END_MARKER_REQUIRED');
 
     const legacy = parseSupervisorCompletion(`${LEGACY_SUPERVISOR_BLOCK_START}\n${JSON.stringify({
       action: 'CONTINUE', conversation_id: task.conversationId, task_id: task.taskId,
