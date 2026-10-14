@@ -205,7 +205,7 @@ export function buildCapabilityRecoverySnapshot(input: CapabilityRecoveryInput):
       recentClass === 'platform_blocked'
         ? 'Command execute appears blocked before reaching forge. Do not restart-loop local services.'
         : ['runtime_storage_not_ready', 'local_jobs_legacy_active', 'local_jobs_unreadable', 'local_jobs_reconciliation_required'].includes(recentClass)
-          ? 'Command execute is blocked by forge runtime storage; use the maintenance executor instead of repository_command_execute.'
+          ? 'Command execute is blocked by forge runtime storage; use the maintenance executor instead of execute_command.'
           : 'Command execute is blocked, denied, or unavailable.',
       commandExecuteActions(recentClass),
     )
@@ -300,7 +300,7 @@ export function buildCapabilityRecoverySnapshot(input: CapabilityRecoveryInput):
       ? ['Runtime lifecycle action is required outside the running Runtime. Use the existing single forge-runtime service only; no rollout, second Runtime, component restart, or source mutation.']
       : platformBlocked
         ? ['One or more calls appear blocked before reaching forge. Use patch handoff or narrower typed tools; do not infer a local Runtime lifecycle failure.']
-        : (input.runtimeStorageReady === false ? ['Runtime storage is not ready. Use runtime_maintenance_status/runtime_maintenance_apply; do not try to repair repository_command_execute with repository_command_execute.'] : []),
+        : (input.runtimeStorageReady === false ? ['Runtime storage is not ready. Use runtime_maintenance_status/runtime_maintenance_apply; do not try to repair execute_command with execute_command.'] : []),
     runtimeHealth: sharedHealth,
     runtimeOperationalView: input.runtimeOperationalView,
   };

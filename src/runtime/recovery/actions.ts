@@ -44,7 +44,7 @@ export const RECOVERY_ACTIONS = {
   localJobsReconcile: {
     id: 'recovery.local_jobs_reconcile',
     title: 'Reconcile Local Jobs',
-    description: 'Terminalize stale active Local Jobs and rebuild the Local Bridge active index without using repository_command_execute.',
+    description: 'Terminalize stale active Local Jobs and rebuild the Local Bridge active index without invoking execute_command.',
     class: 'local_jobs_reconciliation_required',
     risk: 'low',
     confirmation: 'authorization',

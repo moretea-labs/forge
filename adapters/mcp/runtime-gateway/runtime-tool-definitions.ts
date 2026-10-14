@@ -292,13 +292,13 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     min_age_minutes: { type: 'number' },
     max_candidates: { type: 'number' },
   }, ['action_id'], false),
-  definition('runtime_maintenance_status', 'Read the self-contained runtime maintenance plan without using repository_command_execute or Local Job tickets.', {
+  definition('runtime_maintenance_status', 'Read the self-contained runtime maintenance plan without invoking execute_command or creating Local Job tickets.', {
     repo_id: repoId,
     min_age_minutes: { type: 'number' },
     max_candidates: { type: 'number' },
     cancel_pending_approvals: { type: 'boolean' },
   }),
-  definition('runtime_maintenance_apply', 'Apply one bounded runtime maintenance action without repository_command_execute or Local Job tickets.', {
+  definition('runtime_maintenance_apply', 'Apply one bounded runtime maintenance action without invoking execute_command or creating Local Job tickets.', {
     repo_id: repoId,
     action_id: { type: 'string', enum: ['local_jobs_reconcile', 'quarantine_unreadable_local_jobs', 'runtime_storage_finalize_relocation', 'rebuild_projection', 'full_maintenance_pass'] },
     confirm_maintenance: { type: 'boolean' },
