@@ -140,18 +140,22 @@ function workflowSupervisorOriginWorkId(task: WorkflowSupervisorTask, repoId: st
   const legacyWorkPrefix = `forge:${repoId}:work:`;
   const explicit = workflowSupervisorContractText(task, 'work_id')
     ?? (task.taskId.startsWith(legacyWorkPrefix) ? task.taskId.slice(legacyWorkPrefix.length) || undefined : undefined);
-  if (explicit) return explicit;
-  // Standalone Supervisor enrollment predates Work binding in the Task contract.
-  // Read the one canonical conversation binding, never parse Work IDs from
-  // objectives and never make ambiguous matches into a second authority.
-  if (task.continuationPolicy.kind !== 'standalone_supervisor') return undefined;
+  const original = explicit ? getWorkContract({ controllerHome, repoId }, explicit) : undefined;
+  if (explicit && (!original || semanticWorkState(original) === 'open')) return explicit;
   const active = listChatgptWorkBindingsForConversation({ controllerHome, repoId }, task.conversationId)
-    .filter(({ workId }) => {
-      const work = getWorkContract({ controllerHome, repoId }, workId);
-      return work && semanticWorkState(work) === 'open';
-    });
-  // A terminal predecessor may retain the same conversation as its successor.
-  // Only a unique open Work is eligible; multiple live siblings remain ambiguous.
+    .map(({ workId }) => getWorkContract({ controllerHome, repoId }, workId))
+    .filter((work): work is NonNullable<typeof work> => Boolean(work && semanticWorkState(work) === 'open'));
+  // A terminal predecessor retains its audit and conversation binding. Only
+  // explicit successor lineage within the same Requirement can transfer the
+  // active Work projection; siblings cannot inherit the predecessor's task.
+  if (explicit) {
+    const successors = active.filter((work) => work.predecessorWorkId === explicit
+      && original?.requirementId && work.requirementId === original.requirementId);
+    return successors.length === 1 && active.length === 1 ? successors[0]!.workId : explicit;
+  }
+  // Standalone enrollment predates Work binding. It may project into one
+  // unambiguous open Work, without creating a second conversation authority.
+  if (task.continuationPolicy.kind !== 'standalone_supervisor') return undefined;
   return active.length === 1 ? active[0]!.workId : undefined;
 }
 
