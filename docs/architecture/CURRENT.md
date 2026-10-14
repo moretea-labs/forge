@@ -15,6 +15,8 @@ This authority applies one default design rule across new architecture and refac
 - **Self-host through a stable control plane.** Stable Runtime evaluates candidate source/runtime; candidate validation either promotes atomically or leaves Stable authority intact.
 - **Before adding state/store/service/daemon/queue/lock/retry paths, prove the missing fact or physical resource cannot be represented by the existing authority plus CAS, a narrow resource claim, or the existing effect ledger.**
 
+Browser configuration updates normalize and validate the complete candidate **before** committing the sole Controller Home v3 config with the existing atomic writer and legacy-file retirement. An invalid `configure` request must leave the authoritative configuration and any legacy files untouched; manifest/health reads remain read-only.
+
 Status: **Runtime Authority**
 
 This file is the sole maintained architecture authority for the current Forge runtime. Executable code and persisted schemas are authoritative for implementation facts; this document defines the architecture contracts they are expected to preserve. Do not hard-code a source commit here: release-specific snapshots belong in [`versions/`](versions/).

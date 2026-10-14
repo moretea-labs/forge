@@ -723,6 +723,10 @@ export async function resolveBrowserPluginAuthorizationContext(
 
 function saveConfig(input: Pick<AssistantPluginActionExecutionInput, 'controllerHome' | 'repoId' | 'repoRoot'>, patch: Partial<BrowserPluginConfig>): BrowserPluginConfig {
   const next = normalizeConfig({ ...loadConfig(input.repoRoot, input), ...patch });
+  const errors = validateConfig(next);
+  if (errors.length > 0) {
+    throw new AssistantPluginError('PLUGIN_CONFIGURATION_INVALID', errors[0], { retryable: false });
+  }
   return writeRepositoryPluginConfig(input, BROWSER_PLUGIN_ID, next);
 }
 
@@ -4032,10 +4036,6 @@ async function executeBrowserPluginActionInternal(
             ? positiveNumber(args.default_timeout_ms, DEFAULT_TIMEOUT_MS)
             : current.defaultTimeoutMs,
         });
-        const configErrors = validateConfig(config);
-        if (configErrors.length > 0) {
-          throw new AssistantPluginError('PLUGIN_CONFIGURATION_INVALID', configErrors[0], { retryable: false });
-        }
         await closeManagedContextsForRepo(input.repoRoot);
         return { config, health: health(config, input.repoRoot) };
       }
