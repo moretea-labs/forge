@@ -372,8 +372,33 @@
     if (send.disabled || send.getAttribute('aria-disabled') === 'true') return { dispatched: false, reason: 'send_button_disabled' };
     if (!exactConversationIsCurrent()) return { dispatched: false, reason: 'target_identity_changed' };
     if (prepareOnly) return { prepared: true };
+    // Confirm the committed turn inside the content script, rather than
+    // requesting delayed snapshots from the extension background worker.
+    const beforeSend = roleNodes(USER).at(-1);
     send.click();
-    return { dispatched: true, ...(reasoningVerified ? { reasoningVerified } : {}) };
+    const confirmed = await new Promise((resolve) => {
+      // Unobserved submission is unknown, never proof that Send did not run.
+      let timer;
+      let settled = false;
+      const finish = (value) => {
+        if (settled) return;
+        settled = true;
+        observer.disconnect();
+        clearTimeout(timer);
+        resolve(value);
+      };
+      const check = () => {
+        if (expectedConversationId && !exactConversationIsCurrent()) return;
+        const latest = roleNodes(USER).at(-1);
+        if (latest && latest !== beforeSend
+          && core.normalizeText(messageText(latest)) === core.normalizeText(payload)) finish(true);
+      };
+      const observer = new MutationObserver(check);
+      observer.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
+      timer = setTimeout(() => finish(false), 2_000);
+      check();
+    });
+    return { dispatched: true, confirmed, ...(reasoningVerified ? { reasoningVerified } : {}) };
   };
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (!message || message.type === 'forge-computer-chatgpt-scan') { notify(); sendResponse?.({ ok: true }); return false; }
