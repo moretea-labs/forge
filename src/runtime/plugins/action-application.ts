@@ -16,6 +16,7 @@ import {
   getControllerPluginManifest,
   isDirectNonPersistentPluginAction,
   isDirectPluginReadAction,
+  readPluginActionReceiptForRequest,
   submitAssistantPluginAction,
   submitControllerPluginAction,
 } from './store';
@@ -169,7 +170,10 @@ export async function executeAssistantPluginActionApplication(input: {
         process: handle,
       };
     }
-    if (!handle.ok) {
+    // Provider settlement remains authoritative across a sidecar failure.
+    // Re-enter the store below to validate exact args/scope/Work before reading
+    // any recorded outcome; process failure alone never authorizes redispatch.
+    if (!handle.ok && !readPluginActionReceiptForRequest(input.controllerHome, input.request.requestId)) {
       return {
         kind: 'managed_failed',
         manifest,

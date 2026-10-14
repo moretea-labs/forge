@@ -5,6 +5,7 @@ import { CONTROLLER_SCOPE_REPO_ID, FORGE_INSTANCE_SCOPE_KEY, controllerSystemRoo
 import { cpSync, existsSync, lstatSync, mkdirSync, readdirSync, rmSync } from 'fs';
 import type { ExecutionJob, ResourceClaimSpec } from '../execution/jobs/types';
 import { appendRuntimeEvent } from '../evidence/event-ledger';
+import { redactSensitiveValue } from '../evidence/sensitive-output';
 import { readJsonFile, sanitizeFileComponent, writeJsonAtomic } from '../shared/json-files';
 import { createFirstPartyPluginAdapterMap } from './first-party-registry';
 import { reconcileFirstPartyExternalPluginRegistration, reconcileFirstPartyExternalPluginRegistrations } from './first-party-external-registration';
@@ -1180,7 +1181,7 @@ export interface PluginActionReceipt {
   origin?: { surface: string; actor?: string; correlationId?: string };
   authorization?: PluginActionAuthorizationEvidence;
   result?: Record<string, unknown>;
-  error?: { code: string; message: string };
+  error?: { code: string; message: string; retryable?: boolean; details?: Record<string, unknown> };
   /** True for a compact direct-read observation; it is evidence, never an effect-completion authority. */
   observationOnly?: boolean;
   /** SHA-256 of the direct-read result. Result content is intentionally not persisted for observation-only receipts. */
@@ -1820,8 +1821,21 @@ async function submitPluginAction(
       ? error.effectOutcome
       : 'failed';
     const outcomeUnknown = effectOutcome === 'outcome_unknown';
+    const failure = redactSensitiveValue({
+      code,
+      message,
+      ...(isAssistantPluginError(error) ? {
+        retryable: error.retryable,
+        ...(error.details ? { details: error.details } : {}),
+      } : {}),
+    }).value;
+    // Error evidence stays compact; oversized provider diagnostics must not
+    // turn failure settlement into an unbounded persistence write.
+    if (failure.details && Buffer.byteLength(JSON.stringify(failure.details), 'utf8') > 8_192) {
+      delete failure.details;
+    }
     const outcomeResult = outcomeUnknown
-      ? { outcome: 'outcome_unknown', error: { code, message } }
+      ? { outcome: 'outcome_unknown', error: failure }
       : undefined;
     if (boundRemoteWork) {
       appendWorkEvidence({ controllerHome, repoId: workAttributionRepoId(scope, request) }, boundRemoteWork.workId, {
@@ -1851,7 +1865,7 @@ async function submitPluginAction(
       origin: request.origin,
       authorization,
       ...(outcomeResult ? { result: outcomeResult } : {}),
-      error: { code, message },
+      error: failure,
     };
     writeJsonAtomic(pluginActionReceiptPath(controllerHome, scope.scopeKey, receiptId), receipt);
     writeJsonAtomic(requestPath, {

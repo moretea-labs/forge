@@ -316,6 +316,19 @@ export async function callPluginAdapter(
       }
 
       const submitted = application.submitted;
+      if (submitted.receipt.status === 'failed' && submitted.receipt.effectOutcome !== 'outcome_unknown') {
+        return result({
+          accepted: true,
+          deduplicated: submitted.deduplicated,
+          scope: pluginScopeLabel(scope),
+          plugin: summarizePluginActionReceipt(submitted.manifest),
+          action: { actionId: submitted.action.actionId },
+          requestId: submitted.receipt.requestId,
+          receiptId: submitted.receipt.receiptId,
+          effectOutcome: submitted.receipt.effectOutcome ?? 'failed',
+          error: submitted.receipt.error ?? { code: 'PLUGIN_ACTION_FAILED', message: 'Plugin action failed.' },
+        }, true);
+      }
       const compactResult = compactSubmittedPluginActionResult(submitted.result);
       const value = {
         accepted: true,
