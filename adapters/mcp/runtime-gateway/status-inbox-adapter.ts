@@ -647,7 +647,8 @@ export async function callStatusInboxAdapter(
       const activeContracts = activeWorkProjection.contracts;
       // Reuse the exact WorkHandle and semantic Work authorities consulted by
       // delivery. This is a read-only diagnosis, never a delivery admission gate.
-      const receivingOwners = listWorkHandles(ctx.controllerHome, repository.repoId)
+      const receivingOwners = detailLevel === 'detail'
+        ? listWorkHandles(ctx.controllerHome, repository.repoId)
         .filter((handle) => {
           if (handle.checkoutId !== repository.activeCheckoutId
             || handle.branch !== liveGit.branch
@@ -655,7 +656,8 @@ export async function callStatusInboxAdapter(
           const contract = getWorkContract(store, handle.workContractId ?? handle.workId);
           return Boolean(contract && semanticWorkState(contract) === 'open');
         })
-        .sort((left, right) => left.workId.localeCompare(right.workId));
+        .sort((left, right) => left.workId.localeCompare(right.workId))
+        : [];
       const headDriftedOwners = receivingOwners.filter((handle) =>
         Boolean(handle.expectedHead && handle.expectedHead !== liveGit.head));
       const repositoryDeliveryBlockers = [
@@ -775,7 +777,7 @@ export async function callStatusInboxAdapter(
           primaryWorkActivityCounts,
           primaryWorkActivities,
           activeContractCount: activeContracts.length,
-          repositoryDelivery: {
+          ...(detailLevel === 'detail' ? { repositoryDelivery: {
             observation: 'work_handle_and_git_snapshot' as const,
             diagnosticOnly: true,
             checkoutId: repository.activeCheckoutId,
@@ -793,7 +795,7 @@ export async function callStatusInboxAdapter(
             blockers: repositoryDeliveryBlockers,
             nextSafeAction: repositoryDeliveryNextSafeAction,
             limitations: 'Live leases, source validation, conflict preview and target CAS remain canonical delivery-time checks.',
-          },
+          } } : {}),
           invalidActiveContractCount: activeWorkProjection.invalid.length,
           invalidActiveContracts: activeWorkProjection.invalid.slice(0, 10).map(summarizeInvalidActiveWorkCandidate),
           // Summary keeps the stable facade surface only; detail expands to the full registered schema.
