@@ -112,8 +112,17 @@ function projectExtension(source: string, destination: string): void {
       assertRegularFile(sourcePath, 'WORKFLOW_SUPERVISOR_EXTENSION_SOURCE_INVALID');
       writeFileSync(join(staging, file), readFileSync(sourcePath), { mode: 0o600 });
     }
-    rmSync(destination, { recursive: true, force: true });
-    renameSync(staging, destination);
+    // Preserve the previous projection until the staged replacement is ready.
+    const backup = destination + '.backup-' + randomUUID().slice(0, 12);
+    const hadDestination = existsSync(destination);
+    if (hadDestination) renameSync(destination, backup);
+    try {
+      renameSync(staging, destination);
+    } catch (error) {
+      if (hadDestination) renameSync(backup, destination);
+      throw error;
+    }
+    if (hadDestination) rmSync(backup, { recursive: true, force: true });
   } catch (error) {
     rmSync(staging, { recursive: true, force: true });
     throw error;

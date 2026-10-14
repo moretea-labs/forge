@@ -15,7 +15,7 @@ This authority applies one default design rule across new architecture and refac
 - **Self-host through a stable control plane.** Stable Runtime evaluates candidate source/runtime; candidate validation either promotes atomically or leaves Stable authority intact.
 - **Before adding state/store/service/daemon/queue/lock/retry paths, prove the missing fact or physical resource cannot be represented by the existing authority plus CAS, a narrow resource claim, or the existing effect ledger.**
 
-Browser configuration updates normalize and validate the complete candidate **before** committing the sole Controller Home v3 config with the existing atomic writer and legacy-file retirement. An invalid `configure` request must leave the authoritative configuration and any legacy files untouched; manifest/health reads remain read-only.
+Computer ChatGPT extension projection stages the release files and retains the previous directory until replacement succeeds; if activation fails, the previous projection is restored. Browser configuration updates normalize and validate the complete candidate **before** committing the sole Controller Home v3 config with the existing atomic writer and legacy-file retirement. An invalid `configure` request must leave the authoritative configuration and any legacy files untouched; manifest/health reads remain read-only.
 
 Status: **Runtime Authority**
 
