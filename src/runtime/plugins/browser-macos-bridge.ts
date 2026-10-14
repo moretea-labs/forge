@@ -1581,7 +1581,9 @@ async function resolveCurrentMacOsBrowserTabRef(
     ? await runtimeHooks.tabInventory(product, timeoutMs)
     : runtimeHooks.runAppleScript
       ? undefined
-      : await listMacOsBrowserTabs(product, timeoutMs);
+      // Stable identity needs the complete inventory, not UI-current flags.
+      // Input/activation checks read their exact target's foreground state.
+      : await listMacOsBrowserTabs(product, timeoutMs, { correctFrontmost: false });
   if (!inventory) return ref;
 
   const matches = inventory.tabs.filter((candidate) => candidate.tabId === ref.tabId);

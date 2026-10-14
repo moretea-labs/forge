@@ -10,6 +10,27 @@ Canonical MCP timing evidence includes a `list_plugins` call taking 31,712.84ms.
 
 Decision: reuse `preferStored` discovery for both Controller and repository plugin lists, as existing local-bridge and capability-intent discovery already do. Missing snapshots retain the existing live discovery behavior so an unmaterialized plugin remains discoverable. The tool description explicitly identifies health as last-observed. Action execution still uses its separate live-manifest cache and validates provider identity/readiness; stored discovery cannot populate that execution cache. Registry/config mutations retain existing cache invalidation. There is no new cache, durable state, background probe, provider, lifecycle, authority, permission rule or rollback protocol. Existing stored-discovery invalidation, live execution and disabled-registration scenarios supply focused verification; no tests were added. Installed acceptance for this discovery correction remains pending.
 
+## Calls above two seconds, frozen observation window
+
+Canonical Runtime timings from `2026-10-14T00:07:11.994Z` through `2026-10-14T12:50:42.750Z` (08:07–20:50 Shanghai time) contain 6,305 calls; 651 exceed two seconds. These are tool execution durations, excluding remote connector transit. Of the slow calls, 120 are `process_wait`; their approximately five-second waits are consistent with intentional joining and are not by themselves defects. This leaves 531 non-`process_wait` slow calls, which still include legitimate builds, transfers and provider work.
+
+| Tool | All calls | Calls >2s | Median of >2s calls | Maximum |
+| --- | ---: | ---: | ---: | ---: |
+| plugin_action_execute | 810 | 436 | 10.164s | 279.921s |
+| rh_context | 231 | 27 | 3.976s | 29.756s |
+| run_check | 96 | 13 | 4.861s | 123.195s |
+| list_plugins | 22 | 13 | 4.894s | 31.713s |
+| work_validate | 17 | 13 | 12.145s | 15.961s |
+| repository_command_execute | 1,268 | 10 | 3.615s | 7.390s |
+
+Exact read-only request-to-receipt lookup resolves 161 of the 436 slow plugin calls; 275 have no durable receipt in that lookup. Observation-only actions need not retain result receipts, so these unmatched calls must remain unattributed rather than being guessed from request names. Within the matched slow subset: `computer.attach_local_file` has 10 calls, median 131.488s and maximum 279.921s; `open_page` has 35, median 17.704s; `click` has 52, median 11.503s; `activate_page` has six, median 34.506s. These are conditional slow-subset statistics, not typical latency for all calls of each action.
+
+One shared removable cost is proven: `resolveCurrentMacOsBrowserTabRef` requested full inventory with an optional foreground metadata correction before every exact-target operation. Its decision only consumes stable IDs, uniqueness and the truncation marker. On the real running Chrome with 24 tabs, inventory with correction took 2,793/2,896ms; without it, 2,087/2,148ms, with identical window/tab ID sets and `truncated=false`. Exact owned-tab metadata reads before the correction took 2,757/2,826ms and after it took 2,362/2,409ms for the same ID pair. The controlled sample shows a 395–417ms reduction; it does not establish every Computer action falls below two seconds.
+
+Correction: exact identity resolution reuses the existing `correctFrontmost:false` option. Full live inventory, ambiguous/missing/truncated rejection and current-window resolution remain. Actual input and activation retain their own exact-target foreground/postcondition checks. No identity cache, provider bypass, new state, lifecycle or authorization is introduced. Four existing native-handle, moved-window, ambiguous-target and inventory scenarios pass, along with TypeScript verification; no tests were added.
+
+Remaining substantial costs: the native provider still reads per-tab properties sequentially through Apple Events; each file-transfer chunk invokes exact-target resolution again. The live inventory itself still exceeds two seconds in this sample. `rh_context` needs operation/stage evidence before attributing its 25–30s outliers, and build/validation durations require comparing actual command time with framework overhead. These are grounded next investigations, not established causes of every historical slow request.
+
 ## Current evidence
 
 - The observed installed Runtime was release `1791968531522-c8ea73e53af95a6214b3066689ed132bd2b34296`. Current source changes must not be reported as installed behavior without a separate reviewed release transaction.
