@@ -111,12 +111,16 @@ async function main(): Promise<void> {
         buffer = buffer.slice(newline + 1);
         const request = JSON.parse(raw) as { id: string; method: string; params?: Record<string, unknown> };
         const envelopeParams = request.params ?? {};
+        const computerArguments = request.method === 'computer_execute'
+          && envelopeParams.arguments && typeof envelopeParams.arguments === 'object'
+          ? envelopeParams.arguments as Record<string, unknown>
+          : undefined;
         const actionId = request.method === 'execute' && typeof envelopeParams.action === 'string'
           ? envelopeParams.action
-          : request.method;
+          : typeof computerArguments?.action === 'string' ? computerArguments.action : request.method;
         const params = request.method === 'execute' && envelopeParams.arguments && typeof envelopeParams.arguments === 'object'
           ? envelopeParams.arguments as Record<string, unknown>
-          : envelopeParams;
+          : computerArguments ?? envelopeParams;
         let result: Record<string, unknown>;
         if (actionId === 'handshake') {
           counters.handshakes += 1;
@@ -125,7 +129,9 @@ async function main(): Promise<void> {
             protocolVersion: registration.protocolVersion,
             processId: 9001,
             startedAt: '2026-09-09T00:00:00.000Z',
-            computerCapabilities: [],
+            computerCapabilities: [
+              { capabilityId: 'computer.observe.v1', protocolVersion: 1, method: 'computer_execute', actions: ['desktop_observe'] },
+            ],
           };
         } else if (actionId === 'manifest') {
           counters.manifests += 1;
