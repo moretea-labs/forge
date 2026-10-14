@@ -16,7 +16,8 @@ import { cachedGitIdentity, gitSnapshot } from "../../../src/cli/repository/insp
 import { buildRuntimeMaintenanceStatus } from "../../../src/runtime/recovery";
 import { allowedFacadeOperations, buildFacadeResult, listCapabilityDescriptors, summarizeCapabilityGroups, listHandoffAttentionItems, normalizeCheckIds, buildWorkContinuationSnapshot, listPlanContracts, summarizePlanContract, runHandoffInboxApplication, type FacadeTool } from "../../../src/runtime/control-plane/facade";
 import { buildJobOperationDigest } from '../../../src/runtime/control-plane/facade/operation-digest';
-import { readActiveWorkCandidates, type InvalidActiveWorkCandidate } from "../../../packages/kernel/work/api/index";
+import { getWorkContract, readActiveWorkCandidates, semanticWorkState, type InvalidActiveWorkCandidate } from "../../../packages/kernel/work/api/index";
+import { listWorkHandles } from '../../../src/runtime/control-plane/execution/work-handle-store';
 import { observeRuntimeStatus } from "../../../src/runtime/root/status";
 import { getControllerSession } from "../../../packages/kernel/controller/api/index";
 import { listActiveOccurrences, listSchedules, scheduleOwnsWork } from "../../../packages/kernel/scheduler/api/index";
@@ -644,6 +645,37 @@ export async function callStatusInboxAdapter(
       const pendingHandoffCount = pendingHandoffAttention.length;
       const activeWorkProjection = readActiveWorkCandidates({ ...store, limit: 200 });
       const activeContracts = activeWorkProjection.contracts;
+      // Reuse the exact WorkHandle and semantic Work authorities consulted by
+      // delivery. This is a read-only diagnosis, never a delivery admission gate.
+      const receivingOwners = listWorkHandles(ctx.controllerHome, repository.repoId)
+        .filter((handle) => {
+          if (handle.checkoutId !== repository.activeCheckoutId
+            || handle.branch !== liveGit.branch
+            || handle.state === 'cleaned' || handle.state === 'failed') return false;
+          const contract = getWorkContract(store, handle.workContractId ?? handle.workId);
+          return Boolean(contract && semanticWorkState(contract) === 'open');
+        })
+        .sort((left, right) => left.workId.localeCompare(right.workId));
+      const headDriftedOwners = receivingOwners.filter((handle) =>
+        Boolean(handle.expectedHead && handle.expectedHead !== liveGit.head));
+      const repositoryDeliveryBlockers = [
+        ...(receivingOwners.length > 1 ? ['WORK_CANONICAL_MUTATION_OWNERSHIP_AMBIGUOUS']
+          : receivingOwners.length ? ['WORK_DELIVERY_TARGET_WORK_ACTIVE'] : []),
+        ...(headDriftedOwners.length ? ['WORK_HANDLE_HEAD_CHANGED'] : []),
+        ...(liveGit.dirty ? ['WORK_DELIVERY_TARGET_DIRTY'] : []),
+      ];
+      const repositoryDeliveryNextSafeAction =
+        receivingOwners.length > 1
+          ? 'Multiple open WorkHandles claim this checkout. Resolve canonical ownership before any Git mutation; do not guess or bypass a writer.'
+          : headDriftedOwners.length && liveGit.dirty
+          ? 'Owning Work: review the uncommitted paths against successor commits, converge its edits, then use explicit work_prepare successor adoption only if ancestry and path disjointness are proven.'
+          : headDriftedOwners.length
+            ? 'Owning Work: verify exact HEAD ancestry and use work_prepare with expected_previous_head/adopt_candidate_head; never silently rebase or reset.'
+            : liveGit.dirty
+              ? 'Owning writer: review and verify the existing dirty paths, then commit through its authorized Work before integrating another candidate; never auto-stash or reset.'
+              : receivingOwners.length
+                ? 'The receiving Work owns this checkout. Integrate reviewed source commits using its own authorized Git path, then reconcile each source Work through canonical deliver_work.'
+                : 'For a validated source Work, use canonical repository.git.deliver_work; this read-only projection does not check live mutation leases or grant integration authority.';
       markDetailPhase('work_state');
       const activePrimaryWork = activeContracts.filter((contract) => (contract.lifecycleRole ?? 'primary') === 'primary');
       const activeExecutionChildren = activeContracts.filter((contract) => contract.lifecycleRole === 'execution_child');
@@ -743,6 +775,25 @@ export async function callStatusInboxAdapter(
           primaryWorkActivityCounts,
           primaryWorkActivities,
           activeContractCount: activeContracts.length,
+          repositoryDelivery: {
+            observation: 'work_handle_and_git_snapshot' as const,
+            diagnosticOnly: true,
+            checkoutId: repository.activeCheckoutId,
+            branch: liveGit.branch,
+            head: liveGit.head,
+            dirty: liveGit.dirty,
+            ownerCount: receivingOwners.length,
+            ownersTruncated: receivingOwners.length > 5,
+            owners: receivingOwners.slice(0, 5).map((handle) => ({
+              workId: handle.workId,
+              state: handle.state,
+              expectedHead: handle.expectedHead ?? null,
+              headDrift: Boolean(handle.expectedHead && handle.expectedHead !== liveGit.head),
+            })),
+            blockers: repositoryDeliveryBlockers,
+            nextSafeAction: repositoryDeliveryNextSafeAction,
+            limitations: 'Live leases, source validation, conflict preview and target CAS remain canonical delivery-time checks.',
+          },
           invalidActiveContractCount: activeWorkProjection.invalid.length,
           invalidActiveContracts: activeWorkProjection.invalid.slice(0, 10).map(summarizeInvalidActiveWorkCandidate),
           // Summary keeps the stable facade surface only; detail expands to the full registered schema.
