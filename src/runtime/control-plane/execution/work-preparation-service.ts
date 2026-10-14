@@ -112,7 +112,12 @@ function adoptExplicitSuccessorHead(
   if (!expectedPreviousHead || !adoptCandidateHead) {
     throw new Error('WORK_HANDLE_SUCCESSOR_ADOPTION_PAIR_REQUIRED: expected_previous_head and adopt_candidate_head must be supplied together');
   }
-  if (existing.state !== 'prepared' && existing.state !== 'editing') {
+  // A failed validation attempt may need an explicit, audited successor
+  // adoption before it can retry against the current checkout. Keep its
+  // failed state: only a fresh valid check may restore execution authority.
+  const retryableValidationFailure = existing.state === 'failed'
+    && existing.finalization.validation === 'failed';
+  if (existing.state !== 'prepared' && existing.state !== 'editing' && !retryableValidationFailure) {
     throw new Error(`WORK_HANDLE_SUCCESSOR_ADOPTION_STATE_INVALID: ${existing.state}`);
   }
   if (existing.expectedHead !== expectedPreviousHead) {

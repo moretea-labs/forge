@@ -391,7 +391,7 @@
         if (expectedConversationId && !exactConversationIsCurrent()) return;
         const latest = roleNodes(USER).at(-1);
         if (latest && latest !== beforeSend
-          && core.normalizeText(messageText(latest)) === core.normalizeText(payload)) finish(true);
+          && exactComposerText(messageText(latest)) === expected) finish(true);
       };
       const observer = new MutationObserver(check);
       observer.observe(document.documentElement, { childList: true, subtree: true, characterData: true });

@@ -120,9 +120,13 @@ function settleInfrastructureFailure(
   handle: WorkHandleState,
   summary: string,
 ): WorkValidationReconciliation {
-  const next = transitionWorkHandle(controllerHome, handle, 'failed', {
+  // Infrastructure/receipt uncertainty invalidates validation authority,
+  // not the underlying Work. Resume the pre-validation state so the same Work
+  // can repair and retry without opening a replacement lifecycle.
+  const next = transitionWorkHandle(controllerHome, handle, handle.validationRun?.resumeState ?? 'editing', {
     finalization: { ...handle.finalization, validation: 'failed', failureCode: undefined, lastError: summary },
     validationRun: undefined,
+    validatedInputFingerprint: undefined,
     failureReason: summary,
   });
   projectWorkValidationOutcome(controllerHome, next, 'infrastructure_failure', summary);

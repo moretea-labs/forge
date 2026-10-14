@@ -476,9 +476,12 @@ export async function validateWork(ctx: McpExecutionContext, args: Record<string
     : acceptedFailure
       ? String(acceptedFailure.summary ?? 'targeted validation failed')
       : undefined;
+  // A missing/stale Check receipt is retryable validation evidence, not a
+  // failed Work execution. Keep the original Work state so repair commands
+  // remain authorized; accepted test failures retain the existing failed path.
   const nextState = !completed
     ? 'validating'
-    : passed
+    : passed || infrastructureFailure
       ? validationRun.resumeState
       : 'failed';
   const validation = !completed ? 'pending' : passed ? 'done' : 'failed';
@@ -489,7 +492,7 @@ export async function validateWork(ctx: McpExecutionContext, args: Record<string
       lastError: failureSummary,
     },
     validationRun: completed ? undefined : validationRun,
-    ...(passed ? { validatedInputFingerprint: validationFingerprint } : {}),
+    validatedInputFingerprint: passed ? validationFingerprint : undefined,
     ...(failureSummary ? { failureReason: failureSummary } : { failureReason: undefined }),
   });
   if (completed) {

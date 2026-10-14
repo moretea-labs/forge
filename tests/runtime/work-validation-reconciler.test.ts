@@ -230,7 +230,7 @@ describe('Work validation receipt convergence', () => {
     });
 
     const result = reconcileWorkValidation(fx.controllerHome, fx.handle);
-    expect(result).toMatchObject({ outcome: 'infrastructure_failure', changed: true, handle: { state: 'failed' } });
+    expect(result).toMatchObject({ outcome: 'infrastructure_failure', changed: true, handle: { state: 'editing', finalization: { validation: 'failed' } } });
     expect(result.summary).toContain('PROCESS_CHECK_RECEIPT_IDENTITY_MISMATCH');
     expect(result.summary).toContain('check cacheKey');
   });
@@ -437,14 +437,14 @@ describe('Work validation receipt convergence', () => {
   test('bare Process exit failure without semantic Check evidence is infrastructure failure, not valid_fail', () => {
     const fx = fixture('failed', { omitCheckResultReceipt: true });
     const result = reconcileWorkValidation(fx.controllerHome, fx.handle);
-    expect(result).toMatchObject({ outcome: 'infrastructure_failure', changed: true, handle: { state: 'failed' } });
+    expect(result).toMatchObject({ outcome: 'infrastructure_failure', changed: true, handle: { state: 'editing', finalization: { validation: 'failed' } } });
     expect(contractFor(fx)).toMatchObject({ semanticState: 'open', phase: 'implementation', dispatchState: 'running', evidenceState: 'partial' });
   });
 
   test('contradictory Process success and semantic failure evidence fails closed as infrastructure', () => {
     const fx = fixture('succeeded', { semanticOk: false, semanticFailureClass: 'acceptance_failure' });
     const result = reconcileWorkValidation(fx.controllerHome, fx.handle);
-    expect(result).toMatchObject({ outcome: 'infrastructure_failure', changed: true, handle: { state: 'failed' } });
+    expect(result).toMatchObject({ outcome: 'infrastructure_failure', changed: true, handle: { state: 'editing', finalization: { validation: 'failed' } } });
     expect(result.summary).toContain('contradict');
     expect(contractFor(fx)).toMatchObject({ semanticState: 'open', phase: 'implementation', dispatchState: 'running', evidenceState: 'partial' });
   });
@@ -476,13 +476,13 @@ describe('Work validation receipt convergence', () => {
   test('timeout and missing Process records keep validation infrastructure retryable', () => {
     const timedOut = fixture('timed_out');
     const timedOutResult = reconcileWorkValidation(timedOut.controllerHome, timedOut.handle);
-    expect(timedOutResult).toMatchObject({ outcome: 'infrastructure_failure', handle: { state: 'failed' } });
+    expect(timedOutResult).toMatchObject({ outcome: 'infrastructure_failure', handle: { state: 'editing', finalization: { validation: 'failed' } } });
     expect(timedOutResult.handle.finalization.validation).toBe('failed'); expect(timedOutResult.handle.validationRun).toBeUndefined();
     expect(contractFor(timedOut)).toMatchObject({ semanticState: 'open', phase: 'implementation', dispatchState: 'running', evidenceState: 'partial' });
 
     const missing = fixture('succeeded', { createProcess: false });
     const missingResult = reconcileWorkValidation(missing.controllerHome, missing.handle);
-    expect(missingResult).toMatchObject({ outcome: 'infrastructure_failure', handle: { state: 'failed' } });
+    expect(missingResult).toMatchObject({ outcome: 'infrastructure_failure', handle: { state: 'editing', finalization: { validation: 'failed' } } });
     expect(missingResult.handle.validationRun).toBeUndefined();
     expect(contractFor(missing)).toMatchObject({ semanticState: 'open', phase: 'implementation', dispatchState: 'running', evidenceState: 'partial' });
   });
