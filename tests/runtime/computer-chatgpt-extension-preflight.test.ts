@@ -277,8 +277,9 @@ test('real Chrome content script preserves all prompt spaces and newlines during
       return Object.assign(matches, { item: (index: number) => matches[index] });
     },
   };
+  let fullPageTextReads = 0;
   const snapshotContext = {
-    document: { title: 'Forge', body: { innerText: '' }, documentElement: {},
+    document: { title: 'Forge', body: { get innerText() { fullPageTextReads += 1; return 'Full page text'; } }, documentElement: {},
       querySelectorAll: (selector: string) => selector === 'main' ? [main] : [] },
     location: { href: currentUrl }, URL,
     ForgeComputerChatgptCore: { normalizeText: (v: unknown) => String(v ?? '').replace(/\s+/g, ' ').trim(),
@@ -288,9 +289,15 @@ test('real Chrome content script preserves all prompt spaces and newlines during
     setTimeout() { return 1; }, clearTimeout() {},
   };
   runInNewContext(instrumented, snapshotContext);
-  const snapshot = (snapshotContext as typeof snapshotContext & { __receiptSnapshot: () => { latestAssistantResponse: string; latestTurnRole: string } }).__receiptSnapshot();
+  const snapshotReader = (snapshotContext as typeof snapshotContext & {
+    __receiptSnapshot: (options?: { includePageText?: boolean }) => { latestAssistantResponse: string; latestTurnRole: string; pageText?: string };
+  }).__receiptSnapshot;
+  const snapshot = snapshotReader();
   expect(snapshot.latestAssistantResponse).toBe(assistantText);
   expect(snapshot.latestTurnRole).toBe('assistant');
+  expect(fullPageTextReads).toBe(0);
+  expect(snapshotReader({ includePageText: true }).pageText).toBe('Full page text');
+  expect(fullPageTextReads).toBe(1);
 });
 
 test('content script fences bootstrap sends to the exact Project and rejects migrated conversation URLs', async () => {
