@@ -100,7 +100,12 @@ export function forgeWorkflowSupervisorValidators(): WorkflowSupervisorValidator
     },
     userBlockerPolicy: async (task, proposal) => {
       if (task.userBlockerPolicy.kind === 'model_semantic_user_blocker') {
-        return { valid: true, reason: 'model_semantic_user_blocker' };
+        // Tool visibility is a provider failure, not a decision or permission
+        // only the user can supply. Use the immutable completion evidence;
+        // do not add another task state or rely on transient browser text.
+        return proposal.evidence.includes('NO_TOOL_RECEIPT')
+          ? { valid: false, reason: 'tool_unavailable_not_user_blocker' }
+          : { valid: true, reason: 'model_semantic_user_blocker' };
       }
       if (task.userBlockerPolicy.kind === 'forge_work_waiting_for_user') {
         const work = workFor(task);

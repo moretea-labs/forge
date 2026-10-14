@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { WorkflowSupervisorControlPlane } from '../../supervisor/control-plane';
 import { forgeWorkflowSupervisorValidators } from '../../supervisor/forge-validators';
 import { WorkflowSupervisorStore } from '../../supervisor/store';
-import { renderSupervisorPrompt, renderSupervisorReceipt, supervisorReceiptChallenge, SUPERVISOR_TURN_BLOCK_END, SUPERVISOR_TURN_BLOCK_START } from '../../supervisor/protocol';
+import { parseSupervisorCompletion, renderSupervisorPrompt, renderSupervisorReceipt, supervisorReceiptChallenge, SUPERVISOR_TURN_BLOCK_END, SUPERVISOR_TURN_BLOCK_START } from '../../supervisor/protocol';
 import { callCoreCapabilityAdapter } from '../../adapters/mcp/runtime-gateway/core-capability-adapter';
 import { createWorkflowSupervisorServer } from '../../supervisor/server';
 import { workflowSupervisorSocketPath } from '../../supervisor/paths';
@@ -125,6 +125,7 @@ describe('Workflow Supervisor automation receipts', () => {
     expect(parseSupervisorTurn(enrollmentPrompt).receipt).toEqual({ challenge: supervisorReceiptChallenge(task, effect.effectId) });
     expect(enrollmentPrompt).not.toContain('automation.receipt:');
     expect(enrollmentPrompt).toStartWith('<<<FORGE_WORKFLOW_EFFECT_V1:');
+    expect(enrollmentPrompt.split('\n')[1]).toStartWith('forge 继续。使用 Forge 工具');
     expect(enrollmentPrompt).not.toContain('CONTINUE => "C ');
     store.close();
   });
@@ -263,6 +264,16 @@ describe('Workflow Supervisor automation receipts', () => {
       userBlockerPolicy: { kind: 'model_semantic_user_blocker' },
     });
     const firstEffect = control.reserveEnrollment(task.taskId);
+    const noToolResponse = 'NO_TOOL_RECEIPT：本轮没有可调用的 Forge 工具。\n'
+      + renderSupervisorReceipt(task, firstEffect.effectId, 'NEEDS_USER');
+    const noToolProposal = parseSupervisorCompletion(noToolResponse, {
+      task, effectId: firstEffect.effectId, prompt: firstEffect.prompt,
+    }).proposal;
+    expect(noToolProposal.evidence).toEqual(['NO_TOOL_RECEIPT']);
+    expect((await forgeWorkflowSupervisorValidators().userBlockerPolicy(task, noToolProposal)))
+      .toMatchObject({ valid: false, reason: 'tool_unavailable_not_user_blocker' });
+    expect((await forgeWorkflowSupervisorValidators().userBlockerPolicy(task, { ...noToolProposal, evidence: [] })).valid)
+      .toBe(true);
     control.observeEffect({ effectId: firstEffect.effectId, observationId: 'applied-1', outcome: 'applied' });
     const first = await control.observeAssistantTurn({ taskId: task.taskId, conversationId: task.conversationId,
       responseText: 'Useful work first.\n' + renderSupervisorReceipt(task, firstEffect.effectId, 'CONTINUE') });

@@ -129,7 +129,11 @@ export function parseSupervisorCompletion(
         sourceEffectId: validateEffectId(expected.effectId),
         checkpoint: `receipt:${challenge}`,
         reason: 'compact_receipt',
-        evidence: [],
+        // A transient missing tool is mechanical evidence, never user-only
+        // authorization. Persist the explicit model diagnostic on this same
+        // completion so crash reconciliation uses identical validation.
+        evidence: action === 'NEEDS_USER' && /(?:^|\r?\n)\s*NO_TOOL_RECEIPT(?=\s|[:：]|$)/.test(responseText)
+          ? ['NO_TOOL_RECEIPT'] : [],
         conversationId: expected.task.conversationId,
         taskId: expected.task.taskId,
         supervisorState,
@@ -220,6 +224,9 @@ export function renderSupervisorPrompt(
   };
   return [
     renderEffectMarker(effectId),
+    // Keep the exact Effect marker first for existing target matching, but
+    // surface tool intent before the potentially long JSON goal envelope.
+    'forge 继续。使用 Forge 工具立即执行当前任务；先调用真实 Forge 只读工具取得回执，再完成可交付工作。',
     SUPERVISOR_TURN_BLOCK_START,
     JSON.stringify(envelope),
     SUPERVISOR_TURN_BLOCK_END,
