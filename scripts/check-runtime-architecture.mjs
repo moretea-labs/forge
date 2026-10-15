@@ -1489,6 +1489,8 @@ forbid('src/runtime/projections/git-status-sampler.ts', /^function\s+splitStatus
 for (const path of ['src/cli/commands/init.ts', 'src/cli/commands/init-hook.ts', 'src/cli/commands/global-runtime.ts']) {
   forbid(path, /^function\s+(?:withProcessEnv|runProcess)(?:<|\()/m, 'setup commands must import their canonical synchronous process/environment owner');
 }
+requireText('src/cli/editing/edit-session.ts', 'export function findOccurrence');
+forbid('src/cli/repositories/safe-patch.ts', /^function\s+findOccurrence\s*\(/m, 'Safe Patch preflight must reuse Direct Edit anchor occurrence matching');
 requireText('src/cli/editing/edit-session.ts', 'beforeMode');
 requireText('src/cli/editing/edit-session.ts', 'afterMode');
 requireText('src/cli/editing/edit-session.ts', '{ mode: record.beforeMode }');

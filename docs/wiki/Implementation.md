@@ -54,7 +54,7 @@ src/cli/editing/edit-session.ts
 adapters/mcp/tool-mapping/repository-tools.ts
 ```
 
-A bounded patch can be applied directly to the selected checkout with file fingerprints, revisions, savepoints, change budgets, and focused verification. Direct Edit is the default for understood small work; a Plan or worktree is not a prerequisite.
+A bounded patch can be applied directly to the selected checkout with file fingerprints, revisions, savepoints, change budgets, and focused verification. Direct Edit is the default for understood small work; a Plan or worktree is not a prerequisite. Anchor occurrence positioning is owned by `src/cli/editing/edit-session.ts` and reused by `src/cli/repositories/safe-patch.ts` preflight, so preview and the actual patch executor cannot drift on repeated anchors.
 
 ## 5. Command policy and ephemeral workspaces
 

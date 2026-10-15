@@ -1144,7 +1144,7 @@ function sessionSummary(session: EditSession): EditSessionSummary {
   };
 }
 
-function findOccurrence(value: string, anchor: string, occurrence: number): number {
+export function findOccurrence(value: string, anchor: string, occurrence: number): number {
   let from = 0;
   for (let current = 1; current <= occurrence; current += 1) {
     const index = value.indexOf(anchor, from);
