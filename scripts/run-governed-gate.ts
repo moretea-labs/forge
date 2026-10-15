@@ -27,6 +27,7 @@ export function stepsFor(gate: Gate): Step[] {
   ];
   if (gate === 'main') return [
     { label: 'focused task receipt', gate: 'task' },
+    { label: 'quality harness benchmark', command: 'bun', args: ['run', 'check:quality-harness'], timeoutMs: 2 * 60_000 },
     { label: 'core regression', command: 'bun', args: ['run', 'test:core'], timeoutMs: 20 * 60_000 },
     { label: 'runtime smoke', command: 'bun', args: ['run', 'check:smoke'], timeoutMs: 10 * 60_000 },
   ];
