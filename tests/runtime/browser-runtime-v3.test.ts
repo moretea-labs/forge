@@ -424,6 +424,35 @@ describe('Browser Runtime V3 routing', () => {
     }
   });
 
+  test('forwards typed Desktop Operator Chrome process ambiguity and probe failure without generic retry', async () => {
+    const url = 'https://example.com/native-chrome-process-guard';
+    const metadata = ['false', url, 'Chrome Guard', '0', '0', '1200', '800', '7', '9', 'false', 'false'].join(nativeSeparator);
+    let code = 'BROWSER_AUTOMATION_PROCESS_TARGET_AMBIGUOUS';
+    let mutations = 0;
+    // Computer -> Browser preserves the typed provider error, not an
+    // arbitrary message substring from a failing AppleScript transport.
+    const { AssistantPluginError } = await import('../../src/runtime/plugins/errors');
+    setMacOsBrowserRuntimeHooksForTest({
+      platform: 'darwin', appExists: () => true, processRunning: async () => true,
+      runAppleScript: async (script) => {
+        if (script.includes('execute targetTab javascript')) {
+          mutations++;
+          throw new AssistantPluginError(code, 'Provider refused Chrome process targeting', { retryable: code !== 'BROWSER_AUTOMATION_PROCESS_TARGET_AMBIGUOUS' });
+        }
+        return metadata;
+      },
+    });
+    const attached = await reattachMacOsBrowserOwnedPage('chrome', { windowId: '7', tabId: '9' }, 1_000);
+    for (const expected of ['BROWSER_AUTOMATION_PROCESS_TARGET_AMBIGUOUS', 'BROWSER_AUTOMATION_PROCESS_PROBE_UNAVAILABLE']) {
+      code = expected;
+      await expect(attached.page.evaluate('document.title')).rejects.toMatchObject({
+        code: expected,
+        retryable: expected === 'BROWSER_AUTOMATION_PROCESS_PROBE_UNAVAILABLE',
+      });
+    }
+    expect(mutations).toBe(2);
+  });
+
   test('uses a real idempotent click transition for macOS check and uncheck', async () => {
     const url = 'https://example.com/react-checkbox';
     const javaScriptCalls: string[] = [];

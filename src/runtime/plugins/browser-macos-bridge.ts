@@ -962,12 +962,17 @@ export class MacOsAppleEventsPage {
       return await runBrowserAutomationText(effectiveRequest, effectiveScript, args, timeoutMs);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      // Keep the broker's bounded timeout/serialization identity visible to
-      // the sole Supervisor retry policy. Flattening both to the generic
-      // operation error makes a blocked tab hot-loop against the global lane.
-      const brokerFailure = /\b(BROWSER_AUTOMATION_TIMEOUT|BROWSER_AUTOMATION_SERIALIZATION_BUSY)\b/.exec(message)?.[1];
+      // Preserve the provider's *typed* process-identity refusal. In particular,
+      // do not turn ambiguous Chrome app roots into a retryable generic error:
+      // retries must never guess another user's running browser instance.
+      const nativeCode = error instanceof AssistantPluginError ? error.code : undefined;
+      const processFailure = nativeCode === 'BROWSER_AUTOMATION_PROCESS_TARGET_AMBIGUOUS'
+        || nativeCode === 'BROWSER_AUTOMATION_PROCESS_PROBE_UNAVAILABLE' ? nativeCode : undefined;
+      // Existing bounded timeout/serialization identities remain actionable for
+      // the one Supervisor retry policy, including compatibility test transports.
+      const brokerFailure = processFailure ?? /\b(BROWSER_AUTOMATION_TIMEOUT|BROWSER_AUTOMATION_SERIALIZATION_BUSY)\b/.exec(message)?.[1];
       throw new AssistantPluginError(brokerFailure ?? 'PLUGIN_BROWSER_NATIVE_OPERATION_FAILED', `${this.browser.appName} Apple Events operation failed: ${message}`, {
-        retryable: true,
+        retryable: processFailure === 'BROWSER_AUTOMATION_PROCESS_TARGET_AMBIGUOUS' ? false : true,
         details: { browserProduct: this.browser.product, bundleId: this.browser.bundleId },
       });
     }
