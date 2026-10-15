@@ -1248,6 +1248,11 @@ requireText('src/runtime/root/workflow-supervisor-runtime.ts', 'activeReleaseId:
 requireText('src/runtime/root/workflow-supervisor-runtime.ts', 'createWorkflowSupervisorServer');
 requireText('src/runtime/root/workflow-supervisor-runtime.ts', 'startWorkflowSupervisorNativeBrowserAdapter');
 requireText('supervisor/native-browser-adapter.ts', 'targetPort: ComputerChatgptConversationTargetPort;');
+requireText('src/runtime/root/workflow-supervisor-runtime.ts', 'const targetPort = extensionTargetPort;');
+forbid('src/runtime/root/workflow-supervisor-runtime.ts', /PreferredChatgptConversationTargetPort|MacOsChatgptConversationTargetPort|chatgpt-target-router/, 'Work-bound ChatGPT delivery uses one Chrome Extension target port, never a native fallback router');
+requireMissing('adapters/computer/chatgpt-target-router.ts');
+requireText('src/runtime/plugins/browser-runtime.ts', 'options.providers.length !== 1');
+forbid('src/runtime/plugins/browser-runtime.ts', /excludedProviderIds|BrowserProviderUnavailableBeforeActionError/, 'Browser Runtime must not retry an action through another provider');
 forbid('supervisor/native-browser-adapter.ts', /MacOs|AppleEvents|browser-macos-bridge|\bwindowId\b|\btabId\b|window\.name/, 'Workflow Supervisor browser consumer must depend only on the provider-neutral Computer ChatGPT target port');
 forbid('supervisor/native-browser-adapter.ts', /supervisor\/store|sqlite|scheduler|packages\/kernel\/(?:work|controller)|control-plane\/persistence/, 'Native Supervisor browser adapter is transport-only and must not own durable lifecycle, Scheduler, Work, Controller, or persistence authority');
 requireText('src/runtime/root/workflow-supervisor-composition.ts', 'resolveWorkflowSupervisorForgeHome(options.controllerHome)');

@@ -11,7 +11,6 @@ import {
 import {
   BrowserProviderRegistry,
   BrowserProviderSelectionError,
-  BrowserProviderUnavailableBeforeActionError,
   type BrowserRuntimeProvider,
 } from '../../../packages/plugin-runtime/browser/provider-registry';
 
@@ -197,42 +196,34 @@ export async function executeBrowserRuntimeAction(options: {
   input: AssistantPluginActionExecutionInput;
   providers: readonly BrowserRuntimeProvider<AssistantPluginActionExecutionInput, Record<string, unknown>>[];
 }): Promise<Record<string, unknown>> {
-  const registry = registryFor(options.runtimeKey);
-  for (const provider of options.providers) registry.register(provider);
-
-  const policy = browserRuntimeActionPolicy(options.input.actionId);
-  const excluded = new Set<string>();
-  while (true) {
-    let selection;
-    try {
-      selection = await registry.select({
-        input: options.input,
-        requiredCapabilities: policy.requiredCapabilities,
-        foreground: policy.foreground,
-        excludedProviderIds: excluded,
-      });
-    } catch (error) {
-      if (error instanceof BrowserProviderSelectionError) {
-        throw new AssistantPluginError(error.code, error.message, { retryable: error.retryable });
-      }
-      throw error;
-    }
-    const transaction = transactionFor(options.input, selection.provider.providerId, policy);
-    const validationErrors = validateBrowserTransaction(transaction);
-    if (validationErrors.length > 0) {
-      throw new AssistantPluginError('PLUGIN_BROWSER_TRANSACTION_INVALID', validationErrors[0]!, {
-        retryable: false,
-        details: { transactionId: transaction.transactionId, errors: validationErrors },
-      });
-    }
-
-    try {
-      return await selection.provider.execute(options.input);
-    } catch (error) {
-      if (!(error instanceof BrowserProviderUnavailableBeforeActionError)) throw error;
-      excluded.add(selection.provider.providerId);
-      // This is provider reselection, not action replay: the typed error proves the rejected provider
-      // never attempted the action. Unknown outcomes from non-idempotent actions always propagate.
-    }
+  if (options.providers.length !== 1) {
+    throw new AssistantPluginError('PLUGIN_BROWSER_PROVIDER_CARDINALITY_INVALID',
+      'One Browser action must bind exactly one provider before dispatch.', { retryable: false });
   }
+  const registry = registryFor(options.runtimeKey);
+  registry.register(options.providers[0]!);
+  const policy = browserRuntimeActionPolicy(options.input.actionId);
+  let selection;
+  try {
+    selection = await registry.select({
+      input: options.input,
+      requiredCapabilities: policy.requiredCapabilities,
+      foreground: policy.foreground,
+    });
+  } catch (error) {
+    if (error instanceof BrowserProviderSelectionError) {
+      throw new AssistantPluginError(error.code, error.message, { retryable: error.retryable });
+    }
+    throw error;
+  }
+  const transaction = transactionFor(options.input, selection.provider.providerId, policy);
+  const validationErrors = validateBrowserTransaction(transaction);
+  if (validationErrors.length > 0) {
+    throw new AssistantPluginError('PLUGIN_BROWSER_TRANSACTION_INVALID', validationErrors[0]!, {
+      retryable: false,
+      details: { transactionId: transaction.transactionId, errors: validationErrors },
+    });
+  }
+  // Provider failures are returned to the caller. Never silently switch target/provider.
+  return await selection.provider.execute(options.input);
 }

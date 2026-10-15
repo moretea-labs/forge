@@ -6,8 +6,6 @@ import {
 } from './runtime-contract';
 
 export interface BrowserRuntimeProvider<TInput, TResult> extends BrowserProviderCapabilities {
-  /** Lower values are preferred when multiple providers satisfy the same capability contract. */
-  priority: number;
   /** Availability is decided before execution; ordinary provider failures are never fallback signals. */
   supportsInput(input: TInput): boolean;
   execute(input: TInput): Promise<TResult>;
@@ -37,22 +35,6 @@ export class BrowserProviderSelectionError extends Error {
   }
 }
 
-/**
- * A typed pre-action rejection. Runtime may select another provider because this proves the action
- * was not attempted. Arbitrary provider errors are intentionally not mapped to this signal.
- */
-export class BrowserProviderUnavailableBeforeActionError extends Error {
-  readonly providerId: string;
-  readonly reason: string;
-
-  constructor(providerId: string, reason: string) {
-    super(`${providerId} unavailable before action: ${reason}`);
-    this.name = 'BrowserProviderUnavailableBeforeActionError';
-    this.providerId = providerId;
-    this.reason = reason;
-  }
-}
-
 function foregroundCompatible(
   provider: BrowserProviderCapabilities,
   requested: BrowserForegroundRequirement,
@@ -61,24 +43,23 @@ function foregroundCompatible(
 }
 
 export class BrowserProviderRegistry<TInput, TResult> {
-  private readonly providers = new Map<string, BrowserProviderState<TInput, TResult>>();
+  private state?: BrowserProviderState<TInput, TResult>;
 
   register(provider: BrowserRuntimeProvider<TInput, TResult>): void {
-    const current = this.providers.get(provider.providerId);
-    if (current) {
-      current.provider = provider;
+    if (this.state?.provider.providerId === provider.providerId) {
+      this.state.provider = provider;
       return;
     }
-    this.providers.set(provider.providerId, { provider, generation: 1 });
+    // A configuration change replaces the binding; it never accumulates candidates.
+    this.state = { provider, generation: 1 };
   }
 
   invalidate(providerId: string, reason: string): void {
-    const state = this.providers.get(providerId);
-    if (state) state.invalidatedReason = reason;
+    if (this.state?.provider.providerId === providerId) this.state.invalidatedReason = reason;
   }
 
   invalidateAll(reason: string): void {
-    for (const state of this.providers.values()) state.invalidatedReason = reason;
+    if (this.state) this.state.invalidatedReason = reason;
   }
 
   private async prepare(state: BrowserProviderState<TInput, TResult>): Promise<void> {
@@ -92,17 +73,12 @@ export class BrowserProviderRegistry<TInput, TResult> {
     input: TInput;
     requiredCapabilities: readonly BrowserProviderCapability[];
     foreground: BrowserForegroundRequirement;
-    excludedProviderIds?: ReadonlySet<string>;
   }): Promise<BrowserProviderSelection<TInput, TResult>> {
-    const candidates = [...this.providers.values()]
-      .filter(({ provider }) => !options.excludedProviderIds?.has(provider.providerId))
-      .filter(({ provider }) => provider.supportsInput(options.input))
-      .filter(({ provider }) => providerSupports(provider, options.requiredCapabilities))
-      .filter(({ provider }) => foregroundCompatible(provider, options.foreground))
-      .sort((left, right) => left.provider.priority - right.provider.priority
-        || left.provider.providerId.localeCompare(right.provider.providerId));
-
-    const selected = candidates[0];
+    const selected = this.state
+      && this.state.provider.supportsInput(options.input)
+      && providerSupports(this.state.provider, options.requiredCapabilities)
+      && foregroundCompatible(this.state.provider, options.foreground)
+      ? this.state : undefined;
     if (!selected) throw new BrowserProviderSelectionError(options.requiredCapabilities);
     await this.prepare(selected);
     return { provider: selected.provider, generation: selected.generation };

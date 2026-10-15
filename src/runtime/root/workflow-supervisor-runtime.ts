@@ -12,9 +12,7 @@ import { startWorkflowSupervisorNativeBrowserAdapter, type WorkflowSupervisorNat
 import type { WorkflowSupervisorConsumerStatus } from '../../../supervisor/types';
 import { WorkflowSupervisorStore } from '../../../supervisor/store';
 import { createComputerInteractionTargetAuthority } from '../../../adapters/computer/interaction-target-authority';
-import { MacOsChatgptConversationTargetPort } from '../plugins/computer-chatgpt-macos-target';
 import { ChromeExtensionChatgptConversationTargetPort } from '../../../adapters/computer/chatgpt-extension-target';
-import { PreferredChatgptConversationTargetPort } from '../../../adapters/computer/chatgpt-target-router';
 import { createRuntimeComputerTargetPersistence } from './computer-target-persistence';
 import { listDirectActivities, listUserRequests, recordDirectActivity, recordUserRequest, resolveUserRequest } from '../../../packages/kernel/identity/api/index';
 import { getRuntimeWriteClaim } from './write-fence';
@@ -127,8 +125,7 @@ export async function startWorkflowSupervisorRuntime(
   };
   const targetAuthority = createComputerInteractionTargetAuthority(createRuntimeComputerTargetPersistence());
   const extensionTargetPort = new ChromeExtensionChatgptConversationTargetPort(controllerHome, targetAuthority);
-  const appleEventsTargetPort = new MacOsChatgptConversationTargetPort(controllerHome, targetAuthority);
-  const targetPort = new PreferredChatgptConversationTargetPort(extensionTargetPort, appleEventsTargetPort);
+  const targetPort = extensionTargetPort;
   const browserConsumerStatus = (): WorkflowSupervisorConsumerStatus => nativeBrowser?.status() ?? {
     enabled: browserAdapterEnabled,
     running: false,

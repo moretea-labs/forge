@@ -16,7 +16,6 @@ import {
   settleNativeCreatedPageIdentity,
 } from '../../src/runtime/plugins/browser-adapter';
 import {
-  BrowserProviderUnavailableBeforeActionError,
   type BrowserRuntimeProvider,
 } from '../../src/runtime/plugins/browser-provider-registry';
 import type { AssistantPluginActionExecutionInput } from '../../src/runtime/plugins/types';
@@ -55,7 +54,6 @@ function input(actionId: string, requestId: string): AssistantPluginActionExecut
 function provider(options: {
   providerId: string;
   capabilities: BrowserRuntimeProvider<AssistantPluginActionExecutionInput, Record<string, unknown>>['capabilities'];
-  priority: number;
   execute: BrowserRuntimeProvider<AssistantPluginActionExecutionInput, Record<string, unknown>>['execute'];
   revalidate?: () => void;
 }): BrowserRuntimeProvider<AssistantPluginActionExecutionInput, Record<string, unknown>> {
@@ -65,7 +63,6 @@ function provider(options: {
     foreground: 'none',
     verifiesPostconditions: true,
     persistentHandle: true,
-    priority: options.priority,
     supportsInput: () => true,
     execute: options.execute,
     revalidate: options.revalidate,
@@ -102,22 +99,15 @@ describe('Browser Runtime V3 internal resources', () => {
       replaySafety: 'non_idempotent',
     });
     const selected: string[] = [];
-    const wrong = provider({
-      providerId: 'dom-only',
-      capabilities: ['dom.read', 'browser.transaction'],
-      priority: 1,
-      execute: async () => { selected.push('wrong'); return {}; },
-    });
     const right = provider({
       providerId: 'extensions',
       capabilities: ['browser.internal_resources', 'browser.transaction'],
-      priority: 2,
       execute: async () => { selected.push('right'); return { ok: true }; },
     });
     await executeBrowserRuntimeAction({
       runtimeKey: 'browser-v3:extensions',
       input: input('install_unpacked_extension', 'tx-extension-install'),
-      providers: [wrong, right],
+      providers: [right],
     });
     expect(selected).toEqual(['right']);
   });
@@ -346,103 +336,45 @@ describe('Browser Runtime V3 native replacement postconditions', () => {
 });
 
 describe('Browser Runtime V3 routing', () => {
-  test('selects providers by required capabilities rather than failure-driven fallback order', async () => {
+  test('executes the explicitly bound provider for the capability', async () => {
     const calls: string[] = [];
     const result = await executeBrowserRuntimeAction({
       runtimeKey: 'browser-v3:capability-routing',
       input: input('click', 'tx-capability'),
-      providers: [
-        provider({
-          providerId: 'read-only',
-          capabilities: ['dom.read', 'browser.transaction'],
-          priority: 1,
-          execute: async () => {
-            calls.push('read-only');
-            return { provider: 'read-only' };
-          },
-        }),
-        provider({
-          providerId: 'interactive',
-          capabilities: ['dom.interact', 'browser.transaction'],
-          priority: 20,
-          execute: async () => {
-            calls.push('interactive');
-            return { provider: 'interactive' };
-          },
-        }),
-      ],
+      providers: [provider({
+        providerId: 'interactive',
+        capabilities: ['dom.interact', 'browser.transaction'],
+        execute: async () => { calls.push('interactive'); return { provider: 'interactive' }; },
+      })],
     });
-
     expect(result).toEqual({ provider: 'interactive' });
     expect(calls).toEqual(['interactive']);
   });
 
-  test('only a typed pre-action rejection may reselect a provider', async () => {
+  test('rejects multiple providers before executing a Browser action', async () => {
     const calls: string[] = [];
-    const result = await executeBrowserRuntimeAction({
+    await expect(executeBrowserRuntimeAction({
       runtimeKey: 'browser-v3:pre-action-reselect',
       input: input('click', 'tx-pre-action'),
       providers: [
-        provider({
-          providerId: 'preferred',
-          capabilities: ['dom.interact', 'browser.transaction'],
-          priority: 1,
-          execute: async () => {
-            calls.push('preferred');
-            throw new BrowserProviderUnavailableBeforeActionError('preferred', 'not-started');
-          },
-        }),
-        provider({
-          providerId: 'alternate',
-          capabilities: ['dom.interact', 'browser.transaction'],
-          priority: 2,
-          execute: async () => {
-            calls.push('alternate');
-            return { provider: 'alternate' };
-          },
-        }),
+        provider({ providerId: 'preferred', capabilities: ['dom.interact', 'browser.transaction'],
+          execute: async () => { calls.push('preferred'); return {}; } }),
+        provider({ providerId: 'alternate', capabilities: ['dom.interact', 'browser.transaction'],
+          execute: async () => { calls.push('alternate'); return {}; } }),
       ],
-    });
-
-    expect(result).toEqual({ provider: 'alternate' });
-    expect(calls).toEqual(['preferred', 'alternate']);
+    })).rejects.toMatchObject({ code: 'PLUGIN_BROWSER_PROVIDER_CARDINALITY_INVALID' });
+    expect(calls).toEqual([]);
   });
 
-  test('does not replay an unknown non-idempotent outcome on another provider', async () => {
+  test('propagates unknown mutation outcome without retry or provider change', async () => {
     const calls: string[] = [];
-    let observed: unknown;
-    try {
-      await executeBrowserRuntimeAction({
-        runtimeKey: 'browser-v3:no-blind-replay',
-        input: input('click', 'tx-unknown-outcome'),
-        providers: [
-          provider({
-            providerId: 'preferred',
-            capabilities: ['dom.interact', 'browser.transaction'],
-            priority: 1,
-            execute: async () => {
-              calls.push('preferred');
-              throw new Error('unknown outcome after transport started');
-            },
-          }),
-          provider({
-            providerId: 'alternate',
-            capabilities: ['dom.interact', 'browser.transaction'],
-            priority: 2,
-            execute: async () => {
-              calls.push('alternate');
-              return { provider: 'alternate' };
-            },
-          }),
-        ],
-      });
-    } catch (error) {
-      observed = error;
-    }
-
-    expect(observed).toBeInstanceOf(Error);
-    expect((observed as Error).message).toBe('unknown outcome after transport started');
-    expect(calls).toEqual(['preferred']);
+    await expect(executeBrowserRuntimeAction({
+      runtimeKey: 'browser-v3:no-blind-replay',
+      input: input('click', 'tx-unknown-outcome'),
+      providers: [provider({ providerId: 'bound-provider', capabilities: ['dom.interact', 'browser.transaction'],
+        execute: async () => { calls.push('bound-provider'); throw new Error('unknown outcome after transport started'); } })],
+    })).rejects.toThrow('unknown outcome after transport started');
+    expect(calls).toEqual(['bound-provider']);
   });
 
   test('preserves native browser broker timeout and contention identities for Supervisor retry spacing', async () => {
@@ -618,7 +550,6 @@ describe('Browser Runtime V3 routing', () => {
     const warmProvider = provider({
       providerId: 'warm-read',
       capabilities: ['dom.read', 'browser.transaction', 'browser.persistent_handle'],
-      priority: 1,
       revalidate: () => { revalidations += 1; },
       execute: async () => {
         executions += 1;

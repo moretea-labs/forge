@@ -22,7 +22,6 @@ import {
   browserPermissions,
 } from './browser-manifest-surface';
 import { executeBrowserActionThroughNode, shouldUseBrowserNodeBridge } from './browser-node-bridge';
-import { BrowserProviderUnavailableBeforeActionError } from '../../../packages/plugin-runtime/browser/provider-registry';
 import { MAX_BROWSER_CDP_ENDPOINT_CANDIDATES } from '../../../packages/plugin-runtime/browser/runtime-contract';
 import {
   ALL_BROWSER_PROVIDER_CAPABILITIES,
@@ -115,7 +114,7 @@ type BrowserNativeAttachMode = 'auto' | 'disabled';
 
 const CURRENT_BROWSER_CONFIG_SCHEMA_VERSION = 3 as const;
 const DEFAULT_USER_BROWSER_CHANNEL: BrowserChannel = 'chrome';
-const DEFAULT_USER_NATIVE_BROWSER_CANDIDATES: MacOsBrowserProduct[] = ['chrome', 'vivaldi'];
+const DEFAULT_USER_NATIVE_BROWSER_CANDIDATES: MacOsBrowserProduct[] = ['chrome'];
 
 interface BrowserPluginConfig {
   schemaVersion: 3;
@@ -931,11 +930,10 @@ function validateConfig(config: BrowserPluginConfig): string[] {
     const error = cdpEndpointValidationError(endpoint);
     if (error) errors.push(error);
   }
-  if (config.browserMode === 'attach_preferred'
-    && endpoints.length === 0
-    && config.cdpAttachFallback === 'fail_closed'
-    && config.nativeAttachMode === 'disabled') {
-    errors.push('A CDP endpoint or nativeAttachMode=auto is required when browserMode=attach_preferred and cdpAttachFallback=fail_closed.');
+  if (config.browserMode === 'attach_preferred') {
+    if (endpoints.length > 1) errors.push('One Browser attach capability may bind only one CDP endpoint.');
+    if (config.cdpAttachFallback === 'managed_persistent') errors.push('Managed Browser is an explicit browser_mode, never an attach fallback.');
+    if (endpoints.length === 0 && (config.nativeBrowserCandidates?.length ?? 0) > 1) errors.push('Native attach requires one explicitly configured browser product.');
   }
   return errors;
 }
@@ -948,14 +946,8 @@ function configWarnings(config: BrowserPluginConfig): string[] {
       warnings.push('Custom profile mode is more reliable with an explicit Chrome channel or executable path that matches the selected profile format.');
     }
   }
-  if (config.browserMode === 'attach_preferred' && cdpEndpoints(config).length === 0) {
-    if (config.nativeAttachMode === 'auto' && macOsActiveBrowserAttachSupported()) {
-      warnings.push(config.cdpAttachFallback === 'fail_closed'
-        ? 'browserMode=attach_preferred has no configured CDP endpoint; configured native-browser attach will be attempted and managed fallback is disabled.'
-        : 'browserMode=attach_preferred has no configured CDP endpoint; configured native-browser attach will be attempted before explicit managed fallback.');
-    } else {
-      warnings.push('browserMode=attach_preferred has no configured CDP endpoint; actions will use the configured fallback policy.');
-    }
+  if (config.browserMode === 'attach_preferred' && cdpEndpoints(config).length === 0 && config.nativeAttachMode === 'auto') {
+    warnings.push('Native browser attach is the single selected provider; CDP and managed browsers are not automatic alternatives.');
   }
   if (config.browserMode === 'isolated') {
     warnings.push('browserMode=isolated uses a per-session repo-local profile and will not share the default browser profile.');
@@ -2770,7 +2762,7 @@ async function openNativeAttachedContext(
   let preferredNativeWindowId: string | undefined;
   if (!discovered?.attachment) {
     const candidates = savedProduct ? [savedProduct] : (config.nativeBrowserCandidates ?? [...DEFAULT_USER_NATIVE_BROWSER_CANDIDATES]);
-    let preferredCandidates = candidates;
+    let preferredCandidates = candidates.slice(0, 1);
     if (candidates.length > 1 && !target.existingSession && (args.__forge_computer_native_only === true || !stringValue(args.session_id))) {
       // Choosing the frontmost browser can select a different, signed-out
       // profile even while the user's matching Chrome tab is in the background.
@@ -3163,78 +3155,46 @@ async function openBrowser(
       { retryable: true, details: { nativeAttempts: native.attempts } });
   }
   if (requestedMode === 'attach_preferred') {
-    const requireExistingResource = args.__forge_require_existing_resource === true;
-    const existingProvider = target.existingSession?.browser?.provider;
-    const attached = cdpEndpoints(config).length > 0 && runtimeHooks.moduleAvailable('playwright', repoRoot)
-      ? await openAttachedContext(runtimeHooks.loadPlaywright(repoRoot), repoRoot, config, target, args)
-      : { attempts: [] as CdpAttachAttempt[] };
-    if (attached.handle) return attached.handle;
-    if (requireExistingResource && existingProvider === 'playwright-cdp') {
-      throw new AssistantPluginError(
-        'PLUGIN_BROWSER_SESSION_STATE_LOST',
-        'Saved CDP browser page is no longer attachable; refusing to fall back to another browser or create a replacement page.',
-        { retryable: false, details: { sessionId: target.sessionId, provider: existingProvider } },
-      );
+    const savedProvider = target.existingSession?.browser?.provider;
+    if (savedProvider === 'playwright-persistent-context') {
+      throw new AssistantPluginError('PLUGIN_BROWSER_SESSION_STATE_LOST',
+        'A managed session cannot be silently adopted by an attach provider. Select managed_persistent explicitly.',
+        { retryable: false, details: { sessionId: target.sessionId, provider: savedProvider } });
     }
-    if (requireExistingResource && existingProvider === 'playwright-persistent-context') {
-      if (!runtimeHooks.moduleAvailable('playwright', repoRoot)) {
-        throw new AssistantPluginError('PLUGIN_BROWSER_DEPENDENCY_UNAVAILABLE', 'Managed browser mode requires Playwright.', { retryable: false });
+    const endpoints = cdpEndpoints(config);
+    const route = savedProvider === 'macos-apple-events' ? 'native'
+      : savedProvider === 'playwright-cdp' || endpoints.length > 0 ? 'cdp' : 'native';
+    if (route === 'cdp') {
+      if (endpoints.length !== 1) {
+        throw new AssistantPluginError('PLUGIN_BROWSER_PROVIDER_CARDINALITY_INVALID',
+          'CDP attach requires exactly one configured endpoint.', { retryable: false });
       }
-      return openManagedContext(runtimeHooks.loadPlaywright(repoRoot), repoRoot, config, target, args, 'managed_persistent', requestedMode, {
-        policy: config.cdpAttachFallback ?? 'fail_closed',
-        from: 'attach_preferred',
-        to: 'managed_persistent',
-        reason: 'Reusing the existing managed fallback session without probing or creating a different browser resource.',
-        attempts: attached.attempts,
-      });
+      if (!runtimeHooks.moduleAvailable('playwright', repoRoot)) {
+        throw new AssistantPluginError('PLUGIN_BROWSER_DEPENDENCY_UNAVAILABLE',
+          'Selected CDP provider requires Playwright; no other provider will be attempted.', { retryable: false });
+      }
+      const attached = await openAttachedContext(runtimeHooks.loadPlaywright(repoRoot), repoRoot, config, target, args);
+      if (attached.handle) return attached.handle;
+      throw new AssistantPluginError('PLUGIN_BROWSER_ATTACH_UNAVAILABLE',
+        'Configured CDP endpoint unavailable. Native and managed providers will not be attempted.',
+        { retryable: true, details: { provider: 'playwright-cdp', attempts: attached.attempts } });
     }
-
+    if (config.nativeAttachMode !== 'auto') {
+      throw new AssistantPluginError('PLUGIN_BROWSER_ATTACH_UNAVAILABLE',
+        'Native attach is not configured. Choose an explicit Browser mode or one CDP endpoint.',
+        { retryable: false });
+    }
     const native = await openNativeAttachedContext(repoRoot, config, target, args);
     if (native.handle) return native.handle;
-    if (requireExistingResource) {
-      throw new AssistantPluginError(
-        'PLUGIN_BROWSER_SESSION_STATE_LOST',
-        'Saved browser resource is no longer attachable; refusing to create a replacement tab/page for this existing-session action.',
-        { retryable: false, details: { sessionId: target.sessionId, provider: existingProvider } },
-      );
-    }
-
-    const fallbackPolicy = config.cdpAttachFallback ?? 'fail_closed';
-    const cdpReason = attached.attempts.map((attempt) => `${attempt.endpoint}: ${attempt.error ?? 'unavailable'}`).join('; ')
-      || 'No CDP endpoint candidates were configured.';
-    const nativeReason = native.attempts.map((attempt) => `${attempt.appName}: ${attempt.error ?? attempt.status}`).join('; ')
-      || (config.nativeAttachMode === 'disabled' ? 'Native browser attach is disabled.' : 'No scriptable macOS browser was available.');
-    const reason = `CDP: ${cdpReason} Native: ${nativeReason}`;
-    if (fallbackPolicy === 'fail_closed') {
-      throw new AssistantPluginError('PLUGIN_BROWSER_ATTACH_UNAVAILABLE', `No configured browser attach provider was available. Fallback policy fail_closed prevented managed launch. ${reason}`, {
-        retryable: true,
-        details: {
-          browserMode: requestedMode,
-          fallbackPolicy,
-          attempts: attached.attempts,
-          nativeAttempts: native.attempts,
-        },
-      });
-    }
-    if (!runtimeHooks.moduleAvailable('playwright', repoRoot)) {
-      throw new AssistantPluginError('PLUGIN_BROWSER_DEPENDENCY_UNAVAILABLE', `Managed browser fallback requires Playwright, but native/CDP attach was unavailable. ${reason}`, { retryable: false });
-    }
-    return openManagedContext(runtimeHooks.loadPlaywright(repoRoot), repoRoot, config, target, args, 'managed_persistent', requestedMode, {
-      policy: fallbackPolicy,
-      from: 'attach_preferred',
-      to: 'managed_persistent',
-      reason,
-      attempts: attached.attempts,
-      nativeAttempts: native.attempts,
-    });
+    throw new AssistantPluginError('PLUGIN_BROWSER_ATTACH_UNAVAILABLE',
+      'Configured native browser target unavailable. No alternate provider will be attempted.',
+      { retryable: true, details: { provider: 'macos-apple-events', attempts: native.attempts } });
   }
-
   if (!runtimeHooks.moduleAvailable('playwright', repoRoot)) {
     throw new AssistantPluginError('PLUGIN_BROWSER_DEPENDENCY_UNAVAILABLE', 'Managed browser mode requires Playwright.', { retryable: false });
   }
   return openManagedContext(runtimeHooks.loadPlaywright(repoRoot), repoRoot, config, target, args, requestedMode, requestedMode);
 }
-
 async function withPage<T>(
   actionId: string,
   repoRoot: string,
@@ -4021,9 +3981,7 @@ export function buildBrowserPluginManifest(
         ? 'Browser plugin is disabled.'
         : state.ready
           ? `Browser plugin is ready via ${config.browserMode === 'attach_preferred'
-            ? config.cdpAttachFallback === 'managed_persistent'
-              ? 'CDP, macOS native attach, and explicit managed fallback.'
-              : 'CDP or macOS native attach; managed fallback is disabled.'
+            ? 'the one configured CDP or native browser target (no provider fallback).'
             : 'Playwright persistent context.'}`
           : state.state === 'degraded'
             ? state.warnings[0] ?? 'Browser plugin requires a successful live native attach probe.'
@@ -4036,13 +3994,6 @@ export function buildBrowserPluginManifest(
     updatedAt: previousUpdatedAt ?? now(),
   };
 }
-
-const NODE_BRIDGE_PRE_ACTION_FAILURE_CODES = new Set([
-  'PLUGIN_BROWSER_NODE_UNAVAILABLE',
-  'PLUGIN_BROWSER_NODE_HOST_UNAVAILABLE',
-  'PLUGIN_BROWSER_NODE_REQUEST_TOO_LARGE',
-  'PLUGIN_BROWSER_NODE_START_FAILED',
-]);
 
 function browserRuntimeKey(input: AssistantPluginActionExecutionInput): string {
   return `${input.controllerHome}:${input.repoId}`;
@@ -4082,33 +4033,21 @@ async function executeBrowserPluginActionInternal(
     const result = await executeBrowserRuntimeAction({
       runtimeKey,
       input,
-      providers: [
-        ...(nodeBridgeEligible ? [{
+      providers: nodeBridgeEligible ? [{
           providerId: 'browser.node_bridge',
           capabilities: ALL_BROWSER_PROVIDER_CAPABILITIES.filter((capability) => capability !== 'browser.persistent_handle'),
           foreground: 'none' as const,
           verifiesPostconditions: true,
           persistentHandle: false,
-          priority: 10,
           supportsInput: () => true,
-          execute: async (routedInput: AssistantPluginActionExecutionInput) => {
-            try {
-              return await executeBrowserActionThroughNode(routedInput);
-            } catch (error) {
-              if (error instanceof AssistantPluginError && NODE_BRIDGE_PRE_ACTION_FAILURE_CODES.has(error.code)) {
-                throw new BrowserProviderUnavailableBeforeActionError('browser.node_bridge', error.code);
-              }
-              throw error;
-            }
-          },
-        }] : []),
+          execute: async (routedInput: AssistantPluginActionExecutionInput) => await executeBrowserActionThroughNode(routedInput),
+        }] : [
         {
           providerId: 'browser.local',
           capabilities: ALL_BROWSER_PROVIDER_CAPABILITIES,
           foreground: 'none' as const,
           verifiesPostconditions: true,
           persistentHandle: true,
-          priority: 20,
           supportsInput: () => true,
           execute: async (routedInput: AssistantPluginActionExecutionInput) => executeBrowserPluginActionInternal(routedInput, true),
         },
