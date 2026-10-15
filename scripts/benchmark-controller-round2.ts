@@ -4,7 +4,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { createMcpToolContext } from '../src/cli/mcp/multi-repository';
 import { callRuntimeTool } from '../src/runtime/gateway/mcp/runtime-tools';
-import { exposedControllerToolDefinitions } from '../src/cli/mcp/toolset';
+import { exposedControllerToolDefinitions } from '../adapters/mcp/toolset';
 import { registerRepository } from '../src/cli/repositories/registry';
 
 type ToolCall = { value: Record<string, any>; elapsedMs: number };

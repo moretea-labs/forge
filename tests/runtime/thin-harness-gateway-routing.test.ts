@@ -19,7 +19,7 @@ import { repositoryGitStatus } from '../../src/cli/repositories/structured-git';
 import { ensureRepositoryRuntimeStorageBinding } from '../../src/cli/repositories/runtime-storage';
 import { listExecutionJobs } from '../../src/runtime/execution/jobs/store';
 import { listLocalBridgeJobSnapshots } from '../../src/cli/local-bridge/job-store';
-import { callRepositoryTool } from '../../src/cli/mcp/repository-tools';
+import { callRepositoryTool } from '../../adapters/mcp/tool-mapping/repository-tools';
 import { callExecutionTool } from '../../src/runtime/gateway/mcp/execution-tools';
 import { executeWork } from '../../src/runtime/control-plane/execution/work-operation-service';
 import { callRuntimeTool } from '../../src/runtime/gateway/mcp/runtime-tools';

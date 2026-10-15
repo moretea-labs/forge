@@ -6,7 +6,7 @@ import { hashMcpInput, mcpAuditLogPath, tryWriteMcpAuditEntry, writeMcpAuditEntr
 import { getMcpPolicy } from '../../src/cli/mcp/policy';
 import { redactMcpText } from '../../src/cli/mcp/redaction';
 import { globMatches, normalizeMcpRelativePath, resolveMcpPath } from '../../src/cli/mcp/paths';
-import { buildMcpToolDefinitions } from '../../src/cli/mcp/tools';
+import { buildMcpToolDefinitions } from '../../adapters/mcp/tool-mapping/tools';
 
 describe('mcp policy and paths', () => {
   test('matches forge workflow globs without matching sibling paths', () => {

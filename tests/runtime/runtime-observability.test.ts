@@ -26,7 +26,7 @@ import { createMcpToolContext as createMultiRepositoryContext } from '../../src/
 import { createForgeMcpServer } from '../../src/cli/mcp/server';
 import { registerRepository } from '../../src/cli/repositories/registry';
 import { repositoryControllerRoot } from '../../src/cli/repositories/controller-home';
-import { callRepositoryTool } from '../../src/cli/mcp/repository-tools';
+import { callRepositoryTool } from '../../adapters/mcp/tool-mapping/repository-tools';
 import { buildRuntimeMaintenanceStatus } from '../../src/runtime/recovery';
 import { writeJsonAtomic } from '../../src/runtime/shared/json-files';
 import { acquireRuntimeOwnership, type RuntimeOwnershipHandle } from '../../src/runtime/root/ownership';
@@ -41,7 +41,7 @@ import { listWorkContinuationSchedules } from '../../src/runtime/workflow/schedu
 import { createHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
 import { runHandoffInboxApplication } from '../../src/runtime/control-plane/facade/handoff-inbox-application';
 import { writeWorkHandle, type WorkHandleState } from '../../src/runtime/control-plane/execution/work-handle-store';
-import { DEFAULT_CONTROLLER_TOOL_NAMES, PREFERRED_FACADE_TOOL_NAMES } from '../../src/cli/mcp/toolset-names';
+import { DEFAULT_CONTROLLER_TOOL_NAMES, PREFERRED_FACADE_TOOL_NAMES } from '../../adapters/mcp/toolset-names';
 import { FORGE_VERSION } from '../../src/cli/controller/runtime-config';
 import {
   PROCESS_RUNNER_RELEASE_CANARY_CHILD_ARG,

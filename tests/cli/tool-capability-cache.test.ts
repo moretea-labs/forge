@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import type { McpToolDefinition } from '../../src/cli/mcp/tools';
+import type { McpToolDefinition } from '../../adapters/mcp/tool-mapping/tools';
 import { SessionToolDefinitionCache, controllerCapabilityGroupForTool, groupControllerToolDefinitions } from '../../adapters/mcp/tool-capability-cache';
 
 const tool = (name: string): McpToolDefinition => ({ name, description: name, inputSchema: { type: 'object', properties: {} } });

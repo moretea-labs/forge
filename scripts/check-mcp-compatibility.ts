@@ -3,9 +3,9 @@ import { FORGE_TOOL_SURFACE, FORGE_VERSION, forgeToolSurfaceFingerprint } from '
 import { injectCognitionSettlementFields } from '../adapters/mcp/runtime-gateway/cognition-settlement';
 import { injectDurableCommandFields } from '../src/runtime/gateway/mcp/router';
 import { runtimePolicy } from '../src/cli/mcp/multi-repository';
-import { buildMcpToolDefinitions } from '../src/cli/mcp/tools';
-import { accessToolDefinitions } from '../src/cli/mcp/access-tools';
-import { repositoryToolDefinitions } from '../src/cli/mcp/repository-tools';
+import { buildMcpToolDefinitions } from '../adapters/mcp/tool-mapping/tools';
+import { accessToolDefinitions } from '../adapters/mcp/tool-mapping/access-tools';
+import { repositoryToolDefinitions } from '../adapters/mcp/tool-mapping/repository-tools';
 import { runtimeToolDefinitions } from '../src/runtime/gateway/mcp/runtime-tools';
 import { executionToolDefinitions } from '../src/runtime/gateway/mcp/execution-tools';
 import { processToolDefinitions } from '../src/runtime/gateway/mcp/process-tools';
@@ -15,7 +15,7 @@ import {
   DEFAULT_CONTROLLER_TOOL_NAMES,
   PREFERRED_FACADE_TOOL_NAMES,
   STABLE_CONTROLLER_TOOL_NAMES,
-} from '../src/cli/mcp/toolset';
+} from '../adapters/mcp/toolset';
 
 // The served ChatGPT schema is intentionally much smaller than the exhaustive
 // compatibility catalog. Keep a tight budget so accidental tool additions are

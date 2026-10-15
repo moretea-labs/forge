@@ -12,7 +12,7 @@ import { join } from 'path';
 import { spawnSync } from 'child_process';
 import { getMcpPolicy } from '../src/cli/mcp/policy';
 import { createMcpToolContext } from '../src/cli/mcp/multi-repository';
-import { exposedControllerToolDefinitions } from '../src/cli/mcp/toolset';
+import { exposedControllerToolDefinitions } from '../adapters/mcp/toolset';
 import {
   cachedGitIdentity,
   clearGitIdentityCacheForTest,

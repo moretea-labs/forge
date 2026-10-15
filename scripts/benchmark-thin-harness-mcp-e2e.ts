@@ -23,7 +23,7 @@ import { spawnSync } from 'child_process';
 import { ensureControllerHome, repositoryControllerRoot } from '../src/cli/repositories/controller-home';
 import { registerRepository } from '../src/cli/repositories/registry';
 import { createMcpToolContext } from '../src/cli/mcp/server';
-import { callRepositoryTool } from '../src/cli/mcp/repository-tools';
+import { callRepositoryTool } from '../adapters/mcp/tool-mapping/repository-tools';
 import {
   classifyGatewayExecutionPath,
   routeDurableMcpCall,

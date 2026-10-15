@@ -6,11 +6,11 @@ import { join } from 'path';
 import { registerRepository } from '../src/cli/repositories/registry';
 import { readForgeRuntimeStatus } from '../src/runtime/control-plane/runtime-status-client';
 import { FORGE_TOOL_SURFACE } from '../src/cli/controller/runtime-config';
-import { CORE_CONTROLLER_TOOL_NAMES } from '../src/cli/mcp/toolset';
+import { CORE_CONTROLLER_TOOL_NAMES } from '../adapters/mcp/toolset';
 import { writeMcpServiceLocalConfig } from '../adapters/mcp/auth';
-import { buildMcpToolDefinitions } from '../src/cli/mcp/tools';
+import { buildMcpToolDefinitions } from '../adapters/mcp/tool-mapping/tools';
 import { runtimePolicy } from '../src/cli/mcp/multi-repository';
-import { resolveControllerToolsetSelection } from '../src/cli/mcp/toolset-selection';
+import { resolveControllerToolsetSelection } from '../adapters/mcp/toolset-selection';
 import { RUNTIME_WRITE_CLAIM_ENV } from '../src/runtime/root/write-fence';
 import { createMcpToolContext, readCanonicalRuntimeToolSchema } from '../src/cli/mcp/server';
 

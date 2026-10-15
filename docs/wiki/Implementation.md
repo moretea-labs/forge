@@ -8,14 +8,14 @@ Primary code:
 
 ```text
 src/cli/mcp/server.ts
-src/cli/mcp/toolset-names.ts
-src/cli/mcp/repository-tools.ts
+adapters/mcp/toolset-names.ts
+adapters/mcp/tool-mapping/repository-tools.ts
 src/cli/mcp/transports/http.ts
 src/cli/mcp/transports/session-registry.ts
 src/runtime/gateway/mcp/
 ```
 
-`toolset-names.ts` defines the bounded default connector surface. The five facade tools come from `src/runtime/control-plane/facade/types.ts`; repository, patch, check, Process, plugin-dispatch, and result tools bring the current default to 19.
+`toolset-names.ts` defines the bounded default connector surface. The six facade tools come from `src/runtime/control-plane/facade/types.ts`; repository, patch, check, Process, plugin-dispatch, and result tools bring the current default to 20.
 
 The HTTP transport owns authentication and protocol-era routing. MCP 2026-07-28 is the canonical public path: `createMcpHandler` serves each modern request without `Mcp-Session-Id`. `McpSessionRegistry` is retained only for explicit 2025-era compatibility, where it owns session capacity, active-request protection, stream leases, replacement, and close accounting. Durable Work/Process/ControllerRound authority never comes from either transport form. Controller capability rotation and legacy-owner upgrades are Runtime recovery mechanics; ordinary model-facing Work operations neither expose nor require `controller_claim`. Legacy tool-surface mismatches still return a recoverable reinitialize response; modern requests resolve the current Runtime schema per request.
 
@@ -51,7 +51,7 @@ Primary code:
 
 ```text
 src/cli/editing/edit-session.ts
-src/cli/mcp/repository-tools.ts
+adapters/mcp/tool-mapping/repository-tools.ts
 ```
 
 A bounded patch can be applied directly to the selected checkout with file fingerprints, revisions, savepoints, change budgets, and focused verification. Direct Edit is the default for understood small work; a Plan or worktree is not a prerequisite.

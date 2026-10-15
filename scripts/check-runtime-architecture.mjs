@@ -1789,7 +1789,14 @@ requireText('adapters/mcp/transports/http-observation.ts', "'/repos/:repoId/heal
 requireText('src/runtime/control-plane/governance/external-effects.ts', 'EXTERNAL_EFFECT_AUTHORIZATION_REQUIRED');
 requireText('src/runtime/control-plane/governance/external-effects.ts', 'AUTOMATED_REQUIREMENT_REQUIRES_CANDIDATE');
 requireText('adapters/mcp/tool-mapping/tools.ts', "export * from './legacy-tool-service'");
-requireText('src/cli/mcp/tools.ts', '@deprecated Kernel V2 compatibility shim');
+for (const retiredShim of [
+  'src/cli/mcp/access-tools.ts',
+  'src/cli/mcp/repository-tools.ts',
+  'src/cli/mcp/tools.ts',
+  'src/cli/mcp/toolset.ts',
+  'src/cli/mcp/toolset-names.ts',
+  'src/cli/mcp/toolset-selection.ts',
+]) requireMissing(retiredShim);
 
 for (const path of [
   'adapters/mcp/runtime-gateway/router.ts',
@@ -2167,12 +2174,8 @@ for (const path of [
   'src/runtime/gateway/mcp/work-validation-reconciler.ts',
 ]) requireText(path, '@deprecated Kernel V2 compatibility shim');
 for (const path of [
-  'src/cli/mcp/access-tools.ts',
   'src/cli/mcp/multi-repository.ts',
-  'src/cli/mcp/repository-tools.ts',
   'src/cli/mcp/server.ts',
-  'src/cli/mcp/tools.ts',
-  'src/cli/mcp/toolset.ts',
 ]) requireText(path, '@deprecated Kernel V2 compatibility shim');
 requireText('src/runtime/control-plane/execution/work-execution-support.ts', 'packages/protocols/mcp/execution-context');
 requireText('src/runtime/control-plane/execution/work-preparation-service.ts', 'packages/protocols/mcp/execution-context');

@@ -10,7 +10,7 @@ import {
   DEFAULT_CONTROLLER_TOOL_NAMES,
   PREFERRED_FACADE_TOOL_NAMES,
   exposedControllerToolDefinitions,
-} from '../src/cli/mcp/toolset';
+} from '../adapters/mcp/toolset';
 import {
   EXPECTED_FACADE_TOOLS,
   OPTIONAL_INTERACTIVE_DEVELOPMENT_TOOLS,
