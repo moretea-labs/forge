@@ -218,6 +218,7 @@ interface ComputerSurfaceIndexReadyRecord {
   schemaVersion: 1;
   status: 'ready';
   indexedAt: string;
+  terminalBindingIndexReady?: true;
 }
 
 const COMPUTER_SURFACE_INDEX_READY_KEY = 'surface-index-v1-ready';
@@ -229,6 +230,12 @@ function digest40(value: string): string {
 function surfaceBindingIndexKey(binding: ComputerSurfaceProviderBinding | undefined): string | undefined {
   if (!binding?.windowId || !binding.tabId) return undefined;
   return `binding-${digest40(`${binding.providerId}:${binding.browserProduct ?? ''}:${binding.windowId}:${binding.tabId}`)}`;
+}
+
+// Migration-only negative evidence; never claims the live tab binding.
+function terminalBindingIndexKey(binding: ComputerSurfaceProviderBinding | undefined): string | undefined {
+  const key = surfaceBindingIndexKey(binding);
+  return key ? `terminal-${key}` : undefined;
 }
 
 function surfaceStableIdentityIndexKey(identity: ComputerSurfaceStableIdentity): string | undefined {
@@ -282,7 +289,10 @@ function writeSurfaceIndexes(
 ): void {
   // Terminal imports retain stable/alias identity, never a physical tab claim.
   const indexed = status === 'tombstoned' ? { ...target, providerBinding: undefined } : target;
-  for (const key of surfaceIndexKeysForTarget(indexed)) {
+  const keys = surfaceIndexKeysForTarget(indexed);
+  const terminal = status === 'tombstoned' ? terminalBindingIndexKey(target.providerBinding) : undefined;
+  if (terminal) keys.push(terminal);
+  for (const key of keys) {
     const current = transaction.read<ComputerSurfaceIndexRecord>(COMPUTER_TARGET_INDEX_NAMESPACE, COMPUTER_TARGET_SCOPE, key);
     if (current?.value.targetId === target.targetId) continue;
     if (current) {
@@ -311,7 +321,7 @@ function ensureSurfaceIndexes(transaction: ComputerTargetPersistenceTransaction)
     COMPUTER_TARGET_SCOPE,
     COMPUTER_SURFACE_INDEX_READY_KEY,
   );
-  if (ready?.value.status === 'ready') return;
+  if (ready?.value.status === 'ready' && ready.value.terminalBindingIndexReady === true) return;
   const surfaces = transaction.listAll<ComputerInteractionTargetEntry>({
     namespace: COMPUTER_TARGET_NAMESPACE,
     scope: COMPUTER_TARGET_SCOPE,
@@ -324,7 +334,7 @@ function ensureSurfaceIndexes(transaction: ComputerTargetPersistenceTransaction)
     scope: COMPUTER_TARGET_SCOPE,
     key: COMPUTER_SURFACE_INDEX_READY_KEY,
     schemaVersion: 1,
-    value: { schemaVersion: 1, status: 'ready', indexedAt: now() } satisfies ComputerSurfaceIndexReadyRecord,
+    value: { schemaVersion: 1, status: 'ready', indexedAt: now(), terminalBindingIndexReady: true } satisfies ComputerSurfaceIndexReadyRecord,
     action: ready ? 'computer_surface_index_ready_repair' : 'computer_surface_index_ready',
     expectedRevision: ready?.revision ?? null,
   });
@@ -347,9 +357,12 @@ function readIndexedSurfaceRecord(
   const index = transaction.read<ComputerSurfaceIndexRecord>(COMPUTER_TARGET_INDEX_NAMESPACE, COMPUTER_TARGET_SCOPE, indexKey);
   if (!index) return undefined;
   const target = transaction.read<ComputerInteractionTargetEntry>(COMPUTER_TARGET_NAMESPACE, COMPUTER_TARGET_SCOPE, index.value.targetId);
-  if (target?.value.target.kind === 'surface'
-    && (target.value.status === 'active' || !indexKey.startsWith('binding-'))
-    && surfaceIndexKeysForTarget(normalizedSurfaceTarget(target.value.target)).includes(indexKey)) return target;
+  const surface = target?.value.target.kind === 'surface' ? normalizedSurfaceTarget(target.value.target) : undefined;
+  const valid = indexKey.startsWith('terminal-')
+    ? target?.value.status === 'tombstoned' && terminalBindingIndexKey(surface?.providerBinding) === indexKey
+    : (target?.value.status === 'active' || !indexKey.startsWith('binding-'))
+      && Boolean(surface && surfaceIndexKeysForTarget(surface).includes(indexKey));
+  if (target && valid) return target;
   transaction.delete({
     namespace: COMPUTER_TARGET_INDEX_NAMESPACE,
     scope: COMPUTER_TARGET_SCOPE,
@@ -363,8 +376,14 @@ function readIndexedSurfaceRecord(
 function deleteSurfaceIndexes(
   transaction: ComputerTargetPersistenceTransaction,
   target: ComputerSurfaceTarget,
+  status: 'active' | 'tombstoned' = 'active',
 ): void {
-  for (const key of surfaceIndexKeysForTarget(target)) {
+  const keys = surfaceIndexKeysForTarget(target);
+  if (status === 'tombstoned') {
+    const terminal = terminalBindingIndexKey(target.providerBinding);
+    if (terminal) keys.push(terminal);
+  }
+  for (const key of keys) {
     const index = transaction.read<ComputerSurfaceIndexRecord>(COMPUTER_TARGET_INDEX_NAMESPACE, COMPUTER_TARGET_SCOPE, key);
     if (!index || index.value.targetId !== target.targetId) continue;
     transaction.delete({
@@ -607,6 +626,15 @@ export function createComputerInteractionTargetAuthority(
     const inputIndexKeys = surfaceInputIndexKeys({ stableIdentity, visibility, compatibilityAliases, repositoryIds, providerBinding });
     return persistence.transaction(controllerHome, (transaction) => {
       ensureSurfaceIndexes(transaction);
+      // An old repository's import is observation, not permission to revive a
+      // terminal physical tab. Current authoritative writes remain unaffected.
+      if (rawInput.reactivate === false) {
+        const terminalKey = terminalBindingIndexKey(providerBinding);
+        const terminal = terminalKey ? readIndexedSurfaceRecord(transaction, terminalKey) : undefined;
+        if (terminal?.value.status === 'tombstoned' && terminal.value.target.kind === 'surface') {
+          return { target: structuredClone(normalizedSurfaceTarget(terminal.value.target)), status: 'tombstoned', created: false };
+        }
+      }
       const indexed = new Map<string, ComputerTargetPersistenceRecord<ComputerInteractionTargetEntry>>();
       for (const indexKey of inputIndexKeys) {
         const candidate = readIndexedSurfaceRecord(transaction, indexKey);
@@ -674,7 +702,7 @@ export function createComputerInteractionTargetAuthority(
         ...(existing.value.status === 'tombstoned' ? { providerBinding } : providerBinding ? { providerBinding } : {}),
         updatedAt: at,
       };
-      deleteSurfaceIndexes(transaction, currentTarget);
+      deleteSurfaceIndexes(transaction, currentTarget, existing.value.status);
       transaction.write({
         namespace: COMPUTER_TARGET_NAMESPACE,
         scope: COMPUTER_TARGET_SCOPE,
@@ -869,6 +897,7 @@ export function createComputerInteractionTargetAuthority(
         action: 'computer_surface_target_tombstone',
         expectedRevision: current.revision,
       });
+      writeSurfaceIndexes(transaction, normalizedSurfaceTarget(current.value.target), 'tombstoned');
       return true;
     });
   }
@@ -962,6 +991,7 @@ export function createComputerInteractionTargetAuthority(
               action: 'computer_surface_target_tombstone',
               expectedRevision: current.revision,
             });
+            writeSurfaceIndexes(transaction, normalizedSurfaceTarget(current.value.target), 'tombstoned');
           });
           return structuredClone(target);
         },
@@ -1008,7 +1038,7 @@ export function createComputerInteractionTargetAuthority(
           const currentAtMs = Date.parse(current.value.tombstonedAt ?? current.updatedAt);
           const stillExpired = !Number.isFinite(currentAtMs) || nowMs - currentAtMs >= ttlMs;
           if (!stillExpired && !capacityEligible) return false;
-          if (current.value.target.kind === 'surface') deleteSurfaceIndexes(transaction, normalizedSurfaceTarget(current.value.target));
+          if (current.value.target.kind === 'surface') deleteSurfaceIndexes(transaction, normalizedSurfaceTarget(current.value.target), 'tombstoned');
           return transaction.delete({
             namespace: COMPUTER_TARGET_NAMESPACE,
             scope: COMPUTER_TARGET_SCOPE,
