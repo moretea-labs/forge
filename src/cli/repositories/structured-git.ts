@@ -154,7 +154,7 @@ export function resolveRepositoryGitCommitScope(
   return { source: 'staged_index', paths: repositoryGitStagedPaths(repository) };
 }
 
-function splitStatus(porcelain: string): { staged: string[]; unstaged: string[]; untracked: string[] } {
+export function splitRepositoryGitStatus(porcelain: string): { staged: string[]; unstaged: string[]; untracked: string[] } {
   const staged: string[] = [];
   const unstaged: string[] = [];
   const untracked: string[] = [];
@@ -174,7 +174,7 @@ function splitStatus(porcelain: string): { staged: string[]; unstaged: string[];
 export function repositoryGitStatus(repository: RepositoryRecord): RepositoryGitStatusSnapshot {
   const observedAt = new Date().toISOString();
   const porcelain = runGit(repository, ['status', '--porcelain=v1', '--branch', '--untracked-files=all', '--', '.', ':(exclude).ai/harness/**']).stdout;
-  const split = splitStatus(porcelain);
+  const split = splitRepositoryGitStatus(porcelain);
   return {
     repoId: repository.repoId,
     checkoutId: repository.activeCheckoutId,

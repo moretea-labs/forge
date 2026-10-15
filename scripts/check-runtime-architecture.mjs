@@ -1478,6 +1478,14 @@ requireText('src/cli/commands/init-hook.ts', "'.forge'");
 // CLI setup/adoption must use one process/environment implementation, not three writers.
 requireText('src/cli/commands/setup-execution.ts', 'export function withProcessEnv');
 requireText('src/cli/commands/setup-execution.ts', 'export function runSetupProcess');
+// Job recovery and Scheduler must not drift on delegated-operation replay safety.
+requireText('src/runtime/execution/jobs/child-reference.ts', 'export function isAgentDelegationJob');
+for (const path of ['src/runtime/control-plane/global-scheduler/reconciliation.ts', 'src/runtime/execution/jobs/receipt-recovery.ts']) {
+  forbid(path, /^function\s+isAgentDelegationJob\s*\(/m, 'delegation classification must stay in the shared child-reference owner');
+}
+// Live and sampled Git snapshots share the same porcelain partitioning semantics.
+requireText('src/cli/repositories/structured-git.ts', 'export function splitRepositoryGitStatus');
+forbid('src/runtime/projections/git-status-sampler.ts', /^function\s+splitStatus\s*\(/m, 'Git projection must not duplicate the live porcelain parser');
 for (const path of ['src/cli/commands/init.ts', 'src/cli/commands/init-hook.ts', 'src/cli/commands/global-runtime.ts']) {
   forbid(path, /^function\s+(?:withProcessEnv|runProcess)(?:<|\()/m, 'setup commands must import their canonical synchronous process/environment owner');
 }

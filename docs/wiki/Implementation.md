@@ -29,7 +29,7 @@ src/cli/repositories/ephemeral-workspace.ts
 src/runtime/control-plane/execution/execution-identity.ts
 ```
 
-Registered work is resolved to `repoId` plus `checkoutId`. Git top-level/common-directory checks prevent a caller from supplying a different checkout through `cwd`. `ephemeral-workspace.ts` represents the separate explicit authority for an existing unregistered local directory.
+Registered work is resolved to `repoId` plus `checkoutId`. Git top-level/common-directory checks prevent a caller from supplying a different checkout through `cwd`. `ephemeral-workspace.ts` represents the separate explicit authority for an existing unregistered local directory. `src/cli/repositories/structured-git.ts` partitions porcelain status once; `src/runtime/projections/git-status-sampler.ts` uses that parser for its sampled projection rather than maintaining an independent classification.
 
 ## 3. Context and source access
 
