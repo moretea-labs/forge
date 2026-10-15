@@ -10,11 +10,12 @@ describe('live Chrome Apple Events process-target guard', () => {
     expect(chromeMainInstances(gui + '\n' + helper)).toEqual([{ pid: 97438, headless: false }]);
     expect(assertUniqueGuiChromeProcess(gui + '\n' + helper)).toEqual({ pid: 97438 });
   });
-  test('multiple distinct roots refuse script dispatch even when a GUI Chrome exists', () => {
-    expect(() => assertUniqueGuiChromeProcess(gui + '\n' + headless)).toThrow('CHROME_APPLE_EVENTS_TARGET_AMBIGUOUS');
+  test('one GUI Chrome remains exact even when independent headless CDP roots coexist', () => {
+    expect(assertUniqueGuiChromeProcess(gui + '\n' + headless)).toEqual({ pid: 97438 });
+    expect(assertUniqueGuiChromeProcess(gui + '\n' + headless + '\n' + headless.replace('28434', '55220'))).toEqual({ pid: 97438 });
   });
   test('headless-only, no Chrome, or two GUI roots cannot impersonate the user tab', () => {
-    for (const sample of [headless, helper, gui + '\n' + gui.replace('97438', '12345')]) {
+    for (const sample of [headless, helper, gui + '\n' + gui.replace('97438', '12345'), gui + '\n' + headless + '\n' + gui.replace('97438', '12345')]) {
       expect(() => assertUniqueGuiChromeProcess(sample)).toThrow('CHROME_APPLE_EVENTS_TARGET_AMBIGUOUS');
     }
   });

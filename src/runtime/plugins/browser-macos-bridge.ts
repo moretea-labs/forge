@@ -967,12 +967,14 @@ export class MacOsAppleEventsPage {
       // retries must never guess another user's running browser instance.
       const nativeCode = error instanceof AssistantPluginError ? error.code : undefined;
       const processFailure = nativeCode === 'BROWSER_AUTOMATION_PROCESS_TARGET_AMBIGUOUS'
+        || nativeCode === 'BROWSER_AUTOMATION_PROCESS_IDENTITY_LOST'
         || nativeCode === 'BROWSER_AUTOMATION_PROCESS_PROBE_UNAVAILABLE' ? nativeCode : undefined;
       // Existing bounded timeout/serialization identities remain actionable for
       // the one Supervisor retry policy, including compatibility test transports.
       const brokerFailure = processFailure ?? /\b(BROWSER_AUTOMATION_TIMEOUT|BROWSER_AUTOMATION_SERIALIZATION_BUSY)\b/.exec(message)?.[1];
       throw new AssistantPluginError(brokerFailure ?? 'PLUGIN_BROWSER_NATIVE_OPERATION_FAILED', `${this.browser.appName} Apple Events operation failed: ${message}`, {
-        retryable: processFailure === 'BROWSER_AUTOMATION_PROCESS_TARGET_AMBIGUOUS' ? false : true,
+        retryable: processFailure === 'BROWSER_AUTOMATION_PROCESS_TARGET_AMBIGUOUS'
+          || processFailure === 'BROWSER_AUTOMATION_PROCESS_IDENTITY_LOST' ? false : true,
         details: { browserProduct: this.browser.product, bundleId: this.browser.bundleId },
       });
     }

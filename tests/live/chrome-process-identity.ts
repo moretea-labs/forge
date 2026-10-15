@@ -1,7 +1,7 @@
-/** Read-only, pre-Automation guard for Chrome's AppleScript application-name
- * resolution. A second Chrome root (e.g. headless CDP with its own profile)
- * shares com.google.Chrome and can consume Apple Events intended for the GUI.
- * Never guess which root will answer or force-terminate another owner's Chrome.
+/** Read-only preflight for Desktop Operator's process-ID-addressed Chrome
+ * ScriptingBridge transport. One GUI Chrome process may coexist with multiple
+ * independent headless Chrome profiles; two GUI roots remain ambiguous.
+ * Never select a GUI by URL/title or terminate another owner's Chrome.
  */
 export function chromeMainInstances(psOutput: string): Array<{ pid: number; headless: boolean }> {
   const instances: Array<{ pid: number; headless: boolean }> = [];
@@ -17,12 +17,13 @@ export function chromeMainInstances(psOutput: string): Array<{ pid: number; head
 
 export function assertUniqueGuiChromeProcess(psOutput: string): { pid: number } {
   const instances = chromeMainInstances(psOutput);
-  if (instances.length !== 1 || instances[0]?.headless) {
+  const guiRoots = instances.filter((instance) => !instance.headless);
+  if (guiRoots.length !== 1) {
     throw new Error(
       'CHROME_APPLE_EVENTS_TARGET_AMBIGUOUS: exact signed-in GUI Chrome process cannot be proven. ' +
       'Chrome roots=' + instances.length + ', headless roots=' + instances.filter((instance) => instance.headless).length +
-      '. Refusing to script a possibly different Chrome profile; do not change Chrome privacy settings or terminate another owner\'s instance.',
+      '. Refusing to bind an unproven GUI Chrome process; do not change Chrome privacy settings or terminate another owner\'s instance.',
     );
   }
-  return { pid: instances[0].pid };
+  return { pid: guiRoots[0].pid };
 }

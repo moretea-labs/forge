@@ -424,7 +424,7 @@ describe('Browser Runtime V3 routing', () => {
     }
   });
 
-  test('forwards typed Desktop Operator Chrome process ambiguity and probe failure without generic retry', async () => {
+  test('forwards typed Desktop Operator Chrome process ambiguity, identity loss, and probe failure without generic retry', async () => {
     const url = 'https://example.com/native-chrome-process-guard';
     const metadata = ['false', url, 'Chrome Guard', '0', '0', '1200', '800', '7', '9', 'false', 'false'].join(nativeSeparator);
     let code = 'BROWSER_AUTOMATION_PROCESS_TARGET_AMBIGUOUS';
@@ -437,20 +437,20 @@ describe('Browser Runtime V3 routing', () => {
       runAppleScript: async (script) => {
         if (script.includes('execute targetTab javascript')) {
           mutations++;
-          throw new AssistantPluginError(code, 'Provider refused Chrome process targeting', { retryable: code !== 'BROWSER_AUTOMATION_PROCESS_TARGET_AMBIGUOUS' });
+          throw new AssistantPluginError(code, 'Provider refused Chrome process targeting', { retryable: code === 'BROWSER_AUTOMATION_PROCESS_PROBE_UNAVAILABLE' });
         }
         return metadata;
       },
     });
     const attached = await reattachMacOsBrowserOwnedPage('chrome', { windowId: '7', tabId: '9' }, 1_000);
-    for (const expected of ['BROWSER_AUTOMATION_PROCESS_TARGET_AMBIGUOUS', 'BROWSER_AUTOMATION_PROCESS_PROBE_UNAVAILABLE']) {
+    for (const expected of ['BROWSER_AUTOMATION_PROCESS_TARGET_AMBIGUOUS', 'BROWSER_AUTOMATION_PROCESS_IDENTITY_LOST', 'BROWSER_AUTOMATION_PROCESS_PROBE_UNAVAILABLE']) {
       code = expected;
       await expect(attached.page.evaluate('document.title')).rejects.toMatchObject({
         code: expected,
         retryable: expected === 'BROWSER_AUTOMATION_PROCESS_PROBE_UNAVAILABLE',
       });
     }
-    expect(mutations).toBe(2);
+    expect(mutations).toBe(3);
   });
 
   test('uses a real idempotent click transition for macOS check and uncheck', async () => {
