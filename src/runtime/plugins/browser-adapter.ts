@@ -33,6 +33,8 @@ import {
   invalidateBrowserRuntime,
 } from './browser-runtime';
 import { activateRuntimeComputerBrowserApplication } from '../root/computer-composition';
+import { resolveWorkspaceTargetPath, WorkspaceTargetGrantError } from '../workspace-targets';
+import { pluginCapabilityAuthorizationOwnerScope } from './capability-authorization-grants';
 import {
   DEFAULT_BROWSER_SESSION_LIST_LIMIT,
   MAX_BROWSER_SESSION_LIST_LIMIT,
@@ -1407,54 +1409,7 @@ function sameOrigin(left: string, right: string): boolean {
   }
 }
 
-function stableBrowserEntityKey(value: string): string | undefined {
-  try {
-    const url = new URL(value);
-    if (url.protocol !== 'https:' && url.protocol !== 'http:') return undefined;
-    const segments = url.pathname.split('/').filter(Boolean);
-    for (let index = 0; index + 1 < segments.length; index += 1) {
-      if ((segments[index] ?? '').toLowerCase() !== 'apps') continue;
-      const id = segments[index + 1]?.trim();
-      if (id) return `${url.origin}/apps/${id}`;
-    }
-    return undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-function selectReusableNativeTab(
-  referenceUrls: string[],
-  inventory: Awaited<ReturnType<typeof listMacOsBrowserTabs>>,
-  preferredWindowId?: string,
-): {
-  candidate?: (typeof inventory.tabs)[number];
-  match: 'exact_url' | 'stable_entity' | 'none' | 'ambiguous';
-  candidateCount: number;
-} {
-  const normalizedReferences = [...new Set(referenceUrls.filter(Boolean).map(comparableUrl))];
-  const entityKeys = new Set(normalizedReferences.map(stableBrowserEntityKey).filter((value): value is string => Boolean(value)));
-  const scored = inventory.tabs.map((candidate) => {
-    const normalizedCandidate = comparableUrl(candidate.url);
-    const entityKey = stableBrowserEntityKey(candidate.url);
-    const matchScore = normalizedReferences.includes(normalizedCandidate)
-      ? 100
-      : entityKey && entityKeys.has(entityKey)
-        ? 50
-        : 0;
-    const score = matchScore === 0
-      ? 0
-      : matchScore + (preferredWindowId && candidate.windowId === preferredWindowId ? 10 : 0) + (candidate.active ? 1 : 0);
-    return { candidate, score, matchScore };
-  });
-  const maxScore = scored.reduce((max, entry) => Math.max(max, entry.score), 0);
-  if (maxScore === 0) return { match: 'none', candidateCount: 0 };
-  const matches = scored.filter((entry) => entry.score === maxScore);
-  if (matches.length !== 1) return { match: 'ambiguous', candidateCount: matches.length };
-  return { candidate: matches[0]!.candidate, match: matches[0]!.matchScore === 100 ? 'exact_url' : 'stable_entity', candidateCount: 1 };
-}
-
-function selectLiveForgeOwnedNativeTab(
+export function selectLiveForgeOwnedNativeTab(
   repoRoot: string,
   targetUrl: string,
   product: MacOsBrowserProduct,
@@ -1480,11 +1435,11 @@ function selectLiveForgeOwnedNativeTab(
   }
 
   const values = [...candidates.values()];
+  if (inventory.truncated) return { match: 'ambiguous', candidateCount: values.length };
   const exact = values.filter(({ candidate }) => comparableUrl(candidate.url) === comparableUrl(targetUrl));
   const choose = (matches: typeof values, match: 'exact_url' | 'same_origin') => {
     if (matches.length === 1) return { ...matches[0], match, candidateCount: 1 } as const;
-    const active = matches.filter(({ candidate }) => candidate.active);
-    if (active.length === 1) return { ...active[0], match, candidateCount: matches.length } as const;
+    // Multiple matching tabs remain ambiguous even when one is active.
     return { match: 'ambiguous' as const, candidateCount: matches.length };
   };
   if (exact.length > 0) return choose(exact, 'exact_url');
@@ -1494,15 +1449,15 @@ function selectLiveForgeOwnedNativeTab(
   return { match: 'none', candidateCount: 0 };
 }
 
-function selectExactNativeTab(
+export function selectExactNativeTab(
   targetUrl: string,
   inventory: Awaited<ReturnType<typeof listMacOsBrowserTabs>>,
 ): { candidate?: (typeof inventory.tabs)[number]; match: 'exact_url' | 'none' | 'ambiguous'; candidateCount: number } {
+  if (inventory.truncated) return { match: 'ambiguous', candidateCount: inventory.tabs.length };
   const matches = inventory.tabs.filter((candidate) => comparableUrl(candidate.url) === comparableUrl(targetUrl));
   if (matches.length === 0) return { match: 'none', candidateCount: 0 };
   if (matches.length === 1) return { candidate: matches[0], match: 'exact_url', candidateCount: 1 };
-  const active = matches.filter((candidate) => candidate.active);
-  if (active.length === 1) return { candidate: active[0], match: 'exact_url', candidateCount: matches.length };
+  // A frontmost tab does not disambiguate two tabs with the same URL.
   return { match: 'ambiguous', candidateCount: matches.length };
 }
 
@@ -1535,7 +1490,7 @@ async function inventoryTabs(context: BrowserContextLike): Promise<BrowserTabInv
   return entries;
 }
 
-function chooseTab(
+export function chooseTab(
   inventory: BrowserTabInventoryEntry[],
   target: BrowserActionTarget,
   options: { allowBlank?: boolean; requireOwnedToken?: boolean } = {},
@@ -1543,6 +1498,20 @@ function chooseTab(
   const desiredUrl = comparableUrl(target.url);
   const savedTab = target.existingSession?.browser?.tab;
   const expectedOwnerToken = savedTab?.ownership === 'plugin_owned' ? savedTab.ownerToken : undefined;
+  const unique = (matches: BrowserTabInventoryEntry[], basis: string): BrowserTabInventoryEntry | undefined => {
+    if (matches.length > 1) {
+      throw new AssistantPluginError('PLUGIN_BROWSER_REUSABLE_TAB_AMBIGUOUS',
+        'Multiple browser tabs satisfy the same lookup; exact tab identity is not proven.',
+        { retryable: false, details: { sessionId: target.sessionId, basis, candidateCount: matches.length } });
+    }
+    return matches[0];
+  };
+  if (options.requireOwnedToken && expectedOwnerToken
+      && inventory.filter((entry) => entry.ownerToken === expectedOwnerToken).length > 1) {
+    throw new AssistantPluginError('PLUGIN_BROWSER_REUSABLE_TAB_AMBIGUOUS',
+      'Multiple browser tabs report the same owned marker.',
+      { retryable: false, details: { sessionId: target.sessionId, basis: 'owned_token' } });
+  }
   if (options.requireOwnedToken) {
     const owned = expectedOwnerToken ? inventory.find((entry) => entry.ownerToken === expectedOwnerToken) : undefined;
     if (owned) {
@@ -1560,25 +1529,8 @@ function chooseTab(
     };
   }
   const savedUrl = savedTab?.url ? comparableUrl(savedTab.url) : undefined;
-  const savedTitle = savedTab?.title;
-  const savedUrlTitle = savedUrl && savedTitle
-    ? inventory.find((entry) => comparableUrl(entry.url) === savedUrl && entry.title === savedTitle)
-    : undefined;
-  if (savedUrlTitle) {
-    return {
-      entry: savedUrlTitle,
-      matchedBy: 'saved_url_title',
-      sessionResume: {
-        sessionId: target.sessionId,
-        status: 'matched',
-        reason: 'Saved tab URL and title matched an attached browser tab.',
-        savedTab,
-      },
-    };
-  }
-
   const savedUrlOnly = savedUrl
-    ? inventory.find((entry) => comparableUrl(entry.url) === savedUrl)
+    ? unique(inventory.filter((entry) => comparableUrl(entry.url) === savedUrl), 'saved_url')
     : undefined;
   if (savedUrlOnly) {
     return {
@@ -1587,13 +1539,13 @@ function chooseTab(
       sessionResume: {
         sessionId: target.sessionId,
         status: savedTab ? 'matched' : 'no_saved_tab',
-        reason: savedTab ? 'Saved tab URL matched but the previous title was not present.' : 'No saved tab metadata was available.',
+        reason: savedTab ? 'Saved tab URL was unique in this browser context; page title was not used as identity.' : 'No saved tab metadata was available.',
         savedTab,
       },
     };
   }
 
-  const exactUrl = inventory.find((entry) => comparableUrl(entry.url) === desiredUrl);
+  const exactUrl = unique(inventory.filter((entry) => comparableUrl(entry.url) === desiredUrl), 'exact_url');
   if (exactUrl) {
     return {
       entry: exactUrl,
@@ -1613,7 +1565,7 @@ function chooseTab(
     };
   }
 
-  const blank = options.allowBlank === false ? undefined : inventory.find((entry) => isBlankPage(entry.url));
+  const blank = options.allowBlank === false ? undefined : unique(inventory.filter((entry) => isBlankPage(entry.url)), 'blank');
   if (blank) {
     return {
       entry: blank,
@@ -2650,8 +2602,6 @@ async function openNativeAttachedContext(
   const savedTab = target.existingSession?.browser?.tab;
   const savedOwnership = savedTab?.ownership;
   let effectiveOwnership = savedOwnership;
-  let recoveredTabTitle = '';
-  let recoveredTabUrl: string | undefined;
   const savedProduct = target.existingSession?.browser?.provider === 'macos-apple-events'
     && savedTab
     && (savedOwnership === 'plugin_owned' || savedOwnership === 'user_owned')
@@ -2701,66 +2651,18 @@ async function openNativeAttachedContext(
         savedTab,
       };
     } catch (error) {
-      if (error instanceof AssistantPluginError
-        && error.code === 'PLUGIN_BROWSER_NATIVE_TAB_IDENTITY_UNPROVEN'
-        && savedOwnership === 'user_owned') {
+      // URL/title or a formerly active window cannot identify a lost native tab.
+      // Never silently adopt another user's tab or create a replacement for a saved session.
+      if (savedOwnership === 'user_owned' && error instanceof AssistantPluginError && error.code === 'PLUGIN_BROWSER_NATIVE_TAB_IDENTITY_UNPROVEN') {
         throw error;
       }
-      if (savedOwnership === 'user_owned') {
-        throw new AssistantPluginError(
-          'PLUGIN_BROWSER_SESSION_STATE_LOST',
-          'Explicitly adopted user-owned macOS browser tab no longer exists; refusing to silently switch to another user tab.',
-          {
-            retryable: false,
-            details: { sessionId: target.sessionId, browserProduct: savedProduct, ownership: savedOwnership, windowId: savedTab.windowId, tabId: savedTab.tabId, cause: error instanceof Error ? error.message : String(error) },
-          },
-        );
-      }
-      let inventory: Awaited<ReturnType<typeof listMacOsBrowserTabs>> | undefined;
-      let selection: ReturnType<typeof selectReusableNativeTab> | undefined;
-      let recoveryFailure: string | undefined;
-      try {
-        inventory = await listMacOsBrowserTabs(savedProduct, timeout);
-        selection = selectReusableNativeTab(
-          [savedTab.url, target.existingSession?.url ?? '', target.url],
-          inventory,
-          savedTab.windowId,
-        );
-        // Another tab with the same URL can belong to a different Chrome
-        // profile/account. A session-bound action may only use the pinned
-        // physical tab; URL matching is for explicit open-page recovery.
-        if (selection.candidate && args.__forge_require_existing_resource !== true) {
-          const recovered = await reattachMacOsBrowserOwnedPage(savedProduct, { windowId: selection.candidate.windowId, tabId: selection.candidate.tabId }, timeout);
-          page = recovered.page as unknown as PageLike;
-          discovered = { attachment: recovered.attachment, attempts: recovered.attachment.attempts };
-          matchedBy = 'recovered_tab';
-          effectiveOwnership = 'user_owned';
-          recoveredTabTitle = selection.candidate.title;
-          recoveredTabUrl = selection.candidate.url;
-          sessionResume = {
-            sessionId: target.sessionId,
-            status: 'matched',
-            reason: selection.match === 'exact_url'
-              ? 'Saved plugin-owned tab disappeared; rebound safely to the unique currently open tab with the same URL and preserved it as user-owned.'
-              : 'Saved plugin-owned tab disappeared; rebound safely to the unique currently open tab for the same stable app entity and preserved its current page as user-owned.',
-            savedTab,
-          };
-        }
-      } catch (recoveryError) {
-        recoveryFailure = recoveryError instanceof Error ? recoveryError.message : String(recoveryError);
-      }
-      if (!page) {
-        sessionResume = {
-          sessionId: target.sessionId,
-          status: 'stale_tab',
-          reason: recoveryFailure
-            ? `Saved plugin-owned macOS browser tab disappeared and current-tab recovery failed (${recoveryFailure}); creating one replacement plugin-owned tab.`
-            : selection?.match === 'ambiguous'
-              ? 'Saved plugin-owned macOS browser tab disappeared and multiple reusable current tabs matched; refusing to guess between user tabs and creating one replacement plugin-owned tab.'
-              : 'Saved plugin-owned macOS browser tab disappeared and no uniquely reusable current tab matched; creating one replacement plugin-owned tab.',
-          savedTab,
-        };
-      }
+      throw new AssistantPluginError('PLUGIN_BROWSER_SESSION_STATE_LOST',
+        'Saved native browser tab could not be reattached by its exact identity; refusing URL-based recovery or replacement.',
+        { retryable: false, details: {
+          sessionId: target.sessionId, browserProduct: savedProduct, ownership: savedOwnership,
+          windowId: savedTab.windowId, tabId: savedTab.tabId,
+          causeCode: error instanceof AssistantPluginError ? error.code : 'NATIVE_REATTACH_FAILED',
+        } });
     }
   } else {
     sessionResume = savedTab
@@ -3047,8 +2949,6 @@ async function openNativeAttachedContext(
             activeAttachment = rebound.attachment;
             matchedBy = 'exact_url';
             effectiveOwnership = 'user_owned';
-            recoveredTabTitle = exactSelection.candidate.title;
-            recoveredTabUrl = exactSelection.candidate.url;
             sessionResume = {
               sessionId: target.sessionId,
               status: 'matched',
@@ -3095,21 +2995,15 @@ async function openNativeAttachedContext(
     if (comparableUrl(page.url()) !== comparableUrl(target.url) && !explicitUserOwnedUrlMatch) {
       const currentRef = (page as unknown as { tabRef?: () => MacOsBrowserTabRef | undefined }).tabRef?.();
       if (effectiveOwnership === 'user_owned') {
-        if (matchedBy === 'recovered_tab') {
-          sessionResume = { sessionId: target.sessionId, status: 'matched', reason: 'Recovered current user tab was already within the same saved app entity; preserved its current URL instead of navigating it.', savedTab };
-        } else {
-          throw new AssistantPluginError(
-            'PLUGIN_BROWSER_ADOPTED_TAB_URL_MISMATCH',
-            'Explicitly adopted user-owned tab no longer matches the saved session URL; refusing to navigate, replace, or close the user tab.',
-            { retryable: true, details: { sessionId: target.sessionId, expectedUrl: target.url, actualUrl: page.url(), windowId: savedTab?.windowId, tabId: savedTab?.tabId } },
-          );
-        }
+        throw new AssistantPluginError(
+          'PLUGIN_BROWSER_ADOPTED_TAB_URL_MISMATCH',
+          'Explicitly adopted user-owned tab no longer matches the saved session URL; refusing to navigate, replace, or close the user tab.',
+          { retryable: true, details: { sessionId: target.sessionId, expectedUrl: target.url, actualUrl: page.url(), windowId: savedTab?.windowId, tabId: savedTab?.tabId } },
+        );
       }
       const sessionTargetUnchanged = Boolean(target.existingSession?.url) && comparableUrl(target.url) === comparableUrl(target.existingSession?.url ?? '');
       const preserveOwnedSameOriginDrift = matchedBy === 'owned_token' && sessionTargetUnchanged && sameOrigin(page.url(), target.url);
-      if (matchedBy === 'recovered_tab' && effectiveOwnership === 'user_owned') {
-        // Safe recovery adopts an already-open tab. Its current page is authoritative and must not be navigated.
-      } else if (preserveOwnedSameOriginDrift) {
+      if (preserveOwnedSameOriginDrift) {
         sessionResume = { sessionId: target.sessionId, status: 'matched', reason: 'Plugin-owned tab navigated within the same origin; preserved the live tab and refreshed its session URL.', savedTab };
       } else {
         page = await navigateNativePageWithReplacement(page);
@@ -3127,13 +3021,13 @@ async function openNativeAttachedContext(
     if (matchedBy !== 'owned_token' && page.waitForLoadState && !explicitInternalUserSession) {
       await page.waitForLoadState(waitUntil(args.wait_until), { timeout });
     }
-    const observedPageUrl = matchedBy === 'recovered_tab' && recoveredTabUrl ? recoveredTabUrl : page.url();
+    const observedPageUrl = page.url();
     const pageUrl = explicitInternalUserSession
       ? normalizedExplicitNativeAdoptionUrl(observedPageUrl)
       : normalizedUrl(observedPageUrl);
     const nativeRef = (page as unknown as { tabRef?: () => MacOsBrowserTabRef | undefined }).tabRef?.();
     if (!nativeRef) throw new AssistantPluginError('PLUGIN_BROWSER_NATIVE_OWNERSHIP_MISSING', 'Native browser did not return a stable plugin-owned tab reference.', { retryable: true });
-    const title = matchedBy === 'owned_token' ? (target.existingSession?.title ?? '') : matchedBy === 'recovered_tab' ? recoveredTabTitle : '';
+    const title = matchedBy === 'owned_token' ? (target.existingSession?.title ?? '') : '';
     const inventory: BrowserTabInventoryEntry[] = [{ index: 0, key: tabKey(pageUrl, title), url: pageUrl, title }];
     const metadata = activeAttachment.metadata;
     // The live exact-tab URL is authoritative after a safe native rebind. Keep the
@@ -5351,30 +5245,7 @@ async function executeBrowserPluginActionInternal(
         if (requested.length === 0 || requested.length > 32) {
           throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'attach_local_file requires file_path or 1-32 file_paths.', { retryable: false });
         }
-        const repositoryLexicalRoot = resolve(input.repoRoot);
-        const repositoryRoot = realpathSync(input.repoRoot);
-        const resolved = requested.map((filePath) => {
-          const lexicalPath = resolve(input.repoRoot, filePath);
-          const lexicalRelative = relative(repositoryLexicalRoot, lexicalPath);
-          if (lexicalRelative === '..' || lexicalRelative.startsWith(`..${sep}`) || isAbsolute(lexicalRelative)) {
-            throw new AssistantPluginError('PLUGIN_POLICY_BLOCKED', 'Local file attachments must stay inside the repository root.', { retryable: false, details: { fileName: basename(filePath) } });
-          }
-          if (!existsSync(lexicalPath)) {
-            throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', `Local attachment does not exist: ${basename(lexicalPath)}`, { retryable: false });
-          }
-          const realPath = realpathSync(lexicalPath);
-          const repositoryRelative = relative(repositoryRoot, realPath);
-          if (repositoryRelative === '..' || repositoryRelative.startsWith(`..${sep}`) || isAbsolute(repositoryRelative)) {
-            throw new AssistantPluginError('PLUGIN_POLICY_BLOCKED', 'Local file attachments must resolve inside the repository root.', { retryable: false, details: { fileName: basename(lexicalPath) } });
-          }
-          if (!statSync(realPath).isFile()) {
-            throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', `Local attachment is not a regular file: ${basename(lexicalPath)}`, { retryable: false });
-          }
-          if (/\.(exe|dmg|pkg|sh|bat|cmd|app)$/i.test(realPath)) {
-            throw new AssistantPluginError('PLUGIN_POLICY_BLOCKED', 'Executable file attachments are not allowed.', { retryable: false });
-          }
-          return lexicalPath;
-        });
+        const resolved = resolveBrowserAttachmentPaths(input, requested, stringValue(input.args.target_key));
         return await withPage(input.actionId, input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
           await page.evaluate((payload) => {
             const args = payload as { selector: string; count: number };
@@ -5478,6 +5349,61 @@ async function executeBrowserPluginActionInternal(
       },
     });
   }
+}
+
+/** Resolve one upload batch under the repository or the existing local-system target grant.
+ * A target_key changes the path base; it never grants arbitrary absolute filesystem access.
+ */
+export function resolveBrowserAttachmentPaths(
+  input: AssistantPluginActionExecutionInput,
+  requested: string[],
+  targetKey?: string,
+): string[] {
+  const repositoryLexicalRoot = resolve(input.repoRoot);
+  const repositoryRoot = realpathSync(input.repoRoot);
+  return requested.map((filePath) => {
+    let allowedPath: string;
+    if (targetKey) {
+      try {
+        allowedPath = resolveWorkspaceTargetPath(input.controllerHome, targetKey, filePath, {
+          mustExist: true,
+          kind: 'file',
+          operation: 'read',
+          ownerScope: pluginCapabilityAuthorizationOwnerScope(input.origin),
+        }).path;
+      } catch (error) {
+        if (!(error instanceof WorkspaceTargetGrantError)) throw error;
+        throw new AssistantPluginError('PLUGIN_POLICY_BLOCKED',
+          'Upload file is not within an active, caller-owned local-system target grant.',
+          { retryable: false, details: { fileName: basename(filePath), targetKey, causeCode: error.code } });
+      }
+    } else {
+      const lexicalPath = resolve(input.repoRoot, filePath);
+      const lexicalRelative = relative(repositoryLexicalRoot, lexicalPath);
+      if (lexicalRelative === '..' || lexicalRelative.startsWith(`..${sep}`) || isAbsolute(lexicalRelative)) {
+        throw new AssistantPluginError('PLUGIN_POLICY_BLOCKED', 'Local file attachments must stay inside the repository root.', {
+          retryable: false, details: { fileName: basename(filePath) },
+        });
+      }
+      if (!existsSync(lexicalPath)) {
+        throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', `Local attachment does not exist: ${basename(lexicalPath)}`, { retryable: false });
+      }
+      allowedPath = realpathSync(lexicalPath);
+      const repositoryRelative = relative(repositoryRoot, allowedPath);
+      if (repositoryRelative === '..' || repositoryRelative.startsWith(`..${sep}`) || isAbsolute(repositoryRelative)) {
+        throw new AssistantPluginError('PLUGIN_POLICY_BLOCKED', 'Local file attachments must resolve inside the repository root.', {
+          retryable: false, details: { fileName: basename(lexicalPath) },
+        });
+      }
+    }
+    if (!statSync(allowedPath).isFile()) {
+      throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', `Local attachment is not a regular file: ${basename(filePath)}`, { retryable: false });
+    }
+    if (/\.(exe|dmg|pkg|sh|bat|cmd|app)$/i.test(allowedPath)) {
+      throw new AssistantPluginError('PLUGIN_POLICY_BLOCKED', 'Executable file attachments are not allowed.', { retryable: false });
+    }
+    return allowedPath;
+  });
 }
 
 export async function executeBrowserPluginAction(input: AssistantPluginActionExecutionInput): Promise<Record<string, unknown>> {

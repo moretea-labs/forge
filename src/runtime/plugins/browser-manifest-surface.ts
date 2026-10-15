@@ -616,13 +616,14 @@ export function browserActions(): AssistantPluginActionDescriptor[] {
     {
       actionId: 'attach_local_file',
       title: 'Attach local file(s)',
-      description: 'Set one or more allowed local files on input[type=file] after authorization. file_path remains backward-compatible; file_paths supports multiple selection. Never auto-opens executables.',
+      description: 'Attach allowed local files to input[type=file]. Paths are repository-relative by default; optional target_key makes them relative to an existing caller-owned local-system read grant (e.g. Downloads). Does not drive a macOS Open Panel or submit the upload form.',
       readOnly: false, risk: 'remote_write', confirmation: 'authorization', defaultTimeoutMs: 60_000, cancellable: true, idempotent: false,
       scopes: ['browser.interact', 'browser.profile'], resourceClaims: writeRemote,
       argumentsSchema: interactSchema({
         selector: { type: 'string' },
         file_path: { type: 'string' },
         file_paths: { type: 'array', minItems: 1, maxItems: 32, items: { type: 'string' } },
+        target_key: { type: 'string' },
       }, ['selector']),
     },
     {
