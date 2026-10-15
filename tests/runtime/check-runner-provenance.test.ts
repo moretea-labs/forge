@@ -635,7 +635,7 @@ describe('controller check provenance and failure classification', () => {
     expect(check.effects?.hostServices).toEqual(['canonical-runtime', 'forge-recovery']);
     const claims = claimsForCheck(check.id, check.command, 'repo-live-cert', 'checkout-live-cert', check.effects, check.executionAuthority);
     expect(claims.map((claim) => claim.resourceKey)).toEqual(expect.arrayContaining([
-      'release:repo-live-cert',
+      'release:runtime-authority',
       'host-service:canonical-runtime',
       'host-service:forge-recovery',
     ]));
