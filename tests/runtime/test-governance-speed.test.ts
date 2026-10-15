@@ -86,6 +86,7 @@ describe('execution-speed test governance', () => {
 
   test('models task, main, and release as one reusable nested gate DAG', () => {
     expect(stepsFor('task').some((step) => !('gate' in step) && step.label === 'affected tests')).toBe(true);
+    expect(stepsFor('main').some((step) => !('gate' in step) && step.label === 'frozen MCP tool contract')).toBe(true);
     expect(stepsFor('main').some((step) => !('gate' in step) && step.label === 'quality harness benchmark')).toBe(true);
     expect(stepsFor('main').some((step) => 'gate' in step && step.gate === 'task')).toBe(true);
     expect(stepsFor('release').some((step) => 'gate' in step && step.gate === 'main')).toBe(true);
