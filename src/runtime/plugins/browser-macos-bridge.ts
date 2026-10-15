@@ -137,18 +137,9 @@ const defaultRuntimeHooks: MacOsBrowserRuntimeHooks = {
   appExists: (path) => existsSync(path),
   processRunning: async (processName, timeoutMs) => {
     try {
-      const pids = (await execFileText('/usr/bin/pgrep', ['-x', processName], timeoutMs))
-        .split(/\r?\n/).map((value) => value.trim()).filter(Boolean);
-      // Apple Events resolves an application by bundle identity, not the GUI
-      // process PID. A headless sibling can silently receive the user's tab
-      // operations, so process liveness alone is insufficient target proof.
-      if (pids.length !== 1 || !/^\d+$/.test(pids[0]!)) {
-        throw new AssistantPluginError(
-          'PLUGIN_BROWSER_NATIVE_PROCESS_AMBIGUOUS',
-          `${processName} has ${pids.length} application processes; Apple Events cannot prove one browser/profile target. Refusing tab operations.`,
-          { retryable: false, details: { processName, processCount: pids.length } },
-        );
-      }
+      // Process existence only: the canonical Computer provider owns exact
+      // GUI PID selection and rejects ambiguous or unverified targets.
+      await execFileText('/usr/bin/pgrep', ['-x', processName], timeoutMs);
       return true;
     } catch (error) {
       // pgrep's no-match exit is absence; timeout/permission/transport failure
