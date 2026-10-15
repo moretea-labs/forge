@@ -12,6 +12,11 @@ import {
   setBrowserPluginRuntimeHooksForTest,
 } from '../../src/runtime/plugins/browser-adapter';
 import { callBrowserAutomationBroker } from '../../src/runtime/plugins/browser-automation-service';
+import { disposeRuntimeComputerComposition } from '../../src/runtime/root/computer-composition';
+import {
+  setDesktopOperatorComputerSocketPathForTest,
+  resetDesktopOperatorComputerSocketPathForTest,
+} from '../../adapters/computer/desktop-operator-discovery';
 
 if (process.platform !== 'darwin') throw new Error('Native silent browser E2E requires macOS.');
 
@@ -19,6 +24,11 @@ const repoRoot = mkdtempSync(join(tmpdir(), 'forge-browser-live-'));
 const controllerHome = mkdtempSync(join(tmpdir(), 'forge-browser-live-controller-'));
 let server: ReturnType<typeof Bun.serve> | undefined;
 let sessionId = '';
+// Explicit test-only endpoint: validate a freshly built provider without
+// re-registering, replacing, or restarting the user's running Desktop Operator.
+if (process.env.FORGE_CHROME_E2E_TEST_SOCKET) {
+  setDesktopOperatorComputerSocketPathForTest(process.env.FORGE_CHROME_E2E_TEST_SOCKET);
+}
 const timings: Array<{ kind: string; ms: number }> = [];
 
 function nativeTabId(result: Record<string, unknown>): string {
@@ -146,7 +156,11 @@ try {
 } finally {
   if (sessionId) await action('close_session', { session_id: sessionId }).catch(() => undefined);
   server?.stop(true);
+  // The Computer provider owns a persistent Unix channel. Explicitly release
+  // it or Bun's live E2E process stays alive after the test is complete.
+  disposeRuntimeComputerComposition();
   resetBrowserPluginRuntimeHooksForTest();
+  resetDesktopOperatorComputerSocketPathForTest();
   rmSync(repoRoot, { recursive: true, force: true });
   rmSync(controllerHome, { recursive: true, force: true });
 }

@@ -966,15 +966,21 @@ export class MacOsAppleEventsPage {
       // do not turn ambiguous Chrome app roots into a retryable generic error:
       // retries must never guess another user's running browser instance.
       const nativeCode = error instanceof AssistantPluginError ? error.code : undefined;
-      const processFailure = nativeCode === 'BROWSER_AUTOMATION_PROCESS_TARGET_AMBIGUOUS'
+      const nativeFailure = nativeCode === 'BROWSER_AUTOMATION_PROCESS_TARGET_AMBIGUOUS'
         || nativeCode === 'BROWSER_AUTOMATION_PROCESS_IDENTITY_LOST'
-        || nativeCode === 'BROWSER_AUTOMATION_PROCESS_PROBE_UNAVAILABLE' ? nativeCode : undefined;
-      // Existing bounded timeout/serialization identities remain actionable for
-      // the one Supervisor retry policy, including compatibility test transports.
-      const brokerFailure = processFailure ?? /\b(BROWSER_AUTOMATION_TIMEOUT|BROWSER_AUTOMATION_SERIALIZATION_BUSY)\b/.exec(message)?.[1];
+        || nativeCode === 'BROWSER_AUTOMATION_PROCESS_PROBE_UNAVAILABLE'
+        || nativeCode === 'BROWSER_AUTOMATION_NATIVE_EVENT_FAILED'
+        || nativeCode === 'BROWSER_AUTOMATION_MUTATION_OUTCOME_UNKNOWN'
+        ? nativeCode : undefined;
+      const nonRetryable = nativeFailure && nativeFailure !== 'BROWSER_AUTOMATION_PROCESS_PROBE_UNAVAILABLE';
+      // An Apple Event can mutate the page even if its callback fails.
+      // Preserve uncertainty and never retry such a mutation blindly.
+      const outcomeUnknown = nativeFailure === 'BROWSER_AUTOMATION_MUTATION_OUTCOME_UNKNOWN'
+        || (error instanceof AssistantPluginError && error.effectOutcome === 'outcome_unknown');
+      const brokerFailure = nativeFailure ?? /\b(BROWSER_AUTOMATION_TIMEOUT|BROWSER_AUTOMATION_SERIALIZATION_BUSY)\b/.exec(message)?.[1];
       throw new AssistantPluginError(brokerFailure ?? 'PLUGIN_BROWSER_NATIVE_OPERATION_FAILED', `${this.browser.appName} Apple Events operation failed: ${message}`, {
-        retryable: processFailure === 'BROWSER_AUTOMATION_PROCESS_TARGET_AMBIGUOUS'
-          || processFailure === 'BROWSER_AUTOMATION_PROCESS_IDENTITY_LOST' ? false : true,
+        retryable: !nonRetryable && !outcomeUnknown,
+        effectOutcome: outcomeUnknown ? 'outcome_unknown' : 'failed',
         details: { browserProduct: this.browser.product, bundleId: this.browser.bundleId },
       });
     }

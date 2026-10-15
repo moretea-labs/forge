@@ -443,14 +443,15 @@ describe('Browser Runtime V3 routing', () => {
       },
     });
     const attached = await reattachMacOsBrowserOwnedPage('chrome', { windowId: '7', tabId: '9' }, 1_000);
-    for (const expected of ['BROWSER_AUTOMATION_PROCESS_TARGET_AMBIGUOUS', 'BROWSER_AUTOMATION_PROCESS_IDENTITY_LOST', 'BROWSER_AUTOMATION_PROCESS_PROBE_UNAVAILABLE']) {
+    for (const expected of ['BROWSER_AUTOMATION_PROCESS_TARGET_AMBIGUOUS', 'BROWSER_AUTOMATION_PROCESS_IDENTITY_LOST', 'BROWSER_AUTOMATION_PROCESS_PROBE_UNAVAILABLE', 'BROWSER_AUTOMATION_NATIVE_EVENT_FAILED', 'BROWSER_AUTOMATION_MUTATION_OUTCOME_UNKNOWN']) {
       code = expected;
       await expect(attached.page.evaluate('document.title')).rejects.toMatchObject({
         code: expected,
         retryable: expected === 'BROWSER_AUTOMATION_PROCESS_PROBE_UNAVAILABLE',
+        effectOutcome: expected === 'BROWSER_AUTOMATION_MUTATION_OUTCOME_UNKNOWN' ? 'outcome_unknown' : 'failed',
       });
     }
-    expect(mutations).toBe(3);
+    expect(mutations).toBe(5);
   });
 
   test('uses a real idempotent click transition for macOS check and uncheck', async () => {
