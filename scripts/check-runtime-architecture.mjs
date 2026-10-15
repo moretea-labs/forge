@@ -1269,6 +1269,8 @@ requireText('supervisor/store.ts', 'validateSupervisorObjective(input.objective)
 requireText('supervisor/store.ts', 'const objective = validateSupervisorObjective(input.objective)');
 requireText('supervisor/server.ts', 'createWorkflowSupervisorServer');
 forbid('supervisor/server.ts', /from ['"]\.\/store['"]|supervisor\.sqlite|BEGIN IMMEDIATE/, 'Supervisor transport must relay typed commands through the control plane and never own persistence');
+requireText('src/runtime/plugins/browser-macos-bridge.ts', 'PLUGIN_BROWSER_NATIVE_PROCESS_AMBIGUOUS');
+requireText('src/runtime/plugins/browser-macos-bridge.ts', 'await assertMacOsBrowserApplicationRunning(request.product, timeoutMs)');
 requireText('adapters/computer/chrome-extension/manifest.json', 'nativeMessaging');
 requireText('adapters/computer/chrome-extension/background.js', 'computer_extension_claim');
 requireText('adapters/computer/chrome-extension/background.js', 'computer_extension_complete');

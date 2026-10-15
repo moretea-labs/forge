@@ -269,6 +269,14 @@ persisted profile id; a worker restart must not orphan discovery or change
 the physical-tab binding. See the
 [Chrome storage contract](https://developer.chrome.com/docs/extensions/reference/api/storage#storage_areas).
 
+The separate explicit native Apple Events Browser primitive requires exactly one
+running macOS application process for its selected browser. Multiple Chrome
+processes using the same bundle identity, including headless test instances,
+can route Apple Events to a different profile than the visible Chrome GUI.
+Process liveness alone is not tab identity proof: ambiguous or unproven process
+inventory fails closed before tab creation, page reads, or trusted input; it
+must never launch another browser or fall back to a different provider.
+
 A missing pinned profile stays unavailable even when another profile is the sole
 live provider. Within the same profile, Chrome tab id takes precedence over
 window id so moving a tab between windows preserves attachment. An existing pin
