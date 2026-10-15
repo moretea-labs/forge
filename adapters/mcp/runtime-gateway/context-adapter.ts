@@ -12,6 +12,7 @@ import { getExecutionJob, listExecutionJobs } from "../../../src/runtime/executi
 import { isManagedProcessActive, listProcessRecords, listRecoverableProcessRecords, processRuntimeResourceDiagnostics } from "../../../src/runtime/execution/process-runtime";
 import { CONTROLLER_CONTEXT_IMPACT_DOMAINS, type ControllerContextImpactDomain } from "../../../src/cli/controller/context/types";
 import { buildControllerContextPackInSidecar } from "../../../src/runtime/context/context-pack-process";
+import { isCodeShapedTerm } from "../../../src/cli/controller/context/query-planning";
 import { listControllerChecks } from "../../../src/cli/controller/check-runner";
 import { getAssistantPluginManifest, getControllerPluginManifest, listAssistantPluginManifests, listControllerPluginManifests } from "../../../src/runtime/plugins/store";
 import { allowedFacadeOperations, buildFacadeResult, listCapabilityDescriptors, getCapabilityDescriptor, getCoreCapabilityExecutionSchema, getPluginActionCapabilitySchema, searchCapabilityDescriptors, summarizeCapabilityGroups, listHandoffAttentionItems, listHandoffItems, normalizeCheckIds, summarizeHandoffItem, buildWorkContinuationSnapshot, getPlanContract, planSemanticView, FACADE_TOOLS } from "../../../src/runtime/control-plane/facade";
@@ -533,16 +534,20 @@ export async function callContextAdapter(ctx: MultiRepositoryMcpToolContext, nam
             checkoutId: repository.activeCheckoutId,
           })
         : undefined;
+      // GPT supplies repository-language code hints for natural-language intents.
+      // Forge only searches those literal terms; it does not translate or infer semantics.
+      const codeSearchTerms = list(args.search_terms).filter((term) => term.length <= 160).slice(0, 8);
+      const exactCodeQuery = !/\s/u.test(retrievalQuery) && isCodeShapedTerm(retrievalQuery);
       const pack = await buildControllerContextPackInSidecar({
         repoRoot: repository.canonicalRoot,
         policy: ctx.policy,
         options: {
         description: retrievalQuery,
-        // Short code-like queries remain useful exact lexical needles. Long
-        // semantic prompts are already tokenized from description; adding the
-        // whole prompt as an exact needle prevents batch-search early exit and
-        // forces a full bounded repository scan for a phrase that will not match.
-        searchTerms: retrievalQuery.length <= 160 ? [retrievalQuery] : undefined,
+        // Only an actual single code identifier is an implicit exact needle.
+        // Prose (including mixed-language queries) stays in description; the
+        // model supplies matching source-language hints through search_terms.
+        searchTerms: codeSearchTerms.length ? codeSearchTerms
+          : exactCodeQuery ? [retrievalQuery] : undefined,
         knownPaths: list(args.known_paths),
         includeGlobs: list(args.include_globs),
         excludeGlobs: list(args.exclude_globs),

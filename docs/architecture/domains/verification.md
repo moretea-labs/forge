@@ -29,6 +29,7 @@ repos, command facades, hooks, migration helpers, and installed runtime copies.
 - `sync-brain-docs.sh --check` verifies manifest-controlled repo-to-brain mirrors without making gbrain or MCP part of hook correctness.
 - External tooling probes remain read-only by default. Agent code navigation uses current source and explicit LSP navigation; no graph index is required.
 - Source discovery must authorize each file before invoking `rg`, search the eligible inventory rather than silently truncating its alphabetic prefix, and report missing search executables as errors rather than empty matches. `rg` match records use NUL-framed paths/line numbers so standard process-output redaction cannot corrupt JSON syntax. Caller-supplied exclude globs also apply to explicit known paths. `scannedFiles` counts files contributing accepted lexical evidence, not the complete set of candidate paths examined by ripgrep.
+- `rh_context.query` preserves the caller's natural-language intent; optional model-selected `search_terms` supplies up to eight source-language lexical anchors to the existing Context Pack, with no embedded translation/semantic engine. Only a single code-shaped query becomes an implicit exact search needle; natural-language sentences must not be promoted to mandatory literal code symbols. The model selects source-language keywords, inspects current raw-source hits, and progressively refines the query when results are unrelated or truncated.
 
 ## Verification Surface
 
