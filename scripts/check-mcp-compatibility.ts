@@ -15,7 +15,10 @@ import {
   DEFAULT_CONTROLLER_TOOL_NAMES,
   PREFERRED_FACADE_TOOL_NAMES,
   STABLE_CONTROLLER_TOOL_NAMES,
+  controllerToolNamesForToolset,
+  normalizeMcpToolset,
 } from '../adapters/mcp/toolset';
+import { normalizeConfiguredMcpToolset } from '../adapters/mcp/toolset-selection';
 
 // The served ChatGPT schema is intentionally much smaller than the exhaustive
 // compatibility catalog. Keep a tight budget so accidental tool additions are
@@ -132,6 +135,12 @@ if (coreNames.join('\n') !== defaultNames.join('\n')) {
 if (advancedNames.join('\n') !== defaultNames.join('\n')) {
   failures.push('advanced surface must alias the bounded default ChatGPT surface');
 }
+if (normalizeMcpToolset('full') !== 'advanced' || normalizeConfiguredMcpToolset('full') !== 'advanced') {
+  failures.push('historical full toolset must normalize to the canonical bounded advanced profile');
+}
+if (controllerToolNamesForToolset('full').join('\n') !== defaultNames.join('\n')) {
+  failures.push('historical full toolset must not expose internal atomic tools');
+}
 for (const name of ['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work']) {
   if (!preferredNames.includes(name)) failures.push(`preferred facade surface missing: ${name}`);
   if (!defaultNames.includes(name)) failures.push(`default surface missing facade tool: ${name}`);
@@ -167,8 +176,8 @@ console.log(JSON.stringify({
   defaultToolBudget: MAX_DEFAULT_TOOL_COUNT,
   compatibilityCatalogToolCount: catalogNames.length,
   compatibilityCatalogFingerprint: catalogFingerprint,
-  fullCompatibilityToolCount: fullNames.length,
-  fullCompatibilityFingerprint: fullFingerprint,
+  registeredInternalToolCount: fullNames.length,
+  registeredInternalToolFingerprint: fullFingerprint,
   sourceToolCounts: Object.fromEntries(Object.entries(sourceGroups).map(([name, tools]) => [name, tools.length])),
   sourceCollisions: [...new Set(sourceCollisions)].sort(),
   accessModeChangesSchema: false,

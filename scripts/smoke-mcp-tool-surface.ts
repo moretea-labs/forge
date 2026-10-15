@@ -10,7 +10,9 @@ import {
   DEFAULT_CONTROLLER_TOOL_NAMES,
   PREFERRED_FACADE_TOOL_NAMES,
   exposedControllerToolDefinitions,
+  normalizeMcpToolset,
 } from '../adapters/mcp/toolset';
+import { normalizeConfiguredMcpToolset } from '../adapters/mcp/toolset-selection';
 import {
   EXPECTED_FACADE_TOOLS,
   OPTIONAL_INTERACTIVE_DEVELOPMENT_TOOLS,
@@ -56,9 +58,14 @@ const coreCtx = {
   audit: () => undefined,
 } as unknown as MultiRepositoryMcpToolContext;
 const advancedCtx = { ...coreCtx, toolset: 'advanced' as const };
+const historicalFullCtx = { ...coreCtx, toolset: 'full' as const };
 
 const coreExposed = exposedControllerToolDefinitions(coreCtx).map((tool) => tool.name);
 const advancedExposed = exposedControllerToolDefinitions(advancedCtx).map((tool) => tool.name);
+const historicalFullExposed = exposedControllerToolDefinitions(historicalFullCtx).map((tool) => tool.name);
+assert(normalizeMcpToolset('full') === 'advanced', 'explicit full must normalize to advanced');
+assert(normalizeConfiguredMcpToolset('full') === 'advanced', 'persisted full must migrate to advanced');
+assert(JSON.stringify(historicalFullExposed) === JSON.stringify(advancedExposed), 'full must not expose legacy atomic tools');
 for (const name of EXPECTED_FACADE_TOOLS) {
   assert(coreExposed.includes(name), `exposed core tools missing ${name}`);
 }

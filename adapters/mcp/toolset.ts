@@ -18,13 +18,13 @@ import type { McpToolset } from './types';
 import { forgeToolSurfaceFingerprint } from '../../src/cli/controller/runtime-config';
 
 export type ToolExposureClass = 'facade' | 'advanced' | 'internal' | 'compatibility';
-export type ControllerToolProfile = 'facade' | 'core' | 'advanced' | 'full';
+export type ControllerToolProfile = 'facade' | 'core' | 'advanced';
 
 export interface ControllerToolInventoryEntry {
   name: string;
   profile: ControllerToolProfile;
   capability: string;
-  exposedVia: 'facade' | 'core' | 'advanced' | 'full';
+  exposedVia: 'facade' | 'core' | 'advanced';
 }
 
 /**
@@ -67,8 +67,8 @@ export interface ControllerToolSurfaceStatus {
 
 /**
  * Core and Advanced expose the same bounded default ChatGPT surface
- * (DEFAULT_CONTROLLER_TOOL_NAMES). Full remains the exhaustive compatibility
- * surface for legacy integrations; internal atomic handlers are never deleted.
+ * (DEFAULT_CONTROLLER_TOOL_NAMES). Historical full configurations also select
+ * this bounded ABI; atomic handlers remain internal.
  */
 
 /** Historical Advanced name retained for compatibility. */
@@ -101,19 +101,16 @@ function pruneStaticExposureCache(): void {
 }
 
 export function normalizeMcpToolset(value: unknown): McpToolset {
-  if (value === 'full' || value === 'advanced' || value === 'core' || value === 'facade') return value;
+  if (value === 'full') return 'advanced';
+  if (value === 'advanced' || value === 'core' || value === 'facade') return value;
   return 'advanced';
 }
 
-/**
- * null means expose every registered definition. Profile membership only
- * changes schema discovery; authorization remains an independent policy.
- */
+/** Historical full requests never widen the canonical public tool contract. */
 export function controllerToolNamesForToolset(
   toolset: McpToolset,
   _ctx?: MultiRepositoryMcpToolContext,
-): readonly string[] | null {
-  if (toolset === 'full') return null;
+): readonly string[] {
   if (toolset === 'facade') return PREFERRED_FACADE_TOOL_NAMES;
   return DEFAULT_CONTROLLER_TOOL_NAMES;
 }
@@ -182,18 +179,8 @@ function buildStaticControllerExposureSnapshot(
     accessToolDefinitions,
     repositoryToolDefinitions,
   );
-  const rawDefinitions = ctx.toolset === 'full'
-    ? currentDefinitions.concat(
-      buildMultiRepositoryToolDefinitions(ctx).filter(
-        (legacy) => !currentDefinitions.some((current) => current.name === legacy.name),
-      ),
-    )
-    : currentDefinitions;
-  const unique = uniqueDefinitions(rawDefinitions);
-  const allowed = controllerToolNamesForToolset(ctx.toolset, ctx);
-  const expectedToolNames = allowed === null
-    ? unique.definitions.map((tool) => tool.name)
-    : [...new Set(allowed)];
+  const unique = uniqueDefinitions(currentDefinitions);
+  const expectedToolNames = [...new Set(controllerToolNamesForToolset(ctx.toolset, ctx))];
   const definitionByName = new Map(unique.definitions.map((definition) => [definition.name, definition]));
   const definitions = expectedToolNames
     .map((name) => definitionByName.get(name))
@@ -249,7 +236,7 @@ function capabilityForToolName(name: string): string {
 }
 
 function profileForToolset(toolset: McpToolset): ControllerToolProfile {
-  return toolset === 'full' ? 'full' : toolset === 'facade' ? 'facade' : toolset === 'core' ? 'core' : 'advanced';
+  return toolset === 'facade' ? 'facade' : toolset === 'core' ? 'core' : 'advanced';
 }
 
 export function controllerToolInventory(
@@ -279,7 +266,7 @@ export function controllerExposureSnapshot(ctx: MultiRepositoryMcpToolContext): 
   const staticSnapshot = staticControllerExposureSnapshot(ctx);
   return {
     access: resolveControllerAccessStateForContext(ctx),
-    toolset: ctx.toolset,
+    toolset: normalizeMcpToolset(ctx.toolset),
     profile: profileForToolset(ctx.toolset),
     inventory: controllerToolInventory(staticSnapshot.actualToolNames, ctx.toolset),
     ...staticSnapshot,

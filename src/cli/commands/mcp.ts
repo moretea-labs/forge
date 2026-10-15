@@ -170,7 +170,7 @@ export function buildMcpCommand(): Command {
     .option('--host <host>', 'HTTP bind host', '127.0.0.1')
     .option('--port <port>', 'HTTP bind port', '8765')
     .option('--profile <profile>', 'MCP profile: planner|executor|orchestrator|controller', 'controller')
-    .option('--toolset <toolset>', 'Controller toolset: facade|core|advanced|full (default advanced; facade is an explicit five-tool ChatGPT surface)')
+    .option('--toolset <toolset>', 'Controller toolset: facade|core|advanced (default advanced; historical full maps to advanced)')
     .option('--auth <mode>', 'HTTP auth mode: oauth|bearer|none', 'oauth')
     .option('--enable-chatgpt-browser', 'Expose tools that operate the user logged-in ChatGPT Web browser session')
     .option('--enable-dev-runner', 'Enable local Codex/Claude task runners for controller or orchestrator profiles')
