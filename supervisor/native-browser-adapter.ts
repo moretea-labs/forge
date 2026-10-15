@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type {
   ComputerChatgptConversationIdentity,
   ComputerChatgptConversationObservation,
@@ -180,6 +182,59 @@ function preflightComposerObservation(snapshot: ComputerChatgptConversationObser
     ...(selectorVersion ? { selectorVersion } : {}),
   };
 }
+/**
+ * Optional, single-effect operator backup: this records no draft by default.
+ * A 0600 on-device authorization marker must name the exact blocked effect,
+ * current task, project URL, and observed fingerprint before raw text is saved.
+ * The file remains local; no transcript, plugin receipt, or logs carry text.
+ * This never clears an editor or permits a Send.
+ */
+export function backupAuthorizedBlockedComposer(
+  controllerHome: string,
+  taskId: string,
+  effectId: string,
+  projectUrl: string,
+  snapshot: ComputerChatgptConversationObservation,
+): string | undefined {
+  if (!/^supervisor:[a-z0-9]+$/.test(taskId) || !/^fx_[a-zA-Z0-9_-]+$/.test(effectId)) return;
+  if (snapshot.composerSelectorVersion !== 'visible-single-v2' || !snapshot.composerText?.trim()) return;
+  if (preflightComposerObservation(snapshot, effectId).classification !== 'unattributed') return;
+  let expectedUrl: URL;
+  let actualUrl: URL;
+  try { expectedUrl = new URL(projectUrl); actualUrl = new URL(snapshot.url); } catch { return; }
+  const projectRoute = (url: URL): string | undefined =>
+    /^\/g\/(g-p-[a-z0-9]+)(?:-[^/]+)?\/project\/?$/i.exec(url.pathname)?.[1]?.toLowerCase();
+  if (expectedUrl.origin !== 'https://chatgpt.com' || actualUrl.origin !== expectedUrl.origin
+    || !projectRoute(expectedUrl) || projectRoute(actualUrl) !== projectRoute(expectedUrl)) return;
+  const observation = preflightComposerObservation(snapshot, effectId);
+  const base = join(controllerHome, 'supervisor', 'draft-backups');
+  const authorization = join(base, `authorization-${effectId}.json`);
+  let marker: unknown;
+  try { marker = JSON.parse(readFileSync(authorization, 'utf8')); } catch { return; }
+  if (!marker || typeof marker !== 'object' || Array.isArray(marker)) return;
+  const expected = marker as Record<string, unknown>;
+  if (expected.schemaVersion !== 1 || expected.taskId !== taskId
+    || expected.effectId !== effectId || expected.projectUrl !== projectUrl
+    || expected.fingerprint !== observation.fingerprint || expected.consent !== 'user-authorized-exact-backup') return;
+  mkdirSync(base, { recursive: true, mode: 0o700 });
+  const path = join(base, `composer-${effectId}-${observation.fingerprint}.json`);
+  const payload = { schemaVersion: 1, taskId, effectId, projectUrl, observedUrl: snapshot.url,
+    selectorVersion: snapshot.composerSelectorVersion, fingerprint: observation.fingerprint,
+    composerText: snapshot.composerText };
+  try {
+    writeFileSync(path, JSON.stringify(payload) + '\n', { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+  } catch (error) {
+    // A repeated preflight must not overwrite the original evidence.
+    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') return;
+    try {
+      const existing = JSON.parse(readFileSync(path, 'utf8')) as typeof payload;
+      if (existing.fingerprint !== payload.fingerprint || existing.composerText !== payload.composerText
+        || existing.taskId !== taskId || existing.observedUrl !== snapshot.url) return;
+    } catch { return; }
+  }
+  return path;
+}
+
 function exactConversation(snapshot: ComputerChatgptConversationObservation, task: WorkflowSupervisorBrowserTask): boolean {
   try { return parseChatgptConversationIdentity(snapshot.url).conversationId === task.conversationId; }
   catch { return false; }
@@ -666,6 +721,11 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     }
     if (!prepared.ready) {
       const observed = await target.observe({ includeUserHistory: false, includePageText: false }).catch(() => beforeSend);
+      if (prepared.reasonCode === 'composer_not_empty') {
+        // Snapshot backups require an exact, separately authorized fingerprint.
+        backupAuthorizedBlockedComposer(this.deps.providerScopeKey, task.taskId, command.effectId,
+          this.control.bootstrapProjectUrl(task.taskId), observed);
+      }
       this.control.recordProviderPreparationFailure({ taskId: task.taskId, effectId: command.effectId, reasonCode: prepared.reasonCode, composerObservation: preflightComposerObservation(observed, command.effectId) });
       this.noteTaskFailure(SUPERVISOR_PRE_SEND_BLOCKED, task, command.effectId);
       this.deps.onError(new Error(prepared.reasonCode));

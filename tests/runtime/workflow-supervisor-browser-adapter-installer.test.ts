@@ -10,6 +10,7 @@ import {
   type WorkflowSupervisorBrowserInstallation,
 } from '../../src/runtime/plugins/computer-chatgpt-browser-adapter-installer';
 import { WORKFLOW_SUPERVISOR_NATIVE_HOST_NAME } from '../../supervisor/native-messaging/host';
+import { backupAuthorizedBlockedComposer } from '../../supervisor/native-browser-adapter';
 import { buildLocalSystemPluginManifest, localSystemPluginAdapter } from '../../src/runtime/plugins/local-system-adapter';
 
 const roots: string[] = [];
@@ -62,6 +63,37 @@ describe('local_system Workflow Supervisor browser adapter surface', () => {
     expect(install?.argumentsSchema).toEqual({ type: 'object', properties: {}, additionalProperties: false });
     expect(install?.confirmation).toBe('authorization');
     expect(install?.resourceClaims).toEqual([{ resource: 'provider-state', mode: 'write' }]);
+  });
+});
+
+describe('Exact operator-authorized blocked-composer backup', () => {
+  test('fails closed without marker, on wrong fingerprint or route; preserves exact bytes without a Send', () => {
+    const controllerHome = temp('forge-composer-evidence-');
+    const taskId = 'supervisor:abc123';
+    const effectId = 'fx_abc123';
+    const projectUrl = 'https://chatgpt.com/g/g-p-123-forge/project';
+    const snapshot = {
+      url: projectUrl, title: 'Forge', latestUserText: '', latestAssistantResponse: '',
+      composerText: 'Draft with  two spaces\nsecond line', composerSelectorVersion: 'visible-single-v2',
+      providerActivityText: '', providerFailureText: '', isGenerating: false,
+    } as const;
+    const base = join(controllerHome,'supervisor','draft-backups');
+    const digest = createHash('sha256').update('preflight-composer-v1:\0'+snapshot.composerText).digest('hex').slice(0,24);
+    expect(backupAuthorizedBlockedComposer(controllerHome,taskId,effectId,projectUrl,snapshot)).toBeUndefined();
+    mkdirSync(base,{recursive:true});
+    const auth = join(base,`authorization-${effectId}.json`);
+    const consent = {schemaVersion:1,taskId,effectId,projectUrl,fingerprint:'incorrect',consent:'user-authorized-exact-backup'};
+    writeFileSync(auth,JSON.stringify(consent),{mode:0o600});
+    expect(backupAuthorizedBlockedComposer(controllerHome,taskId,effectId,projectUrl,snapshot)).toBeUndefined();
+    writeFileSync(auth,JSON.stringify({...consent,fingerprint:digest}));
+    expect(backupAuthorizedBlockedComposer(controllerHome,taskId,effectId,projectUrl,{...snapshot,url:'https://chatgpt.com/'})).toBeUndefined();
+    const file=backupAuthorizedBlockedComposer(controllerHome,taskId,effectId,projectUrl,
+      {...snapshot,url:'https://chatgpt.com/g/g-p-123-forge/project'});
+    expect(file).toBe(join(base,`composer-${effectId}-${digest}.json`));
+    expect(JSON.parse(readFileSync(file!,'utf8')).composerText).toBe(snapshot.composerText);
+    expect(backupAuthorizedBlockedComposer(controllerHome,taskId,effectId,projectUrl,
+      {...snapshot,url:'https://chatgpt.com/g/g-p-123-forge/project'})).toBe(file);
+    expect(backupAuthorizedBlockedComposer(controllerHome,taskId,effectId,projectUrl,{...snapshot,composerText:'different'})).toBeUndefined();
   });
 });
 
