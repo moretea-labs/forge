@@ -4,20 +4,14 @@ import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { assertUniqueGuiChromeProcess } from './chrome-process-identity';
 import { registerRepository } from '../../src/cli/repositories/registry';
 import {
   executeBrowserPluginAction,
   resetBrowserPluginRuntimeHooksForTest,
   setBrowserPluginRuntimeHooksForTest,
 } from '../../src/runtime/plugins/browser-adapter';
-import {
-  resetMacOsBrowserRuntimeHooksForTest,
-  setMacOsBrowserRuntimeHooksForTest,
-} from '../../src/runtime/plugins/browser-macos-bridge';
-import {
-  resetMacOsCapabilityBrokerSocketPathForTest,
-  setMacOsCapabilityBrokerSocketPathForTest,
-} from '../../src/runtime/plugins/macos-capability-broker';
+import { callBrowserAutomationBroker } from '../../src/runtime/plugins/browser-automation-service';
 
 if (process.platform !== 'darwin') throw new Error('Native silent browser E2E requires macOS.');
 
@@ -25,7 +19,6 @@ const repoRoot = mkdtempSync(join(tmpdir(), 'forge-browser-live-'));
 const controllerHome = mkdtempSync(join(tmpdir(), 'forge-browser-live-controller-'));
 let server: ReturnType<typeof Bun.serve> | undefined;
 let sessionId = '';
-const scripts: string[] = [];
 const timings: Array<{ kind: string; ms: number }> = [];
 
 function nativeTabId(result: Record<string, unknown>): string {
@@ -38,36 +31,46 @@ function nativeTabId(result: Record<string, unknown>): string {
   return tabId as string;
 }
 
-async function runAppleScript(script: string, args: string[] = []): Promise<string> {
-  scripts.push(script);
-  const started = performance.now();
-  const kind = script.includes('make new tab at end of tabs of targetWindow') ? 'create'
-    : script.includes('execute targetTab javascript') ? 'js'
-      : script.includes('set targetIsActive') ? 'target-metadata'
-        : script.includes('close targetTab') ? 'close'
-          : script.includes('set targetTab to active tab of targetWindow') ? 'active-metadata' : 'other';
-  const child = Bun.spawn(['/usr/bin/osascript', '-e', script, '--', ...args], { stdout: 'pipe', stderr: 'pipe' });
-  let timedOut = false;
-  const timer = setTimeout(() => { timedOut = true; child.kill(); }, 10_000);
-  const [stdout, stderr, exitCode] = await Promise.all([
-    new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited,
-  ]);
-  clearTimeout(timer);
-  timings.push({ kind: timedOut ? `${kind}-timeout` : kind, ms: Math.round((performance.now() - started) * 10) / 10 });
-  if (timedOut) throw new Error(`osascript timed out: ${kind}`);
-  if (exitCode !== 0) throw new Error(stderr || `osascript exited ${exitCode}`);
-  return stdout.trim();
+/** The stable Desktop Operator is the only macOS automation principal.
+ * Checking GUI Chrome's state through a separate osascript child can test
+ * a different TCC identity and report a misleading permissions failure.
+ */
+async function activeChromeTabIdentity(): Promise<{ windowId: string; tabId: string; url: string; title: string }> {
+  const result = await callBrowserAutomationBroker({ action: 'metadata', product: 'chrome' }, 5_000);
+  const parts = String(result.value ?? '').split(String.fromCharCode(30));
+  assert(parts.length >= 7 && Boolean(parts[1]), 'Desktop Operator returned incomplete Chrome metadata');
+  return { windowId: parts[7] ?? '', tabId: parts[8] ?? '', url: parts[1] ?? '', title: parts[2] ?? '' };
 }
 
+function assertUserTabPreserved(
+  before: { windowId: string; tabId: string; url: string; title: string },
+  after: { windowId: string; tabId: string; url: string; title: string },
+): void {
+  if (before.windowId && before.tabId && after.windowId && after.tabId) {
+    assert.equal(after.windowId, before.windowId, 'Chrome active user window changed');
+    assert.equal(after.tabId, before.tabId, 'Chrome active user tab changed');
+  } else {
+    assert.equal(after.url, before.url, 'Chrome active user URL changed');
+    assert.equal(after.title, before.title, 'Chrome active user page title changed');
+  }
+}
+
+
 async function action(actionId: string, args: Record<string, unknown>): Promise<Record<string, unknown>> {
-  return await executeBrowserPluginAction({
-    controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId,
+  const started = performance.now();
+  try {
+    return await executeBrowserPluginAction({
+    controllerHome, repoId: 'repo', repoRoot, pluginId: 'browser', actionId,
     requestId: `browser-live-${actionId}-${crypto.randomUUID()}`, args, origin: { surface: 'local-ui', actor: 'e2e' },
-  });
+    });
+  } finally {
+    timings.push({ kind: actionId, ms: Math.round((performance.now() - started) * 10) / 10 });
+  }
 }
 
 try {
-  process.env.FORGE_CONTROLLER_HOME = controllerHome;
+  // Browser session/artifact state is scoped by input.controllerHome. The
+  // Computer provider must retain the real controller's registered identity.
   mkdirSync(join(repoRoot, 'src'), { recursive: true });
   mkdirSync(join(repoRoot, 'tasks'), { recursive: true });
   mkdirSync(join(repoRoot, '.ai/harness'), { recursive: true });
@@ -95,10 +98,14 @@ try {
     cdpAttachFallback: 'fail_closed', nativeAttachMode: 'auto', nativeBrowserCandidates: ['chrome'], defaultTimeoutMs: 10_000,
   }, null, 2)}\n`);
   setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => false });
-  setMacOsCapabilityBrokerSocketPathForTest(join(tmpdir(), `forge-browser-live-no-broker-${process.pid}.sock`));
-  setMacOsBrowserRuntimeHooksForTest({ platform: 'darwin', appExists: () => true, processRunning: async () => true, runAppleScript });
-
-  const userTabBefore = await runAppleScript('tell application "Google Chrome" to return URL of active tab of front window as text');
+  // A bundle name alone cannot prove which running Chrome instance receives
+  // Apple Events. Check process roots *before* any scripting or tab mutation.
+  const processList = spawnSync('/bin/ps', ['-axo', 'pid=,args='], { encoding: 'utf8', timeout: 5_000, maxBuffer: 8 * 1024 * 1024 });
+  if (processList.error || processList.status !== 0) {
+    throw new Error('CHROME_APPLE_EVENTS_PROCESS_PROBE_UNAVAILABLE: Cannot prove which Chrome instance would receive Apple Events.');
+  }
+  assertUniqueGuiChromeProcess(processList.stdout);
+  const userTabBefore = await activeChromeTabIdentity();
   const first = await action('get_text', { url: one });
   assert(String(first.text).includes('Forge One'));
   sessionId = String(first.sessionId);
@@ -134,16 +141,12 @@ try {
   sessionId = '';
   assert.equal(closed.closed, true);
   assert.equal(closed.resourceClosed, true);
-  assert.equal(await runAppleScript('tell application "Google Chrome" to return URL of active tab of front window as text'), userTabBefore);
-  assert.equal(scripts.some((script) => /\n\s*activate\s*\n/.test(script) || script.includes('set index of targetWindow to 1')), false);
-  console.log(JSON.stringify({ ok: true, appleScriptCalls: timings.length, durationMs: Math.round(timings.reduce((sum, entry) => sum + entry.ms, 0)), timings }));
+  assertUserTabPreserved(userTabBefore, await activeChromeTabIdentity());
+  console.log(JSON.stringify({ ok: true, provider: 'desktop_operator', actionCount: timings.length, durationMs: Math.round(timings.reduce((sum, entry) => sum + entry.ms, 0)), timings }));
 } finally {
   if (sessionId) await action('close_session', { session_id: sessionId }).catch(() => undefined);
   server?.stop(true);
   resetBrowserPluginRuntimeHooksForTest();
-  resetMacOsBrowserRuntimeHooksForTest();
-  resetMacOsCapabilityBrokerSocketPathForTest();
-  delete process.env.FORGE_CONTROLLER_HOME;
   rmSync(repoRoot, { recursive: true, force: true });
   rmSync(controllerHome, { recursive: true, force: true });
 }

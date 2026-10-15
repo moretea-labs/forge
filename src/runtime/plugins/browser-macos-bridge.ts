@@ -996,8 +996,12 @@ export class MacOsAppleEventsPage {
       if (macOsBrowserJavaScriptAutomationDisabled(error)) {
         throw new AssistantPluginError(
           'PLUGIN_BROWSER_JAVASCRIPT_PERMISSION_REQUIRED',
-          `${this.browser.appName} allows tab/window automation, but DOM actions require Settings > Privacy > Apple Events > Allow JavaScript from Apple Events.`,
-          { retryable: false, details: { browserProduct: this.browser.product, bundleId: this.browser.bundleId } },
+          `${this.browser.appName} rejected JavaScript from Apple Events for the browser instance addressed by macOS automation. This does not prove that the user's visible Chrome instance has this setting disabled. Verify the exact Chrome process/profile and View > Developer > Allow JavaScript from Apple Events before changing settings.`,
+          { retryable: false, details: {
+            browserProduct: this.browser.product, bundleId: this.browser.bundleId,
+            processIdentity: 'unverified',
+            ...(this.targetRef ? { windowId: this.targetRef.windowId, tabId: this.targetRef.tabId } : {}),
+          } },
         );
       }
       throw error;

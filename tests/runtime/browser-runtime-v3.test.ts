@@ -86,6 +86,31 @@ describe('Browser Runtime completion wait policy', () => {
   });
 });
 
+describe('Native Chrome Apple Events denial identity', () => {
+  test('retains the error code without claiming the visible Chrome checkbox is unchecked', async () => {
+    const url = 'https://example.com/flag-check';
+    const metadata = ['false', url, 'Page', '0', '0', '1000', '750', '7', '9', 'false', 'false'].join(nativeSeparator);
+    setMacOsBrowserRuntimeHooksForTest({
+      platform: 'darwin', appExists: () => true, processRunning: async () => true,
+      runAppleScript: async (script) => {
+        if (script.includes('execute targetTab javascript')) {
+          throw new Error('Executing JavaScript through AppleScript is turned off. View > Developer > Allow JavaScript from Apple Events.');
+        }
+        return metadata;
+      },
+    });
+    const bound = await reattachMacOsBrowserOwnedPage('chrome', { windowId: '7', tabId: '9' }, 1000);
+    try {
+      await bound.page.evaluate('2+2');
+      throw new Error('Expected Apple Events JavaScript denial');
+    } catch (error) {
+      expect(error).toMatchObject({ code: 'PLUGIN_BROWSER_JAVASCRIPT_PERMISSION_REQUIRED',
+        details: { browserProduct: 'chrome', processIdentity: 'unverified', windowId: '7', tabId: '9' } });
+      expect(String(error)).toContain('does not prove');
+    }
+  });
+});
+
 describe('Browser Runtime V3 internal resources', () => {
   test('routes unpacked-extension reads and mutations through browser.internal_resources plus transaction authority', async () => {
     expect(browserRuntimeActionPolicy('list_unpacked_extensions')).toEqual({
