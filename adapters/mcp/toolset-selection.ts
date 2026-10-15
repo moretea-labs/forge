@@ -8,7 +8,7 @@ export interface ControllerToolsetSelection {
 }
 
 export function normalizeConfiguredMcpToolset(value: unknown): McpToolset | undefined {
-  // An old 'full' config selects the same canonical bounded ABI, not a second catalog.
+  // Single normalization authority for both persisted config and MCP tool exposure.
   if (value === 'full') return 'advanced';
   return value === 'facade' || value === 'core' || value === 'advanced' ? value : undefined;
 }
