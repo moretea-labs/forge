@@ -15,6 +15,7 @@ import { dirname, join, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import { Command } from 'commander';
 import { runDoctor, type CheckStatus, type DoctorReport } from './doctor';
+import { withProcessEnv } from './setup-execution';
 import { runStatus, type StatusReport } from './status';
 import { runMcpSetupChatgpt } from '../../../adapters/mcp/setup';
 import { resolveControllerHome } from '../repositories/controller-home';
@@ -123,24 +124,6 @@ const REPO_ROOT = resolve(SCRIPT_DIR, '..', '..', '..');
 const UPDATE_CHECK_ENV = 'FORGE_CHECK_UPDATES';
 const GLOBAL_RULES_BEGIN = '<!-- BEGIN: forge global-working-rules -->';
 const VALID_TARGETS: readonly InitHookTarget[] = ['none', 'codex', 'claude', 'both'];
-
-function withProcessEnv<T>(env: NodeJS.ProcessEnv | undefined, fn: () => T): T {
-  if (!env) return fn();
-  const previous = new Map<string, string | undefined>();
-  for (const [key, value] of Object.entries(env)) {
-    previous.set(key, process.env[key]);
-    if (value === undefined) delete process.env[key];
-    else process.env[key] = value;
-  }
-  try {
-    return fn();
-  } finally {
-    for (const [key, value] of previous) {
-      if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
-    }
-  }
-}
 
 function selectedTargets(target: InitHookTarget): Array<'codex' | 'claude'> {
   if (target === 'none') return [];

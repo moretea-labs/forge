@@ -70,6 +70,8 @@ The classifier distinguishes readonly, workspace write, remote write, and destru
 
 The MCP result envelope distinguishes “not authorized/executed” from “process executed and failed.” A blocked `rm` therefore returns authorization-required state rather than a fabricated exit-code failure, and successful ephemeral mutations are not labeled as readonly.
 
+`src/cli/commands/setup-execution.ts` is the single synchronous CLI setup/adoption owner for temporary process environment overlays and mapping bounded child-process results to setup steps. `init.ts`, `init-hook.ts`, and `global-runtime.ts` import this owner directly instead of maintaining their own `process.env` mutation and process-step wrappers. This setup convenience layer does not own Runtime or Work execution authority.
+
 ## 6. Unified Process Runtime
 
 Primary code:

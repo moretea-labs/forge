@@ -1475,6 +1475,12 @@ requireText('src/cli/commands/init-hook.ts', "['open', 'next']");
 requireText('src/cli/commands/init-hook.ts', "command(name)");
 requireText('src/cli/commands/init-hook.ts', "command('close')");
 requireText('src/cli/commands/init-hook.ts', "'.forge'");
+// CLI setup/adoption must use one process/environment implementation, not three writers.
+requireText('src/cli/commands/setup-execution.ts', 'export function withProcessEnv');
+requireText('src/cli/commands/setup-execution.ts', 'export function runSetupProcess');
+for (const path of ['src/cli/commands/init.ts', 'src/cli/commands/init-hook.ts', 'src/cli/commands/global-runtime.ts']) {
+  forbid(path, /^function\s+(?:withProcessEnv|runProcess)(?:<|\()/m, 'setup commands must import their canonical synchronous process/environment owner');
+}
 requireText('src/cli/editing/edit-session.ts', 'beforeMode');
 requireText('src/cli/editing/edit-session.ts', 'afterMode');
 requireText('src/cli/editing/edit-session.ts', '{ mode: record.beforeMode }');
