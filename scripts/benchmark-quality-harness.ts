@@ -11,6 +11,7 @@ import { clearAllSessionCachesForTest } from '../src/cli/repository/session-cach
 import { startLightweightRepositoryCommand } from '../src/runtime/execution/process-runtime/lightweight-managed';
 import { registerRepository } from '../src/cli/repositories/registry';
 import { getProcessRecord } from '../src/runtime/execution/process-runtime/store';
+import { readProcessHandleIndexEntry } from '../src/runtime/execution/process-runtime/handle-index';
 
 function percentile(values: number[], ratio: number): number {
   if (values.length === 0) throw new Error('BENCHMARK_MISSING_SAMPLES');
@@ -89,6 +90,7 @@ try {
   const reportedDurableWrites: number[] = [];
   const reportedLeaseOperations: number[] = [];
   let durableProcessRecordsObserved = 0;
+  let persistedHandleIndexEntriesObserved = 0;
   for (let index = 0; index < iterations; index += 1) {
     rawChild.push(await rawGitStatus(root));
     const started = performance.now();
@@ -108,6 +110,9 @@ try {
     reportedDurableWrites.push(run.metrics.durableWrites);
     reportedLeaseOperations.push(run.metrics.leaseOperations);
     if (getProcessRecord(controllerHome, repository.repoId, run.handle.processId) !== undefined) durableProcessRecordsObserved += 1;
+    const indexEntry = readProcessHandleIndexEntry(controllerHome, run.handle.processId);
+    if (indexEntry?.lane === 'lightweight' && indexEntry.target.scope === 'repository'
+      && indexEntry.target.repositoryId === repository.repoId) persistedHandleIndexEntriesObserved += 1;
   }
 
   const steadyContextCold = contextCold.slice(1);
@@ -138,6 +143,7 @@ try {
       durableProcessWrites: reportedDurableWrites.reduce((total, value) => total + value, 0),
       leaseOperations: reportedLeaseOperations.reduce((total, value) => total + value, 0),
       durableProcessRecordsObserved,
+      persistedHandleIndexEntriesObserved,
     },
     thresholds: {
       hotContextToColdP50MaxRatio: 0.9,
@@ -160,6 +166,7 @@ try {
     zeroReportedLeaseOperations: reportedLeaseOperations.length === iterations
       && output.command.leaseOperations <= output.thresholds.leaseOperationsMax,
     zeroObservedDurableProcessRecords: output.command.durableProcessRecordsObserved === 0,
+    completePersistedHandleIndex: output.command.persistedHandleIndexEntriesObserved === iterations,
   };
   process.stdout.write(`${JSON.stringify({ ...output, assertions, passed: Object.values(assertions).every(Boolean) }, null, 2)}\n`);
   if (!Object.values(assertions).every(Boolean)) process.exitCode = 1;
