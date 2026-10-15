@@ -6,11 +6,10 @@ import { join } from 'path';
 import { registerRepository } from '../src/cli/repositories/registry';
 import { readForgeRuntimeStatus } from '../src/runtime/control-plane/runtime-status-client';
 import { FORGE_TOOL_SURFACE } from '../src/cli/controller/runtime-config';
-import { CORE_CONTROLLER_TOOL_NAMES } from '../adapters/mcp/toolset';
+import { controllerExposureSnapshot } from '../adapters/mcp/toolset';
 import { writeMcpServiceLocalConfig } from '../adapters/mcp/auth';
 import { buildMcpToolDefinitions } from '../adapters/mcp/tool-mapping/tools';
 import { runtimePolicy } from '../adapters/mcp/multi-repository';
-import { resolveControllerToolsetSelection } from '../adapters/mcp/toolset-selection';
 import { RUNTIME_WRITE_CLAIM_ENV } from '../src/runtime/root/write-fence';
 import { createMcpToolContext, readCanonicalRuntimeToolSchema } from '../adapters/mcp/server';
 
@@ -160,8 +159,8 @@ try {
     enableDevRunner: true,
     devRunnerAgents: 'codex,claude',
   });
-  // Unmarked Controller startup intentionally preserves the Advanced compatibility label.
-  const expectedToolset = resolveControllerToolsetSelection(null).toolset;
+  // Every Controller session exposes the same complete capability registry.
+  const expectedToolset = 'full';
   if (health.body.toolset !== expectedToolset) throw new Error(`TOOLSET_CHANGED: ${String(health.body.toolset)}`);
   if (health.body.toolSurface !== FORGE_TOOL_SURFACE) throw new Error(`TOOL_SURFACE_CHANGED: ${String(health.body.toolSurface)}`);
   const expectedCompatibilityToolCount = buildMcpToolDefinitions(expectedPolicy).length;
@@ -184,7 +183,7 @@ try {
     devRunnerAgents: 'codex,claude',
   });
   const runtimeSchema = await readCanonicalRuntimeToolSchema(runtimeContext);
-  const expectedRuntimeNames = [...CORE_CONTROLLER_TOOL_NAMES].sort();
+  const expectedRuntimeNames = [...controllerExposureSnapshot(runtimeContext).actualToolNames].sort();
   if (JSON.stringify(runtimeSchema.toolNames) !== JSON.stringify(expectedRuntimeNames)) {
     throw new Error(`RUNTIME_TOOL_SCHEMA_CHANGED: ${JSON.stringify(runtimeSchema.toolNames)}`);
   }

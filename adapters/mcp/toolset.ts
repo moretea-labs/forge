@@ -12,20 +12,17 @@ import { executionToolDefinitions } from './runtime-gateway/execution-tools';
 import { processToolDefinitions } from './runtime-gateway/process-tools';
 import { injectDurableCommandFields } from './runtime-gateway/router';
 import { injectCognitionSettlementFields } from './runtime-gateway/cognition-settlement';
-import { DEFAULT_CONTROLLER_TOOL_NAMES, PREFERRED_FACADE_TOOL_NAMES, STABLE_CONTROLLER_TOOL_NAMES } from './toolset-names';
-export { BOOTSTRAP_CONTROLLER_TOOL_NAMES, CORE_CONTROLLER_TOOL_NAMES, DEFAULT_CONTROLLER_TOOL_NAMES, PREFERRED_FACADE_TOOL_NAMES, STABLE_CONTROLLER_TOOL_NAMES } from './toolset-names';
-import type { McpToolset } from './types';
-import { normalizeConfiguredMcpToolset } from './toolset-selection';
+import { PREFERRED_FACADE_TOOL_NAMES } from './toolset-names';
+export { PREFERRED_CONTROLLER_TOOL_NAMES, PREFERRED_FACADE_TOOL_NAMES } from './toolset-names';
 import { forgeToolSurfaceFingerprint } from '../../src/cli/controller/runtime-config';
 
-export type ToolExposureClass = 'facade' | 'advanced' | 'internal' | 'compatibility';
-export type ControllerToolProfile = 'facade' | 'core' | 'advanced';
+export type ControllerToolProfile = 'full';
 
 export interface ControllerToolInventoryEntry {
   name: string;
   profile: ControllerToolProfile;
   capability: string;
-  exposedVia: 'facade' | 'core' | 'advanced';
+  exposedVia: 'facade' | 'full';
 }
 
 /**
@@ -35,7 +32,7 @@ export interface ControllerToolInventoryEntry {
  */
 export interface ControllerExposureSnapshot {
   access: ControllerAccessState;
-  toolset: McpToolset;
+  toolset: 'full';
   profile: ControllerToolProfile;
   definitions: McpToolDefinition[];
   toolNames: string[];
@@ -66,17 +63,6 @@ export interface ControllerToolSurfaceStatus {
   ready: boolean;
 }
 
-/**
- * Core and Advanced expose the same bounded default ChatGPT surface
- * (DEFAULT_CONTROLLER_TOOL_NAMES). Historical full configurations also select
- * this bounded ABI; atomic handlers remain internal.
- */
-
-/** Historical Advanced name retained for compatibility. */
-export const ADVANCED_CONTROLLER_TOOL_NAMES = DEFAULT_CONTROLLER_TOOL_NAMES;
-
-const DEFAULT_CONTROLLER_TOOL_SET = new Set<string>(DEFAULT_CONTROLLER_TOOL_NAMES);
-
 interface StaticControllerExposureSnapshot {
   definitions: McpToolDefinition[];
   toolNames: string[];
@@ -101,27 +87,12 @@ function pruneStaticExposureCache(): void {
   }
 }
 
-export function normalizeMcpToolset(value: unknown): McpToolset {
-  return normalizeConfiguredMcpToolset(value) ?? 'advanced';
-}
-
-/** Historical full requests never widen the canonical public tool contract. */
-export function controllerToolNamesForToolset(
-  toolset: McpToolset,
-  _ctx?: MultiRepositoryMcpToolContext,
-): readonly string[] {
-  if (toolset === 'facade') return PREFERRED_FACADE_TOOL_NAMES;
-  return DEFAULT_CONTROLLER_TOOL_NAMES;
-}
-
 export function resolveControllerAccessStateForContext(
   ctx: MultiRepositoryMcpToolContext,
 ): ControllerAccessState {
   return resolveControllerAccessState({
     controllerHome: ctx.controllerHome,
     repoRoot: ctx.explicitRepository?.canonicalRoot,
-    toolsetOverride: ctx.toolset,
-    toolsetLocked: ctx.toolsetLocked ?? false,
   });
 }
 
@@ -159,7 +130,6 @@ function staticExposureCacheKey(ctx: MultiRepositoryMcpToolContext): string {
     controllerHome: ctx.controllerHome,
     repoRoot: ctx.repoRoot,
     explicitRepositoryId: ctx.explicitRepository?.repoId,
-    toolset: ctx.toolset,
     profile: ctx.policy.profile,
     enableChatgptBrowser: ctx.enableChatgptBrowser === true,
     devAgentRunner: ctx.policy.execution.agentRunner,
@@ -178,8 +148,13 @@ function buildStaticControllerExposureSnapshot(
     accessToolDefinitions,
     repositoryToolDefinitions,
   );
-  const unique = uniqueDefinitions(currentDefinitions);
-  const expectedToolNames = [...new Set(controllerToolNamesForToolset(ctx.toolset, ctx))];
+  const rawDefinitions = currentDefinitions.concat(
+    buildMultiRepositoryToolDefinitions(ctx).filter(
+      (legacy) => !currentDefinitions.some((current) => current.name === legacy.name),
+    ),
+  );
+  const unique = uniqueDefinitions(rawDefinitions);
+  const expectedToolNames = unique.definitions.map((tool) => tool.name);
   const definitionByName = new Map(unique.definitions.map((definition) => [definition.name, definition]));
   const definitions = expectedToolNames
     .map((name) => definitionByName.get(name))
@@ -234,15 +209,10 @@ function capabilityForToolName(name: string): string {
   return 'compatibility';
 }
 
-function profileForToolset(toolset: McpToolset): ControllerToolProfile {
-  return toolset === 'facade' ? 'facade' : toolset === 'core' ? 'core' : 'advanced';
-}
-
 export function controllerToolInventory(
   toolNames: readonly string[],
-  toolset: McpToolset,
 ): ControllerToolInventoryEntry[] {
-  const profile = profileForToolset(toolset);
+  const profile = 'full' as const;
   return toolNames.map((name) => ({
     name,
     profile,
@@ -255,19 +225,13 @@ export function clearControllerExposureCacheForTest(): void {
   staticControllerExposureCache.clear();
 }
 
-export function allControllerToolDefinitions(ctx: MultiRepositoryMcpToolContext): McpToolDefinition[] {
-  return uniqueDefinitions(
-    runtimeToolDefinitions.concat(executionToolDefinitions, processToolDefinitions, accessToolDefinitions, repositoryToolDefinitions, buildMultiRepositoryToolDefinitions(ctx)),
-  ).definitions.map((definition) => injectCognitionSettlementFields(injectDurableCommandFields(definition)));
-}
-
 export function controllerExposureSnapshot(ctx: MultiRepositoryMcpToolContext): ControllerExposureSnapshot {
   const staticSnapshot = staticControllerExposureSnapshot(ctx);
   return {
     access: resolveControllerAccessStateForContext(ctx),
-    toolset: normalizeMcpToolset(ctx.toolset),
-    profile: profileForToolset(ctx.toolset),
-    inventory: controllerToolInventory(staticSnapshot.actualToolNames, ctx.toolset),
+    toolset: 'full',
+    profile: 'full',
+    inventory: controllerToolInventory(staticSnapshot.actualToolNames),
     ...staticSnapshot,
   };
 }
@@ -288,29 +252,6 @@ export function controllerToolSurfaceStatus(ctx: MultiRepositoryMcpToolContext):
 
 export function controllerExposedToolNames(ctx: MultiRepositoryMcpToolContext): string[] {
   return controllerExposureSnapshot(ctx).actualToolNames;
-}
-
-export function classifyControllerToolExposure(toolName: string): ToolExposureClass {
-  if ((PREFERRED_FACADE_TOOL_NAMES as readonly string[]).includes(toolName)) return 'facade';
-  if (toolName.startsWith('rh_')) return 'facade';
-  if (DEFAULT_CONTROLLER_TOOL_SET.has(toolName)) return 'advanced';
-  return 'compatibility';
-}
-
-export function controllerToolExposureMetadata(toolNames: readonly string[]): {
-  preferredTools: string[];
-  advancedTools: string[];
-  compatibilityTools: string[];
-  classification: Record<string, ToolExposureClass>;
-} {
-  const classification: Record<string, ToolExposureClass> = {};
-  for (const name of toolNames) classification[name] = classifyControllerToolExposure(name);
-  return {
-    preferredTools: toolNames.filter((name) => classification[name] === 'facade'),
-    advancedTools: toolNames.filter((name) => classification[name] === 'advanced'),
-    compatibilityTools: toolNames.filter((name) => classification[name] === 'compatibility'),
-    classification,
-  };
 }
 
 export function exposedControllerToolDefinitions(ctx: MultiRepositoryMcpToolContext): McpToolDefinition[] {

@@ -167,8 +167,6 @@ function accessStatePayload(
   effective = resolveControllerAccessState({
     controllerHome: ctx.controllerHome,
     repoRoot: ctx.explicitRepository?.canonicalRoot,
-    toolsetOverride: ctx.toolset,
-    toolsetLocked: ctx.toolsetLocked,
   }),
 ) {
   const repositoryPolicy = readRepositoryAccessPolicy(ctx.controllerHome, repository.repoId);
@@ -206,8 +204,6 @@ function previewPayload(
   const currentEffective = resolveControllerAccessState({
     controllerHome: ctx.controllerHome,
     repoRoot: ctx.explicitRepository?.canonicalRoot,
-    toolsetOverride: ctx.toolset,
-    toolsetLocked: ctx.toolsetLocked,
   });
   const currentPolicy = readRepositoryAccessPolicy(ctx.controllerHome, repository.repoId);
   const currentGroups = accessToolGroups(currentEffective.effectiveAccessMode);
@@ -280,8 +276,6 @@ export function callAccessTool(
       const effective = resolveControllerAccessState({
         controllerHome: ctx.controllerHome,
         repoRoot: ctx.explicitRepository?.canonicalRoot,
-        toolsetOverride: ctx.toolset,
-        toolsetLocked: ctx.toolsetLocked,
       });
       return result({
         ...accessStatePayload(ctx, repository, configured, effective),

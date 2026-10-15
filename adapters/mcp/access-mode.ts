@@ -6,12 +6,6 @@ import {
   type McpLocalConfig,
   writeMcpServiceLocalConfig,
 } from './auth';
-import type { McpToolset } from './types';
-import {
-  migrateControllerToolsetConfig,
-  normalizeConfiguredMcpToolset,
-  resolveControllerToolsetSelection,
-} from './toolset-selection';
 import {
   isAccessMode,
   type AccessMode,
@@ -20,28 +14,23 @@ import {
 export type ControllerAccessConfigSource =
   | 'controller_home.access_mode'
   | 'repo_local_fallback.access_mode'
-  | 'controller_home.legacy_toolset'
-  | 'repo_local_fallback.legacy_toolset'
   | 'default';
 
 export interface ControllerAccessState {
   configuredAccessMode: AccessMode;
   effectiveAccessMode: AccessMode;
-  /** Selected schema profile; access mode never changes this value. */
-  effectiveToolset: McpToolset;
+  /** The complete MCP capability registry is always available. */
+  effectiveToolset: 'full';
   source: ControllerAccessConfigSource;
   lastAppliedAt?: string;
   exposureRevision: number;
   configPathSource: 'controller_home' | 'repo_local_fallback' | 'default';
-  legacyToolset?: McpToolset;
   schemaStableAcrossAccessModes: true;
 }
 
 export interface ResolveControllerAccessStateInput {
   controllerHome: string;
   repoRoot?: string;
-  toolsetOverride?: McpToolset;
-  toolsetLocked?: boolean;
 }
 
 export interface PersistControllerAccessModeResult {
@@ -50,19 +39,20 @@ export interface PersistControllerAccessModeResult {
   state: ControllerAccessState;
 }
 
-export function accessModeForLegacyToolset(toolset: McpToolset): AccessMode {
-  return toolset === 'core' ? 'request' : 'full_access';
-}
-
-/** Retained for compatibility only; access mode no longer changes schema. */
-export function legacyToolsetForAccessMode(_mode: AccessMode): McpToolset {
-  return 'core';
-}
-
 function configLocation(controllerHome: string, repoRoot?: string): 'controller_home' | 'repo_local_fallback' | 'default' {
   if (existsSync(mcpControllerHomeLocalConfigPath(controllerHome))) return 'controller_home';
   if (repoRoot && existsSync(mcpLocalConfigPath(repoRoot))) return 'repo_local_fallback';
   return 'default';
+}
+
+/** One-way interpretation of old persisted permissions, not a toolset selector. */
+export function configuredControllerAccessMode(config: McpLocalConfig | null | undefined): AccessMode {
+  if (isAccessMode(config?.accessMode)) return config.accessMode;
+  // Historically, core without an explicit accessMode meant Request, not Full Access.
+  // Preserve that permission until the next canonical config write retires toolset.
+  return (config as { toolset?: unknown } | null | undefined)?.toolset === 'core'
+    ? 'request'
+    : 'full_access';
 }
 
 function normalizedRevision(value: unknown): number {
@@ -77,27 +67,18 @@ export function resolveControllerAccessState(input: ResolveControllerAccessState
     ? config.accessModeUpdatedAt
     : undefined;
   const exposureRevision = normalizedRevision(config?.accessModeRevision);
-  const rawLegacyToolset = normalizeConfiguredMcpToolset(config?.toolset);
-  const selectedToolset = resolveControllerToolsetSelection(config, input.toolsetOverride);
-  const configuredAccessMode = isAccessMode(config?.accessMode)
-    ? config.accessMode
-    : rawLegacyToolset
-      ? accessModeForLegacyToolset(rawLegacyToolset)
-      : 'full_access';
+  const configuredAccessMode = configuredControllerAccessMode(config);
   const source: ControllerAccessConfigSource = isAccessMode(config?.accessMode)
     ? (location === 'controller_home' ? 'controller_home.access_mode' : 'repo_local_fallback.access_mode')
-    : rawLegacyToolset
-      ? (location === 'controller_home' ? 'controller_home.legacy_toolset' : 'repo_local_fallback.legacy_toolset')
-      : 'default';
+    : 'default';
   return {
     configuredAccessMode,
     effectiveAccessMode: configuredAccessMode,
-    effectiveToolset: selectedToolset.toolset,
+    effectiveToolset: 'full',
     source,
     lastAppliedAt,
     exposureRevision,
     configPathSource: location,
-    legacyToolset: rawLegacyToolset,
     schemaStableAcrossAccessModes: true,
   };
 }
@@ -110,7 +91,6 @@ export function persistControllerAccessMode(
   const existing = loadMcpServiceLocalConfig(controllerHome, repoRoot) ?? {};
   const accessModeUpdatedAt = new Date().toISOString();
   const accessModeRevision = normalizedRevision(existing.accessModeRevision) + 1;
-  const migratedToolset = migrateControllerToolsetConfig(existing);
   const config: McpLocalConfig = {
     ...existing,
     version: Math.max(existing.version ?? 1, 2),
@@ -118,11 +98,10 @@ export function persistControllerAccessMode(
     accessMode: mode,
     accessModeUpdatedAt,
     accessModeRevision,
-    // Access changes preserve an explicit profile and migrate the old implicit
-    // Advanced label to Core; they never expand or shrink schema themselves.
-    toolset: migratedToolset.toolset,
-    toolsetExplicit: migratedToolset.toolsetExplicit,
   };
+  // Stored legacy profile values are not part of the one-surface contract.
+  delete (config as Record<string, unknown>).toolset;
+  delete (config as Record<string, unknown>).toolsetExplicit;
   const configPath = writeMcpServiceLocalConfig(controllerHome, config);
   return {
     configPath,

@@ -28,7 +28,6 @@ export interface McpServeOptions {
   devRunnerAgents?: string;
   devRunnerTimeoutMs?: string;
   devRunnerMaxTimeoutMs?: string;
-  toolset?: 'facade' | 'core' | 'advanced' | 'full';
 }
 
 interface McpAccessOptions {
@@ -105,7 +104,6 @@ async function runRepositoryAccessCommand(
     repo: rawOpts.repo ?? '.',
     controllerHome: rawOpts.controllerHome,
     profile: 'controller',
-    toolset: 'core',
   });
   const result = callAccessTool(ctx, toolName, {
     repo_id: rawOpts.repoId,
@@ -170,7 +168,6 @@ export function buildMcpCommand(): Command {
     .option('--host <host>', 'HTTP bind host', '127.0.0.1')
     .option('--port <port>', 'HTTP bind port', '8765')
     .option('--profile <profile>', 'MCP profile: planner|executor|orchestrator|controller', 'controller')
-    .option('--toolset <toolset>', 'Controller toolset: facade|core|advanced (default advanced; historical full maps to advanced)')
     .option('--auth <mode>', 'HTTP auth mode: oauth|bearer|none', 'oauth')
     .option('--enable-chatgpt-browser', 'Expose tools that operate the user logged-in ChatGPT Web browser session')
     .option('--enable-dev-runner', 'Enable local Codex/Claude task runners for controller or orchestrator profiles')
@@ -191,7 +188,6 @@ export function buildMcpCommand(): Command {
             repo: rawOpts.repo ?? '.',
             controllerHome: rawOpts.controllerHome,
             profile: rawOpts.profile,
-            toolset: rawOpts.toolset,
             enableChatgptBrowser: rawOpts.enableChatgptBrowser === true,
             enableDevRunner: rawOpts.enableDevRunner,
             devRunnerAgents: rawOpts.devRunnerAgents,
@@ -206,7 +202,6 @@ export function buildMcpCommand(): Command {
             repo: rawOpts.repo,
             controllerHome: rawOpts.controllerHome,
             profile: rawOpts.profile,
-            toolset: rawOpts.toolset,
             host: rawOpts.host,
             port: parsePort(rawOpts.port),
             auth: rawOpts.auth,

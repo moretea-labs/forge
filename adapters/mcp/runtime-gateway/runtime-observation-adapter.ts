@@ -2,7 +2,7 @@ import { existsSync } from 'fs';
 import { collectRuntimePerformanceDiagnostics, inferLocalControllerProcess } from '../../../src/runtime/diagnostics/performance';
 import type { McpToolDefinition, CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
-import { allControllerToolDefinitions, controllerExposureSnapshot, controllerToolSurfaceStatus } from '../toolset';
+import { controllerExposureSnapshot, controllerToolSurfaceStatus } from '../toolset';
 import { boundedPluginArtifactImageContent, jsonPreview, result, resultWithPluginArtifactImages } from './result-adapter';
 import { expectedRevision, repositoryRootForRepoId, selected, stringList } from './shared-adapter';
 import { callStatusInboxAdapter, GIT_IDENTITY_SAMPLE_TTL_MS, summarizeInvalidActiveWorkCandidate, summarizeWorkListItem } from './status-inbox-adapter';

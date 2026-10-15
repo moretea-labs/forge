@@ -23,6 +23,7 @@ import { classifyForgeIncidentForRepair, maybeRegisterMcpIncidentRepair } from '
 import { callRuntimeTool, sessionlessFacadeControllerAuthorityMatches } from '../../adapters/mcp/runtime-gateway/runtime-tools';
 import { authenticatedFacadeControllerIdentity } from '../../adapters/mcp/runtime-gateway/controller-authority-adapter';
 import { createMcpToolContext as createMultiRepositoryContext } from '../../adapters/mcp/multi-repository';
+import { resolveControllerAccessState, persistControllerAccessMode, configuredControllerAccessMode } from '../../adapters/mcp/access-mode';
 import { createForgeMcpServer } from '../../adapters/mcp/server';
 import { registerRepository } from '../../src/cli/repositories/registry';
 import { repositoryControllerRoot } from '../../src/cli/repositories/controller-home';
@@ -41,7 +42,7 @@ import { listWorkContinuationSchedules } from '../../src/runtime/workflow/schedu
 import { createHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
 import { runHandoffInboxApplication } from '../../src/runtime/control-plane/facade/handoff-inbox-application';
 import { writeWorkHandle, type WorkHandleState } from '../../src/runtime/control-plane/execution/work-handle-store';
-import { DEFAULT_CONTROLLER_TOOL_NAMES, PREFERRED_FACADE_TOOL_NAMES } from '../../adapters/mcp/toolset-names';
+import { PREFERRED_CONTROLLER_TOOL_NAMES, PREFERRED_FACADE_TOOL_NAMES } from '../../adapters/mcp/toolset-names';
 import { FORGE_VERSION } from '../../src/cli/controller/runtime-config';
 import {
   PROCESS_RUNNER_RELEASE_CANARY_CHILD_ARG,
@@ -820,7 +821,6 @@ describe('runtime observability', () => {
       const ctx = createMultiRepositoryContext({
         repo: repoRoot,
         profile: 'controller',
-        toolset: 'full',
         controllerHome,
         runtimeSourceRoot: repoRoot,
       });
@@ -1103,14 +1103,14 @@ describe('runtime observability', () => {
     }
   });
 
-  test('serves one bounded tools/list even for historical full requests', async () => {
+  test('serves one complete tools/list with unified terminal and typed capability dispatch', async () => {
     const controllerHome = mkdtempSync(join(tmpdir(), 'forge-core-tools-'));
     const commandRepoRoot = mkdtempSync(join(tmpdir(), 'forge-command-tool-'));
-    const listNames = async (toolset?: 'facade' | 'core' | 'advanced') => {
-      const server = createForgeMcpServer({ controllerHome, profile: 'controller', ...(toolset ? { toolset } : {}) });
+    const listNames = async () => {
+      const server = createForgeMcpServer({ controllerHome, profile: 'controller' });
       const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
       await server.connect(serverTransport);
-      const client = new Client({ name: `runtime-tools-${toolset ?? 'default'}`, version: '1.0.0' }, { capabilities: {} });
+      const client = new Client({ name: 'runtime-tools-default', version: '1.0.0' }, { capabilities: {} });
       let toolListChanged = 0;
       client.setNotificationHandler('notifications/tools/list_changed', () => {
         toolListChanged += 1;
@@ -1127,31 +1127,38 @@ describe('runtime observability', () => {
       }
     };
     try {
+      // Legacy core-only configuration must retain Request permission when
+      // retiring the schema selector. This is part of the existing public ABI test.
+      const legacyControllerHome = mkdtempSync(join(tmpdir(), 'forge-one-tool-surface-access-'));
+      try {
+        mkdirSync(join(legacyControllerHome, 'mcp'), { recursive: true });
+        writeFileSync(join(legacyControllerHome, 'mcp', 'mcp.local.json'), JSON.stringify({ toolset: 'core' }));
+        expect(configuredControllerAccessMode({ accessMode: 'request' })).toBe('request');
+        const before = resolveControllerAccessState({ controllerHome: legacyControllerHome });
+        expect(before.effectiveAccessMode).toBe('request');
+        expect(before.effectiveToolset).toBe('full');
+        const persisted = persistControllerAccessMode(legacyControllerHome, 'request');
+        expect(persisted.state.effectiveToolset).toBe('full');
+        expect(persisted.state.effectiveAccessMode).toBe('request');
+        expect('toolset' in persisted.config).toBe(false);
+        expect('toolsetExplicit' in persisted.config).toBe(false);
+      } finally {
+        rmSync(legacyControllerHome, { recursive: true, force: true });
+      }
+
       const defaultNames = await listNames();
-      expect(defaultNames).toEqual([...DEFAULT_CONTROLLER_TOOL_NAMES]);
+      expect(defaultNames).toEqual(expect.arrayContaining([...PREFERRED_CONTROLLER_TOOL_NAMES]));
+      expect(defaultNames.length).toBeGreaterThan(PREFERRED_CONTROLLER_TOOL_NAMES.length);
       expect(defaultNames).toEqual(expect.arrayContaining(['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work']));
       expect(defaultNames).toContain('execute_command');
       expect(defaultNames).not.toContain('repository_command_execute');
       expect(defaultNames).not.toContain('process_exec');
       expect(defaultNames).not.toContain('work_execute');
-      expect(defaultNames).not.toContain('repository_git_status');
-      expect(defaultNames).not.toContain('git_commit_paths');
+      expect(defaultNames).toContain('repository_git_status');
+      expect(defaultNames).toContain('git_commit_paths');
 
-      const facadeNames = await listNames('facade');
-      expect(facadeNames).toEqual([...PREFERRED_FACADE_TOOL_NAMES]);
-      expect(facadeNames).toEqual(['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work', 'capability_execute']);
-      expect(facadeNames).not.toContain('execute_command');
-      expect(facadeNames).not.toContain('run_check');
-
-      const coreNames = await listNames('core');
-      expect(coreNames).toEqual(defaultNames);
-
-      const advancedNames = await listNames('advanced');
-      expect(advancedNames).toEqual(defaultNames);
-      expect(advancedNames).toContain('execute_command');
-      expect(advancedNames).not.toContain('verify_edit_session');
-      // Historical full selection cannot widen the published Controller ABI.
-      const fullServer = createForgeMcpServer({ controllerHome, profile: 'controller', toolset: 'full' });
+      // The same canonical registry is used by independent MCP sessions.
+      const fullServer = createForgeMcpServer({ controllerHome, profile: 'controller' });
       const [fullClientTransport, fullServerTransport] = InMemoryTransport.createLinkedPair();
       await fullServer.connect(fullServerTransport);
       const fullClient = new Client({ name: 'runtime-tools-full', version: '1.0.0' }, { capabilities: {} });
@@ -1159,9 +1166,9 @@ describe('runtime observability', () => {
       try {
         const fullNames = (await fullClient.listTools()).tools.map((tool) => tool.name);
         expect(fullNames).toEqual(defaultNames);
-        expect(fullNames).not.toContain('repository_git_status');
-        expect(fullNames).not.toContain('git_commit_paths');
-        expect(fullNames).not.toContain('verify_edit_session');
+        expect(fullNames).toContain('repository_git_status');
+        expect(fullNames).toContain('git_commit_paths');
+        expect(fullNames).toContain('verify_edit_session');
         expect(fullNames).toContain('execute_command');
         expect(fullNames).not.toContain('repository_command_execute');
         expect(fullNames).not.toContain('process_exec');
@@ -1199,7 +1206,7 @@ describe('runtime observability', () => {
 
   test('writes the same trace identity into response metadata and incident records', async () => {
     const controllerHome = mkdtempSync(join(tmpdir(), 'forge-trace-'));
-    const server = createForgeMcpServer({ controllerHome, profile: 'controller', toolset: 'full' });
+    const server = createForgeMcpServer({ controllerHome, profile: 'controller' });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     await server.connect(serverTransport);
     const client = new Client({ name: 'runtime-observability', version: '1.0.0' }, { capabilities: {} });

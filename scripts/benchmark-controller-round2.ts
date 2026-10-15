@@ -65,7 +65,6 @@ async function main(): Promise<void> {
       repo: repoRoot,
       controllerHome,
       profile: 'controller',
-      toolset: 'advanced',
       sessionId: `benchmark-round2-${Date.now()}`,
     });
     const cold = await call(context, 'controller_context', { repo_id: repository.repoId });
@@ -83,7 +82,6 @@ async function main(): Promise<void> {
       repo: repoRoot,
       controllerHome,
       profile: 'controller',
-      toolset: 'advanced',
       sessionId: `benchmark-round2-replacement-${Date.now()}`,
     });
     const replacementSessionContext = await call(replacementContext, 'controller_context', { repo_id: repository.repoId });
@@ -110,19 +108,18 @@ async function main(): Promise<void> {
       include_temp_dirs: false,
     });
 
-    const toolSurface: Record<string, unknown> = {};
-    for (const toolset of ['core', 'advanced', 'full'] as const) {
-      const toolContext = createMcpToolContext({ repo: repoRoot, controllerHome, profile: 'controller', toolset });
-      const definitions = exposedControllerToolDefinitions(toolContext);
-      toolSurface[toolset] = {
+    const toolContext = createMcpToolContext({ repo: repoRoot, controllerHome, profile: 'controller' });
+    const definitions = exposedControllerToolDefinitions(toolContext);
+    const toolSurface = {
+      full: {
         toolCount: definitions.length,
         schemaBytes: definitions.reduce((total, tool) => total + bytes(tool.inputSchema), 0),
         responseBytes: bytes(definitions),
-        p50Ms: undefined,
-        p95Ms: undefined,
-      };
-    }
-    const surfaceRecord = toolSurface.advanced as Record<string, unknown>;
+        p50Ms: undefined as number | undefined,
+        p95Ms: undefined as number | undefined,
+      },
+    };
+    const surfaceRecord = toolSurface.full;
     surfaceRecord.p50Ms = percentile(timings, 0.5);
     surfaceRecord.p95Ms = percentile(timings, 0.95);
 

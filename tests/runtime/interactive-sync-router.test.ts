@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { DEFAULT_CONTROLLER_TOOL_NAMES, STABLE_CONTROLLER_TOOL_NAMES } from '../../adapters/mcp/toolset-names';
+import { PREFERRED_CONTROLLER_TOOL_NAMES } from '../../adapters/mcp/toolset-names';
 import { classifyGatewayExecutionPath, runsAsInteractiveSyncWrite } from '../../adapters/mcp/runtime-gateway/router';
 import { runtimeToolDefinitions } from '../../adapters/mcp/runtime-gateway/runtime-tool-definitions';
 
@@ -56,19 +56,18 @@ describe('interactive sync routing policy', () => {
     }
   });
 
-  test('stable connector surface stays identical to the bounded default surface', () => {
-    expect(STABLE_CONTROLLER_TOOL_NAMES).toEqual(DEFAULT_CONTROLLER_TOOL_NAMES);
-    expect(STABLE_CONTROLLER_TOOL_NAMES).toHaveLength(DEFAULT_CONTROLLER_TOOL_NAMES.length);
-    expect(STABLE_CONTROLLER_TOOL_NAMES).toContain('repository_safe_patch_apply');
-    expect(STABLE_CONTROLLER_TOOL_NAMES).toContain('plugin_action_execute');
-    const stableNames = new Set<string>(STABLE_CONTROLLER_TOOL_NAMES);
+  test('preferred entry points stay stable without hiding the complete MCP surface', () => {
+    expect(PREFERRED_CONTROLLER_TOOL_NAMES.length).toBeGreaterThan(0);
+    expect(PREFERRED_CONTROLLER_TOOL_NAMES).toContain('repository_safe_patch_apply');
+    expect(PREFERRED_CONTROLLER_TOOL_NAMES).toContain('plugin_action_execute');
+    const stableNames = new Set<string>(PREFERRED_CONTROLLER_TOOL_NAMES);
     expect(stableNames.has('computer_console_unlock_prepare')).toBe(false);
     expect(stableNames.has('computer_console_unlock')).toBe(false);
     for (const name of ['computer_console_unlock_enroll', 'computer_console_unlock_status', 'computer_console_unlock_recover', 'computer_console_unlock_revoke']) {
       expect(stableNames.has(name)).toBe(false);
     }
-    expect(STABLE_CONTROLLER_TOOL_NAMES).not.toContain('repository_git_create_branch');
-    expect(STABLE_CONTROLLER_TOOL_NAMES).not.toContain('work_wait');
-    expect(STABLE_CONTROLLER_TOOL_NAMES).not.toContain('git_commit_paths');
+    expect(PREFERRED_CONTROLLER_TOOL_NAMES).not.toContain('repository_git_create_branch');
+    expect(PREFERRED_CONTROLLER_TOOL_NAMES).not.toContain('work_wait');
+    expect(PREFERRED_CONTROLLER_TOOL_NAMES).not.toContain('git_commit_paths');
   });
 });

@@ -2,7 +2,7 @@ import { existsSync } from "fs";
 import { join } from "path";
 import { runProcess } from '../../../src/effects/process-runner';
 import type { MultiRepositoryMcpToolContext } from "../multi-repository";
-import { allControllerToolDefinitions, controllerExposureSnapshot, controllerToolSurfaceStatus } from "../toolset";
+import { controllerExposureSnapshot, controllerToolSurfaceStatus } from "../toolset";
 import { result } from "./result-adapter";
 import { selected, selectedOptional } from "./shared-adapter";
 import { SEMANTIC_SCOPE_KEY } from "../../../src/cli/repositories/controller-home";
@@ -456,7 +456,7 @@ export async function callStatusInboxAdapter(
       const runtimeSource = runtimeSourceSnapshotStatus(readiness.daemon.source, ctx.runtimeSourceRoot);
       const sourceSnapshotStale = runtimeSource.restartRequired;
       const exposure = controllerExposureSnapshot(ctx);
-      const localRegisteredToolNames = allControllerToolDefinitions(ctx).map((tool) => tool.name).sort();
+      const localRegisteredToolNames = [...exposure.actualToolNames].sort();
       markDetailPhase('tool_surface');
       const toolSurfaceReady = exposure.ready && exposure.missingToolNames.length === 0;
       // Ordinary interactive execution depends on the execution axis only.

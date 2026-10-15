@@ -99,7 +99,6 @@ async function benchmarkScale(scale: number): Promise<Record<string, unknown>> {
     const ctx = createMcpToolContext({
       repo: repoRoot,
       profile: 'controller',
-      toolset: 'advanced',
       controllerHome,
     }) as unknown as MultiRepositoryMcpToolContext;
 
@@ -185,21 +184,17 @@ async function main(): Promise<void> {
     const repoRoot = join(profileRepo, 'repo');
     mkdirSync(repoRoot, { recursive: true });
     gitInit(repoRoot);
-    const counts: Record<string, number> = {};
-    for (const toolset of ['core', 'advanced', 'full'] as const) {
-      const ctx = createMcpToolContext({ repo: repoRoot, profile: 'controller', toolset, controllerHome }) as unknown as MultiRepositoryMcpToolContext;
-      counts[toolset] = exposedControllerToolDefinitions(ctx).length;
-    }
+    const ctx = createMcpToolContext({ repo: repoRoot, profile: 'controller', controllerHome }) as MultiRepositoryMcpToolContext;
+    const exposedTools = exposedControllerToolDefinitions(ctx).length;
     console.log(JSON.stringify({
       benchmark: 'controller-hotpath',
       hotReads: HOT_READS,
       scales: scaleResults,
       gitSampling,
-      toolsetCounts: counts,
+      exposedTools,
       acceptance: {
         warmP95Ms: 100,
         maxSummaryBytes: 32 * 1024,
-        coreMaxTools: 20,
         identitySubprocessesPerSample: 1,
         snapshotUniqueSubprocesses: 2,
       },

@@ -13,7 +13,7 @@ import { admitDirectEditWorkContract } from '../../../src/runtime/control-plane/
 import { listCapabilityDescriptors, summarizeCapabilityGroups } from '../../../src/runtime/control-plane/facade/capability-registry';
 import { exportControllerWorklog, listControllerWorklogEvents, parseWorklogCategory } from "../../../src/cli/controller/worklog";
 import { FORGE_MCP_SCHEMA_VERSION, FORGE_TOOL_SURFACE, FORGE_VERSION, forgeToolSurfaceFingerprint, MIN_AGENT_TIMEOUT_MS, formatDurationMs, normalizeAgentTimeoutMs } from "../../../src/cli/controller/runtime-config";
-import { DEFAULT_CONTROLLER_TOOL_NAMES, PREFERRED_FACADE_TOOL_NAMES } from "../toolset-names";
+import { PREFERRED_FACADE_TOOL_NAMES } from "../toolset-names";
 import { buildLocalConnectorStatusForRepo } from "../../../src/cli/local-bridge/connector-freshness";
 import { gitDiff, gitSnapshot, searchRepository } from "../../../src/cli/repository/inspector";
 import { getGitHubStatus } from "../../../src/cli/github/github";
@@ -51,6 +51,8 @@ export interface McpToolContext {
   /** Bound repository identity for session cache keys. */
   repoId?: string;
   checkoutId?: string;
+  /** Canonical tools/list projection supplied by the MCP registry; never authored by the client. */
+  publishedToolNames?: readonly string[];
   /** Request-scoped MCP cancellation; never persisted or reused across calls. */
   signal?: AbortSignal;
 }
@@ -1426,17 +1428,6 @@ export function buildMcpToolDefinitions(
   return tools.filter((tool) => !RETIRED_LEGACY_PUBLIC_TOOLS.has(tool.name));
 }
 
-export function controllerExpectedToolNames(
-  policy: McpPolicy,
-  opts: { enableChatgptBrowser?: boolean } = {},
-): string[] {
-  const names = buildMcpToolDefinitions(policy, opts).map((tool) => tool.name);
-  if (policy.profile !== "controller") return names;
-  // The Connector readiness expectation must match the bounded default schema
-  // served by toolset.ts. Full compatibility tools are intentionally omitted.
-  return [...DEFAULT_CONTROLLER_TOOL_NAMES];
-}
-
 const RETIRED_LEGACY_PUBLIC_TOOLS = new Set([
   "list_issues",
   "get_project_board",
@@ -1569,9 +1560,11 @@ export async function callMcpTool(
             "TOOL_DISABLED",
             "controller_capabilities requires the controller profile",
           );
-        const expectedTools = controllerExpectedToolNames(ctx.policy, {
-          enableChatgptBrowser: ctx.enableChatgptBrowser === true,
-        });
+        const expectedTools = ctx.publishedToolNames;
+        if (!expectedTools) return errorResult(
+          'MCP_TOOL_SURFACE_UNAVAILABLE',
+          'Controller capability diagnostics require the authoritative MCP registry projection.',
+        );
         const preferredTools: string[] = [...PREFERRED_FACADE_TOOL_NAMES];
         const capabilityDescriptors = listCapabilityDescriptors();
         const connectorSnapshot = Array.isArray(args.connector_tool_names)
@@ -1678,8 +1671,7 @@ export async function callMcpTool(
           toolExposure: {
             preferred: preferredTools,
             note: "Prefer the five rh_* workflow facades for orchestration. Typed repository, Git, Issue/Task, plugin, browser, iOS, artifact, and recovery tools remain available because the current MCP transport cannot load domain schemas per conversation.",
-            advanced: expectedTools.filter((tool) => !preferredTools.includes(tool)).slice(0, 40),
-            compatibilityRetained: true,
+            exposedToolCount: expectedTools.length,
           },
           expectedTools,
           facadeToolsPresentInExpectedTools: preferredTools.every((tool: string) => expectedTools.includes(tool)),

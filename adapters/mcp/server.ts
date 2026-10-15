@@ -1029,7 +1029,7 @@ export function createForgeMcpServerFromContext(
     if (isMultiRepositoryContext(ctx)) {
       const rpcId = handlerContext.mcpReq.id;
       return traceControllerMcpRequest(ctx, name, args, typeof rpcId === 'string' || typeof rpcId === 'number' ? rpcId : undefined, async (requestId, _traceId, phaseTimings) => {
-        // The public Gateway only exposes its stable facade schema. It may
+        // The public Gateway serves one complete canonical tool schema. It may
         // proxy execution, but it never discovers one Runtime schema and
         // validates calls against another source checkout.
         if (!getRuntimeWriteClaim() && !runtimeSchema && !canonicalRuntimeSchemaMatchesGateway(ctx)) {
@@ -1087,6 +1087,14 @@ export function createForgeMcpServerFromContext(
           if (durableResult) return durableResult;
           const repositoryResult = await callRepositoryToolWithPostFinalizeAttribution(ctx.controllerHome, name, args, ctx);
           if (repositoryResult) return repositoryResult;
+          if (name === 'controller_capabilities') {
+            // Legacy read-only diagnostics consume the authoritative tools/list
+            // snapshot; legacy handlers must not import Runtime registries.
+            return await callMultiRepositoryTool({
+              ...ctx,
+              publishedToolNames: controllerExposureSnapshot(ctx).actualToolNames,
+            }, name, args);
+          }
           return await callMultiRepositoryTool(ctx, name, args);
         };
         const localResult = await executeLocalTool();

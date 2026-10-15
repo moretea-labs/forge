@@ -1,12 +1,6 @@
 export type McpProfileName = 'planner' | 'executor' | 'orchestrator' | 'controller';
 export type McpPathIntent = 'read' | 'write';
 export type McpAgentRunnerName = 'codex' | 'claude';
-/** Controller MCP tools/list exposure profile.
- * - facade: explicit five-tool ChatGPT orchestration surface
- * - core/advanced (default compatibility labels): bounded stable controller surface
- * - full: compatibility mode — all legacy + runtime tools
- */
-export type McpToolset = 'facade' | 'core' | 'advanced' | 'full';
 
 export interface McpPolicy {
   profile: McpProfileName;

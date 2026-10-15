@@ -1,62 +1,21 @@
-# MCP tool exposure profiles
+# MCP capability surface
 
-Every Controller MCP tool definition receives the same optional bounded `cognition_settlement` transport field at the final exposure layer, including ordinary repository/edit/process tools as well as the `rh_*` facade. The model emits it only at a meaningful successful outcome boundary; routine micro-steps omit it. Model-authored learning and feedback are mechanically routed to the same Cognitive writers used by `rh_work learning_record/learning_feedback`. Settlement runs after the primary tool succeeds, so a cognition-write defect is returned as explicit settlement metadata/warning rather than converting an already-applied primary effect into a retryable failure. The envelope is not a lifecycle or authority surface.
+Forge exposes one complete MCP `tools/list` registry. There is **no toolset selector**: the former `facade`, `core`, `advanced`, and `full` exposure modes no longer select different schemas. Each currently registered capability is discoverable and retains its own typed validation and execution authority.
 
-Controller MCP uses one stable default schema so ChatGPT can reliably read, edit, run checks, use Git, delegate to local Agents, coordinate durable Goal/Work, capture iOS evidence, and recover from failures without a permission switch hiding tools.
+The model may prefer the small `rh_*` entry points, `execute_command`, `capability_execute`, and `plugin_action_execute` for ordinary work, but preference is guidance, not a visibility gate. `adapters/mcp/toolset-names.ts` retains a small *preferred-name reference* for connector freshness and ergonomic routing; it is not a second public tool inventory. `adapters/mcp/toolset.ts` assembles the actual tool definitions once from the current module registries, returning the canonical ordered names and schema fingerprint to MCP discovery, health, status and connection diagnostics.
 
-## Profiles
+## Execution authority
 
-| Toolset | CLI | Behavior |
-| --- | --- | --- |
-| **facade** (opt-in) | `--toolset facade` | Six-tool ChatGPT orchestration surface: `rh_access`, `rh_status`, `rh_inbox`, `rh_context`, `rh_work`, `capability_execute`. Internal handlers and capabilities remain registered; only MCP discovery is reduced. Intended for latency/tool-selection A/B before any default migration. |
-| **advanced** (default) | `--toolset advanced` | Current stable 20-tool controller surface. Includes the five `rh_*` facades plus repository, Direct Edit, command, check, plugin-dispatch, Process, and result/evidence tools. |
-| **core** | `--toolset core` | Compatibility label for the same stable default 20-tool schema. It does not reduce capability or require reconnecting. |
-| **full** | `--toolset full` | Every historical legacy and runtime definition. Use only for old integrations or deep compatibility diagnosis because the much larger schema can reduce tool-selection quality. |
+- `execute_command`: general repository/workspace terminal and explicitly granted ForgeInstance host processes; Process Runtime owns execution and receipts.
+- `capability_execute`: core typed capability actions owned by their canonical domain module.
+- `plugin_action_execute`: external plugin actions owned by their provider authority.
+- Other typed tools remain callable until their callers are migrated to a genuinely equivalent canonical action. Do not delete an operation simply to reduce `tools/list` count.
+- Access modes (request/full access) and host/OS grants control *execution*, never tool discovery. Changing permissions does not add or hide tools.
 
-Configure via CLI flags, `FORGE_MCP_TOOLSET`, or Controller Home MCP config. Empty/default controller configuration resolves to `advanced`.
+The MCP transport publishes the complete static schema; it cannot dynamically load tools for a selected domain. Any removal or schema change requires a current-host connector refresh according to actual connector support, but does not justify retaining a second toolset profile. Historical persisted `toolset` fields never select an exposure mode. A previous `core`-only configuration is interpreted once as Request permission (to avoid silently widening access), and the obsolete selector is cleared on the next canonical configuration write.
 
-## Single source of truth
+## Performance and maintenance
 
-`adapters/mcp/toolset-names.ts` owns the dependency-free stable name list. `adapters/mcp/toolset.ts` joins that list with the actual definition registry and returns one exposure snapshot containing:
+A large `tools/list` can increase initial schema/context cost and tool selection ambiguity. Optimize this by measuring actual discover-to-action latency, schema bytes, routing errors and total calls to complete a task, then **migrating and deleting redundant public tools**, not by creating hidden profiles or duplicate authority. Retain typed semantics, remote mutation receipts and process observation where a shell-only replacement would lose safety or reliability.
 
-- expected and actual tool names/counts;
-- missing, unexpected, and duplicate names;
-- schema fingerprint;
-- readiness.
-
-MCP `tools/list`, call validation, `/health`, `controller_ready`, `rh_status`, Connector freshness, and the Local Controller UI derive from this contract. Readiness cannot be `ready` while required tools are missing.
-
-## Three-layer tool contract
-
-The current implementation separates orchestration from capability without deleting product functions:
-
-1. **Workflow facade:** `rh_status`, `rh_access`, `rh_inbox`, `rh_context`, and `rh_work` are the preferred ChatGPT control-plane entry points.
-2. **Typed atomic tools:** repository inspection, Direct Edit, command, Git, Work/Job, Issue/Task, Goal/Work, plugin, browser, iOS, artifact, and recovery handlers remain public because their schemas preserve operation-specific validation and evidence.
-3. **Internal handlers and capability registry:** capabilities are grouped as `controller`, `repository-core`, `git`, `issue-task`, `browser`, `ios`, `plugin`, `evidence`, and `runtime-maintenance`. `rh_status`, `rh_context`, and `controller_capabilities` expose this metadata.
-
-The MCP transport publishes a static schema for each selected toolset. It does **not** dynamically load a domain schema after ChatGPT selects that domain. The opt-in `facade` toolset reduces initial discovery to five facade tools while retaining the same internal handlers; `core`/`advanced` keep the current 19-tool stable schema and `full` keeps the exhaustive compatibility schema.
-
-Capability metadata changes do not change `tools/list`; restart the Controller to load new code, but reconnect/rescan ChatGPT only when tool names or input schemas change.
-
-## Permissions
-
-Request/Full Access is an execution-policy decision below tool discovery. Switching access mode does not change the schema, does not require an MCP restart, and does not require reconnecting ChatGPT.
-
-Remote writes, destructive actions, outside-repository paths, and secret access remain independently gated.
-
-## Guidance
-
-- Prefer `rh_status`, `rh_access`, `rh_context`, `rh_work`, and `rh_inbox` for normal orchestration.
-- Use first-class Direct Edit, command, Git, `quick_agent_session`, Goal/Work, iOS, plugin, and artifact tools when the facade is not the shortest reliable path.
-- Use `--toolset facade` only for explicit experiments/clients until latency and workflow coverage are validated; the default remains the stable 19-tool surface.
-- Keep the stable surface unique and at or below 128 tools.
-- Add new public tools only when they unlock a real end-to-end workflow; otherwise route capabilities through an existing facade or plugin action.
-
-## Related checks
-
-```bash
-bun test tests/cli/mcp-tool-exposure-profiles.test.ts
-bun test tests/cli/connector-freshness.test.ts
-bun test tests/runtime/facade-mcp-surface.test.ts
-bun run check:mcp-compatibility
-```
+Every source change should preserve the one-inventory invariant, the current permission model and the real MCP `tools/list` plus execution-path acceptance checks. No Runtime cutover is implied by a source-only change.

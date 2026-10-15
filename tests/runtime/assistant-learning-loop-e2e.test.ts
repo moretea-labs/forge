@@ -525,7 +525,7 @@ describe('connected assistant learning loops', () => {
       controllerInstanceId: round.owner.controllerInstanceId,
       controllerType: 'chatgpt' as const,
       policy: getMcpPolicy('controller', { repoRoot: fx.repoRoot }),
-      toolset: 'core',
+      toolset: 'full',
     } as unknown as MultiRepositoryMcpToolContext;
     const signal = {
       scope_kind: 'project',
@@ -797,7 +797,7 @@ describe('connected assistant learning loops', () => {
       controllerHome: fx.controllerHome,
       repoRoot: consumerRoot,
       policy: getMcpPolicy('controller', { repoRoot: consumerRoot }),
-      toolset: 'core',
+      toolset: 'full',
       enableChatgptBrowser: false,
       explicitRepository: consumerRepository,
     } as unknown as MultiRepositoryMcpToolContext;
@@ -1082,8 +1082,7 @@ describe('direct model-authored learning without Work lifecycle', () => {
       controllerInstanceId: 'instance-direct-learning',
       controllerType: 'chatgpt' as const,
       policy: getMcpPolicy('controller', { repoRoot: fx.repoRoot }),
-      toolset: 'core',
-      toolsetLocked: true,
+      toolset: 'full',
     } as unknown as MultiRepositoryMcpToolContext;
 
     const observation = await callRuntimeTool(ctx, 'plugin_action_execute', {
@@ -1249,8 +1248,7 @@ describe('direct model-authored learning without Work lifecycle', () => {
       controllerInstanceId: 'instance-direct-learning',
       controllerType: 'chatgpt' as const,
       policy: getMcpPolicy('controller', { repoRoot: fx.repoRoot }),
-      toolset: 'core',
-      toolsetLocked: true,
+      toolset: 'full',
     } as unknown as MultiRepositoryMcpToolContext;
 
     const learning = await callRuntimeTool(ctx, 'rh_work', {
@@ -1426,8 +1424,7 @@ describe('direct model-authored learning without Work lifecycle', () => {
       controllerInstanceId: 'instance-direct-learning',
       controllerType: 'chatgpt' as const,
       policy: getMcpPolicy('controller', { repoRoot: fx.repoRoot }),
-      toolset: 'core',
-      toolsetLocked: true,
+      toolset: 'full',
     } as unknown as MultiRepositoryMcpToolContext;
 
     const learning = await callRuntimeTool(ctx, 'rh_work', {

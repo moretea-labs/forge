@@ -24,8 +24,7 @@ import {
   MAX_AGENT_TIMEOUT_MS,
 } from "../../src/cli/controller/runtime-config";
 import { ensureControllerHome, ensureRepoPreferredControllerHome } from "../../src/cli/repositories/controller-home";
-import { accessModeForLegacyToolset } from "./access-mode";
-import { migrateControllerToolsetConfig } from "./toolset-selection";
+import { configuredControllerAccessMode } from './access-mode';
 import { ensureForgeInstanceIdentity, normalizeConfiguredForgeInstanceId, readForgeInstanceIdentity } from "../../packages/kernel/identity/api/index";
 import { discoverExecutable } from "../../src/runtime/platform/executable-discovery";
 
@@ -383,8 +382,6 @@ export function runMcpSetupChatgpt(opts: {
   const oauth = ensureMcpControllerHomeOAuthPassphrase(controllerHome);
   if (token.changed) changed.push(token.path);
   if (oauth.changed) changed.push(oauth.path);
-  const migratedToolset = migrateControllerToolsetConfig(existingConfig);
-  const toolset = migratedToolset.toolset;
   const config = {
     version: Math.max(existingConfig?.version ?? 1, 3),
     identity: { forgeInstanceId: forgeInstance.instanceId },
@@ -408,10 +405,7 @@ export function runMcpSetupChatgpt(opts: {
       localEndpoint: `http://127.0.0.1:${connectorPort}/mcp`,
     },
     profile: existingConfig?.profile ?? "controller",
-    toolset,
-    toolsetExplicit: migratedToolset.toolsetExplicit,
-    accessMode: existingConfig?.accessMode
-      ?? accessModeForLegacyToolset(existingConfig?.toolset ?? toolset),
+    accessMode: configuredControllerAccessMode(existingConfig),
     accessModeUpdatedAt: existingConfig?.accessModeUpdatedAt,
     accessModeRevision: existingConfig?.accessModeRevision ?? 0,
     localController: opts.userLevel && !existingConfig?.repo
@@ -470,7 +464,7 @@ export function runMcpSetupChatgpt(opts: {
       `[forge mcp] Forge instance: ${forgeInstance.instanceId}`,
       opts.userLevel ? `[forge mcp] Scope: user (${controllerHome})` : `[forge mcp] Repo: ${repoRoot}`,
       "[forge mcp] Profile: controller",
-      `[forge mcp] Toolset: ${config.toolset}`,
+      '[forge mcp] Tools: complete Forge capability registry',
       `[forge mcp] ChatGPT MCP server name: ${serverName}`,
       `[forge mcp] Internal Runtime endpoint: http://${host}:${port}/mcp`,
       `[forge mcp] ChatGPT local OAuth endpoint: http://127.0.0.1:${connectorPort}/mcp`,
@@ -686,7 +680,7 @@ export function runMcpDoctor(opts: {
       : "not_adopted",
     repo: repoRoot,
     mcp: {
-      toolset: migrateControllerToolsetConfig(localConfig).toolset,
+      toolset: 'full',
       localConfig: existsSync(mcpControllerHomeLocalConfigPath(controllerHome)) || existsSync(
         join(repoRoot, ".forge", "mcp.local.json"),
       ),

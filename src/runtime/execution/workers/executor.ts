@@ -518,8 +518,7 @@ export async function executeExecutionJob(controllerHome: string, job: Execution
       ...context,
       controllerHome,
       explicitRepository: repository,
-      toolset: job.payload.toolset === 'core' || job.payload.toolset === 'full' ? job.payload.toolset : 'advanced',
-      toolsetLocked: true,
+      toolset: 'full',
     };
     // Durable Work mutations execute through control-plane application services.
     // The Worker must never import MCP transport to obtain Work semantics.

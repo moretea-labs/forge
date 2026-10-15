@@ -57,7 +57,7 @@ function mcpContext(controllerHome: string, repository: ReturnType<typeof regist
     repoRoot: repository.canonicalRoot,
     controllerHome,
     policy: getMcpPolicy('controller', { repoRoot: repository.canonicalRoot }),
-    toolset: 'core',
+    toolset: 'full',
     enableChatgptBrowser: false,
     explicitRepository: repository,
     audit: () => undefined,

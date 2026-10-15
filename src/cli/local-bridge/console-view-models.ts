@@ -243,7 +243,7 @@ export interface AccessStateViewModel {
   configuredAccessModeLabel: string;
   effectiveAccessMode: 'request' | 'full_access';
   effectiveAccessModeLabel: string;
-  effectiveToolset: 'facade' | 'core' | 'advanced' | 'full';
+  effectiveToolset: 'full';
   exposureRevision: number;
   lastAppliedAt?: string;
   source: string;
