@@ -822,15 +822,7 @@
       "module": "browser",
       "resource": "pure"
     },
-    "tests/runtime/computer-chatgpt-target-router.test.ts": {
-      "module": "browser",
-      "resource": "pure"
-    },
     "tests/runtime/computer-interaction-target.test.ts": {
-      "module": "browser",
-      "resource": "controller-home-isolated"
-    },
-    "tests/runtime/computer-chatgpt-macos-target.test.ts": {
       "module": "browser",
       "resource": "controller-home-isolated"
     },
@@ -965,10 +957,6 @@
     "tests/runtime/workflow-supervisor-conversation-switch.test.ts": {
       "module": "workflow",
       "resource": "controller-home-isolated"
-    },
-    "tests/runtime/workflow-supervisor-native-browser.test.ts": {
-      "module": "browser",
-      "resource": "pure"
     },
     "tests/runtime/workflow-supervisor-stop.test.ts": {
       "module": "workflow",

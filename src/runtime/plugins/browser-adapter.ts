@@ -939,7 +939,8 @@ function validateConfig(config: BrowserPluginConfig): string[] {
   if (config.browserMode === 'attach_preferred') {
     if (endpoints.length > 1) errors.push('One Browser attach capability may bind only one CDP endpoint.');
     if (config.cdpAttachFallback === 'managed_persistent') errors.push('Managed Browser is an explicit browser_mode, never an attach fallback.');
-    if (endpoints.length === 0 && (config.nativeBrowserCandidates?.length ?? 0) > 1) errors.push('Native attach requires one explicitly configured browser product.');
+    // The configured list is discovery scope; execution must bind exactly one
+    // provider from the actual tab/product evidence, never select by fallback.
   }
   return errors;
 }
@@ -2830,6 +2831,11 @@ async function openNativeAttachedContext(
           // Exactly one available browser product is observed. Product discovery
           // must not silently fall through multiple provider backends.
           preferredCandidates = [observed[0]!.product];
+        } else if (observed.length === 0) {
+          throw new AssistantPluginError(args.__forge_computer_native_only === true
+            ? 'PLUGIN_COMPUTER_NATIVE_BROWSER_UNAVAILABLE' : 'PLUGIN_BROWSER_ATTACH_UNAVAILABLE',
+            'No usable existing native browser was observed; refusing to launch or guess a provider.',
+            { retryable: false });
         } else {
           throw new AssistantPluginError('PLUGIN_BROWSER_PROVIDER_CARDINALITY_INVALID',
             'No uniquely identified existing browser product; refusing implicit cross-provider selection.',
