@@ -9,6 +9,8 @@ monitors its exact provider effect, commits the model's structured receipt, and
 reserves the next fixed prompt for CONTINUE. DONE and NEEDS_USER retain their
 configured semantic validators; STOPPED remains explicit operator authority.
 
+The Supervisor Effect prompt carries immutable task identity, outcome objective and terminal receipt; it is not a per-turn checklist, execution-time budget, or reason to perform a status probe before work. Ordinary CONTINUE turns should resume substantive work for as long as safe, useful actions remain. A terminal C receipt is a protocol acknowledgment, not evidence of productive progress; observed tool calls and deliverables are separate evidence. JSON metadata and Project instructions do not grant a missing ChatGPT App capability.
+
 The first Work-bound enrollment still requires authenticated launcher admission,
 canonical Work lookup and a prepared ControllerRound. Before consulting that lower
 admission gate, the Runtime checks whether the exact conversation already has a

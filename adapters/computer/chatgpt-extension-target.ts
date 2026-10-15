@@ -475,11 +475,35 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
           && match.providerBinding?.browserProduct === existing.browserProduct
           && instanceId === existing.providerSessionId)
         : undefined;
-      const candidate = existingMatch ?? (matches.length === 1 && first.match.providerBinding ? first : undefined);
-      // Same conversation + marker can exist in multiple physical tabs. Without
-      // an existing physical binding, the marker is not enough proof to choose a
-      // tab, so never create a new incorrect authority binding.
+      const bootstrap = bootstrapKey
+        ? this.authority.findSurfaceByStableIdentity(this.controllerHome, {
+            surfaceType: 'browser-tab', ownership: 'provider_owned',
+            resource: { namespace: 'chatgpt.bootstrap', key: bootstrapKey },
+          })
+        : undefined;
+      const pinned = bootstrap?.providerBinding;
+      const bootstrapMatch = pinned?.providerId === PROVIDER_ID
+        ? matches.find(({ instanceId, match }) => match.providerBinding?.windowId === pinned.windowId
+          && match.providerBinding?.tabId === pinned.tabId
+          && match.providerBinding?.browserProduct === pinned.browserProduct
+          && instanceId === pinned.providerSessionId)
+        : undefined;
+      // A known bootstrap pin is the authority for this pending send. Another
+      // tab carrying the same marker cannot replace that physical attachment.
+      if (pinned && !bootstrapMatch && !existingMatch) continue;
+      const candidate = existingMatch ?? bootstrapMatch ?? (matches.length === 1 && first.match.providerBinding ? first : undefined);
+      // Resolve duplicate marker tabs only with an exact persisted physical pin.
+      // A bootstrap pin already owns its tab: return that target so the caller
+      // can promote it, instead of prematurely binding a second conversation
+      // Surface to the same tab and hitting COMPUTER_SURFACE_INDEX_CONFLICT.
       if (!candidate) continue;
+      if (bootstrap && candidate === bootstrapMatch && !existingMatch) {
+        const metadata = bootstrap.compatibilityRecords.find((entry) => entry.namespace === 'chatgpt.target')?.value as Record<string, unknown> | undefined;
+        if (typeof metadata?.projectUrl !== 'string' || !metadata.projectUrl) continue;
+        const identity: ComputerChatgptBootstrapIdentity = { namespace: 'chatgpt.bootstrap', bootstrapKey: bootstrapKey!, projectUrl: metadata.projectUrl };
+        results.push({ state: 'ready', target: this.target(identity, bootstrap, candidate.instanceId), observation: candidate.match.observation });
+        continue;
+      }
       const record = await this.bindAsync(candidate.match.identity, candidate.match.providerBinding, candidate.instanceId);
       results.push({ state: 'ready', target: this.target(candidate.match.identity, record, candidate.instanceId), observation: candidate.match.observation });
     }

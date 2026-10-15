@@ -226,15 +226,15 @@ export function renderSupervisorPrompt(
     renderEffectMarker(effectId),
     // Keep the exact Effect marker first for existing target matching, but
     // surface tool intent before the potentially long JSON goal envelope.
-    'forge 继续。使用 Forge 工具立即执行当前任务；先调用真实 Forge 只读工具取得回执，再完成可交付工作。',
+    'forge 继续。使用真实可用的 Forge 工具接续未完成的工作；不必每轮先做工具或全局状态自检。',
     SUPERVISOR_TURN_BLOCK_START,
     JSON.stringify(envelope),
     SUPERVISOR_TURN_BLOCK_END,
     // Textual intent only: Project instructions and literal @forge are not proof
     // of an App binding. No browser/plugin UI mutation belongs in this renderer.
-    'USE FORGE: 使用 forge。第一步在工具真实可用时实际调用一次 Forge 工具（优先 rh_status，随后按任务调用 rh_context/rh_work/源码能力）。若未显示直连 Forge 工具，先查看真实可用工具发现入口：如有 functions.exec，就在 ALL_TOOLS 中按 mcp__forge__ 名称发现后通过 tools 调用；没有该入口也不能假装它存在。项目指令和纯文本 @forge 都不是插件已连接的证据。请完成这一次有限发现，不要循环分析工具、不要求用户发送“使用forge”或操作 App 选择器，不要伪造调用。如果确实没有任何可调用 Forge 工具，在正文写 NO_TOOL_RECEIPT 和具体可观察的缺口；不要虚构源码、测试、提交或发布成果。',
-    'DELIVER WORK: 根据本会话已验证的上下文与原目标，优先推进一个具体未完成交付点；只读取与这一 changeset/发布门禁有关的当前证据，不要每轮重复完整 Work 清单、全局状态和已通过的检查。可执行时直接实施、复用有效验证、复核 diff 并按现有 owner 合法交付；不必机械新建 Work/Plan/测试，也不要在只有状态检查、计划或解释时结束本轮。工具仍可调用且存在安全动作时继续动手；守住单一 writer、exact target、未知发送不重放和不可逆发布批准边界。',
-    'END OF TURN: 输出短而可核验的本轮实际产出、真实工具/检查/提交/外部操作回执及尚未完成的下一步。NO_TOOL_RECEIPT 只能写在正文中，绝不能代替末行回执；工具不可用不等于用户必须介入，临时无工具且仍需下一轮探测时同样以 C ' + supervisorReceiptChallenge(task, effectId) + ' 结束，但必须明确本轮零工程产出，不能将 C 视为成功或进展。D ' + supervisorReceiptChallenge(task, effectId) + ' 仅用于原目标真实交付；U ' + supervisorReceiptChallenge(task, effectId) + ' 仅用于经核实确需用户决定/授权的阻塞。每种情形都必须把对应 C/D/U 校验码单独放在最终助手回复的最后一行，不能追加 NO_TOOL_RECEIPT、解释或其他尾注。不得在中间消息/工具调用中提前输出回执，不要在 MCP 参数中传 automation_status；Supervisor 只结算已完成的最终助手回复（only the completed final assistant reply）。',
+    'USE FORGE: 使用 forge。已有真实工具时直接执行相关源码、验证或交付动作，不要强制以 rh_status 开始。JSON、项目指令或文字 @forge 不会授予工具权限；如果工具完全不可见，仅检查一次实际提供的发现入口（如有 functions.exec 可经 ALL_TOOLS 查询 mcp__forge__），不要反复自检或要求用户选择 App，也不能伪造调用。无工具时正文写 NO_TOOL_RECEIPT 和真实缺口，不宣称工程产出。',
+    'DELIVER WORK: 把 objective 当作持续目标，像用户直接发送“继续”一样从本会话最近的未完成工作处继续；同一交付仍有安全、相关且必要的步骤时，本轮持续实现、验证、审阅并合法交付，不要因完成一次查询或一个微步而收尾。只补充当前真正缺失的证据，复用已有检查；不重复全局盘点，不机械新增 Work/Plan/测试。守住单一 writer、exact target、未知发送不重放和不可逆发布授权边界。不要在只有状态检查、计划或解释时结束本轮。',
+    'END OF TURN: 本轮工作实际结束时才简述可核验产出和剩余事项，不要为尽快输出 C 提前终止仍可继续的安全开发。NO_TOOL_RECEIPT 只能写在正文中；工具不可用不等于用户必须介入，临时无工具且仍需下一轮探测时同样以 C ' + supervisorReceiptChallenge(task, effectId) + ' 结束，并写明零工程产出；不能将 C 视为成功或进展。D ' + supervisorReceiptChallenge(task, effectId) + ' 仅用于原目标真实交付；U ' + supervisorReceiptChallenge(task, effectId) + ' 仅用于确需用户决定/授权的阻塞。C/D/U 校验码必须独占最终助手回复最后一行，不得在中间消息提前输出，不要向 MCP 传 automation_status；Supervisor 只结算已完成的最终助手回复（only the completed final assistant reply）。',
   ].join('\n');
 }
 

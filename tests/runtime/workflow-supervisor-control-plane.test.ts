@@ -539,7 +539,7 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     });
     expect(recovery).toContain('END OF TURN:');
     expect(recovery).toContain('USE FORGE: 使用 forge');
-    expect(recovery).toContain('实际调用一次 Forge 工具');
+    expect(recovery).toContain('已有真实工具时直接执行相关源码');
     expect(recovery).toContain('NO_TOOL_RECEIPT 只能写在正文中');
     expect(recovery).toContain('临时无工具且仍需下一轮探测时同样以 C ' + supervisorReceiptChallenge(task, 'fx_recover01'));
     expect(recovery).toContain('不能将 C 视为成功或进展');
@@ -717,6 +717,9 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     const machineCheckpoint = renderSupervisorPrompt(task, 'fx_continue_machine', 'continuation', 'automation:supervisor:test:rh_work:continue:fx_before_machine');
     expect(parseSupervisorTurn(machineCheckpoint).continuity).toBeUndefined();
     expect(machineCheckpoint).toContain('DELIVER WORK:');
+    expect(machineCheckpoint).toContain('像用户直接发送“继续”一样');
+    expect(machineCheckpoint).not.toContain('优先推进一个具体未完成交付点');
+    expect(machineCheckpoint).not.toContain('先调用真实 Forge 只读工具');
     expect(machineCheckpoint).toContain('不要在只有状态检查、计划或解释时结束本轮');
     expect(machineCheckpoint).not.toContain('automation:supervisor:test:rh_work:continue:fx_before_machine');
     expect(continuation).not.toContain('automation.receipt:');
