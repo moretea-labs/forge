@@ -1,5 +1,5 @@
 import { execFile } from 'child_process';
-import { existsSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, readFileSync, statSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { basename, extname } from 'path';
 import {
@@ -16,6 +16,7 @@ import type { BrowserNativeAttachAttempt, BrowserNativeProduct } from '../../../
 const RECORD_SEPARATOR = String.fromCharCode(30);
 const DEFAULT_NATIVE_TIMEOUT_MS = 5_000;
 const MAX_NATIVE_OUTPUT_BYTES = 1_048_576;
+const MAX_NATIVE_BROWSER_FILE_ATTACH_BYTES = 16 * 1024 * 1024;
 
 export type MacOsBrowserProduct = BrowserNativeProduct;
 
@@ -1134,15 +1135,16 @@ export class MacOsAppleEventsPage {
     if (filePaths.length === 0 || filePaths.length > 32) {
       throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'Native browser file input accepts 1-32 local files.', { retryable: false });
     }
-    for (const filePath of filePaths) {
+
+    // Validate the entire batch before sending bytes or changing input.files.
+    const attachments = filePaths.map((filePath) => {
       if (!filePath || !existsSync(filePath)) {
         throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'Local file does not exist.', { retryable: false });
       }
-    }
-
-    if (filePaths.length === 1) {
-      const filePath = filePaths[0];
-      const bytes = readFileSync(filePath);
+      const metadata = statSync(filePath);
+      if (!metadata.isFile()) {
+        throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'Native browser can attach only regular files.', { retryable: false });
+      }
       const fileName = basename(filePath);
       const extension = extname(fileName).toLowerCase();
       const mimeType = extension === '.pdf' ? 'application/pdf'
@@ -1150,123 +1152,98 @@ export class MacOsAppleEventsPage {
         : extension === '.png' ? 'image/png'
         : extension === '.jpg' || extension === '.jpeg' ? 'image/jpeg'
         : 'application/octet-stream';
-      const bufferKey = `__forgeLocalFile_${Date.now()}_${Math.random().toString(16).slice(2)}`;
-      const encoded = bytes.toString('base64');
-      const chunkChars = 192 * 1024;
-      try {
+      return { filePath, fileName, size: metadata.size, mimeType };
+    });
+    const totalBytes = attachments.reduce((sum, attachment) => sum + attachment.size, 0);
+    if (totalBytes > MAX_NATIVE_BROWSER_FILE_ATTACH_BYTES) {
+      throw new AssistantPluginError('PLUGIN_BROWSER_NATIVE_FILE_TOO_LARGE',
+        'Native browser upload is bounded to 16 MiB per batch; select a smaller batch instead of queuing unbounded Apple Events.',
+        { retryable: false, details: { totalBytes, limitBytes: MAX_NATIVE_BROWSER_FILE_ATTACH_BYTES } });
+    }
+
+    // A read-only DOM preflight must pass before staging starts. In particular,
+    // multi-file uploads cannot reset a previous file selection on preflight failure.
+    await this.evaluate(`(() => { // __forgeFileInputPreflight
+      const matches = document.querySelectorAll(${JSON.stringify(selector)});
+      if (matches.length !== 1) throw new Error('File input selector must resolve to exactly one element.');
+      const element = matches[0];
+      if (!(element instanceof HTMLInputElement) || element.type !== 'file') throw new Error('Selector must resolve to an input[type=file].');
+      if (element.disabled) throw new Error('Target file input is disabled.');
+      if (${attachments.length > 1} && !element.multiple) throw new Error('Target input does not allow multiple files.');
+      return true;
+    })()`);
+
+    const batchKey = `__forgeStagedFiles_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+    const bufferKey = `__forgeEncodedFile_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+    const expected = attachments.map(({ fileName, size }) => ({ name: fileName, size }));
+    const chunkChars = 192 * 1024;
+    try {
+      for (const attachment of attachments) {
+        // Stage one file at a time. No DOM selection or change event occurs
+        // until the complete batch has arrived and its sizes have been checked.
+        const encoded = readFileSync(attachment.filePath).toString('base64');
         await this.evaluate(`(() => { globalThis[${JSON.stringify(bufferKey)}] = ''; return true; })()`);
         for (let offset = 0; offset < encoded.length; offset += chunkChars) {
           const chunk = encoded.slice(offset, offset + chunkChars);
           await this.evaluate(`(() => { globalThis[${JSON.stringify(bufferKey)}] += ${JSON.stringify(chunk)}; return true; })()`);
         }
-        const attached = await this.evaluate<{ name?: string; size?: number }>(`(() => {
-          const element = document.querySelector(${JSON.stringify(selector)});
-          if (!(element instanceof HTMLInputElement) || element.type !== 'file') throw new Error('Selector must resolve to an input[type=file].');
-          const expectedName = ${JSON.stringify(fileName)};
-          const expectedSize = ${bytes.length};
+        const staged = await this.evaluate<{ name?: string; size?: number }>(`(() => { // __forgeFileInputStaged
           const encoded = String(globalThis[${JSON.stringify(bufferKey)}] || '');
           const binary = atob(encoded);
           const data = new Uint8Array(binary.length);
           for (let i = 0; i < binary.length; i += 1) data[i] = binary.charCodeAt(i);
-          const file = new File([data], expectedName, { type: ${JSON.stringify(mimeType)} });
-          const transfer = new DataTransfer();
-          transfer.items.add(file);
-          element.files = transfer.files;
-          element.dispatchEvent(new Event('input', { bubbles: true }));
-          element.dispatchEvent(new Event('change', { bubbles: true }));
-          const selected = element.files && element.files[0];
-          return selected ? { name: selected.name, size: selected.size, expectedName, expectedSize } : null;
+          const file = new File([data], ${JSON.stringify(attachment.fileName)}, { type: ${JSON.stringify(attachment.mimeType)} });
+          const staged = globalThis[${JSON.stringify(batchKey)}] || [];
+          staged.push(file);
+          globalThis[${JSON.stringify(batchKey)}] = staged;
+          delete globalThis[${JSON.stringify(bufferKey)}];
+          return { name: file.name, size: file.size };
         })()`);
-        if (attached?.name !== fileName || attached?.size !== bytes.length) {
-          throw new AssistantPluginError('PLUGIN_BROWSER_NATIVE_FILE_ATTACH_FAILED', 'Native browser did not retain the requested local file on the target input.', {
-            retryable: true,
-            details: { expectedName: fileName, expectedSize: bytes.length, actualName: attached?.name, actualSize: attached?.size },
-          });
+        if (staged?.name !== attachment.fileName || staged?.size !== attachment.size) {
+          throw new AssistantPluginError('PLUGIN_BROWSER_NATIVE_FILE_ATTACH_FAILED',
+            'Browser did not stage the expected local file.', { retryable: false });
         }
-      } finally {
-        await this.evaluate(`(() => { try { delete globalThis[${JSON.stringify(bufferKey)}]; } catch {} return true; })()`).catch(() => undefined);
       }
-      return;
-    }
 
-    const attachments = filePaths.map((filePath) => {
-      const bytes = readFileSync(filePath);
-      const fileName = basename(filePath);
-      const extension = extname(fileName).toLowerCase();
-      const mimeType = extension === '.pdf' ? 'application/pdf'
-        : extension === '.zip' ? 'application/zip'
-        : extension === '.png' ? 'image/png'
-        : extension === '.jpg' || extension === '.jpeg' ? 'image/jpeg'
-        : 'application/octet-stream';
-      return {
-        bytes,
-        fileName,
-        mimeType,
-        bufferKey: `__forgeLocalFile_${Date.now()}_${Math.random().toString(16).slice(2)}`,
-      };
-    });
-
-    if (attachments.length > 1) {
-      await this.evaluate(`(() => {
-        const element = document.querySelector(${JSON.stringify(selector)});
-        if (!(element instanceof HTMLInputElement) || element.type !== 'file') throw new Error('Selector must resolve to an input[type=file].');
-        if (!element.multiple) throw new Error('Target input does not allow multiple files.');
+      // One commit to input.files and one event pair, after all File objects
+      // are staged and verified. Failed transfer never partially selects files.
+      const selected = await this.evaluate<Array<{ name?: string; size?: number }>>(`(() => { // __forgeFileInputCommit
+        const matches = document.querySelectorAll(${JSON.stringify(selector)});
+        if (matches.length !== 1) throw new Error('File input selector changed during transfer.');
+        const element = matches[0];
+        if (!(element instanceof HTMLInputElement) || element.type !== 'file' || element.disabled) {
+          throw new Error('File input became unavailable during transfer.');
+        }
+        if (${attachments.length > 1} && !element.multiple) throw new Error('File input no longer supports multiple files.');
+        const staged = globalThis[${JSON.stringify(batchKey)}];
+        const expected = ${JSON.stringify(expected)};
+        if (!Array.isArray(staged) || staged.length !== expected.length ||
+            !staged.every((file, i) => file instanceof File && file.name === expected[i].name && file.size === expected[i].size)) {
+          throw new Error('Staged file batch does not match the requested selection.');
+        }
         const transfer = new DataTransfer();
+        staged.forEach((file) => transfer.items.add(file));
         element.files = transfer.files;
-        return true;
-      })()`);
-    }
-
-    const chunkChars = 192 * 1024;
-    try {
-      for (let index = 0; index < attachments.length; index += 1) {
-        const attachment = attachments[index];
-        const encoded = attachment.bytes.toString('base64');
-        await this.evaluate(`(() => { globalThis[${JSON.stringify(attachment.bufferKey)}] = ''; return true; })()`);
-        for (let offset = 0; offset < encoded.length; offset += chunkChars) {
-          const chunk = encoded.slice(offset, offset + chunkChars);
-          await this.evaluate(`(() => { globalThis[${JSON.stringify(attachment.bufferKey)}] += ${JSON.stringify(chunk)}; return true; })()`);
+        const selected = Array.from(element.files || []).map((file) => ({ name: file.name, size: file.size }));
+        if (selected.length !== expected.length ||
+            !selected.every((file, i) => file.name === expected[i].name && file.size === expected[i].size)) {
+          throw new Error('Browser did not retain the requested file selection.');
         }
-        const append = attachments.length > 1 && index > 0;
-        await this.evaluate(`(() => {
-          const element = document.querySelector(${JSON.stringify(selector)});
-          if (!(element instanceof HTMLInputElement) || element.type !== 'file') throw new Error('Selector must resolve to an input[type=file].');
-          const expectedName = ${JSON.stringify(attachment.fileName)};
-          const expectedSize = ${attachment.bytes.length};
-          const encoded = String(globalThis[${JSON.stringify(attachment.bufferKey)}] || '');
-          const binary = atob(encoded);
-          const data = new Uint8Array(binary.length);
-          for (let i = 0; i < binary.length; i += 1) data[i] = binary.charCodeAt(i);
-          const file = new File([data], expectedName, { type: ${JSON.stringify(attachment.mimeType)} });
-          const transfer = new DataTransfer();
-          if (${append ? 'true' : 'false'}) {
-            for (const existing of Array.from(element.files || [])) transfer.items.add(existing);
-          }
-          transfer.items.add(file);
-          element.files = transfer.files;
-          return Array.from(element.files || []).map((selected) => ({ name: selected.name, size: selected.size }));
-        })()`);
-      }
-
-      const selected = await this.evaluate<Array<{ name?: string; size?: number }>>(`(() => {
-        const element = document.querySelector(${JSON.stringify(selector)});
-        if (!(element instanceof HTMLInputElement) || element.type !== 'file') throw new Error('Selector must resolve to an input[type=file].');
         element.dispatchEvent(new Event('input', { bubbles: true }));
         element.dispatchEvent(new Event('change', { bubbles: true }));
-        return Array.from(element.files || []).map((file) => ({ name: file.name, size: file.size }));
+        return selected;
       })()`);
-      const expected = attachments.map((attachment) => ({ name: attachment.fileName, size: attachment.bytes.length }));
-      const matches = selected.length === expected.length && expected.every((item, index) => selected[index]?.name === item.name && selected[index]?.size === item.size);
-      if (!matches) {
-        throw new AssistantPluginError('PLUGIN_BROWSER_NATIVE_FILE_ATTACH_FAILED', 'Native browser did not retain the requested local files on the target input.', {
-          retryable: true,
-          details: { expected, actual: selected },
-        });
+      if (selected.length !== expected.length ||
+          !expected.every((item, index) => selected[index]?.name === item.name && selected[index]?.size === item.size)) {
+        throw new AssistantPluginError('PLUGIN_BROWSER_NATIVE_FILE_ATTACH_FAILED',
+          'Native browser did not retain the requested local files on the target input.', { retryable: false });
       }
     } finally {
-      for (const attachment of attachments) {
-        await this.evaluate(`(() => { try { delete globalThis[${JSON.stringify(attachment.bufferKey)}]; } catch {} return true; })()`).catch(() => undefined);
-      }
+      // Unknown effect outcomes must be reconciled by observation, never by replay.
+      await this.evaluate(`(() => {
+        try { delete globalThis[${JSON.stringify(bufferKey)}]; delete globalThis[${JSON.stringify(batchKey)}]; } catch {}
+        return true;
+      })()`).catch(() => undefined);
     }
   }
 

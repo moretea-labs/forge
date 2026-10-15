@@ -73,6 +73,8 @@ try {
   mkdirSync(join(repoRoot, '.ai/harness'), { recursive: true });
   mkdirSync(join(repoRoot, '.forge/plugins'), { recursive: true });
   writeFileSync(join(repoRoot, 'src/example.ts'), 'export const value = 1;\n');
+  writeFileSync(join(repoRoot, 'src/upload-one.txt'), 'first');
+  writeFileSync(join(repoRoot, 'src/upload-two.txt'), 'second');
   writeFileSync(join(repoRoot, 'tasks/current.md'), '# Current\n');
   spawnSync('git', ['init', '-b', 'main'], { cwd: repoRoot, stdio: 'ignore' });
   registerRepository({ path: repoRoot, controllerHome });
@@ -82,7 +84,7 @@ try {
     fetch(request) {
       const path = new URL(request.url).pathname;
       const title = path === '/three' ? 'Forge Three' : path === '/two' ? 'Forge Two' : 'Forge One';
-      return new Response(`<!doctype html><title>${title}</title><body><main>${title}</main><input id="email"><button id="btn" onclick="document.querySelector('#status').textContent='clicked:'+document.querySelector('#email').value">Apply</button><a id="next" href="/three">Next</a><div id="status">idle</div></body>`, { headers: { 'content-type': 'text/html' } });
+      return new Response(`<!doctype html><title>${title}</title><body><main>${title}</main><input id="email"><button id="btn" onclick="document.querySelector('#status').textContent='clicked:'+document.querySelector('#email').value">Apply</button><a id="next" href="/three">Next</a><div id="status">idle</div><input id="upload" type="file" multiple oninput="document.querySelector(\'#upload-status\').textContent=Array.from(this.files||[]).map(f=>f.name+\':\'+f.size).join(\',\')"><div id="upload-status">empty</div></body>`, { headers: { 'content-type': 'text/html' } });
     },
   });
   const port = server.port;
@@ -110,6 +112,8 @@ try {
   assert(!('screenshot' in filled));
   await action('click', { session_id: sessionId, selector: '#btn', post_action_wait_ms: 1 });
   assert(String((await action('get_text', { session_id: sessionId, selector: '#status' })).text).includes('clicked:silent@example.com'));
+  await action('attach_local_file', { session_id: sessionId, selector: '#upload', file_paths: ['src/upload-one.txt', 'src/upload-two.txt'] });
+  assert.equal(String((await action('get_text', { session_id: sessionId, selector: '#upload-status' })).text).trim(), 'upload-one.txt:5,upload-two.txt:6');
 
   const navigated = await action('click', { session_id: sessionId, selector: '#next', post_action_wait_ms: 100 });
   assert.equal(String(navigated.url), `http://127.0.0.1:${port}/three`);
