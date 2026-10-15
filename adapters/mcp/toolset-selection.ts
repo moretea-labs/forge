@@ -8,7 +8,9 @@ export interface ControllerToolsetSelection {
 }
 
 export function normalizeConfiguredMcpToolset(value: unknown): McpToolset | undefined {
-  return value === 'facade' || value === 'core' || value === 'advanced' || value === 'full' ? value : undefined;
+  // An old 'full' config selects the same canonical bounded ABI, not a second catalog.
+  if (value === 'full') return 'advanced';
+  return value === 'facade' || value === 'core' || value === 'advanced' ? value : undefined;
 }
 
 /** Persisted Core and Advanced are compatibility-equivalent stable profiles. */

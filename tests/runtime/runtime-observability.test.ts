@@ -1103,7 +1103,7 @@ describe('runtime observability', () => {
     }
   });
 
-  test('serves the bounded default tools/list and retains explicit Advanced compatibility plus full fallback', async () => {
+  test('serves one bounded tools/list even for historical full requests', async () => {
     const controllerHome = mkdtempSync(join(tmpdir(), 'forge-core-tools-'));
     const commandRepoRoot = mkdtempSync(join(tmpdir(), 'forge-command-tool-'));
     const listNames = async (toolset?: 'facade' | 'core' | 'advanced') => {
@@ -1150,7 +1150,7 @@ describe('runtime observability', () => {
       expect(advancedNames).toEqual(defaultNames);
       expect(advancedNames).toContain('execute_command');
       expect(advancedNames).not.toContain('verify_edit_session');
-      // Full compatibility profile still exposes the atomic Git handlers.
+      // Historical full selection cannot widen the published Controller ABI.
       const fullServer = createForgeMcpServer({ controllerHome, profile: 'controller', toolset: 'full' });
       const [fullClientTransport, fullServerTransport] = InMemoryTransport.createLinkedPair();
       await fullServer.connect(fullServerTransport);
@@ -1158,14 +1158,14 @@ describe('runtime observability', () => {
       await fullClient.connect(fullClientTransport);
       try {
         const fullNames = (await fullClient.listTools()).tools.map((tool) => tool.name);
-        expect(fullNames).toContain('repository_git_status');
-        expect(fullNames).toContain('git_commit_paths');
-        expect(fullNames).toContain('verify_edit_session');
+        expect(fullNames).toEqual(defaultNames);
+        expect(fullNames).not.toContain('repository_git_status');
+        expect(fullNames).not.toContain('git_commit_paths');
+        expect(fullNames).not.toContain('verify_edit_session');
         expect(fullNames).toContain('execute_command');
         expect(fullNames).not.toContain('repository_command_execute');
         expect(fullNames).not.toContain('process_exec');
         expect(fullNames).not.toContain('work_execute');
-        expect(fullNames.length).toBeGreaterThan(defaultNames.length);
         const hostCall = await fullClient.callTool({ name: 'execute_command', arguments: { scope: 'host', command: ['echo', 'ungranted-host'] } });
         expect(hostCall.isError).toBe(true);
         // This isolated test Controller has no live ForgeInstance identity; a

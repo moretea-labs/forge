@@ -5,9 +5,9 @@ export const PREFERRED_FACADE_TOOL_NAMES = [...FACADE_TOOLS] as const;
 
 /**
  * Default ChatGPT-facing MCP surface. The Runtime keeps every internal atomic
- * handler and the full compatibility profile; ChatGPT only needs this bounded
- * execution surface. Atomic Git / issue-task / edit-session / plugin
- * tools remain registered and reachable through `toolset=full`.
+ * handlers internally; ChatGPT only needs this bounded execution surface.
+ * Historical `toolset=full` configurations select this same published ABI;
+ * atomic Git / issue-task / edit-session handlers are not MCP tools.
  */
 export const DEFAULT_CONTROLLER_TOOL_NAMES = [
   ...PREFERRED_FACADE_TOOL_NAMES,
@@ -45,7 +45,7 @@ export const DEFAULT_CONTROLLER_TOOL_NAMES = [
   'process_cancel',
 
   // Evidence. Approval resolution is available through rh_access/rh_work and
-  // the explicit full compatibility profile; it does not need a top-level
+  // internal-only atomic handlers; it does not need a top-level
   // default tool.
   'result_read',
   'result_search',
