@@ -4,10 +4,9 @@ import { FACADE_TOOLS } from '../../src/runtime/control-plane/facade/types';
 export const PREFERRED_FACADE_TOOL_NAMES = [...FACADE_TOOLS] as const;
 
 /**
- * Default ChatGPT-facing MCP surface. The Runtime keeps every internal atomic
- * handlers internally; ChatGPT only needs this bounded execution surface.
- * Historical `toolset=full` configurations select this same published ABI;
- * atomic Git / issue-task / edit-session handlers are not MCP tools.
+ * Default ChatGPT-facing MCP surface. The Runtime retains atomic handlers
+ * internally, while ChatGPT sees this bounded execution surface. Historical
+ * `toolset=full` configurations select this same published ABI.
  */
 export const DEFAULT_CONTROLLER_TOOL_NAMES = [
   ...PREFERRED_FACADE_TOOL_NAMES,
@@ -63,11 +62,10 @@ export const BOOTSTRAP_CONTROLLER_TOOL_NAMES = [
 ] as const;
 
 /**
- * Stable ChatGPT connector schema. Keep this identical to the bounded default
- * Runtime surface so discovery never advertises atomic tools that the default
- * Forge build will reject. The exhaustive `full` profile is assembled directly
- * from registered definitions and remains available for explicit compatibility
- * clients without widening the normal connector schema.
+ * Stable ChatGPT connector schema. This is identical to the bounded default
+ * Runtime surface; no Controller profile exposes the internal atomic catalog.
+ * Historical `full` selections normalize to `advanced` without losing
+ * repository, process, evidence, or typed plugin capabilities.
  */
 export const STABLE_CONTROLLER_TOOL_NAMES = DEFAULT_CONTROLLER_TOOL_NAMES;
 

@@ -15,6 +15,7 @@ import { injectCognitionSettlementFields } from './runtime-gateway/cognition-set
 import { DEFAULT_CONTROLLER_TOOL_NAMES, PREFERRED_FACADE_TOOL_NAMES, STABLE_CONTROLLER_TOOL_NAMES } from './toolset-names';
 export { BOOTSTRAP_CONTROLLER_TOOL_NAMES, CORE_CONTROLLER_TOOL_NAMES, DEFAULT_CONTROLLER_TOOL_NAMES, PREFERRED_FACADE_TOOL_NAMES, STABLE_CONTROLLER_TOOL_NAMES } from './toolset-names';
 import type { McpToolset } from './types';
+import { normalizeConfiguredMcpToolset } from './toolset-selection';
 import { forgeToolSurfaceFingerprint } from '../../src/cli/controller/runtime-config';
 
 export type ToolExposureClass = 'facade' | 'advanced' | 'internal' | 'compatibility';
@@ -101,9 +102,7 @@ function pruneStaticExposureCache(): void {
 }
 
 export function normalizeMcpToolset(value: unknown): McpToolset {
-  if (value === 'full') return 'advanced';
-  if (value === 'advanced' || value === 'core' || value === 'facade') return value;
-  return 'advanced';
+  return normalizeConfiguredMcpToolset(value) ?? 'advanced';
 }
 
 /** Historical full requests never widen the canonical public tool contract. */
