@@ -3,7 +3,6 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { resolveControllerHome } from '../../src/cli/repositories/controller-home';
 import type { AccessMode } from '../../src/runtime/control-plane/governance/access-policy';
-import type { McpToolset } from './types';
 
 export interface McpLocalConfig {
   version?: number;
@@ -29,9 +28,6 @@ export interface McpLocalConfig {
     localEndpoint?: string;
   };
   profile?: string;
-  toolset?: 'facade' | 'core' | 'advanced' | 'full';
-  /** Compatibility marker retained for previously persisted toolset choices. */
-  toolsetExplicit?: boolean;
   accessMode?: AccessMode;
   accessModeUpdatedAt?: string;
   accessModeRevision?: number;
@@ -90,10 +86,10 @@ export interface McpRuntimeState {
     forgeVersion?: string;
     toolSurfaceFingerprint?: string;
     runtimeToolSurfaceFingerprint?: string;
-    toolset?: 'facade' | 'core' | 'advanced' | 'full';
+    toolset?: 'full';
     configuredAccessMode?: AccessMode;
     effectiveAccessMode?: AccessMode;
-    effectiveToolset?: McpToolset;
+    effectiveToolset?: 'full';
     accessModeSource?: string;
     accessModeLastAppliedAt?: string;
     exposureRevision?: number;

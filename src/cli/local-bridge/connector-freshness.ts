@@ -19,7 +19,7 @@ import {
   loadMcpLocalConfig,
   loadMcpServiceLocalConfig,
 } from '../../../adapters/mcp/auth';
-import { PREFERRED_FACADE_TOOL_NAMES, DEFAULT_CONTROLLER_TOOL_NAMES } from '../../../adapters/mcp/toolset-names';
+import { PREFERRED_FACADE_TOOL_NAMES } from '../../../adapters/mcp/toolset-names';
 import { resolveRepoPreferredControllerHome } from '../repositories/controller-home';
 import type { PlainStatusTone } from './console-view-models';
 
@@ -37,8 +37,6 @@ export const OPTIONAL_INTERACTIVE_DEVELOPMENT_TOOLS = [
   'process_wait',
 ] as const;
 
-/** @deprecated Prefer ADVANCED_CONTROLLER_TOOL_NAMES; kept for import stability. */
-export const CORE_SURFACE_INTERACTIVE_TOOLS = OPTIONAL_INTERACTIVE_DEVELOPMENT_TOOLS;
 
 export type ConnectorFreshnessStatus =
   | 'local_mcp_updated'
@@ -477,15 +475,6 @@ function finalize(
   report: Omit<ConnectorFreshnessReport, never>,
 ): ConnectorFreshnessReport {
   return report;
-}
-
-/**
- * Build local tool names from the in-process controller registry (not ChatGPT).
- * Uses expectedTools when provided; otherwise falls back to the stable default exposure.
- */
-export function localControllerToolNames(expectedTools?: readonly string[]): string[] {
-  if (expectedTools && expectedTools.length > 0) return uniqueSorted(expectedTools);
-  return uniqueSorted([...DEFAULT_CONTROLLER_TOOL_NAMES]);
 }
 
 export function buildLocalConnectorStatus(input: {

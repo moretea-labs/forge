@@ -2,8 +2,7 @@ import { loadMcpLocalConfig, loadMcpServiceLocalConfig } from './auth';
 import { getMcpPolicy, parseMcpProfile } from './policy';
 import { buildMcpToolDefinitions, callMcpTool, type CallToolResult, type McpToolContext, type McpToolDefinition } from './tool-mapping/tools';
 import { DEFAULT_AGENT_TIMEOUT_MS, MAX_AGENT_TIMEOUT_MS, normalizeAgentTimeoutMs } from '../../src/cli/controller/runtime-config';
-import type { McpAgentRunnerName, McpToolset } from './types';
-import { configuredControllerToolset } from './toolset-selection';
+import type { McpAgentRunnerName } from './types';
 import { realpathSync } from 'fs';
 import { resolve } from 'path';
 import { ensureRepoPreferredControllerHome } from '../../src/cli/repositories/controller-home';
@@ -28,7 +27,6 @@ export interface McpServerOptions {
   devRunnerAgents?: string;
   devRunnerTimeoutMs?: number;
   devRunnerMaxTimeoutMs?: number;
-  toolset?: McpToolset | string;
   sessionId?: string;
   principalId?: string;
   controllerType?: McpToolContext['controllerType'];
@@ -42,8 +40,7 @@ export interface McpServerOptions {
 export interface MultiRepositoryMcpToolContext extends McpToolContext {
   controllerHome: string;
   explicitRepository?: RepositoryRecord;
-  toolset: McpToolset;
-  toolsetLocked: boolean;
+  toolset: 'full';
   runtimeSourceRoot?: string;
 }
 
@@ -65,14 +62,6 @@ const REPOSITORY_LOCKED_TOOLS = new Set([
   'configure_github_plugin',
 ]);
 
-
-export function parseMcpToolset(value: unknown, profile: string): McpToolset {
-  if (profile !== 'controller') return 'full';
-  const normalized = typeof value === 'string' ? value.trim().toLowerCase() : '';
-  if (!normalized) return 'advanced';
-  if (normalized === 'facade' || normalized === 'core' || normalized === 'advanced' || normalized === 'full') return normalized;
-  throw new Error(`invalid MCP toolset "${String(value)}" (expected: facade, core, advanced, or full)`);
-}
 
 function repositoryForExplicitPath(path: string, controllerHome: string): RepositoryRecord | undefined {
   const selectedPath = (() => {
@@ -332,24 +321,14 @@ export function createMcpToolContext(opts: McpServerOptions): MultiRepositoryMcp
     : undefined;
   const policyRoot = explicitRepository?.canonicalRoot ?? controllerHome;
   const policy = runtimePolicy(policyRoot, { ...opts, controllerHome });
-  const config = policy.profile === 'controller'
-    ? loadMcpServiceLocalConfig(controllerHome, explicitRepository?.canonicalRoot)
-    : loadMcpLocalConfig(policyRoot);
-  const toolsetOverride = opts.toolset ?? process.env.FORGE_MCP_TOOLSET;
-  const configuredToolset = policy.profile === 'controller'
-    ? configuredControllerToolset(config)
-    : config?.toolset;
-  const toolset = parseMcpToolset(
-    toolsetOverride ?? configuredToolset,
-    policy.profile,
-  );
+  // All Forge capabilities share one public MCP tool registry.
+  // Host authorization remains independent of tool discovery.
   return {
     controllerHome,
     explicitRepository,
     repoRoot: policyRoot,
     policy,
-    toolset,
-    toolsetLocked: toolsetOverride !== undefined || configuredToolset !== undefined,
+    toolset: 'full',
     enableChatgptBrowser: opts.enableChatgptBrowser === true,
     sessionId: opts.sessionId,
     principalId: opts.principalId,
@@ -401,6 +380,7 @@ export async function callMultiRepositoryTool(
       controllerInstanceId: ctx.controllerInstanceId,
       repoId: repository.repoId,
       checkoutId: repository.activeCheckoutId,
+      publishedToolNames: ctx.publishedToolNames,
     };
     const invoke = async () => await callMcpTool(scopedContext, name, scopedArgs) as ToolResult;
     const result = REPOSITORY_LOCKED_TOOLS.has(name)

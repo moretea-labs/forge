@@ -31,7 +31,7 @@ These features are part of the default local setup:
 
 ## Tool exposure
 
-The default `core` / `advanced` toolset exposes a bounded ChatGPT-facing schema of 20 tools: the five `rh_*` workflow facades (with optional semantic retrieval via `rh_context.search`), repository selection, a single `execute_command` for repository/workspace and explicitly granted ForgeInstance host commands (no Work/Plan prerequisite), exact source read, `repository_safe_patch_apply`, `run_check`, one typed `plugin_action_execute` dispatcher with plugin schemas routed through `rh_context`, managed process lifecycle, result retrieval, and approval resolution. Git / issue-task / edit-session / other plugin / browser / iOS / maintenance atomics remain registered as internal handlers and are reachable through the `full` compatibility profile when still supported. Retired lifecycles are removed rather than kept as dormant compatibility handlers. The MCP transport does not dynamically load domain schemas.
+Forge exposes one complete MCP tool registry without `facade` / `core` / `advanced` / `full` exposure selectors. The preferred entry points remain the `rh_*` facades, `execute_command` for authorized terminal work, `capability_execute` for typed core actions, and `plugin_action_execute` for provider-owned plugin actions. Other genuinely distinct Git, repository, Process, evidence, browser, iOS, and maintenance capabilities remain public until their callers move to an equivalent canonical action and their duplicate definitions are removed. Tool selection guidance does not hide capability. The MCP transport publishes the full static schema and does not dynamically load domain schemas.
 
 ## Execution choices
 

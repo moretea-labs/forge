@@ -785,7 +785,6 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
     repo: repoRoot,
     controllerHome,
     profile,
-    toolset: opts.toolset,
     enableChatgptBrowser: opts.enableChatgptBrowser,
     enableDevRunner: opts.enableDevRunner,
     devRunnerAgents: opts.devRunnerAgents,

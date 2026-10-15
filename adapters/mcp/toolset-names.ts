@@ -4,12 +4,11 @@ import { FACADE_TOOLS } from '../../src/runtime/control-plane/facade/types';
 export const PREFERRED_FACADE_TOOL_NAMES = [...FACADE_TOOLS] as const;
 
 /**
- * Default ChatGPT-facing MCP surface. The Runtime keeps every internal atomic
- * handler and the full compatibility profile; ChatGPT only needs this bounded
- * execution surface. Atomic Git / issue-task / edit-session / plugin
- * tools remain registered and reachable through `toolset=full`.
+ * Preferred public tool names for model routing and connector freshness.
+ * Not an exposure profile: every registered MCP tool is always discoverable.
+ * Removal of an obsolete public handler is a source migration, not a toolset switch.
  */
-export const DEFAULT_CONTROLLER_TOOL_NAMES = [
+export const PREFERRED_CONTROLLER_TOOL_NAMES = [
   ...PREFERRED_FACADE_TOOL_NAMES,
 
   // Repository selection / bootstrap.
@@ -21,7 +20,7 @@ export const DEFAULT_CONTROLLER_TOOL_NAMES = [
   'execute_command',
 
   // Source inspection and bounded Direct Edit. Code location is routed through
-  // rh_context.search; the low-level search_repository handler remains in full.
+  // rh_context.search; the direct search_repository action remains available.
   'read_repository_file',
   'repository_safe_patch_apply',
 
@@ -29,12 +28,11 @@ export const DEFAULT_CONTROLLER_TOOL_NAMES = [
   'run_check',
 
   // Protected Computer preparation/input use typed direct-non-persistent actions
-  // behind the stable plugin dispatcher. Their full-profile atomic tools remain
-  // registered only for compatibility clients and are not part of this frozen ABI.
+  // behind the stable plugin dispatcher. Distinct OS actions remain public.
 
   // One typed plugin dispatcher. Plugin discovery/action schemas stay routed
   // through rh_context(capability_id=plugin.<plugin>.<action>) to avoid widening
-  // the default surface with list/get plugin atomics.
+  // the preferred list with every plugin atomic.
   'plugin_action_execute',
 
   // Managed Process Runtime lifecycle (attach / poll / cancel — never re-exec).
@@ -44,32 +42,7 @@ export const DEFAULT_CONTROLLER_TOOL_NAMES = [
   'process_logs',
   'process_cancel',
 
-  // Evidence. Approval resolution is available through rh_access/rh_work and
-  // the explicit full compatibility profile; it does not need a top-level
-  // default tool.
+  // Evidence. The complete registry also exposes exact typed approval actions.
   'result_read',
   'result_search',
 ] as const;
-
-/** Minimal bootstrap subset retained for diagnostics and constrained clients. */
-export const BOOTSTRAP_CONTROLLER_TOOL_NAMES = [
-  ...PREFERRED_FACADE_TOOL_NAMES,
-  'repository_access_get',
-  'repository_list',
-  'repository_get',
-  'repository_register',
-  'repository_latest_source_diagnose',
-  'repository_bootstrap_local_project',
-] as const;
-
-/**
- * Stable ChatGPT connector schema. Keep this identical to the bounded default
- * Runtime surface so discovery never advertises atomic tools that the default
- * Forge build will reject. The exhaustive `full` profile is assembled directly
- * from registered definitions and remains available for explicit compatibility
- * clients without widening the normal connector schema.
- */
-export const STABLE_CONTROLLER_TOOL_NAMES = DEFAULT_CONTROLLER_TOOL_NAMES;
-
-/** Core is a compatibility label for the bounded default Controller surface. */
-export const CORE_CONTROLLER_TOOL_NAMES = DEFAULT_CONTROLLER_TOOL_NAMES;

@@ -10,6 +10,7 @@ import { callRepositoryTool, repositoryToolDefinitions } from "../../adapters/mc
 import { repositoryGitCommit, repositoryGitMergeBranch, repositoryGitRebaseOnto, repositoryGitStatus } from "../../src/cli/repositories/structured-git";
 import { callRuntimeTool, runtimeToolDefinitions } from "../../adapters/mcp/runtime-gateway/runtime-tools";
 import { createMcpToolContext } from "../../adapters/mcp/multi-repository";
+import { controllerExposureSnapshot } from '../../adapters/mcp/toolset';
 import { getLocalBridgeJob, readLocalBridgeJobOutput, readLocalBridgeJobOutputSnapshot } from "../../src/cli/local-bridge/job-store";
 import { routeDurableMcpCall } from "../../adapters/mcp/runtime-gateway/router";
 import { waitRepositoryCommandProcess } from "../../src/runtime/execution/process-runtime/command-facade";
@@ -1128,14 +1129,17 @@ describe("repository MCP command tools", () => {
         repo_id: registered.repoId,
       }));
       const ctx = createMcpToolContext({ repo: staleRoot, controllerHome, profile: "controller" });
-      const capabilities = JSON.parse((await callMcpTool(ctx, "controller_capabilities")).content[0]?.text ?? "{}");
+      // Direct handler tests pass the same registry snapshot normally supplied by MCP.
+      const capabilities = JSON.parse((await callMcpTool({
+        ...ctx,
+        publishedToolNames: controllerExposureSnapshot(ctx).actualToolNames,
+      }, "controller_capabilities")).content[0]?.text ?? "{}");
 
       expect(response.diagnosis.recommendedPath).toBe(canonicalRichRoot);
       expect(response.diagnosis.noMutation).toBe(true);
-      // The tool still works when invoked directly, but the default ChatGPT
-      // surface keeps source diagnostics / bootstrap behind explicit profiles.
-      expect(capabilities.expectedTools).not.toContain("repository_latest_source_diagnose");
-      expect(capabilities.expectedTools).not.toContain("repository_bootstrap_local_project");
+      // One complete tools/list includes source diagnosis and onboarding.
+      expect(capabilities.expectedTools).toContain("repository_latest_source_diagnose");
+      expect(capabilities.expectedTools).toContain("repository_bootstrap_local_project");
       expect(capabilities.expectedTools).toContain("execute_command");
       expect(existsSync(join(richRoot, ".git"))).toBe(false);
     } finally {

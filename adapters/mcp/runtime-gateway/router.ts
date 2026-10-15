@@ -48,7 +48,6 @@ function result(value: Record<string, unknown>, isError = false): CallToolResult
 
 export function getMcpToolDefinition(ctx: MultiRepositoryMcpToolContext, name: string): McpToolDefinition | undefined {
   const currentDefinitions = [...runtimeToolDefinitions, ...executionToolDefinitions, ...processToolDefinitions, ...repositoryToolDefinitions];
-  if (ctx.toolset !== 'full') return currentDefinitions.find((tool) => tool.name === name);
   return [...currentDefinitions, ...buildMultiRepositoryToolDefinitions(ctx)].find((tool) => tool.name === name);
 }
 

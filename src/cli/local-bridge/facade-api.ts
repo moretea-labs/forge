@@ -598,8 +598,6 @@ function controllerAccessStateView(ctx: ConsoleFacadeContext): AccessStateViewMo
   const effective = resolveControllerAccessState({
     controllerHome: ctx.controllerHome,
     repoRoot: ctx.repository.canonicalRoot,
-    toolsetOverride: toolCtx.toolset,
-    toolsetLocked: toolCtx.toolsetLocked,
   });
   const repositoryPolicy = readRepositoryAccessPolicy(ctx.controllerHome, ctx.repository.repoId);
   const runtimeGeneration = readRuntimeGeneration(ctx.controllerHome);

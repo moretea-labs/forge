@@ -4,10 +4,8 @@
  * Does not require a live ChatGPT connector session.
  */
 import { getMcpPolicy } from '../adapters/mcp/policy';
-import { controllerExpectedToolNames } from '../adapters/mcp/tool-mapping/legacy-tool-service';
 import {
-  ADVANCED_CONTROLLER_TOOL_NAMES,
-  DEFAULT_CONTROLLER_TOOL_NAMES,
+  PREFERRED_CONTROLLER_TOOL_NAMES,
   PREFERRED_FACADE_TOOL_NAMES,
   exposedControllerToolDefinitions,
 } from '../adapters/mcp/toolset';
@@ -23,7 +21,16 @@ function assert(condition: unknown, message: string): asserts condition {
 }
 
 const policy = getMcpPolicy('controller');
-const expected = controllerExpectedToolNames(policy);
+const fullCtx = {
+  policy,
+  toolset: 'full' as const,
+  controllerHome: process.cwd(),
+  repoRoot: process.cwd(),
+  enableChatgptBrowser: false,
+  audit: () => undefined,
+} as unknown as MultiRepositoryMcpToolContext;
+const fullExposed = exposedControllerToolDefinitions(fullCtx).map((tool) => tool.name);
+const expected = fullExposed;
 
 assert(
   JSON.stringify([...PREFERRED_FACADE_TOOL_NAMES]) === JSON.stringify([...EXPECTED_FACADE_TOOLS]),
@@ -32,7 +39,7 @@ assert(
 
 for (const name of EXPECTED_FACADE_TOOLS) {
   assert(
-    (DEFAULT_CONTROLLER_TOOL_NAMES as readonly string[]).includes(name),
+    (PREFERRED_CONTROLLER_TOOL_NAMES as readonly string[]).includes(name),
     `default exposure missing ${name}`,
   );
   assert(expected.includes(name), `expectedTools missing ${name}`);
@@ -40,41 +47,21 @@ for (const name of EXPECTED_FACADE_TOOLS) {
 
 for (const name of OPTIONAL_INTERACTIVE_DEVELOPMENT_TOOLS) {
   assert(
-    (ADVANCED_CONTROLLER_TOOL_NAMES as readonly string[]).includes(name),
-    `interactive tool ${name} missing from ADVANCED_CONTROLLER_TOOL_NAMES`,
+    (PREFERRED_CONTROLLER_TOOL_NAMES as readonly string[]).includes(name),
+    `interactive tool ${name} missing from the preferred capability list`,
   );
   assert(
-    (DEFAULT_CONTROLLER_TOOL_NAMES as readonly string[]).includes(name),
-    `interactive tool ${name} missing from the stable default tools/list`,
+    (PREFERRED_CONTROLLER_TOOL_NAMES as readonly string[]).includes(name),
+    `interactive tool ${name} missing from the preferred routing list`,
   );
 }
 
-const coreCtx = {
-  policy,
-  toolset: 'core' as const,
-  enableChatgptBrowser: false,
-  audit: () => undefined,
-} as unknown as MultiRepositoryMcpToolContext;
-const advancedCtx = { ...coreCtx, toolset: 'advanced' as const };
-
-const coreExposed = exposedControllerToolDefinitions(coreCtx).map((tool) => tool.name);
-const advancedExposed = exposedControllerToolDefinitions(advancedCtx).map((tool) => tool.name);
-for (const name of EXPECTED_FACADE_TOOLS) {
-  assert(coreExposed.includes(name), `exposed core tools missing ${name}`);
+for (const name of PREFERRED_CONTROLLER_TOOL_NAMES) {
+  assert(fullExposed.includes(name), `complete registry missing preferred capability ${name}`);
 }
-assert(coreExposed.includes('repository_list'), 'default surface missing repository_list');
-assert(!coreExposed.includes('repository_bootstrap_local_project'), 'default stable surface must not expose legacy bootstrap tool');
-assert(!advancedExposed.includes('repository_bootstrap_local_project'), 'advanced stable alias must not expose legacy bootstrap tool');
-assert(coreExposed.length === DEFAULT_CONTROLLER_TOOL_NAMES.length, `core stable tool count changed: ${coreExposed.length}`);
-assert(advancedExposed.length === DEFAULT_CONTROLLER_TOOL_NAMES.length, `advanced stable tool count changed: ${advancedExposed.length}`);
-assert(
-  JSON.stringify(coreExposed) === JSON.stringify(advancedExposed),
-  'Core and Advanced must remain schema-stable aliases of the same bounded tool surface',
-);
-for (const name of OPTIONAL_INTERACTIVE_DEVELOPMENT_TOOLS) {
-  assert(coreExposed.includes(name), `stable surface missing interactive ${name}`);
-  assert(advancedExposed.includes(name), `advanced alias missing interactive ${name}`);
-}
+assert(fullExposed.includes('repository_bootstrap_local_project'), 'complete registry missing repository bootstrap');
+assert(fullExposed.includes('git_commit_paths'), 'complete registry missing canonical Git operation');
+assert(fullExposed.length > PREFERRED_CONTROLLER_TOOL_NAMES.length, 'complete registry must include every registered operation');
 
 const unable = evaluateConnectorFreshness({ localToolNames: expected });
 assert(unable.status === 'unable_to_verify_chatgpt_snapshot', `expected unable_to_verify, got ${unable.status}`);
@@ -103,11 +90,10 @@ console.log(JSON.stringify({
   ok: true,
   expectedFacadeTools: EXPECTED_FACADE_TOOLS,
   preferredTools: PREFERRED_FACADE_TOOL_NAMES,
-  defaultToolCount: coreExposed.length,
-  advancedToolCount: advancedExposed.length,
+  exposedToolCount: fullExposed.length,
+  preferredToolCount: PREFERRED_CONTROLLER_TOOL_NAMES.length,
   expectedToolsHasFacade: EXPECTED_FACADE_TOOLS.every((name) => expected.includes(name)),
-  advancedHasInteractive: OPTIONAL_INTERACTIVE_DEVELOPMENT_TOOLS.every((name) =>
-    (ADVANCED_CONTROLLER_TOOL_NAMES as readonly string[]).includes(name)),
+  fullHasInteractive: OPTIONAL_INTERACTIVE_DEVELOPMENT_TOOLS.every((name) => fullExposed.includes(name)),
   states: {
     unable: unable.status,
     missingSnap: missingSnap.status,
