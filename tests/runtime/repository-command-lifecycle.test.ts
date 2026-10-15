@@ -20,7 +20,7 @@ import {
 import { registerRepository } from '../../src/cli/repositories/registry';
 import { commitSelectedPaths } from '../../src/cli/repositories/selected-path-actions';
 import { acquireControllerLock, releaseControllerLock } from '../../src/cli/repositories/locks';
-import { persistControllerAccessMode } from '../../src/cli/mcp/access-mode';
+import { persistControllerAccessMode } from '../../adapters/mcp/access-mode';
 import { executionIdentityForRepository, executionIdentityForWork } from '../../src/runtime/control-plane/execution/execution-identity';
 import { readWorkHandle, transitionWorkHandle, writeWorkHandle, type WorkHandleState } from '../../src/runtime/control-plane/execution/work-handle-store';
 import { assertCanonicalRepositoryMutationWorkHandleAvailable } from '../../src/runtime/control-plane/execution/work-handle-authority';

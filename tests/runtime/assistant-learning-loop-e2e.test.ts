@@ -23,7 +23,7 @@ import {
 import type { WorkflowPublicationReceipt } from '../../packages/workflow-runtime/api/index';
 import { memoryAddressKey } from '../../packages/kernel/cognition/api/index';
 import { ensureForgeInstanceIdentity } from '../../packages/kernel/identity/api/index';
-import { getMcpPolicy } from '../../src/cli/mcp/policy';
+import { getMcpPolicy } from '../../adapters/mcp/policy';
 import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
 import { registerRepository } from '../../src/cli/repositories/registry';
 import { writeWorkflowRunCheckpoint } from '../../src/runtime/control-plane/persistence/workflow-run-store';
@@ -34,7 +34,7 @@ import { prepareAssistantWorkContext, recordControllerExperience, recordControll
 import { cognitiveUsageFeedbackForContext } from '../../src/runtime/context/cognitive-attention';
 import { parseControllerLearningSignalDrafts, persistAutomaticControllerRoundLearning } from '../../src/runtime/context/automatic-learning';
 import { cognitionReadPort } from '../../src/runtime/control-plane/persistence/cognition-store';
-import { callRuntimeTool } from '../../src/runtime/gateway/mcp/runtime-tools';
+import { callRuntimeTool } from '../../adapters/mcp/runtime-gateway/runtime-tools';
 import { createHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
 import { writeProjectIdentity, writeProjectPlacement, writeWorkspaceIdentity } from '../../src/runtime/control-plane/workspace/workspace-store';
 import type { MultiRepositoryMcpToolContext } from '../../adapters/mcp/multi-repository';
@@ -45,8 +45,11 @@ afterEach(() => {
   while (roots.length > 0) rmSync(roots.pop()!, { recursive: true, force: true });
 });
 
+// Context composition reads wall time; anchor the scenario once so retained
+// 30-day experiences do not expire merely because the calendar advances.
+const scenarioStartedAt = Date.now();
 function time(minute: number): string {
-  return new Date(Date.parse('2026-09-08T00:00:00.000Z') + minute * 60_000).toISOString();
+  return new Date(scenarioStartedAt + minute * 60_000).toISOString();
 }
 
 function fixture(name: string, options: { knowledge?: boolean } = {}) {

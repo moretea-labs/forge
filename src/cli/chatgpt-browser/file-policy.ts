@@ -1,8 +1,8 @@
 import { createHash } from 'crypto';
 import { existsSync, readFileSync, statSync } from 'fs';
 import { isAbsolute, resolve } from 'path';
-import { resolveMcpPath } from '../mcp/paths';
-import type { McpPolicy } from '../mcp/types';
+import { resolveMcpPath } from '../../../adapters/mcp/paths';
+import type { McpPolicy } from '../../../adapters/mcp/types';
 import type { BrowserWriteOutputPolicy, PromptBundleFile } from './types';
 
 const READ_ALLOW_GLOBS = [

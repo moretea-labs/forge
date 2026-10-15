@@ -2,8 +2,8 @@ import { createHash } from 'crypto';
 import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, statSync } from 'fs';
 import { delimiter, join, resolve } from 'path';
 import { runProcess } from '../../effects/process-runner';
-import { globMatches, resolveMcpPath } from '../mcp/paths';
-import type { McpPolicy } from '../mcp/types';
+import { globMatches, resolveMcpPath } from '../../../adapters/mcp/paths';
+import type { McpPolicy } from '../../../adapters/mcp/types';
 import {
   collectSessionIdentity,
   getOrCreateSessionCache,

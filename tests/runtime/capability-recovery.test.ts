@@ -22,7 +22,7 @@ import {
 import { applyEditOperations, beginEditSession, getEditSession } from '../../src/cli/editing/edit-session';
 import { addRepositoryCheckout, getRepository, registerRepository } from '../../src/cli/repositories/registry';
 import { ensureRepositoryRuntimeStorageBinding } from '../../src/cli/repositories/runtime-storage';
-import { getMcpPolicy } from '../../src/cli/mcp/policy';
+import { getMcpPolicy } from '../../adapters/mcp/policy';
 import { cancelWorkContract, createWorkContract, getWorkContract, recordWorkImplementationReview, transitionWorkContractPhase } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { implementationReviewChangedPathDigest } from '../../packages/kernel/work/domain/implementation-review';
 import { createPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';

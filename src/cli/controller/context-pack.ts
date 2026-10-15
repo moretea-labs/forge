@@ -5,9 +5,9 @@ import {
   searchRepositoryManyAsync,
   searchRepositoryManyCacheIdentity,
 } from "../repository/inspector";
-import { globMatches } from "../mcp/paths";
+import { globMatches } from "../../../adapters/mcp/paths";
 import { posix } from "path";
-import type { McpPolicy } from "../mcp/types";
+import type { McpPolicy } from "../../../adapters/mcp/types";
 import { materializeSource } from "./context/source-materializer";
 import { projectBoard } from "./issue-store";
 import { buildControllerTaskLedgerProjection } from "./task-ledger";

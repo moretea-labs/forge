@@ -96,7 +96,7 @@ import {
   defaultUserControllerHomeForMigration,
   scheduleRecoveryControllerHomeMigration,
 } from '../../src/runtime/standalone-recovery/controller-home-migration';
-import { ensureMcpControllerHomeOAuthPassphrase, writeMcpServiceLocalConfig } from '../../src/cli/mcp/auth';
+import { ensureMcpControllerHomeOAuthPassphrase, writeMcpServiceLocalConfig } from '../../adapters/mcp/auth';
 import { acquireRecoveryReleaseLock, installStandaloneRecovery, inspectPrimaryConnectorLaunchdContract, inspectPrimaryPublicTunnelLaunchdContract, inspectRecoveryTunnelLaunchdContract, RECOVERY_DAEMON_LABEL, resolveRecoveryCompilerExecutable, retireStaleRecoveryLaunchAgents } from '../../src/runtime/standalone-recovery/installer';
 import { acquireRecoveryOperationLock, recoveryOperationLockPath } from '../../src/runtime/standalone-recovery/operation-lock';
 import { readCurrentRecoveryRelease, recoveryGatewayIsDraining } from '../../src/runtime/standalone-recovery/release';

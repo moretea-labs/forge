@@ -4,7 +4,7 @@ import { resolveEphemeralWorkspaceTarget } from '../../../src/cli/repositories/e
 import { commandExecutionScopeKey, type RepositoryCommandScopeTarget } from '../../../src/cli/repositories/command-scope';
 import { executionIdentityForWork, type ResolvedExecutionIdentity } from '../../../src/runtime/control-plane/execution/execution-identity';
 import { assertNoBoundExecutionSessionMutation, resolveClaimedRepositoryWorkId, resolveExplicitClaimedRepositoryWork, type RepositoryWorkAttributionCaller } from '../../../src/runtime/control-plane/execution/repository-work-attribution';
-import { getWorkContract, promoteWorkToRepositoryChange, semanticWorkState, type WorkContract } from '../../../packages/kernel/work/api';
+import { getWorkContract, semanticWorkState, type WorkContract } from '../../../packages/kernel/work/api';
 import { assertCanonicalRepositoryMutationWorkHandleAvailable, ensureRepositoryMutationWorkHandle, markRepositoryMutationStarted } from '../../../src/runtime/control-plane/execution/work-handle-authority';
 import { readWorkHandle } from '../../../src/runtime/control-plane/execution/work-handle-store';
 import { ensureRunningRepositoryWorkCheckout } from '../../../src/runtime/control-plane/execution/retained-work-resume';
@@ -355,11 +355,8 @@ function resolveRepositorySelectionForClaimedWork(
       allowSoleRepository: true,
     });
   }
-  let work = resolveExplicitClaimedRepositoryWork(controllerHome, repository, caller, explicitWorkId);
+  const work = resolveExplicitClaimedRepositoryWork(controllerHome, repository, caller, explicitWorkId);
   if (!work) return repository;
-  if (work.workKind !== 'repository_change') {
-    work = promoteWorkToRepositoryChange({ controllerHome, repoId: repository.repoId }, work.workId);
-  }
   const principalId = caller?.principalId?.trim();
   const sessionId = caller?.sessionId?.trim();
   const controllerInstanceId = caller?.controllerInstanceId?.trim();

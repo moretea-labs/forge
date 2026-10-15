@@ -3,20 +3,20 @@
  * Focused smoke: local MCP tool surface + connector freshness semantics.
  * Does not require a live ChatGPT connector session.
  */
-import { getMcpPolicy } from '../src/cli/mcp/policy';
-import { controllerExpectedToolNames } from '../src/cli/mcp/legacy-tool-service';
+import { getMcpPolicy } from '../adapters/mcp/policy';
+import { controllerExpectedToolNames } from '../adapters/mcp/tool-mapping/legacy-tool-service';
 import {
   ADVANCED_CONTROLLER_TOOL_NAMES,
   DEFAULT_CONTROLLER_TOOL_NAMES,
   PREFERRED_FACADE_TOOL_NAMES,
   exposedControllerToolDefinitions,
-} from '../src/cli/mcp/toolset';
+} from '../adapters/mcp/toolset';
 import {
   EXPECTED_FACADE_TOOLS,
   OPTIONAL_INTERACTIVE_DEVELOPMENT_TOOLS,
   evaluateConnectorFreshness,
 } from '../src/cli/local-bridge/connector-freshness';
-import type { MultiRepositoryMcpToolContext } from '../src/cli/mcp/multi-repository';
+import type { MultiRepositoryMcpToolContext } from '../adapters/mcp/multi-repository';
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(`SMOKE_FAIL: ${message}`);

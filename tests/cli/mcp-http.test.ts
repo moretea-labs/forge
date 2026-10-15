@@ -6,9 +6,9 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { CLIENT_CAPABILITIES_META_KEY, CLIENT_INFO_META_KEY, PROTOCOL_VERSION_META_KEY } from '@modelcontextprotocol/server';
-import { mcpControllerHomeOAuthPath, mcpControllerHomeTokenPath } from '../../src/cli/mcp/auth';
-import { runMcpSetupChatgpt } from '../../src/cli/mcp/setup';
-import { mergeNoProxy, withDirectNetworkProxyBypass } from '../../src/cli/mcp/proxy-env';
+import { mcpControllerHomeOAuthPath, mcpControllerHomeTokenPath } from '../../adapters/mcp/auth';
+import { runMcpSetupChatgpt } from '../../adapters/mcp/setup';
+import { mergeNoProxy, withDirectNetworkProxyBypass } from '../../adapters/mcp/proxy-env';
 import { McpSessionRegistry } from '../../adapters/mcp/transports/session-registry';
 import { admitMcpPost, createMcpHttpSessionRegistry, mcpRequestError } from '../../adapters/mcp/transports/http';
 import { recentMcpTransportEvidence } from '../../adapters/mcp/transports/http-observation';

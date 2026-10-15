@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { legacyIosPluginInvocation } from '../../src/runtime/gateway/mcp/legacy-ios-tool-adapter';
+import { legacyIosPluginInvocation } from '../../adapters/mcp/runtime-gateway/legacy-ios-tool-adapter';
 
 describe('legacy iOS tool compatibility adapter', () => {
   test('translates legacy build input to the canonical typed iOS plugin action without keeping undefined compatibility fields', () => {

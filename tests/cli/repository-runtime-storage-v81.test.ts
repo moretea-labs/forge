@@ -10,7 +10,7 @@ import {
   writeFileSync,
 } from 'fs';
 import { join } from 'path';
-import { callMultiRepositoryTool, createMcpToolContext } from '../../src/cli/mcp/server';
+import { callMultiRepositoryTool, createMcpToolContext } from '../../adapters/mcp/server';
 import { repositoryControllerRoot } from '../../src/cli/repositories/controller-home';
 import { ensureRepositoryRuntimeStorage, ensureRepositoryRuntimeStorageBinding } from '../../src/cli/repositories/runtime-storage';
 import { beginEditSession } from '../../src/cli/editing/edit-session';

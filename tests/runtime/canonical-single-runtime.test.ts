@@ -34,7 +34,7 @@ import {
   loadMcpServiceRuntimeState,
   writeMcpServiceLocalConfig,
   writeMcpServiceRuntimeState,
-} from '../../src/cli/mcp/auth';
+} from '../../adapters/mcp/auth';
 
 test('Runtime MCP shutdown withdraws the listener before bounded session drain', async () => {
   const order: string[] = [];

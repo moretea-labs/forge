@@ -4,7 +4,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { closeSetupSession, openSetupSession, readSetupSession, type InitHookReport } from '../../src/cli/commands/init-hook';
 import { configureSetupProfile, resolveTunnelGuidance, setupConnectorAuthMode, type SetupPlatformSnapshot } from '../../src/cli/commands/setup-profile';
-import { runMcpSetupChatgpt } from '../../src/cli/mcp/setup';
+import { runMcpSetupChatgpt } from '../../adapters/mcp/setup';
 import { readControllerConnectionSnapshot, repairControllerConnection } from '../../src/runtime/control-plane/facade/controller-connection';
 
 const platform: SetupPlatformSnapshot = { platform: 'linux', arch: 'x64', environment: 'linux', serviceManager: 'systemd-user', commands: { brew: false, cloudflared: false, tailscale: false, tunnelClient: false, systemctl: true, winget: false } };

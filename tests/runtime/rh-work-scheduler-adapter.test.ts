@@ -3,11 +3,11 @@ import { execFileSync } from 'child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { getMcpPolicy } from '../../src/cli/mcp/policy';
-import type { MultiRepositoryMcpToolContext } from '../../src/cli/mcp/multi-repository';
+import { getMcpPolicy } from '../../adapters/mcp/policy';
+import type { MultiRepositoryMcpToolContext } from '../../adapters/mcp/multi-repository';
 import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
 import { registerRepository } from '../../src/cli/repositories/registry';
-import { callRuntimeTool } from '../../src/runtime/gateway/mcp/runtime-tools';
+import { callRuntimeTool } from '../../adapters/mcp/runtime-gateway/runtime-tools';
 import { createWorkContract } from '../../packages/kernel/work/api/index';
 
 const roots: string[] = [];

@@ -7,7 +7,7 @@ import { allowedFacadeOperations, validateSuggestedNextActions } from '../../src
 import { buildCodexControllerInvocation, buildSuperControllerInvocation, type ThinLauncherRequest } from '../../src/runtime/control-plane/launcher/thin-launcher';
 import { parseCodexConversationJsonl } from '../../src/runtime/control-plane/launcher/local-conversation-controller';
 import { RH_WORK_MODEL_OPERATIONS, isRhWorkAcceptedOperation } from '../../src/runtime/control-plane/facade/rh-work-operation-contract';
-import { runtimeToolDefinitions } from '../../src/runtime/gateway/mcp/runtime-tool-definitions';
+import { runtimeToolDefinitions } from '../../adapters/mcp/runtime-gateway/runtime-tool-definitions';
 import { normalizeRhWorkInputWireMigration } from '../../adapters/mcp/runtime-gateway/work-input-wire-migration';
 import { CONTROLLER_LEARNING_SIGNAL_ENVELOPE_MAX_ITEMS } from '../../src/runtime/context/automatic-learning';
 import {

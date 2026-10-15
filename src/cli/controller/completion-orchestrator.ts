@@ -6,7 +6,7 @@ import { getAgentJob, markAgentJobClosure, markAgentJobReviewedCompletion, recor
 import type { AgentJobMeta } from '../agent-jobs/types';
 import { cleanupIntegratedWorktree, cleanupNoChangeWorktree, integrateAgentJob, IntegrationReviewRequiredError, taskRunDiff } from '../agent-jobs/integration';
 import { finalizeEditSession, getEditSession, revalidateEditSessionOwnership, rollbackEditSession, verifyEditSession } from '../editing/edit-session';
-import { getMcpPolicy } from '../mcp/policy';
+import { getMcpPolicy } from '../../../adapters/mcp/policy';
 import { resolveRepoPreferredControllerHome } from '../repositories/controller-home';
 import { withControllerLock } from '../repositories/locks';
 import { listActiveLeases } from '../../runtime/resources/leases/store';

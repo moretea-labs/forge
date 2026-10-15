@@ -1,6 +1,6 @@
 import { existsSync, lstatSync, readdirSync, statSync } from 'fs';
-import { globMatches, resolveMcpPath } from '../../mcp/paths';
-import type { McpPolicy } from '../../mcp/types';
+import { globMatches, resolveMcpPath } from '../../../../adapters/mcp/paths';
+import type { McpPolicy } from '../../../../adapters/mcp/types';
 
 export function looksLikeGlob(path: string): boolean { return /[*?{[]/.test(path); }
 export function coveredByGlob(path: string, globs: string[]): boolean {

@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { buildControllerContextPack, buildControllerContextPackAsync, type ControllerContextPackOptions } from '../../src/cli/controller/context-pack';
-import { getMcpPolicy } from '../../src/cli/mcp/policy';
+import { getMcpPolicy } from '../../adapters/mcp/policy';
 
 const roots: string[] = [];
 afterEach(() => { while (roots.length) rmSync(roots.pop()!, { recursive: true, force: true }); });

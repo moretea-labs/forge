@@ -7,15 +7,15 @@ This page maps the public Forge model to the current source tree. It is an imple
 Primary code:
 
 ```text
-src/cli/mcp/server.ts
-src/cli/mcp/toolset-names.ts
-src/cli/mcp/repository-tools.ts
-src/cli/mcp/transports/http.ts
-src/cli/mcp/transports/session-registry.ts
-src/runtime/gateway/mcp/
+adapters/mcp/server.ts
+adapters/mcp/toolset-names.ts
+adapters/mcp/tool-mapping/repository-tools.ts
+adapters/mcp/transports/http.ts
+adapters/mcp/transports/session-registry.ts
+adapters/mcp/runtime-gateway/
 ```
 
-`toolset-names.ts` defines the bounded default connector surface. The five facade tools come from `src/runtime/control-plane/facade/types.ts`; repository, patch, check, Process, plugin-dispatch, and result tools bring the current default to 19.
+`toolset-names.ts` defines the bounded default connector surface. The six facade tools come from `src/runtime/control-plane/facade/types.ts`; repository, patch, check, Process, plugin-dispatch, and result tools bring the current default to 20.
 
 The HTTP transport owns authentication and protocol-era routing. MCP 2026-07-28 is the canonical public path: `createMcpHandler` serves each modern request without `Mcp-Session-Id`. `McpSessionRegistry` is retained only for explicit 2025-era compatibility, where it owns session capacity, active-request protection, stream leases, replacement, and close accounting. Durable Work/Process/ControllerRound authority never comes from either transport form. Controller capability rotation and legacy-owner upgrades are Runtime recovery mechanics; ordinary model-facing Work operations neither expose nor require `controller_claim`. Legacy tool-surface mismatches still return a recoverable reinitialize response; modern requests resolve the current Runtime schema per request.
 
@@ -51,7 +51,7 @@ Primary code:
 
 ```text
 src/cli/editing/edit-session.ts
-src/cli/mcp/repository-tools.ts
+adapters/mcp/tool-mapping/repository-tools.ts
 ```
 
 A bounded patch can be applied directly to the selected checkout with file fingerprints, revisions, savepoints, change budgets, and focused verification. Direct Edit is the default for understood small work; a Plan or worktree is not a prerequisite.
@@ -79,7 +79,7 @@ src/runtime/execution/process-runtime/runtime.ts
 src/runtime/execution/process-runtime/store.ts
 src/runtime/execution/process-runtime/interactive-admission.ts
 src/runtime/shared/process-identity.ts
-src/runtime/gateway/mcp/process-tools.ts
+adapters/mcp/runtime-gateway/process-tools.ts
 ```
 
 `spawnManagedProcess` creates one Process record and one physical child execution. Exact PID/start-time/executable identity protects later lifecycle operations. Known-long processes can return handles immediately; short commands may complete during a bounded interactive window. Process startup captures command/start-time together and reuses the running-state persistence result instead of repeating store writes/reads on the hot path.
@@ -103,7 +103,7 @@ Primary code:
 
 ```text
 src/runtime/execution/process-runtime/check-facade.ts
-src/runtime/gateway/mcp/persisted-check-process.ts
+adapters/mcp/runtime-gateway/persisted-check-process.ts
 src/runtime/evidence/
 src/runtime/projections/
 ```

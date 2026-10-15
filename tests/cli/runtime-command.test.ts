@@ -84,7 +84,7 @@ describe('runtime command surface', () => {
     expect(existsSync(join(ROOT, 'src/cli/mcp/restart.ts'))).toBe(false);
     const mcpCommand = readFileSync(join(ROOT, 'src/cli/commands/mcp.ts'), 'utf8');
     const lifecycleAuthority = readFileSync(join(ROOT, 'src/cli/controller/lifecycle-authority.ts'), 'utf8');
-    const mcpAuth = readFileSync(join(ROOT, 'src/cli/mcp/auth.ts'), 'utf8');
+    const mcpAuth = readFileSync(join(ROOT, 'adapters/mcp/auth.ts'), 'utf8');
     const httpTransport = readFileSync(join(ROOT, 'adapters/mcp/transports/http.ts'), 'utf8');
     const httpObservation = readFileSync(join(ROOT, 'adapters/mcp/transports/http-observation.ts'), 'utf8');
     const runtimeTools = readFileSync(join(ROOT, 'adapters/mcp/runtime-gateway/runtime-tools.ts'), 'utf8');
@@ -95,7 +95,7 @@ describe('runtime command surface', () => {
     const workAdapter = readFileSync(join(ROOT, 'adapters/mcp/runtime-gateway/work-adapter.ts'), 'utf8');
     const controllerAuthorityAdapter = readFileSync(join(ROOT, 'adapters/mcp/runtime-gateway/controller-authority-adapter.ts'), 'utf8');
     const runtimeGatewaySurface = [runtimeTools, runtimeObservation, runtimeReadinessObservation, recoveryAdapter, statusInboxAdapter, controllerAuthorityAdapter, workAdapter].join('\n');
-    const toolsetNames = readFileSync(join(ROOT, 'src/cli/mcp/toolset-names.ts'), 'utf8');
+    const toolsetNames = readFileSync(join(ROOT, 'adapters/mcp/toolset-names.ts'), 'utf8');
     const processGc = readFileSync(join(ROOT, 'src/runtime/execution/process-runtime/gc.ts'), 'utf8');
     const workerOwnership = readFileSync(join(ROOT, 'src/runtime/execution/workers/ownership.ts'), 'utf8');
     const workerEntry = readFileSync(join(ROOT, 'src/runtime/execution/workers/worker-entry.ts'), 'utf8');

@@ -1,6 +1,6 @@
 import { readFileSync } from 'fs';
 import { posix, resolve } from 'path';
-import type { McpPolicy } from '../../mcp/types';
+import type { McpPolicy } from '../../../../adapters/mcp/types';
 import { readableFile } from './known-paths';
 
 const CONTRACT_NAMES = ['AGENTS.md', 'CLAUDE.md'] as const;

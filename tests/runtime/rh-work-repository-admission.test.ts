@@ -3,13 +3,13 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { MultiRepositoryMcpToolContext } from '../../src/cli/mcp/multi-repository';
-import { getMcpPolicy } from '../../src/cli/mcp/policy';
+import type { MultiRepositoryMcpToolContext } from '../../adapters/mcp/multi-repository';
+import { getMcpPolicy } from '../../adapters/mcp/policy';
 import { ensureControllerHome, SEMANTIC_SCOPE_KEY } from '../../src/cli/repositories/controller-home';
 import { registerRepository } from '../../src/cli/repositories/registry';
 import { getWorkContract } from '../../packages/kernel/work/api/index';
 import { readWorkHandle } from '../../src/runtime/control-plane/execution/work-handle-store';
-import { callRuntimeTool } from '../../src/runtime/gateway/mcp/runtime-tools';
+import { callRuntimeTool } from '../../adapters/mcp/runtime-gateway/runtime-tools';
 
 const roots: string[] = [];
 

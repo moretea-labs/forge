@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { reconcileReadinessProjectionSource } from '../../src/cli/mcp/readiness-projection';
+import { reconcileReadinessProjectionSource } from '../../adapters/mcp/readiness-projection';
 
 describe('MCP readiness projection reconciliation', () => {
   test('keeps readiness independent from a retired legacy task ledger', () => {

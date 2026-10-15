@@ -2,7 +2,7 @@ import { createHash } from 'crypto';
 import { isAbsolute, join, resolve } from 'path';
 import { hostname } from 'os';
 import { systemdUserUnitName } from '../src/cli/controller/systemd-user';
-import { openAiSecureTunnelConnectArgs } from '../src/cli/mcp/openai-secure-tunnel';
+import { openAiSecureTunnelConnectArgs } from '../adapters/mcp/tunnels/openai-secure-tunnel';
 import type { OpenAiSecureTunnelServiceConfig, PrimaryConnectorServiceConfig, PublicTunnelServiceConfig, RecoveryTunnelServiceConfig } from '../src/runtime/standalone-recovery/core';
 import { installStandaloneRecovery } from '../src/runtime/standalone-recovery/installer';
 

@@ -8,16 +8,16 @@ Controller MCP uses one stable default schema so ChatGPT can reliably read, edit
 
 | Toolset | CLI | Behavior |
 | --- | --- | --- |
-| **facade** (opt-in) | `--toolset facade` | Five-tool ChatGPT orchestration surface: `rh_access`, `rh_status`, `rh_inbox`, `rh_context`, `rh_work`. Internal handlers and capabilities remain registered; only MCP discovery is reduced. Intended for latency/tool-selection A/B before any default migration. |
-| **advanced** (default) | `--toolset advanced` | Current stable 19-tool controller surface. Includes the five `rh_*` facades plus repository, Direct Edit, command, check, plugin-dispatch, Process, and result/evidence tools. |
-| **core** | `--toolset core` | Compatibility label for the same stable default 19-tool schema. It does not reduce capability or require reconnecting. |
+| **facade** (opt-in) | `--toolset facade` | Six-tool ChatGPT orchestration surface: `rh_access`, `rh_status`, `rh_inbox`, `rh_context`, `rh_work`, `capability_execute`. Internal handlers and capabilities remain registered; only MCP discovery is reduced. Intended for latency/tool-selection A/B before any default migration. |
+| **advanced** (default) | `--toolset advanced` | Current stable 20-tool controller surface. Includes the five `rh_*` facades plus repository, Direct Edit, command, check, plugin-dispatch, Process, and result/evidence tools. |
+| **core** | `--toolset core` | Compatibility label for the same stable default 20-tool schema. It does not reduce capability or require reconnecting. |
 | **full** | `--toolset full` | Every historical legacy and runtime definition. Use only for old integrations or deep compatibility diagnosis because the much larger schema can reduce tool-selection quality. |
 
 Configure via CLI flags, `FORGE_MCP_TOOLSET`, or Controller Home MCP config. Empty/default controller configuration resolves to `advanced`.
 
 ## Single source of truth
 
-`src/cli/mcp/toolset-names.ts` owns the dependency-free stable name list. `src/cli/mcp/toolset.ts` joins that list with the actual definition registry and returns one exposure snapshot containing:
+`adapters/mcp/toolset-names.ts` owns the dependency-free stable name list. `adapters/mcp/toolset.ts` joins that list with the actual definition registry and returns one exposure snapshot containing:
 
 - expected and actual tool names/counts;
 - missing, unexpected, and duplicate names;

@@ -63,8 +63,8 @@ import {
   startLightweightRepositoryCommand,
   waitForLightweightProcess,
 } from '../../src/runtime/execution/process-runtime/lightweight-managed';
-import { classifyGatewayExecutionPath } from '../../src/runtime/gateway/mcp/router';
-import { persistedCheckSemanticScopeKey, runPersistedCheckViaProcessRuntime } from '../../src/runtime/gateway/mcp/persisted-check-process';
+import { classifyGatewayExecutionPath } from '../../adapters/mcp/runtime-gateway/router';
+import { persistedCheckSemanticScopeKey, runPersistedCheckViaProcessRuntime } from '../../adapters/mcp/runtime-gateway/persisted-check-process';
 import { classifyPersistedCheckTerminalEvidence, readPersistedCheckResultReceipt } from '../../src/runtime/execution/process-runtime/check-result';
 import { ensureControllerHome, repositoryControllerRoot } from '../../src/cli/repositories/controller-home';
 import { registerRepository } from '../../src/cli/repositories/registry';
@@ -82,8 +82,8 @@ import { defaultProcessIdentityProbe, executableFingerprint } from '../../src/ru
 import { ensureRepositoryRuntimeStorage } from '../../src/cli/repositories/runtime-storage';
 import { resolveEphemeralWorkspaceTarget } from '../../src/cli/repositories/ephemeral-workspace';
 import { sanitizeFileComponent } from '../../src/runtime/shared/json-files';
-import { callProcessTool, DEFAULT_PROCESS_WAIT_ATTACH_BUDGET_MS, processToolDefinitions } from '../../src/runtime/gateway/mcp/process-tools';
-import type { MultiRepositoryMcpToolContext } from '../../src/cli/mcp/multi-repository';
+import { callProcessTool, DEFAULT_PROCESS_WAIT_ATTACH_BUDGET_MS, processToolDefinitions } from '../../adapters/mcp/runtime-gateway/process-tools';
+import type { MultiRepositoryMcpToolContext } from '../../adapters/mcp/multi-repository';
 import { rebuildRepositoryProjection } from '../../src/runtime/projections/materialized-view';
 import { createWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { rotateRuntimeGeneration } from '../../src/runtime/control-plane/runtime-generation';

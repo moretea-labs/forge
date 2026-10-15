@@ -1,4 +1,4 @@
-import { redactMcpText } from '../../cli/mcp/redaction';
+import { redactMcpText } from '../../../adapters/mcp/redaction';
 import type { ExecutionJob } from '../execution/jobs/types';
 import { buildJobOperationDigest } from '../control-plane/facade/operation-digest';
 import {

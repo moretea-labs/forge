@@ -3,8 +3,8 @@ import { execFileSync } from 'child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { getMcpPolicy } from '../../src/cli/mcp/policy';
-import type { MultiRepositoryMcpToolContext } from '../../src/cli/mcp/multi-repository';
+import { getMcpPolicy } from '../../adapters/mcp/policy';
+import type { MultiRepositoryMcpToolContext } from '../../adapters/mcp/multi-repository';
 import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
 import { addRepositoryCheckout, registerRepository } from '../../src/cli/repositories/registry';
 import { createWorkContract, getWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
@@ -19,7 +19,7 @@ import {
   writeProjectPlacement,
   writeWorkspaceIdentity,
 } from '../../src/runtime/control-plane/workspace/workspace-store';
-import { callRuntimeTool } from '../../src/runtime/gateway/mcp/runtime-tools';
+import { callRuntimeTool } from '../../adapters/mcp/runtime-gateway/runtime-tools';
 
 const roots: string[] = [];
 
@@ -424,7 +424,7 @@ describe('rh_work Requirement bootstrap', () => {
     expect(stale.data.currentPlan).toMatchObject({ planId: 'PLAN-THIN-CREATE', revision: 2 });
   }, 15_000);
 
-  test('retires the Plan scope-replan writer and keeps Work scope widening a Work-owned operation', async () => {
+  test('retires the Plan scope-replan writer without mutating the Work', async () => {
     const repoRoot = tempRoot('forge-active-plan-work-replan-repo-');
     const controllerHome = tempRoot('forge-active-plan-work-replan-home-');
     const sourceRevision = initRepo(repoRoot);
@@ -454,6 +454,8 @@ describe('rh_work Requirement bootstrap', () => {
       allowedPaths: ['src/**'], forbiddenPaths: [], checks: ['package:check:type'], constraints: {}, requestedBy: 'chatgpt', dispatchState: 'running',
     });
 
+    const workBeforeRepair = getWorkContract(store, 'work-active-scope');
+
     // Plan-scoped repair is a read-only fact now: it neither replans the Plan nor
     // rewrites the Work, and it never decides replacement admission.
     const repaired = structured(await callRuntimeTool(ctx, 'rh_work', {
@@ -475,10 +477,10 @@ describe('rh_work Requirement bootstrap', () => {
     expect(getPlanContract(store, planId)?.steps[0]).toMatchObject({ allowedPaths: ['src/**'] });
     expect(getPlanContract(store, planId)?.steps[0]?.workId).toBeUndefined();
     expect(getPlanContract(store, 'PLAN-ACTIVE-SCOPE-R2')).toBeUndefined();
-    expect(getWorkContract(store, 'work-active-scope')).toMatchObject({ allowedPaths: ['src/**'] });
+    // Compare the canonical aggregate: retired top-level allowedPaths are not
+    // a scope authority. The entire Work must remain unchanged by Plan repair.
+    expect(getWorkContract(store, 'work-active-scope')).toEqual(workBeforeRepair);
 
-    // Work scope is owned by the Work: no Plan revision, approval or accepted
-    // Plan path fence is consulted when a caller widens its own scope.
     expect(getWorkContract(store, 'work-active-scope')?.planSourceRevision).toBe(sourceRevision);
   }, 15_000);
 

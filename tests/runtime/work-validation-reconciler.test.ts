@@ -8,7 +8,7 @@ import { writeWorkHandle, type WorkHandleState } from '../../src/runtime/control
 import { createProcessRecord } from '../../src/runtime/execution/process-runtime/store';
 import { writePersistedCheckResultReceipt } from '../../src/runtime/execution/process-runtime/check-result';
 import type { ManagedProcessRecord, ProcessCheckExecutionIdentity } from '../../src/runtime/execution/process-runtime/types';
-import { hasCurrentWorkValidationAuthority, markWorkValidationPending, reconcilePendingWorkValidations, reconcileWorkValidation } from '../../src/runtime/gateway/mcp/work-validation-reconciler';
+import { hasCurrentWorkValidationAuthority, markWorkValidationPending, reconcilePendingWorkValidations, reconcileWorkValidation } from '../../src/runtime/control-plane/execution/work-validation-reconciler';
 import {
   effectiveVerificationEvidence,
   verificationInputFingerprint,

@@ -17,7 +17,7 @@ import {
   resolvePersistedCheckProcessInvocation,
   resolvePersistedCheckRuntimeExecutable,
   shouldUseCandidatePersistedCheckRunner,
-} from '../../src/runtime/gateway/mcp/persisted-check-process';
+} from '../../adapters/mcp/runtime-gateway/persisted-check-process';
 
 const diagnosticArgs = ['runtime', 'diagnostic-read', '--tool', 'workflow_watchdog_report'];
 

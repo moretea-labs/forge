@@ -1789,7 +1789,14 @@ requireText('adapters/mcp/transports/http-observation.ts', "'/repos/:repoId/heal
 requireText('src/runtime/control-plane/governance/external-effects.ts', 'EXTERNAL_EFFECT_AUTHORIZATION_REQUIRED');
 requireText('src/runtime/control-plane/governance/external-effects.ts', 'AUTOMATED_REQUIREMENT_REQUIRES_CANDIDATE');
 requireText('adapters/mcp/tool-mapping/tools.ts', "export * from './legacy-tool-service'");
-requireText('src/cli/mcp/tools.ts', '@deprecated Kernel V2 compatibility shim');
+for (const retiredShim of [
+  'src/cli/mcp/access-tools.ts',
+  'src/cli/mcp/repository-tools.ts',
+  'src/cli/mcp/tools.ts',
+  'src/cli/mcp/toolset.ts',
+  'src/cli/mcp/toolset-names.ts',
+  'src/cli/mcp/toolset-selection.ts',
+]) requireMissing(retiredShim);
 
 for (const path of [
   'adapters/mcp/runtime-gateway/router.ts',
@@ -2156,7 +2163,28 @@ forbid(
   /authority-env|BRAIN_CONTROLLER_AUTHORITY_REQUIRED|BRAIN_AUTHORITY_ENV_INVALID/,
   'advisory experience CLI must not require a Controller capability',
 );
+// Retired Gateway/CLI forwarding aliases must not be reintroduced: adapter
+// definitions and execution-domain reconciliation own their canonical paths.
 for (const path of [
+  'adapters/mcp/runtime-gateway/work-validation-reconciler.ts',
+  'src/cli/mcp/access-mode.ts',
+  'src/cli/mcp/audit.ts',
+  'src/cli/mcp/auth.ts',
+  'src/cli/mcp/multi-repository.ts',
+  'src/cli/mcp/openai-secure-tunnel.ts',
+  'src/cli/mcp/paths.ts',
+  'src/cli/mcp/policy.ts',
+  'src/cli/mcp/readiness-projection.ts',
+  'src/cli/mcp/redaction.ts',
+  'src/cli/mcp/repo.ts',
+  'src/cli/mcp/server.ts',
+  'src/cli/mcp/setup.ts',
+  'src/cli/mcp/transports/http.ts',
+  'src/cli/mcp/transports/session-registry.ts',
+  'src/cli/mcp/types.ts',
+  'src/cli/mcp/oauth.ts',
+  'src/cli/mcp/tool-contract.ts',
+  'src/cli/mcp/transports/stdio.ts',
   'src/runtime/gateway/mcp/execution-tools.ts',
   'src/runtime/gateway/mcp/legacy-ios-tool-adapter.ts',
   'src/runtime/gateway/mcp/persisted-check-process.ts',
@@ -2165,17 +2193,7 @@ for (const path of [
   'src/runtime/gateway/mcp/runtime-tool-definitions.ts',
   'src/runtime/gateway/mcp/runtime-tools.ts',
   'src/runtime/gateway/mcp/work-validation-reconciler.ts',
-]) requireText(path, '@deprecated Kernel V2 compatibility shim');
-for (const path of [
-  'src/cli/mcp/access-tools.ts',
-  'src/cli/mcp/legacy-context.ts',
-  'src/cli/mcp/legacy-tool-service.ts',
-  'src/cli/mcp/multi-repository.ts',
-  'src/cli/mcp/repository-tools.ts',
-  'src/cli/mcp/server.ts',
-  'src/cli/mcp/tools.ts',
-  'src/cli/mcp/toolset.ts',
-]) requireText(path, '@deprecated Kernel V2 compatibility shim');
+]) requireMissing(path);
 requireText('src/runtime/control-plane/execution/work-execution-support.ts', 'packages/protocols/mcp/execution-context');
 requireText('src/runtime/control-plane/execution/work-preparation-service.ts', 'packages/protocols/mcp/execution-context');
 requireText('src/runtime/control-plane/execution/work-operation-service.ts', 'packages/protocols/mcp/execution-context');
@@ -2218,13 +2236,6 @@ forbidBetween(
   /\b(?:pid|process|endpoint|url|tunnel|token)\b/i,
   'ForgeInstanceIdentity creation must remain independent of process and adapter transport/auth metadata',
 );
-for (const path of [
-  'src/cli/mcp/auth.ts',
-  'src/cli/mcp/setup.ts',
-  'src/cli/mcp/openai-secure-tunnel.ts',
-]) {
-  requireText(path, '@deprecated Kernel V2 compatibility shim');
-}
 requireText('adapters/mcp/auth.ts', 'forgeInstanceId?: string');
 forbid('adapters/mcp/auth.ts', /server:\s*\{[\s\S]{0,512}?instanceId\??:\s*string/, 'MCP server process identity must not share semantic Forge instanceId naming');
 requireText('adapters/mcp/setup.ts', 'ensureForgeInstanceIdentity');

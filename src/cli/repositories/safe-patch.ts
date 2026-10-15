@@ -11,7 +11,7 @@ import {
   type EditSessionPatchError,
 } from '../editing/edit-session';
 import { normalizeEditOperation, type EditOperation } from '../editing/edit-operation-contract';
-import { getMcpPolicy } from '../mcp/policy';
+import { getMcpPolicy } from '../../../adapters/mcp/policy';
 import type { RepositoryRecord } from './types';
 import { ensureRepositoryRuntimeStorageBinding } from './runtime-storage';
 

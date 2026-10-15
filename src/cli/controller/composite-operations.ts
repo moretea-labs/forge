@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { createHash } from 'crypto';
 import { runProcess } from '../../effects/process-runner';
-import { resolveMcpRepoRoot } from '../mcp/repo';
+import { resolveMcpRepoRoot } from '../../../adapters/mcp/repo';
 import { listControllerChecks, runControllerCheck } from './check-runner';
 import {
   compositeFailed,

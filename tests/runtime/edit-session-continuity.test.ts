@@ -12,7 +12,7 @@ import {
   getEditSession,
   type EditSessionBinding,
 } from '../../src/cli/editing/edit-session';
-import { getMcpPolicy } from '../../src/cli/mcp/policy';
+import { getMcpPolicy } from '../../adapters/mcp/policy';
 import { registerRepository } from '../../src/cli/repositories/registry';
 import { ensureRepositoryRuntimeStorageBinding } from '../../src/cli/repositories/runtime-storage';
 import { applySafePatch } from '../../src/cli/repositories/safe-patch';
