@@ -2837,6 +2837,11 @@ async function openNativeAttachedContext(
             'No usable existing native browser was observed; refusing to launch or guess a provider.',
             { retryable: false });
         } else {
+          if (args.__forge_require_existing_resource === true) {
+            throw new AssistantPluginError('PLUGIN_BROWSER_EXISTING_TAB_NOT_FOUND',
+              'No uniquely reusable tab matches the requested existing resource; refusing new tab creation.',
+              { retryable: false });
+          }
           throw new AssistantPluginError('PLUGIN_BROWSER_PROVIDER_CARDINALITY_INVALID',
             'No uniquely identified existing browser product; refusing implicit cross-provider selection.',
             { retryable: false, details: { candidateCount: observed.length } });
