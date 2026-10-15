@@ -114,7 +114,7 @@ type BrowserNativeAttachMode = 'auto' | 'disabled';
 
 const CURRENT_BROWSER_CONFIG_SCHEMA_VERSION = 3 as const;
 const DEFAULT_USER_BROWSER_CHANNEL: BrowserChannel = 'chrome';
-const DEFAULT_USER_NATIVE_BROWSER_CANDIDATES: MacOsBrowserProduct[] = ['chrome'];
+const DEFAULT_USER_NATIVE_BROWSER_CANDIDATES: MacOsBrowserProduct[] = ['chrome', 'vivaldi'];
 
 interface BrowserPluginConfig {
   schemaVersion: 3;
@@ -2762,7 +2762,7 @@ async function openNativeAttachedContext(
   let preferredNativeWindowId: string | undefined;
   if (!discovered?.attachment) {
     const candidates = savedProduct ? [savedProduct] : (config.nativeBrowserCandidates ?? [...DEFAULT_USER_NATIVE_BROWSER_CANDIDATES]);
-    let preferredCandidates = candidates.slice(0, 1);
+    let preferredCandidates = candidates;
     if (candidates.length > 1 && !target.existingSession && (args.__forge_computer_native_only === true || !stringValue(args.session_id))) {
       // Choosing the frontmost browser can select a different, signed-out
       // profile even while the user's matching Chrome tab is in the background.
@@ -2820,6 +2820,14 @@ async function openNativeAttachedContext(
               try { return new URL(entry.url).origin === origin; } catch { return false; }
             }).map((entry) => entry.windowId)));
           if (matchingWindows.size === 1) preferredNativeWindowId = [...matchingWindows][0];
+        } else if (observed.length === 1) {
+          // Exactly one available browser product is observed. Product discovery
+          // must not silently fall through multiple provider backends.
+          preferredCandidates = [observed[0]!.product];
+        } else {
+          throw new AssistantPluginError('PLUGIN_BROWSER_PROVIDER_CARDINALITY_INVALID',
+            'No uniquely identified existing browser product; refusing implicit cross-provider selection.',
+            { retryable: false, details: { candidateCount: observed.length } });
         }
       }
     }
