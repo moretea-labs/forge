@@ -330,6 +330,15 @@ describe('Computer durable InteractionTarget authority', () => {
         { bundle_id: 'com.example.Editor', launch: false, activate: false },
         'target-unsupported-platform',
       ))).rejects.toThrow('PLUGIN_COMPUTER_DESKTOP_PLATFORM_UNSUPPORTED');
+      await expect(computerPluginAdapter.executeAction(actionInput(
+        controllerHome, 'create_session',
+        { url: 'https://example.com/', browser_mode: 'managed_persistent' },
+        'computer-must-not-launch-playwright',
+      ))).rejects.toMatchObject({ code: 'PLUGIN_COMPUTER_BROWSER_SCRIPT_MODE_SEPARATE' });
+      await expect(computerPluginAdapter.executeAction(actionInput(
+        controllerHome, 'install_unpacked_extension', { extension_path: '/tmp/no-script-extension' },
+        'computer-no-script-extension',
+      ))).rejects.toMatchObject({ code: 'PLUGIN_COMPUTER_BROWSER_SCRIPT_ACTION_SEPARATE' });
     } finally {
       rmSync(controllerHome, { recursive: true, force: true });
     }

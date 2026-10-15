@@ -55,6 +55,7 @@ import {
   readMacOsBrowserOwnedTabMetadata,
   macOsActiveBrowserAttachSupported,
   macOsBrowserJavaScriptAutomationDisabled,
+  assertMacOsBrowserApplicationRunning,
   type MacOsBrowserAttachAttempt,
   type MacOsBrowserCreateTabEvidence,
   type MacOsBrowserProduct,
@@ -579,7 +580,7 @@ function normalizeConfig(raw: PersistedBrowserPluginConfig): BrowserPluginConfig
     schemaVersion: CURRENT_BROWSER_CONFIG_SCHEMA_VERSION,
     enabled: raw.enabled === true,
     provider: 'playwright',
-    browserMode: browserMode(raw.browserMode) ?? 'managed_persistent',
+    browserMode: browserMode(raw.browserMode) ?? 'attach_preferred',
     profileMode: browserProfileMode(raw.profileMode) ?? (normalizedProfileDir ? 'custom' : 'repo_local'),
     profileDir: normalizedProfileDir,
     profileDirectory: stringValue(raw.profileDirectory),
@@ -591,7 +592,7 @@ function normalizeConfig(raw: PersistedBrowserPluginConfig): BrowserPluginConfig
       ? Math.min(positiveNumber(raw.cdpDiscoveryTimeoutMs, DEFAULT_CDP_DISCOVERY_TIMEOUT_MS), MAX_CDP_DISCOVERY_TIMEOUT_MS)
       : undefined,
     cdpAttachFallback: browserCdpAttachFallback(raw.cdpAttachFallback) ?? 'fail_closed',
-    nativeAttachMode: browserNativeAttachMode(raw.nativeAttachMode) ?? 'disabled',
+    nativeAttachMode: browserNativeAttachMode(raw.nativeAttachMode) ?? 'auto',
     nativeBrowserCandidates: browserProductList(raw.nativeBrowserCandidates) ?? [...DEFAULT_USER_NATIVE_BROWSER_CANDIDATES],
     defaultTimeoutMs: typeof raw.defaultTimeoutMs === 'number' ? positiveNumber(raw.defaultTimeoutMs, DEFAULT_TIMEOUT_MS) : undefined,
   };
@@ -599,20 +600,20 @@ function normalizeConfig(raw: PersistedBrowserPluginConfig): BrowserPluginConfig
 
 function migrateLegacyRepositoryConfig(raw: PersistedBrowserPluginConfig): PersistedBrowserPluginConfig {
   if (raw.schemaVersion === CURRENT_BROWSER_CONFIG_SCHEMA_VERSION) return raw;
-  const configuredCdp = Boolean(
-    stringValue(raw.cdpEndpoint)
-    || (stringList(raw.cdpEndpointCandidates)?.length ?? 0) > 0,
-  );
-  const legacyMode = browserMode(raw.browserMode) ?? 'attach_preferred';
+  // v1 legacy managed profiles were an implicit route to a fresh browser.
+  // Migrate that default to the existing signed-in native browser; preserve
+  // explicit v2 managed configurations as separate scripting capabilities.
+  const legacyV1 = raw.schemaVersion === 1;
   return {
     ...raw,
     schemaVersion: CURRENT_BROWSER_CONFIG_SCHEMA_VERSION,
-    // v1/v2 defaulted to attach_preferred + native auto and silently made
-    // Apple Events JavaScript a global Browser dependency whenever no CDP endpoint
-    // was configured. Preserve explicit CDP attachment, but retire native attach
-    // from migrated defaults; it remains available only when explicitly selected.
-    browserMode: legacyMode === 'attach_preferred' && !configuredCdp ? 'managed_persistent' : legacyMode,
-    nativeAttachMode: 'disabled',
+    browserMode: legacyV1 ? 'attach_preferred' : (browserMode(raw.browserMode) ?? 'attach_preferred'),
+    cdpAttachFallback: legacyV1 ? 'fail_closed' : (raw.cdpAttachFallback ?? 'fail_closed'),
+    nativeAttachMode: legacyV1 ? 'auto' : (raw.nativeAttachMode ?? 'auto'),
+    ...(legacyV1 ? {
+      profileMode: 'repo_local' as const, profileDir: undefined, profileDirectory: undefined,
+      browserChannel: DEFAULT_USER_BROWSER_CHANNEL, nativeBrowserCandidates: [...DEFAULT_USER_NATIVE_BROWSER_CANDIDATES],
+    } : {}),
   };
 }
 
@@ -629,12 +630,24 @@ function writeJson(path: string, value: unknown): void {
   writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`, 'utf-8');
 }
 
-function loadConfig(repoRoot: string, context?: Pick<RepositoryPluginConfigContext, 'controllerHome' | 'repoId'>): BrowserPluginConfig {
+function loadConfig(
+  repoRoot: string,
+  context?: Pick<RepositoryPluginConfigContext, 'controllerHome' | 'repoId'>,
+  computerNativeOnly = false,
+): BrowserPluginConfig {
+  // Computer Browser is a built-in Forge capability, not an optional
+  // repository Browser-script plugin. Its native defaults ship with the
+  // first-party Computer adapter; never inherit an independent Playwright
+  // profile, enabled flag, CDP endpoint, or fallback from a repository.
+  if (computerNativeOnly) return normalizeConfig({
+    enabled: true, browserMode: 'attach_preferred',
+    nativeAttachMode: 'auto', cdpAttachFallback: 'fail_closed',
+    nativeBrowserCandidates: [...DEFAULT_USER_NATIVE_BROWSER_CANDIDATES],
+  });
   const persisted = context
     ? readRepositoryPluginConfig<PersistedBrowserPluginConfig>({ ...context, repoRoot }, BROWSER_PLUGIN_ID)
     : undefined;
-  if (!persisted) return normalizeConfig({});
-  return normalizeConfig(migrateLegacyRepositoryConfig(persisted));
+  return persisted ? normalizeConfig(migrateLegacyRepositoryConfig(persisted)) : normalizeConfig({});
 }
 
 async function resolveBrowserPluginAuthorizationContextInternal(
@@ -649,7 +662,7 @@ async function resolveBrowserPluginAuthorizationContextInternal(
   // call and left the Scheduler without a durable browser-session grant.
   if (!action || action.confirmation !== 'authorization' || !action.scopes.includes('browser.profile')) return undefined;
 
-  const persistedConfig = loadConfig(input.repoRoot, input);
+  const persistedConfig = loadConfig(input.repoRoot, input, input.pluginId === 'computer');
   const sessionId = stringValue(input.args.session_id);
   const authorizationBrowserMode = parseBrowserModeInput(input.args.browser_mode) ?? persistedConfig.browserMode;
   if (!sessionId || authorizationBrowserMode === 'isolated') return undefined;
@@ -2631,7 +2644,7 @@ async function openNativeAttachedContext(
   args: Record<string, unknown>,
 ): Promise<{ handle?: BrowserOpenHandle; attempts: MacOsBrowserAttachAttempt[] }> {
   if (config.nativeAttachMode === 'disabled') return { attempts: [] };
-  if (!target.existingSession && !stringValue(args.session_id)) {
+  if (!target.existingSession && !stringValue(args.session_id) && args.__forge_computer_native_only !== true) {
     await inspectNativeOwnedSessions({ repoRoot, savedSessions: listSavedSessions(repoRoot), timeoutMs: config.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS, pruneDead: true });
   }
   const timeout = positiveNumber(args.timeout_ms, config.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS);
@@ -2754,10 +2767,73 @@ async function openNativeAttachedContext(
   }
 
   let createdThisCallRef: MacOsBrowserTabRef | undefined;
+  let preferredNativeWindowId: string | undefined;
   if (!discovered?.attachment) {
     const candidates = savedProduct ? [savedProduct] : (config.nativeBrowserCandidates ?? [...DEFAULT_USER_NATIVE_BROWSER_CANDIDATES]);
-    discovered = await discoverMacOsBrowserAttachment(candidates, Math.min(timeout, MAX_CDP_DISCOVERY_TIMEOUT_MS));
+    let preferredCandidates = candidates;
+    if (candidates.length > 1 && !target.existingSession && (args.__forge_computer_native_only === true || !stringValue(args.session_id))) {
+      // Choosing the frontmost browser can select a different, signed-out
+      // profile even while the user's matching Chrome tab is in the background.
+      // Prefer exact URL evidence across *all* configured native products.
+      const inventories = await Promise.all(candidates.map(async (product) => {
+        try { await assertMacOsBrowserApplicationRunning(product, timeout); }
+        catch (error) {
+          if (error instanceof AssistantPluginError && [
+            'PLUGIN_BROWSER_NATIVE_APP_NOT_RUNNING', 'PLUGIN_BROWSER_NATIVE_APP_NOT_INSTALLED',
+            'PLUGIN_BROWSER_NATIVE_APP_UNSUPPORTED_PLATFORM',
+          ].includes(error.code)) return undefined;
+          throw error;
+        }
+        try {
+          const inventory = await listMacOsBrowserTabs(product, timeout, { correctFrontmost: false });
+          if (inventory.truncated) throw new AssistantPluginError('PLUGIN_COMPUTER_BROWSER_INVENTORY_INCOMPLETE',
+            'Native browser inventory truncated; cannot prove the existing target tab is absent.',
+            { retryable: true, details: { browserProduct: product } });
+          return { product, inventory };
+        } catch (error) {
+          // Unreadable background tabs are not absent tabs: no replacement
+          // browser or new tab may be created from an incomplete inventory.
+          if (args.__forge_computer_native_only === true) {
+            throw new AssistantPluginError('PLUGIN_COMPUTER_BROWSER_INVENTORY_UNAVAILABLE',
+              'Cannot enumerate existing native browser tabs; refusing to create a duplicate.',
+              { retryable: true, details: { browserProduct: product, cause: error instanceof Error ? error.message : String(error) } });
+          }
+          return undefined;
+        }
+      }));
+      const observed = inventories.filter((item): item is NonNullable<typeof item> => Boolean(item));
+      const exact = observed.flatMap(({ product, inventory }) => inventory.tabs
+        .filter((entry) => comparableUrl(entry.url) === comparableUrl(target.url))
+        .map((entry) => ({ product, entry })));
+      if (exact.length > 1) {
+        throw new AssistantPluginError('PLUGIN_BROWSER_REUSABLE_TAB_AMBIGUOUS',
+          'Multiple browser products have existing tabs for the exact URL; refusing to guess and create another tab.',
+          { retryable: false, details: { targetUrl: target.url, candidateCount: exact.length } });
+      }
+      if (exact.length === 1) {
+        preferredCandidates = [exact[0]!.product];
+      } else {
+        // Same-origin tabs only identify a likely browser *profile*, not an
+        // exact resource. A new tab may be created there, but never overwrite
+        // an unrelated user tab or invent proof of authentication.
+        const origin = (() => { try { return new URL(target.url).origin; } catch { return ''; } })();
+        const originProducts = observed.filter(({ inventory }) => origin && inventory.tabs.some((entry) => {
+          try { return new URL(entry.url).origin === origin; } catch { return false; }
+        })).map(({ product }) => product);
+        if (originProducts.length === 1) {
+          preferredCandidates = [originProducts[0]!];
+          const matchingWindows = new Set(observed
+            .filter(({ product }) => product === originProducts[0])
+            .flatMap(({ inventory }) => inventory.tabs.filter((entry) => {
+              try { return new URL(entry.url).origin === origin; } catch { return false; }
+            }).map((entry) => entry.windowId)));
+          if (matchingWindows.size === 1) preferredNativeWindowId = [...matchingWindows][0];
+        }
+      }
+    }
+    discovered = await discoverMacOsBrowserAttachment(preferredCandidates, Math.min(timeout, MAX_CDP_DISCOVERY_TIMEOUT_MS));
     const zeroWindowAttempt = args.__forge_require_existing_resource !== true
+      && args.__forge_computer_native_only !== true
       ? discovered.attempts.find((attempt) => attempt.status === 'unavailable' && attempt.error?.includes('FORGE_NO_BROWSER_WINDOW'))
       : undefined;
     if (!discovered.attachment && zeroWindowAttempt) {
@@ -2874,12 +2950,17 @@ async function openNativeAttachedContext(
     }
   };
   try {
-    if (!page && !savedTab && !stringValue(args.session_id)) {
+    if (!page && !savedTab && !target.existingSession && (args.__forge_computer_native_only === true || !stringValue(args.session_id))) {
       let inventory: Awaited<ReturnType<typeof listMacOsBrowserTabs>> | undefined;
       try {
         inventory = await listMacOsBrowserTabs(activeAttachment.metadata.product, timeout);
       } catch (error) {
         if (!nativeTabInventoryUnsupported(error)) throw error;
+        if (args.__forge_computer_native_only === true) {
+          throw new AssistantPluginError('PLUGIN_COMPUTER_BROWSER_INVENTORY_UNAVAILABLE',
+            'Native tab inventory unavailable; Computer cannot prove an existing tab is absent.',
+            { retryable: true });
+        }
       }
       if (inventory) {
         const ownedSelection = selectLiveForgeOwnedNativeTab(repoRoot, target.url, activeAttachment.metadata.product, inventory);
@@ -2945,7 +3026,23 @@ async function openNativeAttachedContext(
       }
     }
     if (!page) {
-      page = await createMacOsBrowserOwnedPage(activeAttachment, target.url, timeout) as unknown as PageLike;
+      // Explicit existing-resource requests (including read-only live
+      // acceptance) must never create a new tab if no exact tab was found.
+      if (!target.existingSession && args.__forge_require_existing_resource === true) {
+        throw new AssistantPluginError('PLUGIN_BROWSER_EXISTING_TAB_NOT_FOUND',
+          'No uniquely reusable native tab matches the requested URL; refusing to create a new tab.',
+          { retryable: false });
+      }
+      if (preferredNativeWindowId) {
+        const created = await createMacOsBrowserOwnedPageForProduct(
+          activeAttachment.metadata.product, target.url, activeAttachment.attempts, preferredNativeWindowId, timeout,
+        );
+        page = created.page as unknown as PageLike;
+        activeAttachment = created.attachment;
+        discovered = { attachment: created.attachment, attempts: created.attachment.attempts };
+      } else {
+        page = await createMacOsBrowserOwnedPage(activeAttachment, target.url, timeout) as unknown as PageLike;
+      }
       createdThisCallRef = (page as unknown as { tabRef?: () => MacOsBrowserTabRef | undefined }).tabRef?.();
       const liveIdentity = await settleNativeCreatedPageIdentity(
         page as unknown as {
@@ -3046,7 +3143,25 @@ async function openBrowser(
   target: BrowserActionTarget,
   args: Record<string, unknown>,
 ): Promise<BrowserOpenHandle> {
-  const requestedMode = config.browserMode ?? 'managed_persistent';
+  const computerNativeOnly = args.__forge_computer_native_only === true;
+  const requestedMode = computerNativeOnly ? 'attach_preferred' : (config.browserMode ?? 'attach_preferred');
+  if (computerNativeOnly) {
+    // Computer operates existing desktop/browser resources. Playwright CDP and
+    // managed profiles remain exclusive to explicitly selected Browser scripts.
+    if (target.existingSession?.browser?.provider
+      && target.existingSession.browser.provider !== 'macos-apple-events') {
+      throw new AssistantPluginError('PLUGIN_COMPUTER_BROWSER_PROVIDER_MISMATCH',
+        'This saved session belongs to an independent scripted Browser provider; Computer cannot silently adopt or replace it.',
+        { retryable: false, details: { sessionId: target.sessionId, provider: target.existingSession.browser.provider } });
+    }
+    const native = await openNativeAttachedContext(repoRoot, {
+      ...config, browserMode: 'attach_preferred', nativeAttachMode: 'auto', cdpAttachFallback: 'fail_closed',
+    }, target, args);
+    if (native.handle) return native.handle;
+    throw new AssistantPluginError('PLUGIN_COMPUTER_NATIVE_BROWSER_UNAVAILABLE',
+      'No attachable existing Chrome or Vivaldi browser is available. Computer will not start a Playwright profile.',
+      { retryable: true, details: { nativeAttempts: native.attempts } });
+  }
   if (requestedMode === 'attach_preferred') {
     const requireExistingResource = args.__forge_require_existing_resource === true;
     const existingProvider = target.existingSession?.browser?.provider;
@@ -3879,9 +3994,12 @@ function health(config: BrowserPluginConfig, repoRoot?: string): AssistantPlugin
   };
 }
 
-export function buildBrowserPluginManifest(previousRevision = 0, previousUpdatedAt?: string, repoRoot?: string, context?: AssistantPluginBuildContext): AssistantPluginManifest {
+export function buildBrowserPluginManifest(
+  previousRevision = 0, previousUpdatedAt?: string, repoRoot?: string,
+  context?: AssistantPluginBuildContext, computerNativeOnly = false,
+): AssistantPluginManifest {
   const root = repoRoot ?? process.cwd();
-  const config = loadConfig(root, context);
+  const config = loadConfig(root, context, computerNativeOnly);
   const state = health(config, root);
   return {
     schemaVersion: 1,
@@ -3934,9 +4052,15 @@ async function executeBrowserPluginActionInternal(
   input: AssistantPluginActionExecutionInput,
   runtimeAlreadyRouted = false,
 ): Promise<Record<string, unknown>> {
-  const persisted = loadConfig(input.repoRoot, input);
+  const persisted = loadConfig(input.repoRoot, input, input.pluginId === 'computer');
   const actionSessionId = input.actionId === 'configure' ? undefined : stringValue(input.args.session_id);
   const actionSession = actionSessionId ? findBrowserSession(input.repoRoot, actionSessionId) : undefined;
+  if (input.pluginId === 'computer' && actionSession?.browser?.provider
+    && actionSession.browser.provider !== 'macos-apple-events') {
+    throw new AssistantPluginError('PLUGIN_COMPUTER_BROWSER_PROVIDER_MISMATCH',
+      'Computer cannot manage an independent scripted Browser session; use the Browser plugin for that session.',
+      { retryable: false, details: { sessionId: actionSessionId, provider: actionSession.browser.provider } });
+  }
   const current = input.actionId === 'configure' ? persisted : effectiveBrowserActionConfig(persisted, input.args, actionSession);
   if (!current.enabled && input.actionId !== 'configure') {
     throw new AssistantPluginError('PLUGIN_DISABLED', 'Browser plugin is disabled.', { retryable: false });
@@ -3949,7 +4073,7 @@ async function executeBrowserPluginActionInternal(
   }
   if (!runtimeAlreadyRouted) {
     const runtimeKey = browserRuntimeKey(input);
-    const nodeBridgeEligible = shouldUseBrowserNodeBridge(
+    const nodeBridgeEligible = input.pluginId !== 'computer' && shouldUseBrowserNodeBridge(
       input.actionId,
       current.browserMode,
       runtimeHooksCustomized,
@@ -4118,7 +4242,10 @@ async function executeBrowserPluginActionInternal(
             throw new AssistantPluginError('PLUGIN_BROWSER_SESSION_CURSOR_INVALID', 'Browser session cursor is invalid or expired.', { retryable: false });
           }
         }
-        const page = inventory.sessions.slice(offset, offset + requestedLimit);
+        const visibleSessions = input.pluginId === 'computer'
+          ? inventory.sessions.filter(({ session }) => session.browser?.provider === 'macos-apple-events')
+          : inventory.sessions;
+        const page = visibleSessions.slice(offset, offset + requestedLimit);
         const nextOffset = offset + page.length;
         return {
           provider: 'playwright',
@@ -4131,8 +4258,8 @@ async function executeBrowserPluginActionInternal(
           deadManagedSessionCount: inventory.deadManagedSessionCount,
           deadNativeSessionCount: inventory.deadNativeSessionCount,
           limit: requestedLimit,
-          totalCount: inventory.sessions.length,
-          ...(nextOffset < inventory.sessions.length ? { nextCursor: Buffer.from(JSON.stringify({ offset: nextOffset }), 'utf8').toString('base64url') } : {}),
+          totalCount: visibleSessions.length,
+          ...(nextOffset < visibleSessions.length ? { nextCursor: Buffer.from(JSON.stringify({ offset: nextOffset }), 'utf8').toString('base64url') } : {}),
           sessions: page.map(({ session, liveness, evidence, cleanupError }) => ({
             sessionId: session.sessionId,
             url: session.url,
@@ -4217,7 +4344,13 @@ async function executeBrowserPluginActionInternal(
       case 'request_human_handoff': {
         const target = resolveActionTarget(input.repoRoot, input.args);
         const managedSession = target.existingSession;
-        const managedTarget = managedSession ? await runtimeManagedPageForSession(input.repoRoot, current, managedSession) : undefined;
+        if (input.pluginId === 'computer' && managedSession?.browser?.provider
+          && managedSession.browser.provider !== 'macos-apple-events') {
+          throw new AssistantPluginError('PLUGIN_COMPUTER_BROWSER_PROVIDER_MISMATCH',
+            'Computer handoff requires a native browser tab, not a scripted Browser session.', { retryable: false });
+        }
+        const managedTarget = input.pluginId === 'computer'
+          ? undefined : managedSession ? await runtimeManagedPageForSession(input.repoRoot, current, managedSession) : undefined;
         if (managedSession && managedTarget) {
           const result = { url: managedTarget.page.url(), title: await managedTarget.page.title().catch(() => managedSession.title) };
           const handoff = startRuntimeManagedBrowserHandoff({
@@ -4254,7 +4387,7 @@ async function executeBrowserPluginActionInternal(
         const nativeTab = nativeSession?.browser?.tab;
         const nativeBrowser = nativeSession?.browser?.provider === 'macos-apple-events'
           && nativeSession.browser.browserProduct
-          && nativeTab?.ownership === 'plugin_owned'
+          && (nativeTab?.ownership === 'plugin_owned' || nativeTab?.ownership === 'user_owned')
           && typeof nativeTab.windowId === 'string'
           && typeof nativeTab.tabId === 'string'
           ? {
@@ -4262,6 +4395,11 @@ async function executeBrowserPluginActionInternal(
               ref: { windowId: nativeTab.windowId, tabId: nativeTab.tabId },
             }
           : undefined;
+        if (input.pluginId === 'computer' && !nativeBrowser) {
+          throw new AssistantPluginError('PLUGIN_COMPUTER_NATIVE_BROWSER_HANDOFF_UNAVAILABLE',
+            'Computer handoff requires an existing bound native tab; it will not open a Playwright profile.',
+            { retryable: false });
+        }
         const handoffMode: BrowserMode = current.browserMode === 'isolated' ? 'isolated' : 'managed_persistent';
         const profile = selectedProfile(current, input.repoRoot, handoffMode, target.sessionId);
         if (!nativeBrowser) mkdirSync(profile.profileDir, { recursive: true });
@@ -4296,6 +4434,11 @@ async function executeBrowserPluginActionInternal(
       case 'get_handoff_status': {
         const interactionId = requiredString(input.args.interaction_id, 'interaction_id');
         const handoff = getBrowserHandoff(input.repoRoot, interactionId);
+        if (input.pluginId === 'computer' && !handoff.targetId.startsWith('macos-apple-events:')) {
+          throw new AssistantPluginError('PLUGIN_COMPUTER_BROWSER_PROVIDER_MISMATCH',
+            'Computer can only inspect native browser handoffs; standalone scripted handoffs are independent.',
+            { retryable: false });
+        }
         if (handoff.status === 'completed' && handoff.result?.url) {
           const session = findBrowserSession(input.repoRoot, handoff.sessionId);
           if (session) {
@@ -4323,6 +4466,11 @@ async function executeBrowserPluginActionInternal(
           throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'resolution must be resume or cancel', { retryable: false });
         }
         const currentHandoff = getBrowserHandoff(input.repoRoot, interactionId);
+        if (input.pluginId === 'computer' && !currentHandoff.targetId.startsWith('macos-apple-events:')) {
+          throw new AssistantPluginError('PLUGIN_COMPUTER_BROWSER_PROVIDER_MISMATCH',
+            'Computer can resolve only native browser handoffs; scripted Browser handoffs remain independent.',
+            { retryable: false });
+        }
         if (isRuntimeManagedBrowserHandoff(currentHandoff)) {
           const session = findBrowserSession(input.repoRoot, currentHandoff.sessionId);
           const managedTarget = session ? await runtimeManagedPageForSession(input.repoRoot, current, session) : undefined;

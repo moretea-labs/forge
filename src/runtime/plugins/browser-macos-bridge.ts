@@ -647,13 +647,15 @@ if preferredWindowId is not "" then
     end if
   end repeat
 end if
+if preferredWindowId is not "" and targetWindow is missing value then error "FORGE_BROWSER_PREFERRED_WINDOW_MISSING:" & preferredWindowId
 if targetWindow is missing value and (count of windows) is greater than 0 then set targetWindow to front window
 if targetWindow is missing value then
   set targetWindow to make new window
   set targetTab to active tab of targetWindow
   set URL of targetTab to targetUrl
 else
-  set targetWindow to front window
+  -- Preserve the selected background window; front-window reassignment here
+  -- previously discarded the caller's stable target and opened the wrong tab.
   set originalActiveTabId to ((id of active tab of targetWindow) as text)
   set targetTab to make new tab at end of tabs of targetWindow with properties {URL:targetUrl}
   -- Restore the previously active tab by identity, never by a stale position:

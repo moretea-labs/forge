@@ -23,6 +23,7 @@ import type { AssistantPluginActionExecutionInput } from '../../src/runtime/plug
 import {
   invalidateMacOsBrowserPageHandle,
   invalidateMacOsBrowserPageHandles,
+  createMacOsBrowserOwnedPageForProduct,
   listMacOsBrowserTabs,
   nativeDomLoadStateSatisfied,
   parseMacOsBrowserCreateTabBrokerResult,
@@ -669,6 +670,20 @@ describe('Browser Runtime V3 routing', () => {
       }],
     });
     expect(scripts).toHaveLength(1);
+    // The explicit background window is the creation target; do not
+    // reassign it to front window inside the create script.
+    setMacOsBrowserRuntimeHooksForTest({
+      platform: 'darwin', appExists: () => true, processRunning: async () => true,
+      runAppleScript: async (script) => {
+        scripts.push(script);
+        return `7${nativeSeparator}10`;
+      },
+    });
+    await createMacOsBrowserOwnedPageForProduct('vivaldi', 'https://chatgpt.com/', [], '7', 1_000);
+    const creationScript = scripts.at(-1) ?? '';
+    expect(creationScript).toContain('set preferredWindowId to "7"');
+    expect(creationScript).toContain('if preferredWindowId is not "" and targetWindow is missing value then error');
+    expect(creationScript).not.toContain('else\n  set targetWindow to front window');
   });
 
   test('never compiles an Apple Events browser script for a browser that is not already running', async () => {
