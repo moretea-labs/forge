@@ -1251,6 +1251,8 @@ requireText('supervisor/native-browser-adapter.ts', 'targetPort: ComputerChatgpt
 requireText('src/runtime/root/workflow-supervisor-runtime.ts', 'const targetPort = extensionTargetPort;');
 forbid('src/runtime/root/workflow-supervisor-runtime.ts', /PreferredChatgptConversationTargetPort|MacOsChatgptConversationTargetPort|chatgpt-target-router/, 'Work-bound ChatGPT delivery uses one Chrome Extension target port, never a native fallback router');
 requireMissing('adapters/computer/chatgpt-target-router.ts');
+requireMissing('src/runtime/plugins/computer-chatgpt-macos-target.ts');
+requireMissing('src/runtime/plugins/browser-provider-registry.ts');
 requireText('src/runtime/plugins/browser-runtime.ts', 'options.providers.length !== 1');
 forbid('src/runtime/plugins/browser-runtime.ts', /excludedProviderIds|BrowserProviderUnavailableBeforeActionError/, 'Browser Runtime must not retry an action through another provider');
 forbid('supervisor/native-browser-adapter.ts', /MacOs|AppleEvents|browser-macos-bridge|\bwindowId\b|\btabId\b|window\.name/, 'Workflow Supervisor browser consumer must depend only on the provider-neutral Computer ChatGPT target port');
@@ -2361,13 +2363,12 @@ forbid('packages/plugin-runtime/browser/provider-registry.ts', /AssistantPluginE
 requireText('packages/protocols/browser/session.ts', 'export interface BrowserSessionState');
 for (const path of [
   'src/runtime/plugins/browser-runtime-contract.ts',
-  'src/runtime/plugins/browser-provider-registry.ts',
   'src/runtime/plugins/browser-session-types.ts',
 ]) {
   requireText(path, '@deprecated C0 compatibility shim');
 }
 for (const path of sourceFiles('src/runtime/plugins')) {
-  if (['src/runtime/plugins/browser-runtime-contract.ts', 'src/runtime/plugins/browser-provider-registry.ts', 'src/runtime/plugins/browser-session-types.ts'].includes(path)) continue;
+  if (['src/runtime/plugins/browser-runtime-contract.ts', 'src/runtime/plugins/browser-session-types.ts'].includes(path)) continue;
   forbid(path, /from\s+['"]\.\/browser-(?:runtime-contract|provider-registry|session-types)['"]/, 'active Browser runtime code must consume plugin-runtime/protocol Browser contracts, not retired local owners');
 }
 // Computer SurfaceTarget is the only durable interaction-target authority. Browser

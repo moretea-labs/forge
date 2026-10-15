@@ -17,7 +17,7 @@ import {
 } from '../../src/runtime/plugins/browser-adapter';
 import {
   type BrowserRuntimeProvider,
-} from '../../src/runtime/plugins/browser-provider-registry';
+} from '../../packages/plugin-runtime/browser/provider-registry';
 import type { AssistantPluginActionExecutionInput } from '../../src/runtime/plugins/types';
 import {
   invalidateMacOsBrowserPageHandle,
