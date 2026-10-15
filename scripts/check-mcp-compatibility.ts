@@ -40,7 +40,10 @@ const EXPECTED_STABLE_TOOL_NAME_FINGERPRINT = 'f22e635a213b45fa';
 // Every public object-schema tool carries shared transport metadata only through
 // the final tools/list materialization path. Tool schema revisions
 // intentionally invalidate stale Connector schema snapshots.
-const EXPECTED_STABLE_TOOL_SCHEMA_FINGERPRINT = '9bd588d157f66fdf';
+// 2026-10-15: rh_context gained model-authored search_terms in 5a0f8d839.
+// Removing only that property from the current frozen surface reproduces the
+// preceding 9bd588d157f66fdf fingerprint; the new surface is intentional.
+const EXPECTED_STABLE_TOOL_SCHEMA_FINGERPRINT = '793a6c1d07070dc2';
 
 const policy = runtimePolicy(process.cwd(), {
   profile: 'controller',
