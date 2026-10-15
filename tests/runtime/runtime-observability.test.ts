@@ -1165,6 +1165,7 @@ describe('runtime observability', () => {
       await fullClient.connect(fullClientTransport);
       try {
         const fullNames = (await fullClient.listTools()).tools.map((tool) => tool.name);
+        expect(fullNames).toEqual(defaultNames);
         expect(fullNames).toContain('repository_git_status');
         expect(fullNames).toContain('git_commit_paths');
         expect(fullNames).toContain('verify_edit_session');
@@ -1172,7 +1173,6 @@ describe('runtime observability', () => {
         expect(fullNames).not.toContain('repository_command_execute');
         expect(fullNames).not.toContain('process_exec');
         expect(fullNames).not.toContain('work_execute');
-        expect(fullNames).toEqual(defaultNames);
         const hostCall = await fullClient.callTool({ name: 'execute_command', arguments: { scope: 'host', command: ['echo', 'ungranted-host'] } });
         expect(hostCall.isError).toBe(true);
         // This isolated test Controller has no live ForgeInstance identity; a

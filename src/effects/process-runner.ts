@@ -1,7 +1,7 @@
 import { existsSync, statSync } from "fs";
 import { delimiter, extname, isAbsolute, join } from "path";
 import { spawnSync } from "child_process";
-import { redactSensitiveText } from "../runtime/evidence/sensitive-output";
+import { redactSensitiveText, redactSensitiveValue } from "../runtime/evidence/sensitive-output";
 
 export interface ProcessOutputRedaction {
   readonly pattern: RegExp;
@@ -53,6 +53,22 @@ export function redactProcessOutput(
   value: string,
   redactions: readonly ProcessOutputRedaction[] = [],
 ): string {
+  // CLI JSON is a structured protocol, not free-form log text. Regex redaction
+  // can replace an array/object value with a bare [REDACTED] marker, destroying
+  // the JSON and causing an otherwise successful CoreDevice action to fail.
+  // Redact parsed values first, then reserialize so secrets stay hidden and
+  // downstream machine-readable contracts remain valid.
+  if (redactions.length === 0) {
+    try {
+      const parsed = JSON.parse(value);
+      if (parsed !== null && typeof parsed === "object") {
+        const structured = redactSensitiveValue(parsed);
+        if (structured.changed) return JSON.stringify(structured.value);
+      }
+    } catch {
+      // Ordinary command output is text, not necessarily JSON.
+    }
+  }
   const customRedacted = redactions.reduce(
     (current, redaction) => current.replace(redaction.pattern, redaction.replacement),
     value,

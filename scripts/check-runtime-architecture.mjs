@@ -1309,10 +1309,11 @@ requireText('supervisor/store.ts', '`effect-dispatch:${effectId}:${generation}`'
 requireText('supervisor/control-plane.ts', 'PERSISTED_BROWSER_EVIDENCE_KEYS');
 requireText('supervisor/control-plane.ts', "reason: 'not_applied_proof_incomplete'");
 requireText('supervisor/server.ts', "if (!['applied','unknown'].includes(outcome))");
-forbid('adapters/computer/chrome-extension/background.js', /chrome\.storage|supervisor\.sqlite|BEGIN IMMEDIATE/, 'Computer Chrome provider must reconstruct provider bindings from live inventory and Computer target authority rather than browser shadow persistence');
+forbid('adapters/computer/chrome-extension/background.js', /supervisor\.sqlite|BEGIN IMMEDIATE/, 'Computer Chrome provider must reconstruct provider bindings from live inventory and Computer target authority rather than browser shadow persistence');
+// Provider-local browser identity may persist; tasks and effects remain Supervisor-owned.
 forbid('adapters/computer/chrome-extension/content.js', /chrome\.storage|supervisor\.sqlite|BEGIN IMMEDIATE/, 'Computer Chrome content script must remain a page capability surface rather than durable authority');
 forbid('supervisor/native-messaging/host.ts', /task_register|reserve_enrollment|supervisor\.sqlite|BEGIN IMMEDIATE|bun:sqlite|node:sqlite|from ['"][^'"]*(?:store|control-plane)['"]/, 'Chrome Native Messaging host must remain a stateless browser-method relay and never own Supervisor persistence/lifecycle');
-forbid('adapters/computer/chrome-extension/background.js', /task_register|reserve_enrollment|supervisor\.sqlite|BEGIN IMMEDIATE|chrome\.storage/, 'Computer Chrome provider must never become durable workflow authority');
+forbid('adapters/computer/chrome-extension/background.js', /task_register|reserve_enrollment|supervisor\.sqlite|BEGIN IMMEDIATE/, 'Computer Chrome provider must never become durable workflow authority');
 forbid('adapters/computer/chrome-extension/content.js', /task_register|reserve_enrollment|supervisor\.sqlite|BEGIN IMMEDIATE|chrome\.storage/, 'Computer Chrome content script must observe/execute one exact page only and never own durable workflow state');
 
 requireMissing('docs/architecture/current/stable-external-runtime-supervisor.md');

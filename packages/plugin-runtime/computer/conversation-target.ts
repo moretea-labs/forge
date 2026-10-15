@@ -117,7 +117,9 @@ export type ComputerChatgptExtensionCommandResult =
   | { kind: 'dispatch'; mutation: 'attempted'; confirmed?: boolean; reasoningVerified?: 'medium' | 'high' | 'xhigh'; observation?: ComputerChatgptConversationObservation }
   | { kind: 'marker_matches'; matches: Array<{ identity: ComputerChatgptConversationIdentity; providerBinding?: ComputerSurfaceProviderBinding; observation: ComputerChatgptConversationObservation }> }
   | { kind: 'closed' }
-  | { kind: 'failed'; code: string; retryable?: boolean; failoverSafe?: boolean; humanAction?: 'login' | 'grant_permission' };
+  | { kind: 'failed'; code: string; retryable?: boolean; failoverSafe?: boolean; humanAction?: 'login' | 'grant_permission';
+      /** Exact attachment retained after ensure hydration failed; never Send/readiness authority. */
+      providerBinding?: ComputerSurfaceProviderBinding };
 
 export interface ComputerChatgptExtensionHeartbeat {
   providerId: string;
