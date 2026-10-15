@@ -1,6 +1,6 @@
-import { createPrivateKey, sign } from 'crypto';
+import { createHash, createPrivateKey, sign } from 'crypto';
 import { accessSync, constants as fsConstants, existsSync, mkdirSync, promises as fsPromises, readFileSync, statSync, writeFileSync } from 'fs';
-import { dirname, join } from 'path';
+import { basename, dirname, extname, isAbsolute, join, relative, resolve } from 'path';
 import { CONTROLLER_SCOPE_REPO_ID, controllerSystemRoot } from '../../cli/repositories/controller-home';
 import type {
   AssistantPluginActionDescriptor,
@@ -459,6 +459,7 @@ function permissions(ready: boolean): AssistantPluginPermissionScope[] {
     permission('appstoreconnect.apps.read', 'read', 'Read App Store Connect apps, versions, localizations, builds, and TestFlight groups.', ready),
     permission('appstoreconnect.developer_resources.read', 'read', 'Read Apple Developer bundle IDs, capabilities, certificates, devices, and provisioning profiles.', ready),
     permission('appstoreconnect.metadata.write', 'write', 'Patch App Store Connect metadata after dry-run review and authorization.', ready),
+    permission('appstoreconnect.screenshots.write', 'write', 'Upload and order App Store screenshots in verified app/version/locale/device sets.', ready),
     permission('appstoreconnect.testflight.write', 'write', 'Assign builds to TestFlight groups and prepare beta review submissions.', ready),
     permission('appstoreconnect.release.write', 'write', 'Create App Store versions and gated review submissions.', ready),
     permission('appstoreconnect.xcodecloud.read', 'read', 'Read Xcode Cloud products and workflow configuration.', ready),
@@ -485,6 +486,12 @@ function capabilities(): AssistantPluginCapability[] {
       description: 'Read Certificates, Identifiers & Profiles resources to diagnose provisioning authorization without mutating Apple Developer state.',
       scopes: ['appstoreconnect.developer_resources.read'],
       actions: ['list_bundle_ids', 'list_bundle_id_capabilities', 'list_certificates', 'list_devices', 'list_profiles'],
+    },
+    {
+      capabilityId: 'app-store-screenshots', title: 'App Store Screenshots',
+      description: 'Read screenshot sets and safely upload or order localized screenshots through official Apple reservations and upload operations.',
+      scopes: ['appstoreconnect.apps.read', 'appstoreconnect.screenshots.write'],
+      actions: ['list_app_screenshot_sets', 'list_app_screenshots', 'upload_app_screenshot', 'reorder_app_screenshots'],
     },
     {
       capabilityId: 'app-store-metadata',
@@ -526,7 +533,7 @@ function actions(): AssistantPluginActionDescriptor[] {
   return [
     {
       actionId: 'configure', title: 'Configure App Store Connect plugin', description: 'Enable official App Store Connect API access and save non-secret defaults.', readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 30_000, cancellable: true, idempotent: true,
-      scopes: ['appstoreconnect.apps.read', 'appstoreconnect.developer_resources.read', 'appstoreconnect.metadata.write', 'appstoreconnect.testflight.write', 'appstoreconnect.release.write', 'appstoreconnect.xcodecloud.read', 'appstoreconnect.xcodecloud.write'], resourceClaims: [{ resource: 'repo-state', mode: 'write' }],
+      scopes: ['appstoreconnect.apps.read', 'appstoreconnect.developer_resources.read', 'appstoreconnect.metadata.write', 'appstoreconnect.screenshots.write', 'appstoreconnect.testflight.write', 'appstoreconnect.release.write', 'appstoreconnect.xcodecloud.read', 'appstoreconnect.xcodecloud.write'], resourceClaims: [{ resource: 'repo-state', mode: 'write' }],
       argumentsSchema: { type: 'object', properties: { enabled: { type: 'boolean' }, provider: { type: 'string', enum: ['mock', 'app-store-connect-api'] }, issuer_id: { type: 'string' }, key_id: { type: 'string' }, private_key_path: { type: 'string' }, clear_private_key_path: { type: 'boolean' }, clear_api_identity: { type: 'boolean' }, team_id: { type: 'string' }, clear_team_id: { type: 'boolean' }, default_app_id: { type: 'string' }, clear_default_app_id: { type: 'boolean' }, default_locale: { type: 'string' }, default_timeout_ms: { type: 'number' } }, additionalProperties: false },
     },
     { actionId: 'auth_status', title: 'Check App Store Connect auth', description: 'Report API readiness without returning secrets.', readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 10_000, cancellable: true, idempotent: true, scopes: ['appstoreconnect.apps.read'], resourceClaims: [], argumentsSchema: { type: 'object', properties: {}, additionalProperties: false } },
@@ -538,6 +545,10 @@ function actions(): AssistantPluginActionDescriptor[] {
     { actionId: 'list_profiles', title: 'List provisioning profiles', description: 'Read Apple Developer provisioning profiles, optionally filtered by profile name or type.', readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 45_000, cancellable: true, idempotent: true, scopes: ['appstoreconnect.developer_resources.read'], resourceClaims: readRemote, argumentsSchema: { type: 'object', properties: { name: { type: 'string' }, profile_type: { type: 'string' }, limit: { type: 'number' } }, additionalProperties: false } },
     { actionId: 'list_app_store_versions', title: 'List App Store versions', description: 'List App Store versions for one app.', readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 45_000, cancellable: true, idempotent: true, scopes: ['appstoreconnect.apps.read'], resourceClaims: readRemote, argumentsSchema: { type: 'object', properties: { app_id: { type: 'string' }, limit: { type: 'number' } }, additionalProperties: false } },
     { actionId: 'list_app_store_version_localizations', title: 'List App Store version localizations', description: 'List localizations for one App Store version.', readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 45_000, cancellable: true, idempotent: true, scopes: ['appstoreconnect.apps.read'], resourceClaims: readRemote, argumentsSchema: { type: 'object', properties: { version_id: { type: 'string' }, limit: { type: 'number' } }, required: ['version_id'], additionalProperties: false } },
+    { actionId: 'list_app_screenshot_sets', title: 'List localized screenshot sets', description: 'Read device screenshot sets for a verified exact App/version/locale.', readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 60_000, cancellable: true, idempotent: true, scopes: ['appstoreconnect.apps.read'], resourceClaims: readRemote, argumentsSchema: { type: 'object', properties: { app_id: { type: 'string' }, version_id: { type: 'string' }, localization_id: { type: 'string' }, locale: { type: 'string' } }, required: ['app_id', 'version_id', 'localization_id', 'locale'], additionalProperties: false } },
+    { actionId: 'list_app_screenshots', title: 'List localized screenshots', description: 'Read screenshot upload state and checksum for an exact device screenshot set.', readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 60_000, cancellable: true, idempotent: true, scopes: ['appstoreconnect.apps.read'], resourceClaims: readRemote, argumentsSchema: { type: 'object', properties: { app_id: { type: 'string' }, version_id: { type: 'string' }, localization_id: { type: 'string' }, locale: { type: 'string' }, display_type: { type: 'string' } }, required: ['app_id', 'version_id', 'localization_id', 'locale', 'display_type'], additionalProperties: false } },
+    { actionId: 'upload_app_screenshot', title: 'Upload localized App screenshot', description: 'Verify exact App/version/locale/device, reserve Apple upload, PUT signed byte ranges, commit MD5, return processing state. Reconcile by checksum before retry.', readOnly: false, risk: 'remote_write', confirmation: 'authorization', defaultTimeoutMs: 180_000, cancellable: true, idempotent: false, scopes: ['appstoreconnect.screenshots.write'], resourceClaims: writeRemote, argumentsSchema: { type: 'object', properties: { app_id: { type: 'string' }, version_id: { type: 'string' }, localization_id: { type: 'string' }, locale: { type: 'string' }, display_type: { type: 'string' }, file_path: { type: 'string' }, expected_sha256: { type: 'string' }, dry_run: { type: 'boolean' } }, required: ['app_id', 'version_id', 'localization_id', 'locale', 'display_type', 'file_path'], additionalProperties: false } },
+    { actionId: 'reorder_app_screenshots', title: 'Reorder localized screenshots', description: 'Replace exact screenshot ID order after reconciling same-set membership and processing state.', readOnly: false, risk: 'remote_write', confirmation: 'authorization', defaultTimeoutMs: 90_000, cancellable: true, idempotent: false, scopes: ['appstoreconnect.screenshots.write'], resourceClaims: writeRemote, argumentsSchema: { type: 'object', properties: { app_id: { type: 'string' }, version_id: { type: 'string' }, localization_id: { type: 'string' }, locale: { type: 'string' }, display_type: { type: 'string' }, screenshot_ids: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 10 }, dry_run: { type: 'boolean' } }, required: ['app_id', 'version_id', 'localization_id', 'locale', 'display_type', 'screenshot_ids'], additionalProperties: false } },
     { actionId: 'get_app_info', title: 'Get app info', description: 'Get App Info records and localizations for one app.', readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 45_000, cancellable: true, idempotent: true, scopes: ['appstoreconnect.apps.read'], resourceClaims: readRemote, argumentsSchema: { type: 'object', properties: { app_id: { type: 'string' } }, additionalProperties: false } },
     { actionId: 'list_app_infos', title: 'List app infos', description: 'List App Info records for one app.', readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 45_000, cancellable: true, idempotent: true, scopes: ['appstoreconnect.apps.read'], resourceClaims: readRemote, argumentsSchema: { type: 'object', properties: { app_id: { type: 'string' }, limit: { type: 'number' } }, additionalProperties: false } },
     { actionId: 'list_builds', title: 'List builds', description: 'List recent builds for one app with processing state fields.', readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 45_000, cancellable: true, idempotent: true, scopes: ['appstoreconnect.apps.read'], resourceClaims: readRemote, argumentsSchema: { type: 'object', properties: { app_id: { type: 'string' }, limit: { type: 'number' } }, additionalProperties: false } },
@@ -587,6 +598,159 @@ function actions(): AssistantPluginActionDescriptor[] {
     },
   ];
 }
+
+
+type AscScreenshotResource = {
+  id: string;
+  attributes?: {
+    locale?: string; screenshotDisplayType?: string; fileName?: string; fileSize?: number;
+    sourceFileChecksum?: string | null; assetDeliveryState?: { state?: string; errors?: unknown[] };
+    uploadOperations?: Array<{ method: string; url: string; offset: number; length: number;
+      requestHeaders?: Array<{ name: string; value: string }> }>;
+  };
+  relationships?: Record<string, { data?: { id: string } | null }>;
+};
+type AscScreenshotResponse = { data: AscScreenshotResource };
+type AscScreenshotList = { data: AscScreenshotResource[] };
+function safeScreenshot(resource: AscScreenshotResource): Record<string, unknown> {
+  return { id: resource.id, fileName: resource.attributes?.fileName, fileSize: resource.attributes?.fileSize,
+    sourceFileChecksum: resource.attributes?.sourceFileChecksum ?? null,
+    state: resource.attributes?.assetDeliveryState?.state,
+    processingErrorCount: resource.attributes?.assetDeliveryState?.errors?.length ?? 0 };
+}
+async function verifyScreenshotOwner(config: AppStoreConnectPluginConfig, args: Record<string, unknown>): Promise<string> {
+  const app = requiredArg(args, 'app_id'), versionId = requiredArg(args, 'version_id');
+  const locId = requiredArg(args, 'localization_id'), locale = requiredArg(args, 'locale');
+  // Use the exact App's version and that version's localization collections:
+  // JSON:API relationships may contain only links, not linkage data.
+  const versions = await apiRequest<AscScreenshotList>(config, {
+    path: '/v1/apps/' + encodeURIComponent(app) + '/appStoreVersions', query: { limit: 200 },
+  });
+  if (!versions.data?.some((v) => v.id === versionId))
+    throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'Screenshot App/version ownership mismatch.', { retryable: false });
+  const localizations = await apiRequest<AscScreenshotList>(config, {
+    path: '/v1/appStoreVersions/' + encodeURIComponent(versionId) + '/appStoreVersionLocalizations',
+    query: { 'filter[locale]': locale, limit: 200 },
+  });
+  if (!localizations.data?.some((loc) => loc.id === locId && loc.attributes?.locale === locale))
+    throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'Screenshot version/locale ownership mismatch.', { retryable: false });
+  return locId;
+}
+function screenshotType(args: Record<string, unknown>): string {
+  const display = requiredArg(args, 'display_type');
+  if (!/^APP_(IPHONE|IPAD|WATCH|APPLE_TV|DESKTOP|APPLE_VISION_PRO)[A-Z0-9_]*$/.test(display))
+    throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'Unsupported screenshot display type.', { retryable: false });
+  return display;
+}
+async function listScreenshotSets(config: AppStoreConnectPluginConfig, localizationId: string): Promise<AscScreenshotResource[]> {
+  const response = await apiRequest<AscScreenshotList>(config, {
+    path: '/v1/appStoreVersionLocalizations/' + encodeURIComponent(localizationId) + '/appScreenshotSets', query: { limit: 100 },
+  });
+  if (!Array.isArray(response.data)) throw new AssistantPluginError('PLUGIN_PROVIDER_ERROR', 'Malformed screenshot sets.', { retryable: false });
+  return response.data;
+}
+async function findScreenshotSet(config: AppStoreConnectPluginConfig, locId: string, display: string, create: boolean): Promise<string | undefined> {
+  const matches = (await listScreenshotSets(config, locId)).filter((s) => s.attributes?.screenshotDisplayType === display);
+  if (matches.length > 1) throw new AssistantPluginError('PLUGIN_PROVIDER_ERROR', 'Duplicate device screenshot sets.', { retryable: false });
+  if (matches.length) return matches[0].id;
+  if (!create) return undefined;
+  const created = await apiRequest<AscScreenshotResponse>(config, { path: '/v1/appScreenshotSets', method: 'POST',
+    body: { data: { type: 'appScreenshotSets', attributes: { screenshotDisplayType: display },
+      relationships: { appStoreVersionLocalization: { data: { type: 'appStoreVersionLocalizations', id: locId } } } } } });
+  if (!created.data?.id) throw new AssistantPluginError('PLUGIN_PROVIDER_ERROR', 'Apple did not return a screenshot set ID.', { retryable: false });
+  return created.data.id;
+}
+async function listScreenshots(config: AppStoreConnectPluginConfig, setId: string): Promise<AscScreenshotResource[]> {
+  const response = await apiRequest<AscScreenshotList>(config, {
+    path: '/v1/appScreenshotSets/' + encodeURIComponent(setId) + '/appScreenshots', query: { limit: 100 },
+  });
+  if (!Array.isArray(response.data)) throw new AssistantPluginError('PLUGIN_PROVIDER_ERROR', 'Malformed screenshot inventory.', { retryable: false });
+  return response.data;
+}
+async function screenshotFile(repoRoot: string, inputPath: string) {
+  const root = await fsPromises.realpath(repoRoot);
+  const path = await fsPromises.realpath(resolve(root, inputPath));
+  const rel = relative(root, path);
+  if (!rel || rel === '..' || rel.startsWith('../') || isAbsolute(rel))
+    throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'Screenshot file must be inside the authorized checkout.', { retryable: false });
+  const stat = await fsPromises.stat(path);
+  if (!stat.isFile() || stat.size === 0 || stat.size > 25 * 1024 * 1024)
+    throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'Screenshot must be a nonempty image under 25 MiB.', { retryable: false });
+  const bytes = await fsPromises.readFile(path), name = basename(path), ext = extname(name).toLowerCase();
+  const jpeg = (ext === '.jpg' || ext === '.jpeg') && bytes[0] === 0xff && bytes[1] === 0xd8;
+  const png = ext === '.png' && bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+  if (!jpeg && !png) throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'Screenshot image extension/signature mismatch.', { retryable: false });
+  return { bytes, name, relativePath: rel, sha256: createHash('sha256').update(bytes).digest('hex'), md5: createHash('md5').update(bytes).digest('hex') };
+}
+async function uploadScreenshotParts(parts: NonNullable<NonNullable<AscScreenshotResource['attributes']>['uploadOperations']>, bytes: Buffer): Promise<void> {
+  const ordered = [...parts].sort((a, b) => a.offset - b.offset);
+  let cursor = 0;
+  for (const part of ordered) {
+    if (!Number.isSafeInteger(part.offset) || !Number.isSafeInteger(part.length) || part.length <= 0 ||
+        part.offset !== cursor || part.length + cursor > bytes.length || part.method !== 'PUT')
+      throw new AssistantPluginError('PLUGIN_PROVIDER_ERROR', 'Invalid or non-contiguous Apple upload range.', { retryable: false });
+    const url = new URL(part.url);
+    if (url.protocol !== 'https:' || !(url.hostname === 'apple.com' || url.hostname.endsWith('.apple.com')) ||
+        url.username || url.password)
+      throw new AssistantPluginError('PLUGIN_PROVIDER_ERROR', 'Unexpected Apple upload host.', { retryable: false });
+    for (const h of part.requestHeaders ?? [])
+      if (!/^(content-type|content-md5|x-amz-[a-z0-9-]+|x-apple-[a-z0-9-]+)$/i.test(h.name))
+        throw new AssistantPluginError('PLUGIN_PROVIDER_ERROR', 'Unexpected Apple upload header.', { retryable: false });
+    cursor += part.length;
+  }
+  if (!ordered.length || cursor !== bytes.length)
+    throw new AssistantPluginError('PLUGIN_PROVIDER_ERROR', 'Apple upload operations do not cover the file.', { retryable: false });
+  for (const part of ordered) {
+    const controller = new AbortController(), timer = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
+    try {
+      const response = await fetch(part.url, { method: 'PUT',
+        headers: Object.fromEntries((part.requestHeaders ?? []).map((h) => [h.name, h.value])),
+        body: new Uint8Array(bytes.subarray(part.offset, part.offset + part.length)), redirect: 'manual', signal: controller.signal });
+      if (!response.ok) throw new Error('UPLOAD_HTTP_ERROR');
+    } catch {
+      throw new AssistantPluginError('PLUGIN_PROVIDER_ERROR', 'Screenshot part outcome is unknown. Reconcile reservation before retry.', {
+        retryable: false, details: { offset: part.offset, length: part.length } });
+    } finally { clearTimeout(timer); }
+  }
+}
+async function uploadOfficialScreenshot(config: AppStoreConnectPluginConfig, args: Record<string, unknown>, repoRoot: string): Promise<Record<string, unknown>> {
+  const file = await screenshotFile(repoRoot, requiredArg(args, 'file_path'));
+  if (args.expected_sha256 && (stringValue(args.expected_sha256)?.toLowerCase() !== file.sha256))
+    throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'Screenshot SHA-256 differs from expected.', { retryable: false });
+  const display = screenshotType(args), loc = await verifyScreenshotOwner(config, args);
+  const existingSet = await findScreenshotSet(config, loc, display, false);
+  const existing = existingSet ? await listScreenshots(config, existingSet) : [];
+  const sameName = existing.filter((r) => r.attributes?.fileName === file.name);
+  const complete = sameName.find((r) => r.attributes?.sourceFileChecksum?.toLowerCase() === file.md5 &&
+    r.attributes?.assetDeliveryState?.state !== 'FAILED');
+  if (complete) return { applied: false, alreadyPresent: true, setId: existingSet, screenshot: safeScreenshot(complete) };
+  if (sameName.length) throw new AssistantPluginError('PLUGIN_PROVIDER_ERROR', 'Same filename has different or pending contents; reconcile before retry.', {
+    retryable: false, details: { screenshotIds: sameName.map((r) => r.id), states: sameName.map((r) => r.attributes?.assetDeliveryState?.state) } });
+  if (existing.length >= 10) throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'Device set has ten screenshots already.', { retryable: false });
+  if (args.dry_run === true) return { dryRun: true, appId: args.app_id, versionId: args.version_id, locale: args.locale,
+    displayType: display, setId: existingSet ?? null, wouldCreateSet: !existingSet,
+    file: { relativePath: file.relativePath, name: file.name, size: file.bytes.length, sha256: file.sha256 } };
+  const setId = existingSet ?? await findScreenshotSet(config, loc, display, true);
+  if (!setId) throw new AssistantPluginError('PLUGIN_PROVIDER_ERROR', 'Could not resolve screenshot set.', { retryable: false });
+  const reservation = await apiRequest<AscScreenshotResponse>(config, { path: '/v1/appScreenshots', method: 'POST',
+    body: { data: { type: 'appScreenshots', attributes: { fileName: file.name, fileSize: file.bytes.length },
+      relationships: { appScreenshotSet: { data: { type: 'appScreenshotSets', id: setId } } } } } });
+  const r = reservation.data;
+  if (!r?.id || !r.attributes?.uploadOperations)
+    throw new AssistantPluginError('PLUGIN_PROVIDER_ERROR', 'Apple reservation is incomplete; reconcile before retry.', { retryable: false });
+  await uploadScreenshotParts(r.attributes.uploadOperations, file.bytes);
+  await apiRequest<AscScreenshotResponse>(config, { path: '/v1/appScreenshots/' + encodeURIComponent(r.id),
+    method: 'PATCH', body: { data: { type: 'appScreenshots', id: r.id,
+      attributes: { uploaded: true, sourceFileChecksum: file.md5 } } } });
+  const confirmed = await apiRequest<AscScreenshotResponse>(config, {
+    path: '/v1/appScreenshots/' + encodeURIComponent(r.id),
+  });
+  if (confirmed.data?.id !== r.id || confirmed.data?.attributes?.sourceFileChecksum?.toLowerCase() !== file.md5)
+    throw new AssistantPluginError('PLUGIN_PROVIDER_ERROR', 'Apple screenshot checksum is not confirmed by readback. Inspect before retry.', { retryable: false });
+  return { applied: true, setId, sha256: file.sha256, screenshot: safeScreenshot(confirmed.data),
+    note: 'Apple MD5 readback confirmed. Check assetDeliveryState until processing completes before declaring Store approval.' };
+}
+
 
 function appId(args: Record<string, unknown>, config: AppStoreConnectPluginConfig): string {
   const value = stringValue(args.app_id) ?? config.defaultAppId;
@@ -701,6 +865,10 @@ function mockResponse(actionId: string, args: Record<string, unknown>, config: A
       readinessMode: 'mock_provider_ready',
     };
   }
+  if (actionId === 'list_app_screenshot_sets') return { data: [{ id: stableMockId('screenshot_set', args), displayType: stringValue(args.display_type) ?? 'APP_IPHONE_61' }], provider: 'mock' };
+  if (actionId === 'list_app_screenshots') return { setId: stableMockId('screenshot_set', args), data: [], provider: 'mock' };
+  if (actionId === 'upload_app_screenshot' || actionId === 'reorder_app_screenshots')
+    throw new AssistantPluginError('PLUGIN_ACTION_NOT_SUPPORTED', 'Mock mode cannot perform screenshot uploads or reordering.', { retryable: false });
   if (actionId === 'list_apps') return { data: [{ type: 'apps', id, attributes: { name: 'Mock App', bundleId: stringValue(args.bundle_id) ?? 'com.example.app', sku: 'MOCK' } }], meta: { provider: 'mock' } };
   if (actionId === 'list_app_store_versions') return { data: [{ type: 'appStoreVersions', id: stableMockId('version', { id }), attributes: { versionString: '1.0.0', appStoreState: 'PREPARE_FOR_SUBMISSION', platform: 'IOS' } }] };
   if (actionId === 'list_app_store_version_localizations') {
@@ -917,6 +1085,40 @@ export async function executeAppStoreConnectPluginAction(input: AssistantPluginA
         path: `/v1/appStoreVersions/${encodeURIComponent(requiredArg(input.args, 'version_id'))}/appStoreVersionLocalizations`,
         query: { limit: limit(input.args.limit) },
       });
+    case 'list_app_screenshot_sets': {
+      const locId = await verifyScreenshotOwner(config, input.args);
+      const sets = await listScreenshotSets(config, locId);
+      return { data: sets.map((s) => ({ id: s.id, displayType: s.attributes?.screenshotDisplayType })) };
+    }
+    case 'list_app_screenshots': {
+      const loc = await verifyScreenshotOwner(config, input.args);
+      const display = screenshotType(input.args);
+      const setId = await findScreenshotSet(config, loc, display, false);
+      return { setId: setId ?? null, data: setId ? (await listScreenshots(config, setId)).map(safeScreenshot) : [] };
+    }
+    case 'upload_app_screenshot':
+      return uploadOfficialScreenshot(config, input.args, input.repoRoot);
+    case 'reorder_app_screenshots': {
+      const loc = await verifyScreenshotOwner(config, input.args);
+      const setId = await findScreenshotSet(config, loc, screenshotType(input.args), false);
+      if (!setId) throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'Cannot reorder a missing screenshot set.', { retryable: false });
+      const original = await listScreenshots(config, setId);
+      const next = input.args.screenshot_ids;
+      if (!Array.isArray(next) || next.some((id) => typeof id !== 'string') ||
+          next.length !== original.length || new Set(next).size !== original.length ||
+          original.some((entry) => !next.includes(entry.id) || !entry.attributes?.sourceFileChecksum ||
+            entry.attributes?.assetDeliveryState?.state === 'FAILED'))
+        throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'Reorder requires exactly all committed IDs in the same screenshot set.', { retryable: false });
+      if (next.every((id, i) => id === original[i].id))
+        return { applied: false, alreadyOrdered: true, setId, screenshotIds: next };
+      if (input.args.dry_run === true) return { dryRun: true, setId, screenshotIds: next };
+      await apiRequest(config, { path: '/v1/appScreenshotSets/' + encodeURIComponent(setId) + '/relationships/appScreenshots',
+        method: 'PATCH', body: { data: next.map((id) => ({ type: 'appScreenshots', id })) } });
+      const checked = await listScreenshots(config, setId);
+      if (!next.every((id, i) => id === checked[i]?.id))
+        throw new AssistantPluginError('PLUGIN_PROVIDER_ERROR', 'Apple screenshot order does not match the requested order after write.', { retryable: false });
+      return { applied: true, setId, screenshotIds: next };
+    }
     case 'get_app_info':
     case 'list_app_infos':
       return apiRequest(config, { path: `/v1/apps/${encodeURIComponent(appId(input.args, config))}/appInfos`, query: { include: 'appInfoLocalizations', limit: limit(input.args.limit) } });
