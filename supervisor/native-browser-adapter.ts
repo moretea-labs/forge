@@ -254,6 +254,17 @@ export function authorizedDraftReplacementPrompt(
   if (auth.taskId !== taskId || auth.effectId !== effectId || auth.projectUrl !== projectUrl
     || auth.fingerprint !== observation.fingerprint || auth.consent !== 'user-authorized-exact-backup'
     || typeof auth.nonce !== 'string' || !/^[a-f0-9]{32}$/.test(auth.nonce)) return;
+  // The authorization is a single-use physical mutation capability, not a
+  // reusable password. Atomic exclusive creation remains durable across
+  // Runtime/extension restarts and concurrent preflights. A failed prepare
+  // consumes this token; the operator must explicitly authorize another one.
+  const consumption = join(controllerHome, 'supervisor', 'draft-backups',
+    `consumed-${effectId}-${auth.nonce}.json`);
+  try {
+    writeFileSync(consumption, JSON.stringify({ schemaVersion: 1, taskId, effectId,
+      projectUrl, fingerprint: observation.fingerprint, nonce: auth.nonce }) + '\n',
+    { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+  } catch { return; }
   return `<<<FORGE_DRAFT_REPLACE_V1:${observation.fingerprint}:${auth.nonce}>>>\n${prompt}`;
 }
 

@@ -1,5 +1,6 @@
 import { expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
+import { createHash, webcrypto } from 'node:crypto';
 import { runInNewContext } from 'node:vm';
 import { join } from 'node:path';
 
@@ -35,11 +36,14 @@ function fixture(options: {
   acknowledgeSlider?: boolean;
   navigateAfterOptionClick?: string;
   forgeAppLabel?: string;
+  projectUrl?: string;
+  initialDraft?: string;
 } = {}) {
   const state = { controlClicks: 0, optionClicks: 0, sendClicks: 0, controlLabel: options.startingLabel ?? 'GPT-6 High', menuOpen: false };
-  const location = { href: 'https://chatgpt.com/c/12345678-1234-1234-1234-123456789abc' };
+  const location = { href: options.projectUrl ?? 'https://chatgpt.com/c/12345678-1234-1234-1234-123456789abc' };
   let onMessage: ((message: Record<string, unknown>, sender: unknown, respond: (value: unknown) => void) => unknown) | undefined;
   const textarea = new FakeTextArea();
+  textarea.value = options.initialDraft ?? '';
   let pickerOpen = false;
   const picker = Object.assign(new FakeHTMLElement(), {
     getAttribute: () => pickerOpen ? 'open' : null,
@@ -135,6 +139,8 @@ function fixture(options: {
     window: { getSelection: () => ({ removeAllRanges() {}, addRange() {} }) },
     location,
     URL,
+    crypto: webcrypto,
+    TextEncoder,
     HTMLTextAreaElement: FakeTextArea,
     HTMLElement: FakeHTMLElement,
     HTMLInputElement: class {},
@@ -161,16 +167,16 @@ function fixture(options: {
     if (!onMessage) throw new Error('missing content-script message listener');
     onMessage({ type: 'forge-computer-chatgpt-capabilities' }, {}, (value) => resolve(value as Record<string, unknown>));
   });
-  const prepare = async (reasoning?: string, expectedConversationId?: string, prompt = 'source delivery') => {
+  const prepare = async (reasoning?: string, expectedConversationId?: string, prompt = 'source delivery', expectedProjectId?: string) => {
     return await new Promise<Record<string, unknown>>((resolve) => {
       if (!onMessage) throw new Error('missing content-script message listener');
-      onMessage({ type: 'forge-computer-chatgpt-prepare', prompt, reasoning, expectedConversationId }, {}, (value) => resolve(value as Record<string, unknown>));
+      onMessage({ type: 'forge-computer-chatgpt-prepare', prompt, reasoning, expectedConversationId, expectedProjectId }, {}, (value) => resolve(value as Record<string, unknown>));
     });
   };
-  const dispatch = async (reasoning?: string, expectedConversationId?: string, prompt = 'source delivery') => {
+  const dispatch = async (reasoning?: string, expectedConversationId?: string, prompt = 'source delivery', expectedProjectId?: string) => {
     return await new Promise<Record<string, unknown>>((resolve) => {
       if (!onMessage) throw new Error('missing content-script message listener');
-      onMessage({ type: 'forge-computer-chatgpt-dispatch', prompt, reasoning, expectedConversationId }, {}, (value) => resolve(value as Record<string, unknown>));
+      onMessage({ type: 'forge-computer-chatgpt-dispatch', prompt, reasoning, expectedConversationId, expectedProjectId }, {}, (value) => resolve(value as Record<string, unknown>));
     });
   };
   return { dispatch, prepare, capabilities, state, textarea, location };
@@ -301,4 +307,43 @@ test('ordinary manual transport without an explicit reasoning requirement is unc
   const f = fixture({ controlPresent: false });
   expect(await f.dispatch()).toMatchObject({ dispatched: true });
   expect(f.state.sendClicks).toBe(1);
+});
+
+
+test('Chrome extension stages only the exact authorized backed-up project draft and sends canonical prompt once', async () => {
+  const projectUrl = 'https://chatgpt.com/g/g-p-abc123-forge/project';
+  const priorDraft = '@forge unrelated\nRead-only user request';
+  const effect = 'fx_draft_guard_123456789';
+  const prompt = `<<<FORGE_WORKFLOW_EFFECT_V1:${effect}>>>
+Run accepted independent audit`;
+  const fingerprint = createHash('sha256').update('preflight-composer-v1:\0' + priorDraft).digest('hex').slice(0,24);
+  const guarded = `<<<FORGE_DRAFT_REPLACE_V1:${fingerprint}:abcdef0123456789abcdef0123456789>>>
+${prompt}`;
+  const f = fixture({controlPresent:false,projectUrl,initialDraft:priorDraft});
+  expect(await f.prepare(undefined,undefined,prompt,'g-p-abc123')).toMatchObject({prepared:false,reason:'composer_not_empty'});
+  expect(f.textarea.value).toBe(priorDraft);
+  expect(f.state.sendClicks).toBe(0);
+  expect(await f.dispatch(undefined,undefined,guarded,'g-p-abc123')).toMatchObject({dispatched:false,reason:'composer_replacement_mode_invalid'});
+  expect(f.textarea.value).toBe(priorDraft);
+  expect(await f.prepare(undefined,undefined,guarded,'g-p-abc123')).toMatchObject({prepared:true});
+  expect(f.textarea.value).toBe(prompt);
+  expect(f.state.sendClicks).toBe(0);
+  expect(await f.dispatch(undefined,undefined,prompt,'g-p-abc123')).toMatchObject({dispatched:true,confirmed:true});
+  expect(f.state.sendClicks).toBe(1);
+});
+
+test('Chrome extension refuses stale digest and wrong project without touching unrelated draft', async () => {
+  const priorDraft = '@forge unrelated content';
+  const effect = 'fx_draft_guard_123456789';
+  const prompt = `<<<FORGE_WORKFLOW_EFFECT_V1:${effect}>>>
+Source`;
+  const projectUrl='https://chatgpt.com/g/g-p-abc123-forge/project';
+  const digest=createHash('sha256').update('preflight-composer-v1:\0' + priorDraft).digest('hex').slice(0,24);
+  const guard=`<<<FORGE_DRAFT_REPLACE_V1:${digest}:abcdef0123456789abcdef0123456789>>>
+${prompt}`;
+  const f=fixture({controlPresent:false,projectUrl,initialDraft:priorDraft+' changed'});
+  expect(await f.prepare(undefined,undefined,guard,'g-p-abc123')).toMatchObject({prepared:false,reason:'composer_not_empty'});
+  expect(await f.prepare(undefined,undefined,guard,'g-p-other')).toMatchObject({prepared:false,reason:'target_identity_changed'});
+  expect(f.textarea.value).toBe(priorDraft+' changed');
+  expect(f.state.sendClicks).toBe(0);
 });

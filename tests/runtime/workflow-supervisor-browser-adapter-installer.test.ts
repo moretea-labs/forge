@@ -99,6 +99,12 @@ describe('Exact operator-authorized blocked-composer backup', () => {
     writeFileSync(auth,JSON.stringify({...consent,fingerprint:digest,nonce:'abcdef0123456789abcdef0123456789'}));
     const prepared=authorizedDraftReplacementPrompt(controllerHome,taskId,effectId,projectUrl,snapshot,prompt);
     expect(prepared).toBe(`<<<FORGE_DRAFT_REPLACE_V1:${digest}:abcdef0123456789abcdef0123456789>>>\n${prompt}`);
+    // The original draft may be restored after preparation. The same nonce
+    // must still fail closed even with an identical matching fingerprint.
+    expect(authorizedDraftReplacementPrompt(controllerHome,taskId,effectId,projectUrl,snapshot,prompt)).toBeUndefined();
+    const consumed=join(base,`consumed-${effectId}-abcdef0123456789abcdef0123456789.json`);
+    expect(JSON.parse(readFileSync(consumed,'utf8')).fingerprint).toBe(digest);
+    expect(existsSync(consumed)).toBe(true);
     expect(JSON.parse(readFileSync(file!,'utf8')).composerText).toBe(snapshot.composerText);
     expect(authorizedDraftReplacementPrompt(controllerHome,taskId,effectId,projectUrl,
       {...snapshot,composerText:'different'},prompt)).toBeUndefined();
