@@ -2726,7 +2726,11 @@ async function openNativeAttachedContext(
           inventory,
           savedTab.windowId,
         );
-        if (selection.candidate) {
+        // A read/action bound to an existing session may adopt only the
+        // uniquely verified exact URL after its old tab disappears. Merely
+        // sharing an origin does not prove the user's authenticated profile.
+        if (selection.candidate
+          && (args.__forge_require_existing_resource !== true || selection.match === 'exact_url')) {
           const recovered = await reattachMacOsBrowserOwnedPage(savedProduct, { windowId: selection.candidate.windowId, tabId: selection.candidate.tabId }, timeout);
           page = recovered.page as unknown as PageLike;
           discovered = { attachment: recovered.attachment, attempts: recovered.attachment.attempts };
@@ -2765,6 +2769,19 @@ async function openNativeAttachedContext(
       : { sessionId: target.sessionId, status: 'no_saved_tab', reason: 'Created one plugin-owned tab while preserving the user active tab.' };
   }
 
+  // Session-bound reads and mutations must never turn a dead tab into a new
+  // tab or silently select another profile. The explicit open-page route is
+  // separate and retains its documented create/recover semantics.
+  if (args.__forge_require_existing_resource === true && target.existingSession && !page) {
+    throw new AssistantPluginError(
+      'PLUGIN_BROWSER_SESSION_STATE_LOST',
+      'The saved native browser tab is unavailable and no exact existing tab can be verified; the session was not moved to another profile or recreated.',
+      { retryable: false, details: {
+        sessionId: target.sessionId, browserProduct: savedProduct,
+        savedWindowId: savedTab?.windowId, savedTabId: savedTab?.tabId,
+      } },
+    );
+  }
   let createdThisCallRef: MacOsBrowserTabRef | undefined;
   let preferredNativeWindowId: string | undefined;
   if (!discovered?.attachment) {

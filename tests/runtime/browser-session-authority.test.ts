@@ -654,7 +654,7 @@ describe('browser session compatibility on Computer target authority', () => {
     expect(inventoryCalls).toBe(3);
   });
 
-  test('replaces a missing plugin-owned native tab after exact identity becomes stale', async () => {
+  test('session-bound reads refuse to create a replacement for a missing native tab', async () => {
     const { controllerHome, repoA } = fixture();
     mkdirSync(join(repoA, '.forge', 'plugins'), { recursive: true });
     writeFileSync(join(repoA, '.forge', 'plugins', 'browser.json'), JSON.stringify({
@@ -744,17 +744,18 @@ describe('browser session compatibility on Computer target authority', () => {
 
     ownedExists = false;
     invalidateMacOsBrowserPageHandles();
-    const observed = await executeBrowserPluginAction({
+    await expect(executeBrowserPluginAction({
       ...baseInput,
       requestId: 'stale-owned-read',
       actionId: 'get_text',
       args: { session_id: sessionId, selector: 'body' },
-    });
+    })).rejects.toThrow('PLUGIN_BROWSER_SESSION_STATE_LOST');
 
-    expect(observed.text).toBe('Recovered Body');
-    expect(createCalls).toBe(2);
-    expect(findBrowserSession(controllerHome, 'repo-a', repoA, sessionId)?.browser?.tab).toMatchObject({ ownership: 'plugin_owned', tabId: '10' });
-    expect(computerBackedSession(controllerHome, 'repo-a', repoA, sessionId)?.browser?.tab).toMatchObject({ ownership: 'plugin_owned', tabId: '10' });
+    // A read-only action does not create a replacement in another Chrome
+    // profile or mutate the user's open tab when the original tab vanished.
+    expect(createCalls).toBe(1);
+    expect(findBrowserSession(controllerHome, 'repo-a', repoA, sessionId)?.browser?.tab).toMatchObject({ ownership: 'plugin_owned', tabId: '9' });
+    expect(computerBackedSession(controllerHome, 'repo-a', repoA, sessionId)?.browser?.tab).toMatchObject({ ownership: 'plugin_owned', tabId: '9' });
   });
 
   test('native cold rebind reports and persists the live same-origin URL after external drift', async () => {
