@@ -402,6 +402,13 @@ describe('Computer durable InteractionTarget authority', () => {
         port.heartbeat({ providerId: 'browser.chrome-extension', providerInstanceId: 'current',
           observedAt: new Date().toISOString(), conversations: [] });
         const pending = port.openBootstrap('https://chatgpt.com/g/g-p-test/project', key);
+        if (!shouldRecover) {
+          expect(await pending).toMatchObject({ state: 'unavailable', failure: {
+            code: 'COMPUTER_CHATGPT_EXTENSION_NOT_CONNECTED', failoverSafe: false } });
+          expect(port.claim('current')).toBeUndefined();
+          expect(targetAuthority.getSurface(home, saved.targetId)?.providerBinding).toMatchObject(binding);
+          continue;
+        }
         const first = port.claim('current');
         expect(first?.kind).toBe('ensure');
         if (first?.kind !== 'ensure') throw new Error('Missing initial exact-tab query');
@@ -412,13 +419,6 @@ describe('Computer durable InteractionTarget authority', () => {
         for (let attempt = 0; attempt < 30 && !second && shouldRecover; attempt += 1) {
           second = port.claim('current');
           if (!second) await Bun.sleep(1);
-        }
-        if (!shouldRecover) {
-          expect(await pending).toMatchObject({ state: 'unavailable', failure: {
-            code: 'COMPUTER_CHATGPT_BOOTSTRAP_PINNED_TAB_MISSING', failoverSafe: false } });
-          expect(port.claim('current')).toBeUndefined();
-          expect(targetAuthority.getSurface(home, saved.targetId)?.providerBinding).toMatchObject(binding);
-          continue;
         }
         expect(second?.kind).toBe('ensure');
         if (second?.kind !== 'ensure') throw new Error('Missing same-provider fresh-tab attempt');
@@ -769,7 +769,7 @@ describe('Computer durable InteractionTarget authority', () => {
           browserProduct: 'chrome', windowId: 'stale-window', tabId: 'stale-tab', observedAt: '2026-10-09T05:01:00.000Z' },
       });
       expect(await extension.ensureExact(identity)).toMatchObject({
-        state: 'unavailable', failure: { code: 'COMPUTER_CHATGPT_EXTENSION_EXACT_TARGET_AMBIGUOUS', failoverSafe: false },
+        state: 'unavailable', failure: { code: 'COMPUTER_CHATGPT_EXTENSION_NOT_CONNECTED', failoverSafe: false },
       });
       expect(extension.claim('profile-one')).toBeUndefined();
       expect(extension.claim('profile-two')).toBeUndefined();
@@ -878,7 +878,7 @@ describe('Computer durable InteractionTarget authority', () => {
           code: 'COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE',
           retryable: true,
           phase: 'pre_mutation',
-          failoverSafe: true,
+          failoverSafe: false,
         },
       });
     } finally {
@@ -933,7 +933,7 @@ describe('Computer durable InteractionTarget authority', () => {
           code: 'COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE',
           retryable: true,
           phase: 'pre_mutation',
-          failoverSafe: true,
+          failoverSafe: false,
         },
       });
     } finally {

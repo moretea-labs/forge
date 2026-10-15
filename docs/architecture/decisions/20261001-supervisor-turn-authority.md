@@ -253,3 +253,52 @@ scenarios. Whole-Runtime activation follows canonical gates; actual productive
 successive turns remain separate live acceptance evidence. Original exhausted
 records are preserved and may only receive the existing explicit operator
 recovery after the exact provider turn is proven settled or failed.
+
+## Chrome attachment continuity (20261015)
+
+Computer owns browser/profile selection and tab attachments. The extension keeps
+one random provider instance id in `chrome.storage.local`, scoped by Chrome to
+that extension/profile. Worker suspension, extension reload and browser restart
+therefore preserve profile identity. The id is removed on extension uninstall;
+there is no task/effect state, credential, URL, or conversation content in this
+cache. The existing Computer Controller authority remains the only durable
+attachment writer. The extension owns only this constant-size transport identity,
+requires the standard storage permission and grants no new host access. See the
+[Chrome storage contract](https://developer.chrome.com/docs/extensions/reference/api/storage#storage_areas).
+
+A missing pinned profile stays unavailable even when another profile is the sole
+live provider. Within the same profile, Chrome tab id takes precedence over
+window id so moving a tab between windows preserves attachment. An existing pin
+at another conversation URL is identity drift. Only a positive Chrome tab-missing
+result permits recovery through complete exact-conversation inventory: reuse the
+unique existing conversation tab, or reopen the persisted conversation URL when
+absent. This preserves the existing disposable-resource restoration rule without
+creating a new ChatGPT conversation. Ambiguous matches and unreadable inventory
+remain unresolved; they do not authorize profile replacement or another tab.
+Bootstrap recovery still requires the same live provider's positive missing-tab
+proof and the existing Computer binding CAS.
+
+Tab creation and conversation hydration are separate outcomes. An ensure failure
+may return its exact physical attachment alongside the error. The existing
+Computer surface lease stores that attachment before reporting failure; page
+readiness and Send remain unavailable. A subsequent worker uses that binding
+instead of creating another Project tab. Claimed commands without a result stay
+unknown and cannot authorize provider fallback or another tab creation. The
+optional failure binding is backward compatible; only updated extensions supply
+it. No database schema, lifecycle, process, retry budget, external send, or second
+writer is added. Existing leases, redacted receipts, task terminalization,
+tombstone retention, backpressure and unknown-effect fences remain. Complete
+Runtime release/rollback includes the adapter contract and matching extension.
+
+Incident evidence: read-only Runtime calls on 2026-10-15 observed 188 historical
+Supervisor tasks and zero active tasks; recent retrieved acceptance tasks were
+terminal. That inventory is not evidence of current autonomous sends. Computer
+reported 227 saved records, 221 unverified and six dead native records; metadata
+is not proof of a live tab. Existing discovery stays observation-only and never
+enrolls historical conversations. A source reproduction combined unavailable
+content scripts with worker restart: the old code changed instance id, returned
+no binding, and created two tabs for one bootstrap key. The candidate retained
+one instance and returned the failed page's binding, keeping one tab and sending
+nothing. A separate Controller probe verified failed-binding persistence, broker
+restart reuse and no commands to a foreign profile. These are bounded adapter
+facts; live release acceptance remains separate.

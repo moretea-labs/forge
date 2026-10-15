@@ -78,7 +78,8 @@ test('unhydrated bootstrap remains bound to its one created tab without creating
     __testEnsureHydrated: (command: unknown, instance: string) => Promise<Record<string, unknown>>;
   }).__testEnsureHydrated({ kind: 'ensure',
     identity: { namespace: 'chatgpt.bootstrap', bootstrapKey: 'supervisor:forge', projectUrl: url } }, 'real-chrome');
-  expect(result).toMatchObject({ kind: 'failed', code: 'COMPUTER_CHATGPT_TAB_NOT_READY', failoverSafe: false });
+  expect(result).toMatchObject({ kind: 'failed', code: 'COMPUTER_CHATGPT_TAB_NOT_READY', failoverSafe: false,
+    providerBinding: { providerSessionId: 'real-chrome', windowId: '8', tabId: '508' } });
   expect(created).toBe(1);
   expect(snapshots).toBeGreaterThanOrEqual(8);
 });
@@ -134,7 +135,8 @@ test('restarted worker prepares and dispatches only the Controller-pinned bootst
   let oldContentScript = false;
   const tabs = [
     { id: 41, windowId: 8, url: tabUrl },
-    { id: 42, windowId: 8, url: tabUrl },
+    // Moving the pinned tab to another window preserves its physical tab id.
+    { id: 42, windowId: 9, url: tabUrl },
   ];
   const sandbox = {
     ForgeComputerChatgptCore: {

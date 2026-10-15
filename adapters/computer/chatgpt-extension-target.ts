@@ -183,8 +183,11 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
 
   private selectProviderInstance(preferredInstanceId?: string): { instanceId?: string; ambiguous: boolean } {
     const fresh = this.freshProviders();
-    if (preferredInstanceId && fresh.some(([instanceId]) => instanceId === preferredInstanceId)) {
-      return { instanceId: preferredInstanceId, ambiguous: false };
+    if (preferredInstanceId) {
+      // A disconnected profile is unavailable, not permission to switch to
+      // the only other signed-in (or signed-out) Chrome instance.
+      return { ...(fresh.some(([instanceId]) => instanceId === preferredInstanceId)
+        ? { instanceId: preferredInstanceId } : {}), ambiguous: false };
     }
     // Foreground tab is not a durable browser-principal binding. If more
     // than one Extension instance is connected, require a known pin instead
@@ -313,18 +316,21 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
   }
 
   async ensureExact(identity: ComputerChatgptConversationIdentity): Promise<ComputerChatgptTargetResult> {
+    const preferredInstanceId = this.preferredProviderInstance(identity);
     const fresh = this.freshProviders();
-    if (fresh.length === 0) return failure('COMPUTER_CHATGPT_EXTENSION_NOT_CONNECTED', { failoverSafe: true });
-    const exact = fresh.flatMap(([instanceId, state]) => state.heartbeat.conversations
+    if (fresh.length === 0 || (preferredInstanceId && !fresh.some(([instanceId]) => instanceId === preferredInstanceId))) {
+      return failure('COMPUTER_CHATGPT_EXTENSION_NOT_CONNECTED', { failoverSafe: !preferredInstanceId });
+    }
+    const exact = fresh.filter(([instanceId]) => !preferredInstanceId || instanceId === preferredInstanceId)
+      .flatMap(([instanceId, state]) => state.heartbeat.conversations
       .filter((entry) => entry.conversationId === identity.conversationId)
       .map((entry) => ({ instanceId, entry })));
     // Multiple tabs can show one conversation. Prefer the existing exact
     // Computer binding over heartbeat focus or an arbitrary matching tab.
     const binding = this.authority.findSurfaceByStableIdentity(this.controllerHome, stableIdentity(identity))?.providerBinding;
     let candidates = exact;
-    if (exact.length > 1 && binding?.providerId === PROVIDER_ID && binding.windowId && binding.tabId) {
-      const bound = exact.filter(({ entry }) => entry.providerBinding?.windowId === binding.windowId
-        && entry.providerBinding?.tabId === binding.tabId
+    if (binding?.providerId === PROVIDER_ID && binding.windowId && binding.tabId) {
+      const bound = exact.filter(({ entry }) => entry.providerBinding?.tabId === binding.tabId
         && (!binding.browserProduct || entry.providerBinding?.browserProduct === binding.browserProduct));
       candidates = bound.filter(({ instanceId }) => instanceId === binding.providerSessionId);
     }
@@ -338,7 +344,7 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
       try {
         const observation = await target.observe({ includeUserHistory: false, includePageText: false });
         if (!conversationContentAvailable(observation)) {
-          return failure('COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE', { failoverSafe: true });
+          return failure('COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE', { failoverSafe: false });
         }
         return { state: 'ready', target, observation };
       } catch (error) {
@@ -346,15 +352,15 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
           error instanceof Error && error.message.trim()
             ? error.message.trim()
             : 'COMPUTER_CHATGPT_EXTENSION_OBSERVATION_UNAVAILABLE',
-          { failoverSafe: true },
+          { failoverSafe: false },
         );
       }
     }
-    const selected = this.selectProviderInstance(this.preferredProviderInstance(identity));
+    const selected = this.selectProviderInstance(preferredInstanceId);
     if (!selected.instanceId) {
       return failure(
         selected.ambiguous ? 'COMPUTER_CHATGPT_EXTENSION_PROVIDER_INSTANCE_AMBIGUOUS' : 'COMPUTER_CHATGPT_EXTENSION_NOT_CONNECTED',
-        { failoverSafe: !selected.ambiguous },
+        { failoverSafe: !selected.ambiguous && !preferredInstanceId },
       );
     }
     const previous = this.authority.findSurfaceByStableIdentity(this.controllerHome, stableIdentity(identity));
@@ -363,17 +369,22 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
     });
     if (!response.result) return failure(
       response.claimed ? 'COMPUTER_CHATGPT_EXTENSION_TARGET_OPEN_OUTCOME_UNKNOWN' : 'COMPUTER_CHATGPT_EXTENSION_NOT_CONNECTED',
-      { failoverSafe: !response.claimed },
+      { failoverSafe: !response.claimed && !preferredInstanceId },
     );
     if (response.result.kind === 'ensured') {
-      if (response.result.observation && !conversationContentAvailable(response.result.observation)) {
-        return failure('COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE', { failoverSafe: true });
-      }
       const record = await this.bindAsync(identity, response.result.providerBinding, selected.instanceId);
+      if (response.result.observation && !conversationContentAvailable(response.result.observation)) {
+        return failure('COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE', { failoverSafe: false });
+      }
       return { state: 'ready', target: this.target(identity, record, selected.instanceId), ...(response.result.observation ? { observation: response.result.observation } : {}) };
     }
-    if (response.result.kind === 'failed') return failure(response.result.code, { retryable: response.result.retryable, failoverSafe: response.result.failoverSafe !== false, humanAction: response.result.humanAction });
-    return failure('COMPUTER_CHATGPT_EXTENSION_ENSURE_INVALID', { failoverSafe: true });
+    if (response.result.kind === 'failed') {
+      if (response.result.providerBinding) await this.bindAsync(identity, response.result.providerBinding, selected.instanceId);
+      return failure(response.result.code, { retryable: response.result.retryable,
+        failoverSafe: !response.result.providerBinding && !preferredInstanceId && response.result.failoverSafe === true,
+        humanAction: response.result.humanAction });
+    }
+    return failure('COMPUTER_CHATGPT_EXTENSION_ENSURE_INVALID', { failoverSafe: false });
   }
 
   async openBootstrap(projectUrl: string, bootstrapKey: string, recoverStalePin = true): Promise<ComputerChatgptTargetResult> {
@@ -408,6 +419,7 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
       return { state: 'ready', target: this.target(identity, record, selected.instanceId), ...(response.result.observation ? { observation: response.result.observation } : {}) };
     }
     if (response.result.kind === 'failed') {
+      if (response.result.providerBinding) await this.bindAsync(identity, response.result.providerBinding, selected.instanceId);
       // Only openBootstrap's pre-dispatch caller may rebuild a tab attachment.
       // The SAME live Chrome provider has proved the Controller-pinned physical
       // tab absent before creating a replacement. Preserve the durable target
@@ -439,7 +451,7 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
         return await this.openBootstrap(projectUrl, bootstrapKey, false);
       }
       return failure(response.result.code, {
-        retryable: response.result.retryable, failoverSafe: response.result.failoverSafe === true && !binding,
+        retryable: response.result.retryable, failoverSafe: response.result.failoverSafe === true && !binding && !response.result.providerBinding,
         humanAction: response.result.humanAction,
       });
     }
@@ -470,8 +482,7 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
       const first = matches[0]!;
       const existing = this.authority.findSurfaceByStableIdentity(this.controllerHome, stableIdentity(first.match.identity))?.providerBinding;
       const existingMatch = existing?.providerId === PROVIDER_ID
-        ? matches.find(({ instanceId, match }) => match.providerBinding?.windowId === existing.windowId
-          && match.providerBinding?.tabId === existing.tabId
+        ? matches.find(({ instanceId, match }) => match.providerBinding?.tabId === existing.tabId
           && match.providerBinding?.browserProduct === existing.browserProduct
           && instanceId === existing.providerSessionId)
         : undefined;
@@ -483,8 +494,7 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
         : undefined;
       const pinned = bootstrap?.providerBinding;
       const bootstrapMatch = pinned?.providerId === PROVIDER_ID
-        ? matches.find(({ instanceId, match }) => match.providerBinding?.windowId === pinned.windowId
-          && match.providerBinding?.tabId === pinned.tabId
+        ? matches.find(({ instanceId, match }) => match.providerBinding?.tabId === pinned.tabId
           && match.providerBinding?.browserProduct === pinned.browserProduct
           && instanceId === pinned.providerSessionId)
         : undefined;

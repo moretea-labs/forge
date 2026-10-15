@@ -8,7 +8,20 @@ const DISCOVERY_MIN_INTERVAL_MS = 2_000;
 const RPC_TIMEOUT_MS = 30_000;
 const bootstrapTabs = new Map();
 const randomId = () => globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-const PROVIDER_INSTANCE_ID = randomId();
+let providerInstancePromise;
+function providerInstanceId() {
+  // Profile-local storage survives worker and browser restarts. It identifies
+  // this Chrome profile, never a task or an outbound effect.
+  // A fresh worker UUID would invalidate every Controller-pinned tab.
+  providerInstancePromise ??= (async () => {
+    const saved = await chrome.storage.local.get('forgeComputerProviderInstanceId');
+    if (typeof saved.forgeComputerProviderInstanceId === 'string' && saved.forgeComputerProviderInstanceId) return saved.forgeComputerProviderInstanceId;
+    const instanceId = randomId();
+    await chrome.storage.local.set({ forgeComputerProviderInstanceId: instanceId });
+    return instanceId;
+  })().catch((error) => { providerInstancePromise = undefined; throw error; });
+  return providerInstancePromise;
+}
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 function browserProduct() {
   const ua = String(globalThis.navigator?.userAgent ?? '');
@@ -114,9 +127,8 @@ async function waitForContent(tabId, requireBootstrapUi = false) {
 function matchingTabs(tabs, identity, pinnedBinding) {
   if (identity?.namespace === 'chatgpt.conversation') {
     const exact = tabs.filter((tab) => core.parseConversation(tab.url ?? '')?.conversationId === identity.conversationId);
-    if (exact.length > 1 && pinnedBinding?.providerId === PROVIDER_ID && pinnedBinding.tabId && pinnedBinding.windowId) {
-      const pinned = exact.filter((tab) => String(tab.id) === String(pinnedBinding.tabId)
-        && String(tab.windowId) === String(pinnedBinding.windowId));
+    if (pinnedBinding?.providerId === PROVIDER_ID && pinnedBinding.tabId && pinnedBinding.windowId) {
+      const pinned = exact.filter((tab) => String(tab.id) === String(pinnedBinding.tabId));
       if (pinned.length === 1) return pinned;
     }
     // Duplicate exact URLs without a verifiable pin must never select an
@@ -131,8 +143,7 @@ function matchingTabs(tabs, identity, pinnedBinding) {
     const belongsToProject = (tab) => String(tab.url ?? '') === identity.projectUrl
       || Boolean(projectId && core.projectId(tab.url ?? '') === projectId);
     if (pinnedBinding?.providerId === PROVIDER_ID && pinnedBinding.tabId && pinnedBinding.windowId) {
-      const exact = tabs.filter((tab) => String(tab.id) === String(pinnedBinding.tabId)
-        && String(tab.windowId) === String(pinnedBinding.windowId));
+      const exact = tabs.filter((tab) => String(tab.id) === String(pinnedBinding.tabId));
       if (exact.length && !belongsToProject(exact[0])) throw new Error('COMPUTER_CHATGPT_BOOTSTRAP_PINNED_TAB_IDENTITY_CHANGED');
       return exact;
     }
@@ -143,6 +154,22 @@ function matchingTabs(tabs, identity, pinnedBinding) {
 }
 async function resolveTarget(identity, createIfMissing, pinnedBinding) {
   const tabs = await chatgptTabs();
+  if (identity?.namespace === 'chatgpt.conversation' && pinnedBinding?.providerId === PROVIDER_ID && pinnedBinding.tabId) {
+    // Window moves preserve Chrome's profile-local tab id. A vanished id may
+    // be recovered by exact conversation, but an existing tab at another URL
+    // is identity drift and must never be silently replaced.
+    let pinned;
+    try { pinned = await tabGet(Number(pinnedBinding.tabId)); }
+    catch (error) {
+      if (!/No tab with id/i.test(String(error?.message ?? error))) throw error;
+    }
+    if (pinned) {
+      if (core.parseConversation(pinned.url ?? '')?.conversationId !== identity.conversationId) {
+        throw new Error('COMPUTER_CHATGPT_EXTENSION_PINNED_TAB_IDENTITY_CHANGED');
+      }
+      return { tab: pinned, created: false };
+    }
+  }
   const matches = matchingTabs(tabs, identity, pinnedBinding);
   if (matches.length > 1) throw new Error('COMPUTER_CHATGPT_EXTENSION_EXACT_TARGET_AMBIGUOUS');
   if (matches.length === 1) {
@@ -176,10 +203,13 @@ async function executeEnsure(command, instanceId) {
       kind: 'failed',
       code: String(error?.message ?? error).split(':')[0] || 'COMPUTER_CHATGPT_EXTENSION_ENSURE_FAILED',
       retryable: true,
+      // A hydration failure must retain the created tab's physical attachment.
+      // This receipt grants neither a ready page nor permission to Send.
+      ...(target ? { providerBinding: binding(target.tab, instanceId) } : {}),
       // Bootstrap tabs can exist before this command even when no new tab was
       // created now. A worker failure cannot prove that creating a different
       // native tab would preserve the one-task/one-tab binding.
-      failoverSafe: command.identity.namespace !== 'chatgpt.bootstrap' && target?.created === false,
+      failoverSafe: false,
     };
   }
 }
@@ -324,7 +354,7 @@ let providerTickInFlight;
 async function providerTick() {
   if (providerTickInFlight) return await providerTickInFlight;
   providerTickInFlight = (async () => {
-    const instanceId = PROVIDER_INSTANCE_ID;
+    const instanceId = await providerInstanceId();
     await publishHeartbeat(instanceId);
     for (let index = 0; index < 8; index += 1) {
       const claim = await nativeRpc('computer_extension_claim', { provider_instance_id: instanceId });
