@@ -9,7 +9,6 @@ import { AssistantPluginError } from '../errors';
 const TOOLCHAIN_VERSION = '10.2.1';
 const WORKER_IDLE_MS = 15 * 60_000;
 const WORKER_STARTUP_MS = 12_000;
-const MUTATION_READY_BUDGET_MS = 2_500;
 const REQUEST_TIMEOUT_MS = 12_000;
 const RSD_ENDPOINT_CACHE_TTL_MS = 30_000;
 const RSD_ENDPOINT_PERSISTED_TTL_MS = 10 * 60_000;
@@ -1089,23 +1088,11 @@ async function waitForMutationWorker(
   }
   const current = workers.get(input.deviceIdentifier);
   const warmup = warmups.get(input.deviceIdentifier);
-  const readiness = current
-    ? current.ready.then(() => undefined).catch(() => undefined)
-    : warmup;
-  if (readiness) {
-    let timer: NodeJS.Timeout | undefined;
-    try {
-      await Promise.race([
-        readiness,
-        new Promise<void>((resolve) => {
-          timer = setTimeout(resolve, MUTATION_READY_BUDGET_MS);
-          timer.unref?.();
-        }),
-      ]);
-    } finally {
-      if (timer) clearTimeout(timer);
-    }
-  }
+  // Plugin actions use separate managed processes. A detached prewarm cannot
+  // survive its owning action, so the first real mutation must finish its own
+  // endpoint discovery and worker startup rather than time out and retry cold.
+  const readiness = warmup ?? current?.ready.then(() => undefined).catch(() => undefined);
+  if (readiness) await readiness;
   const waitMs = Math.round((performance.now() - startedAt) * 100) / 100;
   const worker = workers.get(input.deviceIdentifier);
   if (!worker || worker.readyState !== 'ready') {
@@ -1115,15 +1102,13 @@ async function waitForMutationWorker(
     }
     throw new AssistantPluginError(
       'IOS_HID_INPUT_NOT_READY',
-      `RemoteXPC HID is still warming after the ${MUTATION_READY_BUDGET_MS}ms mutation readiness budget. No input was sent; retry the same action after prewarm completes.`,
+      'RemoteXPC HID worker did not reach ready state in this action. No input was sent.',
       {
         retryable: true,
         details: {
           deviceIdentifier: input.deviceIdentifier,
           mutationDispatched: false,
           workerReadyWaitMs: waitMs,
-          readinessBudgetMs: MUTATION_READY_BUDGET_MS,
-          prewarmContinues: warmups.has(input.deviceIdentifier) || worker?.readyState === 'starting',
         },
       },
     );
