@@ -4,7 +4,7 @@ Status: **PARTIAL — not a known-good or release acceptance.** This record desc
 
 ## Identities and scope
 
-- Mac source checkout: `/Users/greyson/DevProjects/forge`, source HEAD at this measurement: `765804d762544a87e3d750287a423fad64d86ddb`.
+- Mac source checkout: `<local-forge-checkout>` (local path omitted from the public ledger), source HEAD at this measurement: `765804d762544a87e3d750287a423fad64d86ddb`.
 - Active immutable Runtime remains `1792022338979-696cc9d5f3aea62e550309206b73f7357c545d70`, authority revision 868, using source `696cc9d5f`. **Unreleased** source commits: `5a0f8d839` (model-selected lexical hints), `9a7e26f63` (retire obsolete editor rule), `765804d76` (exported-definition ranking and snippet fairness).
 - Preserve four pre-existing dirty files outside code search. No Runtime cutover, restart, promotion, external delivery, or CodeGraph process termination was performed.
 - Existing independent acceptance task: `supervisor:9089c98263b23e1bd329813b`. Enrollment remains blocked by unattributed `composer_not_empty` draft; do not treat the bootstrap URL as a delivered independent conversation.
@@ -35,10 +35,10 @@ Used existing `scripts/benchmark-mcp-transport.ts` via `http://127.0.0.1:8765/mc
 | `rh_status` | 20.62 / 23.25 ms | 17.01 / 20.84 ms | 2.98 / 5.02 ms |
 | `rh_context`, exact known source path | 199.78 / 215.20 ms | 196.25 / 207.57 ms | 3.40 / 4.14 ms |
 
-Reproduction examples (read-only, using the local Runtime's existing auth):
+Reproduction examples (read-only, using the local Runtime's existing auth). Replace `REGISTERED_REPO_ID` with the local repository ID from `repository_list` before running; raw local IDs and device paths are intentionally not published:
 ```sh
-bun scripts/benchmark-mcp-transport.ts --endpoint http://127.0.0.1:8765/mcp --local-service-auth --tool rh_status --iterations 20 --warmup 3 --repo-id repo_123b7cf58b6b17b5cbe46a56
-bun scripts/benchmark-mcp-transport.ts --endpoint http://127.0.0.1:8765/mcp --local-service-auth --tool rh_context --iterations 20 --warmup 3 --repo-id repo_123b7cf58b6b17b5cbe46a56 --arguments '{"operation":"search","query":"runProcess","known_paths":["src/effects/process-runner.ts"],"max_files":3,"max_snippets":4,"structural_context":"off","include_learning_recall":false}'
+bun scripts/benchmark-mcp-transport.ts --endpoint http://127.0.0.1:8765/mcp --local-service-auth --tool rh_status --iterations 20 --warmup 3 --repo-id REGISTERED_REPO_ID
+bun scripts/benchmark-mcp-transport.ts --endpoint http://127.0.0.1:8765/mcp --local-service-auth --tool rh_context --iterations 20 --warmup 3 --repo-id REGISTERED_REPO_ID --arguments '{"operation":"search","query":"runProcess","known_paths":["src/effects/process-runner.ts"],"max_files":3,"max_snippets":4,"structural_context":"off","include_learning_recall":false}'
 ```
 
 ### ChatGPT-connected tool invocation (separate path; not controlled A/B)

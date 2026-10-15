@@ -2465,7 +2465,7 @@ describe('work_validate persisted semantic identity', () => {
     expect(continued?.structuredContent).toMatchObject({
       reused: true,
       adoptedSuccessor: { previousHead: work.expectedHead, currentHead: successor },
-      work: { workId: work.workId, baseCommit: work.baseCommit, deliveryBaseCommit: successor, expectedHead: successor },
+      work: { workId: work.workId, baseCommit: work.baseCommit, deliveryBaseCommit: work.deliveryBaseCommit, expectedHead: successor },
     });
     expect(readFileSync(join(fx.repoRoot, 'scratch.txt'), 'utf8')).toBe('unrelated dirty source\n');
   });
