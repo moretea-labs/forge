@@ -1454,6 +1454,7 @@ requireText('src/runtime/root/service.ts', 'SuccessfulExit');
 requireText('src/runtime/root/service.ts', 'ThrottleInterval');
 requireText('src/runtime/root/service-runner.ts', 'activeRuntimeReleaseManifest');
 requireText('src/runtime/standalone-recovery/core.ts', 'restartPrimaryRuntime');
+forbid('src/runtime/standalone-recovery/core.ts', /\bopenSync\s*\([^,]+,\s*['"]wx['"]/, 'Recovery Core must not create a second exclusive mutation lock writer');
 requireText('src/runtime/standalone-recovery/core.ts', 'recoverPrimaryRuntime');
 requireText('src/runtime/standalone-recovery/core.ts', "action: 'restart_primary_runtime'");
 requireText('src/runtime/standalone-recovery/core.ts', 'restartAttempts >= maximumRestartAttempts');
@@ -1918,6 +1919,9 @@ const B7_ALLOWED_KERNEL_LEGACY_EDGES = new Set([
 ]);
 requireExactShrinkingDebt('Kernel -> legacy src dependency debt', b7KernelLegacyEdges, B7_ALLOWED_KERNEL_LEGACY_EDGES);
 const b7ProductionEdges = new Set(dependencyEdges(b7ProductionGraph));
+if (!b7ProductionEdges.has('src/runtime/standalone-recovery/core.ts -> src/runtime/standalone-recovery/operation-lock.ts')) {
+  failures.push('Recovery Core must consume the single shared operation-lock authority');
+}
 for (const requiredEdge of [
   'packages/kernel/work/domain/types.ts -> packages/kernel/identity/api/index.ts',
   'packages/kernel/scheduler/domain/schedule.ts -> packages/kernel/identity/api/index.ts',
