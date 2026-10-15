@@ -5,6 +5,14 @@ Date: 2026-10-11
 Owner: ChatGPT (semantic decisions) / Forge Controller (mechanical durability)
 Scope: Workflow Supervisor → Computer exact-conversation delivery → ChatGPT Forge App receipt
 
+## 2026-10-15 后续收敛候选（下文为历史设计与审查记录）
+
+本文件关于 `PreferredChatgptConversationTargetPort`、`MacOsChatgptConversationTargetPort` 和扩展/native 兼容接管的描述，仅是当时的事实与阶段设计，**不再代表收敛候选的当前路径**。后续源码候选规定：Work-bound ChatGPT conversation 只由 Chrome Extension 提供 Computer exact-target observe/prepare/dispatch，Supervisor 独占 effect/重放 Authority；Apple Events 保留为通用显式 macOS Computer/Browser 操作，不再作为 ChatGPT 发送候选。
+
+同批删除 `adapters/computer/chatgpt-target-router.ts`、`src/runtime/plugins/computer-chatgpt-macos-target.ts` 和 `src/runtime/plugins/browser-provider-registry.ts`。通用 Browser 操作在执行前只绑定一个 Provider；attach 使用单一 CDP endpoint 或明确 native browser product，不再自动跨 CDP/native/managed 试错。对应源提交 `fa65b2d1`、`c4842a4c`、`208fd065`，详见 `docs/architecture/CURRENT.md`；架构 gate 已禁止恢复旧 writer。
+
+静态检查与五组聚焦测试已通过；8 组 Browser 测试在改动前后均为 79 通过 / 10 失败，没有新增失败。候选尚未合入被其他 Work 占用的 main，未发布和执行 Runtime 重连后真实三轮验收。**不得将此源码收敛记为自动推进产品验收 DONE。**
+
 ## 2026-10-14 用户收敛指令（优先于下文历史阶段记录）
 
 交付目标只有一个：无需人工发送“继续”，自动完成多轮真实源码修改、检查与提交，并在 Runtime 重启/重连后从同一 Task 继续；未知发送结果不得重发，不得破坏已有工作。目前未验收。静态审查与修复由当前工作负责，实际运行、发布和验收由另一工作负责；静态通过不能代替其证据。
