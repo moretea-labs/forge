@@ -1079,6 +1079,17 @@ export function iosPhysicalDeviceActions(): AssistantPluginActionDescriptor[] {
       },
     },
     {
+      actionId: 'physical_device_observed_swipe', title: 'Swipe a freshly observed physical iPhone screen',
+      description: 'One-shot screenshot-bound swipe for system-screen navigation before the target app is foreground. Reuses and consumes the same fresh observation as observed_tap; app form gestures continue to require confirmed target foreground.',
+      readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 30_000, cancellable: true, idempotent: false,
+      scopes: ['ios.device'], resourceClaims: mutationClaims,
+      argumentsSchema: {
+        type: 'object',
+        properties: { ...interactionProperty, observation_id: { type: 'string' }, x: { type: 'number', minimum: 0 }, y: { type: 'number', minimum: 0 }, to_x: { type: 'number', minimum: 0 }, to_y: { type: 'number', minimum: 0 }, duration_ms: { type: 'number', minimum: 80, maximum: 3000 } },
+        required: ['interaction_id', 'observation_id', 'x', 'y', 'to_x', 'to_y'], additionalProperties: false,
+      },
+    },
+    {
       actionId: 'physical_device_batch', title: 'Run fast physical iPhone input batch',
       description: 'Preferred fast path for a visually confirmed target app: perform up to 20 tap, swipe, text, or bounded-wait steps under one fresh screenshot foreground fence, one unlock/display readiness pass, and one plugin round-trip. Pass observation_id to atomically bind and consume the latest visually verified screenshot without a separate confirm_foreground round-trip; omitting it preserves the explicit confirm_foreground compatibility path. Stops on the first failed step and never replays a partially-mutated batch.',
       readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 60_000, cancellable: true, idempotent: false,
@@ -1410,7 +1421,8 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
         deviceUnmodified: true,
       };
     }
-    case 'physical_device_observed_tap': {
+    case 'physical_device_observed_tap':
+    case 'physical_device_observed_swipe': {
       const lockStartedAt = performance.now();
       const unlock = await requireSessionUnlocked(input, state);
       recordTiming(timingStages, 'lockState', lockStartedAt, unlock.cached);
@@ -1425,16 +1437,25 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
       const display = geometry.display;
       const x = requireFiniteNumber(input.args.x, 'x');
       const y = requireFiniteNumber(input.args.y, 'y');
+      const swipe = input.actionId === 'physical_device_observed_swipe';
+      const x2 = swipe ? requireFiniteNumber(input.args.to_x, 'to_x') : undefined;
+      const y2 = swipe ? requireFiniteNumber(input.args.to_y, 'to_y') : undefined;
+      const durationMs = swipe && typeof input.args.duration_ms === 'number'
+        ? Math.trunc(input.args.duration_ms) : 250;
       consumePhysicalScreenObservation(input, state);
       const hidStartedAt = performance.now();
       const result = await executeRemoteXpcHidInput({
         controllerHome: input.controllerHome, deviceIdentifier: state.device.identifier, udid: state.device.udid,
-        width: display.width, height: display.height, action: 'tap', x, y,
+        width: display.width, height: display.height, action: swipe ? 'swipe' : 'tap',
+        x, y, ...(swipe ? { x2, y2, durationMs } : {}),
       });
       timingStages.hidWorkerReady = { ms: result.timings.workerStartupMs + result.timings.workerReadyMs, cached: result.reusedWorker };
       timingStages.hidWriteAck = { ms: result.timings.hidMs ?? result.timings.requestMs, cached: false };
       timingStages.hidRequestTotal = { ms: elapsedMs(hidStartedAt), cached: result.reusedWorker };
-      appendEvent(input, record.interactionId, 'observed_tap', { requestId: input.requestId, observationId: observation.observationId, observationAgeMs: ageMs, x, y, reusedWorker: result.reusedWorker });
+      appendEvent(input, record.interactionId, swipe ? 'observed_swipe' : 'observed_tap', {
+        requestId: input.requestId, observationId: observation.observationId, observationAgeMs: ageMs,
+        x, y, ...(swipe ? { x2, y2, durationMs } : {}), reusedWorker: result.reusedWorker,
+      });
       return finishTimedResult(actionStartedAt, timingStages, { provider: 'coredevice', inputBackend: 'remote-xpc-hid', interaction: record, display, result: bounded(result), observationConsumed: true });
     }
     case 'physical_device_batch': {
