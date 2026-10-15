@@ -4,7 +4,7 @@
  * Does not require a live ChatGPT connector session.
  */
 import { getMcpPolicy } from '../src/cli/mcp/policy';
-import { controllerExpectedToolNames } from '../src/cli/mcp/legacy-tool-service';
+import { controllerExpectedToolNames } from '../adapters/mcp/tool-mapping/legacy-tool-service';
 import {
   ADVANCED_CONTROLLER_TOOL_NAMES,
   DEFAULT_CONTROLLER_TOOL_NAMES,

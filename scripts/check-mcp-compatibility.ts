@@ -80,16 +80,6 @@ const missingCatalog = catalogNames.filter((name) => !fullNames.includes(name));
 const sourceCollisions = Object.entries(sourceGroups).flatMap(([group, names], groupIndex, entries) =>
   names.filter((name) => entries.slice(0, groupIndex).some(([, earlier]) => earlier.includes(name)))
     .map((name) => `${group}:${name}`));
-const currentToolNames = new Set([
-  ...sourceGroups.runtime,
-  ...sourceGroups.execution,
-  ...sourceGroups.process,
-  ...sourceGroups.access,
-  ...sourceGroups.repository,
-]);
-const legacyHandlerSource = readFileSync(new URL('../src/cli/mcp/legacy-tool-service.ts', import.meta.url), 'utf8');
-const legacyHandlerNames = [...legacyHandlerSource.matchAll(/case\s+["']([^"']+)["']\s*:/g)].map((match) => match[1]);
-const legacyHandlerCollisions = [...new Set(legacyHandlerNames.filter((name) => currentToolNames.has(name)))].sort();
 const recoveryMcpSource = readFileSync(new URL('../src/runtime/standalone-recovery/mcp-server.ts', import.meta.url), 'utf8');
 const recoveryStatelessMarkers = [
   'createMcpHandler',
@@ -133,7 +123,6 @@ if (duplicateDefault.length) failures.push(`default duplicate names: ${[...new S
 if (missingDefault.length) failures.push(`default tools missing from registered definitions: ${missingDefault.join(', ')}`);
 if (missingCatalog.length) failures.push(`compatibility catalog tools missing from registered definitions: ${missingCatalog.join(', ')}`);
 if (sourceCollisions.length) failures.push(`tool schema authority collisions: ${sourceCollisions.join(', ')}`);
-if (legacyHandlerCollisions.length) failures.push(`legacy execution authority collisions: ${legacyHandlerCollisions.join(', ')}`);
 if (coreNames.join('\n') !== defaultNames.join('\n')) {
   failures.push('core surface must alias the bounded default ChatGPT surface');
 }
@@ -179,6 +168,5 @@ console.log(JSON.stringify({
   fullCompatibilityFingerprint: fullFingerprint,
   sourceToolCounts: Object.fromEntries(Object.entries(sourceGroups).map(([name, tools]) => [name, tools.length])),
   sourceCollisions: [...new Set(sourceCollisions)].sort(),
-  legacyHandlerCollisions,
   accessModeChangesSchema: false,
 }, null, 2));

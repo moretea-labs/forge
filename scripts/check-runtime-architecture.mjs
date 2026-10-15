@@ -2169,7 +2169,6 @@ for (const path of [
 for (const path of [
   'src/cli/mcp/access-tools.ts',
   'src/cli/mcp/legacy-context.ts',
-  'src/cli/mcp/legacy-tool-service.ts',
   'src/cli/mcp/multi-repository.ts',
   'src/cli/mcp/repository-tools.ts',
   'src/cli/mcp/server.ts',
