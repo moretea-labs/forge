@@ -406,6 +406,13 @@ export function buildControllerContextPack(
     for (const hit of search.results) {
       if (!coveredByGlob(hit.path, searchIncludeGlobs) || excludeGlobs.some((glob) => globMatches(glob, hit.path))) continue;
       if (candidates.size >= maxFiles * 3 && !candidates.has(hit.path) && !requiredSearchQueries.includes(hit.query)) continue;
+      if (requiredSearchQueries.includes(hit.query)) {
+        const source = hit.text.trimStart();
+        const declared = /^(?:(?:export|declare|default|async)\s+)*(?:function|class|interface|type|const|let|enum)\s+([\w$]+)/.exec(source)?.[1];
+        if (declared?.toLowerCase() === hit.query.toLowerCase()) {
+          addReason(candidates, hit.path, `${source.startsWith('export ') ? 'exported' : 'local'}-definition:${hit.query}`, hit.line);
+        }
+      }
       if (terms.includes(hit.query)) {
         addReason(candidates, hit.path, `search:${hit.query}`, hit.line);
       } else {
@@ -421,6 +428,9 @@ export function buildControllerContextPack(
 
   timingsMs.lexical = Math.round((performance.now() - lexicalStartedAt) * 100) / 100;
   const primarySearchReason = terms.length > 0 ? `search:${terms[0]}` : undefined;
+  const definitionPriority = (reasons: readonly string[]): number =>
+    reasons.some((reason) => reason.startsWith('exported-definition:')) ? 2
+      : reasons.some((reason) => reason.startsWith('local-definition:')) ? 1 : 0;
   const rankedCandidates = Array.from(candidates.entries())
     .map(([path, entry]) => ({ path, reasons: Array.from(entry.reasons), lines: Array.from(entry.lines) }))
     .sort((left, right) => {
@@ -431,6 +441,8 @@ export function buildControllerContextPack(
         ? 2
         : right.reasons.some((reason) => reason.startsWith("explicit-known-directory:")) ? 1 : 0;
       if (leftExplicit !== rightExplicit) return rightExplicit - leftExplicit;
+      const definitionDelta = definitionPriority(right.reasons) - definitionPriority(left.reasons);
+      if (definitionDelta !== 0) return definitionDelta;
       const leftPrimary = primarySearchReason && left.reasons.includes(primarySearchReason) ? 1 : 0;
       const rightPrimary = primarySearchReason && right.reasons.includes(primarySearchReason) ? 1 : 0;
       if (leftPrimary !== rightPrimary) return rightPrimary - leftPrimary;
@@ -503,9 +515,12 @@ export function buildControllerContextPack(
     const waveOnePerFileCap = multiWaveEligible
       ? Math.max(1, Math.ceil(maxSnippets / Math.max(1, initialCandidateLimit + timingsMs.expansionBudgetMax)))
       : remainingSnippets;
+    // A caller-increased max_snippets budget must not let the first broad
+    // candidate consume every snippet and erase other selected source files.
+    const inferredFairShare = Math.max(1, Math.ceil(remainingSnippets / (selected.length - selectedIndex)));
     const fileSnippetBudget = exactKnown
       ? Math.max(1, remainingSnippets - exactKnownAfter)
-      : Math.min(remainingSnippets, waveOnePerFileCap);
+      : Math.min(remainingSnippets, waveOnePerFileCap, inferredFairShare);
     let snippets: ControllerContextPackSnippet[] = [];
     try {
       snippets = materializeSource({

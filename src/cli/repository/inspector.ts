@@ -722,16 +722,33 @@ export function searchRepositoryMany(
       opts.caseSensitive ? hit.text : hit.text.toLowerCase(),
       opts.caseSensitive ? needle : needle.toLowerCase(),
     )));
-  const declarationHit = (path: string): boolean => requiredQueries.some((needle) =>
-    (hitsByPath.get(path) ?? []).some((hit) => {
-      const declared = /^(?:(?:export|declare|default|async)\s+)*(?:function|class|interface|type|const|let|enum)\s+([\w$]+)/.exec(hit.text.trimStart())?.[1];
-      return declared !== undefined && (opts.caseSensitive ? declared === needle : declared.toLowerCase() === needle.toLowerCase());
-    }));
+  // Prefer the public source owner over same-named local wrappers. A bare
+  // declaration and an exported declaration are both exact hits, but they
+  // are not equally useful when only a few source files can be returned.
+  const declarationRankCache = new Map<string, number>();
+  const declarationRank = (path: string): number => {
+    const cached = declarationRankCache.get(path);
+    if (cached !== undefined) return cached;
+    let rank = 0;
+    for (const hit of hitsByPath.get(path) ?? []) {
+      const source = hit.text.trimStart();
+      const declared = /^(?:(?:export|declare|default|async)\s+)*(?:function|class|interface|type|const|let|enum)\s+([\w$]+)/.exec(source)?.[1];
+      if (declared === undefined || !requiredQueries.some((needle) =>
+        opts.caseSensitive ? declared === needle : declared.toLowerCase() === needle.toLowerCase())) continue;
+      rank = Math.max(rank, source.startsWith('export ') ? 2 : 1);
+      if (rank === 2) break;
+    }
+    declarationRankCache.set(path, rank);
+    return rank;
+  };
+  // Sorting only paths with evidence preserves the authorized inventory order
+  // while avoiding comparisons across thousands of guaranteed no-hit files.
+  const pathsWithHits = authorizedCandidatePaths.filter((path) => hitsByPath.has(path));
   const orderedPaths = requiredQueries.length
-    ? [...authorizedCandidatePaths].sort((left, right) =>
-        Number(declarationHit(right)) - Number(declarationHit(left))
+    ? pathsWithHits.sort((left, right) =>
+        declarationRank(right) - declarationRank(left)
         || Number(exactHit(right)) - Number(exactHit(left)))
-    : authorizedCandidatePaths;
+    : pathsWithHits;
   for (const path of orderedPaths) {
     if (searchManyComplete(matchState) || matchState.matchedPaths.size >= maxFiles) break;
     const hits = hitsByPath.get(path);
