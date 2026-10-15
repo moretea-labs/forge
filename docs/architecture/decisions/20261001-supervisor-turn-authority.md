@@ -263,7 +263,10 @@ therefore preserve profile identity. The id is removed on extension uninstall;
 there is no task/effect state, credential, URL, or conversation content in this
 cache. The existing Computer Controller authority remains the only durable
 attachment writer. The extension owns only this constant-size transport identity,
-requires the standard storage permission and grants no new host access. See the
+requires the standard storage permission and grants no new host access. Discovery
+and target-command heartbeats derive their source identity from this same
+persisted profile id; a worker restart must not orphan discovery or change
+the physical-tab binding. See the
 [Chrome storage contract](https://developer.chrome.com/docs/extensions/reference/api/storage#storage_areas).
 
 A missing pinned profile stays unavailable even when another profile is the sole

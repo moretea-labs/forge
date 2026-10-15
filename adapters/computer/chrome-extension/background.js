@@ -408,7 +408,9 @@ async function refreshDiscovery() {
     const title = String(tab.title ?? '').trim();
     conversations.push({ conversation_id: identity.conversationId, canonical_url: identity.canonicalUrl, ...projectByConversation.get(identity.conversationId), ...(title ? { title: title.slice(0, 512) } : {}), ...(tab.id === current?.id ? { is_current: true } : {}) });
   }
-  await nativeRpc('browser_discovery_update', { source: `chrome-extension:${PROVIDER_INSTANCE_ID}`, conversations }).catch(() => undefined);
+  // Discovery and command routing share one persisted Chrome-profile identity.
+  const instanceId = await providerInstanceId();
+  await nativeRpc('browser_discovery_update', { source: `chrome-extension:${instanceId}`, conversations }).catch(() => undefined);
 }
 let discoveryInFlight;
 let discoveryTimer;
