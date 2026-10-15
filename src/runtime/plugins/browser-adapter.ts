@@ -2726,11 +2726,10 @@ async function openNativeAttachedContext(
           inventory,
           savedTab.windowId,
         );
-        // A read/action bound to an existing session may adopt only the
-        // uniquely verified exact URL after its old tab disappears. Merely
-        // sharing an origin does not prove the user's authenticated profile.
-        if (selection.candidate
-          && (args.__forge_require_existing_resource !== true || selection.match === 'exact_url')) {
+        // Another tab with the same URL can belong to a different Chrome
+        // profile/account. A session-bound action may only use the pinned
+        // physical tab; URL matching is for explicit open-page recovery.
+        if (selection.candidate && args.__forge_require_existing_resource !== true) {
           const recovered = await reattachMacOsBrowserOwnedPage(savedProduct, { windowId: selection.candidate.windowId, tabId: selection.candidate.tabId }, timeout);
           page = recovered.page as unknown as PageLike;
           discovered = { attachment: recovered.attachment, attempts: recovered.attachment.attempts };

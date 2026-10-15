@@ -670,7 +670,7 @@ describe('browser session compatibility on Computer target authority', () => {
     const separator = String.fromCharCode(30);
     const fieldSeparator = String.fromCharCode(31);
     const url = 'https://example.com/forge-owned';
-    const userUrl = 'https://user.example.net/keep';
+    let userUrl = 'https://user.example.net/keep';
     let ownedTabId = '';
     let ownedExists = false;
     let createCalls = 0;
@@ -743,6 +743,9 @@ describe('browser session compatibility on Computer target authority', () => {
     expect(computerBackedSession(controllerHome, 'repo-a', repoA, sessionId)?.browser?.tab).toMatchObject({ ownership: 'plugin_owned', tabId: '9' });
 
     ownedExists = false;
+    // Even an exact URL now exists in the unrelated user tab. URL equality
+    // must not replace the lost physical session binding.
+    userUrl = url;
     invalidateMacOsBrowserPageHandles();
     await expect(executeBrowserPluginAction({
       ...baseInput,
