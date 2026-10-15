@@ -235,6 +235,28 @@ export function backupAuthorizedBlockedComposer(
   return path;
 }
 
+/** An explicit on-device authorization + verified backup permits exactly one
+ * existing Chrome-extension editor replacement at prepare time. The dispatch
+ * still uses the unmodified canonical effect prompt and sole provider writer.
+ */
+export function authorizedDraftReplacementPrompt(
+  controllerHome: string, taskId: string, effectId: string, projectUrl: string,
+  snapshot: ComputerChatgptConversationObservation, prompt: string,
+): string | undefined {
+  const backup = backupAuthorizedBlockedComposer(controllerHome, taskId, effectId, projectUrl, snapshot);
+  if (!backup || !prompt.startsWith(`<<<FORGE_WORKFLOW_EFFECT_V1:${effectId}>>>`)) return;
+  const observation = preflightComposerObservation(snapshot, effectId);
+  let marker: unknown;
+  try { marker = JSON.parse(readFileSync(join(controllerHome, 'supervisor', 'draft-backups', `authorization-${effectId}.json`), 'utf8')); }
+  catch { return; }
+  if (!marker || typeof marker !== 'object' || Array.isArray(marker)) return;
+  const auth = marker as Record<string, unknown>;
+  if (auth.taskId !== taskId || auth.effectId !== effectId || auth.projectUrl !== projectUrl
+    || auth.fingerprint !== observation.fingerprint || auth.consent !== 'user-authorized-exact-backup'
+    || typeof auth.nonce !== 'string' || !/^[a-f0-9]{32}$/.test(auth.nonce)) return;
+  return `<<<FORGE_DRAFT_REPLACE_V1:${observation.fingerprint}:${auth.nonce}>>>\n${prompt}`;
+}
+
 function exactConversation(snapshot: ComputerChatgptConversationObservation, task: WorkflowSupervisorBrowserTask): boolean {
   try { return parseChatgptConversationIdentity(snapshot.url).conversationId === task.conversationId; }
   catch { return false; }
@@ -714,7 +736,9 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       return;
     }
     let prepared: Awaited<ReturnType<ComputerChatgptConversationTarget['prepare']>>;
-    try { prepared = await target.prepare(command.prompt); }
+    const exactReplacement = authorizedDraftReplacementPrompt(this.deps.providerScopeKey, task.taskId,
+      command.effectId, this.control.bootstrapProjectUrl(task.taskId), beforeSend, command.prompt);
+    try { prepared = await target.prepare(exactReplacement ?? command.prompt); }
     catch (error) {
       this.control.recordProviderPreparationFailure({ taskId: task.taskId, effectId: command.effectId, reasonCode: consumerFailureCode(error, 'COMPUTER_PREPARE_FAILED'), composerObservation: preflightComposerObservation(beforeSend, command.effectId) });
       this.noteTaskFailure(SUPERVISOR_PRE_SEND_BLOCKED, task, command.effectId); this.deps.onError(error); return;

@@ -10,7 +10,7 @@ import {
   type WorkflowSupervisorBrowserInstallation,
 } from '../../src/runtime/plugins/computer-chatgpt-browser-adapter-installer';
 import { WORKFLOW_SUPERVISOR_NATIVE_HOST_NAME } from '../../supervisor/native-messaging/host';
-import { backupAuthorizedBlockedComposer } from '../../supervisor/native-browser-adapter';
+import { backupAuthorizedBlockedComposer, authorizedDraftReplacementPrompt } from '../../supervisor/native-browser-adapter';
 import { buildLocalSystemPluginManifest, localSystemPluginAdapter } from '../../src/runtime/plugins/local-system-adapter';
 
 const roots: string[] = [];
@@ -94,6 +94,14 @@ describe('Exact operator-authorized blocked-composer backup', () => {
     expect(backupAuthorizedBlockedComposer(controllerHome,taskId,effectId,projectUrl,
       {...snapshot,url:'https://chatgpt.com/g/g-p-123-forge/project'})).toBe(file);
     expect(backupAuthorizedBlockedComposer(controllerHome,taskId,effectId,projectUrl,{...snapshot,composerText:'different'})).toBeUndefined();
+    const prompt=`<<<FORGE_WORKFLOW_EFFECT_V1:${effectId}>>>\nComplete isolated acceptance`;
+    expect(authorizedDraftReplacementPrompt(controllerHome,taskId,effectId,projectUrl,snapshot,prompt)).toBeUndefined();
+    writeFileSync(auth,JSON.stringify({...consent,fingerprint:digest,nonce:'abcdef0123456789abcdef0123456789'}));
+    const prepared=authorizedDraftReplacementPrompt(controllerHome,taskId,effectId,projectUrl,snapshot,prompt);
+    expect(prepared).toBe(`<<<FORGE_DRAFT_REPLACE_V1:${digest}:abcdef0123456789abcdef0123456789>>>\n${prompt}`);
+    expect(JSON.parse(readFileSync(file!,'utf8')).composerText).toBe(snapshot.composerText);
+    expect(authorizedDraftReplacementPrompt(controllerHome,taskId,effectId,projectUrl,
+      {...snapshot,composerText:'different'},prompt)).toBeUndefined();
   });
 });
 

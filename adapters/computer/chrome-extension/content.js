@@ -329,6 +329,14 @@
         : true;
     if (!exactConversationIsCurrent()) return { dispatched: false, reason: 'target_identity_changed' };
     if (typeof prompt !== 'string' || !prompt.trim()) return { dispatched: false, reason: 'prompt_required' };
+    // This bounded prepare-only envelope is produced by the canonical
+    // Supervisor only after an exact 0600 on-device backup and operator marker.
+    // It is never part of a sent effect and never authorizes another provider.
+    const replacement = /^<<<FORGE_DRAFT_REPLACE_V1:([a-f0-9]{24}):([a-f0-9]{32})>>>\n/.exec(prompt);
+    if (replacement && (!prepareOnly || !expectedProjectId || mode !== 'send')) {
+      return { dispatched: false, reason: 'composer_replacement_mode_invalid' };
+    }
+    const actualPrompt = replacement ? prompt.slice(replacement[0].length) : prompt;
     if (mode === 'recover') {
       const stop = document.querySelector(STOP);
       if (prepareOnly && stop instanceof HTMLElement) return { prepared: false, reason: 'provider_recovery_stop_pending' };
@@ -345,10 +353,10 @@
     const node = composer();
     if (!node) return { dispatched: false, reason: 'composer_missing' };
     // Project instructions select tools. No @forge UI mention is needed.
-    const supervisor = /^(?:@forge\s+)?<<<FORGE_WORKFLOW_EFFECT_V1:fx_[a-zA-Z0-9_-]+>>>/.test(prompt);
+    const supervisor = /^(?:@forge\s+)?<<<FORGE_WORKFLOW_EFFECT_V1:fx_[a-zA-Z0-9_-]+>>>/.test(actualPrompt);
     if (supervisor && !expectedConversationId && !expectedProjectId) return { dispatched: false, reason: 'target_identity_unavailable' };
     // Strip only the exact legacy prefix on already-durable effects.
-    const payload = supervisor ? prompt.replace(/^@forge\s+(?=<<<FORGE_WORKFLOW_EFFECT_V1:fx_[a-zA-Z0-9_-]+>>>)/, '') : prompt;
+    const payload = supervisor ? actualPrompt.replace(/^@forge\s+(?=<<<FORGE_WORKFLOW_EFFECT_V1:fx_[a-zA-Z0-9_-]+>>>)/, '') : actualPrompt;
     const expected = exactComposerText(payload);
     const existing = composerText();
     // A restored draft belongs to this effect only when it matches precisely.
@@ -357,7 +365,17 @@
       ? [expected, exactComposerText(payload + '\n@'), exactComposerText(payload + '\nforge'), exactComposerText('forge ' + payload)]
       : [expected];
     if (node.querySelector('[plugin-mention-name], [app-mention-name]')) return { dispatched: false, reason: 'composer_has_app_mention' };
-    if (existing && !ownedDrafts.includes(existing)) return { dispatched: false, reason: 'composer_not_empty' };
+    const unowned = Boolean(existing && !ownedDrafts.includes(existing));
+    if (unowned && (!replacement || !supervisor)) return { dispatched: false, reason: 'composer_not_empty' };
+    if (unowned) {
+      // Hash the *currently visible* single editor, not the page or another
+      // tab. If it changed since the backup, do not touch it.
+      if (!globalThis.crypto?.subtle || !globalThis.TextEncoder) return { dispatched: false, reason: 'composer_replacement_digest_unavailable' };
+      const bytes = new TextEncoder().encode('preflight-composer-v1:\0' + existing);
+      const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
+      const prefix = Array.from(digest).map((byte) => byte.toString(16).padStart(2, '0')).join('').slice(0, 24);
+      if (prefix !== replacement[1]) return { dispatched: false, reason: 'composer_not_empty' };
+    }
     let reasoningVerified;
     if (reasoning !== undefined) {
       const checked = await ensureReasoning(reasoning);
