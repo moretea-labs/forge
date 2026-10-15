@@ -35,7 +35,7 @@ import { resolveRepositoryCheckStorage } from '../../src/runtime/execution/proce
 import { appendControllerWorklogEvent, listControllerWorklogEvents, resolveControllerWorklogStorage } from '../../src/cli/controller/worklog';
 import { executionIdentityForRepository } from '../../src/runtime/control-plane/execution/execution-identity';
 import { runReadOnlyDiagnosticViaProcessRuntime } from '../../src/runtime/diagnostics/process-facade';
-import { MCP_SERVER_INSTRUCTIONS } from '../../src/cli/mcp/instructions';
+import { MCP_SERVER_INSTRUCTIONS } from '../../adapters/mcp/instructions';
 import {
   applyEditOperations,
   assertEditSessionDurableBinding,

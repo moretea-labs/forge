@@ -49,7 +49,7 @@ import { registerRepository } from '../../src/cli/repositories/registry';
 import {
   callPostFinalizeWorkReadOnlyCommand,
   callRepositoryToolWithPostFinalizeAttribution,
-} from '../../src/cli/mcp/post-finalize-work-attribution';
+} from '../../adapters/mcp/tool-mapping/post-finalize-work-attribution';
 import {
   createWorkContract,
   recordWorkCompletionReceipt,

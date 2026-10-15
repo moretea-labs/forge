@@ -2168,7 +2168,6 @@ for (const path of [
 ]) requireText(path, '@deprecated Kernel V2 compatibility shim');
 for (const path of [
   'src/cli/mcp/access-tools.ts',
-  'src/cli/mcp/legacy-context.ts',
   'src/cli/mcp/multi-repository.ts',
   'src/cli/mcp/repository-tools.ts',
   'src/cli/mcp/server.ts',
