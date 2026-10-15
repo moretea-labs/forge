@@ -1,14 +1,14 @@
 import { readFileSync } from 'fs';
 import { FORGE_TOOL_SURFACE, FORGE_VERSION, forgeToolSurfaceFingerprint } from '../src/cli/controller/runtime-config';
 import { injectCognitionSettlementFields } from '../adapters/mcp/runtime-gateway/cognition-settlement';
-import { injectDurableCommandFields } from '../src/runtime/gateway/mcp/router';
+import { injectDurableCommandFields } from '../adapters/mcp/runtime-gateway/router';
 import { runtimePolicy } from '../src/cli/mcp/multi-repository';
 import { buildMcpToolDefinitions } from '../adapters/mcp/tool-mapping/tools';
 import { accessToolDefinitions } from '../adapters/mcp/tool-mapping/access-tools';
 import { repositoryToolDefinitions } from '../adapters/mcp/tool-mapping/repository-tools';
-import { runtimeToolDefinitions } from '../src/runtime/gateway/mcp/runtime-tools';
-import { executionToolDefinitions } from '../src/runtime/gateway/mcp/execution-tools';
-import { processToolDefinitions } from '../src/runtime/gateway/mcp/process-tools';
+import { runtimeToolDefinitions } from '../adapters/mcp/runtime-gateway/runtime-tools';
+import { executionToolDefinitions } from '../adapters/mcp/runtime-gateway/execution-tools';
+import { processToolDefinitions } from '../adapters/mcp/runtime-gateway/process-tools';
 import {
   ADVANCED_CONTROLLER_TOOL_NAMES,
   CORE_CONTROLLER_TOOL_NAMES,

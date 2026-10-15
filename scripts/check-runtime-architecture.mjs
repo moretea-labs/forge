@@ -2163,7 +2163,13 @@ forbid(
   /authority-env|BRAIN_CONTROLLER_AUTHORITY_REQUIRED|BRAIN_AUTHORITY_ENV_INVALID/,
   'advisory experience CLI must not require a Controller capability',
 );
+// Retired Gateway/CLI forwarding aliases must not be reintroduced: adapter
+// definitions and execution-domain reconciliation own their canonical paths.
 for (const path of [
+  'adapters/mcp/runtime-gateway/work-validation-reconciler.ts',
+  'src/cli/mcp/oauth.ts',
+  'src/cli/mcp/tool-contract.ts',
+  'src/cli/mcp/transports/stdio.ts',
   'src/runtime/gateway/mcp/execution-tools.ts',
   'src/runtime/gateway/mcp/legacy-ios-tool-adapter.ts',
   'src/runtime/gateway/mcp/persisted-check-process.ts',
@@ -2172,7 +2178,7 @@ for (const path of [
   'src/runtime/gateway/mcp/runtime-tool-definitions.ts',
   'src/runtime/gateway/mcp/runtime-tools.ts',
   'src/runtime/gateway/mcp/work-validation-reconciler.ts',
-]) requireText(path, '@deprecated Kernel V2 compatibility shim');
+]) requireMissing(path);
 for (const path of [
   'src/cli/mcp/multi-repository.ts',
   'src/cli/mcp/server.ts',

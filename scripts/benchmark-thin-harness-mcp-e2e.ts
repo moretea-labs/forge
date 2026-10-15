@@ -27,7 +27,7 @@ import { callRepositoryTool } from '../adapters/mcp/tool-mapping/repository-tool
 import {
   classifyGatewayExecutionPath,
   routeDurableMcpCall,
-} from '../src/runtime/gateway/mcp/router';
+} from '../adapters/mcp/runtime-gateway/router';
 import { listExecutionJobs } from '../src/runtime/execution/jobs/store';
 import { listLocalBridgeJobSnapshots } from '../src/cli/local-bridge/job-store';
 import { listFastReceipts } from '../src/runtime/execution/thin-harness/fast-receipt';

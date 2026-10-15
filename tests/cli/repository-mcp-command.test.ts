@@ -8,10 +8,10 @@ import { addRepositoryCheckout, getRepository, listRepositories, registerReposit
 import { callMcpTool } from "../../adapters/mcp/tool-mapping/tools";
 import { callRepositoryTool, repositoryToolDefinitions } from "../../adapters/mcp/tool-mapping/repository-tools";
 import { repositoryGitCommit, repositoryGitMergeBranch, repositoryGitRebaseOnto, repositoryGitStatus } from "../../src/cli/repositories/structured-git";
-import { callRuntimeTool, runtimeToolDefinitions } from "../../src/runtime/gateway/mcp/runtime-tools";
+import { callRuntimeTool, runtimeToolDefinitions } from "../../adapters/mcp/runtime-gateway/runtime-tools";
 import { createMcpToolContext } from "../../src/cli/mcp/multi-repository";
 import { getLocalBridgeJob, readLocalBridgeJobOutput, readLocalBridgeJobOutputSnapshot } from "../../src/cli/local-bridge/job-store";
-import { routeDurableMcpCall } from "../../src/runtime/gateway/mcp/router";
+import { routeDurableMcpCall } from "../../adapters/mcp/runtime-gateway/router";
 import { waitRepositoryCommandProcess } from "../../src/runtime/execution/process-runtime/command-facade";
 import { getExecutionJob, listExecutionJobs } from "../../src/runtime/execution/jobs/store";
 import { cancelWorkContract, createWorkContract, failWorkContract, getWorkContract } from "../../src/runtime/control-plane/facade/work-contract-store";

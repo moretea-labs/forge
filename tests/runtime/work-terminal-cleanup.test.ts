@@ -17,7 +17,7 @@ import { cleanupTerminalWork, reconcileTerminalWorkCleanups } from '../../src/ru
 import { processLogDir } from '../../src/runtime/execution/process-runtime';
 import { createProcessRecord } from '../../src/runtime/execution/process-runtime/store';
 import type { ManagedProcessRecord } from '../../src/runtime/execution/process-runtime/types';
-import { selectDefaultWorkValidationChecks } from '../../src/runtime/gateway/mcp/execution-tools';
+import { selectDefaultWorkValidationChecks } from '../../adapters/mcp/runtime-gateway/execution-tools';
 import { ensureManagedWorkspace } from '../../src/runtime/execution/managed-workspace';
 import { cleanupControllerRuntimeState } from '../../src/runtime/control-plane/runtime-cleanup';
 import { collectWorkLifecycleAttention } from '../../src/runtime/control-plane/execution/work-lifecycle-audit';

@@ -16,9 +16,9 @@ import { join } from 'path';
 import { performance } from 'perf_hooks';
 import { createMcpToolContext } from '../src/cli/mcp/server';
 import { registerRepository } from '../src/cli/repositories/registry';
-import { callRuntimeTool } from '../src/runtime/gateway/mcp/runtime-tools';
-import { callProcessTool } from '../src/runtime/gateway/mcp/process-tools';
-import { routeDurableMcpCall } from '../src/runtime/gateway/mcp/router';
+import { callRuntimeTool } from '../adapters/mcp/runtime-gateway/runtime-tools';
+import { callProcessTool } from '../adapters/mcp/runtime-gateway/process-tools';
+import { routeDurableMcpCall } from '../adapters/mcp/runtime-gateway/router';
 import { getProcessRecord } from '../src/runtime/execution/process-runtime/store';
 import {
   clearGitIdentityCacheForTest,

@@ -8,7 +8,7 @@ import {
   classifyGatewayExecutionPath,
   gatewayRouteBehaviorSnapshot,
   routeDurableMcpCall,
-} from '../../src/runtime/gateway/mcp/router';
+} from '../../adapters/mcp/runtime-gateway/router';
 import { executeGatewayRoutedOperation } from '../../adapters/mcp/runtime-gateway/gateway-execution-adapter';
 import { callCoreCapabilityAdapter } from '../../adapters/mcp/runtime-gateway/core-capability-adapter';
 import { createMcpToolContext } from '../../src/cli/mcp/server';
@@ -20,10 +20,10 @@ import { ensureRepositoryRuntimeStorageBinding } from '../../src/cli/repositorie
 import { listExecutionJobs } from '../../src/runtime/execution/jobs/store';
 import { listLocalBridgeJobSnapshots } from '../../src/cli/local-bridge/job-store';
 import { callRepositoryTool } from '../../adapters/mcp/tool-mapping/repository-tools';
-import { callExecutionTool } from '../../src/runtime/gateway/mcp/execution-tools';
+import { callExecutionTool } from '../../adapters/mcp/runtime-gateway/execution-tools';
 import { executeWork } from '../../src/runtime/control-plane/execution/work-operation-service';
-import { callRuntimeTool } from '../../src/runtime/gateway/mcp/runtime-tools';
-import { callProcessTool } from '../../src/runtime/gateway/mcp/process-tools';
+import { callRuntimeTool } from '../../adapters/mcp/runtime-gateway/runtime-tools';
+import { callProcessTool } from '../../adapters/mcp/runtime-gateway/process-tools';
 import { classifyRepositoryCommand } from '../../src/cli/repositories/command-classifier';
 import { classifyRepositoryCommandRoute, waitRepositoryCommandProcess } from '../../src/runtime/execution/process-runtime/command-facade';
 import { routeExecution, isFastEligibleTool } from '../../src/runtime/execution/thin-harness';

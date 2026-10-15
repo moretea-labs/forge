@@ -18,7 +18,7 @@ import {
 } from '../../src/cli/controller/check-runner';
 import type { RepositoryCheckStorageAuthority } from '../../src/runtime/execution/process-runtime/check-storage';
 import { registerRepository } from '../../src/cli/repositories/registry';
-import { resolvePersistedCheckCliInvocation, resolvePersistedCheckProcessInvocation } from '../../src/runtime/gateway/mcp/persisted-check-process';
+import { resolvePersistedCheckCliInvocation, resolvePersistedCheckProcessInvocation } from '../../adapters/mcp/runtime-gateway/persisted-check-process';
 import { runPersistedCheckSidecar } from '../../src/runtime/execution/process-runtime/check-runner-sidecar';
 import { claimsForCheck } from '../../src/runtime/execution/process-runtime/resource-claims';
 import { writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';

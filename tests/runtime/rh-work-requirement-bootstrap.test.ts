@@ -19,7 +19,7 @@ import {
   writeProjectPlacement,
   writeWorkspaceIdentity,
 } from '../../src/runtime/control-plane/workspace/workspace-store';
-import { callRuntimeTool } from '../../src/runtime/gateway/mcp/runtime-tools';
+import { callRuntimeTool } from '../../adapters/mcp/runtime-gateway/runtime-tools';
 
 const roots: string[] = [];
 

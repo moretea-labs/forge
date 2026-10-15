@@ -20,7 +20,7 @@ import type { ExecutionJob } from '../../src/runtime/execution/jobs/types';
 import type { TaskLedgerProjection } from '../../src/cli/controller/task-ledger';
 import { flushMcpDiagnostics, recordMcpIncident, recordMcpTiming } from '../../src/runtime/diagnostics/mcp-timing';
 import { classifyForgeIncidentForRepair, maybeRegisterMcpIncidentRepair } from '../../src/runtime/diagnostics/incident-repair';
-import { callRuntimeTool, sessionlessFacadeControllerAuthorityMatches } from '../../src/runtime/gateway/mcp/runtime-tools';
+import { callRuntimeTool, sessionlessFacadeControllerAuthorityMatches } from '../../adapters/mcp/runtime-gateway/runtime-tools';
 import { authenticatedFacadeControllerIdentity } from '../../adapters/mcp/runtime-gateway/controller-authority-adapter';
 import { createMcpToolContext as createMultiRepositoryContext } from '../../src/cli/mcp/multi-repository';
 import { createForgeMcpServer } from '../../src/cli/mcp/server';

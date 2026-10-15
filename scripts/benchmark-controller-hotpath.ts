@@ -22,7 +22,7 @@ import {
   gitSnapshotPerformanceSnapshot,
 } from '../src/cli/repository/inspector';
 import { registerRepository } from '../src/cli/repositories/registry';
-import { callRuntimeTool } from '../src/runtime/gateway/mcp/runtime-tools';
+import { callRuntimeTool } from '../adapters/mcp/runtime-gateway/runtime-tools';
 import type { MultiRepositoryMcpToolContext } from '../src/cli/mcp/multi-repository';
 
 const HOT_READS = 30;

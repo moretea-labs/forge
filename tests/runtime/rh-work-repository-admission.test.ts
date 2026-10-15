@@ -9,7 +9,7 @@ import { ensureControllerHome, SEMANTIC_SCOPE_KEY } from '../../src/cli/reposito
 import { registerRepository } from '../../src/cli/repositories/registry';
 import { getWorkContract } from '../../packages/kernel/work/api/index';
 import { readWorkHandle } from '../../src/runtime/control-plane/execution/work-handle-store';
-import { callRuntimeTool } from '../../src/runtime/gateway/mcp/runtime-tools';
+import { callRuntimeTool } from '../../adapters/mcp/runtime-gateway/runtime-tools';
 
 const roots: string[] = [];
 

@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { DEFAULT_CONTROLLER_TOOL_NAMES, STABLE_CONTROLLER_TOOL_NAMES } from '../../adapters/mcp/toolset-names';
-import { classifyGatewayExecutionPath, runsAsInteractiveSyncWrite } from '../../src/runtime/gateway/mcp/router';
+import { classifyGatewayExecutionPath, runsAsInteractiveSyncWrite } from '../../adapters/mcp/runtime-gateway/router';
 import { runtimeToolDefinitions } from '../../adapters/mcp/runtime-gateway/runtime-tool-definitions';
 
 describe('interactive sync routing policy', () => {

@@ -7,12 +7,12 @@ This page maps the public Forge model to the current source tree. It is an imple
 Primary code:
 
 ```text
-src/cli/mcp/server.ts
+adapters/mcp/server.ts
 adapters/mcp/toolset-names.ts
 adapters/mcp/tool-mapping/repository-tools.ts
-src/cli/mcp/transports/http.ts
-src/cli/mcp/transports/session-registry.ts
-src/runtime/gateway/mcp/
+adapters/mcp/transports/http.ts
+adapters/mcp/transports/session-registry.ts
+adapters/mcp/runtime-gateway/
 ```
 
 `toolset-names.ts` defines the bounded default connector surface. The six facade tools come from `src/runtime/control-plane/facade/types.ts`; repository, patch, check, Process, plugin-dispatch, and result tools bring the current default to 20.
@@ -79,7 +79,7 @@ src/runtime/execution/process-runtime/runtime.ts
 src/runtime/execution/process-runtime/store.ts
 src/runtime/execution/process-runtime/interactive-admission.ts
 src/runtime/shared/process-identity.ts
-src/runtime/gateway/mcp/process-tools.ts
+adapters/mcp/runtime-gateway/process-tools.ts
 ```
 
 `spawnManagedProcess` creates one Process record and one physical child execution. Exact PID/start-time/executable identity protects later lifecycle operations. Known-long processes can return handles immediately; short commands may complete during a bounded interactive window. Process startup captures command/start-time together and reuses the running-state persistence result instead of repeating store writes/reads on the hot path.
@@ -103,7 +103,7 @@ Primary code:
 
 ```text
 src/runtime/execution/process-runtime/check-facade.ts
-src/runtime/gateway/mcp/persisted-check-process.ts
+adapters/mcp/runtime-gateway/persisted-check-process.ts
 src/runtime/evidence/
 src/runtime/projections/
 ```

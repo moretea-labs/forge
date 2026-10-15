@@ -34,7 +34,7 @@ import { prepareAssistantWorkContext, recordControllerExperience, recordControll
 import { cognitiveUsageFeedbackForContext } from '../../src/runtime/context/cognitive-attention';
 import { parseControllerLearningSignalDrafts, persistAutomaticControllerRoundLearning } from '../../src/runtime/context/automatic-learning';
 import { cognitionReadPort } from '../../src/runtime/control-plane/persistence/cognition-store';
-import { callRuntimeTool } from '../../src/runtime/gateway/mcp/runtime-tools';
+import { callRuntimeTool } from '../../adapters/mcp/runtime-gateway/runtime-tools';
 import { createHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
 import { writeProjectIdentity, writeProjectPlacement, writeWorkspaceIdentity } from '../../src/runtime/control-plane/workspace/workspace-store';
 import type { MultiRepositoryMcpToolContext } from '../../adapters/mcp/multi-repository';
