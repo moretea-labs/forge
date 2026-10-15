@@ -445,7 +445,24 @@ function buildComputerManifest(
   repoRoot?: string,
   context?: AssistantPluginBuildContext,
 ): AssistantPluginManifest {
-  const browser = buildBrowserPluginManifest(previousRevision, previousUpdatedAt, repoRoot, context);
+  const browser = buildBrowserPluginManifest(previousRevision, previousUpdatedAt, repoRoot, context, true);
+  const scriptedBrowserActions = new Set([
+    'configure', 'install_unpacked_extension', 'list_unpacked_extensions', 'clear_session', 'reconcile_sessions',
+  ]);
+  const browserActions = browser.actions.filter((action) => !scriptedBrowserActions.has(action.actionId));
+  const browserCapabilities = browser.capabilities.map((capability) => ({
+    ...capability,
+    actions: capability.actions.filter((action) => !scriptedBrowserActions.has(action)),
+    ...(capability.capabilityId === 'browser-interaction'
+      ? { description: 'Interact with existing Chrome or Vivaldi through native Computer; scripted Playwright is a separate explicit capability.' }
+      : {}),
+    ...(capability.capabilityId === 'browser-session'
+      ? { description: 'Discover, bind and reuse tabs of the user’s existing browser.' }
+      : {}),
+    ...(capability.capabilityId === 'browser-human-handoff'
+      ? { description: 'Present the exact existing native browser tab for manual interaction.' }
+      : {}),
+  })).filter((capability) => capability.actions.length > 0);
   const desktop = desktopProviderManifest(context);
   const platform = currentComputerPlatform();
   const desktopSupported = platform === 'darwin';
@@ -464,8 +481,10 @@ function buildComputerManifest(
       strategy: 'derived',
       duplicateStateAllowed: false,
       sourceOfTruth: [
-        ...browser.authority.sourceOfTruth,
+        // Computer browser is built in and never reads a project's independent
+        // Browser-script configuration to decide activation or routing.
         'controllerHome:sqlite/computer_interaction_target',
+        'controller-home:repository browser artifacts',
       ],
     },
     enabled: browser.enabled || desktop?.enabled === true,
@@ -498,9 +517,12 @@ function buildComputerManifest(
         desktop: { supported: desktopSupported, ready: desktopReady, state: desktop?.health.state ?? (desktopSupported ? 'not_installed' : 'unsupported') },
       },
     },
-    permissions: [...browser.permissions, ...desktopProductPermissions(desktopReady)],
-    capabilities: [...browser.capabilities, ...desktopProductCapabilities()],
-    actions: [...browser.actions, ...desktopProductActions()],
+    permissions: [...browser.permissions.filter((permission) => permission.scope !== 'browser.extensions').map((permission) =>
+      permission.scope === 'browser.profile'
+        ? { ...permission, description: 'Bind and persist exact existing native browser tab identities.' }
+        : permission), ...desktopProductPermissions(desktopReady)],
+    capabilities: [...browserCapabilities, ...desktopProductCapabilities()],
+    actions: [...browserActions, ...desktopProductActions()],
     updatedAt: previousUpdatedAt ?? checkedAt,
   };
 }
@@ -1003,19 +1025,42 @@ async function resolveDesktopAuthorizationContext(input: AssistantPluginActionEx
   return provider.resolveAuthorizationContext?.(providerInput(input, input.actionId, input.args));
 }
 
+// Computer's browser subdomain always targets the user's real browser.
+// The independent Browser plugin retains explicit Playwright scripting modes,
+// but Computer must neither select nor silently fall back to those providers.
+function computerNativeBrowserInput(input: AssistantPluginActionExecutionInput): AssistantPluginActionExecutionInput {
+  if (['configure', 'install_unpacked_extension', 'list_unpacked_extensions', 'clear_session', 'reconcile_sessions'].includes(input.actionId)) {
+    throw new AssistantPluginError('PLUGIN_COMPUTER_BROWSER_SCRIPT_ACTION_SEPARATE',
+      'Browser profile configuration and script-managed extensions belong to the independent Browser plugin.', { retryable: false });
+  }
+  if ((input.args.browser_mode !== undefined && input.args.browser_mode !== 'attach_preferred')
+    || (input.args.cdp_attach_fallback !== undefined && input.args.cdp_attach_fallback !== 'fail_closed')
+    || (input.args.native_attach_mode !== undefined && input.args.native_attach_mode !== 'auto')) {
+    throw new AssistantPluginError('PLUGIN_COMPUTER_BROWSER_SCRIPT_MODE_SEPARATE',
+      'Computer only operates the native browser; use the independent Browser plugin for scripted or isolated profiles.',
+      { retryable: false });
+  }
+  return { ...input, args: { ...input.args,
+    browser_mode: 'attach_preferred',
+    cdp_attach_fallback: 'fail_closed',
+    native_attach_mode: 'auto',
+    __forge_computer_native_only: true,
+  } };
+}
+
 export const computerPluginAdapter: AssistantPluginAdapter = {
   pluginId: 'computer',
   scope: 'controller_with_repository_overlay',
   buildManifest: buildComputerManifest,
   async resolveAuthorizationContext(input) {
     if (!isDesktopProductAction(input.actionId)) {
-      return resolveBrowserPluginAuthorizationContext({ ...input, pluginId: 'browser' });
+      return resolveBrowserPluginAuthorizationContext(computerNativeBrowserInput(input));
     }
     return resolveDesktopAuthorizationContext(input);
   },
   async executeAction(input) {
     if (!isDesktopProductAction(input.actionId)) {
-      return executeBrowserPluginAction({ ...input, pluginId: 'browser' });
+      return executeBrowserPluginAction(computerNativeBrowserInput(input));
     }
     if (input.actionId === COMPUTER_CONSOLE_UNLOCK_PREPARE_ACTION) {
       return executeProtectedConsoleUnlockPreparation({ confirmAuthorization: input.confirmAuthorization === true, timeoutMs: input.timeoutMs }, input.controllerHome);

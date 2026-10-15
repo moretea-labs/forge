@@ -1290,8 +1290,8 @@ requireText('adapters/computer/chatgpt-extension-target.ts', 'return await this.
 forbid('adapters/computer/chrome-extension/background.js', /resolveTarget\(command\.identity,\s*false\)\.catch/, 'Extension worker must recover a pinned bootstrap from the durable Computer binding, not its ephemeral in-worker Map');
 forbid('adapters/computer/chrome-extension/content.js', /core\.normalizeText\(payload\)/, 'Provider pre-send evidence must preserve whitespace in immutable effect payload');
 requireMissing('supervisor/chrome-extension');
-requireText('src/runtime/plugins/browser-adapter.ts', "browserMode: browserMode(raw.browserMode) ?? 'managed_persistent'");
-requireText('src/runtime/plugins/browser-adapter.ts', "nativeAttachMode: browserNativeAttachMode(raw.nativeAttachMode) ?? 'disabled'");
+requireText('src/runtime/plugins/browser-adapter.ts', "browserMode: browserMode(raw.browserMode) ?? 'attach_preferred'");
+requireText('src/runtime/plugins/browser-adapter.ts', "nativeAttachMode: browserNativeAttachMode(raw.nativeAttachMode) ?? 'auto'");
 requireText('supervisor/native-messaging/host.ts', 'ALLOWED_BROWSER_METHODS');
 requireText('supervisor/native-messaging/host.ts', 'computer_extension_claim');
 forbid('supervisor/native-messaging/host.ts', /['"](?:browser_tasks|browser_poll|browser_begin_effect|browser_observe_effect|browser_observe_dispatch_failure|browser_observe_provider_turn|browser_observe_assistant|bootstrap_poll|bootstrap_project_url|bootstrap_begin_effect|bootstrap_observe_effect|bootstrap_bind_conversation)['"]/, 'Chrome Native Messaging transport must not expose Workflow Supervisor effect RPCs; extension traffic terminates at Computer target commands');
@@ -2402,6 +2402,11 @@ for (const path of sourceFiles('packages/workflow-runtime')) {
   forbid(path, /xiaohongshu|douyin|instagram|reddit|facebook/i, 'generic Workflow Runtime contracts must not own site/business choreography');
   forbid(path, /from\s+['"][^'"]*(?:src\/runtime|adapters)\//, 'Workflow Runtime package contracts must remain independent from Runtime/adapters implementation authority');
 }
+requireText('src/runtime/plugins/first-party-registry.ts', "from './computer-registration'");
+requireText('src/runtime/plugins/computer-registration.ts', 'buildBrowserPluginManifest(previousRevision, previousUpdatedAt, repoRoot, context, true)');
+requireText('src/runtime/plugins/computer-registration.ts', '__forge_computer_native_only: true');
+requireText('src/runtime/plugins/browser-adapter.ts', 'if (computerNativeOnly) return normalizeConfig({');
+requireText('src/runtime/plugins/browser-adapter.ts', 'if (computerNativeOnly) {');
 requireText('src/runtime/plugins/browser-registration.ts', 'export const browserPluginAdapter');
 requireText('src/runtime/plugins/first-party-registry.ts', "from './browser-registration'");
 forbid('src/runtime/plugins/first-party-registry.ts', /from\s+['"]\.\/browser-adapter['"]/, 'first-party registry must depend on the thin Browser registration entrypoint, not the action implementation');
