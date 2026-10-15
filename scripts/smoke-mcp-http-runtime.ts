@@ -9,10 +9,10 @@ import { FORGE_TOOL_SURFACE } from '../src/cli/controller/runtime-config';
 import { CORE_CONTROLLER_TOOL_NAMES } from '../adapters/mcp/toolset';
 import { writeMcpServiceLocalConfig } from '../adapters/mcp/auth';
 import { buildMcpToolDefinitions } from '../adapters/mcp/tool-mapping/tools';
-import { runtimePolicy } from '../src/cli/mcp/multi-repository';
+import { runtimePolicy } from '../adapters/mcp/multi-repository';
 import { resolveControllerToolsetSelection } from '../adapters/mcp/toolset-selection';
 import { RUNTIME_WRITE_CLAIM_ENV } from '../src/runtime/root/write-fence';
-import { createMcpToolContext, readCanonicalRuntimeToolSchema } from '../src/cli/mcp/server';
+import { createMcpToolContext, readCanonicalRuntimeToolSchema } from '../adapters/mcp/server';
 
 const root = mkdtempSync(join(tmpdir(), 'forge-mcp-http-smoke-'));
 const repoRoot = join(root, 'repo');

@@ -2,10 +2,10 @@ import { describe, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { hashMcpInput, mcpAuditLogPath, tryWriteMcpAuditEntry, writeMcpAuditEntry } from '../../src/cli/mcp/audit';
-import { getMcpPolicy } from '../../src/cli/mcp/policy';
-import { redactMcpText } from '../../src/cli/mcp/redaction';
-import { globMatches, normalizeMcpRelativePath, resolveMcpPath } from '../../src/cli/mcp/paths';
+import { hashMcpInput, mcpAuditLogPath, tryWriteMcpAuditEntry, writeMcpAuditEntry } from '../../adapters/mcp/audit';
+import { getMcpPolicy } from '../../adapters/mcp/policy';
+import { redactMcpText } from '../../adapters/mcp/redaction';
+import { globMatches, normalizeMcpRelativePath, resolveMcpPath } from '../../adapters/mcp/paths';
 import { buildMcpToolDefinitions } from '../../adapters/mcp/tool-mapping/tools';
 
 describe('mcp policy and paths', () => {

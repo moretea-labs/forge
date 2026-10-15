@@ -6,7 +6,7 @@ import {
   previewRepositoryCommandExecutionAsync,
   type RepositoryCommandSnapshot,
 } from '../../../cli/repositories/command-executor';
-import { getMcpPolicy } from '../../../cli/mcp/policy';
+import { getMcpPolicy } from '../../../../adapters/mcp/policy';
 import { readRepositoryRange } from '../../../cli/repository/inspector';
 import type { RepositoryRecord } from '../../../cli/repositories/types';
 import { getLeaseSideEffectMetrics } from '../../resources/leases/store';

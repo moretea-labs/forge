@@ -32,12 +32,12 @@ import {
   waitForCanonicalRuntimeReleaseHandoff,
   type CanonicalRuntimeProxy,
   type CanonicalRuntimeToolSchema,
-} from '../../src/cli/mcp/server';
+} from '../../adapters/mcp/server';
 import {
   isMcpToolsListRequest,
   mcpSessionToolSurfaceFingerprintIsCurrent,
   resolveMcpSessionCurrentFingerprint,
-} from '../../src/cli/mcp/transports/http';
+} from '../../adapters/mcp/transports/http';
 import {
   RUNTIME_MCP_CUTOVER_OUTCOME_UNKNOWN,
   RUNTIME_MCP_REQUEST_DRAIN_TIMEOUT_MS,

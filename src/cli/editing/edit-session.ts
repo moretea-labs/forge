@@ -9,8 +9,8 @@ import {
   type ControllerCheckResult,
 } from '../controller/check-runner';
 import { tryAppendControllerWorklogEvent } from '../controller/worklog';
-import { globMatches, resolveMcpPath } from '../mcp/paths';
-import type { McpPolicy } from '../mcp/types';
+import { globMatches, resolveMcpPath } from '../../../adapters/mcp/paths';
+import type { McpPolicy } from '../../../adapters/mcp/types';
 import type { ProcessCheckCompletionReceipt, ProcessCheckReceiptStatus } from '../../runtime/execution/process-runtime/check-receipt';
 import { invalidateRepositoryReadCaches } from '../repository/inspector';
 import type { EditOperation } from './edit-operation-contract';

@@ -1,11 +1,11 @@
 # MCP HTTP Transport Lifecycle
 
 > Capability: `mcp-http-transport-lifecycle`
-> Runtime Authority: `docs/architecture/../../CURRENT.md` and `docs/architecture/../../CURRENT.md`
+> Runtime Authority: [Current Architecture](../../CURRENT.md)
 
 ## Responsibility
 
-`src/cli/mcp/transports/` owns HTTP authentication handoff and protocol-era serving. MCP 2026-07-28 is the canonical public boundary and is served per request without protocol-level sessions. The session registry, global admission capacity, transport leases, and DELETE cleanup exist only for the explicit 2025-era compatibility path. The transport does not own durable Work/Process/ControllerRound authority or Gateway process recovery.
+`adapters/mcp/transports/` owns HTTP authentication handoff and protocol-era serving. MCP 2026-07-28 is the canonical public boundary and is served per request without protocol-level sessions. The session registry, global admission capacity, transport leases, and DELETE cleanup exist only for the explicit 2025-era compatibility path. The transport does not own durable Work/Process/ControllerRound authority or Gateway process recovery.
 
 ## Invariants
 

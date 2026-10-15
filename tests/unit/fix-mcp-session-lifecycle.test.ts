@@ -3,8 +3,8 @@ import {
   McpSessionRegistry,
   type ClosableMcpTransport,
   type McpSessionRoute,
-} from '../../src/cli/mcp/transports/session-registry';
-import { mcpSessionToolSurfaceFingerprintIsCurrent } from '../../src/cli/mcp/transports/http';
+} from '../../adapters/mcp/transports/session-registry';
+import { mcpSessionToolSurfaceFingerprintIsCurrent } from '../../adapters/mcp/transports/http';
 
 class FakeTransport implements ClosableMcpTransport {
   closeCalls = 0;

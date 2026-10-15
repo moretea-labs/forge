@@ -13,8 +13,8 @@ import {
   type EditOperation,
   type EditSession,
 } from "../editing/edit-session";
-import { resolveMcpPath } from "../mcp/paths";
-import type { McpPolicy } from "../mcp/types";
+import { resolveMcpPath } from "../../../adapters/mcp/paths";
+import type { McpPolicy } from "../../../adapters/mcp/types";
 import { getAgentJob, markAgentJobClosure, markAgentJobIntegrated, markAgentJobIntegrationReview } from "./job-manager";
 import type { AgentJobMeta, AgentJobPreservationReason } from "./types";
 import { assertRuntimeMayWriteOrThrow, isRuntimeWriteFenceError } from "../../runtime/root/write-fence";

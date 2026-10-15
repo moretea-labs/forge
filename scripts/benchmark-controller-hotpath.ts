@@ -10,8 +10,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
-import { getMcpPolicy } from '../src/cli/mcp/policy';
-import { createMcpToolContext } from '../src/cli/mcp/multi-repository';
+import { getMcpPolicy } from '../adapters/mcp/policy';
+import { createMcpToolContext } from '../adapters/mcp/multi-repository';
 import { exposedControllerToolDefinitions } from '../adapters/mcp/toolset';
 import {
   cachedGitIdentity,
@@ -23,7 +23,7 @@ import {
 } from '../src/cli/repository/inspector';
 import { registerRepository } from '../src/cli/repositories/registry';
 import { callRuntimeTool } from '../adapters/mcp/runtime-gateway/runtime-tools';
-import type { MultiRepositoryMcpToolContext } from '../src/cli/mcp/multi-repository';
+import type { MultiRepositoryMcpToolContext } from '../adapters/mcp/multi-repository';
 
 const HOT_READS = 30;
 const COLD_GIT_READS = 20;

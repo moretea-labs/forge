@@ -18,7 +18,7 @@ import {
 import { dirname, join, resolve, sep } from 'path';
 import { spawnSync } from 'child_process';
 import { repositoryControllerRoot } from '../../../cli/repositories/controller-home';
-import { globMatches, normalizeMcpRelativePath } from '../../../cli/mcp/paths';
+import { globMatches, normalizeMcpRelativePath } from '../../../../adapters/mcp/paths';
 import { sanitizeFileComponent } from '../../shared/json-files';
 import { measureReclaimablePath, RUNTIME_LIFECYCLE_RETENTION_POLICY_VERSION } from '../lifecycle-retention-metrics';
 

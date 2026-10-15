@@ -2167,6 +2167,21 @@ forbid(
 // definitions and execution-domain reconciliation own their canonical paths.
 for (const path of [
   'adapters/mcp/runtime-gateway/work-validation-reconciler.ts',
+  'src/cli/mcp/access-mode.ts',
+  'src/cli/mcp/audit.ts',
+  'src/cli/mcp/auth.ts',
+  'src/cli/mcp/multi-repository.ts',
+  'src/cli/mcp/openai-secure-tunnel.ts',
+  'src/cli/mcp/paths.ts',
+  'src/cli/mcp/policy.ts',
+  'src/cli/mcp/readiness-projection.ts',
+  'src/cli/mcp/redaction.ts',
+  'src/cli/mcp/repo.ts',
+  'src/cli/mcp/server.ts',
+  'src/cli/mcp/setup.ts',
+  'src/cli/mcp/transports/http.ts',
+  'src/cli/mcp/transports/session-registry.ts',
+  'src/cli/mcp/types.ts',
   'src/cli/mcp/oauth.ts',
   'src/cli/mcp/tool-contract.ts',
   'src/cli/mcp/transports/stdio.ts',
@@ -2179,10 +2194,6 @@ for (const path of [
   'src/runtime/gateway/mcp/runtime-tools.ts',
   'src/runtime/gateway/mcp/work-validation-reconciler.ts',
 ]) requireMissing(path);
-for (const path of [
-  'src/cli/mcp/multi-repository.ts',
-  'src/cli/mcp/server.ts',
-]) requireText(path, '@deprecated Kernel V2 compatibility shim');
 requireText('src/runtime/control-plane/execution/work-execution-support.ts', 'packages/protocols/mcp/execution-context');
 requireText('src/runtime/control-plane/execution/work-preparation-service.ts', 'packages/protocols/mcp/execution-context');
 requireText('src/runtime/control-plane/execution/work-operation-service.ts', 'packages/protocols/mcp/execution-context');
@@ -2225,13 +2236,6 @@ forbidBetween(
   /\b(?:pid|process|endpoint|url|tunnel|token)\b/i,
   'ForgeInstanceIdentity creation must remain independent of process and adapter transport/auth metadata',
 );
-for (const path of [
-  'src/cli/mcp/auth.ts',
-  'src/cli/mcp/setup.ts',
-  'src/cli/mcp/openai-secure-tunnel.ts',
-]) {
-  requireText(path, '@deprecated Kernel V2 compatibility shim');
-}
 requireText('adapters/mcp/auth.ts', 'forgeInstanceId?: string');
 forbid('adapters/mcp/auth.ts', /server:\s*\{[\s\S]{0,512}?instanceId\??:\s*string/, 'MCP server process identity must not share semantic Forge instanceId naming');
 requireText('adapters/mcp/setup.ts', 'ensureForgeInstanceIdentity');

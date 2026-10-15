@@ -2,7 +2,7 @@ import { createHash } from 'crypto';
 import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { basename, dirname, join, resolve } from 'path';
-import { loadMcpServiceLocalConfig } from '../../cli/mcp/auth';
+import { loadMcpServiceLocalConfig } from '../../../adapters/mcp/auth';
 import { runtimeAuthorityFreeEnvironment } from '../shared/process-environment';
 import type { PackageRuntimeRelease } from './package-runtime-release';
 import { createPlatformServiceManagerHost, platformLaunchdInstalledPath, type PlatformServiceManagerHost, type SystemdUserUnitInput } from '../platform/service-manager';

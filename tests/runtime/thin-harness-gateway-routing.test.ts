@@ -11,8 +11,8 @@ import {
 } from '../../adapters/mcp/runtime-gateway/router';
 import { executeGatewayRoutedOperation } from '../../adapters/mcp/runtime-gateway/gateway-execution-adapter';
 import { callCoreCapabilityAdapter } from '../../adapters/mcp/runtime-gateway/core-capability-adapter';
-import { createMcpToolContext } from '../../src/cli/mcp/server';
-import { callMultiRepositoryTool } from '../../src/cli/mcp/multi-repository';
+import { createMcpToolContext } from '../../adapters/mcp/server';
+import { callMultiRepositoryTool } from '../../adapters/mcp/multi-repository';
 import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
 import { addRepositoryCheckout, getRepository, registerRepository, selectRepositoryCheckout } from '../../src/cli/repositories/registry';
 import { repositoryGitStatus } from '../../src/cli/repositories/structured-git';
@@ -42,7 +42,7 @@ import {
   beginEditSession,
   getEditSession,
 } from '../../src/cli/editing/edit-session';
-import { getMcpPolicy } from '../../src/cli/mcp/policy';
+import { getMcpPolicy } from '../../adapters/mcp/policy';
 import {
   reconcilePendingEditValidations,
   startOrJoinEditValidation,

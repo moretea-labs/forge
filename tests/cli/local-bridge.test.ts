@@ -24,7 +24,7 @@ import {
 import { FORGE_TOOL_SURFACE } from "../../src/cli/controller/runtime-config";
 import { createIssue, getIssue, updateTask } from "../../src/cli/controller/issue-store";
 import { beginEditSession, applyEditOperations } from "../../src/cli/editing/edit-session";
-import { getMcpPolicy } from "../../src/cli/mcp/policy";
+import { getMcpPolicy } from "../../adapters/mcp/policy";
 import {
   executeLocalBridgeJob,
   getLocalBridgeJob,

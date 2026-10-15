@@ -84,7 +84,7 @@ describe('runtime command surface', () => {
     expect(existsSync(join(ROOT, 'src/cli/mcp/restart.ts'))).toBe(false);
     const mcpCommand = readFileSync(join(ROOT, 'src/cli/commands/mcp.ts'), 'utf8');
     const lifecycleAuthority = readFileSync(join(ROOT, 'src/cli/controller/lifecycle-authority.ts'), 'utf8');
-    const mcpAuth = readFileSync(join(ROOT, 'src/cli/mcp/auth.ts'), 'utf8');
+    const mcpAuth = readFileSync(join(ROOT, 'adapters/mcp/auth.ts'), 'utf8');
     const httpTransport = readFileSync(join(ROOT, 'adapters/mcp/transports/http.ts'), 'utf8');
     const httpObservation = readFileSync(join(ROOT, 'adapters/mcp/transports/http-observation.ts'), 'utf8');
     const runtimeTools = readFileSync(join(ROOT, 'adapters/mcp/runtime-gateway/runtime-tools.ts'), 'utf8');

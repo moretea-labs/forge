@@ -30,7 +30,7 @@ import {
 import { readRuntimeReleaseAuthority } from '../../src/runtime/root/release-store';
 import { ensurePackageConnectorService, packageConnectorEndpointStatusHealthy, packageConnectorLaunchSpec, packageConnectorReadinessEndpoint, packageConnectorServiceMatchesRelease, packageConnectorServicePaths, packageConnectorSystemdInstallCommands, readPackageConnectorServiceAuthority, renderPackageConnectorLaunchAgent, renderPackageConnectorSystemdUserUnit, syncPackageConnectorActiveEntrypoint, waitForPackageConnectorEndpointReady } from '../../src/runtime/root/package-connector-service';
 import { retireConflictingForgeLaunchAgents } from '../../src/cli/controller/launch-agents';
-import { writeMcpServiceLocalConfig } from '../../src/cli/mcp/auth';
+import { writeMcpServiceLocalConfig } from '../../adapters/mcp/auth';
 
 const roots: string[] = [];
 function fixture(): { root: string; home: string; repo: string; token: string } {

@@ -1,5 +1,5 @@
 import type { GitHubStatus } from "../github/contracts";
-import type { McpAgentRunnerName } from "../mcp/types";
+import type { McpAgentRunnerName } from "../../../adapters/mcp/types";
 import type { ControllerAgent } from "../controller/types";
 
 export type ExecutorHealthStatus =

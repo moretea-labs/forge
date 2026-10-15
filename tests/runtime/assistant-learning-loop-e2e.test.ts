@@ -23,7 +23,7 @@ import {
 import type { WorkflowPublicationReceipt } from '../../packages/workflow-runtime/api/index';
 import { memoryAddressKey } from '../../packages/kernel/cognition/api/index';
 import { ensureForgeInstanceIdentity } from '../../packages/kernel/identity/api/index';
-import { getMcpPolicy } from '../../src/cli/mcp/policy';
+import { getMcpPolicy } from '../../adapters/mcp/policy';
 import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
 import { registerRepository } from '../../src/cli/repositories/registry';
 import { writeWorkflowRunCheckpoint } from '../../src/runtime/control-plane/persistence/workflow-run-store';
@@ -45,8 +45,11 @@ afterEach(() => {
   while (roots.length > 0) rmSync(roots.pop()!, { recursive: true, force: true });
 });
 
+// Context composition reads wall time; anchor the scenario once so retained
+// 30-day experiences do not expire merely because the calendar advances.
+const scenarioStartedAt = Date.now();
 function time(minute: number): string {
-  return new Date(Date.parse('2026-09-08T00:00:00.000Z') + minute * 60_000).toISOString();
+  return new Date(scenarioStartedAt + minute * 60_000).toISOString();
 }
 
 function fixture(name: string, options: { knowledge?: boolean } = {}) {

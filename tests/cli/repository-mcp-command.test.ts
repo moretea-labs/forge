@@ -9,7 +9,7 @@ import { callMcpTool } from "../../adapters/mcp/tool-mapping/tools";
 import { callRepositoryTool, repositoryToolDefinitions } from "../../adapters/mcp/tool-mapping/repository-tools";
 import { repositoryGitCommit, repositoryGitMergeBranch, repositoryGitRebaseOnto, repositoryGitStatus } from "../../src/cli/repositories/structured-git";
 import { callRuntimeTool, runtimeToolDefinitions } from "../../adapters/mcp/runtime-gateway/runtime-tools";
-import { createMcpToolContext } from "../../src/cli/mcp/multi-repository";
+import { createMcpToolContext } from "../../adapters/mcp/multi-repository";
 import { getLocalBridgeJob, readLocalBridgeJobOutput, readLocalBridgeJobOutputSnapshot } from "../../src/cli/local-bridge/job-store";
 import { routeDurableMcpCall } from "../../adapters/mcp/runtime-gateway/router";
 import { waitRepositoryCommandProcess } from "../../src/runtime/execution/process-runtime/command-facade";

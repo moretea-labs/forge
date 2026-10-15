@@ -22,7 +22,7 @@ import { join } from 'path';
 import { spawnSync } from 'child_process';
 import { ensureControllerHome, repositoryControllerRoot } from '../src/cli/repositories/controller-home';
 import { registerRepository } from '../src/cli/repositories/registry';
-import { createMcpToolContext } from '../src/cli/mcp/server';
+import { createMcpToolContext } from '../adapters/mcp/server';
 import { callRepositoryTool } from '../adapters/mcp/tool-mapping/repository-tools';
 import {
   classifyGatewayExecutionPath,
@@ -35,7 +35,7 @@ import {
   getLeaseSideEffectMetrics,
   resetLeaseSideEffectMetrics,
 } from '../src/runtime/resources/leases/store';
-import type { MultiRepositoryMcpToolContext } from '../src/cli/mcp/multi-repository';
+import type { MultiRepositoryMcpToolContext } from '../adapters/mcp/multi-repository';
 import { waitForProcess } from '../src/runtime/execution/process-runtime/runtime';
 import { isLightweightProcessId, waitForLightweightProcess } from '../src/runtime/execution/process-runtime/lightweight-managed';
 

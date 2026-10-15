@@ -83,7 +83,7 @@ import { ensureRepositoryRuntimeStorage } from '../../src/cli/repositories/runti
 import { resolveEphemeralWorkspaceTarget } from '../../src/cli/repositories/ephemeral-workspace';
 import { sanitizeFileComponent } from '../../src/runtime/shared/json-files';
 import { callProcessTool, DEFAULT_PROCESS_WAIT_ATTACH_BUDGET_MS, processToolDefinitions } from '../../adapters/mcp/runtime-gateway/process-tools';
-import type { MultiRepositoryMcpToolContext } from '../../src/cli/mcp/multi-repository';
+import type { MultiRepositoryMcpToolContext } from '../../adapters/mcp/multi-repository';
 import { rebuildRepositoryProjection } from '../../src/runtime/projections/materialized-view';
 import { createWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { rotateRuntimeGeneration } from '../../src/runtime/control-plane/runtime-generation';

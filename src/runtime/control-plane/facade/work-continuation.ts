@@ -1,5 +1,5 @@
 import type { WorkContract, WorkReconciliationRecord } from './types';
-import { redactMcpText } from '../../../cli/mcp/redaction';
+import { redactMcpText } from '../../../../adapters/mcp/redaction';
 
 export interface WorkContinuationSnapshot {
   schemaVersion: 1;

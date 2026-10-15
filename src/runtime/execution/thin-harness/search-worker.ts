@@ -4,8 +4,8 @@
  */
 import { isMainThread, parentPort, workerData, Worker } from 'worker_threads';
 import { fileURLToPath } from 'url';
-import { getMcpPolicy } from '../../../cli/mcp/policy';
-import type { McpPolicy } from '../../../cli/mcp/types';
+import { getMcpPolicy } from '../../../../adapters/mcp/policy';
+import type { McpPolicy } from '../../../../adapters/mcp/types';
 import {
   searchRepository,
   searchRepositoryMany,

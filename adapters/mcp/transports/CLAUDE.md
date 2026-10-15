@@ -5,21 +5,21 @@ Keep this file focused on the local contract for this primary functional block.
 <!-- BEGIN ARCHITECTURE CONTRACT -->
 ## Architecture Contract
 
-- Functional block: `src/cli/mcp/transports`
+- Functional block: `adapters/mcp/transports`
 - Capability ID: `mcp-http-transport-lifecycle`
-- Matched prefix: `src/cli/mcp/transports`
+- Matched prefix: `adapters/mcp/transports`
 - Architecture domain: `controller-runtime`
 - Architecture capability: `transport-lifecycle`
 - Architecture module: `docs/architecture/modules/controller-runtime/transport-lifecycle.md`
 - Last architecture event: 2026-07-18T07:08:47.902Z
-- Last changed path: `src/cli/mcp/transports`
+- Last changed path: `adapters/mcp/transports`
 - Severity: medium
 - Change type: capability-config
 - Module responsibility: Keep this block aligned with the local boundary described by surrounding human-owned context.
-- Entrypoints: `src/cli/mcp/transports`
+- Entrypoints: `adapters/mcp/transports`
 - Allowed dependencies: Follow root `AGENTS.md` / `CLAUDE.md` and this local contract.
 - Forbidden dependencies: Do not cross sibling app/service/package boundaries without an architecture snapshot or explicit plan.
-- Runtime path: `src/cli/mcp/transports`
+- Runtime path: `adapters/mcp/transports`
 - LSP/tooling profile: `typescript-lsp`
 - Verification: Use root required checks plus local commands recorded in this capability contract.
 - Latest snapshot: `(none yet)`

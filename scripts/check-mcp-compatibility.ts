@@ -2,7 +2,7 @@ import { readFileSync } from 'fs';
 import { FORGE_TOOL_SURFACE, FORGE_VERSION, forgeToolSurfaceFingerprint } from '../src/cli/controller/runtime-config';
 import { injectCognitionSettlementFields } from '../adapters/mcp/runtime-gateway/cognition-settlement';
 import { injectDurableCommandFields } from '../adapters/mcp/runtime-gateway/router';
-import { runtimePolicy } from '../src/cli/mcp/multi-repository';
+import { runtimePolicy } from '../adapters/mcp/multi-repository';
 import { buildMcpToolDefinitions } from '../adapters/mcp/tool-mapping/tools';
 import { accessToolDefinitions } from '../adapters/mcp/tool-mapping/access-tools';
 import { repositoryToolDefinitions } from '../adapters/mcp/tool-mapping/repository-tools';

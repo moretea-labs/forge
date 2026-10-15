@@ -169,7 +169,7 @@ export const RUNTIME_LIFECYCLE_INVENTORY: readonly RuntimeLifecycleClassDefiniti
     retentionCapacity: 'Global maximum, lease expiry and absolute lifetime bound stream-only sessions.',
     cleanupAuthority: 'MCP transport registry lifecycle.',
     recoverySemantics: 'Closing transport state never cancels or completes a durably accepted Job.',
-    closureStatus: 'existing_bounded', evidencePaths: ['docs/architecture/modules/controller-runtime/transport-lifecycle.md','src/cli/mcp/transports'],
+    closureStatus: 'existing_bounded', evidencePaths: ['docs/architecture/modules/controller-runtime/transport-lifecycle.md','adapters/mcp/transports'],
   }),
   lifecycle({
     id: 'browser_session_profile', owner: 'Browser session/provider authority', scope: 'provider', dataClass: 'provider_artifact',

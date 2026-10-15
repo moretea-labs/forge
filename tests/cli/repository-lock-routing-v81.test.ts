@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { dirname } from 'path';
-import { repositoryScopedToolArgs } from '../../src/cli/mcp/multi-repository';
+import { repositoryScopedToolArgs } from '../../adapters/mcp/multi-repository';
 import {
   acquireControllerLock,
   controllerLockPath,

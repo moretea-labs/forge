@@ -2,7 +2,7 @@ import { execFileSync } from 'child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { createMcpToolContext } from '../src/cli/mcp/multi-repository';
+import { createMcpToolContext } from '../adapters/mcp/multi-repository';
 import { callRuntimeTool } from '../adapters/mcp/runtime-gateway/runtime-tools';
 import { exposedControllerToolDefinitions } from '../adapters/mcp/toolset';
 import { registerRepository } from '../src/cli/repositories/registry';

@@ -6,11 +6,11 @@
       "domain": "controller-runtime",
       "name": "transport-lifecycle",
       "prefixes": [
-        "src/cli/mcp/transports"
+        "adapters/mcp/transports"
       ],
       "contract_files": {
-        "agents": "src/cli/mcp/transports/AGENTS.md",
-        "claude": "src/cli/mcp/transports/CLAUDE.md"
+        "agents": "adapters/mcp/transports/AGENTS.md",
+        "claude": "adapters/mcp/transports/CLAUDE.md"
       },
       "architecture_module": "docs/architecture/modules/controller-runtime/transport-lifecycle.md",
       "lsp_profile": "typescript-lsp",

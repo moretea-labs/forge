@@ -8,8 +8,8 @@ import {
   registerRepository,
   selectRepositoryCheckout,
 } from '../src/cli/repositories/registry';
-import { createMcpToolContext } from '../src/cli/mcp/server';
-import { callMultiRepositoryTool } from '../src/cli/mcp/multi-repository';
+import { createMcpToolContext } from '../adapters/mcp/server';
+import { callMultiRepositoryTool } from '../adapters/mcp/multi-repository';
 import { callRuntimeTool } from '../adapters/mcp/runtime-gateway/runtime-tools';
 import { createWorkContract } from '../src/runtime/control-plane/facade/work-contract-store';
 import { createRequirement } from '../src/runtime/control-plane/persistence/requirement-store';

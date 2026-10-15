@@ -6,7 +6,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { performance } from 'perf_hooks';
 import { buildControllerContextPackAsync } from '../src/cli/controller/context-pack';
-import { getMcpPolicy } from '../src/cli/mcp/policy';
+import { getMcpPolicy } from '../adapters/mcp/policy';
 import { clearAllSessionCachesForTest } from '../src/cli/repository/session-cache';
 import { startLightweightRepositoryCommand } from '../src/runtime/execution/process-runtime/lightweight-managed';
 import { registerRepository } from '../src/cli/repositories/registry';

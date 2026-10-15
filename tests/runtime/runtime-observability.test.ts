@@ -22,8 +22,8 @@ import { flushMcpDiagnostics, recordMcpIncident, recordMcpTiming } from '../../s
 import { classifyForgeIncidentForRepair, maybeRegisterMcpIncidentRepair } from '../../src/runtime/diagnostics/incident-repair';
 import { callRuntimeTool, sessionlessFacadeControllerAuthorityMatches } from '../../adapters/mcp/runtime-gateway/runtime-tools';
 import { authenticatedFacadeControllerIdentity } from '../../adapters/mcp/runtime-gateway/controller-authority-adapter';
-import { createMcpToolContext as createMultiRepositoryContext } from '../../src/cli/mcp/multi-repository';
-import { createForgeMcpServer } from '../../src/cli/mcp/server';
+import { createMcpToolContext as createMultiRepositoryContext } from '../../adapters/mcp/multi-repository';
+import { createForgeMcpServer } from '../../adapters/mcp/server';
 import { registerRepository } from '../../src/cli/repositories/registry';
 import { repositoryControllerRoot } from '../../src/cli/repositories/controller-home';
 import { callRepositoryTool } from '../../adapters/mcp/tool-mapping/repository-tools';

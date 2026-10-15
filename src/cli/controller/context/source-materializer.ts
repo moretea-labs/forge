@@ -1,6 +1,6 @@
-import type { McpPolicy } from '../../mcp/types';
+import type { McpPolicy } from '../../../../adapters/mcp/types';
 import { extractTypeScriptSourceSymbolsInSidecar } from '../../../runtime/context/typescript-navigation-process';
-import { redactMcpText } from '../../mcp/redaction';
+import { redactMcpText } from '../../../../adapters/mcp/redaction';
 import { readRepositoryRange, type RepositoryReadSession } from '../../repository/inspector';
 
 const DEFAULT_CONTEXT_BEFORE = 12;

@@ -14,7 +14,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { performance } from 'perf_hooks';
-import { createMcpToolContext } from '../src/cli/mcp/server';
+import { createMcpToolContext } from '../adapters/mcp/server';
 import { registerRepository } from '../src/cli/repositories/registry';
 import { callRuntimeTool } from '../adapters/mcp/runtime-gateway/runtime-tools';
 import { callProcessTool } from '../adapters/mcp/runtime-gateway/process-tools';
