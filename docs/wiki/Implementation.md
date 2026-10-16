@@ -78,6 +78,10 @@ including mode preservation and unique temporary paths. Independent Windows/WSL
 host rescue deliberately retains its local writer rather than importing a
 Runtime module into its emergency migration entrypoint.
 
+Adoption no longer emits repo-local generated Helper wrapper scripts. The unused
+compatibility generator under `src/core/adoption/helper-wrapper-plan.ts` is retired;
+`src/core/adoption/plan.ts` installs only the current project-level assets.
+
 ## 6. Unified Process Runtime
 
 Primary code:

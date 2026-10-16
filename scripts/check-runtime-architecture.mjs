@@ -1478,6 +1478,7 @@ requireText('src/cli/commands/init-hook.ts', "'.forge'");
 // CLI setup/adoption must use one process/environment implementation, not three writers.
 requireText('src/cli/commands/setup-execution.ts', 'export function withProcessEnv');
 requireText('src/cli/commands/setup-execution.ts', 'export function runSetupProcess');
+requireMissing('src/core/adoption/helper-wrapper-plan.ts');
 // Service and release persistence use one writer rather than five sibling
 // open/write/rename algorithms with incompatible temporary-file identities.
 requireText('src/runtime/shared/atomic-text-file.ts', 'export function writeAtomicTextFile');
