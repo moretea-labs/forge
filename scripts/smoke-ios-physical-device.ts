@@ -1,6 +1,6 @@
 import { existsSync } from 'fs';
 import { spawnSync } from 'child_process';
-import { executeIosPluginAction } from '../src/runtime/plugins/ios-adapter';
+import { computerPluginAdapter } from '../src/runtime/plugins/computer-registration';
 import { resolveRepoPreferredControllerHome } from '../src/cli/repositories/controller-home';
 
 const repoRoot = process.cwd();
@@ -29,12 +29,12 @@ const common = {
   controllerHome,
   repoId,
   repoRoot,
-  pluginId: 'ios',
+  pluginId: 'computer',
   origin: { surface: 'local-ui' as const, actor: 'physical-ios-live-smoke' },
 };
 
 async function invoke(actionId: string, args: Record<string, unknown>) {
-  return executeIosPluginAction({
+  return computerPluginAdapter.executeAction({
     ...common,
     actionId,
     args,
@@ -43,6 +43,7 @@ async function invoke(actionId: string, args: Record<string, unknown>) {
 }
 
 let interactionId: string | undefined;
+let reusedSession = false;
 try {
   const listed = await invoke('physical_device_list', {});
   const devices = Array.isArray(listed.devices) ? listed.devices as Array<Record<string, unknown>> : [];
@@ -58,11 +59,14 @@ try {
   const opened = await invoke('physical_device_open', {
     device: device.identifier,
     bundle_id: bundleId,
-    relaunch: true,
+    relaunch: false,
+    observe_after_open: true,
+    prewarm_input: true,
   });
   const interaction = opened.interaction as Record<string, unknown> | undefined;
   interactionId = typeof interaction?.interactionId === 'string' ? interaction.interactionId : undefined;
   if (!interactionId) throw new Error('The physical provider did not return an interaction id.');
+  reusedSession = opened.reusedSession === true;
 
   const screenshot = await invoke('physical_device_screenshot', {
     interaction_id: interactionId,
@@ -78,10 +82,11 @@ try {
   const height = metadata.match(/pixelHeight:\s*(\d+)/)?.[1];
   const format = metadata.match(/format:\s*(\S+)/)?.[1];
 
-  const closed = await invoke('physical_device_close', { interaction_id: interactionId });
+  const closed = reusedSession ? undefined : await invoke('physical_device_close', { interaction_id: interactionId });
   interactionId = undefined;
   const app = installed[0]!;
   console.log(JSON.stringify({
+    verificationLevel: 'source_computer_adapter_open_and_capture_only',
     device: {
       name: device.name,
       model: device.model,
@@ -97,6 +102,7 @@ try {
       version: app.version,
     },
     launchStatus: interaction?.status,
+    reusedSession,
     controlPlane: opened.controlPlane,
     coreDeviceCapabilities: info.capabilities,
     screenViewingURLAvailable: typeof info.screenViewingURL === 'string',
@@ -106,11 +112,11 @@ try {
       height: height ? Number(height) : undefined,
       format,
     },
-    closeStatus: (closed.interaction as Record<string, unknown> | undefined)?.status,
-    deviceUnmodified: closed.deviceUnmodified === true,
+    closeStatus: (closed?.interaction as Record<string, unknown> | undefined)?.status,
+    deviceUnmodified: closed?.deviceUnmodified === true,
   }, null, 2));
 } finally {
-  if (interactionId) {
+  if (interactionId && !reusedSession) {
     try { await invoke('physical_device_close', { interaction_id: interactionId }); } catch {}
   }
 }

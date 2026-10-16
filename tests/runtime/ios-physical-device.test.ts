@@ -191,6 +191,21 @@ describe('CoreDevice-first physical iPhone provider', () => {
     await executeIosPhysicalDeviceAction(input(value, 'physical_device_close', { interaction_id: (first.interaction as { interactionId: string }).interactionId }));
   });
 
+  it('keeps standalone phone smoke on the sole Computer path and never sends unreviewed app input', () => {
+    const source = readFileSync(join(process.cwd(), 'scripts/smoke-ios-physical-device.ts'), 'utf8');
+    expect(source).toContain("pluginId: 'computer'");
+    expect(source).toContain('computerPluginAdapter.executeAction(');
+    expect(source).toContain('relaunch: false');
+    expect(source).toContain('reusedSession ? undefined');
+    expect(source).toContain('if (interactionId && !reusedSession)');
+    expect(source).toContain("verificationLevel: 'source_computer_adapter_open_and_capture_only'");
+    expect(source).not.toContain('executeIosPluginAction');
+    expect(source).not.toContain("invoke('physical_device_observed_tap'");
+    expect(source).not.toContain("invoke('physical_device_batch'");
+    const systemNavigation = iosPhysicalDeviceActions().find((action) => action.actionId === 'physical_device_observed_tap');
+    expect(systemNavigation?.description).toContain('Observation freshness is not app identity');
+  });
+
   it('starts HID prewarm without synchronously awaiting worker readiness during open', () => {
     const source = readFileSync(join(process.cwd(), 'src/runtime/plugins/ios-physical-device.ts'), 'utf8');
     expect(source).toContain('prewarmRemoteXpcHid({');

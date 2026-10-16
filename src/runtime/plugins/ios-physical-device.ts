@@ -1176,7 +1176,7 @@ export function iosPhysicalDeviceActions(): AssistantPluginActionDescriptor[] {
     },
     {
       actionId: 'physical_device_observed_tap', title: 'Tap a freshly observed physical iPhone screen',
-      description: 'One-shot observed tap for app/system navigation, without reactivation. capture_after=true returns the next CoreDevice screenshot and new observation in this same call; never blindly retry a tap after screenshot failure.',
+      description: 'One-shot screenshot-bound tap for an independently inspected system-screen navigation, without reactivation. Observation freshness is not app identity: never dispatch from an unseen screenshot or use this system-navigation path for ordinary in-app taps; verify exact target foreground first and use physical_device_confirm_foreground plus physical_device_batch/tap. capture_after=true returns the next screenshot; never retry an uncertain tap.',
       readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 30_000, cancellable: true, idempotent: false,
       scopes: ['ios.device'], resourceClaims: mutationClaims,
       argumentsSchema: {

@@ -84,6 +84,10 @@ The existing worker correctly uses a single pasteboard connection for snapshot, 
 
 Physical CoreDevice action descriptors, scopes and exact-phone authorization are exposed through the existing `computer` plugin. They delegate to the unchanged `ios-physical-device` executor and Controller-global UDID lock. The `ios` plugin retains iOS development, Simulator, and explicit agent-device/XCTest actions but no longer advertises CoreDevice app actions. The public typed action route remains `plugin_action_execute`; this introduces no second device provider, transport, session store, or replay authority. Existing `ios-device` interaction identity and target verification are unchanged.
 
+### Physical foreground drift witnessed during source acceptance
+
+A source-side JD acceptance opened and observed the correct iPhone App through `computer` and the existing CoreDevice provider, but a later script captured a *new, unreviewed* screenshot and applied coordinates derived from an earlier JD image. The device foreground had meanwhile changed to the user's ChatGPT App. The observed tap succeeded against that other App, so **fresh observation IDs alone are not foreground identity proof**. The session was closed by exact interaction ID and its global device lock was released; no further text input was sent. Do not replay the tap. The next app-specific attempt must separate model-reviewed observation from mutation, use the established `physical_device_confirm_foreground` authority for in-app gestures, and abort if user foreground changes. The live 11.24.0 HID tap is verified, but Unicode clipboard input, shopping SKU prices and personal medical document export are not. Standalone smoke tests must stop their retained HID worker, or their process can time out despite completing the CoreDevice open and screenshot.
+
 ## Existing module migration map
 
 `KEEP` means the responsibility stays in Forge. `MOVE` means the responsibility belongs in the independent `ios-device` provider. `REWRITE` means the current in-process module is useful evidence/behavior but is not itself the final service boundary. `DELETE` is conditional on the stated removal criterion.
