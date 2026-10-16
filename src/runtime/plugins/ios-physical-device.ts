@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'crypto';
-import { existsSync, mkdirSync, readFileSync } from 'fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, unlinkSync } from 'fs';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
 import { performance } from 'perf_hooks';
@@ -38,6 +38,9 @@ const MAX_JSON_BYTES = 64 * 1024;
 const MAX_EVENTS = 200;
 const MAX_BATCH_STEPS = 20;
 const MAX_BATCH_WAIT_MS = 5_000;
+const MAX_EXPORTED_DOCUMENT_BYTES = 20 * 1024 * 1024;
+const MAX_DOCUMENT_INDEX_BYTES = 512 * 1024;
+const MAX_SCREENSHOT_BYTES = 25 * 1024 * 1024;
 
 interface CommandResult {
   ok: boolean;
@@ -260,7 +263,11 @@ function statePath(input: AssistantPluginActionExecutionInput, interactionId: st
 
 function artifactDir(input: AssistantPluginActionExecutionInput, interactionId: string): string {
   const path = join(controllerRoot(input), 'artifacts', 'ios', 'physical-device', sanitize(interactionId));
-  mkdirSync(path, { recursive: true });
+  mkdirSync(path, { recursive: true, mode: 0o700 });
+  if (!lstatSync(path).isDirectory()) {
+    throw new AssistantPluginError('IOS_DEVICE_ARTIFACT_DIR_INVALID', 'The private iPhone artifact directory is not a regular directory.', { retryable: false });
+  }
+  chmodSync(path, 0o700);
   return path;
 }
 
@@ -321,6 +328,19 @@ function optionalString(value: unknown): string | undefined {
 function requireFiniteNumber(value: unknown, name: string): number {
   if (typeof value === 'number' && Number.isFinite(value)) return value;
   throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', `${name} must be a finite number.`, { retryable: false });
+}
+
+function requireAppDocumentPath(value: unknown): string {
+  const path = requireString(value, 'path');
+  const parts = path.split('/');
+  if (parts.length !== 2 || parts[0] !== 'Documents'
+    || !/^[^\\/\u0000-\u001f\u007f]+\.(?:pdf|png|jpe?g|heic)$/i.test(parts[1] ?? '')
+    || parts[1] === '.' || parts[1] === '..' || path.length > 512) {
+    throw new AssistantPluginError('IOS_DEVICE_DOCUMENT_PATH_INVALID',
+      'Provide one exact PDF/image filename immediately within the selected app Documents directory.',
+      { retryable: false });
+  }
+  return path;
 }
 
 function requireBundleId(value: unknown): string {
@@ -479,7 +499,12 @@ async function physicalDeviceLockState(input: AssistantPluginActionExecutionInpu
 
 async function requirePhysicalDeviceUnlocked(input: AssistantPluginActionExecutionInput, device: PhysicalDevice): Promise<void> {
   const lockState = await physicalDeviceLockState(input, device);
-  if (lockState.passcodeRequired !== true) return;
+  if (lockState.passcodeRequired === false) return;
+  if (lockState.passcodeRequired !== true) {
+    throw new AssistantPluginError('IOS_DEVICE_LOCK_STATE_UNVERIFIED',
+      'CoreDevice did not report a verified iPhone lock state; app activation was not attempted.',
+      { retryable: false });
+  }
   throw new AssistantPluginError(
     'IOS_DEVICE_LOCKED',
     `The selected iPhone ${device.name} is locked. Unlock it before launching an app through CoreDevice.`,
@@ -521,18 +546,49 @@ async function physicalDisplayGeometry(input: AssistantPluginActionExecutionInpu
   };
 }
 
-function pngDisplayGeometry(path: string, pointScale?: number): DisplayGeometry | undefined {
-  try {
-    const header = readFileSync(path).subarray(0, 24);
-    const signature = header.subarray(0, 8).toString('hex');
-    if (header.length < 24 || signature !== '89504e470d0a1a0a') return undefined;
-    const width = header.readUInt32BE(16);
-    const height = header.readUInt32BE(20);
-    if (width <= 1 || height <= 1) return undefined;
-    return { width, height, pointScale };
-  } catch {
-    return undefined;
+const PNG_CRC_TABLE = Uint32Array.from({ length: 256 }, (_, byte) => {
+  let crc = byte;
+  for (let bit = 0; bit < 8; bit += 1) {
+    crc = (crc >>> 1) ^ ((crc & 1) ? 0xedb88320 : 0);
   }
+  return crc >>> 0;
+});
+
+function pngDisplayGeometry(image: Buffer, pointScale?: number): DisplayGeometry | undefined {
+  // No screenshot observation is issued until all PNG chunks have valid bounds
+  // and CRCs; a plausible header/trailer alone is not a usable image.
+  if (image.length < 57 || image.subarray(0, 8).toString('hex') !== '89504e470d0a1a0a') return undefined;
+  let offset = 8;
+  let width = 0;
+  let height = 0;
+  let sawImageData = false;
+  while (offset + 12 <= image.length) {
+    const length = image.readUInt32BE(offset);
+    if (length > image.length - offset - 12) return undefined;
+    const kind = image.toString('ascii', offset + 4, offset + 8);
+    const end = offset + 8 + length;
+    if (!/^[A-Za-z]{4}$/.test(kind)) return undefined;
+    let crc = 0xffffffff;
+    for (let pos = offset + 4; pos < end; pos += 1) {
+      crc = PNG_CRC_TABLE[(crc ^ image[pos]!) & 0xff]! ^ (crc >>> 8);
+    }
+    if (((crc ^ 0xffffffff) >>> 0) !== image.readUInt32BE(end)) return undefined;
+    if (kind === 'IHDR') {
+      if (offset !== 8 || length !== 13) return undefined;
+      width = image.readUInt32BE(offset + 8);
+      height = image.readUInt32BE(offset + 12);
+      if (width <= 1 || height <= 1 || width > 10_000 || height > 10_000
+        || image[offset + 18] !== 0 || image[offset + 19] !== 0 || (image[offset + 20] ?? 2) > 1) return undefined;
+    } else if (kind === 'IDAT') {
+      if (!width || length === 0) return undefined;
+      sawImageData = true;
+    } else if (kind === 'IEND') {
+      return sawImageData && length === 0 && end + 4 === image.length
+        ? { width, height, pointScale } : undefined;
+    }
+    offset = end + 4;
+  }
+  return undefined;
 }
 
 async function sessionDisplayGeometry(
@@ -837,23 +893,20 @@ function requireObservedPhysicalTargetForeground(state: PhysicalSessionState): P
 function resolvePhysicalBatchForegroundObservation(
   state: PhysicalSessionState,
   observationId: string | undefined,
-): { foregroundObservation: PhysicalForegroundObservation; source: 'atomic_screenshot' | 'explicit_confirmation'; screenshotAgeMs?: number } {
-  if (observationId) {
-    const { observation, ageMs } = recentScreenshotObservation(state, observationId);
-    return {
-      foregroundObservation: {
-        observationId: observation.observationId,
-        screenshotObservedAt: observation.observedAt,
-        confirmedAt: timestamp(),
-        bundleId: state.bundleId,
-      },
-      source: 'atomic_screenshot',
-      screenshotAgeMs: ageMs,
-    };
+): { foregroundObservation: PhysicalForegroundObservation; source: 'explicit_confirmation'; screenshotAgeMs?: number } {
+  // Observation freshness proves only that the screen was captured. It never proves
+  // the target app was foreground. Require a separate, model-reviewed confirmation.
+  const observed = observationId ? recentScreenshotObservation(state, observationId) : undefined;
+  const confirmed = requireObservedPhysicalTargetForeground(state);
+  if (observationId && confirmed.observationId !== observationId) {
+    throw new AssistantPluginError('IOS_DEVICE_FOREGROUND_OBSERVATION_REQUIRED',
+      'The batch observation must match the separately confirmed target-app foreground.',
+      { retryable: true, details: { hidMutationDispatched: false } });
   }
   return {
-    foregroundObservation: requireObservedPhysicalTargetForeground(state),
+    foregroundObservation: confirmed,
     source: 'explicit_confirmation',
+    ...(observed ? { screenshotAgeMs: observed.ageMs } : {}),
   };
 }
 
@@ -988,32 +1041,57 @@ async function capturePhysicalScreen(
   state: PhysicalSessionState,
   label: string,
 ): Promise<Record<string, unknown>> {
-  const path = join(artifactDir(input, state.interactionId), `${sanitize(label)}-${hooks.now().getTime()}.png`);
-  const screenshotResult = await runCoreJson(input, [
-    'device', 'capture', 'screenshot', '--device', state.device.identifier, '--destination', path,
-  ], 'IOS_DEVICE_SCREENSHOT_FAILED', 60_000);
-  if (!existsSync(path)) {
-    throw new AssistantPluginError('IOS_DEVICE_SCREENSHOT_MISSING', 'CoreDevice succeeded without creating the requested screenshot.', { retryable: false });
-  }
-  const observedAt = timestamp();
-  const observationId = randomUUID();
-  const screenshotDisplay = pngDisplayGeometry(path, state.display?.pointScale);
-  if (screenshotDisplay) state.display = { ...screenshotDisplay, observedAt };
-  state.lastScreenshot = { observationId, observedAt, label };
+  const path = join(artifactDir(input, state.interactionId), `${sanitize(label)}-${hooks.now().getTime()}-${randomUUID()}.png`);
+  // A new capture supersedes the old screen. A failed observation cannot leave
+  // an earlier foreground confirmation available to authorize subsequent HID.
+  state.lastScreenshot = undefined;
   state.foregroundObservation = undefined;
-  state.events.push({ at: observedAt, type: 'screenshot', details: { label, observationId } });
-  state.events = state.events.slice(-MAX_EVENTS);
   writeState(input, state);
-  return {
-    screenshotResult: bounded(screenshotResult),
-    observation: { observationId, observedAt, label, ttlMs: INPUT_FOREGROUND_OBSERVATION_TTL_MS },
-    fastPath: {
-      actionId: 'physical_device_batch',
-      arguments: { interaction_id: state.interactionId, observation_id: observationId },
-      requires: ['steps'], ttlMs: INPUT_FOREGROUND_OBSERVATION_TTL_MS, oneShot: true,
-    },
-    artifactCandidates: [{ kind: 'ios_physical_device_screenshot', mediaType: 'image/png', path }],
-  };
+  try {
+    const screenshotResult = await runCoreJson(input, [
+      'device', 'capture', 'screenshot', '--device', state.device.identifier, '--destination', path,
+    ], 'IOS_DEVICE_SCREENSHOT_FAILED', 60_000);
+    if (!existsSync(path)) {
+      throw new AssistantPluginError('IOS_DEVICE_SCREENSHOT_MISSING', 'CoreDevice succeeded without creating the requested screenshot.', { retryable: false });
+    }
+    const file = lstatSync(path);
+    // The enclosing directory is 0700 during CoreDevice's write; the finished
+    // screenshot itself must also be private before it is read or returned.
+    if (file.isFile()) chmodSync(path, 0o600);
+    const image = file.isFile() && file.size <= MAX_SCREENSHOT_BYTES && file.size > 0 ? readFileSync(path) : undefined;
+    const screenshotDisplay = image ? pngDisplayGeometry(image, state.display?.pointScale) : undefined;
+    if (!screenshotDisplay || !image) {
+      throw new AssistantPluginError('IOS_DEVICE_SCREENSHOT_INVALID', 'CoreDevice did not provide a bounded PNG screenshot with valid image dimensions and terminal marker.', { retryable: false });
+    }
+    const screenshotSha256 = createHash('sha256').update(image).digest('hex');
+    const observedAt = timestamp();
+    const observationId = randomUUID();
+    state.display = { ...screenshotDisplay, observedAt };
+    state.lastScreenshot = { observationId, observedAt, label };
+    state.foregroundObservation = undefined;
+    state.events.push({ at: observedAt, type: 'screenshot', details: { label, observationId } });
+    state.events = state.events.slice(-MAX_EVENTS);
+    writeState(input, state);
+    return {
+      screenshotResult: bounded(screenshotResult),
+      observation: { observationId, observedAt, label, ttlMs: INPUT_FOREGROUND_OBSERVATION_TTL_MS,
+        screenshotSha256, screenshotBytes: image.length, width: screenshotDisplay.width, height: screenshotDisplay.height },
+      foregroundConfirmation: {
+        actionId: 'physical_device_confirm_foreground',
+        arguments: { interaction_id: state.interactionId, observation_id: observationId, bundle_id: state.bundleId },
+        requires: ['independent visual confirmation of target app'],
+        ttlMs: INPUT_FOREGROUND_OBSERVATION_TTL_MS,
+      },
+      artifactCandidates: [{ kind: 'ios_physical_device_screenshot', mediaType: 'image/png', path,
+        sha256: screenshotSha256, bytes: image.length }],
+    };
+  } catch (error) {
+    // A partially written or invalid image is not an observation artifact.
+    if (existsSync(path)) {
+      try { unlinkSync(path); } catch { /* Preserve the original capture failure. */ }
+    }
+    throw error;
+  }
 }
 
 /** After a mutation, screenshot failures are observations, never a reason to retry input. */
@@ -1176,7 +1254,7 @@ export function iosPhysicalDeviceActions(): AssistantPluginActionDescriptor[] {
     },
     {
       actionId: 'physical_device_observed_tap', title: 'Tap a freshly observed physical iPhone screen',
-      description: 'One-shot observed tap for app/system navigation, without reactivation. capture_after=true returns the next CoreDevice screenshot and new observation in this same call; never blindly retry a tap after screenshot failure.',
+      description: 'One-shot screenshot-bound tap for an independently inspected system-screen navigation, without reactivation. Observation freshness is not app identity: never dispatch from an unseen screenshot or use this system-navigation path for ordinary in-app taps; verify exact target foreground first and use physical_device_confirm_foreground plus physical_device_batch/tap. capture_after=true returns the next screenshot; never retry an uncertain tap.',
       readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 30_000, cancellable: true, idempotent: false,
       scopes: ['ios.device'], resourceClaims: mutationClaims,
       argumentsSchema: {
@@ -1198,7 +1276,7 @@ export function iosPhysicalDeviceActions(): AssistantPluginActionDescriptor[] {
     },
     {
       actionId: 'physical_device_batch', title: 'Run fast physical iPhone input batch',
-      description: 'Run up to 20 short visually grounded taps, swipes, text edits or waits on the single CoreDevice/HID provider. Pass observation_id to consume a fresh, visually verified screenshot without an extra confirm call. capture_after=true also returns the NEXT PNG and observation in this same call, shortening the observe-act-observe loop. Never retry a partially applied batch; screenshot failure after successful input is reported without replaying input.',
+      description: 'Run up to 20 short visually grounded taps, swipes, text edits or waits on the single CoreDevice/HID provider. First independently inspect the screenshot and call physical_device_confirm_foreground with the exact target bundle. observation_id is an optional match check, not an authorization shortcut. capture_after=true returns the NEXT PNG and observation for separate inspection and confirmation. Never retry partially applied or unknown input.',
       readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 60_000, cancellable: true, idempotent: false,
       scopes: ['ios.device'], resourceClaims: mutationClaims,
       argumentsSchema: {
@@ -1266,6 +1344,20 @@ export function iosPhysicalDeviceActions(): AssistantPluginActionDescriptor[] {
       },
     },
     {
+      actionId: 'physical_device_documents_list', title: 'Discover selected-app iPhone documents',
+      description: 'With explicit interactive confirmation, list bounded PDF/image filenames in the selected app Documents sandbox. No general Files/iCloud or other-app search.',
+      readOnly: false, risk: 'workspace_write', confirmation: 'strong_confirmation', requiredConfirmationText: 'list-iphone-app-documents',
+      defaultTimeoutMs: 60_000, cancellable: true, idempotent: true, scopes: ['ios.device'], resourceClaims: stateClaim,
+      argumentsSchema: { type: 'object', properties: { ...interactionProperty, bundle_id: { type: 'string' } }, required: ['interaction_id', 'bundle_id'], additionalProperties: false },
+    },
+    {
+      actionId: 'physical_device_document_export', title: 'Export one selected-app iPhone document',
+      description: 'With explicit interactive confirmation, copy one exact PDF/image from the selected app Documents sandbox into private Controller artifacts; no bulk export, deletion or upload.',
+      readOnly: false, risk: 'workspace_write', confirmation: 'strong_confirmation', requiredConfirmationText: 'export-iphone-app-document',
+      defaultTimeoutMs: 90_000, cancellable: true, idempotent: false, scopes: ['ios.device'], resourceClaims: mutationClaims,
+      argumentsSchema: { type: 'object', properties: { ...interactionProperty, bundle_id: { type: 'string' }, path: { type: 'string', maxLength: 512 } }, required: ['interaction_id', 'bundle_id', 'path'], additionalProperties: false },
+    },
+    {
       actionId: 'physical_device_events', title: 'Read physical iOS events',
       description: 'Read bounded, redacted provider events without input text or credentials.',
       readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 30_000, cancellable: true, idempotent: true,
@@ -1317,6 +1409,11 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
     const selectStartedAt = performance.now();
     const selected = await selectDevice(input, input.args.device);
     recordTiming(timingStages, 'deviceSelection', selectStartedAt, false);
+    if (!selected.connected) {
+      throw new AssistantPluginError('IOS_DEVICE_NOT_CONNECTED',
+        'The selected paired iPhone has no usable CoreDevice connection; app activation was not attempted.',
+        { retryable: true });
+    }
     const bundleId = requireBundleId(input.args.bundle_id);
     const appsStartedAt = performance.now();
     const lockStartedAt = performance.now();
@@ -1514,6 +1611,163 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
   const { record, state } = requireRecord(input, input.actionId === 'physical_device_close');
   recordTiming(timingStages, 'sessionLookup', sessionLookupStartedAt, false);
   switch (input.actionId) {
+    case 'physical_device_documents_list': {
+      if (requireBundleId(input.args.bundle_id) !== state.bundleId) {
+        throw new AssistantPluginError('IOS_DEVICE_DOCUMENT_TARGET_MISMATCH', 'Document consent does not match the exact app session.', { retryable: false });
+      }
+      if (!state.device.connected) {
+        throw new AssistantPluginError('IOS_DEVICE_NOT_CONNECTED', 'Exact iPhone is not connected.', { retryable: true });
+      }
+      let response: Record<string, unknown>;
+      try {
+        response = await runCoreJson(input, [
+          'device', 'info', 'files', '--device', state.device.identifier,
+          '--domain-type', 'appDataContainer', '--domain-identifier', state.bundleId,
+          '--subdirectory', 'Documents', '--no-recurse',
+        ], 'IOS_DEVICE_DOCUMENT_LIST_FAILED', 60_000);
+      } catch (error) {
+        // CoreDevice's raw errors may contain private document names or paths.
+        // Keep the stable failure code, not stderr, stdout or command arguments.
+        throw new AssistantPluginError('IOS_DEVICE_DOCUMENT_LIST_UNVERIFIED',
+          'The selected app document listing could not be verified.',
+          { retryable: false, details: {
+            causeCode: error instanceof AssistantPluginError ? error.code : 'COREDEVICE_LIST_FAILURE',
+          } });
+      }
+      const result = objectValue(response.result);
+      const entries = Array.isArray(result.files) ? result.files
+        : Array.isArray(result.entries) ? result.entries : undefined;
+      if (!entries) {
+        throw new AssistantPluginError('IOS_DEVICE_DOCUMENT_LIST_SCHEMA_UNKNOWN',
+          'CoreDevice did not return a recognized file listing; no documents were verified.',
+          { retryable: false });
+      }
+      // A recognized top-level array with unrecognized row fields is not an
+      // empty directory. Reject it rather than falsely reporting no documents.
+      const listedNames = entries.map((entry) => typeof entry === 'string' ? entry
+        : stringField(objectValue(entry), 'name') ?? stringField(objectValue(entry), 'fileName'));
+      if (listedNames.some((name) => typeof name !== 'string' || !name.trim())) {
+        throw new AssistantPluginError('IOS_DEVICE_DOCUMENT_LIST_SCHEMA_UNKNOWN',
+          'CoreDevice returned file entries without recognizable names; document presence is unverified.',
+          { retryable: false });
+      }
+      const names = (listedNames as string[]).filter((name) =>
+        !name.includes('/') && !name.includes('\\')
+        && /\.(?:pdf|png|jpe?g|heic)$/i.test(name)).slice(0, 100);
+      return { provider: 'coredevice', deviceUnmodified: true,
+        interactionId: record.interactionId, bundleId: state.bundleId,
+        domain: 'appDataContainer/Documents', names, truncated: entries.length > 100 };
+    }
+    case 'physical_device_document_export': {
+      if (requireBundleId(input.args.bundle_id) !== state.bundleId) {
+        throw new AssistantPluginError('IOS_DEVICE_DOCUMENT_TARGET_MISMATCH', 'Document consent does not match the exact app session.', { retryable: false });
+      }
+      if (!state.device.connected) {
+        throw new AssistantPluginError('IOS_DEVICE_NOT_CONNECTED', 'Exact iPhone is not connected.', { retryable: true });
+      }
+      const path = requireAppDocumentPath(input.args.path);
+      const dir = join(artifactDir(input, record.interactionId), 'private-documents');
+      mkdirSync(dir, { recursive: true, mode: 0o700 });
+      if (!lstatSync(dir).isDirectory()) {
+        throw new AssistantPluginError('IOS_DEVICE_DOCUMENT_ARTIFACT_INVALID', 'The private document directory is not a regular directory.', { retryable: false });
+      }
+      chmodSync(dir, 0o700);
+      const ext = path.slice(path.lastIndexOf('.')).toLowerCase();
+      const destination = join(dir, randomUUID() + ext);
+      try {
+        // Validate the existing manifest before copying anything from the
+        // phone. Corrupt, oversized or foreign records cannot be overwritten.
+        const indexPath = join(dir, 'index.json');
+        let entries: Array<Record<string, unknown>> = [];
+        if (existsSync(indexPath)) {
+          const indexFile = lstatSync(indexPath);
+          if (!indexFile.isFile() || indexFile.size <= 0 || indexFile.size > MAX_DOCUMENT_INDEX_BYTES) {
+            throw new AssistantPluginError('IOS_DEVICE_DOCUMENT_INDEX_INVALID',
+              'The private document index is not a bounded regular file.', { retryable: false });
+          }
+          const prior = readJsonFile<unknown>(indexPath);
+          const index = objectValue(prior);
+          const stored = index.entries;
+          const validEntries = Array.isArray(stored) && stored.length <= 500
+            && stored.every((item) => {
+              const row = objectValue(item);
+              return typeof row.exportedAt === 'string' && !Number.isNaN(Date.parse(row.exportedAt))
+                && typeof row.sourcePath === 'string' && /^Documents\/[^/\\]+\.(?:pdf|png|jpe?g|heic)$/i.test(row.sourcePath)
+                && typeof row.artifactName === 'string' && /^[a-f0-9-]{36}\.(?:pdf|png|jpe?g|heic)$/i.test(row.artifactName)
+                && typeof row.sha256 === 'string' && /^[a-f0-9]{64}$/.test(row.sha256)
+                && typeof row.bytes === 'number' && Number.isSafeInteger(row.bytes)
+                && row.bytes > 0 && row.bytes <= MAX_EXPORTED_DOCUMENT_BYTES;
+            });
+          if (index.schemaVersion !== 1 || index.bundleId !== state.bundleId
+            || index.interactionId !== record.interactionId || !validEntries) {
+            throw new AssistantPluginError('IOS_DEVICE_DOCUMENT_INDEX_INVALID',
+              'The private document index belongs to another session or is malformed.', { retryable: false });
+          }
+          entries = stored as Array<Record<string, unknown>>;
+        }
+        if (entries.length >= 500) {
+          throw new AssistantPluginError('IOS_DEVICE_DOCUMENT_INDEX_FULL',
+            'The private document index has reached its 500-item limit.', { retryable: false });
+        }
+        await runCoreJson(input, [
+          'device', 'copy', 'from', '--device', state.device.identifier,
+          '--domain-type', 'appDataContainer', '--domain-identifier', state.bundleId,
+          '--source', path, '--destination', destination,
+        ], 'IOS_DEVICE_DOCUMENT_EXPORT_FAILED', 90_000);
+        const file = lstatSync(destination);
+        if (!file.isFile() || file.size <= 0 || file.size > MAX_EXPORTED_DOCUMENT_BYTES) {
+          throw new AssistantPluginError('IOS_DEVICE_DOCUMENT_EXPORT_INVALID',
+            'Expected exactly one nonempty regular document of at most 20 MiB.', { retryable: false });
+        }
+        chmodSync(destination, 0o600);
+        const bytes = readFileSync(destination);
+        // Validate more than magic bytes: a truncated CoreDevice copy must not
+        // become a successful medical-document export or organized index entry.
+        const isExpectedFormat = ext === '.pdf'
+          ? bytes.subarray(0, 5).toString('ascii') === '%PDF-'
+            && /%%EOF[\x00\x09\x0a\x0c\x0d\x20]*$/.test(bytes.subarray(-2048).toString('latin1'))
+          : ext === '.png' ? pngDisplayGeometry(bytes) !== undefined
+            : ext === '.jpg' || ext === '.jpeg'
+              ? bytes.length > 4 && bytes.subarray(0, 3).toString('hex') === 'ffd8ff'
+                && bytes.subarray(-2).toString('hex') === 'ffd9'
+              : ext === '.heic' && bytes.length >= 16
+                && bytes.subarray(4, 8).toString('ascii') === 'ftyp'
+                && /^(?:heic|heix|hevc|hevx|mif1|msf1)$/.test(bytes.subarray(8, 12).toString('ascii'))
+                && bytes.readUInt32BE(0) >= 16 && bytes.readUInt32BE(0) <= bytes.length;
+        if (!isExpectedFormat) {
+          throw new AssistantPluginError('IOS_DEVICE_DOCUMENT_FORMAT_INVALID',
+            'Exported document framing is invalid or incomplete for the selected file type.', { retryable: false });
+        }
+        const sha256 = createHash('sha256').update(bytes).digest('hex');
+        // One canonical export writer also maintains a bounded private index of
+        // facts; medical meaning and cross-app classification stay with the model.
+        const entry = { exportedAt: timestamp(), sourcePath: path,
+          artifactName: destination.slice(dir.length + 1), sha256, bytes: file.size };
+        // Atomic rename is the last fallible operation before acknowledging the
+        // export; a failed index update cannot produce a successful receipt.
+        writeJsonAtomic(indexPath, { schemaVersion: 1, bundleId: state.bundleId,
+          interactionId: record.interactionId, entries: [...entries, entry] }, { mode: 0o600 });
+        return { provider: 'coredevice', deviceUnmodified: true, externallyUploaded: false,
+          interactionId: record.interactionId, bundleId: state.bundleId,
+          document: { domain: 'appDataContainer', sourcePath: path, localArtifact: destination,
+            sha256, bytes: file.size },
+          organizedIndex: { localArtifact: indexPath, entryCount: entries.length + 1 } };
+      } catch (error) {
+        // Raw CoreDevice error details may contain sensitive document filenames.
+        // Never expose those details or retry an unknown/partial copy.
+        let cleanup = 'no_partial_artifact';
+        if (existsSync(destination)) {
+          try { unlinkSync(destination); cleanup = 'partial_artifact_deleted'; }
+          catch { cleanup = 'partial_artifact_cleanup_failed'; }
+        }
+        throw new AssistantPluginError('IOS_DEVICE_DOCUMENT_EXPORT_UNVERIFIED',
+          'The selected document export was not verified. Input is not replayable.',
+          { retryable: false, details: {
+            causeCode: error instanceof AssistantPluginError ? error.code : 'FILE_VERIFICATION_FAILED',
+            cleanup,
+          } });
+      }
+    }
     case 'physical_device_screenshot': {
       const captured = await capturePhysicalScreen(input, state, sanitize(optionalString(input.args.label) ?? 'screenshot'));
       const { screenshotResult, ...observation } = captured;

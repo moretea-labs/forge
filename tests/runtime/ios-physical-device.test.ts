@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 import { spawnSync } from 'child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { deflateSync } from 'zlib';
 import {
   executeIosPhysicalDeviceAction,
   iosPhysicalDeviceActions,
@@ -19,6 +20,7 @@ import { readInteractionSession, writeInteractionSession } from '../../src/runti
 import { registerRepository } from '../../src/cli/repositories/registry';
 import { submitAssistantPluginAction, getAssistantPluginManifest } from '../../src/runtime/plugins/store';
 import { computerPluginAdapter } from '../../src/runtime/plugins/computer-registration';
+import { executeIosPluginAction } from '../../src/runtime/plugins/ios-adapter';
 import { listPluginCapabilityAuthorizations } from '../../src/runtime/plugins/capability-authorization-grants';
 import { acquireControllerLock, readControllerLock, releaseControllerLock, renewControllerLock } from '../../src/cli/repositories/locks';
 import { ensureIosDeviceOwnership, iosCoreDeviceOwnershipId, releaseIosDeviceOwnership } from '../../src/runtime/plugins/ios-device-ownership';
@@ -53,10 +55,38 @@ function json(result: Record<string, unknown>): string {
   return JSON.stringify({ info: { outcome: 'success' }, result });
 }
 
+// The existing screenshot mock must produce a real bounded PNG: invalid text
+// fixtures would bypass the exact evidence gate being exercised here.
+function pngChunk(type: string, data: Buffer): Buffer {
+  const body = Buffer.concat([Buffer.from(type, 'ascii'), data]);
+  let crc = 0xffffffff;
+  for (const byte of body) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit += 1) crc = (crc >>> 1) ^ ((crc & 1) ? 0xedb88320 : 0);
+  }
+  const header = Buffer.alloc(4);
+  header.writeUInt32BE(data.length);
+  const footer = Buffer.alloc(4);
+  footer.writeUInt32BE((~crc) >>> 0);
+  return Buffer.concat([header, body, footer]);
+}
+const screenWidth = 1206;
+const screenHeight = 2622;
+const pngHeader = Buffer.alloc(13);
+pngHeader.writeUInt32BE(screenWidth, 0);
+pngHeader.writeUInt32BE(screenHeight, 4);
+pngHeader[8] = 1; // 1-bit grayscale
+const syntheticScreenshotPng = Buffer.concat([
+  Buffer.from('89504e470d0a1a0a', 'hex'),
+  pngChunk('IHDR', pngHeader),
+  pngChunk('IDAT', deflateSync(Buffer.alloc((Math.ceil(screenWidth / 8) + 1) * screenHeight))),
+  pngChunk('IEND', Buffer.alloc(0)),
+]);
+
 function maybeScreenshotCommand(command: string, args: string[]) {
   if (!args.join(' ').includes('device capture screenshot')) return undefined;
   const destination = args[args.indexOf('--destination') + 1]!;
-  writeFileSync(destination, 'png');
+  writeFileSync(destination, syntheticScreenshotPng);
   return { ok: true, status: 0, stdout: json({ destination }), stderr: '', command: [command, ...args] };
 }
 
@@ -189,6 +219,34 @@ describe('CoreDevice-first physical iPhone provider', () => {
     expect(second.reusedSession).toBe(true);
     expect((second.interaction as { interactionId: string }).interactionId).toBe((first.interaction as { interactionId: string }).interactionId);
     await executeIosPhysicalDeviceAction(input(value, 'physical_device_close', { interaction_id: (first.interaction as { interactionId: string }).interactionId }));
+  });
+
+  it('keeps standalone phone smoke on the sole Computer path and never sends unreviewed app input', () => {
+    const source = readFileSync(join(process.cwd(), 'scripts/smoke-ios-physical-device.ts'), 'utf8');
+    expect(source).toContain("pluginId: 'computer'");
+    expect(source).toContain('computerPluginAdapter.executeAction(');
+    expect(source).toContain('relaunch: false');
+    expect(source).toContain('prewarm_input: false');
+    expect(source).not.toContain('prewarm_input: true');
+    expect(source).toContain('reusedSession ? undefined');
+    expect(source).toContain('if (interactionId && !reusedSession)');
+    expect(source).toContain("verificationLevel: 'source_computer_adapter_open_and_capture_only'");
+    expect(source).toContain('device.connected !== true || device.screenshotAvailable !== true');
+    expect(source).toContain("createHash('sha256').update(image).digest('hex')");
+    expect(source).toContain('artifact?.sha256 !== screenshotSha256');
+    expect(source).toContain('semanticPriceVerified: false');
+    expect(source).not.toContain('executeIosPluginAction');
+    expect(source).not.toContain("invoke('physical_device_observed_tap'");
+    expect(source).not.toContain("invoke('physical_device_batch'");
+    const systemNavigation = iosPhysicalDeviceActions().find((action) => action.actionId === 'physical_device_observed_tap');
+    expect(systemNavigation?.description).toContain('Observation freshness is not app identity');
+  });
+
+  it('rejects the old direct iOS physical-device execution route before CoreDevice dispatch', async () => {
+    const value = fixture();
+    await expect(executeIosPluginAction(input(value, 'physical_device_open', {
+      device: 'CORE-DEVICE-1', bundle_id: 'com.xingin.discover',
+    }))).rejects.toMatchObject({ code: 'PLUGIN_ACTION_NOT_SUPPORTED', retryable: false });
   });
 
   it('starts HID prewarm without synchronously awaiting worker readiness during open', () => {
@@ -354,11 +412,18 @@ describe('CoreDevice-first physical iPhone provider', () => {
       id: 'CORE-DEVICE-1',
     });
     expect(openAuthorization?.target.identityFingerprint).toHaveLength(64);
+    const deviceReadiness = await executeIosPhysicalDeviceAction(input(value, 'physical_device_status', {}));
+    expect(deviceReadiness.coreDeviceReady).toBe(true);
 
     const computerManifest = getAssistantPluginManifest(value.controllerHome, repository, 'computer');
     const iosManifest = getAssistantPluginManifest(value.controllerHome, repository, 'ios');
     expect(computerManifest.actions.some((action) => action.actionId === 'physical_device_open')).toBe(true);
     expect(computerManifest.actions.some((action) => action.actionId === 'physical_device_batch')).toBe(true);
+    expect(computerManifest.health.details?.iphone).toMatchObject({
+      provider: 'coredevice', observationReady: true,
+      inputReady: false, ready: false, toolchainVersion: '11.24.0',
+    });
+    expect(computerManifest.health.warnings.some((warning) => warning.includes('RemoteXPC HID input requires Controller-owned pymobiledevice3 11.24.0'))).toBe(true);
     expect(iosManifest.actions.some((action) => action.actionId.startsWith('physical_device_'))).toBe(false);
     expect(iosManifest.actions.some((action) => action.actionId === 'xcode_test')).toBe(true);
     expect(iosManifest.actions.some((action) => action.actionId === 'launch_simulator')).toBe(true);
@@ -415,6 +480,8 @@ describe('CoreDevice-first physical iPhone provider', () => {
     const screenshot = screenshotSubmission.result?.result as Record<string, unknown>;
     const artifact = (screenshot.artifactCandidates as Array<Record<string, unknown>>)[0]!;
     expect(existsSync(String(artifact.path))).toBe(true);
+    expect(statSync(String(artifact.path)).mode & 0o777).toBe(0o600);
+    expect(statSync(join(String(artifact.path), '..')).mode & 0o777).toBe(0o700);
     expect(commands.some((argv) => argv.includes('xcodebuild'))).toBe(false);
     expect(commands.some((argv) => argv.includes('prepare'))).toBe(false);
 
@@ -514,9 +581,11 @@ describe('CoreDevice-first physical iPhone provider', () => {
     expect(launchCount).toBe(1);
   });
 
-  it('fails early with a retryable lock-state error instead of misclassifying CoreDevice launch failure', async () => {
+  it('fails early for locked, unknown-lock, and disconnected iPhones without attempting app activation', async () => {
     const value = fixture();
     const commands: string[][] = [];
+    let lockResponse: Record<string, unknown> = { passcodeRequired: true, unlockedSinceBoot: true };
+    let deviceOnline = true;
     setIosPhysicalDeviceRuntimeHooksForTest({
       platform: () => 'darwin',
       runCommand: (command, args) => {
@@ -527,9 +596,9 @@ describe('CoreDevice-first physical iPhone provider', () => {
           return { ok: true, status: 0, stdout: '636.3\n', stderr: '', command: [command, ...args] };
         }
         const joined = args.join(' ');
-        if (joined.includes('list devices')) return { ok: true, status: 0, stdout: json({ devices: [deviceEntry()] }), stderr: '', command: [command, ...args] };
+        if (joined.includes('list devices')) return { ok: true, status: 0, stdout: json({ devices: [deviceOnline ? deviceEntry() : { ...deviceEntry(), connectionProperties: { pairingState: 'paired', tunnelState: 'disconnected', transportType: 'localNetwork' }, deviceProperties: { ...deviceEntry().deviceProperties, ddiServicesAvailable: false }, capabilities: [] }] }), stderr: '', command: [command, ...args] };
         if (joined.includes('device info apps')) return { ok: true, status: 0, stdout: json({ apps: [{ name: 'Test', bundleIdentifier: 'com.example.locked' }] }), stderr: '', command: [command, ...args] };
-        if (joined.includes('device info lockState')) return { ok: true, status: 0, stdout: json({ passcodeRequired: true, unlockedSinceBoot: true }), stderr: '', command: [command, ...args] };
+        if (joined.includes('device info lockState')) return { ok: true, status: 0, stdout: json(lockResponse), stderr: '', command: [command, ...args] };
         throw new Error(`unexpected command: ${[command, ...args].join(' ')}`);
       },
     });
@@ -540,6 +609,12 @@ describe('CoreDevice-first physical iPhone provider', () => {
     } catch (error) {
       expect(error).toMatchObject({ code: 'IOS_DEVICE_LOCKED', retryable: true });
     }
+    lockResponse = { unlockedSinceBoot: true }; // Unknown lock schema cannot authorize activation.
+    await expect(executeIosPhysicalDeviceAction(input(value, 'physical_device_open', { device: 'greyson', bundle_id: 'com.example.locked' })))
+      .rejects.toMatchObject({ code: 'IOS_DEVICE_LOCK_STATE_UNVERIFIED', retryable: false });
+    deviceOnline = false;
+    await expect(executeIosPhysicalDeviceAction(input(value, 'physical_device_open', { device: 'greyson', bundle_id: 'com.example.locked' })))
+      .rejects.toMatchObject({ code: 'IOS_DEVICE_NOT_CONNECTED', retryable: true });
     expect(commands.some((argv) => argv.join(' ').includes('device process launch'))).toBe(false);
   });
 
@@ -628,7 +703,7 @@ describe('CoreDevice-first physical iPhone provider', () => {
     const displays = commands.filter((argv) => argv.join(' ').includes('device info displays'));
     expect(versions).toHaveLength(1);
     expect(locks).toHaveLength(1);
-    expect(displays).toHaveLength(1);
+    expect(displays).toHaveLength(1); // Initial CoreDevice display preflight remains authoritative.
     expect(commands.some((argv) => argv.includes('xcodebuild'))).toBe(false);
     expect(commands.some((argv) => argv.includes('prepare'))).toBe(false);
     expect(commands.some((argv) => argv.some((arg) => arg.includes('agent-device')))).toBe(false);
@@ -707,7 +782,7 @@ describe('CoreDevice-first physical iPhone provider', () => {
     const displays = commands.filter((argv) => argv.join(' ').includes('device info displays'));
     expect(launches).toHaveLength(1);
     expect(locks).toHaveLength(1);
-    expect(displays).toHaveLength(1);
+    expect(displays).toHaveLength(0); // Valid screenshot geometry avoids the external display command.
     expect(commands.some((argv) => argv.includes('xcodebuild'))).toBe(false);
     expect(commands.some((argv) => argv.some((arg) => arg.includes('agent-device')))).toBe(false);
 
@@ -716,7 +791,7 @@ describe('CoreDevice-first physical iPhone provider', () => {
     expect(JSON.stringify(events)).toContain('batch_input');
   });
 
-  it('fuses open screenshot and batch follow-up screenshot without relaxing the one-shot observation fence', async () => {
+  it('requires independently confirmed app foreground before fused batch and follow-up screenshots', async () => {
     const value = fixture();
     const hidCalls: Array<Record<string, unknown>> = [];
     setRemoteXpcHidExecutorForTest(async (request) => {
@@ -753,13 +828,20 @@ describe('CoreDevice-first physical iPhone provider', () => {
     const observation = screenshot.observation as Record<string, unknown>;
     const observationId = String(observation.observationId);
     expect(observation.ttlMs).toBe(30_000);
-    expect(screenshot.fastPath).toEqual({
-      actionId: 'physical_device_batch',
-      arguments: { interaction_id: interactionId, observation_id: observationId },
-      requires: ['steps'],
+    expect(screenshot.foregroundConfirmation).toEqual({
+      actionId: 'physical_device_confirm_foreground',
+      arguments: { interaction_id: interactionId, observation_id: observationId, bundle_id: 'com.xingin.discover' },
+      requires: ['independent visual confirmation of target app'],
       ttlMs: 30_000,
-      oneShot: true,
     });
+    await expect(executeIosPhysicalDeviceAction(input(value, 'physical_device_batch', {
+      interaction_id: interactionId, observation_id: observationId,
+      steps: [{ kind: 'type', text: 'must-not-send-before-confirmation' }],
+    }))).rejects.toMatchObject({ code: 'IOS_DEVICE_FOREGROUND_OBSERVATION_REQUIRED', retryable: true });
+    expect(hidCalls).toHaveLength(0);
+    await executeIosPhysicalDeviceAction(input(value, 'physical_device_confirm_foreground', {
+      interaction_id: interactionId, observation_id: observationId, bundle_id: 'com.xingin.discover',
+    }));
 
     const batched = await executeIosPhysicalDeviceAction(input(value, 'physical_device_batch', {
       interaction_id: interactionId,
@@ -769,17 +851,24 @@ describe('CoreDevice-first physical iPhone provider', () => {
     }));
     expect(hidCalls).toHaveLength(1);
     expect(hidCalls[0]).toMatchObject({ action: 'type', text: '<redacted>', textMode: 'auto', replaceExisting: true });
-    expect(batched.foregroundObservation).toMatchObject({ observationId, source: 'atomic_screenshot', consumed: true });
-    expect(batched.executionPlan).toMatchObject({ foregroundObservationChecks: 1, foregroundObservationSource: 'atomic_screenshot', pluginRoundTrips: 1 });
+    expect(batched.foregroundObservation).toMatchObject({ observationId, source: 'explicit_confirmation', consumed: true });
+    expect(batched.executionPlan).toMatchObject({ foregroundObservationChecks: 1, foregroundObservationSource: 'explicit_confirmation', pluginRoundTrips: 1 });
     expect(batched.postActionCapture).toMatchObject({ status: 'captured' });
     expect((batched.artifactCandidates as Array<Record<string, unknown>>)).toHaveLength(1);
     const nextObservationId = String((batched.observation as Record<string, unknown>).observationId);
     expect(nextObservationId).not.toBe(observationId);
+    await expect(executeIosPhysicalDeviceAction(input(value, 'physical_device_batch', {
+      interaction_id: interactionId, observation_id: nextObservationId,
+      steps: [{ kind: 'type', text: 'blocked-followup-unconfirmed' }],
+    }))).rejects.toMatchObject({ code: 'IOS_DEVICE_FOREGROUND_OBSERVATION_REQUIRED', retryable: true });
+    await executeIosPhysicalDeviceAction(input(value, 'physical_device_confirm_foreground', {
+      interaction_id: interactionId, observation_id: nextObservationId, bundle_id: 'com.xingin.discover',
+    }));
     const followup = await executeIosPhysicalDeviceAction(input(value, 'physical_device_batch', {
       interaction_id: interactionId, observation_id: nextObservationId,
       steps: [{ kind: 'type', text: 'second screen', input_mode: 'keys' }],
     }));
-    expect(followup.foregroundObservation).toMatchObject({ observationId: nextObservationId, source: 'atomic_screenshot', consumed: true });
+    expect(followup.foregroundObservation).toMatchObject({ observationId: nextObservationId, source: 'explicit_confirmation', consumed: true });
     expect(hidCalls).toHaveLength(2);
 
     await expect(executeIosPhysicalDeviceAction(input(value, 'physical_device_batch', {
@@ -791,13 +880,14 @@ describe('CoreDevice-first physical iPhone provider', () => {
 
     const events = await executeIosPhysicalDeviceAction(input(value, 'physical_device_events', { interaction_id: interactionId }));
     expect(JSON.stringify(events)).not.toContain('慢慢变富');
-    expect(JSON.stringify(events)).not.toContain('foreground_confirmed');
+    expect(JSON.stringify(events)).toContain('foreground_confirmed');
   });
 
   it('does not mark an applied input batch replayable when follow-up screenshot fails', async () => {
     const value = fixture();
     let hidCalls = 0;
     let screenshotCalls = 0;
+    let failedScreenshotPath: string | undefined;
     setRemoteXpcHidExecutorForTest(async (request) => {
       hidCalls += 1;
       return {
@@ -810,7 +900,11 @@ describe('CoreDevice-first physical iPhone provider', () => {
       runCommand: (command, args) => {
         if (args.join(' ').includes('device capture screenshot')) {
           screenshotCalls += 1;
-          if (screenshotCalls > 1) return { ok: false, status: 1, stdout: '', stderr: 'screen unavailable', command: [command, ...args] };
+          if (screenshotCalls > 1) {
+            failedScreenshotPath = args[args.indexOf('--destination') + 1];
+            writeFileSync(failedScreenshotPath!, Buffer.from('partial-sensitive-screen'));
+            return { ok: false, status: 1, stdout: '', stderr: 'screen unavailable', command: [command, ...args] };
+          }
           return maybeScreenshotCommand(command, args)!;
         }
         if (args[0] === 'devicectl' && args[1] === '--version') return { ok: true, status: 0, stdout: '636.3\n', stderr: '', command: [command, ...args] };
@@ -827,6 +921,9 @@ describe('CoreDevice-first physical iPhone provider', () => {
     }));
     const interactionId = String((opened.interaction as Record<string, unknown>).interactionId);
     const observationId = String((opened.observation as Record<string, unknown>).observationId);
+    await executeIosPhysicalDeviceAction(input(value, 'physical_device_confirm_foreground', {
+      interaction_id: interactionId, observation_id: observationId, bundle_id: 'com.xingin.discover',
+    }));
     const batch = await executeIosPhysicalDeviceAction(input(value, 'physical_device_batch', {
       interaction_id: interactionId, observation_id: observationId, capture_after: true,
       steps: [{ kind: 'type', text: 'once' }],
@@ -836,6 +933,11 @@ describe('CoreDevice-first physical iPhone provider', () => {
     expect(batch).not.toHaveProperty('observation');
     expect(hidCalls).toBe(1);
     expect(screenshotCalls).toBe(2);
+    expect(failedScreenshotPath).toBeDefined();
+    expect(existsSync(failedScreenshotPath!)).toBe(false);
+    await expect(executeIosPhysicalDeviceAction(input(value, 'physical_device_confirm_foreground', {
+      interaction_id: interactionId, observation_id: observationId, bundle_id: 'com.xingin.discover',
+    }))).rejects.toMatchObject({ code: 'IOS_DEVICE_SCREEN_OBSERVATION_REQUIRED' });
     await expect(executeIosPhysicalDeviceAction(input(value, 'physical_device_batch', {
       interaction_id: interactionId, observation_id: observationId, steps: [{ kind: 'type', text: 'do-not-repeat' }],
     }))).rejects.toMatchObject({ code: 'IOS_DEVICE_SCREEN_OBSERVATION_REQUIRED' });

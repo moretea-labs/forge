@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'fs';
+import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { afterEach, describe, expect, it } from 'bun:test';
@@ -12,6 +12,7 @@ import {
   remoteXpcHidWarmupFailureErrorForTest,
   remoteXpcHidWorkerSourceForTest,
   remoteXpcHidStatus,
+  remoteXpcHidCachedStatus,
   resetRemoteXpcHidForTest,
   setRemoteXpcHidExecutorForTest,
 } from '../../src/runtime/plugins/ios/remote-xpc-hid';
@@ -138,6 +139,22 @@ describe('RemoteXPC HID backend', () => {
       transport: 'macos-trusted-coredevice-rsd',
       runnerOwned: false,
     });
+    const folder = mkdtempSync(join(tmpdir(), 'forge-hid-no-eager-'));
+    try {
+      const executable = join(folder, 'mock-python');
+      const marker = join(folder, 'launched');
+      writeFileSync(executable, `#!/bin/sh\nprintf launched > "${marker}"\nexit 1\n`);
+      chmodSync(executable, 0o700);
+      const env = { FORGE_IOS_HID_PYTHON: executable };
+      const passive = remoteXpcHidCachedStatus('/controller', env);
+      expect(passive).toMatchObject({ available: false, toolchainVersion: '11.24.0' });
+      expect(existsSync(marker)).toBe(false);
+      // Explicit readiness is still verified by the sole pinned Python probe.
+      expect(remoteXpcHidStatus('/controller', env).available).toBe(false);
+      expect(existsSync(marker)).toBe(true);
+    } finally {
+      rmSync(folder, { recursive: true, force: true });
+    }
   });
 
   it('types without requiring display geometry', async () => {

@@ -16,11 +16,16 @@ export function readJsonFile<T>(path: string, fallback?: T): T {
   }
 }
 
-export function writeJsonAtomic(path: string, value: unknown): void {
+export function writeJsonAtomic(path: string, value: unknown, options?: { mode?: number }): void {
   ensureParent(path);
   const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
-  writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
-  renameSync(temporary, path);
+  try {
+    writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, { encoding: 'utf8', ...(options?.mode === undefined ? {} : { mode: options.mode }) });
+    renameSync(temporary, path);
+  } catch (error) {
+    rmSync(temporary, { force: true });
+    throw error;
+  }
 }
 
 export function appendJsonLine(path: string, value: unknown): void {

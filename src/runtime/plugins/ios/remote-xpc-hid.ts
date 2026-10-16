@@ -6,7 +6,7 @@ import { createInterface } from 'readline';
 import { performance } from 'perf_hooks';
 import { AssistantPluginError } from '../errors';
 
-const TOOLCHAIN_VERSION = '11.24.0';
+export const IOS_HID_TOOLCHAIN_VERSION = '11.24.0';
 const WORKER_IDLE_MS = 15 * 60_000;
 const WORKER_STARTUP_MS = 12_000;
 const REQUEST_TIMEOUT_MS = 12_000;
@@ -14,6 +14,8 @@ const RSD_ENDPOINT_CACHE_TTL_MS = 30_000;
 const RSD_ENDPOINT_PERSISTED_TTL_MS = 10 * 60_000;
 const MAX_TEXT_LENGTH = 2048;
 const MAX_STDERR = 8 * 1024;
+const TOOLCHAIN_PROBE_TTL_MS = 60_000;
+const TOOLCHAIN_PROBE_TIMEOUT_MS = 5_000;
 
 export interface RemoteXpcHidInput {
   controllerHome: string;
@@ -98,6 +100,7 @@ const warmups = new Map<string, Promise<void>>();
 const workerGenerations = new Map<string, number>();
 const warmupFailures = new Map<string, WarmupFailure>();
 const endpointCache = new Map<string, EndpointCacheEntry>();
+const toolchainProbeCache = new Map<string, { checkedAt: number; installedVersion?: string; available: boolean; reason?: string }>();
 
 export function setRemoteXpcHidExecutorForTest(executor: TestExecutor | undefined): void {
   testExecutor = executor;
@@ -111,26 +114,71 @@ export function resetRemoteXpcHidForTest(): void {
   workerGenerations.clear();
   warmupFailures.clear();
   endpointCache.clear();
+  toolchainProbeCache.clear();
 }
 
-export function remoteXpcHidStatus(controllerHome: string, env: NodeJS.ProcessEnv = process.env): Record<string, unknown> {
+const TOOLCHAIN_PROBE_SCRIPT = [
+  'from importlib.metadata import version',
+  'from pymobiledevice3.remote.remote_service_discovery import RemoteServiceDiscoveryService',
+  'from pymobiledevice3.remote.core_device.pasteboard_service import PasteboardService',
+  'from pymobiledevice3.remote.core_device.hid_service import UniversalHIDServiceService, touch_session',
+  "print(version('pymobiledevice3'))",
+].join('; ');
+
+function probeHidToolchain(python: string): { installedVersion?: string; available: boolean; reason?: string } {
+  const cached = toolchainProbeCache.get(python);
+  if (cached && Date.now() - cached.checkedAt <= TOOLCHAIN_PROBE_TTL_MS) return cached;
+  const result = spawnSync(python, ['-c', TOOLCHAIN_PROBE_SCRIPT], {
+    encoding: 'utf8', timeout: TOOLCHAIN_PROBE_TIMEOUT_MS, maxBuffer: 8 * 1024,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  const installedVersion = typeof result.stdout === 'string' ? result.stdout.trim() : undefined;
+  const available = result.status === 0 && installedVersion === IOS_HID_TOOLCHAIN_VERSION && !result.error;
+  const reason = available ? undefined : result.error?.message ?? (result.status === 0
+    ? `Expected pymobiledevice3 ${IOS_HID_TOOLCHAIN_VERSION}, found ${installedVersion || 'unknown'}.`
+    : `pymobiledevice3 import/version probe failed (exit ${result.status ?? 'unknown'}).`);
+  const probe = { checkedAt: Date.now(), installedVersion, available, reason };
+  // A failed probe is not durable: an explicitly authorized installer may
+  // finish immediately afterward without requiring a Runtime restart.
+  if (available) toolchainProbeCache.set(python, probe);
+  else toolchainProbeCache.delete(python);
+  return probe;
+}
+
+function hidToolchainStatus(controllerHome: string, env: NodeJS.ProcessEnv, allowProbe: boolean): Record<string, unknown> {
   const python = resolvePython(controllerHome, env);
+  const cached = python ? toolchainProbeCache.get(python) : undefined;
+  const validCached = cached?.available === true && Date.now() - cached.checkedAt <= TOOLCHAIN_PROBE_TTL_MS
+    ? cached : undefined;
+  const probe = python ? (allowProbe ? probeHidToolchain(python) : validCached) : undefined;
   return {
     backend: 'remote-xpc-hid',
-    available: Boolean(python),
+    available: probe?.available === true,
     python,
-    toolchainVersion: TOOLCHAIN_VERSION,
+    toolchainVersion: IOS_HID_TOOLCHAIN_VERSION,
+    ...(probe?.installedVersion ? { installedVersion: probe.installedVersion } : {}),
+    ...(probe?.reason ? { reason: probe.reason } : {}),
     transport: 'macos-trusted-coredevice-rsd',
     runnerOwned: false,
   };
+}
+
+// Manifest reads are passive: only an explicit HID action may start Python.
+// This is a view of the same short-lived successful probe cache, not a second
+// readiness authority or a durable grant.
+export function remoteXpcHidCachedStatus(controllerHome: string, env: NodeJS.ProcessEnv = process.env): Record<string, unknown> {
+  return hidToolchainStatus(controllerHome, env, false);
+}
+
+export function remoteXpcHidStatus(controllerHome: string, env: NodeJS.ProcessEnv = process.env): Record<string, unknown> {
+  return hidToolchainStatus(controllerHome, env, true);
 }
 
 function resolvePython(controllerHome: string, env: NodeJS.ProcessEnv): string | undefined {
   const explicit = env.FORGE_IOS_HID_PYTHON?.trim();
   const candidates = [
     explicit,
-    join(controllerHome, 'toolchains', `pymobiledevice3-${TOOLCHAIN_VERSION}-py39`, 'bin', 'python'),
-    join(controllerHome, 'toolchains', `pymobiledevice3-${TOOLCHAIN_VERSION}`, 'bin', 'python'),
+    join(controllerHome, 'toolchains', `pymobiledevice3-${IOS_HID_TOOLCHAIN_VERSION}`, 'bin', 'python'),
   ].filter((value): value is string => Boolean(value));
   return candidates.find((candidate) => existsSync(candidate));
 }
@@ -142,6 +190,7 @@ import asyncio
 import json
 import sys
 import time
+from importlib.metadata import version as package_version
 
 from pymobiledevice3.remote.remote_service_discovery import RemoteServiceDiscoveryService
 from pymobiledevice3.remote.core_device.pasteboard_service import PasteboardService
@@ -221,7 +270,11 @@ async def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--host', required=True)
     parser.add_argument('--port', required=True, type=int)
+    parser.add_argument('--expected-version', required=True)
     args = parser.parse_args()
+    actual_version = package_version('pymobiledevice3')
+    if actual_version != args.expected_version:
+        raise RuntimeError(f'RemoteXPC HID pymobiledevice3 version mismatch: {actual_version} != {args.expected_version}')
     async with RemoteServiceDiscoveryService((args.host, args.port)) as rsd:
         async with touch_session(rsd) as hid:
             connected = await hid.list_connected_services()
@@ -742,11 +795,12 @@ export function stopRemoteXpcHidForDevice(deviceIdentifier: string): Record<stri
 }
 
 function startWorker(input: Pick<RemoteXpcHidInput, 'controllerHome' | 'deviceIdentifier'>, endpoint: RsdEndpoint): WorkerRecord {
-  const python = resolvePython(input.controllerHome, process.env);
+  const status = remoteXpcHidStatus(input.controllerHome);
+  const python = status.available === true && typeof status.python === 'string' ? status.python : undefined;
   if (!python) {
-    throw new AssistantPluginError('IOS_HID_TOOLCHAIN_MISSING', `The Controller-owned pymobiledevice3 ${TOOLCHAIN_VERSION} toolchain is unavailable.`, {
+    throw new AssistantPluginError('IOS_HID_TOOLCHAIN_MISSING', `The Controller-owned pymobiledevice3 ${IOS_HID_TOOLCHAIN_VERSION} toolchain is unavailable or incompatible.`, {
       retryable: false,
-      details: { expected: join(input.controllerHome, 'toolchains', `pymobiledevice3-${TOOLCHAIN_VERSION}-py39`, 'bin', 'python') },
+      details: { expected: join(input.controllerHome, 'toolchains', `pymobiledevice3-${IOS_HID_TOOLCHAIN_VERSION}`, 'bin', 'python'), reason: status.reason },
     });
   }
   const script = materializeWorker(input.controllerHome);
@@ -755,6 +809,7 @@ function startWorker(input: Pick<RemoteXpcHidInput, 'controllerHome' | 'deviceId
     '-u', script,
     '--host', endpoint.host,
     '--port', String(endpoint.port),
+    '--expected-version', IOS_HID_TOOLCHAIN_VERSION,
   ], {
     stdio: ['pipe', 'pipe', 'pipe'],
     env: {

@@ -33,11 +33,7 @@ import {
   iosAgentDeviceStatus,
   isIosAgentDeviceAction,
 } from './ios-agent-device';
-import {
-  executeIosPhysicalDeviceAction,
-  iosPhysicalDeviceStatus,
-  isIosPhysicalDeviceAction,
-} from './ios-physical-device';
+import { iosPhysicalDeviceStatus, isIosPhysicalDeviceAction } from './ios-physical-device';
 
 const IOS_PLUGIN_ID = 'ios';
 
@@ -159,7 +155,7 @@ function permissions(input: { developmentReady: boolean; physicalReady: boolean 
     { scope: 'ios.discover', mode: 'read', description: 'Discover iOS projects and paired physical devices.', granted: input.developmentReady || input.physicalReady, required: true },
     { scope: 'ios.build', mode: 'write', description: 'Build iOS app targets into bounded DerivedData.', granted: input.developmentReady, required: true },
     { scope: 'ios.simulator', mode: 'write', description: 'Boot simulators, install, launch, screenshot, and collect logs.', granted: input.developmentReady, required: true },
-    { scope: 'ios.device', mode: 'write', description: 'Inspect and operate an exact paired physical iPhone through CoreDevice; optional XCTest semantics are isolated in the agent-device fallback.', granted: input.physicalReady, required: false },
+    { scope: 'ios.device', mode: 'write', description: 'Explicit paired-iPhone development/XCTest actions; everyday CoreDevice app interaction belongs to Computer.', granted: input.physicalReady, required: false },
   ];
 }
 
@@ -414,7 +410,7 @@ export function buildIosPluginManifest(previousRevision = 0, previousUpdatedAt?:
     revision: Math.max(1, previousRevision || 1),
     pluginId: IOS_PLUGIN_ID,
     provider: 'apple-local',
-    displayName: 'iOS / iPhone Computer Use & Development',
+    displayName: 'iOS Development / Simulator / XCTest',
     pluginVersion: '1.0.0',
     authority: {
       strategy: 'derived',
@@ -443,7 +439,9 @@ export function buildIosPluginManifest(previousRevision = 0, previousUpdatedAt?:
 
 export async function executeIosPluginAction(input: AssistantPluginActionExecutionInput): Promise<Record<string, unknown>> {
   if (isIosAgentDeviceAction(input.actionId)) return executeIosAgentDeviceAction(input);
-  if (isIosPhysicalDeviceAction(input.actionId)) return executeIosPhysicalDeviceAction(input);
+  if (isIosPhysicalDeviceAction(input.actionId)) {
+    throw new AssistantPluginError('PLUGIN_ACTION_NOT_SUPPORTED', `Physical iPhone app actions are available only through computer/${input.actionId}.`, { retryable: false });
+  }
   const currentPlatform = iosDevelopmentPlatform();
   if (currentPlatform !== 'darwin' && input.actionId !== 'discover_project' && input.actionId !== 'xcode_status') {
     throw new AssistantPluginError('PLUGIN_DEPENDENCY_MISSING', 'iOS plugin actions require macOS with Xcode/Simulator.', {
