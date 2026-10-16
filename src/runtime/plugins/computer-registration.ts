@@ -32,6 +32,7 @@ import { desktopOperatorActions } from './desktop-operator-registration';
 import { getExternalPluginAdapter } from './external-adapter';
 import { AssistantPluginError } from './errors';
 import { executeIosPhysicalDeviceAction, iosPhysicalDeviceActions, iosPhysicalDeviceCapabilities, iosPhysicalDeviceStatus, isIosPhysicalDeviceAction, resolveIosPhysicalDeviceAuthorizationContext } from './ios-physical-device';
+import { remoteXpcHidStatus } from './ios/remote-xpc-hid';
 import type {
   AssistantPluginActionDescriptor,
   AssistantPluginActionExecutionInput,
@@ -471,6 +472,8 @@ function buildComputerManifest(
   const desktopReady = desktopSupported && desktop?.enabled === true && desktop.health.ready;
   const physicalRepository = desktopSupported && context?.controllerScoped === false;
   const physicalReady = physicalRepository && iosPhysicalDeviceStatus().coreDeviceReady;
+  const hidStatus = physicalRepository && context ? remoteXpcHidStatus(context.controllerHome) : undefined;
+  const physicalInputReady = physicalReady && hidStatus?.available === true;
   const ready = browserReady && desktopReady;
   const partial = browserReady || desktopReady || physicalReady;
   const checkedAt = new Date().toISOString();
@@ -511,6 +514,7 @@ function buildComputerManifest(
       ],
       warnings: [
         ...browser.health.warnings,
+        ...(physicalReady && !physicalInputReady ? [`Physical iPhone observation is ready, but RemoteXPC HID input requires Controller-owned pymobiledevice3 ${String(hidStatus?.toolchainVersion ?? 'toolchain')}.`] : []),
         ...(desktopSupported
           ? (desktopReady ? [] : ['Native Computer capability diagnostics are available through the internal platform provider.'])
           : [`Native Desktop Computer capabilities are unsupported on ${platform}.`]),
@@ -519,7 +523,12 @@ function buildComputerManifest(
         partial: !ready && partial,
         browser: { ready: browserReady, state: browser.health.state },
         desktop: { supported: desktopSupported, ready: desktopReady, state: desktop?.health.state ?? (desktopSupported ? 'not_installed' : 'unsupported') },
-        iphone: { supported: desktopSupported, ready: physicalReady, provider: 'coredevice' },
+        iphone: {
+          supported: desktopSupported, ready: physicalInputReady,
+          observationReady: physicalReady, inputReady: physicalInputReady,
+          toolchainVersion: hidStatus?.toolchainVersion,
+          provider: 'coredevice',
+        },
       },
     },
     permissions: [...browser.permissions.filter((permission) => permission.scope !== 'browser.extensions').map((permission) =>

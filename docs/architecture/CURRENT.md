@@ -345,7 +345,7 @@ Trusted `ExternalPluginRegistration` is the endpoint/lifecycle authority for an 
 - `ios-device` is the single physical-device resource domain. Backend/engine details may vary, but they must not create independent mutation authority or concurrent ownership for the same phone.
 - Agent-device readiness is capability-negotiated from a reviewed version/help contract and a stable contract fingerprint. A preferred version is support guidance rather than authority; unsupported or unreviewed pre-1.0 contracts fail closed instead of guessing flags or semantic support.
 - Application adapters own app-specific semantic targeting and assertions; provider code owns transport, device/session lifecycle, and command execution. Semantic action failure is distinct from transport/session death, and unknown mutation outcomes are fenced rather than blindly replayed.
-- iOS evidence is bounded and redacted. Read-only lifecycle/screenshot capability must never be represented as proof of semantic mutation capability.
+- iOS evidence is bounded and redacted. Read-only lifecycle/screenshot capability must never be represented as proof of semantic mutation capability. Computer reports CoreDevice `observationReady` separately from pinned RemoteXPC HID `inputReady`; an unavailable toolchain may leave screenshots usable without claiming interaction readiness.
 
 ## Browser Runtime V3 contract
 

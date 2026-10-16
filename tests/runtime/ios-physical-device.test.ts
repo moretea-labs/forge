@@ -379,11 +379,18 @@ describe('CoreDevice-first physical iPhone provider', () => {
       id: 'CORE-DEVICE-1',
     });
     expect(openAuthorization?.target.identityFingerprint).toHaveLength(64);
+    const deviceReadiness = await executeIosPhysicalDeviceAction(input(value, 'physical_device_status', {}));
+    expect(deviceReadiness.coreDeviceReady).toBe(true);
 
     const computerManifest = getAssistantPluginManifest(value.controllerHome, repository, 'computer');
     const iosManifest = getAssistantPluginManifest(value.controllerHome, repository, 'ios');
     expect(computerManifest.actions.some((action) => action.actionId === 'physical_device_open')).toBe(true);
     expect(computerManifest.actions.some((action) => action.actionId === 'physical_device_batch')).toBe(true);
+    expect(computerManifest.health.details?.iphone).toMatchObject({
+      provider: 'coredevice', observationReady: true,
+      inputReady: false, ready: false, toolchainVersion: '11.24.0',
+    });
+    expect(computerManifest.health.warnings.some((warning) => warning.includes('RemoteXPC HID input requires Controller-owned pymobiledevice3 11.24.0'))).toBe(true);
     expect(iosManifest.actions.some((action) => action.actionId.startsWith('physical_device_'))).toBe(false);
     expect(iosManifest.actions.some((action) => action.actionId === 'xcode_test')).toBe(true);
     expect(iosManifest.actions.some((action) => action.actionId === 'launch_simulator')).toBe(true);
