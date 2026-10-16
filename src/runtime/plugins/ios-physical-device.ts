@@ -262,7 +262,11 @@ function statePath(input: AssistantPluginActionExecutionInput, interactionId: st
 
 function artifactDir(input: AssistantPluginActionExecutionInput, interactionId: string): string {
   const path = join(controllerRoot(input), 'artifacts', 'ios', 'physical-device', sanitize(interactionId));
-  mkdirSync(path, { recursive: true });
+  mkdirSync(path, { recursive: true, mode: 0o700 });
+  if (!lstatSync(path).isDirectory()) {
+    throw new AssistantPluginError('IOS_DEVICE_ARTIFACT_DIR_INVALID', 'The private iPhone artifact directory is not a regular directory.', { retryable: false });
+  }
+  chmodSync(path, 0o700);
   return path;
 }
 
@@ -1037,40 +1041,56 @@ async function capturePhysicalScreen(
   label: string,
 ): Promise<Record<string, unknown>> {
   const path = join(artifactDir(input, state.interactionId), `${sanitize(label)}-${hooks.now().getTime()}-${randomUUID()}.png`);
-  const screenshotResult = await runCoreJson(input, [
-    'device', 'capture', 'screenshot', '--device', state.device.identifier, '--destination', path,
-  ], 'IOS_DEVICE_SCREENSHOT_FAILED', 60_000);
-  if (!existsSync(path)) {
-    throw new AssistantPluginError('IOS_DEVICE_SCREENSHOT_MISSING', 'CoreDevice succeeded without creating the requested screenshot.', { retryable: false });
-  }
-  const file = lstatSync(path);
-  const image = file.isFile() && file.size <= MAX_SCREENSHOT_BYTES && file.size > 0 ? readFileSync(path) : undefined;
-  const screenshotDisplay = image ? pngDisplayGeometry(image, state.display?.pointScale) : undefined;
-  if (!screenshotDisplay || !image) {
-    throw new AssistantPluginError('IOS_DEVICE_SCREENSHOT_INVALID', 'CoreDevice did not provide a bounded PNG screenshot with valid image dimensions and terminal marker.', { retryable: false });
-  }
-  const screenshotSha256 = createHash('sha256').update(image).digest('hex');
-  const observedAt = timestamp();
-  const observationId = randomUUID();
-  state.display = { ...screenshotDisplay, observedAt };
-  state.lastScreenshot = { observationId, observedAt, label };
+  // A new capture supersedes the old screen. A failed observation cannot leave
+  // an earlier foreground confirmation available to authorize subsequent HID.
+  state.lastScreenshot = undefined;
   state.foregroundObservation = undefined;
-  state.events.push({ at: observedAt, type: 'screenshot', details: { label, observationId } });
-  state.events = state.events.slice(-MAX_EVENTS);
   writeState(input, state);
-  return {
-    screenshotResult: bounded(screenshotResult),
-    observation: { observationId, observedAt, label, ttlMs: INPUT_FOREGROUND_OBSERVATION_TTL_MS,
-      screenshotSha256, screenshotBytes: image.length, width: screenshotDisplay.width, height: screenshotDisplay.height },
-    foregroundConfirmation: {
-      actionId: 'physical_device_confirm_foreground',
-      arguments: { interaction_id: state.interactionId, observation_id: observationId, bundle_id: state.bundleId },
-      requires: ['independent visual confirmation of target app'],
-      ttlMs: INPUT_FOREGROUND_OBSERVATION_TTL_MS,
-    },
-    artifactCandidates: [{ kind: 'ios_physical_device_screenshot', mediaType: 'image/png', path,
-      sha256: screenshotSha256, bytes: image.length }],
-  };
+  try {
+    const screenshotResult = await runCoreJson(input, [
+      'device', 'capture', 'screenshot', '--device', state.device.identifier, '--destination', path,
+    ], 'IOS_DEVICE_SCREENSHOT_FAILED', 60_000);
+    if (!existsSync(path)) {
+      throw new AssistantPluginError('IOS_DEVICE_SCREENSHOT_MISSING', 'CoreDevice succeeded without creating the requested screenshot.', { retryable: false });
+    }
+    const file = lstatSync(path);
+    // The enclosing directory is 0700 during CoreDevice's write; the finished
+    // screenshot itself must also be private before it is read or returned.
+    if (file.isFile()) chmodSync(path, 0o600);
+    const image = file.isFile() && file.size <= MAX_SCREENSHOT_BYTES && file.size > 0 ? readFileSync(path) : undefined;
+    const screenshotDisplay = image ? pngDisplayGeometry(image, state.display?.pointScale) : undefined;
+    if (!screenshotDisplay || !image) {
+      throw new AssistantPluginError('IOS_DEVICE_SCREENSHOT_INVALID', 'CoreDevice did not provide a bounded PNG screenshot with valid image dimensions and terminal marker.', { retryable: false });
+    }
+    const screenshotSha256 = createHash('sha256').update(image).digest('hex');
+    const observedAt = timestamp();
+    const observationId = randomUUID();
+    state.display = { ...screenshotDisplay, observedAt };
+    state.lastScreenshot = { observationId, observedAt, label };
+    state.foregroundObservation = undefined;
+    state.events.push({ at: observedAt, type: 'screenshot', details: { label, observationId } });
+    state.events = state.events.slice(-MAX_EVENTS);
+    writeState(input, state);
+    return {
+      screenshotResult: bounded(screenshotResult),
+      observation: { observationId, observedAt, label, ttlMs: INPUT_FOREGROUND_OBSERVATION_TTL_MS,
+        screenshotSha256, screenshotBytes: image.length, width: screenshotDisplay.width, height: screenshotDisplay.height },
+      foregroundConfirmation: {
+        actionId: 'physical_device_confirm_foreground',
+        arguments: { interaction_id: state.interactionId, observation_id: observationId, bundle_id: state.bundleId },
+        requires: ['independent visual confirmation of target app'],
+        ttlMs: INPUT_FOREGROUND_OBSERVATION_TTL_MS,
+      },
+      artifactCandidates: [{ kind: 'ios_physical_device_screenshot', mediaType: 'image/png', path,
+        sha256: screenshotSha256, bytes: image.length }],
+    };
+  } catch (error) {
+    // A partially written or invalid image is not an observation artifact.
+    if (existsSync(path)) {
+      try { unlinkSync(path); } catch { /* Preserve the original capture failure. */ }
+    }
+    throw error;
+  }
 }
 
 /** After a mutation, screenshot failures are observations, never a reason to retry input. */

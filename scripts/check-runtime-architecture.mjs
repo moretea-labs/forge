@@ -2371,6 +2371,10 @@ requireText('src/runtime/plugins/ios-physical-device.ts', "'IOS_DEVICE_LOCK_STAT
 requireText('src/runtime/plugins/ios-physical-device.ts', "if (lockState.passcodeRequired === false) return;");
 requireText('src/runtime/plugins/ios-physical-device.ts', 'if (!selected.connected) {');
 requireText('src/runtime/plugins/ios-physical-device.ts', "'IOS_DEVICE_SCREENSHOT_INVALID'");
+requireText('src/runtime/plugins/ios-physical-device.ts', 'chmodSync(path, 0o700);');
+requireText('src/runtime/plugins/ios-physical-device.ts', 'if (file.isFile()) chmodSync(path, 0o600);');
+requireText('src/runtime/plugins/ios-physical-device.ts', 'state.lastScreenshot = undefined;');
+requireText('src/runtime/plugins/ios-physical-device.ts', 'try { unlinkSync(path); } catch');
 requireText('src/runtime/plugins/ios-physical-device.ts', 'PNG_CRC_TABLE');
 requireText('src/runtime/plugins/ios-physical-device.ts', 'sawImageData && length === 0 && end + 4 === image.length');
 requireText('src/runtime/plugins/ios-physical-device.ts', 'screenshotSha256, screenshotBytes: image.length');

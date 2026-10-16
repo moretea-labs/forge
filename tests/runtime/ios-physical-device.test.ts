@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 import { spawnSync } from 'child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { deflateSync } from 'zlib';
@@ -476,6 +476,8 @@ describe('CoreDevice-first physical iPhone provider', () => {
     const screenshot = screenshotSubmission.result?.result as Record<string, unknown>;
     const artifact = (screenshot.artifactCandidates as Array<Record<string, unknown>>)[0]!;
     expect(existsSync(String(artifact.path))).toBe(true);
+    expect(statSync(String(artifact.path)).mode & 0o777).toBe(0o600);
+    expect(statSync(join(String(artifact.path), '..')).mode & 0o777).toBe(0o700);
     expect(commands.some((argv) => argv.includes('xcodebuild'))).toBe(false);
     expect(commands.some((argv) => argv.includes('prepare'))).toBe(false);
 
@@ -881,6 +883,7 @@ describe('CoreDevice-first physical iPhone provider', () => {
     const value = fixture();
     let hidCalls = 0;
     let screenshotCalls = 0;
+    let failedScreenshotPath: string | undefined;
     setRemoteXpcHidExecutorForTest(async (request) => {
       hidCalls += 1;
       return {
@@ -893,7 +896,11 @@ describe('CoreDevice-first physical iPhone provider', () => {
       runCommand: (command, args) => {
         if (args.join(' ').includes('device capture screenshot')) {
           screenshotCalls += 1;
-          if (screenshotCalls > 1) return { ok: false, status: 1, stdout: '', stderr: 'screen unavailable', command: [command, ...args] };
+          if (screenshotCalls > 1) {
+            failedScreenshotPath = args[args.indexOf('--destination') + 1];
+            writeFileSync(failedScreenshotPath!, Buffer.from('partial-sensitive-screen'));
+            return { ok: false, status: 1, stdout: '', stderr: 'screen unavailable', command: [command, ...args] };
+          }
           return maybeScreenshotCommand(command, args)!;
         }
         if (args[0] === 'devicectl' && args[1] === '--version') return { ok: true, status: 0, stdout: '636.3\n', stderr: '', command: [command, ...args] };
@@ -922,6 +929,11 @@ describe('CoreDevice-first physical iPhone provider', () => {
     expect(batch).not.toHaveProperty('observation');
     expect(hidCalls).toBe(1);
     expect(screenshotCalls).toBe(2);
+    expect(failedScreenshotPath).toBeDefined();
+    expect(existsSync(failedScreenshotPath!)).toBe(false);
+    await expect(executeIosPhysicalDeviceAction(input(value, 'physical_device_confirm_foreground', {
+      interaction_id: interactionId, observation_id: observationId, bundle_id: 'com.xingin.discover',
+    }))).rejects.toMatchObject({ code: 'IOS_DEVICE_SCREEN_OBSERVATION_REQUIRED' });
     await expect(executeIosPhysicalDeviceAction(input(value, 'physical_device_batch', {
       interaction_id: interactionId, observation_id: observationId, steps: [{ kind: 'type', text: 'do-not-repeat' }],
     }))).rejects.toMatchObject({ code: 'IOS_DEVICE_SCREEN_OBSERVATION_REQUIRED' });
