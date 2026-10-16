@@ -2360,10 +2360,12 @@ requireText('packages/plugin-runtime/computer/provider.ts', 'export interface Co
 requireText('packages/plugin-runtime/computer/provider-registry.ts', 'export class ComputerProviderRegistry');
 requireText('src/runtime/plugins/computer-registration.ts', 'return executeIosPhysicalDeviceAction(input)');
 requireText('src/runtime/plugins/computer-registration.ts', 'observationReady: physicalReady, inputReady: physicalInputReady');
-requireText('src/runtime/plugins/computer-registration.ts', 'const hidStatus = physicalReady && context ? remoteXpcHidStatus(context.controllerHome) : undefined;');
+requireText('src/runtime/plugins/computer-registration.ts', 'const hidStatus = physicalReady && context ? remoteXpcHidCachedStatus(context.controllerHome) : undefined;');
 requireText('src/runtime/plugins/ios/remote-xpc-hid.ts', 'probeHidToolchain(python)');
 requireText('src/runtime/plugins/ios/remote-xpc-hid.ts', "'--expected-version', IOS_HID_TOOLCHAIN_VERSION");
 requireText('scripts/install-ios-hid-toolchain.sh', 'pymobiledevice3==$version');
+requireText('src/runtime/plugins/ios/remote-xpc-hid.ts', 'return hidToolchainStatus(controllerHome, env, false);');
+requireText('src/runtime/plugins/ios/remote-xpc-hid.ts', 'return hidToolchainStatus(controllerHome, env, true);');
 requireText('src/runtime/plugins/ios-physical-device.ts', 'const confirmed = requireObservedPhysicalTargetForeground(state)');
 requireText('src/runtime/plugins/ios-physical-device.ts', "'IOS_DEVICE_SCREENSHOT_INVALID'");
 requireText('src/runtime/plugins/ios-physical-device.ts', 'PNG_CRC_TABLE');

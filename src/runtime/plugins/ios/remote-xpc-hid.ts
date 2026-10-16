@@ -145,9 +145,12 @@ function probeHidToolchain(python: string): { installedVersion?: string; availab
   return probe;
 }
 
-export function remoteXpcHidStatus(controllerHome: string, env: NodeJS.ProcessEnv = process.env): Record<string, unknown> {
+function hidToolchainStatus(controllerHome: string, env: NodeJS.ProcessEnv, allowProbe: boolean): Record<string, unknown> {
   const python = resolvePython(controllerHome, env);
-  const probe = python ? probeHidToolchain(python) : undefined;
+  const cached = python ? toolchainProbeCache.get(python) : undefined;
+  const validCached = cached?.available === true && Date.now() - cached.checkedAt <= TOOLCHAIN_PROBE_TTL_MS
+    ? cached : undefined;
+  const probe = python ? (allowProbe ? probeHidToolchain(python) : validCached) : undefined;
   return {
     backend: 'remote-xpc-hid',
     available: probe?.available === true,
@@ -158,6 +161,17 @@ export function remoteXpcHidStatus(controllerHome: string, env: NodeJS.ProcessEn
     transport: 'macos-trusted-coredevice-rsd',
     runnerOwned: false,
   };
+}
+
+// Manifest reads are passive: only an explicit HID action may start Python.
+// This is a view of the same short-lived successful probe cache, not a second
+// readiness authority or a durable grant.
+export function remoteXpcHidCachedStatus(controllerHome: string, env: NodeJS.ProcessEnv = process.env): Record<string, unknown> {
+  return hidToolchainStatus(controllerHome, env, false);
+}
+
+export function remoteXpcHidStatus(controllerHome: string, env: NodeJS.ProcessEnv = process.env): Record<string, unknown> {
+  return hidToolchainStatus(controllerHome, env, true);
 }
 
 function resolvePython(controllerHome: string, env: NodeJS.ProcessEnv): string | undefined {
