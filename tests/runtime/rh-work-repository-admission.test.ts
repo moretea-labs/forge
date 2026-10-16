@@ -80,7 +80,7 @@ describe('rh_work repository admission', () => {
     expect(readWorkHandle(controllerHome, repository.repoId, workId)).toBeUndefined();
   });
 
-  test('repo-bound start creates a concrete WorkHandle instead of stopping at semantic context', async () => {
+  test('repo-bound start defaults to an isolated concrete WorkHandle instead of stopping at semantic context', async () => {
     const repoRoot = tempRoot('forge-rh-work-admission-repo-');
     const controllerHome = tempRoot('forge-rh-work-admission-home-');
     const sourceRevision = initRepo(repoRoot);
@@ -90,25 +90,21 @@ describe('rh_work repository admission', () => {
       repo_id: repository.repoId,
       operation: 'start',
       objective: 'Create one concrete repository execution carrier.',
-      request_id: 'repository-start-current',
+      request_id: 'repository-start-default-isolated',
       source_revision: sourceRevision,
       allowed_paths: ['src/**'],
-      constraints: { workspace_mode: 'current' },
     }));
 
     expect(started.status).toBe('ok');
-    expect(started.data.executionHandle).toMatchObject({
-      checkoutId: repository.activeCheckoutId,
-      managedWorktree: false,
-      state: 'prepared',
-    });
+    expect(started.data.executionHandle).toMatchObject({ managedWorktree: true, state: 'prepared' });
+    expect(started.data.executionHandle.checkoutId).not.toBe(repository.activeCheckoutId);
     const workId = String(started.data.work.workId);
     expect(readWorkHandle(controllerHome, repository.repoId, workId)).toMatchObject({
-      workId, checkoutId: repository.activeCheckoutId, managedWorktree: false,
+      workId, checkoutId: started.data.executionHandle.checkoutId, managedWorktree: true,
     });
     expect(getWorkContract({ controllerHome, repoId: repository.repoId }, workId)).toMatchObject({
-      checkoutId: repository.activeCheckoutId,
-      allowedPaths: ['src/**'],
+      checkoutId: started.data.executionHandle.checkoutId,
+      constraints: { workspaceMode: 'isolated' },
     });
   });
 

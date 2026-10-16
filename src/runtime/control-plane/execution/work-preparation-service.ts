@@ -42,6 +42,11 @@ function boundedStringArray(value: unknown, limit: number): string[] {
   return Array.isArray(value) ? value.map(String).slice(0, limit) : [];
 }
 
+function requestedWorkPrepareIsolation(args: Record<string, unknown>): 'reuse' | 'new_worktree' | 'auto' | undefined {
+  if (!Object.prototype.hasOwnProperty.call(args, 'isolation')) return undefined;
+  return args.isolation === 'reuse' || args.isolation === 'new_worktree' || args.isolation === 'auto' ? args.isolation : 'auto';
+}
+
 function workPrepareFingerprint(input: {
   repoId: string;
   requestedCheckoutId?: string;
@@ -174,10 +179,18 @@ export function prepareWork(ctx: McpExecutionContext, args: Record<string, unkno
     updateExecutionSession(ctx.controllerHome, identityFor(ctx, args), { activeRepositoryId: repository.repoId, activeCheckoutId: repository.activeCheckoutId, permissionSnapshotVersion: currentPermissionSnapshotVersion(ctx.controllerHome, repository.repoId) });
   }
   const existingId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
+  const requestedIsolation = requestedWorkPrepareIsolation(args);
   if (existingId) {
     const existing = readWorkHandle(ctx.controllerHome, repository.repoId, existingId)
       ?? findWorkHandle(ctx, session, { ...args, work_id: existingId, repo_id: repository.repoId });
     if (existing.principalId !== session.principalId) throw new Error('WORK_HANDLE_ACCESS_DENIED');
+    if (requestedIsolation !== undefined) {
+      const requestedWorkspaceMode = requestedIsolation === 'reuse' ? 'current' : 'isolated';
+      const existingWorkspaceMode = existing.managedWorktree ? 'isolated' : 'current';
+      if (requestedWorkspaceMode !== existingWorkspaceMode) {
+        throw new Error(`WORK_PREPARE_PLACEMENT_CONFLICT: ${existingId}; existing=${existingWorkspaceMode}; requested=${requestedWorkspaceMode}`);
+      }
+    }
     const adopted = adoptExplicitSuccessorHead(ctx, args, repository, existing);
     const active = adopted ?? existing;
     if (!adopted) validateWorkHandle(ctx.controllerHome, active, identityFor(ctx, args), 'cheap', 'inspect');
@@ -192,7 +205,7 @@ export function prepareWork(ctx: McpExecutionContext, args: Record<string, unkno
 
   const requestId = typeof args.request_id === 'string' ? args.request_id.trim() : '';
   if (!requestId) throw new Error('WORK_PREPARE_REQUEST_ID_REQUIRED: new work preparation requires request_id');
-  const isolation = args.isolation === 'reuse' || args.isolation === 'new_worktree' || args.isolation === 'auto' ? args.isolation : 'auto';
+  const isolation = requestedWorkPrepareIsolation(args) ?? 'auto';
   const objective = String(args.objective ?? 'Controller-managed repository work').trim().slice(0, 2_000);
   const goalId = typeof args.goal_id === 'string' && args.goal_id.trim() ? args.goal_id.trim() : undefined;
   const acceptanceCriteria = boundedStringArray(args.acceptance_criteria, 20);

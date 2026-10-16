@@ -5,6 +5,7 @@ import { listControllerChecks } from '../../../src/cli/controller/check-runner';
 import { repositoryGitStatus } from '../../../src/cli/repositories/structured-git';
 import { getWorkContract, updateWorkContract, workSemanticView } from '../../../packages/kernel/work/api/index';
 import { ensureRepositoryWorkHandle } from '../../../src/runtime/control-plane/execution/work-handle-authority';
+import { readWorkHandle } from '../../../src/runtime/control-plane/execution/work-handle-store';
 import { ensureManagedWorkspace } from '../../../src/runtime/execution/managed-workspace';
 import { ensureRepositoryProjectOnboarding } from '../../../src/runtime/control-plane/workspace/project-onboarding';
 import { buildFacadeResult } from '../../../src/runtime/control-plane/facade';
@@ -78,12 +79,19 @@ async function callRepositoryBoundStart(
 
   try {
     const rawConstraints = contextRecord(args.constraints);
-    // Placement is caller-owned. Legacy `auto` is a stable mechanical spelling
-    // of the durable-Work isolated/frozen-base default; it never inspects dirty
-    // paths, risk, task text, or other semantic context to choose topology.
-    const requestedWorkspaceMode: 'current' | 'isolated' = rawConstraints.workspace_mode === 'isolated' || rawConstraints.workspace_mode === 'auto'
-      ? 'isolated'
-      : 'current';
+    // Placement is caller-owned. Omitted placement and legacy `auto` are the
+    // stable mechanical spelling of the durable-Work isolated/frozen-base default;
+    // only explicit `current` may reuse the selected canonical checkout.
+    const requestedWorkspaceMode: 'current' | 'isolated' = rawConstraints.workspace_mode === 'current'
+      ? 'current'
+      : 'isolated';
+    const existingHandle = readWorkHandle(ctx.controllerHome, repository.repoId, workId);
+    if (existingHandle) {
+      const existingWorkspaceMode = existingHandle.managedWorktree ? 'isolated' : 'current';
+      if (existingWorkspaceMode !== requestedWorkspaceMode) {
+        throw new Error(`WORK_REPOSITORY_ADMISSION_PLACEMENT_CONFLICT: ${workId}; existing=${existingWorkspaceMode}; requested=${requestedWorkspaceMode}`);
+      }
+    }
     const sourceStatus = repositoryGitStatus(repository);
     const requestedSourceRevision = typeof args.source_revision === 'string' ? args.source_revision.trim() : '';
     if (requestedSourceRevision && sourceStatus.head && requestedWorkspaceMode !== 'isolated' && requestedSourceRevision !== sourceStatus.head) {
