@@ -2383,6 +2383,9 @@ requireText('src/runtime/plugins/ios-physical-device.ts', "'IOS_DEVICE_DOCUMENT_
 requireText('src/runtime/plugins/ios-physical-device.ts', "listedNames.some((name) => typeof name !== 'string' || !name.trim())");
 requireText('src/runtime/plugins/ios-physical-device.ts', "requiredConfirmationText: 'export-iphone-app-document'");
 requireText('src/runtime/plugins/ios-physical-device.ts', "const indexPath = join(dir, 'index.json')");
+requireText('src/runtime/plugins/ios-physical-device.ts', 'pngDisplayGeometry(bytes) !== undefined');
+requireText('src/runtime/plugins/ios-physical-device.ts', 'bytes.subarray(-2).toString(\'hex\') === \'ffd9\'');
+requireText('src/runtime/plugins/ios-physical-device.ts', 'bytes.readUInt32BE(0) >= 16 && bytes.readUInt32BE(0) <= bytes.length');
 requireText('src/runtime/plugins/ios-physical-device.ts', 'entries: [...entries, entry] }, { mode: 0o600 });');
 requireText('src/runtime/plugins/ios-physical-device.ts', 'organizedIndex: { localArtifact: indexPath, entryCount: entries.length + 1 }');
 requireText('src/runtime/plugins/ios-physical-device.ts', 'requireBundleId(input.args.bundle_id) !== state.bundleId');

@@ -1686,14 +1686,22 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
         }
         chmodSync(destination, 0o600);
         const bytes = readFileSync(destination);
-        const isExpectedFormat = ext === '.pdf' ? bytes.subarray(0, 5).toString('ascii') === '%PDF-'
-          : ext === '.png' ? bytes.subarray(0, 8).toString('hex') === '89504e470d0a1a0a'
-            : ext === '.jpg' || ext === '.jpeg' ? bytes.subarray(0, 3).toString('hex') === 'ffd8ff'
-              : ext === '.heic' && bytes.subarray(4, 8).toString('ascii') === 'ftyp'
-                && /^(?:heic|heix|hevc|hevx|mif1|msf1)$/.test(bytes.subarray(8, 12).toString('ascii'));
+        // Validate more than magic bytes: a truncated CoreDevice copy must not
+        // become a successful medical-document export or organized index entry.
+        const isExpectedFormat = ext === '.pdf'
+          ? bytes.subarray(0, 5).toString('ascii') === '%PDF-'
+            && /%%EOF[\x00\x09\x0a\x0c\x0d\x20]*$/.test(bytes.subarray(-2048).toString('latin1'))
+          : ext === '.png' ? pngDisplayGeometry(bytes) !== undefined
+            : ext === '.jpg' || ext === '.jpeg'
+              ? bytes.length > 4 && bytes.subarray(0, 3).toString('hex') === 'ffd8ff'
+                && bytes.subarray(-2).toString('hex') === 'ffd9'
+              : ext === '.heic' && bytes.length >= 16
+                && bytes.subarray(4, 8).toString('ascii') === 'ftyp'
+                && /^(?:heic|heix|hevc|hevx|mif1|msf1)$/.test(bytes.subarray(8, 12).toString('ascii'))
+                && bytes.readUInt32BE(0) >= 16 && bytes.readUInt32BE(0) <= bytes.length;
         if (!isExpectedFormat) {
           throw new AssistantPluginError('IOS_DEVICE_DOCUMENT_FORMAT_INVALID',
-            'Exported file signature does not match the selected document type.', { retryable: false });
+            'Exported document framing is invalid or incomplete for the selected file type.', { retryable: false });
         }
         const sha256 = createHash('sha256').update(bytes).digest('hex');
         // One canonical export writer also maintains a bounded private index of
