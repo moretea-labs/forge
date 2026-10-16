@@ -14,14 +14,9 @@ const KEYCHAIN_ACCOUNT: Record<StoredGoogleCredentialKind, string> = {
   'refresh-token': 'refresh-token',
   'client-secret': 'client-secret',
 };
-const memoryCache = new Map<string, string>();
 
 function keychainService(service: StoredGoogleService): string {
   return `${KEYCHAIN_SERVICE_PREFIX}.${service}`;
-}
-
-function cacheKey(service: StoredGoogleService, kind: StoredGoogleCredentialKind): string {
-  return `${service}:${kind}`;
 }
 
 const macKeychainAdapter: GoogleCredentialStoreAdapter = {
@@ -66,7 +61,6 @@ let adapter: GoogleCredentialStoreAdapter = macKeychainAdapter;
 
 export function setGoogleCredentialStoreAdapterForTest(next?: GoogleCredentialStoreAdapter): void {
   adapter = next ?? macKeychainAdapter;
-  memoryCache.clear();
 }
 
 export function googleCredentialStoreStatus(): Record<string, unknown> {
@@ -87,13 +81,10 @@ function readStoredGoogleCredential(
     ? ['google-workspace']
     : [service, 'google-workspace'];
   for (const candidate of candidates) {
-    const key = cacheKey(candidate, kind);
-    const cached = memoryCache.get(key);
-    if (cached) return { value: cached, source: `keychain:${candidate}:${kind}` };
     if (!adapter.available()) continue;
+    // Keychain is the authority: another Forge process may have rotated this credential.
     const value = adapter.read(candidate, kind)?.trim();
     if (!value) continue;
-    memoryCache.set(key, value);
     return { value, source: `keychain:${candidate}:${kind}` };
   }
   return undefined;
@@ -104,7 +95,6 @@ function writeStoredGoogleCredential(service: StoredGoogleService, kind: StoredG
   if (!normalized) throw new Error(kind === 'refresh-token' ? 'GOOGLE_REFRESH_TOKEN_REQUIRED' : 'GOOGLE_CLIENT_SECRET_REQUIRED');
   if (!adapter.available()) throw new Error('GOOGLE_CREDENTIAL_STORE_UNAVAILABLE');
   adapter.write(service, normalized, kind);
-  memoryCache.set(cacheKey(service, kind), normalized);
 }
 
 export function readStoredGoogleRefreshToken(service: StoredGoogleService): { token: string; source: string } | undefined {

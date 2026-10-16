@@ -56,6 +56,7 @@ function pluginAuthSummary(manifest: AssistantPluginManifest): Record<string, un
     lifecycleReason: manifest.lifecycle.reason,
     healthState: manifest.health.state,
     ready: manifest.health.ready,
+    readinessMode: manifest.health.details?.readinessMode,
     authRequired: manifest.health.errors.some((error) => /access token|auth|authorization|oauth/i.test(error)),
     errors: manifest.health.errors.slice(0, 5),
     warnings: manifest.health.warnings.slice(0, 5),
@@ -74,7 +75,9 @@ export function buildWorkspaceAuthStatus(manifests: AssistantPluginManifest[]): 
     actionRequired: summaries.filter((entry) => entry.authRequired === true || entry.ready !== true).map((entry) => ({
       pluginId: entry.pluginId,
       reason: entry.lifecycleReason,
-      next: 'Call workspace_auth_login_prepare and open the returned local OAuth URL. The callback stores the refresh token in macOS Keychain.',
+      next: entry.readinessMode === 'live_token_unverified'
+        ? 'Run a read-only provider action. If Google requires client_secret, restore the matching OAuth client secret in macOS Keychain; if it cannot be recovered, configure a dedicated OAuth client ID and matching secret, then reauthorize.'
+        : 'Call workspace_auth_login_prepare and open the returned local OAuth URL. The callback stores the refresh token in macOS Keychain.',
     })),
     safety: {
       credentialMaterialReturned: false,

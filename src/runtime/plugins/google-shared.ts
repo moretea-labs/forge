@@ -331,7 +331,7 @@ export function resolveGoogleAuth(
       credentialSource: refresh?.name,
       accessToken: REFRESH_REQUIRED_ACCESS_TOKEN,
       errors: [],
-      warnings: ['A stored refresh credential is available; the next provider request will refresh and verify an access token.'],
+      warnings: ['A refresh token is stored, but Google has not verified it. A matching OAuth client secret may also be required by the provider.'],
     };
   }
   return {
@@ -351,7 +351,7 @@ export type GoogleReadinessMode =
 export function resolveGoogleReadinessMode(config: GooglePluginConfig, auth: GoogleAuthState): GoogleReadinessMode {
   if (!config.enabled) return 'disabled';
   if (config.provider === 'mock' && auth.ready) return 'mock_provider_ready';
-  if (config.provider === 'google-workspace' && auth.ready) return 'live_provider_ready';
+  if (config.provider === 'google-workspace' && auth.ready && auth.probed) return 'live_provider_ready';
   if (config.provider === 'google-workspace' && auth.authenticated) return 'live_token_unverified';
   return 'missing_token';
 }
@@ -379,10 +379,10 @@ export function pluginStateFromGoogleAuth(config: GooglePluginConfig, auth: Goog
       checkedAt: new Date().toISOString(),
       ready: config.enabled && ready,
       probed: config.enabled ? auth.probed : false,
-      errors: [],
+      errors: !config.enabled || auth.authenticated ? [] : auth.errors,
       warnings: !config.enabled
         ? ['Plugin is disabled. Enable it before using Google provider actions.']
-        : [...auth.warnings, ...(!auth.authenticated ? auth.errors : [])],
+        : auth.warnings,
       details: {
         provider: config.provider,
         accountEmail: config.accountEmail,
@@ -457,7 +457,12 @@ async function refreshGoogleAccessToken(service: GoogleService, timeoutMs: numbe
     try { parsed = raw ? JSON.parse(raw) as Record<string, unknown> : {}; } catch { parsed = { raw }; }
     const accessToken = typeof parsed.access_token === 'string' ? parsed.access_token.trim() : '';
     if (!response.ok || !accessToken) {
-      throw new AssistantPluginError('PLUGIN_AUTH_FAILED', 'Google refresh token exchange failed.', {
+      const missingSecret = parsed.error === 'invalid_request'
+        && typeof parsed.error_description === 'string'
+        && /client_secret is missing/i.test(parsed.error_description);
+      throw new AssistantPluginError('PLUGIN_AUTH_FAILED', missingSecret
+        ? 'Google OAuth client secret is missing for the configured client. Restore its matching secret in macOS Keychain, or reauthorize with a new OAuth client.'
+        : 'Google refresh token exchange failed.', {
         retryable: false,
         details: { service, status: response.status, providerError: parsed },
       });
