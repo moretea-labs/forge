@@ -2315,7 +2315,7 @@ describe('work_validate persisted semantic identity', () => {
     });
   });
 
-  test('isolated work_prepare persists one checkout identity across WorkContract and WorkHandle', async () => {
+  test('work_prepare does not silently reuse a current Work when new_worktree is explicit', async () => {
     const fx = fixture();
     roots.push(fx.root);
 
@@ -2326,27 +2326,35 @@ describe('work_validate persisted semantic identity', () => {
       session_id: session.sessionId,
       repo_id: fx.repository.repoId,
       request_id: 'prepare-identity-convergence',
-      objective: 'Bind one exact managed checkout identity.',
+      objective: 'Keep one explicit current checkout until a new placement is requested.',
       acceptance_criteria: [],
       checks: [],
-      isolation: 'new_worktree',
+      isolation: 'reuse',
     });
     expect(prepared?.isError).not.toBe(true);
     const work = (prepared?.structuredContent as {
       work: { workId: string; checkoutId: string; managedWorktree: boolean };
     }).work;
-    const handle = readWorkHandle(fx.controllerHome, fx.repository.repoId, work.workId)!;
-    const contract = getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, work.workId)!;
+    const beforeHandle = readWorkHandle(fx.controllerHome, fx.repository.repoId, work.workId)!;
+    const beforeContract = getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, work.workId)!;
+    expect(beforeHandle.managedWorktree).toBe(false);
+    expect(beforeHandle.checkoutId).toBe(fx.repository.activeCheckoutId);
 
-    expect(work.managedWorktree).toBe(true);
-    expect(handle.checkoutId).toBe(work.checkoutId);
-    expect(contract).toMatchObject({
-      checkoutId: work.checkoutId,
-      worktreeRef: handle.worktreePath,
-      executionPlacement: {
-        repositoryId: fx.repository.repoId,
-        checkoutId: work.checkoutId,
-      },
+    const rebound = await callExecutionTool(fx.ctx, 'work_prepare', {
+      session_id: session.sessionId,
+      repo_id: fx.repository.repoId,
+      work_id: work.workId,
+      isolation: 'new_worktree',
+    });
+    expect(rebound?.isError).toBe(true);
+    expect(JSON.stringify(rebound?.structuredContent ?? rebound)).toContain('WORK_PREPARE_PLACEMENT_CONFLICT');
+    expect(readWorkHandle(fx.controllerHome, fx.repository.repoId, work.workId)).toMatchObject({
+      checkoutId: beforeHandle.checkoutId,
+      managedWorktree: false,
+    });
+    expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, work.workId)).toMatchObject({
+      constraints: { workspaceMode: 'current' },
+      executionPlacement: { repositoryId: fx.repository.repoId },
     });
   });
 
