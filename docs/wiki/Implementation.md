@@ -72,6 +72,12 @@ The MCP result envelope distinguishes “not authorized/executed” from “proc
 
 `src/cli/commands/setup-execution.ts` is the single synchronous CLI setup/adoption owner for temporary process environment overlays and mapping bounded child-process results to setup steps. `init.ts`, `init-hook.ts`, and `global-runtime.ts` import this owner directly instead of maintaining their own `process.env` mutation and process-step wrappers. This setup convenience layer does not own Runtime or Work execution authority.
 
+Runtime/Connector service configuration, release materialization and CLI systemd unit
+files use `src/runtime/shared/atomic-text-file.ts` for atomic text replacement,
+including mode preservation and unique temporary paths. Independent Windows/WSL
+host rescue deliberately retains its local writer rather than importing a
+Runtime module into its emergency migration entrypoint.
+
 ## 6. Unified Process Runtime
 
 Primary code:

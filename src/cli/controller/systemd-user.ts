@@ -1,7 +1,8 @@
+import { writeAtomicTextFile } from '../../runtime/shared/atomic-text-file';
 import { spawnSync, type SpawnSyncReturns } from 'child_process';
-import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, rmSync } from 'fs';
 import { homedir } from 'os';
-import { dirname, join } from 'path';
+import { join } from 'path';
 
 export interface SystemdUserUnitInput {
   description?: string;
@@ -10,13 +11,6 @@ export interface SystemdUserUnitInput {
   environment: Record<string, string>;
   restart?: 'no' | 'on-failure' | 'always';
   restartSec?: number;
-}
-
-function atomicWrite(path: string, content: string, mode = 0o644): void {
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  const temporary = `${path}.${process.pid}.tmp`;
-  writeFileSync(temporary, content, { encoding: 'utf8', mode });
-  renameSync(temporary, path);
 }
 
 export function systemdEscape(value: string): string {
@@ -79,7 +73,7 @@ export function writeSystemdUserUnit(
   env: NodeJS.ProcessEnv = process.env,
 ): string {
   const unitPath = systemdUserUnitPath(unitName, env);
-  atomicWrite(unitPath, renderSystemdUserUnit(input), 0o644);
+  writeAtomicTextFile(unitPath, renderSystemdUserUnit(input), 0o644);
   return unitPath;
 }
 

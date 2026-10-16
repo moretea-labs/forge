@@ -1478,6 +1478,20 @@ requireText('src/cli/commands/init-hook.ts', "'.forge'");
 // CLI setup/adoption must use one process/environment implementation, not three writers.
 requireText('src/cli/commands/setup-execution.ts', 'export function withProcessEnv');
 requireText('src/cli/commands/setup-execution.ts', 'export function runSetupProcess');
+// Service and release persistence use one writer rather than five sibling
+// open/write/rename algorithms with incompatible temporary-file identities.
+requireText('src/runtime/shared/atomic-text-file.ts', 'export function writeAtomicTextFile');
+for (const path of [
+  'src/runtime/root/service.ts',
+  'src/runtime/root/package-connector-service.ts',
+  'src/runtime/root/package-runtime-service.ts',
+  'src/runtime/root/package-runtime-release.ts',
+  'src/cli/controller/systemd-user.ts',
+]) {
+  forbid(path, /^function\s+atomicWrite\s*\(/m, 'service/release text writes must reuse the shared atomic writer');
+  requireText(path, 'writeAtomicTextFile');
+}
+
 // Job recovery and Scheduler must not drift on delegated-operation replay safety.
 requireText('src/runtime/execution/jobs/child-reference.ts', 'export function isAgentDelegationJob');
 for (const path of ['src/runtime/control-plane/global-scheduler/reconciliation.ts', 'src/runtime/execution/jobs/receipt-recovery.ts']) {

@@ -1,5 +1,6 @@
+import { writeAtomicTextFile } from '../shared/atomic-text-file';
 import { createHash } from 'crypto';
-import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'fs';
+import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, statSync } from 'fs';
 import { homedir } from 'os';
 import { basename, dirname, join, resolve } from 'path';
 import { loadMcpServiceLocalConfig } from '../../../adapters/mcp/auth';
@@ -63,13 +64,6 @@ export type PackageConnectorAuthMode = 'oauth' | 'none';
 
 function xml(value: string): string {
   return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
-}
-
-function atomicWrite(path: string, content: string, mode = 0o600): void {
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  const temporary = `${path}.${process.pid}.tmp`;
-  writeFileSync(temporary, content, { encoding: 'utf8', mode });
-  renameSync(temporary, path);
 }
 
 export function packageConnectorServicePaths(controllerHome: string, accountHome = process.env.HOME ?? homedir()): PackageConnectorServicePaths {
@@ -169,7 +163,7 @@ export function armPackageConnectorCutoverDrain(input: {
   };
   const path = packageConnectorCutoverDrainMarkerPath(input.controllerHome);
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  atomicWrite(path, `${JSON.stringify(marker, null, 2)}\n`, 0o600);
+  writeAtomicTextFile(path, `${JSON.stringify(marker, null, 2)}\n`, 0o600);
   return marker;
 }
 
@@ -229,7 +223,7 @@ function writePackageConnectorServiceAuthority(input: { release: PackageConnecto
     ...(artifact ? { connectorArtifactIdentity: artifact.identity } : {}),
     installedAt: input.installedAt ?? new Date().toISOString(),
   };
-  atomicWrite(paths.authorityPath, `${JSON.stringify(authority, null, 2)}\n`);
+  writeAtomicTextFile(paths.authorityPath, `${JSON.stringify(authority, null, 2)}\n`);
 }
 
 export function packageConnectorEndpointStatusHealthy(status: number, authMode: PackageConnectorAuthMode = 'oauth'): boolean {
@@ -521,7 +515,7 @@ export async function installPackageConnectorService(input: { release: PackageCo
       port: launch.port,
       requiredArguments: ['mcp', 'serve', '--auth', launch.authMode],
     });
-    atomicWrite(paths.sourcePlistPath, renderPackageConnectorLaunchAgent({ paths, launch }), 0o600);
+    writeAtomicTextFile(paths.sourcePlistPath, renderPackageConnectorLaunchAgent({ paths, launch }), 0o600);
     serviceHost.installLaunchd(paths.sourcePlistPath, paths.label);
     const result = await serviceHost.bootstrapLaunchd({ label: paths.label, plistPath: paths.installedPlistPath });
     if (!result.ok) throw new Error(`FORGE_PACKAGE_CONNECTOR_LAUNCHD_INSTALL_FAILED: ${result.diagnostics.join('; ')}`);

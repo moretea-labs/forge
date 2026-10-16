@@ -1,5 +1,6 @@
+import { writeAtomicTextFile } from '../shared/atomic-text-file';
 import { createHash, randomUUID } from 'crypto';
-import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'fs';
+import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, statSync } from 'fs';
 import { homedir } from 'os';
 import { dirname, isAbsolute, join, relative, resolve } from 'path';
 import { resolveControllerHome } from '../../cli/repositories/controller-home';
@@ -35,13 +36,6 @@ export interface ForgeRuntimeServicePaths {
 
 function xml(value: string): string {
   return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&apos;');
-}
-
-function atomicWrite(path: string, content: string, mode = 0o600): void {
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  const temporary = `${path}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
-  writeFileSync(temporary, content, { encoding: 'utf8', mode });
-  renameSync(temporary, path);
 }
 
 export function forgeRuntimeServicePaths(controllerHome: string): ForgeRuntimeServicePaths {
@@ -346,8 +340,8 @@ export function ensureForgeRuntimeLaunchAgentContract(
     ? readFileSync(desired.paths.installedPlistPath, 'utf8')
     : undefined;
   const changed = existingSource !== desired.plist || (input.installUserLaunchAgent === true && existingInstalled !== desired.plist);
-  if (existingSource !== desired.plist) atomicWrite(desired.paths.sourcePlistPath, desired.plist);
-  if (input.installUserLaunchAgent === true && existingInstalled !== desired.plist) atomicWrite(desired.paths.installedPlistPath, desired.plist, 0o644);
+  if (existingSource !== desired.plist) writeAtomicTextFile(desired.paths.sourcePlistPath, desired.plist);
+  if (input.installUserLaunchAgent === true && existingInstalled !== desired.plist) writeAtomicTextFile(desired.paths.installedPlistPath, desired.plist, 0o644);
   return { paths: desired.paths, mode: desired.mode, changed };
 }
 
@@ -367,7 +361,7 @@ export function writeForgeRuntimeServiceConfig(input: ForgeRuntimeServiceConfig)
   const config = validateForgeRuntimeServiceConfig(input);
   const paths = forgeRuntimeServicePaths(config.controllerHome);
   mkdirSync(join(paths.serviceRoot, 'logs'), { recursive: true, mode: 0o700 });
-  atomicWrite(paths.configPath, `${JSON.stringify(config, null, 2)}\n`);
+  writeAtomicTextFile(paths.configPath, `${JSON.stringify(config, null, 2)}\n`);
   return { config, paths };
 }
 

@@ -1,3 +1,4 @@
+import { writeAtomicTextFile } from '../shared/atomic-text-file';
 import { createHash, randomUUID } from 'crypto';
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'fs';
 import { dirname, join, relative, resolve } from 'path';
@@ -65,13 +66,6 @@ function isNonRuntimePackageHelper(path: string): boolean {
 
 function sha256(value: Buffer | string): string {
   return createHash('sha256').update(value).digest('hex');
-}
-
-function atomicWrite(path: string, content: string, mode = 0o600): void {
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  const temporary = `${path}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
-  writeFileSync(temporary, content, { encoding: 'utf8', mode });
-  renameSync(temporary, path);
 }
 
 function walkRegularFiles(root: string, current: string, output: string[], prefix = ''): void {
@@ -413,16 +407,16 @@ export function materializePackageRuntimeRelease(input: {
     try {
       mkdirSync(stagingRoot, { recursive: false, mode: 0o700 });
       stagePackageRuntimeSnapshot(sourcePackageRoot, join(stagingRoot, 'package'), records);
-      atomicWrite(join(stagingRoot, 'package-files.json'), indexJson);
-      atomicWrite(join(stagingRoot, 'forge-runtime'), launcher, 0o700);
+      writeAtomicTextFile(join(stagingRoot, 'package-files.json'), indexJson);
+      writeAtomicTextFile(join(stagingRoot, 'forge-runtime'), launcher, 0o700);
       chmodSync(join(stagingRoot, 'forge-runtime'), 0o700);
-      atomicWrite(join(stagingRoot, processRunnerEntrypoint), processRunnerLauncher, 0o700);
+      writeAtomicTextFile(join(stagingRoot, processRunnerEntrypoint), processRunnerLauncher, 0o700);
       chmodSync(join(stagingRoot, processRunnerEntrypoint), 0o700);
-      atomicWrite(join(stagingRoot, checkRunnerEntrypoint), checkRunnerLauncher, 0o700);
+      writeAtomicTextFile(join(stagingRoot, checkRunnerEntrypoint), checkRunnerLauncher, 0o700);
       chmodSync(join(stagingRoot, checkRunnerEntrypoint), 0o700);
       const manifest: RuntimeReleaseManifest = { ...expectedManifest, createdAt: new Date().toISOString() };
       const stagingManifestPath = join(stagingRoot, 'manifest.json');
-      atomicWrite(stagingManifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+      writeAtomicTextFile(stagingManifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
       // A failed execution surface is still a staging failure. Do not promote an
       // immutable release directory until both manifest-owned runners execute
       // their bounded no-op canary successfully.
