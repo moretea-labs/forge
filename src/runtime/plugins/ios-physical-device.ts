@@ -39,6 +39,7 @@ const MAX_EVENTS = 200;
 const MAX_BATCH_STEPS = 20;
 const MAX_BATCH_WAIT_MS = 5_000;
 const MAX_EXPORTED_DOCUMENT_BYTES = 20 * 1024 * 1024;
+const MAX_DOCUMENT_INDEX_BYTES = 512 * 1024;
 const MAX_SCREENSHOT_BYTES = 25 * 1024 * 1024;
 
 interface CommandResult {
@@ -1674,6 +1675,40 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
       const ext = path.slice(path.lastIndexOf('.')).toLowerCase();
       const destination = join(dir, randomUUID() + ext);
       try {
+        // Validate the existing manifest before copying anything from the
+        // phone. Corrupt, oversized or foreign records cannot be overwritten.
+        const indexPath = join(dir, 'index.json');
+        let entries: Array<Record<string, unknown>> = [];
+        if (existsSync(indexPath)) {
+          const indexFile = lstatSync(indexPath);
+          if (!indexFile.isFile() || indexFile.size <= 0 || indexFile.size > MAX_DOCUMENT_INDEX_BYTES) {
+            throw new AssistantPluginError('IOS_DEVICE_DOCUMENT_INDEX_INVALID',
+              'The private document index is not a bounded regular file.', { retryable: false });
+          }
+          const prior = readJsonFile<unknown>(indexPath);
+          const index = objectValue(prior);
+          const stored = index.entries;
+          const validEntries = Array.isArray(stored) && stored.length <= 500
+            && stored.every((item) => {
+              const row = objectValue(item);
+              return typeof row.exportedAt === 'string' && !Number.isNaN(Date.parse(row.exportedAt))
+                && typeof row.sourcePath === 'string' && /^Documents\/[^/\\]+\.(?:pdf|png|jpe?g|heic)$/i.test(row.sourcePath)
+                && typeof row.artifactName === 'string' && /^[a-f0-9-]{36}\.(?:pdf|png|jpe?g|heic)$/i.test(row.artifactName)
+                && typeof row.sha256 === 'string' && /^[a-f0-9]{64}$/.test(row.sha256)
+                && typeof row.bytes === 'number' && Number.isSafeInteger(row.bytes)
+                && row.bytes > 0 && row.bytes <= MAX_EXPORTED_DOCUMENT_BYTES;
+            });
+          if (index.schemaVersion !== 1 || index.bundleId !== state.bundleId
+            || index.interactionId !== record.interactionId || !validEntries) {
+            throw new AssistantPluginError('IOS_DEVICE_DOCUMENT_INDEX_INVALID',
+              'The private document index belongs to another session or is malformed.', { retryable: false });
+          }
+          entries = stored as Array<Record<string, unknown>>;
+        }
+        if (entries.length >= 500) {
+          throw new AssistantPluginError('IOS_DEVICE_DOCUMENT_INDEX_FULL',
+            'The private document index has reached its 500-item limit.', { retryable: false });
+        }
         await runCoreJson(input, [
           'device', 'copy', 'from', '--device', state.device.identifier,
           '--domain-type', 'appDataContainer', '--domain-identifier', state.bundleId,
@@ -1706,20 +1741,6 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
         const sha256 = createHash('sha256').update(bytes).digest('hex');
         // One canonical export writer also maintains a bounded private index of
         // facts; medical meaning and cross-app classification stay with the model.
-        const indexPath = join(dir, 'index.json');
-        if (existsSync(indexPath) && !lstatSync(indexPath).isFile()) {
-          throw new AssistantPluginError('IOS_DEVICE_DOCUMENT_INDEX_INVALID', 'The private document index is not a regular file.', { retryable: false });
-        }
-        const prior = existsSync(indexPath)
-          ? readJsonFile<{ schemaVersion: number; bundleId: string; entries: Array<Record<string, unknown>> }>(indexPath)
-          : undefined;
-        if (prior && (prior.schemaVersion !== 1 || prior.bundleId !== state.bundleId || !Array.isArray(prior.entries))) {
-          throw new AssistantPluginError('IOS_DEVICE_DOCUMENT_INDEX_INVALID', 'The private document index belongs to another app or is malformed.', { retryable: false });
-        }
-        const entries = prior?.entries ?? [];
-        if (entries.length >= 500) {
-          throw new AssistantPluginError('IOS_DEVICE_DOCUMENT_INDEX_FULL', 'The private document index has reached its 500-item limit.', { retryable: false });
-        }
         const entry = { exportedAt: timestamp(), sourcePath: path,
           artifactName: destination.slice(dir.length + 1), sha256, bytes: file.size };
         // Atomic rename is the last fallible operation before acknowledging the

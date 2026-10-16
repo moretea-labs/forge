@@ -2383,6 +2383,9 @@ requireText('src/runtime/plugins/ios-physical-device.ts', "'IOS_DEVICE_DOCUMENT_
 requireText('src/runtime/plugins/ios-physical-device.ts', "listedNames.some((name) => typeof name !== 'string' || !name.trim())");
 requireText('src/runtime/plugins/ios-physical-device.ts', "requiredConfirmationText: 'export-iphone-app-document'");
 requireText('src/runtime/plugins/ios-physical-device.ts', "const indexPath = join(dir, 'index.json')");
+requireText('src/runtime/plugins/ios-physical-device.ts', 'const MAX_DOCUMENT_INDEX_BYTES = 512 * 1024;');
+requireText('src/runtime/plugins/ios-physical-device.ts', 'indexFile.size <= 0 || indexFile.size > MAX_DOCUMENT_INDEX_BYTES');
+requireText('src/runtime/plugins/ios-physical-device.ts', 'index.interactionId !== record.interactionId || !validEntries');
 requireText('src/runtime/plugins/ios-physical-device.ts', 'pngDisplayGeometry(bytes) !== undefined');
 requireText('src/runtime/plugins/ios-physical-device.ts', 'bytes.subarray(-2).toString(\'hex\') === \'ffd9\'');
 requireText('src/runtime/plugins/ios-physical-device.ts', 'bytes.readUInt32BE(0) >= 16 && bytes.readUInt32BE(0) <= bytes.length');
