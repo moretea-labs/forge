@@ -81,7 +81,7 @@ Recovery never rolls back Gateway, Controller Services, Scheduler, MCP Transport
 
 ## Watchdog rules
 
-One watchdog tick performs at most one mutation under the cross-process Recovery lock.
+One watchdog tick performs at most one mutation under the cross-process Recovery lock. `src/runtime/standalone-recovery/operation-lock.ts` is the sole file-lock acquisition and cleanup implementation shared by Core recovery transactions, installer and certification. The Core transaction wrapper retains lock-owner request attribution, audit on identity uncertainty/races, and exclusive release in `finally`; it does not write a competing lock record.
 
 Allowed self-repair is narrow and ordered:
 

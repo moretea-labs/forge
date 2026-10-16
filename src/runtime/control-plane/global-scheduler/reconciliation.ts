@@ -8,7 +8,7 @@ import {
   childReferenceFromJob,
   childReferenceFromReceipt,
   hasDurableChildReference,
-  isAgentDelegationOperation,
+  isAgentDelegationJob,
   mergeChildReferences,
   buildDelegatedExecutionResult,
 } from '../../execution/jobs/child-reference';
@@ -32,16 +32,6 @@ function canAutomaticallyReplay(job: ExecutionJob): boolean {
   // Legacy Jobs predate explicit operation metadata. Preserve the old safe
   // fallback: read-only claims may replay, writes fail closed.
   return !hasPotentialSideEffects(job);
-}
-
-function isAgentDelegationJob(job: ExecutionJob): boolean {
-  return isAgentDelegationOperation(job.payload.operation)
-    || job.type === 'agent-run'
-    || job.type === 'dispatch-task'
-    || job.payload.arguments?.agentDelegation === true
-    || (job.payload.operation === 'legacy-local-job'
-      && typeof job.payload.arguments?.localAction === 'string'
-      && ['launch-task', 'quick-agent-session'].includes(String(job.payload.arguments.localAction)));
 }
 
 function ambiguousStartedOperation(controllerHome: string, job: ExecutionJob): boolean {

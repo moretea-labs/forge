@@ -24,6 +24,16 @@ export type RecoveryOperationLockAttempt =
   | { acquired: true; handle: RecoveryOperationLockHandle }
   | { acquired: false; owner: RecoveryOperationLockRecord };
 
+/** Preserve the competing owner identities when lock acquisition detects a race. */
+export class RecoveryOperationLockRaceError extends Error {
+  constructor(
+    readonly existing: RecoveryOperationLockRecord,
+    readonly latest: RecoveryOperationLockRecord | undefined,
+  ) {
+    super('RECOVERY_OPERATION_LOCK_RACE');
+  }
+}
+
 function processStartTime(pid: number): string | undefined {
   const result = spawnSync('/bin/ps', ['-o', 'lstart=', '-p', String(pid)], {
     encoding: 'utf8',
@@ -123,7 +133,7 @@ export function acquireRecoveryOperationLock(input: {
         if (!latest || latest.instanceId !== existing.instanceId) {
           if (attempt === 1) {
             if (latest && recoveryOperationLockOwnerAlive(latest)) return { acquired: false, owner: latest };
-            throw new Error('RECOVERY_OPERATION_LOCK_RACE');
+            throw new RecoveryOperationLockRaceError(existing, latest);
           }
           continue;
         }

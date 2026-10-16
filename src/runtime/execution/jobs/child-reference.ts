@@ -38,6 +38,17 @@ export function isAgentDelegationLocalAction(action: string | undefined): boolea
   return AGENT_DELEGATION_LOCAL_ACTIONS.has(action);
 }
 
+/** Shared delegation classification for Scheduler replay and durable receipt recovery. */
+export function isAgentDelegationJob(job: ExecutionJob): boolean {
+  return isAgentDelegationOperation(job.payload.operation)
+    || job.type === 'agent-run'
+    || job.type === 'dispatch-task'
+    || job.payload.arguments?.agentDelegation === true
+    || (job.payload.operation === 'legacy-local-job'
+      && typeof job.payload.arguments?.localAction === 'string'
+      && isAgentDelegationLocalAction(job.payload.arguments.localAction));
+}
+
 function stringField(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;
   const trimmed = value.trim();

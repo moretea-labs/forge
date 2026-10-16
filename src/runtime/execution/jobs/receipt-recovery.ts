@@ -4,7 +4,7 @@ import {
   childReferenceFromJob,
   childReferenceFromReceipt,
   hasDurableChildReference,
-  isAgentDelegationOperation,
+  isAgentDelegationJob,
   mergeChildReferences,
 } from './child-reference';
 import { operationReceiptMatchesJobOwnership, readOperationReceipt } from './receipt-store';
@@ -17,16 +17,6 @@ export type RecoveredReceiptOutcome = {
   recoveredAs: 'completed' | 'delegated';
   outcome: 'succeeded' | 'failed' | 'delegated';
 };
-
-function isAgentDelegationJob(job: ExecutionJob): boolean {
-  return isAgentDelegationOperation(job.payload.operation)
-    || job.type === 'agent-run'
-    || job.type === 'dispatch-task'
-    || job.payload.arguments?.agentDelegation === true
-    || (job.payload.operation === 'legacy-local-job'
-      && typeof job.payload.arguments?.localAction === 'string'
-      && ['launch-task', 'quick-agent-session'].includes(String(job.payload.arguments.localAction)));
-}
 
 /**
  * Recover a running Job from a matching completed/delegated Worker receipt.

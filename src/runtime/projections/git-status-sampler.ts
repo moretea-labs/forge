@@ -1,7 +1,7 @@
 import { join } from 'path';
 import { repositoryControllerRoot } from '../../cli/repositories/controller-home';
 import { selectRepositoryCheckout } from '../../cli/repositories/registry';
-import type { RepositoryGitStatusSnapshot } from '../../cli/repositories/structured-git';
+import { splitRepositoryGitStatus, type RepositoryGitStatusSnapshot } from '../../cli/repositories/structured-git';
 import type { RepositoryRecord } from '../../cli/repositories/types';
 import { runBoundedGit } from '../execution/thin-harness/async-process';
 import { readJsonFile, sanitizeFileComponent, writeJsonAtomic } from '../shared/json-files';
@@ -22,23 +22,6 @@ function samplePath(controllerHome: string, repoId: string, checkoutId: string):
 
 const GIT_STATUS_SAMPLE_TIMEOUT_MS = 5_000;
 const GIT_STATUS_SAMPLE_MAX_BYTES = 512 * 1024;
-
-function splitStatus(porcelain: string): Pick<RepositoryGitStatusSnapshot, 'staged' | 'unstaged' | 'untracked'> {
-  const staged: string[] = [];
-  const unstaged: string[] = [];
-  const untracked: string[] = [];
-  for (const line of porcelain.split(/\r?\n/)) {
-    if (!line || line.startsWith('## ')) continue;
-    const code = line.slice(0, 2);
-    const path = line.slice(3).trim();
-    if (code === '??') untracked.push(path);
-    else {
-      if (code[0] !== ' ' && code[0] !== '?') staged.push(path);
-      if (code[1] !== ' ' && code[1] !== '?') unstaged.push(path);
-    }
-  }
-  return { staged, unstaged, untracked };
-}
 
 async function gitSample(repository: RepositoryRecord, args: readonly string[], maxOutputBytes = GIT_STATUS_SAMPLE_MAX_BYTES) {
   return runBoundedGit(repository.canonicalRoot, args, {
@@ -63,7 +46,7 @@ export async function writeRepositoryGitStatusSample(
     throw new Error(`GIT_STATUS_SAMPLE_FAILED: ${porcelainResult.stderr || `exit ${porcelainResult.exitCode}`}`);
   }
   const porcelain = porcelainResult.stdout;
-  const split = splitStatus(porcelain);
+  const split = splitRepositoryGitStatus(porcelain);
   const sample: RepositoryGitStatusSample = {
     repoId: repository.repoId,
     checkoutId: repository.activeCheckoutId,

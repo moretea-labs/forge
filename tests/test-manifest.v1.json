@@ -373,6 +373,18 @@
       "module": "browser",
       "resource": "controller-home-isolated"
     },
+    "tests/runtime/browser-exact-tab-and-upload.test.ts": {
+      "module": "browser",
+      "resource": "temp-isolated"
+    },
+    "tests/runtime/browser-live-chrome-identity.test.ts": {
+      "module": "browser",
+      "resource": "pure"
+    },
+    "tests/runtime/browser-native-file-staging.test.ts": {
+      "module": "browser",
+      "resource": "temp-isolated"
+    },
     "tests/runtime/browser-runtime-contract.test.ts": {
       "module": "browser",
       "resource": "pure"

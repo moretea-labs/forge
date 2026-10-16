@@ -1,5 +1,6 @@
+import { writeAtomicTextFile } from '../shared/atomic-text-file';
 import { randomUUID } from 'crypto';
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, readFileSync, rmSync } from 'fs';
 import { setTimeout as sleep } from 'timers/promises';
 import { dirname, join, resolve } from 'path';
 import { resolveControllerHome } from '../../cli/repositories/controller-home';
@@ -114,13 +115,6 @@ export interface PackageRuntimeActivationDependencies {
   cleanupActivationHelper?: (request: PackageRuntimeActivationRequest) => Promise<void>;
 }
 
-function atomicWrite(path: string, content: string, mode = 0o600): void {
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  const temporary = `${path}.${process.pid}.tmp`;
-  writeFileSync(temporary, content, { encoding: 'utf8', mode });
-  renameSync(temporary, path);
-}
-
 export function renderForgeRuntimeSystemdUserUnit(input: {
   description?: string;
   executable: string;
@@ -189,7 +183,7 @@ function startPortableRuntime(controllerHome: string, env: NodeJS.ProcessEnv, ho
     stderrPath: paths.stderrPath,
     errorCode: 'FORGE_PORTABLE_RUNTIME_START_FAILED',
   });
-  atomicWrite(join(paths.serviceRoot, 'portable.json'), `${JSON.stringify({ schemaVersion: 1, pid, startedAt: new Date().toISOString() }, null, 2)}\n`);
+  writeAtomicTextFile(join(paths.serviceRoot, 'portable.json'), `${JSON.stringify({ schemaVersion: 1, pid, startedAt: new Date().toISOString() }, null, 2)}\n`);
   return pid;
 }
 
@@ -208,7 +202,7 @@ function activationPaths(controllerHome: string, operationId: string): { request
 }
 
 function writeActivationRequest(request: PackageRuntimeActivationRequest): void {
-  atomicWrite(request.requestPath, `${JSON.stringify(request, null, 2)}\n`);
+  writeAtomicTextFile(request.requestPath, `${JSON.stringify(request, null, 2)}\n`);
 }
 
 function writeActivationReceipt(
@@ -232,7 +226,7 @@ function writeActivationReceipt(
     helperLabel: request.helperLabel,
     ...extra,
   };
-  atomicWrite(request.receiptPath, `${JSON.stringify(receipt, null, 2)}\n`);
+  writeAtomicTextFile(request.receiptPath, `${JSON.stringify(receipt, null, 2)}\n`);
   return receipt;
 }
 
@@ -299,7 +293,7 @@ export function renderPackageRuntimeActivationLaunchAgent(request: PackageRuntim
 async function scheduleDarwinPackageRuntimeActivation(request: PackageRuntimeActivationRequest): Promise<{ label: string; servicePath: string }> {
   if (process.platform !== 'darwin') throw new Error('FORGE_PACKAGE_RUNTIME_ACTIVATION_HELPER_PLATFORM_UNSUPPORTED');
   const host = createPlatformServiceManagerHost({ platform: 'darwin' });
-  atomicWrite(request.helperSourcePlistPath, renderPackageRuntimeActivationLaunchAgent(request), 0o600);
+  writeAtomicTextFile(request.helperSourcePlistPath, renderPackageRuntimeActivationLaunchAgent(request), 0o600);
   host.installLaunchd(request.helperSourcePlistPath, request.helperLabel);
   const result = await host.bootstrapLaunchd({ label: request.helperLabel, plistPath: request.helperInstalledPlistPath });
   if (!result.ok) throw new Error(`FORGE_PACKAGE_RUNTIME_ACTIVATION_HELPER_BOOTSTRAP_FAILED: ${result.diagnostics.join('; ')}`);
@@ -351,7 +345,7 @@ async function rollbackPackageRuntimeActivation(
   }
   try {
     if (request.priorConfigBytes === undefined) rmSync(servicePaths.configPath, { force: true });
-    else atomicWrite(servicePaths.configPath, request.priorConfigBytes);
+    else writeAtomicTextFile(servicePaths.configPath, request.priorConfigBytes);
     syncForgeRuntimeActiveEntrypoint(request.controllerHome);
   } catch (error) {
     errors.push(error instanceof Error ? error.message : String(error));

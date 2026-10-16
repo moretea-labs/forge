@@ -29,7 +29,7 @@ src/cli/repositories/ephemeral-workspace.ts
 src/runtime/control-plane/execution/execution-identity.ts
 ```
 
-Registered work is resolved to `repoId` plus `checkoutId`. Git top-level/common-directory checks prevent a caller from supplying a different checkout through `cwd`. `ephemeral-workspace.ts` represents the separate explicit authority for an existing unregistered local directory.
+Registered work is resolved to `repoId` plus `checkoutId`. Git top-level/common-directory checks prevent a caller from supplying a different checkout through `cwd`. `ephemeral-workspace.ts` represents the separate explicit authority for an existing unregistered local directory. `src/cli/repositories/structured-git.ts` partitions porcelain status once; `src/runtime/projections/git-status-sampler.ts` uses that parser for its sampled projection rather than maintaining an independent classification.
 
 ## 3. Context and source access
 
@@ -54,7 +54,7 @@ src/cli/editing/edit-session.ts
 adapters/mcp/tool-mapping/repository-tools.ts
 ```
 
-A bounded patch can be applied directly to the selected checkout with file fingerprints, revisions, savepoints, change budgets, and focused verification. Direct Edit is the default for understood small work; a Plan or worktree is not a prerequisite.
+A bounded patch can be applied directly to the selected checkout with file fingerprints, revisions, savepoints, change budgets, and focused verification. Direct Edit is the default for understood small work; a Plan or worktree is not a prerequisite. Anchor occurrence positioning is owned by `src/cli/editing/edit-session.ts` and reused by `src/cli/repositories/safe-patch.ts` preflight, so preview and the actual patch executor cannot drift on repeated anchors.
 
 ## 5. Command policy and ephemeral workspaces
 
@@ -69,6 +69,18 @@ src/runtime/execution/process-runtime/command-facade.ts
 The classifier distinguishes readonly, workspace write, remote write, and destructive behavior. Typed argv preserves argument boundaries without shell reparsing. Explicit unregistered workspaces can execute bounded local operations directly, but destructive commands still follow authorization policy.
 
 The MCP result envelope distinguishes “not authorized/executed” from “process executed and failed.” A blocked `rm` therefore returns authorization-required state rather than a fabricated exit-code failure, and successful ephemeral mutations are not labeled as readonly.
+
+`src/cli/commands/setup-execution.ts` is the single synchronous CLI setup/adoption owner for temporary process environment overlays and mapping bounded child-process results to setup steps. `init.ts`, `init-hook.ts`, and `global-runtime.ts` import this owner directly instead of maintaining their own `process.env` mutation and process-step wrappers. This setup convenience layer does not own Runtime or Work execution authority.
+
+Runtime/Connector service configuration, release materialization and CLI systemd unit
+files use `src/runtime/shared/atomic-text-file.ts` for atomic text replacement,
+including mode preservation and unique temporary paths. Independent Windows/WSL
+host rescue deliberately retains its local writer rather than importing a
+Runtime module into its emergency migration entrypoint.
+
+Adoption no longer emits repo-local generated Helper wrapper scripts. The unused
+compatibility generator under `src/core/adoption/helper-wrapper-plan.ts` is retired;
+`src/core/adoption/plan.ts` installs only the current project-level assets.
 
 ## 6. Unified Process Runtime
 

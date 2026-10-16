@@ -4,6 +4,7 @@ import { join, relative, resolve } from 'path';
 import {
   adoptEditSessionSuccessorHead,
   applyEditOperations,
+  findOccurrence,
   beginEditSession,
   getEditSession,
   type EditSession,
@@ -187,17 +188,6 @@ function snippetAround(content: string, needle: string): SafePatchFailureContext
   const focus = (lines[lineIndex] ?? '').slice(0, MAX_TEXT_PREVIEW);
   const after = lines.slice(lineIndex + 1, lineIndex + 4).join('\n').slice(0, MAX_TEXT_PREVIEW);
   return { line: lineIndex + 1, before, focus, after };
-}
-
-function findOccurrence(value: string, anchor: string, occurrence: number): number {
-  let from = 0;
-  for (let current = 1; current <= occurrence; current += 1) {
-    const index = value.indexOf(anchor, from);
-    if (index < 0) return -1;
-    if (current === occurrence) return index;
-    from = index + anchor.length;
-  }
-  return -1;
 }
 
 function applyTextPreview(operation: Exclude<EditOperation, { type: 'create' | 'write' | 'delete' }>, before: string): string {

@@ -29,6 +29,7 @@ import {
   type BrainRootChoice,
 } from "./brain-root";
 import { runProcess as runBoundedProcess } from "../../effects/process-runner";
+import { runSetupProcess as runProcess, withProcessEnv, type SetupExecutionStep } from './setup-execution';
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(SCRIPT_DIR, "..", "..", "..");
@@ -72,14 +73,7 @@ export interface InitCommandOptions {
   env?: NodeJS.ProcessEnv;
 }
 
-export interface InitStep {
-  step: string;
-  status: "ok" | "skipped" | "failed";
-  command?: string[];
-  detail?: string;
-  stdout?: string;
-  stderr?: string;
-}
+export type InitStep = SetupExecutionStep;
 
 export interface InitCommandResult {
   exitCode: number;
@@ -97,18 +91,6 @@ interface Choice<T> {
   label: string;
   value: T;
   detail?: string;
-}
-
-function runProcess(command: string, args: string[], cwd: string, env?: NodeJS.ProcessEnv): InitStep {
-  const result = runBoundedProcess(command, args, { cwd, env });
-
-  return {
-    step: "",
-    status: result.ok ? "ok" : "failed",
-    command: [...result.command],
-    stdout: result.stdout,
-    stderr: result.stderr || result.error,
-  };
 }
 
 function isNpxCacheSource(sourceRoot: string): boolean {
@@ -131,24 +113,6 @@ function renderStep(step: InitStep): string[] {
     lines.push(step.stderr.trim());
   }
   return lines;
-}
-
-function withProcessEnv<T>(env: NodeJS.ProcessEnv | undefined, fn: () => T): T {
-  if (!env) return fn();
-  const previous = new Map<string, string | undefined>();
-  for (const [key, value] of Object.entries(env)) {
-    previous.set(key, process.env[key]);
-    if (value === undefined) delete process.env[key];
-    else process.env[key] = value;
-  }
-  try {
-    return fn();
-  } finally {
-    for (const [key, value] of previous) {
-      if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
-    }
-  }
 }
 
 function hostAgents(target: InstallTargetSpec): string[] {

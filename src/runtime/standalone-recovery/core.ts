@@ -80,7 +80,7 @@ import {
   type ControllerHomeStorageMigration,
 } from '../../cli/repositories/controller-home';
 import { readCurrentRecoveryRelease, type RecoveryRuntimeRole } from './release';
-import { recoveryOperationLockPath } from './operation-lock';
+import { acquireRecoveryOperationLock, recoveryOperationLockOwnerAlive, recoveryOperationLockPath, RecoveryOperationLockRaceError, type RecoveryOperationLockRecord } from './operation-lock';
 import { RECOVERY_MUTATION_IDENTITY_FIELDS, type RecoveryMutationIdentityArguments } from './mutation-identity-contract';
 import { createCandidateExecutionLane, readStableExecutionLane } from '../root/runtime-lane';
 import {
@@ -324,15 +324,7 @@ export type RecoveryMutationAction =
   | 'restart_recovery_gateway'
   | 'repair_public_tunnel';
 
-interface RecoveryLock {
-  schemaVersion?: 1;
-  pid: number;
-  instanceId: string;
-  processStartTime?: string;
-  acquiredAt: string;
-  action?: RecoveryMutationAction;
-  requestId?: string;
-}
+type RecoveryLock = RecoveryOperationLockRecord;
 
 interface RecoveryLockIntent {
   action: RecoveryMutationAction;
@@ -969,23 +961,6 @@ function persistWatchdogDiagnosticEvidence(config: RecoveryConfig, result: Verif
   return evidence;
 }
 
-function processStartTime(pid: number): string | undefined {
-  const result = spawnSync('/bin/ps', ['-o', 'lstart=', '-p', String(pid)], {
-    encoding: 'utf8',
-    timeout: 2_000,
-    maxBuffer: 4_096,
-  });
-  if (result.status !== 0 || typeof result.stdout !== 'string') return undefined;
-  return result.stdout.trim() || undefined;
-}
-
-function recoveryLockOwnerAlive(lock: RecoveryLock): boolean {
-  if (!pidAlive(lock.pid)) return false;
-  if (!lock.processStartTime) return true;
-  const observed = processStartTime(lock.pid);
-  return observed === lock.processStartTime;
-}
-
 function recoveryLockOwnerAttributable(owner: RecoveryLock): boolean {
   return Boolean(owner.action && owner.requestId?.trim());
 }
@@ -1013,7 +988,7 @@ function recoveryBusyDetail(owner: RecoveryLock): string {
 function liveRecoveryMutationLock(config: RecoveryConfig): RecoveryLock | undefined {
   const owner = json<RecoveryLock>(lockPath(config));
   if (!owner || !Number.isInteger(owner.pid) || owner.pid <= 0 || typeof owner.instanceId !== 'string' || !owner.instanceId.trim()) return undefined;
-  return recoveryLockOwnerAlive(owner) ? owner : undefined;
+  return recoveryOperationLockOwnerAlive(owner) ? owner : undefined;
 }
 
 async function withLock<T>(
@@ -1021,73 +996,35 @@ async function withLock<T>(
   intent: RecoveryLockIntent,
   action: (lock: RecoveryLock) => Promise<T>,
 ): Promise<RecoveryLockAttempt<T>> {
-  const path = lockPath(config);
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  const instanceId = randomUUID();
-  const requestId = intent.requestId?.trim() || `internal:${intent.action}:${instanceId}`;
-  const lock: RecoveryLock = {
-    schemaVersion: 1,
-    pid: process.pid,
-    instanceId,
-    processStartTime: processStartTime(process.pid),
-    acquiredAt: new Date().toISOString(),
-    action: intent.action,
-    requestId,
-  };
-
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    let fd: number | undefined;
-    let acquired = false;
-    try {
-      try {
-        fd = openSync(path, 'wx', 0o600);
-        writeFileSync(fd, JSON.stringify(lock));
-        acquired = true;
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-        const existing = json<RecoveryLock>(path);
-        if (!existing || !Number.isInteger(existing.pid) || typeof existing.instanceId !== 'string') {
-          throw new Error('RECOVERY_OPERATION_LOCK_UNCERTAIN');
-        }
-        if (recoveryLockOwnerAlive(existing)) {
-          assertRecoveryLockOwnerAttributable(config, existing);
-          return { acquired: false, owner: existing };
-        }
-        const latest = json<RecoveryLock>(path);
-        if (!latest || latest.instanceId !== existing.instanceId) {
-          if (attempt === 1) {
-            if (latest && recoveryLockOwnerAlive(latest)) {
-              assertRecoveryLockOwnerAttributable(config, latest);
-              return { acquired: false, owner: latest };
-            }
-            audit(config, 'recovery_operation_lock_race', {
-              existingInstanceId: existing.instanceId,
-              existingPid: existing.pid,
-              latestInstanceId: latest?.instanceId ?? null,
-              latestPid: latest?.pid ?? null,
-            });
-            throw new Error('RECOVERY_OPERATION_LOCK_RACE');
-          }
-          continue;
-        }
-        if (recoveryLockOwnerAlive(latest)) {
-          assertRecoveryLockOwnerAttributable(config, latest);
-          return { acquired: false, owner: latest };
-        }
-        try { writeFileSync(`${path}.stale-${Date.now()}-${existing.instanceId}`, readFileSync(path)); } catch { /* evidence best effort */ }
-        rmSync(path, { force: true });
-        continue;
-      }
-      return { acquired: true, value: await action(lock) };
-    } finally {
-      if (fd !== undefined) closeSync(fd);
-      if (acquired) {
-        const current = json<RecoveryLock>(path);
-        if (current?.instanceId === lock.instanceId) rmSync(path, { force: true });
-      }
+  // Installer, certification and Recovery actions share one physical lock writer.
+  // Core supplies only action attribution, audit and scoped handle release.
+  let attempt: ReturnType<typeof acquireRecoveryOperationLock>;
+  try {
+    attempt = acquireRecoveryOperationLock({
+      controllerHome: config.controllerHome,
+      action: intent.action,
+      requestId: intent.requestId,
+    });
+  } catch (error) {
+    if (error instanceof RecoveryOperationLockRaceError) {
+      audit(config, 'recovery_operation_lock_race', {
+        existingInstanceId: error.existing.instanceId,
+        existingPid: error.existing.pid,
+        latestInstanceId: error.latest?.instanceId ?? null,
+        latestPid: error.latest?.pid ?? null,
+      });
     }
+    throw error;
   }
-  throw new Error('RECOVERY_OPERATION_LOCK_BUSY');
+  if (!attempt.acquired) {
+    assertRecoveryLockOwnerAttributable(config, attempt.owner);
+    return { acquired: false, owner: attempt.owner };
+  }
+  try {
+    return { acquired: true, value: await action(attempt.handle.record) };
+  } finally {
+    attempt.handle.close();
+  }
 }
 
 export async function runtimeStatus(config: RecoveryConfig) {

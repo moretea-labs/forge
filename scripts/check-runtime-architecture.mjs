@@ -1456,6 +1456,7 @@ requireText('src/runtime/root/service.ts', 'SuccessfulExit');
 requireText('src/runtime/root/service.ts', 'ThrottleInterval');
 requireText('src/runtime/root/service-runner.ts', 'activeRuntimeReleaseManifest');
 requireText('src/runtime/standalone-recovery/core.ts', 'restartPrimaryRuntime');
+forbid('src/runtime/standalone-recovery/core.ts', /\bopenSync\s*\([^,]+,\s*['"]wx['"]/, 'Recovery Core must not create a second exclusive mutation lock writer');
 requireText('src/runtime/standalone-recovery/core.ts', 'recoverPrimaryRuntime');
 requireText('src/runtime/standalone-recovery/core.ts', "action: 'restart_primary_runtime'");
 requireText('src/runtime/standalone-recovery/core.ts', 'restartAttempts >= maximumRestartAttempts');
@@ -1476,6 +1477,37 @@ requireText('src/cli/commands/init-hook.ts', "['open', 'next']");
 requireText('src/cli/commands/init-hook.ts', "command(name)");
 requireText('src/cli/commands/init-hook.ts', "command('close')");
 requireText('src/cli/commands/init-hook.ts', "'.forge'");
+// CLI setup/adoption must use one process/environment implementation, not three writers.
+requireText('src/cli/commands/setup-execution.ts', 'export function withProcessEnv');
+requireText('src/cli/commands/setup-execution.ts', 'export function runSetupProcess');
+requireMissing('src/core/adoption/helper-wrapper-plan.ts');
+// Service and release persistence use one writer rather than five sibling
+// open/write/rename algorithms with incompatible temporary-file identities.
+requireText('src/runtime/shared/atomic-text-file.ts', 'export function writeAtomicTextFile');
+for (const path of [
+  'src/runtime/root/service.ts',
+  'src/runtime/root/package-connector-service.ts',
+  'src/runtime/root/package-runtime-service.ts',
+  'src/runtime/root/package-runtime-release.ts',
+  'src/cli/controller/systemd-user.ts',
+]) {
+  forbid(path, /^function\s+atomicWrite\s*\(/m, 'service/release text writes must reuse the shared atomic writer');
+  requireText(path, 'writeAtomicTextFile');
+}
+
+// Job recovery and Scheduler must not drift on delegated-operation replay safety.
+requireText('src/runtime/execution/jobs/child-reference.ts', 'export function isAgentDelegationJob');
+for (const path of ['src/runtime/control-plane/global-scheduler/reconciliation.ts', 'src/runtime/execution/jobs/receipt-recovery.ts']) {
+  forbid(path, /^function\s+isAgentDelegationJob\s*\(/m, 'delegation classification must stay in the shared child-reference owner');
+}
+// Live and sampled Git snapshots share the same porcelain partitioning semantics.
+requireText('src/cli/repositories/structured-git.ts', 'export function splitRepositoryGitStatus');
+forbid('src/runtime/projections/git-status-sampler.ts', /^function\s+splitStatus\s*\(/m, 'Git projection must not duplicate the live porcelain parser');
+for (const path of ['src/cli/commands/init.ts', 'src/cli/commands/init-hook.ts', 'src/cli/commands/global-runtime.ts']) {
+  forbid(path, /^function\s+(?:withProcessEnv|runProcess)(?:<|\()/m, 'setup commands must import their canonical synchronous process/environment owner');
+}
+requireText('src/cli/editing/edit-session.ts', 'export function findOccurrence');
+forbid('src/cli/repositories/safe-patch.ts', /^function\s+findOccurrence\s*\(/m, 'Safe Patch preflight must reuse Direct Edit anchor occurrence matching');
 requireText('src/cli/editing/edit-session.ts', 'beforeMode');
 requireText('src/cli/editing/edit-session.ts', 'afterMode');
 requireText('src/cli/editing/edit-session.ts', '{ mode: record.beforeMode }');
@@ -1920,6 +1952,9 @@ const B7_ALLOWED_KERNEL_LEGACY_EDGES = new Set([
 ]);
 requireExactShrinkingDebt('Kernel -> legacy src dependency debt', b7KernelLegacyEdges, B7_ALLOWED_KERNEL_LEGACY_EDGES);
 const b7ProductionEdges = new Set(dependencyEdges(b7ProductionGraph));
+if (!b7ProductionEdges.has('src/runtime/standalone-recovery/core.ts -> src/runtime/standalone-recovery/operation-lock.ts')) {
+  failures.push('Recovery Core must consume the single shared operation-lock authority');
+}
 for (const requiredEdge of [
   'packages/kernel/work/domain/types.ts -> packages/kernel/identity/api/index.ts',
   'packages/kernel/scheduler/domain/schedule.ts -> packages/kernel/identity/api/index.ts',
