@@ -71,6 +71,8 @@ export const TASK_TARGET_SPACED_FAILURE_CODES: ReadonlySet<string> = new Set([
   'COMPUTER_CHATGPT_EXTENSION_EXACT_TARGET_AMBIGUOUS',
   'COMPUTER_CHATGPT_RESTORED_TARGET_UNPROVEN',
   'COMPUTER_CHATGPT_TARGET_RESTORE_FAILED',
+  // An absent manually closed tab cannot be re-created by a read-only probe.
+  'COMPUTER_CHATGPT_EXTENSION_EXACT_TARGET_ABSENT_READ_ONLY',
   'COMPUTER_CHATGPT_BOOTSTRAP_TARGET_UNAVAILABLE',
   'COMPUTER_CHATGPT_EXTENSION_TARGET_OPEN_OUTCOME_UNKNOWN',
   'COMPUTER_CHATGPT_EXTENSION_BOOTSTRAP_OPEN_OUTCOME_UNKNOWN',
@@ -656,7 +658,12 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     // strands the task.
     if (chatgptProviderBackpressureRemainingMs(this.deps.providerScopeKey, this.deps.nowMs()) > 0
       && !this.conversations.some((conversation) => conversation.conversation_id === task.conversationId)) return;
-    const ensured = await this.deps.targetPort.ensureExact(identityForTask(task));
+    // Only a new, explicitly admitted send may open a missing tab. A late
+    // receipt probe or unknown-effect reconciliation uses existing attachments
+    // and never resurrects a manually closed conversation by observation.
+    const ensured = await this.deps.targetPort.ensureExact(identityForTask(task), {
+      createIfMissing: poll.command?.mode === 'send',
+    });
     if (ensured.state !== 'ready') { this.noteTargetUnavailable(task, poll.command?.effectId, ensured.failure); return; }
     const target = ensured.target;
     const snapshot = ensured.observation ?? await target.observe({ includeUserHistory: false, includePageText: false });

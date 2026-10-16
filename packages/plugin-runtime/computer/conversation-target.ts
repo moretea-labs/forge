@@ -139,7 +139,8 @@ export interface ComputerChatgptExtensionBrokerRpc {
 
 export interface ComputerChatgptConversationTargetPort {
   inventory(): Promise<ComputerChatgptConversationInventory>;
-  ensureExact(identity: ComputerChatgptConversationIdentity): Promise<ComputerChatgptTargetResult>;
+  /** Read-only reconciliation cannot create a missing tab. Only a separately authorized new send may opt in to exact conversation creation. */
+  ensureExact(identity: ComputerChatgptConversationIdentity, options?: { createIfMissing?: boolean }): Promise<ComputerChatgptTargetResult>;
   openBootstrap(projectUrl: string, bootstrapKey: string): Promise<ComputerChatgptTargetResult>;
   findBySubmittedMarker(
     marker: string,

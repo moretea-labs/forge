@@ -243,7 +243,20 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
     const record = this.upsert(identity);
     const normalized = normalizeBinding(binding, instanceId);
     if (!normalized) return record;
-    return await this.authority.withSurfaceLease(this.controllerHome, record.targetId, async (lease) => lease.bind(normalized));
+    return await this.authority.withSurfaceLease(this.controllerHome, record.targetId, async (lease) => {
+      const previous = lease.current().providerBinding;
+      // Heartbeat inventory omits the Forge-create token. Carry it forward only
+      // for the same exact physical attachment; never transfer it to a new tab.
+      const sameAttachment = previous?.providerId === normalized.providerId
+        && previous.providerSessionId === normalized.providerSessionId
+        && previous.browserProduct === normalized.browserProduct
+        && previous.windowId === normalized.windowId
+        && previous.tabId === normalized.tabId;
+      return lease.bind({
+        ...normalized,
+        ...(normalized.ownerToken ? {} : sameAttachment && previous?.ownerToken ? { ownerToken: previous.ownerToken } : {}),
+      });
+    });
   }
 
   private target(identity: ComputerChatgptTargetIdentity, record: ComputerSurfaceTarget, instanceId: string): ComputerChatgptConversationTarget {
@@ -263,7 +276,7 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
               || saved.providerSessionId !== observed.providerSessionId
               || saved.browserProduct !== observed.browserProduct
               || saved.windowId !== observed.windowId || saved.tabId !== observed.tabId
-              || saved.ownerToken !== observed.ownerToken) {
+              || (observed.ownerToken && saved.ownerToken !== observed.ownerToken)) {
               await this.bindAsync(identity, response.result.providerBinding, instanceId);
             }
           }
@@ -315,7 +328,7 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
     return { conversations: [...byConversationId.values()], complete: true, unavailableProviders: [] };
   }
 
-  async ensureExact(identity: ComputerChatgptConversationIdentity): Promise<ComputerChatgptTargetResult> {
+  async ensureExact(identity: ComputerChatgptConversationIdentity, options: { createIfMissing?: boolean } = {}): Promise<ComputerChatgptTargetResult> {
     const preferredInstanceId = this.preferredProviderInstance(identity);
     const fresh = this.freshProviders();
     if (fresh.length === 0 || (preferredInstanceId && !fresh.some(([instanceId]) => instanceId === preferredInstanceId))) {
@@ -355,6 +368,12 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
           { failoverSafe: false },
         );
       }
+    }
+    // A missing exact tab may be opened only for a Supervisor-authorized fresh
+    // send. Observation and outcome-unknown reconciliation must not resurrect
+    // a manually closed tab or mint another browser resource.
+    if (options.createIfMissing === false) {
+      return failure('COMPUTER_CHATGPT_EXTENSION_EXACT_TARGET_ABSENT_READ_ONLY', { failoverSafe: false });
     }
     const selected = this.selectProviderInstance(preferredInstanceId);
     if (!selected.instanceId) {
