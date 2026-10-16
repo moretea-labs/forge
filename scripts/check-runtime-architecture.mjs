@@ -2370,6 +2370,11 @@ requireText('scripts/install-ios-hid-toolchain.sh', 'pymobiledevice3==$version')
 requireText('src/runtime/plugins/ios/remote-xpc-hid.ts', 'return hidToolchainStatus(controllerHome, env, false);');
 requireText('src/runtime/plugins/ios/remote-xpc-hid.ts', 'return hidToolchainStatus(controllerHome, env, true);');
 requireText('src/runtime/plugins/ios-physical-device.ts', 'const confirmed = requireObservedPhysicalTargetForeground(state)');
+requireText('src/runtime/plugins/ios-physical-device.ts', 'const reusable = reusablePhysicalSession(input, selected, bundleId);');
+requireText('src/runtime/plugins/ios-physical-device.ts', "appendEvent(input, reusable.interactionId, 'app_activated'");
+requireText('src/runtime/plugins/ios-physical-device.ts', "state: 'deferred_to_first_input'");
+requireText('src/runtime/plugins/ios-physical-device.ts', 'input.args.prewarm_input === true && input.args.observe_after_open !== true');
+requireText('tests/runtime/ios-physical-device.test.ts', "it('reuses the same session but always reactivates its target app'");
 requireText('src/runtime/plugins/ios-physical-device.ts', "'IOS_DEVICE_LOCK_STATE_UNVERIFIED'");
 requireText('src/runtime/plugins/ios-physical-device.ts', "if (lockState.passcodeRequired === false) return;");
 requireText('src/runtime/plugins/ios-physical-device.ts', 'if (!selected.connected) {');

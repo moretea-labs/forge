@@ -26,7 +26,7 @@ import type {
   AssistantPluginAuthorizationTarget,
   AssistantPluginCapability,
 } from './types';
-import { executeRemoteXpcHidInput, prewarmRemoteXpcHid, remoteXpcHidStatus, stopRemoteXpcHidForDevice } from './ios/remote-xpc-hid';
+import { executeRemoteXpcHidInput, remoteXpcHidStatus, stopRemoteXpcHidForDevice } from './ios/remote-xpc-hid';
 
 const PROVIDER = 'ios-device' as const;
 const SESSION_EXPIRY_MS = 2 * 60 * 60_000;
@@ -715,9 +715,7 @@ function reusablePhysicalSession(
   input: AssistantPluginActionExecutionInput,
   selected: PhysicalDevice,
   bundleId: string,
-  relaunch: boolean,
 ): InteractionSessionRecord | undefined {
-  if (relaunch) return undefined;
   const aliases = [selected.identifier, selected.udid].filter((value): value is string => Boolean(value));
   return listInteractionSessions(input.repoRoot, PROVIDER).find((entry) => {
     if (!isInteractionSessionActive(entry.status) || interactionAutomationEngine(entry) !== 'coredevice') return false;
@@ -1229,7 +1227,7 @@ export function iosPhysicalDeviceActions(): AssistantPluginActionDescriptor[] {
     },
     {
       actionId: 'physical_device_open', title: 'Open physical iOS app session',
-      description: 'Open or reuse an exact CoreDevice iPhone session; launch metadata never proves foreground. Set observe_after_open=true to return the initial screenshot and short-lived observation in the same call, without authorizing input. prewarm_input=true starts the existing RemoteXPC worker without XCTest.',
+      description: 'Open or reactivate the target app in the same exact CoreDevice iPhone session; activation metadata never proves foreground. Set observe_after_open=true to return a new screenshot without authorizing input. prewarm_input=true defers isolated RemoteXPC worker startup to the first input action instead of wasting a cross-action prewarm.',
       readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 2 * 60_000, cancellable: true, idempotent: false,
       scopes: ['ios.device'], resourceClaims: mutationClaims,
       argumentsSchema: { type: 'object', properties: { device: { type: 'string' }, bundle_id: { type: 'string' }, relaunch: { type: 'boolean' }, prewarm_input: { type: 'boolean' }, observe_after_open: { type: 'boolean' } }, required: ['device', 'bundle_id'], additionalProperties: false },
@@ -1429,7 +1427,7 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
     const sessionLookupStartedAt = performance.now();
     const expiredSessionCount = expirePhysicalDeviceSessions(input);
     pruneInteractionSessions(input.repoRoot, PROVIDER, 100);
-    const reusable = reusablePhysicalSession(input, selected, bundleId, input.args.relaunch === true);
+    const reusable = reusablePhysicalSession(input, selected, bundleId);
     const conflict = listInteractionSessions(input.repoRoot, PROVIDER).find((entry) =>
       isInteractionSessionActive(entry.status) && interactionMayOwnTarget(entry, selectedAliases));
     recordTiming(timingStages, 'sessionLookup', sessionLookupStartedAt, false);
@@ -1447,6 +1445,18 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
         releaseIosDeviceOwnership(input.controllerHome, input.repoId, reusable.interactionId, iosCoreDeviceOwnershipId(selected));
         throw new AssistantPluginError('IOS_DEVICE_SESSION_STATE_MISSING', 'The existing physical iPhone session has no recoverable state.', { retryable: false });
       }
+      // Owning a session never proves the target app remains in the foreground.
+      // Invalidate the old observation BEFORE activating another foreground app.
+      existingState.lastScreenshot = undefined;
+      existingState.foregroundObservation = undefined;
+      writeState(input, existingState);
+      const activationArgs = ['device', 'process', 'launch', '--device', selected.identifier, '--activate'];
+      if (input.args.relaunch === true) activationArgs.push('--terminate-existing');
+      activationArgs.push(bundleId);
+      const activationStartedAt = performance.now();
+      const activation = await runCoreJson(input, activationArgs, 'IOS_DEVICE_LAUNCH_FAILED', 60_000)
+        .finally(() => recordTiming(timingStages, 'activationRequest', activationStartedAt, false));
+      appendEvent(input, reusable.interactionId, 'app_activated', { bundleId, relaunch: input.args.relaunch === true });
       const active = patchInteractionSession(input.repoRoot, PROVIDER, reusable.interactionId, {
         expiresAt: new Date(hooks.now().getTime() + SESSION_EXPIRY_MS).toISOString(),
       }) ?? reusable;
@@ -1459,6 +1469,8 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
         interaction: active,
         device: selected,
         app: apps[0],
+        launch: bounded(activation),
+        foregroundVerification: { authority: 'screenshot_observation', required: true },
         reusedSession: true,
         controlPlane: {
           lifecycle: 'coredevice',
@@ -1517,13 +1529,10 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
       if (input.args.relaunch === true) args.push('--terminate-existing');
       args.push(bundleId);
       const prewarmStartedAt = performance.now();
-      const prewarmRequested = input.args.prewarm_input === true && Boolean(selected.udid);
-      const inputPrewarm: Record<string, unknown> = prewarmRequested && selected.udid
-        ? prewarmRemoteXpcHid({
-          controllerHome: input.controllerHome,
-          deviceIdentifier: selected.identifier,
-          udid: selected.udid,
-        })
+      // Separate plugin actions run in isolated processes. Starting a HID worker
+      // here cannot accelerate the next input; defer startup to the input action.
+      const inputPrewarm: Record<string, unknown> = input.args.prewarm_input === true
+        ? { backend: 'remote-xpc-hid', state: 'deferred_to_first_input', runnerOwned: false }
         : { backend: 'remote-xpc-hid', state: 'not_requested', runnerOwned: false };
       recordTiming(
         timingStages,
@@ -1532,7 +1541,7 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
         inputPrewarm.state === 'ready' || inputPrewarm.state === 'test' || input.args.prewarm_input !== true,
       );
       const displayStartedAt = performance.now();
-      const display = input.args.prewarm_input === true
+      const display = input.args.prewarm_input === true && input.args.observe_after_open !== true
         ? await physicalDisplayGeometry(input, selected).then((result) => {
           recordTiming(timingStages, 'displayInfo', displayStartedAt, false);
           return result;
@@ -1541,7 +1550,7 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
           throw error;
         })
         : undefined;
-      if (input.args.prewarm_input !== true) recordTiming(timingStages, 'displayInfo', displayStartedAt, true);
+      if (input.args.prewarm_input !== true || input.args.observe_after_open === true) recordTiming(timingStages, 'displayInfo', displayStartedAt, true);
       if (display) {
         state.display = { ...display, observedAt: createdAt };
         writeState(input, state);

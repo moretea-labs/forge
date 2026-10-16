@@ -190,9 +190,11 @@ describe('CoreDevice-first physical iPhone provider', () => {
     expect(mutations.every((action) => action.executionMode === 'runtime')).toBe(true);
   });
 
-  it('reuses an active same-app session and does not launch the app twice', async () => {
+  it('reuses the same session but always reactivates its target app', async () => {
     const value = fixture();
     let launches = 0;
+    const launchArgs: string[][] = [];
+    let displayQueries = 0;
     setIosPhysicalDeviceRuntimeHooksForTest({
       platform: () => 'darwin',
       now: () => new Date('2026-08-17T08:00:00.000Z'),
@@ -201,24 +203,54 @@ describe('CoreDevice-first physical iPhone provider', () => {
         throw new Error(`unexpected sync command: ${[command, ...args].join(' ')}`);
       },
       runCommandAsync: async (command, args) => {
+        const screenshot = maybeScreenshotCommand(command, args);
+        if (screenshot) return screenshot;
         const joined = args.join(' ');
         if (args[0] === 'devicectl' && args[1] === '--version') return { ok: true, status: 0, stdout: '636.3\\n', stderr: '', command: [command, ...args] };
         if (joined.includes('list devices')) return { ok: true, status: 0, stdout: json({ devices: [deviceEntry()] }), stderr: '', command: [command, ...args] };
         if (joined.includes('device info apps')) return { ok: true, status: 0, stdout: json({ apps: [{ name: '小红书', bundleIdentifier: 'com.xingin.discover' }] }), stderr: '', command: [command, ...args] };
         if (joined.includes('device info lockState')) return { ok: true, status: 0, stdout: json({ passcodeRequired: false, unlockedSinceBoot: true }), stderr: '', command: [command, ...args] };
+        if (joined.includes('device info displays')) {
+          displayQueries += 1;
+          return { ok: true, status: 0, stdout: json({ displays: [{ bounds: [[0, 0], [1206, 2622]], pointScale: 3, primary: true }] }), stderr: '', command: [command, ...args] };
+        }
         if (joined.includes('device process launch')) {
           launches += 1;
+          launchArgs.push(args);
           return { ok: true, status: 0, stdout: json({ processIdentifier: 123, launchOptions: { activatedWhenStarted: true } }), stderr: '', command: [command, ...args] };
         }
         throw new Error(`unexpected async command: ${joined}`);
       },
     });
-    const first = await executeIosPhysicalDeviceAction(input(value, 'physical_device_open', { device: 'CORE-DEVICE-1', bundle_id: 'com.xingin.discover' }));
-    const second = await executeIosPhysicalDeviceAction(input(value, 'physical_device_open', { device: 'CORE-DEVICE-1', bundle_id: 'com.xingin.discover' }));
-    expect(launches).toBe(1);
+    const first = await executeIosPhysicalDeviceAction(input(value, 'physical_device_open', {
+      device: 'CORE-DEVICE-1', bundle_id: 'com.xingin.discover', observe_after_open: true, prewarm_input: true,
+    }));
+    const interactionId = (first.interaction as { interactionId: string }).interactionId;
+    const firstId = (first.observation as { observationId: string }).observationId;
+    await executeIosPhysicalDeviceAction(input(value, 'physical_device_confirm_foreground', {
+      interaction_id: interactionId, observation_id: firstId, bundle_id: 'com.xingin.discover',
+    }));
+    const second = await executeIosPhysicalDeviceAction(input(value, 'physical_device_open', {
+      device: 'CORE-DEVICE-1', bundle_id: 'com.xingin.discover', observe_after_open: true, prewarm_input: true,
+    }));
+    expect(launches).toBe(2);
     expect(second.reusedSession).toBe(true);
-    expect((second.interaction as { interactionId: string }).interactionId).toBe((first.interaction as { interactionId: string }).interactionId);
-    await executeIosPhysicalDeviceAction(input(value, 'physical_device_close', { interaction_id: (first.interaction as { interactionId: string }).interactionId }));
+    expect(second.foregroundVerification).toMatchObject({ authority: 'screenshot_observation', required: true });
+    expect((second.interaction as { interactionId: string }).interactionId).toBe(interactionId);
+    expect((second.observation as { observationId: string }).observationId).not.toBe(firstId);
+    await expect(executeIosPhysicalDeviceAction(input(value, 'physical_device_confirm_foreground', {
+      interaction_id: interactionId, observation_id: firstId, bundle_id: 'com.xingin.discover',
+    }))).rejects.toMatchObject({ code: 'IOS_DEVICE_SCREEN_OBSERVATION_REQUIRED' });
+    const third = await executeIosPhysicalDeviceAction(input(value, 'physical_device_open', {
+      device: 'CORE-DEVICE-1', bundle_id: 'com.xingin.discover', relaunch: true, observe_after_open: true,
+    }));
+    expect((third.interaction as { interactionId: string }).interactionId).toBe(interactionId);
+    expect(third.reusedSession).toBe(true);
+    expect(launches).toBe(3);
+    expect(launchArgs[2]).toContain('--terminate-existing');
+    expect(launchArgs[1]).not.toContain('--terminate-existing');
+    expect(displayQueries).toBe(0); // Validated PNG geometry replaces the open-time CoreDevice display query.
+    await executeIosPhysicalDeviceAction(input(value, 'physical_device_close', { interaction_id: interactionId }));
   });
 
   it('keeps standalone phone smoke on the sole Computer path and never sends unreviewed app input', () => {
@@ -249,11 +281,11 @@ describe('CoreDevice-first physical iPhone provider', () => {
     }))).rejects.toMatchObject({ code: 'PLUGIN_ACTION_NOT_SUPPORTED', retryable: false });
   });
 
-  it('starts HID prewarm without synchronously awaiting worker readiness during open', () => {
+  it('defers isolated HID worker startup to the first real input action', () => {
     const source = readFileSync(join(process.cwd(), 'src/runtime/plugins/ios-physical-device.ts'), 'utf8');
-    expect(source).toContain('prewarmRemoteXpcHid({');
+    expect(source).toContain("state: 'deferred_to_first_input'");
+    expect(source).not.toContain('prewarmRemoteXpcHid({');
     expect(source).not.toContain('awaitRemoteXpcHidPrewarm');
-    expect(source).not.toContain('INPUT_OPEN_PREWARM_BUDGET_MS');
   });
 
   it('overlaps independent open preflights while keeping display readiness ahead of app activation', async () => {
@@ -319,7 +351,7 @@ describe('CoreDevice-first physical iPhone provider', () => {
     expect(order.indexOf('apps-start')).toBeLessThan(Math.min(order.indexOf('apps-end'), order.indexOf('lock-end')));
     expect(order.indexOf('lock-start')).toBeLessThan(Math.min(order.indexOf('apps-end'), order.indexOf('lock-end')));
     expect(order.indexOf('display-end')).toBeLessThan(order.indexOf('launch-start'));
-    expect(opened.inputPrewarm).toMatchObject({ backend: 'remote-xpc-hid', state: 'test' });
+    expect(opened.inputPrewarm).toMatchObject({ backend: 'remote-xpc-hid', state: 'deferred_to_first_input' });
     const timing = opened.timing as { totalMs: number; stages: Record<string, { ms: number }> };
     expect(timing.stages.installedAppLookup.ms).toBeGreaterThanOrEqual(0);
     expect(timing.stages.lockState.ms).toBeGreaterThanOrEqual(0);
@@ -666,7 +698,7 @@ describe('CoreDevice-first physical iPhone provider', () => {
     }));
     const interactionId = String((opened.interaction as Record<string, unknown>).interactionId);
     expect(opened.controlPlane).toMatchObject({ input: 'remote-xpc-hid', runnerOwned: false });
-    expect(opened.inputPrewarm).toMatchObject({ backend: 'remote-xpc-hid', state: 'test', runnerOwned: false });
+    expect(opened.inputPrewarm).toMatchObject({ backend: 'remote-xpc-hid', state: 'deferred_to_first_input', runnerOwned: false });
 
     await observeAndConfirmForeground(value, interactionId);
     const tapped = await executeIosPhysicalDeviceAction(input(value, 'physical_device_tap', {
