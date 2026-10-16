@@ -2367,6 +2367,9 @@ requireText('scripts/install-ios-hid-toolchain.sh', 'pymobiledevice3==$version')
 requireText('src/runtime/plugins/ios/remote-xpc-hid.ts', 'return hidToolchainStatus(controllerHome, env, false);');
 requireText('src/runtime/plugins/ios/remote-xpc-hid.ts', 'return hidToolchainStatus(controllerHome, env, true);');
 requireText('src/runtime/plugins/ios-physical-device.ts', 'const confirmed = requireObservedPhysicalTargetForeground(state)');
+requireText('src/runtime/plugins/ios-physical-device.ts', "'IOS_DEVICE_LOCK_STATE_UNVERIFIED'");
+requireText('src/runtime/plugins/ios-physical-device.ts', "if (lockState.passcodeRequired === false) return;");
+requireText('src/runtime/plugins/ios-physical-device.ts', 'if (!selected.connected) {');
 requireText('src/runtime/plugins/ios-physical-device.ts', "'IOS_DEVICE_SCREENSHOT_INVALID'");
 requireText('src/runtime/plugins/ios-physical-device.ts', 'PNG_CRC_TABLE');
 requireText('src/runtime/plugins/ios-physical-device.ts', 'sawImageData && length === 0 && end + 4 === image.length');

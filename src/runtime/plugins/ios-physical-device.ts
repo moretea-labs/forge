@@ -494,7 +494,12 @@ async function physicalDeviceLockState(input: AssistantPluginActionExecutionInpu
 
 async function requirePhysicalDeviceUnlocked(input: AssistantPluginActionExecutionInput, device: PhysicalDevice): Promise<void> {
   const lockState = await physicalDeviceLockState(input, device);
-  if (lockState.passcodeRequired !== true) return;
+  if (lockState.passcodeRequired === false) return;
+  if (lockState.passcodeRequired !== true) {
+    throw new AssistantPluginError('IOS_DEVICE_LOCK_STATE_UNVERIFIED',
+      'CoreDevice did not report a verified iPhone lock state; app activation was not attempted.',
+      { retryable: false });
+  }
   throw new AssistantPluginError(
     'IOS_DEVICE_LOCKED',
     `The selected iPhone ${device.name} is locked. Unlock it before launching an app through CoreDevice.`,
@@ -1383,6 +1388,11 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
     const selectStartedAt = performance.now();
     const selected = await selectDevice(input, input.args.device);
     recordTiming(timingStages, 'deviceSelection', selectStartedAt, false);
+    if (!selected.connected) {
+      throw new AssistantPluginError('IOS_DEVICE_NOT_CONNECTED',
+        'The selected paired iPhone has no usable CoreDevice connection; app activation was not attempted.',
+        { retryable: true });
+    }
     const bundleId = requireBundleId(input.args.bundle_id);
     const appsStartedAt = performance.now();
     const lockStartedAt = performance.now();

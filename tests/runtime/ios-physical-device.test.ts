@@ -575,9 +575,11 @@ describe('CoreDevice-first physical iPhone provider', () => {
     expect(launchCount).toBe(1);
   });
 
-  it('fails early with a retryable lock-state error instead of misclassifying CoreDevice launch failure', async () => {
+  it('fails early for locked, unknown-lock, and disconnected iPhones without attempting app activation', async () => {
     const value = fixture();
     const commands: string[][] = [];
+    let lockResponse: Record<string, unknown> = { passcodeRequired: true, unlockedSinceBoot: true };
+    let deviceOnline = true;
     setIosPhysicalDeviceRuntimeHooksForTest({
       platform: () => 'darwin',
       runCommand: (command, args) => {
@@ -588,9 +590,9 @@ describe('CoreDevice-first physical iPhone provider', () => {
           return { ok: true, status: 0, stdout: '636.3\n', stderr: '', command: [command, ...args] };
         }
         const joined = args.join(' ');
-        if (joined.includes('list devices')) return { ok: true, status: 0, stdout: json({ devices: [deviceEntry()] }), stderr: '', command: [command, ...args] };
+        if (joined.includes('list devices')) return { ok: true, status: 0, stdout: json({ devices: [deviceOnline ? deviceEntry() : { ...deviceEntry(), connectionProperties: { pairingState: 'paired', tunnelState: 'disconnected', transportType: 'localNetwork' }, deviceProperties: { ...deviceEntry().deviceProperties, ddiServicesAvailable: false }, capabilities: [] }] }), stderr: '', command: [command, ...args] };
         if (joined.includes('device info apps')) return { ok: true, status: 0, stdout: json({ apps: [{ name: 'Test', bundleIdentifier: 'com.example.locked' }] }), stderr: '', command: [command, ...args] };
-        if (joined.includes('device info lockState')) return { ok: true, status: 0, stdout: json({ passcodeRequired: true, unlockedSinceBoot: true }), stderr: '', command: [command, ...args] };
+        if (joined.includes('device info lockState')) return { ok: true, status: 0, stdout: json(lockResponse), stderr: '', command: [command, ...args] };
         throw new Error(`unexpected command: ${[command, ...args].join(' ')}`);
       },
     });
@@ -601,6 +603,12 @@ describe('CoreDevice-first physical iPhone provider', () => {
     } catch (error) {
       expect(error).toMatchObject({ code: 'IOS_DEVICE_LOCKED', retryable: true });
     }
+    lockResponse = { unlockedSinceBoot: true }; // Unknown lock schema cannot authorize activation.
+    await expect(executeIosPhysicalDeviceAction(input(value, 'physical_device_open', { device: 'greyson', bundle_id: 'com.example.locked' })))
+      .rejects.toMatchObject({ code: 'IOS_DEVICE_LOCK_STATE_UNVERIFIED', retryable: false });
+    deviceOnline = false;
+    await expect(executeIosPhysicalDeviceAction(input(value, 'physical_device_open', { device: 'greyson', bundle_id: 'com.example.locked' })))
+      .rejects.toMatchObject({ code: 'IOS_DEVICE_NOT_CONNECTED', retryable: true });
     expect(commands.some((argv) => argv.join(' ').includes('device process launch'))).toBe(false);
   });
 
