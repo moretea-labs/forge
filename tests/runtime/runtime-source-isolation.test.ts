@@ -5,7 +5,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { getMcpPolicy } from '../../adapters/mcp/policy';
 import type { MultiRepositoryMcpToolContext } from '../../adapters/mcp/multi-repository';
-import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
+import { ensureControllerHome, repositoryControllerRoot } from '../../src/cli/repositories/controller-home';
 import { addRepositoryCheckout, registerRepository } from '../../src/cli/repositories/registry';
 import { callRuntimeTool } from '../../adapters/mcp/runtime-gateway/runtime-tools';
 import { callContextAdapter } from '../../adapters/mcp/runtime-gateway/context-adapter';
@@ -34,7 +34,7 @@ import {
   startManagedPluginAction,
   waitManagedPluginAction,
 } from '../../src/runtime/plugins/lightweight-action';
-import { submitAssistantPluginAction } from '../../src/runtime/plugins/store';
+import { clearAssistantPluginManifestCacheForTest, getAssistantPluginManifest, submitAssistantPluginAction } from '../../src/runtime/plugins/store';
 import { startGoalWorkloop } from '../../src/runtime/control-plane/facade/goal-workloop';
 import { createHandoffItem, getHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
 import { cancelWorkContract, createWorkContract, type WorkContract } from '../../packages/kernel/work/api/index';
@@ -1499,6 +1499,31 @@ printf '{"ok":true}\\n'
     const computerMatch = data.capabilitySearch?.matches?.find((entry) => entry.capabilityId?.startsWith('plugin.computer.'));
     expect(computerMatch).toBeTruthy();
     expect(computerMatch?.descriptor?.exposedVia).toBe('plugin_action_execute');
+  });
+
+  test('rh_context capability search follows live plugin ownership instead of stale stored manifests', async () => {
+    const business = tempRoot('forge-context-capability-search-stale-');
+    const controllerHome = tempRoot('forge-home-capability-search-stale-');
+    initGitRepo(business, 'context-capability-search-stale');
+    ensureControllerHome(controllerHome);
+    const repository = registerRepository({ path: business, controllerHome, displayName: 'Capability Search Stale' });
+
+    const computerManifest = getAssistantPluginManifest(controllerHome, repository, 'computer');
+    writeJsonAtomic(
+      join(repositoryControllerRoot(controllerHome, repository.repoId), 'plugins', 'manifests', 'ios.json'),
+      { ...computerManifest, pluginId: 'ios', displayName: 'Stale iOS Manifest' },
+    );
+    clearAssistantPluginManifestCacheForTest();
+
+    const payload = structured(await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_context', {
+      repo_id: repository.repoId,
+      operation: 'list',
+      query: 'physical iPhone app open',
+      detail_level: 'summary',
+    }));
+    const matches = ((payload.data as { capabilitySearch?: { matches?: Array<{ capabilityId?: string }> } }).capabilitySearch?.matches ?? []);
+    expect(matches.some((entry) => entry.capabilityId === 'plugin.computer.physical_device_open')).toBe(true);
+    expect(matches.some((entry) => entry.capabilityId === 'plugin.ios.physical_device_open')).toBe(false);
   });
 
   test('plugin sidecar deadline leaves bounded settlement time after the provider deadline', () => {

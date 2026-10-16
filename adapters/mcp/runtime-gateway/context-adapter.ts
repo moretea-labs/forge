@@ -838,7 +838,9 @@ export async function callContextAdapter(ctx: MultiRepositoryMcpToolContext, nam
       const learningRecall = args.include_learning_recall === false
         ? undefined
         : rhContextLearningRecall(ctx, repository, capabilityIntentQuery);
-      const manifestOptions = { preferStored: true };
+      // Intent-ranked capability discovery must reflect the executable plugin contract.
+      // Persisted manifests are status projections and may outlive a source release that moved an action.
+      const manifestOptions = { preferStored: false };
       const repositoryManifests = listAssistantPluginManifests(ctx.controllerHome, repository, manifestOptions);
       const controllerManifests = listControllerPluginManifests(ctx.controllerHome, manifestOptions);
       const manifests = [...new Map(
