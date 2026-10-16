@@ -102,6 +102,9 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
   private readonly providerStates = new Map<string, ProviderState>();
   private readonly pending = new Map<string, PendingCommand>();
   private readonly queues = new Map<string, string[]>();
+  // Process-local physical-operation singleflight, not a second tab lifecycle
+  // authority. Exact Surface binding/CAS remains the only durable owner.
+  private readonly retiring = new Map<string, Promise<boolean>>();
 
   constructor(
     private readonly controllerHome: string,
@@ -559,7 +562,19 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
    * Chrome close with missing acknowledgement is outcome-unknown: retain the
    * exact attachment so the same owner can reconcile/retry, never make it
    * eligible for another physical owner by clearing the index prematurely. */
-  private async retirePhysicalBinding(record: ComputerSurfaceTarget, identity?: ComputerChatgptTargetIdentity): Promise<boolean> {
+  private retirePhysicalBinding(record: ComputerSurfaceTarget, identity?: ComputerChatgptTargetIdentity): Promise<boolean> {
+    const existing = this.retiring.get(record.targetId);
+    if (existing) return existing;
+    const pending = this.retirePhysicalBindingOnce(record, identity);
+    this.retiring.set(record.targetId, pending);
+    const release = (): void => {
+      if (this.retiring.get(record.targetId) === pending) this.retiring.delete(record.targetId);
+    };
+    void pending.then(release, release);
+    return pending;
+  }
+
+  private async retirePhysicalBindingOnce(record: ComputerSurfaceTarget, identity?: ComputerChatgptTargetIdentity): Promise<boolean> {
     const previous = record.providerBinding;
     if (previous?.providerId !== PROVIDER_ID) return false;
     const resource = record.stableIdentity.resource;
