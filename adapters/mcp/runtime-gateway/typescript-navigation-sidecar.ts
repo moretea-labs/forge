@@ -10,9 +10,10 @@ import {
   navigateTypeScriptSymbol,
   type TypeScriptNavigationRequest,
 } from '../../../src/runtime/context/typescript-navigation';
-import type {
-  SemanticNavigationOutcome,
-  SemanticNavigationReadPolicy,
+import {
+  isIncidentalSemanticDependencyProbe,
+  type SemanticNavigationOutcome,
+  type SemanticNavigationReadPolicy,
 } from '../../../src/runtime/context/semantic-navigation-contract';
 
 interface Envelope {
@@ -83,6 +84,7 @@ export function runTypeScriptNavigationSidecar(
   try {
     for (const request of envelope.requests) {
       let policyDeniedReads = 0;
+      let materialPolicyDeniedReads = 0;
       const policyDeniedReadSamples = new Set<string>();
       try {
         const result = navigateTypeScriptSymbol(repoRoot, request, {
@@ -92,6 +94,7 @@ export function runTypeScriptNavigationSidecar(
             const decision = resolveMcpPath(repoRoot, relativePath, policy, 'read');
             if (decision.ok) return true;
             policyDeniedReads += 1;
+            if (!isIncidentalSemanticDependencyProbe(relativePath)) materialPolicyDeniedReads += 1;
             if (policyDeniedReadSamples.size < 20) policyDeniedReadSamples.add(relativePath);
             return false;
           },
@@ -105,6 +108,7 @@ export function runTypeScriptNavigationSidecar(
             target: result.target,
             locations: result.locations,
             policyDeniedReads,
+            materialPolicyDeniedReads,
             ...(policyDeniedReadSamples.size > 0 ? {
               details: { policyDeniedReadSamples: [...policyDeniedReadSamples] },
             } : {}),

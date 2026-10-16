@@ -1290,6 +1290,47 @@ printf '{"ok":true}\\n'
     }));
   });
 
+  test('rh_context keeps incidental TypeScript dependency denials diagnostic but blocks denied requested sources', async () => {
+    const business = tempRoot('forge-context-ts-materiality-');
+    const controllerHome = tempRoot('forge-home-context-ts-materiality-');
+    initGitRepo(business, 'context-ts-materiality');
+    mkdirSync(join(business, 'node_modules', 'dummy-dependency'), { recursive: true });
+    writeFileSync(join(business, 'node_modules', 'dummy-dependency', 'index.d.ts'), 'export interface External { value: string };\n');
+    writeFileSync(join(business, 'tsconfig.json'), JSON.stringify({
+      compilerOptions: { module: 'CommonJS', moduleResolution: 'Node', target: 'ES2022' },
+      include: ['src/**/*.ts'],
+    }));
+    writeFileSync(join(business, 'src', 'helper.ts'), 'export const helper = 42;\n');
+    const definitionLine = 'export const EXPORTED = helper;';
+    writeFileSync(join(business, 'src', 'index.ts'),
+      "import type { External } from 'dummy-dependency';\nimport { helper } from './helper';\n" + definitionLine + '\n');
+    git(business, 'add', '.');
+    git(business, 'commit', '-m', 'typescript fixture');
+    const repository = registerRepository({ path: business, controllerHome, displayName: 'Context TypeScript Materiality' });
+    const context = mcpContext(controllerHome, repository);
+    const search = async (path: string, line: number, column: number) => structured(await callRuntimeTool(context, 'rh_context', {
+      repo_id: repository.repoId, operation: 'search', query: 'EXPORTED',
+      known_paths: ['src/index.ts', 'src/helper.ts'], retrieval_mode: 'review',
+      structural_context: 'off', max_files: 4, max_snippets: 8, detail_level: 'raw',
+      semantic_navigation: [{ navigation: 'definition', path, line, column }],
+    }));
+    const allowed = (await search('src/index.ts', 3, definitionLine.indexOf('helper') + 2)).data as {
+      readiness?: { status?: string; readyForHighConfidenceMutation?: boolean; semantic?: { status?: string; reasonCodes?: string[] } };
+      semanticNavigation?: { policyDeniedReads?: number; materialPolicyDeniedReads?: number; staticClosure?: { status?: string } };
+    };
+    expect(allowed.semanticNavigation?.policyDeniedReads).toBeGreaterThan(0);
+    expect(allowed.semanticNavigation?.materialPolicyDeniedReads).toBe(0);
+    expect(allowed.semanticNavigation?.staticClosure?.status).toBe('complete_for_requested_symbols');
+    expect(allowed.readiness).toMatchObject({ status: 'ready', readyForHighConfidenceMutation: true, semantic: { status: 'ready', reasonCodes: [] } });
+    const denied = (await search('node_modules/dummy-dependency/index.d.ts', 1, 20)).data as {
+      readiness?: { status?: string; semantic?: { reasonCodes?: string[] } };
+      semanticNavigation?: { errors?: Array<{ code?: string }> };
+    };
+    expect(denied.readiness?.status).toBe('insufficient');
+    expect(denied.readiness?.semantic?.reasonCodes).toContain('semantic.semantic_navigation_target_denied');
+    expect(denied.semanticNavigation?.errors?.map(error => error.code)).toContain('SEMANTIC_NAVIGATION_TARGET_DENIED');
+  });
+
   test('rh_context search exposes multi-wave readiness and folds semantic failures into mutation readiness', async () => {
     const business = tempRoot('forge-context-readiness-facade-');
     const controllerHome = tempRoot('forge-home-context-readiness-facade-');

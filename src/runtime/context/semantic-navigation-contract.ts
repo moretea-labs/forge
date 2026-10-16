@@ -25,6 +25,8 @@ export interface SemanticNavigationResult {
   target: { path: string; line: number; column: number };
   locations: SemanticNavigationLocation[];
   policyDeniedReads?: number;
+  /** Denied requested/material reads, excluding incidental dependency probes. */
+  materialPolicyDeniedReads?: number;
   details?: Record<string, unknown>;
 }
 
@@ -67,4 +69,9 @@ export interface IndexedSemanticNavigationRequest {
 export interface IndexedSemanticNavigationOutcome {
   index: number;
   outcome: SemanticNavigationOutcome;
+}
+
+/** Dependency probes rejected by policy cannot certify missing requested source relationships. */
+export function isIncidentalSemanticDependencyProbe(path: string): boolean {
+  return /(?:^|\/)node_modules\/[^/]+/.test(path.replace(/\\/g, '/'));
 }

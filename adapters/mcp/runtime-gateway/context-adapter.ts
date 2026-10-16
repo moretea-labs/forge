@@ -1,5 +1,6 @@
 import { createHash } from "crypto";
 import { defaultSemanticProviderRegistry, type SemanticNavigationKind, type SemanticNavigationRequest } from "../../../src/runtime/context/semantic-navigation";
+import { isIncidentalSemanticDependencyProbe } from "../../../src/runtime/context/semantic-navigation-contract";
 import { buildContextClosureReceipt } from "../../../src/runtime/context/context-closure";
 import type { MultiRepositoryMcpToolContext } from "../multi-repository";
 import { result } from "./result-adapter";
@@ -278,6 +279,7 @@ interface RhContextSemanticNavigationProjection {
   providers: unknown[];
   policyDeniedLocations: number;
   policyDeniedReads: number;
+  materialPolicyDeniedReads: number;
   policyDeniedReadSamples: string[];
   requestTruncated: boolean;
   freshness: 'not_requested' | 'changed_during_query' | 'current_at_query';
@@ -298,6 +300,7 @@ async function rhContextSemanticNavigation(
   let anyLocationTruncated = false;
   let policyDeniedLocations = 0;
   let policyDeniedReads = 0;
+  let materialPolicyDeniedReads = 0;
   const policyDeniedReadSamples = new Set<string>();
   const semanticAccessScope = createHash('sha256')
     .update(JSON.stringify({ profile: policy.profile, readGlobs: policy.readGlobs, denyGlobs: policy.denyGlobs }))
@@ -345,6 +348,7 @@ async function rhContextSemanticNavigation(
     const decision = resolveMcpPath(repoRoot, relativePath, policy, 'read');
     if (decision.ok) return true;
     policyDeniedReads += 1;
+    if (!isIncidentalSemanticDependencyProbe(relativePath)) materialPolicyDeniedReads += 1;
     if (policyDeniedReadSamples.size < 20) policyDeniedReadSamples.add(relativePath);
     return false;
   };
@@ -370,6 +374,7 @@ async function rhContextSemanticNavigation(
     const semantic = outcome.result;
     const sidecarDeniedReads = Math.max(0, Number(semantic.policyDeniedReads ?? 0));
     policyDeniedReads += sidecarDeniedReads;
+    materialPolicyDeniedReads += Math.max(0, Number(semantic.materialPolicyDeniedReads ?? sidecarDeniedReads));
     const sidecarDeniedSamples = semantic.details?.policyDeniedReadSamples;
     if (Array.isArray(sidecarDeniedSamples)) {
       for (const sample of sidecarDeniedSamples) {
@@ -383,6 +388,11 @@ async function rhContextSemanticNavigation(
       policyDeniedLocations += 1;
       return false;
     });
+    // With no resolved requested relationship, even dependency-only denied reads
+    // may conceal material evidence. Preserve admission blocking for this case.
+    if (allowedLocations.length === 0 && sidecarDeniedReads > 0 && Number(semantic.materialPolicyDeniedReads ?? sidecarDeniedReads) === 0) {
+      materialPolicyDeniedReads += sidecarDeniedReads;
+    }
     const truncated = allowedLocations.length > RH_CONTEXT_SEMANTIC_LOCATION_LIMIT;
     anyLocationTruncated ||= truncated;
     results.push({
@@ -396,6 +406,7 @@ async function rhContextSemanticNavigation(
       returnedLocations: Math.min(allowedLocations.length, RH_CONTEXT_SEMANTIC_LOCATION_LIMIT),
       truncated,
       policyDeniedReads: semantic.policyDeniedReads ?? 0,
+      materialPolicyDeniedReads: semantic.materialPolicyDeniedReads ?? semantic.policyDeniedReads ?? 0,
       ...(semantic.details ?? {}),
     });
   }
@@ -424,7 +435,7 @@ async function rhContextSemanticNavigation(
   }
 
   const requestTruncated = raw.length > RH_CONTEXT_SEMANTIC_QUERY_LIMIT;
-  const incomplete = requestTruncated || anyLocationTruncated || policyDeniedLocations > 0 || policyDeniedReads > 0 || errors.length > 0 || sourceChangedDuringQuery;
+  const incomplete = requestTruncated || anyLocationTruncated || policyDeniedLocations > 0 || materialPolicyDeniedReads > 0 || errors.length > 0 || sourceChangedDuringQuery;
   const languages = new Set(results.map((entry) => String(entry.language ?? '')).filter(Boolean));
   const singleLanguage = languages.size === 1 ? [...languages][0] : undefined;
   const scope = singleLanguage === 'typescript'
@@ -444,6 +455,7 @@ async function rhContextSemanticNavigation(
     providers: defaultSemanticProviderRegistry.list(),
     policyDeniedLocations,
     policyDeniedReads,
+    materialPolicyDeniedReads,
     policyDeniedReadSamples: Array.from(policyDeniedReadSamples),
     requestTruncated,
     freshness: raw.length === 0 ? 'not_requested' : sourceChangedDuringQuery ? 'changed_during_query' : 'current_at_query',
@@ -577,7 +589,7 @@ export async function callContextAdapter(ctx: MultiRepositoryMcpToolContext, nam
       const semanticReasonCodes = Array.from(new Set([
         ...semanticNavigation.errors.map((entry) => `semantic.${String(entry.code ?? 'provider_error').toLowerCase()}`),
         ...(semanticNavigation.requestTruncated ? ['semantic.request_truncated'] : []),
-        ...(semanticNavigation.policyDeniedLocations > 0 || semanticNavigation.policyDeniedReads > 0 ? ['semantic.policy_denied'] : []),
+        ...(semanticNavigation.policyDeniedLocations > 0 || semanticNavigation.materialPolicyDeniedReads > 0 ? ['semantic.policy_denied'] : []),
         ...(semanticNavigation.freshness === 'changed_during_query' ? ['semantic.source_changed_during_query'] : []),
         ...(semanticNavigation.requested > 0 && semanticNavigation.staticClosure.status !== 'complete_for_requested_symbols' ? ['semantic.static_closure_incomplete'] : []),
       ]));
