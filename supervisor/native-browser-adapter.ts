@@ -47,6 +47,11 @@ const USER_VISIBLE_DEGRADED_AFTER_MS = 30_000;
 const TASK_TARGET_RETRY_BASE_MS = 30_000;
 /** Slow read-only probe cadence for an applied turn whose bounded resume is exhausted. */
 const AWAITING_RECEIPT_OBSERVATION_MS = 60_000;
+// Give a fully idle conversation longer than the 60-second late-receipt probe
+// cadence before releasing its disposable Chrome attachment. Under pressure
+// only the eight most recently idle exact resources retain that grace.
+const SUPERVISOR_IDLE_TAB_GRACE_MS = 5 * 60_000;
+const SUPERVISOR_IDLE_TAB_RETAIN_LIMIT = 8;
 const TASK_TARGET_RETRY_MAX_MS = 10 * 60_000;
 // Preparation may inspect/change a local draft, but never sends to ChatGPT.
 // Stop after bounded unsuccessful preflights; an unchanged failing provider
@@ -66,6 +71,8 @@ export const TASK_TARGET_SPACED_FAILURE_CODES: ReadonlySet<string> = new Set([
   'COMPUTER_CHATGPT_EXTENSION_EXACT_TARGET_AMBIGUOUS',
   'COMPUTER_CHATGPT_RESTORED_TARGET_UNPROVEN',
   'COMPUTER_CHATGPT_TARGET_RESTORE_FAILED',
+  // An absent manually closed tab cannot be re-created by a read-only probe.
+  'COMPUTER_CHATGPT_EXTENSION_EXACT_TARGET_ABSENT_READ_ONLY',
   'COMPUTER_CHATGPT_BOOTSTRAP_TARGET_UNAVAILABLE',
   'COMPUTER_CHATGPT_EXTENSION_TARGET_OPEN_OUTCOME_UNKNOWN',
   'COMPUTER_CHATGPT_EXTENSION_BOOTSTRAP_OPEN_OUTCOME_UNKNOWN',
@@ -326,6 +333,8 @@ export class WorkflowSupervisorNativeBrowserAdapter {
   private readonly projectedTaskStalls = new Map<string, Omit<WorkflowSupervisorStallProjection, 'taskId' | 'state' | 'observedAt'>>();
   /** Spacing for read-only observation of a turn whose bounded resume is exhausted. */
   private readonly awaitingReceiptObservedAtMs = new Map<string, number>();
+  /** Rebuildable idle-grace projection; Supervisor effects remain the sole authority. */
+  private readonly idleResourceSinceMs = new Map<string, number>();
 
   constructor(
     private readonly control: WorkflowSupervisorControlPlane,
@@ -507,7 +516,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     this.timer = undefined;
     await this.inflight?.catch(() => undefined);
     await this.deps.targetPort.close().catch(() => undefined);
-    this.observedAssistant.clear(); this.providerFailureSeen.clear(); this.providerFailureAwaitingClear.clear(); this.freshSendCheckedAt.clear(); this.taskTransportFailures.clear(); this.projectedTaskStalls.clear(); this.awaitingReceiptObservedAtMs.clear();
+    this.observedAssistant.clear(); this.providerFailureSeen.clear(); this.providerFailureAwaitingClear.clear(); this.freshSendCheckedAt.clear(); this.taskTransportFailures.clear(); this.projectedTaskStalls.clear(); this.awaitingReceiptObservedAtMs.clear(); this.idleResourceSinceMs.clear();
   }
 
   async runOnce(): Promise<void> {
@@ -539,10 +548,35 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     } else if (inventory.complete) {
       this.clearTransportFailure();
     }
-    // Due-work omits tasks during observation/retry spacing. Retention follows
-    // task lifetime; otherwise every cooldown closes the tab and the next
-    // observation reloads the same conversation from the provider.
-    const activeResourceKeys = this.control.listTasks(true).map((task) => task.conversationId.startsWith('bootstrap:') ? `chatgpt.bootstrap:${task.taskId}` : `chatgpt.conversation:${task.conversationId}`);
+    // Retire only disposable provider attachments. The durable Supervisor
+    // effect ledger (not textual DONE or a browser tab) proves protection: a
+    // queued/reconciling command and an applied turn awaiting its receipt both
+    // remain attached even during cooldown. A terminal task is absent here.
+    const taskResourceKeys = new Set<string>();
+    const protectedResourceKeys = new Set<string>();
+    for (const task of this.control.listTasks(true)) {
+      const key = task.conversationId.startsWith('bootstrap:')
+        ? `chatgpt.bootstrap:${task.taskId}`
+        : `chatgpt.conversation:${task.conversationId}`;
+      taskResourceKeys.add(key);
+      if (this.control.store.nextBrowserEffect(task.taskId)
+        || this.control.store.hasAppliedEffectAwaitingCompletion(task.taskId)) protectedResourceKeys.add(key);
+    }
+    for (const key of this.idleResourceSinceMs.keys()) {
+      if (!taskResourceKeys.has(key) || protectedResourceKeys.has(key)) this.idleResourceSinceMs.delete(key);
+    }
+    const now = this.deps.nowMs();
+    for (const key of taskResourceKeys) {
+      if (!protectedResourceKeys.has(key) && !this.idleResourceSinceMs.has(key)) this.idleResourceSinceMs.set(key, now);
+    }
+    // Enforce a bounded idle attachment budget. This does not cap truly active
+    // effects: they cannot be retired merely because tab pressure is high.
+    const graceKeys = [...this.idleResourceSinceMs.entries()]
+      .filter(([key, since]) => taskResourceKeys.has(key) && now - since < SUPERVISOR_IDLE_TAB_GRACE_MS)
+      .sort((left, right) => right[1] - left[1])
+      .slice(0, SUPERVISOR_IDLE_TAB_RETAIN_LIMIT)
+      .map(([key]) => key);
+    const activeResourceKeys = [...new Set([...protectedResourceKeys, ...graceKeys])];
     await this.deps.targetPort.cleanup(activeResourceKeys).catch((error) => this.deps.onError(error));
     for (const task of tasks) {
       if (this.closed) break;
@@ -624,7 +658,12 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     // strands the task.
     if (chatgptProviderBackpressureRemainingMs(this.deps.providerScopeKey, this.deps.nowMs()) > 0
       && !this.conversations.some((conversation) => conversation.conversation_id === task.conversationId)) return;
-    const ensured = await this.deps.targetPort.ensureExact(identityForTask(task));
+    // Only a new, explicitly admitted send may open a missing tab. A late
+    // receipt probe or unknown-effect reconciliation uses existing attachments
+    // and never resurrects a manually closed conversation by observation.
+    const ensured = await this.deps.targetPort.ensureExact(identityForTask(task), {
+      createIfMissing: poll.command?.mode === 'send',
+    });
     if (ensured.state !== 'ready') { this.noteTargetUnavailable(task, poll.command?.effectId, ensured.failure); return; }
     const target = ensured.target;
     const snapshot = ensured.observation ?? await target.observe({ includeUserHistory: false, includePageText: false });

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 import { spawnSync } from 'child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { deflateSync } from 'zlib';
@@ -231,6 +231,10 @@ describe('CoreDevice-first physical iPhone provider', () => {
     expect(source).toContain('reusedSession ? undefined');
     expect(source).toContain('if (interactionId && !reusedSession)');
     expect(source).toContain("verificationLevel: 'source_computer_adapter_open_and_capture_only'");
+    expect(source).toContain('device.connected !== true || device.screenshotAvailable !== true');
+    expect(source).toContain("createHash('sha256').update(image).digest('hex')");
+    expect(source).toContain('artifact?.sha256 !== screenshotSha256');
+    expect(source).toContain('semanticPriceVerified: false');
     expect(source).not.toContain('executeIosPluginAction');
     expect(source).not.toContain("invoke('physical_device_observed_tap'");
     expect(source).not.toContain("invoke('physical_device_batch'");
@@ -476,6 +480,8 @@ describe('CoreDevice-first physical iPhone provider', () => {
     const screenshot = screenshotSubmission.result?.result as Record<string, unknown>;
     const artifact = (screenshot.artifactCandidates as Array<Record<string, unknown>>)[0]!;
     expect(existsSync(String(artifact.path))).toBe(true);
+    expect(statSync(String(artifact.path)).mode & 0o777).toBe(0o600);
+    expect(statSync(join(String(artifact.path), '..')).mode & 0o777).toBe(0o700);
     expect(commands.some((argv) => argv.includes('xcodebuild'))).toBe(false);
     expect(commands.some((argv) => argv.includes('prepare'))).toBe(false);
 
@@ -575,9 +581,11 @@ describe('CoreDevice-first physical iPhone provider', () => {
     expect(launchCount).toBe(1);
   });
 
-  it('fails early with a retryable lock-state error instead of misclassifying CoreDevice launch failure', async () => {
+  it('fails early for locked, unknown-lock, and disconnected iPhones without attempting app activation', async () => {
     const value = fixture();
     const commands: string[][] = [];
+    let lockResponse: Record<string, unknown> = { passcodeRequired: true, unlockedSinceBoot: true };
+    let deviceOnline = true;
     setIosPhysicalDeviceRuntimeHooksForTest({
       platform: () => 'darwin',
       runCommand: (command, args) => {
@@ -588,9 +596,9 @@ describe('CoreDevice-first physical iPhone provider', () => {
           return { ok: true, status: 0, stdout: '636.3\n', stderr: '', command: [command, ...args] };
         }
         const joined = args.join(' ');
-        if (joined.includes('list devices')) return { ok: true, status: 0, stdout: json({ devices: [deviceEntry()] }), stderr: '', command: [command, ...args] };
+        if (joined.includes('list devices')) return { ok: true, status: 0, stdout: json({ devices: [deviceOnline ? deviceEntry() : { ...deviceEntry(), connectionProperties: { pairingState: 'paired', tunnelState: 'disconnected', transportType: 'localNetwork' }, deviceProperties: { ...deviceEntry().deviceProperties, ddiServicesAvailable: false }, capabilities: [] }] }), stderr: '', command: [command, ...args] };
         if (joined.includes('device info apps')) return { ok: true, status: 0, stdout: json({ apps: [{ name: 'Test', bundleIdentifier: 'com.example.locked' }] }), stderr: '', command: [command, ...args] };
-        if (joined.includes('device info lockState')) return { ok: true, status: 0, stdout: json({ passcodeRequired: true, unlockedSinceBoot: true }), stderr: '', command: [command, ...args] };
+        if (joined.includes('device info lockState')) return { ok: true, status: 0, stdout: json(lockResponse), stderr: '', command: [command, ...args] };
         throw new Error(`unexpected command: ${[command, ...args].join(' ')}`);
       },
     });
@@ -601,6 +609,12 @@ describe('CoreDevice-first physical iPhone provider', () => {
     } catch (error) {
       expect(error).toMatchObject({ code: 'IOS_DEVICE_LOCKED', retryable: true });
     }
+    lockResponse = { unlockedSinceBoot: true }; // Unknown lock schema cannot authorize activation.
+    await expect(executeIosPhysicalDeviceAction(input(value, 'physical_device_open', { device: 'greyson', bundle_id: 'com.example.locked' })))
+      .rejects.toMatchObject({ code: 'IOS_DEVICE_LOCK_STATE_UNVERIFIED', retryable: false });
+    deviceOnline = false;
+    await expect(executeIosPhysicalDeviceAction(input(value, 'physical_device_open', { device: 'greyson', bundle_id: 'com.example.locked' })))
+      .rejects.toMatchObject({ code: 'IOS_DEVICE_NOT_CONNECTED', retryable: true });
     expect(commands.some((argv) => argv.join(' ').includes('device process launch'))).toBe(false);
   });
 
@@ -873,6 +887,7 @@ describe('CoreDevice-first physical iPhone provider', () => {
     const value = fixture();
     let hidCalls = 0;
     let screenshotCalls = 0;
+    let failedScreenshotPath: string | undefined;
     setRemoteXpcHidExecutorForTest(async (request) => {
       hidCalls += 1;
       return {
@@ -885,7 +900,11 @@ describe('CoreDevice-first physical iPhone provider', () => {
       runCommand: (command, args) => {
         if (args.join(' ').includes('device capture screenshot')) {
           screenshotCalls += 1;
-          if (screenshotCalls > 1) return { ok: false, status: 1, stdout: '', stderr: 'screen unavailable', command: [command, ...args] };
+          if (screenshotCalls > 1) {
+            failedScreenshotPath = args[args.indexOf('--destination') + 1];
+            writeFileSync(failedScreenshotPath!, Buffer.from('partial-sensitive-screen'));
+            return { ok: false, status: 1, stdout: '', stderr: 'screen unavailable', command: [command, ...args] };
+          }
           return maybeScreenshotCommand(command, args)!;
         }
         if (args[0] === 'devicectl' && args[1] === '--version') return { ok: true, status: 0, stdout: '636.3\n', stderr: '', command: [command, ...args] };
@@ -914,6 +933,11 @@ describe('CoreDevice-first physical iPhone provider', () => {
     expect(batch).not.toHaveProperty('observation');
     expect(hidCalls).toBe(1);
     expect(screenshotCalls).toBe(2);
+    expect(failedScreenshotPath).toBeDefined();
+    expect(existsSync(failedScreenshotPath!)).toBe(false);
+    await expect(executeIosPhysicalDeviceAction(input(value, 'physical_device_confirm_foreground', {
+      interaction_id: interactionId, observation_id: observationId, bundle_id: 'com.xingin.discover',
+    }))).rejects.toMatchObject({ code: 'IOS_DEVICE_SCREEN_OBSERVATION_REQUIRED' });
     await expect(executeIosPhysicalDeviceAction(input(value, 'physical_device_batch', {
       interaction_id: interactionId, observation_id: observationId, steps: [{ kind: 'type', text: 'do-not-repeat' }],
     }))).rejects.toMatchObject({ code: 'IOS_DEVICE_SCREEN_OBSERVATION_REQUIRED' });

@@ -102,6 +102,9 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
   private readonly providerStates = new Map<string, ProviderState>();
   private readonly pending = new Map<string, PendingCommand>();
   private readonly queues = new Map<string, string[]>();
+  // Process-local physical-operation singleflight, not a second tab lifecycle
+  // authority. Exact Surface binding/CAS remains the only durable owner.
+  private readonly retiring = new Map<string, Promise<boolean>>();
 
   constructor(
     private readonly controllerHome: string,
@@ -243,7 +246,20 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
     const record = this.upsert(identity);
     const normalized = normalizeBinding(binding, instanceId);
     if (!normalized) return record;
-    return await this.authority.withSurfaceLease(this.controllerHome, record.targetId, async (lease) => lease.bind(normalized));
+    return await this.authority.withSurfaceLease(this.controllerHome, record.targetId, async (lease) => {
+      const previous = lease.current().providerBinding;
+      // Heartbeat inventory omits the Forge-create token. Carry it forward only
+      // for the same exact physical attachment; never transfer it to a new tab.
+      const sameAttachment = previous?.providerId === normalized.providerId
+        && previous.providerSessionId === normalized.providerSessionId
+        && previous.browserProduct === normalized.browserProduct
+        && previous.windowId === normalized.windowId
+        && previous.tabId === normalized.tabId;
+      return lease.bind({
+        ...normalized,
+        ...(normalized.ownerToken ? {} : sameAttachment && previous?.ownerToken ? { ownerToken: previous.ownerToken } : {}),
+      });
+    });
   }
 
   private target(identity: ComputerChatgptTargetIdentity, record: ComputerSurfaceTarget, instanceId: string): ComputerChatgptConversationTarget {
@@ -263,7 +279,7 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
               || saved.providerSessionId !== observed.providerSessionId
               || saved.browserProduct !== observed.browserProduct
               || saved.windowId !== observed.windowId || saved.tabId !== observed.tabId
-              || saved.ownerToken !== observed.ownerToken) {
+              || (observed.ownerToken && saved.ownerToken !== observed.ownerToken)) {
               await this.bindAsync(identity, response.result.providerBinding, instanceId);
             }
           }
@@ -315,7 +331,7 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
     return { conversations: [...byConversationId.values()], complete: true, unavailableProviders: [] };
   }
 
-  async ensureExact(identity: ComputerChatgptConversationIdentity): Promise<ComputerChatgptTargetResult> {
+  async ensureExact(identity: ComputerChatgptConversationIdentity, options: { createIfMissing?: boolean } = {}): Promise<ComputerChatgptTargetResult> {
     const preferredInstanceId = this.preferredProviderInstance(identity);
     const fresh = this.freshProviders();
     if (fresh.length === 0 || (preferredInstanceId && !fresh.some(([instanceId]) => instanceId === preferredInstanceId))) {
@@ -355,6 +371,12 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
           { failoverSafe: false },
         );
       }
+    }
+    // A missing exact tab may be opened only for a Supervisor-authorized fresh
+    // send. Observation and outcome-unknown reconciliation must not resurrect
+    // a manually closed tab or mint another browser resource.
+    if (options.createIfMissing === false) {
+      return failure('COMPUTER_CHATGPT_EXTENSION_EXACT_TARGET_ABSENT_READ_ONLY', { failoverSafe: false });
     }
     const selected = this.selectProviderInstance(preferredInstanceId);
     if (!selected.instanceId) {
@@ -536,6 +558,60 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
     return { state: 'ready', target: this.target(identity, record, selected.instanceId) };
   }
 
+  /** Existing Surface binding is the only retirement authority. A claimed
+   * Chrome close with missing acknowledgement is outcome-unknown: retain the
+   * exact attachment so the same owner can reconcile/retry, never make it
+   * eligible for another physical owner by clearing the index prematurely. */
+  private retirePhysicalBinding(record: ComputerSurfaceTarget, identity?: ComputerChatgptTargetIdentity): Promise<boolean> {
+    const existing = this.retiring.get(record.targetId);
+    if (existing) return existing;
+    const pending = this.retirePhysicalBindingOnce(record, identity);
+    this.retiring.set(record.targetId, pending);
+    const release = (): void => {
+      if (this.retiring.get(record.targetId) === pending) this.retiring.delete(record.targetId);
+    };
+    void pending.then(release, release);
+    return pending;
+  }
+
+  private async retirePhysicalBindingOnce(record: ComputerSurfaceTarget, identity?: ComputerChatgptTargetIdentity): Promise<boolean> {
+    const previous = record.providerBinding;
+    if (previous?.providerId !== PROVIDER_ID) return false;
+    const resource = record.stableIdentity.resource;
+    if (previous.ownerToken) {
+      const instanceId = providerInstanceId(previous.providerSessionId);
+      if (!identity || !instanceId || !this.providerIsFresh(instanceId)) return false;
+      if ([...this.pending.values()].some((entry) => 'identity' in entry.command
+        && entry.command.kind !== 'close'
+        && entry.command.identity.namespace === resource?.namespace
+        && (entry.command.identity.namespace === 'chatgpt.conversation'
+          ? entry.command.identity.conversationId === resource?.key
+          : entry.command.identity.namespace === 'chatgpt.bootstrap' && entry.command.identity.bootstrapKey === resource?.key))) return false;
+      let acknowledged = false;
+      try {
+        const response = await this.submit(instanceId, { kind: 'close', identity, providerBinding: previous });
+        acknowledged = response.result?.kind === 'closed';
+      } catch { return false; }
+      if (!acknowledged) return false;
+    }
+    // A legacy or user-attached tab has no Forge-create token: detach only,
+    // never turn a matching ChatGPT URL into permission for physical closure.
+    let cleared = false;
+    try {
+      await this.authority.withSurfaceLease(this.controllerHome, record.targetId, async (lease) => {
+        const binding = lease.current().providerBinding;
+        if (binding?.providerId !== previous.providerId
+          || binding.providerSessionId !== previous.providerSessionId
+          || binding.browserProduct !== previous.browserProduct
+          || binding.windowId !== previous.windowId || binding.tabId !== previous.tabId
+          || binding.ownerToken !== previous.ownerToken) return;
+        lease.clearBinding();
+        cleared = true;
+      });
+    } catch { return false; }
+    return cleared;
+  }
+
   async cleanup(activeResourceKeys: readonly string[]): Promise<void> {
     const active = new Set(activeResourceKeys);
     for (const record of this.authority.listAllSurfaces(this.controllerHome)) {
@@ -546,10 +622,8 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
       const identity: ComputerChatgptTargetIdentity | undefined = resource.namespace === 'chatgpt.conversation'
         ? (typeof compatibility?.canonicalUrl === 'string' ? { namespace: 'chatgpt.conversation', conversationId: resource.key, canonicalUrl: compatibility.canonicalUrl } : undefined)
         : (typeof compatibility?.projectUrl === 'string' ? { namespace: 'chatgpt.bootstrap', bootstrapKey: resource.key, projectUrl: compatibility.projectUrl } : undefined);
-      const instanceId = providerInstanceId(record.providerBinding?.providerSessionId);
-      if (identity && instanceId && this.providerIsFresh(instanceId)) await this.submit(instanceId, { kind: 'close', identity, providerBinding: record.providerBinding }).catch(() => undefined);
-      await this.authority.withSurfaceLease(this.controllerHome, record.targetId, async (lease) => { lease.clearBinding(); }).catch(() => undefined);
-      if (resource.namespace === 'chatgpt.bootstrap') this.authority.tombstoneSurface(this.controllerHome, record.targetId);
+      const cleared = await this.retirePhysicalBinding(record, identity);
+      if (cleared && resource.namespace === 'chatgpt.bootstrap') this.authority.tombstoneSurface(this.controllerHome, record.targetId);
     }
   }
 
@@ -563,9 +637,7 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
       : resource?.namespace === 'chatgpt.bootstrap' && typeof compatibility?.projectUrl === 'string'
         ? { namespace: 'chatgpt.bootstrap', bootstrapKey: resource.key, projectUrl: compatibility.projectUrl }
         : undefined;
-    const instanceId = providerInstanceId(record.providerBinding?.providerSessionId);
-    if (identity && instanceId && this.providerIsFresh(instanceId)) await this.submit(instanceId, { kind: 'close', identity }).catch(() => undefined);
-    await this.authority.withSurfaceLease(this.controllerHome, targetId, async (lease) => { lease.clearBinding(); }).catch(() => undefined);
+    if (record.providerBinding) await this.retirePhysicalBinding(record, identity);
   }
 
   async close(): Promise<void> {

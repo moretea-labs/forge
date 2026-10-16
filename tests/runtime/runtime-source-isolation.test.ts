@@ -6,8 +6,9 @@ import { join } from 'path';
 import { getMcpPolicy } from '../../adapters/mcp/policy';
 import type { MultiRepositoryMcpToolContext } from '../../adapters/mcp/multi-repository';
 import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
-import { registerRepository } from '../../src/cli/repositories/registry';
+import { addRepositoryCheckout, registerRepository } from '../../src/cli/repositories/registry';
 import { callRuntimeTool } from '../../adapters/mcp/runtime-gateway/runtime-tools';
+import { callContextAdapter } from '../../adapters/mcp/runtime-gateway/context-adapter';
 import { primaryWorkRuntimeActivity } from '../../adapters/mcp/runtime-gateway/status-inbox-adapter';
 import { mintEngineeringAdmissionEvidence } from '../../adapters/mcp/runtime-gateway/engineering-preconditions';
 import {
@@ -145,6 +146,50 @@ function corruptProjectionWork(controllerHome: string, repoId: string, workId: s
 }
 
 describe('runtime source isolation', () => {
+  test('rh_context Work source reads the exact registered isolated checkout and rejects mismatched/unknown owners', async () => {
+    const controllerHome = tempRoot('forge-context-exact-work-home-');
+    const repoRoot = tempRoot('forge-context-exact-work-repo-');
+    initGitRepo(repoRoot, 'context-exact-work');
+    writeFileSync(join(repoRoot, 'src', 'index.ts'), 'export const EXACT_WORK_SOURCE = "CANONICAL";\\n');
+    git(repoRoot, 'add', '.');
+    git(repoRoot, 'commit', '-m', 'canonical context source');
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'Context source owner' });
+    const worktree = join(controllerHome, 'managed-worktrees', repository.repoId, 'work-context-proof');
+    mkdirSync(join(controllerHome, 'managed-worktrees', repository.repoId), { recursive: true });
+    git(repoRoot, 'worktree', 'add', '-q', '-b', 'work/context-exact-source', worktree, 'HEAD');
+    writeFileSync(join(worktree, 'src', 'index.ts'), 'export const EXACT_WORK_SOURCE = "ISOLATED";\\n');
+    git(worktree, 'add', '.');
+    git(worktree, 'commit', '-m', 'isolated context source');
+    const registry = addRepositoryCheckout({ repoId: repository.repoId, path: worktree, controllerHome });
+    const checkout = registry.checkouts.find(item => item.canonicalRoot === realpathSync(worktree));
+    expect(checkout).toBeDefined();
+    const workId = 'work-context-source-provenance';
+    createWorkContract({ controllerHome, repoId: repository.repoId }, {
+      workId, repoId: repository.repoId, checkoutId: checkout!.checkoutId,
+      objective: 'Review exactly the current isolated Work source.',
+      acceptanceCriteria: [], constraints: {}, requestedBy: 'chatgpt', checks: [],
+    });
+    const context = mcpContext(controllerHome, repository);
+    const args = {
+      repo_id: repository.repoId, operation: 'search', query: 'EXACT_WORK_SOURCE',
+      known_paths: ['src/index.ts'], max_files: 1, max_snippets: 2,
+      detail_level: 'raw', retrieval_mode: 'implementation', structural_context: 'off', work_id: workId,
+    };
+    const data = structured(await callRuntimeTool(context, 'rh_context', args)).data as {
+      contextClosure?: { sourceRevision?: string; repository?: { branch?: string } };
+      files?: Array<{ snippets?: Array<{ content?: string }> }>;
+    };
+    const actualSource = (data.files ?? []).flatMap(file => file.snippets ?? []).map(snippet => snippet.content ?? '').join('');
+    expect(data.contextClosure?.sourceRevision).toBe(git(worktree, 'rev-parse', 'HEAD'));
+    expect(data.contextClosure?.repository?.branch).toBe('work/context-exact-source');
+    expect(actualSource).toContain('ISOLATED');
+    expect(actualSource).not.toContain('CANONICAL');
+    await expect(callContextAdapter(context, 'rh_context', { ...args, checkout_id: repository.activeCheckoutId }))
+      .rejects.toThrow('CONTEXT_WORK_CHECKOUT_MISMATCH');
+    await expect(callContextAdapter(context, 'rh_context', { ...args, work_id: 'unknown-work-context' }))
+      .rejects.toThrow('CONTEXT_WORK_NOT_FOUND');
+  });
+
   test('stable semantic ids resolve without synthetic repository ownership in a multi-repository Controller Home', async () => {
     const controllerHome = tempRoot('forge-home-stable-semantic-id-');
     const primaryRoot = tempRoot('forge-stable-semantic-primary-');

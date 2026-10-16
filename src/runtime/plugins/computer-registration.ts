@@ -32,7 +32,7 @@ import { desktopOperatorActions } from './desktop-operator-registration';
 import { getExternalPluginAdapter } from './external-adapter';
 import { AssistantPluginError } from './errors';
 import { executeIosPhysicalDeviceAction, iosPhysicalDeviceActions, iosPhysicalDeviceCapabilities, iosPhysicalDeviceStatus, isIosPhysicalDeviceAction, resolveIosPhysicalDeviceAuthorizationContext } from './ios-physical-device';
-import { remoteXpcHidStatus } from './ios/remote-xpc-hid';
+import { remoteXpcHidCachedStatus } from './ios/remote-xpc-hid';
 import type {
   AssistantPluginActionDescriptor,
   AssistantPluginActionExecutionInput,
@@ -472,9 +472,9 @@ function buildComputerManifest(
   const desktopReady = desktopSupported && desktop?.enabled === true && desktop.health.ready;
   const physicalRepository = desktopSupported && context?.controllerScoped === false;
   const physicalReady = physicalRepository && iosPhysicalDeviceStatus().coreDeviceReady;
-  // Browser/Desktop manifest reads must never synchronously start Python unless
-  // an explicit CoreDevice action already established usable phone observation.
-  const hidStatus = physicalReady && context ? remoteXpcHidStatus(context.controllerHome) : undefined;
+  // Passive manifest reads must never launch Python: input readiness is
+  // published only after an explicit HID action verified the exact toolchain.
+  const hidStatus = physicalReady && context ? remoteXpcHidCachedStatus(context.controllerHome) : undefined;
   const physicalInputReady = physicalReady && hidStatus?.available === true;
   const ready = browserReady && desktopReady;
   const partial = browserReady || desktopReady || physicalReady;
