@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'crypto';
-import { existsSync, mkdirSync, readFileSync } from 'fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, unlinkSync } from 'fs';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
 import { performance } from 'perf_hooks';
@@ -38,6 +38,7 @@ const MAX_JSON_BYTES = 64 * 1024;
 const MAX_EVENTS = 200;
 const MAX_BATCH_STEPS = 20;
 const MAX_BATCH_WAIT_MS = 5_000;
+const MAX_EXPORTED_DOCUMENT_BYTES = 20 * 1024 * 1024;
 
 interface CommandResult {
   ok: boolean;
@@ -321,6 +322,19 @@ function optionalString(value: unknown): string | undefined {
 function requireFiniteNumber(value: unknown, name: string): number {
   if (typeof value === 'number' && Number.isFinite(value)) return value;
   throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', `${name} must be a finite number.`, { retryable: false });
+}
+
+function requireAppDocumentPath(value: unknown): string {
+  const path = requireString(value, 'path');
+  const parts = path.split('/');
+  if (parts.length !== 2 || parts[0] !== 'Documents'
+    || !/^[^\\/\u0000-\u001f\u007f]+\.(?:pdf|png|jpe?g|heic)$/i.test(parts[1] ?? '')
+    || parts[1] === '.' || parts[1] === '..' || path.length > 512) {
+    throw new AssistantPluginError('IOS_DEVICE_DOCUMENT_PATH_INVALID',
+      'Provide one exact PDF/image filename immediately within the selected app Documents directory.',
+      { retryable: false });
+  }
+  return path;
 }
 
 function requireBundleId(value: unknown): string {
@@ -1264,6 +1278,20 @@ export function iosPhysicalDeviceActions(): AssistantPluginActionDescriptor[] {
       },
     },
     {
+      actionId: 'physical_device_documents_list', title: 'Discover selected-app iPhone documents',
+      description: 'With explicit interactive confirmation, list bounded PDF/image filenames in the selected app Documents sandbox. No general Files/iCloud or other-app search.',
+      readOnly: false, risk: 'workspace_write', confirmation: 'strong_confirmation', requiredConfirmationText: 'list-iphone-app-documents',
+      defaultTimeoutMs: 60_000, cancellable: true, idempotent: true, scopes: ['ios.device'], resourceClaims: stateClaim,
+      argumentsSchema: { type: 'object', properties: { ...interactionProperty }, required: ['interaction_id'], additionalProperties: false },
+    },
+    {
+      actionId: 'physical_device_document_export', title: 'Export one selected-app iPhone document',
+      description: 'With explicit interactive confirmation, copy one exact PDF/image from the selected app Documents sandbox into private Controller artifacts; no bulk export, deletion or upload.',
+      readOnly: false, risk: 'workspace_write', confirmation: 'strong_confirmation', requiredConfirmationText: 'export-iphone-app-document',
+      defaultTimeoutMs: 90_000, cancellable: true, idempotent: false, scopes: ['ios.device'], resourceClaims: mutationClaims,
+      argumentsSchema: { type: 'object', properties: { ...interactionProperty, path: { type: 'string', maxLength: 512 } }, required: ['interaction_id', 'path'], additionalProperties: false },
+    },
+    {
       actionId: 'physical_device_events', title: 'Read physical iOS events',
       description: 'Read bounded, redacted provider events without input text or credentials.',
       readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 30_000, cancellable: true, idempotent: true,
@@ -1512,6 +1540,85 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
   const { record, state } = requireRecord(input, input.actionId === 'physical_device_close');
   recordTiming(timingStages, 'sessionLookup', sessionLookupStartedAt, false);
   switch (input.actionId) {
+    case 'physical_device_documents_list': {
+      if (!state.device.connected) {
+        throw new AssistantPluginError('IOS_DEVICE_NOT_CONNECTED', 'Exact iPhone is not connected.', { retryable: true });
+      }
+      const response = await runCoreJson(input, [
+        'device', 'info', 'files', '--device', state.device.identifier,
+        '--domain-type', 'appDataContainer', '--domain-identifier', state.bundleId,
+        '--subdirectory', 'Documents', '--no-recurse',
+      ], 'IOS_DEVICE_DOCUMENT_LIST_FAILED', 60_000);
+      const result = objectValue(response.result);
+      const entries = Array.isArray(result.files) ? result.files
+        : Array.isArray(result.entries) ? result.entries : undefined;
+      if (!entries) {
+        throw new AssistantPluginError('IOS_DEVICE_DOCUMENT_LIST_SCHEMA_UNKNOWN',
+          'CoreDevice did not return a recognized file listing; no documents were verified.',
+          { retryable: false });
+      }
+      const names = entries.map((entry) => typeof entry === 'string' ? entry
+        : stringField(objectValue(entry), 'name') ?? stringField(objectValue(entry), 'fileName'))
+        .filter((name): name is string => typeof name === 'string'
+          && !name.includes('/') && !name.includes('\\')
+          && /\.(?:pdf|png|jpe?g|heic)$/i.test(name)).slice(0, 100);
+      return { provider: 'coredevice', deviceUnmodified: true,
+        interactionId: record.interactionId, bundleId: state.bundleId,
+        domain: 'appDataContainer/Documents', names, truncated: entries.length > 100 };
+    }
+    case 'physical_device_document_export': {
+      if (!state.device.connected) {
+        throw new AssistantPluginError('IOS_DEVICE_NOT_CONNECTED', 'Exact iPhone is not connected.', { retryable: true });
+      }
+      const path = requireAppDocumentPath(input.args.path);
+      const dir = join(artifactDir(input, record.interactionId), 'private-documents');
+      mkdirSync(dir, { recursive: true, mode: 0o700 });
+      chmodSync(dir, 0o700);
+      const ext = path.slice(path.lastIndexOf('.')).toLowerCase();
+      const destination = join(dir, randomUUID() + ext);
+      try {
+        await runCoreJson(input, [
+          'device', 'copy', 'from', '--device', state.device.identifier,
+          '--domain-type', 'appDataContainer', '--domain-identifier', state.bundleId,
+          '--source', path, '--destination', destination,
+        ], 'IOS_DEVICE_DOCUMENT_EXPORT_FAILED', 90_000);
+        const file = lstatSync(destination);
+        if (!file.isFile() || file.size <= 0 || file.size > MAX_EXPORTED_DOCUMENT_BYTES) {
+          throw new AssistantPluginError('IOS_DEVICE_DOCUMENT_EXPORT_INVALID',
+            'Expected exactly one nonempty regular document of at most 20 MiB.', { retryable: false });
+        }
+        chmodSync(destination, 0o600);
+        const bytes = readFileSync(destination);
+        const isExpectedFormat = ext === '.pdf' ? bytes.subarray(0, 5).toString('ascii') === '%PDF-'
+          : ext === '.png' ? bytes.subarray(0, 8).toString('hex') === '89504e470d0a1a0a'
+            : ext === '.jpg' || ext === '.jpeg' ? bytes.subarray(0, 3).toString('hex') === 'ffd8ff'
+              : ext === '.heic' && bytes.subarray(4, 8).toString('ascii') === 'ftyp'
+                && /^(?:heic|heix|hevc|hevx|mif1|msf1)$/.test(bytes.subarray(8, 12).toString('ascii'));
+        if (!isExpectedFormat) {
+          throw new AssistantPluginError('IOS_DEVICE_DOCUMENT_FORMAT_INVALID',
+            'Exported file signature does not match the selected document type.', { retryable: false });
+        }
+        const sha256 = createHash('sha256').update(bytes).digest('hex');
+        return { provider: 'coredevice', deviceUnmodified: true, externallyUploaded: false,
+          interactionId: record.interactionId, bundleId: state.bundleId,
+          document: { domain: 'appDataContainer', sourcePath: path, localArtifact: destination,
+            sha256, bytes: file.size } };
+      } catch (error) {
+        // Raw CoreDevice error details may contain sensitive document filenames.
+        // Never expose those details or retry an unknown/partial copy.
+        let cleanup = 'no_partial_artifact';
+        if (existsSync(destination)) {
+          try { unlinkSync(destination); cleanup = 'partial_artifact_deleted'; }
+          catch { cleanup = 'partial_artifact_cleanup_failed'; }
+        }
+        throw new AssistantPluginError('IOS_DEVICE_DOCUMENT_EXPORT_UNVERIFIED',
+          'The selected document export was not verified. Input is not replayable.',
+          { retryable: false, details: {
+            causeCode: error instanceof AssistantPluginError ? error.code : 'FILE_VERIFICATION_FAILED',
+            cleanup,
+          } });
+      }
+    }
     case 'physical_device_screenshot': {
       const captured = await capturePhysicalScreen(input, state, sanitize(optionalString(input.args.label) ?? 'screenshot'));
       const { screenshotResult, ...observation } = captured;
