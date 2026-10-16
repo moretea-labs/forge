@@ -73,10 +73,14 @@ try {
   assert.equal(browserCore.parseConversation(conversationUrl)?.conversationId, conversationId);
   assert.equal(browserCore.parseConversation(`https://example.com/c/${conversationId}`), null);
   const extensionManifest = JSON.parse(readFileSync(resolve('adapters/computer/chrome-extension/manifest.json'), 'utf8')) as { permissions?: string[] };
-  assert.equal(extensionManifest.permissions?.includes('storage'), false);
+  assert.equal(extensionManifest.permissions?.includes('storage'), true);
   const backgroundSource = readFileSync(resolve('adapters/computer/chrome-extension/background.js'), 'utf8');
-  assert.ok(backgroundSource.includes('const PROVIDER_INSTANCE_ID = randomId()'));
-  assert.equal(backgroundSource.includes('chrome.storage'), false);
+  assert.ok(backgroundSource.includes('function providerInstanceId()'));
+  assert.ok(backgroundSource.includes("chrome.storage.local.get('forgeComputerProviderInstanceId')"));
+  assert.ok(backgroundSource.includes('await providerInstanceId()'));
+  assert.equal(backgroundSource.includes('PROVIDER_INSTANCE_ID'), false);
+  assert.ok(backgroundSource.includes("chrome.storage.local.set({ forgeComputerProviderInstanceId: instanceId })"));
+  assert.ok(backgroundSource.includes('source: `chrome-extension:${instanceId}`'));
   assert.ok(backgroundSource.includes("nativeRpc('computer_extension_heartbeat'"));
   assert.ok(backgroundSource.includes('providerInstanceId: instanceId'));
   assert.ok(backgroundSource.includes("nativeRpc('computer_extension_claim', { provider_instance_id: instanceId })"));
