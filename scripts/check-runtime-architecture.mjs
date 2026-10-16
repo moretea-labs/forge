@@ -1407,6 +1407,9 @@ forbid(
 );
 
 requireText('docs/architecture/CURRENT.md', 'Canonical Runtime is activated as one immutable whole release');
+requireText('src/runtime/root/release-execution-canary.ts', 'releaseScriptRequiresBun');
+forbid('src/runtime/root/package-runtime-release.ts', /ownsProcessRuntimeCanary|PROCESS_RUNTIME_RELEASE_CANARY_ARG/, 'package Runtime wrappers must delegate release canaries to the attested Process Runner/Check Runner implementation');
+requireText('scripts/migrate-windows-wsl-controller-home.ts', 'assertRuntimeReleaseExecutionCanaries(stagedRelease.manifestPath, destination);');
 requireText('docs/architecture/CURRENT.md', 'Runtime availability/recovery keeps Forge itself healthy');
 requireText('docs/architecture/CURRENT.md', 'Historical Issue/Task/Local Job and compatibility projections must not become second mutable authorities.');
 requireText('src/runtime/root/runtime.ts', 'export class CanonicalForgeRuntime');

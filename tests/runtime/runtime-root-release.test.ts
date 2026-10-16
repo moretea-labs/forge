@@ -141,6 +141,26 @@ describe('immutable Runtime Process Runtime execution surface', () => {
     expect(await runPersistedCheckSidecar(['--forge-release-canary-child'])).toBe(0);
   });
 
+  test('uses the resolved Bun runtime only for Bun-backed legacy scripts', () => {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-runtime-execution-surface-bun-'));
+    roots.push(controllerHome);
+    const manifestPath = executionSurfaceFixture({
+      controllerHome,
+      releaseId: 'canary-bun-shebang',
+      processRunnerSource: '#!/usr/bin/env bun\nprocess.exit(0);\n',
+    });
+    const calls: { name: string; executable: string; args: string[] }[] = [];
+    assertRuntimeReleaseExecutionCanaries(manifestPath, controllerHome, {
+      runExecutionEntryCanary: (command) => {
+        calls.push(command);
+        return { ok: true };
+      },
+    });
+    expect(calls[0]).toMatchObject({ name: 'process_runner', executable: process.execPath });
+    expect(calls[0]?.args[0]).toBe(join(controllerHome, 'runtime', 'releases', 'canary-bun-shebang', 'process-runner.js'));
+    expect(calls[1]).toMatchObject({ name: 'check_runner', executable: join(controllerHome, 'runtime', 'releases', 'canary-bun-shebang', 'forge-check-runner') });
+  });
+
   test.each([
     ['process_runner', 17, 0],
     ['check_runner', 0, 19],
