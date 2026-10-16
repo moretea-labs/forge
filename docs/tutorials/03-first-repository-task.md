@@ -10,6 +10,8 @@ Ask ChatGPT:
 Use Forge. Check rh_status, then load rh_context for my selected repository. Summarize the current branch, working-tree state, relevant files, and available named checks. Do not modify anything yet.
 ```
 
+For a CLI identity check, `forge repo validate <repo-id>` prints a bounded validation summary and checkout counts. Use `--json` only when the full repository, runtime-storage, and legacy-migration audit is needed; that detailed output can be large.
+
 Resolve a dirty tree or ambiguous repository selection before writing.
 
 ## 2. Give a bounded task

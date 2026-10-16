@@ -106,7 +106,23 @@ export function buildRepositoryCommand(): Command {
     .argument('<repo-id>', 'Stable repository ID'))
     .action((repoId: string, opts: { controllerHome?: string; json?: boolean }) => {
       const repository = getRepository(repoId, opts.controllerHome, { includeRemoved: true });
-      output({ validation: validateRepository(repoId, opts.controllerHome), ...initializeRepository(repository, opts.controllerHome) }, opts.json === true);
+      const validation = validateRepository(repoId, opts.controllerHome);
+      if (opts.json === true) {
+        output({ validation, ...initializeRepository(repository, opts.controllerHome) }, true);
+        return;
+      }
+      // The default validation view is bounded even when the repository has
+      // thousands of historical checkout records. Full audit data is opt-in.
+      output({
+        validation,
+        repository: repositorySummary(repository),
+        checkouts: {
+          total: repository.checkouts.length,
+          active: repository.checkouts.filter((checkout) => !checkout.lifecycle || checkout.lifecycle === 'active').length,
+          archived: repository.checkouts.filter((checkout) => checkout.lifecycle === 'archived').length,
+          removed: repository.checkouts.filter((checkout) => checkout.lifecycle === 'removed').length,
+        },
+      }, false);
     });
 
   common(command.command('command')
