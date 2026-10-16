@@ -8,6 +8,7 @@ import { runBoundedProcess } from '../execution/thin-harness/async-process';
 import { readJsonFile, writeJsonAtomic } from '../shared/json-files';
 import { resolveTrustedNodeExecutable } from '../shared/trusted-node-executable';
 import { AssistantPluginError, toAssistantPluginError } from './errors';
+import { ensureIosDeviceOwnership, releaseIosDeviceOwnership, withIosDeviceTransientOwnership } from './ios-device-ownership';
 import {
   interactionAutomationEngine,
   interactionMayOwnTarget,
@@ -734,6 +735,15 @@ function providerForDevice(device: AgentDeviceEntry): InteractionProvider {
   return device.kind === 'simulator' ? SIMULATOR_PROVIDER : DEVICE_PROVIDER;
 }
 
+async function runPhysicalDeviceCommand<T>(
+  input: AssistantPluginActionExecutionInput,
+  device: AgentDeviceEntry,
+  operation: () => Promise<T>,
+): Promise<T> {
+  if (device.kind !== 'device') return operation();
+  return withIosDeviceTransientOwnership(input.controllerHome, input.repoId, input.requestId, device.id, operation);
+}
+
 function selectTarget(input: AssistantPluginActionExecutionInput, selector?: string): AgentDeviceEntry {
   const inventory = devices(input);
   const normalizedSelector = selector?.trim().toLocaleLowerCase('en-US');
@@ -835,11 +845,25 @@ function requireRecord(input: AssistantPluginActionExecutionInput, allowTerminal
         status: 'closing',
         error: { code: 'AGENT_DEVICE_CLEANUP_FAILED', message: 'The expired agent-device session could not be closed; ownership remains fenced.' },
       });
+    if (record.provider === DEVICE_PROVIDER && closed) releaseIosDeviceOwnership(input.controllerHome, record.owner.repoId, interactionId, record.targetId);
     throw new AssistantPluginError(
       closed ? 'AGENT_DEVICE_SESSION_EXPIRED' : 'AGENT_DEVICE_CLEANUP_FAILED',
       closed ? 'The agent-device session expired and was closed.' : 'The expired agent-device session could not be closed; retry agent_device_close.',
       { retryable: !closed },
     );
+  }
+  if (record.provider === DEVICE_PROVIDER) {
+    const ownership = ensureIosDeviceOwnership(input.controllerHome, input.repoId, interactionId, record.targetId);
+    if (!ownership.acquired) {
+      throw new AssistantPluginError('PLUGIN_RESOURCE_BUSY', 'The selected iPhone is already owned by another active Forge interaction.', {
+        retryable: true,
+        details: { interactionId, targetId: record.targetId, blocker: ownership.blocker },
+      });
+    }
+    const active = patchInteractionSession(input.repoRoot, record.provider, interactionId, {
+      expiresAt: new Date(hooks.now().getTime() + SESSION_EXPIRY_MS).toISOString(),
+    });
+    if (active) return active;
   }
   return record;
 }
@@ -915,6 +939,7 @@ function reconcileExpiredSessions(input: AssistantPluginActionExecutionInput): v
         status: 'closing',
         error: { code: 'AGENT_DEVICE_CLEANUP_FAILED', message: 'The expired agent-device session could not be closed; ownership remains fenced.' },
       });
+    if (record.provider === DEVICE_PROVIDER) releaseIosDeviceOwnership(input.controllerHome, record.owner.repoId, record.interactionId, record.targetId);
   }
 }
 
@@ -934,6 +959,7 @@ function failSession(input: AssistantPluginActionExecutionInput, record: Interac
       status: 'closing',
       error: { code: 'AGENT_DEVICE_CLEANUP_FAILED', message: `${normalized.message}; cleanup failed and ownership remains fenced.` },
     });
+  if (closed && record.provider === DEVICE_PROVIDER) releaseIosDeviceOwnership(input.controllerHome, record.owner.repoId, record.interactionId, record.targetId);
   if (!closed) {
     throw new AssistantPluginError('AGENT_DEVICE_CLEANUP_FAILED', 'The agent-device action failed and its session could not be closed; retry agent_device_close.', {
       retryable: true,
@@ -2258,12 +2284,12 @@ export async function executeIosAgentDeviceAction(input: AssistantPluginActionEx
       contractFingerprint: dependency.capabilityProfile.contractFingerprint,
       device: selected,
       physicalDeviceSupported: selected.kind === 'device',
-      result: bounded(await runJsonAsync(input, args, {
+      result: bounded(await runPhysicalDeviceCommand(input, selected, () => runJsonAsync(input, args, {
         signing: signingFromArgs(input.args),
         stateDir: targetRuntimeStateDir(input, selected),
         failureCode: 'AGENT_DEVICE_DOCTOR_FAILED',
         timeoutMs: 4 * 60_000,
-      })),
+      }))),
     };
   }
 
@@ -2276,14 +2302,14 @@ export async function executeIosAgentDeviceAction(input: AssistantPluginActionEx
       contractFingerprint: dependency.capabilityProfile.contractFingerprint,
       device: selected,
       physicalDeviceSupported: selected.kind === 'device',
-      result: bounded(await runJsonAsync(input, [
+      result: bounded(await runPhysicalDeviceCommand(input, selected, () => runJsonAsync(input, [
         'prepare', 'ios-runner', '--platform', 'ios', '--device', selected.name, '--timeout', '600000', '--json',
       ], {
         signing,
         stateDir: targetRuntimeStateDir(input, selected),
         failureCode: 'AGENT_DEVICE_PREPARE_FAILED',
         timeoutMs: 10 * 60_000,
-      })),
+      }))),
     };
   }
 
@@ -2298,6 +2324,19 @@ export async function executeIosAgentDeviceAction(input: AssistantPluginActionEx
     const conflict = listInteractionSessions(input.repoRoot, provider).find((entry) =>
       isInteractionSessionActive(entry.status) && interactionMayOwnTarget(entry, selected.aliases));
     if (conflict) {
+      if (selected.kind === 'device' && provider === DEVICE_PROVIDER && conflict.instructions === app && input.args.relaunch !== true) {
+        const ownership = ensureIosDeviceOwnership(input.controllerHome, input.repoId, conflict.interactionId, selected.id);
+        if (!ownership.acquired) {
+          throw new AssistantPluginError('PLUGIN_RESOURCE_BUSY', 'The selected iPhone is already owned by another active Forge interaction.', {
+            retryable: true,
+            details: { interactionId: conflict.interactionId, targetId: conflict.targetId, blocker: ownership.blocker },
+          });
+        }
+        const active = patchInteractionSession(input.repoRoot, provider, conflict.interactionId, {
+          expiresAt: new Date(hooks.now().getTime() + SESSION_EXPIRY_MS).toISOString(),
+        }) ?? conflict;
+        return { provider: 'agent-device', version: dependency.detectedVersion ?? IOS_AGENT_DEVICE_VERSION, contractFingerprint: dependency.capabilityProfile.contractFingerprint, interaction: active, device: selected, physicalDeviceSupported: true, reusedSession: true };
+      }
       throw new AssistantPluginError('PLUGIN_RESOURCE_BUSY', 'The selected iOS target already has an active interaction.', {
         retryable: true,
         details: {
@@ -2310,6 +2349,15 @@ export async function executeIosAgentDeviceAction(input: AssistantPluginActionEx
     }
     pruneInteractionSessions(input.repoRoot, provider, 100);
     const interactionId = `ios_agent_device_${randomUUID()}`;
+    if (selected.kind === 'device') {
+      const ownership = ensureIosDeviceOwnership(input.controllerHome, input.repoId, interactionId, selected.id);
+      if (!ownership.acquired) {
+        throw new AssistantPluginError('PLUGIN_RESOURCE_BUSY', 'The selected iPhone is already owned by another active Forge interaction.', {
+          retryable: true,
+          details: { interactionId, targetId: selected.id, blocker: ownership.blocker },
+        });
+      }
+    }
     const createdAt = timestamp();
     const record: InteractionSessionRecord = {
       schemaVersion: 1,
@@ -2348,6 +2396,7 @@ export async function executeIosAgentDeviceAction(input: AssistantPluginActionEx
         result: bounded(result),
       };
     } catch (error) {
+      if (selected.kind === 'device') releaseIosDeviceOwnership(input.controllerHome, input.repoId, interactionId, selected.id);
       return failSession(input, record, error);
     }
   }
@@ -2464,6 +2513,7 @@ export async function executeIosAgentDeviceAction(input: AssistantPluginActionEx
         try {
           const closedProvider = await closeProviderSession(input, current, args);
           const closed = patchInteractionSession(input.repoRoot, current.provider, current.interactionId, { status: 'closed' }) ?? current;
+          if (current.provider === DEVICE_PROVIDER) releaseIosDeviceOwnership(input.controllerHome, current.owner.repoId, current.interactionId, current.targetId);
           return {
             provider: 'agent-device',
             interaction: closed,

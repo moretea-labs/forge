@@ -7,6 +7,7 @@ import { repositoryControllerRoot } from '../../cli/repositories/controller-home
 import { runBoundedProcess } from '../execution/thin-harness/async-process';
 import { readJsonFile, writeJsonAtomic } from '../shared/json-files';
 import { AssistantPluginError, toAssistantPluginError } from './errors';
+import { ensureIosDeviceOwnership, releaseIosDeviceOwnership } from './ios-device-ownership';
 import {
   interactionAutomationEngine,
   interactionMayOwnTarget,
@@ -632,10 +633,42 @@ function expirePhysicalDeviceSessions(input: AssistantPluginActionExecutionInput
       error: { code: 'IOS_DEVICE_SESSION_EXPIRED', message: 'The physical iOS interaction expired.' },
     });
     appendEvent(input, record.interactionId, 'session_expired');
-    if (state?.device.identifier) stopRemoteXpcHidForDevice(state.device.identifier);
+    if (state?.device.identifier) {
+      stopRemoteXpcHidForDevice(state.device.identifier);
+      releaseIosDeviceOwnership(input.controllerHome, record.owner.repoId, record.interactionId, state.device.identifier);
+    }
     expired += 1;
   }
   return expired;
+}
+
+function deviceOwnershipError(
+  selected: PhysicalDevice,
+  result: ReturnType<typeof ensureIosDeviceOwnership>,
+): AssistantPluginError {
+  return new AssistantPluginError('PLUGIN_RESOURCE_BUSY', 'The selected iPhone is already owned by another active Forge interaction.', {
+    retryable: true,
+    details: {
+      device: { identifier: selected.identifier, name: selected.name },
+      blocker: result.blocker,
+    },
+  });
+}
+
+function reusablePhysicalSession(
+  input: AssistantPluginActionExecutionInput,
+  selected: PhysicalDevice,
+  bundleId: string,
+  relaunch: boolean,
+): InteractionSessionRecord | undefined {
+  if (relaunch) return undefined;
+  const aliases = [selected.identifier, selected.udid].filter((value): value is string => Boolean(value));
+  return listInteractionSessions(input.repoRoot, PROVIDER).find((entry) => {
+    if (!isInteractionSessionActive(entry.status) || interactionAutomationEngine(entry) !== 'coredevice') return false;
+    if (!interactionMayOwnTarget(entry, aliases)) return false;
+    const state = readState(input, entry.interactionId);
+    return state?.device.identifier === selected.identifier && state.bundleId === bundleId;
+  });
 }
 
 function requireRecord(input: AssistantPluginActionExecutionInput, allowTerminal = false): { record: InteractionSessionRecord; state: PhysicalSessionState } {
@@ -668,7 +701,16 @@ function requireRecord(input: AssistantPluginActionExecutionInput, allowTerminal
     });
     appendEvent(input, interactionId, 'session_expired');
     stopRemoteXpcHidForDevice(state.device.identifier);
+    releaseIosDeviceOwnership(input.controllerHome, record.owner.repoId, interactionId, state.device.identifier);
     throw new AssistantPluginError('IOS_DEVICE_SESSION_EXPIRED', 'The physical iOS interaction expired; open a new session.', { retryable: false });
+  }
+  if (isInteractionSessionActive(record.status)) {
+    const ownership = ensureIosDeviceOwnership(input.controllerHome, input.repoId, interactionId, state.device.identifier);
+    if (!ownership.acquired) throw deviceOwnershipError(state.device, ownership);
+    const active = patchInteractionSession(input.repoRoot, PROVIDER, interactionId, {
+      expiresAt: new Date(hooks.now().getTime() + SESSION_EXPIRY_MS).toISOString(),
+    });
+    if (active) return { record: active, state };
   }
   return { record, state };
 }
@@ -1172,9 +1214,9 @@ export function iosPhysicalDeviceActions(): AssistantPluginActionDescriptor[] {
       argumentsSchema: { type: 'object', properties: { ...interactionProperty }, required: ['interaction_id'], additionalProperties: false },
     },
   ];
-  return actions.map((action) => action.readOnly || action.actionId === 'physical_device_confirm_foreground'
+  return actions.map((action) => action.readOnly
     ? action
-    : { ...action, executionMode: 'lightweight_process' });
+    : { ...action, executionMode: 'runtime' });
 }
 
 export async function executeIosPhysicalDeviceAction(input: AssistantPluginActionExecutionInput): Promise<Record<string, unknown>> {
@@ -1224,10 +1266,42 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
     const sessionLookupStartedAt = performance.now();
     const expiredSessionCount = expirePhysicalDeviceSessions(input);
     pruneInteractionSessions(input.repoRoot, PROVIDER, 100);
+    const reusable = reusablePhysicalSession(input, selected, bundleId, input.args.relaunch === true);
     const conflict = listInteractionSessions(input.repoRoot, PROVIDER).find((entry) =>
       isInteractionSessionActive(entry.status) && interactionMayOwnTarget(entry, selectedAliases));
     recordTiming(timingStages, 'sessionLookup', sessionLookupStartedAt, false);
     if (expiredSessionCount > 0) timingStages.sessionReconcile = { ms: timingStages.sessionLookup.ms, cached: false };
+    if (reusable) {
+      const ownership = ensureIosDeviceOwnership(input.controllerHome, input.repoId, reusable.interactionId, selected.identifier);
+      if (!ownership.acquired) throw deviceOwnershipError(selected, ownership);
+      const existingState = readState(input, reusable.interactionId);
+      if (!existingState) {
+        patchInteractionSession(input.repoRoot, PROVIDER, reusable.interactionId, {
+          status: 'failed',
+          error: { code: 'IOS_DEVICE_SESSION_STATE_MISSING', message: 'The existing physical iPhone session has no recoverable state.' },
+        });
+        appendEvent(input, reusable.interactionId, 'session_state_missing');
+        releaseIosDeviceOwnership(input.controllerHome, input.repoId, reusable.interactionId, selected.identifier);
+        throw new AssistantPluginError('IOS_DEVICE_SESSION_STATE_MISSING', 'The existing physical iPhone session has no recoverable state.', { retryable: false });
+      }
+      const active = patchInteractionSession(input.repoRoot, PROVIDER, reusable.interactionId, {
+        expiresAt: new Date(hooks.now().getTime() + SESSION_EXPIRY_MS).toISOString(),
+      }) ?? reusable;
+      return finishTimedResult(actionStartedAt, timingStages, {
+        provider: 'coredevice',
+        interaction: active,
+        device: selected,
+        app: apps[0],
+        reusedSession: true,
+        controlPlane: {
+          lifecycle: 'coredevice',
+          observation: 'coredevice',
+          input: 'remote-xpc-hid',
+          semanticFallback: 'agent-device',
+          runnerOwned: false,
+        },
+      });
+    }
     if (conflict) {
       throw new AssistantPluginError('PLUGIN_RESOURCE_BUSY', 'The selected iPhone already has an active forge interaction.', {
         retryable: true,
@@ -1240,6 +1314,8 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
       });
     }
     const interactionId = `ios_device_${randomUUID()}`;
+    const ownership = ensureIosDeviceOwnership(input.controllerHome, input.repoId, interactionId, selected.identifier);
+    if (!ownership.acquired) throw deviceOwnershipError(selected, ownership);
     const createdAt = timestamp();
     const record: InteractionSessionRecord = {
       schemaVersion: 1,
@@ -1355,6 +1431,7 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
         error: { code: normalized.code, message: normalized.message },
       });
       appendEvent(input, interactionId, 'open_failed', { code: normalized.code, message: normalized.message });
+      releaseIosDeviceOwnership(input.controllerHome, input.repoId, interactionId, selected.identifier);
       throw normalized;
     }
   }
@@ -1719,7 +1796,8 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
       patchInteractionSession(input.repoRoot, PROVIDER, record.interactionId, { status: 'closing' });
       appendEvent(input, record.interactionId, 'session_closed', { inputWorkerRelease });
       const finalRecord = patchInteractionSession(input.repoRoot, PROVIDER, record.interactionId, { status: 'closed', error: undefined }) ?? record;
-      return { provider: 'coredevice', interaction: finalRecord, deviceUnmodified: true, inputWorkerRelease };
+      const deviceOwnershipReleased = releaseIosDeviceOwnership(input.controllerHome, input.repoId, record.interactionId, state.device.identifier);
+      return { provider: 'coredevice', interaction: finalRecord, deviceUnmodified: true, inputWorkerRelease, deviceOwnershipReleased };
     }
     default:
       throw new AssistantPluginError('PLUGIN_ACTION_NOT_SUPPORTED', `ios/${input.actionId} is not supported.`, { retryable: false });

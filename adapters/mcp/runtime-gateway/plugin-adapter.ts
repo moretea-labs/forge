@@ -145,7 +145,7 @@ export async function callPluginAdapter(
       }).map(summarizePlugin);
       let repositoryPlugins: ReturnType<typeof summarizePlugin>[] = [];
       let repositoryId: string | undefined;
-      if (explicitRepositoryContextRequested(args)) {
+      if (explicitRepositoryContextRequested(args) || typeof ctx.repoId === 'string' && ctx.repoId.trim()) {
         const repository = selected(ctx, args);
         repositoryId = repository.repoId;
         repositoryPlugins = listAssistantPluginManifests(ctx.controllerHome, repository, {

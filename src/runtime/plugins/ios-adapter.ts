@@ -99,26 +99,36 @@ function health(repoRoot: string): AssistantPluginHealth {
   } as RepositoryRecord);
   const currentPlatform = iosDevelopmentPlatform();
   const platformOk = currentPlatform === 'darwin';
-  const toolingReady = platformOk && Boolean(xcode && 'ready' in xcode && xcode.ready);
+  const developmentReady = platformOk && Boolean(xcode && 'ready' in xcode && xcode.ready);
+  const physicalDevice = iosPhysicalDeviceStatus();
+  const physicalReady = platformOk && physicalDevice.coreDeviceReady;
+  const agentDevice = iosAgentDeviceStatus({ repoRoot });
+  const semanticReady = agentDevice.available === true;
+  const pluginReady = platformOk && (developmentReady || physicalReady || semanticReady);
   const warnings: string[] = [];
-  if (!platformOk) warnings.push('iOS plugin requires macOS with Xcode and Simulator.');
-  if (platformOk && !xcodeSnapshot.probed) warnings.push('Xcode/simctl readiness has not been explicitly probed in this runtime yet.');
-  else if (platformOk && !toolingReady) warnings.push('Xcode/simctl is not fully ready on this host.');
+  if (!platformOk) warnings.push('iOS capabilities require a macOS host.');
+  if (platformOk && !developmentReady) warnings.push('Xcode/Simulator development capability is not fully ready on this host.');
+  if (platformOk && !physicalReady) warnings.push('CoreDevice physical-iPhone capability is not ready on this host.');
   if (!discovery.ready) warnings.push('No .xcworkspace/.xcodeproj/Package.swift discovered in this repository yet.');
-  const status = userFacingStatusFrom(toolingReady, discovery.ready, Boolean(xcode && 'simctlAvailable' in xcode && xcode.simctlAvailable));
+  const status = userFacingStatusFrom(developmentReady, discovery.ready, Boolean(xcode && 'simctlAvailable' in xcode && xcode.simctlAvailable), physicalReady);
   return {
-    state: !platformOk ? 'disabled' : toolingReady ? 'ready' : 'degraded',
+    state: !platformOk ? 'disabled' : pluginReady ? 'ready' : 'degraded',
     checkedAt: now(),
-    ready: toolingReady,
-    probed: xcodeSnapshot.probed,
+    ready: pluginReady,
+    probed: xcodeSnapshot.probed || physicalDevice.probed || Boolean(agentDevice.available),
     errors: [],
     warnings,
     details: {
-      provider: 'local-xcode',
+      provider: 'local-ios',
       platform: currentPlatform,
       userFacingStatus: status,
       discoverable: discovery.ready,
       defaultContainer: discovery.defaultContainer,
+      capabilities: {
+        development: developmentReady,
+        physicalDevice: physicalReady,
+        semanticAgentDevice: semanticReady,
+      },
       xcode: xcode && 'ready' in xcode ? {
         ready: xcode.ready,
         xcodeSelectPath: 'xcodeSelectPath' in xcode ? xcode.xcodeSelectPath : undefined,
@@ -127,8 +137,8 @@ function health(repoRoot: string): AssistantPluginHealth {
         probed: xcodeSnapshot.probed,
         cached: xcodeSnapshot.cached,
       } : xcode,
-      agentDevice: iosAgentDeviceStatus({ repoRoot }),
-      physicalDevice: iosPhysicalDeviceStatus(),
+      agentDevice,
+      physicalDevice,
       artifactRoots: {
         repoLocal: '.forge/ios/',
         controller: 'controller-home/repositories/<repoId>/artifacts/ios/',
@@ -137,21 +147,22 @@ function health(repoRoot: string): AssistantPluginHealth {
   };
 }
 
-function userFacingStatusFrom(toolingReady: boolean, discoverable: boolean, simReady: boolean): string {
-  if (!toolingReady && !discoverable) return 'not_configured';
-  if (discoverable && toolingReady && simReady) return 'buildable';
+function userFacingStatusFrom(toolingReady: boolean, discoverable: boolean, simReady: boolean, physicalReady: boolean): string {
+  if (!toolingReady && !physicalReady && !discoverable) return 'not_configured';
+  if (toolingReady && discoverable && simReady) return 'buildable';
+  if (physicalReady && !toolingReady) return 'physical_device_ready';
   if (toolingReady && simReady) return 'simulator_ready';
   if (discoverable) return 'discoverable';
-  if (toolingReady) return 'simulator_ready';
+  if (physicalReady) return 'physical_device_ready';
   return 'not_configured';
 }
 
-function permissions(ready: boolean): AssistantPluginPermissionScope[] {
+function permissions(input: { developmentReady: boolean; physicalReady: boolean }): AssistantPluginPermissionScope[] {
   return [
-    { scope: 'ios.discover', mode: 'read', description: 'Discover Xcode projects, schemes, and simulator inventory.', granted: ready, required: true },
-    { scope: 'ios.build', mode: 'write', description: 'Build iOS app targets into bounded DerivedData.', granted: ready, required: true },
-    { scope: 'ios.simulator', mode: 'write', description: 'Boot simulators, install, launch, screenshot, and collect logs.', granted: ready, required: true },
-    { scope: 'ios.device', mode: 'write', description: 'Inspect and operate an exact paired physical iPhone through CoreDevice; optional XCTest semantics are isolated in the agent-device fallback.', granted: ready, required: false },
+    { scope: 'ios.discover', mode: 'read', description: 'Discover iOS projects and paired physical devices.', granted: input.developmentReady || input.physicalReady, required: true },
+    { scope: 'ios.build', mode: 'write', description: 'Build iOS app targets into bounded DerivedData.', granted: input.developmentReady, required: true },
+    { scope: 'ios.simulator', mode: 'write', description: 'Boot simulators, install, launch, screenshot, and collect logs.', granted: input.developmentReady, required: true },
+    { scope: 'ios.device', mode: 'write', description: 'Inspect and operate an exact paired physical iPhone through CoreDevice; optional XCTest semantics are isolated in the agent-device fallback.', granted: input.physicalReady, required: false },
   ];
 }
 
@@ -408,7 +419,7 @@ export function buildIosPluginManifest(previousRevision = 0, previousUpdatedAt?:
     revision: Math.max(1, previousRevision || 1),
     pluginId: IOS_PLUGIN_ID,
     provider: 'apple-local',
-    displayName: 'iOS Development Plugin',
+    displayName: 'iOS / iPhone Computer Use & Development',
     pluginVersion: '1.0.0',
     authority: {
       strategy: 'derived',
@@ -419,13 +430,16 @@ export function buildIosPluginManifest(previousRevision = 0, previousUpdatedAt?:
     lifecycle: {
       state: !enabled ? 'disabled' : state.ready ? 'enabled' : 'degraded',
       reason: !enabled
-        ? 'iOS plugin is only available on macOS hosts.'
+        ? 'iOS capabilities are only available on macOS hosts.'
         : state.ready
-          ? 'Xcode and Simulator tooling are ready.'
-          : state.warnings[0] ?? 'iOS tooling is partially available.',
+          ? 'At least one iOS development or physical-device capability is ready.'
+          : state.warnings[0] ?? 'iOS capabilities are partially available.',
     },
     health: state,
-    permissions: permissions(state.ready),
+    permissions: permissions({
+      developmentReady: Boolean(state.details?.capabilities && typeof state.details.capabilities === 'object' && (state.details.capabilities as Record<string, unknown>).development === true),
+      physicalReady: Boolean(state.details?.capabilities && typeof state.details.capabilities === 'object' && (state.details.capabilities as Record<string, unknown>).physicalDevice === true),
+    }),
     capabilities: capabilities(),
     actions: actions(),
     updatedAt: previousUpdatedAt ?? now(),

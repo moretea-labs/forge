@@ -150,6 +150,26 @@ export function readControllerLock(controllerHome: string, key: ControllerLockKe
   return record;
 }
 
+export function renewControllerLock(
+  controllerHome: string,
+  key: ControllerLockKey,
+  lockId: string,
+  ttlMs: number,
+): ControllerLockRecord {
+  const current = readControllerLock(controllerHome, key);
+  if (!current) throw new Error(`LOCK_NOT_FOUND: ${lockId}`);
+  if (current.lockId !== lockId) throw new Error(`LOCK_OWNERSHIP_MISMATCH: ${current.lockId}`);
+  const normalizedTtlMs = Math.max(5_000, Math.trunc(ttlMs));
+  const heartbeatAt = new Date().toISOString();
+  const next: ControllerLockRecord = {
+    ...current,
+    heartbeatAt,
+    expiresAt: new Date(Date.now() + normalizedTtlMs).toISOString(),
+  };
+  writeFileSync(current.path, `${JSON.stringify(next, null, 2)}\n`, 'utf-8');
+  return next;
+}
+
 function metric(key: ControllerLockKey, waitedMs: number, outcome: 'success' | 'contention' | 'timeout'): void {
   recordGatewayLatency({
     repoId: key.repoId,

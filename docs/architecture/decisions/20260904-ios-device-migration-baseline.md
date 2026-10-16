@@ -50,6 +50,18 @@ The provider release is independently versioned from the Forge Runtime release a
 
 `interactionMayOwnTarget()` and the target-alias rules are the current migration fence: old records that cannot prove they refer to a different phone fail closed rather than allowing CoreDevice and agent-device to acquire the same device concurrently.
 
+## 2026-10-16 pre-migration stabilization
+
+Before T10 service extraction, the in-process implementation now closes the highest-risk ownership/lifecycle gaps without introducing a second provider:
+
+- physical iPhone ownership uses a Controller-global lock keyed by the exact CoreDevice identifier, so repository scope cannot create a second mutation owner;
+- active same-app CoreDevice interactions are reusable and their device ownership lease is renewed by activity; Runtime restart can reclaim an unexpired session after the previous owner process dies;
+- physical mutation actions execute in the Forge Runtime so the RemoteXPC/HID worker can persist across consecutive actions instead of being recreated by every lightweight action process;
+- agent-device physical actions share the same exact-device fence, while Simulator remains outside the physical-device ownership domain;
+- plugin discovery includes the current repository overlay when a repository context is already selected, and iOS health reports development and physical-device readiness independently rather than treating Xcode/Simulator readiness as the physical-phone health authority.
+
+These are stabilization changes to the existing ownership boundary, not a new iOS-specific control plane. T10/T11 remain responsible for moving live provider/transport handles behind the independently operated `ios-device` service.
+
 ## Existing module migration map
 
 `KEEP` means the responsibility stays in Forge. `MOVE` means the responsibility belongs in the independent `ios-device` provider. `REWRITE` means the current in-process module is useful evidence/behavior but is not itself the final service boundary. `DELETE` is conditional on the stated removal criterion.

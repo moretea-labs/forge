@@ -5,6 +5,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import {
   executeIosPhysicalDeviceAction,
+  iosPhysicalDeviceActions,
   resetIosPhysicalDeviceRuntimeHooksForTest,
   resolveIosPhysicalDeviceAuthorizationContext,
   setIosPhysicalDeviceRuntimeHooksForTest,
@@ -18,6 +19,8 @@ import { readInteractionSession, writeInteractionSession } from '../../src/runti
 import { registerRepository } from '../../src/cli/repositories/registry';
 import { submitAssistantPluginAction } from '../../src/runtime/plugins/store';
 import { listPluginCapabilityAuthorizations } from '../../src/runtime/plugins/capability-authorization-grants';
+import { acquireControllerLock, readControllerLock, releaseControllerLock, renewControllerLock } from '../../src/cli/repositories/locks';
+import { ensureIosDeviceOwnership, releaseIosDeviceOwnership } from '../../src/runtime/plugins/ios-device-ownership';
 
 const roots: string[] = [];
 
@@ -120,6 +123,66 @@ afterEach(() => {
 });
 
 describe('CoreDevice-first physical iPhone provider', () => {
+  it('renews a controller lock without changing its identity', () => {
+    const value = fixture();
+    const key = { scope: 'global' as const, resource: 'ios-device:phone-1' };
+    const lock = acquireControllerLock(value.controllerHome, key, 'owner-a', 60_000);
+    const renewed = renewControllerLock(value.controllerHome, key, lock.lockId, 120_000);
+    expect(renewed.lockId).toBe(lock.lockId);
+    expect(renewed.owner).toBe('owner-a');
+    expect(Date.parse(renewed.expiresAt!)).toBeGreaterThanOrEqual(Date.parse(lock.expiresAt!));
+    releaseControllerLock(value.controllerHome, key, lock.lockId);
+  });
+
+  it('keeps physical iPhone ownership unique across repository scope', () => {
+    const value = fixture();
+    const first = ensureIosDeviceOwnership(value.controllerHome, 'repo-a', 'interaction-a', 'CORE-DEVICE-1');
+    expect(first.acquired).toBe(true);
+    const second = ensureIosDeviceOwnership(value.controllerHome, 'repo-b', 'interaction-b', 'CORE-DEVICE-1');
+    expect(second.acquired).toBe(false);
+    expect(second.blocker?.owner).toBe('ios-device-session:repo-a:interaction-a');
+    expect(releaseIosDeviceOwnership(value.controllerHome, 'repo-b', 'interaction-b', 'CORE-DEVICE-1')).toBe(false);
+    expect(releaseIosDeviceOwnership(value.controllerHome, 'repo-a', 'interaction-a', 'CORE-DEVICE-1')).toBe(true);
+    expect(readControllerLock(value.controllerHome, { scope: 'global', resource: 'ios-device:CORE-DEVICE-1' })).toBeUndefined();
+  });
+
+  it('runs physical mutation actions in the Runtime so the HID worker can persist across calls', () => {
+    const mutations = iosPhysicalDeviceActions().filter((action) => !action.readOnly);
+    expect(mutations.length).toBeGreaterThan(0);
+    expect(mutations.every((action) => action.executionMode === 'runtime')).toBe(true);
+  });
+
+  it('reuses an active same-app session and does not launch the app twice', async () => {
+    const value = fixture();
+    let launches = 0;
+    setIosPhysicalDeviceRuntimeHooksForTest({
+      platform: () => 'darwin',
+      now: () => new Date('2026-08-17T08:00:00.000Z'),
+      runCommand: (command, args) => {
+        if (args[0] === 'devicectl' && args[1] === '--version') return { ok: true, status: 0, stdout: '636.3\\n', stderr: '', command: [command, ...args] };
+        throw new Error(`unexpected sync command: ${[command, ...args].join(' ')}`);
+      },
+      runCommandAsync: async (command, args) => {
+        const joined = args.join(' ');
+        if (args[0] === 'devicectl' && args[1] === '--version') return { ok: true, status: 0, stdout: '636.3\\n', stderr: '', command: [command, ...args] };
+        if (joined.includes('list devices')) return { ok: true, status: 0, stdout: json({ devices: [deviceEntry()] }), stderr: '', command: [command, ...args] };
+        if (joined.includes('device info apps')) return { ok: true, status: 0, stdout: json({ apps: [{ name: '小红书', bundleIdentifier: 'com.xingin.discover' }] }), stderr: '', command: [command, ...args] };
+        if (joined.includes('device info lockState')) return { ok: true, status: 0, stdout: json({ passcodeRequired: false, unlockedSinceBoot: true }), stderr: '', command: [command, ...args] };
+        if (joined.includes('device process launch')) {
+          launches += 1;
+          return { ok: true, status: 0, stdout: json({ processIdentifier: 123, launchOptions: { activatedWhenStarted: true } }), stderr: '', command: [command, ...args] };
+        }
+        throw new Error(`unexpected async command: ${joined}`);
+      },
+    });
+    const first = await executeIosPhysicalDeviceAction(input(value, 'physical_device_open', { device: 'CORE-DEVICE-1', bundle_id: 'com.xingin.discover' }));
+    const second = await executeIosPhysicalDeviceAction(input(value, 'physical_device_open', { device: 'CORE-DEVICE-1', bundle_id: 'com.xingin.discover' }));
+    expect(launches).toBe(1);
+    expect(second.reusedSession).toBe(true);
+    expect((second.interaction as { interactionId: string }).interactionId).toBe((first.interaction as { interactionId: string }).interactionId);
+    await executeIosPhysicalDeviceAction(input(value, 'physical_device_close', { interaction_id: (first.interaction as { interactionId: string }).interactionId }));
+  });
+
   it('starts HID prewarm without synchronously awaiting worker readiness during open', () => {
     const source = readFileSync(join(process.cwd(), 'src/runtime/plugins/ios-physical-device.ts'), 'utf8');
     expect(source).toContain('prewarmRemoteXpcHid({');
