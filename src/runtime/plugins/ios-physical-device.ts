@@ -1619,6 +1619,9 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
       const path = requireAppDocumentPath(input.args.path);
       const dir = join(artifactDir(input, record.interactionId), 'private-documents');
       mkdirSync(dir, { recursive: true, mode: 0o700 });
+      if (!lstatSync(dir).isDirectory()) {
+        throw new AssistantPluginError('IOS_DEVICE_DOCUMENT_ARTIFACT_INVALID', 'The private document directory is not a regular directory.', { retryable: false });
+      }
       chmodSync(dir, 0o700);
       const ext = path.slice(path.lastIndexOf('.')).toLowerCase();
       const destination = join(dir, randomUUID() + ext);
@@ -1645,10 +1648,33 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
             'Exported file signature does not match the selected document type.', { retryable: false });
         }
         const sha256 = createHash('sha256').update(bytes).digest('hex');
+        // One canonical export writer also maintains a bounded private index of
+        // facts; medical meaning and cross-app classification stay with the model.
+        const indexPath = join(dir, 'index.json');
+        if (existsSync(indexPath) && !lstatSync(indexPath).isFile()) {
+          throw new AssistantPluginError('IOS_DEVICE_DOCUMENT_INDEX_INVALID', 'The private document index is not a regular file.', { retryable: false });
+        }
+        const prior = existsSync(indexPath)
+          ? readJsonFile<{ schemaVersion: number; bundleId: string; entries: Array<Record<string, unknown>> }>(indexPath)
+          : undefined;
+        if (prior && (prior.schemaVersion !== 1 || prior.bundleId !== state.bundleId || !Array.isArray(prior.entries))) {
+          throw new AssistantPluginError('IOS_DEVICE_DOCUMENT_INDEX_INVALID', 'The private document index belongs to another app or is malformed.', { retryable: false });
+        }
+        const entries = prior?.entries ?? [];
+        if (entries.length >= 500) {
+          throw new AssistantPluginError('IOS_DEVICE_DOCUMENT_INDEX_FULL', 'The private document index has reached its 500-item limit.', { retryable: false });
+        }
+        const entry = { exportedAt: timestamp(), sourcePath: path,
+          artifactName: destination.slice(dir.length + 1), sha256, bytes: file.size };
+        // Atomic rename is the last fallible operation before acknowledging the
+        // export; a failed index update cannot produce a successful receipt.
+        writeJsonAtomic(indexPath, { schemaVersion: 1, bundleId: state.bundleId,
+          interactionId: record.interactionId, entries: [...entries, entry] });
         return { provider: 'coredevice', deviceUnmodified: true, externallyUploaded: false,
           interactionId: record.interactionId, bundleId: state.bundleId,
           document: { domain: 'appDataContainer', sourcePath: path, localArtifact: destination,
-            sha256, bytes: file.size } };
+            sha256, bytes: file.size },
+          organizedIndex: { localArtifact: indexPath, entryCount: entries.length + 1 } };
       } catch (error) {
         // Raw CoreDevice error details may contain sensitive document filenames.
         // Never expose those details or retry an unknown/partial copy.
