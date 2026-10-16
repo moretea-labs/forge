@@ -6,7 +6,7 @@ import { createInterface } from 'readline';
 import { performance } from 'perf_hooks';
 import { AssistantPluginError } from '../errors';
 
-const TOOLCHAIN_VERSION = '10.2.1';
+const TOOLCHAIN_VERSION = '11.24.0';
 const WORKER_IDLE_MS = 15 * 60_000;
 const WORKER_STARTUP_MS = 12_000;
 const REQUEST_TIMEOUT_MS = 12_000;

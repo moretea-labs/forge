@@ -134,7 +134,7 @@ describe('RemoteXPC HID backend', () => {
     expect(status).toMatchObject({
       backend: 'remote-xpc-hid',
       available: false,
-      toolchainVersion: '10.2.1',
+      toolchainVersion: '11.24.0',
       transport: 'macos-trusted-coredevice-rsd',
       runnerOwned: false,
     });

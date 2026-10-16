@@ -74,6 +74,12 @@ Measured real-device CoreDevice launch and screenshot calls are each on the orde
 
 The optimization should be judged by real elapsed *open → observe → input → observe* time, tool-round-trip count and same-device correctness; unit tests and device readiness are necessary but not sufficient proof of shopping-app E2E reliability.
 
+### 2026-10-16 RemoteXPC HID toolchain correction
+
+The paired iPhone 17 (iOS 27.0.1) accepted JD launch and screenshot observation, but the Unicode search path failed at `pasteboard_set_text` with `IncompleteReadError: 0 bytes read on a total of 9 expected bytes`. The input ledger marked the clipboard write as dispatched, so the failed input was not replayed.
+
+The existing worker correctly uses a single pasteboard connection for snapshot, write, and restoration. `pymobiledevice3 10.2.1` numbers consecutive RemoteXPC reply-bearing requests incorrectly; inspecting `11.24.0` establishes an odd-message-ID correction and the required HID/pasteboard exports are compatible. Pin the single Controller-owned toolchain to `11.24.0` rather than adding a second transport or local protocol workaround. Offline verification of this candidate does not constitute live iPhone Unicode input acceptance or authorize runtime activation.
+
 ## Existing module migration map
 
 `KEEP` means the responsibility stays in Forge. `MOVE` means the responsibility belongs in the independent `ios-device` provider. `REWRITE` means the current in-process module is useful evidence/behavior but is not itself the final service boundary. `DELETE` is conditional on the stated removal criterion.
