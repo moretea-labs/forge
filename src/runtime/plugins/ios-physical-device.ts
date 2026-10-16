@@ -1669,7 +1669,7 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
         // Atomic rename is the last fallible operation before acknowledging the
         // export; a failed index update cannot produce a successful receipt.
         writeJsonAtomic(indexPath, { schemaVersion: 1, bundleId: state.bundleId,
-          interactionId: record.interactionId, entries: [...entries, entry] });
+          interactionId: record.interactionId, entries: [...entries, entry] }, { mode: 0o600 });
         return { provider: 'coredevice', deviceUnmodified: true, externallyUploaded: false,
           interactionId: record.interactionId, bundleId: state.bundleId,
           document: { domain: 'appDataContainer', sourcePath: path, localArtifact: destination,
