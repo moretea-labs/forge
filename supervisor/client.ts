@@ -89,6 +89,13 @@ export async function listWorkflowSupervisorTasks(forgeHome: string, activeOnly 
   const result = await rpc<{ tasks: WorkflowSupervisorTask[] }>(forgeHome, 'task_list', { active_only: activeOnly });
   return result.tasks;
 }
+/** Explicit read-only terminal history. Native ChatGPT archive is not inferred. */
+export async function listWorkflowSupervisorTerminalTasks(forgeHome: string): Promise<Array<{ task: WorkflowSupervisorTask; terminal: WorkflowSupervisorTerminalState }>> {
+  const result = await rpc<{ terminalTasks: Array<{ task: WorkflowSupervisorTask; terminal: WorkflowSupervisorTerminalState }> }>(
+    forgeHome, 'task_list', { terminal_only: true },
+  );
+  return result.terminalTasks;
+}
 /** Operator-only recovery; never exposed to the browser Native Messaging host. */
 export async function recoverWorkflowSupervisorTask(forgeHome: string, input: { taskId: string; sourceEffectId?: string; requestId: string; reason: string; supersedeUnknown?: boolean; authorizedBy?: string }): Promise<{ recoveryEffect: WorkflowSupervisorEffect; action: 'retry_authorized' | 'recovery_reserved' | 'unknown_superseded' }> {
   return await rpc(forgeHome, 'task_recover', {
