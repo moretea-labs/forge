@@ -3,6 +3,7 @@ import { spawnSync } from 'child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { deflateSync } from 'zlib';
 import {
   executeIosPhysicalDeviceAction,
   iosPhysicalDeviceActions,
@@ -54,10 +55,38 @@ function json(result: Record<string, unknown>): string {
   return JSON.stringify({ info: { outcome: 'success' }, result });
 }
 
+// The existing screenshot mock must produce a real bounded PNG: invalid text
+// fixtures would bypass the exact evidence gate being exercised here.
+function pngChunk(type: string, data: Buffer): Buffer {
+  const body = Buffer.concat([Buffer.from(type, 'ascii'), data]);
+  let crc = 0xffffffff;
+  for (const byte of body) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit += 1) crc = (crc >>> 1) ^ ((crc & 1) ? 0xedb88320 : 0);
+  }
+  const header = Buffer.alloc(4);
+  header.writeUInt32BE(data.length);
+  const footer = Buffer.alloc(4);
+  footer.writeUInt32BE((~crc) >>> 0);
+  return Buffer.concat([header, body, footer]);
+}
+const screenWidth = 1206;
+const screenHeight = 2622;
+const pngHeader = Buffer.alloc(13);
+pngHeader.writeUInt32BE(screenWidth, 0);
+pngHeader.writeUInt32BE(screenHeight, 4);
+pngHeader[8] = 1; // 1-bit grayscale
+const syntheticScreenshotPng = Buffer.concat([
+  Buffer.from('89504e470d0a1a0a', 'hex'),
+  pngChunk('IHDR', pngHeader),
+  pngChunk('IDAT', deflateSync(Buffer.alloc((Math.ceil(screenWidth / 8) + 1) * screenHeight))),
+  pngChunk('IEND', Buffer.alloc(0)),
+]);
+
 function maybeScreenshotCommand(command: string, args: string[]) {
   if (!args.join(' ').includes('device capture screenshot')) return undefined;
   const destination = args[args.indexOf('--destination') + 1]!;
-  writeFileSync(destination, 'png');
+  writeFileSync(destination, syntheticScreenshotPng);
   return { ok: true, status: 0, stdout: json({ destination }), stderr: '', command: [command, ...args] };
 }
 
@@ -660,7 +689,7 @@ describe('CoreDevice-first physical iPhone provider', () => {
     const displays = commands.filter((argv) => argv.join(' ').includes('device info displays'));
     expect(versions).toHaveLength(1);
     expect(locks).toHaveLength(1);
-    expect(displays).toHaveLength(1);
+    expect(displays).toHaveLength(1); // Initial CoreDevice display preflight remains authoritative.
     expect(commands.some((argv) => argv.includes('xcodebuild'))).toBe(false);
     expect(commands.some((argv) => argv.includes('prepare'))).toBe(false);
     expect(commands.some((argv) => argv.some((arg) => arg.includes('agent-device')))).toBe(false);
@@ -739,7 +768,7 @@ describe('CoreDevice-first physical iPhone provider', () => {
     const displays = commands.filter((argv) => argv.join(' ').includes('device info displays'));
     expect(launches).toHaveLength(1);
     expect(locks).toHaveLength(1);
-    expect(displays).toHaveLength(1);
+    expect(displays).toHaveLength(0); // Valid screenshot geometry avoids the external display command.
     expect(commands.some((argv) => argv.includes('xcodebuild'))).toBe(false);
     expect(commands.some((argv) => argv.some((arg) => arg.includes('agent-device')))).toBe(false);
 

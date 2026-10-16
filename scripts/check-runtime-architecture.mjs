@@ -2365,6 +2365,8 @@ requireText('src/runtime/plugins/ios/remote-xpc-hid.ts', 'probeHidToolchain(pyth
 requireText('src/runtime/plugins/ios/remote-xpc-hid.ts', "'--expected-version', IOS_HID_TOOLCHAIN_VERSION");
 requireText('scripts/install-ios-hid-toolchain.sh', 'pymobiledevice3==$version');
 requireText('src/runtime/plugins/ios-physical-device.ts', 'const confirmed = requireObservedPhysicalTargetForeground(state)');
+requireText('src/runtime/plugins/ios-physical-device.ts', "'IOS_DEVICE_SCREENSHOT_INVALID'");
+requireText('src/runtime/plugins/ios-physical-device.ts', 'screenshotSha256, screenshotBytes: image.length');
 requireText('src/runtime/plugins/ios-physical-device.ts', "requiredConfirmationText: 'list-iphone-app-documents'");
 requireText('src/runtime/plugins/ios-physical-device.ts', "requiredConfirmationText: 'export-iphone-app-document'");
 requireText('src/runtime/plugins/ios-physical-device.ts', 'requireBundleId(input.args.bundle_id) !== state.bundleId');

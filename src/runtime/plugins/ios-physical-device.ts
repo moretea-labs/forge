@@ -39,6 +39,7 @@ const MAX_EVENTS = 200;
 const MAX_BATCH_STEPS = 20;
 const MAX_BATCH_WAIT_MS = 5_000;
 const MAX_EXPORTED_DOCUMENT_BYTES = 20 * 1024 * 1024;
+const MAX_SCREENSHOT_BYTES = 25 * 1024 * 1024;
 
 interface CommandResult {
   ok: boolean;
@@ -535,18 +536,16 @@ async function physicalDisplayGeometry(input: AssistantPluginActionExecutionInpu
   };
 }
 
-function pngDisplayGeometry(path: string, pointScale?: number): DisplayGeometry | undefined {
-  try {
-    const header = readFileSync(path).subarray(0, 24);
-    const signature = header.subarray(0, 8).toString('hex');
-    if (header.length < 24 || signature !== '89504e470d0a1a0a') return undefined;
-    const width = header.readUInt32BE(16);
-    const height = header.readUInt32BE(20);
-    if (width <= 1 || height <= 1) return undefined;
-    return { width, height, pointScale };
-  } catch {
-    return undefined;
-  }
+function pngDisplayGeometry(image: Buffer, pointScale?: number): DisplayGeometry | undefined {
+  // A filename or header-only pseudo-PNG must never authorize foreground input.
+  if (image.length < 57 || image.subarray(0, 8).toString('hex') !== '89504e470d0a1a0a'
+    || image.readUInt32BE(8) !== 13 || image.subarray(12, 16).toString('ascii') !== 'IHDR'
+    || image.readUInt32BE(image.length - 12) !== 0
+    || image.subarray(image.length - 8, image.length - 4).toString('ascii') !== 'IEND') return undefined;
+  const width = image.readUInt32BE(16);
+  const height = image.readUInt32BE(20);
+  if (width <= 1 || height <= 1 || width > 10_000 || height > 10_000) return undefined;
+  return { width, height, pointScale };
 }
 
 async function sessionDisplayGeometry(
@@ -999,17 +998,23 @@ async function capturePhysicalScreen(
   state: PhysicalSessionState,
   label: string,
 ): Promise<Record<string, unknown>> {
-  const path = join(artifactDir(input, state.interactionId), `${sanitize(label)}-${hooks.now().getTime()}.png`);
+  const path = join(artifactDir(input, state.interactionId), `${sanitize(label)}-${hooks.now().getTime()}-${randomUUID()}.png`);
   const screenshotResult = await runCoreJson(input, [
     'device', 'capture', 'screenshot', '--device', state.device.identifier, '--destination', path,
   ], 'IOS_DEVICE_SCREENSHOT_FAILED', 60_000);
   if (!existsSync(path)) {
     throw new AssistantPluginError('IOS_DEVICE_SCREENSHOT_MISSING', 'CoreDevice succeeded without creating the requested screenshot.', { retryable: false });
   }
+  const file = lstatSync(path);
+  const image = file.isFile() && file.size <= MAX_SCREENSHOT_BYTES && file.size > 0 ? readFileSync(path) : undefined;
+  const screenshotDisplay = image ? pngDisplayGeometry(image, state.display?.pointScale) : undefined;
+  if (!screenshotDisplay || !image) {
+    throw new AssistantPluginError('IOS_DEVICE_SCREENSHOT_INVALID', 'CoreDevice did not provide a bounded PNG screenshot with valid image dimensions and terminal marker.', { retryable: false });
+  }
+  const screenshotSha256 = createHash('sha256').update(image).digest('hex');
   const observedAt = timestamp();
   const observationId = randomUUID();
-  const screenshotDisplay = pngDisplayGeometry(path, state.display?.pointScale);
-  if (screenshotDisplay) state.display = { ...screenshotDisplay, observedAt };
+  state.display = { ...screenshotDisplay, observedAt };
   state.lastScreenshot = { observationId, observedAt, label };
   state.foregroundObservation = undefined;
   state.events.push({ at: observedAt, type: 'screenshot', details: { label, observationId } });
@@ -1017,14 +1022,16 @@ async function capturePhysicalScreen(
   writeState(input, state);
   return {
     screenshotResult: bounded(screenshotResult),
-    observation: { observationId, observedAt, label, ttlMs: INPUT_FOREGROUND_OBSERVATION_TTL_MS },
+    observation: { observationId, observedAt, label, ttlMs: INPUT_FOREGROUND_OBSERVATION_TTL_MS,
+      screenshotSha256, screenshotBytes: image.length, width: screenshotDisplay.width, height: screenshotDisplay.height },
     foregroundConfirmation: {
       actionId: 'physical_device_confirm_foreground',
       arguments: { interaction_id: state.interactionId, observation_id: observationId, bundle_id: state.bundleId },
       requires: ['independent visual confirmation of target app'],
       ttlMs: INPUT_FOREGROUND_OBSERVATION_TTL_MS,
     },
-    artifactCandidates: [{ kind: 'ios_physical_device_screenshot', mediaType: 'image/png', path }],
+    artifactCandidates: [{ kind: 'ios_physical_device_screenshot', mediaType: 'image/png', path,
+      sha256: screenshotSha256, bytes: image.length }],
   };
 }
 
