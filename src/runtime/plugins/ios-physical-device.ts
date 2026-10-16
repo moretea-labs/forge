@@ -1587,11 +1587,22 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
       if (!state.device.connected) {
         throw new AssistantPluginError('IOS_DEVICE_NOT_CONNECTED', 'Exact iPhone is not connected.', { retryable: true });
       }
-      const response = await runCoreJson(input, [
-        'device', 'info', 'files', '--device', state.device.identifier,
-        '--domain-type', 'appDataContainer', '--domain-identifier', state.bundleId,
-        '--subdirectory', 'Documents', '--no-recurse',
-      ], 'IOS_DEVICE_DOCUMENT_LIST_FAILED', 60_000);
+      let response: Record<string, unknown>;
+      try {
+        response = await runCoreJson(input, [
+          'device', 'info', 'files', '--device', state.device.identifier,
+          '--domain-type', 'appDataContainer', '--domain-identifier', state.bundleId,
+          '--subdirectory', 'Documents', '--no-recurse',
+        ], 'IOS_DEVICE_DOCUMENT_LIST_FAILED', 60_000);
+      } catch (error) {
+        // CoreDevice's raw errors may contain private document names or paths.
+        // Keep the stable failure code, not stderr, stdout or command arguments.
+        throw new AssistantPluginError('IOS_DEVICE_DOCUMENT_LIST_UNVERIFIED',
+          'The selected app document listing could not be verified.',
+          { retryable: false, details: {
+            causeCode: error instanceof AssistantPluginError ? error.code : 'COREDEVICE_LIST_FAILURE',
+          } });
+      }
       const result = objectValue(response.result);
       const entries = Array.isArray(result.files) ? result.files
         : Array.isArray(result.entries) ? result.entries : undefined;
