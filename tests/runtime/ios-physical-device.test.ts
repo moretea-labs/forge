@@ -17,7 +17,8 @@ import {
 import { AssistantPluginError } from '../../src/runtime/plugins/errors';
 import { readInteractionSession, writeInteractionSession } from '../../src/runtime/plugins/interaction-session';
 import { registerRepository } from '../../src/cli/repositories/registry';
-import { submitAssistantPluginAction } from '../../src/runtime/plugins/store';
+import { submitAssistantPluginAction, getAssistantPluginManifest } from '../../src/runtime/plugins/store';
+import { computerPluginAdapter } from '../../src/runtime/plugins/computer-registration';
 import { listPluginCapabilityAuthorizations } from '../../src/runtime/plugins/capability-authorization-grants';
 import { acquireControllerLock, readControllerLock, releaseControllerLock, renewControllerLock } from '../../src/cli/repositories/locks';
 import { ensureIosDeviceOwnership, iosCoreDeviceOwnershipId, releaseIosDeviceOwnership } from '../../src/runtime/plugins/ios-device-ownership';
@@ -354,8 +355,28 @@ describe('CoreDevice-first physical iPhone provider', () => {
     });
     expect(openAuthorization?.target.identityFingerprint).toHaveLength(64);
 
+    const computerManifest = getAssistantPluginManifest(value.controllerHome, repository, 'computer');
+    const iosManifest = getAssistantPluginManifest(value.controllerHome, repository, 'ios');
+    expect(computerManifest.actions.some((action) => action.actionId === 'physical_device_open')).toBe(true);
+    expect(computerManifest.actions.some((action) => action.actionId === 'physical_device_batch')).toBe(true);
+    expect(iosManifest.actions.some((action) => action.actionId.startsWith('physical_device_'))).toBe(false);
+    expect(iosManifest.actions.some((action) => action.actionId === 'xcode_test')).toBe(true);
+    expect(iosManifest.actions.some((action) => action.actionId === 'launch_simulator')).toBe(true);
+    const controllerManifest = computerPluginAdapter.buildManifest(1, undefined, value.repoRoot, {
+      controllerHome: value.controllerHome, repoId: value.repoId,
+      repoRoot: value.repoRoot, controllerScoped: true,
+    });
+    expect(controllerManifest.actions.some((action) => action.actionId.startsWith('physical_device_'))).toBe(false);
+    expect(computerManifest.actions.find((action) => action.actionId === 'physical_device_batch')).toMatchObject({
+      confirmation: 'authorization', executionMode: 'runtime', idempotent: false,
+    });
+    await expect(submitAssistantPluginAction(value.controllerHome, repository, {
+      pluginId: 'ios', actionId: 'physical_device_open', requestId: 'old-ios-physical-entry-rejected',
+      args: { device: 'greyson', bundle_id: 'com.xingin.discover' }, origin: { surface: 'mcp', actor: 'principal:test-user' },
+    })).rejects.toThrow('PLUGIN_ACTION_NOT_FOUND');
+
     const openedSubmission = await submitAssistantPluginAction(value.controllerHome, repository, {
-      pluginId: 'ios', actionId: 'physical_device_open', requestId: 'physical-open-grant',
+      pluginId: 'computer', actionId: 'physical_device_open', requestId: 'physical-open-grant',
       args: { device: 'greyson', bundle_id: 'com.xingin.discover' }, origin: { surface: 'mcp', actor: 'principal:test-user' },
     });
     expect(openedSubmission.authorization).toMatchObject({ source: 'host_permission_model', reusable: true, established: true, capabilityId: 'ios-physical-device' });
@@ -371,7 +392,7 @@ describe('CoreDevice-first physical iPhone provider', () => {
 
     await observeAndConfirmForeground(value, interactionId);
     const automatedTyped = await submitAssistantPluginAction(value.controllerHome, repository, {
-      pluginId: 'ios', actionId: 'physical_device_type_text', requestId: 'physical-type-workflow',
+      pluginId: 'computer', actionId: 'physical_device_type_text', requestId: 'physical-type-workflow',
       args: { interaction_id: interactionId, text: 'Forge123' },
       authorizationGrantRefs: [String(openedSubmission.authorization?.grantId)],
       origin: { surface: 'system', actor: 'workflow-runtime' },
@@ -386,7 +407,7 @@ describe('CoreDevice-first physical iPhone provider', () => {
     expect(commands.some((argv) => argv.join(' ').includes('device info displays'))).toBe(false);
 
     const screenshotSubmission = await submitAssistantPluginAction(value.controllerHome, repository, {
-      pluginId: 'ios', actionId: 'physical_device_screenshot', requestId: 'physical-screenshot-grant',
+      pluginId: 'computer', actionId: 'physical_device_screenshot', requestId: 'physical-screenshot-grant',
       args: { interaction_id: interactionId, label: 'xhs' }, origin: { surface: 'mcp', actor: 'principal:test-user' },
     });
     expect(screenshotSubmission.authorization).toMatchObject({ source: 'capability_grant', grantId: openedSubmission.authorization?.grantId });

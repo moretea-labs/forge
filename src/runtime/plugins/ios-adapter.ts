@@ -35,11 +35,8 @@ import {
 } from './ios-agent-device';
 import {
   executeIosPhysicalDeviceAction,
-  iosPhysicalDeviceActions,
-  iosPhysicalDeviceCapabilities,
   iosPhysicalDeviceStatus,
   isIosPhysicalDeviceAction,
-  resolveIosPhysicalDeviceAuthorizationContext,
 } from './ios-physical-device';
 
 const IOS_PLUGIN_ID = 'ios';
@@ -183,7 +180,6 @@ function capabilities(): AssistantPluginCapability[] {
       actions: ['smoke_review', 'build', 'xcode_test', 'launch_simulator', 'capture_screenshot'],
     },
     ...iosAgentDeviceCapabilities(),
-    ...iosPhysicalDeviceCapabilities(),
   ];
 }
 
@@ -406,7 +402,6 @@ function actions(): AssistantPluginActionDescriptor[] {
       },
     },
     ...iosAgentDeviceActions(),
-    ...iosPhysicalDeviceActions(),
   ];
 }
 
@@ -604,9 +599,7 @@ export async function executeIosPluginAction(input: AssistantPluginActionExecuti
 export const iosPluginAdapter = {
   pluginId: IOS_PLUGIN_ID,
   buildManifest: buildIosPluginManifest,
-  resolveAuthorizationContext: async (input: AssistantPluginActionExecutionInput) => {
-    if (!isIosPhysicalDeviceAction(input.actionId)) return undefined;
-    return resolveIosPhysicalDeviceAuthorizationContext(input);
-  },
+  // CoreDevice actions are public only through the Computer manifest; Xcode and XCTest stay here.
+  resolveAuthorizationContext: async () => undefined,
   executeAction: executeIosPluginAction,
 };

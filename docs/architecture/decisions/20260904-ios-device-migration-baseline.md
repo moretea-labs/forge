@@ -80,6 +80,10 @@ The paired iPhone 17 (iOS 27.0.1) accepted JD launch and screenshot observation,
 
 The existing worker correctly uses a single pasteboard connection for snapshot, write, and restoration. `pymobiledevice3 10.2.1` numbers consecutive RemoteXPC reply-bearing requests incorrectly; inspecting `11.24.0` establishes an odd-message-ID correction and the required HID/pasteboard exports are compatible. Pin the single Controller-owned toolchain to `11.24.0` rather than adding a second transport or local protocol workaround. Offline verification of this candidate does not constitute live iPhone Unicode input acceptance or authorize runtime activation.
 
+### Unified Computer ingress (2026-10-16)
+
+Physical CoreDevice action descriptors, scopes and exact-phone authorization are exposed through the existing `computer` plugin. They delegate to the unchanged `ios-physical-device` executor and Controller-global UDID lock. The `ios` plugin retains iOS development, Simulator, and explicit agent-device/XCTest actions but no longer advertises CoreDevice app actions. The public typed action route remains `plugin_action_execute`; this introduces no second device provider, transport, session store, or replay authority. Existing `ios-device` interaction identity and target verification are unchanged.
+
 ## Existing module migration map
 
 `KEEP` means the responsibility stays in Forge. `MOVE` means the responsibility belongs in the independent `ios-device` provider. `REWRITE` means the current in-process module is useful evidence/behavior but is not itself the final service boundary. `DELETE` is conditional on the stated removal criterion.

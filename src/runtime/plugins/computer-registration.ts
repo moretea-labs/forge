@@ -31,6 +31,7 @@ import {
 import { desktopOperatorActions } from './desktop-operator-registration';
 import { getExternalPluginAdapter } from './external-adapter';
 import { AssistantPluginError } from './errors';
+import { executeIosPhysicalDeviceAction, iosPhysicalDeviceActions, iosPhysicalDeviceCapabilities, iosPhysicalDeviceStatus, isIosPhysicalDeviceAction, resolveIosPhysicalDeviceAuthorizationContext } from './ios-physical-device';
 import type {
   AssistantPluginActionDescriptor,
   AssistantPluginActionExecutionInput,
@@ -468,8 +469,10 @@ function buildComputerManifest(
   const desktopSupported = platform === 'darwin';
   const browserReady = browser.enabled && browser.health.ready;
   const desktopReady = desktopSupported && desktop?.enabled === true && desktop.health.ready;
+  const physicalRepository = desktopSupported && context?.controllerScoped === false;
+  const physicalReady = physicalRepository && iosPhysicalDeviceStatus().coreDeviceReady;
   const ready = browserReady && desktopReady;
-  const partial = browserReady || desktopReady;
+  const partial = browserReady || desktopReady || physicalReady;
   const checkedAt = new Date().toISOString();
   return {
     ...browser,
@@ -485,9 +488,10 @@ function buildComputerManifest(
         // Browser-script configuration to decide activation or routing.
         'controllerHome:sqlite/computer_interaction_target',
         'controller-home:repository browser artifacts',
+        'controller-home:repository ios-device interactions and Controller-global UDID lock',
       ],
     },
-    enabled: browser.enabled || desktop?.enabled === true,
+    enabled: browser.enabled || desktop?.enabled === true || physicalReady,
     lifecycle: {
       state: ready ? 'enabled' : partial ? 'degraded' : 'error',
       reason: ready
@@ -515,14 +519,19 @@ function buildComputerManifest(
         partial: !ready && partial,
         browser: { ready: browserReady, state: browser.health.state },
         desktop: { supported: desktopSupported, ready: desktopReady, state: desktop?.health.state ?? (desktopSupported ? 'not_installed' : 'unsupported') },
+        iphone: { supported: desktopSupported, ready: physicalReady, provider: 'coredevice' },
       },
     },
     permissions: [...browser.permissions.filter((permission) => permission.scope !== 'browser.extensions').map((permission) =>
       permission.scope === 'browser.profile'
         ? { ...permission, description: 'Bind and persist exact existing native browser tab identities.' }
-        : permission), ...desktopProductPermissions(desktopReady)],
-    capabilities: [...browserCapabilities, ...desktopProductCapabilities()],
-    actions: [...browserActions, ...desktopProductActions()],
+        : permission), ...desktopProductPermissions(desktopReady),
+      ...(physicalRepository ? [
+        { scope: 'ios.discover' as const, mode: 'read' as const, description: 'Discover paired physical iPhones through CoreDevice.', granted: physicalReady, required: false },
+        { scope: 'ios.device' as const, mode: 'write' as const, description: 'Use one exact iPhone through the existing CoreDevice/RemoteXPC owner.', granted: physicalReady, required: false },
+      ] : [])],
+    capabilities: [...browserCapabilities, ...desktopProductCapabilities(), ...(physicalRepository ? iosPhysicalDeviceCapabilities() : [])],
+    actions: [...browserActions, ...desktopProductActions(), ...(physicalRepository ? iosPhysicalDeviceActions() : [])],
     updatedAt: previousUpdatedAt ?? checkedAt,
   };
 }
@@ -1053,12 +1062,14 @@ export const computerPluginAdapter: AssistantPluginAdapter = {
   scope: 'controller_with_repository_overlay',
   buildManifest: buildComputerManifest,
   async resolveAuthorizationContext(input) {
+    if (isIosPhysicalDeviceAction(input.actionId)) return resolveIosPhysicalDeviceAuthorizationContext(input);
     if (!isDesktopProductAction(input.actionId)) {
       return resolveBrowserPluginAuthorizationContext(computerNativeBrowserInput(input));
     }
     return resolveDesktopAuthorizationContext(input);
   },
   async executeAction(input) {
+    if (isIosPhysicalDeviceAction(input.actionId)) return executeIosPhysicalDeviceAction(input);
     if (!isDesktopProductAction(input.actionId)) {
       return executeBrowserPluginAction(computerNativeBrowserInput(input));
     }
