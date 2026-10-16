@@ -121,7 +121,7 @@ export function buildGitHubWorkflowDispatchArgs(repository: string, input: GitHu
   return args;
 }
 
-function gh(repoRoot: string, args: string[], input?: string, maxOutputBytes = 512 * 1024) {
+export function gh(repoRoot: string, args: string[], input?: string, maxOutputBytes = 512 * 1024) {
   return runProcess('gh', args, {
     cwd: repoRoot,
     timeoutMs: 120_000,
@@ -284,7 +284,7 @@ function parseIssueUrl(output: string): { url: string; number: number } {
   return { url, number };
 }
 
-function addProjectItem(repoRoot: string, link: GitHubIssueLink, projectOwner?: string, projectNumber?: number): GitHubIssueLink {
+export function addProjectItem(repoRoot: string, link: GitHubIssueLink, projectOwner?: string, projectNumber?: number): GitHubIssueLink {
   if (!projectOwner || !projectNumber) return link;
   const result = gh(repoRoot, ['project', 'item-add', String(projectNumber), '--owner', projectOwner, '--url', link.url, '--format', 'json']);
   if (!result.ok) throw new Error(`failed to add ${link.url} to GitHub Project: ${result.error || result.stderr}`);
@@ -302,7 +302,7 @@ function withoutPairedOption(args: string[], option: string): string[] {
   return args.filter((entry, index, all) => entry !== option && all[index - 1] !== option);
 }
 
-function createGitHubIssue(repoRoot: string, repo: GitHubRepositoryInfo, title: string, bodyPath: string, labels: string[], parentNumber?: number): GitHubIssueLink {
+export function createGitHubIssue(repoRoot: string, repo: GitHubRepositoryInfo, title: string, bodyPath: string, labels: string[], parentNumber?: number): GitHubIssueLink {
   const args = ['issue', 'create', '--repo', repo.nameWithOwner, '--title', title, '--body-file', bodyPath];
   for (const label of labels) args.push('--label', label);
   if (parentNumber) args.push('--parent', String(parentNumber));
@@ -323,7 +323,7 @@ function createGitHubIssue(repoRoot: string, repo: GitHubRepositoryInfo, title: 
   return { owner: repo.owner, repo: repo.repo, number: parsed.number, url: parsed.url, syncedAt: new Date().toISOString() };
 }
 
-function updateGitHubIssue(repoRoot: string, repo: GitHubRepositoryInfo, link: GitHubIssueLink, title: string, bodyPath: string): GitHubIssueLink {
+export function updateGitHubIssue(repoRoot: string, repo: GitHubRepositoryInfo, link: GitHubIssueLink, title: string, bodyPath: string): GitHubIssueLink {
   const result = gh(repoRoot, ['issue', 'edit', String(link.number), '--repo', repo.nameWithOwner, '--title', title, '--body-file', bodyPath]);
   if (!result.ok) throw new Error(`failed to update GitHub issue #${link.number}: ${result.error || result.stderr}`);
   return { ...link, owner: repo.owner, repo: repo.repo, syncedAt: new Date().toISOString() };

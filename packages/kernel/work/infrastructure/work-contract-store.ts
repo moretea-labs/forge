@@ -97,6 +97,8 @@ export type CreateWorkContractInput = Omit<
 export interface ListWorkContractOptions extends WorkContractStoreOptions {
   state?: SemanticWorkState | 'active' | 'all';
   limit?: number;
+  /** Explicit pagination for complete internal historical inventory. */
+  offset?: number;
   detailLevel?: 'summary' | 'detail' | 'raw';
 }
 
@@ -996,6 +998,8 @@ export function isCurrentWorkContract(contract: WorkContract): boolean {
 export function listWorkContracts(options: ListWorkContractOptions): WorkContract[] {
   const state = options.state ?? 'active';
   const limit = Math.max(1, Math.min(Math.trunc(options.limit ?? 50), 100));
+  const offset = Math.max(0, Math.trunc(options.offset ?? 0));
+  if (state === 'active' && offset > 0) throw new Error('WORK_ACTIVE_PAGINATION_UNSUPPORTED');
   if (state === 'active' && sqliteBacked(options)) {
     const active = readActiveWorkCandidates({ ...options, limit });
     if (active.invalid.length > 0) {
@@ -1014,7 +1018,7 @@ export function listWorkContracts(options: ListWorkContractOptions): WorkContrac
       return semanticWorkState(contract) === state;
     })
     .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
-    .slice(0, limit);
+    .slice(offset, offset + limit);
 }
 
 function workExecutionSemanticScopeKeys(contract: WorkContract): string[] {
