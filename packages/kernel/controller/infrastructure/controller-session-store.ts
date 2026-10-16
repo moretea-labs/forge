@@ -746,45 +746,70 @@ export function bindControllerSessionToCurrentRuntime(
   },
 ): ControllerSession {
   assertIdentity(input);
-  const current = getControllerSession(options, input.workId);
-  if (!current) {
-    if (input.allowClaimIfMissing !== true) throw new Error(`WORK_CONTROLLER_OWNER_REQUIRED: ${input.workId}`);
-    return claimControllerSession(options, { ...input, expectedClaimGeneration: 0 });
-  }
-  const currentPrincipal = controllerSessionPrincipalId(current);
-  if (current.controllerId !== input.controllerId) {
-    throw new Error(`WORK_CONTROLLER_OWNER_MISMATCH: ${input.workId} is owned by ${current.controllerId}`);
-  }
-  if (current.controllerType !== input.controllerType) {
-    throw new Error(`WORK_CONTROLLER_TYPE_MISMATCH: ${input.workId} is owned by ${current.controllerType}`);
-  }
-  if (currentPrincipal !== input.principalId.trim()) {
-    throw new Error(`WORK_CONTROLLER_PRINCIPAL_MISMATCH: ${input.workId}`);
-  }
-  const ownerInstanceId = current.controllerInstanceId?.trim() || '';
   const requestedInstanceId = input.controllerInstanceId.trim();
-  if (ownerInstanceId !== requestedInstanceId) {
-    const currentRuntimeInstanceId = input.currentRuntimeInstanceId?.trim() || '';
-    if (!currentRuntimeInstanceId || currentRuntimeInstanceId !== requestedInstanceId) {
-      throw new Error(`WORK_CONTROLLER_INSTANCE_MISMATCH: ${input.workId}`);
-    }
-  }
-  const requestedAuthorityDigest = input.authorityDigest?.trim() || '';
-  const currentAuthorityDigest = current.authorityDigest?.trim() || '';
-  if (
-    ownerInstanceId === requestedInstanceId
-    && current.sessionId === input.sessionId
-    && (!requestedAuthorityDigest || requestedAuthorityDigest === currentAuthorityDigest)
-  ) return current;
-  // The opaque Work capability belongs to durable ownership, not to one
-  // transport or Runtime process. A positively-current Runtime migration keeps
-  // the same digest while claim generation fences the new controller epoch.
-  const preservedAuthorityDigest = input.authorityDigest?.trim() || current.authorityDigest?.trim() || undefined;
-  return resumeControllerSession(options, {
-    ...input,
-    ...(preservedAuthorityDigest ? { authorityDigest: preservedAuthorityDigest } : {}),
-    expectedClaimGeneration: current.claimGeneration,
-  });
+  const currentRuntimeInstanceId = input.currentRuntimeInstanceId?.trim() || '';
+  return withControllerSessionMutationLock(
+    options,
+    input.workId,
+    `controller-bind-current-runtime:${input.controllerId}:${input.sessionId}`,
+    () => {
+      assertControllerWorkClaimable(options, input.workId);
+      const store = read(options);
+      const current = activeSession(store, input.workId, optionsNowMs(options));
+      const retained = current ? undefined : getRetainedControllerSession(options, input.workId);
+      const retainedMatchesIdentity = Boolean(
+        retained
+        && retained.controllerId === input.controllerId
+        && retained.controllerType === input.controllerType
+        && controllerSessionPrincipalId(retained) === input.principalId.trim(),
+      );
+      const previous = current ?? (input.allowClaimIfMissing === true && retainedMatchesIdentity ? retained : undefined);
+
+      if (!current && !previous && input.allowClaimIfMissing !== true) {
+        throw new Error(`WORK_CONTROLLER_OWNER_REQUIRED: ${input.workId}`);
+      }
+      if (!current && retainedMatchesIdentity) {
+        if (!currentRuntimeInstanceId || currentRuntimeInstanceId !== requestedInstanceId) {
+          throw new Error(`WORK_CONTROLLER_INSTANCE_MISMATCH: ${input.workId}`);
+        }
+      }
+
+      if (current) {
+        const currentPrincipal = controllerSessionPrincipalId(current);
+        if (current.controllerId !== input.controllerId) {
+          throw new Error(`WORK_CONTROLLER_OWNER_MISMATCH: ${input.workId} is owned by ${current.controllerId}`);
+        }
+        if (current.controllerType !== input.controllerType) {
+          throw new Error(`WORK_CONTROLLER_TYPE_MISMATCH: ${input.workId} is owned by ${current.controllerType}`);
+        }
+        if (currentPrincipal !== input.principalId.trim()) {
+          throw new Error(`WORK_CONTROLLER_PRINCIPAL_MISMATCH: ${input.workId}`);
+        }
+        const ownerInstanceId = current.controllerInstanceId?.trim() || '';
+        if (ownerInstanceId !== requestedInstanceId) {
+          if (!currentRuntimeInstanceId || currentRuntimeInstanceId !== requestedInstanceId) {
+            throw new Error(`WORK_CONTROLLER_INSTANCE_MISMATCH: ${input.workId}`);
+          }
+        }
+        const requestedAuthorityDigest = input.authorityDigest?.trim() || '';
+        const currentAuthorityDigest = current.authorityDigest?.trim() || '';
+        if (
+          ownerInstanceId === requestedInstanceId
+          && current.sessionId === input.sessionId
+          && (!requestedAuthorityDigest || requestedAuthorityDigest === currentAuthorityDigest)
+        ) return current;
+      }
+
+      // The opaque Work capability belongs to durable ownership, not to one
+      // transport or Runtime process. A positively-current Runtime migration keeps
+      // the same digest while claim generation fences the new controller epoch.
+      const preservedAuthorityDigest = input.authorityDigest?.trim() || previous?.authorityDigest?.trim() || undefined;
+      return persistClaim(options, store, {
+        ...input,
+        ...(preservedAuthorityDigest ? { authorityDigest: preservedAuthorityDigest } : {}),
+      }, previous);
+    },
+  );
 }
 
 export function releaseControllerSession(options: ControllerSessionStoreOptions, workId: string, controllerId: string): void {

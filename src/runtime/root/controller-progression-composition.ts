@@ -1,6 +1,8 @@
 import {
   beginControllerRoundRelayAfterRelease,
+  bindControllerSessionToCurrentRuntime,
   controllerRoundBlockerClass,
+  controllerSessionPrincipalId,
   getControllerRoundRelay,
   getControllerWorkBinding,
   getRetainedControllerSession,
@@ -8,6 +10,7 @@ import {
   resumeControllerRoundOccurrence,
   type ControllerBinding,
   type ControllerHost,
+  type ControllerSession,
 } from '../../../packages/kernel/controller/api/index';
 import { getWorkContract, semanticWorkState } from '../../../packages/kernel/work/api/index';
 import {
@@ -18,6 +21,7 @@ import {
   ensureWorkflowSupervisorEnrollmentForWork,
   type WorkflowSupervisorEnrollmentStatus,
 } from './workflow-supervisor-composition';
+import { getRuntimeWriteClaim } from './write-fence';
 
 export interface ControllerProgressionInput {
   workId: string;
@@ -85,6 +89,27 @@ export type ControllerProgressionResult =
  * exclusively reserves and delivers Work-bound ChatGPT effects. Non-ChatGPT
  * ControllerHost remains the direct provider boundary.
  */
+function rebindRetainedSessionToCurrentRuntime(
+  options: { controllerHome: string; repoId: string },
+  session: ControllerSession,
+): ControllerSession {
+  const currentRuntimeInstanceId = getRuntimeWriteClaim()?.runtimeInstanceId?.trim();
+  if (!currentRuntimeInstanceId || currentRuntimeInstanceId === session.controllerInstanceId?.trim()) return session;
+  return bindControllerSessionToCurrentRuntime({
+    controllerHome: options.controllerHome,
+    repoId: options.repoId,
+  }, {
+    workId: session.workId,
+    controllerId: session.controllerId,
+    controllerType: session.controllerType,
+    sessionId: session.sessionId,
+    principalId: controllerSessionPrincipalId(session),
+    controllerInstanceId: currentRuntimeInstanceId,
+    currentRuntimeInstanceId,
+    allowClaimIfMissing: true,
+  });
+}
+
 export async function reconcileControllerProgression(
   options: { controllerHome: string; repoId: string; repoRoot: string },
   input: ControllerProgressionInput,
@@ -100,18 +125,30 @@ export async function reconcileControllerProgression(
   if (!retainedSession) return { status: 'retained_session_missing', reason: 'CONTROLLER_SESSION_NOT_RETAINED' };
   if (retainedSession.controllerType === 'human') return { status: 'human_controller', reason: 'HUMAN_CONTROLLER' };
 
+  let existingRound = retainedSession.controllerType === 'chatgpt'
+    ? getControllerRoundRelay(store, input.workId)
+    : undefined;
+  if (existingRound?.status === 'pending_release') {
+    // The release fence belongs to the previous Controller epoch. Consume it
+    // before migrating the retained session to the new Runtime epoch.
+    existingRound = beginControllerRoundRelayAfterRelease(store, {
+      workId: input.workId,
+      releasedSession: retainedSession,
+    }) ?? getControllerRoundRelay(store, input.workId);
+  }
+  const session = rebindRetainedSessionToCurrentRuntime(store, retainedSession);
+
   const ensureBinding = dependencies.ensureBinding ?? ensureScheduledControllerBindingForWork;
   const existingBinding = getControllerWorkBinding(store, input.workId)?.binding;
   const binding = existingBinding ?? ensureBinding(store, {
     workId: input.workId,
-    session: retainedSession,
+    session,
     scheduleName: input.scheduleName,
     args: input.bindingArgs ?? {},
   });
 
-  if (retainedSession.controllerType === 'chatgpt') {
+  if (session.controllerType === 'chatgpt') {
     const ensureSupervisorEnrollment = dependencies.ensureSupervisorEnrollment ?? ensureWorkflowSupervisorEnrollmentForWork;
-    let existingRound = getControllerRoundRelay(store, input.workId);
     let controllerRoundOccurrenceId = input.occurrenceId;
     if (existingRound?.status === 'pending_release') {
       // The semantic turn already chose continue_immediately. Once its exact
