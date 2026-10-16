@@ -739,7 +739,7 @@ describe('CoreDevice-first physical iPhone provider', () => {
     expect(JSON.stringify(events)).toContain('batch_input');
   });
 
-  it('fuses open screenshot and batch follow-up screenshot without relaxing the one-shot observation fence', async () => {
+  it('requires independently confirmed app foreground before fused batch and follow-up screenshots', async () => {
     const value = fixture();
     const hidCalls: Array<Record<string, unknown>> = [];
     setRemoteXpcHidExecutorForTest(async (request) => {
@@ -776,13 +776,20 @@ describe('CoreDevice-first physical iPhone provider', () => {
     const observation = screenshot.observation as Record<string, unknown>;
     const observationId = String(observation.observationId);
     expect(observation.ttlMs).toBe(30_000);
-    expect(screenshot.fastPath).toEqual({
-      actionId: 'physical_device_batch',
-      arguments: { interaction_id: interactionId, observation_id: observationId },
-      requires: ['steps'],
+    expect(screenshot.foregroundConfirmation).toEqual({
+      actionId: 'physical_device_confirm_foreground',
+      arguments: { interaction_id: interactionId, observation_id: observationId, bundle_id: 'com.xingin.discover' },
+      requires: ['independent visual confirmation of target app'],
       ttlMs: 30_000,
-      oneShot: true,
     });
+    await expect(executeIosPhysicalDeviceAction(input(value, 'physical_device_batch', {
+      interaction_id: interactionId, observation_id: observationId,
+      steps: [{ kind: 'type', text: 'must-not-send-before-confirmation' }],
+    }))).rejects.toMatchObject({ code: 'IOS_DEVICE_FOREGROUND_OBSERVATION_REQUIRED', retryable: true });
+    expect(hidCalls).toHaveLength(0);
+    await executeIosPhysicalDeviceAction(input(value, 'physical_device_confirm_foreground', {
+      interaction_id: interactionId, observation_id: observationId, bundle_id: 'com.xingin.discover',
+    }));
 
     const batched = await executeIosPhysicalDeviceAction(input(value, 'physical_device_batch', {
       interaction_id: interactionId,
@@ -792,17 +799,24 @@ describe('CoreDevice-first physical iPhone provider', () => {
     }));
     expect(hidCalls).toHaveLength(1);
     expect(hidCalls[0]).toMatchObject({ action: 'type', text: '<redacted>', textMode: 'auto', replaceExisting: true });
-    expect(batched.foregroundObservation).toMatchObject({ observationId, source: 'atomic_screenshot', consumed: true });
-    expect(batched.executionPlan).toMatchObject({ foregroundObservationChecks: 1, foregroundObservationSource: 'atomic_screenshot', pluginRoundTrips: 1 });
+    expect(batched.foregroundObservation).toMatchObject({ observationId, source: 'explicit_confirmation', consumed: true });
+    expect(batched.executionPlan).toMatchObject({ foregroundObservationChecks: 1, foregroundObservationSource: 'explicit_confirmation', pluginRoundTrips: 1 });
     expect(batched.postActionCapture).toMatchObject({ status: 'captured' });
     expect((batched.artifactCandidates as Array<Record<string, unknown>>)).toHaveLength(1);
     const nextObservationId = String((batched.observation as Record<string, unknown>).observationId);
     expect(nextObservationId).not.toBe(observationId);
+    await expect(executeIosPhysicalDeviceAction(input(value, 'physical_device_batch', {
+      interaction_id: interactionId, observation_id: nextObservationId,
+      steps: [{ kind: 'type', text: 'blocked-followup-unconfirmed' }],
+    }))).rejects.toMatchObject({ code: 'IOS_DEVICE_FOREGROUND_OBSERVATION_REQUIRED', retryable: true });
+    await executeIosPhysicalDeviceAction(input(value, 'physical_device_confirm_foreground', {
+      interaction_id: interactionId, observation_id: nextObservationId, bundle_id: 'com.xingin.discover',
+    }));
     const followup = await executeIosPhysicalDeviceAction(input(value, 'physical_device_batch', {
       interaction_id: interactionId, observation_id: nextObservationId,
       steps: [{ kind: 'type', text: 'second screen', input_mode: 'keys' }],
     }));
-    expect(followup.foregroundObservation).toMatchObject({ observationId: nextObservationId, source: 'atomic_screenshot', consumed: true });
+    expect(followup.foregroundObservation).toMatchObject({ observationId: nextObservationId, source: 'explicit_confirmation', consumed: true });
     expect(hidCalls).toHaveLength(2);
 
     await expect(executeIosPhysicalDeviceAction(input(value, 'physical_device_batch', {
@@ -814,7 +828,7 @@ describe('CoreDevice-first physical iPhone provider', () => {
 
     const events = await executeIosPhysicalDeviceAction(input(value, 'physical_device_events', { interaction_id: interactionId }));
     expect(JSON.stringify(events)).not.toContain('慢慢变富');
-    expect(JSON.stringify(events)).not.toContain('foreground_confirmed');
+    expect(JSON.stringify(events)).toContain('foreground_confirmed');
   });
 
   it('does not mark an applied input batch replayable when follow-up screenshot fails', async () => {
@@ -850,6 +864,9 @@ describe('CoreDevice-first physical iPhone provider', () => {
     }));
     const interactionId = String((opened.interaction as Record<string, unknown>).interactionId);
     const observationId = String((opened.observation as Record<string, unknown>).observationId);
+    await executeIosPhysicalDeviceAction(input(value, 'physical_device_confirm_foreground', {
+      interaction_id: interactionId, observation_id: observationId, bundle_id: 'com.xingin.discover',
+    }));
     const batch = await executeIosPhysicalDeviceAction(input(value, 'physical_device_batch', {
       interaction_id: interactionId, observation_id: observationId, capture_after: true,
       steps: [{ kind: 'type', text: 'once' }],

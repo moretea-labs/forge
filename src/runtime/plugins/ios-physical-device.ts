@@ -837,23 +837,20 @@ function requireObservedPhysicalTargetForeground(state: PhysicalSessionState): P
 function resolvePhysicalBatchForegroundObservation(
   state: PhysicalSessionState,
   observationId: string | undefined,
-): { foregroundObservation: PhysicalForegroundObservation; source: 'atomic_screenshot' | 'explicit_confirmation'; screenshotAgeMs?: number } {
-  if (observationId) {
-    const { observation, ageMs } = recentScreenshotObservation(state, observationId);
-    return {
-      foregroundObservation: {
-        observationId: observation.observationId,
-        screenshotObservedAt: observation.observedAt,
-        confirmedAt: timestamp(),
-        bundleId: state.bundleId,
-      },
-      source: 'atomic_screenshot',
-      screenshotAgeMs: ageMs,
-    };
+): { foregroundObservation: PhysicalForegroundObservation; source: 'explicit_confirmation'; screenshotAgeMs?: number } {
+  // Observation freshness proves only that the screen was captured. It never proves
+  // the target app was foreground. Require a separate, model-reviewed confirmation.
+  const observed = observationId ? recentScreenshotObservation(state, observationId) : undefined;
+  const confirmed = requireObservedPhysicalTargetForeground(state);
+  if (observationId && confirmed.observationId !== observationId) {
+    throw new AssistantPluginError('IOS_DEVICE_FOREGROUND_OBSERVATION_REQUIRED',
+      'The batch observation must match the separately confirmed target-app foreground.',
+      { retryable: true, details: { hidMutationDispatched: false } });
   }
   return {
-    foregroundObservation: requireObservedPhysicalTargetForeground(state),
+    foregroundObservation: confirmed,
     source: 'explicit_confirmation',
+    ...(observed ? { screenshotAgeMs: observed.ageMs } : {}),
   };
 }
 
@@ -1007,10 +1004,11 @@ async function capturePhysicalScreen(
   return {
     screenshotResult: bounded(screenshotResult),
     observation: { observationId, observedAt, label, ttlMs: INPUT_FOREGROUND_OBSERVATION_TTL_MS },
-    fastPath: {
-      actionId: 'physical_device_batch',
-      arguments: { interaction_id: state.interactionId, observation_id: observationId },
-      requires: ['steps'], ttlMs: INPUT_FOREGROUND_OBSERVATION_TTL_MS, oneShot: true,
+    foregroundConfirmation: {
+      actionId: 'physical_device_confirm_foreground',
+      arguments: { interaction_id: state.interactionId, observation_id: observationId, bundle_id: state.bundleId },
+      requires: ['independent visual confirmation of target app'],
+      ttlMs: INPUT_FOREGROUND_OBSERVATION_TTL_MS,
     },
     artifactCandidates: [{ kind: 'ios_physical_device_screenshot', mediaType: 'image/png', path }],
   };
@@ -1198,7 +1196,7 @@ export function iosPhysicalDeviceActions(): AssistantPluginActionDescriptor[] {
     },
     {
       actionId: 'physical_device_batch', title: 'Run fast physical iPhone input batch',
-      description: 'Run up to 20 short visually grounded taps, swipes, text edits or waits on the single CoreDevice/HID provider. Pass observation_id to consume a fresh, visually verified screenshot without an extra confirm call. capture_after=true also returns the NEXT PNG and observation in this same call, shortening the observe-act-observe loop. Never retry a partially applied batch; screenshot failure after successful input is reported without replaying input.',
+      description: 'Run up to 20 short visually grounded taps, swipes, text edits or waits on the single CoreDevice/HID provider. First independently inspect the screenshot and call physical_device_confirm_foreground with the exact target bundle. observation_id is an optional match check, not an authorization shortcut. capture_after=true returns the NEXT PNG and observation for separate inspection and confirmation. Never retry partially applied or unknown input.',
       readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 60_000, cancellable: true, idempotent: false,
       scopes: ['ios.device'], resourceClaims: mutationClaims,
       argumentsSchema: {
