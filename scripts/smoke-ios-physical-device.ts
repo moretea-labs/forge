@@ -61,7 +61,8 @@ try {
     bundle_id: bundleId,
     relaunch: false,
     observe_after_open: true,
-    prewarm_input: true,
+    // This is a one-shot open/capture receipt; do not retain a HID worker.
+    prewarm_input: false,
   });
   const interaction = opened.interaction as Record<string, unknown> | undefined;
   interactionId = typeof interaction?.interactionId === 'string' ? interaction.interactionId : undefined;

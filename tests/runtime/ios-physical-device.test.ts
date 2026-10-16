@@ -197,6 +197,8 @@ describe('CoreDevice-first physical iPhone provider', () => {
     expect(source).toContain("pluginId: 'computer'");
     expect(source).toContain('computerPluginAdapter.executeAction(');
     expect(source).toContain('relaunch: false');
+    expect(source).toContain('prewarm_input: false');
+    expect(source).not.toContain('prewarm_input: true');
     expect(source).toContain('reusedSession ? undefined');
     expect(source).toContain('if (interactionId && !reusedSession)');
     expect(source).toContain("verificationLevel: 'source_computer_adapter_open_and_capture_only'");
