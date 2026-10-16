@@ -2359,6 +2359,9 @@ forbid('adapters/computer/desktop-operator-negotiation.ts', /interface\s+Compute
 requireText('packages/plugin-runtime/computer/provider.ts', 'export interface ComputerProvider');
 requireText('packages/plugin-runtime/computer/provider-registry.ts', 'export class ComputerProviderRegistry');
 requireText('src/runtime/plugins/computer-registration.ts', 'return executeIosPhysicalDeviceAction(input)');
+requireText('scripts/smoke-ios-physical-device.ts', "pluginId: 'computer'");
+requireText('scripts/smoke-ios-physical-device.ts', 'artifact?.sha256 !== screenshotSha256');
+requireText('scripts/smoke-ios-physical-device.ts', 'semanticPriceVerified: false');
 requireText('src/runtime/plugins/computer-registration.ts', 'observationReady: physicalReady, inputReady: physicalInputReady');
 requireText('src/runtime/plugins/computer-registration.ts', 'const hidStatus = physicalReady && context ? remoteXpcHidCachedStatus(context.controllerHome) : undefined;');
 requireText('src/runtime/plugins/ios/remote-xpc-hid.ts', 'probeHidToolchain(python)');

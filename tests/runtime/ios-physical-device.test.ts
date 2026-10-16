@@ -231,6 +231,10 @@ describe('CoreDevice-first physical iPhone provider', () => {
     expect(source).toContain('reusedSession ? undefined');
     expect(source).toContain('if (interactionId && !reusedSession)');
     expect(source).toContain("verificationLevel: 'source_computer_adapter_open_and_capture_only'");
+    expect(source).toContain('device.connected !== true || device.screenshotAvailable !== true');
+    expect(source).toContain("createHash('sha256').update(image).digest('hex')");
+    expect(source).toContain('artifact?.sha256 !== screenshotSha256');
+    expect(source).toContain('semanticPriceVerified: false');
     expect(source).not.toContain('executeIosPluginAction');
     expect(source).not.toContain("invoke('physical_device_observed_tap'");
     expect(source).not.toContain("invoke('physical_device_batch'");
