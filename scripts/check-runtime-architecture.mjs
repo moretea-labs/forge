@@ -2358,6 +2358,8 @@ requireText('packages/protocols/computer/contract.ts', 'export interface Compute
 forbid('adapters/computer/desktop-operator-negotiation.ts', /interface\s+ComputerCapabilityAdvertisement/, 'Desktop Operator negotiation must consume the provider-neutral Computer capability advertisement contract instead of redefining it');
 requireText('packages/plugin-runtime/computer/provider.ts', 'export interface ComputerProvider');
 requireText('packages/plugin-runtime/computer/provider-registry.ts', 'export class ComputerProviderRegistry');
+requireText('src/runtime/plugins/computer-registration.ts', 'return executeIosPhysicalDeviceAction(input)');
+forbid('src/runtime/plugins/ios-adapter.ts', /\bexecuteIosPhysicalDeviceAction\b/, 'CoreDevice iPhone App mutations must have a single public Computer owner, not a retained iOS-adapter writer');
 requireText('adapters/computer/desktop-operator-contract.ts', 'DESKTOP_OPERATOR_PROVIDER_PLUGIN_ID');
 requireText('adapters/computer/desktop-operator-negotiation.ts', 'negotiateDesktopOperatorComputerHandshake');
 requireText('adapters/computer/desktop-operator-negotiation.ts', 'buildDesktopOperatorComputerInvocation');

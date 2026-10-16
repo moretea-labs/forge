@@ -19,6 +19,7 @@ import { readInteractionSession, writeInteractionSession } from '../../src/runti
 import { registerRepository } from '../../src/cli/repositories/registry';
 import { submitAssistantPluginAction, getAssistantPluginManifest } from '../../src/runtime/plugins/store';
 import { computerPluginAdapter } from '../../src/runtime/plugins/computer-registration';
+import { executeIosPluginAction } from '../../src/runtime/plugins/ios-adapter';
 import { listPluginCapabilityAuthorizations } from '../../src/runtime/plugins/capability-authorization-grants';
 import { acquireControllerLock, readControllerLock, releaseControllerLock, renewControllerLock } from '../../src/cli/repositories/locks';
 import { ensureIosDeviceOwnership, iosCoreDeviceOwnershipId, releaseIosDeviceOwnership } from '../../src/runtime/plugins/ios-device-ownership';
@@ -204,6 +205,13 @@ describe('CoreDevice-first physical iPhone provider', () => {
     expect(source).not.toContain("invoke('physical_device_batch'");
     const systemNavigation = iosPhysicalDeviceActions().find((action) => action.actionId === 'physical_device_observed_tap');
     expect(systemNavigation?.description).toContain('Observation freshness is not app identity');
+  });
+
+  it('rejects the old direct iOS physical-device execution route before CoreDevice dispatch', async () => {
+    const value = fixture();
+    await expect(executeIosPluginAction(input(value, 'physical_device_open', {
+      device: 'CORE-DEVICE-1', bundle_id: 'com.xingin.discover',
+    }))).rejects.toMatchObject({ code: 'PLUGIN_ACTION_NOT_SUPPORTED', retryable: false });
   });
 
   it('starts HID prewarm without synchronously awaiting worker readiness during open', () => {

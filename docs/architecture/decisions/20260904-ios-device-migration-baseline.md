@@ -82,7 +82,7 @@ The existing worker correctly uses a single pasteboard connection for snapshot, 
 
 ### Unified Computer ingress (2026-10-16)
 
-Physical CoreDevice action descriptors, scopes and exact-phone authorization are exposed through the existing `computer` plugin. They delegate to the unchanged `ios-physical-device` executor and Controller-global UDID lock. The `ios` plugin retains iOS development, Simulator, and explicit agent-device/XCTest actions but no longer advertises CoreDevice app actions. The public typed action route remains `plugin_action_execute`; this introduces no second device provider, transport, session store, or replay authority. Existing `ios-device` interaction identity and target verification are unchanged.
+Physical CoreDevice action descriptors, scopes and exact-phone authorization are exposed through the existing `computer` plugin. They delegate to the unchanged `ios-physical-device` executor and Controller-global UDID lock. The `ios` plugin retains iOS development, Simulator, and explicit agent-device/XCTest actions but no longer advertises CoreDevice app actions; the old `executeIosPluginAction` direct physical-device dispatch is retired and fails before any CoreDevice effect. The public typed action route remains `plugin_action_execute`; this introduces no second device provider, transport, session store, or replay authority. Existing `ios-device` interaction identity and target verification are unchanged.
 
 ### Physical foreground drift witnessed during source acceptance
 
