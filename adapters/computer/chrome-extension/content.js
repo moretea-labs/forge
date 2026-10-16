@@ -172,6 +172,7 @@
       } : {}),
       ...(editor ? { composerText: composerText(editor) } : {}),
       composerSelectorVersion: 'visible-single-v2',
+      composerReplacementContract: 'exact-backed-up-project-draft-v1',
       // Read-only hydration attestation for a NEW Project bootstrap tab.
       // URL/DOM shell visibility alone cannot prove that the React model
       // picker has mounted or that the provider editor is send-ready.
@@ -430,7 +431,8 @@
     // Read-only exact-tab capability attestation. A stale content script must
     // never receive an xhigh-required send that it would silently ignore.
     if (message.type === 'forge-computer-chatgpt-capabilities') {
-      sendResponse({ reasoningPreflight: 'verified_before_send_v1', bootstrapTargetGuard: 'project-checked-before-send-v1' });
+      sendResponse({ reasoningPreflight: 'verified_before_send_v1', bootstrapTargetGuard: 'project-checked-before-send-v1',
+        composerReplacementContract: 'exact-backed-up-project-draft-v1' });
       return false;
     }
     if (message.type === 'forge-computer-chatgpt-prepare') {

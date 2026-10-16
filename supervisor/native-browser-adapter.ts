@@ -243,6 +243,9 @@ export function authorizedDraftReplacementPrompt(
   controllerHome: string, taskId: string, effectId: string, projectUrl: string,
   snapshot: ComputerChatgptConversationObservation, prompt: string,
 ): string | undefined {
+  // Disk projection does not attest that this exact Chrome tab loaded the latest script.
+  // Never spend a one-use authorization before a matching read-only contract receipt.
+  if (snapshot.composerReplacementContract !== 'exact-backed-up-project-draft-v1') return;
   const backup = backupAuthorizedBlockedComposer(controllerHome, taskId, effectId, projectUrl, snapshot);
   if (!backup || !prompt.startsWith(`<<<FORGE_WORKFLOW_EFFECT_V1:${effectId}>>>`)) return;
   const observation = preflightComposerObservation(snapshot, effectId);
@@ -744,6 +747,15 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       this.noteTargetUnavailable(task, command.effectId, {
         code: 'WORKFLOW_SUPERVISOR_BOOTSTRAP_EXISTING_CONVERSATION',
       });
+      return;
+    }
+    if (preflightComposerObservation(beforeSend, command.effectId).classification === 'unattributed'
+      && beforeSend.composerReplacementContract !== 'exact-backed-up-project-draft-v1') {
+      // Not a draft conflict or a Send attempt: Chrome retained a stale content script.
+      this.control.recordProviderPreparationFailure({ taskId: task.taskId, effectId: command.effectId,
+        reasonCode: 'COMPUTER_CHATGPT_BOOTSTRAP_LOADED_SCRIPT_STALE',
+        composerObservation: preflightComposerObservation(beforeSend, command.effectId) });
+      this.noteTaskFailure(SUPERVISOR_PRE_SEND_BLOCKED, task, command.effectId);
       return;
     }
     let prepared: Awaited<ReturnType<ComputerChatgptConversationTarget['prepare']>>;

@@ -230,7 +230,8 @@ async function executePrepare(command) {
   const expectedProjectId = command.identity?.namespace === 'chatgpt.bootstrap' ? core.projectId(command.identity.projectUrl) : undefined;
   if (command.identity?.namespace === 'chatgpt.bootstrap' && !expectedProjectId)
     return { kind: 'prepared', ready: false, reasonCode: 'COMPUTER_CHATGPT_BOOTSTRAP_PROJECT_UNPROVEN' };
-  if (command.reasoning !== undefined || expectedProjectId) {
+  const requiresDraftReplacement = typeof command.prompt === 'string' && command.prompt.startsWith('<<<FORGE_DRAFT_REPLACE_V1:');
+  if (command.reasoning !== undefined || expectedProjectId || requiresDraftReplacement) {
     let capability;
     try { capability = await tabMessage(target.tab.id, { type: 'forge-computer-chatgpt-capabilities' }); }
     catch { return { kind: 'prepared', ready: false, reasonCode: expectedProjectId
@@ -241,6 +242,8 @@ async function executePrepare(command) {
     // may cross this version boundary without target verification.
     if (expectedProjectId && capability?.bootstrapTargetGuard !== 'project-checked-before-send-v1')
       return { kind: 'prepared', ready: false, reasonCode: 'COMPUTER_CHATGPT_BOOTSTRAP_PROJECT_GUARD_UNSUPPORTED' };
+    if (requiresDraftReplacement && capability?.composerReplacementContract !== 'exact-backed-up-project-draft-v1')
+      return { kind: 'prepared', ready: false, reasonCode: 'COMPUTER_CHATGPT_BOOTSTRAP_LOADED_SCRIPT_STALE' };
   }
   try {
     const result = await tabMessage(target.tab.id, {

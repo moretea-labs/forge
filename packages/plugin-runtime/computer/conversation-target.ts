@@ -24,6 +24,8 @@ export interface ComputerChatgptConversationObservation {
   composerText?: string;
   /** Read-only content-script selector attestation; undefined on older loaded scripts. */
   composerSelectorVersion?: 'visible-single-v2';
+  /** Exact loaded content-script contract; file projection/version on disk is not a live browser attestation. */
+  composerReplacementContract?: 'exact-backed-up-project-draft-v1';
   /** Read-only provider UI hydration receipt; never a Send/effect authority. */
   reasoningControlReady?: boolean;
   providerActivityText: string;

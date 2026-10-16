@@ -75,6 +75,7 @@ describe('Exact operator-authorized blocked-composer backup', () => {
     const snapshot = {
       url: projectUrl, title: 'Forge', latestUserText: '', latestAssistantResponse: '',
       composerText: 'Draft with  two spaces\nsecond line', composerSelectorVersion: 'visible-single-v2',
+      composerReplacementContract: 'exact-backed-up-project-draft-v1',
       providerActivityText: '', providerFailureText: '', isGenerating: false,
     } as const;
     const base = join(controllerHome,'supervisor','draft-backups');
@@ -97,6 +98,10 @@ describe('Exact operator-authorized blocked-composer backup', () => {
     const prompt=`<<<FORGE_WORKFLOW_EFFECT_V1:${effectId}>>>\nComplete isolated acceptance`;
     expect(authorizedDraftReplacementPrompt(controllerHome,taskId,effectId,projectUrl,snapshot,prompt)).toBeUndefined();
     writeFileSync(auth,JSON.stringify({...consent,fingerprint:digest,nonce:'abcdef0123456789abcdef0123456789'}));
+    // A projected but unloaded extension must not consume the existing one-shot authorization.
+    expect(authorizedDraftReplacementPrompt(controllerHome,taskId,effectId,projectUrl,
+      {...snapshot,composerReplacementContract:undefined},prompt)).toBeUndefined();
+    expect(existsSync(join(base,`consumed-${effectId}-abcdef0123456789abcdef0123456789.json`))).toBe(false);
     const prepared=authorizedDraftReplacementPrompt(controllerHome,taskId,effectId,projectUrl,snapshot,prompt);
     expect(prepared).toBe(`<<<FORGE_DRAFT_REPLACE_V1:${digest}:abcdef0123456789abcdef0123456789>>>\n${prompt}`);
     // The original draft may be restored after preparation. The same nonce
@@ -256,7 +261,14 @@ describe('Computer Chrome extension browser-resource authority', () => {
     const onUpdated: Array<(tabId: number, changeInfo: { status?: string }, tab: FakeTab) => void> = [];
     const extensionRoot = join(process.cwd(), 'adapters', 'computer', 'chrome-extension');
     const nativeMessageListeners: Array<(response: { id: string; ok: boolean; result?: unknown }) => void> = [];
+    const storage = new Map<string, unknown>();
     const chrome = {
+      storage: {
+        local: {
+          get: async (key: string) => ({ [key]: storage.get(key) }),
+          set: async (values: Record<string, unknown>) => { for (const [key, value] of Object.entries(values)) storage.set(key, value); },
+        },
+      },
       runtime: {
         lastError: undefined as { message: string } | undefined,
         connectNative() {

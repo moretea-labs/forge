@@ -313,3 +313,7 @@ one instance and returned the failed page's binding, keeping one tab and sending
 nothing. A separate Controller probe verified failed-binding persistence, broker
 restart reuse and no commands to a foreign profile. These are bounded adapter
 facts; live release acceptance remains separate.
+
+### Live Chrome content contract at Bootstrap
+
+A projected Chrome extension on disk is not evidence that an existing Chrome tab has loaded the same content script. Before Supervisor consumes an exact, single-use authorization to back up and replace an unrelated Project composer draft, the actual pinned tab must attest `composerReplacementContract=exact-backed-up-project-draft-v1` in its read-only snapshot. An absent attestation is a task-local `COMPUTER_CHATGPT_BOOTSTRAP_LOADED_SCRIPT_STALE` pre-send failure, not permission to clear the editor, switch providers, create a replacement tab, or record Send. The Chrome background independently checks this exact-tab capability when preparing a guarded draft replacement. The original draft and one-use authorization remain intact when the loaded script is stale; after reloading the extension, the original unspent effect may be rearmed only within its existing bounded operator-retry contract. Projection checks and MCP health cannot substitute for this live evidence. Final release acceptance still requires independent actual multi-turn work to DONE.
