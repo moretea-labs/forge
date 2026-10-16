@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { createHash } from 'crypto';
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { spawn, spawnSync } from 'child_process';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -356,7 +356,7 @@ describe('Forge Runtime service', () => {
     expect(readFileSync(join(changed.packageRoot, 'src', 'runtime.ts'), 'utf8')).toBe('export const runtime = 2;\n');
   });
 
-  test('owns the current execution canary at the package wrapper boundary for older sidecars', () => {
+  test('does not let the package wrapper bypass a stale Process Runtime canary', () => {
     const fx = fixture(), packageRoot = join(fx.root, 'package-legacy-canary');
     for (const dir of ['src/runtime/root', 'src/runtime/shared', 'bin', 'assets', 'scripts']) mkdirSync(join(packageRoot, dir), { recursive: true });
     writeFileSync(join(packageRoot, 'package.json'), JSON.stringify({ name: '@moretea-labs/forge', version: '1.7.2-legacy-canary' }));
@@ -365,14 +365,9 @@ describe('Forge Runtime service', () => {
     writeFileSync(join(packageRoot, 'bin', 'forge-runtime.mjs'), 'process.exit(99);\n');
     writePackageRuntimeCanaryFixture(packageRoot, false);
 
-    const release = materializePackageRuntimeRelease({ controllerHome: fx.home, packageRoot, operationId: 'package-legacy-canary' });
-    const processRunner = spawnSync(join(release.releaseRoot, 'process-runner.js'), ['--forge-release-canary-child'], { encoding: 'utf8' });
-    const checkRunner = spawnSync(join(release.releaseRoot, 'forge-check-runner'), ['--forge-release-canary-child'], { encoding: 'utf8' });
-    expect(processRunner.status).toBe(0);
-    expect(checkRunner.status).toBe(0);
-
-    const delegated = spawnSync(join(release.releaseRoot, 'forge-check-runner'), ['--not-a-canary'], { encoding: 'utf8' });
-    expect(delegated.status).toBe(2);
+    expect(() => materializePackageRuntimeRelease({ controllerHome: fx.home, packageRoot, operationId: 'package-legacy-canary' }))
+      .toThrow('RUNTIME_RELEASE_EXECUTION_CANARY_FAILED: process_runner');
+    expect(existsSync(join(fx.home, 'runtime', 'releases')) ? readdirSync(join(fx.home, 'runtime', 'releases')) : []).toEqual([]);
   });
 
   test('does not duplicate a systemd process-group shutdown signal', async () => {

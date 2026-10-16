@@ -1,3 +1,4 @@
+import { readFileSync } from 'fs';
 import { join } from 'path';
 import { runProcess } from '../../effects/process-runner';
 import { PROCESS_RUNTIME_RELEASE_CANARY_ARG } from '../execution/process-runtime/canary';
@@ -25,9 +26,9 @@ export interface RuntimeReleaseExecutionCanaryDependencies {
 /**
  * Release execution canaries deliberately do not inherit developer-tool PATH
  * entries. Standalone-binary artifacts must execute without Homebrew, Bun, nvm,
- * or similar PATH dependencies. Legacy script releases predate the embedded
- * Runtime interpreter and are probed through the same explicitly resolved Bun
- * executable that their Process Runtime uses in production.
+ * or similar PATH dependencies. Legacy source scripts are probed through the
+ * same explicitly resolved Bun executable that their Process Runtime uses in
+ * production, while executable shebangs remain the artifact's own launch contract.
  */
 export function runtimeReleaseCanaryEnvironment(
   env: NodeJS.ProcessEnv = process.env,
@@ -41,6 +42,17 @@ export function runtimeReleaseCanaryEnvironment(
     return { ...env, PATH: systemPath };
   }
   return { ...env, PATH: '/usr/bin:/bin:/usr/sbin:/sbin' };
+}
+
+/**
+ * Execute legacy JavaScript/TypeScript through the resolved Bun runtime only
+ * when the artifact does not declare a different executable shebang.
+ */
+function releaseScriptRequiresBun(entryPath: string): boolean {
+  const firstLine = readFileSync(entryPath, 'utf8').split(/\r?\n/, 1)[0]?.trim() ?? '';
+  if (!firstLine.startsWith('#!')) return true;
+  const shebangTokens = firstLine.slice(2).trim().split(/\s+/).filter(Boolean);
+  return shebangTokens.some((token) => /(?:^|\/)bun(?:\.exe)?$/i.test(token));
 }
 
 /**
@@ -81,10 +93,11 @@ export function assertRuntimeReleaseExecutionCanaries(
     const args = entry.canary === 'runtime_interpreter' ? ['--version'] : [PROCESS_RUNTIME_RELEASE_CANARY_ARG];
     const legacyScript = surface.manifest.executionMode !== 'standalone-binary'
       && /\.(?:[cm]?js|tsx?)$/i.test(entry.path);
+    const usesExplicitBun = legacyScript && releaseScriptRequiresBun(entry.path);
     assertCanary({
       name: entry.name,
-      executable: legacyScript ? resolveBunExecutable(process.execPath, process.env) : entry.path,
-      args: legacyScript ? [entry.path, ...args] : args,
+      executable: usesExplicitBun ? resolveBunExecutable(process.execPath, process.env) : entry.path,
+      args: usesExplicitBun ? [entry.path, ...args] : args,
     });
   }
 
