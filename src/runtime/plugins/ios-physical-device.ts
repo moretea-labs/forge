@@ -1282,14 +1282,14 @@ export function iosPhysicalDeviceActions(): AssistantPluginActionDescriptor[] {
       description: 'With explicit interactive confirmation, list bounded PDF/image filenames in the selected app Documents sandbox. No general Files/iCloud or other-app search.',
       readOnly: false, risk: 'workspace_write', confirmation: 'strong_confirmation', requiredConfirmationText: 'list-iphone-app-documents',
       defaultTimeoutMs: 60_000, cancellable: true, idempotent: true, scopes: ['ios.device'], resourceClaims: stateClaim,
-      argumentsSchema: { type: 'object', properties: { ...interactionProperty }, required: ['interaction_id'], additionalProperties: false },
+      argumentsSchema: { type: 'object', properties: { ...interactionProperty, bundle_id: { type: 'string' } }, required: ['interaction_id', 'bundle_id'], additionalProperties: false },
     },
     {
       actionId: 'physical_device_document_export', title: 'Export one selected-app iPhone document',
       description: 'With explicit interactive confirmation, copy one exact PDF/image from the selected app Documents sandbox into private Controller artifacts; no bulk export, deletion or upload.',
       readOnly: false, risk: 'workspace_write', confirmation: 'strong_confirmation', requiredConfirmationText: 'export-iphone-app-document',
       defaultTimeoutMs: 90_000, cancellable: true, idempotent: false, scopes: ['ios.device'], resourceClaims: mutationClaims,
-      argumentsSchema: { type: 'object', properties: { ...interactionProperty, path: { type: 'string', maxLength: 512 } }, required: ['interaction_id', 'path'], additionalProperties: false },
+      argumentsSchema: { type: 'object', properties: { ...interactionProperty, bundle_id: { type: 'string' }, path: { type: 'string', maxLength: 512 } }, required: ['interaction_id', 'bundle_id', 'path'], additionalProperties: false },
     },
     {
       actionId: 'physical_device_events', title: 'Read physical iOS events',
@@ -1541,6 +1541,9 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
   recordTiming(timingStages, 'sessionLookup', sessionLookupStartedAt, false);
   switch (input.actionId) {
     case 'physical_device_documents_list': {
+      if (requireBundleId(input.args.bundle_id) !== state.bundleId) {
+        throw new AssistantPluginError('IOS_DEVICE_DOCUMENT_TARGET_MISMATCH', 'Document consent does not match the exact app session.', { retryable: false });
+      }
       if (!state.device.connected) {
         throw new AssistantPluginError('IOS_DEVICE_NOT_CONNECTED', 'Exact iPhone is not connected.', { retryable: true });
       }
@@ -1567,6 +1570,9 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
         domain: 'appDataContainer/Documents', names, truncated: entries.length > 100 };
     }
     case 'physical_device_document_export': {
+      if (requireBundleId(input.args.bundle_id) !== state.bundleId) {
+        throw new AssistantPluginError('IOS_DEVICE_DOCUMENT_TARGET_MISMATCH', 'Document consent does not match the exact app session.', { retryable: false });
+      }
       if (!state.device.connected) {
         throw new AssistantPluginError('IOS_DEVICE_NOT_CONNECTED', 'Exact iPhone is not connected.', { retryable: true });
       }

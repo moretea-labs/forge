@@ -2367,6 +2367,7 @@ requireText('scripts/install-ios-hid-toolchain.sh', 'pymobiledevice3==$version')
 requireText('src/runtime/plugins/ios-physical-device.ts', 'const confirmed = requireObservedPhysicalTargetForeground(state)');
 requireText('src/runtime/plugins/ios-physical-device.ts', "requiredConfirmationText: 'list-iphone-app-documents'");
 requireText('src/runtime/plugins/ios-physical-device.ts', "requiredConfirmationText: 'export-iphone-app-document'");
+requireText('src/runtime/plugins/ios-physical-device.ts', 'requireBundleId(input.args.bundle_id) !== state.bundleId');
 requireText('src/runtime/plugins/ios-physical-device.ts', "'--domain-type', 'appDataContainer', '--domain-identifier', state.bundleId");
 forbid('src/runtime/plugins/ios-physical-device.ts', /source:\s*'atomic_screenshot'/, 'bare iPhone screenshot IDs must never bypass explicit target-foreground confirmation');
 forbid('src/runtime/plugins/ios-adapter.ts', /\bexecuteIosPhysicalDeviceAction\b/, 'CoreDevice iPhone App mutations must have a single public Computer owner, not a retained iOS-adapter writer');
