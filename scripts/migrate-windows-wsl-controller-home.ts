@@ -12,6 +12,7 @@ import {
 import { homedir } from 'os';
 import { basename, dirname, join, resolve } from 'path';
 import { spawnSync } from 'child_process';
+import { assertRuntimeReleaseExecutionCanaries } from '../src/runtime/root/release-execution-canary';
 import { stageRuntimeRelease } from '../src/runtime/root/release-materialize';
 import { publishRuntimeRelease } from '../src/runtime/root/release-store';
 
@@ -254,6 +255,7 @@ try {
   // the clean source checkout before any canonical unit starts.
   preserveLegacyReleaseAuthority(destination, timestamp);
   const stagedRelease = stageRuntimeRelease({ controllerHome: destination, sourceRoot });
+  assertRuntimeReleaseExecutionCanaries(stagedRelease.manifestPath, destination);
   publishRuntimeRelease(destination, stagedRelease.manifestPath, `windows-wsl-controller-home-migration-${timestamp}`);
   const release = readActiveRelease(destination);
   atomicWrite(unitPath(units.canonicalRuntime), renderRuntimeUnit(destination, units.canonicalRuntime, release), 0o644);

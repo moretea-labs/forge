@@ -14,6 +14,7 @@ import {
   runtimeCleanupLogPath,
   type RuntimeCleanupReport,
 } from '../../src/runtime/control-plane/runtime-cleanup';
+import { runSchedulerPeriodicCleanup } from '../../src/runtime/control-plane/global-scheduler/maintenance';
 import { applyRuntimeCleanup, previewRuntimeCleanup } from '../../src/runtime/maintenance/cleanup';
 import { markRepositoryProjectionDirty, persistRepositoryProjectionDirty, repositoryProjectionIsDirty } from '../../src/runtime/projections/invalidation';
 import type { RepositoryRecord } from '../../src/cli/repositories/types';
@@ -870,6 +871,37 @@ describe('runtime cleanup', () => {
     }
     expect(launches).toBe(1);
     expect(inlineCleanupCalls).toBe(0);
+  });
+
+  test('production periodic maintenance invokes the canonical Runtime cleanup owner', async () => {
+    const home = controllerHome();
+    let runtimeCleanupCalls = 0;
+    let observedSequence = -1;
+
+    await runSchedulerPeriodicCleanup({
+      controllerHome: home,
+      controllerPid: process.pid,
+      nowMs: 6 * 60_000,
+      cleanupIntervalMs: 60_000,
+      repositories: [],
+      runtimeCleanup: (_controllerHome, options) => {
+        runtimeCleanupCalls += 1;
+        observedSequence = options?.periodicSequence ?? -1;
+        // The scheduler only observes whether this call throws, not its report.
+        return {} as RuntimeCleanupReport;
+      },
+      terminalWorkCleanup: async () => ({
+        scanned: 0, eligible: 0, attempted: 0, cleaned: [], blocked: [],
+        skippedRecent: [], skippedRetained: [], skippedNonTerminal: [],
+        branchReconciled: [], errors: [], truncated: false,
+      }),
+      processGc: () => ({
+        ok: true, removedRecords: 0, removedLogs: 0, skippedActive: 0, reconciledStaleActive: 0,
+      }),
+    });
+
+    expect(runtimeCleanupCalls).toBe(1);
+    expect(observedSequence).toBe(6);
   });
 
   test('retired ExecutionJob retention removes only proven-terminal legacy bundles', () => {

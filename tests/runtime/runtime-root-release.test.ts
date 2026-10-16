@@ -22,19 +22,46 @@ const STABLE_MACOS_SIGNING: MacOSRuntimeCodeSigning = {
 
 function retentionRelease(home: string, releaseId: string): string {
   const releaseRoot = join(home, 'runtime', 'releases', releaseId);
+  const manifestPath = join(releaseRoot, 'manifest.json');
   mkdirSync(releaseRoot, { recursive: true });
-  writeFileSync(join(releaseRoot, 'manifest.json'), '{}\n');
+  writeFileSync(manifestPath, `${JSON.stringify({
+    schemaVersion: 1,
+    releaseId,
+    artifactIdentity: `sha256:${sha256Text(releaseId)}`,
+    entrypoint: 'forge-runtime',
+    arguments: [],
+    configurationSchemaVersion: 1,
+    deploymentScope: 'portable',
+    databaseSchemaCompatibility: { minimum: 1, maximum: 999 },
+    workerProtocolVersion: 1,
+    createdAt: new Date().toISOString(),
+  }, null, 2)}\n`);
   return releaseRoot;
 }
 
 function writeRetentionRuntimeAuthority(home: string, activeId: string, previousId: string): void {
   const releasesRoot = join(home, 'runtime', 'releases');
+  const releaseRecord = (releaseId: string) => {
+    const manifestPath = join(releasesRoot, releaseId, 'manifest.json');
+    const manifest = loadRuntimeReleaseManifest(manifestPath, home);
+    return {
+      releaseId: manifest.releaseId,
+      artifactIdentity: manifest.artifactIdentity,
+      manifestPath,
+      manifestSha256: sha256Text(readFileSync(manifestPath, 'utf8')),
+      workerProtocolVersion: manifest.workerProtocolVersion,
+      publishedAt: manifest.createdAt,
+    };
+  };
   writeFileSync(join(releasesRoot, 'authority.json'), `${JSON.stringify({
-    schemaVersion: 1,
+    schemaVersion: 2,
     status: 'committed',
     revision: 1,
-    active: { releaseId: activeId, manifestPath: join(releasesRoot, activeId, 'manifest.json') },
-    previous: { releaseId: previousId, manifestPath: join(releasesRoot, previousId, 'manifest.json') },
+    fencingToken: 'a'.repeat(64),
+    operationId: 'retention-test',
+    committedAt: new Date().toISOString(),
+    active: releaseRecord(activeId),
+    previous: releaseRecord(previousId),
   }, null, 2)}\n`);
 }
 
@@ -139,6 +166,26 @@ describe('immutable Runtime Process Runtime execution surface', () => {
     const surface = assertRuntimeReleaseExecutionCanaries(manifestPath, controllerHome);
     expect(surface.entries.map((entry) => entry.name)).toEqual(['process_runner', 'check_runner']);
     expect(await runPersistedCheckSidecar(['--forge-release-canary-child'])).toBe(0);
+  });
+
+  test('uses the resolved Bun runtime only for Bun-backed legacy scripts', () => {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-runtime-execution-surface-bun-'));
+    roots.push(controllerHome);
+    const manifestPath = executionSurfaceFixture({
+      controllerHome,
+      releaseId: 'canary-bun-shebang',
+      processRunnerSource: '#!/usr/bin/env bun\nprocess.exit(0);\n',
+    });
+    const calls: { name: string; executable: string; args: string[] }[] = [];
+    assertRuntimeReleaseExecutionCanaries(manifestPath, controllerHome, {
+      runExecutionEntryCanary: (command) => {
+        calls.push(command);
+        return { ok: true };
+      },
+    });
+    expect(calls[0]).toMatchObject({ name: 'process_runner', executable: process.execPath });
+    expect(calls[0]?.args[0]).toBe(join(controllerHome, 'runtime', 'releases', 'canary-bun-shebang', 'process-runner.js'));
+    expect(calls[1]).toMatchObject({ name: 'check_runner', executable: join(controllerHome, 'runtime', 'releases', 'canary-bun-shebang', 'forge-check-runner') });
   });
 
   test.each([

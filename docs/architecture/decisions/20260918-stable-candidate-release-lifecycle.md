@@ -206,7 +206,7 @@ summaries, never tokens, raw database payloads or browser messages.
 | known-good bundle | Standalone Recovery | bounded live attestations; prune only after state commit | validate release + DB + service contract offline |
 | RuntimeReleaseAuthority | Runtime Root physical release store | schema 2; active/previous release identity and previous SQLite backup only | physical publish/rollback; no release-phase or transaction intent |
 | ReleaseSession | Release domain / stateless ReleaseCoordinator | wire schema 1 + current semantic epoch 2; `known_good`, `rolled_back`, `failed`; bounded session retention is physical cleanup | revision CAS resumes the same session; Recovery provider executes physical effects |
-| Candidate B Home | ReleaseSession semantic authority / Recovery physical provider | explicit terminal cleanup only after evidence retention | no deletion/rebuild of A; B can be inspected independently |
+| Candidate B Home | ReleaseSession semantic authority / Recovery physical provider | explicit retired cleanup after evidence retention; soaking and terminal sessions are physically reclaimable only after candidate owner quiescence | no deletion/rebuild of A; B can be inspected independently |
 | Process Runtime terminal lease | Process Runtime lease authority | terminal evidence and lease release are separate idempotent phases | terminal observation/wait/cancel and full maintenance retry exact lease release until settled |
 
 All bundle and session data is local Controller state. It contains no secrets:
@@ -230,4 +230,5 @@ the service contract records a token *path*, while each B token is an independen
 - no-op automatic reconciliation does not fork a Recovery worker, and terminal source revisions are not autonomously replayed;
 - definitive runaway-CPU rejection restores Stable A through the existing ReleaseSession rollback authority rather than repeating soak measurement;
 - terminal Process observation and full maintenance both reconcile any exact leftover workspace lease; `completed_unknown` cannot permanently fence a checkout;
+- periodic Runtime maintenance is the production retention caller; its rotating removal phase reaches release history without starving the other cleanup classes, while committed Runtime authority protects active/previous release trees, the serving Connector release and the previous rollback SQLite backup; historical known-good evidence alone does not pin release trees;
 - final live release testing remains a separate, one-shot governed operation.

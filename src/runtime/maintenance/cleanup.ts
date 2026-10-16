@@ -88,12 +88,42 @@ function isSafeForgeTemp(path: string): boolean {
   const name = basename(path);
   if (!name.startsWith('forge')) return false;
   const parent = dirname(path);
-  const allowedParents = new Set([resolve(tmpdir()), '/private/tmp', '/tmp']);
-  return allowedParents.has(resolve(parent));
+  const allowedParents = new Set([tmpdir(), '/private/tmp', '/tmp'].filter((root) => existsSync(root)).map((root) => realpathSync(root)));
+  try { return allowedParents.has(realpathSync(parent)); } catch { return false; }
+}
+
+// Temp cleanup cannot dispose of a Git worktree just because its directory
+// begins with "forge". Bounded traversal fails closed on nested repositories,
+// symlinks and uninspectable or high-cardinality source.
+function protectsGitSource(root: string): boolean {
+  const pending: Array<{ path: string; depth: number }> = [{ path: root, depth: 0 }];
+  let visited = 0;
+  while (pending.length > 0) {
+    const current = pending.pop()!;
+    if (++visited > 256) return true;
+    try {
+      const stat = lstatSync(current.path);
+      if (stat.isSymbolicLink()) return true;
+      if (!stat.isDirectory()) continue;
+      if (existsSync(join(current.path, '.git'))
+        || (existsSync(join(current.path, 'HEAD')) && existsSync(join(current.path, 'objects')) && existsSync(join(current.path, 'refs')))) return true;
+      const entries = readdirSync(current.path, { withFileTypes: true });
+      if (entries.length + visited > 256) return true;
+      for (const entry of entries) {
+        if (entry.isSymbolicLink()) return true;
+        if (!entry.isDirectory()) continue;
+        if (current.depth >= 5) return true;
+        pending.push({ path: join(current.path, entry.name), depth: current.depth + 1 });
+      }
+    } catch {
+      return true;
+    }
+  }
+  return false;
 }
 
 function scanTempDirs(minAgeMinutes: number, limit: number): RuntimeCleanupCandidate[] {
-  const roots = Array.from(new Set([tmpdir(), '/private/tmp', '/tmp'].filter((root) => existsSync(root)).map((root) => resolve(root))));
+  const roots = Array.from(new Set([tmpdir(), '/private/tmp', '/tmp'].filter((root) => existsSync(root)).map((root) => realpathSync(root))));
   const processes = processCommands();
   const at = Date.now();
   const candidates: RuntimeCleanupCandidate[] = [];
@@ -108,11 +138,14 @@ function scanTempDirs(minAgeMinutes: number, limit: number): RuntimeCleanupCandi
         if (!stat.isDirectory()) continue;
         const occupied = processes.find((process) => process.command.includes(path));
         const ageMinutes = Math.max(0, Math.round((at - stat.mtimeMs) / 60_000));
-        const safe = !occupied && ageMinutes >= minAgeMinutes;
+        const gitSourceProtected = protectsGitSource(path);
+        const safe = !occupied && ageMinutes >= minAgeMinutes && !gitSourceProtected;
         candidates.push({
           kind: 'temp_dir',
           path,
-          reason: safe
+          reason: gitSourceProtected
+            ? 'Git worktree, repository, symlink or uninspectable source is protected; use its Work/Git owner.'
+            : safe
             ? `Forge temp directory is older than ${minAgeMinutes} minutes and not referenced by a running process.`
             : 'Temp directory is too new or still referenced by a running process.',
           ageMinutes,
@@ -368,6 +401,9 @@ export function applyRuntimeCleanup(repoRoot: string, options: RuntimeCleanupOpt
   const applied: Array<RuntimeCleanupCandidate & { applied: boolean; error?: string }> = eligible.slice(0, normalized.maxRemovals).map((candidate) => {
     try {
       if (candidate.kind === 'temp_dir' && candidate.path && isSafeForgeTemp(candidate.path)) {
+        // A preview is not a mutation lease. Recheck source and liveness.
+        if (protectsGitSource(candidate.path)) throw new Error('RUNTIME_CLEANUP_GIT_SOURCE_PROTECTED');
+        if (processCommands().some((process) => process.command.includes(candidate.path!))) throw new Error('RUNTIME_CLEANUP_TEMP_PROCESS_OCCUPIED');
         rmSync(candidate.path, { recursive: true, force: true });
         return { ...candidate, applied: true };
       }

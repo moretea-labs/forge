@@ -1203,6 +1203,8 @@ forbid(
 requireMissing('src/runtime/control-plane/routing/workspace-admission.ts');
 forbid('packages/kernel/work/domain/types.ts', /requireHandoffOnAmbiguity|requireWorktree|directMainProhibited/, 'retired Work placement/handoff policy fields must not return as durable authority');
 forbid('adapters/mcp/runtime-gateway/work-adapter.ts', /require_handoff_on_ambiguity|require_worktree|direct_main_prohibited/, 'retired placement/handoff wire flags must not drive repository topology');
+requireText('adapters/mcp/runtime-gateway/work-adapter.ts', "rawConstraints.workspace_mode === 'current'\n      ? 'current'\n      : 'isolated'", 'repository-bound rh_work.start must default omitted placement to isolated execution');
+requireText('src/runtime/control-plane/execution/work-preparation-service.ts', 'WORK_PREPARE_PLACEMENT_CONFLICT', 'work_prepare must not silently reuse a conflicting existing WorkHandle placement');
 forbid('src/cli/controller/execution-policy.ts', /requiresHumanAcceptance|autoRunDeclaredChecks|autoCompleteAfterSuccessfulRun|requiresScopedPaths|requiresDiffEvidence|requiresAnyVerificationEvidence|requiresAcceptanceEvidence|READ_ONLY_INTENT|DESTRUCTIVE_INTENT|SENSITIVE_PATH_PATTERNS/, 'task risk/text/path classification must not decide workflow, placement, verification, scope, or acceptance authority');
 requireMissing('src/runtime/control-plane/daemon-entry.ts');
 requireMissing('scripts/smoke-runtime-control-plane.ts');
@@ -1407,6 +1409,9 @@ forbid(
 );
 
 requireText('docs/architecture/CURRENT.md', 'Canonical Runtime is activated as one immutable whole release');
+requireText('src/runtime/root/release-execution-canary.ts', 'releaseScriptRequiresBun');
+forbid('src/runtime/root/package-runtime-release.ts', /ownsProcessRuntimeCanary|PROCESS_RUNTIME_RELEASE_CANARY_ARG/, 'package Runtime wrappers must delegate release canaries to the attested Process Runner/Check Runner implementation');
+requireText('scripts/migrate-windows-wsl-controller-home.ts', 'assertRuntimeReleaseExecutionCanaries(stagedRelease.manifestPath, destination);');
 requireText('docs/architecture/CURRENT.md', 'Runtime availability/recovery keeps Forge itself healthy');
 requireText('docs/architecture/CURRENT.md', 'Historical Issue/Task/Local Job and compatibility projections must not become second mutable authorities.');
 requireText('src/runtime/root/runtime.ts', 'export class CanonicalForgeRuntime');
@@ -1484,6 +1489,8 @@ requireMissing('src/core/adoption/helper-wrapper-plan.ts');
 // Service and release persistence use one writer rather than five sibling
 // open/write/rename algorithms with incompatible temporary-file identities.
 requireText('src/runtime/shared/atomic-text-file.ts', 'export function writeAtomicTextFile');
+requireText('src/runtime/maintenance/cleanup.ts', 'RUNTIME_CLEANUP_GIT_SOURCE_PROTECTED');
+requireText('src/runtime/maintenance/cleanup.ts', 'protectsGitSource(candidate.path)');
 for (const path of [
   'src/runtime/root/service.ts',
   'src/runtime/root/package-connector-service.ts',
@@ -1719,6 +1726,16 @@ requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'persistS
 requireText('src/runtime/control-plane/global-scheduler/worker-attachment.ts', 'attachExecutionWorker');
 requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'runSchedulerPeriodicCleanup');
 requireText('src/runtime/control-plane/global-scheduler/maintenance.ts', 'runSchedulerValidationReconciliation');
+requireMatch(
+  'src/runtime/control-plane/global-scheduler/maintenance.ts',
+  /input\.runtimeCleanup\(input\.controllerHome,\s*\{\s*reason:\s*['"]periodic['"]/s,
+  'route periodic maintenance through the canonical Runtime cleanup owner',
+);
+requireText('src/runtime/control-plane/runtime-cleanup.ts', 'cleanupControllerReleaseHistory');
+requireText('src/runtime/control-plane/release-retention.ts', "releasePaths.add(releasePathFromAuthorityRecord(releasesRoot, parsed.active, 'active'))");
+requireText('src/runtime/control-plane/release-retention.ts', 'const connectorRelease = loadPackageConnectorReleaseProtection(controllerHome, releasesRoot);');
+requireText('src/runtime/control-plane/release-retention.ts', 'const databaseBackup = (previous as Record<string, unknown>).databaseBackup;');
+requireText('src/runtime/root/scheduler.ts', 'isolatePeriodicCleanup: true');
 requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'planSchedulerSourceSampling');
 requireText('src/runtime/control-plane/global-scheduler/source-scan.ts', 'selectSchedulerSourceScanRepositories');
 requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'runSchedulerDurableAdmission');
