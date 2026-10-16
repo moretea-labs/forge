@@ -472,7 +472,9 @@ function buildComputerManifest(
   const desktopReady = desktopSupported && desktop?.enabled === true && desktop.health.ready;
   const physicalRepository = desktopSupported && context?.controllerScoped === false;
   const physicalReady = physicalRepository && iosPhysicalDeviceStatus().coreDeviceReady;
-  const hidStatus = physicalRepository && context ? remoteXpcHidStatus(context.controllerHome) : undefined;
+  // Browser/Desktop manifest reads must never synchronously start Python unless
+  // an explicit CoreDevice action already established usable phone observation.
+  const hidStatus = physicalReady && context ? remoteXpcHidStatus(context.controllerHome) : undefined;
   const physicalInputReady = physicalReady && hidStatus?.available === true;
   const ready = browserReady && desktopReady;
   const partial = browserReady || desktopReady || physicalReady;
