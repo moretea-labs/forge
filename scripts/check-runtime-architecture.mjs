@@ -2370,6 +2370,7 @@ requireText('src/runtime/plugins/ios-physical-device.ts', 'PNG_CRC_TABLE');
 requireText('src/runtime/plugins/ios-physical-device.ts', 'sawImageData && length === 0 && end + 4 === image.length');
 requireText('src/runtime/plugins/ios-physical-device.ts', 'screenshotSha256, screenshotBytes: image.length');
 requireText('src/runtime/plugins/ios-physical-device.ts', "requiredConfirmationText: 'list-iphone-app-documents'");
+requireText('src/runtime/plugins/ios-physical-device.ts', "listedNames.some((name) => typeof name !== 'string' || !name.trim())");
 requireText('src/runtime/plugins/ios-physical-device.ts', "requiredConfirmationText: 'export-iphone-app-document'");
 requireText('src/runtime/plugins/ios-physical-device.ts', "const indexPath = join(dir, 'index.json')");
 requireText('src/runtime/plugins/ios-physical-device.ts', 'entries: [...entries, entry] }, { mode: 0o600 });');

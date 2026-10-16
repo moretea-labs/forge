@@ -1600,11 +1600,18 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
           'CoreDevice did not return a recognized file listing; no documents were verified.',
           { retryable: false });
       }
-      const names = entries.map((entry) => typeof entry === 'string' ? entry
-        : stringField(objectValue(entry), 'name') ?? stringField(objectValue(entry), 'fileName'))
-        .filter((name): name is string => typeof name === 'string'
-          && !name.includes('/') && !name.includes('\\')
-          && /\.(?:pdf|png|jpe?g|heic)$/i.test(name)).slice(0, 100);
+      // A recognized top-level array with unrecognized row fields is not an
+      // empty directory. Reject it rather than falsely reporting no documents.
+      const listedNames = entries.map((entry) => typeof entry === 'string' ? entry
+        : stringField(objectValue(entry), 'name') ?? stringField(objectValue(entry), 'fileName'));
+      if (listedNames.some((name) => typeof name !== 'string' || !name.trim())) {
+        throw new AssistantPluginError('IOS_DEVICE_DOCUMENT_LIST_SCHEMA_UNKNOWN',
+          'CoreDevice returned file entries without recognizable names; document presence is unverified.',
+          { retryable: false });
+      }
+      const names = (listedNames as string[]).filter((name) =>
+        !name.includes('/') && !name.includes('\\')
+        && /\.(?:pdf|png|jpe?g|heic)$/i.test(name)).slice(0, 100);
       return { provider: 'coredevice', deviceUnmodified: true,
         interactionId: record.interactionId, bundleId: state.bundleId,
         domain: 'appDataContainer/Documents', names, truncated: entries.length > 100 };
