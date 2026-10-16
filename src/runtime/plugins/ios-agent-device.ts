@@ -939,7 +939,7 @@ function reconcileExpiredSessions(input: AssistantPluginActionExecutionInput): v
         status: 'closing',
         error: { code: 'AGENT_DEVICE_CLEANUP_FAILED', message: 'The expired agent-device session could not be closed; ownership remains fenced.' },
       });
-    if (record.provider === DEVICE_PROVIDER) releaseIosDeviceOwnership(input.controllerHome, record.owner.repoId, record.interactionId, record.targetId);
+    if (record.provider === DEVICE_PROVIDER && closed) releaseIosDeviceOwnership(input.controllerHome, record.owner.repoId, record.interactionId, record.targetId);
   }
 }
 

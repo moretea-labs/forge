@@ -7,7 +7,7 @@ import { repositoryControllerRoot } from '../../cli/repositories/controller-home
 import { runBoundedProcess } from '../execution/thin-harness/async-process';
 import { readJsonFile, writeJsonAtomic } from '../shared/json-files';
 import { AssistantPluginError, toAssistantPluginError } from './errors';
-import { ensureIosDeviceOwnership, releaseIosDeviceOwnership } from './ios-device-ownership';
+import { ensureIosDeviceOwnership, iosCoreDeviceOwnershipId, releaseIosDeviceOwnership } from './ios-device-ownership';
 import {
   interactionAutomationEngine,
   interactionMayOwnTarget,
@@ -635,7 +635,7 @@ function expirePhysicalDeviceSessions(input: AssistantPluginActionExecutionInput
     appendEvent(input, record.interactionId, 'session_expired');
     if (state?.device.identifier) {
       stopRemoteXpcHidForDevice(state.device.identifier);
-      releaseIosDeviceOwnership(input.controllerHome, record.owner.repoId, record.interactionId, state.device.identifier);
+      releaseIosDeviceOwnership(input.controllerHome, record.owner.repoId, record.interactionId, iosCoreDeviceOwnershipId(state.device));
     }
     expired += 1;
   }
@@ -701,11 +701,11 @@ function requireRecord(input: AssistantPluginActionExecutionInput, allowTerminal
     });
     appendEvent(input, interactionId, 'session_expired');
     stopRemoteXpcHidForDevice(state.device.identifier);
-    releaseIosDeviceOwnership(input.controllerHome, record.owner.repoId, interactionId, state.device.identifier);
+    releaseIosDeviceOwnership(input.controllerHome, record.owner.repoId, interactionId, iosCoreDeviceOwnershipId(state.device));
     throw new AssistantPluginError('IOS_DEVICE_SESSION_EXPIRED', 'The physical iOS interaction expired; open a new session.', { retryable: false });
   }
   if (isInteractionSessionActive(record.status)) {
-    const ownership = ensureIosDeviceOwnership(input.controllerHome, input.repoId, interactionId, state.device.identifier);
+    const ownership = ensureIosDeviceOwnership(input.controllerHome, input.repoId, interactionId, iosCoreDeviceOwnershipId(state.device));
     if (!ownership.acquired) throw deviceOwnershipError(state.device, ownership);
     const active = patchInteractionSession(input.repoRoot, PROVIDER, interactionId, {
       expiresAt: new Date(hooks.now().getTime() + SESSION_EXPIRY_MS).toISOString(),
@@ -1272,7 +1272,7 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
     recordTiming(timingStages, 'sessionLookup', sessionLookupStartedAt, false);
     if (expiredSessionCount > 0) timingStages.sessionReconcile = { ms: timingStages.sessionLookup.ms, cached: false };
     if (reusable) {
-      const ownership = ensureIosDeviceOwnership(input.controllerHome, input.repoId, reusable.interactionId, selected.identifier);
+      const ownership = ensureIosDeviceOwnership(input.controllerHome, input.repoId, reusable.interactionId, iosCoreDeviceOwnershipId(selected));
       if (!ownership.acquired) throw deviceOwnershipError(selected, ownership);
       const existingState = readState(input, reusable.interactionId);
       if (!existingState) {
@@ -1281,7 +1281,7 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
           error: { code: 'IOS_DEVICE_SESSION_STATE_MISSING', message: 'The existing physical iPhone session has no recoverable state.' },
         });
         appendEvent(input, reusable.interactionId, 'session_state_missing');
-        releaseIosDeviceOwnership(input.controllerHome, input.repoId, reusable.interactionId, selected.identifier);
+        releaseIosDeviceOwnership(input.controllerHome, input.repoId, reusable.interactionId, iosCoreDeviceOwnershipId(selected));
         throw new AssistantPluginError('IOS_DEVICE_SESSION_STATE_MISSING', 'The existing physical iPhone session has no recoverable state.', { retryable: false });
       }
       const active = patchInteractionSession(input.repoRoot, PROVIDER, reusable.interactionId, {
@@ -1314,7 +1314,7 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
       });
     }
     const interactionId = `ios_device_${randomUUID()}`;
-    const ownership = ensureIosDeviceOwnership(input.controllerHome, input.repoId, interactionId, selected.identifier);
+    const ownership = ensureIosDeviceOwnership(input.controllerHome, input.repoId, interactionId, iosCoreDeviceOwnershipId(selected));
     if (!ownership.acquired) throw deviceOwnershipError(selected, ownership);
     const createdAt = timestamp();
     const record: InteractionSessionRecord = {
@@ -1431,7 +1431,7 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
         error: { code: normalized.code, message: normalized.message },
       });
       appendEvent(input, interactionId, 'open_failed', { code: normalized.code, message: normalized.message });
-      releaseIosDeviceOwnership(input.controllerHome, input.repoId, interactionId, selected.identifier);
+      releaseIosDeviceOwnership(input.controllerHome, input.repoId, interactionId, iosCoreDeviceOwnershipId(selected));
       throw normalized;
     }
   }
@@ -1796,7 +1796,7 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
       patchInteractionSession(input.repoRoot, PROVIDER, record.interactionId, { status: 'closing' });
       appendEvent(input, record.interactionId, 'session_closed', { inputWorkerRelease });
       const finalRecord = patchInteractionSession(input.repoRoot, PROVIDER, record.interactionId, { status: 'closed', error: undefined }) ?? record;
-      const deviceOwnershipReleased = releaseIosDeviceOwnership(input.controllerHome, input.repoId, record.interactionId, state.device.identifier);
+      const deviceOwnershipReleased = releaseIosDeviceOwnership(input.controllerHome, input.repoId, record.interactionId, iosCoreDeviceOwnershipId(state.device));
       return { provider: 'coredevice', interaction: finalRecord, deviceUnmodified: true, inputWorkerRelease, deviceOwnershipReleased };
     }
     default:

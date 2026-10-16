@@ -54,7 +54,7 @@ The provider release is independently versioned from the Forge Runtime release a
 
 Before T10 service extraction, the in-process implementation now closes the highest-risk ownership/lifecycle gaps without introducing a second provider:
 
-- physical iPhone ownership uses a Controller-global lock keyed by the exact CoreDevice identifier, so repository scope cannot create a second mutation owner;
+- physical iPhone ownership uses one Controller-global lock keyed by the hardware UDID shared by CoreDevice and XCTest (not CoreDevice's transport-local identifier), so neither provider nor repository scope can create a second mutation owner;
 - active same-app CoreDevice interactions are reusable and their device ownership lease is renewed by activity; Runtime restart can reclaim an unexpired session after the previous owner process dies;
 - physical mutation actions execute in the Forge Runtime so the RemoteXPC/HID worker can persist across consecutive actions instead of being recreated by every lightweight action process;
 - agent-device physical actions share the same exact-device fence, while Simulator remains outside the physical-device ownership domain;

@@ -20,7 +20,7 @@ import { registerRepository } from '../../src/cli/repositories/registry';
 import { submitAssistantPluginAction } from '../../src/runtime/plugins/store';
 import { listPluginCapabilityAuthorizations } from '../../src/runtime/plugins/capability-authorization-grants';
 import { acquireControllerLock, readControllerLock, releaseControllerLock, renewControllerLock } from '../../src/cli/repositories/locks';
-import { ensureIosDeviceOwnership, releaseIosDeviceOwnership } from '../../src/runtime/plugins/ios-device-ownership';
+import { ensureIosDeviceOwnership, iosCoreDeviceOwnershipId, releaseIosDeviceOwnership } from '../../src/runtime/plugins/ios-device-ownership';
 
 const roots: string[] = [];
 
@@ -134,16 +134,23 @@ describe('CoreDevice-first physical iPhone provider', () => {
     releaseControllerLock(value.controllerHome, key, lock.lockId);
   });
 
-  it('keeps physical iPhone ownership unique across repository scope', () => {
+  it('fences the same physical iPhone across CoreDevice, XCTest and repository scopes by UDID', () => {
     const value = fixture();
-    const first = ensureIosDeviceOwnership(value.controllerHome, 'repo-a', 'interaction-a', 'CORE-DEVICE-1');
+    const coreDevice = { identifier: 'CORE-DEVICE-1', udid: '00008150-TEST' };
+    const canonical = iosCoreDeviceOwnershipId(coreDevice);
+    expect(canonical).toBe('00008150-TEST');
+    expect(() => iosCoreDeviceOwnershipId({ identifier: coreDevice.identifier })).toThrow('IOS_DEVICE_UDID_REQUIRED');
+    const first = ensureIosDeviceOwnership(value.controllerHome, 'repo-a', 'coredevice-session', canonical);
     expect(first.acquired).toBe(true);
-    const second = ensureIosDeviceOwnership(value.controllerHome, 'repo-b', 'interaction-b', 'CORE-DEVICE-1');
-    expect(second.acquired).toBe(false);
-    expect(second.blocker?.owner).toBe('ios-device-session:repo-a:interaction-a');
-    expect(releaseIosDeviceOwnership(value.controllerHome, 'repo-b', 'interaction-b', 'CORE-DEVICE-1')).toBe(false);
-    expect(releaseIosDeviceOwnership(value.controllerHome, 'repo-a', 'interaction-a', 'CORE-DEVICE-1')).toBe(true);
-    expect(readControllerLock(value.controllerHome, { scope: 'global', resource: 'ios-device:CORE-DEVICE-1' })).toBeUndefined();
+    const agent = ensureIosDeviceOwnership(value.controllerHome, 'repo-b', 'agent-device-session', '00008150-test');
+    expect(agent.acquired).toBe(false);
+    expect(agent.blocker?.owner).toBe('ios-device-session:repo-a:coredevice-session');
+    const other = ensureIosDeviceOwnership(value.controllerHome, 'repo-b', 'other-device', '00008150-OTHER');
+    expect(other.acquired).toBe(true);
+    expect(releaseIosDeviceOwnership(value.controllerHome, 'repo-b', 'agent-device-session', canonical)).toBe(false);
+    expect(releaseIosDeviceOwnership(value.controllerHome, 'repo-b', 'other-device', '00008150-OTHER')).toBe(true);
+    expect(releaseIosDeviceOwnership(value.controllerHome, 'repo-a', 'coredevice-session', canonical)).toBe(true);
+    expect(readControllerLock(value.controllerHome, { scope: 'global', resource: 'ios-device:00008150-TEST' })).toBeUndefined();
   });
 
   it('runs physical mutation actions in the Runtime so the HID worker can persist across calls', () => {

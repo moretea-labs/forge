@@ -17,7 +17,7 @@ export interface IosDeviceOwnershipResult {
 }
 
 function deviceResourceKey(deviceIdentifier: string): string {
-  const normalized = deviceIdentifier.trim();
+  const normalized = deviceIdentifier.trim().toUpperCase();
   if (!normalized) throw new Error('IOS_DEVICE_IDENTIFIER_REQUIRED');
   return `${IOS_DEVICE_LOCK_PREFIX}${normalized}`;
 }
@@ -38,6 +38,14 @@ function blocker(lock: ControllerLockRecord) {
     heartbeatAt: lock.heartbeatAt,
     ...(lock.expiresAt ? { expiresAt: lock.expiresAt } : {}),
   } satisfies IosDeviceOwnershipResult['blocker'];
+}
+
+// Use the hardware UDID as the single physical iPhone identity shared with XCTest.
+// CoreDevice identifier is a transport-local locator, not the agent-device device id.
+export function iosCoreDeviceOwnershipId(device: { identifier: string; udid?: string }): string {
+  const udid = device.udid?.trim();
+  if (!udid) throw new Error('IOS_DEVICE_UDID_REQUIRED');
+  return udid;
 }
 
 export function ensureIosDeviceOwnership(
