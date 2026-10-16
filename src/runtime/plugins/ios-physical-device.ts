@@ -536,16 +536,49 @@ async function physicalDisplayGeometry(input: AssistantPluginActionExecutionInpu
   };
 }
 
+const PNG_CRC_TABLE = Uint32Array.from({ length: 256 }, (_, byte) => {
+  let crc = byte;
+  for (let bit = 0; bit < 8; bit += 1) {
+    crc = (crc >>> 1) ^ ((crc & 1) ? 0xedb88320 : 0);
+  }
+  return crc >>> 0;
+});
+
 function pngDisplayGeometry(image: Buffer, pointScale?: number): DisplayGeometry | undefined {
-  // A filename or header-only pseudo-PNG must never authorize foreground input.
-  if (image.length < 57 || image.subarray(0, 8).toString('hex') !== '89504e470d0a1a0a'
-    || image.readUInt32BE(8) !== 13 || image.subarray(12, 16).toString('ascii') !== 'IHDR'
-    || image.readUInt32BE(image.length - 12) !== 0
-    || image.subarray(image.length - 8, image.length - 4).toString('ascii') !== 'IEND') return undefined;
-  const width = image.readUInt32BE(16);
-  const height = image.readUInt32BE(20);
-  if (width <= 1 || height <= 1 || width > 10_000 || height > 10_000) return undefined;
-  return { width, height, pointScale };
+  // No screenshot observation is issued until all PNG chunks have valid bounds
+  // and CRCs; a plausible header/trailer alone is not a usable image.
+  if (image.length < 57 || image.subarray(0, 8).toString('hex') !== '89504e470d0a1a0a') return undefined;
+  let offset = 8;
+  let width = 0;
+  let height = 0;
+  let sawImageData = false;
+  while (offset + 12 <= image.length) {
+    const length = image.readUInt32BE(offset);
+    if (length > image.length - offset - 12) return undefined;
+    const kind = image.toString('ascii', offset + 4, offset + 8);
+    const end = offset + 8 + length;
+    if (!/^[A-Za-z]{4}$/.test(kind)) return undefined;
+    let crc = 0xffffffff;
+    for (let pos = offset + 4; pos < end; pos += 1) {
+      crc = PNG_CRC_TABLE[(crc ^ image[pos]!) & 0xff]! ^ (crc >>> 8);
+    }
+    if (((crc ^ 0xffffffff) >>> 0) !== image.readUInt32BE(end)) return undefined;
+    if (kind === 'IHDR') {
+      if (offset !== 8 || length !== 13) return undefined;
+      width = image.readUInt32BE(offset + 8);
+      height = image.readUInt32BE(offset + 12);
+      if (width <= 1 || height <= 1 || width > 10_000 || height > 10_000
+        || image[offset + 18] !== 0 || image[offset + 19] !== 0 || (image[offset + 20] ?? 2) > 1) return undefined;
+    } else if (kind === 'IDAT') {
+      if (!width || length === 0) return undefined;
+      sawImageData = true;
+    } else if (kind === 'IEND') {
+      return sawImageData && length === 0 && end + 4 === image.length
+        ? { width, height, pointScale } : undefined;
+    }
+    offset = end + 4;
+  }
+  return undefined;
 }
 
 async function sessionDisplayGeometry(
