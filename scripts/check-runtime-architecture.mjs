@@ -1484,6 +1484,8 @@ requireMissing('src/core/adoption/helper-wrapper-plan.ts');
 // Service and release persistence use one writer rather than five sibling
 // open/write/rename algorithms with incompatible temporary-file identities.
 requireText('src/runtime/shared/atomic-text-file.ts', 'export function writeAtomicTextFile');
+requireText('src/runtime/maintenance/cleanup.ts', 'RUNTIME_CLEANUP_GIT_SOURCE_PROTECTED');
+requireText('src/runtime/maintenance/cleanup.ts', 'protectsGitSource(candidate.path)');
 for (const path of [
   'src/runtime/root/service.ts',
   'src/runtime/root/package-connector-service.ts',
