@@ -982,6 +982,71 @@ async function waitPhysicalInputBatch(durationMs: number, signal?: AbortSignal):
   });
 }
 
+/** CoreDevice screenshot is the one observation authority for the device. */
+async function capturePhysicalScreen(
+  input: AssistantPluginActionExecutionInput,
+  state: PhysicalSessionState,
+  label: string,
+): Promise<Record<string, unknown>> {
+  const path = join(artifactDir(input, state.interactionId), `${sanitize(label)}-${hooks.now().getTime()}.png`);
+  const screenshotResult = await runCoreJson(input, [
+    'device', 'capture', 'screenshot', '--device', state.device.identifier, '--destination', path,
+  ], 'IOS_DEVICE_SCREENSHOT_FAILED', 60_000);
+  if (!existsSync(path)) {
+    throw new AssistantPluginError('IOS_DEVICE_SCREENSHOT_MISSING', 'CoreDevice succeeded without creating the requested screenshot.', { retryable: false });
+  }
+  const observedAt = timestamp();
+  const observationId = randomUUID();
+  const screenshotDisplay = pngDisplayGeometry(path, state.display?.pointScale);
+  if (screenshotDisplay) state.display = { ...screenshotDisplay, observedAt };
+  state.lastScreenshot = { observationId, observedAt, label };
+  state.foregroundObservation = undefined;
+  state.events.push({ at: observedAt, type: 'screenshot', details: { label, observationId } });
+  state.events = state.events.slice(-MAX_EVENTS);
+  writeState(input, state);
+  return {
+    screenshotResult: bounded(screenshotResult),
+    observation: { observationId, observedAt, label, ttlMs: INPUT_FOREGROUND_OBSERVATION_TTL_MS },
+    fastPath: {
+      actionId: 'physical_device_batch',
+      arguments: { interaction_id: state.interactionId, observation_id: observationId },
+      requires: ['steps'], ttlMs: INPUT_FOREGROUND_OBSERVATION_TTL_MS, oneShot: true,
+    },
+    artifactCandidates: [{ kind: 'ios_physical_device_screenshot', mediaType: 'image/png', path }],
+  };
+}
+
+/** After a mutation, screenshot failures are observations, never a reason to retry input. */
+async function optionalPostActionCapture(
+  input: AssistantPluginActionExecutionInput,
+  state: PhysicalSessionState,
+  label: string,
+  timingStages: TimingStages,
+): Promise<Record<string, unknown>> {
+  const startedAt = performance.now();
+  try {
+    const capture = await capturePhysicalScreen(input, state, label);
+    recordTiming(timingStages, 'postActionScreenshot', startedAt, false);
+    const { screenshotResult: _ignored, ...observation } = capture;
+    return { ...observation, postActionCapture: { status: 'captured' } };
+  } catch (error) {
+    recordTiming(timingStages, 'postActionScreenshot', startedAt, false);
+    const normalized = toAssistantPluginError(error, {
+      code: 'IOS_DEVICE_SCREENSHOT_FAILED',
+      message: 'The physical iPhone input completed, but its follow-up screenshot could not be captured.',
+      retryable: false,
+    });
+    // A secondary diagnostic write must not turn a completed HID effect into a replayable error.
+    try { appendEvent(input, state.interactionId, 'post_action_screenshot_failed', { code: normalized.code }); } catch { /* observation failure remains explicit */ }
+    return {
+      postActionCapture: {
+        status: 'failed', code: normalized.code,
+        mutationAlreadyApplied: true, retryOnly: 'physical_device_screenshot',
+      },
+    };
+  }
+}
+
 export function isIosPhysicalDeviceAction(actionId: string): boolean {
   return actionId.startsWith('physical_device_');
 }
@@ -1086,10 +1151,10 @@ export function iosPhysicalDeviceActions(): AssistantPluginActionDescriptor[] {
     },
     {
       actionId: 'physical_device_open', title: 'Open physical iOS app session',
-      description: 'Request activation of one installed third-party app through CoreDevice and create a bounded interaction session. CoreDevice launch metadata is diagnostic only: capture a screenshot and explicitly confirm the observed foreground before any HID input. Set prewarm_input=true when runnerless input will follow; Forge then waits up to 4 seconds for a non-mutating RemoteXPC readiness result so the first HID action does not need a blind retry.',
+      description: 'Open or reuse an exact CoreDevice iPhone session; launch metadata never proves foreground. Set observe_after_open=true to return the initial screenshot and short-lived observation in the same call, without authorizing input. prewarm_input=true starts the existing RemoteXPC worker without XCTest.',
       readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 2 * 60_000, cancellable: true, idempotent: false,
       scopes: ['ios.device'], resourceClaims: mutationClaims,
-      argumentsSchema: { type: 'object', properties: { device: { type: 'string' }, bundle_id: { type: 'string' }, relaunch: { type: 'boolean' }, prewarm_input: { type: 'boolean' } }, required: ['device', 'bundle_id'], additionalProperties: false },
+      argumentsSchema: { type: 'object', properties: { device: { type: 'string' }, bundle_id: { type: 'string' }, relaunch: { type: 'boolean' }, prewarm_input: { type: 'boolean' }, observe_after_open: { type: 'boolean' } }, required: ['device', 'bundle_id'], additionalProperties: false },
     },
     {
       actionId: 'physical_device_screenshot', title: 'Capture physical iOS screenshot',
@@ -1111,29 +1176,29 @@ export function iosPhysicalDeviceActions(): AssistantPluginActionDescriptor[] {
     },
     {
       actionId: 'physical_device_observed_tap', title: 'Tap a freshly observed physical iPhone screen',
-      description: 'One-shot screen-relative tap bound to the latest fresh screenshot observation. It does not reactivate any app and consumes the observation before dispatch, so it can safely navigate system UI such as Spotlight into the target app when CoreDevice activation did not actually foreground it.',
+      description: 'One-shot observed tap for app/system navigation, without reactivation. capture_after=true returns the next CoreDevice screenshot and new observation in this same call; never blindly retry a tap after screenshot failure.',
       readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 30_000, cancellable: true, idempotent: false,
       scopes: ['ios.device'], resourceClaims: mutationClaims,
       argumentsSchema: {
         type: 'object',
-        properties: { ...interactionProperty, observation_id: { type: 'string' }, x: { type: 'number', minimum: 0 }, y: { type: 'number', minimum: 0 } },
+        properties: { ...interactionProperty, observation_id: { type: 'string' }, capture_after: { type: 'boolean' }, x: { type: 'number', minimum: 0 }, y: { type: 'number', minimum: 0 } },
         required: ['interaction_id', 'observation_id', 'x', 'y'], additionalProperties: false,
       },
     },
     {
       actionId: 'physical_device_observed_swipe', title: 'Swipe a freshly observed physical iPhone screen',
-      description: 'One-shot screenshot-bound swipe for system-screen navigation before the target app is foreground. Reuses and consumes the same fresh observation as observed_tap; app form gestures continue to require confirmed target foreground.',
+      description: 'One-shot screenshot-bound swipe for system navigation, consuming the observed screen without app reactivation. capture_after=true returns the next CoreDevice screenshot and new observation in the same call; app form gestures still require foreground confirmation.',
       readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 30_000, cancellable: true, idempotent: false,
       scopes: ['ios.device'], resourceClaims: mutationClaims,
       argumentsSchema: {
         type: 'object',
-        properties: { ...interactionProperty, observation_id: { type: 'string' }, x: { type: 'number', minimum: 0 }, y: { type: 'number', minimum: 0 }, to_x: { type: 'number', minimum: 0 }, to_y: { type: 'number', minimum: 0 }, duration_ms: { type: 'number', minimum: 80, maximum: 3000 } },
+        properties: { ...interactionProperty, observation_id: { type: 'string' }, capture_after: { type: 'boolean' }, x: { type: 'number', minimum: 0 }, y: { type: 'number', minimum: 0 }, to_x: { type: 'number', minimum: 0 }, to_y: { type: 'number', minimum: 0 }, duration_ms: { type: 'number', minimum: 80, maximum: 3000 } },
         required: ['interaction_id', 'observation_id', 'x', 'y', 'to_x', 'to_y'], additionalProperties: false,
       },
     },
     {
       actionId: 'physical_device_batch', title: 'Run fast physical iPhone input batch',
-      description: 'Preferred fast path for a visually confirmed target app: perform up to 20 tap, swipe, text, or bounded-wait steps under one fresh screenshot foreground fence, one unlock/display readiness pass, and one plugin round-trip. Pass observation_id to atomically bind and consume the latest visually verified screenshot without a separate confirm_foreground round-trip; omitting it preserves the explicit confirm_foreground compatibility path. Stops on the first failed step and never replays a partially-mutated batch.',
+      description: 'Run up to 20 short visually grounded taps, swipes, text edits or waits on the single CoreDevice/HID provider. Pass observation_id to consume a fresh, visually verified screenshot without an extra confirm call. capture_after=true also returns the NEXT PNG and observation in this same call, shortening the observe-act-observe loop. Never retry a partially applied batch; screenshot failure after successful input is reported without replaying input.',
       readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 60_000, cancellable: true, idempotent: false,
       scopes: ['ios.device'], resourceClaims: mutationClaims,
       argumentsSchema: {
@@ -1141,6 +1206,7 @@ export function iosPhysicalDeviceActions(): AssistantPluginActionDescriptor[] {
         properties: {
           ...interactionProperty,
           observation_id: { type: 'string' },
+          capture_after: { type: 'boolean' },
           steps: {
             type: 'array', minItems: 1, maxItems: MAX_BATCH_STEPS,
             items: {
@@ -1287,7 +1353,11 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
       const active = patchInteractionSession(input.repoRoot, PROVIDER, reusable.interactionId, {
         expiresAt: new Date(hooks.now().getTime() + SESSION_EXPIRY_MS).toISOString(),
       }) ?? reusable;
+      const nextObservation = input.args.observe_after_open === true
+        ? await optionalPostActionCapture(input, existingState, 'resume', timingStages)
+        : {};
       return finishTimedResult(actionStartedAt, timingStages, {
+        ...nextObservation,
         provider: 'coredevice',
         interaction: active,
         device: selected,
@@ -1399,7 +1469,11 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
       // Semantic automation is an explicit opt-in action so repeated computer-use
       // workflows cannot accidentally create fresh Runner lifecycles.
       const active = patchInteractionSession(input.repoRoot, PROVIDER, interactionId, { status: 'waiting_for_user' }) ?? record;
+      const nextObservation = input.args.observe_after_open === true
+        ? await optionalPostActionCapture(input, state, 'open', timingStages)
+        : {};
       return finishTimedResult(actionStartedAt, timingStages, {
+        ...nextObservation,
         provider: 'coredevice',
         interaction: active,
         device: selected,
@@ -1441,35 +1515,10 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
   recordTiming(timingStages, 'sessionLookup', sessionLookupStartedAt, false);
   switch (input.actionId) {
     case 'physical_device_screenshot': {
-      const label = sanitize(optionalString(input.args.label) ?? 'screenshot');
-      const path = join(artifactDir(input, record.interactionId), `${label}-${hooks.now().getTime()}.png`);
-      const result = await runCoreJson(input, [
-        'device', 'capture', 'screenshot', '--device', state.device.identifier, '--destination', path,
-      ], 'IOS_DEVICE_SCREENSHOT_FAILED', 60_000);
-      if (!existsSync(path)) {
-        throw new AssistantPluginError('IOS_DEVICE_SCREENSHOT_MISSING', 'CoreDevice succeeded without creating the requested screenshot.', { retryable: false });
-      }
-      const observedAt = timestamp();
-      const observationId = randomUUID();
-      const screenshotDisplay = pngDisplayGeometry(path, state.display?.pointScale);
-      if (screenshotDisplay) state.display = { ...screenshotDisplay, observedAt };
-      state.lastScreenshot = { observationId, observedAt, label };
-      state.foregroundObservation = undefined;
-      writeState(input, state);
-      const eventStartedAt = performance.now();
-      appendEvent(input, record.interactionId, 'screenshot', { label, observationId });
-      recordTiming(timingStages, 'eventPersistence', eventStartedAt, false);
+      const captured = await capturePhysicalScreen(input, state, sanitize(optionalString(input.args.label) ?? 'screenshot'));
+      const { screenshotResult, ...observation } = captured;
       return finishTimedResult(actionStartedAt, timingStages, {
-        provider: 'coredevice', interaction: record, result: bounded(result),
-        observation: { observationId, observedAt, label, ttlMs: INPUT_FOREGROUND_OBSERVATION_TTL_MS },
-        fastPath: {
-          actionId: 'physical_device_batch',
-          arguments: { interaction_id: record.interactionId, observation_id: observationId },
-          requires: ['steps'],
-          ttlMs: INPUT_FOREGROUND_OBSERVATION_TTL_MS,
-          oneShot: true,
-        },
-        artifactCandidates: [{ kind: 'ios_physical_device_screenshot', mediaType: 'image/png', path }],
+        provider: 'coredevice', interaction: record, result: screenshotResult, ...observation,
       });
     }
     case 'physical_device_confirm_foreground': {
@@ -1533,7 +1582,10 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
         requestId: input.requestId, observationId: observation.observationId, observationAgeMs: ageMs,
         x, y, ...(swipe ? { x2, y2, durationMs } : {}), reusedWorker: result.reusedWorker,
       });
-      return finishTimedResult(actionStartedAt, timingStages, { provider: 'coredevice', inputBackend: 'remote-xpc-hid', interaction: record, display, result: bounded(result), observationConsumed: true });
+      const nextObservation = input.args.capture_after === true
+        ? await optionalPostActionCapture(input, state, swipe ? 'swipe' : 'tap', timingStages)
+        : {};
+      return finishTimedResult(actionStartedAt, timingStages, { ...nextObservation, provider: 'coredevice', inputBackend: 'remote-xpc-hid', interaction: record, display, result: bounded(result), observationConsumed: true });
     }
     case 'physical_device_batch': {
       const lockStartedAt = performance.now();
@@ -1666,7 +1718,11 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
         kinds: steps.map((step) => step.kind),
       });
       recordTiming(timingStages, 'eventPersistence', eventStartedAt, false);
+      const nextObservation = input.args.capture_after === true
+        ? await optionalPostActionCapture(input, state, 'batch', timingStages)
+        : {};
       return finishTimedResult(actionStartedAt, timingStages, {
+        ...nextObservation,
         provider: 'coredevice',
         inputBackend: 'remote-xpc-hid',
         interaction: record,

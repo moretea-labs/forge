@@ -695,7 +695,7 @@ describe('CoreDevice-first physical iPhone provider', () => {
     expect(JSON.stringify(events)).toContain('batch_input');
   });
 
-  it('atomically consumes a fresh screenshot in one batch without a confirm_foreground round-trip', async () => {
+  it('fuses open screenshot and batch follow-up screenshot without relaxing the one-shot observation fence', async () => {
     const value = fixture();
     const hidCalls: Array<Record<string, unknown>> = [];
     setRemoteXpcHidExecutorForTest(async (request) => {
@@ -724,12 +724,11 @@ describe('CoreDevice-first physical iPhone provider', () => {
     });
 
     const opened = await executeIosPhysicalDeviceAction(input(value, 'physical_device_open', {
-      device: 'greyson', bundle_id: 'com.xingin.discover',
+      device: 'greyson', bundle_id: 'com.xingin.discover', observe_after_open: true,
     }));
     const interactionId = String((opened.interaction as Record<string, unknown>).interactionId);
-    const screenshot = await executeIosPhysicalDeviceAction(input(value, 'physical_device_screenshot', {
-      interaction_id: interactionId, label: 'atomic-batch-proof',
-    }));
+    expect(opened.postActionCapture).toMatchObject({ status: 'captured' });
+    const screenshot = opened;
     const observation = screenshot.observation as Record<string, unknown>;
     const observationId = String(observation.observationId);
     expect(observation.ttlMs).toBe(30_000);
@@ -744,23 +743,82 @@ describe('CoreDevice-first physical iPhone provider', () => {
     const batched = await executeIosPhysicalDeviceAction(input(value, 'physical_device_batch', {
       interaction_id: interactionId,
       observation_id: observationId,
+      capture_after: true,
       steps: [{ kind: 'type', text: '慢慢变富', input_mode: 'auto', replace_existing: true }],
     }));
     expect(hidCalls).toHaveLength(1);
     expect(hidCalls[0]).toMatchObject({ action: 'type', text: '<redacted>', textMode: 'auto', replaceExisting: true });
     expect(batched.foregroundObservation).toMatchObject({ observationId, source: 'atomic_screenshot', consumed: true });
     expect(batched.executionPlan).toMatchObject({ foregroundObservationChecks: 1, foregroundObservationSource: 'atomic_screenshot', pluginRoundTrips: 1 });
+    expect(batched.postActionCapture).toMatchObject({ status: 'captured' });
+    expect((batched.artifactCandidates as Array<Record<string, unknown>>)).toHaveLength(1);
+    const nextObservationId = String((batched.observation as Record<string, unknown>).observationId);
+    expect(nextObservationId).not.toBe(observationId);
+    const followup = await executeIosPhysicalDeviceAction(input(value, 'physical_device_batch', {
+      interaction_id: interactionId, observation_id: nextObservationId,
+      steps: [{ kind: 'type', text: 'second screen', input_mode: 'keys' }],
+    }));
+    expect(followup.foregroundObservation).toMatchObject({ observationId: nextObservationId, source: 'atomic_screenshot', consumed: true });
+    expect(hidCalls).toHaveLength(2);
 
     await expect(executeIosPhysicalDeviceAction(input(value, 'physical_device_batch', {
       interaction_id: interactionId,
       observation_id: observationId,
       steps: [{ kind: 'type', text: 'must-not-replay' }],
     }))).rejects.toMatchObject({ code: 'IOS_DEVICE_SCREEN_OBSERVATION_REQUIRED', retryable: true });
-    expect(hidCalls).toHaveLength(1);
+    expect(hidCalls).toHaveLength(2);
 
     const events = await executeIosPhysicalDeviceAction(input(value, 'physical_device_events', { interaction_id: interactionId }));
     expect(JSON.stringify(events)).not.toContain('慢慢变富');
     expect(JSON.stringify(events)).not.toContain('foreground_confirmed');
+  });
+
+  it('does not mark an applied input batch replayable when follow-up screenshot fails', async () => {
+    const value = fixture();
+    let hidCalls = 0;
+    let screenshotCalls = 0;
+    setRemoteXpcHidExecutorForTest(async (request) => {
+      hidCalls += 1;
+      return {
+        backend: 'remote-xpc-hid', reusedWorker: true, endpoint: { host: 'fd00::1', port: 53194 },
+        result: { action: request.action }, timings: { workerStartupMs: 0, workerReadyMs: 0, requestMs: 1, hidMs: 1 },
+      };
+    });
+    setIosPhysicalDeviceRuntimeHooksForTest({
+      platform: () => 'darwin',
+      runCommand: (command, args) => {
+        if (args.join(' ').includes('device capture screenshot')) {
+          screenshotCalls += 1;
+          if (screenshotCalls > 1) return { ok: false, status: 1, stdout: '', stderr: 'screen unavailable', command: [command, ...args] };
+          return maybeScreenshotCommand(command, args)!;
+        }
+        if (args[0] === 'devicectl' && args[1] === '--version') return { ok: true, status: 0, stdout: '636.3\n', stderr: '', command: [command, ...args] };
+        const joined = args.join(' ');
+        if (joined.includes('list devices')) return { ok: true, status: 0, stdout: json({ devices: [deviceEntry()] }), stderr: '', command: [command, ...args] };
+        if (joined.includes('device info apps')) return { ok: true, status: 0, stdout: json({ apps: [{ name: '小红书', bundleIdentifier: 'com.xingin.discover' }] }), stderr: '', command: [command, ...args] };
+        if (joined.includes('device info lockState')) return { ok: true, status: 0, stdout: json({ passcodeRequired: false, unlockedSinceBoot: true }), stderr: '', command: [command, ...args] };
+        if (joined.includes('device process launch')) return { ok: true, status: 0, stdout: json({ processIdentifier: 123 }), stderr: '', command: [command, ...args] };
+        throw new Error(`unexpected command: ${[command, ...args].join(' ')}`);
+      },
+    });
+    const opened = await executeIosPhysicalDeviceAction(input(value, 'physical_device_open', {
+      device: 'greyson', bundle_id: 'com.xingin.discover', observe_after_open: true,
+    }));
+    const interactionId = String((opened.interaction as Record<string, unknown>).interactionId);
+    const observationId = String((opened.observation as Record<string, unknown>).observationId);
+    const batch = await executeIosPhysicalDeviceAction(input(value, 'physical_device_batch', {
+      interaction_id: interactionId, observation_id: observationId, capture_after: true,
+      steps: [{ kind: 'type', text: 'once' }],
+    }));
+    expect(batch.completed).toHaveLength(1);
+    expect(batch.postActionCapture).toMatchObject({ status: 'failed', mutationAlreadyApplied: true, retryOnly: 'physical_device_screenshot' });
+    expect(batch).not.toHaveProperty('observation');
+    expect(hidCalls).toBe(1);
+    expect(screenshotCalls).toBe(2);
+    await expect(executeIosPhysicalDeviceAction(input(value, 'physical_device_batch', {
+      interaction_id: interactionId, observation_id: observationId, steps: [{ kind: 'type', text: 'do-not-repeat' }],
+    }))).rejects.toMatchObject({ code: 'IOS_DEVICE_SCREEN_OBSERVATION_REQUIRED' });
+    expect(hidCalls).toBe(1);
   });
 
   it('rejects superseded and stale atomic batch observations before HID dispatch', async () => {
@@ -1155,9 +1213,13 @@ describe('CoreDevice-first physical iPhone provider', () => {
     const screenshot = await executeIosPhysicalDeviceAction(input(value, 'physical_device_screenshot', { interaction_id: interactionId, label: 'spotlight' }));
     const observationId = String((screenshot.observation as Record<string, unknown>).observationId);
     const tapped = await executeIosPhysicalDeviceAction(input(value, 'physical_device_observed_tap', {
-      interaction_id: interactionId, observation_id: observationId, x: 1010, y: 720,
+      interaction_id: interactionId, observation_id: observationId, x: 1010, y: 720, capture_after: true,
     }));
     expect(tapped.observationConsumed).toBe(true);
+    expect(tapped.postActionCapture).toMatchObject({ status: 'captured' });
+    const afterTap = String((tapped.observation as Record<string, unknown>).observationId);
+    expect(afterTap).not.toBe(observationId);
+    expect(tapped.artifactCandidates).toHaveLength(1);
     expect(hidCalls).toHaveLength(1);
     expect(hidCalls[0]).toMatchObject({ action: 'tap', x: 1010, y: 720, width: 1206, height: 2622 });
     const launches = commands.filter((argv) => argv.join(' ').includes('device process launch'));

@@ -62,6 +62,18 @@ Before T10 service extraction, the in-process implementation now closes the high
 
 These are stabilization changes to the existing ownership boundary, not a new iOS-specific control plane. T10/T11 remain responsible for moving live provider/transport handles behind the independently operated `ios-device` service.
 
+### Low-round-trip observe / act / observe (2026-10-16)
+
+Measured real-device CoreDevice launch and screenshot calls are each on the order of 1 second, while complete navigation is dominated by multiple controller/tool/model turns. Reduce the **number of round trips**, not the number of foreground safety checks:
+
+- `physical_device_open({ observe_after_open: true })` and same-app session reuse optionally capture an initial screenshot in the same action; launch status is still not proof of foreground.
+- `physical_device_batch({ observation_id, steps, capture_after: true })` performs only visually grounded bounded input and captures the next screenshot in the same action. The returned observation ID is fresh, one-shot and must be visually inspected before more input.
+- `physical_device_observed_tap/swipe({ observation_id, ..., capture_after: true })` supports the same fused follow-up screenshot for system UI navigation.
+- All three variants call the **existing CoreDevice screenshot implementation**; no second image provider, autonomous app navigation engine, device state store, or XCUITest runner is introduced. Optional capture returns the same bounded Controller-owned PNG artifact.
+- If an input succeeds but the follow-up screenshot fails, return `postActionCapture.status=failed`, `mutationAlreadyApplied=true`, and allow **only** a new screenshot. Never retry the tap, swipe, or batch merely because screenshot failed.
+
+The optimization should be judged by real elapsed *open → observe → input → observe* time, tool-round-trip count and same-device correctness; unit tests and device readiness are necessary but not sufficient proof of shopping-app E2E reliability.
+
 ## Existing module migration map
 
 `KEEP` means the responsibility stays in Forge. `MOVE` means the responsibility belongs in the independent `ios-device` provider. `REWRITE` means the current in-process module is useful evidence/behavior but is not itself the final service boundary. `DELETE` is conditional on the stated removal criterion.
