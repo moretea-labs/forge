@@ -282,7 +282,10 @@ describe('ReleaseSession candidate retention integration', () => {
       sessionId: retired.sessionId,
       expectedRevision: retired.revision,
       phase: 'known_good',
-      receipts: [{ id: 'retention-known-good', kind: 'known_good', summary: 'terminalize retired retention fixture' }],
+      receipts: [
+        { id: 'supervisor_continuation_proof', kind: 'soak', summary: 'prove retained Supervisor continuation during soak' },
+        { id: 'retention-known-good', kind: 'known_good', summary: 'terminalize retired retention fixture' },
+      ],
     });
 
     const resumableLane = candidate('release-resumable-12345678', 8767);
@@ -579,36 +582,40 @@ describe('runtime cleanup release integration', () => {
     const home = controllerHome();
     runtimeRelease(home, 'active-release');
     runtimeRelease(home, 'previous-release');
-    const staleA = runtimeRelease(home, 'stale-release-a');
-    const staleB = runtimeRelease(home, 'stale-release-b');
+    const staleReleases = ['a', 'b', 'c'].map((suffix) => runtimeRelease(home, `stale-release-${suffix}`));
     const backups = join(home, 'runtime', 'releases', 'backups');
     mkdirSync(backups, { recursive: true });
     const referencedBackup = join(backups, 'referenced.sqlite');
+    const staleBackups = ['a', 'b', 'c'].map((suffix) => join(backups, `stale-${suffix}.sqlite`));
     writeFileSync(referencedBackup, 'referenced', 'utf8');
+    staleBackups.forEach((path) => writeFileSync(path, 'stale', 'utf8'));
     writeRuntimeAuthority(home, 'active-release', 'previous-release', referencedBackup);
-    age(staleA);
-    age(staleB);
+    staleReleases.forEach((path) => age(path));
+    staleBackups.forEach((path) => age(path));
     const daemon = join(home, 'daemon');
     mkdirSync(daemon, { recursive: true });
     const staleTemp = join(daemon, 'always-stale.tmp');
     writeFileSync(staleTemp, 'temporary\n', 'utf8');
     age(staleTemp);
 
-    const report = cleanupControllerRuntimeState(home, {
+    const reports = [6, 13, 20, 27, 34, 41].map((periodicSequence) => cleanupControllerRuntimeState(home, {
       reason: 'periodic',
-      periodicSequence: 6,
+      periodicSequence,
       nowMs: NOW,
       maxEntries: 100,
       maxRemovals: 1,
       releaseRetentionGraceMs: 0,
       inspectProcess: () => ({ alive: false }),
-    });
+    }));
 
-    expect([staleA, staleB].filter((path) => existsSync(path))).toHaveLength(1);
+    expect(staleReleases.every((path) => !existsSync(path))).toBe(true);
+    expect(staleBackups.every((path) => !existsSync(path))).toBe(true);
+    expect(existsSync(join(home, 'runtime', 'releases', 'active-release'))).toBe(true);
+    expect(existsSync(join(home, 'runtime', 'releases', 'previous-release'))).toBe(true);
+    expect(existsSync(referencedBackup)).toBe(true);
     expect(existsSync(staleTemp)).toBe(true);
-    expect(report.removedReleasePaths).toHaveLength(1);
-    expect(report.cycle.removed).toBe(1);
-    expect(report.cycle.budgetExhausted).toBe(true);
+    expect(reports.every((report) => report.cycle.removed === 1)).toBe(true);
+    expect(reports.slice(0, -1).every((report) => report.cycle.budgetExhausted)).toBe(true);
   });
 
 });

@@ -1724,6 +1724,16 @@ requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'persistS
 requireText('src/runtime/control-plane/global-scheduler/worker-attachment.ts', 'attachExecutionWorker');
 requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'runSchedulerPeriodicCleanup');
 requireText('src/runtime/control-plane/global-scheduler/maintenance.ts', 'runSchedulerValidationReconciliation');
+requireMatch(
+  'src/runtime/control-plane/global-scheduler/maintenance.ts',
+  /input\.runtimeCleanup\(input\.controllerHome,\s*\{\s*reason:\s*['"]periodic['"]/s,
+  'route periodic maintenance through the canonical Runtime cleanup owner',
+);
+requireText('src/runtime/control-plane/runtime-cleanup.ts', 'cleanupControllerReleaseHistory');
+requireText('src/runtime/control-plane/release-retention.ts', "releasePaths.add(releasePathFromAuthorityRecord(releasesRoot, parsed.active, 'active'))");
+requireText('src/runtime/control-plane/release-retention.ts', 'const connectorRelease = loadPackageConnectorReleaseProtection(controllerHome, releasesRoot);');
+requireText('src/runtime/control-plane/release-retention.ts', 'const databaseBackup = (previous as Record<string, unknown>).databaseBackup;');
+requireText('src/runtime/root/scheduler.ts', 'isolatePeriodicCleanup: true');
 requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'planSchedulerSourceSampling');
 requireText('src/runtime/control-plane/global-scheduler/source-scan.ts', 'selectSchedulerSourceScanRepositories');
 requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'runSchedulerDurableAdmission');

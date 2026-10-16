@@ -22,19 +22,46 @@ const STABLE_MACOS_SIGNING: MacOSRuntimeCodeSigning = {
 
 function retentionRelease(home: string, releaseId: string): string {
   const releaseRoot = join(home, 'runtime', 'releases', releaseId);
+  const manifestPath = join(releaseRoot, 'manifest.json');
   mkdirSync(releaseRoot, { recursive: true });
-  writeFileSync(join(releaseRoot, 'manifest.json'), '{}\n');
+  writeFileSync(manifestPath, `${JSON.stringify({
+    schemaVersion: 1,
+    releaseId,
+    artifactIdentity: `sha256:${sha256Text(releaseId)}`,
+    entrypoint: 'forge-runtime',
+    arguments: [],
+    configurationSchemaVersion: 1,
+    deploymentScope: 'portable',
+    databaseSchemaCompatibility: { minimum: 1, maximum: 999 },
+    workerProtocolVersion: 1,
+    createdAt: new Date().toISOString(),
+  }, null, 2)}\n`);
   return releaseRoot;
 }
 
 function writeRetentionRuntimeAuthority(home: string, activeId: string, previousId: string): void {
   const releasesRoot = join(home, 'runtime', 'releases');
+  const releaseRecord = (releaseId: string) => {
+    const manifestPath = join(releasesRoot, releaseId, 'manifest.json');
+    const manifest = loadRuntimeReleaseManifest(manifestPath, home);
+    return {
+      releaseId: manifest.releaseId,
+      artifactIdentity: manifest.artifactIdentity,
+      manifestPath,
+      manifestSha256: sha256Text(readFileSync(manifestPath, 'utf8')),
+      workerProtocolVersion: manifest.workerProtocolVersion,
+      publishedAt: manifest.createdAt,
+    };
+  };
   writeFileSync(join(releasesRoot, 'authority.json'), `${JSON.stringify({
-    schemaVersion: 1,
+    schemaVersion: 2,
     status: 'committed',
     revision: 1,
-    active: { releaseId: activeId, manifestPath: join(releasesRoot, activeId, 'manifest.json') },
-    previous: { releaseId: previousId, manifestPath: join(releasesRoot, previousId, 'manifest.json') },
+    fencingToken: 'a'.repeat(64),
+    operationId: 'retention-test',
+    committedAt: new Date().toISOString(),
+    active: releaseRecord(activeId),
+    previous: releaseRecord(previousId),
   }, null, 2)}\n`);
 }
 
