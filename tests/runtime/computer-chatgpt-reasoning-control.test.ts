@@ -332,6 +332,32 @@ ${prompt}`;
   expect(f.state.sendClicks).toBe(1);
 });
 
+test('Chrome extension retires an exact STOPPED bootstrap draft in prepare-only mode', async () => {
+  const projectUrl = 'https://chatgpt.com/g/g-p-abc123-forge/project';
+  const staleEffect = 'fx_retired_bootstrap_123456';
+  const currentEffect = 'fx_current_bootstrap_123456';
+  const staleDraft = '<<<FORGE_WORKFLOW_EFFECT_V1:' + staleEffect + '>>>\nRetired bootstrap prompt';
+  const nextPrompt = '<<<FORGE_WORKFLOW_EFFECT_V1:' + currentEffect + '>>>\nContinue the same goal';
+  const fingerprint = createHash('sha256')
+    .update('preflight-composer-v1:\0' + staleDraft)
+    .digest('hex').slice(0, 24);
+  const retired = '<<<FORGE_RETIRED_DRAFT_V1:' + staleEffect + ':' + fingerprint + '>>>\n' + nextPrompt;
+  const f = fixture({controlPresent:false,projectUrl,initialDraft:staleDraft});
+  expect(await f.dispatch(undefined,undefined,retired,'g-p-abc123'))
+    .toMatchObject({dispatched:false,reason:'composer_replacement_mode_invalid'});
+  expect(f.textarea.value).toBe(staleDraft);
+  expect(await f.prepare(undefined,undefined,retired,'g-p-abc123')).toMatchObject({prepared:true});
+  expect(f.textarea.value).toBe(nextPrompt);
+  expect(f.state.sendClicks).toBe(0);
+  expect(await f.dispatch(undefined,undefined,nextPrompt,'g-p-abc123')).toMatchObject({dispatched:true,confirmed:true});
+  expect(f.state.sendClicks).toBe(1);
+  const edited = fixture({controlPresent:false,projectUrl,initialDraft:staleDraft + ' human edit'});
+  expect(await edited.prepare(undefined,undefined,retired,'g-p-abc123'))
+    .toMatchObject({prepared:false,reason:'composer_not_empty'});
+  expect(edited.textarea.value).toBe(staleDraft + ' human edit');
+  expect(edited.state.sendClicks).toBe(0);
+});
+
 test('Chrome extension refuses stale digest and wrong project without touching unrelated draft', async () => {
   const priorDraft = '@forge unrelated content';
   const effect = 'fx_draft_guard_123456789';
