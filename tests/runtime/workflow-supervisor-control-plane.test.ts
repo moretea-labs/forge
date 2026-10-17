@@ -2108,6 +2108,71 @@ test('recovery stop-pending is a live-turn observation, not a failed preparation
   store.close();
 });
 
+test('dispatch-owner no-click refunds each exact generation while the existing three-release preflight gate bounds retries', () => {
+  const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-no-click-refund-'));
+  roots.push(root);
+  let activeReleaseId = 'release-1';
+  const store = new WorkflowSupervisorStore(join(root, 'supervisor-home'), { activeReleaseId: () => activeReleaseId });
+  const control = new WorkflowSupervisorControlPlane(store, {}, { browserTaskActive: () => true });
+  const taskId = 'dispatch-owner-no-click-refund';
+  const conversationId = 'abababab-1111-2222-3333-444444444444';
+  const conversationUrl = `https://chatgpt.com/c/${conversationId}`;
+  control.registerTask({
+    taskId, conversationId, conversationUrl, objective: 'No-click proofs do not spend actual send budget.',
+    completionContract: {}, continuationPolicy: { kind: 'standalone_supervisor' }, userBlockerPolicy: {},
+  });
+  const effect = control.reserveEnrollment(taskId);
+  const ownerReturn = (generation: number, reason: string): void => {
+    expect(store.nextBrowserEffect(taskId, { nowMs: Date.now() + 600_000 })).toMatchObject({ mode: 'send', generation });
+    expect(store.recordEffectDispatchStarted(effect.effectId, generation, `owner-${generation}`, { surface: 'macos-native' })).toBe(true);
+    control.browserObserveDispatchFailure({
+      conversationId, conversationUrl, effectId: effect.effectId,
+      observationId: `owner-no-click-${generation}`, dispatchGeneration: generation, reason,
+    });
+    expect(store.nextBrowserEffect(taskId, { nowMs: Date.now() + 600_000 })).toBeUndefined();
+  };
+  ownerReturn(1, 'composer_missing');
+  activeReleaseId = 'release-2';
+  ownerReturn(2, 'send_button_missing');
+  activeReleaseId = 'release-3';
+  ownerReturn(3, 'composer_missing');
+  expect(store.effectDispatchBudget(effect.effectId)).toMatchObject({ generations: 3, maxGenerations: 3, exhausted: false });
+  expect(control.taskStall(taskId)).toMatchObject({
+    state: 'spaced', effectId: effect.effectId, reason: 'pre_send_infrastructure_blocked',
+  });
+  store.close();
+});
+
+test('bootstrap no-click refunds the exact generation and shares the bounded release gate', () => {
+  const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-bootstrap-no-click-proof-'));
+  roots.push(root);
+  const release = { id: 'release-1' };
+  const store = new WorkflowSupervisorStore(join(root, 'supervisor-home'), { activeReleaseId: () => release.id });
+  const control = new WorkflowSupervisorControlPlane(store, {}, { browserTaskActive: () => true });
+  const taskId = 'bootstrap-no-click-proof';
+  control.registerTask({
+    taskId, conversationId: `bootstrap:${taskId}`, conversationUrl: 'https://chatgpt.com/',
+    objective: 'A proven bootstrap no-click refunds only its started generation.',
+    completionContract: {}, continuationPolicy: { kind: 'standalone_supervisor', bootstrap: true }, userBlockerPolicy: {},
+  });
+  const effect = control.reserveEnrollment(taskId);
+  expect(control.bootstrapBeginEffect({
+    taskId, effectId: effect.effectId, dispatchId: 'bootstrap-no-click-dispatch-1', dispatchGeneration: 1,
+  })).toBe(true);
+  control.bootstrapObserveEffect({
+    taskId, effectId: effect.effectId, observationId: 'bootstrap-no-click-proof-1', outcome: 'not_applied',
+  });
+  control.recordProviderPreparationFailure({ taskId, effectId: effect.effectId, reasonCode: 'composer_missing' });
+  expect(store.effectDispatchBudget(effect.effectId)).toMatchObject({ generations: 1, maxGenerations: 3, exhausted: false });
+  expect(store.nextBrowserEffect(taskId)).toBeUndefined();
+
+  release.id = 'release-2';
+  expect(store.nextBrowserEffect(taskId, { nowMs: Date.now() + 600_000 })).toMatchObject({
+    mode: 'send', generation: 2, effect: { effectId: effect.effectId, kind: 'enrollment' },
+  });
+  store.close();
+});
+
 test('native consumer status exposes and clears a pre-dispatch due-effect transport blocker without changing effect authority', async () => {
   const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-consumer-status-'));
   roots.push(root);
@@ -2917,9 +2982,13 @@ test('Resume stream unavailable uses a bounded same-conversation recovery chain 
   expect(() => control.recoverTask({ ...operatorRequest, sourceEffectId: operatorRecovery.effectId })).toThrow('WORKFLOW_SUPERVISOR_RECOVERY_OUTCOME_UNKNOWN');
   store.recordEffectObservation(operatorRecovery.effectId, 'legacy-owner-no-click', 'unknown', { surface: 'macos-native', reason: 'composer_missing' });
   expect(control.recoverTask({ ...operatorRequest, sourceEffectId: operatorRecovery.effectId }).recoveryEffect.effectId).toBe(operatorRecovery.effectId);
+  expect(store.nextBrowserEffect(taskId, { nowMs: Date.now() + 60_000 })).toMatchObject({
+    mode: 'send', generation: 2, effect: { effectId: operatorRecovery.effectId },
+  });
   control.browserObserveDispatchFailure({ conversationId, conversationUrl, effectId: operatorRecovery.effectId, observationId: 'owner-no-click', dispatchGeneration: 1, reason: 'composer_missing' });
-  expect(store.nextBrowserEffect(taskId, { nowMs: Date.now() + 60_000 })).toMatchObject({ mode: 'send', generation: 2, effect: { effectId: operatorRecovery.effectId } });
-  expect(store.effectDispatchBudget(operatorRecovery.effectId).generations).toBe(1);
+  expect(store.nextBrowserEffect(taskId, { nowMs: Date.now() + 60_000 })).toBeUndefined();
+  expect(control.taskStall(taskId)).toMatchObject({ state: 'spaced', effectId: operatorRecovery.effectId, reason: 'pre_send_infrastructure_blocked' });
+  expect(store.effectDispatchBudget(operatorRecovery.effectId)).toMatchObject({ generations: 1, exhausted: false });
 });
 
 test('public supervisor_task recover routes exhausted provider resume through the canonical single writer', async () => {
@@ -3504,7 +3573,7 @@ test('bounds and spaces provider re-dispatch of one un-applied effect, then rele
 });
 
 describe('Workflow Supervisor operator recovery and conversation replacement', () => {
-  test('a mechanically exhausted un-applied effect never becomes silently inert and needs one bounded operator grant', async () => {
+  test('confirmed post-dispatch non-application exhausts send budget and needs one bounded operator grant', async () => {
     const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-operator-retry-'));
     roots.push(root);
     const store = new WorkflowSupervisorStore(join(root, 'supervisor-home'));
@@ -3513,28 +3582,26 @@ describe('Workflow Supervisor operator recovery and conversation replacement', (
     const conversationUrl = `https://chatgpt.com/c/${conversationId}`;
     const taskId = 'operator-retry-exhaustion';
     control.registerTask({
-      taskId, conversationId, conversationUrl, objective: 'Operator retry after a purely local obstacle.',
+      taskId, conversationId, conversationUrl, objective: 'Operator retry after confirmed provider non-application.',
       completionContract: {}, continuationPolicy: { kind: 'standalone_supervisor' }, userBlockerPolicy: {},
     });
     const effect = control.reserveEnrollment(taskId);
     const ownerReturn = (generation: number, reason: string): void => {
       store.recordEffectDispatchStarted(effect.effectId, generation, `owner-${generation}`, { surface: 'macos-native' });
-      control.browserObserveDispatchFailure({
-        conversationId, conversationUrl, effectId: effect.effectId,
-        observationId: `owner-no-click-${generation}`, dispatchGeneration: generation, reason,
+      store.recordEffectNotAppliedProof(effect.effectId, `provider-confirmed-not-applied-${generation}`, {
+        surface: 'macos-native', dispatch_generation: generation, send_clicked: true,
+        provider_receipt: 'confirmed_not_applied_after_dispatch', reason,
       });
     };
-    ownerReturn(1, 'composer_missing');
-    ownerReturn(2, 'send_button_missing');
-    ownerReturn(3, 'composer_missing');
-    // Every failure above is the dispatch owner's own pre-send return, so the
-    // one bounded automatic refund must apply instead of exhausting the effect.
-    expect(store.effectDispatchBudget(effect.effectId)).toMatchObject({ generations: 3, exhausted: false });
-    expect(store.nextBrowserEffect(taskId, { nowMs: Date.now() + 600_000 })).toMatchObject({ mode: 'send', generation: 4 });
-    ownerReturn(4, 'composer_missing');
+    ownerReturn(1, 'provider_receipt_not_applied');
+    ownerReturn(2, 'provider_receipt_not_applied');
+    ownerReturn(3, 'provider_receipt_not_applied');
+    // Confirmed post-dispatch non-application is not a pre-send rejection and
+    // therefore consumes the bounded generation budget.
+    expect(store.effectDispatchBudget(effect.effectId)).toMatchObject({ generations: 3, maxGenerations: 3, exhausted: true });
     expect(store.nextBrowserEffect(taskId, { nowMs: Date.now() + 600_000 })).toBeUndefined();
     // Exhaustion is visible as a derived projection instead of an empty queue.
-    expect(control.taskStall(taskId)).toMatchObject({ state: 'retryable', effectId: effect.effectId, generations: 4, maxGenerations: 4 });
+    expect(control.taskStall(taskId)).toMatchObject({ state: 'retryable', effectId: effect.effectId, generations: 3, maxGenerations: 3 });
     const stallProjections: Array<Record<string, unknown>> = [];
     const page: TestBrowserPage = {
       evaluate: async () => undefined as never,
@@ -3564,14 +3631,14 @@ describe('Workflow Supervisor operator recovery and conversation replacement', (
     });
     await adapter.runOnce();
     expect(stallProjections).toContainEqual(expect.objectContaining({
-      taskId, effectId: effect.effectId, state: 'exhausted', stallKind: 'retryable', generations: 4, maxGenerations: 4,
+      taskId, effectId: effect.effectId, state: 'exhausted', stallKind: 'retryable', generations: 3, maxGenerations: 3,
     }));
     expect(() => control.recoverTask({ taskId, sourceEffectId: effect.effectId, requestId: '', reason: 'missing request id' }))
       .toThrow('WORKFLOW_SUPERVISOR_RECOVERY_REASON_REQUIRED');
     const recovered = control.recoverTask({ taskId, sourceEffectId: effect.effectId, requestId: 'op-retry-1', reason: 'The local composer obstacle was fixed.' });
     expect(recovered.action).toBe('retry_authorized');
     expect(recovered.recoveryEffect.effectId).toBe(effect.effectId);
-    expect(store.nextBrowserEffect(taskId, { nowMs: Date.now() + 600_000 })).toMatchObject({ mode: 'send', generation: 5 });
+    expect(store.nextBrowserEffect(taskId, { nowMs: Date.now() + 600_000 })).toMatchObject({ mode: 'send', generation: 4 });
     await adapter.runOnce();
     expect(stallProjections).toContainEqual(expect.objectContaining({
       taskId, effectId: effect.effectId, state: 'recovered', stallKind: 'retryable',

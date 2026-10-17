@@ -824,6 +824,8 @@ export class WorkflowSupervisorNativeBrowserAdapter {
         (result) => result.mutation === 'attempted' ? { providerAccepted: result.confirmed === true } : { code: result.reasonCode, message: result.reasonCode });
       if (dispatch.mutation === 'not_attempted') {
         this.control.bootstrapObserveEffect({ taskId: task.taskId, effectId: command.effectId, observationId: `bootstrap-${randomUUID()}`, outcome: 'not_applied', evidence: { pre_send_rejection: true, reason: dispatch.reasonCode } });
+        this.control.recordProviderPreparationFailure({ taskId: task.taskId, effectId: command.effectId,
+          reasonCode: dispatch.reasonCode ?? 'COMPUTER_CHATGPT_DISPATCH_NOT_ATTEMPTED', composerObservation: preflightComposerObservation(beforeSend, command.effectId) });
         await this.deps.targetPort.release(target.targetId).catch(() => undefined);
         return;
       }

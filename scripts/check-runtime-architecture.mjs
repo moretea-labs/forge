@@ -1128,6 +1128,12 @@ requireText('adapters/mcp/runtime-gateway/workflow-supervisor-adapter.ts', "...(
 requireText('supervisor/forge-validators.ts', "requirement.state === 'waiting_for_user'");
 requireText('supervisor/native-browser-adapter.ts', "command.kind === 'recovery' && prepared.reasonCode === 'provider_recovery_stop_pending'");
 requireText('supervisor/native-browser-adapter.ts', 'provider-turn observation, not an infrastructure preparation failure');
+requireText('supervisor/store.ts', 'proofGeneration === ledger.lastGeneration');
+requireText('supervisor/store.ts', 'dispatch_generation: dispatch.lastGeneration');
+requireText('supervisor/store.ts', 'dispatch_generation: row?.dispatch_generation, pre_send_rejection: true');
+requireText('supervisor/store.ts', 'effect-dispatch-budget-refund:${effectId}:${proofGeneration}');
+requireText('supervisor/control-plane.ts', 'const recoveryStopPending = effect.kind === \'recovery\' && input.reason.trim() === \'provider_recovery_stop_pending\';');
+requireText('supervisor/native-browser-adapter.ts', "reasonCode: dispatch.reasonCode ?? 'COMPUTER_CHATGPT_DISPATCH_NOT_ATTEMPTED'");
 forbid('src/runtime/root/workflow-supervisor-composition.ts', /WorkflowSupervisorStore|supervisor\.sqlite|registerTask\(|reserveEffect\(/, 'Forge composition must access Supervisor state only through daemon RPC, never open its database or become a second writer');
 requireText('src/runtime/root/workflow-supervisor-composition.ts', 'workflowSupervisorBoundaryForWork');
 requireText('src/runtime/root/workflow-supervisor-composition.ts', '`forge:${repoId}:work:${workId}`');

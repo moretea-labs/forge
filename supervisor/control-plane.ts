@@ -489,7 +489,7 @@ export class WorkflowSupervisorControlPlane {
     this.observeEffect({ effectId: effect.effectId, observationId: input.observationId, outcome: input.outcome, evidence });
     if (input.outcome === 'applied') this.hooks.effectApplied?.(task, effect, { observationId: input.observationId, evidence });
   }
-  /** Local Computer preparation returned before Send intent; persist in the existing effect ledger. */
+  /** Persist a bounded preflight rejection; started generations require an exact no-click proof first. */
   recordProviderPreparationFailure(input: { taskId: string; effectId: string; reasonCode: string; composerObservation?: WorkflowSupervisorPreflightComposerObservation }): void {
     const task = this.requireTask(input.taskId);
     const effect = this.store.getEffect(input.effectId);
@@ -550,12 +550,15 @@ export class WorkflowSupervisorControlPlane {
     if (dispatch?.generation !== input.dispatchGeneration) throw new Error('WORKFLOW_SUPERVISOR_DISPATCH_GENERATION_CHANGED');
     this.store.recordEffectNotAppliedProof(input.effectId, input.observationId, {
       surface: input.surface?.trim().slice(0, 128) || 'macos-native', reason: input.reason, send_clicked: false, dispatch_generation: input.dispatchGeneration,
-      // This call is the dispatch owner's own mechanical return, produced before
-      // any Send click. Marking it as a pre-send rejection is what lets the one
-      // bounded budget refund apply, exactly as the bootstrap path does; without
-      // it a purely local obstacle permanently exhausted the effect.
+      // This call is the dispatch owner's exact mechanical return before any
+      // Send click. The store refunds this generation once; the existing preflight
+      // gate bounds ordinary repeats without spending actual send budget.
       pre_send_rejection: true,
     });
+    const recoveryStopPending = effect.kind === 'recovery' && input.reason.trim() === 'provider_recovery_stop_pending';
+    if (!recoveryStopPending) {
+      this.recordProviderPreparationFailure({ taskId: task.taskId, effectId: effect.effectId, reasonCode: input.reason });
+    }
   }
   browserObserveProviderTurn(input: { conversationId: string; conversationUrl: string; generating: boolean; latestAssistantResponse: string; providerActivityText?: string; providerFailureCode?: string; receiptMissing?: boolean; observedAtMs: number; graceMs: number }): { state: 'inactive' | 'none' | 'generating' | 'idle_pending' | 'recovery_reserved' | 'exhausted'; recoveryEffect?: WorkflowSupervisorEffect } {
     const task = this.requireBrowserTask(input.conversationId, input.conversationUrl);

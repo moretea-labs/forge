@@ -1332,12 +1332,16 @@ export class WorkflowSupervisorStore {
       // Other observers can report a transport error while the native sender
       // is still preparing. Only that generation's dispatch owner can prove
       // it returned before clicking Send.
-      return statement(db, "SELECT payload_json FROM events WHERE effect_id=? AND kind='effect_unknown' AND event_id>? AND json_extract(payload_json,'$.surface')='macos-native' ORDER BY event_id LIMIT 1", (s) => s.get(effectId, dispatch.lastEventId)) as { payload_json?: string } | undefined;
+      const unknown = statement(db, "SELECT payload_json FROM events WHERE effect_id=? AND kind='effect_unknown' AND event_id>? AND json_extract(payload_json,'$.surface')='macos-native' ORDER BY event_id LIMIT 1", (s) => s.get(effectId, dispatch.lastEventId)) as { payload_json?: string } | undefined;
+      return unknown ? { ...unknown, dispatch_generation: dispatch.lastGeneration } : undefined;
     });
     const evidence = parsedObject(row?.payload_json);
     const beforeSend = new Set(['composer_missing', 'composer_not_empty', 'composer_selection_unavailable', 'composer_text_insertion_rejected', 'composer_text_unconfirmed', 'composer_submit_mismatch', 'send_button_missing']);
     if (evidence.surface !== 'macos-native' || evidence.reconciliation === true || !beforeSend.has(String(evidence.reason))) return false;
-    this.recordEffectNotAppliedProof(effectId, `operator-pre-send:${requestId}`, { ...evidence, send_clicked: false, requested_by: 'user', request_id: requestId, attestation: 'persisted_native_pre_send_return' });
+    this.recordEffectNotAppliedProof(effectId, `operator-pre-send:${requestId}`, {
+      ...evidence, send_clicked: false, dispatch_generation: row?.dispatch_generation, pre_send_rejection: true,
+      requested_by: 'user', request_id: requestId, attestation: 'persisted_native_pre_send_return',
+    });
     return true;
   }
   private reserveEffectWithin(db: Database, input: { taskId: string; effectId: string; kind: WorkflowEffectKind; originKey: string; sourceCompletionFingerprint?: string; prompt: string }): WorkflowSupervisorEffect {
@@ -1355,7 +1359,7 @@ export class WorkflowSupervisorStore {
     return effect;
   }
 
-  /** Attest that no Send intent was reserved and the provider UI could not prepare. */
+  /** Persist a bounded provider pre-send rejection; a started generation requires a durable exact no-click proof first. */
   recordEffectPreparationFailure(effectId: string, reasonCode: string, composerObservation?: WorkflowSupervisorPreflightComposerObservation): void {
     this.transaction((db) => {
       const effect = statement(db, 'SELECT task_id FROM effects WHERE effect_id = ?', (s) => s.get(effectId)) as { task_id?: string } | undefined;
@@ -1433,10 +1437,17 @@ export class WorkflowSupervisorStore {
       if (existing && (existing.kind !== 'effect_not_applied' || existing.payload_json !== payload)) throw new Error('WORKFLOW_SUPERVISOR_OBSERVATION_ID_CONFLICT');
       statement(db, 'INSERT OR IGNORE INTO events(task_id,event_key,kind,effect_id,payload_json,occurred_at) VALUES (?,?,?,?,?,?)', (s) => s.run(effect.task_id, key, 'effect_not_applied', effectId, payload, now()));
       const ledger = effectDispatchLedger(db, effectId);
+      const proofGeneration = Number(proof.dispatch_generation);
+      const legacyRefund = statement(db, 'SELECT event_id FROM events WHERE event_key = ?', (s) => s.get(`effect-dispatch-budget-refund:${effectId}`)) as { event_id?: number } | undefined;
+      const legacyRefundCoversGeneration = proofGeneration === WORKFLOW_SUPERVISOR_MAX_DISPATCH_GENERATIONS && Boolean(legacyRefund);
       if (proof.pre_send_rejection === true
-        && ledger.generations >= WORKFLOW_SUPERVISOR_MAX_DISPATCH_GENERATIONS
-        && ledger.budgetRefunds === 0) {
-        statement(db, 'INSERT OR IGNORE INTO events(task_id,event_key,kind,effect_id,payload_json,occurred_at) VALUES (?,?,?,?,?,?)', (s) => s.run(effect.task_id, `effect-dispatch-budget-refund:${effectId}`, 'effect_dispatch_budget_refunded', effectId, json({ reason: 'pre_send_rejection_did_not_reach_provider' }), now()));
+        && Number.isInteger(proofGeneration) && proofGeneration > 0
+        && proofGeneration === ledger.lastGeneration
+        && !legacyRefundCoversGeneration) {
+        statement(db, 'INSERT OR IGNORE INTO events(task_id,event_key,kind,effect_id,payload_json,occurred_at) VALUES (?,?,?,?,?,?)', (s) => s.run(
+          effect.task_id, `effect-dispatch-budget-refund:${effectId}:${proofGeneration}`, 'effect_dispatch_budget_refunded', effectId,
+          json({ reason: 'pre_send_rejection_did_not_reach_provider', dispatch_generation: proofGeneration }), now(),
+        ));
       }
     });
   }

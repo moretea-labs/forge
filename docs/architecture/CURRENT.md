@@ -203,6 +203,8 @@ Transient Runtime, connector, browser-provider, or Supervisor-adapter unavailabi
 
 Standalone Workflow Supervisor tasks may intentionally remain unbound under `model_semantic_completion`. When a task names `work_id` or `requirement_id`, DONE uses the same committed semantic proof as `forge_work_done` / `forge_requirement_done`; missing, ambiguous, or nonterminal bindings reject DONE and produce a correction effect. `repo_id` and objective/receipt text alone never create Work or Requirement authority.
 
+A dispatch-owner proof that Send was not clicked refunds that exact generation in the existing effect ledger and records the failure against the existing bounded per-release preflight gate. `provider_recovery_stop_pending` on a recovery effect is a live-turn observation and consumes neither budget; outcome-unknown mutations remain reconciliation-only and are never refunded or replayed.
+
 **Model owns reasoning and engineering policy. Forge owns capabilities, durable facts, execution mechanics and receipts.** Forge carries no route/mode vocabulary that selects Direct Control, durable Work, handoff, a worker/provider, verification, review, or completion on the model's behalf. Invoking `rh_work` is itself the explicit decision to use durable Work; `work_kind` is the explicit declaration of the technical evidence shape. Parallel delivery across independent Plan steps is expressed through explicit Work/Plan lineage plus existing Process/resource claims, which serialize or reject conflicts through the same Lease authority; no Forge-side task-size, complexity, or parallelism heuristic promotes a task into a lifecycle tier. There is no separate runtime tier, agent swarm, second scheduler, or second project lifecycle.
 
 ## State ownership
