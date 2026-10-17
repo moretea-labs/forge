@@ -1056,7 +1056,7 @@ describe('runtime observability', () => {
         enabled: true,
         trigger: { type: 'interval', everyMinutes: 5 },
         policy: { shadowMode: false },
-        action: { operation: 'external_controller_wake', arguments: { work_id: repairWorkId, controller_type: 'chatgpt' } },
+        action: { operation: 'controller_progression', arguments: { work_id: repairWorkId, controller_type: 'chatgpt' } },
       });
 
       cancelWorkContract({ controllerHome, repoId: repository.repoId }, repairWorkId!, { summary: 'Close the prior repair generation before registering a successor.' });

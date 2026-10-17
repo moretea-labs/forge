@@ -372,6 +372,12 @@ async function dispatch(control: WorkflowSupervisorControlPlane, discovery: Work
     ...(typeof p.authorized_by === 'string' && p.authorized_by.trim() ? { authorizedBy: p.authorized_by.trim() } : {}),
   });
   if (req.method === 'task_stall') return control.taskStall(text(p, 'task_id'));
+  if (req.method === 'task_bind_scheduled_wake') return control.bindScheduledWake({
+    taskId: text(p, 'task_id'), repoId: text(p, 'repo_id'), workId: text(p, 'work_id'), scheduleId: text(p, 'schedule_id'),
+  });
+  if (req.method === 'task_wake_scheduled') return control.wakeScheduledTask({
+    taskId: text(p, 'task_id'), scheduleId: text(p, 'schedule_id'), occurrenceId: text(p, 'occurrence_id'),
+  });
   if (req.method === 'task_migrate_conversation') return control.migrateConversation({
     taskId: text(p, 'task_id'),
     expectedConversationId: text(p, 'expected_conversation_id'),

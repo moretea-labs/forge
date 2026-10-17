@@ -258,6 +258,48 @@ export class WorkflowSupervisorControlPlane {
     return task;
   }
   getEffect(id: string): WorkflowSupervisorEffect | undefined { return this.store.getEffect(validateEffectId(id)); }
+  /** Bind the one canonical Scheduler occurrence lane to an exact Work-owned Supervisor task. */
+  bindScheduledWake(input: { taskId: string; repoId: string; workId: string; scheduleId: string }) {
+    const task = this.requireTask(input.taskId);
+    requireNonTerminalTask(this.store, task.taskId);
+    const bound = this.store.bindScheduledWake(input);
+    const pending = this.store.currentUnappliedEffect(task.taskId);
+    if (pending && !this.store.latestEffectDispatch(pending.effectId) && !this.store.effectApplied(pending.effectId)) {
+      const source = pending.sourceCompletionFingerprint ? this.store.getCompletion(pending.sourceCompletionFingerprint) : undefined;
+      const checkpoint = source?.proposal.reason === 'compact_receipt' ? undefined : source?.proposal.checkpoint;
+      this.store.refreshUndispatchedEffectPrompt({
+        taskId: task.taskId,
+        effectId: pending.effectId,
+        expectedPrompt: pending.prompt,
+        prompt: this.renderPrompt(bound.task, pending.effectId, pending.kind, checkpoint),
+      });
+    }
+    return bound;
+  }
+  /** Consume a completed WAIT receipt exactly once for one exact Scheduler occurrence. */
+  wakeScheduledTask(input: { taskId: string; scheduleId: string; occurrenceId: string }): { effect: WorkflowSupervisorEffect; deduplicated: boolean } {
+    const task = this.requireTask(input.taskId);
+    if (task.continuationPolicy.scheduled_wake_schedule_id !== input.scheduleId) {
+      throw new Error('WORKFLOW_SUPERVISOR_SCHEDULE_BINDING_MISMATCH');
+    }
+    const originKey = `scheduled-wake:${input.scheduleId}:${input.occurrenceId}`;
+    const id = stableEffectId(originKey);
+    const prior = this.store.getEffectByOriginKey(originKey);
+    if (prior) {
+      if (prior.taskId !== task.taskId || prior.effectId !== id || prior.kind !== 'continuation' || !prior.sourceCompletionFingerprint) {
+        throw new Error('WORKFLOW_SUPERVISOR_SCHEDULED_WAKE_IDENTITY_CONFLICT');
+      }
+      return { effect: prior, deduplicated: true };
+    }
+    requireNonTerminalTask(this.store, task.taskId);
+    return this.store.reserveScheduledWake({
+      taskId: task.taskId,
+      scheduleId: input.scheduleId,
+      occurrenceId: input.occurrenceId,
+      effectId: id,
+      prompt: this.renderPrompt(task, id, 'continuation', `scheduled wake ${input.scheduleId} occurrence ${input.occurrenceId}`),
+    });
+  }
   /** Read-only stall classification for one task; no lifecycle authority. */
   taskStall(taskId: string): ReturnType<WorkflowSupervisorStore['taskStall']> { return this.store.taskStall(this.requireTask(taskId).taskId); }
   /**
@@ -623,8 +665,8 @@ export class WorkflowSupervisorControlPlane {
         if (committed.successorEffect) reconciled += 1;
         continue;
       }
-      const validator = latest.action === 'DONE' ? this.validators.completionContract : this.validators.userBlockerPolicy;
-      const validation = await validator(task, latest.proposal);
+      if (latest.action === 'WAIT') continue;
+      const validation = await this.validateTerminalProposal(task, latest.proposal);
       const correctionId = validation.valid ? undefined : stableEffectId(`completion:${latest.completionFingerprint}`);
       this.store.resolveTerminal({
         completionFingerprint: latest.completionFingerprint,
@@ -686,10 +728,13 @@ export class WorkflowSupervisorControlPlane {
       const committed = this.reserveContinuation(task, completion);
       return { action: 'CONTINUE', completionFingerprint, terminal: false, successorEffect: committed.successorEffect!, deduplicated: committed.deduplicated };
     }
+    if (parsed.proposal.action === 'WAIT') {
+      const committed = this.store.commitCompletion(completion);
+      return { action: 'WAIT', completionFingerprint, terminal: false, deduplicated: committed.deduplicated };
+    }
     const committed = this.store.commitCompletion(completion);
 
-    const validator = parsed.proposal.action === 'DONE' ? this.validators.completionContract : this.validators.userBlockerPolicy;
-    const validation = await validator(task, parsed.proposal);
+    const validation = await this.validateTerminalProposal(task, parsed.proposal);
     const correctionId = validation.valid ? undefined : stableEffectId(`completion:${completionFingerprint}`);
     const resolved = this.store.resolveTerminal({ completionFingerprint, taskId: task.taskId, action: parsed.proposal.action, accepted: validation.valid, reason: validation.reason,
       ...(correctionId ? { correction: { effectId: correctionId, prompt: this.renderPrompt(task, correctionId, 'correction', parsed.proposal.reason === 'compact_receipt' ? undefined : parsed.proposal.checkpoint, validation.reason) } } : {}) });
@@ -709,6 +754,32 @@ export class WorkflowSupervisorControlPlane {
       ...(task.continuationPolicy.kind === 'standalone_supervisor'
         ? { freshEnrollmentPrompt: this.renderPrompt(task, nextId, 'enrollment') } : {}),
     });
+  }
+
+  private async validateTerminalProposal(
+    task: WorkflowSupervisorTask,
+    proposal: WorkflowSupervisorCompletion['proposal'],
+  ): Promise<WorkflowContractValidation> {
+    const validator = proposal.action === 'DONE' ? this.validators.completionContract : this.validators.userBlockerPolicy;
+    const validation = await validator(task, proposal);
+    if (typeof task.continuationPolicy.scheduled_wake_schedule_id !== 'string') return validation;
+    if (proposal.action === 'DONE') {
+      return {
+        ...validation,
+        valid: false,
+        reason: validation.valid ? 'scheduled_work_must_wait' : validation.reason,
+        evidence: [...(validation.evidence ?? []), 'A Work-bound recurring Schedule owns the next run; use WAIT instead of terminal DONE.'],
+      };
+    }
+    if (proposal.action === 'NEEDS_USER') {
+      return {
+        ...validation,
+        valid: false,
+        reason: validation.valid ? 'scheduled_work_must_remain_open' : validation.reason,
+        evidence: [...(validation.evidence ?? []), 'Persist the exact user blocker and use WAIT; a recurring scheduled Work must remain open.'],
+      };
+    }
+    return validation;
   }
 
   private renderPrompt(

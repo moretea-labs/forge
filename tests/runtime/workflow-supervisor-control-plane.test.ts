@@ -695,6 +695,117 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     expect(duplicate.successorEffect?.effectId).toBe(first.successorEffect?.effectId);
   });
 
+  test('WAIT is durable and only the exact bound Scheduler occurrence can wake the same task', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-scheduled-wake-'));
+    roots.push(root);
+    let nowMs = Date.now();
+    const store = new WorkflowSupervisorStore(root, { now: () => nowMs });
+    const control = new WorkflowSupervisorControlPlane(store, {
+      completionContract: async () => ({ valid: true, reason: 'completion accepted' }),
+      userBlockerPolicy: async () => ({ valid: true, reason: 'exact user blocker accepted' }),
+    });
+    const task = control.registerTask({
+      taskId: 'task-scheduled-wake',
+      conversationId: 'abababab-1111-2222-3333-444444444444',
+      conversationUrl: 'https://chatgpt.com/c/abababab-1111-2222-3333-444444444444',
+      objective: 'Run the same Gmail routine once per scheduled occurrence.',
+      completionContract: { repo_id: 'repo-scheduled-wake', work_id: 'work-scheduled-wake' },
+      continuationPolicy: { kind: 'forge_goal_outer_turn' },
+      userBlockerPolicy: {},
+    });
+    const unscheduledEffectId = 'fx_12345678';
+    expect(() => parseSupervisorCompletion(renderSupervisorReceipt(task, unscheduledEffectId, 'WAIT'), {
+      task, effectId: unscheduledEffectId,
+    })).toThrow('WORKFLOW_SUPERVISOR_WAIT_NOT_SCHEDULED');
+
+    const pendingBeforeBinding = control.reserveEnrollment(task.taskId);
+    expect(pendingBeforeBinding.prompt).not.toContain('SCHEDULED WORK:');
+    const bound = control.bindScheduledWake({
+      taskId: task.taskId, repoId: 'repo-scheduled-wake', workId: 'work-scheduled-wake', scheduleId: 'SCH-daily-gmail',
+    });
+    expect(bound.task.continuationPolicy.scheduled_wake_schedule_id).toBe('SCH-daily-gmail');
+    expect(bound.changed).toBe(true);
+    expect(control.getEffect(pendingBeforeBinding.effectId)?.prompt).toContain('SCHEDULED WORK:');
+    expect(control.bindScheduledWake({
+      taskId: task.taskId, repoId: 'repo-scheduled-wake', workId: 'work-scheduled-wake', scheduleId: 'SCH-daily-gmail',
+    }).deduplicated).toBe(true);
+    expect(() => control.bindScheduledWake({
+      taskId: task.taskId, repoId: 'repo-scheduled-wake', workId: 'work-scheduled-wake', scheduleId: 'SCH-other',
+    })).toThrow('WORKFLOW_SUPERVISOR_SCHEDULE_BINDING_CONFLICT');
+
+    const refreshed = control.getTask(task.taskId)!;
+    const enrollment = control.reserveEnrollment(task.taskId);
+    expect(enrollment.prompt).toContain('SCHEDULED WORK:');
+    control.observeEffect({ effectId: enrollment.effectId, observationId: 'scheduled-wake-applied', outcome: 'applied' });
+    const receipt = renderSupervisorReceipt(refreshed, enrollment.effectId, 'WAIT');
+    const completion = await control.observeAssistantTurn({
+      taskId: task.taskId, conversationId: task.conversationId, responseText: receipt,
+    });
+    expect(completion).toMatchObject({ action: 'WAIT', terminal: false });
+    expect(completion.successorEffect).toBeUndefined();
+    const duplicateWait = await control.observeAssistantTurn({
+      taskId: task.taskId, conversationId: task.conversationId, responseText: receipt,
+    });
+    expect(duplicateWait).toMatchObject({ action: 'WAIT', terminal: false, deduplicated: true });
+    nowMs += 4 * 60_000;
+    expect(control.taskStall(task.taskId)).toMatchObject({
+      state: 'waiting', scheduleId: 'SCH-daily-gmail', completionFingerprint: completion.completionFingerprint,
+    });
+
+    const wakeInput = { taskId: task.taskId, scheduleId: 'SCH-daily-gmail', occurrenceId: 'occurrence-2026-10-17T08:00+08:00' };
+    const wake = control.wakeScheduledTask(wakeInput);
+    expect(wake.deduplicated).toBe(false);
+    expect(wake.effect).toMatchObject({ kind: 'continuation', sourceCompletionFingerprint: completion.completionFingerprint });
+    const duplicate = control.wakeScheduledTask(wakeInput);
+    expect(duplicate.deduplicated).toBe(true);
+    expect(duplicate.effect.effectId).toBe(wake.effect.effectId);
+    expect(control.taskStall(task.taskId)).toMatchObject({ state: 'deliverable', effectId: wake.effect.effectId, mode: 'send' });
+    expect(() => control.wakeScheduledTask({
+      ...wakeInput, occurrenceId: 'occurrence-2026-10-18T08:00+08:00',
+    })).toThrow('WORKFLOW_SUPERVISOR_SCHEDULED_WAKE_CAUSAL_OBLIGATION_PENDING');
+
+    control.observeEffect({ effectId: wake.effect.effectId, observationId: 'scheduled-wake-second-turn-applied', outcome: 'applied' });
+    const staleDone = await control.observeAssistantTurn({
+      taskId: task.taskId,
+      conversationId: task.conversationId,
+      responseText: renderSupervisorReceipt(control.getTask(task.taskId)!, wake.effect.effectId, 'DONE'),
+    });
+    expect(staleDone).toMatchObject({ action: 'DONE', terminal: false });
+    expect(staleDone.successorEffect?.kind).toBe('correction');
+    const correction = staleDone.successorEffect!;
+    control.observeEffect({ effectId: correction.effectId, observationId: 'scheduled-wake-correction-applied', outcome: 'applied' });
+    const nextWait = await control.observeAssistantTurn({
+      taskId: task.taskId,
+      conversationId: task.conversationId,
+      responseText: renderSupervisorReceipt(control.getTask(task.taskId)!, correction.effectId, 'WAIT'),
+    });
+    expect(nextWait).toMatchObject({ action: 'WAIT', terminal: false });
+    const nextWake = control.wakeScheduledTask({
+      taskId: task.taskId,
+      scheduleId: 'SCH-daily-gmail',
+      occurrenceId: 'occurrence-2026-10-18T08:00+08:00',
+    });
+    expect(nextWake.deduplicated).toBe(false);
+    expect(nextWake.effect.effectId).not.toBe(wake.effect.effectId);
+    expect(control.wakeScheduledTask({
+      taskId: task.taskId,
+      scheduleId: 'SCH-daily-gmail',
+      occurrenceId: 'occurrence-2026-10-18T08:00+08:00',
+    })).toMatchObject({ deduplicated: true, effect: { effectId: nextWake.effect.effectId } });
+    control.observeEffect({ effectId: nextWake.effect.effectId, observationId: 'scheduled-wake-user-blocker-applied', outcome: 'applied' });
+    const userBlocker = await control.observeAssistantTurn({
+      taskId: task.taskId,
+      conversationId: task.conversationId,
+      responseText: renderSupervisorReceipt(control.getTask(task.taskId)!, nextWake.effect.effectId, 'NEEDS_USER'),
+    });
+    expect(userBlocker).toMatchObject({ action: 'NEEDS_USER', terminal: false });
+    expect(userBlocker.successorEffect?.kind).toBe('correction');
+    expect(control.taskStall(task.taskId)).toMatchObject({
+      state: 'deliverable', effectId: userBlocker.successorEffect?.effectId, mode: 'send',
+    });
+    store.close();
+  });
+
   test('keeps every Supervisor prompt on the reusable start or continuation template', () => {
     const task = {
       taskId: 'task-minimal-continuation',

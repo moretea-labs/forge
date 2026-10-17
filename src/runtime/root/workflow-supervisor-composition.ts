@@ -17,7 +17,7 @@ import {
   type ChatgptWorkConversationBinding,
 } from '../../../adapters/chatgpt/work-conversation-binding-store';
 import { readRequirement } from '../control-plane/persistence/requirement-store';
-import { getWorkflowSupervisorCurrentConversation, getWorkflowSupervisorTask, getWorkflowSupervisorTaskByConversationId, getWorkflowSupervisorTaskStall, registerWorkflowSupervisorTask, reserveWorkflowSupervisorEnrollment } from '../../../supervisor/client';
+import { bindWorkflowSupervisorScheduledWake, getWorkflowSupervisorCurrentConversation, getWorkflowSupervisorTask, getWorkflowSupervisorTaskByConversationId, getWorkflowSupervisorTaskStall, registerWorkflowSupervisorTask, reserveWorkflowSupervisorEnrollment, wakeWorkflowSupervisorScheduledTask } from '../../../supervisor/client';
 import { resolveWorkflowSupervisorForgeHome, workflowSupervisorSocketPath } from '../../../supervisor/paths';
 import type { WorkflowSupervisorLifecycleHooks, WorkflowSupervisorTask } from '../../../supervisor/types';
 import { getRuntimeWriteClaim } from './write-fence';
@@ -131,7 +131,7 @@ export function inheritWorkflowSupervisorConversationBinding(
   });
 }
 
-function workflowSupervisorContractText(task: WorkflowSupervisorTask, key: string): string | undefined {
+export function workflowSupervisorContractText(task: WorkflowSupervisorTask, key: string): string | undefined {
   const value = task.completionContract[key] ?? task.userBlockerPolicy[key];
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
@@ -456,9 +456,62 @@ export async function bindCurrentWorkflowSupervisorConversationForWork(
   return { status: 'bound', binding };
 }
 
+export async function bindWorkflowSupervisorScheduledWakeForWork(
+  options: { controllerHome: string; repoId: string },
+  workId: string,
+  scheduleId: string,
+): Promise<{ status: 'bound'; taskId: string } | { status: 'not_enrolled' | 'binding_deferred' }> {
+  const forgeHome = resolveWorkflowSupervisorForgeHome(options.controllerHome);
+  if (!existsSync(workflowSupervisorSocketPath(forgeHome))) return { status: 'binding_deferred' };
+  const exactTaskId = taskIdForWork(options.repoId, workId);
+  let task = await getWorkflowSupervisorTask(forgeHome, exactTaskId);
+  if (!task) {
+    const binding = getChatgptWorkConversationBinding(options, workId);
+    if (binding) {
+      const authority = await getWorkflowSupervisorTaskByConversationId(forgeHome, binding.conversationId);
+      if (authority) {
+        const ownerRepoId = typeof authority.task.completionContract.repo_id === 'string'
+          ? authority.task.completionContract.repo_id : authority.task.continuationPolicy.repo_id;
+        if (ownerRepoId !== options.repoId || authority.task.completionContract.work_id !== workId) {
+          throw new Error('WORKFLOW_SUPERVISOR_SCHEDULE_WORK_IDENTITY_MISMATCH');
+        }
+        task = authority.task;
+      }
+    }
+  }
+  if (!task) return { status: 'not_enrolled' };
+  const bound = await bindWorkflowSupervisorScheduledWake(forgeHome, {
+    taskId: task.taskId,
+    repoId: options.repoId,
+    workId,
+    scheduleId,
+  });
+  return { status: 'bound', taskId: bound.task.taskId };
+}
+
+export async function wakeWorkflowSupervisorScheduledTaskForWork(
+  options: { controllerHome: string; repoId: string },
+  workId: string,
+  scheduleId: string,
+  occurrenceId: string,
+): Promise<{ status: 'woken' | 'not_waiting' | 'not_enrolled' | 'binding_deferred'; taskId?: string; effectId?: string }> {
+  const binding = await bindWorkflowSupervisorScheduledWakeForWork(options, workId, scheduleId);
+  if (binding.status !== 'bound') return binding;
+  if (!binding.taskId) throw new Error('WORKFLOW_SUPERVISOR_SCHEDULE_BINDING_TASK_ID_MISSING');
+  const forgeHome = resolveWorkflowSupervisorForgeHome(options.controllerHome);
+  const stall = await getWorkflowSupervisorTaskStall(forgeHome, binding.taskId);
+  if (stall.state !== 'waiting') return { status: 'not_waiting', taskId: binding.taskId };
+  const wake = await wakeWorkflowSupervisorScheduledTask(forgeHome, {
+    taskId: binding.taskId, scheduleId, occurrenceId,
+  });
+  return { status: 'woken', taskId: binding.taskId, effectId: wake.effect.effectId };
+}
+
 export async function ensureWorkflowSupervisorEnrollmentForWork(
   options: { controllerHome: string; repoId: string },
   workId: string,
+  scheduledWakeScheduleId?: string,
+  scheduleOccurrenceId?: string,
 ): Promise<{ status: WorkflowSupervisorEnrollmentStatus; taskId?: string; effectId?: string; reason?: string }> {
   const boundary = workflowSupervisorBoundaryForWork(options, workId);
   if (boundary.status === 'not_eligible') return { status: boundary.status };
@@ -484,9 +537,25 @@ export async function ensureWorkflowSupervisorEnrollmentForWork(
     if (existingRepoId !== options.repoId || existingWorkId !== workId) {
       throw new Error('WORKFLOW_SUPERVISOR_TASK_ID_CONFLICT');
     }
-    const stall = await getWorkflowSupervisorTaskStall(forgeHome, taskId);
+    let stall = await getWorkflowSupervisorTaskStall(forgeHome, taskId);
     if (stall.state === 'terminal') {
       return { status: 'lower_layer_not_ready', reason: 'WORKFLOW_SUPERVISOR_TASK_TERMINAL' };
+    }
+    if (scheduledWakeScheduleId) {
+      await bindWorkflowSupervisorScheduledWake(forgeHome, {
+        taskId,
+        repoId: options.repoId,
+        workId,
+        scheduleId: scheduledWakeScheduleId,
+      });
+      stall = await getWorkflowSupervisorTaskStall(forgeHome, taskId);
+      if (stall.state === 'waiting') {
+        if (!scheduleOccurrenceId) return { status: 'lower_layer_not_ready', taskId, reason: 'SCHEDULE_OCCURRENCE_ID_REQUIRED' };
+        const wake = await wakeWorkflowSupervisorScheduledTask(forgeHome, {
+          taskId, scheduleId: scheduledWakeScheduleId, occurrenceId: scheduleOccurrenceId,
+        });
+        return { status: 'enrolled', taskId, effectId: wake.effect.effectId };
+      }
     }
     const ownedRequirementId = typeof existingWorkTask.completionContract.requirement_id === 'string'
       ? existingWorkTask.completionContract.requirement_id : undefined;
@@ -526,6 +595,22 @@ export async function ensureWorkflowSupervisorEnrollmentForWork(
           reason: `WORKFLOW_SUPERVISOR_TASK_TERMINAL:${existingAuthority.terminal}`,
         };
       }
+      if (scheduledWakeScheduleId) {
+        await bindWorkflowSupervisorScheduledWake(forgeHome, {
+          taskId: existingAuthority.task.taskId,
+          repoId: options.repoId,
+          workId,
+          scheduleId: scheduledWakeScheduleId,
+        });
+        const stall = await getWorkflowSupervisorTaskStall(forgeHome, existingAuthority.task.taskId);
+        if (stall.state === 'waiting') {
+          if (!scheduleOccurrenceId) return { status: 'lower_layer_not_ready', taskId: existingAuthority.task.taskId, reason: 'SCHEDULE_OCCURRENCE_ID_REQUIRED' };
+          const wake = await wakeWorkflowSupervisorScheduledTask(forgeHome, {
+            taskId: existingAuthority.task.taskId, scheduleId: scheduledWakeScheduleId, occurrenceId: scheduleOccurrenceId,
+          });
+          return { status: 'enrolled', taskId: existingAuthority.task.taskId, effectId: wake.effect.effectId };
+        }
+      }
       const effect = await reserveWorkflowSupervisorEnrollment(forgeHome, existingAuthority.task.taskId);
       return { status: 'enrolled', taskId: existingAuthority.task.taskId, effectId: effect.effectId };
     }
@@ -557,6 +642,7 @@ export async function ensureWorkflowSupervisorEnrollmentForWork(
       ...(boundary.status === 'outer_turn'
         ? { exact_conversation_id: boundary.conversationId, exact_conversation_url: boundary.conversationUrl }
         : { bootstrap: true }),
+      ...(scheduledWakeScheduleId ? { scheduled_wake_schedule_id: scheduledWakeScheduleId } : {}),
       outer_turn_owner: 'workflow_supervisor',
     },
     userBlockerPolicy: {

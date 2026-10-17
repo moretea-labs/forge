@@ -138,7 +138,7 @@ function occurrenceHistory(occurrences: ScheduleOccurrence[]): ConsoleAutomation
 }
 
 function scheduleMode(schedule: RepositorySchedule): ConsoleAutomationMode {
-  if (schedule.action.operation === 'external_controller_wake') return 'continuation';
+  if (schedule.action.operation === 'external_controller_wake' || schedule.action.operation === 'controller_progression') return 'continuation';
   if (schedule.action.operation === 'browser_probe') return schedule.action.arguments?.keepalive_only === true ? 'browser_keepalive' : 'browser_watch';
   return 'schedule';
 }

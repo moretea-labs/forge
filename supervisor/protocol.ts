@@ -6,11 +6,11 @@ import type { WorkflowEffectKind, WorkflowSupervisorProposal, WorkflowSupervisor
 // block formats remain read-only compatibility for already-durable conversations.
 export const SUPERVISOR_BLOCK_START = 'FORGE_WORKFLOW_SUPERVISOR_V1_BEGIN';
 export const SUPERVISOR_BLOCK_END = 'FORGE_WORKFLOW_SUPERVISOR_V1_END';
-const COMPACT_RECEIPT = /(?:^|\n)([CDU]) ([0-9a-f]{7})\s*$/;
+const COMPACT_RECEIPT = /(?:^|\n)([CWDU]) ([0-9a-f]{7})\s*$/;
 // Older installed Chrome content scripts flattened an entire completed reply
 // into one line. The immutable Effect challenge remains the sole authority;
 // recover only its terminal token, never an inline token in multiline text.
-const FLATTENED_COMPACT_RECEIPT = /(?:^| )([CDU]) ([0-9a-f]{7})$/;
+const FLATTENED_COMPACT_RECEIPT = /(?:^| )([CWDU]) ([0-9a-f]{7})$/;
 function terminalCompactReceipt(responseText: string): RegExpExecArray | null {
   const text = responseText.trim();
   return COMPACT_RECEIPT.exec(text)
@@ -67,7 +67,7 @@ export function renderSupervisorReceipt(
   effectId: string,
   action: WorkflowSupervisorProposal['action'],
 ): string {
-  const code = action === 'CONTINUE' ? 'C' : action === 'DONE' ? 'D' : 'U';
+  const code = action === 'CONTINUE' ? 'C' : action === 'WAIT' ? 'W' : action === 'DONE' ? 'D' : 'U';
   return `${code} ${supervisorReceiptChallenge(task, effectId)}`;
 }
 
@@ -96,7 +96,7 @@ export function hasCommittedSupervisorEnvelope(responseText: string): boolean {
 
 export function parseSupervisorCompletion(
   responseText: string,
-  expected?: { task: Pick<WorkflowSupervisorTask, 'taskId' | 'conversationId'>; effectId: string; prompt?: string },
+  expected?: { task: Pick<WorkflowSupervisorTask, 'taskId' | 'conversationId' | 'continuationPolicy'>; effectId: string; prompt?: string },
 ): { proposal: WorkflowSupervisorProposal; controlBlock: string } {
   if (Buffer.byteLength(responseText, 'utf8') > MAX_RESPONSE) throw new Error('WORKFLOW_SUPERVISOR_RESPONSE_TOO_LARGE');
   const compact = terminalCompactReceipt(responseText);
@@ -121,8 +121,11 @@ export function parseSupervisorCompletion(
       challenge = envelope.receipt.challenge;
     }
     if (compact[2] !== challenge) throw new Error('WORKFLOW_SUPERVISOR_COMPACT_RECEIPT_CHALLENGE_MISMATCH');
-    const action = compact[1] === 'C' ? 'CONTINUE' : compact[1] === 'D' ? 'DONE' : 'NEEDS_USER';
-    const supervisorState: WorkflowSupervisorState = action === 'CONTINUE' ? 'running' : action === 'DONE' ? 'done' : 'needs_user';
+    const action = compact[1] === 'C' ? 'CONTINUE' : compact[1] === 'W' ? 'WAIT' : compact[1] === 'D' ? 'DONE' : 'NEEDS_USER';
+    if (action === 'WAIT' && typeof expected.task.continuationPolicy.scheduled_wake_schedule_id !== 'string') {
+      throw new Error('WORKFLOW_SUPERVISOR_WAIT_NOT_SCHEDULED');
+    }
+    const supervisorState: WorkflowSupervisorState = action === 'CONTINUE' ? 'running' : action === 'WAIT' ? 'waiting' : action === 'DONE' ? 'done' : 'needs_user';
     return {
       proposal: {
         action,
@@ -150,7 +153,10 @@ export function parseSupervisorCompletion(
   const allowed = new Set(['action', 'source_effect_id', 'checkpoint', 'reason', 'evidence', 'conversation_id', 'task_id', 'supervisor_state', 'active_scope']);
   if (Object.keys(record).some((key) => !allowed.has(key))) throw new Error('WORKFLOW_SUPERVISOR_CONTROL_BLOCK_FIELD_INVALID');
   const action = boundedString(record.action, 'ACTION', 32);
-  if (!['CONTINUE', 'DONE', 'NEEDS_USER'].includes(action)) throw new Error('WORKFLOW_SUPERVISOR_ACTION_INVALID');
+  if (!['CONTINUE', 'WAIT', 'DONE', 'NEEDS_USER'].includes(action)) throw new Error('WORKFLOW_SUPERVISOR_ACTION_INVALID');
+  if (action === 'WAIT' && (!expected || typeof expected.task.continuationPolicy.scheduled_wake_schedule_id !== 'string')) {
+    throw new Error('WORKFLOW_SUPERVISOR_WAIT_NOT_SCHEDULED');
+  }
   const sourceEffectId = validateEffectId(boundedString(record.source_effect_id, 'SOURCE_EFFECT_ID', 128));
   const checkpoint = boundedString(record.checkpoint, 'CHECKPOINT', 2_000);
   const reason = boundedString(record.reason, 'REASON', 2_000);
@@ -160,8 +166,8 @@ export function parseSupervisorCompletion(
   const taskId = record.task_id === undefined ? undefined : boundedString(record.task_id, 'TASK_ID', 512);
   const supervisorState = record.supervisor_state === undefined ? undefined : boundedString(record.supervisor_state, 'SUPERVISOR_STATE', 32) as WorkflowSupervisorState;
   const activeScope = record.active_scope === undefined ? undefined : boundedString(record.active_scope, 'ACTIVE_SCOPE', 512);
-  if (supervisorState && !['running', 'done', 'needs_user'].includes(supervisorState)) throw new Error('WORKFLOW_SUPERVISOR_STATE_INVALID');
-  const expectedState: WorkflowSupervisorState = action === 'CONTINUE' ? 'running' : action === 'DONE' ? 'done' : 'needs_user';
+  if (supervisorState && !['running', 'waiting', 'done', 'needs_user'].includes(supervisorState)) throw new Error('WORKFLOW_SUPERVISOR_STATE_INVALID');
+  const expectedState: WorkflowSupervisorState = action === 'CONTINUE' ? 'running' : action === 'WAIT' ? 'waiting' : action === 'DONE' ? 'done' : 'needs_user';
   if (supervisorState && supervisorState !== expectedState) throw new Error('WORKFLOW_SUPERVISOR_STATE_ACTION_MISMATCH');
   if (activeScope && !/^(?:requirement|goal):[^\s]{1,480}$/.test(activeScope)) throw new Error('WORKFLOW_SUPERVISOR_ACTIVE_SCOPE_INVALID');
   const controlBlock = responseText.slice(start, end + endMarker.length);
@@ -234,7 +240,10 @@ export function renderSupervisorPrompt(
     // of an App binding. No browser/plugin UI mutation belongs in this renderer.
     'USE FORGE: 使用 forge。已有真实工具时直接执行相关源码、验证或交付动作，不要强制以 rh_status 开始。JSON、项目指令或文字 @forge 不会授予工具权限；如果工具完全不可见，仅检查一次实际提供的发现入口（如有 functions.exec 可经 ALL_TOOLS 查询 mcp__forge__），不要反复自检或要求用户选择 App，也不能伪造调用。无工具时正文写 NO_TOOL_RECEIPT 和真实缺口，不宣称工程产出。',
     'DELIVER WORK: 把 objective 当作持续目标，像用户直接发送“继续”一样从本会话最近的未完成工作处继续；同一交付仍有安全、相关且必要的步骤时，本轮持续实现、验证、审阅并合法交付，不要因完成一次查询或一个微步而收尾。只补充当前真正缺失的证据，复用已有检查；不重复全局盘点，不机械新增 Work/Plan/测试。守住单一 writer、exact target、未知发送不重放和不可逆发布授权边界。不要在只有状态检查、计划或解释时结束本轮。',
-    'END OF TURN: 本轮工作实际结束时才简述可核验产出和剩余事项，不要为尽快输出 C 提前终止仍可继续的安全开发。NO_TOOL_RECEIPT 只能写在正文中；工具不可用不等于用户必须介入，临时无工具且仍需下一轮探测时同样以 C ' + supervisorReceiptChallenge(task, effectId) + ' 结束，并写明零工程产出；不能将 C 视为成功或进展。D ' + supervisorReceiptChallenge(task, effectId) + ' 仅用于原目标真实交付；U ' + supervisorReceiptChallenge(task, effectId) + ' 仅用于确需用户决定/授权的阻塞。C/D/U 校验码必须独占最终助手回复最后一行，不得在中间消息提前输出，不要向 MCP 传 automation_status；Supervisor 只结算已完成的最终助手回复（only the completed final assistant reply）。',
+    ...(typeof task.continuationPolicy.scheduled_wake_schedule_id === 'string' ? [
+      'SCHEDULED WORK: 本轮仍有同一日的必要步骤时继续实现并以 C ' + supervisorReceiptChallenge(task, effectId) + ' 结束；当日目标已完成且没有剩余安全必要步骤时，使用 WAIT 并以 W ' + supervisorReceiptChallenge(task, effectId) + ' 结束。若存在真实人工阻塞，先记录精确且持久的 UserRequest、停止不安全动作，并在授权可用时通知用户，然后使用 WAIT 保持同一任务开放；不要用 DONE 或 NEEDS_USER 终结每日循环，也不要自行创建新日程。WAIT 让同一任务保持非终结状态，直到绑定的 Scheduler 下次触发。',
+    ] : []),
+    'END OF TURN: 本轮工作实际结束时才简述可核验产出和剩余事项，不要为尽快输出 C 提前终止仍可继续的安全开发。NO_TOOL_RECEIPT 只能写在正文中；工具不可用不等于用户必须介入，临时无工具且仍需下一轮探测时同样以 C ' + supervisorReceiptChallenge(task, effectId) + ' 结束，并写明零工程产出；不能将 C 视为成功或进展。D ' + supervisorReceiptChallenge(task, effectId) + ' 仅用于原目标真实交付；U ' + supervisorReceiptChallenge(task, effectId) + ' 仅用于确需用户决定/授权的阻塞。C/D/U' + (typeof task.continuationPolicy.scheduled_wake_schedule_id === 'string' ? '/W' : '') + ' 校验码必须独占最终助手回复最后一行，不得在中间消息提前输出，不要向 MCP 传 automation_status；Supervisor 只结算已完成的最终助手回复（only the completed final assistant reply）。',
   ].join('\n');
 }
 

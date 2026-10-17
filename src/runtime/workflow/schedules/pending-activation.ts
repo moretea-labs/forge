@@ -5,6 +5,7 @@ import { resolveControllerHome } from '../../../cli/repositories/controller-home
 import { getSchedule, saveSchedule } from '../../../../packages/kernel/scheduler/api/index';
 
 const EXTERNAL_CONTROLLER_WAKE_OPERATION = 'external_controller_wake';
+const CONTROLLER_PROGRESSION_OPERATION = 'controller_progression';
 
 export interface PendingContinuationActivationMarker {
   schemaVersion: 1;
@@ -53,8 +54,9 @@ export function queuePendingContinuationActivation(
   scheduleId: string,
 ): PendingContinuationActivationMarker {
   const schedule = getSchedule(controllerHome, repoId, scheduleId);
-  if (schedule.action.operation !== EXTERNAL_CONTROLLER_WAKE_OPERATION) {
-    throw new Error('PENDING_CONTINUATION_ACTIVATION_REQUIRES_EXTERNAL_CONTROLLER_WAKE');
+  if (schedule.action.operation !== EXTERNAL_CONTROLLER_WAKE_OPERATION
+    && schedule.action.operation !== CONTROLLER_PROGRESSION_OPERATION) {
+    throw new Error('PENDING_CONTINUATION_ACTIVATION_REQUIRES_WORK_CONTINUATION');
   }
   const workId = schedule.action.arguments?.work_id;
   if (typeof workId !== 'string' || !workId.trim()) {
@@ -108,7 +110,8 @@ export function applyPendingContinuationActivations(controllerHome: string): Pen
       const marker = readMarker(path);
       const schedule = getSchedule(controllerHome, marker.repoId, marker.scheduleId);
       const workId = schedule.action.arguments?.work_id;
-      if (schedule.action.operation !== EXTERNAL_CONTROLLER_WAKE_OPERATION || workId !== marker.workId) {
+      if ((schedule.action.operation !== EXTERNAL_CONTROLLER_WAKE_OPERATION
+        && schedule.action.operation !== CONTROLLER_PROGRESSION_OPERATION) || workId !== marker.workId) {
         results.push({ ...marker, status: 'failed', reason: 'Schedule no longer targets the queued Work continuation.' });
         continue;
       }
@@ -122,7 +125,11 @@ export function applyPendingContinuationActivations(controllerHome: string): Pen
         results.push({ ...marker, status: 'already_active' });
         continue;
       }
-      saveSchedule(controllerHome, { ...schedule, policy: { ...schedule.policy, shadowMode: false } });
+      saveSchedule(controllerHome, {
+        ...schedule,
+        action: { ...schedule.action, operation: CONTROLLER_PROGRESSION_OPERATION },
+        policy: { ...schedule.policy, shadowMode: false },
+      });
       rmSync(path, { force: true });
       results.push({ ...marker, status: 'activated' });
     } catch (error) {

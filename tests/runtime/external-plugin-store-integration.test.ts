@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { spawn, spawnSync, type ChildProcess } from 'child_process';
-import { join } from 'path';
+import { dirname, join } from 'path';
 import { installExternalPluginRegistration, type ExternalPluginRegistration } from '../../src/runtime/plugins/external-registration';
 import { createExternalPluginAdapter } from '../../src/runtime/plugins/external-adapter';
 import { registerRepository } from '../../src/cli/repositories/registry';
@@ -11,12 +11,14 @@ import { getWorkContract } from '../../src/runtime/control-plane/facade/work-con
 import { continueGoalWorkloop, runGoalWorkloop, startGoalWorkloop } from '../../src/runtime/control-plane/facade/goal-workloop';
 import { callRhWorkSemanticOperation } from '../../adapters/mcp/runtime-gateway/work-semantic-operations';
 import { buildResendPluginManifest, executeResendPluginAction } from '../../src/runtime/plugins/resend-adapter';
+import { GMAIL_AUTOMATION_CAPABILITY_ID, GMAIL_AUTOMATION_OWNER_EMAIL, GMAIL_PLUGIN_ID } from '../../src/runtime/plugins/gmail-adapter';
 import { repositoryPluginConfigPath } from '../../src/runtime/plugins/config-store';
 import { createFirstPartyPluginAdapterMap } from '../../src/runtime/plugins/first-party-registry';
 import { getPluginActionCapabilitySchema } from '../../src/runtime/control-plane/facade/capability-registry';
 import { buildPluginManagementManifest } from '../../src/runtime/plugins/plugin-management-adapter';
 import {
   findActivePluginCapabilityAuthorization,
+  pluginCapabilityAuthorizationOwnerScope,
   recordPluginCapabilityAuthorization,
 } from '../../src/runtime/plugins/capability-authorization-grants';
 import {
@@ -241,6 +243,118 @@ describe('controller-scoped plugin Work attribution', () => {
       pluginId: 'desktop_operator', actionId: 'desktop_status', requestId: 'controller-scope-work-attribution',
       workId, workRepoId: 'repo-conflict', args: {}, origin: { surface: 'mcp', actor: 'test' },
     })).rejects.toThrow('WORK_PLUGIN_ATTRIBUTION_REPO_CONFLICT');
+  });
+});
+
+describe('scheduled Gmail automation capability', () => {
+  test('requires an explicit fixed-mailbox grant and deduplicates owner notifications', async () => {
+    clearAssistantPluginManifestCacheForTest();
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-gmail-automation-home-'));
+    roots.push(controllerHome);
+    const repoRoot = mkdtempSync(join(tmpdir(), 'forge-gmail-automation-repo-'));
+    roots.push(repoRoot);
+    expect(spawnSync('git', ['init', '-b', 'main'], { cwd: repoRoot, encoding: 'utf8' }).status).toBe(0);
+    writeFileSync(join(repoRoot, 'README.md'), 'gmail automation fixture\\n');
+    expect(spawnSync('git', ['add', '.'], { cwd: repoRoot, encoding: 'utf8' }).status).toBe(0);
+    expect(spawnSync('git', ['-c', 'user.name=Forge Test', '-c', 'user.email=forge@example.test', 'commit', '-m', 'init'], { cwd: repoRoot, encoding: 'utf8' }).status).toBe(0);
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'gmail-automation-test' });
+    const context = { controllerHome, repoId: repository.repoId, repoRoot: repository.canonicalRoot };
+    const configPath = repositoryPluginConfigPath(context, 'gmail');
+    mkdirSync(dirname(configPath), { recursive: true });
+    writeFileSync(configPath, JSON.stringify({ enabled: true, provider: 'mock', accountEmail: GMAIL_AUTOMATION_OWNER_EMAIL }, null, 2));
+    const origin = { surface: 'mcp' as const, actor: 'plugin_action_execute' as const };
+
+    await expect(submitAssistantPluginAction(controllerHome, repository, {
+      pluginId: GMAIL_PLUGIN_ID,
+      actionId: 'send_owner_notification',
+      requestId: 'gmail-notification-without-grant',
+      args: { subject: '[Forge] Test notification', body_text: 'This must not send before authorization.' },
+      origin,
+    })).rejects.toThrow('PLUGIN_CAPABILITY_GRANT_REQUIRED');
+    await expect(submitAssistantPluginAction(controllerHome, repository, {
+      pluginId: GMAIL_PLUGIN_ID,
+      actionId: 'archive_scheduled_message',
+      requestId: 'gmail-archive-without-grant',
+      args: { message_id: 'fixture-message' },
+      origin,
+    })).rejects.toThrow('PLUGIN_CAPABILITY_GRANT_REQUIRED');
+
+    const grantQuery = {
+      ownerScope: pluginCapabilityAuthorizationOwnerScope(origin),
+      repoId: repository.repoId,
+      pluginId: GMAIL_PLUGIN_ID,
+      capabilityId: GMAIL_AUTOMATION_CAPABILITY_ID,
+      target: {
+        kind: 'gmail-mailbox' as const,
+        id: GMAIL_AUTOMATION_OWNER_EMAIL,
+        identityFingerprint: `gmail-profile:${GMAIL_AUTOMATION_OWNER_EMAIL}`,
+      },
+      scopes: ['gmail.send'],
+      risk: 'remote_write' as const,
+    };
+    await expect(submitAssistantPluginAction(controllerHome, repository, {
+      pluginId: GMAIL_PLUGIN_ID,
+      actionId: 'authorize_scheduled_gmail_automation',
+      requestId: 'gmail-explicit-automation-grant-missing-confirmation',
+      args: {},
+      origin,
+    })).rejects.toThrow('PLUGIN_CONFIRMATION_REQUIRED');
+    expect(findActivePluginCapabilityAuthorization(controllerHome, grantQuery)).toBeUndefined();
+
+    await submitAssistantPluginAction(controllerHome, repository, {
+      pluginId: GMAIL_PLUGIN_ID,
+      actionId: 'authorize_scheduled_gmail_automation',
+      requestId: 'gmail-explicit-automation-grant',
+      args: {},
+      origin,
+      confirmAuthorization: true,
+      confirmationText: 'authorize-scheduled-gmail-automation',
+    });
+    const grant = findActivePluginCapabilityAuthorization(controllerHome, grantQuery);
+    expect(grant).toBeDefined();
+
+    const args = { subject: '[Forge] Test notification', body_text: 'Persistent receipt deduplication acceptance.' };
+    const systemOrigin = { surface: 'system' as const, correlationId: 'gmail-system-notification-once' };
+    const first = await submitAssistantPluginAction(controllerHome, repository, {
+      pluginId: GMAIL_PLUGIN_ID,
+      actionId: 'send_owner_notification',
+      requestId: 'gmail-system-notification-once',
+      args,
+      origin: systemOrigin,
+      authorizationGrantRefs: [grant!.grantId],
+    });
+    const second = await submitAssistantPluginAction(controllerHome, repository, {
+      pluginId: GMAIL_PLUGIN_ID,
+      actionId: 'send_owner_notification',
+      requestId: 'gmail-system-notification-once',
+      args,
+      origin: systemOrigin,
+      authorizationGrantRefs: [grant!.grantId],
+    });
+    expect(first.deduplicated).toBe(false);
+    expect(second.deduplicated).toBe(true);
+    expect(second.receipt.receiptId).toBe(first.receipt.receiptId);
+    expect(first.manifest.actions.find((action) => action.actionId === 'send_message')?.confirmation).toBe('strong_confirmation');
+    const scheduledCapability = first.manifest.capabilities.find((capability) => capability.capabilityId === GMAIL_AUTOMATION_CAPABILITY_ID);
+    expect(scheduledCapability?.actions).toEqual(expect.arrayContaining(['archive_scheduled_message', 'send_owner_notification']));
+    expect(scheduledCapability?.actions).not.toContain('send_message');
+
+    await expect(submitAssistantPluginAction(controllerHome, repository, {
+      pluginId: GMAIL_PLUGIN_ID,
+      actionId: 'send_owner_notification',
+      requestId: 'gmail-notification-arbitrary-recipient',
+      args: { subject: '[Forge] Invalid recipient', body_text: 'Must reject extra recipient fields.', to: ['attacker@example.com'] },
+      origin: systemOrigin,
+      authorizationGrantRefs: [grant!.grantId],
+    })).rejects.toThrow();
+    await expect(submitAssistantPluginAction(controllerHome, repository, {
+      pluginId: GMAIL_PLUGIN_ID,
+      actionId: 'send_message',
+      requestId: 'gmail-general-send-without-strong-confirmation',
+      args: { to: ['attacker@example.com'], subject: 'Not authorized', body_text: 'Must remain strongly confirmed.' },
+      origin,
+    })).rejects.toThrow();
+    clearAssistantPluginManifestCacheForTest();
   });
 });
 

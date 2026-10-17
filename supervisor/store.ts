@@ -623,6 +623,100 @@ export class WorkflowSupervisorStore {
     });
   }
   getTask(taskId: string): WorkflowSupervisorTask | undefined { return this.read((db) => { const row = statement(db, 'SELECT * FROM tasks WHERE task_id = ?', (s) => s.get(taskId)); return row ? taskFromRow(row as Record<string, unknown>) : undefined; }); }
+  bindScheduledWake(input: { taskId: string; repoId: string; workId: string; scheduleId: string }): { task: WorkflowSupervisorTask; changed: boolean; deduplicated: boolean } {
+    const scheduleId = boundedText(input.scheduleId);
+    if (!scheduleId || scheduleId.length > 512) throw new Error('WORKFLOW_SUPERVISOR_SCHEDULE_ID_INVALID');
+    return this.transaction((db) => {
+      const row = statement(db, 'SELECT * FROM tasks WHERE task_id = ?', (s) => s.get(input.taskId)) as Record<string, unknown> | undefined;
+      if (!row) throw new Error('WORKFLOW_SUPERVISOR_TASK_UNKNOWN');
+      const task = taskFromRow(row);
+      if (statement(db, "SELECT 1 FROM events WHERE task_id=? AND kind IN ('terminal_done','terminal_needs_user','terminal_stopped') LIMIT 1", (s) => s.get(input.taskId))) {
+        throw new Error('WORKFLOW_SUPERVISOR_TASK_TERMINAL');
+      }
+      if (task.completionContract.repo_id !== input.repoId || task.completionContract.work_id !== input.workId) {
+        throw new Error('WORKFLOW_SUPERVISOR_SCHEDULE_WORK_IDENTITY_MISMATCH');
+      }
+      if (task.continuationPolicy.kind !== 'forge_goal_outer_turn') throw new Error('WORKFLOW_SUPERVISOR_SCHEDULE_OUTER_TURN_REQUIRED');
+      const existingScheduleId = boundedText(task.continuationPolicy.scheduled_wake_schedule_id);
+      if (existingScheduleId) {
+        if (existingScheduleId !== scheduleId) throw new Error('WORKFLOW_SUPERVISOR_SCHEDULE_BINDING_CONFLICT');
+        return { task, changed: false, deduplicated: true };
+      }
+      const continuationPolicy = { ...task.continuationPolicy, scheduled_wake_schedule_id: scheduleId };
+      statement(db, 'UPDATE tasks SET continuation_policy_json = ? WHERE task_id = ?', (s) => s.run(json(continuationPolicy), input.taskId));
+      statement(db, 'INSERT OR IGNORE INTO events(task_id,event_key,kind,payload_json,occurred_at) VALUES (?,?,?,?,?)', (s) => s.run(
+        input.taskId, `scheduled-wake-bound:${input.taskId}:${scheduleId}`, 'scheduled_wake_bound',
+        json({ repo_id: input.repoId, work_id: input.workId, schedule_id: scheduleId, attestation: 'exact_work_schedule_binding' }), now()));
+      const updated = statement(db, 'SELECT * FROM tasks WHERE task_id = ?', (s) => s.get(input.taskId)) as Record<string, unknown> | undefined;
+      if (!updated) throw new Error('WORKFLOW_SUPERVISOR_TASK_PERSIST_FAILED');
+      return { task: taskFromRow(updated), changed: true, deduplicated: false };
+    });
+  }
+  refreshUndispatchedEffectPrompt(input: { taskId: string; effectId: string; expectedPrompt: string; prompt: string }): boolean {
+    if (!input.prompt.trim()) throw new Error('WORKFLOW_SUPERVISOR_EFFECT_PROMPT_REQUIRED');
+    return this.transaction((db) => {
+      const row = statement(db, 'SELECT * FROM effects WHERE effect_id = ?', (s) => s.get(input.effectId)) as Record<string, unknown> | undefined;
+      if (!row || String(row.task_id) !== input.taskId) throw new Error('WORKFLOW_SUPERVISOR_EFFECT_TASK_MISMATCH');
+      if (String(row.prompt_text) !== input.expectedPrompt) throw new Error('WORKFLOW_SUPERVISOR_EFFECT_PROMPT_CHANGED');
+      const dispatched = statement(db, "SELECT 1 FROM events WHERE effect_id = ? AND kind = 'effect_dispatch_started' LIMIT 1", (s) => s.get(input.effectId));
+      const applied = statement(db, "SELECT 1 FROM events WHERE effect_id = ? AND kind = 'effect_applied' LIMIT 1", (s) => s.get(input.effectId));
+      if (dispatched || applied) return false;
+      statement(db, 'UPDATE effects SET prompt_text = ? WHERE effect_id = ? AND prompt_text = ?', (s) => s.run(input.prompt, input.effectId, input.expectedPrompt));
+      return true;
+    });
+  }
+  reserveScheduledWake(input: { taskId: string; scheduleId: string; occurrenceId: string; effectId: string; prompt: string }): { effect: WorkflowSupervisorEffect; deduplicated: boolean } {
+    const scheduleId = boundedText(input.scheduleId);
+    const occurrenceId = boundedText(input.occurrenceId);
+    if (!scheduleId || scheduleId.length > 512) throw new Error('WORKFLOW_SUPERVISOR_SCHEDULE_ID_INVALID');
+    if (!occurrenceId || occurrenceId.length > 512) throw new Error('WORKFLOW_SUPERVISOR_SCHEDULE_OCCURRENCE_ID_INVALID');
+    return this.transaction((db) => {
+      const row = statement(db, 'SELECT * FROM tasks WHERE task_id = ?', (s) => s.get(input.taskId)) as Record<string, unknown> | undefined;
+      if (!row) throw new Error('WORKFLOW_SUPERVISOR_TASK_UNKNOWN');
+      const task = taskFromRow(row);
+      if (task.continuationPolicy.kind !== 'forge_goal_outer_turn'
+        || task.continuationPolicy.scheduled_wake_schedule_id !== scheduleId) {
+        throw new Error('WORKFLOW_SUPERVISOR_SCHEDULE_BINDING_MISMATCH');
+      }
+      const originKey = `scheduled-wake:${scheduleId}:${occurrenceId}`;
+      const priorRow = statement(db, 'SELECT * FROM effects WHERE origin_key = ?', (s) => s.get(originKey)) as Record<string, unknown> | undefined;
+      if (priorRow) {
+        const prior = effectFromRow(priorRow);
+        if (prior.taskId !== input.taskId || prior.effectId !== input.effectId || prior.kind !== 'continuation' || !prior.sourceCompletionFingerprint) {
+          throw new Error('WORKFLOW_SUPERVISOR_SCHEDULED_WAKE_IDENTITY_CONFLICT');
+        }
+        return { effect: prior, deduplicated: true };
+      }
+      if (statement(db, "SELECT 1 FROM events WHERE task_id=? AND kind IN ('terminal_done','terminal_needs_user','terminal_stopped') LIMIT 1", (s) => s.get(input.taskId))) {
+        throw new Error('WORKFLOW_SUPERVISOR_TASK_TERMINAL');
+      }
+      if (oldestUnappliedEffect(db, input.taskId)) throw new Error('WORKFLOW_SUPERVISOR_SCHEDULED_WAKE_CAUSAL_OBLIGATION_PENDING');
+      const awaitingReceipt = statement(db, `SELECT 1 AS ok FROM effects e
+        WHERE e.task_id = ?
+          AND EXISTS (SELECT 1 FROM events applied WHERE applied.effect_id = e.effect_id AND applied.kind = 'effect_applied')
+          AND NOT EXISTS (SELECT 1 FROM completions c WHERE c.task_id = e.task_id AND c.source_effect_id = e.effect_id)
+        LIMIT 1`, (s) => s.get(input.taskId));
+      if (awaitingReceipt) throw new Error('WORKFLOW_SUPERVISOR_SCHEDULED_WAKE_CAUSAL_OBLIGATION_PENDING');
+      const latestRow = statement(db, "SELECT c.* FROM completions c WHERE c.task_id = ? ORDER BY COALESCE((SELECT MAX(completion_event.event_id) FROM events completion_event WHERE completion_event.task_id = c.task_id AND completion_event.completion_fingerprint = c.completion_fingerprint AND completion_event.kind = 'assistant_completion'), c.rowid) DESC LIMIT 1", (s) => s.get(input.taskId)) as Record<string, unknown> | undefined;
+      if (!latestRow) throw new Error('WORKFLOW_SUPERVISOR_SCHEDULED_WAKE_NOT_WAITING');
+      const completion = completionFromRow(latestRow);
+      if (completion.action !== 'WAIT') throw new Error('WORKFLOW_SUPERVISOR_SCHEDULED_WAKE_NOT_WAITING');
+      const consumed = statement(db, 'SELECT * FROM effects WHERE task_id = ? AND source_completion_fingerprint = ?', (s) => s.get(input.taskId, completion.completionFingerprint)) as Record<string, unknown> | undefined;
+      if (consumed) throw new Error('WORKFLOW_SUPERVISOR_SCHEDULED_WAKE_ALREADY_CONSUMED');
+      const effect = this.reserveEffectWithin(db, {
+        taskId: input.taskId,
+        effectId: input.effectId,
+        kind: 'continuation',
+        originKey,
+        sourceCompletionFingerprint: completion.completionFingerprint,
+        prompt: input.prompt,
+      });
+      statement(db, 'INSERT OR IGNORE INTO events(task_id,event_key,kind,effect_id,completion_fingerprint,payload_json,occurred_at) VALUES (?,?,?,?,?,?,?)', (s) => s.run(
+        input.taskId, `scheduled-wake-committed:${scheduleId}:${occurrenceId}`, 'scheduled_wake_reserved', effect.effectId,
+        completion.completionFingerprint, json({ schedule_id: scheduleId, occurrence_id: occurrenceId, source_completion_fingerprint: completion.completionFingerprint }), now()));
+      return { effect, deduplicated: false };
+    });
+  }
   bindBootstrapConversation(taskId: string, conversationId: string, conversationUrl: string): WorkflowSupervisorTask {
     return this.transaction((db) => {
       const row = statement(db, 'SELECT * FROM tasks WHERE task_id = ?', (s) => s.get(taskId)) as Record<string, unknown> | undefined;
@@ -698,12 +792,12 @@ export class WorkflowSupervisorStore {
       WHERE c.action = 'CONTINUE'
         AND NOT EXISTS (SELECT 1 FROM effects successor WHERE successor.origin_key = 'completion:' || c.completion_fingerprint)
         AND NOT EXISTS (SELECT 1 FROM events terminal WHERE terminal.task_id = c.task_id AND terminal.kind IN ('terminal_done','terminal_needs_user','terminal_stopped'))
-      ORDER BY c.committed_at DESC, c.completion_fingerprint DESC LIMIT ?`, (s) => s.all(boundedLimit))
+      ORDER BY COALESCE((SELECT MAX(completion_event.event_id) FROM events completion_event WHERE completion_event.task_id = c.task_id AND completion_event.completion_fingerprint = c.completion_fingerprint AND completion_event.kind = 'assistant_completion'), c.rowid) DESC LIMIT ?`, (s) => s.all(boundedLimit))
       .map((row) => completionFromRow(row as Record<string, unknown>)));
   }
   getCompletionByResponseSha256(taskId: string, responseSha256: string): WorkflowSupervisorCompletion | undefined {
     return this.read((db) => {
-      const rows = statement(db, 'SELECT * FROM completions WHERE task_id = ? AND response_sha256 = ? ORDER BY committed_at, completion_fingerprint LIMIT 2', (s) => s.all(taskId, responseSha256)) as Record<string, unknown>[];
+      const rows = statement(db, 'SELECT * FROM completions WHERE task_id = ? AND response_sha256 = ? ORDER BY committed_at, rowid LIMIT 2', (s) => s.all(taskId, responseSha256)) as Record<string, unknown>[];
       if (rows.length > 1) throw new Error('WORKFLOW_SUPERVISOR_RESPONSE_COMPLETION_AMBIGUOUS');
       return rows[0] ? completionFromRow(rows[0]) : undefined;
     });
@@ -711,7 +805,7 @@ export class WorkflowSupervisorStore {
   /** The only replay candidate when no applied effect is awaiting a receipt. */
   getLatestCompletion(taskId: string): WorkflowSupervisorCompletion | undefined {
     return this.read((db) => {
-      const row = statement(db, 'SELECT * FROM completions WHERE task_id = ? ORDER BY committed_at DESC, completion_fingerprint DESC LIMIT 1', (s) => s.get(taskId)) as Record<string, unknown> | undefined;
+      const row = statement(db, "SELECT c.* FROM completions c WHERE c.task_id = ? ORDER BY COALESCE((SELECT MAX(completion_event.event_id) FROM events completion_event WHERE completion_event.task_id = c.task_id AND completion_event.completion_fingerprint = c.completion_fingerprint AND completion_event.kind = 'assistant_completion'), c.rowid) DESC LIMIT 1", (s) => s.get(taskId)) as Record<string, unknown> | undefined;
       return row ? completionFromRow(row) : undefined;
     });
   }
@@ -725,7 +819,7 @@ export class WorkflowSupervisorStore {
         const task = taskFromRow(taskRow);
         const taskRepoId = boundedText(task.completionContract.repo_id) ?? boundedText(task.continuationPolicy.repo_id);
         if (input.repoId?.trim() && taskRepoId !== input.repoId.trim()) continue;
-        const completionRows = statement(db, 'SELECT * FROM completions WHERE task_id = ? AND committed_at >= ? ORDER BY committed_at, completion_fingerprint', (s) => s.all(task.taskId, input.notBefore)) as Record<string, unknown>[];
+        const completionRows = statement(db, "SELECT c.* FROM completions c WHERE c.task_id = ? AND c.committed_at >= ? ORDER BY COALESCE((SELECT MAX(completion_event.event_id) FROM events completion_event WHERE completion_event.task_id = c.task_id AND completion_event.completion_fingerprint = c.completion_fingerprint AND completion_event.kind = 'assistant_completion'), c.rowid) ASC", (s) => s.all(task.taskId, input.notBefore)) as Record<string, unknown>[];
         const completions = completionRows.map(completionFromRow);
         // Release acceptance proves continuation liveness, not semantic task completion.
         // Requiring DONE here deadlocks a long-running Supervisor goal against its own known-good gate.
@@ -881,6 +975,18 @@ export class WorkflowSupervisorStore {
     if (this.hasAppliedEffectAwaitingCompletion(taskId)) {
       return { state: 'spaced', ...(leaf ? { effectId: leaf.effectId } : {}), reason: 'awaiting_completion_receipt' };
     }
+    const waiting = this.read((db) => {
+      const taskRow = statement(db, 'SELECT * FROM tasks WHERE task_id = ?', (s) => s.get(taskId)) as Record<string, unknown> | undefined;
+      if (!taskRow) return undefined;
+      const task = taskFromRow(taskRow);
+      const scheduleId = boundedText(task.continuationPolicy.scheduled_wake_schedule_id);
+      if (!scheduleId) return undefined;
+      const latest = statement(db, "SELECT c.completion_fingerprint, c.action FROM completions c WHERE c.task_id = ? ORDER BY COALESCE((SELECT MAX(completion_event.event_id) FROM events completion_event WHERE completion_event.task_id = c.task_id AND completion_event.completion_fingerprint = c.completion_fingerprint AND completion_event.kind = 'assistant_completion'), c.rowid) DESC LIMIT 1", (s) => s.get(taskId)) as { completion_fingerprint?: string; action?: string } | undefined;
+      return latest?.action === 'WAIT' && latest.completion_fingerprint
+        ? { state: 'waiting' as const, scheduleId, completionFingerprint: latest.completion_fingerprint }
+        : undefined;
+    });
+    if (waiting) return waiting;
     return { state: 'inert' };
   }
   /** One operator-approved repair of a proven pre-send failure, never a provider retry refund. */

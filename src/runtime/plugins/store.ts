@@ -679,7 +679,18 @@ function enforceConfirmation(action: AssistantPluginActionDescriptor, request: A
   // Ordinary authorization is delegated to the host AI/tool permission model.
   // Forge keeps only the explicit strong-confirmation boundary for
   // destructive or irreversible plugin operations.
-  if (action.confirmation === 'none' || action.confirmation === 'authorization') return;
+  if (action.confirmation === 'none') return;
+  if (action.confirmation === 'authorization') {
+    if (action.requiredConfirmationText) {
+      if (request.confirmAuthorization !== true) {
+        throw new Error(`PLUGIN_CONFIRMATION_REQUIRED: ${request.pluginId}/${request.actionId} requires confirmAuthorization=true`);
+      }
+      if (request.confirmationText !== action.requiredConfirmationText) {
+        throw new Error(`PLUGIN_CONFIRMATION_TEXT_REQUIRED: provide confirmationText=${action.requiredConfirmationText}`);
+      }
+    }
+    return;
+  }
   if (action.confirmation === 'strong_confirmation') {
     if (request.confirmAuthorization !== true) {
       throw new Error(`PLUGIN_CONFIRMATION_REQUIRED: ${request.pluginId}/${request.actionId} requires confirmAuthorization=true`);
@@ -1668,6 +1679,13 @@ async function submitPluginAction(
           };
         }
       }
+    }
+
+    if (action.requiresExplicitCapabilityGrant && !activeAuthorizationGrant) {
+      throw new AssistantPluginError(
+        'PLUGIN_CAPABILITY_GRANT_REQUIRED',
+        `${manifest.pluginId}/${action.actionId} requires an explicit reusable capability grant for its exact target. Run the dedicated authorization action first.`,
+      );
     }
 
     const result = await withAssistantPluginResourceLeases(

@@ -101,9 +101,9 @@ function requestPath(controllerHome: string, targetKey: string, requestId: strin
 export const SCHEDULE_OCCURRENCE_RECENT_LIMIT = 5_000;
 export const SCHEDULE_CREATED_OCCURRENCE_STALE_MS = 5 * 60 * 1_000;
 
-const EXTERNAL_CONTROLLER_WAKE_MAX_FAILURES = 3;
-const EXTERNAL_CONTROLLER_WAKE_DAILY_BUDGET_MINUTES = 60;
-const EXTERNAL_CONTROLLER_WAKE_MIN_COOLDOWN_MINUTES = 10;
+const WORK_CONTINUATION_MAX_FAILURES = 3;
+const WORK_CONTINUATION_DAILY_BUDGET_MINUTES = 60;
+const WORK_CONTINUATION_MIN_COOLDOWN_MINUTES = 10;
 
 function boundedSchedulePolicy(schedule: RepositorySchedule): RepositorySchedule['policy'] {
   const policy = {
@@ -111,17 +111,18 @@ function boundedSchedulePolicy(schedule: RepositorySchedule): RepositorySchedule
     backoffBaseMinutes: Math.max(1, schedule.policy.backoffBaseMinutes ?? schedule.policy.cooldownMinutes ?? 1),
     backoffMaxMinutes: Math.max(1, schedule.policy.backoffMaxMinutes ?? 24 * 60),
   };
-  if (schedule.action.operation !== 'external_controller_wake') return policy;
-  // A Work-bound controller wake is expensive and can affect the user's
+  if (schedule.action.operation !== 'external_controller_wake' && schedule.action.operation !== 'controller_progression') return policy;
+  // A Work-bound continuation is expensive and can affect the user's
   // provider. No schedule payload may convert a transient tool outage into an
   // all-day retry loop. Larger work needs an explicit future user action after
   // the bounded lane records useful failure evidence.
   return {
     ...policy,
-    maxFailures: Math.max(1, Math.min(policy.maxFailures, EXTERNAL_CONTROLLER_WAKE_MAX_FAILURES)),
-    dailyBudgetMinutes: Math.max(1, Math.min(policy.dailyBudgetMinutes, EXTERNAL_CONTROLLER_WAKE_DAILY_BUDGET_MINUTES)),
-    cooldownMinutes: Math.max(policy.cooldownMinutes, EXTERNAL_CONTROLLER_WAKE_MIN_COOLDOWN_MINUTES),
-    backoffBaseMinutes: Math.max(policy.backoffBaseMinutes, EXTERNAL_CONTROLLER_WAKE_MIN_COOLDOWN_MINUTES),
+    maxFailures: Math.max(1, Math.min(policy.maxFailures, WORK_CONTINUATION_MAX_FAILURES)),
+    dailyBudgetMinutes: Math.max(1, Math.min(policy.dailyBudgetMinutes, WORK_CONTINUATION_DAILY_BUDGET_MINUTES)),
+    cooldownMinutes: Math.max(policy.cooldownMinutes, WORK_CONTINUATION_MIN_COOLDOWN_MINUTES),
+    backoffBaseMinutes: Math.max(policy.backoffBaseMinutes, WORK_CONTINUATION_MIN_COOLDOWN_MINUTES),
+    backoffMaxMinutes: Math.max(policy.backoffMaxMinutes, WORK_CONTINUATION_MIN_COOLDOWN_MINUTES, policy.backoffBaseMinutes),
   };
 }
 function canonical(value: unknown): unknown {
@@ -175,7 +176,7 @@ export function createSchedule(controllerHome: string, input: CreateScheduleInpu
       return getSchedule(controllerHome, input.repoId, record.scheduleId);
     }
     const timestamp = new Date().toISOString();
-    const schedule: RepositorySchedule = {
+    const candidate: RepositorySchedule = {
       ...input,
       requestId,
       schemaVersion: 1,
@@ -185,6 +186,7 @@ export function createSchedule(controllerHome: string, input: CreateScheduleInpu
       updatedAt: timestamp,
       consecutiveFailures: 0,
     };
+    const schedule: RepositorySchedule = { ...candidate, policy: boundedSchedulePolicy(candidate) };
     writeJsonAtomic(schedulePath(controllerHome, schedule.repoId, schedule.scheduleId), schedule);
     writeJsonAtomic(requestRecordPath, { schemaVersion: 1, requestId, semanticKey, scheduleId: schedule.scheduleId, repoId: schedule.repoId, createdAt: timestamp } satisfies ScheduleRequestRecord);
     appendRuntimeEvent(controllerHome, { repoId: schedule.repoId, entityType: 'schedule', entityId: schedule.scheduleId, eventType: 'schedule_created', requestId, revision: schedule.revision, data: { name: schedule.name, shadowMode: schedule.policy.shadowMode } });
@@ -228,6 +230,7 @@ function persistScheduleRevision(
     requestId: current.requestId,
     createdAt: current.createdAt,
     updatedAt: new Date().toISOString(),
+    policy: boundedSchedulePolicy(candidate),
   };
   writeJsonAtomic(schedulePath(controllerHome, next.repoId, next.scheduleId), next);
   appendRuntimeEvent(controllerHome, { repoId: next.repoId, entityType: 'schedule', entityId: next.scheduleId, eventType: 'schedule_updated', requestId: next.requestId, revision: next.revision, data: { enabled: next.enabled, pausedReason: next.pausedReason } });
