@@ -30,6 +30,8 @@ test('operator stop is terminal without claiming semantic completion', () => {
     expect(control.stopTask(taskId, 'user requested stop')).toEqual({ taskId, terminal: 'STOPPED', deduplicated: false });
     expect(store.terminalAction(taskId)).toBe('STOPPED');
     expect(control.listTasks(true)).toEqual([]);
+    expect(control.listTerminalTasks().map(({ task, terminal }) => ({ taskId: task.taskId, terminal }))).toEqual([{ taskId, terminal: 'STOPPED' }]);
+    expect(control.listTasks(false).map((task) => task.taskId)).toEqual([taskId]);
     expect(control.browserTasks()).toEqual([]);
     expect(control.bootstrapPoll(taskId)).toMatchObject({ terminal: 'STOPPED' });
 
@@ -55,6 +57,9 @@ test('operator stop is terminal without claiming semantic completion', () => {
       conversationUrl: 'https://chatgpt.com/c/conversation-stop-enrolled',
     })).toMatchObject({ terminal: 'STOPPED' });
     expect(control.stopTask(taskId, 'user requested stop')).toEqual({ taskId, terminal: 'STOPPED', deduplicated: true });
+    expect(control.listTerminalTasks().map(({ task, terminal }) => ({ taskId: task.taskId, terminal }))).toEqual([
+      { taskId, terminal: 'STOPPED' }, { taskId: enrolledTaskId, terminal: 'STOPPED' },
+    ]);
   } finally {
     store.close();
     rmSync(root, { recursive: true, force: true });

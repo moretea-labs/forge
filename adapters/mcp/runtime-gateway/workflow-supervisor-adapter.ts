@@ -5,6 +5,7 @@ import {
   getWorkflowSupervisorTask,
   getWorkflowSupervisorTaskStall,
   listWorkflowSupervisorTasks,
+  listWorkflowSupervisorTerminalTasks,
   migrateWorkflowSupervisorConversation,
   recoverWorkflowSupervisorTask,
   registerWorkflowSupervisorTask,
@@ -64,6 +65,10 @@ export async function callWorkflowSupervisorAdapter(
   }
 
   if (operation === 'list') {
+    if (args.terminal_only === true) {
+      const terminalTasks = await listWorkflowSupervisorTerminalTasks(forgeHome);
+      return result({ terminalTasks, count: terminalTasks.length, terminalOnly: true, summary: `${terminalTasks.length} canonically terminal Supervisor task(s) in retained history; conversations are not archived or deleted.` });
+    }
     const activeOnly = args.active_only !== false;
     const tasks = await listWorkflowSupervisorTasks(forgeHome, activeOnly);
     return result({ tasks, count: tasks.length, activeOnly, summary: `${tasks.length} Supervisor task(s) listed.` });

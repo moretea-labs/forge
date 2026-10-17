@@ -361,7 +361,9 @@ async function dispatch(control: WorkflowSupervisorControlPlane, discovery: Work
     requestId: text(p, 'request_id'),
     ...(typeof p.authorized_by === 'string' && p.authorized_by.trim() ? { authorizedBy: p.authorized_by.trim() } : {}),
   });
-  if (req.method === 'task_list') return { tasks: control.listTasks(p.active_only === true) };
+  if (req.method === 'task_list') return p.terminal_only === true
+    ? { tasks: [], terminalTasks: control.listTerminalTasks() }
+    : { tasks: control.listTasks(p.active_only === true) };
   if (req.method === 'task_stop') return control.stopTask(text(p, 'task_id'), typeof p.reason === 'string' && p.reason.trim() ? p.reason.trim() : 'Stopped by operator request.');
   if (req.method === 'task_recover') return control.recoverTask({
     taskId: text(p, 'task_id'),

@@ -243,6 +243,16 @@ export class WorkflowSupervisorControlPlane {
     const tasks = this.store.listTasks();
     return activeOnly ? tasks.filter((task) => !this.store.terminalAction(task.taskId)) : tasks;
   }
+  /**
+   * Completed/blocked/stopped history is a read-only projection of canonical
+   * terminal events. It never archives the ChatGPT conversation or rewrites Work.
+   */
+  listTerminalTasks(): Array<{ task: WorkflowSupervisorTask; terminal: WorkflowSupervisorTerminalState }> {
+    return this.store.listTasks().flatMap((task) => {
+      const terminal = this.store.terminalAction(task.taskId);
+      return terminal ? [{ task, terminal }] : [];
+    });
+  }
   stopTask(taskId: string, reason = 'Stopped by operator request.'): { taskId: string; terminal: 'STOPPED'; deduplicated: boolean } {
     return this.store.stopTask(taskId, reason);
   }
