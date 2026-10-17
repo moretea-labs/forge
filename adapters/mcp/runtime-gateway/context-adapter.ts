@@ -844,7 +844,7 @@ export async function callContextAdapter(ctx: MultiRepositoryMcpToolContext, nam
       const repositoryManifests = listAssistantPluginManifests(ctx.controllerHome, repository, manifestOptions);
       const controllerManifests = listControllerPluginManifests(ctx.controllerHome, manifestOptions);
       const manifests = [...new Map(
-        [...repositoryManifests, ...controllerManifests].map((manifest) => [manifest.pluginId, manifest] as const),
+        [...controllerManifests, ...repositoryManifests].map((manifest) => [manifest.pluginId, manifest] as const),
       ).values()];
       const matches = searchCapabilityDescriptors(capabilityIntentQuery, manifests, 12)
         .map((match) => ({

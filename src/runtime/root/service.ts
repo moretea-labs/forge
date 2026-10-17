@@ -188,6 +188,91 @@ async function retireLegacyBrowserAutomationLaunchAgent(controllerHome: string):
   rmSync(legacy.installedPlistPath, { force: true });
 }
 
+/**
+ * Read the previously installed exact launchd contract only when config.json
+ * cannot be validated. Both canonical source and installed contracts must be
+ * identical and must still identify the active immutable Runtime release.
+ * A stale/mismatched plist never supplies a guessed listener port.
+ */
+function verifiedRuntimeLaunchdContract(controllerHome: string): { port: number; args: string[] } | undefined {
+  try {
+    const paths = forgeRuntimeServicePaths(controllerHome);
+    const active = readActiveRuntimeRelease(paths.controllerHome);
+    if (!active || !activeRuntimeEntrypoint(paths.controllerHome)) return undefined;
+    if (!existsSync(paths.sourcePlistPath) || !existsSync(paths.installedPlistPath)) return undefined;
+    if (statSync(paths.sourcePlistPath).size > 128 * 1024 || statSync(paths.installedPlistPath).size > 128 * 1024) return undefined;
+    const source = readFileSync(paths.sourcePlistPath, 'utf8');
+    if (source !== readFileSync(paths.installedPlistPath, 'utf8')) return undefined;
+    const parseXmlString = (raw: string): string | undefined => {
+      if (/&(?!(?:amp|lt|gt|quot|apos);)/.test(raw) || /[<>]/.test(raw)) return undefined;
+      return raw.replace(/&(amp|lt|gt|quot|apos);/g, (_, entity: string) =>
+        ({ amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" })[entity] ?? '');
+    };
+    const label = /<key>Label<\/key>\s*<string>([^<]*)<\/string>/.exec(source);
+    if (!label || parseXmlString(label[1]!) !== paths.label) return undefined;
+    const program = /<key>ProgramArguments<\/key>\s*<array>([\s\S]*?)<\/array>/.exec(source);
+    if (!program) return undefined;
+    const args: string[] = [];
+    const text = program[1]!;
+    const itemPattern = /\s*<string>([^<]*)<\/string>\s*/g;
+    let cursor = 0;
+    for (let match = itemPattern.exec(text); match; match = itemPattern.exec(text)) {
+      if (match.index !== cursor) return undefined;
+      const value = parseXmlString(match[1]!);
+      if (value === undefined) return undefined;
+      args.push(value);
+      cursor = itemPattern.lastIndex;
+    }
+    if (cursor !== text.length || args[0] !== resolve(paths.activeEntrypointPath)) return undefined;
+    const exactValue = (flag: string): string | undefined => {
+      const indices = args.flatMap((arg, index) => arg === flag ? [index] : []);
+      return indices.length === 1 ? args[indices[0]! + 1] : undefined;
+    };
+    if (exactValue('--controller-home') !== paths.controllerHome
+      || exactValue('--release-manifest') !== resolve(active.manifestPath)) return undefined;
+    const portString = exactValue('--port');
+    if (!portString || !/^[1-9]\d{0,4}$/.test(portString)) return undefined;
+    const port = Number(portString);
+    return port <= 65_535 ? { port, args } : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Read-only projection of the original installed launchd contract. */
+export function verifiedRuntimePortFromLaunchdContract(controllerHome: string): number | undefined {
+  return verifiedRuntimeLaunchdContract(controllerHome)?.port;
+}
+
+/** Use the one existing config writer only after service and listener quiescence. */
+export function restoreRuntimeConfigFromVerifiedLaunchdContract(controllerHome: string): boolean {
+  const proven = verifiedRuntimeLaunchdContract(controllerHome);
+  if (!proven) return false;
+  const arg = (flag: string): string | undefined => {
+    const indices = proven.args.flatMap((value, index) => value === flag ? [index] : []);
+    return indices.length === 1 ? proven.args[indices[0]! + 1] : undefined;
+  };
+  const host = arg('--host');
+  const authTokenFile = arg('--auth-token-file');
+  if (!host || !authTokenFile) return false;
+  try {
+    const topologyString = arg('--deployment-topology');
+    const topology = topologyString ? JSON.parse(topologyString) as RuntimeDeploymentTopology : undefined;
+    writeForgeRuntimeServiceConfig({
+      schemaVersion: 1,
+      controllerHome: forgeRuntimeServicePaths(controllerHome).controllerHome,
+      host,
+      port: proven.port,
+      authTokenFile,
+      ...(arg('--repo') ? { repositoryRoot: arg('--repo') } : {}),
+      ...(topology ? { topology } : {}),
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function activeRuntimeLaunchSpec(controllerHome: string): ActiveRuntimeLaunchSpec | undefined {
   const home = resolveControllerHome(controllerHome);
   const active = readActiveRuntimeRelease(home);

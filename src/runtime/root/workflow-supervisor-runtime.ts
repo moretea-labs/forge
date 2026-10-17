@@ -22,7 +22,8 @@ import { getWorkContract } from '../../../packages/kernel/work/api/index';
 import { isTerminalSemanticWorkState } from '../../../packages/kernel/work/api/index';
 import { findActivePluginCapabilityAuthorization, pluginCapabilityAuthorizationOwnerScope } from '../plugins/capability-authorization-grants';
 import { submitAssistantPluginAction } from '../plugins/store';
-import { GMAIL_AUTOMATION_CAPABILITY_ID, GMAIL_AUTOMATION_OWNER_EMAIL, GMAIL_PLUGIN_ID } from '../plugins/gmail-adapter';
+import { loadGmailPluginConfig } from '../plugins/google-shared';
+import { GMAIL_AUTOMATION_CAPABILITY_ID, GMAIL_PLUGIN_ID } from '../plugins/gmail-adapter';
 
 export interface RuntimeWorkflowSupervisorHandle {
   readonly done: Promise<void>;
@@ -133,17 +134,12 @@ export async function startWorkflowSupervisorRuntime(
   const notificationRequestId = (...parts: string[]): string => `wfsn_${createHash('sha256').update(parts.join('\u0000')).digest('hex').slice(0, 32)}`;
   const notificationOrigin = { surface: 'system' as const };
   const notificationOwnerScope = pluginCapabilityAuthorizationOwnerScope({ surface: 'system', actor: 'plugin_action_execute' });
-  const notificationTarget = {
-    kind: 'gmail-mailbox' as const,
-    id: GMAIL_AUTOMATION_OWNER_EMAIL,
-    identityFingerprint: `gmail-profile:${GMAIL_AUTOMATION_OWNER_EMAIL}`,
-  };
-  const findNotificationGrant = (repoId: string) => findActivePluginCapabilityAuthorization(controllerHome, {
+  const findNotificationGrant = (repoId: string, target: { kind: 'gmail-mailbox'; id: string; identityFingerprint: string } | undefined) => target && findActivePluginCapabilityAuthorization(controllerHome, {
     ownerScope: notificationOwnerScope,
     repoId,
     pluginId: GMAIL_PLUGIN_ID,
     capabilityId: GMAIL_AUTOMATION_CAPABILITY_ID,
-    target: notificationTarget,
+    target,
     scopes: ['gmail.send'],
     risk: 'remote_write',
   });
@@ -164,13 +160,19 @@ export async function startWorkflowSupervisorRuntime(
     if (!repoId) return;
     const repository = getRepository(repoId, controllerHome);
     if (!repository) return;
-    const grant = findNotificationGrant(repoId);
+    const mailbox = loadGmailPluginConfig(repository.canonicalRoot, { controllerHome, repoId }).accountEmail?.trim().toLowerCase();
+    const target = mailbox ? {
+      kind: 'gmail-mailbox' as const,
+      id: mailbox,
+      identityFingerprint: `gmail-profile:${mailbox}`,
+    } : undefined;
+    const grant = findNotificationGrant(repoId, target);
     if (!grant) {
       recordUserRequest(controllerHome, {
         kind: 'user_action_request',
         rootCauseKey: `workflow-supervisor.notification-auth:${input.taskId}`,
         title: 'Scheduled Gmail notification authorization required',
-        summary: `Forge has not sent the Workflow Supervisor notification because no active reusable Gmail automation grant is available for ${GMAIL_AUTOMATION_OWNER_EMAIL}. To authorize, run Gmail action authorize_scheduled_gmail_automation interactively. It grants only gmail.modify/gmail.send for this fixed mailbox for up to 90 days; it does not authorize arbitrary recipients, replies, or trash. No email was sent or retried around this boundary.`,
+        summary: `Forge has not sent the Workflow Supervisor notification because no active reusable Gmail automation grant is available for the configured Gmail profile${mailbox ? ` (${mailbox})` : ''}. Set Gmail accountEmail to match the connected profile, then run Gmail action authorize_scheduled_gmail_automation interactively. The grant permits only selected-message archiving and notifications to this profile for up to 90 days; it does not authorize arbitrary recipients, replies, or trash. No email was sent or retried around this boundary.`,
         actionRequired: 'grant_permission',
         targetScope: { scopeKind: 'workflow_supervisor_task', scopeId: input.taskId },
         presentation: {
@@ -180,7 +182,7 @@ export async function startWorkflowSupervisorRuntime(
           currentState: {
             taskId: input.taskId,
             repoId,
-            mailbox: GMAIL_AUTOMATION_OWNER_EMAIL,
+            ...(mailbox ? { mailbox } : {}),
             pluginId: GMAIL_PLUGIN_ID,
             capabilityId: GMAIL_AUTOMATION_CAPABILITY_ID,
             authorizationAction: 'authorize_scheduled_gmail_automation',
@@ -226,6 +228,7 @@ export async function startWorkflowSupervisorRuntime(
       const authorizationRequired = loginRequired || [
         'PLUGIN_CAPABILITY_GRANT_REQUIRED',
         'GMAIL_AUTOMATION_DISABLED',
+        'GMAIL_AUTOMATION_MAILBOX_NOT_CONFIGURED',
         'GMAIL_AUTOMATION_MAILBOX_MISMATCH',
         'EXTERNAL_EFFECT_AUTHORIZATION_REQUIRED',
       ].includes(failureCode ?? '');
@@ -235,7 +238,7 @@ export async function startWorkflowSupervisorRuntime(
           kind: 'user_action_request',
           rootCauseKey: `workflow-supervisor.notification-send-auth:${input.taskId}:${input.requestId}`,
           title: loginRequired ? 'Gmail notification reauthorization required' : 'Gmail notification authorization required',
-          summary: `Forge could not send the notification to ${GMAIL_AUTOMATION_OWNER_EMAIL} because the exact Gmail provider action failed with ${failureCode}: ${failureMessage}. No alternate provider or automatic resend was used. Restore the Gmail authorization or exact mailbox grant, then continue from the original task.`,
+          summary: `Forge could not send the notification to the configured Gmail profile${mailbox ? ` (${mailbox})` : ''} because the exact Gmail provider action failed with ${failureCode}: ${failureMessage}. No alternate provider or automatic resend was used. Restore the Gmail authorization or exact mailbox grant, then continue from the original task.`,
           actionRequired: loginRequired ? 'login' : 'grant_permission',
           targetScope: {
             scopeKind: 'workflow_supervisor_task',
@@ -251,7 +254,7 @@ export async function startWorkflowSupervisorRuntime(
               taskId: input.taskId,
               repoId,
               ...(workId ? { workId } : {}),
-              mailbox: GMAIL_AUTOMATION_OWNER_EMAIL,
+              ...(mailbox ? { mailbox } : {}),
               pluginId: GMAIL_PLUGIN_ID,
               capabilityId: GMAIL_AUTOMATION_CAPABILITY_ID,
               actionId: 'send_owner_notification',
@@ -285,7 +288,15 @@ export async function startWorkflowSupervisorRuntime(
             continue;
           }
         }
-        if (findNotificationGrant(repoId)) {
+        const repository = getRepository(repoId, controllerHome);
+        if (!repository) continue;
+        const mailbox = loadGmailPluginConfig(repository.canonicalRoot, { controllerHome, repoId }).accountEmail?.trim().toLowerCase();
+        const target = mailbox ? {
+          kind: 'gmail-mailbox' as const,
+          id: mailbox,
+          identityFingerprint: `gmail-profile:${mailbox}`,
+        } : undefined;
+        if (findNotificationGrant(repoId, target)) {
           resolveUserRequest(controllerHome, { requestId: request.requestId, decision: 'gmail_automation_authorized', resolvedBy: 'forge-runtime' });
         }
       }

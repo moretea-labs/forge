@@ -603,7 +603,7 @@ function actions(): AssistantPluginActionDescriptor[] {
 type AscScreenshotResource = {
   id: string;
   attributes?: {
-    locale?: string; screenshotDisplayType?: string; fileName?: string; fileSize?: number;
+    locale?: string; platform?: string; appStoreState?: string; screenshotDisplayType?: string; fileName?: string; fileSize?: number;
     sourceFileChecksum?: string | null; assetDeliveryState?: { state?: string; errors?: unknown[] };
     uploadOperations?: Array<{ method: string; url: string; offset: number; length: number;
       requestHeaders?: Array<{ name: string; value: string }> }>;
@@ -626,8 +626,10 @@ async function verifyScreenshotOwner(config: AppStoreConnectPluginConfig, args: 
   const versions = await apiRequest<AscScreenshotList>(config, {
     path: '/v1/apps/' + encodeURIComponent(app) + '/appStoreVersions', query: { limit: 200 },
   });
-  if (!versions.data?.some((v) => v.id === versionId))
-    throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'Screenshot App/version ownership mismatch.', { retryable: false });
+  const exactVersion = versions.data?.find((v) => v.id === versionId);
+  if (!exactVersion || exactVersion.attributes?.platform !== 'IOS' ||
+      exactVersion.attributes?.appStoreState !== 'PREPARE_FOR_SUBMISSION')
+    throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'Screenshot target must be an editable iOS version of the specified App.', { retryable: false });
   const localizations = await apiRequest<AscScreenshotList>(config, {
     path: '/v1/appStoreVersions/' + encodeURIComponent(versionId) + '/appStoreVersionLocalizations',
     query: { 'filter[locale]': locale, limit: 200 },
@@ -713,6 +715,43 @@ async function uploadScreenshotParts(parts: NonNullable<NonNullable<AscScreensho
     } finally { clearTimeout(timer); }
   }
 }
+async function waitForScreenshotProcessing(config: AppStoreConnectPluginConfig, screenshotId: string, md5: string):
+  Promise<{ resource: AscScreenshotResource; complete: boolean }> {
+  // Apple commits asynchronously: UPLOAD_COMPLETE means accepted, not processed.
+  // Bounded polling never repeats a reservation or an uncertain upload/commit.
+  const deadline = Date.now() + 45_000;
+  for (;;) {
+    const response = await apiRequest<AscScreenshotResponse>(config, {
+      path: '/v1/appScreenshots/' + encodeURIComponent(screenshotId),
+      timeoutMs: 15_000,
+    });
+    const resource = response.data;
+    if (!resource || resource.id !== screenshotId)
+      throw new AssistantPluginError('PLUGIN_PROVIDER_ERROR', 'Apple screenshot identity readback failed; inspect before retry.', {
+        retryable: false, details: { screenshotId } });
+    const checksum = resource.attributes?.sourceFileChecksum?.toLowerCase();
+    if (checksum && checksum !== md5)
+      throw new AssistantPluginError('PLUGIN_PROVIDER_ERROR', 'Apple screenshot checksum mismatch; inspect before retry.', {
+        retryable: false, details: { screenshotId } });
+    const state = resource.attributes?.assetDeliveryState?.state;
+    if (state === 'FAILED')
+      throw new AssistantPluginError('PLUGIN_PROVIDER_ERROR', 'Apple screenshot processing failed; inspect before retry.', {
+        retryable: false, details: { screenshotId, processingErrorCount: resource.attributes?.assetDeliveryState?.errors?.length ?? 0 } });
+    if (state === 'COMPLETE') {
+      if (checksum !== md5)
+        throw new AssistantPluginError('PLUGIN_PROVIDER_ERROR', 'Apple screenshot completed without a confirmed checksum; inspect before retry.', {
+          retryable: false, details: { screenshotId } });
+      return { resource, complete: true };
+    }
+    if (Date.now() >= deadline) {
+      if (state !== 'UPLOAD_COMPLETE')
+        throw new AssistantPluginError('PLUGIN_PROVIDER_ERROR', 'Apple screenshot commit state is unresolved; inspect before retry.', {
+          retryable: false, details: { screenshotId, state: state ?? null } });
+      return { resource, complete: false };
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, Math.min(2_500, deadline - Date.now())));
+  }
+}
 async function uploadOfficialScreenshot(config: AppStoreConnectPluginConfig, args: Record<string, unknown>, repoRoot: string): Promise<Record<string, unknown>> {
   const file = await screenshotFile(repoRoot, requiredArg(args, 'file_path'));
   if (args.expected_sha256 && (stringValue(args.expected_sha256)?.toLowerCase() !== file.sha256))
@@ -721,10 +760,20 @@ async function uploadOfficialScreenshot(config: AppStoreConnectPluginConfig, arg
   const existingSet = await findScreenshotSet(config, loc, display, false);
   const existing = existingSet ? await listScreenshots(config, existingSet) : [];
   const sameName = existing.filter((r) => r.attributes?.fileName === file.name);
+  if (sameName.length > 1)
+    throw new AssistantPluginError('PLUGIN_PROVIDER_ERROR', 'Multiple screenshots share the source filename; inspect before retry.', {
+      retryable: false, details: { screenshotIds: sameName.map((r) => r.id) } });
   const complete = sameName.find((r) => r.attributes?.sourceFileChecksum?.toLowerCase() === file.md5 &&
-    r.attributes?.assetDeliveryState?.state !== 'FAILED');
-  if (complete) return { applied: false, alreadyPresent: true, setId: existingSet, screenshot: safeScreenshot(complete) };
-  if (sameName.length) throw new AssistantPluginError('PLUGIN_PROVIDER_ERROR', 'Same filename has different or pending contents; reconcile before retry.', {
+    r.attributes?.assetDeliveryState?.state === 'COMPLETE');
+  if (complete) return { applied: false, alreadyPresent: true, processingComplete: true, setId: existingSet, screenshot: safeScreenshot(complete) };
+  const committed = sameName.find((r) => r.attributes?.sourceFileChecksum?.toLowerCase() === file.md5 &&
+    r.attributes?.assetDeliveryState?.state === 'UPLOAD_COMPLETE');
+  if (committed) {
+    const processed = await waitForScreenshotProcessing(config, committed.id, file.md5);
+    return { applied: false, alreadyPresent: true, processingComplete: processed.complete, setId: existingSet,
+      screenshot: safeScreenshot(processed.resource) };
+  }
+  if (sameName.length) throw new AssistantPluginError('PLUGIN_PROVIDER_ERROR', 'Same filename has different, failed or uncommitted contents; inspect before retry.', {
     retryable: false, details: { screenshotIds: sameName.map((r) => r.id), states: sameName.map((r) => r.attributes?.assetDeliveryState?.state) } });
   if (existing.length >= 10) throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'Device set has ten screenshots already.', { retryable: false });
   if (args.dry_run === true) return { dryRun: true, appId: args.app_id, versionId: args.version_id, locale: args.locale,
@@ -742,13 +791,10 @@ async function uploadOfficialScreenshot(config: AppStoreConnectPluginConfig, arg
   await apiRequest<AscScreenshotResponse>(config, { path: '/v1/appScreenshots/' + encodeURIComponent(r.id),
     method: 'PATCH', body: { data: { type: 'appScreenshots', id: r.id,
       attributes: { uploaded: true, sourceFileChecksum: file.md5 } } } });
-  const confirmed = await apiRequest<AscScreenshotResponse>(config, {
-    path: '/v1/appScreenshots/' + encodeURIComponent(r.id),
-  });
-  if (confirmed.data?.id !== r.id || confirmed.data?.attributes?.sourceFileChecksum?.toLowerCase() !== file.md5)
-    throw new AssistantPluginError('PLUGIN_PROVIDER_ERROR', 'Apple screenshot checksum is not confirmed by readback. Inspect before retry.', { retryable: false });
-  return { applied: true, setId, sha256: file.sha256, screenshot: safeScreenshot(confirmed.data),
-    note: 'Apple MD5 readback confirmed. Check assetDeliveryState until processing completes before declaring Store approval.' };
+  const processed = await waitForScreenshotProcessing(config, r.id, file.md5);
+  return { applied: true, setId, sha256: file.sha256, processingComplete: processed.complete,
+    screenshot: safeScreenshot(processed.resource),
+    ...(processed.complete ? {} : { note: 'Apple accepted the upload but processing remains pending. Read the exact screenshot set before further action.' }) };
 }
 
 
@@ -1107,7 +1153,7 @@ export async function executeAppStoreConnectPluginAction(input: AssistantPluginA
       if (!Array.isArray(next) || next.some((id) => typeof id !== 'string') ||
           next.length !== original.length || new Set(next).size !== original.length ||
           original.some((entry) => !next.includes(entry.id) || !entry.attributes?.sourceFileChecksum ||
-            entry.attributes?.assetDeliveryState?.state === 'FAILED'))
+            entry.attributes?.assetDeliveryState?.state !== 'COMPLETE'))
         throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'Reorder requires exactly all committed IDs in the same screenshot set.', { retryable: false });
       if (next.every((id, i) => id === original[i].id))
         return { applied: false, alreadyOrdered: true, setId, screenshotIds: next };

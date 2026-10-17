@@ -216,6 +216,40 @@ export function repositoryGitDiff(repository: RepositoryRecord, input: { staged?
   };
 }
 
+/**
+ * One Git-index/worktree candidate view for Work inspection and check selection.
+ * Untracked paths are explicit evidence; Git cannot provide their patch before add.
+ * Keep both index slices visible while bounding the aggregate patch size.
+ */
+export function repositoryGitWorkspaceChanges(
+  repository: RepositoryRecord,
+  maxBytes = 64 * 1024,
+): {
+  status: RepositoryGitStatusSnapshot;
+  staged: RepositoryGitDiffResult;
+  unstaged: RepositoryGitDiffResult;
+  changedPaths: string[];
+  diff: { nameOnly: string[]; stat: string; patch: string; truncated: boolean };
+} {
+  const status = repositoryGitStatus(repository);
+  const sliceBytes = Math.max(1024, Math.floor(boundedOutputBytes(maxBytes) / 2));
+  const staged = repositoryGitDiff(repository, { staged: true, maxBytes: sliceBytes });
+  const unstaged = repositoryGitDiff(repository, { maxBytes: sliceBytes });
+  const changedPaths = [...new Set([...staged.nameOnly, ...unstaged.nameOnly, ...status.untracked])].sort();
+  return {
+    status,
+    staged,
+    unstaged,
+    changedPaths,
+    diff: {
+      nameOnly: changedPaths,
+      stat: [staged.stat, unstaged.stat].filter(Boolean).join('\n'),
+      patch: [staged.patch, unstaged.patch].filter(Boolean).join('\n'),
+      truncated: staged.truncated || unstaged.truncated,
+    },
+  };
+}
+
 export function repositoryGitCreateBranch(controllerHome: string, repository: RepositoryRecord, input: { branch: unknown; startPoint?: unknown; switchTo?: unknown }): { branch: string; execution: RepositoryGitExecution } {
   const branch = assertSafeBranchName(input.branch);
   const startPoint = typeof input.startPoint === 'string' && input.startPoint.trim() ? input.startPoint.trim() : undefined;

@@ -591,6 +591,7 @@ function ripgrepCandidateLines(
   queries: readonly string[],
   caseSensitive: boolean,
   maxResultsPerQuery: number,
+  skippedBinaryPaths?: Set<string>,
 ): Map<string, Array<{ line: number; text: string }>> {
   const found = new Map<string, Array<{ line: number; text: string }>>();
   const searchDeadline = Date.now() + 15_000;
@@ -621,6 +622,24 @@ function ripgrepCandidateLines(
     let cursor = 0;
     while (cursor < result.stdout.length) {
       const filenameEnd = result.stdout.indexOf('\0', cursor);
+      const firstLineEnd = result.stdout.indexOf('\n', cursor);
+      // Ripgrep prints a plain-text "path: binary file matches" notice when
+      // a candidate contains NUL bytes. This notice has no NUL-framed path
+      // or line number; discard only notices naming an exact authorized path.
+      // One binary match must not invalidate unrelated valid source evidence.
+      if (firstLineEnd >= cursor && (filenameEnd < 0 || firstLineEnd < filenameEnd)) {
+        const notice = result.stdout.slice(cursor, firstLineEnd);
+        const marker = ': binary file matches';
+        const markerAt = notice.lastIndexOf(marker);
+        const binaryPath = markerAt > 0 ? notice.slice(0, markerAt) : '';
+        const suffix = markerAt >= 0 ? notice.slice(markerAt + marker.length) : '';
+        if (!paths.includes(binaryPath) || (suffix !== '' && !/^ \(found "\\0" byte around offset \d+\)$/.test(suffix))) {
+          throw new Error('RIPGREP_SEARCH_INVALID_OUTPUT: malformed NUL/line-framed match');
+        }
+        skippedBinaryPaths?.add(binaryPath);
+        cursor = firstLineEnd + 1;
+        continue;
+      }
       const lineEnd = result.stdout.indexOf('\n', filenameEnd + 1);
       const numberEnd = result.stdout.indexOf(':', filenameEnd + 1);
       if (filenameEnd < cursor || lineEnd < 0 || numberEnd <= filenameEnd || numberEnd >= lineEnd) {
@@ -687,7 +706,7 @@ export function searchRepositoryMany(
   let scannedFiles = 0;
   let policyDeniedFiles = 0;
   let skippedLargeFiles = 0;
-  let skippedBinaryFiles = 0;
+  const skippedBinaryPaths = new Set<string>();
   const canonicalRepoRoot = realpathSync(repoRoot);
 
   const authorizedCandidatePaths: string[] = [];
@@ -701,7 +720,7 @@ export function searchRepositoryMany(
     authorizedCandidatePaths.push(path);
   }
   const exactHits = authorizedCandidatePaths.length && requiredQueries.length
-    ? ripgrepCandidateLines(repoRoot, authorizedCandidatePaths, requiredQueries, opts.caseSensitive === true, maxResultsPerQuery)
+    ? ripgrepCandidateLines(repoRoot, authorizedCandidatePaths, requiredQueries, opts.caseSensitive === true, maxResultsPerQuery, skippedBinaryPaths)
     : null;
   const hasRequiredHit = (needle: string): boolean => exactHits !== null
     && [...exactHits.values()].some((lines) => lines.some(({ text }) => exactCodeNeedleMatches(
@@ -713,7 +732,7 @@ export function searchRepositoryMany(
   const hitsByPath = exactHits && requiredQueries.every(hasRequiredHit)
     ? exactHits
     : authorizedCandidatePaths.length
-      ? ripgrepCandidateLines(repoRoot, authorizedCandidatePaths, queries, opts.caseSensitive === true, maxResultsPerQuery)
+      ? ripgrepCandidateLines(repoRoot, authorizedCandidatePaths, queries, opts.caseSensitive === true, maxResultsPerQuery, skippedBinaryPaths)
       : new Map<string, Array<{ line: number; text: string }>>();
   // Exact symbol needles must not lose to broad recall-token matches that
   // occur in earlier alphabetic paths.
@@ -765,7 +784,7 @@ export function searchRepositoryMany(
     scannedFiles,
     policyDeniedFiles,
     skippedLargeFiles,
-    skippedBinaryFiles,
+    skippedBinaryFiles: skippedBinaryPaths.size,
     candidateCount: inventory.candidateCount,
     inventoryFileCount: inventory.files.length,
     inventoryCacheHit: inventory.cacheHit,

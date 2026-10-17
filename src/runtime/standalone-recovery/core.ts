@@ -22,6 +22,8 @@ import {
   inspectForgeRuntimeLaunchAgentContract,
   installForgeRuntimeService,
   readForgeRuntimeServiceConfig,
+  restoreRuntimeConfigFromVerifiedLaunchdContract,
+  verifiedRuntimePortFromLaunchdContract,
   syncForgeRuntimeActiveEntrypoint,
   uninstallForgeRuntimeService,
 } from '../root/service';
@@ -3400,7 +3402,9 @@ async function observePrimaryRuntimePort(config: RecoveryConfig, runCommand: Com
   try {
     port = readForgeRuntimeServiceConfig(paths.configPath).port;
   } catch {
-    return { port: -1, pids: [], uncertain: 'primary Runtime service port could not be read' };
+    const provenPort = verifiedRuntimePortFromLaunchdContract(config.controllerHome);
+    if (!provenPort) return { port: -1, pids: [], uncertain: 'primary Runtime service port could not be read from config or exact launchd contract' };
+    port = provenPort;
   }
   const result = await runCommand('lsof', ['-nP', '-Fp', `-iTCP:${port}`, '-sTCP:LISTEN'], 3_000);
   if (result.status === 1 && result.stderr.trim().length === 0) return { port, pids: [] };
@@ -3648,6 +3652,16 @@ async function stopPrimaryRuntimeForReleaseTransition(input: {
       detail: `Workflow Supervisor writer did not quiesce after Runtime stop: ${supervisor.detail}`,
       staleListenerCleanup,
     };
+  }
+  // A corrupt config is reconstructed through the original validated writer
+  // only after the Runtime service, listener, owner and Supervisor are quiescent.
+  try {
+    readForgeRuntimeServiceConfig(forgeRuntimeServicePaths(input.config.controllerHome).configPath);
+  } catch {
+    if (input.service.platform !== 'launchd'
+      || !restoreRuntimeConfigFromVerifiedLaunchdContract(input.config.controllerHome)) {
+      return { ok: false, detail: 'stopped Runtime config cannot be restored from an exact launchd contract', staleListenerCleanup };
+    }
   }
   return {
     ok: true,

@@ -21,9 +21,16 @@ import {
 } from './google-shared';
 
 export const GMAIL_PLUGIN_ID = 'gmail';
-export const GMAIL_AUTOMATION_OWNER_EMAIL = 'ouyangguanling@gmail.com';
 export const GMAIL_AUTOMATION_CAPABILITY_ID = 'scheduled-gmail-automation';
 const GMAIL_AUTOMATION_GRANT_MINUTES = 90 * 24 * 60;
+
+function gmailAutomationMailbox(config: GmailPluginConfig): string {
+  const mailbox = stringValue(config.accountEmail)?.toLowerCase();
+  if (!mailbox) {
+    throw new AssistantPluginError('GMAIL_AUTOMATION_MAILBOX_NOT_CONFIGURED', 'Set the Gmail plugin accountEmail to the connected mailbox before using scheduled Gmail automation.', { retryable: false });
+  }
+  return mailbox;
+}
 
 interface GmailProvider {
   listMessages(args: Record<string, unknown>, config: GmailPluginConfig): Promise<Record<string, unknown>>;
@@ -103,7 +110,7 @@ function gmailCapabilities(): AssistantPluginCapability[] {
     {
       capabilityId: GMAIL_AUTOMATION_CAPABILITY_ID,
       title: 'Scheduled Gmail Automation',
-      description: 'After an explicit reusable grant, archive selected messages in the fixed owner mailbox and send Forge/Gmail notifications only to that mailbox. This does not authorize arbitrary mail, replies, or trash.',
+      description: 'After an explicit reusable grant, archive selected messages in the configured, profile-verified owner mailbox and send Forge/Gmail notifications only to that mailbox. This does not authorize arbitrary mail, replies, or trash.',
       scopes: ['gmail.modify', 'gmail.send'],
       actions: ['authorize_scheduled_gmail_automation', 'archive_scheduled_message', 'send_owner_notification'],
     },
@@ -308,7 +315,7 @@ function gmailActions(): AssistantPluginActionDescriptor[] {
     {
       actionId: 'authorize_scheduled_gmail_automation',
       title: 'Authorize scheduled Gmail automation',
-      description: 'Explicitly grant Forge up to 90 days of permission to archive selected messages and send Forge/Gmail notifications only to ouyangguanling@gmail.com. This action sends no email and does not authorize arbitrary messages, replies, or trash.',
+      description: 'Explicitly grant Forge up to 90 days of permission to archive selected messages and send Forge/Gmail notifications only to the configured, profile-verified Gmail mailbox. This action sends no email and does not authorize arbitrary messages, replies, or trash.',
       readOnly: false,
       risk: 'remote_write',
       confirmation: 'authorization',
@@ -343,7 +350,7 @@ function gmailActions(): AssistantPluginActionDescriptor[] {
     {
       actionId: 'send_owner_notification',
       title: 'Send Forge notification to owner mailbox',
-      description: 'Send a plain-text Forge/Gmail automation notification only to ouyangguanling@gmail.com. No recipient, CC, BCC, or attachments can be supplied. Requires the dedicated scheduled Gmail automation grant.',
+      description: 'Send a plain-text Forge/Gmail automation notification only to the configured, profile-verified Gmail mailbox. No recipient, CC, BCC, or attachments can be supplied. Requires the dedicated scheduled Gmail automation grant.',
       readOnly: false,
       risk: 'remote_write',
       confirmation: 'authorization',
@@ -822,7 +829,7 @@ export async function executeGmailPluginAction(input: AssistantPluginActionExecu
       return gmailProvider(current, input.repoRoot).sendMessage(input.args, current);
     case 'authorize_scheduled_gmail_automation':
       return {
-        authorizedMailbox: GMAIL_AUTOMATION_OWNER_EMAIL,
+        authorizedMailbox: gmailAutomationMailbox(current),
         capabilityId: GMAIL_AUTOMATION_CAPABILITY_ID,
         scopes: ['gmail.modify', 'gmail.send'],
         grantLifetimeDays: 90,
@@ -841,7 +848,7 @@ export async function executeGmailPluginAction(input: AssistantPluginActionExecu
         throw new AssistantPluginError('GMAIL_OWNER_NOTIFICATION_BODY_REQUIRED', 'Owner notifications require plain-text body_text.', { retryable: false });
       }
       return gmailProvider(current, input.repoRoot).sendMessage({
-        to: [GMAIL_AUTOMATION_OWNER_EMAIL],
+        to: [gmailAutomationMailbox(current)],
         subject,
         body_text: bodyText,
       }, current);
@@ -874,20 +881,21 @@ async function resolveGmailAutomationAuthorizationContext(input: AssistantPlugin
   if (!current.enabled) {
     throw new AssistantPluginError('GMAIL_AUTOMATION_DISABLED', 'Enable the Gmail plugin before authorizing scheduled Gmail automation.', { retryable: false });
   }
+  const configuredEmail = gmailAutomationMailbox(current);
   const profile = await gmailProvider(current, input.repoRoot).getProfile({}, current);
   const actualEmail = stringValue(profile.emailAddress)?.toLowerCase();
-  if (actualEmail !== GMAIL_AUTOMATION_OWNER_EMAIL) {
+  if (actualEmail !== configuredEmail) {
     throw new AssistantPluginError(
       'GMAIL_AUTOMATION_MAILBOX_MISMATCH',
-      `Scheduled Gmail automation is restricted to ${GMAIL_AUTOMATION_OWNER_EMAIL}; the connected mailbox profile did not match.`,
+      'The connected Gmail profile does not match the configured Gmail accountEmail.',
       { retryable: false },
     );
   }
   return {
     target: {
       kind: 'gmail-mailbox' as const,
-      id: GMAIL_AUTOMATION_OWNER_EMAIL,
-      identityFingerprint: `gmail-profile:${GMAIL_AUTOMATION_OWNER_EMAIL}`,
+      id: configuredEmail,
+      identityFingerprint: `gmail-profile:${configuredEmail}`,
     },
     expiresInMinutes: GMAIL_AUTOMATION_GRANT_MINUTES,
   };

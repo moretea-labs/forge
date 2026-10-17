@@ -11,7 +11,7 @@ import { getWorkContract } from '../../src/runtime/control-plane/facade/work-con
 import { continueGoalWorkloop, runGoalWorkloop, startGoalWorkloop } from '../../src/runtime/control-plane/facade/goal-workloop';
 import { callRhWorkSemanticOperation } from '../../adapters/mcp/runtime-gateway/work-semantic-operations';
 import { buildResendPluginManifest, executeResendPluginAction } from '../../src/runtime/plugins/resend-adapter';
-import { GMAIL_AUTOMATION_CAPABILITY_ID, GMAIL_AUTOMATION_OWNER_EMAIL, GMAIL_PLUGIN_ID } from '../../src/runtime/plugins/gmail-adapter';
+import { GMAIL_AUTOMATION_CAPABILITY_ID, GMAIL_PLUGIN_ID } from '../../src/runtime/plugins/gmail-adapter';
 import { repositoryPluginConfigPath } from '../../src/runtime/plugins/config-store';
 import { createFirstPartyPluginAdapterMap } from '../../src/runtime/plugins/first-party-registry';
 import { getPluginActionCapabilitySchema } from '../../src/runtime/control-plane/facade/capability-registry';
@@ -247,7 +247,7 @@ describe('controller-scoped plugin Work attribution', () => {
 });
 
 describe('scheduled Gmail automation capability', () => {
-  test('requires an explicit fixed-mailbox grant and deduplicates owner notifications', async () => {
+  test('requires an explicit configured-mailbox grant and deduplicates owner notifications', async () => {
     clearAssistantPluginManifestCacheForTest();
     const controllerHome = mkdtempSync(join(tmpdir(), 'forge-gmail-automation-home-'));
     roots.push(controllerHome);
@@ -261,7 +261,8 @@ describe('scheduled Gmail automation capability', () => {
     const context = { controllerHome, repoId: repository.repoId, repoRoot: repository.canonicalRoot };
     const configPath = repositoryPluginConfigPath(context, 'gmail');
     mkdirSync(dirname(configPath), { recursive: true });
-    writeFileSync(configPath, JSON.stringify({ enabled: true, provider: 'mock', accountEmail: GMAIL_AUTOMATION_OWNER_EMAIL }, null, 2));
+    const ownerEmail = 'owner@example.test';
+    writeFileSync(configPath, JSON.stringify({ enabled: true, provider: 'mock', accountEmail: ownerEmail }, null, 2));
     const origin = { surface: 'mcp' as const, actor: 'plugin_action_execute' as const };
 
     await expect(submitAssistantPluginAction(controllerHome, repository, {
@@ -286,8 +287,8 @@ describe('scheduled Gmail automation capability', () => {
       capabilityId: GMAIL_AUTOMATION_CAPABILITY_ID,
       target: {
         kind: 'gmail-mailbox' as const,
-        id: GMAIL_AUTOMATION_OWNER_EMAIL,
-        identityFingerprint: `gmail-profile:${GMAIL_AUTOMATION_OWNER_EMAIL}`,
+        id: ownerEmail,
+        identityFingerprint: `gmail-profile:${ownerEmail}`,
       },
       scopes: ['gmail.send'],
       risk: 'remote_write' as const,

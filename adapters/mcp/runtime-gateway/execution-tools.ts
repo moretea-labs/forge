@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'fs';
 import type { McpToolDefinition, CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
-import { repositoryGitStatus, repositoryGitDiff } from '../../../src/cli/repositories/structured-git';
+import { repositoryGitWorkspaceChanges } from '../../../src/cli/repositories/structured-git';
 import { listControllerChecks } from '../../../src/cli/controller/check-runner';
 import { buildWorkContinuationSnapshot } from '../../../src/runtime/control-plane/facade/work-continuation';
 import { currentControllerInstanceId, startExecutionSession, type ExecutionSessionContext } from '../../../src/runtime/control-plane/execution/session-store';
@@ -84,8 +84,8 @@ function inspectWork(ctx: MultiRepositoryMcpToolContext, args: Record<string, un
   const validationStarted = performance.now();
   const validated = validateWorkHandle(ctx.controllerHome, handle, identityFor(ctx, args), 'cheap', 'inspect');
   const validationMs = performance.now() - validationStarted;
-  const status = repositoryGitStatus(validated.worktreeRepository);
-  const diff = repositoryGitDiff(validated.worktreeRepository, { maxBytes: 64 * 1024 });
+  const candidate = repositoryGitWorkspaceChanges(validated.worktreeRepository);
+  const { status, diff } = candidate;
   const contract = contractFor(ctx, handle);
   const checks = contract?.checks ?? [];
   const packageManifest = existsSync(`${validated.worktreeRepository.canonicalRoot}/package.json`)
@@ -95,7 +95,7 @@ function inspectWork(ctx: MultiRepositoryMcpToolContext, args: Record<string, un
     session: { sessionId: session.sessionId, repoId: session.activeRepositoryId, checkoutId: session.activeCheckoutId },
     work: compactHandle(handle),
     readiness: { valid: true, warnings: validated.warnings, permissionSnapshotVersion: handle.permissionSnapshotVersion },
-    git: { status, diff: { nameOnly: diff.nameOnly, stat: diff.stat, patch: diff.patch, truncated: diff.truncated } },
+    git: { status, diff: { ...diff, staged: { nameOnly: candidate.staged.nameOnly, stat: candidate.staged.stat, truncated: candidate.staged.truncated }, unstaged: { nameOnly: candidate.unstaged.nameOnly, stat: candidate.unstaged.stat, truncated: candidate.unstaged.truncated }, untracked: status.untracked } },
     workContract: contract ? {
       workId: contract.workId,
       state: contract.semanticState,
@@ -105,7 +105,7 @@ function inspectWork(ctx: MultiRepositoryMcpToolContext, args: Record<string, un
       semantics: buildWorkContinuationSnapshot(contract).semantics,
     } : undefined,
     continuation: contract ? buildWorkContinuationSnapshot(contract) : undefined,
-    paths: { changed: diff.nameOnly },
+    paths: { changed: candidate.changedPaths },
     checks: checks.map((checkId) => ({ checkId, registered: listControllerChecks(validated.worktreeRepository.canonicalRoot).some((check) => check.id === checkId) })),
     package: packageManifest ? { name: packageManifest.name, scripts: packageManifest.scripts } : undefined,
   };

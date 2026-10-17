@@ -241,7 +241,7 @@ export async function callRhWorkSemanticOperation(
     const semantic = workSemanticView(revised);
     let resourceReconciliation: Awaited<ReturnType<typeof reconcileSingleTerminalWorkCleanup>> | undefined;
     if (
-      operation === 'complete'
+      semantic.state !== 'open'
       && store.controllerHome
       && revised.repoId?.trim()
       && readWorkHandle(store.controllerHome, revised.repoId, revised.workId)

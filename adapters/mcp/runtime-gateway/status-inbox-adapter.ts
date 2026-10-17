@@ -448,6 +448,7 @@ export async function callStatusInboxAdapter(
         detailTimingMark = now;
       };
       const readiness = await controllerReadinessEvidence(ctx, repository);
+      const runtimeObservation = observeRuntimeStatus(ctx.controllerHome);
       markDetailPhase('readiness');
       const liveGit = gitSnapshot(repository.canonicalRoot);
       markDetailPhase('git');
@@ -583,7 +584,7 @@ export async function callStatusInboxAdapter(
         )],
         diagnostics: {
           runtime: {
-            ready: readiness.ready,
+            ready: runtimeObservation.ready,
           },
           toolSurface: {
             ready: toolSurfaceReady,

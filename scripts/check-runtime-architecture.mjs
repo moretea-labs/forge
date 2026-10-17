@@ -1131,14 +1131,14 @@ requireText('src/runtime/workflow/schedules/engine.ts', 'schedule.action.operati
 requireText('src/runtime/workflow/schedules/work-continuation.ts', "const CONTROLLER_PROGRESSION_OPERATION = 'controller_progression';");
 requireText('src/runtime/workflow/schedules/pending-activation.ts', "const CONTROLLER_PROGRESSION_OPERATION = 'controller_progression';");
 requireText('src/runtime/workflow/schedules/pending-activation.ts', 'operation: CONTROLLER_PROGRESSION_OPERATION');
-requireText('src/runtime/plugins/gmail-adapter.ts', "export const GMAIL_AUTOMATION_OWNER_EMAIL = 'ouyangguanling@gmail.com';");
+requireText('src/runtime/plugins/gmail-adapter.ts', 'actualEmail !== configuredEmail');
 requireText('src/runtime/plugins/gmail-adapter.ts', "export const GMAIL_AUTOMATION_CAPABILITY_ID = 'scheduled-gmail-automation';");
 requireText('src/runtime/plugins/gmail-adapter.ts', "actionId: 'authorize_scheduled_gmail_automation'");
 requireText('src/runtime/plugins/gmail-adapter.ts', "requiredConfirmationText: 'authorize-scheduled-gmail-automation'");
 requireText('src/runtime/plugins/store.ts', 'if (action.requiredConfirmationText)');
 requireText('src/runtime/plugins/gmail-adapter.ts', "actionId: 'archive_scheduled_message'");
 requireText('src/runtime/plugins/gmail-adapter.ts', "actionId: 'send_owner_notification'");
-requireText('src/runtime/plugins/gmail-adapter.ts', 'to: [GMAIL_AUTOMATION_OWNER_EMAIL]');
+requireText('src/runtime/plugins/gmail-adapter.ts', 'to: [gmailAutomationMailbox(current)]');
 requireText('src/runtime/plugins/gmail-adapter.ts', 'requiresExplicitCapabilityGrant: true');
 requireText('src/runtime/plugins/gmail-adapter.ts', 'expiresInMinutes: GMAIL_AUTOMATION_GRANT_MINUTES');
 requireText('src/runtime/plugins/store.ts', 'if (action.requiresExplicitCapabilityGrant && !activeAuthorizationGrant)');

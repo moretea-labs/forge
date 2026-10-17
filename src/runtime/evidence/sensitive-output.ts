@@ -59,8 +59,8 @@ const SENSITIVE_PATTERNS: readonly SensitivePattern[] = [
   },
   {
     type: 'secret_assignment',
-    pattern: /((?:^|[^\w]))(["']?)([A-Za-z0-9_.-]*(?:api[_-]?key|access[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|private[_-]?key|password|passwd|secret|credentials?|auth[_-]?token|token|cookie)[A-Za-z0-9_.-]*)\2(\s*(?:=>|:=|=|:)\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,}\r\n]+)/gim,
-    replacement: '$1$2$3$2$4[REDACTED]',
+    pattern: /((?:^|[^\w]))(["']?)([A-Za-z0-9_.-]*(?:api[_-]?key|access[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|private[_-]?key|password|passwd|secret|credentials?|auth[_-]?token|token|cookie)[A-Za-z0-9_.-]*)\2(\s*(?:=>|:=|=|:)\s*)((?:[A-Z][A-Za-z0-9_]*(?:[?!])?\s*=\s*)?)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,}\r\n]+)/gim,
+    replacement: '$1$2$3$2$4$5[REDACTED]',
   },
   {
     type: 'database_url_assignment',
@@ -136,6 +136,26 @@ export function redactSensitiveText(input: string): SensitiveTextRedactionResult
   let text = input;
   const counts = new Map<string, number>();
   for (const entry of SENSITIVE_PATTERNS) {
+    if (entry.type === 'secret_assignment') {
+      let redactions = 0;
+      text = text.replace(entry.pattern, (matched, boundary: string, quote: string, key: string, separator: string, typeDefault: string) => {
+        // Preserve non-credential data flow even when a source symbol ends in "Token".
+        // An unquoted floating-point counter or a reference to the local token
+        // variable is not a secret literal. Keep unknown opaque/quoted token values
+        // redacted, including compound token keys, rather than whitelisting names.
+        const prefix = `${boundary}${quote}${key}${quote}${separator}${typeDefault}`;
+        const rhs = matched.slice(prefix.length);
+        const genericToken = /token$/i.test(key) && !/^(?:token|(?:api|access|refresh|auth|session|bearer|csrf|id|jwt|oauth)[_-]?token)$/i.test(key);
+        const sourceCounter = /^[+-]?(?:\d+\.\d*|\.\d+)(?:e[+-]?\d+)?[;)]?$/i.test(rhs);
+        const sourceReference = /^token[;)]?$/.test(rhs);
+        const sourceType = separator.trim() === ':' && !typeDefault && /^(?:Double|Float|Int|Int8|Int16|Int32|Int64|Bool|String|Character|CGFloat|Date|UUID)[?!]?[),{;]?$/.test(rhs);
+        if (genericToken && (sourceCounter || sourceReference || sourceType)) return matched;
+        redactions += 1;
+        return `${prefix}[REDACTED]`;
+      });
+      if (redactions) counts.set(entry.type, (counts.get(entry.type) ?? 0) + redactions);
+      continue;
+    }
     const matches = text.match(entry.pattern);
     if (!matches?.length) continue;
     counts.set(entry.type, (counts.get(entry.type) ?? 0) + matches.length);

@@ -962,6 +962,10 @@
       "module": "workflow",
       "resource": "controller-home-isolated"
     },
+    "tests/runtime/workflow-supervisor-retired-bootstrap-draft.test.ts": {
+      "module": "workflow",
+      "resource": "controller-home-isolated"
+    },
     "tests/runtime/workflow-supervisor-work-closure.test.ts": {
       "module": "workflow",
       "resource": "controller-home-isolated"

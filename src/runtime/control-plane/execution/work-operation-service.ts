@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'crypto';
 import { isAbsolute, relative, resolve } from 'path';
 import type { McpExecutionContext } from '../../../../packages/protocols/mcp/execution-context';
-import { repositoryGitStatus, repositoryGitDiff } from '../../../cli/repositories/structured-git';
+import { repositoryGitStatus, repositoryGitWorkspaceChanges } from '../../../cli/repositories/structured-git';
 import { classifyRepositoryCommand } from '../../../cli/repositories/command-classifier';
 import { listControllerChecks, readLatestControllerCheckEvidence } from '../../../cli/controller/check-runner';
 import { readRepositoryAccessPolicy } from '../governance/access-policy';
@@ -244,9 +244,9 @@ export async function validateWork(ctx: McpExecutionContext, args: Record<string
   }
   const validated = validateWorkHandle(ctx.controllerHome, handle, identityFor(ctx, args), 'full', 'validate');
   const contract = contractFor(ctx, handle);
-  const changed = repositoryGitDiff(validated.worktreeRepository, { maxBytes: 64 * 1024 });
-  const workspaceChangedPaths = Array.isArray(changed.nameOnly) ? changed.nameOnly.map(String) : [];
-  const validationStatus = repositoryGitStatus(validated.worktreeRepository);
+  const workspaceChanges = repositoryGitWorkspaceChanges(validated.worktreeRepository);
+  const workspaceChangedPaths = workspaceChanges.changedPaths;
+  const validationStatus = workspaceChanges.status;
   const validationHead = validationStatus.head
     ?? handle.expectedHead
     ?? handle.baseCommit
