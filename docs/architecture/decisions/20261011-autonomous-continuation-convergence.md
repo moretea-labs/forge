@@ -538,3 +538,37 @@ Direct execution against a temporary real Supervisor Store reproduced a cleanup 
 The existing consumer now derives protection from `currentUnappliedEffect` instead. An unresolved effect keeps its exact attachment until the existing ledger settles or retires it, including blocked preparation and retry/observation spacing. Applied turns still use `hasAppliedEffectAwaitingCompletion`; terminal and genuinely idle cleanup retain their existing ownership/lease and grace rules. This reuses the Store's existing exclusion of superseded effects and retired unsent recovery effects. No state, persistent writer, timeout, retry, or provider is added. Scheduling remains separate from retention; the Computer target authority remains the sole physical close owner. A temporary direct run through `runOnce()` confirmed that the same exact resource key remains protected beyond six minutes with dispatch count still zero. No live task or browser was mutated by this verification; real-Chrome and restart acceptance remain pending.
 
 Validation for this retention correction: existing Supervisor control-plane and Computer interaction-target suites passed 115 cases; type, repository hygiene, runtime architecture, architecture sync (advisory), and bootstrap checks passed. Public CI run 39077751120 at prior source 8b609668d independently failed on the already-tracked missing Linux ripgrep dependency (#296); it does not validate this source correction or permit a live acceptance claim.
+
+### 2026-10-18 One Chrome provider: heartbeat independent of page callbacks
+
+The registered Chrome extension and Native Messaging Host remain the only
+Supervisor browser provider. A command's Chrome tabs.sendMessage callback
+previously had no settlement bound. The extension worker awaited that command
+inside its sole providerTickInFlight loop, which only published a profile
+heartbeat once at the start. One unresponsive content-script callback could
+therefore indefinitely stop all subsequent heartbeats, despite healthy
+Runtime, Supervisor scheduler and native host processes. In a read-only
+external-to-repository fault injection against the actual worker source,
+the original worker sent one heartbeat and then stopped while the callback
+was held; the corrected worker maintained another heartbeat and settled the
+claim exactly once. This is a cross-task mechanical liveness invariant, not
+a new agent workflow decision.
+
+The single extension worker now keeps an independent singleflight heartbeat,
+one claimed command per tick, and a seven-second bound on page message
+callbacks, below the broker's existing twelve-second claim window. It retains
+the original provider profile ID, same native port, one command mutation lane,
+and canonical Controller effect authority. After a timed-out post-Send
+callback, the dispatch must be classified attempted/outcome-unknown; absence
+of confirmation never grants a second Send. Late callbacks cannot settle
+the same command twice. The separate native AppleEvents Computer observation
+is diagnostic only, not an automatic alternative Supervisor provider.
+
+A release may be marked useful for unattended development only after the
+exact loaded Chrome worker has delivered fresh profile heartbeats, the
+original affected tasks have produced applied effects and real completion
+receipts, and at least one recovery across a Runtime restart or browser
+suspension is observed. A healthy Runtime, current disk projection, or a
+short disposable C-to-D test alone cannot establish this. If macOS or Chrome
+will not run a worker while locked/suspended, surface an explicit external
+dependency instead of fabricating progress or replaying an unknown effect.

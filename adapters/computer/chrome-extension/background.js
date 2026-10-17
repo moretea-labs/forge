@@ -6,6 +6,9 @@ const PROVIDER_ID = 'browser.chrome-extension';
 const PROVIDER_TICK_MS = 750;
 const DISCOVERY_MIN_INTERVAL_MS = 2_000;
 const RPC_TIMEOUT_MS = 30_000;
+// The broker budgets 12 seconds for a claimed command; a hung content
+// callback must settle earlier without claiming a Send never happened.
+const TAB_MESSAGE_TIMEOUT_MS = 7_000;
 const bootstrapTabs = new Map();
 const randomId = () => globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 let providerInstancePromise;
@@ -69,11 +72,24 @@ function nativeRpc(method, params = {}) {
   });
 }
 function tabMessage(tabId, message) {
-  return new Promise((resolve, reject) => chrome.tabs.sendMessage(tabId, message, (response) => {
-    const error = chrome.runtime.lastError;
-    if (error) { reject(new Error(error.message)); return; }
-    resolve(response ?? {});
-  }));
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (error, response) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (error) reject(error); else resolve(response ?? {});
+    };
+    const timer = setTimeout(() => finish(new Error('COMPUTER_CHATGPT_EXTENSION_TAB_MESSAGE_TIMEOUT')), TAB_MESSAGE_TIMEOUT_MS);
+    try {
+      chrome.tabs.sendMessage(tabId, message, (response) => {
+        // Read lastError inside the callback, even if the request timed out,
+        // so Chrome does not report an unhandled transport error.
+        const error = chrome.runtime.lastError;
+        finish(error ? new Error(error.message) : undefined, response);
+      });
+    } catch (error) { finish(error); }
+  });
 }
 function tabGet(tabId) {
   return new Promise((resolve, reject) => chrome.tabs.get(tabId, (tab) => {
@@ -406,18 +422,26 @@ async function publishHeartbeat(instanceId) {
   await nativeRpc('computer_extension_heartbeat', { providerId: PROVIDER_ID, providerInstanceId: instanceId, observedAt: new Date().toISOString(), conversations });
 }
 let providerTickInFlight;
+let providerHeartbeatInFlight;
+function heartbeatTick() {
+  providerHeartbeatInFlight ??= providerInstanceId().then(publishHeartbeat)
+    .finally(() => { providerHeartbeatInFlight = undefined; });
+  return providerHeartbeatInFlight;
+}
 async function providerTick() {
-  if (providerTickInFlight) return await providerTickInFlight;
+  // One claimed command retains the sole mutation lane; it must not also
+  // suppress profile heartbeat when a page/Chrome callback is slow or hangs.
+  if (providerTickInFlight) { await heartbeatTick(); return; }
   providerTickInFlight = (async () => {
     const instanceId = await providerInstanceId();
-    await publishHeartbeat(instanceId);
-    for (let index = 0; index < 8; index += 1) {
-      const claim = await nativeRpc('computer_extension_claim', { provider_instance_id: instanceId });
-      const command = claim?.command;
-      if (!command) break;
-      const result = await executeCommand(command, instanceId);
-      await nativeRpc('computer_extension_complete', { provider_instance_id: instanceId, command_id: command.commandId, result });
-    }
+    await heartbeatTick();
+    // One command per tick keeps heartbeats and other tasks fair. The broker
+    // remains the only authority for a claimed Send and its unknown outcome.
+    const claim = await nativeRpc('computer_extension_claim', { provider_instance_id: instanceId });
+    const command = claim?.command;
+    if (!command) return;
+    const result = await executeCommand(command, instanceId);
+    await nativeRpc('computer_extension_complete', { provider_instance_id: instanceId, command_id: command.commandId, result });
   })().finally(() => { providerTickInFlight = undefined; });
   return await providerTickInFlight;
 }
