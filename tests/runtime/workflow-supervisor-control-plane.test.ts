@@ -2872,6 +2872,46 @@ test('429 network evidence is rate-limit authority only when it belongs to the c
   expect(chatgptFailedRequestIsCausalRateLimit({ status: 429, url: 'https://chatgpt.com/backend-api/conversation' })).toBe(false);
 });
 
+test('live provider activity resets the stale-turn grace before the assistant response commits', () => {
+  const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-provider-activity-digest-'));
+  roots.push(root);
+  const store = new WorkflowSupervisorStore(join(root, 'supervisor-home'));
+  const control = new WorkflowSupervisorControlPlane(store);
+  const taskId = 'provider-activity-digest-task';
+  const conversationId = 'abababab-1212-3434-5656-787878787878';
+  const conversationUrl = `https://chatgpt.com/c/${conversationId}`;
+  control.registerTask({
+    taskId, conversationId, conversationUrl,
+    objective: 'Live provider progress must reset the idle digest before a final assistant response commits.',
+    completionContract: {}, continuationPolicy: {}, userBlockerPolicy: {},
+  });
+  const source = control.reserveEnrollment(taskId);
+  expect(store.recordEffectDispatchStarted(source.effectId, 1, 'applied-source-generation', { surface: 'test' })).toBe(true);
+  control.observeEffect({ effectId: source.effectId, observationId: 'source-applied', outcome: 'applied' });
+
+  const observe = (providerActivityText: string, observedAtMs: number) => control.browserObserveProviderTurn({
+    conversationId, conversationUrl, generating: true,
+    latestAssistantResponse: 'Previously committed assistant answer',
+    providerActivityText, observedAtMs, graceMs: 1_000,
+  });
+
+  expect(observe('Reasoning: inspect the repository', 1_000).state).toBe('generating');
+  // The committed assistant answer is unchanged, but new tool/progress text
+  // must change the canonical digest and restart the grace window.
+  expect(observe('Reasoning: inspect the repository. Tool output: 4 files found.', 5_000).state).toBe('generating');
+  expect(observe('Reasoning: inspect the repository. Tool output: 4 files found.', 5_999).state).toBe('generating');
+  const stale = observe('Reasoning: inspect the repository. Tool output: 4 files found.', 6_000);
+  expect(stale.state).toBe('recovery_reserved');
+  expect(stale.recoveryEffect).toMatchObject({ kind: 'recovery', taskId });
+  expect(stale.recoveryEffect?.effectId).not.toBe(source.effectId);
+  expect(store.latestEffectDispatch(source.effectId)).toMatchObject({ generation: 1 });
+  expect(store.providerResumeExhausted(source.effectId)).toBe(false);
+  expect(store.nextBrowserEffect(taskId, { nowMs: Date.now() + 60_000 })).toMatchObject({
+    mode: 'send', generation: 1, effect: { effectId: stale.recoveryEffect?.effectId, kind: 'recovery' },
+  });
+  store.close();
+});
+
 test('Resume stream unavailable uses a bounded same-conversation recovery chain and never replays the applied effect', () => {
   const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-stream-unavailable-'));
   roots.push(root);
