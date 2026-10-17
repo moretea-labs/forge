@@ -27,3 +27,7 @@ Use actual temporary Git repositories and real ripgrep for candidate evidence/fr
 The historical #214 ingress candidate is not integrated: it derives provider recovery provenance from diagnostic lastError text. Keep that Work genuinely unfinished until it consumes typed failure evidence through the existing ControllerRound owner; do not restore diagnostic-text semantic authority just to retire its checkout.
 
 Source acceptance does not prove live release-specific continuation or independent GitHub Projects OAuth. Preserve those unresolved obligations with existing owners when retiring source execution children. Keep genuinely unfinished dirty candidates until reconciled, not merely to reduce the displayed count.
+
+## Final preservation audit
+
+The final audit found stale expectedHead could incorrectly produce a no-source-delta proof for an advanced branch. Exact historical tips were first retained in Git archive refs as containment. The existing cleanup owner now requires callers to name the protected revision: actual branch tip or verified bundle tip, never the old WorkHandle candidate. Cached retirement evidence must name that same branch head; existing bundles must read back that exact head. Branch ref deletion uses expected-head CAS. No semantic lifecycle, persistence schema, cleanup owner or new test is introduced. Existing branch/bundle retention cases and an actual temporary Git workflow verify the corrected boundary.

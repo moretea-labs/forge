@@ -914,9 +914,11 @@ describe('terminal Work cleanup', () => {
     git(fx.workspace.root!, ['add', '.']);
     git(fx.workspace.root!, ['commit', '-m', 'feat: unique terminal work']);
     const head = git(fx.workspace.root!, ['rev-parse', 'HEAD']);
-    const current = writeWorkHandle(fx.controllerHome, { ...fx.handle, expectedHead: head });
+    // The real branch advanced without a WorkHandle successor adoption.
+    const current = writeWorkHandle(fx.controllerHome, { ...fx.handle });
     const result = await cleanup(fx, current);
     expect(result.receipt.preservation.bundlePath).toBeTruthy();
+    expect(git(fx.repositoryRoot, ['bundle', 'list-heads', result.receipt.preservation.bundlePath!])).toContain(head);
     expect(result.receipt.preservation.bundleSha256).toMatch(/^[a-f0-9]{64}$/);
     expect(result.receipt.branchCleanup).toMatchObject({ status: 'archived', uniqueCommits: 1 });
     expect(branchExists(fx.repositoryRoot, fx.branch)).toBe(false);
@@ -1012,6 +1014,8 @@ describe('terminal Work cleanup', () => {
     const current = writeWorkHandle(fx.controllerHome, { ...fx.handle, expectedHead: head });
     const cleaned = await cleanup(fx, current);
     const bundlePath = cleaned.receipt.preservation.bundlePath!;
+    // Metadata may lag the archived source; GC must prove the physical bundle.
+    writeWorkHandle(fx.controllerHome, { ...cleaned.handle, expectedHead: fx.handle.baseCommit });
     git(fx.repositoryRoot, ['cherry-pick', head]);
 
     const report = cleanupControllerRuntimeState(fx.controllerHome, {

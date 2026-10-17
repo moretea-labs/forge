@@ -170,6 +170,11 @@ function createVerifiedBundle(controllerHome: string, handle: WorkHandleState, t
   }
   const verified = git(targetRoot, ['bundle', 'verify', path], 60_000);
   if (!verified.ok) throw new Error(verified.stderr || 'git bundle verify failed');
+  const branchHead = git(targetRoot, ['rev-parse', '--verify', `refs/heads/${handle.branch}^{commit}`]);
+  const bundleHead = git(targetRoot, ['bundle', 'list-heads', path, `refs/heads/${handle.branch}`]);
+  if (!branchHead.ok || !bundleHead.ok || bundleHead.stdout !== `${branchHead.stdout} refs/heads/${handle.branch}`) {
+    throw new Error('BRANCH_BUNDLE_HEAD_MISMATCH: verified bundle does not preserve the current branch tip');
+  }
   return { path, sha256: hashText(readFileSync(path)) };
 }
 
@@ -489,9 +494,13 @@ function prepareManagedBranchPreservation(
   current: WorkHandleState,
   target: ReturnType<typeof getRepository>,
   targetBranch: string,
-): { uniqueCommits: number; branchPreserved: boolean } {
+): { uniqueCommits: number; branchPreserved: boolean; branchHead?: string } {
   let uniqueCommits = 0;
+  let branchHead: string | undefined;
   if (branchExists(target.canonicalRoot, current.branch)) {
+    const observed = git(target.canonicalRoot, ['rev-parse', '--verify', `refs/heads/${current.branch}^{commit}`]);
+    if (!observed.ok || !observed.stdout) addBlocker(receipt, 'BRANCH_REVISION_UNKNOWN');
+    else branchHead = observed.stdout;
     if (!branchExists(target.canonicalRoot, targetBranch)) {
       addBlocker(receipt, `TARGET_BRANCH_MISSING: ${targetBranch}`);
     } else {
@@ -502,11 +511,12 @@ function prepareManagedBranchPreservation(
   }
   receipt.branchCleanup.uniqueCommits = uniqueCommits;
 
+  const retirement = receipt.preservation.bundleRetirement;
   let branchPreserved = Boolean(
-    receipt.preservation.bundleRetirement?.status === 'not_needed'
-    || receipt.preservation.bundleRetirement?.status === 'removed',
+    branchHead && retirement?.protectedRevision === branchHead
+    && (retirement.status === 'not_needed' || retirement.status === 'removed'),
   );
-  if (receipt.preservation.bundlePath && !branchPreserved) {
+  if (branchHead && receipt.preservation.bundlePath && !branchPreserved) {
     try {
       const bundle = createVerifiedBundle(input.controllerHome, current, target.canonicalRoot);
       if (receipt.preservation.bundleSha256 && receipt.preservation.bundleSha256 !== bundle.sha256) {
@@ -519,7 +529,7 @@ function prepareManagedBranchPreservation(
     }
   }
   if (uniqueCommits > 0 && !branchPreserved && receipt.blockers.length === 0) {
-    const proof = proveWorkPreservationContained(target.canonicalRoot, { ...current, cleanupReceipt: receipt }, targetBranch);
+    const proof = proveWorkPreservationContained(target.canonicalRoot, current, targetBranch, branchHead);
     if (proof.contained) {
       receipt.preservation.bundleRetirement = {
         status: 'not_needed',
@@ -547,7 +557,7 @@ function prepareManagedBranchPreservation(
       }
     }
   }
-  return { uniqueCommits, branchPreserved };
+  return { uniqueCommits, branchPreserved, branchHead };
 }
 
 function applyManagedBranchCleanup(
@@ -559,6 +569,7 @@ function applyManagedBranchCleanup(
   receipt: WorkCleanupReceipt,
   uniqueCommits: number,
   branchPreserved: boolean,
+  expectedBranchHead: string | undefined,
 ): void {
   if (!deleteBranch) {
     receipt.branchCleanup.status = 'retained';
@@ -578,6 +589,10 @@ function applyManagedBranchCleanup(
     receipt.branchCleanup.status = 'retained';
     receipt.branchCleanup.reason = 'Unique commits are not archived.';
     addBlocker(receipt, `BRANCH_UNPRESERVED: ${current.branch}`);
+  } else if (!expectedBranchHead) {
+    receipt.branchCleanup.status = 'retained';
+    receipt.branchCleanup.reason = 'Exact branch revision is unavailable.';
+    addBlocker(receipt, 'BRANCH_REVISION_UNKNOWN');
   } else {
     // Branch deletion requires the canonical OwnedResource witness in addition
     // to Git relation checks. Repository/ref shape alone is not cleanup authority.
@@ -594,12 +609,10 @@ function applyManagedBranchCleanup(
       addBlocker(receipt, `OWNED_BRANCH_CLEANUP_FENCED: ${receipt.branchCleanup.reason}`);
       return;
     }
-    // We already proved the exact branch relation against targetBranch above.
-    // `git branch -d` instead consults the checkout's current HEAD, which may be
-    // an older/stale source checkout and can falsely reject a branch that is
-    // fully contained in the explicit target branch. After that target-branch
-    // proof (or a verified archive for unique commits), delete the ref directly.
-    const deleted = git(target.canonicalRoot, ['branch', '-D', current.branch]);
+    // Delete only the exact tip whose containment or bundle was proved above.
+    // A concurrent successor must retain its ref rather than inherit an older
+    // WorkHandle or preservation receipt's deletion authority.
+    const deleted = git(target.canonicalRoot, ['update-ref', '-d', `refs/heads/${current.branch}`, expectedBranchHead]);
     if (!deleted.ok && branchExists(target.canonicalRoot, current.branch)) {
       receipt.branchCleanup.status = 'failed';
       receipt.branchCleanup.reason = deleted.stderr || 'branch delete failed';
@@ -671,6 +684,7 @@ function reconcileCleanedManagedBranchRetirement(
       receipt,
       preservation.uniqueCommits,
       preservation.branchPreserved,
+      preservation.branchHead,
     );
   } else if (receipt.branchCleanup.status === 'pending') {
     receipt.branchCleanup.status = 'retained';
@@ -975,7 +989,7 @@ export async function cleanupTerminalWork(input: TerminalWorkCleanupInput): Prom
     receipt.worktree.status = 'already_removed';
   }
 
-  const { uniqueCommits, branchPreserved } = prepareManagedBranchPreservation(
+  const { uniqueCommits, branchPreserved, branchHead } = prepareManagedBranchPreservation(
     input,
     receipt,
     current,
@@ -1049,6 +1063,7 @@ export async function cleanupTerminalWork(input: TerminalWorkCleanupInput): Prom
     receipt,
     uniqueCommits,
     branchPreserved,
+    branchHead,
   );
 
   const pruned = git(target.canonicalRoot, ['worktree', 'prune']);

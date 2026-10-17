@@ -107,14 +107,14 @@ function treeEntry(root: string, ref: string, path: string): string | undefined 
 
 export function proveWorkPreservationContained(
   repositoryRoot: string,
-  handle: Pick<WorkHandleState, 'baseCommit' | 'deliveryBaseCommit' | 'expectedHead' | 'cleanupReceipt'>,
+  handle: Pick<WorkHandleState, 'baseCommit' | 'deliveryBaseCommit'>,
   targetBranch: string,
+  protectedCandidate: string | undefined,
 ): WorkPreservationContainmentProof {
   const base = workDeliveryBaseRevision(handle);
   if (!base || !revision(repositoryRoot, base)) {
     return { contained: false, reason: 'base_revision_unavailable', comparedPaths: [] };
   }
-  const protectedCandidate = handle.cleanupReceipt?.preservation.checkpointCommit?.trim() || handle.expectedHead?.trim();
   if (!protectedCandidate) {
     return { contained: false, reason: 'protected_revision_unavailable', comparedPaths: [] };
   }
@@ -336,7 +336,7 @@ export function cleanupWorkPreservationArtifacts(
         skip(report, 'retention_grace');
         continue;
       }
-      const proof = proveWorkPreservationContained(repository.canonicalRoot, handle, receipt.targetBranch);
+      const proof = proveWorkPreservationContained(repository.canonicalRoot, handle, receipt.targetBranch, bundleProtectedRevision(repository.canonicalRoot, bundlePath));
       if (!proof.contained) {
         report.retained += 1;
         skip(report, `containment_${proof.reason}`);
@@ -468,7 +468,7 @@ export function cleanupWorkPreservationArtifacts(
 
       const receipt = handle?.cleanupReceipt;
       const handleProof = handle && receipt?.complete
-        ? proveWorkPreservationContained(repository.canonicalRoot, handle, receipt.targetBranch)
+        ? proveWorkPreservationContained(repository.canonicalRoot, handle, receipt.targetBranch, bundleProtectedRevision(repository.canonicalRoot, bundlePath))
         : undefined;
       const orphanProof = !handle && repository.defaultBranch
         ? proveOrphanBundleContained(repository.canonicalRoot, bundlePath, repository.defaultBranch)

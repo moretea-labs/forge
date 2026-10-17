@@ -2,6 +2,8 @@
 
 ### Historical source delivery and cleanup
 
+Branch and bundle preservation must bind the actual Git tip being retired. A WorkHandle expectedHead/checkpoint or older no-source-delta receipt cannot substitute for the current branch or verified bundle head. Bundle readback must cover that exact branch tip, and ref deletion uses expected-tip CAS so a concurrent successor remains intact.
+
 Worktree convergence separates source containment, model-authored acceptance and physical retirement. Terminal rh_work revisions, including same-terminal retries, enter the existing single-Work cleanup owner; Git integration never terminalizes a Work. Work inspection and verification use the shared structured Git candidate view for staged, unstaged and untracked paths. Runtime readiness detail uses the same live owner observation as summary. See [the 2026-10-17 decision](../researches/20261017-worktree-convergence.md).
 
 ### Technical design baseline
