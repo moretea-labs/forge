@@ -1913,9 +1913,17 @@ export function finalizeEditSession(repoRoot: string, sessionId: string, input: 
 } = {}): EditSession {
   let session = getEditSession(repoRoot, sessionId);
   session = bindSessionControllerInstance(repoRoot, session, input.binding);
-  if (session.baseRevision && gitRevision(repoRoot) !== session.baseRevision) throw new Error('EDIT_SESSION_BASE_REVISION_CHANGED');
-  if (session.workspaceFingerprint && workspaceFingerprint(repoRoot) !== session.workspaceFingerprint) throw new Error('EDIT_SESSION_WORKSPACE_FINGERPRINT_CHANGED');
+  const baseRevisionChanged = Boolean(session.baseRevision && gitRevision(repoRoot) !== session.baseRevision);
+  const workspaceFingerprintChanged = Boolean(session.workspaceFingerprint && workspaceFingerprint(repoRoot) !== session.workspaceFingerprint);
   if (session.assurance?.approvalRequired && input.approvalConfirmed !== true) throw new Error('EDIT_SESSION_APPROVAL_REQUIRED');
+  if (baseRevisionChanged || workspaceFingerprintChanged) {
+    // A commit changes HEAD and Git's workspace fingerprint even when the exact edit-session after-images are now integrated.
+    // Reconcile through the canonical after-image + clean-tracked-path checks before rejecting the stale snapshot.
+    const reconciled = reconcileEditSession(repoRoot, session.sessionId, input);
+    if (reconciled.status === 'finalized' || reconciled.status === 'superseded') return reconciled;
+    if (baseRevisionChanged) throw new Error('EDIT_SESSION_BASE_REVISION_CHANGED');
+    throw new Error('EDIT_SESSION_WORKSPACE_FINGERPRINT_CHANGED');
+  }
   const emptyOpenSession = session.status === 'open' && session.operations.length === 0;
   if (!emptyOpenSession && !['dirty', 'checked', 'check_failed'].includes(session.status)) {
     throw new Error(`edit session cannot be finalized from ${session.status}`);

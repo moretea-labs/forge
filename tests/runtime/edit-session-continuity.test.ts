@@ -57,6 +57,50 @@ test('adopts a non-overlapping successor HEAD in the same Work-bound session and
     expect(readFileSync(join(fx.repoRoot, 'source.ts'), 'utf8')).toBe('export const value = 3;\n');
   });
 
+  test('finalizes an integrated edit session after its tracked paths are committed', () => {
+    const fx = fixture();
+    const binding = durableBinding('runtime-a');
+    const session = beginEditSession(fx.repoRoot, {
+      purpose: 'Finalize integrated session after HEAD advance',
+      allowedPaths: ['source.ts'],
+      binding,
+    });
+    applyEditOperations(fx.repoRoot, fx.policy, session.sessionId, [{
+      type: 'replace', path: 'source.ts', expectedSha256: sha256(fx.initial),
+      replacements: [{ oldText: 'value = 1', newText: 'value = 2' }],
+    }], { binding });
+
+    spawnSync('git', ['add', 'source.ts'], { cwd: fx.repoRoot });
+    spawnSync('git', ['commit', '-qm', 'integrate edit session'], { cwd: fx.repoRoot });
+
+    const finalized = finalizeEditSession(fx.repoRoot, session.sessionId, {
+      binding: durableBinding('runtime-b'),
+    });
+    expect(finalized).toMatchObject({ status: 'finalized', currentRevision: 1, controllerInstanceId: 'runtime-b' });
+  });
+
+  test('does not finalize a stale session while its tracked after-image remains uncommitted', () => {
+    const fx = fixture();
+    const binding = durableBinding('runtime-a');
+    const session = beginEditSession(fx.repoRoot, {
+      purpose: 'Keep uncommitted edit behind stale-baseline guard',
+      allowedPaths: ['source.ts'],
+      binding,
+    });
+    applyEditOperations(fx.repoRoot, fx.policy, session.sessionId, [{
+      type: 'replace', path: 'source.ts', expectedSha256: sha256(fx.initial),
+      replacements: [{ oldText: 'value = 1', newText: 'value = 2' }],
+    }], { binding });
+
+    writeFileSync(join(fx.repoRoot, 'unrelated.txt'), 'parallel\n');
+    spawnSync('git', ['add', 'unrelated.txt'], { cwd: fx.repoRoot });
+    spawnSync('git', ['commit', '-qm', 'parallel unrelated change'], { cwd: fx.repoRoot });
+
+    expect(() => finalizeEditSession(fx.repoRoot, session.sessionId, { binding }))
+      .toThrow('EDIT_SESSION_BASE_REVISION_CHANGED');
+    expect(getEditSession(fx.repoRoot, session.sessionId).status).toBe('dirty');
+  });
+
   test('rejects successor HEAD adoption when the intervening commit overlaps a session path', () => {
     const fx = fixture();
     const session = beginEditSession(fx.repoRoot, { purpose: 'Overlap guard', allowedPaths: ['source.ts'], binding: durableBinding('runtime-a') });
