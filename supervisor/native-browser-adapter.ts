@@ -278,6 +278,40 @@ export function authorizedDraftReplacementPrompt(
   return `<<<FORGE_DRAFT_REPLACE_V1:${observation.fingerprint}:${auth.nonce}>>>\n${prompt}`;
 }
 
+/**
+ * A STOPPED bootstrap may leave an exact machine-authored draft in the shared
+ * Project editor. The Supervisor ledger proves retirement and its prior
+ * exact pre-Send editor digest attests the live bytes, even where ProseMirror
+ * injected layout-derived whitespace. Foreign/human edits never qualify.
+ */
+export function retiredBootstrapDraftReplacementPrompt(
+  control: WorkflowSupervisorControlPlane,
+  task: WorkflowSupervisorBrowserTask,
+  snapshot: ComputerChatgptConversationObservation,
+  prompt: string,
+): string | undefined {
+  if (snapshot.composerSelectorVersion !== 'visible-single-v2' || !snapshot.composerText
+    || snapshot.isGenerating || !prompt.startsWith('<<<FORGE_WORKFLOW_EFFECT_V1:')) return;
+  const draft = snapshot.composerText.replace(/\r\n?/g, '\n');
+  const match = /^<<<FORGE_WORKFLOW_EFFECT_V1:(fx_[a-zA-Z0-9_-]+)>>>/.exec(draft);
+  if (!match) return;
+  const staleEffect = control.getEffect(match[1]!);
+  if (!staleEffect || staleEffect.taskId === task.taskId
+    // No dispatch generation was ever opened, so the stopped effect could
+    // not have clicked Send. Ambiguous/applied/returned effects fail closed.
+    || control.effectDispatchBudget(staleEffect.effectId).generations !== 0) return;
+  const oldTask = control.getTask(staleEffect.taskId);
+  const retired = oldTask && control.getTaskByConversationId(oldTask.conversationId);
+  if (retired?.terminal !== 'STOPPED'
+    || control.bootstrapProjectUrl(staleEffect.taskId) !== control.bootstrapProjectUrl(task.taskId)) return;
+  const attested = control.preSendComposerObservation(staleEffect.effectId);
+  // Only the old effect's persisted no-click fingerprint, not any loose
+  // whitespace similarity, can authorize replacement of a ProseMirror draft.
+  const fingerprint = sha256('preflight-composer-v1:\0' + draft).slice(0, 24);
+  if (!attested || attested.fingerprint !== fingerprint || attested.chars !== draft.length) return;
+  return '<<<FORGE_RETIRED_DRAFT_V1:' + staleEffect.effectId + ':' + fingerprint + '>>>\n' + prompt;
+}
+
 function exactConversation(snapshot: ComputerChatgptConversationObservation, task: WorkflowSupervisorBrowserTask): boolean {
   try { return parseChatgptConversationIdentity(snapshot.url).conversationId === task.conversationId; }
   catch { return false; }
@@ -800,7 +834,9 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     let prepared: Awaited<ReturnType<ComputerChatgptConversationTarget['prepare']>>;
     const exactReplacement = authorizedDraftReplacementPrompt(this.deps.providerScopeKey, task.taskId,
       command.effectId, this.control.bootstrapProjectUrl(task.taskId), beforeSend, command.prompt);
-    try { prepared = await target.prepare(exactReplacement ?? command.prompt); }
+    const retiredReplacement = exactReplacement ? undefined
+      : retiredBootstrapDraftReplacementPrompt(this.control, task, beforeSend, command.prompt);
+    try { prepared = await target.prepare(exactReplacement ?? retiredReplacement ?? command.prompt); }
     catch (error) {
       this.control.recordProviderPreparationFailure({ taskId: task.taskId, effectId: command.effectId, reasonCode: consumerFailureCode(error, 'COMPUTER_PREPARE_FAILED'), composerObservation: preflightComposerObservation(beforeSend, command.effectId) });
       this.noteTaskFailure(SUPERVISOR_PRE_SEND_BLOCKED, task, command.effectId); this.deps.onError(error); return;

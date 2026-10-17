@@ -268,6 +268,9 @@ export class WorkflowSupervisorControlPlane {
     return task;
   }
   getEffect(id: string): WorkflowSupervisorEffect | undefined { return this.store.getEffect(validateEffectId(id)); }
+  preSendComposerObservation(effectId: string): WorkflowSupervisorPreflightComposerObservation | undefined {
+    return this.store.preSendComposerObservation(validateEffectId(effectId));
+  }
   /** Bind the one canonical Scheduler occurrence lane to an exact Work-owned Supervisor task. */
   bindScheduledWake(input: { taskId: string; repoId: string; workId: string; scheduleId: string }) {
     const task = this.requireTask(input.taskId);

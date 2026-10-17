@@ -900,6 +900,28 @@ export class WorkflowSupervisorStore {
       return undefined;
     });
   }
+  /**
+   * Exact persisted pre-Send editor evidence. ProseMirror may introduce a
+   * mid-body line break; only the observed prior exact digest grants recovery.
+   */
+  preSendComposerObservation(effectId: string): WorkflowSupervisorPreflightComposerObservation | undefined {
+    return this.read((db) => {
+      const sql = "SELECT e.payload_json FROM events e JOIN effects fx ON fx.effect_id = e.effect_id "
+        + "WHERE e.effect_id = ? AND e.kind = 'effect_preflight_rejected' "
+        + "AND e.event_id < (SELECT MIN(t.event_id) FROM events t WHERE t.task_id = fx.task_id AND t.kind = 'terminal_stopped') "
+        + "ORDER BY e.event_id DESC LIMIT 1";
+      const row = statement(db, sql, (query) => query.get(effectId)) as { payload_json?: string } | undefined;
+      const data = parsedObject(row?.payload_json);
+      const editor = parsedObject(data.composer_observation);
+      if (data.send_clicked !== false || data.attestation !== 'computer_prepare_returned_before_supervisor_send_intent'
+        || editor.classification !== 'current_effect' || editor.selectorVersion !== 'visible-single-v2'
+        || !Number.isInteger(editor.chars) || Number(editor.chars) < 1
+        || typeof editor.fingerprint !== 'string' || !/^[a-f0-9]{24}$/.test(editor.fingerprint)) return undefined;
+      return { chars: Number(editor.chars), fingerprint: editor.fingerprint,
+        classification: 'current_effect', selectorVersion: 'visible-single-v2' };
+    });
+  }
+
   latestEffectDispatch(effectId: string): { eventId: number; generation: number; evidence: Record<string, unknown> } | undefined {
     return this.read((db) => {
       const row = statement(db, "SELECT event_id,payload_json FROM events WHERE effect_id = ? AND kind = 'effect_dispatch_started' ORDER BY event_id DESC LIMIT 1", (s) => s.get(effectId)) as { event_id?: number; payload_json?: string } | undefined;

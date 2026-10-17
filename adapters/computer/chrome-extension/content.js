@@ -144,9 +144,11 @@
     // than comparing synthetic layout whitespace to an immutable effect.
     const observed = blocks.length > 0 && blocks.every((block) => block.tagName === 'P')
       ? blocks.map((block) => {
-        const value = exactComposerText(block.innerText ?? block.textContent);
-        // An empty final <p><br></p> may expose one visual newline.
-        return value === '\n' && !String(block.textContent ?? '').trim() ? '' : value;
+        // innerText may insert a *visual* newline around auto-linked URLs or
+        // inline styled descendants even inside one ProseMirror paragraph.
+        // One direct <p> is one actual editor line: read its text nodes.
+        const value = exactComposerText(block.textContent ?? block.innerText);
+        return !value.trim() ? '' : value;
       }).join('\n')
       : editor?.value ?? editor?.innerText ?? editor?.textContent;
     const text = exactComposerText(observed);
@@ -337,7 +339,13 @@
     if (replacement && (!prepareOnly || !expectedProjectId || mode !== 'send')) {
       return { dispatched: false, reason: 'composer_replacement_mode_invalid' };
     }
-    const actualPrompt = replacement ? prompt.slice(replacement[0].length) : prompt;
+    // Prepare-only exact retirement; never submits or retries the stopped task.
+    const retired = /^<<<FORGE_RETIRED_DRAFT_V1:(fx_[a-zA-Z0-9_-]+):([a-f0-9]{24})>>>\n/.exec(prompt);
+    if (retired && (!prepareOnly || !expectedProjectId || mode !== 'send' || replacement)) {
+      return { dispatched: false, reason: 'composer_replacement_mode_invalid' };
+    }
+    const actualPrompt = replacement ? prompt.slice(replacement[0].length)
+      : retired ? prompt.slice(retired[0].length) : prompt;
     if (mode === 'recover') {
       const stop = document.querySelector(STOP);
       if (prepareOnly && stop instanceof HTMLElement) return { prepared: false, reason: 'provider_recovery_stop_pending' };
@@ -363,11 +371,14 @@
     // A restored draft belongs to this effect only when it matches precisely.
     // Never overwrite another task's draft or a human-authored message.
     const ownedDrafts = supervisor
-      ? [expected, exactComposerText(payload + '\n@'), exactComposerText(payload + '\nforge'), exactComposerText('forge ' + payload)]
+      ? [expected, expected + '\n', exactComposerText(payload + '\n@'), exactComposerText(payload + '\nforge'), exactComposerText('forge ' + payload)]
       : [expected];
     if (node.querySelector('[plugin-mention-name], [app-mention-name]')) return { dispatched: false, reason: 'composer_has_app_mention' };
     const unowned = Boolean(existing && !ownedDrafts.includes(existing));
-    if (unowned && (!replacement || !supervisor)) return { dispatched: false, reason: 'composer_not_empty' };
+    if (unowned && ((!replacement && !retired) || !supervisor)) return { dispatched: false, reason: 'composer_not_empty' };
+    if (retired && (!unowned || !existing.startsWith(`<<<FORGE_WORKFLOW_EFFECT_V1:${retired[1]}>>>`))) {
+      return { dispatched: false, reason: 'composer_not_empty' };
+    }
     if (unowned) {
       // Hash the *currently visible* single editor, not the page or another
       // tab. If it changed since the backup, do not touch it.
@@ -375,7 +386,7 @@
       const bytes = new TextEncoder().encode('preflight-composer-v1:\0' + existing);
       const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
       const prefix = Array.from(digest).map((byte) => byte.toString(16).padStart(2, '0')).join('').slice(0, 24);
-      if (prefix !== replacement[1]) return { dispatched: false, reason: 'composer_not_empty' };
+      if (prefix !== (replacement ? replacement[1] : retired?.[2])) return { dispatched: false, reason: 'composer_not_empty' };
     }
     let reasoningVerified;
     if (reasoning !== undefined) {
@@ -384,10 +395,15 @@
       reasoningVerified = checked.level;
     }
     if (!exactConversationIsCurrent()) return { dispatched: false, reason: 'target_identity_changed' };
-    if (existing !== expected) writeComposer(node, payload);
+    if (existing !== expected && existing !== expected + '\n') writeComposer(node, payload);
     await sleep(75);
     if (!exactConversationIsCurrent()) return { dispatched: false, reason: 'target_identity_changed' };
-    if (composerText() !== expected) return { dispatched: false, reason: 'composer_write_unconfirmed' };
+    // ProseMirror may expose one editor-generated final newline even when
+    // the immutable input was inserted byte-for-byte. Do not widen matching
+    // beyond that single trailing line break or weaken sent-turn proof.
+    if (composerText() !== expected && composerText() !== expected + '\n') {
+      return { dispatched: false, reason: 'composer_write_unconfirmed' };
+    }
     const send = document.querySelector(SEND);
     if (!send) return { dispatched: false, reason: 'send_button_missing' };
     if (send.disabled || send.getAttribute('aria-disabled') === 'true') return { dispatched: false, reason: 'send_button_disabled' };

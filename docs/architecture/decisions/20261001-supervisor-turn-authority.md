@@ -118,6 +118,22 @@ DONE, NEEDS_USER and explicit STOPPED retire owned resources; after restart the
 same owner reconstructs ownership from exact task identity and window.name.
 An adopted user tab loses only the Supervisor marker and stays open.
 
+An operator-STOPPED bootstrap may have written an entire machine-authored effect to a
+Project composer without clicking Send. A subsequent bootstrap for that **same Project**
+may replace the residue only if the canonical Supervisor ledger proves the prior task is
+STOPPED, the prior effect has zero dispatch generations, and its last pre-Send failure
+durably attests that exact, single visible editor (classification=current_effect,
+send_clicked=false, matching full text length and SHA-256 fingerprint). This exact
+persisted observation accommodates a previously captured editor representation
+without normalizing or permitting arbitrary human changes. New observations
+reconstruct text from the direct ProseMirror paragraphs' text nodes, avoiding
+CSS-rendered extra line breaks around auto-linked URLs. The sole Chrome extension
+rechecks the stopped effect marker and a fresh exact editor fingerprint immediately
+before its prepare-only replacement. This grants no replay or
+new provider authority. Ambiguous/applied/possibly-sent effects, user or foreign drafts,
+and a generating assistant always fail closed. A successful prepare still requires the
+normal exact-effect Send and completion checks; never count typing as delivery.
+
 When delivery or read-only observation is due, complete supported-browser
 inventory must prove the exact enrolled conversation absent before the owner
 opens its persisted conversation URL. An unreadable inventory, foreign owner,
