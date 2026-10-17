@@ -40,6 +40,10 @@ export async function callWorkflowSupervisorAdapter(
     const requestId = textArg(args, 'request_id');
     if (!objective) throw new Error('WORKFLOW_SUPERVISOR_OBJECTIVE_REQUIRED');
     if (!requestId) throw new Error('WORKFLOW_SUPERVISOR_REQUEST_ID_REQUIRED');
+    const workId = textArg(args, 'work_id');
+    const requirementId = textArg(args, 'requirement_id');
+    if (workId && requirementId) throw new Error('WORKFLOW_SUPERVISOR_SEMANTIC_BINDING_AMBIGUOUS');
+    if ((workId || requirementId) && !repoId) throw new Error('WORKFLOW_SUPERVISOR_SEMANTIC_BINDING_REPO_REQUIRED');
     const id = standaloneTaskId(repoId, requestId);
     const task = await registerWorkflowSupervisorTask(forgeHome, {
       taskId: id,
@@ -49,6 +53,8 @@ export async function callWorkflowSupervisorAdapter(
       completionContract: {
         kind: 'model_semantic_completion',
         ...(repoId ? { repo_id: repoId, controller_home: ctx.controllerHome } : {}),
+        ...(workId ? { work_id: workId } : {}),
+        ...(requirementId ? { requirement_id: requirementId } : {}),
       },
       continuationPolicy: { kind: 'standalone_supervisor', bootstrap: true, ...(repoId ? { repo_id: repoId } : {}) },
       userBlockerPolicy: { kind: 'model_semantic_user_blocker' },

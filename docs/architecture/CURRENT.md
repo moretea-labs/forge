@@ -201,6 +201,8 @@ Machine-observable continuation health is derived from canonical Requirement/Pla
 
 Transient Runtime, connector, browser-provider, or Supervisor-adapter unavailability may delay progress, but it does not authorize a lower layer to seize outer-turn ownership. Once the exact conversation boundary exists, failure to enroll or reach Supervisor remains quiescent/retriable infrastructure state rather than a fallback permission for Scheduler or maintenance to double-send.
 
+Standalone Workflow Supervisor tasks may intentionally remain unbound under `model_semantic_completion`. When a task names `work_id` or `requirement_id`, DONE uses the same committed semantic proof as `forge_work_done` / `forge_requirement_done`; missing, ambiguous, or nonterminal bindings reject DONE and produce a correction effect. `repo_id` and objective/receipt text alone never create Work or Requirement authority.
+
 **Model owns reasoning and engineering policy. Forge owns capabilities, durable facts, execution mechanics and receipts.** Forge carries no route/mode vocabulary that selects Direct Control, durable Work, handoff, a worker/provider, verification, review, or completion on the model's behalf. Invoking `rh_work` is itself the explicit decision to use durable Work; `work_kind` is the explicit declaration of the technical evidence shape. Parallel delivery across independent Plan steps is expressed through explicit Work/Plan lineage plus existing Process/resource claims, which serialize or reject conflicts through the same Lease authority; no Forge-side task-size, complexity, or parallelism heuristic promotes a task into a lifecycle tier. There is no separate runtime tier, agent swarm, second scheduler, or second project lifecycle.
 
 ## State ownership

@@ -75,28 +75,48 @@ function boundWorkLineage(task: WorkflowSupervisorTask, requirementId?: string):
     : undefined;
 }
 
+function validateWorkCompletion(task: WorkflowSupervisorTask): WorkflowContractValidation {
+  const work = workFor(task);
+  return work && work.semanticState === 'completed'
+    ? boundWorkLineage(task) ?? { valid: true, reason: 'work_terminal_committed' }
+    : unsupported('work_not_completed');
+}
+
+function validateRequirementCompletion(task: WorkflowSupervisorTask, proposal: WorkflowSupervisorProposal): WorkflowContractValidation {
+  const requirement = requirementFor(task, proposal);
+  if (!requirement) return unsupported('requirement_not_found');
+  if (requirement.state !== 'done' || !requirement.semanticAcceptance) {
+    return { valid: false, reason: 'requirement_not_semantically_done:' + requirement.state, evidence: requirement.auditRefs.slice(-8) };
+  }
+  return boundWorkLineage(task, requirement.requirementId)
+    ?? { valid: true, reason: 'requirement_semantic_acceptance_committed', evidence: requirement.auditRefs.slice(-8) };
+}
+
+/**
+ * A standalone task may intentionally have no semantic target. When it names a
+ * Work or Requirement, DONE must use the same committed semantic proof as the
+ * corresponding typed completion contract. Repository provenance alone is not
+ * a semantic binding, and proposal text never creates one.
+ */
+function validateSemanticCompletionBinding(task: WorkflowSupervisorTask, proposal: WorkflowSupervisorProposal): WorkflowContractValidation {
+  const workId = contractText(task, 'work_id');
+  const requirementId = contractText(task, 'requirement_id');
+  if (workId && requirementId) return unsupported('semantic_completion_binding_ambiguous');
+  if (workId) return validateWorkCompletion(task);
+  if (requirementId) return validateRequirementCompletion(task, proposal);
+  return { valid: true, reason: 'model_semantic_completion' };
+}
+
 /** Read committed semantic Goal and explicit Work lineage without changing either authority. */
 export function forgeWorkflowSupervisorValidators(): WorkflowSupervisorValidators {
   return {
     completionContract: async (task, proposal) => {
       if (task.completionContract.kind === 'model_semantic_completion') {
-        return boundWorkLineage(task, contractText(task, 'requirement_id'))
-          ?? { valid: true, reason: 'model_semantic_completion' };
+        return validateSemanticCompletionBinding(task, proposal);
       }
-      if (task.completionContract.kind === 'forge_work_done') {
-        const work = workFor(task);
-        return work && work.semanticState === 'completed'
-          ? boundWorkLineage(task) ?? { valid: true, reason: 'work_terminal_committed' }
-          : unsupported('work_not_completed');
-      }
+      if (task.completionContract.kind === 'forge_work_done') return validateWorkCompletion(task);
       if (!['forge_requirement_done', 'forge_dynamic_requirement_done'].includes(String(task.completionContract.kind ?? ''))) return unsupported('completion_contract_kind_unsupported');
-      const requirement = requirementFor(task, proposal);
-      if (!requirement) return unsupported('requirement_not_found');
-      if (requirement.state !== 'done' || !requirement.semanticAcceptance) {
-        return { valid: false, reason: `requirement_not_semantically_done:${requirement.state}`, evidence: requirement.auditRefs.slice(-8) };
-      }
-      return boundWorkLineage(task, requirement.requirementId)
-        ?? { valid: true, reason: 'requirement_semantic_acceptance_committed', evidence: requirement.auditRefs.slice(-8) };
+      return validateRequirementCompletion(task, proposal);
     },
     userBlockerPolicy: async (task, proposal) => {
       if (task.userBlockerPolicy.kind === 'model_semantic_user_blocker') {

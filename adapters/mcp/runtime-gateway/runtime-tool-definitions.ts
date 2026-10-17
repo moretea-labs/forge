@@ -454,8 +454,10 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     recent_safe_error: { type: 'string' },
     model: { type: 'string' },
   }),
-  definition('supervisor_task', 'Start, list, inspect, revise, recover, stop, or prove standalone Workflow Supervisor autonomous tasks. Supervisor task/effect state is the continuation authority; Requirement, Plan, and Work are optional and are not created by this tool.', {
-    repo_id: { ...repoId, description: 'Optional repository provenance for start/proof; never Work authority.' },
+  definition('supervisor_task', 'Start, list, inspect, revise, recover, stop, or prove standalone Workflow Supervisor autonomous tasks. Supervisor task/effect state is the continuation authority; Requirement, Plan, and Work are not created by this tool. A standalone task may bind to one existing Work or Requirement for semantic DONE proof; omitting both keeps the unbound standalone contract.', {
+    repo_id: { ...repoId, description: 'Optional repository provenance for start/proof; a repository scope must be available with work_id or requirement_id. Repository identity alone is never Work authority.' },
+    work_id: { type: 'string', minLength: 1, maxLength: 256, description: 'Optional exact semantic Work binding. When set, DONE requires committed Work completion and terminal explicit lineage.' },
+    requirement_id: { type: 'string', minLength: 1, maxLength: 256, description: 'Optional exact semantic Requirement binding. Mutually exclusive with work_id; DONE requires committed semantic acceptance and terminal Work lineage.' },
     operation: { type: 'string', enum: ['start', 'list', 'get', 'revise', 'recover', 'stop', 'proof'] },
     task_id: { type: 'string' },
     objective: { type: 'string', description: 'Outcome objective for start/revise; revise never changes task or conversation identity.' },

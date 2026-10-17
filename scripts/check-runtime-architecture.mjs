@@ -1116,6 +1116,15 @@ forbid('supervisor/client.ts', /reserveWorkflowSupervisorSchedulerRecovery|reser
 forbid('supervisor/control-plane.ts', /reserveSchedulerRecovery/, 'Scheduler recovery must not regrow as a second Supervisor recovery authority');
 forbid('supervisor/server.ts', /reserve_scheduler_recovery/, 'Supervisor RPC surface must not expose retired Scheduler recovery authority');
 requireText('supervisor/forge-validators.ts', "requirement.state !== 'done'");
+requireText('supervisor/forge-validators.ts', 'validateSemanticCompletionBinding(task, proposal)');
+requireText('supervisor/forge-validators.ts', 'function validateWorkCompletion(');
+requireText('supervisor/forge-validators.ts', 'function validateRequirementCompletion(');
+requireText('adapters/mcp/runtime-gateway/runtime-tool-definitions.ts', "work_id: { type: 'string', minLength: 1, maxLength: 256");
+requireText('adapters/mcp/runtime-gateway/runtime-tool-definitions.ts', "requirement_id: { type: 'string', minLength: 1, maxLength: 256");
+requireText('adapters/mcp/runtime-gateway/workflow-supervisor-adapter.ts', 'WORKFLOW_SUPERVISOR_SEMANTIC_BINDING_AMBIGUOUS');
+requireText('adapters/mcp/runtime-gateway/workflow-supervisor-adapter.ts', 'WORKFLOW_SUPERVISOR_SEMANTIC_BINDING_REPO_REQUIRED');
+requireText('adapters/mcp/runtime-gateway/workflow-supervisor-adapter.ts', "...(workId ? { work_id: workId } : {})");
+requireText('adapters/mcp/runtime-gateway/workflow-supervisor-adapter.ts', "...(requirementId ? { requirement_id: requirementId } : {})");
 requireText('supervisor/forge-validators.ts', "requirement.state === 'waiting_for_user'");
 forbid('src/runtime/root/workflow-supervisor-composition.ts', /WorkflowSupervisorStore|supervisor\.sqlite|registerTask\(|reserveEffect\(/, 'Forge composition must access Supervisor state only through daemon RPC, never open its database or become a second writer');
 requireText('src/runtime/root/workflow-supervisor-composition.ts', 'workflowSupervisorBoundaryForWork');
