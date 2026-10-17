@@ -3,6 +3,7 @@ import type { MultiRepositoryMcpToolContext } from '../multi-repository';
 import { applyScheduleDedupe, buildScheduleDedupeReport, deleteSchedule } from '../../../packages/kernel/scheduler/api/index';
 import { buildFacadeResult } from '../../../src/runtime/control-plane/facade/facade-result';
 import { buildWorkContinuationSnapshot } from '../../../src/runtime/control-plane/facade/work-continuation';
+import { bindWorkflowSupervisorScheduledWakeForWork } from '../../../src/runtime/root/workflow-supervisor-composition';
 import {
   createWorkContinuationSchedule,
   getWorkContinuationSchedule,
@@ -33,6 +34,34 @@ const RH_WORK_SCHEDULE_OPERATIONS = new Set<RhWorkScheduleOperation>([
   'schedule_delete',
   'schedule_trigger',
 ]);
+
+async function bindSupervisorWakeForSchedule(
+  ctx: MultiRepositoryMcpToolContext,
+  repoId: string,
+  schedule: { scheduleId: string; action: { operation: string; arguments?: Record<string, unknown> } },
+): Promise<{ status: 'bound' | 'not_enrolled' | 'binding_deferred'; taskId?: string } | undefined> {
+  if (schedule.action.operation !== 'controller_progression' || schedule.action.arguments?.controller_type !== 'chatgpt') {
+    return undefined;
+  }
+  const workId = typeof schedule.action.arguments.work_id === 'string' ? schedule.action.arguments.work_id.trim() : '';
+  if (!workId) throw new Error('SCHEDULE_SUPERVISOR_WAKE_WORK_ID_REQUIRED');
+  try {
+    return await bindWorkflowSupervisorScheduledWakeForWork(
+      { controllerHome: ctx.controllerHome, repoId },
+      workId,
+      schedule.scheduleId,
+    );
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    let pauseFailure = '';
+    try {
+      pauseWorkContinuationSchedule(ctx.controllerHome, repoId, schedule.scheduleId, `Supervisor scheduled-wake binding failed: ${reason}`);
+    } catch (pauseError) {
+      pauseFailure = `; schedule pause also failed: ${pauseError instanceof Error ? pauseError.message : String(pauseError)}`;
+    }
+    throw new Error(`SCHEDULE_SUPERVISOR_WAKE_BINDING_FAILED:${reason}${pauseFailure}`);
+  }
+}
 
 export function isRhWorkScheduleOperation(operation: string): operation is RhWorkScheduleOperation {
   return RH_WORK_SCHEDULE_OPERATIONS.has(operation as RhWorkScheduleOperation);
@@ -105,6 +134,7 @@ export async function callRhWorkScheduleAdapter(
         backoffMaxMinutes: typeof args.backoff_max_minutes === 'number' ? args.backoff_max_minutes : undefined,
         stopConditions: Array.isArray(args.stop_conditions) ? args.stop_conditions.map(String) : undefined,
       });
+      const supervisorWakeBinding = await bindSupervisorWakeForSchedule(ctx, repository.repoId, created.schedule);
       return result(buildFacadeResult({
         summary: created.work
           ? `Work schedule ${created.schedule.scheduleId} is configured for Work ${created.work.workId}.`
@@ -112,6 +142,7 @@ export async function callRhWorkScheduleAdapter(
         data: {
           schedule: created.schedule,
           ...(created.work ? { work: buildWorkContinuationSnapshot(created.work) } : {}),
+          ...(supervisorWakeBinding ? { supervisorWakeBinding } : {}),
         },
       }) as unknown as Record<string, unknown>);
     }
@@ -134,7 +165,11 @@ export async function callRhWorkScheduleAdapter(
     }
     if (operation === 'schedule_resume') {
       const saved = resumeWorkContinuationSchedule(ctx.controllerHome, repository.repoId, scheduleId);
-      return result(buildFacadeResult({ summary: `Schedule ${scheduleId} is resumed.`, data: { schedule: saved } }) as unknown as Record<string, unknown>);
+      const supervisorWakeBinding = await bindSupervisorWakeForSchedule(ctx, repository.repoId, saved);
+      return result(buildFacadeResult({
+        summary: `Schedule ${scheduleId} is resumed.`,
+        data: { schedule: saved, ...(supervisorWakeBinding ? { supervisorWakeBinding } : {}) },
+      }) as unknown as Record<string, unknown>);
     }
     if (operation === 'schedule_delete') {
       const schedule = getWorkContinuationSchedule(ctx.controllerHome, repository.repoId, scheduleId).schedule;

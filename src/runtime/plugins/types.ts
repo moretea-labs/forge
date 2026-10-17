@@ -50,6 +50,8 @@ export interface AssistantPluginActionDescriptor {
   readOnly: boolean;
   risk: AssistantPluginActionRisk;
   confirmation: AssistantPluginActionConfirmation;
+  /** Requires an existing explicit reusable grant; this action cannot implicitly create its own grant. */
+  requiresExplicitCapabilityGrant?: boolean;
   requiredConfirmationText?: string;
   defaultTimeoutMs: number;
   cancellable: boolean;

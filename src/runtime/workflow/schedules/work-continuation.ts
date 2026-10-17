@@ -28,6 +28,13 @@ import type {
 export type ContinuationControllerType = Exclude<ControllerType, 'human'>;
 export type WorkScheduleMode = 'continuation' | 'browser_watch' | 'browser_keepalive';
 
+const CONTROLLER_PROGRESSION_OPERATION = 'controller_progression';
+const LEGACY_EXTERNAL_CONTROLLER_WAKE_OPERATION = 'external_controller_wake';
+
+function isWorkContinuationOperation(operation: string): boolean {
+  return operation === CONTROLLER_PROGRESSION_OPERATION || operation === LEGACY_EXTERNAL_CONTROLLER_WAKE_OPERATION;
+}
+
 export interface WorkContinuationScheduleInput {
   workId?: string;
   scheduleMode?: WorkScheduleMode;
@@ -93,7 +100,7 @@ function activeWork(controllerHome: string, repoId: string, workId: string): Wor
 }
 
 function continuationSchedule(schedule: RepositorySchedule): RepositorySchedule {
-  if (!['external_controller_wake', 'browser_probe'].includes(schedule.action.operation)) {
+  if (!isWorkContinuationOperation(schedule.action.operation) && schedule.action.operation !== 'browser_probe') {
     throw new Error(`SCHEDULE_NOT_WORK_CONTINUATION: ${schedule.scheduleId}`);
   }
   return schedule;
@@ -194,7 +201,7 @@ export function createWorkContinuationSchedule(
   }
   if (!requestedWorkId && scheduleMode === 'browser_keepalive' && controllerType !== 'chatgpt') throw new Error('STANDALONE_BROWSER_KEEPALIVE_CHATGPT_REQUIRED');
   const trigger = normalizedTrigger(input);
-  const operation = scheduleMode === 'continuation' ? 'external_controller_wake' : 'browser_probe';
+  const operation = scheduleMode === 'continuation' ? CONTROLLER_PROGRESSION_OPERATION : 'browser_probe';
   const name = input.scheduleName?.trim()
     || (scheduleMode === 'browser_watch' ? `Watch external state for Work ${work!.workId}`
       : scheduleMode === 'browser_keepalive'
@@ -240,7 +247,7 @@ export function createWorkContinuationSchedule(
   // Work may legitimately observe several independent external targets.
   if (scheduleMode === 'continuation') {
     const existing = listSchedules(controllerHome, repoId)
-      .filter((candidate) => candidate.action.operation === 'external_controller_wake')
+      .filter((candidate) => isWorkContinuationOperation(candidate.action.operation))
       .filter((candidate) => candidate.action.arguments?.work_id === work!.workId);
     const authoritative = [...existing].reverse().find((candidate) => candidate.enabled) ?? existing.at(-1);
     if (authoritative) {
@@ -302,7 +309,7 @@ export function listWorkContinuationSchedules(
   options: WorkContinuationScheduleListOptions = {},
 ): { schedules: RepositorySchedule[]; occurrences?: ScheduleOccurrence[] } {
   const schedules = listSchedules(controllerHome, repoId)
-    .filter((entry) => ['external_controller_wake', 'browser_probe'].includes(entry.action.operation))
+    .filter((entry) => isWorkContinuationOperation(entry.action.operation) || entry.action.operation === 'browser_probe')
     .filter((entry) => !options.workId || entry.action.arguments?.work_id === options.workId);
   if (!options.includeOccurrences) return { schedules };
   const scheduleIds = new Set(schedules.map((entry) => entry.scheduleId));
@@ -342,6 +349,44 @@ export function resumeWorkContinuationSchedule(controllerHome: string, repoId: s
   const schedule = continuationSchedule(getSchedule(controllerHome, repoId, scheduleId));
   const workId = typeof schedule.action.arguments?.work_id === 'string' ? schedule.action.arguments.work_id : '';
   activeWork(controllerHome, repoId, workId);
+  if (schedule.action.operation === LEGACY_EXTERNAL_CONTROLLER_WAKE_OPERATION) {
+    const trigger = schedule.trigger;
+    const migrated = createWorkContinuationSchedule(controllerHome, repoId, {
+      workId,
+      scheduleName: schedule.name,
+      controllerType: typeof schedule.action.arguments?.controller_type === 'string'
+        ? schedule.action.arguments.controller_type as ContinuationControllerType
+        : undefined,
+      continuationPrompt: typeof schedule.action.arguments?.continuation_hint === 'string'
+        ? schedule.action.arguments.continuation_hint
+        : typeof schedule.action.arguments?.continuation_prompt === 'string'
+          ? schedule.action.arguments.continuation_prompt
+          : undefined,
+      triggerType: trigger.type,
+      everyMinutes: trigger.everyMinutes,
+      cronExpression: trigger.cronExpression,
+      timezone: trigger.timezone,
+      catchUpMinutes: trigger.catchUpMinutes,
+      calendarAt: trigger.calendarAt,
+      condition: trigger.condition,
+      eventName: trigger.eventName,
+      dependencyJobIds: trigger.dependencyJobIds,
+      maxFailures: schedule.policy.maxFailures,
+      cooldownMinutes: schedule.policy.cooldownMinutes,
+      dailyBudgetMinutes: schedule.policy.dailyBudgetMinutes,
+      shadowMode: schedule.policy.shadowMode,
+      backoffBaseMinutes: schedule.policy.backoffBaseMinutes,
+      backoffMaxMinutes: schedule.policy.backoffMaxMinutes,
+      stopConditions: schedule.stopConditions,
+    }).schedule;
+    return saveSchedule(controllerHome, {
+      ...migrated,
+      enabled: true,
+      pausedReason: undefined,
+      consecutiveFailures: 0,
+      nextEligibleAt: undefined,
+    });
+  }
   return saveSchedule(controllerHome, {
     ...schedule,
     enabled: true,
@@ -378,7 +423,7 @@ export async function triggerWorkContinuationRepositoryEvent(
 ): Promise<Array<{ scheduleId: string; occurrenceId?: string; status?: string }>> {
   const schedules = listWorkContinuationSchedules(controllerHome, repoId, { workId: input.workId }).schedules
     .filter((schedule) => schedule.enabled)
-    .filter((schedule) => schedule.action.operation === 'external_controller_wake')
+    .filter((schedule) => isWorkContinuationOperation(schedule.action.operation))
     .filter((schedule) => schedule.trigger.type === 'repository-event' && schedule.trigger.eventName === eventName);
   const triggered: Array<{ scheduleId: string; occurrenceId?: string; status?: string }> = [];
   for (const schedule of schedules) {
@@ -404,7 +449,7 @@ export function eventDrivenContinuationSchedule(
 ): RepositorySchedule {
   const workSchedules = listWorkContinuationSchedules(controllerHome, repoId, { workId: input.workId }).schedules;
   const existing = workSchedules
-    .filter((schedule) => schedule.action.operation === 'external_controller_wake')
+    .filter((schedule) => isWorkContinuationOperation(schedule.action.operation))
     .reverse()
     .find((schedule) => schedule.enabled)
     ?? workSchedules.at(-1);

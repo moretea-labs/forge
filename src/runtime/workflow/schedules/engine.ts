@@ -51,6 +51,7 @@ import type {
 const execFileAsync = promisify(execFile);
 const LIVE_MAINTENANCE_OPERATION = 'runtime_maintenance_apply';
 const EXTERNAL_CONTROLLER_WAKE_OPERATION = 'external_controller_wake';
+const CONTROLLER_PROGRESSION_OPERATION = 'controller_progression';
 const BROWSER_PROBE_OPERATION = 'browser_probe';
 const GITHUB_ISSUE_WATCH_OPERATION = 'github_issue_watch';
 const DEFAULT_EXTERNAL_CONTROLLER_WAKE_TIMEOUT_MS = 60_000;
@@ -60,6 +61,7 @@ function isDeterministicSchedule(schedule: RepositorySchedule): boolean {
   // Kernel executes only typed, bounded dispatch operations.
   return schedule.action.operation === LIVE_MAINTENANCE_OPERATION
     || schedule.action.operation === EXTERNAL_CONTROLLER_WAKE_OPERATION
+    || schedule.action.operation === CONTROLLER_PROGRESSION_OPERATION
     || schedule.action.operation === BROWSER_PROBE_OPERATION
     || schedule.action.operation === GITHUB_ISSUE_WATCH_OPERATION;
 }
@@ -87,6 +89,7 @@ async function workspaceDirty(controllerHome: string, repoId: string): Promise<b
 
 function workBoundScheduleWorkId(schedule: RepositorySchedule): string | undefined {
   if (schedule.action.operation !== EXTERNAL_CONTROLLER_WAKE_OPERATION
+    && schedule.action.operation !== CONTROLLER_PROGRESSION_OPERATION
     && schedule.action.operation !== BROWSER_PROBE_OPERATION) return undefined;
   const value = schedule.action.arguments?.work_id;
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
@@ -246,7 +249,7 @@ export function classifyChatgptWakeFailure(reason: string): ChatgptWakeFailureCl
   return 'ordinary_failure';
 }
 
-async function executeExternalControllerWake(
+async function executeControllerProgression(
   controllerHome: string,
   schedule: RepositorySchedule,
   occurrence: ScheduleOccurrence,
@@ -311,12 +314,20 @@ async function executeExternalControllerWake(
     );
   }
 
+  if (schedule.action.operation === CONTROLLER_PROGRESSION_OPERATION
+    && (typeof args.controller_binding_id !== 'string' || !args.controller_binding_id.trim())) {
+    throw new Error(`SCHEDULE_CONTROLLER_PROGRESSION_BINDING_REQUIRED:${workId}`);
+  }
+
   const hadLegacySessionIdentity = typeof args.controller_session_id === 'string' && args.controller_session_id.trim().length > 0;
 
   // Explicit compatibility migration for schedules written before Kernel V2 B4.
   // Provider metadata is copied once into the adapter-owned binding and the
   // Schedule is rewritten to exact Work/ControllerSession/ControllerBinding ids.
   if (!bindingRecord) {
+    if (schedule.action.operation === CONTROLLER_PROGRESSION_OPERATION) {
+      throw new Error(`SCHEDULE_CONTROLLER_PROGRESSION_BINDING_NOT_FOUND:${workId}`);
+    }
     const binding = ensureScheduledControllerBinding(
       { controllerHome, repoId: schedule.repoId },
       { workId, session: retainedSession, scheduleName: schedule.name, args },
@@ -388,6 +399,8 @@ async function executeExternalControllerWake(
         continuationHint,
         allowSemanticWaitRecovery: controllerType === 'chatgpt',
         scheduleName: schedule.name,
+        scheduleId: schedule.scheduleId,
+        scheduleOccurrenceId: occurrence.occurrenceId,
         bindingArgs: args,
       },
     );
@@ -442,13 +455,17 @@ async function executeExternalControllerWake(
 
     const supervisorEnrollment = progression.status === 'chatgpt_enrolled'
       ? progression.supervisorEnrollment
-      : { status: 'not_eligible' as const };
+      : progression.status === 'scheduled_supervisor_woken'
+        ? { status: 'enrolled' as const, taskId: progression.taskId, effectId: progression.effectId }
+        : { status: 'not_eligible' as const };
+    const supervisorOwnsTurn = progression.status === 'chatgpt_enrolled' || progression.status === 'scheduled_supervisor_woken';
     updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, (current) => ({
       lastTriggeredAt: timestamp,
       lastOccurrenceId: occurrence.occurrenceId,
       consecutiveFailures: 0,
       nextEligibleAt: undefined,
       ...(supervisorEnrollment.status === 'enrolled'
+        && schedule.action.operation !== CONTROLLER_PROGRESSION_OPERATION
         ? { enabled: false, pausedReason: 'workflow_supervisor_owns_outer_turn' }
         : current.enabled ? { pausedReason: undefined } : {}),
     }));
@@ -457,18 +474,22 @@ async function executeExternalControllerWake(
       status: 'dispatched',
       reason: progression.status === 'chatgpt_enrolled'
         ? `Workflow Supervisor reserved the exact ChatGPT effect ${progression.supervisorEnrollment.effectId ?? progression.relayScopeId}; Scheduler issued no provider send.`
-        : progression.reused
-          ? `Controller continuation occurrence ${occurrence.occurrenceId} was already durably dispatched; external replay suppressed and semantic round closure is still pending.`
-          : `ControllerHost accepted durable binding ${bindingRecord.binding.bindingId} for Work ${workId}; dispatch ${progression.providerDispatchReceiptId ?? progression.relayScopeId}; semantic round closure is still pending.`,
+        : progression.status === 'scheduled_supervisor_woken'
+          ? `Scheduler occurrence ${occurrence.occurrenceId} woke the same Workflow Supervisor task and reserved effect ${progression.effectId}; Scheduler issued no provider send.`
+          : progression.reused
+            ? `Controller continuation occurrence ${occurrence.occurrenceId} was already durably dispatched; external replay suppressed and semantic round closure is still pending.`
+            : `ControllerHost accepted durable binding ${bindingRecord.binding.bindingId} for Work ${workId}; dispatch ${progression.providerDispatchReceiptId ?? progression.relayScopeId}; semantic round closure is still pending.`,
     });
     appendWorkEvidence(workStore, workId, {
       evidenceId: dispatchedOccurrence.occurrenceId,
-      title: progression.status === 'chatgpt_enrolled'
+      title: supervisorOwnsTurn
         ? 'scheduled Workflow Supervisor effect reserved'
         : 'scheduled Controller continuation dispatched',
-      summary: progression.status === 'chatgpt_enrolled'
-        ? `Schedule ${schedule.scheduleId} materialized the exact ControllerRound occurrence and Supervisor effect; Supervisor owns ChatGPT delivery.`
-        : `Schedule ${schedule.scheduleId} occurrence ${dispatchedOccurrence.occurrenceId} resumed the exact Work-bound ControllerSession through ControllerHost.`,
+      summary: progression.status === 'scheduled_supervisor_woken'
+        ? `Schedule ${schedule.scheduleId} occurrence ${dispatchedOccurrence.occurrenceId} woke the same Work-bound Supervisor task; Supervisor owns ChatGPT delivery.`
+        : progression.status === 'chatgpt_enrolled'
+          ? `Schedule ${schedule.scheduleId} materialized the exact ControllerRound occurrence and Supervisor effect; Supervisor owns ChatGPT delivery.`
+          : `Schedule ${schedule.scheduleId} occurrence ${dispatchedOccurrence.occurrenceId} resumed the exact Work-bound ControllerSession through ControllerHost.`,
       detailLevel: 'summary',
     });
     return dispatchedOccurrence;
@@ -724,8 +745,9 @@ export async function evaluateSchedule(
   }
 
   const args = schedule.action.arguments ?? {};
-  if (schedule.action.operation === EXTERNAL_CONTROLLER_WAKE_OPERATION) {
-    return executeExternalControllerWake(controllerHome, schedule, occurrence, timestamp, args);
+  if (schedule.action.operation === EXTERNAL_CONTROLLER_WAKE_OPERATION
+    || schedule.action.operation === CONTROLLER_PROGRESSION_OPERATION) {
+    return executeControllerProgression(controllerHome, schedule, occurrence, timestamp, args);
   }
 
   if (schedule.action.operation === GITHUB_ISSUE_WATCH_OPERATION) {
@@ -772,7 +794,7 @@ export async function evaluateSchedule(
           ? `${args.continuation_prompt}\n\nGitHub issue watcher detected: ${issueSummary}`
           : `GitHub issue watcher detected actionable issue changes: ${issueSummary}. Read current Work/Plan/evidence and process these issues through the bounded repair workflow.`,
       };
-      const wake = await executeExternalControllerWake(controllerHome, schedule, occurrence, timestamp, wakeArgs, evidence, { transientWakeFailure: true });
+      const wake = await executeControllerProgression(controllerHome, schedule, occurrence, timestamp, wakeArgs, evidence, { transientWakeFailure: true });
       if (wake.status !== 'failed') persistObservation();
       return wake;
     } catch (error) {
@@ -836,7 +858,7 @@ export async function evaluateSchedule(
               : `Scheduled browser watcher ${schedule.scheduleId} detected that authentication is required (${probe.authReason ?? 'login marker'}). Inspect the external dependency and request user login only if it cannot be restored safely.`;
           if (workId) {
             const wakeArgs = { ...args, continuation_prompt: authPrompt };
-            return executeExternalControllerWake(controllerHome, observedSchedule, occurrence, timestamp, wakeArgs, { ...observationEvidence, authReason: probe.authReason });
+            return executeControllerProgression(controllerHome, observedSchedule, occurrence, timestamp, wakeArgs, { ...observationEvidence, authReason: probe.authReason });
           }
           const controllerType = typeof args.controller_type === 'string' ? args.controller_type.trim() : 'chatgpt';
           if (controllerType !== 'chatgpt') {
@@ -917,7 +939,7 @@ export async function evaluateSchedule(
           ? args.continuation_prompt
           : `Scheduled browser watcher ${schedule.scheduleId} detected a changed external observation. Read the current external state, correlate it with Work ${workId}, and continue only the bounded Work objective.`,
       };
-      return executeExternalControllerWake(controllerHome, observedSchedule, occurrence, timestamp, wakeArgs, { ...observationEvidence, observationStatus });
+      return executeControllerProgression(controllerHome, observedSchedule, occurrence, timestamp, wakeArgs, { ...observationEvidence, observationStatus });
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       const failed = applyScheduleFailure(controllerHome, schedule.scheduleId, schedule.repoId, occurrence.occurrenceId, {

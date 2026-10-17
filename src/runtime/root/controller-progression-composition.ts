@@ -19,6 +19,7 @@ import {
 } from './scheduled-controller-composition';
 import {
   ensureWorkflowSupervisorEnrollmentForWork,
+  wakeWorkflowSupervisorScheduledTaskForWork,
   type WorkflowSupervisorEnrollmentStatus,
 } from './workflow-supervisor-composition';
 import { getRuntimeWriteClaim } from './write-fence';
@@ -30,6 +31,8 @@ export interface ControllerProgressionInput {
   continuationHint?: string;
   allowSemanticWaitRecovery?: boolean;
   scheduleName?: string;
+  scheduleId?: string;
+  scheduleOccurrenceId?: string;
   bindingArgs?: Record<string, unknown>;
 }
 
@@ -39,6 +42,7 @@ export interface ControllerProgressionDependencies {
   prepareOccurrence?: typeof prepareControllerRoundOccurrence;
   resumeOccurrence?: typeof resumeControllerRoundOccurrence;
   ensureSupervisorEnrollment?: typeof ensureWorkflowSupervisorEnrollmentForWork;
+  wakeScheduledSupervisorTask?: typeof wakeWorkflowSupervisorScheduledTaskForWork;
 }
 
 export type ControllerProgressionResult =
@@ -59,6 +63,12 @@ export type ControllerProgressionResult =
         effectId?: string;
         reason?: string;
       };
+    }
+  | {
+      status: 'scheduled_supervisor_woken';
+      binding: ControllerBinding;
+      taskId: string;
+      effectId: string;
     }
   | {
       status: 'chatgpt_not_enrolled';
@@ -147,6 +157,21 @@ export async function reconcileControllerProgression(
     args: input.bindingArgs ?? {},
   });
 
+  if (session.controllerType === 'chatgpt' && input.scheduleId && input.scheduleOccurrenceId) {
+    const wakeScheduledSupervisorTask = dependencies.wakeScheduledSupervisorTask ?? wakeWorkflowSupervisorScheduledTaskForWork;
+    const wake = await wakeScheduledSupervisorTask(
+      store, input.workId, input.scheduleId, input.scheduleOccurrenceId,
+    );
+    if (wake.status === 'woken' && wake.taskId && wake.effectId) {
+      return {
+        status: 'scheduled_supervisor_woken',
+        binding,
+        taskId: wake.taskId,
+        effectId: wake.effectId,
+      };
+    }
+  }
+
   if (session.controllerType === 'chatgpt') {
     const ensureSupervisorEnrollment = dependencies.ensureSupervisorEnrollment ?? ensureWorkflowSupervisorEnrollmentForWork;
     let controllerRoundOccurrenceId = input.occurrenceId;
@@ -171,7 +196,7 @@ export async function reconcileControllerProgression(
     }
     if (existingRound?.status === 'blocked'
       && controllerRoundBlockerClass(existingRound) === 'provider_dispatch_outcome_unknown') {
-      const supervisorEnrollment = await ensureSupervisorEnrollment(store, input.workId);
+      const supervisorEnrollment = await ensureSupervisorEnrollment(store, input.workId, input.scheduleId, input.scheduleOccurrenceId);
       return {
         status: supervisorEnrollment.status === 'enrolled' ? 'chatgpt_enrolled' : 'chatgpt_not_enrolled',
         binding,
@@ -194,7 +219,7 @@ export async function reconcileControllerProgression(
     if (prepared.outcome === 'wait_for_user') return { status: 'wait_for_user', reason: prepared.reason, binding };
     if (prepared.outcome === 'rejected') return { status: 'rejected', reason: prepared.reason, binding };
 
-    const supervisorEnrollment = await ensureSupervisorEnrollment(store, input.workId);
+    const supervisorEnrollment = await ensureSupervisorEnrollment(store, input.workId, input.scheduleId, input.scheduleOccurrenceId);
     return {
       status: supervisorEnrollment.status === 'enrolled' ? 'chatgpt_enrolled' : 'chatgpt_not_enrolled',
       binding,

@@ -1,7 +1,8 @@
 import { once } from 'node:events';
+import { createHash } from 'node:crypto';
 import { WorkflowSupervisorControlPlane } from '../../../supervisor/control-plane';
 import { forgeWorkflowSupervisorValidators } from '../../../supervisor/forge-validators';
-import { forgeWorkflowSupervisorLifecycleHooks } from './workflow-supervisor-composition';
+import { forgeWorkflowSupervisorLifecycleHooks, workflowSupervisorContractText } from './workflow-supervisor-composition';
 import { resolveWorkflowSupervisorForgeHome, workflowSupervisorSocketPath } from '../../../supervisor/paths';
 import {
   createWorkflowSupervisorServer,
@@ -16,6 +17,12 @@ import { ChromeExtensionChatgptConversationTargetPort } from '../../../adapters/
 import { createRuntimeComputerTargetPersistence } from './computer-target-persistence';
 import { listDirectActivities, listUserRequests, recordDirectActivity, recordUserRequest, resolveUserRequest } from '../../../packages/kernel/identity/api/index';
 import { getRuntimeWriteClaim } from './write-fence';
+import { getRepository } from '../../cli/repositories/registry';
+import { getWorkContract } from '../../../packages/kernel/work/api/index';
+import { isTerminalSemanticWorkState } from '../../../packages/kernel/work/api/index';
+import { findActivePluginCapabilityAuthorization, pluginCapabilityAuthorizationOwnerScope } from '../plugins/capability-authorization-grants';
+import { submitAssistantPluginAction } from '../plugins/store';
+import { GMAIL_AUTOMATION_CAPABILITY_ID, GMAIL_AUTOMATION_OWNER_EMAIL, GMAIL_PLUGIN_ID } from '../plugins/gmail-adapter';
 
 export interface RuntimeWorkflowSupervisorHandle {
   readonly done: Promise<void>;
@@ -97,7 +104,7 @@ export async function startWorkflowSupervisorRuntime(
       targetScope: `workflow-supervisor-task:${projection.taskId}`,
       principalId: 'forge-runtime',
       status: exhausted ? 'running' : 'completed',
-      startedAt: existing?.startedAt ?? projection.observedAt,
+      startedAt: exhausted && existing?.status !== 'running' ? projection.observedAt : existing?.startedAt ?? projection.observedAt,
       ...(!exhausted ? { completedAt: projection.observedAt } : {}),
       summary: exhausted
         ? projection.stallKind === 'provider_resume_exhausted'
@@ -122,6 +129,268 @@ export async function startWorkflowSupervisorRuntime(
         currentState: { taskId: input.taskId, ...(input.effectId ? { effectId: input.effectId } : {}), transportCode: input.code },
       },
     });
+  };
+  const notificationRequestId = (...parts: string[]): string => `wfsn_${createHash('sha256').update(parts.join('\u0000')).digest('hex').slice(0, 32)}`;
+  const notificationOrigin = { surface: 'system' as const };
+  const notificationOwnerScope = pluginCapabilityAuthorizationOwnerScope({ surface: 'system', actor: 'plugin_action_execute' });
+  const notificationTarget = {
+    kind: 'gmail-mailbox' as const,
+    id: GMAIL_AUTOMATION_OWNER_EMAIL,
+    identityFingerprint: `gmail-profile:${GMAIL_AUTOMATION_OWNER_EMAIL}`,
+  };
+  const findNotificationGrant = (repoId: string) => findActivePluginCapabilityAuthorization(controllerHome, {
+    ownerScope: notificationOwnerScope,
+    repoId,
+    pluginId: GMAIL_PLUGIN_ID,
+    capabilityId: GMAIL_AUTOMATION_CAPABILITY_ID,
+    target: notificationTarget,
+    scopes: ['gmail.send'],
+    risk: 'remote_write',
+  });
+  const sendSupervisorNotification = async (input: {
+    taskId: string;
+    requestId: string;
+    kind: 'user_action_required' | 'continuation_exhausted';
+    subject: string;
+    reason: string;
+    effectId?: string;
+    userRequestId?: string;
+    stillActive?: () => boolean;
+  }): Promise<void> => {
+    if (input.stillActive && !input.stillActive()) return;
+    const task = store.getTask(input.taskId);
+    if (!task) return;
+    const repoId = workflowSupervisorContractText(task, 'repo_id');
+    if (!repoId) return;
+    const repository = getRepository(repoId, controllerHome);
+    if (!repository) return;
+    const grant = findNotificationGrant(repoId);
+    if (!grant) {
+      recordUserRequest(controllerHome, {
+        kind: 'user_action_request',
+        rootCauseKey: `workflow-supervisor.notification-auth:${input.taskId}`,
+        title: 'Scheduled Gmail notification authorization required',
+        summary: `Forge has not sent the Workflow Supervisor notification because no active reusable Gmail automation grant is available for ${GMAIL_AUTOMATION_OWNER_EMAIL}. To authorize, run Gmail action authorize_scheduled_gmail_automation interactively. It grants only gmail.modify/gmail.send for this fixed mailbox for up to 90 days; it does not authorize arbitrary recipients, replies, or trash. No email was sent or retried around this boundary.`,
+        actionRequired: 'grant_permission',
+        targetScope: { scopeKind: 'workflow_supervisor_task', scopeId: input.taskId },
+        presentation: {
+          severity: 'blocked',
+          creationReason: 'scheduled_gmail_notification_authorization_required',
+          reason: 'EXTERNAL_EFFECT_AUTHORIZATION_REQUIRED',
+          currentState: {
+            taskId: input.taskId,
+            repoId,
+            mailbox: GMAIL_AUTOMATION_OWNER_EMAIL,
+            pluginId: GMAIL_PLUGIN_ID,
+            capabilityId: GMAIL_AUTOMATION_CAPABILITY_ID,
+            authorizationAction: 'authorize_scheduled_gmail_automation',
+            scopes: ['gmail.modify', 'gmail.send'],
+            grantLifetimeDays: 90,
+          },
+        },
+      });
+      return;
+    }
+    if (input.stillActive && !input.stillActive()) return;
+    const workId = workflowSupervisorContractText(task, 'work_id');
+    const body = [
+      'Forge Workflow Supervisor 检测到需要人工处理的事件。',
+      `事件：${input.kind}`,
+      `原因：${input.reason.slice(0, 1800)}`,
+      `Supervisor Task：${task.taskId}`,
+      `Work：${workId ?? '未绑定 Work'}`,
+      `目标：${task.objective.slice(0, 800)}`,
+      `ChatGPT 处理入口：${task.conversationUrl}`,
+      ...(repoId && workId ? [`Forge Work 查询：rh_work operation=get repo_id=${repoId} work_id=${workId}`] : []),
+      ...(input.effectId ? [`Effect：${input.effectId}`] : []),
+      ...(input.userRequestId ? [`UserRequest：${input.userRequestId}`] : []),
+      '处理或恢复后，Forge 会继续沿用原有任务与 effect；不要手动重复发送。',
+    ].join('\n').slice(0, 11000);
+    try {
+      await submitAssistantPluginAction(controllerHome, repository, {
+        pluginId: GMAIL_PLUGIN_ID,
+        actionId: 'send_owner_notification',
+        requestId: input.requestId,
+        args: { subject: input.subject, body_text: body },
+        origin: {
+          surface: 'system',
+          correlationId: input.requestId,
+          ...(input.effectId ? { causationId: input.effectId } : {}),
+        },
+        authorizationGrantRefs: [grant.grantId],
+      });
+    } catch (error) {
+      const failureMessage = error instanceof Error ? error.message : String(error);
+      const failureCode = /^([A-Z][A-Z0-9_]+)(?::|$)/.exec(failureMessage)?.[1];
+      const loginRequired = failureCode === 'PLUGIN_AUTH_REQUIRED' || failureCode === 'PLUGIN_AUTH_FAILED';
+      const authorizationRequired = loginRequired || [
+        'PLUGIN_CAPABILITY_GRANT_REQUIRED',
+        'GMAIL_AUTOMATION_DISABLED',
+        'GMAIL_AUTOMATION_MAILBOX_MISMATCH',
+        'EXTERNAL_EFFECT_AUTHORIZATION_REQUIRED',
+      ].includes(failureCode ?? '');
+      if (authorizationRequired && failureCode) {
+        const workId = workflowSupervisorContractText(task, 'work_id');
+        recordUserRequest(controllerHome, {
+          kind: 'user_action_request',
+          rootCauseKey: `workflow-supervisor.notification-send-auth:${input.taskId}:${input.requestId}`,
+          title: loginRequired ? 'Gmail notification reauthorization required' : 'Gmail notification authorization required',
+          summary: `Forge could not send the notification to ${GMAIL_AUTOMATION_OWNER_EMAIL} because the exact Gmail provider action failed with ${failureCode}: ${failureMessage}. No alternate provider or automatic resend was used. Restore the Gmail authorization or exact mailbox grant, then continue from the original task.`,
+          actionRequired: loginRequired ? 'login' : 'grant_permission',
+          targetScope: {
+            scopeKind: 'workflow_supervisor_task',
+            scopeId: input.taskId,
+            repoId,
+            ...(workId ? { workId } : {}),
+          },
+          presentation: {
+            severity: 'blocked',
+            creationReason: 'scheduled_gmail_notification_authorization_failed',
+            reason: failureCode,
+            currentState: {
+              taskId: input.taskId,
+              repoId,
+              ...(workId ? { workId } : {}),
+              mailbox: GMAIL_AUTOMATION_OWNER_EMAIL,
+              pluginId: GMAIL_PLUGIN_ID,
+              capabilityId: GMAIL_AUTOMATION_CAPABILITY_ID,
+              actionId: 'send_owner_notification',
+              requestId: input.requestId,
+              ...(input.effectId ? { effectId: input.effectId } : {}),
+              errorCode: failureCode,
+            },
+          },
+        });
+      }
+      process.stderr.write(`[workflow-supervisor-notification] ${input.requestId}: ${failureMessage}\\n`);
+    }
+  };
+  let notificationReconciliationInFlight: Promise<void> | undefined;
+  const reconcileSupervisorNotifications = (): void => {
+    if (closing || notificationReconciliationInFlight) return;
+    notificationReconciliationInFlight = (async () => {
+      const allRequests = listUserRequests(controllerHome);
+      for (const request of allRequests.filter((item) => item.status === 'pending' && item.rootCauseKey.startsWith('workflow-supervisor.notification-auth:'))) {
+        const taskId = request.targetScope?.scopeId;
+        if (!taskId) continue;
+        const task = store.getTask(taskId);
+        if (!task) continue;
+        const repoId = workflowSupervisorContractText(task, 'repo_id');
+        const workId = workflowSupervisorContractText(task, 'work_id');
+        if (!repoId) continue;
+        if (workId) {
+          const work = getWorkContract({ controllerHome, repoId }, workId);
+          if (!work || isTerminalSemanticWorkState(work.semanticState)) {
+            resolveUserRequest(controllerHome, { requestId: request.requestId, decision: 'underlying_work_terminal', resolvedBy: 'forge-runtime' });
+            continue;
+          }
+        }
+        if (findNotificationGrant(repoId)) {
+          resolveUserRequest(controllerHome, { requestId: request.requestId, decision: 'gmail_automation_authorized', resolvedBy: 'forge-runtime' });
+        }
+      }
+
+      for (const request of allRequests.filter((item) => item.status === 'pending' && item.rootCauseKey.startsWith('workflow-supervisor.transport-human:'))) {
+        const taskId = request.targetScope?.scopeId;
+        if (!taskId) continue;
+        const task = store.getTask(taskId);
+        if (!task) continue;
+        const repoId = workflowSupervisorContractText(task, 'repo_id');
+        const workId = workflowSupervisorContractText(task, 'work_id');
+        if (repoId && workId) {
+          const work = getWorkContract({ controllerHome, repoId }, workId);
+          if (!work || isTerminalSemanticWorkState(work.semanticState)) {
+            resolveUserRequest(controllerHome, { requestId: request.requestId, decision: 'underlying_work_terminal', resolvedBy: 'forge-runtime' });
+            continue;
+          }
+        }
+        const effectId = typeof request.presentation?.currentState?.effectId === 'string' ? request.presentation.currentState.effectId : undefined;
+        const actionLabel = request.actionRequired === 'login' ? 'ChatGPT 登录' : '浏览器权限';
+        await sendSupervisorNotification({
+          taskId,
+          requestId: notificationRequestId('user-action', request.requestId),
+          kind: 'user_action_required',
+          subject: `[Forge] 需要处理：${actionLabel}`,
+          reason: request.summary,
+          effectId,
+          userRequestId: request.requestId,
+          stillActive: () => listUserRequests(controllerHome, 'pending').some((item) => item.requestId === request.requestId),
+        });
+      }
+
+      for (const activity of listDirectActivities(controllerHome, 200).filter((item) => item.capabilityId === 'workflow-supervisor.continuation' && item.status === 'running')) {
+        const prefix = 'workflow-supervisor-task:';
+        if (!activity.targetScope.startsWith(prefix)) continue;
+        const taskId = activity.targetScope.slice(prefix.length);
+        const stall = controlPlane.taskStall(taskId);
+        if (!stall || !(stall.state === 'provider_resume_exhausted'
+          || (stall.state === 'retryable' && stall.generations >= stall.maxGenerations))) continue;
+        const reason = stall.state === 'provider_resume_exhausted'
+          ? 'Supervisor 的 provider resume 尝试已确认耗尽；原 effect 仍被保留，不会盲目重发。'
+          : `Supervisor 自动派发尝试已确认耗尽（${stall.generations}/${stall.maxGenerations}）；原 effect 仍被保留，不会盲目重发。`;
+        await sendSupervisorNotification({
+          taskId,
+          requestId: notificationRequestId('stall', taskId, stall.state, activity.startedAt),
+          kind: 'continuation_exhausted',
+          subject: `[Forge] 自动续跑已耗尽：${taskId}`,
+          reason,
+          effectId: stall.effectId,
+          stillActive: () => {
+            const currentActivity = listDirectActivities(controllerHome, 200).find((item) => item.activityId === activity.activityId);
+            const currentStall = controlPlane.taskStall(taskId);
+            const currentStallExhausted = currentStall.state === 'provider_resume_exhausted'
+              || (currentStall.state === 'retryable' && currentStall.generations >= currentStall.maxGenerations);
+            return currentActivity?.status === 'running'
+              && currentActivity.startedAt === activity.startedAt
+              && currentStallExhausted
+              && currentStall.state === stall.state
+              && currentStall.effectId === stall.effectId;
+          },
+        });
+      }
+
+      for (const task of store.listTasks()) {
+        if (store.terminalAction(task.taskId) !== 'NEEDS_USER') continue;
+        const completion = store.getLatestCompletion(task.taskId);
+        if (!completion || completion.action !== 'NEEDS_USER') continue;
+        const repoId = workflowSupervisorContractText(task, 'repo_id');
+        const workId = workflowSupervisorContractText(task, 'work_id');
+        if (repoId && workId) {
+          const work = getWorkContract({ controllerHome, repoId }, workId);
+          if (!work || isTerminalSemanticWorkState(work.semanticState)) continue;
+        }
+        const relatedRequests = allRequests.filter((request) => request.targetScope?.scopeId === task.taskId
+          && request.rootCauseKey.startsWith(`workflow-supervisor.transport-human:${task.taskId}:`));
+        if (relatedRequests.some((request) => request.status === 'pending')) continue;
+        const completionCommittedAt = Date.parse(completion.committedAt);
+        if (relatedRequests.some((request) => {
+          const resolvedAt = Date.parse(request.resolution?.resolvedAt ?? '');
+          return Number.isFinite(resolvedAt) && Number.isFinite(completionCommittedAt) && resolvedAt >= completionCommittedAt;
+        })) continue;
+        await sendSupervisorNotification({
+          taskId: task.taskId,
+          requestId: notificationRequestId('terminal-needs-user', task.taskId, completion.completionFingerprint),
+          kind: 'user_action_required',
+          subject: `[Forge] 需要人工处理：${task.taskId}`,
+          reason: completion.proposal.reason,
+          effectId: completion.sourceEffectId,
+          stillActive: () => {
+            const currentTask = store.getTask(task.taskId);
+            const currentCompletion = store.getLatestCompletion(task.taskId);
+            if (store.terminalAction(task.taskId) !== 'NEEDS_USER' || currentCompletion?.completionFingerprint !== completion.completionFingerprint) return false;
+            const currentRepoId = currentTask ? workflowSupervisorContractText(currentTask, 'repo_id') : undefined;
+            const currentWorkId = currentTask ? workflowSupervisorContractText(currentTask, 'work_id') : undefined;
+            if (currentRepoId && currentWorkId) {
+              const currentWork = getWorkContract({ controllerHome, repoId: currentRepoId }, currentWorkId);
+              if (!currentWork || isTerminalSemanticWorkState(currentWork.semanticState)) return false;
+            }
+            return true;
+          },
+        });
+      }
+    })()
+      .catch((error) => { process.stderr.write(`[workflow-supervisor-notification-reconcile] ${error instanceof Error ? error.message : String(error)}\\n`); })
+      .finally(() => { notificationReconciliationInFlight = undefined; });
   };
   const targetAuthority = createComputerInteractionTargetAuthority(createRuntimeComputerTargetPersistence());
   const extensionTargetPort = new ChromeExtensionChatgptConversationTargetPort(controllerHome, targetAuthority);
@@ -150,7 +419,7 @@ export async function startWorkflowSupervisorRuntime(
   const reconcileCommittedContinuations = (): void => {
     if (closing || reconciliationInFlight) return;
     reconciliationInFlight = controlPlane.reconcileCommittedContinuations()
-      .then(() => undefined)
+      .then(() => { reconcileSupervisorNotifications(); })
       .catch((error) => { process.stderr.write(`[workflow-supervisor-reconcile] ${error instanceof Error ? error.message : String(error)}\\n`); })
       .finally(() => { reconciliationInFlight = undefined; });
   };

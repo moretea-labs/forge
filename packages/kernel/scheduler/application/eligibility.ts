@@ -122,7 +122,10 @@ function cronFieldMatches(value: number, field: string, min: number, max: number
     const trimmed = part.trim();
     if (trimmed === '*') return true;
     const stepMatch = trimmed.match(/^\*\/(\d+)$/);
-    if (stepMatch) return value % Math.max(1, Number(stepMatch[1])) === 0;
+    if (stepMatch) {
+      const step = Math.max(1, Number(stepMatch[1]));
+      return value >= min && value <= max && (value - min) % step === 0;
+    }
     const rangeMatch = trimmed.match(/^(\d+)-(\d+)(?:\/(\d+))?$/);
     if (rangeMatch) {
       const start = Math.max(min, Number(rangeMatch[1]));

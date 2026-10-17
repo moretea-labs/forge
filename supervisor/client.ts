@@ -106,6 +106,24 @@ export async function getWorkflowSupervisorTaskStall(forgeHome: string, taskId: 
   return await rpc<WorkflowSupervisorTaskStall>(forgeHome, 'task_stall', { task_id: taskId });
 }
 
+/** One-way binding of a Work-owned Supervisor task to its canonical Scheduler lane. */
+export async function bindWorkflowSupervisorScheduledWake(forgeHome: string, input: {
+  taskId: string; repoId: string; workId: string; scheduleId: string;
+}): Promise<{ task: WorkflowSupervisorTask; changed: boolean; deduplicated: boolean }> {
+  return await rpc(forgeHome, 'task_bind_scheduled_wake', {
+    task_id: input.taskId, repo_id: input.repoId, work_id: input.workId, schedule_id: input.scheduleId,
+  }, SUPERVISOR_RPC_MUTATION_TIMEOUT_MS);
+}
+
+/** Scheduler occurrence is the idempotency identity; an unknown send outcome is never replayed. */
+export async function wakeWorkflowSupervisorScheduledTask(forgeHome: string, input: {
+  taskId: string; scheduleId: string; occurrenceId: string;
+}): Promise<{ effect: WorkflowSupervisorEffect; deduplicated: boolean }> {
+  return await rpc(forgeHome, 'task_wake_scheduled', {
+    task_id: input.taskId, schedule_id: input.scheduleId, occurrence_id: input.occurrenceId,
+  }, SUPERVISOR_RPC_MUTATION_TIMEOUT_MS);
+}
+
 /**
  * Operator-only conversation migration for a standalone Supervisor task whose
  * exact conversation became permanently unusable. It is explicit and bounded by

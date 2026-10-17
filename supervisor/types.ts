@@ -1,5 +1,5 @@
-export type WorkflowSupervisorAction = 'CONTINUE' | 'DONE' | 'NEEDS_USER';
-export type WorkflowSupervisorState = 'running' | 'done' | 'needs_user';
+export type WorkflowSupervisorAction = 'CONTINUE' | 'WAIT' | 'DONE' | 'NEEDS_USER';
+export type WorkflowSupervisorState = 'running' | 'waiting' | 'done' | 'needs_user';
 export type WorkflowSupervisorTerminalState = 'DONE' | 'NEEDS_USER' | 'STOPPED';
 /** Machine receipt attached to Forge MCP calls made by an autonomous ChatGPT turn. */
 export type WorkflowEffectKind = 'enrollment' | 'continuation' | 'correction' | 'recovery';
@@ -153,6 +153,7 @@ export type WorkflowSupervisorTaskStall =
   | { state: 'spaced'; effectId?: string; reason: 'retry_spacing' | 'unknown_observation_spacing' | 'awaiting_completion_receipt' | 'pre_send_infrastructure_blocked'; preflightReasonCode?: string; preflightComposerObservation?: WorkflowSupervisorPreflightComposerObservation }
   | { state: 'retryable'; effectId: string; generations: number; maxGenerations: number }
   | { state: 'provider_resume_exhausted'; effectId: string }
+  | { state: 'waiting'; scheduleId: string; completionFingerprint: string }
   | { state: 'inert' };
 
 export interface WorkflowSupervisorValidators {
