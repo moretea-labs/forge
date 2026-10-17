@@ -206,7 +206,7 @@ Transient Runtime, connector, browser-provider, or Supervisor-adapter unavailabi
 ## State ownership
 
 - Git/worktree owns repository source truth. Direct commit scope is the exact staged Git index at the commit boundary; a WorkContract may further constrain that scope through its durable allowed/forbidden path authority. Caller-supplied commit pathspecs are an explicit narrowing input, not a second source of scope truth.
-- Edit Session owns one deterministic local patch transaction and reviewable diff evidence. When Git HEAD or the workspace fingerprint advances, finalization first uses the existing reconciliation path: only exact tracked after-images with no uncommitted changes and passing configured checks may finalize; otherwise the stale-baseline/fingerprint guard remains in force.
+- Edit Session owns one deterministic local patch transaction and reviewable diff evidence.
 - Lightweight process handles own only current-runtime attach state.
 - Validation results own check evidence for the exact inputs they verified.
 - Requirement, Plan, and optional Work are the only cross-domain model-authored semantic working-context records. Each has one stable identity and monotonic semantic revision with expected-revision CAS; append-only semantic revision records are history evidence, not second mutable authorities. Plan source/Requirement basis revisions are provenance and advisory staleness only, never execution gates. Legacy PlanContract lifecycle/steps remain migration execution data and cannot rewrite `semanticContext` once it exists.
