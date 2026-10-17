@@ -1110,6 +1110,7 @@ requireText('src/runtime/root/workflow-supervisor-composition.ts', 'registerWork
 requireText('src/runtime/root/workflow-supervisor-composition.ts', 'reserveWorkflowSupervisorEnrollment');
 requireText('src/runtime/root/workflow-supervisor-composition.ts', 'getWorkflowSupervisorTask(forgeHome, taskId)');
 requireText('src/runtime/root/workflow-supervisor-composition.ts', "stall.state === 'terminal'");
+requireText('supervisor/control-plane.ts', 'if (exhaustedLeaf && this.store.providerResumeExhausted(exhaustedLeaf.effectId)) sourceEffect = exhaustedLeaf;');
 requireText('src/runtime/root/workflow-supervisor-composition.ts', 'WORKFLOW_SUPERVISOR_TASK_REQUIREMENT_CONFLICT');
 requireText('supervisor/entry.ts', 'forgeWorkflowSupervisorValidators()');
 forbid('supervisor/client.ts', /reserveWorkflowSupervisorSchedulerRecovery|reserve_scheduler_recovery/, 'Scheduler recovery is not a Supervisor RPC; reconciliation stays on the canonical effect ledger');

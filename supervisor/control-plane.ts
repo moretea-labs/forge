@@ -563,7 +563,12 @@ export class WorkflowSupervisorControlPlane {
   browserObserveProviderTurn(input: { conversationId: string; conversationUrl: string; generating: boolean; latestAssistantResponse: string; providerActivityText?: string; providerFailureCode?: string; receiptMissing?: boolean; observedAtMs: number; graceMs: number }): { state: 'inactive' | 'none' | 'generating' | 'idle_pending' | 'recovery_reserved' | 'exhausted'; recoveryEffect?: WorkflowSupervisorEffect } {
     const task = this.requireBrowserTask(input.conversationId, input.conversationUrl);
     if (!this.browserTaskActiveForExternalEffect(task)) return { state: 'inactive' };
-    const sourceEffect = this.store.latestAppliedEffectWithoutCompletion(task.taskId);
+    // Exhaustion stops new recovery mutations, not read-only observation of the exhausted applied leaf.
+    let sourceEffect = this.store.latestAppliedEffectWithoutCompletion(task.taskId);
+    if (!sourceEffect) {
+      const exhaustedLeaf = this.store.latestAppliedLeafEffectWithoutCompletion(task.taskId);
+      if (exhaustedLeaf && this.store.providerResumeExhausted(exhaustedLeaf.effectId)) sourceEffect = exhaustedLeaf;
+    }
     if (!sourceEffect) return { state: 'none' };
     const recoveryId = stableEffectId(`provider-recovery:${sourceEffect.effectId}`);
     const providerFailureCode = input.providerFailureCode?.trim();
