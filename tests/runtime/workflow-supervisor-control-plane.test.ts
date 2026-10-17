@@ -1371,7 +1371,7 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     store.close();
   });
 
-  test('derives unattended continuation proof only for one exact release across a Runtime reconnect', () => {
+  test('derives unattended release proof only for causal CONTINUE -> CONTINUE -> DONE across a Runtime reconnect', async () => {
     const fx = fixture();
     const store = new WorkflowSupervisorStore(join(fx.root, 'continuation-proof-supervisor'));
     const control = new WorkflowSupervisorControlPlane(store);
@@ -1391,6 +1391,8 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     const first = control.reserveEnrollment(taskId, 'fx_11111111111111111111111111111111');
     expect(store.recordEffectDispatchStarted(first.effectId, 1, 'dispatch-1', { active_release_id: releaseId, runtime_instance_id: 'runtime-a' })).toBe(true);
     store.recordEffectObservation(first.effectId, 'applied-1', 'applied');
+    const boundaryAfterFirstSend = new Date(Date.now() + 20).toISOString();
+    await new Promise((resolve) => setTimeout(resolve, 25));
     const firstCompletion = {
       completionFingerprint: 'completion-proof-1', taskId, sourceEffectId: first.effectId, action: 'CONTINUE' as const,
       responseSha256: 'response-1', controlBlockSha256: 'control-1',
@@ -1398,7 +1400,7 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
       committedAt: new Date().toISOString(),
     };
     const second = store.commitCompletion(firstCompletion, { effectId: 'fx_22222222222222222222222222222222', kind: 'continuation', prompt: 'round two' }).successorEffect!;
-    expect(store.recordEffectDispatchStarted(second.effectId, 1, 'dispatch-2', { active_release_id: releaseId, runtime_instance_id: 'runtime-b' })).toBe(true);
+    expect(store.recordEffectDispatchStarted(second.effectId, 1, 'dispatch-2', { active_release_id: releaseId, runtime_instance_id: 'runtime-a' })).toBe(true);
     store.recordEffectObservation(second.effectId, 'applied-2', 'applied');
     const secondCompletion = {
       completionFingerprint: 'completion-proof-2', taskId, sourceEffectId: second.effectId, action: 'CONTINUE' as const,
@@ -1407,13 +1409,11 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
       committedAt: new Date().toISOString(),
     };
     const secondResult = store.commitCompletion(secondCompletion, { effectId: 'fx_33333333333333333333333333333333', kind: 'continuation', prompt: 'round three' });
-    expect(control.continuationProof({ repoId: 'repo-proof', activeReleaseId: releaseId, notBefore })).toMatchObject({
-      taskId, conversationId, activeReleaseId: releaseId,
-      actions: ['CONTINUE', 'CONTINUE'],
-      runtimeInstanceIds: ['runtime-a', 'runtime-b'],
-    });
+    expect(control.continuationProof({ repoId: 'repo-proof', activeReleaseId: releaseId, notBefore })).toBeUndefined();
     const third = secondResult.successorEffect!;
     expect(store.recordEffectDispatchStarted(third.effectId, 1, 'dispatch-3', { active_release_id: releaseId, runtime_instance_id: 'runtime-b' })).toBe(true);
+    store.recordEffectObservation(third.effectId, 'unknown-3', 'unknown');
+    expect(control.continuationProof({ repoId: 'repo-proof', activeReleaseId: releaseId, notBefore })).toBeUndefined();
     store.recordEffectObservation(third.effectId, 'applied-3', 'applied');
     const thirdCompletion = {
       completionFingerprint: 'completion-proof-3', taskId, sourceEffectId: third.effectId, action: 'DONE' as const,
@@ -1427,9 +1427,169 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     expect(control.continuationProof({ repoId: 'repo-proof', activeReleaseId: 'other-release', notBefore })).toBeUndefined();
     expect(control.continuationProof({ repoId: 'repo-proof', activeReleaseId: releaseId, notBefore })).toMatchObject({
       taskId, conversationId, activeReleaseId: releaseId,
-      actions: ['CONTINUE', 'CONTINUE'],
+      actions: ['CONTINUE', 'CONTINUE', 'DONE'],
+      completionFingerprints: ['completion-proof-1', 'completion-proof-2', 'completion-proof-3'],
+      sourceEffectIds: [first.effectId, second.effectId, third.effectId],
       runtimeInstanceIds: ['runtime-a', 'runtime-b'],
     });
+    expect(control.continuationProof({ repoId: 'repo-proof', activeReleaseId: releaseId, notBefore: boundaryAfterFirstSend })).toBeUndefined();
+    store.close();
+  });
+
+  test('rejects release proof when DONE is not the causal successor of the second CONTINUE', () => {
+    const fx = fixture();
+    const store = new WorkflowSupervisorStore(join(fx.root, 'noncausal-continuation-proof-supervisor'));
+    const control = new WorkflowSupervisorControlPlane(store);
+    const taskId = 'forge:repo-proof:noncausal-conversation';
+    const conversationId = 'noncausal-conversation';
+    control.registerTask({
+      taskId, conversationId, conversationUrl: `https://chatgpt.com/c/${conversationId}`,
+      objective: 'Reject a terminal completion sourced from an unrelated applied effect.',
+      completionContract: { kind: 'forge_work_done', repo_id: 'repo-proof', work_id: 'work-proof' },
+      continuationPolicy: { kind: 'forge_goal_outer_turn', repo_id: 'repo-proof' },
+      userBlockerPolicy: { kind: 'forge_work_waiting_for_user', repo_id: 'repo-proof', work_id: 'work-proof' },
+    });
+    const notBefore = new Date(Date.now() - 1_000).toISOString();
+    const releaseId = 'release-proof';
+    const dispatchApplied = (effectId: string, index: number, runtimeInstanceId: string) => {
+      expect(store.recordEffectDispatchStarted(effectId, 1, `noncausal-dispatch-${index}`, {
+        active_release_id: releaseId, runtime_instance_id: runtimeInstanceId,
+      })).toBe(true);
+      store.recordEffectObservation(effectId, `noncausal-applied-${index}`, 'applied');
+    };
+    const completion = (fingerprint: string, sourceEffectId: string, action: 'CONTINUE' | 'DONE', checkpoint: string) => ({
+      completionFingerprint: fingerprint, taskId, sourceEffectId, action,
+      responseSha256: `response-${checkpoint}`, controlBlockSha256: `control-${checkpoint}`,
+      proposal: {
+        action, sourceEffectId, checkpoint, reason: checkpoint, evidence: [], conversationId, taskId,
+        supervisorState: (action === 'DONE' ? 'done' : 'running') as 'done' | 'running',
+      },
+      committedAt: new Date().toISOString(),
+    });
+    const first = control.reserveEnrollment(taskId, 'fx_77777777777777777777777777777777');
+    dispatchApplied(first.effectId, 1, 'runtime-a');
+    const firstResult = store.commitCompletion(completion('noncausal-c1', first.effectId, 'CONTINUE', 'round-1'), {
+      effectId: 'fx_88888888888888888888888888888888', kind: 'continuation', prompt: 'round two',
+    });
+    const second = firstResult.successorEffect!;
+    dispatchApplied(second.effectId, 2, 'runtime-a');
+    const secondResult = store.commitCompletion(completion('noncausal-c2', second.effectId, 'CONTINUE', 'round-2'), {
+      effectId: 'fx_99999999999999999999999999999999', kind: 'continuation', prompt: 'round three',
+    });
+    const unrelatedDoneEffect = store.reserveEffect({
+      taskId, effectId: 'fx_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', kind: 'continuation',
+      originKey: 'release-proof-unrelated-done', sourceCompletionFingerprint: 'not-the-second-completion',
+      prompt: 'unrelated terminal source',
+    });
+    expect(secondResult.successorEffect).toBeDefined();
+    dispatchApplied(unrelatedDoneEffect.effectId, 3, 'runtime-b');
+    const finalCompletion = completion('noncausal-done', unrelatedDoneEffect.effectId, 'DONE', 'round-3');
+    store.commitCompletion(finalCompletion);
+    store.resolveTerminal({
+      completionFingerprint: finalCompletion.completionFingerprint, taskId, action: 'DONE', accepted: true, reason: 'accepted',
+    });
+    expect(control.continuationProof({ repoId: 'repo-proof', activeReleaseId: releaseId, notBefore })).toBeUndefined();
+    store.close();
+  });
+
+  test('rejects a terminal receipt that predates its DONE assistant completion', () => {
+    const fx = fixture();
+    const store = new WorkflowSupervisorStore(join(fx.root, 'stale-terminal-proof-supervisor'));
+    const control = new WorkflowSupervisorControlPlane(store);
+    const taskId = 'forge:repo-proof:stale-terminal-conversation';
+    const conversationId = 'stale-terminal-conversation';
+    control.registerTask({
+      taskId, conversationId, conversationUrl: `https://chatgpt.com/c/${conversationId}`,
+      objective: 'Reject a terminal receipt that was recorded before the terminal assistant completion.',
+      completionContract: { kind: 'forge_work_done', repo_id: 'repo-proof', work_id: 'work-proof' },
+      continuationPolicy: { kind: 'forge_goal_outer_turn', repo_id: 'repo-proof' },
+      userBlockerPolicy: { kind: 'forge_work_waiting_for_user', repo_id: 'repo-proof', work_id: 'work-proof' },
+    });
+    const notBefore = new Date(Date.now() - 1_000).toISOString();
+    const releaseId = 'release-proof';
+    const dispatchApplied = (effectId: string, index: number, runtimeInstanceId: string) => {
+      expect(store.recordEffectDispatchStarted(effectId, 1, `stale-terminal-dispatch-${index}`, {
+        active_release_id: releaseId, runtime_instance_id: runtimeInstanceId,
+      })).toBe(true);
+      store.recordEffectObservation(effectId, `stale-terminal-applied-${index}`, 'applied');
+    };
+    const completion = (fingerprint: string, sourceEffectId: string, action: 'CONTINUE' | 'DONE', checkpoint: string) => ({
+      completionFingerprint: fingerprint, taskId, sourceEffectId, action,
+      responseSha256: `response-${checkpoint}`, controlBlockSha256: `control-${checkpoint}`,
+      proposal: {
+        action, sourceEffectId, checkpoint, reason: checkpoint, evidence: [], conversationId, taskId,
+        supervisorState: (action === 'DONE' ? 'done' : 'running') as 'done' | 'running',
+      },
+      committedAt: new Date().toISOString(),
+    });
+    const first = control.reserveEnrollment(taskId, 'fx_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb');
+    dispatchApplied(first.effectId, 1, 'runtime-a');
+    const firstResult = store.commitCompletion(completion('stale-terminal-c1', first.effectId, 'CONTINUE', 'round-1'), {
+      effectId: 'fx_cccccccccccccccccccccccccccccccc', kind: 'continuation', prompt: 'round two',
+    });
+    const second = firstResult.successorEffect!;
+    dispatchApplied(second.effectId, 2, 'runtime-a');
+    const secondResult = store.commitCompletion(completion('stale-terminal-c2', second.effectId, 'CONTINUE', 'round-2'), {
+      effectId: 'fx_dddddddddddddddddddddddddddddddd', kind: 'continuation', prompt: 'round three',
+    });
+    const third = secondResult.successorEffect!;
+    dispatchApplied(third.effectId, 3, 'runtime-b');
+    const finalCompletion = completion('stale-terminal-done', third.effectId, 'DONE', 'round-3');
+    store.resolveTerminal({
+      completionFingerprint: finalCompletion.completionFingerprint, taskId, action: 'DONE', accepted: true, reason: 'accepted',
+    });
+    store.commitCompletion(finalCompletion);
+    expect(control.continuationProof({ repoId: 'repo-proof', activeReleaseId: releaseId, notBefore })).toBeUndefined();
+    store.close();
+  });
+
+  test('rejects out-of-order CONTINUE -> DONE -> CONTINUE release history', () => {
+    const fx = fixture();
+    const store = new WorkflowSupervisorStore(join(fx.root, 'out-of-order-continuation-proof-supervisor'));
+    const control = new WorkflowSupervisorControlPlane(store);
+    const taskId = 'forge:repo-proof:out-of-order-conversation';
+    const conversationId = 'out-of-order-conversation';
+    control.registerTask({
+      taskId, conversationId, conversationUrl: `https://chatgpt.com/c/${conversationId}`,
+      objective: 'Reject release proof when the final three actions are not C -> C -> D.',
+      completionContract: { kind: 'forge_work_done', repo_id: 'repo-proof', work_id: 'work-proof' },
+      continuationPolicy: { kind: 'forge_goal_outer_turn', repo_id: 'repo-proof' },
+      userBlockerPolicy: { kind: 'forge_work_waiting_for_user', repo_id: 'repo-proof', work_id: 'work-proof' },
+    });
+    const notBefore = new Date(Date.now() - 1_000).toISOString();
+    const releaseId = 'release-proof';
+    const dispatchApplied = (effectId: string, index: number, runtimeInstanceId: string) => {
+      expect(store.recordEffectDispatchStarted(effectId, 1, `out-of-order-dispatch-${index}`, {
+        active_release_id: releaseId, runtime_instance_id: runtimeInstanceId,
+      })).toBe(true);
+      store.recordEffectObservation(effectId, `out-of-order-applied-${index}`, 'applied');
+    };
+    const completion = (fingerprint: string, sourceEffectId: string, action: 'CONTINUE' | 'DONE', checkpoint: string) => ({
+      completionFingerprint: fingerprint, taskId, sourceEffectId, action,
+      responseSha256: `response-${checkpoint}`, controlBlockSha256: `control-${checkpoint}`,
+      proposal: {
+        action, sourceEffectId, checkpoint, reason: checkpoint, evidence: [], conversationId, taskId,
+        supervisorState: (action === 'DONE' ? 'done' : 'running') as 'done' | 'running',
+      },
+      committedAt: new Date().toISOString(),
+    });
+    const first = control.reserveEnrollment(taskId, 'fx_eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee');
+    dispatchApplied(first.effectId, 1, 'runtime-a');
+    const firstResult = store.commitCompletion(completion('out-of-order-c1', first.effectId, 'CONTINUE', 'round-1'), {
+      effectId: 'fx_ffffffffffffffffffffffffffffffff', kind: 'continuation', prompt: 'round two',
+    });
+    const second = firstResult.successorEffect!;
+    dispatchApplied(second.effectId, 2, 'runtime-a');
+    const secondResult = store.commitCompletion(completion('out-of-order-done', second.effectId, 'DONE', 'round-2'), {
+      effectId: 'fx_00000000000000000000000000000001', kind: 'continuation', prompt: 'invalid post-DONE turn',
+    });
+    store.resolveTerminal({
+      completionFingerprint: 'out-of-order-done', taskId, action: 'DONE', accepted: true, reason: 'accepted',
+    });
+    const third = secondResult.successorEffect!;
+    dispatchApplied(third.effectId, 3, 'runtime-b');
+    store.commitCompletion(completion('out-of-order-c3', third.effectId, 'CONTINUE', 'round-3'));
+    expect(control.continuationProof({ repoId: 'repo-proof', activeReleaseId: releaseId, notBefore })).toBeUndefined();
     store.close();
   });
 

@@ -52,7 +52,7 @@ orphan deletion, a new relay index, or a second cleanup lifecycle.
 | Evidence / privacy | Existing causal completion hashes, allowlisted provider evidence and redaction; no page-body persistence added. |
 | Capacity / time / performance | Existing send lane, bounded scanner and observation budgets. Provider-wide inventory/backpressure may delay the consumer globally; exact-conversation target failures are task-local and cannot back off unrelated Supervisor tasks. |
 | Topology / portability | Same in-process Runtime/Supervisor owner and native Browser adapter; no process, credential flow or platform dependency added. |
-| Release / rollback | ReleaseSession verifies isolated Candidate B, then cutover retains rollback authority during soak. The new Stable release cannot become known-good until the Supervisor ledger proves exact-active-release CONTINUE → CONTINUE → DONE across a Runtime reconnect. No component activation or manual live database repair. |
+| Release / rollback | ReleaseSession verifies isolated Candidate B, then cutover retains rollback authority during soak. The new Stable release cannot become known-good until the canonical Supervisor ledger proves a causal CONTINUE → CONTINUE → DONE on the exact active release: one dispatch and applied receipt per source effect, terminal_done after the third assistant_completion, and at least two Runtime incarnations. A bounded disposable acceptance task supplies this proof; long-running production Work need not terminate. Historical receipts before the active-release boundary never qualify. No component activation or manual live database repair. |
 
 ## Predecessor obligations
 

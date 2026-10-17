@@ -810,7 +810,8 @@ export class WorkflowSupervisorStore {
     });
   }
   continuationProof(input: { repoId?: string; activeReleaseId: string; notBefore: string }): WorkflowSupervisorContinuationProof | undefined {
-    if (!Number.isFinite(Date.parse(input.notBefore))) throw new Error('WORKFLOW_SUPERVISOR_PROOF_BOUNDARY_INVALID');
+    const notBeforeMs = Date.parse(input.notBefore);
+    if (!Number.isFinite(notBeforeMs)) throw new Error('WORKFLOW_SUPERVISOR_PROOF_BOUNDARY_INVALID');
     const activeReleaseId = boundedText(input.activeReleaseId);
     if (!activeReleaseId) throw new Error('WORKFLOW_SUPERVISOR_PROOF_RELEASE_REQUIRED');
     return this.read((db) => {
@@ -821,38 +822,78 @@ export class WorkflowSupervisorStore {
         if (input.repoId?.trim() && taskRepoId !== input.repoId.trim()) continue;
         const completionRows = statement(db, "SELECT c.* FROM completions c WHERE c.task_id = ? AND c.committed_at >= ? ORDER BY COALESCE((SELECT MAX(completion_event.event_id) FROM events completion_event WHERE completion_event.task_id = c.task_id AND completion_event.completion_fingerprint = c.completion_fingerprint AND completion_event.kind = 'assistant_completion'), c.rowid) ASC", (s) => s.all(task.taskId, input.notBefore)) as Record<string, unknown>[];
         const completions = completionRows.map(completionFromRow);
-        // Release acceptance proves continuation liveness, not semantic task completion.
-        // Requiring DONE here deadlocks a long-running Supervisor goal against its own known-good gate.
-        for (let index = 0; index + 1 < completions.length; index += 1) {
+        // The bounded release canary task must prove C -> C -> accepted D.
+        // Long-running production tasks may remain open; any disposable task can supply this proof.
+        for (let index = 0; index + 2 < completions.length; index += 1) {
+          if (index + 3 !== completions.length) continue;
           const first = completions[index]!;
           const second = completions[index + 1]!;
-          if (first.action !== 'CONTINUE' || second.action !== 'CONTINUE') continue;
-          const rows = [first, second].map((completion) => statement(db, 'SELECT * FROM effects WHERE effect_id = ?', (s) => s.get(completion.sourceEffectId)) as Record<string, unknown> | undefined);
+          const third = completions[index + 2]!;
+          if (first.action !== 'CONTINUE' || second.action !== 'CONTINUE' || third.action !== 'DONE') continue;
+          const rows = [first, second, third].map((completion) => statement(db, 'SELECT * FROM effects WHERE effect_id = ?', (s) => s.get(completion.sourceEffectId)) as Record<string, unknown> | undefined);
           if (rows.some((row) => !row)) continue;
-          const [firstEffect, secondEffect] = rows.map((row) => effectFromRow(row!)) as [WorkflowSupervisorEffect, WorkflowSupervisorEffect];
-          if (secondEffect.sourceCompletionFingerprint !== first.completionFingerprint) continue;
+          const [firstEffect, secondEffect, thirdEffect] = rows.map((row) => effectFromRow(row!)) as [WorkflowSupervisorEffect, WorkflowSupervisorEffect, WorkflowSupervisorEffect];
+          if (
+            [firstEffect, secondEffect, thirdEffect].some((effect) => effect.taskId !== task.taskId)
+            || secondEffect.sourceCompletionFingerprint !== first.completionFingerprint
+            || thirdEffect.sourceCompletionFingerprint !== second.completionFingerprint
+          ) continue;
           const runtimeInstanceIds: string[] = [];
           let valid = true;
-          for (const effect of [firstEffect, secondEffect]) {
-            const dispatchRows = statement(db, "SELECT payload_json FROM events WHERE effect_id = ? AND kind = 'effect_dispatch_started' AND occurred_at >= ? ORDER BY event_id", (s) => s.all(effect.effectId, input.notBefore)) as Array<{ payload_json?: string }>;
-            if (dispatchRows.length !== 1) { valid = false; break; }
-            const evidence = parsedObject(dispatchRows[0]?.payload_json);
+          let thirdCompletionEventId = 0;
+          for (const [completionIndex, completion, effect] of [
+            [0, first, firstEffect],
+            [1, second, secondEffect],
+            [2, third, thirdEffect],
+          ] as const) {
+            const dispatchRows = statement(db, "SELECT event_id,payload_json,occurred_at FROM events WHERE effect_id = ? AND kind = 'effect_dispatch_started' ORDER BY event_id", (s) => s.all(effect.effectId)) as Array<{ event_id?: number; payload_json?: string; occurred_at?: string }>;
+            if (
+              dispatchRows.length !== 1
+              || !Number.isFinite(Date.parse(String(dispatchRows[0]?.occurred_at ?? '')))
+              || Date.parse(String(dispatchRows[0]?.occurred_at ?? '')) < notBeforeMs
+            ) { valid = false; break; }
+            const dispatch = dispatchRows[0]!;
+            const evidence = parsedObject(dispatch.payload_json);
             if (boundedText(evidence.active_release_id) !== activeReleaseId) { valid = false; break; }
             const runtimeInstanceId = boundedText(evidence.runtime_instance_id);
             if (!runtimeInstanceId) { valid = false; break; }
             runtimeInstanceIds.push(runtimeInstanceId);
-            const applied = statement(db, "SELECT 1 AS ok FROM events WHERE effect_id = ? AND kind = 'effect_applied' AND occurred_at >= ? LIMIT 1", (s) => s.get(effect.effectId, input.notBefore));
+            const appliedRows = statement(db, "SELECT event_id,occurred_at FROM events WHERE effect_id = ? AND kind = 'effect_applied' ORDER BY event_id", (s) => s.all(effect.effectId)) as Array<{ event_id?: number; occurred_at?: string }>;
+            const applied = appliedRows.find((row) => {
+              const occurredAtMs = Date.parse(String(row.occurred_at ?? ''));
+              return Number(row.event_id ?? 0) > Number(dispatch.event_id ?? 0)
+                && Number.isFinite(occurredAtMs)
+                && occurredAtMs >= notBeforeMs;
+            });
             if (!applied) { valid = false; break; }
+            const completionEvents = statement(db, "SELECT event_id,occurred_at FROM events WHERE task_id = ? AND completion_fingerprint = ? AND kind = 'assistant_completion' ORDER BY event_id", (s) => s.all(task.taskId, completion.completionFingerprint)) as Array<{ event_id?: number; occurred_at?: string }>;
+            if (
+              completionEvents.length !== 1
+              || !Number.isFinite(Date.parse(String(completionEvents[0]?.occurred_at ?? '')))
+              || Date.parse(String(completionEvents[0]?.occurred_at ?? '')) < notBeforeMs
+              || Number(completionEvents[0]?.event_id ?? 0) <= Number(applied.event_id ?? 0)
+            ) { valid = false; break; }
+            if (completionIndex === 2) thirdCompletionEventId = Number(completionEvents[0]?.event_id ?? 0);
           }
-          const minimumRuntimeInstances = task.continuationPolicy.kind === 'standalone_supervisor' ? 1 : 2;
+          const minimumRuntimeInstances = 2;
           if (!valid || new Set(runtimeInstanceIds).size < minimumRuntimeInstances) continue;
+          const terminalRows = statement(db, "SELECT event_id,occurred_at FROM events WHERE task_id = ? AND completion_fingerprint = ? AND kind = 'terminal_done' ORDER BY event_id", (s) => s.all(task.taskId, third.completionFingerprint)) as Array<{ event_id?: number; occurred_at?: string }>;
+          const latestTerminal = statement(db, "SELECT kind,completion_fingerprint FROM events WHERE task_id = ? AND kind IN ('terminal_done','terminal_needs_user','terminal_stopped') ORDER BY event_id DESC LIMIT 1", (s) => s.get(task.taskId)) as { kind?: string; completion_fingerprint?: string } | undefined;
+          if (
+            terminalRows.length !== 1
+            || !Number.isFinite(Date.parse(String(terminalRows[0]?.occurred_at ?? '')))
+            || Date.parse(String(terminalRows[0]?.occurred_at ?? '')) < notBeforeMs
+            || Number(terminalRows[0]?.event_id ?? 0) <= thirdCompletionEventId
+            || latestTerminal?.kind !== 'terminal_done'
+            || latestTerminal.completion_fingerprint !== third.completionFingerprint
+          ) continue;
           return {
             taskId: task.taskId, conversationId: task.conversationId, activeReleaseId,
-            actions: ['CONTINUE', 'CONTINUE'],
-            completionFingerprints: [first.completionFingerprint, second.completionFingerprint],
-            sourceEffectIds: [first.sourceEffectId, second.sourceEffectId],
+            actions: ['CONTINUE', 'CONTINUE', 'DONE'],
+            completionFingerprints: [first.completionFingerprint, second.completionFingerprint, third.completionFingerprint],
+            sourceEffectIds: [first.sourceEffectId, second.sourceEffectId, third.sourceEffectId],
             runtimeInstanceIds: [...new Set(runtimeInstanceIds)],
-            firstCommittedAt: first.committedAt, lastCommittedAt: second.committedAt,
+            firstCommittedAt: first.committedAt, lastCommittedAt: third.committedAt,
           };
         }
       }
