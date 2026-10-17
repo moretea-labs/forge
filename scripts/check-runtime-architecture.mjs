@@ -1126,6 +1126,8 @@ requireText('adapters/mcp/runtime-gateway/workflow-supervisor-adapter.ts', 'WORK
 requireText('adapters/mcp/runtime-gateway/workflow-supervisor-adapter.ts', "...(workId ? { work_id: workId } : {})");
 requireText('adapters/mcp/runtime-gateway/workflow-supervisor-adapter.ts', "...(requirementId ? { requirement_id: requirementId } : {})");
 requireText('supervisor/forge-validators.ts', "requirement.state === 'waiting_for_user'");
+requireText('supervisor/native-browser-adapter.ts', "command.kind === 'recovery' && prepared.reasonCode === 'provider_recovery_stop_pending'");
+requireText('supervisor/native-browser-adapter.ts', 'provider-turn observation, not an infrastructure preparation failure');
 forbid('src/runtime/root/workflow-supervisor-composition.ts', /WorkflowSupervisorStore|supervisor\.sqlite|registerTask\(|reserveEffect\(/, 'Forge composition must access Supervisor state only through daemon RPC, never open its database or become a second writer');
 requireText('src/runtime/root/workflow-supervisor-composition.ts', 'workflowSupervisorBoundaryForWork');
 requireText('src/runtime/root/workflow-supervisor-composition.ts', '`forge:${repoId}:work:${workId}`');

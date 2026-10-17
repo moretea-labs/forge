@@ -897,6 +897,11 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       this.noteTaskFailure(SUPERVISOR_PRE_SEND_BLOCKED, task, command.effectId); this.deps.onError(error); return;
     }
       if (!prepared.ready) {
+        // The exact recovery target still exposes its Stop control. That is a
+        // provider-turn observation, not an infrastructure preparation failure:
+        // preserve this one reserved recovery effect without spending a send
+        // generation or the bounded preflight-failure budget.
+        if (command.kind === 'recovery' && prepared.reasonCode === 'provider_recovery_stop_pending') return;
         this.control.recordProviderPreparationFailure({ taskId: task.taskId, effectId: command.effectId, reasonCode: prepared.reasonCode });
         this.noteTaskFailure(SUPERVISOR_PRE_SEND_BLOCKED, task, command.effectId);
         this.deps.onError(new Error(prepared.reasonCode));

@@ -2012,6 +2012,102 @@ test('Supervisor preparation rejection is durably release-fenced and never spend
   store.close();
 });
 
+test('recovery stop-pending is a live-turn observation, not a failed preparation', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-recovery-stop-pending-'));
+  roots.push(root);
+  const clock = { nowMs: Date.now() };
+  const store = new WorkflowSupervisorStore(join(root, 'supervisor-home'), { now: () => clock.nowMs });
+  const control = new WorkflowSupervisorControlPlane(store, {}, { browserTaskActive: () => true });
+  const taskId = 'recovery-stop-pending-task';
+  const conversationId = '45454545-6767-8989-1010-121212121212';
+  const conversationUrl = `https://chatgpt.com/c/${conversationId}`;
+  control.registerTask({
+    taskId, conversationId, conversationUrl,
+    objective: 'Do not classify a still-generating exact recovery target as failed infrastructure.',
+    completionContract: {}, continuationPolicy: {}, userBlockerPolicy: {},
+  });
+  const source = control.reserveEnrollment(taskId);
+  store.recordEffectDispatchStarted(source.effectId, 1, 'source-dispatch', { surface: 'test' });
+  store.recordEffectObservation(source.effectId, 'source-applied', 'applied', { surface: 'test' });
+  const observe = () => control.browserObserveProviderTurn({
+    conversationId, conversationUrl, generating: true,
+    latestAssistantResponse: 'stable assistant output',
+    providerActivityText: 'stable provider activity',
+    observedAtMs: clock.nowMs, graceMs: 1_000,
+  });
+  expect(observe().state).toBe('generating');
+  clock.nowMs += 2_000;
+  const reserved = observe();
+  expect(reserved.state).toBe('recovery_reserved');
+  const recovery = reserved.recoveryEffect;
+  if (!recovery) throw new Error('TEST_RECOVERY_EFFECT_NOT_RESERVED');
+
+  let preparationReady = false;
+  let providerGenerating = true;
+  let preparations = 0;
+  let sends = 0;
+  const errors: unknown[] = [];
+  let latestUserText = source.prompt;
+  const page = {
+    evaluate: async () => undefined as never,
+    tabRef: () => ({ windowId: 'recovery-window', tabId: 'recovery-tab' }),
+  };
+  const targetPort = createTestChatgptTargetPort({
+    listTabs: async () => ({ entries: [{ windowId: 'recovery-window', tabId: 'recovery-tab',
+      active: true, url: conversationUrl, title: 'Recovery still generating', browserProduct: 'chrome' }] }),
+    reattach: async () => page,
+    create: async () => { throw new Error('Never create a replacement conversation'); },
+    close: async () => undefined,
+    snapshot: async () => ({
+      url: conversationUrl, title: 'Recovery still generating', latestUserText,
+      latestAssistantResponse: providerGenerating ? 'stable assistant output' : '', composerText: '',
+      isGenerating: providerGenerating, latestTurnRole: 'user',
+      providerActivityText: 'stable provider activity', providerFailureText: '',
+    }),
+    preparePrompt: async () => {
+      preparations++;
+      return preparationReady
+        ? { ready: true as const }
+        : { ready: false as const, reasonCode: 'provider_recovery_stop_pending' };
+    },
+    dispatchPrompt: async (_page, prompt) => {
+      sends++;
+      latestUserText = prompt;
+      return { dispatched: true, confirmed: true };
+    },
+  });
+  const deps = {
+    targetPort, nowMs: () => clock.nowMs, providerIdleGraceMs: 1_000,
+    providerScopeKey: join(root, 'provider-scope'), sleep: async () => undefined,
+    setInterval: () => 0 as unknown as ReturnType<typeof setInterval>,
+    clearInterval: () => undefined, onError: (error: unknown) => errors.push(error),
+  };
+  const adapter = new WorkflowSupervisorNativeBrowserAdapter(control, new WorkflowSupervisorEphemeralDiscovery(), deps);
+  await adapter.runOnce();
+
+  expect(preparations).toBe(1);
+  expect(sends).toBe(0);
+  expect(errors).toEqual([]);
+  expect(store.latestEffectDispatch(recovery.effectId)).toBeUndefined();
+  expect(store.effectDispatchBudget(recovery.effectId).generations).toBe(0);
+  expect(store.nextBrowserEffect(taskId)).toMatchObject({
+    effect: { effectId: recovery.effectId, kind: 'recovery' }, mode: 'send', generation: 1,
+  });
+  expect(control.taskStall(taskId)?.state).not.toBe('spaced');
+
+  preparationReady = true;
+  providerGenerating = false;
+  clock.nowMs += 2_000;
+  await adapter.runOnce();
+  expect(preparations).toBe(2);
+  expect(sends).toBe(1);
+  expect(errors).toEqual([]);
+  expect(store.latestEffectDispatch(recovery.effectId)?.generation).toBe(1);
+  expect(store.effectDispatchBudget(recovery.effectId).generations).toBe(1);
+  await adapter.close();
+  store.close();
+});
+
 test('native consumer status exposes and clears a pre-dispatch due-effect transport blocker without changing effect authority', async () => {
   const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-consumer-status-'));
   roots.push(root);
