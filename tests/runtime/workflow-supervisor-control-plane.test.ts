@@ -3023,6 +3023,73 @@ test('live provider activity resets the stale-turn grace before the assistant re
   store.close();
 });
 
+test('provider recovery exhaustion stops new mutations but keeps observing late activity and receipts', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-late-provider-observation-'));
+  roots.push(root);
+  const store = new WorkflowSupervisorStore(join(root, 'supervisor-home'));
+  const control = new WorkflowSupervisorControlPlane(store);
+  const taskId = 'late-provider-observation-after-exhaustion';
+  const conversationId = '23232323-4545-6767-8989-010101010101';
+  const conversationUrl = `https://chatgpt.com/c/${conversationId}`;
+  control.registerTask({
+    taskId, conversationId, conversationUrl,
+    objective: 'Keep observing an exhausted applied leaf without reserving more automatic recoveries.',
+    completionContract: {}, continuationPolicy: {}, userBlockerPolicy: {},
+  });
+  const source = control.reserveEnrollment(taskId);
+  expect(store.recordEffectDispatchStarted(source.effectId, 1, 'source-dispatch', { surface: 'test' })).toBe(true);
+  control.observeEffect({ effectId: source.effectId, observationId: 'source-applied', outcome: 'applied' });
+
+  const observeFailure = (observedAtMs: number) => control.browserObserveProviderTurn({
+    conversationId, conversationUrl, generating: false, latestAssistantResponse: '',
+    providerFailureCode: 'CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE',
+    observedAtMs, graceMs: 1_000,
+  });
+  const first = observeFailure(1_000);
+  expect(first.state).toBe('recovery_reserved');
+  const firstRecovery = first.recoveryEffect!;
+  expect(store.recordEffectDispatchStarted(firstRecovery.effectId, 1, 'recovery-one-dispatch', { surface: 'test' })).toBe(true);
+  store.recordEffectObservation(firstRecovery.effectId, 'recovery-one-applied', 'applied');
+
+  const second = observeFailure(2_000);
+  expect(second.state).toBe('recovery_reserved');
+  const secondRecovery = second.recoveryEffect!;
+  expect(store.recordEffectDispatchStarted(secondRecovery.effectId, 1, 'recovery-two-dispatch', { surface: 'test' })).toBe(true);
+  store.recordEffectObservation(secondRecovery.effectId, 'recovery-two-applied', 'applied');
+  expect(observeFailure(3_000).state).toBe('exhausted');
+  expect(store.providerResumeExhausted(secondRecovery.effectId)).toBe(true);
+
+  // Exhaustion disables another automatic recovery, not the read-only observer.
+  const lateActivity = control.browserObserveProviderTurn({
+    conversationId, conversationUrl, generating: true, latestAssistantResponse: '',
+    providerActivityText: 'Late tool output: three files analyzed',
+    observedAtMs: 4_000, graceMs: 1_000,
+  });
+  expect(lateActivity.state).toBe('generating');
+  expect(lateActivity.recoveryEffect).toBeUndefined();
+  expect(control.browserPoll({ conversationId, conversationUrl }).command).toBeUndefined();
+
+  const stableAfterLateActivity = control.browserObserveProviderTurn({
+    conversationId, conversationUrl, generating: true, latestAssistantResponse: '',
+    providerActivityText: 'Late tool output: three files analyzed',
+    observedAtMs: 5_000, graceMs: 1_000,
+  });
+  expect(stableAfterLateActivity.state).toBe('exhausted');
+  expect(stableAfterLateActivity.recoveryEffect).toBeUndefined();
+  expect(control.browserPoll({ conversationId, conversationUrl }).command).toBeUndefined();
+
+  const responseText = `Late final result.\n${renderSupervisorReceipt(control.getTask(taskId)!, secondRecovery.effectId, 'CONTINUE')}`;
+  const completion = await control.browserObserveAssistant({ conversationId, conversationUrl, responseText });
+  if (completion.action !== 'CONTINUE' || !completion.successorEffect) throw new Error('LATE_RECEIPT_NOT_ACCEPTED');
+  expect(completion.successorEffect.kind).toBe('continuation');
+  expect(store.providerResumeExhausted(secondRecovery.effectId)).toBe(true);
+  expect(store.latestEffectDispatch(source.effectId)).toMatchObject({ generation: 1 });
+  expect(store.latestEffectDispatch(firstRecovery.effectId)).toMatchObject({ generation: 1 });
+  expect(store.latestEffectDispatch(secondRecovery.effectId)).toMatchObject({ generation: 1 });
+  expect(store.latestAppliedLeafEffectWithoutCompletion(taskId)).toBeUndefined();
+  store.close();
+});
+
 test('Resume stream unavailable uses a bounded same-conversation recovery chain and never replays the applied effect', () => {
   const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-stream-unavailable-'));
   roots.push(root);
