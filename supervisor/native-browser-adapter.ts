@@ -305,10 +305,14 @@ export function retiredBootstrapDraftReplacementPrompt(
   if (retired?.terminal !== 'STOPPED'
     || control.bootstrapProjectUrl(staleEffect.taskId) !== control.bootstrapProjectUrl(task.taskId)) return;
   const attested = control.preSendComposerObservation(staleEffect.effectId);
-  // Only the old effect's persisted no-click fingerprint, not any loose
-  // whitespace similarity, can authorize replacement of a ProseMirror draft.
+  // Both proofs are exact: the immutable effect text, or the previously
+  // attested pre-Send editor bytes. The older extension could synthesize an
+  // extra newline inside a URL; the corrected extension reads the canonical
+  // text without it. Require the persisted no-click preflight in either case.
   const fingerprint = sha256('preflight-composer-v1:\0' + draft).slice(0, 24);
-  if (!attested || attested.fingerprint !== fingerprint || attested.chars !== draft.length) return;
+  const exactSource = draft === staleEffect.prompt.replace(/\r\n?/g, '\n');
+  const exactPreflight = attested?.fingerprint === fingerprint && attested.chars === draft.length;
+  if (!attested || (!exactSource && !exactPreflight)) return;
   return '<<<FORGE_RETIRED_DRAFT_V1:' + staleEffect.effectId + ':' + fingerprint + '>>>\n' + prompt;
 }
 

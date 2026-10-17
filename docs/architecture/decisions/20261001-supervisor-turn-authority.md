@@ -123,11 +123,13 @@ Project composer without clicking Send. A subsequent bootstrap for that **same P
 may replace the residue only if the canonical Supervisor ledger proves the prior task is
 STOPPED, the prior effect has zero dispatch generations, and its last pre-Send failure
 durably attests that exact, single visible editor (classification=current_effect,
-send_clicked=false, matching full text length and SHA-256 fingerprint). This exact
-persisted observation accommodates a previously captured editor representation
-without normalizing or permitting arbitrary human changes. New observations
-reconstruct text from the direct ProseMirror paragraphs' text nodes, avoiding
-CSS-rendered extra line breaks around auto-linked URLs. The sole Chrome extension
+send_clicked=false, matching full text length and SHA-256 fingerprint). The permitted editor payload must either match the canonical
+immutable effect bytes exactly or match that persisted pre-Send observation's
+full length and fingerprint exactly. This dual exact check handles a corrected
+ProseMirror reader that no longer synthesizes layout newlines inside auto-linked
+URLs, without ignoring any other whitespace or allowing arbitrary human edits.
+New observations reconstruct text from the direct ProseMirror paragraphs' text
+nodes rather than CSS-rendered layout text. The sole Chrome extension
 rechecks the stopped effect marker and a fresh exact editor fingerprint immediately
 before its prepare-only replacement. This grants no replay or
 new provider authority. Ambiguous/applied/possibly-sent effects, user or foreign drafts,
