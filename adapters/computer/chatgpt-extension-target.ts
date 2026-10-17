@@ -308,12 +308,12 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
             : { mutation: 'not_attempted' as const, reasonCode: 'COMPUTER_CHATGPT_EXTENSION_NOT_CONNECTED' };
         }
         if (response.result.kind === 'dispatch') {
-          return response.result.mutation === 'attempted'
-            ? { mutation: 'attempted' as const, ...(response.result.confirmed === undefined ? {} : { confirmed: response.result.confirmed }), ...(response.result.reasoningVerified ? { reasoningVerified: response.result.reasoningVerified } : {}) }
-            : { mutation: 'not_attempted' as const, reasonCode: response.result.reasonCode };
+          if (response.result.mutation === 'attempted') return { mutation: 'attempted' as const, ...(response.result.confirmed === undefined ? {} : { confirmed: response.result.confirmed }), ...(response.result.reasoningVerified ? { reasoningVerified: response.result.reasoningVerified } : {}) };
+          if (response.result.mutation === 'not_attempted') return { mutation: 'not_attempted' as const, reasonCode: response.result.reasonCode };
         }
-        if (response.result.kind === 'failed') return { mutation: 'not_attempted' as const, reasonCode: response.result.code };
-        return { mutation: 'not_attempted' as const, reasonCode: 'COMPUTER_CHATGPT_EXTENSION_DISPATCH_INVALID' };
+        // Only a typed dispatch/not_attempted result proves no Send click. A
+        // generic failure or wrong response kind cannot authorize another send.
+        return { mutation: 'attempted' as const, confirmed: false };
       },
     };
   }

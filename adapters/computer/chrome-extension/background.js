@@ -315,7 +315,10 @@ async function executeDispatch(command) {
       ? { kind: 'dispatch', mutation: 'not_attempted', reasonCode: 'COMPUTER_CHATGPT_EXTENSION_CONTENT_UNAVAILABLE' }
       : { kind: 'dispatch', mutation: 'attempted' };
   }
-  if (result?.dispatched !== true) return { kind: 'dispatch', mutation: 'not_attempted', reasonCode: String(result?.reason ?? 'COMPUTER_CHATGPT_EXTENSION_PRE_MUTATION_REJECTION') };
+  if (result?.dispatched === false) return { kind: 'dispatch', mutation: 'not_attempted', reasonCode: String(result?.reason ?? 'COMPUTER_CHATGPT_EXTENSION_PRE_MUTATION_REJECTION') };
+  // A missing/malformed reply after dispatch crossed the content-script boundary
+  // is not an attestation that Send never ran.
+  if (result?.dispatched !== true) return { kind: 'dispatch', mutation: 'attempted', confirmed: false };
   // A changed/stale implementation between preflight and send may have clicked
   // without attesting the reasoning choice. It is still a possible mutation,
   // never a safe not_attempted result or verified reasoning claim.

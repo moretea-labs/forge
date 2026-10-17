@@ -412,30 +412,36 @@
     // Confirm the committed turn inside the content script, rather than
     // requesting delayed snapshots from the extension background worker.
     const beforeSend = roleNodes(USER).at(-1);
-    send.click();
-    const confirmed = await new Promise((resolve) => {
-      // Unobserved submission is unknown, never proof that Send did not run.
-      let timer;
-      let settled = false;
-      const finish = (value) => {
-        if (settled) return;
-        settled = true;
-        observer.disconnect();
-        clearTimeout(timer);
-        resolve(value);
-      };
-      const check = () => {
-        if (expectedConversationId && !exactConversationIsCurrent()) return;
-        const latest = roleNodes(USER).at(-1);
-        if (latest && latest !== beforeSend
-          && exactComposerText(messageText(latest)) === expected) finish(true);
-      };
-      const observer = new MutationObserver(check);
-      observer.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
-      timer = setTimeout(() => finish(false), 2_000);
-      check();
-    });
-    return { dispatched: true, confirmed, ...(reasoningVerified ? { reasoningVerified } : {}) };
+    // Once click starts, an exception cannot prove that the provider did not
+    // receive the message. Keep post-click observation failures outcome-unknown.
+    try {
+      send.click();
+      const confirmed = await new Promise((resolve) => {
+        // Unobserved submission is unknown, never proof that Send did not run.
+        let timer;
+        let settled = false;
+        const finish = (value) => {
+          if (settled) return;
+          settled = true;
+          observer.disconnect();
+          clearTimeout(timer);
+          resolve(value);
+        };
+        const check = () => {
+          if (expectedConversationId && !exactConversationIsCurrent()) return;
+          const latest = roleNodes(USER).at(-1);
+          if (latest && latest !== beforeSend
+            && exactComposerText(messageText(latest)) === expected) finish(true);
+        };
+        const observer = new MutationObserver(check);
+        observer.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
+        timer = setTimeout(() => finish(false), 2_000);
+        check();
+      });
+      return { dispatched: true, confirmed, ...(reasoningVerified ? { reasoningVerified } : {}) };
+    } catch {
+      return { dispatched: true, confirmed: false };
+    }
   };
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (!message || message.type === 'forge-computer-chatgpt-scan') { notify(); sendResponse?.({ ok: true }); return false; }
