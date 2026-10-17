@@ -597,7 +597,9 @@ export class WorkflowSupervisorNativeBrowserAdapter {
         ? `chatgpt.bootstrap:${task.taskId}`
         : `chatgpt.conversation:${task.conversationId}`;
       taskResourceKeys.add(key);
-      if (this.control.store.nextBrowserEffect(task.taskId)
+      // Eligibility is time-dependent; an unresolved effect still owns its
+      // exact attachment during retry spacing or a blocked preparation.
+      if (this.control.store.currentUnappliedEffect(task.taskId)
         || this.control.store.hasAppliedEffectAwaitingCompletion(task.taskId)) protectedResourceKeys.add(key);
     }
     for (const key of this.idleResourceSinceMs.keys()) {
