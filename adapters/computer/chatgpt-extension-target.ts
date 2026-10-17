@@ -503,10 +503,19 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
     for (const matches of matchesByConversation.values()) {
       const first = matches[0]!;
       const existing = this.authority.findSurfaceByStableIdentity(this.controllerHome, stableIdentity(first.match.identity))?.providerBinding;
+      const samePhysicalBinding = (match: MarkerMatch, binding: NonNullable<typeof existing>, instanceId: string): boolean => {
+        const observed = match.providerBinding;
+        return Boolean(observed
+          && observed.providerId === binding.providerId
+          && observed.providerSessionId === binding.providerSessionId
+          && observed.browserProduct === binding.browserProduct
+          && observed.windowId === binding.windowId
+          && observed.tabId === binding.tabId
+          && observed.ownerToken === binding.ownerToken
+          && instanceId === binding.providerSessionId);
+      };
       const existingMatch = existing?.providerId === PROVIDER_ID
-        ? matches.find(({ instanceId, match }) => match.providerBinding?.tabId === existing.tabId
-          && match.providerBinding?.browserProduct === existing.browserProduct
-          && instanceId === existing.providerSessionId)
+        ? matches.find(({ instanceId, match }) => samePhysicalBinding(match, existing, instanceId))
         : undefined;
       const bootstrap = bootstrapKey
         ? this.authority.findSurfaceByStableIdentity(this.controllerHome, {
@@ -516,20 +525,25 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
         : undefined;
       const pinned = bootstrap?.providerBinding;
       const bootstrapMatch = pinned?.providerId === PROVIDER_ID
-        ? matches.find(({ instanceId, match }) => match.providerBinding?.tabId === pinned.tabId
-          && match.providerBinding?.browserProduct === pinned.browserProduct
-          && instanceId === pinned.providerSessionId)
+        ? matches.find(({ instanceId, match }) => samePhysicalBinding(match, pinned, instanceId))
         : undefined;
-      // A known bootstrap pin is the authority for this pending send. Another
-      // tab carrying the same marker cannot replace that physical attachment.
-      if (pinned && !bootstrapMatch && !existingMatch) continue;
-      const candidate = existingMatch ?? bootstrapMatch ?? (matches.length === 1 && first.match.providerBinding ? first : undefined);
+      // A task-specific bootstrap pin outranks a conversation surface for the
+      // same conversationId. If that exact physical pin is absent, preserve the
+      // unknown outcome instead of letting another tab's marker become authority.
+      if (pinned && !bootstrapMatch) continue;
+      const candidate = pinned
+        ? bootstrapMatch
+        : existingMatch ?? (matches.length === 1 && first.match.providerBinding ? first : undefined);
+      const bootstrapMatchBinding = bootstrapMatch?.match.providerBinding;
+      const existingMatchesBootstrap = Boolean(existingMatch && bootstrapMatch && bootstrapMatchBinding
+        && existingMatch.instanceId === bootstrapMatch.instanceId
+        && samePhysicalBinding(existingMatch.match, bootstrapMatchBinding, existingMatch.instanceId));
       // Resolve duplicate marker tabs only with an exact persisted physical pin.
       // A bootstrap pin already owns its tab: return that target so the caller
       // can promote it, instead of prematurely binding a second conversation
       // Surface to the same tab and hitting COMPUTER_SURFACE_INDEX_CONFLICT.
       if (!candidate) continue;
-      if (bootstrap && candidate === bootstrapMatch && !existingMatch) {
+      if (bootstrap && candidate === bootstrapMatch && !existingMatchesBootstrap) {
         const metadata = bootstrap.compatibilityRecords.find((entry) => entry.namespace === 'chatgpt.target')?.value as Record<string, unknown> | undefined;
         if (typeof metadata?.projectUrl !== 'string' || !metadata.projectUrl) continue;
         const identity: ComputerChatgptBootstrapIdentity = { namespace: 'chatgpt.bootstrap', bootstrapKey: bootstrapKey!, projectUrl: metadata.projectUrl };

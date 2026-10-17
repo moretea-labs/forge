@@ -823,6 +823,88 @@ describe('Computer durable InteractionTarget authority', () => {
   });
 
 
+  test('bootstrap physical pin wins over a conflicting conversation binding for the same marker', async () => {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-computer-bootstrap-marker-pin-'));
+    try {
+      const extension = new ChromeExtensionChatgptConversationTargetPort(controllerHome, targetAuthority);
+      const bootstrapKey = 'supervisor:bootstrap-pinned-marker-precedence';
+      const projectUrl = 'https://chatgpt.com/g/g-p-test/project';
+      const conversationId = 'conversation-bootstrap-pin-precedence';
+      const identity = { namespace: 'chatgpt.conversation' as const, conversationId,
+        canonicalUrl: `https://chatgpt.com/c/${conversationId}` };
+      const observedAt = '2026-10-17T02:00:00.000Z';
+      const pinnedBinding = { providerId: 'browser.chrome-extension', providerSessionId: 'profile-one',
+        browserProduct: 'chrome', windowId: 'window-pinned', tabId: 'tab-pinned', ownerToken: 'owner-pinned', observedAt };
+      const otherBinding = { providerId: 'browser.chrome-extension', providerSessionId: 'profile-one',
+        browserProduct: 'chrome', windowId: 'window-existing', tabId: 'tab-existing', ownerToken: 'owner-existing', observedAt };
+      extension.heartbeat({ providerId: 'browser.chrome-extension', providerInstanceId: 'profile-one', observedAt, conversations: [] });
+      const opening = extension.openBootstrap(projectUrl, bootstrapKey);
+      const ensure = extension.claim('profile-one');
+      if (!ensure) throw new Error('No ensure command for exact bootstrap pin');
+      expect(ensure.kind).toBe('ensure');
+      expect(extension.complete('profile-one', ensure.commandId, { kind: 'ensured', providerBinding: pinnedBinding })).toBe(true);
+      const opened = await opening;
+      if (opened.state !== 'ready') throw new Error('Exact bootstrap target was not established');
+      const bootstrapTargetId = opened.target.targetId;
+      const bootstrapSurface = targetAuthority.findSurfaceByStableIdentity(controllerHome, {
+        surfaceType: 'browser-tab', ownership: 'provider_owned',
+        resource: { namespace: 'chatgpt.bootstrap', key: bootstrapKey },
+      });
+      if (!bootstrapSurface) throw new Error('Missing persisted bootstrap physical pin');
+      const existingConversation = targetAuthority.createSurface(controllerHome, {
+        stableIdentity: { surfaceType: 'browser-tab', ownership: 'provider_owned',
+          resource: { namespace: 'chatgpt.conversation', key: conversationId } },
+        visibility: 'controller', providerBinding: otherBinding,
+      });
+      extension.heartbeat({ providerId: 'browser.chrome-extension', providerInstanceId: 'profile-one', observedAt,
+        conversations: [
+          { conversationId, canonicalUrl: identity.canonicalUrl, providerBinding: pinnedBinding },
+          { conversationId, canonicalUrl: identity.canonicalUrl, providerBinding: otherBinding },
+        ],
+      });
+      const marker = '<<<FORGE_TEST_MARKER_BOOTSTRAP_PIN>>>';
+
+      const findMarker = async (bindings: typeof pinnedBinding[]) => {
+        const pending = extension.findBySubmittedMarker(marker, bootstrapKey);
+        let command: ReturnType<typeof extension.claim>;
+        for (let attempt = 0; attempt < 50 && !command; attempt++) {
+          command = extension.claim('profile-one');
+          if (!command) await Bun.sleep(1);
+        }
+        if (!command) throw new Error('Marker search was not claimed by the pinned provider');
+        expect(command.kind).toBe('find_marker');
+        expect(extension.complete('profile-one', command.commandId, {
+          kind: 'marker_matches',
+          matches: bindings.map((providerBinding) => ({
+            identity, providerBinding,
+            observation: { url: identity.canonicalUrl, title: 'Marker', latestUserText: marker,
+              latestAssistantResponse: '', providerActivityText: '', providerFailureText: '',
+              composerText: '', isGenerating: false },
+          })),
+        })).toBe(true);
+        return await pending;
+      };
+
+      const matches = await findMarker([pinnedBinding, otherBinding]);
+      expect(matches).toHaveLength(1);
+      expect(matches[0]).toMatchObject({
+        state: 'ready',
+        target: { targetId: bootstrapTargetId, identity: { namespace: 'chatgpt.bootstrap', bootstrapKey } },
+      });
+      expect(targetAuthority.getSurface(controllerHome, bootstrapTargetId)?.providerBinding)
+        .toMatchObject({ windowId: 'window-pinned', tabId: 'tab-pinned', ownerToken: 'owner-pinned' });
+      expect(targetAuthority.getSurface(controllerHome, existingConversation.targetId)?.providerBinding)
+        .toMatchObject({ windowId: 'window-existing', tabId: 'tab-existing', ownerToken: 'owner-existing' });
+      // If the exact pin is absent, the conversation binding is not a fallback winner.
+      expect(await findMarker([otherBinding])).toEqual([]);
+      expect(targetAuthority.getSurface(controllerHome, bootstrapTargetId)?.providerBinding)
+        .toMatchObject({ windowId: 'window-pinned', tabId: 'tab-pinned', ownerToken: 'owner-pinned' });
+      await extension.close();
+    } finally {
+      rmSync(controllerHome, { recursive: true, force: true });
+    }
+  });
+
   test('does not trust an exact heartbeat entry until conversation content is observable', async () => {
     const controllerHome = mkdtempSync(join(tmpdir(), 'forge-computer-extension-heartbeat-shell-'));
     try {

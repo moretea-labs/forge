@@ -1309,6 +1309,9 @@ requireText('adapters/computer/chrome-extension/background.js', 'resolveTarget(c
 requireText('adapters/computer/chatgpt-extension-target.ts', "response.result.code === 'COMPUTER_CHATGPT_BOOTSTRAP_PINNED_TAB_MISSING'");
 requireText('adapters/computer/chatgpt-extension-target.ts', 'this.authority.withSurfaceLease(this.controllerHome, previous.targetId');
 requireText('adapters/computer/chatgpt-extension-target.ts', 'return await this.openBootstrap(projectUrl, bootstrapKey, false)');
+requireText('adapters/computer/chatgpt-extension-target.ts', 'if (pinned && !bootstrapMatch) continue;');
+requireText('adapters/computer/chatgpt-extension-target.ts', 'const candidate = pinned');
+requireText('adapters/computer/chatgpt-extension-target.ts', 'observed.ownerToken === binding.ownerToken');
 forbid('adapters/computer/chrome-extension/background.js', /resolveTarget\(command\.identity,\s*false\)\.catch/, 'Extension worker must recover a pinned bootstrap from the durable Computer binding, not its ephemeral in-worker Map');
 forbid('adapters/computer/chrome-extension/content.js', /core\.normalizeText\(payload\)/, 'Provider pre-send evidence must preserve whitespace in immutable effect payload');
 requireMissing('supervisor/chrome-extension');
