@@ -33,6 +33,7 @@ export const executionToolDefinitions: McpToolDefinition[] = [
     isolation: { type: 'string', enum: ['reuse', 'new_worktree', 'auto'] }, base_ref: { type: 'string' }, needs_dependencies: { type: 'boolean' },
     expected_previous_head: { type: 'string', description: 'Explicit prior WorkHandle HEAD required for audited successor adoption of an existing work_id.' },
     adopt_candidate_head: { type: 'string', description: 'Explicit current successor commit to adopt after exact identity, ownership, cleanliness, and ancestry validation.' },
+    relocate_to_new_worktree: { type: 'boolean', description: 'Move this existing Work identity to its own managed worktree, with exact previous/candidate HEADs and base_ref. WorkHandle and WorkContract placement commit atomically; the source checkout is not mutated.' },
   }, [], false),
   definition('work_inspect', 'Collect bounded Git, WorkContract, changed-path, check, and readiness evidence through one work handle.', { session_id: sessionId, repo_id: repoId, work_id: workId, detail: { type: 'string', enum: ['summary', 'detail'] } }, ['work_id'], true),
   definition('work_validate', 'Run targeted checks or read-only validation commands against a work handle with full current-state validation.', {

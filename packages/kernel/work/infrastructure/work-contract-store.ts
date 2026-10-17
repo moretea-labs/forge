@@ -14,6 +14,7 @@ import {
   readControlPlaneRecordWithinTransaction,
   withControlPlaneTransaction,
   writeControlPlaneRecordWithinTransaction,
+  type SqliteDatabase,
 } from '../../../../src/runtime/control-plane/persistence/sqlite-store';
 import {
   MAX_IMPLEMENTATION_REVIEW_HISTORY,
@@ -1424,6 +1425,7 @@ function updateWorkContractInternal(
   allowLifecycleWrite = false,
   allowImplementationReviewWrite = false,
   allowPhaseRegression = false,
+  atomicPlacementEffect?: (database: SqliteDatabase, contract: WorkContract) => void,
 ): WorkContract {
   return withExactWorkContractWrite(options, workId, () => {
     const authoritativeOptions = authoritativeExistingWorkStoreOptions(options, workId);
@@ -1527,9 +1529,11 @@ function updateWorkContractInternal(
           action: 'work_contract_updated',
           expectedRevision: exact.revision,
         });
+        atomicPlacementEffect?.(database, next);
       });
       return next;
     }
+    if (atomicPlacementEffect) throw new Error('WORK_PLACEMENT_ATOMIC_SQLITE_REQUIRED');
     const contracts = [...store!.contracts];
     contracts[index] = next;
     writeWorkContractStore(authoritativeOptions, { schemaVersion: 4, updatedAt: at, contracts });
@@ -1614,6 +1618,19 @@ export function updateWorkContract(
 ): WorkContract {
   return updateWorkContractInternal(options, workId, patch, false);
 }
+export function updateWorkContractPlacementAtomically(
+  options: WorkContractStoreOptions,
+  workId: string,
+  patch: Pick<WorkContractMetadataPatch, 'checkoutId' | 'worktreeRef' | 'executionPlacement' | 'worktreePolicy'>,
+  effect: (database: SqliteDatabase, contract: WorkContract) => void,
+): WorkContract {
+  // The WorkContract writer remains the sole semantic metadata authority.
+  // An execution WorkHandle is committed inside the same SQLite transaction,
+  // never as a second step that could leave conflicting checkout ownership.
+  return updateWorkContractInternal(options, workId, patch, false, false, false, false, effect);
+}
+
+
 
 /** Explicit execution-classification transition when an open Work begins governed repository mutation. */
 export function promoteWorkToRepositoryChange(

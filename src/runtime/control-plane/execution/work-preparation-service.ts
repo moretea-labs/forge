@@ -7,6 +7,10 @@ import { ensureManagedWorkspace } from '../../execution/managed-workspace';
 import { listRecoverableProcessRecords } from '../../execution/process-runtime/store';
 import { readRepositoryAccessPolicy } from '../governance/access-policy';
 import { activateWorkContract, failWorkContract, getWorkContract } from '../../../../packages/kernel/work/api/index';
+import { updateWorkContractPlacementAtomically } from '../../../../packages/kernel/work/infrastructure/work-contract-store';
+import { listWorkHandles } from './work-handle-store';
+import { listControlPlaneRecordsWithinTransaction, readControlPlaneRecordWithinTransaction, writeControlPlaneRecordWithinTransaction } from '../persistence/sqlite-store';
+import type { WorkContract } from '../../../../packages/kernel/work/domain/types';
 import { admitPreparedRepositoryWorkContract, materializeRepositoryWorkPlacement } from '../facade/repository-work-admission';
 import { isTerminalSemanticWorkState } from '../facade/types';
 import { updateExecutionSession, type ExecutionSessionContext } from './session-store';
@@ -172,6 +176,116 @@ function adoptExplicitSuccessorHead(
   return writeWorkHandle(ctx.controllerHome, candidate);
 }
 
+function relocateExistingWorkToManagedCheckout(
+  ctx: McpExecutionContext,
+  args: Record<string, unknown>,
+  session: ExecutionSessionContext,
+  repository: ReturnType<typeof selectedRepository>,
+  existing: WorkHandleState,
+): Record<string, unknown> {
+  const prior = typeof args.expected_previous_head === 'string' ? args.expected_previous_head.trim() : '';
+  const candidate = typeof args.adopt_candidate_head === 'string' ? args.adopt_candidate_head.trim() : '';
+  const baseRef = typeof args.base_ref === 'string' ? args.base_ref.trim() : '';
+  if (!prior || !candidate || baseRef !== candidate || !/^[0-9a-f]{40}$/.test(candidate)) {
+    throw new Error('WORK_RELOCATION_EXACT_HEADS_REQUIRED: supply expected_previous_head and matching base_ref/adopt_candidate_head');
+  }
+  if (existing.principalId !== session.principalId) throw new Error('WORK_HANDLE_ACCESS_DENIED');
+  if (existing.expectedHead !== prior && !(existing.managedWorktree && existing.expectedHead === candidate)) {
+    throw new Error('WORK_RELOCATION_PREVIOUS_HEAD_MISMATCH');
+  }
+  if (existing.managedWorktree) {
+    if (existing.expectedHead !== candidate) throw new Error('WORK_RELOCATION_ALREADY_ISOLATED');
+    validateWorkHandle(ctx.controllerHome, existing, identityFor(ctx, args), 'cheap', 'inspect');
+    updateExecutionSession(ctx.controllerHome, identityFor(ctx, args), {
+      activeRepositoryId: existing.repositoryId, activeCheckoutId: existing.checkoutId,
+      activeWorkId: existing.workId, permissionSnapshotVersion: existing.permissionSnapshotVersion,
+    });
+    return { session: requireSession(ctx, args), work: compactHandle(existing), reused: true, relocated: true };
+  }
+  if (existing.state !== 'prepared' && existing.state !== 'editing') throw new Error('WORK_RELOCATION_STATE_INVALID');
+  if (existing.finalization.validation !== 'pending' || existing.finalization.commit !== 'pending' || existing.finalization.merge !== 'pending'
+      || existing.finalization.worktreeCleanup !== 'pending' || existing.finalization.branchCleanup !== 'pending'
+      || existing.cleanupReceipt || existing.validatedInputFingerprint || existing.validationRun) {
+    throw new Error('WORK_RELOCATION_FINALIZATION_IN_PROGRESS');
+  }
+  const contract = getWorkContract({ controllerHome: ctx.controllerHome, repoId: existing.repositoryId }, existing.workId);
+  if (!contract || contract.semanticState !== 'open' || contract.completionReceipt || contract.completionOutcome
+      || contract.checkoutId !== existing.checkoutId) throw new Error('WORK_RELOCATION_CONTRACT_MISMATCH');
+  if (existing.checkoutId !== repository.activeCheckoutId || existing.worktreePath !== repository.canonicalRoot
+      || existing.branch !== repositoryGitStatus(repository).branch) throw new Error('WORK_RELOCATION_SOURCE_MISMATCH');
+  if (!gitIsAncestor(existing.worktreePath, prior, candidate)) throw new Error('WORK_RELOCATION_NONLINEAR');
+  const changedPaths = gitPathSet(existing.worktreePath, ['diff', '--name-only', prior + '..' + candidate], 'WORK_RELOCATION_DIFF_UNAVAILABLE');
+  const dirtyPaths = currentDirtyPaths(existing.worktreePath);
+  const overlap = [...changedPaths].filter((path) => dirtyPaths.has(path));
+  if (overlap.length) throw new Error('WORK_RELOCATION_DIRTY_OVERLAP: ' + overlap.sort().join(','));
+  if (listRecoverableProcessRecords(ctx.controllerHome, existing.repositoryId).some((record) => record.workId === existing.workId)) {
+    throw new Error('WORK_RELOCATION_ACTIVE_PROCESS');
+  }
+  const requestId = typeof args.request_id === 'string' ? args.request_id.trim() : '';
+  if (!requestId) throw new Error('WORK_RELOCATION_REQUEST_ID_REQUIRED');
+  // A deterministic request identity makes physical worktree creation safe to
+  // resume after a process crash before the authoritative database transaction.
+  const workspace = ensureManagedWorkspace(ctx.controllerHome, repository, {
+    requestId: 'relocate:' + existing.workId + ':' + candidate,
+    title: 'Relocate existing Work to managed checkout',
+    associatedWorkId: existing.workId,
+    baseRef: candidate,
+    prepareDependencies: false,
+  });
+  if (!workspace.managed || !workspace.checkoutId || !workspace.root || !workspace.branch) {
+    throw new Error('WORK_RELOCATION_TARGET_NOT_MANAGED');
+  }
+  const selectedTarget = resolveRepositorySelection({
+    repoId: existing.repositoryId, checkoutId: workspace.checkoutId,
+    controllerHome: ctx.controllerHome, allowSoleRepository: false,
+  });
+  const targetStatus = repositoryGitStatus(selectedTarget);
+  if (!targetStatus.clean || targetStatus.head !== candidate || targetStatus.branch !== workspace.branch
+      || workspace.checkoutId === existing.checkoutId || selectedTarget.canonicalRoot !== workspace.root) {
+    throw new Error('WORK_RELOCATION_TARGET_CHANGED');
+  }
+  const moved: WorkHandleState = {
+    ...existing, checkoutId: workspace.checkoutId, worktreePath: workspace.root,
+    branch: workspace.branch, expectedHead: candidate, managedWorktree: true,
+    validationRun: undefined, validatedInputFingerprint: undefined, finalization: initialStage(),
+  };
+  const store = { controllerHome: ctx.controllerHome, repoId: existing.repositoryId };
+  updateWorkContractPlacementAtomically(store, existing.workId, {
+    checkoutId: workspace.checkoutId,
+    worktreeRef: workspace.root,
+    executionPlacement: { schemaVersion: 1, repositoryId: existing.repositoryId, checkoutId: workspace.checkoutId },
+    worktreePolicy: { required: true, reason: 'Explicit identity-preserving managed checkout relocation', ref: workspace.root },
+  }, (database, updatedContract: WorkContract) => {
+    if (updatedContract.checkoutId !== moved.checkoutId) throw new Error('WORK_RELOCATION_TRANSACTION_CONTRACT_MISMATCH');
+    const row = readControlPlaneRecordWithinTransaction<WorkHandleState>(
+      database, 'execution_work_handle', existing.repositoryId, existing.workId,
+    );
+    if (!row || row.revision !== existing.recordRevision
+        || row.value.checkoutId !== existing.checkoutId || row.value.expectedHead !== prior) {
+      throw new Error('WORK_RELOCATION_HANDLE_CAS_CONFLICT');
+    }
+    const competing = listControlPlaneRecordsWithinTransaction<WorkHandleState>(database, {
+      namespace: 'execution_work_handle', scope: existing.repositoryId, limit: 5000,
+    }).some((entry) => entry.value.workId !== existing.workId && entry.value.checkoutId === workspace.checkoutId
+      && entry.value.state !== 'cleaned');
+    if (competing) throw new Error('WORK_RELOCATION_TARGET_OWNED');
+    writeControlPlaneRecordWithinTransaction(database, {
+      namespace: 'execution_work_handle', scope: existing.repositoryId, key: existing.workId,
+      schemaVersion: 1, expectedRevision: row.revision,
+      value: { ...moved, recordRevision: undefined, updatedAt: new Date().toISOString() },
+      action: 'work_handle_checkout_relocated',
+    });
+  });
+  const refreshed = readWorkHandle(ctx.controllerHome, existing.repositoryId, existing.workId);
+  if (!refreshed || refreshed.checkoutId !== workspace.checkoutId) throw new Error('WORK_RELOCATION_COMMIT_NOT_VERIFIED');
+  updateExecutionSession(ctx.controllerHome, identityFor(ctx, args), {
+    activeRepositoryId: refreshed.repositoryId, activeCheckoutId: refreshed.checkoutId,
+    activeWorkId: refreshed.workId, permissionSnapshotVersion: refreshed.permissionSnapshotVersion,
+  });
+  return { session: requireSession(ctx, args), work: compactHandle(refreshed), relocated: true,
+    previousCheckoutId: existing.checkoutId, previousHead: prior, currentHead: candidate };
+}
+
 export function prepareWork(ctx: McpExecutionContext, args: Record<string, unknown>): Record<string, unknown> {
   const session = requireSession(ctx, args);
   const repository = selectedRepository(ctx, session, args, true);
@@ -179,11 +293,16 @@ export function prepareWork(ctx: McpExecutionContext, args: Record<string, unkno
     updateExecutionSession(ctx.controllerHome, identityFor(ctx, args), { activeRepositoryId: repository.repoId, activeCheckoutId: repository.activeCheckoutId, permissionSnapshotVersion: currentPermissionSnapshotVersion(ctx.controllerHome, repository.repoId) });
   }
   const existingId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
+  if (args.relocate_to_new_worktree === true && !existingId) throw new Error('WORK_RELOCATION_EXISTING_WORK_ID_REQUIRED');
   const requestedIsolation = requestedWorkPrepareIsolation(args);
   if (existingId) {
     const existing = readWorkHandle(ctx.controllerHome, repository.repoId, existingId)
       ?? findWorkHandle(ctx, session, { ...args, work_id: existingId, repo_id: repository.repoId });
     if (existing.principalId !== session.principalId) throw new Error('WORK_HANDLE_ACCESS_DENIED');
+    if (args.relocate_to_new_worktree === true) {
+      if (requestedIsolation !== undefined) throw new Error('WORK_RELOCATION_ISOLATION_CONFLICT');
+      return relocateExistingWorkToManagedCheckout(ctx, args, session, repository, existing);
+    }
     if (requestedIsolation !== undefined) {
       const requestedWorkspaceMode = requestedIsolation === 'reuse' ? 'current' : 'isolated';
       const existingWorkspaceMode = existing.managedWorktree ? 'isolated' : 'current';
