@@ -131,7 +131,12 @@ URLs, without ignoring any other whitespace or allowing arbitrary human edits.
 New observations reconstruct text from the direct ProseMirror paragraphs' text
 nodes rather than CSS-rendered layout text. The sole Chrome extension
 rechecks the stopped effect marker and a fresh exact editor fingerprint immediately
-before its prepare-only replacement. This grants no replay or
+before its prepare-only replacement. If ChatGPT hydrates this exact STOPPED-owned draft
+after the first bootstrap snapshot, the same pinned Computer target may obtain
+one fresh read-only observation following a `composer_not_empty` prepare refusal
+and attempt exactly one guarded second **prepare**, still before any Send
+generation. Unknown mutation, foreign text or missing precise evidence remain
+blocked; no task, effect or provider is duplicated. This grants no replay or
 new provider authority. Ambiguous/applied/possibly-sent effects, user or foreign drafts,
 and a generating assistant always fail closed. A successful prepare still requires the
 normal exact-effect Send and completion checks; never count typing as delivery.

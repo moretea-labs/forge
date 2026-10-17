@@ -840,8 +840,20 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       command.effectId, this.control.bootstrapProjectUrl(task.taskId), beforeSend, command.prompt);
     const retiredReplacement = exactReplacement ? undefined
       : retiredBootstrapDraftReplacementPrompt(this.control, task, beforeSend, command.prompt);
-    try { prepared = await target.prepare(exactReplacement ?? retiredReplacement ?? command.prompt); }
-    catch (error) {
+    try {
+      prepared = await target.prepare(exactReplacement ?? retiredReplacement ?? command.prompt);
+      if (!prepared.ready && prepared.reasonCode === 'composer_not_empty'
+        && !exactReplacement && !retiredReplacement) {
+        // ChatGPT may hydrate an old Project draft after the initial tab-ready
+        // observation. A refused prepare never clicked Send. Read the SAME
+        // pinned target once more and offer a second prepare only when the
+        // STOPPED effect's canonical ledger proves this exact editor safe.
+        const hydrated = await target.observe({ includeUserHistory: false, includePageText: false }).catch(() => undefined);
+        const verifiedRetirement = hydrated
+          ? retiredBootstrapDraftReplacementPrompt(this.control, task, hydrated, command.prompt) : undefined;
+        if (verifiedRetirement) prepared = await target.prepare(verifiedRetirement);
+      }
+    } catch (error) {
       this.control.recordProviderPreparationFailure({ taskId: task.taskId, effectId: command.effectId, reasonCode: consumerFailureCode(error, 'COMPUTER_PREPARE_FAILED'), composerObservation: preflightComposerObservation(beforeSend, command.effectId) });
       this.noteTaskFailure(SUPERVISOR_PRE_SEND_BLOCKED, task, command.effectId); this.deps.onError(error); return;
     }
