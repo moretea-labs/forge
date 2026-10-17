@@ -90,6 +90,7 @@ export {
   reviseWorkSemanticContext,
   summarizeWorkContract,
   updateWorkContract,
+  updateWorkContractPlacementAtomically,
   promoteWorkToRepositoryChange,
   recordWorkEvidenceState,
   activateWorkContract,

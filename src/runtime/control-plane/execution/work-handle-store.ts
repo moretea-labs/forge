@@ -4,7 +4,8 @@ import { join } from 'path';
 import { scopedOperationRoot } from '../../../cli/repositories/controller-home';
 import { readJsonFile, sanitizeFileComponent } from '../../shared/json-files';
 import type { ProcessCheckExecutionIdentity } from '../../evidence/process-check-execution';
-import { listControlPlaneRecords, mutateControlPlaneRecord, readOrImportControlPlaneRecord, writeControlPlaneRecord } from '../persistence/sqlite-store';
+import { listControlPlaneRecords, listControlPlaneRecordsWithinTransaction, mutateControlPlaneRecord, readControlPlaneRecordWithinTransaction, readOrImportControlPlaneRecord, writeControlPlaneRecord, writeControlPlaneRecordWithinTransaction } from '../persistence/sqlite-store';
+import { updateWorkContractPlacementAtomically } from '../../../../packages/kernel/work/api/index';
 
 export const WORK_HANDLE_STATES = [
   'prepared',
@@ -377,6 +378,54 @@ export function writeWorkHandle(controllerHome: string, handle: WorkHandleState)
     isValidationPending(record.value),
   );
   return { ...record.value, recordRevision: record.revision };
+}
+
+/**
+ * Atomically rebind the one existing execution handle and its Kernel Work
+ * placement. The application service already proved exact Git ancestry and
+ * clean exclusive target; this store owns only the two-record CAS mutation.
+ */
+export function relocateWorkHandlePlacementAtomically(
+  controllerHome: string,
+  prior: WorkHandleState,
+  target: { checkoutId: string; root: string; branch: string; head: string },
+): WorkHandleState {
+  const moved: WorkHandleState = {
+    ...prior, checkoutId: target.checkoutId, worktreePath: target.root, branch: target.branch,
+    expectedHead: target.head, managedWorktree: true,
+    validationRun: undefined, validatedInputFingerprint: undefined,
+    finalization: { validation: 'pending', commit: 'pending', merge: 'pending', branchCleanup: 'pending', worktreeCleanup: 'pending' },
+  };
+  updateWorkContractPlacementAtomically({ controllerHome, repoId: prior.repositoryId }, prior.workId, {
+    checkoutId: target.checkoutId,
+    worktreeRef: target.root,
+    executionPlacement: { schemaVersion: 1, repositoryId: prior.repositoryId, checkoutId: target.checkoutId },
+    worktreePolicy: { required: true, reason: 'Explicit identity-preserving managed checkout relocation', ref: target.root },
+  }, (database, updatedContract) => {
+    if (updatedContract.checkoutId !== moved.checkoutId) throw new Error('WORK_RELOCATION_TRANSACTION_CONTRACT_MISMATCH');
+    const row = readControlPlaneRecordWithinTransaction<WorkHandleState>(
+      database, 'execution_work_handle', prior.repositoryId, prior.workId,
+    );
+    if (!row || row.revision !== prior.recordRevision || row.value.checkoutId !== prior.checkoutId
+        || row.value.expectedHead !== prior.expectedHead) {
+      throw new Error('WORK_RELOCATION_HANDLE_CAS_CONFLICT');
+    }
+    const competing = listControlPlaneRecordsWithinTransaction<WorkHandleState>(database, {
+      namespace: 'execution_work_handle', scope: prior.repositoryId, limit: 5000,
+    }).some((entry) => entry.value.workId !== prior.workId && entry.value.checkoutId === target.checkoutId
+      && entry.value.state !== 'cleaned');
+    if (competing) throw new Error('WORK_RELOCATION_TARGET_OWNED');
+    const { recordRevision: _revision, ...persisted } = moved;
+    writeControlPlaneRecordWithinTransaction(database, {
+      namespace: 'execution_work_handle', scope: prior.repositoryId, key: prior.workId,
+      schemaVersion: 1, expectedRevision: row.revision,
+      value: { ...persisted, updatedAt: new Date().toISOString() },
+      action: 'work_handle_checkout_relocated',
+    });
+  });
+  const refreshed = readWorkHandle(controllerHome, prior.repositoryId, prior.workId);
+  if (!refreshed || refreshed.checkoutId !== target.checkoutId) throw new Error('WORK_RELOCATION_COMMIT_NOT_VERIFIED');
+  return refreshed;
 }
 
 /**
