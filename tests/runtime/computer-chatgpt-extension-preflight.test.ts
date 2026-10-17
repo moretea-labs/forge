@@ -300,6 +300,72 @@ test('real Chrome content script preserves all prompt spaces and newlines during
   expect(fullPageTextReads).toBe(1);
 });
 
+test('live current-turn activity changes before the assistant role commits', () => {
+  const content = readFileSync(new URL('../../adapters/computer/chrome-extension/content.js', import.meta.url), 'utf8');
+  const instrumented = content.replace(
+    '  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {',
+    '  globalThis.__providerActivitySnapshot = pageSnapshot;\n  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {',
+  );
+  expect(instrumented).not.toBe(content);
+  const collection = <T,>(values: T[]) => Object.assign(values, { item: (index: number) => values[index] });
+  const message = (role: 'user' | 'assistant', value: string) => ({
+    innerText: value,
+    textContent: value,
+    getAttribute: (name: string) => name === 'data-message-author-role' ? role : '',
+    querySelector: () => null,
+  });
+  const priorAssistant = message('assistant', 'Previously committed answer');
+  const latestUser = message('user', 'Exact effect marker');
+  let liveTurnText = 'Reasoning: inspecting the repository';
+  const turn = {
+    get innerText() { return liveTurnText; },
+    get textContent() { return liveTurnText; },
+    getClientRects: () => [1],
+    querySelectorAll: () => collection([] as unknown[]),
+  };
+  const main = {
+    getClientRects: () => [1],
+    querySelectorAll: (selector: string) => selector.includes('conversation-turn') ? collection([turn])
+      : selector.includes('data-message-author-role="user"') && selector.includes('data-message-author-role="assistant"') ? collection([priorAssistant, latestUser])
+        : selector.includes('data-message-author-role="user"') ? collection([latestUser])
+          : selector.includes('data-message-author-role="assistant"') ? collection([priorAssistant])
+            : collection([] as unknown[]),
+  };
+  const context = {
+    document: { title: 'Forge', body: { innerText: '' }, documentElement: {},
+      querySelectorAll: (selector: string) => selector === 'main' ? collection([main]) : collection([] as unknown[]) },
+    location: { href: 'https://chatgpt.com/c/12345678-1234-1234-1234-123456789abc' },
+    URL, Date, Map, Promise,
+    ForgeComputerChatgptCore: {
+      normalizeText: (value: unknown) => String(value ?? '').replace(/\s+/g, ' ').trim(),
+      parseConversation: () => null,
+    },
+    chrome: { runtime: { onMessage: { addListener() {} }, sendMessage() {} } },
+    MutationObserver: class { observe() {} disconnect() {} },
+    setTimeout() { return 1; }, clearTimeout() {},
+  };
+  runInNewContext(instrumented, context);
+  const snapshot = (context as typeof context & {
+    __providerActivitySnapshot: () => {
+      latestAssistantResponse: string; latestTurnRole?: string; providerActivityText: string; isGenerating: boolean;
+    };
+  }).__providerActivitySnapshot;
+  const first = snapshot();
+  expect(first).toMatchObject({
+    latestAssistantResponse: 'Previously committed answer',
+    latestTurnRole: 'user',
+    providerActivityText: 'Reasoning: inspecting the repository',
+    isGenerating: true,
+  });
+
+  liveTurnText = 'Reasoning: inspecting the repository. Tool output: 4 files found.';
+  const next = snapshot();
+  expect(next.latestAssistantResponse).toBe(first.latestAssistantResponse);
+  expect(next.latestTurnRole).toBe('user');
+  expect(next.providerActivityText).toBe('Reasoning: inspecting the repository. Tool output: 4 files found.');
+  expect(next.providerActivityText).not.toBe(first.providerActivityText);
+});
+
 test('content script fences bootstrap sends to the exact Project and rejects migrated conversation URLs', async () => {
   const source = readFileSync(new URL('../../adapters/computer/chrome-extension/content.js', import.meta.url), 'utf8');
   const expectedProjectId = 'g-p-abc';

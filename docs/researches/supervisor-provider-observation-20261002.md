@@ -125,6 +125,8 @@ was built from the recorded DOM roles, so residual uncertainty remains about how
 often ChatGPT's own reasoning surface keeps the last turn text moving between
 tokens: a genuinely silent 10-minute turn still earns its one bounded resume.
 
+Committed regression (2026-10-17): `tests/runtime/computer-chatgpt-extension-preflight.test.ts` executes the real `content.js` `pageSnapshot` against a synthetic visible hydrated `main` where the latest role remains `user`, the previous committed assistant answer stays unchanged, and live reasoning/tool text changes. It asserts that `providerActivityText` changes independently of the committed answer, so observable progress changes the Supervisor digest before a final assistant role/receipt exists. This proves the extraction contract in a fixture, not live Android/Chrome runtime behavior. The historical Android/iOS task ledgers were terminal-stopped under the explicit prior request and are not replayed for this regression.
+
 ## 2026-10-08 native Apple Events contention follow-up
 
 Live exact-tab metadata completed in 368 ms for the retained Forge conversation in Vivaldi (correct URL, active and frontmost). The subsequent minimal DOM request was rejected as `BROWSER_AUTOMATION_SERIALIZATION_BUSY` while a separate `osascript` holder was executing against another tab in the same browser. The known Desktop Operator timeout path now bounds and reaps that holder; this does **not** prove that the Forge conversation was successfully rendered or delivered.
