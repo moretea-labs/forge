@@ -148,6 +148,7 @@ function completionFromRow(row: Record<string, unknown>): WorkflowSupervisorComp
   };
 }
 function parsedObject(value: unknown): Record<string, unknown> {
+  if (value && typeof value === 'object' && !Array.isArray(value)) return value as Record<string, unknown>;
   try { const parsed = JSON.parse(String(value)); return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {}; }
   catch { return {}; }
 }
