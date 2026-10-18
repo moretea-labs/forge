@@ -962,7 +962,9 @@ export async function callRepositoryTool(
                 workId: binding?.workId,
               });
             }
-            const mutationAuthority = binding?.workId
+            // A validation-only reattachment is not repository mutation admission;
+            // it must never promote a thin investigation to repository_change.
+            const mutationAuthority = binding?.workId && args.validation_only !== true
               ? ensureRepositoryMutationWorkHandle({
                   controllerHome,
                   repository,
