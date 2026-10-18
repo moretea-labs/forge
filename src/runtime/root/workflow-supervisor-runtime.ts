@@ -21,9 +21,37 @@ import { getRepository } from '../../cli/repositories/registry';
 import { getWorkContract } from '../../../packages/kernel/work/api/index';
 import { isTerminalSemanticWorkState } from '../../../packages/kernel/work/api/index';
 import { findActivePluginCapabilityAuthorization, pluginCapabilityAuthorizationOwnerScope } from '../plugins/capability-authorization-grants';
-import { submitAssistantPluginAction } from '../plugins/store';
+import { readPluginActionReceiptForRequest, submitAssistantPluginAction, type PluginActionReceipt } from '../plugins/store';
 import { loadGmailPluginConfig } from '../plugins/google-shared';
 import { GMAIL_AUTOMATION_CAPABILITY_ID, GMAIL_PLUGIN_ID } from '../plugins/gmail-adapter';
+
+/** An uncertain external send remains owned by its original immutable plugin receipt. */
+export function recordUnknownSupervisorNotificationReceipt(
+  controllerHome: string,
+  taskId: string,
+  requestId: string,
+  receipt: Pick<PluginActionReceipt, 'receiptId' | 'requestId' | 'pluginId' | 'actionId' | 'status' | 'effectOutcome'>,
+): boolean {
+  if (receipt.requestId !== requestId || receipt.pluginId !== GMAIL_PLUGIN_ID
+    || receipt.actionId !== 'send_owner_notification'
+    || receipt.status !== 'failed' || receipt.effectOutcome !== 'outcome_unknown') return false;
+  const activityId = `workflow-supervisor-notification-unknown-${requestId}`;
+  const existing = getDirectActivity(controllerHome, activityId);
+  if (existing?.receiptRef && existing.receiptRef !== receipt.receiptId) {
+    throw new Error(`WORKFLOW_SUPERVISOR_NOTIFICATION_RECEIPT_CONFLICT: ${requestId}`);
+  }
+  if (!existing) recordDirectActivity(controllerHome, {
+    activityId,
+    capabilityId: 'workflow-supervisor.notification',
+    kind: 'direct_execution',
+    targetScope: `workflow-supervisor-task:${taskId}`,
+    principalId: 'forge-runtime',
+    status: 'failed',
+    receiptRef: receipt.receiptId,
+    summary: 'Gmail notification delivery outcome is unknown. Preserve the exact provider receipt and request ID; do not resend or rekey without authoritative reconciliation.',
+  });
+  return true;
+}
 
 export interface RuntimeWorkflowSupervisorHandle {
   readonly done: Promise<void>;
@@ -160,6 +188,10 @@ export async function startWorkflowSupervisorRuntime(
     if (!repoId) return;
     const repository = getRepository(repoId, controllerHome);
     if (!repository) return;
+    // Read the exact prior receipt before grant checks or changing args. An
+    // outcome-unknown send must never be resubmitted under any envelope.
+    const prior = readPluginActionReceiptForRequest(controllerHome, input.requestId);
+    if (prior && recordUnknownSupervisorNotificationReceipt(controllerHome, input.taskId, input.requestId, prior)) return;
     const mailbox = loadGmailPluginConfig(repository.canonicalRoot, { controllerHome, repoId }).accountEmail?.trim().toLowerCase();
     const target = mailbox ? {
       kind: 'gmail-mailbox' as const,
@@ -209,7 +241,7 @@ export async function startWorkflowSupervisorRuntime(
       '处理或恢复后，Forge 会继续沿用原有任务与 effect；不要手动重复发送。',
     ].join('\n').slice(0, 11000);
     try {
-      await submitAssistantPluginAction(controllerHome, repository, {
+      const submitted = await submitAssistantPluginAction(controllerHome, repository, {
         pluginId: GMAIL_PLUGIN_ID,
         actionId: 'send_owner_notification',
         requestId: input.requestId,
@@ -221,6 +253,9 @@ export async function startWorkflowSupervisorRuntime(
         },
         authorizationGrantRefs: [grant.grantId],
       });
+      if (recordUnknownSupervisorNotificationReceipt(controllerHome, input.taskId, input.requestId, submitted.receipt)) {
+        process.stderr.write(`[workflow-supervisor-notification] ${input.requestId}: outcome_unknown; receipt ${submitted.receipt.receiptId} retained without resend\n`);
+      }
     } catch (error) {
       const failureMessage = error instanceof Error ? error.message : String(error);
       const failureCode = /^([A-Z][A-Z0-9_]+)(?::|$)/.exec(failureMessage)?.[1];
