@@ -20,6 +20,7 @@ import {
   repositoryIdentity,
 } from '../../../src/cli/controller/runtime-config';
 import { McpSessionRegistry } from './session-registry';
+import { reconcileFinishedMcpPosts } from './http-post-lifecycle';
 
 type McpToolContext = ReturnType<typeof createMcpToolContext>;
 type HttpSessionRegistry = McpSessionRegistry<NodeStreamableHTTPServerTransport, McpToolContext>;
@@ -193,6 +194,7 @@ export function registerMcpHttpObservationRoutes(input: McpHttpObservationRouteO
     // Legacy session age excludes modern stateless POSTs. The same response-
     // owned admission map backs both capacity and this diagnostic; no second
     // activity counter or release authority is introduced.
+    reconcileFinishedMcpPosts(runtimeStats.activePostStartedAt);
     const oldestActivePostAt = runtimeStats.activePostStartedAt.size
       ? Math.min(...runtimeStats.activePostStartedAt.values()) : undefined;
     const oldestActivePostAgeMs = oldestActivePostAt === undefined
@@ -254,6 +256,7 @@ export function registerMcpHttpObservationRoutes(input: McpHttpObservationRouteO
 
   app.get('/transport-ready', (_req, res) => {
     const sessionSnapshot = sessionRegistry.snapshot();
+    reconcileFinishedMcpPosts(runtimeStats.activePostStartedAt);
     const sessionCapacityReady = sessionSnapshot.acceptingNewSessions
       && runtimeStats.initializing < maxInitializingSessions
       && runtimeStats.activePostStartedAt.size < maxActivePosts;
@@ -274,6 +277,7 @@ export function registerMcpHttpObservationRoutes(input: McpHttpObservationRouteO
   app.get('/ready', async (_req, res) => {
     const runtimeGeneration = runtimeControllerHome ? readRuntimeGeneration(runtimeControllerHome) : undefined;
     const sessionSnapshot = sessionRegistry.snapshot();
+    reconcileFinishedMcpPosts(runtimeStats.activePostStartedAt);
     const sessionCapacityReady = sessionSnapshot.acceptingNewSessions
       && runtimeStats.initializing < maxInitializingSessions
       && runtimeStats.activePostStartedAt.size < maxActivePosts;
