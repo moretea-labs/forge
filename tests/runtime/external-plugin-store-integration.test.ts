@@ -11,6 +11,7 @@ import { getWorkContract } from '../../src/runtime/control-plane/facade/work-con
 import { continueGoalWorkloop, runGoalWorkloop, startGoalWorkloop } from '../../src/runtime/control-plane/facade/goal-workloop';
 import { callRhWorkSemanticOperation } from '../../adapters/mcp/runtime-gateway/work-semantic-operations';
 import { buildResendPluginManifest, executeResendPluginAction } from '../../src/runtime/plugins/resend-adapter';
+import { executeAssistantPluginActionApplication } from '../../src/runtime/plugins/action-application';
 import { GMAIL_AUTOMATION_CAPABILITY_ID, GMAIL_PLUGIN_ID } from '../../src/runtime/plugins/gmail-adapter';
 import { repositoryPluginConfigPath } from '../../src/runtime/plugins/config-store';
 import { createFirstPartyPluginAdapterMap } from '../../src/runtime/plugins/first-party-registry';
@@ -1024,6 +1025,40 @@ describe('Resend first-party plugin', () => {
       confirmAuthorization: true, confirmationText: 'send-resend-email', origin: { surface: 'mcp', actor: 'test' },
     })).rejects.toThrow('WORK_PLUGIN_RECEIPT_BINDING_KIND_MISMATCH');
     expect(getWorkContract({ controllerHome, repoId: repository.repoId }, workId)?.semanticState).toBe('open');
+  });
+
+  test('rejects invalid Work kind without consuming the Process request id', async () => {
+    const repoRoot = resendFixture();
+    const controllerHome = join(repoRoot, '.controller');
+    expect(spawnSync('git', ['init', '-b', 'main'], { cwd: repoRoot, encoding: 'utf8' }).status).toBe(0);
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'plugin-request-id-preflight' });
+    await executeResendPluginAction({
+      controllerHome, repoId: repository.repoId, repoRoot, pluginId: 'resend', actionId: 'configure',
+      requestId: 'plugin-preflight-configure', args: { enabled: true, provider: 'mock', from_email: 'forge@example.test' },
+      origin: { surface: 'mcp', actor: 'test' },
+    });
+    const started = startGoalWorkloop({
+      workStore: { controllerHome, repoId: repository.repoId }, handoffStore: { controllerHome, repoId: repository.repoId },
+      repoId: repository.repoId, checkoutId: repository.activeCheckoutId,
+    }, {
+      objective: 'Investigation Work must not bind a remote send receipt.',
+      acceptanceCriteria: [], allowedPaths: [], forbiddenPaths: [], checks: [],
+      request: { scopeClear: true, mutation: true, requiresExternalEffect: false, remoteWrite: false, requiresRecovery: false, requiresApproval: false },
+    });
+    const workId = String((started.data as { work?: { workId?: string } }).work?.workId ?? '');
+    const request = {
+      pluginId: 'resend', actionId: 'send_email', requestId: 'same-id-after-preflight-error',
+      args: { to: ['recipient@example.test'], subject: 'one send', text: 'fixture' },
+      confirmAuthorization: true, confirmationText: 'send-resend-email',
+      origin: { surface: 'mcp' as const, actor: 'test' },
+    };
+    await expect(executeAssistantPluginActionApplication({
+      controllerHome, scope: { kind: 'repository', repository }, request: { ...request, workId },
+    })).rejects.toThrow('WORK_PLUGIN_RECEIPT_BINDING_KIND_MISMATCH');
+    expect(existsSync(join(controllerHome, 'repositories', repository.repoId, 'plugin-action-processes'))).toBe(false);
+    const corrected = await submitAssistantPluginAction(controllerHome, repository, request);
+    expect(corrected.receipt.status).toBe('succeeded');
+    expect(corrected.receipt.requestId).toBe(request.requestId);
   });
 
   test('is registered with strongly confirmed delivery and environment-only credentials', () => {

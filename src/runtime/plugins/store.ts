@@ -1357,6 +1357,21 @@ function attributedWorkForPluginAction(
   return work;
 }
 
+/** Reuse the canonical Work binding check before a Process request ID is reserved. */
+export function preflightPluginActionWorkBinding(
+  controllerHome: string,
+  pluginScope: { kind: 'controller' } | { kind: 'repository'; repository: RepositoryRecord },
+  action: AssistantPluginActionDescriptor,
+  request: AssistantPluginActionRequest,
+): void {
+  if (!request.workId?.trim()) return;
+  const scope = pluginScope.kind === 'controller'
+    ? controllerPluginActionScope(controllerHome)
+    : repositoryPluginActionScope(pluginScope.repository);
+  if (action.risk === 'remote_write') remoteEffectWorkForPluginAction(controllerHome, scope, action, request);
+  else attributedWorkForPluginAction(controllerHome, scope, action, request);
+}
+
 function bindLocalEffectReceiptToAttributedWork(
   controllerHome: string,
   scope: PluginActionScopeContext,
