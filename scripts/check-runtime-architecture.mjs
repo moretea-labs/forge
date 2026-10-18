@@ -1156,6 +1156,10 @@ requireText('src/runtime/plugins/gmail-adapter.ts', 'expiresInMinutes: GMAIL_AUT
 requireText('src/runtime/plugins/store.ts', 'if (action.requiresExplicitCapabilityGrant && !activeAuthorizationGrant)');
 requireText('src/runtime/plugins/store.ts', 'PLUGIN_CAPABILITY_GRANT_REQUIRED');
 requireText('src/runtime/root/workflow-supervisor-runtime.ts', 'notificationRequestId');
+requireText('src/runtime/root/workflow-supervisor-runtime.ts', 'export function recordUnknownSupervisorNotificationReceipt(');
+requireText('src/runtime/root/workflow-supervisor-runtime.ts', 'readPluginActionReceiptForRequest(controllerHome, input.requestId)');
+requireText('src/runtime/root/workflow-supervisor-runtime.ts', 'submitted.receipt');
+requireText('tests/runtime/thin-capability-substrate.test.ts', 'unknown Gmail Supervisor notification keeps one exact receipt');
 requireText('src/runtime/root/workflow-supervisor-runtime.ts', "notificationRequestId('stall', taskId, stall.state, stall.effectId)");
 requireText('src/runtime/root/workflow-supervisor-runtime.ts', 'getDirectActivity(controllerHome, stallActivityId(taskId))');
 requireText('packages/kernel/identity/infrastructure/activity-projection-store.ts', 'export function getDirectActivity(');
