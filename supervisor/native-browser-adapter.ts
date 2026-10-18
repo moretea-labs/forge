@@ -279,10 +279,11 @@ export function authorizedDraftReplacementPrompt(
 }
 
 /**
- * A STOPPED bootstrap may leave an exact machine-authored draft in the shared
- * Project editor. The Supervisor ledger proves retirement and its prior
- * exact pre-Send editor digest attests the live bytes, even where ProseMirror
- * injected layout-derived whitespace. Foreign/human edits never qualify.
+ * An exact machine-owned draft can outlive its effect in a Project editor.
+ * Already-applied effects may be reflected by ChatGPT in other Project tabs;
+ * only the immutable full ledger prompt (allowing layout-only whitespace)
+ * qualifies. For never-sent STOPPED effects retain the original stricter
+ * preflight digest rule. Human, unknown-send and modified drafts never qualify.
  */
 export function retiredBootstrapDraftReplacementPrompt(
   control: WorkflowSupervisorControlPlane,
@@ -296,14 +297,27 @@ export function retiredBootstrapDraftReplacementPrompt(
   const match = /^<<<FORGE_WORKFLOW_EFFECT_V1:((?:fx|crpe)_[a-zA-Z0-9_-]{8,120})>>>/.exec(draft);
   if (!match) return;
   const staleEffect = control.getEffect(match[1]!);
-  if (!staleEffect || staleEffect.taskId === task.taskId
-    // No dispatch generation was ever opened, so the stopped effect could
-    // not have clicked Send. Ambiguous/applied/returned effects fail closed.
-    || control.effectDispatchBudget(staleEffect.effectId).generations !== 0) return;
-  const oldTask = control.getTask(staleEffect.taskId);
-  const retired = oldTask && control.getTaskByConversationId(oldTask.conversationId);
-  if (retired?.terminal !== 'STOPPED'
-    || control.bootstrapProjectUrl(staleEffect.taskId) !== control.bootstrapProjectUrl(task.taskId)) return;
+  if (!staleEffect || staleEffect.taskId === task.taskId) return;
+  const alreadyApplied = control.store.effectApplied(staleEffect.effectId);
+  // A live effect can only be retired after durable proof that its own Send
+  // already applied. This never treats an unknown Send as a safe draft.
+  if (alreadyApplied) {
+    if (snapshot.composerReplacementContract !== 'exact-backed-up-project-draft-v1') return;
+    let expected: URL; let actual: URL;
+    try { expected = new URL(control.bootstrapProjectUrl(task.taskId)); actual = new URL(snapshot.url); }
+    catch { return; }
+    const projectRoute = (url: URL) => /^\/g\/(g-p-[a-z0-9]+)(?:-[^/]+)?\/project\/?$/i.exec(url.pathname)?.[1]?.toLowerCase();
+    if (expected.origin !== 'https://chatgpt.com' || actual.origin !== expected.origin
+      || !projectRoute(expected) || projectRoute(actual) !== projectRoute(expected)) return;
+    const canonical = staleEffect.prompt.replace(/\r\n?/g, '\n');
+    if (draft.replace(/\s+/g, ' ').trim() !== canonical.replace(/\s+/g, ' ').trim()) return;
+  } else {
+    if (control.effectDispatchBudget(staleEffect.effectId).generations !== 0) return;
+    const oldTask = control.getTask(staleEffect.taskId);
+    const retired = oldTask && control.getTaskByConversationId(oldTask.conversationId);
+    if (retired?.terminal !== 'STOPPED'
+      || control.bootstrapProjectUrl(staleEffect.taskId) !== control.bootstrapProjectUrl(task.taskId)) return;
+  }
   const attested = control.preSendComposerObservation(staleEffect.effectId);
   // Both proofs are exact: the immutable effect text, or the previously
   // attested pre-Send editor bytes. The older extension could synthesize an
@@ -312,7 +326,7 @@ export function retiredBootstrapDraftReplacementPrompt(
   const fingerprint = sha256('preflight-composer-v1:\0' + draft).slice(0, 24);
   const exactSource = draft === staleEffect.prompt.replace(/\r\n?/g, '\n');
   const exactPreflight = attested?.fingerprint === fingerprint && attested.chars === draft.length;
-  if (!attested || (!exactSource && !exactPreflight)) return;
+  if (!alreadyApplied && (!attested || (!exactSource && !exactPreflight))) return;
   return '<<<FORGE_RETIRED_DRAFT_V1:' + staleEffect.effectId + ':' + fingerprint + '>>>\n' + prompt;
 }
 
