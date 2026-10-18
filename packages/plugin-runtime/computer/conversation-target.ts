@@ -1,7 +1,7 @@
 import type { ComputerSurfaceProviderBinding } from './target-authority';
 
 export type ComputerChatgptReasoning = 'medium' | 'high' | 'xhigh';
-export const DEFAULT_COMPUTER_CHATGPT_REASONING: ComputerChatgptReasoning = 'high';
+export const DEFAULT_COMPUTER_CHATGPT_REASONING: ComputerChatgptReasoning = 'xhigh';
 
 export interface ComputerChatgptConversationIdentity {
   namespace: 'chatgpt.conversation';

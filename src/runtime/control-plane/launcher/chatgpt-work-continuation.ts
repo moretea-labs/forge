@@ -1,11 +1,12 @@
 import { createHash, randomUUID } from 'crypto';
-import { DEFAULT_COMPUTER_CHATGPT_REASONING } from '../../../../packages/plugin-runtime/computer';
+
 import { isWslWindowsRuntime } from '../../../cli/chatgpt-browser/bridge-provider';
 import { createChatgptBrowserDeliveryHost } from '../../../../adapters/chatgpt/browser-delivery-host';
 import { createChatgptWslBridgeDeliveryHost } from '../../../../adapters/chatgpt/wsl-bridge-delivery-host';
 import {
   CHATGPT_AUTOMATION_SUBMISSION_OUTCOME_UNKNOWN,
   DEFAULT_CHATGPT_AUTOMATION_MODEL,
+  DEFAULT_CHATGPT_AUTOMATION_REASONING,
   DEFAULT_CHATGPT_AUTOMATION_TAB_POLICY,
   dispatchWithChatgptProviderBackpressure,
   type ChatgptAutomationReasoning,
@@ -23,10 +24,10 @@ import {
   withChatgptBrowserActionOrigin,
 } from '../../../../adapters/chatgpt/browser-delivery-runtime';
 
-export { DEFAULT_COMPUTER_CHATGPT_REASONING } from '../../../../packages/plugin-runtime/computer';
 export {
   CHATGPT_AUTOMATION_SUBMISSION_OUTCOME_UNKNOWN,
   DEFAULT_CHATGPT_AUTOMATION_MODEL,
+  DEFAULT_CHATGPT_AUTOMATION_REASONING,
   DEFAULT_CHATGPT_AUTOMATION_TAB_POLICY,
   type ChatgptAutomationReasoning,
   type ChatgptAutomationTabCleanupStatus,
@@ -99,7 +100,7 @@ function normalizeModel(value?: string): string {
 }
 
 function normalizeReasoning(value?: ChatgptAutomationReasoning): ChatgptAutomationReasoning {
-  return value ?? DEFAULT_COMPUTER_CHATGPT_REASONING;
+  return value ?? DEFAULT_CHATGPT_AUTOMATION_REASONING;
 }
 
 function normalizeTabPolicy(value?: ChatgptAutomationTabPolicy): ChatgptAutomationTabPolicy {
