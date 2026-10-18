@@ -443,11 +443,14 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
     if (response.result.kind === 'failed') {
       if (response.result.providerBinding) await this.bindAsync(identity, response.result.providerBinding, selected.instanceId);
       // Only openBootstrap's pre-dispatch caller may rebuild a tab attachment.
-      // The SAME live Chrome provider has proved the Controller-pinned physical
-      // tab absent before creating a replacement. Preserve the durable target
-      // and lease/CAS-clear only that stale binding; never recover from an
-      // unknown tab-create result or by switching browser profiles/providers.
-      if (recoverStalePin && response.result.code === 'COMPUTER_CHATGPT_BOOTSTRAP_PINNED_TAB_MISSING'
+      // The SAME live Chrome provider must prove that the exact pinned tab is
+      // either absent or now serves a DIFFERENT Project. A reused physical tab
+      // id is not a valid target and must not permanently strand the unspent
+      // bootstrap. Never close/navigate the mismatched foreign tab. Keep the
+      // one durable target and lease/CAS-clear only its stale binding; never
+      // recover from an unknown tab-create result or switch profiles/providers.
+      if (recoverStalePin && (response.result.code === 'COMPUTER_CHATGPT_BOOTSTRAP_PINNED_TAB_MISSING'
+        || response.result.code === 'COMPUTER_CHATGPT_BOOTSTRAP_PINNED_TAB_IDENTITY_CHANGED')
         && previous && binding?.providerId === PROVIDER_ID
         && providerInstanceId(binding.providerSessionId) === selected.instanceId
         && binding.windowId && binding.tabId) {

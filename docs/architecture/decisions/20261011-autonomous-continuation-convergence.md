@@ -572,3 +572,26 @@ suspension is observed. A healthy Runtime, current disk projection, or a
 short disposable C-to-D test alone cannot establish this. If macOS or Chrome
 will not run a worker while locked/suspended, surface an explicit external
 dependency instead of fabricating progress or replaying an unknown effect.
+
+### 2026-10-18 Exact bootstrap tab identity after browser restoration
+
+A Chrome profile may restore or reassign a persisted numeric tab id to a
+foreign page. The extension's exact bootstrap identity guard correctly
+rejects such a tab, but the Controller's existing same-provider recovery
+previously recognized only a physically *missing* tab, permanently stalling
+unspent tasks after the same provider observed identity drift. These are the
+two exhaustive negative physical observations for the same stale attachment:
+missing tab or pinned tab at a different Project. The single canonical
+openBootstrap owner now treats both as candidate recovery evidence, under
+its existing same-provider-instance requirement, Surface lease and exact
+binding CAS. It never closes/navigates the foreign tab, chooses another
+Project tab by URL, or creates another provider. A claimed but unanswered
+tab creation never authorizes a second creation; a previous external Send
+remains governed by the separate durable bootstrap reconcile path.
+
+The extension creates distinct task-owned *tabs* in Chrome, not new browser
+windows; ephemeral extension management/DevTools windows are operational
+inspection artifacts and should not be misidentified as Supervisor workflow
+windows. A new tab is allowed only after the stale exact binding has been
+safely retired under sole Controller authority. Acceptance must inspect
+actual original tasks, not just a synthetic test or Runtime health.

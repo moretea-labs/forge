@@ -385,8 +385,13 @@ describe('Computer durable InteractionTarget authority', () => {
   });
 
 
-  test('missing pinned bootstrap tab is recoverable only by the same live Chrome provider instance', async () => {
-    for (const [owner, shouldRecover] of [['current', true], ['foreign', false]] as const) {
+  test('missing or reassigned bootstrap tab is recoverable only by the same live Chrome provider', async () => {
+    for (const [owner, code, shouldRecover] of [
+      ['current', 'COMPUTER_CHATGPT_BOOTSTRAP_PINNED_TAB_MISSING', true],
+      ['current', 'COMPUTER_CHATGPT_BOOTSTRAP_PINNED_TAB_IDENTITY_CHANGED', true],
+      ['foreign', 'COMPUTER_CHATGPT_BOOTSTRAP_PINNED_TAB_MISSING', false],
+      ['foreign', 'COMPUTER_CHATGPT_BOOTSTRAP_PINNED_TAB_IDENTITY_CHANGED', false],
+    ] as const) {
       const home = mkdtempSync(join(tmpdir(), 'forge-extension-bootstrap-pin-'));
       const key = 'supervisor:unspent-bootstrap';
       const binding = { providerId: 'browser.chrome-extension', providerSessionId: owner,
@@ -414,7 +419,7 @@ describe('Computer durable InteractionTarget authority', () => {
         if (first?.kind !== 'ensure') throw new Error('Missing initial exact-tab query');
         expect(first.providerBinding).toMatchObject({ tabId: 'tab-old' });
         expect(port.complete('current', first.commandId, { kind: 'failed',
-          code: 'COMPUTER_CHATGPT_BOOTSTRAP_PINNED_TAB_MISSING', retryable: true, failoverSafe: false })).toBe(true);
+          code, retryable: true, failoverSafe: false })).toBe(true);
         let second;
         for (let attempt = 0; attempt < 30 && !second && shouldRecover; attempt += 1) {
           second = port.claim('current');
