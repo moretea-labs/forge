@@ -4096,6 +4096,36 @@ test('bounds and spaces provider re-dispatch of one un-applied effect, then rele
   expect(store.latestEffectDispatch(effect.effectId)?.generation).toBe(3);
 });
 
+test('delayed negative proof from an older dispatch cannot authorize an unknown newer generation', () => {
+  const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-stale-proof-'));
+  roots.push(root);
+  const store = new WorkflowSupervisorStore(join(root, 'supervisor-home'));
+  const control = new WorkflowSupervisorControlPlane(store);
+  const taskId = 'stale-negative-proof-task';
+  const conversationId = 'f0f0f0f0-1111-2222-3333-444444444444';
+  control.registerTask({ taskId, conversationId, conversationUrl: `https://chatgpt.com/c/${conversationId}`,
+    objective: 'Do not replay an unknown generation after an earlier proof arrives late.',
+    completionContract: {}, continuationPolicy: {}, userBlockerPolicy: {} });
+  const effect = control.reserveEnrollment(taskId);
+  expect(store.recordEffectDispatchStarted(effect.effectId, 1, 'generation-one')).toBe(true);
+  const firstProof = { dispatch_generation: 1, send_clicked: false, pre_send_rejection: true };
+  store.recordEffectNotAppliedProof(effect.effectId, 'first-proof', firstProof);
+  expect(store.recordEffectDispatchStarted(effect.effectId, 2, 'generation-two')).toBe(true);
+  // Repeating an existing receipt is idempotent, but an arriving generation-one
+  // proof cannot settle generation two or refund its provider Send budget.
+  expect(() => store.recordEffectNotAppliedProof(effect.effectId, 'first-proof', firstProof)).not.toThrow();
+  expect(() => store.recordEffectNotAppliedProof(effect.effectId, 'late-first-proof', firstProof))
+    .toThrow('WORKFLOW_SUPERVISOR_NOT_APPLIED_PROOF_GENERATION_STALE');
+  expect(() => store.recordEffectNotAppliedProof(effect.effectId, 'unattributed-proof', { send_clicked: false }))
+    .toThrow('WORKFLOW_SUPERVISOR_NOT_APPLIED_PROOF_GENERATION_STALE');
+  expect(store.recordEffectDispatchStarted(effect.effectId, 3, 'premature-third')).toBe(false);
+  store.recordEffectNotAppliedProof(effect.effectId, 'second-proof', {
+    dispatch_generation: 2, send_clicked: false, pre_send_rejection: true,
+  });
+  expect(store.recordEffectDispatchStarted(effect.effectId, 3, 'authorized-third')).toBe(true);
+  store.close();
+});
+
 describe('Workflow Supervisor operator recovery and conversation replacement', () => {
   test('confirmed post-dispatch non-application exhausts send budget and needs one bounded operator grant', async () => {
     const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-operator-retry-'));

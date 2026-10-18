@@ -161,7 +161,12 @@ function storedGeneration(value: unknown): number {
   return Number.isInteger(generation) && generation > 0 ? generation : 1;
 }
 function latestNotAppliedProofEventId(db: Database, effectId: string): number {
-  const notApplied = statement(db, "SELECT event_id FROM events WHERE effect_id = ? AND kind = 'effect_not_applied' ORDER BY event_id DESC LIMIT 1", (s) => s.get(effectId)) as { event_id?: number } | undefined;
+  // Delayed negative evidence from an older generation must not authorize
+  // another Send while the latest generation is outcome-unknown. Apply this
+  // read-side fence to journals written by earlier releases as well.
+  const dispatch = statement(db, "SELECT event_id,payload_json FROM events WHERE effect_id = ? AND kind = 'effect_dispatch_started' ORDER BY event_id DESC LIMIT 1", (s) => s.get(effectId)) as { event_id?: number; payload_json?: string } | undefined;
+  if (!dispatch?.event_id) return 0;
+  const notApplied = statement(db, "SELECT event_id FROM events WHERE effect_id = ? AND kind = 'effect_not_applied' AND event_id > ? AND json_extract(payload_json,'$.dispatch_generation') = ? ORDER BY event_id DESC LIMIT 1", (s) => s.get(effectId, dispatch.event_id, storedGeneration(dispatch.payload_json))) as { event_id?: number } | undefined;
   return Number(notApplied?.event_id ?? 0);
 }
 
@@ -1747,9 +1752,13 @@ export class WorkflowSupervisorStore {
       const payload = json(proof);
       const existing = statement(db, 'SELECT kind,payload_json FROM events WHERE event_key = ?', (s) => s.get(key)) as { kind?: string; payload_json?: string } | undefined;
       if (existing && (existing.kind !== 'effect_not_applied' || existing.payload_json !== payload)) throw new Error('WORKFLOW_SUPERVISOR_OBSERVATION_ID_CONFLICT');
-      statement(db, 'INSERT OR IGNORE INTO events(task_id,event_key,kind,effect_id,payload_json,occurred_at) VALUES (?,?,?,?,?,?)', (s) => s.run(effect.task_id, key, 'effect_not_applied', effectId, payload, now()));
+      if (existing) return; // An identical old receipt is idempotent, not fresh retry authority.
       const ledger = effectDispatchLedger(db, effectId);
       const proofGeneration = Number(proof.dispatch_generation);
+      if (!Number.isInteger(proofGeneration) || proofGeneration < 1 || proofGeneration !== ledger.lastGeneration) {
+        throw new Error('WORKFLOW_SUPERVISOR_NOT_APPLIED_PROOF_GENERATION_STALE');
+      }
+      statement(db, 'INSERT OR IGNORE INTO events(task_id,event_key,kind,effect_id,payload_json,occurred_at) VALUES (?,?,?,?,?,?)', (s) => s.run(effect.task_id, key, 'effect_not_applied', effectId, payload, now()));
       const legacyRefund = statement(db, 'SELECT event_id FROM events WHERE event_key = ?', (s) => s.get(`effect-dispatch-budget-refund:${effectId}`)) as { event_id?: number } | undefined;
       const legacyRefundCoversGeneration = proofGeneration === WORKFLOW_SUPERVISOR_MAX_DISPATCH_GENERATIONS && Boolean(legacyRefund);
       if (proof.pre_send_rejection === true
