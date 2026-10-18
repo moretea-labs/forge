@@ -200,7 +200,7 @@ describe('rh_work Scheduler MCP adapter', () => {
       taskId,
       conversationId,
       conversationUrl: `https://chatgpt.com/c/${conversationId}`,
-      objective: 'Run the scheduled Gmail routine every other day and remain open between occurrences.',
+      objective: 'Run the scheduled Gmail routine daily at 08:00 China time and remain open between occurrences.',
       completionContract: {
         kind: 'forge_work_done',
         controller_home: controllerHome,
@@ -250,10 +250,10 @@ describe('rh_work Scheduler MCP adapter', () => {
         work_id: workId,
         schedule_mode: 'continuation',
         controller_type: 'chatgpt',
-        schedule_name: 'Fixture every-other-day Gmail Supervisor wake',
-        schedule_request_id: 'schedule-every-other-day-gmail-two-occurrences',
+        schedule_name: 'Fixture daily Gmail Supervisor wake',
+        schedule_request_id: 'schedule-daily-gmail-two-consecutive-occurrences',
         trigger_type: 'cron',
-        cron_expression: '0 8 */2 * *',
+        cron_expression: '0 8 * * *',
         schedule_timezone: 'Asia/Shanghai',
         continuation_hint: 'Continue the same scheduled Gmail Work.',
         shadow_mode: false,
@@ -263,15 +263,17 @@ describe('rh_work Scheduler MCP adapter', () => {
       expect(created.data.schedule).toMatchObject({
         enabled: true,
         action: { operation: 'controller_progression', arguments: { work_id: workId, controller_binding_id: controllerBinding.binding.bindingId } },
-        trigger: { type: 'cron', cronExpression: '0 8 */2 * *', timezone: 'Asia/Shanghai' },
+        trigger: { type: 'cron', cronExpression: '0 8 * * *', timezone: 'Asia/Shanghai' },
         policy: { shadowMode: false },
       });
       expect(created.data.supervisorWakeBinding).toEqual({ status: 'bound', taskId });
       expect(control.getEffect(initial.effectId)?.prompt).toContain('SCHEDULED WORK:');
-      expect(cronDue('0 8 */2 * *', Date.parse('2026-10-17T00:00:00.000Z'), 'Asia/Shanghai')).toBe(true);
-      expect(cronDue('0 8 */2 * *', Date.parse('2026-10-18T00:00:00.000Z'), 'Asia/Shanghai')).toBe(false);
-      expect(cronDue('0 8 */2 * *', Date.parse('2026-10-19T00:00:00.000Z'), 'Asia/Shanghai')).toBe(true);
-      expect(cronDue('0 8 */2 * *', Date.parse('2026-10-20T00:00:00.000Z'), 'Asia/Shanghai')).toBe(false);
+      expect(cronDue('0 8 * * *', Date.parse('2026-10-17T00:00:00.000Z'), 'Asia/Shanghai')).toBe(true);
+      expect(cronDue('0 8 * * *', Date.parse('2026-10-17T23:59:00.000Z'), 'Asia/Shanghai')).toBe(false);
+      expect(cronDue('0 8 * * *', Date.parse('2026-10-18T00:00:00.000Z'), 'Asia/Shanghai')).toBe(true);
+      expect(cronDue('0 8 * * *', Date.parse('2026-10-19T00:00:00.000Z'), 'Asia/Shanghai')).toBe(true);
+      expect(cronDue('0 8 * * *', Date.parse('2026-10-31T00:00:00.000Z'), 'Asia/Shanghai')).toBe(true);
+      expect(cronDue('0 8 * * *', Date.parse('2026-11-01T00:00:00.000Z'), 'Asia/Shanghai')).toBe(true);
 
       const paused = structured(await callRuntimeTool(ctx, 'rh_work', {
         repo_id: repository.repoId,
@@ -329,13 +331,13 @@ describe('rh_work Scheduler MCP adapter', () => {
       });
       expect(secondWait).toMatchObject({ action: 'WAIT', terminal: false });
 
-      clockNow = originalDate.parse('2026-10-19T00:00:00.000Z');
+      clockNow = originalDate.parse('2026-10-18T00:00:00.000Z');
       const secondTrigger = await evaluateSchedule(controllerHome, created.data.schedule, false, { source: 'timer' });
       expect(secondTrigger).toMatchObject({
         status: 'dispatched',
         decision: 'execute',
         triggerContext: { source: 'timer' },
-        windowKey: expect.stringContaining('2026-10-19@08:00[Asia/Shanghai]'),
+        windowKey: expect.stringContaining('2026-10-18@08:00[Asia/Shanghai]'),
       });
       const afterSecond = structured(await callRuntimeTool(ctx, 'rh_work', {
         repo_id: repository.repoId,

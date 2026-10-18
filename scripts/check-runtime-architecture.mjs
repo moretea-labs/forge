@@ -1137,7 +1137,8 @@ requireText('packages/kernel/scheduler/infrastructure/schedule-store.ts', "sched
 requireText('packages/kernel/scheduler/infrastructure/schedule-store.ts', 'const schedule: RepositorySchedule = { ...candidate, policy: boundedSchedulePolicy(candidate) };');
 requireText('packages/kernel/scheduler/infrastructure/schedule-store.ts', 'policy: boundedSchedulePolicy(candidate),');
 requireText('src/cli/local-bridge/console-automations.ts', "schedule.action.operation === 'external_controller_wake' || schedule.action.operation === 'controller_progression'");
-requireText('tests/runtime/rh-work-scheduler-adapter.test.ts', "cronDue('0 8 */2 * *', Date.parse('2026-10-17T00:00:00.000Z'), 'Asia/Shanghai')");
+requireText('tests/runtime/rh-work-scheduler-adapter.test.ts', "cronDue('0 8 * * *', Date.parse('2026-10-17T00:00:00.000Z'), 'Asia/Shanghai')");
+requireText('tests/runtime/rh-work-scheduler-adapter.test.ts', "cronDue('0 8 * * *', Date.parse('2026-10-18T00:00:00.000Z'), 'Asia/Shanghai')");
 requireText('src/runtime/workflow/schedules/engine.ts', 'schedule.action.operation === CONTROLLER_PROGRESSION_OPERATION');
 requireText('src/runtime/workflow/schedules/work-continuation.ts', "const CONTROLLER_PROGRESSION_OPERATION = 'controller_progression';");
 requireText('src/runtime/workflow/schedules/pending-activation.ts', "const CONTROLLER_PROGRESSION_OPERATION = 'controller_progression';");
@@ -1187,7 +1188,10 @@ requireText('src/runtime/root/controller-progression-composition.ts', "if (wake.
 requireText('src/runtime/root/controller-progression-composition.ts', "status: 'scheduled_supervisor_woken'");
 requireText('src/runtime/workflow/schedules/engine.ts', "progression.status === 'scheduled_supervisor_woken'");
 requireText('tests/runtime/rh-work-scheduler-adapter.test.ts', 'executes two distinct cron occurrences through the same durable WAIT task without pausing the Schedule');
-requireText('tests/runtime/rh-work-scheduler-adapter.test.ts', "cron_expression: '0 8 */2 * *'");
+requireText('tests/runtime/rh-work-scheduler-adapter.test.ts', "schedule_request_id: 'schedule-daily-gmail-two-consecutive-occurrences'");
+requireText('tests/runtime/rh-work-scheduler-adapter.test.ts', "cron_expression: '0 8 * * *'");
+requireText('tests/runtime/rh-work-scheduler-adapter.test.ts', "2026-10-18@08:00[Asia/Shanghai]");
+requireText('tests/runtime/rh-work-scheduler-adapter.test.ts', '2026-11-01T00:00:00.000Z');
 requireText('tests/runtime/rh-work-scheduler-adapter.test.ts', "evaluateSchedule(controllerHome, created.data.schedule, false, { source: 'timer' })");
 requireText('src/runtime/workflow/schedules/engine.ts', "schedule.action.operation !== CONTROLLER_PROGRESSION_OPERATION");
 requireText('src/runtime/root/workflow-supervisor-runtime.ts', 'authorizationGrantRefs: [grant.grantId]');
