@@ -42,6 +42,8 @@ This file is the sole maintained architecture authority for the current Forge ru
 ## Product model
 
 The macOS native ChatGPT composer pre-send boundary treats only a strictly text-empty single ProseMirror `<p><br></p>` placeholder as an empty editor. Layout newlines on that exact empty placeholder do not constitute user draft content; real text, including whitespace-only text nodes, remains protected from replacement. This classification never overrides the exact-conversation identity fence or the requirement to confirm the prepared composer before any Send.
+ChatGPT may hydrate the same already-applied Forge effect into unrelated Project composer tabs. The sole Supervisor ledger remains authority: a fresh bootstrap may replace only a full machine-owned draft whose effect is durably `effect_applied`, whose complete text matches the immutable effect payload modulo browser-added whitespace, and whose exact Project route and loaded replacement contract are verified. An unknown Send, modified/user draft, or mismatched page never qualifies. Existing never-dispatched STOPPED-effect retirement retains its stricter pre-Send fingerprint proof. This is one Computer preparation rule, not another provider, scheduler, or replay authority.
+
 
 
 Forge is an executable AI harness for a semantic controller. The controller owns requirement interpretation, repository understanding, implementation decisions and review. Forge supplies fast context retrieval, deterministic local execution, provider actions, bounded verification, evidence, and durable lower-layer continuity. Forge verification and evidence are factual inputs, not semantic acceptance rules.
