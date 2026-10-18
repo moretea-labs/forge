@@ -266,8 +266,11 @@ async function executeEnsure(command, instanceId) {
   let target;
   try {
     target = await resolveTarget(command.identity, true, command.providerBinding);
+    // Created and already-bound tabs share one exact-identity receiver repair.
+    // The editor must hydrate before 'ensured'; on failure the existing typed
+    // failed receipt still carries this tab's binding without permitting Send.
     const observation = await waitForContent(target.tab.id, command.identity.namespace === 'chatgpt.bootstrap',
-      target.created ? undefined : () => restoreExactContentReceiver(target.tab.id, command.identity));
+      () => restoreExactContentReceiver(target.tab.id, command.identity));
     const refreshed = await tabGet(target.tab.id);
     return { kind: 'ensured', providerBinding: binding(refreshed, instanceId, target.ownerToken), observation };
   } catch (error) {
