@@ -2092,10 +2092,31 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
       userBlockerPolicy: { controller_home: fx.controllerHome, repo_id: fx.repository.repoId, requirement_id: requirementId },
     });
     control.reserveEnrollment(taskId);
-    expect(control.browserTasks()).toHaveLength(1);
+    const ownedWorkId = `${workId}-owned`;
+    const ownedConversationId = 'abababab-7878-efef-3434-343434343434';
+    createWorkContract(fx.store, {
+      workId: ownedWorkId, repoId: fx.repository.repoId, checkoutId: fx.repository.activeCheckoutId,
+      objective: 'Exact Work-owned automation stops when this Work closes.', acceptanceCriteria: [],
+      allowedPaths: [], forbiddenPaths: [], checks: [], constraints: { workspaceMode: 'current' },
+      requestedBy: 'chatgpt', dispatchState: 'running',
+    });
+    bindChatgptWorkConversation(fx.store, { workId: ownedWorkId, conversationUrl: `https://chatgpt.com/c/${ownedConversationId}` });
+    const ownedTaskId = `forge:${fx.repository.repoId}:work:${ownedWorkId}`;
+    control.registerTask({
+      taskId: ownedTaskId, conversationId: ownedConversationId, conversationUrl: `https://chatgpt.com/c/${ownedConversationId}`,
+      objective: 'Work-owned continuation.',
+      completionContract: { controller_home: fx.controllerHome, repo_id: fx.repository.repoId, work_id: ownedWorkId, kind: 'forge_work_done' },
+      continuationPolicy: { kind: 'forge_goal_outer_turn' }, userBlockerPolicy: {},
+    });
+    control.reserveEnrollment(ownedTaskId);
+    expect(control.browserTasks()).toHaveLength(2);
 
     reviseWorkSemanticContext(fx.store, workId, { expectedRevision: 1, state: 'completed' });
+    reviseWorkSemanticContext(fx.store, ownedWorkId, { expectedRevision: 1, state: 'completed' });
     expect(control.browserTasks()).toHaveLength(1);
+    expect(control.reconcileTerminalWorkBoundTasks()).toEqual([ownedTaskId]);
+    expect(control.store.terminalAction(ownedTaskId)).toBe('STOPPED');
+    expect(control.reconcileTerminalWorkBoundTasks()).toEqual([]);
     expect(control.browserPoll({ conversationId, conversationUrl: `https://chatgpt.com/c/${conversationId}` }).command?.mode).toBe('send');
     control.stopTask(taskId);
     expect(control.browserTasks()).toEqual([]);

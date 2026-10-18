@@ -628,6 +628,9 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     // Preserve fresh-send fairness across ticks. serviceFreshSend prunes
     // retired effect ids; resetting here repeatedly favors the first task.
     this.lastRunTransportUnavailable = false;
+    // One Supervisor terminal-event authority. A Work closed while this
+    // consumer was offline cannot keep delivering a stale effect on restart.
+    this.control.reconcileTerminalWorkBoundTasks();
     this.syncTaskStallProjections();
     const previouslyObservedTasks = this.control.browserTasks();
     // Read-only watchdog for a pre-send blocked task: after each bounded

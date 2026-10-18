@@ -292,6 +292,21 @@ export class WorkflowSupervisorControlPlane {
       return terminal ? [{ task, terminal }] : [];
     });
   }
+  /** Reconcile Work-owned task closure after a crash or a direct Work writer.
+   * Independent Requirement and standalone Goals are intentionally excluded.
+   */
+  reconcileTerminalWorkBoundTasks(): string[] {
+    if (!this.hooks.terminalWorkStopReasonForTask) return [];
+    const stopped: string[] = [];
+    for (const task of this.store.listTasks()) {
+      if (this.store.terminalAction(task.taskId)) continue;
+      const reason = this.hooks.terminalWorkStopReasonForTask(task);
+      if (!reason) continue;
+      const result = this.store.stopTask(task.taskId, reason);
+      if (!result.deduplicated) stopped.push(task.taskId);
+    }
+    return stopped;
+  }
   stopTask(taskId: string, reason = 'Stopped by operator request.'): { taskId: string; terminal: 'STOPPED'; deduplicated: boolean } {
     return this.store.stopTask(taskId, reason);
   }
