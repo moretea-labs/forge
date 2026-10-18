@@ -15,7 +15,7 @@ import { WorkflowSupervisorStore } from '../../../supervisor/store';
 import { createComputerInteractionTargetAuthority } from '../../../adapters/computer/interaction-target-authority';
 import { ChromeExtensionChatgptConversationTargetPort } from '../../../adapters/computer/chatgpt-extension-target';
 import { createRuntimeComputerTargetPersistence } from './computer-target-persistence';
-import { listDirectActivities, listUserRequests, recordDirectActivity, recordUserRequest, resolveUserRequest } from '../../../packages/kernel/identity/api/index';
+import { getDirectActivity, listUserRequests, recordDirectActivity, recordUserRequest, resolveUserRequest } from '../../../packages/kernel/identity/api/index';
 import { getRuntimeWriteClaim } from './write-fence';
 import { getRepository } from '../../cli/repositories/registry';
 import { getWorkContract } from '../../../packages/kernel/work/api/index';
@@ -67,7 +67,7 @@ export async function startWorkflowSupervisorRuntime(
   const transportActivityId = (taskId?: string): string => `workflow-supervisor-transport-${(taskId ?? 'instance').replace(/[^a-zA-Z0-9._-]/g, '_')}`;
   const reportTransportState = (projection: WorkflowSupervisorTransportProjection): void => {
     const activityId = transportActivityId(projection.taskId);
-    const existing = listDirectActivities(controllerHome, 200).find((item) => item.activityId === activityId);
+    const existing = getDirectActivity(controllerHome, activityId);
     const recovered = projection.state === 'recovered';
     recordDirectActivity(controllerHome, {
       activityId,
@@ -92,7 +92,7 @@ export async function startWorkflowSupervisorRuntime(
   const stallActivityId = (taskId: string): string => `workflow-supervisor-stall-${taskId.replace(/[^a-zA-Z0-9._-]/g, '_')}`;
   const reportTaskStall = (projection: WorkflowSupervisorStallProjection): void => {
     const activityId = stallActivityId(projection.taskId);
-    const existing = listDirectActivities(controllerHome, 200).find((item) => item.activityId === activityId);
+    const existing = getDirectActivity(controllerHome, activityId);
     const exhausted = projection.state === 'exhausted';
     if (!exhausted && !existing) return;
     const budget = projection.generations !== undefined && projection.maxGenerations !== undefined
@@ -329,10 +329,12 @@ export async function startWorkflowSupervisorRuntime(
         });
       }
 
-      for (const activity of listDirectActivities(controllerHome, 200).filter((item) => item.capabilityId === 'workflow-supervisor.continuation' && item.status === 'running')) {
-        const prefix = 'workflow-supervisor-task:';
-        if (!activity.targetScope.startsWith(prefix)) continue;
-        const taskId = activity.targetScope.slice(prefix.length);
+      for (const task of store.listTasks()) {
+        const taskId = task.taskId;
+        const activity = getDirectActivity(controllerHome, stallActivityId(taskId));
+        if (activity?.capabilityId !== 'workflow-supervisor.continuation'
+          || activity.status !== 'running'
+          || activity.targetScope !== `workflow-supervisor-task:${taskId}`) continue;
         const stall = controlPlane.taskStall(taskId);
         if (!stall || !(stall.state === 'provider_resume_exhausted'
           || (stall.state === 'retryable' && stall.generations >= stall.maxGenerations))) continue;
@@ -341,18 +343,19 @@ export async function startWorkflowSupervisorRuntime(
           : `Supervisor 自动派发尝试已确认耗尽（${stall.generations}/${stall.maxGenerations}）；原 effect 仍被保留，不会盲目重发。`;
         await sendSupervisorNotification({
           taskId,
-          requestId: notificationRequestId('stall', taskId, stall.state, activity.startedAt),
+          requestId: notificationRequestId('stall', taskId, stall.state, stall.effectId),
           kind: 'continuation_exhausted',
           subject: `[Forge] 自动续跑已耗尽：${taskId}`,
           reason,
           effectId: stall.effectId,
           stillActive: () => {
-            const currentActivity = listDirectActivities(controllerHome, 200).find((item) => item.activityId === activity.activityId);
+            const currentActivity = getDirectActivity(controllerHome, stallActivityId(taskId));
             const currentStall = controlPlane.taskStall(taskId);
+            if (!currentStall) return false;
             const currentStallExhausted = currentStall.state === 'provider_resume_exhausted'
               || (currentStall.state === 'retryable' && currentStall.generations >= currentStall.maxGenerations);
             return currentActivity?.status === 'running'
-              && currentActivity.startedAt === activity.startedAt
+              && currentActivity.targetScope === `workflow-supervisor-task:${taskId}`
               && currentStallExhausted
               && currentStall.state === stall.state
               && currentStall.effectId === stall.effectId;

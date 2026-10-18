@@ -18,6 +18,7 @@ import {
   canonicalCapabilityRegistry,
   invokeCapability,
   recordDirectActivity,
+  getDirectActivity,
   listDirectActivities,
   projectUnifiedActivityView,
 } from '../../packages/kernel/identity/api/index';
@@ -417,5 +418,26 @@ describe('Thin capability substrate', () => {
     expect(view.directActivities.length).toBe(1);
     expect(view.directActivities[0].activityId).toBe(directAct.activityId);
     expect(view.directActivities[0].capabilityId).toBe('repository:read_file');
+  });
+
+  test('Supervisor exhausted activity keeps one exact identity beyond a 200-item projection window', () => {
+    const home = tempHome();
+    const id = 'workflow-supervisor-stall-task-123';
+    const startedAt = '2026-10-17T00:00:00.000Z';
+    const original = recordDirectActivity(home, {
+      activityId: id, capabilityId: 'workflow-supervisor.continuation',
+      kind: 'direct_execution', targetScope: 'workflow-supervisor-task:task-123',
+      principalId: 'forge-runtime', status: 'running', startedAt, summary: 'Exhausted provider resume',
+    });
+    for (let i = 0; i < 205; i++) recordDirectActivity(home, {
+      activityId: `unrelated-${i}`, capabilityId: 'repository:read_file',
+      kind: 'direct_execution', targetScope: 'repository:test', principalId: 'test',
+      status: 'completed', startedAt: '2026-10-18T00:00:00.000Z', summary: 'Unrelated activity',
+    });
+    expect(listDirectActivities(home, 200).some((item) => item.activityId === id)).toBe(false);
+    expect(getDirectActivity(home, id)).toEqual(original);
+    recordDirectActivity(home, { ...original, status: 'completed', completedAt: '2026-10-18T01:00:00.000Z' });
+    expect(getDirectActivity(home, id)?.status).toBe('completed');
+    expect(getDirectActivity(home, 'does-not-exist')).toBeUndefined();
   });
 });

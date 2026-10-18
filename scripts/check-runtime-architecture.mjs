@@ -1155,6 +1155,9 @@ requireText('src/runtime/plugins/gmail-adapter.ts', 'expiresInMinutes: GMAIL_AUT
 requireText('src/runtime/plugins/store.ts', 'if (action.requiresExplicitCapabilityGrant && !activeAuthorizationGrant)');
 requireText('src/runtime/plugins/store.ts', 'PLUGIN_CAPABILITY_GRANT_REQUIRED');
 requireText('src/runtime/root/workflow-supervisor-runtime.ts', 'notificationRequestId');
+requireText('src/runtime/root/workflow-supervisor-runtime.ts', "notificationRequestId('stall', taskId, stall.state, stall.effectId)");
+requireText('src/runtime/root/workflow-supervisor-runtime.ts', 'getDirectActivity(controllerHome, stallActivityId(taskId))');
+requireText('packages/kernel/identity/infrastructure/activity-projection-store.ts', 'export function getDirectActivity(');
 requireText('src/runtime/root/workflow-supervisor-runtime.ts', "stall.state === 'retryable' && stall.generations >= stall.maxGenerations");
 requireText('src/runtime/root/workflow-supervisor-runtime.ts', 'workflow-supervisor.notification-auth:');
 requireText('supervisor/types.ts', "export type WorkflowSupervisorAction = 'CONTINUE' | 'WAIT' | 'DONE' | 'NEEDS_USER';");
