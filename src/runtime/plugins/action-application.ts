@@ -16,6 +16,7 @@ import {
   getControllerPluginManifest,
   isDirectNonPersistentPluginAction,
   isDirectPluginReadAction,
+  preflightPluginActionWorkBinding,
   readPluginActionReceiptForRequest,
   submitAssistantPluginAction,
   submitControllerPluginAction,
@@ -111,6 +112,12 @@ export async function executeAssistantPluginActionApplication(input: {
       action: direct.action,
       result: direct.result,
     };
+  }
+
+  // Reject an invalid Work binding before allocating an immutable Process request ID.
+  // Reattach any existing authoritative provider receipt without fresh preflight.
+  if (action && input.request.workId && !readPluginActionReceiptForRequest(input.controllerHome, input.request.requestId)) {
+    preflightPluginActionWorkBinding(input.controllerHome, input.scope, action, input.request);
   }
 
   if (action?.executionMode === 'runtime') {

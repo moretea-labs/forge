@@ -2423,6 +2423,9 @@ for (const path of productionTypeScriptFiles()) {
   forbid(path, controllerRepoCallPattern, 'production controller-plugin paths must not recreate a fake controller RepositoryRecord');
 }
 requireText('src/runtime/plugins/store.ts', 'const CONTROLLER_PLUGIN_SCOPE_KEY = FORGE_INSTANCE_SCOPE_KEY');
+requireText('src/runtime/plugins/store.ts', 'export function preflightPluginActionWorkBinding(');
+requireText('src/runtime/plugins/action-application.ts', 'preflightPluginActionWorkBinding(input.controllerHome, input.scope, action, input.request);');
+requireText('tests/runtime/external-plugin-store-integration.test.ts', 'rejects invalid Work kind without consuming the Process request id');
 forbidBetween(
   'src/runtime/plugins/store.ts',
   'function controllerPluginActionScope',
