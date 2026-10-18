@@ -327,6 +327,12 @@ function unknownObservationDelayMs(count: number): number {
   );
 }
 
+function unknownObservationDue(db: Database, effectId: string, afterEventId: number, nowMs: number): boolean {
+  const observation = effectUnknownObservationLedger(db, effectId, afterEventId);
+  return observation.sameFingerprintCount === 0
+    || nowMs - observation.lastOccurredAtMs >= unknownObservationDelayMs(observation.sameFingerprintCount);
+}
+
 function effectDispatchLedger(db: Database, effectId: string): EffectDispatchLedger {
   const rows = statement(db, "SELECT event_id,payload_json,occurred_at FROM events WHERE effect_id = ? AND kind = 'effect_dispatch_started' ORDER BY event_id", (s) => s.all(effectId)) as Array<{ event_id?: number; payload_json?: string; occurred_at?: string }>;
   const last = rows[rows.length - 1];
@@ -963,11 +969,7 @@ export class WorkflowSupervisorStore {
       }
       const retryAuthorized = latestNotAppliedProofEventId(db, effect.effectId) > ledger.lastEventId;
       if (!retryAuthorized) {
-        const unknownLedger = effectUnknownObservationLedger(db, effect.effectId, ledger.lastEventId);
-        if (unknownLedger.sameFingerprintCount > 0
-          && nowMs - unknownLedger.lastOccurredAtMs < unknownObservationDelayMs(unknownLedger.sameFingerprintCount)) {
-          return undefined;
-        }
+        if (!unknownObservationDue(db, effect.effectId, ledger.lastEventId, nowMs)) return undefined;
         return { effect, mode: 'reconcile', generation: ledger.lastGeneration };
       }
       if (ledger.generations >= WORKFLOW_SUPERVISOR_MAX_DISPATCH_GENERATIONS + ledger.budgetRefunds) return undefined;
@@ -1183,6 +1185,12 @@ export class WorkflowSupervisorStore {
     });
   }
   effectApplied(effectId: string): boolean { return this.read((db) => Boolean(statement(db, "SELECT 1 AS ok FROM events WHERE effect_id = ? AND kind = 'effect_applied' LIMIT 1", (s) => s.get(effectId)))); }
+  bootstrapAppliedReconcileDue(effectId: string): boolean {
+    return this.read((db) => {
+      const dispatch = effectDispatchLedger(db, effectId);
+      return dispatch.generations > 0 && unknownObservationDue(db, effectId, dispatch.lastEventId, this.clockMs());
+    });
+  }
   providerResumeExhausted(effectId: string): boolean { return this.read((db) => Boolean(statement(db, "SELECT 1 AS ok FROM events WHERE effect_id = ? AND kind = 'assistant_recovery_exhausted' LIMIT 1", (s) => s.get(effectId)))); }
   latestAppliedEffectWithoutCompletion(taskId: string): WorkflowSupervisorEffect | undefined {
     return this.read((db) => {

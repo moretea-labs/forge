@@ -491,7 +491,12 @@ export class WorkflowSupervisorControlPlane {
     // reconciliation command for that applied effect so the exact conversation
     // can be bound without manufacturing another provider generation.
     const applied = this.store.latestAppliedEffectWithoutCompletion(task.taskId);
-    if (!applied) return { authorized: true, task: browserTask(task) };
+    // An applied-but-unbound bootstrap still needs late-receipt observation
+    // when its successor is spaced. Use the same effect-ledger cooldown as
+    // unknown dispatch reconciliation instead of scanning its marker each tick.
+    if (!applied || !this.store.bootstrapAppliedReconcileDue(applied.effectId)) {
+      return { authorized: true, task: browserTask(task) };
+    }
     const dispatch = this.store.latestEffectDispatch(applied.effectId);
     return {
       authorized: true,

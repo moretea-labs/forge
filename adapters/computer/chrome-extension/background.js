@@ -139,8 +139,30 @@ function binding(tab, instanceId, ownerToken) {
 async function snapshot(tabId, options = {}) {
   return await tabMessage(tabId, { type: 'forge-computer-chatgpt-snapshot', options });
 }
-async function waitForContent(tabId, requireBootstrapUi = false) {
+async function restoreExactContentReceiver(tabId, identity) {
+  // The physical tab is already resolved by the one Computer target authority.
+  // A missing MV3 message receiver is not permission to reload/navigate that tab,
+  // replace its draft, or create another tab. Inject only read-only listeners on
+  // this SAME proven conversation/Project, then verify its identity again.
+  const matches = (tab) => identity?.namespace === 'chatgpt.conversation'
+    ? core.parseConversation(tab.url ?? '')?.conversationId === identity.conversationId
+    : identity?.namespace === 'chatgpt.bootstrap'
+      && core.projectId(tab.url ?? '') === core.projectId(identity.projectUrl)
+      && !core.parseConversation(tab.url ?? '');
+  const before = await tabGet(tabId);
+  if (before.discarded || !matches(before)) throw new Error('COMPUTER_CHATGPT_EXTENSION_RECEIVER_TARGET_CHANGED');
+  await new Promise((resolve, reject) => chrome.scripting.executeScript({
+    target: { tabId }, files: ['core.js', 'content.js'],
+  }, () => {
+    const error = chrome.runtime.lastError;
+    if (error) reject(new Error(error.message)); else resolve();
+  }));
+  const after = await tabGet(tabId);
+  if (!matches(after)) throw new Error('COMPUTER_CHATGPT_EXTENSION_RECEIVER_TARGET_CHANGED');
+}
+async function waitForContent(tabId, requireBootstrapUi = false, recoverReceiver) {
   let lastError;
+  let recoveryAttempted = false;
   // Bootstrap is a new provider page: seeing its URL proves location, not
   // that the React composer is hydrated. The Supervisor uses the user's
   // current reasoning setting, not the picker. Bound this wait below the
@@ -153,7 +175,16 @@ async function waitForContent(tabId, requireBootstrapUi = false) {
       const observation = await snapshot(tabId);
       if (typeof observation?.url === 'string' && observation.url
         && (!requireBootstrapUi || typeof observation.composerText === 'string')) return observation;
-    } catch (error) { lastError = error; }
+    } catch (error) {
+      lastError = error;
+      if (!recoveryAttempted && recoverReceiver
+        && /Receiving end does not exist|Could not establish connection/i.test(String(error?.message ?? error))) {
+        recoveryAttempted = true;
+        // Reattach the receiver only after exact tab/Project revalidation.
+        // Never retry the original Send: this is an observation-only preflight.
+        await recoverReceiver();
+      }
+    }
     await sleep(250);
   }
   throw lastError ?? new Error('COMPUTER_CHATGPT_TAB_NOT_READY');
@@ -235,7 +266,8 @@ async function executeEnsure(command, instanceId) {
   let target;
   try {
     target = await resolveTarget(command.identity, true, command.providerBinding);
-    const observation = await waitForContent(target.tab.id, command.identity.namespace === 'chatgpt.bootstrap');
+    const observation = await waitForContent(target.tab.id, command.identity.namespace === 'chatgpt.bootstrap',
+      target.created ? undefined : () => restoreExactContentReceiver(target.tab.id, command.identity));
     const refreshed = await tabGet(target.tab.id);
     return { kind: 'ensured', providerBinding: binding(refreshed, instanceId, target.ownerToken), observation };
   } catch (error) {

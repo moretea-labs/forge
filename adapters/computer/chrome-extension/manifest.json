@@ -8,6 +8,7 @@
     "nativeMessaging",
     "storage",
     "tabs",
+    "scripting",
     "alarms"
   ],
   "host_permissions": [
