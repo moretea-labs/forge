@@ -27,6 +27,26 @@ the protected console recovery call timed out. Projected extension bytes alone
 cannot prove that retained tabs loaded the new content script. Original tasks
 must resume with canonical effect receipts before restoration is claimed.
 
+The subsequent controlled cutover exposed #294 again: release `1956b51ed` was
+healthy and soaking while installed `content.js` retained the prior release's
+bytes. Canonical installer receipt `PLG-1792301168420-563ca3c0` restored exact
+projection equality. Forge and Android committed matching CONTINUE receipts at
+13:23 and 13:24, but other original tasks remained blocked. Protected console
+status subsequently established `available=false, enrolled=false`; manual
+unlock is required for the remaining UI inspection.
+
+The common release defect belongs to Recovery's existing whole-transition
+owner. Its pre-start preparation must reconcile an already installed adapter
+from the active immutable manifest on activation and rollback; stop-only
+rollback restores that projection before reporting success. Cutover re-entry
+checks projection identity before committing the observed Runtime. Candidate B
+and homes without an installed adapter remain untouched. This uses the existing
+installer, authority, locks, audit and failure/rollback paths; it introduces no
+state, process, persistent writer or Runtime startup fallback. Previously loaded
+browser documents still require separate live acceptance. Because this changes
+Recovery itself, its independent artifact must be updated explicitly rather
+than assuming a primary Runtime release updates Recovery code.
+
 Observed on 2026-10-02 (Asia/Shanghai), source/runtime f87c4a08.
 Repair Work: work-semantic-2371fcc14110.
 

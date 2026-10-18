@@ -101,6 +101,7 @@ import { acquireRecoveryReleaseLock, installStandaloneRecovery, inspectPrimaryCo
 import { acquireRecoveryOperationLock, recoveryOperationLockPath } from '../../src/runtime/standalone-recovery/operation-lock';
 import { readCurrentRecoveryRelease, recoveryGatewayIsDraining } from '../../src/runtime/standalone-recovery/release';
 import { createRecoveryHttpTransport } from '../../src/runtime/standalone-recovery/http-transport';
+import { inspectWorkflowSupervisorBrowserAdapter, installWorkflowSupervisorBrowserAdapter } from '../../src/runtime/plugins/computer-chatgpt-browser-adapter-installer';
 
 import { measureRuntimePerformance, assertRuntimePerformanceEvidence, readRuntimeCpu, RECOVERY_RUNAWAY_MEAN_CPU_PERCENT, RECOVERY_RUNAWAY_P95_CPU_PERCENT } from '../../src/runtime/standalone-recovery/performance';
 
@@ -545,6 +546,42 @@ function verifiedManifest(home: string, releaseId: string, runtimeMarker = relea
     createdAt: new Date().toISOString(),
   }, null, 2)}\n`);
   return { path, artifactIdentity };
+}
+
+function writeReleaseBrowserSurface(manifestPath: string): void {
+  const releaseRoot = dirname(manifestPath);
+  const release = JSON.parse(readFileSync(manifestPath, 'utf8'));
+  const packageRoot = join(releaseRoot, 'package');
+  const extensionRoot = join(packageRoot, 'adapters', 'computer', 'chrome-extension');
+  mkdirSync(extensionRoot, { recursive: true });
+  const files = ['background.js', 'content.js', 'core.js', 'manifest.json'];
+  const packageHash = createHash('sha256');
+  for (const file of files) {
+    const bytes = file === 'manifest.json'
+      ? JSON.stringify({ manifest_version: 3, key: Buffer.alloc(64, 7).toString('base64'), version: '1.0.0' })
+      : `// ${release.releaseId}: ${file}\n`;
+    writeFileSync(join(extensionRoot, file), bytes);
+    packageHash.update(join('adapters', 'computer', 'chrome-extension', file)).update('\0').update(bytes).update('\0');
+  }
+  // A legacy packageRoot activates the immutable connector_cli canary.
+  // Keep this fixture executable instead of advertising an incomplete package.
+  const packageManifest = JSON.stringify({ name: 'forge-recovery-test-package', version: '1.8.1' }) + '\n';
+  writeFileSync(join(packageRoot, 'package.json'), packageManifest);
+  packageHash.update('package.json').update('\0').update(packageManifest).update('\0');
+  const connectorPath = join(packageRoot, 'src', 'cli', 'index.ts');
+  const connectorCli = 'process.exit(0);\n';
+  mkdirSync(dirname(connectorPath), { recursive: true });
+  writeFileSync(connectorPath, connectorCli);
+  packageHash.update(join('src', 'cli', 'index.ts')).update('\0').update(connectorCli).update('\0');
+  const nativeHost = `#!/bin/sh\n# ${release.releaseId}\nexit 0\n`;
+  writeFileSync(join(releaseRoot, 'forge-workflow-supervisor-native-host'), nativeHost, { mode: 0o700 });
+  writeFileSync(manifestPath, JSON.stringify({
+    ...release,
+    packageRoot: 'package',
+    packageArtifactIdentity: `sha256:${packageHash.digest('hex')}`,
+    workflowSupervisorNativeHostEntrypoint: 'forge-workflow-supervisor-native-host',
+    workflowSupervisorNativeHostArtifactIdentity: `sha256:${createHash('sha256').update(nativeHost).digest('hex')}`,
+  }) + '\n');
 }
 
 function diagnostics() {
@@ -3299,6 +3336,8 @@ describe('standalone recovery on canonical Runtime', () => {
     const home = controllerHome();
     const first = manifest(home, 'release-a', 'artifact-a');
     const second = manifest(home, 'release-b', 'artifact-b', 2);
+    writeReleaseBrowserSurface(first);
+    writeReleaseBrowserSurface(second);
     ensureActiveRuntimeRelease(home, first);
     const runtime = await runtimeServer();
     writeMainToken(home);
@@ -3308,7 +3347,12 @@ describe('standalone recovery on canonical Runtime', () => {
     removeOwnership(ownership);
 
     publishRuntimeRelease(home, second, 'publish-release-b');
-    const rolled = await rollbackPrevious(config, 'test rollback');
+    const previousHome = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      const installed = installWorkflowSupervisorBrowserAdapter(home);
+      expect(installed).toMatchObject({ projectionCurrent: true, activeReleaseId: 'release-b' });
+      const rolled = await rollbackPrevious(config, 'test rollback');
     expect(rolled.ok).toBe(true);
     expect(rolled.detail).toContain('SQLite backup restored');
     expect(readRuntimeReleaseAuthority(home)).toMatchObject({
@@ -3316,6 +3360,14 @@ describe('standalone recovery on canonical Runtime', () => {
       active: { releaseId: 'release-a', artifactIdentity: 'artifact-a' },
       previous: { releaseId: 'release-b', artifactIdentity: 'artifact-b' },
     });
+      const restoredProjection = inspectWorkflowSupervisorBrowserAdapter(home);
+      expect(restoredProjection).toMatchObject({ projectionCurrent: true, activeReleaseId: 'release-a' });
+      expect(readFileSync(join(restoredProjection.extensionPath, 'content.js'), 'utf8')).toBe('// release-a: content.js\n');
+      expect(readFileSync(restoredProjection.nativeHostPath, 'utf8')).toContain('# release-a\n');
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+    }
   });
 
   test('refuses rollback when the independently attested previous release later fails its execution canary', async () => {
@@ -4671,7 +4723,11 @@ describe('standalone recovery on canonical Runtime', () => {
         createdAt: new Date().toISOString(),
       }, null, 2)}\n`);
 
+      writeReleaseBrowserSurface(first);
+      writeReleaseBrowserSurface(candidateManifestPath);
       ensureActiveRuntimeRelease(home, first);
+      const installed = installWorkflowSupervisorBrowserAdapter(home);
+      expect(installed).toMatchObject({ projectionCurrent: true, activeReleaseId: 'release-a' });
       const runtime = await runtimeServer();
       writeMainToken(home);
       const ownership = startObservedRuntime(home, runtime.endpoint, 'release-a', 'artifact-a');
@@ -4709,6 +4765,13 @@ describe('standalone recovery on canonical Runtime', () => {
         currentUid: async () => 501,
         runCommand: async (_command, args) => {
           commands.push(args);
+          if (args[0] === 'kickstart') {
+            const active = readRuntimeReleaseAuthority(home)!.active.releaseId;
+            const projection = inspectWorkflowSupervisorBrowserAdapter(home);
+            expect(projection).toMatchObject({ projectionCurrent: true, activeReleaseId: active });
+            expect(readFileSync(join(projection.extensionPath, 'content.js'), 'utf8')).toBe(`// ${active}: content.js\n`);
+            expect(readFileSync(projection.nativeHostPath, 'utf8')).toContain(`# ${active}\n`);
+          }
           if (args[0] === 'bootout') launchdLoaded = false;
           if (args[0] === 'print') return launchdLoaded
             ? { ok: true, status: 0, stdout: 'loaded', stderr: '' }
@@ -4747,6 +4810,7 @@ describe('standalone recovery on canonical Runtime', () => {
         active: { releaseId: 'release-a', artifactIdentity: 'artifact-a' },
       });
       expect(restoredAuthority?.previous).toBeUndefined();
+      expect(inspectWorkflowSupervisorBrowserAdapter(home)).toMatchObject({ projectionCurrent: true, activeReleaseId: 'release-a' });
       expect(commands.filter((args) => args.includes('kickstart')).length).toBeGreaterThanOrEqual(2);
       // Candidate B and restored Stable A each cross exactly one strict
       // acceptance boundary; no redundant pre-stop strict verification remains.
