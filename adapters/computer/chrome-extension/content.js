@@ -1,6 +1,10 @@
 (() => {
   const core = globalThis.ForgeComputerChatgptCore;
   if (!core) throw new Error('FORGE_COMPUTER_CHATGPT_CORE_MISSING');
+  // Declarative document_idle loading and exact-tab receiver recovery can race.
+  // Install one listener set per document or one Send could be handled twice.
+  if (globalThis.__forgeComputerChatgptContentInstalledV1 === true) return;
+  globalThis.__forgeComputerChatgptContentInstalledV1 = true;
   const ASSISTANT = '[data-message-author-role="assistant"], [data-chatgpt-search-unit-key$=":assistant"], [data-content-search-unit-key$=":assistant"]';
   const USER = '[data-message-author-role="user"], [data-chatgpt-search-unit-key$=":user"], [data-content-search-unit-key$=":user"]';
   const COMPOSER = '#prompt-textarea, [data-testid="prompt-textarea"], [data-testid="composer-text-input"], textarea[name="prompt"], textarea[placeholder*="Message"], textarea[placeholder*="消息"], form [contenteditable="true"], div[role="textbox"][contenteditable="true"]';
