@@ -346,9 +346,17 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
     const binding = this.authority.findSurfaceByStableIdentity(this.controllerHome, stableIdentity(identity))?.providerBinding;
     let candidates = exact;
     if (binding?.providerId === PROVIDER_ID && binding.windowId && binding.tabId) {
-      const bound = exact.filter(({ entry }) => entry.providerBinding?.tabId === binding.tabId
+      const bound = exact.filter(({ instanceId, entry }) => instanceId === binding.providerSessionId
+        && entry.providerBinding?.tabId === binding.tabId
         && (!binding.browserProduct || entry.providerBinding?.browserProduct === binding.browserProduct));
-      candidates = bound.filter(({ instanceId }) => instanceId === binding.providerSessionId);
+      // Chrome restart replaces physical tab IDs, not the profile principal or
+      // conversation identity. A unique exact tab observed by that SAME live
+      // provider may replace an absent pin through the Surface lease below.
+      // Never choose between multiple matching tabs or switch browser profiles.
+      const replacement = exact.length === 1 && exact[0]!.instanceId === binding.providerSessionId
+        && (!binding.browserProduct || exact[0]!.entry.providerBinding?.browserProduct === binding.browserProduct)
+        ? exact : [];
+      candidates = bound.length ? bound : replacement;
     }
     // A stale binding must not turn two observed exact tabs into a third tab.
     if (exact.length > 1 && candidates.length !== 1) return failure('COMPUTER_CHATGPT_EXTENSION_EXACT_TARGET_AMBIGUOUS', { failoverSafe: false });
