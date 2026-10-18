@@ -628,14 +628,29 @@ describe('Computer durable InteractionTarget authority', () => {
       expect(targetAuthority.getSurface(controllerHome, exact.target.targetId)?.providerBinding).toMatchObject({
         providerSessionId: 'profile-logged-in', browserProduct: 'vivaldi', tabId: 'vivaldi-tab',
       });
+      const unverifiedPrepare = exact.target.prepare('continue exact conversation');
+      expect(extension.claim('profile-logged-out')).toBeUndefined();
+      const unverifiedCommand = extension.claim('profile-logged-in');
+      if (!unverifiedCommand || unverifiedCommand.kind !== 'prepare') throw new Error('exact provider did not receive prepare command');
+      expect(unverifiedCommand.reasoning).toBe('high');
+      expect(extension.complete('profile-logged-in', unverifiedCommand.commandId, { kind: 'prepared', ready: true })).toBe(true);
+      expect(await unverifiedPrepare).toEqual({ ready: false, reasonCode: 'COMPUTER_CHATGPT_REASONING_NOT_VERIFIED' });
+
+      const prepare = exact.target.prepare('continue exact conversation');
+      const prepareCommand = extension.claim('profile-logged-in');
+      if (!prepareCommand || prepareCommand.kind !== 'prepare') throw new Error('exact provider did not receive verified prepare command');
+      expect(prepareCommand.reasoning).toBe('high');
+      expect(extension.complete('profile-logged-in', prepareCommand.commandId, { kind: 'prepared', ready: true, reasoningVerified: 'high' })).toBe(true);
+      expect(await prepare).toEqual({ ready: true, reasoningVerified: 'high' });
+
       const dispatch = exact.target.dispatch('continue exact conversation');
       expect(extension.claim('profile-logged-out')).toBeUndefined();
       const routedCommand = extension.claim('profile-logged-in');
-      expect(routedCommand?.kind).toBe('dispatch');
-      if (!routedCommand) throw new Error('exact provider did not receive command');
+      if (!routedCommand || routedCommand.kind !== 'dispatch') throw new Error('exact provider did not receive dispatch command');
+      expect(routedCommand.reasoning).toBe('high');
       expect(extension.complete('profile-logged-out', routedCommand.commandId, { kind: 'dispatch', mutation: 'attempted', confirmed: true })).toBe(false);
-      expect(extension.complete('profile-logged-in', routedCommand.commandId, { kind: 'dispatch', mutation: 'attempted', confirmed: true })).toBe(true);
-      expect(await dispatch).toEqual({ mutation: 'attempted', confirmed: true });
+      expect(extension.complete('profile-logged-in', routedCommand.commandId, { kind: 'dispatch', mutation: 'attempted', confirmed: true, reasoningVerified: 'high' })).toBe(true);
+      expect(await dispatch).toEqual({ mutation: 'attempted', confirmed: true, reasoningVerified: 'high' });
 
       extension.heartbeat({
         providerId: 'browser.chrome-extension',

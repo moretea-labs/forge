@@ -1,7 +1,7 @@
 import type { RepositorySchedule } from '../../../../packages/kernel/scheduler/api/index';
+import { DEFAULT_COMPUTER_CHATGPT_REASONING } from '../../../../packages/plugin-runtime/computer';
 import {
   DEFAULT_CHATGPT_AUTOMATION_MODEL,
-  DEFAULT_CHATGPT_AUTOMATION_REASONING,
   DEFAULT_CHATGPT_AUTOMATION_TAB_POLICY,
 } from '../../../../adapters/chatgpt/provider-delivery';
 
@@ -9,7 +9,6 @@ export const CHATGPT_AUTOMATION_EXECUTION_PROFILE = 'chatgpt_browser_v1';
 // Missing legacy Schedule preferences inherit the single provider defaults.
 // Explicit saved preferences remain authoritative and are never overwritten.
 export const CHATGPT_AUTOMATION_DEFAULT_MODEL = DEFAULT_CHATGPT_AUTOMATION_MODEL;
-export const CHATGPT_AUTOMATION_DEFAULT_REASONING = DEFAULT_CHATGPT_AUTOMATION_REASONING;
 export const CHATGPT_AUTOMATION_DEFAULT_TAB_POLICY = DEFAULT_CHATGPT_AUTOMATION_TAB_POLICY;
 
 export interface ChatgptAutomationScheduleMigrationResult {
@@ -31,7 +30,7 @@ export function migrateChatgptAutomationSchedule(schedule: RepositorySchedule): 
     ...current,
     controller_type: controllerType,
     model: nonEmptyString(current.model) ?? CHATGPT_AUTOMATION_DEFAULT_MODEL,
-    reasoning: nonEmptyString(current.reasoning) ?? CHATGPT_AUTOMATION_DEFAULT_REASONING,
+    reasoning: nonEmptyString(current.reasoning) ?? DEFAULT_COMPUTER_CHATGPT_REASONING,
     tab_policy: nonEmptyString(current.tab_policy) ?? CHATGPT_AUTOMATION_DEFAULT_TAB_POLICY,
     execution_profile: nonEmptyString(current.execution_profile) ?? CHATGPT_AUTOMATION_EXECUTION_PROFILE,
   };

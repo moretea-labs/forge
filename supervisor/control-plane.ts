@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import type { ComputerChatgptReasoning } from '../packages/plugin-runtime/computer';
 import { parseChatgptConversationIdentity } from './chatgpt-conversation';
 import { parseSupervisorCompletion, renderEffectMarker, renderSupervisorPrompt, sha256, validateEffectId, validateSupervisorObjective } from './protocol';
 import { WorkflowSupervisorStore } from './store';
@@ -566,7 +567,7 @@ export class WorkflowSupervisorControlPlane {
       },
     };
   }
-  bootstrapBeginEffect(input: { taskId: string; effectId: string; dispatchId: string; dispatchGeneration: number }): boolean {
+  bootstrapBeginEffect(input: { taskId: string; effectId: string; dispatchId: string; dispatchGeneration: number; reasoningVerified?: ComputerChatgptReasoning }): boolean {
     const task = this.requireTask(input.taskId);
     requireNonTerminalTask(this.store, task.taskId);
     if (!task.conversationId.startsWith('bootstrap:')) throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_NOT_PENDING');
@@ -575,6 +576,7 @@ export class WorkflowSupervisorControlPlane {
     return this.store.recordEffectDispatchStarted(input.effectId, input.dispatchGeneration, input.dispatchId, {
       surface: 'computer-bootstrap',
       ...(this.hooks.effectDispatchEvidence?.({ task, effectId: input.effectId }) ?? {}),
+      ...(input.reasoningVerified ? { reasoning_verified_before_send: input.reasoningVerified } : {}),
     });
   }
   bootstrapObserveEffect(input: { taskId: string; effectId: string; observationId: string; outcome: 'applied' | 'not_applied' | 'unknown'; evidence?: Record<string, unknown> }): void {
@@ -629,12 +631,15 @@ export class WorkflowSupervisorControlPlane {
     if (!snapshot || browserTextHasEffect(snapshot.latestUserText, effectId) || !this.browserSnapshotMatchesSource(task, pending.effect, snapshot)) {
       return { started: false, mode: 'reconcile', generation: pending.generation };
     }
+    const reasoningVerifiedBeforeSend = input.evidence?.reasoning_verified_before_send;
     const dispatchEvidence = {
       surface: typeof input.evidence?.surface === 'string' ? input.evidence.surface.slice(0, 128) : 'chrome-extension',
       baseline_user_sha256: browserTextSha256(snapshot.latestUserText),
       baseline_assistant_sha256: sha256(snapshot.latestAssistantResponse),
       baseline_has_source_completion: Boolean(pending.effect.sourceCompletionFingerprint),
       ...(this.hooks.effectDispatchEvidence?.({ task, effectId }) ?? {}),
+      ...(reasoningVerifiedBeforeSend === 'medium' || reasoningVerifiedBeforeSend === 'high' || reasoningVerifiedBeforeSend === 'xhigh'
+        ? { reasoning_verified_before_send: reasoningVerifiedBeforeSend } : {}),
     };
     const started = this.store.recordEffectDispatchStarted(effectId, input.dispatchGeneration, input.dispatchId, dispatchEvidence);
     return { started, mode: started ? 'send' : 'reconcile', generation: input.dispatchGeneration };
@@ -950,12 +955,16 @@ function browserSnapshot(evidence: Record<string, unknown> | undefined): { lates
 function normalizeBrowserText(value: string): string { return value.replace(/\s+/g, ' ').trim(); }
 function browserTextSha256(value: string): string { return sha256(normalizeBrowserText(value)); }
 function browserTextHasEffect(value: string, effectId: string): boolean { return value.includes(renderEffectMarker(effectId)); }
-const PERSISTED_BROWSER_EVIDENCE_KEYS = new Set(['exact_user_message', 'observation_fingerprint', 'reconciliation', 'reason', 'surface', 'target_marker_present']);
+const PERSISTED_BROWSER_EVIDENCE_KEYS = new Set(['exact_user_message', 'observation_fingerprint', 'reconciliation', 'reason', 'surface', 'target_marker_present', 'reasoning_verified', 'reasoning_verified_before_send']);
 function sanitizeBrowserEvidence(evidence: Record<string, unknown> | undefined): Record<string, unknown> {
   if (!evidence) return {};
   const sanitized: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(evidence)) {
     if (!PERSISTED_BROWSER_EVIDENCE_KEYS.has(key)) continue;
+    if (key === 'reasoning_verified' || key === 'reasoning_verified_before_send') {
+      if (value === 'medium' || value === 'high' || value === 'xhigh') sanitized[key] = value;
+      continue;
+    }
     if (typeof value === 'boolean' || (typeof value === 'number' && Number.isFinite(value))) sanitized[key] = value;
     else if (typeof value === 'string' && value.length <= 512) sanitized[key] = value;
   }

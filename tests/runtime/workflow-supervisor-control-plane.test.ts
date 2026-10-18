@@ -2320,8 +2320,8 @@ test('Supervisor preparation rejection is durably release-fenced and never spend
     snapshot: async () => ({ url: conversationUrl, title: 'Pre-send boundary', latestUserText: '',
       latestAssistantResponse: '', composerText: '', isGenerating: false,
       providerActivityText: '', providerFailureText: '' }),
-    preparePrompt: async () => { preparations++; return preparationReady
-      ? { ready: true as const } : { ready: false as const, reasonCode: 'FORGE_PLUGIN_NOT_BOUND' }; },
+    preparePrompt: async (_page, _prompt, reasoning) => { preparations++; return preparationReady
+      ? { ready: true as const, reasoningVerified: reasoning } : { ready: false as const, reasonCode: 'FORGE_PLUGIN_NOT_BOUND' }; },
     dispatchPrompt: async () => { sends++; return { dispatched: true, confirmed: true }; },
   });
   const deps = { targetPort, nowMs: () => clock.nowMs, providerIdleGraceMs: 60_000,
@@ -2348,6 +2348,7 @@ test('Supervisor preparation rejection is durably release-fenced and never spend
   expect(preparations).toBe(2);
   expect(sends).toBe(1);
   expect(store.latestEffectDispatch(effect.effectId)?.generation).toBe(1);
+  expect(store.latestEffectDispatch(effect.effectId)?.evidence).toMatchObject({ reasoning_verified_before_send: 'xhigh' });
   await repaired.close();
   // Across unrelated deployments this effect remains capped at three distinct
   // failing preparations, including after restarts; none spends provider budget.
@@ -2439,7 +2440,7 @@ test('recovery stop-pending is a live-turn observation, not a failed preparation
     preparePrompt: async () => {
       preparations++;
       return preparationReady
-        ? { ready: true as const }
+        ? { ready: true as const, reasoningVerified: 'xhigh' as const }
         : { ready: false as const, reasonCode: 'provider_recovery_stop_pending' };
     },
     dispatchPrompt: async (_page, prompt) => {

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { DEFAULT_COMPUTER_CHATGPT_REASONING } from '../../packages/plugin-runtime/computer';
 import type {
   ComputerChatgptBootstrapIdentity,
   ComputerChatgptConversationIdentity,
@@ -291,17 +292,23 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
       prepare: async (prompt, options) => {
         const response = await this.submit(instanceId, { kind: 'prepare', identity, ...(record.providerBinding ? { providerBinding: record.providerBinding } : {}), prompt,
           ...(options?.mode ? { mode: options.mode } : {}),
-          ...(options?.reasoning ? { reasoning: options.reasoning } : {}),
+          reasoning: options?.reasoning ?? DEFAULT_COMPUTER_CHATGPT_REASONING,
         });
         if (!response.result) return { ready: false, reasonCode: response.claimed
           ? 'COMPUTER_CHATGPT_EXTENSION_PREPARE_OUTCOME_UNKNOWN' : 'COMPUTER_CHATGPT_EXTENSION_NOT_CONNECTED' };
-        if (response.result.kind === 'prepared') return response.result.ready
-          ? { ready: true } : { ready: false, reasonCode: response.result.reasonCode };
+        if (response.result.kind === 'prepared') {
+          if (!response.result.ready) return { ready: false, reasonCode: response.result.reasonCode };
+          const reasoningVerified = response.result.reasoningVerified;
+          if (reasoningVerified !== 'medium' && reasoningVerified !== 'high' && reasoningVerified !== 'xhigh') {
+            return { ready: false, reasonCode: 'COMPUTER_CHATGPT_REASONING_NOT_VERIFIED' };
+          }
+          return { ready: true, reasoningVerified };
+        }
         return { ready: false, reasonCode: response.result.kind === 'failed'
           ? response.result.code : 'COMPUTER_CHATGPT_EXTENSION_PREPARE_INVALID' };
       },
       dispatch: async (prompt, options) => {
-        const response = await this.submit(instanceId, { kind: 'dispatch', identity, ...(record.providerBinding ? { providerBinding: record.providerBinding } : {}), prompt, ...(options?.mode ? { mode: options.mode } : {}), ...(options?.reasoning ? { reasoning: options.reasoning } : {}) });
+        const response = await this.submit(instanceId, { kind: 'dispatch', identity, ...(record.providerBinding ? { providerBinding: record.providerBinding } : {}), prompt, ...(options?.mode ? { mode: options.mode } : {}), reasoning: options?.reasoning ?? DEFAULT_COMPUTER_CHATGPT_REASONING });
         if (!response.result) {
           return response.claimed
             ? { mutation: 'attempted' as const }

@@ -327,9 +327,11 @@ async function executePrepare(command) {
       ...(command.identity?.namespace === 'chatgpt.conversation' ? { expectedConversationId: command.identity.conversationId } : {}),
       ...(expectedProjectId ? { expectedProjectId } : {}),
     });
-    return result?.prepared === true
-      ? { kind: 'prepared', ready: true }
-      : { kind: 'prepared', ready: false, reasonCode: String(result?.reason ?? 'COMPUTER_CHATGPT_EXTENSION_PREPARE_REJECTED') };
+    if (result?.prepared !== true) return { kind: 'prepared', ready: false, reasonCode: String(result?.reason ?? 'COMPUTER_CHATGPT_EXTENSION_PREPARE_REJECTED') };
+    if (command.reasoning !== undefined && !['medium', 'high', 'xhigh'].includes(result.reasoningVerified)) {
+      return { kind: 'prepared', ready: false, reasonCode: 'COMPUTER_CHATGPT_REASONING_NOT_VERIFIED' };
+    }
+    return { kind: 'prepared', ready: true, ...(result.reasoningVerified ? { reasoningVerified: result.reasoningVerified } : {}) };
   } catch {
     // A prepare command contains no Send action. Failure is not a submitted effect.
     return { kind: 'prepared', ready: false, reasonCode: 'COMPUTER_CHATGPT_EXTENSION_PREPARE_UNAVAILABLE' };

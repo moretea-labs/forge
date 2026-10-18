@@ -212,14 +212,14 @@ test('Supervisor sends a complete plain-text effect once without selecting any A
   expect(f.textarea.value).toBe(prompt);
 });
 
-test('Chrome Extension prepares the exact plain-text effect without sending before Supervisor authority', async () => {
-  const f = fixture({ controlPresent: false });
+test('Chrome Extension prepares the exact plain-text effect and returns the verified reasoning level before Supervisor authority', async () => {
+  const f = fixture({ optionLabel: 'Extra High' });
   const prompt = '<<<FORGE_WORKFLOW_EFFECT_V1:fx_test_pre_send_123456789>>>\nFORGE_WORKFLOW_TURN_V2_BEGIN';
   const conversationId = '12345678-1234-1234-1234-123456789abc';
-  expect(await f.prepare(undefined, conversationId, prompt)).toMatchObject({ prepared: true });
+  expect(await f.prepare('xhigh', conversationId, prompt)).toMatchObject({ prepared: true, reasoningVerified: 'xhigh' });
   expect(f.state.sendClicks).toBe(0);
   expect(f.textarea.chipNames).toEqual([]);
-  expect(await f.dispatch(undefined, conversationId, prompt)).toMatchObject({ dispatched: true });
+  expect(await f.dispatch('xhigh', conversationId, prompt)).toMatchObject({ dispatched: true, reasoningVerified: 'xhigh' });
   expect(f.state.sendClicks).toBe(1);
 });
 

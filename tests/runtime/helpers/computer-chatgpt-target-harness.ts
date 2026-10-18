@@ -4,11 +4,12 @@ import type {
   ComputerChatgptConversationObservation,
   ComputerChatgptConversationObservationOptions,
   ComputerChatgptConversationTarget,
+  ComputerChatgptReasoning,
   ComputerChatgptConversationTargetPort,
   ComputerChatgptTargetIdentity,
   ComputerChatgptTargetResult,
 } from '../../../packages/plugin-runtime/computer';
-import { parseCanonicalChatgptConversationIdentity } from '../../../packages/plugin-runtime/computer';
+import { DEFAULT_COMPUTER_CHATGPT_REASONING, parseCanonicalChatgptConversationIdentity } from '../../../packages/plugin-runtime/computer';
 
 export interface TestBrowserTabRef {
   windowId: string;
@@ -38,7 +39,7 @@ export interface TestComputerTargetHarnessDependencies {
   writeOwner?(page: TestBrowserPage, marker: string): Promise<void>;
   snapshot(page: TestBrowserPage, options?: ComputerChatgptConversationObservationOptions): Promise<ComputerChatgptConversationObservation>;
   /** Optional test-only UI-preparation attestation, prior to send accounting. */
-  preparePrompt?(page: TestBrowserPage, prompt: string): Promise<{ ready: true } | { ready: false; reasonCode: string }>;
+  preparePrompt?(page: TestBrowserPage, prompt: string, reasoning: ComputerChatgptReasoning): Promise<{ ready: true; reasoningVerified: ComputerChatgptReasoning } | { ready: false; reasonCode: string }>;
   dispatchPrompt(
     page: TestBrowserPage,
     prompt: string,
@@ -80,7 +81,7 @@ export function createTestChatgptTargetPort(
     targetId: entry.targetId,
     identity: entry.identity,
     observe: async (options) => await deps.snapshot(entry.page, options),
-    prepare: async (prompt) => await deps.preparePrompt?.(entry.page, prompt) ?? { ready: true },
+    prepare: async (prompt, options) => await deps.preparePrompt?.(entry.page, prompt, options?.reasoning ?? DEFAULT_COMPUTER_CHATGPT_REASONING) ?? { ready: true, reasoningVerified: options?.reasoning ?? DEFAULT_COMPUTER_CHATGPT_REASONING },
     dispatch: async (prompt, options) => {
       const result = await deps.dispatchPrompt(entry.page, prompt, options);
       return result.dispatched

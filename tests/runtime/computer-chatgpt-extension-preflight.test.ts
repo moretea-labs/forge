@@ -11,6 +11,7 @@ type Response = { kind: string; mutation: string; reasonCode?: string; reasoning
 type Scenario = {
   capability?: unknown;
   preflightTransportError?: boolean;
+  prepare?: { prepared: boolean; reason?: string; reasoningVerified?: string };
   dispatch?: { dispatched: boolean; confirmed?: boolean; reasoningVerified?: string };
 };
 function fixture(scenario: Scenario) {
@@ -38,6 +39,10 @@ function fixture(scenario: Scenario) {
             return;
           }
           callback(scenario.capability);
+          return;
+        }
+        if (message.type === 'forge-computer-chatgpt-prepare') {
+          callback(scenario.prepare ?? { prepared: true, reasoningVerified: 'xhigh' });
           return;
         }
         if (message.type === 'forge-computer-chatgpt-dispatch') {
@@ -80,7 +85,7 @@ function fixture(scenario: Scenario) {
     setInterval() { return 1; },
   };
   const scope = runInNewContext(
-    source + '\n;globalThis.__testDispatch = executeDispatch;',
+    source + '\n;globalThis.__testDispatch = executeDispatch; globalThis.__testPrepare = executePrepare;',
     testContext,
     { filename: 'background.js' },
   ) as unknown;
@@ -89,7 +94,11 @@ function fixture(scenario: Scenario) {
     (testContext as typeof testContext & {
       __testDispatch: (value: object) => Promise<Response>;
     }).__testDispatch({ kind: 'dispatch', identity, prompt: 'source delivery', ...(reasoning ? { reasoning } : {}) });
-  return { dispatch, messages, get submissions() { return submissions; } };
+  const prepare = (reasoning?: 'xhigh') =>
+    (testContext as typeof testContext & {
+      __testPrepare: (value: object) => Promise<{ kind: string; ready: boolean; reasoningVerified?: string; reasonCode?: string }>;
+    }).__testPrepare({ kind: 'prepare', identity, prompt: 'source delivery', ...(reasoning ? { reasoning } : {}) });
+  return { dispatch, prepare, messages, get submissions() { return submissions; } };
 }
 
 test('old content script lacking reasoning preflight cannot receive a Supervisor send', async () => {
@@ -111,13 +120,19 @@ test('capability transport failure remains pre-mutation and never triggers an am
   expect(f.submissions).toBe(0);
 });
 
-test('exact target tab capability permits verified reasoning dispatch with in-page commit acknowledgment', async () => {
+test('exact target tab capability permits a pre-Send reasoning receipt and verified dispatch', async () => {
+  const missingReceipt = fixture({ capability: { reasoningPreflight: 'verified_before_send_v1' }, prepare: { prepared: true } });
+  expect(await missingReceipt.prepare('xhigh')).toMatchObject({ kind: 'prepared', ready: false, reasonCode: 'COMPUTER_CHATGPT_REASONING_NOT_VERIFIED' });
+  expect(missingReceipt.submissions).toBe(0);
+
   const f = fixture({ capability: { reasoningPreflight: 'verified_before_send_v1' } });
-  expect(await f.dispatch('xhigh')).toMatchObject({
-    mutation: 'attempted', confirmed: true, reasoningVerified: 'xhigh',
-  });
+  expect(await f.prepare('xhigh')).toMatchObject({ kind: 'prepared', ready: true, reasoningVerified: 'xhigh' });
+  expect(f.submissions).toBe(0);
+  expect(await f.dispatch('xhigh')).toMatchObject({ mutation: 'attempted', confirmed: true, reasoningVerified: 'xhigh' });
   expect(f.submissions).toBe(1);
   expect(f.messages).toEqual([
+    'forge-computer-chatgpt-capabilities',
+    'forge-computer-chatgpt-prepare',
     'forge-computer-chatgpt-capabilities',
     'forge-computer-chatgpt-dispatch',
   ]);

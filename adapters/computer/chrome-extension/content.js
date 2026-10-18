@@ -445,7 +445,7 @@
     const send = ready.send;
     if (!send.isConnected || !visible(send)) return { dispatched: false, reason: 'send_button_missing' };
     if (send.disabled || send.getAttribute('aria-disabled') === 'true') return { dispatched: false, reason: 'send_button_disabled' };
-    if (prepareOnly) return { prepared: true };
+    if (prepareOnly) return { prepared: true, ...(reasoningVerified ? { reasoningVerified } : {}) };
     // Confirm the committed turn inside the content script, rather than
     // requesting delayed snapshots from the extension background worker.
     const beforeSend = roleNodes(USER).at(-1);
@@ -496,7 +496,8 @@
     }
     if (message.type === 'forge-computer-chatgpt-prepare') {
       dispatchPrompt(String(message.prompt ?? ''), String(message.mode ?? 'send'), message.reasoning, message.expectedConversationId, true, message.expectedProjectId)
-        .then((result) => sendResponse(result?.prepared === true ? { prepared: true }
+        .then((result) => sendResponse(result?.prepared === true
+          ? { prepared: true, ...(result.reasoningVerified ? { reasoningVerified: result.reasoningVerified } : {}) }
           : { prepared: false, reason: String(result?.reason ?? 'COMPUTER_CHATGPT_PREPARE_REJECTED') }),
           (error) => sendResponse({ prepared: false, reason: String(error?.message ?? error) }));
       return true;
