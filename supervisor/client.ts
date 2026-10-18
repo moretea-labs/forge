@@ -63,12 +63,16 @@ export async function getWorkflowSupervisorTask(forgeHome: string, taskId: strin
 
 export async function reviseWorkflowSupervisorTaskObjective(forgeHome: string, input: {
   taskId: string; objective: string; expectedObjectiveSha256: string; requestId: string; authorizedBy?: string;
-}): Promise<{ task: WorkflowSupervisorTask; changed: boolean; deduplicated: boolean; objectiveSha256: string; refreshedEffect?: WorkflowSupervisorEffect }> {
+  workId?: string; requirementId?: string; expectedCompletionContractSha256?: string;
+}): Promise<{ task: WorkflowSupervisorTask; changed: boolean; deduplicated: boolean; objectiveSha256: string; completionContractSha256: string; semanticBindingChanged: boolean; refreshedEffect?: WorkflowSupervisorEffect }> {
   return await rpc(forgeHome, 'task_revise_objective', {
     task_id: input.taskId,
     objective: input.objective,
     expected_objective_sha256: input.expectedObjectiveSha256,
     request_id: input.requestId,
+    ...(input.workId?.trim() ? { work_id: input.workId.trim() } : {}),
+    ...(input.requirementId?.trim() ? { requirement_id: input.requirementId.trim() } : {}),
+    ...(input.expectedCompletionContractSha256?.trim() ? { expected_completion_contract_sha256: input.expectedCompletionContractSha256.trim() } : {}),
     ...(input.authorizedBy?.trim() ? { authorized_by: input.authorizedBy.trim() } : {}),
   }, SUPERVISOR_RPC_MUTATION_TIMEOUT_MS);
 }

@@ -359,6 +359,9 @@ async function dispatch(control: WorkflowSupervisorControlPlane, discovery: Work
     objective: text(p, 'objective'),
     expectedObjectiveSha256: text(p, 'expected_objective_sha256'),
     requestId: text(p, 'request_id'),
+    ...(typeof p.work_id === 'string' && p.work_id.trim() ? { workId: p.work_id.trim() } : {}),
+    ...(typeof p.requirement_id === 'string' && p.requirement_id.trim() ? { requirementId: p.requirement_id.trim() } : {}),
+    ...(typeof p.expected_completion_contract_sha256 === 'string' && p.expected_completion_contract_sha256.trim() ? { expectedCompletionContractSha256: p.expected_completion_contract_sha256.trim() } : {}),
     ...(typeof p.authorized_by === 'string' && p.authorized_by.trim() ? { authorizedBy: p.authorized_by.trim() } : {}),
   });
   if (req.method === 'task_list') return p.terminal_only === true

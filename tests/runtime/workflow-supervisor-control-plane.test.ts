@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
+import { forgeWorkflowSupervisorValidators } from '../../supervisor/forge-validators';
 import { createHash } from 'crypto';
 import { execFileSync } from 'child_process';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
@@ -13,7 +14,7 @@ import { bindCurrentWorkflowSupervisorConversationForWork, ensureWorkflowSupervi
 import { WorkflowSupervisorControlPlane } from '../../supervisor/control-plane';
 import { TASK_TARGET_SPACED_FAILURE_CODES, WorkflowSupervisorNativeBrowserAdapter } from '../../supervisor/native-browser-adapter';
 import { hasCommittedSupervisorEnvelope, LEGACY_SUPERVISOR_BLOCK_END, LEGACY_SUPERVISOR_BLOCK_START, parseSupervisorCompletion, renderSupervisorPrompt, renderSupervisorReceipt, supervisorReceiptChallenge, SUPERVISOR_BLOCK_END, SUPERVISOR_BLOCK_START, SUPERVISOR_TURN_BLOCK_END, SUPERVISOR_TURN_BLOCK_START } from '../../supervisor/protocol';
-import { WorkflowSupervisorStore } from '../../supervisor/store';
+import { WorkflowSupervisorStore, workflowSupervisorCompletionContractSha256 } from '../../supervisor/store';
 import { createWorkflowSupervisorServer, reconcileWorkflowSupervisorSocket, WorkflowSupervisorEphemeralDiscovery } from '../../supervisor/server';
 import { claimControllerSession, getControllerSession, releaseControllerSession } from '../../src/runtime/control-plane/facade/controller-session-store';
 import { bindChatgptWorkConversation, getChatgptWorkConversationBinding, rebindChatgptWorkConversation } from '../../adapters/chatgpt/work-conversation-binding-store';
@@ -312,6 +313,85 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
       expectedObjectiveSha256: originalSha,
       requestId: 'objective-revise-conflict',
     })).toThrow('WORKFLOW_SUPERVISOR_OBJECTIVE_REVISION_CONFLICT');
+    store.close();
+  });
+
+  test('revises an unbound active Supervisor task with one CAS Work binding without changing its in-flight effect', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-semantic-binding-'));
+    roots.push(root);
+    const repoId = 'repo-semantic-binding';
+    const workId = 'work-semantic-binding-target';
+    const otherWorkId = 'work-semantic-binding-other';
+    for (const targetId of [workId, otherWorkId]) {
+      createWorkContract({ controllerHome: root, scopeKey: repoId }, {
+        workId: targetId, repoId, checkoutId: 'fixture', objective: 'Complete the semantic target before DONE.',
+        acceptanceCriteria: ['Canonical semantic target completes'], allowedPaths: [], forbiddenPaths: [],
+        checks: [], constraints: { workspaceMode: 'current' }, requestedBy: 'chatgpt', dispatchState: 'running',
+      });
+    }
+    const store = new WorkflowSupervisorStore(root);
+    const control = new WorkflowSupervisorControlPlane(store, forgeWorkflowSupervisorValidators());
+    const task = control.registerTask({
+      taskId: 'supervisor:semantic-binding-revision',
+      conversationId: '19191919-2828-3737-4646-555555555555',
+      conversationUrl: 'https://chatgpt.com/c/19191919-2828-3737-4646-555555555555',
+      objective: 'Continue the canonical Work until its semantic outcome is complete.',
+      completionContract: { kind: 'model_semantic_completion', controller_home: root, repo_id: repoId },
+      continuationPolicy: { kind: 'standalone_supervisor', bootstrap: true, repo_id: repoId },
+      userBlockerPolicy: { kind: 'model_semantic_user_blocker' },
+    });
+    const effect = control.reserveEnrollment(task.taskId, 'fx_semantic_binding_1234567890');
+    store.recordEffectDispatchStarted(effect.effectId, 1, 'semantic-binding-dispatch');
+    const objectiveSha = createHash('sha256').update(task.objective).digest('hex');
+    const contractSha = workflowSupervisorCompletionContractSha256(task.completionContract);
+    const revised = control.reviseTaskObjective({
+      taskId: task.taskId, objective: task.objective, expectedObjectiveSha256: objectiveSha,
+      expectedCompletionContractSha256: contractSha, workId, requestId: 'bind-work-1', authorizedBy: 'user',
+    });
+    expect(revised).toMatchObject({
+      changed: false, deduplicated: false, semanticBindingChanged: true,
+      task: { taskId: task.taskId, conversationId: task.conversationId, completionContract: { work_id: workId } },
+    });
+    expect(revised.refreshedEffect).toBeUndefined();
+    expect(store.getEffect(effect.effectId)?.prompt).toBe(effect.prompt);
+    const validate = forgeWorkflowSupervisorValidators().completionContract!;
+    expect(await validate(revised.task, { action: 'DONE' } as any)).toMatchObject({ valid: false, reason: 'work_not_completed' });
+
+    const duplicate = control.reviseTaskObjective({
+      taskId: task.taskId, objective: task.objective, expectedObjectiveSha256: objectiveSha,
+      expectedCompletionContractSha256: contractSha, workId, requestId: 'bind-work-1', authorizedBy: 'user',
+    });
+    expect(duplicate.deduplicated).toBe(true);
+    expect(duplicate.completionContractSha256).toBe(workflowSupervisorCompletionContractSha256(revised.task.completionContract));
+    expect(() => control.reviseTaskObjective({
+      taskId: task.taskId, objective: task.objective, expectedObjectiveSha256: objectiveSha,
+      expectedCompletionContractSha256: contractSha, workId, requestId: 'bind-stale-contract', authorizedBy: 'user',
+    })).toThrow('WORKFLOW_SUPERVISOR_COMPLETION_CONTRACT_REVISION_CONFLICT');
+    expect(() => control.reviseTaskObjective({
+      taskId: task.taskId, objective: task.objective, expectedObjectiveSha256: objectiveSha,
+      expectedCompletionContractSha256: revised.completionContractSha256, workId: otherWorkId,
+      requestId: 'bind-conflicting-target', authorizedBy: 'user',
+    })).toThrow('WORKFLOW_SUPERVISOR_SEMANTIC_BINDING_CONFLICT');
+
+    expect(() => control.registerTask({
+      taskId: task.taskId, conversationId: task.conversationId, conversationUrl: task.conversationUrl,
+      objective: task.objective, completionContract: { kind: 'forge_work_done', controller_home: root, repo_id: repoId },
+      continuationPolicy: { kind: 'forge_goal_outer_turn', bootstrap: false, repo_id: repoId },
+      userBlockerPolicy: { kind: 'forge_work_waiting_for_user', controller_home: root, repo_id: repoId },
+    })).toThrow('WORKFLOW_SUPERVISOR_SEMANTIC_BINDING_CONFLICT');
+    const upgraded = control.registerTask({
+      taskId: task.taskId, conversationId: task.conversationId, conversationUrl: task.conversationUrl,
+      objective: task.objective, completionContract: { kind: 'forge_work_done', controller_home: root, repo_id: repoId, work_id: workId },
+      continuationPolicy: { kind: 'forge_goal_outer_turn', bootstrap: false, repo_id: repoId },
+      userBlockerPolicy: { kind: 'forge_work_waiting_for_user', controller_home: root, repo_id: repoId, work_id: workId },
+    });
+    expect(upgraded.completionContract.work_id).toBe(workId);
+    control.stopTask(task.taskId, 'Finish the binding regression fixture.');
+    expect(() => control.reviseTaskObjective({
+      taskId: task.taskId, objective: task.objective, expectedObjectiveSha256: objectiveSha,
+      expectedCompletionContractSha256: workflowSupervisorCompletionContractSha256(upgraded.completionContract),
+      workId, requestId: 'bind-after-terminal', authorizedBy: 'user',
+    })).toThrow('WORKFLOW_SUPERVISOR_TASK_TERMINAL');
     store.close();
   });
 
@@ -3367,6 +3447,72 @@ test('Resume stream unavailable uses a bounded same-conversation recovery chain 
   expect(store.nextBrowserEffect(taskId, { nowMs: Date.now() + 60_000 })).toBeUndefined();
   expect(control.taskStall(taskId)).toMatchObject({ state: 'spaced', effectId: operatorRecovery.effectId, reason: 'pre_send_infrastructure_blocked' });
   expect(store.effectDispatchBudget(operatorRecovery.effectId)).toMatchObject({ generations: 1, exhausted: false });
+});
+
+test('public supervisor_task revise binds the existing task through canonical RPC with completion-contract CAS', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-public-semantic-binding-'));
+  roots.push(root);
+  const controllerHome = join(root, 'controller');
+  ensureControllerHome(controllerHome);
+  const supervisorRoot = join(controllerHome, 'supervisor');
+  mkdirSync(supervisorRoot, { recursive: true });
+  const repoId = 'repo-public-semantic-binding';
+  const workId = 'work-public-semantic-binding';
+  createWorkContract({ controllerHome, scopeKey: repoId }, {
+    workId, repoId, checkoutId: 'fixture', objective: 'Complete the public API semantic target.',
+    acceptanceCriteria: ['Canonical semantic target completes'], allowedPaths: [], forbiddenPaths: [],
+    checks: [], constraints: { workspaceMode: 'current' }, requestedBy: 'chatgpt', dispatchState: 'running',
+  });
+  const store = new WorkflowSupervisorStore(controllerHome);
+  const control = new WorkflowSupervisorControlPlane(store, forgeWorkflowSupervisorValidators());
+  const taskId = 'supervisor:public-semantic-binding';
+  const conversationId = '45454545-2323-6767-8989-101010101010';
+  const conversationUrl = 'https://chatgpt.com/c/' + conversationId;
+  const task = control.registerTask({
+    taskId, conversationId, conversationUrl,
+    objective: 'Keep this existing task open until the bound Work is complete.',
+    completionContract: { kind: 'model_semantic_completion', controller_home: controllerHome, repo_id: repoId },
+    continuationPolicy: { kind: 'standalone_supervisor', bootstrap: true, repo_id: repoId },
+    userBlockerPolicy: { kind: 'model_semantic_user_blocker' },
+  });
+  const effect = control.reserveEnrollment(taskId, 'fx_public_semantic_binding_1234');
+  store.recordEffectDispatchStarted(effect.effectId, 1, 'public-semantic-binding-dispatch');
+  const server = createWorkflowSupervisorServer({
+    controlPlane: control,
+    socketPath: join(supervisorRoot, 'supervisor.sock'),
+    discovery: new WorkflowSupervisorEphemeralDiscovery(),
+    browserAdapterEnabled: true,
+  });
+  await new Promise<void>((resolve, reject) => {
+    if (server.listening) { resolve(); return; }
+    server.once('listening', () => resolve());
+    server.once('error', reject);
+  });
+  try {
+    const ctx = { controllerHome } as unknown as Parameters<typeof callWorkflowSupervisorAdapter>[0];
+    const definition = runtimeToolDefinitions.find((entry) => entry.name === 'supervisor_task');
+    expect(JSON.stringify(definition?.inputSchema)).toContain('expected_completion_contract_sha256');
+    const getResult = await callWorkflowSupervisorAdapter(ctx, 'supervisor_task', { operation: 'get', task_id: taskId });
+    const getPayload = getResult?.structuredContent as Record<string, any>;
+    expect(getPayload.completionContractSha256).toBe(workflowSupervisorCompletionContractSha256(task.completionContract));
+    const revised = await callWorkflowSupervisorAdapter(ctx, 'supervisor_task', {
+      operation: 'revise', task_id: taskId, objective: task.objective,
+      expected_objective_sha256: createHash('sha256').update(task.objective).digest('hex'),
+      expected_completion_contract_sha256: getPayload.completionContractSha256,
+      work_id: workId, repo_id: repoId, request_id: 'public-bind-work-1', authorized_by: 'user',
+    });
+    const revisedPayload = revised?.structuredContent as Record<string, any>;
+    expect(revisedPayload).toMatchObject({
+      semanticBindingChanged: true,
+      task: { taskId, conversationId, conversationUrl, completionContract: { work_id: workId } },
+    });
+    expect(revisedPayload.summary).toContain('semantic completion binding revised');
+    expect(store.getEffect(effect.effectId)?.prompt).toBe(effect.prompt);
+    expect(store.effectDispatchBudget(effect.effectId)).toMatchObject({ generations: 1 });
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    store.close();
+  }
 });
 
 test('public supervisor_task recover routes exhausted provider resume through the canonical single writer', async () => {

@@ -54,6 +54,10 @@ function json(value: unknown): string {
   return JSON.stringify(value);
 }
 
+export function workflowSupervisorCompletionContractSha256(contract: Record<string, unknown>): string {
+  return createHash('sha256').update(json(contract)).digest('hex');
+}
+
 export { resolveWorkflowSupervisorForgeHome } from './paths';
 export function workflowSupervisorRoot(forgeHome?: string): string {
   const root = workflowSupervisorRootPath(forgeHome);
@@ -500,6 +504,14 @@ export class WorkflowSupervisorStore {
         && task.conversationId === input.conversationId
         && task.conversationUrl === input.conversationUrl;
       if (bootstrapUpgrade) {
+        const existingWorkId = boundedText(task.completionContract.work_id);
+        const existingRequirementId = boundedText(task.completionContract.requirement_id);
+        const incomingWorkId = boundedText(input.completionContract.work_id);
+        const incomingRequirementId = boundedText(input.completionContract.requirement_id);
+        if ((existingWorkId && incomingWorkId !== existingWorkId)
+          || (existingRequirementId && incomingRequirementId !== existingRequirementId)) {
+          throw new Error('WORKFLOW_SUPERVISOR_SEMANTIC_BINDING_CONFLICT');
+        }
         statement(db, `UPDATE tasks
           SET objective = ?, completion_contract_json = ?, continuation_policy_json = ?, user_blocker_policy_json = ?
           WHERE task_id = ?`, (s) => s.run(
@@ -557,31 +569,62 @@ export class WorkflowSupervisorStore {
     requestId: string;
     authorizedBy: string;
     refreshEffect?: { effectId: string; expectedPrompt: string; prompt: string };
-  }): { task: WorkflowSupervisorTask; changed: boolean; deduplicated: boolean; objectiveSha256: string; refreshedEffect?: WorkflowSupervisorEffect } {
+    semanticBinding?: { workId?: string; requirementId?: string; expectedCompletionContractSha256: string };
+  }): { task: WorkflowSupervisorTask; changed: boolean; deduplicated: boolean; objectiveSha256: string; completionContractSha256: string; semanticBindingChanged: boolean; refreshedEffect?: WorkflowSupervisorEffect } {
     return this.transaction((db) => {
       const objective = validateSupervisorObjective(input.objective);
       if (!/^[0-9a-f]{64}$/i.test(input.expectedObjectiveSha256)) throw new Error('WORKFLOW_SUPERVISOR_OBJECTIVE_REVISION_EXPECTED_SHA_INVALID');
       if (!input.requestId.trim()) throw new Error('WORKFLOW_SUPERVISOR_OBJECTIVE_REVISION_REQUEST_REQUIRED');
       const targetSha = objectiveSha256(objective);
+      const semanticBinding = input.semanticBinding;
+      const workId = boundedText(semanticBinding?.workId);
+      const requirementId = boundedText(semanticBinding?.requirementId);
+      if (semanticBinding) {
+        if (Boolean(workId) === Boolean(requirementId)) throw new Error('WORKFLOW_SUPERVISOR_SEMANTIC_BINDING_TARGET_INVALID');
+        if (!/^[0-9a-f]{64}$/i.test(semanticBinding.expectedCompletionContractSha256)) {
+          throw new Error('WORKFLOW_SUPERVISOR_COMPLETION_CONTRACT_REVISION_EXPECTED_SHA_INVALID');
+        }
+      }
+      const semanticBindingKind = workId ? 'work' : requirementId ? 'requirement' : undefined;
+      const semanticBindingId = workId ?? requirementId;
       const eventKey = `task-objective-revise:${input.taskId}:${input.requestId}`;
+      const bindingEventKey = `task-semantic-binding-revise:${input.taskId}:${input.requestId}`;
       const existingEvent = statement(db, 'SELECT payload_json FROM events WHERE event_key = ?', (s) => s.get(eventKey)) as { payload_json?: string } | undefined;
+      const existingBindingEvent = statement(db, 'SELECT payload_json FROM events WHERE event_key = ?', (s) => s.get(bindingEventKey)) as { payload_json?: string } | undefined;
       if (existingEvent) {
         const payload = parsedObject(existingEvent.payload_json);
-        if (boundedText(payload.objective_sha256) !== targetSha) throw new Error('WORKFLOW_SUPERVISOR_OBJECTIVE_REVISION_REQUEST_CONFLICT');
+        if (boundedText(payload.objective_sha256) !== targetSha
+          || boundedText(payload.semantic_binding_id) !== semanticBindingId
+          || boundedText(payload.semantic_binding_kind) !== semanticBindingKind
+          || Boolean(existingBindingEvent) !== Boolean(semanticBinding)) {
+          throw new Error('WORKFLOW_SUPERVISOR_OBJECTIVE_REVISION_REQUEST_CONFLICT');
+        }
+        if (existingBindingEvent) {
+          const bindingPayload = parsedObject(existingBindingEvent.payload_json);
+          if (boundedText(bindingPayload.completion_contract_sha256) !== boundedText(payload.completion_contract_sha256)
+            || boundedText(bindingPayload.semantic_binding_id) !== semanticBindingId
+            || boundedText(bindingPayload.semantic_binding_kind) !== semanticBindingKind) {
+            throw new Error('WORKFLOW_SUPERVISOR_SEMANTIC_BINDING_REVISION_REQUEST_CONFLICT');
+          }
+        }
         const taskRow = statement(db, 'SELECT * FROM tasks WHERE task_id = ?', (s) => s.get(input.taskId)) as Record<string, unknown> | undefined;
         if (!taskRow) throw new Error('WORKFLOW_SUPERVISOR_TASK_UNKNOWN');
+        const deduplicatedTask = taskFromRow(taskRow);
         const refreshedEffectId = boundedText(payload.refreshed_effect_id);
         const refreshedRow = refreshedEffectId
           ? statement(db, 'SELECT * FROM effects WHERE effect_id = ?', (s) => s.get(refreshedEffectId)) as Record<string, unknown> | undefined
           : undefined;
         return {
-          task: taskFromRow(taskRow),
+          task: deduplicatedTask,
           changed: payload.changed === true,
           deduplicated: true,
           objectiveSha256: targetSha,
+          completionContractSha256: workflowSupervisorCompletionContractSha256(deduplicatedTask.completionContract),
+          semanticBindingChanged: payload.semantic_binding_changed === true,
           ...(refreshedRow ? { refreshedEffect: effectFromRow(refreshedRow) } : {}),
         };
       }
+      if (existingBindingEvent) throw new Error('WORKFLOW_SUPERVISOR_SEMANTIC_BINDING_REVISION_REQUEST_CONFLICT');
       const row = statement(db, 'SELECT * FROM tasks WHERE task_id = ?', (s) => s.get(input.taskId)) as Record<string, unknown> | undefined;
       if (!row) throw new Error('WORKFLOW_SUPERVISOR_TASK_UNKNOWN');
       const terminal = statement(db, "SELECT kind FROM events WHERE task_id = ? AND kind IN ('terminal_done','terminal_needs_user','terminal_stopped') ORDER BY event_id DESC LIMIT 1", (s) => s.get(input.taskId)) as { kind?: string } | undefined;
@@ -589,6 +632,31 @@ export class WorkflowSupervisorStore {
       const task = taskFromRow(row);
       const currentSha = objectiveSha256(task.objective);
       if (currentSha !== input.expectedObjectiveSha256.toLowerCase()) throw new Error('WORKFLOW_SUPERVISOR_OBJECTIVE_REVISION_CONFLICT');
+
+      const currentContractSha = workflowSupervisorCompletionContractSha256(task.completionContract);
+      let nextCompletionContract = task.completionContract;
+      let completionContractSha = currentContractSha;
+      let semanticBindingChanged = false;
+      if (semanticBinding) {
+        if (task.completionContract.kind !== 'model_semantic_completion') {
+          throw new Error('WORKFLOW_SUPERVISOR_SEMANTIC_BINDING_REVISION_KIND_UNSUPPORTED');
+        }
+        const currentWorkId = boundedText(task.completionContract.work_id);
+        const currentRequirementId = boundedText(task.completionContract.requirement_id);
+        if ((currentWorkId || currentRequirementId)
+          && (currentWorkId !== workId || currentRequirementId !== requirementId)) {
+          throw new Error('WORKFLOW_SUPERVISOR_SEMANTIC_BINDING_CONFLICT');
+        }
+        if (currentContractSha !== semanticBinding.expectedCompletionContractSha256.toLowerCase()) {
+          throw new Error('WORKFLOW_SUPERVISOR_COMPLETION_CONTRACT_REVISION_CONFLICT');
+        }
+        nextCompletionContract = {
+          ...task.completionContract,
+          ...(workId ? { work_id: workId } : { requirement_id: requirementId }),
+        };
+        completionContractSha = workflowSupervisorCompletionContractSha256(nextCompletionContract);
+        semanticBindingChanged = completionContractSha !== currentContractSha;
+      }
 
       let refreshedEffect: WorkflowSupervisorEffect | undefined;
       if (input.refreshEffect) {
@@ -610,6 +678,26 @@ export class WorkflowSupervisorStore {
 
       const changed = task.objective !== objective;
       if (changed) statement(db, 'UPDATE tasks SET objective = ? WHERE task_id = ?', (s) => s.run(objective, input.taskId));
+      if (semanticBindingChanged) {
+        statement(db, 'UPDATE tasks SET completion_contract_json = ? WHERE task_id = ?', (s) => s.run(json(nextCompletionContract), input.taskId));
+      }
+      if (semanticBinding) {
+        statement(db, 'INSERT INTO events(task_id,event_key,kind,payload_json,occurred_at) VALUES (?,?,?,?,?)', (s) => s.run(
+          input.taskId,
+          bindingEventKey,
+          'task_semantic_binding_revised',
+          json({
+            request_id: input.requestId,
+            authorized_by: input.authorizedBy,
+            semantic_binding_kind: semanticBindingKind,
+            semantic_binding_id: semanticBindingId,
+            previous_completion_contract_sha256: currentContractSha,
+            completion_contract_sha256: completionContractSha,
+            changed: semanticBindingChanged,
+          }),
+          now(),
+        ));
+      }
       statement(db, 'INSERT INTO events(task_id,event_key,kind,payload_json,occurred_at) VALUES (?,?,?,?,?)', (s) => s.run(
         input.taskId,
         eventKey,
@@ -620,13 +708,23 @@ export class WorkflowSupervisorStore {
           previous_objective_sha256: currentSha,
           objective_sha256: targetSha,
           changed,
+          completion_contract_sha256: completionContractSha,
+          ...(semanticBinding ? {
+            semantic_binding_kind: semanticBindingKind,
+            semantic_binding_id: semanticBindingId,
+            semantic_binding_changed: semanticBindingChanged,
+          } : {}),
           ...(refreshedEffect ? { refreshed_effect_id: refreshedEffect.effectId } : {}),
         }),
         now(),
       ));
       const updatedTask = statement(db, 'SELECT * FROM tasks WHERE task_id = ?', (s) => s.get(input.taskId)) as Record<string, unknown> | undefined;
       if (!updatedTask) throw new Error('WORKFLOW_SUPERVISOR_TASK_PERSIST_FAILED');
-      return { task: taskFromRow(updatedTask), changed, deduplicated: false, objectiveSha256: targetSha, ...(refreshedEffect ? { refreshedEffect } : {}) };
+      return {
+        task: taskFromRow(updatedTask), changed, deduplicated: false, objectiveSha256: targetSha,
+        completionContractSha256: completionContractSha, semanticBindingChanged,
+        ...(refreshedEffect ? { refreshedEffect } : {}),
+      };
     });
   }
   getTask(taskId: string): WorkflowSupervisorTask | undefined { return this.read((db) => { const row = statement(db, 'SELECT * FROM tasks WHERE task_id = ?', (s) => s.get(taskId)); return row ? taskFromRow(row as Record<string, unknown>) : undefined; }); }

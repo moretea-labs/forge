@@ -125,7 +125,8 @@ describe('Workflow Supervisor automation receipts', () => {
     expect(parseSupervisorTurn(enrollmentPrompt).receipt).toEqual({ challenge: supervisorReceiptChallenge(task, effect.effectId) });
     expect(enrollmentPrompt).not.toContain('automation.receipt:');
     expect(enrollmentPrompt).toStartWith('<<<FORGE_WORKFLOW_EFFECT_V1:');
-    expect(enrollmentPrompt.split('\n')[1]).toStartWith('forge 继续。使用 Forge 工具');
+    expect(enrollmentPrompt.split('\n')[1]).toContain('forge 继续。');
+    expect(enrollmentPrompt.split('\n')[1]).toContain('Forge 工具');
     expect(enrollmentPrompt).not.toContain('CONTINUE => "C ');
     store.close();
   });
