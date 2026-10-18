@@ -2,6 +2,9 @@ import { randomUUID } from 'node:crypto';
 import { parseChatgptConversationIdentity } from './chatgpt-conversation';
 import { parseSupervisorCompletion, renderEffectMarker, renderSupervisorPrompt, sha256, validateEffectId, validateSupervisorObjective } from './protocol';
 import { WorkflowSupervisorStore } from './store';
+import { getWorkContract } from '../packages/kernel/work/api/index';
+import { readRequirement } from '../src/runtime/control-plane/persistence/requirement-store';
+import { resolveWorkflowSupervisorForgeHome } from './paths';
 import type { WorkflowAssistantObservation, WorkflowAssistantObservationResult, WorkflowContractValidation, WorkflowEffectKind, WorkflowSupervisorBrowserPollResult, WorkflowSupervisorBrowserTask, WorkflowSupervisorCompletion, WorkflowSupervisorDiscoveredConversation, WorkflowSupervisorEffect, WorkflowSupervisorLifecycleHooks, WorkflowSupervisorProjectScope, WorkflowSupervisorTask, WorkflowSupervisorTaskInput, WorkflowSupervisorTerminalState, WorkflowSupervisorValidators, WorkflowSupervisorPreflightComposerObservation } from './types';
 
 function compactProjectIdentity(value: string): string {
@@ -65,12 +68,47 @@ export class WorkflowSupervisorControlPlane {
     expectedObjectiveSha256: string;
     requestId: string;
     authorizedBy?: string;
-  }): { task: WorkflowSupervisorTask; changed: boolean; deduplicated: boolean; objectiveSha256: string; refreshedEffect?: WorkflowSupervisorEffect } {
+    workId?: string;
+    requirementId?: string;
+    expectedCompletionContractSha256?: string;
+  }): { task: WorkflowSupervisorTask; changed: boolean; deduplicated: boolean; objectiveSha256: string; completionContractSha256: string; semanticBindingChanged: boolean; refreshedEffect?: WorkflowSupervisorEffect } {
     const task = this.requireTask(input.taskId);
     requireNonTerminalTask(this.store, task.taskId);
     const objective = validateSupervisorObjective(input.objective);
     if (!/^[0-9a-f]{64}$/i.test(input.expectedObjectiveSha256)) throw new Error('WORKFLOW_SUPERVISOR_OBJECTIVE_REVISION_EXPECTED_SHA_INVALID');
     if (!input.requestId.trim()) throw new Error('WORKFLOW_SUPERVISOR_OBJECTIVE_REVISION_REQUEST_REQUIRED');
+    const workId = input.workId?.trim() || undefined;
+    const requirementId = input.requirementId?.trim() || undefined;
+    if (workId && requirementId) throw new Error('WORKFLOW_SUPERVISOR_SEMANTIC_BINDING_TARGET_INVALID');
+    if ((workId || requirementId) && !input.expectedCompletionContractSha256) {
+      throw new Error('WORKFLOW_SUPERVISOR_COMPLETION_CONTRACT_REVISION_EXPECTED_SHA_REQUIRED');
+    }
+    if (!workId && !requirementId && input.expectedCompletionContractSha256) {
+      throw new Error('WORKFLOW_SUPERVISOR_COMPLETION_CONTRACT_REVISION_TARGET_REQUIRED');
+    }
+    let semanticBinding: { workId?: string; requirementId?: string; expectedCompletionContractSha256: string } | undefined;
+    if (workId || requirementId) {
+      if (task.completionContract.kind !== 'model_semantic_completion') {
+        throw new Error('WORKFLOW_SUPERVISOR_SEMANTIC_BINDING_REVISION_KIND_UNSUPPORTED');
+      }
+      const controllerHome = typeof task.completionContract.controller_home === 'string' ? task.completionContract.controller_home.trim() : '';
+      const repoId = typeof task.completionContract.repo_id === 'string' ? task.completionContract.repo_id.trim() : '';
+      if (!controllerHome || !repoId
+        || resolveWorkflowSupervisorForgeHome(controllerHome) !== resolveWorkflowSupervisorForgeHome(this.store.forgeHome)) {
+        throw new Error('WORKFLOW_SUPERVISOR_SEMANTIC_BINDING_CONTEXT_REQUIRED');
+      }
+      if (workId && !getWorkContract({ controllerHome, scopeKey: repoId }, workId)) {
+        throw new Error('WORKFLOW_SUPERVISOR_SEMANTIC_BINDING_WORK_NOT_FOUND');
+      }
+      if (requirementId && !readRequirement({ controllerHome }, requirementId)?.value) {
+        throw new Error('WORKFLOW_SUPERVISOR_SEMANTIC_BINDING_REQUIREMENT_NOT_FOUND');
+      }
+      semanticBinding = {
+        ...(workId ? { workId } : {}),
+        ...(requirementId ? { requirementId } : {}),
+        expectedCompletionContractSha256: input.expectedCompletionContractSha256!,
+      };
+    }
     const pending = this.store.currentUnappliedEffect(task.taskId);
     let refreshEffect: { effectId: string; expectedPrompt: string; prompt: string } | undefined;
     if (pending && !this.store.latestEffectDispatch(pending.effectId)) {
@@ -88,6 +126,7 @@ export class WorkflowSupervisorControlPlane {
       expectedObjectiveSha256: input.expectedObjectiveSha256.toLowerCase(),
       requestId: input.requestId.trim(),
       authorizedBy: input.authorizedBy?.trim() || 'operator',
+      ...(semanticBinding ? { semanticBinding } : {}),
       ...(refreshEffect ? { refreshEffect } : {}),
     });
   }

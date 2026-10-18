@@ -14,6 +14,7 @@ import {
   stopWorkflowSupervisorTask,
 } from '../../../supervisor/client';
 import { resolveWorkflowSupervisorForgeHome } from '../../../supervisor/paths';
+import { workflowSupervisorCompletionContractSha256 } from '../../../supervisor/store';
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
 import { result } from './result-adapter';
 
@@ -78,19 +79,31 @@ export async function callWorkflowSupervisorAdapter(
     const id = textArg(args, 'task_id');
     const objective = textArg(args, 'objective');
     const expectedObjectiveSha256 = textArg(args, 'expected_objective_sha256');
+    const expectedCompletionContractSha256 = textArg(args, 'expected_completion_contract_sha256');
+    const workId = textArg(args, 'work_id');
+    const requirementId = textArg(args, 'requirement_id');
     const requestId = textArg(args, 'request_id');
     if (!id) throw new Error('WORKFLOW_SUPERVISOR_TASK_ID_REQUIRED');
     if (!objective) throw new Error('WORKFLOW_SUPERVISOR_OBJECTIVE_REQUIRED');
     if (!expectedObjectiveSha256) throw new Error('WORKFLOW_SUPERVISOR_OBJECTIVE_REVISION_EXPECTED_SHA_REQUIRED');
     if (!requestId) throw new Error('WORKFLOW_SUPERVISOR_REQUEST_ID_REQUIRED');
+    if (workId && requirementId) throw new Error('WORKFLOW_SUPERVISOR_SEMANTIC_BINDING_TARGET_INVALID');
+    if ((workId || requirementId) && !expectedCompletionContractSha256) throw new Error('WORKFLOW_SUPERVISOR_COMPLETION_CONTRACT_REVISION_EXPECTED_SHA_REQUIRED');
+    if (!(workId || requirementId) && expectedCompletionContractSha256) throw new Error('WORKFLOW_SUPERVISOR_COMPLETION_CONTRACT_REVISION_TARGET_REQUIRED');
     const revised = await reviseWorkflowSupervisorTaskObjective(forgeHome, {
       taskId: id,
       objective,
       expectedObjectiveSha256,
       requestId,
+      ...(workId ? { workId } : {}),
+      ...(requirementId ? { requirementId } : {}),
+      ...(expectedCompletionContractSha256 ? { expectedCompletionContractSha256 } : {}),
       authorizedBy: textArg(args, 'authorized_by') || 'operator',
     });
-    return result({ ...revised, summary: `Supervisor task ${id} objective ${revised.changed ? 'revised' : 'confirmed'} in place.` });
+    const bindingSummary = workId || requirementId
+      ? `; semantic completion binding ${revised.semanticBindingChanged ? 'revised' : 'confirmed'}`
+      : '';
+    return result({ ...revised, summary: `Supervisor task ${id} objective ${revised.changed ? 'revised' : 'confirmed'} in place${bindingSummary}.` });
   }
 
   if (operation === 'stop') {
@@ -149,7 +162,7 @@ export async function callWorkflowSupervisorAdapter(
     // retry/resume budget used to make the task silently leave the delivery
     // queue. The stall state names the exact operator action that can move it.
     const stall = await getWorkflowSupervisorTaskStall(forgeHome, id).catch(() => undefined);
-    return result({ task, ...(stall ? { stall } : {}), summary: `Supervisor task ${id} retrieved${stall ? ` (${stall.state})` : ''}.` });
+    return result({ task, completionContractSha256: workflowSupervisorCompletionContractSha256(task.completionContract), ...(stall ? { stall } : {}), summary: `Supervisor task ${id} retrieved${stall ? ` (${stall.state})` : ''}; canonical completion-contract CAS fingerprint included.` });
   }
 
   if (operation === 'proof') {
