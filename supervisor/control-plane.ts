@@ -574,13 +574,17 @@ export class WorkflowSupervisorControlPlane {
       const pending = this.store.nextBrowserEffect(task.taskId);
       const dispatch = this.store.latestEffectDispatch(effect.effectId);
       if (!pending || pending.effect.effectId !== effect.effectId || pending.mode !== 'reconcile'
-        || !dispatch || pending.generation !== dispatch.generation) {
+        || !dispatch || pending.generation !== dispatch.generation
+        || dispatch.evidence.surface !== 'computer-bootstrap'
+        || input.evidence?.dispatch_mutation !== 'not_attempted'
+        || input.evidence?.send_clicked !== false) {
         throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_NOT_APPLIED_PROOF_INVALID');
       }
       this.store.recordEffectNotAppliedProof(effect.effectId, input.observationId, {
-        surface: 'computer-bootstrap',
+        surface: 'computer-bootstrap', send_clicked: false,
         dispatch_generation: dispatch.generation,
         pre_send_rejection: true,
+        attestation: 'local_computer_dispatch_returned_without_send',
       });
       return;
     }

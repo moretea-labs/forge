@@ -2510,8 +2510,22 @@ test('bootstrap no-click refunds the exact generation and shares the bounded rel
   expect(control.bootstrapBeginEffect({
     taskId, effectId: effect.effectId, dispatchId: 'bootstrap-no-click-dispatch-1', dispatchGeneration: 1,
   })).toBe(true);
+  // A generic observer cannot turn an outcome-unknown bootstrap dispatch into
+  // a reusable provider Send merely by reporting not_applied.
+  for (const evidence of [
+    {},
+    { dispatch_mutation: 'attempted', send_clicked: false },
+    { dispatch_mutation: 'not_attempted', send_clicked: true },
+  ]) {
+    expect(() => control.bootstrapObserveEffect({
+      taskId, effectId: effect.effectId, observationId: `untrusted-${JSON.stringify(evidence)}`,
+      outcome: 'not_applied', evidence,
+    })).toThrow('WORKFLOW_SUPERVISOR_BOOTSTRAP_NOT_APPLIED_PROOF_INVALID');
+  }
+  expect(store.recordEffectDispatchStarted(effect.effectId, 2, 'unproven-bootstrap-retry')).toBe(false);
   control.bootstrapObserveEffect({
     taskId, effectId: effect.effectId, observationId: 'bootstrap-no-click-proof-1', outcome: 'not_applied',
+    evidence: { dispatch_mutation: 'not_attempted', send_clicked: false },
   });
   control.recordProviderPreparationFailure({ taskId, effectId: effect.effectId, reasonCode: 'composer_missing' });
   expect(store.effectDispatchBudget(effect.effectId)).toMatchObject({ generations: 1, maxGenerations: 3, exhausted: false });
@@ -2860,6 +2874,7 @@ test('retries a bootstrap effect after a proven pre-send failure instead of reco
   control.bootstrapObserveEffect({
     taskId: 'bootstrap-negative-proof-task', effectId: effect.effectId,
     observationId: 'proven-no-send', outcome: 'not_applied',
+    evidence: { dispatch_mutation: 'not_attempted', send_clicked: false },
   });
 
   expect(store.nextBrowserEffect('bootstrap-negative-proof-task', { nowMs: dispatchedAt + 30_000 }))
