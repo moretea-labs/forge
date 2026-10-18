@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'crypto';
 import { join } from 'path';
 import type { RepositoryRecord } from '../../cli/repositories/types';
 import { CONTROLLER_SCOPE_REPO_ID, FORGE_INSTANCE_SCOPE_KEY, controllerSystemRoot, ensureControllerHome, repositoryControllerRoot } from '../../cli/repositories/controller-home';
-import { cpSync, existsSync, lstatSync, mkdirSync, readdirSync, rmSync } from 'fs';
+import { cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync } from 'fs';
 import type { ExecutionJob, ResourceClaimSpec } from '../execution/jobs/types';
 import { appendRuntimeEvent } from '../evidence/event-ledger';
 import { redactSensitiveText, redactSensitiveValue } from '../evidence/sensitive-output';
@@ -445,6 +445,20 @@ export function migrateRepositoryPluginConfigLegacyFiles(
     join(repository.canonicalRoot, '.repo-harness', 'plugins'),
   ];
   mkdirSync(targetRoot, { recursive: true });
+  // Upgrade an already-adopted v1/v2 Controller Home config in place. The
+  // adapter owns schema semantics; this store remains the sole file writer.
+  const browserTarget = repositoryPluginConfigPath({ controllerHome, repoId: repository.repoId }, 'browser');
+  const browserNormalizer = PLUGIN_ADAPTERS.get('browser')?.normalizeLegacyConfig;
+  if (!browserNormalizer) throw new Error('PLUGIN_CONFIG_MIGRATION_INVALID: browser schema owner missing');
+  if (existsSync(browserTarget)) {
+    const stat = lstatSync(browserTarget);
+    if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('PLUGIN_CONFIG_AUTHORITY_PATH_INVALID: browser config');
+    let current: unknown;
+    try { current = JSON.parse(readFileSync(browserTarget, 'utf8')); }
+    catch { throw new Error('PLUGIN_CONFIG_AUTHORITY_INVALID: browser config JSON'); }
+    const normalized = browserNormalizer(current);
+    if ((current as { schemaVersion?: unknown }).schemaVersion !== 3) writeJsonAtomic(browserTarget, normalized);
+  }
   for (const legacyRoot of legacyRoots) {
     if (!existsSync(legacyRoot)) continue;
     const stat = lstatSync(legacyRoot);
@@ -462,7 +476,16 @@ export function migrateRepositoryPluginConfigLegacyFiles(
       const sourceStat = lstatSync(source);
       if (sourceStat.isSymbolicLink() || !sourceStat.isFile()) continue;
       const target = repositoryPluginConfigPath({ controllerHome, repoId: repository.repoId }, pluginId);
-      if (!existsSync(target)) cpSync(source, target, { force: false, errorOnExist: false });
+      if (!existsSync(target)) {
+        if (pluginId === 'browser') {
+          let parsed: unknown;
+          try { parsed = JSON.parse(readFileSync(source, 'utf8')); }
+          catch { throw new Error('PLUGIN_CONFIG_MIGRATION_INVALID: legacy browser JSON'); }
+          writeJsonAtomic(target, browserNormalizer(parsed));
+        } else {
+          cpSync(source, target, { force: false, errorOnExist: false });
+        }
+      }
       rmSync(source, { force: true });
     }
     if (readdirSync(legacyRoot).length === 0) rmSync(legacyRoot, { recursive: true, force: true });
@@ -476,7 +499,6 @@ function computeManifest(
   pluginId: string,
   resolvedAdapter?: AssistantPluginAdapter,
 ): AssistantPluginManifest {
-  migrateRepositoryPluginConfigLegacyFiles(controllerHome, repository);
   const adapter = resolvedAdapter ?? resolvePluginAdapter(controllerHome, pluginId);
   if (!adapter || !adapterMatchesRepository(adapter, repository)) throw new Error(`PLUGIN_NOT_FOUND: ${pluginId}`);
   const previous = readStoredManifest(controllerHome, repository.repoId, pluginId);
@@ -934,6 +956,7 @@ export function syncAssistantPluginRegistry(
   repository: RepositoryRecord,
 ): { manifests: AssistantPluginManifest[]; index: AssistantPluginRegistryIndex } {
   invalidateAssistantPluginManifestCache(controllerHome, repository.repoId);
+  migrateRepositoryPluginConfigLegacyFiles(controllerHome, repository);
   const manifests = listAssistantPluginManifests(controllerHome, repository, { forceRefresh: true });
   for (const manifest of manifests) {
     writeJsonAtomic(manifestPath(controllerHome, repository.repoId, manifest.pluginId), manifest);
@@ -951,6 +974,7 @@ export function syncAssistantPluginManifest(
   pluginId: string,
 ): { manifest: AssistantPluginManifest; index: AssistantPluginRegistryIndex } {
   invalidateAssistantPluginManifestCache(controllerHome, repository.repoId, pluginId);
+  migrateRepositoryPluginConfigLegacyFiles(controllerHome, repository);
   const manifest = computeManifest(controllerHome, repository, pluginId);
   writeJsonAtomic(manifestPath(controllerHome, repository.repoId, manifest.pluginId), manifest);
   markControllerContextProjectionDirty(repository.canonicalRoot, `plugin:${pluginId}:synced`);

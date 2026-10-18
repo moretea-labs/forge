@@ -624,6 +624,20 @@ function migrateLegacyRepositoryConfig(raw: PersistedBrowserPluginConfig): Persi
   };
 }
 
+export function normalizeLegacyBrowserConfig(raw: unknown): BrowserPluginConfig {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new Error('PLUGIN_CONFIG_MIGRATION_INVALID: browser config must be an object');
+  }
+  const parsed = raw as PersistedBrowserPluginConfig;
+  if (![1, 2, 3].includes(parsed.schemaVersion as number)) {
+    throw new Error('PLUGIN_CONFIG_MIGRATION_INVALID: unsupported browser schemaVersion');
+  }
+  const migrated = normalizeConfig(migrateLegacyRepositoryConfig(parsed));
+  const errors = validateConfig(migrated);
+  if (errors.length) throw new Error(`PLUGIN_CONFIG_MIGRATION_INVALID: ${errors[0]}`);
+  return migrated;
+}
+
 function readJson<T>(path: string): T | undefined {
   try {
     return JSON.parse(readFileSync(path, 'utf-8')) as T;

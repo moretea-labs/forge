@@ -196,6 +196,8 @@ export interface AssistantPluginAdapter {
   /** Internal adapters remain exactly addressable by trusted composition but are omitted from normal user-facing plugin listings. */
   exposure?: AssistantPluginExposure;
   buildManifest(previousRevision?: number, previousUpdatedAt?: string, repoRoot?: string, context?: AssistantPluginBuildContext): AssistantPluginManifest;
+  /** Pure plugin-owned schema conversion/validation; the config store alone commits migrated bytes. */
+  normalizeLegacyConfig?(raw: unknown): object;
   /** Resolve an exact stable resource identity for reusable authorization-class actions. */
   resolveAuthorizationContext?(input: AssistantPluginActionExecutionInput): Promise<AssistantPluginAuthorizationContext | undefined>;
   executeAction(input: AssistantPluginActionExecutionInput): Promise<Record<string, unknown>>;

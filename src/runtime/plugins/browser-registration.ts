@@ -1,5 +1,6 @@
 import {
   buildBrowserPluginManifest,
+  normalizeLegacyBrowserConfig,
   executeBrowserPluginAction,
   resolveBrowserPluginAuthorizationContext,
 } from './browser-adapter';
@@ -24,6 +25,7 @@ export const browserPluginAdapter: AssistantPluginAdapter = {
   scope: 'controller_with_repository_overlay',
   exposure: 'internal',
   buildManifest: buildBrowserPluginManifest,
+  normalizeLegacyConfig: normalizeLegacyBrowserConfig,
   executeAction: executeBrowserPluginAction,
   resolveAuthorizationContext: resolveBrowserPluginAuthorizationContext,
   shouldRefreshManifestAfterAction(actionId) {
