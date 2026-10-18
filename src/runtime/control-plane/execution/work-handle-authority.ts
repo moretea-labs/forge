@@ -2,7 +2,7 @@ import { resolve } from 'path';
 import type { RepositoryRecord } from '../../../cli/repositories/types';
 import { getRepository, resolveRepositorySelection, selectRepositoryCheckout } from '../../../cli/repositories/registry';
 import { repositoryGitStatus } from '../../../cli/repositories/structured-git';
-import { appendWorkEvidence, getWorkContract, recordWorkEvidenceState, semanticWorkState } from '../../../../packages/kernel/work/api/index';
+import { appendWorkEvidence, getWorkContract, promoteWorkToRepositoryChange, recordWorkEvidenceState, semanticWorkState } from '../../../../packages/kernel/work/api/index';
 import { currentPermissionSnapshotVersion } from './validation';
 import { listWorkHandles, readWorkHandle, transitionWorkHandle, writeWorkHandle, type WorkHandleState } from './work-handle-store';
 import { gitIsAncestor } from './work-execution-support';
@@ -371,7 +371,7 @@ export function ensureRepositoryMutationWorkHandle(input: {
   principalId: string;
   sessionId?: string;
   deferEffectPromotion?: boolean;
-}): { handle: WorkHandleState; promotedFrom?: 'local_effect' | 'remote_effect' } {
+}): { handle: WorkHandleState; promotedFrom?: 'investigation' | 'local_effect' | 'remote_effect' } {
   const store = { controllerHome: input.controllerHome, repoId: input.repository.repoId };
   const contract = getWorkContract(store, input.workId);
   if (!contract) throw new Error(`WORK_NOT_FOUND: ${input.workId}`);
@@ -421,6 +421,14 @@ export function ensureRepositoryMutationWorkHandle(input: {
     handle,
   });
   assertManagedRepositoryMutationAuthority({ repository: input.repository, handle });
-  return { handle };
+  // This is the first point at which concrete repository mutation has passed
+  // the exact WorkHandle checkout, ownership, and managed-worktree fences.
+  // WorkContract remains the sole writer for its semantic classification.
+  const promotedFrom = contract.workKind === 'investigation'
+    || contract.workKind === 'local_effect'
+    || contract.workKind === 'remote_effect'
+    ? contract.workKind
+    : undefined;
+  promoteWorkToRepositoryChange(store, input.workId);
+  return promotedFrom ? { handle, promotedFrom } : { handle };
 }
-
