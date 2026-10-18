@@ -182,7 +182,6 @@
       // Read-only hydration attestation for a NEW Project bootstrap tab.
       // URL/DOM shell visibility alone cannot prove that the React model
       // picker has mounted or that the provider editor is send-ready.
-      reasoningControlReady: Boolean(reasoningControl()),
       providerActivityText: providerActivityText(),
       providerFailureText: providerFailureText(),
       ...(options.includePageText === true ? { pageText: String(document.body?.innerText ?? '').slice(-500000) } : {}),
@@ -212,124 +211,7 @@
       selection?.removeAllRanges();
     }
   };
-  // Reasoning is a provider UI preference, not a Supervisor effect or workflow
-  // decision. Observe the concrete composer control and fail before inserting
-  // any prompt if the page does not acknowledge the requested level.
-  const reasoningLevel = (value) => {
-    const label = core.normalizeText(value).toLowerCase().replace(/[\s_-]+/g, '');
-    if (/extrahigh|xhigh|超高|极高/.test(label)) return 'xhigh';
-    if (/medium|中等/.test(label) || label === '中') return 'medium';
-    if (/high|高/.test(label)) return 'high';
-    return undefined;
-  };
-  const reasoningControl = () => {
-    const selectors = 'button[aria-haspopup="menu"], button[aria-haspopup="listbox"], [role="button"][aria-haspopup="menu"], button[data-testid*="model"], button[data-testid*="reasoning"]';
-    // The visible model picker can live in the composer or the app header;
-    // unlike the separate ChatGPT/Work mode switch, it controls reasoning.
-    // Keep message extraction main-scoped and select the exact model control.
-    const candidates = Array.from(document.querySelectorAll(selectors)).filter(visible);
-    const model = candidates.find((node) => {
-      const aria = core.normalizeText(node.getAttribute?.('aria-label') ?? '').toLowerCase();
-      return aria.includes('选择 chatgpt 模型') || aria.includes('select chatgpt model');
-    });
-    if (model) return model;
-    return candidates.find((node) => {
-      const label = core.normalizeText((node.getAttribute?.('aria-label') ?? '') + ' ' + (node.innerText ?? node.textContent ?? ''));
-      const normalized = label.toLowerCase().replace(/[\s_-]+/g, '');
-      return /^gpt\d/.test(normalized) || normalized.includes('reasoning') || normalized.includes('thinking')
-        || normalized.includes('推理') || normalized.includes('思考') || reasoningLevel(label) !== undefined;
-    });
-  };
-  const reasoningControlLabel = (node) => core.normalizeText((node?.getAttribute?.('aria-label') ?? '') + ' ' + (node?.innerText ?? node?.textContent ?? ''));
-  const selectedReasoningOption = (level) => Array.from(document.querySelectorAll('[role="menuitemradio"], [role="option"], [role="radio"]'))
-    .filter(visible)
-    .find((node) => reasoningLevel(reasoningControlLabel(node)) === level
-      && (node.getAttribute('aria-checked') === 'true' || node.getAttribute('aria-selected') === 'true'));
-  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-  const ensureReasoning = async (level) => {
-    if (level !== 'medium' && level !== 'high' && level !== 'xhigh') {
-      return { verified: false, reason: 'COMPUTER_CHATGPT_REASONING_INVALID' };
-    }
-    const control = reasoningControl();
-    if (!control) return { verified: false, reason: 'COMPUTER_CHATGPT_REASONING_CONTROL_UNAVAILABLE' };
-    if (reasoningLevel(reasoningControlLabel(control)) === level) return { verified: true, level };
-    // Prepare can be retried without a Send. A previous preflight may leave
-    // this exact model picker expanded; clicking it again would close the
-    // menu and falsely report that the strength slider is unavailable.
-    if (control.getAttribute?.('aria-expanded') !== 'true') control.click();
-    // The menu is a React portal and need not mount within the first frame.
-    // Observe it for a bounded interval; never synthesize or infer controls.
-    for (let attempt = 0; attempt < 5; attempt += 1) {
-      await sleep(80);
-      if (Array.from(document.querySelectorAll('[role="slider"][aria-valuenow], [role="menuitemradio"], [role="option"], [role="radio"]')).some(visible)) break;
-    }
-    const menuOptions = Array.from(document.querySelectorAll('[role="menuitemradio"], [role="option"], [role="radio"]'))
-      .filter(visible)
-      .map((node) => ({ node, level: reasoningLevel(reasoningControlLabel(node)), disabled: node.hasAttribute('disabled') || node.getAttribute('aria-disabled') === 'true' }));
-    // xhigh means highest *available*, not a claim that every plan exposes
-    // Extra High. Prefer it, then High, then Medium; record the actual level.
-    const menuLevel = level === 'xhigh'
-      ? ['xhigh', 'high', 'medium'].find((candidate) => menuOptions.some((item) => item.level === candidate && !item.disabled))
-      : level;
-    const option = menuOptions.find((item) => item.level === menuLevel);
-    if (option) {
-      if (option.disabled) return { verified: false, reason: 'COMPUTER_CHATGPT_REASONING_OPTION_DISABLED' };
-      option.node.click();
-      await sleep(80);
-      if (reasoningLevel(reasoningControlLabel(reasoningControl())) === menuLevel || selectedReasoningOption(menuLevel)) {
-        return { verified: true, level: menuLevel };
-      }
-      return { verified: false, reason: 'COMPUTER_CHATGPT_REASONING_NOT_VERIFIED' };
-    }
-    // GPT-6 currently exposes a three-position reasoning-strength control:
-    // the aria-hidden slider reports 0..2 but its outer menuitem owns keyboard
-    // input. Older layouts used 0..4. Never infer the level from a number alone:
-    // React must both update aria-valuenow and announce the resulting level.
-    const sliders = Array.from(document.querySelectorAll('[role="slider"][aria-valuenow]')).filter(visible);
-    if (sliders.length !== 1) return { verified: false, reason: 'COMPUTER_CHATGPT_REASONING_OPTION_UNAVAILABLE' };
-    const slider = sliders[0];
-    const keyboardControl = slider.closest?.('[data-reasoning-slider="true"]') ?? slider;
-    if (keyboardControl.getAttribute?.('aria-disabled') === 'true' || slider.closest?.('[aria-disabled="true"]')) {
-      return { verified: false, reason: 'COMPUTER_CHATGPT_REASONING_OPTION_DISABLED' };
-    }
-    const max = Number(slider.getAttribute('aria-valuemax'));
-    const min = Number(slider.getAttribute('aria-valuemin') ?? '0');
-    const threePosition = min === 0 && max === 2;
-    const legacyFivePosition = min === 0 && max === 4;
-    const target = level === 'xhigh' ? max : level === 'high'
-      ? threePosition ? 2 : 3
-      : threePosition ? 1 : 2;
-    let current = Number(slider.getAttribute('aria-valuenow'));
-    if ((!threePosition && !legacyFivePosition) || ![min, max, current, target].every(Number.isInteger)
-      || current < min || current > max || target < min || target > max) {
-      return { verified: false, reason: 'COMPUTER_CHATGPT_REASONING_STATE_UNAVAILABLE' };
-    }
-    for (let step = 0; step < Math.abs(target - current); step += 1) {
-      const key = target > current ? 'ArrowRight' : 'ArrowLeft';
-      keyboardControl.focus?.();
-      keyboardControl.dispatchEvent(new KeyboardEvent('keydown', { key, code: key, bubbles: true, cancelable: true }));
-      await sleep(40);
-      const next = Number(slider.getAttribute('aria-valuenow'));
-      if (next !== current + (target > current ? 1 : -1)) {
-        return { verified: false, reason: 'COMPUTER_CHATGPT_REASONING_NOT_VERIFIED' };
-      }
-      current = next;
-    }
-    if (Number(slider.getAttribute('aria-valuenow')) !== target) {
-      return { verified: false, reason: 'COMPUTER_CHATGPT_REASONING_NOT_VERIFIED' };
-    }
-    const menu = keyboardControl.closest?.('[role="menu"]');
-    const announced = Array.from(menu?.querySelectorAll?.('[role="status"]') ?? [])
-      .map((node) => core.normalizeText(node.innerText ?? node.textContent).split(/[，,]/)[0]?.trim())
-      .map(reasoningLevel)
-      .find(Boolean);
-    const observedLevel = reasoningLevel(slider.getAttribute('aria-valuetext')) ?? announced;
-    if (!observedLevel || (level !== 'xhigh' && observedLevel !== level)) {
-      return { verified: false, reason: 'COMPUTER_CHATGPT_REASONING_NOT_VERIFIED' };
-    }
-    return { verified: true, level: observedLevel };
-  };
-  const dispatchPrompt = async (prompt, mode = 'send', reasoning, expectedConversationId, prepareOnly = false, expectedProjectId) => {
+  const dispatchPrompt = async (prompt, mode = 'send', expectedConversationId, prepareOnly = false, expectedProjectId) => {
     const exactConversationIsCurrent = () => expectedConversationId
       ? core.parseConversation(location.href)?.conversationId === expectedConversationId
       : expectedProjectId ? core.projectId(location.href) === expectedProjectId && !core.parseConversation(location.href)
@@ -392,12 +274,6 @@
       const prefix = Array.from(digest).map((byte) => byte.toString(16).padStart(2, '0')).join('').slice(0, 24);
       if (prefix !== (replacement ? replacement[1] : retired?.[2])) return { dispatched: false, reason: 'composer_not_empty' };
     }
-    let reasoningVerified;
-    if (reasoning !== undefined) {
-      const checked = await ensureReasoning(reasoning);
-      if (!checked.verified) return { dispatched: false, reason: checked.reason };
-      reasoningVerified = checked.level;
-    }
     if (!exactConversationIsCurrent()) return { dispatched: false, reason: 'target_identity_changed' };
     // Hashing and model-picker hydration yield to page/user edits. Revalidate
     // the same single editor before overwriting any bytes observed above.
@@ -445,7 +321,7 @@
     const send = ready.send;
     if (!send.isConnected || !visible(send)) return { dispatched: false, reason: 'send_button_missing' };
     if (send.disabled || send.getAttribute('aria-disabled') === 'true') return { dispatched: false, reason: 'send_button_disabled' };
-    if (prepareOnly) return { prepared: true, ...(reasoningVerified ? { reasoningVerified } : {}) };
+    if (prepareOnly) return { prepared: true };
     // Confirm the committed turn inside the content script, rather than
     // requesting delayed snapshots from the extension background worker.
     const beforeSend = roleNodes(USER).at(-1);
@@ -475,7 +351,7 @@
         timer = setTimeout(() => finish(false), 2_000);
         check();
       });
-      return { dispatched: true, confirmed, ...(reasoningVerified ? { reasoningVerified } : {}) };
+      return { dispatched: true, confirmed };
     } catch {
       return { dispatched: true, confirmed: false };
     }
@@ -487,23 +363,22 @@
       return false;
     }
     if (message.type === 'forge-computer-chatgpt-snapshot') { sendResponse(pageSnapshot(message.options ?? {})); return false; }
-    // Read-only exact-tab capability attestation. A stale content script must
-    // never receive an xhigh-required send that it would silently ignore.
+    // Read-only exact-tab attestation for bootstrap/draft target guards.
     if (message.type === 'forge-computer-chatgpt-capabilities') {
-      sendResponse({ reasoningPreflight: 'verified_before_send_v1', bootstrapTargetGuard: 'project-checked-before-send-v1',
+      sendResponse({ bootstrapTargetGuard: 'project-checked-before-send-v1',
         composerReplacementContract: 'exact-backed-up-project-draft-v1' });
       return false;
     }
     if (message.type === 'forge-computer-chatgpt-prepare') {
-      dispatchPrompt(String(message.prompt ?? ''), String(message.mode ?? 'send'), message.reasoning, message.expectedConversationId, true, message.expectedProjectId)
+      dispatchPrompt(String(message.prompt ?? ''), String(message.mode ?? 'send'), message.expectedConversationId, true, message.expectedProjectId)
         .then((result) => sendResponse(result?.prepared === true
-          ? { prepared: true, ...(result.reasoningVerified ? { reasoningVerified: result.reasoningVerified } : {}) }
+          ? { prepared: true }
           : { prepared: false, reason: String(result?.reason ?? 'COMPUTER_CHATGPT_PREPARE_REJECTED') }),
           (error) => sendResponse({ prepared: false, reason: String(error?.message ?? error) }));
       return true;
     }
     if (message.type === 'forge-computer-chatgpt-dispatch') {
-      dispatchPrompt(String(message.prompt ?? ''), String(message.mode ?? 'send'), message.reasoning, message.expectedConversationId, false, message.expectedProjectId)
+      dispatchPrompt(String(message.prompt ?? ''), String(message.mode ?? 'send'), message.expectedConversationId, false, message.expectedProjectId)
         .then(sendResponse, (error) => sendResponse({ dispatched: false, reason: String(error?.message ?? error) }));
       return true;
     }

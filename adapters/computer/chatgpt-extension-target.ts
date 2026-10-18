@@ -1,5 +1,4 @@
 import { randomUUID } from 'node:crypto';
-import { DEFAULT_COMPUTER_CHATGPT_REASONING } from '../../packages/plugin-runtime/computer';
 import type {
   ComputerChatgptBootstrapIdentity,
   ComputerChatgptConversationIdentity,
@@ -292,30 +291,25 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
       prepare: async (prompt, options) => {
         const response = await this.submit(instanceId, { kind: 'prepare', identity, ...(record.providerBinding ? { providerBinding: record.providerBinding } : {}), prompt,
           ...(options?.mode ? { mode: options.mode } : {}),
-          reasoning: options?.reasoning ?? DEFAULT_COMPUTER_CHATGPT_REASONING,
         });
         if (!response.result) return { ready: false, reasonCode: response.claimed
           ? 'COMPUTER_CHATGPT_EXTENSION_PREPARE_OUTCOME_UNKNOWN' : 'COMPUTER_CHATGPT_EXTENSION_NOT_CONNECTED' };
         if (response.result.kind === 'prepared') {
           if (!response.result.ready) return { ready: false, reasonCode: response.result.reasonCode };
-          const reasoningVerified = response.result.reasoningVerified;
-          if (reasoningVerified !== 'medium' && reasoningVerified !== 'high' && reasoningVerified !== 'xhigh') {
-            return { ready: false, reasonCode: 'COMPUTER_CHATGPT_REASONING_NOT_VERIFIED' };
-          }
-          return { ready: true, reasoningVerified };
+          return { ready: true };
         }
         return { ready: false, reasonCode: response.result.kind === 'failed'
           ? response.result.code : 'COMPUTER_CHATGPT_EXTENSION_PREPARE_INVALID' };
       },
       dispatch: async (prompt, options) => {
-        const response = await this.submit(instanceId, { kind: 'dispatch', identity, ...(record.providerBinding ? { providerBinding: record.providerBinding } : {}), prompt, ...(options?.mode ? { mode: options.mode } : {}), reasoning: options?.reasoning ?? DEFAULT_COMPUTER_CHATGPT_REASONING });
+        const response = await this.submit(instanceId, { kind: 'dispatch', identity, ...(record.providerBinding ? { providerBinding: record.providerBinding } : {}), prompt, ...(options?.mode ? { mode: options.mode } : {}) });
         if (!response.result) {
           return response.claimed
             ? { mutation: 'attempted' as const }
             : { mutation: 'not_attempted' as const, reasonCode: 'COMPUTER_CHATGPT_EXTENSION_NOT_CONNECTED' };
         }
         if (response.result.kind === 'dispatch') {
-          if (response.result.mutation === 'attempted') return { mutation: 'attempted' as const, ...(response.result.confirmed === undefined ? {} : { confirmed: response.result.confirmed }), ...(response.result.reasoningVerified ? { reasoningVerified: response.result.reasoningVerified } : {}) };
+          if (response.result.mutation === 'attempted') return { mutation: 'attempted' as const, ...(response.result.confirmed === undefined ? {} : { confirmed: response.result.confirmed }) };
           if (response.result.mutation === 'not_attempted') return { mutation: 'not_attempted' as const, reasonCode: response.result.reasonCode };
         }
         // Only a typed dispatch/not_attempted result proves no Send click. A

@@ -1380,9 +1380,7 @@ requireText('src/runtime/plugins/browser-macos-bridge.ts', 'await assertMacOsBro
 requireText('adapters/computer/chrome-extension/manifest.json', 'nativeMessaging');
 requireText('adapters/computer/chrome-extension/background.js', 'computer_extension_claim');
 requireText('adapters/computer/chrome-extension/background.js', 'computer_extension_complete');
-requireText('adapters/computer/chrome-extension/content.js', 'reasoningControlReady: Boolean(reasoningControl())');
 requireText('adapters/computer/chrome-extension/background.js', "typeof observation.composerText === 'string'");
-forbid('adapters/computer/chrome-extension/background.js', /observation\.reasoningControlReady\s*===\s*true/, 'Bootstrap composer hydration must not depend on the optional reasoning picker');
 requireText('adapters/computer/chrome-extension/background.js', "command.identity.namespace === 'chatgpt.bootstrap'");
 forbid('adapters/computer/chrome-extension/background.js', /if \(typeof observation\?\.url === 'string' && observation\.url\) return observation/, 'New bootstrap URL does not attest composer/model hydration before pre-send preparation');
 requireText('adapters/computer/chrome-extension/background.js', 'chrome.runtime.connectNative');
@@ -1393,11 +1391,6 @@ requireText('adapters/computer/chrome-extension/content.js', 'exactComposerText(
 requireText('adapters/computer/chrome-extension/content.js', "return text.trim() ? text : '';");
 requireText('adapters/computer/chrome-extension/content.js', "blocks.every((block) => block.tagName === 'P')");
 requireText('adapters/computer/chrome-extension/content.js', "blocks.map((block) => {");
-requireText('adapters/computer/chrome-extension/content.js', '选择 chatgpt 模型');
-requireText('adapters/computer/chrome-extension/content.js', 'keyboardControl.dispatchEvent(new KeyboardEvent');
-requireText('adapters/computer/chrome-extension/content.js', "control.getAttribute?.('aria-expanded') !== 'true'");
-forbid('adapters/computer/chrome-extension/content.js', /slider\.dispatchEvent\(new KeyboardEvent/, 'The aria-hidden GPT-6 slider is read-only evidence; the enclosing reasoning menuitem owns keyboard input');
-forbid('adapters/computer/chrome-extension/content.js', /conversationRoot\(\)\.querySelectorAll\(selectors\)/, 'The model/reasoning control is in the visible ChatGPT app header outside main; only message extraction belongs to the conversation root');
 requireText('adapters/computer/chrome-extension/background.js', 'resolveTarget(command.identity, false, command.providerBinding)');
 requireText('adapters/computer/chatgpt-extension-target.ts', "response.result.code === 'COMPUTER_CHATGPT_BOOTSTRAP_PINNED_TAB_MISSING'");
 requireText('adapters/computer/chatgpt-extension-target.ts', 'this.authority.withSurfaceLease(this.controllerHome, previous.targetId');

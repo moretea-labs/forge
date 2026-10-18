@@ -979,7 +979,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       return;
     }
     this.clearTaskFailure(task.taskId, command.effectId);
-    if (!this.control.bootstrapBeginEffect({ taskId: task.taskId, effectId: command.effectId, dispatchId: `bootstrap-${randomUUID()}`, dispatchGeneration: command.dispatchGeneration, reasoningVerified: prepared.reasoningVerified })) return;
+    if (!this.control.bootstrapBeginEffect({ taskId: task.taskId, effectId: command.effectId, dispatchId: `bootstrap-${randomUUID()}`, dispatchGeneration: command.dispatchGeneration })) return;
     try {
       const dispatch = await withChatgptProviderDispatchLane(this.deps.providerScopeKey, () => target.dispatch(command.prompt),
         (result) => result.mutation === 'attempted' ? { providerAccepted: result.confirmed === true } : { code: result.reasonCode, message: result.reasonCode });
@@ -1073,7 +1073,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       this.clearTaskFailure(task.taskId, command.effectId);
       const begin = this.control.browserBeginEffect({ conversationId: command.conversationId, conversationUrl: command.conversationUrl, effectId: command.effectId,
         dispatchId: `computer-${randomUUID()}`, dispatchGeneration: command.dispatchGeneration,
-        evidence: { surface: 'computer-chatgpt-target', target_id: target.targetId, latest_user_text: snapshot.latestUserText, latest_assistant_response: snapshot.latestAssistantResponse, reasoning_verified_before_send: prepared.reasoningVerified } });
+        evidence: { surface: 'computer-chatgpt-target', target_id: target.targetId, latest_user_text: snapshot.latestUserText, latest_assistant_response: snapshot.latestAssistantResponse } });
       if (!begin.started) mode = 'reconcile';
     }
     if (mode === 'reconcile') {
@@ -1109,7 +1109,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     }
     if (dispatch.confirmed) {
       this.control.browserObserveEffect({ conversationId: command.conversationId, conversationUrl: command.conversationUrl, effectId: command.effectId,
-        observationId: `computer-observe-${randomUUID()}`, outcome: 'applied', evidence: { surface: 'computer-chatgpt-target', target_id: target.targetId, provider_confirmed: true, ...(dispatch.reasoningVerified ? { reasoning_verified: dispatch.reasoningVerified } : {}) } });
+        observationId: `computer-observe-${randomUUID()}`, outcome: 'applied', evidence: { surface: 'computer-chatgpt-target', target_id: target.targetId, provider_confirmed: true } });
       return;
     }
     let exact = false; let markerPresent = false;
@@ -1121,7 +1121,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     }
     this.control.browserObserveEffect({ conversationId: command.conversationId, conversationUrl: command.conversationUrl, effectId: command.effectId,
       observationId: `computer-observe-${randomUUID()}`, outcome: exact || markerPresent ? 'applied' : 'unknown',
-      evidence: { surface: 'computer-chatgpt-target', target_id: target.targetId, exact_user_message: exact, target_marker_present: markerPresent, ...(dispatch.reasoningVerified ? { reasoning_verified: dispatch.reasoningVerified } : {}),
+      evidence: { surface: 'computer-chatgpt-target', target_id: target.targetId, exact_user_message: exact, target_marker_present: markerPresent,
         ...(!exact && !markerPresent ? { reason: 'outbound_not_confirmed', observation_fingerprint: unknownObservationFingerprint(command.effectId, 'outbound_not_confirmed', snapshot) } : {}) } });
   }
 }

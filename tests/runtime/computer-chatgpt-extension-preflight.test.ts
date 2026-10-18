@@ -101,44 +101,29 @@ function fixture(scenario: Scenario) {
   return { dispatch, prepare, messages, get submissions() { return submissions; } };
 }
 
-test('old content script lacking reasoning preflight cannot receive a Supervisor send', async () => {
+test('exact conversation send requires no model-picker capability', async () => {
   const f = fixture({ capability: undefined });
-  expect(await f.dispatch('xhigh')).toMatchObject({
-    mutation: 'not_attempted',
-    reasonCode: 'COMPUTER_CHATGPT_REASONING_PREFLIGHT_UNSUPPORTED',
-  });
-  expect(f.submissions).toBe(0);
-  expect(f.messages).toEqual(['forge-computer-chatgpt-capabilities']);
-});
-
-test('capability transport failure remains pre-mutation and never triggers an ambiguous replay', async () => {
-  const f = fixture({ preflightTransportError: true });
-  expect(await f.dispatch('xhigh')).toMatchObject({
-    mutation: 'not_attempted',
-    reasonCode: 'COMPUTER_CHATGPT_REASONING_PREFLIGHT_UNAVAILABLE',
-  });
-  expect(f.submissions).toBe(0);
-});
-
-test('exact target tab capability permits a pre-Send reasoning receipt and verified dispatch', async () => {
-  const missingReceipt = fixture({ capability: { reasoningPreflight: 'verified_before_send_v1' }, prepare: { prepared: true } });
-  expect(await missingReceipt.prepare('xhigh')).toMatchObject({ kind: 'prepared', ready: false, reasonCode: 'COMPUTER_CHATGPT_REASONING_NOT_VERIFIED' });
-  expect(missingReceipt.submissions).toBe(0);
-
-  const f = fixture({ capability: { reasoningPreflight: 'verified_before_send_v1' } });
-  expect(await f.prepare('xhigh')).toMatchObject({ kind: 'prepared', ready: true, reasoningVerified: 'xhigh' });
-  expect(f.submissions).toBe(0);
-  expect(await f.dispatch('xhigh')).toMatchObject({ mutation: 'attempted', confirmed: true, reasoningVerified: 'xhigh' });
+  expect(await f.dispatch()).toMatchObject({ mutation: 'attempted', confirmed: true });
   expect(f.submissions).toBe(1);
-  expect(f.messages).toEqual([
-    'forge-computer-chatgpt-capabilities',
-    'forge-computer-chatgpt-prepare',
-    'forge-computer-chatgpt-capabilities',
-    'forge-computer-chatgpt-dispatch',
-  ]);
+  expect(f.messages).toEqual(['forge-computer-chatgpt-dispatch']);
 });
 
-test('legacy ordinary dispatch omits the reasoning handshake', async () => {
+test('capability transport failure cannot veto an exact conversation send', async () => {
+  const f = fixture({ preflightTransportError: true });
+  expect(await f.dispatch()).toMatchObject({ mutation: 'attempted', confirmed: true });
+  expect(f.submissions).toBe(1);
+});
+
+test('exact target prepare never clicks Send and dispatch runs only once', async () => {
+  const f = fixture({ prepare: { prepared: true } });
+  expect(await f.prepare()).toMatchObject({ kind: 'prepared', ready: true });
+  expect(f.submissions).toBe(0);
+  expect(await f.dispatch()).toMatchObject({ mutation: 'attempted', confirmed: true });
+  expect(f.submissions).toBe(1);
+  expect(f.messages).toEqual(['forge-computer-chatgpt-prepare', 'forge-computer-chatgpt-dispatch']);
+});
+
+test('ordinary exact dispatch does not perform a model-picker handshake', async () => {
   const f = fixture({});
   expect(await f.dispatch()).toMatchObject({ mutation: 'attempted', confirmed: true });
   expect(f.submissions).toBe(1);
@@ -146,8 +131,8 @@ test('legacy ordinary dispatch omits the reasoning handshake', async () => {
 });
 
 test('preflight cannot retroactively declare a send not attempted when execution lacks attestation', async () => {
-  const f = fixture({ capability: { reasoningPreflight: 'verified_before_send_v1' }, dispatch: { dispatched: true } });
-  expect(await f.dispatch('xhigh')).toMatchObject({ mutation: 'attempted', confirmed: false });
+  const f = fixture({ dispatch: { dispatched: true } });
+  expect(await f.dispatch()).toMatchObject({ mutation: 'attempted', confirmed: false });
   expect(f.submissions).toBe(1);
 });
 
@@ -426,173 +411,4 @@ test('content script fences bootstrap sends to the exact Project and rejects mig
     expect(result).toMatchObject({ dispatched: false, reason: expectedReason });
     expect(clicks).toBe(0);
   }
-});
-
-test('reasoning preflight finds the visible top-header model control outside main and records highest available level', async () => {
-  const content = readFileSync(new URL('../../adapters/computer/chrome-extension/content.js', import.meta.url), 'utf8');
-  // Exercise the genuine closure-scoped verifier without a provider Send.
-  const instrumented = content.replace(
-    '  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {',
-    '  globalThis.__testEnsureReasoning = ensureReasoning;\n  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {',
-  );
-  expect(instrumented).not.toBe(content);
-  let menuOpened = false;
-  let label = 'GPT-6';
-  let selected = '';
-  const visible = () => [1];
-  const headerButton = {
-    getClientRects: visible,
-    getAttribute: (name: string) => name === 'aria-label' ? label : null,
-    get innerText() { return label; },
-    click() { menuOpened = true; },
-  };
-  const option = (value: string) => ({
-    getClientRects: visible,
-    innerText: value,
-    hasAttribute: () => false,
-    getAttribute: (name: string) => name === 'aria-disabled' ? 'false' : null,
-    click() { selected = value; label = value; menuOpened = false; },
-  });
-  const main = { getClientRects: visible, querySelectorAll: () => [] };
-  const document = {
-    documentElement: {},
-    querySelectorAll: (selector: string) => selector === 'main' ? [main]
-      : selector.includes('[aria-haspopup="menu"]') ? [headerButton]
-        : selector.includes('menuitemradio') && menuOpened ? [option('High'), option('Medium')]
-          : [],
-  };
-  const context = {
-    document, location: { href: 'https://chatgpt.com/g/g-p-forge/project' }, URL,
-    ForgeComputerChatgptCore: {
-      normalizeText: (value: unknown) => String(value ?? '').replace(/\s+/g, ' ').trim(),
-      parseConversation: () => null,
-    },
-    chrome: { runtime: { onMessage: { addListener() {} }, sendMessage() {} } },
-    MutationObserver: class { observe() {} },
-    // Advance only the 80 ms menu-acknowledgement sleeps. The page's 200 ms
-    // discovery notification is unrelated to this reasoning-only regression.
-    setTimeout(callback: () => void, ms: number) { if (ms === 80) queueMicrotask(callback); return 1; }, clearTimeout() {},
-  };
-  runInNewContext(instrumented, context);
-  const verifier = (context as typeof context & {
-    __testEnsureReasoning: (level: string) => Promise<{ verified: boolean; level?: string; reason?: string }>
-  }).__testEnsureReasoning;
-  expect(typeof verifier).toBe('function');
-  expect(await verifier('xhigh')).toEqual({ verified: true, level: 'high' });
-  expect(selected).toBe('High');
-});
-
-test('real GPT-6 Chinese picker verifies the strongest available three-step reasoning level via its keyboard-control parent', async () => {
-  const content = readFileSync(new URL('../../adapters/computer/chrome-extension/content.js', import.meta.url), 'utf8');
-  const instrumented = content.replace(
-    '  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {',
-    '  globalThis.__testEnsureReasoning = ensureReasoning; globalThis.__testPageSnapshot = pageSnapshot;\n  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {',
-  );
-  let menuOpen = false;
-  let value = 1;
-  let focused = false;
-  let keypresses = 0;
-  let pickerVisible = true;
-  const visible = () => [1];
-  const status = { innerText: '中，第 2 项，共 3 项。' };
-  const headerMode = {
-    getClientRects: visible, innerText: 'ChatGPT',
-    getAttribute: (key: string) => key === 'aria-label' ? '切换模式，当前模式：ChatGPT' : null,
-  };
-  const modelButton = {
-    getClientRects: () => pickerVisible ? [1] : [], innerText: '中',
-    getAttribute: (key: string) => key === 'aria-label' ? '选择 ChatGPT 模型' : key === 'aria-expanded' ? String(menuOpen) : null,
-    click() { menuOpen = !menuOpen; },
-  };
-  const menu = { querySelectorAll: (s: string) => s === '[role="status"]' ? [status] : [] };
-  const strength = {
-    getClientRects: visible,
-    getAttribute: (key: string) => key === 'aria-disabled' ? 'false' : null,
-    focus() { focused = true; },
-    closest: (s: string) => s === '[role="menu"]' ? menu : null,
-    dispatchEvent(event: { key?: string }) {
-      if (!focused || event.key !== 'ArrowRight') return;
-      keypresses += 1;
-      value = Math.min(2, value + 1);
-      status.innerText = '高，第 3 项，共 3 项。';
-      modelButton.innerText = '高';
-    },
-  };
-  const slider = {
-    getClientRects: visible,
-    getAttribute: (key: string) => key === 'aria-valuemin' ? '0'
-      : key === 'aria-valuemax' ? '2'
-        : key === 'aria-valuenow' ? String(value)
-          : key === 'aria-valuetext' ? null : null,
-    closest: (s: string) => s === '[data-reasoning-slider="true"]' ? strength
-      : s === '[aria-disabled="true"]' ? null : null,
-    dispatchEvent() { throw new Error('aria-hidden slider must not receive keyboard input'); },
-  };
-  const empty = Object.assign([], { item: () => undefined });
-  let composerDraft = '';
-  let editorParagraphs: string[] | undefined;
-  const document = {
-    documentElement: {}, body: { innerText: '' }, title: 'Forge project',
-    querySelector: (selector: string) => selector.includes('#prompt-textarea')
-      ? editorParagraphs ? {
-        isContentEditable: true, getClientRects: visible,
-        innerText: editorParagraphs.join('\n\n'),
-        children: editorParagraphs.map((text) => ({ tagName: 'P', innerText: text, textContent: text })),
-      } : { value: composerDraft, getClientRects: visible }
-      : null,
-    querySelectorAll: (selector: string) => selector.includes('#prompt-textarea') ? [document.querySelector(selector)]
-      : selector === 'main' ? [{ getClientRects: visible, querySelectorAll: () => empty }]
-      : selector.includes('[aria-haspopup="menu"]') ? [headerMode, modelButton]
-        : selector.includes('[role="slider"][aria-valuenow]') && menuOpen ? [slider]
-          : selector.includes('menuitemradio') ? [] : [],
-  };
-  const context = {
-    document, location: { href: 'https://chatgpt.com/g/g-p-forge/project' }, URL,
-    ForgeComputerChatgptCore: {
-      normalizeText: (s: unknown) => String(s ?? '').replace(/\s+/g, ' ').trim(),
-      parseConversation: () => null,
-    },
-    chrome: { runtime: { onMessage: { addListener() {} }, sendMessage() {} } },
-    MutationObserver: class { observe() {} },
-    KeyboardEvent: class { key: string; constructor(_type: string, opts: { key: string }) { this.key = opts.key; } },
-    setTimeout(fn: () => void, ms: number) { if (ms === 80 || ms === 40) queueMicrotask(fn); return 1; },
-    clearTimeout() {},
-  };
-  runInNewContext(instrumented, context);
-  const verifier = (context as typeof context & {
-    __testEnsureReasoning: (level: string) => Promise<{ verified: boolean; level?: string; reason?: string }>
-  }).__testEnsureReasoning;
-  expect(await verifier('xhigh')).toEqual({ verified: true, level: 'high' });
-  expect(value).toBe(2);
-  expect(keypresses).toBe(1);
-  // A previous preflight may leave the actual model menu open. Repeating the
-  // same prepare must read that live menu, not click the toggle and close it.
-  expect(menuOpen).toBe(true);
-  expect(await verifier('xhigh')).toEqual({ verified: true, level: 'high' });
-  expect(keypresses).toBe(1);
-  expect(menuOpen).toBe(true);
-  const snapshot = (context as typeof context & {
-    __testPageSnapshot: () => { composerText?: string; reasoningControlReady?: boolean };
-  }).__testPageSnapshot;
-  expect(snapshot()).toMatchObject({ composerText: '', reasoningControlReady: true });
-  pickerVisible = false;
-  expect(snapshot()).toMatchObject({ composerText: '', reasoningControlReady: false });
-  // A real empty ChatGPT ProseMirror paragraph presents innerText as a single
-  // newline. That blank UI must not be mistaken for another user's draft.
-  composerDraft = '\n';
-  expect(snapshot()).toMatchObject({ composerText: '' });
-  composerDraft = ' \n \t ';
-  expect(snapshot()).toMatchObject({ composerText: '' });
-  // Once any payload exists, preserve its whitespace byte-for-byte.
-  composerDraft = '  first\n\nsecond  ';
-  expect(snapshot()).toMatchObject({ composerText: composerDraft });
-  // Real Chrome ProseMirror uses direct P blocks. HTMLElement.innerText
-  // inserts TWO newlines between blocks, although the original effect has
-  // exactly ONE; content script must reconstruct the original line breaks.
-  editorParagraphs = ['<<<EFFECT>>>', 'line two', 'line three', '@'];
-  expect(snapshot()).toMatchObject({ composerText: '<<<EFFECT>>>\nline two\nline three\n@' });
-  editorParagraphs = ['  leading', '', 'trailing  ', '@'];
-  expect(snapshot()).toMatchObject({ composerText: '  leading\n\ntrailing  \n@' });
-  editorParagraphs = [''];
-  expect(snapshot()).toMatchObject({ composerText: '' });
 });

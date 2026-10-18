@@ -2306,7 +2306,6 @@ test('Supervisor preparation rejection is durably release-fenced and never spend
   const effect = control.reserveEnrollment(taskId);
   let preparationReady = false;
   let preparations = 0;
-  let reasoningRequested: string | undefined;
   let sends = 0;
   const page: TestBrowserPage = {
     evaluate: async () => undefined as never,
@@ -2321,9 +2320,9 @@ test('Supervisor preparation rejection is durably release-fenced and never spend
     snapshot: async () => ({ url: conversationUrl, title: 'Pre-send boundary', latestUserText: '',
       latestAssistantResponse: '', composerText: '', isGenerating: false,
       providerActivityText: '', providerFailureText: '' }),
-    preparePrompt: async (_page, _prompt, reasoning) => { preparations++; reasoningRequested = reasoning; return preparationReady
-      ? { ready: true as const, reasoningVerified: reasoning } : { ready: false as const, reasonCode: 'FORGE_PLUGIN_NOT_BOUND' }; },
-    dispatchPrompt: async (_page, _prompt, options) => { sends++; return { dispatched: true, confirmed: true, reasoningVerified: options?.reasoning ?? 'xhigh' }; },
+    preparePrompt: async () => { preparations++; return preparationReady
+      ? { ready: true as const } : { ready: false as const, reasonCode: 'FORGE_PLUGIN_NOT_BOUND' }; },
+    dispatchPrompt: async () => { sends++; return { dispatched: true, confirmed: true }; },
   });
   const deps = { targetPort, nowMs: () => clock.nowMs, providerIdleGraceMs: 60_000,
     providerScopeKey: join(root, 'provider-scope'), sleep: async () => undefined,
@@ -2347,10 +2346,9 @@ test('Supervisor preparation rejection is durably release-fenced and never spend
   const repaired = new WorkflowSupervisorNativeBrowserAdapter(control, new WorkflowSupervisorEphemeralDiscovery(), deps);
   await repaired.runOnce();
   expect(preparations).toBe(2);
-  expect(reasoningRequested).toBe('xhigh');
   expect(sends).toBe(1);
   expect(store.latestEffectDispatch(effect.effectId)?.generation).toBe(1);
-  expect(store.latestEffectDispatch(effect.effectId)?.evidence).toMatchObject({ reasoning_verified_before_send: 'xhigh' });
+  expect(store.latestEffectDispatch(effect.effectId)?.evidence).toMatchObject({ surface: 'computer-chatgpt-target' });
   await repaired.close();
   // Across unrelated deployments this effect remains capped at three distinct
   // failing preparations, including after restarts; none spends provider budget.
@@ -2442,7 +2440,7 @@ test('recovery stop-pending is a live-turn observation, not a failed preparation
     preparePrompt: async () => {
       preparations++;
       return preparationReady
-        ? { ready: true as const, reasoningVerified: 'xhigh' as const }
+        ? { ready: true as const }
         : { ready: false as const, reasonCode: 'provider_recovery_stop_pending' };
     },
     dispatchPrompt: async (_page, prompt) => {

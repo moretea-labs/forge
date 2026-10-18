@@ -1,8 +1,5 @@
 import type { ComputerSurfaceProviderBinding } from './target-authority';
 
-export type ComputerChatgptReasoning = 'medium' | 'high' | 'xhigh';
-export const DEFAULT_COMPUTER_CHATGPT_REASONING: ComputerChatgptReasoning = 'xhigh';
-
 export interface ComputerChatgptConversationIdentity {
   namespace: 'chatgpt.conversation';
   conversationId: string;
@@ -29,8 +26,6 @@ export interface ComputerChatgptConversationObservation {
   composerSelectorVersion?: 'visible-single-v2';
   /** Exact loaded content-script contract; file projection/version on disk is not a live browser attestation. */
   composerReplacementContract?: 'exact-backed-up-project-draft-v1';
-  /** Read-only provider UI hydration receipt; never a Send/effect authority. */
-  reasoningControlReady?: boolean;
   providerActivityText: string;
   providerFailureText: string;
   pageText?: string;
@@ -53,13 +48,13 @@ export interface ComputerChatgptConversationTarget {
   identity: ComputerChatgptTargetIdentity;
   observe(options?: ComputerChatgptConversationObservationOptions): Promise<ComputerChatgptConversationObservation>;
   /** UI-only preparation. Must never click Send or create a provider turn. */
-  prepare(prompt: string, options?: { mode?: 'send' | 'resume' | 'recover'; reasoning?: ComputerChatgptReasoning }): Promise<{ ready: true; reasoningVerified: ComputerChatgptReasoning } | { ready: false; reasonCode: string }>;
+  prepare(prompt: string, options?: { mode?: 'send' | 'resume' | 'recover' }): Promise<{ ready: true } | { ready: false; reasonCode: string }>;
   dispatch(
     prompt: string,
-    options?: { mode?: 'send' | 'resume' | 'recover'; reasoning?: ComputerChatgptReasoning },
+    options?: { mode?: 'send' | 'resume' | 'recover' },
   ): Promise<
     | { mutation: 'not_attempted'; reasonCode: string }
-    | { mutation: 'attempted'; confirmed?: boolean; reasoningVerified?: ComputerChatgptReasoning }
+    | { mutation: 'attempted'; confirmed?: boolean }
   >;
 }
 
@@ -103,7 +98,7 @@ export interface ComputerChatgptConversationInventory {
 export type ComputerChatgptExtensionCommand =
   | { commandId: string; kind: 'ensure'; identity: ComputerChatgptTargetIdentity; providerBinding?: ComputerSurfaceProviderBinding }
   | { commandId: string; kind: 'observe'; identity: ComputerChatgptTargetIdentity; providerBinding?: ComputerSurfaceProviderBinding; options?: ComputerChatgptConversationObservationOptions }
-  | { commandId: string; kind: 'dispatch' | 'prepare'; identity: ComputerChatgptTargetIdentity; providerBinding?: ComputerSurfaceProviderBinding; prompt: string; mode?: 'send' | 'resume' | 'recover'; reasoning?: ComputerChatgptReasoning }
+  | { commandId: string; kind: 'dispatch' | 'prepare'; identity: ComputerChatgptTargetIdentity; providerBinding?: ComputerSurfaceProviderBinding; prompt: string; mode?: 'send' | 'resume' | 'recover' }
   | { commandId: string; kind: 'find_marker'; marker: string; bootstrapKey?: string }
   | { commandId: string; kind: 'close'; identity: ComputerChatgptTargetIdentity; providerBinding?: ComputerSurfaceProviderBinding };
 export type ComputerChatgptExtensionCommandInput = ComputerChatgptExtensionCommand extends infer Command
@@ -116,10 +111,10 @@ export type ComputerChatgptExtensionCommandInput = ComputerChatgptExtensionComma
 export type ComputerChatgptExtensionCommandResult =
   | { kind: 'ensured'; providerBinding?: ComputerSurfaceProviderBinding; observation?: ComputerChatgptConversationObservation }
   | { kind: 'observation'; providerBinding?: ComputerSurfaceProviderBinding; observation: ComputerChatgptConversationObservation }
-  | { kind: 'prepared'; ready: true; reasoningVerified?: ComputerChatgptReasoning }
+  | { kind: 'prepared'; ready: true }
   | { kind: 'prepared'; ready: false; reasonCode: string }
   | { kind: 'dispatch'; mutation: 'not_attempted'; reasonCode: string }
-  | { kind: 'dispatch'; mutation: 'attempted'; confirmed?: boolean; reasoningVerified?: ComputerChatgptReasoning; observation?: ComputerChatgptConversationObservation }
+  | { kind: 'dispatch'; mutation: 'attempted'; confirmed?: boolean; observation?: ComputerChatgptConversationObservation }
   | { kind: 'marker_matches'; matches: Array<{ identity: ComputerChatgptConversationIdentity; providerBinding?: ComputerSurfaceProviderBinding; observation: ComputerChatgptConversationObservation }> }
   | { kind: 'closed' }
   | { kind: 'failed'; code: string; retryable?: boolean; failoverSafe?: boolean; humanAction?: 'login' | 'grant_permission';

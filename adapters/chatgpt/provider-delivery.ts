@@ -1,8 +1,7 @@
 import { createHash } from 'crypto';
-import type { ComputerChatgptReasoning } from '../../packages/plugin-runtime/computer';
 
 export const DEFAULT_CHATGPT_AUTOMATION_MODEL = 'gpt-5.6';
-export const DEFAULT_CHATGPT_AUTOMATION_REASONING: ComputerChatgptReasoning = 'high';
+export const DEFAULT_CHATGPT_AUTOMATION_REASONING: ChatgptAutomationReasoning = 'high';
 export const DEFAULT_CHATGPT_AUTOMATION_TAB_POLICY = 'auto';
 export const CHATGPT_AUTOMATION_SUBMISSION_OUTCOME_UNKNOWN = 'CHATGPT_AUTOMATION_SUBMISSION_OUTCOME_UNKNOWN';
 export const CHATGPT_AUTOMATION_MESSAGE_DELIVERY_TIMED_OUT = 'CHATGPT_AUTOMATION_MESSAGE_DELIVERY_TIMED_OUT';
@@ -62,7 +61,7 @@ export function chatgptProviderPageFailure(
     : undefined;
 }
 
-export type ChatgptAutomationReasoning = ComputerChatgptReasoning;
+export type ChatgptAutomationReasoning = 'medium' | 'high' | 'xhigh';
 export type ChatgptAutomationTabPolicy = 'auto' | 'reuse' | 'new';
 export type ChatgptAutomationTabCleanupStatus = 'closed' | 'preserved_user_owned' | 'session_closed' | 'failed';
 
