@@ -910,6 +910,60 @@ describe('Computer durable InteractionTarget authority', () => {
     }
   });
 
+  test('rebinds a missing heartbeat target only through read-only exact Chrome observation', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'forge-exact-observation-rebind-'));
+    try {
+      const extension = new ChromeExtensionChatgptConversationTargetPort(home, targetAuthority);
+      const identity = { namespace: 'chatgpt.conversation' as const, conversationId: 'conversation-rebind',
+        canonicalUrl: 'https://chatgpt.com/c/conversation-rebind' };
+      const record = targetAuthority.createSurface(home, {
+        stableIdentity: { surfaceType: 'browser-tab', ownership: 'provider_owned',
+          resource: { namespace: identity.namespace, key: identity.conversationId } },
+        visibility: 'controller',
+        providerBinding: { providerId: 'browser.chrome-extension', providerSessionId: 'profile-a',
+          browserProduct: 'chrome', windowId: 'old-window', tabId: 'old-tab',
+          observedAt: '2026-10-18T06:00:00.000Z' },
+      });
+      extension.heartbeat({ providerId: 'browser.chrome-extension', providerInstanceId: 'profile-a',
+        observedAt: '2026-10-18T06:00:00.000Z', conversations: [] });
+      const pending = extension.ensureExact(identity, { createIfMissing: false });
+      const command = extension.claim('profile-a');
+      expect(command?.kind).toBe('observe');
+      if (!command) throw new Error('exact read-only observation was not reserved');
+      const binding = { providerId: 'browser.chrome-extension', providerSessionId: 'profile-a',
+        browserProduct: 'chrome', windowId: 'new-window', tabId: 'new-tab',
+        observedAt: '2026-10-18T06:00:01.000Z' };
+      const observation = { url: identity.canonicalUrl, title: 'Original',
+        latestUserText: 'already submitted', latestAssistantResponse: '', providerActivityText: '',
+        providerFailureText: '', composerText: '', isGenerating: false };
+      expect(extension.complete('profile-a', command.commandId,
+        { kind: 'observation', providerBinding: binding, observation })).toBe(true);
+      expect((await pending).state).toBe('ready');
+      expect(targetAuthority.getSurface(home, record.targetId)?.providerBinding)
+        .toMatchObject({ tabId: 'new-tab' });
+      expect(extension.claim('profile-a')).toBeUndefined();
+
+      extension.heartbeat({ providerId: 'browser.chrome-extension', providerInstanceId: 'profile-a',
+        observedAt: '2026-10-18T06:01:00.000Z', conversations: [] });
+      const invalid = extension.ensureExact(identity, { createIfMissing: false });
+      const invalidCommand = extension.claim('profile-a');
+      expect(invalidCommand?.kind).toBe('observe');
+      if (!invalidCommand) throw new Error('missing negative observation');
+      expect(extension.complete('profile-a', invalidCommand.commandId, {
+        kind: 'observation', providerBinding: { ...binding, tabId: 'foreign-tab' },
+        observation: { ...observation, url: 'https://chatgpt.com/c/wrong-conversation' },
+      })).toBe(true);
+      expect(await invalid).toMatchObject({
+        state: 'unavailable', failure: { code: 'COMPUTER_CHATGPT_EXTENSION_TARGET_IDENTITY_UNVERIFIED' },
+      });
+      expect(targetAuthority.getSurface(home, record.targetId)?.providerBinding)
+        .toMatchObject({ tabId: 'new-tab' });
+      await extension.close();
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   test('does not trust an exact heartbeat entry until conversation content is observable', async () => {
     const controllerHome = mkdtempSync(join(tmpdir(), 'forge-computer-extension-heartbeat-shell-'));
     try {
