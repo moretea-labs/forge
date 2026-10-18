@@ -344,7 +344,7 @@
       return { dispatched: false, reason: 'composer_replacement_mode_invalid' };
     }
     // Prepare-only exact retirement; never submits or retries the stopped task.
-    const retired = /^<<<FORGE_RETIRED_DRAFT_V1:(fx_[a-zA-Z0-9_-]+):([a-f0-9]{24})>>>\n/.exec(prompt);
+    const retired = /^<<<FORGE_RETIRED_DRAFT_V1:((?:fx|crpe)_[a-zA-Z0-9_-]{8,120}):([a-f0-9]{24})>>>\n/.exec(prompt);
     if (retired && (!prepareOnly || !expectedProjectId || mode !== 'send' || replacement)) {
       return { dispatched: false, reason: 'composer_replacement_mode_invalid' };
     }
@@ -366,10 +366,10 @@
     const node = composer();
     if (!node) return { dispatched: false, reason: 'composer_missing' };
     // Project instructions select tools. No @forge UI mention is needed.
-    const supervisor = /^(?:@forge\s+)?<<<FORGE_WORKFLOW_EFFECT_V1:fx_[a-zA-Z0-9_-]+>>>/.test(actualPrompt);
+    const supervisor = /^(?:@forge\s+)?<<<FORGE_WORKFLOW_EFFECT_V1:(?:fx|crpe)_[a-zA-Z0-9_-]{8,120}>>>/.test(actualPrompt);
     if (supervisor && !expectedConversationId && !expectedProjectId) return { dispatched: false, reason: 'target_identity_unavailable' };
     // Strip only the exact legacy prefix on already-durable effects.
-    const payload = supervisor ? actualPrompt.replace(/^@forge\s+(?=<<<FORGE_WORKFLOW_EFFECT_V1:fx_[a-zA-Z0-9_-]+>>>)/, '') : actualPrompt;
+    const payload = supervisor ? actualPrompt.replace(/^@forge\s+(?=<<<FORGE_WORKFLOW_EFFECT_V1:(?:fx|crpe)_[a-zA-Z0-9_-]{8,120}>>>)/, '') : actualPrompt;
     const expected = exactComposerText(payload);
     const existing = composerText();
     // A restored draft belongs to this effect only when it matches precisely.
@@ -399,19 +399,52 @@
       reasoningVerified = checked.level;
     }
     if (!exactConversationIsCurrent()) return { dispatched: false, reason: 'target_identity_changed' };
+    // Hashing and model-picker hydration yield to page/user edits. Revalidate
+    // the same single editor before overwriting any bytes observed above.
+    if (composer() !== node || composerText(node) !== existing) return { dispatched: false, reason: 'composer_not_empty' };
     if (existing !== expected && existing !== expected + '\n') writeComposer(node, payload);
-    await sleep(75);
+    // React may acknowledge the exact draft before it enables Send. Observe
+    // this same target for at most two seconds, below the broker deadline;
+    // this is read-only readiness, never another write or Send attempt.
+    const ready = await new Promise((resolve) => {
+      let timer;
+      let settled = false;
+      const finish = (value) => {
+        if (settled) return;
+        settled = true;
+        observer.disconnect();
+        document.removeEventListener('input', check, true);
+        clearTimeout(timer);
+        resolve(value);
+      };
+      const check = (expired = false) => {
+        if (!exactConversationIsCurrent()) { finish({ reason: 'target_identity_changed' }); return; }
+        // ProseMirror may expose one editor-generated final newline. Do not
+        // widen matching beyond that break or tolerate another visible draft.
+        const text = composerText();
+        if (text !== expected && text !== expected + '\n') { finish({ reason: 'composer_write_unconfirmed' }); return; }
+        if (isGenerating()) { finish({ reason: 'provider_busy' }); return; }
+        const buttons = Array.from(document.querySelectorAll(SEND)).filter(visible);
+        const send = buttons.length === 1 ? buttons[0] : undefined;
+        if (send && !send.disabled && send.getAttribute('aria-disabled') !== 'true') { finish({ send }); return; }
+        if (expired === true) finish({ reason: send ? 'send_button_disabled' : 'send_button_missing' });
+      };
+      const observer = new MutationObserver(() => check());
+      observer.observe(document.documentElement, { childList: true, subtree: true, characterData: true, attributes: true });
+      document.addEventListener('input', check, true);
+      timer = setTimeout(() => check(true), 2_000);
+      check();
+    });
+    if (!ready.send) return { dispatched: false, reason: ready.reason };
+    // Await resumes in a new microtask: retain the exact pre-click fences even
+    // if an input/route update was queued alongside the readiness observation.
     if (!exactConversationIsCurrent()) return { dispatched: false, reason: 'target_identity_changed' };
-    // ProseMirror may expose one editor-generated final newline even when
-    // the immutable input was inserted byte-for-byte. Do not widen matching
-    // beyond that single trailing line break or weaken sent-turn proof.
-    if (composerText() !== expected && composerText() !== expected + '\n') {
-      return { dispatched: false, reason: 'composer_write_unconfirmed' };
-    }
-    const send = document.querySelector(SEND);
-    if (!send) return { dispatched: false, reason: 'send_button_missing' };
+    const text = composerText();
+    if (text !== expected && text !== expected + '\n') return { dispatched: false, reason: 'composer_write_unconfirmed' };
+    if (isGenerating()) return { dispatched: false, reason: 'provider_busy' };
+    const send = ready.send;
+    if (!send.isConnected || !visible(send)) return { dispatched: false, reason: 'send_button_missing' };
     if (send.disabled || send.getAttribute('aria-disabled') === 'true') return { dispatched: false, reason: 'send_button_disabled' };
-    if (!exactConversationIsCurrent()) return { dispatched: false, reason: 'target_identity_changed' };
     if (prepareOnly) return { prepared: true };
     // Confirm the committed turn inside the content script, rather than
     // requesting delayed snapshots from the extension background worker.

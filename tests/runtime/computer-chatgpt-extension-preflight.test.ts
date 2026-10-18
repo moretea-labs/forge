@@ -220,15 +220,22 @@ test('real Chrome content script preserves all prompt spaces and newlines during
     [prompt, true],
   ] as const) {
     const composer = { value: rendered, querySelector: () => null, getClientRects: () => [{}] };
-    const sendButton = { disabled: false, getAttribute: () => null, click: () => { sends += 1; } };
+    const sendButton = {
+      isConnected: true, disabled: false, getClientRects: () => [{}],
+      getAttribute: () => null, click: () => { sends += 1; },
+    };
     let sends = 0;
     let listener: ((message: Record<string, unknown>, sender: unknown, respond: (value: unknown) => void) => boolean) | undefined;
     const empty = Object.assign([], { item: () => undefined });
+    const documentEvents = new EventTarget();
     const document = {
       documentElement: {},
+      addEventListener: documentEvents.addEventListener.bind(documentEvents),
+      removeEventListener: documentEvents.removeEventListener.bind(documentEvents),
       querySelector: (selector: string) => selector.includes('#prompt-textarea') ? composer
         : selector.includes('send-button') ? sendButton : null,
-      querySelectorAll: (selector: string) => selector.includes('#prompt-textarea') ? [composer] : empty,
+      querySelectorAll: (selector: string) => selector.includes('#prompt-textarea') ? [composer]
+        : selector.includes('send-button') ? [sendButton] : empty,
     };
     const context = {
       document, location: { href: currentUrl }, URL, Date, Map, Promise,

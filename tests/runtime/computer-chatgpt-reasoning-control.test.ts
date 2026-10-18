@@ -95,6 +95,18 @@ function fixture(options: {
   };
   let submittedUser: { innerText: string } | undefined;
   let onMutation: (() => void) | undefined;
+  const documentEvents = new EventTarget();
+  const sendButton = {
+    isConnected: true,
+    disabled: false,
+    getClientRects: visible,
+    getAttribute: () => null,
+    click() {
+      state.sendClicks += 1;
+      submittedUser = { innerText: textarea.value };
+      queueMicrotask(() => onMutation?.());
+    },
+  };
   const main = {
     getClientRects: visible,
     querySelectorAll(selector: string) {
@@ -108,9 +120,12 @@ function fixture(options: {
     documentElement: {},
     title: 'ChatGPT',
     body: { innerText: '' },
+    addEventListener: documentEvents.addEventListener.bind(documentEvents),
+    removeEventListener: documentEvents.removeEventListener.bind(documentEvents),
     querySelectorAll(selector: string) {
       if (selector === 'main') return [main];
       if (selector.includes('#prompt-textarea')) return [textarea];
+      if (selector.includes('send-button')) return [sendButton];
       if (selector.includes('aria-haspopup') || selector.includes('data-testid*="model"') || selector.includes('data-testid*="reasoning"')) return control ? [control] : [];
       if (selector.includes('[data-mention-section-items]')) return pickerOpen && options.forgeAppLabel ? [forgeOption] : [];
       if (selector.includes('[role="menuitemradio"]')) return state.menuOpen && option ? [option] : [];
@@ -126,11 +141,7 @@ function fixture(options: {
     querySelector(selector: string) {
       if (selector.includes('Add files and more') || selector.includes('添加文件等内容')) return options.forgeAppLabel ? picker : null;
       if (selector.includes('prompt-textarea') || selector.includes('composer-text-input')) return textarea;
-      if (selector.includes('send-button')) return { disabled: false, getAttribute: () => null, click() {
-        state.sendClicks += 1;
-        submittedUser = { innerText: textarea.value };
-        queueMicrotask(() => onMutation?.());
-      } };
+      if (selector.includes('send-button')) return sendButton;
       return null;
     },
   };

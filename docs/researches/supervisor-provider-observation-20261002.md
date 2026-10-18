@@ -1,5 +1,32 @@
 # Four enrolled conversations stalled at the provider observation boundary
 
+## 2026-10-18: scheduled effect identity and composer readiness
+
+At 12:52 Asia/Shanghai, the active Runtime already contained source `3e28fca5b`.
+The canonical ledger still showed pre-send `composer_not_empty` and
+`send_button_disabled` blockers. Event 41881 recorded the latter with
+`send_clicked=false`; this is not an unknown submission or a consumed Send.
+
+Source inspection established two defects at the existing preparation boundary:
+the protocol accepts both `fx_` and scheduled `crpe_` effect identities, while
+several composer ownership/legacy-prefix paths recognized only `fx_`; and the
+content script checked Send after a fixed 75 ms, permitting a disabled button
+to reject preparation before the provider finished enabling it. The latter is
+a source-proven timing vulnerability, not proof of the live event's cause.
+
+The correction accepts the existing protocol's complete effect ID range and
+observes DOM readiness for at most two seconds on the same exact target and
+exact draft. Identity, draft or provider-generation changes reject preparation.
+The content script rechecks editor bytes after asynchronous preparation and
+retains a single Send click. No task authorization, dispatch budget, unknown
+reconciliation rule, persistence schema or lifecycle owner changes.
+
+Type, repository hygiene, runtime architecture, architecture sync and bootstrap
+checks passed. Live browser acceptance remains pending: the Mac was locked and
+the protected console recovery call timed out. Projected extension bytes alone
+cannot prove that retained tabs loaded the new content script. Original tasks
+must resume with canonical effect receipts before restoration is claimed.
+
 Observed on 2026-10-02 (Asia/Shanghai), source/runtime f87c4a08.
 Repair Work: work-semantic-2371fcc14110.
 

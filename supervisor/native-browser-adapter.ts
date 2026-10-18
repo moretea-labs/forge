@@ -181,7 +181,7 @@ function preflightComposerObservation(snapshot: ComputerChatgptConversationObser
   const value = snapshot.composerText;
   const selectorVersion = snapshot.composerSelectorVersion === 'visible-single-v2' ? snapshot.composerSelectorVersion : undefined;
   if (typeof value !== 'string') return { chars: 0, fingerprint: '', classification: 'unavailable', ...(selectorVersion ? { selectorVersion } : {}) };
-  const marker = /^<<<FORGE_WORKFLOW_EFFECT_V1:(fx_[a-zA-Z0-9_-]+)>>>/.exec(value);
+  const marker = /^<<<FORGE_WORKFLOW_EFFECT_V1:((?:fx|crpe)_[a-zA-Z0-9_-]{8,120})>>>/.exec(value);
   return {
     chars: value.length,
     fingerprint: sha256(`preflight-composer-v1:\0${value}`).slice(0, 24),
@@ -203,7 +203,7 @@ export function backupAuthorizedBlockedComposer(
   projectUrl: string,
   snapshot: ComputerChatgptConversationObservation,
 ): string | undefined {
-  if (!/^supervisor:[a-z0-9]+$/.test(taskId) || !/^fx_[a-zA-Z0-9_-]+$/.test(effectId)) return;
+  if (!/^supervisor:[a-z0-9]+$/.test(taskId) || !/^(?:fx|crpe)_[a-zA-Z0-9_-]{8,120}$/.test(effectId)) return;
   if (snapshot.composerSelectorVersion !== 'visible-single-v2' || !snapshot.composerText?.trim()) return;
   if (preflightComposerObservation(snapshot, effectId).classification !== 'unattributed') return;
   let expectedUrl: URL;
@@ -293,7 +293,7 @@ export function retiredBootstrapDraftReplacementPrompt(
   if (snapshot.composerSelectorVersion !== 'visible-single-v2' || !snapshot.composerText
     || snapshot.isGenerating || !prompt.startsWith('<<<FORGE_WORKFLOW_EFFECT_V1:')) return;
   const draft = snapshot.composerText.replace(/\r\n?/g, '\n');
-  const match = /^<<<FORGE_WORKFLOW_EFFECT_V1:(fx_[a-zA-Z0-9_-]+)>>>/.exec(draft);
+  const match = /^<<<FORGE_WORKFLOW_EFFECT_V1:((?:fx|crpe)_[a-zA-Z0-9_-]{8,120})>>>/.exec(draft);
   if (!match) return;
   const staleEffect = control.getEffect(match[1]!);
   if (!staleEffect || staleEffect.taskId === task.taskId
@@ -970,7 +970,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       if (!begin.started) mode = 'reconcile';
     }
     if (mode === 'reconcile') {
-      const exact = normalize(snapshot.latestUserText) === normalize(command.prompt.replace(/^@forge\s+(?=<<<FORGE_WORKFLOW_EFFECT_V1:fx_[a-zA-Z0-9_-]+>>>)/, ''));
+      const exact = normalize(snapshot.latestUserText) === normalize(command.prompt.replace(/^@forge\s+(?=<<<FORGE_WORKFLOW_EFFECT_V1:(?:fx|crpe)_[a-zA-Z0-9_-]{8,120}>>>)/, ''));
       const markerPresent = snapshotTargetMarkerPresent(snapshot, command.effectId);
       if (exact || markerPresent) {
         this.control.browserObserveEffect({ conversationId: command.conversationId, conversationUrl: command.conversationUrl, effectId: command.effectId,
@@ -1008,7 +1008,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     let exact = false; let markerPresent = false;
     for (let attempt = 1; attempt <= MAX_LOCAL_OBSERVATION_ATTEMPTS; attempt += 1) {
       snapshot = await target.observe({ includeUserHistory: true, includePageText: true });
-      exact = normalize(snapshot.latestUserText) === normalize(command.prompt.replace(/^@forge\s+(?=<<<FORGE_WORKFLOW_EFFECT_V1:fx_[a-zA-Z0-9_-]+>>>)/, '')); markerPresent = snapshotTargetMarkerPresent(snapshot, command.effectId);
+      exact = normalize(snapshot.latestUserText) === normalize(command.prompt.replace(/^@forge\s+(?=<<<FORGE_WORKFLOW_EFFECT_V1:(?:fx|crpe)_[a-zA-Z0-9_-]{8,120}>>>)/, '')); markerPresent = snapshotTargetMarkerPresent(snapshot, command.effectId);
       if (exact || markerPresent || attempt >= MAX_LOCAL_OBSERVATION_ATTEMPTS) break;
       await this.deps.sleep(localObservationDelayMs(attempt, 1_000, 4_000));
     }
