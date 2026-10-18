@@ -2322,7 +2322,7 @@ test('Supervisor preparation rejection is durably release-fenced and never spend
       providerActivityText: '', providerFailureText: '' }),
     preparePrompt: async (_page, _prompt, reasoning) => { preparations++; return preparationReady
       ? { ready: true as const, reasoningVerified: reasoning } : { ready: false as const, reasonCode: 'FORGE_PLUGIN_NOT_BOUND' }; },
-    dispatchPrompt: async () => { sends++; return { dispatched: true, confirmed: true }; },
+    dispatchPrompt: async (_page, _prompt, options) => { sends++; return { dispatched: true, confirmed: true, reasoningVerified: options?.reasoning ?? 'xhigh' }; },
   });
   const deps = { targetPort, nowMs: () => clock.nowMs, providerIdleGraceMs: 60_000,
     providerScopeKey: join(root, 'provider-scope'), sleep: async () => undefined,

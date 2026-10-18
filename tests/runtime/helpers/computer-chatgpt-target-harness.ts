@@ -43,8 +43,8 @@ export interface TestComputerTargetHarnessDependencies {
   dispatchPrompt(
     page: TestBrowserPage,
     prompt: string,
-    options?: { mode?: 'send' | 'resume' | 'recover' },
-  ): Promise<{ dispatched: boolean; confirmed?: boolean; reason?: string }>;
+    options?: { mode?: 'send' | 'resume' | 'recover'; reasoning?: ComputerChatgptReasoning },
+  ): Promise<{ dispatched: boolean; confirmed?: boolean; reasoningVerified?: ComputerChatgptReasoning; reason?: string }>;
 }
 
 type BoundTarget = {
@@ -83,11 +83,11 @@ export function createTestChatgptTargetPort(
     observe: async (options) => await deps.snapshot(entry.page, options),
     prepare: async (prompt, options) => await deps.preparePrompt?.(entry.page, prompt, options?.reasoning ?? DEFAULT_COMPUTER_CHATGPT_REASONING) ?? { ready: true, reasoningVerified: options?.reasoning ?? DEFAULT_COMPUTER_CHATGPT_REASONING },
     dispatch: async (prompt, options) => {
-      const result = await deps.dispatchPrompt(entry.page, prompt, options);
+      const result = await deps.dispatchPrompt(entry.page, prompt, { ...options, reasoning: options?.reasoning ?? DEFAULT_COMPUTER_CHATGPT_REASONING });
       return result.dispatched
-        ? { mutation: 'attempted' as const, ...(result.confirmed === undefined ? {} : { confirmed: result.confirmed }) }
+        ? { mutation: 'attempted' as const, ...(result.confirmed === undefined ? {} : { confirmed: result.confirmed }), ...(result.reasoningVerified ? { reasoningVerified: result.reasoningVerified } : {}) }
         : { mutation: 'not_attempted' as const, reasonCode: result.reason ?? 'test_pre_mutation_rejection' };
-    },
+    }
   });
 
   const bind = async (
