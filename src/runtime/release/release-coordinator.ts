@@ -145,7 +145,12 @@ export function decideConfiguredRuntimeReleaseReconciliation(
   const sessions = completeRuntimeReleaseSessions(controllerHome);
   const active = sessions.filter((session) => !releaseSessionIsTerminal(session));
   const session = coordinatorSession(active);
-  if (session) {
+  // A single soaking predecessor remains rollback authority, but inability to
+  // certify it must not forever prevent a newer immutable source revision from
+  // preparing its own Candidate B. Two active sessions are allowed only by the
+  // existing exact soaking-predecessor/successor placement contract.
+  const onlySoakingPredecessor = active.length === 1 && session?.phase === 'soaking';
+  if (session && !onlySoakingPredecessor) {
     return { required: true, reason: 'active_session', action: runtimeReleaseActionForSession(session), session };
   }
 
@@ -153,12 +158,16 @@ export function decideConfiguredRuntimeReleaseReconciliation(
   // ReleaseSession can progress entirely from its durable authority without
   // periodic repository/process churn in the Recovery daemon.
   const source = observeSource();
-  if (!source.configured) return { required: false, reason: 'source_not_configured' };
+  if (!source.configured) return session
+    ? { required: true, reason: 'active_session', action: runtimeReleaseActionForSession(session), session }
+    : { required: false, reason: 'source_not_configured' };
   const sourceRevision = source.sourceRevision?.trim();
   const activeSourceCommit = source.activeSourceCommit?.trim();
   if (!sourceRevision) throw new Error('RELEASE_AUTOMATION_SOURCE_REVISION_UNKNOWN');
   if (!activeSourceCommit) throw new Error('RELEASE_AUTOMATION_ACTIVE_SOURCE_COMMIT_UNKNOWN');
-  if (sourceRevision === activeSourceCommit) return { required: false, reason: 'source_current' };
+  if (sourceRevision === activeSourceCommit) return session
+    ? { required: true, reason: 'active_session', action: runtimeReleaseActionForSession(session), session }
+    : { required: false, reason: 'source_current' };
 
   // An autonomous release is one attempt per immutable source revision.
   // A terminal ReleaseSession is durable evidence that this exact commit was
@@ -187,8 +196,15 @@ export async function advanceConfiguredRuntimeReleaseStep<C extends RuntimeRelea
   config: C,
   provider: RuntimeReleaseProvider<C>,
   requestId?: string,
+  reconciliation?: RuntimeReleaseReconciliationDecision,
 ): Promise<RuntimeReleaseProgressResult> {
-  const decision = decideConfiguredRuntimeReleaseAction(config.controllerHome);
+  // The Coordinator's source comparison may select a new Candidate while the
+  // one allowable soaking predecessor stays open. Provider.prepare itself
+  // revalidates source/Stable A under the existing Recovery mutation lock.
+  const decision: RuntimeReleaseCoordinatorDecision = reconciliation?.required
+    && reconciliation.reason === 'source_mismatch' && reconciliation.action === 'prepare'
+    ? { action: 'prepare' }
+    : decideConfiguredRuntimeReleaseAction(config.controllerHome);
   const request = requestId?.trim();
   switch (decision.action) {
     case 'prepare':
