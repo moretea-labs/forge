@@ -36,6 +36,16 @@ export function recordDirectActivity(
   return item;
 }
 
+/** Read one existing activity by its stable identity, independent of list-window truncation. */
+export function getDirectActivity(controllerHome: string, activityId: string): CapabilityActivityItem | undefined {
+  try {
+    const item = JSON.parse(readFileSync(activityFilePath(controllerHome, activityId), 'utf8')) as CapabilityActivityItem;
+    return item.activityId === activityId ? item : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function listDirectActivities(controllerHome: string, limit = 50): CapabilityActivityItem[] {
   const dir = activityDir(controllerHome);
   const files = readdirSync(dir).filter((f) => f.endsWith('.json'));
