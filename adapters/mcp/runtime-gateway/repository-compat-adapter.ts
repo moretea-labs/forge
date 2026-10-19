@@ -69,6 +69,12 @@ export async function callRepositoryCompatibilityAdapter(ctx: MultiRepositoryMcp
               const committed = commitSelectedPaths(ctx.controllerHome, repository, {
                 paths: args.paths,
                 message: args.message,
+                ...(handle ? { beforeStageGuard: () => {
+                  const status = repositoryGitStatus(repository);
+                  if (status.head !== handle.expectedHead || status.branch !== handle.branch) {
+                    throw new Error(`WORK_HANDLE_HEAD_CHANGED: expected ${handle.expectedHead ?? 'missing'} on ${handle.branch}, found ${status.head ?? 'missing'} on ${status.branch ?? 'detached'}`);
+                  }
+                } } : {}),
                 ...(handle ? { beforeCommitGuard: ({ currentHead }: { currentHead: string | null }) => {
                   if (currentHead !== handle.expectedHead) {
                     throw new Error(`WORK_HANDLE_HEAD_CHANGED: expected ${handle.expectedHead ?? 'missing'}, found ${currentHead ?? 'missing'}`);
