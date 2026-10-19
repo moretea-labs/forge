@@ -12,7 +12,7 @@ test('new bootstrap tab requires its hydrated editor, not a model picker, before
   const tab = { id: 507, windowId: 8, url: projectUrl };
   const snapshots = [
     { url: projectUrl },
-    { url: projectUrl, composerText: '', reasoningControlReady: false },
+    { url: projectUrl, composerText: '' },
   ];
   let snapshotCount = 0;
   let created = 0;
@@ -68,7 +68,7 @@ test('unhydrated bootstrap remains bound to its one created tab without creating
       get: (_id: number, callback: (t: typeof tab) => void) => callback(tab),
       sendMessage: (_id: number, message: { type: string }, callback: (v: unknown) => void) => {
         if (message.type !== 'forge-computer-chatgpt-snapshot') throw new Error('Only snapshot allowed');
-        snapshots++;callback({ url, reasoningControlReady: false });
+        snapshots++;callback({ url });
       },
     } },
     URL, Date, Map, Promise, setTimeout: (fn: () => void) => { queueMicrotask(fn); return 1; }, clearTimeout() {},
@@ -151,7 +151,7 @@ test('restarted worker prepares and dispatches only the Controller-pinned bootst
         sendMessage: (tabId: number, message: Record<string, unknown>, callback: (value: unknown) => void) => {
           messages.push({ tabId, message });
           callback(message.type === 'forge-computer-chatgpt-capabilities'
-            ? oldContentScript ? { reasoningPreflight: 'verified_before_send_v1' }
+            ? oldContentScript ? {}
               : { bootstrapTargetGuard: 'project-checked-before-send-v1' }
             : message.type === 'forge-computer-chatgpt-prepare'
               ? { prepared: true } : { dispatched: false, reason: 'test_no_send' });

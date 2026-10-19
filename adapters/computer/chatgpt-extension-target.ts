@@ -291,24 +291,25 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
       prepare: async (prompt, options) => {
         const response = await this.submit(instanceId, { kind: 'prepare', identity, ...(record.providerBinding ? { providerBinding: record.providerBinding } : {}), prompt,
           ...(options?.mode ? { mode: options.mode } : {}),
-          ...(options?.reasoning ? { reasoning: options.reasoning } : {}),
         });
         if (!response.result) return { ready: false, reasonCode: response.claimed
           ? 'COMPUTER_CHATGPT_EXTENSION_PREPARE_OUTCOME_UNKNOWN' : 'COMPUTER_CHATGPT_EXTENSION_NOT_CONNECTED' };
-        if (response.result.kind === 'prepared') return response.result.ready
-          ? { ready: true } : { ready: false, reasonCode: response.result.reasonCode };
+        if (response.result.kind === 'prepared') {
+          if (!response.result.ready) return { ready: false, reasonCode: response.result.reasonCode };
+          return { ready: true };
+        }
         return { ready: false, reasonCode: response.result.kind === 'failed'
           ? response.result.code : 'COMPUTER_CHATGPT_EXTENSION_PREPARE_INVALID' };
       },
       dispatch: async (prompt, options) => {
-        const response = await this.submit(instanceId, { kind: 'dispatch', identity, ...(record.providerBinding ? { providerBinding: record.providerBinding } : {}), prompt, ...(options?.mode ? { mode: options.mode } : {}), ...(options?.reasoning ? { reasoning: options.reasoning } : {}) });
+        const response = await this.submit(instanceId, { kind: 'dispatch', identity, ...(record.providerBinding ? { providerBinding: record.providerBinding } : {}), prompt, ...(options?.mode ? { mode: options.mode } : {}) });
         if (!response.result) {
           return response.claimed
             ? { mutation: 'attempted' as const }
             : { mutation: 'not_attempted' as const, reasonCode: 'COMPUTER_CHATGPT_EXTENSION_NOT_CONNECTED' };
         }
         if (response.result.kind === 'dispatch') {
-          if (response.result.mutation === 'attempted') return { mutation: 'attempted' as const, ...(response.result.confirmed === undefined ? {} : { confirmed: response.result.confirmed }), ...(response.result.reasoningVerified ? { reasoningVerified: response.result.reasoningVerified } : {}) };
+          if (response.result.mutation === 'attempted') return { mutation: 'attempted' as const, ...(response.result.confirmed === undefined ? {} : { confirmed: response.result.confirmed }) };
           if (response.result.mutation === 'not_attempted') return { mutation: 'not_attempted' as const, reasonCode: response.result.reasonCode };
         }
         // Only a typed dispatch/not_attempted result proves no Send click. A
@@ -380,11 +381,39 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
         );
       }
     }
-    // A missing exact tab may be opened only for a Supervisor-authorized fresh
-    // send. Observation and outcome-unknown reconciliation must not resurrect
-    // a manually closed tab or mint another browser resource.
+    // A heartbeat is an inventory hint, not the exact-target authority.
+    // When it has no match, let the SAME live Chrome instance perform one
+    // read-only physical-tab lookup. This does not create a tab or replay Send;
+    // the provider refuses ambiguous matches and drifted pinned tabs.
     if (options.createIfMissing === false) {
-      return failure('COMPUTER_CHATGPT_EXTENSION_EXACT_TARGET_ABSENT_READ_ONLY', { failoverSafe: false });
+      const selected = this.selectProviderInstance(preferredInstanceId);
+      if (!selected.instanceId) return failure(
+        selected.ambiguous ? 'COMPUTER_CHATGPT_EXTENSION_PROVIDER_INSTANCE_AMBIGUOUS' : 'COMPUTER_CHATGPT_EXTENSION_NOT_CONNECTED',
+        { failoverSafe: false },
+      );
+      const response = await this.submit(selected.instanceId, { kind: 'observe', identity,
+        ...(binding?.providerId === PROVIDER_ID ? { providerBinding: binding } : {}),
+        options: { includeUserHistory: false, includePageText: false },
+      });
+      if (!response.result) return failure('COMPUTER_CHATGPT_EXTENSION_OBSERVATION_UNAVAILABLE', { failoverSafe: false });
+      if (response.result.kind === 'observation') {
+        const { observation, providerBinding } = response.result;
+        let exactUrl = false;
+        try {
+          const parsed = new URL(observation.url);
+          exactUrl = parsed.origin === 'https://chatgpt.com'
+            && parsed.pathname.endsWith(`/c/${identity.conversationId}`);
+        } catch { /* Never bind an unparseable or changed conversation target. */ }
+        if (!exactUrl || !providerBinding) return failure('COMPUTER_CHATGPT_EXTENSION_TARGET_IDENTITY_UNVERIFIED', { failoverSafe: false });
+        if (!conversationContentAvailable(observation)) return failure('COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE', { failoverSafe: false });
+        const record = await this.bindAsync(identity, providerBinding, selected.instanceId);
+        return { state: 'ready', target: this.target(identity, record, selected.instanceId), observation };
+      }
+      return failure(response.result.kind === 'failed'
+        ? response.result.code === 'COMPUTER_CHATGPT_EXTENSION_TARGET_MISSING'
+          ? 'COMPUTER_CHATGPT_EXTENSION_EXACT_TARGET_ABSENT_READ_ONLY'
+          : response.result.code
+        : 'COMPUTER_CHATGPT_EXTENSION_OBSERVATION_INVALID', { failoverSafe: false });
     }
     const selected = this.selectProviderInstance(preferredInstanceId);
     if (!selected.instanceId) {

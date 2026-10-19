@@ -212,11 +212,12 @@ test('Supervisor sends a complete plain-text effect once without selecting any A
   expect(f.textarea.value).toBe(prompt);
 });
 
-test('Chrome Extension prepares the exact plain-text effect without sending before Supervisor authority', async () => {
-  const f = fixture({ controlPresent: false });
+test('Chrome Extension prepares an exact effect without model-picker selection', async () => {
+  const f = fixture({ optionLabel: 'Extra High' });
   const prompt = '<<<FORGE_WORKFLOW_EFFECT_V1:fx_test_pre_send_123456789>>>\nFORGE_WORKFLOW_TURN_V2_BEGIN';
   const conversationId = '12345678-1234-1234-1234-123456789abc';
   expect(await f.prepare(undefined, conversationId, prompt)).toMatchObject({ prepared: true });
+  expect(f.state.controlClicks).toBe(0);
   expect(f.state.sendClicks).toBe(0);
   expect(f.textarea.chipNames).toEqual([]);
   expect(await f.dispatch(undefined, conversationId, prompt)).toMatchObject({ dispatched: true });
@@ -241,80 +242,23 @@ test('similarly named Recovery suggestion is not selected during plain-text Supe
   expect(f.state.sendClicks).toBe(1);
 });
 
-test('content script advertises exact-tab reasoning preflight without mutating the page', async () => {
+test('content script advertises exact bootstrap guards without mutating the page', async () => {
   const f = fixture({ controlPresent: false });
-  expect(await f.capabilities()).toMatchObject({ reasoningPreflight: 'verified_before_send_v1' });
+  expect(await f.capabilities()).toMatchObject({ bootstrapTargetGuard: 'project-checked-before-send-v1' });
   expect(f.state.controlClicks).toBe(0);
   expect(f.state.sendClicks).toBe(0);
 });
 
-test('Supervisor xhigh selects and verifies the composer option before inserting or sending', async () => {
-  const f = fixture({ optionLabel: 'Extra High' });
-  const result = await f.dispatch('xhigh');
-  expect(result).toMatchObject({ dispatched: true, reasoningVerified: 'xhigh' });
-  expect(f.state.controlClicks).toBe(1);
-  expect(f.state.optionClicks).toBe(1);
-  expect(f.state.sendClicks).toBe(1);
-  expect(f.textarea.value).toBe('source delivery');
-});
-
-test('an already selected Extra High control can dispatch without opening the menu', async () => {
-  const f = fixture({ startingLabel: 'GPT-6 Extra High' });
-  expect(await f.dispatch('xhigh')).toMatchObject({ dispatched: true, reasoningVerified: 'xhigh' });
-  expect(f.state.controlClicks).toBe(0);
-  expect(f.state.sendClicks).toBe(1);
-});
-
-test('unobservable reasoning fails closed before any prompt insertion or send', async () => {
-  const f = fixture({ controlPresent: false });
-  expect(await f.dispatch('xhigh')).toMatchObject({ dispatched: false, reason: 'COMPUTER_CHATGPT_REASONING_CONTROL_UNAVAILABLE' });
-  expect(f.textarea.value).toBe('');
-  expect(f.state.sendClicks).toBe(0);
-});
-
-test('disabled, unverified, or stale-conversation Extra High selection never dispatches', async () => {
-  const disabled = fixture({ optionLabel: 'Extra High', optionDisabled: true });
-  expect(await disabled.dispatch('xhigh')).toMatchObject({ dispatched: false, reason: 'COMPUTER_CHATGPT_REASONING_OPTION_UNAVAILABLE' });
-  const ignored = fixture({ optionLabel: 'Extra High', acknowledgeSelection: false });
-  expect(await ignored.dispatch('xhigh')).toMatchObject({ dispatched: false, reason: 'COMPUTER_CHATGPT_REASONING_NOT_VERIFIED' });
-  const navigated = fixture({ optionLabel: 'Extra High', navigateAfterOptionClick: 'https://chatgpt.com/c/87654321-4321-4321-4321-cba987654321' });
-  expect(await navigated.dispatch('xhigh', '12345678-1234-1234-1234-123456789abc'))
-    .toMatchObject({ dispatched: false, reason: 'target_identity_changed' });
-  expect(disabled.textarea.value).toBe('');
-  expect(ignored.textarea.value).toBe('');
-  expect(navigated.textarea.value).toBe('');
-  expect(disabled.state.sendClicks + ignored.state.sendClicks + navigated.state.sendClicks).toBe(0);
-});
-
-test('slider needs an observed state transition rather than an untrusted write', async () => {
-  const supported = fixture({ sliderValue: 3 });
-  expect(await supported.dispatch('xhigh')).toMatchObject({ dispatched: true, reasoningVerified: 'xhigh' });
-  const refused = fixture({ sliderValue: 3, acknowledgeSlider: false });
-  expect(await refused.dispatch('xhigh')).toMatchObject({ dispatched: false, reason: 'COMPUTER_CHATGPT_REASONING_NOT_VERIFIED' });
-  expect(refused.textarea.value).toBe('');
-  expect(refused.state.sendClicks).toBe(0);
-  const unsupportedSlider = fixture({ sliderValue: 2, sliderMax: 3 });
-  expect(await unsupportedSlider.dispatch('xhigh')).toMatchObject({ dispatched: false, reason: 'COMPUTER_CHATGPT_REASONING_STATE_UNAVAILABLE' });
-  expect(unsupportedSlider.state.sendClicks).toBe(0);
-});
-
-test('when Extra High is absent the menu verifies High as the highest available level', async () => {
-  const f = fixture({ optionLabel: 'High' });
-  expect(await f.dispatch('xhigh')).toMatchObject({ dispatched: true, reasoningVerified: 'high' });
-  expect(f.state.optionClicks).toBe(1);
-  expect(f.state.sendClicks).toBe(1);
-});
-
-test('an occupied human composer prevents both model UI changes and provider submission', async () => {
+test('an occupied human composer prevents provider submission', async () => {
   const f = fixture({ optionLabel: 'Extra High' });
   f.textarea.value = 'unsent human draft';
-  expect(await f.dispatch('xhigh')).toMatchObject({ dispatched: false, reason: 'composer_not_empty' });
+  expect(await f.dispatch()).toMatchObject({ dispatched: false, reason: 'composer_not_empty' });
   expect(f.textarea.value).toBe('unsent human draft');
   expect(f.state.controlClicks).toBe(0);
   expect(f.state.sendClicks).toBe(0);
 });
 
-test('ordinary manual transport without an explicit reasoning requirement is unchanged', async () => {
+test('plain-text manual delivery never selects a model', async () => {
   const f = fixture({ controlPresent: false });
   expect(await f.dispatch()).toMatchObject({ dispatched: true });
   expect(f.state.sendClicks).toBe(1);

@@ -4,6 +4,26 @@ All notable public Forge changes are recorded here. Release entries are tied to 
 
 ## Unreleased
 
+## 1.8.2 - 2026-10-19
+- Retire Forge-owned host Skill distribution and independent Skill version authority, retaining CLI/MCP and project templates.
+
+### Reliable autonomous delivery
+
+- Restore exact ChatGPT conversation targeting and recover lost Chrome tab/provider bindings without replaying an uncertain external send.
+- Harden Supervisor effect-ledger ownership, no-click dispatch proofs, bootstrap reconciliation, stale composer recovery, and Chrome Native Messaging heartbeat handling.
+- Stop Work-owned auto-progression after semantic completion while retaining exact request identity and terminal receipts.
+
+### Plugins and scheduled workflows
+
+- Persist Browser plugin v1/v2 configuration migrations into the single Controller Home v3 authority, with atomic write and legacy retirement.
+- Tighten scheduled Gmail digests, fixed-mailbox authorization, unknown notification receipts, and daily wake identity.
+
+### Runtime and packaging
+
+- Make Process Runner release canaries authoritative before promoting immutable package/Runtime releases; reject broken runner artifacts and invalid execution modes.
+- Strengthen Recovery release ownership, package validation, whole-Runtime rollback boundaries, and source/runtime identity.
+
+
 ## 1.8.1 - 2026-09-19
 
 ### Automatic workflows and V2

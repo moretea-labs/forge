@@ -72,9 +72,7 @@ const VALID_LOCATIONS: readonly Location[] = ['global', 'local'];
 interface GlobalRuntimeCommandOptions {
   target: string;
   cli?: boolean;
-  syncSkill?: boolean;
   hooks?: string | false;
-  withExternalSkills?: boolean;
   brainRoot?: string;
   json?: boolean;
 }
@@ -89,9 +87,7 @@ function runGlobalRuntimeBootstrap(commandName: 'init' | 'install', rawOpts: Glo
   const result = runGlobalRuntimeSetup({
     target: rawOpts.target as InstallTargetSpec,
     installCli: rawOpts.cli !== false,
-    syncSkill: rawOpts.syncSkill !== false,
     hostAdapters: rawOpts.hooks !== false,
-    externalSkills: rawOpts.withExternalSkills === true,
     brainRoot: rawOpts.brainRoot,
   });
   if (rawOpts.json === true) {
@@ -114,17 +110,14 @@ export function buildProgram(): Command {
   program
     .command('update')
     .description('Update the global Forge CLI and user-level managed runtime')
-    .option('--target <target>', `Host target for adapters and runtime skills: ${VALID_TARGETS.join('|')}`, 'both')
+    .option('--target <target>', `Host target for adapters: ${VALID_TARGETS.join('|')}`, 'both')
     .option('--version <version>', 'Install a specific Forge package version')
     .option('--channel <channel>', 'Install package channel: latest|next')
     .option('--check', 'Run the read-only setup check without refreshing runtime')
     .option('--check-updates', 'Include network-backed version update advisories in setup check output')
     .option('--no-runtime-refresh', 'Skip runtime refresh and run the read-only setup check only')
     .option('--no-cli', 'Skip installing the Forge CLI globally')
-    .option('--no-sync-skill', 'Skip refreshing Forge host skill aliases')
     .option('--no-hooks', 'Skip global hook adapter installation')
-    .option('--with-external-skills', 'Also bootstrap third-party Waza, Mermaid, and cross-review skills')
-    .option('--no-external-skills', 'Compatibility no-op; update no longer bootstraps third-party skills by default')
     .option('--brain-root <path>', 'Brain vault root for manifest sync')
     .option('--repo <path>', 'Deprecated: use forge adopt --repo <path>')
     .option('--dry-run', 'Deprecated: use forge adopt --dry-run for repo-level planning')
@@ -140,9 +133,7 @@ export function buildProgram(): Command {
       checkUpdates?: boolean;
       runtimeRefresh?: boolean;
       cli?: boolean;
-      syncSkill?: boolean;
       hooks?: string | false;
-      withExternalSkills?: boolean;
       brainRoot?: string;
       interactive?: boolean;
       json?: boolean;
@@ -180,9 +171,7 @@ export function buildProgram(): Command {
         target: rawOpts.target as InstallTargetSpec,
         installCli: rawOpts.cli !== false,
         installSpec,
-        syncSkill: rawOpts.syncSkill !== false,
         hostAdapters: rawOpts.hooks !== false,
-        externalSkills: rawOpts.withExternalSkills === true,
         brainRoot: rawOpts.brainRoot,
       });
       if (rawOpts.json === true) {
@@ -202,9 +191,7 @@ export function buildProgram(): Command {
     .option('--transaction <path>', 'Adoption transaction manifest to restore when action is rollback')
     .option('--dry-run', 'Plan Forge changes without applying them')
     .option('--target <target>', `Host target for readiness checks and optional global bootstrap: ${VALID_TARGETS.join('|')}`, 'both')
-    .option('--no-sync-skill', 'Compatibility no-op; adopt never refreshes user-level skill aliases')
     .option('--no-host-adapters', 'Compatibility no-op; adopt never writes global Codex/Claude hook adapters')
-    .option('--no-external-skills', 'Compatibility no-op; adopt never bootstraps user-level external skills')
     .option('--no-verify', 'Skip repo workflow verification after apply')
     .option('--reclaim-runtime', 'Reclaim generated repo-local hook/helper runtime copies after replacement paths verify')
     .option('--compact', 'Compact repo surface; includes --reclaim-runtime plus package script rewrite')
@@ -220,9 +207,7 @@ export function buildProgram(): Command {
       transaction?: string;
       dryRun?: boolean;
       target: string;
-      syncSkill?: boolean;
       hostAdapters?: boolean;
-      withExternalSkills?: boolean;
       verify?: boolean;
       reclaimRuntime?: boolean;
       compact?: boolean;
@@ -329,9 +314,7 @@ export function buildProgram(): Command {
         repo: rawOpts.repo,
         apply: rawOpts.dryRun !== true,
         target: rawOpts.target as InstallTargetSpec,
-        syncSkill: false,
         hostAdapters: false,
-        externalSkills: false,
         verify: rawOpts.verify !== false,
         brainRoot: rawOpts.brainRoot,
         brainMode: rawOpts.brainMode as InitBrainMode,
@@ -371,9 +354,7 @@ export function buildProgram(): Command {
     .option('--target <target>', `Target host: ${VALID_TARGETS.join('|')}`, 'both')
     .option('--location <location>', `Adapter-only install location: ${VALID_LOCATIONS.join('|')}`)
     .option('--no-cli', 'Skip installing the Forge CLI globally')
-    .option('--no-sync-skill', 'Skip refreshing Forge host skill aliases')
     .option('--no-hooks', 'Skip global hook adapter installation during full runtime install')
-    .option('--with-external-skills', 'Also install optional third-party Waza/Mermaid skills and Forge cross-review helpers')
     .option('--brain-root <path>', 'Brain vault root to persist for Forge brain commands')
     .option('--json', 'Output JSON instead of human-readable text')
     .action((rawOpts: GlobalRuntimeCommandOptions & { location?: string }) => {

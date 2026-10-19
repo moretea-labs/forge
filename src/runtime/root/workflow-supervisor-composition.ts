@@ -220,17 +220,38 @@ function createForgeWorkflowSupervisorBrowserTaskActive(controllerHome: string):
     if (requirementId && readRequirement({ controllerHome }, requirementId)?.value.state === 'cancelled') return false;
     const workId = workflowSupervisorOriginWorkId(task, repoId, controllerHome);
     if (!requirementId && !workId) return false;
-    // An existing task may outlive the Work that originally enrolled it. Its
-    // durable task/effect chain still owns the original Goal; absence cannot
-    // mean DONE, NEEDS_USER, nor permit a replacement provider send.
+    // An independent Requirement Goal can outlive an execution Work; an exact
+    // Work-owned Supervisor cannot initiate another Send after that Work closes.
+    if (terminalWorkSupervisorStopReason(controllerHome, task)) return false;
     const binding = workId ? getChatgptWorkConversationBinding({ controllerHome, repoId }, workId) : undefined;
     return !binding || binding.conversationId === task.conversationId;
   };
 }
 
+/**
+ * Only an exact Work-owned Supervisor task follows that Work's terminal state.
+ * Requirement-owned autonomous Goals and standalone tasks keep their own
+ * explicit lifecycle; a completed lower-layer carrier is not goal completion.
+ */
+function terminalWorkSupervisorStopReason(controllerHome: string, task: WorkflowSupervisorTask): string | undefined {
+  const repoId = workflowSupervisorContractText(task, 'repo_id');
+  const workId = workflowSupervisorContractText(task, 'work_id');
+  const taskHome = workflowSupervisorContractText(task, 'controller_home');
+  if (!repoId || !workId || (taskHome && taskHome !== controllerHome)) return undefined;
+  if (task.taskId !== `forge:${repoId}:work:${workId}`
+    || task.continuationPolicy.kind === 'standalone_supervisor') return undefined;
+  const work = getWorkContract({ controllerHome, repoId }, workId);
+  if (!work) return undefined;
+  const state = semanticWorkState(work);
+  return state !== 'open'
+    ? `Exact Work ${workId} is ${state}; stop its Work-owned Supervisor continuation without changing the original Work or any successor Schedule.`
+    : undefined;
+}
+
 export function forgeWorkflowSupervisorLifecycleHooks(controllerHome: string): WorkflowSupervisorLifecycleHooks {
   const browserTaskActive = createForgeWorkflowSupervisorBrowserTaskActive(controllerHome);
   return {
+    terminalWorkStopReasonForTask: (task) => terminalWorkSupervisorStopReason(controllerHome, task),
     canonicalObjectiveForTask: (task) => {
       // Standalone Supervisor owns its full objective; Work execution context
       // must never silently replace the original autonomous business goal.

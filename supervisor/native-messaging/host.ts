@@ -28,11 +28,30 @@ export async function forwardNativeRequest(value: unknown, forgeHome?: string): 
 }
 export function runNativeMessagingHost(forgeHome?: string): void {
   const decoder = new NativeMessageDecoder();
-  let chain = Promise.resolve();
   process.stdin.on('data', (chunk: Buffer) => {
     let messages: unknown[];
     try { messages = decoder.push(chunk); } catch (error) { process.stdout.write(encodeNativeMessage({ id: 'invalid', ok: false, error: { code: 'WORKFLOW_SUPERVISOR_NATIVE_FRAME_INVALID', message: String(error) } })); return; }
-    for (const message of messages) chain = chain.then(async () => { process.stdout.write(encodeNativeMessage(await forwardNativeRequest(message, forgeHome))); });
+    // Chrome matches replies by request id, not FIFO position. A slow page
+    // discovery/command must never queue heartbeats behind its 30s RPC budget:
+    // the Computer broker expires a provider heartbeat after 15s. Requests
+    // use independent Supervisor socket calls; the broker still exclusively
+    // owns effect claims, dispatch outcomes and exactly-once Send safety.
+    for (const message of messages) {
+      void forwardNativeRequest(message, forgeHome).then(
+        (response) => { process.stdout.write(encodeNativeMessage(response)); },
+        (error) => {
+          // Bad individual requests must not poison subsequent heartbeats.
+          const id = message && typeof message === 'object' && !Array.isArray(message)
+            && typeof (message as { id?: unknown }).id === 'string'
+            ? (message as { id: string }).id : 'invalid';
+          const detail = error instanceof Error ? error.message : String(error);
+          process.stdout.write(encodeNativeMessage({ id, ok: false, error: {
+            code: detail.split(':', 1)[0] || 'WORKFLOW_SUPERVISOR_NATIVE_REQUEST_INVALID',
+            message: detail,
+          } }));
+        },
+      );
+    }
   });
   process.stdin.resume();
 }

@@ -86,7 +86,7 @@ export function createTestChatgptTargetPort(
       return result.dispatched
         ? { mutation: 'attempted' as const, ...(result.confirmed === undefined ? {} : { confirmed: result.confirmed }) }
         : { mutation: 'not_attempted' as const, reasonCode: result.reason ?? 'test_pre_mutation_rejection' };
-    },
+    }
   });
 
   const bind = async (

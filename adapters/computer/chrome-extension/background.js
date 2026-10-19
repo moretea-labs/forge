@@ -165,7 +165,7 @@ async function waitForContent(tabId, requireBootstrapUi = false, recoverReceiver
   let recoveryAttempted = false;
   // Bootstrap is a new provider page: seeing its URL proves location, not
   // that the React composer is hydrated. The Supervisor uses the user's
-  // current reasoning setting, not the picker. Bound this wait below the
+  // exact target page readiness. Bound this wait below the
   // broker's 12-second timeout; missing composer never authorizes Send.
   const attempts = requireBootstrapUi ? 20 : 40;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
@@ -306,13 +306,10 @@ async function executePrepare(command) {
   if (command.identity?.namespace === 'chatgpt.bootstrap' && !expectedProjectId)
     return { kind: 'prepared', ready: false, reasonCode: 'COMPUTER_CHATGPT_BOOTSTRAP_PROJECT_UNPROVEN' };
   const requiresDraftReplacement = typeof command.prompt === 'string' && command.prompt.startsWith('<<<FORGE_DRAFT_REPLACE_V1:');
-  if (command.reasoning !== undefined || expectedProjectId || requiresDraftReplacement) {
+  if (expectedProjectId || requiresDraftReplacement) {
     let capability;
     try { capability = await tabMessage(target.tab.id, { type: 'forge-computer-chatgpt-capabilities' }); }
-    catch { return { kind: 'prepared', ready: false, reasonCode: expectedProjectId
-      ? 'COMPUTER_CHATGPT_CONTENT_CAPABILITIES_UNAVAILABLE' : 'COMPUTER_CHATGPT_REASONING_PREFLIGHT_UNAVAILABLE' }; }
-    if (command.reasoning !== undefined && capability?.reasoningPreflight !== 'verified_before_send_v1')
-      return { kind: 'prepared', ready: false, reasonCode: 'COMPUTER_CHATGPT_REASONING_PREFLIGHT_UNSUPPORTED' };
+    catch { return { kind: 'prepared', ready: false, reasonCode: 'COMPUTER_CHATGPT_CONTENT_CAPABILITIES_UNAVAILABLE' }; }
     // Older content scripts ignore expectedProjectId. No bootstrap draft/send
     // may cross this version boundary without target verification.
     if (expectedProjectId && capability?.bootstrapTargetGuard !== 'project-checked-before-send-v1')
@@ -323,13 +320,11 @@ async function executePrepare(command) {
   try {
     const result = await tabMessage(target.tab.id, {
       type: 'forge-computer-chatgpt-prepare', prompt: command.prompt, mode: command.mode,
-      reasoning: command.reasoning,
       ...(command.identity?.namespace === 'chatgpt.conversation' ? { expectedConversationId: command.identity.conversationId } : {}),
       ...(expectedProjectId ? { expectedProjectId } : {}),
     });
-    return result?.prepared === true
-      ? { kind: 'prepared', ready: true }
-      : { kind: 'prepared', ready: false, reasonCode: String(result?.reason ?? 'COMPUTER_CHATGPT_EXTENSION_PREPARE_REJECTED') };
+    if (result?.prepared !== true) return { kind: 'prepared', ready: false, reasonCode: String(result?.reason ?? 'COMPUTER_CHATGPT_EXTENSION_PREPARE_REJECTED') };
+    return { kind: 'prepared', ready: true };
   } catch {
     // A prepare command contains no Send action. Failure is not a submitted effect.
     return { kind: 'prepared', ready: false, reasonCode: 'COMPUTER_CHATGPT_EXTENSION_PREPARE_UNAVAILABLE' };
@@ -344,20 +339,16 @@ async function executeDispatch(command) {
   // An old tab may still contain a pre-upgrade content script after the
   // extension/runtime has been upgraded. Probe the *exact target tab* before
   // submitting; a background/version heartbeat alone cannot prove it.
-  if (command.reasoning !== undefined || expectedProjectId) {
+  if (expectedProjectId) {
     let capability;
     try { capability = await tabMessage(target.tab.id, { type: 'forge-computer-chatgpt-capabilities' }); }
-    catch { return { kind: 'dispatch', mutation: 'not_attempted', reasonCode: expectedProjectId
-      ? 'COMPUTER_CHATGPT_CONTENT_CAPABILITIES_UNAVAILABLE' : 'COMPUTER_CHATGPT_REASONING_PREFLIGHT_UNAVAILABLE' }; }
-    if (command.reasoning !== undefined && capability?.reasoningPreflight !== 'verified_before_send_v1')
-      return { kind: 'dispatch', mutation: 'not_attempted', reasonCode: 'COMPUTER_CHATGPT_REASONING_PREFLIGHT_UNSUPPORTED' };
+    catch { return { kind: 'dispatch', mutation: 'not_attempted', reasonCode: 'COMPUTER_CHATGPT_CONTENT_CAPABILITIES_UNAVAILABLE' }; }
     if (expectedProjectId && capability?.bootstrapTargetGuard !== 'project-checked-before-send-v1')
       return { kind: 'dispatch', mutation: 'not_attempted', reasonCode: 'COMPUTER_CHATGPT_BOOTSTRAP_PROJECT_GUARD_UNSUPPORTED' };
   }
   let result;
   try { result = await tabMessage(target.tab.id, {
     type: 'forge-computer-chatgpt-dispatch', prompt: command.prompt, mode: command.mode,
-    reasoning: command.reasoning,
     ...(command.identity?.namespace === 'chatgpt.conversation' ? { expectedConversationId: command.identity.conversationId } : {}),
     ...(expectedProjectId ? { expectedProjectId } : {}),
   }); }
@@ -370,16 +361,9 @@ async function executeDispatch(command) {
   // A missing/malformed reply after dispatch crossed the content-script boundary
   // is not an attestation that Send never ran.
   if (result?.dispatched !== true) return { kind: 'dispatch', mutation: 'attempted', confirmed: false };
-  // A changed/stale implementation between preflight and send may have clicked
-  // without attesting the reasoning choice. It is still a possible mutation,
-  // never a safe not_attempted result or verified reasoning claim.
-  if (command.reasoning !== undefined && !['medium', 'high', 'xhigh'].includes(result.reasoningVerified)) {
-    return { kind: 'dispatch', mutation: 'attempted', confirmed: false };
-  }
   // The content script observes the committed user turn within the same page.
   // A missing/negative receipt is an outcome-unknown submission, not a retry grant.
-  return { kind: 'dispatch', mutation: 'attempted', confirmed: result.confirmed === true,
-    ...(result.reasoningVerified ? { reasoningVerified: result.reasoningVerified } : {}) };
+  return { kind: 'dispatch', mutation: 'attempted', confirmed: result.confirmed === true };
 }
 async function executeFindMarker(command, instanceId) {
   const matches = [];

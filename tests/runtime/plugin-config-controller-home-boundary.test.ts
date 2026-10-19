@@ -30,7 +30,7 @@ describe('plugin config Controller Home boundary', () => {
     writeFileSync(join(legacyHarness, 'app-store-connect.json'), '{"schemaVersion":1,"enabled":true}\n');
 
     const target = migrateRepositoryPluginConfigLegacyFiles(controllerHome, { repoId: 'repo-a', canonicalRoot: repoRoot });
-    expect(readFileSync(join(target, 'browser.json'), 'utf8')).toContain('"enabled":true');
+    expect(JSON.parse(readFileSync(join(target, 'browser.json'), 'utf8'))).toMatchObject({ schemaVersion: 3, enabled: true, browserMode: 'attach_preferred', profileMode: 'repo_local', browserChannel: 'chrome' });
     expect(readFileSync(join(target, 'google-calendar.json'), 'utf8')).toContain('"enabled":true');
     expect(readFileSync(join(target, 'app-store-connect.json'), 'utf8')).toContain('"enabled":true');
     expect(readRepositoryPluginConfig({ controllerHome, repoId: 'repo-a', repoRoot }, 'google_calendar')).toMatchObject({ enabled: true });
@@ -46,14 +46,51 @@ describe('plugin config Controller Home boundary', () => {
     const repoRoot = root('forge-plugin-repo-');
     const target = join(controllerHome, 'repositories', 'repo-a', 'plugins', 'config');
     mkdirSync(target, { recursive: true });
-    writeFileSync(join(target, 'browser.json'), 'controller\n');
+    writeFileSync(join(target, 'browser.json'), '{"schemaVersion":3,"enabled":false,"browserMode":"isolated"}\n');
     const legacy = join(repoRoot, '.forge', 'plugins');
     mkdirSync(legacy, { recursive: true });
     writeFileSync(join(legacy, 'browser.json'), 'legacy\n');
 
     migrateRepositoryPluginConfigLegacyFiles(controllerHome, { repoId: 'repo-a', canonicalRoot: repoRoot });
-    expect(readFileSync(join(target, 'browser.json'), 'utf8')).toBe('controller\n');
+    expect(JSON.parse(readFileSync(join(target, 'browser.json'), 'utf8'))).toMatchObject({ schemaVersion: 3, enabled: false, browserMode: 'isolated' });
     expect(existsSync(legacy)).toBe(false);
+  });
+
+  test('upgrades Controller Home v1 only once', () => {
+    const controllerHome = root('forge-plugin-home-');
+    const repoRoot = root('forge-plugin-repo-');
+    const target = join(controllerHome, 'repositories', 'repo-a', 'plugins', 'config');
+    mkdirSync(target, { recursive: true });
+    const path = join(target, 'browser.json');
+    writeFileSync(path, JSON.stringify({ schemaVersion: 1, enabled: true, browserMode: 'managed_persistent', profileMode: 'custom', profileDir: 'legacy', browserChannel: 'chromium' }));
+    migrateRepositoryPluginConfigLegacyFiles(controllerHome, { repoId: 'repo-a', canonicalRoot: repoRoot });
+    const persisted = readFileSync(path, 'utf8');
+    expect(JSON.parse(persisted)).toMatchObject({ schemaVersion: 3, enabled: true, browserMode: 'attach_preferred', profileMode: 'repo_local', browserChannel: 'chrome' });
+    migrateRepositoryPluginConfigLegacyFiles(controllerHome, { repoId: 'repo-a', canonicalRoot: repoRoot });
+    expect(readFileSync(path, 'utf8')).toBe(persisted);
+  });
+
+  test('retains explicit v2 managed mode when migrating', () => {
+    const controllerHome = root('forge-plugin-home-');
+    const repoRoot = root('forge-plugin-repo-');
+    const legacy = join(repoRoot, '.forge', 'plugins');
+    mkdirSync(legacy, { recursive: true });
+    writeFileSync(join(legacy, 'browser.json'), JSON.stringify({ schemaVersion: 2, enabled: true, browserMode: 'managed_persistent', profileMode: 'repo_local', nativeBrowserCandidates: ['vivaldi'] }));
+    const target = migrateRepositoryPluginConfigLegacyFiles(controllerHome, { repoId: 'repo-a', canonicalRoot: repoRoot });
+    expect(JSON.parse(readFileSync(join(target, 'browser.json'), 'utf8'))).toMatchObject({ schemaVersion: 3, browserMode: 'managed_persistent', nativeBrowserCandidates: ['vivaldi'] });
+    expect(existsSync(join(legacy, 'browser.json'))).toBe(false);
+  });
+
+  test('invalid Browser legacy config is neither committed nor retired', () => {
+    const controllerHome = root('forge-plugin-home-');
+    const repoRoot = root('forge-plugin-repo-');
+    const legacy = join(repoRoot, '.forge', 'plugins');
+    mkdirSync(legacy, { recursive: true });
+    const source = join(legacy, 'browser.json');
+    writeFileSync(source, JSON.stringify({ schemaVersion: 2, enabled: true, browserMode: 'attach_preferred', cdpEndpoint: 'https://remote.example.com' }));
+    expect(() => migrateRepositoryPluginConfigLegacyFiles(controllerHome, { repoId: 'repo-a', canonicalRoot: repoRoot })).toThrow(/PLUGIN_CONFIG_MIGRATION_INVALID/);
+    expect(existsSync(source)).toBe(true);
+    expect(existsSync(join(controllerHome, 'repositories', 'repo-a', 'plugins', 'config', 'browser.json'))).toBe(false);
   });
 
   test('ignores a stale compatibility symlink instead of crossing Controller Home identity', () => {
@@ -85,5 +122,8 @@ describe('plugin config Controller Home boundary', () => {
 
     expect(() => readRepositoryPluginConfig({ controllerHome, repoId: 'repo-a', repoRoot }, 'browser'))
       .toThrow(/PLUGIN_CONFIG_AUTHORITY_INVALID/);
+    expect(() => migrateRepositoryPluginConfigLegacyFiles(controllerHome, { repoId: 'repo-a', canonicalRoot: repoRoot }))
+      .toThrow(/PLUGIN_CONFIG_AUTHORITY_INVALID/);
+    expect(existsSync(join(legacy, 'browser.json'))).toBe(true);
   });
 });

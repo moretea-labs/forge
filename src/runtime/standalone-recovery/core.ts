@@ -28,6 +28,7 @@ import {
   uninstallForgeRuntimeService,
 } from '../root/service';
 import { removeRetiredCandidateExecutionLane } from '../root/runtime-lane';
+import { inspectWorkflowSupervisorBrowserAdapter, installWorkflowSupervisorBrowserAdapter } from '../plugins/computer-chatgpt-browser-adapter-installer';
 import {
   inspectKnownGoodRecoveryBundle,
   knownGoodRecoveryBundleRoot,
@@ -2110,6 +2111,23 @@ function quarantine(config: RecoveryConfig, release: ReleaseEvidence | undefined
   writeJson(quarantinePath(config), { schemaVersion: 1, releases });
 }
 
+/** Optional installed projection belongs to the whole active release. Fresh
+ * Candidate B/uninstalled Homes never opt into global browser registration.
+ * Loaded-tab capability and provider connectivity remain separate evidence.
+ */
+function syncInstalledBrowserAdapterProjection(controllerHome: string): void {
+  let projection = inspectWorkflowSupervisorBrowserAdapter(controllerHome);
+  if (!existsSync(projection.extensionPath) && !existsSync(projection.nativeHostPath)) return;
+  const authority = readRuntimeReleaseAuthority(controllerHome);
+  if (!authority) throw new Error('RECOVERY_BROWSER_ADAPTER_RELEASE_AUTHORITY_MISSING');
+  if (!projection.projectionCurrent || projection.activeReleaseId !== authority.active.releaseId) {
+    projection = installWorkflowSupervisorBrowserAdapter(controllerHome);
+  }
+  if (!projection.projectionCurrent || projection.activeReleaseId !== authority.active.releaseId) {
+    throw new Error(`RECOVERY_BROWSER_ADAPTER_PROJECTION_UNVERIFIED: ${projection.detail}`);
+  }
+}
+
 async function rollbackPreviousLocked(config: RecoveryConfig, reason: string): Promise<RollbackResult> {
   const before = await verifyStableRuntime(config);
   const active = before.releases.active;
@@ -2155,6 +2173,7 @@ async function rollbackPreviousLocked(config: RecoveryConfig, reason: string): P
       || committed.active.artifactIdentity !== target.artifactIdentity
       || committed.active.manifestSha256 !== target.manifestSha256
     ) throw new Error('RECOVERY_ROLLBACK_AUTHORITY_MISMATCH');
+    syncInstalledBrowserAdapterProjection(config.controllerHome);
     quarantine(config, active, 'whole-Runtime rollback completed');
     audit(config, 'rollback_succeeded', {
       operationId,
@@ -2176,7 +2195,7 @@ async function rollbackPreviousLocked(config: RecoveryConfig, reason: string): P
   } catch (error) {
     const detail = error instanceof Error ? error.message : 'whole-Runtime rollback failed';
     audit(config, 'rollback_failed', { operationId, activeRevision: active.revision, targetRevision: target.revision, detail });
-    return { ok: false, operationId, detail };
+    return { ok: false, operationId, detail, verify: await verifyStableRuntime(config) };
   }
 }
 
@@ -3805,6 +3824,7 @@ async function rebindStartAndVerifyPrimaryRuntime(input: {
 
   try {
     input.beforeStart?.();
+    syncInstalledBrowserAdapterProjection(input.config.controllerHome);
   } catch (error) {
     return {
       ok: false,
@@ -5680,7 +5700,14 @@ export async function cutoverConfiguredRuntimeReleaseSession(
       const reconciliationDeadline = Date.now() + reconciliationTimeoutMs;
       let stableNow = observeRuntimeStatus(config.controllerHome);
       const stableIdentity = () => {
-        const liveRuntimeIdentityVerified = stableNow.running && stableNow.ready && !stableNow.stale;
+        // A crash after authority publication must not bypass projection
+        // verification. Reconciliation observes only; the release transaction
+        // owns any projection mutation before starting the Runtime.
+        const projection = inspectWorkflowSupervisorBrowserAdapter(config.controllerHome);
+        const installed = existsSync(projection.extensionPath) || existsSync(projection.nativeHostPath);
+        const projectionVerified = !installed || (projection.projectionCurrent
+          && projection.activeReleaseId === stableNow.snapshot?.releaseId);
+        const liveRuntimeIdentityVerified = stableNow.running && stableNow.ready && !stableNow.stale && projectionVerified;
         return {
           candidateIsStable: Boolean(
             liveRuntimeIdentityVerified
@@ -5775,6 +5802,10 @@ export async function cutoverConfiguredRuntimeReleaseSession(
         };
       }
 
+      const projection = inspectWorkflowSupervisorBrowserAdapter(config.controllerHome);
+      const projectionFailure = (existsSync(projection.extensionPath) || existsSync(projection.nativeHostPath))
+        && (!projection.projectionCurrent || projection.activeReleaseId !== stableNow.snapshot?.releaseId)
+        ? `; installed browser projection is unverified: ${projection.detail}` : '';
       session = advanceReleaseSession({
         controllerHome: config.controllerHome,
         sessionId,
@@ -5783,7 +5814,7 @@ export async function cutoverConfiguredRuntimeReleaseSession(
         receipts: [{
           id: 'cutover_failed',
           kind: 'cutover',
-          summary: `${reason}; Stable A outcome is not fully verified; Candidate B is retired`.slice(0, 500),
+          summary: `${reason}; Stable A outcome is not fully verified${projectionFailure}; Candidate B is retired`.slice(0, 500),
         }],
       });
       const cleanup = cleanupRetiredCandidateLane(config, session);
@@ -5797,7 +5828,7 @@ export async function cutoverConfiguredRuntimeReleaseSession(
       return {
         ok: false as const,
         attempted: true,
-        detail: `${reason}; Candidate B is retired but Stable A cutover/rollback outcome is not fully verified${cleanup.ok ? '' : `; Candidate B cleanup failed: ${cleanup.detail}`}`,
+        detail: `${reason}; Candidate B is retired but Stable A cutover/rollback outcome is not fully verified${projectionFailure}${cleanup.ok ? '' : `; Candidate B cleanup failed: ${cleanup.detail}`}`,
         releaseSession: session,
         ...(activation ? { activation } : {}),
       };

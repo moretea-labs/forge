@@ -10,12 +10,10 @@ import { createInterface } from "readline/promises";
 import { stdin, stdout } from "process";
 import { homedir } from "os";
 import {
-  cpSync,
   existsSync,
   mkdirSync,
   readFileSync,
   realpathSync,
-  rmSync,
   writeFileSync,
 } from "fs";
 import { dirname, join, resolve } from "path";
@@ -33,7 +31,6 @@ import { runSetupProcess as runProcess, withProcessEnv, type SetupExecutionStep 
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(SCRIPT_DIR, "..", "..", "..");
-const WAZA_SKILLS = ["think", "hunt", "check", "health"];
 const GBRAIN_INSTALL_ARGS = ["install", "-g", "github:garrytan/gbrain"] as const;
 const GLOBAL_RULES_BEGIN = "<!-- BEGIN: forge global-working-rules -->";
 const GLOBAL_RULES_END = "<!-- END: forge global-working-rules -->";
@@ -45,27 +42,12 @@ export interface GlobalContextOptions {
   reportLanguageInstruction: string;
 }
 
-/**
- * Cross-review skills bundled in this package under `assets/skills/<skill>` and
- * installed host-aware: `codex-review` (Claude host) lets a Claude session get an
- * independent Codex review; `claude-review` (Codex host) lets a Codex session get
- * an independent Claude review. They are self-contained (no gstack runtime), so
- * init bootstraps them as workflow-owned runtime skills alongside Waza and
- * Mermaid, not as an unrelated plugin marketplace stack.
- */
-const CROSS_REVIEW_SKILLS: ReadonlyArray<{ skill: string; host: "claude" | "codex" }> = [
-  { skill: "codex-review", host: "claude" },
-  { skill: "claude-review", host: "codex" },
-];
-
 export interface InitCommandOptions {
   repo?: string;
   sourceRoot?: string;
   apply?: boolean;
   verify?: boolean;
-  syncSkill?: boolean;
   hostAdapters?: boolean;
-  externalSkills?: boolean;
   globalContext?: GlobalContextOptions;
   brainRoot?: string;
   brainMode?: InitBrainMode;
@@ -91,16 +73,6 @@ interface Choice<T> {
   label: string;
   value: T;
   detail?: string;
-}
-
-function isNpxCacheSource(sourceRoot: string): boolean {
-  return /[\\/]_npx[\\/]/.test(sourceRoot);
-}
-
-function initCommandEnv(sourceRoot: string, env?: NodeJS.ProcessEnv): NodeJS.ProcessEnv | undefined {
-  if (!isNpxCacheSource(sourceRoot)) return env;
-  if (env?.AGENTIC_DEV_LINK_INSTALLED_COPIES !== undefined) return env;
-  return { ...(env ?? {}), AGENTIC_DEV_LINK_INSTALLED_COPIES: "0" };
 }
 
 function withStepName(step: InitStep, name: string, detail?: string): InitStep {
@@ -242,106 +214,13 @@ export function writeGlobalContextFiles(
   return { step: "global working rules", status: "ok", detail: changes.join(", ") };
 }
 
-/**
- * Install the bundled cross-review skills, each into the host where it is useful:
- * `codex-review` → `~/.claude/skills` (Claude calls Codex), `claude-review` →
- * `~/.codex/skills` (Codex calls Claude). Respects `target`, is idempotent
- * (identical SKILL.md → "already present"), and treats a missing bundled source
- * as `skipped` (never fails init).
- */
-export function syncCrossReviewSkills(
-  sourceRoot: string,
-  target: InstallTargetSpec,
-  env?: NodeJS.ProcessEnv,
-): InitStep[] {
-  const home = homeDir(env);
-  const steps: InitStep[] = [];
-  for (const { skill, host } of CROSS_REVIEW_SKILLS) {
-    const step = `cross-review skill ${skill}`;
-    if (target !== "both" && target !== host) continue;
-    if (!home) {
-      steps.push({ step, status: "failed", detail: "HOME is required to resolve host skill roots" });
-      continue;
-    }
-    const source = join(sourceRoot, "assets", "skills", skill);
-    const srcSkill = join(source, "SKILL.md");
-    if (!existsSync(srcSkill)) {
-      steps.push({ step, status: "skipped", detail: `bundled source not found at ${source}` });
-      continue;
-    }
-    const root = join(home, host === "claude" ? ".claude" : ".codex", "skills");
-    const dest = join(root, skill);
-    const destSkill = join(dest, "SKILL.md");
-    mkdirSync(root, { recursive: true });
-    if (
-      existsSync(dest) &&
-      (samePath(source, dest) ||
-        (existsSync(destSkill) && readFileSync(destSkill, "utf-8") === readFileSync(srcSkill, "utf-8")))
-    ) {
-      steps.push({ step, status: "ok", detail: "already present" });
-      continue;
-    }
-    if (existsSync(dest)) {
-      rmSync(dest, { recursive: true, force: true });
-    }
-    cpSync(source, dest, { recursive: true });
-    steps.push({ step, status: "ok", detail: `synced ${dest}` });
-  }
-  return steps;
-}
-
-function installExternalSkills(sourceRoot: string, target: InstallTargetSpec, env?: NodeJS.ProcessEnv): InitStep[] {
-  const steps: InitStep[] = [];
-  const agents = hostAgents(target);
-  const waza = runProcess(
-    "npx",
-    [
-      "-y",
-      "skills",
-      "add",
-      "tw93/Waza",
-      "-g",
-      "-a",
-      ...agents,
-      "-s",
-      ...WAZA_SKILLS,
-      "-y",
-    ],
-    sourceRoot,
-    env,
-  );
-  steps.push(withStepName(waza, "external skills Waza", `target=${target}`));
-  const mermaid = runProcess(
-    "npx",
-    [
-      "-y",
-      "skills",
-      "add",
-      "BfdCampos/dotfiles",
-      "-g",
-      "-a",
-      ...agents,
-      "-s",
-      "mermaid",
-      "-y",
-    ],
-    sourceRoot,
-    env,
-  );
-  steps.push(withStepName(mermaid, "external skill mermaid", `target=${target}`));
-  steps.push(...syncCrossReviewSkills(sourceRoot, target, env));
-  return steps;
-}
-
 export function runInit(opts: InitCommandOptions = {}): InitCommandResult {
   const sourceRoot = resolve(opts.sourceRoot ?? REPO_ROOT);
   const repoRoot = resolve(opts.repo ?? process.cwd());
-  let commandEnv = initCommandEnv(sourceRoot, opts.env);
+  let commandEnv = opts.env;
   const apply = opts.apply !== false;
   const verify = opts.verify !== false;
-  const syncSkill = opts.syncSkill !== false;
   const hostAdapters = opts.hostAdapters !== false;
-  const externalSkills = opts.externalSkills === true;
   const brainMode = opts.brainMode ?? "skip";
   const target = opts.target ?? "both";
   const steps: InitStep[] = [];
@@ -359,17 +238,6 @@ export function runInit(opts: InitCommandOptions = {}): InitCommandResult {
       steps,
       lines: steps.flatMap(renderStep),
     };
-  }
-
-  if (syncSkill && apply) {
-    const step = runProcess("bash", [join(sourceRoot, "scripts", "sync-codex-installed-copies.sh")], sourceRoot, commandEnv);
-    steps.push(withStepName(step, "sync forge skills", `target=${target}`));
-  } else {
-    steps.push({
-      step: "sync forge skills",
-      status: "skipped",
-      detail: syncSkill ? "dry-run" : "disabled",
-    });
   }
 
   if (hostAdapters && apply) {
@@ -417,20 +285,6 @@ export function runInit(opts: InitCommandOptions = {}): InitCommandResult {
     commandEnv,
   );
   steps.push(withStepName(migrate, apply ? "apply Forge" : "plan Forge", repoRoot));
-
-  if (externalSkills && apply && migrate.status === "ok") {
-    steps.push(...installExternalSkills(sourceRoot, target, commandEnv));
-  } else {
-    steps.push({
-      step: "external skills",
-      status: "skipped",
-      detail: !externalSkills
-        ? "disabled"
-        : apply
-          ? "Forge did not apply cleanly"
-          : "dry-run",
-    });
-  }
 
   if (brainMode !== "skip" && apply && migrate.status === "ok") {
     const root = opts.brainRoot ?? commandEnv?.FORGE_BRAIN_ROOT;

@@ -38,6 +38,7 @@ import {
 import { McpSessionRegistry, type ClosableMcpTransport, type McpSessionRegistryOptions, type McpSessionRoute } from './session-registry';
 import { getConfiguredPublicOrigin, getPublicOrigin, registerMcpOAuthHttpRoutes } from './oauth-http';
 import { registerMcpHttpObservationRoutes } from './http-observation';
+import { reconcileFinishedMcpPosts } from './http-post-lifecycle';
 import { RUNTIME_MCP_CUTOVER_OUTCOME_UNKNOWN } from '../../../src/runtime/root/mcp-transport';
 import { packageConnectorCutoverDrainIsActive } from '../../../src/runtime/root/package-connector-service';
 export { isAllowedMcpOAuthRedirectUri, isIncompleteOAuthAuthorizeRequest } from './oauth-http';
@@ -390,6 +391,7 @@ export function admitMcpPost(
     sendReleaseCutoverDraining(res);
     return false;
   }
+  reconcileFinishedMcpPosts(stats.activePostStartedAt);
   if (stats.activePostStartedAt.size >= MAX_ACTIVE_POSTS) {
     stats.rejectedOverload += 1;
     res.setHeader('retry-after', '1');

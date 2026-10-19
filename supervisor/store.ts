@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { mkdirSync } from 'node:fs';
 import { resolveWorkflowSupervisorForgeHome, workflowSupervisorDatabasePathValue, workflowSupervisorRootPath } from './paths';
@@ -161,7 +161,12 @@ function storedGeneration(value: unknown): number {
   return Number.isInteger(generation) && generation > 0 ? generation : 1;
 }
 function latestNotAppliedProofEventId(db: Database, effectId: string): number {
-  const notApplied = statement(db, "SELECT event_id FROM events WHERE effect_id = ? AND kind = 'effect_not_applied' ORDER BY event_id DESC LIMIT 1", (s) => s.get(effectId)) as { event_id?: number } | undefined;
+  // Delayed negative evidence from an older generation must not authorize
+  // another Send while the latest generation is outcome-unknown. Apply this
+  // read-side fence to journals written by earlier releases as well.
+  const dispatch = statement(db, "SELECT event_id,payload_json FROM events WHERE effect_id = ? AND kind = 'effect_dispatch_started' ORDER BY event_id DESC LIMIT 1", (s) => s.get(effectId)) as { event_id?: number; payload_json?: string } | undefined;
+  if (!dispatch?.event_id) return 0;
+  const notApplied = statement(db, "SELECT event_id FROM events WHERE effect_id = ? AND kind = 'effect_not_applied' AND event_id > ? AND json_extract(payload_json,'$.dispatch_generation') = ? ORDER BY event_id DESC LIMIT 1", (s) => s.get(effectId, dispatch.event_id, storedGeneration(dispatch.payload_json))) as { event_id?: number } | undefined;
   return Number(notApplied?.event_id ?? 0);
 }
 
@@ -1153,6 +1158,42 @@ export class WorkflowSupervisorStore {
     if (waiting) return waiting;
     return { state: 'inert' };
   }
+  /**
+   * Consecutive genuinely failed task-local attempts since the last durable
+   * provider progress or conversation move. Counts across failure codes and
+   * Runtime restarts; an unknown submission observation is NOT a failed send.
+   * This is a projection of the existing Supervisor journal, not another
+   * mutable retry or delivery authority.
+   */
+  automaticConversationFailureEvidence(taskId: string): { count: number; latestEventId: number; lastFailureAtMs: number } {
+    return this.read((db) => {
+      const row = statement(db, `SELECT COUNT(*) AS total, COALESCE(MAX(event_id),0) AS latest_id, MAX(occurred_at) AS last_at
+        FROM events WHERE task_id = ? AND kind IN (
+          'effect_preflight_rejected', 'assistant_provider_failed',
+          'assistant_recovery_exhausted', 'browser_delivery_attempt_failed'
+        ) AND event_id > COALESCE((
+          SELECT MAX(event_id) FROM events WHERE task_id = ?
+            AND kind IN ('effect_applied','assistant_completion','conversation_migrated')
+        ),0)`, (s) => s.get(taskId, taskId)) as { total?: number; latest_id?: number; last_at?: string };
+      return { count: Number(row?.total ?? 0), latestEventId: Number(row?.latest_id ?? 0),
+        lastFailureAtMs: Date.parse(row?.last_at ?? '') || 0 };
+    });
+  }
+
+  /** Journal one attempted task-local Computer operation, never a guessed Send. */
+  recordBrowserDeliveryAttemptFailure(input: { taskId: string; conversationId: string; code: string; effectId?: string }): void {
+    this.transaction((db) => {
+      const task = statement(db, 'SELECT conversation_id FROM tasks WHERE task_id = ?', (s) => s.get(input.taskId)) as { conversation_id?: string } | undefined;
+      // An old tab or pre-migration provider result cannot charge the new chat.
+      if (!task || task.conversation_id !== input.conversationId) return;
+      statement(db, 'INSERT INTO events(task_id,event_key,kind,effect_id,payload_json,occurred_at) VALUES (?,?,?,?,?,?)', (s) => s.run(
+        input.taskId, `browser-delivery-failed:${input.taskId}:${randomUUID()}`,
+        'browser_delivery_attempt_failed', input.effectId ?? null,
+        json({ conversation_id: input.conversationId, code: input.code.slice(0, 128), phase: 'task_local_pre_mutation' }), now(),
+      ));
+    });
+  }
+
   /** One operator-approved repair of a proven pre-send failure, never a provider retry refund. */
   authorizeOperatorPreflightRetry(input: { effectId: string; requestId: string; reason: string; authorizedBy: string }): { deduplicated: boolean } {
     return this.transaction((db) => {
@@ -1711,9 +1752,13 @@ export class WorkflowSupervisorStore {
       const payload = json(proof);
       const existing = statement(db, 'SELECT kind,payload_json FROM events WHERE event_key = ?', (s) => s.get(key)) as { kind?: string; payload_json?: string } | undefined;
       if (existing && (existing.kind !== 'effect_not_applied' || existing.payload_json !== payload)) throw new Error('WORKFLOW_SUPERVISOR_OBSERVATION_ID_CONFLICT');
-      statement(db, 'INSERT OR IGNORE INTO events(task_id,event_key,kind,effect_id,payload_json,occurred_at) VALUES (?,?,?,?,?,?)', (s) => s.run(effect.task_id, key, 'effect_not_applied', effectId, payload, now()));
+      if (existing) return; // An identical old receipt is idempotent, not fresh retry authority.
       const ledger = effectDispatchLedger(db, effectId);
       const proofGeneration = Number(proof.dispatch_generation);
+      if (!Number.isInteger(proofGeneration) || proofGeneration < 1 || proofGeneration !== ledger.lastGeneration) {
+        throw new Error('WORKFLOW_SUPERVISOR_NOT_APPLIED_PROOF_GENERATION_STALE');
+      }
+      statement(db, 'INSERT OR IGNORE INTO events(task_id,event_key,kind,effect_id,payload_json,occurred_at) VALUES (?,?,?,?,?,?)', (s) => s.run(effect.task_id, key, 'effect_not_applied', effectId, payload, now()));
       const legacyRefund = statement(db, 'SELECT event_id FROM events WHERE event_key = ?', (s) => s.get(`effect-dispatch-budget-refund:${effectId}`)) as { event_id?: number } | undefined;
       const legacyRefundCoversGeneration = proofGeneration === WORKFLOW_SUPERVISOR_MAX_DISPATCH_GENERATIONS && Boolean(legacyRefund);
       if (proof.pre_send_rejection === true

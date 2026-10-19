@@ -22,6 +22,7 @@ import {
 
 export const GMAIL_PLUGIN_ID = 'gmail';
 export const GMAIL_AUTOMATION_CAPABILITY_ID = 'scheduled-gmail-automation';
+export const GMAIL_OWNER_NOTIFICATION_CAPABILITY_ID = 'owner-notification';
 const GMAIL_AUTOMATION_GRANT_MINUTES = 90 * 24 * 60;
 
 function gmailAutomationMailbox(config: GmailPluginConfig): string {
@@ -110,9 +111,16 @@ function gmailCapabilities(): AssistantPluginCapability[] {
     {
       capabilityId: GMAIL_AUTOMATION_CAPABILITY_ID,
       title: 'Scheduled Gmail Automation',
-      description: 'After an explicit reusable grant, archive selected messages in the configured, profile-verified owner mailbox and send Forge/Gmail notifications only to that mailbox. This does not authorize arbitrary mail, replies, or trash.',
-      scopes: ['gmail.modify', 'gmail.send'],
-      actions: ['authorize_scheduled_gmail_automation', 'archive_scheduled_message', 'send_owner_notification'],
+      description: 'After an explicit reusable grant, archive selected messages in the profile-verified mailbox. This does not authorize sending mail, replies or trash.',
+      scopes: ['gmail.modify'],
+      actions: ['authorize_scheduled_gmail_automation', 'archive_scheduled_message'],
+    },
+    {
+      capabilityId: GMAIL_OWNER_NOTIFICATION_CAPABILITY_ID,
+      title: 'Owner Authorization Email',
+      description: 'Send Forge authorization/approval notices exclusively to the configured, Google-profile-verified owner mailbox. Does not authorize archive, replies, trash or arbitrary recipients.',
+      scopes: ['gmail.send'],
+      actions: ['authorize_owner_notifications', 'send_owner_notification'],
     },
   ];
 }
@@ -315,7 +323,7 @@ function gmailActions(): AssistantPluginActionDescriptor[] {
     {
       actionId: 'authorize_scheduled_gmail_automation',
       title: 'Authorize scheduled Gmail automation',
-      description: 'Explicitly grant Forge up to 90 days of permission to archive selected messages and send Forge/Gmail notifications only to the configured, profile-verified Gmail mailbox. This action sends no email and does not authorize arbitrary messages, replies, or trash.',
+      description: 'Explicitly grant Forge up to 90 days to archive selected messages in the configured, profile-verified Gmail mailbox. It does not authorize sending messages or trash.',
       readOnly: false,
       risk: 'remote_write',
       confirmation: 'authorization',
@@ -323,7 +331,7 @@ function gmailActions(): AssistantPluginActionDescriptor[] {
       defaultTimeoutMs: 30_000,
       cancellable: false,
       idempotent: true,
-      scopes: ['gmail.modify', 'gmail.send'],
+      scopes: ['gmail.modify'],
       resourceClaims: [{ resource: 'repo-state', mode: 'write' }],
       argumentsSchema: { type: 'object', properties: {}, additionalProperties: false },
     },
@@ -346,6 +354,21 @@ function gmailActions(): AssistantPluginActionDescriptor[] {
         required: ['message_id'],
         additionalProperties: false,
       },
+    },
+    {
+      actionId: 'authorize_owner_notifications',
+      title: 'Authorize owner notification emails',
+      description: 'Explicitly allow Forge to send future authorization requests to this verified Gmail account, with links to affected ChatGPT conversations. Does not grant archiving, replies or arbitrary recipients.',
+      readOnly: false,
+      risk: 'remote_write',
+      confirmation: 'authorization',
+      requiredConfirmationText: 'authorize-owner-notifications',
+      defaultTimeoutMs: 30_000,
+      cancellable: false,
+      idempotent: true,
+      scopes: ['gmail.send'],
+      resourceClaims: [{ resource: 'repo-state', mode: 'write' }],
+      argumentsSchema: { type: 'object', properties: {}, additionalProperties: false },
     },
     {
       actionId: 'send_owner_notification',
@@ -827,11 +850,19 @@ export async function executeGmailPluginAction(input: AssistantPluginActionExecu
       return gmailProvider(current, input.repoRoot).createDraft(input.args, current);
     case 'send_message':
       return gmailProvider(current, input.repoRoot).sendMessage(input.args, current);
+    case 'authorize_owner_notifications':
+      return {
+        authorizedMailbox: gmailAutomationMailbox(current),
+        capabilityId: GMAIL_OWNER_NOTIFICATION_CAPABILITY_ID,
+        scopes: ['gmail.send'],
+        grantLifetimeDays: 90,
+        sent: false,
+      };
     case 'authorize_scheduled_gmail_automation':
       return {
         authorizedMailbox: gmailAutomationMailbox(current),
         capabilityId: GMAIL_AUTOMATION_CAPABILITY_ID,
-        scopes: ['gmail.modify', 'gmail.send'],
+        scopes: ['gmail.modify'],
         grantLifetimeDays: 90,
         sent: false,
         note: 'The plugin action store records the reusable grant after this explicit authorization action succeeds.',
@@ -874,6 +905,7 @@ async function resolveGmailAutomationAuthorizationContext(input: AssistantPlugin
   if (![
     'authorize_scheduled_gmail_automation',
     'archive_scheduled_message',
+    'authorize_owner_notifications',
     'send_owner_notification',
   ].includes(input.actionId)) return undefined;
 

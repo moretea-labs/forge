@@ -279,10 +279,11 @@ export function authorizedDraftReplacementPrompt(
 }
 
 /**
- * A STOPPED bootstrap may leave an exact machine-authored draft in the shared
- * Project editor. The Supervisor ledger proves retirement and its prior
- * exact pre-Send editor digest attests the live bytes, even where ProseMirror
- * injected layout-derived whitespace. Foreign/human edits never qualify.
+ * An exact machine-owned draft can outlive its effect in a Project editor.
+ * Already-applied effects may be reflected by ChatGPT in other Project tabs;
+ * only the immutable full ledger prompt (allowing layout-only whitespace)
+ * qualifies. For never-sent STOPPED effects retain the original stricter
+ * preflight digest rule. Human, unknown-send and modified drafts never qualify.
  */
 export function retiredBootstrapDraftReplacementPrompt(
   control: WorkflowSupervisorControlPlane,
@@ -296,14 +297,27 @@ export function retiredBootstrapDraftReplacementPrompt(
   const match = /^<<<FORGE_WORKFLOW_EFFECT_V1:((?:fx|crpe)_[a-zA-Z0-9_-]{8,120})>>>/.exec(draft);
   if (!match) return;
   const staleEffect = control.getEffect(match[1]!);
-  if (!staleEffect || staleEffect.taskId === task.taskId
-    // No dispatch generation was ever opened, so the stopped effect could
-    // not have clicked Send. Ambiguous/applied/returned effects fail closed.
-    || control.effectDispatchBudget(staleEffect.effectId).generations !== 0) return;
-  const oldTask = control.getTask(staleEffect.taskId);
-  const retired = oldTask && control.getTaskByConversationId(oldTask.conversationId);
-  if (retired?.terminal !== 'STOPPED'
-    || control.bootstrapProjectUrl(staleEffect.taskId) !== control.bootstrapProjectUrl(task.taskId)) return;
+  if (!staleEffect || staleEffect.taskId === task.taskId) return;
+  const alreadyApplied = control.store.effectApplied(staleEffect.effectId);
+  // A live effect can only be retired after durable proof that its own Send
+  // already applied. This never treats an unknown Send as a safe draft.
+  if (alreadyApplied) {
+    if (snapshot.composerReplacementContract !== 'exact-backed-up-project-draft-v1') return;
+    let expected: URL; let actual: URL;
+    try { expected = new URL(control.bootstrapProjectUrl(task.taskId)); actual = new URL(snapshot.url); }
+    catch { return; }
+    const projectRoute = (url: URL) => /^\/g\/(g-p-[a-z0-9]+)(?:-[^/]+)?\/project\/?$/i.exec(url.pathname)?.[1]?.toLowerCase();
+    if (expected.origin !== 'https://chatgpt.com' || actual.origin !== expected.origin
+      || !projectRoute(expected) || projectRoute(actual) !== projectRoute(expected)) return;
+    const canonical = staleEffect.prompt.replace(/\r\n?/g, '\n');
+    if (draft.replace(/\s+/g, ' ').trim() !== canonical.replace(/\s+/g, ' ').trim()) return;
+  } else {
+    if (control.effectDispatchBudget(staleEffect.effectId).generations !== 0) return;
+    const oldTask = control.getTask(staleEffect.taskId);
+    const retired = oldTask && control.getTaskByConversationId(oldTask.conversationId);
+    if (retired?.terminal !== 'STOPPED'
+      || control.bootstrapProjectUrl(staleEffect.taskId) !== control.bootstrapProjectUrl(task.taskId)) return;
+  }
   const attested = control.preSendComposerObservation(staleEffect.effectId);
   // Both proofs are exact: the immutable effect text, or the previously
   // attested pre-Send editor bytes. The older extension could synthesize an
@@ -312,7 +326,7 @@ export function retiredBootstrapDraftReplacementPrompt(
   const fingerprint = sha256('preflight-composer-v1:\0' + draft).slice(0, 24);
   const exactSource = draft === staleEffect.prompt.replace(/\r\n?/g, '\n');
   const exactPreflight = attested?.fingerprint === fingerprint && attested.chars === draft.length;
-  if (!attested || (!exactSource && !exactPreflight)) return;
+  if (!alreadyApplied && (!attested || (!exactSource && !exactPreflight))) return;
   return '<<<FORGE_RETIRED_DRAFT_V1:' + staleEffect.effectId + ':' + fingerprint + '>>>\n' + prompt;
 }
 
@@ -404,7 +418,49 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     }
   }
 
-  private noteTaskFailure(code: string, task: WorkflowSupervisorBrowserTask, effectId?: string): void {
+  /** Rebuildable de-duplication only; SQLite events and CAS own the decision. */
+  private readonly automaticMigrationAttempted = new Map<string, { key: string; atMs: number }>();
+  /** Read-only provider progress, not another durable effect/Send ledger. */
+  private readonly stalledProviderObservations = new Map<string, { fingerprint: string; changedAtMs: number; failedProbeAtMs: number }>();
+
+  /**
+   * Fail over a proven repeatedly unusable conversation, not a provider-wide
+   * outage or an outcome-unknown Send. The canonical migration transaction
+   * enforces the existing maximum of two unsuccessful conversation moves.
+   */
+  private maybeAutoMigrate(task: WorkflowSupervisorBrowserTask): boolean {
+    if (task.conversationId.startsWith('bootstrap:')
+      || chatgptProviderBackpressureRemainingMs(this.deps.providerScopeKey, this.deps.nowMs()) > 0) return false;
+    const evidence = this.control.store.automaticConversationFailureEvidence(task.taskId);
+    if (evidence.count < 3 || evidence.latestEventId <= 0) return false;
+    const key = `${task.taskId}:${task.conversationId}:${evidence.latestEventId}`;
+    const attempt = this.automaticMigrationAttempted.get(task.taskId);
+    if (attempt?.key === key && this.deps.nowMs() - attempt.atMs < TASK_TARGET_RETRY_MAX_MS) return false;
+    this.automaticMigrationAttempted.set(task.taskId, { key, atMs: this.deps.nowMs() });
+    try {
+      const migrated = this.control.migrateConversation({
+        taskId: task.taskId,
+        expectedConversationId: task.conversationId,
+        fresh: true,
+        requestId: `automatic-delivery-fuse:${task.conversationId}:${evidence.latestEventId}`,
+        reason: `The same Supervisor conversation failed ${evidence.count} task-local delivery/progress attempts without an applied effect or completion. The prior conversation is not reused; the exact effect journal and existing two-migration cap remain authoritative.`,
+        authorizedBy: 'supervisor-automatic-delivery-fuse',
+      });
+      if (migrated.migrated) {
+        this.clearTaskFailure(task.taskId);
+        this.awaitingReceiptObservedAtMs.delete(task.taskId);
+      }
+      return migrated.migrated;
+    } catch (error) {
+      // A pending unknown send, exhausted migration budget, or stale task is a
+      // true safety barrier: do not replay it or bypass the canonical store.
+      const code = consumerFailureCode(error, 'WORKFLOW_SUPERVISOR_AUTOMATIC_MIGRATION_DENIED');
+      this.noteFailure(code, task);
+      return false;
+    }
+  }
+
+  private noteTaskFailure(code: string, task: WorkflowSupervisorBrowserTask, effectId?: string, countTowardFuse = true): void {
     const nowMs = this.deps.nowMs();
     const previous = this.taskTransportFailures.get(task.taskId);
     const failure: TaskTransportFailure = {
@@ -426,6 +482,17 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       });
     }
     this.taskTransportFailures.set(task.taskId, failure);
+    // Account-wide cooldown is not evidence that this *conversation* failed.
+    if (!countTowardFuse || chatgptProviderBackpressureRemainingMs(this.deps.providerScopeKey, nowMs) > 0) return;
+    // Preflight rejections are already one durable failed attempt in the
+    // Supervisor effect ledger; counting them again would double the fuse.
+    if (code !== SUPERVISOR_PRE_SEND_BLOCKED) {
+      this.control.store.recordBrowserDeliveryAttemptFailure({
+        taskId: task.taskId, conversationId: task.conversationId, code,
+        ...(effectId ? { effectId } : {}),
+      });
+    }
+    this.maybeAutoMigrate(task);
   }
 
   private clearTaskFailure(taskId: string, effectId?: string): void {
@@ -441,10 +508,14 @@ export class WorkflowSupervisorNativeBrowserAdapter {
   }
 
   private noteTargetUnavailable(task: WorkflowSupervisorBrowserTask, effectId: string | undefined, failure: { code: string; humanAction?: 'login' | 'grant_permission' }): void {
-    // Exact-target failure is task-local. It must not back off unrelated
-    // Supervisor conversations; only provider-wide inventory/backpressure does.
+    // A user login/grant problem cannot be fixed by a different conversation.
+    if (failure.humanAction) {
+      this.noteTaskFailure(failure.code, task, effectId, false);
+      this.deps.requestHumanAction?.({ taskId: task.taskId, ...(effectId ? { effectId } : {}), action: failure.humanAction, code: failure.code });
+      return;
+    }
+    // Task-local failures are spaced independently of unrelated conversations.
     this.noteTaskFailure(failure.code, task, effectId);
-    if (failure.humanAction) this.deps.requestHumanAction?.({ taskId: task.taskId, ...(effectId ? { effectId } : {}), action: failure.humanAction, code: failure.code });
   }
 
   private syncTaskStallProjections(): void {
@@ -486,6 +557,14 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       catch (error) { this.deps.onError(error); }
       this.projectedTaskStalls.delete(taskId);
     }
+    this.pruneAutomaticRecoveryProjections(activeTaskIds);
+  }
+
+  private pruneAutomaticRecoveryProjections(activeTaskIds: ReadonlySet<string>): void {
+    for (const id of this.automaticMigrationAttempted.keys())
+      if (!activeTaskIds.has(id)) this.automaticMigrationAttempted.delete(id);
+    for (const id of this.stalledProviderObservations.keys())
+      if (!activeTaskIds.has(id)) this.stalledProviderObservations.delete(id);
   }
 
   private dueCommand(nowMs: number): WorkflowSupervisorConsumerStatus['dueCommand'] {
@@ -554,7 +633,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     this.timer = undefined;
     await this.inflight?.catch(() => undefined);
     await this.deps.targetPort.close().catch(() => undefined);
-    this.observedAssistant.clear(); this.providerFailureSeen.clear(); this.providerFailureAwaitingClear.clear(); this.freshSendCheckedAt.clear(); this.taskTransportFailures.clear(); this.projectedTaskStalls.clear(); this.awaitingReceiptObservedAtMs.clear(); this.idleResourceSinceMs.clear();
+    this.observedAssistant.clear(); this.providerFailureSeen.clear(); this.providerFailureAwaitingClear.clear(); this.freshSendCheckedAt.clear(); this.taskTransportFailures.clear(); this.projectedTaskStalls.clear(); this.awaitingReceiptObservedAtMs.clear(); this.idleResourceSinceMs.clear(); this.automaticMigrationAttempted.clear(); this.stalledProviderObservations.clear();
   }
 
   async runOnce(): Promise<void> {
@@ -563,7 +642,29 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     // Preserve fresh-send fairness across ticks. serviceFreshSend prunes
     // retired effect ids; resetting here repeatedly favors the first task.
     this.lastRunTransportUnavailable = false;
+    // One Supervisor terminal-event authority. A Work closed while this
+    // consumer was offline cannot keep delivering a stale effect on restart.
+    this.control.reconcileTerminalWorkBoundTasks();
     this.syncTaskStallProjections();
+    const previouslyObservedTasks = this.control.browserTasks();
+    // Read-only watchdog for a pre-send blocked task: after each bounded
+    // interval with no applied effect or completion, record a failed progress
+    // check in the same journal. This is not a Send/retry attempt.
+    for (const task of previouslyObservedTasks) {
+      const stall = this.control.taskStall(task.taskId);
+      if (stall.state === 'spaced' && stall.reason === 'pre_send_infrastructure_blocked') {
+        const evidence = this.control.store.automaticConversationFailureEvidence(task.taskId);
+        if (evidence.count > 0 && evidence.count < 3
+          && this.deps.nowMs() - evidence.lastFailureAtMs >= AWAITING_RECEIPT_OBSERVATION_MS
+          && chatgptProviderBackpressureRemainingMs(this.deps.providerScopeKey, this.deps.nowMs()) === 0) {
+          this.control.store.recordBrowserDeliveryAttemptFailure({ taskId: task.taskId,
+            conversationId: task.conversationId, effectId: stall.effectId, code: 'WORKFLOW_SUPERVISOR_NO_SEND_PROGRESS_WATCHDOG' });
+        }
+        this.maybeAutoMigrate(task);
+      }
+    }
+    // The watchdog may have changed the exact Task conversation identity.
+    // Never process a stale pre-migration browser task in this tick.
     const tasks = this.control.browserTasks();
     this.lastRunHadTasks = tasks.length > 0;
     let inventory;
@@ -715,6 +816,26 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     this.conversations.push({ conversation_id: task.conversationId, canonical_url: task.conversationUrl,
       ...(snapshot.title.trim() ? { title: snapshot.title.trim().slice(0, 512) } : {}), ...projectMetadataFromConversationUrl(snapshot.url) });
     const providerBusy = snapshot.isGenerating;
+    // Recovery-exhausted tasks can otherwise remain visibly stalled without a
+    // new exception. Three spaced, unchanged exact-page observations trip the
+    // same durable fuse; changing assistant activity resets this observation.
+    if (!poll.command && this.control.taskStall(task.taskId).state === 'provider_resume_exhausted') {
+      const fingerprint = sha256(JSON.stringify({ text: snapshot.latestAssistantResponse,
+        activity: snapshot.providerActivityText, failure: snapshot.providerFailureText, generating: providerBusy }));
+      const previous = this.stalledProviderObservations.get(task.taskId);
+      if (!previous || previous.fingerprint !== fingerprint) {
+        this.stalledProviderObservations.set(task.taskId, {
+          fingerprint, changedAtMs: this.deps.nowMs(), failedProbeAtMs: this.deps.nowMs(),
+        });
+      } else if (this.deps.nowMs() - previous.changedAtMs >= 2 * AWAITING_RECEIPT_OBSERVATION_MS
+        && this.deps.nowMs() - previous.failedProbeAtMs >= AWAITING_RECEIPT_OBSERVATION_MS
+        && chatgptProviderBackpressureRemainingMs(this.deps.providerScopeKey, this.deps.nowMs()) === 0) {
+        previous.failedProbeAtMs = this.deps.nowMs();
+        this.control.store.recordBrowserDeliveryAttemptFailure({ taskId: task.taskId,
+          conversationId: task.conversationId, code: 'WORKFLOW_SUPERVISOR_PROVIDER_NO_PROGRESS_WATCHDOG' });
+        if (this.maybeAutoMigrate(task)) return;
+      }
+    } else this.stalledProviderObservations.delete(task.taskId);
     const latestRoleStillUser = snapshot.latestTurnRole === 'user';
     // Capacity is only authoritative on dedicated live provider UI. A model
     // can quote the same phrase in an ordinary assistant turn; historical
@@ -877,7 +998,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       const dispatch = await withChatgptProviderDispatchLane(this.deps.providerScopeKey, () => target.dispatch(command.prompt),
         (result) => result.mutation === 'attempted' ? { providerAccepted: result.confirmed === true } : { code: result.reasonCode, message: result.reasonCode });
       if (dispatch.mutation === 'not_attempted') {
-        this.control.bootstrapObserveEffect({ taskId: task.taskId, effectId: command.effectId, observationId: `bootstrap-${randomUUID()}`, outcome: 'not_applied', evidence: { pre_send_rejection: true, reason: dispatch.reasonCode } });
+        this.control.bootstrapObserveEffect({ taskId: task.taskId, effectId: command.effectId, observationId: `bootstrap-${randomUUID()}`, outcome: 'not_applied', evidence: { dispatch_mutation: 'not_attempted', send_clicked: false, reason: dispatch.reasonCode } });
         this.control.recordProviderPreparationFailure({ taskId: task.taskId, effectId: command.effectId,
           reasonCode: dispatch.reasonCode ?? 'COMPUTER_CHATGPT_DISPATCH_NOT_ATTEMPTED', composerObservation: preflightComposerObservation(beforeSend, command.effectId) });
         await this.deps.targetPort.release(target.targetId).catch(() => undefined);
@@ -1002,7 +1123,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     }
     if (dispatch.confirmed) {
       this.control.browserObserveEffect({ conversationId: command.conversationId, conversationUrl: command.conversationUrl, effectId: command.effectId,
-        observationId: `computer-observe-${randomUUID()}`, outcome: 'applied', evidence: { surface: 'computer-chatgpt-target', target_id: target.targetId, provider_confirmed: true, ...(dispatch.reasoningVerified ? { reasoning_verified: dispatch.reasoningVerified } : {}) } });
+        observationId: `computer-observe-${randomUUID()}`, outcome: 'applied', evidence: { surface: 'computer-chatgpt-target', target_id: target.targetId, provider_confirmed: true } });
       return;
     }
     let exact = false; let markerPresent = false;
@@ -1014,7 +1135,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     }
     this.control.browserObserveEffect({ conversationId: command.conversationId, conversationUrl: command.conversationUrl, effectId: command.effectId,
       observationId: `computer-observe-${randomUUID()}`, outcome: exact || markerPresent ? 'applied' : 'unknown',
-      evidence: { surface: 'computer-chatgpt-target', target_id: target.targetId, exact_user_message: exact, target_marker_present: markerPresent, ...(dispatch.reasoningVerified ? { reasoning_verified: dispatch.reasoningVerified } : {}),
+      evidence: { surface: 'computer-chatgpt-target', target_id: target.targetId, exact_user_message: exact, target_marker_present: markerPresent,
         ...(!exact && !markerPresent ? { reason: 'outbound_not_confirmed', observation_fingerprint: unknownObservationFingerprint(command.effectId, 'outbound_not_confirmed', snapshot) } : {}) } });
   }
 }

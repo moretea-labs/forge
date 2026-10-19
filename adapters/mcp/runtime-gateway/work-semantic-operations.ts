@@ -21,6 +21,42 @@ import { projectWorkExecutionEvidence } from './work-detail-projection';
 import { readWorkHandle } from '../../../src/runtime/control-plane/execution/work-handle-store';
 import { reconcileSingleTerminalWorkCleanup } from '../../../src/runtime/control-plane/execution/work-terminal-cleanup';
 
+import { existsSync } from 'node:fs';
+import { getWorkflowSupervisorTask, stopWorkflowSupervisorTask } from '../../../supervisor/client';
+import { workflowSupervisorSocketPath } from '../../../supervisor/paths';
+
+async function stopTerminalWorkSupervisor(
+  options: WorkContractStoreOptions,
+  workId: string,
+  state: 'completed' | 'cancelled',
+): Promise<{ status: 'stopped' | 'already_terminal' | 'not_enrolled' | 'pending_reconcile'; reason?: string }> {
+  const controllerHome = options.controllerHome;
+  const repoId = options.repoId?.trim();
+  if (!controllerHome || !repoId || !existsSync(workflowSupervisorSocketPath(controllerHome))) {
+    return { status: 'pending_reconcile', reason: 'Supervisor socket unavailable; native consumer will reconcile terminal Work on restart.' };
+  }
+  const taskId = `forge:${repoId}:work:${workId}`;
+  try {
+    const task = await getWorkflowSupervisorTask(controllerHome, taskId);
+    if (!task) return { status: 'not_enrolled' };
+    // Fail closed: an unrelated Requirement/standalone Goal must never be
+    // stopped by a lower-layer Work transition.
+    if (task.taskId !== taskId || task.completionContract?.work_id !== workId
+      || task.completionContract?.repo_id !== repoId
+      || task.continuationPolicy.kind === 'standalone_supervisor') {
+      return { status: 'pending_reconcile', reason: 'Supervisor task contract is not exact Work-owned.' };
+    }
+    const stopped = await stopWorkflowSupervisorTask(controllerHome, taskId, `Work ${workId} changed to ${state}; its exact Work-owned automatic continuation is closed.`);
+    return { status: stopped.deduplicated ? 'already_terminal' : 'stopped' };
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    const code = reason.split(':', 1)[0]?.trim();
+    if (code === 'WORKFLOW_SUPERVISOR_TASK_UNKNOWN') return { status: 'not_enrolled' };
+    if (code === 'WORKFLOW_SUPERVISOR_TASK_TERMINAL') return { status: 'already_terminal' };
+    return { status: 'pending_reconcile', reason };
+  }
+}
+
 const RH_WORK_SEMANTIC_OPERATIONS = new Set(['start', 'get', 'revise', 'complete']);
 
 type WorkSemanticFacadeData = Record<string, unknown> & {
@@ -239,6 +275,9 @@ export async function callRhWorkSemanticOperation(
       ...(Array.isArray(args.work_result_refs) ? { resultRefs: args.work_result_refs.map(String) } : {}),
     });
     const semantic = workSemanticView(revised);
+    const supervisorClosure = semantic.state !== 'open'
+      ? await stopTerminalWorkSupervisor(store, semantic.workId, semantic.state)
+      : undefined;
     let resourceReconciliation: Awaited<ReturnType<typeof reconcileSingleTerminalWorkCleanup>> | undefined;
     if (
       semantic.state !== 'open'
@@ -267,6 +306,7 @@ export async function callRhWorkSemanticOperation(
         expectedRevision,
         semanticRevision: semantic.revision,
         versionBinding: versionBinding(store, revised, false),
+        ...(supervisorClosure ? { supervisorClosure } : {}),
         ...(resourceReconciliation ? { resourceReconciliation } : {}),
       },
     }) as unknown as Record<string, unknown>);

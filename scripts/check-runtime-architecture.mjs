@@ -1137,7 +1137,8 @@ requireText('packages/kernel/scheduler/infrastructure/schedule-store.ts', "sched
 requireText('packages/kernel/scheduler/infrastructure/schedule-store.ts', 'const schedule: RepositorySchedule = { ...candidate, policy: boundedSchedulePolicy(candidate) };');
 requireText('packages/kernel/scheduler/infrastructure/schedule-store.ts', 'policy: boundedSchedulePolicy(candidate),');
 requireText('src/cli/local-bridge/console-automations.ts', "schedule.action.operation === 'external_controller_wake' || schedule.action.operation === 'controller_progression'");
-requireText('tests/runtime/rh-work-scheduler-adapter.test.ts', "cronDue('0 8 */2 * *', Date.parse('2026-10-17T00:00:00.000Z'), 'Asia/Shanghai')");
+requireText('tests/runtime/rh-work-scheduler-adapter.test.ts', "cronDue('0 8 * * *', Date.parse('2026-10-17T00:00:00.000Z'), 'Asia/Shanghai')");
+requireText('tests/runtime/rh-work-scheduler-adapter.test.ts', "cronDue('0 8 * * *', Date.parse('2026-10-18T00:00:00.000Z'), 'Asia/Shanghai')");
 requireText('src/runtime/workflow/schedules/engine.ts', 'schedule.action.operation === CONTROLLER_PROGRESSION_OPERATION');
 requireText('src/runtime/workflow/schedules/work-continuation.ts', "const CONTROLLER_PROGRESSION_OPERATION = 'controller_progression';");
 requireText('src/runtime/workflow/schedules/pending-activation.ts', "const CONTROLLER_PROGRESSION_OPERATION = 'controller_progression';");
@@ -1155,6 +1156,13 @@ requireText('src/runtime/plugins/gmail-adapter.ts', 'expiresInMinutes: GMAIL_AUT
 requireText('src/runtime/plugins/store.ts', 'if (action.requiresExplicitCapabilityGrant && !activeAuthorizationGrant)');
 requireText('src/runtime/plugins/store.ts', 'PLUGIN_CAPABILITY_GRANT_REQUIRED');
 requireText('src/runtime/root/workflow-supervisor-runtime.ts', 'notificationRequestId');
+requireText('src/runtime/root/workflow-supervisor-runtime.ts', 'export function recordUnknownSupervisorNotificationReceipt(');
+requireText('src/runtime/root/workflow-supervisor-runtime.ts', 'readPluginActionReceiptForRequest(controllerHome, input.requestId)');
+requireText('src/runtime/root/workflow-supervisor-runtime.ts', 'submitted.receipt');
+requireText('tests/runtime/thin-capability-substrate.test.ts', 'unknown Gmail Supervisor notification keeps one exact receipt');
+requireText('src/runtime/root/workflow-supervisor-runtime.ts', "notificationRequestId('stall', taskId, stall.state, stall.effectId)");
+requireText('src/runtime/root/workflow-supervisor-runtime.ts', 'getDirectActivity(controllerHome, stallActivityId(taskId))');
+requireText('packages/kernel/identity/infrastructure/activity-projection-store.ts', 'export function getDirectActivity(');
 requireText('src/runtime/root/workflow-supervisor-runtime.ts', "stall.state === 'retryable' && stall.generations >= stall.maxGenerations");
 requireText('src/runtime/root/workflow-supervisor-runtime.ts', 'workflow-supervisor.notification-auth:');
 requireText('supervisor/types.ts', "export type WorkflowSupervisorAction = 'CONTINUE' | 'WAIT' | 'DONE' | 'NEEDS_USER';");
@@ -1184,7 +1192,10 @@ requireText('src/runtime/root/controller-progression-composition.ts', "if (wake.
 requireText('src/runtime/root/controller-progression-composition.ts', "status: 'scheduled_supervisor_woken'");
 requireText('src/runtime/workflow/schedules/engine.ts', "progression.status === 'scheduled_supervisor_woken'");
 requireText('tests/runtime/rh-work-scheduler-adapter.test.ts', 'executes two distinct cron occurrences through the same durable WAIT task without pausing the Schedule');
-requireText('tests/runtime/rh-work-scheduler-adapter.test.ts', "cron_expression: '0 8 */2 * *'");
+requireText('tests/runtime/rh-work-scheduler-adapter.test.ts', "schedule_request_id: 'schedule-daily-gmail-two-consecutive-occurrences'");
+requireText('tests/runtime/rh-work-scheduler-adapter.test.ts', "cron_expression: '0 8 * * *'");
+requireText('tests/runtime/rh-work-scheduler-adapter.test.ts', "2026-10-18@08:00[Asia/Shanghai]");
+requireText('tests/runtime/rh-work-scheduler-adapter.test.ts', '2026-11-01T00:00:00.000Z');
 requireText('tests/runtime/rh-work-scheduler-adapter.test.ts', "evaluateSchedule(controllerHome, created.data.schedule, false, { source: 'timer' })");
 requireText('src/runtime/workflow/schedules/engine.ts', "schedule.action.operation !== CONTROLLER_PROGRESSION_OPERATION");
 requireText('src/runtime/root/workflow-supervisor-runtime.ts', 'authorizationGrantRefs: [grant.grantId]');
@@ -1369,9 +1380,7 @@ requireText('src/runtime/plugins/browser-macos-bridge.ts', 'await assertMacOsBro
 requireText('adapters/computer/chrome-extension/manifest.json', 'nativeMessaging');
 requireText('adapters/computer/chrome-extension/background.js', 'computer_extension_claim');
 requireText('adapters/computer/chrome-extension/background.js', 'computer_extension_complete');
-requireText('adapters/computer/chrome-extension/content.js', 'reasoningControlReady: Boolean(reasoningControl())');
 requireText('adapters/computer/chrome-extension/background.js', "typeof observation.composerText === 'string'");
-forbid('adapters/computer/chrome-extension/background.js', /observation\.reasoningControlReady\s*===\s*true/, 'Bootstrap composer hydration must not depend on the optional reasoning picker');
 requireText('adapters/computer/chrome-extension/background.js', "command.identity.namespace === 'chatgpt.bootstrap'");
 forbid('adapters/computer/chrome-extension/background.js', /if \(typeof observation\?\.url === 'string' && observation\.url\) return observation/, 'New bootstrap URL does not attest composer/model hydration before pre-send preparation');
 requireText('adapters/computer/chrome-extension/background.js', 'chrome.runtime.connectNative');
@@ -1382,11 +1391,6 @@ requireText('adapters/computer/chrome-extension/content.js', 'exactComposerText(
 requireText('adapters/computer/chrome-extension/content.js', "return text.trim() ? text : '';");
 requireText('adapters/computer/chrome-extension/content.js', "blocks.every((block) => block.tagName === 'P')");
 requireText('adapters/computer/chrome-extension/content.js', "blocks.map((block) => {");
-requireText('adapters/computer/chrome-extension/content.js', '选择 chatgpt 模型');
-requireText('adapters/computer/chrome-extension/content.js', 'keyboardControl.dispatchEvent(new KeyboardEvent');
-requireText('adapters/computer/chrome-extension/content.js', "control.getAttribute?.('aria-expanded') !== 'true'");
-forbid('adapters/computer/chrome-extension/content.js', /slider\.dispatchEvent\(new KeyboardEvent/, 'The aria-hidden GPT-6 slider is read-only evidence; the enclosing reasoning menuitem owns keyboard input');
-forbid('adapters/computer/chrome-extension/content.js', /conversationRoot\(\)\.querySelectorAll\(selectors\)/, 'The model/reasoning control is in the visible ChatGPT app header outside main; only message extraction belongs to the conversation root');
 requireText('adapters/computer/chrome-extension/background.js', 'resolveTarget(command.identity, false, command.providerBinding)');
 requireText('adapters/computer/chatgpt-extension-target.ts', "response.result.code === 'COMPUTER_CHATGPT_BOOTSTRAP_PINNED_TAB_MISSING'");
 requireText('adapters/computer/chatgpt-extension-target.ts', 'this.authority.withSurfaceLease(this.controllerHome, previous.targetId');
@@ -2423,6 +2427,9 @@ for (const path of productionTypeScriptFiles()) {
   forbid(path, controllerRepoCallPattern, 'production controller-plugin paths must not recreate a fake controller RepositoryRecord');
 }
 requireText('src/runtime/plugins/store.ts', 'const CONTROLLER_PLUGIN_SCOPE_KEY = FORGE_INSTANCE_SCOPE_KEY');
+requireText('src/runtime/plugins/store.ts', 'export function preflightPluginActionWorkBinding(');
+requireText('src/runtime/plugins/action-application.ts', 'preflightPluginActionWorkBinding(input.controllerHome, input.scope, action, input.request);');
+requireText('tests/runtime/external-plugin-store-integration.test.ts', 'rejects invalid Work kind without consuming the Process request id');
 forbidBetween(
   'src/runtime/plugins/store.ts',
   'function controllerPluginActionScope',

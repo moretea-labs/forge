@@ -97,8 +97,17 @@ test('retired bootstrap replacement rejects no-click evidence recorded after STO
   expect(f.replace()).toBeUndefined();
 });
 
-test('retired bootstrap replacement rejects an effect with any dispatch generation', () => {
+test('old machine drafts require either a STOPPED no-click proof or an already-applied exact effect', () => {
   const f = fixture();
   Object.defineProperty(f.control, 'effectDispatchBudget', { value: () => ({ generations: 1 }) });
   expect(f.replace()).toBeUndefined();
+  const applied = fixture({ stopOld: false, oldProjectUrl: 'https://chatgpt.com/g/g-p-other/project' });
+  applied.control.store.recordEffectDispatchStarted(applied.oldEffect.effectId, 1, 'source-claim', { surface: 'test' });
+  applied.control.store.recordEffectObservation(applied.oldEffect.effectId, 'source-applied', 'applied', { surface: 'test' });
+  const loaded = { composerReplacementContract: 'exact-backed-up-project-draft-v1' };
+  expect(applied.replace(loaded)).toBe('<<<FORGE_RETIRED_DRAFT_V1:' + applied.oldEffect.effectId + ':'
+    + applied.fingerprint + '>>>\n' + applied.currentEffect.prompt);
+  expect(applied.replace({ ...loaded, composerText: applied.draft + ' human' })).toBeUndefined();
+  expect(applied.replace({ composerReplacementContract: undefined })).toBeUndefined();
+  expect(applied.replace({ ...loaded, url: 'https://chatgpt.com/g/g-p-other/project' })).toBeUndefined();
 });

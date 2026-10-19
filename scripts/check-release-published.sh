@@ -52,6 +52,5 @@ if (packed.shasum !== view["dist.shasum"]) fail("packed tarball shasum does not 
 JS_EOF
 
 git rev-parse -q --verify "refs/tags/v${PACKAGE_VERSION}" >/dev/null
-bun scripts/check-skill-version.ts --project . >/dev/null
 
 echo "[release-published] OK: registry, ${PACKAGE_DIST_TAG} dist-tag, tarball, tag, and local version files agree."

@@ -6,6 +6,7 @@ import {
   type ControllerSession,
 } from '../../../packages/kernel/controller/api/index';
 import { upsertChatgptControllerBinding } from '../../../adapters/chatgpt/controller-binding-store';
+import { DEFAULT_CHATGPT_AUTOMATION_REASONING } from '../../../adapters/chatgpt/provider-delivery';
 import { getWorkContract } from '../../../packages/kernel/work/api/index';
 import { inheritWorkflowSupervisorConversationBinding } from './workflow-supervisor-composition';
 import { getChatgptWorkConversationBinding } from '../../../adapters/chatgpt/work-conversation-binding-store';
@@ -30,7 +31,7 @@ export function ensureScheduledControllerBinding(
       ].map(value => value.trim()).filter(Boolean).filter((value, index, values) => values.indexOf(value) === index),
       title: input.scheduleName,
       model: typeof input.args.model === 'string' ? input.args.model : 'gpt-5.6',
-      reasoning: input.args.reasoning === 'medium' || input.args.reasoning === 'high' || input.args.reasoning === 'xhigh' ? input.args.reasoning : 'medium',
+      reasoning: input.args.reasoning === 'medium' || input.args.reasoning === 'high' || input.args.reasoning === 'xhigh' ? input.args.reasoning : DEFAULT_CHATGPT_AUTOMATION_REASONING,
       tabPolicy: input.args.tab_policy === 'reuse' || input.args.tab_policy === 'new' ? input.args.tab_policy : 'auto',
       timeoutMs: typeof input.args.timeout_ms === 'number' ? input.args.timeout_ms : undefined,
     }).binding;

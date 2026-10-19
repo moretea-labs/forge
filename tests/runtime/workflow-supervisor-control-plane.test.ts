@@ -2092,10 +2092,31 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
       userBlockerPolicy: { controller_home: fx.controllerHome, repo_id: fx.repository.repoId, requirement_id: requirementId },
     });
     control.reserveEnrollment(taskId);
-    expect(control.browserTasks()).toHaveLength(1);
+    const ownedWorkId = `${workId}-owned`;
+    const ownedConversationId = 'abababab-7878-efef-3434-343434343434';
+    createWorkContract(fx.store, {
+      workId: ownedWorkId, repoId: fx.repository.repoId, checkoutId: fx.repository.activeCheckoutId,
+      objective: 'Exact Work-owned automation stops when this Work closes.', acceptanceCriteria: [],
+      allowedPaths: [], forbiddenPaths: [], checks: [], constraints: { workspaceMode: 'current' },
+      requestedBy: 'chatgpt', dispatchState: 'running',
+    });
+    bindChatgptWorkConversation(fx.store, { workId: ownedWorkId, conversationUrl: `https://chatgpt.com/c/${ownedConversationId}` });
+    const ownedTaskId = `forge:${fx.repository.repoId}:work:${ownedWorkId}`;
+    control.registerTask({
+      taskId: ownedTaskId, conversationId: ownedConversationId, conversationUrl: `https://chatgpt.com/c/${ownedConversationId}`,
+      objective: 'Work-owned continuation.',
+      completionContract: { controller_home: fx.controllerHome, repo_id: fx.repository.repoId, work_id: ownedWorkId, kind: 'forge_work_done' },
+      continuationPolicy: { kind: 'forge_goal_outer_turn' }, userBlockerPolicy: {},
+    });
+    control.reserveEnrollment(ownedTaskId);
+    expect(control.browserTasks()).toHaveLength(2);
 
     reviseWorkSemanticContext(fx.store, workId, { expectedRevision: 1, state: 'completed' });
+    reviseWorkSemanticContext(fx.store, ownedWorkId, { expectedRevision: 1, state: 'completed' });
     expect(control.browserTasks()).toHaveLength(1);
+    expect(control.reconcileTerminalWorkBoundTasks()).toEqual([ownedTaskId]);
+    expect(control.store.terminalAction(ownedTaskId)).toBe('STOPPED');
+    expect(control.reconcileTerminalWorkBoundTasks()).toEqual([]);
     expect(control.browserPoll({ conversationId, conversationUrl: `https://chatgpt.com/c/${conversationId}` }).command?.mode).toBe('send');
     control.stopTask(taskId);
     expect(control.browserTasks()).toEqual([]);
@@ -2181,6 +2202,52 @@ test('browserTasks isolates a stale legacy task from an independent bootstrap ta
   expect(control.browserTasks()).toEqual([
     expect.objectContaining({ taskId: 'standalone-bootstrap-task', conversationId: 'bootstrap:standalone-bootstrap-task' }),
   ]);
+});
+
+test('bootstrap reconciles an applied leaf before dispatching its unstarted recovery child', () => {
+  const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-bootstrap-recovery-order-'));
+  roots.push(root);
+  let nowMs = Date.now();
+  const store = new WorkflowSupervisorStore(join(root, 'supervisor-home'), { now: () => nowMs });
+  const control = new WorkflowSupervisorControlPlane(store);
+  const taskId = 'bootstrap-applied-before-recovery';
+  control.registerTask({
+    taskId,
+    conversationId: `bootstrap:${taskId}`,
+    conversationUrl: 'https://chatgpt.com/',
+    objective: 'Reconcile an applied bootstrap effect before dispatching its recovery child.',
+    completionContract: {},
+    continuationPolicy: { kind: 'standalone_supervisor', bootstrap: true },
+    userBlockerPolicy: {},
+  });
+  const source = control.reserveEnrollment(taskId);
+  expect(control.bootstrapBeginEffect({
+    taskId, effectId: source.effectId, dispatchId: 'bootstrap-source-dispatch', dispatchGeneration: 1,
+  })).toBe(true);
+  control.bootstrapObserveEffect({
+    taskId, effectId: source.effectId, observationId: 'bootstrap-source-applied', outcome: 'applied',
+  });
+  const recovery = store.reserveEffect({
+    taskId,
+    effectId: 'fx_99999999999999999999999999999999',
+    kind: 'recovery',
+    originKey: `provider-recovery:${source.effectId}`,
+    prompt: 'Resume the already-applied source effect without replaying it.',
+  });
+
+  expect(control.bootstrapPoll(taskId).command).toMatchObject({
+    mode: 'reconcile', effectId: source.effectId, kind: 'enrollment',
+  });
+  control.bootstrapObserveEffect({
+    taskId, effectId: source.effectId, observationId: 'bootstrap-source-still-unbound', outcome: 'unknown',
+    evidence: { reconciliation: true, reason: 'bootstrap_target_not_observed' },
+  });
+  expect(control.bootstrapPoll(taskId).command).toBeUndefined();
+  nowMs += 10_000;
+  expect(control.bootstrapPoll(taskId).command).toMatchObject({
+    mode: 'reconcile', effectId: source.effectId, kind: 'enrollment',
+  });
+  expect(store.effectDispatchBudget(recovery.effectId).generations).toBe(0);
 });
 
 test('browserTasks prioritizes fresh sends ahead of older reconciliation work', () => {
@@ -2327,6 +2394,7 @@ test('Supervisor preparation rejection is durably release-fenced and never spend
   expect(preparations).toBe(2);
   expect(sends).toBe(1);
   expect(store.latestEffectDispatch(effect.effectId)?.generation).toBe(1);
+  expect(store.latestEffectDispatch(effect.effectId)?.evidence).toMatchObject({ surface: 'computer-chatgpt-target' });
   await repaired.close();
   // Across unrelated deployments this effect remains capped at three distinct
   // failing preparations, including after restarts; none spends provider budget.
@@ -2510,8 +2578,22 @@ test('bootstrap no-click refunds the exact generation and shares the bounded rel
   expect(control.bootstrapBeginEffect({
     taskId, effectId: effect.effectId, dispatchId: 'bootstrap-no-click-dispatch-1', dispatchGeneration: 1,
   })).toBe(true);
+  // A generic observer cannot turn an outcome-unknown bootstrap dispatch into
+  // a reusable provider Send merely by reporting not_applied.
+  for (const evidence of [
+    {},
+    { dispatch_mutation: 'attempted', send_clicked: false },
+    { dispatch_mutation: 'not_attempted', send_clicked: true },
+  ]) {
+    expect(() => control.bootstrapObserveEffect({
+      taskId, effectId: effect.effectId, observationId: `untrusted-${JSON.stringify(evidence)}`,
+      outcome: 'not_applied', evidence,
+    })).toThrow('WORKFLOW_SUPERVISOR_BOOTSTRAP_NOT_APPLIED_PROOF_INVALID');
+  }
+  expect(store.recordEffectDispatchStarted(effect.effectId, 2, 'unproven-bootstrap-retry')).toBe(false);
   control.bootstrapObserveEffect({
     taskId, effectId: effect.effectId, observationId: 'bootstrap-no-click-proof-1', outcome: 'not_applied',
+    evidence: { dispatch_mutation: 'not_attempted', send_clicked: false },
   });
   control.recordProviderPreparationFailure({ taskId, effectId: effect.effectId, reasonCode: 'composer_missing' });
   expect(store.effectDispatchBudget(effect.effectId)).toMatchObject({ generations: 1, maxGenerations: 3, exhausted: false });
@@ -2860,6 +2942,7 @@ test('retries a bootstrap effect after a proven pre-send failure instead of reco
   control.bootstrapObserveEffect({
     taskId: 'bootstrap-negative-proof-task', effectId: effect.effectId,
     observationId: 'proven-no-send', outcome: 'not_applied',
+    evidence: { dispatch_mutation: 'not_attempted', send_clicked: false },
   });
 
   expect(store.nextBrowserEffect('bootstrap-negative-proof-task', { nowMs: dispatchedAt + 30_000 }))
@@ -4094,6 +4177,36 @@ test('bounds and spaces provider re-dispatch of one un-applied effect, then rele
   // The ceiling also holds for a caller that names a generation past the budget.
   expect(store.recordEffectDispatchStarted(effect.effectId, 4, 'dispatch-budget-4')).toBe(false);
   expect(store.latestEffectDispatch(effect.effectId)?.generation).toBe(3);
+});
+
+test('delayed negative proof from an older dispatch cannot authorize an unknown newer generation', () => {
+  const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-stale-proof-'));
+  roots.push(root);
+  const store = new WorkflowSupervisorStore(join(root, 'supervisor-home'));
+  const control = new WorkflowSupervisorControlPlane(store);
+  const taskId = 'stale-negative-proof-task';
+  const conversationId = 'f0f0f0f0-1111-2222-3333-444444444444';
+  control.registerTask({ taskId, conversationId, conversationUrl: `https://chatgpt.com/c/${conversationId}`,
+    objective: 'Do not replay an unknown generation after an earlier proof arrives late.',
+    completionContract: {}, continuationPolicy: {}, userBlockerPolicy: {} });
+  const effect = control.reserveEnrollment(taskId);
+  expect(store.recordEffectDispatchStarted(effect.effectId, 1, 'generation-one')).toBe(true);
+  const firstProof = { dispatch_generation: 1, send_clicked: false, pre_send_rejection: true };
+  store.recordEffectNotAppliedProof(effect.effectId, 'first-proof', firstProof);
+  expect(store.recordEffectDispatchStarted(effect.effectId, 2, 'generation-two')).toBe(true);
+  // Repeating an existing receipt is idempotent, but an arriving generation-one
+  // proof cannot settle generation two or refund its provider Send budget.
+  expect(() => store.recordEffectNotAppliedProof(effect.effectId, 'first-proof', firstProof)).not.toThrow();
+  expect(() => store.recordEffectNotAppliedProof(effect.effectId, 'late-first-proof', firstProof))
+    .toThrow('WORKFLOW_SUPERVISOR_NOT_APPLIED_PROOF_GENERATION_STALE');
+  expect(() => store.recordEffectNotAppliedProof(effect.effectId, 'unattributed-proof', { send_clicked: false }))
+    .toThrow('WORKFLOW_SUPERVISOR_NOT_APPLIED_PROOF_GENERATION_STALE');
+  expect(store.recordEffectDispatchStarted(effect.effectId, 3, 'premature-third')).toBe(false);
+  store.recordEffectNotAppliedProof(effect.effectId, 'second-proof', {
+    dispatch_generation: 2, send_clicked: false, pre_send_rejection: true,
+  });
+  expect(store.recordEffectDispatchStarted(effect.effectId, 3, 'authorized-third')).toBe(true);
+  store.close();
 });
 
 describe('Workflow Supervisor operator recovery and conversation replacement', () => {

@@ -1,3 +1,4 @@
+import { spawnSync } from 'child_process';
 import { createHash, randomUUID } from 'crypto';
 import { existsSync } from 'fs';
 import { createServer, type IncomingMessage, type ServerResponse } from 'http';
@@ -63,6 +64,8 @@ import {
 } from './release';
 import { RECOVERY_MUTATION_IDENTITY_CONTRACT, RECOVERY_MUTATION_IDENTITY_FIELDS } from './mutation-identity-contract';
 import { readReleaseSession } from '../release/release-session';
+import { readRuntimeOwner } from '../root/ownership';
+import { observeRuntimeStatus } from '../root/status';
 import { migrateReleaseDurableState } from '../release/release-state-migration';
 import {
   advanceConfiguredRuntimeRelease,
@@ -89,6 +92,37 @@ const RECOVERY_AUTOMATIC_RELEASE_INTERVAL_MS = 15_000;
  */
 const RECOVERY_AUTOMATIC_RELEASE_FAILURE_BACKOFF_MAX_MS = 15 * 60_000;
 const RECOVERY_AUTOMATIC_RELEASE_STEP_TIMEOUT_MS = 15 * 60_000;
+
+/**
+ * A CLI launched from the primary Runtime's Process Runtime cannot own its
+ * cutover: stopping Stable A cancels that very CLI before the release
+ * transaction can settle. The persistent Recovery daemon/MCP is independent.
+ * Compare the serving Runtime's existing process owner with the actual OS
+ * parent chain, not a caller-supplied scope or model-provided permission flag.
+ */
+function assertIndependentReleaseCliOwner(controllerHome: string): void {
+  const runtime = observeRuntimeStatus(controllerHome);
+  const owner = runtime.running ? readRuntimeOwner(controllerHome) : undefined;
+  if (!owner) return;
+  if (process.platform === 'win32') throw new Error('RECOVERY_CUTOVER_PROCESS_ANCESTRY_UNVERIFIED');
+  let pid = process.ppid;
+  const visited = new Set<number>();
+  for (let depth = 0; depth < 32 && pid > 1; depth += 1) {
+    if (pid === owner.pid) {
+      throw new Error('RECOVERY_CUTOVER_REQUIRES_INDEPENDENT_OWNER: invoke the Recovery daemon/MCP, not a command owned by the primary Runtime');
+    }
+    if (visited.has(pid)) throw new Error('RECOVERY_CUTOVER_PROCESS_ANCESTRY_UNVERIFIED');
+    visited.add(pid);
+    const inspected = spawnSync('ps', ['-o', 'ppid=', '-p', String(pid)], {
+      encoding: 'utf8', timeout: 2_000, maxBuffer: 4 * 1024,
+    });
+    if (inspected.status !== 0) throw new Error('RECOVERY_CUTOVER_PROCESS_ANCESTRY_UNVERIFIED');
+    const parent = Number.parseInt(inspected.stdout.trim(), 10);
+    if (!Number.isInteger(parent) || parent < 1) throw new Error('RECOVERY_CUTOVER_PROCESS_ANCESTRY_UNVERIFIED');
+    pid = parent;
+  }
+  if (pid > 1) throw new Error('RECOVERY_CUTOVER_PROCESS_ANCESTRY_UNVERIFIED');
+}
 
 function option(name: string): string | undefined {
   const index = process.argv.indexOf(name);
@@ -193,6 +227,7 @@ async function cli(): Promise<void> {
         config,
         RECOVERY_RUNTIME_RELEASE_PROVIDER,
         `recovery-auto-release:${process.pid}:${Date.now()}`,
+        decision,
       );
       output({ schemaVersion: 1, ok: result.ok, attempted: result.attempted, decision, result });
     } catch (error) {
@@ -218,11 +253,12 @@ async function cli(): Promise<void> {
     }
     case 'list-releases': output(await listReleases(config)); return;
     case 'attest-known-good': output(await attestKnownGood(config)); return;
-    case 'rollback-previous': output(await rollbackPrevious(config)); return;
-    case 'restart-primary-runtime': output(await restartPrimaryRuntime(config, { forceHealthyRestart: true })); return;
+    case 'rollback-previous': assertIndependentReleaseCliOwner(config.controllerHome); output(await rollbackPrevious(config)); return;
+    case 'restart-primary-runtime': assertIndependentReleaseCliOwner(config.controllerHome); output(await restartPrimaryRuntime(config, { forceHealthyRestart: true })); return;
     case 'restart-primary-connector': output(await restartPrimaryConnector(config, { forceHealthyRestart: true, requestId: `recovery-cli:${process.pid}:${Date.now()}` })); return;
-    case 'recover-primary-runtime': output(await recoverPrimaryRuntime(config)); return;
+    case 'recover-primary-runtime': assertIndependentReleaseCliOwner(config.controllerHome); output(await recoverPrimaryRuntime(config)); return;
     case 'activate-runtime-release': {
+      assertIndependentReleaseCliOwner(config.controllerHome);
       const releasePath = option('--release-manifest') ?? option('--release-path');
       const expectedActiveReleaseId = option('--expected-active-release');
       const expectedAuthorityRevisionRaw = option('--expected-authority-revision');
@@ -237,14 +273,18 @@ async function cli(): Promise<void> {
       }));
       return;
     }
-    case 'stage-and-activate-runtime-release': output(await stageAndActivateConfiguredRuntimeRelease(config, {}, `recovery-cli:${process.pid}:${Date.now()}`)); return;
+    case 'stage-and-activate-runtime-release': assertIndependentReleaseCliOwner(config.controllerHome); output(await stageAndActivateConfiguredRuntimeRelease(config, {}, `recovery-cli:${process.pid}:${Date.now()}`)); return;
     case 'release-session-status': {
       const sessionId = option('--session-id');
       if (!sessionId) throw new Error('RECOVERY_RELEASE_SESSION_ID_REQUIRED');
       output(readReleaseSession(config.controllerHome, sessionId) ?? null);
       return;
     }
-    case 'release-session-advance': output(await advanceConfiguredRuntimeRelease(config, RECOVERY_RUNTIME_RELEASE_PROVIDER, `recovery-cli:${process.pid}:${Date.now()}`)); return;
+    case 'release-session-advance': {
+      assertIndependentReleaseCliOwner(config.controllerHome);
+      output(await advanceConfiguredRuntimeRelease(config, RECOVERY_RUNTIME_RELEASE_PROVIDER, `recovery-cli:${process.pid}:${Date.now()}`));
+      return;
+    }
     case 'release-session-prepare': output(await prepareConfiguredRuntimeReleaseSession(config, {}, `recovery-cli:${process.pid}:${Date.now()}`)); return;
     case 'release-session-static-verify': {
       const sessionId = option('--session-id');
@@ -259,6 +299,7 @@ async function cli(): Promise<void> {
       return;
     }
     case 'release-session-cutover': {
+      assertIndependentReleaseCliOwner(config.controllerHome);
       const sessionId = option('--session-id');
       if (!sessionId) throw new Error('RECOVERY_RELEASE_SESSION_ID_REQUIRED');
       output(await cutoverConfiguredRuntimeReleaseSession(config, sessionId, `recovery-cli:${process.pid}:${Date.now()}`));
@@ -271,6 +312,7 @@ async function cli(): Promise<void> {
       return;
     }
     case 'release-session-rollback': {
+      assertIndependentReleaseCliOwner(config.controllerHome);
       const sessionId = option('--session-id');
       if (!sessionId) throw new Error('RECOVERY_RELEASE_SESSION_ID_REQUIRED');
       output(await rollbackConfiguredRuntimeReleaseSession(config, sessionId, {}, `recovery-cli:${process.pid}:${Date.now()}`));

@@ -169,6 +169,8 @@ export interface WorkflowSupervisorLifecycleHooks {
   projectScopeForTask?(task: WorkflowSupervisorTask): WorkflowSupervisorProjectScope | undefined;
   /** Build the one bounded enrollment task for a newly discovered project conversation. */
   discoveredConversationTask?(conversation: WorkflowSupervisorDiscoveredConversation, scope: WorkflowSupervisorProjectScope): WorkflowSupervisorTaskInput | undefined;
+  /** Exact Work-owned terminal transition, projected into the one Supervisor stop-event writer. */
+  terminalWorkStopReasonForTask?(task: WorkflowSupervisorTask): string | undefined;
   /** Admission for a new send only. Never suppress observation of an already-started effect. */
   browserTaskActive?(task: WorkflowSupervisorTask): boolean;
   /** Mechanical provenance attached to outbound effect dispatch evidence. */

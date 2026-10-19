@@ -312,6 +312,10 @@ function bindSessionControllerInstance(repoRoot: string, session: EditSession, b
   assertEditSessionDurableBinding(session, binding);
   const nextInstanceId = binding?.controllerInstanceId?.trim();
   if (!nextInstanceId || session.controllerInstanceId === nextInstanceId) return session;
+  // A non-Work Safe Patch session has no Controller instance owner to rebind.
+  // Its persisted repository identity is still checked above; never promote
+  // a caller-supplied transient Runtime identity into durable session authority.
+  if (!session.workId && !session.controllerInstanceId) return session;
   const durableIdentity = [
     [session.workId, binding?.workId],
     [session.repoId, binding?.repoId],

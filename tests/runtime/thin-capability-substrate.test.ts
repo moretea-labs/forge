@@ -18,6 +18,7 @@ import {
   canonicalCapabilityRegistry,
   invokeCapability,
   recordDirectActivity,
+  getDirectActivity,
   listDirectActivities,
   projectUnifiedActivityView,
 } from '../../packages/kernel/identity/api/index';
@@ -36,6 +37,7 @@ import {
   workSemanticView,
 } from '../../packages/kernel/work/api/index';
 import { callRhWorkSemanticOperation } from '../../adapters/mcp/runtime-gateway/work-semantic-operations';
+import { recordUnknownSupervisorNotificationReceipt } from '../../src/runtime/root/workflow-supervisor-runtime';
 const roots: string[] = [];
 afterEach(() => {
 });  while (roots.length > 0) rmSync(roots.pop()!, { recursive: true, force: true });
@@ -417,5 +419,50 @@ describe('Thin capability substrate', () => {
     expect(view.directActivities.length).toBe(1);
     expect(view.directActivities[0].activityId).toBe(directAct.activityId);
     expect(view.directActivities[0].capabilityId).toBe('repository:read_file');
+  });
+
+  test('unknown Gmail Supervisor notification keeps one exact receipt and never creates a second activity on repeated observation', () => {
+    const home = tempHome();
+    const receipt = {
+      receiptId: 'PLG-unknown-send', requestId: 'wfsn_exact_unknown',
+      pluginId: 'gmail', actionId: 'send_owner_notification',
+      status: 'failed' as const, effectOutcome: 'outcome_unknown' as const,
+    };
+    expect(recordUnknownSupervisorNotificationReceipt(home, 'task-123', receipt.requestId, receipt)).toBe(true);
+    const first = getDirectActivity(home, `workflow-supervisor-notification-unknown-${receipt.requestId}`);
+    expect(first).toMatchObject({ status: 'failed', receiptRef: receipt.receiptId,
+      targetScope: 'workflow-supervisor-task:task-123' });
+    expect(recordUnknownSupervisorNotificationReceipt(home, 'task-123', receipt.requestId, receipt)).toBe(true);
+    expect(() => recordUnknownSupervisorNotificationReceipt(home, 'task-123', receipt.requestId, {
+      ...receipt, receiptId: 'PLG-conflicting-outcome',
+    })).toThrow('WORKFLOW_SUPERVISOR_NOTIFICATION_RECEIPT_CONFLICT');
+    expect(getDirectActivity(home, first!.activityId)).toEqual(first);
+    expect(listDirectActivities(home).filter((item) => item.activityId === first!.activityId)).toHaveLength(1);
+    expect(recordUnknownSupervisorNotificationReceipt(home, 'task-123', 'wrong-request-id', receipt)).toBe(false);
+    expect(recordUnknownSupervisorNotificationReceipt(home, 'task-123', 'wfsn_success', {
+      ...receipt, requestId: 'wfsn_success', status: 'succeeded', effectOutcome: undefined,
+    })).toBe(false);
+    expect(listDirectActivities(home)).toHaveLength(1);
+  });
+
+  test('Supervisor exhausted activity keeps one exact identity beyond a 200-item projection window', () => {
+    const home = tempHome();
+    const id = 'workflow-supervisor-stall-task-123';
+    const startedAt = '2026-10-17T00:00:00.000Z';
+    const original = recordDirectActivity(home, {
+      activityId: id, capabilityId: 'workflow-supervisor.continuation',
+      kind: 'direct_execution', targetScope: 'workflow-supervisor-task:task-123',
+      principalId: 'forge-runtime', status: 'running', startedAt, summary: 'Exhausted provider resume',
+    });
+    for (let i = 0; i < 205; i++) recordDirectActivity(home, {
+      activityId: `unrelated-${i}`, capabilityId: 'repository:read_file',
+      kind: 'direct_execution', targetScope: 'repository:test', principalId: 'test',
+      status: 'completed', startedAt: '2026-10-18T00:00:00.000Z', summary: 'Unrelated activity',
+    });
+    expect(listDirectActivities(home, 200).some((item) => item.activityId === id)).toBe(false);
+    expect(getDirectActivity(home, id)).toEqual(original);
+    recordDirectActivity(home, { ...original, status: 'completed', completedAt: '2026-10-18T01:00:00.000Z' });
+    expect(getDirectActivity(home, id)?.status).toBe('completed');
+    expect(getDirectActivity(home, 'does-not-exist')).toBeUndefined();
   });
 });

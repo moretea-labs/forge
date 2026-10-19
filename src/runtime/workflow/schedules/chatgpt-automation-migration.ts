@@ -1,4 +1,5 @@
 import type { RepositorySchedule } from '../../../../packages/kernel/scheduler/api/index';
+
 import {
   DEFAULT_CHATGPT_AUTOMATION_MODEL,
   DEFAULT_CHATGPT_AUTOMATION_REASONING,

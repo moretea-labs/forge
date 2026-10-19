@@ -14,7 +14,7 @@ echo "[release-readiness] focused release contracts"
 bun scripts/test-governance.ts affected \
   tests/release/release-version.test.ts \
   tests/release/package-release.test.ts \
-  tests/skill-version.test.ts
+  tests/forge-version.test.ts
 
 echo "[release-readiness] public/package surfaces"
 bash scripts/check-public-docs.sh

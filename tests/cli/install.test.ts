@@ -264,7 +264,6 @@ describe('install command (Phase 1B)', () => {
           '--target',
           'codex',
           '--no-cli',
-          '--no-sync-skill',
         ],
         {
           cwd: ROOT,
