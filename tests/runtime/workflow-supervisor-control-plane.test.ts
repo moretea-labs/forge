@@ -29,13 +29,6 @@ import { runtimeToolDefinitions } from '../../adapters/mcp/runtime-gateway/runti
 const roots: string[] = [];
 afterEach(() => { resetMacOsBrowserRuntimeHooksForTest(); while (roots.length) rmSync(roots.pop()!, { recursive: true, force: true }); });
 
-function parseSupervisorTurn(prompt: string): Record<string, any> {
-  const lines = prompt.split('\n');
-  const start = lines.indexOf(SUPERVISOR_TURN_BLOCK_START);
-  const end = lines.indexOf(SUPERVISOR_TURN_BLOCK_END);
-  if (start < 0 || end !== start + 2) throw new Error('SUPERVISOR_TURN_ENVELOPE_MISSING');
-  return JSON.parse(lines[start + 1]!);
-}
 
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-terminal-reconcile-'));
@@ -201,7 +194,8 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
       requestId: 'canonical-objective-recovery',
       reason: 'Verify prompt refresh after the canonical Work objective changes.',
     }).recoveryEffect;
-    expect(parseSupervisorTurn(recovery.prompt).goal).toEqual({ role: 'outcome', objective: 'Current canonical objective v2.' });
+    expect(recovery.prompt).toContain('supervisor_task get');
+    expect(Array.from(recovery.prompt).length).toBeLessThanOrEqual(200);
     expect(recovery.prompt).not.toContain('Current canonical objective v1.');
     expect(recovery.prompt).not.toContain('Stale registration objective.');
     store.close();
@@ -278,11 +272,9 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     });
     expect(revised).toMatchObject({ changed: true, deduplicated: false, task: { taskId: task.taskId, conversationId: task.conversationId } });
     expect(revised.refreshedEffect?.effectId).toBe(effect.effectId);
-    expect(parseSupervisorTurn(revised.refreshedEffect!.prompt)).toMatchObject({
-      schema_version: 2,
-      identity: { task_id: task.taskId, effect_id: effect.effectId, kind: 'enrollment' },
-      goal: { role: 'outcome', objective: 'Deliver the current product outcome until complete or genuinely blocked.' },
-    });
+    expect(revised.refreshedEffect!.prompt).toContain('task_id:' + JSON.stringify(task.taskId));
+    expect(revised.refreshedEffect!.prompt).toContain('Deliver the current product outcome until complete or genuinely blocked.');
+    expect(Array.from(revised.refreshedEffect!.prompt).length).toBeLessThanOrEqual(500);
     expect(revised.refreshedEffect!.prompt).not.toContain(originalObjective);
 
     const duplicate = control.reviseTaskObjective({
@@ -567,29 +559,31 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     supervisorStore.close();
   });
 
-  test('enforces a 500 character goal bound on new durable tasks', () => {
+  test('keeps complete 8k durable goals independent from compact outbound prompts', () => {
     const base = {
       taskId: 'task-exact-objective-bound',
       conversationId: 'ababcdcd-abcd-abcd-abcd-abcdefabcdef',
       conversationUrl: 'https://chatgpt.com/c/ababcdcd-abcd-abcd-abcd-abcdefabcdef',
-      objective: 'A'.repeat(499),
+      objective: 'A'.repeat(7_950),
       completionContract: {},
       continuationPolicy: {},
       userBlockerPolicy: {},
       createdAt: '2026-01-01T00:00:00.000Z',
     };
-    expect(base.objective.length).toBeLessThanOrEqual(500);
+    expect(base.objective.length).toBeLessThanOrEqual(8_000);
     const prompt = renderSupervisorPrompt(base, 'fx_12345678', 'enrollment');
     expect(Array.from(prompt).length).toBeLessThanOrEqual(500);
-    expect(parseSupervisorTurn(prompt).receipt).toEqual({ challenge: supervisorReceiptChallenge(base, 'fx_12345678') });
+    expect(prompt).toContain('\nreceipt:' + supervisorReceiptChallenge(base, 'fx_12345678'));
+    expect(prompt).toContain('目标摘录：');
+    expect(prompt).toContain('supervisor_task get');
     const legacyPrompt = renderSupervisorPrompt({ ...base, objective: 'L'.repeat(7_950) }, 'fx_12345678', 'continuation');
-    expect(Array.from(legacyPrompt).length).toBeLessThanOrEqual(500);
-    expect(parseSupervisorTurn(legacyPrompt).identity.task_id).toBe(base.taskId);
+    expect(Array.from(legacyPrompt).length).toBeLessThanOrEqual(200);
+    expect(legacyPrompt).toContain('task_id:' + JSON.stringify(base.taskId));
 
     const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-objective-bound-'));
     roots.push(root);
     const store = new WorkflowSupervisorStore(join(root, 'supervisor'));
-    expect(() => store.registerTask({ ...base, objective: 'x'.repeat(501) }))
+    expect(() => store.registerTask({ ...base, objective: 'x'.repeat(8_001) }))
       .toThrow('WORKFLOW_SUPERVISOR_OBJECTIVE_TOO_LARGE');
     expect(store.getTask(base.taskId)).toBeUndefined();
     expect(store.registerTask(base).objective).toBe(base.objective);
@@ -610,7 +604,7 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     const effectId = 'fx_12345678';
     const prompt = renderSupervisorPrompt(task, effectId, 'recovery');
 
-    expect(parseSupervisorTurn(prompt).receipt).toEqual({ challenge: supervisorReceiptChallenge(task, effectId) });
+    expect(prompt).toContain('\nreceipt:' + supervisorReceiptChallenge(task, effectId));
     expect(Array.from(prompt).length).toBeLessThanOrEqual(500);
     expect(prompt).not.toContain('automation.receipt:');
     expect(prompt).not.toContain('最后一次 Forge 调用');
@@ -720,13 +714,13 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     })).toThrow('WORKFLOW_SUPERVISOR_WAIT_NOT_SCHEDULED');
 
     const pendingBeforeBinding = control.reserveEnrollment(task.taskId);
-    expect(pendingBeforeBinding.prompt).not.toContain('W/C/U');
+    expect(pendingBeforeBinding.prompt).not.toContain('当日完 W');
     const bound = control.bindScheduledWake({
       taskId: task.taskId, repoId: 'repo-scheduled-wake', workId: 'work-scheduled-wake', scheduleId: 'SCH-daily-gmail',
     });
     expect(bound.task.continuationPolicy.scheduled_wake_schedule_id).toBe('SCH-daily-gmail');
     expect(bound.changed).toBe(true);
-    expect(control.getEffect(pendingBeforeBinding.effectId)?.prompt).toContain('W/C/U');
+    expect(control.getEffect(pendingBeforeBinding.effectId)?.prompt).toContain('当日完 W');
     expect(control.bindScheduledWake({
       taskId: task.taskId, repoId: 'repo-scheduled-wake', workId: 'work-scheduled-wake', scheduleId: 'SCH-daily-gmail',
     }).deduplicated).toBe(true);
@@ -736,7 +730,7 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
 
     const refreshed = control.getTask(task.taskId)!;
     const enrollment = control.reserveEnrollment(task.taskId);
-    expect(enrollment.prompt).toContain('W/C/U');
+    expect(enrollment.prompt).toContain('当日完 W');
     control.observeEffect({ effectId: enrollment.effectId, observationId: 'scheduled-wake-applied', outcome: 'applied' });
     const receipt = renderSupervisorReceipt(refreshed, enrollment.effectId, 'WAIT');
     const completion = await control.observeAssistantTurn({

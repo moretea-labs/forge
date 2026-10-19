@@ -25,8 +25,9 @@ export const SUPERVISOR_TURN_BLOCK_START = 'FORGE_WORKFLOW_TURN_V2_BEGIN';
 export const SUPERVISOR_TURN_BLOCK_END = 'FORGE_WORKFLOW_TURN_V2_END';
 const EFFECT_ID = /^(?:fx|crpe)_[a-zA-Z0-9_-]{8,120}$/;
 const MAX_RESPONSE = 512 * 1024;
-export const MAX_SUPERVISOR_OBJECTIVE_CHARS = 500;
+export const MAX_SUPERVISOR_OBJECTIVE_CHARS = 8_000;
 export const MAX_SUPERVISOR_PROMPT_CHARS = 500;
+export const MAX_SUPERVISOR_CONTINUATION_PROMPT_CHARS = 200;
 
 /** A goal cannot be silently shortened between durable Task and sent effect. */
 export function validateSupervisorObjective(value: string): string {
@@ -107,7 +108,17 @@ export function parseSupervisorCompletion(
     // Bootstrap binding changes the Task's conversation identity after Send.
     // Validate the challenge actually sent in the immutable effect, never a
     // recomputation from that subsequently changed Task projection.
-    if (expected.prompt?.includes(SUPERVISOR_TURN_BLOCK_START)) {
+    // New outbound turns are plain-language and short. Read the immutable
+    // sent Task identity and receipt from their three-line causal header so a
+    // bootstrap conversation rebind cannot change the expected challenge.
+    if (expected.prompt?.startsWith(renderEffectMarker(expected.effectId) + '\n' + 'task_id:')) {
+      const [, taskLine, receiptLine] = expected.prompt.split('\n');
+      const match = /^receipt:([0-9a-f]{7})$/.exec(receiptLine ?? '');
+      if (taskLine !== 'task_id:' + JSON.stringify(expected.task.taskId) || !match) {
+        throw new Error('WORKFLOW_SUPERVISOR_EFFECT_RECEIPT_INVALID');
+      }
+      challenge = match[1]!;
+    } else if (expected.prompt?.includes(SUPERVISOR_TURN_BLOCK_START)) {
       const start = expected.prompt.indexOf(SUPERVISOR_TURN_BLOCK_START + '\n') + SUPERVISOR_TURN_BLOCK_START.length + 1;
       const end = expected.prompt.indexOf('\n' + SUPERVISOR_TURN_BLOCK_END, start);
       let envelope: WorkflowSupervisorTurnEnvelope;
@@ -195,29 +206,41 @@ export function renderSupervisorPrompt(
 ): string {
   const challenge = supervisorReceiptChallenge(task, effectId);
   const scheduled = typeof task.continuationPolicy.scheduled_wake_schedule_id === 'string';
-  const marker = renderEffectMarker(effectId);
-  const instructions = scheduled
-    ? `forge 继续。读取任务记录并执行。末行仅写 W/C/U 中一个字母、空格和 ${challenge}。`
-    : `forge 继续。读取任务记录并执行。末行仅写 C/D/U 中一个字母、空格和 ${challenge}。`;
-  const envelope: WorkflowSupervisorTurnEnvelope = {
-    schema_version: 2,
-    identity: { task_id: task.taskId, effect_id: validateEffectId(effectId), kind },
-    goal: { role: 'outcome', objective: '读取持久化目标' },
-    receipt: { challenge },
-  };
-  const render = () => [marker, instructions, SUPERVISOR_TURN_BLOCK_START,
-    JSON.stringify(envelope), SUPERVISOR_TURN_BLOCK_END].join('\n');
-  // Inline objective only when it fits. The durable Task remains the sole
-  // authority; checkpoints, safety boilerplate and past context are not sent.
-  const objective = task.objective;
-  envelope.goal!.objective = objective;
-  if (Array.from(render()).length > MAX_SUPERVISOR_PROMPT_CHARS) {
-    delete envelope.goal;
-  }
-  const prompt = render();
-  if (Array.from(prompt).length > MAX_SUPERVISOR_PROMPT_CHARS) {
-    throw new Error('WORKFLOW_SUPERVISOR_PROMPT_TOO_LARGE');
-  }
+  // Stable machine identity stays at the top; the assistant-facing message is
+  // ordinary language. The Task journal, not the prompt, owns the full goal.
+  const header = [
+    renderEffectMarker(effectId),
+    'task_id:' + JSON.stringify(task.taskId),
+    'receipt:' + challenge,
+  ];
+  const outcome = scheduled ? '当日完 W、未完 C、需用户 U' : '未完 C、交付 D、需用户 U';
+  const continuation = kind !== 'enrollment';
+  const instruction = continuation
+    ? `forge ${kind === 'recovery' ? '恢复' : kind === 'correction' ? '纠正' : '继续'}。supervisor_task get 读关联任务后推进；${outcome}，末行字母+空格+回执码。`
+    : `用 Forge supervisor_task get 读取完整 Task 及关联 Requirement/Work 的最新目标、进度，执行验证；${outcome}。末行：字母 空格 receipt 值。`;
+  const length = (value: string): number => Array.from(value).length;
+  const base = [...header, instruction].join('\n');
+  // Long existing Work/Requirement IDs must not be shortened or cause the
+  // scheduler to stall merely to satisfy the usual 200-character wake budget.
+  // They use the same global 500-character hard ceiling as enrollment.
+  const max = !continuation || length(base) > MAX_SUPERVISOR_CONTINUATION_PROMPT_CHARS
+    ? MAX_SUPERVISOR_PROMPT_CHARS : MAX_SUPERVISOR_CONTINUATION_PROMPT_CHARS;
+  if (length(base) > max) throw new Error('WORKFLOW_SUPERVISOR_PROMPT_TOO_LARGE');
+  if (continuation) return base;
+
+  // An enrollment may start in an entirely new ChatGPT conversation. Never
+  // remove the goal outright to fit a transport budget: show a clearly marked
+  // excerpt and explicitly tell the model to fetch the complete durable Task.
+  const objective = task.objective.trim().replace(/\s+/g, ' ');
+  if (!objective) throw new Error('WORKFLOW_SUPERVISOR_OBJECTIVE_REQUIRED');
+  const prefix = '目标摘录：';
+  const available = max - length(base) - length(prefix) - 2;
+  if (available < 1) throw new Error('WORKFLOW_SUPERVISOR_PROMPT_TOO_LARGE');
+  const chars = Array.from(objective);
+  const excerpt = chars.slice(0, Math.min(240, available)).join('');
+  const preview = prefix + excerpt + (chars.length > length(excerpt) ? '…' : '');
+  const prompt = [...header, preview, instruction].join('\n');
+  if (length(prompt) > max) throw new Error('WORKFLOW_SUPERVISOR_PROMPT_TOO_LARGE');
   return prompt;
 }
 

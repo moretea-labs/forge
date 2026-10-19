@@ -19,14 +19,6 @@ afterEach(() => {
   while (roots.length) rmSync(roots.pop()!, { recursive: true, force: true });
 });
 
-function parseSupervisorTurn(prompt: string): Record<string, any> {
-  const lines = prompt.split('\n');
-  const start = lines.indexOf(SUPERVISOR_TURN_BLOCK_START);
-  const end = lines.indexOf(SUPERVISOR_TURN_BLOCK_END);
-  if (start < 0 || end !== start + 2) throw new Error('SUPERVISOR_TURN_ENVELOPE_MISSING');
-  return JSON.parse(lines[start + 1]!);
-}
-
 describe('Workflow Supervisor automation receipts', () => {
   test('resolves bootstrap inside the uniquely discovered repository ChatGPT Project', () => {
     const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-project-bootstrap-'));
@@ -122,10 +114,11 @@ describe('Workflow Supervisor automation receipts', () => {
     expect(replay).toMatchObject({ action: 'CONTINUE', terminal: false });
     expect(store.getEffectByOriginKey(`completion:${(first as { completionFingerprint: string }).completionFingerprint}`)).toBeDefined();
     const enrollmentPrompt = renderSupervisorPrompt(task, effect.effectId, 'enrollment');
-    expect(parseSupervisorTurn(enrollmentPrompt).receipt).toEqual({ challenge: supervisorReceiptChallenge(task, effect.effectId) });
+    expect(enrollmentPrompt).toContain('\nreceipt:' + supervisorReceiptChallenge(task, effect.effectId));
     expect(enrollmentPrompt).not.toContain('automation.receipt:');
     expect(enrollmentPrompt).toStartWith('<<<FORGE_WORKFLOW_EFFECT_V1:');
-    expect(enrollmentPrompt.split('\n')[1]).toContain('forge 继续。');
+    expect(enrollmentPrompt).toContain('目标摘录：');
+    expect(enrollmentPrompt).toContain('supervisor_task get');
     expect(enrollmentPrompt).not.toContain('CONTINUE => "C ');
     store.close();
   });
@@ -176,10 +169,7 @@ describe('Workflow Supervisor automation receipts', () => {
         task: { taskId: startedTask.taskId, conversationId: startedTask.conversationId, objective: 'Deliver the standalone Supervisor outcome through the V2 goal envelope.' },
         refreshedEffect: { effectId: startedEffect.effectId },
       });
-      expect(parseSupervisorTurn((revised?.structuredContent as any).refreshedEffect.prompt)).toMatchObject({
-        schema_version: 2,
-        goal: { role: 'outcome', objective: 'Deliver the standalone Supervisor outcome through the V2 goal envelope.' },
-      });
+      expect((revised?.structuredContent as any).refreshedEffect.prompt).toContain('Deliver the standalone Supervisor outcome through the V2 goal envelope.');
       expect(store.listTasks()).toHaveLength(1);
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));

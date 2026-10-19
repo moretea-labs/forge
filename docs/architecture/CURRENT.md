@@ -458,7 +458,7 @@ Supervisor `forge_work_done` and Requirement DONE contracts read the existing ca
 
 MCP HTTP POST lifecycle diagnostics derive admission count and oldest-request duration from **one response-owned Map**, rather than maintaining a scalar counter beside a separate age store. Each admission is deleted idempotently on `finish` or `close`; admission and health/readiness observation also converge entries from Node's authoritative terminal `ServerResponse` flags in case a transport SDK removed or replaced those listeners. Request age never retires an entry: a connected unfinished response and every possibly in-flight effect remain protected regardless of duration. `/health.sessions.activePosts` and `oldestActivePostAgeMs` share this owner for modern stateless and legacy protocol calls. Recovery propagates the optional oldest active POST age into ReleaseSession cutover diagnostics, retaining the strict existing `activePosts=0`, `activeStreams=0`, initialization-empty, quiet-window safety predicate. Legacy `oldestPostAgeMs` alone does not describe modern HTTP requests and must not be used to conclude that the Connector is quiescent.
 
-**Autonomous continuation R1 baseline (2026-10-11):** The existing Supervisor journal remains the only Work-bound send authority. Task registration, objective revision, and effect rendering now share a single fail-closed objective bound: values exceeding 8,000 JavaScript characters are rejected explicitly, never silently sliced into an apparently successful shorter prompt. The actual Task objective is preserved byte-for-byte within the JSON envelope. Browser delivery validates that Forge's app name and exact app path belong to the same ProseMirror app chip; neither a plain `@forge` string nor separate HTML nodes prove that tool invocation is bound. These are safety/contract changes, not an assertion of a successful live ChatGPT MCP call. Runtime/Recovery/Computer versions and real causal receipt still require G0a/R3/R4 evidence.
+**Autonomous continuation R1 baseline (2026-10-11; prompt revised 2026-10-19):** The existing Supervisor journal remains the only Work-bound send authority. Task registration and objective revision reject goals longer than 8,000 Unicode code points; the complete durable goal is never silently truncated. The former JSON goal envelope is now legacy-read-only: new outbound prompts use the independent bounded human-readable format described below. Browser delivery validates that Forge's app name and exact app path belong to the same ProseMirror app chip; neither a plain `@forge` string nor separate HTML nodes prove that tool invocation is bound. These are safety/contract changes, not an assertion of a successful live ChatGPT MCP call. Runtime/Recovery/Computer versions and real causal receipt still require G0a/R3/R4 evidence.
 
 Browser Playwright dependency resolution has one ordered runtime contract. An immutable compiled Runtime resolves Browser dependencies from the release-owned `package/package.json` beside `forge-runtime-bundle.js` first, then from an explicitly authorized repository package when present, and finally from the executing source/bundle module anchor for development compatibility. Browser dependency availability checks and actual Playwright loading use this same ordered anchor set; consumer repositories are never required to install Forge's packaged Playwright, and no second dependency-resolution authority is maintained.
 
@@ -476,16 +476,25 @@ The Chrome extension heartbeat is an inventory hint, not the durable ChatGPT con
 **Exact marker reconciliation owner pin (2026-10-19).** Chrome marker lookup must include the existing Computer Surface provider binding so the extension can re-attest its session ownerToken on the original tab/window only. An unpinned or token-mismatched physical tab cannot claim a pinned bootstrap effect, even if its user text contains the same effect marker. The Controller never treats marker lookup or reopened tabs as permission to repeat a Send.
 
 
-### Workflow Supervisor prompt budget (2026-10-19)
+### Workflow Supervisor first-turn and continuation prompts (2026-10-19)
 
-The Supervisor's canonical durable Task stores the objective; the outbound ChatGPT
-turn is a wake-up envelope, not a second copy of project scope, safety policy,
-checkpoints, or engineering plans. New Supervisor objective writes are limited to
-500 Unicode code points; an oversized objective is rejected, never truncated.
-Each newly rendered outbound turn is capped at 500 Unicode code points, including
-the effect marker and causal receipt envelope. The renderer includes a brief
-objective only when it fits; otherwise the Task's durable objective remains the
-sole authority, referenced by the exact task identity. Legacy durable tasks are
-not rewritten or truncated. The effect marker, task/effect identity and final
-receipt challenge remain intact for exactly-once reconciliation. User/host tool
-permissions and project requirements apply independently of prompt wording.
+The durable Supervisor Task retains the complete objective (up to 8,000 Unicode
+code points, independently of the outbound prompt budget). The canonical linked
+Requirement/Work may carry the current goal; a new conversation must read the Task
+and its semantic links instead of assuming a stale registration snapshot is current.
+
+New enrollment messages use human-readable text: the exact Effect marker,
+immutable `task_id` and `receipt` header, a nonempty **explicitly labeled goal
+excerpt**, and a direct `supervisor_task get` instruction to retrieve the full
+durable Task and linked semantic context. An excerpt is not silently presented as
+a complete objective. Enrollment is capped at 500 Unicode code points.
+
+Continuation/recovery/correction messages are short wake-ups: model reads current
+Task/linked facts and resumes without copied plans, historical checkpoints,
+safety boilerplate or JSON schema. Aim for <=200 code points; existing lengthy
+Work/Requirement task identities use the common <=500 global hard limit instead
+of truncating identities or stalling scheduled continuation. The sent compact
+`receipt` header is authoritative for the completion challenge across bootstrap
+conversation rebinding; legacy V2 JSON messages are parsed for already-durable
+effects but are no longer generated. The existing Effect ledger alone owns
+once-only send/retry outcomes, and host grants remain the permission boundary.
