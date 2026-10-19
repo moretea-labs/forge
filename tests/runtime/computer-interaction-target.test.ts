@@ -973,6 +973,37 @@ describe('Computer durable InteractionTarget authority', () => {
       });
       expect(targetAuthority.getSurface(home, record.targetId)?.providerBinding)
         .toMatchObject({ tabId: 'new-tab' });
+
+      // The saved physical tab still exists but has been navigated to a
+      // different conversation. Recover the original exact target through its
+      // single Surface lease; never mutate the foreign tab or dispatch Send.
+      const recovering = extension.ensureExact(identity);
+      let staleCommand: ReturnType<typeof extension.claim>;
+      for (let attempt = 0; attempt < 50 && !staleCommand; attempt += 1) {
+        staleCommand = extension.claim('profile-a');
+        if (!staleCommand) await Bun.sleep(1);
+      }
+      expect(staleCommand?.kind).toBe('ensure');
+      if (!staleCommand) throw new Error('stale pin ensure was not claimed');
+      expect(extension.complete('profile-a', staleCommand.commandId, {
+        kind: 'failed', code: 'COMPUTER_CHATGPT_EXTENSION_PINNED_TAB_IDENTITY_CHANGED',
+      })).toBe(true);
+      let rebindCommand: ReturnType<typeof extension.claim>;
+      for (let attempt = 0; attempt < 50 && !rebindCommand; attempt += 1) {
+        rebindCommand = extension.claim('profile-a');
+        if (!rebindCommand) await Bun.sleep(1);
+      }
+      expect(rebindCommand?.kind).toBe('ensure');
+      if (!rebindCommand) throw new Error('single rebind ensure was not claimed');
+      expect(extension.complete('profile-a', rebindCommand.commandId, {
+        kind: 'ensured',
+        providerBinding: { ...binding, tabId: 'restored-tab' },
+        observation,
+      })).toBe(true);
+      expect(await recovering).toMatchObject({ state: 'ready', target: { targetId: record.targetId } });
+      expect(targetAuthority.getSurface(home, record.targetId)?.providerBinding)
+        .toMatchObject({ tabId: 'restored-tab' });
+      expect(extension.claim('profile-a')).toBeUndefined();
       await extension.close();
     } finally {
       rmSync(home, { recursive: true, force: true });

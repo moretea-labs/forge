@@ -332,7 +332,7 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
     return { conversations: [...byConversationId.values()], complete: true, unavailableProviders: [] };
   }
 
-  async ensureExact(identity: ComputerChatgptConversationIdentity, options: { createIfMissing?: boolean } = {}): Promise<ComputerChatgptTargetResult> {
+  async ensureExact(identity: ComputerChatgptConversationIdentity, options: { createIfMissing?: boolean } = {}, recoverStalePin = true): Promise<ComputerChatgptTargetResult> {
     const preferredInstanceId = this.preferredProviderInstance(identity);
     const fresh = this.freshProviders();
     if (fresh.length === 0 || (preferredInstanceId && !fresh.some(([instanceId]) => instanceId === preferredInstanceId))) {
@@ -438,6 +438,38 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
       return { state: 'ready', target: this.target(identity, record, selected.instanceId), ...(response.result.observation ? { observation: response.result.observation } : {}) };
     }
     if (response.result.kind === 'failed') {
+      // A pinned Chrome tab can still exist after the user navigates it to
+      // another conversation. The extension proves this is pre-mutation
+      // identity drift; never navigate or close the foreign tab. Release only
+      // the exact stale Surface binding through its existing CAS lease, then
+      // let the SAME provider resolve one unambiguous exact conversation.
+      if (recoverStalePin
+        && response.result.code === 'COMPUTER_CHATGPT_EXTENSION_PINNED_TAB_IDENTITY_CHANGED'
+        && previous && binding?.providerId === PROVIDER_ID
+        && binding.providerSessionId === selected.instanceId
+        && binding.windowId && binding.tabId) {
+        try {
+          await this.authority.withSurfaceLease(this.controllerHome, previous.targetId, async (lease) => {
+            const current = lease.current();
+            const attached = current.providerBinding;
+            if (current.stableIdentity.resource?.namespace !== identity.namespace
+              || current.stableIdentity.resource.key !== identity.conversationId
+              || attached?.providerId !== binding.providerId
+              || attached.providerSessionId !== binding.providerSessionId
+              || attached.windowId !== binding.windowId
+              || attached.tabId !== binding.tabId
+              || attached.browserProduct !== binding.browserProduct) {
+              throw new Error('COMPUTER_CHATGPT_EXTENSION_PINNED_BINDING_CHANGED');
+            }
+            lease.clearBinding();
+          });
+        } catch {
+          return failure('COMPUTER_CHATGPT_EXTENSION_PINNED_BINDING_CHANGED', { failoverSafe: false });
+        }
+        // The provider still enforces exact URL uniqueness and an unspent
+        // Send generation; a second drift never loops into another recovery.
+        return await this.ensureExact(identity, options, false);
+      }
       if (response.result.providerBinding) await this.bindAsync(identity, response.result.providerBinding, selected.instanceId);
       return failure(response.result.code, { retryable: response.result.retryable,
         failoverSafe: !response.result.providerBinding && !preferredInstanceId && response.result.failoverSafe === true,
