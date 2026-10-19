@@ -193,3 +193,47 @@ test('restarted worker prepares and dispatches only the Controller-pinned bootst
   ]);
   expect(messages.map(x => x.tabId)).toEqual([42, 42]);
 });
+
+test('content snapshot reports only live provider status, not quoted historical status markup', () => {
+  const source = readFileSync(new URL('../../adapters/computer/chrome-extension/content.js', import.meta.url), 'utf8');
+  const capacityText = "You've reached the maximum length for this conversation.";
+  const historyStatus = {
+    innerText: capacityText, textContent: capacityText,
+    getClientRects: () => [{}],
+    closest: (selector: string) => selector.includes('conversation-turn-') ? {} : null,
+  };
+  let statuses: Array<typeof historyStatus> = [historyStatus];
+  const emptyNodes = Object.assign([], { item: () => undefined });
+  const main = { getClientRects: () => [{}], querySelectorAll: (_selector: string) => emptyNodes };
+  const listeners: Array<(message: unknown, sender: unknown, respond: (value: Record<string, unknown>) => void) => void> = [];
+  const scope = {
+    ForgeComputerChatgptCore: {
+      normalizeText: (value: unknown) => String(value ?? '').replace(/\s+/g, ' ').trim(),
+      parseConversation: () => null,
+    },
+    document: {
+      title: 'Conversation',
+      documentElement: {},
+      querySelectorAll: (selector: string) => selector === 'main'
+        ? [main]
+        : selector.includes('[role="alert"]') ? statuses : [],
+    },
+    location: { href: 'https://chatgpt.com/c/12345678-1234-1234-1234-123456789abc' },
+    chrome: { runtime: {
+      onMessage: { addListener: (listener: typeof listeners[number]) => { listeners.push(listener); } },
+      sendMessage: () => undefined,
+    } },
+    MutationObserver: class { observe() {} },
+    setTimeout: () => 1, clearTimeout: () => {},
+    URL,
+  };
+  runInNewContext(source, scope, { filename: 'content.js' });
+  const snapshot = () => {
+    let result: Record<string, unknown> | undefined;
+    listeners[0]!({ type: 'forge-computer-chatgpt-snapshot' }, {}, (value) => { result = value; });
+    return result!;
+  };
+  expect(snapshot().providerFailureText).toBe('');
+  statuses = [historyStatus, { ...historyStatus, closest: () => null }];
+  expect(snapshot().providerFailureText).toBe(capacityText);
+});

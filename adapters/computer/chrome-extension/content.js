@@ -115,7 +115,7 @@
     // Read visible, short, non-message status nodes only; ordinary conversation
     // history must never be interpreted as a current provider failure.
     const status = Array.from(document.querySelectorAll('[role="alert"], [role="status"], [aria-live="assertive"], [aria-live="polite"]'))
-      .filter(visible);
+      .filter((node) => !node.closest(TURN) && !node.closest('[data-message-author-role]') && visible(node));
     const capacity = Array.from(conversationRoot().querySelectorAll('p, span, div'))
       // Exclude message subtrees before layout-dependent visibility reads.
       .filter((node) => !node.closest(TURN) && !node.closest('[data-message-author-role]') && visible(node))
