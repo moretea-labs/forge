@@ -12,7 +12,7 @@ import { continueGoalWorkloop, runGoalWorkloop, startGoalWorkloop } from '../../
 import { callRhWorkSemanticOperation } from '../../adapters/mcp/runtime-gateway/work-semantic-operations';
 import { buildResendPluginManifest, executeResendPluginAction } from '../../src/runtime/plugins/resend-adapter';
 import { executeAssistantPluginActionApplication } from '../../src/runtime/plugins/action-application';
-import { GMAIL_AUTOMATION_CAPABILITY_ID, GMAIL_PLUGIN_ID } from '../../src/runtime/plugins/gmail-adapter';
+import { GMAIL_AUTOMATION_CAPABILITY_ID, GMAIL_OWNER_NOTIFICATION_CAPABILITY_ID, GMAIL_PLUGIN_ID } from '../../src/runtime/plugins/gmail-adapter';
 import { repositoryPluginConfigPath } from '../../src/runtime/plugins/config-store';
 import { createFirstPartyPluginAdapterMap } from '../../src/runtime/plugins/first-party-registry';
 import { getPluginActionCapabilitySchema } from '../../src/runtime/control-plane/facade/capability-registry';
@@ -285,7 +285,7 @@ describe('scheduled Gmail automation capability', () => {
       ownerScope: pluginCapabilityAuthorizationOwnerScope(origin),
       repoId: repository.repoId,
       pluginId: GMAIL_PLUGIN_ID,
-      capabilityId: GMAIL_AUTOMATION_CAPABILITY_ID,
+      capabilityId: GMAIL_OWNER_NOTIFICATION_CAPABILITY_ID,
       target: {
         kind: 'gmail-mailbox' as const,
         id: ownerEmail,
@@ -296,8 +296,8 @@ describe('scheduled Gmail automation capability', () => {
     };
     await expect(submitAssistantPluginAction(controllerHome, repository, {
       pluginId: GMAIL_PLUGIN_ID,
-      actionId: 'authorize_scheduled_gmail_automation',
-      requestId: 'gmail-explicit-automation-grant-missing-confirmation',
+      actionId: 'authorize_owner_notifications',
+      requestId: 'gmail-owner-email-grant-missing-confirmation',
       args: {},
       origin,
     })).rejects.toThrow('PLUGIN_CONFIRMATION_REQUIRED');
@@ -305,15 +305,18 @@ describe('scheduled Gmail automation capability', () => {
 
     await submitAssistantPluginAction(controllerHome, repository, {
       pluginId: GMAIL_PLUGIN_ID,
-      actionId: 'authorize_scheduled_gmail_automation',
-      requestId: 'gmail-explicit-automation-grant',
+      actionId: 'authorize_owner_notifications',
+      requestId: 'gmail-owner-email-grant',
       args: {},
       origin,
       confirmAuthorization: true,
-      confirmationText: 'authorize-scheduled-gmail-automation',
+      confirmationText: 'authorize-owner-notifications',
     });
     const grant = findActivePluginCapabilityAuthorization(controllerHome, grantQuery);
     expect(grant).toBeDefined();
+    expect(findActivePluginCapabilityAuthorization(controllerHome, {
+      ...grantQuery, capabilityId: GMAIL_AUTOMATION_CAPABILITY_ID, scopes: ['gmail.modify'],
+    })).toBeUndefined();
 
     const args = { subject: '[Forge] Test notification', body_text: 'Persistent receipt deduplication acceptance.' };
     const systemOrigin = { surface: 'system' as const, correlationId: 'gmail-system-notification-once' };
@@ -338,8 +341,10 @@ describe('scheduled Gmail automation capability', () => {
     expect(second.receipt.receiptId).toBe(first.receipt.receiptId);
     expect(first.manifest.actions.find((action) => action.actionId === 'send_message')?.confirmation).toBe('strong_confirmation');
     const scheduledCapability = first.manifest.capabilities.find((capability) => capability.capabilityId === GMAIL_AUTOMATION_CAPABILITY_ID);
-    expect(scheduledCapability?.actions).toEqual(expect.arrayContaining(['archive_scheduled_message', 'send_owner_notification']));
-    expect(scheduledCapability?.actions).not.toContain('send_message');
+    expect(scheduledCapability?.actions).toEqual(['authorize_scheduled_gmail_automation', 'archive_scheduled_message']);
+    const ownerCapability = first.manifest.capabilities.find((capability) => capability.capabilityId === GMAIL_OWNER_NOTIFICATION_CAPABILITY_ID);
+    expect(ownerCapability?.actions).toEqual(['authorize_owner_notifications', 'send_owner_notification']);
+    expect(ownerCapability?.actions).not.toContain('send_message');
 
     await expect(submitAssistantPluginAction(controllerHome, repository, {
       pluginId: GMAIL_PLUGIN_ID,
