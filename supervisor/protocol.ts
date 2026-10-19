@@ -23,10 +23,13 @@ export const LEGACY_SUPERVISOR_BLOCK_END = '<<<END_FORGE_WORKFLOW_SUPERVISOR_V1>
 export const EFFECT_MARKER_PREFIX = '<<<FORGE_WORKFLOW_EFFECT_V1:';
 export const SUPERVISOR_TURN_BLOCK_START = 'FORGE_WORKFLOW_TURN_V2_BEGIN';
 export const SUPERVISOR_TURN_BLOCK_END = 'FORGE_WORKFLOW_TURN_V2_END';
+// Compact text-only turns; legacy V2 JSON is kept as read-only receipt compatibility.
+export const SUPERVISOR_COMPACT_TURN_PREFIX = 'TASK_ID:';
 const EFFECT_ID = /^(?:fx|crpe)_[a-zA-Z0-9_-]{8,120}$/;
 const MAX_RESPONSE = 512 * 1024;
-export const MAX_SUPERVISOR_OBJECTIVE_CHARS = 500;
+export const MAX_SUPERVISOR_OBJECTIVE_CHARS = 8_000;
 export const MAX_SUPERVISOR_PROMPT_CHARS = 500;
+export const MAX_SUPERVISOR_CONTINUATION_PROMPT_CHARS = 200;
 
 /** A goal cannot be silently shortened between durable Task and sent effect. */
 export function validateSupervisorObjective(value: string): string {
@@ -107,6 +110,18 @@ export function parseSupervisorCompletion(
     // Bootstrap binding changes the Task's conversation identity after Send.
     // Validate the challenge actually sent in the immutable effect, never a
     // recomputation from that subsequently changed Task projection.
+    // New prompts retain the immutable pre-bootstrap challenge in the sent text.
+    // The stored Effect prompt, not a mutable conversation binding, is authority.
+    if (expected.prompt?.startsWith(renderEffectMarker(expected.effectId) + '\n')) {
+      const tail = expected.prompt.split('\n').at(-1) ?? '';
+      if (tail.startsWith(SUPERVISOR_COMPACT_TURN_PREFIX)) {
+        const sent = /^TASK_ID:(.+);R:([0-9a-f]{7})$/.exec(tail);
+        if (!sent || sent[1] !== expected.task.taskId) {
+          throw new Error('WORKFLOW_SUPERVISOR_EFFECT_RECEIPT_INVALID');
+        }
+        challenge = sent[2]!;
+      }
+    }
     if (expected.prompt?.includes(SUPERVISOR_TURN_BLOCK_START)) {
       const start = expected.prompt.indexOf(SUPERVISOR_TURN_BLOCK_START + '\n') + SUPERVISOR_TURN_BLOCK_START.length + 1;
       const end = expected.prompt.indexOf('\n' + SUPERVISOR_TURN_BLOCK_END, start);
@@ -191,31 +206,42 @@ export function renderSupervisorPrompt(
   _checkpoint?: string,
   _correctionReason?: string,
   _lowerLayerContext?: string,
-  advisoryCognition?: string,
+  _advisoryCognition?: string,
 ): string {
   const challenge = supervisorReceiptChallenge(task, effectId);
-  const scheduled = typeof task.continuationPolicy.scheduled_wake_schedule_id === 'string';
   const marker = renderEffectMarker(effectId);
-  const instructions = scheduled
-    ? `forge 继续。读取任务记录并执行。末行仅写 W/C/U 中一个字母、空格和 ${challenge}。`
-    : `forge 继续。读取任务记录并执行。末行仅写 C/D/U 中一个字母、空格和 ${challenge}。`;
-  const envelope: WorkflowSupervisorTurnEnvelope = {
-    schema_version: 2,
-    identity: { task_id: task.taskId, effect_id: validateEffectId(effectId), kind },
-    goal: { role: 'outcome', objective: '读取持久化目标' },
-    receipt: { challenge },
-  };
-  const render = () => [marker, instructions, SUPERVISOR_TURN_BLOCK_START,
-    JSON.stringify(envelope), SUPERVISOR_TURN_BLOCK_END].join('\n');
-  // Inline objective only when it fits. The durable Task remains the sole
-  // authority; checkpoints, safety boilerplate and past context are not sent.
-  const objective = task.objective;
-  envelope.goal!.objective = objective;
-  if (Array.from(render()).length > MAX_SUPERVISOR_PROMPT_CHARS) {
-    delete envelope.goal;
+  const machineLine = `TASK_ID:${task.taskId};R:${challenge}`;
+  const scheduled = typeof task.continuationPolicy.scheduled_wake_schedule_id === 'string';
+  const choices = scheduled ? 'W/C/U' : 'C/D/U';
+  const count = (value: string): number => Array.from(value).length;
+
+  if (kind !== 'enrollment') {
+    // A wake-up, not a second source of project scope or an execution plan.
+    const prompt = [
+      marker,
+      `forge 继续。supervisor_task get 读取 TASK_ID 并推进；末行 ${choices} ${challenge}。`,
+      machineLine,
+    ].join('\n');
+    if (count(prompt) > MAX_SUPERVISOR_CONTINUATION_PROMPT_CHARS) {
+      throw new Error('WORKFLOW_SUPERVISOR_PROMPT_TOO_LARGE');
+    }
+    return prompt;
   }
-  const prompt = render();
-  if (Array.from(prompt).length > MAX_SUPERVISOR_PROMPT_CHARS) {
+
+  // A new conversation must see a meaningful goal even when the original Task
+  // is longer than the outbound budget. The complete goal is never truncated
+  // in durable storage; explicitly retrieve it before doing any implementation.
+  const objective = task.objective.trim().replace(/\s+/g, ' ');
+  const prefix = `${marker}\nforge 开始任务。目标摘录：`;
+  const suffix = `\n先用 supervisor_task get 按下方 TASK_ID 读取完整目标与最新进度，关联 Requirement/Plan/Work 自主实施与验证；末行按结果写 ${scheduled ? 'W/C/U' : 'D/C/U'} ${challenge}。\n${machineLine}`;
+  const allowance = MAX_SUPERVISOR_PROMPT_CHARS - count(prefix + suffix);
+  const ellipsis = '…（目标未完，详见 Task）';
+  if (allowance < 30) throw new Error('WORKFLOW_SUPERVISOR_PROMPT_TOO_LARGE');
+  const chars = Array.from(objective);
+  const excerpt = chars.length <= allowance
+    ? objective : chars.slice(0, allowance - count(ellipsis)).join('') + ellipsis;
+  const prompt = prefix + excerpt + suffix;
+  if (count(prompt) > MAX_SUPERVISOR_PROMPT_CHARS) {
     throw new Error('WORKFLOW_SUPERVISOR_PROMPT_TOO_LARGE');
   }
   return prompt;

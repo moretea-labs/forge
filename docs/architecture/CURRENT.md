@@ -476,16 +476,8 @@ The Chrome extension heartbeat is an inventory hint, not the durable ChatGPT con
 **Exact marker reconciliation owner pin (2026-10-19).** Chrome marker lookup must include the existing Computer Surface provider binding so the extension can re-attest its session ownerToken on the original tab/window only. An unpinned or token-mismatched physical tab cannot claim a pinned bootstrap effect, even if its user text contains the same effect marker. The Controller never treats marker lookup or reopened tabs as permission to repeat a Send.
 
 
-### Workflow Supervisor prompt budget (2026-10-19)
+### Workflow Supervisor first-turn and continuation prompts (2026-10-19)
 
-The Supervisor's canonical durable Task stores the objective; the outbound ChatGPT
-turn is a wake-up envelope, not a second copy of project scope, safety policy,
-checkpoints, or engineering plans. New Supervisor objective writes are limited to
-500 Unicode code points; an oversized objective is rejected, never truncated.
-Each newly rendered outbound turn is capped at 500 Unicode code points, including
-the effect marker and causal receipt envelope. The renderer includes a brief
-objective only when it fits; otherwise the Task's durable objective remains the
-sole authority, referenced by the exact task identity. Legacy durable tasks are
-not rewritten or truncated. The effect marker, task/effect identity and final
-receipt challenge remain intact for exactly-once reconciliation. User/host tool
-permissions and project requirements apply independently of prompt wording.
+The Supervisor Task is the canonical durable objective (up to 8,000 Unicode code points), independent of outbound prompt size. Enrollment in a fresh conversation includes a human-readable objective excerpt with explicit truncation notation and tells ChatGPT to call `supervisor_task get` using the supplied `TASK_ID` before implementation. Enrollment stays within 500 Unicode code points. Continuation/recovery/correction are compact wake-up messages capped at 200 code points and never restate the objective, scope, safety boilerplate, or checkpoint history.
+
+The new compact wire envelope keeps the exact immutable Effect marker and a `TASK_ID:<id>;R:<challenge>` receipt binding. The parser verifies that binding against the stored Effect prompt (including pre-bootstrap conversation identity); already reserved V2 JSON envelopes remain readable for legacy receipts. Completion remains the exact final-line C/D/U or recurring W/C/U code plus challenge. Project/tool permissions remain enforced by the host and durable facts, not prompt repetition.

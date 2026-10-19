@@ -20,11 +20,10 @@ afterEach(() => {
 });
 
 function parseSupervisorTurn(prompt: string): Record<string, any> {
-  const lines = prompt.split('\n');
-  const start = lines.indexOf(SUPERVISOR_TURN_BLOCK_START);
-  const end = lines.indexOf(SUPERVISOR_TURN_BLOCK_END);
-  if (start < 0 || end !== start + 2) throw new Error('SUPERVISOR_TURN_ENVELOPE_MISSING');
-  return JSON.parse(lines[start + 1]!);
+  const marker = /^<<<FORGE_WORKFLOW_EFFECT_V1:([^>]+)>>>/.exec(prompt);
+  const receipt = /^TASK_ID:(.+);R:([0-9a-f]{7})$/m.exec(prompt);
+  if (!marker || !receipt) throw new Error('SUPERVISOR_TURN_IDENTITY_MISSING');
+  return { identity: { task_id: receipt[1], effect_id: marker[1] }, receipt: { challenge: receipt[2] } };
 }
 
 describe('Workflow Supervisor automation receipts', () => {
@@ -125,7 +124,7 @@ describe('Workflow Supervisor automation receipts', () => {
     expect(parseSupervisorTurn(enrollmentPrompt).receipt).toEqual({ challenge: supervisorReceiptChallenge(task, effect.effectId) });
     expect(enrollmentPrompt).not.toContain('automation.receipt:');
     expect(enrollmentPrompt).toStartWith('<<<FORGE_WORKFLOW_EFFECT_V1:');
-    expect(enrollmentPrompt.split('\n')[1]).toContain('forge 继续。');
+    expect(enrollmentPrompt.split('\n')[1]).toContain('forge 开始任务。');
     expect(enrollmentPrompt).not.toContain('CONTINUE => "C ');
     store.close();
   });
@@ -176,10 +175,7 @@ describe('Workflow Supervisor automation receipts', () => {
         task: { taskId: startedTask.taskId, conversationId: startedTask.conversationId, objective: 'Deliver the standalone Supervisor outcome through the V2 goal envelope.' },
         refreshedEffect: { effectId: startedEffect.effectId },
       });
-      expect(parseSupervisorTurn((revised?.structuredContent as any).refreshedEffect.prompt)).toMatchObject({
-        schema_version: 2,
-        goal: { role: 'outcome', objective: 'Deliver the standalone Supervisor outcome through the V2 goal envelope.' },
-      });
+      expect((revised?.structuredContent as any).refreshedEffect.prompt).toContain('Deliver the standalone Supervisor outcome through the V2 goal envelope.');
       expect(store.listTasks()).toHaveLength(1);
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));

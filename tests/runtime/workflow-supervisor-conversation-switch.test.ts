@@ -148,8 +148,9 @@ describe('Workflow Supervisor fresh conversation switch', () => {
     expect(store.getTask(taskId)?.taskId).toBe(taskId);
     expect(store.currentUnappliedEffect(taskId)?.effectId).toBe(effect.effectId);
     // The first reply echoes the challenge sent before binding the fresh URL.
-    const sentEnvelope = JSON.parse(effect.prompt.split(SUPERVISOR_TURN_BLOCK_START)[1]!.split(SUPERVISOR_TURN_BLOCK_END)[0]!);
-    const bootstrapReceipt = `C ${sentEnvelope.receipt.challenge}`;
+    const sentChallenge = /^TASK_ID:.+;R:([0-9a-f]{7})$/m.exec(effect.prompt)?.[1];
+    if (!sentChallenge) throw new Error('SUPERVISOR_BOOTSTRAP_RECEIPT_MISSING');
+    const bootstrapReceipt = `C ${sentChallenge}`;
     const freshId = '56565656-dddd-eeee-ffff-787878787878';
     expect(() => control.bindBootstrapConversation({
       taskId, conversationId: oldConversationId,
