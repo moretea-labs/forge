@@ -8,9 +8,10 @@ import { ensureRepositoryRuntimeStorage, type RepositoryRuntimeStorageReport } f
 import { getRepository, selectRepositoryCheckout, setRepositoryCheckoutLifecycle } from '../../cli/repositories/registry';
 import type { RepositoryRecord } from '../../cli/repositories/types';
 import { rebuildRepositoryProjection } from '../projections/materialized-view';
-import { getWorkContract, readWorkContractStore, semanticWorkState, updateWorkContract } from '../../../packages/kernel/work/api/index';
+import { getWorkContract, readWorkContractStore, semanticWorkState } from '../../../packages/kernel/work/api/index';
 import { assertOwnedResourceCleanupTarget, listOwnedResources, markOwnedResourceCleaned, type OwnedResource } from '../../../packages/kernel/identity/api/index';
 import { listPlanContracts } from '../control-plane/facade/plan-contract-store';
+import { updateRepositoryWorkPlacement } from '../control-plane/facade/repository-work-admission';
 import { readRequirement } from '../control-plane/persistence/requirement-store';
 import { listControlPlaneRecords, type ControlPlaneRecord } from '../control-plane/persistence/sqlite-store';
 import type { WorkContract } from '../control-plane/facade/types';
@@ -1154,8 +1155,14 @@ function detachLegacyRemoteEffectPlacement(
       result: 'legacy_remote_effect_owned_resource_required',
     };
   }
+  if (!current.checkoutId || !current.worktreeRef || current.checkoutId !== inspection.checkoutId || current.worktreeRef !== inspection.path) {
+    throw new Error(`LEGACY_REMOTE_EFFECT_PLACEMENT_SNAPSHOT_INVALID: ${current.workId}`);
+  }
   const previous = { checkoutId: current.checkoutId, worktreeRef: current.worktreeRef, constraints: current.constraints, worktreePolicy: current.worktreePolicy };
-  updateWorkContract(store, current.workId, {
+  updateRepositoryWorkPlacement(store, current.workId, {
+    kind: 'detach_legacy_remote_effect',
+    expectedCheckoutId: current.checkoutId,
+    expectedWorktreeRef: current.worktreeRef,
     checkoutId: inspection.canonicalCheckoutId,
     worktreeRef: undefined,
     constraints: { ...current.constraints, workspaceMode: 'current' },
@@ -1188,7 +1195,17 @@ function detachLegacyRemoteEffectPlacement(
   } catch (error) {
     if (existsSync(inspection.path)) {
       try { setRepositoryCheckoutLifecycle({ controllerHome, repoId: repository.repoId, checkoutId: inspection.checkoutId, lifecycle: 'active', reason: `Rollback failed legacy remote_effect detach for ${current.workId}.` }); } catch { /* preserve primary failure */ }
-      try { updateWorkContract(store, current.workId, previous); } catch { /* preserve primary failure */ }
+      try {
+        updateRepositoryWorkPlacement(store, current.workId, {
+          kind: 'restore_legacy_remote_effect',
+          expectedCheckoutId: inspection.canonicalCheckoutId,
+          expectedWorktreeRef: undefined,
+          checkoutId: previous.checkoutId,
+          worktreeRef: previous.worktreeRef,
+          worktreePolicy: previous.worktreePolicy,
+          constraints: previous.constraints,
+        });
+      } catch { /* preserve primary failure */ }
     }
     throw error;
   }

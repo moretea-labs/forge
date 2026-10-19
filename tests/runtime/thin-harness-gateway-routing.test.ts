@@ -48,9 +48,9 @@ import {
   startOrJoinEditValidation,
 } from '../../src/runtime/control-plane/execution/edit-validation-coordinator';
 import { createWorkContract, getWorkContract, reviseWorkSemanticContext } from '../../src/runtime/control-plane/facade/work-contract-store';
-import { updateWorkContract as updateKernelWorkContract } from '../../packages/kernel/work/api/index';
 import { snapshotControllerCheck } from '../../src/cli/controller/check-runner';
 import { readWorkHandle, writeWorkHandle } from '../../src/runtime/control-plane/execution/work-handle-store';
+import { workHandleRetainsCanonicalMutationOwnership } from '../../src/runtime/control-plane/execution/work-handle-authority';
 import { verificationInputFingerprint, workspaceValidationFingerprint } from '../../src/runtime/control-plane/execution/verification-evidence';
 
 function git(root: string, args: string[]): string {
@@ -155,9 +155,6 @@ describe('repository.direct_edit capability', () => {
     expect(prepared?.isError).not.toBe(true);
     const work = (prepared?.structuredContent as { work: { workId: string } }).work;
     const handle = readWorkHandle(fx.controllerHome, fx.repository.repoId, work.workId)!;
-    updateKernelWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, work.workId, {
-      worktreePolicy: { required: false, reason: 'legacy semantic placement policy predates the canonical managed WorkHandle' },
-    });
     writeWorkHandle(fx.controllerHome, {
       ...handle,
       state: 'failed',
@@ -711,6 +708,187 @@ describe('repository.git Work delivery', () => {
     writeFileSync(join(handle.worktreePath, 'src', 'lib.ts'), 'export const n = 2;\n');
     git(handle.worktreePath, ['add', 'src/lib.ts']);
     git(handle.worktreePath, ['commit', '-m', 'open target work delivery source']);
+    const unabsorbedHead = git(handle.worktreePath, ['rev-parse', 'HEAD']);
+    const targetHead = git(fx.repoRoot, ['rev-parse', 'HEAD']);
+    const validated = await callExecutionTool(fx.ctx, 'work_validate', {
+      session_id: session.sessionId,
+      repo_id: fx.repository.repoId,
+      work_id: work.workId,
+      check_ids: [],
+      request_id: 'validate-capability-delivery-open-target-work',
+    });
+    expect((validated?.structuredContent as { validation: { passed: boolean } }).validation.passed).toBe(true);
+
+    const blockerId = 'work-open-target-handle';
+    createWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
+      workId: blockerId,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      baseRevision: targetHead,
+      objective: 'Live semantic target owner must continue to fence delivery.',
+      acceptanceCriteria: [],
+      allowedPaths: [],
+      forbiddenPaths: [],
+      checks: [],
+      constraints: {},
+      requestedBy: 'chatgpt',
+      workKind: 'repository_change',
+      dispatchState: 'running',
+      phase: 'implementation',
+    });
+    const at = new Date().toISOString();
+    writeWorkHandle(fx.controllerHome, {
+      ...handle,
+      recordRevision: undefined,
+      workId: blockerId,
+      workContractId: blockerId,
+      checkoutId: fx.repository.activeCheckoutId,
+      worktreePath: fx.repoRoot,
+      branch: 'main',
+      sourceCheckoutId: undefined,
+      deliveryTargetBranch: 'main',
+      managedWorktree: false,
+      baseCommit: targetHead,
+      deliveryBaseCommit: targetHead,
+      expectedHead: unabsorbedHead,
+      state: 'prepared',
+      createdAt: at,
+      updatedAt: at,
+      validationRun: undefined,
+      validatedInputFingerprint: undefined,
+      cleanupResponsibility: undefined,
+      cleanupReceipt: undefined,
+      terminalResourceDisposition: undefined,
+      finalization: { ...handle.finalization, validation: 'pending', commit: 'pending', merge: 'pending', branchCleanup: 'pending', worktreeCleanup: 'pending' },
+    });
+
+    const delivered = await callCoreCapabilityAdapter(fx.ctx, 'capability_execute', {
+      repo_id: fx.repository.repoId,
+      capability_id: 'repository.git',
+      action: 'deliver_work',
+      request_id: 'deliver-capability-open-target-work',
+      arguments: { session_id: session.sessionId, work_id: work.workId },
+    });
+    expect(delivered?.isError).toBe(true);
+    expect(JSON.stringify(delivered?.structuredContent ?? delivered)).toContain(`WORK_DELIVERY_TARGET_WORK_ACTIVE: ${blockerId}`);
+    expect(git(fx.repoRoot, ['rev-parse', 'HEAD'])).toBe(targetHead);
+
+    const unknownBlockerId = 'work-unknown-target-handle';
+    writeWorkHandle(fx.controllerHome, {
+      ...readWorkHandle(fx.controllerHome, fx.repository.repoId, blockerId)!,
+      recordRevision: undefined,
+      workId: unknownBlockerId,
+      workContractId: unknownBlockerId,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+    const openHandle = readWorkHandle(fx.controllerHome, fx.repository.repoId, blockerId)!;
+    writeWorkHandle(fx.controllerHome, { ...openHandle, state: 'cleaned', updatedAt: new Date().toISOString() });
+    const unknownDelivered = await callCoreCapabilityAdapter(fx.ctx, 'capability_execute', {
+      repo_id: fx.repository.repoId,
+      capability_id: 'repository.git',
+      action: 'deliver_work',
+      request_id: 'deliver-capability-unknown-target-work',
+      arguments: { session_id: session.sessionId, work_id: work.workId },
+    });
+    expect(unknownDelivered?.isError).toBe(true);
+    expect(JSON.stringify(unknownDelivered?.structuredContent ?? unknownDelivered)).toContain(`WORK_DELIVERY_TARGET_WORK_ACTIVE: ${unknownBlockerId}`);
+    expect(git(fx.repoRoot, ['rev-parse', 'HEAD'])).toBe(targetHead);
+  });
+
+  test('ignores a mechanically superseded orphan target WorkHandle only when no semantic or physical ownership remains', async () => {
+    const fx = fixture();
+    roots.push(fx.root);
+    const started = await callExecutionTool(fx.ctx, 'session_start', {});
+    const session = (started?.structuredContent as { session: { sessionId: string } }).session;
+    const prepared = await callExecutionTool(fx.ctx, 'work_prepare', {
+      session_id: session.sessionId,
+      repo_id: fx.repository.repoId,
+      request_id: 'prepare-capability-delivery-safe-orphan-target-work',
+      objective: 'Deliver while a stale orphan target projection has no remaining ownership evidence.',
+      checks: [],
+      isolation: 'new_worktree',
+    });
+    const work = (prepared?.structuredContent as { work: { workId: string } }).work;
+    const handle = readWorkHandle(fx.controllerHome, fx.repository.repoId, work.workId)!;
+    writeFileSync(join(handle.worktreePath, 'src', 'lib.ts'), 'export const n = 2;\n');
+    git(handle.worktreePath, ['add', 'src/lib.ts']);
+    git(handle.worktreePath, ['commit', '-m', 'safe orphan target delivery source']);
+    const sourceHead = git(handle.worktreePath, ['rev-parse', 'HEAD']);
+    const targetHead = git(fx.repoRoot, ['rev-parse', 'HEAD']);
+    const validated = await callExecutionTool(fx.ctx, 'work_validate', {
+      session_id: session.sessionId,
+      repo_id: fx.repository.repoId,
+      work_id: work.workId,
+      check_ids: [],
+      request_id: 'validate-capability-delivery-safe-orphan-target-work',
+    });
+    expect((validated?.structuredContent as { validation: { passed: boolean } }).validation.passed).toBe(true);
+
+    const orphanId = 'work-safe-orphan-target-handle';
+    const at = new Date().toISOString();
+    writeWorkHandle(fx.controllerHome, {
+      ...handle,
+      recordRevision: undefined,
+      workId: orphanId,
+      workContractId: orphanId,
+      checkoutId: fx.repository.activeCheckoutId,
+      worktreePath: fx.repoRoot,
+      branch: 'main',
+      sourceCheckoutId: undefined,
+      deliveryTargetBranch: 'main',
+      managedWorktree: false,
+      baseCommit: targetHead,
+      deliveryBaseCommit: targetHead,
+      expectedHead: targetHead,
+      state: 'prepared',
+      createdAt: at,
+      updatedAt: at,
+      validationRun: undefined,
+      validatedInputFingerprint: undefined,
+      cleanupResponsibility: undefined,
+      cleanupReceipt: undefined,
+      terminalResourceDisposition: undefined,
+      finalization: { ...handle.finalization, validation: 'pending', commit: 'pending', merge: 'pending', branchCleanup: 'pending', worktreeCleanup: 'pending' },
+    });
+    const orphanHandle = readWorkHandle(fx.controllerHome, fx.repository.repoId, orphanId)!;
+    expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, orphanId)).toBeUndefined();
+    expect(workHandleRetainsCanonicalMutationOwnership({
+      controllerHome: fx.controllerHome,
+      repositoryId: fx.repository.repoId,
+      handle: orphanHandle,
+      target: { checkoutId: fx.repository.activeCheckoutId, branch: 'main', head: targetHead, root: fx.repository.canonicalRoot, clean: true },
+    })).toBe(false);
+
+    const delivered = await callCoreCapabilityAdapter(fx.ctx, 'capability_execute', {
+      repo_id: fx.repository.repoId,
+      capability_id: 'repository.git',
+      action: 'deliver_work',
+      request_id: 'deliver-capability-safe-orphan-target-work',
+      arguments: { session_id: session.sessionId, work_id: work.workId },
+    });
+    if (delivered?.isError) throw new Error(JSON.stringify(delivered.structuredContent ?? delivered));
+    expect(git(fx.repoRoot, ['rev-parse', 'HEAD'])).toBe(sourceHead);
+  });
+
+  test('releases absorbed physical ownership for open semantic Work but keeps an unabsorbed candidate fenced', async () => {
+    const fx = fixture();
+    roots.push(fx.root);
+    const started = await callExecutionTool(fx.ctx, 'session_start', {});
+    const session = (started?.structuredContent as { session: { sessionId: string } }).session;
+    const prepared = await callExecutionTool(fx.ctx, 'work_prepare', {
+      session_id: session.sessionId,
+      repo_id: fx.repository.repoId,
+      request_id: 'prepare-capability-delivery-open-target-work',
+      objective: 'Keep an open target Work fenced from delivery.',
+      checks: [],
+      isolation: 'new_worktree',
+    });
+    const work = (prepared?.structuredContent as { work: { workId: string } }).work;
+    const handle = readWorkHandle(fx.controllerHome, fx.repository.repoId, work.workId)!;
+    writeFileSync(join(handle.worktreePath, 'src', 'lib.ts'), 'export const n = 2;\n');
+    git(handle.worktreePath, ['add', 'src/lib.ts']);
+    git(handle.worktreePath, ['commit', '-m', 'open target work delivery source']);
     const targetHead = git(fx.repoRoot, ['rev-parse', 'HEAD']);
     const validated = await callExecutionTool(fx.ctx, 'work_validate', {
       session_id: session.sessionId,
@@ -771,9 +949,52 @@ describe('repository.git Work delivery', () => {
       request_id: 'deliver-capability-open-target-work',
       arguments: { session_id: session.sessionId, work_id: work.workId },
     });
-    expect(delivered?.isError).toBe(true);
-    expect(JSON.stringify(delivered?.structuredContent ?? delivered)).toContain(`WORK_DELIVERY_TARGET_WORK_ACTIVE: ${blockerId}`);
-    expect(git(fx.repoRoot, ['rev-parse', 'HEAD'])).toBe(targetHead);
+    if (delivered?.isError) throw new Error(JSON.stringify(delivered.structuredContent ?? delivered));
+    const integratedHead = git(fx.repoRoot, ['rev-parse', 'HEAD']);
+    expect(integratedHead).not.toBe(targetHead);
+
+    // The first successful delivery retired its managed checkout; reselect the
+    // known canonical source explicitly instead of reusing a removed binding.
+    const rebound = await callExecutionTool(fx.ctx, 'session_bind_repository', {
+      session_id: session.sessionId,
+      repo_id: fx.repository.repoId,
+      checkout_id: fx.repository.activeCheckoutId,
+    });
+    expect(rebound?.isError).not.toBe(true);
+    // Exercise a fresh pending delivery, not the successful first Work's
+    // already-settled receipt (which correctly deduplicates repeat requests).
+    const secondPrepared = await callExecutionTool(fx.ctx, 'work_prepare', {
+      session_id: session.sessionId,
+      repo_id: fx.repository.repoId,
+      request_id: 'prepare-capability-delivery-unknown-target-source',
+      objective: 'A new pending source must remain fenced by an unabsorbed target candidate.',
+      checks: [],
+      isolation: 'new_worktree',
+    });
+    if (!secondPrepared?.structuredContent || !(secondPrepared.structuredContent as { work?: unknown }).work) {
+      throw new Error(`SECOND_WORK_PREPARE_FAILED: ${JSON.stringify(secondPrepared)}`);
+    }
+    const secondWork = (secondPrepared.structuredContent as { work: { workId: string } }).work;
+    const secondHandle = readWorkHandle(fx.controllerHome, fx.repository.repoId, secondWork.workId)!;
+    writeFileSync(join(secondHandle.worktreePath, 'src', 'lib.ts'), 'export const n = 3;\n');
+    git(secondHandle.worktreePath, ['add', 'src/lib.ts']);
+    git(secondHandle.worktreePath, ['commit', '-m', 'pending orphan-fenced delivery source']);
+    const secondValidated = await callExecutionTool(fx.ctx, 'work_validate', {
+      session_id: session.sessionId,
+      repo_id: fx.repository.repoId,
+      work_id: secondWork.workId,
+      check_ids: [],
+      request_id: 'validate-capability-delivery-unknown-target-source',
+    });
+    expect((secondValidated?.structuredContent as { validation: { passed: boolean } }).validation.passed).toBe(true);
+
+    const orphanBranch = 'orphan-unmerged-candidate';
+    git(fx.repoRoot, ['checkout', '-b', orphanBranch]);
+    writeFileSync(join(fx.repoRoot, 'orphan-only.txt'), 'unique orphan candidate\n');
+    git(fx.repoRoot, ['add', 'orphan-only.txt']);
+    git(fx.repoRoot, ['commit', '-m', 'unmerged orphan candidate']);
+    const orphanHead = git(fx.repoRoot, ['rev-parse', 'HEAD']);
+    git(fx.repoRoot, ['checkout', 'main']);
 
     const unknownBlockerId = 'work-unknown-target-handle';
     writeWorkHandle(fx.controllerHome, {
@@ -781,6 +1002,7 @@ describe('repository.git Work delivery', () => {
       recordRevision: undefined,
       workId: unknownBlockerId,
       workContractId: unknownBlockerId,
+      expectedHead: orphanHead,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     });
@@ -791,11 +1013,11 @@ describe('repository.git Work delivery', () => {
       capability_id: 'repository.git',
       action: 'deliver_work',
       request_id: 'deliver-capability-unknown-target-work',
-      arguments: { session_id: session.sessionId, work_id: work.workId },
+      arguments: { session_id: session.sessionId, work_id: secondWork.workId },
     });
     expect(unknownDelivered?.isError).toBe(true);
     expect(JSON.stringify(unknownDelivered?.structuredContent ?? unknownDelivered)).toContain(`WORK_DELIVERY_TARGET_WORK_ACTIVE: ${unknownBlockerId}`);
-    expect(git(fx.repoRoot, ['rev-parse', 'HEAD'])).toBe(targetHead);
+    expect(git(fx.repoRoot, ['rev-parse', 'HEAD'])).toBe(integratedHead);
   });
 
   test('requires validation authority for the exact committed source HEAD', async () => {

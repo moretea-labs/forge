@@ -13,6 +13,7 @@ import { gitCommitAtRef, gitWorktreeSnapshot } from './work-lifecycle-audit';
 import { readWorkHandle, writeWorkHandle, type WorkHandleState } from './work-handle-store';
 import { rearmFailedPreservedWorkHandle } from './work-handle-authority';
 import { hasSettledWorkDeliveryReceipt } from './work-completion-authority';
+import { updateRepositoryWorkPlacement } from '../facade/repository-work-admission';
 
 export interface RetainedWorkResumeIdentity {
   principalId: string;
@@ -173,9 +174,15 @@ function restoreArchivedBlockedDeliveryCheckout(input: {
 
   const at = new Date().toISOString();
   const store = { controllerHome, repoId: repository.repoId };
-  updateWorkContract(store, work.workId, {
+  updateRepositoryWorkPlacement(store, work.workId, {
+    kind: 'rebind',
+    expectedCheckoutId: work.checkoutId,
+    expectedWorktreeRef: work.worktreeRef,
     checkoutId: workspace.checkoutId,
     worktreeRef: workspace.root,
+    baseRevision: candidateRevision,
+  });
+  updateWorkContract(store, work.workId, {
     controllerInstanceId: identity.controllerInstanceId,
     continuationPrompt: `Continue work ${repository.repoId}: ${work.objective.slice(0, 500)}. Forge rehydrated exact archived candidate ${candidateRevision}; rerun verification/review before delivery.`,
   });
@@ -326,9 +333,15 @@ function restoreArchivedPendingCandidateCheckout(input: {
 
   const at = new Date().toISOString();
   const store = { controllerHome, repoId: repository.repoId };
-  updateWorkContract(store, work.workId, {
+  updateRepositoryWorkPlacement(store, work.workId, {
+    kind: 'rebind',
+    expectedCheckoutId: work.checkoutId,
+    expectedWorktreeRef: work.worktreeRef,
     checkoutId: workspace.checkoutId,
     worktreeRef: workspace.root,
+    baseRevision: candidateRevision,
+  });
+  updateWorkContract(store, work.workId, {
     controllerInstanceId: identity.controllerInstanceId,
     ...(deliveryBaseCommit !== baseRevision
       ? {
@@ -509,10 +522,15 @@ export function ensureRunningRepositoryWorkCheckout(
     throw new Error(`WORK_CONTINUE_RECONSTRUCTION_REVISION_MISMATCH: ${workId}`);
   }
 
-  updateWorkContract(store, workId, {
+  updateRepositoryWorkPlacement(store, workId, {
+    kind: 'rebind',
+    expectedCheckoutId: work.checkoutId,
+    expectedWorktreeRef: work.worktreeRef,
     checkoutId: workspace.checkoutId,
     worktreeRef: workspace.root,
     baseRevision,
+  });
+  updateWorkContract(store, workId, {
     controllerInstanceId: identity.controllerInstanceId,
     continuationPrompt: `Continue work ${repository.repoId}: ${work.objective.slice(0, 500)}. The prior managed checkout was absent; Forge reconstructed an exact zero-delta checkout at ${baseRevision}.`,
   });

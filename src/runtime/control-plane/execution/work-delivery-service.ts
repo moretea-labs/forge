@@ -31,6 +31,7 @@ import {
   type WorkHandleState,
 } from './work-handle-store';
 import { hasCurrentWorkValidationAuthority } from './work-validation-reconciler';
+import { workHandleRetainsCanonicalMutationOwnership } from './work-handle-authority';
 import { workspaceValidationFingerprint, workValidationInputFingerprint } from './verification-evidence';
 import { selectDefaultWorkValidationChecks } from './work-operation-service';
 import { changedPaths } from './work-revision-diff';
@@ -123,21 +124,6 @@ function deliveryTargetCheckout(
   return { target, targetStatus, targetBranch };
 }
 
-function workHandleHasTerminalSemanticAuthority(
-  controllerHome: string,
-  repositoryId: string,
-  workId: string,
-): boolean {
-  try {
-    const contract = getWorkContract({ controllerHome, repoId: repositoryId }, workId);
-    if (!contract) return false;
-    const state = semanticWorkState(contract);
-    return state === 'completed' || state === 'cancelled';
-  } catch {
-    return false;
-  }
-}
-
 function assertTargetMutationAvailable(
   controllerHome: string,
   handle: WorkHandleState,
@@ -145,21 +131,37 @@ function assertTargetMutationAvailable(
   targetBranch: string,
   expectedTargetHead: string,
   targetRoot: string,
+  targetClean: boolean,
   ownedLeaseJobId?: string,
 ): void {
-  const blockingLease = listActiveLeases(controllerHome, handle.repositoryId)
-    .find((lease) => lease.checkoutId === targetCheckoutId
-      && lease.ownerJobId !== ownedLeaseJobId && lease.workId !== handle.workId);
+  const activeLeases = listActiveLeases(controllerHome, handle.repositoryId);
+  const blockingLease = activeLeases.find((lease) => lease.checkoutId === targetCheckoutId
+    && lease.ownerJobId !== ownedLeaseJobId && lease.workId !== handle.workId);
   if (blockingLease) {
     throw new Error(`WORK_DELIVERY_TARGET_LEASE_ACTIVE: ${blockingLease.leaseId}`);
   }
+  const activeLeaseWorkIds = new Set(activeLeases
+    .map((lease) => lease.workId)
+    .filter((value): value is string => Boolean(value)));
   const blockingWork = listWorkHandles(controllerHome, handle.repositoryId)
     .find((other) => other.workId !== handle.workId
       && other.checkoutId === targetCheckoutId
       && other.branch === targetBranch
       && other.state !== 'cleaned'
       && other.state !== 'failed'
-      && !workHandleHasTerminalSemanticAuthority(controllerHome, handle.repositoryId, other.workId));
+      && workHandleRetainsCanonicalMutationOwnership({
+        controllerHome,
+        repositoryId: handle.repositoryId,
+        handle: other,
+        target: {
+          checkoutId: targetCheckoutId,
+          branch: targetBranch,
+          head: expectedTargetHead,
+          root: targetRoot,
+          clean: targetClean,
+          activeLeaseWorkIds,
+        },
+      }));
   if (blockingWork) {
     throw new Error(`WORK_DELIVERY_TARGET_WORK_ACTIVE: ${blockingWork.workId}`);
   }
@@ -497,7 +499,7 @@ export async function deliverWork(ctx: McpExecutionContext, args: Record<string,
       },
     }, async (gate, ownership) => {
       assertTargetMutationAvailable(ctx.controllerHome, handle, target.activeCheckoutId,
-        targetBranch, targetHead, targetRoot, gate.ownerJobId);
+        targetBranch, targetHead, targetRoot, targetStatus.clean, gate.ownerJobId);
       ownership.assert();
       const preview = !targetIsAncestor
         ? await runBoundedGit(targetRoot, ['merge-tree', '--write-tree', targetHead, sourceRevision], {

@@ -4,6 +4,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
 import { ensureControllerHome, repositoryControllerRoot } from '../../src/cli/repositories/controller-home';
+import { createMcpToolContext } from '../../adapters/mcp/server';
 import { getRepository, registerRepository } from '../../src/cli/repositories/registry';
 import type { CompletionReceipt } from '../../src/cli/controller/types';
 import { cancelWorkContract, createWorkContract, failWorkContract, getWorkContract, recordWorkCompletionReceipt, reviseWorkSemanticContext } from '../../src/runtime/control-plane/facade/work-contract-store';
@@ -17,7 +18,7 @@ import { cleanupTerminalWork, reconcileTerminalWorkCleanups } from '../../src/ru
 import { processLogDir } from '../../src/runtime/execution/process-runtime';
 import { createProcessRecord } from '../../src/runtime/execution/process-runtime/store';
 import type { ManagedProcessRecord } from '../../src/runtime/execution/process-runtime/types';
-import { selectDefaultWorkValidationChecks } from '../../adapters/mcp/runtime-gateway/execution-tools';
+import { callExecutionTool, selectDefaultWorkValidationChecks } from '../../adapters/mcp/runtime-gateway/execution-tools';
 import { ensureManagedWorkspace } from '../../src/runtime/execution/managed-workspace';
 import { cleanupControllerRuntimeState } from '../../src/runtime/control-plane/runtime-cleanup';
 import { collectWorkLifecycleAttention } from '../../src/runtime/control-plane/execution/work-lifecycle-audit';
@@ -846,6 +847,7 @@ describe('terminal Work cleanup', () => {
       branchCleanup: { status: 'deleted', uniqueCommits: 0 },
       worktree: { status: 'removed' },
     });
+    expect(result.receipt.preservation.bundleRetirement).toBeUndefined();
     expect(branchExists(fx.repositoryRoot, fx.branch)).toBe(false);
     expect(git(fx.repositoryRoot, ['branch', '--show-current'])).toBe('stale-cleanup-head');
   });
@@ -924,6 +926,99 @@ describe('terminal Work cleanup', () => {
     expect(branchExists(fx.repositoryRoot, fx.branch)).toBe(false);
   });
 
+
+  test('cleaned zero-unique-commit Work records exact no-source-delta recovery proof', async () => {
+    const fx = fixture('zero-unique-cleanup-proof');
+    const sourceHead = fx.handle.expectedHead!;
+    const result = await cleanupTerminalWork({
+      controllerHome: fx.controllerHome,
+      handle: fx.handle,
+      targetBranch: 'main',
+      deleteBranch: true,
+      terminalOutcome: 'completed_cleanup',
+    });
+
+    expect(result.handle.state).toBe('cleaned');
+    expect(result.receipt).toMatchObject({
+      complete: true,
+      branchCleanup: { uniqueCommits: 0, status: 'deleted' },
+      preservation: {
+        status: 'not_needed',
+        bundleRetirement: {
+          status: 'not_needed',
+          reason: 'no_source_delta',
+          protectedRevision: sourceHead,
+          comparedPaths: [],
+        },
+      },
+    });
+    expect(result.receipt.preservation.bundlePath).toBeUndefined();
+    expect(existsSync(fx.workspace.root!)).toBe(false);
+  });
+
+  test('legacy cleaned zero-delta Work rebinds through the existing WorkContract without replaying cleanup', async () => {
+    const fx = fixture('legacy-cleaned-rebind');
+    const ctx = createMcpToolContext({
+      controllerHome: fx.controllerHome,
+      profile: 'controller',
+      repo: fx.repositoryRoot,
+    });
+    const started = await callExecutionTool(ctx, 'session_start', {});
+    expect(started?.isError).not.toBe(true);
+    const sessionId = (started?.structuredContent as { session: { sessionId: string } }).session.sessionId;
+    const prepared = await callExecutionTool(ctx, 'work_prepare', {
+      session_id: sessionId,
+      repo_id: fx.repository.repoId,
+      request_id: 'prepare-cleaned-rebind-fixture',
+      objective: 'Restore one accidentally cleaned but still-open semantic Work without replaying effects.',
+      checks: [],
+      isolation: 'new_worktree',
+    });
+    if (prepared?.isError) throw new Error(JSON.stringify(prepared.structuredContent));
+    const sourceId = (prepared?.structuredContent as { work: { workId: string } }).work.workId;
+    const source = readWorkHandle(fx.controllerHome, fx.repository.repoId, sourceId)!;
+    const cleaned = await cleanupTerminalWork({
+      controllerHome: fx.controllerHome,
+      handle: source,
+      targetBranch: 'main',
+      deleteBranch: true,
+      terminalOutcome: 'completed_cleanup',
+    });
+    expect(cleaned.handle.state).toBe('cleaned');
+    expect(cleaned.receipt.branchCleanup).toMatchObject({ status: 'deleted', uniqueCommits: 0 });
+    const legacyReceipt = {
+      ...cleaned.receipt,
+      preservation: { ...cleaned.receipt.preservation, bundleRetirement: undefined },
+    };
+    writeWorkHandle(fx.controllerHome, { ...cleaned.handle, cleanupReceipt: legacyReceipt });
+    const sourceHead = source.expectedHead!;
+    const mainHead = git(fx.repositoryRoot, ['rev-parse', 'HEAD']);
+    const request = {
+      session_id: sessionId,
+      repo_id: fx.repository.repoId,
+      checkout_id: fx.repository.activeCheckoutId,
+      work_id: sourceId,
+      request_id: 'restore-legacy-cleaned-rebind',
+      expected_previous_head: sourceHead,
+      adopt_candidate_head: mainHead,
+      base_ref: mainHead,
+    };
+    const resumed = await callExecutionTool(ctx, 'work_prepare', request);
+    if (resumed?.isError) throw new Error(JSON.stringify(resumed.structuredContent));
+    const recovery = resumed?.structuredContent as {
+      recoveredFromWorkId: string;
+      work: { workId: string; checkoutId: string; workContractId: string; expectedHead: string };
+    };
+    expect(recovery.recoveredFromWorkId).toBe(sourceId);
+    expect(recovery.work.workContractId).toBe(sourceId);
+    expect(recovery.work.checkoutId).not.toBe(source.checkoutId);
+    expect(recovery.work.expectedHead).toBe(mainHead);
+    expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, sourceId))
+      .toMatchObject({ semanticState: 'open', checkoutId: recovery.work.checkoutId });
+    const retried = await callExecutionTool(ctx, 'work_prepare', request);
+    if (retried?.isError) throw new Error(JSON.stringify(retried.structuredContent));
+    expect((retried?.structuredContent as { work: { workId: string } }).work.workId).toBe(recovery.work.workId);
+  });
 
   test('does not create a bundle for ancestry-only unique commits with no source delta', async () => {
     const fx = fixture('empty-unique');

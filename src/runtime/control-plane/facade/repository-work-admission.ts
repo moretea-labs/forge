@@ -1,5 +1,5 @@
 import type { AccessMode } from '../governance/access-policy';
-import { createWorkContract, executionPlacementForWork, getWorkContract, updateWorkContract, type WorkContractStoreOptions } from '../../../../packages/kernel/work/api/index';
+import { createWorkContract, getWorkContract, updateWorkContractPlacement, type WorkContractStoreOptions, type WorkContractPlacementChangeKind } from '../../../../packages/kernel/work/api/index';
 import { executionPlacement, readForgeInstanceIdentity } from '../../../../packages/kernel/identity/api/index';
 import type { WorkContract } from './types';
 
@@ -118,38 +118,27 @@ export function admitDirectEditWorkContract(
 }
 
 
-export interface MaterializedRepositoryWorkspace {
-  managed: boolean;
-  checkoutId?: string;
-  root?: string;
+export interface RepositoryWorkPlacementChange {
+  kind: WorkContractPlacementChangeKind;
+  expectedCheckoutId?: string;
+  expectedWorktreeRef?: string;
+  checkoutId: string;
+  worktreeRef?: string;
   baseRevision?: string | null;
+  worktreePolicy?: WorkContract['worktreePolicy'];
+  constraints?: WorkContract['constraints'];
 }
 
-/**
- * Canonical placement materialization transition for an admitted isolated
- * WorkContract. The concrete worktree creator is injected by the execution
- * boundary; only this authority decides how its evidence updates the Work.
- */
-export function materializeRepositoryWorkPlacement(
+/** One canonical entry point for initial placement, CAS rebind, and explicit legacy detach/restore. */
+export function updateRepositoryWorkPlacement(
   store: WorkContractStoreOptions,
   workId: string,
-  materialize: (contract: WorkContract) => MaterializedRepositoryWorkspace,
-): WorkContract | undefined {
+  input: RepositoryWorkPlacementChange,
+): WorkContract {
   const contract = getWorkContract(store, workId);
-  if (!contract || contract.worktreePolicy.required !== true || contract.worktreeRef) return contract;
-  const workspace = materialize(contract);
-  if (!workspace.managed || !workspace.checkoutId || !workspace.root) {
-    throw new Error('MANAGED_WORKSPACE_NOT_MATERIALIZED');
-  }
-  const currentPlacement = executionPlacementForWork(contract);
-  return updateWorkContract(store, workId, {
-    checkoutId: workspace.checkoutId,
-    executionPlacement: executionPlacement({
-      ...(currentPlacement.forgeInstanceId ? { forgeInstanceId: currentPlacement.forgeInstanceId } : {}),
-      repositoryId: contract.repoId,
-      checkoutId: workspace.checkoutId,
-    }),
-    baseRevision: workspace.baseRevision ?? contract.baseRevision,
-    worktreeRef: workspace.root,
+  if (!contract) throw new Error(`WORK_PLACEMENT_CONTRACT_NOT_FOUND: ${workId}`);
+  return updateWorkContractPlacement(store, workId, {
+    ...input,
+    executionPlacement: repositoryExecutionPlacement(store, contract.repoId, input.checkoutId),
   });
 }

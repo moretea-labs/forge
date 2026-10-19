@@ -8,7 +8,6 @@ import {
   evaluateWorkExecutionCompatibility,
   getWorkContract,
   readActiveWorkCandidates,
-  updateWorkContract,
   type WorkContract,
 } from '../../packages/kernel/work/api/index';
 import {
@@ -17,6 +16,7 @@ import {
   reconcileWorkExecutionConcurrencyWaits,
 } from '../../src/runtime/control-plane/concurrency/work-execution-concurrency';
 import { controllerSystemRoot } from '../../src/cli/repositories/controller-home';
+import { updateRepositoryWorkPlacement } from '../../src/runtime/control-plane/facade/repository-work-admission';
 import { routeWorkStart } from '../../src/runtime/control-plane/facade/goal-workloop';
 import { readControlPlaneRecord, writeControlPlaneRecord } from '../../src/runtime/control-plane/persistence/sqlite-store';
 import { createProcessRecord } from '../../src/runtime/execution/process-runtime/store';
@@ -505,7 +505,10 @@ describe('Work execution concurrency', () => {
       },
     });
     expect(getWorkContract({ controllerHome: home, repoId }, blockedWork.workId)?.executionConcurrency).toBeDefined();
-    updateWorkContract({ controllerHome: home, repoId }, blockedWork.workId, {
+    updateRepositoryWorkPlacement({ controllerHome: home, repoId }, blockedWork.workId, {
+      kind: 'rebind',
+      expectedCheckoutId: blockedWork.checkoutId,
+      expectedWorktreeRef: blockedWork.worktreeRef,
       checkoutId: 'checkout-rebound',
       worktreeRef: '/tmp/rebound-worktree',
     });

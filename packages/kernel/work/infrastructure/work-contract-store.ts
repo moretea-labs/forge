@@ -1598,6 +1598,12 @@ export type WorkContractMetadataPatch = Partial<Omit<
   | 'repoId'
   | 'createdAt'
   | 'updatedAt'
+  | 'checkoutId'
+  | 'worktreeRef'
+  | 'executionPlacement'
+  | 'worktreePolicy'
+  | 'constraints'
+  | 'baseRevision'
   | 'semanticState'
   | 'semanticRevision'
   | 'semanticUpdatedAt'
@@ -1616,12 +1622,17 @@ export function updateWorkContract(
   workId: string,
   patch: WorkContractMetadataPatch,
 ): WorkContract {
+  for (const field of ['checkoutId', 'worktreeRef', 'executionPlacement', 'worktreePolicy', 'constraints', 'baseRevision'] as const) {
+    if (Object.prototype.hasOwnProperty.call(patch, field)) {
+      throw new Error(`WORK_PLACEMENT_REQUIRES_CAS_API: ${field}`);
+    }
+  }
   return updateWorkContractInternal(options, workId, patch, false);
 }
 export function updateWorkContractPlacementAtomically(
   options: WorkContractStoreOptions,
   workId: string,
-  patch: Pick<WorkContractMetadataPatch, 'checkoutId' | 'worktreeRef' | 'executionPlacement' | 'worktreePolicy'>,
+  patch: Partial<Pick<WorkContract, 'checkoutId' | 'worktreeRef' | 'executionPlacement' | 'worktreePolicy'>>,
   effect: (database: SqliteDatabase, contract: WorkContract) => void,
 ): WorkContract {
   // The WorkContract writer remains the sole semantic metadata authority.
@@ -1631,6 +1642,100 @@ export function updateWorkContractPlacementAtomically(
 }
 
 
+
+export type WorkContractPlacementChangeKind = 'bind_current' | 'materialize' | 'rebind' | 'detach_legacy_remote_effect' | 'restore_legacy_remote_effect';
+
+export interface UpdateWorkContractPlacementInput {
+  kind: WorkContractPlacementChangeKind;
+  expectedCheckoutId?: string;
+  expectedWorktreeRef?: string;
+  checkoutId: string;
+  worktreeRef?: string;
+  executionPlacement: NonNullable<WorkContract['executionPlacement']>;
+  baseRevision?: string | null;
+  worktreePolicy?: WorkContract['worktreePolicy'];
+  constraints?: WorkContract['constraints'];
+}
+
+/** The single compare-and-swap authority for Work execution placement. */
+export function updateWorkContractPlacement(
+  options: WorkContractStoreOptions,
+  workId: string,
+  input: UpdateWorkContractPlacementInput,
+): WorkContract {
+  const checkoutId = input.checkoutId.trim();
+  const worktreeRef = input.worktreeRef?.trim();
+  if (!checkoutId) throw new Error('WORK_PLACEMENT_TARGET_REQUIRED');
+  if (input.kind !== 'detach_legacy_remote_effect' && input.kind !== 'bind_current' && !worktreeRef) {
+    throw new Error('WORK_PLACEMENT_WORKTREE_REQUIRED');
+  }
+  if (input.kind === 'bind_current' && worktreeRef !== undefined) {
+    throw new Error('WORK_PLACEMENT_CURRENT_WORKTREE_FORBIDDEN');
+  }
+  if (input.executionPlacement.repositoryId !== options.repoId || input.executionPlacement.checkoutId !== checkoutId) {
+    throw new Error('WORK_PLACEMENT_TARGET_IDENTITY_MISMATCH');
+  }
+  return updateWorkContractInternal(options, workId, (current) => {
+    const currentPlacement = executionPlacementForWork(current);
+    const targetWorktreePolicy = input.worktreePolicy ?? current.worktreePolicy;
+    const targetConstraints = input.constraints ?? current.constraints;
+    const targetBaseRevision = input.baseRevision ?? undefined;
+    if (
+      current.checkoutId === checkoutId
+      && current.worktreeRef === worktreeRef
+      && currentPlacement.repositoryId === current.repoId
+      && currentPlacement.checkoutId === checkoutId
+      && JSON.stringify(current.worktreePolicy) === JSON.stringify(targetWorktreePolicy)
+      && JSON.stringify(current.constraints) === JSON.stringify(targetConstraints)
+      && (input.baseRevision === undefined || current.baseRevision === targetBaseRevision)
+    ) return undefined;
+    if (current.checkoutId !== input.expectedCheckoutId || current.worktreeRef !== input.expectedWorktreeRef) {
+      throw new Error('WORK_PLACEMENT_SOURCE_MISMATCH');
+    }
+    if (semanticWorkState(current) !== 'open' || current.completionReceipt || current.completionOutcome) {
+      throw new Error(`WORK_PLACEMENT_TERMINAL: ${workId}`);
+    }
+    if (input.kind === 'bind_current') {
+      if (
+        current.worktreeRef
+        || current.workKind !== 'repository_change'
+        || input.worktreePolicy?.required !== false
+        || input.constraints?.workspaceMode !== 'current'
+      ) throw new Error(`WORK_PLACEMENT_CURRENT_POLICY_MISMATCH: ${workId}`);
+    } else if (input.kind === 'materialize') {
+      if (current.worktreeRef || current.workKind !== 'repository_change' || !current.worktreePolicy.required || !worktreeRef) {
+        throw new Error(`WORK_PLACEMENT_MATERIALIZE_POLICY_MISMATCH: ${workId}`);
+      }
+    } else if (input.kind === 'rebind') {
+      if (current.workKind !== 'repository_change' || !current.worktreePolicy.required || !worktreeRef) {
+        throw new Error(`WORK_PLACEMENT_REBIND_POLICY_MISMATCH: ${workId}`);
+      }
+    } else if (input.kind === 'detach_legacy_remote_effect') {
+      if (
+        current.workKind !== 'remote_effect'
+        || !current.worktreePolicy.required
+        || input.worktreePolicy?.required !== false
+        || worktreeRef !== undefined
+        || input.constraints?.workspaceMode !== 'current'
+      ) throw new Error(`WORK_PLACEMENT_DETACH_POLICY_MISMATCH: ${workId}`);
+    } else if (
+      current.workKind !== 'remote_effect'
+      || current.worktreePolicy.required
+      || input.worktreePolicy?.required !== true
+      || !worktreeRef
+    ) {
+      throw new Error(`WORK_PLACEMENT_RESTORE_POLICY_MISMATCH: ${workId}`);
+    }
+    return {
+      checkoutId,
+      worktreeRef,
+      executionPlacement: input.executionPlacement,
+      ...(input.baseRevision !== undefined ? { baseRevision: targetBaseRevision } : {}),
+      ...(input.worktreePolicy ? { worktreePolicy: input.worktreePolicy } : {}),
+      ...(input.constraints ? { constraints: input.constraints } : {}),
+    };
+  }, false);
+}
 
 /** Explicit execution-classification transition when an open Work begins governed repository mutation. */
 export function promoteWorkToRepositoryChange(

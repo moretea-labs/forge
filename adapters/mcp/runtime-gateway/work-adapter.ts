@@ -4,6 +4,7 @@ import { SEMANTIC_SCOPE_KEY } from '../../../src/cli/repositories/controller-hom
 import { listControllerChecks } from '../../../src/cli/controller/check-runner';
 import { repositoryGitStatus } from '../../../src/cli/repositories/structured-git';
 import { getWorkContract, updateWorkContract, workSemanticView } from '../../../packages/kernel/work/api/index';
+import { updateRepositoryWorkPlacement } from '../../../src/runtime/control-plane/facade/repository-work-admission';
 import { ensureRepositoryWorkHandle } from '../../../src/runtime/control-plane/execution/work-handle-authority';
 import { readWorkHandle } from '../../../src/runtime/control-plane/execution/work-handle-store';
 import { ensureManagedWorkspace } from '../../../src/runtime/execution/managed-workspace';
@@ -121,14 +122,24 @@ async function callRepositoryBoundStart(
       ...(rawConstraints.allow_merge === false ? { allowMerge: false } : rawConstraints.allow_merge === true ? { allowMerge: true } : {}),
       ...(rawConstraints.allow_cleanup === false ? { allowCleanup: false } : rawConstraints.allow_cleanup === true ? { allowCleanup: true } : {}),
     };
-    contract = updateWorkContract(store, workId, {
+    contract = updateRepositoryWorkPlacement(store, workId, {
+      kind: requiresIsolatedWorkspace ? 'materialize' : 'bind_current',
+      expectedCheckoutId: contract.checkoutId,
+      expectedWorktreeRef: contract.worktreeRef,
       checkoutId,
-      executionPlacement: { schemaVersion: 1, repositoryId: repository.repoId, checkoutId },
-      ...(baseRevision ? { baseRevision } : {}),
       ...(worktreeRef ? { worktreeRef } : {}),
+      ...(baseRevision ? { baseRevision } : {}),
+      constraints,
+      worktreePolicy: {
+        required: requiresIsolatedWorkspace,
+        reason: requiresIsolatedWorkspace
+          ? 'Caller explicitly selected an isolated managed workspace.'
+          : 'Caller explicitly selected the current registered checkout.',
+      },
+    });
+    contract = updateWorkContract(store, workId, {
       acceptanceCriteria: boundedStringList(args.acceptance_criteria, 20),
       checks: boundedStringList(args.check_ids, 30),
-      constraints,
     });
     const identity = authenticatedFacadeControllerIdentity(ctx, args);
     const handle = ensureRepositoryWorkHandle({

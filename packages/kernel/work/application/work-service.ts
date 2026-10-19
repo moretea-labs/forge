@@ -6,6 +6,7 @@ import {
 } from '../infrastructure/work-contract-store';
 import type { WorkContract } from '../domain/types';
 import type { WorkContractStoreOptions } from '../ports/work-contract-store';
+export type { WorkContractPlacementChangeKind, UpdateWorkContractPlacementInput } from '../infrastructure/work-contract-store';
 
 export interface CompleteRemoteEffectProcessInput {
   processId: string;
@@ -91,6 +92,7 @@ export {
   summarizeWorkContract,
   updateWorkContract,
   updateWorkContractPlacementAtomically,
+  updateWorkContractPlacement,
   promoteWorkToRepositoryChange,
   recordWorkEvidenceState,
   activateWorkContract,
