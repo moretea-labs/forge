@@ -554,21 +554,25 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
 
   async findBySubmittedMarker(marker: string, bootstrapKey?: string, betweenObservations?: () => Promise<void>): Promise<ComputerChatgptTargetResult[]> {
     await betweenObservations?.();
-    const fresh = this.freshProviders();
-    if (fresh.length === 0) return [];
-    // Reconciliation must carry the original physical tab pin through the
-    // worker. A marker-only result omits its Forge-created ownerToken, making
-    // an otherwise exact match fail the existing identity fence forever.
-    const bootstrapPin = bootstrapKey ? this.authority.findSurfaceByStableIdentity(this.controllerHome, {
+    // Reconcile the Controller's one physical bootstrap pin first. Its
+    // persisted exact Project URL is required for read-only receiver repair.
+    const bootstrapSurface = bootstrapKey ? this.authority.findSurfaceByStableIdentity(this.controllerHome, {
       surfaceType: 'browser-tab', ownership: 'provider_owned',
       resource: { namespace: 'chatgpt.bootstrap', key: bootstrapKey },
-    })?.providerBinding : undefined;
+    }) : undefined;
+    const bootstrapMetadata = bootstrapSurface?.compatibilityRecords.find((entry) => entry.namespace === 'chatgpt.target')?.value as Record<string, unknown> | undefined;
+    const bootstrapIdentity = bootstrapKey && typeof bootstrapMetadata?.projectUrl === 'string' && bootstrapMetadata.projectUrl
+      ? { namespace: 'chatgpt.bootstrap' as const, bootstrapKey, projectUrl: bootstrapMetadata.projectUrl }
+      : undefined;
+    const bootstrapPin = bootstrapSurface?.providerBinding;
+    const fresh = this.freshProviders();
+    if (fresh.length === 0) return [];
     const responses = await Promise.all(fresh.map(async ([instanceId]) => ({
       instanceId,
       response: await this.submit(instanceId, { kind: 'find_marker', marker,
         ...(bootstrapKey ? { bootstrapKey } : {}),
-        ...(bootstrapPin?.providerId === PROVIDER_ID && bootstrapPin.providerSessionId === instanceId
-          ? { providerBinding: bootstrapPin } : {}),
+        ...(bootstrapIdentity && bootstrapPin?.providerId === PROVIDER_ID && bootstrapPin.providerSessionId === instanceId
+          ? { identity: bootstrapIdentity, providerBinding: bootstrapPin } : {}),
       }),
     })));
     await betweenObservations?.();
@@ -679,6 +683,7 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
       const instanceId = providerInstanceId(previous.providerSessionId);
       if (!identity || !instanceId || !this.providerIsFresh(instanceId)) return false;
       if ([...this.pending.values()].some((entry) => 'identity' in entry.command
+        && entry.command.identity !== undefined
         && entry.command.kind !== 'close'
         && entry.command.identity.namespace === resource?.namespace
         && (entry.command.identity.namespace === 'chatgpt.conversation'

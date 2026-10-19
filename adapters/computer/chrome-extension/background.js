@@ -139,16 +139,24 @@ function binding(tab, instanceId, ownerToken) {
 async function snapshot(tabId, options = {}) {
   return await tabMessage(tabId, { type: 'forge-computer-chatgpt-snapshot', options });
 }
+function bootstrapTabBelongsToProject(tab, identity) {
+  if (identity?.namespace !== 'chatgpt.bootstrap') return false;
+  const url = String(tab.url ?? '');
+  const projectUrl = String(identity.projectUrl ?? '');
+  const projectId = core.projectId(projectUrl);
+  return url === projectUrl || Boolean(projectId && core.projectId(url) === projectId);
+}
+function receiverMatchesIdentity(tab, identity) {
+  if (identity?.namespace === 'chatgpt.conversation')
+    return core.parseConversation(tab.url ?? '')?.conversationId === identity.conversationId;
+  return bootstrapTabBelongsToProject(tab, identity);
+}
 async function restoreExactContentReceiver(tabId, identity) {
   // The physical tab is already resolved by the one Computer target authority.
   // A missing MV3 message receiver is not permission to reload/navigate that tab,
   // replace its draft, or create another tab. Inject only read-only listeners on
   // this SAME proven conversation/Project, then verify its identity again.
-  const matches = (tab) => identity?.namespace === 'chatgpt.conversation'
-    ? core.parseConversation(tab.url ?? '')?.conversationId === identity.conversationId
-    : identity?.namespace === 'chatgpt.bootstrap'
-      && Boolean(core.projectId(identity.projectUrl))
-      && core.projectId(tab.url ?? '') === core.projectId(identity.projectUrl);
+  const matches = (tab) => receiverMatchesIdentity(tab, identity);
   // A retained bootstrap pin may now show a conversation in this Project.
   // Restore observation on that same physical tab so the bootstrap owner can
   // detect and retire it before Send. Receiver hydration grants no Send or
@@ -163,6 +171,18 @@ async function restoreExactContentReceiver(tabId, identity) {
   }));
   const after = await tabGet(tabId);
   if (!matches(after)) throw new Error('COMPUTER_CHATGPT_EXTENSION_RECEIVER_TARGET_CHANGED');
+}
+function isMissingContentReceiver(error) {
+  return /Receiving end does not exist|Could not establish connection/i.test(String(error?.message ?? error));
+}
+async function snapshotWithExactReceiverRecovery(tabId, identity, options = {}) {
+  try { return await snapshot(tabId, options); }
+  catch (error) {
+    if (!isMissingContentReceiver(error)) throw error;
+    // Restore only the exact physical tab's read-only listener, never Send.
+    await restoreExactContentReceiver(tabId, identity);
+    return await snapshot(tabId, options);
+  }
 }
 async function waitForContent(tabId, requireBootstrapUi = false, recoverReceiver) {
   let lastError;
@@ -181,8 +201,7 @@ async function waitForContent(tabId, requireBootstrapUi = false, recoverReceiver
         && (!requireBootstrapUi || typeof observation.composerText === 'string')) return observation;
     } catch (error) {
       lastError = error;
-      if (!recoveryAttempted && recoverReceiver
-        && /Receiving end does not exist|Could not establish connection/i.test(String(error?.message ?? error))) {
+      if (!recoveryAttempted && recoverReceiver && isMissingContentReceiver(error)) {
         recoveryAttempted = true;
         // Reattach the receiver only after exact tab/Project revalidation.
         // Never retry the original Send: this is an observation-only preflight.
@@ -208,9 +227,7 @@ function matchingTabs(tabs, identity, pinnedBinding) {
     // The Project is a scope, not a tab identity. Multiple tasks share the
     // same Project; adopting its arbitrary new-chat tab steals another task's
     // binding and violates the Controller's unique Computer surface index.
-    const projectId = core.projectId(identity.projectUrl);
-    const belongsToProject = (tab) => String(tab.url ?? '') === identity.projectUrl
-      || Boolean(projectId && core.projectId(tab.url ?? '') === projectId);
+    const belongsToProject = (tab) => bootstrapTabBelongsToProject(tab, identity);
     if (pinnedBinding?.providerId === PROVIDER_ID && pinnedBinding.tabId && pinnedBinding.windowId) {
       const exact = tabs.filter((tab) => String(tab.id) === String(pinnedBinding.tabId));
       if (exact.length && !belongsToProject(exact[0])) throw new Error('COMPUTER_CHATGPT_BOOTSTRAP_PINNED_TAB_IDENTITY_CHANGED');
@@ -296,8 +313,10 @@ async function executeObserve(command, instanceId) {
   try {
     const target = await resolveTarget(command.identity, false, command.providerBinding);
     if (!target) return { kind: 'failed', code: 'COMPUTER_CHATGPT_EXTENSION_TARGET_MISSING', retryable: true, failoverSafe: true };
-    const observation = await snapshot(target.tab.id, command.options ?? {});
+    const observation = await snapshotWithExactReceiverRecovery(target.tab.id, command.identity, command.options ?? {});
     const refreshed = await tabGet(target.tab.id);
+    if (!receiverMatchesIdentity(refreshed, command.identity))
+      throw new Error('COMPUTER_CHATGPT_EXTENSION_RECEIVER_TARGET_CHANGED');
     return { kind: 'observation', providerBinding: binding(refreshed, instanceId, await attestedOwnerToken(refreshed, command.providerBinding)), observation };
   } catch (error) {
     return { kind: 'failed', code: String(error?.message ?? error).split(':')[0] || 'COMPUTER_CHATGPT_EXTENSION_OBSERVE_FAILED', retryable: true, failoverSafe: true };
@@ -371,11 +390,32 @@ async function executeDispatch(command) {
 }
 async function executeFindMarker(command, instanceId) {
   const matches = [];
-  for (const tab of await chatgptTabs()) {
+  const pinnedBinding = command.providerBinding;
+  let pinnedTarget;
+  if (command.identity?.namespace === 'chatgpt.bootstrap'
+    && pinnedBinding?.providerId === PROVIDER_ID
+    && pinnedBinding.providerSessionId === instanceId
+    && pinnedBinding.tabId && pinnedBinding.windowId) {
+    try { pinnedTarget = await resolveTarget(command.identity, false, pinnedBinding); }
+    catch { /* Invalid pin never permits repair or other-tab adoption. */ }
+  }
+  const tabs = await chatgptTabs();
+  const pinnedTabId = pinnedTarget ? String(pinnedTarget.tab.id) : undefined;
+  // Only the exact pinned physical tab can receive receiver restoration.
+  const orderedTabs = pinnedTarget
+    ? [pinnedTarget.tab, ...tabs.filter((tab) => String(tab.id) !== pinnedTabId)]
+    : tabs;
+  for (const tab of orderedTabs) {
     if (!tab.id) continue;
+    const pinned = Boolean(pinnedTarget && String(tab.id) === pinnedTabId);
     try {
-      const observation = await snapshot(tab.id, { includeUserHistory: true, includePageText: false });
-      const identity = core.parseConversation(observation?.url ?? tab.url ?? '');
+      const observation = pinned
+        ? await snapshotWithExactReceiverRecovery(tab.id, command.identity, { includeUserHistory: true, includePageText: false })
+        : await snapshot(tab.id, { includeUserHistory: true, includePageText: false });
+      const observedTab = pinned ? await tabGet(tab.id) : tab;
+      if (pinned && !receiverMatchesIdentity(observedTab, command.identity))
+        throw new Error('COMPUTER_CHATGPT_EXTENSION_RECEIVER_TARGET_CHANGED');
+      const identity = core.parseConversation(observation?.url ?? observedTab.url ?? '');
       if (!identity) continue;
       const texts = [observation.latestUserText, ...(Array.isArray(observation.userMessages) ? observation.userMessages : [])];
       if (!texts.some((text) => String(text ?? '').includes(command.marker))) continue;
@@ -384,7 +424,7 @@ async function executeFindMarker(command, instanceId) {
       const ownerToken = command.providerBinding && String(command.providerBinding.tabId) === String(tab.id)
         && command.providerBinding.providerSessionId === instanceId
         ? await attestedOwnerToken(tab, command.providerBinding) : undefined;
-      matches.push({ identity: { namespace: 'chatgpt.conversation', conversationId: identity.conversationId, canonicalUrl: identity.canonicalUrl }, providerBinding: binding(tab, instanceId, ownerToken), observation });
+      matches.push({ identity: { namespace: 'chatgpt.conversation', conversationId: identity.conversationId, canonicalUrl: identity.canonicalUrl }, providerBinding: binding(observedTab, instanceId, ownerToken), observation });
     } catch { /* an unreadable tab is not negative proof */ }
   }
   return { kind: 'marker_matches', matches };
