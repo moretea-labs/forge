@@ -1019,7 +1019,9 @@ export async function cleanupTerminalWork(input: TerminalWorkCleanupInput): Prom
       current = persist(input.controllerHome, current, receipt);
       return { handle: current, receipt };
     }
-    const removed = git(target.canonicalRoot, ['worktree', 'remove', '--force', current.worktreePath], 60_000);
+    // Git must recheck cleanliness at removal time. A write after the snapshot
+    // above is a preservation blocker, never authority to discard those bytes.
+    const removed = git(target.canonicalRoot, ['worktree', 'remove', current.worktreePath], 60_000);
     if (!removed.ok && existsSync(current.worktreePath)) {
       receipt.worktree.status = 'failed';
       receipt.worktree.reason = removed.stderr || 'git worktree remove failed';

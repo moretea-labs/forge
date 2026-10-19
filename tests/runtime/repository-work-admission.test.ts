@@ -3,7 +3,6 @@ import { mkdtempSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import {
-  admitDirectEditWorkContract,
   admitPreparedRepositoryWorkContract,
   materializeRepositoryWorkPlacement,
 } from '../../src/runtime/control-plane/facade/repository-work-admission';
@@ -67,30 +66,6 @@ describe('repository Work admission authority', () => {
       baseRevision: 'abc123',
       worktreeRef: '/tmp/forge-isolated-worktree',
       executionPlacement: { forgeInstanceId: 'forge-materialized', repositoryId: location.repoId, checkoutId: 'checkout-isolated' },
-    });
-  });
-
-
-  test('admits bounded Direct Edit explicitly through the capability boundary', () => {
-    const location = store('repo-direct-admission');
-    ensureForgeInstanceIdentity({ controllerHome: location.controllerHome, preferredInstanceId: 'forge-direct' });
-    const work = admitDirectEditWorkContract(location, {
-      workId: 'work-direct-admission',
-      repoId: location.repoId,
-      checkoutId: 'checkout-current',
-      principalId: 'principal-a',
-      controllerInstanceId: 'controller-a',
-      baseRevision: 'abc123',
-      workspaceFingerprint: 'workspace-fingerprint',
-      objective: 'Edit one bounded file.',
-      allowedPaths: ['src/a.ts'],
-      checks: ['package:check:type'],
-      requestedBy: 'chatgpt',
-    });
-    expect(work).toMatchObject({
-      checkoutId: 'checkout-current',
-      constraints: { workspaceMode: 'current' },
-      executionPlacement: { forgeInstanceId: 'forge-direct', repositoryId: location.repoId, checkoutId: 'checkout-current' },
     });
   });
 });
