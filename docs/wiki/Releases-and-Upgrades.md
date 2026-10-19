@@ -2,7 +2,7 @@
 
 ## Published stable release
 
-**Forge v1.8.1** was released on October 9, 2026. The canonical package is [`@moretea-labs/forge` on npm](https://www.npmjs.com/package/@moretea-labs/forge), and the matching [GitHub Release](https://github.com/moretea-labs/forge/releases/tag/v1.8.1) provides an immutable `v1.8.1` tag. npm `latest` is the stable channel; `next` is reserved for release candidates.
+**Forge v1.8.2** was released on October 19, 2026. The canonical package is [`@moretea-labs/forge` on npm](https://www.npmjs.com/package/@moretea-labs/forge), and the matching [GitHub Release](https://github.com/moretea-labs/forge/releases/tag/v1.8.2) provides an immutable `v1.8.1` tag. npm `latest` is the stable channel; `next` is reserved for release candidates.
 
 ## Install or upgrade to the latest stable
 
@@ -21,4 +21,4 @@ Source version, package identity, immutable Git tag, npm dist-tag, and GitHub Re
 
 Release readiness and active whole-Runtime activation are different authorities; do not infer a healthy local service just from successful package publication. Follow the [maintained release process](https://github.com/moretea-labs/forge/blob/main/docs/operations/releasing.md) for contributor instructions.
 
-For the next release, derive its version from the then-current `package.json` rather than changing historical `v1.8.1` links.
+For future releases, derive their version from the then-current `package.json` and update the matching immutable GitHub Release link.

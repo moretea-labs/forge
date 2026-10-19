@@ -92,7 +92,6 @@ function shellCompatibilityWrapper(name) {
 }
 
 const MODULE_HELPERS = new Set([
-  'check-skill-version.ts',
   'workflow-contract.ts',
   'inspect-project-state.ts',
   'migrate-workflow-docs.ts',

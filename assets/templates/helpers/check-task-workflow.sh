@@ -670,7 +670,7 @@ check_helper_runtime_files() {
       refresh-current-status.sh prepare-handoff.sh verify-contract.sh summarize-failures.sh
       verify-sprint.sh sprint-backlog.sh check-task-sync.sh check-deploy-sql-order.sh
       check-architecture-sync.sh check-agent-tooling.sh check-context-files.sh
-      check-brain-manifest.sh sync-brain-docs.sh check-skill-version.ts
+      check-brain-manifest.sh sync-brain-docs.sh
       select-agent-context-blocks.sh ensure-task-workflow.sh check-task-workflow.sh
       switch-plan.sh workflow-contract.ts
       inspect-project-state.ts migrate-workflow-docs.ts migrate-project-template.sh

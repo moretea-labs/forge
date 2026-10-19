@@ -8,7 +8,6 @@ const scriptDir = dirname(fileURLToPath(import.meta.url));
 const root = resolve(scriptDir, "..");
 const pkg = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"));
 const lock = JSON.parse(readFileSync(resolve(root, "package-lock.json"), "utf8"));
-const skill = JSON.parse(readFileSync(resolve(root, "assets/skill-version.json"), "utf8"));
 
 const expectedName = "@moretea-labs/forge";
 const requiredFiles = [
@@ -62,10 +61,6 @@ function requireReusableTarballPublisher() {
 if (pkg.name !== expectedName) fail(`package.json name is ${pkg.name}`);
 const versionMatch = String(pkg.version ?? "").match(/^(\d+\.\d+\.\d+)(?:-rc\.(\d+))?$/);
 if (!versionMatch) fail(`package.json version is not a stable or rc semantic version: ${pkg.version}`);
-const coreVersion = versionMatch[1];
-if (coreVersion !== skill.version || coreVersion !== skill.templateVersion) {
-  fail(`package core version ${coreVersion} must match workflow versions ${skill.version}/${skill.templateVersion}`);
-}
 if (pkg.publishConfig?.access !== "public") fail("publishConfig.access must be public");
 if (pkg.publishConfig?.provenance !== true) fail("publishConfig.provenance must be true");
 if (pkg.publishConfig?.tag !== undefined) fail("publishConfig.tag must be omitted");

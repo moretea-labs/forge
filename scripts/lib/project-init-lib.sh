@@ -1029,7 +1029,7 @@ pi_install_helpers() {
   local target_dir="$1"
   local helpers_dir="$2"
   local mode="${3:-apply}"
-  local helper_names="${4:-new-spec.sh new-sprint.sh new-plan.sh capture-plan.sh plan-to-todo.sh contract-run.ts contract-worktree.sh ship-worktrees.sh archive-workflow.sh refresh-current-status.sh prepare-handoff.sh verify-contract.sh summarize-failures.sh verify-sprint.sh sprint-backlog.sh check-task-sync.sh check-deploy-sql-order.sh check-architecture-sync.sh check-agent-tooling.sh check-context-files.sh check-brain-manifest.sh sync-brain-docs.sh check-skill-version.ts select-agent-context-blocks.sh ensure-task-workflow.sh check-task-workflow.sh switch-plan.sh workflow-contract.ts inspect-project-state.ts migrate-workflow-docs.ts migrate-project-template.sh capability-resolver.ts architecture-event.ts capability-config.ts architecture-queue.sh context-contract-sync.sh workstream-sync.sh prepare-codex-handoff.sh codex-handoff-resume.sh}"
+  local helper_names="${4:-new-spec.sh new-sprint.sh new-plan.sh capture-plan.sh plan-to-todo.sh contract-run.ts contract-worktree.sh ship-worktrees.sh archive-workflow.sh refresh-current-status.sh prepare-handoff.sh verify-contract.sh summarize-failures.sh verify-sprint.sh sprint-backlog.sh check-task-sync.sh check-deploy-sql-order.sh check-architecture-sync.sh check-agent-tooling.sh check-context-files.sh check-brain-manifest.sh sync-brain-docs.sh select-agent-context-blocks.sh ensure-task-workflow.sh check-task-workflow.sh switch-plan.sh workflow-contract.ts inspect-project-state.ts migrate-workflow-docs.ts migrate-project-template.sh capability-resolver.ts architecture-event.ts capability-config.ts architecture-queue.sh context-contract-sync.sh workstream-sync.sh prepare-codex-handoff.sh codex-handoff-resume.sh}"
   local scripts_dir="$target_dir/scripts"
   local runtime_dir="$target_dir/.ai/harness/scripts"
   local helper_name
@@ -1424,7 +1424,7 @@ pi_forge_version_for_refs() {
     printf '%s\n' "unknown"
     return 0
   fi
-  local version_file="$root_dir/assets/skill-version.json"
+  local version_file="$root_dir/package.json"
 
   if [[ -f "$version_file" ]]; then
     sed -n 's/^[[:space:]]*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$version_file" | head -n 1
