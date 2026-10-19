@@ -16,7 +16,6 @@ import { PassThrough, Writable } from "stream";
 import {
   runInit,
   runInteractiveInit,
-  syncCrossReviewSkills,
   writeGlobalContextFiles,
 } from "../../src/cli/commands/init";
 import { configuredBrainRoot } from "../../src/cli/commands/brain-root";
@@ -49,10 +48,6 @@ function setupFakeSource(root: string): void {
       "```",
       "",
     ].join("\n"),
-  );
-  makeExecutable(
-    join(root, "scripts", "sync-codex-installed-copies.sh"),
-    "#!/bin/bash\nset -euo pipefail\necho \"sync link=${AGENTIC_DEV_LINK_INSTALLED_COPIES:-unset}\"\n",
   );
   writeFileSync(
     join(root, "scripts", "inspect-project-state.ts"),
@@ -152,9 +147,7 @@ describe("init command", () => {
 
       const result = runInit({
         sourceRoot: source,
-        syncSkill: false,
         hostAdapters: false,
-        externalSkills: false,
       });
 
       expect(result.exitCode).toBe(0);
@@ -218,9 +211,7 @@ describe("init command", () => {
 
       const result = runInit({
         sourceRoot: source,
-        syncSkill: false,
         hostAdapters: false,
-        externalSkills: false,
       });
 
       expect(result.exitCode).toBe(0);
@@ -229,54 +220,6 @@ describe("init command", () => {
       expect(readFileSync(join(repo, ".ai", "harness", "session", "refresh-marker"), "utf-8")).toContain("refreshed");
     } finally {
       process.chdir(previousCwd);
-      rmSync(tmp, { recursive: true, force: true });
-    }
-  });
-
-  test("runInit can bootstrap core Waza, Mermaid, and cross-review skills for Claude and Codex", () => {
-    const tmp = join(tmpdir(), `forge-init-skills-${Date.now()}`);
-    const source = join(tmp, "source");
-    const repo = join(tmp, "repo");
-    const home = join(tmp, "home");
-    const fakeBin = join(tmp, "bin");
-    const npxLog = join(tmp, "npx.log");
-    try {
-      mkdirSync(source, { recursive: true });
-      mkdirSync(repo, { recursive: true });
-      mkdirSync(fakeBin, { recursive: true });
-      setupFakeSource(source);
-      makeExecutable(
-        join(fakeBin, "npx"),
-        `#!/bin/bash\nprintf '%s\\n' "$*" >> "${npxLog}"\nexit 0\n`,
-      );
-
-      const result = runInit({
-        repo,
-        sourceRoot: source,
-        syncSkill: false,
-        hostAdapters: false,
-        verify: false,
-        externalSkills: true,
-        env: {
-          ...process.env,
-          HOME: home,
-          PATH: `${fakeBin}${delimiter}${BASE_TEST_PATH}`,
-        },
-      });
-
-      expect(result.exitCode).toBe(0);
-      expect(readFileSync(npxLog, "utf-8")).toContain(
-        "-y skills add tw93/Waza -g -a claude-code codex -s think hunt check health -y",
-      );
-      expect(readFileSync(npxLog, "utf-8")).toContain(
-        "-y skills add BfdCampos/dotfiles -g -a claude-code codex -s mermaid -y",
-      );
-      // Cross-review skills install host-aware: codex-review on Claude, claude-review on Codex.
-      expect(existsSync(join(home, ".claude", "skills", "codex-review", "SKILL.md"))).toBe(true);
-      expect(existsSync(join(home, ".codex", "skills", "claude-review", "SKILL.md"))).toBe(true);
-      expect(existsSync(join(home, ".codex", "skills", "codex-review", "SKILL.md"))).toBe(false);
-      expect(existsSync(join(home, ".claude", "skills", "claude-review", "SKILL.md"))).toBe(false);
-    } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
   });
@@ -303,7 +246,6 @@ describe("init command", () => {
       });
 
       expect(result.exitCode).toBe(0);
-      expect(result.steps.find((step) => step.step === "sync forge skills")?.detail).toBe("dry-run");
       expect(result.steps.find((step) => step.step === "install host adapters")?.detail).toBe("dry-run");
       expect(existsSync(join(home, ".codex", "hooks.json"))).toBe(false);
       expect(existsSync(join(repo, ".ai", "harness", "workflow-contract.json"))).toBe(false);
@@ -333,9 +275,7 @@ describe("init command", () => {
       const result = runInit({
         repo,
         sourceRoot: source,
-        syncSkill: false,
         hostAdapters: false,
-        externalSkills: false,
         verify: false,
         brainRoot: join(tmp, "brain"),
         brainMode: "install-gbrain-cli",
@@ -358,32 +298,6 @@ describe("init command", () => {
     }
   });
 
-  test("npx cache sources force copy-based installed skill sync", () => {
-    const tmp = join(tmpdir(), `forge-init-npx-${Date.now()}`);
-    const source = join(tmp, "_npx", "abc123", "node_modules", "forge");
-    const repo = join(tmp, "repo");
-    try {
-      mkdirSync(source, { recursive: true });
-      mkdirSync(repo, { recursive: true });
-      setupFakeSource(source);
-
-      const result = runInit({
-        repo,
-        sourceRoot: source,
-        hostAdapters: false,
-        externalSkills: false,
-        verify: false,
-      });
-
-      expect(result.exitCode).toBe(0);
-      expect(result.steps.find((step) => step.step === "sync forge skills")?.stdout).toContain(
-        "sync link=0",
-      );
-    } finally {
-      rmSync(tmp, { recursive: true, force: true });
-    }
-  });
-
   test("CLI adopt --dry-run --json returns the adoption planner protocol", () => {
     const tmp = join(tmpdir(), `forge-init-cli-codegraph-${Date.now()}`);
     try {
@@ -396,9 +310,7 @@ describe("init command", () => {
           "--repo",
           tmp,
           "--dry-run",
-          "--no-sync-skill",
           "--no-host-adapters",
-          "--no-external-skills",
           "--no-verify",
           "--json",
         ],
@@ -558,9 +470,7 @@ describe("init command", () => {
           CLI,
           "adopt",
           "--dry-run",
-          "--no-sync-skill",
           "--no-host-adapters",
-          "--no-external-skills",
           "--no-verify",
           "--json",
         ],
@@ -732,7 +642,6 @@ describe("init command", () => {
       const result = await runInteractiveInit({
         repo,
         sourceRoot: source,
-        syncSkill: false,
         hostAdapters: false,
         verify: false,
         input,
@@ -753,82 +662,4 @@ describe("init command", () => {
       rmSync(tmp, { recursive: true, force: true });
     }
   }, CODEGRAPH_INIT_TIMEOUT_MS);
-});
-
-describe("syncCrossReviewSkills", () => {
-  function makeSource(root: string): void {
-    mkdirSync(join(root, "assets", "skills", "codex-review"), { recursive: true });
-    writeFileSync(
-      join(root, "assets", "skills", "codex-review", "SKILL.md"),
-      "---\nname: codex-review\n---\n",
-    );
-    mkdirSync(join(root, "assets", "skills", "claude-review"), { recursive: true });
-    writeFileSync(
-      join(root, "assets", "skills", "claude-review", "SKILL.md"),
-      "---\nname: claude-review\n---\n",
-    );
-  }
-
-  test("installs host-aware: codex-review to Claude, claude-review to Codex", () => {
-    const tmp = join(tmpdir(), `cross-review-both-${Date.now()}`);
-    const source = join(tmp, "source");
-    const home = join(tmp, "home");
-    try {
-      mkdirSync(source, { recursive: true });
-      mkdirSync(home, { recursive: true });
-      makeSource(source);
-
-      const steps = syncCrossReviewSkills(source, "both", { ...process.env, HOME: home });
-
-      expect(steps.every((s) => s.status === "ok")).toBe(true);
-      expect(existsSync(join(home, ".claude", "skills", "codex-review", "SKILL.md"))).toBe(true);
-      expect(existsSync(join(home, ".codex", "skills", "claude-review", "SKILL.md"))).toBe(true);
-      expect(existsSync(join(home, ".codex", "skills", "codex-review", "SKILL.md"))).toBe(false);
-      expect(existsSync(join(home, ".claude", "skills", "claude-review", "SKILL.md"))).toBe(false);
-
-      const again = syncCrossReviewSkills(source, "both", { ...process.env, HOME: home });
-      expect(again.some((s) => /already present/.test(s.detail ?? ""))).toBe(true);
-    } finally {
-      rmSync(tmp, { recursive: true, force: true });
-    }
-  });
-
-  test("respects target=claude (only codex-review) and target=codex (only claude-review)", () => {
-    const tmp = join(tmpdir(), `cross-review-target-${Date.now()}`);
-    const source = join(tmp, "source");
-    const claudeHome = join(tmp, "home-claude");
-    const codexHome = join(tmp, "home-codex");
-    try {
-      mkdirSync(source, { recursive: true });
-      mkdirSync(claudeHome, { recursive: true });
-      mkdirSync(codexHome, { recursive: true });
-      makeSource(source);
-
-      syncCrossReviewSkills(source, "claude", { ...process.env, HOME: claudeHome });
-      expect(existsSync(join(claudeHome, ".claude", "skills", "codex-review", "SKILL.md"))).toBe(true);
-      expect(existsSync(join(claudeHome, ".codex", "skills", "claude-review", "SKILL.md"))).toBe(false);
-
-      syncCrossReviewSkills(source, "codex", { ...process.env, HOME: codexHome });
-      expect(existsSync(join(codexHome, ".codex", "skills", "claude-review", "SKILL.md"))).toBe(true);
-      expect(existsSync(join(codexHome, ".claude", "skills", "codex-review", "SKILL.md"))).toBe(false);
-    } finally {
-      rmSync(tmp, { recursive: true, force: true });
-    }
-  });
-
-  test("skips (does not fail) when the bundled source is missing", () => {
-    const tmp = join(tmpdir(), `cross-review-missing-${Date.now()}`);
-    const source = join(tmp, "source");
-    const home = join(tmp, "home");
-    try {
-      mkdirSync(source, { recursive: true });
-      mkdirSync(home, { recursive: true });
-
-      const steps = syncCrossReviewSkills(source, "both", { ...process.env, HOME: home });
-      expect(steps.every((s) => s.status !== "failed")).toBe(true);
-      expect(steps.some((s) => s.status === "skipped")).toBe(true);
-    } finally {
-      rmSync(tmp, { recursive: true, force: true });
-    }
-  });
 });

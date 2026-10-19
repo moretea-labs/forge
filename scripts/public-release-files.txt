@@ -2,8 +2,7 @@
 .gitignore
 .npmignore
 .github/
-.agents/
-AGENTS.md
+.AGENTS.md
 CLAUDE.md
 LICENSE
 CHANGELOG.md
@@ -19,8 +18,6 @@ README.zh-CN.md
 README.ja.md
 README.es.md
 README.fr.md
-SKILL.md
-agents/
 assets/
 bun.lock
 install.ps1

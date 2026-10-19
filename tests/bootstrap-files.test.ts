@@ -9,43 +9,13 @@ function read(relPath: string): string {
 }
 
 describe("Bootstrap Script Contracts", () => {
-  test("SKILL.md should stay within 500-line budget", () => {
-    const skill = read("SKILL.md");
-    expect(skill.split("\n").length).toBeLessThanOrEqual(500);
-  });
-
-  test("router should advertise scaffold plus existing-repo maintenance paths", () => {
-    const skill = read("SKILL.md");
-    expect(skill).toContain("1. **Scaffold**");
-    expect(skill).toContain("2. **Initialize**");
-    expect(skill).toContain("3. **Migrate**");
-    expect(skill).toContain("4. **Audit**");
-    expect(skill).toContain("5. **Repair**");
-    expect(skill).not.toContain("5. **Skill Factory**");
-    expect(skill).not.toContain("references/skill-factory-guide.md");
-    expect(existsSync(join(ROOT, "references/skill-factory-guide.md"))).toBe(false);
-  });
-
-  test("router keeps automatic Direct default while exposing explicit opt-in modes", () => {
-    const skill = read("SKILL.md");
-    expect(skill).toContain("understood bounded work still defaults to Direct Edit");
-    expect(skill).toContain("`-plan` or `/plan`");
-    expect(skill).toContain("`-debug` or `/debug`");
-    expect(skill).toContain("review current raw source");
-    expect(skill).toContain("structural_context=off");
-    expect(skill).toContain("explicit semantic_navigation");
-    expect(skill).toContain("normal Plan approval");
-    expect(skill).toContain("Direct/Work selection rules");
-    expect(skill).toContain("never bypasses permissions");
-    expect(skill).toContain("Mode directives are not sticky across turns");
-  });
-
-  test("Codex agent metadata should exist for user-level installation", () => {
-    const metadata = read("agents/openai.yaml");
-    expect(metadata).toContain("interface:");
-    expect(metadata).toContain('display_name: "forge"');
-    expect(metadata).toContain("short_description:");
-    expect(metadata).toContain("default_prompt:");
+  test("Forge no longer ships a Codex/Claude host Skill", () => {
+    for (const oldPath of ["SKILL.md", "agents/openai.yaml", "assets/skill-version.json",
+      "scripts/sync-codex-installed-copies.sh", "scripts/run-skill-hook.ts", "assets/skill-hooks.json"]) {
+      expect(existsSync(join(ROOT, oldPath))).toBe(false);
+    }
+    expect(existsSync(join(ROOT, "AGENTS.md"))).toBe(true);
+    expect(existsSync(join(ROOT, "CLAUDE.md"))).toBe(true);
   });
 
   test("repo root should describe Controller Home authority and keep hook implementation central", () => {
@@ -265,37 +235,6 @@ describe("Bootstrap Script Contracts", () => {
     expect(content).toContain("exit 2");
   });
 
-  test("cross-review skills should include dirty working tree scope", () => {
-    const claudeReview = read("assets/skills/claude-review/SKILL.md");
-    const codexReview = read("assets/skills/codex-review/SKILL.md");
-
-    expect(claudeReview).toContain("BRANCH_DIFF=$(git diff");
-    expect(claudeReview).toContain("STAGED_DIFF=$(git diff --cached");
-    expect(claudeReview).toContain("UNSTAGED_DIFF=$(git diff");
-    expect(claudeReview).toContain("git ls-files --others --exclude-standard -z");
-    expect(claudeReview).toContain("git diff --no-index -- /dev/null");
-    expect(claudeReview).toContain("BASE=origin/main");
-    expect(claudeReview).toContain("else BASE=HEAD");
-    expect(claudeReview).toContain("Review the combined branch, staged, unstaged, and untracked changes");
-    expect(claudeReview).toContain("run_with_optional_timeout claude -p");
-    expect(claudeReview).toContain("recover_claude_review_from_transcript");
-    expect(claudeReview).toContain("~/.claude/projects/<project>/<session-id>.jsonl");
-    expect(claudeReview).toContain("CLAUDE_CONFIG_DIR");
-    expect(claudeReview).toContain("stdout was empty; output above was recovered from the session transcript");
-    expect(claudeReview).toContain("intentionally does not pass `--no-session-persistence`");
-    expect(claudeReview).not.toContain("${TO:+$TO 330}");
-
-    expect(codexReview).toContain("committed branch diff");
-    expect(codexReview).toContain("git diff --cached");
-    expect(codexReview).toContain("unstaged tracked changes");
-    expect(codexReview).toContain("git ls-files --others --exclude-standard");
-    expect(codexReview).toContain("git diff --no-index -- /dev/null <file>");
-    expect(codexReview).toContain("BASE=origin/main");
-    expect(codexReview).toContain("else BASE=HEAD");
-    expect(codexReview).toContain("run_with_optional_timeout codex exec");
-    expect(codexReview).not.toContain("${TO:+$TO 330}");
-  });
-
   test("hook template should reference existing local hook scripts", () => {
     const settings = read("assets/hooks/settings.template.json");
     const codexHooks = read("assets/hooks/codex.hooks.template.json");
@@ -340,13 +279,11 @@ describe("Bootstrap Script Contracts", () => {
   });
 
   test("hook docs and scripts should use ToolUse event names", () => {
-    const skill = read("SKILL.md");
     const setup = read("scripts/setup-plugins.sh");
+
     const legacyPre = `PreTool${"Call"}`;
     const legacyPost = `PostTool${"Call"}`;
 
-    expect(skill).not.toContain(legacyPre);
-    expect(skill).not.toContain(legacyPost);
     expect(setup).not.toContain(legacyPre);
     expect(setup).not.toContain(legacyPost);
   });

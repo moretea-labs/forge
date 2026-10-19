@@ -769,7 +769,7 @@
       "module": "browser",
       "resource": "pure"
     },
-    "tests/skill-version.test.ts": {
+    "tests/forge-version.test.ts": {
       "module": "workflow",
       "resource": "pure"
     },

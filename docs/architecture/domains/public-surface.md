@@ -1,13 +1,12 @@
 # Architecture Domain: Public Surface
 
 > **Source**: `.ai/context/capabilities.json`
-> **Owner**: Root router and command facade docs.
+> **Owner**: CLI/MCP command facade docs.
 
 ## Purpose
 
 The public surface turns user intent into one of the supported CLI+hooks harness
-actions without duplicating engine policy in prose. It includes the root skill
-compatibility router, README, root agent docs, the `forge` CLI, and thin
+actions without duplicating engine policy in prose. It includes the README, root agent docs, the `forge` CLI, and thin
 `forge-*` command facades.
 
 ## Capabilities
@@ -17,10 +16,9 @@ compatibility router, README, root agent docs, the `forge` CLI, and thin
 
 ## Stable Rules
 
-- Root `SKILL.md` stays short and router-oriented.
+- Forge ships no host Skill; CLI/MCP and host adapters are the execution surfaces.
 - Root `AGENTS.md` and `CLAUDE.md` stay concise; detailed operating rules live in `docs/reference-configs/`.
 - Public commands are CLI-backed facades. Internal steps such as `hooks-init`, `docs-init`, and `create-project-dirs` stay behind `init`, `scaffold`, `migrate`, and `upgrade`.
-- `forge-skill` remains a compatibility trigger, not the canonical name.
 - The former `project-initializer` install paths have been fully removed; no tooling recognizes, syncs, or cleans them up.
 
 ## Verification Surface
