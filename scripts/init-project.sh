@@ -373,60 +373,14 @@ install_dev_tools() {
     echo -e "${GREEN}Dev tools installed!${NC}"
 }
 
-# Write version stamp into the generated project
-write_version_stamp() {
-    local skill_version_file="$SCRIPT_DIR/../assets/skill-version.json"
-    local stamp_dir=".claude"
-    local stamp_file="$stamp_dir/.skill-version"
-    local sv_version="unknown"
-    local sv_template_version="unknown"
-
-    if [ -f "$skill_version_file" ] && command_exists bun; then
-        sv_version=$(bun -e "console.log(JSON.parse(require('fs').readFileSync('$skill_version_file','utf-8')).version)")
-        sv_template_version=$(bun -e "console.log(JSON.parse(require('fs').readFileSync('$skill_version_file','utf-8')).templateVersion)")
-    elif [ -f "$skill_version_file" ] && command_exists node; then
-        sv_version=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$skill_version_file','utf-8')).version)")
-        sv_template_version=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$skill_version_file','utf-8')).templateVersion)")
-    fi
-
-    mkdir -p "$stamp_dir"
-    cat > "$stamp_file" << STAMP_EOF
-skill_version=$sv_version
-template_version=$sv_template_version
-generated_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
-plan_type=${STACK}
-STAMP_EOF
-    echo -e "${GREEN}Version stamp written to $stamp_file${NC}"
-}
-
-# Run a skill lifecycle hook (if bun is available)
-run_skill_hook() {
-    local event="$1"
-    local hook_script="$SCRIPT_DIR/run-skill-hook.ts"
-
-    if command_exists bun && [ -f "$hook_script" ]; then
-        bun "$hook_script" "$event" --context "{\"projectName\":\"$PROJECT_NAME\",\"stack\":\"$STACK\"}" 2>&1 || {
-            if [[ "$event" == pre-* ]]; then
-                echo -e "${RED}Pre-hook $event failed, aborting.${NC}"
-                return 1
-            else
-                echo -e "${YELLOW}Post-hook $event warning (non-fatal).${NC}"
-            fi
-        }
-    fi
-}
-
 # Main execution
 main() {
-    run_skill_hook "pre-init" || exit 1
 
     check_package_manager
     create_project
     create_structure
     install_dev_tools
-    write_version_stamp
 
-    run_skill_hook "post-init"
 
     echo ""
     echo -e "${GREEN}=== Project initialized successfully! ===${NC}"

@@ -329,13 +329,6 @@
       "ifMissing": true
     },
     {
-      "id": "writeFile:scripts/check-skill-version.ts:helper-wrapper",
-      "kind": "writeFile",
-      "status": "planned",
-      "path": "scripts/check-skill-version.ts",
-      "ifMissing": true
-    },
-    {
       "id": "writeFile:scripts/select-agent-context-blocks.sh:helper-wrapper",
       "kind": "writeFile",
       "status": "planned",

@@ -1,6 +1,6 @@
 {
   "name": "@moretea-labs/forge",
-  "version": "1.8.1",
+  "version": "1.8.2",
   "description": "Local-first action assistant for software work with resumable execution, bounded tools, and reviewable evidence",
   "license": "MIT",
   "author": "Moretea Labs contributors",
@@ -39,7 +39,6 @@
     "NOTICE",
     "THIRD_PARTY_NOTICES.md",
     "scripts/verify-forge-runtime.sh",
-    "agents/",
     "assets/",
     "docs/README.md",
     "docs/tutorials/",
@@ -78,7 +77,6 @@
     "supervisor/",
     "AGENTS.md",
     "CLAUDE.md",
-    "SKILL.md",
     "README.md"
   ],
   "bin": {
@@ -167,7 +165,6 @@
     "runtime:activate-source-baseline": "bun scripts/activate-source-baseline.ts request",
     "plugin:install-desktop-operator": "bun scripts/install-desktop-operator-registration.ts",
     "sync:brain-docs": "bun src/cli/index.ts run sync-brain-docs --all",
-    "sync:codex-installed": "bash scripts/sync-codex-installed-copies.sh",
     "check:forge-runtime": "bash scripts/verify-forge-runtime.sh",
     "repo:registry": "bun src/cli/v81-entry.ts repo",
     "smoke:schedule-engine": "node --loader ./src/runtime/shared/node-ts-loader.mjs scripts/smoke-schedule-engine.ts",

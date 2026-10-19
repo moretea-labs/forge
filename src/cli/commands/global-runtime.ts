@@ -2,7 +2,6 @@ import { existsSync, readFileSync } from "fs";
 import { dirname, join, resolve } from "path";
 import { fileURLToPath } from "url";
 import { configureBrainRoot, defaultBrainRootChoice, expandHomePath } from "./brain-root";
-import { syncCrossReviewSkills } from "./init";
 import { runInstall, type InstallTargetSpec } from "./install";
 import { runProcess as runBoundedProcess } from "../../effects/process-runner";
 import { runSetupProcess as runProcess, withProcessEnv, type SetupExecutionStep } from './setup-execution';
@@ -14,11 +13,8 @@ export interface GlobalRuntimeOptions {
   target?: InstallTargetSpec;
   installCli?: boolean;
   installSpec?: string;
-  syncSkill?: boolean;
   hostAdapters?: boolean;
-  externalSkills?: boolean;
   brainRoot?: string;
-  platform?: NodeJS.Platform;
 }
 
 export type GlobalRuntimeStep = SetupExecutionStep;
@@ -32,7 +28,6 @@ export interface GlobalRuntimeResult {
 }
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
-const WAZA_SKILLS = ["think", "hunt", "check", "health"] as const;
 
 function defaultSourceRoot(): string {
   return join(SCRIPT_DIR, "..", "..", "..");
@@ -46,24 +41,6 @@ function renderStep(step: GlobalRuntimeStep): string[] {
   const lines = [`[runtime] ${step.status}: ${step.step}${step.detail ? ` - ${step.detail}` : ""}`];
   if (step.status === "failed" && step.stderr?.trim()) lines.push(step.stderr.trim());
   return lines;
-}
-
-function hostAgents(target: InstallTargetSpec): string[] {
-  if (target === "codex") return ["codex"];
-  if (target === "claude") return ["claude-code"];
-  return ["claude-code", "codex"];
-}
-
-function isNpxCacheSource(sourceRoot: string): boolean {
-  return /[\\/]_npx[\\/]/.test(sourceRoot);
-}
-
-function commandEnv(sourceRoot: string, env?: NodeJS.ProcessEnv): NodeJS.ProcessEnv | undefined {
-  const next = { ...(env ?? {}) };
-  if (isNpxCacheSource(sourceRoot) && next.AGENTIC_DEV_LINK_INSTALLED_COPIES === undefined) {
-    next.AGENTIC_DEV_LINK_INSTALLED_COPIES = "0";
-  }
-  return Object.keys(next).length > 0 ? next : env;
 }
 
 function packageVersion(sourceRoot: string): string | null {
@@ -97,28 +74,6 @@ function installCli(sourceRoot: string, cwd: string, env?: NodeJS.ProcessEnv, in
   );
 }
 
-function syncRuntimeSkill(sourceRoot: string, env?: NodeJS.ProcessEnv, platform: NodeJS.Platform = process.platform): GlobalRuntimeStep {
-  const script = join(sourceRoot, "scripts", "sync-codex-installed-copies.sh");
-  if (!existsSync(script)) {
-    return {
-      step: "sync forge skill runtime",
-      status: "skipped",
-      detail: `script not found: ${script}`,
-    };
-  }
-  if (platform === "win32") {
-    return {
-      step: "sync forge skill runtime",
-      status: "skipped",
-      detail: "native Windows skips the Bash-owned skill sync; use WSL2 for the complete shell workflow",
-    };
-  }
-  return withStepName(
-    runProcess("bash", [script], sourceRoot, env),
-    "sync forge skill runtime",
-  );
-}
-
 function installHostAdapters(target: InstallTargetSpec, env?: NodeJS.ProcessEnv): GlobalRuntimeStep {
   const installed = withProcessEnv(env, () => runInstall({ target, location: "global" }));
   return {
@@ -126,50 +81,6 @@ function installHostAdapters(target: InstallTargetSpec, env?: NodeJS.ProcessEnv)
     status: installed.exitCode === 0 ? "ok" : "failed",
     detail: installed.lines.join("; "),
   };
-}
-
-function installWazaSkills(sourceRoot: string, target: InstallTargetSpec, env?: NodeJS.ProcessEnv): GlobalRuntimeStep {
-  const agents = hostAgents(target);
-  const step = runProcess(
-    "npx",
-    [
-      "-y",
-      "skills",
-      "add",
-      "tw93/Waza",
-      "-g",
-      "-a",
-      ...agents,
-      "-s",
-      ...WAZA_SKILLS,
-      "-y",
-    ],
-    sourceRoot,
-    env,
-  );
-  return withStepName(step, "configure Waza skills", `target=${target}`);
-}
-
-function installMermaidSkill(sourceRoot: string, target: InstallTargetSpec, env?: NodeJS.ProcessEnv): GlobalRuntimeStep {
-  const agents = hostAgents(target);
-  const step = runProcess(
-    "npx",
-    [
-      "-y",
-      "skills",
-      "add",
-      "BfdCampos/dotfiles",
-      "-g",
-      "-a",
-      ...agents,
-      "-s",
-      "mermaid",
-      "-y",
-    ],
-    sourceRoot,
-    env,
-  );
-  return withStepName(step, "configure Mermaid skill", `target=${target}`);
 }
 
 function configureBrain(root: string | undefined, env?: NodeJS.ProcessEnv): GlobalRuntimeStep {
@@ -196,28 +107,14 @@ export function runGlobalRuntimeSetup(opts: GlobalRuntimeOptions = {}): GlobalRu
   const sourceRoot = opts.sourceRoot ?? defaultSourceRoot();
   const cwd = opts.cwd ?? process.cwd();
   const target = opts.target ?? "both";
-  const env = commandEnv(sourceRoot, opts.env);
-  const platform = opts.platform ?? process.platform;
+  const env = opts.env;
   const steps: GlobalRuntimeStep[] = [];
 
   if (opts.installCli !== false) steps.push(installCli(sourceRoot, cwd, env, opts.installSpec));
   else steps.push({ step: "install forge CLI", status: "skipped", detail: "disabled" });
 
-  if (opts.syncSkill !== false) steps.push(syncRuntimeSkill(sourceRoot, env, platform));
-  else steps.push({ step: "sync forge skill runtime", status: "skipped", detail: "disabled" });
-
   if (opts.hostAdapters !== false) steps.push(installHostAdapters(target, env));
   else steps.push({ step: "install host adapters", status: "skipped", detail: "disabled" });
-
-  if (opts.externalSkills !== false) {
-    steps.push(installWazaSkills(sourceRoot, target, env));
-    steps.push(installMermaidSkill(sourceRoot, target, env));
-    steps.push(...syncCrossReviewSkills(sourceRoot, target, env));
-  } else {
-    steps.push({ step: "configure Waza skills", status: "skipped", detail: "disabled" });
-    steps.push({ step: "configure Mermaid skill", status: "skipped", detail: "disabled" });
-    steps.push({ step: "cross-review skills", status: "skipped", detail: "disabled" });
-  }
 
   steps.push(configureBrain(opts.brainRoot, env));
 
