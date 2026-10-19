@@ -567,107 +567,29 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     supervisorStore.close();
   });
 
-  test('carries only typed autonomous turn context without constraining execution scope', () => {
-    const task = {
-      taskId: 'task-minimal-continuation',
-      conversationId: '11111111-2222-3333-4444-555555555555',
-      conversationUrl: 'https://chatgpt.com/c/11111111-2222-3333-4444-555555555555',
-      objective: 'A deliberately distinctive durable objective.',
-      completionContract: { requirement_id: 'REQ-minimal-continuation', repo_id: 'repo-minimal-continuation', checkout_id: 'checkout_ios_candidate' },
-      continuationPolicy: {},
-      userBlockerPolicy: {},
-      createdAt: '2026-01-01T00:00:00.000Z',
-    };
-    const lowerLayerContext = 'controller_authority_id=opaque-previous-turn-token';
-    const continuation = renderSupervisorPrompt(task, 'fx_minimal01', 'continuation', 'large checkpoint payload', undefined, lowerLayerContext, 'Relevant prior cognition.');
-    expect(continuation).toStartWith('<<<FORGE_WORKFLOW_EFFECT_V1:fx_minimal01>>>\n');
-    expect(parseSupervisorTurn(continuation)).toEqual({
-      schema_version: 2,
-      identity: {
-        task_id: task.taskId,
-        effect_id: 'fx_minimal01',
-        kind: 'continuation',
-      },
-      goal: {
-        role: 'outcome',
-        objective: task.objective,
-      },
-      continuity: {
-        role: 'advisory',
-        summary: 'large checkpoint payload',
-      },
-      repository: { repo_id: 'repo-minimal-continuation', checkout_id: 'checkout_ios_candidate' },
-      cognition: { role: 'advisory', projection: 'Relevant prior cognition.' },
-      receipt: { challenge: supervisorReceiptChallenge(task, 'fx_minimal01') },
-    });
-    expect(continuation).not.toContain('继续当前 Supervisor 任务。');
-    expect(continuation).not.toContain('目标：');
-    expect(continuation).not.toContain('模型自行判断');
-    expect(continuation).not.toContain('本提示不新增');
-    expect(continuation).not.toContain('REQ-minimal-continuation');
-    expect(continuation).not.toContain(lowerLayerContext);
-    expect(continuation).not.toContain('"steps"');
-    expect(continuation).not.toContain('"scope"');
-    expect(continuation).not.toContain('"allowed_paths"');
-    expect(continuation).not.toContain('"next_action"');
-
-    const recovery = renderSupervisorPrompt(task, 'fx_recover01', 'recovery', 'restore checkpoint', 'recover durable state', lowerLayerContext);
-    expect(parseSupervisorTurn(recovery)).toMatchObject({
-      identity: { kind: 'recovery' },
-      goal: { role: 'outcome', objective: task.objective },
-      continuity: { role: 'advisory', summary: 'restore checkpoint\nrecover durable state' },
-    });
-    expect(recovery).toContain('END OF TURN:');
-    expect(recovery).toContain('USE FORGE: 使用 forge');
-    expect(recovery).toContain('已有真实工具时直接执行相关源码');
-    expect(recovery).toContain('NO_TOOL_RECEIPT 只能写在正文中');
-    expect(recovery).toContain('临时无工具且仍需下一轮探测时同样以 C ' + supervisorReceiptChallenge(task, 'fx_recover01'));
-    expect(recovery).toContain('不能将 C 视为成功或进展');
-    expect(recovery).toContain('工具不可用不等于用户必须介入');
-    expect(recovery).toContain('only the completed final assistant reply');
-    expect(recovery).toContain('D ' + supervisorReceiptChallenge(task, 'fx_recover01'));
-    expect(recovery).not.toContain('automation_status=continue');
-    expect(recovery).not.toContain('EXECUTION PRIORITY:');
-    expect(recovery).not.toContain(lowerLayerContext);
-
-    const correction = renderSupervisorPrompt(task, 'fx_correct01', 'correction', 'ignored checkpoint', 'ignored correction', lowerLayerContext);
-    expect(parseSupervisorTurn(correction)).toMatchObject({
-      identity: { kind: 'correction' },
-      goal: { role: 'outcome', objective: task.objective },
-      continuity: { role: 'advisory', summary: 'ignored checkpoint\nignored correction' },
-    });
-
-    const enrollment = renderSupervisorPrompt(task, 'fx_1234567890abcdef', 'enrollment');
-    expect(parseSupervisorTurn(enrollment)).toMatchObject({
-      identity: { kind: 'enrollment' },
-      goal: { role: 'outcome', objective: task.objective },
-    });
-    expect(parseSupervisorTurn(enrollment).continuity).toBeUndefined();
-  });
-
-
-  test('does not truncate the exact 8k objective and rejects oversize enrollment before storage', () => {
+  test('enforces a 500 character goal bound on new durable tasks', () => {
     const base = {
       taskId: 'task-exact-objective-bound',
       conversationId: 'ababcdcd-abcd-abcd-abcd-abcdefabcdef',
       conversationUrl: 'https://chatgpt.com/c/ababcdcd-abcd-abcd-abcd-abcdefabcdef',
-      objective: 'A'.repeat(7_950) + '\n  精确保留字符和换行\n' + 'Z'.repeat(28),
+      objective: 'A'.repeat(499),
       completionContract: {},
       continuationPolicy: {},
       userBlockerPolicy: {},
       createdAt: '2026-01-01T00:00:00.000Z',
     };
-    expect(base.objective.length).toBeLessThanOrEqual(8_000);
+    expect(base.objective.length).toBeLessThanOrEqual(500);
     const prompt = renderSupervisorPrompt(base, 'fx_12345678', 'enrollment');
-    expect(parseSupervisorTurn(prompt).goal.objective).toBe(base.objective);
-    expect(prompt.includes(JSON.stringify(base.objective))).toBe(true);
-    expect(() => renderSupervisorPrompt({ ...base, objective: 'x'.repeat(8_001) },
-      'fx_12345678', 'enrollment')).toThrow('WORKFLOW_SUPERVISOR_OBJECTIVE_TOO_LARGE');
+    expect(Array.from(prompt).length).toBeLessThanOrEqual(500);
+    expect(parseSupervisorTurn(prompt).receipt).toEqual({ challenge: supervisorReceiptChallenge(base, 'fx_12345678') });
+    const legacyPrompt = renderSupervisorPrompt({ ...base, objective: 'L'.repeat(7_950) }, 'fx_12345678', 'continuation');
+    expect(Array.from(legacyPrompt).length).toBeLessThanOrEqual(500);
+    expect(parseSupervisorTurn(legacyPrompt).identity.task_id).toBe(base.taskId);
 
     const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-objective-bound-'));
     roots.push(root);
     const store = new WorkflowSupervisorStore(join(root, 'supervisor'));
-    expect(() => store.registerTask({ ...base, objective: 'x'.repeat(8_001) }))
+    expect(() => store.registerTask({ ...base, objective: 'x'.repeat(501) }))
       .toThrow('WORKFLOW_SUPERVISOR_OBJECTIVE_TOO_LARGE');
     expect(store.getTask(base.taskId)).toBeUndefined();
     expect(store.registerTask(base).objective).toBe(base.objective);
@@ -689,10 +611,9 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     const prompt = renderSupervisorPrompt(task, effectId, 'recovery');
 
     expect(parseSupervisorTurn(prompt).receipt).toEqual({ challenge: supervisorReceiptChallenge(task, effectId) });
-    expect(prompt).toContain('END OF TURN:');
+    expect(Array.from(prompt).length).toBeLessThanOrEqual(500);
     expect(prompt).not.toContain('automation.receipt:');
     expect(prompt).not.toContain('最后一次 Forge 调用');
-    expect(prompt).toContain(renderSupervisorReceipt(task, effectId, 'CONTINUE'));
     expect(prompt).not.toContain(SUPERVISOR_BLOCK_START);
     expect(prompt).not.toContain(LEGACY_SUPERVISOR_BLOCK_START);
     expect(prompt).not.toContain('conversation_id=');
@@ -799,13 +720,13 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     })).toThrow('WORKFLOW_SUPERVISOR_WAIT_NOT_SCHEDULED');
 
     const pendingBeforeBinding = control.reserveEnrollment(task.taskId);
-    expect(pendingBeforeBinding.prompt).not.toContain('SCHEDULED WORK:');
+    expect(pendingBeforeBinding.prompt).not.toContain('W/C/U');
     const bound = control.bindScheduledWake({
       taskId: task.taskId, repoId: 'repo-scheduled-wake', workId: 'work-scheduled-wake', scheduleId: 'SCH-daily-gmail',
     });
     expect(bound.task.continuationPolicy.scheduled_wake_schedule_id).toBe('SCH-daily-gmail');
     expect(bound.changed).toBe(true);
-    expect(control.getEffect(pendingBeforeBinding.effectId)?.prompt).toContain('SCHEDULED WORK:');
+    expect(control.getEffect(pendingBeforeBinding.effectId)?.prompt).toContain('W/C/U');
     expect(control.bindScheduledWake({
       taskId: task.taskId, repoId: 'repo-scheduled-wake', workId: 'work-scheduled-wake', scheduleId: 'SCH-daily-gmail',
     }).deduplicated).toBe(true);
@@ -815,7 +736,7 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
 
     const refreshed = control.getTask(task.taskId)!;
     const enrollment = control.reserveEnrollment(task.taskId);
-    expect(enrollment.prompt).toContain('SCHEDULED WORK:');
+    expect(enrollment.prompt).toContain('W/C/U');
     control.observeEffect({ effectId: enrollment.effectId, observationId: 'scheduled-wake-applied', outcome: 'applied' });
     const receipt = renderSupervisorReceipt(refreshed, enrollment.effectId, 'WAIT');
     const completion = await control.observeAssistantTurn({
@@ -884,52 +805,6 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
       state: 'deliverable', effectId: userBlocker.successorEffect?.effectId, mode: 'send',
     });
     store.close();
-  });
-
-  test('keeps every Supervisor prompt on the reusable start or continuation template', () => {
-    const task = {
-      taskId: 'task-minimal-continuation',
-      conversationId: '12121212-3434-5656-7878-909090909090',
-      conversationUrl: 'https://chatgpt.com/c/12121212-3434-5656-7878-909090909090',
-      objective: 'OBJECTIVE_SENTINEL durable goal.',
-      completionContract: { requirement_id: 'REQ-minimal-prompt' },
-      continuationPolicy: {},
-      userBlockerPolicy: {},
-      createdAt: '2026-01-01T00:00:00.000Z',
-    };
-    const continuation = renderSupervisorPrompt(task, 'fx_continue_1234', 'continuation', 'checkpoint-sentinel', undefined, 'LOWER_LAYER_SENTINEL');
-    expect(parseSupervisorTurn(continuation)).toMatchObject({
-      schema_version: 2,
-      identity: { task_id: task.taskId, effect_id: 'fx_continue_1234', kind: 'continuation' },
-      goal: { role: 'outcome', objective: task.objective },
-      continuity: { role: 'advisory', summary: 'checkpoint-sentinel' },
-      receipt: { challenge: supervisorReceiptChallenge(task, 'fx_continue_1234') },
-    });
-    const machineCheckpoint = renderSupervisorPrompt(task, 'fx_continue_machine', 'continuation', 'automation:supervisor:test:rh_work:continue:fx_before_machine');
-    expect(parseSupervisorTurn(machineCheckpoint).continuity).toBeUndefined();
-    expect(machineCheckpoint).toContain('DELIVER WORK:');
-    expect(machineCheckpoint).toContain('像用户直接发送“继续”一样');
-    expect(machineCheckpoint).not.toContain('优先推进一个具体未完成交付点');
-    expect(machineCheckpoint).not.toContain('先调用真实 Forge 只读工具');
-    expect(machineCheckpoint).toContain('不要在只有状态检查、计划或解释时结束本轮');
-    expect(machineCheckpoint).not.toContain('automation:supervisor:test:rh_work:continue:fx_before_machine');
-    expect(continuation).not.toContain('automation.receipt:');
-    expect(continuation).toContain(renderSupervisorReceipt(task, 'fx_continue_1234', 'CONTINUE'));
-    expect(continuation).not.toContain('LOWER_LAYER_SENTINEL');
-    expect(continuation).not.toContain('REQ-minimal-prompt');
-
-    const recovery = renderSupervisorPrompt(task, 'fx_recovery_1234', 'recovery', 'checkpoint-sentinel', 'recover causally', 'LOWER_LAYER_SENTINEL');
-    expect(parseSupervisorTurn(recovery)).toMatchObject({
-      identity: { kind: 'recovery' },
-      goal: { role: 'outcome', objective: task.objective },
-      continuity: { role: 'advisory', summary: 'checkpoint-sentinel\nrecover causally' },
-    });
-    expect(recovery).toContain('recover causally');
-    expect(recovery).not.toContain('LOWER_LAYER_SENTINEL');
-    const longRecovery = renderSupervisorPrompt(task, 'fx_recovery_long', 'recovery', 'checkpoint.'.repeat(250), 'preserve non-replay cause', 'LOWER_LAYER_SENTINEL');
-    const bounded = parseSupervisorTurn(longRecovery).continuity?.summary;
-    expect(bounded?.length).toBeLessThanOrEqual(2_000);
-    expect(bounded).toContain('preserve non-replay cause');
   });
 
   test('inherits a Supervisor conversation only across explicit predecessor lineage, never across Requirement siblings', () => {

@@ -474,3 +474,18 @@ The Chrome extension heartbeat is an inventory hint, not the durable ChatGPT con
 **Exact-tab restoration and migrated enrollment (2026-10-19).** Computer first reuses its pinned Chrome tab. If that physical tab is absent but the Supervisor still has an exact canonical conversation URL and a durably applied effect awaiting completion, `ensureExact` may open that **same** conversation for observation; the reopen itself is never a Send/replay authority, and a mismatched surviving tab remains blocked. After a deliberate, bounded migration to a new Project conversation, the freshly reserved *unsubmitted enrollment* wins over read-only reconciliation of already applied effects from the retired conversation; an old applied message is not sent again. Both behaviors use the existing Computer target binding and Supervisor effect ledger, not another lifecycle or provider.
 
 **Exact marker reconciliation owner pin (2026-10-19).** Chrome marker lookup must include the existing Computer Surface provider binding so the extension can re-attest its session ownerToken on the original tab/window only. An unpinned or token-mismatched physical tab cannot claim a pinned bootstrap effect, even if its user text contains the same effect marker. The Controller never treats marker lookup or reopened tabs as permission to repeat a Send.
+
+
+### Workflow Supervisor prompt budget (2026-10-19)
+
+The Supervisor's canonical durable Task stores the objective; the outbound ChatGPT
+turn is a wake-up envelope, not a second copy of project scope, safety policy,
+checkpoints, or engineering plans. New Supervisor objective writes are limited to
+500 Unicode code points; an oversized objective is rejected, never truncated.
+Each newly rendered outbound turn is capped at 500 Unicode code points, including
+the effect marker and causal receipt envelope. The renderer includes a brief
+objective only when it fits; otherwise the Task's durable objective remains the
+sole authority, referenced by the exact task identity. Legacy durable tasks are
+not rewritten or truncated. The effect marker, task/effect identity and final
+receipt challenge remain intact for exactly-once reconciliation. User/host tool
+permissions and project requirements apply independently of prompt wording.

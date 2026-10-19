@@ -14,7 +14,7 @@ export interface WorkflowSupervisorTurnEnvelope {
     kind: WorkflowEffectKind;
   };
   /** Semantic outcome to pursue. It is context, not an execution-plan DSL. */
-  goal: {
+  goal?: {
     role: 'outcome';
     objective: string;
   };

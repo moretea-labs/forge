@@ -25,12 +25,13 @@ export const SUPERVISOR_TURN_BLOCK_START = 'FORGE_WORKFLOW_TURN_V2_BEGIN';
 export const SUPERVISOR_TURN_BLOCK_END = 'FORGE_WORKFLOW_TURN_V2_END';
 const EFFECT_ID = /^(?:fx|crpe)_[a-zA-Z0-9_-]{8,120}$/;
 const MAX_RESPONSE = 512 * 1024;
-export const MAX_SUPERVISOR_OBJECTIVE_CHARS = 8_000;
+export const MAX_SUPERVISOR_OBJECTIVE_CHARS = 500;
+export const MAX_SUPERVISOR_PROMPT_CHARS = 500;
 
 /** A goal cannot be silently shortened between durable Task and sent effect. */
 export function validateSupervisorObjective(value: string): string {
   if (typeof value !== 'string' || !value.trim()) throw new Error('WORKFLOW_SUPERVISOR_OBJECTIVE_REQUIRED');
-  if (value.length > MAX_SUPERVISOR_OBJECTIVE_CHARS) throw new Error('WORKFLOW_SUPERVISOR_OBJECTIVE_TOO_LARGE');
+  if (Array.from(value).length > MAX_SUPERVISOR_OBJECTIVE_CHARS) throw new Error('WORKFLOW_SUPERVISOR_OBJECTIVE_TOO_LARGE');
   return value;
 }
 const SUPERVISOR_BLOCK_MARKERS = [
@@ -192,59 +193,32 @@ export function renderSupervisorPrompt(
   _lowerLayerContext?: string,
   advisoryCognition?: string,
 ): string {
-  const repoId = typeof task.completionContract.repo_id === 'string'
-    ? task.completionContract.repo_id.trim()
-    : typeof task.continuationPolicy.repo_id === 'string' ? task.continuationPolicy.repo_id.trim() : '';
-  const checkoutId = typeof task.completionContract.checkout_id === 'string'
-    ? task.completionContract.checkout_id.trim()
-    : typeof task.continuationPolicy.checkout_id === 'string' ? task.continuationPolicy.checkout_id.trim() : '';
-  // An automation receipt is a causal key, not an engineering handoff.
-  // Conversation context and live project evidence guide the next action.
-  const rawCheckpoint = typeof _checkpoint === 'string' ? _checkpoint.trim() : '';
-  const checkpoint = /^(?:automation:|receipt:)/.test(rawCheckpoint) ? '' : rawCheckpoint.slice(0, 2_000);
-  // Recovery/correction context is model-facing advisory evidence, not another
-  // authority. Discarding it made a recovery look like the original request
-  // and allowed the model to repeat previously completed work.
-  const recoveryContext = kind === 'recovery' || kind === 'correction'
-    ? (typeof _correctionReason === 'string' ? _correctionReason.trim() : '') : '';
-  // Preserve both parts even when an older checkpoint occupies the full bound.
-  const continuity = recoveryContext
-    ? [checkpoint.slice(0, 950), recoveryContext.slice(0, 1_000)].filter(Boolean).join('\n')
-    : checkpoint;
-  const cognition = advisoryCognition?.trim().slice(0, 8_000) ?? '';
+  const challenge = supervisorReceiptChallenge(task, effectId);
+  const scheduled = typeof task.continuationPolicy.scheduled_wake_schedule_id === 'string';
+  const marker = renderEffectMarker(effectId);
+  const instructions = scheduled
+    ? `forge 继续。读取任务记录并执行。末行仅写 W/C/U 中一个字母、空格和 ${challenge}。`
+    : `forge 继续。读取任务记录并执行。末行仅写 C/D/U 中一个字母、空格和 ${challenge}。`;
   const envelope: WorkflowSupervisorTurnEnvelope = {
     schema_version: 2,
-    identity: {
-      task_id: task.taskId,
-      effect_id: validateEffectId(effectId),
-      kind,
-    },
-    goal: {
-      role: 'outcome',
-      objective: validateSupervisorObjective(task.objective),
-    },
-    ...(continuity ? { continuity: { role: 'advisory' as const, summary: continuity } } : {}),
-    ...(repoId ? { repository: { repo_id: repoId, ...(checkoutId ? { checkout_id: checkoutId } : {}) } } : {}),
-    ...(cognition ? { cognition: { role: 'advisory' as const, projection: cognition } } : {}),
-    receipt: { challenge: supervisorReceiptChallenge(task, effectId) },
+    identity: { task_id: task.taskId, effect_id: validateEffectId(effectId), kind },
+    goal: { role: 'outcome', objective: '读取持久化目标' },
+    receipt: { challenge },
   };
-  return [
-    renderEffectMarker(effectId),
-    // Keep the exact Effect marker first for existing target matching, but
-    // surface tool intent before the potentially long JSON goal envelope.
-    'forge 继续。使用真实可用的 Forge 工具接续未完成的工作；不必每轮先做工具或全局状态自检。',
-    SUPERVISOR_TURN_BLOCK_START,
-    JSON.stringify(envelope),
-    SUPERVISOR_TURN_BLOCK_END,
-    // Textual intent only: Project instructions and literal @forge are not proof
-    // of an App binding. No browser/plugin UI mutation belongs in this renderer.
-    'USE FORGE: 使用 forge。已有真实工具时直接执行相关源码、验证或交付动作，不要强制以 rh_status 开始。JSON、项目指令或文字 @forge 不会授予工具权限；如果工具完全不可见，仅检查一次实际提供的发现入口（如有 functions.exec 可经 ALL_TOOLS 查询 mcp__forge__），不要反复自检或要求用户选择 App，也不能伪造调用。无工具时正文写 NO_TOOL_RECEIPT 和真实缺口，不宣称工程产出。',
-    'DELIVER WORK: 把 objective 当作持续目标，像用户直接发送“继续”一样从本会话最近的未完成工作处继续；同一交付仍有安全、相关且必要的步骤时，本轮持续实现、验证、审阅并合法交付，不要因完成一次查询或一个微步而收尾。只补充当前真正缺失的证据，复用已有检查；不重复全局盘点，不机械新增 Work/Plan/测试。守住单一 writer、exact target、未知发送不重放和不可逆发布授权边界。不要在只有状态检查、计划或解释时结束本轮。',
-    ...(typeof task.continuationPolicy.scheduled_wake_schedule_id === 'string' ? [
-      'SCHEDULED WORK: 本轮仍有同一日的必要步骤时继续实现并以 C ' + supervisorReceiptChallenge(task, effectId) + ' 结束；当日目标已完成且没有剩余安全必要步骤时，使用 WAIT 并以 W ' + supervisorReceiptChallenge(task, effectId) + ' 结束。若存在真实人工阻塞，先记录精确且持久的 UserRequest、停止不安全动作，并在授权可用时通知用户，然后使用 WAIT 保持同一任务开放；不要用 DONE 或 NEEDS_USER 终结每日循环，也不要自行创建新日程。WAIT 让同一任务保持非终结状态，直到绑定的 Scheduler 下次触发。',
-    ] : []),
-    'END OF TURN: 本轮工作实际结束时才简述可核验产出和剩余事项，不要为尽快输出 C 提前终止仍可继续的安全开发。NO_TOOL_RECEIPT 只能写在正文中；工具不可用不等于用户必须介入，临时无工具且仍需下一轮探测时同样以 C ' + supervisorReceiptChallenge(task, effectId) + ' 结束，并写明零工程产出；不能将 C 视为成功或进展。D ' + supervisorReceiptChallenge(task, effectId) + ' 仅用于原目标真实交付；U ' + supervisorReceiptChallenge(task, effectId) + ' 仅用于确需用户决定/授权的阻塞。C/D/U' + (typeof task.continuationPolicy.scheduled_wake_schedule_id === 'string' ? '/W' : '') + ' 校验码必须独占最终助手回复最后一行，不得在中间消息提前输出，不要向 MCP 传 automation_status；Supervisor 只结算已完成的最终助手回复（only the completed final assistant reply）。',
-  ].join('\n');
+  const render = () => [marker, instructions, SUPERVISOR_TURN_BLOCK_START,
+    JSON.stringify(envelope), SUPERVISOR_TURN_BLOCK_END].join('\n');
+  // Inline objective only when it fits. The durable Task remains the sole
+  // authority; checkpoints, safety boilerplate and past context are not sent.
+  const objective = task.objective;
+  envelope.goal!.objective = objective;
+  if (Array.from(render()).length > MAX_SUPERVISOR_PROMPT_CHARS) {
+    delete envelope.goal;
+  }
+  const prompt = render();
+  if (Array.from(prompt).length > MAX_SUPERVISOR_PROMPT_CHARS) {
+    throw new Error('WORKFLOW_SUPERVISOR_PROMPT_TOO_LARGE');
+  }
+  return prompt;
 }
 
 export function sha256(value: string): string { return createHash('sha256').update(value).digest('hex'); }

@@ -126,7 +126,6 @@ describe('Workflow Supervisor automation receipts', () => {
     expect(enrollmentPrompt).not.toContain('automation.receipt:');
     expect(enrollmentPrompt).toStartWith('<<<FORGE_WORKFLOW_EFFECT_V1:');
     expect(enrollmentPrompt.split('\n')[1]).toContain('forge 继续。');
-    expect(enrollmentPrompt.split('\n')[1]).toContain('Forge 工具');
     expect(enrollmentPrompt).not.toContain('CONTINUE => "C ');
     store.close();
   });
