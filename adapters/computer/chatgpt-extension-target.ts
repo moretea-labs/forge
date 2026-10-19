@@ -524,9 +524,20 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
     await betweenObservations?.();
     const fresh = this.freshProviders();
     if (fresh.length === 0) return [];
+    // Reconciliation must carry the original physical tab pin through the
+    // worker. A marker-only result omits its Forge-created ownerToken, making
+    // an otherwise exact match fail the existing identity fence forever.
+    const bootstrapPin = bootstrapKey ? this.authority.findSurfaceByStableIdentity(this.controllerHome, {
+      surfaceType: 'browser-tab', ownership: 'provider_owned',
+      resource: { namespace: 'chatgpt.bootstrap', key: bootstrapKey },
+    })?.providerBinding : undefined;
     const responses = await Promise.all(fresh.map(async ([instanceId]) => ({
       instanceId,
-      response: await this.submit(instanceId, { kind: 'find_marker', marker, ...(bootstrapKey ? { bootstrapKey } : {}) }),
+      response: await this.submit(instanceId, { kind: 'find_marker', marker,
+        ...(bootstrapKey ? { bootstrapKey } : {}),
+        ...(bootstrapPin?.providerId === PROVIDER_ID && bootstrapPin.providerSessionId === instanceId
+          ? { providerBinding: bootstrapPin } : {}),
+      }),
     })));
     await betweenObservations?.();
     const results: ComputerChatgptTargetResult[] = [];

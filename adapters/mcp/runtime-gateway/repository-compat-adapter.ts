@@ -8,6 +8,10 @@ import {
   selectedPathDiff,
   stageSelectedPaths,
 } from '../../../src/cli/repositories/selected-path-actions';
+import { assertCanonicalRepositoryMutationWorkHandleAvailable, ensureRepositoryMutationWorkHandle } from '../../../src/runtime/control-plane/execution/work-handle-authority';
+import { settleWorkHandleExpectedHeadAfterRepositoryCommand } from '../../../src/runtime/control-plane/execution/work-head-settlement';
+import type { ResolvedExecutionIdentity } from '../../../src/runtime/control-plane/execution/execution-identity';
+import { repositoryGitStatus } from '../../../src/cli/repositories/structured-git';
 
 
 
@@ -35,14 +39,74 @@ export async function callRepositoryCompatibilityAdapter(ctx: MultiRepositoryMcp
             }
       case 'git_commit_paths': {
               const repository = selected(ctx, args);
+              const workId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
+              // Do not allow a sessionless commit to advance an active Work's
+              // canonical checkout and leave that Work bound to an old HEAD.
+              assertCanonicalRepositoryMutationWorkHandleAvailable({
+                controllerHome: ctx.controllerHome,
+                repositoryId: repository.repoId,
+                checkoutId: repository.activeCheckoutId,
+                ...(workId ? { workId } : {}),
+              });
+              const handle = workId ? ensureRepositoryMutationWorkHandle({
+                controllerHome: ctx.controllerHome,
+                repository,
+                workId,
+                principalId: ctx.principalId?.trim() ?? '',
+                sessionId: ctx.sessionId,
+              }).handle : undefined;
+              const executionIdentity: ResolvedExecutionIdentity | undefined = handle ? {
+                schemaVersion: 1,
+                repositoryId: handle.repositoryId,
+                checkoutId: handle.checkoutId,
+                canonicalRoot: handle.worktreePath,
+                workId: handle.workId,
+                branch: handle.branch,
+                expectedHead: handle.expectedHead,
+              } : undefined;
+              let headSettlement: ReturnType<typeof settleWorkHandleExpectedHeadAfterRepositoryCommand> | undefined;
+              let settlementError: string | undefined;
               const committed = commitSelectedPaths(ctx.controllerHome, repository, {
                 paths: args.paths,
                 message: args.message,
+                ...(handle ? { beforeStageGuard: () => {
+                  const status = repositoryGitStatus(repository);
+                  if (status.head !== handle.expectedHead || status.branch !== handle.branch) {
+                    throw new Error(`WORK_HANDLE_HEAD_CHANGED: expected ${handle.expectedHead ?? 'missing'} on ${handle.branch}, found ${status.head ?? 'missing'} on ${status.branch ?? 'detached'}`);
+                  }
+                } } : {}),
+                ...(handle ? { beforeCommitGuard: ({ currentHead }: { currentHead: string | null }) => {
+                  if (currentHead !== handle.expectedHead) {
+                    throw new Error(`WORK_HANDLE_HEAD_CHANGED: expected ${handle.expectedHead ?? 'missing'}, found ${currentHead ?? 'missing'}`);
+                  }
+                  const branch = repositoryGitStatus(repository).branch;
+                  if (branch !== handle.branch) {
+                    throw new Error(`WORK_HANDLE_BRANCH_CHANGED: expected ${handle.branch}, found ${branch ?? 'detached'}`);
+                  }
+                } } : {}),
+                ...(executionIdentity ? { afterCommit: () => {
+                  try {
+                    headSettlement = settleWorkHandleExpectedHeadAfterRepositoryCommand({
+                      controllerHome: ctx.controllerHome,
+                      repository,
+                      executionIdentity,
+                      workId,
+                      ok: true,
+                    });
+                  } catch (error) {
+                    settlementError = error instanceof Error ? error.message : String(error);
+                  }
+                } } : {}),
               });
+              const requiresReconciliation = Boolean(handle && !committed.error && headSettlement?.settled !== true);
               return result({
                 repoId: repository.repoId,
                 checkoutId: repository.activeCheckoutId,
                 ...committed,
+                ...(handle ? { workId, headSettlement: headSettlement ?? null } : {}),
+                ...(requiresReconciliation ? { settlementWarning: settlementError ?? `WORK_HEAD_SETTLEMENT_RECONCILIATION_REQUIRED: ${headSettlement?.reason ?? 'no settlement receipt'}` } : {}),
+              // Successful Git commit is never misreported as a failed
+              // side effect merely because Work HEAD settlement needs repair.
               }, Boolean(committed.error));
             }
       case 'repository_change_verify': {

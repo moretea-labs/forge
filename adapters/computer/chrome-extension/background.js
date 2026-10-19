@@ -147,8 +147,12 @@ async function restoreExactContentReceiver(tabId, identity) {
   const matches = (tab) => identity?.namespace === 'chatgpt.conversation'
     ? core.parseConversation(tab.url ?? '')?.conversationId === identity.conversationId
     : identity?.namespace === 'chatgpt.bootstrap'
-      && core.projectId(tab.url ?? '') === core.projectId(identity.projectUrl)
-      && !core.parseConversation(tab.url ?? '');
+      && Boolean(core.projectId(identity.projectUrl))
+      && core.projectId(tab.url ?? '') === core.projectId(identity.projectUrl);
+  // A retained bootstrap pin may now show a conversation in this Project.
+  // Restore observation on that same physical tab so the bootstrap owner can
+  // detect and retire it before Send. Receiver hydration grants no Send or
+  // identity promotion; bootstrapTask still rejects existing conversations.
   const before = await tabGet(tabId);
   if (before.discarded || !matches(before)) throw new Error('COMPUTER_CHATGPT_EXTENSION_RECEIVER_TARGET_CHANGED');
   await new Promise((resolve, reject) => chrome.scripting.executeScript({
@@ -375,7 +379,12 @@ async function executeFindMarker(command, instanceId) {
       if (!identity) continue;
       const texts = [observation.latestUserText, ...(Array.isArray(observation.userMessages) ? observation.userMessages : [])];
       if (!texts.some((text) => String(text ?? '').includes(command.marker))) continue;
-      matches.push({ identity: { namespace: 'chatgpt.conversation', conversationId: identity.conversationId, canonicalUrl: identity.canonicalUrl }, providerBinding: binding(tab, instanceId), observation });
+      // Only the originally pinned physical tab can re-attest its session
+      // ownerToken. Never copy the token to a same-URL or another-profile tab.
+      const ownerToken = command.providerBinding && String(command.providerBinding.tabId) === String(tab.id)
+        && command.providerBinding.providerSessionId === instanceId
+        ? await attestedOwnerToken(tab, command.providerBinding) : undefined;
+      matches.push({ identity: { namespace: 'chatgpt.conversation', conversationId: identity.conversationId, canonicalUrl: identity.canonicalUrl }, providerBinding: binding(tab, instanceId, ownerToken), observation });
     } catch { /* an unreadable tab is not negative proof */ }
   }
   return { kind: 'marker_matches', matches };

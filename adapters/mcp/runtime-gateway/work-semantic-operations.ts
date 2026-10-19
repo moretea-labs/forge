@@ -18,7 +18,6 @@ import { readRequirement, currentRequirementSemanticRevision, getRequirementRevi
 import { buildWorkContinuationSnapshot } from '../../../src/runtime/control-plane/facade/work-continuation';
 import { result } from './result-adapter';
 import { projectWorkExecutionEvidence } from './work-detail-projection';
-import { readWorkHandle } from '../../../src/runtime/control-plane/execution/work-handle-store';
 import { reconcileSingleTerminalWorkCleanup } from '../../../src/runtime/control-plane/execution/work-terminal-cleanup';
 
 import { existsSync } from 'node:fs';
@@ -283,7 +282,6 @@ export async function callRhWorkSemanticOperation(
       semantic.state !== 'open'
       && store.controllerHome
       && revised.repoId?.trim()
-      && readWorkHandle(store.controllerHome, revised.repoId, revised.workId)
     ) {
       try {
         resourceReconciliation = await reconcileSingleTerminalWorkCleanup(

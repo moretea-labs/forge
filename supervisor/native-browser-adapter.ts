@@ -799,11 +799,13 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     // strands the task.
     if (chatgptProviderBackpressureRemainingMs(this.deps.providerScopeKey, this.deps.nowMs()) > 0
       && !this.conversations.some((conversation) => conversation.conversation_id === task.conversationId)) return;
-    // Only a new, explicitly admitted send may open a missing tab. A late
-    // receipt probe or unknown-effect reconciliation uses existing attachments
-    // and never resurrects a manually closed conversation by observation.
+    // Prefer the exact pinned tab. When it is truly absent, a recorded exact
+    // conversation URL may be reopened for READ-ONLY applied-turn observation;
+    // this does not authorize another Send or spend a dispatch generation.
+    // An unknown effect remains unknown until its own marker is verified.
     const ensured = await this.deps.targetPort.ensureExact(identityForTask(task), {
-      createIfMissing: poll.command?.mode === 'send',
+      createIfMissing: poll.command?.mode === 'send'
+        || this.control.store.hasAppliedEffectAwaitingCompletion(task.taskId),
     });
     if (ensured.state !== 'ready') { this.noteTargetUnavailable(task, poll.command?.effectId, ensured.failure); return; }
     const target = ensured.target;

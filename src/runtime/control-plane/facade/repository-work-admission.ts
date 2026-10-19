@@ -60,64 +60,6 @@ export function admitPreparedRepositoryWorkContract(
   });
 }
 
-export interface DirectEditWorkAdmissionInput {
-  workId: string;
-  repoId: string;
-  checkoutId?: string;
-  principalId?: string;
-  controllerInstanceId?: string;
-  baseRevision?: string;
-  workspaceFingerprint: string;
-  objective: string;
-  issueId?: string;
-  taskId?: string;
-  checks: string[];
-  requestedBy: WorkContract['requestedBy'];
-  /** Legacy ingress-only path hints; concrete mutation scope is EditSession-owned. */
-  allowedPaths?: string[];
-  /** Legacy ingress-only path hints; concrete mutation scope is EditSession-owned. */
-  forbiddenPaths?: string[];
-}
-
-/**
- * Canonical compatibility admission for an Edit Session bound to Direct Work.
- * Direct-edit admission is selected explicitly by this capability boundary;
- * no route/mode token authorizes or rejects the operation.
- */
-export function admitDirectEditWorkContract(
-  store: WorkContractStoreOptions,
-  input: DirectEditWorkAdmissionInput,
-): WorkContract {
-  return createWorkContract(store, {
-    workId: input.workId,
-    repoId: input.repoId,
-    checkoutId: input.checkoutId,
-    executionPlacement: repositoryExecutionPlacement(store, input.repoId, input.checkoutId),
-    principalId: input.principalId,
-    controllerInstanceId: input.controllerInstanceId,
-    baseRevision: input.baseRevision,
-    workspaceFingerprint: input.workspaceFingerprint,
-    objective: input.objective,
-    acceptanceCriteria: [],
-    constraints: { workspaceMode: 'current' },
-    risk: 'low',
-    dispatchState: 'running',
-    phase: 'implementation',
-    issueId: input.issueId,
-    taskId: input.taskId,
-    scopeSummary: input.objective,
-    checks: input.checks,
-    requestedBy: input.requestedBy,
-    evidenceRefs: [],
-    handoffRefs: [],
-    suggestedNextActions: [],
-    policyDecisions: [],
-    checkRefs: [],
-    reconciliations: [],
-  });
-}
-
-
 export interface RepositoryWorkPlacementChange {
   kind: WorkContractPlacementChangeKind;
   expectedCheckoutId?: string;
