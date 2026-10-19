@@ -533,7 +533,7 @@ export class WorkflowSupervisorControlPlane {
     // do not let its read-only receipt obligation starve the fresh enrollment.
     const freshEnrollment = this.store.freshConversationMigrationContext(task.taskId)
       ? this.store.nextBrowserEffect(task.taskId) : undefined;
-    if (freshEnrollment?.mode === 'send' && freshEnrollment.effect.kind === 'enrollment') {
+    if (freshEnrollment && freshEnrollment.effect.kind === 'enrollment') {
       return { authorized: true, task: browserTask(task), command: {
         mode: freshEnrollment.mode, effectId: freshEnrollment.effect.effectId,
         kind: freshEnrollment.effect.kind, prompt: freshEnrollment.effect.prompt,
