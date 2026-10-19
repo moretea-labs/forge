@@ -1,0 +1,109 @@
+import { expect, test } from 'bun:test';
+import { mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import { WorkflowSupervisorControlPlane } from '../../supervisor/control-plane';
+import { WorkflowSupervisorStore } from '../../supervisor/store';
+
+test('unchanged task-local browser failures retain three fuse observations without an unbounded journal', () => {
+  const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-failure-coalesce-'));
+  const store = new WorkflowSupervisorStore(root);
+  try {
+    const control = new WorkflowSupervisorControlPlane(store);
+    const taskId = 'task-browser-failure-coalesce';
+    const conversationId = '12121212-3434-5656-7878-909090909092';
+    const conversationUrl = `https://chatgpt.com/c/${conversationId}`;
+    control.registerTask({
+      taskId, conversationId, conversationUrl,
+      objective: 'Keep one transport recovery identity without replaying a Send.',
+      completionContract: {}, continuationPolicy: {}, userBlockerPolicy: {},
+    });
+
+    for (let attempt = 0; attempt < 40; attempt++) {
+      store.recordBrowserDeliveryAttemptFailure({
+        taskId, conversationId, code: 'WORKFLOW_SUPERVISOR_PROVIDER_NO_PROGRESS_WATCHDOG',
+      });
+    }
+    const first = store.automaticConversationFailureEvidence(taskId);
+    expect(first.count).toBe(3);
+    expect(first.latestEventId).toBeGreaterThan(0);
+
+    // The next error class is new diagnostic evidence, independently bounded.
+    for (let attempt = 0; attempt < 20; attempt++) {
+      store.recordBrowserDeliveryAttemptFailure({
+        taskId, conversationId, code: 'COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE',
+      });
+    }
+    expect(store.automaticConversationFailureEvidence(taskId).count).toBe(6);
+
+    // A real committed effect changes the recovery boundary. The next failure
+    // is newly journaled; previous failed observations do not leak across it.
+    const effect = control.reserveEnrollment(taskId);
+    control.observeEffect({ effectId: effect.effectId, observationId: 'failure-fuse-source-applied', outcome: 'applied' });
+    expect(store.automaticConversationFailureEvidence(taskId).count).toBe(0);
+    store.recordBrowserDeliveryAttemptFailure({
+      taskId, conversationId, code: 'WORKFLOW_SUPERVISOR_PROVIDER_NO_PROGRESS_WATCHDOG', effectId: effect.effectId,
+    });
+    expect(store.automaticConversationFailureEvidence(taskId).count).toBe(1);
+
+    // A stale tab from a previous conversation cannot charge the current one.
+    store.recordBrowserDeliveryAttemptFailure({
+      taskId, conversationId: '99999999-8888-7777-6666-555555555555',
+      code: 'WORKFLOW_SUPERVISOR_PROVIDER_NO_PROGRESS_WATCHDOG', effectId: effect.effectId,
+    });
+    expect(store.automaticConversationFailureEvidence(taskId).count).toBe(1);
+  } finally {
+    store.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a rejected compact receipt is observed once per exact effect and unchanged assistant response', async () => {
+  const { WorkflowSupervisorNativeBrowserAdapter } = await import('../../supervisor/native-browser-adapter');
+  const { WorkflowSupervisorEphemeralDiscovery } = await import('../../supervisor/server');
+  const { createTestChatgptTargetPort } = await import('./helpers/computer-chatgpt-target-harness');
+  const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-receipt-coalesce-'));
+  const store = new WorkflowSupervisorStore(root);
+  try {
+    const control = new WorkflowSupervisorControlPlane(store);
+    const taskId = 'task-compact-receipt-coalesce';
+    const conversationId = '12121212-3434-5656-7878-909090909093';
+    const conversationUrl = `https://chatgpt.com/c/${conversationId}`;
+    control.registerTask({
+      taskId, conversationId, conversationUrl, objective: 'Do not reparse an unchanged invalid receipt.',
+      completionContract: {}, continuationPolicy: {}, userBlockerPolicy: {},
+    });
+    const effect = control.reserveEnrollment(taskId);
+    control.observeEffect({ effectId: effect.effectId, observationId: 'compact-receipt-source-applied', outcome: 'applied' });
+    const page = { evaluate: async <T>() => false as T, tabRef: () => ({ windowId: 'window-1', tabId: 'tab-1' }) };
+    const targetPort = createTestChatgptTargetPort({
+      listTabs: async () => ({
+        entries: [{ windowId: 'window-1', tabId: 'tab-1', url: conversationUrl, title: 'receipt', active: true }],
+        unavailableProducts: [],
+      }),
+      reattach: async () => page, create: async () => page, close: async () => undefined,
+      snapshot: async () => ({
+        url: conversationUrl, title: 'receipt', latestUserText: '',
+        latestAssistantResponse: 'C 0000000', providerActivityText: '', providerFailureText: '',
+        latestTurnRole: 'assistant', isGenerating: false,
+      }),
+      dispatchPrompt: async () => ({ dispatched: false, confirmed: false }),
+    });
+    const errors: string[] = [];
+    const adapter = new WorkflowSupervisorNativeBrowserAdapter(control, new WorkflowSupervisorEphemeralDiscovery(), {
+      targetPort, nowMs: () => 1_000, providerIdleGraceMs: 60_000,
+      providerScopeKey: join(root, 'provider-scope'),
+      sleep: async () => undefined,
+      setInterval: () => 0 as unknown as ReturnType<typeof setInterval>,
+      clearInterval: () => undefined,
+      onError: (error) => { errors.push(String(error)); },
+    });
+    await adapter.runOnce();
+    await adapter.runOnce();
+    expect(errors.filter((e) => e.includes('WORKFLOW_SUPERVISOR_COMPACT_RECEIPT_CHALLENGE_MISMATCH'))).toHaveLength(1);
+    expect(store.getLatestCompletion(taskId)).toBeUndefined();
+  } finally {
+    store.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});

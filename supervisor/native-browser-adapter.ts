@@ -851,8 +851,14 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     const unsentRecovery = poll.command?.mode === 'send'
       && poll.command.kind === 'recovery' && poll.command.dispatchGeneration === 1;
     if ((!poll.command || unsentRecovery) && !providerBusy && snapshot.latestTurnRole === 'assistant' && snapshot.latestAssistantResponse.trim()) {
-      const responseFingerprint = sha256(snapshot.latestAssistantResponse);
       const pending = this.control.taskStall(task.taskId);
+      // Receipt validation depends on the pending effect as well as the text.
+      // A stable invalid receipt must not be reparsed on every browser poll;
+      // a different exact effect still gets an independent validation.
+      const responseFingerprint = sha256(JSON.stringify({
+        effectId: 'effectId' in pending ? pending.effectId : null,
+        text: snapshot.latestAssistantResponse,
+      }));
       // Text-only replies are not receipts. Observe their stable idle digest,
       // but avoid generating an identical parser error on every browser tick.
       missingReceiptForAppliedTurn = !hasCommittedSupervisorEnvelope(snapshot.latestAssistantResponse)
@@ -861,7 +867,10 @@ export class WorkflowSupervisorNativeBrowserAdapter {
         try { await this.control.browserObserveAssistant({ conversationId: task.conversationId, conversationUrl: task.conversationUrl, responseText: snapshot.latestAssistantResponse }); this.observedAssistant.set(task.conversationId, responseFingerprint); }
         catch (error) {
           const message = error instanceof Error ? error.message : String(error);
-          if (message.includes('WORKFLOW_SUPERVISOR_') && !message.includes('WORKFLOW_SUPERVISOR_COMPACT_RECEIPT_CHALLENGE_MISMATCH')) this.observedAssistant.set(task.conversationId, responseFingerprint);
+          // A challenge mismatch remains rejected, but the exact unchanged
+          // observation is already known. Do not produce another parser error
+          // until the assistant text or pending effect identity changes.
+          if (message.includes('WORKFLOW_SUPERVISOR_')) this.observedAssistant.set(task.conversationId, responseFingerprint);
           if (!message.includes('WORKFLOW_SUPERVISOR_TASK_TERMINAL')) this.deps.onError(error);
         }
       }

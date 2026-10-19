@@ -1186,10 +1186,30 @@ export class WorkflowSupervisorStore {
       const task = statement(db, 'SELECT conversation_id FROM tasks WHERE task_id = ?', (s) => s.get(input.taskId)) as { conversation_id?: string } | undefined;
       // An old tab or pre-migration provider result cannot charge the new chat.
       if (!task || task.conversation_id !== input.conversationId) return;
+      const code = input.code.slice(0, 128);
+      const effectId = input.effectId ?? null;
+      // The same unchanged pre-mutation failure must not create an unbounded
+      // journal and a fresh automatic-migration identity on every poll. Keep
+      // three concrete observations for the existing recovery fuse, then
+      // require a different cause/effect or real progress before journaling more.
+      const progress = statement(db, `SELECT COALESCE(MAX(event_id), 0) AS event_id
+        FROM events WHERE task_id = ? AND kind IN (
+          'effect_dispatch_started', 'effect_applied', 'assistant_completion', 'conversation_migrated'
+        )`, (s) => s.get(input.taskId)) as { event_id: number };
+      const recent = statement(db, `SELECT effect_id, payload_json FROM events
+        WHERE task_id = ? AND kind = 'browser_delivery_attempt_failed' AND event_id > ?
+        ORDER BY event_id DESC LIMIT 3`, (s) => s.all(input.taskId, progress.event_id)) as Array<{
+          effect_id: string | null; payload_json: string;
+        }>;
+      if (recent.length === 3 && recent.every((entry) => {
+        const payload = JSON.parse(entry.payload_json) as { conversation_id?: string; code?: string };
+        return entry.effect_id === effectId
+          && payload.conversation_id === input.conversationId && payload.code === code;
+      })) return;
       statement(db, 'INSERT INTO events(task_id,event_key,kind,effect_id,payload_json,occurred_at) VALUES (?,?,?,?,?,?)', (s) => s.run(
         input.taskId, `browser-delivery-failed:${input.taskId}:${randomUUID()}`,
-        'browser_delivery_attempt_failed', input.effectId ?? null,
-        json({ conversation_id: input.conversationId, code: input.code.slice(0, 128), phase: 'task_local_pre_mutation' }), now(),
+        'browser_delivery_attempt_failed', effectId,
+        json({ conversation_id: input.conversationId, code, phase: 'task_local_pre_mutation' }), now(),
       ));
     });
   }
