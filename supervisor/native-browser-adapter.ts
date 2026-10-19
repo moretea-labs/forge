@@ -33,16 +33,11 @@ const MAX_TRANSPORT_BACKOFF_STEPS = 6;
 const MAX_LOCAL_OBSERVATION_ATTEMPTS = 3;
 const USER_VISIBLE_DEGRADED_AFTER_MS = 30_000;
 /**
- * A task-local target/conversation failure must space its *own* retries. The
- * exact conversation is a provider resource: re-navigating or replacing its tab
- * on every tick is what produced conversation-read 429s, and a 429 is answered
- * by sending fewer requests, never by opening another conversation.
- *
- * Only failures about *this exact conversation or target* are spaced here.
- * Provider-wide unavailability already backs off the whole consumer, so spacing
- * it again would delay a legitimate resume without reducing any request volume.
- * A new exact-conversation failure code must be added to this mechanical
- * retry-spacing classification.
+ * All task-local Chrome target/receiver failures reuse this existing bounded
+ * retry cadence. Missing receiver and error-page errors must not spin once per
+ * tick just because their provider wording is absent from an allowlist.
+ * Consumer-wide inventory unavailability retains its own backoff boundary.
+ * Observations alone never authorize a new provider Send.
  */
 const TASK_TARGET_RETRY_BASE_MS = 30_000;
 /** Slow read-only probe cadence for an applied turn whose bounded resume is exhausted. */
@@ -58,27 +53,6 @@ const TASK_TARGET_RETRY_MAX_MS = 10 * 60_000;
 // must not become either an infinite UI loop or a spent send generation.
 const SUPERVISOR_PRE_SEND_BLOCKED = 'WORKFLOW_SUPERVISOR_PRE_SEND_BLOCKED';
 
-export const TASK_TARGET_SPACED_FAILURE_CODES: ReadonlySet<string> = new Set([
-  'COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE',
-  // Desktop Operator has already bounded and reaped the Apple Events holder.
-  // Space this task's next native attempt instead of immediately recontending
-  // the one global browser lane on another Supervisor tick.
-  'BROWSER_AUTOMATION_TIMEOUT',
-  'BROWSER_AUTOMATION_SERIALIZATION_BUSY',
-  'WORKFLOW_SUPERVISOR_EXACT_CONVERSATION_UNPROVEN',
-  'COMPUTER_CHATGPT_EXACT_TARGET_UNPROVEN',
-  'COMPUTER_CHATGPT_EXACT_TARGET_AMBIGUOUS',
-  'COMPUTER_CHATGPT_EXTENSION_EXACT_TARGET_AMBIGUOUS',
-  'COMPUTER_CHATGPT_RESTORED_TARGET_UNPROVEN',
-  'COMPUTER_CHATGPT_TARGET_RESTORE_FAILED',
-  // An absent manually closed tab cannot be re-created by a read-only probe.
-  'COMPUTER_CHATGPT_EXTENSION_EXACT_TARGET_ABSENT_READ_ONLY',
-  'COMPUTER_CHATGPT_BOOTSTRAP_TARGET_UNAVAILABLE',
-  'COMPUTER_CHATGPT_EXTENSION_TARGET_OPEN_OUTCOME_UNKNOWN',
-  'COMPUTER_CHATGPT_EXTENSION_BOOTSTRAP_OPEN_OUTCOME_UNKNOWN',
-  SUPERVISOR_PRE_SEND_BLOCKED,
-  'WORKFLOW_SUPERVISOR_BOOTSTRAP_EXISTING_CONVERSATION',
-]);
 function taskTargetRetryDelayMs(streak: number): number {
   const exponent = Math.max(0, Math.min(6, Math.trunc(streak) - 1));
   return Math.min(TASK_TARGET_RETRY_MAX_MS, TASK_TARGET_RETRY_BASE_MS * 2 ** exponent);
@@ -777,7 +751,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       this.awaitingReceiptObservedAtMs.set(task.taskId, this.deps.nowMs());
     }
     if (transportFailure
-      && TASK_TARGET_SPACED_FAILURE_CODES.has(transportFailure.code)
+      && transportFailure.code !== 'WORKFLOW_SUPERVISOR_NATIVE_INVENTORY_INCOMPLETE'
       && this.deps.nowMs() - transportFailure.observedAtMs < taskTargetRetryDelayMs(transportFailure.streak)) return;
     if (task.conversationId.startsWith('bootstrap:')) { await this.bootstrapTask(task); return; }
     let poll = this.control.browserPoll({ conversationId: task.conversationId, conversationUrl: task.conversationUrl });

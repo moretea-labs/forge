@@ -12,7 +12,7 @@ import { createWorkContract, reviseWorkSemanticContext } from '../../packages/ke
 import { createRequirement, reviseRequirementSemantic, updateRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
 import { bindCurrentWorkflowSupervisorConversationForWork, ensureWorkflowSupervisorEnrollmentForWork, forgeWorkflowSupervisorLifecycleHooks, inheritWorkflowSupervisorConversationBinding, workflowSupervisorBoundaryForWork, workflowSupervisorLowerLayerReadyForWork } from '../../src/runtime/root/workflow-supervisor-composition';
 import { WorkflowSupervisorControlPlane } from '../../supervisor/control-plane';
-import { TASK_TARGET_SPACED_FAILURE_CODES, WorkflowSupervisorNativeBrowserAdapter } from '../../supervisor/native-browser-adapter';
+import { WorkflowSupervisorNativeBrowserAdapter } from '../../supervisor/native-browser-adapter';
 import { hasCommittedSupervisorEnvelope, LEGACY_SUPERVISOR_BLOCK_END, LEGACY_SUPERVISOR_BLOCK_START, parseSupervisorCompletion, renderSupervisorPrompt, renderSupervisorReceipt, supervisorReceiptChallenge, SUPERVISOR_BLOCK_END, SUPERVISOR_BLOCK_START, SUPERVISOR_TURN_BLOCK_END, SUPERVISOR_TURN_BLOCK_START } from '../../supervisor/protocol';
 import { WorkflowSupervisorStore, workflowSupervisorCompletionContractSha256 } from '../../supervisor/store';
 import { createWorkflowSupervisorServer, reconcileWorkflowSupervisorSocket, WorkflowSupervisorEphemeralDiscovery } from '../../supervisor/server';
@@ -2695,12 +2695,6 @@ test('native consumer status exposes and clears a pre-dispatch due-effect transp
   // Provider dispatch rejection remains owned by the existing durable effect ledger;
   // the consumer projection neither replays nor marks the effect applied itself.
   expect(store.nextBrowserEffect(taskId)?.mode).not.toBe('reconcile');
-});
-
-test('native Apple Events timeout and lock contention use existing task-local spacing', () => {
-  expect(TASK_TARGET_SPACED_FAILURE_CODES.has('BROWSER_AUTOMATION_TIMEOUT')).toBe(true);
-  expect(TASK_TARGET_SPACED_FAILURE_CODES.has('BROWSER_AUTOMATION_SERIALIZATION_BUSY')).toBe(true);
-  expect(TASK_TARGET_SPACED_FAILURE_CODES.has('PLUGIN_BROWSER_NATIVE_OPERATION_FAILED')).toBe(false);
 });
 
 test('task-local exact-target failure does not back off or starve an independent Supervisor task', async () => {
