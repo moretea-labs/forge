@@ -260,7 +260,7 @@ export function stageSelectedPaths(
 export function commitSelectedPaths(
   controllerHome: string,
   repository: RepositoryRecord,
-  input: { paths: unknown; message: unknown; beforeCommitGuard?: SelectedPathBeforeCommitGuard },
+  input: { paths: unknown; message: unknown; beforeCommitGuard?: SelectedPathBeforeCommitGuard; afterCommit?: () => void },
 ): SelectedPathCommitResult {
   const selectedPaths = normalizeSelectedPaths(repository, input.paths);
   const scope = resolveRepositoryGitCommitScope(repository, { paths: selectedPaths });
@@ -307,6 +307,9 @@ export function commitSelectedPaths(
     args: ['commit', '--only', '-m', message, '--', ...paths],
     authorization: 'explicit_user_request',
   });
+      // Settle the explicit owning Work while the selected checkout is still
+      // locked. A failed physical commit must never advance Work HEAD.
+      if (commit.status === 'executed' && commit.ok === true) input.afterCommit?.();
       return {
         paths,
         stage,

@@ -220,8 +220,9 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     repo_id: repoId,
     paths: { type: 'array', items: { type: 'string' } },
   }, ['paths'], false),
-  definition('git_commit_paths', 'Stage and commit explicit repository-relative paths only, leaving unrelated staged changes untouched.', {
+  definition('git_commit_paths', 'Stage and commit exact paths; supply the owning work_id to settle its HEAD under the checkout lock.', {
     repo_id: repoId,
+    work_id: { type: 'string', description: 'Explicit existing Work owner of this checkout mutation; never inferred from branch.' },
     paths: { type: 'array', items: { type: 'string' } },
     message: { type: 'string' },
   }, ['paths', 'message'], false),
