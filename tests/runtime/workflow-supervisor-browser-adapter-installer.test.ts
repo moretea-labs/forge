@@ -70,7 +70,7 @@ describe('Exact operator-authorized blocked-composer backup', () => {
   test('fails closed without marker, on wrong fingerprint or route; preserves exact bytes without a Send', () => {
     const controllerHome = temp('forge-composer-evidence-');
     const taskId = 'supervisor:abc123';
-    const effectId = 'fx_abc123';
+    const effectId = 'fx_abc12345';
     const projectUrl = 'https://chatgpt.com/g/g-p-123-forge/project';
     const snapshot = {
       url: projectUrl, title: 'Forge', latestUserText: '', latestAssistantResponse: '',

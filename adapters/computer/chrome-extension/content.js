@@ -92,13 +92,16 @@
    * page-global `aria-busy` also fires for unrelated profile/route loading, so
    * `aria-busy` is trusted only inside the current conversation turn.
    */
-  const isGenerating = () => {
+  const hasLiveGenerationSignal = () => {
     if (Array.from(document.querySelectorAll(`${STOP}, [data-is-streaming="true"]`)).some(visible)) return true;
     const turns = conversationRoot().querySelectorAll(TURN);
     const current = turns.length ? turns[turns.length - 1] : undefined;
-    if (current && Array.from(current.querySelectorAll('[aria-busy="true"]')).some(visible)) return true;
-    return latestTurnRole() === 'user';
+    return Boolean(current && Array.from(current.querySelectorAll('[aria-busy="true"]')).some(visible));
   };
+  // Ordinary sends remain conservative when the final visible role is user.
+  // An explicitly authorized Supervisor recovery may disregard that *historical*
+  // role only after confirming that no live stream/stop/busy signal remains.
+  const isGenerating = () => hasLiveGenerationSignal() || latestTurnRole() === 'user';
   /**
    * Live progress of the running provider turn. The last *committed* assistant
    * answer cannot change while a new turn runs, so liveness has to read the live
@@ -233,16 +236,16 @@
     const actualPrompt = replacement ? prompt.slice(replacement[0].length)
       : retired ? prompt.slice(retired[0].length) : prompt;
     if (mode === 'recover') {
-      const stop = document.querySelector(STOP);
+      const stop = Array.from(document.querySelectorAll(STOP)).find(visible);
       if (prepareOnly && stop instanceof HTMLElement) return { prepared: false, reason: 'provider_recovery_stop_pending' };
       if (stop instanceof HTMLElement) {
         if (!exactConversationIsCurrent()) return { dispatched: false, reason: 'target_identity_changed' };
         stop.click();
-        for (let attempt = 0; attempt < 20 && document.querySelector(STOP); attempt += 1) {
+        for (let attempt = 0; attempt < 20 && Array.from(document.querySelectorAll(STOP)).some(visible); attempt += 1) {
           await new Promise((resolve) => setTimeout(resolve, 100));
           if (!exactConversationIsCurrent()) return { dispatched: false, reason: 'target_identity_changed' };
         }
-        if (document.querySelector(STOP)) return { dispatched: false, reason: 'provider_recovery_stop_unconfirmed' };
+        if (Array.from(document.querySelectorAll(STOP)).some(visible)) return { dispatched: false, reason: 'provider_recovery_stop_unconfirmed' };
       }
     } else if (isGenerating()) return { dispatched: false, reason: 'provider_busy' };
     const node = composer();
@@ -299,7 +302,7 @@
         // widen matching beyond that break or tolerate another visible draft.
         const text = composerText();
         if (text !== expected && text !== expected + '\n') { finish({ reason: 'composer_write_unconfirmed' }); return; }
-        if (isGenerating()) { finish({ reason: 'provider_busy' }); return; }
+        if (mode === 'recover' ? hasLiveGenerationSignal() : isGenerating()) { finish({ reason: 'provider_busy' }); return; }
         const buttons = Array.from(document.querySelectorAll(SEND)).filter(visible);
         const send = buttons.length === 1 ? buttons[0] : undefined;
         if (send && !send.disabled && send.getAttribute('aria-disabled') !== 'true') { finish({ send }); return; }
@@ -317,7 +320,7 @@
     if (!exactConversationIsCurrent()) return { dispatched: false, reason: 'target_identity_changed' };
     const text = composerText();
     if (text !== expected && text !== expected + '\n') return { dispatched: false, reason: 'composer_write_unconfirmed' };
-    if (isGenerating()) return { dispatched: false, reason: 'provider_busy' };
+    if (mode === 'recover' ? hasLiveGenerationSignal() : isGenerating()) return { dispatched: false, reason: 'provider_busy' };
     const send = ready.send;
     if (!send.isConnected || !visible(send)) return { dispatched: false, reason: 'send_button_missing' };
     if (send.disabled || send.getAttribute('aria-disabled') === 'true') return { dispatched: false, reason: 'send_button_disabled' };
