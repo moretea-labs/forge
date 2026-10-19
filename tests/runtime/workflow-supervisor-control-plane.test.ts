@@ -2204,6 +2204,52 @@ test('browserTasks isolates a stale legacy task from an independent bootstrap ta
   ]);
 });
 
+test('bootstrap reconciles an applied leaf before dispatching its unstarted recovery child', () => {
+  const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-bootstrap-recovery-order-'));
+  roots.push(root);
+  let nowMs = Date.now();
+  const store = new WorkflowSupervisorStore(join(root, 'supervisor-home'), { now: () => nowMs });
+  const control = new WorkflowSupervisorControlPlane(store);
+  const taskId = 'bootstrap-applied-before-recovery';
+  control.registerTask({
+    taskId,
+    conversationId: `bootstrap:${taskId}`,
+    conversationUrl: 'https://chatgpt.com/',
+    objective: 'Reconcile an applied bootstrap effect before dispatching its recovery child.',
+    completionContract: {},
+    continuationPolicy: { kind: 'standalone_supervisor', bootstrap: true },
+    userBlockerPolicy: {},
+  });
+  const source = control.reserveEnrollment(taskId);
+  expect(control.bootstrapBeginEffect({
+    taskId, effectId: source.effectId, dispatchId: 'bootstrap-source-dispatch', dispatchGeneration: 1,
+  })).toBe(true);
+  control.bootstrapObserveEffect({
+    taskId, effectId: source.effectId, observationId: 'bootstrap-source-applied', outcome: 'applied',
+  });
+  const recovery = store.reserveEffect({
+    taskId,
+    effectId: 'fx_99999999999999999999999999999999',
+    kind: 'recovery',
+    originKey: `provider-recovery:${source.effectId}`,
+    prompt: 'Resume the already-applied source effect without replaying it.',
+  });
+
+  expect(control.bootstrapPoll(taskId).command).toMatchObject({
+    mode: 'reconcile', effectId: source.effectId, kind: 'enrollment',
+  });
+  control.bootstrapObserveEffect({
+    taskId, effectId: source.effectId, observationId: 'bootstrap-source-still-unbound', outcome: 'unknown',
+    evidence: { reconciliation: true, reason: 'bootstrap_target_not_observed' },
+  });
+  expect(control.bootstrapPoll(taskId).command).toBeUndefined();
+  nowMs += 10_000;
+  expect(control.bootstrapPoll(taskId).command).toMatchObject({
+    mode: 'reconcile', effectId: source.effectId, kind: 'enrollment',
+  });
+  expect(store.effectDispatchBudget(recovery.effectId).generations).toBe(0);
+});
+
 test('browserTasks prioritizes fresh sends ahead of older reconciliation work', () => {
   const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-browser-task-priority-'));
   roots.push(root);

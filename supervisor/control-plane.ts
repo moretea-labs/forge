@@ -523,44 +523,41 @@ export class WorkflowSupervisorControlPlane {
     if (!task.conversationId.startsWith('bootstrap:')) throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_NOT_PENDING');
     const terminal = this.store.terminalAction(task.taskId);
     if (terminal === 'STOPPED') return { authorized: true, task: browserTask(task), terminal };
-    const pending = this.store.nextBrowserEffect(task.taskId);
-    if (pending) {
+    // While identity is still bootstrap, reconcile the latest applied leaf
+    // before dispatching any successor. An unstarted recovery child must not
+    // send from a Project/new-composer surface while the source conversation
+    // is still unbound. The existing effect ledger owns observation cooldown.
+    const applied = this.store.latestAppliedLeafEffectWithoutCompletion(task.taskId);
+    if (applied) {
+      if (!this.store.bootstrapAppliedReconcileDue(applied.effectId)) {
+        return { authorized: true, task: browserTask(task) };
+      }
+      const dispatch = this.store.latestEffectDispatch(applied.effectId);
       return {
         authorized: true,
         task: browserTask(task),
         command: {
-          mode: pending.mode,
-          effectId: pending.effect.effectId,
-          kind: pending.effect.kind,
-          prompt: pending.effect.prompt,
-          dispatchGeneration: pending.generation,
+          mode: 'reconcile',
+          effectId: applied.effectId,
+          kind: applied.kind,
+          prompt: applied.prompt,
+          dispatchGeneration: dispatch?.generation ?? 1,
           conversationId: task.conversationId,
           conversationUrl: task.conversationUrl,
         },
       };
     }
-    // Provider application and bootstrap identity binding are separate facts.
-    // A confirmed send may already be applied while ChatGPT has only just
-    // canonicalized the new /c/<conversation> route. Keep one read-only
-    // reconciliation command for that applied effect so the exact conversation
-    // can be bound without manufacturing another provider generation.
-    const applied = this.store.latestAppliedEffectWithoutCompletion(task.taskId);
-    // An applied-but-unbound bootstrap still needs late-receipt observation
-    // when its successor is spaced. Use the same effect-ledger cooldown as
-    // unknown dispatch reconciliation instead of scanning its marker each tick.
-    if (!applied || !this.store.bootstrapAppliedReconcileDue(applied.effectId)) {
-      return { authorized: true, task: browserTask(task) };
-    }
-    const dispatch = this.store.latestEffectDispatch(applied.effectId);
+    const pending = this.store.nextBrowserEffect(task.taskId);
+    if (!pending) return { authorized: true, task: browserTask(task) };
     return {
       authorized: true,
       task: browserTask(task),
       command: {
-        mode: 'reconcile',
-        effectId: applied.effectId,
-        kind: applied.kind,
-        prompt: applied.prompt,
-        dispatchGeneration: dispatch?.generation ?? 1,
+        mode: pending.mode,
+        effectId: pending.effect.effectId,
+        kind: pending.effect.kind,
+        prompt: pending.effect.prompt,
+        dispatchGeneration: pending.generation,
         conversationId: task.conversationId,
         conversationUrl: task.conversationUrl,
       },
