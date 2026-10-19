@@ -33,6 +33,7 @@ export const executionToolDefinitions: McpToolDefinition[] = [
     isolation: { type: 'string', enum: ['reuse', 'new_worktree', 'auto'] }, base_ref: { type: 'string' }, needs_dependencies: { type: 'boolean' },
     expected_previous_head: { type: 'string', description: 'Explicit prior WorkHandle HEAD required for audited successor adoption of an existing work_id.' },
     adopt_candidate_head: { type: 'string', description: 'Explicit current successor commit to adopt after exact identity, ownership, cleanliness, and ancestry validation.' },
+    dirty_overlap_proofs: { type: 'array', maxItems: 20, description: 'Explicit attested content fingerprints for every overlapping unstaged tracked file; metadata-only successor adoption preserves files and index unchanged.', items: { type: 'object', properties: { path: { type: 'string' }, worktree_sha256: { type: 'string' }, index_blob_oid: { type: 'string' } }, required: ['path', 'worktree_sha256', 'index_blob_oid'], additionalProperties: false } },
     relocate_to_new_worktree: { type: 'boolean', description: 'Move this existing Work identity to its own managed worktree, with exact previous/candidate HEADs and base_ref. WorkHandle and WorkContract placement commit atomically; the source checkout is not mutated.' },
   }, [], false),
   definition('work_inspect', 'Collect bounded Git, WorkContract, changed-path, check, and readiness evidence through one work handle.', { session_id: sessionId, repo_id: repoId, work_id: workId, detail: { type: 'string', enum: ['summary', 'detail'] } }, ['work_id'], true),

@@ -1,5 +1,7 @@
 import { createHash } from 'crypto';
 import { spawnSync } from 'child_process';
+import { lstatSync, readFileSync, realpathSync } from 'fs';
+import { resolve, sep } from 'path';
 import type { McpExecutionContext } from '../../../../packages/protocols/mcp/execution-context';
 import { getRepository, resolveRepositorySelection, selectRepositoryCheckout } from '../../../cli/repositories/registry';
 import { repositoryGitStatus } from '../../../cli/repositories/structured-git';
@@ -105,6 +107,62 @@ function currentDirtyPaths(root: string): Set<string> {
   return paths;
 }
 
+function verifyExplicitOverlappingDirtyProofs(
+  root: string,
+  currentHead: string,
+  overlap: string[],
+  rawProofs: unknown,
+): void {
+  // Adoption is metadata-only. An overlap is permitted only with a complete,
+  // caller-reviewed byte fingerprint of the current source and HEAD index.
+  // Neither the worktree nor the index is edited or temporarily stashed.
+  if (!Array.isArray(rawProofs) || rawProofs.length !== overlap.length || overlap.length > 20) {
+    throw new Error('WORK_HANDLE_SUCCESSOR_ADOPTION_DIRTY_PROOFS_REQUIRED: exactly one explicit content proof per overlapping path');
+  }
+  const proofs = new Map<string, { path: string; worktreeSha256: string; indexBlobOid: string }>();
+  for (const input of rawProofs) {
+    if (!input || typeof input !== 'object' || Array.isArray(input)) {
+      throw new Error('WORK_HANDLE_SUCCESSOR_ADOPTION_DIRTY_PROOF_INVALID');
+    }
+    const record = input as Record<string, unknown>;
+    const path = typeof record.path === 'string' ? record.path : '';
+    const worktreeSha256 = typeof record.worktree_sha256 === 'string' ? record.worktree_sha256 : '';
+    const indexBlobOid = typeof record.index_blob_oid === 'string' ? record.index_blob_oid : '';
+    if (!overlap.includes(path) || proofs.has(path) || !/^[0-9a-f]{64}$/.test(worktreeSha256)
+        || !/^[0-9a-f]{40}$/.test(indexBlobOid)) {
+      throw new Error('WORK_HANDLE_SUCCESSOR_ADOPTION_DIRTY_PROOF_INVALID: ' + path);
+    }
+    proofs.set(path, { path, worktreeSha256, indexBlobOid });
+  }
+  for (const path of overlap) {
+    const proof = proofs.get(path);
+    if (!proof) throw new Error('WORK_HANDLE_SUCCESSOR_ADOPTION_DIRTY_PROOF_MISSING: ' + path);
+    const original = resolve(root);
+    const pathname = resolve(original, path);
+    if (!pathname.startsWith(original + sep) || !lstatSync(pathname).isFile()
+        || !realpathSync(pathname).startsWith(realpathSync(original) + sep)) {
+      throw new Error('WORK_HANDLE_SUCCESSOR_ADOPTION_DIRTY_PROOF_PATH_INVALID: ' + path);
+    }
+    const object = (ref: string): string => {
+      const run = spawnSync('git', ['-C', root, 'rev-parse', '--verify', ref], {
+        encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10_000,
+      });
+      if (run.status !== 0 || run.error) {
+        throw new Error('WORK_HANDLE_SUCCESSOR_ADOPTION_DIRTY_PROOF_GIT_UNAVAILABLE: ' + path);
+      }
+      return String(run.stdout ?? '').trim();
+    };
+    // No staged overlap may be laundered into the new Work authority.
+    const committedBlob = object(currentHead + ':' + path);
+    const indexBlob = object(':' + path);
+    const workingHash = createHash('sha256').update(readFileSync(pathname)).digest('hex');
+    if (indexBlob !== committedBlob || indexBlob !== proof.indexBlobOid
+        || workingHash !== proof.worktreeSha256) {
+      throw new Error('WORK_HANDLE_SUCCESSOR_ADOPTION_DIRTY_PROOF_DRIFT: ' + path);
+    }
+  }
+}
+
 function adoptExplicitSuccessorHead(
   ctx: McpExecutionContext,
   args: Record<string, unknown>,
@@ -155,7 +213,10 @@ function adoptExplicitSuccessorHead(
   } else {
     const overlap = [...changedPaths].filter((path) => dirtyPaths.has(path)).sort();
     if (overlap.length > 0) {
-      throw new Error(`WORK_HANDLE_SUCCESSOR_ADOPTION_DIRTY_OVERLAP: ${overlap.slice(0, 20).join(',')}`);
+      if (args.dirty_overlap_proofs === undefined) {
+        throw new Error(`WORK_HANDLE_SUCCESSOR_ADOPTION_DIRTY_OVERLAP: ${overlap.slice(0, 20).join(',')}`);
+      }
+      verifyExplicitOverlappingDirtyProofs(root, adoptCandidateHead, overlap, args.dirty_overlap_proofs);
     }
   }
   const candidate: WorkHandleState = {
@@ -169,6 +230,17 @@ function adoptExplicitSuccessorHead(
     failureReason: undefined,
   };
   validateWorkHandle(ctx.controllerHome, candidate, identityFor(ctx, args), 'cheap', 'inspect');
+  // Revalidate proof immediately before this metadata-only transition in case
+  // another local writer changed the overlapping source while validating.
+  if (gitHead(root) !== adoptCandidateHead) {
+    throw new Error('WORK_HANDLE_SUCCESSOR_ADOPTION_CURRENT_HEAD_CHANGED');
+  }
+  if (!existing.managedWorktree && args.dirty_overlap_proofs !== undefined) {
+    const refreshedDirty = currentDirtyPaths(root);
+    const overlap = [...gitPathSet(root, ['diff', '--name-only', `${expectedPreviousHead}..${adoptCandidateHead}`], 'WORK_HANDLE_SUCCESSOR_ADOPTION_DIFF_UNAVAILABLE')]
+      .filter((path) => refreshedDirty.has(path)).sort();
+    verifyExplicitOverlappingDirtyProofs(root, adoptCandidateHead, overlap, args.dirty_overlap_proofs);
+  }
   return writeWorkHandle(ctx.controllerHome, candidate);
 }
 
