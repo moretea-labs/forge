@@ -2734,6 +2734,73 @@ describe('work_validate persisted semantic identity', () => {
     expect(readWorkHandle(fx.controllerHome, fx.repository.repoId, work.workId)?.expectedHead).toBe(work.expectedHead);
   });
 
+  test('explicit managed Work rebase adopts only the exact clean target HEAD and preserves the true delivery diff', async () => {
+    const fx = fixture();
+    roots.push(fx.root);
+    const started = await callExecutionTool(fx.ctx, 'session_start', {});
+    const session = (started?.structuredContent as { session: { sessionId: string } }).session;
+    const prepared = await callExecutionTool(fx.ctx, 'work_prepare', {
+      session_id: session.sessionId,
+      repo_id: fx.repository.repoId,
+      request_id: 'prepare-managed-rebase-source',
+      objective: 'Rebase the same isolated Work onto an advanced main without adopting unrelated source.',
+      checks: [],
+      isolation: 'new_worktree',
+    });
+    if (prepared?.isError) throw new Error(JSON.stringify(prepared.structuredContent));
+    const work = (prepared?.structuredContent as {
+      work: { workId: string; checkoutId: string; expectedHead: string; baseCommit: string };
+    }).work;
+    const worktree = selectRepositoryCheckout(getRepository(fx.repository.repoId, fx.controllerHome), work.checkoutId);
+
+    writeFileSync(join(fx.repoRoot, 'README.md'), 'unrelated main update\n');
+    git(fx.repoRoot, ['add', 'README.md']);
+    git(fx.repoRoot, ['commit', '-m', 'advance delivery target without source changes']);
+    const targetHead = git(fx.repoRoot, ['rev-parse', 'HEAD']);
+    git(worktree.canonicalRoot, ['merge', '--ff-only', 'main']);
+    writeFileSync(join(worktree.canonicalRoot, 'src/lib.ts'), 'export const n = 2;\n');
+    git(worktree.canonicalRoot, ['add', 'src/lib.ts']);
+    git(worktree.canonicalRoot, ['commit', '-m', 'implement only the Work delta']);
+    const candidateHead = git(worktree.canonicalRoot, ['rev-parse', 'HEAD']);
+
+    const input = {
+      session_id: session.sessionId,
+      repo_id: fx.repository.repoId,
+      checkout_id: work.checkoutId,
+      work_id: work.workId,
+      expected_previous_head: work.expectedHead,
+      adopt_candidate_head: candidateHead,
+      base_ref: targetHead,
+    };
+    const wrongTarget = await callExecutionTool(fx.ctx, 'work_prepare', {
+      ...input, base_ref: work.expectedHead,
+    });
+    expect(wrongTarget?.isError).toBe(true);
+    expect(JSON.stringify(wrongTarget?.structuredContent)).toContain('WORK_HANDLE_REBASE_TARGET_HEAD_CHANGED');
+    expect(readWorkHandle(fx.controllerHome, fx.repository.repoId, work.workId)?.expectedHead).toBe(work.expectedHead);
+
+    const adopted = await callExecutionTool(fx.ctx, 'work_prepare', input);
+    if (adopted?.isError) throw new Error(JSON.stringify(adopted.structuredContent));
+    expect(adopted?.structuredContent).toMatchObject({
+      work: { workId: work.workId, baseCommit: work.baseCommit, expectedHead: candidateHead, deliveryBaseCommit: targetHead },
+    });
+    const retried = await callExecutionTool(fx.ctx, 'work_prepare', input);
+    expect(retried?.isError).not.toBe(true);
+    expect((retried?.structuredContent as { work: { expectedHead: string; deliveryBaseCommit: string } }).work)
+      .toMatchObject({ expectedHead: candidateHead, deliveryBaseCommit: targetHead });
+
+    const validated = await callExecutionTool(fx.ctx, 'work_validate', {
+      session_id: session.sessionId,
+      repo_id: fx.repository.repoId,
+      work_id: work.workId,
+      check_ids: [],
+      request_id: 'validate-exact-rebased-work-delta',
+    });
+    expect(validated?.isError).not.toBe(true);
+    expect((validated?.structuredContent as { validation: { changedPaths: string[] } }).validation.changedPaths)
+      .toEqual(['src/lib.ts']);
+  });
+
   test('explicit managed Work recovery adopts only a clean linear descendant after missed head settlement', async () => {
     const fx = fixture();
     roots.push(fx.root);

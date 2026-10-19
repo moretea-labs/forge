@@ -462,10 +462,19 @@ function adoptExplicitSuccessorHead(
 ): WorkHandleState | undefined {
   const expectedPreviousHead = typeof args.expected_previous_head === 'string' ? args.expected_previous_head.trim() : '';
   const adoptCandidateHead = typeof args.adopt_candidate_head === 'string' ? args.adopt_candidate_head.trim() : '';
-  if (!expectedPreviousHead && !adoptCandidateHead) return undefined;
+  const requestedDeliveryBase = typeof args.base_ref === 'string' ? args.base_ref.trim() : '';
+  if (!expectedPreviousHead && !adoptCandidateHead) {
+    if (requestedDeliveryBase) throw new Error('WORK_HANDLE_REBASE_ADOPTION_PAIR_REQUIRED');
+    return undefined;
+  }
   if (!expectedPreviousHead || !adoptCandidateHead) {
     throw new Error('WORK_HANDLE_SUCCESSOR_ADOPTION_PAIR_REQUIRED: expected_previous_head and adopt_candidate_head must be supplied together');
   }
+  // Exact retry is read-only after the original CAS settlement, never a
+  // second candidate adoption or new checkout authority.
+  if (requestedDeliveryBase && existing.expectedHead === adoptCandidateHead
+      && existing.deliveryBaseCommit === requestedDeliveryBase
+      && gitHead(existing.worktreePath) === adoptCandidateHead) return existing;
   // A failed validation attempt may need an explicit, audited successor
   // adoption before it can retry against the current checkout. Keep its
   // failed state: only a fresh valid check may restore execution authority.
@@ -507,10 +516,32 @@ function adoptExplicitSuccessorHead(
       throw new Error(`WORK_HANDLE_SUCCESSOR_ADOPTION_DIRTY_OVERLAP: ${overlap.slice(0, 20).join(',')}`);
     }
   }
+  // Rebase is an explicit source-Work baseline decision, separate from
+  // candidate HEAD adoption. The target must still be the clean, exact
+  // registered delivery checkout and contain every previously owned revision.
+  if (requestedDeliveryBase) {
+    if (!/^[0-9a-f]{40}$/.test(requestedDeliveryBase) || !existing.managedWorktree
+        || !existing.sourceCheckoutId || existing.checkoutId === existing.sourceCheckoutId) {
+      throw new Error('WORK_HANDLE_REBASE_MANAGED_SOURCE_REQUIRED');
+    }
+    const registered = getRepository(existing.repositoryId, ctx.controllerHome);
+    const target = selectRepositoryCheckout(registered, existing.sourceCheckoutId);
+    const observedTarget = repositoryGitStatus(target);
+    if (!observedTarget.clean || observedTarget.head !== requestedDeliveryBase
+        || observedTarget.branch !== (existing.deliveryTargetBranch ?? registered.defaultBranch)) {
+      throw new Error('WORK_HANDLE_REBASE_TARGET_HEAD_CHANGED');
+    }
+    if (!gitIsAncestor(root, expectedPreviousHead, requestedDeliveryBase)
+        || !gitIsAncestor(root, requestedDeliveryBase, adoptCandidateHead)) {
+      throw new Error('WORK_HANDLE_REBASE_UNINTEGRATED_HISTORY');
+    }
+  }
   const candidate: WorkHandleState = {
     ...existing,
-    // Successor adoption advances the Work candidate, not the delivery target.
-    // Preserve the canonical delivery base until authorized delivery or rebase.
+    // Existing non-rebase adoption preserves the original delivery base;
+    // an explicit verified rebase advances only the delivery base, not the
+    // Work start commit or the semantic Work's durable identity.
+    ...(requestedDeliveryBase ? { deliveryBaseCommit: requestedDeliveryBase } : {}),
     expectedHead: adoptCandidateHead,
     validationRun: undefined,
     validatedInputFingerprint: undefined,
