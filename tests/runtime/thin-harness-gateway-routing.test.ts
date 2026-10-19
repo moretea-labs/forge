@@ -594,7 +594,7 @@ describe('repository.git Work delivery', () => {
       cleanupResponsibility: undefined,
       cleanupReceipt: undefined,
       terminalResourceDisposition: undefined,
-      finalization: { ...handle.finalization, validation: 'pending', commit: 'pending', merge: 'pending', branchCleanup: 'pending', worktreeCleanup: 'pending' },
+      finalization: { ...handle.finalization, validation: 'pending' as const, commit: 'pending' as const, merge: 'pending' as const, branchCleanup: 'pending' as const, worktreeCleanup: 'pending' as const },
     });
 
     const delivered = await callCoreCapabilityAdapter(fx.ctx, 'capability_execute', {
@@ -709,7 +709,12 @@ describe('repository.git Work delivery', () => {
     git(handle.worktreePath, ['add', 'src/lib.ts']);
     git(handle.worktreePath, ['commit', '-m', 'open target work delivery source']);
     const unabsorbedHead = git(handle.worktreePath, ['rev-parse', 'HEAD']);
+    const priorTargetHead = git(fx.repoRoot, ['rev-parse', 'HEAD']);
+    writeFileSync(join(fx.repoRoot, 'delivery-target-advance.txt'), 'The canonical target advanced after the stale WorkHandle baseline.\\n');
+    git(fx.repoRoot, ['add', 'delivery-target-advance.txt']);
+    git(fx.repoRoot, ['commit', '-m', 'advance canonical target beyond stale WorkHandle baseline']);
     const targetHead = git(fx.repoRoot, ['rev-parse', 'HEAD']);
+    expect(targetHead).not.toBe(priorTargetHead);
     const validated = await callExecutionTool(fx.ctx, 'work_validate', {
       session_id: session.sessionId,
       repo_id: fx.repository.repoId,
@@ -767,7 +772,7 @@ describe('repository.git Work delivery', () => {
       capability_id: 'repository.git',
       action: 'deliver_work',
       request_id: 'deliver-capability-open-target-work',
-      arguments: { session_id: session.sessionId, work_id: work.workId },
+      arguments: { session_id: session.sessionId, work_id: work.workId, allow_merge_commit: true },
     });
     expect(delivered?.isError).toBe(true);
     expect(JSON.stringify(delivered?.structuredContent ?? delivered)).toContain(`WORK_DELIVERY_TARGET_WORK_ACTIVE: ${blockerId}`);
@@ -789,7 +794,7 @@ describe('repository.git Work delivery', () => {
       capability_id: 'repository.git',
       action: 'deliver_work',
       request_id: 'deliver-capability-unknown-target-work',
-      arguments: { session_id: session.sessionId, work_id: work.workId },
+      arguments: { session_id: session.sessionId, work_id: work.workId, allow_merge_commit: true },
     });
     expect(unknownDelivered?.isError).toBe(true);
     expect(JSON.stringify(unknownDelivered?.structuredContent ?? unknownDelivered)).toContain(`WORK_DELIVERY_TARGET_WORK_ACTIVE: ${unknownBlockerId}`);
@@ -871,7 +876,75 @@ describe('repository.git Work delivery', () => {
     expect(git(fx.repoRoot, ['rev-parse', 'HEAD'])).toBe(sourceHead);
   });
 
-  test('releases absorbed physical ownership for open semantic Work but keeps an unabsorbed candidate fenced', async () => {
+  test('releases a missing-contract canonical handle when its unique revision is preserved by its archive branch', async () => {
+    const fx = fixture();
+    roots.push(fx.root);
+    const started = await callExecutionTool(fx.ctx, 'session_start', {});
+    const session = (started?.structuredContent as { session: { sessionId: string } }).session;
+    const prepared = await callExecutionTool(fx.ctx, 'work_prepare', {
+      session_id: session.sessionId,
+      repo_id: fx.repository.repoId,
+      request_id: 'prepare-archived-orphan-target-handle',
+      objective: 'Create a baseline handle for the archived-orphan ownership fixture.',
+      checks: [],
+      isolation: 'new_worktree',
+    });
+    const work = (prepared?.structuredContent as { work: { workId: string } }).work;
+    const handle = readWorkHandle(fx.controllerHome, fx.repository.repoId, work.workId)!;
+    const targetHead = git(fx.repoRoot, ['rev-parse', 'HEAD']);
+    const orphanId = 'work-safe-archived-orphan-target-handle';
+    const sourceBranch = `work/${orphanId}-candidate`;
+    const archiveBranch = `archive/${orphanId}-20261019`;
+
+    git(fx.repoRoot, ['checkout', '-b', sourceBranch]);
+    writeFileSync(join(fx.repoRoot, 'src', 'orphan-unique.ts'), 'export const orphanUnique = true;\n');
+    git(fx.repoRoot, ['add', 'src/orphan-unique.ts']);
+    git(fx.repoRoot, ['commit', '-m', 'preserve orphan unique source revision']);
+    const sourceHead = git(fx.repoRoot, ['rev-parse', 'HEAD']);
+    git(fx.repoRoot, ['branch', archiveBranch, sourceHead]);
+    git(fx.repoRoot, ['checkout', 'main']);
+    git(fx.repoRoot, ['branch', '-D', sourceBranch]);
+    expect(git(fx.repoRoot, ['rev-parse', 'HEAD'])).toBe(targetHead);
+
+    const at = new Date().toISOString();
+    const orphanHandle = {
+      ...handle,
+      recordRevision: undefined,
+      workId: orphanId,
+      workContractId: orphanId,
+      checkoutId: fx.repository.activeCheckoutId,
+      worktreePath: fx.repoRoot,
+      branch: 'main',
+      sourceCheckoutId: undefined,
+      deliveryTargetBranch: 'main',
+      managedWorktree: false,
+      baseCommit: sourceHead,
+      deliveryBaseCommit: sourceHead,
+      expectedHead: sourceHead,
+      state: 'prepared' as const,
+      createdAt: at,
+      updatedAt: at,
+      validationRun: undefined,
+      validatedInputFingerprint: undefined,
+      cleanupResponsibility: undefined,
+      cleanupReceipt: undefined,
+      terminalResourceDisposition: undefined,
+      finalization: { ...handle.finalization, validation: 'pending' as const, commit: 'pending' as const, merge: 'pending' as const, branchCleanup: 'pending' as const, worktreeCleanup: 'pending' as const },
+    };
+    writeWorkHandle(fx.controllerHome, orphanHandle);
+    expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, orphanId)).toBeUndefined();
+    const target = { checkoutId: fx.repository.activeCheckoutId, branch: 'main', head: targetHead, root: fx.repository.canonicalRoot, clean: true };
+    expect(workHandleRetainsCanonicalMutationOwnership({
+      controllerHome: fx.controllerHome, repositoryId: fx.repository.repoId, handle: orphanHandle, target,
+    })).toBe(false);
+
+    git(fx.repoRoot, ['branch', '-D', archiveBranch]);
+    expect(workHandleRetainsCanonicalMutationOwnership({
+      controllerHome: fx.controllerHome, repositoryId: fx.repository.repoId, handle: orphanHandle, target,
+    })).toBe(true);
+  });
+
+  test('releases absorbed physical ownership for stale open semantic Work but keeps an unabsorbed candidate fenced', async () => {
     const fx = fixture();
     roots.push(fx.root);
     const started = await callExecutionTool(fx.ctx, 'session_start', {});
@@ -947,11 +1020,13 @@ describe('repository.git Work delivery', () => {
       capability_id: 'repository.git',
       action: 'deliver_work',
       request_id: 'deliver-capability-open-target-work',
-      arguments: { session_id: session.sessionId, work_id: work.workId },
+      arguments: { session_id: session.sessionId, work_id: work.workId, allow_merge_commit: true },
     });
     if (delivered?.isError) throw new Error(JSON.stringify(delivered.structuredContent ?? delivered));
     const integratedHead = git(fx.repoRoot, ['rev-parse', 'HEAD']);
     expect(integratedHead).not.toBe(targetHead);
+    expect(readWorkHandle(fx.controllerHome, fx.repository.repoId, blockerId)?.state).toBe('prepared');
+    expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, blockerId)?.semanticState).toBe('open');
 
     // The first successful delivery retired its managed checkout; reselect the
     // known canonical source explicitly instead of reusing a removed binding.

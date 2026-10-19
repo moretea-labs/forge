@@ -1,3 +1,4 @@
+import { spawnSync } from 'child_process';
 import { realpathSync } from 'fs';
 import type { RepositoryRecord } from '../../../cli/repositories/types';
 import { getRepository, resolveRepositorySelection, selectRepositoryCheckout } from '../../../cli/repositories/registry';
@@ -30,6 +31,20 @@ function samePhysicalCheckout(left: string, right: string): boolean {
     throw new Error('WORK_CHECKOUT_PHYSICAL_IDENTITY_UNAVAILABLE');
   }
 }
+function archivedWorkRevisionRefs(root: string, workId: string): string[] {
+  const result = spawnSync('git', ['-C', root, 'for-each-ref', '--format=%(refname:short)', 'refs/heads/archive/'], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: 10_000,
+    maxBuffer: 1024 * 1024,
+  });
+  if (result.error || result.status !== 0 || typeof result.stdout !== 'string') return [];
+  const prefix = `archive/${workId}-`;
+  return [...new Set(result.stdout.split(/\r?\n/)
+    .map((ref) => ref.trim())
+    .filter((ref) => ref.startsWith(prefix) && /^\d{8}$/.test(ref.slice(prefix.length))))].sort();
+}
+
 
 export interface CanonicalMutationTargetEvidence {
   checkoutId: string;
@@ -102,10 +117,19 @@ export function workHandleRetainsCanonicalMutationOwnership(input: {
   ].map((value) => value?.trim()).filter((value): value is string => Boolean(value)))];
   if (!revisions.length) return true;
 
-  // Once every WorkHandle source revision is already contained by the clean
-  // target HEAD, no repository mutation remains to protect. The semantic Work
-  // stays open and recoverable; only concrete checkout ownership is released.
-  return !revisions.every((revision) => gitIsAncestor(target.root, revision, target.head!));
+  const uncontainedRevisions = revisions.filter((revision) => !gitIsAncestor(target.root, revision, target.head!));
+  if (uncontainedRevisions.length === 0) return false;
+
+  // A missing WorkContract can leave a stale handle on the canonical checkout
+  // after cleanup has already preserved its unique source commit on a dated,
+  // Work-specific archive ref. Keep that ref untouched and release only the
+  // physical checkout fence; an open WorkContract never qualifies for this.
+  if (!contract) {
+    const archiveRefs = archivedWorkRevisionRefs(target.root, handle.workId);
+    if (archiveRefs.length > 0 && uncontainedRevisions.every((revision) =>
+      archiveRefs.some((ref) => gitIsAncestor(target.root, revision, ref)))) return false;
+  }
+  return true;
 }
 
 /**
