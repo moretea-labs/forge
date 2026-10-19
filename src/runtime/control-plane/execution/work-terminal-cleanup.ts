@@ -293,7 +293,10 @@ function selectTerminalCleanupTarget(repository: ReturnType<typeof getRepository
   const sourceCheckoutId = handle.sourceCheckoutId?.trim();
   if (sourceCheckoutId) {
     try {
-      return selectRepositoryCheckout(repository, sourceCheckoutId, { allowArchived: true });
+      const source = selectRepositoryCheckout(repository, sourceCheckoutId, { allowArchived: true });
+      // An archived registry entry can outlive its physical checkout. Git
+      // administration must use the surviving repository, not that absent cwd.
+      if (existsSync(source.canonicalRoot)) return source;
     } catch (error) {
       const unavailable = error instanceof RepositoryCheckoutSelectionError
         && (error.code === 'CHECKOUT_NOT_FOUND' || (error.code === 'CHECKOUT_NOT_ACTIVE' && error.lifecycle === 'removed'));
@@ -1019,7 +1022,9 @@ export async function cleanupTerminalWork(input: TerminalWorkCleanupInput): Prom
       current = persist(input.controllerHome, current, receipt);
       return { handle: current, receipt };
     }
-    const removed = git(target.canonicalRoot, ['worktree', 'remove', '--force', current.worktreePath], 60_000);
+    // Git must recheck cleanliness at removal time. A write after the snapshot
+    // above is a preservation blocker, never authority to discard those bytes.
+    const removed = git(target.canonicalRoot, ['worktree', 'remove', current.worktreePath], 60_000);
     if (!removed.ok && existsSync(current.worktreePath)) {
       receipt.worktree.status = 'failed';
       receipt.worktree.reason = removed.stderr || 'git worktree remove failed';
