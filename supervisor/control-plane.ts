@@ -527,6 +527,20 @@ export class WorkflowSupervisorControlPlane {
     // before dispatching any successor. An unstarted recovery child must not
     // send from a Project/new-composer surface while the source conversation
     // is still unbound. The existing effect ledger owns observation cooldown.
+    // A deliberate fresh-conversation migration already reserved a new
+    // enrollment in the canonical ledger. An applied effect from the retired
+    // conversation can no longer be found by scanning the *new* Project tab;
+    // do not let its read-only receipt obligation starve the fresh enrollment.
+    const freshEnrollment = this.store.freshConversationMigrationContext(task.taskId)
+      ? this.store.nextBrowserEffect(task.taskId) : undefined;
+    if (freshEnrollment?.mode === 'send' && freshEnrollment.effect.kind === 'enrollment') {
+      return { authorized: true, task: browserTask(task), command: {
+        mode: freshEnrollment.mode, effectId: freshEnrollment.effect.effectId,
+        kind: freshEnrollment.effect.kind, prompt: freshEnrollment.effect.prompt,
+        dispatchGeneration: freshEnrollment.generation,
+        conversationId: task.conversationId, conversationUrl: task.conversationUrl,
+      } };
+    }
     const applied = this.store.latestAppliedLeafEffectWithoutCompletion(task.taskId);
     if (applied) {
       if (!this.store.bootstrapAppliedReconcileDue(applied.effectId)) {
