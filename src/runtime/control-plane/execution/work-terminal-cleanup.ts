@@ -293,7 +293,10 @@ function selectTerminalCleanupTarget(repository: ReturnType<typeof getRepository
   const sourceCheckoutId = handle.sourceCheckoutId?.trim();
   if (sourceCheckoutId) {
     try {
-      return selectRepositoryCheckout(repository, sourceCheckoutId, { allowArchived: true });
+      const source = selectRepositoryCheckout(repository, sourceCheckoutId, { allowArchived: true });
+      // An archived registry entry can outlive its physical checkout. Git
+      // administration must use the surviving repository, not that absent cwd.
+      if (existsSync(source.canonicalRoot)) return source;
     } catch (error) {
       const unavailable = error instanceof RepositoryCheckoutSelectionError
         && (error.code === 'CHECKOUT_NOT_FOUND' || (error.code === 'CHECKOUT_NOT_ACTIVE' && error.lifecycle === 'removed'));
