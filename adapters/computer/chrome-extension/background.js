@@ -375,7 +375,12 @@ async function executeFindMarker(command, instanceId) {
       if (!identity) continue;
       const texts = [observation.latestUserText, ...(Array.isArray(observation.userMessages) ? observation.userMessages : [])];
       if (!texts.some((text) => String(text ?? '').includes(command.marker))) continue;
-      matches.push({ identity: { namespace: 'chatgpt.conversation', conversationId: identity.conversationId, canonicalUrl: identity.canonicalUrl }, providerBinding: binding(tab, instanceId), observation });
+      // Only the originally pinned physical tab can re-attest its session
+      // ownerToken. Never copy the token to a same-URL or another-profile tab.
+      const ownerToken = command.providerBinding && String(command.providerBinding.tabId) === String(tab.id)
+        && command.providerBinding.providerSessionId === instanceId
+        ? await attestedOwnerToken(tab, command.providerBinding) : undefined;
+      matches.push({ identity: { namespace: 'chatgpt.conversation', conversationId: identity.conversationId, canonicalUrl: identity.canonicalUrl }, providerBinding: binding(tab, instanceId, ownerToken), observation });
     } catch { /* an unreadable tab is not negative proof */ }
   }
   return { kind: 'marker_matches', matches };
