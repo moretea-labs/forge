@@ -590,7 +590,7 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
     for (const matches of matchesByConversation.values()) {
       const first = matches[0]!;
       const existing = this.authority.findSurfaceByStableIdentity(this.controllerHome, stableIdentity(first.match.identity))?.providerBinding;
-      const samePhysicalBinding = (match: MarkerMatch, binding: NonNullable<typeof existing>, instanceId: string): boolean => {
+      const samePhysicalBinding = (match: MarkerMatch, binding: NonNullable<typeof existing>, instanceId: string, allowMissingObservedOwnerToken = false): boolean => {
         const observed = match.providerBinding;
         return Boolean(observed
           && observed.providerId === binding.providerId
@@ -598,7 +598,7 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
           && observed.browserProduct === binding.browserProduct
           && observed.windowId === binding.windowId
           && observed.tabId === binding.tabId
-          && observed.ownerToken === binding.ownerToken
+          && (observed.ownerToken === binding.ownerToken || (allowMissingObservedOwnerToken && !observed.ownerToken))
           && instanceId === binding.providerSessionId);
       };
       const existingMatch = existing?.providerId === PROVIDER_ID
@@ -612,7 +612,7 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
         : undefined;
       const pinned = bootstrap?.providerBinding;
       const bootstrapMatch = pinned?.providerId === PROVIDER_ID
-        ? matches.find(({ instanceId, match }) => samePhysicalBinding(match, pinned, instanceId))
+        ? matches.find(({ instanceId, match }) => samePhysicalBinding(match, pinned, instanceId, Boolean(bootstrapIdentity)))
         : undefined;
       // A task-specific bootstrap pin outranks a conversation surface for the
       // same conversationId. If that exact physical pin is absent, preserve the

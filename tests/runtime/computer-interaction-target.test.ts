@@ -884,7 +884,8 @@ describe('Computer durable InteractionTarget authority', () => {
       });
       const marker = '<<<FORGE_TEST_MARKER_BOOTSTRAP_PIN>>>';
 
-      const findMarker = async (bindings: typeof pinnedBinding[]) => {
+      type MarkerBinding = Omit<typeof pinnedBinding, 'ownerToken'> & { ownerToken?: string };
+      const findMarker = async (bindings: MarkerBinding[]) => {
         const pending = extension.findBySubmittedMarker(marker, bootstrapKey);
         let command: ReturnType<typeof extension.claim>;
         for (let attempt = 0; attempt < 50 && !command; attempt++) {
@@ -893,6 +894,10 @@ describe('Computer durable InteractionTarget authority', () => {
         }
         if (!command) throw new Error('Marker search was not claimed by the pinned provider');
         expect(command.kind).toBe('find_marker');
+        expect(command).toMatchObject({
+          identity: { namespace: 'chatgpt.bootstrap', bootstrapKey, projectUrl },
+          providerBinding: { providerId: 'browser.chrome-extension', providerSessionId: 'profile-one', windowId: 'window-pinned', tabId: 'tab-pinned', ownerToken: 'owner-pinned' },
+        });
         expect(extension.complete('profile-one', command.commandId, {
           kind: 'marker_matches',
           matches: bindings.map((providerBinding) => ({
@@ -915,6 +920,24 @@ describe('Computer durable InteractionTarget authority', () => {
         .toMatchObject({ windowId: 'window-pinned', tabId: 'tab-pinned', ownerToken: 'owner-pinned' });
       expect(targetAuthority.getSurface(controllerHome, existingConversation.targetId)?.providerBinding)
         .toMatchObject({ windowId: 'window-existing', tabId: 'tab-existing', ownerToken: 'owner-existing' });
+      // A worker restart can lose its transient ownerToken, but reconciliation
+      // must retain the single Controller-persisted physical tab identity.
+      const reloadedPinnedBinding: MarkerBinding = {
+        providerId: pinnedBinding.providerId, providerSessionId: pinnedBinding.providerSessionId,
+        browserProduct: pinnedBinding.browserProduct, windowId: pinnedBinding.windowId,
+        tabId: pinnedBinding.tabId, observedAt,
+      };
+      const afterReload = await findMarker([reloadedPinnedBinding, otherBinding]);
+      expect(afterReload).toHaveLength(1);
+      expect(afterReload[0]).toMatchObject({
+        state: 'ready', target: { targetId: bootstrapTargetId, identity: { namespace: 'chatgpt.bootstrap', bootstrapKey } },
+      });
+      expect(targetAuthority.getSurface(controllerHome, bootstrapTargetId)?.providerBinding)
+        .toMatchObject({ windowId: 'window-pinned', tabId: 'tab-pinned', ownerToken: 'owner-pinned' });
+      // A different nonempty token cannot impersonate the saved physical owner.
+      expect(await findMarker([{ ...pinnedBinding, ownerToken: 'foreign-owner' }, otherBinding])).toEqual([]);
+      // A missing token on a different physical tab cannot inherit the pin.
+      expect(await findMarker([{ ...otherBinding, ownerToken: undefined }])).toEqual([]);
       // If the exact pin is absent, the conversation binding is not a fallback winner.
       expect(await findMarker([otherBinding])).toEqual([]);
       expect(targetAuthority.getSurface(controllerHome, bootstrapTargetId)?.providerBinding)
