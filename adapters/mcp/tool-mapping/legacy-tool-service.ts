@@ -9,7 +9,6 @@ import { listAgentJobs } from "../../../src/cli/agent-jobs/job-manager";
 import { listControllerChecks } from "../../../src/cli/controller/check-runner";
 import { buildExecutionDiagnostics, buildRequirementBoard } from '../../../src/runtime/control-plane/facade/requirement-board';
 import { getWorkContract } from '../../../packages/kernel/work/api';
-import { admitDirectEditWorkContract } from '../../../src/runtime/control-plane/facade/repository-work-admission';
 import { listCapabilityDescriptors, summarizeCapabilityGroups } from '../../../src/runtime/control-plane/facade/capability-registry';
 import { exportControllerWorklog, listControllerWorklogEvents, parseWorklogCategory } from "../../../src/cli/controller/worklog";
 import { FORGE_MCP_SCHEMA_VERSION, FORGE_TOOL_SURFACE, FORGE_VERSION, forgeToolSurfaceFingerprint, MIN_AGENT_TIMEOUT_MS, formatDurationMs, normalizeAgentTimeoutMs } from "../../../src/cli/controller/runtime-config";
@@ -1218,7 +1217,7 @@ export function buildMcpToolDefinitions(
           type: "object",
           properties: {
             purpose: { type: "string" },
-            work_id: { type: "string", description: "Optional existing WorkContract. Omit to create lightweight direct-control Work lineage." },
+            work_id: { type: "string", description: "Optional existing WorkContract. Omit for a Work-independent direct-edit transaction." },
             issue_id: { type: "string" },
             task_id: { type: "string" },
             allowed_paths: { type: "array", items: { type: "string" } },
@@ -2136,29 +2135,11 @@ export async function callMcpTool(
         const controllerHome = resolveRepoPreferredControllerHome(ctx.repoRoot);
         const allowedPaths = stringList(args.allowed_paths);
         const checks = stringList(args.checks);
-        const git = gitSnapshot(ctx.repoRoot);
-        const workspaceIdentity = createHash("sha256").update(JSON.stringify(git)).digest("hex");
-        const requestedWorkId = typeof args.work_id === "string" ? args.work_id.trim() : "";
-        const workId = requestedWorkId || `work-direct-${createHash("sha256").update(`${repoId}\0${purpose}\0${Date.now()}`).digest("hex").slice(0, 16)}`;
-        const workStore = { controllerHome, repoId };
-        const existingWork = getWorkContract(workStore, workId);
-        if (requestedWorkId && !existingWork) return errorResult("WORK_NOT_FOUND", `WorkContract ${workId} not found`);
-        if (!existingWork) {
-          admitDirectEditWorkContract(workStore, {
-            workId,
-            repoId,
-            checkoutId: identity.checkoutId,
-            principalId: identity.principalId,
-            controllerInstanceId: identity.controllerInstanceId,
-            baseRevision: git.head ?? undefined,
-            workspaceFingerprint: workspaceIdentity,
-            objective: purpose,
-            issueId: typeof args.issue_id === "string" ? args.issue_id : undefined,
-            taskId: typeof args.task_id === "string" ? args.task_id : undefined,
-            allowedPaths,
-            checks,
-            requestedBy: "chatgpt",
-          });
+        // An edit transaction is not a semantic objective. Only the Controller
+        // can select an existing Work; ordinary Direct Edit needs no Work lifecycle.
+        const workId = typeof args.work_id === "string" ? args.work_id.trim() || undefined : undefined;
+        if (workId && !getWorkContract({ controllerHome, repoId }, workId)) {
+          return errorResult("WORK_NOT_FOUND", `WorkContract ${workId} not found`);
         }
         const editRepository = resolveRepositorySelection({
           repoId,
@@ -2182,7 +2163,7 @@ export async function callMcpTool(
             repoId,
             checkoutId: identity.checkoutId,
             principalId: identity.principalId,
-            controllerInstanceId: identity.controllerInstanceId,
+            controllerInstanceId: workId ? identity.controllerInstanceId : undefined,
           },
         });
         audit(

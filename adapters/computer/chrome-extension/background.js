@@ -147,8 +147,12 @@ async function restoreExactContentReceiver(tabId, identity) {
   const matches = (tab) => identity?.namespace === 'chatgpt.conversation'
     ? core.parseConversation(tab.url ?? '')?.conversationId === identity.conversationId
     : identity?.namespace === 'chatgpt.bootstrap'
-      && core.projectId(tab.url ?? '') === core.projectId(identity.projectUrl)
-      && !core.parseConversation(tab.url ?? '');
+      && Boolean(core.projectId(identity.projectUrl))
+      && core.projectId(tab.url ?? '') === core.projectId(identity.projectUrl);
+  // A retained bootstrap pin may now show a conversation in this Project.
+  // Restore observation on that same physical tab so the bootstrap owner can
+  // detect and retire it before Send. Receiver hydration grants no Send or
+  // identity promotion; bootstrapTask still rejects existing conversations.
   const before = await tabGet(tabId);
   if (before.discarded || !matches(before)) throw new Error('COMPUTER_CHATGPT_EXTENSION_RECEIVER_TARGET_CHANGED');
   await new Promise((resolve, reject) => chrome.scripting.executeScript({
