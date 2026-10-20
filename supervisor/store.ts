@@ -3,7 +3,7 @@ import { createRequire } from 'node:module';
 import { mkdirSync } from 'node:fs';
 import { resolveWorkflowSupervisorForgeHome, workflowSupervisorDatabasePathValue, workflowSupervisorRootPath } from './paths';
 import { validateSupervisorObjective } from './protocol';
-import type { WorkflowEffectKind, WorkflowEffectOutcome, WorkflowSupervisorCompletion, WorkflowSupervisorContinuationProof, WorkflowSupervisorDiscoverySnapshot, WorkflowSupervisorDiscoveredConversation, WorkflowSupervisorEffect, WorkflowSupervisorTask, WorkflowSupervisorTaskInput, WorkflowSupervisorTaskStall, WorkflowSupervisorTerminalState, WorkflowSupervisorPreflightComposerObservation } from './types';
+import type { WorkflowEffectKind, WorkflowEffectOutcome, WorkflowSupervisorCompletion, WorkflowSupervisorContinuationProof, WorkflowSupervisorDiscoverySnapshot, WorkflowSupervisorDiscoveredConversation, WorkflowSupervisorEffect, WorkflowSupervisorTask, WorkflowSupervisorTaskInput, WorkflowSupervisorTaskStall, WorkflowSupervisorTerminalState, WorkflowSupervisorPreflightComposerObservation, WorkflowSupervisorSilentTurn } from './types';
 export type { WorkflowSupervisorTaskStall } from './types';
 
 interface Statement { get(...params: unknown[]): unknown; all(...params: unknown[]): unknown[]; run(...params: unknown[]): unknown; finalize?(): void }
@@ -1139,12 +1139,17 @@ export class WorkflowSupervisorStore {
       return { state: 'spaced', effectId: pending.effectId, reason: retryAuthorized ? 'retry_spacing' : 'unknown_observation_spacing' };
     }
     const leaf = this.latestAppliedLeafEffectWithoutCompletion(taskId);
-    if (leaf && this.providerResumeExhausted(leaf.effectId)) return { state: 'provider_resume_exhausted', effectId: leaf.effectId };
+    if (leaf && this.providerResumeExhausted(leaf.effectId)) {
+      const silentTurn = this.providerSilence(leaf.effectId);
+      return { state: 'provider_resume_exhausted', effectId: leaf.effectId, ...(silentTurn ? { silentTurn } : {}) };
+    }
     // An applied effect awaiting its receipt is a live obligation even when its
     // bounded resume is exhausted and its recovery child was retired, so it is
-    // never reported as inert.
+    // never reported as inert. Silence is reported as elapsed without claiming
+    // that the provider is producing usable output.
     if (this.hasAppliedEffectAwaitingCompletion(taskId)) {
-      return { state: 'spaced', ...(leaf ? { effectId: leaf.effectId } : {}), reason: 'awaiting_completion_receipt' };
+      const silentTurn = leaf ? this.providerSilence(leaf.effectId) : undefined;
+      return { state: 'spaced', ...(leaf ? { effectId: leaf.effectId } : {}), reason: 'awaiting_completion_receipt', ...(silentTurn ? { silentTurn } : {}) };
     }
     const waiting = this.read((db) => {
       const taskRow = statement(db, 'SELECT * FROM tasks WHERE task_id = ?', (s) => s.get(taskId)) as Record<string, unknown> | undefined;
@@ -1330,6 +1335,32 @@ export class WorkflowSupervisorStore {
     });
   }
   providerResumeExhausted(effectId: string): boolean { return this.read((db) => Boolean(statement(db, "SELECT 1 AS ok FROM events WHERE effect_id = ? AND kind = 'assistant_recovery_exhausted' LIMIT 1", (s) => s.get(effectId)))); }
+  /**
+   * Read-only elapsed silence for one applied effect, derived from the exact
+   * provider-state event the observation loop already journals. It adds no
+   * durable state, no second threshold and no resend authorization: it only
+   * stops the caller from reporting "still running" as if output were arriving.
+   */
+  providerSilence(effectId: string, nowMs = this.clockMs()): WorkflowSupervisorSilentTurn | undefined {
+    return this.read((db) => {
+      const latest = statement(db, `SELECT kind, occurred_at FROM events
+        WHERE effect_id = ? AND kind IN ('assistant_provider_generating','assistant_provider_idle')
+        ORDER BY event_id DESC LIMIT 1`, (s) => s.get(effectId)) as { kind?: string; occurred_at?: string } | undefined;
+      if (!latest || (latest.kind !== 'assistant_provider_generating' && latest.kind !== 'assistant_provider_idle')) return undefined;
+      const observedSinceMs = Date.parse(String(latest.occurred_at ?? ''));
+      if (!Number.isFinite(observedSinceMs)) return undefined;
+      return {
+        effectId,
+        providerState: latest.kind === 'assistant_provider_generating' ? 'generating' : 'idle',
+        observedSince: new Date(observedSinceMs).toISOString(),
+        elapsedMs: Math.max(0, nowMs - observedSinceMs),
+        recoveryGraceMs: WORKFLOW_SUPERVISOR_PROVIDER_IDLE_GRACE_MS,
+        recoveryReviewAt: new Date(observedSinceMs + WORKFLOW_SUPERVISOR_PROVIDER_IDLE_GRACE_MS).toISOString(),
+        progress: 'no_visible_output',
+        resendAuthorized: false,
+      };
+    });
+  }
   latestAppliedEffectWithoutCompletion(taskId: string): WorkflowSupervisorEffect | undefined {
     return this.read((db) => {
       const row = statement(db, `SELECT e.* FROM effects e

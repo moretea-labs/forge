@@ -14,7 +14,7 @@ import { activateWorkContract, failWorkContract, getWorkContract } from '../../.
 import { admitPreparedRepositoryWorkContract, updateRepositoryWorkPlacement } from '../facade/repository-work-admission';
 import { isTerminalSemanticWorkState } from '../facade/types';
 import { updateExecutionSession, type ExecutionSessionContext } from './session-store';
-import { currentPermissionSnapshotVersion, validateWorkHandle } from './validation';
+import { currentPermissionSnapshotVersion, validateWorkHandle, workHandlePlacementLoss } from './validation';
 import { withWorkPrepareRequest } from './work-prepare-request-store';
 import { listWorkHandles, markWorkHandleFailed, newWorkId, readWorkHandle, relocateWorkHandlePlacementAtomically, writeWorkHandle, type WorkFinalizationStages, type WorkHandleState } from './work-handle-store';
 import { createGoalDelegation } from '../governance/authorization';
@@ -290,6 +290,17 @@ function recordedRecoveryPreviousHead(args: Record<string, unknown>, sourceHandl
   return recorded;
 }
 
+/**
+ * The recorded Work head is the exact frozen baseline. When no landed candidate
+ * is named, re-basing the replacement placement on that same revision is not an
+ * inference: it is the revision the WorkHandle already owned.
+ */
+function recoveryCandidateHead(args: Record<string, unknown>, sourceHandle: WorkHandleState): string {
+  return (typeof args.adopt_candidate_head === 'string' ? args.adopt_candidate_head.trim() : '')
+    || sourceHandle.expectedHead?.trim()
+    || '';
+}
+
 function materializeArchivedWorkPlacement(
   ctx: McpExecutionContext,
   args: Record<string, unknown>,
@@ -306,15 +317,18 @@ function materializeArchivedWorkPlacement(
   checkout: ReturnType<typeof selectRepositoryCheckout>;
 } {
   const expectedPreviousHead = recordedRecoveryPreviousHead(args, sourceHandle);
-  const adoptCandidateHead = typeof args.adopt_candidate_head === 'string' ? args.adopt_candidate_head.trim() : '';
+  const adoptCandidateHead = recoveryCandidateHead(args, sourceHandle);
   if (!adoptCandidateHead) throw new Error('WORK_HANDLE_RECOVERY_CANDIDATE_HEAD_REQUIRED');
   const registered = getRepository(repository.repoId, ctx.controllerHome, { includeRemoved: true });
   if (repository.activeCheckoutId !== registered.activeCheckoutId || repository.canonicalRoot !== registered.canonicalRoot) {
     throw new Error('WORK_HANDLE_RECOVERY_CANONICAL_BASE_REQUIRED');
   }
   const baseStatus = repositoryGitStatus(repository);
-  if (!baseStatus.clean || !baseStatus.branch || !baseStatus.head) {
-    throw new Error('WORK_HANDLE_RECOVERY_CANONICAL_BASE_NOT_CLEAN');
+  // Placement recovery creates a new worktree from exact commits. Unrelated
+  // dirty files in the canonical checkout are preserved and are not a merge
+  // gate; only an unresolvable base branch/revision blocks the recovery.
+  if (!baseStatus.branch || !baseStatus.head) {
+    throw new Error('WORK_HANDLE_RECOVERY_CANONICAL_BASE_UNRESOLVED');
   }
   if (!sourceHandle.managedWorktree || sourceHandle.repositoryId !== repository.repoId
     || (sourceHandle.workContractId && sourceHandle.workContractId !== contract.workId)) {
@@ -328,7 +342,11 @@ function materializeArchivedWorkPlacement(
   }
   if (sourceHandle.state === 'cleaned') {
     if (!cleanupReceiptProvesNoUniqueSource(sourceHandle, registered.canonicalRoot)) throw new Error('WORK_HANDLE_RECOVERY_CLEANUP_NOT_PROVEN');
-  } else if (!['prepared', 'editing'].includes(sourceHandle.state)) {
+  } else if (!['prepared', 'editing', 'failed'].includes(sourceHandle.state)) {
+    // A lost placement can leave a mechanically failed handle behind. Its exact
+    // recorded head and the still-open contract are the authority; the
+    // replacement handle starts at `prepared`, so failure is never laundered
+    // into success and no delivery/completion state is copied.
     throw new Error(`WORK_HANDLE_RECOVERY_SOURCE_STATE_INVALID: ${sourceHandle.state}`);
   }
   const oldCheckout = registered.checkouts.find((checkout) => checkout.checkoutId === sourceHandle.checkoutId);
@@ -399,7 +417,7 @@ function materializeArchivedWorkPlacement(
   return { workspace, contract: updatedContract, proof, baseStatus, checkout };
 }
 
-function recoverCleanedWorkHandle(
+function recoverLostWorkPlacement(
   ctx: McpExecutionContext,
   args: Record<string, unknown>,
   session: ExecutionSessionContext,
@@ -407,7 +425,7 @@ function recoverCleanedWorkHandle(
   sourceHandle: WorkHandleState,
 ): Record<string, unknown> {
   const expectedPreviousHead = recordedRecoveryPreviousHead(args, sourceHandle);
-  const adoptCandidateHead = typeof args.adopt_candidate_head === 'string' ? args.adopt_candidate_head.trim() : '';
+  const adoptCandidateHead = recoveryCandidateHead(args, sourceHandle);
   if (!adoptCandidateHead) throw new Error('WORK_HANDLE_RECOVERY_CANDIDATE_HEAD_REQUIRED');
   if (sourceHandle.checkoutId === repository.activeCheckoutId) throw new Error('WORK_HANDLE_RECOVERY_SOURCE_CHECKOUT_STILL_ACTIVE');
   const contract = contractFor(ctx, sourceHandle);
@@ -415,8 +433,6 @@ function recoverCleanedWorkHandle(
   if (contract.semanticState !== 'open' || contract.completionReceipt || contract.completionOutcome) {
     throw new Error(`WORK_HANDLE_RECOVERY_WORK_NOT_OPEN: ${contract.workId}`);
   }
-  const requestId = typeof args.request_id === 'string' ? args.request_id.trim() : '';
-  if (!requestId) throw new Error('WORK_PREPARE_REQUEST_ID_REQUIRED');
   const fingerprint = workPrepareFingerprint({
     repoId: repository.repoId,
     requestedCheckoutId: repository.activeCheckoutId,
@@ -432,6 +448,11 @@ function recoverCleanedWorkHandle(
     expectedPreviousHead,
     adoptCandidateHead,
   });
+  // A deterministic request id makes the recovery retry-safe across tool
+  // failures and process restarts without asking the caller to invent one.
+  const requestId = typeof args.request_id === 'string' && args.request_id.trim()
+    ? args.request_id.trim()
+    : `recover-${fingerprint.slice(0, 32)}`;
   const policy = readRepositoryAccessPolicy(ctx.controllerHome, repository.repoId);
   return withWorkPrepareRequest({
     controllerHome: ctx.controllerHome,
@@ -501,6 +522,12 @@ function recoverCleanedWorkHandle(
       finalization: initialStage(),
       cleanupResponsibility: { owner: 'work_finalizer', registeredAt: at },
     });
+    // Retire the source placement while preserving the canonical Work. Leaving
+    // it live would keep a deleted checkout competing as a recovery owner.
+    // Cleanup-complete handles keep their receipt and are never rewritten here.
+    if (sourceHandle.state !== 'cleaned') {
+      markWorkHandleFailed(ctx.controllerHome, sourceHandle, `placement_lost_rebound_to:${successor.workId}`);
+    }
     const nextSession = updateExecutionSession(ctx.controllerHome, identityFor(ctx, args), {
       activeRepositoryId: repository.repoId,
       activeCheckoutId: successor.checkoutId,
@@ -732,7 +759,19 @@ export function prepareWork(ctx: McpExecutionContext, args: Record<string, unkno
         return { session: requireSession(ctx, args), work: compactHandle(existing), reused: true, terminal: true, workContractStatus: semanticContract.semanticState };
       }
       if (requestedIsolation !== undefined) throw new Error('WORK_RELOCATION_ISOLATION_CONFLICT');
-      return recoverCleanedWorkHandle(ctx, args, session, repository, existing);
+      return recoverLostWorkPlacement(ctx, args, session, repository, existing);
+    }
+    // The recorded checkout is placement. When it is gone, the still-open
+    // canonical Work can re-establish an exact managed placement instead of
+    // being permanently vetoed by a deleted execution location.
+    const placementLoss = workHandlePlacementLoss(repository, existing);
+    if (placementLoss) {
+      const semanticContract = contractFor(ctx, existing);
+      if (semanticContract && isTerminalSemanticWorkState(semanticContract.semanticState)) {
+        return { session: requireSession(ctx, args), work: compactHandle(existing), reused: true, terminal: true, workContractStatus: semanticContract.semanticState };
+      }
+      if (requestedIsolation === 'reuse') throw new Error('WORK_RELOCATION_ISOLATION_CONFLICT');
+      return recoverLostWorkPlacement(ctx, args, session, repository, existing);
     }
     if (args.relocate_to_new_worktree === true) {
       if (requestedIsolation !== undefined) throw new Error('WORK_RELOCATION_ISOLATION_CONFLICT');

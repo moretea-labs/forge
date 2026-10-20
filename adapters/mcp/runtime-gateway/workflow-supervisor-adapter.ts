@@ -162,7 +162,13 @@ export async function callWorkflowSupervisorAdapter(
     // retry/resume budget used to make the task silently leave the delivery
     // queue. The stall state names the exact operator action that can move it.
     const stall = await getWorkflowSupervisorTaskStall(forgeHome, id).catch(() => undefined);
-    return result({ task, completionContractSha256: workflowSupervisorCompletionContractSha256(task.completionContract), ...(stall ? { stall } : {}), summary: `Supervisor task ${id} retrieved${stall ? ` (${stall.state})` : ''}; canonical completion-contract CAS fingerprint included.` });
+    // Report elapsed silence instead of implying that activity equals progress.
+    // The text is informational only; it never authorizes another provider Send.
+    const silentTurn = stall && 'silentTurn' in stall ? stall.silentTurn : undefined;
+    const silenceSummary = silentTurn
+      ? ` No visible provider output for ${Math.max(1, Math.round(silentTurn.elapsedMs / 60_000))}m while the provider still reports ${silentTurn.providerState}; review is due at ${silentTurn.recoveryReviewAt}, and silence alone never authorizes a resend.`
+      : '';
+    return result({ task, completionContractSha256: workflowSupervisorCompletionContractSha256(task.completionContract), ...(stall ? { stall } : {}), summary: `Supervisor task ${id} retrieved${stall ? ` (${stall.state})` : ''}; canonical completion-contract CAS fingerprint included.${silenceSummary}` });
   }
 
   if (operation === 'proof') {

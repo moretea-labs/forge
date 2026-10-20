@@ -85,9 +85,42 @@ function inspectWork(ctx: MultiRepositoryMcpToolContext, args: Record<string, un
   const validationStarted = performance.now();
   const validated = validateWorkHandle(ctx.controllerHome, handle, identityFor(ctx, args), 'cheap', 'inspect');
   const validationMs = performance.now() - validationStarted;
+  const contract = contractFor(ctx, handle);
+  if (validated.placementLoss) {
+    // The checkout is gone, but the canonical Work is not. Report semantic
+    // state and the exact mechanical recovery action; never invent Git state.
+    const value = {
+      session: { sessionId: session.sessionId, repoId: session.activeRepositoryId, checkoutId: session.activeCheckoutId },
+      work: compactHandle(handle),
+      readiness: {
+        valid: false,
+        placement: {
+          state: 'lost' as const,
+          reason: validated.placementLoss,
+          checkoutId: handle.checkoutId,
+          worktreePath: handle.worktreePath,
+          recovery: { operation: 'work_prepare', workId: handle.workId, requires: 'exact recorded head plus a landed candidate revision' },
+        },
+        warnings: validated.warnings,
+        permissionSnapshotVersion: handle.permissionSnapshotVersion,
+      },
+      workContract: contract ? {
+        workId: contract.workId,
+        state: contract.semanticState,
+        objective: contract.objective,
+        checks: contract.checks,
+        acceptanceCriteria: contract.acceptanceCriteria,
+        semantics: buildWorkContinuationSnapshot(contract).semantics,
+      } : undefined,
+      continuation: contract ? buildWorkContinuationSnapshot(contract) : undefined,
+    };
+    const response = makeBoundedWorkResult(ctx, session, handle.repositoryId, handle.workId, 'inspection', value);
+    const trace: McpTimingTrace = { tool: 'work_inspect', sessionResolutionMs: 0, repositoryResolutionMs: 0, workHandleValidationMs: Math.round(validationMs * 100) / 100, resultSerializationMs: 0, totalToolDurationMs: Math.round((performance.now() - started) * 100) / 100, sessionId: session.sessionId, repoId: handle.repositoryId, workId: handle.workId };
+    recordMcpTiming(ctx.controllerHome, trace);
+    return response;
+  }
   const candidate = repositoryGitWorkspaceChanges(validated.worktreeRepository);
   const { status, diff } = candidate;
-  const contract = contractFor(ctx, handle);
   const checks = contract?.checks ?? [];
   const packageManifest = existsSync(`${validated.worktreeRepository.canonicalRoot}/package.json`)
     ? JSON.parse(readFileSync(`${validated.worktreeRepository.canonicalRoot}/package.json`, 'utf-8')) as Record<string, unknown>
