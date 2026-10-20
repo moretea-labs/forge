@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from "crypto";
+import { createHash } from "crypto";
 import {
   closeSync,
   existsSync,
@@ -12,32 +12,18 @@ import {
   appendFileSync,
 } from "fs";
 import { dirname, join, relative } from "path";
-import { spawn, spawnSync } from "child_process";
+import { spawn } from "child_process";
 import { fileURLToPath } from "url";
 import { runProcess } from "../../effects/process-runner";
 import {
   getGitHubAgentSession,
   getGitHubAgentSessionLog,
-  startGitHubAgentSession,
 } from "../github/session";
-import { getGitHubStatus } from "../github/github";
 import { getIssue, inspectTaskReadiness, removeEphemeralIssue, updateTask } from "../controller/issue-store";
 import { readTaskRunEvidence } from "../controller/run-evidence";
 import { resolveEffectiveTaskState } from "../controller/task-status-resolver";
-import type { ControllerTask } from "../controller/types";
 import { tryAppendControllerWorklogEvent } from "../controller/worklog";
 import { continueTaskAfterSuccessfulRun } from "../controller/execution-completion";
-import { executionScopesConflict, taskExecutionPolicy } from "../controller/execution-policy";
-import {
-  DEFAULT_AGENT_TIMEOUT_MS,
-  MAX_AGENT_TIMEOUT_MS,
-  normalizeAgentTimeoutMs,
-  repositoryIdentity,
-} from "../controller/runtime-config";
-import { normalizeRemoteUrl, stableCheckoutId, stableRemoteRepoId } from "../repositories/identity";
-import { resolveRepoPreferredControllerHome } from "../repositories/controller-home";
-import { listRepositories, repositoryCheckoutRootMatches } from "../repositories/registry";
-import { managedWorktreePath } from "../repositories/worktree-storage";
 import {
   ensureControllerEpoch,
   hasControllerOwnershipMetadata,
@@ -63,43 +49,10 @@ import {
   ExecutorHealthError,
   isExecutorHealthError,
 } from "./executor-health";
-import {
-  AgentExecutableError,
-  agentProcessEnv,
-  assertAgentExecutableReady,
-  resolveAgentExecutable,
-} from "./executable-resolver";
 
 const JOB_ROOT = ".ai/harness/jobs";
-const RUN_LAUNCH_LOCK = ".ai/harness/controller/run-launch.lock";
 const RUN_INDEX_ROOT = ".ai/harness/controller/run-indexes";
 const RUN_INDEX_LOCK = ".ai/harness/controller/run-index.lock";
-const RUN_LAUNCH_LOCK_STALE_MS = 30_000;
-const RUN_LAUNCH_LOCK_WAIT_MS = 500;
-const RUN_LAUNCH_LOCK_POLL_MS = 10;
-const DEFAULT_AGENT_STARTUP_TIMEOUT_MS = 90_000;
-const MIN_AGENT_STARTUP_TIMEOUT_MS = 30_000;
-const MAX_AGENT_STARTUP_TIMEOUT_MS = 300_000;
-
-export function agentStartupTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
-  const configured = Number(env.FORGE_AGENT_STARTUP_TIMEOUT_MS);
-  if (!Number.isFinite(configured)) return DEFAULT_AGENT_STARTUP_TIMEOUT_MS;
-  return Math.max(MIN_AGENT_STARTUP_TIMEOUT_MS, Math.min(Math.trunc(configured), MAX_AGENT_STARTUP_TIMEOUT_MS));
-}
-
-function shortId(): string {
-  return randomBytes(4).toString("hex");
-}
-
-function sanitize(value: string): string {
-  return (
-    value
-      .toLowerCase()
-      .replace(/[^a-z0-9-]+/g, "-")
-      .replace(/^-+|-+$/g, "")
-      .slice(0, 50) || "task"
-  );
-}
 
 function readJson<T>(path: string): T {
   return JSON.parse(readFileSync(path, "utf-8")) as T;
@@ -168,87 +121,6 @@ function atomicCreateJson(path: string, value: unknown): boolean {
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
     throw error;
-  }
-}
-
-function tryReadRepositoryIdentity(repoRoot: string): { repoId: string; checkoutId: string } {
-  const controllerHome = resolveRepoPreferredControllerHome(repoRoot);
-  const registered = listRepositories(controllerHome, { includeRemoved: true })
-    .find((record) => repositoryCheckoutRootMatches(record, repoRoot));
-  if (registered) {
-    return { repoId: registered.repoId, checkoutId: stableCheckoutId(registered.repoId, repoRoot) };
-  }
-
-  // Import-only compatibility for repositories that have not yet been registered
-  // into the Controller Home registry. New writes never recreate this file.
-  const path = join(repoRoot, ".ai/harness/repository.json");
-  let repoId = "";
-  try {
-    if (existsSync(path)) {
-      const parsed = readJson<{ repoId?: string }>(path);
-      repoId = typeof parsed.repoId === "string" ? parsed.repoId.trim() : "";
-    }
-  } catch (_error) {
-    repoId = "";
-  }
-  if (!repoId) {
-    const remote = normalizeRemoteUrl(
-      runProcess("git", ["config", "--get", "remote.origin.url"], {
-        cwd: repoRoot,
-        timeoutMs: 10_000,
-        maxOutputBytes: 8 * 1024,
-      }).stdout.trim(),
-    );
-    repoId = remote ? stableRemoteRepoId(remote) : repositoryIdentity(repoRoot);
-  }
-  return {
-    repoId,
-    checkoutId: stableCheckoutId(repoId, repoRoot),
-  };
-}
-
-function withRunLaunchLock<T>(repoRoot: string, action: () => T): T {
-  const path = join(repoRoot, RUN_LAUNCH_LOCK);
-  mkdirSync(dirname(path), { recursive: true });
-  const acquire = (): number => {
-    try {
-      const fd = openSync(path, "wx", 0o600);
-      writeFileSync(fd, `${JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() })}\n`, "utf-8");
-      return fd;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      let stale = true;
-      try {
-        const lock = readJson<{ pid?: number; createdAt?: string }>(path);
-        const createdAt = Date.parse(lock.createdAt ?? "");
-        stale =
-          !Number.isFinite(createdAt) ||
-          Date.now() - createdAt > RUN_LAUNCH_LOCK_STALE_MS ||
-          !isAlive(lock.pid);
-      } catch (_readError) {
-        stale = true;
-      }
-      if (stale) {
-        rmSync(path, { force: true });
-        return acquire();
-      }
-      return -1;
-    }
-  };
-
-  const deadline = Date.now() + RUN_LAUNCH_LOCK_WAIT_MS;
-  let fd = acquire();
-  while (fd < 0 && Date.now() < deadline) {
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, RUN_LAUNCH_LOCK_POLL_MS);
-    fd = acquire();
-  }
-  if (fd < 0)
-    throw new Error("another Controller is preparing a local Task Run; retry after its workspace reservation is visible");
-  try {
-    return action();
-  } finally {
-    closeSync(fd);
-    rmSync(path, { force: true });
   }
 }
 
@@ -695,67 +567,6 @@ function activeRunIndexEntries(repoRoot: string): AgentRunIndexEntry[] {
   return active;
 }
 
-function activeLocalRuns(repoRoot: string, options: { excludeRunId?: string } = {}): AgentJobMeta[] {
-  return activeRunIndexEntries(repoRoot).flatMap((entry) => {
-    try { return [getAgentJob(repoRoot, entry.runId)]; }
-    catch (_error) { return []; }
-  }).filter(
-    (entry) =>
-      entry.provider === "local" &&
-      ["queued", "starting", "running"].includes(entry.status) &&
-      entry.runId !== options.excludeRunId &&
-      (isAlive(entry.workerPid) || isAlive(entry.launchPid) || ["queued", "starting"].includes(entry.status)),
-  );
-}
-
-function activeRuns(repoRoot: string): AgentJobMeta[] {
-  return activeRunIndexEntries(repoRoot).flatMap((entry) => {
-    try { return [readJson<AgentJobMeta>(metaPath(repoRoot, entry.runId))]; }
-    catch (_error) { return []; }
-  }).filter((entry) => ["queued", "starting", "running"].includes(entry.status));
-}
-
-function assertNoTaskScopeConflict(
-  repoRoot: string,
-  issueId: string,
-  task: ControllerTask,
-): void {
-  const policy = taskExecutionPolicy(task);
-  if (policy.executionClass === "read_only" || task.allowedPaths.length === 0) return;
-  const candidates = new Map<string, AgentJobMeta>();
-  for (const run of activeRuns(repoRoot)) candidates.set(run.runId, run);
-  for (const run of listPendingIntegrationRuns(repoRoot, 5000)) candidates.set(run.runId, run);
-  for (const run of candidates.values()) {
-    if (run.issueId === issueId && run.taskId === task.id) continue;
-    let otherScope = run.executionClass && run.allowedPaths
-      ? { executionClass: run.executionClass, allowedPaths: run.allowedPaths }
-      : undefined;
-    if (!otherScope) {
-      try {
-        const otherTask = getIssue(repoRoot, run.issueId).tasks.find((entry) => entry.id === run.taskId);
-        if (otherTask) {
-          otherScope = {
-            executionClass: taskExecutionPolicy(otherTask).executionClass,
-            allowedPaths: otherTask.allowedPaths,
-          };
-        }
-      } catch (_error) {
-        continue;
-      }
-    }
-    if (!otherScope || !executionScopesConflict(
-      { executionClass: policy.executionClass, allowedPaths: task.allowedPaths },
-      otherScope,
-    )) continue;
-    const currentHeadResult = spawnSync("git", ["rev-parse", "HEAD"], { cwd: repoRoot, encoding: "utf-8" });
-    const currentHead = currentHeadResult.status === 0 ? currentHeadResult.stdout.trim() : "";
-    const baseDrift = Boolean(run.baseRevision && currentHead && currentHead !== run.baseRevision);
-    throw new Error(
-      `DRIFT_PREVENTION_BLOCKED: task-local launch overlaps unresolved Run ${run.issueId}/${run.taskId} (${run.runId})${baseDrift ? ` whose base ${run.baseRevision} differs from target ${currentHead}` : ""}`,
-    );
-  }
-}
-
 function cleanupEphemeralIssueAfterRun(repoRoot: string, issueId: string): void {
   try {
     const issue = getIssue(repoRoot, issueId);
@@ -847,164 +658,6 @@ function reconcileIncompleteAutoIntegration(
   } catch (_error) {
     // Run evidence remains authoritative if task metadata changed concurrently.
   }
-}
-
-function resolveExecutionMode(
-  repoRoot: string,
-  provider: "local" | "github",
-  isolate: boolean | undefined,
-  options: { excludeRunId?: string } = {},
-): AgentExecutionMode {
-  if (provider === "github") return "github";
-  if (isolate === true) return "worktree";
-  if (isolate === false) {
-    if (activeLocalRuns(repoRoot, options).length > 0)
-      throw new Error(
-        "cannot run directly in the current workspace while another local Task Run is active; use automatic or worktree isolation",
-      );
-    return "workspace";
-  }
-  return activeLocalRuns(repoRoot, options).length > 0 ? "worktree" : "workspace";
-}
-
-function createWorktree(
-  repoRoot: string,
-  issueId: string,
-  task: ControllerTask,
-  runId: string,
-): { path: string; branch: string | null; baseRevision: string | null } {
-  const gitCheck = runProcess("git", ["rev-parse", "--is-inside-work-tree"], {
-    cwd: repoRoot,
-    timeoutMs: 10_000,
-    maxOutputBytes: 8 * 1024,
-  });
-  if (!gitCheck.ok || gitCheck.stdout.trim() !== "true")
-    return { path: repoRoot, branch: null, baseRevision: null };
-  const revision = runProcess("git", ["rev-parse", "HEAD"], {
-    cwd: repoRoot,
-    timeoutMs: 10_000,
-    maxOutputBytes: 8 * 1024,
-  });
-  if (!revision.ok)
-    throw new Error(
-      `failed to resolve task base revision: ${revision.error || revision.stderr}`,
-    );
-  const baseRevision = revision.stdout.trim();
-  const planned = plannedWorktreeLocation(repoRoot, issueId, task.id, runId);
-  const absoluteWorktree = planned.path;
-  const branch = planned.branch;
-  mkdirSync(dirname(absoluteWorktree), { recursive: true });
-  const result = runProcess(
-    "git",
-    ["worktree", "add", "-b", branch, absoluteWorktree, "HEAD"],
-    {
-      cwd: repoRoot,
-      timeoutMs: 60_000,
-      maxOutputBytes: 64 * 1024,
-    },
-  );
-  if (!result.ok)
-    throw new Error(
-      `failed to create task worktree: ${result.error || result.stderr}`,
-    );
-  return { path: absoluteWorktree, branch, baseRevision };
-}
-
-function currentBaseRevision(repoRoot: string): string | null {
-  const revision = runProcess("git", ["rev-parse", "HEAD"], {
-    cwd: repoRoot,
-    timeoutMs: 10_000,
-    maxOutputBytes: 8 * 1024,
-  });
-  return revision.ok ? revision.stdout.trim() || null : null;
-}
-
-function plannedWorktreeLocation(
-  repoRoot: string,
-  issueId: string,
-  taskId: string,
-  runId: string,
-): { path: string; branch: string } {
-  const suffix = runId.slice(-8);
-  const controllerHome = resolveRepoPreferredControllerHome(repoRoot);
-  const repoId = tryReadRepositoryIdentity(repoRoot).repoId;
-  return {
-    path: managedWorktreePath(
-      controllerHome,
-      repoId,
-      `${sanitize(issueId)}-${sanitize(taskId)}-${suffix}`,
-      listRepositories(controllerHome, { includeRemoved: true }),
-    ),
-    branch: `controller/${sanitize(issueId)}-${sanitize(taskId)}-${suffix}`,
-  };
-}
-
-export function taskPrompt(
-  issueTitle: string,
-  issueSummary: string,
-  task: ControllerTask,
-  repoRoot: string,
-  worktree: string,
-  provider: "local" | "github" = "local",
-  executionMode: AgentExecutionMode = provider === "github"
-    ? "github"
-    : "workspace",
-): string {
-  const executionRules =
-    provider === "github"
-      ? [
-          "- Work in a dedicated branch and open or update a draft pull request.",
-          "- Do not merge the pull request or close the parent issue.",
-          "- Keep the change limited to this Task and surface any missing product decision as a blocker.",
-          "- Finish with a concise PR summary: changed files, checks, residual risks, and blockers.",
-        ]
-      : [
-          "- Keep the change limited to this task. Do not broaden the requirement.",
-          executionMode === "worktree"
-            ? "- Work only inside the isolated worktree. forge will integrate and clean it automatically after a successful Run."
-            : "- Work directly in the current repository workspace. Do not create another worktree, commit, merge, or push.",
-          "- Finish with a concise report: changed files, checks, residual risks, and any blocker.",
-        ];
-  return [
-    "# forge Controller Task",
-    "",
-    `Issue: ${issueTitle}`,
-    issueSummary ? `Issue summary: ${issueSummary}` : "",
-    `Task: ${task.id} — ${task.title}`,
-    `Objective: ${task.objective}`,
-    task.github ? `GitHub task: ${task.github.url}` : "",
-    "",
-    "## Scope contract",
-    "",
-    `- Repository: ${repoRoot}`,
-    provider === "local"
-      ? `- Execution mode: ${executionMode === "worktree" ? `isolated worktree (${worktree})` : `current workspace (${worktree})`}`
-      : "- Execution: GitHub Copilot cloud agent session",
-    `- Allowed paths: ${task.allowedPaths.length ? task.allowedPaths.join(", ") : "derive the smallest safe scope; do not make unrelated changes"}`,
-    `- Forbidden paths: ${task.forbiddenPaths.length ? task.forbiddenPaths.join(", ") : "secrets, credentials, auth state, and unrelated files"}`,
-    `- Risk: ${task.risk}`,
-    "",
-    "## Acceptance criteria",
-    "",
-    ...(task.acceptanceCriteria.length
-      ? task.acceptanceCriteria.map((item) => `- ${item}`)
-      : ["- Complete the stated objective without unrelated changes."]),
-    "",
-    "## Required checks",
-    "",
-    ...(task.checks.length
-      ? task.checks.map((item) => `- ${item}`)
-      : [
-          "- Run the smallest relevant verification available in the repository.",
-        ]),
-    "",
-    "## Execution rules",
-    "",
-    "- Inspect repository instructions and the affected implementation before editing.",
-    ...executionRules,
-  ]
-    .filter(Boolean)
-    .join("\n");
 }
 
 function executorFailureMessage(meta: Pick<AgentJobMeta, "agent" | "error">, stdoutTail?: string, stderrTail?: string): string {

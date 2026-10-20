@@ -1754,7 +1754,7 @@ forbid(
 // Retired Agent Run creation/retry/dispatch API declarations must never return.
 forbid(
   'src/cli/agent-jobs/job-manager.ts',
-  /\b(?:startTaskJob|retryAgentJob|dispatchAcceptedTaskJob|startAcceptedTaskJob|acceptTaskJob|StartTaskJobOptions|DispatchTaskAcceptance|persistRequestIndex|readRequestIndex|baseMeta)\b/,
+  /\b(?:startTaskJob|retryAgentJob|dispatchAcceptedTaskJob|startAcceptedTaskJob|acceptTaskJob|StartTaskJobOptions|DispatchTaskAcceptance|persistRequestIndex|readRequestIndex|baseMeta|agentStartupTimeoutMs|shortId|withRunLaunchLock|activeLocalRuns|activeRuns|assertNoTaskScopeConflict|resolveExecutionMode|createWorktree|currentBaseRevision|plannedWorktreeLocation|taskPrompt)\b/,
   'Retired Agent Run creation, retry, acceptance and request-index code must remain absent; use Thin Launcher',
 );
 forbid(

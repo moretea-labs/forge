@@ -341,6 +341,12 @@ describe('final SQLite control-plane cutover', () => {
 
   test('all durable legacy writers fail at the cutover guard and no reverse export importer exists', () => {
     const issueStore = readFileSync(join(process.cwd(), 'src/cli/controller/issue-store.ts'), 'utf8');
+    const retiredAgentRun = readFileSync(join(process.cwd(), 'src/cli/agent-jobs/job-manager.ts'), 'utf8');
+    // Source-navigation and full-tree caller inventory found no launch consumers.
+    for (const retired of ['agentStartupTimeoutMs', 'withRunLaunchLock', 'assertNoTaskScopeConflict',
+      'resolveExecutionMode', 'createWorktree', 'currentBaseRevision', 'taskPrompt']) {
+      expect(retiredAgentRun).not.toContain(`function ${retired}(`);
+    }
     for (const name of [
       'setTaskDependencies', 'updateIssue', 'updateTask',
       'archiveIssue', 'restoreIssue', 'acceptVerifiedTask', 'recordTaskVerification',
