@@ -500,6 +500,7 @@ function prepareManagedBranchPreservation(
 ): { uniqueCommits: number; branchPreserved: boolean; branchHead?: string } {
   let uniqueCommits = 0;
   let branchHead: string | undefined;
+  let uniquenessProven = false;
   if (branchExists(target.canonicalRoot, current.branch)) {
     const observed = git(target.canonicalRoot, ['rev-parse', '--verify', `refs/heads/${current.branch}^{commit}`]);
     if (!observed.ok || !observed.stdout) addBlocker(receipt, 'BRANCH_REVISION_UNKNOWN');
@@ -509,10 +510,30 @@ function prepareManagedBranchPreservation(
     } else {
       const unique = git(target.canonicalRoot, ['rev-list', '--count', `refs/heads/${targetBranch}..refs/heads/${current.branch}`]);
       if (!unique.ok || !/^\d+$/.test(unique.stdout)) addBlocker(receipt, `BRANCH_UNIQUENESS_UNKNOWN: ${unique.stderr || unique.stdout}`);
-      else uniqueCommits = Number(unique.stdout);
+      else {
+        uniqueCommits = Number(unique.stdout);
+        uniquenessProven = true;
+      }
     }
   }
   receipt.branchCleanup.uniqueCommits = uniqueCommits;
+
+  // A zero-unique-commit cleanup must record the same exact no-source-delta
+  // witness as the unique-commit preservation path. Otherwise an open Work
+  // accidentally terminal-cleaned here cannot later prove safe same-Work
+  // checkout recovery, even when all its source revisions are identical.
+  if (uniquenessProven && uniqueCommits === 0 && !receipt.preservation.bundleRetirement && receipt.blockers.length === 0) {
+    const proof = proveWorkPreservationContained(target.canonicalRoot, current, targetBranch, branchHead);
+    if (proof.contained && proof.reason === 'no_source_delta' && proof.protectedRevision && proof.protectedRevision === current.expectedHead) {
+      receipt.preservation.bundleRetirement = {
+        status: 'not_needed',
+        reason: 'no_source_delta',
+        protectedRevision: proof.protectedRevision,
+        comparedPaths: [],
+        provedAt: nowIso(),
+      };
+    }
+  }
 
   const retirement = receipt.preservation.bundleRetirement;
   let branchPreserved = Boolean(

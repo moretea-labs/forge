@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { spawn, spawnSync, type ChildProcess } from 'child_process';
-import { existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { MAX_AGENT_TIMEOUT_MS, MIN_AGENT_TIMEOUT_MS } from '../../src/cli/controller/runtime-config';
@@ -81,7 +81,7 @@ test('macOS temporary repository and Controller Home aliases are accepted consis
   const controllerHome = join(root, 'controller');
   const repoRoot = join(root, 'repo');
   const registered = seedRepo(controllerHome, repoRoot);
-  expect(registered.canonicalRoot).toContain('/private/tmp/');
+  expect(registered.canonicalRoot).toBe(realpathSync(repoRoot));
 });
 
 function seedWorkHandle(controllerHome: string, repository: ReturnType<typeof seedRepo>, workId: string): WorkHandleState {
@@ -144,7 +144,7 @@ afterEach(async () => {
 });
 
 describe('repository command execution lifecycle', () => {
-  test('ignores an orphan physical WorkHandle after canonical semantic Work authority is gone', () => {
+  test('separates open semantic Work from canonical mutation ownership after its physical source is absorbed', () => {
     const controllerHome = tempRoot('forge-orphan-workhandle-home-');
     const repoRoot = tempRoot('forge-orphan-workhandle-repo-');
     const repository = seedRepo(controllerHome, repoRoot);
@@ -180,6 +180,22 @@ describe('repository command execution lifecycle', () => {
       objective: 'Keep the canonical checkout owned while semantic Work is open.', acceptanceCriteria: [], allowedPaths: ['**'], forbiddenPaths: [], checks: [],
       constraints: { workspaceMode: 'current' }, requestedBy: 'chatgpt',
     });
+    // The semantic Work stays open, but its only recorded source revision is
+    // already the clean canonical HEAD and there is no lease/process ownership.
+    expect(() => assertCanonicalRepositoryMutationWorkHandleAvailable({
+      controllerHome, repositoryId: repository.repoId, checkoutId: repository.activeCheckoutId, workId: 'work-new-owner',
+    })).not.toThrow();
+
+    // A real unabsorbed candidate remains authoritative even though it lives
+    // only in WorkHandle metadata.
+    git(repository.canonicalRoot, ['checkout', '-b', 'owner-unabsorbed']);
+    writeFileSync(join(repository.canonicalRoot, 'owner-only.txt'), 'unique owner source\n');
+    git(repository.canonicalRoot, ['add', 'owner-only.txt']);
+    git(repository.canonicalRoot, ['commit', '-m', 'unique owner source']);
+    const uniqueHead = gitOutput(repository.canonicalRoot, ['rev-parse', 'HEAD']);
+    git(repository.canonicalRoot, ['checkout', 'main']);
+    const existing = readWorkHandle(controllerHome, repository.repoId, workId)!;
+    writeWorkHandle(controllerHome, { ...existing, expectedHead: uniqueHead });
     expect(() => assertCanonicalRepositoryMutationWorkHandleAvailable({
       controllerHome, repositoryId: repository.repoId, checkoutId: repository.activeCheckoutId, workId: 'work-new-owner',
     })).toThrow('WORK_CANONICAL_MUTATION_OWNED');

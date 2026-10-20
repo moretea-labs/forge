@@ -4,9 +4,10 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import {
   admitPreparedRepositoryWorkContract,
-  materializeRepositoryWorkPlacement,
+  updateRepositoryWorkPlacement,
 } from '../../src/runtime/control-plane/facade/repository-work-admission';
 import { ensureForgeInstanceIdentity } from '../../packages/kernel/identity/api/index';
+import { updateWorkContract } from '../../packages/kernel/work/api/index';
 
 const roots: string[] = [];
 afterEach(() => {
@@ -55,17 +56,91 @@ describe('repository Work admission authority', () => {
       requestedBy: 'chatgpt',
       requestId: 'request-materialized-isolated',
     });
-    const materialized = materializeRepositoryWorkPlacement(location, 'work-materialized-isolated', () => ({
-      managed: true,
+    const materialized = updateRepositoryWorkPlacement(location, 'work-materialized-isolated', {
+      kind: 'materialize',
+      expectedCheckoutId: undefined,
+      expectedWorktreeRef: undefined,
       checkoutId: 'checkout-isolated',
-      root: '/tmp/forge-isolated-worktree',
+      worktreeRef: '/tmp/forge-isolated-worktree',
       baseRevision: 'abc123',
-    }));
+    });
     expect(materialized).toMatchObject({
       checkoutId: 'checkout-isolated',
       baseRevision: 'abc123',
       worktreeRef: '/tmp/forge-isolated-worktree',
       executionPlacement: { forgeInstanceId: 'forge-materialized', repositoryId: location.repoId, checkoutId: 'checkout-isolated' },
     });
+  });
+
+
+  test('binds an explicitly selected current checkout through the canonical placement transition', () => {
+    const location = store('repo-materialized-current');
+    const admitted = admitPreparedRepositoryWorkContract(location, {
+      workId: 'work-materialized-current',
+      repoId: location.repoId,
+      objective: 'Use the explicitly selected current checkout.',
+      acceptanceCriteria: [],
+      checks: [],
+      accessMode: 'request',
+      isolated: false,
+      requestedBy: 'chatgpt',
+      requestId: 'request-materialized-current',
+    });
+    const bound = updateRepositoryWorkPlacement(location, admitted.workId, {
+      kind: 'bind_current',
+      expectedCheckoutId: admitted.checkoutId,
+      expectedWorktreeRef: admitted.worktreeRef,
+      checkoutId: 'checkout-current',
+      constraints: { ...admitted.constraints, workspaceMode: 'current' },
+      worktreePolicy: { required: false, reason: 'Caller explicitly selected the current registered checkout.' },
+    });
+    expect(bound).toMatchObject({
+      checkoutId: 'checkout-current',
+      worktreeRef: undefined,
+      constraints: { workspaceMode: 'current' },
+      worktreePolicy: { required: false },
+      executionPlacement: { repositoryId: location.repoId, checkoutId: 'checkout-current' },
+    });
+  });
+
+  test('uses placement CAS for rebind and rejects a stale placement writer', () => {
+    const location = store('repo-placement-cas');
+    const admitted = admitPreparedRepositoryWorkContract(location, {
+      workId: 'work-placement-cas',
+      repoId: location.repoId,
+      objective: 'Rebind only from the observed placement.',
+      acceptanceCriteria: [],
+      checks: [],
+      accessMode: 'request',
+      isolated: true,
+      requestedBy: 'chatgpt',
+      requestId: 'request-placement-cas',
+    });
+    const materialized = updateRepositoryWorkPlacement(location, admitted.workId, {
+      kind: 'materialize',
+      expectedCheckoutId: admitted.checkoutId,
+      expectedWorktreeRef: admitted.worktreeRef,
+      checkoutId: 'checkout-first',
+      worktreeRef: '/tmp/forge-placement-first',
+      baseRevision: 'abc123',
+    });
+    expect(() => updateWorkContract(location, admitted.workId, { checkoutId: 'checkout-bypass' } as never))
+      .toThrow('WORK_PLACEMENT_REQUIRES_CAS_API: checkoutId');
+    const rebound = updateRepositoryWorkPlacement(location, admitted.workId, {
+      kind: 'rebind',
+      expectedCheckoutId: materialized.checkoutId,
+      expectedWorktreeRef: materialized.worktreeRef,
+      checkoutId: 'checkout-second',
+      worktreeRef: '/tmp/forge-placement-second',
+      baseRevision: 'def456',
+    });
+    expect(rebound).toMatchObject({ checkoutId: 'checkout-second', worktreeRef: '/tmp/forge-placement-second', baseRevision: 'def456' });
+    expect(() => updateRepositoryWorkPlacement(location, admitted.workId, {
+      kind: 'rebind',
+      expectedCheckoutId: materialized.checkoutId,
+      expectedWorktreeRef: materialized.worktreeRef,
+      checkoutId: 'checkout-stale',
+      worktreeRef: '/tmp/forge-placement-stale',
+    })).toThrow('WORK_PLACEMENT_SOURCE_MISMATCH');
   });
 });

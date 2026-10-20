@@ -31,7 +31,7 @@ export const executionToolDefinitions: McpToolDefinition[] = [
     session_id: sessionId, repo_id: repoId, checkout_id: { type: 'string' }, work_id: workId,
     objective: { type: 'string' }, goal_id: { type: 'string' }, acceptance_criteria: { type: 'array', items: { type: 'string' } }, checks: { type: 'array', items: { type: 'string' } },
     isolation: { type: 'string', enum: ['reuse', 'new_worktree', 'auto'] }, base_ref: { type: 'string' }, needs_dependencies: { type: 'boolean' },
-    expected_previous_head: { type: 'string', description: 'Explicit prior WorkHandle HEAD required for audited successor adoption of an existing work_id.' },
+    expected_previous_head: { type: 'string', description: 'Exact prior WorkHandle HEAD for direct successor adoption. Cleaned-open Work recovery derives it from the stored handle; if supplied there, it must match.' },
     adopt_candidate_head: { type: 'string', description: 'Explicit current successor commit to adopt after exact identity, ownership, cleanliness, and ancestry validation.' },
     dirty_overlap_proofs: { type: 'array', maxItems: 20, description: 'Explicit attested content fingerprints for every overlapping unstaged tracked file; metadata-only successor adoption preserves files and index unchanged.', items: { type: 'object', properties: { path: { type: 'string' }, worktree_sha256: { type: 'string' }, index_blob_oid: { type: 'string' } }, required: ['path', 'worktree_sha256', 'index_blob_oid'], additionalProperties: false } },
     relocate_to_new_worktree: { type: 'boolean', description: 'Move this existing Work identity to its own managed worktree, with exact previous/candidate HEADs and base_ref. WorkHandle and WorkContract placement commit atomically; the source checkout is not mutated.' },

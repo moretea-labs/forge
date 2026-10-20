@@ -1,20 +1,22 @@
 import { createHash } from 'crypto';
 import { spawnSync } from 'child_process';
-import { lstatSync, readFileSync, realpathSync } from 'fs';
+import { existsSync, lstatSync, readFileSync, realpathSync } from 'fs';
 import { resolve, sep } from 'path';
 import type { McpExecutionContext } from '../../../../packages/protocols/mcp/execution-context';
-import { getRepository, resolveRepositorySelection, selectRepositoryCheckout } from '../../../cli/repositories/registry';
+import { getRepository, repositoryCheckoutLifecycle, resolveRepositorySelection, selectRepositoryCheckout } from '../../../cli/repositories/registry';
 import { repositoryGitStatus } from '../../../cli/repositories/structured-git';
 import { ensureManagedWorkspace } from '../../execution/managed-workspace';
 import { listRecoverableProcessRecords } from '../../execution/process-runtime/store';
+import { listActiveLeases } from '../../resources/leases/store';
+import { proveWorkPreservationContained } from '../cleanup-artifact-retention';
 import { readRepositoryAccessPolicy } from '../governance/access-policy';
 import { activateWorkContract, failWorkContract, getWorkContract } from '../../../../packages/kernel/work/api/index';
-import { admitPreparedRepositoryWorkContract, materializeRepositoryWorkPlacement } from '../facade/repository-work-admission';
+import { admitPreparedRepositoryWorkContract, updateRepositoryWorkPlacement } from '../facade/repository-work-admission';
 import { isTerminalSemanticWorkState } from '../facade/types';
 import { updateExecutionSession, type ExecutionSessionContext } from './session-store';
 import { currentPermissionSnapshotVersion, validateWorkHandle } from './validation';
 import { withWorkPrepareRequest } from './work-prepare-request-store';
-import { markWorkHandleFailed, newWorkId, readWorkHandle, relocateWorkHandlePlacementAtomically, writeWorkHandle, type WorkFinalizationStages, type WorkHandleState } from './work-handle-store';
+import { listWorkHandles, markWorkHandleFailed, newWorkId, readWorkHandle, relocateWorkHandlePlacementAtomically, writeWorkHandle, type WorkFinalizationStages, type WorkHandleState } from './work-handle-store';
 import { createGoalDelegation } from '../governance/authorization';
 import { compactHandle, contractFor, findWorkHandle, gitHead, gitIsAncestor, identityFor, requireSession } from './work-execution-support';
 
@@ -60,6 +62,9 @@ function workPrepareFingerprint(input: {
   checks: string[];
   baseRef?: string;
   needsDependencies: boolean;
+  workContractId?: string;
+  expectedPreviousHead?: string;
+  adoptCandidateHead?: string;
 }): string {
   return createHash('sha256').update(JSON.stringify({ schemaVersion: 1, operation: 'work_prepare', ...input })).digest('hex');
 }
@@ -163,6 +168,359 @@ function verifyExplicitOverlappingDirtyProofs(
   }
 }
 
+interface RecoveryHeadProof {
+  previousHead: string;
+  candidateHead: string;
+  candidateAlreadyIntegrated: boolean;
+}
+
+const LIVE_RECOVERY_HANDLE_STATES = new Set<WorkHandleState['state']>([
+  'prepared', 'editing', 'validating', 'committed', 'merged',
+]);
+
+function pathEntryExists(path: string): boolean {
+  try {
+    lstatSync(path);
+    return true;
+  } catch (error) {
+    const code = error && typeof error === 'object' && 'code' in error
+      ? String((error as { code?: unknown }).code)
+      : '';
+    if (code === 'ENOENT' || code === 'ENOTDIR') return false;
+    throw error;
+  }
+}
+
+function pathMaySharePhysicalRoot(left: string, right: string): boolean {
+  try {
+    if (!pathEntryExists(left) || !pathEntryExists(right)) return false;
+    return realpathSync(left) === realpathSync(right);
+  } catch {
+    return true;
+  }
+}
+
+function cleanupReceiptProvesNoUniqueSource(handle: WorkHandleState, canonicalRoot: string): boolean {
+  const receipt = handle.cleanupReceipt;
+  const cleanupVerified = handle.state === 'cleaned'
+    && handle.managedWorktree
+    && Boolean(receipt)
+    && receipt!.workId === handle.workId
+    && receipt!.repoId === handle.repositoryId
+    && receipt!.checkoutId === handle.checkoutId
+    && receipt!.branch === handle.branch
+    && receipt!.worktree.path === handle.worktreePath
+    && receipt!.terminalOutcome === 'completed_cleanup'
+    && receipt!.complete
+    && !receipt!.partial
+    && receipt!.blockers.length === 0
+    && receipt!.processes.allTerminal
+    && receipt!.processes.blocking.length === 0
+    && receipt!.ownership.controllerLease !== 'pending'
+    && receipt!.ownership.processLeases === 'released'
+    && ['removed', 'already_removed'].includes(receipt!.worktree.status)
+    && ['deleted', 'already_deleted'].includes(receipt!.branchCleanup.status)
+    && receipt!.branchCleanup.uniqueCommits === 0
+    && ['removed', 'already_removed'].includes(receipt!.checkoutRegistry.status)
+    && receipt!.prune.status === 'done'
+    && receipt!.preservation.status === 'not_needed'
+    && Boolean(handle.expectedHead);
+  if (!cleanupVerified || !receipt) return false;
+  const attestation = receipt.preservation.bundleRetirement;
+  if (attestation) {
+    return attestation.status === 'not_needed'
+      && attestation.reason === 'no_source_delta'
+      && attestation.protectedRevision === handle.expectedHead;
+  }
+  // Legacy zero-unique-commit receipts predate the explicit proof field. Do
+  // not infer from that count alone: require the exact recorded source/base
+  // Git trees to have no delta, or keep this Work recovery fenced.
+  const proof = proveWorkPreservationContained(canonicalRoot, handle, receipt.targetBranch, handle.expectedHead);
+  return proof.contained && proof.reason === 'no_source_delta'
+    && proof.protectedRevision === handle.expectedHead;
+}
+
+function exactGitCommit(root: string, revision: string): string | undefined {
+  const result = spawnSync('git', ['-C', root, 'rev-parse', '--verify', `${revision}^{commit}`], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: 10_000,
+  });
+  if (result.error || result.status !== 0) return undefined;
+  return String(result.stdout ?? '').trim() || undefined;
+}
+
+function requireRecoveryHeadProof(
+  root: string,
+  expectedPreviousHead: string,
+  adoptCandidateHead: string,
+  recordedPreviousHead: string | undefined,
+  requireIntegrated: boolean,
+  sourceHandle: WorkHandleState,
+): RecoveryHeadProof {
+  if (!expectedPreviousHead || !adoptCandidateHead || recordedPreviousHead !== expectedPreviousHead) {
+    throw new Error('WORK_HANDLE_RECOVERY_HEAD_PROOF_MISMATCH');
+  }
+  const previousHead = exactGitCommit(root, expectedPreviousHead);
+  if (previousHead !== expectedPreviousHead) throw new Error('WORK_HANDLE_RECOVERY_PREVIOUS_HEAD_UNAVAILABLE');
+  const candidateHead = exactGitCommit(root, adoptCandidateHead);
+  if (candidateHead !== adoptCandidateHead) throw new Error('WORK_HANDLE_RECOVERY_CANDIDATE_HEAD_NOT_EXACT');
+  if (!gitIsAncestor(root, previousHead, candidateHead)) throw new Error('WORK_HANDLE_RECOVERY_NON_LINEAR_HISTORY');
+  const canonicalHead = gitHead(root);
+  const candidateAlreadyIntegrated = Boolean(canonicalHead && gitIsAncestor(root, candidateHead, canonicalHead));
+  if (requireIntegrated && !candidateAlreadyIntegrated) throw new Error('WORK_HANDLE_RECOVERY_CLEANED_SOURCE_NOT_INTEGRATED');
+  if (candidateHead !== previousHead && !candidateAlreadyIntegrated) throw new Error('WORK_HANDLE_RECOVERY_CANDIDATE_NOT_LANDED');
+  if (requireIntegrated) {
+    const recordedRevisions = [sourceHandle.baseCommit, sourceHandle.deliveryBaseCommit, sourceHandle.expectedHead]
+      .map((value) => value?.trim())
+      .filter((value): value is string => Boolean(value));
+    if (recordedRevisions.some((revision) => !gitIsAncestor(root, revision, candidateHead))) {
+      throw new Error('WORK_HANDLE_RECOVERY_SOURCE_REVISION_NOT_CONTAINED');
+    }
+  }
+  return { previousHead, candidateHead, candidateAlreadyIntegrated };
+}
+
+function recordedRecoveryPreviousHead(args: Record<string, unknown>, sourceHandle: WorkHandleState): string {
+  const recorded = sourceHandle.expectedHead?.trim() ?? '';
+  const requested = typeof args.expected_previous_head === 'string' ? args.expected_previous_head.trim() : '';
+  if (!recorded || (requested && requested !== recorded)) {
+    throw new Error('WORK_HANDLE_RECOVERY_HEAD_PROOF_MISMATCH');
+  }
+  return recorded;
+}
+
+function materializeArchivedWorkPlacement(
+  ctx: McpExecutionContext,
+  args: Record<string, unknown>,
+  repository: ReturnType<typeof selectedRepository>,
+  sourceHandle: WorkHandleState,
+  contract: NonNullable<ReturnType<typeof contractFor>>,
+  workspaceRequestId: string,
+  targetWorkHandleId: string,
+): {
+  workspace: ReturnType<typeof ensureManagedWorkspace>;
+  contract: NonNullable<ReturnType<typeof contractFor>>;
+  proof: RecoveryHeadProof;
+  baseStatus: ReturnType<typeof repositoryGitStatus>;
+  checkout: ReturnType<typeof selectRepositoryCheckout>;
+} {
+  const expectedPreviousHead = recordedRecoveryPreviousHead(args, sourceHandle);
+  const adoptCandidateHead = typeof args.adopt_candidate_head === 'string' ? args.adopt_candidate_head.trim() : '';
+  if (!adoptCandidateHead) throw new Error('WORK_HANDLE_RECOVERY_CANDIDATE_HEAD_REQUIRED');
+  const registered = getRepository(repository.repoId, ctx.controllerHome, { includeRemoved: true });
+  if (repository.activeCheckoutId !== registered.activeCheckoutId || repository.canonicalRoot !== registered.canonicalRoot) {
+    throw new Error('WORK_HANDLE_RECOVERY_CANONICAL_BASE_REQUIRED');
+  }
+  const baseStatus = repositoryGitStatus(repository);
+  if (!baseStatus.clean || !baseStatus.branch || !baseStatus.head) {
+    throw new Error('WORK_HANDLE_RECOVERY_CANONICAL_BASE_NOT_CLEAN');
+  }
+  if (!sourceHandle.managedWorktree || sourceHandle.repositoryId !== repository.repoId
+    || (sourceHandle.workContractId && sourceHandle.workContractId !== contract.workId)) {
+    throw new Error('WORK_HANDLE_RECOVERY_WORK_IDENTITY_MISMATCH');
+  }
+  if (contract.repoId !== repository.repoId || contract.workKind !== 'repository_change' || !contract.worktreePolicy.required) {
+    throw new Error('WORK_HANDLE_RECOVERY_CONTRACT_POLICY_MISMATCH');
+  }
+  if (contract.semanticState !== 'open' || contract.completionReceipt || contract.completionOutcome) {
+    throw new Error(`WORK_HANDLE_RECOVERY_WORK_NOT_OPEN: ${contract.workId}`);
+  }
+  if (sourceHandle.state === 'cleaned') {
+    if (!cleanupReceiptProvesNoUniqueSource(sourceHandle, registered.canonicalRoot)) throw new Error('WORK_HANDLE_RECOVERY_CLEANUP_NOT_PROVEN');
+  } else if (!['prepared', 'editing'].includes(sourceHandle.state)) {
+    throw new Error(`WORK_HANDLE_RECOVERY_SOURCE_STATE_INVALID: ${sourceHandle.state}`);
+  }
+  const oldCheckout = registered.checkouts.find((checkout) => checkout.checkoutId === sourceHandle.checkoutId);
+  if (oldCheckout && repositoryCheckoutLifecycle(oldCheckout) === 'active') {
+    throw new Error(`WORK_HANDLE_RECOVERY_SOURCE_CHECKOUT_STILL_ACTIVE: ${sourceHandle.checkoutId}`);
+  }
+  if (pathEntryExists(sourceHandle.worktreePath)) throw new Error('WORK_HANDLE_RECOVERY_SOURCE_PATH_PRESENT');
+  const activeLeases = listActiveLeases(ctx.controllerHome, repository.repoId).filter((lease) =>
+    lease.workId === sourceHandle.workId || lease.workId === contract.workId || lease.checkoutId === sourceHandle.checkoutId);
+  if (activeLeases.length > 0) throw new Error('WORK_HANDLE_RECOVERY_ACTIVE_LEASE');
+  const activeProcesses = listRecoverableProcessRecords(ctx.controllerHome, repository.repoId).filter((process) =>
+    process.workId === sourceHandle.workId || process.workId === contract.workId);
+  if (activeProcesses.length > 0) throw new Error('WORK_HANDLE_RECOVERY_ACTIVE_PROCESS');
+  const proof = requireRecoveryHeadProof(
+    repository.canonicalRoot,
+    expectedPreviousHead,
+    adoptCandidateHead,
+    sourceHandle.expectedHead,
+    sourceHandle.state === 'cleaned',
+    sourceHandle,
+  );
+  const workspace = ensureManagedWorkspace(ctx.controllerHome, repository, {
+    requestId: workspaceRequestId,
+    title: contract.objective,
+    associatedWorkId: contract.workId,
+    baseRef: proof.candidateHead,
+    prepareDependencies: args.needs_dependencies === true,
+  });
+  const workspaceRoot = workspace.root;
+  const workspaceCheckoutId = workspace.checkoutId;
+  if (!workspace.managed || !workspaceRoot || !workspaceCheckoutId
+    || workspaceCheckoutId === sourceHandle.checkoutId || workspaceCheckoutId === repository.activeCheckoutId) {
+    throw new Error('WORK_HANDLE_RECOVERY_SUCCESSOR_CHECKOUT_INVALID');
+  }
+  if (workspaceRoot === sourceHandle.worktreePath || !existsSync(workspaceRoot) || gitHead(workspaceRoot) !== proof.candidateHead) {
+    throw new Error('WORK_HANDLE_RECOVERY_SUCCESSOR_SOURCE_MISMATCH');
+  }
+  const refreshed = getRepository(repository.repoId, ctx.controllerHome);
+  const checkoutRecord = refreshed.checkouts.find((checkout) => checkout.checkoutId === workspaceCheckoutId);
+  if (!checkoutRecord || repositoryCheckoutLifecycle(checkoutRecord) !== 'active' || checkoutRecord.canonicalRoot !== workspaceRoot) {
+    throw new Error('WORK_HANDLE_RECOVERY_SUCCESSOR_CHECKOUT_NOT_ACTIVE');
+  }
+  const checkout = selectRepositoryCheckout(refreshed, workspaceCheckoutId);
+  if (checkout.activeCheckoutId !== workspaceCheckoutId || checkout.canonicalRoot !== workspaceRoot) {
+    throw new Error('WORK_HANDLE_RECOVERY_SUCCESSOR_CHECKOUT_NOT_SELECTED');
+  }
+  const competing = listWorkHandles(ctx.controllerHome, repository.repoId).filter((handle) =>
+    handle.workId !== sourceHandle.workId
+    && handle.workId !== targetWorkHandleId
+    && LIVE_RECOVERY_HANDLE_STATES.has(handle.state)
+    && (handle.checkoutId === workspaceCheckoutId || pathMaySharePhysicalRoot(handle.worktreePath, workspaceRoot)));
+  if (competing.length > 0) throw new Error(`WORK_HANDLE_RECOVERY_SUCCESSOR_ALREADY_OWNED: ${competing[0]?.workId ?? 'unknown'}`);
+  const updatedContract = updateRepositoryWorkPlacement(
+    { controllerHome: ctx.controllerHome, repoId: repository.repoId },
+    contract.workId,
+    {
+      kind: 'rebind',
+      expectedCheckoutId: sourceHandle.checkoutId,
+      expectedWorktreeRef: sourceHandle.worktreePath,
+      checkoutId: workspaceCheckoutId,
+      worktreeRef: workspaceRoot,
+      baseRevision: proof.candidateHead,
+    },
+  );
+  if (!updatedContract || updatedContract.checkoutId !== workspaceCheckoutId || updatedContract.worktreeRef !== workspaceRoot) {
+    throw new Error('WORK_HANDLE_RECOVERY_CONTRACT_PLACEMENT_NOT_COMMITTED');
+  }
+  return { workspace, contract: updatedContract, proof, baseStatus, checkout };
+}
+
+function recoverCleanedWorkHandle(
+  ctx: McpExecutionContext,
+  args: Record<string, unknown>,
+  session: ExecutionSessionContext,
+  repository: ReturnType<typeof selectedRepository>,
+  sourceHandle: WorkHandleState,
+): Record<string, unknown> {
+  const expectedPreviousHead = recordedRecoveryPreviousHead(args, sourceHandle);
+  const adoptCandidateHead = typeof args.adopt_candidate_head === 'string' ? args.adopt_candidate_head.trim() : '';
+  if (!adoptCandidateHead) throw new Error('WORK_HANDLE_RECOVERY_CANDIDATE_HEAD_REQUIRED');
+  if (sourceHandle.checkoutId === repository.activeCheckoutId) throw new Error('WORK_HANDLE_RECOVERY_SOURCE_CHECKOUT_STILL_ACTIVE');
+  const contract = contractFor(ctx, sourceHandle);
+  if (!contract) throw new Error(`WORK_HANDLE_RECOVERY_CONTRACT_NOT_FOUND: ${sourceHandle.workContractId ?? sourceHandle.workId}`);
+  if (contract.semanticState !== 'open' || contract.completionReceipt || contract.completionOutcome) {
+    throw new Error(`WORK_HANDLE_RECOVERY_WORK_NOT_OPEN: ${contract.workId}`);
+  }
+  const requestId = typeof args.request_id === 'string' ? args.request_id.trim() : '';
+  if (!requestId) throw new Error('WORK_PREPARE_REQUEST_ID_REQUIRED');
+  const fingerprint = workPrepareFingerprint({
+    repoId: repository.repoId,
+    requestedCheckoutId: repository.activeCheckoutId,
+    isolation: 'new_worktree',
+    objective: contract.objective,
+    goalId: sourceHandle.goalId ?? contract.workId,
+    acceptanceCriteria: contract.acceptanceCriteria ?? [],
+    allowedPaths: boundedStringArray(args.allowed_paths, 50),
+    checks: contract.checks ?? [],
+    baseRef: adoptCandidateHead,
+    needsDependencies: args.needs_dependencies === true,
+    workContractId: contract.workId,
+    expectedPreviousHead,
+    adoptCandidateHead,
+  });
+  const policy = readRepositoryAccessPolicy(ctx.controllerHome, repository.repoId);
+  return withWorkPrepareRequest({
+    controllerHome: ctx.controllerHome,
+    repoId: repository.repoId,
+    sessionId: session.sessionId,
+    principalId: session.principalId,
+    requestId,
+    fingerprint,
+    proposedWorkId: newWorkId(),
+  }, (request, requestReused) => {
+    const existingSuccessor = readWorkHandle(ctx.controllerHome, repository.repoId, request.workId);
+    if (existingSuccessor && !LIVE_RECOVERY_HANDLE_STATES.has(existingSuccessor.state)) {
+      throw new Error(`WORK_HANDLE_RECOVERY_SUCCESSOR_NOT_ACTIVE: ${existingSuccessor.state}`);
+    }
+    const recovered = materializeArchivedWorkPlacement(
+      ctx,
+      args,
+      repository,
+      sourceHandle,
+      contract,
+      `work-rebind-${sourceHandle.workId}`,
+      request.workId,
+    );
+    if (existingSuccessor && (
+      existingSuccessor.workContractId !== contract.workId
+      || existingSuccessor.checkoutId !== recovered.checkout.activeCheckoutId
+      || existingSuccessor.worktreePath !== recovered.checkout.canonicalRoot
+      || existingSuccessor.expectedHead !== recovered.proof.candidateHead
+    )) throw new Error('WORK_HANDLE_RECOVERY_SUCCESSOR_IDENTITY_MISMATCH');
+    const at = new Date().toISOString();
+    const delegation = session.goalDelegation?.workId === request.workId
+      ? session.goalDelegation
+      : createGoalDelegation({
+        sessionId: session.sessionId,
+        repositoryId: repository.repoId,
+        workId: request.workId,
+        goalId: sourceHandle.goalId ?? contract.workId,
+        allowedRiskClasses: ['readonly', 'local_repo_write', 'workspace_write', 'local_command', 'dependency_change', 'local_git'],
+        deniedRiskClasses: ['remote_write', 'destructive', 'secret_access', 'outside_repository'],
+        permissionSnapshotVersion: policy.revision,
+        source: 'gpt_risk_delegate',
+      });
+    const successor = existingSuccessor ?? writeWorkHandle(ctx.controllerHome, {
+      schemaVersion: 1,
+      workId: request.workId,
+      sessionId: session.sessionId,
+      principalId: session.principalId,
+      repositoryId: repository.repoId,
+      checkoutId: recovered.checkout.activeCheckoutId,
+      worktreePath: recovered.checkout.canonicalRoot,
+      branch: recovered.workspace.branch || recovered.baseStatus.branch!,
+      sourceCheckoutId: repository.activeCheckoutId,
+      deliveryTargetBranch: recovered.baseStatus.branch!,
+      managedWorktree: true,
+      baseCommit: sourceHandle.baseCommit ?? recovered.proof.previousHead,
+      deliveryBaseCommit: recovered.proof.candidateAlreadyIntegrated
+        ? recovered.proof.candidateHead
+        : sourceHandle.deliveryBaseCommit ?? sourceHandle.baseCommit,
+      expectedHead: recovered.proof.candidateHead,
+      workContractId: contract.workId,
+      goalId: sourceHandle.goalId,
+      delegationVersion: delegation.version,
+      permissionSnapshotVersion: policy.revision,
+      state: 'prepared',
+      createdAt: at,
+      updatedAt: at,
+      finalization: initialStage(),
+      cleanupResponsibility: { owner: 'work_finalizer', registeredAt: at },
+    });
+    const nextSession = updateExecutionSession(ctx.controllerHome, identityFor(ctx, args), {
+      activeRepositoryId: repository.repoId,
+      activeCheckoutId: successor.checkoutId,
+      activeWorkId: successor.workId,
+      permissionSnapshotVersion: policy.revision,
+      goalDelegation: delegation,
+      lastValidatedAt: at,
+    });
+    return {
+      session: nextSession,
+      work: compactHandle(successor),
+      reused: requestReused || Boolean(existingSuccessor),
+      isolation: 'isolated',
+      recoveredFromWorkId: sourceHandle.workId,
+      adoptedSuccessor: { previousHead: recovered.proof.previousHead, currentHead: recovered.proof.candidateHead },
+    };
+  });
+
+}
+
 function adoptExplicitSuccessorHead(
   ctx: McpExecutionContext,
   args: Record<string, unknown>,
@@ -171,10 +529,19 @@ function adoptExplicitSuccessorHead(
 ): WorkHandleState | undefined {
   const expectedPreviousHead = typeof args.expected_previous_head === 'string' ? args.expected_previous_head.trim() : '';
   const adoptCandidateHead = typeof args.adopt_candidate_head === 'string' ? args.adopt_candidate_head.trim() : '';
-  if (!expectedPreviousHead && !adoptCandidateHead) return undefined;
+  const requestedDeliveryBase = typeof args.base_ref === 'string' ? args.base_ref.trim() : '';
+  if (!expectedPreviousHead && !adoptCandidateHead) {
+    if (requestedDeliveryBase) throw new Error('WORK_HANDLE_REBASE_ADOPTION_PAIR_REQUIRED');
+    return undefined;
+  }
   if (!expectedPreviousHead || !adoptCandidateHead) {
     throw new Error('WORK_HANDLE_SUCCESSOR_ADOPTION_PAIR_REQUIRED: expected_previous_head and adopt_candidate_head must be supplied together');
   }
+  // Exact retry is read-only after the original CAS settlement, never a
+  // second candidate adoption or new checkout authority.
+  if (requestedDeliveryBase && existing.expectedHead === adoptCandidateHead
+      && existing.deliveryBaseCommit === requestedDeliveryBase
+      && gitHead(existing.worktreePath) === adoptCandidateHead) return existing;
   // A failed validation attempt may need an explicit, audited successor
   // adoption before it can retry against the current checkout. Keep its
   // failed state: only a fresh valid check may restore execution authority.
@@ -219,10 +586,32 @@ function adoptExplicitSuccessorHead(
       verifyExplicitOverlappingDirtyProofs(root, adoptCandidateHead, overlap, args.dirty_overlap_proofs);
     }
   }
+  // Rebase is an explicit source-Work baseline decision, separate from
+  // candidate HEAD adoption. The target must still be the clean, exact
+  // registered delivery checkout and contain every previously owned revision.
+  if (requestedDeliveryBase) {
+    if (!/^[0-9a-f]{40}$/.test(requestedDeliveryBase) || !existing.managedWorktree
+        || !existing.sourceCheckoutId || existing.checkoutId === existing.sourceCheckoutId) {
+      throw new Error('WORK_HANDLE_REBASE_MANAGED_SOURCE_REQUIRED');
+    }
+    const registered = getRepository(existing.repositoryId, ctx.controllerHome);
+    const target = selectRepositoryCheckout(registered, existing.sourceCheckoutId);
+    const observedTarget = repositoryGitStatus(target);
+    if (!observedTarget.clean || observedTarget.head !== requestedDeliveryBase
+        || observedTarget.branch !== (existing.deliveryTargetBranch ?? registered.defaultBranch)) {
+      throw new Error('WORK_HANDLE_REBASE_TARGET_HEAD_CHANGED');
+    }
+    if (!gitIsAncestor(root, expectedPreviousHead, requestedDeliveryBase)
+        || !gitIsAncestor(root, requestedDeliveryBase, adoptCandidateHead)) {
+      throw new Error('WORK_HANDLE_REBASE_UNINTEGRATED_HISTORY');
+    }
+  }
   const candidate: WorkHandleState = {
     ...existing,
-    // Successor adoption advances the Work candidate, not the delivery target.
-    // Preserve the canonical delivery base until authorized delivery or rebase.
+    // Existing non-rebase adoption preserves the original delivery base;
+    // an explicit verified rebase advances only the delivery base, not the
+    // Work start commit or the semantic Work's durable identity.
+    ...(requestedDeliveryBase ? { deliveryBaseCommit: requestedDeliveryBase } : {}),
     expectedHead: adoptCandidateHead,
     validationRun: undefined,
     validatedInputFingerprint: undefined,
@@ -337,6 +726,14 @@ export function prepareWork(ctx: McpExecutionContext, args: Record<string, unkno
     const existing = readWorkHandle(ctx.controllerHome, repository.repoId, existingId)
       ?? findWorkHandle(ctx, session, { ...args, work_id: existingId, repo_id: repository.repoId });
     if (existing.principalId !== session.principalId) throw new Error('WORK_HANDLE_ACCESS_DENIED');
+    if (existing.state === 'cleaned') {
+      const semanticContract = contractFor(ctx, existing);
+      if (semanticContract && isTerminalSemanticWorkState(semanticContract.semanticState)) {
+        return { session: requireSession(ctx, args), work: compactHandle(existing), reused: true, terminal: true, workContractStatus: semanticContract.semanticState };
+      }
+      if (requestedIsolation !== undefined) throw new Error('WORK_RELOCATION_ISOLATION_CONFLICT');
+      return recoverCleanedWorkHandle(ctx, args, session, repository, existing);
+    }
     if (args.relocate_to_new_worktree === true) {
       if (requestedIsolation !== undefined) throw new Error('WORK_RELOCATION_ISOLATION_CONFLICT');
       return relocateExistingWorkToManagedCheckout(ctx, args, session, repository, existing);
@@ -484,10 +881,18 @@ export function prepareWork(ctx: McpExecutionContext, args: Record<string, unkno
         })
         : { mode: 'current' as const, checkoutId: baseCheckoutId, root: repository.canonicalRoot, branch: baseStatus.branch ?? 'detached', baseRevision: baseStatus.head ?? undefined, managed: false };
       if (workspace.managed) {
-        const materialized = materializeRepositoryWorkPlacement(
+        if (!workspace.checkoutId || !workspace.root) throw new Error('MANAGED_WORKSPACE_NOT_MATERIALIZED');
+        const materialized = updateRepositoryWorkPlacement(
           { controllerHome: ctx.controllerHome, repoId: repository.repoId },
           contract.workId,
-          () => workspace,
+          {
+            kind: 'materialize',
+            expectedCheckoutId: contract.checkoutId,
+            expectedWorktreeRef: contract.worktreeRef,
+            checkoutId: workspace.checkoutId,
+            worktreeRef: workspace.root,
+            baseRevision: workspace.baseRevision ?? contract.baseRevision,
+          },
         );
         if (!materialized) throw new Error(`WORK_PLACEMENT_MATERIALIZATION_LOST: ${contract.workId}`);
         contract = materialized;

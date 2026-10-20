@@ -1,9 +1,12 @@
-import { resolve } from 'path';
+import { spawnSync } from 'child_process';
+import { realpathSync } from 'fs';
 import type { RepositoryRecord } from '../../../cli/repositories/types';
 import { getRepository, resolveRepositorySelection, selectRepositoryCheckout } from '../../../cli/repositories/registry';
 import { repositoryGitStatus } from '../../../cli/repositories/structured-git';
 import { appendWorkEvidence, getWorkContract, promoteWorkToRepositoryChange, recordWorkEvidenceState, semanticWorkState } from '../../../../packages/kernel/work/api/index';
 import { currentPermissionSnapshotVersion } from './validation';
+import { listActiveLeases } from '../../resources/leases/store';
+import { listRecoverableProcessRecords } from '../../execution/process-runtime/store';
 import { listWorkHandles, readWorkHandle, transitionWorkHandle, writeWorkHandle, type WorkHandleState } from './work-handle-store';
 import { gitIsAncestor } from './work-execution-support';
 
@@ -15,15 +18,125 @@ export interface RepositoryWorkHandleControllerIdentity {
 const DURABLE_CANONICAL_MUTATION_OWNER_STATES = new Set<WorkHandleState['state']>([
   'editing',
   'validating',
+  'committed',
   'failed_terminal_cleanup',
   'failed',
 ]);
 
+/** All WorkHandle checkout comparisons use physical identity, not path spelling. */
+function samePhysicalCheckout(left: string, right: string): boolean {
+  try {
+    return realpathSync(left) === realpathSync(right);
+  } catch {
+    throw new Error('WORK_CHECKOUT_PHYSICAL_IDENTITY_UNAVAILABLE');
+  }
+}
+function archivedWorkRevisionRefs(root: string, workId: string): string[] {
+  const result = spawnSync('git', ['-C', root, 'for-each-ref', '--format=%(refname:short)', 'refs/heads/archive/'], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: 10_000,
+    maxBuffer: 1024 * 1024,
+  });
+  if (result.error || result.status !== 0 || typeof result.stdout !== 'string') return [];
+  const prefix = `archive/${workId}-`;
+  return [...new Set(result.stdout.split(/\r?\n/)
+    .map((ref) => ref.trim())
+    .filter((ref) => ref.startsWith(prefix) && /^\d{8}$/.test(ref.slice(prefix.length))))].sort();
+}
+
+
+export interface CanonicalMutationTargetEvidence {
+  checkoutId: string;
+  branch?: string;
+  head?: string;
+  root: string;
+  clean: boolean;
+  activeLeaseWorkIds?: ReadonlySet<string>;
+  recoverableProcessWorkIds?: ReadonlySet<string>;
+}
+
+/**
+ * Decide whether one WorkHandle still owns the physical mutation surface of a
+ * canonical checkout. Semantic Work may remain open after its repository delta
+ * has already been absorbed; semantic openness alone is not a checkout mutex.
+ *
+ * Semantic openness and the WorkHandle `prepared` state do not by themselves
+ * own a physical mutation surface. Only distinct source revisions, active
+ * leases/processes, or ambiguous physical checkout evidence retain ownership.
+ */
+export function workHandleRetainsCanonicalMutationOwnership(input: {
+  controllerHome: string;
+  repositoryId: string;
+  handle: WorkHandleState;
+  target: CanonicalMutationTargetEvidence;
+}): boolean {
+  const { handle, target } = input;
+  if (handle.checkoutId !== target.checkoutId || handle.managedWorktree) return false;
+
+  let contract: ReturnType<typeof getWorkContract>;
+  try {
+    contract = getWorkContract(
+      { controllerHome: input.controllerHome, repoId: input.repositoryId },
+      handle.workContractId ?? handle.workId,
+    );
+  } catch {
+    return true;
+  }
+  if (contract && semanticWorkState(contract) !== 'open') return false;
+
+  let sameCheckout: boolean;
+  try {
+    sameCheckout = samePhysicalCheckout(handle.worktreePath, target.root);
+  } catch {
+    return true;
+  }
+  if (!sameCheckout
+    || !target.branch
+    || handle.branch !== target.branch
+    || !target.clean
+    || !target.head
+    || !handle.expectedHead?.trim()) {
+    return true;
+  }
+
+  const activeLeaseWorkIds = input.target.activeLeaseWorkIds
+    ?? new Set(listActiveLeases(input.controllerHome, input.repositoryId).map((lease) => lease.workId));
+  if (activeLeaseWorkIds.has(handle.workId)) return true;
+
+  const recoverableProcessWorkIds = input.target.recoverableProcessWorkIds
+    ?? new Set(listRecoverableProcessRecords(input.controllerHome, input.repositoryId)
+      .map((record) => record.workId)
+      .filter((value): value is string => Boolean(value)));
+  if (recoverableProcessWorkIds.has(handle.workId)) return true;
+
+  const revisions = [...new Set([
+    handle.expectedHead,
+    handle.deliveryBaseCommit,
+    handle.baseCommit,
+  ].map((value) => value?.trim()).filter((value): value is string => Boolean(value)))];
+  if (!revisions.length) return true;
+
+  const uncontainedRevisions = revisions.filter((revision) => !gitIsAncestor(target.root, revision, target.head!));
+  if (uncontainedRevisions.length === 0) return false;
+
+  // A missing WorkContract can leave a stale handle on the canonical checkout
+  // after cleanup has already preserved its unique source commit on a dated,
+  // Work-specific archive ref. Keep that ref untouched and release only the
+  // physical checkout fence; an open WorkContract never qualifies for this.
+  if (!contract) {
+    const archiveRefs = archivedWorkRevisionRefs(target.root, handle.workId);
+    if (archiveRefs.length > 0 && uncontainedRevisions.every((revision) =>
+      archiveRefs.some((ref) => gitIsAncestor(target.root, revision, ref)))) return false;
+  }
+  return true;
+}
+
 /**
  * Fences repository mutations across Process/Lease lifetimes using the existing
  * durable WorkHandle authority. Process leases prevent overlapping execution;
- * this check prevents a later mutation call from taking over a canonical
- * checkout whose mutable lifecycle still belongs to another Work.
+ * semantic Work is advisory context and does not retain an already-absorbed
+ * canonical mutation surface forever.
  */
 export function assertCanonicalRepositoryMutationWorkHandleAvailable(input: {
   controllerHome: string;
@@ -31,25 +144,38 @@ export function assertCanonicalRepositoryMutationWorkHandleAvailable(input: {
   checkoutId: string;
   workId?: string;
 }): void {
+  const repository = getRepository(input.repositoryId, input.controllerHome, { includeRemoved: true });
+  const target = selectRepositoryCheckout(repository, input.checkoutId, { allowArchived: true });
+  const targetStatus = repositoryGitStatus(target);
+  const activeLeaseWorkIds = new Set(
+    listActiveLeases(input.controllerHome, input.repositoryId)
+      .map((lease) => lease.workId)
+      .filter((value): value is string => Boolean(value)),
+  );
+  const recoverableProcessWorkIds = new Set(
+    listRecoverableProcessRecords(input.controllerHome, input.repositoryId)
+      .map((record) => record.workId)
+      .filter((value): value is string => Boolean(value)),
+  );
+  const targetEvidence: CanonicalMutationTargetEvidence = {
+    checkoutId: input.checkoutId,
+    branch: targetStatus.branch ?? undefined,
+    head: targetStatus.head ?? undefined,
+    root: target.canonicalRoot,
+    clean: targetStatus.clean,
+    activeLeaseWorkIds,
+    recoverableProcessWorkIds,
+  };
+
   const owners = listWorkHandles(input.controllerHome, input.repositoryId, 5_000)
-    .filter((handle) => {
-      if (handle.workId === input.workId
-        || handle.checkoutId !== input.checkoutId
-        || handle.managedWorktree === true
-        || !DURABLE_CANONICAL_MUTATION_OWNER_STATES.has(handle.state)) {
-        return false;
-      }
-      const contract = getWorkContract(
-        { controllerHome: input.controllerHome, repoId: input.repositoryId },
-        handle.workId,
-      );
-      // A stale physical handle cannot outlive canonical Work lifecycle authority.
-      // Delivery receipts are mechanical evidence only; an explicitly open Work
-      // continues to own its concrete mutation surface until semantic completion
-      // or cancellation releases that authority.
-      if (!contract) return false;
-      return semanticWorkState(contract) === 'open';
-    })
+    .filter((handle) => handle.workId !== input.workId
+      && DURABLE_CANONICAL_MUTATION_OWNER_STATES.has(handle.state)
+      && workHandleRetainsCanonicalMutationOwnership({
+        controllerHome: input.controllerHome,
+        repositoryId: input.repositoryId,
+        handle,
+        target: targetEvidence,
+      }))
     .sort((left, right) => left.workId.localeCompare(right.workId));
   if (owners.length === 0) return;
   if (owners.length > 1) {
@@ -78,9 +204,9 @@ function resolveRepositoryWorkHandlePlacement(input: {
   if (!branch) throw new Error(`WORKTREE_DETACHED: ${input.checkoutId} has no branch`);
   const managedWorktree = registeredCheckout.worktree === true
     && Boolean(input.worktreeRef)
-    && resolve(input.worktreeRef!) === resolve(checkout.canonicalRoot)
+    && samePhysicalCheckout(input.worktreeRef!, checkout.canonicalRoot)
     && input.checkoutId !== registeredRepository.activeCheckoutId
-    && resolve(checkout.canonicalRoot) !== resolve(registeredRepository.canonicalRoot);
+    && !samePhysicalCheckout(checkout.canonicalRoot, registeredRepository.canonicalRoot);
   return { registeredRepository, registeredCheckout, checkout, status, branch, managedWorktree };
 }
 
@@ -176,7 +302,7 @@ export function reconcileRepositoryWorkHandlePlacement(input: {
   const placement = resolveRepositoryWorkHandlePlacement({ controllerHome: input.controllerHome, repositoryId: input.repositoryId, checkoutId: contract.checkoutId, worktreeRef: contract.worktreeRef });
   if (!placement.managedWorktree) return existing;
   if (placement.registeredCheckout.lifecycle !== 'active') throw new Error(`WORK_HANDLE_PLACEMENT_CHECKOUT_NOT_ACTIVE: ${input.workId}`);
-  if (resolve(existing.worktreePath) !== resolve(placement.checkout.canonicalRoot)) throw new Error(`WORK_HANDLE_PLACEMENT_PATH_MISMATCH: ${input.workId}`);
+  if (!samePhysicalCheckout(existing.worktreePath, placement.checkout.canonicalRoot)) throw new Error(`WORK_HANDLE_PLACEMENT_PATH_MISMATCH: ${input.workId}`);
   if (existing.branch !== placement.branch || (placement.registeredCheckout.branch && placement.registeredCheckout.branch !== placement.branch)) throw new Error(`WORK_HANDLE_PLACEMENT_BRANCH_MISMATCH: ${input.workId}`);
   return writeWorkHandle(input.controllerHome, { ...existing, sourceCheckoutId: placement.registeredRepository.activeCheckoutId, managedWorktree: true });
 }
@@ -236,7 +362,7 @@ export function rearmFailedPreservedWorkHandle(input: {
   if (!placement.managedWorktree || placement.registeredCheckout.lifecycle !== 'active') {
     throw new Error(`WORK_REPOSITORY_MUTATION_FAILED_CHECKOUT_NOT_ACTIVE: ${input.workId}`);
   }
-  if (resolve(placement.checkout.canonicalRoot) !== resolve(handle.worktreePath)
+  if (!samePhysicalCheckout(placement.checkout.canonicalRoot, handle.worktreePath)
     || placement.branch !== handle.branch
     || (handle.expectedHead && placement.status.head !== handle.expectedHead)) {
     throw new Error(`WORK_REPOSITORY_MUTATION_FAILED_CHECKOUT_OWNERSHIP_MISMATCH: ${input.workId}`);
@@ -294,7 +420,7 @@ function rearmRetainedMergedWorkForMutation(input: {
   if (!placement.managedWorktree || placement.registeredCheckout.lifecycle !== 'active') {
     throw new Error(`WORK_RETAINED_REARM_CHECKOUT_NOT_ACTIVE: ${input.workId}`);
   }
-  if (resolve(placement.checkout.canonicalRoot) !== resolve(handle.worktreePath) || placement.branch !== handle.branch) {
+  if (!samePhysicalCheckout(placement.checkout.canonicalRoot, handle.worktreePath) || placement.branch !== handle.branch) {
     throw new Error(`WORK_RETAINED_REARM_OWNERSHIP_MISMATCH: ${input.workId}`);
   }
   if (!placement.status.clean) throw new Error(`WORK_RETAINED_REARM_WORKTREE_DIRTY: ${input.workId}`);
