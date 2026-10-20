@@ -175,10 +175,6 @@ export function mcpServiceOAuthTokenStorePath(controllerHome: string): string {
   return mcpControllerHomeOAuthTokenStorePath(resolveControllerHome(controllerHome));
 }
 
-export function mcpServiceOAuthTokenStoreFallbackPaths(_controllerHome: string, _legacyRepoRoot?: string): string[] {
-  return [];
-}
-
 export function mcpControllerHomeRuntimeStatePath(controllerHome: string): string {
   return mcpControllerHomePath(controllerHome, 'mcp.runtime.json');
 }

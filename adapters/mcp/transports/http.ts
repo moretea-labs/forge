@@ -17,7 +17,6 @@ import {
 } from '../server';
 import {
   loadMcpServiceLocalConfig,
-  mcpServiceOAuthTokenStoreFallbackPaths,
   mcpServiceOAuthTokenStorePath,
   parseMcpHttpAuthMode,
   readMcpServiceBearerToken,
@@ -760,10 +759,7 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
     ? readMcpServiceOAuthPassphrase(controllerHome, repoRoot)
     : null;
   const tokenStore = authMode === 'oauth'
-    ? new McpOAuthTokenStore(
-      mcpServiceOAuthTokenStorePath(controllerHome),
-      mcpServiceOAuthTokenStoreFallbackPaths(controllerHome, repoRoot),
-    )
+    ? new McpOAuthTokenStore(mcpServiceOAuthTokenStorePath(controllerHome))
     : null;
   tokenStore?.load();
   const oauthProvider = tokenStore ? createMcpOAuthProvider(tokenStore) : null;
