@@ -20,26 +20,13 @@ import {
   integrateAgentJob,
   taskRunDiff,
 } from "../agent-jobs/integration";
-import { listControllerChecks, runControllerCheck, runControllerCheckAsync } from "../controller/check-runner";
-import {
-  acceptVerifiedTask,
-  archiveIssue,
-  getIssue,
-  inspectIssueReadiness,
-  inspectTaskReadiness,
-  projectBoard,
-  restoreIssue,
-  recordTaskVerification,
-  setTaskDependencies,
-  updateTask,
-} from "../controller/issue-store";
-import { readTaskRunEvidence } from "../controller/run-evidence";
-import { resolveEffectiveTaskState } from "../controller/task-status-resolver";
+import { listControllerChecks, runControllerCheck } from "../controller/check-runner";
+import { inspectIssueReadiness, inspectTaskReadiness, projectBoard } from "../controller/issue-store";
 import { buildControllerTaskLedgerProjection } from "../controller/task-ledger";
 import { buildControllerOperationalPlan } from "../controller/operational-plan";
 import { exportControllerWorklog, listControllerWorklogEvents, parseWorklogCategory } from "../controller/worklog";
 import { inspectProjectGovernance, reconcileProjectGovernance } from "../controller/governance";
-import { clearCurrentIssue, loadControllerProjectState, saveControllerProjectState } from "../controller/project-state";
+import { loadControllerProjectState } from "../controller/project-state";
 import { legacyIssueAuthorityRetired } from "../controller/legacy-issue-cutover";
 import { buildExecutionDiagnostics, buildRequirementBoard } from "../../runtime/control-plane/facade/requirement-board";
 import {
@@ -101,7 +88,6 @@ import {
   defaultLocalAgentRunners,
 } from "../controller/runtime-config";
 import { taskWriteScopesConflict } from "../controller/execution-policy";
-import { continueTaskAfterSuccessfulRun } from "../controller/execution-completion";
 import { applyCompletionDecision, completionDecisionQueues, finishCompletionBacklog, inspectCompletionBacklog } from "../controller/completion-backlog";
 import { finishEditSession, finishTaskRun } from "../controller/completion-orchestrator";
 import { prepareCodexContinuation } from "../controller/codex-continuation";
@@ -1902,230 +1888,31 @@ export async function startLocalBridgeServer(
   app.get("/api/issues/:issueId/tasks/:taskId", (_request, response) => {
     response.status(410).json(legacyProgressProjectionRetiredPayload());
   });
-  app.patch("/api/project-state", (request, response) => {
-    try {
-      const body = request.body ?? {};
-      const repoRoot = requestRepositoryRoot(request, options, controllerHome);
-      if (legacyIssueAuthorityRetired(repoRoot)) {
-        response.status(410).json(legacyControlPlaneMutationRetiredPayload());
-        return;
-      }
-      if (body.currentIssueId === null || body.currentIssueId === "") {
-        response.json(clearCurrentIssue(repoRoot, "local-ui"));
-        return;
-      }
-      if (typeof body.currentIssueId === "string") {
-        const issue = getIssue(repoRoot, body.currentIssueId);
-        if (issue.archivedAt || ["done", "cancelled"].includes(issue.status)) throw new Error("only an active, non-archived Issue can become the execution focus");
-      }
-      response.json(saveControllerProjectState(repoRoot, {
-        currentIssueId: typeof body.currentIssueId === "string" ? body.currentIssueId : undefined,
-        issueCreationMode: ["open", "focus_only", "paused"].includes(body.issueCreationMode) ? body.issueCreationMode : undefined,
-        showArchivedByDefault: typeof body.showArchivedByDefault === "boolean" ? body.showArchivedByDefault : undefined,
-      }, "local-ui"));
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
-    }
-  });
-  app.post("/api/issues/:issueId/focus", (request, response) => {
-    try {
-      const repoRoot = requestRepositoryRoot(request, options, controllerHome);
-      if (legacyIssueAuthorityRetired(repoRoot)) {
-        response.status(410).json(legacyControlPlaneMutationRetiredPayload());
-        return;
-      }
-      const issue = getIssue(repoRoot, request.params.issueId);
-      if (issue.archivedAt || ["done", "cancelled"].includes(issue.status)) throw new Error("only an active, non-archived Issue can become the execution focus");
-      response.json(saveControllerProjectState(repoRoot, { currentIssueId: issue.id }, "local-ui"));
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
-    }
-  });
+  // All legacy Issue/Task/project-state HTTP mutations are retired for every
+  // repository, including those with no SQLite migration marker. The read-only
+  // history endpoints remain, but Runtime clients write Requirement/Plan/Work.
+  const retireLegacyIssueMutation = (_request: Request, response: Response): void => {
+    response.status(410).json(legacyControlPlaneMutationRetiredPayload());
+  };
+  app.patch("/api/project-state", retireLegacyIssueMutation);
+  for (const path of [
+    "/api/issues/:issueId/focus",
+    "/api/issues/:issueId/archive",
+    "/api/issues/:issueId/restore",
+    "/api/issues/:issueId/tasks/:taskId/verify",
+    "/api/issues/:issueId/tasks/:taskId/accept",
+    "/api/issues/:issueId/tasks/:taskId/request-changes",
+    "/api/issues/:issueId/tasks/:taskId/cancel",
+    "/api/issues/:issueId/tasks/:taskId/dependencies",
+  ]) app.post(path, retireLegacyIssueMutation);
   app.post("/api/tasks/launch-ready", (_request, response) => {
     response.status(410).json(localBridgeExecutionRetiredPayload());
   });
   app.post("/api/issues/:issueId/launch", (_request, response) => {
     response.status(410).json(localBridgeExecutionRetiredPayload());
   });
-  app.post("/api/issues/:issueId/archive", (request, response) => {
-    try {
-      const repoRoot = requestRepositoryRoot(request, options, controllerHome);
-      if (legacyIssueAuthorityRetired(repoRoot)) {
-        response.status(410).json(legacyControlPlaneMutationRetiredPayload());
-        return;
-      }
-      response.json(archiveIssue(repoRoot, request.params.issueId));
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
-    }
-  });
-  app.post("/api/issues/:issueId/restore", (request, response) => {
-    try {
-      const repoRoot = requestRepositoryRoot(request, options, controllerHome);
-      if (legacyIssueAuthorityRetired(repoRoot)) {
-        response.status(410).json(legacyControlPlaneMutationRetiredPayload());
-        return;
-      }
-      response.json(restoreIssue(repoRoot, request.params.issueId));
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
-    }
-  });
   app.post("/api/issues/:issueId/tasks/:taskId/launch", (_request, response) => {
     response.status(410).json(localBridgeExecutionRetiredPayload());
-  });
-  app.post("/api/issues/:issueId/tasks/:taskId/verify", async (request, response) => {
-    try {
-      const repoRoot = requestRepositoryRoot(request, options, controllerHome);
-      if (legacyIssueAuthorityRetired(repoRoot)) {
-        response.status(410).json(legacyControlPlaneMutationRetiredPayload());
-        return;
-      }
-      const issue = getIssue(repoRoot, request.params.issueId);
-      const task = issue.tasks.find((entry) => entry.id === request.params.taskId);
-      if (!task) throw new Error("task not found");
-      if (task.status === "done" || task.status === "verified") {
-        response.json(issue);
-        return;
-      }
-      const confirmAcceptance = request.body?.confirmAcceptance === true;
-      const reviewer = queryString(request.body?.reviewer) ?? "local-controller-human";
-      const latestRunId = task.runIds.at(-1);
-      if (latestRunId) {
-        const run = getAgentJob(repoRoot, latestRunId);
-        if (run.status !== "succeeded") throw new Error(`verification requires a succeeded Run (current: ${run.status})`);
-        if (run.provider === "local" && run.worktree !== repoRoot && !run.integratedSessionId) throw new Error("integrate the isolated local Run before verification");
-        if (run.provider === "github" && run.github?.createPullRequest !== false && !run.github?.pullRequestUrl) throw new Error("GitHub verification requires the linked pull request");
-        continueTaskAfterSuccessfulRun(repoRoot, run);
-        if (!confirmAcceptance) {
-          response.json(getIssue(repoRoot, issue.id));
-          return;
-        }
-        const refreshedIssue = getIssue(repoRoot, issue.id);
-        const refreshedTask = refreshedIssue.tasks.find((entry) => entry.id === task.id);
-        if (!refreshedTask?.verification) throw new Error("successful Run did not produce verification evidence");
-        const at = new Date().toISOString();
-        response.json(recordTaskVerification(repoRoot, issue.id, task.id, {
-          ...refreshedTask.verification,
-          reviewer,
-          acceptanceResults: task.acceptanceCriteria.map((criterion) => ({
-            criterion,
-            ok: true,
-            outcome: "passed" as const,
-            source: "human_review" as const,
-            evidence: `Explicitly confirmed in the local Controller at ${at}.`,
-          })),
-          verifiedAt: at,
-        }));
-        return;
-      }
-
-      // Manual evidence-only verification remains available for Tasks that do not
-      // require a Run or Diff. Missing named checks never block launch or this path.
-      const checkResults = await Promise.all(task.checks.map(async (checkId) => {
-        try {
-          const result = await runControllerCheckAsync(repoRoot, checkId);
-          return {
-            checkId,
-            ok: result.ok,
-            summary: `${result.ok ? "Passed" : "Failed"} with persisted evidence ${result.artifactPath}`,
-          };
-        } catch (error) {
-          return { checkId, ok: false, summary: errorMessage(error) };
-        }
-      }));
-      if (task.acceptanceCriteria.length > 0 && !confirmAcceptance) {
-        throw new Error('Explicit Task acceptance criteria require acceptance evidence when no successful Run is linked');
-      }
-      const at = new Date().toISOString();
-      response.json(recordTaskVerification(repoRoot, issue.id, task.id, {
-        reviewedDiffHash: typeof request.body?.reviewedDiffHash === "string" ? request.body.reviewedDiffHash : undefined,
-        reviewer,
-        checkResults,
-        commandEvidence: [],
-        acceptanceResults: confirmAcceptance
-          ? task.acceptanceCriteria.map((criterion) => ({
-            criterion,
-            ok: true,
-            outcome: "passed" as const,
-            source: "human_review" as const,
-            evidence: `Explicitly confirmed in the local Controller at ${at}.`,
-          }))
-          : [],
-        verifiedAt: at,
-      }));
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
-    }
-  });
-  app.post("/api/issues/:issueId/tasks/:taskId/accept", (request, response) => {
-    try {
-      const repoRoot = requestRepositoryRoot(request, options, controllerHome);
-      if (legacyIssueAuthorityRetired(repoRoot)) {
-        response.status(410).json(legacyControlPlaneMutationRetiredPayload());
-        return;
-      }
-      const issue = getIssue(repoRoot, request.params.issueId);
-      const task = issue.tasks.find((entry) => entry.id === request.params.taskId);
-      if (!task) throw new Error("task not found");
-      const latestRunId = task.runIds.at(-1);
-      if (latestRunId) {
-        const run = getAgentJob(repoRoot, latestRunId);
-        if (run.status !== "succeeded") throw new Error(`latest Run must succeed before acceptance (current: ${run.status})`);
-        if (run.provider === "local" && run.worktree !== repoRoot && !run.integratedSessionId) {
-          throw new Error("integrate the isolated local Task Run before accepting it");
-        }
-      }
-      response.json(acceptVerifiedTask(repoRoot, request.params.issueId, request.params.taskId, queryString(request.body?.note) ?? "Accepted from the local Controller."));
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
-    }
-  });
-  app.post("/api/issues/:issueId/tasks/:taskId/request-changes", (request, response) => {
-    try {
-      const repoRoot = requestRepositoryRoot(request, options, controllerHome);
-      if (legacyIssueAuthorityRetired(repoRoot)) {
-        response.status(410).json(legacyControlPlaneMutationRetiredPayload());
-        return;
-      }
-      const issue = getIssue(repoRoot, request.params.issueId);
-      const task = issue.tasks.find((entry) => entry.id === request.params.taskId);
-      if (!task) throw new Error("task not found");
-      if (!["review", "integrated", "verifying", "verified"].includes(task.status)) throw new Error(`Task is not reviewable from ${task.status}`);
-      response.json(updateTask(repoRoot, issue.id, task.id, { status: "changes_requested", note: queryString(request.body?.note) ?? "Changes requested from the local Controller." }));
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
-    }
-  });
-  app.post("/api/issues/:issueId/tasks/:taskId/cancel", (request, response) => {
-    try {
-      const repoRoot = requestRepositoryRoot(request, options, controllerHome);
-      if (legacyIssueAuthorityRetired(repoRoot)) {
-        response.status(410).json(legacyControlPlaneMutationRetiredPayload());
-        return;
-      }
-      const issue = getIssue(repoRoot, request.params.issueId);
-      const task = issue.tasks.find((entry) => entry.id === request.params.taskId);
-      if (!task) throw new Error("task not found");
-      const state = resolveEffectiveTaskState({ issue, task, runs: readTaskRunEvidence(repoRoot, task) });
-      if (state.activeRunIds.length > 0) throw new Error(`cancel active Run(s) ${state.activeRunIds.join(", ")} before cancelling the Task`);
-      response.json(updateTask(repoRoot, request.params.issueId, request.params.taskId, { status: "cancelled", note: queryString(request.body?.note) ?? "Task cancelled from the local Controller." }));
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
-    }
-  });
-  app.post("/api/issues/:issueId/tasks/:taskId/dependencies", (request, response) => {
-    try {
-      const repoRoot = requestRepositoryRoot(request, options, controllerHome);
-      if (legacyIssueAuthorityRetired(repoRoot)) {
-        response.status(410).json(legacyControlPlaneMutationRetiredPayload());
-        return;
-      }
-      if (!Array.isArray(request.body?.dependsOn)) throw new Error("dependsOn must be an array");
-      response.json(setTaskDependencies(repoRoot, request.params.issueId, request.params.taskId, request.body.dependsOn.map(String)));
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
-    }
   });
   app.get("/api/recipes/:recipeId/prepare", (request, response) => {
     try {

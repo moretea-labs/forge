@@ -162,6 +162,25 @@ describe("Local Execution Bridge", () => {
       expect(response.status).toBe(410);
       expect(await response.json()).toMatchObject({ error: 'LEGACY_PROGRESS_PROJECTION_RETIRED' });
     }
+    // Legacy mutations are retired even before repository portfolio migration.
+    const retiredWriteRoutes = [
+      ['PATCH', '/api/project-state'],
+      ...[
+        '/api/issues/ISS-test/focus', '/api/issues/ISS-test/archive', '/api/issues/ISS-test/restore',
+        '/api/issues/ISS-test/tasks/T1/verify', '/api/issues/ISS-test/tasks/T1/accept',
+        '/api/issues/ISS-test/tasks/T1/request-changes', '/api/issues/ISS-test/tasks/T1/cancel',
+        '/api/issues/ISS-test/tasks/T1/dependencies',
+      ].map((path) => ['POST', path]),
+    ];
+    for (const [method, path] of retiredWriteRoutes) {
+      const response = await fetch(new URL(path, handle.url), {
+        method,
+        headers: { 'content-type': 'application/json', 'x-forge-local-token': handle.token },
+        body: '{}',
+      });
+      expect(response.status).toBe(410);
+      expect(await response.json()).toMatchObject({ error: 'LEGACY_CONTROL_PLANE_MUTATION_RETIRED' });
+    }
   });
 
   test("starts successfully when Local Job runtime storage is already linked", async () => {
@@ -482,7 +501,7 @@ describe("Local Execution Bridge", () => {
     }
   });
 
-  test("serves V5 focus, governance, direct action, worklog, and GitHub plugin APIs", async () => {
+  test("serves V5 governance and read paths while retiring legacy Issue mutations", async () => {
     const root = repo();
     const issue = createIssue(root, {
       title: "V5 API surface",
@@ -516,36 +535,22 @@ describe("Local Execution Bridge", () => {
     servers.push(handle);
     const headers = { "x-forge-local-token": handle.token };
 
-    const focused = await fetch(new URL(`/api/issues/${issue.id}/focus`, handle.url), { method: "POST", headers }).then((response) => response.json());
-    expect(focused.currentIssueId).toBe(issue.id);
+    for (const path of [
+      `/api/issues/${issue.id}/focus`,
+      `/api/issues/${issue.id}/tasks/T1/verify`,
+      `/api/issues/${issue.id}/tasks/T1/accept`,
+    ]) {
+      const response = await fetch(new URL(path, handle.url), {
+        method: "POST",
+        headers: { ...headers, "content-type": "application/json" },
+        body: JSON.stringify({ confirmAcceptance: true }),
+      });
+      expect(response.status).toBe(410);
+      expect(await response.json()).toMatchObject({ error: "LEGACY_CONTROL_PLANE_MUTATION_RETIRED" });
+    }
+    expect(getIssue(root, issue.id).tasks[0]?.status).toBe("review");
     const governance = await fetch(new URL("/api/governance", handle.url), { headers }).then((response) => response.json());
-    expect(governance.currentIssueId).toBe(issue.id);
-    expect(governance.executionQueue[0].taskId).toBe("T1");
-
-    const verified = await fetch(new URL(`/api/issues/${issue.id}/tasks/T1/verify`, handle.url), {
-      method: "POST",
-      headers: { ...headers, "content-type": "application/json" },
-      body: JSON.stringify({ confirmAcceptance: true, reviewer: "test-human" }),
-    }).then((response) => response.json());
-    expect(verified.error).toBeUndefined();
-    const verifiedTask = getIssue(root, issue.id).tasks[0];
-    expect(verifiedTask?.status).toBe("verified");
-    expect(verifiedTask?.verification?.acceptanceResults[0]).toMatchObject({
-      criterion: "Visible",
-      ok: true,
-      outcome: "passed",
-      source: "human_review",
-    });
-    expect(verifiedTask?.verification?.checkResults?.some((entry: { checkId?: string; ok?: boolean }) => entry.checkId === 'focused' && entry.ok)).toBe(true);
-    expect(existsSync(join(root, '.ai', 'harness', 'checks'))).toBe(false);
-    const accepted = await fetch(new URL(`/api/issues/${issue.id}/tasks/T1/accept`, handle.url), {
-      method: "POST",
-      headers: { ...headers, "content-type": "application/json" },
-      body: "{}",
-    }).then((response) => response.json());
-    expect(accepted.error).toBeTruthy();
-    expect(accepted.error).toContain("complete delivery receipt");
-    expect(getIssue(root, issue.id).tasks[0]?.status).toBe("verified");
+    expect(Array.isArray(governance.executionQueue)).toBe(true);
 
     const configured = await fetch(new URL("/api/github/plugin", handle.url), {
       method: "PATCH",

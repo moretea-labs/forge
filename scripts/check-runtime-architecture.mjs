@@ -1753,9 +1753,11 @@ forbid(
 );
 forbid(
   'src/cli/local-bridge/server.ts',
-  /\bretryAgentJob\b|\bacceptTaskJob\b|\bstartTaskJob\b/,
-  'Local Bridge HTTP must not call Agent Run create/start/retry write boundaries',
+  /\bretryAgentJob\b|\bacceptTaskJob\b|\bstartTaskJob\b|\barchiveIssue\b|\brestoreIssue\b|\brecordTaskVerification\b|\bsetTaskDependencies\b|\bacceptVerifiedTask\b|\bsaveControllerProjectState\b|\bupdateTask\b/,
+  'Local Bridge HTTP must not retain legacy Issue/Task, project-state or Agent Run writers',
 );
+requireText('src/cli/local-bridge/server.ts', 'app.post(path, retireLegacyIssueMutation)');
+requireText('src/cli/local-bridge/server.ts', 'app.patch("/api/project-state", retireLegacyIssueMutation)');
 forbid(
   'adapters/mcp/tool-mapping/legacy-tool-service.ts',
   /\bretryAgentJob\b/,

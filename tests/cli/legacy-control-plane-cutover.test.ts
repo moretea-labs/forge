@@ -192,6 +192,11 @@ describe('legacy control-plane cutover', () => {
       '/api/issues/:issueId/tasks/:taskId/request-changes', '/api/issues/:issueId/tasks/:taskId/cancel',
       '/api/issues/:issueId/tasks/:taskId/dependencies',
     ]) expect(source).toContain(route);
-    expect((source.match(/legacyControlPlaneMutationRetiredPayload\(\)/g) ?? []).length).toBeGreaterThanOrEqual(10);
+    expect(source).toContain('const retireLegacyIssueMutation =');
+    expect(source).toContain('app.patch("/api/project-state", retireLegacyIssueMutation)');
+    expect(source).toContain('app.post(path, retireLegacyIssueMutation)');
+    for (const writer of ['saveControllerProjectState(', 'recordTaskVerification(', 'archiveIssue(', 'restoreIssue(', 'setTaskDependencies(', 'acceptVerifiedTask(', 'updateTask(']) {
+      expect(source).not.toContain(writer);
+    }
   });
 });
