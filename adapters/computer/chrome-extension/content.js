@@ -189,7 +189,8 @@
       providerFailureText: providerFailureText(),
       ...(options.includePageText === true ? { pageText: String(document.body?.innerText ?? '').slice(-500000) } : {}),
       latestTurnRole: latestTurnRole(),
-      isGenerating: isGenerating(),
+      // A final user role is a Send-admission fence, not live-generation evidence.
+      isGenerating: hasLiveGenerationSignal(),
     };
   };
   const writeComposer = (node, prompt) => {
@@ -396,7 +397,8 @@
         type: 'forge-computer-chatgpt-page',
         ...(current ?? {}),
         pageUrl: location.href,
-        isGenerating: isGenerating(),
+        // A final user role is a Send-admission fence, not live-generation evidence.
+        isGenerating: hasLiveGenerationSignal(),
       }, () => void chrome.runtime.lastError);
     }, 200);
   }

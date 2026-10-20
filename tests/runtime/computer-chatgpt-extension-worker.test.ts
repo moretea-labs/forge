@@ -237,3 +237,53 @@ test('content snapshot reports only live provider status, not quoted historical 
   statuses = [historyStatus, { ...historyStatus, closest: () => null }];
   expect(snapshot().providerFailureText).toBe(capacityText);
 });
+
+test('read-only ChatGPT generation status ignores a historical user turn while send admission stays conservative', async () => {
+  const source = readFileSync(new URL('../../adapters/computer/chrome-extension/content.js', import.meta.url), 'utf8');
+  const nodeList = <T>(items: T[]) => Object.assign(items, { item: (index: number) => items[index] });
+  const userTurn = {
+    innerText: 'Previously submitted user message', textContent: 'Previously submitted user message',
+    getAttribute: (key: string) => key === 'data-message-author-role' ? 'user' : null,
+    querySelector: () => null, getClientRects: () => [{}],
+  };
+  let liveStopVisible = false;
+  const main = {
+    getClientRects: () => [{}],
+    querySelectorAll: (selector: string) => selector.includes('[data-message-author-role="user"]')
+      ? nodeList([userTurn]) : nodeList([]),
+  };
+  const listeners: Array<(message: unknown, sender: unknown, respond: (value: Record<string, unknown>) => void) => void> = [];
+  const scope = {
+    ForgeComputerChatgptCore: {
+      normalizeText: (value: unknown) => String(value ?? '').replace(/\\s+/g, ' ').trim(),
+      parseConversation: () => null,
+    },
+    document: {
+      title: 'Conversation', documentElement: {},
+      querySelectorAll: (selector: string) => selector === 'main' ? [main]
+        : selector.includes('stop-button') || selector.includes('[data-is-streaming="true"]')
+          ? (liveStopVisible ? [{ getClientRects: () => [{}] }] : []) : [],
+    },
+    location: { href: 'https://chatgpt.com/c/12345678-1234-1234-1234-123456789abc' },
+    chrome: { runtime: {
+      onMessage: { addListener: (listener: typeof listeners[number]) => { listeners.push(listener); } },
+      sendMessage: () => undefined,
+    } },
+    MutationObserver: class { observe() {} },
+    setTimeout: () => 1, clearTimeout: () => {}, URL,
+  };
+  runInNewContext(source, scope, { filename: 'content.js' });
+  const snapshot = () => {
+    let result: Record<string, unknown> | undefined;
+    listeners[0]!({ type: 'forge-computer-chatgpt-snapshot' }, {}, (value) => { result = value; });
+    return result!;
+  };
+  expect(snapshot()).toMatchObject({ latestTurnRole: 'user', isGenerating: false });
+  liveStopVisible = true;
+  expect(snapshot()).toMatchObject({ latestTurnRole: 'user', isGenerating: true });
+  liveStopVisible = false;
+  let prepare: Record<string, unknown> | undefined;
+  listeners[0]!({ type: 'forge-computer-chatgpt-prepare', mode: 'send', prompt: 'probe' }, {}, (value) => { prepare = value; });
+  await Promise.resolve();
+  expect(prepare).toMatchObject({ prepared: false, reason: 'provider_busy' });
+});
