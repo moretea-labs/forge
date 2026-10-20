@@ -32,7 +32,7 @@ interface Envelope {
 }
 
 function profile(value: string): McpProfileName {
-  if (value === 'planner' || value === 'executor' || value === 'orchestrator' || value === 'controller') return value;
+  if (value === 'planner' || value === 'executor' || value === 'controller') return value;
   throw new Error('TYPESCRIPT_NAVIGATION_POLICY_PROFILE_INVALID');
 }
 
