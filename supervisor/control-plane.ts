@@ -588,8 +588,16 @@ export class WorkflowSupervisorControlPlane {
       ...(this.hooks.effectDispatchEvidence?.({ task, effectId: input.effectId }) ?? {}),
     });
   }
-  bootstrapObserveEffect(input: { taskId: string; effectId: string; observationId: string; outcome: 'applied' | 'not_applied' | 'unknown'; evidence?: Record<string, unknown> }): void {
+  bootstrapObserveEffect(input: { taskId: string; effectId: string; observationId: string; outcome: 'applied' | 'not_applied' | 'unknown'; evidence?: Record<string, unknown>; reconciled?: boolean }): void {
     const task = this.requireTask(input.taskId);
+    // A bootstrap provider turn becomes applied through the canonical adapter
+    // only after the exact conversation URL has been promoted and bound. An
+    // unbound applied observation is the old alternate writer path: it leaves
+    // the task permanently unable to reconcile its source conversation. Only
+    // the read-only reconciliation path may record an unbound applied leaf.
+    if (input.outcome === 'applied' && task.conversationId.startsWith('bootstrap:') && input.reconciled !== true) {
+      throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_APPLIED_REQUIRES_BOUND_CONVERSATION');
+    }
     const effect = this.store.getEffect(validateEffectId(input.effectId));
     if (!effect || effect.taskId !== task.taskId) throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_EFFECT_TASK_MISMATCH');
     if (input.outcome === 'not_applied') {

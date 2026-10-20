@@ -301,10 +301,6 @@
       "module": "controller",
       "resource": "temp-isolated"
     },
-    "tests/cli/tool-capability-cache.test.ts": {
-      "module": "workflow",
-      "resource": "temp-isolated"
-    },
     "tests/cli/v81-entry.test.ts": {
       "module": "controller",
       "resource": "pure"
@@ -531,10 +527,6 @@
     },
     "tests/runtime/github-issue-watch.test.ts": {
       "module": "workflow",
-      "resource": "pure"
-    },
-    "tests/runtime/legacy-ios-tool-adapter.test.ts": {
-      "module": "routing",
       "resource": "pure"
     },
     "tests/runtime/governance-rule-resolution.test.ts": {

@@ -23,7 +23,7 @@ import { readControllerResult } from "../../src/runtime/evidence/result-store";
 import { boundedRuntimeResult } from "../../adapters/mcp/runtime-gateway/bounded-result-runtime";
 import { applyExternalFilesystemGrant, previewExternalFilesystemGrant } from "../../src/runtime/safe-tooling/external-filesystem";
 import { terminateProcessesByCommand, waitForNoProcessesByCommand } from "../runtime/process-hygiene";
-import { clearGitIdentityCacheForTest, clearGitSnapshotCacheForTest, gitSnapshot, gitSnapshotPerformanceSnapshot } from "../../src/cli/repository/inspector";
+import { clearGitIdentityCacheForTest, clearGitSnapshotCacheForTest, gitSnapshot, gitSnapshotPerformanceSnapshot, searchRepositoryMany } from "../../src/cli/repository/inspector";
 
 test('oversized direct MCP values externalize through the existing paginated Result Store', () => {
   const controllerHome = mkdtempSync(join(tmpdir(), 'forge-direct-result-'));
@@ -70,6 +70,40 @@ function git(root: string, args: string[]): void {
   const result = spawnSync("git", ["-C", root, ...args], { encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] });
   if (result.status !== 0) throw new Error(result.stderr || `git ${args.join(" ")} failed`);
 }
+
+test("ripgrep JSON discovery keeps NUL-binary and non-UTF8 candidates from corrupting valid source evidence", () => {
+  const workspace = mkdtempSync(join(tmpdir(), "forge-ripgrep-json-framing-"));
+  try {
+    writeFileSync(join(workspace, "a.txt"), "alpha token line\n");
+    writeFileSync(join(workspace, "b.bin"), Buffer.from("prefix\0token\0suffix\n"));
+    writeFileSync(join(workspace, "c.txt"), Buffer.concat([Buffer.from("token "), Buffer.from([0xff, 0xfe]), Buffer.from("\n")]));
+    writeFileSync(join(workspace, "d.ts"), "type Token = string;\nconst tokenValue = 1;\n");
+    const result = searchRepositoryMany(workspace, {
+      profile: "controller",
+      readGlobs: ["**"],
+      writeGlobs: ["**"],
+      denyGlobs: [],
+      maxFileBytes: 2 * 1024 * 1024,
+      execution: {
+        fixedWorkflowCheck: false,
+        codexRunner: false,
+        agentRunner: false,
+        allowedAgents: [],
+        runnerTimeoutMs: 0,
+        runnerMaxTimeoutMs: 0,
+      },
+    }, { queries: ["token"], maxResultsPerQuery: 50, maxFiles: 50 });
+    expect(result.skippedBinaryFiles).toBe(1);
+    expect(result.results.some((hit) => hit.path === "a.txt" && hit.line === 1 && hit.text === "alpha token line")).toBe(true);
+    const nonUtf8 = result.results.find((hit) => hit.path === "c.txt");
+    expect(nonUtf8?.line).toBe(1);
+    expect(nonUtf8?.text).toContain("token");
+    expect(result.results.some((hit) => hit.path === "b.bin")).toBe(false);
+    expect(result.results.filter((hit) => hit.path === "d.ts").length).toBeGreaterThan(0);
+  } finally {
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
 
 async function json(result: ReturnType<typeof callRepositoryTool>) {
   return JSON.parse((await result)?.content[0]?.text ?? "{}");

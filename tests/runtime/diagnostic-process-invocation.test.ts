@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
+import { runProcess } from '../../src/effects/process-runner';
 import {
   CliRuntimeResolutionError,
   currentCliRuntimeTarget,
@@ -20,6 +21,26 @@ import {
 } from '../../adapters/mcp/runtime-gateway/persisted-check-process';
 
 const diagnosticArgs = ['runtime', 'diagnostic-read', '--tool', 'workflow_watchdog_report'];
+
+describe('structured process stdout capture', () => {
+  test('preserves machine framing until validation and reports byte-cap truncation', () => {
+    const script = 'process.stdout.write("secret token: abc\\u0000more text")';
+    const structured = runProcess(process.execPath, ['-e', script], {
+      structuredStdout: true,
+      maxOutputBytes: 1024,
+    });
+    expect(structured.stdoutTruncated).toBe(false);
+    expect(structured.stdout).toBe('secret token: abc\u0000more text');
+    const redacted = runProcess(process.execPath, ['-e', script], { maxOutputBytes: 1024 });
+    expect(redacted.stdout).not.toContain('secret token: abc');
+    const truncated = runProcess(process.execPath, ['-e', script], {
+      structuredStdout: true,
+      maxOutputBytes: 8,
+    });
+    expect(truncated.stdoutTruncated).toBe(true);
+    expect(truncated.stdout).toContain('[output truncated after 8 bytes]');
+  });
+});
 
 describe('typed CLI child invocation', () => {
   test('executes a Bun standalone release directly without its virtual bunfs entry', () => {

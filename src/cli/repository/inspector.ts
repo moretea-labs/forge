@@ -2,6 +2,7 @@ import { createHash } from 'crypto';
 import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, statSync } from 'fs';
 import { delimiter, join, resolve } from 'path';
 import { runProcess } from '../../effects/process-runner';
+import { redactSensitiveText } from '../../runtime/evidence/sensitive-output';
 import { globMatches, resolveMcpPath } from '../../../adapters/mcp/paths';
 import type { McpPolicy } from '../../../adapters/mcp/types';
 import {
@@ -580,10 +581,39 @@ function finalizeSearchManyResult(input: {
   };
 }
 
+interface RipgrepJsonLine {
+  text?: unknown;
+  bytes?: unknown;
+}
+
+interface RipgrepJsonEvent {
+  type?: unknown;
+  data?: {
+    path?: RipgrepJsonLine;
+    lines?: RipgrepJsonLine;
+    line_number?: unknown;
+    binary_offset?: unknown;
+  };
+}
+
+function decodeRipgrepJsonValue(value: RipgrepJsonLine | undefined): string | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  if (typeof value.text === 'string') return value.text;
+  if (typeof value.bytes === 'string') return Buffer.from(value.bytes, 'base64').toString('utf8');
+  return undefined;
+}
+
 /**
  * ripgrep owns literal matching and returns line-addressed evidence directly.
  * The caller supplies only policy-checked paths; neither a repository-wide
  * scan nor a second JavaScript file-content scan is permitted.
+ *
+ * The machine protocol is `rg --json`, parsed before any generic text
+ * redaction. The previous NUL/line framing was safe only until the shared
+ * process runner clipped or redacted stdout: an over-cap query produced a
+ * plain truncation marker inside the frame stream and was misreported as
+ * malformed output. Structured events let us name overflow explicitly and
+ * redact only the retained source text.
  */
 function ripgrepCandidateLines(
   repoRoot: string,
@@ -594,13 +624,15 @@ function ripgrepCandidateLines(
   skippedBinaryPaths?: Set<string>,
 ): Map<string, Array<{ line: number; text: string }>> {
   const found = new Map<string, Array<{ line: number; text: string }>>();
+  const allowed = new Set(allowedPaths);
+  const binaryPaths = new Set<string>();
   const searchDeadline = Date.now() + 15_000;
   for (let offset = 0; offset < allowedPaths.length; offset += 128) {
     const paths = allowedPaths.slice(offset, offset + 128);
     const remainingMs = searchDeadline - Date.now();
     if (remainingMs <= 0) throw new Error('RIPGREP_SEARCH_TIMEOUT: source discovery exceeded 15s total budget');
     const result = runProcess('rg', [
-      '--null', '--with-filename', '--line-number', '--no-heading', '--color', 'never', '--fixed-strings', '--no-ignore', '--no-config', '--no-messages',
+      '--json', '--with-filename', '--line-number', '--no-heading', '--color', 'never', '--fixed-strings', '--no-ignore', '--no-config', '--no-messages',
       '--max-count', String(Math.min(Math.max(maxResultsPerQuery, 32), 500)),
       ...(caseSensitive ? [] : ['--ignore-case']),
       ...queries.flatMap((query) => ['-e', query]),
@@ -612,50 +644,57 @@ function ripgrepCandidateLines(
       env: { PATH: [process.env.PATH, ...(process.platform === 'darwin' ? ['/opt/homebrew/bin', '/usr/local/bin'] : [])].filter(Boolean).join(delimiter) },
       timeoutMs: Math.min(remainingMs, 5_000),
       maxOutputBytes: 16 * 1024 * 1024,
+      // Keep JSON frames intact until validation; source text is redacted below.
+      structuredStdout: true,
     });
-    if (result.error || (result.status !== 0 && result.status !== 1) || result.timedOut
-      || result.stdout.endsWith('\n[output truncated after 16777216 bytes]')) {
+    if (result.stdoutTruncated) {
+      throw new Error('RIPGREP_SEARCH_OUTPUT_TRUNCATED: source discovery exceeded 16MB; narrow the query or include_globs');
+    }
+    if (result.error || (result.status !== 0 && result.status !== 1) || result.timedOut) {
       throw new Error('RIPGREP_SEARCH_FAILED: ' + (result.error || result.stderr || String(result.status)));
     }
-    // NUL-framed paths survive the shared process redactor. JSON-lines did
-    // not: masking source text inside a JSON string invalidated its syntax.
-    let cursor = 0;
-    while (cursor < result.stdout.length) {
-      const filenameEnd = result.stdout.indexOf('\0', cursor);
-      const firstLineEnd = result.stdout.indexOf('\n', cursor);
-      // Ripgrep prints a plain-text "path: binary file matches" notice when
-      // a candidate contains NUL bytes. This notice has no NUL-framed path
-      // or line number; discard only notices naming an exact authorized path.
-      // One binary match must not invalidate unrelated valid source evidence.
-      if (firstLineEnd >= cursor && (filenameEnd < 0 || firstLineEnd < filenameEnd)) {
-        const notice = result.stdout.slice(cursor, firstLineEnd);
-        const marker = ': binary file matches';
-        const markerAt = notice.lastIndexOf(marker);
-        const binaryPath = markerAt > 0 ? notice.slice(0, markerAt) : '';
-        const suffix = markerAt >= 0 ? notice.slice(markerAt + marker.length) : '';
-        if (!paths.includes(binaryPath) || (suffix !== '' && !/^ \(found "\\0" byte around offset \d+\)$/.test(suffix))) {
-          throw new Error('RIPGREP_SEARCH_INVALID_OUTPUT: malformed NUL/line-framed match');
+    for (const [index, line] of result.stdout.split('\n').entries()) {
+      if (!line.trim()) continue;
+      let event: RipgrepJsonEvent;
+      try {
+        event = JSON.parse(line) as RipgrepJsonEvent;
+      } catch {
+        throw new Error(`RIPGREP_SEARCH_INVALID_OUTPUT: malformed JSON event at line ${index + 1}`);
+      }
+      if (event.type === 'begin' || event.type === 'end' || event.type === 'summary') {
+        if (event.type === 'end' && event.data?.binary_offset !== null && event.data?.binary_offset !== undefined) {
+          const binaryPath = decodeRipgrepJsonValue(event.data.path);
+          if (binaryPath && allowed.has(binaryPath)) binaryPaths.add(binaryPath);
         }
-        skippedBinaryPaths?.add(binaryPath);
-        cursor = firstLineEnd + 1;
         continue;
       }
-      const lineEnd = result.stdout.indexOf('\n', filenameEnd + 1);
-      const numberEnd = result.stdout.indexOf(':', filenameEnd + 1);
-      if (filenameEnd < cursor || lineEnd < 0 || numberEnd <= filenameEnd || numberEnd >= lineEnd) {
-        throw new Error('RIPGREP_SEARCH_INVALID_OUTPUT: malformed NUL/line-framed match');
+      if (event.type !== 'match') {
+        throw new Error('RIPGREP_SEARCH_INVALID_OUTPUT: unsupported event type');
       }
-      const path = result.stdout.slice(cursor, filenameEnd);
-      const line = Number(result.stdout.slice(filenameEnd + 1, numberEnd));
-      if (!Number.isSafeInteger(line) || line <= 0) {
+      const path = decodeRipgrepJsonValue(event.data?.path);
+      if (!path || !allowed.has(path)) {
+        throw new Error(`RIPGREP_SEARCH_UNAUTHORIZED_PATH: ${path ? path.slice(0, 300) : '<missing>'} is not an authorized candidate`);
+      }
+      const lineNumber = Number(event.data?.line_number);
+      if (!Number.isSafeInteger(lineNumber) || lineNumber <= 0) {
         throw new Error('RIPGREP_SEARCH_INVALID_OUTPUT: malformed source line number');
       }
-      const text = result.stdout.slice(numberEnd + 1, lineEnd).replace(/\r$/, '');
+      const rawText = decodeRipgrepJsonValue(event.data?.lines);
+      if (rawText === undefined) {
+        throw new Error('RIPGREP_SEARCH_INVALID_OUTPUT: match event has no line text or bytes');
+      }
+      // Source text is the only retained free-form field, so it is redacted
+      // after the protocol has been validated.
+      const text = redactSensitiveText(rawText.replace(/\r?\n$/, '')).text;
       const lines = found.get(path) ?? [];
-      lines.push({ line, text });
+      lines.push({ line: lineNumber, text });
       found.set(path, lines);
-      cursor = lineEnd + 1;
     }
+  }
+  for (const path of binaryPaths) {
+    if (!found.has(path)) continue;
+    found.delete(path);
+    skippedBinaryPaths?.add(path);
   }
   for (const lines of found.values()) lines.sort((a, b) => a.line - b.line);
   return found;

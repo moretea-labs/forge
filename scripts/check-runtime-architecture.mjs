@@ -43,6 +43,9 @@ function forbidBetween(path, startNeedle, endNeedle, expression, description) {
   }
   if (expression.test(source.slice(start, end))) failures.push(`${path} violates ${description}`);
 }
+// The duplicate iOS MCP aliases were retired after typed ios plugin cutover.
+// Do not recreate a second execution schema for these names.
+forbid('adapters/mcp/runtime-gateway/runtime-tool-definitions.ts', /definition\('ios_(?:xcode_status|simulators_list|project_discover|schemes_list|simulator_boot|app_build|app_install|app_launch|simulator_screenshot|simulator_log_tail|ui_smoke_test)'/, 'retired iOS MCP aliases must not be re-exposed');
 const GENERATED_SOURCE_DIRECTORY_NAMES = new Set([
   'node_modules',
   'dist',
@@ -689,7 +692,6 @@ const required = [
   'src/runtime/control-plane/execution/work-handle-authority.ts',
   'src/runtime/control-plane/execution/work-verification-context.ts',
   'src/runtime/control-plane/execution/work-verification-service.ts',
-  'src/runtime/control-plane/execution/implementation-review-content.ts',
   'packages/protocols/handoff/status.ts',
   'packages/kernel/work/domain/implementation-review.ts',
   'packages/kernel/work/domain/state-machine.ts',
@@ -1705,11 +1707,13 @@ forbid(
   /\bcreateExecutionJob\b/,
   'Runtime MCP tools must not retain dormant ExecutionJob creation paths',
 );
-forbid(
-  'src/runtime/execution/jobs/legacy-adapter.ts',
-  /\bcreateExecutionJob\b|\bdispatchLegacyLocalJob\b/,
-  'Legacy Local Bridge compatibility must be read-only and must not dispatch new ExecutionJobs',
-);
+requireMissing('adapters/mcp/tool-capability-cache.ts');
+requireMissing('src/runtime/execution/jobs/legacy-adapter.ts');
+requireMissing('src/cli/mcp/oauth-client-retirement.ts');
+requireMissing('adapters/mcp/tool-mapping/umbrella-tools.ts');
+requireMissing('src/runtime/control-plane/execution/implementation-review-content.ts');
+requireMissing('src/runtime/shared/idempotent-retry.ts');
+requireMissing('tests/cli/tool-capability-cache.test.ts');
 forbid(
   'src/cli/local-bridge/server.ts',
   /\bsubmitLocalBridgeJob\b|\bdispatchLocalBridgeJob\b|\basyncExecute\b/,
@@ -2359,6 +2363,7 @@ for (const path of [
   'src/cli/mcp/transports/stdio.ts',
   'src/runtime/gateway/mcp/execution-tools.ts',
   'src/runtime/gateway/mcp/legacy-ios-tool-adapter.ts',
+  'adapters/mcp/runtime-gateway/legacy-ios-tool-adapter.ts',
   'src/runtime/gateway/mcp/persisted-check-process.ts',
   'src/runtime/gateway/mcp/process-tools.ts',
   'src/runtime/gateway/mcp/router.ts',

@@ -588,7 +588,6 @@ function accessToolGroups(_mode: AccessMode): string[] {
 function controllerAccessStateView(ctx: ConsoleFacadeContext): AccessStateViewModel {
   const configured = resolveControllerAccessState({
     controllerHome: ctx.controllerHome,
-    repoRoot: ctx.repository.canonicalRoot,
   });
   const toolCtx = createMcpToolContext({
     repo: ctx.repository.canonicalRoot,
@@ -597,7 +596,6 @@ function controllerAccessStateView(ctx: ConsoleFacadeContext): AccessStateViewMo
   }) as MultiRepositoryMcpToolContext;
   const effective = resolveControllerAccessState({
     controllerHome: ctx.controllerHome,
-    repoRoot: ctx.repository.canonicalRoot,
   });
   const repositoryPolicy = readRepositoryAccessPolicy(ctx.controllerHome, ctx.repository.repoId);
   const runtimeGeneration = readRuntimeGeneration(ctx.controllerHome);
@@ -995,7 +993,7 @@ export function setConsoleAccessPolicy(
   if (input.confirmAuthorization !== true) {
     throw new Error('ACCESS_MODE_AUTHORIZATION_REQUIRED: changing repository access requires explicit confirmation');
   }
-  persistControllerAccessMode(ctx.controllerHome, input.mode, ctx.repository.canonicalRoot);
+  persistControllerAccessMode(ctx.controllerHome, input.mode);
   const policy = writeRepositoryAccessPolicy(ctx.controllerHome, ctx.repository.repoId, input.mode, 'user');
   return {
     policy,

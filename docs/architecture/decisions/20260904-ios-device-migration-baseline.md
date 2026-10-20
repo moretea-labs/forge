@@ -160,3 +160,7 @@ Removal condition: once the stable MCP/tool surface and all maintained callers u
 - Signing/WDA/CoreDevice tunnel state has one provider owner.
 - Exactly one migration proxy exists and it is translation-only.
 - The migration reuses the generic plugin registration/action protocol and introduces no iOS-specific competing protocol authority.
+
+### iOS MCP alias removal (2026-10-21)
+
+The temporary migration proxy described above has been retired: the 11 `ios_*` MCP aliases were removed from public tool definitions, gateway routing and dispatch. Eight were translations to the existing `plugin_action_execute` owner and three already returned retirement errors. The canonical `ios` plugin keeps Xcode/Simulator actions; this change does not disable iOS development or remove physical-device `computer` authority. `ios_review_packet` remains a distinct review-composition capability. The historical migration table above remains the original decision record.

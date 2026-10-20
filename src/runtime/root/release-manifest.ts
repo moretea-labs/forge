@@ -61,9 +61,10 @@ export const COMPILED_RUNTIME_RELEASE_COMPONENT_FIELDS = [
   'workflowSupervisorNativeHostEntrypoint', 'workflowSupervisorNativeHostArtifactIdentity',
   'processRunnerEntrypoint', 'processRunnerArtifactIdentity',
   'checkRunnerEntrypoint', 'checkRunnerArtifactIdentity',
+  'contextPackEntrypoint', 'contextPackArtifactIdentity',
+  'pluginActionSidecarEntrypoint', 'pluginActionSidecarArtifactIdentity',
   'schedulerWorkerEntrypoint', 'schedulerWorkerArtifactIdentity',
   'periodicCleanupEntrypoint', 'periodicCleanupArtifactIdentity',
-  'pluginActionSidecarEntrypoint', 'pluginActionSidecarArtifactIdentity',
   'externalPluginProbeEntrypoint', 'externalPluginProbeArtifactIdentity',
   'packageRoot', 'packageArtifactIdentity',
 ] as const satisfies readonly (keyof RuntimeReleaseManifest)[];
@@ -327,7 +328,7 @@ export interface RuntimeReleaseExecutionSurface {
   manifest: RuntimeReleaseManifest;
   releaseRoot: string;
   entries: Array<{
-    name: 'runtime_interpreter' | 'process_runner' | 'check_runner' | 'typescript_navigation' | 'context_pack' | 'scheduler_worker' | 'periodic_cleanup';
+    name: 'runtime_interpreter' | 'process_runner' | 'check_runner' | 'typescript_navigation' | 'context_pack' | 'plugin_action_sidecar' | 'scheduler_worker' | 'periodic_cleanup';
     path: string;
     artifactIdentity: string;
     canary: 'runtime_interpreter' | 'process_runtime';
@@ -348,6 +349,18 @@ export function assertRuntimeReleaseExecutionSurface(
   if (!manifest.processRunnerEntrypoint || !manifest.processRunnerArtifactIdentity
     || !manifest.checkRunnerEntrypoint || !manifest.checkRunnerArtifactIdentity) {
     throw new Error('RUNTIME_RELEASE_PROCESS_RUNTIME_SURFACE_INCOMPLETE: process-runner.js and forge-check-runner are required');
+  }
+  // `rh_context` is a core Runtime capability. Every activatable release must
+  // carry its own context-pack sidecar instead of failing open at query time
+  // or borrowing source from another release/checkout.
+  if (!manifest.contextPackEntrypoint || !manifest.contextPackArtifactIdentity) {
+    throw new Error('RUNTIME_RELEASE_CONTEXT_PACK_SURFACE_INCOMPLETE: forge-context-pack is required for rh_context');
+  }
+  // Process Runtime's trusted-child fence resolves this exact release-owned
+  // path. A package release without it must fail activation, not a plugin
+  // action after admission.
+  if (!manifest.pluginActionSidecarEntrypoint || !manifest.pluginActionSidecarArtifactIdentity) {
+    throw new Error('RUNTIME_RELEASE_PLUGIN_ACTION_SIDECAR_SURFACE_INCOMPLETE: forge-plugin-action-sidecar is required');
   }
   if (manifest.executionMode === 'standalone-binary'
     && (!manifest.schedulerWorkerEntrypoint || !manifest.schedulerWorkerArtifactIdentity
@@ -384,6 +397,12 @@ export function assertRuntimeReleaseExecutionSurface(
       name: 'context_pack' as const,
       path: join(releaseRoot, manifest.contextPackEntrypoint),
       artifactIdentity: manifest.contextPackArtifactIdentity,
+      canary: 'process_runtime' as const,
+    }] : []),
+    ...(manifest.pluginActionSidecarEntrypoint && manifest.pluginActionSidecarArtifactIdentity ? [{
+      name: 'plugin_action_sidecar' as const,
+      path: join(releaseRoot, manifest.pluginActionSidecarEntrypoint),
+      artifactIdentity: manifest.pluginActionSidecarArtifactIdentity,
       canary: 'process_runtime' as const,
     }] : []),
     ...(manifest.schedulerWorkerEntrypoint && manifest.schedulerWorkerArtifactIdentity ? [{

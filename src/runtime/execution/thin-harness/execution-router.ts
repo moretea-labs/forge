@@ -84,9 +84,6 @@ const DURABLE_OPERATIONS = new Set<string>([
   'repository_git_merge_branch',
   'repository_git_delete_branch',
   'integrate_task_run',
-  'ios_app_build',
-  'ios_app_install',
-  'ios_app_launch',
   'work_finalize',
 ]);
 

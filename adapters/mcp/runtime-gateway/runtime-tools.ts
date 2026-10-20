@@ -1,7 +1,6 @@
 
 import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
-import { callLegacyIosAdapter } from './legacy-ios-tool-adapter';
 import { result } from './result-adapter';
 import { callContextAdapter } from './context-adapter';import { callPluginAdapter } from './plugin-adapter';import { callRecoveryAdapter } from './recovery-adapter';import { callArtifactAdapter } from './artifact-adapter';import { callFilesystemAdapter } from './filesystem-adapter';import { callModelAdapter } from './model-adapter';
 import { callProtectedComputerAdapter } from './protected-computer-adapter';
@@ -55,8 +54,6 @@ async function callRuntimeToolUnchecked(ctx: MultiRepositoryMcpToolContext, name
     if (executionControl) return executionControl;
     const maintenance = await callMaintenanceAdapter(ctx, name, args);
     if (maintenance) return maintenance;
-    const legacyIos = await callLegacyIosAdapter(ctx, name, args);
-    if (legacyIos) return legacyIos;
     if (name === 'rh_work') return callWorkAdapter(ctx, args);
     return undefined;
   } catch (error) {

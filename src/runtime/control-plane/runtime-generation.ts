@@ -118,11 +118,15 @@ function readImmutableRuntimeReleaseIdentity(root: string): ImmutableRuntimeRele
   const sourceCommit = typeof manifest.sourceCommit === 'string' ? manifest.sourceCommit.trim() : '';
   const releaseRevision = typeof manifest.releaseRevision === 'string' ? manifest.releaseRevision.trim() : '';
   const sourceRepositoryId = typeof manifest.sourceRepositoryId === 'string' ? manifest.sourceRepositoryId.trim() : '';
-  if (!sourceCommit || !releaseRevision || typeof manifest.cleanWorkspace !== 'boolean') {
+  // Package-source releases have no Git checkout; their immutable package
+  // revision is the source identity. Compiled/source releases still require an
+  // explicit source commit.
+  const packageRelease = releaseRevision.startsWith('package:');
+  if ((!sourceCommit && !packageRelease) || !releaseRevision || typeof manifest.cleanWorkspace !== 'boolean') {
     throw new Error(`RUNTIME_RELEASE_MANIFEST_INCOMPLETE: ${manifestPath}`);
   }
   return {
-    sourceCommit,
+    sourceCommit: sourceCommit || releaseRevision,
     releaseRevision,
     ...(sourceRepositoryId ? { sourceRepositoryId } : {}),
     cleanWorkspace: manifest.cleanWorkspace,

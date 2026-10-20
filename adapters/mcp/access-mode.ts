@@ -2,7 +2,6 @@ import { existsSync } from 'fs';
 import {
   loadMcpServiceLocalConfig,
   mcpControllerHomeLocalConfigPath,
-  mcpLocalConfigPath,
   type McpLocalConfig,
   writeMcpServiceLocalConfig,
 } from './auth';
@@ -11,10 +10,7 @@ import {
   type AccessMode,
 } from '../../src/runtime/control-plane/governance/access-policy';
 
-export type ControllerAccessConfigSource =
-  | 'controller_home.access_mode'
-  | 'repo_local_fallback.access_mode'
-  | 'default';
+export type ControllerAccessConfigSource = 'controller_home.access_mode' | 'default';
 
 export interface ControllerAccessState {
   configuredAccessMode: AccessMode;
@@ -24,25 +20,18 @@ export interface ControllerAccessState {
   source: ControllerAccessConfigSource;
   lastAppliedAt?: string;
   exposureRevision: number;
-  configPathSource: 'controller_home' | 'repo_local_fallback' | 'default';
+  configPathSource: 'controller_home' | 'default';
   schemaStableAcrossAccessModes: true;
 }
 
 export interface ResolveControllerAccessStateInput {
   controllerHome: string;
-  repoRoot?: string;
 }
 
 export interface PersistControllerAccessModeResult {
   configPath: string;
   config: McpLocalConfig;
   state: ControllerAccessState;
-}
-
-function configLocation(controllerHome: string, repoRoot?: string): 'controller_home' | 'repo_local_fallback' | 'default' {
-  if (existsSync(mcpControllerHomeLocalConfigPath(controllerHome))) return 'controller_home';
-  if (repoRoot && existsSync(mcpLocalConfigPath(repoRoot))) return 'repo_local_fallback';
-  return 'default';
 }
 
 /** One-way interpretation of old persisted permissions, not a toolset selector. */
@@ -61,15 +50,15 @@ function normalizedRevision(value: unknown): number {
 }
 
 export function resolveControllerAccessState(input: ResolveControllerAccessStateInput): ControllerAccessState {
-  const location = configLocation(input.controllerHome, input.repoRoot);
-  const config = loadMcpServiceLocalConfig(input.controllerHome, input.repoRoot);
+  const location = existsSync(mcpControllerHomeLocalConfigPath(input.controllerHome)) ? 'controller_home' : 'default';
+  const config = loadMcpServiceLocalConfig(input.controllerHome);
   const lastAppliedAt = typeof config?.accessModeUpdatedAt === 'string' && config.accessModeUpdatedAt.trim()
     ? config.accessModeUpdatedAt
     : undefined;
   const exposureRevision = normalizedRevision(config?.accessModeRevision);
   const configuredAccessMode = configuredControllerAccessMode(config);
   const source: ControllerAccessConfigSource = isAccessMode(config?.accessMode)
-    ? (location === 'controller_home' ? 'controller_home.access_mode' : 'repo_local_fallback.access_mode')
+    ? 'controller_home.access_mode'
     : 'default';
   return {
     configuredAccessMode,
@@ -86,9 +75,8 @@ export function resolveControllerAccessState(input: ResolveControllerAccessState
 export function persistControllerAccessMode(
   controllerHome: string,
   mode: AccessMode,
-  repoRoot?: string,
 ): PersistControllerAccessModeResult {
-  const existing = loadMcpServiceLocalConfig(controllerHome, repoRoot) ?? {};
+  const existing = loadMcpServiceLocalConfig(controllerHome) ?? {};
   const accessModeUpdatedAt = new Date().toISOString();
   const accessModeRevision = normalizedRevision(existing.accessModeRevision) + 1;
   const config: McpLocalConfig = {
@@ -106,6 +94,6 @@ export function persistControllerAccessMode(
   return {
     configPath,
     config,
-    state: resolveControllerAccessState({ controllerHome, repoRoot }),
+    state: resolveControllerAccessState({ controllerHome }),
   };
 }

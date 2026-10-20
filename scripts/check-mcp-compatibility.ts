@@ -16,7 +16,9 @@ import { PREFERRED_CONTROLLER_TOOL_NAMES, PREFERRED_FACADE_TOOL_NAMES } from '..
 // The preferred model-routing list remains small; actual tools/list always
 // exposes the complete authoritative registry, without exposure modes.
 const MAX_PREFERRED_TOOL_COUNT = 24;
-const EXPECTED_EXPOSED_NAME_FINGERPRINT = '10db066a55335555';
+// 2026-10-21: retiring the eleven redundant ios_* MCP aliases intentionally
+// changes the complete registry; preferred tool names/schema remain unchanged.
+const EXPECTED_EXPOSED_NAME_FINGERPRINT = 'ee65dccda3c4ebfb';
 
 // #197 decomposition authority: the public/frozen Tool Contract is an explicit
 // baseline, independent from whichever internal adapter currently defines a
