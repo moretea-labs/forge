@@ -1,7 +1,7 @@
 import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
 import { admitRequirement, promoteRequirementCandidate } from '../../../src/runtime/control-plane/facade/requirement-authority';
-import { listRequirementRevisionRecords, readRequirement, requirementSemanticView, reviseRequirementSemantic } from '../../../src/runtime/control-plane/persistence/requirement-store';
+import { readRequirement, requirementSemanticView, reviseRequirementSemantic } from '../../../src/runtime/control-plane/persistence/requirement-store';
 import { readForgeInstanceIdentity } from '../../../packages/kernel/identity/api/index';
 import { resolveProjectForRepositoryPlacement } from '../../../src/runtime/control-plane/workspace/workspace-store';
 import { buildFacadeResult } from '../../../src/runtime/control-plane/facade';
@@ -37,7 +37,6 @@ export async function callRhWorkRequirementOperation(
       summary: `Requirement ${semantic.requirementId} retrieved at semantic revision ${semantic.revision}.`,
       data: {
         requirement: semantic,
-        ...(args.detail_level === 'detail' ? { revisionHistory: listRequirementRevisionRecords({ controllerHome: ctx.controllerHome }, semantic.requirementId, 100) } : {}),
       },
       detailLevel: args.detail_level === 'detail' ? 'detail' : 'summary',
     }) as unknown as Record<string, unknown>);

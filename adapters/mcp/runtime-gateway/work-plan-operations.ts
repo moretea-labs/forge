@@ -11,7 +11,6 @@ import {
   summarizePlanContract,
   planSemanticView,
   revisePlanSemanticContext,
-  listPlanSemanticRevisionRecords,
   type CheckDefinitionLike,
   type PlanContractStoreOptions,
 } from '../../../src/runtime/control-plane/facade';
@@ -53,7 +52,6 @@ export async function callRhWorkPlanOperation(
           summary: `Plan ${plan.planId} current head retrieved at semantic revision ${planSemanticView(plan).revision}.`,
           data: {
             plan: planSemanticView(plan),
-            ...(args.detail_level === 'detail' ? { revisionHistory: listPlanSemanticRevisionRecords(store, plan.planId) } : {}),
           },
           detailLevel: args.detail_level === 'detail' ? 'detail' : 'summary',
         })

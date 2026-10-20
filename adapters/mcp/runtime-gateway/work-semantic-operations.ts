@@ -3,10 +3,7 @@ import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contra
 import {
   createWorkSemanticContext,
   getWorkContract,
-  listWorkSemanticRevisionRecords,
-  readWorkContractStore,
   normalizeWorkObjectiveRelationIds,
-  projectWorkObjectiveGraph,
   reviseWorkSemanticContext,
   workSemanticView,
   semanticWorkState,
@@ -61,7 +58,6 @@ const RH_WORK_SEMANTIC_OPERATIONS = new Set(['start', 'get', 'revise', 'complete
 type WorkSemanticFacadeData = Record<string, unknown> & {
   work?: ReturnType<typeof workSemanticView>;
   currentWork?: ReturnType<typeof workSemanticView>;
-  revisionHistory?: ReturnType<typeof listWorkSemanticRevisionRecords>;
 };
 
 export function buildWorkSemanticFacadeResult(options: BuildFacadeResultOptions<WorkSemanticFacadeData>) {
@@ -71,7 +67,6 @@ export function buildWorkSemanticFacadeResult(options: BuildFacadeResultOptions<
   // valid objective becomes an ellipsis). Keep execution diagnostics bounded.
   if (options.data.work) facade.data.work = options.data.work;
   if (options.data.currentWork) facade.data.currentWork = options.data.currentWork;
-  if (options.data.revisionHistory) facade.data.revisionHistory = options.data.revisionHistory;
   return facade;
 }
 
@@ -226,20 +221,12 @@ export async function callRhWorkSemanticOperation(
     }) as unknown as Record<string, unknown>, true);
     const semantic = workSemanticView(work);
     const detail = args.detail_level === 'detail';
-    const revisionHistory = detail ? listWorkSemanticRevisionRecords(store, semantic.workId, 100) : [];
-    const objectiveGraph = detail ? projectWorkObjectiveGraph(
-      readWorkContractStore(store).contracts.map(workSemanticView),
-      listWorkSemanticRevisionRecords(store, undefined, 200),
-      semantic.workId,
-    ) : undefined;
     return result(buildWorkSemanticFacadeResult({
       summary: `Work ${semantic.workId} retrieved at semantic revision ${semantic.revision}.`,
       data: {
         work: semantic,
         versionBinding: versionBinding(store, work, detail),
         ...(detail ? {
-          revisionHistory,
-          objectiveGraph,
           executionEvidence: projectWorkExecutionEvidence(work),
           continuation: buildWorkContinuationSnapshot(work),
         } : {}),

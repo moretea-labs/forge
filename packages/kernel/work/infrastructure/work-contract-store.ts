@@ -22,7 +22,7 @@ import {
   type WorkImplementationReviewRecord,
 } from '../domain/implementation-review';
 import { phaseIndex, suggestedActionsForSemanticState, transitionPhaseEvidence, validateWorkSemanticTransition, validateWorkSemantics } from '../domain/state-machine';
-import { normalizeWorkObjectiveRelationIds, validateWorkObjectiveRelationShape } from '../domain/objective-graph';
+import { normalizeWorkObjectiveRelationIds, validateWorkObjectiveRelationShape } from '../domain/objective-relations';
 import {
   WORK_PHASES,
   type EvidenceRef,
