@@ -481,10 +481,15 @@ function gmailActions(): AssistantPluginActionDescriptor[] {
   ];
 }
 
-export function encodeMimeHeaderValue(value: string): string {
-  if (/[\r\n]/.test(value)) {
-    throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'MIME header values must not contain CR or LF.');
+function assertMimeHeaderField(value: string, field: string): string {
+  if (/[\x00-\x1f\x7f-\x9f\u2028\u2029]/u.test(value)) {
+    throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', `${field} contains invalid MIME header control characters.`);
   }
+  return value;
+}
+
+export function encodeMimeHeaderValue(value: string): string {
+  assertMimeHeaderField(value, 'Subject');
   if (/^[\x00-\x7F]*$/.test(value)) return value;
 
   // RFC 2047 encoded-words are limited to 75 characters including wrappers.
@@ -517,10 +522,10 @@ export function buildMimeMessage(args: Record<string, unknown>, config: GmailPlu
     throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'to, subject, and body_text are required.');
   }
   const headers = [
-    `To: ${to.join(', ')}`,
-    ...(cc ? [`Cc: ${cc.join(', ')}`] : []),
-    ...(bcc ? [`Bcc: ${bcc.join(', ')}`] : []),
-    ...(config.accountEmail ? [`From: ${config.accountEmail}`] : []),
+    `To: ${to.map((address) => assertMimeHeaderField(address, 'To')).join(', ')}`,
+    ...(cc ? [`Cc: ${cc.map((address) => assertMimeHeaderField(address, 'Cc')).join(', ')}`] : []),
+    ...(bcc ? [`Bcc: ${bcc.map((address) => assertMimeHeaderField(address, 'Bcc')).join(', ')}`] : []),
+    ...(config.accountEmail ? [`From: ${assertMimeHeaderField(config.accountEmail, 'From')}`] : []),
     `Subject: ${encodeMimeHeaderValue(subject)}`,
     'Content-Type: text/plain; charset="UTF-8"',
     'MIME-Version: 1.0',

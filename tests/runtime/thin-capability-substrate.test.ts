@@ -87,7 +87,45 @@ describe('Thin capability substrate', () => {
     });
     expect(destructiveQuery).toBeUndefined();
 
-    // 3) Revoke grant
+    // 3) An ownerless, scoped grant stays bounded to its principal, exact target and minimum risk.
+    const leastPrivilege = recordCanonicalGrant(controllerHome, {
+      principalId: 'legacy-owner',
+      capabilities: ['audit:read'],
+      target: { kind: 'synthetic', id: 'exact-target' },
+      scopes: ['audit.read'],
+      expiresInMinutes: 60,
+    });
+    expect(leastPrivilege.riskCeiling).toBe('readonly');
+    const exactQuery = {
+      principalId: 'legacy-owner',
+      capability: 'audit:read',
+      target: { kind: 'synthetic', id: 'exact-target' },
+      scopes: ['audit.read'],
+    };
+    expect(findActiveCanonicalGrant(controllerHome, { ...exactQuery, risk: 'readonly' })?.grantId).toBe(leastPrivilege.grantId);
+    expect(findActiveCanonicalGrant(controllerHome, { ...exactQuery, risk: 'remote_write' })).toBeUndefined();
+    expect(findActiveCanonicalGrant(controllerHome, { ...exactQuery, ownerScope: 'another-owner' })).toBeUndefined();
+    expect(findActiveCanonicalGrant(controllerHome, { ...exactQuery, scopes: [] })).toBeUndefined();
+    expect(findActiveCanonicalGrant(controllerHome, { capability: 'audit:read', target: exactQuery.target, scopes: exactQuery.scopes })).toBeUndefined();
+    expect(findActiveCanonicalGrant(controllerHome, { principalId: 'legacy-owner', capability: 'audit:read' })).toBeUndefined();
+    expect(findActiveCanonicalGrant(controllerHome, {
+      principalId: 'legacy-owner',
+      capability: 'audit:read',
+      target: { kind: 'synthetic', id: 'exact-target' },
+    })).toBeUndefined();
+    const legacyPath = join(controllerHome, 'system', 'authorization-grants', 'grants.json');
+    const legacyStore = JSON.parse(readFileSync(legacyPath, 'utf8')) as { grants: Array<Record<string, unknown>> };
+    delete legacyStore.grants.find((grant) => grant.grantId === leastPrivilege.grantId)!.riskCeiling;
+    writeFileSync(legacyPath, JSON.stringify(legacyStore));
+    expect(findActiveCanonicalGrant(controllerHome, { ...exactQuery, risk: 'readonly' })?.grantId).toBe(leastPrivilege.grantId);
+    expect(findActiveCanonicalGrant(controllerHome, { ...exactQuery, risk: 'remote_write' })).toBeUndefined();
+    expect(() => revokeCanonicalGrant(controllerHome, {
+      grantId: leastPrivilege.grantId,
+      ownerScope: 'another-owner',
+      reason: 'unauthorized revocation',
+    })).toThrow('GRANT_OWNER_MISMATCH');
+
+    // 4) Revoke grant
     revokeCanonicalGrant(controllerHome, {
       grantId: globalGrant.grantId,
       ownerScope: 'controller:global',

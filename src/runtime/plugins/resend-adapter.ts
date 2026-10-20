@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
 import type {
@@ -466,7 +467,11 @@ export async function executeResendPluginAction(input: AssistantPluginActionExec
       const text = stringValue(input.args.text);
       const html = stringValue(input.args.html);
       if (!text && !html) throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'text or html is required.');
-      const idempotencyKey = `forge-resend-${input.requestId}`.slice(0, 256);
+      // Preserve short legacy keys; hash complete long identities to avoid prefix collisions.
+      const fullIdempotencyKey = `forge-resend-${input.requestId}`;
+      const idempotencyKey = fullIdempotencyKey.length <= 256
+        ? fullIdempotencyKey
+        : `forge-resend-sha256-${createHash('sha256').update(input.requestId).digest('hex')}`;
       const response = await resendRequest(current, '/emails', {
         method: 'POST',
         headers: { 'Idempotency-Key': idempotencyKey },

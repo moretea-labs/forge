@@ -12,7 +12,7 @@ import { continueGoalWorkloop, runGoalWorkloop, startGoalWorkloop } from '../../
 import { callRhWorkSemanticOperation } from '../../adapters/mcp/runtime-gateway/work-semantic-operations';
 import { buildResendPluginManifest, executeResendPluginAction } from '../../src/runtime/plugins/resend-adapter';
 import { executeAssistantPluginActionApplication } from '../../src/runtime/plugins/action-application';
-import { GMAIL_AUTOMATION_CAPABILITY_ID, GMAIL_OWNER_NOTIFICATION_CAPABILITY_ID, GMAIL_PLUGIN_ID } from '../../src/runtime/plugins/gmail-adapter';
+import { buildMimeMessage, GMAIL_AUTOMATION_CAPABILITY_ID, GMAIL_OWNER_NOTIFICATION_CAPABILITY_ID, GMAIL_PLUGIN_ID } from '../../src/runtime/plugins/gmail-adapter';
 import { controllerPluginConfigPath } from '../../src/runtime/plugins/config-store';
 import { createFirstPartyPluginAdapterMap } from '../../src/runtime/plugins/first-party-registry';
 import { getPluginActionCapabilitySchema } from '../../src/runtime/control-plane/facade/capability-registry';
@@ -263,6 +263,13 @@ describe('scheduled Gmail automation capability', () => {
     const configPath = controllerPluginConfigPath(context.controllerHome, 'gmail');
     mkdirSync(dirname(configPath), { recursive: true });
     const ownerEmail = 'owner@example.test';
+    const mimeConfig = { schemaVersion: 1 as const, enabled: true, provider: 'mock' as const, accountEmail: ownerEmail };
+    const mimeArgs = { to: ['user@example.test'], subject: 'Synthetic test', body_text: 'No email is sent.' };
+    expect(buildMimeMessage(mimeArgs, mimeConfig)).toContain('To: user@example.test');
+    for (const header of ['to', 'cc', 'bcc'] as const) {
+      expect(() => buildMimeMessage({ ...mimeArgs, [header]: ['user@example.test\r\nX-Injected: yes'] }, mimeConfig)).toThrow('PLUGIN_ACTION_ARGUMENT_INVALID');
+    }
+    expect(() => buildMimeMessage(mimeArgs, { ...mimeConfig, accountEmail: 'owner@example.test\r\nX-Injected: yes' })).toThrow('PLUGIN_ACTION_ARGUMENT_INVALID');
     writeFileSync(configPath, JSON.stringify({ enabled: true, provider: 'mock', accountEmail: ownerEmail }, null, 2));
     const origin = { surface: 'mcp' as const, actor: 'plugin_action_execute' as const };
 
@@ -1209,6 +1216,12 @@ describe('Resend first-party plugin', () => {
       const sent = await resendAction(repoRoot, 'send_email', { to: ['receiver@example.com'], subject: 'Daily report', text: 'Status OK' }, 'daily-report-2026-08-09');
       expect(sent.status).toBe('sent');
       expect(observedIdempotencyKey).toBe('forge-resend-daily-report-2026-08-09');
+      const longPrefix = 'same-prefix-'.repeat(24);
+      await resendAction(repoRoot, 'send_email', { to: ['receiver@example.com'], subject: 'Long identity A', text: 'Status OK' }, `${longPrefix}a`);
+      const firstLongKey = observedIdempotencyKey;
+      await resendAction(repoRoot, 'send_email', { to: ['receiver@example.com'], subject: 'Long identity B', text: 'Status OK' }, `${longPrefix}b`);
+      expect(observedIdempotencyKey).not.toBe(firstLongKey);
+      expect(observedIdempotencyKey?.length).toBeLessThanOrEqual(256);
     } finally {
       globalThis.fetch = originalFetch;
       resetResendOAuthRuntimeForTest();

@@ -168,7 +168,7 @@ export function recordCanonicalGrant(controllerHome: string, input: RecordGrantI
     capabilities: [...new Set(input.capabilities.map((c) => c.trim()).filter(Boolean))].sort(),
     ...(input.target ? { target: input.target } : {}),
     ...(input.scopes ? { scopes: [...new Set(input.scopes.map((s) => s.trim()).filter(Boolean))].sort() } : {}),
-    ...(input.riskCeiling ? { riskCeiling: input.riskCeiling } : {}),
+    riskCeiling: input.riskCeiling ?? 'readonly',
     ...(input.constraints ? { constraints: input.constraints } : {}),
     createdAt: timestamp,
     updatedAt: timestamp,
@@ -229,7 +229,7 @@ export function revokeCanonicalGrant(controllerHome: string, input: RevokeGrantI
   const index = store.grants.findIndex((g) => g.grantId === grantId);
   if (index < 0) throw new Error(`GRANT_NOT_FOUND: ${grantId}`);
   const current = store.grants[index]!;
-  if (input.ownerScope && current.ownerScope && current.ownerScope !== input.ownerScope.trim()) {
+  if (input.ownerScope && current.ownerScope !== input.ownerScope.trim()) {
     throw new Error(`GRANT_OWNER_MISMATCH: ${grantId}`);
   }
   const revoked: Grant = {
@@ -247,19 +247,21 @@ export function findActiveCanonicalGrant(controllerHome: string, query: QueryGra
   const store = loadStore(controllerHome);
   const nowMs = (query.at ?? new Date()).getTime();
   const requestedRiskRank = RISK_RANK[query.risk ?? 'readonly'] ?? 0;
+  const principalId = query.principalId?.trim();
+  const ownerScope = query.ownerScope?.trim();
+  if (!principalId && !ownerScope) return undefined;
 
   for (const grant of store.grants) {
     if (grant.revokedAt) continue;
     if (Date.parse(grant.expiresAt) <= nowMs) continue;
-    if (query.principalId && grant.principalId !== query.principalId.trim()) continue;
-    if (query.ownerScope && grant.ownerScope && grant.ownerScope !== query.ownerScope.trim()) continue;
+    if (principalId && grant.principalId !== principalId) continue;
+    if (ownerScope && grant.ownerScope !== ownerScope) continue;
     if (!capabilityMatches(grant.capabilities, query.capability)) continue;
-    if (query.target && !targetMatches(grant.target, query.target)) continue;
-    if (query.scopes && !scopesContain(grant.scopes, query.scopes)) continue;
-    if (grant.riskCeiling) {
-      const grantRiskRank = RISK_RANK[grant.riskCeiling] ?? 0;
-      if (grantRiskRank < requestedRiskRank) continue;
-    }
+    if (query.target ? !targetMatches(grant.target, query.target) : Boolean(grant.target)) continue;
+    if (!query.scopes?.length && grant.scopes?.length) continue;
+    if (query.scopes?.length && !scopesContain(grant.scopes, query.scopes)) continue;
+    // Missing ceilings in persisted v1 grants are read-only, never unrestricted.
+    if ((RISK_RANK[grant.riskCeiling ?? 'readonly'] ?? 0) < requestedRiskRank) continue;
     return structuredClone(grant);
   }
   return undefined;
