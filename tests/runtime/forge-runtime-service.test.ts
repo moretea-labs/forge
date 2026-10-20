@@ -48,8 +48,12 @@ function fixture(): { root: string; home: string; repo: string; token: string } 
 function writePackageRuntimeCanaryFixture(packageRoot: string, supportsCurrentCanary = true): void {
   const executionRoot = join(packageRoot, 'src', 'runtime', 'execution', 'process-runtime');
   const cliRoot = join(packageRoot, 'src', 'cli');
+  const contextPackRoot = join(packageRoot, 'adapters', 'mcp', 'runtime-gateway');
+  const pluginSidecarRoot = join(packageRoot, 'src', 'runtime', 'plugins');
   mkdirSync(executionRoot, { recursive: true });
   mkdirSync(cliRoot, { recursive: true });
+  mkdirSync(contextPackRoot, { recursive: true });
+  mkdirSync(pluginSidecarRoot, { recursive: true });
   const canaryOnly = supportsCurrentCanary
     ? [
       `if (process.argv.includes('--forge-release-canary-child')) {`,
@@ -61,6 +65,8 @@ function writePackageRuntimeCanaryFixture(packageRoot: string, supportsCurrentCa
     : `process.exit(process.argv.includes('--forge-release-canary-child') ? 17 : 2);\n`;
   writeFileSync(join(executionRoot, 'process-runner-entry.ts'), canaryOnly);
   writeFileSync(join(executionRoot, 'check-runner-sidecar.ts'), canaryOnly);
+  writeFileSync(join(contextPackRoot, 'context-pack-sidecar.ts'), canaryOnly);
+  writeFileSync(join(pluginSidecarRoot, 'plugin-action-sidecar.ts'), canaryOnly);
   writeFileSync(
     join(cliRoot, 'index.ts'),
     "if (process.argv.slice(2).join(' ') === 'mcp serve --help') process.exit(0);\nprocess.exit(4);\n",

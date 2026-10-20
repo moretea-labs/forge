@@ -3,6 +3,7 @@ import { createHash } from 'crypto';
 import { readFileSync, rmSync, writeFileSync } from 'fs';
 import { getRepository } from '../../cli/repositories/registry';
 import type { AssistantPluginActionRequest } from './types';
+import { PROCESS_RUNTIME_RELEASE_CANARY_ARG } from '../execution/process-runtime/canary';
 import { submitAssistantPluginAction, submitControllerPluginAction } from './store';
 
 interface Envelope {
@@ -50,6 +51,11 @@ export async function runPluginActionSidecar(argv = process.argv.slice(2)): Prom
   } finally {
     rmSync(requestPath, { force: true });
   }
+}
+
+if (process.argv.includes(PROCESS_RUNTIME_RELEASE_CANARY_ARG)) {
+  writeFileSync(1, 'forge plugin-action sidecar release canary\n');
+  process.exit(0);
 }
 
 const direct = typeof process.argv[1] === 'string' && process.argv[1].includes('plugin-action-sidecar');

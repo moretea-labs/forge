@@ -122,7 +122,7 @@ async function callRepositoryList(endpoint: string, token: string): Promise<Reco
     const listed = await client.listTools();
     const names = listed.tools.map((tool) => tool.name);
     expect(names).toContain('repository_list');
-    expect(names).not.toContain('controller_ready');
+    expect(names).toContain('controller_ready');
     const result = await client.callTool({ name: 'repository_list', arguments: {} });
     expect(result.isError).not.toBe(true);
     return result.structuredContent as Record<string, unknown>;
@@ -643,6 +643,53 @@ describe('canonical single Runtime', () => {
     cleanups.push(() => runtime.stop('TEST_CLEANUP'));
     await runtime.start();
     expect(schedulerStarted).toBe(true);
+  });
+
+  test('package release resolves scheduler and gateway source root inside the package snapshot', async () => {
+    const fixture = createFixture({ runtimeInstanceId: 'runtime-package-source-root' });
+    let capturedSourceRoot: string | undefined;
+    const runtime = new CanonicalForgeRuntime(fixture.config, {
+      loadReleaseManifest: () => ({
+        schemaVersion: 1,
+        releaseId: 'package-test-release',
+        artifactIdentity: 'sha256:test-artifact',
+        entrypoint: 'forge-runtime',
+        packageRoot: 'package',
+        packageArtifactIdentity: `sha256:${'a'.repeat(64)}`,
+        arguments: [],
+        configurationSchemaVersion: 1,
+        controllerHome: resolve(fixture.controllerHome),
+        databaseSchemaCompatibility: { minimum: 1, maximum: 1 },
+        workerProtocolVersion: 1,
+        releaseRevision: 'package:1.8.2:test',
+        createdAt: '2026-08-05T00:00:00.000Z',
+      }),
+      collectRuntimeSourceIdentity: () => ({
+        repoId: 'repo-package-test',
+        checkoutId: 'checkout-package-test',
+        repoRoot: fixture.root,
+        canonicalRoot: fixture.root,
+        branch: null,
+        commit: '0'.repeat(40),
+        defaultBranch: 'main',
+        defaultBranchCommit: '0'.repeat(40),
+        dirty: false,
+        observedAt: '2026-08-05T00:00:00.000Z',
+      }) as any,
+      startScheduler: (input) => {
+        capturedSourceRoot = input.runtimeSourceRoot;
+        return inertScheduler();
+      },
+      startLocalBridge: async () => undefined,
+      startTransport: async () => ({ endpoint: 'http://127.0.0.1:9877/mcp', host: '127.0.0.1', port: 9877, close: async () => undefined }),
+      runMcpProbe: async () => undefined,
+      computeToolSurfaceFingerprint: () => 'test-fingerprint',
+      stopLightweightProcesses: async () => 0,
+      stopContextReadHelpers: async () => undefined,
+    });
+    cleanups.push(() => runtime.stop('TEST_CLEANUP'));
+    await runtime.start();
+    expect(capturedSourceRoot).toBe(join(fixture.root, 'package'));
   });
 
   test('canonical Runtime owns the configured embedded Local Bridge lifecycle', async () => {

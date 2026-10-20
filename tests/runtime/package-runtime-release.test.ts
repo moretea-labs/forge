@@ -17,7 +17,7 @@ function fixture(): { home: string; packageRoot: string } {
   roots.push(root);
   const home = join(root, 'home');
   const packageRoot = join(root, 'package-source');
-  for (const dir of ['src/cli', 'src/runtime/root', 'src/runtime/shared', 'src/runtime/execution/process-runtime', 'adapters/mcp', 'packages/kernel/scheduler/api', 'supervisor', 'bin', 'assets', 'scripts']) {
+  for (const dir of ['src/cli', 'src/runtime/root', 'src/runtime/shared', 'src/runtime/execution/process-runtime', 'src/runtime/plugins', 'adapters/mcp/runtime-gateway', 'packages/kernel/scheduler/api', 'supervisor', 'bin', 'assets', 'scripts']) {
     mkdirSync(join(packageRoot, dir), { recursive: true });
   }
   writeFileSync(join(packageRoot, 'package.json'), JSON.stringify({ name: '@moretea-labs/forge', version: '9.9.9-test' }));
@@ -25,11 +25,13 @@ function fixture(): { home: string; packageRoot: string } {
   writeFileSync(join(packageRoot, 'src', 'cli', 'index.ts'), "import { supervisorClient } from '../../supervisor/client';\nif (process.argv.slice(2).join(' ') === 'mcp serve --help') process.exit(supervisorClient === 1 ? 0 : 3);\nprocess.exit(4);\n");
   writeFileSync(join(packageRoot, 'src', 'runtime.ts'), 'export const runtime = 1;\n');
   writeFileSync(join(packageRoot, 'adapters', 'mcp', 'adapter.ts'), 'export const adapter = 1;\n');
+  writeFileSync(join(packageRoot, 'adapters', 'mcp', 'runtime-gateway', 'context-pack-sidecar.ts'), "if (process.argv.includes('--forge-release-canary-child')) { console.log('forge context-pack release canary'); process.exit(0); } process.exit(2);\n");
   writeFileSync(join(packageRoot, 'packages', 'kernel', 'scheduler', 'api', 'index.ts'), 'export const scheduler = 1;\n');
   writeFileSync(join(packageRoot, 'src', 'runtime', 'root', 'entry.ts'), "import { adapter } from '../../../adapters/mcp/adapter';\nimport { scheduler } from '../../../packages/kernel/scheduler/api';\nprocess.exit(adapter === 1 && scheduler === 1 ? 0 : 1);\n");
   writeFileSync(join(packageRoot, 'src', 'runtime', 'shared', 'node-ts-loader.mjs'), 'export async function load(url, context, nextLoad) { return nextLoad(url, context); }\n');
   writeFileSync(join(packageRoot, 'src', 'runtime', 'execution', 'process-runtime', 'process-runner-entry.ts'), "if (process.argv.includes('--forge-release-canary-child')) { console.log('forge process-runner release canary'); process.exit(0); } process.exit(2);\n");
   writeFileSync(join(packageRoot, 'src', 'runtime', 'execution', 'process-runtime', 'check-runner-sidecar.ts'), "if (process.argv.includes('--forge-release-canary-child')) { console.log('forge check-runner release canary'); process.exit(0); } process.exit(2);\n");
+  writeFileSync(join(packageRoot, 'src', 'runtime', 'plugins', 'plugin-action-sidecar.ts'), "if (process.argv.includes('--forge-release-canary-child')) { console.log('forge plugin-action sidecar release canary'); process.exit(0); } process.exit(2);\n");
   writeFileSync(join(packageRoot, 'bin', 'forge-runtime.mjs'), 'process.exit(99);\n');
   writeFileSync(join(packageRoot, 'scripts', 'benchmark-cognitive-memory-activation.ts'), 'throw new Error(\"benchmark only\");\n');
   writeFileSync(join(packageRoot, 'scripts', 'check-release-readiness.sh'), 'exit 99\n');
@@ -60,10 +62,16 @@ describe('package Runtime release immutability', () => {
     const manifest = JSON.parse(readFileSync(release.manifestPath, 'utf8')) as Record<string, string>;
     expect(manifest.processRunnerEntrypoint).toBe('process-runner.js');
     expect(manifest.checkRunnerEntrypoint).toBe('forge-check-runner');
+    expect(manifest.contextPackEntrypoint).toBe('forge-context-pack');
+    expect(manifest.pluginActionSidecarEntrypoint).toBe('forge-plugin-action-sidecar');
     expect(manifest.processRunnerArtifactIdentity).toMatch(/^sha256:/);
     expect(manifest.checkRunnerArtifactIdentity).toMatch(/^sha256:/);
+    expect(manifest.contextPackArtifactIdentity).toMatch(/^sha256:/);
+    expect(manifest.pluginActionSidecarArtifactIdentity).toMatch(/^sha256:/);
     expect(spawnSync(join(release.releaseRoot, 'process-runner.js'), ['--forge-release-canary-child'], { encoding: 'utf8' }).status).toBe(0);
     expect(spawnSync(join(release.releaseRoot, 'forge-check-runner'), ['--forge-release-canary-child'], { encoding: 'utf8' }).status).toBe(0);
+    expect(spawnSync(join(release.releaseRoot, 'forge-context-pack'), ['--forge-release-canary-child'], { encoding: 'utf8' }).status).toBe(0);
+    expect(spawnSync(join(release.releaseRoot, 'forge-plugin-action-sidecar'), ['--forge-release-canary-child'], { encoding: 'utf8' }).status).toBe(0);
 
     writeFileSync(join(packageRoot, 'src', 'runtime.ts'), 'export const runtime = 2;\n');
     rmSync(packageRoot, { recursive: true, force: true });

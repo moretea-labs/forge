@@ -682,8 +682,12 @@ export function adoptEditSessionSuccessorHead(repoRoot: string, sessionId: strin
     throw new Error(`EDIT_SESSION_SUCCESSOR_HEAD_NOT_ELIGIBLE: ${session.status}`);
   }
   assertEditSessionDurableBinding(session, input.binding, { requireBoundIdentity: true });
-  if (!session.workId || !session.repoId || !session.checkoutId || !session.principalId) {
-    throw new Error('EDIT_SESSION_SUCCESSOR_HEAD_WORK_BINDING_REQUIRED');
+  // Work is not an edit-session admission prerequisite. An ordinary
+  // (non-Work) Safe Patch session still has durable repo/checkout/principal
+  // identity; reuse that exact identity instead of forcing a WorkHandle round
+  // trip merely to adopt a proven non-overlapping successor HEAD.
+  if (!session.repoId || !session.checkoutId || !session.principalId) {
+    throw new Error('EDIT_SESSION_SUCCESSOR_HEAD_DURABLE_BINDING_REQUIRED');
   }
   const previousBaseRevision = session.baseRevision?.trim();
   const successorRevision = gitRevision(repoRoot)?.trim();

@@ -18,6 +18,13 @@ export interface RunProcessOptions {
   readonly maxOutputBytes?: number;
   readonly redactions?: readonly ProcessOutputRedaction[];
   readonly input?: string | Buffer;
+  /**
+   * Preserve machine-protocol stdout exactly (no generic text redaction).
+   * Callers using this must validate the protocol and redact only the typed
+   * fields they retain before exposing evidence. stderr and the command line
+   * remain redacted. This keeps framing bytes intact for safe parsing.
+   */
+  readonly structuredStdout?: boolean;
   /** Test seam for platform-specific command preparation. */
   readonly platform?: NodeJS.Platform;
 }
@@ -39,6 +46,8 @@ export interface ProcessRunResult {
   readonly stdout: string;
   readonly stderr: string;
   readonly error: string;
+  /** True when stdout exceeded maxOutputBytes and was clipped. */
+  readonly stdoutTruncated?: boolean;
 }
 
 export const DEFAULT_PROCESS_TIMEOUT_MS = 120_000;
@@ -184,6 +193,7 @@ export function runProcess(command: string, args: readonly string[], opts: RunPr
   const error = result.error as NodeJS.ErrnoException | undefined;
   const timedOut = error?.code === "ETIMEDOUT";
   const stdout = typeof result.stdout === "string" ? result.stdout : "";
+  const stdoutTruncated = Buffer.byteLength(stdout, "utf8") > maxOutputBytes;
   const stderr = typeof result.stderr === "string" ? result.stderr : "";
   const rawError = error ? errorMessage(error) : "";
   const timeoutMessage = timedOut ? `process timed out after ${timeoutMs}ms: ${redactedCommand.join(" ")}` : "";
@@ -195,8 +205,12 @@ export function runProcess(command: string, args: readonly string[], opts: RunPr
     signal: result.signal,
     timedOut,
     command: redactedCommand,
-    stdout: capProcessOutput(redactProcessOutput(stdout, redactions), maxOutputBytes),
+    stdout: capProcessOutput(
+      opts.structuredStdout ? stdout : redactProcessOutput(stdout, redactions),
+      maxOutputBytes,
+    ),
     stderr: capProcessOutput(redactProcessOutput(stderrOrError, redactions), maxOutputBytes),
     error: redactProcessOutput(timeoutMessage || rawError, redactions),
+    stdoutTruncated,
   };
 }

@@ -33,9 +33,14 @@ export function resolveContextPackSidecarCommand(
 ): { executable: string; args: string[]; cwd?: string } {
   const manifestPath = releaseManifestArgument(argv);
   if (manifestPath) {
-    const parsed = JSON.parse(readFileSync(manifestPath, 'utf8')) as ContextPackSidecarManifestRecord;
+    let parsed: ContextPackSidecarManifestRecord;
+    try {
+      parsed = JSON.parse(readFileSync(manifestPath, 'utf8')) as ContextPackSidecarManifestRecord;
+    } catch (error) {
+      throw new Error(`CONTEXT_PACK_SIDECAR_MANIFEST_INVALID: ${manifestPath}: ${error instanceof Error ? error.message : String(error)}`);
+    }
     if (parsed.contextPackEntrypoint !== CONTEXT_PACK_SIDECAR_ENTRYPOINT) {
-      throw new Error('CONTEXT_PACK_SIDECAR_MANIFEST_MISSING');
+      throw new Error(`CONTEXT_PACK_SIDECAR_MANIFEST_MISSING: ${manifestPath} does not declare contextPackEntrypoint; activate a release containing forge-context-pack`);
     }
     const identity = typeof parsed.contextPackArtifactIdentity === 'string'
       ? parsed.contextPackArtifactIdentity.trim()
@@ -44,7 +49,7 @@ export function resolveContextPackSidecarCommand(
       throw new Error('CONTEXT_PACK_SIDECAR_IDENTITY_INVALID');
     }
     const executable = join(dirname(manifestPath), CONTEXT_PACK_SIDECAR_ENTRYPOINT);
-    if (!existsSync(executable)) throw new Error('CONTEXT_PACK_SIDECAR_MISSING');
+    if (!existsSync(executable)) throw new Error(`CONTEXT_PACK_SIDECAR_MISSING: ${executable}`);
     const status = lstatSync(executable);
     if (status.isSymbolicLink() || !status.isFile() || (status.mode & 0o111) === 0) {
       throw new Error('CONTEXT_PACK_SIDECAR_NOT_EXECUTABLE');

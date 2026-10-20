@@ -2095,6 +2095,7 @@ test('bootstrap reconciles an applied leaf before dispatching its unstarted reco
   })).toBe(true);
   control.bootstrapObserveEffect({
     taskId, effectId: source.effectId, observationId: 'bootstrap-source-applied', outcome: 'applied',
+    reconciled: true,
   });
   const recovery = store.reserveEffect({
     taskId,
@@ -2117,6 +2118,42 @@ test('bootstrap reconciles an applied leaf before dispatching its unstarted reco
     mode: 'reconcile', effectId: source.effectId, kind: 'enrollment',
   });
   expect(store.effectDispatchBudget(recovery.effectId).generations).toBe(0);
+});
+
+test('unbound bootstrap applied observation is rejected before any ledger write', () => {
+  const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-bootstrap-applied-prevalidation-'));
+  roots.push(root);
+  const store = new WorkflowSupervisorStore(join(root, 'supervisor-home'));
+  const control = new WorkflowSupervisorControlPlane(store);
+  const taskId = 'bootstrap-unbound-applied';
+  control.registerTask({
+    taskId,
+    conversationId: `bootstrap:${taskId}`,
+    conversationUrl: 'https://chatgpt.com/',
+    objective: 'Reject an alternate unbound applied writer.',
+    completionContract: {},
+    continuationPolicy: { kind: 'standalone_supervisor', bootstrap: true },
+    userBlockerPolicy: {},
+  });
+  const effect = control.reserveEnrollment(taskId);
+  expect(control.bootstrapBeginEffect({
+    taskId, effectId: effect.effectId, dispatchId: 'bootstrap-unbound-dispatch', dispatchGeneration: 1,
+  })).toBe(true);
+  expect(() => control.bootstrapObserveEffect({
+    taskId, effectId: effect.effectId, observationId: 'unbound-applied', outcome: 'applied',
+  })).toThrow('WORKFLOW_SUPERVISOR_BOOTSTRAP_APPLIED_REQUIRES_BOUND_CONVERSATION');
+  expect(store.effectApplied(effect.effectId)).toBe(false);
+  expect(store.nextBrowserEffect(taskId)).toMatchObject({ mode: 'reconcile', effect: { effectId: effect.effectId } });
+
+  control.bindBootstrapConversation({
+    taskId,
+    conversationId: '6ad5b608-91dc-83ea-b059-c2427cb85db4',
+    conversationUrl: 'https://chatgpt.com/c/6ad5b608-91dc-83ea-b059-c2427cb85db4',
+  });
+  control.bootstrapObserveEffect({
+    taskId, effectId: effect.effectId, observationId: 'bound-applied', outcome: 'applied',
+  });
+  expect(store.effectApplied(effect.effectId)).toBe(true);
 });
 
 test('browserTasks prioritizes fresh sends ahead of older reconciliation work', () => {
