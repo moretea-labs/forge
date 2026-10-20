@@ -46,6 +46,10 @@ function forbidBetween(path, startNeedle, endNeedle, expression, description) {
 // The duplicate iOS MCP aliases were retired after typed ios plugin cutover.
 // Do not recreate a second execution schema for these names.
 forbid('adapters/mcp/runtime-gateway/runtime-tool-definitions.ts', /definition\('ios_(?:xcode_status|simulators_list|project_discover|schemes_list|simulator_boot|app_build|app_install|app_launch|simulator_screenshot|simulator_log_tail|ui_smoke_test)'/, 'retired iOS MCP aliases must not be re-exposed');
+// Legacy MCP orchestrator profile had no independent callers or registered agent
+// tool. The controller role is the sole opt-in development-runner owner.
+forbid('adapters/mcp/types.ts', /'orchestrator'/, 'retired orchestrator MCP profile must not re-enter the type authority');
+forbid('adapters/mcp/policy.ts', /profile === 'orchestrator'|value === 'orchestrator'/, 'retired orchestrator MCP policy must not return');
 const GENERATED_SOURCE_DIRECTORY_NAMES = new Set([
   'node_modules',
   'dist',

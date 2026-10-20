@@ -21,9 +21,7 @@ export function mcpServerInstructions(profile: McpProfileName): string {
       'repository_safe_patch_apply returns bounded edit-session diff evidence for semantic review. Review that evidence directly instead of issuing a mandatory follow-up diff/status call; expand it only when truncated or semantically ambiguous. Its typed operation contract is strict: use type=create only for a path that does not exist, and use write/replace/insert/prepend/append/delete only for existing targets; never reinterpret a missing write target as create. Whole-file source replacement is valid when it is an explicit scoped write against the exact expected file SHA/fingerprint; stale-source and dirty-ownership fences must remain authoritative. Do not bypass those fences with arbitrary shell redirection merely because a deterministic rewrite is convenient. After a bounded successful change, finish the requested delivery directly. Avoid additional investigation whose result cannot change implementation or acceptance, and do not invoke redundant atomic compatibility tools merely because they remain registered.',
     ].join(' ');
   }
-  if (profile === 'orchestrator') {
-    return [...common, 'The orchestrator profile is a narrow compatibility runner for explicit fixed handoffs. It is not the primary project-control interface.'].join(' ');
-  }
+
   if (profile === 'executor') {
     return [...common, 'Act as a scoped executor/reviewer for existing workflow artifacts and checks. Do not broaden the task contract.'].join(' ');
   }
