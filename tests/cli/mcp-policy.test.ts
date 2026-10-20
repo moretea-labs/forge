@@ -142,6 +142,9 @@ describe('mcp policy and paths', () => {
   test('retired orchestrator profile is rejected instead of reopening an agent runner', () => {
     expect(() => parseMcpProfile('orchestrator')).toThrow('invalid MCP profile');
     expect(() => getMcpPolicy('orchestrator' as never)).toThrow('unknown MCP profile');
+    const exposed = buildMcpToolDefinitions(getMcpPolicy('controller')).map((tool) => tool.name);
+    expect(exposed).not.toContain('quick_agent_session');
+    expect(exposed).not.toContain('submit_local_job');
   });
 
 });

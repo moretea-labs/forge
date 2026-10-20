@@ -29,8 +29,6 @@ export const RETIRED_AGENT_OPERATIONS = new Set([
   'launch_issue',
   'dispatch_ready_tasks',
   'retry_task_run',
-  'quick_agent_session',
-  'submit_local_job',
 ]);
 
 // Historical ExecutionJobs remain readable migration evidence only.
