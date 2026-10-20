@@ -174,17 +174,6 @@ export async function registerWorkflowSupervisorTask(forgeHome: string, input: W
   }, SUPERVISOR_RPC_MUTATION_TIMEOUT_MS);
 }
 
-export async function bindWorkflowSupervisorBootstrapConversation(
-  forgeHome: string,
-  input: { taskId: string; conversationId: string; conversationUrl: string },
-): Promise<WorkflowSupervisorTask> {
-  return await rpc<WorkflowSupervisorTask>(forgeHome, 'bootstrap_bind_conversation', {
-    task_id: input.taskId,
-    conversation_id: input.conversationId,
-    conversation_url: input.conversationUrl,
-  }, SUPERVISOR_RPC_MUTATION_TIMEOUT_MS);
-}
-
 export async function reserveWorkflowSupervisorEnrollment(forgeHome: string, taskId: string, canonicalEffectId?: string): Promise<WorkflowSupervisorEffect> {
   return await rpc<WorkflowSupervisorEffect>(forgeHome, 'reserve_enrollment', {
     task_id: taskId,

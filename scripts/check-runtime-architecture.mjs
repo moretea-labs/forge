@@ -1235,7 +1235,6 @@ requireText('src/runtime/workflow/schedules/engine.ts', 'controller_binding_id')
 requireText('src/runtime/workflow/schedules/store.ts', '@deprecated Kernel V2 compatibility shim');
 requireText('src/runtime/workflow/schedules/store.ts', 'packages/kernel/scheduler/api/index');
 forbid('src/runtime/workflow/schedules/store.ts', /scheduler\/infrastructure\//, 'legacy Schedule shim must route through the Kernel Scheduler public API');
-requireText('src/runtime/workflow/schedules/types.ts', '@deprecated Kernel V2 compatibility shim');
 for (const path of sourceFiles('packages/kernel/scheduler')) {
   forbid(path, /(?:from\s+['"]|import\s*\(\s*['"])[^'"]*adapters\//, 'Kernel Scheduler must not import provider adapters');
   forbid(path, /\b(?:runWorkChatgptContinuation|launchSuperController|getChatgptWorkConversationBinding)\b|\bbrowser_session_id\b|\bconversation_url\b|\blaunch_args\b/, 'Kernel Scheduler must not own provider transport or provider binding payload fields');
@@ -1252,7 +1251,6 @@ const B7_KERNEL_INTERNAL_COMPATIBILITY_SHIMS = new Set([
   'src/runtime/control-plane/facade/work-contract-store.ts',
   'src/runtime/control-plane/facade/types.ts',
   'src/runtime/workflow/schedules/settlement.ts',
-  'src/runtime/workflow/schedules/types.ts',
 ]);
 // The compatibility-shim ledger may only shrink. A shim with no remaining
 // importer at all is migration debt, not a boundary: delete the file and its
@@ -2600,14 +2598,9 @@ requireText('packages/plugin-runtime/browser/provider-registry.ts', 'export clas
 requireText('packages/plugin-runtime/browser/provider-registry.ts', 'export class BrowserProviderSelectionError');
 forbid('packages/plugin-runtime/browser/provider-registry.ts', /AssistantPluginError|src\/runtime|adapters\//, 'Browser provider selection must remain provider-neutral inside plugin-runtime');
 requireText('packages/protocols/browser/session.ts', 'export interface BrowserSessionState');
-for (const path of [
-  'src/runtime/plugins/browser-runtime-contract.ts',
-  'src/runtime/plugins/browser-session-types.ts',
-]) {
-  requireText(path, '@deprecated C0 compatibility shim');
-}
+requireText('src/runtime/plugins/browser-runtime-contract.ts', '@deprecated C0 compatibility shim');
 for (const path of sourceFiles('src/runtime/plugins')) {
-  if (['src/runtime/plugins/browser-runtime-contract.ts', 'src/runtime/plugins/browser-session-types.ts'].includes(path)) continue;
+  if (path === 'src/runtime/plugins/browser-runtime-contract.ts') continue;
   forbid(path, /from\s+['"]\.\/browser-(?:runtime-contract|provider-registry|session-types)['"]/, 'active Browser runtime code must consume plugin-runtime/protocol Browser contracts, not retired local owners');
 }
 // Computer SurfaceTarget is the only durable interaction-target authority. Browser

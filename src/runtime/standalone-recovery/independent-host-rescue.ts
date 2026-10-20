@@ -1,17 +1,6 @@
 import { createHash } from 'crypto';
 import { isAbsolute, resolve } from 'path';
 
-export const INDEPENDENT_HOST_RESCUE_ACTIONS = [
-  'host_status',
-  'wsl_status', 'wsl_start',
-  'forge_source_status', 'controller_status',
-  'runtime_status', 'runtime_start', 'runtime_restart',
-  'connector_status', 'connector_start', 'connector_restart',
-  'recovery_status', 'recovery_start', 'recovery_restart',
-  'tunnel_status', 'tunnel_start', 'tunnel_restart',
-  'forge_cloud_verify', 'full_recover',
-] as const;
-
 export interface IndependentHostRescueConfig {
   schemaVersion: 1;
   wslDistro: string;
