@@ -200,7 +200,10 @@ export async function startWorkflowSupervisorRuntime(
     // Read the exact prior receipt before grant checks or changing args. An
     // outcome-unknown send must never be resubmitted under any envelope.
     const prior = readPluginActionReceiptForRequest(controllerHome, input.requestId);
-    if (prior && recordUnknownSupervisorNotificationReceipt(controllerHome, input.taskId, input.requestId, prior)) return;
+    if (prior) {
+      recordUnknownSupervisorNotificationReceipt(controllerHome, input.taskId, input.requestId, prior);
+      return;
+    }
     const mailbox = loadGmailPluginConfig(repository.canonicalRoot, { controllerHome, repoId }).accountEmail?.trim().toLowerCase();
     const target = mailbox ? {
       kind: 'gmail-mailbox' as const,
@@ -222,7 +225,6 @@ export async function startWorkflowSupervisorRuntime(
           creationReason: 'scheduled_gmail_notification_authorization_required',
           reason: 'EXTERNAL_EFFECT_AUTHORIZATION_REQUIRED',
           currentState: {
-            taskId: input.taskId,
             repoId,
             ...(mailbox ? { mailbox } : {}),
             pluginId: GMAIL_PLUGIN_ID,
@@ -317,8 +319,13 @@ export async function startWorkflowSupervisorRuntime(
     }
   };
   let notificationReconciliationInFlight: Promise<void> | undefined;
+  // Historical notification reconciliation shares the Runtime event loop with
+  // startup and causal delivery. Reuse the existing timer at maintenance cadence,
+  // leaving initial readiness and active turns free of full backlog/grant scans.
+  const notificationReconciliationIntervalMs = 30_000;
+  let nextNotificationReconciliationAt = Date.now() + notificationReconciliationIntervalMs;
   const reconcileSupervisorNotifications = (): void => {
-    if (closing || notificationReconciliationInFlight) return;
+    if (closing || notificationReconciliationInFlight || Date.now() < nextNotificationReconciliationAt) return;
     notificationReconciliationInFlight = (async () => {
       const allRequests = listUserRequests(controllerHome);
       for (const request of allRequests.filter((item) => item.status === 'pending' && item.rootCauseKey.startsWith('workflow-supervisor.notification-auth:'))) {
@@ -479,7 +486,10 @@ export async function startWorkflowSupervisorRuntime(
       }
     })()
       .catch((error) => { process.stderr.write(`[workflow-supervisor-notification-reconcile] ${error instanceof Error ? error.message : String(error)}\\n`); })
-      .finally(() => { notificationReconciliationInFlight = undefined; });
+      .finally(() => {
+        nextNotificationReconciliationAt = Date.now() + notificationReconciliationIntervalMs;
+        notificationReconciliationInFlight = undefined;
+      });
   };
   const targetAuthority = createComputerInteractionTargetAuthority(createRuntimeComputerTargetPersistence());
   const extensionTargetPort = new ChromeExtensionChatgptConversationTargetPort(controllerHome, targetAuthority);

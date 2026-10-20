@@ -107,6 +107,15 @@ the two-resume chain ceiling and late valid receipt reconciliation. Explicit
 provider failure can still recover earlier. No new scheduler, persistent state,
 notification authority or provider is introduced; complete Runtime rollback
 restores this behavior together with its code and configuration.
+
+Historical owner-notification reconciliation uses the existing Runtime timer
+at a 30-second maintenance cadence, beginning after the initial startup window.
+It must not compete with readiness or causal delivery on every two-second pass.
+A retained plugin receipt owns the notification outcome and any provider retry;
+the observer never resubmits that request. A shared mailbox authorization blocker
+contains the grant's stable identity, not the currently scanned task id, so old
+tasks cannot repeatedly rewrite the same UserRequest presentation. This adds no
+timer, durable cursor, notification queue or alternative authorization owner.
 Parser rejection caches stay ephemeral and keyed by applied source plus response;
 they never accept an invalid challenge, bypass a semantic terminal validator,
 replay an unknown Send, or introduce persistence/schema/release changes.
