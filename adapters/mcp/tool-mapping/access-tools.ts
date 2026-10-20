@@ -162,11 +162,9 @@ function accessStatePayload(
   repository: ReturnType<typeof selected>,
   configured = resolveControllerAccessState({
     controllerHome: ctx.controllerHome,
-    repoRoot: ctx.explicitRepository?.canonicalRoot,
   }),
   effective = resolveControllerAccessState({
     controllerHome: ctx.controllerHome,
-    repoRoot: ctx.explicitRepository?.canonicalRoot,
   }),
 ) {
   const repositoryPolicy = readRepositoryAccessPolicy(ctx.controllerHome, repository.repoId);
@@ -199,11 +197,9 @@ function previewPayload(
 ) {
   const currentConfigured = resolveControllerAccessState({
     controllerHome: ctx.controllerHome,
-    repoRoot: ctx.explicitRepository?.canonicalRoot,
   });
   const currentEffective = resolveControllerAccessState({
     controllerHome: ctx.controllerHome,
-    repoRoot: ctx.explicitRepository?.canonicalRoot,
   });
   const currentPolicy = readRepositoryAccessPolicy(ctx.controllerHome, repository.repoId);
   const currentGroups = accessToolGroups(currentEffective.effectiveAccessMode);
@@ -264,7 +260,7 @@ export function callAccessTool(
       const applyAll = args.all_repositories === true;
       if (operation === 'preview') return result(previewPayload(ctx, repository, mode, applyAll));
 
-      const persisted = persistControllerAccessMode(ctx.controllerHome, mode, ctx.explicitRepository?.canonicalRoot);
+      const persisted = persistControllerAccessMode(ctx.controllerHome, mode);
       if (applyAll) {
         const repositories = loadRepositoryRegistry(ctx.controllerHome).repositories
           .filter((entry) => entry.enabled !== false);
@@ -275,8 +271,7 @@ export function callAccessTool(
       const configured = persisted.state;
       const effective = resolveControllerAccessState({
         controllerHome: ctx.controllerHome,
-        repoRoot: ctx.explicitRepository?.canonicalRoot,
-      });
+          });
       return result({
         ...accessStatePayload(ctx, repository, configured, effective),
         updatedConfigPath: persisted.configPath,

@@ -6,11 +6,8 @@
  */
 
 import {
-  loadMcpLocalConfig,
-  loadMcpRuntimeState,
   loadMcpServiceLocalConfig,
   loadMcpServiceRuntimeState,
-  type McpLocalConfig,
   type McpRuntimeState,
 } from '../../../adapters/mcp/auth';
 import { inferLocalControllerProcess } from '../diagnostics/performance';
@@ -34,7 +31,7 @@ export interface LocalBridgeSurface {
   generation?: string;
   error?: string;
   /** Where endpoint/mode were resolved from. */
-  source: 'service-runtime' | 'repo-runtime' | 'service-config' | 'repo-config' | 'process-scan' | 'none';
+  source: 'service-runtime' | 'service-config' | 'process-scan' | 'none';
   ownerKind: 'mcp-keepalive' | 'controller-service' | 'external' | 'unknown' | 'none';
 }
 
@@ -52,74 +49,19 @@ function modeFromRuntime(runtime: McpRuntimeState | null | undefined): LocalBrid
   return undefined;
 }
 
-function resolveAuthoritativeMcpHomes(controllerHome: string | undefined): string[] {
-  return controllerHome ? [controllerHome] : [];
-}
-
-function firstServiceRuntime(homes: string[]): {
-  runtime: McpRuntimeState | null;
-  home?: string;
-} {
-  // Do not pass legacyRepoRoot while scanning homes: an empty slot home would
-  // otherwise inherit repo-local runtime and shadow a later authoritative home.
-  for (const home of homes) {
-    const runtime = loadMcpServiceRuntimeState(home);
-    if (runtime?.localController) return { runtime, home };
-  }
-  for (const home of homes) {
-    const runtime = loadMcpServiceRuntimeState(home);
-    if (runtime) return { runtime, home };
-  }
-  return { runtime: null };
-}
-
-function firstServiceConfig(homes: string[]): {
-  config: McpLocalConfig | null;
-  home?: string;
-} {
-  // Same rule as runtime: slot homes without mcp/* must not fall back to
-  // repo-local disabled/legacy config before later homes are considered.
-  for (const home of homes) {
-    const config = loadMcpServiceLocalConfig(home);
-    if (config?.localController) return { config, home };
-  }
-  for (const home of homes) {
-    const config = loadMcpServiceLocalConfig(home);
-    if (config) return { config, home };
-  }
-  return { config: null };
-}
-
 /**
- * Resolve Local Bridge capability from Controller Home, then repo-local fallbacks.
- * Controller Home selection belongs to the canonical Runtime owner, not this resolver.
+ * Resolve the Local Bridge capability from the selected Controller Home.
+ * Process scanning is observation only, never a configuration authority.
  */
 export function resolveLocalBridgeSurface(input: {
-  controllerHome?: string;
+  controllerHome: string;
   repoRoot: string;
   /** Optional process scan; when omitted, scan only if runtime state is missing. */
   allowProcessScan?: boolean;
 }): LocalBridgeSurface {
   const allowProcessScan = input.allowProcessScan !== false;
-  const homes = resolveAuthoritativeMcpHomes(input.controllerHome);
-
-  const { runtime: serviceRuntime } = firstServiceRuntime(homes);
-  const repoRuntime = loadMcpRuntimeState(input.repoRoot);
-  const runtime = serviceRuntime?.localController ? serviceRuntime : (repoRuntime ?? serviceRuntime);
-  const runtimeSource: LocalBridgeSurface['source'] = serviceRuntime?.localController
-    ? 'service-runtime'
-    : repoRuntime?.localController
-      ? 'repo-runtime'
-      : 'none';
-
-  const { config: serviceConfig } = firstServiceConfig(homes);
-  const repoConfig = loadMcpLocalConfig(input.repoRoot);
-  const config = serviceConfig?.localController ? serviceConfig : (repoConfig ?? serviceConfig);
-  const configSource: LocalBridgeSurface['source'] = serviceConfig?.localController
-    ? 'service-config'
-    : repoConfig?.localController
-      ? 'repo-config'
-      : 'none';
+  const runtime = loadMcpServiceRuntimeState(input.controllerHome);
+  const config = loadMcpServiceLocalConfig(input.controllerHome);
 
   const configuredEnabled = config?.localController?.enabled;
   const configuredMode = config?.localController?.mode;
@@ -133,7 +75,7 @@ export function resolveLocalBridgeSurface(input: {
   if (runtimeLc) {
     const mode = modeFromRuntime(runtime) ?? configuredMode ?? 'unknown';
     const enabled = mode !== 'disabled' && configuredEnabled !== false;
-    // Prefer live runtime endpoint; fall back to matching config from the same authority chain.
+    // Runtime observation and configured endpoint share the Controller Home owner.
     const endpoint = runtimeLc.endpoint?.trim() || configuredEndpoint;
     const ownerKind = mode === 'embedded'
       ? 'mcp-keepalive'
@@ -155,7 +97,7 @@ export function resolveLocalBridgeSurface(input: {
       pid: runtimeLc.pid,
       generation: runtimeLc.generation ?? runtime?.generation,
       error: runtimeLc.error,
-      source: runtimeSource === 'none' ? 'service-runtime' : runtimeSource,
+      source: 'service-runtime',
       ownerKind,
     };
   }
@@ -168,7 +110,7 @@ export function resolveLocalBridgeSurface(input: {
       endpoint: configuredEndpoint,
       endpointConfigured: Boolean(configuredEndpoint),
       expectedSurface: 'none',
-      source: configSource === 'none' ? 'service-config' : configSource,
+      source: 'service-config',
       ownerKind: 'none',
     };
   }
@@ -182,7 +124,7 @@ export function resolveLocalBridgeSurface(input: {
       endpoint: configuredEndpoint,
       endpointConfigured: true,
       expectedSurface: 'local-controller',
-      source: configSource === 'none' ? 'service-config' : configSource,
+      source: 'service-config',
       ownerKind: mode === 'embedded' ? 'mcp-keepalive' : mode === 'standalone' ? 'controller-service' : 'unknown',
     };
   }

@@ -301,10 +301,6 @@
       "module": "controller",
       "resource": "temp-isolated"
     },
-    "tests/cli/tool-capability-cache.test.ts": {
-      "module": "workflow",
-      "resource": "temp-isolated"
-    },
     "tests/cli/v81-entry.test.ts": {
       "module": "controller",
       "resource": "pure"
