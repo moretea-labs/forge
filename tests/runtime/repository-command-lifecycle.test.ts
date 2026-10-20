@@ -5,10 +5,9 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { MAX_AGENT_TIMEOUT_MS, MIN_AGENT_TIMEOUT_MS } from '../../src/cli/controller/runtime-config';
 import {
-  executeLocalBridgeJob,
   getLocalBridgeJob,
   reconcileLocalBridgeJobs,
-  submitLocalBridgeJob} from '../../src/cli/local-bridge/job-store';
+} from '../../src/cli/local-bridge/job-store';
 import {
   executeRepositoryCommand,
   executeRepositoryCommandAsync,

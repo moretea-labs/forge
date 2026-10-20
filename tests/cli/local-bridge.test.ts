@@ -26,12 +26,10 @@ import { createIssue, getIssue, updateTask } from "../../src/cli/controller/issu
 import { beginEditSession, applyEditOperations } from "../../src/cli/editing/edit-session";
 import { getMcpPolicy } from "../../adapters/mcp/policy";
 import {
-  executeLocalBridgeJob,
   getLocalBridgeJob,
   cancelLocalBridgeJob,
   listLocalBridgeJobs,
   reconcileLocalBridgeJobs,
-  submitLocalBridgeJob,
 } from "../../src/cli/local-bridge/job-store";
 import {
   startLocalBridgeServer,
@@ -145,16 +143,6 @@ async function waitForRun(
 }
 
 describe("Local Execution Bridge", () => {
-  test('fails closed at the Local Bridge Job write boundary', () => {
-    const root = repo();
-    expect(() => submitLocalBridgeJob(root, {
-      action: 'run-check',
-      requestedBy: 'test',
-      payload: { checkId: 'package:test' },
-    })).toThrow(/LOCAL_BRIDGE_JOB_RETIRED/);
-    expect(listLocalBridgeJobs(root)).toHaveLength(0);
-  });
-
   test('returns stable 410 handoffs for retired Local Bridge creation and progress projection routes', async () => {
     const root = repo();
     const handle = await startLocalBridgeServer({ repoRoot: root, port: 0 });

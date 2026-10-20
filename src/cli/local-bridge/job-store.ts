@@ -32,7 +32,6 @@ import type {
   LocalBridgeConfig,
   LocalBridgeJob,
   LocalBridgeJobEvent,
-  LocalBridgeJobRequest,
   RepositoryCommandPayload,
   RunCheckPayload,
   VerifyEditSessionPayload,
@@ -351,15 +350,6 @@ function resolvedJobTimeout(repoRoot: string, value: unknown): number {
 
 function taskApproval(task: ControllerTask): LocalBridgeApproval {
   return taskExecutionPolicy(task).approval;
-}
-
-export function submitLocalBridgeJob(
-  _repoRoot: string,
-  _request: LocalBridgeJobRequest,
-): LocalBridgeJob {
-  throw new Error(
-    "LOCAL_BRIDGE_JOB_RETIRED: New Local Bridge Jobs are disabled. Use WorkContract with Process Runtime or an explicitly claimed external Controller.",
-  );
 }
 
 function readLocalBridgeJob(repoRoot: string, jobId: string): LocalBridgeJob {
@@ -929,14 +919,6 @@ export function cancelLocalBridgeJob(
   return saveJob(repoRoot, job);
 }
 
-export function executeLocalBridgeJobInline(
-  repoRoot: string,
-  jobId: string,
-): LocalBridgeJob {
-  return dispatchLocalBridgeJob(repoRoot, jobId);
-}
-
-
 /**
  * Historical Local Bridge Jobs remain readable, but dispatch ownership has moved
  * to WorkContract + Process Runtime or an explicitly claimed external Controller.
@@ -951,12 +933,4 @@ export function dispatchLocalBridgeJob(repoRoot: string, jobId: string): LocalBr
     "LOCAL_BRIDGE_JOB_RETIRED: Historical Local Bridge Jobs are read-only and cannot be dispatched. Resume through WorkContract + Process Runtime or an explicitly claimed external Controller.",
     { legacyDispatchRetired: true },
   );
-}
-
-
-/** Compatibility API for repository-local callers and focused tests.
- * Production Gateway and Local UI surfaces use dispatchLocalBridgeJob instead.
- */
-export function executeLocalBridgeJob(repoRoot: string, jobId: string): LocalBridgeJob {
-  return executeLocalBridgeJobInline(repoRoot, jobId);
 }

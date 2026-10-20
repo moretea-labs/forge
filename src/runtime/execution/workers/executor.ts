@@ -6,7 +6,7 @@ import { runtimePolicy, type MultiRepositoryMcpToolContext } from '../../../../a
 import { callRuntimeTool } from '../../../../adapters/mcp/runtime-gateway/runtime-tools';
 import { ensureRepositoryRuntimeStorage } from '../../../cli/repositories/runtime-storage';
 import { evaluateReleaseGate } from '../../release/release-gate';
-import { executeLocalBridgeJobInline, getLocalBridgeJob } from '../../../cli/local-bridge/job-store';
+import { dispatchLocalBridgeJob, getLocalBridgeJob } from '../../../cli/local-bridge/job-store';
 import type { LocalBridgeJob } from '../../../cli/local-bridge/types';
 import { settleScheduledExecution } from '../../../../packages/kernel/scheduler/api/index';
 import type { ExecutionJob, ExecutionJobOutcome } from '../jobs/types';
@@ -57,7 +57,7 @@ function acceptLegacyAgentLocalJob(repoRoot: string, jobId: string): LocalBridge
     && typeof current.result.executionJobId === 'string'
     && (current.status === 'dispatched' || (current.status === 'running' && current.ownerPid === undefined));
   if (current.status === 'approved' || projectedExecutionPending) {
-    current = executeLocalBridgeJobInline(repoRoot, jobId);
+    current = dispatchLocalBridgeJob(repoRoot, jobId);
   }
   // One refresh so projection from the linked Agent Run is current.
   return getLocalBridgeJob(repoRoot, jobId);
@@ -71,7 +71,7 @@ async function settleLegacyLocalJob(repoRoot: string, jobId: string, timeoutMs =
     && typeof current.result.executionJobId === 'string'
     && (current.status === 'dispatched' || (current.status === 'running' && current.ownerPid === undefined));
   if (current.status === 'approved' || projectedExecutionPending) {
-    current = executeLocalBridgeJobInline(repoRoot, jobId);
+    current = dispatchLocalBridgeJob(repoRoot, jobId);
   }
   while (['approved', 'dispatched', 'running'].includes(current.status)) {
     if (Date.now() - started >= boundedTimeoutMs) throw new Error(`LEGACY_JOB_TIMEOUT: ${jobId}`);

@@ -188,6 +188,8 @@ Persistent Work/Process state is reserved for actual continuity requirements: sc
 
 ### External effects
 
+Retired Agent Run creation/retry/acceptance and request-index code, together with Local Bridge Job submission/execution shims, have no surviving production callers and are removed rather than retained as exported APIs. Historical Agent Run/Local Bridge receipt, cancellation, HTTP 410 and release-diagnostic readback remain available; new execution enters the existing Work/Process and Thin Launcher authorities. The existing Mobile Intent plugin discovery reads both repository and controller scopes from that same plugin store (no second adapter registry or provider).
+
 Canonical authorization grants use the one Controller Home authority. An absent persisted risk ceiling grants at most read-only access; missing owner identity does not match a requested owner; queries without any principal or owner are not authorization requests; target- or scope-restricted grants cannot satisfy unscoped or explicitly empty-scope queries. Revocation requires the same exact owner match when the caller specifies an owner. Historical v1 records remain inspectable without receiving expanded authority.
 
 Remote or non-idempotent effects are explicit boundaries. Mail MIME header fields reject control characters before encoding, and a provider idempotency key must preserve the identity of the complete request rather than silently truncate distinguishing suffixes. Ambiguous outcomes are reported as `outcome_unknown`; Forge must not silently replay a non-idempotent remote operation.

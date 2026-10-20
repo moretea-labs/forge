@@ -1731,31 +1731,25 @@ forbid(
   /\blocalBridgeJobCreationRetired\b/,
   'The Local Bridge write boundary must be a direct retirement error, not a hidden guard around dormant creation code',
 );
-requireMatch(
+forbid(
   'src/cli/local-bridge/job-store.ts',
-  /export function submitLocalBridgeJob\([\s\S]*?\{\s*throw new Error\([\s\S]*?LOCAL_BRIDGE_JOB_RETIRED[\s\S]*?\);\s*\}/,
-  'submitLocalBridgeJob must fail closed directly with LOCAL_BRIDGE_JOB_RETIRED',
+  /\b(?:submitLocalBridgeJob|executeLocalBridgeJobInline|executeLocalBridgeJob)\b/,
+  'Retired Local Bridge creation and compatibility dispatch APIs must be removed, not preserved as no-op shims',
 );
 forbid(
   'src/cli/local-bridge/job-store.ts',
   /\bacceptTaskJob\b|\bexecuteLaunchTask\b|\bexecuteQuickSession\b/,
   'Historical Local Bridge records must not retain an Agent dispatch path',
 );
-requireMatch(
-  'src/cli/local-bridge/job-store.ts',
-  /export function executeLocalBridgeJobInline\([\s\S]*?return dispatchLocalBridgeJob\(repoRoot, jobId\);\s*\}/,
-  'The Local Bridge compatibility execution API must terminate through the read-only retirement path',
+requireText(
+  'src/runtime/execution/workers/executor.ts',
+  'dispatchLocalBridgeJob(repoRoot, jobId)',
 );
-// Agent Run write boundaries: creation and retry must fail closed at the function entry.
-requireMatch(
+// Retired Agent Run creation/retry/dispatch API declarations must never return.
+forbid(
   'src/cli/agent-jobs/job-manager.ts',
-  /export function startTaskJob\([\s\S]*?\{\s*throw new Error\([\s\S]*?AGENT_RUN_RETIRED[\s\S]*?\);\s*\}/,
-  'startTaskJob must fail closed directly with AGENT_RUN_RETIRED',
-);
-requireMatch(
-  'src/cli/agent-jobs/job-manager.ts',
-  /export function retryAgentJob\([\s\S]*?\{\s*\/\/ Fail closed[\s\S]*?throw new Error\([\s\S]*?AGENT_RUN_RETIRED[\s\S]*?\);\s*\}/,
-  'retryAgentJob must fail closed before any Task mutation with AGENT_RUN_RETIRED',
+  /\b(?:startTaskJob|retryAgentJob|dispatchAcceptedTaskJob|startAcceptedTaskJob|acceptTaskJob|StartTaskJobOptions|DispatchTaskAcceptance|persistRequestIndex|readRequestIndex|baseMeta)\b/,
+  'Retired Agent Run creation, retry, acceptance and request-index code must remain absent; use Thin Launcher',
 );
 forbid(
   'src/cli/local-bridge/server.ts',

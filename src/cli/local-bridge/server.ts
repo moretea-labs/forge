@@ -51,7 +51,6 @@ import {
 } from "../github/plugin";
 import {
   cancelLocalBridgeJob,
-  executeLocalBridgeJob,
   getLocalBridgeJob,
   getLocalBridgeJobEvents,
   listLocalBridgeJobs,
@@ -118,7 +117,7 @@ import { readForgeRuntimeStatus } from "../../runtime/control-plane/runtime-stat
 import { readRuntimeGeneration } from "../../runtime/control-plane/runtime-generation";
 import { findExecutionJob, listExecutionJobs } from "../../runtime/execution/jobs/store";
 import { rebuildRepositoryProjection, readRepositoryProjectionSnapshot } from "../../runtime/projections/materialized-view";
-import { getAssistantPluginManifest, listAssistantPluginManifests, submitAssistantPluginAction, findPluginActionReceipt, compatibilityPluginJobFromReceipt} from "../../runtime/plugins/store";
+import { getAssistantPluginManifest, listAssistantPluginManifests, listControllerPluginManifests, submitAssistantPluginAction, findPluginActionReceipt, compatibilityPluginJobFromReceipt} from "../../runtime/plugins/store";
 import {
   createMobileIntentDevice,
   listMobileIntentDevices,
@@ -1015,7 +1014,11 @@ export async function startLocalBridgeServer(
           accepted: true,
           device: verified.principal.device,
           signatureVerified: verified.signatureVerified,
-          plugins: listAssistantPluginManifests(controllerHome, repository).map((plugin) => ({
+          // One canonical store; mobile discovery includes both repository and controller-scoped plugins.
+          plugins: [...new Map([
+            ...listAssistantPluginManifests(controllerHome, repository),
+            ...listControllerPluginManifests(controllerHome),
+          ].map((plugin) => [plugin.pluginId, plugin] as const)).values()].map((plugin) => ({
             pluginId: plugin.pluginId,
             displayName: plugin.displayName,
             enabled: plugin.enabled,
