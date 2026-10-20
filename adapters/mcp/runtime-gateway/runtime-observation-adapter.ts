@@ -523,7 +523,7 @@ export async function callRuntimeObservationAdapter(ctx: MultiRepositoryMcpToolC
                   endpointReachable: shouldProbe ? endpointReachable : true,
                   expectedSurface: shouldProbe ? expectedSurface : true,
                   processAlive,
-                  runtimeStateFresh: surface.source === 'service-runtime' || surface.source === 'repo-runtime',
+                  runtimeStateFresh: surface.source === 'service-runtime',
                   error: surface.error,
                 },
                 runtimeStorage: {
@@ -588,7 +588,7 @@ export async function callRuntimeObservationAdapter(ctx: MultiRepositoryMcpToolC
                     endpointReachable: shouldProbe ? endpointReachable : null,
                     expectedSurface: shouldProbe ? expectedSurface : null,
                     ...(processAlive !== undefined ? { processAlive } : {}),
-                    runtimeStateFresh: surface.source === 'service-runtime' || surface.source === 'repo-runtime',
+                    runtimeStateFresh: surface.source === 'service-runtime',
                     observedAt: new Date().toISOString(),
                   },
                 },

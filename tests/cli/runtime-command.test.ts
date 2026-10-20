@@ -355,7 +355,16 @@ describe('runtime command surface', () => {
     expect(localBridgeSurface).not.toContain('runtimeSlotForHome');
     expect(localBridgeSurface).not.toContain('slotHomePath');
     expect(localBridgeSurface).not.toContain('activeSlot?:');
-    expect(localBridgeSurface).toContain('return controllerHome ? [controllerHome] : []');
+    expect(localBridgeSurface).toContain('controllerHome: string;');
+    expect(localBridgeSurface).toContain('loadMcpServiceRuntimeState(input.controllerHome)');
+    expect(localBridgeSurface).toContain('loadMcpServiceLocalConfig(input.controllerHome)');
+    expect(localBridgeSurface).not.toContain('loadMcpLocalConfig');
+    expect(localBridgeSurface).not.toContain('loadMcpRuntimeState');
+    expect(localBridgeSurface).not.toContain("'repo-runtime'");
+    expect(localBridgeSurface).not.toContain("'repo-config'");
+    const accessModeSource = readFileSync(join(ROOT, 'adapters/mcp/access-mode.ts'), 'utf8');
+    expect(accessModeSource).not.toContain('repo_local_fallback');
+    expect(accessModeSource).not.toContain('mcpLocalConfigPath');
     expect(localBridgeFacade).toContain("observeRuntimeStatus(ctx.controllerHome)");
     expect(localBridgeFacade).not.toContain("from '../controller/lifecycle'");
     expect(localBridgeFacade).not.toContain('buildRuntimeOperationalView');

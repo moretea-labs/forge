@@ -92,7 +92,6 @@ export function resolveControllerAccessStateForContext(
 ): ControllerAccessState {
   return resolveControllerAccessState({
     controllerHome: ctx.controllerHome,
-    repoRoot: ctx.explicitRepository?.canonicalRoot,
   });
 }
 
