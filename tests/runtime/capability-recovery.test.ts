@@ -232,7 +232,7 @@ describe('capability recovery probe', () => {
     });
 
     expect(snapshot.capabilities.find((capability) => capability.id === 'worker.loop')?.class).toBe('stale_runtime_state');
-    expect(snapshot.recommendedActions.map((action) => action.id)).toContain('recovery.reconcile_jobs');
+    expect(snapshot.recommendedActions.map((action) => action.id)).toContain('recovery.local_jobs_reconcile');
   });
 });
 
@@ -253,7 +253,7 @@ describe('authorized recovery actions', () => {
   it('builds audit evidence records', () => {
     const record = buildRecoveryAuditRecord({
       actor: 'test',
-      action: RECOVERY_ACTIONS.reconcileJobs,
+      action: RECOVERY_ACTIONS.localJobsReconcile,
       result: 'planned',
       reason: 'stale lease evidence',
       affectedPaths: ['.ai/harness/jobs'],

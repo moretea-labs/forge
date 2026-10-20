@@ -992,6 +992,29 @@ describe('terminal Work cleanup', () => {
     };
     writeWorkHandle(fx.controllerHome, { ...cleaned.handle, cleanupReceipt: legacyReceipt });
     const sourceHead = source.expectedHead!;
+    const evidenceAt = new Date().toISOString();
+    const workStore = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    recordWorkCompletionReceipt(workStore, sourceId, {
+      schemaVersion: 1,
+      receiptId: 'receipt-open-work-recovery-evidence',
+      source: 'controller_work',
+      issueId: 'work',
+      taskId: sourceId,
+      workId: sourceId,
+      targetBranch: 'main',
+      targetRevision: sourceHead,
+      sourceRevision: sourceHead,
+      baseRevision: sourceHead,
+      changedPaths: [],
+      delivery: { kind: 'commit', status: 'integrated', strategy: 'already_integrated', reachable: true, recordedAt: evidenceAt },
+      cleanup: { status: 'complete', warnings: [], blockers: [], recordedAt: evidenceAt },
+      verifiedAt: evidenceAt,
+      recordedAt: evidenceAt,
+    }, 'completed_changed', 'repository_change');
+    const openWithEvidence = getWorkContract(workStore, sourceId)!;
+    expect(openWithEvidence.semanticState).toBe('open');
+    expect(openWithEvidence.completionOutcome).toBe('completed_changed');
+    expect(openWithEvidence.completionReceipt?.receiptId).toBe('receipt-open-work-recovery-evidence');
     const mainHead = git(fx.repositoryRoot, ['rev-parse', 'HEAD']);
     const request = {
       session_id: sessionId,
@@ -1021,8 +1044,13 @@ describe('terminal Work cleanup', () => {
     expect(recovery.work.workContractId).toBe(sourceId);
     expect(recovery.work.checkoutId).not.toBe(source.checkoutId);
     expect(recovery.work.expectedHead).toBe(mainHead);
-    expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, sourceId))
-      .toMatchObject({ semanticState: 'open', checkoutId: recovery.work.checkoutId });
+    const recoveredContract = getWorkContract(workStore, sourceId)!;
+    expect(recoveredContract).toMatchObject({
+      semanticState: 'open',
+      checkoutId: recovery.work.checkoutId,
+      completionOutcome: 'completed_changed',
+    });
+    expect(recoveredContract.completionReceipt?.receiptId).toBe('receipt-open-work-recovery-evidence');
     const retried = await callExecutionTool(ctx, 'work_prepare', request);
     if (retried?.isError) throw new Error(JSON.stringify(retried.structuredContent));
     expect((retried?.structuredContent as { work: { workId: string } }).work.workId).toBe(recovery.work.workId);

@@ -159,7 +159,6 @@ export async function executeCapabilityRecoveryAction(
       affectedPaths = ['.ai/harness/local-jobs-archive', '.ai/harness/jobs-archive', '.ai/harness/controller/acknowledged-attention.jsonl'];
       break;
     }
-    case 'recovery.reconcile_jobs':
     case 'recovery.local_jobs_reconcile': {
       const maintenance = applyRuntimeMaintenance(repository!, input.controllerHome, {
         actionId: 'local_jobs_reconcile',

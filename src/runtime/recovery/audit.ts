@@ -1,5 +1,6 @@
 import { createHash } from 'crypto';
 import type { RecoveryActionDescriptor, RecoveryAuditRecord, RecoveryEvidence } from './types';
+import { recoveryAuthorizationMatches } from './actions';
 
 export interface BuildRecoveryAuditRecordInput {
   actor: string;
@@ -34,5 +35,5 @@ export function buildRecoveryAuditRecord(input: BuildRecoveryAuditRecordInput): 
 
 export function assertRecoveryAuthorized(action: RecoveryActionDescriptor, authorization?: string): void {
   if (action.confirmation === 'none') return;
-  if (authorization !== action.id) throw new Error(`RECOVERY_AUTHORIZATION_REQUIRED: ${action.id} requires ${action.confirmation}`);
+  if (!recoveryAuthorizationMatches(action, authorization)) throw new Error(`RECOVERY_AUTHORIZATION_REQUIRED: ${action.id} requires ${action.confirmation}`);
 }

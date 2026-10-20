@@ -117,8 +117,8 @@ import { completeGoogleOAuthLogin } from "../../runtime/safe-tooling/google-oaut
 import { completeResendOAuthLogin } from "../../runtime/safe-tooling/resend-oauth";
 import { summarizePluginForLowInterception } from "../../runtime/safe-tooling";
 import { buildModelClientSummary, buildModelControlPlaneSummary, deepSeekControllerManifest, deepSeekFunctionToolManifest, prepareDeepSeekControllerHandoff, prepareDeepSeekControllerRequest, prepareDeepSeekToolCall } from "../../runtime/model-clients";
-import { applyRuntimeCleanup, previewRuntimeCleanup } from "../../runtime/maintenance/cleanup";
-import { assertRecoveryAuthorized, buildCapabilityRecoverySnapshot, buildRecoveryAuditRecord, recoveryActionById, writeRecoveryAuditRecord } from "../../runtime/recovery";
+import { previewRuntimeCleanup } from "../../runtime/maintenance/cleanup";
+import { assertRecoveryAuthorized, buildCapabilityRecoverySnapshot, buildRecoveryAuditRecord, executeCapabilityRecoveryAction, recoveryActionById, writeRecoveryAuditRecord } from "../../runtime/recovery";
 
 export interface LocalBridgeServerOptions {
   /**
@@ -1811,7 +1811,7 @@ export async function startLocalBridgeServer(
     }
   });
 
-  app.post("/api/recovery/apply", (request, response) => {
+  app.post("/api/recovery/apply", async (request, response) => {
     try {
       const repository = requestRepositorySelection(request, options, controllerHome);
       const repoRoot = repository.canonicalRoot;
@@ -1829,9 +1829,26 @@ export async function startLocalBridgeServer(
         affectedPaths = [".ai/harness/controller/projections"];
       } else if (action.id === "recovery.cleanup_preview") {
         result = previewRuntimeCleanup(repoRoot, { includeTempDirs: true, includeTerminalLocalJobs: true, includeLegacyRuns: true, includeHistoricalAttention: true }) as unknown as Record<string, unknown>;
-      } else if (action.id === "recovery.reconcile_jobs") {
-        result = applyRuntimeCleanup(repoRoot, { includeTempDirs: true, includeTerminalLocalJobs: true, includeLegacyRuns: true, includeHistoricalAttention: true, confirmCleanup: true }) as unknown as Record<string, unknown>;
-        affectedPaths = [".ai/harness/local-jobs", ".ai/harness/jobs"];
+      } else if (action.id === "recovery.local_jobs_reconcile") {
+        // Delegate to the one canonical Recovery application boundary instead of
+        // running a second mutation from the HTTP transport. Authorization was
+        // validated above with the same descriptor; the canonical owner rechecks
+        // and writes the single audit record.
+        const canonical = await executeCapabilityRecoveryAction({
+          controllerHome,
+          repository,
+          actionId: action.id,
+          reason,
+          confirmAuthorization: request.body?.confirmAuthorization === true,
+          authorization: queryString(request.body?.authorization),
+          minAgeMinutes: typeof request.body?.minAgeMinutes === "number" ? request.body.minAgeMinutes : undefined,
+          maxCandidates: typeof request.body?.maxCandidates === "number" ? request.body.maxCandidates : undefined,
+          callStandaloneRecoveryTool: async () => { throw new Error("RECOVERY_ACTION_REQUIRES_MCP_TRANSPORT"); },
+          recoverySnapshot: async () => cachedLocalControllerSnapshot(repoRoot).recovery as unknown as Record<string, unknown>,
+        });
+        localSnapshotCache.delete(repoRoot);
+        response.json({ action: canonical.action, audit: canonical.audit, result: canonical.result });
+        return;
       } else {
         result = { skipped: true, reason: `${action.id} is planned but not executable from the Local Bridge HTTP process.` };
       }

@@ -131,7 +131,9 @@ describe('thin semantic Work lifecycle', () => {
     const detail = structured(await callRhWorkSemanticOperation(options, 'get', {
       work_id: stored.workId, detail_level: 'detail',
     }));
-    expect(detail.data.revisionHistory.find((entry: { revision: number }) => entry.revision === 2).resultRefs).toEqual(resultRefs);
+    expect(detail.data.work.resultRefs).toEqual(resultRefs);
+    expect(detail.data.revisionHistory).toBeUndefined();
+    expect(listWorkSemanticRevisionRecords(options, stored.workId).find((entry) => entry.revision === 2)?.resultRefs).toEqual(resultRefs);
     const stale = structured(await callRhWorkSemanticOperation(options, 'revise', {
       work_id: stored.workId, expected_revision: 2,
     }));
@@ -396,10 +398,8 @@ describe('thin semantic Work lifecycle', () => {
       work_id: 'work-vocabulary',
       detail_level: 'detail',
     }));
-    expect(detail.data.objectiveGraph.current.edges).toEqual(expect.arrayContaining([
-      { kind: 'decomposition', fromWorkId: 'work-parent', toWorkId: 'work-vocabulary', workRevision: 2 },
-      { kind: 'dependency', fromWorkId: 'work-dependency', toWorkId: 'work-vocabulary', workRevision: 2 },
-    ]));
+    expect(detail.data.work).toMatchObject({ semanticParentWorkId: 'work-parent', dependsOnWorkIds: ['work-dependency'] });
+    expect(detail.data.objectiveGraph).toBeUndefined();
     const cycle = structured(await callRhWorkSemanticOperation(options, 'revise', {
       work_id: 'work-parent',
       expected_revision: 1,

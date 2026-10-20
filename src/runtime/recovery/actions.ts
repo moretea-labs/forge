@@ -31,16 +31,6 @@ export const RECOVERY_ACTIONS = {
     localOnly: true,
     boundedTo: ['forge_runtime_storage'],
   },
-  reconcileJobs: {
-    id: 'recovery.reconcile_jobs',
-    title: 'Reconcile jobs and leases',
-    description: 'Run a bounded maintenance pass for stale local jobs, leases, and runtime state.',
-    class: 'local_jobs_reconciliation_required',
-    risk: 'medium',
-    confirmation: 'authorization',
-    localOnly: true,
-    boundedTo: ['forge_runtime_storage'],
-  },
   localJobsReconcile: {
     id: 'recovery.local_jobs_reconcile',
     title: 'Reconcile Local Jobs',
@@ -143,6 +133,27 @@ export const RECOVERY_ACTIONS = {
   },
 } satisfies Record<string, RecoveryActionDescriptor>;
 
+/**
+ * Deprecated wire alias. It resolves to the one canonical descriptor so an
+ * older caller cannot acquire a second risk label, scope or mutation. The same
+ * mapping applies to the confirmation token, so an in-flight caller is not
+ * broken mid-authorization. New callers must use
+ * `recovery.local_jobs_reconcile`.
+ */
+const RECOVERY_ACTION_ID_ALIASES: Readonly<Record<string, string>> = {
+  'recovery.reconcile_jobs': 'recovery.local_jobs_reconcile',
+};
+
+export function canonicalRecoveryActionId(actionId: string): string {
+  return RECOVERY_ACTION_ID_ALIASES[actionId] ?? actionId;
+}
+
+export function recoveryAuthorizationMatches(action: RecoveryActionDescriptor, authorization: string | undefined): boolean {
+  if (!authorization) return false;
+  return canonicalRecoveryActionId(authorization) === action.id;
+}
+
 export function recoveryActionById(actionId: string): RecoveryActionDescriptor | undefined {
-  return Object.values(RECOVERY_ACTIONS).find((action) => action.id === actionId);
+  const canonicalId = canonicalRecoveryActionId(actionId);
+  return Object.values(RECOVERY_ACTIONS).find((action) => action.id === canonicalId);
 }

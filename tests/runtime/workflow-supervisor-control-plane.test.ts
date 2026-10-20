@@ -877,6 +877,9 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     });
     expect(getControllerRoundRelay(fx.store, predecessorWorkId)?.status).toBe('dispatched');
     expect(getControllerRoundRelay(fx.store, successorWorkId)).toEqual(successorRelay);
+
+    reviseWorkSemanticContext(fx.store, predecessorWorkId, { expectedRevision: 1, state: 'completed' });
+    expect(forgeWorkflowSupervisorLifecycleHooks(fx.controllerHome).browserTaskActive?.(task)).toBe(true);
     supervisorStore.close();
   });
 

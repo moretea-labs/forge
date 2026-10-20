@@ -125,6 +125,8 @@ export interface WorkflowSupervisorConsumerStatus {
     taskId?: string;
     effectId?: string;
   };
+  /** Oldest applied turn whose visible provider output has stopped changing. */
+  awaitingReceiptSilence?: WorkflowSupervisorSilentTurn & { taskId: string };
 }
 
 export interface WorkflowContractValidation {
@@ -147,12 +149,32 @@ export interface WorkflowSupervisorPreflightComposerObservation {
   selectorVersion?: string;
 }
 
+/**
+ * Derived from the existing provider-state events: the visible assistant output
+ * has not changed while the provider still advertises activity. This is honest
+ * progress feedback, never an inference that work is succeeding and never a
+ * resend authorization.
+ */
+export interface WorkflowSupervisorSilentTurn {
+  effectId: string;
+  providerState: 'generating' | 'idle';
+  /** First observation of the exact unchanged provider output. */
+  observedSince: string;
+  elapsedMs: number;
+  /** The existing bounded idle-recovery clock, not a second threshold. */
+  recoveryGraceMs: number;
+  recoveryReviewAt: string;
+  progress: 'no_visible_output';
+  /** Silence alone never authorizes replaying an already-applied Send. */
+  resendAuthorized: false;
+}
+
 export type WorkflowSupervisorTaskStall =
   | { state: 'terminal' }
   | { state: 'deliverable'; effectId: string; mode: 'send' | 'reconcile'; generation: number }
-  | { state: 'spaced'; effectId?: string; reason: 'retry_spacing' | 'unknown_observation_spacing' | 'awaiting_completion_receipt' | 'pre_send_infrastructure_blocked'; preflightReasonCode?: string; preflightComposerObservation?: WorkflowSupervisorPreflightComposerObservation }
+  | { state: 'spaced'; effectId?: string; reason: 'retry_spacing' | 'unknown_observation_spacing' | 'awaiting_completion_receipt' | 'pre_send_infrastructure_blocked'; preflightReasonCode?: string; preflightComposerObservation?: WorkflowSupervisorPreflightComposerObservation; silentTurn?: WorkflowSupervisorSilentTurn }
   | { state: 'retryable'; effectId: string; generations: number; maxGenerations: number }
-  | { state: 'provider_resume_exhausted'; effectId: string }
+  | { state: 'provider_resume_exhausted'; effectId: string; silentTurn?: WorkflowSupervisorSilentTurn }
   | { state: 'waiting'; scheduleId: string; completionFingerprint: string }
   | { state: 'inert' };
 

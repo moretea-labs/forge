@@ -1,6 +1,6 @@
 import { existsSync, realpathSync } from 'fs';
 import { spawnSync } from 'child_process';
-import { getRepository, selectRepositoryCheckout, validateRepository } from '../../../cli/repositories/registry';
+import { getRepository, repositoryCheckoutLifecycle, selectRepositoryCheckout, validateRepository } from '../../../cli/repositories/registry';
 import type { RepositoryRecord } from '../../../cli/repositories/types';
 import { readRepositoryAccessPolicy } from '../governance/access-policy';
 import { getWorkContract } from '../../../../packages/kernel/work/api/index';
@@ -9,6 +9,13 @@ import { requireExecutionSession, type ExecutionSessionContext, type SessionIden
 import type { WorkHandleState } from './work-handle-store';
 
 export type ValidationLevel = 'none' | 'cheap' | 'full';
+
+/**
+ * A WorkHandle's checkout is placement, not semantic identity. The checkout can
+ * disappear while the canonical WorkContract remains valid; that must not grant
+ * the retired execution location a permanent veto over the Work.
+ */
+export type WorkHandlePlacementLoss = 'checkout_unregistered' | 'worktree_missing';
 
 export interface ValidatedWorkHandle {
   session: ExecutionSessionContext;
@@ -19,6 +26,26 @@ export interface ValidatedWorkHandle {
   currentHead?: string;
   currentBranch?: string;
   warnings: string[];
+  /**
+   * Set only for a read-only inspection whose recorded placement is gone. The
+   * Work contract is still authoritative, but no Git claim is made and every
+   * mutating operation remains rejected until prepare re-establishes placement.
+   */
+  placementLoss?: WorkHandlePlacementLoss;
+}
+
+/**
+ * One definition of "the recorded placement is gone", shared by inspection and
+ * prepare recovery. It consumes the repository record the caller already read,
+ * so validation does not repeat a registry lookup. The canonical checkout is
+ * never treated as lost: its own validation owns that failure domain.
+ */
+export function workHandlePlacementLoss(repository: RepositoryRecord, handle: WorkHandleState): WorkHandlePlacementLoss | undefined {
+  const checkout = repository.checkouts.find((entry) => entry.checkoutId === handle.checkoutId);
+  if (!checkout || repositoryCheckoutLifecycle(checkout) !== 'active') return 'checkout_unregistered';
+  if (checkout.checkoutId === repository.activeCheckoutId) return undefined;
+  if (!existsSync(handle.worktreePath)) return 'worktree_missing';
+  return undefined;
 }
 
 function gitText(root: string, args: string[]): string | undefined {
@@ -107,13 +134,29 @@ export function validateWorkHandle(
 
   const repository = getRepository(handle.repositoryId, controllerHome, { includeRemoved: true });
   if (repository.removedAt || repository.enabled === false) fail('REPOSITORY_NOT_EXECUTABLE', `repository ${repository.repoId} is disabled or removed`);
-  const worktreeRepository = selectRepositoryCheckout(repository, handle.checkoutId);
-  if (worktreeRepository.activeCheckoutId !== handle.checkoutId) fail('CHECKOUT_NOT_REGISTERED', handle.checkoutId);
 
   const permissionVersion = currentPermissionSnapshotVersion(controllerHome, repository.repoId);
   if (permissionVersion !== handle.permissionSnapshotVersion) {
     fail('WORK_HANDLE_STALE_PERMISSION', `permission snapshot ${handle.permissionSnapshotVersion} is stale; current version is ${permissionVersion}`);
   }
+
+  // A deleted checkout is a lost execution location, not a cancelled Work.
+  // Read-only inspection keeps the semantic Work visible; every operation that
+  // needs real Git state still fails until prepare re-establishes placement.
+  const placementLoss = workHandlePlacementLoss(repository, handle);
+  if (placementLoss) {
+    if (operation === 'inspect' && level !== 'full') {
+      warnings.push(`Work placement is lost (${placementLoss}); the canonical Work is retained but no Git state is reported. Call work_prepare with this work_id to re-establish an exact managed placement.`);
+      return { session, repository, worktreeRepository: repository, handle, warnings, placementLoss };
+    }
+    fail(
+      placementLoss === 'checkout_unregistered' ? 'CHECKOUT_NOT_REGISTERED' : 'WORKTREE_MISSING',
+      `recorded Work placement is lost (${placementLoss}); re-establish it with work_prepare before ${operation}`,
+    );
+  }
+
+  const worktreeRepository = selectRepositoryCheckout(repository, handle.checkoutId);
+  if (worktreeRepository.activeCheckoutId !== handle.checkoutId) fail('CHECKOUT_NOT_REGISTERED', handle.checkoutId);
 
   if (level === 'none') return { session, repository, worktreeRepository, handle, warnings };
 

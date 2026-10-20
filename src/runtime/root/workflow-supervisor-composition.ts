@@ -235,16 +235,21 @@ function createForgeWorkflowSupervisorBrowserTaskActive(controllerHome: string):
  */
 function terminalWorkSupervisorStopReason(controllerHome: string, task: WorkflowSupervisorTask): string | undefined {
   const repoId = workflowSupervisorContractText(task, 'repo_id');
-  const workId = workflowSupervisorContractText(task, 'work_id');
+  const declaredWorkId = workflowSupervisorContractText(task, 'work_id');
   const taskHome = workflowSupervisorContractText(task, 'controller_home');
-  if (!repoId || !workId || (taskHome && taskHome !== controllerHome)) return undefined;
-  if (task.taskId !== `forge:${repoId}:work:${workId}`
+  if (!repoId || !declaredWorkId || (taskHome && taskHome !== controllerHome)) return undefined;
+  if (task.taskId !== `forge:${repoId}:work:${declaredWorkId}`
     || task.continuationPolicy.kind === 'standalone_supervisor') return undefined;
-  const work = getWorkContract({ controllerHome, repoId }, workId);
+  // The task id stays anchored to its original Work for audit and exactly-once
+  // effects. Terminality follows the unique active Work projection on that same
+  // conversation, which may be an explicit same-Requirement predecessor successor.
+  const activeWorkId = workflowSupervisorOriginWorkId(task, repoId, controllerHome);
+  if (!activeWorkId) return undefined;
+  const work = getWorkContract({ controllerHome, repoId }, activeWorkId);
   if (!work) return undefined;
   const state = semanticWorkState(work);
   return state !== 'open'
-    ? `Exact Work ${workId} is ${state}; stop its Work-owned Supervisor continuation without changing the original Work or any successor Schedule.`
+    ? `Exact active Work ${activeWorkId} is ${state}; stop its Work-owned Supervisor continuation without changing the original Work or any successor Schedule.`
     : undefined;
 }
 

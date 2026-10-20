@@ -313,10 +313,6 @@ export const RUNTIME_LIFECYCLE_INVENTORY: readonly RuntimeLifecycleClassDefiniti
   }),
 ]);
 
-export function runtimeLifecycleClass(id: string): RuntimeLifecycleClassDefinition | undefined {
-  return RUNTIME_LIFECYCLE_INVENTORY.find((entry) => entry.id === id);
-}
-
 export function runtimeLifecycleClosureSummary(): { total: number; existingBounded: number; needsV2c2Closure: number; pendingIds: string[] } {
   const pendingIds = RUNTIME_LIFECYCLE_INVENTORY.filter((entry) => entry.closureStatus === 'needs_v2c2_closure').map((entry) => entry.id);
   return {

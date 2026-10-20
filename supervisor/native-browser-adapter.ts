@@ -24,6 +24,7 @@ import type {
   WorkflowSupervisorBrowserTask,
   WorkflowSupervisorConsumerStatus,
   WorkflowSupervisorPreflightComposerObservation,
+  WorkflowSupervisorSilentTurn,
 } from './types';
 
 const DEFAULT_INTERVAL_MS = 1_000;
@@ -359,6 +360,8 @@ export class WorkflowSupervisorNativeBrowserAdapter {
   private readonly projectedTaskStalls = new Map<string, Omit<WorkflowSupervisorStallProjection, 'taskId' | 'state' | 'observedAt'>>();
   /** Spacing for read-only observation of a turn whose bounded resume is exhausted. */
   private readonly awaitingReceiptObservedAtMs = new Map<string, number>();
+  /** Derived from the tick's taskStall passes; the store remains the silence authority. */
+  private projectedSilence?: WorkflowSupervisorSilentTurn & { taskId: string };
   /** Rebuildable idle-grace projection; Supervisor effects remain the sole authority. */
   private readonly idleResourceSinceMs = new Map<string, number>();
 
@@ -452,11 +455,18 @@ export class WorkflowSupervisorNativeBrowserAdapter {
   private syncTaskStallProjections(): void {
     const activeTaskIds = new Set<string>();
     const observedAt = new Date(this.deps.nowMs()).toISOString();
+    let oldestSilence: (WorkflowSupervisorSilentTurn & { taskId: string }) | undefined;
     for (const task of this.control.listTasks(true)) {
       activeTaskIds.add(task.taskId);
       let stall: ReturnType<WorkflowSupervisorControlPlane['taskStall']>;
       try { stall = this.control.taskStall(task.taskId); }
       catch (error) { this.deps.onError(error); continue; }
+      // Silence is reported from the same existing provider-state evidence the
+      // tick already read. It never adds a target, a send or a durable state.
+      const silentTurn = 'silentTurn' in stall ? stall.silentTurn : undefined;
+      if (silentTurn && (!oldestSilence || silentTurn.elapsedMs > oldestSilence.elapsedMs)) {
+        oldestSilence = { taskId: task.taskId, ...silentTurn };
+      }
       if (stall.state === 'retryable' || stall.state === 'provider_resume_exhausted') {
         const next = {
           effectId: stall.effectId,
@@ -488,6 +498,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       catch (error) { this.deps.onError(error); }
       this.projectedTaskStalls.delete(taskId);
     }
+    this.projectedSilence = oldestSilence;
   }
 
   private dueCommand(nowMs: number): WorkflowSupervisorConsumerStatus['dueCommand'] {
@@ -515,6 +526,12 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       ? { code: dueTaskFailure.code, observedAtMs: dueTaskFailure.observedAtMs, taskId: dueCommand!.taskId, ...(dueTaskFailure.effectId ? { effectId: dueTaskFailure.effectId } : {}) }
       : this.lastFailure;
     const stalled = Boolean(this.inflight && this.lastTickStartedAtMs !== undefined && nowMs - this.lastTickStartedAtMs > MAX_TRANSPORT_BACKOFF_MS + 10_000);
+    // Elapsed is recomputed from the recorded observation instant so a read
+    // between ticks cannot report a stale "still working" duration.
+    const silenceSinceMs = this.projectedSilence ? Date.parse(this.projectedSilence.observedSince) : Number.NaN;
+    const silence = this.projectedSilence && Number.isFinite(silenceSinceMs)
+      ? { ...this.projectedSilence, elapsedMs: Math.max(0, nowMs - silenceSinceMs) }
+      : undefined;
     return {
       enabled: true, running: Boolean(this.timer) && !this.closed, observedAt: new Date(nowMs).toISOString(),
       ...(isoTime(this.lastTickStartedAtMs) ? { lastTickStartedAt: isoTime(this.lastTickStartedAtMs) } : {}),
@@ -524,6 +541,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       transportFailureStreak: this.transportFailureStreak,
       providerBackpressureMs: chatgptProviderBackpressureRemainingMs(this.deps.providerScopeKey, nowMs), stalled,
       ...(dueCommand ? { dueCommand } : {}),
+      ...(silence ? { awaitingReceiptSilence: silence } : {}),
       ...(projectedFailure ? { lastFailure: { code: projectedFailure.code, observedAt: new Date(projectedFailure.observedAtMs).toISOString(),
         ...(projectedFailure.taskId ? { taskId: projectedFailure.taskId } : {}), ...(projectedFailure.effectId ? { effectId: projectedFailure.effectId } : {}) } } : {}),
     };

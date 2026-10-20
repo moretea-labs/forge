@@ -62,7 +62,7 @@ function suggestedActionsForClass(recoveryClass: RecoveryClass): RecoveryActionD
   if (recoveryClass === 'platform_blocked' || recoveryClass === 'dirty_worktree_conflict') return [RECOVERY_ACTIONS.createPatchHandoff];
   if (recoveryClass === 'auth_required') return [RECOVERY_ACTIONS.workspaceAuthLoginPrepare];
   if (recoveryClass === 'external_filesystem_grant_required') return [RECOVERY_ACTIONS.externalFilesystemGrantPreview];
-  if (recoveryClass === 'agent_runtime_failure') return [RECOVERY_ACTIONS.reconcileJobs];
+  if (recoveryClass === 'agent_runtime_failure') return [RECOVERY_ACTIONS.localJobsReconcile];
   if (recoveryClass === 'source_defect_suspected' || recoveryClass === 'external_lifecycle_required') return [];
   if (['runtime_storage_not_ready', 'local_jobs_legacy_active', 'local_jobs_unreadable', 'local_jobs_reconciliation_required', 'maintenance_executor_required'].includes(recoveryClass)) {
     return [RECOVERY_ACTIONS.localJobsReconcile, RECOVERY_ACTIONS.finalizeRuntimeStorageRelocation];
@@ -124,8 +124,8 @@ export function buildCapabilityRecoverySnapshot(input: CapabilityRecoveryInput):
   if (sharedHealth) {
     capabilities.push(
       capabilityFromSharedHealth(at, 'forge.runtime', 'Forge Runtime', sharedHealth.components.daemon, 'external_lifecycle_required'),
-      capabilityFromSharedHealth(at, 'durable.scheduler', 'Durable scheduler', sharedHealth.components.scheduler, 'stale_runtime_state', [RECOVERY_ACTIONS.reconcileJobs]),
-      capabilityFromSharedHealth(at, 'worker.loop', 'Worker loop', sharedHealth.components.workers, 'stale_runtime_state', [RECOVERY_ACTIONS.reconcileJobs]),
+      capabilityFromSharedHealth(at, 'durable.scheduler', 'Durable scheduler', sharedHealth.components.scheduler, 'stale_runtime_state', [RECOVERY_ACTIONS.localJobsReconcile]),
+      capabilityFromSharedHealth(at, 'worker.loop', 'Worker loop', sharedHealth.components.workers, 'stale_runtime_state', [RECOVERY_ACTIONS.localJobsReconcile]),
       capabilityFromSharedHealth(at, 'local.bridge', 'Local bridge', sharedHealth.components.localBridge, 'local_recoverable', [RECOVERY_ACTIONS.probeAgain]),
       capabilityFromSharedHealth(at, 'runtime.projection', 'Runtime projection', sharedHealth.components.projection, 'stale_runtime_state', [RECOVERY_ACTIONS.rebuildProjection]),
       capabilityFromSharedHealth(at, 'runtime.storage', 'Runtime storage', sharedHealth.components.runtimeStorage, 'runtime_storage_not_ready', runtimeStorageActions('runtime_storage_not_ready')),
@@ -139,12 +139,12 @@ export function buildCapabilityRecoverySnapshot(input: CapabilityRecoveryInput):
     const schedulerAge = input.schedulerHeartbeatAgeMs;
     const schedulerStale = typeof schedulerAge === 'number' && schedulerAge > SCHEDULER_STALE_MS;
     capabilities.push(schedulerStale || input.schedulerStatus === 'degraded' || input.schedulerStatus === 'not_ready'
-      ? capability(at, 'durable.scheduler', 'Durable scheduler', 'degraded', 'stale_runtime_state', 'Scheduler heartbeat is stale or degraded.', [RECOVERY_ACTIONS.reconcileJobs], { schedulerStatus: input.schedulerStatus, schedulerHeartbeatAgeMs: schedulerAge })
+      ? capability(at, 'durable.scheduler', 'Durable scheduler', 'degraded', 'stale_runtime_state', 'Scheduler heartbeat is stale or degraded.', [RECOVERY_ACTIONS.localJobsReconcile], { schedulerStatus: input.schedulerStatus, schedulerHeartbeatAgeMs: schedulerAge })
       : capability(at, 'durable.scheduler', 'Durable scheduler', 'ready', 'unknown', 'Scheduler heartbeat is healthy.', [], { schedulerStatus: input.schedulerStatus, schedulerHeartbeatAgeMs: schedulerAge }));
 
     const queueStalled = queueDepth > 0 && runningWorkers === 0;
     capabilities.push(queueStalled || activeLeases > 0 && runningWorkers === 0
-      ? capability(at, 'worker.loop', 'Worker loop', 'degraded', 'stale_runtime_state', 'Queued work or leases may be stuck without active workers.', [RECOVERY_ACTIONS.reconcileJobs], { queueDepth, runningWorkers, activeLeases })
+      ? capability(at, 'worker.loop', 'Worker loop', 'degraded', 'stale_runtime_state', 'Queued work or leases may be stuck without active workers.', [RECOVERY_ACTIONS.localJobsReconcile], { queueDepth, runningWorkers, activeLeases })
       : capability(at, 'worker.loop', 'Worker loop', 'ready', 'unknown', 'Worker loop has no stuck queue evidence.', [], { queueDepth, runningWorkers, activeLeases }));
 
     capabilities.push(input.localBridgeRunning === false

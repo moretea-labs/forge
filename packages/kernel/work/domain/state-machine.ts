@@ -1,5 +1,5 @@
 import { assertImplementationReviewHistoryAppendOnly, validateImplementationReviewRecord } from './implementation-review';
-import { normalizeWorkObjectiveRelationIds, validateWorkObjectiveRelationShape } from './objective-graph';
+import { normalizeWorkObjectiveRelationIds, validateWorkObjectiveRelationShape } from './objective-relations';
 import {
   WORK_PHASES,
   isDirectEditWorkCompletionReceipt,
