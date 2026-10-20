@@ -11,7 +11,7 @@ import { buildExecutionDiagnostics, buildRequirementBoard } from '../../../src/r
 import { getWorkContract } from '../../../packages/kernel/work/api';
 import { listCapabilityDescriptors, summarizeCapabilityGroups } from '../../../src/runtime/control-plane/facade/capability-registry';
 import { exportControllerWorklog, listControllerWorklogEvents, parseWorklogCategory } from "../../../src/cli/controller/worklog";
-import { FORGE_MCP_SCHEMA_VERSION, FORGE_TOOL_SURFACE, FORGE_VERSION, forgeToolSurfaceFingerprint, MIN_AGENT_TIMEOUT_MS, formatDurationMs, normalizeAgentTimeoutMs } from "../../../src/cli/controller/runtime-config";
+import { FORGE_MCP_SCHEMA_VERSION, FORGE_TOOL_SURFACE, FORGE_VERSION, forgeToolSurfaceFingerprint, formatDurationMs, normalizeAgentTimeoutMs } from "../../../src/cli/controller/runtime-config";
 import { PREFERRED_FACADE_TOOL_NAMES } from "../toolset-names";
 import { buildLocalConnectorStatusForRepo } from "../../../src/cli/local-bridge/connector-freshness";
 import { gitDiff, gitSnapshot, searchRepository } from "../../../src/cli/repository/inspector";
@@ -753,12 +753,6 @@ export function buildMcpToolDefinitions(
     required: ["sessionId"],
     additionalProperties: false,
   };
-  const agentTimeoutSchema = {
-    type: "number",
-    minimum: MIN_AGENT_TIMEOUT_MS,
-    maximum: policy.execution.runnerMaxTimeoutMs,
-    description: `Execution limit in milliseconds. Defaults to ${policy.execution.runnerTimeoutMs}; maximum ${policy.execution.runnerMaxTimeoutMs}. The value is never silently reduced.`,
-  };
   const tools: McpToolDefinition[] = [
     {
       name: "harness_status",
@@ -943,91 +937,6 @@ export function buildMcpToolDefinitions(
           additionalProperties: false,
         },
         annotations: readOnly,
-      },
-      {
-        name: "quick_agent_session",
-        description:
-          "Start an ephemeral local Codex or Claude session directly from an objective, without requiring an Issue or Task. Current workspace is the default; isolation is opt-in or selected for concurrency.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            request_id: { type: "string" },
-            title: { type: "string" },
-            objective: { type: "string" },
-            summary: { type: "string" },
-            agent: { type: "string", enum: ["codex", "claude"] },
-            isolate: {
-              type: "boolean",
-              description: "Optional. false uses the current workspace, true forces an isolated worktree, and omission selects automatically.",
-            },
-            timeout_ms: agentTimeoutSchema,
-            ephemeral: { type: "boolean", description: "Defaults to true and stays outside the durable Issue board." },
-            allowed_paths: { type: "array", items: { type: "string" } },
-            forbidden_paths: { type: "array", items: { type: "string" } },
-            checks: { type: "array", items: { type: "string" } },
-            acceptance_criteria: { type: "array", items: { type: "string" } },
-            risk: { type: "string", enum: ["readonly", "low", "medium", "high", "destructive"] },
-            approve_destructive: { type: "boolean" },
-            requested_by: { type: "string" },
-          },
-          required: ["title", "objective"],
-          additionalProperties: false,
-        },
-        annotations: { readOnlyHint: false, openWorldHint: false, destructiveHint: false },
-      },
-      {
-        name: "submit_local_job",
-        description:
-          "Submit a high-level local Job Ticket. Local work dispatches immediately unless it is explicitly destructive; no ordinary risk approval queue is used.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            action: {
-              type: "string",
-              enum: ["launch-task", "quick-agent-session", "run-check"],
-            },
-            request_id: { type: "string" },
-            issue_id: { type: "string" },
-            task_id: { type: "string" },
-            agent: {
-              type: "string",
-              enum: ["codex", "claude", "github-copilot"],
-            },
-            isolate: {
-              type: "boolean",
-              description:
-                "Optional. Omit for automatic placement: use the current workspace when no local Run is active and a worktree only for concurrency. false forces the current workspace and is rejected during concurrency; true forces a worktree.",
-            },
-            supervisor_instructions: {
-              type: "string",
-              description: "Optional follow-up guidance from a supervising ChatGPT review. Appended to the retried Run prompt without narrowing normal executor capabilities.",
-            },
-            timeout_ms: agentTimeoutSchema,
-            github_repo: { type: "string" },
-            base_ref: { type: "string" },
-            model: { type: "string" },
-            create_pull_request: { type: "boolean" },
-            approve_destructive: { type: "boolean" },
-            ephemeral: { type: "boolean", description: "Quick Agent defaults to true and stays outside the durable Issue board." },
-            title: { type: "string" },
-            objective: { type: "string" },
-            summary: { type: "string" },
-            allowed_paths: { type: "array", items: { type: "string" } },
-            forbidden_paths: { type: "array", items: { type: "string" } },
-            checks: { type: "array", items: { type: "string" } },
-            acceptance_criteria: { type: "array", items: { type: "string" } },
-            risk: { type: "string", enum: ["readonly", "low", "medium", "high", "destructive"] },
-            check_id: { type: "string" },
-            requested_by: { type: "string" },
-          },
-          required: ["action"],
-          additionalProperties: false,
-        },
-        annotations: {
-          readOnlyHint: false,
-          openWorldHint: false,
-          destructiveHint: false,
-        },
       },
       {
         name: "list_local_jobs",
@@ -1406,52 +1315,8 @@ export function buildMcpToolDefinitions(
       },
     );
   }
-  return tools.filter((tool) => !RETIRED_LEGACY_PUBLIC_TOOLS.has(tool.name));
+  return tools;
 }
-
-const RETIRED_LEGACY_PUBLIC_TOOLS = new Set([
-  "list_issues",
-  "get_project_board",
-  "get_project_governance",
-  "reconcile_project_governance",
-  "get_project_state",
-  "set_current_issue",
-  "archive_issue",
-  "restore_issue",
-  "get_issue",
-  "publish_issue_to_github",
-  "refresh_github_issue",
-  "close_github_issue",
-  "inspect_issue_readiness",
-  "inspect_task_readiness",
-  "prepare_issue_launch",
-  "create_issue",
-  "update_issue",
-  "plan_issue",
-  "append_task",
-  "split_task",
-  "supersede_task",
-  "set_task_dependencies",
-  "update_task",
-  "dispatch_task",
-  "launch_issue",
-  "dispatch_ready_tasks",
-  "get_task_run",
-  "get_task_run_events",
-  "get_task_run_log",
-  "get_task_diff",
-  "integrate_task_run",
-  "finish_task_run",
-  "list_task_runs",
-  "cancel_task_run",
-  "retry_task_run",
-  "verify_task",
-  "accept_task",
-  "request_task_changes",
-  "record_task_verification",
-  "accept_verified_task",
-  "finish_edit_session",
-]);
 
 export async function callMcpTool(
   ctx: McpToolContext,
@@ -1459,10 +1324,6 @@ export async function callMcpTool(
   args: Record<string, unknown> = {},
 ): Promise<CallToolResult> {
   try {
-    if (RETIRED_LEGACY_PUBLIC_TOOLS.has(name)) {
-      audit(ctx, name, "blocked", args);
-      return errorResult("UNKNOWN_TOOL", `unknown tool: ${name}`);
-    }
     switch (name) {
       case "harness_status": {
         const roots = [
@@ -1835,17 +1696,6 @@ export async function callMcpTool(
         };
         audit(ctx, name, "ok", args);
         return textResult(payload);
-      }
-      case "quick_agent_session":
-      case "submit_local_job": {
-        if (ctx.policy.profile !== "controller") {
-          return errorResult("TOOL_DISABLED", `${name} requires the controller profile`);
-        }
-        audit(ctx, name, "blocked", args);
-        return errorResult(
-          name === "quick_agent_session" ? "AGENT_RUN_DEPRECATED" : "LOCAL_BRIDGE_JOB_RETIRED",
-          "Kernel-managed Agent and Local Bridge Jobs are retired. Create or claim WorkContract and use Process Runtime or the Thin Launcher.",
-        );
       }
       case "list_local_jobs": {
         if (ctx.policy.profile !== "controller")
@@ -2827,7 +2677,8 @@ export async function callMcpTool(
         });
       }
       default:
-        return errorResult("UNKNOWN_TOOL", `unknown MCP tool: ${name}`);
+        audit(ctx, name, "blocked", args);
+        return errorResult("UNKNOWN_TOOL", `unknown tool: ${name}`);
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
