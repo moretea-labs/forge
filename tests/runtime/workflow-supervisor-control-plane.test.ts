@@ -14,7 +14,7 @@ import { bindCurrentWorkflowSupervisorConversationForWork, ensureWorkflowSupervi
 import { WorkflowSupervisorControlPlane } from '../../supervisor/control-plane';
 import { WorkflowSupervisorNativeBrowserAdapter } from '../../supervisor/native-browser-adapter';
 import { hasCommittedSupervisorEnvelope, LEGACY_SUPERVISOR_BLOCK_END, LEGACY_SUPERVISOR_BLOCK_START, parseSupervisorCompletion, renderSupervisorPrompt, renderSupervisorReceipt, supervisorReceiptChallenge, SUPERVISOR_BLOCK_END, SUPERVISOR_BLOCK_START, SUPERVISOR_TURN_BLOCK_END, SUPERVISOR_TURN_BLOCK_START } from '../../supervisor/protocol';
-import { WorkflowSupervisorStore, workflowSupervisorCompletionContractSha256 } from '../../supervisor/store';
+import { WorkflowSupervisorStore, workflowSupervisorCompletionContractSha256, WORKFLOW_SUPERVISOR_PROVIDER_IDLE_GRACE_MS } from '../../supervisor/store';
 import { createWorkflowSupervisorServer, reconcileWorkflowSupervisorSocket, WorkflowSupervisorEphemeralDiscovery } from '../../supervisor/server';
 import { claimControllerSession, getControllerSession, releaseControllerSession } from '../../src/runtime/control-plane/facade/controller-session-store';
 import { bindChatgptWorkConversation, getChatgptWorkConversationBinding, rebindChatgptWorkConversation } from '../../adapters/chatgpt/work-conversation-binding-store';
@@ -3049,11 +3049,12 @@ test('stable text-only assistant reply permits one bounded recovery without repl
   const applied = control.reserveEnrollment(taskId);
   control.observeEffect({ effectId: applied.effectId, observationId: 'text-only-applied', outcome: 'applied' });
   const recoveryEffectId = 'fx_90909090909090909090909090909998';
-  const sample = { taskId, effectId: applied.effectId, generating: false, receiptMissing: true, assistantDigest: 'rendered-text-only-response', graceMs: 1_000,
+  const sample = { taskId, effectId: applied.effectId, generating: false, receiptMissing: true, assistantDigest: 'rendered-text-only-response', graceMs: WORKFLOW_SUPERVISOR_PROVIDER_IDLE_GRACE_MS,
     recovery: { effectId: recoveryEffectId, prompt: 'settle missing typed receipt without replaying source' } };
   expect(store.observeProviderTurn({ ...sample, observedAtMs: 1_000 }).state).toBe('idle_pending');
-  expect(store.observeProviderTurn({ ...sample, observedAtMs: 30_000 }).state).toBe('recovery_reserved');
-  expect(store.observeProviderTurn({ ...sample, observedAtMs: 40_000 }).recoveryEffect?.effectId).toBe(recoveryEffectId);
+  expect(store.observeProviderTurn({ ...sample, observedAtMs: WORKFLOW_SUPERVISOR_PROVIDER_IDLE_GRACE_MS + 999 }).state).toBe('idle_pending');
+  expect(store.observeProviderTurn({ ...sample, observedAtMs: WORKFLOW_SUPERVISOR_PROVIDER_IDLE_GRACE_MS + 1_000 }).state).toBe('recovery_reserved');
+  expect(store.observeProviderTurn({ ...sample, observedAtMs: WORKFLOW_SUPERVISOR_PROVIDER_IDLE_GRACE_MS + 2_000 }).recoveryEffect?.effectId).toBe(recoveryEffectId);
   expect(store.getLatestCompletion(taskId)).toBeUndefined();
   expect(store.nextBrowserEffect(taskId)?.effect.effectId).toBe(recoveryEffectId);
   // The recovery has never sent: a local draft blocks its preflight. A late

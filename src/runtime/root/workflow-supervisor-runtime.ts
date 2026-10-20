@@ -11,7 +11,7 @@ import {
 } from '../../../supervisor/server';
 import { startWorkflowSupervisorNativeBrowserAdapter, type WorkflowSupervisorNativeBrowserHandle, type WorkflowSupervisorStallProjection, type WorkflowSupervisorTransportProjection } from '../../../supervisor/native-browser-adapter';
 import type { WorkflowSupervisorConsumerStatus } from '../../../supervisor/types';
-import { WorkflowSupervisorStore } from '../../../supervisor/store';
+import { WorkflowSupervisorStore, WORKFLOW_SUPERVISOR_PROVIDER_IDLE_GRACE_MS } from '../../../supervisor/store';
 import { createComputerInteractionTargetAuthority } from '../../../adapters/computer/interaction-target-authority';
 import { ChromeExtensionChatgptConversationTargetPort } from '../../../adapters/computer/chatgpt-extension-target';
 import { createRuntimeComputerTargetPersistence } from './computer-target-persistence';
@@ -531,7 +531,7 @@ export async function startWorkflowSupervisorRuntime(
       // activity, so the window only elapses on a genuinely silent surface. A
       // real provider failure is classified from provider failure text
       // independently of this threshold.
-      providerIdleGraceMs: 10 * 60_000,
+      providerIdleGraceMs: WORKFLOW_SUPERVISOR_PROVIDER_IDLE_GRACE_MS,
       providerScopeKey: controllerHome,
       sleep: async (ms) => { await new Promise((resolve) => setTimeout(resolve, ms)); },
       setInterval: (handler, ms) => setInterval(handler, ms),

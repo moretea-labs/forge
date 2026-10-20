@@ -806,6 +806,14 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       poll = this.control.browserPoll({ conversationId: task.conversationId, conversationUrl: task.conversationUrl });
       if (poll.terminal) return;
     }
+    // An exact applied user turn can stop without rendering any assistant
+    // message. Only an idle provider and no unresolved successor permit the
+    // existing stable-digest grace to recover it; this never replays its Send.
+    if (!providerBusy && !poll.command && latestRoleStillUser
+      && !this.control.store.currentUnappliedEffect(task.taskId)) {
+      const source = this.control.store.latestAppliedLeafEffectWithoutCompletion(task.taskId);
+      missingReceiptForAppliedTurn = Boolean(source && targetMarkerPresent(snapshot.latestUserText, source.effectId));
+    }
     // A queued continuation must not hide a visible failure from the preceding
     // provider turn. Observe the error first so the existing bounded recovery
     // chain owns it instead of repeatedly attempting the queued send.

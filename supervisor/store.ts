@@ -241,6 +241,8 @@ export const WORKFLOW_SUPERVISOR_MAX_PREFLIGHT_RELEASE_ATTEMPTS = 3;
  * as another lifecycle state.
  */
 export const WORKFLOW_SUPERVISOR_MAX_PROVIDER_RECOVERY_TURNS = 2;
+/** Stable idle evidence, never Runtime heartbeat, starts the bounded recovery clock. */
+export const WORKFLOW_SUPERVISOR_PROVIDER_IDLE_GRACE_MS = 30 * 60_000;
 export const WORKFLOW_SUPERVISOR_DISPATCH_RETRY_BASE_MS = 30_000;
 export const WORKFLOW_SUPERVISOR_DISPATCH_RETRY_MAX_MS = 10 * 60_000;
 export const WORKFLOW_SUPERVISOR_UNKNOWN_OBSERVATION_BASE_MS = 5_000;
@@ -1384,7 +1386,7 @@ export class WorkflowSupervisorStore {
     recovery: { effectId: string; prompt: string };
   }): { state: 'none' | 'generating' | 'idle_pending' | 'recovery_reserved' | 'exhausted'; recoveryEffect?: WorkflowSupervisorEffect } {
     if (!Number.isFinite(input.observedAtMs)) throw new Error('WORKFLOW_SUPERVISOR_PROVIDER_OBSERVED_AT_INVALID');
-    const graceMs = Math.max(1_000, Math.min(10 * 60_000, Math.floor(input.graceMs)));
+    const graceMs = Math.max(1_000, Math.min(WORKFLOW_SUPERVISOR_PROVIDER_IDLE_GRACE_MS, Math.floor(input.graceMs)));
     const digest = input.assistantDigest.trim().slice(0, 128);
     const observedAt = new Date(input.observedAtMs).toISOString();
     return this.transaction((db) => {

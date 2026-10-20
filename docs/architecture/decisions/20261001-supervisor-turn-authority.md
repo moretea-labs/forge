@@ -95,10 +95,18 @@ Provider generation and cooldown still delay a new send, and dispatch admission
 still verifies the exact source effect. Browser resources have the disposable
 lifecycle defined below; task/effect history survives resource retirement.
 The consumer passes actual provider generation evidence through unchanged. A last
-visible user role does not establish generation, but an idle user-only snapshot
-also does not prove a missing completed reply or authorize recovery. An invalid
-receipt on an idle completed reply remains missing a valid causal receipt; the
-existing exact applied marker, idle grace and recovery budget govern recovery.
+visible user role does not establish generation. A provider-idle user-only turn
+with the exact applied effect marker and no unresolved successor may enter the
+same missing-receipt observation as an idle text-only or invalid-receipt reply.
+Production recovery waits for 30 continuous minutes of unchanged provider
+activity/response evidence. A change restarts the existing durable observation
+clock; Runtime ticks never reset it. Active generation, ambiguous target or an
+unknown Send cannot authorize recovery merely because 30 minutes elapsed.
+The existing effect ledger reserves one causal recovery per source, retaining
+the two-resume chain ceiling and late valid receipt reconciliation. Explicit
+provider failure can still recover earlier. No new scheduler, persistent state,
+notification authority or provider is introduced; complete Runtime rollback
+restores this behavior together with its code and configuration.
 Parser rejection caches stay ephemeral and keyed by applied source plus response;
 they never accept an invalid challenge, bypass a semantic terminal validator,
 replay an unknown Send, or introduce persistence/schema/release changes.
