@@ -15,10 +15,7 @@ import {
   FORGE_VERSION,
   forgeToolSurfaceFingerprint,
 } from '../controller/runtime-config';
-import {
-  loadMcpLocalConfig,
-  loadMcpServiceLocalConfig,
-} from '../../../adapters/mcp/auth';
+import { loadMcpServiceLocalConfig } from '../../../adapters/mcp/auth';
 import { PREFERRED_FACADE_TOOL_NAMES } from '../../../adapters/mcp/toolset-names';
 import { resolveRepoPreferredControllerHome } from '../repositories/controller-home';
 import type { PlainStatusTone } from './console-view-models';
@@ -174,7 +171,7 @@ const LIVE_HEALTH_TIMEOUT_MS = 800;
 
 function localMcpHealthUrl(repoRoot: string): string | null {
   const controllerHome = resolveRepoPreferredControllerHome(repoRoot);
-  const config = loadMcpServiceLocalConfig(controllerHome, repoRoot) ?? loadMcpLocalConfig(repoRoot);
+  const config = loadMcpServiceLocalConfig(controllerHome);
   const host = (config?.server?.host ?? '127.0.0.1').trim() || '127.0.0.1';
   const port = typeof config?.server?.port === 'number' && config.server.port > 0
     ? config.server.port
