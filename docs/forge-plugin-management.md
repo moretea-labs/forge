@@ -55,6 +55,12 @@ forge plugin list --refresh
 
 See the [Computer and Plugins Wiki guide](wiki/Computer-and-Plugins.md) and the [Browser runbook](operations/controller-browser-plugin.md). Computer is currently backed by a macOS-only native provider; do not promise native desktop control on Linux/Windows. Browser and Figma readiness depend on the selected browser mode or running app-specific bridge.
 
+## Controller-global user plugin authority
+
+Plugin installation, enabled state, connection configuration, and reusable user authorization are owned once by the current Controller instance. Enabling Gmail, Google Calendar, Google Tasks, Resend, Browser, or App Store Connect makes that same connection available from every registered project. Supplying `repo_id` does not select another plugin instance or Grant domain; it identifies Work attribution and repository resources only. Project-specific business values belong in typed action arguments.
+
+The one-way migration selects a legacy config only when all copies agree or exactly one enabled value is unambiguous. It then writes `Controller Home/system/plugins/config/<plugin>.json` and retires the corresponding repository copies. Conflicting Browser profiles or App Store Connect identities are preserved without choosing or deleting one; an explicit global configuration is required to resolve them. Existing exact-target plugin Grants migrate to `controller:global` only when one live match is unambiguous, preserving the grant ID and authorization target.
+
 ## Trust boundary
 
 Official installation uses the package-owned [`assets/plugin-registry.v1.json`](../assets/plugin-registry.v1.json). Forge:

@@ -1070,7 +1070,7 @@ function computerNativeBrowserInput(input: AssistantPluginActionExecutionInput):
 
 export const computerPluginAdapter: AssistantPluginAdapter = {
   pluginId: 'computer',
-  scope: 'controller_with_repository_overlay',
+  scope: 'controller',
   buildManifest: buildComputerManifest,
   async resolveAuthorizationContext(input) {
     if (isIosPhysicalDeviceAction(input.actionId)) return resolveIosPhysicalDeviceAuthorizationContext(input);

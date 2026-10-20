@@ -180,7 +180,7 @@ export interface AssistantPluginActionExecutionInput {
   providerIdentityPrevalidated?: boolean;
 }
 
-export type AssistantPluginScope = 'repository' | 'controller' | 'controller_with_repository_overlay';
+export type AssistantPluginScope = 'repository' | 'controller';
 export type AssistantPluginExposure = 'product' | 'internal';
 
 export interface AssistantPluginBuildContext {

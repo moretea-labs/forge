@@ -7,7 +7,7 @@ import type {
 import { AssistantPluginError, toAssistantPluginError } from './errors';
 import { bootstrapManagedRuntimeEnv } from '../shared/managed-env';
 import { readStoredGoogleClientSecret, readStoredGoogleRefreshToken } from '../safe-tooling/google-credential-store';
-import { readRepositoryPluginConfig, writeRepositoryPluginConfig, type RepositoryPluginConfigContext } from './config-store';
+import { readControllerPluginConfig, writeControllerPluginConfig, type PluginConfigAdapterContext } from './config-store';
 
 export type GoogleProviderKind = 'mock' | 'google-workspace';
 export type GoogleService = 'gmail' | 'calendar' | 'tasks';
@@ -220,54 +220,54 @@ export function normalizeGoogleTasksPluginConfig(raw: Partial<GoogleTasksPluginC
 
 function loadPluginConfig<T extends GooglePluginConfig>(
   repoRoot: string,
-  context: Pick<RepositoryPluginConfigContext, 'controllerHome' | 'repoId'> | undefined,
+  context: Pick<PluginConfigAdapterContext, 'controllerHome' | 'repoId'> | undefined,
   pluginId: string,
   normalize: (raw: Partial<T>) => T,
   defaults: () => T,
 ): T {
   if (!context) return defaults();
-  const persisted = readRepositoryPluginConfig<Partial<T>>({ ...context, repoRoot }, pluginId);
+  const persisted = readControllerPluginConfig<Partial<T>>(context.controllerHome, pluginId);
   return persisted ? normalize(persisted) : defaults();
 }
 
 function writePluginConfig<T extends GooglePluginConfig>(
-  context: RepositoryPluginConfigContext,
+  context: PluginConfigAdapterContext,
   pluginId: string,
   config: T,
 ): T {
-  return writeRepositoryPluginConfig(context, pluginId, config);
+  return writeControllerPluginConfig(context.controllerHome, pluginId, config);
 }
 
 export function loadGmailPluginConfig(
   repoRoot: string,
-  context?: Pick<RepositoryPluginConfigContext, 'controllerHome' | 'repoId'>,
+  context?: Pick<PluginConfigAdapterContext, 'controllerHome' | 'repoId'>,
 ): GmailPluginConfig {
   return loadPluginConfig(repoRoot, context, 'gmail', normalizeGmailPluginConfig, defaultGmailPluginConfig);
 }
 
 export function loadGoogleCalendarPluginConfig(
   repoRoot: string,
-  context?: Pick<RepositoryPluginConfigContext, 'controllerHome' | 'repoId'>,
+  context?: Pick<PluginConfigAdapterContext, 'controllerHome' | 'repoId'>,
 ): GoogleCalendarPluginConfig {
   return loadPluginConfig(repoRoot, context, 'google-calendar', normalizeGoogleCalendarPluginConfig, defaultGoogleCalendarPluginConfig);
 }
 
 export function loadGoogleTasksPluginConfig(
   repoRoot: string,
-  context?: Pick<RepositoryPluginConfigContext, 'controllerHome' | 'repoId'>,
+  context?: Pick<PluginConfigAdapterContext, 'controllerHome' | 'repoId'>,
 ): GoogleTasksPluginConfig {
   return loadPluginConfig(repoRoot, context, 'google-tasks', normalizeGoogleTasksPluginConfig, defaultGoogleTasksPluginConfig);
 }
 
 export type GooglePluginConfigPatch<T extends GooglePluginConfig> = Partial<Omit<T, 'schemaVersion'>>;
 
-export function saveGmailPluginConfig(context: RepositoryPluginConfigContext, patch: GooglePluginConfigPatch<GmailPluginConfig>): GmailPluginConfig {
+export function saveGmailPluginConfig(context: PluginConfigAdapterContext, patch: GooglePluginConfigPatch<GmailPluginConfig>): GmailPluginConfig {
   const current = loadGmailPluginConfig(context.repoRoot, context);
   return writePluginConfig(context, 'gmail', normalizeGmailPluginConfig({ ...current, ...patch }));
 }
 
 export function saveGoogleCalendarPluginConfig(
-  context: RepositoryPluginConfigContext,
+  context: PluginConfigAdapterContext,
   patch: GooglePluginConfigPatch<GoogleCalendarPluginConfig>,
 ): GoogleCalendarPluginConfig {
   const current = loadGoogleCalendarPluginConfig(context.repoRoot, context);
@@ -275,7 +275,7 @@ export function saveGoogleCalendarPluginConfig(
 }
 
 export function saveGoogleTasksPluginConfig(
-  context: RepositoryPluginConfigContext,
+  context: PluginConfigAdapterContext,
   patch: GooglePluginConfigPatch<GoogleTasksPluginConfig>,
 ): GoogleTasksPluginConfig {
   const current = loadGoogleTasksPluginConfig(context.repoRoot, context);

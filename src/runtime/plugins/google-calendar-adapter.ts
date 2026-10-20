@@ -463,6 +463,7 @@ export async function executeGoogleCalendarPluginAction(input: AssistantPluginAc
 
 export const googleCalendarPluginAdapter = {
   pluginId: GOOGLE_CALENDAR_PLUGIN_ID,
+  scope: 'controller' as const,
   buildManifest: buildGoogleCalendarPluginManifest,
   executeAction: executeGoogleCalendarPluginAction,
 };

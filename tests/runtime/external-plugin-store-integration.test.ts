@@ -13,7 +13,7 @@ import { callRhWorkSemanticOperation } from '../../adapters/mcp/runtime-gateway/
 import { buildResendPluginManifest, executeResendPluginAction } from '../../src/runtime/plugins/resend-adapter';
 import { executeAssistantPluginActionApplication } from '../../src/runtime/plugins/action-application';
 import { GMAIL_AUTOMATION_CAPABILITY_ID, GMAIL_OWNER_NOTIFICATION_CAPABILITY_ID, GMAIL_PLUGIN_ID } from '../../src/runtime/plugins/gmail-adapter';
-import { repositoryPluginConfigPath } from '../../src/runtime/plugins/config-store';
+import { controllerPluginConfigPath } from '../../src/runtime/plugins/config-store';
 import { createFirstPartyPluginAdapterMap } from '../../src/runtime/plugins/first-party-registry';
 import { getPluginActionCapabilitySchema } from '../../src/runtime/control-plane/facade/capability-registry';
 import { buildPluginManagementManifest } from '../../src/runtime/plugins/plugin-management-adapter';
@@ -260,7 +260,7 @@ describe('scheduled Gmail automation capability', () => {
     expect(spawnSync('git', ['-c', 'user.name=Forge Test', '-c', 'user.email=forge@example.test', 'commit', '-m', 'init'], { cwd: repoRoot, encoding: 'utf8' }).status).toBe(0);
     const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'gmail-automation-test' });
     const context = { controllerHome, repoId: repository.repoId, repoRoot: repository.canonicalRoot };
-    const configPath = repositoryPluginConfigPath(context, 'gmail');
+    const configPath = controllerPluginConfigPath(context.controllerHome, 'gmail');
     mkdirSync(dirname(configPath), { recursive: true });
     const ownerEmail = 'owner@example.test';
     writeFileSync(configPath, JSON.stringify({ enabled: true, provider: 'mock', accountEmail: ownerEmail }, null, 2));
@@ -283,7 +283,7 @@ describe('scheduled Gmail automation capability', () => {
 
     const grantQuery = {
       ownerScope: pluginCapabilityAuthorizationOwnerScope(origin),
-      repoId: repository.repoId,
+      repoId: 'controller:global',
       pluginId: GMAIL_PLUGIN_ID,
       capabilityId: GMAIL_OWNER_NOTIFICATION_CAPABILITY_ID,
       target: {
@@ -679,7 +679,7 @@ describe('external plugin reusable authorization targets', () => {
 describe('external plugin store integration', () => {
   test('resolves the built-in browser adapter from controller scope for ChatGPT continuation', () => {
     const fx = fixture();
-    expect(assistantPluginScope('browser', fx.controllerHome)).toBe('controller_with_repository_overlay');
+    expect(assistantPluginScope('browser', fx.controllerHome)).toBe('controller');
     expect(getControllerPluginManifest(fx.controllerHome, 'browser').pluginId).toBe('browser');
   });
 
@@ -1088,7 +1088,7 @@ describe('Resend first-party plugin', () => {
       from_email: 'forge@updates.example.com',
       from_name: 'Forge',
     });
-    const configText = readFileSync(repositoryPluginConfigPath({ controllerHome: join(repoRoot, '.controller'), repoId: 'repo_test' }, 'resend'), 'utf8');
+    const configText = readFileSync(controllerPluginConfigPath(join(repoRoot, '.controller'), 'resend'), 'utf8');
     expect(configText).toContain('updates.example.com');
     expect(configText).not.toContain('apiKey');
     expect(configText).not.toContain('password');

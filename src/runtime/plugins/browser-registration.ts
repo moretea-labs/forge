@@ -22,7 +22,7 @@ const BROWSER_MANIFEST_MUTATING_ACTIONS = new Set([
 /** Thin first-party registration. Browser execution remains an adapter implementation detail. */
 export const browserPluginAdapter: AssistantPluginAdapter = {
   pluginId: 'browser',
-  scope: 'controller_with_repository_overlay',
+  scope: 'controller',
   exposure: 'internal',
   buildManifest: buildBrowserPluginManifest,
   normalizeLegacyConfig: normalizeLegacyBrowserConfig,

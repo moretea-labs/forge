@@ -1,6 +1,7 @@
 import {
   findActiveCanonicalGrant,
   listCanonicalGrants,
+  migrateCanonicalGrantRepositoryScope,
   reconcileCanonicalGrants,
   recordCanonicalGrant,
   revokeCanonicalGrant,
@@ -381,15 +382,38 @@ export function findActivePluginCapabilityAuthorization(
   const target = normalizeTarget(query.target);
   const scopes = normalizeScopes(query.scopes);
   migrateLegacyPluginCapabilityGrants(controllerHome, query.at ?? new Date());
-  const canonical = findActiveCanonicalGrant(controllerHome, {
+  const lookup = (candidateRepoId: string) => findActiveCanonicalGrant(controllerHome, {
     ownerScope,
     capability: `${pluginId}:${capabilityId}`,
-    target: { kind: target.kind, id: target.id, repoId, ...(target.identityFingerprint ? { identityFingerprint: target.identityFingerprint } : {}) },
+    target: { kind: target.kind, id: target.id, repoId: candidateRepoId, ...(target.identityFingerprint ? { identityFingerprint: target.identityFingerprint } : {}) },
     scopes,
     risk: query.risk,
     at: query.at,
   });
-  return canonical ? pluginGrantFromCanonical(canonical, { pluginId, capabilityId, repoId, target }) : undefined;
+  const canonical = lookup(repoId);
+  if (canonical) return pluginGrantFromCanonical(canonical, { pluginId, capabilityId, repoId, target });
+  if (repoId !== 'controller:global') return undefined;
+
+  const legacyMatches = listCanonicalGrants(controllerHome)
+    .map((grant) => ({ canonical: grant, pluginGrant: pluginGrantFromCanonical(grant) }))
+    .filter((entry): entry is { canonical: Grant; pluginGrant: PluginCapabilityAuthorizationGrant } => Boolean(entry.pluginGrant))
+    .filter(({ canonical, pluginGrant }) => pluginGrant.ownerScope === ownerScope
+      && pluginGrant.pluginId === pluginId
+      && pluginGrant.capabilityId === capabilityId
+      && pluginGrant.repoId !== 'controller:global'
+      && pluginGrant.target.kind === target.kind
+      && pluginGrant.target.id === target.id
+      && pluginGrant.target.identityFingerprint === target.identityFingerprint
+      && scopes.every((scope) => pluginGrant.scopes.includes(scope)))
+    .map((entry) => ({ ...entry, active: lookup(entry.pluginGrant.repoId!) }))
+    .filter((entry) => Boolean(entry.active));
+  if (legacyMatches.length !== 1) return undefined;
+  return migratePluginGrantToControllerScope(
+    controllerHome,
+    legacyMatches[0]!.pluginGrant,
+    legacyMatches[0]!.active!,
+    query.at ?? new Date(),
+  );
 }
 
 /**
@@ -397,6 +421,90 @@ export function findActivePluginCapabilityAuthorization(
  * The caller still has to validate plugin, capability, target, scope and risk;
  * this helper only enforces that the referenced grant is live and unrevoked.
  */
+function migratePluginGrantToControllerScope(
+  controllerHome: string,
+  pluginGrant: PluginCapabilityAuthorizationGrant,
+  canonical: Grant,
+  at: Date,
+): PluginCapabilityAuthorizationGrant {
+  if (!canonical.target?.repoId || canonical.target.repoId === 'controller:global') {
+    throw new PluginCapabilityAuthorizationGrantError(
+      'PLUGIN_CAPABILITY_GRANT_ARGUMENT_INVALID',
+      `Grant ${canonical.grantId} has no repository-scoped migration target.`,
+    );
+  }
+  try {
+    const migrated = withControllerLock(
+      controllerHome,
+      { scope: 'global', resource: 'plugin-capability-authorization-grants' },
+      `plugin-capability-grant:${pluginGrant.ownerScope}`,
+      () => migrateCanonicalGrantRepositoryScope(controllerHome, {
+        grantId: canonical.grantId,
+        expectedTarget: canonical.target!,
+        targetRepoId: 'controller:global',
+        now: at,
+      }),
+      5_000,
+    );
+    return pluginGrantFromCanonical(migrated, { ...pluginGrant, repoId: 'controller:global' })!;
+  } catch (error) {
+    if (error instanceof ControllerLockContentionError) {
+      throw new PluginCapabilityAuthorizationGrantError('PLUGIN_CAPABILITY_GRANT_STORE_BUSY', error.message);
+    }
+    throw error;
+  }
+}
+
+/**
+ * Migrate one exact live grant per target into the Controller-wide scope.
+ * Multiple live grants for the same target are deliberately left untouched:
+ * choosing between different scopes/risk ceilings would invent an authority.
+ */
+function pluginGrantMigrationTargetKey(entry: { canonical: Grant; grant: PluginCapabilityAuthorizationGrant }): string {
+  const scopeRef = entry.canonical.target?.scopeRef;
+  return JSON.stringify([
+    entry.grant.ownerScope, entry.grant.pluginId, entry.grant.capabilityId,
+    entry.grant.target.kind, entry.grant.target.id, entry.grant.target.identityFingerprint ?? '',
+    scopeRef?.kind ?? '', scopeRef?.id ?? '',
+  ]);
+}
+
+export function migrateControllerPluginCapabilityAuthorizations(
+  controllerHome: string,
+  controllerPluginIds: readonly string[],
+  at = new Date(),
+): string[] {
+  migrateLegacyPluginCapabilityGrants(controllerHome, at);
+  const pluginIdSet = new Set(controllerPluginIds);
+  const activeAll = listCanonicalGrants(controllerHome)
+    .map((canonical) => ({ canonical, grant: pluginGrantFromCanonical(canonical) }))
+    .filter((entry): entry is { canonical: Grant; grant: PluginCapabilityAuthorizationGrant } => Boolean(entry.grant))
+    .filter(({ canonical, grant }) => pluginIdSet.has(grant.pluginId)
+      && !canonical.revokedAt
+      && Date.parse(canonical.expiresAt) > at.getTime());
+  const existingGlobalTargets = new Set(activeAll
+    .filter(({ grant }) => grant.repoId === 'controller:global')
+    .map(pluginGrantMigrationTargetKey));
+  const active = activeAll.filter(({ grant }) => grant.repoId !== 'controller:global');
+
+  const groups = new Map<string, typeof active>();
+  for (const entry of active) {
+    const key = pluginGrantMigrationTargetKey(entry);
+    const group = groups.get(key) ?? [];
+    group.push(entry);
+    groups.set(key, group);
+  }
+
+  const migrated = new Set<string>();
+  for (const [key, group] of groups) {
+    if (group.length !== 1 || existingGlobalTargets.has(key)) continue;
+    const entry = group[0]!;
+    migratePluginGrantToControllerScope(controllerHome, entry.grant, entry.canonical, at);
+    migrated.add(entry.grant.pluginId);
+  }
+  return [...migrated];
+}
+
 export function findActivePluginCapabilityAuthorizationById(
   controllerHome: string,
   grantId: string,

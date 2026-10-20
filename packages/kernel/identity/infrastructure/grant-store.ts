@@ -190,6 +190,38 @@ export function recordCanonicalGrant(controllerHome: string, input: RecordGrantI
   return grant;
 }
 
+export function migrateCanonicalGrantRepositoryScope(
+  controllerHome: string,
+  input: { grantId: string; expectedTarget: GrantTarget; targetRepoId: string; now?: Date },
+): Grant {
+  const grantId = input.grantId.trim();
+  const targetRepoId = input.targetRepoId.trim();
+  if (!grantId || !targetRepoId) throw new Error('GRANT_SCOPE_MIGRATION_ARGUMENT_INVALID');
+  const now = input.now ?? new Date();
+  const store = loadStore(controllerHome);
+  const index = store.grants.findIndex((grant) => grant.grantId === grantId);
+  if (index < 0) throw new Error(`GRANT_NOT_FOUND: ${grantId}`);
+  const current = store.grants[index]!;
+  if (!current.target || !targetMatches(current.target, input.expectedTarget)) {
+    throw new Error(`GRANT_TARGET_MISMATCH: ${grantId}`);
+  }
+  if (current.revokedAt || Date.parse(current.expiresAt) <= now.getTime()) {
+    throw new Error(`GRANT_NOT_ACTIVE: ${grantId}`);
+  }
+  if (!current.target.repoId || current.target.repoId === targetRepoId) {
+    throw new Error(`GRANT_SCOPE_MIGRATION_SOURCE_INVALID: ${grantId}`);
+  }
+  const target = validateGrantTarget({ ...current.target, repoId: targetRepoId }, 'target');
+  const migrated: Grant = {
+    ...current,
+    target: target!,
+    updatedAt: now.toISOString(),
+  };
+  store.grants[index] = migrated;
+  saveStore(controllerHome, store);
+  return migrated;
+}
+
 export function revokeCanonicalGrant(controllerHome: string, input: RevokeGrantInput): Grant {
   const grantId = input.grantId.trim();
   const now = input.now ?? new Date();

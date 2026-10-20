@@ -16,7 +16,7 @@ import type {
 import { AssistantPluginError, toAssistantPluginError } from './errors';
 import { listCanonicalGrants } from '../../../packages/kernel/identity/api/index';
 import { resolveRepoPreferredControllerHome } from '../../cli/repositories/controller-home';
-import { readRepositoryPluginConfig, writeRepositoryPluginConfig, type RepositoryPluginConfigContext } from './config-store';
+import { readControllerPluginConfig, writeControllerPluginConfig, type PluginConfigAdapterContext } from './config-store';
 import {
   browserActions,
   browserCapabilities,
@@ -653,7 +653,7 @@ function writeJson(path: string, value: unknown): void {
 
 function loadConfig(
   repoRoot: string,
-  context?: Pick<RepositoryPluginConfigContext, 'controllerHome' | 'repoId'>,
+  context?: Pick<PluginConfigAdapterContext, 'controllerHome' | 'repoId'>,
   computerNativeOnly = false,
 ): BrowserPluginConfig {
   // Computer Browser is a built-in Forge capability, not an optional
@@ -666,7 +666,7 @@ function loadConfig(
     nativeBrowserCandidates: [...DEFAULT_USER_NATIVE_BROWSER_CANDIDATES],
   });
   const persisted = context
-    ? readRepositoryPluginConfig<PersistedBrowserPluginConfig>({ ...context, repoRoot }, BROWSER_PLUGIN_ID)
+    ? readControllerPluginConfig<PersistedBrowserPluginConfig>(context.controllerHome, BROWSER_PLUGIN_ID)
     : undefined;
   return persisted ? normalizeConfig(migrateLegacyRepositoryConfig(persisted)) : normalizeConfig({});
 }
@@ -761,7 +761,7 @@ function saveConfig(input: Pick<AssistantPluginActionExecutionInput, 'controller
   if (errors.length > 0) {
     throw new AssistantPluginError('PLUGIN_CONFIGURATION_INVALID', errors[0], { retryable: false });
   }
-  return writeRepositoryPluginConfig(input, BROWSER_PLUGIN_ID, next);
+  return writeControllerPluginConfig(input.controllerHome, BROWSER_PLUGIN_ID, next);
 }
 
 function parsedAbsoluteUrl(value: unknown): { raw: string; parsed: URL } {

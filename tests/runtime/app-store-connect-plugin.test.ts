@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, promises as fsPromises, readFileSyn
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { controllerSystemRoot } from '../../src/cli/repositories/controller-home';
-import { repositoryPluginConfigPath } from '../../src/runtime/plugins/config-store';
+import { controllerPluginConfigPath, migrateLegacyControllerPluginConfigs } from '../../src/runtime/plugins/config-store';
 import {
   buildAppStoreConnectPluginManifest,
   executeAppStoreConnectPluginAction,
@@ -75,10 +75,11 @@ describe('App Store Connect Xcode Cloud workflow actions', () => {
 
     const controllerHome = join(repoRoot, '.controller');
     const context = { controllerHome, repoId: 'repo-test', repoRoot, controllerScoped: false };
+    migrateLegacyControllerPluginConfigs(controllerHome, undefined, [{ repoId: 'repo-test', canonicalRoot: repoRoot }]);
     const manifest = buildAppStoreConnectPluginManifest(1, undefined, repoRoot, context);
     expect(manifest.enabled).toBe(true);
     expect(manifest.health.ready).toBe(true);
-    expect(manifest.authority.sourceOfTruth).toContain('legacy-import-only:.forge/plugins|.repo-harness/plugins/app-store-connect.json');
+    expect(manifest.authority.sourceOfTruth).toContain('controller-global:system/plugins/config/app-store-connect.json');
     const auth = await executeAppStoreConnectPluginAction(input(repoRoot, 'auth_status', {}));
     expect(auth).toMatchObject({ ready: true, provider: 'mock' });
   });
@@ -115,7 +116,7 @@ describe('App Store Connect Xcode Cloud workflow actions', () => {
     expect(manifest.health.details).toMatchObject({ teamId: 'TEAMGLOBAL', credentialSource: 'config:privateKeyPath' });
     expect(existsSync(join(repoRoot, '.forge', 'plugins', 'app-store-connect.json'))).toBe(false);
 
-    const globalPath = join(controllerSystemRoot(controllerHome), 'plugins', 'profiles', 'app-store-connect.json');
+    const globalPath = controllerPluginConfigPath(controllerHome, 'app_store_connect');
     const persisted = readFileSync(globalPath, 'utf-8');
     expect(persisted).toContain(privateKeyPath);
     expect(persisted).not.toContain('test-key-material-never-persisted-inline');
@@ -285,7 +286,7 @@ describe('App Store Connect Xcode Cloud workflow actions', () => {
     expect(existsSync(join(repoRoot, '.forge', 'plugins', 'app-store-connect.json'))).toBe(false);
   });
 
-  test('repository overlay can override safe defaults or explicitly disable a global profile', async () => {
+  test('configuration through any repository updates one Controller-global App Store Connect profile', async () => {
     const repoRoot = root();
     const controllerHome = join(repoRoot, '.controller');
     await executeAppStoreConnectPluginAction({
@@ -298,11 +299,14 @@ describe('App Store Connect Xcode Cloud workflow actions', () => {
     const child = { ...input(repoRoot, 'configure', { default_locale: 'fr-FR' }), controllerHome, repoId: 'repo-child' };
     const configured = await executeAppStoreConnectPluginAction(child) as { config: { enabled: boolean; teamId?: string; defaultLocale?: string } };
     expect(configured.config).toMatchObject({ enabled: true, teamId: 'GLOBAL', defaultLocale: 'fr-FR' });
-    const overlayPath = repositoryPluginConfigPath({ controllerHome, repoId: 'repo-child' }, 'app_store_connect');
-    const overlay = JSON.parse(readFileSync(overlayPath, 'utf-8')) as Record<string, unknown>;
-    expect(overlay).toMatchObject({ schemaVersion: 1, defaultLocale: 'fr-FR' });
-    expect(overlay).not.toHaveProperty('teamId');
-    expect(overlay).not.toHaveProperty('privateKeyPath');
+    const canonicalPath = controllerPluginConfigPath(controllerHome, 'app_store_connect');
+    const stored = JSON.parse(readFileSync(canonicalPath, 'utf-8')) as Record<string, unknown>;
+    expect(stored).toMatchObject({ schemaVersion: 1, enabled: true, teamId: 'GLOBAL', defaultLocale: 'fr-FR' });
+    expect(existsSync(join(controllerHome, 'repositories', 'repo-child', 'plugins', 'config', 'app-store-connect.json'))).toBe(false);
+    const otherRepository = buildAppStoreConnectPluginManifest(1, undefined, repoRoot, {
+      controllerHome, repoId: 'repo-other', repoRoot, controllerScoped: false,
+    });
+    expect(otherRepository.enabled).toBe(true);
 
     await executeAppStoreConnectPluginAction({ ...child, requestId: 'test-disable', args: { enabled: false } });
     const disabled = buildAppStoreConnectPluginManifest(1, undefined, repoRoot, {

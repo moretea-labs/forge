@@ -530,6 +530,7 @@ export async function executeGoogleTasksPluginAction(input: AssistantPluginActio
 
 export const googleTasksPluginAdapter = {
   pluginId: GOOGLE_TASKS_PLUGIN_ID,
+  scope: 'controller' as const,
   buildManifest: buildGoogleTasksPluginManifest,
   executeAction: executeGoogleTasksPluginAction,
 };

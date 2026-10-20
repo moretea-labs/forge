@@ -935,6 +935,7 @@ async function resolveGmailAutomationAuthorizationContext(input: AssistantPlugin
 
 export const gmailPluginAdapter = {
   pluginId: GMAIL_PLUGIN_ID,
+  scope: 'controller' as const,
   buildManifest: buildGmailPluginManifest,
   executeAction: executeGmailPluginAction,
   resolveAuthorizationContext: resolveGmailAutomationAuthorizationContext,

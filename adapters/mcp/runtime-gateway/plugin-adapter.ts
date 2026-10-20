@@ -20,11 +20,6 @@ type PluginTransportScope =
   | { kind: 'controller' }
   | { kind: 'repository'; repository: ReturnType<typeof selected> };
 
-function explicitRepositoryContextRequested(args: Record<string, unknown>): boolean {
-  return (typeof args.repo_id === 'string' && Boolean(args.repo_id.trim()))
-    || (typeof args.checkout_id === 'string' && Boolean(args.checkout_id.trim()));
-}
-
 function pluginTransportScope(
   ctx: MultiRepositoryMcpToolContext,
   args: Record<string, unknown>,
@@ -36,11 +31,6 @@ function pluginTransportScope(
   }
   const scope = assistantPluginScope(pluginId, ctx.controllerHome);
   if (scope === 'controller') return { kind: 'controller' };
-  if (scope === 'controller_with_repository_overlay') {
-    return explicitRepositoryContextRequested(args)
-      ? { kind: 'repository', repository: selected(ctx, args) }
-      : { kind: 'controller' };
-  }
   return { kind: 'repository', repository: selected(ctx, args) };
 }
 
@@ -145,7 +135,9 @@ export async function callPluginAdapter(
       }).map(summarizePlugin);
       let repositoryPlugins: ReturnType<typeof summarizePlugin>[] = [];
       let repositoryId: string | undefined;
-      if (explicitRepositoryContextRequested(args) || typeof ctx.repoId === 'string' && ctx.repoId.trim()) {
+      if ((typeof args.repo_id === 'string' && args.repo_id.trim())
+        || (typeof args.checkout_id === 'string' && args.checkout_id.trim())
+        || (typeof ctx.repoId === 'string' && ctx.repoId.trim())) {
         const repository = selected(ctx, args);
         repositoryId = repository.repoId;
         repositoryPlugins = listAssistantPluginManifests(ctx.controllerHome, repository, {

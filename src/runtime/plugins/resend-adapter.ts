@@ -10,7 +10,7 @@ import type {
   AssistantPluginPermissionScope,
 } from './types';
 import { AssistantPluginError, toAssistantPluginError } from './errors';
-import { readRepositoryPluginConfig, writeRepositoryPluginConfig, type RepositoryPluginConfigContext } from './config-store';
+import { readControllerPluginConfig, writeControllerPluginConfig, type PluginConfigAdapterContext } from './config-store';
 import {
   getResendOAuthAccessToken,
   prepareResendOAuthLogin,
@@ -86,16 +86,16 @@ function normalizeConfig(raw: Partial<ResendPluginConfig>): ResendPluginConfig {
   };
 }
 
-function loadConfig(repoRoot: string, context?: Pick<RepositoryPluginConfigContext, 'controllerHome' | 'repoId'>): ResendPluginConfig {
+function loadConfig(repoRoot: string, context?: Pick<PluginConfigAdapterContext, 'controllerHome' | 'repoId'>): ResendPluginConfig {
   const persisted = context
-    ? readRepositoryPluginConfig<Partial<ResendPluginConfig>>({ ...context, repoRoot }, RESEND_PLUGIN_ID)
+    ? readControllerPluginConfig<Partial<ResendPluginConfig>>(context.controllerHome, RESEND_PLUGIN_ID)
     : undefined;
   return normalizeConfig(persisted ?? {});
 }
 
 function saveConfig(input: Pick<AssistantPluginActionExecutionInput, 'controllerHome' | 'repoId' | 'repoRoot'>, patch: Partial<ResendPluginConfig>): ResendPluginConfig {
   const next = normalizeConfig({ ...loadConfig(input.repoRoot, input), ...patch });
-  return writeRepositoryPluginConfig(input, RESEND_PLUGIN_ID, next);
+  return writeControllerPluginConfig(input.controllerHome, RESEND_PLUGIN_ID, next);
 }
 
 function apiKey(): { value?: string; source?: string } {
@@ -492,6 +492,7 @@ export async function executeResendPluginAction(input: AssistantPluginActionExec
 
 export const resendPluginAdapter = {
   pluginId: RESEND_PLUGIN_ID,
+  scope: 'controller' as const,
   buildManifest: buildResendPluginManifest,
   executeAction: executeResendPluginAction,
 };

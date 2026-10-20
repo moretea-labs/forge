@@ -2,19 +2,21 @@ import { createHash, randomUUID } from 'crypto';
 import { join } from 'path';
 import type { RepositoryRecord } from '../../cli/repositories/types';
 import { CONTROLLER_SCOPE_REPO_ID, FORGE_INSTANCE_SCOPE_KEY, controllerSystemRoot, ensureControllerHome, repositoryControllerRoot } from '../../cli/repositories/controller-home';
-import { cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync } from 'fs';
+import { listRepositories } from '../../cli/repositories/registry';
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync } from 'fs';
 import type { ExecutionJob, ResourceClaimSpec } from '../execution/jobs/types';
 import { appendRuntimeEvent } from '../evidence/event-ledger';
 import { redactSensitiveText, redactSensitiveValue } from '../evidence/sensitive-output';
 import { readJsonFile, sanitizeFileComponent, writeJsonAtomic } from '../shared/json-files';
 import { createFirstPartyPluginAdapterMap } from './first-party-registry';
 import { reconcileFirstPartyExternalPluginRegistration, reconcileFirstPartyExternalPluginRegistrations } from './first-party-external-registration';
-import { REPOSITORY_PLUGIN_CONFIG_IDS, repositoryPluginConfigFileName, repositoryPluginConfigPath } from './config-store';
+import { migrateLegacyControllerPluginConfigs } from './config-store';
 import { getExternalPluginAdapter, listExternalPluginAdapters } from './external-adapter';
 import { AssistantPluginError, isAssistantPluginError, toAssistantPluginError, type AssistantPluginEffectOutcome } from './errors';
 import {
   findActivePluginCapabilityAuthorizationById,
   findActivePluginCapabilityAuthorization,
+  migrateControllerPluginCapabilityAuthorizations,
   pluginCapabilityAuthorizationOwnerScope,
   recordPluginCapabilityAuthorization,
   type PluginCapabilityAuthorizationGrant,
@@ -125,13 +127,113 @@ function controllerIndexPath(controllerHome: string): string {
 }
 
 function adapterMatchesController(adapter: AssistantPluginAdapter): boolean {
-  const scope = adapter.scope ?? 'repository';
-  return scope === 'controller' || scope === 'controller_with_repository_overlay';
+  return (adapter.scope ?? 'repository') === 'controller';
 }
 
 function adapterMatchesRepository(adapter: AssistantPluginAdapter, _repository: RepositoryRecord): boolean {
-  const scope = adapter.scope ?? 'repository';
-  return scope === 'repository' || scope === 'controller_with_repository_overlay';
+  return (adapter.scope ?? 'repository') === 'repository';
+}
+
+const controllerPluginStateMigrationFingerprints = new Map<string, string>();
+
+/** Retire obsolete per-repository manifest projections for plugins now owned by Controller. */
+function retireRepositoryPluginManifestProjections(controllerHome: string, pluginIds: readonly string[]): string[] {
+  const targetIds = new Set(pluginIds);
+  const changed = new Set<string>();
+  const repositoriesRoot = join(controllerHome, 'repositories');
+  if (!existsSync(repositoriesRoot)) return [];
+  const rootStat = lstatSync(repositoriesRoot);
+  if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) {
+    throw new Error(`PLUGIN_MANIFEST_LEGACY_PATH_INVALID: ${repositoriesRoot}`);
+  }
+
+  for (const repoId of readdirSync(repositoriesRoot).sort()) {
+    const repositoryRoot = join(repositoriesRoot, repoId);
+    let repositoryStat;
+    try { repositoryStat = lstatSync(repositoryRoot); } catch { continue; }
+    if (repositoryStat.isSymbolicLink() || !repositoryStat.isDirectory()) continue;
+    const pluginsRoot = join(repositoryRoot, 'plugins');
+    let pluginsStat;
+    try { pluginsStat = lstatSync(pluginsRoot); } catch { continue; }
+    if (pluginsStat.isSymbolicLink() || !pluginsStat.isDirectory()) continue;
+
+    const manifestsRoot = join(pluginsRoot, 'manifests');
+    let manifestsStat;
+    try { manifestsStat = lstatSync(manifestsRoot); } catch { manifestsStat = undefined; }
+    if (manifestsStat?.isDirectory() && !manifestsStat.isSymbolicLink()) {
+      for (const pluginId of targetIds) {
+        const path = join(manifestsRoot, `${sanitizeFileComponent(pluginId)}.json`);
+        try {
+          const stat = lstatSync(path);
+          if (stat.isFile() || stat.isSymbolicLink()) {
+            rmSync(path, { force: true });
+            changed.add(pluginId);
+          }
+        } catch {
+          // No projection for this plugin in this repository.
+        }
+      }
+      try {
+        if (readdirSync(manifestsRoot).length === 0) rmSync(manifestsRoot, { recursive: true, force: true });
+      } catch {
+        // An unrelated concurrent projection write owns the remaining directory.
+      }
+    }
+
+    const registryPath = join(pluginsRoot, 'index.json');
+    try {
+      const registryStat = lstatSync(registryPath);
+      if (registryStat.isSymbolicLink() || !registryStat.isFile()) continue;
+      const index = readJsonFile<AssistantPluginRegistryIndex>(registryPath);
+      const plugins = index.plugins.filter((entry) => !targetIds.has(entry.pluginId));
+      if (plugins.length !== index.plugins.length) {
+        for (const entry of index.plugins) if (targetIds.has(entry.pluginId)) changed.add(entry.pluginId);
+        writeJsonAtomic(registryPath, { ...index, updatedAt: now(), plugins });
+      }
+    } catch {
+      // A malformed historical index is not authority; source adapter scope is.
+    }
+  }
+  return [...changed];
+}
+
+/**
+ * Single entry point for one-way Controller plugin-state migration. Repository
+ * identity is consulted only to enumerate historical files and Work attribution;
+ * it never chooses the current plugin/config/Grant scope.
+ */
+function ensureControllerPluginStateMigrated(controllerHome: string, force = false): string[] {
+  const repositories = listRepositories(controllerHome, { includeRemoved: true })
+    .map((repository) => ({ repoId: repository.repoId, canonicalRoot: repository.canonicalRoot }));
+  const pluginIds = listControllerPluginIds(controllerHome);
+  const fingerprint = JSON.stringify({
+    repositories: repositories.map((repository) => [repository.repoId, repository.canonicalRoot]).sort(([a], [b]) => String(a).localeCompare(String(b))),
+    pluginIds,
+  });
+  if (!force && controllerPluginStateMigrationFingerprints.get(controllerHome) === fingerprint) return [];
+
+  const changedConfigIds = migrateLegacyControllerPluginConfigs(controllerHome, (pluginId, value) => {
+    if (pluginId === 'browser') {
+      const normalizer = PLUGIN_ADAPTERS.get('browser')?.normalizeLegacyConfig;
+      if (!normalizer) throw new Error('PLUGIN_CONFIG_MIGRATION_INVALID: browser schema owner missing');
+      return normalizer(value);
+    }
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      throw new Error(`PLUGIN_CONFIG_MIGRATION_INVALID: ${pluginId} must contain a JSON object`);
+    }
+    return value as object;
+  }, repositories);
+  const changedGrantIds = migrateControllerPluginCapabilityAuthorizations(controllerHome, pluginIds);
+  const changedReceiptIds = migrateControllerPluginActionReceipts(controllerHome, pluginIds);
+  const changedRepositoryManifestIds = retireRepositoryPluginManifestProjections(controllerHome, pluginIds);
+
+  const refreshIds = new Set([...changedConfigIds, ...changedRepositoryManifestIds]);
+  for (const pluginId of refreshIds) {
+    invalidateAssistantPluginManifestCache(controllerHome, CONTROLLER_PLUGIN_CACHE_SCOPE, pluginId);
+    removeControllerPluginManifestProjection(controllerHome, pluginId);
+  }
+  controllerPluginStateMigrationFingerprints.set(controllerHome, fingerprint);
+  return [...new Set([...changedConfigIds, ...changedGrantIds, ...changedReceiptIds, ...changedRepositoryManifestIds])];
 }
 
 function computeControllerManifest(
@@ -160,9 +262,7 @@ function computeControllerManifest(
 export function readControllerStoredPluginManifest(controllerHome: string, pluginId: string): AssistantPluginManifest | undefined {
   try {
     const canonicalPath = controllerManifestPath(controllerHome, pluginId);
-    if (existsSync(canonicalPath)) return readJsonFile<AssistantPluginManifest>(canonicalPath);
-    const legacyPath = join(legacyControllerPluginsRoot(controllerHome), 'manifests', `${sanitizeFileComponent(pluginId)}.json`);
-    return existsSync(legacyPath) ? readJsonFile<AssistantPluginManifest>(legacyPath) : undefined;
+    return existsSync(canonicalPath) ? readJsonFile<AssistantPluginManifest>(canonicalPath) : undefined;
   } catch {
     return undefined;
   }
@@ -176,6 +276,7 @@ export function listControllerPluginManifests(
   controllerHome: string,
   options: ListAssistantPluginManifestsOptions = {},
 ): AssistantPluginManifest[] {
+  ensureControllerPluginStateMigrated(controllerHome);
   const preferStored = options.preferStored === true && options.forceRefresh !== true;
   const fallbackToLive = options.fallbackToLive !== false || !preferStored;
   const cacheKey = listCacheKey(controllerHome, CONTROLLER_PLUGIN_CACHE_SCOPE, preferStored, fallbackToLive);
@@ -211,6 +312,7 @@ function getControllerPluginManifestForExecution(
 }
 
 export function getControllerPluginManifest(controllerHome: string, pluginId: string): AssistantPluginManifest {
+  ensureControllerPluginStateMigrated(controllerHome);
   const adapter = resolvePluginAdapter(controllerHome, pluginId);
   if (!adapter || !adapterMatchesController(adapter)) throw new Error(`PLUGIN_NOT_FOUND: ${pluginId}`);
   return getControllerPluginManifestForExecution(controllerHome, pluginId, adapter).manifest;
@@ -231,6 +333,7 @@ function writeControllerRegistry(controllerHome: string, manifests: AssistantPlu
 
 export function syncControllerPluginRegistry(controllerHome: string) {
   reconcileFirstPartyExternalPluginRegistrations(controllerHome);
+  ensureControllerPluginStateMigrated(controllerHome, true);
   invalidateAssistantPluginManifestCache(controllerHome, CONTROLLER_PLUGIN_CACHE_SCOPE);
   const manifests = listControllerPluginManifests(controllerHome, { forceRefresh: true });
   for (const manifest of manifests) writeJsonAtomic(controllerManifestPath(controllerHome, manifest.pluginId), manifest);
@@ -239,6 +342,7 @@ export function syncControllerPluginRegistry(controllerHome: string) {
 
 export function syncControllerPluginManifest(controllerHome: string, pluginId: string) {
   reconcileFirstPartyExternalPluginRegistration(controllerHome, pluginId);
+  ensureControllerPluginStateMigrated(controllerHome, true);
   invalidateAssistantPluginManifestCache(controllerHome, CONTROLLER_PLUGIN_CACHE_SCOPE, pluginId);
   const manifest = computeControllerManifest(controllerHome, pluginId);
   writeJsonAtomic(controllerManifestPath(controllerHome, pluginId), manifest);
@@ -350,13 +454,7 @@ export function clearAssistantPluginManifestCacheForTest(): void {
 }
 
 function pluginsRoot(controllerHome: string, repoId: string): string {
-  return repoId === CONTROLLER_SCOPE_REPO_ID
-    ? join(controllerSystemRoot(controllerHome), 'plugins')
-    : join(repositoryControllerRoot(controllerHome, repoId), 'plugins');
-}
-
-function legacyControllerPluginsRoot(controllerHome: string): string {
-  return join(repositoryControllerRoot(controllerHome, CONTROLLER_SCOPE_REPO_ID), 'plugins');
+  return join(repositoryControllerRoot(controllerHome, repoId), 'plugins');
 }
 
 function manifestPath(controllerHome: string, repoId: string, pluginId: string): string {
@@ -403,12 +501,7 @@ function pluginIndexEntry(controllerHome: string, repoId: string, manifest: Assi
 function readStoredManifest(controllerHome: string, repoId: string, pluginId: string): AssistantPluginManifest | undefined {
   const canonicalPath = manifestPath(controllerHome, repoId, pluginId);
   try {
-    if (existsSync(canonicalPath)) return readJsonFile<AssistantPluginManifest>(canonicalPath);
-    if (repoId === CONTROLLER_SCOPE_REPO_ID) {
-      const legacyPath = join(legacyControllerPluginsRoot(controllerHome), 'manifests', `${sanitizeFileComponent(pluginId)}.json`);
-      if (existsSync(legacyPath)) return readJsonFile<AssistantPluginManifest>(legacyPath);
-    }
-    return undefined;
+    return existsSync(canonicalPath) ? readJsonFile<AssistantPluginManifest>(canonicalPath) : undefined;
   } catch {
     return undefined;
   }
@@ -435,63 +528,7 @@ function cachedManifestForRepository(
   ) ?? readPluginManifestCache(pluginManifestItemCache, itemCacheKey(controllerHome, repoId, pluginId, false));
 }
 
-export function migrateRepositoryPluginConfigLegacyFiles(
-  controllerHome: string,
-  repository: Pick<RepositoryRecord, 'repoId' | 'canonicalRoot'>,
-): string {
-  const targetRoot = join(repositoryControllerRoot(controllerHome, repository.repoId), 'plugins', 'config');
-  const legacyRoots = [
-    join(repository.canonicalRoot, '.forge', 'plugins'),
-    join(repository.canonicalRoot, '.repo-harness', 'plugins'),
-  ];
-  mkdirSync(targetRoot, { recursive: true });
-  // Upgrade an already-adopted v1/v2 Controller Home config in place. The
-  // adapter owns schema semantics; this store remains the sole file writer.
-  const browserTarget = repositoryPluginConfigPath({ controllerHome, repoId: repository.repoId }, 'browser');
-  const browserNormalizer = PLUGIN_ADAPTERS.get('browser')?.normalizeLegacyConfig;
-  if (!browserNormalizer) throw new Error('PLUGIN_CONFIG_MIGRATION_INVALID: browser schema owner missing');
-  if (existsSync(browserTarget)) {
-    const stat = lstatSync(browserTarget);
-    if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('PLUGIN_CONFIG_AUTHORITY_PATH_INVALID: browser config');
-    let current: unknown;
-    try { current = JSON.parse(readFileSync(browserTarget, 'utf8')); }
-    catch { throw new Error('PLUGIN_CONFIG_AUTHORITY_INVALID: browser config JSON'); }
-    const normalized = browserNormalizer(current);
-    if ((current as { schemaVersion?: unknown }).schemaVersion !== 3) writeJsonAtomic(browserTarget, normalized);
-  }
-  for (const legacyRoot of legacyRoots) {
-    if (!existsSync(legacyRoot)) continue;
-    const stat = lstatSync(legacyRoot);
-    // Historical compatibility symlinks may point at another Controller Home.
-    // Never traverse them; unlink only the retired repository-local compatibility entry.
-    if (stat.isSymbolicLink()) {
-      rmSync(legacyRoot, { force: true });
-      continue;
-    }
-    if (!stat.isDirectory()) throw new Error(`PLUGIN_CONFIG_LEGACY_PATH_INVALID: ${legacyRoot}`);
-    for (const pluginId of REPOSITORY_PLUGIN_CONFIG_IDS) {
-      const fileName = repositoryPluginConfigFileName(pluginId);
-      const source = join(legacyRoot, fileName);
-      if (!existsSync(source)) continue;
-      const sourceStat = lstatSync(source);
-      if (sourceStat.isSymbolicLink() || !sourceStat.isFile()) continue;
-      const target = repositoryPluginConfigPath({ controllerHome, repoId: repository.repoId }, pluginId);
-      if (!existsSync(target)) {
-        if (pluginId === 'browser') {
-          let parsed: unknown;
-          try { parsed = JSON.parse(readFileSync(source, 'utf8')); }
-          catch { throw new Error('PLUGIN_CONFIG_MIGRATION_INVALID: legacy browser JSON'); }
-          writeJsonAtomic(target, browserNormalizer(parsed));
-        } else {
-          cpSync(source, target, { force: false, errorOnExist: false });
-        }
-      }
-      rmSync(source, { force: true });
-    }
-    if (readdirSync(legacyRoot).length === 0) rmSync(legacyRoot, { recursive: true, force: true });
-  }
-  return targetRoot;
-}
+
 
 function computeManifest(
   controllerHome: string,
@@ -888,6 +925,7 @@ export function listAssistantPluginManifests(
   repository: RepositoryRecord,
   options: ListAssistantPluginManifestsOptions = {},
 ): AssistantPluginManifest[] {
+  ensureControllerPluginStateMigrated(controllerHome);
   const preferStored = options.preferStored === true && options.forceRefresh !== true;
   const fallbackToLive = options.fallbackToLive !== false || !preferStored;
   const cacheKey = listCacheKey(controllerHome, repository.repoId, preferStored, fallbackToLive);
@@ -946,8 +984,11 @@ export function getAssistantPluginManifest(
   repository: RepositoryRecord,
   pluginId: string,
 ): AssistantPluginManifest {
+  ensureControllerPluginStateMigrated(controllerHome);
   const adapter = resolvePluginAdapter(controllerHome, pluginId);
-  if (!adapter || !adapterMatchesRepository(adapter, repository)) throw new Error(`PLUGIN_NOT_FOUND: ${pluginId}`);
+  if (!adapter) throw new Error(`PLUGIN_NOT_FOUND: ${pluginId}`);
+  if (adapterMatchesController(adapter)) return getControllerPluginManifestForExecution(controllerHome, pluginId, adapter).manifest;
+  if (!adapterMatchesRepository(adapter, repository)) throw new Error(`PLUGIN_NOT_FOUND: ${pluginId}`);
   return getAssistantPluginManifestForExecution(controllerHome, repository, pluginId, adapter).manifest;
 }
 
@@ -955,8 +996,8 @@ export function syncAssistantPluginRegistry(
   controllerHome: string,
   repository: RepositoryRecord,
 ): { manifests: AssistantPluginManifest[]; index: AssistantPluginRegistryIndex } {
+  ensureControllerPluginStateMigrated(controllerHome, true);
   invalidateAssistantPluginManifestCache(controllerHome, repository.repoId);
-  migrateRepositoryPluginConfigLegacyFiles(controllerHome, repository);
   const manifests = listAssistantPluginManifests(controllerHome, repository, { forceRefresh: true });
   for (const manifest of manifests) {
     writeJsonAtomic(manifestPath(controllerHome, repository.repoId, manifest.pluginId), manifest);
@@ -973,8 +1014,8 @@ export function syncAssistantPluginManifest(
   repository: RepositoryRecord,
   pluginId: string,
 ): { manifest: AssistantPluginManifest; index: AssistantPluginRegistryIndex } {
+  ensureControllerPluginStateMigrated(controllerHome, true);
   invalidateAssistantPluginManifestCache(controllerHome, repository.repoId, pluginId);
-  migrateRepositoryPluginConfigLegacyFiles(controllerHome, repository);
   const manifest = computeManifest(controllerHome, repository, pluginId);
   writeJsonAtomic(manifestPath(controllerHome, repository.repoId, manifest.pluginId), manifest);
   markControllerContextProjectionDirty(repository.canonicalRoot, `plugin:${pluginId}:synced`);
@@ -1114,13 +1155,20 @@ export function executeAssistantPluginDirectNonPersistent(
   repository: RepositoryRecord,
   request: AssistantPluginActionRequest,
 ) {
-  return executePluginDirectNonPersistentInScope(controllerHome, repositoryPluginActionScope(repository), request);
+  ensureControllerPluginStateMigrated(controllerHome);
+  const adapter = resolvePluginAdapter(controllerHome, request.pluginId);
+  return executePluginDirectNonPersistentInScope(
+    controllerHome,
+    adapter && adapterMatchesController(adapter) ? controllerPluginActionScope(controllerHome) : repositoryPluginActionScope(repository),
+    { ...request, ...(request.workId ? { workRepoId: request.workRepoId ?? repository.repoId } : {}) },
+  );
 }
 
 export function executeControllerPluginDirectNonPersistent(
   controllerHome: string,
   request: AssistantPluginActionRequest,
 ) {
+  ensureControllerPluginStateMigrated(controllerHome);
   return executePluginDirectNonPersistentInScope(controllerHome, controllerPluginActionScope(controllerHome), request);
 }
 
@@ -1185,13 +1233,20 @@ export function executeAssistantPluginReadDirect(
   repository: RepositoryRecord,
   request: AssistantPluginActionRequest,
 ) {
-  return executePluginReadDirectInScope(controllerHome, repositoryPluginActionScope(repository), request);
+  ensureControllerPluginStateMigrated(controllerHome);
+  const adapter = resolvePluginAdapter(controllerHome, request.pluginId);
+  return executePluginReadDirectInScope(
+    controllerHome,
+    adapter && adapterMatchesController(adapter) ? controllerPluginActionScope(controllerHome) : repositoryPluginActionScope(repository),
+    { ...request, ...(request.workId ? { workRepoId: request.workRepoId ?? repository.repoId } : {}) },
+  );
 }
 
 export function executeControllerPluginReadDirect(
   controllerHome: string,
   request: AssistantPluginActionRequest,
 ) {
+  ensureControllerPluginStateMigrated(controllerHome);
   return executePluginReadDirectInScope(controllerHome, controllerPluginActionScope(controllerHome), request);
 }
 
@@ -1278,10 +1333,212 @@ function readPluginActionReceipt(controllerHome: string, scopeKey: string, recei
   return undefined;
 }
 
+function rawPluginActionReceiptAt(path: string): PluginActionReceipt | undefined {
+  if (!existsSync(path)) return undefined;
+  try {
+    const stat = lstatSync(path);
+    if (stat.isSymbolicLink() || !stat.isFile()) return undefined;
+    const value = JSON.parse(readFileSync(path, 'utf8')) as PluginActionReceipt;
+    if (!value || typeof value !== 'object' || Array.isArray(value)
+      || typeof value.receiptId !== 'string' || typeof value.requestId !== 'string'
+      || typeof value.pluginId !== 'string' || typeof value.actionId !== 'string'
+      || typeof value.semanticKey !== 'string') return undefined;
+    return value;
+  } catch {
+    return undefined;
+  }
+}
+
+function rawPluginReceiptPath(controllerHome: string, scopeKey: string, receiptId: string): string {
+  return scopeKey === CONTROLLER_PLUGIN_SCOPE_KEY
+    ? join(controllerSystemRoot(controllerHome), 'plugin-action-receipts', `${sanitizeFileComponent(receiptId)}.json`)
+    : join(repositoryControllerRoot(controllerHome, scopeKey), 'plugin-action-receipts', `${sanitizeFileComponent(receiptId)}.json`);
+}
+
+function findLegacyPluginReceiptPath(
+  controllerHome: string,
+  receiptId: string,
+): { scopeKey: string; path: string } | undefined {
+  const repositoriesRoot = join(controllerHome, 'repositories');
+  if (!existsSync(repositoriesRoot)) return undefined;
+  const rootStat = lstatSync(repositoriesRoot);
+  if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) return undefined;
+  const matches: { scopeKey: string; path: string }[] = [];
+  for (const scopeKey of readdirSync(repositoriesRoot).sort()) {
+    const repositoryRoot = join(repositoriesRoot, scopeKey);
+    let repositoryStat;
+    try { repositoryStat = lstatSync(repositoryRoot); } catch { continue; }
+    if (repositoryStat.isSymbolicLink() || !repositoryStat.isDirectory()) continue;
+    const receiptsRoot = join(repositoryRoot, 'plugin-action-receipts');
+    let receiptsStat;
+    try { receiptsStat = lstatSync(receiptsRoot); } catch { continue; }
+    if (receiptsStat.isSymbolicLink() || !receiptsStat.isDirectory()) continue;
+    const path = join(receiptsRoot, `${sanitizeFileComponent(receiptId)}.json`);
+    const receipt = rawPluginActionReceiptAt(path);
+    if (receipt) matches.push({ scopeKey, path });
+  }
+  return matches.length === 1 ? matches[0] : undefined;
+}
+
+function migratedPluginSemanticKey(receipt: PluginActionReceipt, oldScopeKey: string): string | undefined {
+  const globalPrefix = `plugin-action:${CONTROLLER_PLUGIN_SCOPE_KEY}:`;
+  if (receipt.semanticKey.startsWith(globalPrefix)) return receipt.semanticKey;
+  const oldPrefix = `plugin-action:${oldScopeKey}:`;
+  if (!receipt.semanticKey.startsWith(oldPrefix)) return undefined;
+  return `${globalPrefix}${receipt.semanticKey.slice(oldPrefix.length)}`;
+}
+
+function samePluginReceiptOutcome(left: PluginActionReceipt, right: PluginActionReceipt): boolean {
+  return left.receiptId === right.receiptId
+    && left.requestId === right.requestId
+    && left.pluginId === right.pluginId
+    && left.actionId === right.actionId
+    && left.status === right.status
+    && left.effectOutcome === right.effectOutcome
+    && left.createdAt === right.createdAt
+    && left.workId === right.workId
+    && JSON.stringify(canonical(left.result ?? null)) === JSON.stringify(canonical(right.result ?? null))
+    && JSON.stringify(canonical(left.error ?? null)) === JSON.stringify(canonical(right.error ?? null))
+    && JSON.stringify(canonical(left.authorization ?? null)) === JSON.stringify(canonical(right.authorization ?? null));
+}
+
+/**
+ * Moves already-recorded user-plugin effects into the Controller receipt scope.
+ * The provider is never called here: receipt bytes and the request index move
+ * atomically in authority order so retries still deduplicate and unknown effects
+ * are never replayed.
+ */
+function migrateControllerPluginActionReceipts(controllerHome: string, pluginIds: readonly string[]): string[] {
+  const controllerPluginIds = new Set(pluginIds);
+  const changed = new Set<string>();
+  const requestRoot = join(ensureControllerHome(controllerHome), 'indexes', 'plugin-actions', 'requests');
+  const globalReceiptRoot = join(controllerSystemRoot(controllerHome), 'plugin-action-receipts');
+
+  const migrateReceipt = (
+    sourcePath: string,
+    oldScopeKey: string,
+    receipt: PluginActionReceipt,
+    index: PluginActionRequestIndex | undefined,
+    indexPath: string,
+  ): boolean => {
+    if (!controllerPluginIds.has(receipt.pluginId) || receipt.observationOnly === true) return false;
+    if (!receipt.receiptId || !receipt.requestId) return false;
+    const recordedScope = receipt.scopeKey?.trim() || receipt.repoId?.trim() || oldScopeKey;
+    if (recordedScope !== oldScopeKey && recordedScope !== CONTROLLER_PLUGIN_SCOPE_KEY) return false;
+    if (index && (
+      index.requestId !== receipt.requestId
+      || index.receiptId !== receipt.receiptId
+      || index.semanticKey !== receipt.semanticKey
+    )) return false;
+
+    const semanticKey = migratedPluginSemanticKey(receipt, oldScopeKey);
+    if (!semanticKey) return false;
+    const nextReceipt: PluginActionReceipt = {
+      ...receipt,
+      scopeKey: CONTROLLER_PLUGIN_SCOPE_KEY,
+      repoId: undefined,
+      ...(receipt.workId ? { workRepoId: receipt.workRepoId ?? index?.workRepoId ?? receipt.repoId ?? oldScopeKey } : {}),
+      semanticKey,
+    };
+    const destinationPath = join(globalReceiptRoot, `${sanitizeFileComponent(receipt.receiptId)}.json`);
+    if (sourcePath !== destinationPath) {
+      const existing = rawPluginActionReceiptAt(destinationPath);
+      if (existing && !samePluginReceiptOutcome(existing, nextReceipt)) return false;
+      writeJsonAtomic(destinationPath, nextReceipt);
+    } else if (receipt.scopeKey !== CONTROLLER_PLUGIN_SCOPE_KEY || receipt.repoId || receipt.semanticKey !== semanticKey) {
+      writeJsonAtomic(destinationPath, nextReceipt);
+    }
+
+    const nextIndex: PluginActionRequestIndex = index
+      ? {
+          ...index,
+          scopeKey: CONTROLLER_PLUGIN_SCOPE_KEY,
+          repoId: undefined,
+          ...(receipt.workId ? { workRepoId: index.workRepoId ?? receipt.workRepoId ?? receipt.repoId ?? oldScopeKey } : {}),
+          semanticKey,
+        }
+      : {
+          requestId: receipt.requestId,
+          scopeKey: CONTROLLER_PLUGIN_SCOPE_KEY,
+          ...(receipt.workId ? { workRepoId: receipt.workRepoId ?? receipt.repoId ?? oldScopeKey } : {}),
+          receiptId: receipt.receiptId,
+          semanticKey,
+          createdAt: receipt.createdAt,
+        };
+    writeJsonAtomic(indexPath, nextIndex);
+    if (sourcePath !== destinationPath) rmSync(sourcePath, { force: true });
+    changed.add(receipt.pluginId);
+    return true;
+  };
+
+  if (existsSync(requestRoot)) {
+    const requestStat = lstatSync(requestRoot);
+    if (!requestStat.isSymbolicLink() && requestStat.isDirectory()) {
+      for (const name of readdirSync(requestRoot).filter((entry) => entry.endsWith('.json')).sort()) {
+        const indexPath = join(requestRoot, name);
+        let index: PluginActionRequestIndex;
+        try {
+          const stat = lstatSync(indexPath);
+          if (stat.isSymbolicLink() || !stat.isFile()) continue;
+          index = readJsonFile<PluginActionRequestIndex>(indexPath);
+        } catch {
+          continue;
+        }
+        if (!index.requestId || !index.receiptId) continue;
+        let oldScopeKey = index.scopeKey?.trim() || index.repoId?.trim() || '';
+        if (!oldScopeKey) continue;
+        let sourcePath = rawPluginReceiptPath(controllerHome, oldScopeKey, index.receiptId);
+        let receipt = rawPluginActionReceiptAt(sourcePath);
+        if (!receipt && oldScopeKey === CONTROLLER_PLUGIN_SCOPE_KEY) {
+          const legacy = findLegacyPluginReceiptPath(controllerHome, index.receiptId);
+          if (legacy) {
+            oldScopeKey = legacy.scopeKey;
+            sourcePath = legacy.path;
+            receipt = rawPluginActionReceiptAt(sourcePath);
+          }
+        }
+        if (!receipt || !controllerPluginIds.has(receipt.pluginId)) continue;
+        if (oldScopeKey === CONTROLLER_PLUGIN_SCOPE_KEY && sourcePath === rawPluginReceiptPath(controllerHome, CONTROLLER_PLUGIN_SCOPE_KEY, index.receiptId)) {
+          continue;
+        }
+        migrateReceipt(sourcePath, oldScopeKey, receipt, index, indexPath);
+      }
+    }
+  }
+
+  const repositoriesRoot = join(controllerHome, 'repositories');
+  if (existsSync(repositoriesRoot)) {
+    const rootStat = lstatSync(repositoriesRoot);
+    if (!rootStat.isSymbolicLink() && rootStat.isDirectory()) {
+      for (const scopeKey of readdirSync(repositoriesRoot).sort()) {
+        const repositoryRoot = join(repositoriesRoot, scopeKey);
+        let repositoryStat;
+        try { repositoryStat = lstatSync(repositoryRoot); } catch { continue; }
+        if (repositoryStat.isSymbolicLink() || !repositoryStat.isDirectory()) continue;
+        const receiptsRoot = join(repositoryRoot, 'plugin-action-receipts');
+        let receiptsStat;
+        try { receiptsStat = lstatSync(receiptsRoot); } catch { continue; }
+        if (receiptsStat.isSymbolicLink() || !receiptsStat.isDirectory()) continue;
+        for (const name of readdirSync(receiptsRoot).filter((entry) => entry.endsWith('.json')).sort()) {
+          const sourcePath = join(receiptsRoot, name);
+          const receipt = rawPluginActionReceiptAt(sourcePath);
+          if (!receipt || !controllerPluginIds.has(receipt.pluginId) || receipt.observationOnly === true) continue;
+          const indexPath = pluginActionRequestPath(controllerHome, receipt.requestId);
+          if (existsSync(indexPath)) continue;
+          migrateReceipt(sourcePath, scopeKey, receipt, undefined, indexPath);
+        }
+      }
+    }
+  }
+
+  return [...changed];
+}
+
 export function findPluginActionReceipt(
   controllerHome: string,
   receiptId: string,
 ): PluginActionReceipt | undefined {
+  ensureControllerPluginStateMigrated(controllerHome);
   const home = ensureControllerHome(controllerHome);
   // Controller-scoped plugins (for example Local System) live under system/, not
   // repositories/. They are first-class evidence producers and must be searched too.
@@ -1303,6 +1560,7 @@ export function findPluginActionReceipt(
 
 /** Exact request lookup for subordinate Workflow recovery; never dispatches an action. */
 export function readPluginActionReceiptForRequest(controllerHome: string, requestId: string): PluginActionReceipt | undefined {
+  ensureControllerPluginStateMigrated(controllerHome);
   const path = pluginActionRequestPath(controllerHome, requestId);
   if (!existsSync(path)) return undefined;
   const index = readJsonFile<PluginActionRequestIndex>(path);
@@ -1957,6 +2215,14 @@ export function submitAssistantPluginAction(
   repository: RepositoryRecord,
   request: AssistantPluginActionRequest,
 ) {
+  ensureControllerPluginStateMigrated(controllerHome);
+  const adapter = resolvePluginAdapter(controllerHome, request.pluginId);
+  if (adapter && adapterMatchesController(adapter)) {
+    return submitPluginAction(controllerHome, controllerPluginActionScope(controllerHome), {
+      ...request,
+      ...(request.workId ? { workRepoId: request.workRepoId ?? repository.repoId } : {}),
+    });
+  }
   return submitPluginAction(controllerHome, repositoryPluginActionScope(repository), request);
 }
 
@@ -1964,6 +2230,7 @@ export function submitControllerPluginAction(
   controllerHome: string,
   request: AssistantPluginActionRequest,
 ) {
+  ensureControllerPluginStateMigrated(controllerHome);
   return submitPluginAction(controllerHome, controllerPluginActionScope(controllerHome), request);
 }
 

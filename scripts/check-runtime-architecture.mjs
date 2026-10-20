@@ -2435,6 +2435,13 @@ for (const path of productionTypeScriptFiles()) {
   forbid(path, controllerRepoCallPattern, 'production controller-plugin paths must not recreate a fake controller RepositoryRecord');
 }
 requireText('src/runtime/plugins/store.ts', 'const CONTROLLER_PLUGIN_SCOPE_KEY = FORGE_INSTANCE_SCOPE_KEY');
+requireText('src/runtime/plugins/config-store.ts', "return join(controllerSystemRoot(controllerHome), 'plugins', 'config', controllerPluginConfigFileName(pluginId));");
+forbid('adapters/mcp/runtime-gateway/plugin-adapter.ts', /controller_with_repository_overlay/, 'retired plugin overlay scope must not be selected by MCP');
+forbid('src/runtime/plugins/types.ts', /controller_with_repository_overlay/, 'plugin scope has one authority');
+requireText('src/runtime/plugins/store.ts', 'ensureControllerPluginStateMigrated(controllerHome');
+for (const path of ['src/runtime/plugins/gmail-adapter.ts', 'src/runtime/plugins/google-calendar-adapter.ts', 'src/runtime/plugins/google-tasks-adapter.ts', 'src/runtime/plugins/resend-adapter.ts', 'src/runtime/plugins/browser-registration.ts', 'src/runtime/plugins/app-store-connect-adapter.ts']) {
+  requireText(path, "scope: 'controller'");
+}
 requireText('src/runtime/plugins/store.ts', 'export function preflightPluginActionWorkBinding(');
 requireText('src/runtime/plugins/action-application.ts', 'preflightPluginActionWorkBinding(input.controllerHome, input.scope, action, input.request);');
 requireText('tests/runtime/external-plugin-store-integration.test.ts', 'rejects invalid Work kind without consuming the Process request id');
@@ -2463,7 +2470,7 @@ for (const [start, end, description] of [
 // or explicit rejection paths; they are not allowed to become new write paths.
 requireText('src/runtime/plugins/store.ts', 'One-way read compatibility for pre-cutover controller receipts only.');
 requireText('adapters/mcp/runtime-gateway/plugin-adapter.ts', 'PLUGIN_CONTROLLER_REPOSITORY_SENTINEL_RETIRED');
-requireText('src/runtime/plugins/app-store-connect-adapter.ts', 'APP_STORE_CONNECT_LEGACY_CONTROLLER_SCOPE_WRITE_RETIRED');
+forbid('src/runtime/plugins/app-store-connect-adapter.ts', /readRepositoryPluginConfig|writeRepositoryPluginConfig|APP_STORE_CONNECT_LEGACY_CONTROLLER_SCOPE_WRITE_RETIRED/, 'App Store Connect must use the one Controller-global config path');
 requireText('packages/protocols/computer/contract.ts', 'COMPUTER_BROWSER_AUTOMATION_CAPABILITY');
 requireText('packages/protocols/computer/contract.ts', 'ComputerRuntimeProviderCapabilityId');
 requireText('packages/plugin-runtime/computer/provider.ts', 'ComputerRuntimeProviderCapabilityId');

@@ -1,7 +1,6 @@
 import { createHash, createPrivateKey, sign } from 'crypto';
-import { accessSync, constants as fsConstants, existsSync, mkdirSync, promises as fsPromises, readFileSync, statSync, writeFileSync } from 'fs';
-import { basename, dirname, extname, isAbsolute, join, relative, resolve } from 'path';
-import { CONTROLLER_SCOPE_REPO_ID, controllerSystemRoot } from '../../cli/repositories/controller-home';
+import { accessSync, constants as fsConstants, existsSync, promises as fsPromises, readFileSync, statSync } from 'fs';
+import { basename, extname, isAbsolute, join, relative, resolve } from 'path';
 import type {
   AssistantPluginActionDescriptor,
   AssistantPluginActionExecutionInput,
@@ -12,11 +11,10 @@ import type {
   AssistantPluginPermissionScope,
 } from './types';
 import { AssistantPluginError, toAssistantPluginError } from './errors';
-import { readRepositoryPluginConfig, writeRepositoryPluginConfig } from './config-store';
+import { readControllerPluginConfig, writeControllerPluginConfig } from './config-store';
 import { buildQueryString, encodeBase64Url, stableMockId } from './google-shared';
 
 const APP_STORE_CONNECT_PLUGIN_ID = 'app_store_connect';
-const CONTROLLER_PLUGIN_CONFIG_SCOPE = 'controller:global';
 const API_BASE_URL = 'https://api.appstoreconnect.apple.com';
 const DEFAULT_TIMEOUT_MS = 60_000;
 const PRIVATE_KEY_READ_MAX_ATTEMPTS = 4;
@@ -72,10 +70,6 @@ function boundedTimeout(value: unknown): number | undefined {
   return normalized && normalized <= 10 * 60_000 ? normalized : undefined;
 }
 
-function globalConfigPath(controllerHome: string): string {
-  return join(controllerSystemRoot(controllerHome), 'plugins', 'profiles', 'app-store-connect.json');
-}
-
 function normalizeConfig(raw: Partial<AppStoreConnectPluginConfig>): AppStoreConnectPluginConfig {
   return {
     schemaVersion: 1,
@@ -91,26 +85,9 @@ function normalizeConfig(raw: Partial<AppStoreConnectPluginConfig>): AppStoreCon
   };
 }
 
-function readConfigFile(path: string): Partial<AppStoreConnectPluginConfig> | undefined {
-  if (!existsSync(path)) return undefined;
-  try {
-    const parsed = JSON.parse(readFileSync(path, 'utf-8')) as Partial<AppStoreConnectPluginConfig>;
-    return parsed && typeof parsed === 'object' ? parsed : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-function repositoryConfig(repoRoot: string, controllerHome?: string, repoId?: string): Partial<AppStoreConnectPluginConfig> | undefined {
-  if (!controllerHome || !repoId) return undefined;
-  return readRepositoryPluginConfig<Partial<AppStoreConnectPluginConfig>>({ controllerHome, repoId, repoRoot }, APP_STORE_CONNECT_PLUGIN_ID);
-}
-
-function loadConfig(repoRoot: string, controllerHome?: string, repoId?: string): AppStoreConnectPluginConfig {
-  const global = controllerHome ? readConfigFile(globalConfigPath(controllerHome)) : undefined;
-  if (repoId === CONTROLLER_SCOPE_REPO_ID || repoId === CONTROLLER_PLUGIN_CONFIG_SCOPE) return normalizeConfig(global ?? {});
-  const local = repositoryConfig(repoRoot, controllerHome, repoId);
-  return normalizeConfig({ ...(global ?? {}), ...(local ?? {}) });
+function loadConfig(_repoRoot: string, controllerHome?: string, _repoId?: string): AppStoreConnectPluginConfig {
+  const persisted = controllerHome ? readControllerPluginConfig<Partial<AppStoreConnectPluginConfig>>(controllerHome, APP_STORE_CONNECT_PLUGIN_ID) : undefined;
+  return normalizeConfig(persisted ?? {});
 }
 
 function definedPatch(patch: Partial<AppStoreConnectPluginConfig>): Partial<AppStoreConnectPluginConfig> {
@@ -118,28 +95,14 @@ function definedPatch(patch: Partial<AppStoreConnectPluginConfig>): Partial<AppS
 }
 
 function saveConfig(
-  repoRoot: string,
+  _repoRoot: string,
   patch: Partial<AppStoreConnectPluginConfig>,
   controllerHome?: string,
-  repoId?: string,
+  _repoId?: string,
 ): AppStoreConnectPluginConfig {
-  const cleanPatch = definedPatch(patch);
-  if (controllerHome && repoId === CONTROLLER_PLUGIN_CONFIG_SCOPE) {
-    const path = globalConfigPath(controllerHome);
-    const next = normalizeConfig({ ...(readConfigFile(path) ?? {}), ...cleanPatch });
-    mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(path, `${JSON.stringify(next, null, 2)}\n`, 'utf-8');
-    return next;
-  }
-
-  if (repoId === CONTROLLER_SCOPE_REPO_ID) throw new Error('APP_STORE_CONNECT_LEGACY_CONTROLLER_SCOPE_WRITE_RETIRED');
-  if (!controllerHome || !repoId) throw new Error('APP_STORE_CONNECT_CONTROLLER_CONTEXT_REQUIRED');
-  // Repository state is an overlay only. Do not materialize inherited global
-  // credential references into every repository just because configure ran.
-  const existing = repositoryConfig(repoRoot, controllerHome, repoId) ?? {};
-  const overlay = { schemaVersion: 1 as const, ...existing, ...cleanPatch };
-  writeRepositoryPluginConfig({ controllerHome, repoId, repoRoot }, APP_STORE_CONNECT_PLUGIN_ID, overlay);
-  return loadConfig(repoRoot, controllerHome, repoId);
+  if (!controllerHome) throw new Error('APP_STORE_CONNECT_CONTROLLER_CONTEXT_REQUIRED');
+  const next = normalizeConfig({ ...readControllerPluginConfig<Partial<AppStoreConnectPluginConfig>>(controllerHome, APP_STORE_CONNECT_PLUGIN_ID), ...definedPatch(patch) });
+  return writeControllerPluginConfig(controllerHome, APP_STORE_CONNECT_PLUGIN_ID, next);
 }
 
 function envValue(name: string): string | undefined {
@@ -1065,7 +1028,7 @@ export function buildAppStoreConnectPluginManifest(previousRevision = 0, previou
     provider: 'apple',
     displayName: 'App Store Connect API Plugin',
     pluginVersion: '1.1.1',
-    authority: { strategy: 'derived', duplicateStateAllowed: false, sourceOfTruth: ['controller-global:system/plugins/profiles/app-store-connect.json', 'controller-home:repositories/<repoId>/plugins/config/app-store-connect.json', 'legacy-import-only:.forge/plugins|.repo-harness/plugins/app-store-connect.json', 'env:FORGE_ASC_*'] },
+    authority: { strategy: 'derived', duplicateStateAllowed: false, sourceOfTruth: ['controller-global:system/plugins/config/app-store-connect.json', 'legacy-import-only:system/plugins/profiles|repositories/<repoId>/plugins/config|.forge/plugins|.repo-harness/plugins', 'env:FORGE_ASC_*'] },
     enabled: config.enabled,
     lifecycle: { state: state.lifecycleState, reason: !config.enabled ? 'App Store Connect plugin is disabled.' : auth.ready ? 'App Store Connect API credentials are ready.' : auth.errors[0] ?? auth.warnings[0] },
     health: state.health,
@@ -1291,7 +1254,7 @@ export async function executeAppStoreConnectPluginAction(input: AssistantPluginA
 
 export const appStoreConnectPluginAdapter = {
   pluginId: APP_STORE_CONNECT_PLUGIN_ID,
-  scope: 'controller_with_repository_overlay' as const,
+  scope: 'controller' as const,
   buildManifest: buildAppStoreConnectPluginManifest,
   executeAction: executeAppStoreConnectPluginAction,
 };
