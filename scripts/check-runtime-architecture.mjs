@@ -1717,6 +1717,7 @@ forbid(
 );
 requireMissing('adapters/mcp/tool-capability-cache.ts');
 requireMissing('src/runtime/execution/jobs/legacy-adapter.ts');
+requireMissing('src/cli/controller/migrated-issue-decision.ts');
 requireMissing('src/cli/mcp/oauth-client-retirement.ts');
 requireMissing('adapters/mcp/tool-mapping/umbrella-tools.ts');
 requireMissing('src/runtime/control-plane/execution/implementation-review-content.ts');
