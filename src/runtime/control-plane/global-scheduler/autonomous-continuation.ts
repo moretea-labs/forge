@@ -22,7 +22,7 @@ import {
   controllerHostForScheduledBinding,
   ensureScheduledControllerBindingForWork,
 } from '../../root/scheduled-controller-composition';
-import { ensureWorkflowSupervisorEnrollmentForWork } from '../../root/workflow-supervisor-composition';
+import { ensureWorkflowSupervisorEnrollmentForWork, workflowSupervisorBoundaryForWork } from '../../root/workflow-supervisor-composition';
 import { reconcileControllerProgression } from '../../root/controller-progression-composition';
 import { prepareControllerRoundOccurrence, resumeControllerRoundOccurrence } from '../../../../packages/kernel/controller/api/index';
 import { ensureControllerDispositionContinuation } from '../../workflow/schedules/work-continuation';
@@ -144,6 +144,31 @@ export async function runSchedulerAutonomousContinuationReconciliation(input: {
       const requirementState = requirementRecord?.value.state;
       if (requirementState === 'waiting_for_user') { skip(skippedByReason, 'requirement_waiting_for_user'); continue; }
       if (requirementState === 'done' || requirementState === 'cancelled') { skip(skippedByReason, 'requirement:' + requirementState); continue; }
+
+      // An exact Work-bound ChatGPT conversation is already owned by the one
+      // Supervisor journal. Old ControllerSession/ControllerRound gates cannot
+      // veto its outer-turn continuation; first admission and terminality remain
+      // fenced by the existing enrollment owner (never another provider Send).
+      if (workflowSupervisorBoundaryForWork(store, work.workId).status === 'outer_turn') {
+        eligible += 1;
+        try {
+          authorizeWake('external_controller_wake', {
+            work_id: work.workId, controller_type: 'chatgpt',
+            relay_scope_id: relayScopeId, recovery_reason: 'supervisor_owned_conversation',
+          });
+          const enrollment = await (input.dependencies?.ensureSupervisorEnrollment ?? ensureWorkflowSupervisorEnrollmentForWork)(store, work.workId);
+          if (enrollment.status === 'enrolled' && Boolean(enrollment.effectId)) {
+            supervisorEnrolled += 1;
+            materialized += 1;
+          } else {
+            skip(skippedByReason, 'workflow_supervisor:' + (enrollment.reason ?? enrollment.status));
+          }
+        } catch (error) {
+          failed += 1;
+          console.error('[forge liveness] Supervisor continuation failed for ' + repository.repoId + '/' + work.workId + ':', error);
+        }
+        continue;
+      }
 
       const existingRound = getControllerRoundRelay(store, work.workId);
       if (!livenessMayReconcileExistingRound(existingRound)) {

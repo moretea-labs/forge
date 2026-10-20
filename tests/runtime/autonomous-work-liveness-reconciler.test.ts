@@ -18,6 +18,7 @@ import {
 } from '../../packages/kernel/controller/api/index';
 import { cancelWorkContract, createWorkContract, createWorkSemanticContext, getWorkContract, listWorkContracts, type WorkContract } from '../../packages/kernel/work/api/index';
 import { upsertChatgptControllerBinding } from '../../adapters/chatgpt/controller-binding-store';
+import { bindChatgptWorkConversation } from '../../adapters/chatgpt/work-conversation-binding-store';
 import { createRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
 import {
   createPlanContract,
@@ -148,6 +149,18 @@ describe('autonomous Work liveness reconciliation', () => {
     expect(first).toMatchObject({ eligible: 1, supervisorEnrolled: 1, dispatched: 0, failed: 0 });
     expect(enrollments.count).toBe(1);
     expect(getControllerRoundRelay({ controllerHome, repoId: 'repo-a' }, 'WORK-A')?.status).toBe('dispatching');
+
+    // Same existing scenario also checks Supervisor authority without a retained
+    // ControllerSession or a fabricated ControllerRound.
+    createRunningWork(controllerHome, { workId: 'WORK-BOUND-WITHOUT-SESSION' });
+    bindChatgptWorkConversation({ controllerHome, repoId: 'repo-a' }, {
+      workId: 'WORK-BOUND-WITHOUT-SESSION',
+      conversationUrl: 'https://chatgpt.com/c/91919191-3434-5656-7878-909090909090',
+    });
+    const second = await runSchedulerAutonomousContinuationReconciliation({ ...input, maxContinuations: 2 });
+    expect(second).toMatchObject({ eligible: 2, supervisorEnrolled: 2, dispatched: 0, failed: 0 });
+    expect(enrollments.count).toBe(3);
+    expect(getControllerRoundRelay({ controllerHome, repoId: 'repo-a' }, 'WORK-BOUND-WITHOUT-SESSION')).toBeUndefined();
   });
 
   test('enrolls Supervisor for an incomplete dispatching round when no provider effect physically started', async () => {
