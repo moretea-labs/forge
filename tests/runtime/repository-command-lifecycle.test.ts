@@ -422,7 +422,7 @@ describe('repository command execution lifecycle', () => {
     const controllerHome = tempRoot('forge-selected-commit-home-');
     const repoRoot = tempRoot('forge-selected-commit-repo-');
     const repository = seedRepo(controllerHome, repoRoot);
-    persistControllerAccessMode(controllerHome, 'full_access', repoRoot);
+    persistControllerAccessMode(controllerHome, 'full_access');
 
     writeFileSync(join(repoRoot, 'staged-only.txt'), 'staged\n');
     writeFileSync(join(repoRoot, 'unstaged-only.txt'), 'unstaged\n');
@@ -508,7 +508,7 @@ describe('repository command execution lifecycle', () => {
     const controllerHome = tempRoot('forge-cmd-bounded-snapshot-home-');
     const repoRoot = tempRoot('forge-cmd-bounded-snapshot-repo-');
     const repository = seedRepo(controllerHome, repoRoot);
-    persistControllerAccessMode(controllerHome, 'full_access', repoRoot);
+    persistControllerAccessMode(controllerHome, 'full_access');
     for (const name of ['target.txt', 'unrelated-a.txt', 'unrelated-b.txt']) writeFileSync(join(repoRoot, name), 'base\n');
     git(repoRoot, ['add', 'target.txt', 'unrelated-a.txt', 'unrelated-b.txt']);
     git(repoRoot, ['commit', '-m', 'add bounded snapshot fixture']);
@@ -532,7 +532,7 @@ describe('repository command execution lifecycle', () => {
     const controllerHome = tempRoot('forge-cmd-post-evidence-home-');
     const repoRoot = tempRoot('forge-cmd-post-evidence-repo-');
     const repository = seedRepo(controllerHome, repoRoot);
-    persistControllerAccessMode(controllerHome, 'full_access', repoRoot);
+    persistControllerAccessMode(controllerHome, 'full_access');
     writeFileSync(join(repoRoot, 'write-three.mjs'), [
       "await Bun.write('evidence-a.txt', 'a\\n');",
       "await Bun.write('evidence-b.txt', 'b\\n');",
@@ -563,7 +563,7 @@ describe('repository command execution lifecycle', () => {
     const controllerHome = tempRoot('forge-cmd-write-snapshot-home-');
     const repoRoot = tempRoot('forge-cmd-write-snapshot-repo-');
     const repository = seedRepo(controllerHome, repoRoot);
-    persistControllerAccessMode(controllerHome, 'full_access', repoRoot);
+    persistControllerAccessMode(controllerHome, 'full_access');
     const result = executeRepositoryCommand(controllerHome, repository, {
       command: ['touch', 'marker.txt'],
       timeoutMs: 10_000,
@@ -579,7 +579,7 @@ describe('repository command execution lifecycle', () => {
     const controllerHome = tempRoot('forge-cmd-work-read-home-');
     const repoRoot = tempRoot('forge-cmd-work-read-repo-');
     const repository = seedRepo(controllerHome, repoRoot);
-    persistControllerAccessMode(controllerHome, 'full_access', repoRoot);
+    persistControllerAccessMode(controllerHome, 'full_access');
     const processCount = listProcessRecords(controllerHome, repository.repoId).length;
     const result = await executeRepositoryCommandViaProcessRuntime({
       controllerHome,
@@ -602,7 +602,7 @@ describe('repository command execution lifecycle', () => {
 
   test('local shell wrappers and inline interpreters stay lightweight without persistent Process or Lease state', async () => {
     const controllerHome = tempRoot('forge-cmd-opaque-home-'); const repoRoot = tempRoot('forge-cmd-opaque-repo-'); const repository = seedRepo(controllerHome, repoRoot);
-    persistControllerAccessMode(controllerHome, 'full_access', repoRoot); const processCount = listProcessRecords(controllerHome, repository.repoId).length;
+    persistControllerAccessMode(controllerHome, 'full_access'); const processCount = listProcessRecords(controllerHome, repository.repoId).length;
     for (const [command, marker, expected] of [
       [['bash', '-lc', "printf 'shell-lightweight\\n' > shell-marker.txt"], 'shell-marker.txt', 'shell-lightweight\n'],
       [['bun', '-e', "await Bun.write('inline-marker.txt', 'inline-lightweight\\n')"], 'inline-marker.txt', 'inline-lightweight\n'],
@@ -623,7 +623,7 @@ describe('repository command execution lifecycle', () => {
     const controllerHome = tempRoot('forge-cmd-light-home-');
     const repoRoot = tempRoot('forge-cmd-light-repo-');
     const repository = seedRepo(controllerHome, repoRoot);
-    persistControllerAccessMode(controllerHome, 'full_access', repoRoot);
+    persistControllerAccessMode(controllerHome, 'full_access');
     writeFileSync(join(repoRoot, 'slow-command.mjs'), 'setTimeout(() => { console.log("lightweight-ok"); process.exit(0); }, 300);\n');
     const processCount = listProcessRecords(controllerHome, repository.repoId).length;
     const result = await executeRepositoryCommandViaProcessRuntime({
@@ -650,7 +650,7 @@ describe('repository command execution lifecycle', () => {
     const repoRoot = tempRoot('forge-cmd-external-repo-');
     const remoteRoot = tempRoot('forge-cmd-external-remote-');
     const repository = seedRepo(controllerHome, repoRoot);
-    persistControllerAccessMode(controllerHome, 'full_access', repoRoot);
+    persistControllerAccessMode(controllerHome, 'full_access');
     git(remoteRoot, ['init', '--bare']);
     git(repoRoot, ['remote', 'add', 'origin', remoteRoot]);
     const command = ['git', 'push', 'origin', 'HEAD:refs/heads/cloud-test'];
@@ -705,7 +705,7 @@ describe('repository command execution lifecycle', () => {
     const repoRoot = tempRoot('forge-work-remote-delivery-repo-');
     const remoteRoot = tempRoot('forge-work-remote-delivery-remote-');
     const repository = seedRepo(controllerHome, repoRoot);
-    persistControllerAccessMode(controllerHome, 'full_access', repoRoot);
+    persistControllerAccessMode(controllerHome, 'full_access');
     git(remoteRoot, ['init', '--bare']);
     git(repoRoot, ['remote', 'add', 'origin', remoteRoot]);
     git(repoRoot, ['push', 'origin', 'HEAD:refs/heads/main']);
@@ -769,7 +769,7 @@ describe('repository command execution lifecycle', () => {
     const repoRoot = tempRoot('forge-work-remote-terminal-repo-');
     const remoteRoot = tempRoot('forge-work-remote-terminal-remote-');
     const repository = seedRepo(controllerHome, repoRoot);
-    persistControllerAccessMode(controllerHome, 'full_access', repoRoot);
+    persistControllerAccessMode(controllerHome, 'full_access');
     git(remoteRoot, ['init', '--bare']);
     git(repoRoot, ['remote', 'add', 'origin', remoteRoot]);
     git(repoRoot, ['push', 'origin', 'HEAD:refs/heads/main']);

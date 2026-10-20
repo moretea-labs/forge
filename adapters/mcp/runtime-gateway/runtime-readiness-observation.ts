@@ -102,8 +102,7 @@ export async function controllerReadinessEvidence(
     endpointReachable: shouldProbeLocalBridge ? localBridgeEndpointReachable : true,
     expectedSurface: localBridgeExpectedSurface,
     processAlive: localBridgeSurface?.processRunning,
-    runtimeStateFresh: localBridgeSurface?.source === 'service-runtime'
-      || localBridgeSurface?.source === 'repo-runtime',
+    runtimeStateFresh: localBridgeSurface?.source === 'service-runtime',
     error: localBridgeSurface?.error,
   };
   const runtimeHealth = evaluateRuntimeHealth({
