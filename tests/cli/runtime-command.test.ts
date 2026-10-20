@@ -105,6 +105,8 @@ describe('runtime command surface', () => {
     const compositeOperations = readFileSync(join(ROOT, 'src/cli/controller/composite-operations.ts'), 'utf8');
     const controllerPostcondition = readFileSync(join(ROOT, 'src/cli/controller/postcondition.ts'), 'utf8');
     const localBridgeServer = readFileSync(join(ROOT, 'src/cli/local-bridge/server.ts'), 'utf8');
+    const bridgeConnectorFreshness = readFileSync(join(ROOT, 'src/cli/local-bridge/connector-freshness.ts'), 'utf8');
+    const bridgeJobStore = readFileSync(join(ROOT, 'src/cli/local-bridge/job-store.ts'), 'utf8');
     const repoActor = readFileSync(join(ROOT, 'src/runtime/control-plane/repo-actor/actor.ts'), 'utf8');
     const executionWorker = readFileSync(join(ROOT, 'src/runtime/execution/workers/executor.ts'), 'utf8');
     const globalScheduler = readFileSync(join(ROOT, 'src/runtime/control-plane/global-scheduler/scheduler.ts'), 'utf8');
@@ -139,6 +141,10 @@ describe('runtime command surface', () => {
     expect(mcpAuth).not.toContain('mcpServiceOAuthTokenStoreFallbackPaths');
     expect(mcpAuth).not.toContain('resolveMcpRuntimeAuthority');
     expect(mcpAuth).not.toContain('controllerHomeHasAuthoritativeMcpState');
+    expect(bridgeConnectorFreshness).not.toContain('loadMcpLocalConfig');
+    expect(bridgeJobStore).not.toContain('loadMcpLocalConfig');
+    expect(bridgeConnectorFreshness).toContain('loadMcpServiceLocalConfig(controllerHome)');
+    expect(bridgeJobStore).toContain('loadMcpServiceLocalConfig(controllerHome)');
     expect(httpTransport).not.toContain('mcpServiceOAuthTokenStoreFallbackPaths');
     const oauthStore = readFileSync(join(ROOT, 'adapters/mcp/oauth.ts'), 'utf8');
     expect(oauthStore).not.toContain('fallbackPaths');

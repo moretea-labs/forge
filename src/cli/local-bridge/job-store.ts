@@ -21,7 +21,7 @@ import {
   MAX_AGENT_TIMEOUT_MS,
   normalizeAgentTimeoutMs,
 } from "../controller/runtime-config";
-import { loadMcpLocalConfig, loadMcpServiceLocalConfig } from "../../../adapters/mcp/auth";
+import { loadMcpServiceLocalConfig } from "../../../adapters/mcp/auth";
 import type { ControllerTask } from "../controller/types";
 import { taskExecutionPolicy } from "../controller/execution-policy";
 import { tryAppendControllerWorklogEvent } from "../controller/worklog";
@@ -320,7 +320,7 @@ export function localBridgeTimeoutPolicy(repoRoot: string): {
 } {
   const local = loadLocalBridgeConfig(repoRoot);
   const controllerHome = resolveRepoPreferredControllerHome(repoRoot);
-  const mcp = loadMcpServiceLocalConfig(controllerHome, repoRoot) ?? loadMcpLocalConfig(repoRoot);
+  const mcp = loadMcpServiceLocalConfig(controllerHome);
   const maxTimeoutMs = normalizeAgentTimeoutMs(
     local.maxTimeoutMs ?? mcp?.devMode?.maxTimeoutMs,
     {
