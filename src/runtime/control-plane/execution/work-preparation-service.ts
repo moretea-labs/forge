@@ -337,7 +337,9 @@ function materializeArchivedWorkPlacement(
   if (contract.repoId !== repository.repoId || contract.workKind !== 'repository_change' || !contract.worktreePolicy.required) {
     throw new Error('WORK_HANDLE_RECOVERY_CONTRACT_POLICY_MISMATCH');
   }
-  if (contract.semanticState !== 'open' || contract.completionReceipt || contract.completionOutcome) {
+  // semanticState is the sole Work lifecycle authority. Completion evidence may
+  // be recorded while an explicitly open Work still needs continued execution.
+  if (contract.semanticState !== 'open') {
     throw new Error(`WORK_HANDLE_RECOVERY_WORK_NOT_OPEN: ${contract.workId}`);
   }
   if (sourceHandle.state === 'cleaned') {
@@ -430,7 +432,7 @@ function recoverLostWorkPlacement(
   if (sourceHandle.checkoutId === repository.activeCheckoutId) throw new Error('WORK_HANDLE_RECOVERY_SOURCE_CHECKOUT_STILL_ACTIVE');
   const contract = contractFor(ctx, sourceHandle);
   if (!contract) throw new Error(`WORK_HANDLE_RECOVERY_CONTRACT_NOT_FOUND: ${sourceHandle.workContractId ?? sourceHandle.workId}`);
-  if (contract.semanticState !== 'open' || contract.completionReceipt || contract.completionOutcome) {
+  if (contract.semanticState !== 'open') {
     throw new Error(`WORK_HANDLE_RECOVERY_WORK_NOT_OPEN: ${contract.workId}`);
   }
   const fingerprint = workPrepareFingerprint({
@@ -693,8 +695,9 @@ function relocateExistingWorkToManagedCheckout(
     throw new Error('WORK_RELOCATION_FINALIZATION_IN_PROGRESS');
   }
   const contract = getWorkContract({ controllerHome: ctx.controllerHome, repoId: existing.repositoryId }, existing.workId);
-  if (!contract || contract.semanticState !== 'open' || contract.completionReceipt || contract.completionOutcome
-      || contract.checkoutId !== existing.checkoutId) throw new Error('WORK_RELOCATION_CONTRACT_MISMATCH');
+  if (!contract || contract.semanticState !== 'open' || contract.checkoutId !== existing.checkoutId) {
+    throw new Error('WORK_RELOCATION_CONTRACT_MISMATCH');
+  }
   if (existing.checkoutId !== repository.activeCheckoutId || existing.worktreePath !== repository.canonicalRoot
       || existing.branch !== repositoryGitStatus(repository).branch) throw new Error('WORK_RELOCATION_SOURCE_MISMATCH');
   if (!gitIsAncestor(existing.worktreePath, prior, candidate)) throw new Error('WORK_RELOCATION_NONLINEAR');

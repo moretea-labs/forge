@@ -1692,7 +1692,7 @@ export function updateWorkContractPlacement(
     if (current.checkoutId !== input.expectedCheckoutId || current.worktreeRef !== input.expectedWorktreeRef) {
       throw new Error('WORK_PLACEMENT_SOURCE_MISMATCH');
     }
-    if (semanticWorkState(current) !== 'open' || current.completionReceipt || current.completionOutcome) {
+    if (semanticWorkState(current) !== 'open') {
       throw new Error(`WORK_PLACEMENT_TERMINAL: ${workId}`);
     }
     if (input.kind === 'bind_current') {
@@ -1743,7 +1743,7 @@ export function promoteWorkToRepositoryChange(
   workId: string,
 ): WorkContract {
   return updateWorkContractInternal(options, workId, (current) => {
-    if (semanticWorkState(current) !== 'open' || current.completionReceipt || current.completionOutcome) {
+    if (semanticWorkState(current) !== 'open') {
       throw new Error(`WORK_KIND_PROMOTION_TERMINAL: ${workId}`);
     }
     if (current.workKind === 'repository_change') return undefined;
