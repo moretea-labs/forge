@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { hashMcpInput, mcpAuditLogPath, tryWriteMcpAuditEntry, writeMcpAuditEntry } from '../../adapters/mcp/audit';
-import { getMcpPolicy } from '../../adapters/mcp/policy';
+import { getMcpPolicy, parseMcpProfile } from '../../adapters/mcp/policy';
 import { redactMcpText } from '../../adapters/mcp/redaction';
 import { globMatches, normalizeMcpRelativePath, resolveMcpPath } from '../../adapters/mcp/paths';
 import { buildMcpToolDefinitions } from '../../adapters/mcp/tool-mapping/tools';
