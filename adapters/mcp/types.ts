@@ -1,4 +1,4 @@
-export type McpProfileName = 'planner' | 'executor' | 'orchestrator' | 'controller';
+export type McpProfileName = 'planner' | 'executor' | 'controller';
 export type McpPathIntent = 'read' | 'write';
 export type McpAgentRunnerName = 'codex' | 'claude';
 

@@ -101,7 +101,7 @@ function loadMcpPolicyOverrides(repoRoot?: string): McpPolicyOverrideFile | unde
   const profilesRaw = raw.profiles;
   if (!profilesRaw || typeof profilesRaw !== 'object' || Array.isArray(profilesRaw)) return undefined;
   const profiles: Partial<Record<McpProfileName, McpPolicyOverrideProfile>> = {};
-  for (const profile of ['planner', 'executor', 'orchestrator', 'controller'] as const) {
+  for (const profile of ['planner', 'executor', 'controller'] as const) {
     const entry = (profilesRaw as Record<string, unknown>)[profile];
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
     const record = entry as Record<string, unknown>;
@@ -205,28 +205,10 @@ export function getMcpPolicy(profile: McpProfileName, opts: McpPolicyOptions = {
     }, profile, opts.repoRoot);
   }
 
-  if (profile === 'orchestrator') {
-    const devRunner = opts.devAgentRunner === true;
-    return applyPolicyOverrides({
-      profile,
-      readGlobs: devRunner ? ['.ai/harness/controller/packets/codex-goal.md'] : [],
-      writeGlobs: [],
-      denyGlobs: devRunner ? COMMON_DENY_GLOBS : ['**'],
-      maxFileBytes: devRunner ? 512 * 1024 : 0,
-      execution: executionPolicy({
-        codexRunner: devRunner,
-        agentRunner: devRunner,
-        allowedAgents: devRunner ? (opts.allowedAgents?.length ? opts.allowedAgents : defaultLocalAgentRunners()) : [],
-        runnerTimeoutMs: opts.runnerTimeoutMs ?? DEFAULT_AGENT_TIMEOUT_MS,
-        runnerMaxTimeoutMs: opts.runnerMaxTimeoutMs ?? MAX_AGENT_TIMEOUT_MS,
-      }),
-    }, profile, opts.repoRoot);
-  }
-
   throw new Error(`unknown MCP profile: ${String(profile)}`);
 }
 
 export function parseMcpProfile(value: string): McpProfileName {
-  if (value === 'planner' || value === 'executor' || value === 'orchestrator' || value === 'controller') return value;
-  throw new Error(`invalid MCP profile "${value}" (expected: planner, executor, orchestrator, controller)`);
+  if (value === 'planner' || value === 'executor' || value === 'controller') return value;
+  throw new Error(`invalid MCP profile "${value}" (expected: planner, executor, controller)`);
 }

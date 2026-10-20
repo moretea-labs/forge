@@ -276,24 +276,6 @@ function runnerTimeoutMs(ctx: McpToolContext, value: unknown): number {
   });
 }
 
-function runAgentGoal(
-  ctx: McpToolContext,
-  args: Record<string, unknown>,
-): CallToolResult {
-  audit(
-    ctx,
-    "run_agent_goal",
-    "blocked",
-    args,
-    undefined,
-    "Kernel-managed model execution is retired; use Thin Launcher.",
-  );
-  return errorResult(
-    "AGENT_GOAL_DEPRECATED",
-    "Kernel-managed model execution is retired. Create or claim a WorkContract, then start an external SuperController through rh_work.launcher_start.",
-  );
-}
-
 function prdArtifactPath(slug: string): string {
   const normalized = slugify(slug);
   const prefixed = /^\d{8}-\d{4}-/.test(normalized)
@@ -2844,8 +2826,6 @@ export async function callMcpTool(
           error: result.error,
         });
       }
-      case "run_agent_goal":
-        return runAgentGoal(ctx, args);
       default:
         return errorResult("UNKNOWN_TOOL", `unknown MCP tool: ${name}`);
     }
