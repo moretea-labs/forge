@@ -324,6 +324,7 @@ test('live current-turn activity changes before the assistant role commits', () 
   const priorAssistant = message('assistant', 'Previously committed answer');
   const latestUser = message('user', 'Exact effect marker');
   let liveTurnText = 'Reasoning: inspecting the repository';
+  let liveStopVisible = true;
   const turn = {
     get innerText() { return liveTurnText; },
     get textContent() { return liveTurnText; },
@@ -340,7 +341,10 @@ test('live current-turn activity changes before the assistant role commits', () 
   };
   const context = {
     document: { title: 'Forge', body: { innerText: '' }, documentElement: {},
-      querySelectorAll: (selector: string) => selector === 'main' ? collection([main]) : collection([] as unknown[]) },
+      querySelectorAll: (selector: string) => selector === 'main' ? collection([main])
+        : selector.includes('stop-button')
+          ? (liveStopVisible ? collection([{ getClientRects: () => [1] }]) : collection([] as unknown[]))
+          : collection([] as unknown[]) },
     location: { href: 'https://chatgpt.com/c/12345678-1234-1234-1234-123456789abc' },
     URL, Date, Map, Promise,
     ForgeComputerChatgptCore: {
@@ -371,6 +375,9 @@ test('live current-turn activity changes before the assistant role commits', () 
   expect(next.latestTurnRole).toBe('user');
   expect(next.providerActivityText).toBe('Reasoning: inspecting the repository. Tool output: 4 files found.');
   expect(next.providerActivityText).not.toBe(first.providerActivityText);
+  expect(next.isGenerating).toBe(true);
+  liveStopVisible = false;
+  expect(snapshot().isGenerating).toBe(false);
 });
 
 test('content script fences bootstrap sends to the exact Project and rejects migrated conversation URLs', async () => {
