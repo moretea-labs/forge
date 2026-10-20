@@ -179,51 +179,6 @@ export function mcpControllerHomeRuntimeStatePath(controllerHome: string): strin
   return mcpControllerHomePath(controllerHome, 'mcp.runtime.json');
 }
 
-function controllerHomeMcpPaths(controllerHome: string): string[] {
-  return [
-    mcpControllerHomeLocalConfigPath(controllerHome),
-    mcpControllerHomeLocalConfigPath(controllerHome),
-    mcpControllerHomeTokenPath(controllerHome),
-    mcpControllerHomeOAuthPath(controllerHome),
-    mcpControllerHomeOAuthTokenStorePath(controllerHome),
-    mcpControllerHomeRuntimeStatePath(controllerHome),
-  ];
-}
-
-export interface McpRuntimeAuthority {
-  authority: 'controller-home' | 'legacy';
-  path: string;
-  controllerHomePresent: boolean;
-  legacyPresent: boolean;
-  warning?: string;
-}
-
-export function controllerHomeHasAuthoritativeMcpState(controllerHome: string): boolean {
-  return controllerHomeMcpPaths(controllerHome).some((path) => existsSync(path));
-}
-
-export function resolveMcpRuntimeAuthority(
-  controllerHome: string,
-  legacyRepoRoot: string | undefined,
-  kind: 'local-config' | 'runtime-state',
-): McpRuntimeAuthority {
-  const home = resolveControllerHome(controllerHome);
-  const legacyPath = kind === 'local-config'
-    ? (legacyRepoRoot ? mcpLocalConfigPath(legacyRepoRoot) : undefined)
-    : (legacyRepoRoot ? mcpRuntimeStatePath(legacyRepoRoot) : undefined);
-  const legacyPresent = Boolean(legacyPath && existsSync(legacyPath));
-  const controllerHomePresent = controllerHomeHasAuthoritativeMcpState(home);
-  return {
-    authority: 'controller-home',
-    path: kind === 'local-config' ? mcpControllerHomeLocalConfigPath(home) : mcpControllerHomeRuntimeStatePath(home),
-    controllerHomePresent,
-    legacyPresent,
-    warning: legacyPresent
-      ? 'Repository-local MCP state is ignored; Controller Home is authoritative.'
-      : undefined,
-  };
-}
-
 function readJsonFile<T>(path: string): T | null {
   if (!existsSync(path)) return null;
   try {

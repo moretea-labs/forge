@@ -137,6 +137,8 @@ describe('runtime command surface', () => {
     expect(existsSync(join(ROOT, 'src/cli/commands/supervisor.ts'))).toBe(false);
     expect(existsSync(join(ROOT, 'src/cli/controller/stable-state/runtime-writer-context.ts'))).toBe(false);
     expect(mcpAuth).not.toContain('mcpServiceOAuthTokenStoreFallbackPaths');
+    expect(mcpAuth).not.toContain('resolveMcpRuntimeAuthority');
+    expect(mcpAuth).not.toContain('controllerHomeHasAuthoritativeMcpState');
     expect(httpTransport).not.toContain('mcpServiceOAuthTokenStoreFallbackPaths');
     const oauthStore = readFileSync(join(ROOT, 'adapters/mcp/oauth.ts'), 'utf8');
     expect(oauthStore).not.toContain('fallbackPaths');
