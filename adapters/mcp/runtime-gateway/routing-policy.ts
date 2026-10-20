@@ -102,7 +102,6 @@ const AGENT_DELEGATION_TOOLS = new Set([
   'launch_issue',
   'dispatch_ready_tasks',
   'retry_task_run',
-  'quick_agent_session',
 ]);
 const EXPLICIT_EXTERNAL_CONTROLLER_TOOLS = new Set([
   'publish_issue_to_github',
@@ -449,7 +448,7 @@ export function classifyGatewayExecutionPath(
       requiresRecovery: args.requires_recovery === true,
       requiresIsolation: args.isolation === 'new_worktree' || args.requires_isolation === true,
       requiresWorktree: args.isolation === 'new_worktree',
-      agentRun: name === 'quick_agent_session' || name === 'dispatch_task',
+      agentRun: name === 'dispatch_task',
       remoteWrite: name.includes('push') || name === 'publish_issue_to_github',
       timeoutMs: typeof args.timeout_ms === 'number' ? args.timeout_ms : undefined,
       command: args.command as string | string[] | undefined,

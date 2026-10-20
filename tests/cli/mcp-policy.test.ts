@@ -9,6 +9,15 @@ import { globMatches, normalizeMcpRelativePath, resolveMcpPath } from '../../ada
 import { buildMcpToolDefinitions } from '../../adapters/mcp/tool-mapping/tools';
 
 describe('mcp policy and paths', () => {
+  test('retired Agent and Local Bridge submission aliases have no public schema', () => {
+    const definitions = buildMcpToolDefinitions(getMcpPolicy('controller'));
+    const names = definitions.map((tool) => tool.name);
+    expect(names).not.toContain('quick_agent_session');
+    expect(names).not.toContain('submit_local_job');
+    expect(names).toContain('list_local_jobs');
+    expect(names).toContain('get_local_job');
+  });
+
   test('matches forge workflow globs without matching sibling paths', () => {
     expect(globMatches('plans/**', 'plans/prds/example.prd.md')).toBe(true);
     expect(globMatches('plans/plan-*.md', 'plans/plan-test.md')).toBe(true);
