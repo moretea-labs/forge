@@ -43,10 +43,8 @@ const THIN_ROUTED_TOOLS = new Set([
 
 /** Blocking native host tools must never execute on the public MCP event loop. */
 const GATEWAY_ISOLATED_TOOLS = new Set([
-  // Native Apple tooling uses synchronous xcodebuild/simctl subprocesses.
-  'ios_review_packet', 'ios_xcode_status', 'ios_simulators_list', 'ios_project_discover',
-  'ios_schemes_list', 'ios_simulator_boot', 'ios_app_build', 'ios_app_install',
-  'ios_app_launch', 'ios_simulator_screenshot', 'ios_simulator_log_tail', 'ios_ui_smoke_test',
+  // Review packets still require native screenshot/process observation.
+  'ios_review_packet',
   // Diagnostics and maintenance perform process-table and recursive filesystem scans.
   'workflow_watchdog_report', 'runtime_cleanup_preview', 'runtime_cleanup_apply',
   'runtime_maintenance_status', 'runtime_maintenance_apply',
@@ -58,17 +56,8 @@ export function isGatewayIsolatedTool(name: string): boolean {
   return GATEWAY_ISOLATED_TOOLS.has(name);
 }
 
-/**
- * Tools that own their execution boundary and must never fall through to
- * retired generic ExecutionJob creation. Legacy iOS atomics are compatibility
- * adapters over the typed iOS plugin authority.
- */
-const SELF_MANAGED_DURABLE_TOOLS = new Set([
-  'plugin_action_execute',
-  'ios_xcode_status', 'ios_simulators_list', 'ios_project_discover', 'ios_schemes_list',
-  'ios_simulator_boot', 'ios_app_build', 'ios_app_install', 'ios_app_launch',
-  'ios_simulator_screenshot', 'ios_simulator_log_tail', 'ios_ui_smoke_test',
-]);
+/** Canonical typed plugin execution owns its own authorization and dispatch boundary. */
+const SELF_MANAGED_DURABLE_TOOLS = new Set(['plugin_action_execute']);
 
 export function isSelfManagedDurableTool(name: string): boolean {
   return SELF_MANAGED_DURABLE_TOOLS.has(name);

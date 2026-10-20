@@ -1229,8 +1229,6 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     ] as const;
     for (const [name, args, expected] of cases) expect(classifyGatewayExecutionPath(name, args).path).toBe(expected);
     expect(classifyGatewayExecutionPath('plugin_action_execute', {}).path).toBe('direct');
-    expect(classifyGatewayExecutionPath('ios_ui_smoke_test', {}).path).toBe('direct');
-    expect(classifyGatewayExecutionPath('ios_xcode_status', {}).path).toBe('direct');
   });
 
   test('registered async command returns one idempotent lightweight handle without durable state', async () => {
