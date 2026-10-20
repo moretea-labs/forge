@@ -6,12 +6,9 @@ import type {
   ProjectListItemProjection,
   ProjectPlanProjection,
   ProjectCheckoutProjection,
-  PlanRevisionProjection,
   ProjectRequirementProjection,
   UserRequestProjection,
   WorkExecutionEvidenceProjection,
-  WorkRevisionProjection,
-  WorkGraphEdgeProjection,
   WorkGraphNodeProjection,
   WorkSemanticState,
 } from './runtime-projection';
@@ -71,7 +68,6 @@ interface RawRequirementDetailResult {
 interface RawPlanDetailResult {
   data?: {
     plan?: RawPlanSummary;
-    revisionHistory?: RawPlanSummary[];
   };
 }
 
@@ -138,19 +134,11 @@ interface RawWorkView {
 interface RawWorkDetailResult {
   data?: {
     work?: RawWorkView;
-    revisionHistory?: RawWorkView[];
     executionEvidence?: WorkExecutionEvidenceProjection;
     continuation?: {
       continuationPrompt?: string;
       nextSafeAction?: string;
       reconciliationRequired?: boolean;
-    };
-    objectiveGraph?: {
-      current?: {
-        nodes?: RawWorkView[];
-        edges?: WorkGraphEdgeProjection[];
-        truncated?: boolean;
-      };
     };
   };
 }
@@ -352,10 +340,8 @@ export async function readProjectWorkspace(
     }
 
     const selectedWork = detail?.data?.work;
-    const graph = detail?.data?.objectiveGraph?.current;
     const nodes = new Map<string, WorkGraphNodeProjection>();
     for (const work of activeWork) nodes.set(work.workId, graphNode(work));
-    for (const work of graph?.nodes ?? []) nodes.set(work.workId, graphNode(work));
     if (selectedWork) nodes.set(selectedWork.workId, graphNode(selectedWork));
     const recentWorkHistory = (workList.data?.recentHistory ?? [])
       .filter((work) => !nodes.has(work.workId))
@@ -392,23 +378,7 @@ export async function readProjectWorkspace(
           ...(item.updatedAt ? { updatedAt: item.updatedAt } : {}),
         }))
       : [];
-    const workRevisionHistory: WorkRevisionProjection[] = (detail?.data?.revisionHistory ?? []).map((revision) => ({
-      revision: revision.revision ?? 1,
-      objective: revision.objective,
-      state: revision.state,
-      resultRefs: revision.resultRefs ?? [],
-      ...(revision.updatedAt ? { updatedAt: revision.updatedAt } : {}),
-      ...(revision.recordedAt ? { recordedAt: revision.recordedAt } : {}),
-    }));
     const selectedPlan = planDetail?.data?.plan;
-    const planRevisionHistory: PlanRevisionProjection[] = (planDetail?.data?.revisionHistory ?? []).map((revision) => ({
-      revision: revision.revision,
-      goal: revision.goal,
-      status: revision.status,
-      ...(revision.updatedAt ? { updatedAt: revision.updatedAt } : {}),
-      ...(revision.recordedAt ? { recordedAt: revision.recordedAt } : {}),
-      items: revision.items ?? [],
-    }));
     const plan: ProjectPlanProjection | null = selectedPlan ? {
       planId: selectedPlan.planId,
       revision: selectedPlan.revision,
@@ -417,7 +387,6 @@ export async function readProjectWorkspace(
       ...(selectedPlan.requirementId ? { requirementId: selectedPlan.requirementId } : {}),
       ...(selectedPlan.updatedAt ? { updatedAt: selectedPlan.updatedAt } : {}),
       items: selectedPlan.items ?? [],
-      revisionHistory: planRevisionHistory,
     } : null;
 
     return {
@@ -436,11 +405,7 @@ export async function readProjectWorkspace(
         sourceRevision: repositoryState?.head ?? '未知版本',
         dirty: Boolean(repositoryState?.dirty),
       },
-      workGraph: {
-        nodes: [...nodes.values()],
-        edges: graph?.edges ?? [],
-        truncated: graph?.truncated ?? false,
-      },
+      workGraph: { nodes: [...nodes.values()] },
       recentWorkHistory,
       work: selectedWork ? {
         workId: selectedWork.workId,
@@ -457,7 +422,6 @@ export async function readProjectWorkspace(
         ...(selectedWork.planId ? { planId: selectedWork.planId } : {}),
         ...(selectedWork.updatedAt ? { updatedAt: selectedWork.updatedAt } : {}),
         resultRefs: selectedWork.resultRefs ?? [],
-        revisionHistory: workRevisionHistory,
         ...(detail?.data?.executionEvidence ? { executionEvidence: detail.data.executionEvidence } : {}),
       } : null,
       requirement,
