@@ -37,9 +37,10 @@ const EXPECTED_PREFERRED_TOOL_NAME_FINGERPRINT = 'f22e635a213b45fa';
 // the final tools/list materialization path. Tool schema revisions
 // intentionally invalidate stale Connector schema snapshots.
 // 2026-10-15: rh_context gained model-authored search_terms in 5a0f8d839.
-// Removing only that property from the current frozen surface reproduces the
-// preceding 9bd588d157f66fdf fingerprint; the new surface is intentional.
-const EXPECTED_PREFERRED_TOOL_SCHEMA_FINGERPRINT = '793a6c1d07070dc2';
+// 2026-10-20: rh_context now accepts explicit model-authored equivalent recall
+// queries; this intentional input-schema revision invalidates stale Connector
+// tool snapshots without adding an internal semantic model or provider.
+const EXPECTED_PREFERRED_TOOL_SCHEMA_FINGERPRINT = 'eb39f3d203cda029';
 
 const policy = runtimePolicy(process.cwd(), {
   profile: 'controller',

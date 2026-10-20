@@ -184,6 +184,7 @@ function rhContextLearningRecall(
   ctx: MultiRepositoryMcpToolContext,
   repository: ReturnType<typeof selected>,
   query: string,
+  queryVariants: readonly string[] = [],
   workId?: string,
   limit = RH_CONTEXT_AUTOMATIC_RECALL_LIMIT,
 ): Record<string, unknown> {
@@ -201,6 +202,7 @@ function rhContextLearningRecall(
     controllerHome: ctx.controllerHome,
     scopes: resolved.scopes,
     query: query.slice(0, 4_000),
+    queryVariants,
     now: new Date().toISOString(),
     maxItems: Math.min(8, Math.max(1, limit)),
     maxBytes: 12 * 1024,
@@ -548,8 +550,12 @@ export async function callContextAdapter(ctx: MultiRepositoryMcpToolContext, nam
       }
       const cognitionAudit = knowledgeAuditRequested ? rhContextKnowledgeAudit(ctx, repository, args) : undefined;
       const includeLearningRecall = args.include_learning_recall !== false;
+      const queryVariants = Array.isArray(args.recall_query_variants)
+        ? args.recall_query_variants.filter((value): value is string => typeof value === 'string' && Boolean(value.trim()))
+          .slice(0, 3).map(value => value.trim().slice(0, 256))
+        : [];
       const learningRecall = query && !knowledgeAuditRequested && includeLearningRecall
-        ? rhContextLearningRecall(ctx, repository, query, typeof args.work_id === 'string' ? args.work_id.trim() || undefined : undefined)
+        ? rhContextLearningRecall(ctx, repository, query, queryVariants, typeof args.work_id === 'string' ? args.work_id.trim() || undefined : undefined)
         : undefined;
       if (!query && cognitionAudit) {
         const items = Array.isArray(cognitionAudit.items) ? cognitionAudit.items : [];

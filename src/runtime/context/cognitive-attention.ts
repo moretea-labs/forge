@@ -87,6 +87,7 @@ export function resolveCognitiveAttention(input: {
   scopes: readonly ScopeRef[];
   query: string;
   now: string;
+  queryVariants?: readonly string[];
   transientMemories?: readonly MemoryUnit[];
   usageFeedback?: readonly CognitiveUsageFeedback[];
   maxItems?: number;
@@ -99,6 +100,7 @@ export function resolveCognitiveAttention(input: {
     maxGraphDepth: 1,
     maxBytes: input.maxBytes ?? 12 * 1024,
     minCueScore: 0.12,
+    queryVariants: input.queryVariants,
     transientMemories: input.transientMemories ?? [],
     usageFeedback: input.usageFeedback ?? [],
     // Scope is a relevance prior only. Every reachable scope contributes candidates.
