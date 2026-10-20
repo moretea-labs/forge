@@ -26,7 +26,7 @@ import {
   type RuntimeOperationalView,
   type GradedObservation,
 } from '../../../src/runtime/health';
-import { ensureRepositoryRuntimeStorage } from '../../../src/cli/repositories/runtime-storage';
+import { ensureRepositoryRuntimeStorage, inspectRepositoryRuntimeStorage } from '../../../src/cli/repositories/runtime-storage';
 import { projectBoard } from '../../../src/cli/controller/issue-store';
 import { buildControllerTaskLedgerProjection } from '../../../src/cli/controller/task-ledger';
 import { CONTROLLER_CONTEXT_IMPACT_DOMAINS, type ControllerContextImpactDomain } from '../../../src/cli/controller/context/types';
@@ -495,7 +495,7 @@ export async function callRuntimeObservationAdapter(ctx: MultiRepositoryMcpToolC
               const scheduler = readSchedulerHealthSnapshot(ctx.controllerHome);
               const schedulerHeartbeatAgeMs = ageMs(scheduler.lastTickAt);
               const schedulerDispatchHeartbeatAgeMs = ageMs(scheduler.lastDispatchAt);
-              const runtimeStorage = ensureRepositoryRuntimeStorage(repository, ctx.controllerHome);
+              const runtimeStorage = inspectRepositoryRuntimeStorage(repository, ctx.controllerHome);
               const health = evaluateRuntimeHealth({
                 daemon: {
                   status: daemon.status,
@@ -671,12 +671,15 @@ export async function callRuntimeObservationAdapter(ctx: MultiRepositoryMcpToolC
               const repository = selected(ctx, args);
               markPhase('repositoryRouting', repositoryStartedAt);
               const variant = args.detail_level === 'detail' ? 'detail' as const : 'summary' as const;
-              const runtimeRoot = repositoryControllerRoot(ctx.controllerHome, repository.repoId);
+              // One read-only storage observation shared with readiness/status;
+              // a context read never creates or migrates storage.
+              const storageInspection = inspectRepositoryRuntimeStorage(repository, ctx.controllerHome);
               const runtimeStorage = {
-                repoId: repository.repoId,
-                controllerRoot: runtimeRoot,
-                readyForExecution: existsSync(runtimeRoot),
+                repoId: storageInspection.repoId,
+                controllerRoot: storageInspection.controllerRoot,
+                readyForExecution: storageInspection.readyForExecution,
                 readOnly: true,
+                warnings: storageInspection.warnings,
               };
               const runtimeSnapshot = readRepositoryProjectionSnapshot(ctx.controllerHome, repository.repoId);
               const runtimeProjection = runtimeSnapshot.projection;

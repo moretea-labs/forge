@@ -9,6 +9,7 @@ import { buildRuntimeOperationalView, classifyRuntimeReadinessSemantics, evaluat
 import { buildControllerTaskLedgerProjection } from "../../../src/cli/controller/task-ledger";
 import { legacyIssueAuthorityRetired } from "../../../src/cli/controller/legacy-issue-cutover";
 import { FORGE_MCP_SCHEMA_VERSION, FORGE_TOOL_SURFACE, FORGE_VERSION } from "../../../src/cli/controller/runtime-config";
+import { inspectRepositoryRuntimeStorage } from "../../../src/cli/repositories/runtime-storage";
 import { resolveLocalBridgeSurface } from "../../../src/runtime/shared/local-bridge-surface";
 import { listHandoffItems } from "../../../src/runtime/control-plane/facade";
 
@@ -130,7 +131,15 @@ export async function controllerReadinessEvidence(
       persisted: true,
     },
     localBridge: localBridgeObservation,
-    runtimeStorage: { readable: true, ready: true },
+    runtimeStorage: repository
+      ? (() => {
+        // Read-only counterpart of the status path: never creates or migrates
+        // storage during a readiness probe. Legitimately lazy binding stays
+        // benign; real legacy blockers and unusable paths stop readiness.
+        const inspection = inspectRepositoryRuntimeStorage(repository, ctx.controllerHome);
+        return { readable: true, ready: inspection.readyForExecution, warnings: inspection.warnings };
+      })()
+      : { readable: true, ready: true },
     ...signals,
   });
   const operationalView: RuntimeOperationalView = buildRuntimeOperationalView({

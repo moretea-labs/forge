@@ -13,7 +13,7 @@ import {
   writeFileSync,
 } from 'fs';
 import { dirname, join, resolve, sep } from 'path';
-import { ensureRepositoryControllerLayout, resolveControllerHome } from './controller-home';
+import { ensureRepositoryControllerLayout, repositoryControllerRoot, resolveControllerHome } from './controller-home';
 import type { RepositoryRecord } from './types';
 
 export type RuntimeStorageBindingStatus =
@@ -428,6 +428,112 @@ export function ensureRepositoryRuntimeStorage(
     usesStableRoot,
     stableControllerHome: stableHome,
     readyForExecution: warnings.length === 0 && usesStableRoot,
+    bindings,
+    warnings: usesStableRoot
+      ? warnings
+      : [...warnings, `RUNTIME_STORAGE_NOT_STABLE: ${controllerRoot}`],
+  };
+}
+
+export type RuntimeStorageObservedState =
+  | 'linked'
+  | 'binding_required'
+  | 'migration_required'
+  | 'legacy-active'
+  | 'conflict';
+
+export interface RuntimeStorageInspectionBinding {
+  name: string;
+  repositoryPath: string;
+  controllerPath: string;
+  observed: RuntimeStorageObservedState;
+  message?: string;
+}
+
+export interface RepositoryRuntimeStorageInspection {
+  repoId: string;
+  controllerRoot: string;
+  usesStableRoot: boolean;
+  stableControllerHome: string;
+  readyForExecution: boolean;
+  bindings: RuntimeStorageInspectionBinding[];
+  warnings: string[];
+}
+
+/**
+ * Read-only counterpart of `ensureRepositoryRuntimeStorage`. It never creates,
+ * migrates, merges or unlinks anything, so a read/status probe cannot mutate
+ * storage as a side effect. A missing or empty repository binding is benign:
+ * the Runtime materializes it idempotently before execution. A real legacy
+ * blocker or an unusable path is reported instead of being asserted ready.
+ */
+export function inspectRepositoryRuntimeStorage(
+  repository: RepositoryRecord,
+  controllerHome?: string,
+): RepositoryRuntimeStorageInspection {
+  const controllerRoot = repositoryControllerRoot(controllerHome ?? '', repository.repoId);
+  const harnessRoot = join(repository.canonicalRoot, '.ai', 'harness');
+  const stableHome = resolveControllerHome(controllerHome ?? '');
+  const stableRepositoriesRoot = join(stableHome, 'repositories');
+  const normalizedRoot = resolve(controllerRoot);
+  const usesStableRoot = normalizedRoot === stableRepositoriesRoot
+    || normalizedRoot.startsWith(`${stableRepositoriesRoot}${sep}`);
+
+  const bindings: RuntimeStorageInspectionBinding[] = RUNTIME_STORAGE_SPECS.map((spec) => {
+    const sourceRoot = spec.sourceRoot === 'forge' ? join(repository.canonicalRoot, '.forge') : harnessRoot;
+    const repositoryPath = join(sourceRoot, spec.sourceName);
+    const controllerPath = join(controllerRoot, spec.controllerName);
+    const base = { name: spec.name, repositoryPath, controllerPath };
+    if (!existsSync(repositoryPath)) {
+      return isBrokenDirectoryLink(repositoryPath)
+        ? { ...base, observed: 'conflict' as const, message: 'repository runtime symlink target is missing' }
+        : { ...base, observed: 'binding_required' as const };
+    }
+    const stat = lstatSync(repositoryPath);
+    if (stat.isSymbolicLink()) {
+      if (sameCanonicalPath(repositoryPath, controllerPath)) {
+        return { ...base, observed: 'linked' as const };
+      }
+      let legacyTarget: string;
+      try {
+        legacyTarget = realpathSync(repositoryPath);
+      } catch {
+        return { ...base, observed: 'conflict' as const, message: 'repository runtime symlink target is missing' };
+      }
+      const blocker = preservedWorktreeStorageBlocker(legacyTarget, controllerPath, spec)
+        ?? legacyRuntimeBlocker(repositoryPath, spec);
+      return blocker
+        ? { ...base, observed: 'legacy-active' as const, message: blocker }
+        : { ...base, observed: 'migration_required' as const };
+    }
+    if (!stat.isDirectory()) {
+      return { ...base, observed: 'conflict' as const, message: 'repository runtime path exists but is not a directory' };
+    }
+    if (directoryEntries(repositoryPath).length === 0) {
+      return { ...base, observed: 'binding_required' as const };
+    }
+    const blocker = legacyRuntimeBlocker(repositoryPath, spec);
+    return blocker
+      ? { ...base, observed: 'legacy-active' as const, message: blocker }
+      : { ...base, observed: 'migration_required' as const };
+  });
+
+  const blocked = bindings.some((binding) => binding.observed === 'legacy-active' || binding.observed === 'conflict');
+  const warnings = bindings
+    .filter((binding) => binding.observed === 'legacy-active'
+      || binding.observed === 'conflict'
+      || binding.observed === 'migration_required')
+    .map((binding) => `${binding.name}: ${binding.message
+      ?? (binding.observed === 'migration_required'
+        ? 'legacy runtime storage has not been migrated to Controller Home'
+        : binding.observed)}`);
+
+  return {
+    repoId: repository.repoId,
+    controllerRoot,
+    usesStableRoot,
+    stableControllerHome: stableHome,
+    readyForExecution: !blocked && usesStableRoot,
     bindings,
     warnings: usesStableRoot
       ? warnings
