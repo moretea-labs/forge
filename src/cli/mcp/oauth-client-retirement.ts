@@ -1,5 +1,4 @@
 import {
-  mcpServiceOAuthTokenStoreFallbackPaths,
   mcpServiceOAuthTokenStorePath,
 } from '../../../adapters/mcp/auth';
 import {
@@ -51,10 +50,7 @@ export function retireMcpOAuthClient(
   options: RetireMcpOAuthClientOptions = {},
 ): RetireMcpOAuthClientResult {
   const normalizedClientId = requiredClientId(clientId);
-  const store = new McpOAuthTokenStore(
-    mcpServiceOAuthTokenStorePath(controllerHome),
-    mcpServiceOAuthTokenStoreFallbackPaths(controllerHome),
-  );
+  const store = new McpOAuthTokenStore(mcpServiceOAuthTokenStorePath(controllerHome));
   store.load();
 
   const oauth = store.retireClient(normalizedClientId);

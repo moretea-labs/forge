@@ -136,10 +136,10 @@ describe('runtime command surface', () => {
     expect(existsSync(join(ROOT, 'src/cli/controller/lifecycle.ts'))).toBe(false);
     expect(existsSync(join(ROOT, 'src/cli/commands/supervisor.ts'))).toBe(false);
     expect(existsSync(join(ROOT, 'src/cli/controller/stable-state/runtime-writer-context.ts'))).toBe(false);
-    const oauthFallbackStart = mcpAuth.indexOf('export function mcpServiceOAuthTokenStoreFallbackPaths');
-    const oauthFallbackEnd = mcpAuth.indexOf('export function mcpControllerHomeRuntimeStatePath', oauthFallbackStart);
-    const oauthFallbackBlock = mcpAuth.slice(oauthFallbackStart, oauthFallbackEnd);
-    expect(oauthFallbackBlock).not.toContain('runtime-slots');
+    expect(mcpAuth).not.toContain('mcpServiceOAuthTokenStoreFallbackPaths');
+    expect(httpTransport).not.toContain('mcpServiceOAuthTokenStoreFallbackPaths');
+    const oauthStore = readFileSync(join(ROOT, 'adapters/mcp/oauth.ts'), 'utf8');
+    expect(oauthStore).not.toContain('fallbackPaths');
     for (const legacyAuthorityPath of [
       'src/cli/controller/runtime-slots.ts',
       'src/cli/controller/stable-state',

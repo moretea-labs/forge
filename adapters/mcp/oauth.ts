@@ -62,46 +62,32 @@ export class McpOAuthTokenStore implements OAuthRegisteredClientsStore {
   private refreshTokens = new Map<string, string>();
   private clients = new Map<string, OAuthClientInformationFull>();
 
-  constructor(private readonly path: string, private readonly fallbackPaths: string[] = []) {}
+  constructor(private readonly path: string) {}
 
   load(): void {
     this.accessTokens.clear();
     this.refreshTokens.clear();
     this.clients.clear();
-    let loaded = false;
-    let mergedFallback = false;
-    let primaryCorrupt = false;
-    for (const [index, path] of [this.path, ...this.fallbackPaths].entries()) {
-      if (!existsSync(path)) continue;
-      try {
-        const data = JSON.parse(readFileSync(path, 'utf-8')) as TokenData;
-        const refreshTargets = new Set(Object.values(data.refreshTokens ?? {}));
-        for (const [token, info] of Object.entries(data.accessTokens ?? {})) {
-          if (!info.expiresAt || info.expiresAt > nowSeconds() || refreshTargets.has(token)) {
-            if (index > 0 && !this.accessTokens.has(token)) mergedFallback = true;
-            if (index > 0 && this.accessTokens.has(token)) continue;
-            this.accessTokens.set(token, info);
-          }
-        }
-        for (const [token, accessToken] of Object.entries(data.refreshTokens ?? {})) {
-          if (index > 0 && !this.refreshTokens.has(token)) mergedFallback = true;
-          if (index > 0 && this.refreshTokens.has(token)) continue;
-          this.refreshTokens.set(token, accessToken);
-        }
-        for (const [clientId, client] of Object.entries(data.clients ?? {})) {
-          if (index > 0 && !this.clients.has(clientId)) mergedFallback = true;
-          if (index > 0 && this.clients.has(clientId)) continue;
-          this.clients.set(clientId, client);
-        }
-        loaded = true;
-      } catch (_error) {
-        if (index === 0) primaryCorrupt = true;
+    if (!existsSync(this.path)) return;
+
+    let data: TokenData;
+    try {
+      data = JSON.parse(readFileSync(this.path, 'utf-8')) as TokenData;
+    } catch {
+      throw new Error('MCP_OAUTH_STORE_CORRUPT: canonical OAuth state is unreadable');
+    }
+    const refreshTargets = new Set(Object.values(data.refreshTokens ?? {}));
+    for (const [token, info] of Object.entries(data.accessTokens ?? {})) {
+      if (!info.expiresAt || info.expiresAt > nowSeconds() || refreshTargets.has(token)) {
+        this.accessTokens.set(token, info);
       }
     }
-    if (primaryCorrupt && !loaded) {
-      throw new Error('MCP_OAUTH_STORE_CORRUPT: primary OAuth state is unreadable and no valid fallback is available');
+    for (const [token, accessToken] of Object.entries(data.refreshTokens ?? {})) {
+      this.refreshTokens.set(token, accessToken);
     }
-    if (loaded && (mergedFallback || primaryCorrupt)) this.flush();
+    for (const [clientId, client] of Object.entries(data.clients ?? {})) {
+      this.clients.set(clientId, client);
+    }
   }
 
   flush(): void {
