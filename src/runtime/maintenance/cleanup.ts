@@ -4,6 +4,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from 'path';
 import { tmpdir } from 'os';
 import type { CleanupCycleSummary } from '../control-plane/runtime-cleanup';
 import { assertRuntimeMayWrite } from '../root/write-fence';
+import { tempEntryProtectsGitSource } from '../diagnostics/performance';
 
 export interface RuntimeCleanupCandidate {
   kind: 'temp_dir' | 'local_job' | 'legacy_run' | 'attention_marker';
@@ -92,36 +93,6 @@ function isSafeForgeTemp(path: string): boolean {
   try { return allowedParents.has(realpathSync(parent)); } catch { return false; }
 }
 
-// Temp cleanup cannot dispose of a Git worktree just because its directory
-// begins with "forge". Bounded traversal fails closed on nested repositories,
-// symlinks and uninspectable or high-cardinality source.
-function protectsGitSource(root: string): boolean {
-  const pending: Array<{ path: string; depth: number }> = [{ path: root, depth: 0 }];
-  let visited = 0;
-  while (pending.length > 0) {
-    const current = pending.pop()!;
-    if (++visited > 256) return true;
-    try {
-      const stat = lstatSync(current.path);
-      if (stat.isSymbolicLink()) return true;
-      if (!stat.isDirectory()) continue;
-      if (existsSync(join(current.path, '.git'))
-        || (existsSync(join(current.path, 'HEAD')) && existsSync(join(current.path, 'objects')) && existsSync(join(current.path, 'refs')))) return true;
-      const entries = readdirSync(current.path, { withFileTypes: true });
-      if (entries.length + visited > 256) return true;
-      for (const entry of entries) {
-        if (entry.isSymbolicLink()) return true;
-        if (!entry.isDirectory()) continue;
-        if (current.depth >= 5) return true;
-        pending.push({ path: join(current.path, entry.name), depth: current.depth + 1 });
-      }
-    } catch {
-      return true;
-    }
-  }
-  return false;
-}
-
 function scanTempDirs(minAgeMinutes: number, limit: number): RuntimeCleanupCandidate[] {
   const roots = Array.from(new Set([tmpdir(), '/private/tmp', '/tmp'].filter((root) => existsSync(root)).map((root) => realpathSync(root))));
   const processes = processCommands();
@@ -138,7 +109,7 @@ function scanTempDirs(minAgeMinutes: number, limit: number): RuntimeCleanupCandi
         if (!stat.isDirectory()) continue;
         const occupied = processes.find((process) => process.command.includes(path));
         const ageMinutes = Math.max(0, Math.round((at - stat.mtimeMs) / 60_000));
-        const gitSourceProtected = protectsGitSource(path);
+        const gitSourceProtected = tempEntryProtectsGitSource(path);
         const safe = !occupied && ageMinutes >= minAgeMinutes && !gitSourceProtected;
         candidates.push({
           kind: 'temp_dir',
@@ -402,7 +373,7 @@ export function applyRuntimeCleanup(repoRoot: string, options: RuntimeCleanupOpt
     try {
       if (candidate.kind === 'temp_dir' && candidate.path && isSafeForgeTemp(candidate.path)) {
         // A preview is not a mutation lease. Recheck source and liveness.
-        if (protectsGitSource(candidate.path)) throw new Error('RUNTIME_CLEANUP_GIT_SOURCE_PROTECTED');
+        if (tempEntryProtectsGitSource(candidate.path)) throw new Error('RUNTIME_CLEANUP_GIT_SOURCE_PROTECTED');
         if (processCommands().some((process) => process.command.includes(candidate.path!))) throw new Error('RUNTIME_CLEANUP_TEMP_PROCESS_OCCUPIED');
         rmSync(candidate.path, { recursive: true, force: true });
         return { ...candidate, applied: true };

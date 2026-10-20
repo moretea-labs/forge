@@ -281,6 +281,40 @@ export function scanRuntimeTempEntries(
   return { roots, entries: entries.sort((a, b) => b.ageMinutes - a.ageMinutes) };
 }
 
+/**
+ * The one Git-source containment predicate for disposable Runtime temp entries.
+ * A `/tmp/forge*` directory may contain a promoted Git worktree or bare object
+ * store; deleting it because of its name would destroy source. Fail closed on
+ * nested `.git` markers, symlinks, uninspectable or high-cardinality trees.
+ * Preview and apply both consume this predicate so they cannot disagree.
+ */
+export function tempEntryProtectsGitSource(root: string): boolean {
+  const pending: Array<{ path: string; depth: number }> = [{ path: root, depth: 0 }];
+  let visited = 0;
+  while (pending.length > 0) {
+    const current = pending.pop()!;
+    if (++visited > 256) return true;
+    try {
+      const stat = lstatSync(current.path);
+      if (stat.isSymbolicLink()) return true;
+      if (!stat.isDirectory()) continue;
+      if (existsSync(join(current.path, '.git'))
+        || (existsSync(join(current.path, 'HEAD')) && existsSync(join(current.path, 'objects')) && existsSync(join(current.path, 'refs')))) return true;
+      const entries = readdirSync(current.path, { withFileTypes: true });
+      if (entries.length + visited > 256) return true;
+      for (const entry of entries) {
+        if (entry.isSymbolicLink()) return true;
+        if (!entry.isDirectory()) continue;
+        if (current.depth >= 5) return true;
+        pending.push({ path: join(current.path, entry.name), depth: current.depth + 1 });
+      }
+    } catch {
+      return true;
+    }
+  }
+  return false;
+}
+
 export function removeRuntimeTempEntry(
   path: string,
   options: { roots?: string[]; minAgeMinutes?: number; processes?: RuntimeProcessSample[] } = {},
@@ -298,6 +332,11 @@ export function removeRuntimeTempEntry(
   const processes = options.processes ?? collectRuntimeProcesses();
   if (processes.some((process) => process.command.includes(resolvedPath) || process.command.includes(path))) {
     throw new Error('RUNTIME_TEMP_ENTRY_OCCUPIED');
+  }
+  // Name, age and occupancy are not source-ownership proof. The single mutation
+  // entry applies the same Git containment rule the preview already reports.
+  if (stat.isDirectory() && tempEntryProtectsGitSource(resolvedPath)) {
+    throw new Error('RUNTIME_TEMP_GIT_SOURCE_PROTECTED');
   }
   rmSync(resolvedPath, { recursive: stat.isDirectory(), force: true });
   return resolvedPath;
