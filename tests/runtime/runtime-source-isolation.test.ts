@@ -711,6 +711,17 @@ printf '{"ok":true}\\n'
     }
   });
 
+  test('package release without a Git source commit uses its package revision identity', () => {
+    const releaseRoot = tempRoot('forge-package-release-identity-');
+    mkdirSync(releaseRoot, { recursive: true });
+    const releaseRevision = 'package:1.8.2:abcdef0123456789';
+    writeFileSync(join(releaseRoot, 'manifest.json'), JSON.stringify({ releaseRevision, cleanWorkspace: true }));
+
+    const identity = collectRuntimeSourceIdentity(releaseRoot);
+    expect(identity.releaseRevision).toBe(releaseRevision);
+    expect(identity.commit ?? identity.releaseRevision).toBe(releaseRevision);
+  });
+
   test('malformed immutable release manifest fails closed instead of using ambient Git identity', () => {
     const parent = tempRoot('forge-invalid-release-parent-');
     initGitRepo(parent, 'controller-runtime-fixture');
