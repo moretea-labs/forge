@@ -57,6 +57,96 @@ test('adopts a non-overlapping successor HEAD in the same Work-bound session and
     expect(readFileSync(join(fx.repoRoot, 'source.ts'), 'utf8')).toBe('export const value = 3;\n');
   });
 
+  test('adopts a non-overlapping successor HEAD for an ordinary non-Work Safe Patch session', () => {
+    const fx = fixture();
+    const binding: EditSessionBinding = {
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      principalId: 'principal-runtime-continuity',
+    };
+    const session = beginEditSession(fx.repoRoot, {
+      purpose: 'Ordinary edit successor adoption without Work admission',
+      allowedPaths: ['source.ts'],
+      binding,
+    });
+    applyEditOperations(fx.repoRoot, fx.policy, session.sessionId, [{
+      type: 'replace', path: 'source.ts', expectedSha256: sha256(fx.initial),
+      replacements: [{ oldText: 'value = 1', newText: 'value = 2' }],
+    }], { binding });
+
+    writeFileSync(join(fx.repoRoot, 'unrelated.txt'), 'parallel\n');
+    spawnSync('git', ['add', 'unrelated.txt'], { cwd: fx.repoRoot });
+    spawnSync('git', ['commit', '-qm', 'parallel unrelated change'], { cwd: fx.repoRoot });
+    const successor = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).stdout.trim();
+
+    const adopted = adoptEditSessionSuccessorHead(fx.repoRoot, session.sessionId, { binding });
+    expect(adopted.baseRevision).toBe(successor);
+    expect(adopted.currentRevision).toBe(2);
+    expect(adopted.workId).toBeUndefined();
+    expect(adopted.repoId).toBe(fx.repository.repoId);
+    expect(adopted.checkoutId).toBe(fx.repository.activeCheckoutId);
+    expect(adopted.controllerInstanceId).toBeUndefined();
+    expect(readFileSync(join(fx.repoRoot, 'source.ts'), 'utf8')).toBe('export const value = 2;\n');
+  });
+
+  test('safe patch transparently recovers an ordinary non-Work session after a non-overlapping HEAD advance', () => {
+    const fx = fixture();
+    const binding: EditSessionBinding = {
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      principalId: 'principal-runtime-continuity',
+    };
+    const session = beginEditSession(fx.repoRoot, { purpose: 'Ordinary safe patch successor recovery', allowedPaths: ['source.ts'], binding });
+    const first = applySafePatch(fx.repository, {
+      sessionId: session.sessionId,
+      operations: [{ type: 'replace', path: 'source.ts', old_text: 'value = 1', new_text: 'value = 2' }],
+      binding,
+    });
+    expect(first.status).toBe('applied');
+
+    writeFileSync(join(fx.repoRoot, 'unrelated.txt'), 'parallel\n');
+    spawnSync('git', ['add', 'unrelated.txt'], { cwd: fx.repoRoot });
+    spawnSync('git', ['commit', '-qm', 'parallel unrelated change'], { cwd: fx.repoRoot });
+    const successor = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).stdout.trim();
+
+    const second = applySafePatch(fx.repository, {
+      sessionId: session.sessionId,
+      expectedRevision: first.session.currentRevision,
+      operations: [{ type: 'replace', path: 'source.ts', old_text: 'value = 2', new_text: 'value = 3' }],
+      binding,
+    });
+    expect(second.status).toBe('applied');
+    expect(second.recoveredSession).toMatchObject({ previousSessionId: session.sessionId, newSessionId: session.sessionId });
+    expect(second.session.workId).toBeUndefined();
+    expect(second.session.baseRevision).toBe(successor);
+    expect(second.session.currentRevision).toBe(3);
+    expect(readFileSync(join(fx.repoRoot, 'source.ts'), 'utf8')).toBe('export const value = 3;\n');
+  });
+
+  test('ordinary successor adoption still rejects a foreign durable identity', () => {
+    const fx = fixture();
+    const binding: EditSessionBinding = {
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      principalId: 'principal-runtime-continuity',
+    };
+    const session = beginEditSession(fx.repoRoot, { purpose: 'Ordinary identity fence', allowedPaths: ['source.ts'], binding });
+    applyEditOperations(fx.repoRoot, fx.policy, session.sessionId, [{
+      type: 'replace', path: 'source.ts', expectedSha256: sha256(fx.initial),
+      replacements: [{ oldText: 'value = 1', newText: 'value = 2' }],
+    }], { binding });
+
+    writeFileSync(join(fx.repoRoot, 'unrelated.txt'), 'parallel\n');
+    spawnSync('git', ['add', 'unrelated.txt'], { cwd: fx.repoRoot });
+    spawnSync('git', ['commit', '-qm', 'parallel unrelated change'], { cwd: fx.repoRoot });
+    const baseBefore = getEditSession(fx.repoRoot, session.sessionId).baseRevision;
+
+    expect(() => adoptEditSessionSuccessorHead(fx.repoRoot, session.sessionId, {
+      binding: { ...binding, principalId: 'foreign-principal' },
+    })).toThrow('EDIT_SESSION_IDENTITY_MISMATCH: principalId');
+    expect(getEditSession(fx.repoRoot, session.sessionId).baseRevision).toBe(baseBefore);
+  });
+
   test('finalizes an integrated edit session after its tracked paths are committed', () => {
     const fx = fixture();
     const binding = durableBinding('runtime-a');
@@ -168,6 +258,10 @@ function fixture() {
   const repoRoot = mkdtempSync(join(tmpdir(), 'forge-edit-session-continuity-'));
   const controllerHome = mkdtempSync(join(tmpdir(), 'forge-edit-session-controller-'));
   roots.push(repoRoot, controllerHome);
+  // Safe Patch re-resolves runtime storage from the controller environment;
+  // bind each fixture's isolated Controller Home so tests cannot write the
+  // developer's real Controller Home.
+  process.env.FORGE_CONTROLLER_HOME = controllerHome;
   spawnSync('git', ['init', '-q', '-b', 'main'], { cwd: repoRoot });
   spawnSync('git', ['config', 'user.name', 'Forge Test'], { cwd: repoRoot });
   spawnSync('git', ['config', 'user.email', 'forge-test@example.com'], { cwd: repoRoot });
