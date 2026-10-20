@@ -521,10 +521,18 @@ export class CanonicalForgeRuntime {
       const standaloneReleaseRoot = this.release.executionMode === 'standalone-binary'
         ? dirname(this.config.releaseManifestPath)
         : undefined;
+      // A package release keeps its executable source snapshot under
+      // `<release>/package`. Scheduler workers, periodic cleanup, and the
+      // gateway tool context must resolve there, not at the release wrapper.
+      const executionSourceRoot = materializedRelease
+        && this.release.executionMode !== 'standalone-binary'
+        && this.release.packageRoot
+        ? join(dirname(this.config.releaseManifestPath), this.release.packageRoot)
+        : runtimeSourceRoot;
       this.scheduler = this.dependencies.startScheduler({
         controllerHome: this.config.controllerHome,
         readyTimeoutMs: this.config.schedulerReadyTimeoutMs,
-        runtimeSourceRoot: standaloneReleaseRoot ? undefined : runtimeSourceRoot,
+        runtimeSourceRoot: standaloneReleaseRoot ? undefined : executionSourceRoot,
         workerExecutable: standaloneReleaseRoot && this.release.schedulerWorkerEntrypoint
           ? join(standaloneReleaseRoot, this.release.schedulerWorkerEntrypoint)
           : undefined,
@@ -551,7 +559,7 @@ export class CanonicalForgeRuntime {
       });
 
       stage = 'transport';
-      this.refreshToolSurfaceFingerprint(runtimeSourceRoot);
+      this.refreshToolSurfaceFingerprint(executionSourceRoot);
       this.transport = await this.dependencies.startTransport({
         host: this.config.host,
         port: this.config.port,
@@ -560,11 +568,11 @@ export class CanonicalForgeRuntime {
         createServer: (principalId, sessionId, controllerType) => createRuntimeGatewayServer(this.controller!, principalId, {
           controllerHome: this.config.controllerHome,
           runtimeInstanceId: this.runtimeInstanceId,
-          runtimeSourceRoot,
+          runtimeSourceRoot: executionSourceRoot,
           sessionId,
           controllerType,
         }),
-        onToolSurfaceObservation: () => this.refreshToolSurfaceFingerprint(runtimeSourceRoot),
+        onToolSurfaceObservation: () => this.refreshToolSurfaceFingerprint(executionSourceRoot),
         onFatal: (error) => this.failCore('MCP_TRANSPORT_FAILED', error.message),
       });
       this.publishStatus();
