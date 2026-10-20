@@ -343,7 +343,7 @@ describe('final SQLite control-plane cutover', () => {
     const issueStore = readFileSync(join(process.cwd(), 'src/cli/controller/issue-store.ts'), 'utf8');
     for (const name of [
       'planIssue', 'appendTask', 'splitTask', 'supersedeTask', 'setTaskDependencies', 'updateIssue', 'updateTask',
-      'archiveIssue', 'restoreIssue', 'acceptVerifiedTask', 'recordTaskVerification', 'bindTaskToWork', 'projectTaskFromWork',
+      'archiveIssue', 'restoreIssue', 'acceptVerifiedTask', 'recordTaskVerification', 'bindTaskToWork',
     ]) {
       const start = issueStore.indexOf(`export function ${name}`);
       expect(start).toBeGreaterThanOrEqual(0);
@@ -351,6 +351,8 @@ describe('final SQLite control-plane cutover', () => {
       expect(body.indexOf('assertLegacyIssueWritesAllowed')).toBeGreaterThanOrEqual(0);
       expect(body.indexOf('assertLegacyIssueWritesAllowed')).toBeLessThan(body.indexOf('getIssue('));
     }
+    // Retired projection writers must not be restored merely to satisfy a gate.
+    expect(issueStore).not.toContain('export function projectTaskFromWork');
     const createStart = issueStore.indexOf('export function createIssue');
     expect(issueStore.slice(createStart, createStart + 900)).toContain('if (!input.ephemeral) assertLegacyIssueWritesAllowed(repoRoot)');
 

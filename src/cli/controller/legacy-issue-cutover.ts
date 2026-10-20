@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { resolveRepoPreferredControllerHome } from '../repositories/controller-home';
+import { findRegisteredRepositoryByCheckoutRoot } from '../repositories/registry';
 import {
   readControlPlaneRecord,
   readControlPlaneRecordWithinTransaction,
@@ -41,7 +42,11 @@ function repositoryIdentity(repoRoot: string): { repoId?: string } {
 
 export function legacyIssueCutoverState(repoRoot: string): LegacyIssueCutoverState {
   const controllerHome = resolveRepoPreferredControllerHome(repoRoot);
-  const { repoId } = repositoryIdentity(repoRoot);
+  // Repository Registry owns identity for registered checkout roots. A missing,
+  // corrupt or forged local projection must never reactivate a migrated writer.
+  // Legacy unregistered repositories retain their historical projection lookup.
+  const registered = findRegisteredRepositoryByCheckoutRoot(repoRoot, controllerHome);
+  const repoId = registered?.repoId ?? repositoryIdentity(repoRoot).repoId;
   if (!repoId) return { retired: false, controllerHome };
   const record = readControlPlaneRecord<RequirementPortfolioMigrationRecord>(
     controllerHome,
@@ -53,8 +58,8 @@ export function legacyIssueCutoverState(repoRoot: string): LegacyIssueCutoverSta
 }
 
 export function legacyIssueAuthorityRetired(repoRoot: string): boolean {
-  // Only the immutable SQLite migration marker can retire or retain legacy writers;
-  // repository projection files never reactivate themselves after cutover.
+  // The canonical Repository Registry resolves installed identity; only its
+  // SQLite migration marker controls cutover. Repo-local files are not writers.
   return legacyIssueCutoverState(repoRoot).retired;
 }
 

@@ -1745,6 +1745,7 @@ requireText(
   'src/runtime/execution/workers/executor.ts',
   'dispatchLocalBridgeJob(repoRoot, jobId)',
 );
+requireText('src/cli/controller/legacy-issue-cutover.ts', 'findRegisteredRepositoryByCheckoutRoot(repoRoot, controllerHome)');
 // Retired Agent Run creation/retry/dispatch API declarations must never return.
 forbid(
   'src/cli/agent-jobs/job-manager.ts',

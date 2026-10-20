@@ -1,8 +1,10 @@
 import { describe, expect, test } from 'bun:test';
+import { spawnSync } from 'child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { writeControlPlaneRecord } from '../../src/runtime/control-plane/persistence/sqlite-store';
+import { registerRepository } from '../../src/cli/repositories/registry';
 import { getIssueReadView, createIssue, updateTask } from '../../src/cli/controller/issue-store';
 import { buildControllerTaskLedgerProjection, writeControllerTaskLedgerArtifacts } from '../../src/cli/controller/task-ledger';
 import { inspectProjectGovernance, reconcileProjectGovernance } from '../../src/cli/controller/governance';
@@ -176,6 +178,21 @@ describe('legacy control-plane cutover', () => {
         continued: false,
         reason: expect.stringContaining('retired after SQLite cutover'),
       });
+      expect(readFileSync(issuePath, 'utf8')).toBe(before);
+
+      // Once the repo is registered, the repo-local projection is not authority:
+      // deleting, corrupting or spoofing it must not reopen the old writer.
+      expect(spawnSync('git', ['init', '-b', 'main'], { cwd: repoRoot }).status).toBe(0);
+      const registered = registerRepository({ path: repoRoot, controllerHome: _controllerHome, repoIdOverride: REPO_ID });
+      expect(registered.repoId).toBe(REPO_ID);
+      const projectionPath = join(repoRoot, '.ai', 'harness', 'repository.json');
+      for (const contents of [null, '{invalid-json', JSON.stringify({ repoId: 'repo_spoofed' })]) {
+        if (contents === null) rmSync(projectionPath);
+        else writeFileSync(projectionPath, contents);
+        expect(() => createIssue(repoRoot, { title: 'Must stay retired' })).toThrow('LEGACY_ISSUE_WRITES_RETIRED');
+        expect(() => updateTask(repoRoot, ISSUE_ID, 'T6', { status: 'cancelled' })).toThrow('LEGACY_ISSUE_WRITES_RETIRED');
+        expect(getIssueReadView(repoRoot, ISSUE_ID)).toMatchObject({ authority: 'controller-home-sqlite', frozen: true });
+      }
       expect(readFileSync(issuePath, 'utf8')).toBe(before);
     });
   });
