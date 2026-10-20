@@ -342,8 +342,8 @@ describe('final SQLite control-plane cutover', () => {
   test('all durable legacy writers fail at the cutover guard and no reverse export importer exists', () => {
     const issueStore = readFileSync(join(process.cwd(), 'src/cli/controller/issue-store.ts'), 'utf8');
     for (const name of [
-      'planIssue', 'appendTask', 'splitTask', 'supersedeTask', 'setTaskDependencies', 'updateIssue', 'updateTask',
-      'archiveIssue', 'restoreIssue', 'acceptVerifiedTask', 'recordTaskVerification', 'bindTaskToWork',
+      'setTaskDependencies', 'updateIssue', 'updateTask',
+      'archiveIssue', 'restoreIssue', 'acceptVerifiedTask', 'recordTaskVerification',
     ]) {
       const start = issueStore.indexOf(`export function ${name}`);
       expect(start).toBeGreaterThanOrEqual(0);
@@ -351,8 +351,11 @@ describe('final SQLite control-plane cutover', () => {
       expect(body.indexOf('assertLegacyIssueWritesAllowed')).toBeGreaterThanOrEqual(0);
       expect(body.indexOf('assertLegacyIssueWritesAllowed')).toBeLessThan(body.indexOf('getIssue('));
     }
-    // Retired projection writers must not be restored merely to satisfy a gate.
-    expect(issueStore).not.toContain('export function projectTaskFromWork');
+    // No source-consumers or TypeScript reference sites remain for these old mutators.
+    // Retired writer declarations must never be restored just to satisfy a gate.
+    for (const retired of ['planIssue', 'appendTask', 'splitTask', 'supersedeTask', 'bindTaskToWork', 'projectTaskFromWork']) {
+      expect(issueStore).not.toContain(`export function ${retired}`);
+    }
     const createStart = issueStore.indexOf('export function createIssue');
     expect(issueStore.slice(createStart, createStart + 900)).toContain('if (!input.ephemeral) assertLegacyIssueWritesAllowed(repoRoot)');
 

@@ -367,14 +367,6 @@ function effectiveTaskState(repoRoot: string, issue: ControllerIssue, task: Cont
   return resolveEffectiveTaskState({ issue, task, runs: readTaskRunEvidence(repoRoot, task) });
 }
 
-function nextTaskId(tasks: ControllerTask[]): string {
-  const max = tasks.reduce((current, task) => {
-    const match = /^T(\d+)$/.exec(task.id);
-    return match ? Math.max(current, Number(match[1])) : current;
-  }, 0);
-  return `T${max + 1}`;
-}
-
 function taskFromDraft(id: string, draft: TaskDraft, now: string): ControllerTask {
   return {
     id,
@@ -648,115 +640,6 @@ export function createIssue(repoRoot: string, input: {
   return written;
 }
 
-export function planIssue(repoRoot: string, id: string, drafts: TaskDraft[]): ControllerIssue {
-  assertLegacyIssueWritesAllowed(repoRoot, { id });
-  const issue = getIssue(repoRoot, id);
-  assertIssueExecutionActive(issue, 'plan_issue');
-  if (issue.tasks.some((task) => task.workId)) {
-    throw new Error(`TASK_PLAN_WORK_OWNED: ${issue.id} contains Work-backed Tasks; replan through Plan/Work relationships.`);
-  }
-  if (issue.tasks.some((task) => task.runIds.length > 0)) throw new Error('cannot replace task plan after runs have started; append, split, or supersede Tasks instead');
-  const now = new Date().toISOString();
-  issue.tasks = buildTasks(drafts, now);
-  issue.status = issue.tasks.length ? 'planned' : 'analysis';
-  issue.updatedAt = now;
-  refreshReadiness(repoRoot, issue);
-  const written = writeIssue(repoRoot, issue);
-  tryAppendControllerWorklogEvent(repoRoot, { category: 'issue', action: 'issue_planned', summary: `Replaced the Task plan for ${issue.id} with ${issue.tasks.length} Tasks.`, issueId: issue.id, details: { taskIds: issue.tasks.map((task) => task.id) } });
-  return written;
-}
-
-export function appendTask(repoRoot: string, issueIdValue: string, draft: TaskDraft): ControllerIssue {
-  assertLegacyIssueWritesAllowed(repoRoot, { id: issueIdValue });
-  const issue = getIssue(repoRoot, issueIdValue);
-  assertIssueExecutionActive(issue, 'append_task');
-  const now = new Date().toISOString();
-  issue.tasks.push(taskFromDraft(nextTaskId(issue.tasks), draft, now));
-  validateTaskGraph(issue.tasks);
-  issue.updatedAt = now;
-  refreshReadiness(repoRoot, issue);
-  const task = issue.tasks.at(-1)!;
-  const written = writeIssue(repoRoot, issue);
-  tryAppendControllerWorklogEvent(repoRoot, { category: 'task', action: 'task_added', summary: `Added ${task.id}: ${task.title}`, issueId: issue.id, taskId: task.id, statusTo: task.status });
-  return written;
-}
-
-export function splitTask(repoRoot: string, issueIdValue: string, taskId: string, drafts: TaskDraft[]): ControllerIssue {
-  assertLegacyIssueWritesAllowed(repoRoot, { id: issueIdValue });
-  if (drafts.length < 2) throw new Error('split_task requires at least two replacement tasks');
-  const issue = getIssue(repoRoot, issueIdValue);
-  const original = issue.tasks.find((task) => task.id === taskId);
-  const originalStatus = original?.status;
-  if (!original) throw new Error(`task not found: ${issueIdValue}/${taskId}`);
-  if (original.workId) throw new Error(`TASK_PLAN_WORK_OWNED: ${issueIdValue}/${taskId} is bound to Work ${original.workId}`);
-  assertIssueExecutionActive(issue, 'split_task');
-  const originalState = effectiveTaskState(repoRoot, issue, original);
-  if (originalState.terminal || originalState.inactive) throw new Error(`cannot split task from effective status ${originalState.effectiveStatus}`);
-  if (originalState.activeRunIds.length > 0) throw new Error(`cancel active Run(s) ${originalState.activeRunIds.join(', ')} before splitting this Task`);
-  if (['verified'].includes(original.status)) throw new Error(`cannot split task from status ${original.status}`);
-  const now = new Date().toISOString();
-  const replacements: ControllerTask[] = [];
-  for (const draft of drafts) {
-    const replacement = taskFromDraft(nextTaskId([...issue.tasks, ...replacements]), {
-      ...draft,
-      dependsOn: draft.dependsOn ?? original.dependsOn,
-      allowedPaths: draft.allowedPaths ?? original.allowedPaths,
-      forbiddenPaths: draft.forbiddenPaths ?? original.forbiddenPaths,
-      checks: draft.checks ?? original.checks,
-      risk: draft.risk ?? original.risk,
-      recommendedAgent: draft.recommendedAgent ?? original.recommendedAgent,
-    }, now);
-    replacements.push(replacement);
-  }
-  original.status = 'superseded';
-  original.supersededBy = replacements.map((task) => task.id);
-  original.updatedAt = now;
-  for (const task of issue.tasks) {
-    if (!task.dependsOn.includes(original.id)) continue;
-    task.dependsOn = Array.from(new Set(task.dependsOn.flatMap((dependency) => dependency === original.id ? replacements.map((item) => item.id) : [dependency])));
-  }
-  issue.tasks.push(...replacements);
-  validateTaskGraph(issue.tasks);
-  issue.updatedAt = now;
-  refreshReadiness(repoRoot, issue);
-  const written = writeIssue(repoRoot, issue);
-  tryAppendControllerWorklogEvent(repoRoot, { category: 'task', action: 'task_split', summary: `Split ${taskId} into ${replacements.map((task) => task.id).join(', ')}.`, issueId: issue.id, taskId, statusFrom: originalStatus, statusTo: 'superseded', details: { replacements: replacements.map((task) => task.id) } });
-  return written;
-}
-
-export function supersedeTask(repoRoot: string, issueIdValue: string, taskId: string, replacementTaskIds: string[] = []): ControllerIssue {
-  assertLegacyIssueWritesAllowed(repoRoot, { id: issueIdValue });
-  const issue = getIssue(repoRoot, issueIdValue);
-  const task = issue.tasks.find((entry) => entry.id === taskId);
-  if (!task) throw new Error(`task not found: ${issueIdValue}/${taskId}`);
-  if (task.workId) throw new Error(`TASK_STATUS_WORK_OWNED: ${issueIdValue}/${taskId} is bound to Work ${task.workId}`);
-  assertIssueExecutionActive(issue, 'supersede_task');
-  const state = effectiveTaskState(repoRoot, issue, task);
-  if (state.terminal || state.inactive) throw new Error(`cannot supersede Task from effective status ${state.effectiveStatus}`);
-  if (state.activeRunIds.length > 0) throw new Error(`cancel active Run(s) ${state.activeRunIds.join(', ')} before superseding this Task`);
-  for (const replacement of replacementTaskIds) {
-    if (!issue.tasks.some((entry) => entry.id === replacement)) throw new Error(`replacement task not found: ${replacement}`);
-  }
-  const now = new Date().toISOString();
-  task.status = 'superseded';
-  task.supersededBy = normalizeStrings(replacementTaskIds);
-  task.updatedAt = now;
-  if (task.supersededBy.length > 0) {
-    for (const downstream of issue.tasks) {
-      if (!downstream.dependsOn.includes(task.id)) continue;
-      downstream.dependsOn = Array.from(new Set(
-        downstream.dependsOn.flatMap((dependency) => dependency === task.id ? task.supersededBy! : [dependency]),
-      ));
-      downstream.updatedAt = now;
-    }
-  }
-  issue.updatedAt = now;
-  refreshReadiness(repoRoot, issue);
-  const written = writeIssue(repoRoot, issue);
-  tryAppendControllerWorklogEvent(repoRoot, { category: 'task', action: 'task_superseded', summary: `Superseded ${taskId}.`, issueId: issue.id, taskId, statusTo: 'superseded', details: { replacementTaskIds } });
-  return written;
-}
-
 export function setTaskDependencies(repoRoot: string, issueIdValue: string, taskId: string, dependsOn: string[]): ControllerIssue {
   assertLegacyIssueWritesAllowed(repoRoot, { id: issueIdValue });
   const issue = getIssue(repoRoot, issueIdValue);
@@ -864,48 +747,6 @@ export function updateTask(repoRoot: string, issueIdValue: string, taskId: strin
   if (patch.runId?.trim()) tryAppendControllerWorklogEvent(repoRoot, { category: 'run', action: 'run_linked_to_task', summary: `Linked ${patch.runId.trim()} to ${task.id}.`, issueId: issue.id, taskId: task.id, runId: patch.runId.trim() });
   if (patch.github) tryAppendControllerWorklogEvent(repoRoot, { category: 'github', action: 'task_github_linked', summary: `Linked ${task.id} to GitHub.`, issueId: issue.id, taskId: task.id, details: { url: patch.github.url } });
   if (patch.verification) tryAppendControllerWorklogEvent(repoRoot, { category: 'verification', action: task.status === 'verified' ? 'verification_passed' : 'verification_recorded', summary: `${task.id} verification recorded by ${patch.verification.reviewer}.`, issueId: issue.id, taskId: task.id, runId: patch.verification.runId, details: { checks: patch.verification.checkResults, acceptance: patch.verification.acceptanceResults } });
-  return written;
-}
-
-/**
- * Bind a legacy Task to a Work without copying any execution contract fields.
- * Existing fields remain readable for migration, but all new execution writes
- * must go through Work and may only project back with `work_projection`.
- */
-export function bindTaskToWork(
-  repoRoot: string,
-  issueIdValue: string,
-  taskId: string,
-  workId: string,
-  repoId?: string,
-): ControllerIssue {
-  assertLegacyIssueWritesAllowed(repoRoot, { id: issueIdValue });
-  const normalizedWorkId = workId.trim();
-  if (!normalizedWorkId) throw new Error('TASK_WORK_ID_REQUIRED');
-  const normalizedRepoId = repoId?.trim();
-  const issue = getIssue(repoRoot, issueIdValue);
-  const task = issue.tasks.find((entry) => entry.id === taskId);
-  if (!task) throw new Error(`task not found: ${issueIdValue}/${taskId}`);
-  if (task.workId && task.workId !== normalizedWorkId) {
-    throw new Error(`TASK_WORK_REBIND_FORBIDDEN: ${task.workId} -> ${normalizedWorkId}`);
-  }
-  if (normalizedRepoId && task.repoId && task.repoId !== normalizedRepoId) {
-    throw new Error(`TASK_WORK_REPO_REBIND_FORBIDDEN: ${task.repoId} -> ${normalizedRepoId}`);
-  }
-  if (task.workId === normalizedWorkId && (!normalizedRepoId || task.repoId === normalizedRepoId)) return issue;
-  task.workId = normalizedWorkId;
-  if (normalizedRepoId) task.repoId = normalizedRepoId;
-  task.updatedAt = new Date().toISOString();
-  issue.updatedAt = task.updatedAt;
-  const written = writeIssue(repoRoot, issue);
-  tryAppendControllerWorklogEvent(repoRoot, {
-    category: 'task',
-    action: 'task_bound_to_work',
-    summary: `Bound ${task.id} to Work ${normalizedWorkId}; Work owns execution fields.`,
-    issueId: issue.id,
-    taskId: task.id,
-    details: { workId: normalizedWorkId },
-  });
   return written;
 }
 

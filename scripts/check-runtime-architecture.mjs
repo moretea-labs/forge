@@ -1746,6 +1746,11 @@ requireText(
   'dispatchLocalBridgeJob(repoRoot, jobId)',
 );
 requireText('src/cli/controller/legacy-issue-cutover.ts', 'findRegisteredRepositoryByCheckoutRoot(repoRoot, controllerHome)');
+forbid(
+  'src/cli/controller/issue-store.ts',
+  /\b(?:planIssue|appendTask|splitTask|supersedeTask|bindTaskToWork|nextTaskId)\b/,
+  'Unreferenced legacy Issue plan/split/append/supersede and Task-to-Work writers must remain retired',
+);
 // Retired Agent Run creation/retry/dispatch API declarations must never return.
 forbid(
   'src/cli/agent-jobs/job-manager.ts',
