@@ -9,6 +9,19 @@ monitors its exact provider effect, commits the model's structured receipt, and
 reserves the next fixed prompt for CONTINUE. DONE and NEEDS_USER retain their
 configured semantic validators; STOPPED remains explicit operator authority.
 
+A standalone task may name an existing Work solely for semantic completion proof.
+Initial bootstrap must not acquire or replace that Work's provider conversation.
+An explicit same-task conversation migration may carry only an existing Work
+projection of its exact source; unrelated bindings remain under their own authority.
+Work-owned enrollment retains its existing exact-conversation conflict fence.
+
+Transport observation failure is never conversation-migration authority. A missing
+extension receiver or repeated unreadable snapshot leaves the same exact causal
+obligation intact under existing bounded diagnostics/backoff; it cannot prove
+that an applied provider turn is no longer active. Automatic migration requires
+the existing committed continuation boundary or a live terminal capacity banner;
+other conversation changes remain explicit operator decisions.
+
 The Supervisor Effect prompt carries immutable task identity, outcome objective and terminal receipt; it is not a per-turn checklist, execution-time budget, or reason to perform a status probe before work. Ordinary CONTINUE turns should resume substantive work for as long as safe, useful actions remain. A terminal C receipt is a protocol acknowledgment, not evidence of productive progress; observed tool calls and deliverables are separate evidence. JSON metadata and Project instructions do not grant a missing ChatGPT App capability.
 
 The first Work-bound enrollment still requires authenticated launcher admission,
@@ -81,6 +94,14 @@ ChatGPT renders no assistant prose and its last visible message role is user.
 Provider generation and cooldown still delay a new send, and dispatch admission
 still verifies the exact source effect. Browser resources have the disposable
 lifecycle defined below; task/effect history survives resource retirement.
+The consumer passes actual provider generation evidence through unchanged. A last
+visible user role does not establish generation, but an idle user-only snapshot
+also does not prove a missing completed reply or authorize recovery. An invalid
+receipt on an idle completed reply remains missing a valid causal receipt; the
+existing exact applied marker, idle grace and recovery budget govern recovery.
+Parser rejection caches stay ephemeral and keyed by applied source plus response;
+they never accept an invalid challenge, bypass a semantic terminal validator,
+replay an unknown Send, or introduce persistence/schema/release changes.
 A real b388b27c canary exposed
 these consumer gaps after its first persisted CONTINUE, so source gates alone
 did not establish unattended continuation acceptance.

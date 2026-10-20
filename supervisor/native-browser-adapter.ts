@@ -17,7 +17,7 @@ import {
 } from '../adapters/chatgpt/provider-delivery';
 import { parseChatgptConversationIdentity } from './chatgpt-conversation';
 import { WorkflowSupervisorControlPlane } from './control-plane';
-import { hasCommittedSupervisorEnvelope, renderEffectMarker, sha256 } from './protocol';
+import { hasCommittedSupervisorEnvelope, parseSupervisorCompletion, renderEffectMarker, sha256 } from './protocol';
 import type { WorkflowSupervisorEphemeralDiscovery } from './server';
 import type {
   WorkflowSupervisorBrowserCommand,
@@ -334,7 +334,7 @@ function projectMetadataFromConversationUrl(value: string): { projectTitle?: str
 }
 
 export class WorkflowSupervisorNativeBrowserAdapter {
-  private readonly observedAssistant = new Map<string, string>();
+  private readonly observedAssistant = new Map<string, { fingerprint: string; receiptRejected: boolean }>();
   private readonly providerFailureSeen = new Map<string, string>();
   /** A recovery sent while an error surface is still visible must not inherit that stale error as its own failure. */
   private readonly providerFailureAwaitingClear = new Map<string, string>();
@@ -392,49 +392,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     }
   }
 
-  /** Rebuildable de-duplication only; SQLite events and CAS own the decision. */
-  private readonly automaticMigrationAttempted = new Map<string, { key: string; atMs: number }>();
-  /** Read-only provider progress, not another durable effect/Send ledger. */
-  private readonly stalledProviderObservations = new Map<string, { fingerprint: string; changedAtMs: number; failedProbeAtMs: number }>();
-
-  /**
-   * Fail over a proven repeatedly unusable conversation, not a provider-wide
-   * outage or an outcome-unknown Send. The canonical migration transaction
-   * enforces the existing maximum of two unsuccessful conversation moves.
-   */
-  private maybeAutoMigrate(task: WorkflowSupervisorBrowserTask): boolean {
-    if (task.conversationId.startsWith('bootstrap:')
-      || chatgptProviderBackpressureRemainingMs(this.deps.providerScopeKey, this.deps.nowMs()) > 0) return false;
-    const evidence = this.control.store.automaticConversationFailureEvidence(task.taskId);
-    if (evidence.count < 3 || evidence.latestEventId <= 0) return false;
-    const key = `${task.taskId}:${task.conversationId}:${evidence.latestEventId}`;
-    const attempt = this.automaticMigrationAttempted.get(task.taskId);
-    if (attempt?.key === key && this.deps.nowMs() - attempt.atMs < TASK_TARGET_RETRY_MAX_MS) return false;
-    this.automaticMigrationAttempted.set(task.taskId, { key, atMs: this.deps.nowMs() });
-    try {
-      const migrated = this.control.migrateConversation({
-        taskId: task.taskId,
-        expectedConversationId: task.conversationId,
-        fresh: true,
-        requestId: `automatic-delivery-fuse:${task.conversationId}:${evidence.latestEventId}`,
-        reason: `The same Supervisor conversation failed ${evidence.count} task-local delivery/progress attempts without an applied effect or completion. The prior conversation is not reused; the exact effect journal and existing two-migration cap remain authoritative.`,
-        authorizedBy: 'supervisor-automatic-delivery-fuse',
-      });
-      if (migrated.migrated) {
-        this.clearTaskFailure(task.taskId);
-        this.awaitingReceiptObservedAtMs.delete(task.taskId);
-      }
-      return migrated.migrated;
-    } catch (error) {
-      // A pending unknown send, exhausted migration budget, or stale task is a
-      // true safety barrier: do not replay it or bypass the canonical store.
-      const code = consumerFailureCode(error, 'WORKFLOW_SUPERVISOR_AUTOMATIC_MIGRATION_DENIED');
-      this.noteFailure(code, task);
-      return false;
-    }
-  }
-
-  private noteTaskFailure(code: string, task: WorkflowSupervisorBrowserTask, effectId?: string, countTowardFuse = true): void {
+  private noteTaskFailure(code: string, task: WorkflowSupervisorBrowserTask, effectId?: string, recordFailure = true): void {
     const nowMs = this.deps.nowMs();
     const previous = this.taskTransportFailures.get(task.taskId);
     const failure: TaskTransportFailure = {
@@ -457,16 +415,15 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     }
     this.taskTransportFailures.set(task.taskId, failure);
     // Account-wide cooldown is not evidence that this *conversation* failed.
-    if (!countTowardFuse || chatgptProviderBackpressureRemainingMs(this.deps.providerScopeKey, nowMs) > 0) return;
+    if (!recordFailure || chatgptProviderBackpressureRemainingMs(this.deps.providerScopeKey, nowMs) > 0) return;
     // Preflight rejections are already one durable failed attempt in the
-    // Supervisor effect ledger; counting them again would double the fuse.
+    // Supervisor effect ledger; do not duplicate that diagnostic evidence.
     if (code !== SUPERVISOR_PRE_SEND_BLOCKED) {
       this.control.store.recordBrowserDeliveryAttemptFailure({
         taskId: task.taskId, conversationId: task.conversationId, code,
         ...(effectId ? { effectId } : {}),
       });
     }
-    this.maybeAutoMigrate(task);
   }
 
   private clearTaskFailure(taskId: string, effectId?: string): void {
@@ -531,14 +488,6 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       catch (error) { this.deps.onError(error); }
       this.projectedTaskStalls.delete(taskId);
     }
-    this.pruneAutomaticRecoveryProjections(activeTaskIds);
-  }
-
-  private pruneAutomaticRecoveryProjections(activeTaskIds: ReadonlySet<string>): void {
-    for (const id of this.automaticMigrationAttempted.keys())
-      if (!activeTaskIds.has(id)) this.automaticMigrationAttempted.delete(id);
-    for (const id of this.stalledProviderObservations.keys())
-      if (!activeTaskIds.has(id)) this.stalledProviderObservations.delete(id);
   }
 
   private dueCommand(nowMs: number): WorkflowSupervisorConsumerStatus['dueCommand'] {
@@ -607,7 +556,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     this.timer = undefined;
     await this.inflight?.catch(() => undefined);
     await this.deps.targetPort.close().catch(() => undefined);
-    this.observedAssistant.clear(); this.providerFailureSeen.clear(); this.providerFailureAwaitingClear.clear(); this.freshSendCheckedAt.clear(); this.taskTransportFailures.clear(); this.projectedTaskStalls.clear(); this.awaitingReceiptObservedAtMs.clear(); this.idleResourceSinceMs.clear(); this.automaticMigrationAttempted.clear(); this.stalledProviderObservations.clear();
+    this.observedAssistant.clear(); this.providerFailureSeen.clear(); this.providerFailureAwaitingClear.clear(); this.freshSendCheckedAt.clear(); this.taskTransportFailures.clear(); this.projectedTaskStalls.clear(); this.awaitingReceiptObservedAtMs.clear(); this.idleResourceSinceMs.clear();
   }
 
   async runOnce(): Promise<void> {
@@ -620,25 +569,6 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     // consumer was offline cannot keep delivering a stale effect on restart.
     this.control.reconcileTerminalWorkBoundTasks();
     this.syncTaskStallProjections();
-    const previouslyObservedTasks = this.control.browserTasks();
-    // Read-only watchdog for a pre-send blocked task: after each bounded
-    // interval with no applied effect or completion, record a failed progress
-    // check in the same journal. This is not a Send/retry attempt.
-    for (const task of previouslyObservedTasks) {
-      const stall = this.control.taskStall(task.taskId);
-      if (stall.state === 'spaced' && stall.reason === 'pre_send_infrastructure_blocked') {
-        const evidence = this.control.store.automaticConversationFailureEvidence(task.taskId);
-        if (evidence.count > 0 && evidence.count < 3
-          && this.deps.nowMs() - evidence.lastFailureAtMs >= AWAITING_RECEIPT_OBSERVATION_MS
-          && chatgptProviderBackpressureRemainingMs(this.deps.providerScopeKey, this.deps.nowMs()) === 0) {
-          this.control.store.recordBrowserDeliveryAttemptFailure({ taskId: task.taskId,
-            conversationId: task.conversationId, effectId: stall.effectId, code: 'WORKFLOW_SUPERVISOR_NO_SEND_PROGRESS_WATCHDOG' });
-        }
-        this.maybeAutoMigrate(task);
-      }
-    }
-    // The watchdog may have changed the exact Task conversation identity.
-    // Never process a stale pre-migration browser task in this tick.
     const tasks = this.control.browserTasks();
     this.lastRunHadTasks = tasks.length > 0;
     let inventory;
@@ -792,26 +722,6 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     this.conversations.push({ conversation_id: task.conversationId, canonical_url: task.conversationUrl,
       ...(snapshot.title.trim() ? { title: snapshot.title.trim().slice(0, 512) } : {}), ...projectMetadataFromConversationUrl(snapshot.url) });
     const providerBusy = snapshot.isGenerating;
-    // Recovery-exhausted tasks can otherwise remain visibly stalled without a
-    // new exception. Three spaced, unchanged exact-page observations trip the
-    // same durable fuse; changing assistant activity resets this observation.
-    if (!poll.command && this.control.taskStall(task.taskId).state === 'provider_resume_exhausted') {
-      const fingerprint = sha256(JSON.stringify({ text: snapshot.latestAssistantResponse,
-        activity: snapshot.providerActivityText, failure: snapshot.providerFailureText, generating: providerBusy }));
-      const previous = this.stalledProviderObservations.get(task.taskId);
-      if (!previous || previous.fingerprint !== fingerprint) {
-        this.stalledProviderObservations.set(task.taskId, {
-          fingerprint, changedAtMs: this.deps.nowMs(), failedProbeAtMs: this.deps.nowMs(),
-        });
-      } else if (this.deps.nowMs() - previous.changedAtMs >= 2 * AWAITING_RECEIPT_OBSERVATION_MS
-        && this.deps.nowMs() - previous.failedProbeAtMs >= AWAITING_RECEIPT_OBSERVATION_MS
-        && chatgptProviderBackpressureRemainingMs(this.deps.providerScopeKey, this.deps.nowMs()) === 0) {
-        previous.failedProbeAtMs = this.deps.nowMs();
-        this.control.store.recordBrowserDeliveryAttemptFailure({ taskId: task.taskId,
-          conversationId: task.conversationId, code: 'WORKFLOW_SUPERVISOR_PROVIDER_NO_PROGRESS_WATCHDOG' });
-        if (this.maybeAutoMigrate(task)) return;
-      }
-    } else this.stalledProviderObservations.delete(task.taskId);
     const latestRoleStillUser = snapshot.latestTurnRole === 'user';
     // Capacity is only authoritative on dedicated live provider UI. A model
     // can quote the same phrase in an ordinary assistant turn; historical
@@ -852,25 +762,44 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       && poll.command.kind === 'recovery' && poll.command.dispatchGeneration === 1;
     if ((!poll.command || unsentRecovery) && !providerBusy && snapshot.latestTurnRole === 'assistant' && snapshot.latestAssistantResponse.trim()) {
       const pending = this.control.taskStall(task.taskId);
-      // Receipt validation depends on the pending effect as well as the text.
+      const sourceEffect = this.control.store.latestAppliedEffectWithoutCompletion(task.taskId)
+        ?? this.control.store.latestAppliedLeafEffectWithoutCompletion(task.taskId);
+      // Receipt validation depends on the applied source as well as the text.
       // A stable invalid receipt must not be reparsed on every browser poll;
       // a different exact effect still gets an independent validation.
       const responseFingerprint = sha256(JSON.stringify({
-        effectId: 'effectId' in pending ? pending.effectId : null,
+        effectId: sourceEffect?.effectId ?? ('effectId' in pending ? pending.effectId : null),
         text: snapshot.latestAssistantResponse,
       }));
+      const observed = this.observedAssistant.get(task.conversationId);
+      // A different queued/unknown effect still owns delivery; an older applied
+      // marker cannot authorize a recovery alongside that unresolved mutation.
+      const exactAppliedTurn = Boolean(sourceEffect && 'effectId' in pending && pending.effectId === sourceEffect.effectId
+        && targetMarkerPresent(snapshot.latestUserText, sourceEffect.effectId));
       // Text-only replies are not receipts. Observe their stable idle digest,
       // but avoid generating an identical parser error on every browser tick.
-      missingReceiptForAppliedTurn = !hasCommittedSupervisorEnvelope(snapshot.latestAssistantResponse)
-        && 'effectId' in pending && Boolean(pending.effectId && targetMarkerPresent(snapshot.latestUserText, pending.effectId));
-      if (!missingReceiptForAppliedTurn && this.observedAssistant.get(task.conversationId) !== responseFingerprint) {
-        try { await this.control.browserObserveAssistant({ conversationId: task.conversationId, conversationUrl: task.conversationUrl, responseText: snapshot.latestAssistantResponse }); this.observedAssistant.set(task.conversationId, responseFingerprint); }
+      missingReceiptForAppliedTurn = exactAppliedTurn && (!hasCommittedSupervisorEnvelope(snapshot.latestAssistantResponse)
+        || (observed?.fingerprint === responseFingerprint && observed.receiptRejected));
+      if (!missingReceiptForAppliedTurn && observed?.fingerprint !== responseFingerprint) {
+        try {
+          await this.control.browserObserveAssistant({ conversationId: task.conversationId, conversationUrl: task.conversationUrl, responseText: snapshot.latestAssistantResponse });
+          this.observedAssistant.set(task.conversationId, { fingerprint: responseFingerprint, receiptRejected: false });
+        }
         catch (error) {
           const message = error instanceof Error ? error.message : String(error);
-          // A challenge mismatch remains rejected, but the exact unchanged
-          // observation is already known. Do not produce another parser error
-          // until the assistant text or pending effect identity changes.
-          if (message.includes('WORKFLOW_SUPERVISOR_')) this.observedAssistant.set(task.conversationId, responseFingerprint);
+          if (message.includes('WORKFLOW_SUPERVISOR_')) {
+            // Rejected response syntax/identity proves a missing valid receipt.
+            // Storage failures and valid DONE contract rejection are distinct.
+            let receiptRejected = message.startsWith('WORKFLOW_SUPERVISOR_RESPONSE_')
+              || message === 'WORKFLOW_SUPERVISOR_CAUSAL_EFFECT_NOT_APPLIED';
+            const receiptTask = this.control.getTask(task.taskId);
+            if (!receiptRejected && sourceEffect && receiptTask) {
+              try { parseSupervisorCompletion(snapshot.latestAssistantResponse, { task: receiptTask, effectId: sourceEffect.effectId, prompt: sourceEffect.prompt }); }
+              catch { receiptRejected = true; }
+            }
+            this.observedAssistant.set(task.conversationId, { fingerprint: responseFingerprint, receiptRejected });
+            missingReceiptForAppliedTurn = exactAppliedTurn && receiptRejected;
+          }
           if (!message.includes('WORKFLOW_SUPERVISOR_TASK_TERMINAL')) this.deps.onError(error);
         }
       }
@@ -882,7 +811,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     // chain owns it instead of repeatedly attempting the queued send.
     if (!poll.command || providerFailureCode) {
       this.control.browserObserveProviderTurn({ conversationId: task.conversationId, conversationUrl: task.conversationUrl,
-        generating: providerFailureCode ? false : providerBusy || latestRoleStillUser, latestAssistantResponse: snapshot.latestAssistantResponse,
+        generating: providerFailureCode ? false : providerBusy, latestAssistantResponse: snapshot.latestAssistantResponse,
         providerActivityText: snapshot.providerActivityText, receiptMissing: missingReceiptForAppliedTurn, providerFailureCode: providerFailureCode === CHATGPT_AUTOMATION_RATE_LIMITED ? undefined : providerFailureCode,
         observedAtMs: this.deps.nowMs(), graceMs: this.deps.providerIdleGraceMs });
       poll = this.control.browserPoll({ conversationId: task.conversationId, conversationUrl: task.conversationUrl });

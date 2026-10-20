@@ -370,6 +370,10 @@ export function forgeWorkflowSupervisorLifecycleHooks(controllerHome: string): W
       const declaredWorkId = workflowSupervisorContractText(task, 'work_id');
       const taskControllerHome = workflowSupervisorContractText(task, 'controller_home');
       if (!repoId || taskControllerHome !== controllerHome) return;
+      const standalone = task.continuationPolicy.kind === 'standalone_supervisor';
+      // A standalone Work binding supplies semantic completion evidence, not
+      // authority to acquire or replace that Work's provider conversation.
+      if (standalone && !context?.migratedFromConversationId) return;
       // On migration, retain the sole active Work projection even for a
       // standalone task without work_id or a completed predecessor. Prefer
       // a binding already moved to the new conversation on duplicate callbacks.
@@ -381,6 +385,11 @@ export function forgeWorkflowSupervisorLifecycleHooks(controllerHome: string): W
         : declaredWorkId;
       if (!bindingWorkId) return;
       const existing = getChatgptWorkConversationBinding({ controllerHome, repoId }, bindingWorkId);
+      // Explicit same-task migration may carry only an existing projection of
+      // its source conversation. An unrelated semantic Work stays untouched;
+      // the target match admits an idempotent callback after the rebind commits.
+      if (standalone && (!existing || (existing.conversationId !== context?.migratedFromConversationId
+        && existing.conversationId !== task.conversationId))) return;
       if (existing && existing.conversationId !== task.conversationId) {
         if (!context?.migratedFromConversationId || context.migratedFromConversationId !== existing.conversationId) {
           throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_WORK_CONVERSATION_CONFLICT');

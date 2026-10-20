@@ -1158,28 +1158,6 @@ export class WorkflowSupervisorStore {
     if (waiting) return waiting;
     return { state: 'inert' };
   }
-  /**
-   * Consecutive genuinely failed task-local attempts since the last durable
-   * provider progress or conversation move. Counts across failure codes and
-   * Runtime restarts; an unknown submission observation is NOT a failed send.
-   * This is a projection of the existing Supervisor journal, not another
-   * mutable retry or delivery authority.
-   */
-  automaticConversationFailureEvidence(taskId: string): { count: number; latestEventId: number; lastFailureAtMs: number } {
-    return this.read((db) => {
-      const row = statement(db, `SELECT COUNT(*) AS total, COALESCE(MAX(event_id),0) AS latest_id, MAX(occurred_at) AS last_at
-        FROM events WHERE task_id = ? AND kind IN (
-          'effect_preflight_rejected', 'assistant_provider_failed',
-          'assistant_recovery_exhausted', 'browser_delivery_attempt_failed'
-        ) AND event_id > COALESCE((
-          SELECT MAX(event_id) FROM events WHERE task_id = ?
-            AND kind IN ('effect_applied','assistant_completion','conversation_migrated')
-        ),0)`, (s) => s.get(taskId, taskId)) as { total?: number; latest_id?: number; last_at?: string };
-      return { count: Number(row?.total ?? 0), latestEventId: Number(row?.latest_id ?? 0),
-        lastFailureAtMs: Date.parse(row?.last_at ?? '') || 0 };
-    });
-  }
-
   /** Journal one attempted task-local Computer operation, never a guessed Send. */
   recordBrowserDeliveryAttemptFailure(input: { taskId: string; conversationId: string; code: string; effectId?: string }): void {
     this.transaction((db) => {
@@ -1188,10 +1166,9 @@ export class WorkflowSupervisorStore {
       if (!task || task.conversation_id !== input.conversationId) return;
       const code = input.code.slice(0, 128);
       const effectId = input.effectId ?? null;
-      // The same unchanged pre-mutation failure must not create an unbounded
-      // journal and a fresh automatic-migration identity on every poll. Keep
-      // three concrete observations for the existing recovery fuse, then
-      // require a different cause/effect or real progress before journaling more.
+      // Keep at most three unchanged diagnostic observations, then require a
+      // different cause/effect or real progress before journaling more. Failure
+      // counts never authorize a Send, recovery or conversation migration.
       const progress = statement(db, `SELECT COALESCE(MAX(event_id), 0) AS event_id
         FROM events WHERE task_id = ? AND kind IN (
           'effect_dispatch_started', 'effect_applied', 'assistant_completion', 'conversation_migrated'
