@@ -1459,17 +1459,19 @@ export class WorkflowSupervisorStore {
         return { state: input.generating ? 'generating' : 'idle_pending' };
       }
 
-      // Ordinary idle text cannot authorize recovery. Only a stable, exact
-      // assistant response proven to lack its receipt can reserve the existing
-      // bounded, separately identified recovery; never replay the source effect.
-      if (!input.generating && !input.receiptMissing) return { state: 'idle_pending' };
+      // An unchanged response may be legitimate long-running reasoning or a
+      // pending tool call. Text silence is not proof an active turn is stuck:
+      // reserving a second Send races the original turn's late valid receipt.
+      // Only an explicit provider failure (handled above) can recover while
+      // the provider still advertises an active generation.
+      if (input.generating) return { state: 'generating' };
 
-      // Progress, not the provider's visible "generating" control, is the
-      // liveness authority. A frozen page can leave that control present for
-      // hours after tool/output progress stopped. Once the assistant/activity
-      // digest is unchanged for the existing grace window, reserve the next
-      // separately identified recovery turn without replaying the applied source.
-      // The causal chain is bounded to two automatic recovery turns.
+      // For an idle turn require a stable, completed response that is proven
+      // to be missing its causal receipt. Ordinary idle text is insufficient.
+      if (!input.receiptMissing) return { state: 'idle_pending' };
+
+      // Bound the recovery chain to the original two-resume safety limit; the
+      // source effect's eventual legitimate completion remains authoritative.
       if (providerRecoveryDepth >= WORKFLOW_SUPERVISOR_MAX_PROVIDER_RECOVERY_TURNS) {
         statement(db, 'INSERT OR IGNORE INTO events(task_id,event_key,kind,effect_id,payload_json,occurred_at) VALUES (?,?,?,?,?,?)', (s) => s.run(input.taskId, `assistant-recovery-exhausted:${effect.effectId}`, 'assistant_recovery_exhausted', effect.effectId, json({ assistant_digest: digest, exactly_once_resume: true, stale_generation: input.generating, recovery_depth: providerRecoveryDepth, max_recovery_turns: WORKFLOW_SUPERVISOR_MAX_PROVIDER_RECOVERY_TURNS }), observedAt));
         return { state: 'exhausted' };

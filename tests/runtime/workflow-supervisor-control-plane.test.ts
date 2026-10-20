@@ -2317,15 +2317,17 @@ test('recovery stop-pending is a live-turn observation, not a failed preparation
   const source = control.reserveEnrollment(taskId);
   store.recordEffectDispatchStarted(source.effectId, 1, 'source-dispatch', { surface: 'test' });
   store.recordEffectObservation(source.effectId, 'source-applied', 'applied', { surface: 'test' });
-  const observe = () => control.browserObserveProviderTurn({
+  const observe = (providerFailureCode?: string) => control.browserObserveProviderTurn({
     conversationId, conversationUrl, generating: true,
     latestAssistantResponse: 'stable assistant output',
     providerActivityText: 'stable provider activity',
+    ...(providerFailureCode ? { providerFailureCode } : {}),
     observedAtMs: clock.nowMs, graceMs: 1_000,
   });
   expect(observe().state).toBe('generating');
   clock.nowMs += 2_000;
-  const reserved = observe();
+  // An actual provider failure, not text silence, authorizes the one recovery.
+  const reserved = observe('CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE');
   expect(reserved.state).toBe('recovery_reserved');
   const recovery = reserved.recoveryEffect;
   if (!recovery) throw new Error('TEST_RECOVERY_EFFECT_NOT_RESERVED');
@@ -3085,8 +3087,10 @@ test('provider recovery uses the full bounded two-resume budget without replayin
     recovery: { effectId: 'fx_34343434343434343434343434343434', prompt: 'recovery-1' } };
   expect(store.observeProviderTurn({ ...live, observedAtMs: 1_000 }).state).toBe('generating');
   expect(store.observeProviderTurn({ ...live, assistantDigest: 'waiting-tool-progress', observedAtMs: 1_500 }).state).toBe('generating');
-  expect(store.observeProviderTurn({ ...live, assistantDigest: 'waiting-tool-progress', observedAtMs: 2_501 }).state).toBe('recovery_reserved');
-  const firstRecovery = store.observeProviderTurn({ ...live, assistantDigest: 'waiting-tool-progress', observedAtMs: 2_600 }).recoveryEffect!;
+  // A silent but actively generating model has not failed: no recovery Send.
+  expect(store.observeProviderTurn({ ...live, assistantDigest: 'waiting-tool-progress', observedAtMs: 2_501 }).state).toBe('generating');
+  expect(store.getEffect(live.recovery.effectId)).toBeUndefined();
+  const firstRecovery = store.observeProviderTurn({ ...live, assistantDigest: 'waiting-tool-progress', providerFailureCode: 'CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE', observedAtMs: 2_600 }).recoveryEffect!;
   expect(firstRecovery.kind).toBe('recovery');
   expect(control.browserPoll({ conversationId, conversationUrl }).command).toMatchObject({ kind: 'recovery', effectId: firstRecovery.effectId });
   expect(store.providerResumeExhausted(effect.effectId)).toBe(false);
@@ -3097,7 +3101,7 @@ test('provider recovery uses the full bounded two-resume budget without replayin
     recovery: { effectId: 'fx_78787878787878787878787878787878', prompt: 'recovery-2' },
   }).state).toBe('generating');
   const secondReserved = store.observeProviderTurn({
-    taskId, effectId: firstRecovery.effectId, generating: true, assistantDigest: 'resume-1-digest', observedAtMs: 4_001, graceMs: 1_000,
+    taskId, effectId: firstRecovery.effectId, generating: true, assistantDigest: 'resume-1-digest', providerFailureCode: 'CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE', observedAtMs: 4_001, graceMs: 1_000,
     recovery: { effectId: 'fx_90909090909090909090909090909090', prompt: 'recovery-2' },
   });
   expect(secondReserved.state).toBe('recovery_reserved');
@@ -3112,7 +3116,7 @@ test('provider recovery uses the full bounded two-resume budget without replayin
     recovery: { effectId: 'fx_12121212121212121212121212121212', prompt: 'must-not-send' },
   }).state).toBe('generating');
   const exhausted = store.observeProviderTurn({
-    taskId, effectId: secondRecovery.effectId, generating: true, assistantDigest: 'resume-2-digest', observedAtMs: 6_001, graceMs: 1_000,
+    taskId, effectId: secondRecovery.effectId, generating: true, assistantDigest: 'resume-2-digest', providerFailureCode: 'CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE', observedAtMs: 6_001, graceMs: 1_000,
     recovery: { effectId: 'fx_56565656565656565656565656565656', prompt: 'must-not-send' },
   });
   expect(exhausted.state).toBe('exhausted');
@@ -3129,7 +3133,7 @@ test('provider recovery uses the full bounded two-resume budget without replayin
   expect(store.getCompletionByResponseSha256(taskId, createHash('sha256').update(lateReceipt).digest('hex'))?.sourceEffectId).toBe(secondRecovery.effectId);
 });
 
-test('native adapter interrupts a digest-stalled generating turn only for the exactly-once recovery effect', async () => {
+test('native adapter does not interrupt active model reasoning for unchanged output', async () => {
   const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-stalled-generating-'));
   roots.push(root);
   const store = new WorkflowSupervisorStore(join(root, 'supervisor-home'));
@@ -3156,7 +3160,8 @@ test('native adapter interrupts a digest-stalled generating turn only for the ex
   expect(dispatchModes).toEqual([]);
   nowMs = 1_001;
   await adapter.runOnce();
-  expect(dispatchModes).toEqual(['recover']);
+  expect(dispatchModes).toEqual([]);
+  expect(store.getEffectByOriginKey(`provider-recovery:${source.effectId}`)).toBeUndefined();
   expect(store.latestEffectDispatch(source.effectId)?.generation).toBeUndefined();
 });
 
@@ -3169,7 +3174,7 @@ test('429 network evidence is rate-limit authority only when it belongs to the c
   expect(chatgptFailedRequestIsCausalRateLimit({ status: 429, url: 'https://chatgpt.com/backend-api/conversation' })).toBe(false);
 });
 
-test('live provider activity resets the stale-turn grace before the assistant response commits', () => {
+test('active provider reasoning never reserves an unsent recovery merely because output is unchanged', () => {
   const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-provider-activity-digest-'));
   roots.push(root);
   const store = new WorkflowSupervisorStore(join(root, 'supervisor-home'));
@@ -3198,14 +3203,11 @@ test('live provider activity resets the stale-turn grace before the assistant re
   expect(observe('Reasoning: inspect the repository. Tool output: 4 files found.', 5_000).state).toBe('generating');
   expect(observe('Reasoning: inspect the repository. Tool output: 4 files found.', 5_999).state).toBe('generating');
   const stale = observe('Reasoning: inspect the repository. Tool output: 4 files found.', 6_000);
-  expect(stale.state).toBe('recovery_reserved');
-  expect(stale.recoveryEffect).toMatchObject({ kind: 'recovery', taskId });
-  expect(stale.recoveryEffect?.effectId).not.toBe(source.effectId);
+  expect(stale.state).toBe('generating');
+  expect(stale.recoveryEffect).toBeUndefined();
   expect(store.latestEffectDispatch(source.effectId)).toMatchObject({ generation: 1 });
   expect(store.providerResumeExhausted(source.effectId)).toBe(false);
-  expect(store.nextBrowserEffect(taskId, { nowMs: Date.now() + 60_000 })).toMatchObject({
-    mode: 'send', generation: 1, effect: { effectId: stale.recoveryEffect?.effectId, kind: 'recovery' },
-  });
+  expect(store.nextBrowserEffect(taskId, { nowMs: Date.now() + 60_000 })).toBeUndefined();
   store.close();
 });
 
@@ -3260,7 +3262,7 @@ test('provider recovery exhaustion stops new mutations but keeps observing late 
     providerActivityText: 'Late tool output: three files analyzed',
     observedAtMs: 5_000, graceMs: 1_000,
   });
-  expect(stableAfterLateActivity.state).toBe('exhausted');
+  expect(stableAfterLateActivity.state).toBe('generating');
   expect(stableAfterLateActivity.recoveryEffect).toBeUndefined();
   expect(control.browserPoll({ conversationId, conversationUrl }).command).toBeUndefined();
 
