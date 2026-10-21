@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'crypto';
 import { existsSync } from 'fs';
 import { spawnSync } from 'child_process';
 import { join } from 'path';
-import { controllerSystemRoot, repositoryControllerRoot } from '../../cli/repositories/controller-home';
+import { controllerSystemRoot, repositoryControllerRoot } from '../../effects/controller-home';
 import { readJsonFile, sanitizeFileComponent, writeJsonAtomic } from '../shared/json-files';
 import type { ExecutionJob } from '../execution/jobs/types';
 import { recordOutputHandleIndexEntry, readOutputHandleIndexEntry, type OutputHandleStorage } from './output-handle-index';

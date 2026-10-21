@@ -1,4 +1,4 @@
-import { resolveControllerHome } from '../../cli/repositories/controller-home';
+import { resolveControllerHome } from '../../effects/controller-home';
 import { readSchedulerHealthSnapshot } from './global-scheduler/scheduler';
 import type { RuntimeSourceIdentity } from './runtime-generation';
 import { readRuntimeOwner } from '../root/ownership';

@@ -12,7 +12,7 @@ import {
   type MemoryUnit,
   type MemoryUnitDraft,
 } from '../../packages/kernel/cognition/api/index';
-import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
+import { ensureControllerHome } from '../../src/effects/controller-home';
 import { withControlPlaneTransaction } from '../../src/runtime/control-plane/persistence/sqlite-store';
 import {
   activateCognitiveMemory,

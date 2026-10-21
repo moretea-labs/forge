@@ -2,7 +2,7 @@ import { writeAtomicTextFile } from '../shared/atomic-text-file';
 import { createHash, randomUUID } from 'crypto';
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'fs';
 import { dirname, join, relative, resolve } from 'path';
-import { ensureControllerHome } from '../../cli/repositories/controller-home';
+import { ensureControllerHome } from '../../effects/controller-home';
 import { CONTROL_PLANE_SCHEMA_VERSION } from '../control-plane/persistence/sqlite-store';
 import { packageRuntimeSourceRoot } from '../control-plane/runtime-generation';
 import { FORGE_VERSION } from '../../version';

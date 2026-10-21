@@ -12,7 +12,7 @@ import {
   relocateStoppedControllerHomeAuthority,
   rollbackStoppedControllerHomeAuthorityRelocation,
   rollbackStoppedRepoLocalControllerHomeStorage,
-} from '../../src/cli/repositories/controller-home';
+} from '../../src/effects/controller-home';
 import { resolveRuntimeStateControllerHome } from '../../src/cli/commands/runtime';
 import { recoveryControllerHomeMigrationPreflight } from '../../src/cli/commands/recovery';
 import { forgeRuntimeServicePaths } from '../../src/runtime/root/service';

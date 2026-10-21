@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'crypto';
 import { existsSync, mkdirSync } from 'fs';
 import { join } from 'path';
-import { ensureControllerHome, scopedOperationRoot, SEMANTIC_SCOPE_KEY } from '../../../../src/cli/repositories/controller-home';
+import { ensureControllerHome, scopedOperationRoot, SEMANTIC_SCOPE_KEY } from '../../../../src/effects/controller-home';
 import { withControllerLock } from '../../../../src/cli/repositories/locks';
 import { readJsonFile, sanitizeFileComponent, writeJsonAtomic } from '../../../../src/runtime/shared/json-files';
 import {

@@ -3,7 +3,7 @@ import { spawnSync } from 'child_process';
 import { appendFileSync, mkdirSync, realpathSync } from 'fs';
 import { dirname, join, relative } from 'path';
 import { capProcessOutput, redactProcessOutput } from '../../effects/process-runner';
-import { scopedOperationRoot } from './controller-home';
+import { scopedOperationRoot } from '../../effects/controller-home';
 import { classifyRepositoryCommand, type RepositoryCommandAuthorization, type RepositoryCommandClassification } from './command-classifier';
 import { resolveRepositoryCommandCwd } from './command-scope';
 import type { RepositoryRecord } from './types';

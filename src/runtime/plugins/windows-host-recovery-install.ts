@@ -3,7 +3,7 @@ import { chmodSync, copyFileSync, mkdirSync, readFileSync, renameSync, writeFile
 import { homedir } from 'os';
 import { dirname, join, resolve } from 'path';
 import { fileURLToPath } from 'url';
-import { controllerSystemRoot } from '../../cli/repositories/controller-home';
+import { controllerSystemRoot } from '../../effects/controller-home';
 import { discoverWslWindowsHostEnvironment, type WindowsHostEnvironment } from '../platform/windows-host-discovery';
 import { resolveWindowsRecoveryDeployment } from '../platform/windows-recovery-deployment';
 import { installExternalPluginRegistration } from './external-registration';

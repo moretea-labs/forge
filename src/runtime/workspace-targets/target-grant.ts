@@ -1,7 +1,7 @@
 import { createHash } from 'crypto';
 import { existsSync, lstatSync, mkdirSync, realpathSync, statSync } from 'fs';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'path';
-import { controllerSystemRoot } from '../../cli/repositories/controller-home';
+import { controllerSystemRoot } from '../../effects/controller-home';
 import {
   ControllerLockContentionError,
   acquireControllerLockAsync,

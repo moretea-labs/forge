@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
-import { resolveRepoPreferredControllerHome } from '../repositories/controller-home';
+import { resolveRepoPreferredControllerHome } from '../../effects/controller-home';
 import { findRegisteredRepositoryByCheckoutRoot } from '../repositories/registry';
 import {
   readControlPlaneRecord,

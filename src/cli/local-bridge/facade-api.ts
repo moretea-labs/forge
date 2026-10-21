@@ -1351,7 +1351,7 @@ function localMcpObservation(
   ctx: ConsoleFacadeContext,
   freshness: ConnectorFreshnessReport,
 ): ConnectivityComponentObservation {
-  const runtime = loadMcpServiceRuntimeState(ctx.controllerHome, ctx.repository.canonicalRoot);
+  const runtime = loadMcpServiceRuntimeState(ctx.controllerHome);
   if (
     freshness.status === 'local_mcp_updated'
     || freshness.status === 'chatgpt_snapshot_missing_facade'
@@ -1393,8 +1393,8 @@ function localMcpObservation(
 }
 
 function publicMcpObservation(ctx: ConsoleFacadeContext): ConnectivityComponentObservation {
-  const config = loadMcpServiceLocalConfig(ctx.controllerHome, ctx.repository.canonicalRoot);
-  const runtime = loadMcpServiceRuntimeState(ctx.controllerHome, ctx.repository.canonicalRoot);
+  const config = loadMcpServiceLocalConfig(ctx.controllerHome);
+  const runtime = loadMcpServiceRuntimeState(ctx.controllerHome);
   const publicEndpoint = config?.chatgpt?.endpoint ?? runtime?.tunnel?.publicEndpoint;
   if (!publicEndpoint) {
     return createConnectivityObservation(
@@ -1452,7 +1452,7 @@ function localBridgeObservation(): ConnectivityComponentObservation {
 }
 
 function connectorSignals(ctx: ConsoleFacadeContext, freshness: ConnectorFreshnessReport): string[] {
-  const runtime = loadMcpServiceRuntimeState(ctx.controllerHome, ctx.repository.canonicalRoot);
+  const runtime = loadMcpServiceRuntimeState(ctx.controllerHome);
   const signals: string[] = [];
   if (freshness.status === 'chatgpt_snapshot_missing_facade' || freshness.status === 'unable_to_verify_chatgpt_snapshot') {
     signals.push(freshness.summary);

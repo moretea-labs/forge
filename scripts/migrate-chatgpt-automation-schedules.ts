@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { mkdirSync, writeFileSync } from 'fs';
 import { dirname, join, resolve } from 'path';
-import { resolveRepoPreferredControllerHome } from '../src/cli/repositories/controller-home';
+import { resolveRepoPreferredControllerHome } from '../src/effects/controller-home';
 import { listRepositories } from '../src/cli/repositories/registry';
 import { migrateChatgptAutomationSchedule } from '../src/runtime/workflow/schedules/chatgpt-automation-migration';
 import { listSchedules, saveSchedule } from '../packages/kernel/scheduler/api/index';

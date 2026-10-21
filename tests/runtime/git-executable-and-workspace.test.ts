@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync
 import { tmpdir } from 'os';
 import { isAbsolute, join } from 'path';
 import { spawnSync } from 'child_process';
-import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
+import { ensureControllerHome } from '../../src/effects/controller-home';
 import {
   getRepository,
   registerRepository,

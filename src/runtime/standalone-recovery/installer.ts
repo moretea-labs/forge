@@ -106,7 +106,7 @@ const RECOVERY_RELEASE_SOURCE_PATHS = [
   'src/runtime/standalone-recovery',
   'src/runtime/root',
   'src/cli/controller/launch-agents.ts',
-  'src/cli/repositories/controller-home.ts',
+  'src/effects/controller-home.ts',
   'src/effects/process-runner.ts',
   'src/runtime/shared/process-tree.ts',
   'src/runtime/shared/json-files.ts',

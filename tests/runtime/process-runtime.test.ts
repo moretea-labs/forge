@@ -66,7 +66,7 @@ import {
 import { classifyGatewayExecutionPath } from '../../adapters/mcp/runtime-gateway/router';
 import { persistedCheckSemanticScopeKey, runPersistedCheckViaProcessRuntime } from '../../adapters/mcp/runtime-gateway/persisted-check-process';
 import { classifyPersistedCheckTerminalEvidence, readPersistedCheckResultReceipt } from '../../src/runtime/execution/process-runtime/check-result';
-import { ensureControllerHome, repositoryControllerRoot } from '../../src/cli/repositories/controller-home';
+import { ensureControllerHome, repositoryControllerRoot } from '../../src/effects/controller-home';
 import { registerRepository } from '../../src/cli/repositories/registry';
 import { routeExecution } from '../../src/runtime/execution/thin-harness';
 import { listActiveLeases, acquireExecutionLeases } from '../../src/runtime/resources/leases/store';

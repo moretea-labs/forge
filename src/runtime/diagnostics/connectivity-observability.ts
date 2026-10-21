@@ -1,5 +1,5 @@
 import { join } from 'path';
-import { repositoryControllerRoot } from '../../cli/repositories/controller-home';
+import { repositoryControllerRoot } from '../../effects/controller-home';
 import { readJobEvents, type RuntimeEntityEvent } from '../evidence/event-ledger';
 import { readJsonFile, writeJsonAtomic } from '../shared/json-files';
 import type { ExecutionJob, ExecutionJobStatus } from '../execution/jobs/types';

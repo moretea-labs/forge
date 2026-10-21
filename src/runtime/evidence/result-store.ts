@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'crypto';
 import { chmodSync, existsSync, mkdirSync, readdirSync, statSync } from 'fs';
 import { join } from 'path';
-import { controllerSystemRoot, repositoryControllerRoot } from '../../cli/repositories/controller-home';
+import { controllerSystemRoot, repositoryControllerRoot } from '../../effects/controller-home';
 import { readJsonFile, sanitizeFileComponent, writeJsonAtomic } from '../shared/json-files';
 import { recordOutputHandleIndexEntry, readOutputHandleIndexEntry, refreshOutputHandleFingerprint, type OutputHandleStorage } from './output-handle-index';
 import { redactSensitiveValue, type SensitiveRedactionCount } from './sensitive-output';

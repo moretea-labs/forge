@@ -26,7 +26,7 @@ import { createMcpToolContext as createMultiRepositoryContext } from '../../adap
 import { resolveControllerAccessState, persistControllerAccessMode, configuredControllerAccessMode } from '../../adapters/mcp/access-mode';
 import { createForgeMcpServer } from '../../adapters/mcp/server';
 import { registerRepository } from '../../src/cli/repositories/registry';
-import { repositoryControllerRoot } from '../../src/cli/repositories/controller-home';
+import { repositoryControllerRoot } from '../../src/effects/controller-home';
 import { callRepositoryTool } from '../../adapters/mcp/tool-mapping/repository-tools';
 import { buildRuntimeMaintenanceStatus } from '../../src/runtime/recovery';
 import { writeJsonAtomic } from '../../src/runtime/shared/json-files';

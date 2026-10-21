@@ -1,6 +1,6 @@
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { controllerSystemRoot } from '../../cli/repositories/controller-home';
+import { controllerSystemRoot } from '../../effects/controller-home';
 import { readJsonFile, writeJsonAtomic } from '../shared/json-files';
 
 export interface PackagedPluginTrustPolicy {

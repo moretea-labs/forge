@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from '
 import { dirname, join, resolve } from 'path';
 import { runBoundedChild } from '../src/runtime/shared/bounded-child-supervisor';
 import { testContentDigest, workspaceMutationDigest } from '../src/testing/test-governance';
-import { resolveControllerHome } from '../src/cli/repositories/controller-home';
+import { resolveControllerHome } from '../src/effects/controller-home';
 
 export type Gate = 'task' | 'main' | 'release';
 interface CommandStep { label: string; command: string; args: string[]; timeoutMs: number }

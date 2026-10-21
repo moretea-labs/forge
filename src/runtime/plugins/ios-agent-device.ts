@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, realpathSync } from 'fs';
 import { delimiter, dirname, isAbsolute, join } from 'path';
 import { spawnSync } from 'child_process';
 import { performance } from 'perf_hooks';
-import { repositoryControllerRoot } from '../../cli/repositories/controller-home';
+import { repositoryControllerRoot } from '../../effects/controller-home';
 import { runBoundedProcess } from '../execution/thin-harness/async-process';
 import { readJsonFile, writeJsonAtomic } from '../shared/json-files';
 import { resolveTrustedNodeExecutable } from '../shared/trusted-node-executable';

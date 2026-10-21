@@ -15,7 +15,7 @@ import { CLI_VERSION } from './status';
 import { runSecurityScan, type SecurityScanReport } from './security';
 import { isOptIn, resolveHooksDir, resolveRepoRoot } from '../hook/runtime';
 import { ROUTES } from '../hook/route-registry';
-import { resolveControllerHome } from '../repositories/controller-home';
+import { resolveControllerHome } from '../../effects/controller-home';
 import { createSetupBootstrapControlApi } from './bootstrap-control';
 
 const TRUST_STATE_LINE = /^\[hooks\.state\."[^"]+\/\.codex\/hooks\.json:/;

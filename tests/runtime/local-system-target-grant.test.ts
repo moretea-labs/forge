@@ -15,7 +15,7 @@ import {
 import { tmpdir } from 'os';
 import { forgeRuntimeServicePaths } from '../../src/runtime/root/service';
 import { join, resolve } from 'path';
-import { controllerSystemRoot, FORGE_INSTANCE_SCOPE_KEY } from '../../src/cli/repositories/controller-home';
+import { controllerSystemRoot, FORGE_INSTANCE_SCOPE_KEY } from '../../src/effects/controller-home';
 import { createRecoveryConfig, loadRecoveryConfig, recoveryConfigPath } from '../../src/runtime/standalone-recovery/core';
 import {
   disableRepository,

@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
-import { ensureControllerHome } from './controller-home';
+import { ensureControllerHome } from '../../effects/controller-home';
 import { getRepository } from './registry';
 
 export type UmbrellaTaskStatus = 'planned' | 'running' | 'succeeded' | 'failed' | 'blocked' | 'cancelled';

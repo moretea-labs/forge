@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from 'fs';
 import { createHash } from 'crypto';
 import { spawnSync } from 'child_process';
 import { computerPluginAdapter } from '../src/runtime/plugins/computer-registration';
-import { resolveRepoPreferredControllerHome } from '../src/cli/repositories/controller-home';
+import { resolveRepoPreferredControllerHome } from '../src/effects/controller-home';
 
 const repoRoot = process.cwd();
 

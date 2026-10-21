@@ -1,7 +1,7 @@
 import { createHash } from 'crypto';
 import { existsSync, mkdirSync } from 'fs';
 import { dirname, join } from 'path';
-import { ensureControllerHome, repositoryControllerRoot } from '../../../cli/repositories/controller-home';
+import { ensureControllerHome, repositoryControllerRoot } from '../../../effects/controller-home';
 import { withControllerLock } from '../../../cli/repositories/locks';
 import { readJsonFile } from '../../shared/json-files';
 import { mutateControlPlaneRecord } from '../persistence/sqlite-store';

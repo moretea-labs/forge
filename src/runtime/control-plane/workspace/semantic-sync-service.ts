@@ -18,7 +18,7 @@ import { readForgeInstanceIdentity } from '../../../../packages/kernel/identity/
 import type { WorkContract } from '../../../../packages/kernel/work/api/index';
 import { semanticScopeRefForWork } from '../../../../packages/kernel/work/api/index';
 import type { PlanContract } from '../facade/types';
-import { SEMANTIC_SCOPE_KEY } from '../../../cli/repositories/controller-home';
+import { SEMANTIC_SCOPE_KEY } from '../../../effects/controller-home';
 import type { Requirement } from '../persistence/requirement-store';
 import {
   ControlPlaneConflictError,

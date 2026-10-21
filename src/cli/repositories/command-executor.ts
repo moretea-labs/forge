@@ -4,7 +4,7 @@ import { appendFileSync, existsSync, lstatSync, mkdirSync } from 'fs';
 import { dirname, join, relative, resolve } from 'path';
 import { capProcessOutput, redactProcessOutput } from '../../effects/process-runner';
 import { MAX_AGENT_TIMEOUT_MS, MIN_AGENT_TIMEOUT_MS } from '../controller/runtime-config';
-import { scopedOperationRoot } from './controller-home';
+import { scopedOperationRoot } from '../../effects/controller-home';
 import {
   classifyRepositoryCommand,
   type RepositoryCommandAuthorization,

@@ -2074,11 +2074,11 @@ const b7KernelLegacyEdges = edgeSet(b7ProductionGraph, (edge) => {
   return from.startsWith('packages/kernel/') && to.startsWith('src/');
 });
 const B7_ALLOWED_KERNEL_LEGACY_EDGES = new Set([
-  'packages/kernel/work/infrastructure/work-contract-store.ts -> src/cli/repositories/controller-home.ts',
+  'packages/kernel/work/infrastructure/work-contract-store.ts -> src/effects/controller-home.ts',
   'packages/kernel/work/infrastructure/work-contract-store.ts -> src/cli/repositories/locks.ts',
   'packages/kernel/work/infrastructure/work-contract-store.ts -> src/runtime/shared/json-files.ts',
   'packages/kernel/work/infrastructure/work-contract-store.ts -> src/runtime/control-plane/persistence/sqlite-store.ts',
-  'packages/kernel/controller/infrastructure/controller-session-store.ts -> src/cli/repositories/controller-home.ts',
+  'packages/kernel/controller/infrastructure/controller-session-store.ts -> src/effects/controller-home.ts',
   'packages/kernel/controller/infrastructure/controller-session-store.ts -> src/cli/repositories/locks.ts',
   'packages/kernel/controller/infrastructure/controller-session-store.ts -> src/runtime/control-plane/execution/session-store.ts',
   'packages/kernel/controller/infrastructure/controller-session-store.ts -> src/runtime/shared/json-files.ts',
@@ -2090,7 +2090,7 @@ const B7_ALLOWED_KERNEL_LEGACY_EDGES = new Set([
   'packages/kernel/controller/infrastructure/controller-round-store.ts -> src/runtime/control-plane/facade/handoff-inbox-store.ts',
   'packages/kernel/controller/infrastructure/controller-binding-store.ts -> src/cli/repositories/locks.ts',
   'packages/kernel/controller/infrastructure/controller-binding-store.ts -> src/runtime/control-plane/persistence/sqlite-store.ts',
-  'packages/kernel/scheduler/infrastructure/schedule-store.ts -> src/cli/repositories/controller-home.ts',
+  'packages/kernel/scheduler/infrastructure/schedule-store.ts -> src/effects/controller-home.ts',
   'packages/kernel/scheduler/infrastructure/schedule-store.ts -> src/cli/repositories/locks.ts',
   'packages/kernel/scheduler/infrastructure/schedule-store.ts -> src/runtime/control-plane/facade/handoff-inbox-store.ts',
   'packages/kernel/scheduler/infrastructure/schedule-store.ts -> src/runtime/shared/json-files.ts',

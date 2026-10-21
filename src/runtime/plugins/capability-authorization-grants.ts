@@ -10,7 +10,7 @@ import {
 import { randomUUID } from 'crypto';
 import { existsSync, renameSync } from 'fs';
 import { join } from 'path';
-import { controllerSystemRoot } from '../../cli/repositories/controller-home';
+import { controllerSystemRoot } from '../../effects/controller-home';
 import { ControllerLockContentionError, withControllerLock } from '../../cli/repositories/locks';
 import { readJsonFile, writeJsonAtomic } from '../shared/json-files';
 import type { AssistantPluginActionRisk, AssistantPluginAuthorizationTarget } from './types';

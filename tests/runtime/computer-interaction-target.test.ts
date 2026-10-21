@@ -13,7 +13,7 @@ import { createDesktopOperatorRegistrationInput } from '../../src/runtime/plugin
 import { callProtectedComputerAdapter, executeProtectedConsoleUnlockInvocation, executeProtectedConsoleUnlockPreparation } from '../../adapters/mcp/runtime-gateway/protected-computer-adapter';
 import { installExternalPluginRegistration } from '../../src/runtime/plugins/external-registration';
 import type { AssistantPluginActionExecutionInput } from '../../src/runtime/plugins/types';
-import { FORGE_INSTANCE_SCOPE_KEY } from '../../src/cli/repositories/controller-home';
+import { FORGE_INSTANCE_SCOPE_KEY } from '../../src/effects/controller-home';
 import { ChromeExtensionChatgptConversationTargetPort } from '../../adapters/computer/chatgpt-extension-target';
 import { createRuntimeComputerTargetPersistence } from '../../src/runtime/root/computer-target-persistence';
 import type { ComputerInteractionTargetEntry } from '../../packages/plugin-runtime/computer/target-authority';

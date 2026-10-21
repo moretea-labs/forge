@@ -9,7 +9,7 @@ import {
   type MemoryUnit,
 } from '../../../packages/kernel/cognition/api/index';
 import { readForgeInstanceIdentity, type ScopeRef } from '../../../packages/kernel/identity/api/index';
-import { FORGE_INSTANCE_SCOPE_KEY } from '../../cli/repositories/controller-home';
+import { FORGE_INSTANCE_SCOPE_KEY } from '../../effects/controller-home';
 import type { RepositoryRecord } from '../../cli/repositories/types';
 import { cognitionMemoryStore, cognitionReadPort, recordCognitiveUsageObservation, type CognitiveUsageRejectionKind } from '../control-plane/persistence/cognition-store';
 import { resolveProjectForRepositoryPlacement } from '../control-plane/workspace/workspace-store';

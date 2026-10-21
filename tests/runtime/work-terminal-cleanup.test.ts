@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
-import { ensureControllerHome, repositoryControllerRoot } from '../../src/cli/repositories/controller-home';
+import { ensureControllerHome, repositoryControllerRoot } from '../../src/effects/controller-home';
 import { createMcpToolContext } from '../../adapters/mcp/server';
 import { getRepository, registerRepository } from '../../src/cli/repositories/registry';
 import type { CompletionReceipt } from '../../src/cli/controller/types';

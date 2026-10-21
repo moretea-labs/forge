@@ -1,6 +1,6 @@
 import { closeSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
-import { ensureControllerHome, repositoryControllerRoot } from './controller-home';
+import { ensureControllerHome, repositoryControllerRoot } from '../../effects/controller-home';
 import { recordGatewayLatency } from '../../runtime/observability/gateway-contention-metrics';
 
 export type ControllerLockScope = 'global' | 'repository' | 'task' | 'run' | 'worktree';

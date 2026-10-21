@@ -292,7 +292,7 @@ export function registerMcpHttpObservationRoutes(input: McpHttpObservationRouteO
       return;
     }
     const daemon = readForgeRuntimeStatus(runtimeControllerHome);
-    const runtimeState = loadMcpServiceRuntimeState(runtimeControllerHome, repoRoot);
+    const runtimeState = loadMcpServiceRuntimeState(runtimeControllerHome);
     const repositories = listRepositories(runtimeControllerHome).filter((repository) => repository.enabled && !repository.removedAt);
     const projectionSnapshots = repositories.map((repository) => {
       const snapshot = readRepositoryProjectionSnapshot(runtimeControllerHome, repository.repoId);

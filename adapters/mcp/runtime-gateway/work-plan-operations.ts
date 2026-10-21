@@ -16,7 +16,7 @@ import {
 } from '../../../src/runtime/control-plane/facade';
 import { readRequirement } from '../../../src/runtime/control-plane/persistence/requirement-store';
 import { listRepositories } from '../../../src/cli/repositories/registry';
-import { SEMANTIC_SCOPE_KEY } from '../../../src/cli/repositories/controller-home';
+import { SEMANTIC_SCOPE_KEY } from '../../../src/effects/controller-home';
 import { result } from './result-adapter';
 
 const RH_WORK_LIGHTWEIGHT_PLAN_OPERATIONS = new Set([

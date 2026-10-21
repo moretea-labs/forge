@@ -5,7 +5,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { getMcpPolicy } from '../../adapters/mcp/policy';
 import type { MultiRepositoryMcpToolContext } from '../../adapters/mcp/multi-repository';
-import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
+import { ensureControllerHome } from '../../src/effects/controller-home';
 import { addRepositoryCheckout, registerRepository } from '../../src/cli/repositories/registry';
 import { createWorkContract, getWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { getPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';

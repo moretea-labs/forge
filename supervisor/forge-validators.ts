@@ -1,6 +1,6 @@
 import { isLegacyMachineRequirementWait, readRequirement } from '../src/runtime/control-plane/persistence/requirement-store';
 import { getWorkContract, isTerminalSemanticWorkState, readWorkContractLineageSnapshot, type SemanticWorkState } from '../packages/kernel/work/api/index';
-import { SEMANTIC_SCOPE_KEY } from '../src/cli/repositories/controller-home';
+import { SEMANTIC_SCOPE_KEY } from '../src/effects/controller-home';
 import type { WorkflowContractValidation, WorkflowSupervisorProposal, WorkflowSupervisorTask, WorkflowSupervisorValidators } from './types';
 
 function contractText(task: WorkflowSupervisorTask, key: string): string | undefined {

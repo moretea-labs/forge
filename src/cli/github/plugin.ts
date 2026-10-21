@@ -3,7 +3,7 @@ import { join } from "path";
 import { getGitHubStatus, publishIssueToGitHub, refreshGitHubIssue, closeGitHubIssue } from "./github";
 import type { ControllerIssue } from "../controller/types";
 import { tryAppendControllerWorklogEvent } from "../controller/worklog";
-import { resolveRepoPreferredControllerHome } from "../repositories/controller-home";
+import { resolveRepoPreferredControllerHome } from "../../effects/controller-home";
 import { listRepositories, updateRepository } from "../repositories/registry";
 import type { RepositoryRecord } from "../repositories/types";
 

@@ -23,7 +23,7 @@ import { listSessions, openSession, readSession, runBrowserConsult, runBrowserFo
 import type { BrowserProviderName, NativeBrowserChannel, ThinkingLevel } from "../../../src/cli/chatgpt-browser/types";
 import { hashMcpInput, tryWriteMcpAuditEntry } from "../audit";
 import { resolveLocalBridgeSurface, summarizeRecentJobs } from "../../../src/runtime/shared/local-bridge-surface";
-import { resolveRepoPreferredControllerHome } from "../../../src/cli/repositories/controller-home";
+import { resolveRepoPreferredControllerHome } from "../../../src/effects/controller-home";
 import { resolveRepositoryCheckStorage } from '../../../src/runtime/execution/process-runtime/check-storage';
 import { resolveRepositorySelection } from '../../../src/cli/repositories/registry';
 import { ensureRepositoryRuntimeStorageBinding } from '../../../src/cli/repositories/runtime-storage';

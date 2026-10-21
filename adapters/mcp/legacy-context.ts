@@ -1,5 +1,5 @@
 import { resolve } from 'path';
-import { resolveRepoPreferredControllerHome } from '../../src/cli/repositories/controller-home';
+import { resolveRepoPreferredControllerHome } from '../../src/effects/controller-home';
 import { getMcpPolicy, parseMcpProfile } from './policy';
 import type { McpToolContext } from './tool-mapping/tools';
 import type { McpServerOptions } from './multi-repository';

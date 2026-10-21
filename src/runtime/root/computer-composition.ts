@@ -18,7 +18,7 @@ import {
 } from '../../../packages/protocols/computer/index';
 import { DESKTOP_OPERATOR_PROVIDER_PLUGIN_ID } from '../../../adapters/computer/desktop-operator-contract';
 import { createDesktopOperatorComputerProvider, type DesktopOperatorComputerProvider } from '../../../adapters/computer/index';
-import { resolveControllerHome } from '../../cli/repositories/controller-home';
+import { resolveControllerHome } from '../../effects/controller-home';
 import { currentComputerPlatform } from '../platform/computer-platform';
 import { getExternalPluginAdapter } from '../plugins/external-adapter';
 import { getExternalPluginRegistration } from '../plugins/external-registration';

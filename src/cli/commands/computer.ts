@@ -12,7 +12,7 @@ import {
   COMPUTER_OBSERVE_CAPABILITY,
   type ComputerCapabilityId,
 } from '../../../packages/protocols/computer/index';
-import { resolveControllerHome, controllerSystemRoot } from '../repositories/controller-home';
+import { resolveControllerHome, controllerSystemRoot } from '../../effects/controller-home';
 import { getExternalPluginRegistration, removeExternalPluginRegistration } from '../../runtime/plugins/external-registration';
 import {
   readControllerStoredPluginManifest,

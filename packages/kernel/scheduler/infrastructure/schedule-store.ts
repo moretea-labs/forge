@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'crypto';
 import { existsSync, readdirSync, rmSync, statSync } from 'fs';
 import { join } from 'path';
-import { controllerSystemRoot, repositoryControllerRoot } from '../../../../src/cli/repositories/controller-home';
+import { controllerSystemRoot, repositoryControllerRoot } from '../../../../src/effects/controller-home';
 import { withControllerLock } from '../../../../src/cli/repositories/locks';
 import {
   createHandoffItem,

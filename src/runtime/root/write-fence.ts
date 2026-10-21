@@ -1,5 +1,5 @@
 import { resolve } from 'path';
-import { resolveControllerHome } from '../../cli/repositories/controller-home';
+import { resolveControllerHome } from '../../effects/controller-home';
 import { isProcessAlive } from '../shared/process-tree';
 import { readRuntimeIncarnation, readRuntimeOwner, type RuntimeOwnerRecord } from './ownership';
 import {

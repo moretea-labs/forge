@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, rmSync } from 'fs';
 import { dirname, isAbsolute, join, resolve, sep } from 'path';
 import { fileURLToPath } from 'url';
 import { Command } from 'commander';
-import { resolveControllerHome, controllerSystemRoot } from '../repositories/controller-home';
+import { resolveControllerHome, controllerSystemRoot } from '../../effects/controller-home';
 import { withControllerLock, type ControllerLockKey } from '../repositories/locks';
 import { installExternalPluginRegistration, listExternalPluginRegistrations, type ExternalPluginRegistration, type ExternalPluginRegistrationInput } from '../../runtime/plugins/external-registration';
 import { createDesktopOperatorRegistrationInput } from '../../runtime/plugins/desktop-operator-registration';

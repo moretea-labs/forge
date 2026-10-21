@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync,
 import { tmpdir } from "os";
 import { join } from "path";
 import { spawnSync } from "child_process";
-import { repositoryControllerRoot } from "../../src/cli/repositories/controller-home";
+import { repositoryControllerRoot } from "../../src/effects/controller-home";
 import { addRepositoryCheckout, getRepository, listRepositories, registerRepository, repositorySummary } from "../../src/cli/repositories/registry";
 import { callMcpTool } from "../../adapters/mcp/tool-mapping/tools";
 import { callRepositoryTool, repositoryToolDefinitions } from "../../adapters/mcp/tool-mapping/repository-tools";

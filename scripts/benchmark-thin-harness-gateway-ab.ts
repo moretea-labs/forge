@@ -21,7 +21,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readdirSync, existsSync 
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
-import { ensureControllerHome, repositoryControllerRoot } from '../src/cli/repositories/controller-home';
+import { ensureControllerHome, repositoryControllerRoot } from '../src/effects/controller-home';
 import { registerRepository } from '../src/cli/repositories/registry';
 import {
   executeFast,

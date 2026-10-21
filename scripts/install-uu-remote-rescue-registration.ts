@@ -3,7 +3,7 @@ import { mkdirSync, renameSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { dirname, isAbsolute, join, resolve } from 'path';
 import { fileURLToPath } from 'url';
-import { controllerSystemRoot } from '../src/cli/repositories/controller-home';
+import { controllerSystemRoot } from '../src/effects/controller-home';
 import { installExternalPluginRegistration } from '../src/runtime/plugins/external-registration';
 import { createUuRemoteRescueRegistrationInput } from '../src/runtime/plugins/uu-remote-rescue-registration';
 

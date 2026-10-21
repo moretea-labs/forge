@@ -1,6 +1,6 @@
 import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
-import { SEMANTIC_SCOPE_KEY } from '../../../src/cli/repositories/controller-home';
+import { SEMANTIC_SCOPE_KEY } from '../../../src/effects/controller-home';
 import { listControllerChecks } from '../../../src/cli/controller/check-runner';
 import { repositoryGitStatus } from '../../../src/cli/repositories/structured-git';
 import { getWorkContract, updateWorkContract, workSemanticView } from '../../../packages/kernel/work/api/index';

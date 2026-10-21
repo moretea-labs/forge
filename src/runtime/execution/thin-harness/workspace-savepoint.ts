@@ -20,7 +20,7 @@ import {
 } from 'fs';
 import { dirname, join, relative, resolve } from 'path';
 import { randomUUID } from 'crypto';
-import { repositoryControllerRoot } from '../../../cli/repositories/controller-home';
+import { repositoryControllerRoot } from '../../../effects/controller-home';
 
 export interface SavepointEntry {
   path: string;

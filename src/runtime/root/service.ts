@@ -3,7 +3,7 @@ import { createHash, randomUUID } from 'crypto';
 import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, statSync } from 'fs';
 import { homedir } from 'os';
 import { dirname, isAbsolute, join, relative, resolve } from 'path';
-import { resolveControllerHome } from '../../cli/repositories/controller-home';
+import { resolveControllerHome } from '../../effects/controller-home';
 import { createPlatformServiceManagerHost } from '../platform/service-manager';
 import { forgeRuntimePersistentServiceLabel } from '../platform/service-inventory';
 import { loadRuntimeReleaseManifest } from './release-manifest';

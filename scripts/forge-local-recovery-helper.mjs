@@ -3,7 +3,7 @@ import { createHash } from 'crypto';
 import { existsSync, readFileSync } from 'fs';
 import { isAbsolute, join, resolve } from 'path';
 import { pathToFileURL } from 'url';
-import { resolveControllerHome } from '../src/cli/repositories/controller-home.ts';
+import { resolveControllerHome } from '../src/effects/controller-home';
 import { findRegisteredRepositoryByCheckoutRoot, getRepository } from '../src/cli/repositories/registry.ts';
 import { createRecoveryConfig, gatewayToken, loadRecoveryConfig } from '../src/runtime/standalone-recovery/core.ts';
 

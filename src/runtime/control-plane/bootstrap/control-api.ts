@@ -1,4 +1,4 @@
-import { resolveControllerHome } from '../../../cli/repositories/controller-home';
+import { resolveControllerHome } from '../../../effects/controller-home';
 import { buildBootstrapSnapshot } from './state-machine';
 import { readBootstrapSnapshot, writeBootstrapSnapshot } from './store';
 import type { BootstrapAction, BootstrapEvaluation, BootstrapSnapshot } from './types';

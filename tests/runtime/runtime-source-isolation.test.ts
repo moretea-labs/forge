@@ -5,7 +5,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { getMcpPolicy } from '../../adapters/mcp/policy';
 import type { MultiRepositoryMcpToolContext } from '../../adapters/mcp/multi-repository';
-import { ensureControllerHome, repositoryControllerRoot } from '../../src/cli/repositories/controller-home';
+import { ensureControllerHome, repositoryControllerRoot } from '../../src/effects/controller-home';
 import { addRepositoryCheckout, registerRepository } from '../../src/cli/repositories/registry';
 import { callRuntimeTool } from '../../adapters/mcp/runtime-gateway/runtime-tools';
 import { callContextAdapter } from '../../adapters/mcp/runtime-gateway/context-adapter';

@@ -13,7 +13,7 @@ import { executeGatewayRoutedOperation } from '../../adapters/mcp/runtime-gatewa
 import { callCoreCapabilityAdapter } from '../../adapters/mcp/runtime-gateway/core-capability-adapter';
 import { createMcpToolContext } from '../../adapters/mcp/server';
 import { callMultiRepositoryTool } from '../../adapters/mcp/multi-repository';
-import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
+import { ensureControllerHome } from '../../src/effects/controller-home';
 import { addRepositoryCheckout, getRepository, registerRepository, selectRepositoryCheckout } from '../../src/cli/repositories/registry';
 import { repositoryGitStatus } from '../../src/cli/repositories/structured-git';
 import { ensureRepositoryRuntimeStorageBinding } from '../../src/cli/repositories/runtime-storage';

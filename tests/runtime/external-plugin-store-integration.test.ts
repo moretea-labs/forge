@@ -40,7 +40,7 @@ import {
   submitControllerPluginAction,
   submitAssistantPluginAction,
 } from '../../src/runtime/plugins/store';
-import { FORGE_INSTANCE_SCOPE_KEY } from '../../src/cli/repositories/controller-home';
+import { FORGE_INSTANCE_SCOPE_KEY } from '../../src/effects/controller-home';
 import { acquireRuntimeOwnership } from '../../src/runtime/root/ownership';
 import { ensureActiveRuntimeRelease } from '../../src/runtime/root/release-store';
 import { bindRuntimeWriteClaim, clearRuntimeWriteClaimForTests } from '../../src/runtime/root/write-fence';

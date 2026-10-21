@@ -8,7 +8,7 @@ import {
 } from 'fs';
 import { homedir } from 'os';
 import { basename, join, relative, resolve, sep } from 'path';
-import { repositoryControllerRoot } from '../../cli/repositories/controller-home';
+import { repositoryControllerRoot } from '../../effects/controller-home';
 
 const DEFAULT_GENERATED_CACHE_GRACE_MS = 6 * 60 * 60_000;
 const DEFAULT_BROWSER_UPLOAD_GRACE_MS = 24 * 60 * 60_000;
