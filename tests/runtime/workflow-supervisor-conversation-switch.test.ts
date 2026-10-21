@@ -113,7 +113,7 @@ describe('Workflow Supervisor fresh conversation switch', () => {
     supervisorStore.close();
   });
 
-  test('rotates one standalone Supervisor atomically only after 15 confirmed CONTINUE receipts', async () => {
+  test('rotates one standalone Supervisor atomically after 10 confirmed CONTINUE receipts', async () => {
     const fx = fixture();
     const oldConversationId = '12121212-aaaa-bbbb-cccc-343434343434';
     const taskId = 'supervisor:standalone-receipt-rotation';
@@ -129,7 +129,7 @@ describe('Workflow Supervisor fresh conversation switch', () => {
       userBlockerPolicy: {},
     });
     let effect = control.reserveEnrollment(taskId);
-    for (let n = 1; n <= 15; n += 1) {
+    for (let n = 1; n <= 10; n += 1) {
       expect(store.recordEffectDispatchStarted(effect.effectId, 1, `round-${n}`)).toBe(true);
       control.observeEffect({ effectId: effect.effectId, observationId: `applied-${n}`, outcome: 'applied' });
       const result = await control.observeAssistantTurn({ taskId, conversationId: oldConversationId,
@@ -138,7 +138,7 @@ describe('Workflow Supervisor fresh conversation switch', () => {
       expect(result).toMatchObject({ action: 'CONTINUE', terminal: false });
       if (!('successorEffect' in result) || !result.successorEffect) throw new Error('MISSING_CONTINUATION_EFFECT');
       effect = result.successorEffect;
-      if (n < 15) {
+      if (n < 10) {
         expect(effect.kind).toBe('continuation');
         expect(store.getTask(taskId)?.conversationId).toBe(oldConversationId);
       }
@@ -162,15 +162,15 @@ describe('Workflow Supervisor fresh conversation switch', () => {
     expect(store.getTask(taskId)?.conversationId).toBe(freshId);
     // A healthy second window must be eligible to rotate again. Migration
     // budgets limit *consecutive failed* moves, never lifetime conversations.
-    for (let n = 16; n <= 30; n += 1) {
+    for (let n = 11; n <= 20; n += 1) {
       expect(store.recordEffectDispatchStarted(effect.effectId, 1, `round-${n}`)).toBe(true);
       control.observeEffect({ effectId: effect.effectId, observationId: `applied-${n}`, outcome: 'applied' });
       const result = await control.observeAssistantTurn({ taskId, conversationId: freshId,
-        responseText: 'Delivered useful work.\n' + (n === 16 ? bootstrapReceipt : renderSupervisorReceipt(control.getTask(taskId)!, effect.effectId, 'CONTINUE')),
+        responseText: 'Delivered useful work.\n' + (n === 11 ? bootstrapReceipt : renderSupervisorReceipt(control.getTask(taskId)!, effect.effectId, 'CONTINUE')),
       });
       if (!('successorEffect' in result) || !result.successorEffect) throw new Error('MISSING_SUCCESSOR_IN_SECOND_WINDOW');
       effect = result.successorEffect;
-      if (n < 30) {
+      if (n < 20) {
         expect(effect.kind).toBe('continuation');
         expect(store.getTask(taskId)?.conversationId).toBe(freshId);
       }
@@ -203,6 +203,37 @@ describe('Workflow Supervisor fresh conversation switch', () => {
       requestId: 'third-failed-hop', reason: 'A third move without progress must stop.',
       authorizedBy: 'test-operator',
     })).toThrow('WORKFLOW_SUPERVISOR_MIGRATION_BUDGET_EXHAUSTED');
+    store.close();
+  });
+
+
+  test('earlier confirmed receipt rotation derives from durable exact-target load failures', async () => {
+    const fx = fixture();
+    const conversationId = '75757575-aaaa-bbbb-cccc-878787878787';
+    const taskId = 'supervisor:degraded-receipt-rotation';
+    const store = new WorkflowSupervisorStore(fx.controllerHome);
+    const control = new WorkflowSupervisorControlPlane(store);
+    control.registerTask({
+      taskId, conversationId, conversationUrl: `https://chatgpt.com/c/${conversationId}`,
+      objective: 'Rotate a reliably degraded but still completing conversation.',
+      completionContract: {}, continuationPolicy: { kind: 'standalone_supervisor' }, userBlockerPolicy: {},
+    });
+    store.recordBrowserDeliveryAttemptFailure({ taskId, conversationId, code: 'COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE' });
+    store.recordBrowserDeliveryAttemptFailure({ taskId, conversationId, code: 'COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE' });
+    let effect = control.reserveEnrollment(taskId);
+    for (let n = 1; n <= 6; n += 1) {
+      expect(store.recordEffectDispatchStarted(effect.effectId, 1, `degraded-round-${n}`)).toBe(true);
+      control.observeEffect({ effectId: effect.effectId, observationId: `degraded-applied-${n}`, outcome: 'applied' });
+      const result = await control.observeAssistantTurn({
+        taskId, conversationId,
+        responseText: 'Useful progress.\n' + renderSupervisorReceipt(control.getTask(taskId)!, effect.effectId, 'CONTINUE'),
+      });
+      if (!('successorEffect' in result) || !result.successorEffect) throw new Error('DEGRADED_SUCCESSOR_MISSING');
+      effect = result.successorEffect;
+      expect(effect.kind).toBe(n === 6 ? 'enrollment' : 'continuation');
+    }
+    expect(store.getTask(taskId)?.conversationId).toBe(`bootstrap:${taskId}`);
+    expect(store.latestEffectDispatch(effect.effectId)?.generation ?? 0).toBe(0);
     store.close();
   });
 

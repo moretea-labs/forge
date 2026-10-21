@@ -733,7 +733,30 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     const target = ensured.target;
     const snapshot = ensured.observation ?? await target.observe({ includeUserHistory: false, includePageText: false });
     if (!exactConversation(snapshot, task)) { this.noteTargetUnavailable(task, poll.command?.effectId, { code: 'WORKFLOW_SUPERVISOR_EXACT_CONVERSATION_UNPROVEN' }); return; }
-    if (!conversationContentAvailable(snapshot)) { this.noteTargetUnavailable(task, poll.command?.effectId, { code: 'COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE' }); return; }
+    if (!conversationContentAvailable(snapshot)) {
+      const code = 'COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE';
+      this.noteTargetUnavailable(task, poll.command?.effectId, { code });
+      const failure = this.taskTransportFailures.get(task.taskId);
+      // A stable, exact-conversation empty shell is actionable only after
+      // independent spaced observations and a healthy inventory. An applied
+      // unanswered turn, unknown Send, auth failure or global outage cannot
+      // justify leaving the source conversation.
+      if (task.continuationPolicy.kind === 'standalone_supervisor'
+        && !this.lastRunTransportUnavailable
+        && this.conversations.some((conversation) => conversation.conversation_id === task.conversationId)
+        && failure?.code === code && failure.streak >= 3
+        && this.deps.nowMs() - failure.firstFailureAtMs >= 2 * 60_000
+        && poll.command?.mode === 'send' && poll.command.dispatchGeneration === 1
+        && !this.control.store.hasAppliedEffectAwaitingCompletion(task.taskId)) {
+        this.control.migrateConversation({
+          taskId: task.taskId, expectedConversationId: task.conversationId,
+          fresh: true, requestId: `verified-unavailable:${task.conversationId}`,
+          reason: 'exact_conversation_empty_shell_verified_across_spaced_browser_observations',
+          authorizedBy: 'user-authorized-automatic-conversation-rotation',
+        });
+      }
+      return;
+    }
     // Do not clear a pre-send failure merely because a conversation loaded:
     // only a successful provider preparation proves the obstacle is gone.
     if (transportFailure?.code !== SUPERVISOR_PRE_SEND_BLOCKED) this.clearTaskFailure(task.taskId, poll.command?.effectId);
