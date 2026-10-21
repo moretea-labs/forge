@@ -18,7 +18,7 @@ import { callRuntimeTool } from './runtime-gateway/runtime-tools';
 import { callExecutionTool } from './runtime-gateway/execution-tools';
 import { callProcessTool, executeAuthorizedHostCommand } from './runtime-gateway/process-tools';
 import { injectDurableCommandFields, isGatewayIsolatedTool, routeDurableMcpCall } from './runtime-gateway/router';
-import { controllerExposureSnapshot, isControllerToolExposed } from './toolset';
+import { controllerExposureSnapshot, controllerToolSurfaceStatus, isControllerToolExposed } from './toolset';
 import { settleCognitionAfterTool } from './runtime-gateway/cognition-settlement';
 import { randomUUID } from 'crypto';
 import { readFileSync } from 'fs';
@@ -972,7 +972,10 @@ function canonicalRuntimeSchemaMatchesGateway(ctx: MultiRepositoryMcpToolContext
   const runtimeFingerprint = observeRuntimeStatus(ctx.controllerHome).snapshot?.toolSurfaceFingerprint;
   // Older Runtime status records do not have a schema fence. Preserve a
   // diagnosable compatibility path until the Runtime has been upgraded.
-  return !runtimeFingerprint || runtimeFingerprint === controllerExposureSnapshot(ctx).fingerprint;
+  // Tool schemas do not vary by access mode. The cached static projection
+  // avoids loading access-mode config and allocating a diagnostic inventory
+  // for every forwarded MCP call while retaining the same release fence.
+  return !runtimeFingerprint || runtimeFingerprint === controllerToolSurfaceStatus(ctx).fingerprint;
 }
 
 function toolSurfaceMismatchResult(): CallToolResult {
