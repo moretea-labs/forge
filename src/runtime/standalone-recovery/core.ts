@@ -100,415 +100,135 @@ import {
   type ReleaseSessionStableRelease,
 } from '../release/release-session';
 
+import {
+  STABLE_RECOVERY_READ_ONLY_TOOL,
+  assertRecoveryMutationIdentity,
+  audit,
+  auditPath,
+  command,
+  configuredPrimaryPublicTunnel,
+  configuredRecoveryTunnel,
+  defaultPrimaryRuntimeServiceConfig,
+  isPrimaryTunnelControlPlaneOnlyDegradation,
+  json,
+  loadWatchdogState,
+  lockPath,
+  normalizeRecoveryInstallProfile,
+  normalizeRecoveryReadOnlyTool,
+  persistWatchdogDiagnosticEvidence,
+  publicTunnelRepairStatePath,
+  quarantinePath,
+  recoveryCommandEnvironment,
+  recoveryCommandPath,
+  recoveryInstallProfileRoles,
+  recoveryMachineIdentity,
+  recoveryMutationIdentityExpectations,
+  recoveryRoot,
+  runtimePinPath,
+  saveWatchdogState,
+  statePath,
+  watchdogDiagnosticPath,
+  watchdogStatePath,
+  writeJson,
+  type CommandOptions,
+  type CommandResult,
+  type CommandRunner,
+  type ConfiguredRuntimeActivationResult,
+  type KnownGoodStore,
+  type LaunchdPrimaryConnectorServiceConfig,
+  type LaunchdPublicTunnelServiceConfig,
+  type OpenAiSecureTunnelServiceConfig,
+  type PrimaryConnectorRestartResult,
+  type PrimaryConnectorServiceConfig,
+  type PrimaryRuntimeRecoveryResult,
+  type PrimaryRuntimeRestartResult,
+  type PrimaryRuntimeServiceConfig,
+  type PublicTunnelRepairResult,
+  type PublicTunnelServiceConfig,
+  type RecoveryConfig,
+  type RecoveryInstallProfile,
+  type RecoveryLock,
+  type RecoveryLockAttempt,
+  type RecoveryLockIntent,
+  type RecoveryMachineIdentity,
+  type RecoveryMutationAction,
+  type RecoveryTunnelServiceConfig,
+  type RecoveryWatchdogDiagnosticEvidence,
+  type ReleaseEvidence,
+  type RollbackResult,
+  type RuntimePinStore,
+  type RuntimeReleaseActivationResult,
+  type SystemdPrimaryConnectorServiceConfig,
+  type SystemdUserRecoveryTunnelServiceConfig,
+  type VerifyResult,
+  type VerifyStableRuntimeOptions,
+  type WatchdogDecision,
+  type WatchdogState,
+} from './recovery-shared';
+import {
+  canonicalRuntimeSafeForTargetedConnectorRecovery,
+  closeRecoveryMcpSession,
+  connectorCapacityRecoveryRecommended,
+  ensureOpenAiTunnelRuntimeStarted,
+  isUpstreamOpenAiControlPlaneIncident,
+  mainToken,
+  mcpCall,
+  observeOpenAiRecoveryTunnel,
+  observeOpenAiTunnelRuntime,
+  observeRecentMacNetworkExtensionChanges,
+  openAiTunnelObservationFromProbe,
+  probe,
+  probeExternalMcp,
+  probeOpenAiApiReachability,
+  probeOpenAiRecoveryTunnel,
+  probePublicGatewayReadiness,
+  publicGatewayReadinessEndpoint,
+  runtimeEndpoint,
+  runtimeHealthEndpoint,
+  tunnelClientWorkingDirectory,
+} from './probe-observation';
+export {
+  defaultPrimaryRuntimeServiceConfig,
+  isPrimaryTunnelControlPlaneOnlyDegradation,
+  loadWatchdogState,
+  normalizeRecoveryInstallProfile,
+  recoveryCommandEnvironment,
+  recoveryCommandPath,
+  recoveryInstallProfileRoles,
+  recoveryMachineIdentity,
+  recoveryMutationIdentityExpectations,
+  saveWatchdogState,
+  assertRecoveryMutationIdentity,
+} from './recovery-shared';
+export type {
+  ConfiguredRuntimeActivationResult,
+  LaunchdPrimaryConnectorServiceConfig,
+  LaunchdPublicTunnelServiceConfig,
+  OpenAiSecureTunnelServiceConfig,
+  PrimaryConnectorRestartResult,
+  PrimaryConnectorServiceConfig,
+  PrimaryRuntimeRecoveryResult,
+  PrimaryRuntimeRestartResult,
+  PrimaryRuntimeServiceConfig,
+  PublicTunnelRepairResult,
+  PublicTunnelServiceConfig,
+  RecoveryConfig,
+  RecoveryInstallProfile,
+  RecoveryMachineIdentity,
+  RecoveryMutationAction,
+  RecoveryTunnelServiceConfig,
+  RecoveryWatchdogDiagnosticEvidence,
+  RollbackResult,
+  RuntimeReleaseActivationResult,
+  SystemdPrimaryConnectorServiceConfig,
+  SystemdUserRecoveryTunnelServiceConfig,
+  VerifyResult,
+  VerifyStableRuntimeOptions,
+  WatchdogDecision,
+  WatchdogState,
+} from './recovery-shared';
+export { observeOpenAiTunnelLocalHealthFallback, runtimeStatus } from './probe-observation';
 /** Standalone recovery reads only canonical Runtime observation and whole-release authority. */
-interface PublicTunnelRecoveryPolicy {
-  minimumFailures?: number;
-  minimumFailureDurationMs?: number;
-  cooldownMs?: number;
-  postRestartVerifyTimeoutMs?: number;
-}
-
-export interface LaunchdPublicTunnelServiceConfig extends PublicTunnelRecoveryPolicy {
-  platform: 'launchd';
-  label: string;
-  plistPath?: string;
-}
-
-export interface OpenAiSecureTunnelServiceConfig extends PublicTunnelRecoveryPolicy {
-  platform: 'openai-secure-tunnel';
-  /** Stable tunnel-client runtime identity. Recovery must not repoint another alias. */
-  alias: string;
-  /** Non-secret OpenAI tunnel identity. */
-  tunnelId: string;
-  /** Loopback MCP endpoint owned by the local service behind this tunnel. */
-  mcpServerUrl: string;
-  /** Secret reference only (env:NAME or file:/absolute/path). Recovery never reads the secret. */
-  runtimeApiKeyRef?: string;
-  profile?: string;
-  profileDir?: string;
-  adminProfile?: string;
-}
-
-export type PublicTunnelServiceConfig = LaunchdPublicTunnelServiceConfig | OpenAiSecureTunnelServiceConfig;
-
-export interface SystemdUserRecoveryTunnelServiceConfig extends PublicTunnelRecoveryPolicy {
-  platform: 'systemd-user';
-  /** Exact systemd --user unit owned by the dedicated Recovery public tunnel. */
-  unitName: string;
-}
-
-export type RecoveryTunnelServiceConfig = PublicTunnelServiceConfig | SystemdUserRecoveryTunnelServiceConfig;
-
-export interface PrimaryRuntimeServiceConfig {
-  platform: 'launchd' | 'systemd-user';
-  minimumFailures?: number;
-  minimumFailureDurationMs?: number;
-  restartCooldownMs?: number;
-  maximumRestartAttempts?: number;
-  /** Continuous healthy time required before the same release earns a fresh restart budget. */
-  restartBudgetStableDurationMs?: number;
-  recoveryCooldownMs?: number;
-  postRestartVerifyTimeoutMs?: number;
-}
-
-interface PrimaryConnectorRecoveryPolicy {
-  /** Local OAuth MCP endpoint used to distinguish Connector failure from tunnel failure. */
-  localMcpUrl?: string;
-  minimumFailures?: number;
-  minimumFailureDurationMs?: number;
-  restartCooldownMs?: number;
-  maximumRestartAttempts?: number;
-  postRestartVerifyTimeoutMs?: number;
-}
-
-export interface LaunchdPrimaryConnectorServiceConfig extends PrimaryConnectorRecoveryPolicy {
-  platform: 'launchd';
-  label: string;
-  plistPath?: string;
-}
-
-export interface SystemdPrimaryConnectorServiceConfig extends PrimaryConnectorRecoveryPolicy {
-  platform: 'systemd-user';
-  /** Optional assertion. When present it must equal the package Connector label derived from Controller Home. */
-  label?: string;
-}
-
-export type PrimaryConnectorServiceConfig = LaunchdPrimaryConnectorServiceConfig | SystemdPrimaryConnectorServiceConfig;
-
-export type RecoveryInstallProfile = 'manual' | 'gateway' | 'self-healing';
-
-export function normalizeRecoveryInstallProfile(value: unknown, fallback: RecoveryInstallProfile = 'self-healing'): RecoveryInstallProfile {
-  if (value === undefined || value === null || value === '') return fallback;
-  if (value === 'manual' || value === 'gateway' || value === 'self-healing') return value;
-  throw new Error(`RECOVERY_INSTALL_PROFILE_INVALID: ${String(value)}`);
-}
-
-export function recoveryInstallProfileRoles(profile: RecoveryInstallProfile): RecoveryRuntimeRole[] {
-  if (profile === 'manual') return [];
-  return ['daemon'];
-}
-
-export interface RecoveryConfig {
-  schemaVersion: 1;
-  controllerHome: string;
-  /** Persistent Recovery role selection. Legacy configs default to self-healing. */
-  installProfile: RecoveryInstallProfile;
-  publicMcpUrl?: string;
-  recoveryPublicUrl?: string;
-  recoveryTunnelService?: RecoveryTunnelServiceConfig;
-  /** Optional public tunnel serving publicMcpUrl; independent from the OAuth Connector process. */
-  primaryPublicTunnelService?: PublicTunnelServiceConfig;
-  primaryRuntimeService?: PrimaryRuntimeServiceConfig;
-  primaryRuntimeSourceRoot?: string;
-  /** Repository Registry authority paired with primaryRuntimeSourceRoot. */
-  primaryRuntimeSourceRepositoryId?: string;
-  primaryConnectorService?: PrimaryConnectorServiceConfig;
-  mainMcpTokenFile?: string;
-  expectedToolFingerprint?: string;
-  readOnlyTool?: { name: string; arguments?: Record<string, unknown> };
-  gateway?: { host: string; port: number; bearerTokenFile: string };
-}
-
-export interface RecoveryMachineIdentity {
-  schemaVersion: 1;
-  host: string;
-  platform: NodeJS.Platform;
-  controllerHome: string;
-  recovery: {
-    releaseRevision?: string;
-    manifestSha256?: string;
-  };
-  targetRuntime: {
-    id: string;
-    servicePlatform: 'launchd' | 'systemd-user';
-    serviceLabel: string;
-    activeReleaseId?: string;
-    authorityRevision?: number;
-  };
-}
-
-export function recoveryMachineIdentity(
-  config: RecoveryConfig,
-  dependencies: { host?: string; platform?: NodeJS.Platform } = {},
-): RecoveryMachineIdentity {
-  const controllerHome = resolve(config.controllerHome);
-  const platform = dependencies.platform ?? process.platform;
-  const host = dependencies.host?.trim() || hostname();
-  const recoveryRelease = readCurrentRecoveryRelease(controllerHome);
-  const runtimeAuthority = readRuntimeReleaseAuthority(controllerHome);
-  const servicePlatform = (config.primaryRuntimeService ?? defaultPrimaryRuntimeServiceConfig(platform)).platform;
-  const serviceLabel = forgeRuntimeServicePaths(controllerHome).label;
-  const activeReleaseId = runtimeAuthority?.active.releaseId;
-  return {
-    schemaVersion: 1,
-    host,
-    platform,
-    controllerHome,
-    recovery: {
-      ...(recoveryRelease ? { releaseRevision: recoveryRelease.releaseRevision, manifestSha256: recoveryRelease.manifestSha256 } : {}),
-    },
-    targetRuntime: {
-      id: `${servicePlatform}:${serviceLabel}:${activeReleaseId ?? 'none'}`,
-      servicePlatform,
-      serviceLabel,
-      ...(activeReleaseId ? { activeReleaseId } : {}),
-      ...(runtimeAuthority ? { authorityRevision: runtimeAuthority.revision } : {}),
-    },
-  };
-}
-
-export function recoveryMutationIdentityExpectations(identity: Pick<RecoveryMachineIdentity, 'host' | 'platform' | 'controllerHome' | 'recovery' | 'targetRuntime'>): RecoveryMutationIdentityArguments {
-  return {
-    expected_host: identity.host,
-    expected_platform: identity.platform,
-    expected_controller_home: identity.controllerHome,
-    expected_recovery_release: identity.recovery.releaseRevision ?? 'none',
-    expected_target_runtime: identity.targetRuntime.id,
-  };
-}
-
-export function assertRecoveryMutationIdentity(config: RecoveryConfig, args: Record<string, unknown>): RecoveryMachineIdentity {
-  const identity = recoveryMachineIdentity(config);
-  const expected = recoveryMutationIdentityExpectations(identity);
-  for (const field of RECOVERY_MUTATION_IDENTITY_FIELDS) {
-    const supplied = typeof args[field] === 'string' ? args[field].trim() : '';
-    if (!supplied) throw new Error(`RECOVERY_TARGET_IDENTITY_REQUIRED:${field}`);
-    if (supplied !== expected[field]) throw new Error(`RECOVERY_TARGET_IDENTITY_MISMATCH:${field}`);
-  }
-  return identity;
-}
-
-interface ReleaseEvidence {
-  path: string;
-  revision: string;
-  artifactIdentity: string;
-  manifestSha256: string;
-  workerProtocolVersion: number;
-  controllerHome?: string;
-  sourceRepositoryId?: string;
-  releaseAuthorityRevision?: number;
-  releaseFencingTokenSha256?: string;
-  attestedAt?: string;
-  pinnedAt?: string;
-  performance?: RuntimePerformanceEvidence;
-  recoveryBundle?: KnownGoodRecoveryBundle;
-}
-
-interface KnownGoodStore {
-  schemaVersion: 1 | 2;
-  releases: ReleaseEvidence[];
-  updatedAt: string;
-}
-
-interface RuntimePinStore {
-  schemaVersion: 1;
-  release: ReleaseEvidence;
-  updatedAt: string;
-}
-
-export type RecoveryMutationAction =
-  | 'attest_known_good'
-  | 'rollback_previous'
-  | 'restart_primary_runtime'
-  | 'recover_primary_runtime'
-  | 'activate_runtime_release'
-  | 'pin_runtime_release'
-  | 'unpin_runtime_release'
-  | 'activate_pinned_runtime_release'
-  | 'stage_and_activate_runtime_release'
-  | 'release_session_prepare'
-  | 'release_session_static_verify'
-  | 'release_session_candidate_boot'
-  | 'release_session_cutover'
-  | 'release_session_cancel'
-  | 'release_session_rollback'
-  | 'release_session_known_good'
-  | 'restart_primary_connector'
-  | 'restart_recovery_gateway'
-  | 'repair_public_tunnel';
-
-type RecoveryLock = RecoveryOperationLockRecord;
-
-interface RecoveryLockIntent {
-  action: RecoveryMutationAction;
-  requestId?: string;
-}
-
-type RecoveryLockAttempt<T> =
-  | { acquired: true; value: T }
-  | { acquired: false; owner: RecoveryLock };
-
-export interface VerifyResult {
-  ok: boolean;
-  at: string;
-  runtime: { ok: boolean; running: boolean; ready: boolean; stale: boolean; reasonCodes: string[] };
-  releases: { active?: ReleaseEvidence; previous?: ReleaseEvidence; knownGood?: ReleaseEvidence; coherent: boolean };
-  probes: Record<string, { ok: boolean; detail: string; status?: number; value?: unknown }>;
-}
-
-export interface VerifyStableRuntimeOptions extends RuntimeReleaseExecutionCanaryDependencies {
-  probeMcpProtocol?: boolean;
-}
-
-/**
- * Remote tunnel control-plane lookup is weaker evidence than the live data plane.
- * Once the configured tunnel is locally healthy/ready with matching identities and
- * the public MCP protocol succeeds end-to-end, a degraded/unknown control-plane
- * lookup remains diagnostic instead of vetoing whole-Runtime verification.
- * Any local health, readiness, identity, endpoint, or MCP failure still gates.
- */
-export function isPrimaryTunnelControlPlaneOnlyDegradation(
-  probe: VerifyResult['probes'][string] | undefined,
-  mcpProtocolHealthy: boolean,
-): boolean {
-  if (!mcpProtocolHealthy || !probe || probe.ok) return false;
-  const observed = probe.value as Partial<OpenAiSecureTunnelRuntimeObservation> | undefined;
-  return observed?.healthy === true
-    && observed.ready === true
-    && observed.tunnelMatches === true
-    && observed.endpointMatches === true
-    && (observed.controlPlaneState === 'degraded' || observed.controlPlaneState === 'unknown');
-}
-
-/** Bounded, release-scoped explanation for a failed watchdog verification. */
-export interface RecoveryWatchdogDiagnosticEvidence {
-  fingerprint: string;
-  releaseIdentity: string;
-  components: Array<'runtime' | 'gateway' | 'public_mcp' | 'recovery_gateway' | 'recovery_watchdog' | 'recovery_tunnel'>;
-  failedProbes: Array<{ name: string; component: 'runtime' | 'gateway' | 'public_mcp' | 'recovery_gateway' | 'recovery_watchdog' | 'recovery_tunnel'; detail: string; status?: number }>;
-  firstObservedAt: string;
-  lastObservedAt: string;
-  occurrences: number;
-}
-
-interface RecoveryWatchdogDiagnosticStore {
-  schemaVersion: 1;
-  entries: RecoveryWatchdogDiagnosticEvidence[];
-}
-
-export interface RollbackResult {
-  ok: boolean;
-  noOp?: boolean;
-  operationId?: string;
-  detail: string;
-  verify?: VerifyResult;
-}
-
-export interface WatchdogDecision {
-  action: 'healthy' | 'degraded' | 'repair_public_tunnel' | 'restart_recovery_gateway' | 'restart_primary_connector' | 'restart_primary_runtime' | 'rollback' | 'recovery_exhausted';
-  reason: string;
-}
-
-export interface WatchdogState {
-  failures: number;
-  firstFailureAt?: number;
-  rollbackUsed: boolean;
-  runtimeRestartAttempts?: number;
-  runtimeRestartFailures?: number;
-  runtimeRestartLastAttemptAt?: number;
-  /** Exact active Runtime release for the persisted restart budget. */
-  runtimeRestartBudgetIdentity?: string;
-  /** First continuously healthy observation for the active Runtime release. */
-  runtimeHealthySince?: number;
-  /** First observation that exhausted the active release's automatic recovery budget. */
-  runtimeRestartBudgetExhaustedAt?: number;
-  runtimeRecoveryFailures?: number;
-  runtimeRecoveryLastAttemptAt?: number;
-  publicTunnelFailures?: number;
-  publicTunnelFirstFailureAt?: number;
-  publicTunnelRepairFailures?: number;
-  primaryConnectorFailures?: number;
-  primaryConnectorFirstFailureAt?: number;
-  primaryConnectorRestartAttempts?: number;
-  primaryConnectorRestartFailures?: number;
-  primaryConnectorRestartLastAttemptAt?: number;
-  recoveryGatewayRestartUsed?: boolean;
-  recoveryReleaseRevision?: string;
-  lastFullVerifyAt?: number;
-  lastDecision?: WatchdogDecision['action'];
-  lastReason?: string;
-  updatedAt?: string;
-}
-
-export interface PublicTunnelRepairResult {
-  ok: boolean;
-  attempted: boolean;
-  noOp?: boolean;
-  detail: string;
-  serviceLabel?: string;
-  serviceTarget?: string;
-  verify: VerifyResult;
-  localVerify?: VerifyResult;
-}
-
-export interface PrimaryRuntimeRestartResult {
-  ok: boolean;
-  attempted: boolean;
-  noOp?: boolean;
-  detail: string;
-  serviceTarget?: string;
-  verify: VerifyResult;
-}
-
-export interface PrimaryConnectorRestartResult {
-  ok: boolean;
-  attempted: boolean;
-  noOp?: boolean;
-  detail: string;
-  serviceTarget?: string;
-  verify: VerifyResult;
-}
-
-export interface ConfiguredRuntimeActivationResult {
-  ok: boolean;
-  attempted: boolean;
-  noOp?: boolean;
-  detail: string;
-  staged?: StagedRuntimeRelease;
-  releaseSession?: ReleaseSession;
-  /** Legacy/home-bound recovery activation only. Fresh portable source candidates never set this during preparation. */
-  activation?: RuntimeReleaseActivationResult;
-}
-
-export interface PrimaryRuntimeRecoveryResult {
-  ok: boolean;
-  attempted: boolean;
-  noOp?: boolean;
-  detail: string;
-  serviceTarget?: string;
-  rollback?: RollbackResult;
-  verify: VerifyResult;
-}
-
-export interface RuntimeReleaseActivationResult {
-  ok: boolean;
-  attempted: boolean;
-  noOp?: boolean;
-  detail: string;
-  serviceTarget?: string;
-  operationId?: string;
-  rollback?: RollbackResult;
-  verify?: VerifyResult;
-}
-
-// This must be a bounded, stable tool that succeeds before a repository has
-// been selected. rh_status is repository-scoped in multi-repository homes, so
-// it can report REPOSITORY_AMBIGUOUS even when the Runtime is healthy.
-const STABLE_RECOVERY_READ_ONLY_TOOL = { name: 'repository_list', arguments: {} } as const;
-const RETIRED_RECOVERY_READ_ONLY_TOOLS = new Set(['controller_context', 'controller_ready']);
-
-function normalizeRecoveryReadOnlyTool(
-  input: RecoveryConfig['readOnlyTool'] | undefined,
-): NonNullable<RecoveryConfig['readOnlyTool']> {
-  if (!input || RETIRED_RECOVERY_READ_ONLY_TOOLS.has(input.name)) {
-    return { name: STABLE_RECOVERY_READ_ONLY_TOOL.name, arguments: { ...STABLE_RECOVERY_READ_ONLY_TOOL.arguments } };
-  }
-  return input;
-}
-
-export function defaultPrimaryRuntimeServiceConfig(platform: NodeJS.Platform = process.platform): PrimaryRuntimeServiceConfig {
-  return { platform: platform === 'linux' ? 'systemd-user' : 'launchd' };
-}
 
 const DEFAULT_CONFIG: Omit<RecoveryConfig, 'controllerHome'> = {
   schemaVersion: 1,
@@ -516,55 +236,6 @@ const DEFAULT_CONFIG: Omit<RecoveryConfig, 'controllerHome'> = {
   readOnlyTool: { name: STABLE_RECOVERY_READ_ONLY_TOOL.name, arguments: { ...STABLE_RECOVERY_READ_ONLY_TOOL.arguments } },
   primaryRuntimeService: defaultPrimaryRuntimeServiceConfig(),
 };
-
-function json<T>(path: string): T | undefined {
-  try { return JSON.parse(readFileSync(path, 'utf8')) as T; } catch { return undefined; }
-}
-
-function writeJson(path: string, value: unknown): void {
-  const content = `${JSON.stringify(value, null, 2)}\n`;
-  assertStorageHeadroom(path, {
-    operation: 'standalone_recovery_state_write',
-    requiredBytes: Buffer.byteLength(content),
-    reserveBytes: 16 * 1024 * 1024,
-  });
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  const temporary = `${path}.${process.pid}.tmp`;
-  writeFileSync(temporary, content, { encoding: 'utf8', mode: 0o600 });
-  try { chmodSync(temporary, 0o600); } catch { /* best effort */ }
-  renameSync(temporary, path);
-}
-
-function recoveryRoot(config: RecoveryConfig): string { return join(resolve(config.controllerHome), 'recovery'); }
-function statePath(config: RecoveryConfig): string { return join(recoveryRoot(config), 'state', 'known-good.json'); }
-function runtimePinPath(config: RecoveryConfig): string { return join(recoveryRoot(config), 'state', 'runtime-pin.json'); }
-function lockPath(config: RecoveryConfig): string { return recoveryOperationLockPath(config.controllerHome); }
-function auditPath(config: RecoveryConfig): string { return join(recoveryRoot(config), 'audit', 'recovery.jsonl'); }
-function watchdogDiagnosticPath(config: RecoveryConfig): string { return join(recoveryRoot(config), 'state', 'watchdog-diagnostics.json'); }
-function quarantinePath(config: RecoveryConfig): string { return join(recoveryRoot(config), 'state', 'quarantine.json'); }
-function publicTunnelRepairStatePath(config: RecoveryConfig): string { return join(recoveryRoot(config), 'state', 'public-tunnel-repair.json'); }
-function watchdogStatePath(config: RecoveryConfig): string { return join(recoveryRoot(config), 'state', 'watchdog.json'); }
-export function loadWatchdogState(config: RecoveryConfig): WatchdogState {
-  const state = json<WatchdogState>(watchdogStatePath(config));
-  if (!state || !Number.isInteger(state.failures) || state.failures < 0 || typeof state.rollbackUsed !== 'boolean') {
-    return { failures: 0, rollbackUsed: false, publicTunnelFailures: 0, publicTunnelRepairFailures: 0 };
-  }
-  return state;
-}
-
-export function saveWatchdogState(config: RecoveryConfig, state: WatchdogState): WatchdogState {
-  const persisted = { ...state, updatedAt: new Date().toISOString() };
-  writeJson(watchdogStatePath(config), persisted);
-  return persisted;
-}
-
-function configuredRecoveryTunnel(config: RecoveryConfig): RecoveryTunnelServiceConfig | undefined {
-  return config.recoveryTunnelService;
-}
-
-function configuredPrimaryPublicTunnel(config: RecoveryConfig): PublicTunnelServiceConfig | undefined {
-  return config.primaryPublicTunnelService;
-}
 
 function configuredRecoveryPublicUrl(config: RecoveryConfig): string | undefined {
   return config.recoveryPublicUrl;
@@ -840,12 +511,6 @@ export async function unpinRuntimeRelease(config: RecoveryConfig, requestId?: st
 }
 
 
-function audit(config: RecoveryConfig, event: string, detail: Record<string, unknown>): void {
-  const line = JSON.stringify({ at: new Date().toISOString(), event, detail });
-  mkdirSync(dirname(auditPath(config)), { recursive: true, mode: 0o700 });
-  writeFileSync(auditPath(config), `${line}\n`, { encoding: 'utf8', mode: 0o600, flag: 'a' });
-}
-
 export interface RecoveryHistoryEvent {
   at: string;
   event: string;
@@ -915,55 +580,6 @@ export function listRecoveryHistory(
   return { events: parsed.slice(-limit).reverse(), bounded: true, truncated };
 }
 
-const WATCHDOG_DIAGNOSTIC_LIMIT = 32;
-
-function watchdogProbeComponent(name: string): RecoveryWatchdogDiagnosticEvidence['components'][number] {
-  if (name === 'runtime_status') return 'runtime';
-  if (name === 'active_gateway') return 'gateway';
-  if (name === 'recovery_gateway') return 'recovery_gateway';
-  if (name === 'recovery_watchdog') return 'recovery_watchdog';
-  if (name === 'recovery_external_http' || name === 'recovery_tunnel_runtime') return 'recovery_tunnel';
-  return 'public_mcp';
-}
-
-function persistWatchdogDiagnosticEvidence(config: RecoveryConfig, result: VerifyResult): RecoveryWatchdogDiagnosticEvidence | undefined {
-  if (result.ok) return undefined;
-  const failedProbes = Object.entries(result.probes)
-    .filter(([, probe]) => !probe.ok)
-    .map(([name, probe]) => ({
-      name,
-      component: watchdogProbeComponent(name),
-      detail: probe.detail.slice(0, 240),
-      ...(probe.status === undefined ? {} : { status: probe.status }),
-    }));
-  if (!result.runtime.ok && !failedProbes.some((probe) => probe.name === 'runtime_status')) {
-    failedProbes.unshift({ name: 'runtime_readiness', component: 'runtime', detail: result.runtime.reasonCodes.join(', ') || 'runtime is not ready' });
-  }
-  const active = result.releases.active;
-  const releaseIdentity = [active?.revision, active?.artifactIdentity, active?.manifestSha256].filter(Boolean).join(':') || 'unresolved-release';
-  const fingerprint = createHash('sha256').update(JSON.stringify({ releaseIdentity, failedProbes })).digest('hex').slice(0, 24);
-  const observedAt = result.at;
-  const previous = json<RecoveryWatchdogDiagnosticStore>(watchdogDiagnosticPath(config));
-  const entries = Array.isArray(previous?.entries) ? previous.entries : [];
-  const existing = entries.find((entry) => entry.fingerprint === fingerprint);
-  const evidence: RecoveryWatchdogDiagnosticEvidence = existing
-    ? { ...existing, lastObservedAt: observedAt, occurrences: existing.occurrences + 1 }
-    : {
-      fingerprint,
-      releaseIdentity,
-      components: [...new Set(failedProbes.map((probe) => probe.component))],
-      failedProbes,
-      firstObservedAt: observedAt,
-      lastObservedAt: observedAt,
-      occurrences: 1,
-    };
-  writeJson(watchdogDiagnosticPath(config), {
-    schemaVersion: 1,
-    entries: [evidence, ...entries.filter((entry) => entry.fingerprint !== fingerprint)].slice(0, WATCHDOG_DIAGNOSTIC_LIMIT),
-  } satisfies RecoveryWatchdogDiagnosticStore);
-  return evidence;
-}
-
 function recoveryLockOwnerAttributable(owner: RecoveryLock): boolean {
   return Boolean(owner.action && owner.requestId?.trim());
 }
@@ -1028,503 +644,6 @@ async function withLock<T>(
   } finally {
     attempt.handle.close();
   }
-}
-
-export async function runtimeStatus(config: RecoveryConfig) {
-  const identity = recoveryMachineIdentity(config);
-  const observation = observeRuntimeStatus(config.controllerHome);
-  const watchdog = loadWatchdogState(config);
-  return {
-    identity,
-    ...observation,
-    recoveryWatchdog: {
-      lastDecision: watchdog.lastDecision,
-      lastReason: watchdog.lastReason,
-      updatedAt: watchdog.updatedAt,
-      failures: watchdog.failures,
-      rollbackUsed: watchdog.rollbackUsed,
-      runtimeRestartAttempts: watchdog.runtimeRestartAttempts ?? 0,
-      runtimeRestartFailures: watchdog.runtimeRestartFailures ?? 0,
-      primaryConnectorFailures: watchdog.primaryConnectorFailures ?? 0,
-      primaryConnectorRestartAttempts: watchdog.primaryConnectorRestartAttempts ?? 0,
-      primaryConnectorRestartFailures: watchdog.primaryConnectorRestartFailures ?? 0,
-    },
-  };
-}
-
-async function probe(transport: RecoveryHttpTransport, url: string, timeoutMs = 4_000): Promise<{ ok: boolean; detail: string; status?: number }> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort('RECOVERY_HTTP_TIMEOUT'), timeoutMs);
-  try {
-    const response = await transport.request({ url, headers: { accept: 'application/json' }, timeoutMs, signal: controller.signal });
-    return { ok: response.ok, detail: `HTTP ${response.status}`, status: response.status };
-  } catch (error) {
-    return { ok: false, detail: error instanceof Error ? error.message.slice(0, 180) : 'request failed' };
-  } finally { clearTimeout(timer); }
-}
-
-async function probeExternalMcp(
-  transport: RecoveryHttpTransport,
-  url: string,
-  options: { acceptOAuthChallenge?: boolean } = {},
-): Promise<{ ok: boolean; detail: string; status?: number }> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort('RECOVERY_HTTP_TIMEOUT'), 4_000);
-  try {
-    // The MCP transport is POST-based. A GET on the MCP path returns 404 on
-    // some gateway implementations, so probe with an initialize request and
-    // accept the unauthenticated OAuth Bearer challenge.
-    const response = await transport.request({
-      url,
-      method: 'POST',
-      headers: { accept: 'application/json, text/event-stream', 'content-type': 'application/json' },
-      body: JSON.stringify({
-        jsonrpc: '2.0',
-        id: 0,
-        method: 'initialize',
-        params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'forge-standalone-recovery', version: '1' } },
-      }),
-      timeoutMs: 4_000,
-      signal: controller.signal,
-    });
-    const challenge = response.headers['www-authenticate'] ?? '';
-    const oauthChallenge = response.status === 401 && /\bBearer\b/i.test(challenge);
-    const acceptsOAuthChallenge = options.acceptOAuthChallenge ?? true;
-    const ok = response.ok || (acceptsOAuthChallenge && oauthChallenge);
-    const detail = oauthChallenge
-      ? acceptsOAuthChallenge ? 'HTTP 401 OAuth challenge' : 'HTTP 401 unexpected OAuth challenge for unauthenticated Connector'
-      : `HTTP ${response.status}`;
-    return { ok, detail, status: response.status };
-  } catch (error) {
-    return { ok: false, detail: error instanceof Error ? error.message.slice(0, 180) : 'request failed' };
-  } finally { clearTimeout(timer); }
-}
-
-function publicGatewayReadinessEndpoint(endpoint: string): string {
-  const url = new URL(endpoint);
-  url.pathname = '/transport-ready';
-  url.search = '';
-  url.hash = '';
-  return url.toString();
-}
-
-async function probePublicGatewayReadiness(
-  transport: RecoveryHttpTransport,
-  endpoint: string,
-  options: { acceptOAuthChallenge?: boolean } = {},
-): Promise<{ ok: boolean; detail: string; status?: number; value?: unknown }> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort('RECOVERY_HTTP_TIMEOUT'), 4_000);
-  const surface = 'transport-ready';
-  try {
-    const response = await transport.request({
-      url: publicGatewayReadinessEndpoint(endpoint),
-      headers: { accept: 'application/json' },
-      timeoutMs: 4_000,
-      signal: controller.signal,
-    });
-    if (response.status === 404 || response.status === 405) {
-      // Older Connectors predate the transport-scoped capacity surface. Their
-      // whole-control-plane /ready route is intentionally not a transport
-      // liveness contract and can depend on the Runtime that Recovery is in the
-      // middle of restarting. Falling back to it creates a circular cutover
-      // dependency. Verify the actual MCP transport instead: a successful
-      // initialize response or the expected OAuth Bearer challenge proves the
-      // legacy Connector transport is reachable without weakening 5xx/timeout
-      // failure handling.
-      const legacy = await probeExternalMcp(transport, endpoint, options);
-      return { ...legacy, detail: `legacy-mcp ${legacy.detail}` };
-    }
-    let sessionCapacity: unknown;
-    try {
-      const payload = JSON.parse(response.body) as { sessionCapacity?: unknown };
-      sessionCapacity = payload.sessionCapacity;
-    } catch { /* malformed readiness payload remains a failed/opaque probe */ }
-    const recoveryRecommended = Boolean(
-      sessionCapacity
-      && typeof sessionCapacity === 'object'
-      && (sessionCapacity as { recoveryRecommended?: unknown }).recoveryRecommended === true,
-    );
-    return {
-      ok: response.ok && !recoveryRecommended,
-      detail: `${surface} HTTP ${response.status}${recoveryRecommended ? '; session capacity recommends Connector recovery' : ''}`,
-      status: response.status,
-      ...(sessionCapacity === undefined ? {} : { value: sessionCapacity }),
-    };
-  } catch (error) {
-    return { ok: false, detail: `${surface} ${error instanceof Error ? error.message.slice(0, 180) : 'request failed'}` };
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-function connectorCapacityRecoveryRecommended(verified: VerifyResult): boolean {
-  const value = verified.probes.primary_connector_ready?.value;
-  return Boolean(
-    value
-    && typeof value === 'object'
-    && (value as { recoveryRecommended?: unknown }).recoveryRecommended === true,
-  );
-}
-
-function canonicalRuntimeSafeForTargetedConnectorRecovery(verified: VerifyResult): boolean {
-  // Targeted Connector/public-transport recovery mutates no Runtime release or
-  // Work authority. Use durable Runtime ownership + release/execution evidence
-  // as the safety fence; a single failed HTTP gateway/MCP observation is the
-  // symptom this action may need to repair and must not deadlock the recovery path.
-  return verified.runtime.ok
-    && verified.runtime.running
-    && verified.runtime.ready
-    && !verified.runtime.stale
-    && verified.releases.coherent !== false
-    && verified.probes.runtime_execution_surface?.ok !== false;
-}
-
-function mainToken(config: RecoveryConfig): string | undefined {
-  const explicit = config.mainMcpTokenFile?.trim();
-  const candidate = explicit || join(config.controllerHome, 'mcp', 'mcp.tokens.json');
-  if (explicit) {
-    try {
-      const raw = readFileSync(candidate, 'utf8').trim();
-      if (raw.length >= 24 && !raw.startsWith('{')) return raw;
-    } catch {
-      return undefined;
-    }
-  }
-  const parsed = json<{ bearerToken?: unknown }>(candidate);
-  return typeof parsed?.bearerToken === 'string' && parsed.bearerToken.length >= 24 ? parsed.bearerToken : undefined;
-}
-
-interface RecoveryMcpCallResult {
-  ok: boolean;
-  payload?: Record<string, unknown>;
-  detail: string;
-  sessionId?: string;
-}
-
-function parseRecoveryMcpPayload(text: string, contentType: string): Record<string, unknown> | undefined {
-  const trimmed = text.trim();
-  if (!trimmed) return undefined;
-  if (contentType.includes('text/event-stream')) {
-    const data = trimmed
-      .split(/\r?\n/)
-      .filter((line) => line.startsWith('data:'))
-      .map((line) => line.slice(5).trim())
-      .find((line) => line && line !== '[DONE]');
-    if (!data) return undefined;
-    try { return JSON.parse(data) as Record<string, unknown>; } catch { return undefined; }
-  }
-  try { return JSON.parse(trimmed) as Record<string, unknown>; } catch { return undefined; }
-}
-
-async function mcpCall(
-  transport: RecoveryHttpTransport,
-  url: string,
-  token: string,
-  id: number | undefined,
-  method: string,
-  params?: Record<string, unknown>,
-  sessionId?: string,
-): Promise<RecoveryMcpCallResult> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort('RECOVERY_HTTP_TIMEOUT'), 8_000);
-  try {
-    const response = await transport.request({
-      url, method: 'POST', timeoutMs: 8_000, signal: controller.signal,
-      headers: {
-        authorization: `Bearer ${token}`,
-        'content-type': 'application/json',
-        accept: 'application/json, text/event-stream',
-        ...(sessionId ? { 'mcp-session-id': sessionId } : {}),
-      },
-      body: JSON.stringify({ jsonrpc: '2.0', ...(id === undefined ? {} : { id }), method, ...(params ? { params } : {}) }),
-    });
-    const payload = parseRecoveryMcpPayload(response.body, response.headers['content-type'] ?? '');
-    const returnedSessionId = response.headers['mcp-session-id']?.trim() || sessionId;
-    return {
-      ok: response.ok && !payload?.error,
-      payload,
-      detail: `HTTP ${response.status}`,
-      ...(returnedSessionId ? { sessionId: returnedSessionId } : {}),
-    };
-  } catch (error) { return { ok: false, detail: error instanceof Error ? error.message.slice(0, 180) : 'MCP request failed' }; } finally { clearTimeout(timer); }
-}
-
-async function closeRecoveryMcpSession(transport: RecoveryHttpTransport, url: string, token: string, sessionId: string): Promise<{ ok: boolean; detail: string }> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort('RECOVERY_HTTP_TIMEOUT'), 5_000);
-  try {
-    const response = await transport.request({
-      url,
-      method: 'DELETE',
-      timeoutMs: 5_000,
-      signal: controller.signal,
-      headers: {
-        authorization: `Bearer ${token}`,
-        accept: 'application/json, text/event-stream',
-        'mcp-session-id': sessionId,
-      },
-    });
-    return { ok: response.ok, detail: `HTTP ${response.status}` };
-  } catch (error) {
-    return { ok: false, detail: error instanceof Error ? error.message.slice(0, 180) : 'MCP session close failed' };
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-function runtimeEndpoint(config: RecoveryConfig): string | undefined {
-  return observeRuntimeStatus(config.controllerHome).snapshot?.endpoint;
-}
-
-function runtimeHealthEndpoint(endpoint: string): string {
-  const url = new URL(endpoint);
-  // The canonical Runtime serves the whole-Runtime readiness probe at /ready.
-  url.pathname = '/ready';
-  url.search = '';
-  url.hash = '';
-  return url.toString();
-}
-
-/**
- * tunnel-client materialises its own state directory relative to the process
- * working directory. Persistent Forge services run under launchd/systemd with a
- * read-only working directory, so a Forge-owned tunnel reconnect must run from a
- * writable Forge-managed directory. Otherwise the reconnect fails with
- * `mkdir .tunnel-client: read-only file system`, the dedicated Recovery
- * transport can never be repaired, and the Recovery connector stays dark.
- */
-function tunnelClientWorkingDirectory(controllerHome: string): string {
-  const directory = join(resolve(controllerHome), 'tmp', 'tunnel-client');
-  mkdirSync(directory, { recursive: true, mode: 0o700 });
-  return directory;
-}
-
-async function observeOpenAiTunnelRuntime(
-  configured: OpenAiSecureTunnelServiceConfig,
-  runCommand: CommandRunner = command,
-): Promise<OpenAiSecureTunnelRuntimeObservation> {
-  let args: string[];
-  try {
-    args = openAiSecureTunnelStatusArgs(configured.alias, configured);
-  } catch (error) {
-    return {
-      ok: false, running: false, healthy: false, ready: false, tunnelMatches: false, endpointMatches: false,
-      controlPlaneState: 'unknown',
-      controlPlaneDetail: 'tunnel runtime configuration could not be observed',
-      alias: configured.alias, tunnelId: configured.tunnelId,
-      detail: error instanceof Error ? error.message : 'OpenAI tunnel runtime configuration is invalid',
-    };
-  }
-  const status = await runCommand('tunnel-client', args, 15_000);
-  if (!status.stdout.trim()) {
-    const local = await observeOpenAiTunnelLocalHealthFallback(configured);
-    if (local) return local;
-    return {
-      ok: false, running: false, healthy: false, ready: false, tunnelMatches: false, endpointMatches: false,
-      controlPlaneState: 'unknown',
-      controlPlaneDetail: 'tunnel-client status produced no remote control-plane evidence',
-      alias: configured.alias, tunnelId: configured.tunnelId,
-      detail: status.stderr.trim() || 'OpenAI tunnel runtime status is unavailable',
-    };
-  }
-  return parseOpenAiSecureTunnelRuntimeStatus(status.stdout, {
-    alias: configured.alias, tunnelId: configured.tunnelId, mcpServerUrl: configured.mcpServerUrl,
-  });
-}
-
-/**
- * tunnel-client's structured status command can itself be delayed by a
- * control-plane query. When that happens, retain a bounded observation of the
- * locally supervised runtime instead of treating a live, identity-matched
- * alias as failed. This reads only the client-owned profile and loopback
- * health URL; it never creates, repoints, or restarts a tunnel.
- */
-export async function observeOpenAiTunnelLocalHealthFallback(
-  configured: OpenAiSecureTunnelServiceConfig,
-  options: {
-    request?: (url: string, init: { signal: AbortSignal }) => Promise<{ ok: boolean; status: number }>;
-  } = {},
-): Promise<OpenAiSecureTunnelRuntimeObservation | undefined> {
-  if (!configured.profile?.trim() || !configured.profileDir?.trim()) return undefined;
-  const profilePath = join(configured.profileDir, `${configured.profile}.yaml`);
-  let profile: string;
-  try { profile = readFileSync(profilePath, 'utf8'); } catch { return undefined; }
-  const identityMatches = profile.includes(configured.tunnelId);
-  const endpointMatches = profile.includes(configured.mcpServerUrl);
-  const urlFileMatch = profile.match(/["']?url_file["']?\s*:\s*["']([^"']+)["']/i);
-  if (!urlFileMatch) return undefined;
-  let base: URL;
-  try {
-    base = new URL(readFileSync(urlFileMatch[1].trim(), 'utf8').trim());
-    if (base.protocol !== 'http:' || !['127.0.0.1', 'localhost', '::1'].includes(base.hostname)) return undefined;
-  } catch { return undefined; }
-  const request = options.request ?? ((url: string, init: { signal: AbortSignal }) => fetch(url, init));
-  const probe = async (pathname: '/healthz' | '/readyz'): Promise<boolean> => {
-    const url = new URL(base);
-    url.pathname = pathname;
-    url.search = '';
-    url.hash = '';
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort('RECOVERY_TUNNEL_HEALTH_TIMEOUT'), 4_000);
-    try { return (await request(url.toString(), { signal: controller.signal })).ok; } catch { return false; } finally { clearTimeout(timer); }
-  };
-  const [healthy, ready] = await Promise.all([probe('/healthz'), probe('/readyz')]);
-  const localReady = healthy && ready && identityMatches && endpointMatches;
-  // Loopback health proves only that the local tunnel process and MCP binding are
-  // alive. It must never stand in for the remote OpenAI control plane when the
-  // status command itself could not establish that path.
-  const ok = false;
-  const failures: string[] = [];
-  if (!identityMatches) failures.push('profile tunnel id does not match');
-  if (!endpointMatches) failures.push('profile MCP endpoint does not match');
-  if (!healthy) failures.push('local healthz failed');
-  if (!ready) failures.push('local readyz failed');
-  return {
-    ok,
-    running: healthy,
-    healthy,
-    ready,
-    tunnelMatches: identityMatches,
-    endpointMatches,
-    controlPlaneState: 'unknown',
-    controlPlaneDetail: 'tunnel-client status was unavailable; only loopback health was observed',
-    alias: configured.alias,
-    tunnelId: configured.tunnelId,
-    ...(identityMatches ? { observedTunnelId: configured.tunnelId } : {}),
-    detail: localReady
-      ? `managed runtime ${configured.alias} is locally healthy and ready for ${configured.tunnelId}, but the OpenAI control plane is unverified because status is unavailable`
-      : failures.join('; ') || 'OpenAI tunnel local health fallback failed',
-    profilePath,
-  };
-}
-
-async function observeOpenAiRecoveryTunnel(
-  config: RecoveryConfig,
-  runCommand: CommandRunner = command,
-): Promise<OpenAiSecureTunnelRuntimeObservation | undefined> {
-  const configured = configuredRecoveryTunnel(config);
-  if (!configured || configured.platform !== 'openai-secure-tunnel') return undefined;
-  return observeOpenAiTunnelRuntime(configured, runCommand);
-}
-
-async function ensureOpenAiTunnelRuntimeStarted(
-  configured: OpenAiSecureTunnelServiceConfig,
-  runCommand: CommandRunner = command,
-  workingDirectory?: string,
-): Promise<{ ok: boolean; attempted: boolean; noOp?: boolean; detail: string; serviceLabel: string; serviceTarget: string }> {
-  const serviceLabel = configured.alias;
-  const serviceTarget = `tunnel-client:${configured.alias}`;
-  const observed = await observeOpenAiTunnelRuntime(configured, runCommand);
-  if (observed.ok) return { ok: true, attempted: false, noOp: true, detail: observed.detail, serviceLabel, serviceTarget };
-  if (observed.healthy && observed.ready && observed.tunnelMatches && observed.endpointMatches && observed.controlPlaneState !== 'ready') {
-    return {
-      ok: false,
-      attempted: false,
-      noOp: true,
-      detail: `OpenAI Secure MCP Tunnel runtime ${configured.alias} is locally ready but its remote control plane is ${observed.controlPlaneState}; refusing a local reconnect for an upstream transport failure: ${observed.controlPlaneDetail}`,
-      serviceLabel,
-      serviceTarget,
-    };
-  }
-  if (observed.observedTunnelId && !observed.tunnelMatches) {
-    return { ok: false, attempted: false, noOp: true, detail: `OpenAI tunnel alias ${configured.alias} is already bound to a different tunnel id`, serviceLabel, serviceTarget };
-  }
-  if (observed.profilePath && !observed.endpointMatches) {
-    return { ok: false, attempted: false, noOp: true, detail: `OpenAI tunnel alias ${configured.alias} is already bound to a different MCP endpoint`, serviceLabel, serviceTarget };
-  }
-  let args: string[];
-  try {
-    args = openAiSecureTunnelConnectArgs({
-      alias: configured.alias,
-      tunnelId: configured.tunnelId,
-      mcpServerUrl: configured.mcpServerUrl,
-      runtimeApiKeyRef: configured.runtimeApiKeyRef,
-      profile: configured.profile,
-      profileDir: configured.profileDir,
-      adminProfile: configured.adminProfile,
-    });
-  } catch (error) {
-    return { ok: false, attempted: false, noOp: true, detail: error instanceof Error ? error.message : 'OpenAI tunnel runtime configuration is invalid', serviceLabel, serviceTarget };
-  }
-  const connected = await runCommand('tunnel-client', args, Math.max(30_000, configured.postRestartVerifyTimeoutMs ?? 20_000), workingDirectory ? { cwd: workingDirectory } : {});
-  return connected.ok
-    ? { ok: true, attempted: true, detail: `OpenAI Secure MCP Tunnel runtime ${configured.alias} connect dispatched`, serviceLabel, serviceTarget }
-    : { ok: false, attempted: true, detail: `OpenAI Secure MCP Tunnel runtime connect failed: ${connected.stderr || connected.stdout || connected.status}`, serviceLabel, serviceTarget };
-}
-
-async function probeOpenAiRecoveryTunnel(
-  config: RecoveryConfig,
-  runCommand: CommandRunner = command,
-): Promise<{ ok: boolean; detail: string; value?: unknown } | undefined> {
-  const observed = await observeOpenAiRecoveryTunnel(config, runCommand);
-  return observed ? { ok: observed.ok, detail: observed.detail, value: observed } : undefined;
-}
-
-function openAiTunnelObservationFromProbe(
-  probe: { value?: unknown } | undefined,
-): OpenAiSecureTunnelRuntimeObservation | undefined {
-  const value = probe?.value;
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
-  const observed = value as Partial<OpenAiSecureTunnelRuntimeObservation>;
-  if (
-    typeof observed.alias !== 'string'
-    || typeof observed.tunnelId !== 'string'
-    || typeof observed.healthy !== 'boolean'
-    || typeof observed.ready !== 'boolean'
-    || typeof observed.tunnelMatches !== 'boolean'
-    || typeof observed.endpointMatches !== 'boolean'
-    || !['ready', 'degraded', 'unknown'].includes(String(observed.controlPlaneState))
-  ) return undefined;
-  return observed as OpenAiSecureTunnelRuntimeObservation;
-}
-
-function isUpstreamOpenAiControlPlaneIncident(observed: OpenAiSecureTunnelRuntimeObservation | undefined): boolean {
-  return Boolean(
-    observed
-    && observed.healthy
-    && observed.ready
-    && observed.tunnelMatches
-    && observed.endpointMatches
-    && observed.controlPlaneState !== 'ready'
-  );
-}
-
-async function probeOpenAiApiReachability(): Promise<{ ok: boolean; detail: string; status?: number }> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort('RECOVERY_OPENAI_API_REACHABILITY_TIMEOUT'), 4_000);
-  try {
-    const response = await fetch('https://api.openai.com/v1/models', {
-      method: 'GET',
-      headers: { accept: 'application/json' },
-      signal: controller.signal,
-    });
-    return {
-      ok: true,
-      status: response.status,
-      detail: `api.openai.com returned HTTP ${response.status}; DNS/TCP/TLS/HTTP path is reachable`,
-    };
-  } catch (error) {
-    const cause = error instanceof Error && error.cause instanceof Error ? `; cause=${error.cause.message}` : '';
-    return { ok: false, detail: `${error instanceof Error ? error.message : String(error)}${cause}`.slice(0, 500) };
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-async function observeRecentMacNetworkExtensionChanges(
-  runCommand: CommandRunner = command,
-): Promise<{ ok: boolean; detail: string } | undefined> {
-  if (process.platform !== 'darwin') return undefined;
-  const result = await runCommand('/usr/bin/log', [
-    'show', '--last', '90s', '--style', 'compact', '--predicate',
-    'process == "nesessionmanager" AND (eventMessage CONTAINS[c] "configuration changed" OR eventMessage CONTAINS[c] "neconfigurationchanged")',
-  ], 3_000, { maxOutputBytes: 12_000 });
-  const output = (result.stdout || result.stderr).trim();
-  return {
-    ok: result.ok,
-    detail: output ? output.slice(-4_000) : (result.ok ? 'no recent Network Extension configuration changes observed' : 'Network Extension event query failed'),
-  };
 }
 
 async function persistOpenAiTransportIncidentEvidence(input: {
@@ -2632,49 +1751,7 @@ export async function listReleases(config: RecoveryConfig): Promise<Record<strin
   };
 }
 
-interface CommandResult { ok: boolean; status: number | null; stdout: string; stderr: string; }
-interface CommandOptions { cwd?: string; home?: string; maxOutputBytes?: number; }
-type CommandRunner = (commandName: string, args: string[], timeoutMs?: number, options?: CommandOptions) => Promise<CommandResult>;
 interface LaunchdService { uid: number; domain: string; target: string; label: string; plistPath: string; }
-
-/**
- * systemd --user does not necessarily inherit the interactive shell PATH.
- * Recovery owns tunnel repair, so its non-interactive command environment must
- * still find user-installed runtime tools without adding a second service
- * owner or accepting an executable path through RPC.
- */
-export function recoveryCommandPath(
-  inheritedPath = process.env.PATH ?? '',
-  platform: NodeJS.Platform = process.platform,
-  accountHome = homedir(),
-): string {
-  if (platform === 'win32') return inheritedPath;
-  const userBin = join(accountHome, '.local', 'bin');
-  const entries = inheritedPath.split(delimiter).filter(Boolean);
-  return entries.includes(userBin) ? inheritedPath : [userBin, ...entries].join(delimiter);
-}
-
-/**
- * Child environment for Recovery-owned commands.
- *
- * Keep the hosting Runtime's private FORGE_* authority out, but preserve the
- * account context: user-installed tools resolve their own per-account state from
- * HOME, and a persistent launchd/systemd service starts without an interactive
- * HOME to inherit. Without it, `tunnel-client` cannot see its own alias registry,
- * so Recovery both misreads a healthy dedicated tunnel as stopped and cannot
- * confirm the tunnel it just reconnected.
- */
-export function recoveryCommandEnvironment(
-  env: NodeJS.ProcessEnv = process.env,
-  accountHome = homedir(),
-): NodeJS.ProcessEnv {
-  const home = env.HOME?.trim() || accountHome;
-  return {
-    ...runtimeAuthorityFreeEnvironment(env),
-    PATH: recoveryCommandPath(env.PATH ?? '', process.platform, home),
-    HOME: home,
-  };
-}
 
 export interface PublicTunnelRepairDependencies {
   platform?: NodeJS.Platform;
@@ -2684,61 +1761,6 @@ export interface PublicTunnelRepairDependencies {
   verifyLocal?: (config: RecoveryConfig) => Promise<VerifyResult>;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
-}
-
-function command(commandName: string, args: string[], timeoutMs = 10_000, options: CommandOptions = {}): Promise<CommandResult> {
-  return new Promise((resolveCommand) => {
-    const child = spawn(commandName, args, {
-      shell: false,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      windowsHide: true,
-      cwd: options.cwd,
-      env: recoveryCommandEnvironment(process.env, options.home),
-    });
-    const stdout: Buffer[] = [];
-    const stderr: Buffer[] = [];
-    let size = 0;
-    const maxOutputBytes = options.maxOutputBytes ?? 256 * 1024;
-    let settled = false;
-    let stopping = false;
-    let killTimer: ReturnType<typeof setTimeout> | undefined;
-    const finish = (result: CommandResult) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeout);
-      if (killTimer) clearTimeout(killTimer);
-      resolveCommand(result);
-    };
-    const signalChild = (signalName: NodeJS.Signals) => {
-      if (!child.pid || child.exitCode != null) return;
-      try { process.kill(child.pid, signalName); } catch { /* Process already exited. */ }
-    };
-    const stop = (detail: string) => {
-      if (child.exitCode != null || stopping) return;
-      stopping = true;
-      signalChild('SIGTERM');
-      killTimer = setTimeout(() => {
-        signalChild('SIGKILL');
-        finish({
-          ok: false,
-          status: null,
-          stdout: Buffer.concat(stdout).toString('utf8'),
-          stderr: [Buffer.concat(stderr).toString('utf8').trim(), detail].filter(Boolean).join('\n'),
-        });
-      }, 1_000);
-    };
-    const timeout = setTimeout(() => stop(`command timed out after ${timeoutMs}ms`), timeoutMs);
-    child.stdout.on('data', (chunk: Buffer) => {
-      size += chunk.length;
-      if (size <= maxOutputBytes) stdout.push(Buffer.from(chunk)); else stop(`command output exceeded ${maxOutputBytes} bytes`);
-    });
-    child.stderr.on('data', (chunk: Buffer) => {
-      size += chunk.length;
-      if (size <= maxOutputBytes) stderr.push(Buffer.from(chunk)); else stop(`command output exceeded ${maxOutputBytes} bytes`);
-    });
-    child.once('error', () => finish({ ok: false, status: null, stdout: '', stderr: 'command spawn failed' }));
-    child.once('close', (status) => finish({ ok: status === 0, status, stdout: Buffer.concat(stdout).toString('utf8'), stderr: Buffer.concat(stderr).toString('utf8') }));
-  });
 }
 
 async function currentUid(): Promise<number | undefined> {
