@@ -249,14 +249,17 @@ export function controllerToolSurfaceStatus(ctx: MultiRepositoryMcpToolContext):
   };
 }
 
+// Names and public schema are invariant across Request and Full Access.
+// Only the diagnostic exposure snapshot needs to read the access-mode config
+// and build a category inventory. Ordinary MCP call admission must not.
 export function controllerExposedToolNames(ctx: MultiRepositoryMcpToolContext): string[] {
-  return controllerExposureSnapshot(ctx).actualToolNames;
+  return staticControllerExposureSnapshot(ctx).actualToolNames;
 }
 
 export function exposedControllerToolDefinitions(ctx: MultiRepositoryMcpToolContext): McpToolDefinition[] {
-  return controllerExposureSnapshot(ctx).definitions;
+  return staticControllerExposureSnapshot(ctx).definitions;
 }
 
 export function isControllerToolExposed(ctx: MultiRepositoryMcpToolContext, name: string): boolean {
-  return controllerExposureSnapshot(ctx).actualToolNames.includes(name);
+  return staticControllerExposureSnapshot(ctx).actualToolNames.includes(name);
 }
