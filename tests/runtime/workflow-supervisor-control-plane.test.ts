@@ -3604,6 +3604,8 @@ test('verified repeated exact-conversation empty shells migrate only a never-sen
     inventory: async () => ({ conversations: [{ conversationId, canonicalUrl: conversationUrl, title: 'Forge' }], complete: true, unavailableProviders: [] }),
     cleanup: async () => undefined,
     ensureExact: async () => ({ state: 'ready', target: { observe: async () => empty }, observation: empty }),
+    // The test asserts migration reservation, not a new provider submission.
+    openBootstrap: async () => ({ state: 'unavailable', failure: { code: 'TEST_BOOTSTRAP_NOT_STARTED' } }),
     close: async () => undefined,
   } as any;
   const adapter = new WorkflowSupervisorNativeBrowserAdapter(control, new WorkflowSupervisorEphemeralDiscovery(), {
