@@ -820,6 +820,12 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       ? observedProviderFailureCode
       : undefined;
     if (observedProviderFailureCode === CHATGPT_AUTOMATION_CONVERSATION_LIMIT_REACHED) {
+      // A terminal capacity banner does not prove that an already-applied
+      // source turn has completed. Observe its receipt before any migration.
+      if (this.control.store.hasAppliedEffectAwaitingCompletion(task.taskId)) {
+        this.noteTaskFailure('WORKFLOW_SUPERVISOR_CAPACITY_APPLIED_TURN_UNRESOLVED', task, poll.command?.effectId, false);
+        return;
+      }
       // This conversation cannot produce another meaningful turn. Unlike a
       // provider 429, fresh migration is justified by an explicit terminal
       // capacity message on the exact bound provider surface. The existing
