@@ -529,6 +529,18 @@ function normalizeWorkContractStore(store: WorkContractStore): WorkContractStore
   return { schemaVersion: 4, updatedAt: store.updatedAt, contracts: store.contracts.map((contract) => canonicalizeStoredWorkContract(contract)) };
 }
 
+/** Read the historical aggregate index without creating per-Work SQLite rows. */
+function readLegacyWorkContractStore(options: WorkContractStoreOptions & { controllerHome: string }): WorkContractStore {
+  const legacyRecord = readControlPlaneRecord<WorkContractStore>(
+    options.controllerHome,
+    'work_contract_store',
+    workContractStoreScopeKey(options),
+    'index',
+  );
+  return legacyRecord?.value
+    ?? readJsonFile<WorkContractStore>(workContractStorePath(options), emptyWorkContractStore(nowIso(options)));
+}
+
 export function readWorkContractStore(options: WorkContractStoreOptions): WorkContractStore {
   if (!sqliteBacked(options)) {
     const raw = readJsonFile<WorkContractStore>(workContractStorePath(options), emptyWorkContractStore(nowIso(options)));
@@ -553,15 +565,7 @@ export function readWorkContractStore(options: WorkContractStoreOptions): WorkCo
 
   // One-time import only. Once a per-Work row exists, legacy index/file data is
   // never consulted again and is never written back.
-  const legacyRecord = readControlPlaneRecord<WorkContractStore>(
-    options.controllerHome,
-    'work_contract_store',
-    workContractStoreScopeKey(options),
-    'index',
-  );
-  const legacy = legacyRecord?.value
-    ?? readJsonFile<WorkContractStore>(workContractStorePath(options), emptyWorkContractStore(nowIso(options)));
-  const normalized = normalizeWorkContractStore(legacy);
+  const normalized = normalizeWorkContractStore(readLegacyWorkContractStore(options));
   if (normalized.contracts.length > 0) {
     withControlPlaneTransaction(options.controllerHome, (database) => {
       for (const contract of normalized.contracts) {
@@ -607,7 +611,18 @@ export function readWorkContractLineageSnapshot(options: WorkContractStoreOption
     scope: workContractStoreScopeKey(options),
     limit: 5_000,
   });
-  if (records.length === 0) return { contracts: readWorkContractStore(options).contracts, invalid: [] };
+  if (records.length === 0) {
+    // A ControllerRound lineage snapshot is a pure observation, including when
+    // a historical aggregate index has not yet been imported to per-Work rows.
+    // Preserve corrupt-row isolation instead of triggering the legacy importer.
+    const contracts: WorkContract[] = [];
+    const invalid: WorkContractLineageSnapshot['invalid'] = [];
+    for (const raw of readLegacyWorkContractStore(options).contracts) {
+      try { contracts.push(canonicalizeStoredWorkContract(raw)); }
+      catch (error) { invalid.push(lineageInvalidWork(raw, error)); }
+    }
+    return { contracts, invalid };
+  }
 
   const contracts: WorkContract[] = [];
   const invalid: WorkContractLineageSnapshot['invalid'] = [];
