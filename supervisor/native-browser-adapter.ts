@@ -644,6 +644,9 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     for (const task of tasks) {
       if (this.closed) break;
       await this.serviceFreshSend();
+      // A fresh send can atomically migrate this task; the inventory snapshot
+      // from the beginning of the tick must not poll or send its retired chat.
+      if (this.control.getTask(task.taskId)?.conversationId !== task.conversationId) continue;
       try {
         const poll = task.conversationId.startsWith('bootstrap:') ? this.control.bootstrapPoll(task.taskId) : this.control.browserPoll({ conversationId: task.conversationId, conversationUrl: task.conversationUrl });
         if (poll.terminal || poll.command?.mode === 'send') continue;
