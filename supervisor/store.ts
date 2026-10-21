@@ -1880,7 +1880,8 @@ export class WorkflowSupervisorStore {
           const rotate = successor.freshEnrollmentPrompt !== undefined
             && currentTask.continuationPolicy.kind === 'standalone_supervisor'
             && !currentTask.conversationId.startsWith('bootstrap:')
-            && (completedSinceMigration.total ?? 0) >= receiptLimit;
+            && (completedSinceMigration.total ?? 0) >= receiptLimit
+            && !appliedEffectAwaitingCompletionWithin(db, input.taskId);
           successorEffect = this.reserveEffectWithin(db, {
             taskId: input.taskId, effectId: successor.effectId,
             kind: rotate ? 'enrollment' : successor.kind, originKey,

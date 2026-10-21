@@ -258,6 +258,45 @@ describe('Workflow Supervisor fresh conversation switch', () => {
       expect(unverifiedEffect.kind).toBe(n === 10 ? 'enrollment' : 'continuation');
     }
     expect(store.getTask(unverifiedTaskId)?.conversationId).toBe('bootstrap:' + unverifiedTaskId);
+
+    // The sixth receipt cannot retire an unrelated applied, unanswered turn.
+    const siblingTaskId = 'supervisor:receipt-cadence-unanswered-sibling';
+    const siblingConversation = 'abababab-aaaa-bbbb-cccc-cdcdcdcdcdcd';
+    control.registerTask({
+      taskId: siblingTaskId, conversationId: siblingConversation,
+      conversationUrl: 'https://chatgpt.com/c/' + siblingConversation,
+      objective: 'Keep the unanswered sibling on its original conversation.',
+      completionContract: {}, continuationPolicy: { kind: 'standalone_supervisor' }, userBlockerPolicy: {},
+    });
+    for (let n = 0; n < 2; n += 1) store.recordBrowserDeliveryAttemptFailure({
+      taskId: siblingTaskId, conversationId: siblingConversation,
+      code: 'COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE', verifiedEmptyShell: true,
+    });
+    let siblingSource = control.reserveEnrollment(siblingTaskId);
+    for (let n = 1; n <= 6; n += 1) {
+      // Preserve the real source as the latest applied turn for causal receipt
+      // matching; the extra applied sibling still remains unanswered.
+      if (n === 6) {
+        const outstanding = store.reserveEffect({
+          taskId: siblingTaskId, effectId: 'fx_applied_unanswered_sibling_source',
+          kind: 'continuation', originKey: 'test:unanswered-sibling-source',
+          prompt: 'Separate applied source awaits its own reply.',
+        });
+        store.recordEffectDispatchStarted(outstanding.effectId, 1, 'sibling-outstanding-dispatch');
+        store.recordEffectObservation(outstanding.effectId, 'sibling-outstanding-applied', 'applied');
+      }
+      expect(store.recordEffectDispatchStarted(siblingSource.effectId, 1, 'sibling-source-' + n)).toBe(true);
+      control.observeEffect({ effectId: siblingSource.effectId, observationId: 'sibling-source-applied-' + n, outcome: 'applied' });
+      const observed = await control.observeAssistantTurn({
+        taskId: siblingTaskId, conversationId: siblingConversation,
+        responseText: 'Useful progress.\n' + renderSupervisorReceipt(control.getTask(siblingTaskId)!, siblingSource.effectId, 'CONTINUE'),
+      });
+      if (!('successorEffect' in observed) || !observed.successorEffect) throw new Error('SIBLING_SUCCESSOR_MISSING');
+      siblingSource = observed.successorEffect;
+      expect(siblingSource.kind).toBe('continuation');
+      expect(store.getTask(siblingTaskId)?.conversationId).toBe(siblingConversation);
+    }
+    expect(store.hasAppliedEffectAwaitingCompletion(siblingTaskId)).toBe(true);
     store.close();
   });
 
