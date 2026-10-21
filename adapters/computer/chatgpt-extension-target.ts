@@ -14,11 +14,11 @@ import type {
   ComputerChatgptExtensionHeartbeat,
   ComputerChatgptTargetIdentity,
   ComputerChatgptTargetResult,
-  parseCanonicalChatgptConversationIdentity,
   ComputerInteractionTargetAuthorityPort,
   ComputerSurfaceProviderBinding,
   ComputerSurfaceTarget,
 } from '../../packages/plugin-runtime/computer';
+import { parseCanonicalChatgptConversationIdentity } from '../../packages/plugin-runtime/computer';
 
 const PROVIDER_ID = 'browser.chrome-extension';
 const HEARTBEAT_FRESH_MS = 15_000;
