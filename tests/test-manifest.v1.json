@@ -982,6 +982,10 @@
       "module": "workflow",
       "resource": "controller-home-isolated"
     },
+    "tests/runtime/host-process-authorization.test.ts": {
+      "module": "process-runtime",
+      "resource": "controller-home-isolated"
+    },
     "tests/runtime/thin-capability-substrate.test.ts": {
       "module": "workflow",
       "resource": "controller-home-isolated",

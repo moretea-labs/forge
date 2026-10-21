@@ -69,7 +69,7 @@ export function requireHostProcessGrant(controllerHome: string, principalId: str
   });
   if (!grant) {
     throw new Error(
-      `HOST_PROCESS_GRANT_REQUIRED: principal ${principal} needs an explicit ${HOST_PROCESS_EXEC_CAPABILITY} grant for ForgeInstance ${identity.instanceId}`,
+      `HOST_PROCESS_GRANT_REQUIRED: principal ${principal} needs an explicit ${HOST_PROCESS_EXEC_CAPABILITY} grant for ForgeInstance ${identity.instanceId}. On the exact host, in a trusted local terminal: forge security authorize-host-process --principal ${principal} --minutes 15`,
     );
   }
   return { forgeInstanceId: identity.instanceId, grantId: grant.grantId };
