@@ -274,8 +274,8 @@ describe('Workflow Supervisor fresh conversation switch', () => {
     });
     let siblingSource = control.reserveEnrollment(siblingTaskId);
     for (let n = 1; n <= 6; n += 1) {
-      expect(store.recordEffectDispatchStarted(siblingSource.effectId, 1, 'sibling-source-' + n)).toBe(true);
-      control.observeEffect({ effectId: siblingSource.effectId, observationId: 'sibling-source-applied-' + n, outcome: 'applied' });
+      // Preserve the real source as the latest applied turn for causal receipt
+      // matching; the extra applied sibling still remains unanswered.
       if (n === 6) {
         const outstanding = store.reserveEffect({
           taskId: siblingTaskId, effectId: 'fx_applied_unanswered_sibling_source',
@@ -285,6 +285,8 @@ describe('Workflow Supervisor fresh conversation switch', () => {
         store.recordEffectDispatchStarted(outstanding.effectId, 1, 'sibling-outstanding-dispatch');
         store.recordEffectObservation(outstanding.effectId, 'sibling-outstanding-applied', 'applied');
       }
+      expect(store.recordEffectDispatchStarted(siblingSource.effectId, 1, 'sibling-source-' + n)).toBe(true);
+      control.observeEffect({ effectId: siblingSource.effectId, observationId: 'sibling-source-applied-' + n, outcome: 'applied' });
       const observed = await control.observeAssistantTurn({
         taskId: siblingTaskId, conversationId: siblingConversation,
         responseText: 'Useful progress.\n' + renderSupervisorReceipt(control.getTask(siblingTaskId)!, siblingSource.effectId, 'CONTINUE'),
