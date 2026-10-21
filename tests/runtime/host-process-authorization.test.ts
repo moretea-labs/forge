@@ -9,6 +9,7 @@ import {
 } from '../../packages/kernel/identity/api/index';
 import {
   authorizeHostProcessFromLocalTerminal,
+  revokeHostProcessFromLocalTerminal,
   type HostProcessAuthorizationTerminal,
 } from '../../src/cli/commands/host-process-authorization';
 
@@ -56,7 +57,7 @@ describe('local exact-instance host execution grants', () => {
       { controllerHome: h, principalId: '*' }, approved,
     )).rejects.toThrow('HOST_GRANT_PRINCIPAL_INVALID');
     await expect(authorizeHostProcessFromLocalTerminal(
-      { controllerHome: h, principalId: 'controller-http-client', minutes: 31 }, approved,
+      { controllerHome: h, principalId: 'controller-http-client', days: 91 }, approved,
     )).rejects.toThrow('HOST_GRANT_DURATION_INVALID');
     const missing = mkdtempSync(join(tmpdir(), 'forge-no-identity-'));
     homes.push(missing);
@@ -66,16 +67,42 @@ describe('local exact-instance host execution grants', () => {
     expect(listCanonicalGrants(h)).toHaveLength(0);
   });
 
+  test('reuses a 30-day trust decision and caps it at 90 days', async () => {
+    const h = home();
+    const first = await authorizeHostProcessFromLocalTerminal({ controllerHome: h, principalId: 'controller-http-client' }, approved);
+    expect(Date.parse(first.expiresAt) - Date.parse(first.createdAt)).toBe(30 * 24 * 60 * 60 * 1000);
+    const renewed = await authorizeHostProcessFromLocalTerminal({ controllerHome: h, principalId: 'controller-http-client', days: 90 }, approved);
+    expect(Date.parse(renewed.expiresAt) - Date.parse(renewed.createdAt)).toBe(90 * 24 * 60 * 60 * 1000);
+    expect(listCanonicalGrants(h)).toHaveLength(1);
+  });
+
+  test('revokes only the selected current-instance and principal Grant', async () => {
+    const h = home();
+    await authorizeHostProcessFromLocalTerminal({ controllerHome: h, principalId: 'controller-http-client' }, approved);
+    expect(() => revokeHostProcessFromLocalTerminal(
+      { controllerHome: h, principalId: 'controller-http-client' },
+      { interactive: false, async confirm() { return ''; } },
+    )).toThrow('HOST_GRANT_INTERACTIVE_TERMINAL_REQUIRED');
+    expect(revokeHostProcessFromLocalTerminal({ controllerHome: h, principalId: 'controller-http-client' }, approved)).toBe(1);
+    expect(findActiveCanonicalGrant(h, {
+      principalId: 'controller-http-client',
+      capability: 'process:exec',
+      target: { kind: 'forge_instance', id: 'forge_test_host_grant' },
+      risk: 'remote_write',
+    })).toBeUndefined();
+    expect(revokeHostProcessFromLocalTerminal({ controllerHome: h, principalId: 'controller-http-client' }, approved)).toBe(0);
+  });
+
   test('creates one exact-risk exact-target time-limited grant', async () => {
     const h = home();
     const grant = await authorizeHostProcessFromLocalTerminal({
-      controllerHome: h, principalId: 'controller-http-client', minutes: 5,
+      controllerHome: h, principalId: 'controller-http-client', days: 5,
     }, approved);
     expect(grant.capabilities).toEqual(['process:exec']);
     expect(grant.riskCeiling).toBe('remote_write');
     expect(grant.target).toEqual({ kind: 'forge_instance', id: 'forge_test_host_grant' });
     expect(grant.principalId).toBe('controller-http-client');
-    expect(Date.parse(grant.expiresAt) - Date.parse(grant.createdAt)).toBe(300000);
+    expect(Date.parse(grant.expiresAt) - Date.parse(grant.createdAt)).toBe(5 * 24 * 60 * 60 * 1000);
     expect(findActiveCanonicalGrant(h, {
       principalId: 'controller-http-client',
       capability: 'process:exec',
