@@ -741,7 +741,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       // independent spaced observations and a healthy inventory. An applied
       // unanswered turn, unknown Send, auth failure or global outage cannot
       // justify leaving the source conversation.
-      if (task.continuationPolicy.kind === 'standalone_supervisor'
+      if (this.control.getTask(task.taskId)?.continuationPolicy.kind === 'standalone_supervisor'
         && !this.lastRunTransportUnavailable
         && this.conversations.some((conversation) => conversation.conversation_id === task.conversationId)
         && failure?.code === code && failure.streak >= 3
