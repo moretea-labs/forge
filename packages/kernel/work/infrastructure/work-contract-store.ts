@@ -1707,7 +1707,11 @@ export function updateWorkContractPlacement(
         throw new Error(`WORK_PLACEMENT_MATERIALIZE_POLICY_MISMATCH: ${workId}`);
       }
     } else if (input.kind === 'rebind') {
-      if (current.workKind !== 'repository_change' || !current.worktreePolicy.required || !worktreeRef) {
+      // A legacy optional policy may be promoted only through this placement
+      // CAS, with an explicit isolated target. Ordinary rebinds are unchanged.
+      if (current.workKind !== 'repository_change' || !worktreeRef
+        || (!current.worktreePolicy.required
+          && (input.worktreePolicy?.required !== true || input.constraints?.workspaceMode !== 'isolated'))) {
         throw new Error(`WORK_PLACEMENT_REBIND_POLICY_MISMATCH: ${workId}`);
       }
     } else if (input.kind === 'detach_legacy_remote_effect') {

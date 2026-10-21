@@ -347,7 +347,10 @@ function materializeArchivedWorkPlacement(
     || (sourceHandle.workContractId && sourceHandle.workContractId !== contract.workId)) {
     throw new Error('WORK_HANDLE_RECOVERY_WORK_IDENTITY_MISMATCH');
   }
-  if (contract.repoId !== repository.repoId || contract.workKind !== 'repository_change' || !contract.worktreePolicy.required) {
+  // The managed source handle and cleanup receipt prove physical isolation.
+  // A legacy semantic policy may be optional even when the actual execution
+  // used a managed worktree; that policy is not evidence against recovery.
+  if (contract.repoId !== repository.repoId || contract.workKind !== 'repository_change') {
     throw new Error('WORK_HANDLE_RECOVERY_CONTRACT_POLICY_MISMATCH');
   }
   // semanticState is the sole Work lifecycle authority. Completion evidence may
@@ -414,16 +417,29 @@ function materializeArchivedWorkPlacement(
     && LIVE_RECOVERY_HANDLE_STATES.has(handle.state)
     && (handle.checkoutId === workspaceCheckoutId || pathMaySharePhysicalRoot(handle.worktreePath, workspaceRoot)));
   if (competing.length > 0) throw new Error(`WORK_HANDLE_RECOVERY_SUCCESSOR_ALREADY_OWNED: ${competing[0]?.workId ?? 'unknown'}`);
+  // The cleaned WorkHandle and its receipt prove the actual managed source.
+  // Keep one canonical WorkContract CAS writer, even for historical optional
+  // semantic policies that predate their physical managed checkout.
+  const alreadyRecovered = contract.checkoutId === workspaceCheckoutId
+    && contract.worktreeRef === workspaceRoot && contract.worktreePolicy.required;
+  if (!alreadyRecovered && (contract.checkoutId !== sourceHandle.checkoutId
+    || (contract.worktreeRef && contract.worktreeRef !== sourceHandle.worktreePath))) {
+    throw new Error('WORK_HANDLE_RECOVERY_SOURCE_PLACEMENT_MISMATCH');
+  }
   const updatedContract = updateRepositoryWorkPlacement(
     { controllerHome: ctx.controllerHome, repoId: repository.repoId },
     contract.workId,
     {
       kind: 'rebind',
-      expectedCheckoutId: sourceHandle.checkoutId,
-      expectedWorktreeRef: sourceHandle.worktreePath,
+      expectedCheckoutId: contract.checkoutId,
+      expectedWorktreeRef: contract.worktreeRef,
       checkoutId: workspaceCheckoutId,
       worktreeRef: workspaceRoot,
       baseRevision: proof.candidateHead,
+      ...(!contract.worktreePolicy.required ? {
+        worktreePolicy: { required: true, reason: 'Recovered proven managed WorkHandle placement' },
+        constraints: { ...contract.constraints, workspaceMode: 'isolated' as const },
+      } : {}),
     },
   );
   if (!updatedContract || updatedContract.checkoutId !== workspaceCheckoutId || updatedContract.worktreeRef !== workspaceRoot) {
