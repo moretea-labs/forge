@@ -70,7 +70,7 @@ export type ComputerChatgptTargetFailure = {
 
 export type ComputerChatgptTargetResult =
   | { state: 'ready'; target: ComputerChatgptConversationTarget; observation?: ComputerChatgptConversationObservation }
-  | { state: 'unavailable'; failure: ComputerChatgptTargetFailure };
+  | { state: 'unavailable'; failure: ComputerChatgptTargetFailure; observation?: ComputerChatgptConversationObservation };
 
 export interface ComputerObservedChatgptConversation {
   conversationId: string;

@@ -994,6 +994,23 @@ describe('Computer durable InteractionTarget authority', () => {
       expect(await invalid).toMatchObject({
         state: 'unavailable', failure: { code: 'COMPUTER_CHATGPT_EXTENSION_TARGET_IDENTITY_UNVERIFIED' },
       });
+
+      const emptyShell = extension.ensureExact(identity, { createIfMissing: false });
+      const emptyShellCommand = extension.claim('profile-a');
+      expect(emptyShellCommand?.kind).toBe('observe');
+      if (!emptyShellCommand) throw new Error('empty-shell observation was not reserved');
+      const emptyShellObservation = {
+        url: identity.canonicalUrl, title: 'Original', latestUserText: '', latestAssistantResponse: '',
+        providerActivityText: '', providerFailureText: '', composerText: undefined, isGenerating: false,
+      };
+      expect(extension.complete('profile-a', emptyShellCommand.commandId, {
+        kind: 'observation', providerBinding: binding, observation: emptyShellObservation,
+      })).toBe(true);
+      expect(await emptyShell).toMatchObject({
+        state: 'unavailable',
+        failure: { code: 'COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE' },
+        observation: { url: identity.canonicalUrl, latestUserText: '', latestAssistantResponse: '', isGenerating: false },
+      });
       expect(targetAuthority.getSurface(home, record.targetId)?.providerBinding)
         .toMatchObject({ tabId: 'new-tab' });
 
@@ -1090,6 +1107,16 @@ describe('Computer durable InteractionTarget authority', () => {
           phase: 'pre_mutation',
           failoverSafe: false,
         },
+        observation: {
+          url: identity.canonicalUrl,
+          title: 'ChatGPT',
+          latestUserText: '',
+          latestAssistantResponse: '',
+          providerActivityText: '',
+          providerFailureText: '',
+          composerText: undefined,
+          isGenerating: false,
+        },
       });
     } finally {
       rmSync(controllerHome, { recursive: true, force: true });
@@ -1144,6 +1171,16 @@ describe('Computer durable InteractionTarget authority', () => {
           retryable: true,
           phase: 'pre_mutation',
           failoverSafe: false,
+        },
+        observation: {
+          url: identity.canonicalUrl,
+          title: 'ChatGPT',
+          latestUserText: '',
+          latestAssistantResponse: '',
+          providerActivityText: '',
+          providerFailureText: '',
+          composerText: undefined,
+          isGenerating: false,
         },
       });
     } finally {

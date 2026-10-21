@@ -218,8 +218,8 @@ describe('Workflow Supervisor fresh conversation switch', () => {
       objective: 'Rotate a reliably degraded but still completing conversation.',
       completionContract: {}, continuationPolicy: { kind: 'standalone_supervisor' }, userBlockerPolicy: {},
     });
-    store.recordBrowserDeliveryAttemptFailure({ taskId, conversationId, code: 'COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE' });
-    store.recordBrowserDeliveryAttemptFailure({ taskId, conversationId, code: 'COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE' });
+    store.recordBrowserDeliveryAttemptFailure({ taskId, conversationId, code: 'COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE', verifiedEmptyShell: true });
+    store.recordBrowserDeliveryAttemptFailure({ taskId, conversationId, code: 'COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE', verifiedEmptyShell: true });
     let effect = control.reserveEnrollment(taskId);
     for (let n = 1; n <= 6; n += 1) {
       expect(store.recordEffectDispatchStarted(effect.effectId, 1, `degraded-round-${n}`)).toBe(true);
@@ -234,6 +234,30 @@ describe('Workflow Supervisor fresh conversation switch', () => {
     }
     expect(store.getTask(taskId)?.conversationId).toBe(`bootstrap:${taskId}`);
     expect(store.latestEffectDispatch(effect.effectId)?.generation ?? 0).toBe(0);
+    // Unverified typed failures alone do not lower the cadence to six receipts.
+    const unverifiedTaskId = 'supervisor:unverified-degraded-receipt-rotation';
+    const unverifiedConversationId = '85858585-bbbb-cccc-dddd-989898989898';
+    const unverifiedUrl = 'https://chatgpt.com/c/' + unverifiedConversationId;
+    control.registerTask({
+      taskId: unverifiedTaskId, conversationId: unverifiedConversationId, conversationUrl: unverifiedUrl,
+      objective: 'Do not rotate early on unverified typed failures.',
+      completionContract: {}, continuationPolicy: { kind: 'standalone_supervisor' }, userBlockerPolicy: {},
+    });
+    store.recordBrowserDeliveryAttemptFailure({ taskId: unverifiedTaskId, conversationId: unverifiedConversationId, code: 'COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE' });
+    store.recordBrowserDeliveryAttemptFailure({ taskId: unverifiedTaskId, conversationId: unverifiedConversationId, code: 'COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE' });
+    let unverifiedEffect = control.reserveEnrollment(unverifiedTaskId);
+    for (let n = 1; n <= 10; n += 1) {
+      expect(store.recordEffectDispatchStarted(unverifiedEffect.effectId, 1, 'unverified-round-' + n)).toBe(true);
+      control.observeEffect({ effectId: unverifiedEffect.effectId, observationId: 'unverified-applied-' + n, outcome: 'applied' });
+      const result = await control.observeAssistantTurn({
+        taskId: unverifiedTaskId, conversationId: unverifiedConversationId,
+        responseText: 'Useful progress.\n' + renderSupervisorReceipt(control.getTask(unverifiedTaskId)!, unverifiedEffect.effectId, 'CONTINUE'),
+      });
+      if (!('successorEffect' in result) || !result.successorEffect) throw new Error('UNVERIFIED_SUCCESSOR_MISSING');
+      unverifiedEffect = result.successorEffect;
+      expect(unverifiedEffect.kind).toBe(n === 10 ? 'enrollment' : 'continuation');
+    }
+    expect(store.getTask(unverifiedTaskId)?.conversationId).toBe('bootstrap:' + unverifiedTaskId);
     store.close();
   });
 

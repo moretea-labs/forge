@@ -309,6 +309,12 @@ function exactConversation(snapshot: ComputerChatgptConversationObservation, tas
   try { return parseChatgptConversationIdentity(snapshot.url).conversationId === task.conversationId; }
   catch { return false; }
 }
+function exactCanonicalConversationUrl(snapshot: ComputerChatgptConversationObservation, task: WorkflowSupervisorBrowserTask): boolean {
+  try {
+    return parseChatgptConversationIdentity(snapshot.url).canonicalUrl
+      === parseChatgptConversationIdentity(task.conversationUrl).canonicalUrl;
+  } catch { return false; }
+}
 function identityForTask(task: WorkflowSupervisorBrowserTask): ComputerChatgptConversationIdentity {
   const parsed = parseChatgptConversationIdentity(task.conversationUrl);
   if (parsed.conversationId !== task.conversationId) throw new Error('WORKFLOW_SUPERVISOR_CONVERSATION_IDENTITY_MISMATCH');
@@ -395,7 +401,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     }
   }
 
-  private noteTaskFailure(code: string, task: WorkflowSupervisorBrowserTask, effectId?: string, recordFailure = true): void {
+  private noteTaskFailure(code: string, task: WorkflowSupervisorBrowserTask, effectId?: string, recordFailure = true, verifiedEmptyShell = false): void {
     const nowMs = this.deps.nowMs();
     const previous = this.taskTransportFailures.get(task.taskId);
     const failure: TaskTransportFailure = {
@@ -424,7 +430,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     if (code !== SUPERVISOR_PRE_SEND_BLOCKED) {
       this.control.store.recordBrowserDeliveryAttemptFailure({
         taskId: task.taskId, conversationId: task.conversationId, code,
-        ...(effectId ? { effectId } : {}),
+        ...(effectId ? { effectId } : {}), verifiedEmptyShell,
       });
     }
   }
@@ -441,15 +447,34 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     });
   }
 
-  private noteTargetUnavailable(task: WorkflowSupervisorBrowserTask, effectId: string | undefined, failure: { code: string; humanAction?: 'login' | 'grant_permission' }): void {
+  private noteTargetUnavailable(task: WorkflowSupervisorBrowserTask, effectId: string | undefined, failure: { code: string; humanAction?: 'login' | 'grant_permission'; observation?: ComputerChatgptConversationObservation }): void {
     // A user login/grant problem cannot be fixed by a different conversation.
     if (failure.humanAction) {
       this.noteTaskFailure(failure.code, task, effectId, false);
       this.deps.requestHumanAction?.({ taskId: task.taskId, ...(effectId ? { effectId } : {}), action: failure.humanAction, code: failure.code });
       return;
     }
-    // Task-local failures are spaced independently of unrelated conversations.
-    this.noteTaskFailure(failure.code, task, effectId);
+    const observation = failure.observation;
+    const exactUrl = observation !== undefined && exactCanonicalConversationUrl(observation, task);
+    const providerFailure = observation && exactUrl && observation.providerFailureText
+      ? chatgptProviderPageFailure(observation.providerFailureText)
+      : undefined;
+    if (providerFailure) noteChatgptProviderBackpressure(this.deps.providerScopeKey, providerFailure, this.deps.nowMs());
+    const emptyShell = failure.code === 'COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE'
+      && observation !== undefined
+      && exactUrl
+      && !observation.providerFailureText.trim()
+      && !conversationContentAvailable(observation);
+    const verifiedEmptyShell = emptyShell
+      && !this.lastRunTransportUnavailable
+      && this.conversations.some((conversation) => conversation.conversation_id === task.conversationId)
+      && chatgptProviderBackpressureRemainingMs(this.deps.providerScopeKey, this.deps.nowMs()) === 0;
+    // The typed error alone is not migration evidence. Unverified failures keep
+    // task-local backoff but cannot advance the durable short-chat cadence.
+    const code = failure.code === 'COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE' && !verifiedEmptyShell
+      ? 'WORKFLOW_SUPERVISOR_EMPTY_SHELL_EVIDENCE_UNVERIFIED'
+      : failure.code;
+    this.noteTaskFailure(code, task, effectId, true, verifiedEmptyShell);
   }
 
   private syncTaskStallProjections(): void {
@@ -733,7 +758,10 @@ export class WorkflowSupervisorNativeBrowserAdapter {
         || this.control.store.hasAppliedEffectAwaitingCompletion(task.taskId),
     });
     if (ensured.state !== 'ready') {
-      this.noteTargetUnavailable(task, poll.command?.effectId, ensured.failure);
+      this.noteTargetUnavailable(task, poll.command?.effectId, {
+        ...ensured.failure,
+        ...(ensured.observation ? { observation: ensured.observation } : {}),
+      });
       // The Computer provider proves the exact target was selected but did not
       // hydrate. Use its typed failure, not an inferred timeout or browser text.
       if (ensured.failure.code === 'COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE') {
@@ -744,7 +772,8 @@ export class WorkflowSupervisorNativeBrowserAdapter {
           && failure?.code === ensured.failure.code && failure.streak >= 3
           && this.deps.nowMs() - failure.firstFailureAtMs >= 2 * 60_000
           && poll.command?.mode === 'send' && poll.command.dispatchGeneration === 1
-          && !this.control.store.hasAppliedEffectAwaitingCompletion(task.taskId)) {
+          && !this.control.store.hasAppliedEffectAwaitingCompletion(task.taskId)
+          && chatgptProviderBackpressureRemainingMs(this.deps.providerScopeKey, this.deps.nowMs()) === 0) {
           this.control.migrateConversation({
             taskId: task.taskId, expectedConversationId: task.conversationId,
             fresh: true, requestId: `verified-unavailable:${task.conversationId}`,
@@ -759,7 +788,9 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     const snapshot = ensured.observation ?? await target.observe({ includeUserHistory: false, includePageText: false });
     if (!exactConversation(snapshot, task)) { this.noteTargetUnavailable(task, poll.command?.effectId, { code: 'WORKFLOW_SUPERVISOR_EXACT_CONVERSATION_UNPROVEN' }); return; }
     if (!conversationContentAvailable(snapshot)) {
-      this.noteTargetUnavailable(task, poll.command?.effectId, { code: 'COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE' });
+      this.noteTargetUnavailable(task, poll.command?.effectId, {
+        code: 'COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE', observation: snapshot,
+      });
       return;
     }
     // Do not clear a pre-send failure merely because a conversation loaded:
@@ -1026,8 +1057,14 @@ export class WorkflowSupervisorNativeBrowserAdapter {
 
   private async executeCommand(target: ComputerChatgptConversationTarget, command: WorkflowSupervisorBrowserCommand, task: WorkflowSupervisorBrowserTask): Promise<void> {
     let snapshot = await target.observe({ includeUserHistory: true, includePageText: true });
-    if (!exactConversation(snapshot, task) || !conversationContentAvailable(snapshot)) {
-      this.noteTargetUnavailable(task, command.effectId, { code: 'COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE' });
+    if (!exactConversation(snapshot, task)) {
+      this.noteTargetUnavailable(task, command.effectId, { code: 'WORKFLOW_SUPERVISOR_EXACT_CONVERSATION_UNPROVEN' });
+      return;
+    }
+    if (!conversationContentAvailable(snapshot)) {
+      this.noteTargetUnavailable(task, command.effectId, {
+        code: 'COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE', observation: snapshot,
+      });
       return;
     }
     if (command.mode === 'send' && snapshot.isGenerating && command.kind !== 'recovery') return;

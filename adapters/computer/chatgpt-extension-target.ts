@@ -68,7 +68,7 @@ function conversationContentAvailable(observation: ComputerChatgptConversationOb
     || Boolean(observation.latestUserText.trim() || observation.latestAssistantResponse.trim() || observation.providerActivityText.trim());
 }
 
-function failure(code: string, input: { retryable?: boolean; failoverSafe?: boolean; humanAction?: 'login' | 'grant_permission' } = {}): ComputerChatgptTargetResult {
+function failure(code: string, input: { retryable?: boolean; failoverSafe?: boolean; humanAction?: 'login' | 'grant_permission'; observation?: ComputerChatgptConversationObservation } = {}): ComputerChatgptTargetResult {
   return {
     state: 'unavailable',
     failure: {
@@ -78,6 +78,7 @@ function failure(code: string, input: { retryable?: boolean; failoverSafe?: bool
       ...(input.failoverSafe === undefined ? {} : { failoverSafe: input.failoverSafe }),
       ...(input.humanAction ? { humanAction: input.humanAction } : {}),
     },
+    ...(input.observation ? { observation: input.observation } : {}),
   };
 }
 
@@ -369,7 +370,7 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
       try {
         const observation = await target.observe({ includeUserHistory: false, includePageText: false });
         if (!conversationContentAvailable(observation)) {
-          return failure('COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE', { failoverSafe: false });
+          return failure('COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE', { failoverSafe: false, observation });
         }
         return { state: 'ready', target, observation };
       } catch (error) {
@@ -405,7 +406,7 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
             && parsed.pathname.endsWith(`/c/${identity.conversationId}`);
         } catch { /* Never bind an unparseable or changed conversation target. */ }
         if (!exactUrl || !providerBinding) return failure('COMPUTER_CHATGPT_EXTENSION_TARGET_IDENTITY_UNVERIFIED', { failoverSafe: false });
-        if (!conversationContentAvailable(observation)) return failure('COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE', { failoverSafe: false });
+        if (!conversationContentAvailable(observation)) return failure('COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE', { failoverSafe: false, observation });
         const record = await this.bindAsync(identity, providerBinding, selected.instanceId);
         return { state: 'ready', target: this.target(identity, record, selected.instanceId), observation };
       }
@@ -433,7 +434,7 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
     if (response.result.kind === 'ensured') {
       const record = await this.bindAsync(identity, response.result.providerBinding, selected.instanceId);
       if (response.result.observation && !conversationContentAvailable(response.result.observation)) {
-        return failure('COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE', { failoverSafe: false });
+        return failure('COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE', { failoverSafe: false, observation: response.result.observation });
       }
       return { state: 'ready', target: this.target(identity, record, selected.instanceId), ...(response.result.observation ? { observation: response.result.observation } : {}) };
     }
