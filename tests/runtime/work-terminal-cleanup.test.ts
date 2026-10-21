@@ -1080,6 +1080,29 @@ describe('terminal Work cleanup', () => {
     const retried = await callExecutionTool(ctx, 'work_prepare', request);
     if (retried?.isError) throw new Error(JSON.stringify(retried.structuredContent));
     expect((retried?.structuredContent as { work: { workId: string } }).work.workId).toBe(recovery.work.workId);
+
+    // The read-only inspection endpoint must not mutate Handle provenance or
+    // silently redirect the retired exact Handle ID to this successor.
+    const beforeInspect = readWorkHandle(fx.controllerHome, fx.repository.repoId, recovery.work.workId)!;
+    const inspectSession = await callExecutionTool(ctx, 'session_start', {});
+    if (inspectSession?.isError) throw new Error(JSON.stringify(inspectSession.structuredContent));
+    const inspectSessionId = (inspectSession?.structuredContent as { session: { sessionId: string } }).session.sessionId;
+    expect(inspectSessionId).not.toBe(beforeInspect.sessionId);
+    const inspected = await callExecutionTool(ctx, 'work_inspect', {
+      session_id: inspectSessionId, repo_id: fx.repository.repoId, work_id: recovery.work.workId,
+    });
+    if (inspected?.isError) throw new Error(JSON.stringify(inspected.structuredContent));
+    expect(inspected?.structuredContent).toMatchObject({
+      work: { workId: recovery.work.workId }, readiness: { valid: true },
+    });
+    expect(readWorkHandle(fx.controllerHome, fx.repository.repoId, recovery.work.workId)).toEqual(beforeInspect);
+    const retired = await callExecutionTool(ctx, 'work_inspect', {
+      session_id: inspectSessionId, repo_id: fx.repository.repoId, work_id: sourceId,
+    });
+    if (retired?.isError) throw new Error(JSON.stringify(retired.structuredContent));
+    expect(retired?.structuredContent).toMatchObject({
+      work: { workId: sourceId, state: 'cleaned' }, readiness: { valid: false },
+    });
   });
 
   test('does not create a bundle for ancestry-only unique commits with no source delta', async () => {

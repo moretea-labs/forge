@@ -10,7 +10,7 @@ import { resolveAuthorizationRequest } from '../../../src/runtime/control-plane/
 import { readControllerResult, searchControllerResult } from '../../../src/runtime/evidence/result-store';
 import { resumeExecutionJobAfterApproval } from '../../../src/runtime/execution/jobs/store';
 import { recordMcpTiming, type McpTimingTrace } from '../../../src/runtime/diagnostics/mcp-timing';
-import { compactHandle, contractFor, identityFor, makeBoundedWorkResult, principalFor, requireSession, workForSession } from '../../../src/runtime/control-plane/execution/work-execution-support';
+import { compactHandle, contractFor, findWorkHandle, identityFor, makeBoundedWorkResult, principalFor, requireSession } from '../../../src/runtime/control-plane/execution/work-execution-support';
 import { bindSessionRepository, prepareWork } from '../../../src/runtime/control-plane/execution/work-preparation-service';
 import { validateWork } from '../../../src/runtime/control-plane/execution/work-operation-service';
 
@@ -79,8 +79,10 @@ export function startOrResumeSession(ctx: MultiRepositoryMcpToolContext): Execut
 
 function inspectWork(ctx: MultiRepositoryMcpToolContext, args: Record<string, unknown>): Record<string, unknown> {
   const session = requireSession(ctx, args);
-  // work_inspect is authorized read-only evidence; it must not require the write lease.
-  const handle = workForSession(ctx, session, args);
+  // Inspect the exact WorkHandle without rebinding its controller identity,
+  // reconciling validation, or changing the session's active execution focus.
+  // validateWorkHandle below enforces the authenticated principal and fences.
+  const handle = findWorkHandle(ctx, session, args);
   const started = performance.now();
   const validationStarted = performance.now();
   const validated = validateWorkHandle(ctx.controllerHome, handle, identityFor(ctx, args), 'cheap', 'inspect');
