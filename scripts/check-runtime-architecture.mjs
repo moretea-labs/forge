@@ -1777,6 +1777,12 @@ requireText('src/cli/local-bridge/server.ts', 'app.post(path, retireLegacyIssueM
 requireText('src/cli/local-bridge/server.ts', 'app.patch("/api/project-state", retireLegacyIssueMutation)');
 requireText('src/cli/local-bridge/server.ts', 'runEditSessionMutationInWorker(');
 requireText('packages/kernel/identity/infrastructure/grant-store.ts', 'GRANT_ID_REUSE_REQUIRES_NEW_ENROLLMENT');
+requireText('src/runtime/safe-tooling/mac-keychain-write.ts', "spawnSync('/usr/bin/security', ['-i']");
+requireText('src/runtime/safe-tooling/google-credential-store.ts', 'writeMacKeychainGenericPassword(');
+requireText('src/runtime/safe-tooling/resend-oauth.ts', 'writeMacKeychainGenericPassword(');
+forbid('src/runtime/safe-tooling/google-credential-store.ts', /add-generic-password/, 'Google tokens must never enter security CLI argv');
+forbid('src/runtime/safe-tooling/resend-oauth.ts', /add-generic-password/, 'Resend tokens must never enter security CLI argv');
+requireText('src/runtime/safe-tooling/mac-keychain-write.ts', "stdio: ['pipe', 'ignore', 'ignore']");
 requireText('packages/kernel/identity/infrastructure/grant-store.ts', 'grant.expiresAt = priorId.expiresAt;');
 requireText('adapters/mcp/runtime-gateway/status-inbox-adapter.ts', 'gatewayLatencySummaries(repository.repoId)');
 requireText('src/cli/local-bridge/server.ts', 'withRepositoryMutationExclusionAsync(');
