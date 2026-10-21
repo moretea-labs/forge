@@ -95,7 +95,7 @@ import type { MultiRepositoryMcpToolContext } from "../../../adapters/mcp/multi-
 import { createMcpToolContext as createControllerMcpToolContext } from "../../../adapters/mcp/server";
 import { loadMcpServiceLocalConfig, loadMcpServiceRuntimeState } from "../../../adapters/mcp/auth";
 import { loadRepositoryRegistry, registerRepository, removeRepository, resolveRepositorySelection } from "../repositories/registry";
-import { withRepositoryMutationExclusionAsync } from '../../runtime/resources/leases/store';
+import { withRepositoryMutationExclusion, withRepositoryMutationExclusionAsync } from '../../runtime/resources/leases/store';
 import { runEditSessionMutationInWorker } from './edit-session-worker';
 import { resolveControllerHome, resolveRepoPreferredControllerHome } from "../../effects/controller-home";
 import { ensureRepositoryRuntimeStorage } from "../repositories/runtime-storage";
@@ -2033,21 +2033,31 @@ export async function startLocalBridgeServer(
   });
   app.post("/api/edit-sessions/:sessionId/savepoints", (request, response) => {
     try {
-      response.json(createEditSavepoint(requestRepositoryRoot(request, options, controllerHome), request.params.sessionId, String(request.body?.name ?? "")));
+      const repository = requestRepositorySelection(request, options, controllerHome);
+      response.json(withRepositoryMutationExclusion(
+        controllerHome, repository.repoId, 'local_bridge:create_edit_savepoint',
+        () => createEditSavepoint(repository.canonicalRoot, request.params.sessionId, String(request.body?.name ?? "")),
+      ));
     } catch (error) {
       response.status(400).json({ error: errorMessage(error) });
     }
   });
-  app.post("/api/edit-sessions/:sessionId/verify", (request, response) => {
+  app.post("/api/edit-sessions/:sessionId/verify", async (request, response) => {
     try {
-      // Deterministic Direct Edit verification no longer creates a Local Bridge Job.
-      const repoRoot = requestRepositoryRoot(request, options, controllerHome);
-      const session = getEditSession(repoRoot, request.params.sessionId);
-      const verified = verifyEditSession(repoRoot, session.sessionId, {
-        checkIds: Array.isArray(request.body?.checkIds) ? request.body.checkIds.map(String) : undefined,
-        reviewer: queryString(request.body?.reviewer) ?? "local-controller-human",
-        note: queryString(request.body?.note),
-      });
+      // Verification persists EditSession evidence and may run blocking checks.
+      // The existing worker keeps those checks off the Local Bridge event loop.
+      const repository = requestRepositorySelection(request, options, controllerHome);
+      const verified = await withRepositoryMutationExclusionAsync(
+        controllerHome, repository.repoId, 'local_bridge:verify_edit_session',
+        () => runEditSessionMutationInWorker({
+          kind: 'verify',
+          repoRoot: repository.canonicalRoot,
+          sessionId: request.params.sessionId,
+          checkIds: Array.isArray(request.body?.checkIds) ? request.body.checkIds.map(String) : undefined,
+          reviewer: queryString(request.body?.reviewer) ?? "local-controller-human",
+          note: queryString(request.body?.note),
+        }),
+      );
       response.status(200).json({
         accepted: true,
         status: "succeeded",
