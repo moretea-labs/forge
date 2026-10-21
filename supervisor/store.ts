@@ -1857,10 +1857,19 @@ export class WorkflowSupervisorStore {
             JOIN completions c ON c.completion_fingerprint=e.completion_fingerprint
             WHERE e.task_id=? AND e.kind='assistant_completion' AND e.event_id>? AND c.action='CONTINUE'`,
             (s) => s.get(input.taskId, lastMigration?.id ?? 0)) as { total?: number };
+          // One durable completion ledger owns proactive rotation. Count real
+          // completed turns instead of estimating a conversation's token size;
+          // verified exact-target load failures advance the rotation cadence.
+          const unavailableReads = statement(db, `SELECT COUNT(*) AS total FROM events
+            WHERE task_id=? AND kind='browser_delivery_attempt_failed' AND event_id>?
+              AND json_extract(payload_json,'$.conversation_id')=?
+              AND json_extract(payload_json,'$.code')='COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE'`,
+            (s) => s.get(input.taskId, lastMigration?.id ?? 0, currentTask.conversationId)) as { total?: number };
+          const receiptLimit = (unavailableReads.total ?? 0) >= 2 ? 6 : 10;
           const rotate = successor.freshEnrollmentPrompt !== undefined
             && currentTask.continuationPolicy.kind === 'standalone_supervisor'
             && !currentTask.conversationId.startsWith('bootstrap:')
-            && (completedSinceMigration.total ?? 0) >= 15;
+            && (completedSinceMigration.total ?? 0) >= receiptLimit;
           successorEffect = this.reserveEffectWithin(db, {
             taskId: input.taskId, effectId: successor.effectId,
             kind: rotate ? 'enrollment' : successor.kind, originKey,
@@ -1877,7 +1886,7 @@ export class WorkflowSupervisorStore {
               json({ from_conversation_id: sourceConversationId, to_conversation_id: bootstrapConversationId,
                 to_conversation_url: 'https://chatgpt.com/', fresh_conversation: true,
                 replacement_effect_id: successorEffect!.effectId, request_id: `automatic-receipt:${input.completionFingerprint}`,
-                authorized_by: 'user-configured-standalone-rotation', reason: '15_confirmed_continue_receipts' }), now()));
+                authorized_by: 'user-configured-standalone-rotation', reason: `confirmed_continue_receipts:${receiptLimit}` }), now()));
           }
         }
       }

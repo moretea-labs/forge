@@ -644,6 +644,9 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     for (const task of tasks) {
       if (this.closed) break;
       await this.serviceFreshSend();
+      // A fresh send can atomically migrate this task; the inventory snapshot
+      // from the beginning of the tick must not poll or send its retired chat.
+      if (this.control.getTask(task.taskId)?.conversationId !== task.conversationId) continue;
       try {
         const poll = task.conversationId.startsWith('bootstrap:') ? this.control.bootstrapPoll(task.taskId) : this.control.browserPoll({ conversationId: task.conversationId, conversationUrl: task.conversationUrl });
         if (poll.terminal || poll.command?.mode === 'send') continue;
@@ -729,11 +732,36 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       createIfMissing: poll.command?.mode === 'send'
         || this.control.store.hasAppliedEffectAwaitingCompletion(task.taskId),
     });
-    if (ensured.state !== 'ready') { this.noteTargetUnavailable(task, poll.command?.effectId, ensured.failure); return; }
+    if (ensured.state !== 'ready') {
+      this.noteTargetUnavailable(task, poll.command?.effectId, ensured.failure);
+      // The Computer provider proves the exact target was selected but did not
+      // hydrate. Use its typed failure, not an inferred timeout or browser text.
+      if (ensured.failure.code === 'COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE') {
+        const failure = this.taskTransportFailures.get(task.taskId);
+        if (this.control.getTask(task.taskId)?.continuationPolicy.kind === 'standalone_supervisor'
+          && !this.lastRunTransportUnavailable
+          && this.conversations.some((conversation) => conversation.conversation_id === task.conversationId)
+          && failure?.code === ensured.failure.code && failure.streak >= 3
+          && this.deps.nowMs() - failure.firstFailureAtMs >= 2 * 60_000
+          && poll.command?.mode === 'send' && poll.command.dispatchGeneration === 1
+          && !this.control.store.hasAppliedEffectAwaitingCompletion(task.taskId)) {
+          this.control.migrateConversation({
+            taskId: task.taskId, expectedConversationId: task.conversationId,
+            fresh: true, requestId: `verified-unavailable:${task.conversationId}`,
+            reason: 'exact_conversation_empty_shell_verified_across_spaced_browser_observations',
+            authorizedBy: 'user-authorized-automatic-conversation-rotation',
+          });
+        }
+      }
+      return;
+    }
     const target = ensured.target;
     const snapshot = ensured.observation ?? await target.observe({ includeUserHistory: false, includePageText: false });
     if (!exactConversation(snapshot, task)) { this.noteTargetUnavailable(task, poll.command?.effectId, { code: 'WORKFLOW_SUPERVISOR_EXACT_CONVERSATION_UNPROVEN' }); return; }
-    if (!conversationContentAvailable(snapshot)) { this.noteTargetUnavailable(task, poll.command?.effectId, { code: 'COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE' }); return; }
+    if (!conversationContentAvailable(snapshot)) {
+      this.noteTargetUnavailable(task, poll.command?.effectId, { code: 'COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE' });
+      return;
+    }
     // Do not clear a pre-send failure merely because a conversation loaded:
     // only a successful provider preparation proves the obstacle is gone.
     if (transportFailure?.code !== SUPERVISOR_PRE_SEND_BLOCKED) this.clearTaskFailure(task.taskId, poll.command?.effectId);

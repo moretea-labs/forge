@@ -3579,6 +3579,55 @@ test('public supervisor_task recover routes exhausted provider resume through th
   }
 });
 
+
+test('verified repeated exact-conversation empty shells migrate only a never-sent standalone effect', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-empty-shell-rotation-'));
+  roots.push(root);
+  const store = new WorkflowSupervisorStore(join(root, 'supervisor-home'));
+  const control = new WorkflowSupervisorControlPlane(store, {}, {
+    browserTaskActive: () => true, projectScopeForTask: () => ({ title: 'Forge' }),
+  });
+  const taskId = 'supervisor:verified-empty-shell';
+  const conversationId = '91919191-aaaa-bbbb-cccc-929292929292';
+  const conversationUrl = `https://chatgpt.com/c/${conversationId}`;
+  control.registerTask({
+    taskId, conversationId, conversationUrl, objective: 'Resume without the old unusable conversation.',
+    completionContract: {}, continuationPolicy: { kind: 'standalone_supervisor' }, userBlockerPolicy: {},
+  });
+  control.recordBrowserDiscovery('empty-shell-test', [{
+    conversationId, canonicalUrl: conversationUrl, title: 'Forge',
+    projectTitle: 'Forge', projectUrl: 'https://chatgpt.com/g/g-p-123456789abcdef0/project',
+  }]);
+  const pending = control.reserveEnrollment(taskId);
+  let nowMs = 1_000_000;
+  const targetPort = {
+    inventory: async () => ({ conversations: [{ conversationId, canonicalUrl: conversationUrl, title: 'Forge' }], complete: true, unavailableProviders: [] }),
+    cleanup: async () => undefined,
+    // Match the real Computer provider: empty exact shells are typed failed
+    // ensures, never a hydrated 'ready' target.
+    ensureExact: async () => ({ state: 'unavailable', failure: { code: 'COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE' } }),
+    // The test asserts migration reservation, not a new provider submission.
+    openBootstrap: async () => ({ state: 'unavailable', failure: { code: 'TEST_BOOTSTRAP_NOT_STARTED' } }),
+    close: async () => undefined,
+  } as any;
+  const adapter = new WorkflowSupervisorNativeBrowserAdapter(control, new WorkflowSupervisorEphemeralDiscovery(), {
+    targetPort, nowMs: () => nowMs, providerIdleGraceMs: 60_000, providerScopeKey: join(root, 'provider-scope'),
+    sleep: async () => undefined, setInterval: () => 0 as unknown as ReturnType<typeof setInterval>,
+    clearInterval: () => undefined, onError: (error) => { throw error; },
+  });
+  await adapter.runOnce();
+  expect(store.getTask(taskId)?.conversationId).toBe(conversationId);
+  nowMs += 5 * 60_000;
+  await adapter.runOnce();
+  expect(store.getTask(taskId)?.conversationId).toBe(conversationId);
+  nowMs += 5 * 60_000;
+  await adapter.runOnce();
+  expect(store.getTask(taskId)?.conversationId).toBe(`bootstrap:${taskId}`);
+  expect(store.latestEffectDispatch(pending.effectId)?.generation ?? 0).toBe(0);
+  await adapter.close();
+  store.close();
+});
+
 test('a terminal conversation capacity banner migrates the same Supervisor but quoted activity text cannot', async () => {
   const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-capacity-migration-'));
   roots.push(root);
