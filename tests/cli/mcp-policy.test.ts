@@ -154,6 +154,9 @@ describe('mcp policy and paths', () => {
     const exposed = buildMcpToolDefinitions(getMcpPolicy('controller')).map((tool) => tool.name);
     expect(exposed).not.toContain('quick_agent_session');
     expect(exposed).not.toContain('submit_local_job');
+    const controller = getMcpPolicy('controller', { devAgentRunner: true, allowedAgents: ['codex'] });
+    expect(controller.execution.agentRunner).toBe(true);
+    expect(controller.execution.allowedAgents).toEqual(['codex']);
   });
 
 });
