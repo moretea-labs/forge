@@ -36,7 +36,10 @@ import {
   type LocalBridgeServerHandle,
 } from "../../src/cli/local-bridge/server";
 import { isProcessAlive } from "../../src/runtime/shared/process-tree";
-import { loadRepositoryRegistry, registerRepository } from "../../src/cli/repositories/registry";
+import { loadRepositoryRegistry, registerRepository, resolveRepositorySelection } from "../../src/cli/repositories/registry";
+import { acquireControllerLock, releaseControllerLock } from "../../src/cli/repositories/locks";
+import { createMcpToolContext } from "../../adapters/mcp/multi-repository";
+import { callMcpTool as callLegacyMcpTool } from "../../adapters/mcp/tool-mapping/legacy-tool-service";
 import { createSchedule, saveOccurrence, saveSchedule } from "../../src/runtime/workflow/schedules/store";
 import { terminateProcessesByCommand, waitForNoProcessesByCommand } from "../runtime/process-hygiene";
 
@@ -826,6 +829,27 @@ describe("Local Execution Bridge", () => {
     expect(verified.status).toBe("succeeded");
     expect(verified.sessionId).toBe(session.sessionId);
     // Direct verification no longer creates a Local Bridge Job.
+    // Both real entrypoints use the same pre-existing repository lock. A
+    // competing editor must not cause a partial edit or a second writer.
+    const controllerHome = process.env.FORGE_CONTROLLER_HOME!;
+    const repository = resolveRepositorySelection({ explicitPath: root, controllerHome });
+    const lockKey = { scope: 'repository' as const, repoId: repository.repoId };
+    const lock = acquireControllerLock(controllerHome, lockKey, 'test:competing-editor');
+    try {
+      const blocked = await fetch(new URL(`/api/edit-sessions/${session.sessionId}/finalize`, handle.url), {
+        method: "POST",
+        headers: { ...headers, "content-type": "application/json" },
+        body: JSON.stringify({ reviewer: "local-test" }),
+      });
+      expect(blocked.status).toBe(400);
+      expect((await blocked.json()).error).toContain('LOCK_HELD');
+      const legacyContext = createMcpToolContext({ repo: root, controllerHome, profile: 'controller' });
+      const legacyAttempt = await callLegacyMcpTool(legacyContext, 'begin_edit_session', { purpose: 'competing editor' });
+      expect(legacyAttempt.isError).toBe(true);
+      expect(JSON.stringify(legacyAttempt.structuredContent)).toContain('LOCK_HELD');
+    } finally {
+      releaseControllerLock(controllerHome, lockKey, lock.lockId);
+    }
     const finalized = await fetch(new URL(`/api/edit-sessions/${session.sessionId}/finalize`, handle.url), {
       method: "POST",
       headers: { ...headers, "content-type": "application/json" },
