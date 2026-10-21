@@ -42,7 +42,7 @@ function policy(value: unknown): McpPolicy {
     execution: {
       agentRunner: e.agentRunner === true,
       allowedAgents: Array.isArray(e.allowedAgents)
-        ? e.allowedAgents.filter((entry): entry is 'codex' | 'claude' => entry === 'codex' || entry === 'claude')
+        ? e.allowedAgents.filter((entry): entry is 'claude' => entry === 'claude')
         : [],
       runnerTimeoutMs: Number(e.runnerTimeoutMs) || 0,
       runnerMaxTimeoutMs: Number(e.runnerMaxTimeoutMs) || 0,

@@ -61,7 +61,7 @@ const EXPECTED_PREFERRED_TOOL_SCHEMA_FINGERPRINT = 'f169b76886e344eb';
 const policy = runtimePolicy(process.cwd(), {
   profile: 'controller',
   enableDevRunner: true,
-  devRunnerAgents: 'codex,claude',
+  devRunnerAgents: 'claude',
 });
 
 const sourceDefinitionGroups = {

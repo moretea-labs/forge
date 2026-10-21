@@ -125,7 +125,7 @@ export function buildMcpCommand(): Command {
     .option('--auth <mode>', 'HTTP auth mode: oauth|bearer|none', 'oauth')
     .option('--enable-chatgpt-browser', 'Expose tools that operate the user logged-in ChatGPT Web browser session')
     .option('--enable-dev-runner', 'Enable local Codex/Claude task runners for the controller profile')
-    .option('--dev-runner-agents <agents>', 'Comma-separated dev runner agents: codex,claude')
+    .option('--dev-runner-agents <agents>', 'Comma-separated dev runner agents: claude')
     .option('--dev-runner-timeout-ms <ms>', 'Default local agent timeout in milliseconds (default: 3600000)')
     .option('--dev-runner-max-timeout-ms <ms>', 'Maximum per-run timeout in milliseconds (default: 43200000)')
     .action(async (rawOpts: McpServeOptions) => {
