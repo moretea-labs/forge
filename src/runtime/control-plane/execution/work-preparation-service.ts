@@ -809,10 +809,9 @@ export function prepareWork(ctx: McpExecutionContext, args: Record<string, unkno
       if (requestedIsolation !== undefined) throw new Error('WORK_RELOCATION_ISOLATION_CONFLICT');
       return relocateExistingWorkToManagedCheckout(ctx, args, session, repository, existing);
     }
-    if (requestedIsolation !== undefined) {
-      // Fixed placement contract: only `new_worktree` requests an isolated
-      // managed checkout. `reuse` and `auto` both share the selected current
-      // checkout, so an existing placement conflicts only across that boundary.
+    if (requestedIsolation === 'reuse' || requestedIsolation === 'new_worktree') {
+      // A resumed Work stays on its recorded checkout when isolation is omitted
+      // or `auto`. Only explicit placement requests may reject that identity.
       const requestedWorkspaceMode = requestedIsolation === 'new_worktree' ? 'isolated' : 'current';
       const existingWorkspaceMode = existing.managedWorktree ? 'isolated' : 'current';
       if (requestedWorkspaceMode !== existingWorkspaceMode) {
@@ -846,12 +845,12 @@ export function prepareWork(ctx: McpExecutionContext, args: Record<string, unkno
   const baseStatus = repositoryGitStatus(repository);
   const deliveryTargetBranch = baseStatus.branch;
   if (!deliveryTargetBranch) throw new Error(`WORK_DELIVERY_TARGET_DETACHED: source checkout ${baseCheckoutId} has no branch`);
-  // Fixed placement contract: `auto` (the default) and `reuse` share the
-  // selected current checkout; only an explicit `new_worktree` freezes a fresh
-  // isolated base. A dirty current checkout is normal development state, not a
-  // placement gate: record the exact pre-Work dirty baseline on the handle so
-  // delivery/cleanup can attribute bytes later instead of failing closed.
-  const useWorktree = isolation === 'new_worktree';
+  // Direct Edit and explicitly requested `reuse` may share the selected
+  // current checkout (including its recorded dirty baseline). New durable
+  // Work using `auto` or `new_worktree` freezes a separate managed checkout
+  // to avoid acquiring competing canonical WorkHandle mutation ownership.
+  // Existing Works above retain their original checkout, never relocate here.
+  const useWorktree = isolation !== 'reuse';
   let baselineDirtyPaths: string[] | undefined;
   let baselineDirtyPathCount: number | undefined;
   if (!useWorktree && !baseStatus.clean) {
