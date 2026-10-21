@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'crypto';
 import { existsSync, readdirSync } from 'fs';
 import { join } from 'path';
 import { controllerSystemRoot } from '../../../effects/controller-home';
-import { ControllerLockContentionError, readControllerLock, withControllerLock } from '../../../cli/repositories/locks';
+import { ControllerLockContentionError, readControllerLock, withControllerLock, withControllerLockAsync } from '../../../cli/repositories/locks';
 import type { ResourceClaimSpec } from '../../execution/jobs/types';
 import { readJsonFile, removeFile, writeJsonAtomic } from '../../shared/json-files';
 import { markRepositoryProjectionDirty } from '../../projections/invalidation';
@@ -200,6 +200,21 @@ function repositorySourceResourceKey(resourceKey: string): boolean {
  * admission below cannot slip a new writer in between check and mutation.
  * Source reads using the no-lease MCP path stay independently responsive.
  */
+function assertRepositoryProcessMutationAvailable(controllerHome: string, repoId: string, owner: string): void {
+  // This existing global lease mutex also guards managed Process lease publication.
+  // Lock ordering is repository -> global; Process only observes the repository lock.
+  const blocker = withControllerLock(
+    controllerHome,
+    { scope: 'global', resource: 'execution-leases' },
+    `editor-lease-check:${owner}`,
+    () => listActiveLeases(controllerHome, repoId)
+      .find((lease) => repositorySourceResourceKey(lease.resourceKey)),
+  );
+  if (blocker) {
+    throw new Error(`REPOSITORY_PROCESS_LEASE_HELD: ${blocker.resourceKey} owned by ${blocker.ownerJobId}; refusing concurrent source mutation`);
+  }
+}
+
 export function withRepositoryMutationExclusion<T>(
   controllerHome: string,
   repoId: string,
@@ -208,23 +223,23 @@ export function withRepositoryMutationExclusion<T>(
   ttlMs?: number,
 ): T {
   return withControllerLock(controllerHome, { scope: 'repository', repoId }, owner, () => {
-    // The lease check and lease publication must use *the same* existing
-    // global mutex. Otherwise a Process could observe a free repository lock,
-    // then publish its lease after this editor sees an empty active set.
-    // Lock order: editor takes repository then global (briefly), while Process
-    // takes global and only READS repository lock ownership, never waits on it.
-    const blocker = withControllerLock(
-      controllerHome,
-      { scope: 'global', resource: 'execution-leases' },
-      `editor-lease-check:${owner}`,
-      () => listActiveLeases(controllerHome, repoId)
-        .find((lease) => repositorySourceResourceKey(lease.resourceKey)),
-    );
-    if (blocker) {
-      throw new Error(`REPOSITORY_PROCESS_LEASE_HELD: ${blocker.resourceKey} owned by ${blocker.ownerJobId}; refusing concurrent source mutation`);
-    }
+    assertRepositoryProcessMutationAvailable(controllerHome, repoId, owner);
     return mutate();
   }, ttlMs);
+}
+
+/** The same lock and lease handshake for awaited worker-backed edit mutations. */
+export async function withRepositoryMutationExclusionAsync<T>(
+  controllerHome: string,
+  repoId: string,
+  owner: string,
+  mutate: () => Promise<T>,
+  ttlMs?: number,
+): Promise<T> {
+  return withControllerLockAsync(controllerHome, { scope: 'repository', repoId }, owner, async () => {
+    assertRepositoryProcessMutationAvailable(controllerHome, repoId, owner);
+    return await mutate();
+  }, ttlMs, 0);
 }
 
 export function acquireExecutionLeases(
