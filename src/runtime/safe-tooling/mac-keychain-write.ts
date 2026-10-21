@@ -33,4 +33,20 @@ export function writeMacKeychainGenericPassword(
   if (outcome.error || outcome.signal || outcome.status !== 0) {
     throw new Error('MAC_KEYCHAIN_WRITE_FAILED');
   }
+  // security -i may exit 0 even when add-generic-password fails. Its command
+  // output can echo the secret, so it stays suppressed. Verify the exact value
+  // against the same Keychain; never expose readback to logs, errors or callers.
+  const observed = spawnSync('/usr/bin/security', [
+    'find-generic-password', '-s', service, '-a', account, '-w',
+    ...(keychainPath ? [keychainPath] : []),
+  ], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'ignore'],
+    timeout: 5_000,
+  });
+  if (observed.error || observed.signal || observed.status !== 0
+    || typeof observed.stdout !== 'string'
+    || observed.stdout.replace(/\r?\n$/, '') !== value) {
+    throw new Error('MAC_KEYCHAIN_WRITE_FAILED');
+  }
 }

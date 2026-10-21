@@ -146,6 +146,9 @@ describe('macOS Keychain secret-safe write transport', () => {
     const readback = spawnSync('/usr/bin/security', ['find-generic-password', '-s', 'forge.test-credential', '-a', 'dummy', '-w', keychain], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
     expect(readback.status).toBe(0);
     expect(readback.stdout.trim()).toBe(dummy);
+    // macOS security -i may exit 0 for an invalid subcommand destination.
+    // A non-existent Keychain must never appear as a successful store.
+    expect(() => writeMacKeychainGenericPassword('forge.test-credential', 'dummy', dummy, join(root, 'missing.keychain'))).toThrow('MAC_KEYCHAIN_WRITE_FAILED');
     expect(() => writeMacKeychainGenericPassword('forge.test-credential', 'dummy', 'line1\nline2', keychain)).toThrow('MAC_KEYCHAIN_ARGUMENT_INVALID');
   });
 });
