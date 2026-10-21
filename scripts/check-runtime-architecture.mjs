@@ -1313,7 +1313,9 @@ forbid(
 requireMissing('src/runtime/control-plane/routing/workspace-admission.ts');
 forbid('packages/kernel/work/domain/types.ts', /requireHandoffOnAmbiguity|requireWorktree|directMainProhibited/, 'retired Work placement/handoff policy fields must not return as durable authority');
 forbid('adapters/mcp/runtime-gateway/work-adapter.ts', /require_handoff_on_ambiguity|require_worktree|direct_main_prohibited/, 'retired placement/handoff wire flags must not drive repository topology');
-requireText('adapters/mcp/runtime-gateway/work-adapter.ts', "rawConstraints.workspace_mode === 'current'\n      ? 'current'\n      : 'isolated'", 'repository-bound rh_work.start must default omitted placement to isolated execution');
+requireText('adapters/mcp/runtime-gateway/work-adapter.ts', "rawConstraints.workspace_mode === 'isolated' ? 'isolated' : 'current'", 'repository-bound rh_work.start must default omitted placement to the selected current checkout');
+requireText('adapters/mcp/runtime-gateway/work-semantic-operations.ts', 'repositoryPlacement?: \'current\' | \'isolated\'', 'repository-bound semantic creation must carry its placement at initial Work creation');
+requireText('packages/kernel/work/infrastructure/work-contract-store.ts', "workKind: input.repositoryPlacement ? 'repository_change' : 'investigation'", 'repository execution may not retrofit an investigation Work through placement CAS');
 requireText('src/runtime/control-plane/execution/work-preparation-service.ts', 'WORK_PREPARE_PLACEMENT_CONFLICT', 'work_prepare must not silently reuse a conflicting existing WorkHandle placement');
 forbid('src/cli/controller/execution-policy.ts', /requiresHumanAcceptance|autoRunDeclaredChecks|autoCompleteAfterSuccessfulRun|requiresScopedPaths|requiresDiffEvidence|requiresAnyVerificationEvidence|requiresAcceptanceEvidence|READ_ONLY_INTENT|DESTRUCTIVE_INTENT|SENSITIVE_PATH_PATTERNS/, 'task risk/text/path classification must not decide workflow, placement, verification, scope, or acceptance authority');
 requireMissing('src/runtime/control-plane/daemon-entry.ts');
