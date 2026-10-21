@@ -921,6 +921,10 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       this.noteTaskFailure(SUPERVISOR_PRE_SEND_BLOCKED, task, command.effectId); this.deps.onError(error); return;
     }
     if (!prepared.ready) {
+      if (prepared.reasonCode === 'provider_busy') {
+        this.noteTaskFailure('provider_busy', task, command.effectId, false);
+        return;
+      }
       const observed = await target.observe({ includeUserHistory: false, includePageText: false }).catch(() => beforeSend);
       if (prepared.reasonCode === 'composer_not_empty') {
         // Snapshot backups require an exact, separately authorized fingerprint.
@@ -1019,6 +1023,10 @@ export class WorkflowSupervisorNativeBrowserAdapter {
         // preserve this one reserved recovery effect without spending a send
         // generation or the bounded preflight-failure budget.
         if (command.kind === 'recovery' && prepared.reasonCode === 'provider_recovery_stop_pending') return;
+        if (prepared.reasonCode === 'provider_busy') {
+          this.noteTaskFailure('provider_busy', task, command.effectId, false);
+          return;
+        }
         this.control.recordProviderPreparationFailure({ taskId: task.taskId, effectId: command.effectId, reasonCode: prepared.reasonCode });
         this.noteTaskFailure(SUPERVISOR_PRE_SEND_BLOCKED, task, command.effectId);
         this.deps.onError(new Error(prepared.reasonCode));

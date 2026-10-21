@@ -15,6 +15,13 @@ An explicit same-task conversation migration may carry only an existing Work
 projection of its exact source; unrelated bindings remain under their own authority.
 Work-owned enrollment retains its existing exact-conversation conflict fence.
 
+An exact conversation that is still generating may refuse Composer preparation
+with `provider_busy`. This is transient task-local pacing, not broken extension
+or failed Runtime release: no durable preflight rejection, dispatch generation,
+or three-release budget charge. Historical busy rejection events remain auditable
+but do not fence the original unsent effect. Actual infrastructure failures
+retain their hard budget; unknown outbound effects never authorize a resend.
+
 Transport observation failure is never conversation-migration authority. A missing
 extension receiver or repeated unreadable snapshot leaves the same exact causal
 obligation intact under existing bounded diagnostics/backoff; it cannot prove

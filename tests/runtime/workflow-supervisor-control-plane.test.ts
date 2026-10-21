@@ -2216,6 +2216,10 @@ test('explicit operator repair re-arms one proven pre-send effect without mintin
     completionContract: {}, continuationPolicy: {}, userBlockerPolicy: {},
   });
   const effect = control.reserveEnrollment(taskId);
+  // Provider busy is transient and historical busy-only preflight rejection
+  // rows must never block the original unsent effect.
+  store.recordEffectPreparationFailure(effect.effectId, 'provider_busy');
+  expect(store.nextBrowserEffect(taskId)?.effect.effectId).toBe(effect.effectId);
   store.recordEffectPreparationFailure(effect.effectId, 'COMPUTER_CHATGPT_EXTENSION_COMMAND_UNKNOWN');
   expect(store.nextBrowserEffect(taskId)).toBeUndefined();
   expect(store.effectDispatchBudget(effect.effectId).generations).toBe(0);
@@ -2260,6 +2264,7 @@ test('Supervisor preparation rejection is durably release-fenced and never spend
     completionContract: {}, continuationPolicy: {}, userBlockerPolicy: {} });
   const effect = control.reserveEnrollment(taskId);
   let preparationReady = false;
+  let busyOnce = true;
   let preparations = 0;
   let sends = 0;
   const page: TestBrowserPage = {
@@ -2275,8 +2280,12 @@ test('Supervisor preparation rejection is durably release-fenced and never spend
     snapshot: async () => ({ url: conversationUrl, title: 'Pre-send boundary', latestUserText: '',
       latestAssistantResponse: '', composerText: '', isGenerating: false,
       providerActivityText: '', providerFailureText: '' }),
-    preparePrompt: async () => { preparations++; return preparationReady
-      ? { ready: true as const } : { ready: false as const, reasonCode: 'FORGE_PLUGIN_NOT_BOUND' }; },
+    preparePrompt: async () => {
+      preparations++;
+      if (busyOnce) { busyOnce = false; return { ready: false as const, reasonCode: 'provider_busy' }; }
+      return preparationReady
+        ? { ready: true as const } : { ready: false as const, reasonCode: 'FORGE_PLUGIN_NOT_BOUND' };
+    },
     dispatchPrompt: async () => { sends++; return { dispatched: true, confirmed: true }; },
   });
   const deps = { targetPort, nowMs: () => clock.nowMs, providerIdleGraceMs: 60_000,
@@ -2284,8 +2293,12 @@ test('Supervisor preparation rejection is durably release-fenced and never spend
     setInterval: () => 0 as unknown as ReturnType<typeof setInterval>, clearInterval: () => undefined,
     onError: () => undefined };
   const adapter = new WorkflowSupervisorNativeBrowserAdapter(control, new WorkflowSupervisorEphemeralDiscovery(), deps);
+  await adapter.runOnce();
+  expect(control.taskStall(taskId)).toMatchObject({ state: 'deliverable', mode: 'send', generation: 1 });
+  expect(store.effectDispatchBudget(effect.effectId).generations).toBe(0);
+  clock.nowMs += 30 * 60_000;
   for (let n = 0; n < 6; n++) { await adapter.runOnce(); clock.nowMs += 30 * 60_000; }
-  expect(preparations).toBe(1);
+  expect(preparations).toBe(2);
   expect(sends).toBe(0);
   expect(store.effectDispatchBudget(effect.effectId).generations).toBe(0);
   expect(control.taskStall(taskId)).toMatchObject({ state: 'spaced', reason: 'pre_send_infrastructure_blocked' });
@@ -2300,7 +2313,7 @@ test('Supervisor preparation rejection is durably release-fenced and never spend
   preparationReady = true;
   const repaired = new WorkflowSupervisorNativeBrowserAdapter(control, new WorkflowSupervisorEphemeralDiscovery(), deps);
   await repaired.runOnce();
-  expect(preparations).toBe(2);
+  expect(preparations).toBe(3);
   expect(sends).toBe(1);
   expect(store.latestEffectDispatch(effect.effectId)?.generation).toBe(1);
   expect(store.latestEffectDispatch(effect.effectId)?.evidence).toMatchObject({ surface: 'computer-chatgpt-target' });

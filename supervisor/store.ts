@@ -364,7 +364,10 @@ function effectDispatchLedger(db: Database, effectId: string): EffectDispatchLed
 /** Derived entirely from the Supervisor effect event log; no second retry authority. */
 function effectPreflightFailureReleaseIds(db: Database, effectId: string): Array<{ eventId: number; releaseId: string }> {
   const rows = statement(db, "SELECT event_id,payload_json FROM events WHERE effect_id = ? AND kind = 'effect_preflight_rejected' ORDER BY event_id", (s) => s.all(effectId)) as Array<{ event_id?: number; payload_json?: string }>;
-  return rows.map((row) => ({ eventId: Number(row.event_id ?? 0), releaseId: String(parsedObject(row.payload_json).active_release_id ?? 'unidentified-runtime') }));
+  // A generating provider is transient, not a failed Runtime preflight. Keep
+  // historical provider_busy rows for audit, but exclude them from the ceiling.
+  return rows.filter((row) => parsedObject(row.payload_json).reason !== 'provider_busy')
+    .map((row) => ({ eventId: Number(row.event_id ?? 0), releaseId: String(parsedObject(row.payload_json).active_release_id ?? 'unidentified-runtime') }));
 }
 
 export class WorkflowSupervisorStore {
@@ -1710,6 +1713,8 @@ export class WorkflowSupervisorStore {
 
   /** Persist a bounded provider pre-send rejection; a started generation requires a durable exact no-click proof first. */
   recordEffectPreparationFailure(effectId: string, reasonCode: string, composerObservation?: WorkflowSupervisorPreflightComposerObservation): void {
+    // A provider turn in progress has not failed preparation or spent a Send.
+    if (reasonCode === 'provider_busy') return;
     this.transaction((db) => {
       const effect = statement(db, 'SELECT task_id FROM effects WHERE effect_id = ?', (s) => s.get(effectId)) as { task_id?: string } | undefined;
       if (!effect?.task_id) throw new Error('WORKFLOW_SUPERVISOR_EFFECT_UNKNOWN');
