@@ -53,3 +53,8 @@ Earlier V4–V8 Controller, Local Bridge, Supervisor, Issue/Task/Job and recover
 - Made compatibility a shrinking migration debt with a replacement owner, bounded consumers, and an objective removal condition rather than a permanent parallel layer.
 - Established an architecture-enforcement hierarchy that prefers compiler/type/package and AST/dependency-graph proofs over raw string/regex assertions or source-line-count gates.
 - Changed the migration cadence to batch facts, implement coherent slices, review architecture centrally, run focused checks at slice boundaries, and reserve broad multi-review/validation plus Runtime baseline activation for integrated candidate boundaries.
+
+## 2026-10-21 — Enforce module boundaries on future changes
+
+- Integrated the formal module import boundary, legacy-edge migration rule and Rust migration criteria into the canonical `CURRENT.md` authority instead of maintaining a second root architecture document.
+- Added AST-based dependency enforcement to the existing governed task/main/release gate; exact legacy imports are shrinking migration debt and new outward dependencies are rejected.

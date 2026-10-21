@@ -101,6 +101,12 @@ For Kernel V2 and other architecture migrations, optimize for one coherent deliv
 - Implementation review must compare the exact candidate against the same accepted product/design/Plan obligations. Passing tests cannot legalize architecture drift, and architecture prose cannot legalize failing behavior.
 - Prefer enforcing invariants in typed contracts/domain APIs/AST or focused semantic tests. Regex/source-string fences are temporary migration assertions with explicit removal triggers.
 
+## Enforceable Module Boundaries (All Development)
+
+- Every source change must respect [module ownership, import boundaries and Rust migration rules](docs/architecture/CURRENT.md#module-boundaries-and-language-evolution). The existing `check:task` gate executes the structural `check-module-boundaries.mjs` check.
+- New kernel-to-legacy imports and private sibling-domain imports are forbidden. Existing exact legacy edges are shrinking migration debt, never a new dependency allowance.
+- Architecture decisions change owners only after migrating callers and retiring old writers/paths; ordinary refactors do not need extra lifecycle or ADR bureaucracy.
+
 ## Kernel V2 Development Discipline
 
 - Treat Kernel V2 as a domain/authority migration, not an issue-by-issue patch campaign. Before adding state, lifecycle logic, provider routing, compatibility code, or a new process, identify the single owning module and remove or retire competing owners.
