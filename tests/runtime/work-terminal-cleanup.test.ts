@@ -977,9 +977,18 @@ describe('terminal Work cleanup', () => {
     if (prepared?.isError) throw new Error(JSON.stringify(prepared.structuredContent));
     const sourceId = (prepared?.structuredContent as { work: { workId: string } }).work.workId;
     const source = readWorkHandle(fx.controllerHome, fx.repository.repoId, sourceId)!;
+    // Real source delta landed on the exact target branch before cleanup.
+    // A later target commit must not strand the still-open Work merely because
+    // legacy cleanup receipts did not yet persist bundleRetirement evidence.
+    writeFileSync(join(source.worktreePath, 'landed-source.txt'), 'integrated source\n');
+    git(source.worktreePath, ['add', 'landed-source.txt']);
+    git(source.worktreePath, ['commit', '-m', 'feat: landed source']);
+    const sourceHead = git(source.worktreePath, ['rev-parse', 'HEAD']);
+    git(fx.repositoryRoot, ['merge', '--ff-only', source.branch]);
+    const advancedSource = writeWorkHandle(fx.controllerHome, { ...source, expectedHead: sourceHead });
     const cleaned = await cleanupTerminalWork({
       controllerHome: fx.controllerHome,
-      handle: source,
+      handle: advancedSource,
       targetBranch: 'main',
       deleteBranch: true,
       terminalOutcome: 'completed_cleanup',
@@ -991,7 +1000,9 @@ describe('terminal Work cleanup', () => {
       preservation: { ...cleaned.receipt.preservation, bundleRetirement: undefined },
     };
     writeWorkHandle(fx.controllerHome, { ...cleaned.handle, cleanupReceipt: legacyReceipt });
-    const sourceHead = source.expectedHead!;
+    writeFileSync(join(fx.repositoryRoot, 'later-target.txt'), 'main moved after cleanup\n');
+    git(fx.repositoryRoot, ['add', 'later-target.txt']);
+    git(fx.repositoryRoot, ['commit', '-m', 'chore: later target']);
     const evidenceAt = new Date().toISOString();
     const workStore = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
     recordWorkCompletionReceipt(workStore, sourceId, {
@@ -1004,8 +1015,8 @@ describe('terminal Work cleanup', () => {
       targetBranch: 'main',
       targetRevision: sourceHead,
       sourceRevision: sourceHead,
-      baseRevision: sourceHead,
-      changedPaths: [],
+      baseRevision: source.baseCommit!,
+      changedPaths: ['landed-source.txt'],
       delivery: { kind: 'commit', status: 'integrated', strategy: 'already_integrated', reachable: true, recordedAt: evidenceAt },
       cleanup: { status: 'complete', warnings: [], blockers: [], recordedAt: evidenceAt },
       verifiedAt: evidenceAt,

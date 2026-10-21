@@ -232,9 +232,22 @@ function cleanupReceiptProvesNoUniqueSource(handle: WorkHandleState, canonicalRo
       && attestation.reason === 'no_source_delta'
       && attestation.protectedRevision === handle.expectedHead;
   }
-  // Legacy zero-unique-commit receipts predate the explicit proof field. Do
-  // not infer from that count alone: require the exact recorded source/base
-  // Git trees to have no delta, or keep this Work recovery fenced.
+  // A legacy zero-unique-commit cleanup already proved that deleting this
+  // branch would discard no source-exclusive commits. The immutable recorded
+  // head being reachable from the exact cleanup target ref proves containment
+  // even after main advances: today's source/base trees need not match.
+  // Do not accept a missing ref, an abbreviated/symbolic head, or an unrelated
+  // target branch. All physical cleanup, lease, and zero-unique receipt checks
+  // above must be satisfied before this Git proof is considered.
+  if (exactGitCommit(canonicalRoot, handle.expectedHead!) === handle.expectedHead) {
+    try {
+      if (gitIsAncestor(canonicalRoot, handle.expectedHead!, `refs/heads/${receipt.targetBranch}`)) return true;
+    } catch {
+      // A corrupt or vanished target ref must not turn into proof of recovery.
+    }
+  }
+  // Keep the old no-source-delta proof for legacy histories whose target ref
+  // no longer exists but whose recorded source/base trees are still identical.
   const proof = proveWorkPreservationContained(canonicalRoot, handle, receipt.targetBranch, handle.expectedHead);
   return proof.contained && proof.reason === 'no_source_delta'
     && proof.protectedRevision === handle.expectedHead;
