@@ -173,7 +173,8 @@ describe('Workflow Supervisor fresh conversation switch', () => {
         responseText: 'Delivered useful work.\n' + (n === 11 ? bootstrapReceipt : renderSupervisorReceipt(control.getTask(taskId)!, effect.effectId, 'CONTINUE')),
       });
       if (!('successorEffect' in result) || !result.successorEffect) throw new Error('MISSING_SUCCESSOR_IN_SECOND_WINDOW');
-      expect(store.hasCompletionInCurrentConversation(taskId)).toBe(true);
+      // The tenth new-chat receipt atomically rotates again, resetting scope.
+      expect(store.hasCompletionInCurrentConversation(taskId)).toBe(n < 20);
       effect = result.successorEffect;
       if (n < 20) {
         expect(effect.kind).toBe('continuation');
