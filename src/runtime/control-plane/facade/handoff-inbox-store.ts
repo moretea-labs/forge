@@ -7,7 +7,7 @@ import {
 } from '../../../../packages/kernel/identity/api/index';
 import { existsSync, mkdirSync, renameSync } from 'fs';
 import { dirname, join } from 'path';
-import { repositoryControllerRoot } from '../../../cli/repositories/controller-home';
+import { repositoryControllerRoot } from '../../../effects/controller-home';
 import { withControllerLock } from '../../../cli/repositories/locks';
 import { readJsonFile, sanitizeFileComponent, writeJsonAtomic } from '../../shared/json-files';
 import {

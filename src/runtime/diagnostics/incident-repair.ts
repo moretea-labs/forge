@@ -3,7 +3,7 @@ import { closeSync, existsSync, openSync, readSync, realpathSync, statSync } fro
 import { dirname, join, resolve } from 'path';
 import { spawnSync } from 'child_process';
 import { listRepositories, selectRepositoryCheckout } from '../../cli/repositories/registry';
-import { repositoryControllerRoot } from '../../cli/repositories/controller-home';
+import { repositoryControllerRoot } from '../../effects/controller-home';
 import { withControllerLock } from '../../cli/repositories/locks';
 import type { RepositoryRecord } from '../../cli/repositories/types';
 import { loadRuntimeReleaseManifest } from '../root/release-manifest';

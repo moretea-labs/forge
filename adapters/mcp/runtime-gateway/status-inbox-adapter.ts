@@ -5,9 +5,10 @@ import type { MultiRepositoryMcpToolContext } from "../multi-repository";
 import { controllerExposureSnapshot, controllerToolSurfaceStatus } from "../toolset";
 import { result } from "./result-adapter";
 import { selected, selectedOptional } from "./shared-adapter";
-import { SEMANTIC_SCOPE_KEY } from "../../../src/cli/repositories/controller-home";
+import { SEMANTIC_SCOPE_KEY } from "../../../src/effects/controller-home";
 import type { ExecutionJob } from '../../../src/runtime/execution/jobs/types';
 import { getProcessRecord, isManagedProcessActive, processRuntimeResourceDiagnostics } from "../../../src/runtime/execution/process-runtime";
+import { gatewayLatencySummaries } from '../../../src/runtime/observability/gateway-contention-metrics';
 import { formatRuntimeSourceDriftMessage, readRuntimeGeneration } from "../../../src/runtime/control-plane/runtime-generation";
 import { listControllerChecks } from "../../../src/cli/controller/check-runner";
 import { buildCheckExecutionSchedule } from "../../../src/runtime/execution/process-runtime/check-scheduling";
@@ -737,6 +738,7 @@ export async function callStatusInboxAdapter(
       };
       for (const projection of primaryWorkActivities) primaryWorkActivityCounts[projection.activity] += 1;
       markDetailPhase('work_activity');
+      const latencyBuckets = gatewayLatencySummaries(repository.repoId);
       const preferredFacadeTools = ['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work', 'capability_execute'] as const;
       const facade = buildFacadeResult({
         status: effectiveReady ? 'ok' : 'blocked',
@@ -758,6 +760,14 @@ export async function callStatusInboxAdapter(
             sourceSnapshotStale,
             sourceSnapshotReasons: runtimeSource.reasons,
             runtimeSourceDirty: runtimeSource.current?.dirty === true,
+          },
+          gatewayLatency: {
+            observation: latencyBuckets.length > 0 ? 'in_process_samples' : 'not_observed',
+            processLocal: true,
+            limitedTo: 'gateway_lock_and_mutation_gate',
+            bucketCount: latencyBuckets.length,
+            truncated: latencyBuckets.length > 24,
+            buckets: latencyBuckets.slice(0, 24),
           },
           capabilityCount: capabilities.length,
           capabilityGroups: summarizeCapabilityGroups(manifests),

@@ -2,7 +2,7 @@
 import { createHash } from 'crypto';
 import { mkdirSync, renameSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
-import { resolveControllerHome } from '../src/cli/repositories/controller-home';
+import { resolveControllerHome } from '../src/effects/controller-home';
 import { recoveryConnectorDescriptor, verifyRecoveryConnector } from '../src/cli/commands/recovery';
 import { loadRecoveryConfig, verifyStableRuntime } from '../src/runtime/standalone-recovery/core';
 import { observeRuntimeStatus } from '../src/runtime/root/status';

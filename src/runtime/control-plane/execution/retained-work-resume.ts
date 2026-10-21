@@ -2,7 +2,7 @@ import { createHash } from 'crypto';
 import { spawnSync } from 'child_process';
 import { existsSync, readFileSync } from 'fs';
 import { join, resolve } from 'path';
-import { repositoryControllerRoot } from '../../../cli/repositories/controller-home';
+import { repositoryControllerRoot } from '../../../effects/controller-home';
 import type { RepositoryRecord } from '../../../cli/repositories/types';
 import { listRepositories, repositoryCheckoutLifecycle, selectRepositoryCheckout } from '../../../cli/repositories/registry';
 import { repositoryGitStatus } from '../../../cli/repositories/structured-git';

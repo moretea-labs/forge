@@ -13,7 +13,7 @@ import { executeGatewayRoutedOperation } from '../../adapters/mcp/runtime-gatewa
 import { callCoreCapabilityAdapter } from '../../adapters/mcp/runtime-gateway/core-capability-adapter';
 import { createMcpToolContext } from '../../adapters/mcp/server';
 import { callMultiRepositoryTool } from '../../adapters/mcp/multi-repository';
-import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
+import { ensureControllerHome } from '../../src/effects/controller-home';
 import { addRepositoryCheckout, getRepository, registerRepository, selectRepositoryCheckout } from '../../src/cli/repositories/registry';
 import { repositoryGitStatus } from '../../src/cli/repositories/structured-git';
 import { ensureRepositoryRuntimeStorageBinding } from '../../src/cli/repositories/runtime-storage';
@@ -1231,7 +1231,7 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     expect(classifyGatewayExecutionPath('plugin_action_execute', {}).path).toBe('direct');
   });
 
-  test('registered async command returns one idempotent lightweight handle without durable state', async () => {
+  test('registered async workspace writer is idempotent under one managed Process resource lease', async () => {
     const fx = fixture(); roots.push(fx.root);
     const jobsBefore = listExecutionJobs(fx.controllerHome, fx.repository.repoId).length;
     const localBefore = listLocalBridgeJobSnapshots(fx.repoRoot).length;
@@ -1246,8 +1246,8 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     expect([sideEffects?.executionJobCount ?? 0, sideEffects?.localJobCount ?? 0, sideEffects?.workerSpawnCount ?? 0]).toEqual([0, 0, 0]);
     const retry = await callRepositoryTool(fx.controllerHome, 'execute_command', args);
     expect(retry?.isError).not.toBe(true); expect(String((retry?.structuredContent as Record<string, unknown>).processId ?? '')).toBe(processId);
-    expect(processId).toStartWith('lightweight:');
-    expect(listProcessRecords(fx.controllerHome, fx.repository.repoId).length).toBe(processesBefore);
+    expect(processId).not.toStartWith('lightweight:');
+    expect(listProcessRecords(fx.controllerHome, fx.repository.repoId).length).toBeGreaterThan(processesBefore);
     const terminal = await waitRepositoryCommandProcess(fx.controllerHome, fx.repository.repoId, processId, { timeoutMs: 10_000 });
     expect(terminal).toMatchObject({ completed: true, ok: true }); expect(terminal.stdout).toContain('async-ok');
     expect(listExecutionJobs(fx.controllerHome, fx.repository.repoId).length).toBe(jobsBefore); expect(listLocalBridgeJobSnapshots(fx.repoRoot).length).toBe(localBefore);
@@ -2533,8 +2533,8 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     });
     expect(classifyRepositoryCommandRoute(['git', 'status', '--short']).route).toBe('process_direct');
     expect(classifyRepositoryCommandRoute(['git', 'branch', 'feature-x'])).toEqual({
-      route: 'process_direct',
-      reason: 'ephemeral_local_workspace_mutation',
+      route: 'process_managed',
+      reason: 'workspace_write_requires_process_lease',
     });
     expect(classifyRepositoryCommandRoute(['git', 'reset', '--hard', 'HEAD'])).toEqual({
       route: 'process_managed',

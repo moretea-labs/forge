@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { listRepositories } from '../repositories/registry';
-import { resolveRepoPreferredControllerHome } from '../repositories/controller-home';
+import { resolveRepoPreferredControllerHome } from '../../effects/controller-home';
 import { getWorkContract, listWorkContracts, type WorkContract } from '../../../packages/kernel/work/api/index';
 import { getPlanContract, planSemanticView } from '../../runtime/control-plane/facade/plan-contract-store';
 import { readRequirement } from '../../runtime/control-plane/persistence/requirement-store';

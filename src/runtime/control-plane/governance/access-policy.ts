@@ -6,7 +6,7 @@ import {
   writeFileSync,
 } from 'fs';
 import { dirname, join, resolve } from 'path';
-import { isWorkspaceScopeKey, workspaceScopeRoot } from '../../../cli/repositories/controller-home';
+import { isWorkspaceScopeKey, workspaceScopeRoot } from '../../../effects/controller-home';
 
 export const ACCESS_MODES = ['request', 'full_access'] as const;
 export type AccessMode = (typeof ACCESS_MODES)[number];

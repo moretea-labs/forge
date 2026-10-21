@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { resolve } from 'path';
 import { exportRequirementPortfolio } from '../src/cli/controller/requirement-portfolio-export';
-import { resolveRepoPreferredControllerHome } from '../src/cli/repositories/controller-home';
+import { resolveRepoPreferredControllerHome } from '../src/effects/controller-home';
 
 function valueAfter(args: string[], flag: string): string | undefined {
   const index = args.indexOf(flag);

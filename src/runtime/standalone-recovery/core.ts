@@ -81,7 +81,7 @@ import {
   repoLocalControllerHomeStorageNeedsMigration,
   rollbackStoppedRepoLocalControllerHomeStorage,
   type ControllerHomeStorageMigration,
-} from '../../cli/repositories/controller-home';
+} from '../../effects/controller-home';
 import { readCurrentRecoveryRelease, type RecoveryRuntimeRole } from './release';
 import { acquireRecoveryOperationLock, recoveryOperationLockOwnerAlive, recoveryOperationLockPath, RecoveryOperationLockRaceError, type RecoveryOperationLockRecord } from './operation-lock';
 import { RECOVERY_MUTATION_IDENTITY_FIELDS, type RecoveryMutationIdentityArguments } from './mutation-identity-contract';

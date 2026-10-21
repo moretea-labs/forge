@@ -46,11 +46,9 @@ import {
 } from "./job-store";
 import {
   createEditSavepoint,
-  finalizeEditSession,
   getEditSession,
   getEditSessionDiff,
   listEditSessions,
-  rollbackEditSession,
   verifyEditSession,
 } from "../editing/edit-session";
 import { applyConsoleAutomationAction, listConsoleAutomations, summarizeConsoleAutomations } from "./console-automations";
@@ -95,9 +93,11 @@ import { applyStuckStateMigration, inspectStuckControllerStates } from "../contr
 import { getMcpPolicy } from "../../../adapters/mcp/policy";
 import type { MultiRepositoryMcpToolContext } from "../../../adapters/mcp/multi-repository";
 import { createMcpToolContext as createControllerMcpToolContext } from "../../../adapters/mcp/server";
-import { loadMcpLocalConfig, loadMcpServiceLocalConfig, loadMcpServiceRuntimeState } from "../../../adapters/mcp/auth";
+import { loadMcpServiceLocalConfig, loadMcpServiceRuntimeState } from "../../../adapters/mcp/auth";
 import { loadRepositoryRegistry, registerRepository, removeRepository, resolveRepositorySelection } from "../repositories/registry";
-import { resolveControllerHome, resolveRepoPreferredControllerHome } from "../repositories/controller-home";
+import { withRepositoryMutationExclusionAsync } from '../../runtime/resources/leases/store';
+import { runEditSessionMutationInWorker } from './edit-session-worker';
+import { resolveControllerHome, resolveRepoPreferredControllerHome } from "../../effects/controller-home";
 import { ensureRepositoryRuntimeStorage } from "../repositories/runtime-storage";
 import { readForgeRuntimeStatus } from "../../runtime/control-plane/runtime-status-client";
 import { readRuntimeGeneration } from "../../runtime/control-plane/runtime-generation";
@@ -403,8 +403,8 @@ export function buildLocalControllerSnapshot(repoRoot: string) {
         .map((job) => ({ kind: "work", id: job.jobId, title: String(job.payload.operation ?? job.type), status: job.status, updatedAt: job.updatedAt })),
     ].sort((left, right) => String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? ""))).slice(0, 12),
   };
-  const mcpRuntime = loadMcpServiceRuntimeState(controllerHome, repoRoot);
-  const mcpConfig = loadMcpServiceLocalConfig(controllerHome, repoRoot);
+  const mcpRuntime = loadMcpServiceRuntimeState(controllerHome);
+  const mcpConfig = loadMcpServiceLocalConfig(controllerHome);
   const mcpExposureContext = createControllerMcpToolContext({
     repo: repoRoot,
     controllerHome,
@@ -2060,12 +2060,20 @@ export async function startLocalBridgeServer(
       response.status(400).json({ error: errorMessage(error) });
     }
   });
-  app.post("/api/edit-sessions/:sessionId/finalize", (request, response) => {
+  app.post("/api/edit-sessions/:sessionId/finalize", async (request, response) => {
     try {
-      response.json(finalizeEditSession(requestRepositoryRoot(request, options, controllerHome), request.params.sessionId, {
-        reviewer: queryString(request.body?.reviewer) ?? "local-controller-human",
-        note: queryString(request.body?.note),
-      }));
+      const repository = requestRepositorySelection(request, options, controllerHome);
+      response.json(await withRepositoryMutationExclusionAsync(
+        controllerHome, repository.repoId,
+        'local_bridge:finalize_edit_session',
+        () => runEditSessionMutationInWorker({
+          kind: 'finalize',
+          repoRoot: repository.canonicalRoot,
+          sessionId: request.params.sessionId,
+          reviewer: queryString(request.body?.reviewer) ?? "local-controller-human",
+          note: queryString(request.body?.note),
+        }),
+      ));
     } catch (error) {
       response.status(400).json({ error: errorMessage(error) });
     }
@@ -2087,12 +2095,20 @@ export async function startLocalBridgeServer(
       response.status(400).json({ error: errorMessage(error) });
     }
   });
-  app.post("/api/edit-sessions/:sessionId/rollback", (request, response) => {
+  app.post("/api/edit-sessions/:sessionId/rollback", async (request, response) => {
     try {
-      response.json(rollbackEditSession(requestRepositoryRoot(request, options, controllerHome), request.params.sessionId, {
-        toRevision: typeof request.body?.toRevision === "number" ? Math.trunc(request.body.toRevision) : undefined,
-        savepoint: queryString(request.body?.savepoint),
-      }));
+      const repository = requestRepositorySelection(request, options, controllerHome);
+      response.json(await withRepositoryMutationExclusionAsync(
+        controllerHome, repository.repoId,
+        'local_bridge:rollback_edit_session',
+        () => runEditSessionMutationInWorker({
+          kind: 'rollback',
+          repoRoot: repository.canonicalRoot,
+          sessionId: request.params.sessionId,
+          toRevision: typeof request.body?.toRevision === "number" ? Math.trunc(request.body.toRevision) : undefined,
+          savepoint: queryString(request.body?.savepoint),
+        }),
+      ));
     } catch (error) {
       response.status(400).json({ error: errorMessage(error) });
     }

@@ -1,7 +1,7 @@
 import { createHash } from 'crypto';
 import { existsSync, mkdirSync, readdirSync, rmSync, statSync } from 'fs';
 import { isAbsolute, join } from 'path';
-import { controllerSystemRoot, ensureControllerHome } from '../../cli/repositories/controller-home';
+import { controllerSystemRoot, ensureControllerHome } from '../../effects/controller-home';
 import { readJsonFile, sanitizeFileComponent, writeJsonAtomic } from '../shared/json-files';
 import type {
   AssistantPluginActionDescriptor,

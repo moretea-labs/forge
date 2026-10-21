@@ -18,7 +18,7 @@ import { runDoctor, type CheckStatus, type DoctorReport } from './doctor';
 import { withProcessEnv } from './setup-execution';
 import { runStatus, type StatusReport } from './status';
 import { runMcpSetupChatgpt } from '../../../adapters/mcp/setup';
-import { resolveControllerHome } from '../repositories/controller-home';
+import { resolveControllerHome } from '../../effects/controller-home';
 import { createSetupBootstrapControlApi } from './bootstrap-control';
 import type { BootstrapSnapshot } from '../../runtime/control-plane/bootstrap';
 import {

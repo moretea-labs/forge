@@ -25,7 +25,7 @@ import {
 } from '../auth';
 import { createMcpOAuthProvider, McpOAuthTokenStore } from '../oauth';
 import { resolveMcpRepoRoot } from '../repo';
-import { resolveControllerHome } from '../../../src/cli/repositories/controller-home';
+import { resolveControllerHome } from '../../../src/effects/controller-home';
 import { readRuntimeGeneration } from '../../../src/runtime/control-plane/runtime-generation';
 import { recordMcpTransportEvent } from '../../../src/runtime/diagnostics/mcp-timing';
 import { readRuntimeStatusSnapshot, runtimeStatusPath } from '../../../src/runtime/root/status';
@@ -754,9 +754,9 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
     ? undefined
     : resolveMcpRepoRoot(opts.repo ?? '.');
   const authMode = parseMcpHttpAuthMode(opts.auth ?? serviceConfig?.auth?.mode);
-  const authToken = opts.authToken ?? readMcpServiceBearerToken(controllerHome, repoRoot);
+  const authToken = opts.authToken ?? readMcpServiceBearerToken(controllerHome);
   const oauthPassphrase = authMode === 'oauth'
-    ? readMcpServiceOAuthPassphrase(controllerHome, repoRoot)
+    ? readMcpServiceOAuthPassphrase(controllerHome)
     : null;
   const tokenStore = authMode === 'oauth'
     ? new McpOAuthTokenStore(mcpServiceOAuthTokenStorePath(controllerHome))

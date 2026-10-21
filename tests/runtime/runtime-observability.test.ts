@@ -26,7 +26,7 @@ import { createMcpToolContext as createMultiRepositoryContext } from '../../adap
 import { resolveControllerAccessState, persistControllerAccessMode, configuredControllerAccessMode } from '../../adapters/mcp/access-mode';
 import { createForgeMcpServer } from '../../adapters/mcp/server';
 import { registerRepository } from '../../src/cli/repositories/registry';
-import { repositoryControllerRoot } from '../../src/cli/repositories/controller-home';
+import { repositoryControllerRoot } from '../../src/effects/controller-home';
 import { callRepositoryTool } from '../../adapters/mcp/tool-mapping/repository-tools';
 import { buildRuntimeMaintenanceStatus } from '../../src/runtime/recovery';
 import { writeJsonAtomic } from '../../src/runtime/shared/json-files';
@@ -37,7 +37,7 @@ import { collectWorkLifecycleAttention, workLifecycleAttentionBlocksReadiness } 
 import { sampleRepositoryGitStatusForRepositories } from '../../src/runtime/projections/git-status-sampler';
 import { cancelWorkContract, createWorkContract, getWorkContract, listWorkContracts, recordWorkCompletionReceipt, recordWorkImplementationReview, reviseWorkSemanticContext, transitionWorkContractPhase, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { implementationReviewChangedPathDigest } from '../../packages/kernel/work/domain/implementation-review';
-import { claimControllerSession } from '../../src/runtime/control-plane/facade/controller-session-store';
+import { claimControllerSession } from '../../packages/kernel/controller/api/index';
 import { listWorkContinuationSchedules } from '../../src/runtime/workflow/schedules/work-continuation';
 import { createHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
 import { runHandoffInboxApplication } from '../../src/runtime/control-plane/facade/handoff-inbox-application';

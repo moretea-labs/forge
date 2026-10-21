@@ -1,6 +1,6 @@
 import { mkdirSync, readdirSync } from 'fs';
 import { join } from 'path';
-import { controllerSystemRoot, repositoryControllerRoot } from '../../cli/repositories/controller-home';
+import { controllerSystemRoot, repositoryControllerRoot } from '../../effects/controller-home';
 import { readJsonFile, sanitizeFileComponent, writeJsonAtomic } from '../shared/json-files';
 import type { RecoveryAuditRecord } from './types';
 

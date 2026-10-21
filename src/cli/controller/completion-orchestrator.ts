@@ -7,16 +7,16 @@ import type { AgentJobMeta } from '../agent-jobs/types';
 import { cleanupIntegratedWorktree, cleanupNoChangeWorktree, integrateAgentJob, IntegrationReviewRequiredError, taskRunDiff } from '../agent-jobs/integration';
 import { finalizeEditSession, getEditSession, revalidateEditSessionOwnership, rollbackEditSession, verifyEditSession } from '../editing/edit-session';
 import { getMcpPolicy } from '../../../adapters/mcp/policy';
-import { resolveRepoPreferredControllerHome } from '../repositories/controller-home';
+import { resolveRepoPreferredControllerHome } from '../../effects/controller-home';
 import { withControllerLock } from '../repositories/locks';
-import { listActiveLeases } from '../../runtime/resources/leases/store';
+import { listActiveLeases, withRepositoryMutationExclusion } from '../../runtime/resources/leases/store';
 import { acceptVerifiedTask, getIssue, projectIssueEffectiveView, recordTaskVerification, updateTask } from './issue-store';
 import { cleanupEvidenceResourceBlockers, completionEvidenceComplete } from './execution-policy';
 import { currentCompletionTarget, resolveCompletionTargetBranch } from './completion-target';
 import { runControllerCheck } from './check-runner';
 import type { CleanupEvidence, ControllerIssue, ControllerTask, IntegrationEvidence, TaskCommandEvidence, TaskVerification } from './types';
 import type { CompletionMaintenanceWarning, CompletionReceipt, CompletionReceiptSource, CompletionResourceBlocker } from './types';
-import { legacyIssueAuthorityRetired, migratedTaskCompletionState, recordMigratedTaskCompletion } from './legacy-issue-cutover';
+import { legacyIssueAuthorityRetired, legacyIssueCutoverState, migratedTaskCompletionState, recordMigratedTaskCompletion, type LegacyIssueCutoverState } from './legacy-issue-cutover';
 
 export type TaskReviewDecision =
   | 'auto'
@@ -1594,34 +1594,49 @@ function finishTaskRunUnlocked(repoRoot: string, options: FinishTaskRunOptions):
   });
 }
 
-export function finishTaskRun(repoRoot: string, options: FinishTaskRunOptions): FinishTaskRunResult {
-  if (legacyIssueAuthorityRetired(repoRoot)) {
-    throw new Error('LEGACY_TASK_RUN_COMPLETION_RETIRED: Agent Run aliases cannot mutate PlanStep or completion state after SQLite cutover; finalize authoritative Work/Process receipts instead.');
-  }
+// Legacy completion has one coherent mutation transaction: it can integrate
+// source, apply/edit/rollback revisions, commit, then finalize evidence.
+// The target integration lock serializes target delivery, while the existing
+// repository lock serializes its physical writes with MCP and Local Bridge
+// Safe Patch. Lock ordering is always integration -> repository, once for the
+// entire transaction (never in the nested edit primitives).
+function withLegacyCompletionWrite<T>(
+  repoRoot: string,
+  cutover: LegacyIssueCutoverState,
+  identity: string,
+  operation: () => T,
+): T {
+  if (!cutover.repoId) throw new Error('COMPLETION_REPOSITORY_IDENTITY_REQUIRED: cannot prove the shared repository lock key');
   const targetBranch = resolveCompletionTargetBranch(repoRoot);
   const resource = `integration-${createHash('sha256').update(`${repoRoot}\0${targetBranch}`).digest('hex').slice(0, 24)}`;
   return withControllerLock(
-    resolveRepoPreferredControllerHome(repoRoot),
+    cutover.controllerHome,
     { scope: 'global', resource },
-    `completion:${options.runId}`,
-    () => finishTaskRunUnlocked(repoRoot, options),
+    `completion:${identity}`,
+    () => withRepositoryMutationExclusion(
+      cutover.controllerHome,
+      cutover.repoId!,
+      `completion:${identity}`,
+      operation,
+    ),
     30 * 60_000,
   );
 }
 
+export function finishTaskRun(repoRoot: string, options: FinishTaskRunOptions): FinishTaskRunResult {
+  const cutover = legacyIssueCutoverState(repoRoot);
+  if (cutover.retired) {
+    throw new Error('LEGACY_TASK_RUN_COMPLETION_RETIRED: Agent Run aliases cannot mutate PlanStep or completion state after SQLite cutover; finalize authoritative Work/Process receipts instead.');
+  }
+  return withLegacyCompletionWrite(repoRoot, cutover, options.runId, () => finishTaskRunUnlocked(repoRoot, options));
+}
+
 export function finishEditSession(repoRoot: string, options: FinishEditSessionOptions): FinishEditSessionResult {
-  if (legacyIssueAuthorityRetired(repoRoot)) {
+  const cutover = legacyIssueCutoverState(repoRoot);
+  if (cutover.retired) {
     throw new Error('LEGACY_EDIT_SESSION_COMPLETION_RETIRED: Direct Edit Issue/Task completion aliases cannot mutate PlanStep state after SQLite cutover; use authoritative Work completion.');
   }
-  const targetBranch = resolveCompletionTargetBranch(repoRoot);
-  const resource = `integration-${createHash('sha256').update(`${repoRoot}\0${targetBranch}`).digest('hex').slice(0, 24)}`;
-  return withControllerLock(
-    resolveRepoPreferredControllerHome(repoRoot),
-    { scope: 'global', resource },
-    `completion:${options.sessionId}`,
-    () => finishEditSessionUnlocked(repoRoot, options),
-    30 * 60_000,
-  );
+  return withLegacyCompletionWrite(repoRoot, cutover, options.sessionId, () => finishEditSessionUnlocked(repoRoot, options));
 }
 
 export interface ResumeStalledCleanupReport {

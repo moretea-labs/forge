@@ -22,7 +22,7 @@
 import { performance } from 'perf_hooks';
 import { resolve } from 'path';
 import { executeIosAgentDeviceAction } from '../src/runtime/plugins/ios-agent-device';
-import { resolveControllerHome } from '../src/cli/repositories/controller-home';
+import { resolveControllerHome } from '../src/effects/controller-home';
 
 type EvidenceTier = 'exact_wait' | 'scoped_snapshot' | 'full_snapshot' | 'unknown';
 export type BenchmarkProfile = 'fresh_session' | 'reused_session';

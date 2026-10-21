@@ -138,6 +138,99 @@ describe('Thin capability substrate', () => {
       risk: 'readonly',
     });
     expect(revokedQuery).toBeUndefined();
+    expect(() => recordCanonicalGrant(controllerHome, {
+      grantId: globalGrant.grantId,
+      principalId: 'chatgpt-controller',
+      ownerScope: 'controller:global',
+      capabilities: ['google_calendar:*', 'web_browser:read'],
+      riskCeiling: 'workspace_write',
+    })).toThrow('GRANT_ID_REUSE_REQUIRES_NEW_ENROLLMENT');
+
+    const freshEnrollment = recordCanonicalGrant(controllerHome, {
+      principalId: 'chatgpt-controller',
+      ownerScope: 'controller:global',
+      capabilities: ['google_calendar:*', 'web_browser:read'],
+      riskCeiling: 'workspace_write',
+    });
+    expect(freshEnrollment.grantId).not.toBe(globalGrant.grantId);
+    expect(listCanonicalGrants(controllerHome).find((entry) => entry.grantId === globalGrant.grantId)?.revokedAt).toBeDefined();
+    expect(findActiveCanonicalGrant(controllerHome, {
+      principalId: 'chatgpt-controller', capability: 'web_browser:read', risk: 'readonly',
+    })?.grantId).toBe(freshEnrollment.grantId);
+    const fixedStart = new Date('2026-10-21T10:00:00.000Z');
+    const timeBoundGrant = recordCanonicalGrant(controllerHome, {
+      principalId: 'time-bound-owner', ownerScope: 'controller:replay',
+      capabilities: ['browser:read'], riskCeiling: 'readonly',
+      expiresInMinutes: 60, now: fixedStart,
+    });
+    const replayedGrant = recordCanonicalGrant(controllerHome, {
+      grantId: timeBoundGrant.grantId,
+      principalId: 'time-bound-owner', ownerScope: 'controller:replay',
+      capabilities: ['browser:read'], riskCeiling: 'readonly',
+      expiresInMinutes: 90 * 24 * 60, now: new Date('2026-10-21T10:30:00.000Z'),
+    });
+    expect(replayedGrant.createdAt).toBe(timeBoundGrant.createdAt);
+    expect(replayedGrant.expiresAt).toBe(timeBoundGrant.expiresAt);
+    expect(replayedGrant.updatedAt).toBe('2026-10-21T10:30:00.000Z');
+    expect(findActiveCanonicalGrant(controllerHome, {
+      principalId: 'time-bound-owner', capability: 'browser:read', at: new Date('2026-10-21T11:01:00.000Z'),
+    })).toBeUndefined();
+    const boundFirst = recordCanonicalGrant(controllerHome, {
+      principalId: 'device-bound-owner', ownerScope: 'controller:devices',
+      target: { kind: 'desktop_app', id: 'some-app' },
+      capabilities: ['credential:use'], scopes: ['credential.fill'],
+      riskCeiling: 'workspace_write',
+      constraints: { deviceId: 'local-device-a', use: { purpose: 'sign-in', limit: 1 } },
+    });
+    expect(() => recordCanonicalGrant(controllerHome, {
+      grantId: boundFirst.grantId,
+      principalId: 'device-bound-owner', ownerScope: 'controller:devices',
+      target: { kind: 'desktop_app', id: 'some-app' },
+      capabilities: ['credential:use'], scopes: ['credential.fill'],
+      riskCeiling: 'workspace_write',
+      constraints: { deviceId: 'local-device-b', use: { purpose: 'sign-in', limit: 1 } },
+    })).toThrow('GRANT_IDENTITY_SCOPE_CHANGE_REQUIRES_NEW_ENROLLMENT');
+    expect(listCanonicalGrants(controllerHome).find((row) => row.grantId === boundFirst.grantId)?.constraints).toEqual(boundFirst.constraints);
+    const boundSecond = recordCanonicalGrant(controllerHome, {
+      principalId: 'device-bound-owner', ownerScope: 'controller:devices',
+      target: { kind: 'desktop_app', id: 'some-app' },
+      capabilities: ['credential:use'], scopes: ['credential.fill'],
+      riskCeiling: 'workspace_write',
+      constraints: { deviceId: 'local-device-b', use: { purpose: 'sign-in', limit: 1 } },
+    });
+    expect(boundSecond.grantId).not.toBe(boundFirst.grantId);
+    expect(listCanonicalGrants(controllerHome).filter((row) => [boundFirst.grantId, boundSecond.grantId].includes(row.grantId))).toHaveLength(2);
+    const restrictedQuery = {
+      principalId: 'device-bound-owner',
+      ownerScope: 'controller:devices',
+      capability: 'credential:use',
+      target: { kind: 'desktop_app', id: 'some-app' },
+      scopes: ['credential.fill'],
+      risk: 'workspace_write' as const,
+    };
+    expect(findActiveCanonicalGrant(controllerHome, restrictedQuery)).toBeUndefined();
+    expect(findActiveCanonicalGrant(controllerHome, { ...restrictedQuery, constraints: { deviceId: 'local-device-c' } })).toBeUndefined();
+    expect(findActiveCanonicalGrant(controllerHome, { ...restrictedQuery, constraints: { deviceId: 'local-device-a', use: { purpose: 'sign-in', limit: 2 } } })).toBeUndefined();
+    expect(findActiveCanonicalGrant(controllerHome, { ...restrictedQuery, constraints: { use: { limit: 1, purpose: 'sign-in' }, deviceId: 'local-device-b' } })?.grantId).toBe(boundSecond.grantId);
+    expect(findActiveCanonicalGrant(controllerHome, { ...restrictedQuery, constraints: { use: { limit: 1, purpose: 'sign-in' }, deviceId: 'local-device-a' } })?.grantId).toBe(boundFirst.grantId);
+    expect(findActiveCanonicalGrant(controllerHome, { principalId: 'chatgpt-controller', capability: 'web_browser:read', constraints: { deviceId: 'local-device-a' } })).toBeUndefined();
+    const replayBound = recordCanonicalGrant(controllerHome, {
+      grantId: boundFirst.grantId,
+      principalId: 'device-bound-owner', ownerScope: 'controller:devices',
+      target: { kind: 'desktop_app', id: 'some-app' },
+      capabilities: ['credential:use'], scopes: ['credential.fill'],
+      riskCeiling: 'workspace_write',
+      constraints: { use: { limit: 1, purpose: 'sign-in' }, deviceId: 'local-device-a' },
+    });
+    expect(replayBound.grantId).toBe(boundFirst.grantId);
+    expect(listCanonicalGrants(controllerHome).find((row) => row.grantId === boundSecond.grantId)).toBeDefined();
+    expect(() => recordCanonicalGrant(controllerHome, {
+      grantId: leastPrivilege.grantId,
+      principalId: 'different-principal',
+      capabilities: ['audit:read'],
+      target: { kind: 'synthetic', id: 'exact-target' },
+      scopes: ['audit.read'],
+    })).toThrow('GRANT_IDENTITY_SCOPE_CHANGE_REQUIRES_NEW_ENROLLMENT');
   });
 
   test('Step 4: ScheduleDefinition splits authored intent from mechanical runtime state', () => {
@@ -411,6 +504,19 @@ describe('Thin capability substrate', () => {
     expect(authResult.success).toBe(true);
     expect(authResult.result).toEqual({ currentUrl: 'https://example.com', title: 'Example Domain' });
     expect(authResult.handle?.status).toBe('completed');
+
+    recordCanonicalGrant(controllerHome, {
+      principalId: 'restricted-test-agent', capabilities: ['browser:navigate'],
+      constraints: { deviceId: 'trusted-device-claimed-by-provider' },
+    });
+    // Broker does not receive trusted device evidence today. A constrained
+    // grant must not be treated like a broad, reusable grant by default.
+    const restrictedResult = await invokeCapability(controllerHome, {
+      capabilityId: 'browser:navigate', principalId: 'restricted-test-agent',
+      target: { scope: 'global' }, arguments: { url: 'https://example.com' },
+    });
+    expect(restrictedResult.success).toBe(false);
+    expect(restrictedResult.error?.code).toBe('UNAUTHORIZED_CAPABILITY');
   });
 
   test('Step 6: Direct capability activity without Work projects to Activity/history instead of synthetic Work', () => {

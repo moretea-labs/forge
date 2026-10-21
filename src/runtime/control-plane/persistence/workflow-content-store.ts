@@ -6,7 +6,7 @@ import {
   type WorkflowAssetDefinition,
   type WorkflowAssetDraft,
 } from '../../../../packages/workflow-runtime/api/index';
-import { ensureControllerWorkflowContentRoot } from '../../../cli/repositories/controller-home';
+import { ensureControllerWorkflowContentRoot } from '../../../effects/controller-home';
 
 export interface ProjectWorkflowAssetContract {
   schemaVersion: 1;

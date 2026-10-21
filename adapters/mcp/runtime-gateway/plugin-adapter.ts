@@ -1,5 +1,5 @@
 import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
-import { FORGE_INSTANCE_SCOPE_KEY } from '../../../src/cli/repositories/controller-home';
+import { FORGE_INSTANCE_SCOPE_KEY } from '../../../src/effects/controller-home';
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
 import { buildWorkspaceAuthStatus, prepareWorkspaceAuthLogin, summarizePluginForLowInterception } from '../../../src/runtime/safe-tooling';
 import {

@@ -15,7 +15,7 @@ import type {
 } from './types';
 import { AssistantPluginError, toAssistantPluginError } from './errors';
 import { listCanonicalGrants } from '../../../packages/kernel/identity/api/index';
-import { resolveRepoPreferredControllerHome } from '../../cli/repositories/controller-home';
+import { resolveRepoPreferredControllerHome } from '../../effects/controller-home';
 import { readControllerPluginConfig, writeControllerPluginConfig, type PluginConfigAdapterContext } from './config-store';
 import {
   browserActions,

@@ -1,7 +1,7 @@
 import { randomUUID } from 'crypto';
 import { join } from 'path';
 import { readFileSync } from 'fs';
-import { repositoryControllerRoot } from '../../cli/repositories/controller-home';
+import { repositoryControllerRoot } from '../../effects/controller-home';
 import { appendJsonLine } from '../shared/json-files';
 import type { ExecutionJob, ExecutionJobEvent } from '../execution/jobs/types';
 

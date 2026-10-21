@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { MultiRepositoryMcpToolContext } from '../../adapters/mcp/multi-repository';
 import { getMcpPolicy } from '../../adapters/mcp/policy';
-import { ensureControllerHome, SEMANTIC_SCOPE_KEY } from '../../src/cli/repositories/controller-home';
+import { ensureControllerHome, SEMANTIC_SCOPE_KEY } from '../../src/effects/controller-home';
 import { registerRepository } from '../../src/cli/repositories/registry';
 import { getWorkContract } from '../../packages/kernel/work/api/index';
 import { readWorkHandle } from '../../src/runtime/control-plane/execution/work-handle-store';

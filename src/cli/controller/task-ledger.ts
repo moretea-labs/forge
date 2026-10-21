@@ -3,7 +3,7 @@ import { dirname, join } from "path";
 import { projectBoard } from "./issue-store";
 import { listControllerWorklogEvents } from "./worklog";
 import { legacyIssueCutoverState } from "./legacy-issue-cutover";
-import { resolveRepoPreferredControllerHome } from "../repositories/controller-home";
+import { resolveRepoPreferredControllerHome } from "../../effects/controller-home";
 import { buildRequirementBoard } from "../../runtime/control-plane/facade/requirement-board";
 
 const LEDGER_JSON_PATH = ".ai/harness/controller/task-ledger.json";

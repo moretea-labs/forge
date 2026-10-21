@@ -5,7 +5,7 @@ import { DEFAULT_AGENT_TIMEOUT_MS, MAX_AGENT_TIMEOUT_MS, normalizeAgentTimeoutMs
 import type { McpAgentRunnerName } from './types';
 import { realpathSync } from 'fs';
 import { resolve } from 'path';
-import { ensureRepoPreferredControllerHome } from '../../src/cli/repositories/controller-home';
+import { ensureRepoPreferredControllerHome } from '../../src/effects/controller-home';
 import { bindRepositoryEntities } from '../../src/cli/repositories/entity-migration';
 import { withControllerLockAsync } from '../../src/cli/repositories/locks';
 import { listRepositories, registerRepository, repositorySummary, resolveRepositorySelection, selectRepositoryCheckout } from '../../src/cli/repositories/registry';
@@ -57,8 +57,12 @@ const EXECUTION_STORAGE_TOOLS = new Set([
   'execute_local_bridge_job',
 ]);
 
+// Legacy edit mutations lock inside withLegacyEditMutation, including the
+// canonical Process-lease check. Do not acquire this physical lock a second time.
 const REPOSITORY_LOCKED_TOOLS = new Set([
-  ...EXECUTION_STORAGE_TOOLS,
+  'verify_edit_session',
+  'submit_local_bridge_job',
+  'execute_local_bridge_job',
   'configure_github_plugin',
 ]);
 
@@ -97,7 +101,7 @@ function parseAgentList(value: unknown): McpAgentRunnerName[] {
 export function runtimePolicy(repoRoot: string, opts: McpServerOptions) {
   const profile = parseMcpProfile(opts.profile ?? 'controller');
   const config = profile === 'controller' && opts.controllerHome
-    ? loadMcpServiceLocalConfig(opts.controllerHome, repoRoot)
+    ? loadMcpServiceLocalConfig(opts.controllerHome)
     : loadMcpLocalConfig(repoRoot);
   const envDevRunner = parseBooleanSetting(process.env.FORGE_MCP_DEV_RUNNER);
   const configuredDevRunner = envDevRunner ?? config?.devMode?.agentRunner === true;
@@ -361,7 +365,8 @@ export async function callMultiRepositoryTool(
     // Legacy entity migration belongs to writes/registration, never to the
     // ordinary read hot path (search / read / list / context). Only mutation
     // tools rebind entities so newly created issues/tasks/sessions stay bound.
-    const rebindEntities = REPOSITORY_LOCKED_TOOLS.has(name);
+    // Historical entity binding is independent of the physical edit lock.
+    const rebindEntities = EXECUTION_STORAGE_TOOLS.has(name) || name === 'configure_github_plugin';
     if (rebindEntities) bindRepositoryEntities(repository);
     const scopedContext: McpToolContext = {
       repoRoot: repository.canonicalRoot,

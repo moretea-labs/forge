@@ -215,9 +215,10 @@ describe('Work v3 lifecycle authority', () => {
       dispatchState: 'not_dispatched',
       evidenceState: 'none',
     });
-    const persisted = JSON.parse(readFileSync(path, 'utf8')) as any;
-    expect(persisted.schemaVersion).toBe(4);
-    expect(persisted.contracts[0]).toMatchObject({ schemaVersion: 4, semanticState: 'open', phase: 'implementation', dispatchState: 'not_dispatched', evidenceState: 'none' });
+    // The portable JSON reader is a projection too; only the writer migrates.
+    const stillLegacy = JSON.parse(readFileSync(path, 'utf8')) as any;
+    expect(stillLegacy.schemaVersion).toBe(2);
+    expect(stillLegacy.contracts[0].schemaVersion).toBe(2);
 
     // @ts-expect-error Retired status is rejected rather than translated into semantic authority.
     expect(() => updateWorkContract(store, workId, { status: 'ready' })).toThrow('WORK_RETIRED_FIELD_REJECTED: status');
@@ -228,6 +229,9 @@ describe('Work v3 lifecycle authority', () => {
 
     const withEvidence = recordWorkEvidenceState(store, workId, 'partial');
     expect(withEvidence).toMatchObject({ phase: 'implementation', dispatchState: 'not_dispatched', evidenceState: 'partial' });
+    const persisted = JSON.parse(readFileSync(path, 'utf8')) as any;
+    expect(persisted.schemaVersion).toBe(4);
+    expect(persisted.contracts[0]).toMatchObject({ schemaVersion: 4, semanticState: 'open', phase: 'implementation', dispatchState: 'not_dispatched', evidenceState: 'partial' });
     const cancelled = cancelWorkContract(store, workId, { summary: 'Explicit canonical cancellation.' });
     expect(cancelled).toMatchObject({ semanticState: 'cancelled', phase: 'implementation', dispatchState: 'terminal', evidenceState: 'partial' });
     expect(readWorkContractStore(store).contracts[0]).toMatchObject({

@@ -1,14 +1,20 @@
 import { afterEach, expect, test } from 'bun:test';
 import { spawn, type ChildProcess } from 'child_process';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { createHash } from 'crypto';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { withControllerLock } from '../../src/cli/repositories/locks';
 import {
   createWorkContract,
+  acceptSubmittedWorkContract,
+  getWorkContractByRequestId,
   createWorkSemanticContext,
   getWorkContract,
   readActiveWorkCandidates,
+  readWorkContractStore,
+  readWorkContractLineageSnapshot,
+  recordWorkEvidenceState,
   promoteWorkToRepositoryChange,
   reviseWorkSemanticContext,
   type VerificationRecord,
@@ -18,7 +24,7 @@ import {
   readControlPlaneRecord,
   writeControlPlaneRecord,
 } from '../../src/runtime/control-plane/persistence/sqlite-store';
-import { SEMANTIC_SCOPE_KEY } from '../../src/cli/repositories/controller-home';
+import { SEMANTIC_SCOPE_KEY } from '../../src/effects/controller-home';
 
 const homes: string[] = [];
 
@@ -72,6 +78,32 @@ test('explicitly promotes an open investigation Work before governed repository 
   expect(promoted.workKind).toBe('repository_change');
   expect(promoted.semanticState).toBe('open');
   expect(getWorkContract({ controllerHome, repoId }, workId)?.workKind).toBe('repository_change');
+
+  // A confirmed request index is idempotency evidence, not an optional cache.
+  const requestId = 'work-index-fail-closed';
+  const admission = { repoId, requestId, semanticKey: 'test:index', operation: {
+    name: 'index-observation', semanticKey: 'test:index', argumentHash: 'hash-index',
+    mode: 'readonly' as const, idempotent: true, replayable: true, resourceClaims: [],
+  } };
+  const accepted = acceptSubmittedWorkContract(controllerHome, admission);
+  expect(getWorkContractByRequestId(controllerHome, requestId)?.workId).toBe(accepted.contract.workId);
+  expect(() => getWorkContractByRequestId(controllerHome, requestId, 'foreign-repo')).toThrow('REQUEST_ID_REPO_CONFLICT');
+  const path = join(controllerHome, 'indexes', 'work-contracts', 'requests', createHash('sha256').update(requestId).digest('hex') + '.json');
+  const original = readFileSync(path, 'utf8');
+  writeFileSync(path, '{broken-json');
+  expect(() => getWorkContractByRequestId(controllerHome, requestId)).toThrow('WORK_REQUEST_INDEX_CORRUPT');
+  expect(() => acceptSubmittedWorkContract(controllerHome, admission)).toThrow('WORK_REQUEST_INDEX_CORRUPT');
+  const orphan = { ...JSON.parse(original), workId: 'work-missing-from-canonical-authority' };
+  writeFileSync(path, JSON.stringify(orphan));
+  expect(() => getWorkContractByRequestId(controllerHome, requestId)).toThrow('WORK_ACCEPTANCE_LOST');
+  expect(() => acceptSubmittedWorkContract(controllerHome, admission)).toThrow('WORK_ACCEPTANCE_LOST');
+  writeFileSync(path, original);
+  expect(acceptSubmittedWorkContract(controllerHome, admission)).toMatchObject({ deduplicated: true });
+
+  const emptyHome = mkdtempSync(join(tmpdir(), 'forge-work-index-missing-read-'));
+  homes.push(emptyHome);
+  expect(getWorkContractByRequestId(emptyHome, 'unseen-request')).toBeUndefined();
+  expect(existsSync(join(emptyHome, 'indexes', 'work-contracts', 'requests'))).toBe(false);
 });
 
 function verificationRecord(input: {
@@ -275,7 +307,7 @@ test('semantic Work authority shadows stale repository-scoped active compatibili
   expect(readControlPlaneRecord<WorkContract>(controllerHome, 'work_contract', repoId, workId)?.value.semanticState).toBe('open');
 });
 
-test('persists the exact historical v3 review-gap migration once without making phase evidence semantic authority', () => {
+test('projects historical v3 read-only and persists the review-gap migration with one actual mutation', () => {
   const fx = fixture('legacy-review-gap');
   const options = { controllerHome: fx.controllerHome, repoId: fx.repoId };
   const record = readControlPlaneRecord<WorkContract>(fx.controllerHome, 'work_contract', fx.repoId, fx.workId)!;
@@ -288,6 +320,26 @@ test('persists the exact historical v3 review-gap migration once without making 
   });
   const seeded = readControlPlaneRecord<WorkContract>(fx.controllerHome, 'work_contract', fx.repoId, fx.workId)!;
 
+  // Admission is a repeated read-only projection, not a historical schema writer.
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const candidate = readActiveWorkCandidates({ ...options, limit: 20 }).contracts
+      .find((contract) => contract.workId === fx.workId);
+    expect(candidate?.phaseEvidence.review).toBeDefined();
+    const unchanged = readControlPlaneRecord<WorkContract>(fx.controllerHome, 'work_contract', fx.repoId, fx.workId)!;
+    expect(unchanged.revision).toBe(seeded.revision);
+    expect(unchanged.schemaVersion).toBe(3);
+  }
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    expect(readWorkContractStore(options).contracts.find((contract) => contract.workId === fx.workId)?.phaseEvidence.review).toBeDefined();
+    expect(getWorkContract(options, fx.workId)?.phaseEvidence.review).toBeDefined();
+    const afterRead = readControlPlaneRecord<WorkContract>(fx.controllerHome, 'work_contract', fx.repoId, fx.workId)!;
+    expect(afterRead.revision).toBe(seeded.revision);
+    expect(afterRead.schemaVersion).toBe(3);
+  }
+
+  // Only a semantic/evidence writer persists the canonical v4 record.
+  recordWorkEvidenceState(options, fx.workId, 'partial');
   const migrated = getWorkContract(options, fx.workId)!;
   expect(migrated.phaseEvidence.review).toBeDefined();
   const persisted = readControlPlaneRecord<WorkContract>(fx.controllerHome, 'work_contract', fx.repoId, fx.workId)!;
@@ -319,4 +371,26 @@ test('persists the exact historical v3 review-gap migration once without making 
     value: malformed, action: 'fixture_malformed_current_v3', expectedRevision: malformedRecord.revision,
   });
   expect(getWorkContract(options, malformedId)).toMatchObject({ workId: malformedId, semanticState: 'open' });
+
+  // A legacy-only Controller Home must not import rows merely because a
+  // ControllerRound inspects Work lineage. The explicit compatibility index
+  // import remains available to the normal Work-contract collection reader.
+  const legacyHome = mkdtempSync(join(tmpdir(), 'forge-work-legacy-lineage-'));
+  homes.push(legacyHome);
+  const legacyScope = 'repo-legacy-lineage-projection';
+  const legacyWork = { ...record.value, repoId: legacyScope };
+  writeControlPlaneRecord(legacyHome, {
+    namespace: 'work_contract_store', scope: legacyScope, key: 'index', schemaVersion: 3,
+    value: { schemaVersion: 3, updatedAt: record.updatedAt, contracts: [legacyWork] },
+    action: 'fixture_legacy_index', expectedRevision: null,
+  });
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const lineage = readWorkContractLineageSnapshot({ controllerHome: legacyHome, repoId: legacyScope });
+    expect(lineage.invalid).toEqual([]);
+    expect(lineage.contracts).toMatchObject([{ workId: fx.workId, schemaVersion: 4 }]);
+    expect(readControlPlaneRecord<WorkContract>(legacyHome, 'work_contract', legacyScope, fx.workId)).toBeUndefined();
+  }
+  expect(readWorkContractStore({ controllerHome: legacyHome, repoId: legacyScope }).contracts)
+    .toMatchObject([{ workId: fx.workId, schemaVersion: 4 }]);
+  expect(readControlPlaneRecord<WorkContract>(legacyHome, 'work_contract', legacyScope, fx.workId)?.schemaVersion).toBe(4);
 });

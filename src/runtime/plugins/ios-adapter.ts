@@ -1,6 +1,6 @@
 import { join } from 'path';
 import type { RepositoryRecord } from '../../cli/repositories/types';
-import { repositoryControllerRoot } from '../../cli/repositories/controller-home';
+import { repositoryControllerRoot } from '../../effects/controller-home';
 import {
   iosAppBuild,
   iosAppInstall,

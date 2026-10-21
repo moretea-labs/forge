@@ -1,4 +1,4 @@
-import { FORGE_INSTANCE_SCOPE_KEY } from '../../src/cli/repositories/controller-home';
+import { FORGE_INSTANCE_SCOPE_KEY } from '../../src/effects/controller-home';
 import { withControllerLock } from '../../src/cli/repositories/locks';
 import { readControlPlaneRecord, writeControlPlaneRecord } from '../../src/runtime/control-plane/persistence/sqlite-store';
 import type { ControllerBinding } from '../../packages/kernel/controller/api/index';

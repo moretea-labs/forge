@@ -13,7 +13,7 @@ import {
   writeFileSync,
 } from 'fs';
 import { dirname, join, resolve, sep } from 'path';
-import { ensureRepositoryControllerLayout, repositoryControllerRoot, resolveControllerHome } from './controller-home';
+import { ensureRepositoryControllerLayout, repositoryControllerRoot, resolveControllerHome } from '../../effects/controller-home';
 import type { RepositoryRecord } from './types';
 
 export type RuntimeStorageBindingStatus =

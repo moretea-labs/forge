@@ -1,5 +1,5 @@
 import { join } from 'path';
-import { resolveControllerHome } from '../../../cli/repositories/controller-home';
+import { resolveControllerHome } from '../../../effects/controller-home';
 import { readJsonFile, writeJsonAtomic } from '../../shared/json-files';
 import type { BootstrapSnapshot } from './types';
 

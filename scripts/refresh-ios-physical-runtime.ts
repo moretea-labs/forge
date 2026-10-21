@@ -2,7 +2,7 @@ import { spawnSync } from 'child_process';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs';
 import { dirname, join, resolve } from 'path';
 import { buildIosPluginManifest, executeIosPluginAction } from '../src/runtime/plugins/ios-adapter';
-import { resolveRepoPreferredControllerHome } from '../src/cli/repositories/controller-home';
+import { resolveRepoPreferredControllerHome } from '../src/effects/controller-home';
 
 interface AgentDeviceEntry {
   platform?: unknown;

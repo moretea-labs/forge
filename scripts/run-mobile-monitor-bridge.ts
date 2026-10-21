@@ -3,7 +3,7 @@ import { dirname, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import { createMobileIntentDevice } from '../src/cli/local-bridge/mobile-intents';
 import { startLocalBridgeServer } from '../src/cli/local-bridge/server';
-import { resolveRepoPreferredControllerHome } from '../src/cli/repositories/controller-home';
+import { resolveRepoPreferredControllerHome } from '../src/effects/controller-home';
 
 interface StoredMonitorCredential {
   deviceId: string;

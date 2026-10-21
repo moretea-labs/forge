@@ -23,7 +23,7 @@ import { markOperationDelegated } from '../jobs/receipt-store';
 import { assertAutomatedOperationAllowed } from '../../control-plane/governance/external-effects';
 import { triggerWorkspaceAgent } from '../workspace-agent';
 import { executeAssistantPluginAction } from '../../plugins/store';
-import { CONTROLLER_SCOPE_REPO_ID, controllerSystemRoot, repositoryControllerRoot } from '../../../cli/repositories/controller-home';
+import { CONTROLLER_SCOPE_REPO_ID, controllerSystemRoot, repositoryControllerRoot } from '../../../effects/controller-home';
 import { writeExecutionArtifact } from '../../evidence/artifact-store';
 import { existsSync } from 'fs';
 import { isAbsolute, relative, resolve, sep } from 'path';

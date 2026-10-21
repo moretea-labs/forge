@@ -456,6 +456,16 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     this.noteTaskFailure(failure.code, task, effectId);
   }
 
+  private taskConversationContentAvailable(task: WorkflowSupervisorBrowserTask, snapshot: ComputerChatgptConversationObservation): boolean {
+    if (!conversationContentAvailable(snapshot)) return false;
+    // A hydrated composer is enough for a genuinely new enrollment, but not
+    // evidence that an established conversation's history has loaded.
+    // Avoid sending a continuation into a blank old shell after a completed
+    // source turn. The canonical completion journal owns that distinction.
+    if (snapshot.isGenerating || snapshot.latestUserText.trim() || snapshot.latestAssistantResponse.trim()) return true;
+    return !this.control.store.hasCompletionInCurrentConversation(task.taskId);
+  }
+
   private observeVerifiedEmptyShell(
     task: WorkflowSupervisorBrowserTask,
     effectId: string | undefined,
@@ -468,7 +478,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       ? chatgptProviderPageFailure(observation.providerFailureText) : undefined;
     if (providerFailure) noteChatgptProviderBackpressure(this.deps.providerScopeKey, providerFailure, this.deps.nowMs());
     const verified = exactUrl && !observation.providerFailureText.trim()
-      && !conversationContentAvailable(observation)
+      && !this.taskConversationContentAvailable(task, observation)
       && !this.lastRunTransportUnavailable
       && this.conversations.some((conversation) => conversation.conversation_id === task.conversationId)
       && chatgptProviderBackpressureRemainingMs(this.deps.providerScopeKey, this.deps.nowMs()) === 0;
@@ -493,6 +503,33 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       reason: 'exact_conversation_empty_shell_verified_across_spaced_browser_observations',
       authorizedBy: 'user-authorized-automatic-conversation-rotation',
     });
+  }
+
+  private handleVerifiedTerminalCapacity(
+    task: WorkflowSupervisorBrowserTask,
+    effectId: string | undefined,
+    observation: ComputerChatgptConversationObservation,
+  ): boolean {
+    // A provider-owned terminal banner can be visible before historical turns
+    // hydrate. The exact bound URL and live failure region are mandatory;
+    // transcript/activity text alone is never sufficient for migration.
+    if (!exactCanonicalConversationUrl(observation, task)
+      || chatgptProviderPageFailure(observation.providerFailureText) !== CHATGPT_AUTOMATION_CONVERSATION_LIMIT_REACHED) return false;
+    if (this.control.store.hasAppliedEffectAwaitingCompletion(task.taskId)) {
+      this.noteTaskFailure('WORKFLOW_SUPERVISOR_CAPACITY_APPLIED_TURN_UNRESOLVED', task, effectId, false);
+      return true;
+    }
+    // Supervisor's existing atomic CAS migration independently rejects any
+    // unresolved/unknown Send or other still-owned effect.
+    this.control.migrateConversation({
+      taskId: task.taskId,
+      expectedConversationId: task.conversationId,
+      fresh: true,
+      requestId: `capacity:${task.conversationId}`,
+      reason: 'live_provider_conversation_capacity_exhausted',
+      authorizedBy: 'user-authorized-automatic-conversation-rotation',
+    });
+    return true;
   }
 
   private syncTaskStallProjections(): void {
@@ -776,9 +813,10 @@ export class WorkflowSupervisorNativeBrowserAdapter {
         || this.control.store.hasAppliedEffectAwaitingCompletion(task.taskId),
     });
     if (ensured.state !== 'ready') {
+      if (ensured.observation && this.handleVerifiedTerminalCapacity(task, poll.command?.effectId, ensured.observation)) return;
       const verifiedEmpty = ensured.failure.code === 'COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE'
         && ensured.observation !== undefined
-        && !conversationContentAvailable(ensured.observation);
+        && !this.taskConversationContentAvailable(task, ensured.observation);
       if (verifiedEmpty) {
         this.observeVerifiedEmptyShell(task, poll.command?.effectId, poll.command, ensured.observation!);
       } else {
@@ -796,7 +834,8 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     const target = ensured.target;
     const snapshot = ensured.observation ?? await target.observe({ includeUserHistory: false, includePageText: false });
     if (!exactConversation(snapshot, task)) { this.noteTargetUnavailable(task, poll.command?.effectId, { code: 'WORKFLOW_SUPERVISOR_EXACT_CONVERSATION_UNPROVEN' }); return; }
-    if (!conversationContentAvailable(snapshot)) {
+    if (this.handleVerifiedTerminalCapacity(task, poll.command?.effectId, snapshot)) return;
+    if (!this.taskConversationContentAvailable(task, snapshot)) {
       this.observeVerifiedEmptyShell(task, poll.command?.effectId, poll.command, snapshot);
       return;
     }
@@ -819,21 +858,6 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     const providerFailureCode = observedProviderFailureCode && observedProviderFailureCode !== providerFailureAwaitingClear
       ? observedProviderFailureCode
       : undefined;
-    if (observedProviderFailureCode === CHATGPT_AUTOMATION_CONVERSATION_LIMIT_REACHED) {
-      // This conversation cannot produce another meaningful turn. Unlike a
-      // provider 429, fresh migration is justified by an explicit terminal
-      // capacity message on the exact bound provider surface. The existing
-      // Supervisor CAS transaction preserves already-applied source effects.
-      this.control.migrateConversation({
-        taskId: task.taskId,
-        expectedConversationId: task.conversationId,
-        fresh: true,
-        requestId: `capacity:${task.conversationId}`,
-        reason: 'live_provider_conversation_capacity_exhausted',
-        authorizedBy: 'user-authorized-automatic-conversation-rotation',
-      });
-      return;
-    }
     const priorProviderFailure = this.providerFailureSeen.get(task.conversationId);
     if (!observedProviderFailureCode) this.providerFailureSeen.delete(task.conversationId);
     else if (priorProviderFailure !== observedProviderFailureCode) { noteChatgptProviderBackpressure(this.deps.providerScopeKey, observedProviderFailureCode, this.deps.nowMs()); this.providerFailureSeen.set(task.conversationId, observedProviderFailureCode); }
@@ -1068,7 +1092,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       this.noteTargetUnavailable(task, command.effectId, { code: 'WORKFLOW_SUPERVISOR_EXACT_CONVERSATION_UNPROVEN' });
       return;
     }
-    if (!conversationContentAvailable(snapshot)) {
+    if (!this.taskConversationContentAvailable(task, snapshot)) {
       this.observeVerifiedEmptyShell(task, command.effectId, command, snapshot);
       return;
     }
@@ -1094,6 +1118,22 @@ export class WorkflowSupervisorNativeBrowserAdapter {
         this.deps.onError(new Error(prepared.reasonCode));
         return;
       }
+      // Preparing the composer yields to the provider UI. The conversation
+      // may have lost its hydrated history while that preparation was in
+      // progress. Re-attest the exact target before spending a dispatch
+      // generation or permitting Send, and use this fresh causal baseline.
+      // Keep full user-message history for the existing reconcile fallback if
+      // the dispatch generation is refused by a concurrent journal update.
+      snapshot = await target.observe({ includeUserHistory: true, includePageText: false });
+      if (!exactConversation(snapshot, task)) {
+        this.noteTargetUnavailable(task, command.effectId, { code: 'WORKFLOW_SUPERVISOR_EXACT_CONVERSATION_UNPROVEN' });
+        return;
+      }
+      if (!this.taskConversationContentAvailable(task, snapshot)) {
+        this.observeVerifiedEmptyShell(task, command.effectId, command, snapshot);
+        return;
+      }
+      if (command.kind !== 'recovery' && snapshot.isGenerating) return;
       this.clearTaskFailure(task.taskId, command.effectId);
       const begin = this.control.browserBeginEffect({ conversationId: command.conversationId, conversationUrl: command.conversationUrl, effectId: command.effectId,
         dispatchId: `computer-${randomUUID()}`, dispatchGeneration: command.dispatchGeneration,

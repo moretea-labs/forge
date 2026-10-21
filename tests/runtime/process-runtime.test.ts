@@ -66,7 +66,7 @@ import {
 import { classifyGatewayExecutionPath } from '../../adapters/mcp/runtime-gateway/router';
 import { persistedCheckSemanticScopeKey, runPersistedCheckViaProcessRuntime } from '../../adapters/mcp/runtime-gateway/persisted-check-process';
 import { classifyPersistedCheckTerminalEvidence, readPersistedCheckResultReceipt } from '../../src/runtime/execution/process-runtime/check-result';
-import { ensureControllerHome, repositoryControllerRoot } from '../../src/cli/repositories/controller-home';
+import { ensureControllerHome, repositoryControllerRoot } from '../../src/effects/controller-home';
 import { registerRepository } from '../../src/cli/repositories/registry';
 import { routeExecution } from '../../src/runtime/execution/thin-harness';
 import { listActiveLeases, acquireExecutionLeases } from '../../src/runtime/resources/leases/store';
@@ -2180,7 +2180,7 @@ describe('command classifier safe shell combinations', () => {
     expect(classifyRepositoryCommandRoute(['echo', 'forge recovery activate-runtime'])).not.toEqual({ route: 'reject', reason: 'standalone_recovery_lifecycle_required' });
   });
 
-  test('routes only CodeGraph status as a readonly observation', () => { const status = ['node_modules/.bin/codegraph', 'status', '.']; expect(classifyRepositoryCommand(status).risk).toBe('readonly'); expect(classifyRepositoryCommand('node_modules/.bin/codegraph status .').risk).toBe('readonly'); expect(classifyRepositoryCommandRoute(status)).toEqual({ route: 'process_direct', reason: 'readonly_fast_path' }); for (const subcommand of ['init', 'sync']) { const mutation = ['node_modules/.bin/codegraph', subcommand, '.']; expect(classifyRepositoryCommand(mutation).risk).toBe('workspace_write'); expect(classifyRepositoryCommandRoute(mutation)).toEqual({ route: 'process_direct', reason: 'ephemeral_local_workspace_mutation' }); } });
+  test('routes only CodeGraph status as a readonly observation', () => { const status = ['node_modules/.bin/codegraph', 'status', '.']; expect(classifyRepositoryCommand(status).risk).toBe('readonly'); expect(classifyRepositoryCommand('node_modules/.bin/codegraph status .').risk).toBe('readonly'); expect(classifyRepositoryCommandRoute(status)).toEqual({ route: 'process_direct', reason: 'readonly_fast_path' }); for (const subcommand of ['init', 'sync']) { const mutation = ['node_modules/.bin/codegraph', subcommand, '.']; expect(classifyRepositoryCommand(mutation).risk).toBe('workspace_write'); expect(classifyRepositoryCommandRoute(mutation)).toEqual({ route: 'process_managed', reason: 'workspace_write_requires_process_lease' }); } });
 
   test('recognizes common wrapped and host observation commands as readonly', () => {
     expect(classifyRepositoryCommand(['git', 'check-ignore', '-q', '.codegraph']).risk).toBe('readonly');

@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ensureControllerHome } from '../src/cli/repositories/controller-home';
+import { ensureControllerHome } from '../src/effects/controller-home';
 import { registerRepository } from '../src/cli/repositories/registry';
 import {
   beginControllerRoundProviderDispatch,
@@ -13,7 +13,7 @@ import {
   finishControllerRoundRelayDispatch,
   getControllerRoundRelay,
 } from '../packages/kernel/controller/api/index';
-import { claimControllerSession, releaseControllerSession } from '../src/runtime/control-plane/facade/controller-session-store';
+import { claimControllerSession, releaseControllerSession } from '../packages/kernel/controller/api/index';
 import { createWorkContract } from '../src/runtime/control-plane/facade/work-contract-store';
 import { createHandoffItem } from '../src/runtime/control-plane/facade/handoff-inbox-store';
 import { listUserRequests } from '../packages/kernel/identity/api/index';

@@ -24,7 +24,7 @@ import type { WorkflowPublicationReceipt } from '../../packages/workflow-runtime
 import { memoryAddressKey } from '../../packages/kernel/cognition/api/index';
 import { ensureForgeInstanceIdentity } from '../../packages/kernel/identity/api/index';
 import { getMcpPolicy } from '../../adapters/mcp/policy';
-import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
+import { ensureControllerHome } from '../../src/effects/controller-home';
 import { registerRepository } from '../../src/cli/repositories/registry';
 import { writeWorkflowRunCheckpoint } from '../../src/runtime/control-plane/persistence/workflow-run-store';
 import { createRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';

@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSy
 import { basename, dirname, join } from "path";
 import { beginEditSession, applyEditOperations, createEditSavepoint, EditSessionPatchError, finalizeEditSession, getEditSession, getEditSessionDiff, listEditSessions, PREFERRED_EDIT_PATCH_BATCH_OPERATIONS, rollbackEditSession } from "../../../src/cli/editing/edit-session";
 import { EDIT_OPERATION_INPUT_SCHEMA, normalizeEditOperations } from "../../../src/cli/editing/edit-operation-contract";
+import { withRepositoryMutationExclusion } from '../../../src/runtime/resources/leases/store';
 import { listAgentJobs } from "../../../src/cli/agent-jobs/job-manager";
 import { listControllerChecks } from "../../../src/cli/controller/check-runner";
 import { buildExecutionDiagnostics, buildRequirementBoard } from '../../../src/runtime/control-plane/facade/requirement-board';
@@ -23,7 +24,7 @@ import { listSessions, openSession, readSession, runBrowserConsult, runBrowserFo
 import type { BrowserProviderName, NativeBrowserChannel, ThinkingLevel } from "../../../src/cli/chatgpt-browser/types";
 import { hashMcpInput, tryWriteMcpAuditEntry } from "../audit";
 import { resolveLocalBridgeSurface, summarizeRecentJobs } from "../../../src/runtime/shared/local-bridge-surface";
-import { resolveRepoPreferredControllerHome } from "../../../src/cli/repositories/controller-home";
+import { resolveRepoPreferredControllerHome } from "../../../src/effects/controller-home";
 import { resolveRepositoryCheckStorage } from '../../../src/runtime/execution/process-runtime/check-storage';
 import { resolveRepositorySelection } from '../../../src/cli/repositories/registry';
 import { ensureRepositoryRuntimeStorageBinding } from '../../../src/cli/repositories/runtime-storage';
@@ -128,6 +129,21 @@ function editExecutionIdentity(ctx: McpToolContext): {
     principalId: ctx.principalId?.trim() || 'legacy-controller',
     controllerInstanceId: ctx.controllerInstanceId?.trim() || 'legacy-controller',
   };
+}
+
+/**
+ * Existing repository mutation lock, shared with safe_patch_apply and the
+ * Local Bridge editor. Keep the whole synchronous edit primitive under one
+ * lock; no nested lock in edit-session.ts, and no second mutation authority.
+ */
+function withLegacyEditMutation<T>(ctx: McpToolContext, operation: string, mutate: () => T): T {
+  const controllerHome = ctx.runtimeControllerHome?.trim() || resolveRepoPreferredControllerHome(ctx.repoRoot);
+  const repoId = ctx.repoId?.trim() || resolveRepositorySelection({
+    explicitPath: ctx.repoRoot,
+    controllerHome,
+    allowSoleRepository: true,
+  }).repoId;
+  return withRepositoryMutationExclusion(controllerHome, repoId, `mcp:${operation}`, mutate);
 }
 
 function fileSummary(
@@ -1982,7 +1998,7 @@ export async function callMcpTool(
         if (editStorage.status === 'legacy-active' || editStorage.status === 'conflict') {
           return errorResult('EDIT_SESSION_STORAGE_NOT_READY', editStorage.message ?? editStorage.status);
         }
-        const session = beginEditSession(ctx.repoRoot, {
+        const session = withLegacyEditMutation(ctx, name, () => beginEditSession(ctx.repoRoot, {
           purpose,
           issueId: typeof args.issue_id === "string" ? args.issue_id : undefined,
           taskId: typeof args.task_id === "string" ? args.task_id : undefined,
@@ -1997,7 +2013,7 @@ export async function callMcpTool(
             principalId: identity.principalId,
             controllerInstanceId: workId ? identity.controllerInstanceId : undefined,
           },
-        });
+        }));
         audit(
           ctx,
           name,
@@ -2017,7 +2033,7 @@ export async function callMcpTool(
         try {
           const current = getEditSession(ctx.repoRoot, String(args.session_id ?? ""));
           const identity = editExecutionIdentity(ctx);
-          session = applyEditOperations(
+          session = withLegacyEditMutation(ctx, name, () => applyEditOperations(
             ctx.repoRoot,
             ctx.policy,
             current.sessionId,
@@ -2036,7 +2052,7 @@ export async function callMcpTool(
                 controllerInstanceId: identity.controllerInstanceId,
               },
             },
-          );
+          ));
         } catch (error) {
           if (error instanceof EditSessionPatchError) {
             audit(ctx, name, "failed", args, `controller-home://repositories/${editExecutionIdentity(ctx).repoId}/edit-sessions/${error.details.sessionId}`, error.message);
@@ -2089,11 +2105,11 @@ export async function callMcpTool(
       case "create_edit_savepoint": {
         if (ctx.policy.profile !== "controller")
           return errorResult("TOOL_DISABLED", "create_edit_savepoint requires the controller profile");
-        const session = createEditSavepoint(
+        const session = withLegacyEditMutation(ctx, name, () => createEditSavepoint(
           ctx.repoRoot,
           String(args.session_id ?? ""),
           String(args.name ?? ""),
-        );
+        ));
         audit(ctx, name, "ok", args, `controller-home://repositories/${editExecutionIdentity(ctx).repoId}/edit-sessions/${session.sessionId}`);
         return textResult(session);
       }
@@ -2115,14 +2131,14 @@ export async function callMcpTool(
             "TOOL_DISABLED",
             "rollback_edit_session requires the controller profile",
           );
-        const session = rollbackEditSession(
+        const session = withLegacyEditMutation(ctx, name, () => rollbackEditSession(
           ctx.repoRoot,
           String(args.session_id ?? ""),
           {
             toRevision: typeof args.to_revision === "number" ? Math.trunc(args.to_revision) : undefined,
             savepoint: typeof args.savepoint === "string" ? args.savepoint : undefined,
           },
-        );
+        ));
         audit(
           ctx,
           name,
@@ -2140,7 +2156,7 @@ export async function callMcpTool(
           );
         const current = getEditSession(ctx.repoRoot, String(args.session_id ?? ""));
         const identity = editExecutionIdentity(ctx);
-        const session = finalizeEditSession(
+        const session = withLegacyEditMutation(ctx, name, () => finalizeEditSession(
           ctx.repoRoot,
           current.sessionId,
           {
@@ -2155,7 +2171,7 @@ export async function callMcpTool(
               controllerInstanceId: identity.controllerInstanceId,
             },
           },
-        );
+        ));
         audit(
           ctx,
           name,

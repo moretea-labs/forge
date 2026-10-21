@@ -17,7 +17,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
-import { ensureControllerHome } from '../src/cli/repositories/controller-home';
+import { ensureControllerHome } from '../src/effects/controller-home';
 import { registerRepository } from '../src/cli/repositories/registry';
 import {
   executeFast,

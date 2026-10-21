@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'crypto';
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { dirname, join } from 'path';
-import { resolveControllerHome } from '../../cli/repositories/controller-home';
+import { resolveControllerHome } from '../../effects/controller-home';
 import { loadRuntimeReleaseManifest } from '../root/release-manifest';
 import { readRuntimeReleaseAuthority } from '../root/release-store';
 import { ensureBrowserStateInControllerHome } from './browser-session-store';

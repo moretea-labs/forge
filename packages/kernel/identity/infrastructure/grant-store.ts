@@ -1,4 +1,5 @@
 import { randomUUID } from 'crypto';
+import { isDeepStrictEqual } from 'util';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs';
 import { dirname, join, resolve } from 'path';
 import type {
@@ -176,14 +177,47 @@ export function recordCanonicalGrant(controllerHome: string, input: RecordGrantI
   };
 
   const store = loadStore(controllerHome);
+  const priorId = store.grants.find((entry) => entry.grantId === grantId);
+  if (priorId) {
+    if (priorId.revokedAt || Date.parse(priorId.expiresAt) <= now.getTime()) {
+      throw new Error('GRANT_ID_REUSE_REQUIRES_NEW_ENROLLMENT');
+    }
+    const sameCapabilities = priorId.capabilities.length === grant.capabilities.length
+      && priorId.capabilities.every((value, index) => value === grant.capabilities[index]);
+    const previousScopes = priorId.scopes ?? [];
+    const nextScopes = grant.scopes ?? [];
+    if (priorId.principalId !== grant.principalId
+      || priorId.ownerScope !== grant.ownerScope
+      || !targetMatches(priorId.target, grant.target)
+      || !sameCapabilities
+      || previousScopes.length !== nextScopes.length
+      || previousScopes.some((value, index) => value !== nextScopes[index])
+      || (priorId.riskCeiling ?? 'readonly') !== (grant.riskCeiling ?? 'readonly')
+      || !isDeepStrictEqual(priorId.constraints ?? {}, grant.constraints ?? {})) {
+      throw new Error('GRANT_IDENTITY_SCOPE_CHANGE_REQUIRES_NEW_ENROLLMENT');
+    }
+    // A replay or legacy metadata repair is not another enrollment. In
+    // particular, a supplied later `now` or larger TTL must not renew access.
+    grant.createdAt = priorId.createdAt;
+    grant.expiresAt = priorId.expiresAt;
+    grant.updatedAt = new Date(Math.max(Date.parse(priorId.updatedAt), now.getTime())).toISOString();
+  }
   store.grants = store.grants.filter((entry) => {
+    // Routine replacement must not erase a revoked/expired record. Explicit
+    // reconcileCanonicalGrants remains the sole lifecycle prune authority;
+    // this fence prevents ID reuse only while the original record is present.
+    if (entry.revokedAt || Date.parse(entry.expiresAt) <= now.getTime()) return true;
     if (entry.grantId === grantId) return false;
     const samePrincipal = entry.principalId === grant.principalId;
     const sameOwner = entry.ownerScope === grant.ownerScope;
     const sameTarget = targetMatches(entry.target, grant.target);
     const sameCapabilities = entry.capabilities.length === grant.capabilities.length
       && entry.capabilities.every((c, i) => c === grant.capabilities[i]);
-    return !(samePrincipal && sameOwner && sameTarget && sameCapabilities);
+    const sameScopes = isDeepStrictEqual(entry.scopes ?? [], grant.scopes ?? []);
+    const sameRisk = (entry.riskCeiling ?? 'readonly') === (grant.riskCeiling ?? 'readonly');
+    const sameConstraints = isDeepStrictEqual(entry.constraints ?? {}, grant.constraints ?? {});
+    // Distinct enrolled restrictions must not be removed by ordinary dedupe.
+    return !(samePrincipal && sameOwner && sameTarget && sameCapabilities && sameScopes && sameRisk && sameConstraints);
   });
   store.grants.push(grant);
   saveStore(controllerHome, store);
@@ -260,6 +294,9 @@ export function findActiveCanonicalGrant(controllerHome: string, query: QueryGra
     if (query.target ? !targetMatches(grant.target, query.target) : Boolean(grant.target)) continue;
     if (!query.scopes?.length && grant.scopes?.length) continue;
     if (query.scopes?.length && !scopesContain(grant.scopes, query.scopes)) continue;
+    // Opaque enrolled restrictions must match exactly; absent query context never
+    // selects a restricted grant. Real identity/attestation remains provider-owned.
+    if (!isDeepStrictEqual(grant.constraints ?? {}, query.constraints ?? {})) continue;
     // Missing ceilings in persisted v1 grants are read-only, never unrestricted.
     if ((RISK_RANK[grant.riskCeiling ?? 'readonly'] ?? 0) < requestedRiskRank) continue;
     return structuredClone(grant);

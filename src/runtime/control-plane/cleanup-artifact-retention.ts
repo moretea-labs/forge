@@ -1,7 +1,7 @@
 import { existsSync, lstatSync, readdirSync, rmdirSync, rmSync, statSync } from 'fs';
 import { spawnSync } from 'child_process';
 import { join, relative, resolve } from 'path';
-import { repositoryControllerRoot } from '../../cli/repositories/controller-home';
+import { repositoryControllerRoot } from '../../effects/controller-home';
 import { measureReclaimablePath } from './lifecycle-retention-metrics';
 import { getRepository } from '../../cli/repositories/registry';
 import {

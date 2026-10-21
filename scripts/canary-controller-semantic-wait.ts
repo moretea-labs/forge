@@ -3,11 +3,11 @@ import { execFileSync } from 'child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { ensureControllerHome } from '../src/cli/repositories/controller-home';
+import { ensureControllerHome } from '../src/effects/controller-home';
 import { registerRepository } from '../src/cli/repositories/registry';
 import { createRequirement, updateRequirement } from '../src/runtime/control-plane/persistence/requirement-store';
 import { createWorkContract, recordWorkEvidenceState, updateWorkContract } from '../src/runtime/control-plane/facade/work-contract-store';
-import { claimControllerSession } from '../src/runtime/control-plane/facade/controller-session-store';
+import { claimControllerSession } from '../packages/kernel/controller/api/index';
 import {
   acknowledgeControllerRoundClaim,
   beginInitialControllerRoundDispatch,

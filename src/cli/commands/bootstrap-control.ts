@@ -1,4 +1,4 @@
-import { resolveControllerHome, controllerSystemRoot } from '../repositories/controller-home';
+import { resolveControllerHome, controllerSystemRoot } from '../../effects/controller-home';
 import {
   createBootstrapControlApi,
   type BootstrapControlApi,

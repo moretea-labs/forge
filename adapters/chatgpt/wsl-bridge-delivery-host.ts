@@ -1,5 +1,5 @@
 import { runBridgeProvider } from '../../src/cli/chatgpt-browser/bridge-provider';
-import { controllerSystemRoot } from '../../src/cli/repositories/controller-home';
+import { controllerSystemRoot } from '../../src/effects/controller-home';
 import {
   classifyChatgptProviderFailure,
   type ChatgptProviderDeliveryHost,

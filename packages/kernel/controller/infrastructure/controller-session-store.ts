@@ -1,6 +1,6 @@
 import { createHash, randomUUID, timingSafeEqual } from 'crypto';
 import { join } from 'path';
-import { FORGE_INSTANCE_SCOPE_KEY, repositoryControllerRoot } from '../../../../src/cli/repositories/controller-home';
+import { FORGE_INSTANCE_SCOPE_KEY, repositoryControllerRoot } from '../../../../src/effects/controller-home';
 import { withControllerLock } from '../../../../src/cli/repositories/locks';
 import {
   peekExecutionSession,

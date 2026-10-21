@@ -3,7 +3,7 @@ import { generateKeyPairSync } from 'crypto';
 import { existsSync, mkdirSync, mkdtempSync, promises as fsPromises, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { controllerSystemRoot } from '../../src/cli/repositories/controller-home';
+import { controllerSystemRoot } from '../../src/effects/controller-home';
 import { controllerPluginConfigPath, migrateLegacyControllerPluginConfigs } from '../../src/runtime/plugins/config-store';
 import {
   buildAppStoreConnectPluginManifest,

@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync,
 import { tmpdir } from "os";
 import { join } from "path";
 import { spawnSync } from "child_process";
-import { repositoryControllerRoot } from "../../src/cli/repositories/controller-home";
+import { repositoryControllerRoot } from "../../src/effects/controller-home";
 import { addRepositoryCheckout, getRepository, listRepositories, registerRepository, repositorySummary } from "../../src/cli/repositories/registry";
 import { callMcpTool } from "../../adapters/mcp/tool-mapping/tools";
 import { callRepositoryTool, repositoryToolDefinitions } from "../../adapters/mcp/tool-mapping/repository-tools";
@@ -16,7 +16,7 @@ import { routeDurableMcpCall } from "../../adapters/mcp/runtime-gateway/router";
 import { waitRepositoryCommandProcess } from "../../src/runtime/execution/process-runtime/command-facade";
 import { getExecutionJob, listExecutionJobs } from "../../src/runtime/execution/jobs/store";
 import { cancelWorkContract, createWorkContract, failWorkContract, getWorkContract } from "../../src/runtime/control-plane/facade/work-contract-store";
-import { claimControllerSession } from "../../src/runtime/control-plane/facade/controller-session-store";
+import { claimControllerSession } from '../../packages/kernel/controller/api/index';
 import { readWorkHandle } from "../../src/runtime/control-plane/execution/work-handle-store";
 import { startExecutionSession, updateExecutionSession } from "../../src/runtime/control-plane/execution/session-store";
 import { readControllerResult } from "../../src/runtime/evidence/result-store";
@@ -258,6 +258,10 @@ describe("repository MCP command tools", () => {
       writeFileSync(join(repoRoot, "outside.txt"), "base-outside\n");
       git(repoRoot, ["add", "owned.txt", "outside.txt"]);
       git(repoRoot, ["commit", "-m", "base"]);
+      // Existing test fixture also exercises a real upstream: status --branch
+      // must agree with rev-parse @{u}, not just the local branch name.
+      git(repoRoot, ["update-ref", "refs/remotes/origin/main", "HEAD"]);
+      git(repoRoot, ["branch", "--set-upstream-to=origin/main", "main"]);
       writeFileSync(join(repoRoot, "owned.txt"), "changed-owned\n");
       writeFileSync(join(repoRoot, "outside.txt"), "changed-outside\n");
       git(repoRoot, ["add", "outside.txt"]);
@@ -277,6 +281,15 @@ describe("repository MCP command tools", () => {
       expect(failed.error?.code).toBe("GIT_COMMIT_FAILED");
       expect(readFileSync(indexPath).equals(indexBefore)).toBe(true);
       const afterFailure = repositoryGitStatus(repository);
+      // Porcelain --branch and git branch/rev-parse must report one exact
+      // identity even when index and worktree have independent dirty paths.
+      expect(afterFailure.branch).toBe(
+        spawnSync("git", ["-C", repoRoot, "branch", "--show-current"], { encoding: "utf8" }).stdout.trim(),
+      );
+      expect(afterFailure.head).toBe(
+        spawnSync("git", ["-C", repoRoot, "rev-parse", "--verify", "HEAD"], { encoding: "utf8" }).stdout.trim(),
+      );
+      expect(afterFailure.upstream).toBe("origin/main");
       expect(afterFailure.staged).toEqual(["outside.txt"]);
       expect(afterFailure.unstaged).toEqual(["owned.txt"]);
       expect(readFileSync(join(repoRoot, "owned.txt"), "utf8")).toBe("changed-owned\n");

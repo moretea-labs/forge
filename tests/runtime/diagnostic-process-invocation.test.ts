@@ -10,7 +10,7 @@ import {
   resolveCliChildInvocation,
 } from '../../src/cli/runtime-invocation';
 import { resolveDiagnosticCliInvocation, runReadOnlyDiagnosticViaProcessRuntime } from '../../src/runtime/diagnostics/process-facade';
-import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
+import { ensureControllerHome } from '../../src/effects/controller-home';
 import { registerRepository } from '../../src/cli/repositories/registry';
 import {
   resolveCandidatePersistedCheckRunnerTarget,

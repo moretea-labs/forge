@@ -17,7 +17,7 @@ import {
   isWorkspaceScopeKey,
   repositoryControllerRoot,
   workspaceScopeRoot,
-} from '../../../cli/repositories/controller-home';
+} from '../../../effects/controller-home';
 import {
   forgeInstanceExecutionTarget,
   repositoryExecutionTarget,
@@ -28,7 +28,7 @@ import {
 
 export const FORGE_INSTANCE_PROCESS_SCOPE_KEY = 'instance';
 /** Reserved prefix for workspace process scopes; registered repository ids are `repo_*`. */
-export { WORKSPACE_SCOPE_PREFIX as WORKSPACE_PROCESS_SCOPE_PREFIX } from '../../../cli/repositories/controller-home';
+export { WORKSPACE_SCOPE_PREFIX as WORKSPACE_PROCESS_SCOPE_PREFIX } from '../../../effects/controller-home';
 
 export interface RepositoryProcessScope {
   schemaVersion: 1;

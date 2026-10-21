@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, test } from 'bun:test';
 import { recordCognitiveMemory, type CognitiveWriteAuthorityPort } from '../packages/kernel/cognition/api/index.ts';
-import { ensureControllerHome } from '../src/cli/repositories/controller-home.ts';
+import { ensureControllerHome } from '../src/effects/controller-home';
 import { cognitionMemoryStore } from '../src/runtime/control-plane/persistence/cognition-store.ts';
 import { applyCognitiveSkillCanary, COGNITIVE_SKILL_CANARY_PROFILES } from '../src/runtime/context/cognitive-skill-canary.ts';
 import type { AssistantContextResolution } from '../src/runtime/context/assistant-context.ts';

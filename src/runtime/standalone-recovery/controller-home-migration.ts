@@ -18,7 +18,7 @@ import {
   relocateStoppedControllerHomeAuthority,
   rollbackStoppedControllerHomeAuthorityRelocation,
   type StoppedControllerHomeAuthorityRelocation,
-} from '../../cli/repositories/controller-home';
+} from '../../effects/controller-home';
 import { inspectControlPlaneDatabaseFile } from '../control-plane/persistence/sqlite-store';
 import {
   activeRuntimeEntrypoint,

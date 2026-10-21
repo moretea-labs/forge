@@ -12,7 +12,7 @@ import { createWorkflowSupervisorServer } from '../../supervisor/server';
 import { workflowSupervisorSocketPath } from '../../supervisor/paths';
 import { createWorkSemanticContext, reviseWorkSemanticContext } from '../../packages/kernel/work/api/index';
 import { createRequirement, updateRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
-import { SEMANTIC_SCOPE_KEY } from '../../src/cli/repositories/controller-home';
+import { SEMANTIC_SCOPE_KEY } from '../../src/effects/controller-home';
 
 const roots: string[] = [];
 afterEach(() => {

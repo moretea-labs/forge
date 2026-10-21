@@ -171,19 +171,49 @@ export function splitRepositoryGitStatus(porcelain: string): { staged: string[];
   return { staged, unstaged, untracked };
 }
 
+/**
+ * The porcelain v1 --branch header contains current branch and upstream.
+ * Reuse it rather than launching git branch and git rev-parse @{u} again.
+ * On an unexpected header fail back to Git itself; never invent identity.
+ */
+function porcelainBranchIdentity(porcelain: string): { branch: string | null; upstream: string | null } | undefined {
+  const header = porcelain.split(/\r?\n/, 1)[0];
+  if (!header?.startsWith('## ')) return undefined;
+  const value = header.slice(3);
+  if (value === 'HEAD (no branch)' || value.startsWith('HEAD (detached ')) {
+    return { branch: null, upstream: null };
+  }
+  for (const prefix of ['No commits yet on ', 'Initial commit on ']) {
+    if (value.startsWith(prefix)) {
+      const branch = value.slice(prefix.length);
+      return branch && !/\s/.test(branch) ? { branch, upstream: null } : undefined;
+    }
+  }
+  // Ref names cannot contain whitespace or '..'; the ahead/behind/gone
+  // decoration is not part of either ref. Reject ambiguous headers.
+  const token = value.split(' ', 1)[0] ?? '';
+  if (!token || token.includes('"') || token.includes('(') || token.includes(')')) return undefined;
+  const separator = token.indexOf('...');
+  const branch = separator < 0 ? token : token.slice(0, separator);
+  const upstream = separator < 0 ? null : token.slice(separator + 3);
+  if (!branch || (separator >= 0 && !upstream)) return undefined;
+  return { branch, upstream };
+}
+
 export function repositoryGitStatus(repository: RepositoryRecord): RepositoryGitStatusSnapshot {
   const observedAt = new Date().toISOString();
   const porcelain = runGit(repository, ['status', '--porcelain=v1', '--branch', '--untracked-files=all', '--', '.', ':(exclude).ai/harness/**']).stdout;
   const split = splitRepositoryGitStatus(porcelain);
+  const identity = porcelainBranchIdentity(porcelain);
   return {
     repoId: repository.repoId,
     checkoutId: repository.activeCheckoutId,
     observedAt,
     staleAgeMs: 0,
     sampleSource: 'live',
-    branch: gitText(repository, ['branch', '--show-current']),
+    branch: identity ? identity.branch : gitText(repository, ['branch', '--show-current']),
     head: gitText(repository, ['rev-parse', '--verify', 'HEAD']),
-    upstream: gitText(repository, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}']),
+    upstream: identity ? identity.upstream : gitText(repository, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}']),
     porcelain,
     // Git porcelain v1 with --branch uses the same short-status layout. Reuse
     // the authoritative status snapshot instead of spawning Git a second time.
@@ -193,7 +223,11 @@ export function repositoryGitStatus(repository: RepositoryRecord): RepositoryGit
   };
 }
 
-export function repositoryGitDiff(repository: RepositoryRecord, input: { staged?: unknown; paths?: unknown; maxBytes?: unknown } = {}): RepositoryGitDiffResult {
+function repositoryGitDiffWithIdentity(
+  repository: RepositoryRecord,
+  input: { staged?: unknown; paths?: unknown; maxBytes?: unknown },
+  identity?: Pick<RepositoryGitStatusSnapshot, 'branch' | 'head'>,
+): RepositoryGitDiffResult {
   const maxBytes = boundedOutputBytes(input.maxBytes);
   const staged = input.staged === true;
   const paths = normalizePaths(input.paths);
@@ -205,8 +239,8 @@ export function repositoryGitDiff(repository: RepositoryRecord, input: { staged?
   return {
     repoId: repository.repoId,
     checkoutId: repository.activeCheckoutId,
-    branch: gitText(repository, ['branch', '--show-current']),
-    head: gitText(repository, ['rev-parse', '--verify', 'HEAD']),
+    branch: identity ? identity.branch : gitText(repository, ['branch', '--show-current']),
+    head: identity ? identity.head : gitText(repository, ['rev-parse', '--verify', 'HEAD']),
     staged,
     paths,
     nameOnly,
@@ -214,6 +248,10 @@ export function repositoryGitDiff(repository: RepositoryRecord, input: { staged?
     patch,
     truncated: patch.length >= maxBytes,
   };
+}
+
+export function repositoryGitDiff(repository: RepositoryRecord, input: { staged?: unknown; paths?: unknown; maxBytes?: unknown } = {}): RepositoryGitDiffResult {
+  return repositoryGitDiffWithIdentity(repository, input);
 }
 
 /**
@@ -224,17 +262,39 @@ export function repositoryGitDiff(repository: RepositoryRecord, input: { staged?
 export function repositoryGitWorkspaceChanges(
   repository: RepositoryRecord,
   maxBytes = 64 * 1024,
+  options: { detail?: 'summary' | 'detail' } = {},
 ): {
   status: RepositoryGitStatusSnapshot;
   staged: RepositoryGitDiffResult;
   unstaged: RepositoryGitDiffResult;
   changedPaths: string[];
-  diff: { nameOnly: string[]; stat: string; patch: string; truncated: boolean };
+  diff: { nameOnly: string[]; stat: string; patch: string; truncated: boolean; omitted?: boolean };
 } {
   const status = repositoryGitStatus(repository);
   const sliceBytes = Math.max(1024, Math.floor(boundedOutputBytes(maxBytes) / 2));
-  const staged = repositoryGitDiff(repository, { staged: true, maxBytes: sliceBytes });
-  const unstaged = repositoryGitDiff(repository, { maxBytes: sliceBytes });
+  // Summary needs changed paths, not six synchronous Git diff invocations.
+  // The status snapshot is already the authority for these path categories.
+  const statusOnlySlice = (staged: boolean): RepositoryGitDiffResult => ({
+    repoId: status.repoId,
+    checkoutId: status.checkoutId,
+    branch: status.branch,
+    head: status.head,
+    staged,
+    paths: [],
+    nameOnly: staged ? status.staged : status.unstaged,
+    stat: '',
+    patch: '',
+    truncated: false,
+  });
+  const detailed = options.detail !== 'summary';
+  // A detailed snapshot reuses the same branch and HEAD. Without this, both
+  // staged and unstaged diffs each repeat two synchronous Git subprocesses.
+  const staged = detailed
+    ? repositoryGitDiffWithIdentity(repository, { staged: true, maxBytes: sliceBytes }, status)
+    : statusOnlySlice(true);
+  const unstaged = detailed
+    ? repositoryGitDiffWithIdentity(repository, { maxBytes: sliceBytes }, status)
+    : statusOnlySlice(false);
   const changedPaths = [...new Set([...staged.nameOnly, ...unstaged.nameOnly, ...status.untracked])].sort();
   return {
     status,
@@ -246,6 +306,7 @@ export function repositoryGitWorkspaceChanges(
       stat: [staged.stat, unstaged.stat].filter(Boolean).join('\n'),
       patch: [staged.patch, unstaged.patch].filter(Boolean).join('\n'),
       truncated: staged.truncated || unstaged.truncated,
+      ...(detailed ? {} : { omitted: true }),
     },
   };
 }

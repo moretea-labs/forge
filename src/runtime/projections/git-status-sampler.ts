@@ -1,5 +1,5 @@
 import { join } from 'path';
-import { repositoryControllerRoot } from '../../cli/repositories/controller-home';
+import { repositoryControllerRoot } from '../../effects/controller-home';
 import { selectRepositoryCheckout } from '../../cli/repositories/registry';
 import { splitRepositoryGitStatus, type RepositoryGitStatusSnapshot } from '../../cli/repositories/structured-git';
 import type { RepositoryRecord } from '../../cli/repositories/types';

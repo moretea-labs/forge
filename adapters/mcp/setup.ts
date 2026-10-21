@@ -23,7 +23,7 @@ import {
   DEFAULT_AGENT_TIMEOUT_MS,
   MAX_AGENT_TIMEOUT_MS,
 } from "../../src/cli/controller/runtime-config";
-import { ensureControllerHome, ensureRepoPreferredControllerHome } from "../../src/cli/repositories/controller-home";
+import { ensureControllerHome, ensureRepoPreferredControllerHome } from "../../src/effects/controller-home";
 import { configuredControllerAccessMode } from './access-mode';
 import { ensureForgeInstanceIdentity, normalizeConfiguredForgeInstanceId, readForgeInstanceIdentity } from "../../packages/kernel/identity/api/index";
 import { discoverExecutable } from "../../src/runtime/platform/executable-discovery";
@@ -339,7 +339,7 @@ export function runMcpSetupChatgpt(opts: {
     controllerHome,
     preferredInstanceId: configuredInstanceId,
   });
-  const existingConfig = loadMcpServiceLocalConfig(controllerHome, repoRoot);
+  const existingConfig = loadMcpServiceLocalConfig(controllerHome);
   const configuredForgeInstanceId = existingConfig?.identity?.forgeInstanceId?.trim();
   if (configuredForgeInstanceId && configuredForgeInstanceId !== forgeInstance.instanceId) {
     throw new Error(`MCP_FORGE_INSTANCE_ID_MISMATCH: config=${configuredForgeInstanceId} kernel=${forgeInstance.instanceId}`);
@@ -652,8 +652,8 @@ export function runMcpDoctor(opts: {
 }): McpSetupResult {
   const repoRoot = resolveMcpRepoRoot(opts.repo ?? ".");
   const controllerHome = ensureRepoPreferredControllerHome(repoRoot);
-  const localConfig = loadMcpServiceLocalConfig(controllerHome, repoRoot);
-  const runtimeState = loadMcpServiceRuntimeState(controllerHome, repoRoot);
+  const localConfig = loadMcpServiceLocalConfig(controllerHome);
+  const runtimeState = loadMcpServiceRuntimeState(controllerHome);
   const configuredServerName = localConfig?.chatgpt?.serverName;
   const forgeInstanceId = localConfig?.identity?.forgeInstanceId?.trim()
     || readForgeInstanceIdentity(controllerHome)?.instanceId;

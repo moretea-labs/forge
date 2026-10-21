@@ -8,7 +8,7 @@ import {
   applyRequirementPortfolioMigration,
   previewRequirementPortfolioMigration,
 } from '../src/cli/controller/requirement-portfolio-migration';
-import { resolveRepoPreferredControllerHome } from '../src/cli/repositories/controller-home';
+import { resolveRepoPreferredControllerHome } from '../src/effects/controller-home';
 import { backupControlPlaneDatabase } from '../src/runtime/control-plane/persistence/sqlite-store';
 
 interface Args {

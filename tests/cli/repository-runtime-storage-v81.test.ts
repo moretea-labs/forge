@@ -11,7 +11,7 @@ import {
 } from 'fs';
 import { join } from 'path';
 import { callMultiRepositoryTool, createMcpToolContext } from '../../adapters/mcp/server';
-import { repositoryControllerRoot } from '../../src/cli/repositories/controller-home';
+import { repositoryControllerRoot } from '../../src/effects/controller-home';
 import { ensureRepositoryRuntimeStorage, ensureRepositoryRuntimeStorageBinding } from '../../src/cli/repositories/runtime-storage';
 import { beginEditSession } from '../../src/cli/editing/edit-session';
 import { repositoryFixture } from './repository-v81-fixture';

@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { ensureControllerHome } from '../../../cli/repositories/controller-home';
+import { ensureControllerHome } from '../../../effects/controller-home';
 import { getExecutionJob, heartbeatExecutionJob, transitionExecutionJobFromWorker } from '../jobs/store';
 import { assertFencingToken, releaseExecutionLeases, renewExecutionLeases } from '../../resources/leases/store';
 import { recordExecutionEvidence } from '../../evidence/evidence-store';

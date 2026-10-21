@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'crypto';
 import { existsSync, mkdirSync } from 'fs';
 import { join } from 'path';
-import { ensureControllerHome, scopedOperationRoot, SEMANTIC_SCOPE_KEY } from '../../../../src/cli/repositories/controller-home';
+import { ensureControllerHome, scopedOperationRoot, SEMANTIC_SCOPE_KEY } from '../../../../src/effects/controller-home';
 import { withControllerLock } from '../../../../src/cli/repositories/locks';
 import { readJsonFile, sanitizeFileComponent, writeJsonAtomic } from '../../../../src/runtime/shared/json-files';
 import {
@@ -151,6 +151,8 @@ export interface CreateWorkSemanticInput {
   semanticParentWorkId?: string;
   dependsOnWorkIds?: string[];
   requestedBy?: 'chatgpt' | 'user' | 'system' | 'scheduler';
+  /** Trusted repository-bound admission intent; ordinary semantic Work remains investigation-only. */
+  repositoryPlacement?: 'current' | 'isolated';
 }
 
 export interface ReviseWorkSemanticInput {
@@ -521,19 +523,28 @@ export function canonicalizeWorkContractForAuthority(contract: WorkContract): Wo
 }
 
 function normalizeWorkContractStore(store: WorkContractStore): WorkContractStore {
-  // v1-v3 rows are a one-way schema migration into v4. v4 rows are validated as-is;
-  // retired status is never inferred or exposed during normal reads.
+  // Normalize historical v1-v3 rows in memory only. Ordinary reads never
+  // commit their projected v4 shape; the explicit Work writer owns persistence.
   // Removal condition: delete this migration branch after supported Controller Homes report zero schema<4 Work rows across one full release boundary.
   return { schemaVersion: 4, updatedAt: store.updatedAt, contracts: store.contracts.map((contract) => canonicalizeStoredWorkContract(contract)) };
+}
+
+/** Read the historical aggregate index without creating per-Work SQLite rows. */
+function readLegacyWorkContractStore(options: WorkContractStoreOptions & { controllerHome: string }): WorkContractStore {
+  const legacyRecord = readControlPlaneRecord<WorkContractStore>(
+    options.controllerHome,
+    'work_contract_store',
+    workContractStoreScopeKey(options),
+    'index',
+  );
+  return legacyRecord?.value
+    ?? readJsonFile<WorkContractStore>(workContractStorePath(options), emptyWorkContractStore(nowIso(options)));
 }
 
 export function readWorkContractStore(options: WorkContractStoreOptions): WorkContractStore {
   if (!sqliteBacked(options)) {
     const raw = readJsonFile<WorkContractStore>(workContractStorePath(options), emptyWorkContractStore(nowIso(options)));
     const normalized = normalizeWorkContractStore(raw);
-    if (raw.schemaVersion !== 4 || raw.contracts.some((contract) => storedWorkContractNeedsMigration(contract))) {
-      writeJsonAtomic(workContractStorePath(options), normalized);
-    }
     return normalized;
   }
   const records = listControlPlaneRecords<WorkContract>(options.controllerHome, {
@@ -547,38 +558,14 @@ export function readWorkContractStore(options: WorkContractStoreOptions): WorkCo
       updatedAt: records[0]?.updatedAt ?? nowIso(options),
       contracts: records.map((record) => workContractAtPersistedSchema(record.value, record.schemaVersion)),
     });
-    const legacyRows = records
-      .map((record, index) => ({ record, contract: normalized.contracts[index]! }))
-      .filter(({ record }) => storedWorkContractNeedsMigration(record.value, record.schemaVersion));
-    if (legacyRows.length > 0) {
-      withControlPlaneTransaction(options.controllerHome, (database) => {
-        for (const { record, contract } of legacyRows) {
-          writeControlPlaneRecordWithinTransaction(database, {
-            namespace: 'work_contract',
-            scope: workContractStoreScopeKey(options),
-            key: contract.workId,
-            schemaVersion: 4,
-            value: contract,
-            action: 'work_contract_schema_v4_migrated',
-            expectedRevision: record.revision,
-          });
-        }
-      });
-    }
+    // Existing-row collection reads are projections. Never revise SQLite
+    // metadata during enumeration; the explicit mutation transaction persists v4.
     return normalized;
   }
 
   // One-time import only. Once a per-Work row exists, legacy index/file data is
   // never consulted again and is never written back.
-  const legacyRecord = readControlPlaneRecord<WorkContractStore>(
-    options.controllerHome,
-    'work_contract_store',
-    workContractStoreScopeKey(options),
-    'index',
-  );
-  const legacy = legacyRecord?.value
-    ?? readJsonFile<WorkContractStore>(workContractStorePath(options), emptyWorkContractStore(nowIso(options)));
-  const normalized = normalizeWorkContractStore(legacy);
+  const normalized = normalizeWorkContractStore(readLegacyWorkContractStore(options));
   if (normalized.contracts.length > 0) {
     withControlPlaneTransaction(options.controllerHome, (database) => {
       for (const contract of normalized.contracts) {
@@ -624,7 +611,18 @@ export function readWorkContractLineageSnapshot(options: WorkContractStoreOption
     scope: workContractStoreScopeKey(options),
     limit: 5_000,
   });
-  if (records.length === 0) return { contracts: readWorkContractStore(options).contracts, invalid: [] };
+  if (records.length === 0) {
+    // A ControllerRound lineage snapshot is a pure observation, including when
+    // a historical aggregate index has not yet been imported to per-Work rows.
+    // Preserve corrupt-row isolation instead of triggering the legacy importer.
+    const contracts: WorkContract[] = [];
+    const invalid: WorkContractLineageSnapshot['invalid'] = [];
+    for (const raw of readLegacyWorkContractStore(options).contracts) {
+      try { contracts.push(canonicalizeStoredWorkContract(raw)); }
+      catch (error) { invalid.push(lineageInvalidWork(raw, error)); }
+    }
+    return { contracts, invalid };
+  }
 
   const contracts: WorkContract[] = [];
   const invalid: WorkContractLineageSnapshot['invalid'] = [];
@@ -728,8 +726,8 @@ export function createWorkSemanticContext(options: WorkContractStoreOptions, inp
     repoId: options.repoId?.trim() ?? '',
     objective: input.objective,
     acceptanceCriteria: [],
-    constraints: {},
-    workKind: 'investigation',
+    constraints: input.repositoryPlacement ? { workspaceMode: input.repositoryPlacement } : {},
+    workKind: input.repositoryPlacement ? 'repository_change' : 'investigation',
     lifecycleRole: 'primary',
     requestedBy: input.requestedBy ?? 'chatgpt',
     checks: [],
@@ -864,7 +862,7 @@ export function createWorkContract(options: WorkContractStoreOptions, input: Cre
         if (contract.semanticParentWorkId?.trim() || contract.dependsOnWorkIds?.length) {
           const relationContracts = listControlPlaneRecordsWithinTransaction<WorkContract>(database, {
             namespace: 'work_contract', scope, limit: 5_000,
-          }).map((record) => canonicalizeStoredWorkContract(record.value));
+          }).map((record) => canonicalizeStoredWorkContract(record.value, record.schemaVersion));
           validateWorkObjectiveRelationIntegrity(contract, relationContracts);
         }
         writeControlPlaneRecordWithinTransaction(database, {
@@ -908,9 +906,23 @@ interface WorkRequestIndexRecord {
 
 function workRequestIndexPath(controllerHome: string, requestId: string): string {
   const hash = createHash('sha256').update(requestId).digest('hex');
-  const root = join(ensureControllerHome(controllerHome), 'indexes', 'work-contracts', 'requests');
-  mkdirSync(root, { recursive: true });
+  // Lookups must not create directories; writeJsonAtomic makes the parent on admission.
+  const root = join(controllerHome, 'indexes', 'work-contracts', 'requests');
   return join(root, `${hash}.json`);
+}
+
+function readWorkRequestIndex(path: string, requestId: string): WorkRequestIndexRecord {
+  let value: unknown;
+  try { value = readJsonFile<unknown>(path); }
+  catch { throw new Error(`WORK_REQUEST_INDEX_CORRUPT: ${requestId}`); }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`WORK_REQUEST_INDEX_CORRUPT: ${requestId}`);
+  }
+  const record = value as Partial<WorkRequestIndexRecord>;
+  if (record.requestId !== requestId || !record.repoId?.trim() || !record.workId?.trim() || !record.semanticKey?.trim()) {
+    throw new Error(`WORK_REQUEST_INDEX_CORRUPT: ${requestId}`);
+  }
+  return record as WorkRequestIndexRecord;
 }
 
 export function getWorkContractByRequestId(
@@ -922,14 +934,13 @@ export function getWorkContractByRequestId(
   if (!normalizedRequestId) return undefined;
   const recordPath = workRequestIndexPath(controllerHome, normalizedRequestId);
   if (!existsSync(recordPath)) return undefined;
-  try {
-    const record = readJsonFile<WorkRequestIndexRecord>(recordPath);
-    if (record.requestId !== normalizedRequestId) return undefined;
-    if (expectedRepoId && record.repoId !== expectedRepoId) return undefined;
-    return getWorkContract({ controllerHome, repoId: record.repoId }, record.workId);
-  } catch {
-    return undefined;
+  const record = readWorkRequestIndex(recordPath, normalizedRequestId);
+  if (expectedRepoId && record.repoId !== expectedRepoId) {
+    throw new Error(`REQUEST_ID_REPO_CONFLICT: ${normalizedRequestId} already belongs to repository ${record.repoId}`);
   }
+  const work = getWorkContract({ controllerHome, repoId: record.repoId }, record.workId);
+  if (!work) throw new Error(`WORK_ACCEPTANCE_LOST: request ${normalizedRequestId} is indexed without a readable WorkContract`);
+  return work;
 }
 
 /**
@@ -959,7 +970,7 @@ export function acceptSubmittedWorkContract(
   return withControllerLock(home, { scope: 'global', resource: `work-request-${lockId}` }, `accept-work:${requestId}`, () => {
     const recordPath = workRequestIndexPath(home, requestId);
     if (existsSync(recordPath)) {
-      const record = readJsonFile<WorkRequestIndexRecord>(recordPath);
+      const record = readWorkRequestIndex(recordPath, requestId);
       if (record.repoId !== input.repoId) throw new Error(`REQUEST_ID_REPO_CONFLICT: ${requestId} already belongs to repository ${record.repoId}`);
       if (record.semanticKey !== semanticKey) throw new Error(`REQUEST_ID_CONFLICT: ${requestId} already belongs to ${record.semanticKey}`);
       const existing = getWorkContract({ controllerHome: home, repoId: record.repoId, now: options.now }, record.workId);
@@ -1082,9 +1093,10 @@ export function readActiveWorkCandidates(
         scope: SEMANTIC_SCOPE_KEY,
         limit: 5_000,
       }));
+  // Scheduler admission only projects historical rows; exact Work access owns
+  // one-time schema persistence, so polling cannot advance Work revisions.
   const contracts: WorkContract[] = [];
   const invalid: InvalidActiveWorkCandidate[] = [];
-  const migrations: Array<{ record: (typeof records)[number]; contract: WorkContract }> = [];
   for (const record of records) {
     // Exact Work reads already prefer semantic scope over repository-scoped
     // compatibility rows. Collection reads must preserve the same one-authority
@@ -1094,7 +1106,6 @@ export function readActiveWorkCandidates(
     if (!rawWorkMayBeCurrent(raw)) continue;
     try {
       const normalized = canonicalizeStoredWorkContract(raw, record.schemaVersion);
-      if (storedWorkContractNeedsMigration(raw, record.schemaVersion)) migrations.push({ record, contract: normalized });
       if (isCurrentWorkContract(normalized)) contracts.push(normalized);
     } catch (error) {
       invalid.push({
@@ -1109,21 +1120,6 @@ export function readActiveWorkCandidates(
         error: error instanceof Error ? error.message : String(error),
       });
     }
-  }
-  if (migrations.length > 0) {
-    withControlPlaneTransaction(options.controllerHome, (database) => {
-      for (const { record, contract } of migrations) {
-        writeControlPlaneRecordWithinTransaction(database, {
-          namespace: 'work_contract',
-          scope: workContractStoreScopeKey(options),
-          key: contract.workId,
-          schemaVersion: 4,
-          value: contract,
-          action: 'work_contract_schema_v4_migrated',
-          expectedRevision: record.revision,
-        });
-      }
-    });
   }
   contracts.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
   invalid.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
@@ -1230,12 +1226,12 @@ export function reviseWorkSemanticContext(
         const scope = workContractStoreScopeKey(authoritativeOptions);
         const currentRecord = readControlPlaneRecordWithinTransaction<WorkContract>(database, 'work_contract', scope, workId);
         if (!currentRecord) throw new Error(`work contract not found: ${workId}`);
-        const current = canonicalizeStoredWorkContract(currentRecord.value);
+        const current = canonicalizeStoredWorkContract(currentRecord.value, currentRecord.schemaVersion);
         const at = nowIso(authoritativeOptions);
         const relationContracts = relationRevisionRequested
           ? listControlPlaneRecordsWithinTransaction<WorkContract>(database, {
               namespace: 'work_contract', scope, limit: 5_000,
-            }).map((record) => canonicalizeStoredWorkContract(record.value))
+            }).map((record) => canonicalizeStoredWorkContract(record.value, record.schemaVersion))
           : [];
         const next = applyRevision(current, at, relationContracts);
         const semanticRevision = currentWorkSemanticRevision(current);
@@ -1289,19 +1285,8 @@ function readExactSqliteWorkContract(
   const exact = readControlPlaneRecord<WorkContract>(options.controllerHome, 'work_contract', scope, sanitizedId);
   if (!exact) return undefined;
   const canonical = canonicalizeStoredWorkContract(exact.value, exact.schemaVersion);
-  if (storedWorkContractNeedsMigration(exact.value, exact.schemaVersion)) {
-    withControlPlaneTransaction(options.controllerHome, (database) => {
-      writeControlPlaneRecordWithinTransaction(database, {
-        namespace: 'work_contract',
-        scope,
-        key: canonical.workId,
-        schemaVersion: 4,
-        value: canonical,
-        action: 'work_contract_schema_v4_migrated',
-        expectedRevision: exact.revision,
-      });
-    });
-  }
+  // A read must never advance a Work revision. The subsequent authorized
+  // mutation carries this in-memory canonical form into its own CAS write.
   return canonical;
 }
 
@@ -1448,7 +1433,7 @@ function updateWorkContractInternal(
     // visible and fenced, but cannot prevent a different terminal Work from
     // recording its physical cleanup.
     const current = exact
-      ? canonicalizeStoredWorkContract(exact.value)
+      ? canonicalizeStoredWorkContract(exact.value, exact.schemaVersion)
       : store!.contracts[index]!;
     const mutationPatch = typeof mutation === 'function' ? mutation(current, at) : mutation;
     if (!mutationPatch) return current;
