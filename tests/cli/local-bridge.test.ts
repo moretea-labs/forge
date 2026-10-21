@@ -38,8 +38,7 @@ import {
 import { isProcessAlive } from "../../src/runtime/shared/process-tree";
 import { loadRepositoryRegistry, registerRepository, resolveRepositorySelection } from "../../src/cli/repositories/registry";
 import { acquireControllerLock, releaseControllerLock } from "../../src/cli/repositories/locks";
-import { createMcpToolContext } from "../../adapters/mcp/multi-repository";
-import { callMcpTool as callLegacyMcpTool } from "../../adapters/mcp/tool-mapping/legacy-tool-service";
+import { createMcpToolContext, callMultiRepositoryTool } from "../../adapters/mcp/multi-repository";
 import { createSchedule, saveOccurrence, saveSchedule } from "../../src/runtime/workflow/schedules/store";
 import { terminateProcessesByCommand, waitForNoProcessesByCommand } from "../runtime/process-hygiene";
 
@@ -844,7 +843,7 @@ describe("Local Execution Bridge", () => {
       expect(blocked.status).toBe(400);
       expect((await blocked.json()).error).toContain('LOCK_HELD');
       const legacyContext = createMcpToolContext({ repo: root, controllerHome, profile: 'controller' });
-      const legacyAttempt = await callLegacyMcpTool(legacyContext, 'begin_edit_session', { purpose: 'competing editor' });
+      const legacyAttempt = await callMultiRepositoryTool(legacyContext, 'begin_edit_session', { purpose: 'competing editor' });
       expect(legacyAttempt.isError).toBe(true);
       expect(JSON.stringify(legacyAttempt.structuredContent)).toContain('LOCK_HELD');
       // Historical pre-cutover completion must share the same repository
@@ -867,11 +866,15 @@ describe("Local Execution Bridge", () => {
     } finally {
       releaseControllerLock(controllerHome, lockKey, lock.lockId);
     }
-    const finalized = await fetch(new URL(`/api/edit-sessions/${session.sessionId}/finalize`, handle.url), {
+    const finalization = fetch(new URL(`/api/edit-sessions/${session.sessionId}/finalize`, handle.url), {
       method: "POST",
       headers: { ...headers, "content-type": "application/json" },
       body: JSON.stringify({ reviewer: "local-test" }),
-    }).then((response) => response.json());
+    });
+    // A read-only HTTP request stays serviceable while the editor worker runs.
+    const concurrentRead = await fetch(new URL("/api/snapshot", handle.url), { headers });
+    expect(concurrentRead.status).toBe(200);
+    const finalized = await finalization.then((response) => response.json());
     expect(finalized.status).toBe("finalized");
   });
   test("preserves executable mode when an Edit Session replaces a shebang file", () => {
@@ -996,7 +999,7 @@ describe("Local Execution Bridge", () => {
     expect(snapshot.board).toBeDefined();
     expect(snapshot.toolSurface).toBe(FORGE_TOOL_SURFACE);
     expect(snapshot.timeoutPolicy).toEqual({
-      defaultTimeoutMs: 10_000,
+      defaultTimeoutMs: 3_600_000,
       maxTimeoutMs: 43_200_000,
     });
 

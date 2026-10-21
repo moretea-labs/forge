@@ -46,11 +46,9 @@ import {
 } from "./job-store";
 import {
   createEditSavepoint,
-  finalizeEditSession,
   getEditSession,
   getEditSessionDiff,
   listEditSessions,
-  rollbackEditSession,
   verifyEditSession,
 } from "../editing/edit-session";
 import { applyConsoleAutomationAction, listConsoleAutomations, summarizeConsoleAutomations } from "./console-automations";
@@ -97,7 +95,8 @@ import type { MultiRepositoryMcpToolContext } from "../../../adapters/mcp/multi-
 import { createMcpToolContext as createControllerMcpToolContext } from "../../../adapters/mcp/server";
 import { loadMcpServiceLocalConfig, loadMcpServiceRuntimeState } from "../../../adapters/mcp/auth";
 import { loadRepositoryRegistry, registerRepository, removeRepository, resolveRepositorySelection } from "../repositories/registry";
-import { withControllerLock } from "../repositories/locks";
+import { withControllerLockAsync } from "../repositories/locks";
+import { runEditSessionMutationInWorker } from "./edit-session-worker";
 import { resolveControllerHome, resolveRepoPreferredControllerHome } from "../../effects/controller-home";
 import { ensureRepositoryRuntimeStorage } from "../repositories/runtime-storage";
 import { readForgeRuntimeStatus } from "../../runtime/control-plane/runtime-status-client";
@@ -2061,16 +2060,20 @@ export async function startLocalBridgeServer(
       response.status(400).json({ error: errorMessage(error) });
     }
   });
-  app.post("/api/edit-sessions/:sessionId/finalize", (request, response) => {
+  app.post("/api/edit-sessions/:sessionId/finalize", async (request, response) => {
     try {
       const repository = requestRepositorySelection(request, options, controllerHome);
-      response.json(withControllerLock(
+      response.json(await withControllerLockAsync(
         controllerHome, { scope: 'repository', repoId: repository.repoId },
         'local_bridge:finalize_edit_session',
-        () => finalizeEditSession(repository.canonicalRoot, request.params.sessionId, {
+        () => runEditSessionMutationInWorker({
+          kind: 'finalize',
+          repoRoot: repository.canonicalRoot,
+          sessionId: request.params.sessionId,
           reviewer: queryString(request.body?.reviewer) ?? "local-controller-human",
           note: queryString(request.body?.note),
         }),
+        undefined, 0,
       ));
     } catch (error) {
       response.status(400).json({ error: errorMessage(error) });
@@ -2093,16 +2096,20 @@ export async function startLocalBridgeServer(
       response.status(400).json({ error: errorMessage(error) });
     }
   });
-  app.post("/api/edit-sessions/:sessionId/rollback", (request, response) => {
+  app.post("/api/edit-sessions/:sessionId/rollback", async (request, response) => {
     try {
       const repository = requestRepositorySelection(request, options, controllerHome);
-      response.json(withControllerLock(
+      response.json(await withControllerLockAsync(
         controllerHome, { scope: 'repository', repoId: repository.repoId },
         'local_bridge:rollback_edit_session',
-        () => rollbackEditSession(repository.canonicalRoot, request.params.sessionId, {
+        () => runEditSessionMutationInWorker({
+          kind: 'rollback',
+          repoRoot: repository.canonicalRoot,
+          sessionId: request.params.sessionId,
           toRevision: typeof request.body?.toRevision === "number" ? Math.trunc(request.body.toRevision) : undefined,
           savepoint: queryString(request.body?.savepoint),
         }),
+        undefined, 0,
       ));
     } catch (error) {
       response.status(400).json({ error: errorMessage(error) });
