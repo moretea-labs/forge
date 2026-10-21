@@ -7,6 +7,7 @@ import type { AgentJobMeta } from '../agent-jobs/types';
 import { cleanupIntegratedWorktree, cleanupNoChangeWorktree, integrateAgentJob, IntegrationReviewRequiredError, taskRunDiff } from '../agent-jobs/integration';
 import { finalizeEditSession, getEditSession, revalidateEditSessionOwnership, rollbackEditSession, verifyEditSession } from '../editing/edit-session';
 import { getMcpPolicy } from '../../../adapters/mcp/policy';
+import { resolveRepoPreferredControllerHome } from '../../effects/controller-home';
 import { withControllerLock } from '../repositories/locks';
 import { listActiveLeases } from '../../runtime/resources/leases/store';
 import { acceptVerifiedTask, getIssue, projectIssueEffectiveView, recordTaskVerification, updateTask } from './issue-store';
@@ -15,7 +16,7 @@ import { currentCompletionTarget, resolveCompletionTargetBranch } from './comple
 import { runControllerCheck } from './check-runner';
 import type { CleanupEvidence, ControllerIssue, ControllerTask, IntegrationEvidence, TaskCommandEvidence, TaskVerification } from './types';
 import type { CompletionMaintenanceWarning, CompletionReceipt, CompletionReceiptSource, CompletionResourceBlocker } from './types';
-import { legacyIssueCutoverState, migratedTaskCompletionState, recordMigratedTaskCompletion, type LegacyIssueCutoverState } from './legacy-issue-cutover';
+import { legacyIssueAuthorityRetired, legacyIssueCutoverState, migratedTaskCompletionState, recordMigratedTaskCompletion, type LegacyIssueCutoverState } from './legacy-issue-cutover';
 
 export type TaskReviewDecision =
   | 'auto'
