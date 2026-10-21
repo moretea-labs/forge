@@ -1,5 +1,8 @@
 import { describe, expect, test } from 'bun:test';
-import { readFileSync } from 'fs';
+import { mkdtempSync, readFileSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import { workflowCapabilityDependencies } from '../../packages/workflow-runtime/api/index';
 import {
   buildXiaohongshuPluginManifest,
   buildXiaohongshuPublishRecipe,
@@ -8,6 +11,7 @@ import {
 import { listFirstPartyPluginAdapters } from '../../src/runtime/plugins/first-party-registry';
 import {
   materializedXiaohongshuWorkflow,
+  ensureXiaohongshuWorkflowInstalled,
   translateXiaohongshuPublishToWorkflow,
   XIAOHONGSHU_WORKFLOW_IDS,
 } from '../../src/runtime/workflows/first-party/xiaohongshu';
@@ -19,6 +23,20 @@ const baseArgs = {
 };
 
 describe('xiaohongshu Workflow compatibility', () => {
+  test('installed capability bindings follow actual steps, not stale authored metadata', () => {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-xhs-capabilities-'));
+    try {
+      const installed = ensureXiaohongshuWorkflowInstalled(controllerHome, XIAOHONGSHU_WORKFLOW_IDS.longText);
+      const asset = materializedXiaohongshuWorkflow(XIAOHONGSHU_WORKFLOW_IDS.longText);
+      const bound = installed.value.bindings.map(binding => binding.capabilityId).sort();
+      expect(bound).toEqual(workflowCapabilityDependencies(asset));
+      expect(asset.requiredCapabilities).toContain('browser.attach_local_file');
+      expect(bound).not.toContain('browser.attach_local_file');
+    } finally {
+      rmSync(controllerHome, { recursive: true, force: true });
+    }
+  });
+
   test('manifest exposes only read-only translation; remote effects are not plugin-owned', () => {
     const manifest = buildXiaohongshuPluginManifest();
     expect(manifest.pluginId).toBe('xiaohongshu');

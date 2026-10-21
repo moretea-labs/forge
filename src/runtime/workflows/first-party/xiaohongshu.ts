@@ -1,6 +1,6 @@
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
-import { materializeWorkflowAsset, type WorkflowAssetDefinition, type WorkflowAssetDraft, type WorkflowJsonValue } from '../../../../packages/workflow-runtime/api/index';
+import { materializeWorkflowAsset, workflowCapabilityDependencies, type WorkflowAssetDefinition, type WorkflowAssetDraft, type WorkflowJsonValue } from '../../../../packages/workflow-runtime/api/index';
 import { writeWorkflowAssetContent } from '../../control-plane/persistence/workflow-content-store';
 import { readWorkflowRegistryEntry, recordWorkflowBindings, registerWorkflowAsset, type WorkflowCapabilityBinding } from '../../control-plane/persistence/workflow-registry-store';
 
@@ -34,7 +34,7 @@ export function materializedXiaohongshuWorkflow(workflowId: string): WorkflowAss
 }
 
 function browserBindings(asset: WorkflowAssetDefinition): WorkflowCapabilityBinding[] {
-  return (asset.requiredCapabilities ?? []).map((capabilityId) => {
+  return workflowCapabilityDependencies(asset).map((capabilityId) => {
     if (!capabilityId.startsWith('browser.')) throw new Error(`XHS_WORKFLOW_CAPABILITY_UNSUPPORTED: ${capabilityId}`);
     const actionId = capabilityId.slice('browser.'.length);
     if (!actionId) throw new Error(`XHS_WORKFLOW_CAPABILITY_INVALID: ${capabilityId}`);

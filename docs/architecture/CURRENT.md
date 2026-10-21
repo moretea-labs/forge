@@ -571,3 +571,6 @@ Rust is optional and **incremental**, used only after identifying a real systems
 
 A file over 1,000 lines merits responsibility review, not an arbitrary failing size gate. Monitor actual dependency fan-out, cycles, duplicate ownership, controller bookkeeping overhead, delivery lead time and shrinking exceptions. Improve the common structural guard rather than expanding per-incident regex rules.
 
+### Workflow capability dependency authority (2026-10-21)
+
+The executable Workflow step graph is the sole source for capability and reconciliation dependencies. `workflowCapabilityDependencies()` in `packages/workflow-runtime/domain/workflow-asset.ts` derives a stable, deduplicated inventory from capability steps and their `reconcileWithCapabilityId`, and first-party installation binds those capabilities rather than a second authored list. Older `requiredCapabilities` fields remain in versioned content only for existing digest identity; they are not permission or provider-binding authority. This migration deliberately leaves installed asset bytes, existing content digests, Work and effect receipts unchanged. Changes to an asset's executable steps still require the existing content-digest/registry identity invalidation. Do not reintroduce a manually maintained executable-capability inventory in future Workflow integrations.
