@@ -176,7 +176,30 @@ export function recordCanonicalGrant(controllerHome: string, input: RecordGrantI
   };
 
   const store = loadStore(controllerHome);
+  const priorId = store.grants.find((entry) => entry.grantId === grantId);
+  if (priorId) {
+    if (priorId.revokedAt || Date.parse(priorId.expiresAt) <= now.getTime()) {
+      throw new Error('GRANT_ID_REUSE_REQUIRES_NEW_ENROLLMENT');
+    }
+    const sameCapabilities = priorId.capabilities.length === grant.capabilities.length
+      && priorId.capabilities.every((value, index) => value === grant.capabilities[index]);
+    const previousScopes = priorId.scopes ?? [];
+    const nextScopes = grant.scopes ?? [];
+    if (priorId.principalId !== grant.principalId
+      || priorId.ownerScope !== grant.ownerScope
+      || !targetMatches(priorId.target, grant.target)
+      || !sameCapabilities
+      || previousScopes.length !== nextScopes.length
+      || previousScopes.some((value, index) => value !== nextScopes[index])
+      || (priorId.riskCeiling ?? 'readonly') !== (grant.riskCeiling ?? 'readonly')) {
+      throw new Error('GRANT_IDENTITY_SCOPE_CHANGE_REQUIRES_NEW_ENROLLMENT');
+    }
+  }
   store.grants = store.grants.filter((entry) => {
+    // Routine replacement must not erase a revoked/expired record. Explicit
+    // reconcileCanonicalGrants remains the sole lifecycle prune authority;
+    // this fence prevents ID reuse only while the original record is present.
+    if (entry.revokedAt || Date.parse(entry.expiresAt) <= now.getTime()) return true;
     if (entry.grantId === grantId) return false;
     const samePrincipal = entry.principalId === grant.principalId;
     const sameOwner = entry.ownerScope === grant.ownerScope;

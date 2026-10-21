@@ -138,6 +138,32 @@ describe('Thin capability substrate', () => {
       risk: 'readonly',
     });
     expect(revokedQuery).toBeUndefined();
+    expect(() => recordCanonicalGrant(controllerHome, {
+      grantId: globalGrant.grantId,
+      principalId: 'chatgpt-controller',
+      ownerScope: 'controller:global',
+      capabilities: ['google_calendar:*', 'web_browser:read'],
+      riskCeiling: 'workspace_write',
+    })).toThrow('GRANT_ID_REUSE_REQUIRES_NEW_ENROLLMENT');
+
+    const freshEnrollment = recordCanonicalGrant(controllerHome, {
+      principalId: 'chatgpt-controller',
+      ownerScope: 'controller:global',
+      capabilities: ['google_calendar:*', 'web_browser:read'],
+      riskCeiling: 'workspace_write',
+    });
+    expect(freshEnrollment.grantId).not.toBe(globalGrant.grantId);
+    expect(listCanonicalGrants(controllerHome).find((entry) => entry.grantId === globalGrant.grantId)?.revokedAt).toBeDefined();
+    expect(findActiveCanonicalGrant(controllerHome, {
+      principalId: 'chatgpt-controller', capability: 'web_browser:read', risk: 'readonly',
+    })?.grantId).toBe(freshEnrollment.grantId);
+    expect(() => recordCanonicalGrant(controllerHome, {
+      grantId: leastPrivilege.grantId,
+      principalId: 'different-principal',
+      capabilities: ['audit:read'],
+      target: { kind: 'synthetic', id: 'exact-target' },
+      scopes: ['audit.read'],
+    })).toThrow('GRANT_IDENTITY_SCOPE_CHANGE_REQUIRES_NEW_ENROLLMENT');
   });
 
   test('Step 4: ScheduleDefinition splits authored intent from mechanical runtime state', () => {
