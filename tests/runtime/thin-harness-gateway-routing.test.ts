@@ -2533,8 +2533,8 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     });
     expect(classifyRepositoryCommandRoute(['git', 'status', '--short']).route).toBe('process_direct');
     expect(classifyRepositoryCommandRoute(['git', 'branch', 'feature-x'])).toEqual({
-      route: 'process_direct',
-      reason: 'ephemeral_local_workspace_mutation',
+      route: 'process_managed',
+      reason: 'workspace_write_requires_process_lease',
     });
     expect(classifyRepositoryCommandRoute(['git', 'reset', '--hard', 'HEAD'])).toEqual({
       route: 'process_managed',
