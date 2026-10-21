@@ -1778,6 +1778,7 @@ requireText('src/cli/local-bridge/server.ts', 'app.patch("/api/project-state", r
 requireText('src/cli/local-bridge/server.ts', 'runEditSessionMutationInWorker(');
 requireText('packages/kernel/identity/infrastructure/grant-store.ts', 'GRANT_ID_REUSE_REQUIRES_NEW_ENROLLMENT');
 requireText('src/runtime/safe-tooling/mac-keychain-write.ts', "spawnSync('/usr/bin/security', ['-i']");
+requireText('supervisor/native-browser-adapter.ts', 'handleVerifiedTerminalCapacity(');
 requireText('src/runtime/safe-tooling/google-credential-store.ts', 'writeMacKeychainGenericPassword(');
 requireText('src/runtime/safe-tooling/resend-oauth.ts', 'writeMacKeychainGenericPassword(');
 forbid('src/runtime/safe-tooling/google-credential-store.ts', /add-generic-password/, 'Google tokens must never enter security CLI argv');
