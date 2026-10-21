@@ -100,11 +100,14 @@ function percentile(values: number[], fraction: number): number {
   return Math.round(sorted[index]! * 100) / 100;
 }
 
-export function gatewayLatencySummaries(): GatewayLatencySummary[] {
-  return [...samplesByKey.values()].map((samples) => {
-    const first = samples[0]!;
-    const count = samples.length;
-    const durations = samples.map((sample) => sample.durationMs);
+export function gatewayLatencySummaries(repoId?: string): GatewayLatencySummary[] {
+  const selectedBucket = repoId ? bucket(repoId, 'global') : undefined;
+  return [...samplesByKey.values()]
+    .filter((samples) => !selectedBucket || samples[0]?.repositoryBucket === selectedBucket)
+    .map((samples) => {
+      const first = samples[0]!;
+      const count = samples.length;
+      const durations = samples.map((sample) => sample.durationMs);
     const rate = (outcome: GatewayMetricOutcome) => Math.round(
       (samples.filter((sample) => sample.outcome === outcome).length / count) * 10_000,
     ) / 10_000;
