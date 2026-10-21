@@ -1110,6 +1110,22 @@ export class WorkflowSupervisorNativeBrowserAdapter {
         this.deps.onError(new Error(prepared.reasonCode));
         return;
       }
+      // Preparing the composer yields to the provider UI. The conversation
+      // may have lost its hydrated history while that preparation was in
+      // progress. Re-attest the exact target before spending a dispatch
+      // generation or permitting Send, and use this fresh causal baseline.
+      // Keep full user-message history for the existing reconcile fallback if
+      // the dispatch generation is refused by a concurrent journal update.
+      snapshot = await target.observe({ includeUserHistory: true, includePageText: false });
+      if (!exactConversation(snapshot, task)) {
+        this.noteTargetUnavailable(task, command.effectId, { code: 'WORKFLOW_SUPERVISOR_EXACT_CONVERSATION_UNPROVEN' });
+        return;
+      }
+      if (!this.taskConversationContentAvailable(task, snapshot)) {
+        this.observeVerifiedEmptyShell(task, command.effectId, command, snapshot);
+        return;
+      }
+      if (command.kind !== 'recovery' && snapshot.isGenerating) return;
       this.clearTaskFailure(task.taskId, command.effectId);
       const begin = this.control.browserBeginEffect({ conversationId: command.conversationId, conversationUrl: command.conversationUrl, effectId: command.effectId,
         dispatchId: `computer-${randomUUID()}`, dispatchGeneration: command.dispatchGeneration,
