@@ -171,19 +171,49 @@ export function splitRepositoryGitStatus(porcelain: string): { staged: string[];
   return { staged, unstaged, untracked };
 }
 
+/**
+ * The porcelain v1 --branch header contains current branch and upstream.
+ * Reuse it rather than launching git branch and git rev-parse @{u} again.
+ * On an unexpected header fail back to Git itself; never invent identity.
+ */
+function porcelainBranchIdentity(porcelain: string): { branch: string | null; upstream: string | null } | undefined {
+  const header = porcelain.split(/\r?\n/, 1)[0];
+  if (!header?.startsWith('## ')) return undefined;
+  const value = header.slice(3);
+  if (value === 'HEAD (no branch)' || value.startsWith('HEAD (detached ')) {
+    return { branch: null, upstream: null };
+  }
+  for (const prefix of ['No commits yet on ', 'Initial commit on ']) {
+    if (value.startsWith(prefix)) {
+      const branch = value.slice(prefix.length);
+      return branch && !/\s/.test(branch) ? { branch, upstream: null } : undefined;
+    }
+  }
+  // Ref names cannot contain whitespace or '..'; the ahead/behind/gone
+  // decoration is not part of either ref. Reject ambiguous headers.
+  const token = value.split(' ', 1)[0] ?? '';
+  if (!token || token.includes('"') || token.includes('(') || token.includes(')')) return undefined;
+  const separator = token.indexOf('...');
+  const branch = separator < 0 ? token : token.slice(0, separator);
+  const upstream = separator < 0 ? null : token.slice(separator + 3);
+  if (!branch || (separator >= 0 && !upstream)) return undefined;
+  return { branch, upstream };
+}
+
 export function repositoryGitStatus(repository: RepositoryRecord): RepositoryGitStatusSnapshot {
   const observedAt = new Date().toISOString();
   const porcelain = runGit(repository, ['status', '--porcelain=v1', '--branch', '--untracked-files=all', '--', '.', ':(exclude).ai/harness/**']).stdout;
   const split = splitRepositoryGitStatus(porcelain);
+  const identity = porcelainBranchIdentity(porcelain);
   return {
     repoId: repository.repoId,
     checkoutId: repository.activeCheckoutId,
     observedAt,
     staleAgeMs: 0,
     sampleSource: 'live',
-    branch: gitText(repository, ['branch', '--show-current']),
+    branch: identity ? identity.branch : gitText(repository, ['branch', '--show-current']),
     head: gitText(repository, ['rev-parse', '--verify', 'HEAD']),
-    upstream: gitText(repository, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}']),
+    upstream: identity ? identity.upstream : gitText(repository, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}']),
     porcelain,
     // Git porcelain v1 with --branch uses the same short-status layout. Reuse
     // the authoritative status snapshot instead of spawning Git a second time.
