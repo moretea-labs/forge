@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSy
 import { basename, dirname, join } from "path";
 import { beginEditSession, applyEditOperations, createEditSavepoint, EditSessionPatchError, finalizeEditSession, getEditSession, getEditSessionDiff, listEditSessions, PREFERRED_EDIT_PATCH_BATCH_OPERATIONS, rollbackEditSession } from "../../../src/cli/editing/edit-session";
 import { EDIT_OPERATION_INPUT_SCHEMA, normalizeEditOperations } from "../../../src/cli/editing/edit-operation-contract";
-import { withControllerLock } from "../../../src/cli/repositories/locks";
+import { withRepositoryMutationExclusion } from '../../../src/runtime/resources/leases/store';
 import { listAgentJobs } from "../../../src/cli/agent-jobs/job-manager";
 import { listControllerChecks } from "../../../src/cli/controller/check-runner";
 import { buildExecutionDiagnostics, buildRequirementBoard } from '../../../src/runtime/control-plane/facade/requirement-board';
@@ -143,7 +143,7 @@ function withLegacyEditMutation<T>(ctx: McpToolContext, operation: string, mutat
     controllerHome,
     allowSoleRepository: true,
   }).repoId;
-  return withControllerLock(controllerHome, { scope: 'repository', repoId }, `mcp:${operation}`, mutate);
+  return withRepositoryMutationExclusion(controllerHome, repoId, `mcp:${operation}`, mutate);
 }
 
 function fileSummary(
