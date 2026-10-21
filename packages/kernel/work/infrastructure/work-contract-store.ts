@@ -151,6 +151,8 @@ export interface CreateWorkSemanticInput {
   semanticParentWorkId?: string;
   dependsOnWorkIds?: string[];
   requestedBy?: 'chatgpt' | 'user' | 'system' | 'scheduler';
+  /** Trusted repository-bound admission intent; ordinary semantic Work remains investigation-only. */
+  repositoryPlacement?: 'current' | 'isolated';
 }
 
 export interface ReviseWorkSemanticInput {
@@ -728,8 +730,8 @@ export function createWorkSemanticContext(options: WorkContractStoreOptions, inp
     repoId: options.repoId?.trim() ?? '',
     objective: input.objective,
     acceptanceCriteria: [],
-    constraints: {},
-    workKind: 'investigation',
+    constraints: input.repositoryPlacement ? { workspaceMode: input.repositoryPlacement } : {},
+    workKind: input.repositoryPlacement ? 'repository_change' : 'investigation',
     lifecycleRole: 'primary',
     requestedBy: input.requestedBy ?? 'chatgpt',
     checks: [],
