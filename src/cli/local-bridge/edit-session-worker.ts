@@ -29,8 +29,13 @@ export function runEditSessionMutationInWorker(input: EditSessionWorkerInput): P
       settled = true;
       reject(new Error(`EDIT_SESSION_MUTATION_OUTCOME_UNKNOWN: ${cause}; inspect durable session before retry`));
     };
-    worker.once('error', (error) => unknown(error instanceof Error ? error.message : String(error)));
-    worker.once('exit', (code) => unknown(`worker exited ${code} before result`));
+    // An error can precede the actual worker exit. Keep the parent-owned
+    // repository lock until the worker has stopped, never on error alone.
+    let workerError: string | undefined;
+    worker.once('error', (error) => {
+      workerError = error instanceof Error ? error.message : String(error);
+    });
+    worker.once('exit', (code) => unknown(workerError ?? `worker exited ${code} before result`));
   });
 }
 
