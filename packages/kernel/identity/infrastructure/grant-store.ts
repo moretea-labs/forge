@@ -1,4 +1,5 @@
 import { randomUUID } from 'crypto';
+import { isDeepStrictEqual } from 'util';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs';
 import { dirname, join, resolve } from 'path';
 import type {
@@ -191,7 +192,8 @@ export function recordCanonicalGrant(controllerHome: string, input: RecordGrantI
       || !sameCapabilities
       || previousScopes.length !== nextScopes.length
       || previousScopes.some((value, index) => value !== nextScopes[index])
-      || (priorId.riskCeiling ?? 'readonly') !== (grant.riskCeiling ?? 'readonly')) {
+      || (priorId.riskCeiling ?? 'readonly') !== (grant.riskCeiling ?? 'readonly')
+      || !isDeepStrictEqual(priorId.constraints ?? {}, grant.constraints ?? {})) {
       throw new Error('GRANT_IDENTITY_SCOPE_CHANGE_REQUIRES_NEW_ENROLLMENT');
     }
     // A replay or legacy metadata repair is not another enrollment. In
@@ -211,7 +213,11 @@ export function recordCanonicalGrant(controllerHome: string, input: RecordGrantI
     const sameTarget = targetMatches(entry.target, grant.target);
     const sameCapabilities = entry.capabilities.length === grant.capabilities.length
       && entry.capabilities.every((c, i) => c === grant.capabilities[i]);
-    return !(samePrincipal && sameOwner && sameTarget && sameCapabilities);
+    const sameScopes = isDeepStrictEqual(entry.scopes ?? [], grant.scopes ?? []);
+    const sameRisk = (entry.riskCeiling ?? 'readonly') === (grant.riskCeiling ?? 'readonly');
+    const sameConstraints = isDeepStrictEqual(entry.constraints ?? {}, grant.constraints ?? {});
+    // Distinct enrolled restrictions must not be removed by ordinary dedupe.
+    return !(samePrincipal && sameOwner && sameTarget && sameCapabilities && sameScopes && sameRisk && sameConstraints);
   });
   store.grants.push(grant);
   saveStore(controllerHome, store);
