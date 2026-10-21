@@ -20,7 +20,7 @@ export const PREFERRED_CONTROLLER_TOOL_NAMES = [
   'execute_command',
 
   // Source inspection and bounded Direct Edit. Code location is routed through
-  // rh_context.search; the direct search_repository action remains available.
+  // rh_context.search and exact file reads.
   'read_repository_file',
   'repository_safe_patch_apply',
 

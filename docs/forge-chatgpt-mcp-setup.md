@@ -94,10 +94,9 @@ A successful controller-to-Forge tool call is the meaningful end-to-end setup mi
 
 ## Optional controller entries
 
-Codex and Claude are configured only when explicitly selected:
+Claude is configured only when explicitly selected:
 
 ```bash
-forge mcp setup codex --scope user --profile controller
 forge mcp setup claude --scope user --profile controller
 ```
 

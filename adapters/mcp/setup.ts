@@ -2,7 +2,6 @@ import { createHash } from "crypto";
 import { spawnSync } from "child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { isIP } from "net";
-import { homedir } from "os";
 import { dirname, join, relative, resolve } from "path";
 import {
   ensureMcpControllerHomeBearerToken,
@@ -26,7 +25,6 @@ import {
 import { ensureControllerHome, ensureRepoPreferredControllerHome } from "../../src/effects/controller-home";
 import { configuredControllerAccessMode } from './access-mode';
 import { ensureForgeInstanceIdentity, normalizeConfiguredForgeInstanceId, readForgeInstanceIdentity } from "../../packages/kernel/identity/api/index";
-import { discoverExecutable } from "../../src/runtime/platform/executable-discovery";
 
 export interface McpSetupResult {
   status: "ok";
@@ -35,16 +33,6 @@ export interface McpSetupResult {
   forgeInstanceId?: string;
   lines: string[];
 }
-
-const REQUIRED_CODEX_TOOLS = [
-  "harness_status",
-  "read_workflow_file",
-  "latest_session_context",
-  "latest_checks",
-  "prepare_codex_goal_from_sprint",
-  "write_codex_goal",
-  "run_workflow_check",
-];
 
 const CHATGPT_MCP_ENDPOINT_PLACEHOLDER = "<https-tunnel-url>/mcp";
 const CHATGPT_NAMED_TUNNEL_HOST_PLACEHOLDER = "<named-tunnel-host>";
@@ -298,10 +286,9 @@ A successful controller-to-Forge tool call is the meaningful end-to-end setup mi
 
 ## Optional controller entries
 
-Codex and Claude are configured only when explicitly selected:
+Claude is configured only when explicitly selected:
 
 \`\`\`bash
-forge mcp setup codex --scope user --profile controller
 forge mcp setup claude --scope user --profile controller
 \`\`\`
 
@@ -495,79 +482,6 @@ function localControllerProfile(value: string | undefined, label: string, fallba
   return normalized;
 }
 
-export function codexMcpBlock(profile: LocalControllerProfile = 'executor'): string {
-  const lines = [
-    '[mcp_servers.forge]',
-    'command = "forge"',
-    'args = [',
-    '  "mcp",',
-    '  "serve",',
-    '  "--repo",',
-    '  ".",',
-    '  "--transport",',
-    '  "stdio",',
-    '  "--profile",',
-    `  "${profile}"`,
-    ']',
-  ];
-  if (profile === 'executor') {
-    lines.push(
-      'enabled_tools = [',
-      ...REQUIRED_CODEX_TOOLS.map((tool) => `  "${tool}",`),
-      ']',
-      'default_tools_approval_mode = "prompt"',
-    );
-  }
-  return `${lines.join('\n')}\n`;
-}
-
-export function patchCodexConfigToml(current: string, profile: LocalControllerProfile = 'executor'): string {
-  const block = codexMcpBlock(profile);
-  const normalized = current.trimEnd();
-  const blockPattern = /\n?\[mcp_servers\.forge\][\s\S]*?(?=\n\[|$)/;
-  const prefix = normalized.length > 0 ? `${normalized}\n\n` : '';
-  if (!blockPattern.test(normalized)) return `${prefix}${block}`;
-  return `${normalized.replace(blockPattern, `\n${block}`.trimEnd())}\n`;
-}
-
-export function runMcpSetupCodex(opts: {
-  repo?: string;
-  scope?: string;
-  profile?: string;
-  dryRun?: boolean;
-}): McpSetupResult {
-  const scope = (opts.scope ?? 'project').trim().toLowerCase();
-  if (scope !== 'project' && scope !== 'user') {
-    throw new Error('forge mcp setup codex --scope: expected project|user');
-  }
-  const profile = localControllerProfile(opts.profile, 'forge mcp setup codex --profile', 'executor');
-  const repoRoot = resolveMcpRepoRoot(opts.repo ?? '.');
-  const configPath = scope === 'user' ? join(homedir(), '.codex', 'config.toml') : join(repoRoot, '.codex', 'config.toml');
-  const changed: string[] = [];
-  const current = existsSync(configPath) ? readFileSync(configPath, 'utf-8') : '';
-  const next = patchCodexConfigToml(current, profile);
-  if (opts.dryRun === true) {
-    return {
-      status: 'ok', repoRoot, changed: [],
-      lines: [`[forge mcp] Dry run: would patch ${scope === 'user' ? configPath : relative(repoRoot, configPath)}`, next],
-    };
-  }
-  if (existsSync(configPath) && current !== next) {
-    const backupPath = `${configPath}.bak`;
-    writeFileIfChanged(backupPath, current, changed);
-  }
-  writeFileIfChanged(configPath, next, changed);
-  return {
-    status: 'ok', repoRoot, changed,
-    lines: [
-      `[forge mcp] Codex config: ${scope === 'user' ? configPath : relative(repoRoot, configPath)}`,
-      '[forge mcp] Server: forge',
-      '[forge mcp] Transport: stdio',
-      `[forge mcp] Role: external ${profile === 'controller' ? 'primary controller' : 'executor/delegate'}`,
-    ],
-  };
-}
-
 export function claudeMcpSetupCommand(repoRoot: string, profile: LocalControllerProfile = 'controller', scope = 'user'): string[] {
   return [
     'claude', 'mcp', 'add', 'forge', '--scope', scope, '--',
@@ -664,16 +578,6 @@ export function runMcpDoctor(opts: {
   const host = localConfig?.server?.host ?? "127.0.0.1";
   const port = localConfig?.server?.port ?? 8765;
   const authMode = localConfig?.auth?.mode ?? "missing";
-  const codexConfigPath = join(repoRoot, ".codex", "config.toml");
-  const codexConfig = existsSync(codexConfigPath)
-    ? readFileSync(codexConfigPath, "utf-8")
-    : "";
-  const codexHasServer = codexConfig.includes("[mcp_servers.forge]");
-  const missingTools = REQUIRED_CODEX_TOOLS.filter(
-    (tool) => !codexConfig.includes(`"${tool}"`),
-  );
-  const codexResolution = discoverExecutable({ id: "codex", candidates: ["codex"] });
-  const codexCommand = codexResolution.status === "ready" ? codexResolution.executable : undefined;
   const report = {
     status: existsSync(join(repoRoot, ".ai", "harness", "policy.json"))
       ? "ready_local"
@@ -702,14 +606,6 @@ export function runMcpDoctor(opts: {
         maxTimeoutMs:
           localConfig?.devMode?.maxTimeoutMs ?? MAX_AGENT_TIMEOUT_MS,
       },
-    },
-    codex: {
-      cliAvailable: codexCommand !== null,
-      configured: codexHasServer && missingTools.length === 0,
-      configPath: ".codex/config.toml",
-      hasServer: codexHasServer,
-      missingTools,
-      fix: "forge mcp setup codex --repo . --scope project",
     },
     chatgpt: {
       ...(configuredServerName ? { serverName: configuredServerName } : {}),
@@ -775,8 +671,6 @@ export function runMcpDoctor(opts: {
                 ]
               : []),
             `[forge mcp] Dev runner: ${report.mcp.devMode.agentRunner ? `enabled (${report.mcp.devMode.allowedAgents.join(",")})` : "disabled"}`,
-            `[forge mcp] Codex config: ${report.codex.configured ? "present" : "missing"}`,
-            `[forge mcp] Codex CLI: ${report.codex.cliAvailable ? "present" : "missing"}`,
             `[forge mcp] Next ChatGPT setup: ${report.chatgpt.setup}`,
           ],
   };

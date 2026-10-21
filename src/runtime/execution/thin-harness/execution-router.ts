@@ -60,7 +60,6 @@ const FAST_OPERATIONS = new Set<string>([
   'repository_git_diff',
   'repository_safe_patch_apply',
   'repository_safe_patch_plan',
-  'search_repository',
   'read_file_range',
   'git_diff_paths',
   'git_stage_paths',

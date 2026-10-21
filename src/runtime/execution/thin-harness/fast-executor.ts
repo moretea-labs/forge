@@ -678,7 +678,7 @@ export async function executeFast(
             checkoutId: ctx.repository.activeCheckoutId,
           }) as unknown as Record<string, unknown>;
         });
-      } else if (operation === 'search' || operation === 'search_repository') {
+      } else if (operation === 'search') {
         resultPayload = await trace.measure('executionMs', async () => runSearchInWorker(
           root,
           String(request.input.query ?? ''),

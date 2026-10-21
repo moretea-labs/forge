@@ -9,7 +9,6 @@ export interface McpPolicy {
   denyGlobs: string[];
   maxFileBytes: number;
   execution: {
-    fixedWorkflowCheck: boolean;
     codexRunner: boolean;
     agentRunner: boolean;
     allowedAgents: McpAgentRunnerName[];

@@ -33,7 +33,6 @@ const THIN_ROUTED_TOOLS = new Set([
   'git_diff_paths',
   'apply_patch',
   'apply_edit_operations',
-  'search_repository',
   'read_file_range',
   'read_repository_file',
   // Checks and edit verification use Process Runtime unless multi-phase/release requires Durable.

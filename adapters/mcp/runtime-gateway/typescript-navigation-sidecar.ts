@@ -44,7 +44,6 @@ function readPolicy(input: SemanticNavigationReadPolicy): McpPolicy {
     denyGlobs: [...input.denyGlobs],
     maxFileBytes: input.maxFileBytes,
     execution: {
-      fixedWorkflowCheck: false,
       codexRunner: false,
       agentRunner: false,
       allowedAgents: [],

@@ -40,7 +40,6 @@ function policy(value: unknown): McpPolicy {
     denyGlobs: stringList(input.denyGlobs),
     maxFileBytes,
     execution: {
-      fixedWorkflowCheck: e.fixedWorkflowCheck === true,
       codexRunner: e.codexRunner === true,
       agentRunner: e.agentRunner === true,
       allowedAgents: Array.isArray(e.allowedAgents)

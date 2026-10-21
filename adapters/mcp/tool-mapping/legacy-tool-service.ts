@@ -2,7 +2,7 @@ import type { CallToolResult, McpToolDefinition } from '../../../packages/protoc
 export type { CallToolResult, McpToolDefinition } from '../../../packages/protocols/mcp/tool-contract';
 import { createHash } from "crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync, appendFileSync } from "fs";
-import { basename, dirname, join } from "path";
+import { dirname, join } from "path";
 import { beginEditSession, applyEditOperations, createEditSavepoint, EditSessionPatchError, finalizeEditSession, getEditSession, getEditSessionDiff, listEditSessions, PREFERRED_EDIT_PATCH_BATCH_OPERATIONS, rollbackEditSession } from "../../../src/cli/editing/edit-session";
 import { EDIT_OPERATION_INPUT_SCHEMA, normalizeEditOperations } from "../../../src/cli/editing/edit-operation-contract";
 import { listAgentJobs } from "../../../src/cli/agent-jobs/job-manager";
@@ -14,9 +14,8 @@ import { exportControllerWorklog, listControllerWorklogEvents, parseWorklogCateg
 import { FORGE_MCP_SCHEMA_VERSION, FORGE_TOOL_SURFACE, FORGE_VERSION, forgeToolSurfaceFingerprint, formatDurationMs, normalizeAgentTimeoutMs } from "../../../src/cli/controller/runtime-config";
 import { PREFERRED_FACADE_TOOL_NAMES } from "../toolset-names";
 import { buildLocalConnectorStatusForRepo } from "../../../src/cli/local-bridge/connector-freshness";
-import { gitSnapshot, searchRepository } from "../../../src/cli/repository/inspector";
+import { gitSnapshot } from "../../../src/cli/repository/inspector";
 import { listLocalBridgeJobs } from "../../../src/cli/local-bridge/job-store";
-import { runHelper } from "../../../src/cli/runtime/helper-runner";
 import { listSessions, openSession, readSession, runBrowserConsult, runBrowserFollowup } from "../../../src/cli/chatgpt-browser/engine";
 import type { BrowserProviderName, NativeBrowserChannel, ThinkingLevel } from "../../../src/cli/chatgpt-browser/types";
 import { hashMcpInput, tryWriteMcpAuditEntry } from "../audit";
@@ -362,18 +361,6 @@ function writeMarkdownArtifact(
   });
 }
 
-function validateGoal(body: string): string[] {
-  return [
-    "# Codex Goal",
-    "## Source of truth",
-    "## Role",
-    "## Scope",
-    "## Required workflow",
-    "## Required checks",
-    "## Done when",
-  ].filter((section) => !body.includes(section));
-}
-
 function stringList(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value
@@ -528,81 +515,6 @@ function renderChecklistSprintBody(args: Record<string, unknown>): string {
   );
 }
 
-function renderCodexGoalFromSprint(args: Record<string, unknown>): {
-  body: string;
-  prompt: string;
-} {
-  const prdPath = String(args.prd_path ?? "").trim();
-  const sprintPath = String(args.sprint_path ?? "").trim();
-  const goalPrdPath = String(args.goal_prd_path ?? prdPath).trim() || prdPath;
-  const goalSprintPath =
-    String(args.goal_sprint_path ?? sprintPath).trim() || sprintPath;
-  const referenceRepo = String(args.reference_repo ?? "").trim();
-  const extraInstructions = String(args.extra_instructions ?? "").trim();
-  const prompt = [
-    "/goal",
-    `Read: ${goalPrdPath}`,
-    `Open or use a worktree and complete: ${goalSprintPath}`,
-    "After each completed phase, stage the result before continuing.",
-    "Use the user's language for status reports unless repo-local instructions require otherwise.",
-    referenceRepo ? `Reference repo: ${referenceRepo}` : "",
-  ]
-    .filter(Boolean)
-    .join("\n");
-  const body = [
-    "# Codex Goal",
-    "",
-    "## Source of truth",
-    "",
-    `- PRD: \`${goalPrdPath}\``,
-    `- Checklist Sprint: \`${goalSprintPath}\``,
-    ...(referenceRepo
-      ? [`- Reference repo: \`${referenceRepo}\` (read-only comparison source)`]
-      : []),
-    "",
-    "## Role",
-    "",
-    "Codex is the executor. ChatGPT/forge may prepare planning artifacts, but implementation ownership stays in the local Codex session.",
-    "",
-    "## Scope",
-    "",
-    "- Open or use an isolated worktree for the sprint implementation.",
-    "- Execute the checklist Sprint task cards in order.",
-    "- Update the Sprint checklist as phases complete.",
-    "- Stage each completed phase before continuing to the next phase.",
-    "- Do not modify the reference repo or ignored secrets/ops state.",
-    "",
-    "## Required workflow",
-    "",
-    "1. Read the PRD and Sprint paths above before editing.",
-    "2. Build the P1/P2/P3 map required by repo-local AGENTS.md for non-trivial changes.",
-    "3. Execute one checklist task card at a time.",
-    "4. After each phase, run the relevant focused checks, update the checklist, and stage the completed slice.",
-    "5. Continue until the Sprint checklist is complete or a real blocker is reached.",
-    "6. Leave a concise handoff with staged state and verification evidence.",
-    ...(extraInstructions ? ["", extraInstructions] : []),
-    "",
-    "## Required checks",
-    "",
-    "- Run the checks named by the Sprint task card.",
-    "- At sprint closeout, run repo-required checks unless the Sprint narrows the verification surface with a stated reason.",
-    "",
-    "## Done when",
-    "",
-    "- The checklist Sprint is complete.",
-    "- Every completed phase is staged.",
-    "- Checks pass or failures are documented with exact blocker evidence.",
-    "- No commit is created unless the user explicitly asks for commit.",
-    "",
-    "## Host-native /goal prompt",
-    "",
-    "```text",
-    prompt,
-    "```",
-  ].join("\n");
-  return { body, prompt };
-}
-
 function parseThinking(value: unknown): ThinkingLevel | undefined {
   if (value === undefined || value === null || value === "") return undefined;
   if (
@@ -703,20 +615,6 @@ export function buildMcpToolDefinitions(
       overwrite: { type: "boolean" },
     },
     required: ["title", "slug", "prd_path", "tasks"],
-    additionalProperties: false,
-  };
-  const goalFromSprintSchema = {
-    type: "object",
-    properties: {
-      prd_path: { type: "string" },
-      sprint_path: { type: "string" },
-      goal_prd_path: { type: "string" },
-      goal_sprint_path: { type: "string" },
-      reference_repo: { type: "string" },
-      extra_instructions: { type: "string" },
-      overwrite: { type: "boolean" },
-    },
-    required: ["prd_path", "sprint_path"],
     additionalProperties: false,
   };
   const browserRunSchema = {
@@ -839,28 +737,6 @@ export function buildMcpToolDefinitions(
       annotations: write,
     },
     {
-      name: "prepare_codex_goal_from_sprint",
-      description:
-        "Prepare .ai/harness/controller/packets/codex-goal.md and a host-native /goal prompt from PRD + checklist Sprint.",
-      inputSchema: goalFromSprintSchema,
-      annotations: write,
-    },
-    {
-      name: "write_codex_goal",
-      description:
-        "Write .ai/harness/controller/packets/codex-goal.md after required section validation.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          body: { type: "string" },
-          overwrite: { type: "boolean" },
-        },
-        required: ["body"],
-        additionalProperties: false,
-      },
-      annotations: write,
-    },
-    {
       name: "append_controller_plan_note",
       description: "Append a timestamped ChatGPT planning note to the controller packet cache.",
       inputSchema: {
@@ -979,25 +855,6 @@ export function buildMcpToolDefinitions(
         description:
           "Return Git state, controller issue board, active task runs, and workflow markers.",
         inputSchema: EMPTY_SCHEMA,
-        annotations: readOnly,
-      },
-      {
-        name: "search_repository",
-        description:
-          "Search policy-readable source and documentation files without loading the full repository.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            query: { type: "string" },
-            include_globs: { type: "array", items: { type: "string" } },
-            exclude_globs: { type: "array", items: { type: "string" } },
-            max_results: { type: "number" },
-            max_files: { type: "number" },
-            case_sensitive: { type: "boolean" },
-          },
-          required: ["query"],
-          additionalProperties: false,
-        },
         annotations: readOnly,
       },
       {
@@ -1192,14 +1049,6 @@ export function buildMcpToolDefinitions(
     );
   }
 
-  if (policy.execution.fixedWorkflowCheck) {
-    tools.push({
-      name: "run_workflow_check",
-      description: "Run the fixed forge strict workflow check.",
-      inputSchema: EMPTY_SCHEMA,
-      annotations: write,
-    });
-  }
   if (opts.enableChatgptBrowser === true) {
     tools.push(
       {
@@ -1565,33 +1414,6 @@ export async function callMcpTool(
         };
         audit(ctx, name, "ok", args);
         return textResult(payload);
-      }
-      case "search_repository": {
-        if (ctx.policy.profile !== "controller")
-          return errorResult(
-            "TOOL_DISABLED",
-            "search_repository requires the controller profile",
-          );
-        const session = ctx.sessionId && ctx.repoId
-          ? {
-            sessionId: ctx.sessionId,
-            repoId: ctx.repoId,
-            checkoutId: ctx.checkoutId ?? ctx.repoId,
-          }
-          : undefined;
-        const result = searchRepository(ctx.repoRoot, ctx.policy, {
-          query: String(args.query ?? ""),
-          includeGlobs: stringList(args.include_globs),
-          excludeGlobs: stringList(args.exclude_globs),
-          maxResults:
-            typeof args.max_results === "number" ? args.max_results : undefined,
-          maxFiles:
-            typeof args.max_files === "number" ? args.max_files : undefined,
-          caseSensitive: args.case_sensitive === true,
-          session,
-        });
-        audit(ctx, name, "ok", args);
-        return textResult(result);
       }
       case "list_checks": {
         if (ctx.policy.profile !== "controller")
@@ -2080,100 +1902,6 @@ export async function callMcpTool(
           args,
         );
       }
-      case "prepare_codex_goal_from_sprint": {
-        const prdPath = String(args.prd_path ?? "").trim();
-        const sprintPath = String(args.sprint_path ?? "").trim();
-        const missingInputs = [
-          { label: "PRD", path: prdPath },
-          { label: "Sprint", path: sprintPath },
-        ].filter((entry) => {
-          const decision = resolveMcpPath(
-            ctx.repoRoot,
-            entry.path,
-            ctx.policy,
-            "read",
-          );
-          return (
-            !decision.ok ||
-            !decision.absolutePath ||
-            !existsSync(decision.absolutePath)
-          );
-        });
-        if (missingInputs.length > 0) {
-          audit(
-            ctx,
-            name,
-            "blocked",
-            args,
-            missingInputs[0]?.path,
-            `${missingInputs.map((entry) => entry.label).join(", ")} path does not exist or is not readable`,
-          );
-          return errorResult(
-            "SOURCE_NOT_READABLE",
-            "PRD or Sprint path does not exist or is not policy-readable.",
-            { missing: missingInputs },
-          );
-        }
-        const goal = renderCodexGoalFromSprint(args);
-        const missing = validateGoal(goal.body);
-        if (missing.length > 0) {
-          audit(
-            ctx,
-            name,
-            "blocked",
-            args,
-            ".ai/harness/controller/packets/codex-goal.md",
-            `missing required goal sections: ${missing.join(", ")}`,
-          );
-          return errorResult(
-            "INVALID_GOAL",
-            "Generated Codex goal is missing required sections.",
-            { missing },
-          );
-        }
-        return writeMarkdownArtifact(
-          ctx,
-          name,
-          ".ai/harness/controller/packets/codex-goal.md",
-          "Codex Goal",
-          "codex-goal",
-          goal.body,
-          args.overwrite === true,
-          args,
-          {
-            prompt: goal.prompt,
-          },
-        );
-      }
-      case "write_codex_goal": {
-        const body = String(args.body ?? "");
-        const missing = validateGoal(body);
-        if (body.trim().length < 120 || missing.length > 0) {
-          audit(
-            ctx,
-            name,
-            "blocked",
-            args,
-            ".ai/harness/controller/packets/codex-goal.md",
-            `missing required goal sections: ${missing.join(", ")}`,
-          );
-          return errorResult(
-            "INVALID_GOAL",
-            "Codex goal is missing required sections or is too small.",
-            { missing },
-          );
-        }
-        return writeMarkdownArtifact(
-          ctx,
-          name,
-          ".ai/harness/controller/packets/codex-goal.md",
-          "Codex Goal",
-          "codex-goal",
-          body,
-          args.overwrite === true,
-          args,
-        );
-      }
       case "append_controller_plan_note": {
         const path = ".ai/harness/controller/packets/chatgpt-plan.md";
         const decision = resolveMcpPath(
@@ -2200,38 +1928,6 @@ export async function callMcpTool(
         appendFileSync(decision.absolutePath, block, "utf-8");
         audit(ctx, name, "ok", args, path);
         return textResult({ status: "appended", path });
-      }
-      case "run_workflow_check": {
-        const result = runHelper({
-          helper: "check-task-workflow",
-          args: ["--strict"],
-          cwd: ctx.repoRoot,
-          stdio: "pipe",
-          timeoutMs: 60_000,
-          maxOutputBytes: 96 * 1024,
-        });
-        const stdout = redactMcpText(result.stdout ?? "");
-        const stderr = redactMcpText(result.stderr ?? "");
-        audit(
-          ctx,
-          name,
-          result.exitCode === 0 ? "ok" : "failed",
-          args,
-          undefined,
-          stderr.text,
-        );
-        return textResult({
-          exitCode: result.exitCode,
-          reason: result.reason,
-          stdout: stdout.text,
-          stderr: stderr.text,
-          helper: result.resolved
-            ? {
-                source: result.resolved.source,
-                fileName: basename(result.resolved.path),
-              }
-            : null,
-        });
       }
       case "run_chatgpt_browser_consult": {
         if (ctx.enableChatgptBrowser !== true)

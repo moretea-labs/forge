@@ -73,7 +73,6 @@ interface McpPolicyOverrideFile {
 
 function executionPolicy(overrides: Partial<McpPolicy['execution']> = {}): McpPolicy['execution'] {
   return {
-    fixedWorkflowCheck: false,
     codexRunner: false,
     agentRunner: false,
     allowedAgents: [],
@@ -156,9 +155,7 @@ export function getMcpPolicy(profile: McpProfileName, opts: McpPolicyOptions = {
         '.github/workflows/**',
       ],
       maxFileBytes: 512 * 1024,
-      execution: executionPolicy({
-        fixedWorkflowCheck: true,
-      }),
+      execution: executionPolicy(),
     }, profile, opts.repoRoot);
   }
 
@@ -169,9 +166,7 @@ export function getMcpPolicy(profile: McpProfileName, opts: McpPolicyOptions = {
       writeGlobs: ['tasks/reviews/**', '.ai/harness/checks/**', '.ai/harness/session/**', '.ai/harness/controller/packets/**'],
       denyGlobs: COMMON_DENY_GLOBS,
       maxFileBytes: 512 * 1024,
-      execution: executionPolicy({
-        fixedWorkflowCheck: true,
-      }),
+      execution: executionPolicy(),
     }, profile, opts.repoRoot);
   }
 
@@ -195,7 +190,6 @@ export function getMcpPolicy(profile: McpProfileName, opts: McpPolicyOptions = {
       ],
       maxFileBytes: 2 * 1024 * 1024,
       execution: executionPolicy({
-        fixedWorkflowCheck: true,
         codexRunner: devRunner,
         agentRunner: devRunner,
         allowedAgents: devRunner ? (opts.allowedAgents?.length ? opts.allowedAgents : defaultLocalAgentRunners()) : [],

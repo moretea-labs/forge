@@ -25,7 +25,13 @@ const MAX_PREFERRED_TOOL_COUNT = 24;
 // (repository_git_diff/git_diff_paths for get_git_diff; the GitHub plugin
 // manifest via get_plugin and plugin_action_execute action 'configure' for
 // github_status, get_github_plugin_status, configure_github_plugin).
-const EXPECTED_EXPOSED_NAME_FINGERPRINT = '2134f5ca8294c5fc';
+// 2026-10-21 audit round 3 (cont.): the project does not integrate Codex or
+// other external agent controllers, so the Codex-specific MCP surface was
+// retired with it (run_workflow_check, search_repository,
+// prepare_codex_goal_from_sprint, write_codex_goal) together with the
+// `forge mcp setup codex` CLI, the doctor Codex report, and the
+// fixedWorkflowCheck policy flag.
+const EXPECTED_EXPOSED_NAME_FINGERPRINT = 'e6e3c8ade6c5a8d5';
 
 // #197 decomposition authority: the public/frozen Tool Contract is an explicit
 // baseline, independent from whichever internal adapter currently defines a

@@ -85,7 +85,6 @@ test("ripgrep JSON discovery keeps NUL-binary and non-UTF8 candidates from corru
       denyGlobs: [],
       maxFileBytes: 2 * 1024 * 1024,
       execution: {
-        fixedWorkflowCheck: false,
         codexRunner: false,
         agentRunner: false,
         allowedAgents: [],
