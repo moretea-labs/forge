@@ -194,6 +194,11 @@ export function recordCanonicalGrant(controllerHome: string, input: RecordGrantI
       || (priorId.riskCeiling ?? 'readonly') !== (grant.riskCeiling ?? 'readonly')) {
       throw new Error('GRANT_IDENTITY_SCOPE_CHANGE_REQUIRES_NEW_ENROLLMENT');
     }
+    // A replay or legacy metadata repair is not another enrollment. In
+    // particular, a supplied later `now` or larger TTL must not renew access.
+    grant.createdAt = priorId.createdAt;
+    grant.expiresAt = priorId.expiresAt;
+    grant.updatedAt = new Date(Math.max(Date.parse(priorId.updatedAt), now.getTime())).toISOString();
   }
   store.grants = store.grants.filter((entry) => {
     // Routine replacement must not erase a revoked/expired record. Explicit
