@@ -2322,8 +2322,9 @@ forbid(
 requireText('src/runtime/root/workflow-supervisor-composition.ts', 'reserveWorkflowSupervisorEnrollment(forgeHome, registeredTask.taskId, lowerLayer.providerEffectId)');
 requireText('src/runtime/root/workflow-supervisor-composition.ts', 'providerDispatchEffectId: effect.effectId');
 requireText('supervisor/protocol.ts', '(?:fx|crpe)_');
-requireText('packages/plugin-runtime/computer/conversation-target.ts', "state: 'unavailable'; failure: ComputerChatgptTargetFailure; observation?: ComputerChatgptConversationObservation");
-requireText('adapters/computer/chatgpt-extension-target.ts', "observation: input.observation");
+requireText('packages/plugin-runtime/computer/conversation-target.ts', "observation?: ComputerChatgptConversationObservation");
+requireText('adapters/computer/chatgpt-extension-target.ts', 'unhydratedExactConversation(identity, observation)');
+requireText('adapters/computer/chatgpt-extension-target.ts', 'parseCanonicalChatgptConversationIdentity(observation.url)');
 requireText('supervisor/native-browser-adapter.ts', 'exactCanonicalConversationUrl(observation, task)');
 requireText('supervisor/native-browser-adapter.ts', 'chatgptProviderPageFailure(observation.providerFailureText)');
 requireText('supervisor/native-browser-adapter.ts', 'WORKFLOW_SUPERVISOR_EMPTY_SHELL_EVIDENCE_UNVERIFIED');

@@ -4,6 +4,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import {
   workflowContentIdentity,
+  workflowCapabilityDependencies,
   type WorkflowAssetDraft,
 } from '../../packages/workflow-runtime/api/index';
 import {
@@ -48,6 +49,16 @@ function draft(version = '1.0.0', prompt = 'prepare one generic note'): Workflow
 }
 
 describe('Workflow Asset content and machine registry authority', () => {
+  test('capability bindings derive from executable steps and unknown-effect reconciliation, not an authored list', () => {
+    const asset = draft();
+    // This stale inventory omits the reconciliation capability and must not be a binding authority.
+    expect(asset.requiredCapabilities).toEqual(['browser.navigate', 'browser.fill']);
+    expect(workflowCapabilityDependencies(asset)).toEqual(['browser.fill', 'browser.navigate', 'browser.query']);
+    asset.requiredCapabilities = ['browser.unrelated'];
+    asset.steps.push({ stepId: 'repeat', capabilityId: 'browser.navigate' });
+    expect(workflowCapabilityDependencies(asset)).toEqual(['browser.fill', 'browser.navigate', 'browser.query']);
+  });
+
   test('stores editable content under Controller Home while SQLite keeps metadata-only bindings', () => {
     const controllerHome = temp('forge-workflow-controller-');
     const written = writeWorkflowAssetContent({ kind: 'controller', controllerHome }, draft());
