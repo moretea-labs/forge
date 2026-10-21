@@ -3594,6 +3594,10 @@ test('verified repeated exact-conversation empty shells migrate only a never-sen
     taskId, conversationId, conversationUrl, objective: 'Resume without the old unusable conversation.',
     completionContract: {}, continuationPolicy: { kind: 'standalone_supervisor' }, userBlockerPolicy: {},
   });
+  control.recordBrowserDiscovery('empty-shell-test', [{
+    conversationId, canonicalUrl: conversationUrl, title: 'Forge',
+    projectTitle: 'Forge', projectUrl: 'https://chatgpt.com/g/g-p-123456789abcdef0/project',
+  }]);
   const pending = control.reserveEnrollment(taskId);
   let nowMs = 1_000_000;
   const empty = {
