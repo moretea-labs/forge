@@ -847,6 +847,23 @@ describe("Local Execution Bridge", () => {
       const legacyAttempt = await callLegacyMcpTool(legacyContext, 'begin_edit_session', { purpose: 'competing editor' });
       expect(legacyAttempt.isError).toBe(true);
       expect(JSON.stringify(legacyAttempt.structuredContent)).toContain('LOCK_HELD');
+      // Historical pre-cutover completion must share the same repository
+      // writer, even though it also owns an independent integration target lock.
+      // Missing run/session lookups must not occur before the lock fence.
+      const finishEdit = await fetch(new URL(`/api/edit-sessions/${session.sessionId}/finish`, handle.url), {
+        method: "POST",
+        headers: { ...headers, "content-type": "application/json" },
+        body: JSON.stringify({ decision: "auto" }),
+      });
+      expect(finishEdit.status).toBe(400);
+      expect((await finishEdit.json()).error).toContain('LOCK_HELD');
+      const finishRun = await fetch(new URL('/api/runs/missing-run/finish', handle.url), {
+        method: "POST",
+        headers: { ...headers, "content-type": "application/json" },
+        body: JSON.stringify({ decision: "auto" }),
+      });
+      expect(finishRun.status).toBe(400);
+      expect((await finishRun.json()).error).toContain('LOCK_HELD');
     } finally {
       releaseControllerLock(controllerHome, lockKey, lock.lockId);
     }
