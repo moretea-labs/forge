@@ -37,7 +37,7 @@ import { collectWorkLifecycleAttention, workLifecycleAttentionBlocksReadiness } 
 import { sampleRepositoryGitStatusForRepositories } from '../../src/runtime/projections/git-status-sampler';
 import { cancelWorkContract, createWorkContract, getWorkContract, listWorkContracts, recordWorkCompletionReceipt, recordWorkImplementationReview, reviseWorkSemanticContext, transitionWorkContractPhase, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { implementationReviewChangedPathDigest } from '../../packages/kernel/work/domain/implementation-review';
-import { claimControllerSession } from '../../src/runtime/control-plane/facade/controller-session-store';
+import { claimControllerSession } from '../../packages/kernel/controller/api/index';
 import { listWorkContinuationSchedules } from '../../src/runtime/workflow/schedules/work-continuation';
 import { createHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
 import { runHandoffInboxApplication } from '../../src/runtime/control-plane/facade/handoff-inbox-application';

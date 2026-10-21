@@ -23,7 +23,7 @@ import { continueGoalWorkloop, routeWorkStart, stopGoalWorkloop } from '../../sr
 import { createRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
 import { createHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
 import { recordUserRequest } from '../../packages/kernel/identity/api/index';
-import { claimControllerSession, controllerSessionBlocksRecovery, getControllerSession, releaseControllerSession, resumeControllerSession } from '../../src/runtime/control-plane/facade/controller-session-store';
+import { claimControllerSession, controllerSessionBlocksRecovery, getControllerSession, releaseControllerSession, resumeControllerSession } from '../../packages/kernel/controller/api/index';
 import { invalidateExecutionSession, readExecutionSession, startExecutionSession, updateExecutionSession } from '../../src/runtime/control-plane/execution/session-store';
 import {
   acknowledgeControllerRoundClaim,

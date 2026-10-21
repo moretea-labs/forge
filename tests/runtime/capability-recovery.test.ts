@@ -26,7 +26,7 @@ import { getMcpPolicy } from '../../adapters/mcp/policy';
 import { cancelWorkContract, createWorkContract, getWorkContract, recordWorkImplementationReview, transitionWorkContractPhase } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { implementationReviewChangedPathDigest } from '../../packages/kernel/work/domain/implementation-review';
 import { createPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
-import { claimControllerSession, releaseControllerSession } from '../../src/runtime/control-plane/facade/controller-session-store';
+import { claimControllerSession, releaseControllerSession } from '../../packages/kernel/controller/api/index';
 import { applyControllerHomeMigration } from '../../src/runtime/control-plane/persistence/controller-home-migration';
 import { writeWorkHandle } from '../../src/runtime/control-plane/execution/work-handle-store';
 import { getOwnedResource, recordOwnedResource } from '../../packages/kernel/identity/api/index';

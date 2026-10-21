@@ -16,7 +16,7 @@ import { WorkflowSupervisorNativeBrowserAdapter } from '../../supervisor/native-
 import { hasCommittedSupervisorEnvelope, LEGACY_SUPERVISOR_BLOCK_END, LEGACY_SUPERVISOR_BLOCK_START, parseSupervisorCompletion, renderSupervisorPrompt, renderSupervisorReceipt, supervisorReceiptChallenge, SUPERVISOR_BLOCK_END, SUPERVISOR_BLOCK_START, SUPERVISOR_TURN_BLOCK_END, SUPERVISOR_TURN_BLOCK_START } from '../../supervisor/protocol';
 import { WorkflowSupervisorStore, workflowSupervisorCompletionContractSha256, WORKFLOW_SUPERVISOR_PROVIDER_IDLE_GRACE_MS } from '../../supervisor/store';
 import { createWorkflowSupervisorServer, reconcileWorkflowSupervisorSocket, WorkflowSupervisorEphemeralDiscovery } from '../../supervisor/server';
-import { claimControllerSession, getControllerSession, releaseControllerSession } from '../../src/runtime/control-plane/facade/controller-session-store';
+import { claimControllerSession, getControllerSession, releaseControllerSession } from '../../packages/kernel/controller/api/index';
 import { bindChatgptWorkConversation, getChatgptWorkConversationBinding, rebindChatgptWorkConversation } from '../../adapters/chatgpt/work-conversation-binding-store';
 import { CHATGPT_AUTOMATION_RATE_LIMITED, CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE, chatgptProviderBackpressureRemainingMs, chatgptProviderPageFailure, classifyChatgptProviderFailure, noteChatgptProviderBackpressure } from '../../adapters/chatgpt/provider-delivery';
 import { chatgptBrowserObservationMatchesTarget, chatgptComposerRetainsPrompt, chatgptFailedRequestIsCausalRateLimit, chatgptForgePluginMentionBound, chatgptForgePluginPickerIndex, chatgptOutboundMessageMatchesPrompt, chatgptSupervisorPromptBody } from '../../adapters/chatgpt/browser-delivery-runtime';

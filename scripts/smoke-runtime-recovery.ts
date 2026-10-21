@@ -15,7 +15,7 @@ import {
   claimControllerSession,
   getControllerSession,
   releaseControllerSession,
-} from '../src/runtime/control-plane/facade/controller-session-store';
+} from '../packages/kernel/controller/api/index';
 import { listExecutionJobs } from '../src/runtime/execution/jobs/store';
 import {
   __resetLiveMonitorsForTests,

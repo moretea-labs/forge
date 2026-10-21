@@ -1064,7 +1064,6 @@ requireText('packages/kernel/controller/ports/controller-host.ts', 'export inter
 requireText('packages/kernel/controller/ports/controller-host.ts', 'resume(binding: ControllerBinding, roundContext: ControllerRoundContext)');
 requireText('packages/kernel/controller/infrastructure/controller-session-store.ts', 'claimControllerSession');
 requireText('packages/kernel/controller/infrastructure/controller-session-store.ts', 'releaseControllerSessionWithAuthority');
-requireText('src/runtime/control-plane/facade/controller-session-store.ts', '@deprecated Kernel V2 compatibility shim');
 forbid('packages/kernel/controller/index.ts', /infrastructure\//, 'Kernel module root must expose only its public API');
 forbid('packages/kernel/controller/application/controller-service.ts', /export\s+\*\s+from\s+['"]\.\.\/infrastructure\//, 'Controller application façade must not wildcard-export infrastructure');
 // B4 Scheduler continuation authority: Schedule owns occurrence state only;
@@ -1256,7 +1255,6 @@ for (const path of sourceFiles('src')) {
   forbid(path, /(?:from\s+['"]|import\s*\(\s*['"])[^'"]*controller-session-store['"]/, 'production source must consume packages/kernel/controller instead of retired ControllerSession facade authority');
 }
 const B7_KERNEL_INTERNAL_COMPATIBILITY_SHIMS = new Set([
-  'src/runtime/control-plane/facade/controller-session-store.ts',
   'src/runtime/control-plane/facade/work-contract-store.ts',
   'src/runtime/control-plane/facade/types.ts',
   'src/runtime/workflow/schedules/settlement.ts',

@@ -13,7 +13,7 @@ import {
   finishControllerRoundRelayDispatch,
   getControllerRoundRelay,
 } from '../packages/kernel/controller/api/index';
-import { claimControllerSession, releaseControllerSession } from '../src/runtime/control-plane/facade/controller-session-store';
+import { claimControllerSession, releaseControllerSession } from '../packages/kernel/controller/api/index';
 import { createWorkContract } from '../src/runtime/control-plane/facade/work-contract-store';
 import { createHandoffItem } from '../src/runtime/control-plane/facade/handoff-inbox-store';
 import { listUserRequests } from '../packages/kernel/identity/api/index';

@@ -10,7 +10,7 @@ import {
   getControllerSession,
   mintControllerSessionAuthority,
   resumeControllerSession,
-} from '../../src/runtime/control-plane/facade/controller-session-store';
+} from '../../packages/kernel/controller/api/index';
 import { bindControllerOwnershipForInvocation, recoverDirectControllerAuthority } from '../../src/runtime/control-plane/execution/controller-authority-recovery';
 import { invalidateExecutionSession, startExecutionSession } from '../../src/runtime/control-plane/execution/session-store';
 import { createWorkContract, reviseWorkSemanticContext } from '../../src/runtime/control-plane/facade/work-contract-store';
