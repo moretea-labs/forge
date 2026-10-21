@@ -13,6 +13,7 @@ import {
   getWorkContract,
   readActiveWorkCandidates,
   readWorkContractStore,
+  readWorkContractLineageSnapshot,
   recordWorkEvidenceState,
   promoteWorkToRepositoryChange,
   reviseWorkSemanticContext,
@@ -370,4 +371,26 @@ test('projects historical v3 read-only and persists the review-gap migration wit
     value: malformed, action: 'fixture_malformed_current_v3', expectedRevision: malformedRecord.revision,
   });
   expect(getWorkContract(options, malformedId)).toMatchObject({ workId: malformedId, semanticState: 'open' });
+
+  // A legacy-only Controller Home must not import rows merely because a
+  // ControllerRound inspects Work lineage. The explicit compatibility index
+  // import remains available to the normal Work-contract collection reader.
+  const legacyHome = mkdtempSync(join(tmpdir(), 'forge-work-legacy-lineage-'));
+  homes.push(legacyHome);
+  const legacyScope = 'repo-legacy-lineage-projection';
+  const legacyWork = { ...record.value, repoId: legacyScope };
+  writeControlPlaneRecord(legacyHome, {
+    namespace: 'work_contract_store', scope: legacyScope, key: 'index', schemaVersion: 3,
+    value: { schemaVersion: 3, updatedAt: record.updatedAt, contracts: [legacyWork] },
+    action: 'fixture_legacy_index', expectedRevision: null,
+  });
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const lineage = readWorkContractLineageSnapshot({ controllerHome: legacyHome, repoId: legacyScope });
+    expect(lineage.invalid).toEqual([]);
+    expect(lineage.contracts).toMatchObject([{ workId: fx.workId, schemaVersion: 4 }]);
+    expect(readControlPlaneRecord<WorkContract>(legacyHome, 'work_contract', legacyScope, fx.workId)).toBeUndefined();
+  }
+  expect(readWorkContractStore({ controllerHome: legacyHome, repoId: legacyScope }).contracts)
+    .toMatchObject([{ workId: fx.workId, schemaVersion: 4 }]);
+  expect(readControlPlaneRecord<WorkContract>(legacyHome, 'work_contract', legacyScope, fx.workId)?.schemaVersion).toBe(4);
 });
