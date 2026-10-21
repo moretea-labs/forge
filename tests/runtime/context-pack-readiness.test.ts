@@ -72,6 +72,20 @@ test('treats lossless exact-known window materialization as sufficient despite l
   expect(pack.search.truncated).toBe(true);
   expect(pack.files[0]?.snippets.length).toBeGreaterThan(0);
   expect(pack.files[0]?.snippets.every((snippet) => !snippet.truncated)).toBe(true);
+  // Implementation retrieval is lexical by default: it must not launch a
+  // second TypeScript compiler sidecar just to bound ordinary source windows.
+  expect(pack.files[0]?.snippets.every((snippet) => snippet.materialization === 'line_window')).toBe(true);
+  const reviewed = buildControllerContextPack(root, getMcpPolicy('controller'), {
+    description: 'Inspect WINDOW_MARKER in the exact known implementation file.',
+    searchTerms: ['WINDOW_MARKER'],
+    knownPaths: ['src/exact-window.ts'],
+    retrievalMode: 'review',
+    structuralContext: 'off',
+    maxFiles: 1,
+    maxSnippets: 2,
+    maxCharsPerSnippet: 2400,
+  });
+  expect(reviewed.files[0]?.snippets.some((snippet) => snippet.materialization === 'symbol')).toBe(true);
   expect(pack.readiness.unresolvedReasonCodes).not.toContain('retrieval_truncated');
   expect(pack.readiness.status).toBe('ready');
   expect(pack.readiness.readyForHighConfidenceMutation).toBe(true);

@@ -183,6 +183,11 @@ export function buildControllerContextPack(
   let rangeCacheHits = 0;
   let rangeCacheMisses = 0;
   const structuralMode = options.structuralContext ?? "off";
+  // Plain implementation source search returns bounded raw line windows. The
+  // compiler symbol sidecar is only needed for an explicitly broader review
+  // or a requested structural investigation, never as an implicit second
+  // subprocess for every long TypeScript file in ordinary code discovery.
+  const preferSymbolRanges = retrievalMode !== "implementation" || structuralMode !== "off";
   const structuralIndexRoot = options.structuralIndexRoot?.trim() || repoRoot;
   const indexSource = structuralIndexRoot === repoRoot ? "current_checkout" : "repository_baseline";
   let overlayChangedFiles = indexSource === "repository_baseline" ? gitStatusChangedPaths(git.status) : [];
@@ -535,6 +540,7 @@ export function buildControllerContextPack(
         maxSnippets: Math.min(options.maxSnippets === undefined && !exactKnown ? 2 : fileSnippetBudget, remainingSnippets),
         maxCharsPerSnippet: exactKnown && options.maxCharsPerSnippet === undefined ? 8000 : maxCharsPerSnippet,
         session: options.session,
+        preferSymbolRanges,
       });
       for (const snippet of snippets) {
         if (snippet.cacheHit) rangeCacheHits += 1;
@@ -627,6 +633,7 @@ export function buildControllerContextPack(
             maxSnippets: Math.min(3, remainingSnippets),
             maxCharsPerSnippet,
             session: options.session,
+            preferSymbolRanges,
           });
           for (const snippet of snippets) {
             if (snippet.cacheHit) rangeCacheHits += 1;
@@ -671,6 +678,7 @@ export function buildControllerContextPack(
         maxSnippets: remainingSnippets,
         maxCharsPerSnippet,
         session: options.session,
+        preferSymbolRanges,
       });
       for (const snippet of snippets) {
         if (snippet.cacheHit) rangeCacheHits += 1;
