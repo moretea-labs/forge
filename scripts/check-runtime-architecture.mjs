@@ -1776,6 +1776,8 @@ forbid(
 requireText('src/cli/local-bridge/server.ts', 'app.post(path, retireLegacyIssueMutation)');
 requireText('src/cli/local-bridge/server.ts', 'app.patch("/api/project-state", retireLegacyIssueMutation)');
 requireText('src/cli/local-bridge/server.ts', 'runEditSessionMutationInWorker(');
+requireText('src/cli/local-bridge/server.ts', 'withRepositoryMutationExclusionAsync(');
+requireText('src/runtime/resources/leases/store.ts', 'assertRepositoryProcessMutationAvailable(controllerHome, repoId, owner)');
 forbid('src/cli/local-bridge/server.ts', /\b(?:rollbackEditSession|finalizeEditSession)\s*\(/, 'Local Bridge edit mutations must run off-thread under the existing repository lock');
 forbid(
   'adapters/mcp/tool-mapping/legacy-tool-service.ts',

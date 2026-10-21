@@ -6,6 +6,7 @@ import { buildPatchHandoffArtifact } from '../../runtime/recovery/patch-handoff'
 import { executeRepositoryGitCommand, type RepositoryGitExecution } from './git-command-executor';
 import { resolveRepositoryGitCommitScope } from './structured-git';
 import { withControllerLock } from './locks';
+import { withRepositoryMutationExclusion } from '../../runtime/resources/leases/store';
 import type { RepositoryRecord } from './types';
 
 const DEFAULT_MAX_OUTPUT_BYTES = 128 * 1024;
@@ -273,7 +274,11 @@ export function commitSelectedPaths(
     controllerHome,
     { scope: 'worktree', repoId: repository.repoId, worktreeId: repository.activeCheckoutId },
     `selected-path-commit:${repository.activeCheckoutId}`,
-    () => {
+    () => withRepositoryMutationExclusion(
+      controllerHome,
+      repository.repoId,
+      `selected-path-commit:${repository.activeCheckoutId}`,
+      () => {
   // Refuse a stale Work before even staging its selected files. This
   // preserves the existing index on rejected checkout/HEAD ownership.
   input.beforeStageGuard?.();
@@ -322,7 +327,8 @@ export function commitSelectedPaths(
           ? { error: { code: 'SELECTED_PATH_COMMIT_FAILED', message: commit.stderr || 'git commit failed for selected paths' } }
           : {}),
       };
-    },
+      },
+    ),
   );
 }
 

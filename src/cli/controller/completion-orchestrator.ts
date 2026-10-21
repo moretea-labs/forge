@@ -9,7 +9,7 @@ import { finalizeEditSession, getEditSession, revalidateEditSessionOwnership, ro
 import { getMcpPolicy } from '../../../adapters/mcp/policy';
 import { resolveRepoPreferredControllerHome } from '../../effects/controller-home';
 import { withControllerLock } from '../repositories/locks';
-import { listActiveLeases } from '../../runtime/resources/leases/store';
+import { listActiveLeases, withRepositoryMutationExclusion } from '../../runtime/resources/leases/store';
 import { acceptVerifiedTask, getIssue, projectIssueEffectiveView, recordTaskVerification, updateTask } from './issue-store';
 import { cleanupEvidenceResourceBlockers, completionEvidenceComplete } from './execution-policy';
 import { currentCompletionTarget, resolveCompletionTargetBranch } from './completion-target';
@@ -1613,9 +1613,9 @@ function withLegacyCompletionWrite<T>(
     cutover.controllerHome,
     { scope: 'global', resource },
     `completion:${identity}`,
-    () => withControllerLock(
+    () => withRepositoryMutationExclusion(
       cutover.controllerHome,
-      { scope: 'repository', repoId: cutover.repoId! },
+      cutover.repoId!,
       `completion:${identity}`,
       operation,
     ),

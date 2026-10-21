@@ -10,6 +10,7 @@ import { readWorkHandle } from '../../../src/runtime/control-plane/execution/wor
 import { ensureRunningRepositoryWorkCheckout } from '../../../src/runtime/control-plane/execution/retained-work-resume';
 import { executeRepositoryCommand, previewRepositoryCommandExecution } from '../../../src/cli/repositories/command-executor';
 import { withControllerLock } from '../../../src/cli/repositories/locks';
+import { withRepositoryMutationExclusion } from '../../../src/runtime/resources/leases/store';
 import {
   disableRepository,
   findIdenticalRepositoryRegistration,
@@ -949,9 +950,9 @@ export async function callRepositoryTool(
       case 'repository_safe_patch_apply': {
         const repository = resolveRepositorySelectionForClaimedWork(controllerHome, args, repoIdValue, caller);
         const binding = safePatchEditBinding(controllerHome, repository, caller, args);
-        const applied = withControllerLock(
+        const applied = withRepositoryMutationExclusion(
           controllerHome,
-          { scope: 'repository', repoId: repository.repoId },
+          repository.repoId,
           'mcp:repository_safe_patch_apply',
           () => {
             if (args.validation_only !== true) {
