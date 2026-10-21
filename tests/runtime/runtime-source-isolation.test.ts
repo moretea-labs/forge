@@ -1373,10 +1373,13 @@ printf '{"ok":true}\\n'
     const allowed = (await search('src/index.ts', 3, definitionLine.indexOf('helper') + 2)).data as {
       readiness?: { status?: string; readyForHighConfidenceMutation?: boolean; semantic?: { status?: string; reasonCodes?: string[] } };
       semanticNavigation?: { policyDeniedReads?: number; materialPolicyDeniedReads?: number; staticClosure?: { status?: string } };
+      semanticEvidence?: { totalLocations?: number; returnedLocations?: number; truncated?: boolean; locations?: Array<{ path?: string; line?: number; column?: number; navigation?: string }> };
     };
     expect(allowed.semanticNavigation?.policyDeniedReads).toBeGreaterThan(0);
     expect(allowed.semanticNavigation?.materialPolicyDeniedReads).toBe(0);
     expect(allowed.semanticNavigation?.staticClosure?.status).toBe('complete_for_requested_symbols');
+    expect(allowed.semanticEvidence?.locations).toContainEqual(expect.objectContaining({ path: 'src/helper.ts', line: 1, navigation: 'definition' }));
+    expect(allowed.semanticEvidence?.returnedLocations).toBeGreaterThan(0);
     expect(allowed.readiness).toMatchObject({ status: 'ready', readyForHighConfidenceMutation: true, semantic: { status: 'ready', reasonCodes: [] } });
     const denied = (await search('node_modules/dummy-dependency/index.d.ts', 1, 20)).data as {
       readiness?: { status?: string; semantic?: { reasonCodes?: string[] } };
