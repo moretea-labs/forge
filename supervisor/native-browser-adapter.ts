@@ -1114,7 +1114,9 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       // may have lost its hydrated history while that preparation was in
       // progress. Re-attest the exact target before spending a dispatch
       // generation or permitting Send, and use this fresh causal baseline.
-      snapshot = await target.observe({ includeUserHistory: false, includePageText: false });
+      // Keep full user-message history for the existing reconcile fallback if
+      // the dispatch generation is refused by a concurrent journal update.
+      snapshot = await target.observe({ includeUserHistory: true, includePageText: false });
       if (!exactConversation(snapshot, task)) {
         this.noteTargetUnavailable(task, command.effectId, { code: 'WORKFLOW_SUPERVISOR_EXACT_CONVERSATION_UNPROVEN' });
         return;
