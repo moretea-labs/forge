@@ -175,6 +175,41 @@ describe('Thin capability substrate', () => {
     expect(findActiveCanonicalGrant(controllerHome, {
       principalId: 'time-bound-owner', capability: 'browser:read', at: new Date('2026-10-21T11:01:00.000Z'),
     })).toBeUndefined();
+    const boundFirst = recordCanonicalGrant(controllerHome, {
+      principalId: 'device-bound-owner', ownerScope: 'controller:devices',
+      target: { kind: 'desktop_app', id: 'some-app' },
+      capabilities: ['credential:use'], scopes: ['credential.fill'],
+      riskCeiling: 'workspace_write',
+      constraints: { deviceId: 'local-device-a', use: { purpose: 'sign-in', limit: 1 } },
+    });
+    expect(() => recordCanonicalGrant(controllerHome, {
+      grantId: boundFirst.grantId,
+      principalId: 'device-bound-owner', ownerScope: 'controller:devices',
+      target: { kind: 'desktop_app', id: 'some-app' },
+      capabilities: ['credential:use'], scopes: ['credential.fill'],
+      riskCeiling: 'workspace_write',
+      constraints: { deviceId: 'local-device-b', use: { purpose: 'sign-in', limit: 1 } },
+    })).toThrow('GRANT_IDENTITY_SCOPE_CHANGE_REQUIRES_NEW_ENROLLMENT');
+    expect(listCanonicalGrants(controllerHome).find((row) => row.grantId === boundFirst.grantId)?.constraints).toEqual(boundFirst.constraints);
+    const boundSecond = recordCanonicalGrant(controllerHome, {
+      principalId: 'device-bound-owner', ownerScope: 'controller:devices',
+      target: { kind: 'desktop_app', id: 'some-app' },
+      capabilities: ['credential:use'], scopes: ['credential.fill'],
+      riskCeiling: 'workspace_write',
+      constraints: { deviceId: 'local-device-b', use: { purpose: 'sign-in', limit: 1 } },
+    });
+    expect(boundSecond.grantId).not.toBe(boundFirst.grantId);
+    expect(listCanonicalGrants(controllerHome).filter((row) => [boundFirst.grantId, boundSecond.grantId].includes(row.grantId))).toHaveLength(2);
+    const replayBound = recordCanonicalGrant(controllerHome, {
+      grantId: boundFirst.grantId,
+      principalId: 'device-bound-owner', ownerScope: 'controller:devices',
+      target: { kind: 'desktop_app', id: 'some-app' },
+      capabilities: ['credential:use'], scopes: ['credential.fill'],
+      riskCeiling: 'workspace_write',
+      constraints: { use: { limit: 1, purpose: 'sign-in' }, deviceId: 'local-device-a' },
+    });
+    expect(replayBound.grantId).toBe(boundFirst.grantId);
+    expect(listCanonicalGrants(controllerHome).find((row) => row.grantId === boundSecond.grantId)).toBeDefined();
     expect(() => recordCanonicalGrant(controllerHome, {
       grantId: leastPrivilege.grantId,
       principalId: 'different-principal',
