@@ -193,7 +193,11 @@ export function repositoryGitStatus(repository: RepositoryRecord): RepositoryGit
   };
 }
 
-export function repositoryGitDiff(repository: RepositoryRecord, input: { staged?: unknown; paths?: unknown; maxBytes?: unknown } = {}): RepositoryGitDiffResult {
+function repositoryGitDiffWithIdentity(
+  repository: RepositoryRecord,
+  input: { staged?: unknown; paths?: unknown; maxBytes?: unknown },
+  identity?: Pick<RepositoryGitStatusSnapshot, 'branch' | 'head'>,
+): RepositoryGitDiffResult {
   const maxBytes = boundedOutputBytes(input.maxBytes);
   const staged = input.staged === true;
   const paths = normalizePaths(input.paths);
@@ -205,8 +209,8 @@ export function repositoryGitDiff(repository: RepositoryRecord, input: { staged?
   return {
     repoId: repository.repoId,
     checkoutId: repository.activeCheckoutId,
-    branch: gitText(repository, ['branch', '--show-current']),
-    head: gitText(repository, ['rev-parse', '--verify', 'HEAD']),
+    branch: identity ? identity.branch : gitText(repository, ['branch', '--show-current']),
+    head: identity ? identity.head : gitText(repository, ['rev-parse', '--verify', 'HEAD']),
     staged,
     paths,
     nameOnly,
@@ -214,6 +218,10 @@ export function repositoryGitDiff(repository: RepositoryRecord, input: { staged?
     patch,
     truncated: patch.length >= maxBytes,
   };
+}
+
+export function repositoryGitDiff(repository: RepositoryRecord, input: { staged?: unknown; paths?: unknown; maxBytes?: unknown } = {}): RepositoryGitDiffResult {
+  return repositoryGitDiffWithIdentity(repository, input);
 }
 
 /**
@@ -224,17 +232,39 @@ export function repositoryGitDiff(repository: RepositoryRecord, input: { staged?
 export function repositoryGitWorkspaceChanges(
   repository: RepositoryRecord,
   maxBytes = 64 * 1024,
+  options: { detail?: 'summary' | 'detail' } = {},
 ): {
   status: RepositoryGitStatusSnapshot;
   staged: RepositoryGitDiffResult;
   unstaged: RepositoryGitDiffResult;
   changedPaths: string[];
-  diff: { nameOnly: string[]; stat: string; patch: string; truncated: boolean };
+  diff: { nameOnly: string[]; stat: string; patch: string; truncated: boolean; omitted?: boolean };
 } {
   const status = repositoryGitStatus(repository);
   const sliceBytes = Math.max(1024, Math.floor(boundedOutputBytes(maxBytes) / 2));
-  const staged = repositoryGitDiff(repository, { staged: true, maxBytes: sliceBytes });
-  const unstaged = repositoryGitDiff(repository, { maxBytes: sliceBytes });
+  // Summary needs changed paths, not six synchronous Git diff invocations.
+  // The status snapshot is already the authority for these path categories.
+  const statusOnlySlice = (staged: boolean): RepositoryGitDiffResult => ({
+    repoId: status.repoId,
+    checkoutId: status.checkoutId,
+    branch: status.branch,
+    head: status.head,
+    staged,
+    paths: [],
+    nameOnly: staged ? status.staged : status.unstaged,
+    stat: '',
+    patch: '',
+    truncated: false,
+  });
+  const detailed = options.detail !== 'summary';
+  // A detailed snapshot reuses the same branch and HEAD. Without this, both
+  // staged and unstaged diffs each repeat two synchronous Git subprocesses.
+  const staged = detailed
+    ? repositoryGitDiffWithIdentity(repository, { staged: true, maxBytes: sliceBytes }, status)
+    : statusOnlySlice(true);
+  const unstaged = detailed
+    ? repositoryGitDiffWithIdentity(repository, { maxBytes: sliceBytes }, status)
+    : statusOnlySlice(false);
   const changedPaths = [...new Set([...staged.nameOnly, ...unstaged.nameOnly, ...status.untracked])].sort();
   return {
     status,
@@ -246,6 +276,7 @@ export function repositoryGitWorkspaceChanges(
       stat: [staged.stat, unstaged.stat].filter(Boolean).join('\n'),
       patch: [staged.patch, unstaged.patch].filter(Boolean).join('\n'),
       truncated: staged.truncated || unstaged.truncated,
+      ...(detailed ? {} : { omitted: true }),
     },
   };
 }

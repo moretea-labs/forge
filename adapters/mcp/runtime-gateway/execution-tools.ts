@@ -36,7 +36,7 @@ export const executionToolDefinitions: McpToolDefinition[] = [
     dirty_overlap_proofs: { type: 'array', maxItems: 20, description: 'Explicit attested content fingerprints for every overlapping unstaged tracked file; metadata-only successor adoption preserves files and index unchanged.', items: { type: 'object', properties: { path: { type: 'string' }, worktree_sha256: { type: 'string' }, index_blob_oid: { type: 'string' } }, required: ['path', 'worktree_sha256', 'index_blob_oid'], additionalProperties: false } },
     relocate_to_new_worktree: { type: 'boolean', description: 'Move this existing Work identity to its own managed worktree, with exact previous/candidate HEADs and base_ref. WorkHandle and WorkContract placement commit atomically; the source checkout is not mutated.' },
   }, [], false),
-  definition('work_inspect', 'Collect bounded Git, WorkContract, changed-path, check, and readiness evidence through one work handle.', { session_id: sessionId, repo_id: repoId, work_id: workId, detail: { type: 'string', enum: ['summary', 'detail'] } }, ['work_id'], true),
+  definition('work_inspect', 'Inspect one WorkHandle. Summary (default) returns Git status and changed paths without computing patches; detail includes bounded staged/unstaged diffs.', { session_id: sessionId, repo_id: repoId, work_id: workId, detail: { type: 'string', enum: ['summary', 'detail'] } }, ['work_id'], true),
   definition('work_validate', 'Run targeted checks or read-only validation commands against a work handle with full current-state validation.', {
     session_id: sessionId, controller_id: { type: 'string', description: 'Controller identity that holds the Work lease. Defaults to the authenticated principal.' }, repo_id: repoId, work_id: workId, check_ids: { type: 'array', items: { type: 'string' } }, commands: { type: 'array', items: { type: 'object' } }, interactive_wait_ms: { type: 'number', description: 'Optional bounded attach window for checks launched by this validation call. Defaults to asynchronous behavior.' },
   }, ['work_id'], false),
@@ -121,7 +121,8 @@ function inspectWork(ctx: MultiRepositoryMcpToolContext, args: Record<string, un
     recordMcpTiming(ctx.controllerHome, trace);
     return response;
   }
-  const candidate = repositoryGitWorkspaceChanges(validated.worktreeRepository);
+  const detail = args.detail === 'detail' ? 'detail' : 'summary';
+  const candidate = repositoryGitWorkspaceChanges(validated.worktreeRepository, 64 * 1024, { detail });
   const { status, diff } = candidate;
   const checks = contract?.checks ?? [];
   const packageManifest = existsSync(`${validated.worktreeRepository.canonicalRoot}/package.json`)
@@ -142,7 +143,11 @@ function inspectWork(ctx: MultiRepositoryMcpToolContext, args: Record<string, un
     } : undefined,
     continuation: contract ? buildWorkContinuationSnapshot(contract) : undefined,
     paths: { changed: candidate.changedPaths },
-    checks: checks.map((checkId) => ({ checkId, registered: listControllerChecks(validated.worktreeRepository.canonicalRoot).some((check) => check.id === checkId) })),
+    checks: (() => {
+      // Read the check registry once, not once per required check.
+      const registered = new Set(checks.length ? listControllerChecks(validated.worktreeRepository.canonicalRoot).map((check) => check.id) : []);
+      return checks.map((checkId) => ({ checkId, registered: registered.has(checkId) }));
+    })(),
     package: packageManifest ? { name: packageManifest.name, scripts: packageManifest.scripts } : undefined,
   };
   const response = makeBoundedWorkResult(ctx, session, handle.repositoryId, handle.workId, 'inspection', value);
