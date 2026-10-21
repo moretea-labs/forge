@@ -20,7 +20,12 @@ const MAX_PREFERRED_TOOL_COUNT = 24;
 // changes the complete registry; preferred tool names/schema remain unchanged.
 // 2026-10-21: two error-only retired Agent/Local Job submission aliases were
 // deleted from the public MCP registry; keep all other schema/name guards.
-const EXPECTED_EXPOSED_NAME_FINGERPRINT = '8cb7153fa2de1612';
+// 2026-10-21 audit round 3: four legacy compatibility names were retired from
+// the public registry because the modern registry already owns the capability
+// (repository_git_diff/git_diff_paths for get_git_diff; the GitHub plugin
+// manifest via get_plugin and plugin_action_execute action 'configure' for
+// github_status, get_github_plugin_status, configure_github_plugin).
+const EXPECTED_EXPOSED_NAME_FINGERPRINT = '2134f5ca8294c5fc';
 
 // #197 decomposition authority: the public/frozen Tool Contract is an explicit
 // baseline, independent from whichever internal adapter currently defines a

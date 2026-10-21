@@ -59,7 +59,6 @@ const EXECUTION_STORAGE_TOOLS = new Set([
 
 const REPOSITORY_LOCKED_TOOLS = new Set([
   ...EXECUTION_STORAGE_TOOLS,
-  'configure_github_plugin',
 ]);
 
 
@@ -287,7 +286,7 @@ export function repositoryScopedToolArgs(
 
   const github = repository.github;
   const githubRepo = github ? `${github.owner}/${github.repo}` : undefined;
-  if (githubRepo && ['github_status', 'publish_issue_to_github'].includes(name) && args.repo === undefined) {
+  if (githubRepo && name === 'publish_issue_to_github' && args.repo === undefined) {
     args.repo = githubRepo;
   }
   if (githubRepo && ['dispatch_task', 'launch_issue', 'dispatch_ready_tasks'].includes(name) && args.github_repo === undefined) {
