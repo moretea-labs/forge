@@ -288,6 +288,16 @@ test('persists the exact historical v3 review-gap migration once without making 
   });
   const seeded = readControlPlaneRecord<WorkContract>(fx.controllerHome, 'work_contract', fx.repoId, fx.workId)!;
 
+  // Admission is a repeated read-only projection, not a historical schema writer.
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const candidate = readActiveWorkCandidates({ ...options, limit: 20 }).contracts
+      .find((contract) => contract.workId === fx.workId);
+    expect(candidate?.phaseEvidence.review).toBeDefined();
+    const unchanged = readControlPlaneRecord<WorkContract>(fx.controllerHome, 'work_contract', fx.repoId, fx.workId)!;
+    expect(unchanged.revision).toBe(seeded.revision);
+    expect(unchanged.schemaVersion).toBe(3);
+  }
+
   const migrated = getWorkContract(options, fx.workId)!;
   expect(migrated.phaseEvidence.review).toBeDefined();
   const persisted = readControlPlaneRecord<WorkContract>(fx.controllerHome, 'work_contract', fx.repoId, fx.workId)!;

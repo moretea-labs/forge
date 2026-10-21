@@ -1084,9 +1084,10 @@ export function readActiveWorkCandidates(
         scope: SEMANTIC_SCOPE_KEY,
         limit: 5_000,
       }));
+  // Scheduler admission only projects historical rows; exact Work access owns
+  // one-time schema persistence, so polling cannot advance Work revisions.
   const contracts: WorkContract[] = [];
   const invalid: InvalidActiveWorkCandidate[] = [];
-  const migrations: Array<{ record: (typeof records)[number]; contract: WorkContract }> = [];
   for (const record of records) {
     // Exact Work reads already prefer semantic scope over repository-scoped
     // compatibility rows. Collection reads must preserve the same one-authority
@@ -1096,7 +1097,6 @@ export function readActiveWorkCandidates(
     if (!rawWorkMayBeCurrent(raw)) continue;
     try {
       const normalized = canonicalizeStoredWorkContract(raw, record.schemaVersion);
-      if (storedWorkContractNeedsMigration(raw, record.schemaVersion)) migrations.push({ record, contract: normalized });
       if (isCurrentWorkContract(normalized)) contracts.push(normalized);
     } catch (error) {
       invalid.push({
@@ -1111,21 +1111,6 @@ export function readActiveWorkCandidates(
         error: error instanceof Error ? error.message : String(error),
       });
     }
-  }
-  if (migrations.length > 0) {
-    withControlPlaneTransaction(options.controllerHome, (database) => {
-      for (const { record, contract } of migrations) {
-        writeControlPlaneRecordWithinTransaction(database, {
-          namespace: 'work_contract',
-          scope: workContractStoreScopeKey(options),
-          key: contract.workId,
-          schemaVersion: 4,
-          value: contract,
-          action: 'work_contract_schema_v4_migrated',
-          expectedRevision: record.revision,
-        });
-      }
-    });
   }
   contracts.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
   invalid.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
