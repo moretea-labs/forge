@@ -81,6 +81,7 @@ export interface WorkflowAssetDefinition {
   inputs?: Record<string, WorkflowJsonValue>;
   inputContract?: Record<string, WorkflowInputContract>;
   credentialRefs?: Record<string, WorkflowCredentialReference>;
+  /** Legacy authored inventory only; runtime capability bindings come from executable steps. */
   requiredCapabilities?: string[];
   steps: WorkflowStepDefinition[];
   prompts?: Record<string, string>;
@@ -93,6 +94,16 @@ export interface WorkflowAssetDefinition {
 }
 
 export type WorkflowAssetDraft = Omit<WorkflowAssetDefinition, 'contentDigest'>;
+
+/** Single source for action and reconciliation dependencies; never trust a duplicated inventory for grants. */
+export function workflowCapabilityDependencies(asset: Pick<WorkflowAssetDefinition, 'steps'>): string[] {
+  const capabilities = new Set<string>();
+  for (const step of asset.steps) {
+    if (step.kind !== 'script') capabilities.add(step.capabilityId);
+    if (step.reconcileWithCapabilityId) capabilities.add(step.reconcileWithCapabilityId);
+  }
+  return [...capabilities].sort();
+}
 
 const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const VERSION_PATTERN = /^[A-Za-z0-9][A-Za-z0-9.+_-]{0,63}$/;
