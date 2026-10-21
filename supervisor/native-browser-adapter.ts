@@ -456,6 +456,16 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     this.noteTaskFailure(failure.code, task, effectId);
   }
 
+  private taskConversationContentAvailable(task: WorkflowSupervisorBrowserTask, snapshot: ComputerChatgptConversationObservation): boolean {
+    if (!conversationContentAvailable(snapshot)) return false;
+    // A hydrated composer is enough for a genuinely new enrollment, but not
+    // evidence that an established conversation's history has loaded.
+    // Avoid sending a continuation into a blank old shell after a completed
+    // source turn. The canonical completion journal owns that distinction.
+    if (snapshot.isGenerating || snapshot.latestUserText.trim() || snapshot.latestAssistantResponse.trim()) return true;
+    return this.control.store.getLatestCompletion(task.taskId) === undefined;
+  }
+
   private observeVerifiedEmptyShell(
     task: WorkflowSupervisorBrowserTask,
     effectId: string | undefined,
@@ -468,7 +478,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       ? chatgptProviderPageFailure(observation.providerFailureText) : undefined;
     if (providerFailure) noteChatgptProviderBackpressure(this.deps.providerScopeKey, providerFailure, this.deps.nowMs());
     const verified = exactUrl && !observation.providerFailureText.trim()
-      && !conversationContentAvailable(observation)
+      && !this.taskConversationContentAvailable(task, observation)
       && !this.lastRunTransportUnavailable
       && this.conversations.some((conversation) => conversation.conversation_id === task.conversationId)
       && chatgptProviderBackpressureRemainingMs(this.deps.providerScopeKey, this.deps.nowMs()) === 0;
@@ -778,7 +788,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     if (ensured.state !== 'ready') {
       const verifiedEmpty = ensured.failure.code === 'COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE'
         && ensured.observation !== undefined
-        && !conversationContentAvailable(ensured.observation);
+        && !this.taskConversationContentAvailable(task, ensured.observation);
       if (verifiedEmpty) {
         this.observeVerifiedEmptyShell(task, poll.command?.effectId, poll.command, ensured.observation!);
       } else {
@@ -796,7 +806,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     const target = ensured.target;
     const snapshot = ensured.observation ?? await target.observe({ includeUserHistory: false, includePageText: false });
     if (!exactConversation(snapshot, task)) { this.noteTargetUnavailable(task, poll.command?.effectId, { code: 'WORKFLOW_SUPERVISOR_EXACT_CONVERSATION_UNPROVEN' }); return; }
-    if (!conversationContentAvailable(snapshot)) {
+    if (!this.taskConversationContentAvailable(task, snapshot)) {
       this.observeVerifiedEmptyShell(task, poll.command?.effectId, poll.command, snapshot);
       return;
     }
@@ -1074,7 +1084,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       this.noteTargetUnavailable(task, command.effectId, { code: 'WORKFLOW_SUPERVISOR_EXACT_CONVERSATION_UNPROVEN' });
       return;
     }
-    if (!conversationContentAvailable(snapshot)) {
+    if (!this.taskConversationContentAvailable(task, snapshot)) {
       this.observeVerifiedEmptyShell(task, command.effectId, command, snapshot);
       return;
     }

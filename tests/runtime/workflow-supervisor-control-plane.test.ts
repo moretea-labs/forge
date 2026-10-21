@@ -3908,6 +3908,7 @@ test('final assistant receipt successor waits for observed provider idle before 
   // In-flight generation must never trigger a successor send, even if a
   // compatible prior receipt appears in the visible response.
   let submittedText = '继续。';
+  let blankTimeline = false;
   let owner = `forge-workflow-supervisor:created:${conversationId}`;
   let generating = true;
   let closeCount = 0;
@@ -3959,8 +3960,8 @@ test('final assistant receipt successor waits for observed provider idle before 
         };
       }
       return {
-        url: conversationUrl, title: 'Tool-only completed turn', latestUserText: submittedText,
-        latestAssistantResponse: '', latestTurnRole: 'user' as const,
+        url: conversationUrl, title: 'Tool-only completed turn', latestUserText: blankTimeline ? '' : submittedText,
+        latestAssistantResponse: '', composerText: '', latestTurnRole: 'user' as const,
         isGenerating: generating, providerActivityText: '', providerFailureText: '',
       };
     },
@@ -3985,6 +3986,12 @@ test('final assistant receipt successor waits for observed provider idle before 
   generating = false;
   nowMs += 1_500;
   storeClockMs += 4 * 60_000;
+  blankTimeline = true;
+  await adapter.runOnce();
+  expect(dispatched).toEqual([]);
+  expect(store.latestEffectDispatch(successor!.effectId)).toBeUndefined();
+  blankTimeline = false;
+  nowMs += 15 * 60_000;
   await adapter.runOnce();
   expect(dispatched).toEqual([successor!.prompt]);
   expect(store.latestEffectDispatch(successor!.effectId)?.generation).toBe(1);
