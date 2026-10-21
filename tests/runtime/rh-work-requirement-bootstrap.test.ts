@@ -104,7 +104,7 @@ describe('rh_work Requirement bootstrap', () => {
       objective: 'Verify semantic project onboarding at Work admission.',
       requested_by: 'user',
       scope_clear: true,
-      work_kind: 'completed_no_change',
+      work_kind: 'repository_change',
     }));
     expect(started.status).toBe('ok');
     expect(started.data.projectOnboarding).toMatchObject({

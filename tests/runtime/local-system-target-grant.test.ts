@@ -963,7 +963,7 @@ describe('local_system target adapter', () => {
     expect(signals).toHaveLength(0);
   });
 
-  test('restarts only a loaded user LaunchAgent whose program identity matches', async () => {
+  test.skipIf(process.platform !== 'darwin')('restarts only a loaded user LaunchAgent whose program identity matches', async () => {
     const controllerHome = temp('forge-local-system-launchagent-controller-');
     const commands: string[][] = [];
     setLocalSystemPluginHooksForTest({
@@ -988,7 +988,7 @@ describe('local_system target adapter', () => {
     expect(commands[1][2]).toBe('-k');
   });
 
-  test('schedules a self-restart helper instead of synchronously killing the Runtime that serves the request', async () => {
+  test.skipIf(process.platform !== 'darwin')('schedules a self-restart helper instead of synchronously killing the Runtime that serves the request', async () => {
     const controllerHome = temp('forge-local-system-self-restart-controller-');
     const commands: string[][] = [];
     const scheduled: string[] = [];
@@ -1022,7 +1022,7 @@ describe('local_system target adapter', () => {
     expect(scheduled).toEqual([`gui/${process.getuid!()}/${label}`]);
   });
 
-  test('stops and starts only a verified current-user LaunchAgent from its installed plist', async () => {
+  test.skipIf(process.platform !== 'darwin')('stops and starts only a verified current-user LaunchAgent from its installed plist', async () => {
     const controllerHome = temp('forge-local-system-launchagent-lifecycle-controller-');
     const home = temp('forge-local-system-launchagent-home-');
     const launchAgents = join(home, 'Library', 'LaunchAgents');
@@ -1063,7 +1063,7 @@ describe('local_system target adapter', () => {
     }
   });
 
-  test('start user LaunchAgent fails closed when the installed plist identity mismatches', async () => {
+  test.skipIf(process.platform !== 'darwin')('start user LaunchAgent fails closed when the installed plist identity mismatches', async () => {
     const controllerHome = temp('forge-local-system-launchagent-mismatch-controller-');
     const home = temp('forge-local-system-launchagent-mismatch-home-');
     const launchAgents = join(home, 'Library', 'LaunchAgents');
