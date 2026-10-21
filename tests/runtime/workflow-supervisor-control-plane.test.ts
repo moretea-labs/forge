@@ -3718,8 +3718,10 @@ test('a terminal conversation capacity banner migrates the same Supervisor but q
     snapshot: async (observedPage) => ({
       url: observedPage === page ? conversationUrl : 'https://chatgpt.com/g/g-p-123456789abcdef0/project',
       title: 'Avela',
-      latestUserText: observedPage === page ? 'Original durable effect already submitted.' : '',
-      latestAssistantResponse: '', providerActivityText: observedPage === page ? warning : '',
+      // The live capacity banner can outlive hydration of the old transcript.
+      // A quoted activity line without a live failure remains insufficient.
+      latestUserText: observedPage === page && !activeStatus ? 'Original durable effect already submitted.' : '',
+      latestAssistantResponse: '', providerActivityText: observedPage === page && !activeStatus ? warning : '',
       providerFailureText: observedPage === page ? activeStatus : '',
       latestTurnRole: 'user' as const,
       isGenerating: false,
@@ -3761,6 +3763,8 @@ test('a terminal conversation capacity banner migrates the same Supervisor but q
     responseText: 'Existing turn completed.\n' + renderSupervisorReceipt(control.getTask(taskId)!, effect.effectId, 'CONTINUE'),
   });
   expect(completed.action).toBe('CONTINUE');
+  // The old transcript is now empty while the exact provider failure banner
+  // remains visible. The CAS can migrate only after that applied receipt.
   // The previous capacity observation set task-local backoff. A completed
   // source receipt restores eligibility, but it must respect that spacing.
   clockMs += 5 * 60_000;

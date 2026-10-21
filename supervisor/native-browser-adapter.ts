@@ -505,6 +505,33 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     });
   }
 
+  private handleVerifiedTerminalCapacity(
+    task: WorkflowSupervisorBrowserTask,
+    effectId: string | undefined,
+    observation: ComputerChatgptConversationObservation,
+  ): boolean {
+    // A provider-owned terminal banner can be visible before historical turns
+    // hydrate. The exact bound URL and live failure region are mandatory;
+    // transcript/activity text alone is never sufficient for migration.
+    if (!exactCanonicalConversationUrl(observation, task)
+      || chatgptProviderPageFailure(observation.providerFailureText) !== CHATGPT_AUTOMATION_CONVERSATION_LIMIT_REACHED) return false;
+    if (this.control.store.hasAppliedEffectAwaitingCompletion(task.taskId)) {
+      this.noteTaskFailure('WORKFLOW_SUPERVISOR_CAPACITY_APPLIED_TURN_UNRESOLVED', task, effectId, false);
+      return true;
+    }
+    // Supervisor's existing atomic CAS migration independently rejects any
+    // unresolved/unknown Send or other still-owned effect.
+    this.control.migrateConversation({
+      taskId: task.taskId,
+      expectedConversationId: task.conversationId,
+      fresh: true,
+      requestId: `capacity:${task.conversationId}`,
+      reason: 'live_provider_conversation_capacity_exhausted',
+      authorizedBy: 'user-authorized-automatic-conversation-rotation',
+    });
+    return true;
+  }
+
   private syncTaskStallProjections(): void {
     const activeTaskIds = new Set<string>();
     const observedAt = new Date(this.deps.nowMs()).toISOString();
@@ -786,6 +813,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
         || this.control.store.hasAppliedEffectAwaitingCompletion(task.taskId),
     });
     if (ensured.state !== 'ready') {
+      if (ensured.observation && this.handleVerifiedTerminalCapacity(task, poll.command?.effectId, ensured.observation)) return;
       const verifiedEmpty = ensured.failure.code === 'COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE'
         && ensured.observation !== undefined
         && !this.taskConversationContentAvailable(task, ensured.observation);
@@ -806,6 +834,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     const target = ensured.target;
     const snapshot = ensured.observation ?? await target.observe({ includeUserHistory: false, includePageText: false });
     if (!exactConversation(snapshot, task)) { this.noteTargetUnavailable(task, poll.command?.effectId, { code: 'WORKFLOW_SUPERVISOR_EXACT_CONVERSATION_UNPROVEN' }); return; }
+    if (this.handleVerifiedTerminalCapacity(task, poll.command?.effectId, snapshot)) return;
     if (!this.taskConversationContentAvailable(task, snapshot)) {
       this.observeVerifiedEmptyShell(task, poll.command?.effectId, poll.command, snapshot);
       return;
@@ -829,27 +858,6 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     const providerFailureCode = observedProviderFailureCode && observedProviderFailureCode !== providerFailureAwaitingClear
       ? observedProviderFailureCode
       : undefined;
-    if (observedProviderFailureCode === CHATGPT_AUTOMATION_CONVERSATION_LIMIT_REACHED) {
-      // A terminal capacity banner does not prove that an already-applied
-      // source turn has completed. Observe its receipt before any migration.
-      if (this.control.store.hasAppliedEffectAwaitingCompletion(task.taskId)) {
-        this.noteTaskFailure('WORKFLOW_SUPERVISOR_CAPACITY_APPLIED_TURN_UNRESOLVED', task, poll.command?.effectId, false);
-        return;
-      }
-      // This conversation cannot produce another meaningful turn. Unlike a
-      // provider 429, fresh migration is justified by an explicit terminal
-      // capacity message on the exact bound provider surface. The existing
-      // Supervisor CAS transaction preserves already-applied source effects.
-      this.control.migrateConversation({
-        taskId: task.taskId,
-        expectedConversationId: task.conversationId,
-        fresh: true,
-        requestId: `capacity:${task.conversationId}`,
-        reason: 'live_provider_conversation_capacity_exhausted',
-        authorizedBy: 'user-authorized-automatic-conversation-rotation',
-      });
-      return;
-    }
     const priorProviderFailure = this.providerFailureSeen.get(task.conversationId);
     if (!observedProviderFailureCode) this.providerFailureSeen.delete(task.conversationId);
     else if (priorProviderFailure !== observedProviderFailureCode) { noteChatgptProviderBackpressure(this.deps.providerScopeKey, observedProviderFailureCode, this.deps.nowMs()); this.providerFailureSeen.set(task.conversationId, observedProviderFailureCode); }
