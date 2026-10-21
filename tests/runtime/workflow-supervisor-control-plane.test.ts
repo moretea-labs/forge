@@ -18,7 +18,7 @@ import { WorkflowSupervisorStore, workflowSupervisorCompletionContractSha256, WO
 import { createWorkflowSupervisorServer, reconcileWorkflowSupervisorSocket, WorkflowSupervisorEphemeralDiscovery } from '../../supervisor/server';
 import { claimControllerSession, getControllerSession, releaseControllerSession } from '../../src/runtime/control-plane/facade/controller-session-store';
 import { bindChatgptWorkConversation, getChatgptWorkConversationBinding, rebindChatgptWorkConversation } from '../../adapters/chatgpt/work-conversation-binding-store';
-import { CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE, chatgptProviderPageFailure, classifyChatgptProviderFailure } from '../../adapters/chatgpt/provider-delivery';
+import { CHATGPT_AUTOMATION_RATE_LIMITED, CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE, chatgptProviderBackpressureRemainingMs, chatgptProviderPageFailure, classifyChatgptProviderFailure, noteChatgptProviderBackpressure } from '../../adapters/chatgpt/provider-delivery';
 import { chatgptBrowserObservationMatchesTarget, chatgptComposerRetainsPrompt, chatgptFailedRequestIsCausalRateLimit, chatgptForgePluginMentionBound, chatgptForgePluginPickerIndex, chatgptOutboundMessageMatchesPrompt, chatgptSupervisorPromptBody } from '../../adapters/chatgpt/browser-delivery-runtime';
 import { parseChatgptConversationIdentity } from '../../supervisor/chatgpt-conversation';
 import { setMacOsBrowserRuntimeHooksForTest, resetMacOsBrowserRuntimeHooksForTest } from '../../src/runtime/plugins/browser-macos-bridge';
@@ -2775,7 +2775,7 @@ test('enrolled reconciliation reopens only its exact conversation and never repe
   expect(control.browserPoll({ conversationId, conversationUrl }).command?.mode).toBe('reconcile');
   await adapter.runOnce();
 
-  expect(adapter.status().lastFailure?.code).toBe('COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE');
+  expect(adapter.status().lastFailure?.code).toBe('WORKFLOW_SUPERVISOR_EMPTY_SHELL_EVIDENCE_UNVERIFIED');
   expect(store.effectDispatchBudget(effect.effectId).generations).toBe(1);
   expect(store.effectApplied(effect.effectId)).toBe(false);
   conversationLoaded = true;
@@ -3600,41 +3600,70 @@ test('verified repeated exact-conversation empty shells migrate only a never-sen
   }]);
   const pending = control.reserveEnrollment(taskId);
   let nowMs = 1_000_000;
-  let observedUrl = 'https://chatgpt.com/c/unrelated-conversation';
+  let observationMode: 'missing' | 'wrong' | 'failure-text' | 'exact' = 'missing';
+  let inventoryHealthy = true;
+  const providerScopeKey = join(root, 'provider-scope');
+  const emptyShellObservation = {
+    url: conversationUrl, title: 'Forge', latestUserText: '', latestAssistantResponse: '',
+    providerActivityText: '', providerFailureText: '', composerText: undefined, isGenerating: false,
+  };
   const targetPort = {
-    inventory: async () => ({ conversations: [{ conversationId, canonicalUrl: conversationUrl, title: 'Forge' }], complete: true, unavailableProviders: [] }),
+    inventory: async () => ({
+      conversations: [{ conversationId, canonicalUrl: conversationUrl, title: 'Forge' }],
+      complete: inventoryHealthy, providerInventoryReady: inventoryHealthy,
+      unavailableProviders: inventoryHealthy ? [] : ['browser.chrome-extension'],
+    }),
     cleanup: async () => undefined,
-    // Match the real Computer provider: empty exact shells are typed failed
-    // ensures, never a hydrated 'ready' target.
+    // The typed error is insufficient: only a read-only observation whose URL
+    // and empty content the Supervisor independently verifies may count.
     ensureExact: async () => ({
       state: 'unavailable', failure: { code: 'COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE' },
-      observation: {
-        url: observedUrl, title: 'Forge', latestUserText: '', latestAssistantResponse: '',
-        providerActivityText: '', providerFailureText: '', isGenerating: false,
-      },
+      ...(observationMode === 'missing' ? {} : { observation: {
+        ...emptyShellObservation,
+        url: observationMode === 'wrong' ? 'https://chatgpt.com/g/g-test/project/p-test/c/' + conversationId : conversationUrl,
+        providerFailureText: observationMode === 'failure-text' || observationMode === 'wrong' ? 'too many requests' : '',
+      } }),
     }),
     // The test asserts migration reservation, not a new provider submission.
     openBootstrap: async () => ({ state: 'unavailable', failure: { code: 'TEST_BOOTSTRAP_NOT_STARTED' } }),
     close: async () => undefined,
   } as any;
   const adapter = new WorkflowSupervisorNativeBrowserAdapter(control, new WorkflowSupervisorEphemeralDiscovery(), {
-    targetPort, nowMs: () => nowMs, providerIdleGraceMs: 60_000, providerScopeKey: join(root, 'provider-scope'),
+    targetPort, nowMs: () => nowMs, providerIdleGraceMs: 60_000, providerScopeKey,
     sleep: async () => undefined, setInterval: () => 0 as unknown as ReturnType<typeof setInterval>,
     clearInterval: () => undefined, onError: (error) => { throw error; },
   });
-  await adapter.runOnce();
-  expect(store.getTask(taskId)?.conversationId).toBe(conversationId);
-  expect(adapter.status().lastFailure?.code).toBe('WORKFLOW_SUPERVISOR_EMPTY_SHELL_IDENTITY_UNPROVEN');
-  nowMs += 5 * 60_000;
-  observedUrl = conversationUrl;
-  await adapter.runOnce();
-  expect(store.getTask(taskId)?.conversationId).toBe(conversationId);
-  nowMs += 5 * 60_000;
-  await adapter.runOnce();
-  expect(store.getTask(taskId)?.conversationId).toBe(conversationId);
-  nowMs += 5 * 60_000;
-  await adapter.runOnce();
-  expect(store.getTask(taskId)?.conversationId).toBe(`bootstrap:${taskId}`);
+  for (const mode of ['missing', 'wrong', 'failure-text'] as const) {
+    observationMode = mode;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      nowMs += 15 * 60_000;
+      await adapter.runOnce();
+      expect(store.getTask(taskId)?.conversationId).toBe(conversationId);
+    }
+    if (mode === 'wrong') expect(chatgptProviderBackpressureRemainingMs(providerScopeKey, nowMs)).toBe(0);
+  }
+  observationMode = 'exact';
+  inventoryHealthy = false;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    nowMs += 15 * 60_000;
+    await adapter.runOnce();
+    expect(store.getTask(taskId)?.conversationId).toBe(conversationId);
+  }
+  inventoryHealthy = true;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    nowMs += 15 * 60_000;
+    noteChatgptProviderBackpressure(providerScopeKey, CHATGPT_AUTOMATION_RATE_LIMITED, nowMs);
+    await adapter.runOnce();
+    expect(store.getTask(taskId)?.conversationId).toBe(conversationId);
+  }
+  // Expire the account-wide cooldown before collecting three fresh verified
+  // observations against the healthy inventory.
+  nowMs += 60 * 60_000;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    nowMs += 15 * 60_000;
+    await adapter.runOnce();
+    expect(store.getTask(taskId)?.conversationId).toBe(attempt === 2 ? 'bootstrap:' + taskId : conversationId);
+  }
   expect(store.latestEffectDispatch(pending.effectId)?.generation ?? 0).toBe(0);
   await adapter.close();
   store.close();

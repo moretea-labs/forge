@@ -1166,13 +1166,14 @@ export class WorkflowSupervisorStore {
     return { state: 'inert' };
   }
   /** Journal one attempted task-local Computer operation, never a guessed Send. */
-  recordBrowserDeliveryAttemptFailure(input: { taskId: string; conversationId: string; code: string; effectId?: string }): void {
+  recordBrowserDeliveryAttemptFailure(input: { taskId: string; conversationId: string; code: string; effectId?: string; verifiedEmptyShell?: boolean }): void {
     this.transaction((db) => {
       const task = statement(db, 'SELECT conversation_id FROM tasks WHERE task_id = ?', (s) => s.get(input.taskId)) as { conversation_id?: string } | undefined;
       // An old tab or pre-migration provider result cannot charge the new chat.
       if (!task || task.conversation_id !== input.conversationId) return;
       const code = input.code.slice(0, 128);
       const effectId = input.effectId ?? null;
+      const verifiedEmptyShell = code === 'COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE' && input.verifiedEmptyShell === true;
       // Keep at most three unchanged diagnostic observations, then require a
       // different cause/effect or real progress before journaling more. Failure
       // counts never authorize a Send, recovery or conversation migration.
@@ -1186,14 +1187,15 @@ export class WorkflowSupervisorStore {
           effect_id: string | null; payload_json: string;
         }>;
       if (recent.length === 3 && recent.every((entry) => {
-        const payload = JSON.parse(entry.payload_json) as { conversation_id?: string; code?: string };
+        const payload = JSON.parse(entry.payload_json) as { conversation_id?: string; code?: string; verified_empty_shell?: boolean };
         return entry.effect_id === effectId
-          && payload.conversation_id === input.conversationId && payload.code === code;
+          && payload.conversation_id === input.conversationId && payload.code === code
+          && payload.verified_empty_shell === verifiedEmptyShell;
       })) return;
       statement(db, 'INSERT INTO events(task_id,event_key,kind,effect_id,payload_json,occurred_at) VALUES (?,?,?,?,?,?)', (s) => s.run(
         input.taskId, `browser-delivery-failed:${input.taskId}:${randomUUID()}`,
         'browser_delivery_attempt_failed', effectId,
-        json({ conversation_id: input.conversationId, code, phase: 'task_local_pre_mutation' }), now(),
+        json({ conversation_id: input.conversationId, code, phase: 'task_local_pre_mutation', verified_empty_shell: verifiedEmptyShell }), now(),
       ));
     });
   }
@@ -1863,7 +1865,8 @@ export class WorkflowSupervisorStore {
           const unavailableReads = statement(db, `SELECT COUNT(*) AS total FROM events
             WHERE task_id=? AND kind='browser_delivery_attempt_failed' AND event_id>?
               AND json_extract(payload_json,'$.conversation_id')=?
-              AND json_extract(payload_json,'$.code')='COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE'`,
+              AND json_extract(payload_json,'$.code')='COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE'
+              AND json_extract(payload_json,'$.verified_empty_shell')=1`,
             (s) => s.get(input.taskId, lastMigration?.id ?? 0, currentTask.conversationId)) as { total?: number };
           const receiptLimit = (unavailableReads.total ?? 0) >= 2 ? 6 : 10;
           const rotate = successor.freshEnrollmentPrompt !== undefined
