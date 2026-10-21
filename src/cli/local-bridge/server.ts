@@ -97,7 +97,7 @@ import type { MultiRepositoryMcpToolContext } from "../../../adapters/mcp/multi-
 import { createMcpToolContext as createControllerMcpToolContext } from "../../../adapters/mcp/server";
 import { loadMcpServiceLocalConfig, loadMcpServiceRuntimeState } from "../../../adapters/mcp/auth";
 import { loadRepositoryRegistry, registerRepository, removeRepository, resolveRepositorySelection } from "../repositories/registry";
-import { withControllerLock } from "../repositories/locks";
+import { withRepositoryMutationExclusion } from '../../runtime/resources/leases/store';
 import { resolveControllerHome, resolveRepoPreferredControllerHome } from "../../effects/controller-home";
 import { ensureRepositoryRuntimeStorage } from "../repositories/runtime-storage";
 import { readForgeRuntimeStatus } from "../../runtime/control-plane/runtime-status-client";
@@ -2064,8 +2064,8 @@ export async function startLocalBridgeServer(
   app.post("/api/edit-sessions/:sessionId/finalize", (request, response) => {
     try {
       const repository = requestRepositorySelection(request, options, controllerHome);
-      response.json(withControllerLock(
-        controllerHome, { scope: 'repository', repoId: repository.repoId },
+      response.json(withRepositoryMutationExclusion(
+        controllerHome, repository.repoId,
         'local_bridge:finalize_edit_session',
         () => finalizeEditSession(repository.canonicalRoot, request.params.sessionId, {
           reviewer: queryString(request.body?.reviewer) ?? "local-controller-human",
@@ -2096,8 +2096,8 @@ export async function startLocalBridgeServer(
   app.post("/api/edit-sessions/:sessionId/rollback", (request, response) => {
     try {
       const repository = requestRepositorySelection(request, options, controllerHome);
-      response.json(withControllerLock(
-        controllerHome, { scope: 'repository', repoId: repository.repoId },
+      response.json(withRepositoryMutationExclusion(
+        controllerHome, repository.repoId,
         'local_bridge:rollback_edit_session',
         () => rollbackEditSession(repository.canonicalRoot, request.params.sessionId, {
           toRevision: typeof request.body?.toRevision === "number" ? Math.trunc(request.body.toRevision) : undefined,
