@@ -200,6 +200,20 @@ describe('Thin capability substrate', () => {
     });
     expect(boundSecond.grantId).not.toBe(boundFirst.grantId);
     expect(listCanonicalGrants(controllerHome).filter((row) => [boundFirst.grantId, boundSecond.grantId].includes(row.grantId))).toHaveLength(2);
+    const restrictedQuery = {
+      principalId: 'device-bound-owner',
+      ownerScope: 'controller:devices',
+      capability: 'credential:use',
+      target: { kind: 'desktop_app', id: 'some-app' },
+      scopes: ['credential.fill'],
+      risk: 'workspace_write' as const,
+    };
+    expect(findActiveCanonicalGrant(controllerHome, restrictedQuery)).toBeUndefined();
+    expect(findActiveCanonicalGrant(controllerHome, { ...restrictedQuery, constraints: { deviceId: 'local-device-c' } })).toBeUndefined();
+    expect(findActiveCanonicalGrant(controllerHome, { ...restrictedQuery, constraints: { deviceId: 'local-device-a', use: { purpose: 'sign-in', limit: 2 } } })).toBeUndefined();
+    expect(findActiveCanonicalGrant(controllerHome, { ...restrictedQuery, constraints: { use: { limit: 1, purpose: 'sign-in' }, deviceId: 'local-device-b' } })?.grantId).toBe(boundSecond.grantId);
+    expect(findActiveCanonicalGrant(controllerHome, { ...restrictedQuery, constraints: { use: { limit: 1, purpose: 'sign-in' }, deviceId: 'local-device-a' } })?.grantId).toBe(boundFirst.grantId);
+    expect(findActiveCanonicalGrant(controllerHome, { principalId: 'chatgpt-controller', capability: 'web_browser:read', constraints: { deviceId: 'local-device-a' } })).toBeUndefined();
     const replayBound = recordCanonicalGrant(controllerHome, {
       grantId: boundFirst.grantId,
       principalId: 'device-bound-owner', ownerScope: 'controller:devices',
@@ -490,6 +504,19 @@ describe('Thin capability substrate', () => {
     expect(authResult.success).toBe(true);
     expect(authResult.result).toEqual({ currentUrl: 'https://example.com', title: 'Example Domain' });
     expect(authResult.handle?.status).toBe('completed');
+
+    recordCanonicalGrant(controllerHome, {
+      principalId: 'restricted-test-agent', capabilities: ['browser:navigate'],
+      constraints: { deviceId: 'trusted-device-claimed-by-provider' },
+    });
+    // Broker does not receive trusted device evidence today. A constrained
+    // grant must not be treated like a broad, reusable grant by default.
+    const restrictedResult = await invokeCapability(controllerHome, {
+      capabilityId: 'browser:navigate', principalId: 'restricted-test-agent',
+      target: { scope: 'global' }, arguments: { url: 'https://example.com' },
+    });
+    expect(restrictedResult.success).toBe(false);
+    expect(restrictedResult.error?.code).toBe('UNAUTHORIZED_CAPABILITY');
   });
 
   test('Step 6: Direct capability activity without Work projects to Activity/history instead of synthetic Work', () => {

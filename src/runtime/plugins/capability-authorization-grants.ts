@@ -387,6 +387,9 @@ export function findActivePluginCapabilityAuthorization(
     capability: `${pluginId}:${capabilityId}`,
     target: { kind: target.kind, id: target.id, repoId: candidateRepoId, ...(target.identityFingerprint ? { identityFingerprint: target.identityFingerprint } : {}) },
     scopes,
+    // This consumer owns the exact plugin metadata recorded on its canonical
+    // Grant. It must not discover the same capability via unrelated constraints.
+    constraints: { kind: 'plugin_capability_authorization', pluginId, capabilityId },
     risk: query.risk,
     at: query.at,
   });
