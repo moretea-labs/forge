@@ -922,6 +922,16 @@ export class WorkflowSupervisorStore {
       return rows[0] ? completionFromRow(rows[0]) : undefined;
     });
   }
+  /** Read-only completion evidence for the current logical conversation. */
+  hasCompletionInCurrentConversation(taskId: string): boolean {
+    return this.read((db) => Boolean(statement(db, `SELECT 1 FROM events completed
+      WHERE completed.task_id=? AND completed.kind='assistant_completion'
+        AND completed.event_id > COALESCE((
+          SELECT MAX(migrated.event_id) FROM events migrated
+          WHERE migrated.task_id=? AND migrated.kind='conversation_migrated'
+        ), 0) LIMIT 1`, (q) => q.get(taskId, taskId))));
+  }
+
   /** The only replay candidate when no applied effect is awaiting a receipt. */
   getLatestCompletion(taskId: string): WorkflowSupervisorCompletion | undefined {
     return this.read((db) => {

@@ -463,7 +463,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     // Avoid sending a continuation into a blank old shell after a completed
     // source turn. The canonical completion journal owns that distinction.
     if (snapshot.isGenerating || snapshot.latestUserText.trim() || snapshot.latestAssistantResponse.trim()) return true;
-    return this.control.store.getLatestCompletion(task.taskId) === undefined;
+    return !this.control.store.hasCompletionInCurrentConversation(task.taskId);
   }
 
   private observeVerifiedEmptyShell(
