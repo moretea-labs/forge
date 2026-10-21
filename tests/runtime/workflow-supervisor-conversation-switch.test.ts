@@ -278,7 +278,7 @@ describe('Workflow Supervisor fresh conversation switch', () => {
       control.observeEffect({ effectId: siblingSource.effectId, observationId: 'sibling-source-applied-' + n, outcome: 'applied' });
       if (n === 6) {
         const outstanding = store.reserveEffect({
-          taskId: siblingTaskId, effectId: 'applied-unanswered-sibling-source',
+          taskId: siblingTaskId, effectId: 'fx_applied_unanswered_sibling_source',
           kind: 'continuation', originKey: 'test:unanswered-sibling-source',
           prompt: 'Separate applied source awaits its own reply.',
         });
