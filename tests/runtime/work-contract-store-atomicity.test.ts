@@ -9,6 +9,8 @@ import {
   createWorkSemanticContext,
   getWorkContract,
   readActiveWorkCandidates,
+  readWorkContractStore,
+  recordWorkEvidenceState,
   promoteWorkToRepositoryChange,
   reviseWorkSemanticContext,
   type VerificationRecord,
@@ -275,7 +277,7 @@ test('semantic Work authority shadows stale repository-scoped active compatibili
   expect(readControlPlaneRecord<WorkContract>(controllerHome, 'work_contract', repoId, workId)?.value.semanticState).toBe('open');
 });
 
-test('persists the exact historical v3 review-gap migration once without making phase evidence semantic authority', () => {
+test('projects historical v3 read-only and persists the review-gap migration with one actual mutation', () => {
   const fx = fixture('legacy-review-gap');
   const options = { controllerHome: fx.controllerHome, repoId: fx.repoId };
   const record = readControlPlaneRecord<WorkContract>(fx.controllerHome, 'work_contract', fx.repoId, fx.workId)!;
@@ -298,6 +300,16 @@ test('persists the exact historical v3 review-gap migration once without making 
     expect(unchanged.schemaVersion).toBe(3);
   }
 
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    expect(readWorkContractStore(options).contracts.find((contract) => contract.workId === fx.workId)?.phaseEvidence.review).toBeDefined();
+    expect(getWorkContract(options, fx.workId)?.phaseEvidence.review).toBeDefined();
+    const afterRead = readControlPlaneRecord<WorkContract>(fx.controllerHome, 'work_contract', fx.repoId, fx.workId)!;
+    expect(afterRead.revision).toBe(seeded.revision);
+    expect(afterRead.schemaVersion).toBe(3);
+  }
+
+  // Only a semantic/evidence writer persists the canonical v4 record.
+  recordWorkEvidenceState(options, fx.workId, 'partial');
   const migrated = getWorkContract(options, fx.workId)!;
   expect(migrated.phaseEvidence.review).toBeDefined();
   const persisted = readControlPlaneRecord<WorkContract>(fx.controllerHome, 'work_contract', fx.repoId, fx.workId)!;
