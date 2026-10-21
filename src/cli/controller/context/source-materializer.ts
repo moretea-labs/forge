@@ -36,6 +36,8 @@ export interface MaterializeSourceOptions {
   maxSnippets: number;
   maxCharsPerSnippet: number;
   session?: RepositoryReadSession;
+  /** Ordinary lexical implementation search must not spawn another TypeScript compiler sidecar. */
+  preferSymbolRanges?: boolean;
 }
 
 interface SymbolRange {
@@ -231,7 +233,9 @@ export function materializeSource(options: MaterializeSourceOptions): Materializ
     return [materializedSnippet(full, { startLine: 1, endLine: full.totalLines }, options, 'complete_file')];
   }
 
-  const symbolIndex = cachedSourceSymbolIndex(options.path, full.sha256, full.content);
+  const symbolIndex = options.preferSymbolRanges === false
+    ? undefined
+    : cachedSourceSymbolIndex(options.path, full.sha256, full.content);
   const snippets: MaterializedSourceSnippet[] = [];
   const seen = new Set<string>();
   for (const line of mergeHitLines(options.hitLines.length > 0 ? options.hitLines : [1])) {
