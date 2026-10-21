@@ -1777,6 +1777,7 @@ requireText('src/cli/local-bridge/server.ts', 'app.post(path, retireLegacyIssueM
 requireText('src/cli/local-bridge/server.ts', 'app.patch("/api/project-state", retireLegacyIssueMutation)');
 requireText('src/cli/local-bridge/server.ts', 'runEditSessionMutationInWorker(');
 requireText('packages/kernel/identity/infrastructure/grant-store.ts', 'GRANT_ID_REUSE_REQUIRES_NEW_ENROLLMENT');
+requireText('packages/kernel/identity/infrastructure/grant-store.ts', 'grant.expiresAt = priorId.expiresAt;');
 requireText('adapters/mcp/runtime-gateway/status-inbox-adapter.ts', 'gatewayLatencySummaries(repository.repoId)');
 requireText('src/cli/local-bridge/server.ts', 'withRepositoryMutationExclusionAsync(');
 requireText('src/runtime/resources/leases/store.ts', 'assertRepositoryProcessMutationAvailable(controllerHome, repoId, owner)');

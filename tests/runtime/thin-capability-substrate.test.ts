@@ -157,6 +157,24 @@ describe('Thin capability substrate', () => {
     expect(findActiveCanonicalGrant(controllerHome, {
       principalId: 'chatgpt-controller', capability: 'web_browser:read', risk: 'readonly',
     })?.grantId).toBe(freshEnrollment.grantId);
+    const fixedStart = new Date('2026-10-21T10:00:00.000Z');
+    const timeBoundGrant = recordCanonicalGrant(controllerHome, {
+      principalId: 'time-bound-owner', ownerScope: 'controller:replay',
+      capabilities: ['browser:read'], riskCeiling: 'readonly',
+      expiresInMinutes: 60, now: fixedStart,
+    });
+    const replayedGrant = recordCanonicalGrant(controllerHome, {
+      grantId: timeBoundGrant.grantId,
+      principalId: 'time-bound-owner', ownerScope: 'controller:replay',
+      capabilities: ['browser:read'], riskCeiling: 'readonly',
+      expiresInMinutes: 90 * 24 * 60, now: new Date('2026-10-21T10:30:00.000Z'),
+    });
+    expect(replayedGrant.createdAt).toBe(timeBoundGrant.createdAt);
+    expect(replayedGrant.expiresAt).toBe(timeBoundGrant.expiresAt);
+    expect(replayedGrant.updatedAt).toBe('2026-10-21T10:30:00.000Z');
+    expect(findActiveCanonicalGrant(controllerHome, {
+      principalId: 'time-bound-owner', capability: 'browser:read', at: new Date('2026-10-21T11:01:00.000Z'),
+    })).toBeUndefined();
     expect(() => recordCanonicalGrant(controllerHome, {
       grantId: leastPrivilege.grantId,
       principalId: 'different-principal',
