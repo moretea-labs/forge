@@ -24,7 +24,6 @@ const POLICY: McpPolicy = {
   denyGlobs: [],
   maxFileBytes: 1024 * 1024,
   execution: {
-    codexRunner: false,
     agentRunner: false,
     allowedAgents: [],
     runnerTimeoutMs: 60_000,

@@ -73,7 +73,6 @@ interface McpPolicyOverrideFile {
 
 function executionPolicy(overrides: Partial<McpPolicy['execution']> = {}): McpPolicy['execution'] {
   return {
-    codexRunner: false,
     agentRunner: false,
     allowedAgents: [],
     runnerTimeoutMs: DEFAULT_AGENT_TIMEOUT_MS,
@@ -190,7 +189,6 @@ export function getMcpPolicy(profile: McpProfileName, opts: McpPolicyOptions = {
       ],
       maxFileBytes: 2 * 1024 * 1024,
       execution: executionPolicy({
-        codexRunner: devRunner,
         agentRunner: devRunner,
         allowedAgents: devRunner ? (opts.allowedAgents?.length ? opts.allowedAgents : defaultLocalAgentRunners()) : [],
         runnerTimeoutMs: opts.runnerTimeoutMs ?? DEFAULT_AGENT_TIMEOUT_MS,

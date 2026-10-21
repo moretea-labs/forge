@@ -58,7 +58,7 @@ const BROWSER_READ_POLICY: McpPolicy = {
   writeGlobs: [],
   denyGlobs: READ_DENY_GLOBS,
   maxFileBytes: 512 * 1024,
-  execution: { codexRunner: false, agentRunner: false, allowedAgents: [], runnerTimeoutMs: 0, runnerMaxTimeoutMs: 0 },
+  execution: { agentRunner: false, allowedAgents: [], runnerTimeoutMs: 0, runnerMaxTimeoutMs: 0 },
 };
 
 const BROWSER_CLI_OUTPUT_POLICY: McpPolicy = {
@@ -67,7 +67,7 @@ const BROWSER_CLI_OUTPUT_POLICY: McpPolicy = {
   writeGlobs: ['**'],
   denyGlobs: WRITE_DENY_GLOBS,
   maxFileBytes: 0,
-  execution: { codexRunner: false, agentRunner: false, allowedAgents: [], runnerTimeoutMs: 0, runnerMaxTimeoutMs: 0 },
+  execution: { agentRunner: false, allowedAgents: [], runnerTimeoutMs: 0, runnerMaxTimeoutMs: 0 },
 };
 
 const BROWSER_MCP_OUTPUT_POLICY: McpPolicy = {
@@ -84,7 +84,7 @@ const BROWSER_MCP_OUTPUT_POLICY: McpPolicy = {
   ],
   denyGlobs: WRITE_DENY_GLOBS,
   maxFileBytes: 0,
-  execution: { codexRunner: false, agentRunner: false, allowedAgents: [], runnerTimeoutMs: 0, runnerMaxTimeoutMs: 0 },
+  execution: { agentRunner: false, allowedAgents: [], runnerTimeoutMs: 0, runnerMaxTimeoutMs: 0 },
 };
 
 function isProbablyBinary(bytes: Buffer): boolean {

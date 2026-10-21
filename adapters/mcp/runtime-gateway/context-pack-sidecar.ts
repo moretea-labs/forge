@@ -40,7 +40,6 @@ function policy(value: unknown): McpPolicy {
     denyGlobs: stringList(input.denyGlobs),
     maxFileBytes,
     execution: {
-      codexRunner: e.codexRunner === true,
       agentRunner: e.agentRunner === true,
       allowedAgents: Array.isArray(e.allowedAgents)
         ? e.allowedAgents.filter((entry): entry is 'codex' | 'claude' => entry === 'codex' || entry === 'claude')
