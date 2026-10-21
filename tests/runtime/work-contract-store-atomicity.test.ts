@@ -1,11 +1,14 @@
 import { afterEach, expect, test } from 'bun:test';
 import { spawn, type ChildProcess } from 'child_process';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { createHash } from 'crypto';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { withControllerLock } from '../../src/cli/repositories/locks';
 import {
   createWorkContract,
+  acceptSubmittedWorkContract,
+  getWorkContractByRequestId,
   createWorkSemanticContext,
   getWorkContract,
   readActiveWorkCandidates,
@@ -74,6 +77,32 @@ test('explicitly promotes an open investigation Work before governed repository 
   expect(promoted.workKind).toBe('repository_change');
   expect(promoted.semanticState).toBe('open');
   expect(getWorkContract({ controllerHome, repoId }, workId)?.workKind).toBe('repository_change');
+
+  // A confirmed request index is idempotency evidence, not an optional cache.
+  const requestId = 'work-index-fail-closed';
+  const admission = { repoId, requestId, semanticKey: 'test:index', operation: {
+    name: 'index-observation', semanticKey: 'test:index', argumentHash: 'hash-index',
+    mode: 'readonly' as const, idempotent: true, replayable: true, resourceClaims: [],
+  } };
+  const accepted = acceptSubmittedWorkContract(controllerHome, admission);
+  expect(getWorkContractByRequestId(controllerHome, requestId)?.workId).toBe(accepted.contract.workId);
+  expect(() => getWorkContractByRequestId(controllerHome, requestId, 'foreign-repo')).toThrow('REQUEST_ID_REPO_CONFLICT');
+  const path = join(controllerHome, 'indexes', 'work-contracts', 'requests', createHash('sha256').update(requestId).digest('hex') + '.json');
+  const original = readFileSync(path, 'utf8');
+  writeFileSync(path, '{broken-json');
+  expect(() => getWorkContractByRequestId(controllerHome, requestId)).toThrow('WORK_REQUEST_INDEX_CORRUPT');
+  expect(() => acceptSubmittedWorkContract(controllerHome, admission)).toThrow('WORK_REQUEST_INDEX_CORRUPT');
+  const orphan = { ...JSON.parse(original), workId: 'work-missing-from-canonical-authority' };
+  writeFileSync(path, JSON.stringify(orphan));
+  expect(() => getWorkContractByRequestId(controllerHome, requestId)).toThrow('WORK_ACCEPTANCE_LOST');
+  expect(() => acceptSubmittedWorkContract(controllerHome, admission)).toThrow('WORK_ACCEPTANCE_LOST');
+  writeFileSync(path, original);
+  expect(acceptSubmittedWorkContract(controllerHome, admission)).toMatchObject({ deduplicated: true });
+
+  const emptyHome = mkdtempSync(join(tmpdir(), 'forge-work-index-missing-read-'));
+  homes.push(emptyHome);
+  expect(getWorkContractByRequestId(emptyHome, 'unseen-request')).toBeUndefined();
+  expect(existsSync(join(emptyHome, 'indexes', 'work-contracts', 'requests'))).toBe(false);
 });
 
 function verificationRecord(input: {

@@ -891,9 +891,23 @@ interface WorkRequestIndexRecord {
 
 function workRequestIndexPath(controllerHome: string, requestId: string): string {
   const hash = createHash('sha256').update(requestId).digest('hex');
-  const root = join(ensureControllerHome(controllerHome), 'indexes', 'work-contracts', 'requests');
-  mkdirSync(root, { recursive: true });
+  // Lookups must not create directories; writeJsonAtomic makes the parent on admission.
+  const root = join(controllerHome, 'indexes', 'work-contracts', 'requests');
   return join(root, `${hash}.json`);
+}
+
+function readWorkRequestIndex(path: string, requestId: string): WorkRequestIndexRecord {
+  let value: unknown;
+  try { value = readJsonFile<unknown>(path); }
+  catch { throw new Error(`WORK_REQUEST_INDEX_CORRUPT: ${requestId}`); }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`WORK_REQUEST_INDEX_CORRUPT: ${requestId}`);
+  }
+  const record = value as Partial<WorkRequestIndexRecord>;
+  if (record.requestId !== requestId || !record.repoId?.trim() || !record.workId?.trim() || !record.semanticKey?.trim()) {
+    throw new Error(`WORK_REQUEST_INDEX_CORRUPT: ${requestId}`);
+  }
+  return record as WorkRequestIndexRecord;
 }
 
 export function getWorkContractByRequestId(
@@ -905,14 +919,13 @@ export function getWorkContractByRequestId(
   if (!normalizedRequestId) return undefined;
   const recordPath = workRequestIndexPath(controllerHome, normalizedRequestId);
   if (!existsSync(recordPath)) return undefined;
-  try {
-    const record = readJsonFile<WorkRequestIndexRecord>(recordPath);
-    if (record.requestId !== normalizedRequestId) return undefined;
-    if (expectedRepoId && record.repoId !== expectedRepoId) return undefined;
-    return getWorkContract({ controllerHome, repoId: record.repoId }, record.workId);
-  } catch {
-    return undefined;
+  const record = readWorkRequestIndex(recordPath, normalizedRequestId);
+  if (expectedRepoId && record.repoId !== expectedRepoId) {
+    throw new Error(`REQUEST_ID_REPO_CONFLICT: ${normalizedRequestId} already belongs to repository ${record.repoId}`);
   }
+  const work = getWorkContract({ controllerHome, repoId: record.repoId }, record.workId);
+  if (!work) throw new Error(`WORK_ACCEPTANCE_LOST: request ${normalizedRequestId} is indexed without a readable WorkContract`);
+  return work;
 }
 
 /**
@@ -942,7 +955,7 @@ export function acceptSubmittedWorkContract(
   return withControllerLock(home, { scope: 'global', resource: `work-request-${lockId}` }, `accept-work:${requestId}`, () => {
     const recordPath = workRequestIndexPath(home, requestId);
     if (existsSync(recordPath)) {
-      const record = readJsonFile<WorkRequestIndexRecord>(recordPath);
+      const record = readWorkRequestIndex(recordPath, requestId);
       if (record.repoId !== input.repoId) throw new Error(`REQUEST_ID_REPO_CONFLICT: ${requestId} already belongs to repository ${record.repoId}`);
       if (record.semanticKey !== semanticKey) throw new Error(`REQUEST_ID_CONFLICT: ${requestId} already belongs to ${record.semanticKey}`);
       const existing = getWorkContract({ controllerHome: home, repoId: record.repoId, now: options.now }, record.workId);
