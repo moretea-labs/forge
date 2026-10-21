@@ -1067,8 +1067,8 @@ export function createForgeMcpServerFromContext(
             if (args.repo_id !== undefined || args.checkout_id !== undefined || args.workspace_root !== undefined) {
               return { content: [{ type: 'text', text: 'COMMAND_SCOPE_CONFLICT: host execution cannot claim repository or workspace targeting' }], structuredContent: { error: { code: 'COMMAND_SCOPE_CONFLICT', message: 'Host execution cannot claim repository or workspace targeting' } }, isError: true };
             }
-            // One exposed command, two existing authorization targets. The host
-            // lane checks its canonical ForgeInstance process:exec Grant itself.
+            // The existing explicitly selected Full Access is the single
+            // ordinary host-command permission authority.
             return executeAuthorizedHostCommand(ctx, args);
           }
           const accessResult = callAccessTool(ctx, name, args);

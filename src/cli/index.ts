@@ -27,7 +27,6 @@ import { buildRepositoryCommand } from './commands/repository';
 import { buildRuntimeCommand } from './commands/runtime';
 import { buildRecoveryCommand } from './commands/recovery';
 import { formatSecurityScan, runSecurityScan } from './commands/security';
-import { authorizeHostProcessFromLocalTerminal, revokeHostProcessFromLocalTerminal } from './commands/host-process-authorization';
 import { runGlobalRuntimeSetup } from './commands/global-runtime';
 import { runPromptGuardDecideCli } from './commands/prompt-guard-decision';
 import { runAdoptionPlan, runExperimentalTsApply } from './commands/adopt-plan';
@@ -456,7 +455,7 @@ export function buildProgram(): Command {
 
   const security = program
     .command('security')
-    .description('Security checks and locally confirmed host authorization');
+    .description('Read-only security checks for local hook and editor task configs');
   security
     .command('scan')
     .description('Scan Claude/Codex hook configs and VS Code folder-open tasks')
@@ -467,38 +466,6 @@ export function buildProgram(): Command {
       console.log(formatSecurityScan(report, rawOpts.json === true));
       const strictFailure = report.findings.some((finding) => finding.severity === 'high' || finding.severity === 'fail');
       process.exit(rawOpts.strict === true && strictFailure ? 1 : 0);
-    });
-
-  security
-    .command('authorize-host-process')
-    .description('Authorize exact ForgeInstance process:exec via local terminal')
-    .requiredOption('--principal <id>', 'Authenticated principal from HOST_PROCESS_GRANT_REQUIRED')
-    .option('--days <days>', 'Reusable lifetime (1-90 days)', '30')
-    .action(async (opts: { principal: string; days: string }) => {
-      try {
-        if (!/^[0-9]+$/.test(opts.days)) throw new Error('HOST_GRANT_DURATION_INVALID: expected 1-90 days');
-        const grant = await authorizeHostProcessFromLocalTerminal({
-          principalId: opts.principal, days: Number(opts.days),
-        });
-        console.log('Authorized process:exec for ' + grant.principalId + ' on ' + grant.target?.id + ' until ' + grant.expiresAt);
-      } catch (error) {
-        console.error(error instanceof Error ? error.message : String(error));
-        process.exitCode = 2;
-      }
-    });
-
-  security
-    .command('revoke-host-process')
-    .description('Revoke the current ForgeInstance process:exec Grant for an exact principal')
-    .requiredOption('--principal <id>', 'Authenticated principal to revoke')
-    .action((opts: { principal: string }) => {
-      try {
-        const count = revokeHostProcessFromLocalTerminal({ principalId: opts.principal });
-        console.log('Revoked ' + count + ' host process grant(s) for ' + opts.principal);
-      } catch (error) {
-        console.error(error instanceof Error ? error.message : String(error));
-        process.exitCode = 2;
-      }
     });
 
   program.addCommand(buildPluginCommand());

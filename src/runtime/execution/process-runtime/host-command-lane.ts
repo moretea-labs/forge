@@ -13,7 +13,7 @@
 
 import { existsSync, realpathSync, statSync } from 'fs';
 import { isAbsolute } from 'path';
-import { findActiveCanonicalGrant, readForgeInstanceIdentity } from '../../../../packages/kernel/identity/api/index';
+import { readForgeInstanceIdentity } from '../../../../packages/kernel/identity/api/index';
 import {
   startLightweightHostCommand,
   type StartLightweightHostCommandInput,
@@ -21,8 +21,6 @@ import {
 import { DEFAULT_MAX_OUTPUT_BYTES, DEFAULT_PROCESS_TIMEOUT_MS, type ProcessHandle } from './types';
 
 /** Broad host process-execution capability. `process:*` also satisfies it. */
-export const HOST_PROCESS_EXEC_CAPABILITY = 'process:exec';
-
 const HOST_INTERACTIVE_WAIT_DEFAULT_MS = 8_000;
 const HOST_INTERACTIVE_WAIT_MAX_MS = 120_000;
 const HOST_TIMEOUT_MAX_MS = 24 * 60 * 60_000;
@@ -44,35 +42,23 @@ export interface HostCommandRequest {
   signal?: AbortSignal;
 }
 
-export interface HostCommandGrantDecision {
+export interface HostCommandIdentity {
   forgeInstanceId: string;
-  grantId: string;
 }
 
 /**
- * Resolve and validate the exact ForgeInstance target authorization.
- * Missing instance identity, principal, or grant all fail closed: there is no
- * fallback host, container, or checkout.
+ * The authenticated MCP entrypoint validates the existing Full Access setting.
+ * This lane still verifies the exact local instance and caller identity.
  */
-export function requireHostProcessGrant(controllerHome: string, principalId: string | undefined): HostCommandGrantDecision {
+export function requireHostProcessIdentity(controllerHome: string, principalId: string | undefined): HostCommandIdentity {
   const identity = readForgeInstanceIdentity(controllerHome);
   if (!identity?.instanceId) {
     throw new Error('HOST_PROCESS_TARGET_UNAVAILABLE: the serving ForgeInstance identity is not initialized');
   }
-  const principal = principalId?.trim();
-  if (!principal) throw new Error('HOST_PROCESS_PRINCIPAL_REQUIRED: host process execution requires an authenticated principal');
-  const grant = findActiveCanonicalGrant(controllerHome, {
-    principalId: principal,
-    capability: HOST_PROCESS_EXEC_CAPABILITY,
-    target: { kind: 'forge_instance', id: identity.instanceId },
-    risk: 'remote_write',
-  });
-  if (!grant) {
-    throw new Error(
-      `HOST_PROCESS_GRANT_REQUIRED: principal ${principal} needs an explicit ${HOST_PROCESS_EXEC_CAPABILITY} grant for ForgeInstance ${identity.instanceId}. On the exact host, in a trusted local terminal: forge security authorize-host-process --principal ${principal} --days 30`,
-    );
+  if (!principalId?.trim()) {
+    throw new Error('HOST_PROCESS_PRINCIPAL_REQUIRED: host process execution requires an authenticated principal');
   }
-  return { forgeInstanceId: identity.instanceId, grantId: grant.grantId };
+  return { forgeInstanceId: identity.instanceId };
 }
 
 /** Canonical absolute working directory for a host-local command. */
@@ -99,7 +85,7 @@ function boundedNumber(value: number | undefined, fallback: number, max: number)
 export interface HostCommandResult {
   handle: ProcessHandle;
   metrics: Awaited<ReturnType<typeof startLightweightHostCommand>>['metrics'];
-  target: HostCommandGrantDecision & { cwd: string };
+  target: HostCommandIdentity & { cwd: string };
 }
 
 /**
@@ -108,7 +94,7 @@ export interface HostCommandResult {
  * invocation; they are never re-executed.
  */
 export async function executeHostCommand(request: HostCommandRequest): Promise<HostCommandResult> {
-  const target = requireHostProcessGrant(request.controllerHome, request.principalId);
+  const target = requireHostProcessIdentity(request.controllerHome, request.principalId);
   const cwd = resolveHostCommandCwd(request.cwd);
   const interactiveWaitMs = boundedNumber(
     request.interactiveWaitMs,

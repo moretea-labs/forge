@@ -60,9 +60,9 @@ export const ACCESS_MODE_DESCRIPTORS: Record<AccessMode, AccessModeDescriptor> =
     mode: 'full_access',
     label: 'Host-managed execution — normal work proceeds',
     shortLabel: 'Host managed',
-    description: 'Normal work follows the host AI permission model. Forge only keeps hard safety gates for secrets, outside-repository access, and destructive operations.',
-    automaticallyAllowed: ['Repository file reads/writes', 'Repository-scoped commands and Git', 'Dependencies, network access, and ordinary remote writes'],
-    stillRequiresApproval: ['Outside-repository access', 'Irreversible or destructive operations'],
+    description: 'Normal work follows the host AI permission model. Explicit Full Access also permits ordinary host commands; protected secrets and destructive operations retain separate safety boundaries.',
+    automaticallyAllowed: ['Repository file reads/writes', 'Repository-scoped commands and Git', 'Ordinary host commands', 'Dependencies, network access, and ordinary remote writes'],
+    stillRequiresApproval: ['Protected credential use', 'Irreversible or destructive operations'],
     alwaysDenied: ['Raw secrets or credentials', 'Bypassing controller safety boundaries'],
   },
 };

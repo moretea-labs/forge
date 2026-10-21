@@ -982,7 +982,7 @@
       "module": "workflow",
       "resource": "controller-home-isolated"
     },
-    "tests/runtime/host-process-authorization.test.ts": {
+    "tests/runtime/host-full-access.test.ts": {
       "module": "process-runtime",
       "resource": "controller-home-isolated"
     },
