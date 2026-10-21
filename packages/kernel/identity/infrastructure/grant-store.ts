@@ -294,6 +294,9 @@ export function findActiveCanonicalGrant(controllerHome: string, query: QueryGra
     if (query.target ? !targetMatches(grant.target, query.target) : Boolean(grant.target)) continue;
     if (!query.scopes?.length && grant.scopes?.length) continue;
     if (query.scopes?.length && !scopesContain(grant.scopes, query.scopes)) continue;
+    // Opaque enrolled restrictions must match exactly; absent query context never
+    // selects a restricted grant. Real identity/attestation remains provider-owned.
+    if (!isDeepStrictEqual(grant.constraints ?? {}, query.constraints ?? {})) continue;
     // Missing ceilings in persisted v1 grants are read-only, never unrestricted.
     if ((RISK_RANK[grant.riskCeiling ?? 'readonly'] ?? 0) < requestedRiskRank) continue;
     return structuredClone(grant);

@@ -1788,6 +1788,8 @@ requireText('src/runtime/safe-tooling/mac-keychain-write.ts', "throw new Error('
 requireText('packages/kernel/identity/infrastructure/grant-store.ts', 'grant.expiresAt = priorId.expiresAt;');
 requireText('packages/kernel/identity/infrastructure/grant-store.ts', 'isDeepStrictEqual(priorId.constraints ?? {}, grant.constraints ?? {})');
 requireText('packages/kernel/identity/infrastructure/grant-store.ts', 'sameConstraints = isDeepStrictEqual(entry.constraints ?? {}, grant.constraints ?? {})');
+requireText('packages/kernel/identity/infrastructure/grant-store.ts', 'isDeepStrictEqual(grant.constraints ?? {}, query.constraints ?? {})');
+requireText('src/runtime/plugins/capability-authorization-grants.ts', "constraints: { kind: 'plugin_capability_authorization', pluginId, capabilityId },");
 requireText('adapters/mcp/runtime-gateway/status-inbox-adapter.ts', 'gatewayLatencySummaries(repository.repoId)');
 requireText('src/cli/local-bridge/server.ts', 'withRepositoryMutationExclusionAsync(');
 requireText('src/runtime/resources/leases/store.ts', 'assertRepositoryProcessMutationAvailable(controllerHome, repoId, owner)');
