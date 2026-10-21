@@ -850,6 +850,16 @@ describe("Local Execution Bridge", () => {
       });
       expect(blocked.status).toBe(400);
       expect((await blocked.json()).error).toContain('LOCK_HELD');
+      for (const [route, body] of [
+        ['savepoints', { name: 'locked-savepoint' }],
+        ['verify', { reviewer: 'locked-reviewer' }],
+      ] as const) {
+        const blockedEdit = await fetch(new URL(`/api/edit-sessions/${session.sessionId}/${route}`, handle.url), {
+          method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify(body),
+        });
+        expect(blockedEdit.status).toBe(400);
+        expect((await blockedEdit.json()).error).toContain('LOCK_HELD');
+      }
       const legacyContext = createMcpToolContext({ repo: root, controllerHome, profile: 'controller' });
       const legacyAttempt = await callMultiRepositoryTool(legacyContext, 'begin_edit_session', { purpose: 'competing editor' });
       expect(legacyAttempt.isError).toBe(true);
@@ -898,6 +908,10 @@ describe("Local Execution Bridge", () => {
         visibility: 'ephemeral', notifyScheduler: false, invalidateProjection: false, emitRuntimeEvent: false,
       });
     }
+    const savepoint = await fetch(new URL(`/api/edit-sessions/${session.sessionId}/savepoints`, handle.url), {
+      method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify({ name: 'unlocked-savepoint' }),
+    }).then((response) => response.json());
+    expect(savepoint.savepoints.some((item: { name: string }) => item.name === 'unlocked-savepoint')).toBe(true);
     const finalization = fetch(new URL(`/api/edit-sessions/${session.sessionId}/finalize`, handle.url), {
       method: "POST",
       headers: { ...headers, "content-type": "application/json" },
