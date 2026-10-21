@@ -176,6 +176,14 @@ export interface WorkHandleState {
   expectedHead?: string;
   permissionSnapshotVersion: number;
   state: WorkHandleStateName;
+  /**
+   * Dirty baseline captured when a current-checkout Work was prepared on a
+   * dirty shared checkout. Paths the Work did not author stay attributable to
+   * their pre-Work state; bounded with `baselineDirtyPathCount` holding the
+   * full count when the list was truncated.
+   */
+  baselineDirtyPaths?: string[];
+  baselineDirtyPathCount?: number;
   createdAt: string;
   updatedAt: string;
   failureReason?: string;

@@ -238,7 +238,10 @@ export function routeWorkStart(
   ctx: GoalWorkloopContext,
   input: GoalWorkloopStartInput,
 ): FacadeResult {
-  const workspaceMode: 'current' | 'isolated' = input.constraints?.workspaceMode === 'isolated' || input.constraints?.workspaceMode === 'auto' ? 'isolated' : 'current';
+  // Fixed placement contract: only an explicit `isolated` constraint requests a
+  // managed frozen-base worktree. `auto` (and anything unset) shares the
+  // selected current checkout, matching work_prepare's default placement.
+  const workspaceMode: 'current' | 'isolated' = input.constraints?.workspaceMode === 'isolated' ? 'isolated' : 'current';
   const canonicalConstraints: WorkContract['constraints'] = {
     ...(input.constraints ?? {}),
     workspaceMode,
@@ -453,7 +456,9 @@ export function startGoalWorkloop(
   input: GoalWorkloopStartInput,
   policy?: PolicyDecision,
 ): FacadeResult {
-  const workspaceMode: 'current' | 'isolated' = input.constraints?.workspaceMode === 'isolated' || input.constraints?.workspaceMode === 'auto' ? 'isolated' : 'current';
+  // Fixed placement contract (see routeWorkStart): only explicit `isolated`
+  // freezes a managed worktree; `auto`/unset shares the current checkout.
+  const workspaceMode: 'current' | 'isolated' = input.constraints?.workspaceMode === 'isolated' ? 'isolated' : 'current';
   const canonicalConstraints: WorkContract['constraints'] = {
     ...(input.constraints ?? {}),
     workspaceMode,

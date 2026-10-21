@@ -2570,7 +2570,7 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
 });
 
 describe('work_validate persisted semantic identity', () => {
-  test('work_prepare auto isolates a clean canonical checkout and keeps its start base frozen', async () => {
+  test('work_prepare auto shares the selected current checkout; new_worktree freezes an isolated base', async () => {
     const fx = fixture();
     roots.push(fx.root);
 
@@ -2580,19 +2580,35 @@ describe('work_validate persisted semantic identity', () => {
     const prepared = await callExecutionTool(fx.ctx, 'work_prepare', {
       session_id: session.sessionId,
       repo_id: fx.repository.repoId,
-      request_id: 'prepare-auto-frozen-base',
-      objective: 'Keep repository Work isolated until delivery.',
-      acceptance_criteria: ['Canonical target movement does not change the Work base during implementation.'],
+      request_id: 'prepare-auto-shares-current',
+      objective: 'Default Work placement shares the selected current checkout.',
+      acceptance_criteria: ['auto placement never creates a managed worktree.'],
       checks: [],
       isolation: 'auto',
     });
     expect(prepared?.isError).not.toBe(true);
     const work = (prepared?.structuredContent as {
+      work: { workId: string; checkoutId: string; managedWorktree: boolean };
+    }).work;
+    expect(work.managedWorktree).toBe(false);
+    expect(work.checkoutId).toBe(fx.repository.activeCheckoutId);
+
+    const isolated = await callExecutionTool(fx.ctx, 'work_prepare', {
+      session_id: session.sessionId,
+      repo_id: fx.repository.repoId,
+      request_id: 'prepare-new-worktree-frozen-base',
+      objective: 'Explicit new_worktree placement freezes an isolated start base.',
+      acceptance_criteria: ['Canonical target movement does not change the Work base during implementation.'],
+      checks: [],
+      isolation: 'new_worktree',
+    });
+    expect(isolated?.isError).not.toBe(true);
+    const isolatedWork = (isolated?.structuredContent as {
       work: { workId: string; checkoutId: string; managedWorktree: boolean; baseCommit: string; deliveryBaseCommit: string; expectedHead: string };
     }).work;
-    expect(work.managedWorktree).toBe(true);
-    expect(work.checkoutId).not.toBe(fx.repository.activeCheckoutId);
-    const frozen = { baseCommit: work.baseCommit, deliveryBaseCommit: work.deliveryBaseCommit, expectedHead: work.expectedHead };
+    expect(isolatedWork.managedWorktree).toBe(true);
+    expect(isolatedWork.checkoutId).not.toBe(fx.repository.activeCheckoutId);
+    const frozen = { baseCommit: isolatedWork.baseCommit, deliveryBaseCommit: isolatedWork.deliveryBaseCommit, expectedHead: isolatedWork.expectedHead };
 
     writeFileSync(join(fx.repoRoot, 'src/lib.ts'), 'export const n = 2;\n');
     git(fx.repoRoot, ['add', 'src/lib.ts']);
@@ -2601,11 +2617,11 @@ describe('work_validate persisted semantic identity', () => {
     const continued = await callExecutionTool(fx.ctx, 'work_prepare', {
       session_id: session.sessionId,
       repo_id: fx.repository.repoId,
-      work_id: work.workId,
+      work_id: isolatedWork.workId,
     });
     expect(continued?.isError).not.toBe(true);
     expect(continued?.structuredContent).toMatchObject({
-      work: { workId: work.workId, managedWorktree: true, ...frozen },
+      work: { workId: isolatedWork.workId, managedWorktree: true, ...frozen },
       reused: true,
     });
   });

@@ -3,6 +3,7 @@ import type { MultiRepositoryMcpToolContext } from '../multi-repository';
 import { callRepositoryTool } from '../tool-mapping/repository-tools';
 import { commitSelectedPaths, selectedPathDiff, stageSelectedPaths } from '../../../src/cli/repositories/selected-path-actions';
 import { deliverWork } from '../../../src/runtime/control-plane/execution/work-delivery-service';
+import { discardManagedWork } from '../../../src/runtime/control-plane/execution/work-terminal-cleanup';
 import { validateWork } from '../../../src/runtime/control-plane/execution/work-operation-service';
 import { startOrResumeSession } from './execution-tools';
 import { result } from './result-adapter';
@@ -246,6 +247,22 @@ export async function callCoreCapabilityAdapter(
           repo_id: repository.repoId,
         });
         return result(delivered);
+      }
+      case 'discard_work': {
+        // Explicit convergence exit for retained dirty managed worktrees: the
+        // dirty state is archived (tracked diff + untracked copies + branch
+        // bundle) before the worktree/branch are removed. Never heuristic.
+        const workId = typeof input.work_id === 'string' ? input.work_id.trim() : '';
+        if (!workId) {
+          return result({ error: { code: 'WORK_ID_REQUIRED', message: 'discard_work requires an explicit work_id.' } }, true);
+        }
+        const discarded = await discardManagedWork(ctx.controllerHome, repository.repoId, workId, {
+          reason: typeof input.reason === 'string' ? input.reason.trim() : undefined,
+        });
+        return result({
+          repoId: repository.repoId,
+          ...discarded,
+        }, discarded.status !== 'discarded' && discarded.status !== 'already_cleaned');
       }
       default:
         return result({ error: { code: 'CORE_CAPABILITY_ACTION_UNSUPPORTED', message: `Unsupported repository.git action: ${action || '<empty>'}` } }, true);

@@ -1,9 +1,15 @@
 import { createHash } from 'crypto';
 import { spawnSync } from 'child_process';
 import {
+  cpSync,
   existsSync,
   mkdirSync,
   readFileSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  writeFileSync,
 } from 'fs';
 import { dirname, join, resolve } from 'path';
 import { repoLocalNoIndexControllerHome, repositoryControllerRoot } from '../../../effects/controller-home';
@@ -17,7 +23,7 @@ import {
 import { managedPathInside, managedWorktreeStorageRoot } from '../../../cli/repositories/worktree-storage';
 import { markRepositoryProjectionDirty } from '../../projections/invalidation';
 import { listControlPlaneRecords } from '../persistence/sqlite-store';
-import { getWorkContract, recordCancelledWorkCleanupCompleted, semanticWorkState } from '../../../../packages/kernel/work/api/index';
+import { getWorkContract, recordCancelledWorkCleanupCompleted, reviseWorkSemanticContext, semanticWorkState } from '../../../../packages/kernel/work/api/index';
 import { assertOwnedResourceCleanupTarget, markOwnedResourceCleaned, markOwnedResourceRetained } from '../../../../packages/kernel/identity/api/index';
 import { managedBranchOwnedResourceId, managedBranchOwnedResourceLocator, managedWorkspaceOwnedResourceId } from '../../execution/managed-workspace';
 import { isRepositoryCompletionReceipt, type WorkContract } from '../facade/types';
@@ -49,6 +55,13 @@ export interface TerminalWorkCleanupInput {
   deleteBranch?: boolean;
   terminalOutcome: WorkTerminalOutcome;
   failureReason?: string;
+  /**
+   * Explicit discard convergence: archive the dirty workspace state (tracked
+   * diff plus untracked file copies) before removal instead of retaining the
+   * worktree in place. Only the explicit `discardManagedWork` path sets this;
+   * heuristic/periodic cleanup never discards dirty bytes.
+   */
+  discardPolicy?: 'snapshot';
 }
 
 export interface TerminalWorkCleanupResult {
@@ -350,6 +363,14 @@ export interface TerminalWorkCleanupReconcileOptions {
   nowMs?: number;
   minAgeMs?: number;
   maxWork?: number;
+  orphanAfterMs?: number;
+}
+
+export interface OrphanManagedWorktreeSweepReport {
+  scanned: number;
+  removed: Array<{ path: string; mode: 'git_worktree' | 'directory' }>;
+  retained: Array<{ path: string; reason: string }>;
+  errors: Array<{ path: string; error: string }>;
 }
 
 export interface TerminalWorkCleanupReconcileReport {
@@ -364,6 +385,7 @@ export interface TerminalWorkCleanupReconcileReport {
   branchReconciled: Array<{ workId: string; from: string; to: string }>;
   errors: Array<{ workId: string; error: string }>;
   truncated: boolean;
+  orphanWorktrees: OrphanManagedWorktreeSweepReport;
 }
 
 function contractCompletedNoChange(contract: WorkContract): boolean {
@@ -1045,7 +1067,27 @@ export async function cleanupTerminalWork(input: TerminalWorkCleanupInput): Prom
     }
     // Git must recheck cleanliness at removal time. A write after the snapshot
     // above is a preservation blocker, never authority to discard those bytes.
-    const removed = git(target.canonicalRoot, ['worktree', 'remove', current.worktreePath], 60_000);
+    let removeArgs = ['worktree', 'remove', current.worktreePath];
+    if (input.discardPolicy === 'snapshot') {
+      // Explicit discard archived the dirty state; refuse removal when the
+      // workspace changed after that snapshot instead of discarding unarchived bytes.
+      const recheck = git(current.worktreePath, ['status', '--porcelain', '--untracked-files=all']);
+      const snapshotStatusPath = receipt.preservation.patchArchivePath
+        ? join(dirname(receipt.preservation.patchArchivePath), 'status.porcelain.txt')
+        : undefined;
+      const snapshotted = snapshotStatusPath && existsSync(snapshotStatusPath)
+        ? readFileSync(snapshotStatusPath, 'utf8').trim()
+        : '';
+      if (!recheck.ok || recheck.stdout !== snapshotted) {
+        receipt.worktree.status = 'retained';
+        receipt.worktree.reason = 'Dirty workspace changed after the discard snapshot; removal blocked to avoid discarding unarchived bytes.';
+        addBlocker(receipt, `WORKTREE_DIRTY_SNAPSHOT_STALE: ${receipt.worktree.reason}`);
+        current = persist(input.controllerHome, current, receipt);
+        return { handle: current, receipt };
+      }
+      removeArgs = ['worktree', 'remove', '--force', current.worktreePath];
+    }
+    const removed = git(target.canonicalRoot, removeArgs, 60_000);
     if (!removed.ok && existsSync(current.worktreePath)) {
       receipt.worktree.status = 'failed';
       receipt.worktree.reason = removed.stderr || 'git worktree remove failed';
@@ -1238,6 +1280,7 @@ export async function reconcileTerminalWorkCleanups(
     branchReconciled: [],
     errors: [],
     truncated: false,
+    orphanWorktrees: { scanned: 0, removed: [], retained: [], errors: [] },
   };
 
   const maintenanceEpoch = Math.floor(nowMs / 60_000);
@@ -1353,5 +1396,201 @@ export async function reconcileTerminalWorkCleanups(
       }
     }
   }
+  report.orphanWorktrees = sweepOrphanManagedWorktrees(controllerHome, {
+    nowMs,
+    orphanAfterMs: options.orphanAfterMs,
+  });
   return report;
+}
+
+const ORPHAN_MANAGED_WORKTREE_AFTER_MS = 7 * 24 * 60 * 60 * 1_000;
+
+/**
+ * Physical convergence for controller-owned managed worktree storage. A
+ * directory under the managed worktree storage root that no WorkHandle, no
+ * WorkContract worktreeRef, and no registered checkout references is orphaned
+ * crash residue (for example a crash between `git worktree add` and Work
+ * admission, or compaction that removed the last referencing record). Such a
+ * directory is removed only after an age grace period; anything referenced by
+ * a live record is never touched here.
+ */
+function sweepOrphanManagedWorktrees(
+  controllerHome: string,
+  options: { nowMs?: number; orphanAfterMs?: number } = {},
+): OrphanManagedWorktreeSweepReport {
+  const nowMs = options.nowMs ?? Date.now();
+  const orphanAfterMs = Math.max(60 * 60 * 1_000, options.orphanAfterMs ?? ORPHAN_MANAGED_WORKTREE_AFTER_MS);
+  const report: OrphanManagedWorktreeSweepReport = { scanned: 0, removed: [], retained: [], errors: [] };
+  let storageRoot: string | undefined;
+  try {
+    storageRoot = managedWorktreeStorageRoot(controllerHome, listRepositories(controllerHome, { includeRemoved: true }));
+  } catch {
+    return report;
+  }
+  if (!existsSync(storageRoot)) return report;
+
+  const referenced = new Set<string>();
+  const reference = (value?: string): void => {
+    const path = value?.trim();
+    if (!path) return;
+    try {
+      referenced.add(realpathSync(resolve(path)));
+    } catch {
+      referenced.add(resolve(path));
+    }
+  };
+  for (const repository of listRepositories(controllerHome, { includeRemoved: true })) {
+    for (const handle of listWorkHandles(controllerHome, repository.repoId, 10_000)) reference(handle.worktreePath);
+    for (const checkout of repository.checkouts) reference(checkout.canonicalRoot);
+    for (const record of listControlPlaneRecords<WorkContract>(controllerHome, {
+      namespace: 'work_contract',
+      scope: repository.repoId,
+      limit: 10_000,
+    })) {
+      reference(record.value.worktreeRef);
+    }
+  }
+
+  // Managed layout is <storageRoot>/<repoId>/<worktree>; a git worktree root is
+  // recognizable by its .git file. Only .git-bearing directories are candidates.
+  const candidates: string[] = [];
+  const collect = (dir: string, depth: number): void => {
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory() || entry.name === '.DS_Store') continue;
+      const child = join(dir, entry.name);
+      if (existsSync(join(child, '.git'))) {
+        candidates.push(child);
+        continue;
+      }
+      if (depth < 2) collect(child, depth + 1);
+    }
+  };
+  collect(storageRoot, 0);
+
+  for (const candidate of candidates) {
+    report.scanned += 1;
+    let canonical: string;
+    try {
+      canonical = realpathSync(candidate);
+    } catch {
+      continue;
+    }
+    if (referenced.has(canonical)) continue;
+    let ageMs: number;
+    try {
+      ageMs = nowMs - statSync(candidate).mtimeMs;
+    } catch {
+      continue;
+    }
+    if (ageMs < orphanAfterMs) {
+      report.retained.push({ path: candidate, reason: 'younger than the orphan grace period' });
+      continue;
+    }
+    try {
+      const commonDir = gitCommonDir(candidate);
+      let removedOk = false;
+      if (commonDir && existsSync(commonDir)) {
+        const adminRoot = dirname(commonDir);
+        const result = git(adminRoot, ['worktree', 'remove', '--force', candidate], 60_000);
+        removedOk = result.ok || !existsSync(candidate);
+      }
+      if (!removedOk && existsSync(candidate)) {
+        // Not a registered git worktree (or its admin root is gone): the
+        // directory is unreferenced controller-owned storage residue.
+        rmSync(candidate, { recursive: true, force: true });
+      }
+      report.removed.push({ path: candidate, mode: commonDir ? 'git_worktree' : 'directory' });
+    } catch (error) {
+      report.errors.push({ path: candidate, error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+  return report;
+}
+
+export interface ManagedWorkDiscardResult {
+  workId: string;
+  status: 'discarded' | 'already_cleaned' | 'retained' | 'blocked' | 'no_handle' | 'not_managed';
+  receipt?: WorkCleanupReceipt;
+  reason?: string;
+}
+
+/**
+ * Explicit discard convergence for one Work's managed worktree/branch. This is
+ * the exit for the fail-closed DIRTY_WORKTREE_RETAINED blocker: the controller
+ * (model or user) explicitly resolves an abandoned managed workspace —
+ * including one whose WorkContract is still open, such as a stale Work surfaced
+ * by maintenance discovery — by cancelling it through the same explicit
+ * semantic CAS the facade uses, archiving its dirty bytes (tracked diff +
+ * untracked copies + branch bundle for unique commits), and then removing the
+ * worktree and branch. It is reached only through an explicit discard request,
+ * never from heuristic or periodic cleanup, and never auto-cancels a Work.
+ */
+export async function discardManagedWork(
+  controllerHome: string,
+  repositoryId: string,
+  workId: string,
+  options: { reason?: string } = {},
+): Promise<ManagedWorkDiscardResult> {
+  void options;
+  const handle = readWorkHandle(controllerHome, repositoryId, workId)
+    ?? recoverTerminalWorkHandle(controllerHome, repositoryId, workId);
+  if (!handle) {
+    return { workId, status: 'no_handle', reason: 'No WorkHandle exists for this Work and no terminal placement could be recovered.' };
+  }
+  if (!handle.managedWorktree) {
+    return { workId, status: 'not_managed', reason: 'Work shares the selected current checkout; it owns no disposable worktree.' };
+  }
+  if (handle.state === 'cleaned' && handle.cleanupReceipt?.complete === true) {
+    return { workId, status: 'already_cleaned', receipt: handle.cleanupReceipt };
+  }
+  const repository = getRepository(repositoryId, controllerHome, { includeRemoved: true });
+  const contractId = handle.workContractId ?? workId;
+  let contract = getWorkContract({ controllerHome, repoId: repositoryId }, contractId);
+  if (contract && semanticWorkState(contract) === 'open') {
+    // Explicit semantic CAS cancellation, mirroring stopGoalWorkloop: the
+    // revision check refuses a concurrent semantic writer instead of forcing
+    // the transition. Maintenance never performs this step autonomously.
+    const semanticRevision = Number.isInteger(contract.semanticRevision) && Number(contract.semanticRevision) > 0
+      ? Number(contract.semanticRevision)
+      : 1;
+    contract = reviseWorkSemanticContext({ controllerHome, repoId: repositoryId }, contract.workId, {
+      expectedRevision: semanticRevision,
+      state: 'cancelled',
+      resultRefs: contract.evidenceRefs
+        .flatMap((evidence) => [evidence.evidenceId, evidence.artifactId])
+        .map((value) => value?.trim())
+        .filter((value): value is string => Boolean(value)),
+    });
+  }
+  if (!contract || semanticWorkState(contract) === 'open') {
+    return { workId, status: 'blocked', reason: 'WorkContract is missing or still open after the explicit discard cancellation.' };
+  }
+  const targetBranch = resolveWorkDeliveryTargetBranch(handle, repository.defaultBranch);
+  const cleaned = await cleanupTerminalWork({
+    controllerHome,
+    handle,
+    targetBranch,
+    deleteBranch: true,
+    terminalOutcome: terminalOutcomeForContract(contract),
+    failureReason: handle.failureReason ?? handle.finalization.lastError,
+    discardPolicy: 'snapshot',
+  });
+  writeWorkHandle(controllerHome, { ...cleaned.handle, cleanupReceipt: cleaned.receipt });
+  if (cleaned.receipt.complete) {
+    const latest = getWorkContract({ controllerHome, repoId: repositoryId }, contractId);
+    if (latest) reconcileCancelledCleanupProjection(controllerHome, repositoryId, latest, cleaned.receipt);
+    return { workId, status: 'discarded', receipt: cleaned.receipt };
+  }
+  return {
+    workId,
+    status: cleaned.receipt.worktree.status === 'retained' ? 'retained' : 'blocked',
+    receipt: cleaned.receipt,
+    reason: cleaned.receipt.blockers.join('; ') || cleaned.receipt.worktree.reason || 'terminal cleanup incomplete',
+  };
 }

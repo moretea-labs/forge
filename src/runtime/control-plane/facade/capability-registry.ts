@@ -652,6 +652,20 @@ export function getCoreCapabilityExecutionSchema(capabilityId: string): Record<s
           },
         },
       },
+      discard_work: {
+        readOnly: false,
+        risk: 'local_repo_write',
+        argumentsSchema: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['work_id'],
+          properties: {
+            session_id: { type: 'string', minLength: 1, maxLength: 256 },
+            work_id: { type: 'string', minLength: 1, maxLength: 256 },
+            reason: { type: 'string', minLength: 0, maxLength: 1_000 },
+          },
+        },
+      },
     },
   };
 }
