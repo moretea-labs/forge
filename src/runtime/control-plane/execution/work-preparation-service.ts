@@ -334,7 +334,9 @@ function materializeArchivedWorkPlacement(
     || (sourceHandle.workContractId && sourceHandle.workContractId !== contract.workId)) {
     throw new Error('WORK_HANDLE_RECOVERY_WORK_IDENTITY_MISMATCH');
   }
-  if (contract.repoId !== repository.repoId || contract.workKind !== 'repository_change' || !contract.worktreePolicy.required) {
+  // Optional does not mean forbidden: a legacy open Work can already own a managed placement.
+  // The placement CAS below explicitly promotes its policy while re-establishing that placement.
+  if (contract.repoId !== repository.repoId || contract.workKind !== 'repository_change') {
     throw new Error('WORK_HANDLE_RECOVERY_CONTRACT_POLICY_MISMATCH');
   }
   // semanticState is the sole Work lifecycle authority. Completion evidence may
@@ -411,6 +413,8 @@ function materializeArchivedWorkPlacement(
       checkoutId: workspaceCheckoutId,
       worktreeRef: workspaceRoot,
       baseRevision: proof.candidateHead,
+      worktreePolicy: { required: true, reason: 'Recovered managed WorkHandle placement is explicitly isolated.' },
+      constraints: { ...contract.constraints, workspaceMode: 'isolated' },
     },
   );
   if (!updatedContract || updatedContract.checkoutId !== workspaceCheckoutId || updatedContract.worktreeRef !== workspaceRoot) {
@@ -934,6 +938,8 @@ export function prepareWork(ctx: McpExecutionContext, args: Record<string, unkno
             checkoutId: workspace.checkoutId,
             worktreeRef: workspace.root,
             baseRevision: workspace.baseRevision ?? contract.baseRevision,
+            worktreePolicy: { required: true, reason: 'Work preparation explicitly selected a managed isolated workspace.' },
+            constraints: { ...contract.constraints, workspaceMode: 'isolated' },
           },
         );
         if (!materialized) throw new Error(`WORK_PLACEMENT_MATERIALIZATION_LOST: ${contract.workId}`);

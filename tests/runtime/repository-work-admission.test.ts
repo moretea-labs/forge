@@ -73,6 +73,46 @@ describe('repository Work admission authority', () => {
   });
 
 
+  test('promotes an optional legacy policy only with an explicit isolated placement CAS', () => {
+    const location = store('repo-legacy-policy-promotion');
+    const admitted = admitPreparedRepositoryWorkContract(location, {
+      workId: 'work-legacy-policy-promotion',
+      repoId: location.repoId,
+      objective: 'Promote an optional legacy policy only when isolation is explicit.',
+      acceptanceCriteria: [],
+      checks: [],
+      accessMode: 'request',
+      isolated: false,
+      requestedBy: 'chatgpt',
+      requestId: 'request-legacy-policy-promotion',
+    });
+    expect(admitted.worktreePolicy.required).toBe(false);
+    const constraints = { ...admitted.constraints, workspaceMode: 'isolated' as const };
+    const worktreePolicy = { required: true, reason: 'Managed isolated placement was explicitly selected.' };
+    const materialized = updateRepositoryWorkPlacement(location, admitted.workId, {
+      kind: 'materialize',
+      expectedCheckoutId: admitted.checkoutId,
+      expectedWorktreeRef: admitted.worktreeRef,
+      checkoutId: 'checkout-promoted',
+      worktreeRef: '/tmp/forge-promoted',
+      baseRevision: 'abc123',
+      worktreePolicy,
+      constraints,
+    });
+    expect(materialized).toMatchObject({ worktreePolicy: { required: true }, constraints: { workspaceMode: 'isolated' } });
+    const rebound = updateRepositoryWorkPlacement(location, admitted.workId, {
+      kind: 'rebind',
+      expectedCheckoutId: materialized.checkoutId,
+      expectedWorktreeRef: materialized.worktreeRef,
+      checkoutId: 'checkout-rebound',
+      worktreeRef: '/tmp/forge-rebound',
+      baseRevision: 'def456',
+      worktreePolicy,
+      constraints,
+    });
+    expect(rebound).toMatchObject({ checkoutId: 'checkout-rebound', worktreePolicy: { required: true }, constraints: { workspaceMode: 'isolated' } });
+  });
+
   test('binds an explicitly selected current checkout through the canonical placement transition', () => {
     const location = store('repo-materialized-current');
     const admitted = admitPreparedRepositoryWorkContract(location, {

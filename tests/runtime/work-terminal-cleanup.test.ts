@@ -1056,6 +1056,78 @@ describe('terminal Work cleanup', () => {
     expect((retried?.structuredContent as { work: { workId: string } }).work.workId).toBe(recovery.work.workId);
   });
 
+  test('recovers a managed open Work with a legacy optional worktree policy', async () => {
+    const fx = fixture('legacy-optional-policy-rebind');
+    const ctx = createMcpToolContext({
+      controllerHome: fx.controllerHome,
+      profile: 'controller',
+      repo: fx.repositoryRoot,
+    });
+    const started = await callExecutionTool(ctx, 'session_start', {});
+    expect(started?.isError).not.toBe(true);
+    const session = (started?.structuredContent as { session: { sessionId: string; principalId: string } }).session;
+    const handle = writeWorkHandle(fx.controllerHome, { ...fx.handle, sessionId: session.sessionId, principalId: session.principalId });
+    const sourceId = handle.workId;
+    const sourceHead = handle.expectedHead!;
+    const workStore = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    createWorkContract(workStore, {
+      workId: sourceId,
+      repoId: fx.repository.repoId,
+      objective: 'Restore an open Work whose managed placement predates explicit isolation policy.',
+      acceptanceCriteria: [],
+      constraints: {},
+      checks: [],
+      requestedBy: 'chatgpt',
+      phase: 'implementation',
+      workKind: 'repository_change',
+      checkoutId: handle.checkoutId,
+      worktreeRef: handle.worktreePath,
+      baseRevision: sourceHead,
+      worktreePolicy: { required: false, reason: 'Legacy contract allowed but did not require managed isolation.' },
+    });
+    const cleaned = await cleanupTerminalWork({
+      controllerHome: fx.controllerHome,
+      handle,
+      targetBranch: 'main',
+      deleteBranch: true,
+      terminalOutcome: 'completed_cleanup',
+    });
+    expect(cleaned.handle.state).toBe('cleaned');
+    expect(getWorkContract(workStore, sourceId)?.semanticState).toBe('open');
+
+    const mainHead = git(fx.repositoryRoot, ['rev-parse', 'HEAD']);
+    const request = {
+      session_id: session.sessionId,
+      repo_id: fx.repository.repoId,
+      checkout_id: fx.repository.activeCheckoutId,
+      work_id: sourceId,
+      request_id: 'restore-legacy-optional-policy-placement',
+      expected_previous_head: sourceHead,
+      adopt_candidate_head: mainHead,
+      base_ref: mainHead,
+    };
+    const resumed = await callExecutionTool(ctx, 'work_prepare', request);
+    if (resumed?.isError) throw new Error(JSON.stringify(resumed.structuredContent));
+    const recovery = resumed?.structuredContent as {
+      recoveredFromWorkId: string;
+      work: { workId: string; checkoutId: string; workContractId: string; expectedHead: string };
+    };
+    expect(recovery.recoveredFromWorkId).toBe(sourceId);
+    expect(recovery.work.workContractId).toBe(sourceId);
+    expect(recovery.work.checkoutId).not.toBe(fx.handle.checkoutId);
+    expect(recovery.work.expectedHead).toBe(mainHead);
+    const recoveredContract = getWorkContract(workStore, sourceId)!;
+    expect(recoveredContract).toMatchObject({
+      semanticState: 'open',
+      checkoutId: recovery.work.checkoutId,
+      worktreePolicy: { required: true },
+      constraints: { workspaceMode: 'isolated' },
+    });
+    const retried = await callExecutionTool(ctx, 'work_prepare', request);
+    if (retried?.isError) throw new Error(JSON.stringify(retried.structuredContent));
+    expect((retried?.structuredContent as { work: { workId: string } }).work.workId).toBe(recovery.work.workId);
+  });
+
   test('does not create a bundle for ancestry-only unique commits with no source delta', async () => {
     const fx = fixture('empty-unique');
     git(fx.workspace.root!, ['commit', '--allow-empty', '-m', 'chore: ancestry-only marker']);

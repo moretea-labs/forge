@@ -181,6 +181,8 @@ function restoreArchivedBlockedDeliveryCheckout(input: {
     checkoutId: workspace.checkoutId,
     worktreeRef: workspace.root,
     baseRevision: candidateRevision,
+    worktreePolicy: { required: true, reason: 'Archived repository Work is resumed in a managed isolated worktree.' },
+    constraints: { ...work.constraints, workspaceMode: 'isolated' },
   });
   updateWorkContract(store, work.workId, {
     controllerInstanceId: identity.controllerInstanceId,
@@ -340,6 +342,8 @@ function restoreArchivedPendingCandidateCheckout(input: {
     checkoutId: workspace.checkoutId,
     worktreeRef: workspace.root,
     baseRevision: candidateRevision,
+    worktreePolicy: { required: true, reason: 'Pending repository candidate is resumed in a managed isolated worktree.' },
+    constraints: { ...work.constraints, workspaceMode: 'isolated' },
   });
   updateWorkContract(store, work.workId, {
     controllerInstanceId: identity.controllerInstanceId,
@@ -529,6 +533,8 @@ export function ensureRunningRepositoryWorkCheckout(
     checkoutId: workspace.checkoutId,
     worktreeRef: workspace.root,
     baseRevision,
+    worktreePolicy: { required: true, reason: 'Recovered repository Work uses a managed isolated worktree.' },
+    constraints: { ...work.constraints, workspaceMode: 'isolated' },
   });
   updateWorkContract(store, workId, {
     controllerInstanceId: identity.controllerInstanceId,

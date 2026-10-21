@@ -1703,11 +1703,11 @@ export function updateWorkContractPlacement(
         || input.constraints?.workspaceMode !== 'current'
       ) throw new Error(`WORK_PLACEMENT_CURRENT_POLICY_MISMATCH: ${workId}`);
     } else if (input.kind === 'materialize') {
-      if (current.worktreeRef || current.workKind !== 'repository_change' || !current.worktreePolicy.required || !worktreeRef) {
+      if (current.worktreeRef || current.workKind !== 'repository_change' || !targetWorktreePolicy.required || targetConstraints.workspaceMode !== 'isolated' || !worktreeRef) {
         throw new Error(`WORK_PLACEMENT_MATERIALIZE_POLICY_MISMATCH: ${workId}`);
       }
     } else if (input.kind === 'rebind') {
-      if (current.workKind !== 'repository_change' || !current.worktreePolicy.required || !worktreeRef) {
+      if (current.workKind !== 'repository_change' || !targetWorktreePolicy.required || targetConstraints.workspaceMode !== 'isolated' || !worktreeRef) {
         throw new Error(`WORK_PLACEMENT_REBIND_POLICY_MISMATCH: ${workId}`);
       }
     } else if (input.kind === 'detach_legacy_remote_effect') {
