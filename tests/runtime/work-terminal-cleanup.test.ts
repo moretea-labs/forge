@@ -9,6 +9,7 @@ import { getRepository, registerRepository } from '../../src/cli/repositories/re
 import type { CompletionReceipt } from '../../src/cli/controller/types';
 import { cancelWorkContract, createWorkContract, failWorkContract, getWorkContract, recordWorkCompletionReceipt, reviseWorkSemanticContext } from '../../src/runtime/control-plane/facade/work-contract-store';
 import type { WorkContract } from '../../src/runtime/control-plane/facade/types';
+import { updateRepositoryWorkPlacement } from '../../src/runtime/control-plane/facade/repository-work-admission';
 import {
   readWorkHandle,
   writeWorkHandle,
@@ -1026,6 +1027,18 @@ describe('terminal Work cleanup', () => {
     expect(openWithEvidence.semanticState).toBe('open');
     expect(openWithEvidence.completionOutcome).toBe('completed_changed');
     expect(openWithEvidence.completionReceipt?.receiptId).toBe('receipt-open-work-recovery-evidence');
+    // The historical semantic worktree requirement may be optional while the
+    // actual cleaned WorkHandle was demonstrably managed. Preserve the physical
+    // owner and let its cleanup receipt govern recovery, not this policy flag.
+    const optionalPolicy = updateRepositoryWorkPlacement(workStore, sourceId, {
+      kind: 'rebind',
+      expectedCheckoutId: openWithEvidence.checkoutId,
+      expectedWorktreeRef: openWithEvidence.worktreeRef,
+      checkoutId: openWithEvidence.checkoutId!,
+      worktreeRef: openWithEvidence.worktreeRef,
+      worktreePolicy: { required: false, reason: 'Legacy optional policy on a physically managed checkout' },
+    });
+    expect(optionalPolicy.worktreePolicy.required).toBe(false);
     const mainHead = git(fx.repositoryRoot, ['rev-parse', 'HEAD']);
     const request = {
       session_id: sessionId,
@@ -1062,6 +1075,8 @@ describe('terminal Work cleanup', () => {
       completionOutcome: 'completed_changed',
     });
     expect(recoveredContract.completionReceipt?.receiptId).toBe('receipt-open-work-recovery-evidence');
+    expect(recoveredContract.worktreePolicy.required).toBe(true);
+    expect(recoveredContract.constraints.workspaceMode).toBe('isolated');
     const retried = await callExecutionTool(ctx, 'work_prepare', request);
     if (retried?.isError) throw new Error(JSON.stringify(retried.structuredContent));
     expect((retried?.structuredContent as { work: { workId: string } }).work.workId).toBe(recovery.work.workId);
