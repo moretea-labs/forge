@@ -75,7 +75,6 @@ const DURABLE_OPERATIONS = new Set<string>([
   'finish_edit_session',
   'dispatch_task',
   'launch_issue',
-  'quick_agent_session',
   'publish_issue_to_github',
   'release_gate',
   'runtime_recovery',
@@ -671,7 +670,7 @@ function durableSuggestion(operation: string): string {
   if (operation === 'run_check' || operation === 'run_focused_check') return 'run_check through Durable Work';
   if (operation.includes('patch')) return 'repository_safe_patch_apply with apply_mode=async or Durable Work';
   if (operation.includes('command')) return 'execute_command through Durable Work / Local Job';
-  if (operation.includes('agent') || operation === 'quick_agent_session') return 'quick_agent_session / dispatch_task';
+  if (operation.includes('agent')) return 'rh_work.launcher_start with an exact Work identity';
   return 'Durable Work (ExecutionJob path)';
 }
 
@@ -683,7 +682,7 @@ export function isFastEligibleTool(name: string, args: Record<string, unknown> =
     requiresRecovery: args.requires_recovery === true,
     requiresIsolation: args.isolation === 'new_worktree' || args.requires_isolation === true,
     requiresWorktree: args.isolation === 'new_worktree',
-    agentRun: name === 'quick_agent_session' || name === 'dispatch_task',
+    agentRun: name === 'dispatch_task',
     remoteWrite: name.includes('push') || name === 'publish_issue_to_github',
     timeoutMs: typeof args.timeout_ms === 'number' ? args.timeout_ms : undefined,
     command: args.command as string | string[] | undefined,

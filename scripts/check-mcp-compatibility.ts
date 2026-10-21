@@ -18,8 +18,9 @@ import { PREFERRED_CONTROLLER_TOOL_NAMES, PREFERRED_FACADE_TOOL_NAMES } from '..
 const MAX_PREFERRED_TOOL_COUNT = 24;
 // 2026-10-21: retiring the eleven redundant ios_* MCP aliases intentionally
 // changes the complete registry; preferred tool names/schema remain unchanged.
-// 2026-10-21: two error-only retired Agent/Local Job submission aliases were
-// deleted from the public MCP registry; keep all other schema/name guards.
+// 2026-10-21: the two error-only local Agent/Job creation aliases are removed
+// from public MCP schemas. The full-name fingerprint changes deliberately;
+// the preferred names/schema and collision checks remain unchanged.
 const EXPECTED_EXPOSED_NAME_FINGERPRINT = '8cb7153fa2de1612';
 
 // #197 decomposition authority: the public/frozen Tool Contract is an explicit

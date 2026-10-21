@@ -50,9 +50,8 @@ forbid('adapters/mcp/runtime-gateway/runtime-tool-definitions.ts', /definition\(
 // Do not allow a second model runner or legacy profile to reappear as a bypass.
 forbid('adapters/mcp/policy.ts', /profile === 'orchestrator'|value === 'orchestrator'/, 'orchestrator MCP policy must stay retired');
 forbid('adapters/mcp/tool-mapping/legacy-tool-service.ts', /\bfunction runAgentGoal\b|case "run_agent_goal"/, 'legacy in-process model runner must stay removed');
-// Legacy Agent Run and Local Bridge submission tool names must stay absent:
-forbid('adapters/mcp/tool-mapping/legacy-tool-service.ts', /name:\s*["'](?:quick_agent_session|submit_local_job)["']/, 'retired Agent/Local Job submit schemas must remain deleted');
-forbid('adapters/mcp/tool-mapping/legacy-tool-service.ts', /RETIRED_LEGACY_PUBLIC_TOOLS|AGENT_RUN_DEPRECATED|LOCAL_BRIDGE_JOB_RETIRED/, 'dead per-name compatibility code must not return');
+// Old agent/local-job creation aliases no longer expose schemas or executable handlers.
+forbid('adapters/mcp/tool-mapping/legacy-tool-service.ts', /name: ["'](?:quick_agent_session|submit_local_job)["']|case ["'](?:quick_agent_session|submit_local_job)["']/, 'retired local Agent/Job creation aliases must not regain MCP schemas or handlers');
 const GENERATED_SOURCE_DIRECTORY_NAMES = new Set([
   'node_modules',
   'dist',
