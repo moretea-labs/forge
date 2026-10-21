@@ -8,7 +8,7 @@
 
 import { existsSync, readFileSync, readdirSync, unlinkSync, statSync } from 'fs';
 import { join } from 'path';
-import { ensureRepositoryControllerLayout, repositoryControllerRoot } from '../../../cli/repositories/controller-home';
+import { ensureRepositoryControllerLayout, repositoryControllerRoot } from '../../../effects/controller-home';
 import { isRepositoryProcessScopeKey, processScopeRoot } from './process-scope';
 import { getProcessRecord, listActiveProcessIds } from './store';
 import { reconcileStaleManagedProcessForMaintenance, releaseProcessLeasesOnce } from './runtime';

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
+import { ensureControllerHome } from '../../src/effects/controller-home';
 import { createWorkContract, getWorkContract, listWorkSemanticRevisionRecords, recordWorkEvidenceState, reviseWorkSemanticContext, transitionWorkContractPhase, workSemanticView } from '../../packages/kernel/work/api/index';
 import { callRhWorkSemanticOperation } from '../../adapters/mcp/runtime-gateway/work-semantic-operations';
 import { createRequirement, reviseRequirementSemantic } from '../../src/runtime/control-plane/persistence/requirement-store';

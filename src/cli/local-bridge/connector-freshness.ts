@@ -17,7 +17,7 @@ import {
 } from '../controller/runtime-config';
 import { loadMcpServiceLocalConfig } from '../../../adapters/mcp/auth';
 import { PREFERRED_FACADE_TOOL_NAMES } from '../../../adapters/mcp/toolset-names';
-import { resolveRepoPreferredControllerHome } from '../repositories/controller-home';
+import { resolveRepoPreferredControllerHome } from '../../effects/controller-home';
 import type { PlainStatusTone } from './console-view-models';
 
 export const EXPECTED_FACADE_TOOLS = [...PREFERRED_FACADE_TOOL_NAMES] as const;

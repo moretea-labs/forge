@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'crypto';
 import { existsSync, opendirSync, readdirSync } from 'fs';
 import { join } from 'path';
-import { ensureControllerHome, ensureRepositoryControllerLayout, repositoryControllerRoot } from '../../../cli/repositories/controller-home';
+import { ensureControllerHome, ensureRepositoryControllerLayout, repositoryControllerRoot } from '../../../effects/controller-home';
 import { releaseControllerLock, tryAcquireControllerLock, withControllerLock } from '../../../cli/repositories/locks';
 import { appendJobEvent } from '../../evidence/event-ledger';
 import { cleanupExecutionArtifactsForJob, writeExecutionArtifact } from '../../evidence/artifact-store';

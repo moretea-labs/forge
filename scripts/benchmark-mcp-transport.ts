@@ -3,7 +3,7 @@ import { readFileSync } from 'fs';
 import { performance } from 'perf_hooks';
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { readMcpServiceBearerToken } from '../adapters/mcp/auth';
-import { resolveRepoPreferredControllerHome } from '../src/cli/repositories/controller-home';
+import { resolveRepoPreferredControllerHome } from '../src/effects/controller-home';
 import {
   aggregateMcpTransportLatencySamples,
   extractForgeServerDuration,

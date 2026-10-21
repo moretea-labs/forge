@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'crypto';
 import { existsSync, readdirSync } from 'fs';
 import { join } from 'path';
-import { controllerSystemRoot } from '../../../cli/repositories/controller-home';
+import { controllerSystemRoot } from '../../../effects/controller-home';
 import { ControllerLockContentionError, withControllerLock } from '../../../cli/repositories/locks';
 import type { ResourceClaimSpec } from '../../execution/jobs/types';
 import { readJsonFile, removeFile, writeJsonAtomic } from '../../shared/json-files';

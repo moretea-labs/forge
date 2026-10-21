@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { closeSync, copyFileSync, existsSync, mkdirSync, openSync, readSync, renameSync, statSync, unlinkSync } from 'fs';
 import { dirname, join } from 'path';
-import { durableControllerHome } from '../../../cli/repositories/controller-home';
+import { durableControllerHome } from '../../../effects/controller-home';
 
 /**
  * Small, dependency-free SQLite boundary for controller-owned runtime facts.

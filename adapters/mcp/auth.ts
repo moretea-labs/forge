@@ -1,7 +1,7 @@
 import { randomBytes } from 'crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
-import { resolveControllerHome } from '../../src/cli/repositories/controller-home';
+import { resolveControllerHome } from '../../src/effects/controller-home';
 import type { AccessMode } from '../../src/runtime/control-plane/governance/access-policy';
 
 export interface McpLocalConfig {
@@ -214,11 +214,11 @@ export function loadMcpRuntimeState(repoRoot: string): McpRuntimeState | null {
   }
 }
 
-export function loadMcpServiceLocalConfig(controllerHome: string, _legacyRepoRoot?: string): McpLocalConfig | null {
+export function loadMcpServiceLocalConfig(controllerHome: string): McpLocalConfig | null {
   return readJsonFile<McpLocalConfig>(mcpControllerHomeLocalConfigPath(resolveControllerHome(controllerHome)));
 }
 
-export function loadMcpServiceRuntimeState(controllerHome: string, _legacyRepoRoot?: string): McpRuntimeState | null {
+export function loadMcpServiceRuntimeState(controllerHome: string): McpRuntimeState | null {
   return readJsonFile<McpRuntimeState>(mcpControllerHomeRuntimeStatePath(resolveControllerHome(controllerHome)));
 }
 
@@ -264,7 +264,7 @@ export function ensureMcpBearerToken(repoRoot: string): { token: string; path: s
   return { token, path, changed: true };
 }
 
-export function readMcpServiceBearerToken(controllerHome: string, _legacyRepoRoot?: string): string | null {
+export function readMcpServiceBearerToken(controllerHome: string): string | null {
   if (process.env.FORGE_MCP_TOKEN?.trim()) return process.env.FORGE_MCP_TOKEN.trim();
   const parsed = readJsonFile<{ bearerToken?: unknown }>(mcpControllerHomeTokenPath(controllerHome));
   if (typeof parsed?.bearerToken === 'string' && parsed.bearerToken.trim().length > 0) return parsed.bearerToken.trim();
@@ -292,7 +292,6 @@ export function writeMcpControllerHomeBearerToken(controllerHome: string, token:
 export function syncMcpControllerHomeBearerToken(
   targetControllerHome: string,
   sourceControllerHome: string,
-  _legacyRepoRoot?: string,
 ): { path: string; changed: boolean } {
   const source = readMcpServiceBearerToken(sourceControllerHome)
     ?? ensureMcpControllerHomeBearerToken(sourceControllerHome).token;
@@ -334,7 +333,7 @@ export function ensureMcpOAuthPassphrase(repoRoot: string): { passphrase: string
   return { passphrase, path, changed: true };
 }
 
-export function readMcpServiceOAuthPassphrase(controllerHome: string, _legacyRepoRoot?: string): string | null {
+export function readMcpServiceOAuthPassphrase(controllerHome: string): string | null {
   if (process.env.FORGE_MCP_OAUTH_PASSPHRASE?.trim()) {
     return process.env.FORGE_MCP_OAUTH_PASSPHRASE.trim();
   }

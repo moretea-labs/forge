@@ -3,7 +3,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
 import { execFileSync, spawnSync, type StdioOptions } from 'child_process';
-import { repositoryControllerRoot, resolveControllerHome } from '../repositories/controller-home';
+import { repositoryControllerRoot, resolveControllerHome } from '../../effects/controller-home';
 import { findRegisteredRepositoryByCheckoutRoot } from '../repositories/registry';
 import { getRoute, type HookEvent, type RouteId } from './route-registry';
 

@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync } from '
 import { dirname, join, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import { spawnSync } from 'child_process';
-import { ensureControllerHome, resolveControllerHome } from '../../cli/repositories/controller-home';
+import { ensureControllerHome, resolveControllerHome } from '../../effects/controller-home';
 import { repositoryIdentity } from '../../cli/controller/runtime-config';
 import { stableCheckoutId } from '../../cli/repositories/identity';
 import { readJsonFile, writeJsonAtomic } from '../shared/json-files';

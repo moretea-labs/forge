@@ -15,7 +15,7 @@ import {
   recordWorkExecutionConcurrencyWait,
   reconcileWorkExecutionConcurrencyWaits,
 } from '../../src/runtime/control-plane/concurrency/work-execution-concurrency';
-import { controllerSystemRoot } from '../../src/cli/repositories/controller-home';
+import { controllerSystemRoot } from '../../src/effects/controller-home';
 import { updateRepositoryWorkPlacement } from '../../src/runtime/control-plane/facade/repository-work-admission';
 import { routeWorkStart } from '../../src/runtime/control-plane/facade/goal-workloop';
 import { readControlPlaneRecord, writeControlPlaneRecord } from '../../src/runtime/control-plane/persistence/sqlite-store';

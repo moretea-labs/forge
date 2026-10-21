@@ -1,5 +1,5 @@
 import { join } from 'node:path';
-import { resolveControllerHome } from '../src/cli/repositories/controller-home';
+import { resolveControllerHome } from '../src/effects/controller-home';
 
 export function resolveWorkflowSupervisorForgeHome(controllerHome?: string): string {
   return resolveControllerHome(controllerHome);

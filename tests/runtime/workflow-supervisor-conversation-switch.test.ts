@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
+import { ensureControllerHome } from '../../src/effects/controller-home';
 import { getCoreCapabilityExecutionSchema } from '../../src/runtime/control-plane/facade/capability-registry';
 import { forgeWorkflowSupervisorLifecycleHooks } from '../../src/runtime/root/workflow-supervisor-composition';
 import {

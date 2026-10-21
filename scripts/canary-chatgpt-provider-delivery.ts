@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { randomUUID } from 'crypto';
-import { resolveControllerHome } from '../src/cli/repositories/controller-home';
+import { resolveControllerHome } from '../src/effects/controller-home';
 import { isWslWindowsRuntime } from '../src/cli/chatgpt-browser/bridge-provider';
 import { createChatgptBrowserDeliveryHost } from '../adapters/chatgpt/browser-delivery-host';
 import { createChatgptWslBridgeDeliveryHost } from '../adapters/chatgpt/wsl-bridge-delivery-host';

@@ -30,7 +30,7 @@ import { completionEvidenceComplete, executionScopesConflict, taskExecutionPolic
 import { resolveCompletionTargetBranch } from './completion-target';
 import { listControllerChecks } from './check-runner';
 import { normalizeCheckIds } from '../../runtime/control-plane/facade/check-normalization';
-import { resolveRepoPreferredControllerHome } from '../repositories/controller-home';
+import { resolveRepoPreferredControllerHome } from '../../effects/controller-home';
 import { markControllerContextProjectionDirty } from '../../runtime/projections/controller-context';
 import {
   assertLegacyIssueWritesAllowed,

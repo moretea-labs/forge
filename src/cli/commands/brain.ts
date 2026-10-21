@@ -12,7 +12,7 @@ import * as path from 'path';
 import { execFileSync } from 'child_process';
 import { configuredBrainRoot } from './brain-root';
 import { addBrainAssistantCommands } from './brain-assistant';
-import { resolveRepoPreferredControllerHome } from '../repositories/controller-home';
+import { resolveRepoPreferredControllerHome } from '../../effects/controller-home';
 import { findRegisteredRepositoryByCheckoutRoot } from '../repositories/registry';
 import { getWorkContract, semanticWorkState } from '../../../packages/kernel/work/api/index';
 

@@ -9,12 +9,21 @@ const ts = createRequire(import.meta.url)('typescript');
 const debtFile = 'docs/architecture/kernel-legacy-edge-debt.json';
 const debt = JSON.parse(readFileSync(join(root, debtFile), 'utf8'));
 if (debt.version !== 1 || !Array.isArray(debt.edges)) throw new Error('invalid kernel legacy debt ledger');
+const runtimeCliDebtFile = 'docs/architecture/runtime-cli-edge-debt.json';
+const runtimeCliDebt = JSON.parse(readFileSync(join(root, runtimeCliDebtFile), 'utf8'));
+if (runtimeCliDebt.version !== 1 || !Array.isArray(runtimeCliDebt.edges)) throw new Error('invalid runtime->cli debt ledger');
 const sorted = [...debt.edges].sort();
 if (new Set(sorted).size !== sorted.length || JSON.stringify(sorted) !== JSON.stringify(debt.edges)) {
   throw new Error(`${debtFile}: edges must be unique and sorted`);
 }
 const allowedDebt = new Set(debt.edges);
 const usedDebt = new Set();
+const runtimeCliSorted = [...runtimeCliDebt.edges].sort();
+if (new Set(runtimeCliSorted).size !== runtimeCliSorted.length || JSON.stringify(runtimeCliSorted) !== JSON.stringify(runtimeCliDebt.edges)) {
+  throw new Error(`${runtimeCliDebtFile}: edges must be unique and sorted`);
+}
+const allowedRuntimeCliDebt = new Set(runtimeCliDebt.edges);
+const usedRuntimeCliDebt = new Set();
 const failures = [];
 const domainDependencies = new Map();
 const posix = path => path.split(sep).join('/');
@@ -79,6 +88,27 @@ for (const absolute of filesWithin(join(root, 'packages/kernel'))) {
 for (const edge of allowedDebt) {
   if (!usedDebt.has(edge)) failures.push(`${debtFile}: stale exception ${edge}; remove retired debt`);
 }
+
+// src/runtime must not reach back into src/cli. Existing reverse edges are
+// shrinking migration debt recorded in runtime-cli-edge-debt.json; the shared
+// neutral owners live under src/effects (path/storage contracts) and the
+// kernel/adapter layers.
+for (const absolute of filesWithin(join(root, 'src/runtime'))) {
+  const source = posix(relative(root, absolute));
+  if (source.endsWith('.test.ts')) continue;
+  for (const item of importsOf(readFileSync(absolute, 'utf8'), source)) {
+    if (!item.path.startsWith('.')) continue;
+    const target = posix(relative(root, resolve(dirname(absolute), item.path)));
+    if (target !== '' && !target.startsWith('src/cli/')) continue;
+    const key = `${source}|${item.path}`;
+    if (allowedRuntimeCliDebt.has(key)) usedRuntimeCliDebt.add(key);
+    else failures.push(`${source}:${item.line}: unapproved src/runtime -> src/cli import ${target}; move the shared owner to a neutral module`);
+  }
+}
+for (const edge of allowedRuntimeCliDebt) {
+  if (!usedRuntimeCliDebt.has(edge)) failures.push(`${runtimeCliDebtFile}: stale exception ${edge}; remove retired debt`);
+}
+
 const visited = new Set();
 const active = new Set();
 function visit(domain, stack) {
@@ -98,5 +128,5 @@ if (failures.length) {
   console.error(`Module boundaries failed (${failures.length}):\n${failures.join('\n')}`);
   process.exitCode = 1;
 } else {
-  console.log(`Module boundaries passed: ${allowedDebt.size} explicitly tracked legacy edges; no new edge permitted`);
+  console.log(`Module boundaries passed: ${allowedDebt.size} kernel legacy edges, ${allowedRuntimeCliDebt.size} runtime->cli legacy edges; no new edge permitted`);
 }

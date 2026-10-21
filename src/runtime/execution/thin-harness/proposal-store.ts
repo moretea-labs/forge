@@ -15,7 +15,7 @@ import {
   writeFileSync,
 } from 'fs';
 import { join } from 'path';
-import { repositoryControllerRoot } from '../../../cli/repositories/controller-home';
+import { repositoryControllerRoot } from '../../../effects/controller-home';
 import { runBoundedGit } from './async-process';
 import {
   computePathFingerprintsAsync,

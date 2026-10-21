@@ -1,7 +1,7 @@
 import { randomUUID } from 'crypto';
 import { existsSync } from 'fs';
 import { join } from 'path';
-import { ensureControllerHome } from '../../../cli/repositories/controller-home';
+import { ensureControllerHome } from '../../../effects/controller-home';
 import { readJsonFile, sanitizeFileComponent } from '../../shared/json-files';
 import type { GoalDelegation } from '../governance/authorization';
 import {

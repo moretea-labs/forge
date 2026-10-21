@@ -95,9 +95,9 @@ import { applyStuckStateMigration, inspectStuckControllerStates } from "../contr
 import { getMcpPolicy } from "../../../adapters/mcp/policy";
 import type { MultiRepositoryMcpToolContext } from "../../../adapters/mcp/multi-repository";
 import { createMcpToolContext as createControllerMcpToolContext } from "../../../adapters/mcp/server";
-import { loadMcpLocalConfig, loadMcpServiceLocalConfig, loadMcpServiceRuntimeState } from "../../../adapters/mcp/auth";
+import { loadMcpServiceLocalConfig, loadMcpServiceRuntimeState } from "../../../adapters/mcp/auth";
 import { loadRepositoryRegistry, registerRepository, removeRepository, resolveRepositorySelection } from "../repositories/registry";
-import { resolveControllerHome, resolveRepoPreferredControllerHome } from "../repositories/controller-home";
+import { resolveControllerHome, resolveRepoPreferredControllerHome } from "../../effects/controller-home";
 import { ensureRepositoryRuntimeStorage } from "../repositories/runtime-storage";
 import { readForgeRuntimeStatus } from "../../runtime/control-plane/runtime-status-client";
 import { readRuntimeGeneration } from "../../runtime/control-plane/runtime-generation";
@@ -403,8 +403,8 @@ export function buildLocalControllerSnapshot(repoRoot: string) {
         .map((job) => ({ kind: "work", id: job.jobId, title: String(job.payload.operation ?? job.type), status: job.status, updatedAt: job.updatedAt })),
     ].sort((left, right) => String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? ""))).slice(0, 12),
   };
-  const mcpRuntime = loadMcpServiceRuntimeState(controllerHome, repoRoot);
-  const mcpConfig = loadMcpServiceLocalConfig(controllerHome, repoRoot);
+  const mcpRuntime = loadMcpServiceRuntimeState(controllerHome);
+  const mcpConfig = loadMcpServiceLocalConfig(controllerHome);
   const mcpExposureContext = createControllerMcpToolContext({
     repo: repoRoot,
     controllerHome,

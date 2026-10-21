@@ -2,7 +2,7 @@ import { Command } from 'commander';
 import { existsSync, mkdirSync, writeFileSync } from 'fs';
 import { dirname, join, resolve } from 'path';
 import { fileURLToPath } from 'url';
-import { resolveControllerHome, resolveRepoPreferredControllerHome } from '../repositories/controller-home';
+import { resolveControllerHome, resolveRepoPreferredControllerHome } from '../../effects/controller-home';
 import { findExecutionJob, listActiveExecutionJobs, listExecutionJobs } from '../../runtime/execution/jobs/store';
 import { readJobEvents } from '../../runtime/evidence/event-ledger';
 import { findRegisteredRepositoryByCheckoutRoot, getRepository, listRepositories } from '../repositories/registry';
@@ -158,7 +158,7 @@ export function buildRuntimeCommand(): Command {
 
       const tokenPath = resolve(opts.authTokenFile ?? join(home, 'mcp', 'runtime-token'));
       if (!existsSync(tokenPath)) {
-        const token = readMcpServiceBearerToken(home, repoRoot);
+        const token = readMcpServiceBearerToken(home);
         if (!token) throw new Error('RUNTIME_SERVICE_AUTH_TOKEN_UNAVAILABLE: run forge mcp setup chatgpt first');
         writeFileSync(tokenPath, `${token}\n`, { mode: 0o600 });
       }

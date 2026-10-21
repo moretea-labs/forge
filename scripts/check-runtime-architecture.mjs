@@ -1064,7 +1064,6 @@ requireText('packages/kernel/controller/ports/controller-host.ts', 'export inter
 requireText('packages/kernel/controller/ports/controller-host.ts', 'resume(binding: ControllerBinding, roundContext: ControllerRoundContext)');
 requireText('packages/kernel/controller/infrastructure/controller-session-store.ts', 'claimControllerSession');
 requireText('packages/kernel/controller/infrastructure/controller-session-store.ts', 'releaseControllerSessionWithAuthority');
-requireText('src/runtime/control-plane/facade/controller-session-store.ts', '@deprecated Kernel V2 compatibility shim');
 forbid('packages/kernel/controller/index.ts', /infrastructure\//, 'Kernel module root must expose only its public API');
 forbid('packages/kernel/controller/application/controller-service.ts', /export\s+\*\s+from\s+['"]\.\.\/infrastructure\//, 'Controller application façade must not wildcard-export infrastructure');
 // B4 Scheduler continuation authority: Schedule owns occurrence state only;
@@ -1256,7 +1255,6 @@ for (const path of sourceFiles('src')) {
   forbid(path, /(?:from\s+['"]|import\s*\(\s*['"])[^'"]*controller-session-store['"]/, 'production source must consume packages/kernel/controller instead of retired ControllerSession facade authority');
 }
 const B7_KERNEL_INTERNAL_COMPATIBILITY_SHIMS = new Set([
-  'src/runtime/control-plane/facade/controller-session-store.ts',
   'src/runtime/control-plane/facade/work-contract-store.ts',
   'src/runtime/control-plane/facade/types.ts',
   'src/runtime/workflow/schedules/settlement.ts',
@@ -1315,7 +1313,9 @@ forbid(
 requireMissing('src/runtime/control-plane/routing/workspace-admission.ts');
 forbid('packages/kernel/work/domain/types.ts', /requireHandoffOnAmbiguity|requireWorktree|directMainProhibited/, 'retired Work placement/handoff policy fields must not return as durable authority');
 forbid('adapters/mcp/runtime-gateway/work-adapter.ts', /require_handoff_on_ambiguity|require_worktree|direct_main_prohibited/, 'retired placement/handoff wire flags must not drive repository topology');
-requireText('adapters/mcp/runtime-gateway/work-adapter.ts', "rawConstraints.workspace_mode === 'current'\n      ? 'current'\n      : 'isolated'", 'repository-bound rh_work.start must default omitted placement to isolated execution');
+requireText('adapters/mcp/runtime-gateway/work-adapter.ts', "rawConstraints.workspace_mode === 'isolated' ? 'isolated' : 'current'", 'repository-bound rh_work.start must default omitted placement to the selected current checkout');
+requireText('adapters/mcp/runtime-gateway/work-semantic-operations.ts', 'repositoryPlacement?: \'current\' | \'isolated\'', 'repository-bound semantic creation must carry its placement at initial Work creation');
+requireText('packages/kernel/work/infrastructure/work-contract-store.ts', "workKind: input.repositoryPlacement ? 'repository_change' : 'investigation'", 'repository execution may not retrofit an investigation Work through placement CAS');
 requireText('src/runtime/control-plane/execution/work-preparation-service.ts', 'WORK_PREPARE_PLACEMENT_CONFLICT', 'work_prepare must not silently reuse a conflicting existing WorkHandle placement');
 forbid('src/cli/controller/execution-policy.ts', /requiresHumanAcceptance|autoRunDeclaredChecks|autoCompleteAfterSuccessfulRun|requiresScopedPaths|requiresDiffEvidence|requiresAnyVerificationEvidence|requiresAcceptanceEvidence|READ_ONLY_INTENT|DESTRUCTIVE_INTENT|SENSITIVE_PATH_PATTERNS/, 'task risk/text/path classification must not decide workflow, placement, verification, scope, or acceptance authority');
 requireMissing('src/runtime/control-plane/daemon-entry.ts');
@@ -2074,11 +2074,11 @@ const b7KernelLegacyEdges = edgeSet(b7ProductionGraph, (edge) => {
   return from.startsWith('packages/kernel/') && to.startsWith('src/');
 });
 const B7_ALLOWED_KERNEL_LEGACY_EDGES = new Set([
-  'packages/kernel/work/infrastructure/work-contract-store.ts -> src/cli/repositories/controller-home.ts',
+  'packages/kernel/work/infrastructure/work-contract-store.ts -> src/effects/controller-home.ts',
   'packages/kernel/work/infrastructure/work-contract-store.ts -> src/cli/repositories/locks.ts',
   'packages/kernel/work/infrastructure/work-contract-store.ts -> src/runtime/shared/json-files.ts',
   'packages/kernel/work/infrastructure/work-contract-store.ts -> src/runtime/control-plane/persistence/sqlite-store.ts',
-  'packages/kernel/controller/infrastructure/controller-session-store.ts -> src/cli/repositories/controller-home.ts',
+  'packages/kernel/controller/infrastructure/controller-session-store.ts -> src/effects/controller-home.ts',
   'packages/kernel/controller/infrastructure/controller-session-store.ts -> src/cli/repositories/locks.ts',
   'packages/kernel/controller/infrastructure/controller-session-store.ts -> src/runtime/control-plane/execution/session-store.ts',
   'packages/kernel/controller/infrastructure/controller-session-store.ts -> src/runtime/shared/json-files.ts',
@@ -2090,7 +2090,7 @@ const B7_ALLOWED_KERNEL_LEGACY_EDGES = new Set([
   'packages/kernel/controller/infrastructure/controller-round-store.ts -> src/runtime/control-plane/facade/handoff-inbox-store.ts',
   'packages/kernel/controller/infrastructure/controller-binding-store.ts -> src/cli/repositories/locks.ts',
   'packages/kernel/controller/infrastructure/controller-binding-store.ts -> src/runtime/control-plane/persistence/sqlite-store.ts',
-  'packages/kernel/scheduler/infrastructure/schedule-store.ts -> src/cli/repositories/controller-home.ts',
+  'packages/kernel/scheduler/infrastructure/schedule-store.ts -> src/effects/controller-home.ts',
   'packages/kernel/scheduler/infrastructure/schedule-store.ts -> src/cli/repositories/locks.ts',
   'packages/kernel/scheduler/infrastructure/schedule-store.ts -> src/runtime/control-plane/facade/handoff-inbox-store.ts',
   'packages/kernel/scheduler/infrastructure/schedule-store.ts -> src/runtime/shared/json-files.ts',

@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { recordCognitiveMemory, recordCognitiveMemoryEdge, type CognitiveWriteAuthorityPort } from '../packages/kernel/cognition/api/index';
-import { ensureControllerHome } from '../src/cli/repositories/controller-home';
+import { ensureControllerHome } from '../src/effects/controller-home';
 import { activateCognitiveMemory, cognitionMemoryStore } from '../src/runtime/control-plane/persistence/cognition-store';
 
 const count = Math.max(1_000, Math.min(100_000, Number(process.argv[2] ?? 20_000)));

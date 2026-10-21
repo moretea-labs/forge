@@ -5,7 +5,7 @@ import { DEFAULT_AGENT_TIMEOUT_MS, MAX_AGENT_TIMEOUT_MS, normalizeAgentTimeoutMs
 import type { McpAgentRunnerName } from './types';
 import { realpathSync } from 'fs';
 import { resolve } from 'path';
-import { ensureRepoPreferredControllerHome } from '../../src/cli/repositories/controller-home';
+import { ensureRepoPreferredControllerHome } from '../../src/effects/controller-home';
 import { bindRepositoryEntities } from '../../src/cli/repositories/entity-migration';
 import { withControllerLockAsync } from '../../src/cli/repositories/locks';
 import { listRepositories, registerRepository, repositorySummary, resolveRepositorySelection, selectRepositoryCheckout } from '../../src/cli/repositories/registry';
@@ -97,7 +97,7 @@ function parseAgentList(value: unknown): McpAgentRunnerName[] {
 export function runtimePolicy(repoRoot: string, opts: McpServerOptions) {
   const profile = parseMcpProfile(opts.profile ?? 'controller');
   const config = profile === 'controller' && opts.controllerHome
-    ? loadMcpServiceLocalConfig(opts.controllerHome, repoRoot)
+    ? loadMcpServiceLocalConfig(opts.controllerHome)
     : loadMcpLocalConfig(repoRoot);
   const envDevRunner = parseBooleanSetting(process.env.FORGE_MCP_DEV_RUNNER);
   const configuredDevRunner = envDevRunner ?? config?.devMode?.agentRunner === true;

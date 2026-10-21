@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'crypto';
 import { existsSync, mkdirSync } from 'fs';
 import { join } from 'path';
-import { ensureControllerHome, scopedOperationRoot, SEMANTIC_SCOPE_KEY } from '../../../../src/cli/repositories/controller-home';
+import { ensureControllerHome, scopedOperationRoot, SEMANTIC_SCOPE_KEY } from '../../../../src/effects/controller-home';
 import { withControllerLock } from '../../../../src/cli/repositories/locks';
 import { readJsonFile, sanitizeFileComponent, writeJsonAtomic } from '../../../../src/runtime/shared/json-files';
 import {
@@ -151,6 +151,8 @@ export interface CreateWorkSemanticInput {
   semanticParentWorkId?: string;
   dependsOnWorkIds?: string[];
   requestedBy?: 'chatgpt' | 'user' | 'system' | 'scheduler';
+  /** Trusted repository-bound admission intent; ordinary semantic Work remains investigation-only. */
+  repositoryPlacement?: 'current' | 'isolated';
 }
 
 export interface ReviseWorkSemanticInput {
@@ -728,8 +730,8 @@ export function createWorkSemanticContext(options: WorkContractStoreOptions, inp
     repoId: options.repoId?.trim() ?? '',
     objective: input.objective,
     acceptanceCriteria: [],
-    constraints: {},
-    workKind: 'investigation',
+    constraints: input.repositoryPlacement ? { workspaceMode: input.repositoryPlacement } : {},
+    workKind: input.repositoryPlacement ? 'repository_change' : 'investigation',
     lifecycleRole: 'primary',
     requestedBy: input.requestedBy ?? 'chatgpt',
     checks: [],

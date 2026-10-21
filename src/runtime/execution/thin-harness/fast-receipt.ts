@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { createHash, randomUUID } from 'crypto';
-import { repositoryControllerRoot } from '../../../cli/repositories/controller-home';
+import { repositoryControllerRoot } from '../../../effects/controller-home';
 import {
   FAST_RECEIPT_MAX_SUMMARY_BYTES,
   FAST_RECEIPT_RETENTION,

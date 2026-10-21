@@ -18,7 +18,7 @@ import {
   readControlPlaneRecord,
   writeControlPlaneRecord,
 } from '../../src/runtime/control-plane/persistence/sqlite-store';
-import { SEMANTIC_SCOPE_KEY } from '../../src/cli/repositories/controller-home';
+import { SEMANTIC_SCOPE_KEY } from '../../src/effects/controller-home';
 
 const homes: string[] = [];
 

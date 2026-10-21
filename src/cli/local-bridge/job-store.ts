@@ -25,7 +25,7 @@ import { loadMcpServiceLocalConfig } from "../../../adapters/mcp/auth";
 import type { ControllerTask } from "../controller/types";
 import { taskExecutionPolicy } from "../controller/execution-policy";
 import { tryAppendControllerWorklogEvent } from "../controller/worklog";
-import { resolveControllerHome, resolveRepoPreferredControllerHome } from "../repositories/controller-home";
+import { resolveControllerHome, resolveRepoPreferredControllerHome } from "../../effects/controller-home";
 import { findExecutionJob } from "../../runtime/execution/jobs/store";
 import type {
   LocalBridgeApproval,

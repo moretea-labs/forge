@@ -1,6 +1,6 @@
 import { cpSync, existsSync, lstatSync, mkdirSync, readdirSync, renameSync, rmSync } from 'fs';
 import { basename, dirname, join } from 'path';
-import { repositoryControllerRoot } from '../../cli/repositories/controller-home';
+import { repositoryControllerRoot } from '../../effects/controller-home';
 import { assertStorageHeadroom } from '../shared/storage-capacity';
 import { measureReclaimablePath } from '../control-plane/lifecycle-retention-metrics';
 

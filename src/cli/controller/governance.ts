@@ -17,7 +17,7 @@ import { readIssueRunEvidence } from "./run-evidence";
 import { resolveEffectiveTaskState, resolveIssueTaskStates, resolveTaskDependencies, type EffectiveTaskState } from "./task-status-resolver";
 import { tryAppendControllerWorklogEvent } from "./worklog";
 import { legacyIssueCutoverState } from "./legacy-issue-cutover";
-import { resolveRepoPreferredControllerHome } from "../repositories/controller-home";
+import { resolveRepoPreferredControllerHome } from "../../effects/controller-home";
 import { buildRequirementBoard } from "../../runtime/control-plane/facade/requirement-board";
 
 export type GovernanceSeverity = "info" | "warning" | "critical";

@@ -16,7 +16,7 @@ import {
   resolveControllerHome,
   rollbackStoppedControllerHomeAuthorityRelocation,
   type StoppedControllerHomeAuthorityRelocation,
-} from '../repositories/controller-home';
+} from '../../effects/controller-home';
 import { FORGE_VERSION } from '../../version';
 import {
   RECOVERY_DAEMON_LABEL,

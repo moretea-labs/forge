@@ -6,7 +6,7 @@ import {
   readFileSync,
 } from 'fs';
 import { dirname, join, resolve } from 'path';
-import { repoLocalNoIndexControllerHome, repositoryControllerRoot } from '../../../cli/repositories/controller-home';
+import { repoLocalNoIndexControllerHome, repositoryControllerRoot } from '../../../effects/controller-home';
 import {
   getRepository,
   listRepositories,

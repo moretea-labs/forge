@@ -1,6 +1,6 @@
 import { mkdirSync, watch } from 'fs';
 import { dirname, join } from 'path';
-import { ensureControllerHome } from '../../../cli/repositories/controller-home';
+import { ensureControllerHome } from '../../../effects/controller-home';
 import { readJsonFile, writeJsonAtomic } from '../../shared/json-files';
 
 interface SchedulerWakeSignal {

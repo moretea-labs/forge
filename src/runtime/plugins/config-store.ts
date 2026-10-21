@@ -1,6 +1,6 @@
 import { existsSync, lstatSync, readFileSync, readdirSync, rmSync } from 'fs';
 import { dirname, join } from 'path';
-import { controllerSystemRoot } from '../../cli/repositories/controller-home';
+import { controllerSystemRoot } from '../../effects/controller-home';
 import { listRepositories } from '../../cli/repositories/registry';
 import type { RepositoryRecord } from '../../cli/repositories/types';
 import { sanitizeFileComponent, writeJsonAtomic } from '../shared/json-files';

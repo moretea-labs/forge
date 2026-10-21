@@ -11,7 +11,7 @@ import {
 } from 'fs';
 import { dirname, join, resolve } from 'path';
 import { fileURLToPath } from 'url';
-import { resolveRepoPreferredControllerHome } from '../src/cli/repositories/controller-home';
+import { resolveRepoPreferredControllerHome } from '../src/effects/controller-home';
 import { findRegisteredRepositoryByCheckoutRoot } from '../src/cli/repositories/registry';
 import { cleanupTerminalWork } from '../src/runtime/control-plane/execution/work-terminal-cleanup';
 import { listWorkHandles, type WorkTerminalOutcome } from '../src/runtime/control-plane/execution/work-handle-store';

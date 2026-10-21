@@ -1,7 +1,7 @@
 import { randomUUID } from 'crypto';
 import { existsSync, mkdirSync } from 'fs';
 import { join, relative, resolve } from 'path';
-import { isWorkspaceScopeKey, repositoryControllerRoot, scopedOperationRoot } from '../../../cli/repositories/controller-home';
+import { isWorkspaceScopeKey, repositoryControllerRoot, scopedOperationRoot } from '../../../effects/controller-home';
 import { readJsonFile, sanitizeFileComponent, writeJsonAtomic } from '../../shared/json-files';
 import type { AccessMode } from './access-policy';
 

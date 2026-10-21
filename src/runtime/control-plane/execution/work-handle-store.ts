@@ -1,7 +1,7 @@
 import { randomUUID } from 'crypto';
 import { existsSync } from 'fs';
 import { join } from 'path';
-import { scopedOperationRoot } from '../../../cli/repositories/controller-home';
+import { scopedOperationRoot } from '../../../effects/controller-home';
 import { readJsonFile, sanitizeFileComponent } from '../../shared/json-files';
 import type { ProcessCheckExecutionIdentity } from '../../evidence/process-check-execution';
 import { listControlPlaneRecords, listControlPlaneRecordsWithinTransaction, mutateControlPlaneRecord, readControlPlaneRecordWithinTransaction, readOrImportControlPlaneRecord, writeControlPlaneRecord, writeControlPlaneRecordWithinTransaction } from '../persistence/sqlite-store';

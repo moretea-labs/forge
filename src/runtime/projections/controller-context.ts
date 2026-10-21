@@ -2,7 +2,7 @@ import { createHash } from 'crypto';
 import { readdirSync, rmSync } from 'fs';
 import { join, resolve } from 'path';
 import { isProcessAlive } from '../shared/process-tree';
-import { repositoryControllerRoot } from '../../cli/repositories/controller-home';
+import { repositoryControllerRoot } from '../../effects/controller-home';
 import { readJsonFile, writeJsonAtomic } from '../shared/json-files';
 
 export type ControllerContextProjectionVariant = 'summary' | 'detail';

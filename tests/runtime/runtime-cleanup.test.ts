@@ -18,7 +18,7 @@ import { runSchedulerPeriodicCleanup } from '../../src/runtime/control-plane/glo
 import { applyRuntimeCleanup, previewRuntimeCleanup } from '../../src/runtime/maintenance/cleanup';
 import { markRepositoryProjectionDirty, persistRepositoryProjectionDirty, repositoryProjectionIsDirty } from '../../src/runtime/projections/invalidation';
 import type { RepositoryRecord } from '../../src/cli/repositories/types';
-import { repositoryControllerRoot } from '../../src/cli/repositories/controller-home';
+import { repositoryControllerRoot } from '../../src/effects/controller-home';
 import { registerRepository, removeRepository } from '../../src/cli/repositories/registry';
 import { cleanupRetiredRepositoryNamespaces } from '../../src/runtime/control-plane/repository-namespace-retention';
 import { resolveGitExecutable } from '../../src/effects/git-executable';

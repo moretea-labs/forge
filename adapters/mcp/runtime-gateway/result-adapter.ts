@@ -2,7 +2,7 @@ import { existsSync, readFileSync, statSync } from 'fs';
 import { isAbsolute, relative, resolve, sep } from 'path';
 import type { CallToolResult as SdkCallToolResult } from "@modelcontextprotocol/client";
 import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
-import { CONTROLLER_SCOPE_REPO_ID, FORGE_INSTANCE_SCOPE_KEY, controllerSystemRoot, repositoryControllerRoot } from '../../../src/cli/repositories/controller-home';
+import { CONTROLLER_SCOPE_REPO_ID, FORGE_INSTANCE_SCOPE_KEY, controllerSystemRoot, repositoryControllerRoot } from '../../../src/effects/controller-home';
 import { redactMcpText } from '../redaction';
 
 /** Transport-only MCP result envelope. No lifecycle or domain mutation belongs here. */

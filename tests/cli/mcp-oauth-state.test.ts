@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync } from 'fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { dirname, join } from 'path';
 import { createMcpOAuthProvider, McpOAuthTokenStore } from '../../adapters/mcp/oauth';
+import { mcpServiceOAuthTokenStorePath } from '../../adapters/mcp/auth';
 
 const roots: string[] = [];
 afterEach(() => { while (roots.length > 0) rmSync(roots.pop()!, { recursive: true, force: true }); });
@@ -69,5 +70,39 @@ describe('MCP OAuth authorization-code lifecycle', () => {
     const diagnostics = provider.authorizationCodeDiagnostics();
     expect(diagnostics.pending).toBe(8);
     expect(diagnostics.evicted).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe('MCP OAuth token store single-owner integrity', () => {
+  test('corrupt canonical store fails closed with MCP_OAUTH_STORE_CORRUPT and is never silently rewritten', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-oauth-state-')); roots.push(root);
+    const path = mcpServiceOAuthTokenStorePath(root);
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, '{not-json', { encoding: 'utf-8' });
+    const store = new McpOAuthTokenStore(path);
+    expect(() => store.load()).toThrow('MCP_OAUTH_STORE_CORRUPT');
+    // A fail-closed load must not become a recovery writer: the corrupt bytes
+    // stay untouched instead of being replaced by a fresh empty store.
+    expect(readFileSync(path, 'utf-8')).toBe('{not-json');
+  });
+
+  test('token state persists and reloads through the one Controller Home file without a fallback source', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-oauth-state-')); roots.push(root);
+    const path = mcpServiceOAuthTokenStorePath(root);
+    const store = new McpOAuthTokenStore(path);
+    store.setTokenPair(
+      'access-1',
+      { token: 'access-1', clientId: 'single-owner-client', scopes: ['forge'], expiresAt: 4_102_444_800 },
+      'refresh-1',
+    );
+    const reloaded = new McpOAuthTokenStore(path);
+    reloaded.load();
+    expect(reloaded.getAccessToken('access-1')?.clientId).toBe('single-owner-client');
+    expect(reloaded.getRefreshToken('refresh-1')).toBe('access-1');
+    expect(reloaded.revokeToken('refresh-1')).toBeUndefined();
+    const afterRevoke = new McpOAuthTokenStore(path);
+    afterRevoke.load();
+    expect(afterRevoke.getAccessToken('access-1')).toBeUndefined();
+    expect(afterRevoke.getRefreshToken('refresh-1')).toBeUndefined();
   });
 });

@@ -7,7 +7,7 @@ import {
   writeFileSync,
 } from "fs";
 import { dirname, isAbsolute, join, relative, resolve } from "path";
-import { durableControllerHome, repositoryControllerRoot } from "../repositories/controller-home";
+import { durableControllerHome, repositoryControllerRoot } from "../../effects/controller-home";
 import { findRegisteredRepositoryByCheckoutRoot } from "../repositories/registry";
 
 const WORKLOG_CONTROLLER_RELATIVE_PATH = "controller/worklog.jsonl";

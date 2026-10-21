@@ -1,6 +1,6 @@
 import { existsSync, lstatSync, rmSync } from 'fs';
 import { join, relative } from 'path';
-import { repositoryControllerRoot } from '../../cli/repositories/controller-home';
+import { repositoryControllerRoot } from '../../effects/controller-home';
 import { listRepositories } from '../../cli/repositories/registry';
 import { listActiveExecutionJobs } from '../execution/jobs/store';
 import { listActiveProcessIds } from '../execution/process-runtime/store';

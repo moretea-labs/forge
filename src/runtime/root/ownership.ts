@@ -9,7 +9,7 @@ import {
   writeFileSync,
 } from 'fs';
 import { dirname, join } from 'path';
-import { resolveControllerHome } from '../../cli/repositories/controller-home';
+import { resolveControllerHome } from '../../effects/controller-home';
 import { isProcessAlive, terminateProcessTree, type ProcessTreeTerminationResult } from '../shared/process-tree';
 import { defaultProcessIdentityProbe, executableFingerprint, processIdentityMatches } from '../shared/process-identity';
 

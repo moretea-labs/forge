@@ -13,7 +13,7 @@ import { workHasActiveExecution } from '../../src/runtime/execution/work-activit
 import { acquireRuntimeOwnership } from '../../src/runtime/root/ownership';
 import { forgeRuntimeServicePaths } from '../../src/runtime/root/service';
 import { writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
-import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
+import { ensureControllerHome } from '../../src/effects/controller-home';
 import { registerRepository } from '../../src/cli/repositories/registry';
 import { assertCommandPathOperandsStayInRepository, assertRepositoryCommandInputAllowed } from '../../src/cli/repositories/command-scope';
 import type { RepositoryRecord } from '../../src/cli/repositories/types';
@@ -23,7 +23,7 @@ import { continueGoalWorkloop, routeWorkStart, stopGoalWorkloop } from '../../sr
 import { createRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
 import { createHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
 import { recordUserRequest } from '../../packages/kernel/identity/api/index';
-import { claimControllerSession, controllerSessionBlocksRecovery, getControllerSession, releaseControllerSession, resumeControllerSession } from '../../src/runtime/control-plane/facade/controller-session-store';
+import { claimControllerSession, controllerSessionBlocksRecovery, getControllerSession, releaseControllerSession, resumeControllerSession } from '../../packages/kernel/controller/api/index';
 import { invalidateExecutionSession, readExecutionSession, startExecutionSession, updateExecutionSession } from '../../src/runtime/control-plane/execution/session-store';
 import {
   acknowledgeControllerRoundClaim,

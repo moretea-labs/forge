@@ -3,7 +3,7 @@ import { randomUUID } from 'crypto';
 import { existsSync, readFileSync, rmSync } from 'fs';
 import { setTimeout as sleep } from 'timers/promises';
 import { dirname, join, resolve } from 'path';
-import { resolveControllerHome } from '../../cli/repositories/controller-home';
+import { resolveControllerHome } from '../../effects/controller-home';
 import { createPlatformServiceManagerHost, probeSystemdUserAvailable, type PlatformServiceManagerHost, type PlatformServiceManagerKind, type SystemdUserUnitInput } from '../platform/service-manager';
 import { reconcileRetiredForgePersistentServices, type ForgeRetiredServiceReconciliation } from '../platform/service-inventory';
 import { runtimeAuthorityFreeEnvironment } from '../shared/process-environment';

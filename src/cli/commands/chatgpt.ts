@@ -12,7 +12,7 @@ import {
   runBrowserSetup,
 } from '../chatgpt-browser/engine';
 import type { BrowserProviderName, BrowserSessionStatus, NativeBrowserChannel, ThinkingLevel } from '../chatgpt-browser/types';
-import { durableControllerHome } from '../repositories/controller-home';
+import { durableControllerHome } from '../../effects/controller-home';
 import { closeChatgptControllerRoundFromSource } from '../../runtime/control-plane/launcher/chatgpt-round-continuation';
 
 interface BrowserCommonOptions {

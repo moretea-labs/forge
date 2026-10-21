@@ -1,7 +1,7 @@
 import { createHash } from 'crypto';
 import { mkdirSync } from 'fs';
 import { join } from 'path';
-import { scopedOperationRoot } from '../../../cli/repositories/controller-home';
+import { scopedOperationRoot } from '../../../effects/controller-home';
 import { withControllerLock } from '../../../cli/repositories/locks';
 import { readJsonFile, sanitizeFileComponent, writeJsonAtomic } from '../../shared/json-files';
 import {

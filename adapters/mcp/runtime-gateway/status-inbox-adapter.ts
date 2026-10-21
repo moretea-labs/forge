@@ -5,7 +5,7 @@ import type { MultiRepositoryMcpToolContext } from "../multi-repository";
 import { controllerExposureSnapshot, controllerToolSurfaceStatus } from "../toolset";
 import { result } from "./result-adapter";
 import { selected, selectedOptional } from "./shared-adapter";
-import { SEMANTIC_SCOPE_KEY } from "../../../src/cli/repositories/controller-home";
+import { SEMANTIC_SCOPE_KEY } from "../../../src/effects/controller-home";
 import type { ExecutionJob } from '../../../src/runtime/execution/jobs/types';
 import { getProcessRecord, isManagedProcessActive, processRuntimeResourceDiagnostics } from "../../../src/runtime/execution/process-runtime";
 import { formatRuntimeSourceDriftMessage, readRuntimeGeneration } from "../../../src/runtime/control-plane/runtime-generation";

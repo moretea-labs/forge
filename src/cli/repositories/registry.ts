@@ -16,7 +16,7 @@ import {
   durableControllerHome,
   ensureControllerHome,
   ensureRepositoryControllerLayout,
-} from './controller-home';
+} from '../../effects/controller-home';
 import { withControllerLock } from './locks';
 import {
   inferDisplayName,

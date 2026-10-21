@@ -2,7 +2,7 @@ import { createHash } from 'crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs';
 import { dirname, join, resolve } from 'path';
 import type { RepositoryRecord } from '../../cli/repositories/types';
-import { controllerSystemRoot, repositoryControllerRoot } from '../../cli/repositories/controller-home';
+import { controllerSystemRoot, repositoryControllerRoot } from '../../effects/controller-home';
 import { resolveTrustedNodeExecutable } from '../shared/trusted-node-executable';
 import { startLightweightInternalProcess, waitForLightweightProcess } from '../execution/process-runtime/lightweight-managed';
 import { getProcessHandle, spawnManagedProcess, waitForProcess } from '../execution/process-runtime/runtime';

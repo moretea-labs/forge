@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'fs';
 import { dirname, join, resolve } from 'path';
-import { ensureControllerHome } from '../../cli/repositories/controller-home';
+import { ensureControllerHome } from '../../effects/controller-home';
 import {
   backupControlPlaneDatabase,
   controlPlaneDatabasePath,

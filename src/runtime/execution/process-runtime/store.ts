@@ -16,7 +16,7 @@ import {
   writeFileSync,
 } from 'fs';
 import { basename, dirname, join } from 'path';
-import { ensureRepositoryControllerLayout, repositoryControllerRoot } from '../../../cli/repositories/controller-home';
+import { ensureRepositoryControllerLayout, repositoryControllerRoot } from '../../../effects/controller-home';
 import { mutateControlPlaneRecord, readOrImportControlPlaneRecord } from '../../control-plane/persistence/sqlite-store';
 import { isSensitiveOutputKey, redactSensitiveText } from '../../evidence/sensitive-output';
 import { touchSchedulerWakeSignal } from '../../control-plane/global-scheduler/wake-signal';

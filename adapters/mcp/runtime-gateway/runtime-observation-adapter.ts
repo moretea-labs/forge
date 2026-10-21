@@ -8,7 +8,7 @@ import { expectedRevision, repositoryRootForRepoId, selected, stringList } from 
 import { callStatusInboxAdapter, GIT_IDENTITY_SAMPLE_TTL_MS, summarizeInvalidActiveWorkCandidate, summarizeWorkListItem } from './status-inbox-adapter';
 import { ageMs, controllerReadinessEvidence, localControllerDiagnosticMatchesRuntime, probeLocalControllerHealth, runtimeSourceSnapshotStatus, type ControllerReadinessSignals } from './runtime-readiness-observation';
 import { listRepositories, repositorySummary, resolveRepositorySelection } from '../../../src/cli/repositories/registry';
-import { repositoryControllerRoot } from '../../../src/cli/repositories/controller-home';
+import { repositoryControllerRoot } from '../../../src/effects/controller-home';
 import { cancelExecutionJob, findExecutionJob, getExecutionJob, getExecutionJobByRequestId, listExecutionJobs } from '../../../src/runtime/execution/jobs/store';
 import { waitForExecutionJob } from '../../../src/runtime/execution/jobs/wait';
 import { getProcessHandle, listRecoverableProcessRecords, processRuntimeResourceDiagnostics } from '../../../src/runtime/execution/process-runtime';

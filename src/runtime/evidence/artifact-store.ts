@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'crypto';
 import { closeSync, existsSync, mkdirSync, opendirSync, openSync, readSync, statSync } from 'fs';
 import { join } from 'path';
-import { controllerSystemRoot, repositoryControllerRoot } from '../../cli/repositories/controller-home';
+import { controllerSystemRoot, repositoryControllerRoot } from '../../effects/controller-home';
 import type { ExecutionJob } from '../execution/jobs/types';
 import { readJsonFile, removeFile, sanitizeFileComponent, writeJsonAtomic } from '../shared/json-files';
 import { deleteOutputHandleIndexEntry, recordOutputHandleIndexEntry, readOutputHandleIndexEntry, type OutputHandleStorage } from './output-handle-index';

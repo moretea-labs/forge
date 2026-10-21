@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { mkdirSync, renameSync, writeFileSync } from 'fs';
 import { dirname, isAbsolute, resolve } from 'path';
-import { ensureControllerHome } from '../src/cli/repositories/controller-home';
+import { ensureControllerHome } from '../src/effects/controller-home';
 import { findRegisteredRepositoryByCheckoutRoot, registerRepository } from '../src/cli/repositories/registry';
 import {
   collectChangedPaths,
