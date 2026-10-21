@@ -3600,14 +3600,12 @@ test('verified repeated exact-conversation empty shells migrate only a never-sen
   }]);
   const pending = control.reserveEnrollment(taskId);
   let nowMs = 1_000_000;
-  const empty = {
-    url: conversationUrl, title: 'Forge', latestUserText: '', latestAssistantResponse: '',
-    providerActivityText: '', providerFailureText: '', isGenerating: false,
-  };
   const targetPort = {
     inventory: async () => ({ conversations: [{ conversationId, canonicalUrl: conversationUrl, title: 'Forge' }], complete: true, unavailableProviders: [] }),
     cleanup: async () => undefined,
-    ensureExact: async () => ({ state: 'ready', target: { observe: async () => empty }, observation: empty }),
+    // Match the real Computer provider: empty exact shells are typed failed
+    // ensures, never a hydrated 'ready' target.
+    ensureExact: async () => ({ state: 'unavailable', failure: { code: 'COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE' } }),
     // The test asserts migration reservation, not a new provider submission.
     openBootstrap: async () => ({ state: 'unavailable', failure: { code: 'TEST_BOOTSTRAP_NOT_STARTED' } }),
     close: async () => undefined,
