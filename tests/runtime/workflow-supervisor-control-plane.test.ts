@@ -3909,6 +3909,7 @@ test('final assistant receipt successor waits for observed provider idle before 
   // compatible prior receipt appears in the visible response.
   let submittedText = '继续。';
   let blankTimeline = false;
+  let dehydrateOnPrepare = false;
   let owner = `forge-workflow-supervisor:created:${conversationId}`;
   let generating = true;
   let closeCount = 0;
@@ -3965,6 +3966,10 @@ test('final assistant receipt successor waits for observed provider idle before 
         isGenerating: generating, providerActivityText: '', providerFailureText: '',
       };
     },
+    preparePrompt: async () => {
+      if (dehydrateOnPrepare) { blankTimeline = true; dehydrateOnPrepare = false; }
+      return { ready: true };
+    },
     dispatchPrompt: async (_page: TestBrowserPage, prompt: string) => {
       dispatched.push(prompt); submittedText = prompt; scanEvents.push('successor-send');
       return { dispatched: true, confirmed: true };
@@ -3990,6 +3995,13 @@ test('final assistant receipt successor waits for observed provider idle before 
   await adapter.runOnce();
   expect(dispatched).toEqual([]);
   expect(store.latestEffectDispatch(successor!.effectId)).toBeUndefined();
+  blankTimeline = false;
+  dehydrateOnPrepare = true;
+  nowMs += 15 * 60_000;
+  await adapter.runOnce();
+  expect(dispatched).toEqual([]);
+  expect(store.latestEffectDispatch(successor!.effectId)).toBeUndefined();
+  // Recover the very same prepared effect; no new Send identity or generation.
   blankTimeline = false;
   nowMs += 15 * 60_000;
   await adapter.runOnce();
