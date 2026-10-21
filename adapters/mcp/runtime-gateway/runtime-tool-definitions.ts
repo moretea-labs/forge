@@ -43,7 +43,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     detail_level: { type: 'string', enum: ['summary', 'detail'] },
     limit: { type: 'number' },
   }),
-  definition('rh_context', 'Read-only semantic repository retrieval and advisory context, including source snippets, paths, symbols, relationships and optional project knowledge. The model chooses when to retrieve context, when to use terminal search through execute_command, and whether the retrieved evidence is sufficient. This tool does not authorize execution or impose a required workflow.', {
+  definition('rh_context', 'Read-only semantic repository retrieval and advisory context, including source snippets, paths, symbols, relationships and optional project knowledge. Requested compiler navigation locations are returned as bounded flat semanticEvidence.locations alongside navigation diagnostics. The model chooses when to retrieve context, when to use terminal search through execute_command, and whether the retrieved evidence is sufficient. This tool does not authorize execution or impose a required workflow.', {
     repo_id: repoId,
     checkout_id: { type: 'string', description: 'Optional checkout identity for repositories with multiple worktrees.' },
     operation: { type: 'string', enum: ['list', 'get', 'search'], description: 'Defaults to get. Search returns semantic source candidates when the model selects this retrieval capability.' },
