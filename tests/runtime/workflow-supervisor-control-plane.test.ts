@@ -3600,12 +3600,19 @@ test('verified repeated exact-conversation empty shells migrate only a never-sen
   }]);
   const pending = control.reserveEnrollment(taskId);
   let nowMs = 1_000_000;
+  let observedUrl = 'https://chatgpt.com/c/unrelated-conversation';
   const targetPort = {
     inventory: async () => ({ conversations: [{ conversationId, canonicalUrl: conversationUrl, title: 'Forge' }], complete: true, unavailableProviders: [] }),
     cleanup: async () => undefined,
     // Match the real Computer provider: empty exact shells are typed failed
     // ensures, never a hydrated 'ready' target.
-    ensureExact: async () => ({ state: 'unavailable', failure: { code: 'COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE' } }),
+    ensureExact: async () => ({
+      state: 'unavailable', failure: { code: 'COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE' },
+      observation: {
+        url: observedUrl, title: 'Forge', latestUserText: '', latestAssistantResponse: '',
+        providerActivityText: '', providerFailureText: '', isGenerating: false,
+      },
+    }),
     // The test asserts migration reservation, not a new provider submission.
     openBootstrap: async () => ({ state: 'unavailable', failure: { code: 'TEST_BOOTSTRAP_NOT_STARTED' } }),
     close: async () => undefined,
@@ -3615,6 +3622,11 @@ test('verified repeated exact-conversation empty shells migrate only a never-sen
     sleep: async () => undefined, setInterval: () => 0 as unknown as ReturnType<typeof setInterval>,
     clearInterval: () => undefined, onError: (error) => { throw error; },
   });
+  await adapter.runOnce();
+  expect(store.getTask(taskId)?.conversationId).toBe(conversationId);
+  expect(adapter.status().lastFailure?.code).toBe('WORKFLOW_SUPERVISOR_EMPTY_SHELL_IDENTITY_UNPROVEN');
+  nowMs += 5 * 60_000;
+  observedUrl = conversationUrl;
   await adapter.runOnce();
   expect(store.getTask(taskId)?.conversationId).toBe(conversationId);
   nowMs += 5 * 60_000;
