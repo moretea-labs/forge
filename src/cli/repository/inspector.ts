@@ -527,14 +527,65 @@ function exactCodeNeedleMatches(haystack: string, needle: string): boolean {
   return new RegExp(`(?:^|[^\\p{L}\\p{N}_$])${escaped}(?=$|[^\\p{L}\\p{N}_$])`, 'u').test(haystack);
 }
 
+function searchQueryMatches(haystack: string, needle: string, exact: boolean): boolean {
+  return exact ? exactCodeNeedleMatches(haystack, needle) : haystack.includes(needle);
+}
+
+/**
+ * Discovery already has match evidence for the full authorized inventory from
+ * the single ripgrep pass. Rank that evidence before the bounded path budget;
+ * stopping on inventory order lets early, generic matches hide a later file
+ * that covers the actual query.
+ */
+function rankDiscoveryPaths(
+  paths: readonly string[],
+  hitsByPath: ReadonlyMap<string, Array<{ line: number; text: string }>>,
+  state: SearchManyMatchState,
+): string[] {
+  const matchedQueriesByPath = new Map<string, Set<string>>();
+  const documentFrequency = new Map(state.queries.map((query) => [query, 0]));
+  for (const path of paths) {
+    const matchedQueries = new Set<string>();
+    for (const hit of hitsByPath.get(path) ?? []) {
+      const haystack = state.caseSensitive ? hit.text : hit.text.toLowerCase();
+      for (const { query, needle } of state.needles) {
+        if (matchedQueries.has(query)) continue;
+        if (searchQueryMatches(haystack, needle, state.requiredQueries.includes(query))) matchedQueries.add(query);
+      }
+    }
+    matchedQueriesByPath.set(path, matchedQueries);
+    for (const query of matchedQueries) documentFrequency.set(query, (documentFrequency.get(query) ?? 0) + 1);
+  }
+  const documentCount = paths.length;
+  const scores = new Map(paths.map((path) => {
+    const queries = matchedQueriesByPath.get(path) ?? new Set<string>();
+    const weightedCoverage = [...queries].reduce(
+      (score, query) => score + 1 + Math.log((documentCount + 1) / ((documentFrequency.get(query) ?? 0) + 1)),
+      0,
+    );
+    return [path, {
+      weightedCoverage,
+      queryCoverage: queries.size,
+      primaryMatch: Number(queries.has(state.queries[0]!)),
+      hitCount: Math.min((hitsByPath.get(path) ?? []).length, state.maxResultsPerQuery),
+    }] as const;
+  }));
+  return [...paths].sort((left, right) => {
+    const leftScore = scores.get(left)!;
+    const rightScore = scores.get(right)!;
+    return rightScore.weightedCoverage - leftScore.weightedCoverage
+      || rightScore.queryCoverage - leftScore.queryCoverage
+      || rightScore.primaryMatch - leftScore.primaryMatch
+      || rightScore.hitCount - leftScore.hitCount
+      || left.localeCompare(right);
+  });
+}
+
 function matchSearchManyLine(state: SearchManyMatchState, path: string, line: number, text: string): void {
   const haystack = state.caseSensitive ? text : text.toLowerCase();
   for (const { query, needle } of state.needles) {
     if ((state.counts.get(query) ?? 0) >= state.maxResultsPerQuery) continue;
-    const matches = state.requiredQueries.includes(query)
-      ? exactCodeNeedleMatches(haystack, needle)
-      : haystack.includes(needle);
-    if (!matches) continue;
+    if (!searchQueryMatches(haystack, needle, state.requiredQueries.includes(query))) continue;
     state.results.push({ query, path, line, text: text.slice(0, 500) });
     state.matchedPaths.add(path);
     state.counts.set(query, (state.counts.get(query) ?? 0) + 1);
@@ -802,11 +853,14 @@ export function searchRepositoryMany(
   // Sorting only paths with evidence preserves the authorized inventory order
   // while avoiding comparisons across thousands of guaranteed no-hit files.
   const pathsWithHits = authorizedCandidatePaths.filter((path) => hitsByPath.has(path));
-  const orderedPaths = requiredQueries.length
+  const exactSearchSatisfied = exactHits !== null && requiredQueries.every(hasRequiredHit);
+  const orderedPaths = exactSearchSatisfied
     ? pathsWithHits.sort((left, right) =>
         declarationRank(right) - declarationRank(left)
         || Number(exactHit(right)) - Number(exactHit(left)))
-    : pathsWithHits;
+    : completionMode === 'discovery'
+      ? rankDiscoveryPaths(pathsWithHits, hitsByPath, matchState)
+      : pathsWithHits;
   for (const path of orderedPaths) {
     if (searchManyComplete(matchState) || matchState.matchedPaths.size >= maxFiles) break;
     const hits = hitsByPath.get(path);

@@ -33,6 +33,7 @@ import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contra
 
 const RH_CONTEXT_RECENT_ACTIVITY_WINDOW_MS = 24 * 60 * 60 * 1_000;
 const RH_CONTEXT_AUTOMATIC_RECALL_LIMIT = 4;
+const RH_CONTEXT_SEMANTIC_EVIDENCE_LIMIT = 64;
 
 function timestampIsRecent(value: string | undefined, cutoffMs: number): boolean {
   if (!value) return false;
@@ -642,6 +643,53 @@ export async function callContextAdapter(ctx: MultiRepositoryMcpToolContext, nam
               : 'none',
         compatibilityQuerySyntax: RH_CONTEXT_LEGACY_SEMANTIC_SYNTAX,
       };
+      // Keep actionable source locations in a shallow, bounded projection. The
+      // generic facade's depth budget otherwise replaces nested LSP locations
+      // with opaque [bounded-depth] markers, hiding the very evidence requested.
+      const semanticEvidence = semanticNavigation.requested > 0 ? (() => {
+        const locations = semanticNavigation.results.flatMap((entry) => {
+          const target = entry.target && typeof entry.target === 'object' && !Array.isArray(entry.target)
+            ? entry.target as Record<string, unknown>
+            : {};
+          const values = Array.isArray(entry.locations) ? entry.locations : [];
+          return values.flatMap((value) => {
+            if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
+            const location = value as Record<string, unknown>;
+            const path = typeof location.path === 'string' ? location.path : '';
+            const line = typeof location.line === 'number' ? location.line : Number.NaN;
+            const column = typeof location.column === 'number' ? location.column : Number.NaN;
+            if (!path || !Number.isSafeInteger(line) || line < 1 || !Number.isSafeInteger(column) || column < 1) return [];
+            return [{
+              provider: typeof entry.provider === 'string' ? entry.provider : 'unknown',
+              language: typeof entry.language === 'string' ? entry.language : 'unknown',
+              navigation: typeof entry.navigation === 'string' ? entry.navigation : 'unknown',
+              targetPath: typeof target.path === 'string' ? target.path : '',
+              targetLine: typeof target.line === 'number' ? target.line : 0,
+              targetColumn: typeof target.column === 'number' ? target.column : 0,
+              path,
+              line,
+              column,
+              ...(typeof location.name === 'string' ? { name: location.name } : {}),
+              ...(typeof location.kind === 'string' ? { kind: location.kind } : {}),
+            }];
+          });
+        });
+        const totalLocations = semanticNavigation.results.reduce((total, entry) => total + (
+          typeof entry.totalLocations === 'number'
+            ? entry.totalLocations
+            : Array.isArray(entry.locations) ? entry.locations.length : 0
+        ), 0);
+        return {
+          requested: semanticNavigation.requested,
+          resultCount: semanticNavigation.results.length,
+          totalLocations,
+          returnedLocations: Math.min(locations.length, RH_CONTEXT_SEMANTIC_EVIDENCE_LIMIT),
+          truncated: semanticNavigation.requestTruncated
+            || locations.length > RH_CONTEXT_SEMANTIC_EVIDENCE_LIMIT
+            || semanticNavigation.results.some((entry) => entry.truncated === true),
+          locations: locations.slice(0, RH_CONTEXT_SEMANTIC_EVIDENCE_LIMIT),
+        };
+      })() : undefined;
       const semanticReasonCodes = Array.from(new Set([
         ...semanticNavigation.errors.map((entry) => `semantic.${String(entry.code ?? 'provider_error').toLowerCase()}`),
         ...(semanticNavigation.requestTruncated ? ['semantic.request_truncated'] : []),
@@ -704,6 +752,7 @@ export async function callContextAdapter(ctx: MultiRepositoryMcpToolContext, nam
           structuralContext: pack.structuralContext,
           impactContext: pack.impactContext,
           semanticNavigation,
+          ...(semanticEvidence ? { semanticEvidence } : {}),
           contextClosure,
           readiness,
           expansion: pack.expansion,
@@ -739,6 +788,9 @@ export async function callContextAdapter(ctx: MultiRepositoryMcpToolContext, nam
       // but it must not corrupt this runtime-issued round-trip contract because rh_work validates
       // the exact full receipt digest supplied by the Controller during engineering re-entry.
       (facade.data as typeof facade.data & { contextClosure: typeof contextClosure }).contextClosure = contextClosure;
+      if (semanticEvidence) {
+        (facade.data as typeof facade.data & { semanticEvidence: typeof semanticEvidence }).semanticEvidence = semanticEvidence;
+      }
       // Individual snippets are bounded, but broad searches can still aggregate
       // a very large direct MCP payload. Keep ContextClosure authority inline and
       // externalize only the heavy file collection through the existing Result Store.

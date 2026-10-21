@@ -42,7 +42,8 @@ const EXPECTED_PREFERRED_TOOL_NAME_FINGERPRINT = 'f22e635a213b45fa';
 // 2026-10-20: rh_context now accepts explicit model-authored equivalent recall
 // queries; this intentional input-schema revision invalidates stale Connector
 // tool snapshots without adding an internal semantic model or provider.
-const EXPECTED_PREFERRED_TOOL_SCHEMA_FINGERPRINT = 'eb39f3d203cda029';
+// 2026-10-21: rh_context documents bounded flat semantic navigation locations.
+const EXPECTED_PREFERRED_TOOL_SCHEMA_FINGERPRINT = 'f169b76886e344eb';
 
 const policy = runtimePolicy(process.cwd(), {
   profile: 'controller',

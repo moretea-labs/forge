@@ -111,3 +111,29 @@ test('retains separate explicit code symbols in sync and async discovery beyond 
   expect(asyncPack.files.map((file) => file.path)).toEqual(pack.files.map((file) => file.path));
   expect(asyncPack.search.scannedFiles).toBeLessThan(30);
 });
+
+test('ranks the full natural-language discovery result before applying the bounded candidate budget', () => {
+  const root = mkdtempSync(join(tmpdir(), 'forge-context-discovery-ranking-'));
+  roots.push(root);
+  execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: root });
+  execFileSync('git', ['config', 'user.email', 'context@example.test'], { cwd: root });
+  execFileSync('git', ['config', 'user.name', 'Context Test'], { cwd: root });
+  mkdirSync(join(root, 'src'), { recursive: true });
+  for (let index = 0; index < 12; index += 1) {
+    writeFileSync(join(root, `src/a-noise-${String(index).padStart(2, '0')}.ts`), "export const unrelated = 'App Store Connect';\n");
+  }
+  writeFileSync(join(root, 'src/z-release-rejection.ts'), "export const releaseSubmission = 'App Store Connect release rejection submission';\n");
+  execFileSync('git', ['add', '.'], { cwd: root });
+  execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: root });
+
+  const pack = buildControllerContextPack(root, getMcpPolicy('controller'), {
+    description: 'App Store Connect release rejection submission',
+    retrievalMode: 'implementation',
+    structuralContext: 'off',
+    maxFiles: 4,
+    maxSnippets: 4,
+  });
+
+  expect(pack.files.map((file) => file.path)).toContain('src/z-release-rejection.ts');
+  expect(pack.files[0]?.path).toBe('src/z-release-rejection.ts');
+});
