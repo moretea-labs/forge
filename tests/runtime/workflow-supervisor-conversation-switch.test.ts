@@ -147,6 +147,9 @@ describe('Workflow Supervisor fresh conversation switch', () => {
     expect(store.getTask(taskId)?.conversationId).toBe(`bootstrap:${taskId}`);
     expect(store.getTask(taskId)?.taskId).toBe(taskId);
     expect(store.currentUnappliedEffect(taskId)?.effectId).toBe(effect.effectId);
+    // History from the old chat stays replayable but does not make a fresh chat established.
+    expect(store.getLatestCompletion(taskId)).toBeDefined();
+    expect(store.hasCompletionInCurrentConversation(taskId)).toBe(false);
     // The first reply echoes the challenge sent before binding the fresh URL.
     const sentChallenge = /^receipt:([0-9a-f]{7})$/m.exec(effect.prompt)?.[1];
     expect(sentChallenge).toBeDefined();
@@ -160,6 +163,7 @@ describe('Workflow Supervisor fresh conversation switch', () => {
       taskId, conversationId: freshId, conversationUrl: `https://chatgpt.com/c/${freshId}`,
     });
     expect(store.getTask(taskId)?.conversationId).toBe(freshId);
+    expect(store.hasCompletionInCurrentConversation(taskId)).toBe(false);
     // A healthy second window must be eligible to rotate again. Migration
     // budgets limit *consecutive failed* moves, never lifetime conversations.
     for (let n = 11; n <= 20; n += 1) {
@@ -169,6 +173,7 @@ describe('Workflow Supervisor fresh conversation switch', () => {
         responseText: 'Delivered useful work.\n' + (n === 11 ? bootstrapReceipt : renderSupervisorReceipt(control.getTask(taskId)!, effect.effectId, 'CONTINUE')),
       });
       if (!('successorEffect' in result) || !result.successorEffect) throw new Error('MISSING_SUCCESSOR_IN_SECOND_WINDOW');
+      expect(store.hasCompletionInCurrentConversation(taskId)).toBe(true);
       effect = result.successorEffect;
       if (n < 20) {
         expect(effect.kind).toBe('continuation');
@@ -177,6 +182,7 @@ describe('Workflow Supervisor fresh conversation switch', () => {
     }
     expect(effect.kind).toBe('enrollment');
     expect(store.getTask(taskId)?.conversationId).toBe(`bootstrap:${taskId}`);
+    expect(store.hasCompletionInCurrentConversation(taskId)).toBe(false);
     // A fresh logical chat cannot be a source retired two migrations ago.
     expect(() => control.bindBootstrapConversation({
       taskId, conversationId: oldConversationId,
