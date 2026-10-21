@@ -196,8 +196,9 @@ export function recordCanonicalGrant(controllerHome: string, input: RecordGrantI
     }
   }
   store.grants = store.grants.filter((entry) => {
-    // Revoked/expired records remain durable audit evidence. A fresh authorized
-    // enrollment has its own ID; neither dedupe nor migration revives the old ID.
+    // Routine replacement must not erase a revoked/expired record. Explicit
+    // reconcileCanonicalGrants remains the sole lifecycle prune authority;
+    // this fence prevents ID reuse only while the original record is present.
     if (entry.revokedAt || Date.parse(entry.expiresAt) <= now.getTime()) return true;
     if (entry.grantId === grantId) return false;
     const samePrincipal = entry.principalId === grant.principalId;
