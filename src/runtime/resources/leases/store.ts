@@ -208,8 +208,18 @@ export function withRepositoryMutationExclusion<T>(
   ttlMs?: number,
 ): T {
   return withControllerLock(controllerHome, { scope: 'repository', repoId }, owner, () => {
-    const blocker = listActiveLeases(controllerHome, repoId)
-      .find((lease) => repositorySourceResourceKey(lease.resourceKey));
+    // The lease check and lease publication must use *the same* existing
+    // global mutex. Otherwise a Process could observe a free repository lock,
+    // then publish its lease after this editor sees an empty active set.
+    // Lock order: editor takes repository then global (briefly), while Process
+    // takes global and only READS repository lock ownership, never waits on it.
+    const blocker = withControllerLock(
+      controllerHome,
+      { scope: 'global', resource: 'execution-leases' },
+      `editor-lease-check:${owner}`,
+      () => listActiveLeases(controllerHome, repoId)
+        .find((lease) => repositorySourceResourceKey(lease.resourceKey)),
+    );
     if (blocker) {
       throw new Error(`REPOSITORY_PROCESS_LEASE_HELD: ${blocker.resourceKey} owned by ${blocker.ownerJobId}; refusing concurrent source mutation`);
     }
