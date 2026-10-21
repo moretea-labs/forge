@@ -18,6 +18,7 @@ import type {
   ComputerSurfaceProviderBinding,
   ComputerSurfaceTarget,
 } from '../../packages/plugin-runtime/computer';
+import { parseCanonicalChatgptConversationIdentity } from '../../packages/plugin-runtime/computer';
 
 const PROVIDER_ID = 'browser.chrome-extension';
 const HEARTBEAT_FRESH_MS = 15_000;
@@ -78,6 +79,26 @@ function failure(code: string, input: { retryable?: boolean; failoverSafe?: bool
       ...(input.failoverSafe === undefined ? {} : { failoverSafe: input.failoverSafe }),
       ...(input.humanAction ? { humanAction: input.humanAction } : {}),
     },
+  };
+}
+
+function unhydratedExactConversation(
+  identity: ComputerChatgptConversationIdentity,
+  observation: ComputerChatgptConversationObservation,
+): ComputerChatgptTargetResult {
+  let verified = false;
+  try {
+    const actual = parseCanonicalChatgptConversationIdentity(observation.url);
+    const expected = parseCanonicalChatgptConversationIdentity(identity.canonicalUrl);
+    verified = actual.conversationId === expected.conversationId
+      && actual.conversationId === identity.conversationId
+      && !conversationContentAvailable(observation);
+  } catch { /* The source page is not provably the intended conversation. */ }
+  return {
+    state: 'unavailable',
+    failure: { code: 'COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE', retryable: true,
+      phase: 'pre_mutation', failoverSafe: false },
+    ...(verified ? { observation } : {}),
   };
 }
 
@@ -369,7 +390,7 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
       try {
         const observation = await target.observe({ includeUserHistory: false, includePageText: false });
         if (!conversationContentAvailable(observation)) {
-          return failure('COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE', { failoverSafe: false });
+          return unhydratedExactConversation(identity, observation);
         }
         return { state: 'ready', target, observation };
       } catch (error) {
@@ -405,7 +426,7 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
             && parsed.pathname.endsWith(`/c/${identity.conversationId}`);
         } catch { /* Never bind an unparseable or changed conversation target. */ }
         if (!exactUrl || !providerBinding) return failure('COMPUTER_CHATGPT_EXTENSION_TARGET_IDENTITY_UNVERIFIED', { failoverSafe: false });
-        if (!conversationContentAvailable(observation)) return failure('COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE', { failoverSafe: false });
+        if (!conversationContentAvailable(observation)) return unhydratedExactConversation(identity, observation);
         const record = await this.bindAsync(identity, providerBinding, selected.instanceId);
         return { state: 'ready', target: this.target(identity, record, selected.instanceId), observation };
       }
@@ -433,7 +454,7 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
     if (response.result.kind === 'ensured') {
       const record = await this.bindAsync(identity, response.result.providerBinding, selected.instanceId);
       if (response.result.observation && !conversationContentAvailable(response.result.observation)) {
-        return failure('COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE', { failoverSafe: false });
+        return unhydratedExactConversation(identity, response.result.observation);
       }
       return { state: 'ready', target: this.target(identity, record, selected.instanceId), ...(response.result.observation ? { observation: response.result.observation } : {}) };
     }

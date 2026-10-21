@@ -452,6 +452,30 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     this.noteTaskFailure(failure.code, task, effectId);
   }
 
+  private observeVerifiedEmptyShell(
+    task: WorkflowSupervisorBrowserTask,
+    effectId: string | undefined,
+    command: { mode: string; dispatchGeneration?: number } | undefined,
+  ): void {
+    const code = 'COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE';
+    this.noteTargetUnavailable(task, effectId, { code });
+    const failure = this.taskTransportFailures.get(task.taskId);
+    if (this.control.getTask(task.taskId)?.continuationPolicy.kind !== 'standalone_supervisor'
+      || this.lastRunTransportUnavailable
+      || !this.conversations.some((conversation) => conversation.conversation_id === task.conversationId)
+      || failure?.code !== code || failure.streak < 3
+      || this.deps.nowMs() - failure.firstFailureAtMs < 2 * 60_000
+      || command?.mode !== 'send' || command.dispatchGeneration !== 1
+      || this.control.store.hasAppliedEffectAwaitingCompletion(task.taskId)) return;
+    // The existing Supervisor CAS ledger is the only migration and send owner.
+    this.control.migrateConversation({
+      taskId: task.taskId, expectedConversationId: task.conversationId,
+      fresh: true, requestId: `verified-unavailable:${task.conversationId}`,
+      reason: 'exact_conversation_empty_shell_verified_across_spaced_browser_observations',
+      authorizedBy: 'user-authorized-automatic-conversation-rotation',
+    });
+  }
+
   private syncTaskStallProjections(): void {
     const activeTaskIds = new Set<string>();
     const observedAt = new Date(this.deps.nowMs()).toISOString();
@@ -733,25 +757,21 @@ export class WorkflowSupervisorNativeBrowserAdapter {
         || this.control.store.hasAppliedEffectAwaitingCompletion(task.taskId),
     });
     if (ensured.state !== 'ready') {
-      this.noteTargetUnavailable(task, poll.command?.effectId, ensured.failure);
-      // The Computer provider proves the exact target was selected but did not
-      // hydrate. Use its typed failure, not an inferred timeout or browser text.
-      if (ensured.failure.code === 'COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE') {
-        const failure = this.taskTransportFailures.get(task.taskId);
-        if (this.control.getTask(task.taskId)?.continuationPolicy.kind === 'standalone_supervisor'
-          && !this.lastRunTransportUnavailable
-          && this.conversations.some((conversation) => conversation.conversation_id === task.conversationId)
-          && failure?.code === ensured.failure.code && failure.streak >= 3
-          && this.deps.nowMs() - failure.firstFailureAtMs >= 2 * 60_000
-          && poll.command?.mode === 'send' && poll.command.dispatchGeneration === 1
-          && !this.control.store.hasAppliedEffectAwaitingCompletion(task.taskId)) {
-          this.control.migrateConversation({
-            taskId: task.taskId, expectedConversationId: task.conversationId,
-            fresh: true, requestId: `verified-unavailable:${task.conversationId}`,
-            reason: 'exact_conversation_empty_shell_verified_across_spaced_browser_observations',
-            authorizedBy: 'user-authorized-automatic-conversation-rotation',
-          });
-        }
+      const verifiedEmpty = ensured.failure.code === 'COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE'
+        && ensured.observation !== undefined
+        && exactConversation(ensured.observation, task)
+        && !conversationContentAvailable(ensured.observation);
+      if (verifiedEmpty) {
+        this.observeVerifiedEmptyShell(task, poll.command?.effectId, poll.command);
+      } else {
+        // An unverified URL, a heartbeat or a generic typed transport failure
+        // never accumulates the durable early-rotation evidence.
+        this.noteTargetUnavailable(task, poll.command?.effectId, {
+          ...ensured.failure,
+          code: ensured.failure.code === 'COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE'
+            ? 'WORKFLOW_SUPERVISOR_EMPTY_SHELL_IDENTITY_UNPROVEN'
+            : ensured.failure.code,
+        });
       }
       return;
     }
@@ -759,7 +779,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     const snapshot = ensured.observation ?? await target.observe({ includeUserHistory: false, includePageText: false });
     if (!exactConversation(snapshot, task)) { this.noteTargetUnavailable(task, poll.command?.effectId, { code: 'WORKFLOW_SUPERVISOR_EXACT_CONVERSATION_UNPROVEN' }); return; }
     if (!conversationContentAvailable(snapshot)) {
-      this.noteTargetUnavailable(task, poll.command?.effectId, { code: 'COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE' });
+      this.observeVerifiedEmptyShell(task, poll.command?.effectId, poll.command);
       return;
     }
     // Do not clear a pre-send failure merely because a conversation loaded:

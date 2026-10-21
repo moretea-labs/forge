@@ -1090,6 +1090,12 @@ describe('Computer durable InteractionTarget authority', () => {
           phase: 'pre_mutation',
           failoverSafe: false,
         },
+        observation: {
+          url: identity.canonicalUrl, title: 'ChatGPT',
+          latestUserText: '', latestAssistantResponse: '',
+          providerActivityText: '', providerFailureText: '',
+          composerText: undefined, isGenerating: false,
+        },
       });
     } finally {
       rmSync(controllerHome, { recursive: true, force: true });
@@ -1144,6 +1150,12 @@ describe('Computer durable InteractionTarget authority', () => {
           retryable: true,
           phase: 'pre_mutation',
           failoverSafe: false,
+        },
+        observation: {
+          url: identity.canonicalUrl, title: 'ChatGPT',
+          latestUserText: '', latestAssistantResponse: '',
+          providerActivityText: '', providerFailureText: '',
+          composerText: undefined, isGenerating: false,
         },
       });
     } finally {
