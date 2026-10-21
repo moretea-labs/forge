@@ -330,7 +330,7 @@ describe('Workflow Supervisor fresh conversation switch', () => {
       control.observeEffect({ effectId: current.effectId, observationId: 'unknown-guard-applied-' + n, outcome: 'applied' });
       const observed = await control.observeAssistantTurn({
         taskId: unknownTaskId, conversationId: unknownConversation,
-        responseText: 'Useful progress.\\n' + renderSupervisorReceipt(control.getTask(unknownTaskId)!, current.effectId, 'CONTINUE'),
+        responseText: 'Useful progress.\n' + renderSupervisorReceipt(control.getTask(unknownTaskId)!, current.effectId, 'CONTINUE'),
       });
       if (!('successorEffect' in observed) || !observed.successorEffect) throw new Error('UNKNOWN_GUARD_SUCCESSOR_MISSING');
       current = observed.successorEffect;
