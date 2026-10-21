@@ -277,6 +277,15 @@ describe("repository MCP command tools", () => {
       expect(failed.error?.code).toBe("GIT_COMMIT_FAILED");
       expect(readFileSync(indexPath).equals(indexBefore)).toBe(true);
       const afterFailure = repositoryGitStatus(repository);
+      // Porcelain --branch and git branch/rev-parse must report one exact
+      // identity even when index and worktree have independent dirty paths.
+      expect(afterFailure.branch).toBe(
+        spawnSync("git", ["-C", repoRoot, "branch", "--show-current"], { encoding: "utf8" }).stdout.trim(),
+      );
+      expect(afterFailure.head).toBe(
+        spawnSync("git", ["-C", repoRoot, "rev-parse", "--verify", "HEAD"], { encoding: "utf8" }).stdout.trim(),
+      );
+      expect(afterFailure.upstream).toBe(null);
       expect(afterFailure.staged).toEqual(["outside.txt"]);
       expect(afterFailure.unstaged).toEqual(["owned.txt"]);
       expect(readFileSync(join(repoRoot, "owned.txt"), "utf8")).toBe("changed-owned\n");
