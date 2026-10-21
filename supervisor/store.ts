@@ -1881,6 +1881,10 @@ export class WorkflowSupervisorStore {
             && currentTask.continuationPolicy.kind === 'standalone_supervisor'
             && !currentTask.conversationId.startsWith('bootstrap:')
             && (completedSinceMigration.total ?? 0) >= receiptLimit
+            // The source completion cannot retire any other still-unapplied
+            // command: a started send may have reached the provider, and even
+            // an unstarted effect still owns an undispatched continuation.
+            && !oldestUnappliedEffect(db, input.taskId)
             && !appliedEffectAwaitingCompletionWithin(db, input.taskId);
           successorEffect = this.reserveEffectWithin(db, {
             taskId: input.taskId, effectId: successor.effectId,

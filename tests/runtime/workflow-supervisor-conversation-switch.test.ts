@@ -297,6 +297,47 @@ describe('Workflow Supervisor fresh conversation switch', () => {
       expect(store.getTask(siblingTaskId)?.conversationId).toBe(siblingConversation);
     }
     expect(store.hasAppliedEffectAwaitingCompletion(siblingTaskId)).toBe(true);
+
+    // The same auto-rotation path must not abandon an unresolved send.
+    // Unlike an applied sibling, this one has a dispatched generation with
+    // an unknown outcome. A later source reply does not resolve that send.
+    const unknownTaskId = 'supervisor:receipt-cadence-unknown-send';
+    const unknownConversation = 'cdcdcdcd-aaaa-bbbb-cccc-efefefefefef';
+    control.registerTask({
+      taskId: unknownTaskId, conversationId: unknownConversation,
+      conversationUrl: 'https://chatgpt.com/c/' + unknownConversation,
+      objective: 'Do not rotate away from an outcome-unknown sibling send.',
+      completionContract: {}, continuationPolicy: { kind: 'standalone_supervisor' }, userBlockerPolicy: {},
+    });
+    for (let n = 0; n < 2; n += 1) store.recordBrowserDeliveryAttemptFailure({
+      taskId: unknownTaskId, conversationId: unknownConversation,
+      code: 'COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE', verifiedEmptyShell: true,
+    });
+    let current = control.reserveEnrollment(unknownTaskId);
+    for (let n = 1; n <= 6; n += 1) {
+      if (n === 6) {
+        const unknown = store.reserveEffect({
+          taskId: unknownTaskId, effectId: 'fx_undetermined_sibling_send',
+          kind: 'continuation', originKey: 'test:undetermined-sibling-send',
+          prompt: 'Separate send with unverified delivery.',
+        });
+        expect(store.recordEffectDispatchStarted(unknown.effectId, 1, 'unknown-sibling-send')).toBe(true);
+        store.recordEffectObservation(unknown.effectId, 'unknown-sibling-observation', 'unknown', {
+          surface: 'macos-native', reason: 'outbound_not_confirmed',
+        });
+      }
+      expect(store.recordEffectDispatchStarted(current.effectId, 1, 'unknown-guard-source-' + n)).toBe(true);
+      control.observeEffect({ effectId: current.effectId, observationId: 'unknown-guard-applied-' + n, outcome: 'applied' });
+      const observed = await control.observeAssistantTurn({
+        taskId: unknownTaskId, conversationId: unknownConversation,
+        responseText: 'Useful progress.\\n' + renderSupervisorReceipt(control.getTask(unknownTaskId)!, current.effectId, 'CONTINUE'),
+      });
+      if (!('successorEffect' in observed) || !observed.successorEffect) throw new Error('UNKNOWN_GUARD_SUCCESSOR_MISSING');
+      current = observed.successorEffect;
+      expect(current.kind).toBe('continuation');
+      expect(store.getTask(unknownTaskId)?.conversationId).toBe(unknownConversation);
+    }
+    expect(store.currentUnappliedEffect(unknownTaskId)?.effectId).toBe('fx_undetermined_sibling_send');
     store.close();
   });
 
