@@ -131,7 +131,7 @@ function adapterMatchesController(adapter: AssistantPluginAdapter): boolean {
 }
 
 function adapterMatchesRepository(adapter: AssistantPluginAdapter, _repository: RepositoryRecord): boolean {
-  return (adapter.scope ?? 'repository') === 'repository';
+  return (adapter.scope ?? 'repository') === 'repository' || adapter.repositorySurface === true;
 }
 
 const controllerPluginStateMigrationFingerprints = new Map<string, string>();
@@ -225,7 +225,11 @@ function ensureControllerPluginStateMigrated(controllerHome: string, force = fal
   }, repositories);
   const changedGrantIds = migrateControllerPluginCapabilityAuthorizations(controllerHome, pluginIds);
   const changedReceiptIds = migrateControllerPluginActionReceipts(controllerHome, pluginIds);
-  const changedRepositoryManifestIds = retireRepositoryPluginManifestProjections(controllerHome, pluginIds);
+  // Adapters that keep a repository surface also keep their per-repository
+  // manifest projections; retiring them would orphan the repository-bound
+  // action surface (for example computer's physical_device_* actions).
+  const controllerOwnedRepositoryManifestIds = pluginIds.filter((pluginId) => PLUGIN_ADAPTERS.get(pluginId)?.repositorySurface !== true);
+  const changedRepositoryManifestIds = retireRepositoryPluginManifestProjections(controllerHome, controllerOwnedRepositoryManifestIds);
 
   const refreshIds = new Set([...changedConfigIds, ...changedRepositoryManifestIds]);
   for (const pluginId of refreshIds) {
@@ -987,7 +991,12 @@ export function getAssistantPluginManifest(
   ensureControllerPluginStateMigrated(controllerHome);
   const adapter = resolvePluginAdapter(controllerHome, pluginId);
   if (!adapter) throw new Error(`PLUGIN_NOT_FOUND: ${pluginId}`);
-  if (adapterMatchesController(adapter)) return getControllerPluginManifestForExecution(controllerHome, pluginId, adapter).manifest;
+  // A controller-scoped adapter with a repository surface (computer keeps the
+  // repository-bound physical_device_* actions) must still resolve the
+  // repository build for repository-scoped reads and action execution;
+  // diverting it to the controller manifest would hide those actions and
+  // break their execution with PLUGIN_ACTION_NOT_FOUND.
+  if (adapterMatchesController(adapter) && adapter.repositorySurface !== true) return getControllerPluginManifestForExecution(controllerHome, pluginId, adapter).manifest;
   if (!adapterMatchesRepository(adapter, repository)) throw new Error(`PLUGIN_NOT_FOUND: ${pluginId}`);
   return getAssistantPluginManifestForExecution(controllerHome, repository, pluginId, adapter).manifest;
 }
@@ -2217,7 +2226,10 @@ export function submitAssistantPluginAction(
 ) {
   ensureControllerPluginStateMigrated(controllerHome);
   const adapter = resolvePluginAdapter(controllerHome, request.pluginId);
-  if (adapter && adapterMatchesController(adapter)) {
+  // A controller-scoped adapter with a repository surface keeps repository-
+  // bound actions (computer physical_device_*) on the repository action
+  // scope; diverting them to the controller scope hides those actions.
+  if (adapter && adapterMatchesController(adapter) && adapter.repositorySurface !== true) {
     return submitPluginAction(controllerHome, controllerPluginActionScope(controllerHome), {
       ...request,
       ...(request.workId ? { workRepoId: request.workRepoId ?? repository.repoId } : {}),

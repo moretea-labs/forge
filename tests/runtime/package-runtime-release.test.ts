@@ -12,11 +12,12 @@ afterEach(() => {
   while (roots.length > 0) rmSync(roots.pop()!, { recursive: true, force: true });
 });
 
-function fixture(): { home: string; packageRoot: string } {
+function fixture(targetPackageRoot?: string): { home: string; packageRoot: string } {
   const root = mkdtempSync(join(tmpdir(), 'forge-package-runtime-release-'));
   roots.push(root);
   const home = join(root, 'home');
-  const packageRoot = join(root, 'package-source');
+  const packageRoot = targetPackageRoot ?? join(root, 'package-source');
+  mkdirSync(packageRoot, { recursive: true });
   for (const dir of ['src/cli', 'src/runtime/root', 'src/runtime/shared', 'src/runtime/execution/process-runtime', 'src/runtime/plugins', 'adapters/mcp/runtime-gateway', 'packages/kernel/scheduler/api', 'supervisor', 'bin', 'assets', 'scripts']) {
     mkdirSync(join(packageRoot, dir), { recursive: true });
   }
@@ -77,6 +78,67 @@ describe('package Runtime release immutability', () => {
     rmSync(packageRoot, { recursive: true, force: true });
     expect(existsSync(packageRoot)).toBe(false);
 
+    const launched = spawnSync(release.entrypointPath, [], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin:/usr/sbin:/sbin' } });
+    expect(launched.status).toBe(0);
+  });
+
+  test('snapshots the hoisted Bun-global dependency closure and stays independently launchable', () => {
+    // Bun global installs hoist dependencies as siblings under
+    // <global>/node_modules instead of nesting them beneath the package
+    // (#305). The immutable release must contain the resolved dependency
+    // bytes, resolve imports from its own snapshot, fail closed while a
+    // required dependency is missing, and keep launching after the whole
+    // global install disappears.
+    const root = mkdtempSync(join(tmpdir(), 'forge-package-runtime-hoisted-'));
+    roots.push(root);
+    const home = join(root, 'home');
+    const globalRoot = join(root, 'bun-global');
+    const { packageRoot } = fixture(join(globalRoot, 'node_modules', '@moretea-labs', 'forge'));
+    const manifest = JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8')) as Record<string, unknown>;
+    manifest.dependencies = { 'runtime-dependency': '^1.0.0', '@scope/dep': '^1.0.0' };
+    writeFileSync(join(packageRoot, 'package.json'), JSON.stringify(manifest));
+    rmSync(join(packageRoot, 'node_modules'), { recursive: true, force: true });
+    writeFileSync(
+      join(packageRoot, 'src', 'cli', 'index.ts'),
+      "import { dependency } from 'runtime-dependency';\nif (process.argv.slice(2).join(' ') === 'mcp serve --help') process.exit(dependency === 1 ? 0 : 3);\nprocess.exit(4);\n",
+    );
+
+    // Required dependency satisfied by neither layout fails closed before staging.
+    expect(() => materializePackageRuntimeRelease({ controllerHome: home, packageRoot, operationId: 'hoisted-missing' }))
+      .toThrow('PACKAGE_RUNTIME_DEPENDENCY_MISSING: runtime-dependency');
+
+    // Hoisted sibling dependencies, including a transitive dependency nested
+    // inside one of them (npm-style) and one hoisted beside its parent.
+    mkdirSync(join(globalRoot, 'node_modules', 'runtime-dependency'), { recursive: true });
+    writeFileSync(join(globalRoot, 'node_modules', 'runtime-dependency', 'index.js'), 'export const dependency = 1;\n');
+    writeFileSync(join(globalRoot, 'node_modules', 'runtime-dependency', 'package.json'), JSON.stringify({
+      name: 'runtime-dependency',
+      version: '1.0.0',
+      dependencies: { 'nested-transitive': '^1.0.0' },
+    }));
+    mkdirSync(join(globalRoot, 'node_modules', 'runtime-dependency', 'node_modules', 'nested-transitive'), { recursive: true });
+    writeFileSync(join(globalRoot, 'node_modules', 'runtime-dependency', 'node_modules', 'nested-transitive', 'index.js'), 'export const nested = 1;\n');
+    mkdirSync(join(globalRoot, 'node_modules', '@scope', 'dep'), { recursive: true });
+    writeFileSync(join(globalRoot, 'node_modules', '@scope', 'dep', 'index.js'), 'export const scoped = 1;\n');
+    writeFileSync(join(globalRoot, 'node_modules', '@scope', 'dep', 'package.json'), JSON.stringify({
+      name: '@scope/dep',
+      version: '1.0.0',
+      dependencies: { 'hoisted-transitive': '^1.0.0' },
+    }));
+    mkdirSync(join(globalRoot, 'node_modules', 'hoisted-transitive'), { recursive: true });
+    writeFileSync(join(globalRoot, 'node_modules', 'hoisted-transitive', 'index.js'), 'export const hoisted = 1;\n');
+
+    const release = materializePackageRuntimeRelease({ controllerHome: home, packageRoot, operationId: 'hoisted-closure' });
+    expect(readFileSync(join(release.packageRoot, 'node_modules', 'runtime-dependency', 'index.js'), 'utf8')).toBe('export const dependency = 1;\n');
+    expect(readFileSync(join(release.packageRoot, 'node_modules', '@scope', 'dep', 'index.js'), 'utf8')).toBe('export const scoped = 1;\n');
+    expect(readFileSync(join(release.packageRoot, 'node_modules', 'runtime-dependency', 'node_modules', 'nested-transitive', 'index.js'), 'utf8')).toBe('export const nested = 1;\n');
+    expect(readFileSync(join(release.packageRoot, 'node_modules', 'hoisted-transitive', 'index.js'), 'utf8')).toBe('export const hoisted = 1;\n');
+
+    // The connector CLI canary ran during materialize and resolved the hoisted
+    // dependency from the snapshot; the release must keep launching after the
+    // entire global install directory disappears.
+    rmSync(globalRoot, { recursive: true, force: true });
+    expect(existsSync(globalRoot)).toBe(false);
     const launched = spawnSync(release.entrypointPath, [], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin:/usr/sbin:/sbin' } });
     expect(launched.status).toBe(0);
   });

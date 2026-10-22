@@ -419,8 +419,31 @@ export class WorkflowSupervisorControlPlane {
   }
   continuationProof(input: { repoId?: string; activeReleaseId: string; notBefore: string }) { return this.store.continuationProof(input); }
   browserDiscoverySnapshot() { return this.store.discoverySnapshot(); }
+  /** Operator authorization for the exact existing Project; never infer one
+   * from the standalone task's objective or nearby browser tabs. */
+  bindBootstrapProject(input: { taskId: string; projectUrl: string; requestId: string; authorizedBy: string }) {
+    const task = this.requireTask(input.taskId);
+    requireNonTerminalTask(this.store, task.taskId);
+    let parsed: URL;
+    try { parsed = new URL(input.projectUrl); }
+    catch { throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_URL_INVALID'); }
+    const match = /^\/g\/(g-p-[a-z0-9]+)(?:-[^/]+)?\/project\/?$/i.exec(parsed.pathname);
+    if (parsed.origin !== 'https://chatgpt.com' || !match || parsed.search || parsed.hash
+      || parsed.username || parsed.password) throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_URL_INVALID');
+    const canonical = `https://chatgpt.com/g/${match[1]!.toLocaleLowerCase()}/project`;
+    if (!this.store.discoverySnapshot().conversations.some((conversation) => {
+      try {
+        const value = new URL(conversation.projectUrl ?? '');
+        return value.origin === parsed.origin
+          && /^\/g\/(g-p-[a-z0-9]+)(?:-[^/]+)?\/project\/?$/i.exec(value.pathname)?.[1]?.toLocaleLowerCase() === match[1]!.toLocaleLowerCase();
+      } catch { return false; }
+    })) throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_NOT_DISCOVERED');
+    return this.store.bindBootstrapProject({ taskId: task.taskId, projectUrl: canonical, requestId: input.requestId, authorizedBy: input.authorizedBy });
+  }
   bootstrapProjectUrl(taskId: string): string {
     const task = this.requireTask(taskId);
+    const explicitlyBound = this.store.boundBootstrapProjectUrl(taskId);
+    if (explicitlyBound) return explicitlyBound;
     const scope = this.hooks.projectScopeForTask?.(task);
     const title = scope?.title.trim();
     if (!scope || !title) throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_SCOPE_REQUIRED');

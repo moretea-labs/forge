@@ -1,7 +1,7 @@
 import { writeAtomicTextFile } from '../shared/atomic-text-file';
 import { createHash, randomUUID } from 'crypto';
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'fs';
-import { dirname, join, relative, resolve } from 'path';
+import { basename, dirname, join, relative, resolve } from 'path';
 import { ensureControllerHome } from '../../effects/controller-home';
 import { CONTROL_PLANE_SCHEMA_VERSION } from '../control-plane/persistence/sqlite-store';
 import { packageRuntimeSourceRoot } from '../control-plane/runtime-generation';
@@ -132,6 +132,206 @@ export function packageRuntimeFileIndex(packageRoot = packageRuntimeSourceRoot()
   return records;
 }
 
+interface PackageRuntimeDependencyManifest {
+  dependencies?: Record<string, unknown>;
+  optionalDependencies?: Record<string, unknown>;
+}
+
+function readPackageRuntimeDependencyManifest(packageRoot: string): PackageRuntimeDependencyManifest {
+  try {
+    const parsed = JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8')) as PackageRuntimeDependencyManifest;
+    return {
+      dependencies: parsed.dependencies && typeof parsed.dependencies === 'object' ? parsed.dependencies : undefined,
+      optionalDependencies: parsed.optionalDependencies && typeof parsed.optionalDependencies === 'object' ? parsed.optionalDependencies : undefined,
+    };
+  } catch {
+    return {};
+  }
+}
+
+function installedDependencyDirectory(root: string, name: string): string {
+  return join(root, 'node_modules', ...name.split('/'));
+}
+
+/**
+ * Discover the hoisted dependency root when the package is installed in a
+ * layout where dependencies are siblings rather than nested beneath the
+ * package (Bun global installs hoist to `<global>/node_modules/*`). Returns
+ * undefined for nested layouts (npm global installs, source checkouts), where
+ * dependencies live under the package's own `node_modules`.
+ */
+function hoistedPackageRuntimeDependencyRoot(packageRoot: string): string | undefined {
+  let current = resolve(packageRoot);
+  for (let depth = 0; depth < 4; depth += 1) {
+    const parent = dirname(current);
+    if (parent === current) return undefined;
+    // `<root>/node_modules/<pkg>` or `<root>/node_modules/<scope>/<pkg>`
+    if (basename(parent) === 'node_modules') return dirname(parent);
+    current = parent;
+  }
+  return undefined;
+}
+
+/**
+ * One canonical dependency-closure discovery for immutable package Runtime
+ * releases (#305). A nested layout (every declared dependency present under
+ * the package's own `node_modules`, or no declared dependencies) keeps the
+ * existing whole-tree snapshot. Otherwise the closure resolves every declared
+ * dependency through standard node resolution inside the discovered dependency
+ * root (nested-inside-dependency first, then hoisted siblings) and fails
+ * closed when a required dependency is missing. Every closure record path
+ * mirrors its resolved install location relative to
+ * `<dependencyRoot>/node_modules`, so the existing single dependencyRoot
+ * source mapping stays exact and the immutable release never depends on the
+ * original global package's live path.
+ */
+export function packageRuntimeDependencyRecords(
+  packageRoot = packageRuntimeSourceRoot(),
+  dependencyRoot = packageRuntimeDependencyRootDiscovery(packageRoot),
+): PackageRuntimeFileRecord[] {
+  const root = resolve(packageRoot);
+  const dependencies = dependencyRoot === undefined ? undefined : resolve(dependencyRoot);
+  if (dependencies === undefined || dependencies === root) return [];
+  const manifest = readPackageRuntimeDependencyManifest(root);
+  const required = Object.keys(manifest.dependencies ?? {});
+  const optional = Object.keys(manifest.optionalDependencies ?? {});
+  if (required.length === 0 && optional.length === 0) return [];
+
+  const records = new Map<string, PackageRuntimeFileRecord>();
+  const installed = new Set<string>();
+  // Resolution is scoped to the dependency root subtree: starting from the
+  // package root would admit `<packageRoot>/node_modules` installs whose
+  // record paths are indistinguishable from hoisted ones under the single
+  // dependencyRoot source mapping. Hoisted layouts keep no nested installs
+  // beneath the package, and a dependency satisfied by neither location
+  // fails closed.
+  const resolveDependencyInstall = (name: string, fromDir: string): string | undefined => {
+    let current = resolve(fromDir);
+    for (let depth = 0; depth < 16; depth += 1) {
+      const candidate = installedDependencyDirectory(current, name);
+      if (existsSync(candidate)) return candidate;
+      if (current === dependencies) return undefined;
+      const parent = dirname(current);
+      if (parent === current || relative(dependencies, parent).startsWith('..')) return undefined;
+      current = parent;
+    }
+    return undefined;
+  };
+  const queue: Array<{ name: string; fromDir: string; optional: boolean }> = [
+    ...required.map((name) => ({ name, fromDir: dependencies, optional: false })),
+    ...optional.map((name) => ({ name, fromDir: dependencies, optional: true })),
+  ];
+  while (queue.length > 0) {
+    const item = queue.shift()!;
+    const installDir = resolveDependencyInstall(item.name, item.fromDir);
+    if (!installDir) {
+      if (item.optional) continue;
+      throw new Error(`PACKAGE_RUNTIME_DEPENDENCY_MISSING: ${item.name} (required by ${relative(dependencies, item.fromDir) || 'dependency root'})`);
+    }
+    // The record path mirrors the resolved install location relative to the
+    // dependency root, so standard node resolution inside the immutable
+    // release finds exactly these bytes.
+    const recordPrefix = relative(dependencies, installDir).split('\\').join('/');
+    if (recordPrefix === '' || recordPrefix.startsWith('..')) {
+      throw new Error(`PACKAGE_RUNTIME_DEPENDENCY_RESOLUTION_ESCAPE: ${item.name} -> ${installDir}`);
+    }
+    if (installed.has(installDir)) continue;
+    installed.add(installDir);
+    const innerFiles: string[] = [];
+    walkDependencyPackageFiles(installDir, installDir, innerFiles, recordPrefix);
+    for (const path of innerFiles) {
+      const bytes = readFileSync(join(installDir, path.slice(recordPrefix.length + 1)));
+      records.set(path, { path, sha256: sha256(bytes), bytes: bytes.length });
+    }
+    const innerManifest = readPackageRuntimeDependencyManifest(installDir);
+    queue.push(
+      ...Object.keys(innerManifest.dependencies ?? {}).map((name) => ({ name, fromDir: installDir, optional: false })),
+      ...Object.keys(innerManifest.optionalDependencies ?? {}).map((name) => ({ name, fromDir: installDir, optional: true })),
+    );
+  }
+  return [...records.values()].sort((left, right) => left.path.localeCompare(right.path));
+}
+
+/**
+ * Walk one resolved dependency package without descending into its own nested
+ * `node_modules`: nested dependencies are resolved by the closure resolver so
+ * each install location is recorded exactly once at its resolution path.
+ */
+function walkDependencyPackageFiles(root: string, current: string, output: string[], prefix: string): void {
+  if (!existsSync(current)) return;
+  const stat = lstatSync(current);
+  if (stat.isSymbolicLink()) {
+    const target = statSync(current);
+    if (target.isFile()) {
+      const relativePath = relative(root, current).split('\\').join('/');
+      output.push(`${prefix}/${relativePath}`);
+    }
+    return;
+  }
+  if (stat.isFile()) {
+    const relativePath = relative(root, current).split('\\').join('/');
+    output.push(`${prefix}/${relativePath}`);
+    return;
+  }
+  if (!stat.isDirectory()) return;
+  if (relative(root, current) === 'node_modules') return;
+  for (const entry of readdirSync(current).sort()) walkDependencyPackageFiles(root, join(current, entry), output, prefix);
+}
+
+/**
+ * Package file index for a hoisted dependency layout: the package's own
+ * `node_modules` is not walked (it holds nothing in a Bun global install);
+ * dependency bytes come exclusively from the verified closure so every
+ * `node_modules/**` record maps back to the dependency root exactly.
+ */
+export function packageRuntimeClosureFileIndex(packageRoot: string, dependencyRoot: string): PackageRuntimeFileRecord[] {
+  const root = resolve(packageRoot);
+  const ownRoots = PACKAGE_RUNTIME_ROOTS.filter((directory) => directory !== 'node_modules');
+  const ownRecords = packageFileIndex(root, ownRoots, PACKAGE_RUNTIME_FILES)
+    .filter((record) => !isNonRuntimePackageHelper(record.path));
+  const records = [...ownRecords, ...packageRuntimeDependencyRecords(root, dependencyRoot)]
+    .sort((left, right) => left.path.localeCompare(right.path))
+    .filter((record, index, all) => index === 0 || all[index - 1]!.path !== record.path);
+  const paths = new Set(records.map((record) => record.path));
+  if (!paths.has('package.json') || !paths.has('bin/forge-runtime.mjs')) {
+    throw new Error(`PACKAGE_RUNTIME_SURFACE_INCOMPLETE: ${root}`);
+  }
+  return records;
+}
+
+/**
+ * Canonical layout discovery for `materializePackageRuntimeRelease`: nested
+ * when every declared dependency is satisfied from the package's own
+ * `node_modules` (or none are declared); otherwise the hoisted ancestor root
+ * that must satisfy the closure. A required dependency satisfied by neither
+ * layout fails closed.
+ */
+export function packageRuntimeDependencyRootDiscovery(packageRoot = packageRuntimeSourceRoot()): string | undefined {
+  const root = resolve(packageRoot);
+  const manifest = readPackageRuntimeDependencyManifest(root);
+  const required = Object.keys(manifest.dependencies ?? {});
+  const optional = Object.keys(manifest.optionalDependencies ?? {});
+  if (required.length === 0 && optional.length === 0) return root;
+  const missingNested: string[] = [];
+  for (const name of [...required, ...optional]) {
+    if (existsSync(installedDependencyDirectory(root, name))) continue;
+    missingNested.push(name);
+  }
+  if (missingNested.length === 0) return root;
+  const hoisted = hoistedPackageRuntimeDependencyRoot(root);
+  if (hoisted === undefined) {
+    const missingRequired = missingNested.filter((name) => required.includes(name));
+    if (missingRequired.length === 0) return root;
+    throw new Error(`PACKAGE_RUNTIME_DEPENDENCY_MISSING: ${missingRequired.join(', ')}`);
+  }
+  for (const name of required) {
+    if (!existsSync(installedDependencyDirectory(hoisted, name))) {
+      throw new Error(`PACKAGE_RUNTIME_DEPENDENCY_MISSING: ${name}`);
+    }
+  }
+  return hoisted;
+}
+
 export function compiledRuntimePackageFileIndex(packageRoot = packageRuntimeSourceRoot()): PackageRuntimeFileRecord[] {
   const root = resolve(packageRoot);
   const records = packageFileIndex(root, COMPILED_RUNTIME_PACKAGE_ROOTS, COMPILED_RUNTIME_PACKAGE_FILES);
@@ -151,10 +351,10 @@ export function packageRuntimeFingerprint(records: PackageRuntimeFileRecord[]): 
   return hash.digest('hex');
 }
 
-function packageRuntimeArtifactIdentity(root: string, records: PackageRuntimeFileRecord[]): string {
+function packageRuntimeArtifactIdentity(root: string, records: PackageRuntimeFileRecord[], dependencyRoot = root): string {
   const hash = createHash('sha256');
   for (const record of records) {
-    hash.update(record.path).update('\0').update(readFileSync(join(root, record.path))).update('\0');
+    hash.update(record.path).update('\0').update(readFileSync(packageSourcePath(root, record.path, dependencyRoot))).update('\0');
   }
   return `sha256:${hash.digest('hex')}`;
 }
@@ -337,9 +537,16 @@ export function materializePackageRuntimeRelease(input: {
   const controllerHome = ensureControllerHome(input.controllerHome);
   const sourcePackageRoot = resolve(input.packageRoot ?? packageRuntimeSourceRoot());
   const version = packageVersion(sourcePackageRoot);
-  const records = packageRuntimeFileIndex(sourcePackageRoot);
+  // One canonical dependency-closure discovery covers both install layouts:
+  // nested npm globals keep the whole own-node_modules snapshot, Bun-hoisted
+  // globals snapshot the resolved closure from the hoisted dependency root
+  // (#305). Missing required dependencies fail closed before any staging.
+  const dependencyRoot = packageRuntimeDependencyRootDiscovery(sourcePackageRoot);
+  const records = dependencyRoot !== undefined && dependencyRoot !== sourcePackageRoot
+    ? packageRuntimeClosureFileIndex(sourcePackageRoot, dependencyRoot)
+    : packageRuntimeFileIndex(sourcePackageRoot);
   const fingerprint = packageRuntimeFingerprint(records);
-  const packageArtifactIdentity = packageRuntimeArtifactIdentity(sourcePackageRoot, records);
+  const packageArtifactIdentity = packageRuntimeArtifactIdentity(sourcePackageRoot, records, dependencyRoot);
   const safeVersion = version.replace(/[^A-Za-z0-9._-]+/g, '-');
   const launcherBinding = sha256(`${resolve(process.execPath)}\0package-launcher-v9`);
   const releaseId = `package-${safeVersion}-${fingerprint.slice(0, 16)}-${launcherBinding.slice(0, 12)}`;
@@ -432,7 +639,7 @@ export function materializePackageRuntimeRelease(input: {
     const stagingRoot = join(releasesRoot, `.staging-${releaseId}-${process.pid}-${randomUUID().slice(0, 8)}`);
     try {
       mkdirSync(stagingRoot, { recursive: false, mode: 0o700 });
-      stagePackageRuntimeSnapshot(sourcePackageRoot, join(stagingRoot, 'package'), records);
+      stagePackageRuntimeSnapshot(sourcePackageRoot, join(stagingRoot, 'package'), records, dependencyRoot);
       writeAtomicTextFile(join(stagingRoot, 'package-files.json'), indexJson);
       writeAtomicTextFile(join(stagingRoot, 'forge-runtime'), launcher, 0o700);
       chmodSync(join(stagingRoot, 'forge-runtime'), 0o700);
