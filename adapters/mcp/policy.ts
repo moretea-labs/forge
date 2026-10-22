@@ -45,8 +45,6 @@ export const PLANNER_WRITE_GLOBS = [
   'plans/prds/**',
   'plans/sprints/**',
   'plans/plan-*.md',
-  '.ai/harness/controller/packets/codex-goal.md',
-  '.ai/harness/controller/packets/chatgpt-plan.md',
 ];
 
 export interface McpPolicyOptions {
