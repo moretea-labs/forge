@@ -551,6 +551,8 @@ effects but are no longer generated. The existing Effect ledger alone owns
 once-only send/retry outcomes, and host grants remain the permission boundary.
 
 
+Supervisor pending-effect selection prioritizes already-started sends over fresh successors. Within that priority, durable insertion order breaks equal creation timestamps; hashed effect IDs are never causal ordering evidence. Existing unknown-outcome spacing, no-click retry proof and dispatch budgets still decide whether the selected effect can reconcile or retry.
+
 ## Module Boundaries and Language Evolution
 This policy applies to **all Forge source development**. `AGENTS.md` is the entry point. `docs/architecture/CURRENT.md` records active authorities and `docs/reference-configs/runtime-architecture-guardrails.md` defines existing correctness and release constraints. Reconcile any disagreement within the same reviewed delivery; never introduce a second authority.
 

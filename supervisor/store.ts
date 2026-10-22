@@ -232,7 +232,12 @@ function oldestUnappliedEffect(db: Database, taskId: string): WorkflowSupervisor
         WHERE completed.task_id = e.task_id
           AND e.origin_key = 'provider-recovery:' || completed.source_effect_id
       )
-    ) ORDER BY e.created_at, e.effect_id LIMIT 1`, (s) => s.get(taskId)) as Record<string, unknown> | undefined;
+    ) ORDER BY
+      -- A started send owns reconciliation/retry before any fresh successor.
+      -- Millisecond timestamps and hashed effect IDs cannot prove causal order.
+      CASE WHEN EXISTS (SELECT 1 FROM events started
+        WHERE started.effect_id = e.effect_id AND started.kind = 'effect_dispatch_started') THEN 0 ELSE 1 END,
+      e.created_at, e.rowid LIMIT 1`, (s) => s.get(taskId)) as Record<string, unknown> | undefined;
   return row ? effectFromRow(row) : undefined;
 }
 
