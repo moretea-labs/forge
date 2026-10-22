@@ -2,18 +2,12 @@
 import type {
   BrowserSessionAuthorityPage,
   BrowserSessionAuthoritySession,
-  BrowserSessionLegacyCutoverRepository,
-  BrowserSessionLegacyCutoverReport,
-  BrowserSessionTombstoneCleanupReport,
 } from '../../../packages/plugin-runtime/browser/session-authority';
 import {
   DEFAULT_BROWSER_SESSION_LIST_LIMIT,
   MAX_BROWSER_SESSION_LIST_LIMIT,
 } from '../../../packages/plugin-runtime/browser/session-authority';
-import {
-  currentRuntimeBrowserSessionExecutionContext,
-  withRuntimeBrowserSessionExecutionContext,
-} from '../root/browser-session-composition';
+import { withRuntimeBrowserSessionExecutionContext } from '../root/browser-session-composition';
 import {
   ensureBrowserSessionsMigratedToComputer,
   findBrowserSession as findComputerBackedBrowserSession,
@@ -25,19 +19,10 @@ import {
 export {
   DEFAULT_BROWSER_SESSION_LIST_LIMIT,
   MAX_BROWSER_SESSION_LIST_LIMIT,
-  type BrowserSessionAuthorityContext,
   type BrowserSessionExecutionContext,
   type BrowserSessionAuthorityPage,
   type BrowserSessionAuthoritySession,
-  type BrowserSessionLegacyCutoverRepository,
-  type BrowserSessionLegacyCutoverReport,
-  type BrowserSessionTombstoneCleanupReport,
 } from '../../../packages/plugin-runtime/browser/session-authority';
-
-export {
-  currentRuntimeBrowserSessionExecutionContext as currentBrowserSessionAuthorityContext,
-  withRuntimeBrowserSessionExecutionContext as withBrowserSessionAuthorityContext,
-} from '../root/browser-session-composition';
 
 function withContext<T>(controllerHome: string, repoId: string | undefined, operation: () => T): T {
   return withRuntimeBrowserSessionExecutionContext({ controllerHome, ...(repoId?.trim() ? { repoId: repoId.trim() } : {}) }, operation);
@@ -113,30 +98,3 @@ export function tombstoneBrowserSession(controllerHome: string, repoId: string, 
     return true;
   });
 }
-
-/** Browser-owned legacy cutover authority is retired; Computer migration markers own cutover state. */
-export function closeLegacyBrowserSessionImportCutover(
-  _controllerHome: string,
-  repositories: readonly BrowserSessionLegacyCutoverRepository[],
-): BrowserSessionLegacyCutoverReport {
-  return { closed: true, alreadyClosed: true, repositoryCount: repositories.length, migratedRecordCount: 0 };
-}
-
-/** Browser-owned tombstone retention is retired; Computer target retention is authoritative. */
-export function cleanupBrowserSessionTombstones(
-  _controllerHome: string,
-  _options?: { nowMs?: number; ttlMs?: number; maxTombstones?: number; maxRemovals?: number },
-): BrowserSessionTombstoneCleanupReport {
-  return {
-    policyVersion: 'browser-session-tombstone-retention-v1',
-    cutoverClosed: true,
-    inspected: 0,
-    eligible: 0,
-    removed: 0,
-    retained: 0,
-    blockers: [],
-    budgetExhausted: false,
-  };
-}
-
-void currentRuntimeBrowserSessionExecutionContext;

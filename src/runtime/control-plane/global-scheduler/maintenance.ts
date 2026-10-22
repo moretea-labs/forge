@@ -1,10 +1,6 @@
 import type { RepositoryRecord } from '../../../cli/repositories/types';
 import { cleanupRuntimeComputerInteractionTargets } from '../../root/computer-target-composition';
 import { cleanupControllerHomeBrowserArtifacts, cleanupGeneratedRepositoryCheckoutCaches, cleanupIdleXCTestDevices } from '../generated-cache-retention';
-import {
-  cleanupRuntimeBrowserSessionTombstones,
-  closeRuntimeBrowserSessionLegacyImportCutover,
-} from '../../root/browser-session-composition';
 import type { cleanupControllerRuntimeState } from '../runtime-cleanup';
 import type { reconcileTerminalWorkCleanups } from '../execution/work-terminal-cleanup';
 import type { gcTerminalProcesses } from '../../execution/process-runtime/gc';
@@ -172,23 +168,10 @@ export async function runSchedulerPeriodicCleanup(input: {
     console.error('[forge cleanup] release failure repair reconciliation failed:', error);
   }
 
-  // Browser/computer tombstones are retention state. Their lifecycle truth is
+  // Computer interaction-target tombstones are retention state. Their lifecycle truth is
   // written synchronously by their owning authorities, so a five-minute sweep
   // is sufficient and avoids repeating controller-wide scans every minute.
   if (plan.runRetention) {
-    if (!runtimeMaintenanceAuthorityCurrent(input.controllerHome)) return;
-    try {
-      closeRuntimeBrowserSessionLegacyImportCutover(
-        input.controllerHome,
-        input.repositories.map((repository) => ({ repoId: repository.repoId, repoRoot: repository.canonicalRoot })),
-      );
-      const browserSessions = cleanupRuntimeBrowserSessionTombstones(input.controllerHome, { nowMs: input.nowMs });
-      if (browserSessions.blockers.length > 0 || browserSessions.budgetExhausted) {
-        console.error('[forge cleanup] Browser session retention reported bounded blockers');
-      }
-    } catch (error) {
-      console.error('[forge cleanup] Browser session retention failed:', error);
-    }
     if (!runtimeMaintenanceAuthorityCurrent(input.controllerHome)) return;
     try {
       const computerTargets = await cleanupRuntimeComputerInteractionTargets(input.controllerHome, { nowMs: input.nowMs });

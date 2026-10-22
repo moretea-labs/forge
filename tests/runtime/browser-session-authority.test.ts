@@ -23,8 +23,6 @@ import {
 } from '../../src/runtime/plugins/browser-macos-bridge';
 import { AssistantPluginError } from '../../src/runtime/plugins/errors';
 import {
-  cleanupBrowserSessionTombstones,
-  closeLegacyBrowserSessionImportCutover,
   ensureLegacyBrowserSessionsImported,
   findBrowserSession,
   listAllBrowserSessionsForRepository,
@@ -34,7 +32,7 @@ import {
 } from '../../src/runtime/plugins/browser-session-authority';
 import { findBrowserSession as findComputerBackedBrowserSession } from '../../src/runtime/plugins/browser-session-store';
 import { readLegacyBrowserSessionMigrationEntries } from '../../src/runtime/plugins/browser-session-legacy-migration';
-import { withRuntimeBrowserSessionAuthorityContext } from '../../src/runtime/root/browser-session-composition';
+import { withRuntimeBrowserSessionExecutionContext } from '../../src/runtime/root/browser-session-composition';
 import {
   withControlPlaneTransaction,
   writeControlPlaneRecordWithinTransaction,
@@ -42,6 +40,7 @@ import {
 import { registerRepository } from '../../src/cli/repositories/registry';
 import { withControllerLockAsync } from '../../src/cli/repositories/locks';
 import { submitAssistantPluginAction } from '../../src/runtime/plugins/store';
+import { writeControllerPluginConfig } from '../../src/runtime/plugins/config-store';
 
 const roots: string[] = [];
 afterEach(() => {
@@ -99,7 +98,7 @@ function extensionFixture(repoRoot: string): string {
 }
 
 function computerBackedSession(controllerHome: string, repoId: string, repoRoot: string, sessionId: string) {
-  return withRuntimeBrowserSessionAuthorityContext(
+  return withRuntimeBrowserSessionExecutionContext(
     { controllerHome, repoId },
     () => findComputerBackedBrowserSession(repoRoot, sessionId),
   );
@@ -172,20 +171,13 @@ describe('browser session compatibility on Computer target authority', () => {
     expect(listBrowserSessions(controllerHome, 'repo-a', repoA).sessions.map((entry) => entry.sessionId)).toEqual(['managed-a', 'native-a']);
   });
 
-  test('Browser-owned retention is retired while Computer tombstones remain authoritative', () => {
+  test('Computer-backed browser tombstones remain authoritative without Browser retention', () => {
     const { controllerHome, repoA } = fixture();
     mkdirSync(repoA, { recursive: true });
     saveBrowserSession(controllerHome, 'repo-a', repoA, session('active-keep', '2026-08-24T01:00:00.000Z'));
     saveBrowserSession(controllerHome, 'repo-a', repoA, session('stale-drop', '2026-08-24T02:00:00.000Z'));
     expect(tombstoneBrowserSession(controllerHome, 'repo-a', repoA, 'stale-drop')).toBe(true);
 
-    const retiredRetention = cleanupBrowserSessionTombstones(controllerHome, {
-      nowMs: Date.now() + 31 * 24 * 60 * 60_000,
-      ttlMs: 30 * 24 * 60 * 60_000,
-    });
-    expect(retiredRetention).toMatchObject({ cutoverClosed: true, removed: 0, blockers: [] });
-    const cutover = closeLegacyBrowserSessionImportCutover(controllerHome, [{ repoId: 'repo-a', repoRoot: repoA }]);
-    expect(cutover).toMatchObject({ closed: true, alreadyClosed: true, migratedRecordCount: 0 });
     expect(findBrowserSession(controllerHome, 'repo-a', repoA, 'stale-drop')).toBeUndefined();
     expect(findBrowserSession(controllerHome, 'repo-a', repoA, 'active-keep')?.sessionId).toBe('active-keep');
   });
@@ -263,10 +255,10 @@ describe('browser session compatibility on Computer target authority', () => {
   test('legacy migration canonicalizes historical numeric native tab ids before Computer authority', async () => {
     const { controllerHome, repoA } = fixture();
     mkdirSync(join(repoA, '.forge', 'plugins'), { recursive: true });
-    writeFileSync(join(repoA, '.forge', 'plugins', 'browser.json'), JSON.stringify({
+    writeControllerPluginConfig(controllerHome, 'browser', {
       schemaVersion: 1, enabled: true, provider: 'playwright', browserMode: 'attach_preferred',
       cdpAttachFallback: 'fail_closed', nativeAttachMode: 'auto',
-    }));
+    });
     const updatedAt = '2026-08-24T01:00:00.000Z';
     const legacySession = session('legacy-numeric-native', updatedAt, { native: true });
     const legacyTab = legacySession.browser?.tab as unknown as Record<string, unknown>;
@@ -313,14 +305,14 @@ describe('browser session compatibility on Computer target authority', () => {
   test('browser adapter lists central authority with bounded pagination and authorization sees migrated sessions', async () => {
     const { controllerHome, repoA } = fixture();
     mkdirSync(join(repoA, '.forge', 'plugins'), { recursive: true });
-    writeFileSync(join(repoA, '.forge', 'plugins', 'browser.json'), JSON.stringify({
+    writeControllerPluginConfig(controllerHome, 'browser', {
       schemaVersion: 1,
       enabled: true,
       provider: 'playwright',
       browserMode: 'attach_preferred',
       cdpAttachFallback: 'fail_closed',
       nativeAttachMode: 'auto',
-    }));
+    });
     const legacyRoot = join(repoA, '.forge', 'browser', 'sessions');
     mkdirSync(legacyRoot, { recursive: true });
     for (const [id, at] of [['one', '2026-08-24T01:00:00.000Z'], ['two', '2026-08-24T02:00:00.000Z'], ['three', '2026-08-24T03:00:00.000Z']] as const) {
@@ -373,7 +365,7 @@ describe('browser session compatibility on Computer target authority', () => {
     const initialized = spawnSync('git', ['init', '-b', 'main'], { cwd: repoA, encoding: 'utf8' });
     expect(initialized.status).toBe(0);
     mkdirSync(join(repoA, '.forge', 'plugins'), { recursive: true });
-    writeFileSync(join(repoA, '.forge', 'plugins', 'browser.json'), JSON.stringify({
+    writeControllerPluginConfig(controllerHome, 'browser', {
       schemaVersion: 1,
       enabled: true,
       provider: 'playwright',
@@ -381,7 +373,7 @@ describe('browser session compatibility on Computer target authority', () => {
       cdpAttachFallback: 'fail_closed',
       nativeAttachMode: 'auto',
       nativeBrowserCandidates: ['chrome'],
-    }));
+    });
     const repository = registerRepository({ path: repoA, controllerHome, displayName: 'browser-projection-lock' });
     const separator = String.fromCharCode(30);
     const url = 'https://example.com/projection-lock';
@@ -425,7 +417,7 @@ describe('browser session compatibility on Computer target authority', () => {
   test('native active-tab adoption distinguishes browser-active from authoritative system foreground', async () => {
     const { controllerHome, repoA } = fixture();
     mkdirSync(join(repoA, '.forge', 'plugins'), { recursive: true });
-    writeFileSync(join(repoA, '.forge', 'plugins', 'browser.json'), JSON.stringify({
+    writeControllerPluginConfig(controllerHome, 'browser', {
       schemaVersion: 1,
       enabled: true,
       provider: 'playwright',
@@ -433,7 +425,7 @@ describe('browser session compatibility on Computer target authority', () => {
       cdpAttachFallback: 'fail_closed',
       nativeAttachMode: 'auto',
       nativeBrowserCandidates: ['chrome'],
-    }));
+    });
 
     const separator = String.fromCharCode(30);
     const url = 'https://example.com/native-adoption';
@@ -475,7 +467,7 @@ describe('browser session compatibility on Computer target authority', () => {
   test('activate_page recovers system foreground through Desktop Operator and preserves exact native tab for trusted input', async () => {
     const { controllerHome, repoA } = fixture();
     mkdirSync(join(repoA, '.forge', 'plugins'), { recursive: true });
-    writeFileSync(join(repoA, '.forge', 'plugins', 'browser.json'), JSON.stringify({
+    writeControllerPluginConfig(controllerHome, 'browser', {
       schemaVersion: 1,
       enabled: true,
       provider: 'playwright',
@@ -483,7 +475,7 @@ describe('browser session compatibility on Computer target authority', () => {
       cdpAttachFallback: 'fail_closed',
       nativeAttachMode: 'auto',
       nativeBrowserCandidates: ['chrome', 'vivaldi'],
-    }));
+    });
 
     const separator = String.fromCharCode(30);
     const fieldSeparator = String.fromCharCode(31);
@@ -565,7 +557,7 @@ describe('browser session compatibility on Computer target authority', () => {
   test('legacy native broker without tab inventory creates and closes only the exact plugin-owned tab', async () => {
     const { controllerHome, repoA } = fixture();
     mkdirSync(join(repoA, '.forge', 'plugins'), { recursive: true });
-    writeFileSync(join(repoA, '.forge', 'plugins', 'browser.json'), JSON.stringify({
+    writeControllerPluginConfig(controllerHome, 'browser', {
       schemaVersion: 1,
       enabled: true,
       provider: 'playwright',
@@ -573,7 +565,7 @@ describe('browser session compatibility on Computer target authority', () => {
       cdpAttachFallback: 'fail_closed',
       nativeAttachMode: 'auto',
       nativeBrowserCandidates: ['chrome'],
-    }));
+    });
 
     const separator = String.fromCharCode(30);
     const url = 'https://example.com/legacy-inventory';
@@ -657,7 +649,7 @@ describe('browser session compatibility on Computer target authority', () => {
   test('session-bound reads refuse to create a replacement for a missing native tab', async () => {
     const { controllerHome, repoA } = fixture();
     mkdirSync(join(repoA, '.forge', 'plugins'), { recursive: true });
-    writeFileSync(join(repoA, '.forge', 'plugins', 'browser.json'), JSON.stringify({
+    writeControllerPluginConfig(controllerHome, 'browser', {
       schemaVersion: 1,
       enabled: true,
       provider: 'playwright',
@@ -665,7 +657,7 @@ describe('browser session compatibility on Computer target authority', () => {
       cdpAttachFallback: 'fail_closed',
       nativeAttachMode: 'auto',
       nativeBrowserCandidates: ['chrome'],
-    }));
+    });
 
     const separator = String.fromCharCode(30);
     const fieldSeparator = String.fromCharCode(31);
@@ -764,7 +756,7 @@ describe('browser session compatibility on Computer target authority', () => {
   test('native cold rebind reports and persists the live same-origin URL after external drift', async () => {
     const { controllerHome, repoA } = fixture();
     mkdirSync(join(repoA, '.forge', 'plugins'), { recursive: true });
-    writeFileSync(join(repoA, '.forge', 'plugins', 'browser.json'), JSON.stringify({
+    writeControllerPluginConfig(controllerHome, 'browser', {
       schemaVersion: 1,
       enabled: true,
       provider: 'playwright',
@@ -772,7 +764,7 @@ describe('browser session compatibility on Computer target authority', () => {
       cdpAttachFallback: 'fail_closed',
       nativeAttachMode: 'auto',
       nativeBrowserCandidates: ['chrome'],
-    }));
+    });
 
     const separator = String.fromCharCode(30);
     const originalUrl = 'https://example.com/native-drift';
@@ -857,7 +849,7 @@ describe('browser session compatibility on Computer target authority', () => {
   test('successful exact native reattach publishes Browser health evidence', async () => {
     const { controllerHome, repoA } = fixture();
     mkdirSync(join(repoA, '.forge', 'plugins'), { recursive: true });
-    writeFileSync(join(repoA, '.forge', 'plugins', 'browser.json'), JSON.stringify({
+    writeControllerPluginConfig(controllerHome, 'browser', {
       schemaVersion: 2,
       enabled: true,
       provider: 'playwright',
@@ -865,7 +857,7 @@ describe('browser session compatibility on Computer target authority', () => {
       cdpAttachFallback: 'fail_closed',
       nativeAttachMode: 'auto',
       nativeBrowserCandidates: ['chrome'],
-    }));
+    });
 
     setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => false });
     const separator = String.fromCharCode(30);
@@ -902,11 +894,11 @@ describe('browser session compatibility on Computer target authority', () => {
     const { controllerHome, repoA } = fixture();
     mkdirSync(join(repoA, '.forge', 'plugins'), { recursive: true });
     const extensionPath = extensionFixture(repoA);
-    writeFileSync(join(repoA, '.forge', 'plugins', 'browser.json'), JSON.stringify({
+    writeControllerPluginConfig(controllerHome, 'browser', {
       schemaVersion: 2, enabled: true, provider: 'playwright', browserMode: 'attach_preferred',
       profileMode: 'repo_local', browserChannel: 'chrome', cdpEndpoint: 'http://127.0.0.1:9222',
       cdpAttachFallback: 'fail_closed', nativeAttachMode: 'disabled',
-    }));
+    });
     const canonicalExtensionPath = realpathSync(extensionPath);
     const methods: string[] = [];
     let disconnected = 0;
@@ -966,10 +958,10 @@ describe('browser session compatibility on Computer target authority', () => {
 
     mkdirSync(join(repoA, '.forge', 'plugins'), { recursive: true });
     const extensionPath = extensionFixture(repoA);
-    writeFileSync(join(repoA, '.forge', 'plugins', 'browser.json'), JSON.stringify({
+    writeControllerPluginConfig(controllerHome, 'browser', {
       schemaVersion: 2, enabled: true, provider: 'playwright', browserMode: 'managed_persistent',
       profileMode: 'repo_local', browserChannel: 'chrome', cdpAttachFallback: 'fail_closed', nativeAttachMode: 'disabled',
-    }));
+    });
     const canonicalExtensionPath = realpathSync(extensionPath);
     const nativeHostPath = join(repoA, 'forge-native-host');
     writeFileSync(nativeHostPath, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
@@ -1042,10 +1034,10 @@ describe('browser session compatibility on Computer target authority', () => {
     mkdirSync(join(repoA, '.forge', 'plugins'), { recursive: true });
     const extensionPath = extensionFixture(repoA);
     const canonicalExtensionPath = realpathSync(extensionPath);
-    writeFileSync(join(repoA, '.forge', 'plugins', 'browser.json'), JSON.stringify({
+    writeControllerPluginConfig(controllerHome, 'browser', {
       schemaVersion: 2, enabled: true, provider: 'playwright', browserMode: 'managed_persistent',
       profileMode: 'repo_local', browserChannel: 'chrome', cdpAttachFallback: 'fail_closed', nativeAttachMode: 'disabled',
-    }));
+    });
     const methods: string[] = [];
     let detached = 0;
     let runtimeTargetVisible = false;
@@ -1112,10 +1104,10 @@ describe('browser session compatibility on Computer target authority', () => {
     const { controllerHome, repoA } = fixture();
     mkdirSync(join(repoA, '.forge', 'plugins'), { recursive: true });
     const extensionPath = extensionFixture(repoA);
-    writeFileSync(join(repoA, '.forge', 'plugins', 'browser.json'), JSON.stringify({
+    writeControllerPluginConfig(controllerHome, 'browser', {
       schemaVersion: 2, enabled: true, provider: 'playwright', browserMode: 'managed_persistent',
       profileMode: 'repo_local', browserChannel: 'chrome', cdpAttachFallback: 'fail_closed', nativeAttachMode: 'disabled',
-    }));
+    });
     let detached = 0;
     setBrowserPluginRuntimeHooksForTest({
       moduleAvailable: () => true,
@@ -1160,12 +1152,12 @@ describe('browser session compatibility on Computer target authority', () => {
     writeFileSync(join(userDataDir, 'Default', 'Preferences'), '{}');
     writeFileSync(join(userDataDir, 'DevToolsActivePort'), '49399\n/devtools/browser/stale\n');
     symlinkSync('test-host-3131', join(userDataDir, 'SingletonLock'));
-    writeFileSync(join(repoA, '.forge', 'plugins', 'browser.json'), JSON.stringify({
+    writeControllerPluginConfig(controllerHome, 'browser', {
       schemaVersion: 3, enabled: true, provider: 'playwright', browserMode: 'managed_persistent',
       profileMode: 'custom', profileDir: userDataDir, profileDirectory: 'Default',
       executablePath: '/Applications/Vivaldi.app/Contents/MacOS/Vivaldi',
       cdpAttachFallback: 'fail_closed', nativeAttachMode: 'disabled',
-    }));
+    });
     const launched: Array<{ executable: string; args: string[] }> = [];
     const signalled: Array<[number, NodeJS.Signals]> = [];
     const methods: string[] = [];
@@ -1240,12 +1232,12 @@ describe('browser session compatibility on Computer target authority', () => {
     writeFileSync(join(userDataDir, 'Local State'), '{}');
     writeFileSync(join(userDataDir, 'Default', 'Preferences'), '{}');
     symlinkSync('test-host-6262', join(userDataDir, 'SingletonLock'));
-    writeFileSync(join(repoA, '.forge', 'plugins', 'browser.json'), JSON.stringify({
+    writeControllerPluginConfig(controllerHome, 'browser', {
       schemaVersion: 3, enabled: true, provider: 'playwright', browserMode: 'managed_persistent',
       profileMode: 'custom', profileDir: userDataDir, profileDirectory: 'Default',
       executablePath: '/Applications/Vivaldi.app/Contents/MacOS/Vivaldi',
       cdpAttachFallback: 'fail_closed', nativeAttachMode: 'disabled',
-    }));
+    });
     const signalled: Array<[number, NodeJS.Signals]> = [];
     setBrowserPluginRuntimeHooksForTest({
       moduleAvailable: () => false,
@@ -1273,12 +1265,12 @@ describe('browser session compatibility on Computer target authority', () => {
     mkdirSync(join(userDataDir, 'Default'), { recursive: true });
     writeFileSync(join(userDataDir, 'Local State'), '{}');
     writeFileSync(join(userDataDir, 'Default', 'Preferences'), '{}');
-    writeFileSync(join(repoA, '.forge', 'plugins', 'browser.json'), JSON.stringify({
+    writeControllerPluginConfig(controllerHome, 'browser', {
       schemaVersion: 3, enabled: true, provider: 'playwright', browserMode: 'managed_persistent',
       profileMode: 'custom', profileDir: userDataDir, profileDirectory: 'Default',
       executablePath: '/Applications/Vivaldi.app/Contents/MacOS/Vivaldi',
       cdpAttachFallback: 'fail_closed', nativeAttachMode: 'disabled',
-    }));
+    });
     const signalled: Array<[number, NodeJS.Signals]> = [];
     setBrowserPluginRuntimeHooksForTest({
       moduleAvailable: () => false,
@@ -1409,12 +1401,12 @@ describe('browser session compatibility on Computer target authority', () => {
     mkdirSync(join(userDataDir, 'Default'), { recursive: true });
     writeFileSync(join(userDataDir, 'Local State'), '{}');
     writeFileSync(join(userDataDir, 'Default', 'Preferences'), '{}');
-    writeFileSync(join(repoA, '.forge', 'plugins', 'browser.json'), JSON.stringify({
+    writeControllerPluginConfig(controllerHome, 'browser', {
       schemaVersion: 3, enabled: true, provider: 'playwright', browserMode: 'managed_persistent',
       profileMode: 'custom', profileDir: userDataDir, profileDirectory: 'Default',
       executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
       cdpAttachFallback: 'fail_closed', nativeAttachMode: 'disabled',
-    }));
+    });
     let launchOptions: Record<string, unknown> | undefined;
     setBrowserPluginRuntimeHooksForTest({
       moduleAvailable: () => true,
@@ -1470,10 +1462,10 @@ describe('browser session compatibility on Computer target authority', () => {
       type: 'stdio',
       allowed_origins: ['chrome-extension://' + 'a'.repeat(32) + '/'],
     }));
-    writeFileSync(join(repoA, '.forge', 'plugins', 'browser.json'), JSON.stringify({
+    writeControllerPluginConfig(controllerHome, 'browser', {
       schemaVersion: 2, enabled: true, provider: 'playwright', browserMode: 'managed_persistent',
       profileMode: 'repo_local', browserChannel: 'chrome', cdpAttachFallback: 'fail_closed', nativeAttachMode: 'disabled',
-    }));
+    });
     let launched = false;
     setBrowserPluginRuntimeHooksForTest({
       moduleAvailable: () => true,
@@ -1490,10 +1482,10 @@ describe('browser session compatibility on Computer target authority', () => {
   test('ordinary managed browsing still honors configured branded channel when no extension is requested', async () => {
     const { controllerHome, repoA } = fixture();
     mkdirSync(join(repoA, '.forge', 'plugins'), { recursive: true });
-    writeFileSync(join(repoA, '.forge', 'plugins', 'browser.json'), JSON.stringify({
+    writeControllerPluginConfig(controllerHome, 'browser', {
       schemaVersion: 2, enabled: true, provider: 'playwright', browserMode: 'managed_persistent',
       profileMode: 'repo_local', browserChannel: 'chrome', cdpAttachFallback: 'fail_closed', nativeAttachMode: 'disabled',
-    }));
+    });
     let launchOptions: Record<string, unknown> | undefined;
     setBrowserPluginRuntimeHooksForTest({
       moduleAvailable: () => true,
@@ -1533,11 +1525,11 @@ describe('browser session compatibility on Computer target authority', () => {
     const { controllerHome, repoA } = fixture();
     mkdirSync(join(repoA, '.forge', 'plugins'), { recursive: true });
     const extensionPath = extensionFixture(repoA);
-    writeFileSync(join(repoA, '.forge', 'plugins', 'browser.json'), JSON.stringify({
+    writeControllerPluginConfig(controllerHome, 'browser', {
       schemaVersion: 2, enabled: true, provider: 'playwright', browserMode: 'attach_preferred',
       profileMode: 'repo_local', browserChannel: 'chrome', cdpAttachFallback: 'fail_closed',
       nativeAttachMode: 'auto', nativeBrowserCandidates: ['chrome'],
-    }));
+    });
     setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => false });
     await expect(executeBrowserPluginAction({
       controllerHome, repoId: 'repo-a', repoRoot: repoA, pluginId: 'browser',
@@ -1589,7 +1581,7 @@ describe('browser session compatibility on Computer target authority', () => {
     expect(migrated.health.details?.sessionCountSemantics).toBe('controller_authority_unavailable');
 
     mkdirSync(join(repoA, '.forge', 'plugins'), { recursive: true });
-    writeFileSync(join(repoA, '.forge', 'plugins', 'browser.json'), JSON.stringify({
+    writeControllerPluginConfig(controllerHome, 'browser', {
       schemaVersion: 2,
       enabled: true,
       provider: 'playwright',
@@ -1601,7 +1593,7 @@ describe('browser session compatibility on Computer target authority', () => {
       cdpAttachFallback: 'managed_persistent',
       nativeAttachMode: 'auto',
       nativeBrowserCandidates: ['vivaldi'],
-    }));
+    });
     const explicit = buildBrowserPluginManifest(1, undefined, repoA, { controllerHome, repoId: 'repo-a', repoRoot: repoA, controllerScoped: false });
     expect(explicit.health.details?.browserMode).toBe('managed_persistent');
     expect(explicit.health.details?.profileMode).toBe('custom');
