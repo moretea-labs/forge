@@ -23,8 +23,6 @@ import {
 } from '../../src/runtime/plugins/browser-macos-bridge';
 import { AssistantPluginError } from '../../src/runtime/plugins/errors';
 import {
-  cleanupBrowserSessionTombstones,
-  closeLegacyBrowserSessionImportCutover,
   ensureLegacyBrowserSessionsImported,
   findBrowserSession,
   listAllBrowserSessionsForRepository,
@@ -34,7 +32,7 @@ import {
 } from '../../src/runtime/plugins/browser-session-authority';
 import { findBrowserSession as findComputerBackedBrowserSession } from '../../src/runtime/plugins/browser-session-store';
 import { readLegacyBrowserSessionMigrationEntries } from '../../src/runtime/plugins/browser-session-legacy-migration';
-import { withRuntimeBrowserSessionAuthorityContext } from '../../src/runtime/root/browser-session-composition';
+import { withRuntimeBrowserSessionExecutionContext } from '../../src/runtime/root/browser-session-composition';
 import {
   withControlPlaneTransaction,
   writeControlPlaneRecordWithinTransaction,
@@ -99,7 +97,7 @@ function extensionFixture(repoRoot: string): string {
 }
 
 function computerBackedSession(controllerHome: string, repoId: string, repoRoot: string, sessionId: string) {
-  return withRuntimeBrowserSessionAuthorityContext(
+  return withRuntimeBrowserSessionExecutionContext(
     { controllerHome, repoId },
     () => findComputerBackedBrowserSession(repoRoot, sessionId),
   );
@@ -172,20 +170,13 @@ describe('browser session compatibility on Computer target authority', () => {
     expect(listBrowserSessions(controllerHome, 'repo-a', repoA).sessions.map((entry) => entry.sessionId)).toEqual(['managed-a', 'native-a']);
   });
 
-  test('Browser-owned retention is retired while Computer tombstones remain authoritative', () => {
+  test('Computer-backed browser tombstones remain authoritative without Browser retention', () => {
     const { controllerHome, repoA } = fixture();
     mkdirSync(repoA, { recursive: true });
     saveBrowserSession(controllerHome, 'repo-a', repoA, session('active-keep', '2026-08-24T01:00:00.000Z'));
     saveBrowserSession(controllerHome, 'repo-a', repoA, session('stale-drop', '2026-08-24T02:00:00.000Z'));
     expect(tombstoneBrowserSession(controllerHome, 'repo-a', repoA, 'stale-drop')).toBe(true);
 
-    const retiredRetention = cleanupBrowserSessionTombstones(controllerHome, {
-      nowMs: Date.now() + 31 * 24 * 60 * 60_000,
-      ttlMs: 30 * 24 * 60 * 60_000,
-    });
-    expect(retiredRetention).toMatchObject({ cutoverClosed: true, removed: 0, blockers: [] });
-    const cutover = closeLegacyBrowserSessionImportCutover(controllerHome, [{ repoId: 'repo-a', repoRoot: repoA }]);
-    expect(cutover).toMatchObject({ closed: true, alreadyClosed: true, migratedRecordCount: 0 });
     expect(findBrowserSession(controllerHome, 'repo-a', repoA, 'stale-drop')).toBeUndefined();
     expect(findBrowserSession(controllerHome, 'repo-a', repoA, 'active-keep')?.sessionId).toBe('active-keep');
   });
