@@ -968,6 +968,38 @@ export function createCanonicalRuntimeProxy(
   };
 }
 
+/**
+ * Read-only Process Runtime observation tools. Their forwarding failures carry
+ * no side-effect ambiguity, so the Gateway can answer with a typed recoverable
+ * result instead of an opaque JSON-RPC -32603 (#341). process_cancel and all
+ * mutating tools keep the rethrow path: their failures must stay loud.
+ */
+const canonicalRuntimeProcessObservationToolNames = new Set(['process_get', 'process_wait', 'process_logs']);
+
+function processObservationTransportFailureResult(
+  toolName: string,
+  args: Record<string, unknown>,
+  error: unknown,
+): CallToolResult {
+  const record = error && typeof error === 'object' ? error as { code?: unknown; message?: unknown } : undefined;
+  const message = error instanceof Error ? error.message : String(error);
+  const cause = typeof record?.code === 'string' ? record.code
+    : /^([A-Z][A-Z0-9_]+)[:\s]/.exec(message)?.[1];
+  const processId = typeof args.process_id === 'string' ? args.process_id : undefined;
+  const value = {
+    error: {
+      code: 'PROCESS_OBSERVATION_TRANSPORT_FAILED',
+      message: `${toolName} could not observe the managed process: ${message}. The observation failed without touching execution: the process was not restarted, cancelled, or duplicated. Retry the same observation with the same process_id once transport recovers.`,
+      recoverable: true,
+      action: 'retry_observation',
+      tool: toolName,
+      ...(processId ? { processId } : {}),
+      ...(cause ? { cause } : {}),
+    },
+  };
+  return { content: [{ type: 'text', text: JSON.stringify(value) }], structuredContent: value, isError: true };
+}
+
 function canonicalRuntimeSchemaMatchesGateway(ctx: MultiRepositoryMcpToolContext): boolean {
   const runtimeFingerprint = observeRuntimeStatus(ctx.controllerHome).snapshot?.toolSurfaceFingerprint;
   // Older Runtime status records do not have a schema fence. Preserve a
@@ -1059,6 +1091,18 @@ export function createForgeMcpServerFromContext(
           // Keep trace correlation separate from Tool Contract idempotency. Only
           // a caller-supplied request_id may authorize semantic replay/dedup.
           const forwardedArgs = args;
+          if (runtimeProxy && canonicalRuntimeProcessObservationToolNames.has(name)
+            && (runtimeSchema || observeRuntimeStatus(ctx.controllerHome).ready)) {
+            // A read-only process observation (get/wait/logs) that cannot be
+            // forwarded is a typed recoverable observation failure, never a raw
+            // JSON-RPC internal error: the managed process identity is
+            // preserved and the failure must not restart or duplicate execution.
+            try {
+              return await runtimeProxy.callTool(ctx, name, forwardedArgs, phaseTimings);
+            } catch (error) {
+              return processObservationTransportFailureResult(name, forwardedArgs, error);
+            }
+          }
           if (runtimeProxy && runtimeSchema) return runtimeProxy.callTool(ctx, name, forwardedArgs, phaseTimings);
           if (runtimeProxy && observeRuntimeStatus(ctx.controllerHome).ready) return runtimeProxy.callTool(ctx, name, forwardedArgs, phaseTimings);
         }
