@@ -2,35 +2,22 @@
 
 CLAUDE.md is a routing card. Keep context minimal and load only what the current task needs.
 
-### Always Read First
-
-- `docs/spec.md`: stable product truth
-- `tasks/todos.md`: deferred-goal ledger (tradeoff + revisit trigger); the active checklist lives in the plan's `## Task Breakdown`
-- `.ai/harness/session/continuation.md`: resumable cross-session state
+### Read First
+- Controller Home Requirement, Plan, Work and receipts: durable execution and continuation authority.
+- docs/spec.md: human product context.
+- tasks/todos.md: deferred goals; tasks/lessons.md: human-readable lessons.
 
 ### Load On Demand
-
-| Trigger | Read This File |
-|---------|----------------|
-| Deep codebase investigation | `docs/researches/` |
-| Active implementation planning | `plans/plan-*.md` |
-| Sprint done definition | `tasks/contracts/<plan-stem>.contract.md` |
-| Evaluator verdict | `tasks/reviews/<plan-stem>.review.md` |
-| Implementation notes | `tasks/notes/<plan-stem>.notes.md` |
-| Latest verification evidence | `.ai/harness/checks/latest.json` |
-| Historical implementation context | Git history and durable Control Plane Plan/Work/Verification evidence |
-| Agentic skill routing | `docs/reference-configs/agentic-development-flow.md` |
-| Harness runtime model | `docs/reference-configs/harness-overview.md` |
-| Sprint contract rules | `docs/reference-configs/sprint-contracts.md` |
-| Evaluator scoring | `docs/reference-configs/evaluator-rubric.md` |
-| Handoff expectations | `docs/reference-configs/handoff-protocol.md` |
-| Product and architecture context | `docs/brief.md`, `docs/decisions.md`, `docs/tech-stack.md` |
-| Durable progress and release history | `tasks/workstreams/`, `docs/CHANGELOG.md` |
-
-### First Principles
-
-- Keep state minimal and derivable.
-- Keep interfaces explicit and verifiable.
+| Trigger | Reference |
+|---------|-----------|
+| Deep investigation | docs/researches/ |
+| Active plan and Work | Forge Controller Home Plan / Work |
+| Verification and review | Controller Home receipts, exact Git diff and existing checks |
+| Legacy task material | plans/, tasks/contracts/, tasks/reviews/, .ai/harness/ (migration/history only) |
+| Tool routing | docs/reference-configs/agentic-development-flow.md |
+| Runtime reference | docs/reference-configs/harness-overview.md (not live authority) |
+| Product architecture | docs/decisions.md, docs/tech-stack.md |
+| Human changelog | docs/CHANGELOG.md |
 
 ---
 

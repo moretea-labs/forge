@@ -1,32 +1,14 @@
 ### 7. Development Protocol
 
-> **Core Philosophy**: Code is toilet paper when contracts change; durable truth belongs in repo-local artifacts, not chat memory.
+> The model decides the workflow; Forge provides capabilities and Controller Home persists durable facts.
 
-#### The Layered Truth
+#### Sources of Truth
+- **Product**: docs/spec.md, docs/researches/ and architecture docs are human-authored context.
+- **Execution**: for forge.config.json projects, Controller Home SQLite exclusively owns Requirement, Plan, Work, status and verification receipts.
+- **Human notes**: tasks/todos.md and tasks/lessons.md do not override Controller Home.
+- **Implementation**: src/, tests/ and Git record source and evidence, not a second workflow lifecycle.
+- **Legacy**: plans/, tasks/contracts/, tasks/reviews/ and .ai/harness/ are migration/history inputs only.
 
-- **PRODUCT TRUTH**: `docs/spec.md`
-- **EXECUTION TRUTH**: `plans/`
-- **DONE TRUTH**: `tasks/contracts/`, `tasks/reviews/`, `tasks/notes/`, `.ai/harness/checks/latest.json`, `.ai/harness/runs/`
-- **MUTABLE LAYER**: `src/`
-
-#### Response Protocol (Concise)
-
-```yaml
-NEW_FEATURE_FLOW:
-  1. Define acceptance criteria
-  2. Define contract
-  3. Write failing tests
-  4. Implement and verify
-
-BUG_FIX_FLOW:
-  1. Reproduce with test
-  2. Fix root cause
-  3. Re-run full verification
-```
-
-Detailed playbooks:
-- `docs/reference-configs/harness-overview.md`
-- `docs/reference-configs/agentic-development-flow.md`
-- `docs/reference-configs/sprint-contracts.md`
+Inspect source, implement a coherent change, run appropriate existing checks, review and record the outcome. Do not impose mandatory repo-local plan/sprint gates.
 
 ---

@@ -154,13 +154,12 @@ const FALLBACK_TEMPLATE_VARIABLES: Record<string, string> = {
   PROJECT_STRUCTURE:
     "{{PROJECT_NAME}}/\n" +
     "├── docs/spec.md\n" +
-    "├── plans/\n" +
-    "├── tasks/contracts/\n" +
-    "├── tasks/reviews/\n" +
+    "├── docs/researches/\n" +
+    "├── tasks/todos.md\n" +
+    "├── tasks/lessons.md\n" +
+    "├── forge.config.json\n" +
     "├── tests/\n" +
     "├── src/\n" +
-    "├── tasks/\n" +
-    "├── .ai/harness/\n" +
     "├── deploy/\n" +
     "│   └── sql/ (ordered deployment SQL)\n" +
     "├── _ops/ (ignored local state)\n" +
