@@ -24,11 +24,6 @@ export {
 } from './routing-policy';
 export type { GatewayRouteBehaviorSnapshot } from './routing-policy';
 
-// Historical ExecutionJobs remain readable migration evidence only.
-function executionJobCreationRetired(): boolean {
-  return true;
-}
-
 function result(value: Record<string, unknown>, isError = false): CallToolResult {
   return {
     content: [{ type: 'text', text: JSON.stringify(value, null, 2) }],
@@ -183,7 +178,7 @@ export async function routeDurableMcpCall(
   // remote writes run through the durable Process Runtime, while destructive or
   // explicitly delegated commands are refused by the repository facade itself.
   // Do not intercept that tool with the retired ExecutionJob gate here.
-  if (classification.path === 'durable' && executionJobCreationRetired() && name !== 'execute_command') {
+  if (classification.path === 'durable' && name !== 'execute_command') {
     return result({
       accepted: false,
       mode: 'external_controller_required',
