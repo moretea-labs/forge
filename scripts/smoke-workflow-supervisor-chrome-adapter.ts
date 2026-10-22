@@ -13,7 +13,7 @@ import { WorkflowSupervisorEphemeralDiscovery } from '../supervisor/server';
 const home = mkdtempSync(join(tmpdir(), 'forge-supervisor-chrome-'));
 try {
   let mechanicalNowMs = Date.now();
-  const turnAdvanceMs = 1_000;
+  const turnAdvanceMs = 61_000;
   const control = new WorkflowSupervisorControlPlane(new WorkflowSupervisorStore(home, { now: () => mechanicalNowMs }), { completionContract: async () => ({ valid: true, reason: 'ok' }), userBlockerPolicy: async () => ({ valid: true, reason: 'ok' }) });
   const conversationId = 'WEB:11111111-2222-3333-4444-555555555555';
   const conversationUrl = `https://chatgpt.com/c/${conversationId}`;
