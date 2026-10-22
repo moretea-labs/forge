@@ -1,3 +1,4 @@
+import { buildGoalProgress } from '../../../src/runtime/control-plane/facade/requirement-board';
 import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
 import { admitRequirement, promoteRequirementCandidate } from '../../../src/runtime/control-plane/facade/requirement-authority';
@@ -37,6 +38,7 @@ export async function callRhWorkRequirementOperation(
       summary: `Requirement ${semantic.requirementId} retrieved at semantic revision ${semantic.revision}.`,
       data: {
         requirement: semantic,
+        progress: buildGoalProgress(ctx.controllerHome, { requirementId }, args.detail_level === 'detail' ? 'detail' : 'summary'),
       },
       detailLevel: args.detail_level === 'detail' ? 'detail' : 'summary',
     }) as unknown as Record<string, unknown>);

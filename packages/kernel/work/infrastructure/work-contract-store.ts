@@ -13,6 +13,7 @@ import {
   readControlPlaneRecord,
   readControlPlaneRecordWithinTransaction,
   withControlPlaneTransaction,
+  withControlPlaneReadDatabase,
   writeControlPlaneRecordWithinTransaction,
   type SqliteDatabase,
 } from '../../../../src/runtime/control-plane/persistence/sqlite-store';
@@ -634,6 +635,53 @@ export function readWorkContractLineageSnapshot(options: WorkContractStoreOption
     }
   }
   return { contracts, invalid };
+}
+
+/** Fresh goal membership across this Controller Home; no migration, cache or lifecycle writes. */
+export function readWorkGoalSnapshot(
+  controllerHome: string,
+  filter: { requirementId?: string; planId?: string },
+): WorkContractLineageSnapshot & { truncated: boolean } {
+  const requirementId = filter.requirementId?.trim() || null;
+  const planId = filter.planId?.trim() || null;
+  if (!requirementId && !planId) throw new Error('WORK_GOAL_ID_REQUIRED');
+  const rows = withControlPlaneReadDatabase(controllerHome, (database) => {
+    const statement = database.prepare(`
+      SELECT record_key, schema_version, payload
+      FROM control_plane_records current
+      WHERE namespace = 'work_contract'
+        AND (? IS NULL OR json_extract(payload, '$.requirementId') = ?)
+        AND (? IS NULL OR json_extract(payload, '$.planId') = ?)
+        AND (scope = ? OR NOT EXISTS (
+          SELECT 1 FROM control_plane_records semantic
+          WHERE semantic.namespace = 'work_contract' AND semantic.scope = ?
+            AND semantic.record_key = current.record_key
+        ))
+      ORDER BY updated_at DESC, scope, record_key
+      LIMIT 5001
+    `);
+    try {
+      return statement.all(requirementId, requirementId, planId, planId, SEMANTIC_SCOPE_KEY, SEMANTIC_SCOPE_KEY) as Array<{
+        record_key: string; schema_version: number; payload: string;
+      }>;
+    } finally { statement.finalize?.(); }
+  });
+  const contracts: WorkContract[] = [];
+  const invalid: WorkContractLineageSnapshot['invalid'] = [];
+  const identities = new Set<string>();
+  const duplicates = new Set<string>();
+  for (const row of rows) {
+    if (identities.has(row.record_key)) duplicates.add(row.record_key);
+    identities.add(row.record_key);
+  }
+  for (const row of rows.slice(0, 5000)) {
+    const raw = JSON.parse(row.payload) as WorkContract;
+    try {
+      if (duplicates.has(row.record_key)) throw new Error('WORK_GOAL_IDENTITY_AMBIGUOUS');
+      contracts.push(canonicalizeStoredWorkContract(raw, row.schema_version));
+    } catch (error) { invalid.push(lineageInvalidWork(raw, error, row.record_key)); }
+  }
+  return { contracts, invalid, truncated: rows.length > 5000 };
 }
 
 function lineageInvalidWork(
