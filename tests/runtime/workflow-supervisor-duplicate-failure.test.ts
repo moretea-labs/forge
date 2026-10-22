@@ -140,6 +140,9 @@ test('committed CONTINUE dispatches before slow browser cleanup without another 
     const page = { evaluate: async <T>() => false as T, tabRef: () => ({ windowId: 'priority-window', tabId: 'priority-tab' }) };
     let sends = 0;
     let cleanupSawSend = false;
+    let currentUser = enrollment.prompt;
+    let currentReply = receipt;
+    let generating = false;
     const targetPort = createTestChatgptTargetPort({
       listTabs: async () => ({ entries: [{ windowId: 'priority-window', tabId: 'priority-tab',
         url: conversationUrl, title: 'Continuation', active: true, browserProduct: 'chrome' }], unavailableProducts: [] }),
@@ -147,13 +150,16 @@ test('committed CONTINUE dispatches before slow browser cleanup without another 
       create: async () => { throw new Error('Do not create another conversation'); },
       close: async () => undefined,
       snapshot: async () => ({
-        url: conversationUrl, title: 'Continuation', latestUserText: enrollment.prompt,
-        latestAssistantResponse: receipt, latestTurnRole: 'assistant' as const,
-        composerText: '', isGenerating: false, providerActivityText: '', providerFailureText: '',
+        url: conversationUrl, title: 'Continuation', latestUserText: currentUser,
+        latestAssistantResponse: currentReply, latestTurnRole: generating ? 'user' as const : 'assistant' as const,
+        composerText: '', isGenerating: generating, providerActivityText: '', providerFailureText: '',
       }),
       dispatchPrompt: async (_page, prompt) => {
         expect(prompt).toContain(successorId!);
         sends++;
+        currentUser = prompt;
+        currentReply = '';
+        generating = true;
         return { dispatched: true, confirmed: true };
       },
     });
