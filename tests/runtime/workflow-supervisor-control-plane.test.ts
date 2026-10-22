@@ -2386,6 +2386,7 @@ test('Supervisor preparation rejection is durably release-fenced and never spend
     completionContract: {}, continuationPolicy: {}, userBlockerPolicy: {} });
   const effect = control.reserveEnrollment(taskId);
   let preparationReady = false;
+  let providerBusy = true;
   let preparations = 0;
   let sends = 0;
   const page: TestBrowserPage = {
@@ -2401,8 +2402,9 @@ test('Supervisor preparation rejection is durably release-fenced and never spend
     snapshot: async () => ({ url: conversationUrl, title: 'Pre-send boundary', latestUserText: '',
       latestAssistantResponse: '', composerText: '', isGenerating: false,
       providerActivityText: '', providerFailureText: '' }),
-    preparePrompt: async () => { preparations++; return preparationReady
-      ? { ready: true as const } : { ready: false as const, reasonCode: 'FORGE_PLUGIN_NOT_BOUND' }; },
+    preparePrompt: async () => { preparations++; return providerBusy
+      ? { ready: false as const, reasonCode: 'provider_busy' }
+      : preparationReady ? { ready: true as const } : { ready: false as const, reasonCode: 'FORGE_PLUGIN_NOT_BOUND' }; },
     dispatchPrompt: async () => { sends++; return { dispatched: true, confirmed: true }; },
   });
   const deps = { targetPort, nowMs: () => clock.nowMs, providerIdleGraceMs: 60_000,
@@ -2410,8 +2412,21 @@ test('Supervisor preparation rejection is durably release-fenced and never spend
     setInterval: () => 0 as unknown as ReturnType<typeof setInterval>, clearInterval: () => undefined,
     onError: () => undefined };
   const adapter = new WorkflowSupervisorNativeBrowserAdapter(control, new WorkflowSupervisorEphemeralDiscovery(), deps);
+  // Repeated provider activity, even across releases, must only defer locally:
+  // no Send, no durable failed preflight, and no exhausted operator repair.
+  for (const busyRelease of ['busy-release-one', 'busy-release-two', 'busy-release-three']) {
+    release.id = busyRelease;
+    await adapter.runOnce();
+    clock.nowMs += 30 * 60_000;
+  }
+  expect(preparations).toBe(3);
+  expect(store.nextBrowserEffect(taskId)).toMatchObject({ mode: 'send', effect: { effectId: effect.effectId } });
+  expect(control.taskStall(taskId)).toMatchObject({ state: 'deliverable', effectId: effect.effectId });
+  expect(store.effectDispatchBudget(effect.effectId).generations).toBe(0);
+  providerBusy = false;
+  release.id = 'release-one';
   for (let n = 0; n < 6; n++) { await adapter.runOnce(); clock.nowMs += 30 * 60_000; }
-  expect(preparations).toBe(1);
+  expect(preparations).toBe(4);
   expect(sends).toBe(0);
   expect(store.effectDispatchBudget(effect.effectId).generations).toBe(0);
   expect(control.taskStall(taskId)).toMatchObject({ state: 'spaced', reason: 'pre_send_infrastructure_blocked' });
@@ -2426,7 +2441,7 @@ test('Supervisor preparation rejection is durably release-fenced and never spend
   preparationReady = true;
   const repaired = new WorkflowSupervisorNativeBrowserAdapter(control, new WorkflowSupervisorEphemeralDiscovery(), deps);
   await repaired.runOnce();
-  expect(preparations).toBe(2);
+  expect(preparations).toBe(5); // three transient deferrals + blocked preparation + recovered preparation
   expect(sends).toBe(1);
   expect(store.latestEffectDispatch(effect.effectId)?.generation).toBe(1);
   expect(store.latestEffectDispatch(effect.effectId)?.evidence).toMatchObject({ surface: 'computer-chatgpt-target' });
