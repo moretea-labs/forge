@@ -837,6 +837,38 @@ export class WorkflowSupervisorStore {
       return { effect, deduplicated: false };
     });
   }
+  /** One explicit operator-selected ChatGPT Project for an unbound standalone
+   * bootstrap. This is task-local provenance, not a new Work/repository owner.
+   * Never change a Project after a provider Send might have occurred. */
+  bindBootstrapProject(input: { taskId: string; projectUrl: string; requestId: string; authorizedBy: string }): { projectUrl: string; deduplicated: boolean } {
+    if (!input.requestId.trim() || !input.authorizedBy.trim()) throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_BINDING_AUTHORITY_REQUIRED');
+    return this.transaction((db) => {
+      const row = statement(db, 'SELECT * FROM tasks WHERE task_id = ?', (s) => s.get(input.taskId)) as Record<string, unknown> | undefined;
+      if (!row) throw new Error('WORKFLOW_SUPERVISOR_TASK_UNKNOWN');
+      const task = taskFromRow(row);
+      if (task.continuationPolicy.kind !== 'standalone_supervisor'
+        || task.conversationId !== `bootstrap:${task.taskId}`) throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_BINDING_NOT_PENDING');
+      if (statement(db, "SELECT 1 FROM events WHERE task_id=? AND kind IN ('terminal_done','terminal_needs_user','terminal_stopped') LIMIT 1", (s) => s.get(input.taskId))) throw new Error('WORKFLOW_SUPERVISOR_TASK_TERMINAL');
+      const prior = statement(db, "SELECT payload_json FROM events WHERE task_id=? AND kind='bootstrap_project_bound' ORDER BY event_id LIMIT 1", (s) => s.get(input.taskId)) as { payload_json?: string } | undefined;
+      if (prior) {
+        if (parsedObject(prior.payload_json).project_url !== input.projectUrl) throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_BINDING_CONFLICT');
+        return { projectUrl: input.projectUrl, deduplicated: true };
+      }
+      const pending = oldestUnappliedEffect(db, input.taskId);
+      if (!pending || effectDispatchLedger(db, pending.effectId).generations !== 0
+        || appliedEffectAwaitingCompletionWithin(db, input.taskId)) throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_BINDING_OUTCOME_UNRESOLVED');
+      statement(db, 'INSERT INTO events(task_id,event_key,kind,payload_json,occurred_at) VALUES (?,?,?,?,?)', (s) => s.run(
+        input.taskId, `bootstrap-project-bound:${input.taskId}`, 'bootstrap_project_bound',
+        json({ project_url: input.projectUrl, request_id: input.requestId, authorized_by: input.authorizedBy }), now()));
+      return { projectUrl: input.projectUrl, deduplicated: false };
+    });
+  }
+  boundBootstrapProjectUrl(taskId: string): string | undefined {
+    return this.read((db) => {
+      const row = statement(db, "SELECT payload_json FROM events WHERE task_id=? AND kind='bootstrap_project_bound' ORDER BY event_id LIMIT 1", (s) => s.get(taskId)) as { payload_json?: string } | undefined;
+      return boundedText(parsedObject(row?.payload_json).project_url);
+    });
+  }
   bindBootstrapConversation(taskId: string, conversationId: string, conversationUrl: string): WorkflowSupervisorTask {
     return this.transaction((db) => {
       const row = statement(db, 'SELECT * FROM tasks WHERE task_id = ?', (s) => s.get(taskId)) as Record<string, unknown> | undefined;
