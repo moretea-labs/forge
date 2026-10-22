@@ -63,7 +63,6 @@ const REPOSITORY_LOCKED_TOOLS = new Set([
   'verify_edit_session',
   'submit_local_bridge_job',
   'execute_local_bridge_job',
-  'configure_github_plugin',
 ]);
 
 
@@ -95,7 +94,7 @@ function parseAgentList(value: unknown): McpAgentRunnerName[] {
   const raw = Array.isArray(value) ? value : typeof value === 'string' ? value.split(',') : [];
   return Array.from(new Set(raw
     .map((entry) => String(entry).trim().toLowerCase())
-    .filter((entry): entry is McpAgentRunnerName => entry === 'codex' || entry === 'claude')));
+    .filter((entry): entry is McpAgentRunnerName => entry === 'claude')));
 }
 
 export function runtimePolicy(repoRoot: string, opts: McpServerOptions) {
@@ -291,7 +290,7 @@ export function repositoryScopedToolArgs(
 
   const github = repository.github;
   const githubRepo = github ? `${github.owner}/${github.repo}` : undefined;
-  if (githubRepo && ['github_status', 'publish_issue_to_github'].includes(name) && args.repo === undefined) {
+  if (githubRepo && name === 'publish_issue_to_github' && args.repo === undefined) {
     args.repo = githubRepo;
   }
   if (githubRepo && ['dispatch_task', 'launch_issue', 'dispatch_ready_tasks'].includes(name) && args.github_repo === undefined) {

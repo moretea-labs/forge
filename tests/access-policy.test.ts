@@ -96,7 +96,8 @@ describe('access decision matrix', () => {
   test('descriptors explain the remaining hard boundaries', () => {
     const full = accessModeDescriptor('full_access');
     expect(full.shortLabel).toBe('Host managed');
-    expect(full.stillRequiresApproval.join(' ')).toContain('Outside-repository');
+    expect(full.automaticallyAllowed.join(' ')).toContain('Ordinary host commands');
+    expect(full.stillRequiresApproval.join(' ')).toContain('Protected credential use');
     expect(full.alwaysDenied.join(' ')).toContain('secrets');
   });
 });

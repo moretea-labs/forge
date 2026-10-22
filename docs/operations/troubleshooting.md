@@ -66,7 +66,7 @@ A `502`, reconnect, or truncated response does not prove a durable write failed.
 
 ## Codex or Claude controller entry is unavailable
 
-Forge has no internal agent that must be repaired. If Codex/Claude was not selected, ignore its absence. If it was explicitly selected as a controller entry, install/authenticate that client and run `forge mcp setup codex --scope user --profile controller` or `forge mcp setup claude --scope user --profile controller`, then continue with `forge setup next`.
+Forge has no internal agent that must be repaired. If Codex/Claude was not selected, ignore its absence. If Claude was explicitly selected as a controller entry, install/authenticate that client and run `forge mcp setup claude --scope user --profile controller`, then continue with `forge setup next`.
 
 ## Repository paths behave differently between Windows and WSL2
 

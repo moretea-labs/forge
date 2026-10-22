@@ -64,7 +64,7 @@ forge repo list --json
 
 ## Codex 或 Claude 控制入口不可用
 
-Forge 没有一个必须修复的内部 Agent。没有选择 Codex/Claude 时直接忽略它们；明确选择为主控后，才安装/登录对应客户端，并执行 `forge mcp setup codex --scope user --profile controller` 或 `forge mcp setup claude --scope user --profile controller`，随后继续 `forge setup next`。
+Forge 没有一个必须修复的内部 Agent。没有选择 Codex/Claude 时直接忽略它们；明确选择 Claude 为主控后，才安装/登录对应客户端，并执行 `forge mcp setup claude --scope user --profile controller`，随后继续 `forge setup next`。
 
 ## Windows 与 WSL2 路径行为不一致
 

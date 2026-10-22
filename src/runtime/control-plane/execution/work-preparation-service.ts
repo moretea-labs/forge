@@ -810,7 +810,10 @@ export function prepareWork(ctx: McpExecutionContext, args: Record<string, unkno
       return relocateExistingWorkToManagedCheckout(ctx, args, session, repository, existing);
     }
     if (requestedIsolation !== undefined) {
-      const requestedWorkspaceMode = requestedIsolation === 'reuse' ? 'current' : 'isolated';
+      // Fixed placement contract: only `new_worktree` requests an isolated
+      // managed checkout. `reuse` and `auto` both share the selected current
+      // checkout, so an existing placement conflicts only across that boundary.
+      const requestedWorkspaceMode = requestedIsolation === 'new_worktree' ? 'isolated' : 'current';
       const existingWorkspaceMode = existing.managedWorktree ? 'isolated' : 'current';
       if (requestedWorkspaceMode !== existingWorkspaceMode) {
         throw new Error(`WORK_PREPARE_PLACEMENT_CONFLICT: ${existingId}; existing=${existingWorkspaceMode}; requested=${requestedWorkspaceMode}`);
@@ -843,10 +846,19 @@ export function prepareWork(ctx: McpExecutionContext, args: Record<string, unkno
   const baseStatus = repositoryGitStatus(repository);
   const deliveryTargetBranch = baseStatus.branch;
   if (!deliveryTargetBranch) throw new Error(`WORK_DELIVERY_TARGET_DETACHED: source checkout ${baseCheckoutId} has no branch`);
-  if (isolation === 'reuse' && !baseStatus.clean) throw new Error('WORKTREE_DIRTY: reuse was requested but the selected checkout is dirty; choose new_worktree or auto');
-  // A repository Work freezes its start revision on its own checkout. Sharing the
-  // canonical checkout is an explicit model choice (`reuse`), never the auto path.
-  const useWorktree = isolation !== 'reuse';
+  // Fixed placement contract: `auto` (the default) and `reuse` share the
+  // selected current checkout; only an explicit `new_worktree` freezes a fresh
+  // isolated base. A dirty current checkout is normal development state, not a
+  // placement gate: record the exact pre-Work dirty baseline on the handle so
+  // delivery/cleanup can attribute bytes later instead of failing closed.
+  const useWorktree = isolation === 'new_worktree';
+  let baselineDirtyPaths: string[] | undefined;
+  let baselineDirtyPathCount: number | undefined;
+  if (!useWorktree && !baseStatus.clean) {
+    const dirty = [...currentDirtyPaths(repository.canonicalRoot)].sort();
+    baselineDirtyPathCount = dirty.length;
+    baselineDirtyPaths = dirty.slice(0, 2_000);
+  }
   const policy = readRepositoryAccessPolicy(ctx.controllerHome, repository.repoId);
   const fingerprint = workPrepareFingerprint({
     repoId: repository.repoId,
@@ -984,6 +996,7 @@ export function prepareWork(ctx: McpExecutionContext, args: Record<string, unkno
         repositoryId: repository.repoId, checkoutId: checkout.activeCheckoutId, worktreePath: checkout.canonicalRoot, branch,
         sourceCheckoutId: baseCheckoutId, deliveryTargetBranch, managedWorktree: workspace.managed, workContractId: contract.workId, goalId, delegationVersion: delegation.version,
         baseCommit: workspace.baseRevision ?? head, deliveryBaseCommit: workspace.baseRevision ?? head, expectedHead: head, permissionSnapshotVersion: policy.revision,
+        ...(baselineDirtyPaths ? { baselineDirtyPaths, baselineDirtyPathCount } : {}),
         state: 'prepared', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), finalization: initialStage(),
         cleanupResponsibility: { owner: 'work_finalizer', registeredAt: new Date().toISOString() },
       };

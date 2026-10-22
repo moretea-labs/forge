@@ -2,7 +2,7 @@ import type { CallToolResult, McpToolDefinition } from '../../../packages/protoc
 export type { CallToolResult, McpToolDefinition } from '../../../packages/protocols/mcp/tool-contract';
 import { createHash } from "crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync, appendFileSync } from "fs";
-import { basename, dirname, join } from "path";
+import { dirname, join } from "path";
 import { beginEditSession, applyEditOperations, createEditSavepoint, EditSessionPatchError, finalizeEditSession, getEditSession, getEditSessionDiff, listEditSessions, PREFERRED_EDIT_PATCH_BATCH_OPERATIONS, rollbackEditSession } from "../../../src/cli/editing/edit-session";
 import { EDIT_OPERATION_INPUT_SCHEMA, normalizeEditOperations } from "../../../src/cli/editing/edit-operation-contract";
 import { withRepositoryMutationExclusion } from '../../../src/runtime/resources/leases/store';
@@ -15,15 +15,11 @@ import { exportControllerWorklog, listControllerWorklogEvents, parseWorklogCateg
 import { FORGE_MCP_SCHEMA_VERSION, FORGE_TOOL_SURFACE, FORGE_VERSION, forgeToolSurfaceFingerprint, formatDurationMs, normalizeAgentTimeoutMs } from "../../../src/cli/controller/runtime-config";
 import { PREFERRED_FACADE_TOOL_NAMES } from "../toolset-names";
 import { buildLocalConnectorStatusForRepo } from "../../../src/cli/local-bridge/connector-freshness";
-import { gitDiff, gitSnapshot, searchRepository } from "../../../src/cli/repository/inspector";
-import { getGitHubStatus } from "../../../src/cli/github/github";
-import { getGitHubPluginStatus, saveGitHubPluginConfig } from "../../../src/cli/github/plugin";
-import { getLocalBridgeJobEvents, getLocalBridgeJobSnapshot, listLocalBridgeJobs, readLocalBridgeJobOutput, reconcileLocalBridgeJobs } from "../../../src/cli/local-bridge/job-store";
-import { runHelper } from "../../../src/cli/runtime/helper-runner";
+import { gitSnapshot } from "../../../src/cli/repository/inspector";
+import { listLocalBridgeJobs } from "../../../src/cli/local-bridge/job-store";
 import { listSessions, openSession, readSession, runBrowserConsult, runBrowserFollowup } from "../../../src/cli/chatgpt-browser/engine";
 import type { BrowserProviderName, NativeBrowserChannel, ThinkingLevel } from "../../../src/cli/chatgpt-browser/types";
 import { hashMcpInput, tryWriteMcpAuditEntry } from "../audit";
-import { resolveLocalBridgeSurface, summarizeRecentJobs } from "../../../src/runtime/shared/local-bridge-surface";
 import { resolveRepoPreferredControllerHome } from "../../../src/effects/controller-home";
 import { resolveRepositoryCheckStorage } from '../../../src/runtime/execution/process-runtime/check-storage';
 import { resolveRepositorySelection } from '../../../src/cli/repositories/registry';
@@ -381,18 +377,6 @@ function writeMarkdownArtifact(
   });
 }
 
-function validateGoal(body: string): string[] {
-  return [
-    "# Codex Goal",
-    "## Source of truth",
-    "## Role",
-    "## Scope",
-    "## Required workflow",
-    "## Required checks",
-    "## Done when",
-  ].filter((section) => !body.includes(section));
-}
-
 function stringList(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value
@@ -547,81 +531,6 @@ function renderChecklistSprintBody(args: Record<string, unknown>): string {
   );
 }
 
-function renderCodexGoalFromSprint(args: Record<string, unknown>): {
-  body: string;
-  prompt: string;
-} {
-  const prdPath = String(args.prd_path ?? "").trim();
-  const sprintPath = String(args.sprint_path ?? "").trim();
-  const goalPrdPath = String(args.goal_prd_path ?? prdPath).trim() || prdPath;
-  const goalSprintPath =
-    String(args.goal_sprint_path ?? sprintPath).trim() || sprintPath;
-  const referenceRepo = String(args.reference_repo ?? "").trim();
-  const extraInstructions = String(args.extra_instructions ?? "").trim();
-  const prompt = [
-    "/goal",
-    `Read: ${goalPrdPath}`,
-    `Open or use a worktree and complete: ${goalSprintPath}`,
-    "After each completed phase, stage the result before continuing.",
-    "Use the user's language for status reports unless repo-local instructions require otherwise.",
-    referenceRepo ? `Reference repo: ${referenceRepo}` : "",
-  ]
-    .filter(Boolean)
-    .join("\n");
-  const body = [
-    "# Codex Goal",
-    "",
-    "## Source of truth",
-    "",
-    `- PRD: \`${goalPrdPath}\``,
-    `- Checklist Sprint: \`${goalSprintPath}\``,
-    ...(referenceRepo
-      ? [`- Reference repo: \`${referenceRepo}\` (read-only comparison source)`]
-      : []),
-    "",
-    "## Role",
-    "",
-    "Codex is the executor. ChatGPT/forge may prepare planning artifacts, but implementation ownership stays in the local Codex session.",
-    "",
-    "## Scope",
-    "",
-    "- Open or use an isolated worktree for the sprint implementation.",
-    "- Execute the checklist Sprint task cards in order.",
-    "- Update the Sprint checklist as phases complete.",
-    "- Stage each completed phase before continuing to the next phase.",
-    "- Do not modify the reference repo or ignored secrets/ops state.",
-    "",
-    "## Required workflow",
-    "",
-    "1. Read the PRD and Sprint paths above before editing.",
-    "2. Build the P1/P2/P3 map required by repo-local AGENTS.md for non-trivial changes.",
-    "3. Execute one checklist task card at a time.",
-    "4. After each phase, run the relevant focused checks, update the checklist, and stage the completed slice.",
-    "5. Continue until the Sprint checklist is complete or a real blocker is reached.",
-    "6. Leave a concise handoff with staged state and verification evidence.",
-    ...(extraInstructions ? ["", extraInstructions] : []),
-    "",
-    "## Required checks",
-    "",
-    "- Run the checks named by the Sprint task card.",
-    "- At sprint closeout, run repo-required checks unless the Sprint narrows the verification surface with a stated reason.",
-    "",
-    "## Done when",
-    "",
-    "- The checklist Sprint is complete.",
-    "- Every completed phase is staged.",
-    "- Checks pass or failures are documented with exact blocker evidence.",
-    "- No commit is created unless the user explicitly asks for commit.",
-    "",
-    "## Host-native /goal prompt",
-    "",
-    "```text",
-    prompt,
-    "```",
-  ].join("\n");
-  return { body, prompt };
-}
-
 function parseThinking(value: unknown): ThinkingLevel | undefined {
   if (value === undefined || value === null || value === "") return undefined;
   if (
@@ -722,20 +631,6 @@ export function buildMcpToolDefinitions(
       overwrite: { type: "boolean" },
     },
     required: ["title", "slug", "prd_path", "tasks"],
-    additionalProperties: false,
-  };
-  const goalFromSprintSchema = {
-    type: "object",
-    properties: {
-      prd_path: { type: "string" },
-      sprint_path: { type: "string" },
-      goal_prd_path: { type: "string" },
-      goal_sprint_path: { type: "string" },
-      reference_repo: { type: "string" },
-      extra_instructions: { type: "string" },
-      overwrite: { type: "boolean" },
-    },
-    required: ["prd_path", "sprint_path"],
     additionalProperties: false,
   };
   const browserRunSchema = {
@@ -855,28 +750,6 @@ export function buildMcpToolDefinitions(
       name: "write_plan",
       description: "Write an implementation plan under plans/plan-*.md.",
       inputSchema: markdownWriterSchema,
-      annotations: write,
-    },
-    {
-      name: "prepare_codex_goal_from_sprint",
-      description:
-        "Prepare .ai/harness/controller/packets/codex-goal.md and a host-native /goal prompt from PRD + checklist Sprint.",
-      inputSchema: goalFromSprintSchema,
-      annotations: write,
-    },
-    {
-      name: "write_codex_goal",
-      description:
-        "Write .ai/harness/controller/packets/codex-goal.md after required section validation.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          body: { type: "string" },
-          overwrite: { type: "boolean" },
-        },
-        required: ["body"],
-        additionalProperties: false,
-      },
       annotations: write,
     },
     {
@@ -1001,39 +874,6 @@ export function buildMcpToolDefinitions(
         annotations: readOnly,
       },
       {
-        name: "search_repository",
-        description:
-          "Search policy-readable source and documentation files without loading the full repository.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            query: { type: "string" },
-            include_globs: { type: "array", items: { type: "string" } },
-            exclude_globs: { type: "array", items: { type: "string" } },
-            max_results: { type: "number" },
-            max_files: { type: "number" },
-            case_sensitive: { type: "boolean" },
-          },
-          required: ["query"],
-          additionalProperties: false,
-        },
-        annotations: readOnly,
-      },
-      {
-        name: "get_git_diff",
-        description:
-          "Return the current unstaged Git diff, optionally limited to one repo-relative path.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            path: { type: "string" },
-            max_bytes: { type: "number" },
-          },
-          additionalProperties: false,
-        },
-        annotations: readOnly,
-      },
-      {
         name: "list_checks",
         description:
           "List focused repository checks from safe package scripts and .forge/checks.json.",
@@ -1077,44 +917,6 @@ export function buildMcpToolDefinitions(
           additionalProperties: false,
         },
         annotations: write,
-      },
-      {
-        name: "get_github_plugin_status",
-        description:
-          "Return optional GitHub Issue/Project plugin configuration, readiness, and supported capabilities.",
-        inputSchema: EMPTY_SCHEMA,
-        annotations: readOnly,
-      },
-      {
-        name: "configure_github_plugin",
-        description:
-          "Enable or configure the optional GitHub Issue/Project synchronization plugin. Local controller files remain authoritative.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            enabled: { type: "boolean" },
-            repository: { type: "string" },
-            clear_repository: { type: "boolean" },
-            sync_mode: { type: "string", enum: ["manual", "checkpoint"] },
-            include_tasks: { type: "boolean" },
-            project_owner: { type: "string" },
-            project_number: { type: "number" },
-            clear_project: { type: "boolean" },
-          },
-          additionalProperties: false,
-        },
-        annotations: write,
-      },
-      {
-        name: "github_status",
-        description:
-          "Check GitHub CLI authentication, repository mapping, Projects readiness, and cloud-agent session support.",
-        inputSchema: {
-          type: "object",
-          properties: { repo: { type: "string" } },
-          additionalProperties: false,
-        },
-        annotations: readOnly,
       },
       {
         name: "begin_edit_session",
@@ -1263,14 +1065,6 @@ export function buildMcpToolDefinitions(
     );
   }
 
-  if (policy.execution.fixedWorkflowCheck) {
-    tools.push({
-      name: "run_workflow_check",
-      description: "Run the fixed forge strict workflow check.",
-      inputSchema: EMPTY_SCHEMA,
-      annotations: write,
-    });
-  }
   if (opts.enableChatgptBrowser === true) {
     tools.push(
       {
@@ -1566,153 +1360,6 @@ export async function callMcpTool(
         audit(ctx, name, "ok", args);
         return textResult(payload);
       }
-      case "local_bridge_status": {
-        if (ctx.policy.profile !== "controller")
-          return errorResult(
-            "TOOL_DISABLED",
-            "local_bridge_status requires the controller profile",
-          );
-        const detailLevel = args.detail_level === "detail" || args.detail === true
-          ? "detail"
-          : "summary";
-        const controllerHome = resolveRepoPreferredControllerHome(ctx.repoRoot);
-        const surface = resolveLocalBridgeSurface({
-          controllerHome,
-          repoRoot: ctx.repoRoot,
-          allowProcessScan: detailLevel === "detail",
-        });
-        const jobs = listLocalBridgeJobs(ctx.repoRoot, detailLevel === "detail" ? 12 : 20);
-        const { activeJobCount, recentJobSummary } = summarizeRecentJobs(jobs);
-        // Prefer authoritative surface; never invent a legacy 8766 endpoint.
-        const endpoint = surface.endpoint ?? null;
-        const running = surface.enabled
-          && (surface.processRunning === true
-            || (surface.endpointConfigured && surface.mode === "embedded"));
-        if (detailLevel === "summary") {
-          const payload = {
-            detailLevel: "summary",
-            repoId: ctx.repoId,
-            running,
-            ready: surface.enabled ? (surface.processRunning !== false) : true,
-            health: surface.enabled
-              ? (surface.processRunning === true || surface.mode === "embedded" ? "ready" : "warning")
-              : "disabled",
-            mode: surface.mode,
-            endpoint,
-            endpointConfigured: surface.endpointConfigured,
-            endpointReachable: null as boolean | null,
-            processRunning: surface.processRunning ?? null,
-            expectedSurface: surface.expectedSurface,
-            requiredForReadiness: surface.requiredForReadiness,
-            warnings: surface.error && surface.requiredForReadiness
-              ? [{ code: "LOCAL_BRIDGE_ERROR", message: surface.error.slice(0, 300) }]
-              : [],
-            activeJobCount,
-            recentJobSummary,
-            statusSource: surface.source,
-            nonBlocking: !surface.requiredForReadiness,
-            approvalQueue: false,
-          };
-          audit(ctx, name, "ok", args);
-          return textResult(payload);
-        }
-        const reconciliation = reconcileLocalBridgeJobs(ctx.repoRoot);
-        const payload = {
-          detailLevel: "detail",
-          endpoint,
-          endpointConfigured: surface.endpointConfigured,
-          running,
-          error: surface.error,
-          mode: surface.mode,
-          requiredForReadiness: surface.requiredForReadiness,
-          statusSource: surface.source,
-          counts: recentJobSummary,
-          activeJobCount,
-          recentJobSummary,
-          approvalQueue: false,
-          reconciliation,
-          recentJobs: jobs.map((job) => ({
-            jobId: job.jobId,
-            action: job.action,
-            status: job.status,
-            checkId: job.action === "run-check" ? (job.payload as { checkId?: string }).checkId : undefined,
-            runId: job.runId,
-            issueId: job.issueId,
-            taskId: job.taskId,
-            createdAt: job.createdAt,
-            updatedAt: job.updatedAt,
-            finishedAt: job.finishedAt,
-            revision: job.revision,
-            deadlineAt: job.deadlineAt,
-            error: job.error?.slice(0, 300),
-          })),
-          nonBlocking: !surface.requiredForReadiness,
-          fallback:
-            "Open the localhost Local Controller to launch work or inspect execution when a ChatGPT write action is unavailable.",
-        };
-        audit(ctx, name, "ok", args);
-        return textResult(payload);
-      }
-      case "controller_context": {
-        if (ctx.policy.profile !== "controller")
-          return errorResult(
-            "TOOL_DISABLED",
-            "controller_context requires the controller profile",
-          );
-        const controllerHome = resolveRepoPreferredControllerHome(ctx.repoRoot);
-        const requirementBoard = buildRequirementBoard({ controllerHome, repoId: ctx.repoId });
-        const executionDiagnostics = buildExecutionDiagnostics({
-          controllerHome,
-          repoId: ctx.repoId,
-          detailLevel: "detail",
-        });
-        const runs = listAgentJobs(ctx.repoRoot, 8);
-        const reconciliation = reconcileLocalBridgeJobs(ctx.repoRoot);
-        const jobs = listLocalBridgeJobs(ctx.repoRoot, 8);
-        const checks = listControllerChecks(ctx.repoRoot).map((check) => ({
-          id: check.id,
-          description: check.description,
-          timeoutMs: check.timeoutMs,
-          source: check.source,
-        }));
-        const payload = {
-          git: gitSnapshot(ctx.repoRoot),
-          requirementBoard,
-          executionDiagnostics,
-          legacyCompatibility: {
-            currentIssue: "deprecated_frozen",
-            issueTaskBoard: "deprecated_frozen",
-            authority: "controller-home-sqlite",
-          },
-          activeRuns: runs.map((run) => ({
-            runId: run.runId,
-            issueId: run.issueId,
-            taskId: run.taskId,
-            status: run.status,
-            agent: run.agent,
-            provider: run.provider,
-            executionMode: run.executionMode,
-            progress: run.progress,
-            lastHeartbeatAt: run.lastHeartbeatAt,
-            error: run.error?.slice(0, 300),
-          })),
-          localBridge: {
-            reconciliation,
-            recentJobs: jobs.map((job) => ({
-              jobId: job.jobId,
-              action: job.action,
-              status: job.status,
-              checkId: job.action === "run-check" ? (job.payload as { checkId?: string }).checkId : undefined,
-              issueId: job.issueId,
-              taskId: job.taskId,
-              updatedAt: job.updatedAt,
-            })),
-          },
-          checks,
-        };
-        audit(ctx, name, "ok", args);
-        return textResult(payload);
-      }
       case "list_local_jobs": {
         if (ctx.policy.profile !== "controller")
           return errorResult(
@@ -1723,46 +1370,6 @@ export async function callMcpTool(
         const jobs = listLocalBridgeJobs(ctx.repoRoot, limit);
         audit(ctx, name, "ok", args);
         return textResult({ jobs });
-      }
-      case "get_local_job": {
-        if (ctx.policy.profile !== "controller")
-          return errorResult(
-            "TOOL_DISABLED",
-            "get_local_job requires the controller profile",
-          );
-        const jobId = String(args.job_id ?? "").trim();
-        const includeEvents = args.include_events === true;
-        const includeOutput = args.include_output === true;
-        const snapshot = getLocalBridgeJobSnapshot(ctx.repoRoot, jobId);
-        const payload = {
-          job: snapshot.job,
-          ...(snapshot.status !== "ok" ? { lookup: snapshot } : {}),
-          ...(includeEvents && snapshot.status === "ok" ? { events: getLocalBridgeJobEvents(ctx.repoRoot, jobId) } : {}),
-          ...(includeOutput
-            ? {
-                output: readLocalBridgeJobOutput(ctx.repoRoot, jobId, {
-                  stream: args.stream === "stderr" ? "stderr" : "stdout",
-                  maxBytes: typeof args.max_bytes === "number" ? args.max_bytes : undefined,
-                }),
-              }
-            : {}),
-        };
-        audit(ctx, name, "ok", args);
-        return textResult(payload);
-      }
-      case "get_local_job_output": {
-        if (ctx.policy.profile !== "controller")
-          return errorResult(
-            "TOOL_DISABLED",
-            "get_local_job_output requires the controller profile",
-          );
-        const jobId = String(args.job_id ?? "").trim();
-        const payload = readLocalBridgeJobOutput(ctx.repoRoot, jobId, {
-          stream: args.stream === "stderr" ? "stderr" : "stdout",
-          maxBytes: typeof args.max_bytes === "number" ? args.max_bytes : undefined,
-        });
-        audit(ctx, name, "ok", args);
-        return textResult(payload);
       }
       case "project_snapshot": {
         if (ctx.policy.profile !== "controller") return errorResult("TOOL_DISABLED", "project_snapshot requires the controller profile");
@@ -1824,70 +1431,6 @@ export async function callMcpTool(
         audit(ctx, name, "ok", args);
         return textResult(payload);
       }
-      case "search_repository": {
-        if (ctx.policy.profile !== "controller")
-          return errorResult(
-            "TOOL_DISABLED",
-            "search_repository requires the controller profile",
-          );
-        const session = ctx.sessionId && ctx.repoId
-          ? {
-            sessionId: ctx.sessionId,
-            repoId: ctx.repoId,
-            checkoutId: ctx.checkoutId ?? ctx.repoId,
-          }
-          : undefined;
-        const result = searchRepository(ctx.repoRoot, ctx.policy, {
-          query: String(args.query ?? ""),
-          includeGlobs: stringList(args.include_globs),
-          excludeGlobs: stringList(args.exclude_globs),
-          maxResults:
-            typeof args.max_results === "number" ? args.max_results : undefined,
-          maxFiles:
-            typeof args.max_files === "number" ? args.max_files : undefined,
-          caseSensitive: args.case_sensitive === true,
-          session,
-        });
-        audit(ctx, name, "ok", args);
-        return textResult(result);
-      }
-      case "get_git_diff": {
-        if (ctx.policy.profile !== "controller")
-          return errorResult(
-            "TOOL_DISABLED",
-            "get_git_diff requires the controller profile",
-          );
-        const path =
-          typeof args.path === "string" && args.path.trim()
-            ? args.path.trim()
-            : undefined;
-        if (path) {
-          const decision = resolveMcpPath(
-            ctx.repoRoot,
-            path,
-            ctx.policy,
-            "read",
-          );
-          if (!decision.ok)
-            return errorResult(
-              "POLICY_DENIED",
-              decision.reason ?? "path denied",
-              { path },
-            );
-        }
-        const maxBytes =
-          typeof args.max_bytes === "number"
-            ? Math.min(Math.max(Math.trunc(args.max_bytes), 1024), 512 * 1024)
-            : 128 * 1024;
-        const result = gitDiff(ctx.repoRoot, path, maxBytes);
-        const redacted = redactMcpText(result.diff);
-        audit(ctx, name, "ok", args, path);
-        return textResult({
-          ...result,
-          diff: redacted.text,
-          redactions: redacted.redactions,
-        });
-      }
       case "list_checks": {
         if (ctx.policy.profile !== "controller")
           return errorResult(
@@ -1929,47 +1472,6 @@ export async function callMcpTool(
         });
         audit(ctx, name, "ok", args, result.path);
         return textResult(result);
-      }
-      case "get_github_plugin_status": {
-        if (ctx.policy.profile !== "controller")
-          return errorResult("TOOL_DISABLED", "get_github_plugin_status requires the controller profile");
-        const status = getGitHubPluginStatus(ctx.repoRoot);
-        audit(ctx, name, "ok", args, status.repository);
-        return textResult(status);
-      }
-      case "configure_github_plugin": {
-        if (ctx.policy.profile !== "controller")
-          return errorResult("TOOL_DISABLED", "configure_github_plugin requires the controller profile");
-        const config = saveGitHubPluginConfig(ctx.repoRoot, {
-          enabled: typeof args.enabled === "boolean" ? args.enabled : undefined,
-          repository: args.clear_repository === true ? "" : typeof args.repository === "string" ? args.repository : undefined,
-          syncMode: args.sync_mode === "checkpoint" ? "checkpoint" : args.sync_mode === "manual" ? "manual" : undefined,
-          includeTasks: typeof args.include_tasks === "boolean" ? args.include_tasks : undefined,
-          projectOwner: args.clear_project === true ? "" : typeof args.project_owner === "string" ? args.project_owner : undefined,
-          projectNumber: args.clear_project === true ? null : typeof args.project_number === "number" ? args.project_number : undefined,
-        });
-        audit(ctx, name, "ok", args, "repository-registry:github");
-        return textResult(config);
-      }
-      case "github_status": {
-        if (ctx.policy.profile !== "controller")
-          return errorResult(
-            "TOOL_DISABLED",
-            "github_status requires the controller profile",
-          );
-        const status = getGitHubStatus(
-          ctx.repoRoot,
-          typeof args.repo === "string" ? args.repo : undefined,
-        );
-        audit(
-          ctx,
-          name,
-          status.available && status.authenticated ? "ok" : "failed",
-          args,
-          status.repository?.nameWithOwner,
-          status.errors.join("; "),
-        );
-        return textResult(status);
       }
       case "begin_edit_session": {
         if (ctx.policy.profile !== "controller")
@@ -2416,100 +1918,6 @@ export async function callMcpTool(
           args,
         );
       }
-      case "prepare_codex_goal_from_sprint": {
-        const prdPath = String(args.prd_path ?? "").trim();
-        const sprintPath = String(args.sprint_path ?? "").trim();
-        const missingInputs = [
-          { label: "PRD", path: prdPath },
-          { label: "Sprint", path: sprintPath },
-        ].filter((entry) => {
-          const decision = resolveMcpPath(
-            ctx.repoRoot,
-            entry.path,
-            ctx.policy,
-            "read",
-          );
-          return (
-            !decision.ok ||
-            !decision.absolutePath ||
-            !existsSync(decision.absolutePath)
-          );
-        });
-        if (missingInputs.length > 0) {
-          audit(
-            ctx,
-            name,
-            "blocked",
-            args,
-            missingInputs[0]?.path,
-            `${missingInputs.map((entry) => entry.label).join(", ")} path does not exist or is not readable`,
-          );
-          return errorResult(
-            "SOURCE_NOT_READABLE",
-            "PRD or Sprint path does not exist or is not policy-readable.",
-            { missing: missingInputs },
-          );
-        }
-        const goal = renderCodexGoalFromSprint(args);
-        const missing = validateGoal(goal.body);
-        if (missing.length > 0) {
-          audit(
-            ctx,
-            name,
-            "blocked",
-            args,
-            ".ai/harness/controller/packets/codex-goal.md",
-            `missing required goal sections: ${missing.join(", ")}`,
-          );
-          return errorResult(
-            "INVALID_GOAL",
-            "Generated Codex goal is missing required sections.",
-            { missing },
-          );
-        }
-        return writeMarkdownArtifact(
-          ctx,
-          name,
-          ".ai/harness/controller/packets/codex-goal.md",
-          "Codex Goal",
-          "codex-goal",
-          goal.body,
-          args.overwrite === true,
-          args,
-          {
-            prompt: goal.prompt,
-          },
-        );
-      }
-      case "write_codex_goal": {
-        const body = String(args.body ?? "");
-        const missing = validateGoal(body);
-        if (body.trim().length < 120 || missing.length > 0) {
-          audit(
-            ctx,
-            name,
-            "blocked",
-            args,
-            ".ai/harness/controller/packets/codex-goal.md",
-            `missing required goal sections: ${missing.join(", ")}`,
-          );
-          return errorResult(
-            "INVALID_GOAL",
-            "Codex goal is missing required sections or is too small.",
-            { missing },
-          );
-        }
-        return writeMarkdownArtifact(
-          ctx,
-          name,
-          ".ai/harness/controller/packets/codex-goal.md",
-          "Codex Goal",
-          "codex-goal",
-          body,
-          args.overwrite === true,
-          args,
-        );
-      }
       case "append_controller_plan_note": {
         const path = ".ai/harness/controller/packets/chatgpt-plan.md";
         const decision = resolveMcpPath(
@@ -2536,38 +1944,6 @@ export async function callMcpTool(
         appendFileSync(decision.absolutePath, block, "utf-8");
         audit(ctx, name, "ok", args, path);
         return textResult({ status: "appended", path });
-      }
-      case "run_workflow_check": {
-        const result = runHelper({
-          helper: "check-task-workflow",
-          args: ["--strict"],
-          cwd: ctx.repoRoot,
-          stdio: "pipe",
-          timeoutMs: 60_000,
-          maxOutputBytes: 96 * 1024,
-        });
-        const stdout = redactMcpText(result.stdout ?? "");
-        const stderr = redactMcpText(result.stderr ?? "");
-        audit(
-          ctx,
-          name,
-          result.exitCode === 0 ? "ok" : "failed",
-          args,
-          undefined,
-          stderr.text,
-        );
-        return textResult({
-          exitCode: result.exitCode,
-          reason: result.reason,
-          stdout: stdout.text,
-          stderr: stderr.text,
-          helper: result.resolved
-            ? {
-                source: result.resolved.source,
-                fileName: basename(result.resolved.path),
-              }
-            : null,
-        });
       }
       case "run_chatgpt_browser_consult": {
         if (ctx.enableChatgptBrowser !== true)

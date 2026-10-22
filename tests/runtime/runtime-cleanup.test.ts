@@ -894,6 +894,7 @@ describe('runtime cleanup', () => {
         scanned: 0, eligible: 0, attempted: 0, cleaned: [], blocked: [],
         skippedRecent: [], skippedRetained: [], skippedNonTerminal: [],
         branchReconciled: [], errors: [], truncated: false,
+        orphanWorktrees: { scanned: 0, removed: [], retained: [], errors: [] },
       }),
       processGc: () => ({
         ok: true, removedRecords: 0, removedLogs: 0, skippedActive: 0, reconciledStaleActive: 0,

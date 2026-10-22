@@ -58,7 +58,7 @@ export function forgeToolSurfaceFingerprint(toolSurface: readonly string[] | rea
 export const MIN_AGENT_TIMEOUT_MS = 5_000;
 export const DEFAULT_AGENT_TIMEOUT_MS = 60 * 60 * 1000;
 export const MAX_AGENT_TIMEOUT_MS = 12 * 60 * 60 * 1000;
-export const DEFAULT_LOCAL_AGENT_RUNNERS = ['codex', 'claude'] as const;
+export const DEFAULT_LOCAL_AGENT_RUNNERS = ['claude'] as const;
 
 export function defaultLocalAgentRunners(): Array<(typeof DEFAULT_LOCAL_AGENT_RUNNERS)[number]> {
   return [...DEFAULT_LOCAL_AGENT_RUNNERS];

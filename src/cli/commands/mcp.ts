@@ -1,9 +1,7 @@
 import { Command } from 'commander';
-import { isAbsolute, relative } from 'path';
 import { createMcpToolContext } from '../../../adapters/mcp/server';
 import { startMcpHttp } from '../../../adapters/mcp/transports/http';
 import { startMcpStdio } from '../../../adapters/mcp/transports/stdio';
-import { callMcpTool } from '../../../adapters/mcp/tool-mapping/tools';
 import { callAccessTool } from '../../../adapters/mcp/tool-mapping/access-tools';
 import { assertControllerLifecycleOwner } from '../controller/lifecycle-authority';
 import { bindInheritedRuntimeWriteClaimFromEnvironment } from '../../runtime/root/write-fence';
@@ -11,7 +9,6 @@ import {
   runMcpDoctor,
   runMcpPrintGuide,
   runMcpSetupChatgpt,
-  runMcpSetupCodex,
   runMcpSetupClaude,
 } from '../../../adapters/mcp/setup';
 
@@ -60,16 +57,6 @@ interface McpSetupLocalControllerOptions {
   scope?: string;
   profile?: string;
   dryRun?: boolean;
-}
-
-
-interface McpPrepareGoalOptions {
-  repo?: string;
-  prd: string;
-  sprint: string;
-  referenceRepo?: string;
-  extraInstructions?: string;
-  overwrite?: boolean;
 }
 
 function parsePort(value: string): number {
@@ -123,39 +110,6 @@ async function runRepositoryAccessCommand(
   console.log(JSON.stringify(payload, null, 2));
 }
 
-async function prepareCodexGoalFromSprint(rawOpts: McpPrepareGoalOptions): Promise<string[]> {
-  const ctx = createMcpToolContext({ repo: rawOpts.repo ?? '.', profile: 'planner' });
-  const prdPath = toRepoRelativeInput(ctx.repoRoot, rawOpts.prd);
-  const sprintPath = toRepoRelativeInput(ctx.repoRoot, rawOpts.sprint);
-  const result = await callMcpTool(ctx, 'prepare_codex_goal_from_sprint', {
-    prd_path: prdPath,
-    sprint_path: sprintPath,
-    goal_prd_path: rawOpts.prd,
-    goal_sprint_path: rawOpts.sprint,
-    reference_repo: rawOpts.referenceRepo,
-    extra_instructions: rawOpts.extraInstructions,
-    overwrite: rawOpts.overwrite === true,
-  });
-  const firstContent = result.content[0];
-  const payload = JSON.parse(firstContent?.type === 'text' ? firstContent.text : '{}');
-  if (payload.error) {
-    throw new Error(`${payload.error.code}: ${payload.error.message}`);
-  }
-  return [
-    `[forge mcp] Codex goal: ${payload.path}`,
-    '[forge mcp] Host-native /goal prompt:',
-    '',
-    String(payload.prompt ?? '').trimEnd(),
-  ];
-}
-
-function toRepoRelativeInput(repoRoot: string, path: string): string {
-  if (!isAbsolute(path)) return path;
-  const relativePath = relative(repoRoot, path).split('\\').join('/');
-  if (relativePath === '' || relativePath.startsWith('../') || relativePath === '..') return path;
-  return relativePath;
-}
-
 export function buildMcpCommand(): Command {
   const mcp = new Command('mcp').description('Run and configure the forge MCP workflow sidecar');
 
@@ -171,7 +125,7 @@ export function buildMcpCommand(): Command {
     .option('--auth <mode>', 'HTTP auth mode: oauth|bearer|none', 'oauth')
     .option('--enable-chatgpt-browser', 'Expose tools that operate the user logged-in ChatGPT Web browser session')
     .option('--enable-dev-runner', 'Enable local Codex/Claude task runners for the controller profile')
-    .option('--dev-runner-agents <agents>', 'Comma-separated dev runner agents: codex,claude')
+    .option('--dev-runner-agents <agents>', 'Comma-separated dev runner agents: claude')
     .option('--dev-runner-timeout-ms <ms>', 'Default local agent timeout in milliseconds (default: 3600000)')
     .option('--dev-runner-max-timeout-ms <ms>', 'Maximum per-run timeout in milliseconds (default: 43200000)')
     .action(async (rawOpts: McpServeOptions) => {
@@ -254,21 +208,6 @@ export function buildMcpCommand(): Command {
     });
 
   setup
-    .command('codex')
-    .description('Configure Codex as an explicit Forge controller or executor')
-    .option('--repo <path>', 'Repository root to configure', '.')
-    .option('--scope <scope>', 'Config scope: project|user', 'project')
-    .option('--profile <profile>', 'Forge MCP role: controller|executor', 'executor')
-    .option('--dry-run', 'Print planned changes without writing files')
-    .action((rawOpts: McpSetupLocalControllerOptions) => {
-      void runMcpAction(() => {
-        const result = runMcpSetupCodex(rawOpts);
-        console.log(result.lines.join('\n'));
-      });
-    });
-
-
-  setup
     .command('claude')
     .description('Configure Claude Code as an explicit Forge controller or executor through the Claude CLI')
     .option('--repo <path>', 'Repository root to expose initially', '.')
@@ -312,22 +251,6 @@ export function buildMcpCommand(): Command {
 
   mcp.addCommand(access);
 
-
-  mcp
-    .command('prepare-goal')
-    .description('Prepare .ai/harness/controller/packets/codex-goal.md and print a host-native /goal prompt from a PRD and checklist Sprint')
-    .option('--repo <path>', 'Repository root to configure', '.')
-    .requiredOption('--prd <path>', 'PRD path to read')
-    .requiredOption('--sprint <path>', 'Checklist Sprint path to execute')
-    .option('--reference-repo <path>', 'Read-only reference repo path to include in the Goal')
-    .option('--extra-instructions <text>', 'Additional bounded execution instruction for Codex')
-    .option('--overwrite', 'Replace an existing Codex goal handoff')
-    .action((rawOpts: McpPrepareGoalOptions) => {
-      void runMcpAction(async () => {
-        const lines = await prepareCodexGoalFromSprint(rawOpts);
-        console.log(lines.join('\n'));
-      });
-    });
 
   mcp
     .command('print-chatgpt-guide')

@@ -17,6 +17,7 @@ import {
   waitRepositoryCommandProcess,
 } from '../../../src/runtime/execution/process-runtime';
 import { redactSensitiveText, redactSensitiveValue } from '../../../src/runtime/evidence/sensitive-output';
+import { resolveControllerAccessState } from '../access-mode';
 import { getProcessRecord } from '../../../src/runtime/execution/process-runtime/store';
 import { forgeInstanceIdFor, readProcessHandleIndexEntry } from '../../../src/runtime/execution/process-runtime/handle-index';
 import { isForgeInstanceProcessScopeKey, isRepositoryProcessScopeKey, processScopeKeyForHandle } from '../../../src/runtime/execution/process-runtime/process-scope';
@@ -388,11 +389,24 @@ function workDefaultCommandCwd(ctx: MultiRepositoryMcpToolContext, workId: strin
   return workspace || undefined;
 }
 
+/**
+ * The explicitly user-selected Full Access mode is the single Forge permission
+ * authority for ordinary host commands. Legacy defaults are not opt-in proof.
+ */
+export function requireHostFullAccess(controllerHome: string, principalId: string | undefined): void {
+  if (!principalId?.trim()) throw new Error('HOST_PROCESS_PRINCIPAL_REQUIRED: authenticated principal required');
+  const state = resolveControllerAccessState({ controllerHome });
+  if (state.source !== 'controller_home.access_mode' || state.effectiveAccessMode !== 'full_access') {
+    throw new Error('HOST_FULL_ACCESS_REQUIRED: explicitly enable Full Access in existing Forge permission settings');
+  }
+}
+
 export async function executeAuthorizedHostCommand(
   ctx: MultiRepositoryMcpToolContext,
   args: Record<string, unknown>,
 ): Promise<CallToolResult> {
   try {
+    requireHostFullAccess(ctx.controllerHome, ctx.principalId);
     const command = stringList(args.command);
     const shellCommand = typeof args.shell_command === 'string' && args.shell_command.trim()
       ? args.shell_command
@@ -426,7 +440,7 @@ export async function executeAuthorizedHostCommand(
         forgeInstanceId: executed.target.forgeInstanceId,
         cwd: executed.target.cwd,
       },
-      authorization: { capability: 'process:exec', grantId: executed.target.grantId },
+      authorization: { source: 'host_ai_full_access', principalId: ctx.principalId },
       executionMetrics: executed.metrics,
     });
   } catch (error) {

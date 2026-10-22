@@ -101,7 +101,7 @@ export function classifyLocalExecutorHealth(
       fallback: "enable_local_agent",
     };
   }
-  if (!policy.allowedAgents.includes(agent)) {
+  if (!(policy.allowedAgents as readonly string[]).includes(agent)) {
     return {
       agent,
       status: "disabled",
