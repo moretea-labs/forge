@@ -259,32 +259,10 @@ export async function startWorkflowSupervisorRuntime(
       identityFingerprint: `gmail-profile:${mailbox}`,
     } : undefined;
     const grant = findNotificationGrant(repoId, target);
-    if (!grant) {
-      recordUserRequest(controllerHome, {
-        kind: 'user_action_request',
-        rootCauseKey: `workflow-supervisor.notification-auth:${repoId}:${mailbox ?? 'unconfigured'}`,
-        title: 'Authorize owner-only Gmail alerts',
-        summary: `Forge cannot email owner authorization notices until Gmail action authorize_owner_notifications is approved for the configured and Google-verified owner mailbox${mailbox ? ` (${mailbox})` : ''}. The send-only grant lasts up to 90 days, cannot archive email or contact other recipients, and creates no email when authorized. Unsent events remain in UserRequest.`,
-        actionRequired: 'grant_permission',
-        targetScope: task ? { scopeKind: 'workflow_supervisor_task', scopeId: input.taskId, repoId, ...(input.workId ? { workId: input.workId } : {}) }
-          : { scopeKind: 'work', scopeId: input.workId ?? input.taskId, repoId, ...(input.workId ? { workId: input.workId } : {}) },
-        presentation: {
-          severity: 'blocked',
-          creationReason: 'scheduled_gmail_notification_authorization_required',
-          reason: 'EXTERNAL_EFFECT_AUTHORIZATION_REQUIRED',
-          currentState: {
-            repoId,
-            ...(mailbox ? { mailbox } : {}),
-            pluginId: GMAIL_PLUGIN_ID,
-            capabilityId: GMAIL_OWNER_NOTIFICATION_CAPABILITY_ID,
-            authorizationAction: 'authorize_owner_notifications',
-            scopes: ['gmail.send'],
-            grantLifetimeDays: 90,
-          },
-        },
-      });
-      return;
-    }
+    // Owner email is optional and prospective. The task blocker itself remains
+    // in UserRequest; missing email opt-in must not create another blocker on
+    // each historical notification reconciliation.
+    if (!grant) return;
     // Opt-in is prospective. Do not replay a backlog of old blockers or
     // historical terminal completions when the owner first grants email access.
     if (input.occurredAt && Date.parse(input.occurredAt) <= Date.parse(grant.createdAt)) return;
@@ -380,32 +358,16 @@ export async function startWorkflowSupervisorRuntime(
     if (closing || notificationReconciliationInFlight || Date.now() < nextNotificationReconciliationAt) return;
     notificationReconciliationInFlight = (async () => {
       const allRequests = listUserRequests(controllerHome);
-      for (const request of allRequests.filter((item) => item.status === 'pending' && item.rootCauseKey.startsWith('workflow-supervisor.notification-auth:'))) {
-        const taskId = request.targetScope?.scopeId;
-        if (!taskId) continue;
-        const task = store.getTask(taskId);
-        if (!task) continue;
-        const repoId = workflowSupervisorContractText(task, 'repo_id');
-        const workId = workflowSupervisorContractText(task, 'work_id');
-        if (!repoId) continue;
-        if (workId) {
-          const work = getWorkContract({ controllerHome, repoId }, workId);
-          if (!work || isTerminalSemanticWorkState(work.semanticState)) {
-            resolveUserRequest(controllerHome, { requestId: request.requestId, decision: 'underlying_work_terminal', resolvedBy: 'forge-runtime' });
-            continue;
-          }
-        }
-        const repository = getRepository(repoId, controllerHome);
-        if (!repository) continue;
-        const mailbox = loadGmailPluginConfig(repository.canonicalRoot, { controllerHome, repoId }).accountEmail?.trim().toLowerCase();
-        const target = mailbox ? {
-          kind: 'gmail-mailbox' as const,
-          id: mailbox,
-          identityFingerprint: `gmail-profile:${mailbox}`,
-        } : undefined;
-        if (findNotificationGrant(repoId, target)) {
-          resolveUserRequest(controllerHome, { requestId: request.requestId, decision: 'gmail_automation_authorized', resolvedBy: 'forge-runtime' });
-        }
+      // Old mandatory-email-opt-in UserRequests are not actionable blockers.
+      // Resolve them through the existing UserRequest authority, including
+      // orphaned records whose original task has already disappeared.
+      for (const request of allRequests.filter((item) => item.status === 'pending'
+        && item.rootCauseKey.startsWith('workflow-supervisor.notification-auth:'))) {
+        resolveUserRequest(controllerHome, {
+          requestId: request.requestId,
+          decision: 'optional_owner_notification_not_required',
+          resolvedBy: 'forge-runtime',
+        });
       }
 
       // One canonical pending UserRequest -> one Gmail notice. Never email
