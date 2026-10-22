@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { readControlPlaneRecord, withControlPlaneTransaction, writeControlPlaneRecordWithinTransaction } from '../../src/runtime/control-plane/persistence/sqlite-store';
 import {
   cancelWorkContract,
   createWorkContract,
@@ -13,7 +14,6 @@ import {
   isCurrentWorkContract,
   workSemanticView,
   updateWorkContract,
-  workContractStorePath,
 } from '../../packages/kernel/work/api/index';
 
 const roots: string[] = [];
@@ -26,11 +26,12 @@ describe('Work v3 lifecycle authority', () => {
   test('keeps thin Work semantic revision/CAS independent from mechanical lifecycle state', () => {
     const root = mkdtempSync(join(tmpdir(), 'forge-work-semantic-authority-'));
     roots.push(root);
-    const store = { root };
+    const repoId = 'repo-work-semantic-authority';
+    const store = { controllerHome: root, repoId };
     const workId = 'work-semantic-authority';
     const created = createWorkContract(store, {
       workId,
-      repoId: 'repo-work-semantic-authority',
+      repoId,
       objective: 'Original semantic objective.',
       acceptanceCriteria: [],
       allowedPaths: [], forbiddenPaths: [], checks: [],
@@ -93,15 +94,16 @@ describe('Work v3 lifecycle authority', () => {
     expect(isCurrentWorkContract(semanticallyCompleted)).toBe(false);
   });
 
-  test('file-backed reviseWorkSemanticContext guarantees zero write on stale or invalid revision', () => {
+  test('SQLite reviseWorkSemanticContext guarantees zero write on stale or invalid revision', () => {
     const root = mkdtempSync(join(tmpdir(), 'forge-work-zero-write-'));
     roots.push(root);
-    const store = { root };
+    const repoId = 'repo-zero-write';
+    const store = { controllerHome: root, repoId };
     const workId = 'work-zero-write-test';
 
     createWorkContract(store, {
       workId,
-      repoId: 'repo-zero-write',
+      repoId,
       objective: 'Initial objective.',
       acceptanceCriteria: [],
       allowedPaths: [], forbiddenPaths: [], checks: [],
@@ -110,8 +112,8 @@ describe('Work v3 lifecycle authority', () => {
       dispatchState: 'running',
     });
 
-    const storePath = workContractStorePath(store);
-    const initialContractStoreBytes = readFileSync(storePath, 'utf8');
+    const initialRecord = readControlPlaneRecord(root, 'work_contract', repoId, workId);
+    expect(initialRecord).toBeDefined();
     const initialHistory = listWorkSemanticRevisionRecords(store, workId);
     expect(initialHistory).toEqual([]);
 
@@ -121,7 +123,7 @@ describe('Work v3 lifecycle authority', () => {
       objective: 'Stale expected revision write attempt',
     })).toThrow('WORK_REVISION_CONFLICT');
 
-    expect(readFileSync(storePath, 'utf8')).toBe(initialContractStoreBytes);
+    expect(readControlPlaneRecord(root, 'work_contract', repoId, workId)).toEqual(initialRecord);
     expect(listWorkSemanticRevisionRecords(store, workId)).toEqual([]);
 
     // 2) Invalid objective (empty) throws and performs zero writes
@@ -130,7 +132,7 @@ describe('Work v3 lifecycle authority', () => {
       objective: '   ',
     })).toThrow('WORK_OBJECTIVE_REQUIRED');
 
-    expect(readFileSync(storePath, 'utf8')).toBe(initialContractStoreBytes);
+    expect(readControlPlaneRecord(root, 'work_contract', repoId, workId)).toEqual(initialRecord);
     expect(listWorkSemanticRevisionRecords(store, workId)).toEqual([]);
 
     // 3) Invalid plan revision throws and performs zero writes
@@ -139,7 +141,7 @@ describe('Work v3 lifecycle authority', () => {
       planRevision: 0,
     })).toThrow('WORK_PLAN_REVISION_INVALID');
 
-    expect(readFileSync(storePath, 'utf8')).toBe(initialContractStoreBytes);
+    expect(readControlPlaneRecord(root, 'work_contract', repoId, workId)).toEqual(initialRecord);
     expect(listWorkSemanticRevisionRecords(store, workId)).toEqual([]);
 
     // 4) Valid revision succeeds and writes both history and next revision
@@ -151,8 +153,6 @@ describe('Work v3 lifecycle authority', () => {
     expect(listWorkSemanticRevisionRecords(store, workId)).toHaveLength(1);
     expect(listWorkSemanticRevisionRecords(store, workId)[0]?.revision).toBe(1);
 
-    const revision2StoreBytes = readFileSync(storePath, 'utf8');
-    const historyAfterRev2 = listWorkSemanticRevisionRecords(store, workId);
 
     // 5) Forbidden reopen on completed work performs zero writes
     const completed = reviseWorkSemanticContext(store, workId, {
@@ -161,7 +161,7 @@ describe('Work v3 lifecycle authority', () => {
     });
     expect(workSemanticView(completed).state).toBe('completed');
 
-    const completedStoreBytes = readFileSync(storePath, 'utf8');
+    const completedRecord = readControlPlaneRecord(root, 'work_contract', repoId, workId);
     const completedHistory = listWorkSemanticRevisionRecords(store, workId);
     expect(completedHistory).toHaveLength(2);
 
@@ -170,18 +170,19 @@ describe('Work v3 lifecycle authority', () => {
       state: 'open',
     })).toThrow('WORK_SEMANTIC_REOPEN_FORBIDDEN');
 
-    expect(readFileSync(storePath, 'utf8')).toBe(completedStoreBytes);
+    expect(readControlPlaneRecord(root, 'work_contract', repoId, workId)).toEqual(completedRecord);
     expect(listWorkSemanticRevisionRecords(store, workId)).toEqual(completedHistory);
   });
 
   test('legacy mechanical state is never inferred from status and current lifecycle writes require canonical APIs', () => {
     const root = mkdtempSync(join(tmpdir(), 'forge-work-v3-authority-'));
     roots.push(root);
-    const store = { root };
+    const repoId = 'repo-work-v3-authority';
+    const store = { controllerHome: root, repoId };
     const workId = 'work-v3-lifecycle-authority';
     createWorkContract(store, {
       workId,
-      repoId: 'repo-work-v3-authority',
+      repoId,
       objective: 'Prove lifecycle authority is explicit after legacy migration.',
       acceptanceCriteria: ['Legacy inference cannot remain a steady-state mutation authority.'],
       allowedPaths: [],
@@ -193,15 +194,17 @@ describe('Work v3 lifecycle authority', () => {
       dispatchState: 'running',
     });
 
-    const path = workContractStorePath(store);
-    const legacy = JSON.parse(readFileSync(path, 'utf8')) as any;
+    const stored = readControlPlaneRecord<Record<string, any>>(root, 'work_contract', repoId, workId)!;
+    const legacy = structuredClone(stored.value) as Record<string, any>;
     legacy.schemaVersion = 2;
-    legacy.contracts[0].schemaVersion = 2;
-    delete legacy.contracts[0].phase;
-    delete legacy.contracts[0].phaseEvidence;
-    delete legacy.contracts[0].dispatchState;
-    delete legacy.contracts[0].evidenceState;
-    writeFileSync(path, JSON.stringify(legacy, null, 2) + '\n');
+    delete legacy.phase;
+    delete legacy.phaseEvidence;
+    delete legacy.dispatchState;
+    delete legacy.evidenceState;
+    withControlPlaneTransaction(root, (database) => writeControlPlaneRecordWithinTransaction(database, {
+      namespace: 'work_contract', scope: repoId, key: workId, schemaVersion: 2, value: legacy,
+      action: 'test_seed_legacy_work_contract', expectedRevision: stored.revision,
+    }));
 
     const migrated = readWorkContractStore(store).contracts[0]!;
     expect(migrated).toMatchObject({
@@ -215,10 +218,11 @@ describe('Work v3 lifecycle authority', () => {
       dispatchState: 'not_dispatched',
       evidenceState: 'none',
     });
-    // The portable JSON reader is a projection too; only the writer migrates.
-    const stillLegacy = JSON.parse(readFileSync(path, 'utf8')) as any;
+    // A legacy SQLite row is a read-only projection; only an authorized writer persists v4.
+    const stillLegacy = readControlPlaneRecord<Record<string, any>>(root, 'work_contract', repoId, workId)!;
     expect(stillLegacy.schemaVersion).toBe(2);
-    expect(stillLegacy.contracts[0].schemaVersion).toBe(2);
+    expect(stillLegacy.value.schemaVersion).toBe(2);
+    expect(stillLegacy.value.phase).toBeUndefined();
 
     // @ts-expect-error Retired status is rejected rather than translated into semantic authority.
     expect(() => updateWorkContract(store, workId, { status: 'ready' })).toThrow('WORK_RETIRED_FIELD_REJECTED: status');
@@ -229,9 +233,9 @@ describe('Work v3 lifecycle authority', () => {
 
     const withEvidence = recordWorkEvidenceState(store, workId, 'partial');
     expect(withEvidence).toMatchObject({ phase: 'implementation', dispatchState: 'not_dispatched', evidenceState: 'partial' });
-    const persisted = JSON.parse(readFileSync(path, 'utf8')) as any;
+    const persisted = readControlPlaneRecord<Record<string, any>>(root, 'work_contract', repoId, workId)!;
     expect(persisted.schemaVersion).toBe(4);
-    expect(persisted.contracts[0]).toMatchObject({ schemaVersion: 4, semanticState: 'open', phase: 'implementation', dispatchState: 'not_dispatched', evidenceState: 'partial' });
+    expect(persisted.value).toMatchObject({ schemaVersion: 4, semanticState: 'open', phase: 'implementation', dispatchState: 'not_dispatched', evidenceState: 'partial' });
     const cancelled = cancelWorkContract(store, workId, { summary: 'Explicit canonical cancellation.' });
     expect(cancelled).toMatchObject({ semanticState: 'cancelled', phase: 'implementation', dispatchState: 'terminal', evidenceState: 'partial' });
     expect(readWorkContractStore(store).contracts[0]).toMatchObject({

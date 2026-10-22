@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import type { WorkContractStoreOptions } from '../../packages/kernel/work/ports/work-contract-store';
 import {
   continueGoalWorkloop,
   routeWorkStart,
@@ -30,7 +31,7 @@ function temp(prefix: string): string {
 function reviewContext(prefix: string) {
   const root = temp(prefix);
   return {
-    workStore: { root: join(root, 'work') },
+    workStore: { controllerHome: root, repoId: `repo-${prefix}` },
     handoffStore: { root: join(root, 'handoffs') },
     repoId: `repo-${prefix}`,
     availableChecks: [],
@@ -45,7 +46,7 @@ function reviewContext(prefix: string) {
  * `check:runtime-architecture`). Semantic completion is always an explicit
  * model/user CAS revision through work_complete.
  */
-function completeSemanticWork(store: { root?: string }, workId: string) {
+function completeSemanticWork(store: WorkContractStoreOptions, workId: string) {
   const current = getWorkContract(store, workId)!;
   return reviseWorkSemanticContext(store, workId, {
     expectedRevision: workSemanticView(current).revision,

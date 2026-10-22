@@ -69,9 +69,6 @@ export function recordRemoteEffectWorkProcessReceipt(
  * ../api) instead of importing persistence implementation directly.
  */
 export {
-  workContractRoot,
-  workContractStorePath,
-  emptyWorkContractStore,
   readWorkContractStore,
   writeWorkContractStore,
   createWorkSemanticContext,

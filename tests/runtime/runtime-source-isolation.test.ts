@@ -1571,11 +1571,11 @@ printf '{"ok":true}\\n'
     }));
     expect(retiredControllerSentinel.error).toMatchObject({ code: 'PLUGIN_CONTROLLER_REPOSITORY_SENTINEL_RETIRED' });
 
-    const repositoryScoped = structured(await callRuntimeTool(ctx, 'get_plugin', {
+    const repositoryContextLookup = structured(await callRuntimeTool(ctx, 'get_plugin', {
       repo_id: repository.repoId,
       plugin_id: 'browser',
     }));
-    expect(repositoryScoped.scope).toBe('repository');
+    expect(repositoryContextLookup.scope).toBe('controller');
   });
 
 });

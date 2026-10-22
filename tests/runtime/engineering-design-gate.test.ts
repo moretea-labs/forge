@@ -233,7 +233,7 @@ describe('Stage7C upstream engineering authority', () => {
   test('same-root design observations remain durable guidance without blocking Work continuation', () => {
     const root = temp('stage7c-design-supersession-');
     const context = {
-      workStore: { root: join(root, 'work') },
+      workStore: { controllerHome: root, repoId: 'repo-a' },
       handoffStore: { root: join(root, 'handoff') },
       repoId: 'repo-a',
       checkoutId: 'checkout-a',
@@ -321,7 +321,7 @@ describe('Stage7C upstream engineering authority', () => {
   test('unrelated blockers require an explicitly declared owning Work instead of an automatically created child Work', () => {
     const root = temp('stage7c-linked-work-');
     const context = {
-      workStore: { root: join(root, 'work') },
+      workStore: { controllerHome: root, repoId: 'repo-a' },
       handoffStore: { root: join(root, 'handoff') },
       repoId: 'repo-a',
       checkoutId: 'checkout-a',

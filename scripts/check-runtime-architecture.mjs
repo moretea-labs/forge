@@ -292,6 +292,8 @@ forbid('adapters/mcp/runtime-gateway/work-adapter.ts', /repositoryGit(?:Commit|F
 forbid('adapters/mcp/runtime-gateway/work-adapter.ts', /control-plane\/facade\/work-contract-store|kernel\/work\/infrastructure/, 'rh_work must consume canonical semantic APIs instead of persistence infrastructure');
 forbid('adapters/mcp/runtime-gateway/work-plan-operations.ts', /plan_approve|plan_accept_step|plan_supersede|approvePlanContractAsync|acceptPlanStepEvidence|supersedePlanContract/, 'retired Plan approval/acceptance/supersession APIs must not remain on the runtime surface');
 forbid('src/runtime/control-plane/facade/plan-contract-store.ts', /approvePlanContract|approvePendingPlanRevision|supersedePlanContract|plan_revision_approved/, 'legacy Plan approval/supersession writers must stay retired');
+forbid('src/runtime/control-plane/facade/plan-contract-store.ts', /planContractRoot|planContractStorePath|planRevisionStorePath|planSemanticRevisionStorePath|appendJsonPlanRevisionRecord|appendJsonPlanSemanticRevisionRecord|plan_contract_legacy_import|readJsonFile|writeJsonAtomic/, 'Plan contract and revision persistence must use Controller Home SQLite only');
+forbid('packages/kernel/work/infrastructure/work-contract-store.ts', /workContractRoot|workContractStorePath|workSemanticRevisionStorePath|readWorkSemanticRevisionStore|readLegacyWorkContractStore|work_contract_legacy_import|sqliteBacked/, 'Work contract and semantic revision persistence must use Controller Home SQLite only');
 
 // #197 MCP mega-adapter decomposition. These are debt ledgers, not target
 // architecture: entries may only disappear. New domain-authority imports or

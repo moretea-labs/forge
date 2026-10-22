@@ -4,12 +4,12 @@ export interface WorkContractStoreLocation {
   controllerHome?: string;
   /** Canonical storage scope. Semantic Work uses the portable semantic scope; repository Work may omit this and use repoId. */
   scopeKey?: string;
-  /** Legacy/repository execution storage scope and optional placement context. */
+  /** Repository execution scope and optional placement context. */
   repoId?: string;
-  root?: string;
 }
 
 export interface WorkContractStoreOptions extends WorkContractStoreLocation {
+  controllerHome: string;
   now?: () => string;
 }
 

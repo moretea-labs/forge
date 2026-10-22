@@ -86,7 +86,7 @@ describe('bounded Work candidate extension authority', () => {
   test('same-root scope extension stays in the exact Work and applies policy scope before implementation continues', () => {
     const root = temp('forge-candidate-scope-extension-');
     const context = {
-      workStore: { root: join(root, 'work') },
+      workStore: { controllerHome: root, repoId: 'repo-candidate-scope-extension' },
       handoffStore: { root: join(root, 'handoff') },
       repoId: 'repo-candidate-scope-extension',
       checkoutId: 'checkout-candidate-scope-extension',

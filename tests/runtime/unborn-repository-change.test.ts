@@ -25,7 +25,7 @@ describe('repository-change Work with an unborn Git baseline', () => {
     git(repoRoot, ['init', '-b', 'main']);
     expect(spawnSync('git', ['rev-parse', '--verify', 'HEAD'], { cwd: repoRoot }).status).not.toBe(0);
 
-    const workStore = { root: join(stateRoot, 'work') };
+    const workStore = { controllerHome: stateRoot, repoId: 'repo-unborn' };
     const initialContext = {
       workStore,
       handoffStore: { root: join(stateRoot, 'handoff') },
@@ -93,11 +93,12 @@ describe('repository-change Work with an unborn Git baseline', () => {
   });
 
   test('does not infer unborn authority for a legacy Work that merely lacks a base revision', () => {
-    const workStore = { root: join(mkdtempSync(join(tmpdir(), 'forge-unborn-legacy-state-')), 'work') };
-    roots.push(workStore.root.replace(/\/work$/, ''));
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-unborn-legacy-state-'));
+    roots.push(controllerHome);
+    const workStore = { controllerHome, repoId: 'repo-legacy-missing-base' };
     const context = {
       workStore,
-      handoffStore: { root: join(workStore.root, '..', 'handoff') },
+      handoffStore: { root: join(controllerHome, 'handoff') },
       repoId: 'repo-legacy-missing-base',
       checkoutId: 'checkout-legacy',
       workspaceChangedPaths: [] as string[],
