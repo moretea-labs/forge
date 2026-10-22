@@ -10,6 +10,7 @@ import { addRepositoryCheckout, registerRepository } from '../../src/cli/reposit
 import { callRuntimeTool } from '../../adapters/mcp/runtime-gateway/runtime-tools';
 import { callContextAdapter } from '../../adapters/mcp/runtime-gateway/context-adapter';
 import { primaryWorkRuntimeActivity } from '../../adapters/mcp/runtime-gateway/status-inbox-adapter';
+import { recordGatewayLatency } from '../../src/runtime/observability/gateway-contention-metrics';
 import { mintEngineeringAdmissionEvidence } from '../../adapters/mcp/runtime-gateway/engineering-preconditions';
 import {
   collectRuntimeSourceIdentity,
@@ -951,11 +952,13 @@ printf '{"ok":true}\\n'
       error: expect.stringContaining('WORK_OBJECTIVE_REQUIRED'),
     });
 
+    recordGatewayLatency({ repoId: repository.repoId, operationClass: 'controller_lock', phase: 'lock_wait', durationMs: 12 });
     const detailPayload = structured(await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_status', {
       repo_id: repository.repoId, operation: 'get', detail_level: 'detail',
     }));
     expect(detailPayload.error).toBeUndefined();
     const detail = detailPayload.data as {
+      gatewayLatency?: { observation: string; processLocal: boolean; limitedTo: string; bucketCount: number; truncated: boolean; buckets: Array<{ count: number; p50Ms: number; p95Ms: number; operationClass: string }> };
       activeContractCount?: number;
       activePrimaryWorkCount?: number;
       primaryWorkActivityCounts?: Record<'running' | 'waiting_for_user' | 'scheduled' | 'recoverable' | 'needs_reconciliation', number>;
@@ -977,6 +980,10 @@ printf '{"ok":true}\\n'
         };
       };
     };
+    expect(Object.hasOwn(summary, 'gatewayLatency')).toBe(false);
+    expect(detail.gatewayLatency).toMatchObject({ observation: 'in_process_samples', processLocal: true, limitedTo: 'gateway_lock_and_mutation_gate', truncated: false });
+    expect(detail.gatewayLatency?.buckets).toContainEqual(expect.objectContaining({ operationClass: 'controller_lock', p95Ms: 12 }));
+    expect(detail.gatewayLatency?.buckets.find((entry) => entry.operationClass === 'controller_lock')?.count).toBeGreaterThanOrEqual(1);
     expect(detail.readiness?.readyFor).toBe('bounded_execution');
     expect(detail.readiness?.diagnostics?.semantics?.autonomousContinuationReady).toBe(false);
     expect(Array.isArray(detail.readiness?.diagnostics?.semantics?.autonomousContinuationBlockers)).toBe(true);

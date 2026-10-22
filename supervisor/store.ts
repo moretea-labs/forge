@@ -175,6 +175,14 @@ function effectSuperseded(db: Database, effectId: string): boolean {
   return Boolean(statement(db, "SELECT 1 AS ok FROM events WHERE effect_id = ? AND kind = 'effect_outcome_unknown_superseded' LIMIT 1", (s) => s.get(effectId)));
 }
 
+function appliedEffectAwaitingCompletionWithin(db: Database, taskId: string): boolean {
+  return Boolean(statement(db, `SELECT 1 AS ok FROM effects e
+    WHERE e.task_id = ?
+      AND EXISTS (SELECT 1 FROM events applied WHERE applied.effect_id = e.effect_id AND applied.kind = 'effect_applied')
+      AND NOT EXISTS (SELECT 1 FROM completions c WHERE c.task_id = e.task_id AND c.source_effect_id = e.effect_id)
+    LIMIT 1`, (s) => s.get(taskId)));
+}
+
 function providerResumeExhaustedWithin(db: Database, effectId: string): boolean {
   return Boolean(statement(db, "SELECT 1 AS ok FROM events WHERE effect_id = ? AND kind = 'assistant_recovery_exhausted' LIMIT 1", (s) => s.get(effectId)));
 }
@@ -914,6 +922,16 @@ export class WorkflowSupervisorStore {
       return rows[0] ? completionFromRow(rows[0]) : undefined;
     });
   }
+  /** Read-only completion evidence for the current logical conversation. */
+  hasCompletionInCurrentConversation(taskId: string): boolean {
+    return this.read((db) => Boolean(statement(db, `SELECT 1 FROM events completed
+      WHERE completed.task_id=? AND completed.kind='assistant_completion'
+        AND completed.event_id > COALESCE((
+          SELECT MAX(migrated.event_id) FROM events migrated
+          WHERE migrated.task_id=? AND migrated.kind='conversation_migrated'
+        ), 0) LIMIT 1`, (q) => q.get(taskId, taskId))));
+  }
+
   /** The only replay candidate when no applied effect is awaiting a receipt. */
   getLatestCompletion(taskId: string): WorkflowSupervisorCompletion | undefined {
     return this.read((db) => {
@@ -1400,11 +1418,7 @@ export class WorkflowSupervisorStore {
    * and dispatch that recovery instead of abandoning the browser task.
    */
   hasAppliedEffectAwaitingCompletion(taskId: string): boolean {
-    return this.read((db) => Boolean(statement(db, `SELECT 1 AS ok FROM effects e
-      WHERE e.task_id = ?
-        AND EXISTS (SELECT 1 FROM events applied WHERE applied.effect_id = e.effect_id AND applied.kind = 'effect_applied')
-        AND NOT EXISTS (SELECT 1 FROM completions c WHERE c.task_id = e.task_id AND c.source_effect_id = e.effect_id)
-      LIMIT 1`, (s) => s.get(taskId))));
+    return this.read((db) => appliedEffectAwaitingCompletionWithin(db, taskId));
   }
 
   observeProviderTurn(input: {
@@ -1591,6 +1605,9 @@ export class WorkflowSupervisorStore {
             (SELECT MAX(event_id) FROM events WHERE task_id = ? AND kind = 'assistant_completion'), 0
           )`, (s) => s.get(input.taskId, input.taskId)) as { total?: number } | undefined;
       if (Number(prior?.total ?? 0) >= WORKFLOW_SUPERVISOR_MAX_CONVERSATION_MIGRATIONS) throw new Error('WORKFLOW_SUPERVISOR_MIGRATION_BUDGET_EXHAUSTED');
+      // A known-applied turn without its completion is still an active effect;
+      // a provider capacity banner cannot retire its observation obligation.
+      if (appliedEffectAwaitingCompletionWithin(db, input.taskId)) throw new Error('WORKFLOW_SUPERVISOR_MIGRATION_APPLIED_TURN_UNRESOLVED');
       // A submitted mutation whose outcome is unknown must be reconciled, never
       // abandoned by moving the task elsewhere.
       const pending = oldestUnappliedEffect(db, input.taskId);
@@ -1653,6 +1670,7 @@ export class WorkflowSupervisorStore {
             (SELECT MAX(event_id) FROM events WHERE task_id = ? AND kind = 'assistant_completion'), 0
           )`, (s) => s.get(input.taskId, input.taskId)) as { total?: number } | undefined;
       if (Number(prior?.total ?? 0) >= WORKFLOW_SUPERVISOR_MAX_CONVERSATION_MIGRATIONS) throw new Error('WORKFLOW_SUPERVISOR_MIGRATION_BUDGET_EXHAUSTED');
+      if (appliedEffectAwaitingCompletionWithin(db, input.taskId)) throw new Error('WORKFLOW_SUPERVISOR_MIGRATION_APPLIED_TURN_UNRESOLVED');
       const pending = oldestUnappliedEffect(db, input.taskId);
       if (pending) {
         const ledger = effectDispatchLedger(db, pending.effectId);
@@ -1872,7 +1890,12 @@ export class WorkflowSupervisorStore {
           const rotate = successor.freshEnrollmentPrompt !== undefined
             && currentTask.continuationPolicy.kind === 'standalone_supervisor'
             && !currentTask.conversationId.startsWith('bootstrap:')
-            && (completedSinceMigration.total ?? 0) >= receiptLimit;
+            && (completedSinceMigration.total ?? 0) >= receiptLimit
+            // The source completion cannot retire any other still-unapplied
+            // command: a started send may have reached the provider, and even
+            // an unstarted effect still owns an undispatched continuation.
+            && !oldestUnappliedEffect(db, input.taskId)
+            && !appliedEffectAwaitingCompletionWithin(db, input.taskId);
           successorEffect = this.reserveEffectWithin(db, {
             taskId: input.taskId, effectId: successor.effectId,
             kind: rotate ? 'enrollment' : successor.kind, originKey,

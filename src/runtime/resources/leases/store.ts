@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'crypto';
 import { existsSync, readdirSync } from 'fs';
 import { join } from 'path';
 import { controllerSystemRoot } from '../../../effects/controller-home';
-import { ControllerLockContentionError, withControllerLock } from '../../../cli/repositories/locks';
+import { ControllerLockContentionError, readControllerLock, withControllerLock, withControllerLockAsync } from '../../../cli/repositories/locks';
 import type { ResourceClaimSpec } from '../../execution/jobs/types';
 import { readJsonFile, removeFile, writeJsonAtomic } from '../../shared/json-files';
 import { markRepositoryProjectionDirty } from '../../projections/invalidation';
@@ -183,6 +183,65 @@ export function listActiveLeases(controllerHome: string, repoId: string): Execut
   return listAllActiveLeases(controllerHome).filter((lease) => lease.repoId === repoId);
 }
 
+// Editor mutations and managed repository processes already have separate
+// historical lock transports. This is a compatibility bridge, not a third
+// authority: Process allocation checks the existing repository lock under its
+// existing global lease mutex, and editor allocation holds that repository lock
+// while observing current Process claims. Neither path can pass both checks
+// while the other has a physical writer in flight.
+function repositorySourceResourceKey(resourceKey: string): boolean {
+  return /^(?:workspace:|workspace-read:|path:|git-index:|git-head:|git-ref:|git-refs:|repo-content:)/.test(resourceKey);
+}
+
+/**
+ * One existing ControllerLock protects each synchronous editing transaction.
+ * Reject if an earlier managed Process owns overlapping repository source
+ * resources. This check is inside the physical repository lock, so lease
+ * admission below cannot slip a new writer in between check and mutation.
+ * Source reads using the no-lease MCP path stay independently responsive.
+ */
+function assertRepositoryProcessMutationAvailable(controllerHome: string, repoId: string, owner: string): void {
+  // This existing global lease mutex also guards managed Process lease publication.
+  // Lock ordering is repository -> global; Process only observes the repository lock.
+  const blocker = withControllerLock(
+    controllerHome,
+    { scope: 'global', resource: 'execution-leases' },
+    `editor-lease-check:${owner}`,
+    () => listActiveLeases(controllerHome, repoId)
+      .find((lease) => repositorySourceResourceKey(lease.resourceKey)),
+  );
+  if (blocker) {
+    throw new Error(`REPOSITORY_PROCESS_LEASE_HELD: ${blocker.resourceKey} owned by ${blocker.ownerJobId}; refusing concurrent source mutation`);
+  }
+}
+
+export function withRepositoryMutationExclusion<T>(
+  controllerHome: string,
+  repoId: string,
+  owner: string,
+  mutate: () => T,
+  ttlMs?: number,
+): T {
+  return withControllerLock(controllerHome, { scope: 'repository', repoId }, owner, () => {
+    assertRepositoryProcessMutationAvailable(controllerHome, repoId, owner);
+    return mutate();
+  }, ttlMs);
+}
+
+/** The same lock and lease handshake for awaited worker-backed edit mutations. */
+export async function withRepositoryMutationExclusionAsync<T>(
+  controllerHome: string,
+  repoId: string,
+  owner: string,
+  mutate: () => Promise<T>,
+  ttlMs?: number,
+): Promise<T> {
+  return withControllerLockAsync(controllerHome, { scope: 'repository', repoId }, owner, async () => {
+    assertRepositoryProcessMutationAvailable(controllerHome, repoId, owner);
+    return await mutate();
+  }, ttlMs, 0);
+}
+
 export function acquireExecutionLeases(
   controllerHome: string,
   repoId: string,
@@ -216,6 +275,20 @@ export function acquireExecutionLeases(
 
   try {
     return withControllerLock(controllerHome, { scope: 'global', resource: 'execution-leases' }, `lease-acquire:${ownerJobId}`, () => {
+    // Once an editor owns the physical repository lock, a new Process writer
+    // must not publish a conflicting resource lease. The editor performs the
+    // inverse check before touching bytes (under that same repository lock).
+    if (claims.some((claim) => claim.mode !== 'read' && repositorySourceResourceKey(claim.resourceKey))) {
+      const held = readControllerLock(controllerHome, { scope: 'repository', repoId });
+      if (held) {
+        return { acquired: false, leases: [], blockers: [{
+          resourceKey: 'repository-writer',
+          ownerJobId: held.owner,
+          leaseId: held.lockId,
+          mode: 'exclusive' as const,
+        }] };
+      }
+    }
     const active = listAllActiveLeases(controllerHome)
       .filter((lease) => lease.ownerJobId !== ownerJobId || lease.repoId !== repoId);
     const blockers = claims.flatMap((claim) => active

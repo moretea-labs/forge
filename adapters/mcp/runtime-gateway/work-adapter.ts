@@ -60,7 +60,12 @@ async function callRepositoryBoundStart(
 ): Promise<CallToolResult> {
   const store = { controllerHome: ctx.controllerHome, repoId: repository.repoId };
   const workId = semanticWorkId(store, args);
-  const semanticStart = await callRhWorkSemanticOperation(store, 'start', { ...args, work_id: workId });
+  const rawConstraints = contextRecord(args.constraints);
+  // Only explicit isolation needs a managed worktree; the default/auto path
+  // shares the selected checkout just like work_prepare. Freeze this choice
+  // in the initial Work creation, not after the semantic Work has been written.
+  const requestedWorkspaceMode: 'current' | 'isolated' = rawConstraints.workspace_mode === 'isolated' ? 'isolated' : 'current';
+  const semanticStart = await callRhWorkSemanticOperation(store, 'start', { ...args, work_id: workId }, requestedWorkspaceMode);
   if (!semanticStart) {
     return result(buildFacadeResult({
       status: 'blocked',
@@ -79,13 +84,6 @@ async function callRepositoryBoundStart(
   }
 
   try {
-    const rawConstraints = contextRecord(args.constraints);
-    // Placement is caller-owned. Omitted placement and legacy `auto` are the
-    // stable mechanical spelling of the durable-Work isolated/frozen-base default;
-    // only explicit `current` may reuse the selected canonical checkout.
-    const requestedWorkspaceMode: 'current' | 'isolated' = rawConstraints.workspace_mode === 'current'
-      ? 'current'
-      : 'isolated';
     const existingHandle = readWorkHandle(ctx.controllerHome, repository.repoId, workId);
     if (existingHandle) {
       const existingWorkspaceMode = existingHandle.managedWorktree ? 'isolated' : 'current';

@@ -160,6 +160,7 @@ export async function callRhWorkSemanticOperation(
   store: WorkContractStoreOptions,
   operation: string,
   args: Record<string, unknown>,
+  repositoryPlacement?: 'current' | 'isolated',
 ): Promise<CallToolResult | undefined> {
   if (!RH_WORK_SEMANTIC_OPERATIONS.has(operation)) return undefined;
   const workId = operation === 'start' ? semanticWorkId(store, args) : String(args.work_id ?? '').trim();
@@ -171,6 +172,12 @@ export async function callRhWorkSemanticOperation(
     const requestId = typeof args.request_id === 'string' ? args.request_id.trim() : '';
     const existing = getWorkContract(store, workId);
     if (existing) {
+      if (repositoryPlacement && (existing.workKind !== 'repository_change' || existing.constraints.workspaceMode !== repositoryPlacement)) {
+        return result(buildWorkSemanticFacadeResult({
+          status: 'blocked', summary: `WORK_REPOSITORY_ADMISSION_PLACEMENT_CONFLICT: ${workId}`,
+          data: { workId, currentWork: workSemanticView(existing) },
+        }) as unknown as Record<string, unknown>, true);
+      }
       if (!semanticCreateMatches(existing, args, requestId)) return result(buildWorkSemanticFacadeResult({
         status: 'blocked',
         summary: `WORK_SEMANTIC_CREATE_CONFLICT: ${workId}`,
@@ -192,6 +199,7 @@ export async function callRhWorkSemanticOperation(
         workId,
         objective,
         requestedBy: 'chatgpt',
+        ...(repositoryPlacement ? { repositoryPlacement } : {}),
         ...basis,
         ...(typeof args.semantic_parent_work_id === 'string' ? { semanticParentWorkId: args.semantic_parent_work_id } : {}),
         ...(Array.isArray(args.depends_on_work_ids) ? { dependsOnWorkIds: args.depends_on_work_ids.map(String) } : {}),

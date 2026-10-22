@@ -1088,6 +1088,9 @@ describe('terminal Work cleanup', () => {
     if (inspectSession?.isError) throw new Error(JSON.stringify(inspectSession.structuredContent));
     const inspectSessionId = (inspectSession?.structuredContent as { session: { sessionId: string } }).session.sessionId;
     expect(inspectSessionId).not.toBe(beforeInspect.sessionId);
+    // The default summary reads one Git status/identity snapshot; a caller
+    // must ask for detail before Forge generates a staged/unstaged patch.
+    writeFileSync(join(beforeInspect.worktreePath, 'README.md'), 'fixture modified for inspect\\n');
     const inspected = await callExecutionTool(ctx, 'work_inspect', {
       session_id: inspectSessionId, repo_id: fx.repository.repoId, work_id: recovery.work.workId,
     });
@@ -1095,6 +1098,17 @@ describe('terminal Work cleanup', () => {
     expect(inspected?.structuredContent).toMatchObject({
       work: { workId: recovery.work.workId }, readiness: { valid: true },
     });
+    expect(inspected?.structuredContent).toMatchObject({
+      paths: { changed: ['README.md'] },
+      git: { diff: { omitted: true, patch: '' }, status: { unstaged: ['README.md'] } },
+    });
+    const detailed = await callExecutionTool(ctx, 'work_inspect', {
+      session_id: inspectSessionId, repo_id: fx.repository.repoId, work_id: recovery.work.workId, detail: 'detail',
+    });
+    if (detailed?.isError) throw new Error(JSON.stringify(detailed.structuredContent));
+    const detailedGit = (detailed?.structuredContent as { git: { diff: { patch: string; omitted?: boolean } } }).git;
+    expect(detailedGit.diff.omitted).toBeUndefined();
+    expect(detailedGit.diff.patch).toContain('fixture modified for inspect');
     expect(readWorkHandle(fx.controllerHome, fx.repository.repoId, recovery.work.workId)).toEqual(beforeInspect);
     const retired = await callExecutionTool(ctx, 'work_inspect', {
       session_id: inspectSessionId, repo_id: fx.repository.repoId, work_id: sourceId,

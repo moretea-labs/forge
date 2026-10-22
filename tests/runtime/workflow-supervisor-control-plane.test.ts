@@ -3672,7 +3672,8 @@ test('verified repeated exact-conversation empty shells migrate only a never-sen
 test('a terminal conversation capacity banner migrates the same Supervisor but quoted activity text cannot', async () => {
   const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-capacity-migration-'));
   roots.push(root);
-  const store = new WorkflowSupervisorStore(join(root, 'supervisor-home'));
+  let clockMs = Date.now();
+  const store = new WorkflowSupervisorStore(join(root, 'supervisor-home'), { now: () => clockMs });
   const control = new WorkflowSupervisorControlPlane(store, {}, {
     browserTaskActive: () => true,
     projectScopeForTask: () => ({ title: 'Avela' }),
@@ -3717,8 +3718,10 @@ test('a terminal conversation capacity banner migrates the same Supervisor but q
     snapshot: async (observedPage) => ({
       url: observedPage === page ? conversationUrl : 'https://chatgpt.com/g/g-p-123456789abcdef0/project',
       title: 'Avela',
-      latestUserText: observedPage === page ? 'Original durable effect already submitted.' : '',
-      latestAssistantResponse: '', providerActivityText: observedPage === page ? warning : '',
+      // The live capacity banner can outlive hydration of the old transcript.
+      // A quoted activity line without a live failure remains insufficient.
+      latestUserText: observedPage === page && !activeStatus ? 'Original durable effect already submitted.' : '',
+      latestAssistantResponse: '', providerActivityText: observedPage === page && !activeStatus ? warning : '',
       providerFailureText: observedPage === page ? activeStatus : '',
       latestTurnRole: 'user' as const,
       isGenerating: false,
@@ -3732,7 +3735,7 @@ test('a terminal conversation capacity banner migrates the same Supervisor but q
   });
   const adapter = new WorkflowSupervisorNativeBrowserAdapter(control, new WorkflowSupervisorEphemeralDiscovery(), {
     targetPort,
-    nowMs: () => Date.now(),
+    nowMs: () => clockMs,
     providerIdleGraceMs: 60_000,
     providerScopeKey: join(root, 'provider-scope'),
     sleep: async () => undefined,
@@ -3743,6 +3746,28 @@ test('a terminal conversation capacity banner migrates the same Supervisor but q
   await adapter.runOnce();
   expect(store.getTask(taskId)?.conversationId).toBe(conversationId);
   activeStatus = warning;
+  await adapter.runOnce();
+  // Even an explicit provider capacity banner cannot abandon an applied turn
+  // until its durable causal completion is recorded.
+  expect(store.getTask(taskId)?.conversationId).toBe(conversationId);
+  expect(store.getEffectByOriginKey(`fresh-conversation:${taskId}:capacity:${conversationId}`)).toBeUndefined();
+  expect(() => control.migrateConversation({ taskId, expectedConversationId: conversationId,
+    fresh: true, requestId: 'capacity-unresolved-direct', reason: 'Terminal capacity', authorizedBy: 'test',
+  })).toThrow('WORKFLOW_SUPERVISOR_MIGRATION_APPLIED_TURN_UNRESOLVED');
+  expect(() => control.migrateConversation({ taskId, expectedConversationId: conversationId,
+    conversationId: '99999999-8888-7777-6666-555555555555',
+    conversationUrl: 'https://chatgpt.com/c/99999999-8888-7777-6666-555555555555',
+    requestId: 'capacity-unresolved-explicit', reason: 'Move conversation', authorizedBy: 'test',
+  })).toThrow('WORKFLOW_SUPERVISOR_MIGRATION_APPLIED_TURN_UNRESOLVED');
+  const completed = await control.observeAssistantTurn({ taskId, conversationId,
+    responseText: 'Existing turn completed.\n' + renderSupervisorReceipt(control.getTask(taskId)!, effect.effectId, 'CONTINUE'),
+  });
+  expect(completed.action).toBe('CONTINUE');
+  // The old transcript is now empty while the exact provider failure banner
+  // remains visible. The CAS can migrate only after that applied receipt.
+  // The previous capacity observation set task-local backoff. A completed
+  // source receipt restores eligibility, but it must respect that spacing.
+  clockMs += 5 * 60_000;
   await adapter.runOnce();
   expect(store.getTask(taskId)?.conversationId).toBe(`bootstrap:${taskId}`);
   expect(store.latestEffectDispatch(effect.effectId)?.generation).toBe(1);
@@ -3887,6 +3912,8 @@ test('final assistant receipt successor waits for observed provider idle before 
   // In-flight generation must never trigger a successor send, even if a
   // compatible prior receipt appears in the visible response.
   let submittedText = '继续。';
+  let blankTimeline = false;
+  let dehydrateOnPrepare = false;
   let owner = `forge-workflow-supervisor:created:${conversationId}`;
   let generating = true;
   let closeCount = 0;
@@ -3938,10 +3965,14 @@ test('final assistant receipt successor waits for observed provider idle before 
         };
       }
       return {
-        url: conversationUrl, title: 'Tool-only completed turn', latestUserText: submittedText,
-        latestAssistantResponse: '', latestTurnRole: 'user' as const,
+        url: conversationUrl, title: 'Tool-only completed turn', latestUserText: blankTimeline ? '' : submittedText,
+        latestAssistantResponse: '', composerText: '', latestTurnRole: 'user' as const,
         isGenerating: generating, providerActivityText: '', providerFailureText: '',
       };
+    },
+    preparePrompt: async () => {
+      if (dehydrateOnPrepare) { blankTimeline = true; dehydrateOnPrepare = false; }
+      return { ready: true };
     },
     dispatchPrompt: async (_page: TestBrowserPage, prompt: string) => {
       dispatched.push(prompt); submittedText = prompt; scanEvents.push('successor-send');
@@ -3964,6 +3995,19 @@ test('final assistant receipt successor waits for observed provider idle before 
   generating = false;
   nowMs += 1_500;
   storeClockMs += 4 * 60_000;
+  blankTimeline = true;
+  await adapter.runOnce();
+  expect(dispatched).toEqual([]);
+  expect(store.latestEffectDispatch(successor!.effectId)).toBeUndefined();
+  blankTimeline = false;
+  dehydrateOnPrepare = true;
+  nowMs += 15 * 60_000;
+  await adapter.runOnce();
+  expect(dispatched).toEqual([]);
+  expect(store.latestEffectDispatch(successor!.effectId)).toBeUndefined();
+  // Recover the very same prepared effect; no new Send identity or generation.
+  blankTimeline = false;
+  nowMs += 15 * 60_000;
   await adapter.runOnce();
   expect(dispatched).toEqual([successor!.prompt]);
   expect(store.latestEffectDispatch(successor!.effectId)?.generation).toBe(1);

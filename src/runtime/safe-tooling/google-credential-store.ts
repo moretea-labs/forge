@@ -1,4 +1,5 @@
 import { execFileSync } from 'child_process';
+import { writeMacKeychainGenericPassword } from './mac-keychain-write';
 
 export type StoredGoogleService = 'gmail' | 'calendar' | 'tasks' | 'google-workspace';
 export type StoredGoogleCredentialKind = 'refresh-token' | 'client-secret';
@@ -43,17 +44,7 @@ const macKeychainAdapter: GoogleCredentialStoreAdapter = {
     if (process.platform !== 'darwin') {
       throw new Error('GOOGLE_CREDENTIAL_STORE_UNAVAILABLE: macOS Keychain is required for local OAuth credential persistence');
     }
-    execFileSync('/usr/bin/security', [
-      'add-generic-password',
-      '-U',
-      '-s', keychainService(service),
-      '-a', KEYCHAIN_ACCOUNT[kind],
-      '-w', value,
-    ], {
-      encoding: 'utf-8',
-      stdio: ['ignore', 'ignore', 'pipe'],
-      timeout: 5_000,
-    });
+    writeMacKeychainGenericPassword(keychainService(service), KEYCHAIN_ACCOUNT[kind], value);
   },
 };
 

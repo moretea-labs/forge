@@ -36,7 +36,10 @@ import {
   type LocalBridgeServerHandle,
 } from "../../src/cli/local-bridge/server";
 import { isProcessAlive } from "../../src/runtime/shared/process-tree";
-import { loadRepositoryRegistry, registerRepository } from "../../src/cli/repositories/registry";
+import { loadRepositoryRegistry, registerRepository, resolveRepositorySelection } from "../../src/cli/repositories/registry";
+import { acquireControllerLock, releaseControllerLock } from "../../src/cli/repositories/locks";
+import { acquireExecutionLeases, releaseExecutionLeases } from '../../src/runtime/resources/leases/store';
+import { createMcpToolContext, callMultiRepositoryTool } from '../../adapters/mcp/multi-repository';
 import { createSchedule, saveOccurrence, saveSchedule } from "../../src/runtime/workflow/schedules/store";
 import { terminateProcessesByCommand, waitForNoProcessesByCommand } from "../runtime/process-hygiene";
 
@@ -826,11 +829,98 @@ describe("Local Execution Bridge", () => {
     expect(verified.status).toBe("succeeded");
     expect(verified.sessionId).toBe(session.sessionId);
     // Direct verification no longer creates a Local Bridge Job.
-    const finalized = await fetch(new URL(`/api/edit-sessions/${session.sessionId}/finalize`, handle.url), {
+    // Both real entrypoints use the same pre-existing repository lock. A
+    // competing editor must not cause a partial edit or a second writer.
+    const controllerHome = process.env.FORGE_CONTROLLER_HOME!;
+    const repository = resolveRepositorySelection({ explicitPath: root, controllerHome });
+    const lockKey = { scope: 'repository' as const, repoId: repository.repoId };
+    const lock = acquireControllerLock(controllerHome, lockKey, 'test:competing-editor');
+    try {
+      // A managed Process cannot publish a workspace writer lease while this
+      // editor owns the existing repository lock.
+      const denied = acquireExecutionLeases(controllerHome, repository.repoId, 'test:process-during-editor', [
+        { resourceKey: `workspace:${repository.activeCheckoutId}`, mode: 'write' },
+      ], { visibility: 'ephemeral', notifyScheduler: false, invalidateProjection: false, emitRuntimeEvent: false });
+      expect(denied.acquired).toBe(false);
+      expect(denied.blockers.some((entry) => entry.resourceKey === 'repository-writer')).toBe(true);
+      const blocked = await fetch(new URL(`/api/edit-sessions/${session.sessionId}/finalize`, handle.url), {
+        method: "POST",
+        headers: { ...headers, "content-type": "application/json" },
+        body: JSON.stringify({ reviewer: "local-test" }),
+      });
+      expect(blocked.status).toBe(400);
+      expect((await blocked.json()).error).toContain('LOCK_HELD');
+      for (const [route, body] of [
+        ['savepoints', { name: 'locked-savepoint' }],
+        ['verify', { reviewer: 'locked-reviewer' }],
+      ] as const) {
+        const blockedEdit = await fetch(new URL(`/api/edit-sessions/${session.sessionId}/${route}`, handle.url), {
+          method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify(body),
+        });
+        expect(blockedEdit.status).toBe(400);
+        expect((await blockedEdit.json()).error).toContain('LOCK_HELD');
+      }
+      const legacyContext = createMcpToolContext({ repo: root, controllerHome, profile: 'controller' });
+      const legacyAttempt = await callMultiRepositoryTool(legacyContext, 'begin_edit_session', { purpose: 'competing editor' });
+      expect(legacyAttempt.isError).toBe(true);
+      expect(JSON.stringify(legacyAttempt.structuredContent)).toContain('LOCK_HELD');
+      // Historical pre-cutover completion must share the same repository
+      // writer, even though it also owns an independent integration target lock.
+      // Missing run/session lookups must not occur before the lock fence.
+      const finishEdit = await fetch(new URL(`/api/edit-sessions/${session.sessionId}/finish`, handle.url), {
+        method: "POST",
+        headers: { ...headers, "content-type": "application/json" },
+        body: JSON.stringify({ decision: "auto" }),
+      });
+      expect(finishEdit.status).toBe(400);
+      expect((await finishEdit.json()).error).toContain('LOCK_HELD');
+      const finishRun = await fetch(new URL('/api/runs/missing-run/finish', handle.url), {
+        method: "POST",
+        headers: { ...headers, "content-type": "application/json" },
+        body: JSON.stringify({ decision: "auto" }),
+      });
+      expect(finishRun.status).toBe(400);
+      expect((await finishRun.json()).error).toContain('LOCK_HELD');
+    } finally {
+      releaseControllerLock(controllerHome, lockKey, lock.lockId);
+    }
+
+    // Opposite ordering: a managed Process has already acquired its durable
+    // source claim. Both old editor surfaces must reject before touching bytes.
+    const running = acquireExecutionLeases(controllerHome, repository.repoId, 'test:managed-writer', [
+      { resourceKey: `workspace:${repository.activeCheckoutId}`, mode: 'write' },
+    ], { visibility: 'ephemeral', notifyScheduler: false, invalidateProjection: false, emitRuntimeEvent: false });
+    expect(running.acquired).toBe(true);
+    try {
+      const blockedByProcess = await fetch(new URL(`/api/edit-sessions/${session.sessionId}/finalize`, handle.url), {
+        method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify({ reviewer: 'local-test' }),
+      });
+      expect(blockedByProcess.status).toBe(400);
+      expect((await blockedByProcess.json()).error).toContain('REPOSITORY_PROCESS_LEASE_HELD');
+      const legacyAttempt = await callMultiRepositoryTool(
+        createMcpToolContext({ repo: root, controllerHome, profile: 'controller' }),
+        'begin_edit_session', { purpose: 'editor conflicts with managed Process' },
+      );
+      expect(legacyAttempt.isError).toBe(true);
+      expect(JSON.stringify(legacyAttempt.structuredContent)).toContain('REPOSITORY_PROCESS_LEASE_HELD');
+    } finally {
+      releaseExecutionLeases(controllerHome, repository.repoId, 'test:managed-writer', running.leases, {
+        visibility: 'ephemeral', notifyScheduler: false, invalidateProjection: false, emitRuntimeEvent: false,
+      });
+    }
+    const savepoint = await fetch(new URL(`/api/edit-sessions/${session.sessionId}/savepoints`, handle.url), {
+      method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify({ name: 'unlocked-savepoint' }),
+    }).then((response) => response.json());
+    expect(savepoint.savepoints.some((item: { name: string }) => item.name === 'unlocked-savepoint')).toBe(true);
+    const finalization = fetch(new URL(`/api/edit-sessions/${session.sessionId}/finalize`, handle.url), {
       method: "POST",
       headers: { ...headers, "content-type": "application/json" },
       body: JSON.stringify({ reviewer: "local-test" }),
-    }).then((response) => response.json());
+    });
+    // A read-only HTTP request stays serviceable while the editor worker runs.
+    const concurrentRead = await fetch(new URL("/api/snapshot", handle.url), { headers });
+    expect(concurrentRead.status).toBe(200);
+    const finalized = await finalization.then((response) => response.json());
     expect(finalized.status).toBe("finalized");
   });
   test("preserves executable mode when an Edit Session replaces a shebang file", () => {
@@ -955,7 +1045,7 @@ describe("Local Execution Bridge", () => {
     expect(snapshot.board).toBeDefined();
     expect(snapshot.toolSurface).toBe(FORGE_TOOL_SURFACE);
     expect(snapshot.timeoutPolicy).toEqual({
-      defaultTimeoutMs: 10_000,
+      defaultTimeoutMs: 3_600_000,
       maxTimeoutMs: 43_200_000,
     });
 

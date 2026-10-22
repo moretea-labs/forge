@@ -14,6 +14,7 @@ import { buildResendPluginManifest, executeResendPluginAction } from '../../src/
 import { executeAssistantPluginActionApplication } from '../../src/runtime/plugins/action-application';
 import { buildMimeMessage, GMAIL_AUTOMATION_CAPABILITY_ID, GMAIL_OWNER_NOTIFICATION_CAPABILITY_ID, GMAIL_PLUGIN_ID } from '../../src/runtime/plugins/gmail-adapter';
 import { controllerPluginConfigPath } from '../../src/runtime/plugins/config-store';
+import { writeMacKeychainGenericPassword } from '../../src/runtime/safe-tooling/mac-keychain-write';
 import { createFirstPartyPluginAdapterMap } from '../../src/runtime/plugins/first-party-registry';
 import { getPluginActionCapabilitySchema } from '../../src/runtime/control-plane/facade/capability-registry';
 import { buildPluginManagementManifest } from '../../src/runtime/plugins/plugin-management-adapter';
@@ -132,6 +133,25 @@ process.on('SIGTERM', () => server.close(() => process.exit(0)));
     });
   });
 }
+
+describe('macOS Keychain secret-safe write transport', () => {
+  test.skipIf(process.platform !== 'darwin')('writes quoted dummy secret to an isolated Keychain without credential argv', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-isolated-keychain-'));
+    roots.push(root);
+    const keychain = join(root, 'isolated.keychain');
+    const created = spawnSync('/usr/bin/security', ['create-keychain', '-p', 'dummy-test-only', keychain], { stdio: 'ignore' });
+    expect(created.status).toBe(0);
+    const dummy = JSON.stringify({ token: 'fake value with spaces and "quotes"', fragment: 'back\\\\slash' });
+    writeMacKeychainGenericPassword('forge.test-credential', 'dummy', dummy, keychain);
+    const readback = spawnSync('/usr/bin/security', ['find-generic-password', '-s', 'forge.test-credential', '-a', 'dummy', '-w', keychain], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+    expect(readback.status).toBe(0);
+    expect(readback.stdout.trim()).toBe(dummy);
+    // macOS security -i may exit 0 for an invalid subcommand destination.
+    // A non-existent Keychain must never appear as a successful store.
+    expect(() => writeMacKeychainGenericPassword('forge.test-credential', 'dummy', dummy, join(root, 'missing.keychain'))).toThrow('MAC_KEYCHAIN_WRITE_FAILED');
+    expect(() => writeMacKeychainGenericPassword('forge.test-credential', 'dummy', 'line1\nline2', keychain)).toThrow('MAC_KEYCHAIN_ARGUMENT_INVALID');
+  });
+});
 
 describe('plugin action resource replay fencing', () => {
   test('successful provider effect survives old-Runtime lease cleanup fencing and the successor reclaims immediately', async () => {

@@ -407,14 +407,14 @@ describe('repository command execution lifecycle', () => {
 
   test('raw git commits derive staged-index scope while widening forms stay blocked and selected-path commits isolate unrelated staged work', async () => {
     const route = (command: string[] | string) => classifyRepositoryCommandRoute(command);
-    expect(route(['git', 'commit', '-m', 'staged index'])).toEqual({ route: 'process_direct', reason: 'ephemeral_local_workspace_mutation' });
-    expect(route("git commit -m 'staged index shell'")).toEqual({ route: 'process_direct', reason: 'ephemeral_local_workspace_mutation' });
-    expect(route(['bash', '-lc', "git commit -m 'wrapped staged index'"])).toEqual({ route: 'process_direct', reason: 'lightweight_local_shell_wrapper' });
+    expect(route(['git', 'commit', '-m', 'staged index'])).toEqual({ route: 'process_managed', reason: 'workspace_write_requires_process_lease' });
+    expect(route("git commit -m 'staged index shell'")).toEqual({ route: 'process_managed', reason: 'workspace_write_requires_process_lease' });
+    expect(route(['bash', '-lc', "git commit -m 'wrapped staged index'"])).toEqual({ route: 'process_managed', reason: 'workspace_write_requires_process_lease' });
     expect(route("git add . && git commit -m 'compound unsafe'")).toEqual({ route: 'reject', reason: 'git_commit_requires_explicit_path_scope' });
-    expect(route(['git', 'commit', '--only', '-m', 'safe', '--', 'README.md'])).toEqual({ route: 'process_direct', reason: 'ephemeral_local_workspace_mutation' });
-    expect(route(['git', 'commit', '-m', 'safe argv pathspec', '--', 'README.md', 'docs/forge-plugin-management.md'])).toEqual({ route: 'process_direct', reason: 'ephemeral_local_workspace_mutation' });
-    expect(route("git commit -m 'safe shell pathspec' -- README.md docs/forge-plugin-management.md")).toEqual({ route: 'process_direct', reason: 'ephemeral_local_workspace_mutation' });
-    expect(route(['bash', '-lc', "git commit -m 'safe wrapped pathspec' -- README.md"])).toEqual({ route: 'process_direct', reason: 'lightweight_local_shell_wrapper' });
+    expect(route(['git', 'commit', '--only', '-m', 'safe', '--', 'README.md'])).toEqual({ route: 'process_managed', reason: 'workspace_write_requires_process_lease' });
+    expect(route(['git', 'commit', '-m', 'safe argv pathspec', '--', 'README.md', 'docs/forge-plugin-management.md'])).toEqual({ route: 'process_managed', reason: 'workspace_write_requires_process_lease' });
+    expect(route("git commit -m 'safe shell pathspec' -- README.md docs/forge-plugin-management.md")).toEqual({ route: 'process_managed', reason: 'workspace_write_requires_process_lease' });
+    expect(route(['bash', '-lc', "git commit -m 'safe wrapped pathspec' -- README.md"])).toEqual({ route: 'process_managed', reason: 'workspace_write_requires_process_lease' });
     expect(route(['bash', '-lc', "rg -n 'git commit' src tests"])).toEqual({ route: 'process_direct', reason: 'readonly_fast_path' });
     expect(route(['git', 'commit', '-a', '-m', 'scope widening', '--', 'README.md'])).toEqual({ route: 'reject', reason: 'git_commit_requires_explicit_path_scope' });
     expect(route("git commit --include -m 'scope widening' -- README.md")).toEqual({ route: 'reject', reason: 'git_commit_requires_explicit_path_scope' });
@@ -484,9 +484,9 @@ describe('repository command execution lifecycle', () => {
     expect(route(['bash', '-lc', 'curl -fsS http://127.0.0.1:8765/ready'])).toEqual({ route: 'process_direct', reason: 'readonly_fast_path' });
     expect(route(['bash', '-lc', 'curl -fsS http://127.0.0.1:8765/ready >/dev/null'])).toEqual({ route: 'process_direct', reason: 'readonly_fast_path' });
     for (const payload of ['curl -fsS http://127.0.0.1:8765/ready > marker.txt', 'curl -fsS -X POST http://127.0.0.1:8765/ready', 'curl -fsS -d payload http://127.0.0.1:8765/ready', 'curl -fsS https://example.com/']) expect(route(['bash', '-lc', payload])).toEqual({ route: 'process_managed', reason: 'shell_wrapper_requires_managed_boundary' });
-    for (const payload of ['printf local > marker.txt', 'bun -e "console.log(1)"']) expect(route(['bash', '-lc', payload])).toEqual({ route: 'process_direct', reason: 'lightweight_local_shell_wrapper' });
-    expect(route(['bun', '-e', 'await fetch("http://127.0.0.1:8765/ready")'])).toEqual({ route: 'process_direct', reason: 'lightweight_local_inline_interpreter' });
-    expect(route(['touch', 'marker.txt'])).toEqual({ route: 'process_direct', reason: 'ephemeral_local_workspace_mutation' });
+    for (const payload of ['printf local > marker.txt', 'bun -e "console.log(1)"']) expect(route(['bash', '-lc', payload])).toEqual({ route: 'process_managed', reason: 'workspace_write_requires_process_lease' });
+    expect(route(['bun', '-e', 'await fetch("http://127.0.0.1:8765/ready")'])).toEqual({ route: 'process_managed', reason: 'workspace_write_requires_process_lease' });
+    expect(route(['touch', 'marker.txt'])).toEqual({ route: 'process_managed', reason: 'workspace_write_requires_process_lease' });
   });
 
   test('readonly direct execution exposes unobserved mutation evidence without taking before/after snapshots', async () => {
@@ -600,7 +600,7 @@ describe('repository command execution lifecycle', () => {
     expect(listActiveLeases(controllerHome, repository.repoId)).toHaveLength(0);
   });
 
-  test('local shell wrappers and inline interpreters stay lightweight without persistent Process or Lease state', async () => {
+  test('local shell and inline workspace writes use Process leases rather than unclaimed lightweight subprocesses', async () => {
     const controllerHome = tempRoot('forge-cmd-opaque-home-'); const repoRoot = tempRoot('forge-cmd-opaque-repo-'); const repository = seedRepo(controllerHome, repoRoot);
     persistControllerAccessMode(controllerHome, 'full_access'); const processCount = listProcessRecords(controllerHome, repository.repoId).length;
     for (const [command, marker, expected] of [
@@ -608,18 +608,19 @@ describe('repository command execution lifecycle', () => {
       [['bun', '-e', "await Bun.write('inline-marker.txt', 'inline-lightweight\\n')"], 'inline-marker.txt', 'inline-lightweight\n'],
     ] as const) {
       const result = await executeRepositoryCommandViaProcessRuntime({ controllerHome, repository, command, timeoutMs: 10_000, executionIdentity: executionIdentityForRepository(repository) });
-      expect(result.process?.processId).toStartWith('lightweight:');
-      expect(result.executionMetrics).toMatchObject({ lane: 'lightweight_managed', durableWrites: 0, leaseOperations: 0 });
+      expect(result.process?.processId).not.toStartWith('lightweight:');
+      expect(result.executionMetrics).toMatchObject({ lane: 'durable_process' });
       const terminal = result.process!.completed
         ? result.process!
         : await waitRepositoryCommandProcess(controllerHome, repository.repoId, result.process!.processId, { timeoutMs: 10_000 });
       expect(terminal).toMatchObject({ completed: true, ok: true });
       expect(readFileSync(join(repoRoot, marker), 'utf-8')).toBe(expected);
     }
-    expect(listProcessRecords(controllerHome, repository.repoId)).toHaveLength(processCount); expect(listActiveLeases(controllerHome, repository.repoId)).toHaveLength(0);
+    expect(listProcessRecords(controllerHome, repository.repoId).length).toBeGreaterThan(processCount);
+    expect(listActiveLeases(controllerHome, repository.repoId)).toHaveLength(0);
   });
 
-  test('long ordinary local command upgrades only to an in-memory lightweight handle', async () => {
+  test('long ordinary local workspace mutation holds a Process resource lease', async () => {
     const controllerHome = tempRoot('forge-cmd-light-home-');
     const repoRoot = tempRoot('forge-cmd-light-repo-');
     const repository = seedRepo(controllerHome, repoRoot);
@@ -636,13 +637,14 @@ describe('repository command execution lifecycle', () => {
       executionIdentity: executionIdentityForRepository(repository),
     });
     expect(result.route).toBe('process_managed');
-    expect(result.process?.processId).toStartWith('lightweight:');
-    expect(result.executionMetrics).toMatchObject({ lane: 'lightweight_managed', durableWrites: 0, leaseOperations: 0 });
-    expect(listProcessRecords(controllerHome, repository.repoId)).toHaveLength(processCount);
-    expect(listActiveLeases(controllerHome, repository.repoId)).toHaveLength(0);
+    expect(result.process?.processId).not.toStartWith('lightweight:');
+    expect(result.executionMetrics).toMatchObject({ lane: 'durable_process' });
+    expect(listProcessRecords(controllerHome, repository.repoId).length).toBeGreaterThan(processCount);
+    expect(listActiveLeases(controllerHome, repository.repoId).length).toBeGreaterThan(0);
     const terminal = await waitRepositoryCommandProcess(controllerHome, repository.repoId, result.process!.processId, { timeoutMs: 10_000 });
     expect(terminal).toMatchObject({ completed: true, ok: true });
     expect(terminal.stdout).toContain('lightweight-ok');
+    expect(listActiveLeases(controllerHome, repository.repoId)).toHaveLength(0);
   });
 
   test('ordinary remote writes execute through managed Process Runtime without external-controller delegation', async () => {

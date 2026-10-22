@@ -34,7 +34,6 @@ import {
 import type { ProcessHandle, ProcessCommandSpec } from './types';
 import { DEFAULT_INTERACTIVE_WAIT_MS } from './types';
 import { durationAwareInteractiveWaitMs } from './interactive-admission';
-import { isFocusedCheckCommand } from '../thin-harness/execution-router';
 import { assertExecutionIdentity, type ResolvedExecutionIdentity } from '../../control-plane/execution/execution-identity';
 import { settleWorkHandleExpectedHeadAfterRepositoryCommand } from '../../control-plane/execution/work-head-settlement';
 import {
@@ -277,43 +276,17 @@ export function classifyRepositoryCommandRoute(
   if (options.workId?.trim() && classification.risk !== 'readonly') {
     return { route: 'process_managed', reason: 'work_attributed_effectful_durable' };
   }
-  const text = Array.isArray(command) ? command.join(' ') : String(command);
-  // Classification chooses scheduling/receipt granularity only; it does not
-  // decide whether a scoped repository command is allowed to run. Known remote
-  // or broadly effectful commands use managed Process Runtime so existing
-  // resource claims and receipts can serialize/reconcile them. Unknown commands
-  // still execute instead of requiring a new allow rule.
-  if (classification.risk === 'remote_write' || classification.risk === 'destructive') {
-    return { route: 'process_managed', reason: 'effectful_command_managed' };
-  }
-  const argv = Array.isArray(command) ? command : [];
-  const executable = argv[0]?.split(/[\\/]/).pop()?.toLowerCase();
-  const shellWrapped = Boolean(executable
-    && ['bash', 'sh', 'zsh', 'fish', 'dash', 'cmd', 'powershell', 'pwsh'].includes(executable)
-    && argv.slice(1).some((arg) => ['-c', '-lc', '/c', '-Command'].includes(arg)));
-  const wrappedShellCommand = shellWrapped ? fixedShellWrapperCommand(argv) : undefined;
-  const wrapsInlineInterpreter = Boolean(wrappedShellCommand
-    && /^\s*(?:exec\s+)?(?:node|nodejs|bun|deno|ruby|perl|python\d*)\b[^\n]*(?:\s-c\b|\s-e\b|\s--eval\b)/i.test(wrappedShellCommand));
-  const wrapsObviousExternalIo = Boolean(wrappedShellCommand
-    && /\b(?:curl|wget|ssh|scp|sftp|ftp|telnet|nc|ncat)\b|https?:\/\//i.test(wrappedShellCommand));
-  if (shellWrapped && classification.risk !== 'readonly') {
-    if (wrapsObviousExternalIo && !wrapsInlineInterpreter) {
-      return { route: 'process_managed', reason: 'shell_wrapper_requires_managed_boundary' };
-    }
-    return { route: 'process_direct', reason: 'lightweight_local_shell_wrapper' };
-  }
-  if (executable && ['node', 'nodejs', 'bun', 'deno', 'ruby', 'perl', 'python', 'python3'].includes(executable)
-    && argv.slice(1).some((arg) => ['-c', '-e', '--eval'].includes(arg))) {
-    return { route: 'process_direct', reason: 'lightweight_local_inline_interpreter' };
-  }
+  // Read-only observations remain lease-free. A workspace mutation must
+  // declare its workspace/index/ref resources for its full process lifetime;
+  // the lightweight direct subprocess deliberately owns no leases.
+  // This chooses execution placement, not whether a command is authorized.
   if (classification.risk === 'readonly') {
     return { route: 'process_direct', reason: 'readonly_fast_path' };
   }
-  // workspace_write / build-test
-  if (isFocusedCheckCommand(command) || /\b(?:test|typecheck|lint|build|check)\b/i.test(text)) {
-    return { route: 'process_direct', reason: 'ephemeral_local_build_or_test' };
+  if (classification.risk === 'remote_write' || classification.risk === 'destructive') {
+    return { route: 'process_managed', reason: 'effectful_command_managed' };
   }
-  return { route: 'process_direct', reason: 'ephemeral_local_workspace_mutation' };
+  return { route: 'process_managed', reason: 'workspace_write_requires_process_lease' };
 }
 
 /**

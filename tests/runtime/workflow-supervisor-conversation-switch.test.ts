@@ -147,6 +147,9 @@ describe('Workflow Supervisor fresh conversation switch', () => {
     expect(store.getTask(taskId)?.conversationId).toBe(`bootstrap:${taskId}`);
     expect(store.getTask(taskId)?.taskId).toBe(taskId);
     expect(store.currentUnappliedEffect(taskId)?.effectId).toBe(effect.effectId);
+    // History from the old chat stays replayable but does not make a fresh chat established.
+    expect(store.getLatestCompletion(taskId)).toBeDefined();
+    expect(store.hasCompletionInCurrentConversation(taskId)).toBe(false);
     // The first reply echoes the challenge sent before binding the fresh URL.
     const sentChallenge = /^receipt:([0-9a-f]{7})$/m.exec(effect.prompt)?.[1];
     expect(sentChallenge).toBeDefined();
@@ -160,6 +163,7 @@ describe('Workflow Supervisor fresh conversation switch', () => {
       taskId, conversationId: freshId, conversationUrl: `https://chatgpt.com/c/${freshId}`,
     });
     expect(store.getTask(taskId)?.conversationId).toBe(freshId);
+    expect(store.hasCompletionInCurrentConversation(taskId)).toBe(false);
     // A healthy second window must be eligible to rotate again. Migration
     // budgets limit *consecutive failed* moves, never lifetime conversations.
     for (let n = 11; n <= 20; n += 1) {
@@ -169,6 +173,8 @@ describe('Workflow Supervisor fresh conversation switch', () => {
         responseText: 'Delivered useful work.\n' + (n === 11 ? bootstrapReceipt : renderSupervisorReceipt(control.getTask(taskId)!, effect.effectId, 'CONTINUE')),
       });
       if (!('successorEffect' in result) || !result.successorEffect) throw new Error('MISSING_SUCCESSOR_IN_SECOND_WINDOW');
+      // The tenth new-chat receipt atomically rotates again, resetting scope.
+      expect(store.hasCompletionInCurrentConversation(taskId)).toBe(n < 20);
       effect = result.successorEffect;
       if (n < 20) {
         expect(effect.kind).toBe('continuation');
@@ -177,6 +183,7 @@ describe('Workflow Supervisor fresh conversation switch', () => {
     }
     expect(effect.kind).toBe('enrollment');
     expect(store.getTask(taskId)?.conversationId).toBe(`bootstrap:${taskId}`);
+    expect(store.hasCompletionInCurrentConversation(taskId)).toBe(false);
     // A fresh logical chat cannot be a source retired two migrations ago.
     expect(() => control.bindBootstrapConversation({
       taskId, conversationId: oldConversationId,
@@ -258,6 +265,86 @@ describe('Workflow Supervisor fresh conversation switch', () => {
       expect(unverifiedEffect.kind).toBe(n === 10 ? 'enrollment' : 'continuation');
     }
     expect(store.getTask(unverifiedTaskId)?.conversationId).toBe('bootstrap:' + unverifiedTaskId);
+
+    // The sixth receipt cannot retire an unrelated applied, unanswered turn.
+    const siblingTaskId = 'supervisor:receipt-cadence-unanswered-sibling';
+    const siblingConversation = 'abababab-aaaa-bbbb-cccc-cdcdcdcdcdcd';
+    control.registerTask({
+      taskId: siblingTaskId, conversationId: siblingConversation,
+      conversationUrl: 'https://chatgpt.com/c/' + siblingConversation,
+      objective: 'Keep the unanswered sibling on its original conversation.',
+      completionContract: {}, continuationPolicy: { kind: 'standalone_supervisor' }, userBlockerPolicy: {},
+    });
+    for (let n = 0; n < 2; n += 1) store.recordBrowserDeliveryAttemptFailure({
+      taskId: siblingTaskId, conversationId: siblingConversation,
+      code: 'COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE', verifiedEmptyShell: true,
+    });
+    let siblingSource = control.reserveEnrollment(siblingTaskId);
+    for (let n = 1; n <= 6; n += 1) {
+      // Preserve the real source as the latest applied turn for causal receipt
+      // matching; the extra applied sibling still remains unanswered.
+      if (n === 6) {
+        const outstanding = store.reserveEffect({
+          taskId: siblingTaskId, effectId: 'fx_applied_unanswered_sibling_source',
+          kind: 'continuation', originKey: 'test:unanswered-sibling-source',
+          prompt: 'Separate applied source awaits its own reply.',
+        });
+        store.recordEffectDispatchStarted(outstanding.effectId, 1, 'sibling-outstanding-dispatch');
+        store.recordEffectObservation(outstanding.effectId, 'sibling-outstanding-applied', 'applied');
+      }
+      expect(store.recordEffectDispatchStarted(siblingSource.effectId, 1, 'sibling-source-' + n)).toBe(true);
+      control.observeEffect({ effectId: siblingSource.effectId, observationId: 'sibling-source-applied-' + n, outcome: 'applied' });
+      const observed = await control.observeAssistantTurn({
+        taskId: siblingTaskId, conversationId: siblingConversation,
+        responseText: 'Useful progress.\n' + renderSupervisorReceipt(control.getTask(siblingTaskId)!, siblingSource.effectId, 'CONTINUE'),
+      });
+      if (!('successorEffect' in observed) || !observed.successorEffect) throw new Error('SIBLING_SUCCESSOR_MISSING');
+      siblingSource = observed.successorEffect;
+      expect(siblingSource.kind).toBe('continuation');
+      expect(store.getTask(siblingTaskId)?.conversationId).toBe(siblingConversation);
+    }
+    expect(store.hasAppliedEffectAwaitingCompletion(siblingTaskId)).toBe(true);
+
+    // The same auto-rotation path must not abandon an unresolved send.
+    // Unlike an applied sibling, this one has a dispatched generation with
+    // an unknown outcome. A later source reply does not resolve that send.
+    const unknownTaskId = 'supervisor:receipt-cadence-unknown-send';
+    const unknownConversation = 'cdcdcdcd-aaaa-bbbb-cccc-efefefefefef';
+    control.registerTask({
+      taskId: unknownTaskId, conversationId: unknownConversation,
+      conversationUrl: 'https://chatgpt.com/c/' + unknownConversation,
+      objective: 'Do not rotate away from an outcome-unknown sibling send.',
+      completionContract: {}, continuationPolicy: { kind: 'standalone_supervisor' }, userBlockerPolicy: {},
+    });
+    for (let n = 0; n < 2; n += 1) store.recordBrowserDeliveryAttemptFailure({
+      taskId: unknownTaskId, conversationId: unknownConversation,
+      code: 'COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE', verifiedEmptyShell: true,
+    });
+    let current = control.reserveEnrollment(unknownTaskId);
+    for (let n = 1; n <= 6; n += 1) {
+      if (n === 6) {
+        const unknown = store.reserveEffect({
+          taskId: unknownTaskId, effectId: 'fx_undetermined_sibling_send',
+          kind: 'continuation', originKey: 'test:undetermined-sibling-send',
+          prompt: 'Separate send with unverified delivery.',
+        });
+        expect(store.recordEffectDispatchStarted(unknown.effectId, 1, 'unknown-sibling-send')).toBe(true);
+        store.recordEffectObservation(unknown.effectId, 'unknown-sibling-observation', 'unknown', {
+          surface: 'macos-native', reason: 'outbound_not_confirmed',
+        });
+      }
+      expect(store.recordEffectDispatchStarted(current.effectId, 1, 'unknown-guard-source-' + n)).toBe(true);
+      control.observeEffect({ effectId: current.effectId, observationId: 'unknown-guard-applied-' + n, outcome: 'applied' });
+      const observed = await control.observeAssistantTurn({
+        taskId: unknownTaskId, conversationId: unknownConversation,
+        responseText: 'Useful progress.\n' + renderSupervisorReceipt(control.getTask(unknownTaskId)!, current.effectId, 'CONTINUE'),
+      });
+      if (!('successorEffect' in observed) || !observed.successorEffect) throw new Error('UNKNOWN_GUARD_SUCCESSOR_MISSING');
+      current = observed.successorEffect;
+      expect(current.kind).toBe('continuation');
+      expect(store.getTask(unknownTaskId)?.conversationId).toBe(unknownConversation);
+    }
+    expect(store.currentUnappliedEffect(unknownTaskId)?.effectId).toBe('fx_undetermined_sibling_send');
     store.close();
   });
 

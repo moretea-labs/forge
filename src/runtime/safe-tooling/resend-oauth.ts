@@ -1,4 +1,5 @@
 import { execFileSync } from 'child_process';
+import { writeMacKeychainGenericPassword } from './mac-keychain-write';
 import { createHash, randomBytes, randomUUID } from 'crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
@@ -65,11 +66,7 @@ const macKeychainAdapter: ResendCredentialStoreAdapter = {
   },
   write(service, account, value) {
     if (process.platform !== 'darwin') throw new Error('RESEND_CREDENTIAL_STORE_UNAVAILABLE');
-    execFileSync('/usr/bin/security', [
-      'add-generic-password', '-U', '-s', service, '-a', account, '-w', value,
-    ], {
-      encoding: 'utf8', stdio: ['ignore', 'ignore', 'pipe'], timeout: 5_000,
-    });
+    writeMacKeychainGenericPassword(service, account, value);
   },
 };
 

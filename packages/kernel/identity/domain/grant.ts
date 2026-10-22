@@ -67,6 +67,8 @@ export interface QueryGrantInput {
   capability: string;
   target?: GrantTarget;
   scopes?: readonly string[];
+  /** Trusted caller-provided context, not device attestation. Omission cannot satisfy restricted grants. */
+  constraints?: Record<string, unknown>;
   risk?: 'readonly' | 'workspace_write' | 'remote_write' | 'destructive';
   at?: Date;
 }
