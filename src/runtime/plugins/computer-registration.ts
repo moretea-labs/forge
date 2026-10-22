@@ -516,7 +516,16 @@ function buildComputerManifest(
       ],
       warnings: [
         ...browser.health.warnings,
-        ...(physicalReady && !physicalInputReady ? [`Physical iPhone observation is ready, but RemoteXPC HID input requires Controller-owned pymobiledevice3 ${String(hidStatus?.toolchainVersion ?? 'toolchain')}.`] : []),
+        ...(physicalReady && !physicalInputReady ? [hidStatus?.reason
+          // The authoritative live probe ran and failed: the toolchain is
+          // genuinely missing or wrong.
+          ? `Physical iPhone observation is ready, but RemoteXPC HID input requires Controller-owned pymobiledevice3 ${String(hidStatus?.toolchainVersion ?? 'toolchain')}: ${String(hidStatus.reason)}.`
+          // Passive manifest reads never launch Python: no recent verified
+          // probe in this process is NOT a missing toolchain. inputReady=false
+          // here only means the short-lived verified cache is empty or stale;
+          // the physical input action performs the authoritative live probe
+          // before dispatch (#289).
+          : 'Physical iPhone observation is ready; RemoteXPC HID input readiness is unverified in this process (manifest reads never launch Python). inputReady=false does not indicate a missing pymobiledevice3 toolchain; the physical input action performs the authoritative live toolchain probe before dispatch.'] : []),
         ...(desktopSupported
           ? (desktopReady ? [] : ['Native Computer capability diagnostics are available through the internal platform provider.'])
           : [`Native Desktop Computer capabilities are unsupported on ${platform}.`]),

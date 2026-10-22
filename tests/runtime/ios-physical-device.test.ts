@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { spawnSync } from 'child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
@@ -11,6 +11,7 @@ import {
   resolveIosPhysicalDeviceAuthorizationContext,
   setIosPhysicalDeviceRuntimeHooksForTest,
 } from '../../src/runtime/plugins/ios-physical-device';
+import { setComputerPlatformForTest } from '../../src/runtime/platform/computer-platform';
 import {
   resetRemoteXpcHidForTest,
   setRemoteXpcHidExecutorForTest,
@@ -147,7 +148,16 @@ function deviceEntry() {
   };
 }
 
+beforeEach(() => {
+  // The physical iPhone provider is a darwin product surface: pin the
+  // Computer composition platform seam too, not only the iOS runtime hooks,
+  // so the suite is platform-independent (Linux CI must see the same
+  // manifest surface as macOS).
+  setComputerPlatformForTest('darwin');
+});
+
 afterEach(() => {
+  setComputerPlatformForTest(undefined);
   resetIosPhysicalDeviceRuntimeHooksForTest();
   resetRemoteXpcHidForTest();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
@@ -455,7 +465,12 @@ describe('CoreDevice-first physical iPhone provider', () => {
       provider: 'coredevice', observationReady: true,
       inputReady: false, ready: false, toolchainVersion: '11.24.0',
     });
-    expect(computerManifest.health.warnings.some((warning) => warning.includes('RemoteXPC HID input requires Controller-owned pymobiledevice3 11.24.0'))).toBe(true);
+    // Passive manifest reads never launch Python: with no recent verified
+    // probe in this process, inputReady=false must be reported as
+    // "unverified", never as a missing pymobiledevice3 toolchain (#289).
+    expect(computerManifest.health.warnings.some((warning) => warning.includes('RemoteXPC HID input readiness is unverified in this process'))).toBe(true);
+    expect(computerManifest.health.warnings.some((warning) => warning.includes('does not indicate a missing pymobiledevice3 toolchain'))).toBe(true);
+    expect(computerManifest.health.warnings.some((warning) => warning.includes('RemoteXPC HID input requires Controller-owned'))).toBe(false);
     expect(iosManifest.actions.some((action) => action.actionId.startsWith('physical_device_'))).toBe(false);
     expect(iosManifest.actions.some((action) => action.actionId === 'xcode_test')).toBe(true);
     expect(iosManifest.actions.some((action) => action.actionId === 'launch_simulator')).toBe(true);
