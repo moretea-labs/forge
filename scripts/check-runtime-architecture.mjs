@@ -1056,8 +1056,7 @@ requireText('src/runtime/control-plane/facade/plan-contract-store.ts', 'PLAN_REQ
 forbid('adapters/mcp/runtime-gateway/work-controller-operations.ts', /completeRequirementGoal|requirementAcceptance/, 'Controller disposition must not complete or accept Requirement semantics');
 forbid('adapters/mcp/runtime-gateway/runtime-tools.ts', /\bacceptRequirementOutcome\s*\(/, 'MCP transport must never own Requirement semantic completion');
 forbid('src/runtime/control-plane/facade/rh-work-operation-contract.ts', /requirement_continue/, 'retired Requirement lifecycle compatibility operation must not remain accepted');
-requireText('adapters/mcp/tool-mapping/post-finalize-work-attribution.ts', 'semanticWorkState(work)');
-forbid('adapters/mcp/tool-mapping/post-finalize-work-attribution.ts', /isTerminalWorkContractStatus|lifecycleClosed|work\.status\s*!==?\s*['"]completed['"]/, 'post-completion readonly attribution must follow semantic Work state, not legacy lifecycle projections');
+requireMissing('adapters/mcp/tool-mapping/post-finalize-work-attribution.ts');
 forbid('adapters/mcp/runtime-gateway/work-controller-operations.ts', /goal_complete[^\n]{0,200}requirementId|requirementId[^\n]{0,200}goal_complete/, 'Controller goal_complete may settle continuation but must not own Requirement completion');
 // B3 ControllerSession authority and provider-neutral host boundary.
 requireText('packages/kernel/controller/domain/types.ts', 'export interface ControllerBinding');
