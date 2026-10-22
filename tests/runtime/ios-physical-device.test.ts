@@ -455,7 +455,12 @@ describe('CoreDevice-first physical iPhone provider', () => {
       provider: 'coredevice', observationReady: true,
       inputReady: false, ready: false, toolchainVersion: '11.24.0',
     });
-    expect(computerManifest.health.warnings.some((warning) => warning.includes('RemoteXPC HID input requires Controller-owned pymobiledevice3 11.24.0'))).toBe(true);
+    // Passive manifest reads never launch Python: with no recent verified
+    // probe in this process, inputReady=false must be reported as
+    // "unverified", never as a missing pymobiledevice3 toolchain (#289).
+    expect(computerManifest.health.warnings.some((warning) => warning.includes('RemoteXPC HID input readiness is unverified in this process'))).toBe(true);
+    expect(computerManifest.health.warnings.some((warning) => warning.includes('does not indicate a missing pymobiledevice3 toolchain'))).toBe(true);
+    expect(computerManifest.health.warnings.some((warning) => warning.includes('RemoteXPC HID input requires Controller-owned'))).toBe(false);
     expect(iosManifest.actions.some((action) => action.actionId.startsWith('physical_device_'))).toBe(false);
     expect(iosManifest.actions.some((action) => action.actionId === 'xcode_test')).toBe(true);
     expect(iosManifest.actions.some((action) => action.actionId === 'launch_simulator')).toBe(true);

@@ -154,6 +154,11 @@ function hidToolchainStatus(controllerHome: string, env: NodeJS.ProcessEnv, allo
   return {
     backend: 'remote-xpc-hid',
     available: probe?.available === true,
+    // Passive reads distinguish "no recent verified probe in this process"
+    // from "the authoritative probe ran and failed": unverified never implies
+    // the toolchain is missing, and only an explicit HID action may probe
+    // (#289).
+    probeState: probe?.available === true ? 'verified-recent' : probe?.reason ? 'probe-failed' : 'unverified',
     python,
     toolchainVersion: IOS_HID_TOOLCHAIN_VERSION,
     ...(probe?.installedVersion ? { installedVersion: probe.installedVersion } : {}),
