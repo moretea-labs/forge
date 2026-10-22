@@ -271,7 +271,7 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
       reason: 'Verify prompt refresh after the canonical Work objective changes.',
     }).recoveryEffect;
     expect(recovery.prompt).toContain('supervisor_task get');
-    expect(Array.from(recovery.prompt).length).toBeLessThanOrEqual(200);
+    expect(Array.from(recovery.prompt).length).toBeLessThanOrEqual(4_000);
     expect(recovery.prompt).not.toContain('Current canonical objective v1.');
     expect(recovery.prompt).not.toContain('Stale registration objective.');
     store.close();
@@ -653,7 +653,7 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     expect(prompt).toContain('目标摘录：');
     expect(prompt).toContain('supervisor_task get');
     const legacyPrompt = renderSupervisorPrompt({ ...base, objective: 'L'.repeat(7_950) }, 'fx_12345678', 'continuation');
-    expect(Array.from(legacyPrompt).length).toBeLessThanOrEqual(200);
+    expect(Array.from(legacyPrompt).length).toBeLessThanOrEqual(4_000);
     expect(legacyPrompt).toContain('task_id:' + JSON.stringify(base.taskId));
 
     const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-objective-bound-'));
@@ -681,7 +681,7 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     const prompt = renderSupervisorPrompt(task, effectId, 'recovery');
 
     expect(prompt).toContain('\nreceipt:' + supervisorReceiptChallenge(task, effectId));
-    expect(Array.from(prompt).length).toBeLessThanOrEqual(500);
+    expect(Array.from(prompt).length).toBeLessThanOrEqual(4_000);
     expect(prompt).not.toContain('automation.receipt:');
     expect(prompt).not.toContain('最后一次 Forge 调用');
     expect(prompt).not.toContain(SUPERVISOR_BLOCK_START);
@@ -703,7 +703,7 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     const flattened = completedReply.replace(/\s+/g, ' ').trim();
     expect(hasCommittedSupervisorEnvelope(flattened)).toBe(true);
     expect(parseSupervisorCompletion(flattened, { task, effectId, prompt }).proposal)
-      .toMatchObject({ action: 'CONTINUE', sourceEffectId: effectId });
+      .toMatchObject({ action: 'CONTINUE', sourceEffectId: effectId, checkpoint: '本轮完成了实际检查。' });
     expect(() => parseSupervisorCompletion('本轮完成。 C 0000000', { task, effectId, prompt }))
       .toThrow('WORKFLOW_SUPERVISOR_COMPACT_RECEIPT_CHALLENGE_MISMATCH');
     const inlineWithNewlines = `本轮完成了实际检查。\n仍在叙述 C ${supervisorReceiptChallenge(task, effectId)}`;

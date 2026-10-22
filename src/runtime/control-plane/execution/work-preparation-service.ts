@@ -1,4 +1,5 @@
 import { createHash } from 'crypto';
+import { isDeepStrictEqual } from 'node:util';
 import { spawnSync } from 'child_process';
 import { existsSync, lstatSync, readFileSync, realpathSync } from 'fs';
 import { resolve, sep } from 'path';
@@ -901,11 +902,15 @@ export function prepareWork(ctx: McpExecutionContext, args: Record<string, unkno
           workContractStatus: existingContract.semanticState,
         };
       }
-      if (existingContract.semanticState === 'open') {
+      // Request replay only restores the execution binding. It must not move
+      // an existing Work back to implementation or replace phase evidence.
+      // A crash after handle persistence but before its first activation is
+      // still an unfinished preparation, not a new implementation round.
+      if (request.status === 'claimed' && existingContract.phase === 'implementation'
+          && existingContract.dispatchState === 'not_dispatched') {
         activateWorkContract(
-          { controllerHome: ctx.controllerHome, repoId: repository.repoId },
-          createdWorkId,
-          { phase: 'implementation', summary: 'Prepared Work resumed on the existing WorkHandle.', worktreeRef: existingHandle.worktreePath },
+          { controllerHome: ctx.controllerHome, repoId: repository.repoId }, createdWorkId,
+          { phase: 'implementation', summary: 'Repository Work preparation completed and execution ownership is active.', worktreeRef: existingHandle.worktreePath },
         );
       }
       const delegation = createGoalDelegation({
@@ -918,7 +923,11 @@ export function prepareWork(ctx: McpExecutionContext, args: Record<string, unkno
         permissionSnapshotVersion: policy.revision,
         source: 'gpt_risk_delegate',
       });
-      const nextSession = updateExecutionSession(ctx.controllerHome, identityFor(ctx, args), { activeRepositoryId: repository.repoId, activeCheckoutId: existingHandle.checkoutId, activeWorkId: createdWorkId, permissionSnapshotVersion: policy.revision, goalDelegation: delegation, lastValidatedAt: new Date().toISOString() });
+      const priorDelegation = session.goalDelegation;
+      const unchangedDelegation = priorDelegation && isDeepStrictEqual(
+        JSON.parse(JSON.stringify({ ...delegation, createdAt: priorDelegation.createdAt })), priorDelegation,
+      );
+      const nextSession = updateExecutionSession(ctx.controllerHome, identityFor(ctx, args), { activeRepositoryId: repository.repoId, activeCheckoutId: existingHandle.checkoutId, activeWorkId: createdWorkId, permissionSnapshotVersion: policy.revision, goalDelegation: unchangedDelegation ? priorDelegation : delegation });
       return { session: nextSession, work: compactHandle(existingHandle), reused: true, isolation: existingHandle.managedWorktree ? 'isolated' : 'current' };
     }
 

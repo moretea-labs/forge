@@ -27,7 +27,7 @@ const EFFECT_ID = /^(?:fx|crpe)_[a-zA-Z0-9_-]{8,120}$/;
 const MAX_RESPONSE = 512 * 1024;
 export const MAX_SUPERVISOR_OBJECTIVE_CHARS = 8_000;
 export const MAX_SUPERVISOR_PROMPT_CHARS = 500;
-export const MAX_SUPERVISOR_CONTINUATION_PROMPT_CHARS = 200;
+export const MAX_SUPERVISOR_CONTINUATION_PROMPT_CHARS = 4_000;
 
 /** A goal cannot be silently shortened between durable Task and sent effect. */
 export function validateSupervisorObjective(value: string): string {
@@ -138,11 +138,13 @@ export function parseSupervisorCompletion(
       throw new Error('WORKFLOW_SUPERVISOR_WAIT_NOT_SCHEDULED');
     }
     const supervisorState: WorkflowSupervisorState = action === 'CONTINUE' ? 'running' : action === 'WAIT' ? 'waiting' : action === 'DONE' ? 'done' : 'needs_user';
+    const progress = Array.from(responseText.trim().slice(0, compact.index).trim());
+    const checkpoint = progress.length > 2_000 ? progress.slice(0, 1_999).join('') + '…' : progress.join('') || `receipt:${challenge}`;
     return {
       proposal: {
         action,
         sourceEffectId: validateEffectId(expected.effectId),
-        checkpoint: `receipt:${challenge}`,
+        checkpoint,
         reason: 'compact_receipt',
         // A transient missing tool is mechanical evidence, never user-only
         // authorization. Persist the explicit model diagnostic on this same
@@ -199,9 +201,9 @@ export function renderSupervisorPrompt(
   task: WorkflowSupervisorTask,
   effectId: string,
   kind: WorkflowEffectKind,
-  _checkpoint?: string,
-  _correctionReason?: string,
-  _lowerLayerContext?: string,
+  checkpoint?: string,
+  correctionReason?: string,
+  lowerLayerContext?: string,
   advisoryCognition?: string,
 ): string {
   const challenge = supervisorReceiptChallenge(task, effectId);
@@ -216,17 +218,34 @@ export function renderSupervisorPrompt(
   const outcome = scheduled ? '当日完 W、未完 C、需用户 U' : '未完 C、交付 D、需用户 U';
   const continuation = kind !== 'enrollment';
   const instruction = continuation
-    ? `forge ${kind === 'recovery' ? '恢复' : kind === 'correction' ? '纠正' : '继续'}。supervisor_task get 读关联任务后推进；${outcome}，末行字母+空格+回执码。`
-    : `用 Forge supervisor_task get 读取完整 Task 及关联 Requirement/Work 的最新目标、进度，执行验证；${outcome}。末行：字母 空格 receipt 值。`;
+    ? `forge ${kind === 'recovery' ? '恢复' : kind === 'correction' ? '纠正' : '继续'}。沿当前目标连续完成读取、修改、验证和统一交付；仅上下文缺失或目标变更时 supervisor_task get。仅确需跨轮时 C，并简述已做、证据及下一步；${outcome}，末行字母+空格+回执码。`
+    : `用 Forge supervisor_task get 读取完整 Task 及关联 Requirement/Work 的最新目标、进度，连续执行修改、验证与统一交付；仅确需跨轮时 C，并简述已做、证据及下一步；${outcome}。末行：字母 空格 receipt 值。`;
   const length = (value: string): number => Array.from(value).length;
+  if (continuation) {
+    const goal = Array.from(validateSupervisorObjective(task.objective).trim().replace(/\s+/g, ' '));
+    header.push('目标摘录：' + goal.slice(0, 240).join('') + (goal.length > 240 ? '…' : ''));
+  }
   const base = [...header, instruction].join('\n');
-  // Long existing Work/Requirement IDs must not be shortened or cause the
-  // scheduler to stall merely to satisfy the usual 200-character wake budget.
-  // They use the same global 500-character hard ceiling as enrollment.
-  const max = !continuation || length(base) > MAX_SUPERVISOR_CONTINUATION_PROMPT_CHARS
-    ? MAX_SUPERVISOR_PROMPT_CHARS : MAX_SUPERVISOR_CONTINUATION_PROMPT_CHARS;
+  const max = continuation || checkpoint || correctionReason || lowerLayerContext || advisoryCognition
+    ? MAX_SUPERVISOR_CONTINUATION_PROMPT_CHARS : MAX_SUPERVISOR_PROMPT_CHARS;
   if (length(base) > max) throw new Error('WORKFLOW_SUPERVISOR_PROMPT_TOO_LARGE');
-  if (continuation) return base;
+  // Advisory excerpts reuse the existing completion/effect journal. They never
+  // authorize a mutation or replace live Work, resource, or Git evidence.
+  const context: string[] = [];
+  for (const [label, value, limit] of [
+    ['纠正原因', correctionReason, 700],
+    ['上轮进展（参考，执行前核对事实）', checkpoint && !/^(?:receipt|automation):/.test(checkpoint) ? checkpoint : undefined, 2_000],
+    ['执行上下文（参考）', lowerLayerContext, 600],
+    ['建议（参考）', advisoryCognition, 300],
+  ] as const) {
+    if (!value?.trim()) continue;
+    const available = max - length(base) - length(context.join('\n')) - length(label) - 4 - (continuation ? 0 : 243);
+    if (available < 2) break;
+    const chars = Array.from(value.trim());
+    const budget = Math.min(limit, available);
+    context.push(label + '：' + (chars.length > budget ? chars.slice(0, budget - 1).join('') + '…' : value.trim()));
+  }
+  if (continuation) return [...header, ...context, instruction].join('\n');
 
   // An enrollment may start in an entirely new ChatGPT conversation. Never
   // remove the goal outright to fit a transport budget: show a clearly marked
@@ -234,12 +253,12 @@ export function renderSupervisorPrompt(
   const objective = task.objective.trim().replace(/\s+/g, ' ');
   if (!objective) throw new Error('WORKFLOW_SUPERVISOR_OBJECTIVE_REQUIRED');
   const prefix = '目标摘录：';
-  const available = max - length(base) - length(prefix) - 2;
+  const available = max - length(base) - length(context.join('\n')) - context.length - length(prefix) - 2;
   if (available < 1) throw new Error('WORKFLOW_SUPERVISOR_PROMPT_TOO_LARGE');
   const chars = Array.from(objective);
   const excerpt = chars.slice(0, Math.min(240, available)).join('');
   const preview = prefix + excerpt + (chars.length > length(excerpt) ? '…' : '');
-  const prompt = [...header, preview, instruction].join('\n');
+  const prompt = [...header, preview, ...context, instruction].join('\n');
   if (length(prompt) > max) throw new Error('WORKFLOW_SUPERVISOR_PROMPT_TOO_LARGE');
   return prompt;
 }
