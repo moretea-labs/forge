@@ -1071,6 +1071,10 @@ function computerNativeBrowserInput(input: AssistantPluginActionExecutionInput):
 export const computerPluginAdapter: AssistantPluginAdapter = {
   pluginId: 'computer',
   scope: 'controller',
+  // Computer is controller-scoped for its Browser/Desktop/console surface but
+  // still owns the repository-bound physical_device_* iPhone actions; keep the
+  // repository manifest surface reachable (see AssistantPluginAdapter.repositorySurface).
+  repositorySurface: true,
   buildManifest: buildComputerManifest,
   async resolveAuthorizationContext(input) {
     if (isIosPhysicalDeviceAction(input.actionId)) return resolveIosPhysicalDeviceAuthorizationContext(input);
