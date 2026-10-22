@@ -46,10 +46,7 @@ import {
 } from '../../src/runtime/root/mcp-transport';
 import { writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
 import { registerRepository } from '../../src/cli/repositories/registry';
-import {
-  callPostFinalizeWorkReadOnlyCommand,
-  callRepositoryToolWithPostFinalizeAttribution,
-} from '../../adapters/mcp/tool-mapping/post-finalize-work-attribution';
+import { callRepositoryTool } from '../../adapters/mcp/tool-mapping/repository-tools';
 import {
   createWorkContract,
   recordWorkCompletionReceipt,
@@ -1080,41 +1077,42 @@ function postFinalizeAttributionFixture() {
   };
 }
 
-describe('MCP post-finalize Work attribution', () => {
-  test('keeps completed Work attribution for bounded typed-argv readonly observations only', async () => {
+describe('MCP terminal Work command context', () => {
+  test('keeps completed Work as historical context through the canonical MCP command entry', async () => {
     const fx = postFinalizeAttributionFixture();
+    const context = { ...createMcpToolContext({ controllerHome: fx.controllerHome, profile: 'controller' }), ...fx.caller };
+    const server = createForgeMcpServerFromContext(context);
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    const client = new Client({ name: 'terminal-work-command', version: '1.0.0' }, { capabilities: {} });
+    await client.connect(clientTransport);
     try {
-      const response = await callRepositoryToolWithPostFinalizeAttribution(
-        fx.controllerHome,
-        'execute_command',
-        {
+      const response = await client.callTool({
+        name: 'execute_command',
+        arguments: {
           repo_id: fx.repository.repoId,
+          checkout_id: fx.repository.activeCheckoutId,
           work_id: fx.workId,
           command: ['git', 'status', '-sb'],
           request_id: 'post-finalize-status',
         },
-        fx.caller,
-      );
-      const structured = (response?.structuredContent ?? {}) as Record<string, unknown>;
+      });
+      const structured = (response.structuredContent ?? {}) as Record<string, unknown>;
+      expect(response.isError).not.toBe(true);
       expect(structured.accepted).toBe(true);
       expect(structured.ok).toBe(true);
-      expect(structured.semanticWorkState).toBe('completed');
-      expect(structured.workId).toBe(fx.workId);
-      expect(structured.postFinalizeAttribution).toBe('readonly_followup');
+      expect(structured.checkoutId).toBe(fx.repository.activeCheckoutId);
+      expect(structured.historicalWorkContext).toEqual({
+        workId: fx.workId,
+        state: 'completed',
+        mode: 'historical_read_only_observation',
+        attribution: 'not_active_work',
+      });
+      expect(structured.processId).toBeUndefined();
       expect(String(structured.stdout)).toContain('## main');
-
-      expect(await callPostFinalizeWorkReadOnlyCommand(
-        fx.controllerHome,
-        'execute_command',
-        {
-          repo_id: fx.repository.repoId,
-          work_id: fx.workId,
-          command: ['git', 'status', '-sb'],
-          request_id: 'post-finalize-wrong-principal',
-        },
-        { ...fx.caller, principalId: 'different-principal' },
-      )).toBeUndefined();
     } finally {
+      await client.close();
+      await server.close();
       rmSync(fx.root, { recursive: true, force: true });
     }
   });
@@ -1123,43 +1121,16 @@ describe('MCP post-finalize Work attribution', () => {
     const fx = postFinalizeAttributionFixture();
     try {
       const mutationPath = join(fx.repoRoot, 'must-not-exist.txt');
-      const mutationArgs = {
-        repo_id: fx.repository.repoId,
-        work_id: fx.workId,
-        command: ['touch', 'must-not-exist.txt'],
-        request_id: 'post-finalize-mutation',
-      };
-      expect(await callPostFinalizeWorkReadOnlyCommand(
-        fx.controllerHome,
-        'execute_command',
-        mutationArgs,
-        fx.caller,
-      )).toBeUndefined();
-      expect(await callPostFinalizeWorkReadOnlyCommand(
-        fx.controllerHome,
-        'execute_command',
-        {
+      for (const command of [['touch', 'must-not-exist.txt'], ['git', 'push', 'origin', 'main']]) {
+        const response = await callRepositoryTool(fx.controllerHome, 'execute_command', {
           repo_id: fx.repository.repoId,
           work_id: fx.workId,
-          command: ['git', 'push', 'origin', 'main'],
-          request_id: 'post-finalize-delivery',
-        },
-        fx.caller,
-      )).toBeUndefined();
-
-      let rejection = '';
-      try {
-        const response = await callRepositoryToolWithPostFinalizeAttribution(
-          fx.controllerHome,
-          'execute_command',
-          mutationArgs,
-          fx.caller,
-        );
-        rejection = JSON.stringify(response?.structuredContent ?? response);
-      } catch (error) {
-        rejection = error instanceof Error ? error.message : String(error);
+          command,
+          request_id: `post-finalize-${command[0]}`,
+        }, fx.caller);
+        expect(response?.isError).toBe(true);
+        expect(JSON.stringify(response?.structuredContent ?? response)).toContain('WORK_ATTRIBUTION_INVALID');
       }
-      expect(rejection).toContain('WORK_ATTRIBUTION_INVALID');
       expect(existsSync(mutationPath)).toBe(false);
     } finally {
       rmSync(fx.root, { recursive: true, force: true });

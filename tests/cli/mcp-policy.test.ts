@@ -197,7 +197,7 @@ describe('mcp redaction and audit', () => {
       const inputHash = hashMcpInput({ body: 'secret body' });
       writeMcpAuditEntry(tmp, {
         timestamp: '2026-06-17T00:00:00.000Z',
-        tool: 'write_prd',
+        tool: 'repository_safe_patch_apply',
         status: 'failed',
         targetPath: 'plans/prds/test.prd.md',
         inputHash,

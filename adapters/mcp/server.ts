@@ -13,7 +13,7 @@ import {
   type MultiRepositoryMcpToolContext,
 } from './multi-repository';
 import { callAccessTool } from './tool-mapping/access-tools';
-import { callRepositoryToolWithPostFinalizeAttribution } from './tool-mapping/post-finalize-work-attribution';
+import { callRepositoryTool } from './tool-mapping/repository-tools';
 import { callRuntimeTool } from './runtime-gateway/runtime-tools';
 import { callExecutionTool } from './runtime-gateway/execution-tools';
 import { callProcessTool, executeAuthorizedHostCommand } from './runtime-gateway/process-tools';
@@ -1132,7 +1132,7 @@ export function createForgeMcpServerFromContext(
           if (runtimeResult) return runtimeResult;
           const durableResult = await routeDurableMcpCall(ctx, name, args);
           if (durableResult) return durableResult;
-          const repositoryResult = await callRepositoryToolWithPostFinalizeAttribution(ctx.controllerHome, name, args, ctx);
+          const repositoryResult = await callRepositoryTool(ctx.controllerHome, name, args, ctx);
           if (repositoryResult) return repositoryResult;
           if (name === 'controller_capabilities') {
             // Legacy read-only diagnostics consume the authoritative tools/list

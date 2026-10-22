@@ -10,9 +10,6 @@ const EXPLICIT_AUTHORIZATION_OPERATIONS = new Set([
 const AUTOMATED_REQUIREMENT_OPERATIONS = new Set([
   'create_issue',
   'append_task',
-  'write_prd',
-  'write_prd_from_idea',
-  'write_plan',
 ]);
 
 const DANGEROUS_COMMAND_PATTERNS = [

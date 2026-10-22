@@ -16,22 +16,11 @@ import { PREFERRED_CONTROLLER_TOOL_NAMES, PREFERRED_FACADE_TOOL_NAMES } from '..
 // The preferred model-routing list remains small; actual tools/list always
 // exposes the complete authoritative registry, without exposure modes.
 const MAX_PREFERRED_TOOL_COUNT = 24;
-// 2026-10-21: retiring the eleven redundant ios_* MCP aliases intentionally
-// changes the complete registry; preferred tool names/schema remain unchanged.
-// 2026-10-21: two error-only retired Agent/Local Job submission aliases were
-// deleted from the public MCP registry; keep all other schema/name guards.
-// 2026-10-21 audit round 3: four legacy compatibility names were retired from
-// the public registry because the modern registry already owns the capability
-// (repository_git_diff/git_diff_paths for get_git_diff; the GitHub plugin
-// manifest via get_plugin and plugin_action_execute action 'configure' for
-// github_status, get_github_plugin_status, configure_github_plugin).
-// 2026-10-21 audit round 3 (cont.): the project does not integrate Codex or
-// other external agent controllers, so the Codex-specific MCP surface was
-// retired with it (run_workflow_check, search_repository,
-// prepare_codex_goal_from_sprint, write_codex_goal) together with the
-// `forge mcp setup codex` CLI, the doctor Codex report, and the
-// fixedWorkflowCheck policy flag.
-const EXPECTED_EXPOSED_NAME_FINGERPRINT = 'e6e3c8ade6c5a8d5';
+// Complete-registry migrations are explicit and independent of the stable
+// preferred contract. 2026-10-23: retire the nine specialized legacy Markdown,
+// PRD/Sprint listing, repository-state summary and controller-packet helpers;
+// ordinary repository inspection/Direct Edit and Controller Home remain owners.
+const EXPECTED_EXPOSED_NAME_FINGERPRINT = 'a33a78cd67b025ae';
 
 // #197 decomposition authority: the public/frozen Tool Contract is an explicit
 // baseline, independent from whichever internal adapter currently defines a

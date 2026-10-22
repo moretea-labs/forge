@@ -14,6 +14,10 @@ Terminal semantic revisions invoke that cleanup owner even when the WorkHandle i
 
 ### Technical design baseline
 
+Terminal Work command observations use the canonical Repository command entry and Process Runtime, with the selected checkout and ordinary preview, authorization, timeout, and execution-mode handling. A terminal `work_id` is historical context only (`historicalWorkContext`), never an active execution identity or permission to mutate. The separate post-finalize command executor is retired; completed Work cannot reopen source or remote-delivery authority.
+
+The legacy MCP PRD/Sprint/Plan Markdown generators, dedicated PRD/Sprint listing tools, `summarize_forge_state` and `append_controller_plan_note` are retired. Model-authored semantic Requirement/Plan/Work remains in Controller Home; intentional human-authored project documents use ordinary repository inspection and Direct Edit. Planner policy no longer grants writes to retired repository-local controller packet files. This removes specialized workflow templates and their implicit staged-phase rules rather than adding a replacement planning authority.
+
 Work request-ID lookup is fail-closed idempotency evidence, not a cache miss fallback. An absent index stays a pure, no-directory-creation read; a present but corrupt/mismatched index or an index pointing to a missing Work raises an explicit error and cannot be mistaken for a never-admitted effect. Both readonly lookup and the existing locked admission writer validate the same index contract. This does not create an additional Work or replay owner.
 
 ControllerRound Work-lineage snapshots are SQLite-only observations. An empty per-Work scope stays empty; lineage inspection never imports a historical aggregate index or creates per-Work rows. The bounded legacy aggregate/file importer is retired from the runtime store path.
