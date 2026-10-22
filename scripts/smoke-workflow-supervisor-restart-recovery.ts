@@ -4,11 +4,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { WorkflowSupervisorControlPlane } from '../supervisor/control-plane';
 import { SUPERVISOR_BLOCK_END, SUPERVISOR_BLOCK_START } from '../supervisor/protocol';
-import { WORKFLOW_SUPERVISOR_MIN_TURN_INTERVAL_MS, WorkflowSupervisorStore } from '../supervisor/store';
+import { WorkflowSupervisorStore } from '../supervisor/store';
 
 const home = mkdtempSync(join(tmpdir(), 'forge-supervisor-recovery-'));
 let mechanicalNowMs = Date.now();
-const TURN_ADVANCE_MS = WORKFLOW_SUPERVISOR_MIN_TURN_INTERVAL_MS + 1_000;
+const TURN_ADVANCE_MS = 1_000;
 const validators = { completionContract: async () => ({ valid: true, reason: 'ok' }), userBlockerPolicy: async () => ({ valid: true, reason: 'ok' }) };
 const control = () => new WorkflowSupervisorControlPlane(new WorkflowSupervisorStore(home, { now: () => mechanicalNowMs }), validators);
 const block = (
