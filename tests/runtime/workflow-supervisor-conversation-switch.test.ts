@@ -345,6 +345,9 @@ describe('Workflow Supervisor fresh conversation switch', () => {
       expect(store.getTask(unknownTaskId)?.conversationId).toBe(unknownConversation);
     }
     expect(store.currentUnappliedEffect(unknownTaskId)?.effectId).toBe('fx_undetermined_sibling_send');
+    // Unknown delivery remains the queue owner; a fresh receipt successor
+    // cannot become sendable when both effects share a millisecond timestamp.
+    expect(store.nextBrowserEffect(unknownTaskId)?.mode).not.toBe('send');
     store.close();
   });
 
