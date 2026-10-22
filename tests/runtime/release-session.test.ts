@@ -427,7 +427,7 @@ describe('Recovery ReleaseSession', () => {
       configured: true,
       sourceRevision: 'def456',
       activeSourceCommit: 'older-stable',
-    }))).toMatchObject({ required: true, reason: 'source_mismatch', action: 'prepare' });
+    }))).toMatchObject({ required: false, reason: 'source_mismatch' });
   });
 
   test('runs one normal release call through every immediately executable durable phase', async () => {

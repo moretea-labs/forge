@@ -227,7 +227,6 @@ async function cli(): Promise<void> {
         config,
         RECOVERY_RUNTIME_RELEASE_PROVIDER,
         `recovery-auto-release:${process.pid}:${Date.now()}`,
-        decision,
       );
       output({ schemaVersion: 1, ok: result.ok, attempted: result.attempted, decision, result });
     } catch (error) {
