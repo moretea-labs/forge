@@ -111,6 +111,82 @@ describe('ChatGPT native tab identity pre-send fence', () => {
   });
 });
 
+describe('Standalone Supervisor explicit bootstrap Project binding', () => {
+  test('binds one observed Project without inventing a Work or replaying an effect', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-project-binding-'));
+    roots.push(root);
+    const store = new WorkflowSupervisorStore(root);
+    const control = new WorkflowSupervisorControlPlane(store);
+    const taskId = 'supervisor:standalone-revenue';
+    const projectId = 'g-p-6a922010db348191a84d1a5306c083e8';
+    const projectUrl = `https://chatgpt.com/g/${projectId}/project`;
+    const conversationId = '11111111-2222-3333-4444-555555555555';
+    control.registerTask({
+      taskId, conversationId: `bootstrap:${taskId}`, conversationUrl: 'https://chatgpt.com/',
+      objective: 'Continue the original standalone revenue experiment.',
+      completionContract: { kind: 'model_semantic_completion' },
+      continuationPolicy: { kind: 'standalone_supervisor', bootstrap: true },
+      userBlockerPolicy: {},
+    });
+    const effect = control.reserveEnrollment(taskId);
+    expect(() => control.bootstrapProjectUrl(taskId)).toThrow('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_SCOPE_REQUIRED');
+    expect(() => control.bindBootstrapProject({
+      taskId, projectUrl, requestId: 'bind-before-discovery', authorizedBy: 'user',
+    })).toThrow('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_NOT_DISCOVERED');
+    control.recordBrowserDiscovery('chrome', [{
+      conversationId, canonicalUrl: `https://chatgpt.com/g/${projectId}-forge/c/${conversationId}`,
+      projectTitle: 'forge', projectUrl,
+    }]);
+    expect(() => control.bindBootstrapProject({
+      taskId, projectUrl: 'https://evil.example/g/' + projectId + '/project', requestId: 'evil', authorizedBy: 'user',
+    })).toThrow('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_URL_INVALID');
+    const bind = { taskId, projectUrl: `https://chatgpt.com/g/${projectId}-forge/project`, requestId: 'bind-once', authorizedBy: 'user' };
+    expect(control.bindBootstrapProject(bind)).toEqual({ projectUrl, deduplicated: false });
+    expect(control.bindBootstrapProject(bind)).toEqual({ projectUrl, deduplicated: true });
+    expect(control.bootstrapProjectUrl(taskId)).toBe(projectUrl);
+    expect(control.bootstrapPoll(taskId).command?.effectId).toBe(effect.effectId);
+    expect(control.getTask(taskId)?.completionContract).toEqual({ kind: 'model_semantic_completion' });
+    expect(store.effectDispatchBudget(effect.effectId).generations).toBe(0);
+    store.close();
+  });
+
+  test('refuses changing the target after any provider dispatch and forbids conflicting rebinding', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-project-fence-'));
+    roots.push(root);
+    const store = new WorkflowSupervisorStore(root);
+    const control = new WorkflowSupervisorControlPlane(store);
+    const projectId = 'g-p-6a922010db348191a84d1a5306c083e8';
+    const projectUrl = `https://chatgpt.com/g/${projectId}/project`;
+    const otherProject = 'https://chatgpt.com/g/g-p-fedcba9876543210/project';
+    const discovered = [projectUrl, otherProject].map((url, i) => ({
+      conversationId: i === 0 ? '11111111-2222-3333-4444-555555555555' : '22222222-3333-4444-5555-666666666666',
+      canonicalUrl: i === 0 ? 'https://chatgpt.com/c/11111111-2222-3333-4444-555555555555' : 'https://chatgpt.com/c/22222222-3333-4444-5555-666666666666',
+      projectTitle: i === 0 ? 'forge' : 'another', projectUrl: url,
+    }));
+    control.recordBrowserDiscovery('chrome', discovered);
+    for (const suffix of ['bound', 'dispatched']) {
+      const taskId = `supervisor:project-${suffix}`;
+      control.registerTask({
+        taskId, conversationId: `bootstrap:${taskId}`, conversationUrl: 'https://chatgpt.com/',
+        objective: 'Preserve exact Supervisor enrollment.',
+        completionContract: { kind: 'model_semantic_completion' },
+        continuationPolicy: { kind: 'standalone_supervisor', bootstrap: true }, userBlockerPolicy: {},
+      });
+      const effect = control.reserveEnrollment(taskId);
+      if (suffix === 'dispatched') {
+        expect(store.recordEffectDispatchStarted(effect.effectId, 1, 'send-started')).toBe(true);
+        expect(() => control.bindBootstrapProject({ taskId, projectUrl, requestId: 'late', authorizedBy: 'user' }))
+          .toThrow('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_BINDING_OUTCOME_UNRESOLVED');
+      } else {
+        control.bindBootstrapProject({ taskId, projectUrl, requestId: 'first', authorizedBy: 'user' });
+        expect(() => control.bindBootstrapProject({ taskId, projectUrl: otherProject, requestId: 'change', authorizedBy: 'user' }))
+          .toThrow('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_BINDING_CONFLICT');
+      }
+    }
+    store.close();
+  });
+});
+
 describe('Workflow Supervisor canonical lifecycle projection', () => {
   test('rejects ChatGPT local temporary conversation ids as non-canonical bootstrap identity', () => {
     expect(() => parseChatgptConversationIdentity(
