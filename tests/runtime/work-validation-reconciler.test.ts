@@ -2,8 +2,8 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { readControlPlaneRecord, withControlPlaneTransaction, writeControlPlaneRecordWithinTransaction } from '../../src/runtime/control-plane/persistence/sqlite-store';
 import { createWorkContract, getWorkContract, recordWorkEvidenceState } from '../../src/runtime/control-plane/facade/work-contract-store';
-import { workContractStorePath } from '../../packages/kernel/work/infrastructure/work-contract-store';
 import { writeWorkHandle, type WorkHandleState } from '../../src/runtime/control-plane/execution/work-handle-store';
 import { createProcessRecord } from '../../src/runtime/execution/process-runtime/store';
 import { writePersistedCheckResultReceipt } from '../../src/runtime/execution/process-runtime/check-result';
@@ -579,9 +579,11 @@ describe('workspace-bound validation identity', () => {
     const root = mkdtempSync(join(tmpdir(), 'forge-work-review-phase-migration-'));
     roots.push(root);
     const workId = 'work-legacy-review-phase';
-    createWorkContract({ root }, {
+    const repoId = 'repo-legacy-review-phase';
+    const store = { controllerHome: root, repoId };
+    createWorkContract(store, {
       workId,
-      repoId: 'repo-legacy-review-phase',
+      repoId,
       objective: 'Continue an in-flight Work across a Runtime schema upgrade.',
       acceptanceCriteria: ['Durable Work remains readable after adding the review phase.'],
       constraints: {},
@@ -592,9 +594,8 @@ describe('workspace-bound validation identity', () => {
       dispatchState: 'running',
     });
 
-    const storePath = workContractStorePath({ root });
-    const persisted = JSON.parse(readFileSync(storePath, 'utf8')) as { contracts: Array<Record<string, any>> };
-    const legacy = persisted.contracts[0]!;
+    const persisted = readControlPlaneRecord<Record<string, any>>(root, 'work_contract', repoId, workId)!;
+    const legacy = structuredClone(persisted.value) as Record<string, any>;
     legacy.schemaVersion = 2;
     legacy.phase = 'delivery';
     legacy.phaseEvidence.implementation.state = 'satisfied';
@@ -602,10 +603,15 @@ describe('workspace-bound validation identity', () => {
     delete legacy.phaseEvidence.review;
     legacy.phaseEvidence.delivery.state = 'active';
     legacy.phaseEvidence.cleanup.state = 'pending';
-    writeFileSync(storePath, `${JSON.stringify(persisted, null, 2)}\
-`);
+    withControlPlaneTransaction(root, (database) => writeControlPlaneRecordWithinTransaction(database, {
+      namespace: 'work_contract', scope: repoId, key: workId, schemaVersion: 2, value: legacy,
+      action: 'test_seed_legacy_review_phase', expectedRevision: persisted.revision,
+    }));
 
-    const migrated = getWorkContract({ root }, workId)!;
+    const migrated = getWorkContract(store, workId)!;
+    const stillLegacy = readControlPlaneRecord<Record<string, any>>(root, 'work_contract', repoId, workId)!;
+    expect(stillLegacy.schemaVersion).toBe(2);
+    expect(stillLegacy.value.phaseEvidence.review).toBeUndefined();
     expect(migrated.phase).toBe('delivery');
     expect(migrated.phaseEvidence.review.state).toBe('skipped');
     expect(migrated.phaseEvidence.review.summary).toContain('compatibility-skipped without synthesizing Controller approval');
@@ -613,13 +619,15 @@ describe('workspace-bound validation identity', () => {
     expect(migrated.phaseEvidence.delivery.state).toBe('active');
   });
 
-  test('upgrades a persisted legacy-inferred pending review after the Work already advanced past review', () => {
+  test('projects a persisted legacy-inferred pending review after the Work already advanced past review', () => {
     const root = mkdtempSync(join(tmpdir(), 'forge-work-review-phase-pending-migration-'));
     roots.push(root);
     const workId = 'work-legacy-pending-review-phase';
-    createWorkContract({ root }, {
+    const repoId = 'repo-legacy-pending-review-phase';
+    const store = { controllerHome: root, repoId };
+    createWorkContract(store, {
       workId,
-      repoId: 'repo-legacy-pending-review-phase',
+      repoId,
       objective: 'Read a Work that persisted legacy review evidence before first-class review existed.',
       acceptanceCriteria: ['Only legacy-inferred pending review evidence is compatibility-upgraded.'],
       constraints: {},
@@ -630,9 +638,8 @@ describe('workspace-bound validation identity', () => {
       dispatchState: 'running',
     });
 
-    const storePath = workContractStorePath({ root });
-    const persisted = JSON.parse(readFileSync(storePath, 'utf8')) as { contracts: Array<Record<string, any>> };
-    const legacy = persisted.contracts[0]!;
+    const persisted = readControlPlaneRecord<Record<string, any>>(root, 'work_contract', repoId, workId)!;
+    const legacy = structuredClone(persisted.value) as Record<string, any>;
     legacy.schemaVersion = 2;
     legacy.phase = 'delivery';
     legacy.phaseEvidence.implementation.state = 'satisfied';
@@ -645,9 +652,15 @@ describe('workspace-bound validation identity', () => {
     };
     legacy.phaseEvidence.delivery.state = 'active';
     legacy.phaseEvidence.cleanup.state = 'pending';
-    writeFileSync(storePath, `${JSON.stringify(persisted, null, 2)}\n`);
+    withControlPlaneTransaction(root, (database) => writeControlPlaneRecordWithinTransaction(database, {
+      namespace: 'work_contract', scope: repoId, key: workId, schemaVersion: 2, value: legacy,
+      action: 'test_seed_legacy_pending_review_phase', expectedRevision: persisted.revision,
+    }));
 
-    const migrated = getWorkContract({ root }, workId)!;
+    const migrated = getWorkContract(store, workId)!;
+    const stillLegacy = readControlPlaneRecord<Record<string, any>>(root, 'work_contract', repoId, workId)!;
+    expect(stillLegacy.schemaVersion).toBe(2);
+    expect(stillLegacy.value.phaseEvidence.review.state).toBe('pending');
     expect(migrated.phaseEvidence.review.state).toBe('skipped');
     expect(migrated.phaseEvidence.review.source).toBe('legacy_inferred');
     expect(migrated.phaseEvidence.review.summary).toContain('before that checkpoint existed');
