@@ -1011,6 +1011,13 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       this.noteTaskFailure(SUPERVISOR_PRE_SEND_BLOCKED, task, command.effectId); this.deps.onError(error); return;
     }
     if (!prepared.ready) {
+      if (prepared.reasonCode === 'provider_busy') {
+        // A live provider turn is temporary backpressure, not a broken local
+        // preflight. Keep the exact unsent effect and use task-local spacing;
+        // do not consume the durable release/operator-repair allowance.
+        this.noteTaskFailure('WORKFLOW_SUPERVISOR_PROVIDER_BUSY', task, command.effectId, false);
+        return;
+      }
       const observed = await target.observe({ includeUserHistory: false, includePageText: false }).catch(() => beforeSend);
       if (prepared.reasonCode === 'composer_not_empty') {
         // Snapshot backups require an exact, separately authorized fingerprint.
@@ -1113,6 +1120,13 @@ export class WorkflowSupervisorNativeBrowserAdapter {
         // preserve this one reserved recovery effect without spending a send
         // generation or the bounded preflight-failure budget.
         if (command.kind === 'recovery' && prepared.reasonCode === 'provider_recovery_stop_pending') return;
+        if (prepared.reasonCode === 'provider_busy') {
+          // A live or uncompleted provider turn is a read-only wait condition.
+          // No Send was attempted; do not exhaust the release-fenced repair
+          // budget and strand an otherwise intact Supervisor enrollment.
+          this.noteTaskFailure('WORKFLOW_SUPERVISOR_PROVIDER_BUSY', task, command.effectId, false);
+          return;
+        }
         this.control.recordProviderPreparationFailure({ taskId: task.taskId, effectId: command.effectId, reasonCode: prepared.reasonCode });
         this.noteTaskFailure(SUPERVISOR_PRE_SEND_BLOCKED, task, command.effectId);
         this.deps.onError(new Error(prepared.reasonCode));
