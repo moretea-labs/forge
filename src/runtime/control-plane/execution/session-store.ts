@@ -1,4 +1,5 @@
 import { randomUUID } from 'crypto';
+import { isDeepStrictEqual } from 'node:util';
 import { existsSync } from 'fs';
 import { join } from 'path';
 import { ensureControllerHome } from '../../../effects/controller-home';
@@ -181,6 +182,9 @@ export function updateExecutionSession(
   patch: Partial<Omit<ExecutionSessionContext, 'schemaVersion' | 'sessionId' | 'principalId' | 'createdAt'>>,
 ): ExecutionSessionContext {
   const current = requireExecutionSession(controllerHome, identity);
+  // A repeated binding is not progress or a heartbeat. Keep its revision and
+  // timestamp unless a caller actually changes session facts.
+  if (Object.entries(patch).every(([key, value]) => isDeepStrictEqual(current[key as keyof ExecutionSessionContext], value))) return current;
   const updated: ExecutionSessionContext = {
     ...current,
     ...patch,

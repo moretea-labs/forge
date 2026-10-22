@@ -378,3 +378,34 @@ facts; live release acceptance remains separate.
 ### Live Chrome content contract at Bootstrap
 
 A projected Chrome extension on disk is not evidence that an existing Chrome tab has loaded the same content script. Before Supervisor consumes an exact, single-use authorization to back up and replace an unrelated Project composer draft, the actual pinned tab must attest `composerReplacementContract=exact-backed-up-project-draft-v1` in its read-only snapshot. An absent attestation is a task-local `COMPUTER_CHATGPT_BOOTSTRAP_LOADED_SCRIPT_STALE` pre-send failure, not permission to clear the editor, switch providers, create a replacement tab, or record Send. The Chrome background independently checks this exact-tab capability when preparing a guarded draft replacement. The original draft and one-use authorization remain intact when the loaded script is stale; after reloading the extension, the original unspent effect may be rearmed only within its existing bounded operator-retry contract. Projection checks and MCP health cannot substitute for this live evidence. Final release acceptance still requires independent actual multi-turn work to DONE.
+
+
+### 2026-10-23 continuation context and execution granularity
+
+Continuation resumes coherent implementation, verification and delivery within the
+current model turn; CONTINUE is reserved for work that actually needs another
+turn. Task reads restore missing or changed context rather than being mandatory
+on every wake. This is advisory guidance, not an automatic progress gate.
+
+The existing compact completion parser retains up to 2,000 characters of the
+assistant text preceding the validated terminal receipt as its checkpoint. The
+same completion journal supplies successor prompts, including crash reconciliation;
+receipt-only replies remain causal references and are not displayed as progress.
+Continuation prompts carry a current objective excerpt, bounded advisory checkpoints and correction reasons within 4,000
+characters, preserving the immutable three-line identity header. Truncated excerpts
+are marked. Live semantic/resource owners remain authoritative; checkpoint prose
+cannot authorize effects or prove completion. No schema, process, retry policy,
+writer, deployment topology or retention owner changes. Existing exact-conversation,
+unknown-send and terminal validators remain in force. Whole-runtime activation and
+rollback remain separate delivery decisions.
+
+
+Work preparation replay preserves existing semantic phase and evidence. Only a
+claimed preparation whose handle exists but whose Work has never dispatched may
+finish its initial implementation activation after a crash. Replaying a completed
+preparation reuses an identical scoped delegation and does not refresh validation
+timestamps. The existing execution-session owner skips unchanged patches after
+normal principal/instance validation. A changed policy, scope, invalidation or
+controller instance still uses the existing validation and write path. Direct Edit
+continues through its existing EditSession/Process owners without Work creation.
+No schema, lease, authorization policy, semantic owner or retention changes.

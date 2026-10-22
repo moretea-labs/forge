@@ -113,7 +113,7 @@ export class WorkflowSupervisorControlPlane {
     let refreshEffect: { effectId: string; expectedPrompt: string; prompt: string } | undefined;
     if (pending && !this.store.latestEffectDispatch(pending.effectId)) {
       const source = pending.sourceCompletionFingerprint ? this.store.getCompletion(pending.sourceCompletionFingerprint) : undefined;
-      const checkpoint = source?.proposal.reason === 'compact_receipt' ? undefined : source?.proposal.checkpoint;
+      const checkpoint = source?.proposal.checkpoint;
       refreshEffect = {
         effectId: pending.effectId,
         expectedPrompt: pending.prompt,
@@ -333,7 +333,7 @@ export class WorkflowSupervisorControlPlane {
     const pending = this.store.currentUnappliedEffect(task.taskId);
     if (pending && !this.store.latestEffectDispatch(pending.effectId) && !this.store.effectApplied(pending.effectId)) {
       const source = pending.sourceCompletionFingerprint ? this.store.getCompletion(pending.sourceCompletionFingerprint) : undefined;
-      const checkpoint = source?.proposal.reason === 'compact_receipt' ? undefined : source?.proposal.checkpoint;
+      const checkpoint = source?.proposal.checkpoint;
       this.store.refreshUndispatchedEffectPrompt({
         taskId: task.taskId,
         effectId: pending.effectId,
@@ -866,14 +866,14 @@ export class WorkflowSupervisorControlPlane {
     const validation = await this.validateTerminalProposal(task, parsed.proposal);
     const correctionId = validation.valid ? undefined : stableEffectId(`completion:${completionFingerprint}`);
     const resolved = this.store.resolveTerminal({ completionFingerprint, taskId: task.taskId, action: parsed.proposal.action, accepted: validation.valid, reason: validation.reason,
-      ...(correctionId ? { correction: { effectId: correctionId, prompt: this.renderPrompt(task, correctionId, 'correction', parsed.proposal.reason === 'compact_receipt' ? undefined : parsed.proposal.checkpoint, validation.reason) } } : {}) });
+      ...(correctionId ? { correction: { effectId: correctionId, prompt: this.renderPrompt(task, correctionId, 'correction', parsed.proposal.checkpoint, validation.reason) } } : {}) });
     return { action: parsed.proposal.action, completionFingerprint, terminal: validation.valid, ...(resolved.successorEffect ? { successorEffect: resolved.successorEffect } : {}), validation, deduplicated: committed.deduplicated || resolved.deduplicated };
   }
 
   /** Model CONTINUE and its causal successor commit in the same authority transaction. */
   private reserveContinuation(task: WorkflowSupervisorTask, completion: WorkflowSupervisorCompletion) {
     const nextId = stableEffectId(`completion:${completion.completionFingerprint}`);
-    const checkpoint = completion.proposal.reason === 'compact_receipt' ? undefined : completion.proposal.checkpoint;
+    const checkpoint = completion.proposal.checkpoint;
     return this.store.commitCompletion(completion, {
       effectId: nextId,
       kind: 'continuation',
@@ -881,7 +881,7 @@ export class WorkflowSupervisorControlPlane {
       // Rebuild from the same durable goal in a new logical conversation after
       // a confirmed receipt cycle; never migrate an uncompleted mutation.
       ...(task.continuationPolicy.kind === 'standalone_supervisor'
-        ? { freshEnrollmentPrompt: this.renderPrompt(task, nextId, 'enrollment') } : {}),
+        ? { freshEnrollmentPrompt: this.renderPrompt(task, nextId, 'enrollment', checkpoint) } : {}),
     });
   }
 
@@ -922,7 +922,8 @@ export class WorkflowSupervisorControlPlane {
     const canonicalObjective = this.hooks.canonicalObjectiveForTask?.(task)?.trim();
     const promptTask = canonicalObjective ? { ...task, objective: canonicalObjective } : task;
     const cognition = this.hooks.advisoryCognitionForTask?.(promptTask);
-    return renderSupervisorPrompt(promptTask, effectId, kind, checkpoint, correctionReason, lowerLayerContext, cognition);
+    const continuity = checkpoint ?? (kind === 'recovery' ? this.store.getLatestCompletion(task.taskId)?.proposal.checkpoint : undefined);
+    return renderSupervisorPrompt(promptTask, effectId, kind, continuity, correctionReason, lowerLayerContext, cognition);
   }
 
   private browserTaskActive(task: WorkflowSupervisorTask): boolean { return this.hooks.browserTaskActive?.(task) ?? true; }
