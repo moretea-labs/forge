@@ -180,6 +180,14 @@ function appliedEffectAwaitingCompletionWithin(db: Database, taskId: string): bo
     WHERE e.task_id = ?
       AND EXISTS (SELECT 1 FROM events applied WHERE applied.effect_id = e.effect_id AND applied.kind = 'effect_applied')
       AND NOT EXISTS (SELECT 1 FROM completions c WHERE c.task_id = e.task_id AND c.source_effect_id = e.effect_id)
+      -- Once the exact provider recovery actually commits a receipt, the
+      -- dispatched parent can no longer commit a competing completion.
+      -- Its causal observation is fulfilled by the completed recovery child.
+      -- Merely reserving/dispatching/applying a child never lifts this fence.
+      AND NOT EXISTS (SELECT 1 FROM effects child
+        JOIN completions receipt ON receipt.task_id = child.task_id AND receipt.source_effect_id = child.effect_id
+        WHERE child.task_id = e.task_id AND child.kind = 'recovery'
+          AND child.origin_key = 'provider-recovery:' || e.effect_id)
     LIMIT 1`, (s) => s.get(taskId)));
 }
 
@@ -811,12 +819,11 @@ export class WorkflowSupervisorStore {
         throw new Error('WORKFLOW_SUPERVISOR_TASK_TERMINAL');
       }
       if (oldestUnappliedEffect(db, input.taskId)) throw new Error('WORKFLOW_SUPERVISOR_SCHEDULED_WAKE_CAUSAL_OBLIGATION_PENDING');
-      const awaitingReceipt = statement(db, `SELECT 1 AS ok FROM effects e
-        WHERE e.task_id = ?
-          AND EXISTS (SELECT 1 FROM events applied WHERE applied.effect_id = e.effect_id AND applied.kind = 'effect_applied')
-          AND NOT EXISTS (SELECT 1 FROM completions c WHERE c.task_id = e.task_id AND c.source_effect_id = e.effect_id)
-        LIMIT 1`, (s) => s.get(input.taskId));
-      if (awaitingReceipt) throw new Error('WORKFLOW_SUPERVISOR_SCHEDULED_WAKE_CAUSAL_OBLIGATION_PENDING');
+      // Reuse the single causal-obligation definition. A completed provider
+      // recovery settles its failed parent; an in-flight recovery still blocks.
+      if (appliedEffectAwaitingCompletionWithin(db, input.taskId)) {
+        throw new Error('WORKFLOW_SUPERVISOR_SCHEDULED_WAKE_CAUSAL_OBLIGATION_PENDING');
+      }
       const latestRow = statement(db, "SELECT c.* FROM completions c WHERE c.task_id = ? ORDER BY COALESCE((SELECT MAX(completion_event.event_id) FROM events completion_event WHERE completion_event.task_id = c.task_id AND completion_event.completion_fingerprint = c.completion_fingerprint AND completion_event.kind = 'assistant_completion'), c.rowid) DESC LIMIT 1", (s) => s.get(input.taskId)) as Record<string, unknown> | undefined;
       if (!latestRow) throw new Error('WORKFLOW_SUPERVISOR_SCHEDULED_WAKE_NOT_WAITING');
       const completion = completionFromRow(latestRow);

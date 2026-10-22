@@ -877,6 +877,56 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     store.close();
   });
 
+  test('a completed provider recovery settles the failed applied parent and permits the next scheduled wake', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-recovery-wait-settlement-'));
+    roots.push(root);
+    const store = new WorkflowSupervisorStore(root);
+    const control = new WorkflowSupervisorControlPlane(store);
+    const taskId = 'task-gmail-recovered-wait';
+    const conversationId = 'abababab-2222-3333-4444-555555555555';
+    control.registerTask({
+      taskId, conversationId, conversationUrl: `https://chatgpt.com/c/${conversationId}`,
+      objective: 'Resume the same daily Gmail task from the durable WAIT receipt.',
+      completionContract: { repo_id: 'repo-gmail', work_id: 'work-gmail' },
+      continuationPolicy: { kind: 'forge_goal_outer_turn' },
+      userBlockerPolicy: {},
+    });
+    control.bindScheduledWake({ taskId, repoId: 'repo-gmail', workId: 'work-gmail', scheduleId: 'SCH-gmail' });
+    const source = control.reserveEnrollment(taskId);
+    control.observeEffect({ effectId: source.effectId, observationId: 'source-applied', outcome: 'applied' });
+    const recovery = store.reserveEffect({
+      taskId, effectId: 'fx_12345678123456781234567812345678', kind: 'recovery',
+      originKey: `provider-recovery:${source.effectId}`,
+      prompt: 'Resume the applied Gmail turn after an observed stream failure.',
+    });
+    expect(store.recordEffectDispatchStarted(recovery.effectId, 1, 'recovery-dispatch')).toBe(true);
+    control.observeEffect({ effectId: recovery.effectId, observationId: 'recovery-applied', outcome: 'applied' });
+    expect(store.hasAppliedEffectAwaitingCompletion(taskId)).toBe(true);
+    expect(control.taskStall(taskId).state).toBe('spaced');
+    const blockedWake = { taskId, scheduleId: 'SCH-gmail', occurrenceId: '2026-10-22' };
+    expect(() => control.wakeScheduledTask(blockedWake))
+      .toThrow('WORKFLOW_SUPERVISOR_SCHEDULED_WAKE_CAUSAL_OBLIGATION_PENDING');
+
+    const receipt = await control.observeAssistantTurn({
+      taskId, conversationId,
+      responseText: renderSupervisorReceipt(control.getTask(taskId)!, recovery.effectId, 'WAIT'),
+    });
+    expect(receipt).toMatchObject({ action: 'WAIT', terminal: false });
+    // Parent was genuinely applied, never directly completed, and never
+    // replayed. The completed child is the exact subsequent causal authority.
+    expect(store.getEffect(source.effectId)).toBeDefined();
+    expect(store.hasAppliedEffectAwaitingCompletion(taskId)).toBe(false);
+    expect(control.taskStall(taskId)).toMatchObject({
+      state: 'waiting', scheduleId: 'SCH-gmail', completionFingerprint: receipt.completionFingerprint,
+    });
+    const wake = control.wakeScheduledTask(blockedWake);
+    expect(wake).toMatchObject({ deduplicated: false, effect: { kind: 'continuation' } });
+    expect(control.wakeScheduledTask(blockedWake)).toMatchObject({
+      deduplicated: true, effect: { effectId: wake.effect.effectId },
+    });
+    store.close();
+  });
+
   test('inherits a Supervisor conversation only across explicit predecessor lineage, never across Requirement siblings', () => {
     const fx = fixture();
     const requirementId = 'REQ-supervisor-exact-conversation-lineage';
