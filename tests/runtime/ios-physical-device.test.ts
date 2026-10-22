@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { spawnSync } from 'child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
@@ -11,6 +11,7 @@ import {
   resolveIosPhysicalDeviceAuthorizationContext,
   setIosPhysicalDeviceRuntimeHooksForTest,
 } from '../../src/runtime/plugins/ios-physical-device';
+import { setComputerPlatformForTest } from '../../src/runtime/platform/computer-platform';
 import {
   resetRemoteXpcHidForTest,
   setRemoteXpcHidExecutorForTest,
@@ -147,7 +148,16 @@ function deviceEntry() {
   };
 }
 
+beforeEach(() => {
+  // The physical iPhone provider is a darwin product surface: pin the
+  // Computer composition platform seam too, not only the iOS runtime hooks,
+  // so the suite is platform-independent (Linux CI must see the same
+  // manifest surface as macOS).
+  setComputerPlatformForTest('darwin');
+});
+
 afterEach(() => {
+  setComputerPlatformForTest(undefined);
   resetIosPhysicalDeviceRuntimeHooksForTest();
   resetRemoteXpcHidForTest();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
