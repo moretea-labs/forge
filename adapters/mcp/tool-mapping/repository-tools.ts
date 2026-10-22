@@ -1165,7 +1165,12 @@ export async function callRepositoryTool(
             // repository identity here drops branch/expectedHead and prevents the
             // successful command from settling its legitimate successor HEAD.
             executionIdentity = executionIdentityForWork(repository!, mutationAuthority.handle);
-          } else {
+          } else if (repository) {
+            // Repository-semantic mutation fencing applies only to a registered
+            // repository target; an arbitrary workspace owns no registry record,
+            // WorkHandle, or lease, so a registry-keyed ownership assert would
+            // fail with "repository not found" for a valid existing directory.
+            // Path-scoped execution keeps its cwd containment and root checks.
             withControllerLock(
               controllerHome,
               { scope: 'repository', repoId: commandExecutionScopeKey(commandTarget) },
