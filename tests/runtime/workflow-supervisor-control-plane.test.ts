@@ -2441,7 +2441,7 @@ test('Supervisor preparation rejection is durably release-fenced and never spend
   preparationReady = true;
   const repaired = new WorkflowSupervisorNativeBrowserAdapter(control, new WorkflowSupervisorEphemeralDiscovery(), deps);
   await repaired.runOnce();
-  expect(preparations).toBe(2);
+  expect(preparations).toBe(5); // three transient deferrals + blocked preparation + recovered preparation
   expect(sends).toBe(1);
   expect(store.latestEffectDispatch(effect.effectId)?.generation).toBe(1);
   expect(store.latestEffectDispatch(effect.effectId)?.evidence).toMatchObject({ surface: 'computer-chatgpt-target' });
