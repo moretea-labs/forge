@@ -1691,7 +1691,8 @@ forbid(
   /\bcreateExecutionJob\b|\bgetExecutionJob\b/,
   'Gateway Router must not retain dormant ExecutionJob creation or lookup paths',
 );
-requireText('adapters/mcp/runtime-gateway/router.ts', 'executionJobCreationRetired');
+requireText('adapters/mcp/runtime-gateway/router.ts', "classification.path === 'durable' && name !== 'execute_command'");
+forbid('adapters/mcp/runtime-gateway/router.ts', /shouldCreateDurableJob|function executionJobCreationRetired/, 'MCP Gateway must not own a duplicate retired-ExecutionJob creation decision');
 requireText('adapters/mcp/runtime-gateway/router.ts', "'EXECUTION_JOB_RETIRED'");
 requireText('adapters/mcp/runtime-gateway/execution-tools.ts', 'isDurableWorkOperation');
 forbid('adapters/mcp/runtime-gateway/execution-tools.ts', /'work_execute'/, 'A Work-bound execution helper must not be a second public command tool');

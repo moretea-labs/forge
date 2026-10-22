@@ -33,11 +33,6 @@ export const RETIRED_AGENT_OPERATIONS = new Set([
   'submit_local_job',
 ]);
 
-// Historical ExecutionJobs remain readable migration evidence only.
-function executionJobCreationRetired(): boolean {
-  return true;
-}
-
 function result(value: Record<string, unknown>, isError = false): CallToolResult {
   return {
     content: [{ type: 'text', text: JSON.stringify(value, null, 2) }],
@@ -49,23 +44,6 @@ function result(value: Record<string, unknown>, isError = false): CallToolResult
 export function getMcpToolDefinition(ctx: MultiRepositoryMcpToolContext, name: string): McpToolDefinition | undefined {
   const currentDefinitions = [...runtimeToolDefinitions, ...executionToolDefinitions, ...processToolDefinitions, ...repositoryToolDefinitions];
   return [...currentDefinitions, ...buildMultiRepositoryToolDefinitions(ctx)].find((tool) => tool.name === name);
-}
-
-/**
- * Classify Gateway execution path before any ExecutionJob is created.
- * Fast decisions short-circuit durable queueing so Thin Harness owns the request.
- */
-export function shouldCreateDurableJob(
-  ctx: MultiRepositoryMcpToolContext,
-  name: string,
-  args: Record<string, unknown> = {},
-  opts: { allowReadOnly?: boolean; forceDurable?: boolean } = {},
-): boolean {
-  if (executionJobCreationRetired()) return false;
-  const definition = getMcpToolDefinition(ctx, name);
-  if (!definition) return false;
-  // One authoritative decision: do not duplicate read/write/isolation policy here.
-  return classifyGatewayExecutionPath(name, args, { ...opts, definition }).path === 'durable';
 }
 
 function canonical(value: unknown): unknown {
@@ -215,7 +193,7 @@ export async function routeDurableMcpCall(
   // remote writes run through the durable Process Runtime, while destructive or
   // explicitly delegated commands are refused by the repository facade itself.
   // Do not intercept that tool with the retired ExecutionJob gate here.
-  if (classification.path === 'durable' && executionJobCreationRetired() && name !== 'execute_command') {
+  if (classification.path === 'durable' && name !== 'execute_command') {
     return result({
       accepted: false,
       mode: 'external_controller_required',

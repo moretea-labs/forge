@@ -332,7 +332,7 @@ export function classifyGatewayExecutionPath(
     // Gateway owns transport placement, not Check lifecycle semantics. Until
     // the registered ControllerCheck is resolved by the Check owner below,
     // never infer Durable handling from a caller-provided id string.
-    // Route as "fast" so shouldCreateDurableJob returns false; actual execution
+    // Route as "fast" so ordinary checks never enter the retired ExecutionJob path; actual execution
     // uses Process Runtime (direct or managed handle) in routeDurableMcpCall / legacy handler.
     return {
       path: 'fast',
