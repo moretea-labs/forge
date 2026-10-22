@@ -481,6 +481,10 @@ function runtimeServiceConfig(home: string): void {
 function writeReleaseExecutionSurface(releaseRoot: string): {
   processRunnerArtifactIdentity: string;
   checkRunnerArtifactIdentity: string;
+  contextPackEntrypoint: 'forge-context-pack';
+  contextPackArtifactIdentity: string;
+  pluginActionSidecarEntrypoint: 'forge-plugin-action-sidecar';
+  pluginActionSidecarArtifactIdentity: string;
 } {
   const processRunner = '#!/usr/bin/env bun\nimport { existsSync } from "node:fs";\nif (existsSync("fail-process-runner")) process.exit(71);\nprocess.exit(0);\n';
   const checkRunner = '#!/bin/sh\nif [ -f fail-check-runner ]; then exit 73; fi\nexit 0\n';
@@ -490,7 +494,16 @@ function writeReleaseExecutionSurface(releaseRoot: string): {
   writeFileSync(checkRunnerPath, checkRunner);
   chmodSync(processRunnerPath, 0o700);
   chmodSync(checkRunnerPath, 0o700);
+  const sidecar = '#!/bin/sh\nexit 0\n';
+  const sidecarIdentity = `sha256:${createHash('sha256').update(sidecar).digest('hex')}`;
+  for (const name of ['forge-context-pack', 'forge-plugin-action-sidecar']) {
+    writeFileSync(join(releaseRoot, name), sidecar, { mode: 0o700 });
+  }
   return {
+    contextPackEntrypoint: 'forge-context-pack',
+    contextPackArtifactIdentity: sidecarIdentity,
+    pluginActionSidecarEntrypoint: 'forge-plugin-action-sidecar',
+    pluginActionSidecarArtifactIdentity: sidecarIdentity,
     processRunnerArtifactIdentity: `sha256:${createHash('sha256').update(processRunner).digest('hex')}`,
     checkRunnerArtifactIdentity: `sha256:${createHash('sha256').update(checkRunner).digest('hex')}`,
   };
@@ -508,9 +521,8 @@ function manifest(home: string, releaseId: string, artifactIdentity: string, wor
     artifactIdentity,
     entrypoint: 'forge-runtime',
     processRunnerEntrypoint: 'process-runner.js',
-    processRunnerArtifactIdentity: executionSurface.processRunnerArtifactIdentity,
     checkRunnerEntrypoint: 'forge-check-runner',
-    checkRunnerArtifactIdentity: executionSurface.checkRunnerArtifactIdentity,
+    ...executionSurface,
     arguments: [],
     configurationSchemaVersion: 1,
     controllerHome: resolve(home),
@@ -535,9 +547,8 @@ function verifiedManifest(home: string, releaseId: string, runtimeMarker = relea
     artifactIdentity,
     entrypoint: 'forge-runtime',
     processRunnerEntrypoint: 'process-runner.js',
-    processRunnerArtifactIdentity: executionSurface.processRunnerArtifactIdentity,
     checkRunnerEntrypoint: 'forge-check-runner',
-    checkRunnerArtifactIdentity: executionSurface.checkRunnerArtifactIdentity,
+    ...executionSurface,
     arguments: [],
     configurationSchemaVersion: 1,
     controllerHome: resolve(home),
@@ -4626,9 +4637,8 @@ describe('standalone recovery on canonical Runtime', () => {
         artifactIdentity,
         entrypoint: 'forge-runtime',
         processRunnerEntrypoint: 'process-runner.js',
-        processRunnerArtifactIdentity: executionSurface.processRunnerArtifactIdentity,
         checkRunnerEntrypoint: 'forge-check-runner',
-        checkRunnerArtifactIdentity: executionSurface.checkRunnerArtifactIdentity,
+        ...executionSurface,
         arguments: [],
         configurationSchemaVersion: 1,
         controllerHome: resolve(home),
@@ -4716,9 +4726,8 @@ describe('standalone recovery on canonical Runtime', () => {
       artifactIdentity: 'sha256:deadbeef',
       entrypoint: 'forge-runtime',
       processRunnerEntrypoint: 'process-runner.js',
-      processRunnerArtifactIdentity: executionSurface.processRunnerArtifactIdentity,
       checkRunnerEntrypoint: 'forge-check-runner',
-      checkRunnerArtifactIdentity: executionSurface.checkRunnerArtifactIdentity,
+      ...executionSurface,
       arguments: [],
       configurationSchemaVersion: 1,
       controllerHome: resolve(home),
@@ -4751,9 +4760,8 @@ describe('standalone recovery on canonical Runtime', () => {
         artifactIdentity,
         entrypoint: 'forge-runtime',
         processRunnerEntrypoint: 'process-runner.js',
-        processRunnerArtifactIdentity: executionSurface.processRunnerArtifactIdentity,
         checkRunnerEntrypoint: 'forge-check-runner',
-        checkRunnerArtifactIdentity: executionSurface.checkRunnerArtifactIdentity,
+        ...executionSurface,
         arguments: [],
         configurationSchemaVersion: 1,
         controllerHome: resolve(home),
