@@ -493,7 +493,10 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     if (this.control.getTask(task.taskId)?.continuationPolicy.kind !== 'standalone_supervisor'
       || failure?.code !== code || failure.streak < 3
       || this.deps.nowMs() - failure.firstFailureAtMs < 2 * 60_000
-      || command?.mode !== 'send' || command.dispatchGeneration !== 1
+      || !((command?.mode === 'send' && command.dispatchGeneration === 1)
+        || (effectId !== undefined
+          && this.control.store.currentUnappliedEffect(task.taskId)?.effectId === effectId
+          && this.control.effectDispatchBudget(effectId).generations === 0))
       || this.control.store.hasAppliedEffectAwaitingCompletion(task.taskId)
       || chatgptProviderBackpressureRemainingMs(this.deps.providerScopeKey, this.deps.nowMs()) > 0) return;
     // The existing Supervisor CAS ledger is the only migration and send owner.
@@ -773,10 +776,9 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     // Derived from the durable effect log, not this adapter's process memory.
     const stall = this.control.taskStall(task.taskId);
     if (stall.state === 'spaced' && stall.reason === 'pre_send_infrastructure_blocked') {
-      // A blocked new recovery cannot authorize a Send, but it must not hide
-      // the completed final reply of its already-applied source effect.
-      // Probe read-only at the existing bounded receipt cadence.
-      if (!this.control.store.hasAppliedEffectAwaitingCompletion(task.taskId)) return;
+      // A failed preparation blocks Send, not observation of the exact target.
+      // Keep the same bounded read-only probe so an unusable conversation can
+      // still supply migration evidence even when no applied reply is pending.
       const checkedAt = this.awaitingReceiptObservedAtMs.get(task.taskId) ?? 0;
       if (this.deps.nowMs() - checkedAt < AWAITING_RECEIPT_OBSERVATION_MS) return;
       this.awaitingReceiptObservedAtMs.set(task.taskId, this.deps.nowMs());
@@ -818,7 +820,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
         && ensured.observation !== undefined
         && !this.taskConversationContentAvailable(task, ensured.observation);
       if (verifiedEmpty) {
-        this.observeVerifiedEmptyShell(task, poll.command?.effectId, poll.command, ensured.observation!);
+        this.observeVerifiedEmptyShell(task, poll.command?.effectId ?? (stall.state === 'spaced' ? stall.effectId : undefined), poll.command, ensured.observation!);
       } else {
         // An unverified URL, a heartbeat or a generic typed transport failure
         // never accumulates the durable early-rotation evidence.
@@ -836,7 +838,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     if (!exactConversation(snapshot, task)) { this.noteTargetUnavailable(task, poll.command?.effectId, { code: 'WORKFLOW_SUPERVISOR_EXACT_CONVERSATION_UNPROVEN' }); return; }
     if (this.handleVerifiedTerminalCapacity(task, poll.command?.effectId, snapshot)) return;
     if (!this.taskConversationContentAvailable(task, snapshot)) {
-      this.observeVerifiedEmptyShell(task, poll.command?.effectId, poll.command, snapshot);
+      this.observeVerifiedEmptyShell(task, poll.command?.effectId ?? (stall.state === 'spaced' ? stall.effectId : undefined), poll.command, snapshot);
       return;
     }
     // Do not clear a pre-send failure merely because a conversation loaded:

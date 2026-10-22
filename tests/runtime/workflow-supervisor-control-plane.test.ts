@@ -3740,6 +3740,9 @@ test('verified repeated exact-conversation empty shells migrate only a never-sen
     projectTitle: 'Forge', projectUrl: 'https://chatgpt.com/g/g-p-123456789abcdef0/project',
   }]);
   const pending = control.reserveEnrollment(taskId);
+  // A durable no-send preparation blocker must not disable exact-target
+  // observation or the existing safe empty-shell migration.
+  store.recordEffectPreparationFailure(pending.effectId, 'composer_not_empty');
   let nowMs = 1_000_000;
   let observationMode: 'missing' | 'wrong' | 'failure-text' | 'exact' = 'missing';
   let inventoryHealthy = true;
