@@ -502,7 +502,13 @@ export class WorkflowSupervisorControlPlane {
       // read-only and mints nothing, so keeping it attached is what lets late
       // provider/completion evidence resolve the turn instead of stranding it.
       const providerTurnAwaitingReceipt = this.store.hasAppliedEffectAwaitingCompletion(task.taskId);
-      if (!pending && !providerTurnAwaitingReceipt) return [];
+      if (!pending && !providerTurnAwaitingReceipt) {
+        const stall = this.store.taskStall(task.taskId);
+        // Withholding a failed preparation must not remove an established
+        // conversation from the read-only observer and safe-rotation path.
+        if (task.conversationId.startsWith('bootstrap:') || stall.state !== 'spaced'
+          || stall.reason !== 'pre_send_infrastructure_blocked') return [];
+      }
       // Bootstrap has no exact conversation yet, so it cannot satisfy the
       // normal Work-boundary predicate. Its already-persisted enrollment effect
       // is the narrow authority to acquire one through Computer exactly once.
