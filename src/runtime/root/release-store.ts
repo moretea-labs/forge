@@ -121,7 +121,7 @@ export function runtimeReleaseAuthorityPath(controllerHome: string): string {
 /** Resolve a local operational backup path under Controller Home only. */
 function backupPath(controllerHome: string, releaseId: string, operationId: string): string {
   const safe = `${releaseId}-${operationId}`.replace(/[^A-Za-z0-9._-]+/g, '-').slice(0, 120);
-  return join(ensureControllerHome(controllerHome), 'runtime', 'releases', 'backups', `${Date.now()}-${safe}.sqlite`);
+  return join(ensureControllerHome(controllerHome), 'runtime', 'releases', 'backups', `${Date.now()}-${randomUUID().slice(0, 8)}-${safe}.sqlite`);
 }
 
 interface RuntimeReleasePublicationLease {
@@ -340,6 +340,30 @@ function writeRuntimeReleaseAuthority(controllerHome: string, authority: Runtime
   return authority;
 }
 
+/** Keep the captured rollback topology alive until activation or compensation settles. */
+export function protectRuntimeReleaseAuthority(
+  controllerHome: string,
+  authority: RuntimeReleaseAuthority | undefined,
+  operationId: string,
+): () => void {
+  const releases: Array<() => void> = [];
+  try {
+    for (const [role, record] of [['active', authority?.active], ['previous', authority?.previous]] as const) {
+      if (!record) continue;
+      releases.push(writePublicationLease(
+        controllerHome,
+        `preactivation-${role}-${operationId}`,
+        record.manifestPath,
+        record.databaseBackup?.path,
+      ));
+    }
+  } catch (error) {
+    for (const release of releases) release();
+    throw error;
+  }
+  return () => { for (const release of releases) release(); };
+}
+
 function sameRelease(left: RuntimePublishedRelease, right: RuntimePublishedRelease): boolean {
   return left.releaseId === right.releaseId
     && left.artifactIdentity === right.artifactIdentity
@@ -469,7 +493,7 @@ export function publishRuntimeRelease(
     && preparedDatabaseBackup.activeReleaseId === current.active.releaseId
     && preparedDatabaseBackup.operationId === operationId,
   );
-  const pendingBackupPath = preparedMatches && preparedDatabaseBackup
+  let pendingBackupPath = preparedMatches && preparedDatabaseBackup
     ? preparedDatabaseBackup.path
     : backupPath(controllerHome, current.active.releaseId, operationId);
   let releaseLease = () => {};
@@ -485,6 +509,7 @@ export function publishRuntimeRelease(
   // lease with Candidate B before publication so cleanup protects both sides
   // of the complete authority transition.
   if (prepared || preparedMatches) {
+    if (!prepared) pendingBackupPath = backupPath(controllerHome, current.active.releaseId, operationId);
     releaseLease = writePublicationLease(controllerHome, operationId, candidate.manifestPath, pendingBackupPath);
   }
   let backup: string;

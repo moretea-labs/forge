@@ -80,6 +80,7 @@ function hasCustomClaudeHooks(repo: string): boolean {
 }
 
 function detectMode(repo: string): Mode {
+  if (existsSync(join(repo, "forge.config.json"))) return "audit";
   const hasTasks = existsSync(join(repo, "tasks"));
   const hasPlan = existsSync(join(repo, "plans"));
   const hasLegacyDocs =
@@ -108,7 +109,12 @@ export function inspectRepo(repo: string): InspectionResult {
   );
   const driftSignals: string[] = [];
   const requiredDecisions: string[] = [];
-  const safeDefaults = [
+  const safeDefaults = existsSync(join(repo, "forge.config.json")) ? [
+    "Keep mutable Requirement/Plan/Work and verification state in Forge Controller Home SQLite",
+    "Read execution progress through Forge tools; do not create repo-local task contracts or session state",
+    "Keep repository files for authored specifications, architecture, source, and reusable lessons",
+    "Treat legacy workflow files as migration evidence, not current execution authority",
+  ] : [
     "Preserve repo-local tasks-first workflow",
     "Preserve uncertain legacy content in place until explicit currentness triage",
     "Delete only manifest-owned known_generated legacy files",

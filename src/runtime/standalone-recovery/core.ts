@@ -51,6 +51,7 @@ import { loadRuntimeReleaseManifest } from '../root/release-manifest';
 import { assertRuntimeReleaseExecutionCanaries, assertRuntimeReleaseFiles, promotePortableRuntimeRelease, runtimeReleaseTreeSha256, stageRuntimeReleaseFromCandidateSource, withRuntimeReleaseSourceSnapshot, type RuntimeReleaseExecutionCanaryDependencies, type StagedRuntimeRelease } from '../root/release-materialize';
 import {
   prepareRuntimeReleaseDatabaseBackup,
+  protectRuntimeReleaseAuthority,
   publishRuntimeRelease,
   readRuntimeReleaseAuthority,
   reconcileFailedRuntimeReleaseActivationAuthority,
@@ -3388,6 +3389,10 @@ async function activateRuntimeReleaseInternal(
       });
       return { ok: false, attempted: false, noOp: true, detail, operationId } satisfies RuntimeReleaseActivationResult;
     }
+    // Candidate startup may run release GC after publication removes the old
+    // previous pointer. Compensation still needs that exact captured topology.
+    const releaseAuthorityProtection = protectRuntimeReleaseAuthority(config.controllerHome, current, operationId);
+    try {
     // Snapshot Stable A while it is still serving. The release store keeps a
     // database-wide SQLite data_version observer open across this snapshot and
     // the stop boundary. Any intervening commit invalidates the speculative
@@ -3668,14 +3673,19 @@ async function activateRuntimeReleaseInternal(
     return {
       ok: false,
       attempted: true,
-      detail: activationFailureDetail
-        ? `requested Runtime release failed to start; previous release restored: ${activationFailureDetail}`
-        : 'requested Runtime release activated but failed whole-Runtime verification; previous release restored',
+      detail: rollback.ok
+        ? (activationFailureDetail
+          ? `requested Runtime release failed to start; previous release restored: ${activationFailureDetail}`
+          : 'requested Runtime release activated but failed whole-Runtime verification; previous release restored')
+        : `requested Runtime release activation failed; previous release recovery failed: ${rollback.detail}`,
       serviceTarget: service.target,
       operationId,
       rollback,
       verify: after,
     } satisfies RuntimeReleaseActivationResult;
+    } finally {
+      releaseAuthorityProtection();
+    }
   };
 
   if (heldRecoveryLock) {
