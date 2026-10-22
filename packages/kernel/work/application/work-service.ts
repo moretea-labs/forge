@@ -81,6 +81,7 @@ export {
   listWorkContracts,
   readActiveWorkCandidates,
   readWorkContractLineageSnapshot,
+  readWorkGoalSnapshot,
   initializeWorkCandidateIndex,
   isCurrentWorkContract,
   supersedeWorkContract,

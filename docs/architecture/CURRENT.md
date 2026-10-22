@@ -71,6 +71,8 @@ Status: **Runtime Authority**
 
 This file is the sole maintained architecture authority for the current Forge runtime. Executable code and persisted schemas are authoritative for implementation facts; this document defines the architecture contracts they are expected to preserve. Do not hard-code a source commit here: release-specific snapshots belong in [`versions/`](versions/).
 
+Same-instance goal progress is a fresh read-only projection of the existing Controller Home SQLite Work records. `rh_work(requirement_get)` and `rh_work(plan_get)` return related Work semantic revisions/states, parent/dependency links and bounded result/check/review references, preferring canonical semantic records over legacy repository copies. Queries select exact goal membership before output limits; invalid or ambiguous records and truncation remain explicit. No parent objective rewrite, repository ledger, progress cache, watcher or new lifecycle state is created. Plan-basis mismatches are diagnostic evidence; only the Controller decides acceptance, completion, integration and release. Sessions using the same local Forge instance observe newly committed Work results on their next read.
+
 ## Product model
 
 The macOS native ChatGPT composer pre-send boundary treats only a strictly text-empty single ProseMirror `<p><br></p>` placeholder as an empty editor. Layout newlines on that exact empty placeholder do not constitute user draft content; real text, including whitespace-only text nodes, remains protected from replacement. This classification never overrides the exact-conversation identity fence or the requirement to confirm the prepared composer before any Send.

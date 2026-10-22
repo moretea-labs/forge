@@ -1,3 +1,4 @@
+import { buildGoalProgress } from '../../../src/runtime/control-plane/facade/requirement-board';
 import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
 import {
@@ -52,6 +53,9 @@ export async function callRhWorkPlanOperation(
           summary: `Plan ${plan.planId} current head retrieved at semantic revision ${planSemanticView(plan).revision}.`,
           data: {
             plan: planSemanticView(plan),
+            ...(store.controllerHome ? { progress: buildGoalProgress(store.controllerHome, {
+              planId: plan.planId, planRevision: planSemanticView(plan).revision,
+            }, args.detail_level === 'detail' ? 'detail' : 'summary') } : {}),
           },
           detailLevel: args.detail_level === 'detail' ? 'detail' : 'summary',
         })

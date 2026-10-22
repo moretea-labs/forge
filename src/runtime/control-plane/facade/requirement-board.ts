@@ -7,7 +7,7 @@ import {
 } from '../persistence/requirement-store';
 import { isRepositoryCompletionReceipt } from './types';
 import { listPlanContracts, summarizePlanContract } from './plan-contract-store';
-import { listWorkContracts, summarizeWorkContract } from '../../../../packages/kernel/work/api/index';
+import { listWorkContracts, summarizeWorkContract, readWorkGoalSnapshot } from '../../../../packages/kernel/work/api/index';
 import type { PlanContract, WorkContract } from './types';
 
 const DEFAULT_REQUIREMENT_LIMIT = 12;
@@ -297,5 +297,68 @@ export function buildExecutionDiagnostics(
       { tool: 'workflow_watchdog_report', arguments: { include_processes: true } },
       { tool: 'get_project_governance', arguments: {} },
     ],
+  };
+}
+
+/** Read-only progress for all sessions using this one local Controller Home. */
+export function buildGoalProgress(
+  controllerHome: string,
+  filter: { requirementId?: string; planId?: string; planRevision?: number },
+  detailLevel: 'summary' | 'detail' = 'summary',
+): Record<string, unknown> {
+  const snapshot = readWorkGoalSnapshot(controllerHome, filter);
+  const counts = { open: 0, completed: 0, cancelled: 0 };
+  for (const work of snapshot.contracts) counts[work.semanticState] += 1;
+  const ordered = [...snapshot.contracts].sort((left, right) =>
+    Number(right.semanticState === 'open') - Number(left.semanticState === 'open')
+      || (right.semanticUpdatedAt ?? right.updatedAt).localeCompare(left.semanticUpdatedAt ?? left.updatedAt));
+  const workLimit = detailLevel === 'detail' ? 40 : 8;
+  const resultLimit = detailLevel === 'detail' ? 8 : 3;
+  const works = ordered.slice(0, workLimit).map((work) => ({
+    workId: work.workId,
+    revision: work.semanticRevision,
+    state: work.semanticState,
+    objective: boundedText(work.objective, detailLevel === 'detail' ? 600 : 240),
+    requirementId: work.requirementId,
+    planId: work.planId,
+    planRevision: work.planRevision,
+    planStepId: work.planStepId,
+    semanticParentWorkId: work.semanticParentWorkId,
+    dependsOnWorkIds: work.dependsOnWorkIds ?? [],
+    resultRefs: (work.semanticResultRefs ?? []).slice(-resultLimit).map((ref) => boundedText(ref, 500)),
+    resultRefTruncatedCount: Math.max(0, (work.semanticResultRefs?.length ?? 0) - resultLimit),
+    checks: work.checkRefs.slice(-3).map((check) => ({
+      checkId: check.checkId, outcome: check.outcome, summary: boundedText(check.summary, 500),
+      sourceRevision: check.sourceRevision, recordedAt: check.recordedAt,
+    })),
+    review: work.implementationReviews.slice(-1).map((review) => ({
+      reviewId: review.reviewId, decision: review.decision, sourceRevision: review.sourceRevision,
+    })),
+    evidenceState: work.evidenceState,
+    completionOutcome: work.completionOutcome,
+    updatedAt: work.semanticUpdatedAt ?? work.updatedAt,
+    detailPointer: { tool: 'rh_work', arguments: { operation: 'get', work_id: work.workId, detail_level: 'detail' } },
+  }));
+  const mismatched = filter.planRevision === undefined ? [] : snapshot.contracts
+    .filter((work) => work.planRevision !== filter.planRevision).map((work) => work.workId);
+  const unassigned = snapshot.contracts.filter((work) => work.planId && !work.planStepId).map((work) => work.workId);
+  return {
+    source: 'controller_home_sqlite',
+    observedAt: new Date().toISOString(),
+    workCount: snapshot.contracts.length,
+    counts,
+    works,
+    workTruncatedCount: Math.max(0, snapshot.contracts.length - works.length),
+    sourceTruncated: snapshot.truncated,
+    invalidWorkCount: snapshot.invalid.length,
+    invalidWorks: snapshot.invalid.slice(0, workLimit).map((work) => ({ ...work, error: boundedText(work.error, 500) })),
+    invalidWorkTruncatedCount: Math.max(0, snapshot.invalid.length - workLimit),
+    planBasisMismatchWorkIds: mismatched.slice(0, workLimit),
+    planBasisMismatchCount: mismatched.length,
+    unassignedPlanItemWorkIds: unassigned.slice(0, workLimit),
+    unassignedPlanItemWorkCount: unassigned.length,
+    detailPointer: { tool: 'rh_work', arguments: { operation: filter.planId ? 'plan_get' : 'requirement_get',
+      ...(filter.planId ? { plan_id: filter.planId } : { requirement_id: filter.requirementId }), detail_level: 'detail' } },
+    acceptance: 'explicit_controller_decision_required',
   };
 }
