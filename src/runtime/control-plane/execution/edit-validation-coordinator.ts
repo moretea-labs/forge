@@ -341,6 +341,10 @@ function receiptFor(
     workId: session.workId,
     editSessionId: run.editSessionId,
     editRevision: run.editRevision,
+    // Semantic Check reuse binds to the requesting EditSession, not the
+    // original Process origin. Preserve its issue/task provenance in receipts.
+    issueId: session.issueId,
+    taskId: session.taskId,
     checkId,
     processId: binding.processId,
     ...(persistedIdentity ? {
