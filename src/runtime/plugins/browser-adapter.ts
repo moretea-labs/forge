@@ -40,8 +40,8 @@ import {
   MAX_BROWSER_SESSION_LIST_LIMIT,
 } from '../../../packages/plugin-runtime/browser/session-authority';
 import {
-  currentRuntimeBrowserSessionAuthorityContext as currentBrowserSessionAuthorityContext,
-  withRuntimeBrowserSessionAuthorityContext as withBrowserSessionAuthorityContext,
+  currentRuntimeBrowserSessionExecutionContext,
+  withRuntimeBrowserSessionExecutionContext,
 } from '../root/browser-session-composition';
 import {
   closeMacOsBrowserOwnedTab,
@@ -749,7 +749,7 @@ async function resolveBrowserPluginAuthorizationContextInternal(
 export async function resolveBrowserPluginAuthorizationContext(
   input: AssistantPluginActionExecutionInput,
 ): Promise<AssistantPluginAuthorizationContext | undefined> {
-  return await withBrowserSessionAuthorityContext(
+  return await withRuntimeBrowserSessionExecutionContext(
     { controllerHome: input.controllerHome, repoId: input.repoId },
     () => resolveBrowserPluginAuthorizationContextInternal(input),
   );
@@ -3780,7 +3780,7 @@ function health(config: BrowserPluginConfig, repoRoot?: string): AssistantPlugin
   const dependencyReady = runtimeHooks.moduleAvailable('playwright', repoRoot);
   const configErrors = validateConfig(config);
   const warnings = configWarnings(config);
-  const authority = currentBrowserSessionAuthorityContext();
+  const authority = currentRuntimeBrowserSessionExecutionContext();
   const savedSessionCount = repoRoot && authority ? listSavedBrowserSessions(repoRoot).length : 0;
   const activeHandoffCount = repoRoot
     ? listBrowserHandoffs(repoRoot).filter((entry) => ['starting', 'waiting_for_user', 'closing'].includes(entry.status)).length
@@ -4137,7 +4137,7 @@ async function executeBrowserPluginActionInternal(
         const nextOffset = offset + page.length;
         return {
           provider: 'playwright',
-          sessionCountSemantics: currentBrowserSessionAuthorityContext() ? 'controller_authority' : 'saved_metadata',
+          sessionCountSemantics: currentRuntimeBrowserSessionExecutionContext() ? 'controller_authority' : 'saved_metadata',
           scannedSessionCount: inventory.scannedSessionCount,
           savedSessionCount: inventory.savedSessionCount,
           liveManagedSessionCount: inventory.liveManagedSessionCount,
@@ -5421,7 +5421,7 @@ export function resolveBrowserAttachmentPaths(
 }
 
 export async function executeBrowserPluginAction(input: AssistantPluginActionExecutionInput): Promise<Record<string, unknown>> {
-  return await withBrowserSessionAuthorityContext(
+  return await withRuntimeBrowserSessionExecutionContext(
     { controllerHome: input.controllerHome, repoId: input.repoId },
     () => executeBrowserPluginActionInternal(input),
   );
