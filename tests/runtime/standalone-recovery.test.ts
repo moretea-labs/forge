@@ -1022,7 +1022,7 @@ test('standalone Recovery restarts the canonical Linux systemd-user primary Conn
   expect(result).toMatchObject({ ok: true, attempted: true });
   expect(commands.some((entry) => entry[0] === 'systemctl' && entry[1] === '--user' && entry[2] === 'restart')).toBe(true);
   expect(commands.some((entry) => entry[0] === 'systemctl' && entry.includes('MainPID'))).toBe(true);
-  expect(commands.some((entry) => entry[0] === 'lsof' && entry.includes('4242'))).toBe(true);
+  expect(commands.some((entry) => entry[0] === 'lsof' && entry.some((arg) => String(arg).startsWith('-iTCP:')))).toBe(true);
   expect(commands.some((entry) => entry[0] === 'launchctl')).toBe(false);
 });
 
