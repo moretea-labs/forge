@@ -21,7 +21,7 @@ function arg(name: string): string | undefined {
 }
 
 const mechanicalNowMs = Number(arg('--now-ms') ?? Date.now());
-const TURN_ADVANCE_MS = 1_000;
+const TURN_ADVANCE_MS = 61_000;
 
 function control(home: string): WorkflowSupervisorControlPlane {
   return new WorkflowSupervisorControlPlane(new WorkflowSupervisorStore(home, { now: () => mechanicalNowMs }), {
@@ -249,10 +249,8 @@ async function main(): Promise<void> {
       'done-3',
       'quiescent',
     ].entries()) {
-      // A successor send is intentionally throttled from the receipt that
-      // authorized it. Advance the deterministic clock by that contract
-      // interval so this restart smoke verifies recovery, not a rate-limit
-      // rejection.
+      // Time-travel beyond the unknown-send observation retry window.
+      // Confirmed CONTINUE itself no longer imposes a fixed dispatch delay.
       const child = spawnSync(process.execPath, [script, '--phase', nextPhase, '--home', home, '--now-ms', String(baseNowMs + index * TURN_ADVANCE_MS)], {
         cwd: process.cwd(),
         encoding: 'utf8',
