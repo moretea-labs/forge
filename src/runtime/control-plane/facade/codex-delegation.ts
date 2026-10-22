@@ -1,4 +1,3 @@
-import { randomUUID } from 'crypto';
 import { buildFacadeResult } from './facade-result';
 import type {
   EvidenceRef,
@@ -33,28 +32,6 @@ export interface CodexContextPack {
     mustProduce: Array<'evidence_artifact' | 'handoff_item' | 'patch_proposal' | 'suggested_next_actions'>;
     mustNot: string[];
   };
-}
-
-export interface GrokDelegateRequestPacket {
-  schemaVersion: 1;
-  requestId: string;
-  target: 'grok';
-  mode: 'bounded_handoff_request';
-  repoId: string;
-  workId?: string;
-  objective: string;
-  acceptanceCriteria: string[];
-  constraints: WorkContract['constraints'];
-  allowedPaths: string[];
-  forbiddenPaths: string[];
-  relevantFilesSummary: string[];
-  policyBoundaries: string[];
-  currentEvidenceRefs: EvidenceRef[];
-  requiredOutputFormat: CodexContextPack['expectedOutputFormat'];
-  instructions: string[];
-  /** Direct Grok execution is not assumed available; ChatGPT remains authority. */
-  directExecutionAvailable: false;
-  returnPath: 'evidence_or_handoff_for_chatgpt_review';
 }
 
 export interface CodexDelegationInput {
@@ -127,37 +104,6 @@ export function buildCodexContextPack(input: CodexDelegationInput & { repoId: st
         'return_secrets_or_tokens',
       ],
     },
-  };
-}
-
-export function prepareGrokDelegateRequest(
-  input: CodexDelegationInput & { repoId: string; work?: WorkContract },
-): GrokDelegateRequestPacket {
-  const pack = buildCodexContextPack({ ...input, target: 'grok' });
-  return {
-    schemaVersion: 1,
-    requestId: `grok-req-${randomUUID().slice(0, 10)}`,
-    target: 'grok',
-    mode: 'bounded_handoff_request',
-    repoId: pack.repoId,
-    workId: pack.workId,
-    objective: pack.objective,
-    acceptanceCriteria: pack.acceptanceCriteria,
-    constraints: pack.constraints,
-    allowedPaths: pack.allowedPaths,
-    forbiddenPaths: pack.forbiddenPaths,
-    relevantFilesSummary: pack.relevantFilesSummary,
-    policyBoundaries: pack.policyBoundaries,
-    currentEvidenceRefs: pack.currentEvidenceRefs,
-    requiredOutputFormat: pack.expectedOutputFormat,
-    instructions: [
-      'Act as a parallel small-brain reviewer/implementer for ChatGPT.',
-      'Return only bounded evidence, patch proposal, and suggested next actions.',
-      'Do not finalize work, push, or request secrets.',
-      'ChatGPT remains responsible for semantic review; Forge does not impose a finalize phase.',
-    ],
-    directExecutionAvailable: false,
-    returnPath: 'evidence_or_handoff_for_chatgpt_review',
   };
 }
 
