@@ -37,7 +37,7 @@ import {
   workSemanticView,
 } from '../../packages/kernel/work/api/index';
 import { callRhWorkSemanticOperation } from '../../adapters/mcp/runtime-gateway/work-semantic-operations';
-import { recordUnknownSupervisorNotificationReceipt } from '../../src/runtime/root/workflow-supervisor-runtime';
+import { recordFailedSupervisorNotificationReceipt, recordUnknownSupervisorNotificationReceipt } from '../../src/runtime/root/workflow-supervisor-runtime';
 const roots: string[] = [];
 afterEach(() => {
 });  while (roots.length > 0) rmSync(roots.pop()!, { recursive: true, force: true });
@@ -587,6 +587,43 @@ describe('Thin capability substrate', () => {
       ...receipt, requestId: 'wfsn_success', status: 'succeeded', effectOutcome: undefined,
     })).toBe(false);
     expect(listDirectActivities(home)).toHaveLength(1);
+  });
+
+  test('settled failed Gmail owner notifications surface one durable UserRequest without rekeying', () => {
+    const home = tempHome();
+    const failed = {
+      receiptId: 'PLG-known-auth-failure', requestId: 'wfsn_exact_failed',
+      pluginId: 'gmail', actionId: 'send_owner_notification',
+      status: 'failed' as const, effectOutcome: 'failed' as const,
+      error: { code: 'PLUGIN_AUTH_REQUIRED', message: 'Authentication required' },
+    };
+    expect(recordFailedSupervisorNotificationReceipt(home, 'task-failed', 'repo-a', failed.requestId, failed)).toBe(true);
+    const first = listUserRequests(home, 'pending').filter((item) => item.rootCauseKey.includes('notification-send-failed:'));
+    expect(first).toHaveLength(1);
+    expect(first[0]).toMatchObject({
+      kind: 'user_action_request', actionRequired: 'login',
+      targetScope: { scopeKind: 'workflow_supervisor_task', scopeId: 'task-failed', repoId: 'repo-a' },
+      presentation: { currentState: { receiptId: failed.receiptId, requestId: failed.requestId } },
+    });
+    expect(recordFailedSupervisorNotificationReceipt(home, 'task-failed', 'repo-a', failed.requestId, failed)).toBe(true);
+    expect(listUserRequests(home, 'pending')).toHaveLength(1);
+    expect(() => recordFailedSupervisorNotificationReceipt(home, 'task-failed', 'repo-a', failed.requestId, {
+      ...failed, receiptId: 'PLG-conflicting-known-failure',
+    })).toThrow('WORKFLOW_SUPERVISOR_NOTIFICATION_RECEIPT_CONFLICT');
+    expect(recordFailedSupervisorNotificationReceipt(home, 'task-failed', 'repo-a', failed.requestId, {
+      ...failed, effectOutcome: 'outcome_unknown',
+    })).toBe(false);
+    expect(recordFailedSupervisorNotificationReceipt(home, 'task-failed', 'repo-a', failed.requestId, {
+      ...failed, status: 'succeeded',
+    })).toBe(false);
+    expect(recordFailedSupervisorNotificationReceipt(home, 'task-failed', 'repo-a', 'wrong-request', failed)).toBe(false);
+
+    const provider = { ...failed, receiptId: 'PLG-provider-failure', requestId: 'wfsn_provider_failed',
+      error: { code: 'GMAIL_PROVIDER_UNAVAILABLE', message: 'Provider unavailable' } };
+    expect(recordFailedSupervisorNotificationReceipt(home, 'task-failed', 'repo-a', provider.requestId, provider)).toBe(true);
+    expect(listUserRequests(home, 'pending').find((item) => item.rootCauseKey.endsWith(provider.requestId)))
+      .toMatchObject({ kind: 'user_decision_request', actionRequired: 'product_decision' });
+    expect(listUserRequests(home, 'pending')).toHaveLength(2);
   });
 
   test('Supervisor exhausted activity keeps one exact identity beyond a 200-item projection window', () => {

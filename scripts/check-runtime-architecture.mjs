@@ -1168,6 +1168,8 @@ requireText('src/runtime/root/workflow-supervisor-runtime.ts', 'export function 
 requireText('src/runtime/root/workflow-supervisor-runtime.ts', 'readPluginActionReceiptForRequest(controllerHome, input.requestId)');
 requireText('src/runtime/root/workflow-supervisor-runtime.ts', 'submitted.receipt');
 requireText('tests/runtime/thin-capability-substrate.test.ts', 'unknown Gmail Supervisor notification keeps one exact receipt');
+requireText('src/runtime/root/workflow-supervisor-runtime.ts', 'export function recordFailedSupervisorNotificationReceipt(');
+requireText('tests/runtime/thin-capability-substrate.test.ts', 'settled failed Gmail owner notifications surface one durable UserRequest without rekeying');
 requireText('src/runtime/root/workflow-supervisor-runtime.ts', "notificationRequestId('stall', taskId, stall.state, stall.effectId)");
 requireText('src/runtime/root/workflow-supervisor-runtime.ts', 'getDirectActivity(controllerHome, stallActivityId(taskId))');
 requireText('packages/kernel/identity/infrastructure/activity-projection-store.ts', 'export function getDirectActivity(');

@@ -54,6 +54,49 @@ export function recordUnknownSupervisorNotificationReceipt(
   return true;
 }
 
+/** A settled failed notification must never be mistaken for a successful deduplicated send. */
+export function recordFailedSupervisorNotificationReceipt(
+  controllerHome: string,
+  taskId: string,
+  repoId: string,
+  requestId: string,
+  receipt: Pick<PluginActionReceipt, 'receiptId' | 'requestId' | 'pluginId' | 'actionId' | 'status' | 'effectOutcome' | 'error'>,
+): boolean {
+  if (receipt.requestId !== requestId || receipt.pluginId !== GMAIL_PLUGIN_ID
+    || receipt.actionId !== 'send_owner_notification'
+    || receipt.status !== 'failed' || receipt.effectOutcome === 'outcome_unknown') return false;
+  const rootCauseKey = `workflow-supervisor.notification-send-failed:${taskId}:${requestId}`;
+  const existing = listUserRequests(controllerHome).find((item) => item.rootCauseKey === rootCauseKey);
+  if (existing?.presentation?.currentState?.receiptId
+    && existing.presentation.currentState.receiptId !== receipt.receiptId) {
+    throw new Error(`WORKFLOW_SUPERVISOR_NOTIFICATION_RECEIPT_CONFLICT: ${requestId}`);
+  }
+  const code = receipt.error?.code ?? 'GMAIL_NOTIFICATION_FAILED';
+  const loginRequired = code === 'PLUGIN_AUTH_REQUIRED' || code === 'PLUGIN_AUTH_FAILED';
+  const grantRequired = loginRequired || [
+    'PLUGIN_CAPABILITY_GRANT_REQUIRED',
+    'GMAIL_AUTOMATION_DISABLED',
+    'GMAIL_AUTOMATION_MAILBOX_NOT_CONFIGURED',
+    'GMAIL_AUTOMATION_MAILBOX_MISMATCH',
+    'EXTERNAL_EFFECT_AUTHORIZATION_REQUIRED',
+  ].includes(code);
+  recordUserRequest(controllerHome, {
+    kind: grantRequired ? 'user_action_request' : 'user_decision_request',
+    rootCauseKey,
+    title: grantRequired ? 'Gmail notification authorization required' : 'Gmail notification delivery failed',
+    summary: `Forge Gmail owner notification did not send: ${code} (receipt ${receipt.receiptId}). The exact failed request ${requestId} remains settled; no automatic retry, changed key, or alternate provider was used. ${grantRequired ? 'Restore the exact Gmail authorization for future notifications.' : 'Review the Gmail provider failure before authorizing any new send.'}`,
+    actionRequired: loginRequired ? 'login' : grantRequired ? 'grant_permission' : 'product_decision',
+    targetScope: { scopeKind: 'workflow_supervisor_task', scopeId: taskId, repoId },
+    presentation: {
+      severity: 'blocked',
+      creationReason: 'scheduled_gmail_notification_receipt_failed',
+      reason: code,
+      currentState: { taskId, repoId, pluginId: GMAIL_PLUGIN_ID, actionId: 'send_owner_notification', requestId, receiptId: receipt.receiptId, errorCode: code },
+    },
+  });
+  return true;
+}
+
 export interface RuntimeWorkflowSupervisorHandle {
   readonly done: Promise<void>;
   close(): Promise<void>;
@@ -201,7 +244,12 @@ export async function startWorkflowSupervisorRuntime(
     // outcome-unknown send must never be resubmitted under any envelope.
     const prior = readPluginActionReceiptForRequest(controllerHome, input.requestId);
     if (prior) {
-      recordUnknownSupervisorNotificationReceipt(controllerHome, input.taskId, input.requestId, prior);
+      // Never resend under any envelope. An outcome-unknown receipt retains its
+      // exact direct activity; a settled failed receipt becomes an exact
+      // UserRequest so a known failure is never mistaken for a deduped send.
+      if (!recordUnknownSupervisorNotificationReceipt(controllerHome, input.taskId, input.requestId, prior)) {
+        recordFailedSupervisorNotificationReceipt(controllerHome, input.taskId, repoId, input.requestId, prior);
+      }
       return;
     }
     const mailbox = loadGmailPluginConfig(repository.canonicalRoot, { controllerHome, repoId }).accountEmail?.trim().toLowerCase();
@@ -270,8 +318,12 @@ export async function startWorkflowSupervisorRuntime(
       });
       if (recordUnknownSupervisorNotificationReceipt(controllerHome, input.taskId, input.requestId, submitted.receipt)) {
         process.stderr.write(`[workflow-supervisor-notification] ${input.requestId}: outcome_unknown; receipt ${submitted.receipt.receiptId} retained without resend\n`);
+      } else {
+        recordFailedSupervisorNotificationReceipt(controllerHome, input.taskId, repoId, input.requestId, submitted.receipt);
       }
     } catch (error) {
+      const failedReceipt = readPluginActionReceiptForRequest(controllerHome, input.requestId);
+      if (failedReceipt && recordFailedSupervisorNotificationReceipt(controllerHome, input.taskId, repoId, input.requestId, failedReceipt)) return;
       const failureMessage = error instanceof Error ? error.message : String(error);
       const failureCode = /^([A-Z][A-Z0-9_]+)(?::|$)/.exec(failureMessage)?.[1];
       const loginRequired = failureCode === 'PLUGIN_AUTH_REQUIRED' || failureCode === 'PLUGIN_AUTH_FAILED';
