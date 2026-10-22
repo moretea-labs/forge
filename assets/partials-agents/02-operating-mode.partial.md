@@ -1,45 +1,21 @@
 ## Operating Mode
 
 - Default to **{{RUNTIME_MODE}}**.
-- Runtime profile: {{RUNTIME_PROFILE}}.
-- Recovery profile: `{{RECOVERY_PROFILE}}`.
-- State profile: `{{STATE_PROFILE}}`.
-- Context profile: `{{CONTEXT_PROFILE}}`.
-- Claude runtime expectation: `{{CLAUDE_POLICY}}`.
-- Codex runtime expectation: `{{CODEX_POLICY}}`.
-- Do not implement until the user explicitly asks to implement.
-- Once the user asks to execute, minimize avoidable human intervention: continue reversible, policy-allowed implementation, verification, cleanup, and delivery autonomously, stopping only at a genuinely user-only identity/legal/financial/strong-confirmation/irreversible boundary.
-- For authenticated browser work, reuse the user's already-running signed-in Google Chrome with attach-preferred, native-auto, Chrome-only, fail-closed routing. Preserve cookies, tokens, sessions, and settings; never silently switch to a managed, isolated, Vivaldi, or otherwise unauthenticated profile unless the task explicitly requests that mode.
-- Stable product truth: `docs/spec.md`.
-- Research reports: `docs/researches/`.
-- Deferred-goal ledger: `tasks/todos.md` (active execution stays in the plan's `## Task Breakdown`).
-- Task contract done gate: `tasks/contracts/` (legacy name: sprint contract).
-- Evaluator verdicts: `tasks/reviews/`.
-- Implementation notes: `tasks/notes/`.
-- Structured checks: `.ai/harness/checks/latest.json`.
-- Session continuation: `.ai/harness/session/continuation.md`.
-- Harness policy: `.ai/harness/policy.json`.
-- Context map: `.ai/context/context-map.json`.
-- Lessons contract: `tasks/lessons.md`.
-- Plan directory: `plans/` (timestamped plans).
-- Active plan rule: `.ai/harness/active-plan` for this worktree when present, `.ai/harness/active-worktree` as owner marker, and `.claude/.active-plan` legacy fallback during transition. Do not infer active execution from the latest plan.
-- Terminal repo-local workflow artifacts are deleted only after their exact final state is represented by Git; do not maintain plan/todo archive directories.
-- Shared automation layer: `.ai/hooks/`.
-- Host adapters: user-level `~/.claude/settings.json` and `~/.codex/hooks.json` call `forge-hook`, falling back to `forge hook`, which dispatches into opted-in repos.
-- External reference cache: `_ref/` is an occasional ignored external checkout cache, read/refresh-only comparison material, and must stay out of commits; decisions based on it must cite repo+commit/tag+path in notes or research.
-- Deployment operations workspace: `deploy/` is commit-ready for runbooks, submission materials, release checklists, helper scripts, ordered SQL files under `deploy/sql/`, and env examples.
-- Local operations state: `_ops/` is ignored and private for secrets, real env files, provider state, artifacts, logs, and scratch files; do not commit or agent-edit `_ops/*`.
-- Agentic skill routing: product discovery -> gstack `office-hours`; complex engineering plans -> gstack `plan-eng-review`; design plans -> gstack `plan-design-review`; daily small/medium planning, bug hunts, and checks -> Forge `/plan`, `/hunt`, `/check`.
-- Knowledge sync and handoff retrieval -> `gbrain`.
-- Codex automation profile: required `health`, `check`, and `mermaid` from `~/.codex/skills`; do not vendor skill bodies.
-- Code navigation uses bounded ripgrep discovery and explicit language-service definitions/references/implementations; no graph index is required.
-- External tooling reference: `docs/reference-configs/agentic-development-flow.md` for routing details, `docs/reference-configs/external-tooling.md` for install/update guidance.
-- Waza runtime boundary: Codex reads `~/.codex/skills`; `~/.agents/skills` is only skills CLI staging/cache and must be copied into Codex with verification after updates.
-- Environment check: `bash .ai/harness/scripts/check-agent-tooling.sh --host both --check-updates`.
-- After substantive repo changes, run `bash .ai/harness/scripts/check-task-sync.sh` and `bash .ai/harness/scripts/check-task-workflow.sh --strict`.
-- Primary worktree warns by default; enforce via `.claude/.require-worktree`.
-- Contract-level execution is worktree-first: `.ai/harness/scripts/plan-to-todo.sh --plan <approved-plan>` starts a linked `codex/<slug>` worktree when policy enables it, and `.ai/harness/scripts/contract-worktree.sh finish` merges back only after Forge `/review` and sprint verification pass.
-- After Codex Plan mode, Forge `/plan`, or `forge-plan` produces a decision-complete plan, capture it with `.ai/harness/scripts/capture-plan.sh --slug <slug> --title <title>`; if implementation is already approved, capture with `--status Approved --execute` or run `.ai/harness/scripts/plan-to-todo.sh --plan <active-plan>`.
-- If repo state conflicts with the task, use an isolated `codex/<task-slug>` worktree, validate with Forge `/review`, and merge back to `main` without unrelated dirty changes.
+- Runtime profile: {{RUNTIME_PROFILE}}; recovery: {{RECOVERY_PROFILE}}; state: {{STATE_PROFILE}}; context: {{CONTEXT_PROFILE}}.
+- Claude runtime expectation: {{CLAUDE_POLICY}}.
+- Codex runtime expectation: {{CODEX_POLICY}}.
+- Do not implement until the user requests implementation. After authorization, execute non-blocked work without unnecessary human handoffs.
+- For authenticated browser work, reuse the user's signed-in Chrome session; preserve cookies and tokens, and do not switch profiles without authorization.
 
----
+### Current Authority
+- In a modern forge.config.json project, **Controller Home SQLite is the sole durable machine authority** for Requirement, Plan, Work, ControllerRound, Process, Schedule, permissions and evidence. Read/update it through Forge tools.
+- docs/spec.md and docs/researches/ are human product and research context. tasks/todos.md holds deferred goals; tasks/lessons.md holds human-readable corrections.
+- plans/, tasks/contracts/, tasks/reviews/, tasks/notes/, tasks/workstreams/, and .ai/harness/ are legacy migration/history, not live plan, completion, checks or session authorities. Do not create or revive them.
+- Use current Controller Home Work/Plan, Git and real receipts to resume. Choose checkout isolation on actual writer conflicts, not retired worktree-policy scripts.
+- The model decides which existing checks/review to run and when to complete; Git delivery is a separate explicit decision.
+
+### Other Context
+- docs/reference-configs/agentic-development-flow.md and external-tooling.md describe optional tool routing, not workflow authority.
+- deploy/ holds versioned operational runbooks; _ops/ is private local scratch/secret state, never commit or edit it as a project artifact.
+- Source navigation: bounded ripgrep then explicit symbol navigation as needed.
+- Third-party host skills are optional and must not change Forge workflow correctness.

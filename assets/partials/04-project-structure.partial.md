@@ -1,5 +1,7 @@
 ## Project Structure
 
+Illustrative source/documentation layout only. Controller Home is authoritative for active Requirement/Plan/Work/receipts, regardless of directories appearing in a historical template.
+
 ```
 {{PROJECT_STRUCTURE}}
 ```
@@ -12,45 +14,29 @@
 
 {{#IF WEBAPP_RENDERING_MODEL_ENABLED}}
 ### Webapp Rendering Model
-
 {{WEBAPP_RENDERING_MODEL_SUMMARY}}
-
 | Boundary | Default |
 |----------|---------|
 {{WEBAPP_RENDERING_TECH_STACK_TABLE}}
-
 {{/IF}}
 {{#IF AI_NATIVE_PROFILE_ENABLED}}
 ### AI-Native Profile
-
 {{AI_NATIVE_PROFILE_SUMMARY}}
-
 | Layer | Technology |
 |-------|------------|
 {{AI_NATIVE_TECH_STACK_TABLE}}
-
 {{/IF}}
 ---
 
 ## Workflow Rules
-
-- Prefer modifying existing files over adding new files.
-- {{RUNTIME_MODE}} by default for file mutations.
-- Primary worktree warns by default; enforce via `.claude/.require-worktree`.
-- Commit explicitly after green checks; no automatic checkpoint hook in the shared preset.
-- Keep stable product truth in `docs/spec.md`.
-- Keep sprint done definitions in `tasks/contracts/`, `tasks/reviews/`, and task-local implementation notes in `tasks/notes/`.
-- Keep resumable state in `.ai/harness/session/continuation.md`.
-- Treat `_ref/` as an occasional ignored external reference checkout cache; read or refresh it for comparison, but keep it out of commits and cite repo+commit/tag+path in `tasks/notes/` or `docs/researches/` when it influences a decision.
-- Treat `deploy/` as the trackable deployment and operations surface for runbooks, submission materials, release checklists, helper scripts, ordered SQL files under `deploy/sql/`, and env examples.
-- Treat `_ops/` as ignored local operations state for secrets, real env files, provider state, artifacts, logs, and scratch files; do not commit or agent-edit `_ops/*`.
-- Treat contract-level execution as worktree-first: `.ai/harness/scripts/plan-to-todo.sh --plan <approved-plan>` starts a linked `codex/<slug>` worktree when policy enables it, and `.ai/harness/scripts/contract-worktree.sh finish` merges back only after Forge `/review` and sprint verification pass.
-- Capture decision-complete Codex Plan mode, Forge `/plan`, or `forge-plan` outputs with `.ai/harness/scripts/capture-plan.sh --slug <slug> --title <title>` so planning becomes a `plans/` artifact before implementation.
-- Route product discovery to gstack `office-hours`, complex engineering plans to gstack `plan-eng-review`, design plans to gstack `plan-design-review`, and daily small/medium planning, bug hunts, and checks to Forge `/plan`, `/hunt`, and `/check`.
-- Route knowledge sync and handoff retrieval to `gbrain`.
-- Register valuable repo-authored docs in `.ai/harness/brain-manifest.json` with `sync.direction=repo-to-brain`; `.ai/harness/scripts/sync-brain-docs.sh` and the PostEdit hook mirror only those explicit entries into the default brain vault.
-- Codex automation profile is runtime-referenced, not vendored: required skills are `health`, `check`, and `mermaid` from `~/.codex/skills`.
-- Code navigation uses bounded ripgrep discovery and explicit language-service symbol navigation; no graph index is required.
-- Treat third-party host skills as optional. Their installation state must not change Forge workflow correctness.
-- Use `docs/reference-configs/agentic-development-flow.md` for routing details and `docs/reference-configs/external-tooling.md` plus `bash .ai/harness/scripts/check-agent-tooling.sh --host both --check-updates` for environment checks.
-- If repo state conflicts with the task, use an isolated `codex/<task-slug>` worktree, validate with Forge `/review`, and merge back to `main` without unrelated dirty changes.
+- Prefer modifying existing files over adding new ones.
+- Respect the selected {{RUNTIME_MODE}} runtime mode and user authorization.
+- Keep product intent in docs/spec.md; tasks/todos.md and tasks/lessons.md are human notes.
+- Keep live Requirement, Plan, Work, review decisions and verification receipts in Controller Home, not tasks/contracts/ or .ai/harness/.
+- Use an isolated worktree when there is a real writer conflict; preserve unrelated dirty bytes.
+- Commit deliberately after sufficient existing checks; choose integration separately from completing Work.
+- _ref/ is only an ignored external source-comparison cache; cite exact revisions in research.
+- deploy/ contains trackable runbooks and SQL; _ops/ is private local state and must not be committed.
+- Optional host skills and gstack/Waza/gbrain do not define Forge lifecycle authority.
+- For source discovery use ripgrep and explicit language-service navigation as appropriate.
+- Do not run retired .ai/harness/ workflow scripts or regenerate a repo-local runtime controller.
