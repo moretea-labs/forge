@@ -806,7 +806,11 @@ export function prepareWork(ctx: McpExecutionContext, args: Record<string, unkno
       return recoverLostWorkPlacement(ctx, args, session, repository, existing);
     }
     if (args.relocate_to_new_worktree === true) {
-      if (requestedIsolation !== undefined) throw new Error('WORK_RELOCATION_ISOLATION_CONFLICT');
+      // Explicit new_worktree agrees with relocation; other isolation values
+      // select the current checkout. Exact HEAD and writer fences stay intact.
+      if (requestedIsolation !== undefined && requestedIsolation !== 'new_worktree') {
+        throw new Error('WORK_RELOCATION_ISOLATION_CONFLICT');
+      }
       return relocateExistingWorkToManagedCheckout(ctx, args, session, repository, existing);
     }
     if (requestedIsolation !== undefined) {
