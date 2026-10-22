@@ -193,6 +193,15 @@ export interface AssistantPluginBuildContext {
 export interface AssistantPluginAdapter {
   pluginId: string;
   scope?: AssistantPluginScope;
+  /**
+   * A controller-scoped adapter that still exposes repository-bound actions
+   * (for example computer's physical_device_* iPhone surface) keeps its
+   * repository manifest surface: repository-scoped manifest reads and action
+   * execution resolve the repository build instead of being diverted to the
+   * controller-global manifest, and the controller migration must not retire
+   * its per-repository manifest projections.
+   */
+  repositorySurface?: boolean;
   /** Internal adapters remain exactly addressable by trusted composition but are omitted from normal user-facing plugin listings. */
   exposure?: AssistantPluginExposure;
   buildManifest(previousRevision?: number, previousUpdatedAt?: string, repoRoot?: string, context?: AssistantPluginBuildContext): AssistantPluginManifest;
