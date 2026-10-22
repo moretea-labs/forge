@@ -134,9 +134,13 @@ export function decideConfiguredRuntimeReleaseAction(controllerHome: string): Ru
 /**
  * Decide whether the Recovery-hosted automatic trigger should invoke one
  * ReleaseCoordinator step. ReleaseSession remains the only durable progression
- * authority; source comparison merely decides whether an absent session should
- * be created. Unknown active source identity fails closed rather than implying
- * a source mismatch.
+ * authority, and automatic reconciliation exists to resume an already-active
+ * session (crash recovery); source comparison never creates a session. A
+ * configured source HEAD that differs from the active Runtime is evidence for
+ * an explicit, model-reviewed whole-candidate release decision, not an
+ * implicit trigger that may stop a stable Runtime while unrelated Work is live
+ * (#307). Unknown active source identity fails closed rather than implying a
+ * source mismatch.
  */
 export function decideConfiguredRuntimeReleaseReconciliation(
   controllerHome: string,
@@ -182,7 +186,13 @@ export function decideConfiguredRuntimeReleaseReconciliation(
     return { required: false, reason: 'source_already_attempted', session: priorAttempt };
   }
 
-  return { required: true, reason: 'source_mismatch', action: 'prepare' };
+  // A fresh source mismatch is reported, not acted on: automatic
+  // reconciliation must not stop a stable Runtime or open a ReleaseSession
+  // from a HEAD comparison alone. The configured source participates in a
+  // release only through the explicit model-reviewed ReleaseSession
+  // primitives (release-session-prepare/advance/cutover, or
+  // stage-and-activate-runtime-release).
+  return { required: false, reason: 'source_mismatch' };
 }
 
 function decisionFingerprint(decision: RuntimeReleaseCoordinatorDecision): string {
@@ -196,15 +206,11 @@ export async function advanceConfiguredRuntimeReleaseStep<C extends RuntimeRelea
   config: C,
   provider: RuntimeReleaseProvider<C>,
   requestId?: string,
-  reconciliation?: RuntimeReleaseReconciliationDecision,
 ): Promise<RuntimeReleaseProgressResult> {
-  // The Coordinator's source comparison may select a new Candidate while the
-  // one allowable soaking predecessor stays open. Provider.prepare itself
-  // revalidates source/Stable A under the existing Recovery mutation lock.
-  const decision: RuntimeReleaseCoordinatorDecision = reconciliation?.required
-    && reconciliation.reason === 'source_mismatch' && reconciliation.action === 'prepare'
-    ? { action: 'prepare' }
-    : decideConfiguredRuntimeReleaseAction(config.controllerHome);
+  // Every step re-derives the next action from persisted ReleaseSession state.
+  // The Coordinator never synthesizes a new session from a source comparison:
+  // sessions originate only from the explicit prepare primitives.
+  const decision: RuntimeReleaseCoordinatorDecision = decideConfiguredRuntimeReleaseAction(config.controllerHome);
   const request = requestId?.trim();
   switch (decision.action) {
     case 'prepare':
