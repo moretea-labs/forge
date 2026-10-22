@@ -24,15 +24,6 @@ export {
 } from './routing-policy';
 export type { GatewayRouteBehaviorSnapshot } from './routing-policy';
 
-export const RETIRED_AGENT_OPERATIONS = new Set([
-  'dispatch_task',
-  'launch_issue',
-  'dispatch_ready_tasks',
-  'retry_task_run',
-  'quick_agent_session',
-  'submit_local_job',
-]);
-
 // Historical ExecutionJobs remain readable migration evidence only.
 function executionJobCreationRetired(): boolean {
   return true;
@@ -47,25 +38,13 @@ function result(value: Record<string, unknown>, isError = false): CallToolResult
 }
 
 export function getMcpToolDefinition(ctx: MultiRepositoryMcpToolContext, name: string): McpToolDefinition | undefined {
-  const currentDefinitions = [...runtimeToolDefinitions, ...executionToolDefinitions, ...processToolDefinitions, ...repositoryToolDefinitions];
-  return [...currentDefinitions, ...buildMultiRepositoryToolDefinitions(ctx)].find((tool) => tool.name === name);
-}
-
-/**
- * Classify Gateway execution path before any ExecutionJob is created.
- * Fast decisions short-circuit durable queueing so Thin Harness owns the request.
- */
-export function shouldCreateDurableJob(
-  ctx: MultiRepositoryMcpToolContext,
-  name: string,
-  args: Record<string, unknown> = {},
-  opts: { allowReadOnly?: boolean; forceDurable?: boolean } = {},
-): boolean {
-  if (executionJobCreationRetired()) return false;
-  const definition = getMcpToolDefinition(ctx, name);
-  if (!definition) return false;
-  // One authoritative decision: do not duplicate read/write/isolation policy here.
-  return classifyGatewayExecutionPath(name, args, { ...opts, definition }).path === 'durable';
+  // Static tools already own their published schema. Do not rebuild the large
+  // legacy policy-shaped inventory on every ordinary tools/call.
+  return runtimeToolDefinitions.find((tool) => tool.name === name)
+    ?? executionToolDefinitions.find((tool) => tool.name === name)
+    ?? processToolDefinitions.find((tool) => tool.name === name)
+    ?? repositoryToolDefinitions.find((tool) => tool.name === name)
+    ?? buildMultiRepositoryToolDefinitions(ctx).find((tool) => tool.name === name);
 }
 
 function canonical(value: unknown): unknown {
@@ -164,17 +143,6 @@ export async function routeDurableMcpCall(
         message: `${name} is not registered by this forge build.`,
       },
     }, true);
-  }
-
-  if (RETIRED_AGENT_OPERATIONS.has(name)) {
-    return result({
-      accepted: false,
-      mode: 'reject',
-      path: 'reject',
-      rejectCode: 'AGENT_RUN_DEPRECATED',
-      message: 'Kernel-managed Agent Runs are retired. When durable continuation is actually needed, create or resume the semantic Work and start the external Controller through rh_work.launcher_start; mechanical ControllerRound ownership is internal.',
-      migration: ['rh_work.plan_create', 'rh_work.launcher_start', 'rh_inbox.create'],
-    });
   }
 
   // Classify BEFORE creating any ExecutionJob / LocalJob / Worker.
