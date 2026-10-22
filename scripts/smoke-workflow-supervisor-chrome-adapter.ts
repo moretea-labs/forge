@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { WorkflowSupervisorControlPlane } from '../supervisor/control-plane';
 import { SUPERVISOR_BLOCK_END, SUPERVISOR_BLOCK_START } from '../supervisor/protocol';
-import { WORKFLOW_SUPERVISOR_MIN_TURN_INTERVAL_MS, WorkflowSupervisorStore } from '../supervisor/store';
+import { WorkflowSupervisorStore } from '../supervisor/store';
 import { NativeMessageDecoder, encodeNativeMessage } from '../supervisor/native-messaging/protocol';
 import { renderWorkflowSupervisorNativeManifest } from '../supervisor/native-messaging/manifest';
 import { ALLOWED_BROWSER_METHODS } from '../supervisor/native-messaging/host';
@@ -13,7 +13,7 @@ import { WorkflowSupervisorEphemeralDiscovery } from '../supervisor/server';
 const home = mkdtempSync(join(tmpdir(), 'forge-supervisor-chrome-'));
 try {
   let mechanicalNowMs = Date.now();
-  const turnAdvanceMs = WORKFLOW_SUPERVISOR_MIN_TURN_INTERVAL_MS + 1_000;
+  const turnAdvanceMs = 61_000;
   const control = new WorkflowSupervisorControlPlane(new WorkflowSupervisorStore(home, { now: () => mechanicalNowMs }), { completionContract: async () => ({ valid: true, reason: 'ok' }), userBlockerPolicy: async () => ({ valid: true, reason: 'ok' }) });
   const conversationId = 'WEB:11111111-2222-3333-4444-555555555555';
   const conversationUrl = `https://chatgpt.com/c/${conversationId}`;

@@ -109,3 +109,81 @@ test('a rejected compact receipt is observed once per exact effect and unchanged
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+
+test('committed CONTINUE dispatches before slow browser cleanup without another scheduler wake', async () => {
+  const { WorkflowSupervisorNativeBrowserAdapter } = await import('../../supervisor/native-browser-adapter');
+  const { WorkflowSupervisorEphemeralDiscovery } = await import('../../supervisor/server');
+  const { renderSupervisorReceipt } = await import('../../supervisor/protocol');
+  const { createTestChatgptTargetPort } = await import('./helpers/computer-chatgpt-target-harness');
+  const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-continuation-priority-'));
+  const store = new WorkflowSupervisorStore(root);
+  try {
+    const control = new WorkflowSupervisorControlPlane(store, {}, { browserTaskActive: () => true });
+    const taskId = 'continuation-cleanup-priority';
+    const conversationId = '56565656-3434-7878-9090-121212121212';
+    const conversationUrl = 'https://chatgpt.com/c/' + conversationId;
+    control.registerTask({
+      taskId, conversationId, conversationUrl,
+      objective: 'Dispatch the successor of this completed turn promptly.',
+      completionContract: {}, continuationPolicy: {}, userBlockerPolicy: {},
+    });
+    const enrollment = control.reserveEnrollment(taskId);
+    control.observeEffect({ effectId: enrollment.effectId, observationId: 'initial-send-applied', outcome: 'applied' });
+    const task = control.getTask(taskId)!;
+    const receipt = renderSupervisorReceipt(task, enrollment.effectId, 'CONTINUE');
+    const completed = await control.observeAssistantTurn({ taskId, conversationId, responseText: receipt });
+    expect(completed.action).toBe('CONTINUE');
+    const successorId = completed.successorEffect?.effectId;
+    expect(successorId).toBeDefined();
+
+    const page = { evaluate: async <T>() => false as T, tabRef: () => ({ windowId: 'priority-window', tabId: 'priority-tab' }) };
+    let sends = 0;
+    let cleanupSawSend = false;
+    let currentUser = enrollment.prompt;
+    let currentReply = receipt;
+    let generating = false;
+    const targetPort = createTestChatgptTargetPort({
+      listTabs: async () => ({ entries: [{ windowId: 'priority-window', tabId: 'priority-tab',
+        url: conversationUrl, title: 'Continuation', active: true, browserProduct: 'chrome' }], unavailableProducts: [] }),
+      reattach: async () => page,
+      create: async () => { throw new Error('Do not create another conversation'); },
+      close: async () => undefined,
+      snapshot: async () => ({
+        url: conversationUrl, title: 'Continuation', latestUserText: currentUser,
+        latestAssistantResponse: currentReply, latestTurnRole: generating ? 'user' as const : 'assistant' as const,
+        composerText: '', isGenerating: generating, providerActivityText: '', providerFailureText: '',
+      }),
+      dispatchPrompt: async (_page, prompt) => {
+        expect(prompt).toContain(successorId!);
+        sends++;
+        currentUser = prompt;
+        currentReply = '';
+        generating = true;
+        return { dispatched: true, confirmed: true };
+      },
+    });
+    const cleanup = targetPort.cleanup.bind(targetPort);
+    const adapter = new WorkflowSupervisorNativeBrowserAdapter(control, new WorkflowSupervisorEphemeralDiscovery(), {
+      targetPort: { ...targetPort, cleanup: async (activeKeys) => {
+        cleanupSawSend = sends === 1;
+        await cleanup(activeKeys);
+      } },
+      nowMs: () => Date.now(), providerIdleGraceMs: 60_000,
+      providerScopeKey: join(root, 'provider-scope'),
+      sleep: async () => undefined,
+      setInterval: () => 0 as unknown as ReturnType<typeof setInterval>,
+      clearInterval: () => undefined,
+      onError: (error) => { throw error; },
+    });
+    await adapter.runOnce();
+    expect(sends).toBe(1);
+    expect(cleanupSawSend).toBe(true);
+    expect(store.effectApplied(successorId!)).toBe(true);
+    await adapter.runOnce();
+    expect(sends).toBe(1);
+  } finally {
+    store.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});

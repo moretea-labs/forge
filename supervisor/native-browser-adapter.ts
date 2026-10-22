@@ -692,6 +692,11 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     } else if (inventory.complete) {
       this.clearTransportFailure();
     }
+    // Dispatch a ready continuation before browser attachment cleanup.
+    // Cleanup can take a long time under tab pressure; it must not hold up
+    // an already committed Supervisor effect. Resource keys below are then
+    // computed from the current bindings, including any conversation migration.
+    await this.serviceFreshSend();
     // Retire only disposable provider attachments. The durable Supervisor
     // effect ledger (not textual DONE or a browser tab) proves protection: a
     // queued/reconciling command and an applied turn awaiting its receipt both

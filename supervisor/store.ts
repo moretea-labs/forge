@@ -283,7 +283,6 @@ export const WORKFLOW_SUPERVISOR_MAX_OPERATOR_REFUNDS = 2;
  * provider problem from turning into a conversation-hopping loop.
  */
 export const WORKFLOW_SUPERVISOR_MAX_CONVERSATION_MIGRATIONS = 2;
-export const WORKFLOW_SUPERVISOR_MIN_TURN_INTERVAL_MS = 3 * 60_000;
 
 /** Spaced retries keep a persistent local obstacle from becoming a request storm. */
 export function workflowSupervisorDispatchRetryDelayMs(generation: number): number {
@@ -1123,14 +1122,8 @@ export class WorkflowSupervisorStore {
       const ledger = effectDispatchLedger(db, effect.effectId);
       const nowMs = options.nowMs ?? this.clockMs();
       if (ledger.generations === 0) {
-        // A fresh continuation is one further provider turn of the same task.
-        // Spacing is measured from the completion that authorized it, so a fast
-        // provider reply cannot turn the outer-turn chain into a request storm.
-        const source = effect.sourceCompletionFingerprint
-          ? statement(db, 'SELECT committed_at FROM completions WHERE completion_fingerprint = ?', (s) => s.get(effect.sourceCompletionFingerprint!)) as { committed_at?: string } | undefined
-          : undefined;
-        const committedAtMs = Date.parse(String(source?.committed_at ?? ''));
-        if (Number.isFinite(committedAtMs) && nowMs - committedAtMs < WORKFLOW_SUPERVISOR_MIN_TURN_INTERVAL_MS) return undefined;
+        // Committed CONTINUE already has one unique causal successor.
+        // Retry spacing and provider backpressure still guard failed sends.
         if (this.preflightBlocked(db, effect.effectId)) return undefined;
         return { effect, mode: 'send', generation: 1 };
       }
