@@ -8,9 +8,6 @@ export interface BrowserSessionExecutionContext {
   repoId?: string;
 }
 
-/** @deprecated Compatibility alias for frozen callers; this is context, not an authority capability. */
-export type BrowserSessionAuthorityContext = BrowserSessionExecutionContext;
-
 /** Compatibility shape for Browser-facing session metadata. It is persisted only inside a Computer SurfaceTarget record. */
 export interface BrowserSessionAuthoritySession {
   schemaVersion: 1;
@@ -35,28 +32,4 @@ export interface BrowserSessionAuthorityPage<T extends BrowserSessionAuthoritySe
   limit: number;
   totalCount: number;
   nextCursor?: string;
-}
-
-export interface BrowserSessionLegacyCutoverRepository {
-  repoId: string;
-  repoRoot: string;
-}
-
-export interface BrowserSessionLegacyCutoverReport {
-  closed: boolean;
-  alreadyClosed: boolean;
-  repositoryCount: number;
-  migratedRecordCount: number;
-}
-
-/** Compatibility-only report shape; Browser no longer owns tombstone retention. */
-export interface BrowserSessionTombstoneCleanupReport {
-  policyVersion: 'browser-session-tombstone-retention-v1';
-  cutoverClosed: boolean;
-  inspected: number;
-  eligible: number;
-  removed: number;
-  retained: number;
-  blockers: string[];
-  budgetExhausted: boolean;
 }
