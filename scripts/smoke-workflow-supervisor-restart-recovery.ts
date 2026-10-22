@@ -8,7 +8,7 @@ import { WorkflowSupervisorStore } from '../supervisor/store';
 
 const home = mkdtempSync(join(tmpdir(), 'forge-supervisor-recovery-'));
 let mechanicalNowMs = Date.now();
-const TURN_ADVANCE_MS = 1_000;
+const TURN_ADVANCE_MS = 61_000;
 const validators = { completionContract: async () => ({ valid: true, reason: 'ok' }), userBlockerPolicy: async () => ({ valid: true, reason: 'ok' }) };
 const control = () => new WorkflowSupervisorControlPlane(new WorkflowSupervisorStore(home, { now: () => mechanicalNowMs }), validators);
 const block = (
