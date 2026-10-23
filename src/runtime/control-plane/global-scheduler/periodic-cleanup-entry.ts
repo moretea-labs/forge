@@ -5,7 +5,6 @@ import { gcTerminalProcesses } from '../../execution/process-runtime/gc';
 import { assertRuntimeMayWrite } from '../../root/write-fence';
 import { runSchedulerPeriodicCleanup } from './maintenance';
 import { PROCESS_RUNTIME_RELEASE_CANARY_ARG } from '../../execution/process-runtime/canary';
-import { executeAutoFinalization } from '../../maintenance/work-auto-finalization';
 
 // Release staging executes the exact immutable cleanup artifact in a no-op mode.
 // Exit before parsing maintenance arguments or binding any write authority.
@@ -38,25 +37,6 @@ async function main(): Promise<void> {
   const fence = assertRuntimeMayWrite('cleanup', controllerHome);
   if (!fence.allowed) throw new Error(`PERIODIC_CLEANUP_RUNTIME_FENCED: ${fence.reason}`);
   const repositories = listRepositories(controllerHome).filter((repository) => repository.enabled && !repository.removedAt);
-
-  // Run Work auto-finalization before terminal cleanup
-  console.log('[periodic-cleanup] Running Work auto-finalization');
-  try {
-    const finalizationReport = await executeAutoFinalization(controllerHome, {
-      minAgeMinutes: 5,
-      maxWork: 20,
-      dryRun: false,
-    });
-    console.log('[periodic-cleanup] Work finalization completed:', {
-      scanned: finalizationReport.scanned,
-      autoCompleted: finalizationReport.autoCompleted.length,
-      cleanedUp: finalizationReport.cleanedUp.length,
-      errors: finalizationReport.errors.length,
-    });
-  } catch (error) {
-    console.error('[periodic-cleanup] Work finalization failed:', error instanceof Error ? error.message : String(error));
-  }
-
   await runSchedulerPeriodicCleanup({
     controllerHome,
     controllerPid,
