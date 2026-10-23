@@ -2327,7 +2327,7 @@ test('browserTasks prioritizes fresh sends ahead of older reconciliation work', 
   ]);
 });
 
-test('explicit operator repair re-arms a proven pre-send effect once per release without minting generations or infinite retries', () => {
+test('explicit browser repairs re-arm the same proven pre-send effect without changing release or minting generations', () => {
   const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-operator-preflight-repair-'));
   roots.push(root);
   const release = { id: 'browser-release-one' };
@@ -2360,10 +2360,15 @@ test('explicit operator repair re-arms a proven pre-send effect once per release
   // does not turn INSERT OR IGNORE into an unlimited retry loophole.
   store.recordEffectPreparationFailure(effect.effectId, 'COMPUTER_CHATGPT_FORGE_CHIP_NOT_BOUND');
   expect(store.nextBrowserEffect(taskId)).toBeUndefined();
-  expect(() => control.recoverTask({ ...input, requestId: 'operator-attempt-two' }))
-    .toThrow('WORKFLOW_SUPERVISOR_PRE_SEND_OPERATOR_REARM_EXHAUSTED');
-  release.id = 'browser-release-two';
+  expect(control.recoverTask({ ...input, requestId: 'operator-attempt-two',
+    reason: 'Verified composer cleared after preserving the exact draft',
+  }).recoveryEffect.effectId).toBe(effect.effectId);
   expect(store.nextBrowserEffect(taskId)?.effect.effectId).toBe(effect.effectId);
+  store.recordEffectPreparationFailure(effect.effectId, 'COMPUTER_REPAIR_NOT_SUFFICIENT');
+  expect(store.nextBrowserEffect(taskId)).toBeUndefined();
+  release.id = 'browser-release-two';
+  // Explicit repairs never reset the existing automatic preparation ceiling.
+  expect(store.nextBrowserEffect(taskId)).toBeUndefined();
   store.recordEffectPreparationFailure(effect.effectId, 'COMPUTER_PREPARE_FAILED');
   expect(store.nextBrowserEffect(taskId)).toBeUndefined();
   const secondReleaseRepair = control.recoverTask({ ...input, requestId: 'operator-repaired-browser-release-two' });
@@ -2373,8 +2378,12 @@ test('explicit operator repair re-arms a proven pre-send effect once per release
   expect(store.effectDispatchBudget(effect.effectId).generations).toBe(0);
   store.recordEffectPreparationFailure(effect.effectId, 'COMPUTER_PREPARE_FAILED_AFTER_RELEASE_TWO_REARM');
   expect(store.nextBrowserEffect(taskId)).toBeUndefined();
-  expect(() => control.recoverTask({ ...input, requestId: 'operator-attempt-two-release-two' }))
-    .toThrow('WORKFLOW_SUPERVISOR_PRE_SEND_OPERATOR_REARM_EXHAUSTED');
+  expect(control.recoverTask({ ...input, requestId: 'operator-attempt-two-release-two',
+    reason: 'Verified exact provider target repaired',
+  }).recoveryEffect.effectId).toBe(effect.effectId);
+  expect(store.nextBrowserEffect(taskId)?.effect.effectId).toBe(effect.effectId);
+  store.recordEffectPreparationFailure(effect.effectId, 'COMPUTER_REPAIR_NOT_SUFFICIENT');
+  expect(store.nextBrowserEffect(taskId)).toBeUndefined();
   release.id = 'browser-release-three';
   expect(store.nextBrowserEffect(taskId)).toBeUndefined();
   const thirdReleaseRepair = control.recoverTask({ ...input, requestId: 'operator-repaired-browser-release-three' });
@@ -2384,8 +2393,12 @@ test('explicit operator repair re-arms a proven pre-send effect once per release
   expect(store.effectDispatchBudget(effect.effectId).generations).toBe(0);
   store.recordEffectPreparationFailure(effect.effectId, 'COMPUTER_PREPARE_FAILED_AFTER_RELEASE_THREE_REARM');
   expect(store.nextBrowserEffect(taskId)).toBeUndefined();
-  expect(() => control.recoverTask({ ...input, requestId: 'operator-attempt-two-release-three' }))
-    .toThrow('WORKFLOW_SUPERVISOR_PRE_SEND_OPERATOR_REARM_EXHAUSTED');
+  expect(control.recoverTask({ ...input, requestId: 'operator-attempt-two-release-three',
+    reason: 'Verified refreshed extension provider',
+  }).recoveryEffect.effectId).toBe(effect.effectId);
+  expect(store.nextBrowserEffect(taskId)?.effect.effectId).toBe(effect.effectId);
+  store.recordEffectPreparationFailure(effect.effectId, 'COMPUTER_REPAIR_NOT_SUFFICIENT');
+  expect(store.nextBrowserEffect(taskId)).toBeUndefined();
   expect(store.effectDispatchBudget(effect.effectId).generations).toBe(0);
   store.close();
 });
@@ -2494,9 +2507,14 @@ test('Supervisor preparation rejection is durably release-fenced and never spend
     preflightComposerObservation: { chars: 37, classification: 'unattributed', selectorVersion: 'visible-single-v2' } });
   expect(store.nextBrowserEffect(task2)).toBeUndefined();
   expect(store.effectDispatchBudget(effect2.effectId).generations).toBe(0);
-  expect(() => store.authorizeOperatorPreflightRetry({ effectId: effect2.effectId,
-    requestId: 'attempt-second-explicit-rearm', authorizedBy: 'operator', reason: 'repeat',
-  })).toThrow('WORKFLOW_SUPERVISOR_PRE_SEND_OPERATOR_REARM_EXHAUSTED');
+  expect(store.authorizeOperatorPreflightRetry({ effectId: effect2.effectId,
+    requestId: 'attempt-second-explicit-rearm', authorizedBy: 'operator',
+    reason: 'Verified exact backed-up draft was cleared after the first repair failed',
+  })).toEqual({ deduplicated: false });
+  expect(store.nextBrowserEffect(task2)).toMatchObject({ mode: 'send', generation: 1 });
+  control.recordProviderPreparationFailure({ taskId: task2, effectId: effect2.effectId, reasonCode: 'COMPUTER_REPAIR_NOT_SUFFICIENT' });
+  expect(store.nextBrowserEffect(task2)).toBeUndefined();
+  expect(store.effectDispatchBudget(effect2.effectId).generations).toBe(0);
   store.close();
 });
 

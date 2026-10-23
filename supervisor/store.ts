@@ -1255,7 +1255,7 @@ export class WorkflowSupervisorStore {
     });
   }
 
-  /** One operator-approved re-observation per active release for a proven pre-send failure; never a provider retry refund. */
+  /** One preparation per explicit operator repair decision; never a provider retry refund. */
   authorizeOperatorPreflightRetry(input: { effectId: string; requestId: string; reason: string; authorizedBy: string }): { deduplicated: boolean } {
     return this.transaction((db) => {
       const effect = statement(db, 'SELECT task_id FROM effects WHERE effect_id = ?', (s) => s.get(input.effectId)) as { task_id?: string } | undefined;
@@ -1268,14 +1268,9 @@ export class WorkflowSupervisorStore {
       if (statement(db, 'SELECT 1 FROM events WHERE event_key = ?', (s) => s.get(key))) return { deduplicated: true };
       const failed = effectPreflightFailureReleaseIds(db, input.effectId);
       const releaseId = this.activeReleaseId()?.trim() || 'unidentified-runtime';
-      // One explicit no-Send re-observation is allowed per immutable active
-      // release. A later release may recover the same effect, but returning to
-      // a release already rearmed remains exhausted; no failure or Send budget
-      // is erased. The existing preflightBlocked predicate still must be true.
-      const rearmedReleases = statement(db, "SELECT payload_json FROM events WHERE effect_id = ? AND kind = 'effect_preflight_operator_rearmed' ORDER BY event_id", (s) => s.all(input.effectId)) as Array<{ payload_json?: string }>;
-      if (rearmedReleases.some((entry) => String(parsedObject(entry.payload_json).active_release_id ?? 'unidentified-runtime') === releaseId)) {
-        throw new Error('WORKFLOW_SUPERVISOR_PRE_SEND_OPERATOR_REARM_EXHAUSTED');
-      }
+      // Browser repairs can occur independently of a source release. Each
+      // explicit decision permits one preparation; another failure blocks again.
+      // Keep release provenance without treating it as operator repair authority.
       if (!this.preflightBlocked(db, input.effectId)
         || (failed.length < WORKFLOW_SUPERVISOR_MAX_PREFLIGHT_RELEASE_ATTEMPTS
           && !failed.some((entry) => entry.releaseId === releaseId))) {
