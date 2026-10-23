@@ -305,8 +305,15 @@
         if (!exactConversationIsCurrent()) { finish({ reason: 'target_identity_changed' }); return; }
         // ProseMirror may expose one editor-generated final newline. Do not
         // widen matching beyond that break or tolerate another visible draft.
-        const text = composerText();
-        if (text !== expected && text !== expected + '\n') { finish({ reason: 'composer_write_unconfirmed' }); return; }
+        if (composer() !== node) { finish({ reason: 'composer_missing' }); return; }
+        const text = composerText(node);
+        // ProseMirror may commit a programmatic edit after the initial event.
+        // Keep observing only within the existing bounded readiness window;
+        // never click Send until exact bytes are visible in this same editor.
+        if (text !== expected && text !== expected + '\n') {
+          if (expired) finish({ reason: 'composer_write_unconfirmed' });
+          return;
+        }
         if (mode === 'recover' ? hasLiveGenerationSignal() : isGenerating()) { finish({ reason: 'provider_busy' }); return; }
         const buttons = Array.from(document.querySelectorAll(SEND)).filter(visible);
         const send = buttons.length === 1 ? buttons[0] : undefined;
