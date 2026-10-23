@@ -404,9 +404,9 @@ export class WorkflowSupervisorStore {
     const tried = effectPreflightFailureReleaseIds(db, effectId);
     const releaseId = this.activeReleaseId()?.trim() || 'unidentified-runtime';
     const lastFailure = tried.filter((entry) => entry.releaseId === releaseId).at(-1);
-    // Three failed releases exhaust automatic re-preparation, not an
-    // operator's single explicit post-repair proof. The same durable event
-    // ledger still enforces one rearm at most and re-blocks after its failure.
+    // Three failed preflights exhaust automatic re-preparation. An explicit
+    // operator rearm is scoped to the active release and does not erase prior
+    // failures; a failed post-rearm preparation blocks the same effect again.
     const rearm = statement(db, "SELECT event_id FROM events WHERE effect_id = ? AND kind = 'effect_preflight_operator_rearmed' ORDER BY event_id DESC LIMIT 1", (s) => s.get(effectId)) as { event_id?: number } | undefined;
     const rearmedEventId = Number(rearm?.event_id ?? 0);
     if (tried.length >= WORKFLOW_SUPERVISOR_MAX_PREFLIGHT_RELEASE_ATTEMPTS) {
@@ -1255,7 +1255,7 @@ export class WorkflowSupervisorStore {
     });
   }
 
-  /** One operator-approved repair of a proven pre-send failure, never a provider retry refund. */
+  /** One operator-approved re-observation per active release for a proven pre-send failure; never a provider retry refund. */
   authorizeOperatorPreflightRetry(input: { effectId: string; requestId: string; reason: string; authorizedBy: string }): { deduplicated: boolean } {
     return this.transaction((db) => {
       const effect = statement(db, 'SELECT task_id FROM effects WHERE effect_id = ?', (s) => s.get(input.effectId)) as { task_id?: string } | undefined;
@@ -1268,10 +1268,12 @@ export class WorkflowSupervisorStore {
       if (statement(db, 'SELECT 1 FROM events WHERE event_key = ?', (s) => s.get(key))) return { deduplicated: true };
       const failed = effectPreflightFailureReleaseIds(db, input.effectId);
       const releaseId = this.activeReleaseId()?.trim() || 'unidentified-runtime';
-      // An operator may authorize ONE bounded no-Send re-observation after a
-      // verified repair, including on a successor Runtime after the automatic
-      // three-release cap. Never erase the prior failures or refund Send budget.
-      if (statement(db, "SELECT 1 FROM events WHERE effect_id = ? AND kind = 'effect_preflight_operator_rearmed' LIMIT 1", (s) => s.get(input.effectId))) {
+      // One explicit no-Send re-observation is allowed per immutable active
+      // release. A later release may recover the same effect, but returning to
+      // a release already rearmed remains exhausted; no failure or Send budget
+      // is erased. The existing preflightBlocked predicate still must be true.
+      const rearmedReleases = statement(db, "SELECT payload_json FROM events WHERE effect_id = ? AND kind = 'effect_preflight_operator_rearmed' ORDER BY event_id", (s) => s.all(input.effectId)) as Array<{ payload_json?: string }>;
+      if (rearmedReleases.some((entry) => String(parsedObject(entry.payload_json).active_release_id ?? 'unidentified-runtime') === releaseId)) {
         throw new Error('WORKFLOW_SUPERVISOR_PRE_SEND_OPERATOR_REARM_EXHAUSTED');
       }
       if (!this.preflightBlocked(db, input.effectId)
@@ -1776,10 +1778,11 @@ export class WorkflowSupervisorStore {
         throw new Error('WORKFLOW_SUPERVISOR_PRE_SEND_FAILURE_OUTCOME_NOT_PROVEN');
       }
       const activeReleaseId = this.activeReleaseId()?.trim() || 'unidentified-runtime';
-      // After one explicit repair the next real preparation failure MUST be
-      // recorded again; otherwise INSERT OR IGNORE could permit infinite retries.
+      // Each explicit rearm gives the next real preparation failure a distinct
+      // event key; INSERT OR IGNORE must not hide a failure after a later repair.
       const rearm = statement(db, "SELECT COUNT(*) AS count FROM events WHERE effect_id = ? AND kind = 'effect_preflight_operator_rearmed'", (s) => s.get(effectId)) as { count?: number } | undefined;
-      const key = `effect-preflight-rejected:${effectId}:${activeReleaseId}${Number(rearm?.count ?? 0) > 0 ? ':operator-rearmed' : ''}`;
+      const rearmCount = Number(rearm?.count ?? 0);
+      const key = `effect-preflight-rejected:${effectId}:${activeReleaseId}${rearmCount > 0 ? `:operator-rearmed-${rearmCount}` : ''}`;
       statement(db, 'INSERT OR IGNORE INTO events(task_id,event_key,kind,effect_id,payload_json,occurred_at) VALUES (?,?,?,?,?,?)', (s) => s.run(
         effect.task_id!, key, 'effect_preflight_rejected', effectId,
         json({ active_release_id: activeReleaseId, reason: (boundedText(reasonCode) ?? 'COMPUTER_PREPARE_REJECTED').slice(0, 256), send_clicked: false, attestation: 'computer_prepare_returned_before_supervisor_send_intent', ...(composerObservation ? { composer_observation: composerObservation } : {}) }), now(),
