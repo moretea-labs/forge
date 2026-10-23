@@ -51,6 +51,7 @@ import {
 import { createWorkContract, getWorkContract, reviseWorkSemanticContext } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { snapshotControllerCheck } from '../../src/cli/controller/check-runner';
 import { readWorkHandle, writeWorkHandle } from '../../src/runtime/control-plane/execution/work-handle-store';
+import { principalFor } from '../../src/runtime/control-plane/execution/work-execution-support';
 import { workHandleRetainsCanonicalMutationOwnership } from '../../src/runtime/control-plane/execution/work-handle-authority';
 import { verificationInputFingerprint, workspaceValidationFingerprint } from '../../src/runtime/control-plane/execution/verification-evidence';
 
@@ -3354,5 +3355,97 @@ describe('work_validate persisted semantic identity', () => {
     }).validation;
     expect(secondValidation).toMatchObject({ passed: true, completed: true });
     expect(secondValidation.checks[0]?.status).toBe('passed');
+  });
+});
+
+describe('Work tools without explicit execution-session preflight', () => {
+  test('prepares, reuses and inspects an isolated Work from repository and Work identity alone', async () => {
+    const fx = fixture();
+    roots.push(fx.root);
+    const prepared = await callExecutionTool(fx.ctx, 'work_prepare', {
+      repo_id: fx.repository.repoId,
+      objective: 'No caller-managed execution Session or Checkout selection',
+      isolation: 'new_worktree',
+      request_id: 'implicit-work-preparation',
+    });
+    if (prepared?.isError) throw new Error(JSON.stringify(prepared.structuredContent ?? prepared));
+    const first = prepared?.structuredContent as { work: { workId: string; checkoutId: string; sessionId: string; managedWorktree: boolean } };
+    expect(first.work.workId).toBeTruthy();
+    expect(first.work.managedWorktree).toBe(true);
+    expect(first.work.checkoutId).not.toBe(fx.repository.activeCheckoutId);
+    expect(readExecutionSession(fx.controllerHome, {
+      sessionId: first.work.sessionId, principalId: principalFor(fx.ctx),
+      controllerInstanceId: fx.ctx.controllerInstanceId,
+    })?.activeWorkId).toBe(first.work.workId);
+    const boundRevision = readControlPlaneRecord(
+      fx.controllerHome, 'execution_session', 'controller', first.work.sessionId,
+    )?.revision;
+    const replay = await callExecutionTool(fx.ctx, 'work_prepare', {
+      repo_id: fx.repository.repoId,
+      objective: 'No caller-managed execution Session or Checkout selection',
+      isolation: 'new_worktree',
+      request_id: 'implicit-work-preparation',
+    });
+    if (replay?.isError) throw new Error(JSON.stringify(replay.structuredContent ?? replay));
+    expect((replay?.structuredContent as { work: { workId: string } }).work.workId).toBe(first.work.workId);
+    expect(readControlPlaneRecord(
+      fx.controllerHome, 'execution_session', 'controller', first.work.sessionId,
+    )?.revision).toBe(boundRevision);
+
+    const reused = await callExecutionTool(fx.ctx, 'work_prepare', {
+      repo_id: fx.repository.repoId, work_id: first.work.workId,
+    });
+    if (reused?.isError) throw new Error(JSON.stringify(reused.structuredContent ?? reused));
+    const second = reused?.structuredContent as { work: { workId: string; checkoutId: string }; reused: boolean };
+    expect(second.reused).toBe(true);
+    expect(second.work.workId).toBe(first.work.workId);
+    expect(second.work.checkoutId).toBe(first.work.checkoutId);
+
+    const inspected = await callExecutionTool(fx.ctx, 'work_inspect', {
+      repo_id: fx.repository.repoId, work_id: first.work.workId,
+    });
+    expect(inspected?.isError).not.toBe(true);
+    expect((inspected?.structuredContent as { work: { workId: string } }).work.workId).toBe(first.work.workId);
+  });
+
+  test('keeps explicit wrong-checkout requests fenced without session preflight', async () => {
+    const fx = fixture();
+    roots.push(fx.root);
+    const prepared = await callExecutionTool(fx.ctx, 'work_prepare', {
+      repo_id: fx.repository.repoId, objective: 'Fence checkout drift',
+      isolation: 'new_worktree', request_id: 'implicit-checkout-fence',
+    });
+    if (prepared?.isError) throw new Error(JSON.stringify(prepared.structuredContent ?? prepared));
+    const workId = (prepared?.structuredContent as { work: { workId: string } }).work.workId;
+    const inspected = await callExecutionTool(fx.ctx, 'work_inspect', {
+      repo_id: fx.repository.repoId, work_id: workId, checkout_id: fx.repository.activeCheckoutId,
+    });
+    expect(inspected?.isError).toBe(true);
+    expect(JSON.stringify(inspected?.structuredContent)).toContain('WORK_HANDLE_CHECKOUT_DRIFT');
+  });
+});
+
+describe('recorded-HEAD relocation without duplicated model proofs', () => {
+  test('moves an existing clean direct Work into a managed worktree without supplying three identical HEADs', async () => {
+    const fx = fixture();
+    roots.push(fx.root);
+    const initialHead = git(fx.repoRoot, ['rev-parse', 'HEAD']);
+    const direct = await callExecutionTool(fx.ctx, 'work_prepare', {
+      repo_id: fx.repository.repoId, objective: 'Recorded source HEAD is the exact relocation proof',
+      isolation: 'reuse', request_id: 'head-implicit-direct',
+    });
+    if (direct?.isError) throw new Error(JSON.stringify(direct.structuredContent ?? direct));
+    const existing = (direct?.structuredContent as { work: { workId: string; managedWorktree: boolean } }).work;
+    expect(existing.managedWorktree).toBe(false);
+    const moved = await callExecutionTool(fx.ctx, 'work_prepare', {
+      repo_id: fx.repository.repoId, work_id: existing.workId, relocate_to_new_worktree: true,
+    });
+    if (moved?.isError) throw new Error(JSON.stringify(moved.structuredContent ?? moved));
+    const relocated = moved?.structuredContent as { relocated: boolean; work: { checkoutId: string; managedWorktree: boolean; expectedHead: string } };
+    expect(relocated.relocated).toBe(true);
+    expect(relocated.work.managedWorktree).toBe(true);
+    expect(relocated.work.checkoutId).not.toBe(fx.repository.activeCheckoutId);
+    expect(relocated.work.expectedHead).toBe(initialHead);
+    expect(git(fx.repoRoot, ['rev-parse', 'HEAD'])).toBe(initialHead);
   });
 });

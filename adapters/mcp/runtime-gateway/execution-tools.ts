@@ -1,10 +1,13 @@
 import { existsSync, readFileSync } from 'fs';
+import { createHash } from 'crypto';
 import type { McpToolDefinition, CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
 import { repositoryGitWorkspaceChanges } from '../../../src/cli/repositories/structured-git';
 import { listControllerChecks } from '../../../src/cli/controller/check-runner';
 import { buildWorkContinuationSnapshot } from '../../../src/runtime/control-plane/facade/work-continuation';
-import { currentControllerInstanceId, startExecutionSession, type ExecutionSessionContext } from '../../../src/runtime/control-plane/execution/session-store';
+import { currentControllerInstanceId, readExecutionSession, startExecutionSession, updateExecutionSession, type ExecutionSessionContext } from '../../../src/runtime/control-plane/execution/session-store';
+import { getRepository } from '../../../src/cli/repositories/registry';
+import { readWorkHandle } from '../../../src/runtime/control-plane/execution/work-handle-store';
 import { currentPermissionSnapshotVersion, validateWorkHandle } from '../../../src/runtime/control-plane/execution/validation';
 import { resolveAuthorizationRequest } from '../../../src/runtime/control-plane/governance/authorization';
 import { readControllerResult, searchControllerResult } from '../../../src/runtime/evidence/result-store';
@@ -20,21 +23,21 @@ function definition(name: string, description: string, properties: Record<string
   return { name, description, inputSchema: { type: 'object', properties, ...(required.length ? { required } : {}), additionalProperties: false }, annotations: { readOnlyHint, openWorldHint: false, destructiveHint } };
 }
 
-const sessionId = { type: 'string', description: 'Controller-issued session id returned by session_start. Omit only when the MCP transport binds one.' };
+const sessionId = { type: 'string', description: 'Legacy explicit execution-session identity; ordinary Work operations derive it from the authenticated caller and Work.' };
 const workId = { type: 'string', description: 'Controller-owned work handle id returned by work_prepare.' };
-const repoId = { type: 'string', description: 'Stable repository id. Repository switching must be explicit through session_bind_repository.' };
+const repoId = { type: 'string', description: 'Stable repository id; no explicit execution-session repository binding is required.' };
 
 export const executionToolDefinitions: McpToolDefinition[] = [
   definition('session_start', 'Start or resume a controller-owned MCP execution session. Identity comes from the authenticated/controller-issued transport context.', {}, [], false),
   definition('session_bind_repository', 'Explicitly bind the current session to one registered repository and checkout.', { session_id: sessionId, repo_id: repoId, checkout_id: { type: 'string' } }, ['repo_id'], false),
-  definition('work_prepare', 'Prepare or reuse one controller-owned work handle and bind it to a WorkContract, checkout, branch, and permission snapshot.', {
+  definition('work_prepare', 'Prepare or reuse a Work in its stable Git placement. Repository and caller identity are resolved automatically; no session_start or session_bind_repository is required.', {
     session_id: sessionId, repo_id: repoId, checkout_id: { type: 'string' }, work_id: workId,
     objective: { type: 'string' }, goal_id: { type: 'string' }, acceptance_criteria: { type: 'array', items: { type: 'string' } }, checks: { type: 'array', items: { type: 'string' } },
     isolation: { type: 'string', enum: ['reuse', 'new_worktree', 'auto'] }, base_ref: { type: 'string' }, needs_dependencies: { type: 'boolean' },
     expected_previous_head: { type: 'string', description: 'Exact prior WorkHandle HEAD for direct successor adoption. Cleaned-open Work recovery derives it from the stored handle; if supplied there, it must match.' },
     adopt_candidate_head: { type: 'string', description: 'Explicit current successor commit to adopt after exact identity, ownership, cleanliness, and ancestry validation.' },
     dirty_overlap_proofs: { type: 'array', maxItems: 20, description: 'Explicit attested content fingerprints for every overlapping unstaged tracked file; metadata-only successor adoption preserves files and index unchanged.', items: { type: 'object', properties: { path: { type: 'string' }, worktree_sha256: { type: 'string' }, index_blob_oid: { type: 'string' } }, required: ['path', 'worktree_sha256', 'index_blob_oid'], additionalProperties: false } },
-    relocate_to_new_worktree: { type: 'boolean', description: 'Move this existing Work identity to its own managed worktree, with exact previous/candidate HEADs and base_ref. WorkHandle and WorkContract placement commit atomically; the source checkout is not mutated.' },
+    relocate_to_new_worktree: { type: 'boolean', description: 'Move this existing Work to a managed worktree; the recorded frozen HEAD is reused unless a different candidate is explicitly supplied. The source checkout is not mutated.' },
   }, [], false),
   definition('work_inspect', 'Inspect one WorkHandle. Summary (default) returns Git status and changed paths without computing patches; detail includes bounded staged/unstaged diffs.', { session_id: sessionId, repo_id: repoId, work_id: workId, detail: { type: 'string', enum: ['summary', 'detail'] } }, ['work_id'], true),
   definition('work_validate', 'Run targeted checks or read-only validation commands against a work handle with full current-state validation.', {
@@ -46,6 +49,7 @@ export const executionToolDefinitions: McpToolDefinition[] = [
 ];
 
 const executionToolNames = new Set(executionToolDefinitions.map((tool) => tool.name));
+const implicitWorkSessionTools = new Set(['work_prepare', 'work_inspect', 'work_validate']);
 
 /** Repository execution and validation remain Process/WorkHandle operations; semantic Work completion is separate. */
 const DURABLE_WORK_OPERATION_NAMES = new Set([
@@ -155,9 +159,78 @@ function inspectWork(ctx: MultiRepositoryMcpToolContext, args: Record<string, un
   return response;
 }
 
+/**
+ * Mechanical identity resolution for legacy WorkHandle tools. The MCP principal,
+ * WorkHandle and Repository Registry are authoritative; a model need not create
+ * or bind an execution Session before a normal repository Work operation.
+ * Explicit legacy session_id still takes the strict existing route.
+ */
+function withImplicitWorkSession(
+  ctx: MultiRepositoryMcpToolContext,
+  args: Record<string, unknown>,
+): Record<string, unknown> {
+  if (typeof args.session_id === 'string' && args.session_id.trim()) return args;
+
+  const requestedRepoId = typeof args.repo_id === 'string' && args.repo_id.trim()
+    ? args.repo_id.trim() : ctx.explicitRepository?.repoId;
+  const requestedWorkId = typeof args.work_id === 'string' && args.work_id.trim() ? args.work_id.trim() : undefined;
+  const handle = requestedRepoId && requestedWorkId
+    ? readWorkHandle(ctx.controllerHome, requestedRepoId, requestedWorkId)
+    : undefined;
+  const principalId = principalFor(ctx);
+  if (handle && handle.principalId !== principalId) throw new Error('WORK_HANDLE_ACCESS_DENIED');
+  const requestedCheckout = typeof args.checkout_id === 'string' && args.checkout_id.trim() ? args.checkout_id.trim() : undefined;
+  if (handle && requestedCheckout && handle.checkoutId !== requestedCheckout) {
+    throw new Error('WORK_HANDLE_CHECKOUT_DRIFT: explicit checkout disagrees with existing Work placement');
+  }
+
+  // A Work's recorded session id is provenance, not a caller-selected focus.
+  // Request identity makes first preparation retries stable without a new
+  // session_start call; a fresh ordinary invocation has its own identity.
+  const requestId = typeof args.request_id === 'string' && args.request_id.trim() ? args.request_id.trim() : undefined;
+  const seed = [principalId, requestedRepoId ?? '', requestedWorkId ?? requestId ?? ''].join(':');
+  const sessionId = handle?.sessionId ?? ctx.sessionId
+    ?? `sess_auto_${createHash('sha256').update(seed).digest('hex').slice(0, 32)}`;
+  const identity = { sessionId, principalId, controllerInstanceId: ctx.controllerInstanceId ?? currentControllerInstanceId() };
+  const session = readExecutionSession(ctx.controllerHome, identity) ?? startExecutionSession(ctx.controllerHome, {
+    ...identity, capabilitySnapshotVersion: 1,
+  });
+  if (requestedRepoId) {
+    // An identical idempotent preparation retry already owns its isolated
+    // checkout. Omitting checkout_id must not bounce it to canonical main.
+    const sameRequestReplay = !handle && Boolean(requestId) && !ctx.sessionId
+      && session.activeRepositoryId === requestedRepoId && Boolean(session.activeWorkId);
+    const checkoutId = handle?.checkoutId ?? requestedCheckout
+      ?? (sameRequestReplay ? session.activeCheckoutId : undefined)
+      ?? getRepository(requestedRepoId, ctx.controllerHome).activeCheckoutId;
+    const permissionSnapshotVersion = currentPermissionSnapshotVersion(ctx.controllerHome, requestedRepoId);
+    // An idempotent new-Work retry may already be bound to its admitted Work;
+    // absence of work_id in the request must not clear that settled binding.
+    const activeWorkId = handle?.workId ?? (
+      session.activeRepositoryId === requestedRepoId && session.activeCheckoutId === checkoutId
+        ? session.activeWorkId : undefined
+    );
+    if (session.activeRepositoryId !== requestedRepoId || session.activeCheckoutId !== checkoutId
+        || session.activeWorkId !== activeWorkId || session.permissionSnapshotVersion !== permissionSnapshotVersion) {
+      updateExecutionSession(ctx.controllerHome, identity, {
+        activeRepositoryId: requestedRepoId, activeCheckoutId: checkoutId,
+        activeWorkId, permissionSnapshotVersion,
+      });
+    }
+  }
+  return {
+    ...args, session_id: sessionId,
+    ...(requestedRepoId ? { repo_id: requestedRepoId } : {}),
+    ...(handle && !requestedCheckout ? { checkout_id: handle.checkoutId } : {}),
+  };
+}
+
 export async function callExecutionTool(ctx: MultiRepositoryMcpToolContext, name: string, args: Record<string, unknown>): Promise<CallToolResult | undefined> {
   if (!executionToolNames.has(name)) return undefined;
   try {
+    if (implicitWorkSessionTools.has(name)) {
+      args = withImplicitWorkSession(ctx, args);
+    }
     switch (name) {
       case 'session_start': {
         const session = startOrResumeSession(ctx);
