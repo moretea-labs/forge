@@ -149,7 +149,10 @@ function bootstrapTabBelongsToProject(tab, identity) {
 function receiverMatchesIdentity(tab, identity) {
   if (identity?.namespace === 'chatgpt.conversation')
     return core.parseConversation(tab.url ?? '')?.conversationId === identity.conversationId;
-  return bootstrapTabBelongsToProject(tab, identity);
+  // A Project conversation can share the bootstrap Project id. It is not
+  // an unsent bootstrap receiver and must never be rebound as one.
+  return bootstrapTabBelongsToProject(tab, identity)
+    && !core.parseConversation(tab.url ?? '');
 }
 async function restoreExactContentReceiver(tabId, identity) {
   // The physical tab is already resolved by the one Computer target authority.

@@ -161,18 +161,34 @@ function bootstrapFixture(initialTabs: Array<{ id: number; windowId: number; url
   const context = {
     chrome, URL, Date, Math, importScripts() {},
     ForgeComputerChatgptCore: {
-      parseConversation() { return null; }, projectId,
+      parseConversation(value: string) {
+        const found = /\/c\/([0-9a-f-]{36})(?:[/?#]|$)/.exec(value);
+        return found ? { conversationId: found[1] } : null;
+      }, projectId,
       normalizeText(value: unknown) { return String(value ?? '').trim(); },
     },
     setTimeout() { return 1; }, clearTimeout() {}, setInterval() { return 1; },
   };
-  runInNewContext(source + '\n;globalThis.__resolveTarget = resolveTarget;globalThis.__matchingTabs = matchingTabs;', context);
+  runInNewContext(source + '\n;globalThis.__resolveTarget = resolveTarget;globalThis.__matchingTabs = matchingTabs;globalThis.__matchesReceiver = receiverMatchesIdentity;', context);
   return {
     tabs,
+    matchesReceiver: (tab: { id: number; windowId: number; url: string }, identity: object) =>
+      (context as typeof context & { __matchesReceiver: (tab: object, identity: object) => boolean }).__matchesReceiver(tab, identity),
     resolve: (identity: object, create: boolean, pinned?: object) =>
       (context as typeof context & { __resolveTarget: (identity: object, create: boolean, pinned?: object) => Promise<{ tab: { id: number; windowId: number; url: string }; created: boolean }> }).__resolveTarget(identity, create, pinned),
   };
 }
+
+test('bootstrap receiver rejects an existing conversation even inside the same Project', () => {
+  const projectUrl = 'https://chatgpt.com/g/g-p-avela-project';
+  const identity = { namespace: 'chatgpt.bootstrap', bootstrapKey: 'supervisor:avela', projectUrl };
+  const fixture = bootstrapFixture();
+  expect(fixture.matchesReceiver({ id: 11, windowId: 8, url: projectUrl }, identity)).toBe(true);
+  expect(fixture.matchesReceiver({
+    id: 12, windowId: 8,
+    url: projectUrl + '/c/12345678-1234-1234-1234-123456789abc',
+  }, identity)).toBe(false);
+});
 
 test('two fresh Supervisor tasks in one Project receive distinct new tabs, never a borrowed Project tab', async () => {
   const projectUrl = 'https://chatgpt.com/g/g-p-avela-project';
