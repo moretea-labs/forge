@@ -88,6 +88,7 @@ function fixture() {
   }, null, 2));
   git(repoRoot, ['add', '.']);
   git(repoRoot, ['commit', '-m', 'init']);
+  git(repoRoot, ['update-ref', 'refs/remotes/origin/main', 'HEAD']);
   ensureControllerHome(controllerHome);
   const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'gw-route' });
   const ctx = createMcpToolContext({
@@ -1025,6 +1026,9 @@ describe('repository.git Work delivery', () => {
     if (delivered?.isError) throw new Error(JSON.stringify(delivered.structuredContent ?? delivered));
     const integratedHead = git(fx.repoRoot, ['rev-parse', 'HEAD']);
     expect(integratedHead).not.toBe(targetHead);
+    // The prior delivery advanced main. Simulate fetching its new integration
+    // commit before admitting another independent main-based source Work.
+    git(fx.repoRoot, ['update-ref', 'refs/remotes/origin/main', integratedHead]);
     expect(readWorkHandle(fx.controllerHome, fx.repository.repoId, blockerId)?.state).toBe('prepared');
     expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, blockerId)?.semanticState).toBe('open');
 
@@ -1166,9 +1170,9 @@ describe('repository.git Work delivery', () => {
     expect(prepared?.isError).not.toBe(true);
     const work = (prepared?.structuredContent as { work: { workId: string } }).work;
     const handle = readWorkHandle(fx.controllerHome, fx.repository.repoId, work.workId)!;
-    expect(handle.sourceCheckoutId).toBe(rotated.activeCheckoutId);
-    expect(handle.deliveryTargetBranch).toBe('parent-delivery');
-    expect(handle.deliveryTargetBranch).not.toBe(fx.repository.defaultBranch);
+    expect(handle.sourceCheckoutId).toBe(fx.repository.activeCheckoutId);
+    expect(handle.deliveryTargetBranch).toBe(fx.repository.defaultBranch);
+    expect(handle.baseCommit).toBe(git(fx.repoRoot, ['rev-parse', 'refs/remotes/origin/main']));
   });
 });
 
@@ -2570,28 +2574,42 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
 });
 
 describe('work_validate persisted semantic identity', () => {
-  test('work_prepare auto shares the selected current checkout; new_worktree freezes an isolated base', async () => {
+  test('work_prepare auto isolates new Work from other current checkout and reuses existing Work', async () => {
     const fx = fixture();
     roots.push(fx.root);
 
+    const otherRoot = join(fx.root, 'other-work-checkout');
+    git(fx.repoRoot, ['worktree', 'add', '-b', 'other-work', otherRoot, 'HEAD']);
+    const rotated = addRepositoryCheckout({ repoId: fx.repository.repoId, path: otherRoot, controllerHome: fx.controllerHome, activate: true });
+    writeFileSync(join(otherRoot, 'OTHER-WORK-COMMIT'), 'unrelated branch revision\n');
+    git(otherRoot, ['add', 'OTHER-WORK-COMMIT']);
+    git(otherRoot, ['commit', '-m', 'unrelated Work progress']);
+    writeFileSync(join(otherRoot, 'UNCOMMITTED-OTHER-WORK'), 'must remain untouched\n');
+    const mainHead = git(fx.repoRoot, ['rev-parse', 'HEAD']);
+    expect(git(otherRoot, ['rev-parse', 'HEAD'])).not.toBe(mainHead);
     const started = await callExecutionTool(fx.ctx, 'session_start', {});
     expect(started?.isError).not.toBe(true);
     const session = (started?.structuredContent as { session: { sessionId: string } }).session;
     const prepared = await callExecutionTool(fx.ctx, 'work_prepare', {
       session_id: session.sessionId,
       repo_id: fx.repository.repoId,
+      checkout_id: rotated.activeCheckoutId,
       request_id: 'prepare-auto-shares-current',
-      objective: 'Default Work placement shares the selected current checkout.',
-      acceptance_criteria: ['auto placement never creates a managed worktree.'],
+      objective: 'Default independent Work starts from fetched main, not unrelated dirty checkout.',
+      acceptance_criteria: ['auto creates isolated main-based worktree.'],
       checks: [],
       isolation: 'auto',
     });
     expect(prepared?.isError).not.toBe(true);
     const work = (prepared?.structuredContent as {
-      work: { workId: string; checkoutId: string; managedWorktree: boolean };
+      work: { workId: string; checkoutId: string; managedWorktree: boolean; baseCommit: string; sourceCheckoutId: string; deliveryTargetBranch: string };
     }).work;
-    expect(work.managedWorktree).toBe(false);
-    expect(work.checkoutId).toBe(fx.repository.activeCheckoutId);
+    expect(work.managedWorktree).toBe(true);
+    expect(work.checkoutId).not.toBe(rotated.activeCheckoutId);
+    expect(work.baseCommit).toBe(mainHead);
+    expect(work.sourceCheckoutId).toBe(fx.repository.activeCheckoutId);
+    expect(work.deliveryTargetBranch).toBe('main');
+    expect(readFileSync(join(otherRoot, 'UNCOMMITTED-OTHER-WORK'), 'utf8')).toBe('must remain untouched\n');
 
     const isolated = await callExecutionTool(fx.ctx, 'work_prepare', {
       session_id: session.sessionId,
