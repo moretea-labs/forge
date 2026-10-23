@@ -24,10 +24,17 @@ function pluginTransportScope(
   ctx: MultiRepositoryMcpToolContext,
   args: Record<string, unknown>,
   pluginId: string,
+  actionId?: string,
 ): PluginTransportScope {
   const explicitRepoId = typeof args.repo_id === 'string' ? args.repo_id.trim() : '';
   if (explicitRepoId === '__controller__') {
     throw new Error('PLUGIN_CONTROLLER_REPOSITORY_SENTINEL_RETIRED: controller-scoped plugins no longer use a synthetic repository id');
+  }
+  // Physical iPhone interactions are the repository-bound surface of the
+  // existing Computer adapter. The same adapter's Browser/Desktop actions
+  // remain Controller-scoped; route by the selected action, not plugin id.
+  if (pluginId === 'computer' && actionId?.startsWith('physical_device_')) {
+    return { kind: 'repository', repository: selected(ctx, args) };
   }
   const scope = assistantPluginScope(pluginId, ctx.controllerHome);
   if (scope === 'controller') return { kind: 'controller' };
@@ -162,9 +169,9 @@ export async function callPluginAdapter(
     case 'plugin_action_execute': {
       const pluginId = String(args.plugin_id ?? '').trim();
       const workId = typeof args.work_id === 'string' && args.work_id.trim() ? args.work_id.trim() : undefined;
-      const scope = pluginTransportScope(ctx, args, pluginId);
-      const workRepository = workId ? selected(ctx, args) : undefined;
       const actionId = String(args.action_id ?? '').trim();
+      const scope = pluginTransportScope(ctx, args, pluginId, actionId);
+      const workRepository = workId ? selected(ctx, args) : undefined;
       const requestId = String(args.request_id ?? '').trim();
       const actionArguments = args.arguments && typeof args.arguments === 'object' && !Array.isArray(args.arguments)
         ? args.arguments as Record<string, unknown>
