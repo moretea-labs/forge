@@ -1026,6 +1026,9 @@ describe('repository.git Work delivery', () => {
     if (delivered?.isError) throw new Error(JSON.stringify(delivered.structuredContent ?? delivered));
     const integratedHead = git(fx.repoRoot, ['rev-parse', 'HEAD']);
     expect(integratedHead).not.toBe(targetHead);
+    // The prior delivery advanced main. Simulate fetching its new integration
+    // commit before admitting another independent main-based source Work.
+    git(fx.repoRoot, ['update-ref', 'refs/remotes/origin/main', integratedHead]);
     expect(readWorkHandle(fx.controllerHome, fx.repository.repoId, blockerId)?.state).toBe('prepared');
     expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, blockerId)?.semanticState).toBe('open');
 
@@ -2578,8 +2581,12 @@ describe('work_validate persisted semantic identity', () => {
     const otherRoot = join(fx.root, 'other-work-checkout');
     git(fx.repoRoot, ['worktree', 'add', '-b', 'other-work', otherRoot, 'HEAD']);
     const rotated = addRepositoryCheckout({ repoId: fx.repository.repoId, path: otherRoot, controllerHome: fx.controllerHome, activate: true });
+    writeFileSync(join(otherRoot, 'OTHER-WORK-COMMIT'), 'unrelated branch revision\n');
+    git(otherRoot, ['add', 'OTHER-WORK-COMMIT']);
+    git(otherRoot, ['commit', '-m', 'unrelated Work progress']);
     writeFileSync(join(otherRoot, 'UNCOMMITTED-OTHER-WORK'), 'must remain untouched\n');
     const mainHead = git(fx.repoRoot, ['rev-parse', 'HEAD']);
+    expect(git(otherRoot, ['rev-parse', 'HEAD'])).not.toBe(mainHead);
     const started = await callExecutionTool(fx.ctx, 'session_start', {});
     expect(started?.isError).not.toBe(true);
     const session = (started?.structuredContent as { session: { sessionId: string } }).session;
