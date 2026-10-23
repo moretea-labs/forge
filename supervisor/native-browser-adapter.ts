@@ -958,6 +958,12 @@ export class WorkflowSupervisorNativeBrowserAdapter {
   }
 
   private async bootstrapTask(task: WorkflowSupervisorBrowserTask): Promise<void> {
+    const command = this.control.bootstrapPoll(task.taskId).command;
+    if (!command) return;
+    // Reconciliation can service a fresh send while scanning. Holding the send
+    // lane here would make that successor wait for the lane we cannot release.
+    if (command.mode === 'reconcile') { await this.reconcileBootstrapTask(task, command); return; }
+    if (command.mode !== 'send') return;
     const outcome: { providerAccepted?: boolean; code?: string; message?: string } = {};
     return await withChatgptProviderDispatchLane(this.deps.providerScopeKey,
       () => this.bootstrapTaskWithinLane(task, outcome), () => outcome);
@@ -968,9 +974,9 @@ export class WorkflowSupervisorNativeBrowserAdapter {
   ): Promise<void> {
     const poll = this.control.bootstrapPoll(task.taskId);
     const command = poll.command;
-    if (!command) return;
-    if (command.mode === 'reconcile') { await this.reconcileBootstrapTask(task, command); return; }
-    if (command.mode !== 'send') return;
+    // The command can change while waiting for the lane. Reconcile on the next
+    // tick instead of entering a scan from inside the non-reentrant send lane.
+    if (!command || command.mode !== 'send') return;
     // Bootstrap opens a provider project surface and then submits the first
     // prompt. Both are provider requests, so account-wide backpressure defers the
     // whole attempt instead of racing it against an explicit rate limit.
