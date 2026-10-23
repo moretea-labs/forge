@@ -10,6 +10,7 @@ import {
 } from '../../../src/cli/repositories/selected-path-actions';
 import { assertCanonicalRepositoryMutationWorkHandleAvailable, ensureRepositoryMutationWorkHandle } from '../../../src/runtime/control-plane/execution/work-handle-authority';
 import { settleWorkHandleExpectedHeadAfterRepositoryCommand } from '../../../src/runtime/control-plane/execution/work-head-settlement';
+import { readWorkHandle } from '../../../src/runtime/control-plane/execution/work-handle-store';
 import type { ResolvedExecutionIdentity } from '../../../src/runtime/control-plane/execution/execution-identity';
 import { repositoryGitStatus } from '../../../src/cli/repositories/structured-git';
 
@@ -38,8 +39,19 @@ export async function callRepositoryCompatibilityAdapter(ctx: MultiRepositoryMcp
               }, staged.execution.ok !== true);
             }
       case 'git_commit_paths': {
-              const repository = selected(ctx, args);
               const workId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
+              const requestedRepository = selected(ctx, args);
+              const ownedCheckoutId = workId
+                ? readWorkHandle(ctx.controllerHome, requestedRepository.repoId, workId)?.checkoutId
+                : undefined;
+              // WorkHandle owns physical placement. The caller should not have to
+              // rediscover and rebind the checkout for each ordinary commit.
+              if (ownedCheckoutId && args.checkout_id && args.checkout_id !== ownedCheckoutId) {
+                throw new Error('WORK_HANDLE_PLACEMENT_CHECKOUT_MISMATCH: ' + workId);
+              }
+              const repository = ownedCheckoutId
+                ? selected(ctx, { ...args, checkout_id: ownedCheckoutId })
+                : requestedRepository;
               // Do not allow a sessionless commit to advance an active Work's
               // canonical checkout and leave that Work bound to an old HEAD.
               assertCanonicalRepositoryMutationWorkHandleAvailable({
