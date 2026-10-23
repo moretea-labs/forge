@@ -1169,6 +1169,21 @@ describe('terminal Work cleanup', () => {
       identity: { sessionId: 'test-session', principalId: 'test-principal' },
     })?.workId).toBe(recovery.work.workId);
 
+    // Two live physical Handles on the same checkout cannot silently prefer
+    // the direct historical ID, even if its state is no longer terminal.
+    writeWorkHandle(fx.controllerHome, {
+      ...readWorkHandle(fx.controllerHome, fx.repository.repoId, sourceId)!,
+      state: 'editing',
+    });
+    expect(() => ensureRepositoryWorkHandle({
+      controllerHome: fx.controllerHome, repository: fx.repository, workId: sourceId,
+      identity: { sessionId: 'test-session', principalId: 'test-principal' },
+    })).toThrow('WORK_HANDLE_AMBIGUOUS');
+    writeWorkHandle(fx.controllerHome, {
+      ...readWorkHandle(fx.controllerHome, fx.repository.repoId, sourceId)!,
+      state: 'cleaned',
+    });
+
     // Without an active successor, a terminal direct Handle fails closed.
     writeWorkHandle(fx.controllerHome, {
       ...readWorkHandle(fx.controllerHome, fx.repository.repoId, recovery.work.workId)!,

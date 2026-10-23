@@ -239,19 +239,20 @@ export function resolveActiveWorkHandle(
   }
 
   const ACTIVE_STATES = new Set<WorkHandleState['state']>(['prepared', 'editing', 'validating', 'committed', 'merged']);
-  // A terminal historical Handle does not become executable merely because
-  // recovery reused its checkout. Resolve the active successor instead.
-  if (direct && direct.checkoutId === canonicalCheckoutId && ACTIVE_STATES.has(direct.state)) {
-    return direct;
-  }
-
-  // Scan for unique active successor matching semantic Work and canonical checkout.
+  // Even a live direct Handle must compete with any successor on the same
+  // checkout. An early return would silently admit two physical Writers.
   const candidates = listWorkHandles(controllerHome, repositoryId, 5_000)
     .filter((handle) =>
-      handle.workContractId === workId
+      (handle.workId === workId || handle.workContractId === workId)
       && handle.checkoutId === canonicalCheckoutId
       && ACTIVE_STATES.has(handle.state)
     );
+  // Exact lookup may find a Handle outside a bounded scan. Count it once,
+  // without making the historical direct identity authoritative over a peer.
+  if (direct && direct.checkoutId === canonicalCheckoutId && ACTIVE_STATES.has(direct.state)
+      && !candidates.some((candidate) => candidate.workId === direct.workId)) {
+    candidates.push(direct);
+  }
 
   if (candidates.length === 0) {
     // A recorded historical Handle is not fresh placement authority.
