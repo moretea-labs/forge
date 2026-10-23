@@ -1156,7 +1156,6 @@ export async function callRepositoryTool(
                 workId: executionIdentity.workId!,
                 principalId: caller?.principalId ?? '',
                 sessionId: caller?.sessionId,
-                deferEffectPromotion: true,
               }),
               60_000,
             );

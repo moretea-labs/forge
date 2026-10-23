@@ -222,7 +222,6 @@ export function ensureRepositoryWorkHandle(input: {
   workId: string;
   identity: RepositoryWorkHandleControllerIdentity;
   checkoutId?: string;
-  allowEffectWork?: boolean;
 }): WorkHandleState | undefined {
   const existing = readWorkHandle(input.controllerHome, input.repository.repoId, input.workId);
   if (existing) {
@@ -235,9 +234,6 @@ export function ensureRepositoryWorkHandle(input: {
     { controllerHome: input.controllerHome, repoId: input.repository.repoId },
     input.workId,
   );
-  // allowEffectWork is retained only for source compatibility while old
-  // repository callers cut over. workKind is no longer an execution authority.
-  void input.allowEffectWork;
   const checkoutId = input.checkoutId?.trim() || contract?.checkoutId?.trim();
   if (!contract || !checkoutId) return undefined;
   // Callers may already be scoped to the Work checkout. Re-read the unselected
@@ -496,7 +492,6 @@ export function ensureRepositoryMutationWorkHandle(input: {
   workId: string;
   principalId: string;
   sessionId?: string;
-  deferEffectPromotion?: boolean;
 }): { handle: WorkHandleState; promotedFrom?: 'investigation' | 'local_effect' | 'remote_effect' } {
   const store = { controllerHome: input.controllerHome, repoId: input.repository.repoId };
   const contract = getWorkContract(store, input.workId);
@@ -517,9 +512,6 @@ export function ensureRepositoryMutationWorkHandle(input: {
     workId: input.workId,
   });
 
-  // deferEffectPromotion is a compatibility input from the retired Work-kind
-  // lifecycle. Repository mutation is now admitted by the concrete target fence.
-  void input.deferEffectPromotion;
 
   let handle = ensureRepositoryWorkHandle({
     controllerHome: input.controllerHome,
@@ -527,7 +519,6 @@ export function ensureRepositoryMutationWorkHandle(input: {
     workId: input.workId,
     identity: { sessionId: provenanceSessionId, principalId },
     checkoutId: mutationCheckoutId,
-    allowEffectWork: true,
   });
   if (!handle) throw new Error(`WORK_REPOSITORY_MUTATION_HANDLE_REQUIRED: ${input.workId}`);
   handle = rearmFailedPreservedWorkHandle({
@@ -555,6 +546,8 @@ export function ensureRepositoryMutationWorkHandle(input: {
     || contract.workKind === 'remote_effect'
     ? contract.workKind
     : undefined;
-  promoteWorkToRepositoryChange(store, input.workId);
+  // Already-classified repository work must not reenter the Work-store write lock
+  // for every file edit / command. Promotion is a one-time semantic transition.
+  if (promotedFrom) promoteWorkToRepositoryChange(store, input.workId);
   return promotedFrom ? { handle, promotedFrom } : { handle };
 }
