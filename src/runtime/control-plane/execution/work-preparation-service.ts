@@ -782,9 +782,8 @@ function relocateExistingWorkToManagedCheckout(
 export function prepareWork(ctx: McpExecutionContext, args: Record<string, unknown>): Record<string, unknown> {
   const session = requireSession(ctx, args);
   const repository = selectedRepository(ctx, session, args, true);
-  if (!session.activeRepositoryId) {
-    updateExecutionSession(ctx.controllerHome, identityFor(ctx, args), { activeRepositoryId: repository.repoId, activeCheckoutId: repository.activeCheckoutId, permissionSnapshotVersion: currentPermissionSnapshotVersion(ctx.controllerHome, repository.repoId) });
-  }
+  // Prepare only after all applicable validation; each successful branch binds
+  // its final Work/checkout directly, without a provisional session write.
   const existingId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
   if (args.relocate_to_new_worktree === true && !existingId) throw new Error('WORK_RELOCATION_EXISTING_WORK_ID_REQUIRED');
   const requestedIsolation = requestedWorkPrepareIsolation(args);
