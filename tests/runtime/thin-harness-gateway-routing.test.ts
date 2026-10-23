@@ -54,6 +54,9 @@ import { readWorkHandle, writeWorkHandle } from '../../src/runtime/control-plane
 import { workHandleRetainsCanonicalMutationOwnership } from '../../src/runtime/control-plane/execution/work-handle-authority';
 import { verificationInputFingerprint, workspaceValidationFingerprint } from '../../src/runtime/control-plane/execution/verification-evidence';
 
+import { startExecutionSession, updateExecutionSession, readExecutionSession } from '../../src/runtime/control-plane/execution/session-store';
+import { listActiveLeases } from '../../src/runtime/resources/leases/store';
+
 function git(root: string, args: string[]): string {
   const result = spawnSync('git', ['-C', root, ...args], { encoding: 'utf-8' });
   if (result.status !== 0) throw new Error(result.stderr || `git ${args.join(' ')} failed`);
@@ -1259,6 +1262,64 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     });
     expect(classification.path).toBe('fast');
     expect(classification.decision?.mode).toBe('fast');
+  });
+
+  test('readonly commands with Work context never acquire mutation admission on a dirty owned checkout', async () => {
+    const fx = fixture(); roots.push(fx.root);
+    const caller = { sessionId: 'read-session', principalId: 'read-principal', controllerInstanceId: 'read-instance' };
+    startExecutionSession(fx.controllerHome, caller);
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    const work = createWorkContract(store, {
+      workId: 'work-read-observation', repoId: fx.repository.repoId, checkoutId: fx.repository.activeCheckoutId,
+      workKind: 'investigation', objective: 'Observe without repository mutation authority.',
+      acceptanceCriteria: [], allowedPaths: ['**'], forbiddenPaths: [], checks: [], constraints: {}, requestedBy: 'chatgpt',
+    });
+    updateExecutionSession(fx.controllerHome, caller, {
+      activeWorkId: work.workId, activeRepositoryId: fx.repository.repoId, activeCheckoutId: fx.repository.activeCheckoutId,
+    });
+    const head = git(fx.repoRoot, ['rev-parse', 'HEAD']);
+    const owner = writeWorkHandle(fx.controllerHome, {
+      schemaVersion: 1, workId: 'work-other-writer', repositoryId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId, worktreePath: fx.repository.canonicalRoot,
+      branch: 'main', baseCommit: head, expectedHead: head, managedWorktree: false,
+      principalId: 'other-principal', sessionId: 'other-session', permissionSnapshotVersion: 1,
+      state: 'editing', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+      finalization: { validation: 'pending', commit: 'pending', merge: 'pending', branchCleanup: 'pending', worktreeCleanup: 'pending' },
+    });
+    writeFileSync(join(fx.repoRoot, 'README.md'), 'staged bytes\n');
+    git(fx.repoRoot, ['add', 'README.md']);
+    writeFileSync(join(fx.repoRoot, 'README.md'), 'unstaged bytes\n');
+    writeFileSync(join(fx.repoRoot, 'untracked.txt'), 'untracked bytes\n');
+    const snapshot = () => ({
+      index: git(fx.repoRoot, ['diff', '--cached', '--binary']),
+      unstaged: git(fx.repoRoot, ['diff', '--binary']),
+      untracked: readFileSync(join(fx.repoRoot, 'untracked.txt'), 'utf8'),
+      head: git(fx.repoRoot, ['rev-parse', 'HEAD']),
+      work: getWorkContract(store, work.workId), owner: readWorkHandle(fx.controllerHome, fx.repository.repoId, owner.workId),
+      session: readExecutionSession(fx.controllerHome, caller),
+    });
+    const before = snapshot();
+    for (const attribution of [{}, { work_id: work.workId }]) {
+      const response = await callRepositoryTool(fx.controllerHome, 'execute_command', {
+        repo_id: fx.repository.repoId, command: ['git', 'status', '--short'], ...attribution,
+      }, caller);
+      expect(response?.isError).not.toBe(true);
+      expect(response?.structuredContent).toMatchObject({ ok: true, reason: 'readonly_fast_path', status: 'succeeded', processId: undefined });
+    }
+    expect(readWorkHandle(fx.controllerHome, fx.repository.repoId, work.workId)).toBeUndefined();
+    expect(snapshot()).toEqual(before);
+    expect(listProcessRecords(fx.controllerHome, fx.repository.repoId)).toHaveLength(0);
+    expect(listActiveLeases(fx.controllerHome, fx.repository.repoId)).toHaveLength(0);
+    const unclaimedWrite = await callRepositoryTool(fx.controllerHome, 'execute_command', {
+      repo_id: fx.repository.repoId, command: ['touch', 'forbidden.txt'], request_id: 'unclaimed-write',
+    }, caller);
+    expect(JSON.stringify(unclaimedWrite)).toContain('WORK_ATTRIBUTION_REQUIRED');
+    const claimedWrite = await callRepositoryTool(fx.controllerHome, 'execute_command', {
+      repo_id: fx.repository.repoId, command: ['touch', 'forbidden.txt'], work_id: work.workId, request_id: 'claimed-write',
+    }, caller);
+    expect(JSON.stringify(claimedWrite)).toContain('WORK_CANONICAL_MUTATION_OWNED');
+    expect(existsSync(join(fx.repoRoot, 'forbidden.txt'))).toBe(false);
+    expect(snapshot()).toEqual(before);
   });
 
   test('routes bounded runtime maintenance writes directly but preserves explicit async durable routing', () => {

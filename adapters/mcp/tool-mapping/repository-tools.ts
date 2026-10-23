@@ -335,6 +335,7 @@ function resolveRepositorySelectionForClaimedWork(
   args: Record<string, unknown>,
   repoIdValue: string,
   caller?: RepositoryToolCallerContext,
+  allowCheckoutMutation = true,
 ): ReturnType<typeof resolveRepositorySelection> {
   const checkoutId = typeof args.checkout_id === 'string' ? args.checkout_id.trim() : '';
   const explicitWorkId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
@@ -361,7 +362,7 @@ function resolveRepositorySelectionForClaimedWork(
   const principalId = caller?.principalId?.trim();
   const sessionId = caller?.sessionId?.trim();
   const controllerInstanceId = caller?.controllerInstanceId?.trim();
-  if (principalId && sessionId && controllerInstanceId) {
+  if (allowCheckoutMutation && principalId && sessionId && controllerInstanceId) {
     ensureRunningRepositoryWorkCheckout({
       controllerHome,
       repository,
@@ -482,7 +483,9 @@ function resolveRepositoryCommandTarget(
     };
   }
 
-  const repository = resolveRepositorySelectionForClaimedWork(controllerHome, args, repoIdValue, caller);
+  // Observation must not reconstruct a checkout or re-arm mutation authority.
+  const readonly = classifyRepositoryCommand(args.command as string | string[], selectedRepository.defaultBranch).risk === 'readonly';
+  const repository = resolveRepositorySelectionForClaimedWork(controllerHome, args, repoIdValue, caller, !readonly);
   const explicitWorkId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
   const workId = explicitWorkId
     ? resolveClaimedRepositoryWorkId(controllerHome, repository, caller, explicitWorkId)
@@ -1094,7 +1097,10 @@ export async function callRepositoryTool(
         const explicitWorkId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
         // Repository-semantic checks apply only when a repository target exists;
         // an arbitrary workspace has no bound session, default branch, or Work.
-        if (repository && !explicitWorkId) assertNoBoundExecutionSessionMutation(controllerHome, repository, caller);
+        const mutationClassification = classifyRepositoryCommand(args.command as string | string[], commandTarget.defaultBranch);
+        if (repository && !explicitWorkId && mutationClassification.risk !== 'readonly') {
+          assertNoBoundExecutionSessionMutation(controllerHome, repository, caller);
+        }
         // Git integration is a capability with its own repository, scope and
         // concurrency checks.  A Work's semantic completion and any optional
         // verification/review evidence never admit or deny this operation.
@@ -1132,6 +1138,7 @@ export async function callRepositoryTool(
         });
         const processRequestId = typeof args.request_id === 'string' ? args.request_id.trim() : '';
         if (executionIdentity.workId
+          && mutationClassification.risk !== 'readonly'
           && (routeClass.route === 'process_direct' || routeClass.route === 'process_managed' || routeClass.route === 'durable')
           && !processRequestId) {
           throw new Error(
@@ -1140,7 +1147,6 @@ export async function callRepositoryTool(
           );
         }
         let mutationAuthority: ReturnType<typeof ensureRepositoryMutationWorkHandle> | undefined;
-        const mutationClassification = classifyRepositoryCommand(args.command as string | string[], commandTarget.defaultBranch);
         if (
           (mutationClassification.risk === 'workspace_write' || mutationClassification.risk === 'destructive')
           && (routeClass.route === 'process_direct' || routeClass.route === 'process_managed')
