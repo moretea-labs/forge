@@ -555,6 +555,44 @@ export function releaseSessionIsSoakingSupersededByStableAuthority(
 }
 
 /**
+ * A later failed cutover restored the byte-identical soaking predecessor
+ * through its recorded rollback transaction. This is not autonomous acceptance:
+ * the caller additionally requires the exact live known-good Runtime and
+ * current authority operation before retiring the stale rollback claim.
+ */
+export function releaseSessionIsSoakingSupersededByFailedCutoverCompensation(
+  predecessor: ReleaseSession,
+  failedSuccessor: ReleaseSession,
+  current: ReleaseSessionStableRelease,
+  currentOperationId: string | undefined,
+): boolean {
+  const prior = predecessor.transaction;
+  const candidate = predecessor.candidateRelease;
+  const failed = failedSuccessor.transaction;
+  const successor = failedSuccessor.candidateRelease;
+  if (
+    predecessor.phase !== 'soaking' || failedSuccessor.phase !== 'failed'
+    || !prior || !candidate || !failed || !successor
+    || prior.candidateReleaseId !== candidate.releaseId
+    || failed.candidateReleaseId !== successor.releaseId
+    || !failedSuccessor.receipts.some((receipt) => receipt.id === 'cutover_failed')
+    || !currentOperationId || currentOperationId !== failed.operationId
+    || failedSuccessor.stableRelease.authorityRevision !== prior.cutoverAuthorityRevision
+    || failed.cutoverAuthorityRevision !== prior.cutoverAuthorityRevision + 1
+    || current.authorityRevision !== failed.cutoverAuthorityRevision + 1
+  ) return false;
+  return failedSuccessor.stableRelease.releaseId === candidate.releaseId
+    && failedSuccessor.stableRelease.artifactIdentity === candidate.artifactIdentity
+    && failedSuccessor.stableRelease.manifestSha256 === candidate.manifestSha256
+    && failed.rollbackRelease.releaseId === candidate.releaseId
+    && failed.rollbackRelease.artifactIdentity === candidate.artifactIdentity
+    && failed.rollbackRelease.manifestSha256 === candidate.manifestSha256
+    && current.releaseId === candidate.releaseId
+    && current.artifactIdentity === candidate.artifactIdentity
+    && current.manifestSha256 === candidate.manifestSha256;
+}
+
+/**
  * Durable semantic proof that Candidate B is no longer required as a mutable
  * Controller Home. This does not itself authorize deletion: cleanup must still
  * prove the exact fenced path and absence of a live Runtime owner.

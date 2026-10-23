@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { RELEASE_SESSION_PHASES, advanceReleaseSession, createReleaseSession, listCompleteReleaseSessions, listReleaseSessions, migrateReleaseSessionState, readReleaseSession, recordReleaseSessionTransaction, releaseSessionCandidateIsRetired, releaseSessionIsSoakingSupersededByStableAuthority, type ReleaseSessionCandidateRelease, type ReleaseSessionStableRelease, type ReleaseSessionTransaction } from '../../src/runtime/release/release-session';
+import { RELEASE_SESSION_PHASES, advanceReleaseSession, createReleaseSession, listCompleteReleaseSessions, listReleaseSessions, migrateReleaseSessionState, readReleaseSession, recordReleaseSessionTransaction, releaseSessionCandidateIsRetired, releaseSessionIsSoakingSupersededByStableAuthority, releaseSessionIsSoakingSupersededByFailedCutoverCompensation, type ReleaseSessionCandidateRelease, type ReleaseSessionStableRelease, type ReleaseSessionTransaction } from '../../src/runtime/release/release-session';
 import type { RuntimeReleaseAuthority } from '../../src/runtime/root/release-store';
 import { advanceConfiguredRuntimeRelease, decideConfiguredRuntimeReleaseAction, decideConfiguredRuntimeReleaseReconciliation } from '../../src/runtime/release/release-coordinator';
 import { cancelConfiguredRuntimeReleaseSession, createRecoveryConfig } from '../../src/runtime/standalone-recovery/core';
@@ -294,6 +294,41 @@ describe('Recovery ReleaseSession', () => {
     const exactCandidateAtSameRevision: ReleaseSessionStableRelease = { ...stableRelease, authorityRevision: 8, releaseId: candidateRelease.releaseId, artifactIdentity: candidateRelease.artifactIdentity, manifestSha256: candidateRelease.manifestSha256 };
     expect(releaseSessionIsSoakingSupersededByStableAuthority(session, exactCandidateAtSameRevision)).toBe(false);
     expect(releaseSessionIsSoakingSupersededByStableAuthority(session, { ...exactCandidateAtSameRevision, authorityRevision: 9 })).toBe(false);
+    const failedSuccessor = {
+      ...session,
+      phase: 'failed' as const,
+      stableRelease: exactCandidateAtSameRevision,
+      candidateRelease: {
+        ...candidateRelease,
+        releaseId: 'failed-candidate-b',
+        artifactIdentity: 'sha256:failed-candidate-b',
+        manifestSha256: 'failed-candidate-b-manifest',
+      },
+      transaction: {
+        ...session.transaction!,
+        operationId: 'failed-candidate-b-activation',
+        candidateReleaseId: 'failed-candidate-b',
+        cutoverAuthorityRevision: 9,
+        rollbackRelease: {
+          ...session.transaction!.rollbackRelease,
+          releaseId: candidateRelease.releaseId,
+          artifactIdentity: candidateRelease.artifactIdentity,
+          manifestSha256: candidateRelease.manifestSha256,
+        },
+      },
+      receipts: [...session.receipts, { id: 'cutover_failed', kind: 'cutover' as const, summary: 'later candidate activation failed', recordedAt: new Date().toISOString() }],
+    };
+    const restored = { ...exactCandidateAtSameRevision, authorityRevision: 10 };
+    const compensated = releaseSessionIsSoakingSupersededByFailedCutoverCompensation;
+    expect(compensated(session, failedSuccessor, restored, 'failed-candidate-b-activation')).toBe(true);
+    expect(compensated(session, failedSuccessor, restored, 'other-transaction')).toBe(false);
+    expect(compensated(session, failedSuccessor, { ...restored, authorityRevision: 11 }, 'failed-candidate-b-activation')).toBe(false);
+    expect(compensated(session, { ...failedSuccessor, receipts: session.receipts }, restored, 'failed-candidate-b-activation')).toBe(false);
+    expect(compensated(session, {
+      ...failedSuccessor,
+      transaction: { ...failedSuccessor.transaction, rollbackRelease: { ...failedSuccessor.transaction.rollbackRelease, releaseId: 'unrelated-release' } },
+    }, restored, 'failed-candidate-b-activation')).toBe(false);
+
     expect(releaseSessionIsSoakingSupersededByStableAuthority(session, { ...exactCandidateAtSameRevision, releaseId: 'emergency-release' })).toBe(false);
     expect(releaseSessionIsSoakingSupersededByStableAuthority(session, {
       ...exactCandidateAtSameRevision,
