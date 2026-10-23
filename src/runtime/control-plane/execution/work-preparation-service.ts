@@ -944,7 +944,7 @@ export function prepareWork(ctx: McpExecutionContext, args: Record<string, unkno
 
   // Optimization: use cached Git status for reuse mode
   const useWorktree = isolation !== 'reuse';
-  const baseStatus = useWorktree ? repositoryGitStatus(repository) : getCachedGitStatus(repository);
+  const baseStatus = useWorktree ? repositoryGitStatus(repository) : getCachedGitStatus(repository, () => repositoryGitStatus(repository));
 
   // A new Work defaults to an isolated checkout of fetched integration main.
   // Explicit reuse still permits a current-checkout direct edit.
