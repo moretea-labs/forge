@@ -89,7 +89,7 @@ describe('ValidationOptimization', () => {
       };
 
       const status1 = getCachedGitStatus(repo);
-      const status2 = getCachedGitStatus(repo, true); // force refresh
+      const status2 = getCachedGitStatus(repo); // force refresh
 
       // Should fetch fresh (different object)
       expect(status2).not.toBe(status1);
