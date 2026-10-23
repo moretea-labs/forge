@@ -95,7 +95,8 @@ function fixture() {
   }, null, 2));
   git(repoRoot, ['add', '.']);
   git(repoRoot, ['commit', '-m', 'init']);
-  git(repoRoot, ['update-ref', 'refs/remotes/origin/main', 'HEAD']);
+  git(repoRoot, ['remote', 'add', 'origin', originRoot]);
+  git(repoRoot, ['push', '--set-upstream', 'origin', 'main']);
   ensureControllerHome(controllerHome);
   const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'gw-route' });
   const ctx = createMcpToolContext({
@@ -1042,9 +1043,10 @@ describe('repository.git Work delivery', () => {
     if (delivered?.isError) throw new Error(JSON.stringify(delivered.structuredContent ?? delivered));
     const integratedHead = git(fx.repoRoot, ['rev-parse', 'HEAD']);
     expect(integratedHead).not.toBe(targetHead);
-    // The prior delivery advanced main. Simulate fetching its new integration
-    // commit before admitting another independent main-based source Work.
-    git(fx.repoRoot, ['update-ref', 'refs/remotes/origin/main', integratedHead]);
+    // Publish the prior delivery to the fixture origin before preparing the
+    // next independent Work; a local tracking ref alone is not remote truth.
+    git(fx.repoRoot, ['push', 'origin', 'main']);
+    expect(git(fx.repoRoot, ['rev-parse', 'refs/remotes/origin/main'])).toBe(integratedHead);
     expect(readWorkHandle(fx.controllerHome, fx.repository.repoId, blockerId)?.state).toBe('prepared');
     expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, blockerId)?.semanticState).toBe('open');
 
@@ -2745,9 +2747,6 @@ describe('work_validate persisted semantic identity', () => {
   test('work_prepare auto isolates new Work from other current checkout and reuses existing Work', async () => {
     const fx = fixture();
     roots.push(fx.root);
-
-    git(fx.repoRoot, ['remote', 'add', 'origin', fx.originRoot]);
-    git(fx.repoRoot, ['push', '--set-upstream', 'origin', 'main']);
 
     const otherRoot = join(fx.root, 'other-work-checkout');
     git(fx.repoRoot, ['worktree', 'add', '-b', 'other-work', otherRoot, 'HEAD']);
