@@ -958,6 +958,14 @@ export class WorkflowSupervisorNativeBrowserAdapter {
   }
 
   private async bootstrapTask(task: WorkflowSupervisorBrowserTask): Promise<void> {
+    const outcome: { providerAccepted?: boolean; code?: string; message?: string } = {};
+    return await withChatgptProviderDispatchLane(this.deps.providerScopeKey,
+      () => this.bootstrapTaskWithinLane(task, outcome), () => outcome);
+  }
+
+  private async bootstrapTaskWithinLane(
+    task: WorkflowSupervisorBrowserTask, laneOutcome: { providerAccepted?: boolean; code?: string; message?: string },
+  ): Promise<void> {
     const poll = this.control.bootstrapPoll(task.taskId);
     const command = poll.command;
     if (!command) return;
@@ -1039,8 +1047,9 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     this.clearTaskFailure(task.taskId, command.effectId);
     if (!this.control.bootstrapBeginEffect({ taskId: task.taskId, effectId: command.effectId, dispatchId: `bootstrap-${randomUUID()}`, dispatchGeneration: command.dispatchGeneration })) return;
     try {
-      const dispatch = await withChatgptProviderDispatchLane(this.deps.providerScopeKey, () => target.dispatch(command.prompt),
-        (result) => result.mutation === 'attempted' ? { providerAccepted: result.confirmed === true } : { code: result.reasonCode, message: result.reasonCode });
+      const dispatch = await target.dispatch(command.prompt);
+      if (dispatch.mutation === 'attempted') laneOutcome.providerAccepted = dispatch.confirmed === true;
+      else { laneOutcome.code = dispatch.reasonCode; laneOutcome.message = dispatch.reasonCode; }
       if (dispatch.mutation === 'not_attempted') {
         this.control.bootstrapObserveEffect({ taskId: task.taskId, effectId: command.effectId, observationId: `bootstrap-${randomUUID()}`, outcome: 'not_applied', evidence: { dispatch_mutation: 'not_attempted', send_clicked: false, reason: dispatch.reasonCode } });
         this.control.recordProviderPreparationFailure({ taskId: task.taskId, effectId: command.effectId,
@@ -1101,6 +1110,20 @@ export class WorkflowSupervisorNativeBrowserAdapter {
   }
 
   private async executeCommand(target: ComputerChatgptConversationTarget, command: WorkflowSupervisorBrowserCommand, task: WorkflowSupervisorBrowserTask): Promise<void> {
+    // One provider lane owns preparation, insertion and submission together.
+    // The Supervisor poll loop already processes tasks sequentially; this also
+    // fences other ChatGPT transports that share the account dispatch lane.
+    if (command.mode !== 'send') return await this.executeCommandWithinLane(target, command, task, {});
+    const outcome: { providerAccepted?: boolean; code?: string; message?: string } = {};
+    return await withChatgptProviderDispatchLane(this.deps.providerScopeKey,
+      () => this.executeCommandWithinLane(target, command, task, outcome),
+      () => outcome);
+  }
+
+  private async executeCommandWithinLane(
+    target: ComputerChatgptConversationTarget, command: WorkflowSupervisorBrowserCommand,
+    task: WorkflowSupervisorBrowserTask, laneOutcome: { providerAccepted?: boolean; code?: string; message?: string },
+  ): Promise<void> {
     let snapshot = await target.observe({ includeUserHistory: true, includePageText: true });
     if (!exactConversation(snapshot, task)) {
       this.noteTargetUnavailable(task, command.effectId, { code: 'WORKFLOW_SUPERVISOR_EXACT_CONVERSATION_UNPROVEN' });
@@ -1179,8 +1202,9 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     }
     let dispatch: Awaited<ReturnType<ComputerChatgptConversationTarget['dispatch']>>;
     try {
-      dispatch = await withChatgptProviderDispatchLane(this.deps.providerScopeKey, () => target.dispatch(command.prompt, { ...(command.kind === 'recovery' ? { mode: 'recover' as const } : {}) }),
-        (result) => result.mutation === 'attempted' ? { providerAccepted: result.confirmed === true } : { code: result.reasonCode, message: result.reasonCode });
+      dispatch = await target.dispatch(command.prompt, { ...(command.kind === 'recovery' ? { mode: 'recover' as const } : {}) });
+      if (dispatch.mutation === 'attempted') laneOutcome.providerAccepted = dispatch.confirmed === true;
+      else { laneOutcome.code = dispatch.reasonCode; laneOutcome.message = dispatch.reasonCode; }
     } catch (error) {
       this.control.browserObserveEffect({ conversationId: command.conversationId, conversationUrl: command.conversationUrl, effectId: command.effectId,
         observationId: `computer-observe-${randomUUID()}`, outcome: 'unknown',

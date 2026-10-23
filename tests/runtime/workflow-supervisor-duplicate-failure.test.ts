@@ -187,3 +187,99 @@ test('committed CONTINUE dispatches before slow browser cleanup without another 
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('two independent Supervisor adapters serialize bootstrap preparation behind conversation dispatch', async () => {
+  const { WorkflowSupervisorNativeBrowserAdapter } = await import('../../supervisor/native-browser-adapter');
+  const { WorkflowSupervisorEphemeralDiscovery } = await import('../../supervisor/server');
+  const { createTestChatgptTargetPort } = await import('./helpers/computer-chatgpt-target-harness');
+  const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-shared-composer-lane-'));
+  const storeA = new WorkflowSupervisorStore(join(root, 'a'));
+  const storeB = new WorkflowSupervisorStore(join(root, 'b'));
+  const events: string[] = [];
+  try {
+    const providerScopeKey = join(root, 'shared-provider-scope');
+    const conversationId = '41414141-aaaa-bbbb-cccc-414141414141';
+    const conversationUrl = 'https://chatgpt.com/c/' + conversationId;
+    const projectUrl = 'https://chatgpt.com/g/g-p-abc123-forge/project';
+    const controlA = new WorkflowSupervisorControlPlane(storeA, {}, { browserTaskActive: () => true });
+    controlA.registerTask({
+      taskId: 'supervisor:serial-conversation', conversationId, conversationUrl,
+      objective: 'Send through the shared account lane.', completionContract: {},
+      continuationPolicy: {}, userBlockerPolicy: {},
+    });
+    controlA.reserveEnrollment('supervisor:serial-conversation');
+    const controlB = new WorkflowSupervisorControlPlane(storeB, {}, {
+      browserTaskActive: () => true,
+      projectScopeForTask: () => ({ title: 'forge', repoId: 'repo-forge', controllerHome: root }),
+    });
+    controlB.registerTask({
+      taskId: 'supervisor:serial-bootstrap', conversationId: 'bootstrap:supervisor:serial-bootstrap',
+      conversationUrl: 'https://chatgpt.com/', objective: 'Bootstrap another task.',
+      completionContract: {}, continuationPolicy: { kind: 'standalone_supervisor', bootstrap: true },
+      userBlockerPolicy: {},
+    });
+    controlB.recordBrowserDiscovery('chrome-extension', [{
+      conversationId, canonicalUrl: conversationUrl, projectTitle: 'forge', projectUrl,
+    }]);
+    controlB.reserveEnrollment('supervisor:serial-bootstrap');
+    let enteredFirst!: () => void;
+    let allowFirst!: () => void;
+    const firstPrepared = new Promise<void>((resolve) => { enteredFirst = resolve; });
+    const releaseFirst = new Promise<void>((resolve) => { allowFirst = resolve; });
+    const page = { evaluate: async <T>() => false as T, tabRef: () => ({ windowId: 'w', tabId: 't' }) };
+    let latestUserText = 'Earlier committed user message';
+    const targetA = createTestChatgptTargetPort({
+      listTabs: async () => ({ entries: [{ windowId: 'w', tabId: 't', url: conversationUrl, title: 'A', active: true }], unavailableProducts: [] }),
+      reattach: async () => page, create: async () => page, close: async () => undefined,
+      snapshot: async () => ({
+        url: conversationUrl, title: 'A', latestUserText,
+        latestAssistantResponse: 'Earlier completed assistant response', latestTurnRole: 'assistant',
+        composerText: '', isGenerating: false, providerActivityText: '', providerFailureText: '',
+      }),
+      preparePrompt: async () => {
+        events.push('conversation:prepare'); enteredFirst(); await releaseFirst; return { ready: true };
+      },
+      dispatchPrompt: async (_page, prompt) => {
+        events.push('conversation:dispatch'); latestUserText = prompt;
+        return { dispatched: true, confirmed: true };
+      },
+    });
+    const targetB = createTestChatgptTargetPort({
+      listTabs: async () => ({ entries: [{ windowId: 'w2', tabId: 't2', url: projectUrl, title: 'Forge', active: true }], unavailableProducts: [] }),
+      reattach: async () => page, create: async () => page, close: async () => undefined,
+      snapshot: async () => ({
+        url: projectUrl, title: 'Forge', latestUserText: '', latestAssistantResponse: '',
+        composerText: '', composerSelectorVersion: 'visible-single-v2',
+        isGenerating: false, providerActivityText: '', providerFailureText: '',
+      }),
+      preparePrompt: async () => { events.push('bootstrap:prepare'); return { ready: true }; },
+      dispatchPrompt: async () => {
+        events.push('bootstrap:dispatch');
+        return { dispatched: false, reason: 'test-no-click' };
+      },
+    });
+    const makeAdapter = (control: WorkflowSupervisorControlPlane, targetPort: ReturnType<typeof createTestChatgptTargetPort>) =>
+      new WorkflowSupervisorNativeBrowserAdapter(control, new WorkflowSupervisorEphemeralDiscovery(), {
+        targetPort, providerScopeKey, nowMs: () => Date.now(), providerIdleGraceMs: 60_000,
+        sleep: async () => undefined,
+        setInterval: () => 0 as unknown as ReturnType<typeof setInterval>,
+        clearInterval: () => undefined,
+        onError: (error) => { throw error; },
+      });
+    const adapterA = makeAdapter(controlA, targetA);
+    const adapterB = makeAdapter(controlB, targetB);
+    const first = adapterA.runOnce();
+    await firstPrepared;
+    const second = adapterB.runOnce();
+    await Promise.resolve();
+    expect(events).toEqual(['conversation:prepare']);
+    allowFirst();
+    await Promise.all([first, second]);
+    expect(events).toEqual([
+      'conversation:prepare', 'conversation:dispatch', 'bootstrap:prepare', 'bootstrap:dispatch',
+    ]);
+  } finally {
+    storeA.close(); storeB.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});

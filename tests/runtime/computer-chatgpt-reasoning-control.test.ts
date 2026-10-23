@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { createHash, webcrypto } from 'node:crypto';
 import { runInNewContext } from 'node:vm';
 import { join } from 'node:path';
+import { withChatgptProviderDispatchLane } from '../../adapters/chatgpt/provider-delivery';
 
 const extensionRoot = join(process.cwd(), 'adapters', 'computer', 'chrome-extension');
 const coreSource = readFileSync(join(extensionRoot, 'core.js'), 'utf8');
@@ -327,4 +328,93 @@ ${prompt}`;
   expect(await f.prepare(undefined,undefined,guard,'g-p-other')).toMatchObject({prepared:false,reason:'target_identity_changed'});
   expect(f.textarea.value).toBe(priorDraft+' changed');
   expect(f.state.sendClicks).toBe(0);
+});
+
+test('Supervisor replaces a stale Forge-marked draft without comparing its old body', async () => {
+  const previous = '<<<FORGE_WORKFLOW_EFFECT_V1:fx_old_serial_123456789>>>\nOld content spanning arbitrary lines';
+  const current = '<<<FORGE_WORKFLOW_EFFECT_V1:fx_new_serial_123456789>>>\nNew canonical task content';
+  const f = fixture({ controlPresent: false, initialDraft: previous });
+  const conversationId = '12345678-1234-1234-1234-123456789abc';
+  expect(await f.prepare(undefined, conversationId, current)).toMatchObject({ prepared: true });
+  expect(f.textarea.value).toBe(current);
+  expect(f.state.sendClicks).toBe(0);
+  expect(await f.dispatch(undefined, conversationId, current)).toMatchObject({ dispatched: true, confirmed: true });
+  expect(f.state.sendClicks).toBe(1);
+});
+
+test('Supervisor replaces a partial same-effect marked draft before dispatch', async () => {
+  const current = '<<<FORGE_WORKFLOW_EFFECT_V1:fx_current_serial_123456>>>\nComplete current payload';
+  const f = fixture({ controlPresent: false, initialDraft: '<<<FORGE_WORKFLOW_EFFECT_V1:fx_current_serial_123456>>>\nIncomplete' });
+  expect(await f.prepare(undefined, '12345678-1234-1234-1234-123456789abc', current)).toMatchObject({ prepared: true });
+  expect(f.textarea.value).toBe(current);
+  expect(f.state.sendClicks).toBe(0);
+});
+
+test('Supervisor refuses unmarked and malformed-magic drafts rather than overwriting them', async () => {
+  const current = '<<<FORGE_WORKFLOW_EFFECT_V1:fx_new_serial_123456789>>>\nCurrent';
+  const drafts = [
+    'A real unsent human draft',
+    'human prefix <<<FORGE_WORKFLOW_EFFECT_V1:fx_old_serial_123456789>>>\nSome text',
+    '<<<FORGE_WORKFLOW_EFFECT_V1:fx_old_serial_123456789>> trailing invalid syntax',
+  ];
+  for (const draft of drafts) {
+    const f = fixture({ controlPresent: false, initialDraft: draft });
+    expect(await f.prepare(undefined, '12345678-1234-1234-1234-123456789abc', current))
+      .toMatchObject({ prepared: false, reason: 'composer_not_empty' });
+    expect(f.textarea.value).toBe(draft);
+    expect(f.state.sendClicks).toBe(0);
+  }
+});
+
+test('Ordinary prompts cannot replace a Forge-marked Supervisor draft', async () => {
+  const draft = '<<<FORGE_WORKFLOW_EFFECT_V1:fx_old_serial_123456789>>>\nProtected';
+  const f = fixture({ controlPresent: false, initialDraft: draft });
+  expect(await f.dispatch(undefined, '12345678-1234-1234-1234-123456789abc', 'ordinary prompt'))
+    .toMatchObject({ dispatched: false, reason: 'composer_not_empty' });
+  expect(f.textarea.value).toBe(draft);
+  expect(f.state.sendClicks).toBe(0);
+});
+
+test('Supervisor conversation send and bootstrap execute prepare through dispatch serially', async () => {
+  const scope = 'supervisor-prepare-send-serial-test';
+  const events: string[] = [];
+  let enteredFirst!: () => void;
+  let finishFirst!: () => void;
+  const firstEntered = new Promise<void>((resolve) => { enteredFirst = resolve; });
+  const firstCanDispatch = new Promise<void>((resolve) => { finishFirst = resolve; });
+
+  const first = withChatgptProviderDispatchLane(scope, async () => {
+    events.push('conversation:prepare');
+    enteredFirst();
+    await firstCanDispatch;
+    events.push('conversation:dispatch');
+    return { providerAccepted: true };
+  }, (outcome) => outcome);
+  await firstEntered;
+
+  const second = withChatgptProviderDispatchLane(scope, async () => {
+    events.push('bootstrap:prepare');
+    events.push('bootstrap:dispatch');
+    return { providerAccepted: true };
+  }, (outcome) => outcome);
+  await Promise.resolve();
+  expect(events).toEqual(['conversation:prepare']);
+  finishFirst();
+  await Promise.all([first, second]);
+  expect(events).toEqual([
+    'conversation:prepare',
+    'conversation:dispatch',
+    'bootstrap:prepare',
+    'bootstrap:dispatch',
+  ]);
+});
+
+test('an unconfirmed provider submission is not replayed by the shared lane', async () => {
+  let submissions = 0;
+  const result = await withChatgptProviderDispatchLane('supervisor-unknown-no-replay-test', async () => {
+    submissions++;
+    return { providerAccepted: false };
+  }, (outcome) => outcome);
+  expect(result.providerAccepted).toBe(false);
+  expect(submissions).toBe(1);
 });
