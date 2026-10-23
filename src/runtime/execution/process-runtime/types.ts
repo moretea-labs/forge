@@ -12,6 +12,9 @@ export interface ExecutionConcurrencyWaitProjection {
   blockerCode: string;
   disposition: 'wait' | 'invalid';
   blockingWorkId?: string;
+  /** Exact Process to join before deciding whether to submit a distinct action. */
+  blockingProcessId?: string;
+  blockingOwnerRelation?: 'same_work_same_checkout' | 'other_work_or_checkout' | 'non_work_owner' | 'unknown';
   semanticScopeKeys: string[];
   resourceKeys: string[];
   wakeTrigger:
