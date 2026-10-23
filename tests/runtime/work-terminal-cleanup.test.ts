@@ -1081,6 +1081,33 @@ describe('terminal Work cleanup', () => {
     expect(recovery.work.workContractId).toBe(sourceId);
     expect(recovery.work.checkoutId).not.toBe(source.checkoutId);
     expect(recovery.work.expectedHead).toBe(mainHead);
+
+    // Semantic sourceId resolves to live physical recovery.work.workId using current checkout
+    const { ensureRepositoryWorkHandle } = await import('../../src/runtime/control-plane/execution/work-handle-authority');
+    const resolvedHandle = ensureRepositoryWorkHandle({
+      controllerHome: fx.controllerHome,
+      repository: fx.repository,
+      workId: sourceId,
+      identity: { sessionId: 'test-session', principalId: 'test-principal' },
+    });
+    expect(resolvedHandle?.workId).toBe(recovery.work.workId);
+    expect(resolvedHandle?.workContractId).toBe(sourceId);
+    expect(resolvedHandle?.checkoutId).toBe(recovery.work.checkoutId);
+
+    // Wrong old checkout throws mismatch
+    expect(() => ensureRepositoryWorkHandle({
+      controllerHome: fx.controllerHome,
+      repository: fx.repository,
+      workId: sourceId,
+      identity: { sessionId: 'test-session', principalId: 'test-principal' },
+      checkoutId: source.checkoutId,
+    })).toThrow('WORK_HANDLE_PLACEMENT_CHECKOUT_MISMATCH');
+
+    // Existing later historical work_inspect still returns cleaned original
+    const cleanedOriginal = readWorkHandle(fx.controllerHome, fx.repository.repoId, sourceId);
+    expect(cleanedOriginal?.state).toBe('cleaned');
+    expect(cleanedOriginal?.checkoutId).toBe(source.checkoutId);
+
     const recoveredContract = getWorkContract(workStore, sourceId)!;
     expect(recoveredContract).toMatchObject({
       semanticState: 'open',
