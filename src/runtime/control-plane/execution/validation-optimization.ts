@@ -1,6 +1,5 @@
 import type { McpExecutionContext } from '../../../../packages/protocols/mcp/execution-context';
 import type { ExecutionSessionContext } from './session-store';
-import { repositoryGitStatus } from '../../../cli/repositories/structured-git';
 
 /**
  * Git status cache to avoid repeated calls within a short time window.
@@ -12,13 +11,11 @@ import { repositoryGitStatus } from '../../../cli/repositories/structured-git';
  */
 
 interface CachedGitStatus {
-  repoId: string;
-  checkoutId: string;
-  status: ReturnType<typeof repositoryGitStatus>;
+  status: unknown;
   cachedAt: number;
 }
 
-const GIT_STATUS_CACHE_TTL_MS = 5000; // 5 seconds
+const GIT_STATUS_CACHE_TTL_MS = 5000;
 const gitStatusCache = new Map<string, CachedGitStatus>();
 
 function cacheKey(repoId: string, checkoutId: string): string {
@@ -26,41 +23,25 @@ function cacheKey(repoId: string, checkoutId: string): string {
 }
 
 /**
- * Get Git status with short-term caching.
- *
- * Safe to cache because:
- * - Most operations complete within 5 seconds
- * - Git status is read-only
- * - Stale cache only affects optimization, not correctness
- * - Actual mutations still check at write time
+ * Runtime owns cache lifetime; the existing caller owns Git status reads.
+ * Do not import the CLI Git implementation into Runtime.
  */
-export function getCachedGitStatus(
-  repository: { repoId: string; activeCheckoutId: string; canonicalRoot: string },
-): ReturnType<typeof repositoryGitStatus> {
+export function getCachedGitStatus<T>(
+  repository: { repoId: string; activeCheckoutId: string },
+  readStatus: () => T,
+): T {
   const key = cacheKey(repository.repoId, repository.activeCheckoutId);
   const now = Date.now();
-
   const cached = gitStatusCache.get(key);
-  if (cached && (now - cached.cachedAt) < GIT_STATUS_CACHE_TTL_MS) {
-    return cached.status;
+  if (cached && now - cached.cachedAt < GIT_STATUS_CACHE_TTL_MS) {
+    return cached.status as T;
   }
-
-  // Cache miss or expired - fetch fresh status
-  const status = repositoryGitStatus(repository as any);
-
-  gitStatusCache.set(key, {
-    repoId: repository.repoId,
-    checkoutId: repository.activeCheckoutId,
-    status,
-    cachedAt: now,
-  });
-
-  // Clean up old entries (simple LRU)
+  const status = readStatus();
+  gitStatusCache.set(key, { status, cachedAt: now });
   if (gitStatusCache.size > 100) {
-    const oldestKey = gitStatusCache.keys().next().value;
-    if (oldestKey) gitStatusCache.delete(oldestKey);
+    const oldest = gitStatusCache.keys().next().value;
+    if (oldest) gitStatusCache.delete(oldest);
   }
-
   return status;
 }
 
