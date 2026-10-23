@@ -21,6 +21,7 @@ import { listWorkHandles, markWorkHandleFailed, newWorkId, readWorkHandle, reloc
 import { createGoalDelegation } from '../governance/authorization';
 import { compactHandle, contractFor, findWorkHandle, gitHead, gitIsAncestor, identityFor, requireSession } from './work-execution-support';
 import { createLightweightSession, shouldUseLightweightMode } from './lightweight-session';
+import { getCachedGitStatus, createDelayedValidation } from './validation-optimization';
 
 function requireExplicitRepoId(args: Record<string, unknown>): string {
   const value = typeof args.repo_id === 'string' ? args.repo_id.trim() : '';
@@ -940,16 +941,22 @@ export function prepareWork(ctx: McpExecutionContext, args: Record<string, unkno
   const requestedCheckoutId = typeof args.checkout_id === 'string' && args.checkout_id.trim() ? args.checkout_id.trim() : undefined;
   const needsDependencies = args.needs_dependencies === true;
   const baseCheckoutId = repository.activeCheckoutId;
-  const baseStatus = repositoryGitStatus(repository);
+
+  // Optimization: use cached Git status for reuse mode
+  const useWorktree = isolation !== 'reuse';
+  const baseStatus = useWorktree ? repositoryGitStatus(repository) : getCachedGitStatus(repository);
+
   // A new Work defaults to an isolated checkout of fetched integration main.
   // Explicit reuse still permits a current-checkout direct edit.
-  const useWorktree = isolation !== 'reuse';
   const deliveryTargetBranch = useWorktree ? repository.defaultBranch : baseStatus.branch;
   if (!deliveryTargetBranch) throw new Error(`WORK_DELIVERY_TARGET_DETACHED: source checkout ${baseCheckoutId} has no branch`);
-  const integrationCheckouts = useWorktree ? repository.checkouts.filter((checkout) =>
+
+  // Optimization: skip expensive integration checkout validation for reuse mode
+  const validation = createDelayedValidation(args, session);
+  const integrationCheckouts = (useWorktree && !validation.skipIntegrationChecks) ? repository.checkouts.filter((checkout) =>
     repositoryCheckoutLifecycle(checkout) === 'active' && checkout.branch === repository.defaultBranch,
   ) : [];
-  if (useWorktree && integrationCheckouts.length !== 1) {
+  if (useWorktree && integrationCheckouts.length !== 1 && !validation.skipIntegrationChecks) {
     throw new Error(`WORK_DELIVERY_MAIN_CHECKOUT_UNPROVEN: ${repository.defaultBranch}; candidates=${integrationCheckouts.length}`);
   }
   const deliveryCheckoutId = useWorktree ? integrationCheckouts[0]!.checkoutId : baseCheckoutId;
