@@ -67,12 +67,11 @@ function failure(error: unknown): CallToolResult {
 }
 
 export function startOrResumeSession(ctx: MultiRepositoryMcpToolContext): ExecutionSessionContext {
-  const permissionVersion = ctx.explicitRepository ? currentPermissionSnapshotVersion(ctx.controllerHome, ctx.explicitRepository.repoId) : 0;
   return startExecutionSession(ctx.controllerHome, {
     sessionId: ctx.sessionId,
     principalId: principalFor(ctx),
     controllerInstanceId: ctx.controllerInstanceId ?? currentControllerInstanceId(),
-    permissionSnapshotVersion: permissionVersion,
+    ...(ctx.explicitRepository ? { permissionSnapshotVersion: currentPermissionSnapshotVersion(ctx.controllerHome, ctx.explicitRepository.repoId) } : {}),
     capabilitySnapshotVersion: 1,
   });
 }
