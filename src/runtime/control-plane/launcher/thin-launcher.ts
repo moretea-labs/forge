@@ -13,7 +13,7 @@ import {
   reserveExternalControllerLaunch,
 } from './launch-reservation-store';
 import type { ControllerType } from '../facade/types';
-import { codexMcpConfigArgs, resolveProviderMcpBootstrap, type ProviderMcpBootstrap } from './provider-mcp-bootstrap';
+import { claudeMcpConfigArgs, codexMcpConfigArgs, resolveProviderMcpBootstrap, type ProviderMcpBootstrap } from './provider-mcp-bootstrap';
 import { repositoryChildProcessEnvironment } from '../../shared/process-environment';
 import { redactProcessOutput } from '../../../effects/process-runner';
 import { renderCognitiveAttentionForWork } from '../../context/cognitive-attention';
@@ -224,6 +224,36 @@ export function buildCodexControllerInvocation(
   };
 }
 
+export interface ClaudeControllerInvocationRequest {
+  executable: string;
+  prompt: string;
+  mcpBootstrap: ProviderMcpBootstrap;
+  args?: string[];
+}
+
+export function buildClaudeControllerInvocation(
+  request: ClaudeControllerInvocationRequest,
+): { executable: string; args: string[] } {
+  const userArgs = request.args ?? [];
+  // Detect conflicting caller-provided --mcp-config; only one authority is allowed.
+  if (userArgs.some(arg => arg === '--mcp-config' || arg.startsWith('--mcp-config='))) {
+    throw new Error('LAUNCHER_CLAUDE_MCP_CONFIG_CONFLICT: caller must not provide --mcp-config when Forge MCP bootstrap is active');
+  }
+  if (userArgs.some(arg => arg === '--strict-mcp-config' || arg.startsWith('--strict-mcp-config='))) {
+    throw new Error('LAUNCHER_CLAUDE_STRICT_MCP_CONFIG_CONFLICT: Forge manages strict-mcp-config');
+  }
+  return {
+    executable: request.executable,
+    args: [
+      '--print',
+      '--permission-mode', 'auto',
+      ...claudeMcpConfigArgs(request.mcpBootstrap),
+      ...userArgs,
+      request.prompt,
+    ],
+  };
+}
+
 export function buildSuperControllerInvocation(
   request: ThinLauncherRequest,
   executable: string,
@@ -241,13 +271,13 @@ export function buildSuperControllerInvocation(
     });
   }
   if (request.controllerType === 'claude') {
-    if (!(request.args ?? []).includes('--mcp-config')) {
-      throw new Error('LAUNCHER_CLAUDE_FORGE_MCP_CONFIG_REQUIRED');
-    }
-    return {
+    if (!mcpBootstrap) throw new Error('LAUNCHER_CLAUDE_FORGE_MCP_REQUIRED');
+    return buildClaudeControllerInvocation({
       executable,
-      args: ['--print', '--permission-mode', 'auto', ...(request.args ?? []), prompt],
-    };
+      prompt,
+      mcpBootstrap,
+      args: request.args,
+    });
   }
   if (request.controllerType === 'chatgpt') {
     throw new Error('LAUNCHER_CHATGPT_SUPERVISOR_OWNED');
@@ -299,8 +329,8 @@ export async function launchSuperController(
     `Forge maintains provider/session binding, transport recovery, effect dedupe, and retry bookkeeping internally. Continue this exact Work using repository capabilities; pass work_id=${work.workId} when durable source attribution is needed, validate with normal capability evidence, and update semantic Work only when objective/result state changes. Surface genuine human decisions through the existing user-request/inbox path.`,
   ].filter(Boolean).join('\n');
   try {
-    const mcpBootstrap = request.controllerType === 'codex'
-      ? (dependencies.resolveProviderMcpBootstrap ?? resolveProviderMcpBootstrap)(stores.work.controllerHome, 'codex', reservation.reservationId)
+    const mcpBootstrap = (request.controllerType === 'codex' || request.controllerType === 'claude')
+      ? (dependencies.resolveProviderMcpBootstrap ?? resolveProviderMcpBootstrap)(stores.work.controllerHome, request.controllerType, reservation.reservationId)
       : undefined;
     const invocation = buildSuperControllerInvocation({ ...request, controllerHome: stores.work.controllerHome, repoId: work.repoId }, executable, prompt, mcpBootstrap);
     const child = spawn(invocation.executable, invocation.args, {
