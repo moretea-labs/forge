@@ -2327,7 +2327,7 @@ test('browserTasks prioritizes fresh sends ahead of older reconciliation work', 
   ]);
 });
 
-test('explicit operator repair re-arms one proven pre-send effect without minting generations or infinite retries', () => {
+test('explicit operator repair re-arms a proven pre-send effect once per release without minting generations or infinite retries', () => {
   const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-operator-preflight-repair-'));
   roots.push(root);
   const release = { id: 'browser-release-one' };
@@ -2365,8 +2365,27 @@ test('explicit operator repair re-arms one proven pre-send effect without mintin
   release.id = 'browser-release-two';
   expect(store.nextBrowserEffect(taskId)?.effect.effectId).toBe(effect.effectId);
   store.recordEffectPreparationFailure(effect.effectId, 'COMPUTER_PREPARE_FAILED');
+  expect(store.nextBrowserEffect(taskId)).toBeUndefined();
+  const secondReleaseRepair = control.recoverTask({ ...input, requestId: 'operator-repaired-browser-release-two' });
+  expect(secondReleaseRepair.action).toBe('retry_authorized');
+  expect(secondReleaseRepair.recoveryEffect.effectId).toBe(effect.effectId);
+  expect(store.nextBrowserEffect(taskId)?.effect.effectId).toBe(effect.effectId);
+  expect(store.effectDispatchBudget(effect.effectId).generations).toBe(0);
+  store.recordEffectPreparationFailure(effect.effectId, 'COMPUTER_PREPARE_FAILED_AFTER_RELEASE_TWO_REARM');
+  expect(store.nextBrowserEffect(taskId)).toBeUndefined();
+  expect(() => control.recoverTask({ ...input, requestId: 'operator-attempt-two-release-two' }))
+    .toThrow('WORKFLOW_SUPERVISOR_PRE_SEND_OPERATOR_REARM_EXHAUSTED');
   release.id = 'browser-release-three';
   expect(store.nextBrowserEffect(taskId)).toBeUndefined();
+  const thirdReleaseRepair = control.recoverTask({ ...input, requestId: 'operator-repaired-browser-release-three' });
+  expect(thirdReleaseRepair.action).toBe('retry_authorized');
+  expect(thirdReleaseRepair.recoveryEffect.effectId).toBe(effect.effectId);
+  expect(store.nextBrowserEffect(taskId)?.effect.effectId).toBe(effect.effectId);
+  expect(store.effectDispatchBudget(effect.effectId).generations).toBe(0);
+  store.recordEffectPreparationFailure(effect.effectId, 'COMPUTER_PREPARE_FAILED_AFTER_RELEASE_THREE_REARM');
+  expect(store.nextBrowserEffect(taskId)).toBeUndefined();
+  expect(() => control.recoverTask({ ...input, requestId: 'operator-attempt-two-release-three' }))
+    .toThrow('WORKFLOW_SUPERVISOR_PRE_SEND_OPERATOR_REARM_EXHAUSTED');
   expect(store.effectDispatchBudget(effect.effectId).generations).toBe(0);
   store.close();
 });
