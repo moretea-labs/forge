@@ -13,6 +13,7 @@ import {
   activatePinnedRuntimeRelease,
   attestKnownGood as attestKnownGoodWithCpu,
   createRecoveryConfig,
+  configuredRuntimeReleaseSourceState,
   decideWatchdog,
   defaultPrimaryRuntimeServiceConfig,
   initializeStandaloneRecovery,
@@ -436,6 +437,7 @@ function committedRecoverySource(root: string): string {
   execFileSync('git', ['init', '-q'], { cwd: root });
   execFileSync('git', ['add', 'README.md', 'package.json'], { cwd: root });
   execFileSync('git', ['-c', 'user.name=Forge Test', '-c', 'user.email=forge-test@example.invalid', 'commit', '-qm', 'recovery source'], { cwd: root });
+  execFileSync('git', ['update-ref', 'refs/remotes/origin/main', 'HEAD'], { cwd: root });
   return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
 }
 
@@ -1882,6 +1884,10 @@ test('legacy stage-and-activate ABI only prepares isolated Candidate B and never
   const home = controllerHome();
   const sourceRoot = join(home, 'source');
   const sourceRevision = committedRecoverySource(sourceRoot);
+  writeFileSync(join(sourceRoot, 'WORK-ONLY.md'), 'not on fetched main\n');
+  execFileSync('git', ['add', 'WORK-ONLY.md'], { cwd: sourceRoot });
+  execFileSync('git', ['-c', 'user.name=Forge Test', '-c', 'user.email=forge-test@example.invalid', 'commit', '-qm', 'unreleased development checkout'], { cwd: sourceRoot });
+  expect(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: sourceRoot, encoding: 'utf8' }).trim()).not.toBe(sourceRevision);
   writeFileSync(join(sourceRoot, 'README.md'), 'dirty concurrent source bytes must not enter Candidate B\n');
   writeFileSync(join(sourceRoot, 'UNTRACKED-CONCURRENT.txt'), 'also excluded\n');
   const baseline = verifiedManifest(home, 'release-baseline');
@@ -1894,6 +1900,10 @@ test('legacy stage-and-activate ABI only prepares isolated Candidate B and never
     primaryRuntimeSourceRoot: sourceRoot,
     primaryRuntimeSourceRepositoryId: 'repo_source_fixture',
   });
+  expect(configuredRuntimeReleaseSourceState(config).sourceRevision).toBe(sourceRevision);
+  execFileSync('git', ['update-ref', '-d', 'refs/remotes/origin/main'], { cwd: sourceRoot });
+  expect(() => configuredRuntimeReleaseSourceState(config)).toThrow('RELEASE_SESSION_SOURCE_REVISION_UNAVAILABLE');
+  execFileSync('git', ['update-ref', 'refs/remotes/origin/main', sourceRevision], { cwd: sourceRoot });
   let stagedFrom = '';
   let candidateHome = '';
   let activationCalled = false;
@@ -1907,6 +1917,7 @@ test('legacy stage-and-activate ABI only prepares isolated Candidate B and never
       expect(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: input.sourceRoot, encoding: 'utf8' }).trim()).toBe(sourceRevision);
       expect(readFileSync(join(input.sourceRoot, 'README.md'), 'utf8')).toBe('recovery source\n');
       expect(existsSync(join(input.sourceRoot, 'UNTRACKED-CONCURRENT.txt'))).toBe(false);
+      expect(existsSync(join(input.sourceRoot, 'WORK-ONLY.md'))).toBe(false);
       expect(resolve(input.controllerHome)).not.toBe(resolve(home));
       const operationLock = JSON.parse(readFileSync(join(home, 'recovery', 'locks', 'operation.lock'), 'utf8')) as Record<string, unknown>;
       expect(operationLock).toMatchObject({
@@ -2072,6 +2083,7 @@ test('ReleaseSession preparation reconciles terminal and orphan Candidate B lane
   writeFileSync(join(sourceRoot, 'README.md'), 'recovery source v2\n');
   execFileSync('git', ['add', 'README.md'], { cwd: sourceRoot });
   execFileSync('git', ['-c', 'user.name=Forge Test', '-c', 'user.email=forge-test@example.invalid', 'commit', '-qm', 'recovery source v2'], { cwd: sourceRoot });
+  execFileSync('git', ['update-ref', 'refs/remotes/origin/main', 'HEAD'], { cwd: sourceRoot });
 
   const second = await stageAndActivateConfiguredRuntimeRelease(config, {
     stage: (input) => {
@@ -2097,6 +2109,7 @@ test('ReleaseSession preparation reconciles terminal and orphan Candidate B lane
   writeFileSync(join(sourceRoot, 'README.md'), 'recovery source v3\n');
   execFileSync('git', ['add', 'README.md'], { cwd: sourceRoot });
   execFileSync('git', ['-c', 'user.name=Forge Test', '-c', 'user.email=forge-test@example.invalid', 'commit', '-qm', 'recovery source v3'], { cwd: sourceRoot });
+  execFileSync('git', ['update-ref', 'refs/remotes/origin/main', 'HEAD'], { cwd: sourceRoot });
 
   const third = await stageAndActivateConfiguredRuntimeRelease(config, {
     stage: (input) => {

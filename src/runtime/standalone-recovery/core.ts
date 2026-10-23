@@ -3768,11 +3768,12 @@ function configuredSourceRevision(sourceRoot: string): string {
     ...runtimeAuthorityFreeEnvironment(process.env),
     PATH: recoveryCommandPath(),
   };
-  // ReleaseSession source authority is the exact committed Git object selected
-  // internally by Recovery. The configured checkout is only an object/dependency
-  // provider: concurrent working-tree edits are intentionally non-authoritative
-  // and are excluded by the detached immutable source snapshot used below.
-  const head = spawnSync('git', ['-C', sourceRoot, 'rev-parse', '--verify', 'HEAD^{commit}'], {
+  // The fetched integration main is the source authority, not this checkout's
+  // moving HEAD (which can belong to an unrelated Work). Keep the resolved SHA
+  // frozen in the existing ReleaseSession; the checkout only supplies Git
+  // objects/dependencies to the detached immutable source snapshot. Fail closed
+  // without origin/main rather than silently releasing a development branch.
+  const head = spawnSync('git', ['-C', sourceRoot, 'rev-parse', '--verify', 'refs/remotes/origin/main^{commit}'], {
     encoding: 'utf8',
     env,
     timeout: 10_000,
