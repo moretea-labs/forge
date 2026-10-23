@@ -370,6 +370,25 @@ test('Supervisor replaces legacy unmarked drafts only during exact-target prepar
   }
 });
 
+test('legacy replacement never applies to ordinary prepare or a selected App mention', async () => {
+  const conversationId = '12345678-1234-1234-1234-123456789abc';
+  const draft = 'User draft in shared editor';
+  const prompt = '<<<FORGE_WORKFLOW_EFFECT_V1:fx_legacy_neg_123456789>>>\nRun';
+  const ordinary = fixture({ controlPresent: false, initialDraft: draft });
+  expect(await ordinary.prepare(undefined, conversationId, 'ordinary human message'))
+    .toMatchObject({ prepared: false, reason: 'composer_not_empty' });
+  expect(ordinary.textarea.value).toBe(draft);
+  const mention = fixture({ controlPresent: false, initialDraft: draft });
+  mention.textarea.chipNames = ['forge'];
+  expect(await mention.prepare(undefined, conversationId, prompt))
+    .toMatchObject({ prepared: false, reason: 'composer_has_app_mention' });
+  expect(mention.textarea.value).toBe(draft);
+  const wrongTarget = fixture({ controlPresent: false, initialDraft: draft });
+  expect(await wrongTarget.prepare(undefined, 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', prompt))
+    .toMatchObject({ prepared: false, reason: 'target_identity_changed' });
+  expect(wrongTarget.textarea.value).toBe(draft);
+});
+
 test('Ordinary prompts cannot replace a Forge-marked Supervisor draft', async () => {
   const draft = '<<<FORGE_WORKFLOW_EFFECT_V1:fx_old_serial_123456789>>>\nProtected';
   const f = fixture({ controlPresent: false, initialDraft: draft });
