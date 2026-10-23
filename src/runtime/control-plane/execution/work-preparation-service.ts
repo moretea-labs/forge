@@ -993,6 +993,7 @@ export function prepareWork(ctx: McpExecutionContext, args: Record<string, unkno
           title: objective,
           associatedWorkId: createdWorkId,
           baseRef: worktreeBaseRef,
+          refreshBaseRef: !baseRef,
           prepareDependencies: needsDependencies,
         })
         : { mode: 'current' as const, checkoutId: baseCheckoutId, root: repository.canonicalRoot, branch: baseStatus.branch ?? 'detached', baseRevision: baseStatus.head ?? undefined, managed: false };

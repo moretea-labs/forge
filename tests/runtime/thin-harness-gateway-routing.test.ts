@@ -67,9 +67,12 @@ function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'thin-gw-route-'));
   const controllerHome = join(root, 'controller');
   const repoRoot = join(root, 'repo');
+  const originRoot = join(root, 'origin.git');
   mkdirSync(controllerHome, { recursive: true });
   mkdirSync(join(repoRoot, 'src'), { recursive: true });
   mkdirSync(join(repoRoot, '.forge'), { recursive: true });
+  mkdirSync(originRoot, { recursive: true });
+  git(originRoot, ['init', '--bare']);
   git(repoRoot, ['init', '-b', 'main']);
   git(repoRoot, ['config', 'user.name', 'Test']);
   git(repoRoot, ['config', 'user.email', 'test@example.com']);
@@ -100,7 +103,7 @@ function fixture() {
     profile: 'controller',
     repo: repoRoot,
   });
-  return { root, controllerHome, repoRoot, repository, ctx };
+  return { root, controllerHome, repoRoot, originRoot, repository, ctx };
 }
 
 const roots: string[] = [];
@@ -2743,6 +2746,9 @@ describe('work_validate persisted semantic identity', () => {
     const fx = fixture();
     roots.push(fx.root);
 
+    git(fx.repoRoot, ['remote', 'add', 'origin', fx.originRoot]);
+    git(fx.repoRoot, ['push', '--set-upstream', 'origin', 'main']);
+
     const otherRoot = join(fx.root, 'other-work-checkout');
     git(fx.repoRoot, ['worktree', 'add', '-b', 'other-work', otherRoot, 'HEAD']);
     const rotated = addRepositoryCheckout({ repoId: fx.repository.repoId, path: otherRoot, controllerHome: fx.controllerHome, activate: true });
@@ -2752,6 +2758,17 @@ describe('work_validate persisted semantic identity', () => {
     writeFileSync(join(otherRoot, 'UNCOMMITTED-OTHER-WORK'), 'must remain untouched\n');
     const mainHead = git(fx.repoRoot, ['rev-parse', 'HEAD']);
     expect(git(otherRoot, ['rev-parse', 'HEAD'])).not.toBe(mainHead);
+    const remoteAdvance = join(fx.root, 'remote-advance');
+    git(fx.root, ['clone', fx.originRoot, remoteAdvance]);
+    git(remoteAdvance, ['config', 'user.name', 'Test']);
+    git(remoteAdvance, ['config', 'user.email', 'test@example.com']);
+    writeFileSync(join(remoteAdvance, 'REMOTE-ADVANCE'), 'new integration revision\n');
+    git(remoteAdvance, ['add', 'REMOTE-ADVANCE']);
+    git(remoteAdvance, ['commit', '-m', 'advance integration remotely']);
+    git(remoteAdvance, ['push', 'origin', 'main']);
+    const remoteHead = git(remoteAdvance, ['rev-parse', 'HEAD']);
+    expect(git(fx.repoRoot, ['rev-parse', 'HEAD'])).toBe(mainHead);
+    expect(git(fx.repoRoot, ['rev-parse', 'refs/remotes/origin/main'])).toBe(mainHead);
     const started = await callExecutionTool(fx.ctx, 'session_start', {});
     expect(started?.isError).not.toBe(true);
     const session = (started?.structuredContent as { session: { sessionId: string } }).session;
@@ -2781,7 +2798,7 @@ describe('work_validate persisted semantic identity', () => {
     }).work;
     expect(work.managedWorktree).toBe(true);
     expect(work.checkoutId).not.toBe(rotated.activeCheckoutId);
-    expect(work.baseCommit).toBe(mainHead);
+    expect(work.baseCommit).toBe(remoteHead);
     expect(work.sourceCheckoutId).toBe(fx.repository.activeCheckoutId);
     expect(work.deliveryTargetBranch).toBe('main');
     expect(readFileSync(join(otherRoot, 'UNCOMMITTED-OTHER-WORK'), 'utf8')).toBe('must remain untouched\n');

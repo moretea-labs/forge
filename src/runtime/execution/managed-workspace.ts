@@ -24,6 +24,8 @@ export interface EnsureManagedWorkspaceInput {
   /** Semantic Work provenance for durable ownership; never an execution mutex. */
   associatedWorkId?: string;
   baseRef?: string;
+  /** Refresh the default origin-tracking base before freezing a new workspace. */
+  refreshBaseRef?: boolean;
   branchName?: string;
   /** Explicitly materialize lockfile-backed Node dependencies in this isolated worktree. */
   prepareDependencies?: boolean;
@@ -108,6 +110,11 @@ function assertBranch(root: string, branch: string): string {
     throw new Error(`MANAGED_WORKSPACE_BRANCH_INVALID: ${normalized}`);
   }
   return normalized;
+}
+
+function originTrackingBranch(baseRef: string): string | undefined {
+  const match = /^refs\/remotes\/origin\/(.+)$/.exec(baseRef);
+  return match?.[1] && validateBranchName(match[1], { purpose: 'MANAGED_WORKSPACE_BASE_BRANCH' });
 }
 
 function detectManagedWorkspaceDependencyBootstrap(repoRoot: string): ManagedWorkspaceDependencyBootstrap | undefined {
@@ -409,6 +416,20 @@ export function ensureManagedWorkspace(
       let branchOwnedByForge = Boolean(manifest);
       // Persisted manifests are authoritative evidence; never move an active worktree in place.
       const path = manifest?.path ? resolve(manifest.path) : requestedPath;
+      // A new default Work base is an origin-tracking ref, not a promise that a
+      // previously fetched ref is current. Refresh exactly that ref while the
+      // existing worktree lock serializes its local ref update and subsequent
+      // base resolution. Replays keep their manifest-pinned revision; explicit
+      // baseRef callers retain their chosen provenance.
+      const trackedBranch = !manifest && input.refreshBaseRef === true
+        ? originTrackingBranch(requestedBaseRef)
+        : undefined;
+      if (trackedBranch) {
+        git(sourceRoot, [
+          'fetch', '--no-tags', '--no-write-fetch-head', 'origin',
+          `+refs/heads/${trackedBranch}:refs/remotes/origin/${trackedBranch}`,
+        ], 120_000);
+      }
       const baseRevision = manifest?.baseRevision ?? git(sourceRoot, ['rev-parse', '--verify', `${requestedBaseRef}^{commit}`]);
 
       if (!existingWorkspace(path, branch)) {
