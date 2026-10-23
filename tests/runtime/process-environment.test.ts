@@ -10,7 +10,7 @@ import {
   resolveSchedulerWorkerCommand,
   resolveSchedulerWorkerExecutable,
   selectSchedulerWorkerEnvironment,
-} from '../../src/runtime/control-plane/global-scheduler/scheduler';
+} from '../../src/runtime/control-plane/global-scheduler/worker-launch';
 import {
   buildSchedulerWorkerExitFailure,
   buildSchedulerWorkerExitedLifecycle,

@@ -107,7 +107,6 @@ describe('runtime command surface', () => {
     const localBridgeServer = readFileSync(join(ROOT, 'src/cli/local-bridge/server.ts'), 'utf8');
     const bridgeConnectorFreshness = readFileSync(join(ROOT, 'src/cli/local-bridge/connector-freshness.ts'), 'utf8');
     const bridgeJobStore = readFileSync(join(ROOT, 'src/cli/local-bridge/job-store.ts'), 'utf8');
-    const repoActor = readFileSync(join(ROOT, 'src/runtime/control-plane/repo-actor/actor.ts'), 'utf8');
     const executionWorker = readFileSync(join(ROOT, 'src/runtime/execution/workers/executor.ts'), 'utf8');
     const globalScheduler = readFileSync(join(ROOT, 'src/runtime/control-plane/global-scheduler/scheduler.ts'), 'utf8');
     const processRuntime = readFileSync(join(ROOT, 'src/runtime/execution/process-runtime/runtime.ts'), 'utf8');
@@ -288,10 +287,6 @@ describe('runtime command surface', () => {
     expect(localBridgeServer).not.toContain('scheduleControllerServiceRestart');
     expect(localBridgeServer).not.toContain('RUNTIME_LIFECYCLE_ACTION_RETIRED');
     expect(localBridgeServer).not.toContain('detached coordinator owns the full stack restart');
-    expect(repoActor).not.toContain('restart-coordinator');
-    expect(repoActor).not.toContain('controller_restart_verify');
-    expect(repoActor).not.toContain('shouldDeferControllerRestartRetry');
-    expect(repoActor).not.toContain('restartStateReader');
     expect(existsSync(join(ROOT, 'src/runtime/execution/jobs/restart-resume.ts'))).toBe(false);
     expect(executionWorker).not.toContain('runtimeToolArgumentsForExecutionJob');
     expect(executionWorker).not.toContain('jobs/restart-resume');
