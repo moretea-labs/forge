@@ -1144,6 +1144,27 @@ describe('terminal Work cleanup', () => {
     expect(retired?.structuredContent).toMatchObject({
       work: { workId: sourceId, state: 'cleaned' }, readiness: { valid: false },
     });
+
+    // Same-checkout recovery cannot resurrect a cleaned historical identity.
+    // Reuse this fixture rather than adding a separate placeholder test.
+    writeWorkHandle(fx.controllerHome, {
+      ...readWorkHandle(fx.controllerHome, fx.repository.repoId, sourceId)!,
+      checkoutId: recovery.work.checkoutId,
+    });
+    expect(ensureRepositoryWorkHandle({
+      controllerHome: fx.controllerHome, repository: fx.repository, workId: sourceId,
+      identity: { sessionId: 'test-session', principalId: 'test-principal' },
+    })?.workId).toBe(recovery.work.workId);
+
+    // Without an active successor, a terminal direct Handle fails closed.
+    writeWorkHandle(fx.controllerHome, {
+      ...readWorkHandle(fx.controllerHome, fx.repository.repoId, recovery.work.workId)!,
+      state: 'failed',
+    });
+    expect(() => ensureRepositoryWorkHandle({
+      controllerHome: fx.controllerHome, repository: fx.repository, workId: sourceId,
+      identity: { sessionId: 'test-session', principalId: 'test-principal' },
+    })).toThrow('WORK_HANDLE_NOT_ACTIVE');
   });
 
   test('does not create a bundle for ancestry-only unique commits with no source delta', async () => {

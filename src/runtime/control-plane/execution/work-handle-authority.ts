@@ -228,12 +228,8 @@ export function resolveActiveWorkHandle(
   const direct = readWorkHandle(controllerHome, repositoryId, workId);
   const contract = getWorkContract({ controllerHome, repoId: repositoryId }, workId);
 
-  // Fast path: direct Handle matches canonical checkout
-  if (direct && contract && direct.checkoutId === contract.checkoutId) {
-    return direct;
-  }
-
-  // No Contract: workId is exact physical Handle ID only
+  // Without a semantic Contract this is an exact physical Handle lookup.
+  // Historical inspection remains available separately from mutation attribution.
   if (!contract) return direct;
 
   const canonicalCheckoutId = contract.checkoutId?.trim();
@@ -242,8 +238,14 @@ export function resolveActiveWorkHandle(
     return direct;
   }
 
-  // Scan for unique active successor matching semantic Work and canonical checkout
-  const ACTIVE_STATES = new Set(['prepared', 'editing', 'validating', 'committed', 'merged']);
+  const ACTIVE_STATES = new Set<WorkHandleState['state']>(['prepared', 'editing', 'validating', 'committed', 'merged']);
+  // A terminal historical Handle does not become executable merely because
+  // recovery reused its checkout. Resolve the active successor instead.
+  if (direct && direct.checkoutId === canonicalCheckoutId && ACTIVE_STATES.has(direct.state)) {
+    return direct;
+  }
+
+  // Scan for unique active successor matching semantic Work and canonical checkout.
   const candidates = listWorkHandles(controllerHome, repositoryId, 5_000)
     .filter((handle) =>
       handle.workContractId === workId
@@ -252,11 +254,12 @@ export function resolveActiveWorkHandle(
     );
 
   if (candidates.length === 0) {
-    // No active successor. If direct Handle points to stale checkout, fail closed
+    // A recorded historical Handle is not fresh placement authority.
     if (direct && direct.checkoutId !== canonicalCheckoutId) {
       throw new Error(`WORK_HANDLE_PLACEMENT_CHECKOUT_MISMATCH: ${workId}`);
     }
-    return direct;
+    if (direct) throw new Error(`WORK_HANDLE_NOT_ACTIVE: ${workId}`);
+    return undefined;
   }
 
   if (candidates.length === 1) return candidates[0];
