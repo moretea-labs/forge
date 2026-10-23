@@ -159,6 +159,9 @@ export function resourceKeysOverlap(leftRaw: string, rightRaw: string): boolean 
     return pathOverlaps(leftPath, rightPath);
   }
 
+  // Repository-scoped Git refs serialize only within the same repository.
+  // Preserve conservative overlap for legacy unscoped git-ref keys.
+  if (left.startsWith('git-refs:') && right.startsWith('git-refs:')) return left === right;
   if (isGitRefKey(left) && isGitRefKey(right)) return true;
 
   return false;

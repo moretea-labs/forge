@@ -4,7 +4,7 @@ import {
   claimsForRepositoryCommand,
   scopeResourceClaims,
 } from '../../src/runtime/execution/process-runtime/resource-claims';
-import { claimsConflict } from '../../src/runtime/resources/claims/conflicts';
+import { claimsConflict, resourceKeysOverlap } from '../../src/runtime/resources/claims/conflicts';
 import type { ExecutionLease } from '../../src/runtime/resources/leases/types';
 import { claimsForAssistantPluginAction } from '../../src/runtime/plugins/store';
 import type { AssistantPluginActionDescriptor } from '../../src/runtime/plugins/types';
@@ -12,6 +12,28 @@ import type { AssistantPluginActionDescriptor } from '../../src/runtime/plugins/
 function lease(resourceKey: string, mode: 'read' | 'write' | 'exclusive'): ExecutionLease {
   return { resourceKey, mode } as ExecutionLease;
 }
+
+describe('Git refs lease repository boundaries', () => {
+  test('separate repository refs do not serialize; same repository or legacy unscoped ref still conflicts', () => {
+    expect(resourceKeysOverlap('git-refs:repo-a', 'git-refs:repo-b')).toBe(false);
+    expect(claimsConflict(
+      { resourceKey: 'git-refs:repo-a', mode: 'exclusive' },
+      lease('git-refs:repo-b', 'exclusive'),
+    )).toBe(false);
+    expect(claimsConflict(
+      { resourceKey: 'git-refs:repo-a', mode: 'exclusive' },
+      lease('git-refs:repo-a', 'exclusive'),
+    )).toBe(true);
+    expect(claimsConflict(
+      { resourceKey: 'git-refs:repo-a', mode: 'read' },
+      lease('git-refs:repo-a', 'read'),
+    )).toBe(false);
+    expect(claimsConflict(
+      { resourceKey: 'git-refs:repo-a', mode: 'exclusive' },
+      lease('git-ref:HEAD', 'write'),
+    )).toBe(true);
+  });
+});
 
 describe('Process Runtime fine-grained resource claims', () => {
   test('readonly commands claim workspace read only', () => {
