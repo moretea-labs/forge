@@ -11,6 +11,7 @@ import {
 } from '../../src/runtime/control-plane/execution/validation-optimization';
 
 describe('ValidationOptimization', () => {
+  const readStatus = () => ({ branch: 'main', head: 'test-sha' });
   let testDir: string;
 
   beforeEach(() => {
@@ -34,10 +35,10 @@ describe('ValidationOptimization', () => {
       };
 
       // First call - cache miss
-      const status1 = getCachedGitStatus(repo);
+      const status1 = getCachedGitStatus(repo, readStatus);
 
       // Second call - should use cache
-      const status2 = getCachedGitStatus(repo);
+      const status2 = getCachedGitStatus(repo, readStatus);
 
       // Should return same reference (cached)
       expect(status2).toBe(status1);
@@ -56,8 +57,8 @@ describe('ValidationOptimization', () => {
         canonicalRoot: testDir,
       };
 
-      const status1 = getCachedGitStatus(repo1);
-      const status2 = getCachedGitStatus(repo2);
+      const status1 = getCachedGitStatus(repo1, readStatus);
+      const status2 = getCachedGitStatus(repo2, readStatus);
 
       // Different repos, different cache entries
       expect(status1).toBeDefined();
@@ -71,28 +72,31 @@ describe('ValidationOptimization', () => {
         canonicalRoot: testDir,
       };
 
-      const status1 = getCachedGitStatus(repo);
+      const status1 = getCachedGitStatus(repo, readStatus);
 
       // Wait for cache to expire (>5 seconds in real scenario)
       // For test, we just verify the mechanism works
-      const status2 = getCachedGitStatus(repo);
+      const status2 = getCachedGitStatus(repo, readStatus);
 
       // Within TTL, should be cached
       expect(status2).toBe(status1);
     });
 
-    test('forceRefresh bypasses cache', () => {
+    test('cached read does not re-execute the Git status loader', () => {
       const repo = {
         repoId: 'repo_test',
         activeCheckoutId: 'checkout_main',
         canonicalRoot: testDir,
       };
 
-      const status1 = getCachedGitStatus(repo);
-      const status2 = getCachedGitStatus(repo); // force refresh
+      let reads = 0;
+      const loader = () => { reads += 1; return { head: String(reads) }; };
+      const status1 = getCachedGitStatus(repo, loader);
+      const status2 = getCachedGitStatus(repo, loader);
 
-      // Should fetch fresh (different object)
-      expect(status2).not.toBe(status1);
+      // This is deliberately a cache hit; freshness requires invalidation.
+      expect(status2).toBe(status1);
+      expect(reads).toBe(1);
     });
   });
 
@@ -104,9 +108,9 @@ describe('ValidationOptimization', () => {
         canonicalRoot: testDir,
       };
 
-      const status1 = getCachedGitStatus(repo);
+      const status1 = getCachedGitStatus(repo, readStatus);
       invalidateGitStatusCache('repo_test', 'checkout_main');
-      const status2 = getCachedGitStatus(repo);
+      const status2 = getCachedGitStatus(repo, readStatus);
 
       // Cache invalidated, should be different object
       expect(status2).not.toBe(status1);
@@ -125,13 +129,13 @@ describe('ValidationOptimization', () => {
         canonicalRoot: testDir,
       };
 
-      getCachedGitStatus(repo1);
-      getCachedGitStatus(repo2);
+      getCachedGitStatus(repo1, readStatus);
+      getCachedGitStatus(repo2, readStatus);
 
       invalidateGitStatusCache('repo_test'); // no checkoutId - invalidate all
 
-      const status1After = getCachedGitStatus(repo1);
-      const status2After = getCachedGitStatus(repo2);
+      const status1After = getCachedGitStatus(repo1, readStatus);
+      const status2After = getCachedGitStatus(repo2, readStatus);
 
       // Both should be fresh
       expect(status1After).toBeDefined();
