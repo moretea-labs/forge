@@ -30,7 +30,6 @@ import { routeExecution, isFastEligibleTool } from '../../src/runtime/execution/
 import { getProcessRecord, listProcessRecords } from '../../src/runtime/execution/process-runtime/store';
 import { getProcessHandle, waitForProcess } from '../../src/runtime/execution/process-runtime/runtime';
 import { readControlPlaneRecord } from '../../src/runtime/control-plane/persistence/sqlite-store';
-import { startExecutionSession, type ExecutionSessionContext } from '../../src/runtime/control-plane/execution/session-store';
 import { runPersistedCheckViaProcessRuntime } from '../../src/runtime/execution/process-runtime/persisted-check';
 import { readPersistedCheckResultReceipt } from '../../src/runtime/execution/process-runtime/check-result';
 import { resolveRepositoryCheckStorage } from '../../src/runtime/execution/process-runtime/check-storage';
@@ -55,7 +54,7 @@ import { readWorkHandle, writeWorkHandle } from '../../src/runtime/control-plane
 import { workHandleRetainsCanonicalMutationOwnership } from '../../src/runtime/control-plane/execution/work-handle-authority';
 import { verificationInputFingerprint, workspaceValidationFingerprint } from '../../src/runtime/control-plane/execution/verification-evidence';
 
-import { startExecutionSession, updateExecutionSession, readExecutionSession } from '../../src/runtime/control-plane/execution/session-store';
+import { startExecutionSession, updateExecutionSession, readExecutionSession, type ExecutionSessionContext } from '../../src/runtime/control-plane/execution/session-store';
 import { listActiveLeases } from '../../src/runtime/resources/leases/store';
 
 function git(root: string, args: string[]): string {
