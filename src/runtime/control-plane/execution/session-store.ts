@@ -143,12 +143,6 @@ export function startExecutionSession(
     controllerInstanceId,
   });
   if (existing) {
-    const permissionChanged = input.permissionSnapshotVersion !== undefined
-      && input.permissionSnapshotVersion !== existing.permissionSnapshotVersion;
-    const capabilityChanged = input.capabilitySnapshotVersion !== undefined
-      && input.capabilitySnapshotVersion !== existing.capabilitySnapshotVersion;
-    if (!permissionChanged && !capabilityChanged) return existing;
-
     const updated = {
       ...existing,
       updatedAt: now(),
