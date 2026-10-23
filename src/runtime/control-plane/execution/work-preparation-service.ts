@@ -831,9 +831,17 @@ export function prepareWork(ctx: McpExecutionContext, args: Record<string, unkno
     const adopted = adoptExplicitSuccessorHead(ctx, args, repository, existing);
     const active = adopted ?? existing;
     if (!adopted) validateWorkHandle(ctx.controllerHome, active, identityFor(ctx, args), 'cheap', 'inspect');
-    updateExecutionSession(ctx.controllerHome, identityFor(ctx, args), { activeRepositoryId: active.repositoryId, activeCheckoutId: active.checkoutId, activeWorkId: active.workId, permissionSnapshotVersion: active.permissionSnapshotVersion });
+    // Skip redundant Session update when already bound to the exact same Work/permission.
+    const unchanged = session.activeRepositoryId === active.repositoryId
+      && session.activeCheckoutId === active.checkoutId
+      && session.activeWorkId === active.workId
+      && session.permissionSnapshotVersion === active.permissionSnapshotVersion;
+    const boundSession = unchanged ? session : updateExecutionSession(ctx.controllerHome, identityFor(ctx, args), {
+      activeRepositoryId: active.repositoryId, activeCheckoutId: active.checkoutId,
+      activeWorkId: active.workId, permissionSnapshotVersion: active.permissionSnapshotVersion,
+    });
     return {
-      session: requireSession(ctx, args),
+      session: boundSession,
       work: compactHandle(active),
       reused: true,
       ...(adopted ? { adoptedSuccessor: { previousHead: existing.expectedHead, currentHead: adopted.expectedHead } } : {}),
