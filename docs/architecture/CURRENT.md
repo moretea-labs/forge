@@ -1,5 +1,9 @@
 # Forge Current Architecture
 
+### Work handle resolution after recovery
+
+After Work recovery/succession, a semantic Work Contract may be bound to a new physical WorkHandle with a different ID. Callers using the semantic Work ID must resolve to the unique active physical Handle matching the canonical WorkContract.checkoutId, not an archived old Handle on a wrong checkout. `resolveActiveWorkHandle` selects only prepared/editing/validating/committed/merged Handles bound to the exact canonical checkout; multiple active Handles for the same semantic Work on the same checkout fail closed with WORK_HANDLE_AMBIGUOUS. Historical read-only `findWorkHandle` in work-execution-support performs exact physical lookup without reverse-importing work-handle-authority, preventing circular dependency while authority module provides semantic resolution. Work head settlement uses the resolved current physical Handle for attribution with CAS intact.
+
 ### Historical source delivery and cleanup
 
 Legacy cleaned WorkHandle recovery does not require a moving target branch to retain the exact historical source/base tree equality. For an otherwise fully verified zero-unique-commit cleanup with no preserved bundle and no active leases, the exact recorded source commit must be reachable by Git ancestry from the cleanup receipt's target branch before re-establishing placement. This immutable containment evidence remains valid as the target advances; missing or unrelated refs cannot authorize recovery. The existing no-source-delta proof remains a fail-closed legacy fallback, and candidate-head/WorkContract CAS checks still govern the successor.

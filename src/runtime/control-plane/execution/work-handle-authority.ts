@@ -211,6 +211,63 @@ function resolveRepositoryWorkHandlePlacement(input: {
 }
 
 /**
+ * Resolve the active physical WorkHandle for a given Work ID, which may be either
+ * a semantic Work Contract ID or a physical WorkHandle ID. When a semantic ID is
+ * provided and no direct WorkHandle match exists, scan for the active physical
+ * Handle that references this semantic Work via workContractId.
+ *
+ * After Work recovery/succession, the semantic Work Contract may be bound to a new
+ * physical WorkHandle with a different checkout. Only the unique active successor
+ * matching the canonical WorkContract.checkoutId is selected; fail closed on conflict.
+ */
+export function resolveActiveWorkHandle(
+  controllerHome: string,
+  repositoryId: string,
+  workId: string,
+): WorkHandleState | undefined {
+  const direct = readWorkHandle(controllerHome, repositoryId, workId);
+  const contract = getWorkContract({ controllerHome, repoId: repositoryId }, workId);
+
+  // Fast path: direct Handle matches canonical checkout
+  if (direct && contract && direct.checkoutId === contract.checkoutId) {
+    return direct;
+  }
+
+  // No Contract: workId is exact physical Handle ID only
+  if (!contract) return direct;
+
+  const canonicalCheckoutId = contract.checkoutId?.trim();
+  if (!canonicalCheckoutId) {
+    // Legacy Contract without explicit checkout: exact physical lookup only
+    return direct;
+  }
+
+  // Scan for unique active successor matching semantic Work and canonical checkout
+  const ACTIVE_STATES = new Set(['prepared', 'editing', 'validating', 'committed', 'merged']);
+  const candidates = listWorkHandles(controllerHome, repositoryId, 5_000)
+    .filter((handle) =>
+      handle.workContractId === workId
+      && handle.checkoutId === canonicalCheckoutId
+      && ACTIVE_STATES.has(handle.state)
+    );
+
+  if (candidates.length === 0) {
+    // No active successor. If direct Handle points to stale checkout, fail closed
+    if (direct && direct.checkoutId !== canonicalCheckoutId) {
+      throw new Error(`WORK_HANDLE_PLACEMENT_CHECKOUT_MISMATCH: ${workId}`);
+    }
+    return direct;
+  }
+
+  if (candidates.length === 1) return candidates[0];
+
+  // Multiple active handles: fail-closed
+  throw new Error(
+    `WORK_HANDLE_AMBIGUOUS: semantic Work ${workId} has multiple active physical handles on checkout ${canonicalCheckoutId}: ${candidates.map((h) => h.workId).join(', ')}`,
+  );
+}
+
+/**
  * Materialize concrete repository-mutation ownership for an optional semantic
  * Work attribution. Thin Work does not classify execution kind; checkout/CAS
  * placement and the WorkHandle resource fence own mutation safety.
@@ -223,7 +280,7 @@ export function ensureRepositoryWorkHandle(input: {
   identity: RepositoryWorkHandleControllerIdentity;
   checkoutId?: string;
 }): WorkHandleState | undefined {
-  const existing = readWorkHandle(input.controllerHome, input.repository.repoId, input.workId);
+  const existing = resolveActiveWorkHandle(input.controllerHome, input.repository.repoId, input.workId);
   if (existing) {
     if (input.checkoutId?.trim() && existing.checkoutId !== input.checkoutId.trim()) {
       throw new Error(`WORK_HANDLE_PLACEMENT_CHECKOUT_MISMATCH: ${input.workId}`);
@@ -290,7 +347,7 @@ export function reconcileRepositoryWorkHandlePlacement(input: {
   repositoryId: string;
   workId: string;
 }): WorkHandleState | undefined {
-  const existing = readWorkHandle(input.controllerHome, input.repositoryId, input.workId);
+  const existing = resolveActiveWorkHandle(input.controllerHome, input.repositoryId, input.workId);
   if (!existing || existing.managedWorktree) return existing;
   const contract = getWorkContract({ controllerHome: input.controllerHome, repoId: input.repositoryId }, input.workId);
   if (!contract || !contract.checkoutId) return existing;
@@ -468,7 +525,7 @@ export function markRepositoryMutationStarted(input: {
   const store = { controllerHome: input.controllerHome, repoId: input.repository.repoId };
   const contract = getWorkContract(store, input.workId);
   if (!contract) return undefined;
-  const handle = readWorkHandle(input.controllerHome, input.repository.repoId, input.workId);
+  const handle = resolveActiveWorkHandle(input.controllerHome, input.repository.repoId, input.workId);
   if (!handle || handle.managedWorktree || handle.state !== 'prepared') return handle;
   const boundWorkId = handle.workContractId ?? handle.workId;
   if (boundWorkId !== input.workId) {
