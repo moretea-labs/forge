@@ -349,7 +349,7 @@ test('Supervisor replaces a partial same-effect marked draft before dispatch', a
 });
 
 test('Supervisor replaces legacy unmarked drafts only during exact-target prepare', async () => {
-  const current = '<<<FORGE_WORKFLOW_EFFECT_V1:fx_new_serial_123456789>>>\\nCurrent';
+  const current = '<<<FORGE_WORKFLOW_EFFECT_V1:fx_new_serial_123456789>>>\nCurrent';
   const conversationId = '12345678-1234-1234-1234-123456789abc';
   for (const priorDraft of [
     'An old user-entered shared composer draft',
