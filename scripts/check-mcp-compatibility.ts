@@ -20,7 +20,9 @@ const MAX_PREFERRED_TOOL_COUNT = 24;
 // preferred contract. 2026-10-23: retire the nine specialized legacy Markdown,
 // PRD/Sprint listing, repository-state summary and controller-packet helpers;
 // ordinary repository inspection/Direct Edit and Controller Home remain owners.
-const EXPECTED_EXPOSED_NAME_FINGERPRINT = 'a33a78cd67b025ae';
+// Deliberate retirement: prepare_transfer_artifacts called the already-retired
+// task-ledger Writer. The 20 preferred Tool contracts remain unchanged.
+const EXPECTED_EXPOSED_NAME_FINGERPRINT = 'ae848f7370f52b5a';
 
 // #197 decomposition authority: the public/frozen Tool Contract is an explicit
 // baseline, independent from whichever internal adapter currently defines a

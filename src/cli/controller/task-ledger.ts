@@ -1,13 +1,9 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
-import { dirname, join } from "path";
 import { projectBoard } from "./issue-store";
 import { listControllerWorklogEvents } from "./worklog";
 import { legacyIssueCutoverState } from "./legacy-issue-cutover";
 import { resolveRepoPreferredControllerHome } from "../../effects/controller-home";
 import { buildRequirementBoard } from "../../runtime/control-plane/facade/requirement-board";
 
-const LEDGER_JSON_PATH = ".ai/harness/controller/task-ledger.json";
-const LEDGER_PROJECTION_PATH = ".ai/harness/projections/controller-task-ledger.md";
 const LEDGER_SCHEMA_VERSION = 2;
 
 export interface TaskLedgerTaskProjection {
@@ -104,17 +100,6 @@ export interface TaskLedgerProjection {
   readOnly?: true;
   authority?: "controller-home-sqlite";
   notice?: string;
-}
-
-export interface TaskLedgerArtifactPreview {
-  path: string;
-  exists: boolean;
-  preview?: string;
-}
-
-export interface WrittenTaskLedgerArtifacts {
-  projection: TaskLedgerProjection;
-  artifacts: TaskLedgerArtifactPreview[];
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -529,104 +514,4 @@ export function buildControllerTaskLedgerProjection(
       ],
     },
   };
-}
-
-function tableEscape(value: unknown): string {
-  return String(value ?? "").replace(/\|/g, "\\|").replace(/\r?\n/g, " ");
-}
-
-function renderTaskRow(task: TaskLedgerTaskProjection): string {
-  return `| ${tableEscape(task.issueId)} | ${tableEscape(task.taskId)} | ${tableEscape(task.title)} | ${tableEscape(task.effectiveStatus)} | ${tableEscape(task.verificationStatus)} | ${tableEscape(task.latestRunStatus ?? task.activeRunStatus ?? "")} |`;
-}
-
-export function renderControllerTaskLedgerProjection(projection: TaskLedgerProjection, reason: string): string {
-  const current = projection.currentIssueId
-    ? projection.issues.find((issue) => issue.id === projection.currentIssueId)
-    : undefined;
-  const taskRows = projection.attention.length
-    ? projection.attention.map(renderTaskRow)
-    : ["| - | - | No attention tasks | - | - | - |"];
-  return [
-    "# Controller Task Ledger Projection",
-    "",
-    `> **Generated**: ${projection.generatedAt}`,
-    `> **Reason**: ${reason}`,
-    '> **Source**: controller Issue/Task/Run state + worklog projection',
-    "",
-    "## Current Focus",
-    "",
-    current
-      ? `- Current Issue: \`${current.id}\` — ${current.title} (${current.lifecycleStatus ?? current.status ?? "unknown"})`
-      : "- Current Issue: not selected.",
-    `- Issue count: ${projection.issueCount}`,
-    `- Archived Issue count: ${projection.archivedIssueCount}`,
-    `- Effective task counts: \`${JSON.stringify(projection.counts)}\``,
-    `- Continuation state: \`${projection.status.kind}\` — ${projection.status.label}`,
-    `- Continuation reason: ${projection.status.reason}`,
-    "",
-    "## Next Actions",
-    "",
-    ...projection.suggestedNextActions.map((action) => `- ${action}`),
-    "",
-    "## Attention Tasks",
-    "",
-    "| Issue | Task | Title | Effective Status | Verification | Latest Run |",
-    "| --- | --- | --- | --- | --- | --- |",
-    ...taskRows,
-    "",
-    "## Ready Queue",
-    "",
-    ...(projection.readyTasks.length
-      ? projection.readyTasks.slice(0, 10).map((task) => `- ${task.issueId}/${task.taskId}: ${task.title ?? "Untitled"} (${task.executionClass ?? "unknown"})`)
-      : ["- No ready tasks reported."]),
-    "",
-    "## Recent Worklog",
-    "",
-    ...(projection.recentEvents.length
-      ? projection.recentEvents.slice(0, 10).map((event) => `- ${event.at} [${event.category}/${event.action}] ${event.summary}`)
-      : ["- No worklog events recorded yet."]),
-    "",
-    "## Context Contract",
-    "",
-    "- This file is a recovery/status projection, not a substitute for source review.",
-    "- For implementation, expand the exact source snippets, relevant types/callers, current diff, and focused test output before making decisions.",
-    "- Keep validation targeted unless the task/release policy requires broader checks.",
-    "",
-  ].join("\n");
-}
-
-function artifactPreview(repoRoot: string, path: string): TaskLedgerArtifactPreview {
-  const absolute = join(repoRoot, path);
-  if (!existsSync(absolute)) return { path, exists: false };
-  const content = readFileSync(absolute, "utf-8");
-  return {
-    path,
-    exists: true,
-    preview: content.split(/\r?\n/).slice(0, 32).join("\n"),
-  };
-}
-
-export function writeControllerTaskLedgerArtifacts(repoRoot: string, input: { reason?: unknown } = {}): WrittenTaskLedgerArtifacts {
-  if (legacyIssueCutoverState(repoRoot).retired) {
-    throw new Error("LEGACY_TASK_LEDGER_WRITES_RETIRED: task-ledger projection files are frozen after SQLite cutover.");
-  }
-  const reason = String(input.reason ?? "manual").trim() || "manual";
-  const projection = buildControllerTaskLedgerProjection(repoRoot);
-  const jsonPath = join(repoRoot, LEDGER_JSON_PATH);
-  const projectionPath = join(repoRoot, LEDGER_PROJECTION_PATH);
-  mkdirSync(dirname(jsonPath), { recursive: true });
-  mkdirSync(dirname(projectionPath), { recursive: true });
-  writeFileSync(jsonPath, `${JSON.stringify(projection, null, 2)}\n`, "utf-8");
-  writeFileSync(projectionPath, renderControllerTaskLedgerProjection(projection, reason), "utf-8");
-  return {
-    projection,
-    artifacts: [
-      artifactPreview(repoRoot, LEDGER_JSON_PATH),
-      artifactPreview(repoRoot, LEDGER_PROJECTION_PATH),
-    ],
-  };
-}
-
-export function controllerTaskLedgerArtifactPaths(): { json: string; projection: string } {
-  return { json: LEDGER_JSON_PATH, projection: LEDGER_PROJECTION_PATH };
 }
