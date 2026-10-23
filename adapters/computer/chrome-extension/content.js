@@ -268,7 +268,12 @@
       ? [expected, expected + '\n', exactComposerText(payload + '\n@'), exactComposerText(payload + '\nforge'), exactComposerText('forge ' + payload)]
       : [expected];
     if (node.querySelector('[plugin-mention-name], [app-mention-name]')) return { dispatched: false, reason: 'composer_has_app_mention' };
-    const unowned = Boolean(existing && !ownedDrafts.includes(existing) && !markedForgeDraft);
+    // The user authorizes retiring legacy, unmarked drafts while the sole
+    // Supervisor writer prepares the exact task target. A plain dispatch never
+    // gets this exception: it must first pass the serialized prepare phase.
+    // New drafts carry the immutable Forge effect marker above.
+    const legacySupervisorPrepare = supervisor && prepareOnly && !replacement && !retired;
+    const unowned = Boolean(existing && !ownedDrafts.includes(existing) && !markedForgeDraft && !legacySupervisorPrepare);
     if (unowned && ((!replacement && !retired) || !supervisor)) return { dispatched: false, reason: 'composer_not_empty' };
     if (retired && (!unowned || !existing.startsWith(`<<<FORGE_WORKFLOW_EFFECT_V1:${retired[1]}>>>`))) {
       return { dispatched: false, reason: 'composer_not_empty' };
