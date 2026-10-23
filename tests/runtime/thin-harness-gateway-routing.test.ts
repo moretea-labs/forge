@@ -29,6 +29,7 @@ import { classifyRepositoryCommandRoute, waitRepositoryCommandProcess } from '..
 import { routeExecution, isFastEligibleTool } from '../../src/runtime/execution/thin-harness';
 import { getProcessRecord, listProcessRecords } from '../../src/runtime/execution/process-runtime/store';
 import { getProcessHandle, waitForProcess } from '../../src/runtime/execution/process-runtime/runtime';
+import { readControlPlaneRecord } from '../../src/runtime/control-plane/persistence/sqlite-store';
 import { runPersistedCheckViaProcessRuntime } from '../../src/runtime/execution/process-runtime/persisted-check';
 import { readPersistedCheckResultReceipt } from '../../src/runtime/execution/process-runtime/check-result';
 import { resolveRepositoryCheckStorage } from '../../src/runtime/execution/process-runtime/check-storage';
@@ -2586,6 +2587,16 @@ describe('work_validate persisted semantic identity', () => {
     const started = await callExecutionTool(fx.ctx, 'session_start', {});
     expect(started?.isError).not.toBe(true);
     const session = (started?.structuredContent as { session: { sessionId: string } }).session;
+    // An invalid prepare must not write a provisional repository binding.
+    const revisionBefore = readControlPlaneRecord(fx.controllerHome, 'execution_session', 'controller', session.sessionId)?.revision;
+    const invalid = await callExecutionTool(fx.ctx, 'work_prepare', {
+      session_id: session.sessionId,
+      repo_id: fx.repository.repoId,
+      objective: 'Missing request id is rejected without mutating the session.',
+    });
+    expect(invalid?.isError).toBe(true);
+    expect(JSON.stringify(invalid?.structuredContent ?? invalid)).toContain('WORK_PREPARE_REQUEST_ID_REQUIRED');
+    expect(readControlPlaneRecord(fx.controllerHome, 'execution_session', 'controller', session.sessionId)?.revision).toBe(revisionBefore);
     const prepared = await callExecutionTool(fx.ctx, 'work_prepare', {
       session_id: session.sessionId,
       repo_id: fx.repository.repoId,
