@@ -258,13 +258,17 @@
     const payload = supervisor ? actualPrompt.replace(/^@forge\s+(?=<<<FORGE_WORKFLOW_EFFECT_V1:(?:fx|crpe)_[a-zA-Z0-9_-]{8,120}>>>)/, '') : actualPrompt;
     const expected = exactComposerText(payload);
     const existing = composerText();
-    // A restored draft belongs to this effect only when it matches precisely.
-    // Never overwrite another task's draft or a human-authored message.
+    // A single serialized Supervisor writer may replace a stale machine-owned
+    // draft by its strict prefix; old body equality is not an ownership test.
+    // Never infer ownership from @forge, incidental text, or an unmarked draft.
+    // Exact backup/retirement envelopes keep their stronger one-use proof.
+    const markedForgeDraft = supervisor && !replacement && !retired
+      && /^<<<FORGE_WORKFLOW_EFFECT_V1:(?:fx|crpe)_[a-zA-Z0-9_-]{8,120}>>>(?:\n|$)/.test(existing);
     const ownedDrafts = supervisor
       ? [expected, expected + '\n', exactComposerText(payload + '\n@'), exactComposerText(payload + '\nforge'), exactComposerText('forge ' + payload)]
       : [expected];
     if (node.querySelector('[plugin-mention-name], [app-mention-name]')) return { dispatched: false, reason: 'composer_has_app_mention' };
-    const unowned = Boolean(existing && !ownedDrafts.includes(existing));
+    const unowned = Boolean(existing && !ownedDrafts.includes(existing) && !markedForgeDraft);
     if (unowned && ((!replacement && !retired) || !supervisor)) return { dispatched: false, reason: 'composer_not_empty' };
     if (retired && (!unowned || !existing.startsWith(`<<<FORGE_WORKFLOW_EFFECT_V1:${retired[1]}>>>`))) {
       return { dispatched: false, reason: 'composer_not_empty' };
@@ -319,6 +323,7 @@
     // Await resumes in a new microtask: retain the exact pre-click fences even
     // if an input/route update was queued alongside the readiness observation.
     if (!exactConversationIsCurrent()) return { dispatched: false, reason: 'target_identity_changed' };
+    if (composer() !== node) return { dispatched: false, reason: 'composer_missing' };
     const text = composerText();
     if (text !== expected && text !== expected + '\n') return { dispatched: false, reason: 'composer_write_unconfirmed' };
     if (mode === 'recover' ? hasLiveGenerationSignal() : isGenerating()) return { dispatched: false, reason: 'provider_busy' };
