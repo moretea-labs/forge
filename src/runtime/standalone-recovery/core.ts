@@ -96,6 +96,7 @@ import {
   releaseSessionCandidateIsRetired,
   releaseSessionIsSoakingPredecessorOfStable,
   releaseSessionIsSoakingSupersededByStableAuthority,
+  releaseSessionIsSoakingSupersededByFailedCutoverCompensation,
   type ReleaseSession,
   type ReleaseSessionCandidateRelease,
   type ReleaseSessionStableRelease,
@@ -3976,6 +3977,38 @@ export async function prepareConfiguredRuntimeReleaseSession(
             priorCutoverAuthorityRevision: existing.transaction?.cutoverAuthorityRevision,
             activeAuthorityRevision: stableRelease.authorityRevision,
             activeReleaseId: stableRelease.releaseId,
+          });
+          cleanupRetiredCandidateLane(config, superseded);
+          continue;
+        }
+        // A later failed cutover may restore the same binary while advancing
+        // the authority fence. Only its exact recorded compensation and a
+        // healthy known-good stable Runtime can retire this stale soak.
+        const authority = readRuntimeReleaseAuthority(config.controllerHome);
+        const active = activeAuthorityRelease(config);
+        const knownGood = active && matchingKnownGood(config, active);
+        const compensated = authority?.revision === stableRelease.authorityRevision
+          && knownGood && liveRuntimeOwnsRelease(config, knownGood)
+          ? inventory.sessions.find((later) => releaseSessionIsSoakingSupersededByFailedCutoverCompensation(
+              existing, later, stableRelease, authority.operationId,
+            ))
+          : undefined;
+        if (compensated) {
+          const superseded = advanceReleaseSession({
+            controllerHome: config.controllerHome,
+            sessionId: existing.sessionId,
+            expectedRevision: existing.revision,
+            phase: 'failed',
+            receipts: [{
+              id: 'soak_superseded_by_compensated_cutover',
+              kind: 'soak',
+              summary: ('Later failed cutover ' + compensated.sessionId + ' restored attested Stable A at authority ' + stableRelease.authorityRevision).slice(0, 500),
+            }],
+          });
+          audit(config, 'release_session_soak_superseded_by_compensated_cutover', {
+            sessionId: existing.sessionId,
+            compensatingSessionId: compensated.sessionId,
+            activeAuthorityRevision: stableRelease.authorityRevision,
           });
           cleanupRetiredCandidateLane(config, superseded);
           continue;
