@@ -5,6 +5,7 @@ import { join } from 'path';
 import { ensureControllerHome } from '../../src/effects/controller-home';
 import { createWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import {
+  buildClaudeControllerInvocation,
   buildSuperControllerInvocation,
   launchSuperController,
   resolveLauncherExecutable,
@@ -45,6 +46,16 @@ function codexBootstrap() {
     principalId: 'external:codex:test-reservation',
     sessionId: 'external-session:codex:test-reservation',
     env: process.env,
+  };
+}
+
+function claudeBootstrap() {
+  return {
+    url: 'http://127.0.0.1:9876/mcp',
+    bearerTokenEnvVar: 'FORGE_RUNTIME_MCP_TOKEN' as const,
+    principalId: 'external:claude:test-reservation',
+    sessionId: 'external-session:claude:test-reservation',
+    env: { ...process.env, FORGE_RUNTIME_MCP_TOKEN: 'test-token-not-for-argv' },
   };
 }
 
@@ -198,6 +209,109 @@ describe('Thin Launcher startup observability', () => {
       cwd: fx.root,
     }, {
       resolveProviderMcpBootstrap: () => bootstrap,
+    });
+    if (launched.pid) launchedPids.push(launched.pid);
+
+    expect(launched.pid).toBeGreaterThan(0);
+    expect(launched.prompt).not.toContain('controller_claim');
+    expect(launched.prompt).toContain(`work_id=${fx.workId}`);
+    expect(getExternalControllerLaunchReservation(fx.store, fx.workId)).toMatchObject({
+      reservationId: launched.reservationId,
+      pid: launched.pid,
+    });
+  });
+
+  test('isolates launched Claude from global MCP configs and uses reservation-scoped Forge MCP', () => {
+    const fx = launcherFixture();
+    const bootstrap = claudeBootstrap();
+    const invocation = buildSuperControllerInvocation({
+      controllerType: 'claude',
+      workId: fx.workId,
+      cwd: fx.root,
+      args: ['--max-budget-usd', '5'],
+    }, 'claude', 'claim the exact Work', bootstrap);
+
+    expect(invocation.args).toContain('--strict-mcp-config');
+    expect(invocation.args).toContain('--mcp-config');
+    const mcpConfigIndex = invocation.args.indexOf('--mcp-config');
+    const mcpConfigJson = invocation.args[mcpConfigIndex + 1];
+    expect(mcpConfigJson).toBeTruthy();
+    const mcpConfig = JSON.parse(mcpConfigJson!);
+    expect(mcpConfig.mcpServers.forge.url).toBe('http://127.0.0.1:9876/mcp');
+    expect(mcpConfig.mcpServers.forge.type).toBe('http');
+    expect(mcpConfig.mcpServers.forge.headers.Authorization).toBe('Bearer ${FORGE_RUNTIME_MCP_TOKEN}');
+    expect(mcpConfig.mcpServers.forge.headers['X-Forge-Forwarded-Principal-Id']).toBe('external:claude:test-reservation');
+    expect(mcpConfig.mcpServers.forge.headers['X-Forge-Forwarded-Session-Id']).toBe('external-session:claude:test-reservation');
+    expect(mcpConfig.mcpServers.forge.headers['X-Forge-Forwarded-Controller-Type']).toBe('claude');
+    expect(invocation.args.join(' ')).not.toContain('test-token-not-for-argv');
+    expect(invocation.args).toContain('--max-budget-usd');
+    expect(invocation.args).toContain('5');
+  });
+
+  test('rejects caller-provided --mcp-config when Forge MCP bootstrap is active', () => {
+    const fx = launcherFixture();
+    const bootstrap = claudeBootstrap();
+    expect(() => buildClaudeControllerInvocation({
+      executable: 'claude',
+      prompt: 'test',
+      mcpBootstrap: bootstrap,
+      args: ['--mcp-config', '{}'],
+    })).toThrow('LAUNCHER_CLAUDE_MCP_CONFIG_CONFLICT');
+  });
+
+  test('rejects caller-provided --strict-mcp-config when Forge manages isolation', () => {
+    const fx = launcherFixture();
+    const bootstrap = claudeBootstrap();
+    expect(() => buildClaudeControllerInvocation({
+      executable: 'claude',
+      prompt: 'test',
+      mcpBootstrap: bootstrap,
+      args: ['--strict-mcp-config'],
+    })).toThrow('LAUNCHER_CLAUDE_STRICT_MCP_CONFIG_CONFLICT');
+  });
+
+  test('uses the reservation-scoped Claude MCP bootstrap and isolates principal identity', async () => {
+    const fx = launcherFixture();
+    const bootstrap1 = claudeBootstrap();
+    const bootstrap2 = {
+      ...claudeBootstrap(),
+      principalId: 'external:claude:different-reservation',
+      sessionId: 'external-session:claude:different-reservation',
+    };
+    const invocation1 = buildSuperControllerInvocation({
+      controllerType: 'claude',
+      workId: fx.workId,
+      cwd: fx.root,
+    }, 'claude', 'first work', bootstrap1);
+    const invocation2 = buildSuperControllerInvocation({
+      controllerType: 'claude',
+      workId: 'WORK-2',
+      cwd: fx.root,
+    }, 'claude', 'second work', bootstrap2);
+
+    const config1 = JSON.parse(invocation1.args[invocation1.args.indexOf('--mcp-config') + 1]!);
+    const config2 = JSON.parse(invocation2.args[invocation2.args.indexOf('--mcp-config') + 1]!);
+    expect(config1.mcpServers.forge.headers['X-Forge-Forwarded-Principal-Id']).toBe('external:claude:test-reservation');
+    expect(config2.mcpServers.forge.headers['X-Forge-Forwarded-Principal-Id']).toBe('external:claude:different-reservation');
+    expect(config1.mcpServers.forge.headers['X-Forge-Forwarded-Session-Id']).not.toBe(
+      config2.mcpServers.forge.headers['X-Forge-Forwarded-Session-Id']
+    );
+  });
+
+  test('launches Claude with reservation-scoped Forge MCP bootstrap', async () => {
+    const fx = launcherFixture();
+    const bootstrap = claudeBootstrap();
+    const launched = await launchSuperController({ work: fx.store, handoff: fx.store }, {
+      controllerType: 'claude',
+      executable: sleepingExecutable(fx.root),
+      workId: fx.workId,
+      cwd: fx.root,
+    }, {
+      resolveProviderMcpBootstrap: (_controllerHome, provider, reservationId) => ({
+        ...bootstrap,
+        principalId: `external:${provider}:${reservationId}`,
+        sessionId: `external-session:${provider}:${reservationId}`,
+      }),
     });
     if (launched.pid) launchedPids.push(launched.pid);
 

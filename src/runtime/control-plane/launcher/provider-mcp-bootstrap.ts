@@ -18,7 +18,7 @@ export interface ProviderMcpReservationIdentity {
 }
 
 export function providerMcpReservationIdentity(
-  provider: 'codex',
+  provider: 'codex' | 'claude',
   reservationId: string,
 ): ProviderMcpReservationIdentity {
   const suffix = reservationId.trim();
@@ -44,7 +44,7 @@ function runtimeMcpUrl(controllerHome: string): string {
 
 export function resolveProviderMcpBootstrap(
   controllerHome: string,
-  provider: 'codex',
+  provider: 'codex' | 'claude',
   reservationId: string,
 ): ProviderMcpBootstrap {
   const config = readForgeRuntimeServiceConfig(forgeRuntimeServicePaths(controllerHome).configPath);
@@ -79,5 +79,22 @@ export function codexMcpConfigArgs(bootstrap: ProviderMcpBootstrap): string[] {
     // Keep the explicit URL override visible for diagnostics; the complete
     // table above has already removed the persisted stdio transport.
     '-c', `mcp_servers.forge.url=${JSON.stringify(bootstrap.url)}`,
+  ];
+}
+
+export function claudeMcpConfigArgs(bootstrap: ProviderMcpBootstrap): string[] {
+  // Claude expands env references in HTTP MCP headers. Never put a secret in
+  // argv, persisted config, or diagnostics; the child receives it in env.
+  const headers = {
+    'Authorization': `Bearer \${${bootstrap.bearerTokenEnvVar}}`,
+    'X-Forge-Forwarded-Principal-Id': bootstrap.principalId,
+    'X-Forge-Forwarded-Session-Id': bootstrap.sessionId,
+    'X-Forge-Forwarded-Controller-Type': 'claude',
+  };
+  return [
+    '--strict-mcp-config',
+    '--mcp-config', JSON.stringify({
+      mcpServers: { forge: { type: 'http', url: bootstrap.url, headers } },
+    }),
   ];
 }
