@@ -1969,7 +1969,10 @@ forbid(
   'MCP execution transport must not own managed-workspace or WorkContract preparation admission',
 );
 requireText('src/runtime/control-plane/execution/work-preparation-service.ts', 'export function prepareWork(');
-requireText('src/runtime/control-plane/execution/work-preparation-service.ts', "const useWorktree = isolation === 'new_worktree';");
+requireText('src/runtime/control-plane/execution/work-preparation-service.ts', "const useWorktree = isolation !== 'reuse';");
+requireText('src/runtime/control-plane/execution/work-preparation-service.ts', 'deliveryTargetBranch = useWorktree ? repository.defaultBranch : baseStatus.branch');
+requireText('src/runtime/control-plane/execution/work-preparation-service.ts', 'refs/remotes/origin/${repository.defaultBranch}');
+requireText('src/runtime/control-plane/execution/work-preparation-service.ts', 'sourceCheckoutId: deliveryCheckoutId, deliveryTargetBranch');
 forbid(
   'src/runtime/control-plane/execution/work-preparation-service.ts',
   /adoptExistingWorkHead|WORK_HEAD_ADOPTION_/,
