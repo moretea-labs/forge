@@ -972,6 +972,11 @@ describe('terminal Work cleanup', () => {
 
   test('legacy cleaned zero-delta Work rebinds through the existing WorkContract without replaying cleanup', async () => {
     const fx = fixture('legacy-cleaned-rebind');
+    // A new managed Work fetches the integration branch from origin. Keep this
+    // fixture local and self-contained while providing a real Git remote.
+    const originRoot = join(fx.root, 'origin.git');
+    git(fx.root, ['clone', '--bare', fx.repositoryRoot, originRoot]);
+    git(fx.repositoryRoot, ['remote', 'add', 'origin', originRoot]);
     const ctx = createMcpToolContext({
       controllerHome: fx.controllerHome,
       profile: 'controller',
