@@ -815,10 +815,10 @@ export function prepareWork(ctx: McpExecutionContext, args: Record<string, unkno
       return relocateExistingWorkToManagedCheckout(ctx, args, session, repository, existing);
     }
     if (requestedIsolation !== undefined) {
-      // Fixed placement contract: only `new_worktree` requests an isolated
-      // managed checkout. `reuse` and `auto` both share the selected current
-      // checkout, so an existing placement conflicts only across that boundary.
-      const requestedWorkspaceMode = requestedIsolation === 'new_worktree' ? 'isolated' : 'current';
+      // Existing Work placement is authoritative; auto always reuses it.
+      const requestedWorkspaceMode = requestedIsolation === 'auto'
+        ? (existing.managedWorktree ? 'isolated' : 'current')
+        : requestedIsolation === 'new_worktree' ? 'isolated' : 'current';
       const existingWorkspaceMode = existing.managedWorktree ? 'isolated' : 'current';
       if (requestedWorkspaceMode !== existingWorkspaceMode) {
         throw new Error(`WORK_PREPARE_PLACEMENT_CONFLICT: ${existingId}; existing=${existingWorkspaceMode}; requested=${requestedWorkspaceMode}`);
@@ -849,14 +849,21 @@ export function prepareWork(ctx: McpExecutionContext, args: Record<string, unkno
   const needsDependencies = args.needs_dependencies === true;
   const baseCheckoutId = repository.activeCheckoutId;
   const baseStatus = repositoryGitStatus(repository);
-  const deliveryTargetBranch = baseStatus.branch;
+  // A new Work defaults to an isolated checkout of fetched integration main.
+  // Explicit reuse still permits a current-checkout direct edit.
+  const useWorktree = isolation !== 'reuse';
+  const deliveryTargetBranch = useWorktree ? repository.defaultBranch : baseStatus.branch;
   if (!deliveryTargetBranch) throw new Error(`WORK_DELIVERY_TARGET_DETACHED: source checkout ${baseCheckoutId} has no branch`);
-  // Fixed placement contract: `auto` (the default) and `reuse` share the
-  // selected current checkout; only an explicit `new_worktree` freezes a fresh
-  // isolated base. A dirty current checkout is normal development state, not a
-  // placement gate: record the exact pre-Work dirty baseline on the handle so
-  // delivery/cleanup can attribute bytes later instead of failing closed.
-  const useWorktree = isolation === 'new_worktree';
+  const integrationCheckouts = useWorktree ? repository.checkouts.filter((checkout) =>
+    repositoryCheckoutLifecycle(checkout) === 'active' && checkout.branch === repository.defaultBranch,
+  ) : [];
+  if (useWorktree && integrationCheckouts.length !== 1) {
+    throw new Error(`WORK_DELIVERY_MAIN_CHECKOUT_UNPROVEN: ${repository.defaultBranch}; candidates=${integrationCheckouts.length}`);
+  }
+  const deliveryCheckoutId = useWorktree ? integrationCheckouts[0]!.checkoutId : baseCheckoutId;
+  const worktreeBaseRef = baseRef ?? (useWorktree ? `refs/remotes/origin/${repository.defaultBranch}` : undefined);
+  // For explicit reuse, preserve any pre-existing dirty bytes as baseline
+  // evidence so subsequent delivery cannot mistake them for this Work's edits.
   let baselineDirtyPaths: string[] | undefined;
   let baselineDirtyPathCount: number | undefined;
   if (!useWorktree && !baseStatus.clean) {
@@ -972,7 +979,7 @@ export function prepareWork(ctx: McpExecutionContext, args: Record<string, unkno
           requestId: createdWorkId,
           title: objective,
           associatedWorkId: createdWorkId,
-          baseRef,
+          baseRef: worktreeBaseRef,
           prepareDependencies: needsDependencies,
         })
         : { mode: 'current' as const, checkoutId: baseCheckoutId, root: repository.canonicalRoot, branch: baseStatus.branch ?? 'detached', baseRevision: baseStatus.head ?? undefined, managed: false };
@@ -1007,7 +1014,7 @@ export function prepareWork(ctx: McpExecutionContext, args: Record<string, unkno
       const handle: WorkHandleState = {
         schemaVersion: 1, workId: createdWorkId, sessionId: session.sessionId, principalId: session.principalId,
         repositoryId: repository.repoId, checkoutId: checkout.activeCheckoutId, worktreePath: checkout.canonicalRoot, branch,
-        sourceCheckoutId: baseCheckoutId, deliveryTargetBranch, managedWorktree: workspace.managed, workContractId: contract.workId, goalId, delegationVersion: delegation.version,
+        sourceCheckoutId: deliveryCheckoutId, deliveryTargetBranch, managedWorktree: workspace.managed, workContractId: contract.workId, goalId, delegationVersion: delegation.version,
         baseCommit: workspace.baseRevision ?? head, deliveryBaseCommit: workspace.baseRevision ?? head, expectedHead: head, permissionSnapshotVersion: policy.revision,
         ...(baselineDirtyPaths ? { baselineDirtyPaths, baselineDirtyPathCount } : {}),
         state: 'prepared', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), finalization: initialStage(),
