@@ -6,7 +6,7 @@ import { join } from 'path';
 import { writeControlPlaneRecord } from '../../src/runtime/control-plane/persistence/sqlite-store';
 import { registerRepository } from '../../src/cli/repositories/registry';
 import { getIssueReadView, createIssue, updateTask } from '../../src/cli/controller/issue-store';
-import { buildControllerTaskLedgerProjection, writeControllerTaskLedgerArtifacts } from '../../src/cli/controller/task-ledger';
+import { buildControllerTaskLedgerProjection } from '../../src/cli/controller/task-ledger';
 import { inspectProjectGovernance, reconcileProjectGovernance } from '../../src/cli/controller/governance';
 import { clearCurrentIssue, loadControllerProjectState, saveControllerProjectState } from '../../src/cli/controller/project-state';
 import { finishEditSession, finishTaskRun } from '../../src/cli/controller/completion-orchestrator';
@@ -165,7 +165,6 @@ describe('legacy control-plane cutover', () => {
       expect(() => updateTask(repoRoot, ISSUE_ID, 'T6', { status: 'cancelled' })).toThrow('LEGACY_ISSUE_WRITES_RETIRED');
       expect(() => saveControllerProjectState(repoRoot, { currentIssueId: ISSUE_ID })).toThrow('LEGACY_CURRENT_ISSUE_RETIRED');
       expect(() => saveControllerProjectState(repoRoot, { issueCreationMode: 'open' })).toThrow('LEGACY_PROJECT_STATE_WRITES_RETIRED');
-      expect(() => writeControllerTaskLedgerArtifacts(repoRoot)).toThrow('LEGACY_TASK_LEDGER_WRITES_RETIRED');
       expect(() => reconcileProjectGovernance(repoRoot)).toThrow('LEGACY_GOVERNANCE_RECONCILIATION_RETIRED');
       expect(() => finishTaskRun(repoRoot, { runId: 'RUN-MISSING' })).toThrow('LEGACY_TASK_RUN_COMPLETION_RETIRED');
       expect(() => finishEditSession(repoRoot, { sessionId: 'EDIT-MISSING' })).toThrow('LEGACY_EDIT_SESSION_COMPLETION_RETIRED');
