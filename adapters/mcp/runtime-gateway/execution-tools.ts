@@ -8,7 +8,7 @@ import { buildWorkContinuationSnapshot } from '../../../src/runtime/control-plan
 import { currentControllerInstanceId, readExecutionSession, startExecutionSession, updateExecutionSession, type ExecutionSessionContext } from '../../../src/runtime/control-plane/execution/session-store';
 import { getRepository } from '../../../src/cli/repositories/registry';
 import { readWorkHandle } from '../../../src/runtime/control-plane/execution/work-handle-store';
-import { currentPermissionSnapshotVersion, validateWorkHandle } from '../../../src/runtime/control-plane/execution/validation';
+import { currentPermissionSnapshotVersion, validateWorkHandle, workHandlePlacementLoss } from '../../../src/runtime/control-plane/execution/validation';
 import { resolveAuthorizationRequest } from '../../../src/runtime/control-plane/governance/authorization';
 import { readControllerResult, searchControllerResult } from '../../../src/runtime/evidence/result-store';
 import { resumeExecutionJobAfterApproval } from '../../../src/runtime/execution/jobs/store';
@@ -23,7 +23,7 @@ function definition(name: string, description: string, properties: Record<string
   return { name, description, inputSchema: { type: 'object', properties, ...(required.length ? { required } : {}), additionalProperties: false }, annotations: { readOnlyHint, openWorldHint: false, destructiveHint } };
 }
 
-const sessionId = { type: 'string', description: 'Legacy explicit execution-session identity; ordinary Work operations derive it from the authenticated caller and Work.' };
+const sessionId = { type: 'string', description: 'Controller-issued session id returned by session_start. Omit only when the MCP transport binds one.' };
 const workId = { type: 'string', description: 'Controller-owned work handle id returned by work_prepare.' };
 const repoId = { type: 'string', description: 'Stable repository id; no explicit execution-session repository binding is required.' };
 
@@ -167,6 +167,7 @@ function inspectWork(ctx: MultiRepositoryMcpToolContext, args: Record<string, un
  */
 function withImplicitWorkSession(
   ctx: MultiRepositoryMcpToolContext,
+  name: string,
   args: Record<string, unknown>,
 ): Record<string, unknown> {
   if (typeof args.session_id === 'string' && args.session_id.trim()) return args;
@@ -177,6 +178,10 @@ function withImplicitWorkSession(
   const handle = requestedRepoId && requestedWorkId
     ? readWorkHandle(ctx.controllerHome, requestedRepoId, requestedWorkId)
     : undefined;
+  // Inspect/validate may not introduce a Session while failing to resolve a Work.
+  if (name !== 'work_prepare' && (!requestedWorkId || !requestedRepoId || !handle)) {
+    throw new Error('WORK_HANDLE_NOT_FOUND: select an existing Work and repository');
+  }
   const principalId = principalFor(ctx);
   if (handle && handle.principalId !== principalId) throw new Error('WORK_HANDLE_ACCESS_DENIED');
   const requestedCheckout = typeof args.checkout_id === 'string' && args.checkout_id.trim() ? args.checkout_id.trim() : undefined;
@@ -188,21 +193,37 @@ function withImplicitWorkSession(
   // Request identity makes first preparation retries stable without a new
   // session_start call; a fresh ordinary invocation has its own identity.
   const requestId = typeof args.request_id === 'string' && args.request_id.trim() ? args.request_id.trim() : undefined;
-  const seed = [principalId, requestedRepoId ?? '', requestedWorkId ?? requestId ?? ''].join(':');
-  const sessionId = handle?.sessionId ?? ctx.sessionId
+  if (!requestedRepoId) throw new Error('REPOSITORY_ID_REQUIRED: select a repository');
+  if (name === 'work_prepare' && !requestedWorkId && !requestId) {
+    throw new Error('WORK_PREPARE_REQUEST_ID_REQUIRED: new Work preparation needs a stable request_id');
+  }
+  if (requestedWorkId && !handle) throw new Error('WORK_HANDLE_NOT_FOUND: requested Work is not registered');
+  const seed = [principalId, requestedRepoId, requestedWorkId ?? requestId ?? ''].join(':');
+  // A transport session is not a Work owner: multiple Works can share it.
+  // Prefer the durable Work's existing provenance or derive an identity only
+  // from this Work/preparation request, never from mutable transport focus.
+  const sessionId = handle?.sessionId
     ?? `sess_auto_${createHash('sha256').update(seed).digest('hex').slice(0, 32)}`;
   const identity = { sessionId, principalId, controllerInstanceId: ctx.controllerInstanceId ?? currentControllerInstanceId() };
   const session = readExecutionSession(ctx.controllerHome, identity) ?? startExecutionSession(ctx.controllerHome, {
     ...identity, capabilitySnapshotVersion: 1,
   });
+  let lostPlacement = false;
   if (requestedRepoId) {
+    const repository = getRepository(requestedRepoId, ctx.controllerHome);
+    // A deleted worktree is only a lost physical placement. An existing Work
+    // must be resolved through the active source checkout for the existing
+    // Work recovery path, never force a retired checkout into selection.
+    lostPlacement = Boolean(handle && name === 'work_prepare'
+      && workHandlePlacementLoss(repository, handle));
     // An identical idempotent preparation retry already owns its isolated
     // checkout. Omitting checkout_id must not bounce it to canonical main.
-    const sameRequestReplay = !handle && Boolean(requestId) && !ctx.sessionId
+    const sameRequestReplay = !handle && Boolean(requestId)
       && session.activeRepositoryId === requestedRepoId && Boolean(session.activeWorkId);
-    const checkoutId = handle?.checkoutId ?? requestedCheckout
+    const checkoutId = requestedCheckout
+      ?? (lostPlacement ? repository.activeCheckoutId : handle?.checkoutId)
       ?? (sameRequestReplay ? session.activeCheckoutId : undefined)
-      ?? getRepository(requestedRepoId, ctx.controllerHome).activeCheckoutId;
+      ?? repository.activeCheckoutId;
     const permissionSnapshotVersion = currentPermissionSnapshotVersion(ctx.controllerHome, requestedRepoId);
     // An idempotent new-Work retry may already be bound to its admitted Work;
     // absence of work_id in the request must not clear that settled binding.
@@ -221,7 +242,7 @@ function withImplicitWorkSession(
   return {
     ...args, session_id: sessionId,
     ...(requestedRepoId ? { repo_id: requestedRepoId } : {}),
-    ...(handle && !requestedCheckout ? { checkout_id: handle.checkoutId } : {}),
+    ...(handle && !requestedCheckout && !lostPlacement ? { checkout_id: handle.checkoutId } : {}),
   };
 }
 
@@ -229,7 +250,7 @@ export async function callExecutionTool(ctx: MultiRepositoryMcpToolContext, name
   if (!executionToolNames.has(name)) return undefined;
   try {
     if (implicitWorkSessionTools.has(name)) {
-      args = withImplicitWorkSession(ctx, args);
+      args = withImplicitWorkSession(ctx, name, args);
     }
     switch (name) {
       case 'session_start': {
