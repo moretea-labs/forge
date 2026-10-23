@@ -708,6 +708,19 @@ describe('terminal Work cleanup', () => {
     expect(existsSync(fx.workspace.root!)).toBe(true);
     expect(readFileSync(join(fx.workspace.root!, 'dirty-semantic-only.txt'), 'utf8')).toBe('preserve terminal dirty bytes\n');
     expect(readWorkHandle(fx.controllerHome, fx.repository.repoId, fx.handle.workId)?.cleanupReceipt?.blockers).toContain('DIRTY_WORKTREE_RETAINED');
+
+    const firstHandle = readWorkHandle(fx.controllerHome, fx.repository.repoId, fx.handle.workId)!;
+    const repeated = await reconcileTerminalWorkCleanups(fx.controllerHome, { minAgeMs: 0, maxWork: 5 });
+    expect(repeated.blocked).toContainEqual({ workId: fx.handle.workId, reason: 'DIRTY_WORKTREE_RETAINED' });
+    const repeatedHandle = readWorkHandle(fx.controllerHome, fx.repository.repoId, fx.handle.workId)!;
+    expect(repeatedHandle.recordRevision).toBe(firstHandle.recordRevision);
+    expect(repeatedHandle.updatedAt).toBe(firstHandle.updatedAt);
+    expect(readFileSync(join(fx.workspace.root!, 'dirty-semantic-only.txt'), 'utf8')).toBe('preserve terminal dirty bytes\n');
+
+    rmSync(join(fx.workspace.root!, 'dirty-semantic-only.txt'));
+    const resolved = await reconcileTerminalWorkCleanups(fx.controllerHome, { minAgeMs: 0, maxWork: 5 });
+    expect(resolved.cleaned).toContain(fx.handle.workId);
+    expect(readWorkHandle(fx.controllerHome, fx.repository.repoId, fx.handle.workId)?.state).toBe('cleaned');
   });
 
   test('periodic reconciler leaves non-terminal Work untouched', async () => {

@@ -1367,6 +1367,23 @@ export async function reconcileTerminalWorkCleanups(
       }
       report.attempted += 1;
       try {
+        // A prior cleanup has already released its process/lease ownership and
+        // proved that dirty bytes must be retained. While Git still reports a
+        // dirty worktree, repeating the same failed transition only rewrites
+        // WorkHandle/cleanup receipt state; no deletion is possible. Re-enter
+        // the full owner/fingerprint/branch path as soon as it becomes clean.
+        const previousReceipt = originalHandle.cleanupReceipt;
+        if (originalHandle.state === 'failed_terminal_cleanup'
+          && previousReceipt?.complete === false
+          && previousReceipt.blockers.length === 1
+          && previousReceipt.blockers[0] === 'DIRTY_WORKTREE_RETAINED'
+          && previousReceipt.worktree.status === 'retained') {
+          const status = git(originalHandle.worktreePath, ['status', '--porcelain', '--untracked-files=all']);
+          if (status.ok && status.stdout) {
+            report.blocked.push({ workId: originalHandle.workId, reason: 'DIRTY_WORKTREE_RETAINED' });
+            continue;
+          }
+        }
         const targetBranch = resolveWorkDeliveryTargetBranch(originalHandle, repository.defaultBranch);
         const drift = reconcileLegacyTerminalBranchDrift(controllerHome, repository, originalHandle, targetBranch);
         if (drift.blocker) {
