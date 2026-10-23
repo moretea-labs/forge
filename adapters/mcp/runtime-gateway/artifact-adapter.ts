@@ -1,7 +1,5 @@
 import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
-import { writeControllerTaskLedgerArtifacts } from '../../../src/cli/controller/task-ledger';
-import { prepareTransferArtifacts } from '../../../src/cli/repositories/selected-path-actions';
 import {
   buildReviewArtifactIndex,
   ensureReviewArtifactRoots,
@@ -18,18 +16,6 @@ export function callArtifactAdapter(
   args: Record<string, unknown>,
 ): CallToolResult | undefined {
   switch (name) {
-    case 'prepare_transfer_artifacts': {
-      const repository = selected(ctx, args);
-      const transfer = prepareTransferArtifacts(repository, { reason: args.reason });
-      const taskLedger = writeControllerTaskLedgerArtifacts(repository.canonicalRoot, { reason: args.reason });
-      return result({
-        repoId: repository.repoId,
-        checkoutId: repository.activeCheckoutId,
-        ...transfer,
-        taskLedger: taskLedger.projection,
-        artifacts: [...transfer.artifacts, ...taskLedger.artifacts],
-      });
-    }
     case 'review_artifacts_prepare': {
       const repository = selected(ctx, args);
       return result(ensureReviewArtifactRoots(repository));
