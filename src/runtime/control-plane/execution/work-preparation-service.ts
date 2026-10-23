@@ -718,11 +718,11 @@ function relocateExistingWorkToManagedCheckout(
   if (existing.managedWorktree) {
     if (existing.expectedHead !== candidate) throw new Error('WORK_RELOCATION_ALREADY_ISOLATED');
     validateWorkHandle(ctx.controllerHome, existing, identityFor(ctx, args), 'cheap', 'inspect');
-    updateExecutionSession(ctx.controllerHome, identityFor(ctx, args), {
+    const nextSession = updateExecutionSession(ctx.controllerHome, identityFor(ctx, args), {
       activeRepositoryId: existing.repositoryId, activeCheckoutId: existing.checkoutId,
       activeWorkId: existing.workId, permissionSnapshotVersion: existing.permissionSnapshotVersion,
     });
-    return { session: requireSession(ctx, args), work: compactHandle(existing), reused: true, relocated: true };
+    return { session: nextSession, work: compactHandle(existing), reused: true, relocated: true };
   }
   if (existing.state !== 'prepared' && existing.state !== 'editing') throw new Error('WORK_RELOCATION_STATE_INVALID');
   if (existing.finalization.validation !== 'pending' || existing.finalization.commit !== 'pending' || existing.finalization.merge !== 'pending'
@@ -771,11 +771,11 @@ function relocateExistingWorkToManagedCheckout(
     checkoutId: workspace.checkoutId, root: workspace.root,
     branch: workspace.branch, head: candidate,
   });
-  updateExecutionSession(ctx.controllerHome, identityFor(ctx, args), {
+  const nextSession = updateExecutionSession(ctx.controllerHome, identityFor(ctx, args), {
     activeRepositoryId: refreshed.repositoryId, activeCheckoutId: refreshed.checkoutId,
     activeWorkId: refreshed.workId, permissionSnapshotVersion: refreshed.permissionSnapshotVersion,
   });
-  return { session: requireSession(ctx, args), work: compactHandle(refreshed), relocated: true,
+  return { session: nextSession, work: compactHandle(refreshed), relocated: true,
     previousCheckoutId: existing.checkoutId, previousHead: prior, currentHead: candidate };
 }
 
@@ -794,7 +794,7 @@ export function prepareWork(ctx: McpExecutionContext, args: Record<string, unkno
     if (existing.state === 'cleaned') {
       const semanticContract = contractFor(ctx, existing);
       if (semanticContract && isTerminalSemanticWorkState(semanticContract.semanticState)) {
-        return { session: requireSession(ctx, args), work: compactHandle(existing), reused: true, terminal: true, workContractStatus: semanticContract.semanticState };
+        return { session, work: compactHandle(existing), reused: true, terminal: true, workContractStatus: semanticContract.semanticState };
       }
       if (requestedIsolation !== undefined) throw new Error('WORK_RELOCATION_ISOLATION_CONFLICT');
       return recoverLostWorkPlacement(ctx, args, session, repository, existing);
@@ -806,7 +806,7 @@ export function prepareWork(ctx: McpExecutionContext, args: Record<string, unkno
     if (placementLoss) {
       const semanticContract = contractFor(ctx, existing);
       if (semanticContract && isTerminalSemanticWorkState(semanticContract.semanticState)) {
-        return { session: requireSession(ctx, args), work: compactHandle(existing), reused: true, terminal: true, workContractStatus: semanticContract.semanticState };
+        return { session, work: compactHandle(existing), reused: true, terminal: true, workContractStatus: semanticContract.semanticState };
       }
       if (requestedIsolation === 'reuse') throw new Error('WORK_RELOCATION_ISOLATION_CONFLICT');
       return recoverLostWorkPlacement(ctx, args, session, repository, existing);
@@ -915,7 +915,7 @@ export function prepareWork(ctx: McpExecutionContext, args: Record<string, unkno
       const terminal = isTerminalSemanticWorkState(existingContract.semanticState);
       if (terminal) {
         return {
-          session: requireSession(ctx, args),
+          session,
           work: compactHandle(existingHandle),
           reused: true,
           terminal: true,
