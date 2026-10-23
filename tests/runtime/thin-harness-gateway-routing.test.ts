@@ -67,9 +67,13 @@ function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'thin-gw-route-'));
   const controllerHome = join(root, 'controller');
   const repoRoot = join(root, 'repo');
+  const originRoot = join(root, 'origin.git');
   mkdirSync(controllerHome, { recursive: true });
   mkdirSync(join(repoRoot, 'src'), { recursive: true });
   mkdirSync(join(repoRoot, '.forge'), { recursive: true });
+  mkdirSync(originRoot, { recursive: true });
+  git(originRoot, ['init', '--bare']);
+  git(originRoot, ['symbolic-ref', 'HEAD', 'refs/heads/main']);
   git(repoRoot, ['init', '-b', 'main']);
   git(repoRoot, ['config', 'user.name', 'Test']);
   git(repoRoot, ['config', 'user.email', 'test@example.com']);
@@ -92,7 +96,8 @@ function fixture() {
   }, null, 2));
   git(repoRoot, ['add', '.']);
   git(repoRoot, ['commit', '-m', 'init']);
-  git(repoRoot, ['update-ref', 'refs/remotes/origin/main', 'HEAD']);
+  git(repoRoot, ['remote', 'add', 'origin', originRoot]);
+  git(repoRoot, ['push', '--set-upstream', 'origin', 'main']);
   ensureControllerHome(controllerHome);
   const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'gw-route' });
   const ctx = createMcpToolContext({
@@ -100,7 +105,7 @@ function fixture() {
     profile: 'controller',
     repo: repoRoot,
   });
-  return { root, controllerHome, repoRoot, repository, ctx };
+  return { root, controllerHome, repoRoot, originRoot, repository, ctx };
 }
 
 const roots: string[] = [];
@@ -1039,9 +1044,10 @@ describe('repository.git Work delivery', () => {
     if (delivered?.isError) throw new Error(JSON.stringify(delivered.structuredContent ?? delivered));
     const integratedHead = git(fx.repoRoot, ['rev-parse', 'HEAD']);
     expect(integratedHead).not.toBe(targetHead);
-    // The prior delivery advanced main. Simulate fetching its new integration
-    // commit before admitting another independent main-based source Work.
-    git(fx.repoRoot, ['update-ref', 'refs/remotes/origin/main', integratedHead]);
+    // Publish the prior delivery to the fixture origin before preparing the
+    // next independent Work; a local tracking ref alone is not remote truth.
+    git(fx.repoRoot, ['push', 'origin', 'main']);
+    expect(git(fx.repoRoot, ['rev-parse', 'refs/remotes/origin/main'])).toBe(integratedHead);
     expect(readWorkHandle(fx.controllerHome, fx.repository.repoId, blockerId)?.state).toBe('prepared');
     expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, blockerId)?.semanticState).toBe('open');
 
@@ -2752,6 +2758,17 @@ describe('work_validate persisted semantic identity', () => {
     writeFileSync(join(otherRoot, 'UNCOMMITTED-OTHER-WORK'), 'must remain untouched\n');
     const mainHead = git(fx.repoRoot, ['rev-parse', 'HEAD']);
     expect(git(otherRoot, ['rev-parse', 'HEAD'])).not.toBe(mainHead);
+    const remoteAdvance = join(fx.root, 'remote-advance');
+    git(fx.root, ['clone', fx.originRoot, remoteAdvance]);
+    git(remoteAdvance, ['config', 'user.name', 'Test']);
+    git(remoteAdvance, ['config', 'user.email', 'test@example.com']);
+    writeFileSync(join(remoteAdvance, 'REMOTE-ADVANCE'), 'new integration revision\n');
+    git(remoteAdvance, ['add', 'REMOTE-ADVANCE']);
+    git(remoteAdvance, ['commit', '-m', 'advance integration remotely']);
+    git(remoteAdvance, ['push', 'origin', 'main']);
+    const remoteHead = git(remoteAdvance, ['rev-parse', 'HEAD']);
+    expect(git(fx.repoRoot, ['rev-parse', 'HEAD'])).toBe(mainHead);
+    expect(git(fx.repoRoot, ['rev-parse', 'refs/remotes/origin/main'])).toBe(mainHead);
     const started = await callExecutionTool(fx.ctx, 'session_start', {});
     expect(started?.isError).not.toBe(true);
     const session = (started?.structuredContent as { session: { sessionId: string } }).session;
@@ -2781,7 +2798,7 @@ describe('work_validate persisted semantic identity', () => {
     }).work;
     expect(work.managedWorktree).toBe(true);
     expect(work.checkoutId).not.toBe(rotated.activeCheckoutId);
-    expect(work.baseCommit).toBe(mainHead);
+    expect(work.baseCommit).toBe(remoteHead);
     expect(work.sourceCheckoutId).toBe(fx.repository.activeCheckoutId);
     expect(work.deliveryTargetBranch).toBe('main');
     expect(readFileSync(join(otherRoot, 'UNCOMMITTED-OTHER-WORK'), 'utf8')).toBe('must remain untouched\n');
