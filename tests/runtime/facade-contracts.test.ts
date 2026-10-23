@@ -4,7 +4,7 @@ import { getCoreCapabilityExecutionSchema, listCapabilityDescriptors, searchCapa
 import { evaluatePolicyGate } from '../../src/runtime/control-plane/facade/policy-gate';
 import { buildFacadeResult } from '../../src/runtime/control-plane/facade/facade-result';
 import { allowedFacadeOperations, validateSuggestedNextActions } from '../../src/runtime/control-plane/facade/suggested-actions';
-import { buildCodexControllerInvocation, buildSuperControllerInvocation, type ThinLauncherRequest } from '../../src/runtime/control-plane/launcher/thin-launcher';
+import { buildClaudeControllerInvocation, buildCodexControllerInvocation, buildSuperControllerInvocation, type ThinLauncherRequest } from '../../src/runtime/control-plane/launcher/thin-launcher';
 import { parseCodexConversationJsonl } from '../../src/runtime/control-plane/launcher/local-conversation-controller';
 import { RH_WORK_MODEL_OPERATIONS, isRhWorkAcceptedOperation } from '../../src/runtime/control-plane/facade/rh-work-operation-contract';
 import { runtimeToolDefinitions } from '../../adapters/mcp/runtime-gateway/runtime-tool-definitions';
@@ -699,14 +699,42 @@ describe('Thin Launcher external Controller invocation', () => {
       request({ controllerType: 'claude', args: ['--max-budget-usd', '1'] }),
       'claude',
       'continue bounded work',
-    )).toThrow('LAUNCHER_CLAUDE_FORGE_MCP_CONFIG_REQUIRED');
-    expect(buildSuperControllerInvocation(
-      request({ controllerType: 'claude', args: ['--mcp-config', '{\"mcpServers\":{}}', '--max-budget-usd', '1'] }),
+    )).toThrow('LAUNCHER_CLAUDE_FORGE_MCP_REQUIRED');
+
+    const claudeBootstrap = {
+      url: 'http://127.0.0.1:8765/mcp',
+      bearerTokenEnvVar: 'FORGE_RUNTIME_MCP_TOKEN' as const,
+      principalId: 'external:claude:reservation-2',
+      sessionId: 'external-session:claude:reservation-2',
+      env: { FORGE_RUNTIME_MCP_TOKEN: 'secret-not-for-argv' },
+    };
+    const claude = buildSuperControllerInvocation(
+      request({ controllerType: 'claude', args: ['--max-budget-usd', '1'] }),
       'claude',
       'continue bounded work',
-    )).toEqual({
+      claudeBootstrap,
+    );
+    expect(claude.executable).toBe('claude');
+    expect(claude.args).toContain('--print');
+    expect(claude.args).toContain('--permission-mode');
+    expect(claude.args).toContain('auto');
+    expect(claude.args).toContain('--strict-mcp-config');
+    expect(claude.args).toContain('--mcp-config');
+    const claudeMcpConfigIndex = claude.args.indexOf('--mcp-config');
+    const claudeMcpConfig = JSON.parse(claude.args[claudeMcpConfigIndex + 1]!);
+    expect(claudeMcpConfig.mcpServers.forge.url).toBe('http://127.0.0.1:8765/mcp');
+    expect(claudeMcpConfig.mcpServers.forge.headers.Authorization).toBe('Bearer ${FORGE_RUNTIME_MCP_TOKEN}');
+    expect(claudeMcpConfig.mcpServers.forge.headers['X-Forge-Forwarded-Principal-Id']).toBe('external:claude:reservation-2');
+    expect(claudeMcpConfig.mcpServers.forge.headers['X-Forge-Forwarded-Controller-Type']).toBe('claude');
+    expect(claude.args.join(' ')).not.toContain('secret-not-for-argv');
+    expect(claude.args).toContain('--max-budget-usd');
+    expect(claude.args).toContain('1');
+
+    expect(() => buildClaudeControllerInvocation({
       executable: 'claude',
-      args: ['--print', '--permission-mode', 'auto', '--mcp-config', '{"mcpServers":{}}', '--max-budget-usd', '1', 'continue bounded work'],
-    });
+      prompt: 'test',
+      mcpBootstrap: claudeBootstrap,
+      args: ['--mcp-config', '{}'],
+    })).toThrow('LAUNCHER_CLAUDE_MCP_CONFIG_CONFLICT');
   });
 });
