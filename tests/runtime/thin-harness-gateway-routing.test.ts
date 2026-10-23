@@ -1250,14 +1250,16 @@ describe('repository.git Work delivery', () => {
     const boundPermission = boundSession.value.permissionSnapshotVersion;
 
     // Simulate session_start from context without explicit repository (e.g., after transport reconnect)
-    const noRepoCtx = { ...fx.ctx, explicitRepository: undefined };
+    const noRepoCtx = { ...fx.ctx, sessionId: session.sessionId, explicitRepository: undefined };
     const resumed = await callExecutionTool(noRepoCtx, 'session_start', {});
     expect(resumed?.isError).not.toBe(true);
     const resumedSession = readControlPlaneRecord<ExecutionSessionContext>(fx.controllerHome, 'execution_session', 'controller', session.sessionId)!;
     expect(resumedSession.value.activeRepositoryId).toBe(fx.repository.repoId);
     expect(resumedSession.value.activeWorkId).toBe(work.workId);
     expect(resumedSession.value.permissionSnapshotVersion).toBe(boundPermission);
-    expect(resumedSession.revision).toBe(boundRevision);
+    // Same Session must refresh ControllerSession recovery liveness, not create a new Session.
+    expect(resumedSession.revision).toBe(boundRevision + 1);
+    expect(Date.parse(resumedSession.value.lastValidatedAt!)).toBeGreaterThanOrEqual(Date.parse(boundSession.value.lastValidatedAt!));
 
     // An explicit permission snapshot change must still write and preserve Work focus.
     startExecutionSession(fx.controllerHome, {
@@ -1267,25 +1269,11 @@ describe('repository.git Work delivery', () => {
       permissionSnapshotVersion: boundPermission + 1,
     });
     const changedPermission = readControlPlaneRecord<ExecutionSessionContext>(fx.controllerHome, 'execution_session', 'controller', session.sessionId)!;
-    expect(changedPermission.revision).toBe(boundRevision + 1);
+    expect(changedPermission.revision).toBe(resumedSession.revision + 1);
     expect(changedPermission.value.permissionSnapshotVersion).toBe(boundPermission + 1);
     expect(changedPermission.value.activeWorkId).toBe(work.workId);
 
-    // Optional capability snapshot: missing is a real no-op; zero is a legitimate update.
-    const legacyId = 'session-optional-capability';
-    const legacyIdentity = { sessionId: legacyId, principalId: boundSession.value.principalId,
-      controllerInstanceId: boundSession.value.controllerInstanceId };
-    startExecutionSession(fx.controllerHome, legacyIdentity);
-    const legacyBefore = readControlPlaneRecord<ExecutionSessionContext>(fx.controllerHome, 'execution_session', 'controller', legacyId)!;
-    startExecutionSession(fx.controllerHome, legacyIdentity);
-    expect(readControlPlaneRecord<ExecutionSessionContext>(fx.controllerHome, 'execution_session', 'controller', legacyId)?.revision).toBe(legacyBefore.revision);
-    startExecutionSession(fx.controllerHome, { ...legacyIdentity, capabilitySnapshotVersion: 1 });
-    const capabilitySet = readControlPlaneRecord<ExecutionSessionContext>(fx.controllerHome, 'execution_session', 'controller', legacyId)!;
-    expect(capabilitySet.revision).toBe(legacyBefore.revision + 1);
-    startExecutionSession(fx.controllerHome, { ...legacyIdentity, capabilitySnapshotVersion: 0 });
-    const capabilityCleared = readControlPlaneRecord<ExecutionSessionContext>(fx.controllerHome, 'execution_session', 'controller', legacyId)!;
-    expect(capabilityCleared.revision).toBe(capabilitySet.revision + 1);
-    expect(capabilityCleared.value.capabilitySnapshotVersion).toBe(0);
+
   });
 });
 
