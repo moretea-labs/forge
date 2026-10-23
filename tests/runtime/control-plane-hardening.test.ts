@@ -47,19 +47,10 @@ import {
   normalizeSchedulerConfig,
   restoreSchedulerState,
 } from '../../src/runtime/control-plane/global-scheduler/scheduler';
-import {
-  consumeSchedulerDispatchCapacity,
-  createSchedulerDispatchCapacity,
-  schedulerAgentProvider,
-  schedulerDispatchCapacityAllows,
-} from '../../src/runtime/control-plane/global-scheduler/dispatch-capacity';
-import { selectExecutionJobDispatchRepositories } from '../../src/runtime/control-plane/dispatch-priority';
 import { selectSchedulerProjectionRefreshTargets } from '../../src/runtime/control-plane/global-scheduler/projection-refresh';
 import { evaluateSchedulerWorkerExitCandidate } from '../../src/runtime/control-plane/global-scheduler/worker-exit-decision';
 import { reconcileSchedulerWorkerExit } from '../../src/runtime/control-plane/global-scheduler/worker-exit-reconciler';
-import { runSchedulerDurableAdmission } from '../../src/runtime/control-plane/global-scheduler/durable-admission';
 import { shouldWakeForSchedulerEvent } from '../../src/runtime/control-plane/global-scheduler/wake-signal';
-import { RepoActorRegistry } from '../../src/runtime/control-plane/repo-actor/registry';
 
 const roots: string[] = [];
 
@@ -183,11 +174,6 @@ describe('control-plane hardening', () => {
     });
   });
 
-  test('does not hide a per-repository worker ceiling below the scheduler worker budget', () => {
-    const actors = new RepoActorRegistry('/tmp/forge-repo-actor-config-test', { maxConcurrentWorkers: 7 });
-    expect(actors.get('repo-a').config.maxConcurrentWorkers).toBe(7);
-  });
-
   test('isolates Scheduler state restoration and snapshot serialization from lifecycle mutation', () => {
     const sourceScanAt = Date.parse('2026-08-20T12:34:56.000Z');
     expect(restoreSchedulerState({
@@ -196,15 +182,10 @@ describe('control-plane hardening', () => {
       lastSourceScanAt: '2026-08-20T12:34:56.000Z',
       lastSourceScanRepoCount: 3,
       sourceScansAvoided: 5,
-      lastRepoDispatch: {
-        'repo-a': 42,
-        'repo-invalid': Number.NaN,
-      },
     })).toEqual({
       lastSourceScanAt: sourceScanAt,
       lastSourceScanRepoCount: 3,
       sourceScansAvoided: 5,
-      lastRepoDispatch: [['repo-a', 42]],
     });
 
     expect(buildSchedulerHealthSnapshot({
@@ -217,7 +198,6 @@ describe('control-plane hardening', () => {
       lastSourceScanAt: sourceScanAt,
       lastSourceScanRepoCount: 3,
       sourceScansAvoided: 5,
-      lastRepoDispatch: new Map([['repo-a', 42]]),
     }, Date.parse('2026-08-20T13:00:00.000Z'))).toEqual({
       schemaVersion: 1,
       updatedAt: '2026-08-20T13:00:00.000Z',
@@ -230,129 +210,7 @@ describe('control-plane hardening', () => {
       lastSourceScanAt: '2026-08-20T12:34:56.000Z',
       lastSourceScanRepoCount: 3,
       sourceScansAvoided: 5,
-      lastRepoDispatch: { 'repo-a': 42 },
     });
-  });
-
-  test('isolates Scheduler dispatch capacity accounting from the dispatch lock', () => {
-    const executionJob = (input: {
-      jobId: string;
-      type: ExecutionJob['type'];
-      status: ExecutionJob['status'];
-      agent?: 'codex' | 'claude' | 'github-copilot';
-    }) => ({
-      jobId: input.jobId,
-      repoId: 'repo-a',
-      type: input.type,
-      status: input.status,
-      payload: { operation: 'test', arguments: input.agent ? { agent: input.agent } : {} },
-    }) as ExecutionJob;
-    const active = [
-      executionJob({ jobId: 'check-running', type: 'check', status: 'running' }),
-      executionJob({ jobId: 'codex-running', type: 'agent-run', status: 'running', agent: 'codex' }),
-      executionJob({ jobId: 'claude-dispatched', type: 'dispatch-task', status: 'dispatched', agent: 'claude' }),
-    ];
-    const limits = {
-      maxWorkers: 4,
-      maxHeavyChecks: 2,
-      maxAgentProcesses: 3,
-      maxCodexProcesses: 2,
-      maxClaudeProcesses: 1,
-      maxGitHubProcesses: 1,
-    };
-    const capacity = createSchedulerDispatchCapacity(active, limits, false);
-    expect(capacity.workers).toBe(1);
-    expect(capacity.heavyChecks).toBe(1);
-    expect(capacity.agents).toBe(1);
-    expect(Object.fromEntries(capacity.providers)).toEqual({ codex: 1, claude: 0, 'github-copilot': 1 });
-    expect(schedulerAgentProvider(executionJob({ jobId: 'default-agent', type: 'agent-run', status: 'queued' }))).toBe('codex');
-    expect(schedulerDispatchCapacityAllows(capacity, executionJob({
-      jobId: 'claude-waiting', type: 'agent-run', status: 'queued', agent: 'claude',
-    }))).toBe(false);
-    const codexWaiting = executionJob({ jobId: 'codex-waiting', type: 'agent-run', status: 'queued', agent: 'codex' });
-    expect(schedulerDispatchCapacityAllows(capacity, codexWaiting)).toBe(true);
-    consumeSchedulerDispatchCapacity(capacity, codexWaiting);
-    expect(capacity.workers).toBe(0);
-    expect(capacity.agents).toBe(0);
-    expect(capacity.providers.get('codex')).toBe(0);
-
-    const pressured = createSchedulerDispatchCapacity([], limits, true);
-    expect(pressured.workers).toBe(1);
-    expect(pressured.heavyChecks).toBe(1);
-    expect(pressured.agents).toBe(0);
-    expect([...pressured.providers.values()]).toEqual([0, 0, 0]);
-  });
-
-  test('keeps durable admission observation and schedule advancement outside the dispatch lock', async () => {
-    const calls: string[] = [];
-    const jobs = [
-      { repoId: 'repo-a', jobId: 'queued', status: 'queued', type: 'repository-command', payload: { operation: 'test' } },
-      { repoId: 'repo-a', jobId: 'running', status: 'running', type: 'repository-command', payload: { operation: 'test' } },
-      { repoId: 'repo-b', jobId: 'observed', status: 'queued', type: 'repository-command', payload: { operation: 'test' }, timings: { schedulerObservedAt: '2026-08-21T00:00:00.000Z' } },
-    ] as ExecutionJob[];
-    const dependencies = {
-      listActiveJobs: () => jobs,
-      markSchedulerObserved: (_controllerHome: string, repoId: string, jobId: string) => {
-        calls.push(`observe:${repoId}:${jobId}`);
-        return jobs.find((job) => job.jobId === jobId)!;
-      },
-      tickSchedules: async (_controllerHome: string, repoIds: string[]) => {
-        calls.push(`schedule:${repoIds.join(',')}`);
-        return [];
-      },
-    };
-
-    expect(await runSchedulerDurableAdmission({
-      controllerHome: '/tmp/controller',
-      repositoryIds: ['repo-a', 'repo-b'],
-      nowMs: 60_000,
-      lastScheduleTickAt: 0,
-    }, dependencies)).toEqual({ scheduleTicked: true });
-    expect(calls).toEqual([
-      'observe:repo-a:queued',
-      'schedule:repo-a,repo-b',
-    ]);
-
-    calls.length = 0;
-    expect(await runSchedulerDurableAdmission({
-      controllerHome: '/tmp/controller',
-      repositoryIds: ['repo-a', 'repo-b'],
-      nowMs: 70_000,
-      lastScheduleTickAt: 60_000,
-    }, dependencies)).toEqual({ scheduleTicked: false });
-    expect(calls).toEqual(['observe:repo-a:queued']);
-  });
-
-  test('isolates per-repository Scheduler priority and fairness ordering from the dispatch lock', () => {
-    const now = Date.parse('2026-08-21T00:00:00.000Z');
-    const job = (input: {
-      repoId: string;
-      jobId: string;
-      priority: ExecutionJob['priority'];
-      queuedAt: string;
-      status?: ExecutionJob['status'];
-    }) => ({
-      repoId: input.repoId,
-      jobId: input.jobId,
-      priority: input.priority,
-      queuedAt: input.queuedAt,
-      createdAt: input.queuedAt,
-      status: input.status ?? 'queued',
-      type: 'repository-command',
-      payload: { operation: 'test' },
-    }) as ExecutionJob;
-    const active = [
-      job({ repoId: 'repo-a', jobId: 'a-newer', priority: 'P1', queuedAt: '2026-08-20T23:59:00.000Z' }),
-      job({ repoId: 'repo-a', jobId: 'a-older', priority: 'P1', queuedAt: '2026-08-20T23:58:00.000Z' }),
-      job({ repoId: 'repo-b', jobId: 'b-top', priority: 'P0', queuedAt: '2026-08-20T23:59:30.000Z' }),
-      job({ repoId: 'repo-c', jobId: 'c-top', priority: 'P1', queuedAt: '2026-08-20T23:57:00.000Z' }),
-      job({ repoId: 'repo-terminal', jobId: 'done', priority: 'P0', queuedAt: '2026-08-20T20:00:00.000Z', status: 'succeeded' }),
-    ];
-
-    expect(selectExecutionJobDispatchRepositories(active, now, new Map([
-      ['repo-a', 100],
-      ['repo-c', 50],
-    ]))).toEqual(['repo-b', 'repo-c', 'repo-a']);
   });
 
   test('isolates Scheduler projection refresh target selection from tick side effects', () => {

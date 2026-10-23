@@ -1,21 +1,13 @@
 import { execFile, type ChildProcess } from 'child_process';
-import { dirname, resolve } from 'path';
+import { resolve } from 'path';
 import { cpus, freemem, loadavg } from 'os';
 import { listRepositories } from '../../../cli/repositories/registry';
 import { writeAgentExecutableReadinessSnapshot } from '../../../cli/agent-jobs/executable-resolver';
-import { withControllerLock } from '../../../cli/repositories/locks';
 import {
   assertRuntimeMayWrite,
   getRuntimeWriteClaim,
   runtimeWriteClaimEnvironment,
 } from '../../root/write-fence';
-import {
-  getExecutionJob,
-  listActiveExecutionJobs,
-} from '../../execution/jobs/store';
-import { type ExecutionWorkerLifecycle } from '../../execution/jobs/types';
-import { RepoActorRegistry } from '../repo-actor/registry';
-import { reconcileExecutionJobsAsync } from './reconciliation';
 import { isProcessAlive } from '../../shared/process-tree';
 import { readSchedulerWakeSignal, waitForSchedulerWakeSignal } from './wake-signal';
 import { cleanupControllerRuntimeState } from '../runtime-cleanup';
@@ -29,46 +21,18 @@ import {
 } from './maintenance';
 import { planSchedulerSourceSampling } from './source-scan';
 import { runSchedulerAutonomousContinuationReconciliation } from './autonomous-continuation';
-import {
-  runSchedulerDurableAdmission,
-  SCHEDULE_TICK_INTERVAL_MS,
-} from './durable-admission';
+import { tickSchedules } from '../../workflow/schedules/engine';
 import { sampleRepositoryGitStatusForRepositories } from '../../projections/git-status-sampler';
-import { selectExecutionJobDispatchRepositories } from '../dispatch-priority';
-import {
-  buildSchedulerWorkerLaunchDescriptor,
-  resolveSchedulerWorkerCommand,
-  selectSchedulerWorkerEnvironment,
-} from './worker-launch';
-import {
-  consumeSchedulerDispatchCapacity,
-  createSchedulerDispatchCapacity,
-  schedulerDispatchCapacityAllows,
-} from './dispatch-capacity';
 import {
   refreshSchedulerRepositoryProjections,
   selectSchedulerDirtyProjectionRepositories,
 } from './projection-refresh';
-import { createSchedulerWorkerStderrCapture } from './worker-stderr';
-import { persistSchedulerWorkerAttachment } from './worker-attachment';
 import { reconcileWorkExecutionConcurrencyWaits } from '../concurrency/work-execution-concurrency';
-import {
-  cleanupSchedulerWorkerProcesses,
-  registerSchedulerWorkerProcess,
-  spawnSchedulerWorkerProcess,
-  wireSchedulerWorkerProcess,
-} from './worker-process';
-import { reconcileSchedulerWorkerExit } from './worker-exit-reconciler';
-import { persistSchedulerSpawnedWorkerLifecycle } from './worker-lifecycle-store';
+import { cleanupSchedulerWorkerProcesses } from './worker-process';
 import {
   spawnSchedulerPeriodicCleanup,
   type SchedulerPeriodicCleanupSpawnResult,
 } from './periodic-cleanup-process';
-import {
-  buildSchedulerWorkerExitedLifecycle,
-  buildSchedulerWorkerSpawnFailureLifecycle,
-  buildSchedulerWorkerSpawnedLifecycle,
-} from './worker-lifecycle';
 import { normalizeSchedulerConfig, type SchedulerConfig } from './config';
 import {
   readSchedulerHealthSnapshot,
@@ -87,16 +51,9 @@ export type {
   SchedulerRestoredState,
   SchedulerStateSnapshotInput,
 } from './state';
-export {
-  buildSchedulerWorkerLaunchDescriptor,
-  resolveSchedulerWorkerCommand,
-  resolveSchedulerWorkerExecutable,
-  selectSchedulerWorkerEnvironment,
-} from './worker-launch';
-export type { SchedulerWorkerCommand, SchedulerWorkerLaunchDescriptor } from './worker-launch';
 export { selectSchedulerSourceScanRepositories } from './source-scan';
 
-const DARWIN_MEMORY_SAMPLE_TTL_MS = 5_000;
+const SCHEDULE_TICK_INTERVAL_MS = 30_000;
 export const SCHEDULER_RECONCILIATION_INTERVAL_MS = 5_000;
 const RUNTIME_CLEANUP_INTERVAL_MS = Math.max(30_000, Number(process.env.FORGE_RUNTIME_CLEANUP_INTERVAL_MS ?? 60_000));
 
@@ -208,25 +165,19 @@ export interface SchedulerRuntimeBinding {
 
 export class GlobalScheduler {
   private readonly controllerHome: string;
-  private readonly actors: RepoActorRegistry;
-  private readonly children = new Map<string, ChildProcess>();
   private readonly maintenanceChildren = new Map<string, ChildProcess>();
   private readonly config: SchedulerConfig;
   private readonly controllerPid: number;
   private readonly runtimeSourceRoot?: string;
-  private readonly workerEntrypoint?: string;
-  private readonly workerExecutable?: string;
   private readonly periodicCleanupExecutable?: string;
   private readonly isolatePeriodicCleanup: boolean;
   private readonly fatalOnTickError: boolean;
   private lastScheduleTick = 0;
   private lastReconcile = 0;
   private lastPersistedAt = 0;
-  private readonly lastRepoDispatch = new Map<string, number>();
   private readonly loopStartedAt = new Date().toISOString();
   private lastHeartbeatAt = this.loopStartedAt;
   private lastTickAt = this.loopStartedAt;
-  private lastDispatchAt: string | undefined;
   private lastReconcileAt: string | undefined;
   private lastCleanupAt = 0;
   private lastGitStatusSampleAt = 0;
@@ -241,9 +192,6 @@ export class GlobalScheduler {
   private workValidationReconcile = reconcilePendingWorkValidations;
   private editValidationReconcile = reconcilePendingEditValidations;
   private repositoryList = listRepositories;
-  private lastDarwinMemorySampleAt = 0;
-  private cachedDarwinAvailableMemoryMb: number | undefined;
-  private darwinMemorySampleInFlight: Promise<void> | undefined;
 
   constructor(
     controllerHome: string,
@@ -253,14 +201,7 @@ export class GlobalScheduler {
     this.controllerHome = controllerHome;
     this.controllerPid = runtime.controllerPid ?? process.pid;
     this.config = normalizeSchedulerConfig(config);
-    // The per-repository mailbox must not impose a hidden concurrency ceiling
-    // below the scheduler's global worker budget. Resource leases still serialize
-    // conflicting workspace/path/integration claims, while independent jobs in a
-    // busy single repository may use the available global worker capacity.
-    this.actors = new RepoActorRegistry(controllerHome, { maxConcurrentWorkers: this.config.maxWorkers });
     this.runtimeSourceRoot = runtime.runtimeSourceRoot ? resolve(runtime.runtimeSourceRoot) : undefined;
-    this.workerEntrypoint = runtime.workerEntrypoint ? resolve(runtime.workerEntrypoint) : undefined;
-    this.workerExecutable = runtime.workerExecutable ? resolve(runtime.workerExecutable) : undefined;
     this.periodicCleanupExecutable = runtime.periodicCleanupExecutable ? resolve(runtime.periodicCleanupExecutable) : undefined;
     this.isolatePeriodicCleanup = runtime.isolatePeriodicCleanup === true;
     this.fatalOnTickError = runtime.fatalOnTickError === true;
@@ -268,7 +209,6 @@ export class GlobalScheduler {
     this.lastSourceScanAt = restoredState.lastSourceScanAt;
     this.lastSourceScanRepoCount = restoredState.lastSourceScanRepoCount;
     this.sourceScansAvoided = restoredState.sourceScansAvoided;
-    for (const [repoId, timestamp] of restoredState.lastRepoDispatch) this.lastRepoDispatch.set(repoId, timestamp);
   }
 
   private persistState(force = false): void {
@@ -280,220 +220,15 @@ export class GlobalScheduler {
       lastHeartbeatAt: this.lastHeartbeatAt,
       heartbeatTimeoutMs: this.config.heartbeatTimeoutMs,
       lastTickAt: this.lastTickAt,
-      lastDispatchAt: this.lastDispatchAt,
       lastReconcileAt: this.lastReconcileAt,
       lastSourceScanAt: this.lastSourceScanAt,
       lastSourceScanRepoCount: this.lastSourceScanRepoCount,
       sourceScansAvoided: this.sourceScansAvoided,
-      lastRepoDispatch: this.lastRepoDispatch,
     }, now);
   }
 
   private pidAlive(pid: number | undefined): boolean {
     return isProcessAlive(pid);
-  }
-
-  private async recordWorkerExit(
-    repoId: string,
-    jobId: string,
-    attempt: number,
-    child: ChildProcess | undefined,
-    lifecycle: ExecutionWorkerLifecycle,
-    exitCode: number | null,
-    signal: string | null,
-    stderr: string,
-    stderrTruncated: boolean,
-    startupError?: string,
-  ): Promise<void> {
-    const diagnosticLifecycle = buildSchedulerWorkerExitedLifecycle({
-      lifecycle,
-      childPid: child?.pid,
-      exitCode,
-      signal,
-      stderr,
-      stderrTruncated,
-      startupError,
-    });
-    reconcileSchedulerWorkerExit({
-      controllerHome: this.controllerHome,
-      repoId,
-      jobId,
-      attempt,
-      childPid: child?.pid,
-      lifecycle,
-      diagnosticLifecycle,
-      exitCode,
-      signal,
-      stderr,
-      stderrTruncated,
-      startupError,
-    });
-  }
-
-  private spawnWorker(repoId: string, jobId: string): boolean {
-    // A fenced Runtime must not consume the queue or dispatch Workers.
-    const fence = assertRuntimeMayWrite('consume_queue', this.controllerHome);
-    if (!fence.allowed) return false;
-    const tracked = this.children.get(jobId);
-    if (tracked?.pid && this.pidAlive(tracked.pid)) return false;
-    const current = getExecutionJob(this.controllerHome, repoId, jobId);
-    if (!['dispatched', 'running'].includes(current.status)) return false;
-    if (current.workerPid && this.pidAlive(current.workerPid)) return false;
-    const command = (() => {
-      try {
-        return resolveSchedulerWorkerCommand({
-          runtimeSourceRoot: this.runtimeSourceRoot,
-          workerEntrypoint: this.workerEntrypoint,
-          standaloneExecutable: this.workerExecutable,
-        });
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        const lifecycle = buildSchedulerWorkerSpawnFailureLifecycle({
-          executable: this.workerExecutable ?? process.execPath,
-          cwd: this.workerExecutable ? dirname(this.workerExecutable) : (this.runtimeSourceRoot ?? process.cwd()),
-          environment: selectSchedulerWorkerEnvironment(process.env),
-          ownerPid: this.controllerPid,
-          attempt: current.attempt,
-          maxAttempts: current.maxAttempts,
-        });
-        persistSchedulerSpawnedWorkerLifecycle({
-          controllerHome: this.controllerHome,
-          repoId,
-          jobId,
-          lifecycle,
-        });
-        void this.recordWorkerExit(repoId, jobId, current.attempt, undefined, lifecycle, null, null, '', false, message);
-        return undefined;
-      }
-    })();
-    if (!command) return false;
-    // Pass the parent's captured Runtime owner and whole-release claim. A Worker
-    // never re-adopts current authority after spawn; owner/release rotation fences it.
-    const writeClaim = getRuntimeWriteClaim();
-    const launch = buildSchedulerWorkerLaunchDescriptor({
-      command,
-      controllerHome: this.controllerHome,
-      repoId,
-      jobId,
-      controllerPid: this.controllerPid,
-      runtimeSourceRoot: this.workerExecutable ? undefined : this.runtimeSourceRoot,
-      writeClaimEnvironment: writeClaim ? runtimeWriteClaimEnvironment(writeClaim) : {},
-    });
-    const stderrCapture = createSchedulerWorkerStderrCapture({
-      controllerHome: this.controllerHome,
-      repoId,
-      jobId,
-      attempt: current.attempt,
-    });
-    const lifecycle = buildSchedulerWorkerSpawnedLifecycle({
-      launch,
-      ownerPid: this.controllerPid,
-      releaseIdentity: writeClaim ? {
-        runtimeInstanceId: writeClaim.runtimeInstanceId,
-        releaseAuthorityRevision: writeClaim.releaseAuthorityRevision,
-        releaseId: writeClaim.releaseId,
-        artifactIdentity: writeClaim.artifactIdentity,
-        workerProtocolVersion: writeClaim.workerProtocolVersion,
-      } : undefined,
-      attempt: current.attempt,
-      maxAttempts: current.maxAttempts,
-      stderrPath: stderrCapture.path,
-    });
-    persistSchedulerSpawnedWorkerLifecycle({
-      controllerHome: this.controllerHome,
-      repoId,
-      jobId,
-      lifecycle,
-    });
-    const spawned = spawnSchedulerWorkerProcess(launch);
-    if (!spawned.ok) {
-      void this.recordWorkerExit(
-        repoId,
-        jobId,
-        current.attempt,
-        undefined,
-        lifecycle,
-        null,
-        null,
-        '',
-        false,
-        spawned.startupError,
-      );
-      return false;
-    }
-    const child = spawned.child;
-    wireSchedulerWorkerProcess({
-      jobId,
-      child,
-      children: this.children,
-      stderrCapture,
-      onExit: ({ exitCode, signal, stderr, stderrTruncated, startupError }) => {
-        void this.recordWorkerExit(
-          repoId,
-          jobId,
-          current.attempt,
-          child,
-          lifecycle,
-          exitCode,
-          signal,
-          stderr,
-          stderrTruncated,
-          startupError,
-        );
-      },
-    });
-    return registerSchedulerWorkerProcess({
-      jobId,
-      child,
-      children: this.children,
-      attach: (workerPid) => persistSchedulerWorkerAttachment({
-        controllerHome: this.controllerHome,
-        repoId,
-        jobId,
-        workerPid,
-        lifecycle,
-      }),
-    });
-  }
-
-  private refreshDarwinAvailableMemoryMb(fallback: number): void {
-    if (this.darwinMemorySampleInFlight) return;
-    this.lastDarwinMemorySampleAt = Date.now();
-    this.darwinMemorySampleInFlight = sampleDarwinAvailableMemoryMb(fallback)
-      .then((availableMemoryMb) => {
-        this.cachedDarwinAvailableMemoryMb = availableMemoryMb;
-      })
-      .catch(() => {
-        this.cachedDarwinAvailableMemoryMb = fallback;
-      })
-      .finally(() => {
-        this.darwinMemorySampleInFlight = undefined;
-      });
-  }
-
-  private availableMemoryMb(now = Date.now()): number {
-    const fallback = freemem() / (1024 * 1024);
-    if (process.platform !== 'darwin') return fallback;
-    const cached = this.cachedDarwinAvailableMemoryMb;
-    if (cached !== undefined && now - this.lastDarwinMemorySampleAt < DARWIN_MEMORY_SAMPLE_TTL_MS) {
-      return cached;
-    }
-
-    this.refreshDarwinAvailableMemoryMb(fallback);
-    return cached ?? fallback;
-  }
-
-  private resourcePressure(): { pressured: boolean; freeMemoryMb: number; loadPerCpu: number } {
-    const freeMemoryMb = this.availableMemoryMb();
-    const loadPerCpu = loadavg()[0] / Math.max(1, cpus().length);
-    return {
-      pressured: isSchedulerResourcePressured(
-        { freeMemoryMb, loadPerCpu },
-        { minFreeMemoryMb: this.config.minFreeMemoryMb, maxLoadPerCpu: this.config.maxLoadPerCpu },
-      ),
-      freeMemoryMb,
-      loadPerCpu,
-    };
   }
 
   private launchPeriodicCleanup(nowMs: number): boolean {
@@ -568,7 +303,6 @@ export class GlobalScheduler {
       }
     }
     if (now - this.lastReconcile >= SCHEDULER_RECONCILIATION_INTERVAL_MS) {
-      await reconcileExecutionJobsAsync(this.controllerHome);
       for (const repository of repositories) {
         try {
           this.workExecutionConcurrencyReconcile({ controllerHome: this.controllerHome, repoId: repository.repoId });
@@ -587,8 +321,7 @@ export class GlobalScheduler {
       this.lastReconcileAt = new Date(now).toISOString();
       reconciliationRan = true;
     }
-    const activeJobSnapshot = listActiveExecutionJobs(this.controllerHome);
-    const activeSourceRepoIds = new Set(activeJobSnapshot.map((job) => job.repoId));
+    const activeSourceRepoIds = new Set<string>();
     const sourceSampling = planSchedulerSourceSampling({
       repositories,
       activeRepoIds: activeSourceRepoIds,
@@ -634,99 +367,21 @@ export class GlobalScheduler {
         console.error('[forge liveness] controller progression reconciliation reported ' + liveness.failed + ' failure(s)');
       }
     }
-    const durableAdmission = await runSchedulerDurableAdmission({
-      controllerHome: this.controllerHome,
-      repositoryIds: repositories.map((repo) => repo.repoId),
-      nowMs: now,
-      lastScheduleTickAt: this.lastScheduleTick,
-      activeJobs: activeJobSnapshot,
-    });
-    if (durableAdmission.scheduleTicked) this.lastScheduleTick = now;
-    let activeJobs = 0;
-    const pendingSpawns: Array<{ repoId: string; jobId: string }> = [];
-    const projectionRefreshRepos = new Set<string>();
-    if (activeJobSnapshot.length > 0) {
-      const pressure = this.resourcePressure();
-      try {
-        activeJobs = withControllerLock(
-          this.controllerHome,
-          {
-            scope: 'task',
-            repoId: '__controller__',
-            taskId: 'global-scheduler-dispatch',
-          },
-          `global-scheduler:${this.controllerPid}`,
-          () => {
-            const active = listActiveExecutionJobs(this.controllerHome);
-            const capacity = createSchedulerDispatchCapacity(active, this.config, pressure.pressured);
-            if (capacity.workers <= 0) return active.length;
-
-            const scheduleNow = Date.now();
-            const repoIds = selectExecutionJobDispatchRepositories(active, scheduleNow, this.lastRepoDispatch);
-            const reservedRepos = new Set(capacity.reservedJobs.map((job) => job.repoId));
-            let dispatchStateChanged = false;
-            const canDispatch = (job: (typeof active)[number]): boolean => schedulerDispatchCapacityAllows(capacity, job);
-            for (const repoId of repoIds) {
-              if (capacity.workers <= 0) break;
-              if (!reservedRepos.has(repoId) && reservedRepos.size >= this.config.maxConcurrentRepositories) continue;
-              const actor = this.actors.get(repoId);
-              let dispatch: ReturnType<typeof actor.tryClaimNext>;
-              try {
-                dispatch = actor.tryClaimNext({
-                  scheduleNow,
-                  canDispatch,
-                  refreshProjection: false,
-                  lockWaitMs: 0,
-                });
-                projectionRefreshRepos.add(repoId);
-              } catch (error) {
-                if (error instanceof Error && error.message.startsWith('LOCK_HELD:')) continue;
-                throw error;
-              }
-              if (!dispatch) continue;
-
-              // A successful claim is the capacity reservation. Count it immediately,
-              // before the worker PID is spawned or attached, so concurrent schedulers
-              // cannot over-dispatch through the dispatched -> running window.
-              consumeSchedulerDispatchCapacity(capacity, dispatch.job);
-              reservedRepos.add(repoId);
-              const dispatchedAt = Date.now();
-              this.lastRepoDispatch.set(repoId, dispatchedAt);
-              this.lastDispatchAt = new Date(dispatchedAt).toISOString();
-              dispatchStateChanged = true;
-              pendingSpawns.push({ repoId, jobId: dispatch.job.jobId });
-            }
-            if (dispatchStateChanged) this.persistState(true);
-            return active.length;
-          },
-          5_000,
-        );
-      } catch (error) {
-        if (!(error instanceof Error) || !error.message.startsWith('LOCK_HELD:')) throw error;
-        // Another scheduler owns the global dispatch reservation. The pre-lock snapshot
-        // is sufficient for backoff accounting; the next wake/tick observes the winner's state.
-        activeJobs = activeJobSnapshot.length;
-      }
+    // ExecutionJob creation is retired. Work and Process own live execution.
+    if (now - this.lastScheduleTick >= SCHEDULE_TICK_INTERVAL_MS) {
+      await tickSchedules(this.controllerHome, repositories.map((repo) => repo.repoId));
+      this.lastScheduleTick = now;
     }
-    // Repo Actor mutations leave projection dirty markers. Refresh those repos
-    // immediately; the independent source safety scan contributes only its bounded
-    // active/round-robin candidates after the dispatch reservation lock is free.
     refreshSchedulerRepositoryProjections({
       controllerHome: this.controllerHome,
       repositories,
       sourceScanRepositories: projectionMaintenanceRepositories,
-      projectionRefreshRepoIds: projectionRefreshRepos,
+      projectionRefreshRepoIds: new Set<string>(),
       controllerPid: this.controllerPid,
     });
-    // Process creation, lifecycle file writes, and Worker attachment are all
-    // deliberately outside the global dispatch reservation lock. The durable
-    // dispatched state is the capacity reservation while spawn proceeds.
-    for (const pending of pendingSpawns) {
-      this.spawnWorker(pending.repoId, pending.jobId);
-    }
     this.lastHeartbeatAt = new Date().toISOString();
     this.persistState();
-    return { activeJobs };
+    return { activeJobs: 0 };
   }
 
   async run(signal?: AbortSignal): Promise<void> {
@@ -786,10 +441,7 @@ export class GlobalScheduler {
       }
     } finally {
       clearInterval(heartbeatTimer);
-      await Promise.all([
-        cleanupSchedulerWorkerProcesses(this.children),
-        cleanupSchedulerWorkerProcesses(this.maintenanceChildren),
-      ]);
+      await cleanupSchedulerWorkerProcesses(this.maintenanceChildren);
     }
   }
 }

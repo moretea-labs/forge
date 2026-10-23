@@ -573,7 +573,6 @@ const SEMANTIC_STRING_AUTHORITY_DEBT = new Set([
   `src/runtime/control-plane/execution/work-head-settlement.ts::error.message.includes('CONTROL_PLANE_REVISION_CONFLICT')`,
   `src/runtime/control-plane/facade/requirement-authority.ts::error.message.startsWith('REQUIREMENT_ALREADY_EXISTS:')`,
   `src/runtime/control-plane/global-scheduler/reconciliation.ts::message.includes(':')`,
-  `src/runtime/control-plane/global-scheduler/scheduler.ts::error.message.startsWith('LOCK_HELD:')`,
   `src/runtime/control-plane/launcher/chatgpt-work-continuation.ts::error.message.includes(':')`,
   `src/runtime/control-plane/persistence/sqlite-store.ts::(error instanceof Error ? error.message : String(error)).startsWith('CONTROL_PLANE_SQLITE_BUSY:')`,
   `src/runtime/control-plane/persistence/sqlite-store.ts::/database is locked|SQLITE_BUSY/i.test(message)`,
@@ -674,7 +673,6 @@ const required = [
   'src/runtime/control-plane/global-scheduler/config.ts',
   'src/runtime/control-plane/global-scheduler/state.ts',
   'src/runtime/control-plane/global-scheduler/worker-launch.ts',
-  'src/runtime/control-plane/global-scheduler/dispatch-capacity.ts',
   'src/runtime/control-plane/global-scheduler/projection-refresh.ts',
   'src/runtime/control-plane/global-scheduler/worker-lifecycle.ts',
   'src/runtime/control-plane/global-scheduler/worker-stderr.ts',
@@ -682,11 +680,9 @@ const required = [
   'src/runtime/control-plane/global-scheduler/worker-lifecycle-store.ts',
   'src/runtime/control-plane/global-scheduler/maintenance.ts',
   'src/runtime/control-plane/global-scheduler/source-scan.ts',
-  'src/runtime/control-plane/global-scheduler/durable-admission.ts',
   'src/runtime/control-plane/global-scheduler/worker-exit-decision.ts',
   'src/runtime/control-plane/global-scheduler/worker-exit-reconciler.ts',
   'src/runtime/control-plane/global-scheduler/worker-process.ts',
-  'src/runtime/control-plane/repo-actor/actor.ts',
   'src/runtime/execution/jobs/store.ts',
   'src/runtime/execution/jobs/timeouts.ts',
   'src/runtime/execution/jobs/receipt-store.ts',
@@ -1857,24 +1853,15 @@ requireText('src/runtime/resources/leases/types.ts', 'fencingToken: number');
 requireText('src/runtime/resources/leases/store.ts', 'assertFencingToken');
 requireText('src/runtime/resources/leases/store.ts', 'expectedLeaseMap');
 requireText('src/runtime/resources/claims/conflicts.ts', "'repo-content:*'");
-requireText('src/runtime/control-plane/repo-actor/actor.ts', 'repo-actor-mailbox');
-requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'maxConcurrentRepositories');
-requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'createSchedulerDispatchCapacity');
-requireText('src/runtime/control-plane/global-scheduler/dispatch-capacity.ts', 'maxHeavyChecks');
-requireText('src/runtime/control-plane/global-scheduler/dispatch-capacity.ts', 'maxAgentProcesses');
 requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'normalizeSchedulerConfig');
 requireText('src/runtime/control-plane/global-scheduler/config.ts', 'normalizeSchedulerConfig');
 requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'writeSchedulerHealthSnapshot');
 requireText('src/runtime/control-plane/global-scheduler/state.ts', 'writeSchedulerHealthSnapshot');
-requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'buildSchedulerWorkerLaunchDescriptor');
 requireText('src/runtime/control-plane/global-scheduler/worker-launch.ts', 'buildSchedulerWorkerLaunchDescriptor');
 requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'refreshSchedulerRepositoryProjections');
 requireText('src/runtime/control-plane/global-scheduler/projection-refresh.ts', 'refreshRepositoryProjectionForRepository');
-requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'buildSchedulerWorkerSpawnedLifecycle');
 requireText('src/runtime/control-plane/global-scheduler/worker-lifecycle.ts', 'buildSchedulerWorkerExitFailure');
-requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'createSchedulerWorkerStderrCapture');
 requireText('src/runtime/control-plane/global-scheduler/worker-stderr.ts', 'MAX_SCHEDULER_WORKER_STDERR_BYTES');
-requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'persistSchedulerWorkerAttachment');
 requireText('src/runtime/control-plane/global-scheduler/worker-attachment.ts', 'attachExecutionWorker');
 requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'runSchedulerPeriodicCleanup');
 requireText('src/runtime/control-plane/global-scheduler/maintenance.ts', 'runSchedulerValidationReconciliation');
@@ -1890,18 +1877,12 @@ requireText('src/runtime/control-plane/release-retention.ts', 'const databaseBac
 requireText('src/runtime/root/scheduler.ts', 'isolatePeriodicCleanup: true');
 requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'planSchedulerSourceSampling');
 requireText('src/runtime/control-plane/global-scheduler/source-scan.ts', 'selectSchedulerSourceScanRepositories');
-requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'runSchedulerDurableAdmission');
-requireText('src/runtime/control-plane/global-scheduler/durable-admission.ts', 'markExecutionJobSchedulerObserved');
 requireText('src/runtime/control-plane/global-scheduler/worker-exit-reconciler.ts', 'persistSchedulerTerminalWorkerLifecycle');
 requireText('src/runtime/control-plane/global-scheduler/worker-lifecycle-store.ts', 'TERMINAL_JOB_STATUSES');
 requireText('src/runtime/control-plane/global-scheduler/worker-exit-reconciler.ts', 'evaluateSchedulerWorkerExitCandidate');
 requireText('src/runtime/control-plane/global-scheduler/worker-exit-decision.ts', 'TERMINAL_JOB_STATUSES');
-requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'reconcileSchedulerWorkerExit');
 requireText('src/runtime/control-plane/global-scheduler/worker-exit-reconciler.ts', 'releaseExecutionLeases');
 requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'cleanupSchedulerWorkerProcesses');
-requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'registerSchedulerWorkerProcess');
-requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'spawnSchedulerWorkerProcess');
-requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'wireSchedulerWorkerProcess');
 requireText('src/runtime/control-plane/global-scheduler/worker-process.ts', 'cleanupSchedulerWorkerProcesses');
 requireText('src/runtime/control-plane/global-scheduler/worker-process.ts', 'dependencies.spawnProcess');
 requireText('src/runtime/control-plane/global-scheduler/worker-process.ts', 'terminateProcessTree');
@@ -1910,20 +1891,6 @@ requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'writeAge
 requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'sampleRepositoryGitStatusForRepositories');
 requireText('src/cli/agent-jobs/executable-resolver.ts', 'revalidateAgentExecutable');
 requireText('src/cli/agent-jobs/executable-resolver.ts', 'AGENT_EXECUTABLE_IDENTITY_CHANGED');
-forbidBetween(
-  'src/runtime/control-plane/global-scheduler/scheduler.ts',
-  'activeJobs = withControllerLock(',
-  '} catch (error) {',
-  /this\.spawnWorker\s*\(/,
-  'Execution Worker spawn must happen outside the global scheduler lock',
-);
-forbidBetween(
-  'src/runtime/control-plane/repo-actor/actor.ts',
-  'const dispatch = withControllerLock(',
-  '// Projection materialization',
-  /rebuildRepositoryProjection\s*\(/,
-  'Projection rebuild must happen outside the Repo Actor mailbox lock',
-);
 requireText('packages/kernel/scheduler/infrastructure/schedule-store.ts', "'occurrences'");
 requireText('src/runtime/projections/git-status-sampler.ts', 'writeRepositoryGitStatusSample');
 requireText('src/runtime/projections/git-status-sampler.ts', 'readRepositoryGitStatusSample');
@@ -2007,7 +1974,6 @@ for (const path of [
   'adapters/mcp/runtime-gateway/runtime-tools.ts',
   'adapters/mcp/runtime-gateway/work-adapter.ts',
   'src/runtime/control-plane/global-scheduler/scheduler.ts',
-  'src/runtime/control-plane/repo-actor/actor.ts',
   'src/runtime/workflow/schedules/engine.ts',
   'src/runtime/workflow/schedules/work-continuation.ts',
   'adapters/mcp/transports/http.ts',
