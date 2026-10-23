@@ -225,6 +225,61 @@ test('service-worker restart reattaches only the exact Controller-pinned bootstr
   expect(fixture.tabs).toHaveLength(2);
 });
 
+test('Chrome content script awaits delayed exact editor readback without duplicate Send', async () => {
+  const source = readFileSync(new URL('../../adapters/computer/chrome-extension/content.js', import.meta.url), 'utf8');
+  const id = '12345678-1234-1234-1234-123456789abc';
+  const url = `https://chatgpt.com/c/${id}`;
+  const prompt = 'alpha  beta\nline two';
+  for (const [rendered, expectedSend] of [[prompt, true], ['alpha beta\nline two', false]] as const) {
+    let sends = 0;
+    let listener: ((message: Record<string, unknown>, sender: unknown, respond: (value: unknown) => void) => boolean) | undefined;
+    const observers: Array<() => void> = [];
+    class TextArea {
+      private text = '';
+      get value() { return this.text; }
+      set value(_next: string) {
+        queueMicrotask(() => { this.text = rendered; for (const notify of [...observers]) notify(); });
+      }
+      focus() {}
+      dispatchEvent() { return true; }
+      querySelector() { return null; }
+      getClientRects() { return [1]; }
+    }
+    const editor = new TextArea();
+    const send = { isConnected: true, disabled: false, getClientRects: () => [1],
+      getAttribute: () => null, click: () => { sends++; } };
+    const empty = Object.assign([], { item: () => undefined });
+    const document = { documentElement: {}, addEventListener() {}, removeEventListener() {},
+      querySelectorAll: (selector: string) => selector.includes('#prompt-textarea') ? [editor]
+        : selector.includes('send-button') ? [send] : empty };
+    const context = {
+      document, location: { href: url }, URL, Date, Map, Promise,
+      HTMLTextAreaElement: TextArea, HTMLInputElement: class {},
+      InputEvent: class { constructor(_type: string, _options: unknown) {} },
+      ForgeComputerChatgptCore: {
+        parseConversation: (value: string) => value === url ? { conversationId: id } : undefined,
+        normalizeText: (value: unknown) => String(value ?? '').replace(/\s+/g, ' ').trim(),
+      },
+      chrome: { runtime: { onMessage: { addListener: (fn: typeof listener) => { listener = fn; } }, sendMessage() {} } },
+      MutationObserver: class {
+        constructor(private callback: () => void) {}
+        observe() { observers.push(this.callback); }
+        disconnect() { const index = observers.indexOf(this.callback); if (index >= 0) observers.splice(index, 1); }
+      },
+      setTimeout: (callback: () => void, ms: number) => { if (ms === 2_000 || ms === 75) queueMicrotask(callback); return 1; },
+      clearTimeout() {},
+    };
+    runInNewContext(source, context);
+    if (!listener) throw new Error('Chrome content listener missing');
+    const result = await new Promise<Record<string, unknown>>((resolve) => {
+      listener!({ type: 'forge-computer-chatgpt-dispatch', prompt, expectedConversationId: id }, null, (value) => resolve(value as Record<string, unknown>));
+    });
+    expect(result.dispatched).toBe(expectedSend);
+    if (!expectedSend) expect(result.reason).toBe('composer_write_unconfirmed');
+    expect(sends).toBe(expectedSend ? 1 : 0);
+  }
+});
+
 test('real Chrome content script preserves all prompt spaces and newlines during send readback', async () => {
   const content = readFileSync(new URL('../../adapters/computer/chrome-extension/content.js', import.meta.url), 'utf8');
   const prompt = 'alpha  beta\nline two';
