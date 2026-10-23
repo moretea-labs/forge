@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { assertUniqueGuiChromeProcess } from './chrome-process-identity';
 import { registerRepository } from '../../src/cli/repositories/registry';
+import { writeControllerPluginConfig } from '../../src/runtime/plugins/config-store';
 import {
   executeBrowserPluginAction,
   resetBrowserPluginRuntimeHooksForTest,
@@ -68,11 +69,14 @@ function assertUserTabPreserved(
 
 async function action(actionId: string, args: Record<string, unknown>): Promise<Record<string, unknown>> {
   const started = performance.now();
+  const focusBefore = await activeChromeTabIdentity();
   try {
-    return await executeBrowserPluginAction({
+    const result = await executeBrowserPluginAction({
     controllerHome, repoId: 'repo', repoRoot, pluginId: 'browser', actionId,
     requestId: `browser-live-${actionId}-${crypto.randomUUID()}`, args, origin: { surface: 'local-ui', actor: 'e2e' },
     });
+    assertUserTabPreserved(focusBefore, await activeChromeTabIdentity());
+    return result;
   } finally {
     timings.push({ kind: actionId, ms: Math.round((performance.now() - started) * 10) / 10 });
   }
@@ -103,10 +107,10 @@ try {
   const port = server.port;
   const one = `http://127.0.0.1:${port}/one`;
   const two = `http://127.0.0.1:${port}/two`;
-  writeFileSync(join(repoRoot, '.forge/plugins/browser.json'), `${JSON.stringify({
-    schemaVersion: 1, enabled: true, provider: 'playwright', browserMode: 'attach_preferred',
+  writeControllerPluginConfig(controllerHome, 'browser', {
+    schemaVersion: 3, enabled: true, provider: 'playwright', browserMode: 'attach_preferred',
     cdpAttachFallback: 'fail_closed', nativeAttachMode: 'auto', nativeBrowserCandidates: ['chrome'], defaultTimeoutMs: 10_000,
-  }, null, 2)}\n`);
+  });
   setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => false });
   // A bundle name alone cannot prove which running Chrome instance receives
   // Apple Events. Check process roots *before* any scripting or tab mutation.
@@ -151,8 +155,10 @@ try {
   sessionId = '';
   assert.equal(closed.closed, true);
   assert.equal(closed.resourceClosed, true);
-  assertUserTabPreserved(userTabBefore, await activeChromeTabIdentity());
-  console.log(JSON.stringify({ ok: true, provider: 'desktop_operator', actionCount: timings.length, durationMs: Math.round(timings.reduce((sum, entry) => sum + entry.ms, 0)), timings }));
+  const userTabAfter = await activeChromeTabIdentity();
+  const focusChangedDuringOtherActivity = userTabBefore.windowId !== userTabAfter.windowId
+    || userTabBefore.tabId !== userTabAfter.tabId;
+  console.log(JSON.stringify({ ok: true, provider: 'desktop_operator', focusChangedDuringOtherActivity, actionCount: timings.length, durationMs: Math.round(timings.reduce((sum, entry) => sum + entry.ms, 0)), timings }));
 } finally {
   if (sessionId) await action('close_session', { session_id: sessionId }).catch(() => undefined);
   server?.stop(true);
