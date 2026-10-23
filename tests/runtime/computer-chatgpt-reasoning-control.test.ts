@@ -328,3 +328,48 @@ ${prompt}`;
   expect(f.textarea.value).toBe(priorDraft+' changed');
   expect(f.state.sendClicks).toBe(0);
 });
+
+test('Supervisor replaces a stale Forge-marked draft without comparing its old body', async () => {
+  const previous = '<<<FORGE_WORKFLOW_EFFECT_V1:fx_old_serial_123456789>>>\nOld content spanning arbitrary lines';
+  const current = '<<<FORGE_WORKFLOW_EFFECT_V1:fx_new_serial_123456789>>>\nNew canonical task content';
+  const f = fixture({ controlPresent: false, initialDraft: previous });
+  const conversationId = '12345678-1234-1234-1234-123456789abc';
+  expect(await f.prepare(undefined, conversationId, current)).toMatchObject({ prepared: true });
+  expect(f.textarea.value).toBe(current);
+  expect(f.state.sendClicks).toBe(0);
+  expect(await f.dispatch(undefined, conversationId, current)).toMatchObject({ dispatched: true, confirmed: true });
+  expect(f.state.sendClicks).toBe(1);
+});
+
+test('Supervisor replaces a partial same-effect marked draft before dispatch', async () => {
+  const current = '<<<FORGE_WORKFLOW_EFFECT_V1:fx_current_serial_123456>>>\nComplete current payload';
+  const f = fixture({ controlPresent: false, initialDraft: '<<<FORGE_WORKFLOW_EFFECT_V1:fx_current_serial_123456>>>\nIncomplete' });
+  expect(await f.prepare(undefined, '12345678-1234-1234-1234-123456789abc', current)).toMatchObject({ prepared: true });
+  expect(f.textarea.value).toBe(current);
+  expect(f.state.sendClicks).toBe(0);
+});
+
+test('Supervisor refuses unmarked and malformed-magic drafts rather than overwriting them', async () => {
+  const current = '<<<FORGE_WORKFLOW_EFFECT_V1:fx_new_serial_123456789>>>\nCurrent';
+  const drafts = [
+    'A real unsent human draft',
+    'human prefix <<<FORGE_WORKFLOW_EFFECT_V1:fx_old_serial_123456789>>>\nSome text',
+    '<<<FORGE_WORKFLOW_EFFECT_V1:fx_old_serial_123456789>> trailing invalid syntax',
+  ];
+  for (const draft of drafts) {
+    const f = fixture({ controlPresent: false, initialDraft: draft });
+    expect(await f.prepare(undefined, '12345678-1234-1234-1234-123456789abc', current))
+      .toMatchObject({ prepared: false, reason: 'composer_not_empty' });
+    expect(f.textarea.value).toBe(draft);
+    expect(f.state.sendClicks).toBe(0);
+  }
+});
+
+test('Ordinary prompts cannot replace a Forge-marked Supervisor draft', async () => {
+  const draft = '<<<FORGE_WORKFLOW_EFFECT_V1:fx_old_serial_123456789>>>\nProtected';
+  const f = fixture({ controlPresent: false, initialDraft: draft });
+  expect(await f.dispatch(undefined, '12345678-1234-1234-1234-123456789abc', 'ordinary prompt'))
+    .toMatchObject({ dispatched: false, reason: 'composer_not_empty' });
+  expect(f.textarea.value).toBe(draft);
+  expect(f.state.sendClicks).toBe(0);
+});
