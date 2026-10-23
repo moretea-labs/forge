@@ -1184,6 +1184,51 @@ describe('repository.git Work delivery', () => {
     expect(handle.deliveryTargetBranch).toBe(fx.repository.defaultBranch);
     expect(handle.baseCommit).toBe(git(fx.repoRoot, ['rev-parse', 'refs/remotes/origin/main']));
   });
+
+  test('repeated identical work_prepare preserves execution_session revision', async () => {
+    const fx = fixture();
+    roots.push(fx.root);
+    const started = await callExecutionTool(fx.ctx, 'session_start', {});
+    const session = (started?.structuredContent as { session: { sessionId: string } }).session;
+    const prepared = await callExecutionTool(fx.ctx, 'work_prepare', {
+      session_id: session.sessionId,
+      repo_id: fx.repository.repoId,
+      request_id: 'prepare-session-idempotency',
+      objective: 'Verify repeated identical Work preparation preserves Session revision.',
+      checks: [],
+      isolation: 'new_worktree',
+    });
+    expect(prepared?.isError).not.toBe(true);
+    const work = (prepared?.structuredContent as { work: { workId: string } }).work;
+    const firstSession = readControlPlaneRecord(fx.controllerHome, 'execution_session', 'controller', session.sessionId)!;
+    expect(firstSession).toBeTruthy();
+    const firstRevision = firstSession.revision;
+
+    const repeated = await callExecutionTool(fx.ctx, 'work_prepare', {
+      session_id: session.sessionId,
+      repo_id: fx.repository.repoId,
+      work_id: work.workId,
+      request_id: 'prepare-session-idempotency',
+      objective: 'Verify repeated identical Work preparation preserves Session revision.',
+      checks: [],
+      isolation: 'new_worktree',
+    });
+    expect(repeated?.isError).not.toBe(true);
+    const secondSession = readControlPlaneRecord(fx.controllerHome, 'execution_session', 'controller', session.sessionId)!;
+    expect(secondSession.revision).toBe(firstRevision);
+
+    const secondWork = await callExecutionTool(fx.ctx, 'work_prepare', {
+      session_id: session.sessionId,
+      repo_id: fx.repository.repoId,
+      request_id: 'prepare-session-changed-binding',
+      objective: 'Changed Work binding updates Session.',
+      checks: [],
+      isolation: 'new_worktree',
+    });
+    expect(secondWork?.isError).not.toBe(true);
+    const changedSession = readControlPlaneRecord(fx.controllerHome, 'execution_session', 'controller', session.sessionId)!;
+    expect(changedSession.revision).toBeGreaterThan(firstRevision);
+  });
 });
 
 describe('Gateway Thin Harness routing before ExecutionJob', () => {
