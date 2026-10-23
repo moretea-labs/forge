@@ -30,6 +30,7 @@ import { routeExecution, isFastEligibleTool } from '../../src/runtime/execution/
 import { getProcessRecord, listProcessRecords } from '../../src/runtime/execution/process-runtime/store';
 import { getProcessHandle, waitForProcess } from '../../src/runtime/execution/process-runtime/runtime';
 import { readControlPlaneRecord } from '../../src/runtime/control-plane/persistence/sqlite-store';
+import { startExecutionSession, type ExecutionSessionContext } from '../../src/runtime/control-plane/execution/session-store';
 import { runPersistedCheckViaProcessRuntime } from '../../src/runtime/execution/process-runtime/persisted-check';
 import { readPersistedCheckResultReceipt } from '../../src/runtime/execution/process-runtime/check-result';
 import { resolveRepositoryCheckStorage } from '../../src/runtime/execution/process-runtime/check-storage';
@@ -1224,6 +1225,67 @@ describe('repository.git Work delivery', () => {
     expect(secondWork?.isError).not.toBe(true);
     const changedSession = readControlPlaneRecord(fx.controllerHome, 'execution_session', 'controller', session.sessionId)!;
     expect(changedSession.revision).toBeGreaterThan(firstRevision);
+  });
+
+  test('repeated session_start without explicit repository preserves existing Work binding and permission snapshot', async () => {
+    const fx = fixture();
+    roots.push(fx.root);
+    const started = await callExecutionTool(fx.ctx, 'session_start', {});
+    const session = (started?.structuredContent as { session: { sessionId: string } }).session;
+    const prepared = await callExecutionTool(fx.ctx, 'work_prepare', {
+      session_id: session.sessionId,
+      repo_id: fx.repository.repoId,
+      request_id: 'prepare-binding-preservation',
+      objective: 'Establish Work binding with explicit permission snapshot.',
+      checks: [],
+      isolation: 'new_worktree',
+    });
+    expect(prepared?.isError).not.toBe(true);
+    const work = (prepared?.structuredContent as { work: { workId: string } }).work;
+    const boundSession = readControlPlaneRecord<ExecutionSessionContext>(fx.controllerHome, 'execution_session', 'controller', session.sessionId)!;
+    expect(boundSession.value.activeRepositoryId).toBe(fx.repository.repoId);
+    expect(boundSession.value.activeWorkId).toBe(work.workId);
+    expect(boundSession.value.permissionSnapshotVersion).toBeGreaterThan(0);
+    const boundRevision = boundSession.revision;
+    const boundPermission = boundSession.value.permissionSnapshotVersion;
+
+    // Simulate session_start from context without explicit repository (e.g., after transport reconnect)
+    const noRepoCtx = { ...fx.ctx, explicitRepository: undefined };
+    const resumed = await callExecutionTool(noRepoCtx, 'session_start', {});
+    expect(resumed?.isError).not.toBe(true);
+    const resumedSession = readControlPlaneRecord<ExecutionSessionContext>(fx.controllerHome, 'execution_session', 'controller', session.sessionId)!;
+    expect(resumedSession.value.activeRepositoryId).toBe(fx.repository.repoId);
+    expect(resumedSession.value.activeWorkId).toBe(work.workId);
+    expect(resumedSession.value.permissionSnapshotVersion).toBe(boundPermission);
+    expect(resumedSession.revision).toBe(boundRevision);
+
+    // An explicit permission snapshot change must still write and preserve Work focus.
+    startExecutionSession(fx.controllerHome, {
+      sessionId: session.sessionId,
+      principalId: boundSession.value.principalId,
+      controllerInstanceId: boundSession.value.controllerInstanceId,
+      permissionSnapshotVersion: boundPermission + 1,
+    });
+    const changedPermission = readControlPlaneRecord<ExecutionSessionContext>(fx.controllerHome, 'execution_session', 'controller', session.sessionId)!;
+    expect(changedPermission.revision).toBe(boundRevision + 1);
+    expect(changedPermission.value.permissionSnapshotVersion).toBe(boundPermission + 1);
+    expect(changedPermission.value.activeWorkId).toBe(work.workId);
+
+    // Optional capability snapshot: missing is a real no-op; zero is a legitimate update.
+    const legacyId = 'session-optional-capability';
+    const legacyIdentity = { sessionId: legacyId, principalId: boundSession.value.principalId,
+      controllerInstanceId: boundSession.value.controllerInstanceId };
+    startExecutionSession(fx.controllerHome, legacyIdentity);
+    const legacyBefore = readControlPlaneRecord<ExecutionSessionContext>(fx.controllerHome, 'execution_session', 'controller', legacyId)!;
+    startExecutionSession(fx.controllerHome, legacyIdentity);
+    expect(readControlPlaneRecord<ExecutionSessionContext>(fx.controllerHome, 'execution_session', 'controller', legacyId)?.revision).toBe(legacyBefore.revision);
+    startExecutionSession(fx.controllerHome, { ...legacyIdentity, capabilitySnapshotVersion: 1 });
+    const capabilitySet = readControlPlaneRecord<ExecutionSessionContext>(fx.controllerHome, 'execution_session', 'controller', legacyId)!;
+    expect(capabilitySet.revision).toBe(legacyBefore.revision + 1);
+    startExecutionSession(fx.controllerHome, { ...legacyIdentity, capabilitySnapshotVersion: 0 });
+    const capabilityCleared = readControlPlaneRecord<ExecutionSessionContext>(fx.controllerHome, 'execution_session', 'controller', legacyId)!;
+    expect(capabilityCleared.revision).toBe(capabilitySet.revision + 1);
+    expect(capabilityCleared.value.capabilitySnapshotVersion).toBe(0);
   });
 });
 
