@@ -395,6 +395,15 @@ describe('repository.git Work delivery', () => {
     expect(prepared?.isError).not.toBe(true);
     const work = (prepared?.structuredContent as { work: { workId: string } }).work;
     const handle = readWorkHandle(fx.controllerHome, fx.repository.repoId, work.workId)!;
+    const preparedSession = (prepared?.structuredContent as { session: { updatedAt: string } }).session;
+    const sameBinding = await callExecutionTool(fx.ctx, 'session_bind_repository', {
+      session_id: session.sessionId,
+      repo_id: fx.repository.repoId,
+      checkout_id: handle.checkoutId,
+    });
+    expect(sameBinding?.isError).not.toBe(true);
+    expect((sameBinding?.structuredContent as { session: { activeWorkId?: string; updatedAt: string } }).session)
+      .toMatchObject({ activeWorkId: work.workId, updatedAt: preparedSession.updatedAt });
     writeFileSync(join(handle.worktreePath, 'src', 'lib.ts'), 'export const n = 2;\n');
     git(handle.worktreePath, ['add', 'src/lib.ts']);
     git(handle.worktreePath, ['commit', '-m', 'committed default-validation source']);

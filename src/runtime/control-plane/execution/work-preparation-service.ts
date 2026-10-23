@@ -82,17 +82,23 @@ function invalidateActiveWork(ctx: McpExecutionContext, session: ExecutionSessio
 export function bindSessionRepository(ctx: McpExecutionContext, args: Record<string, unknown>): Record<string, unknown> {
   const session = requireSession(ctx, args);
   const repository = resolveRepositorySelection({ repoId: requireExplicitRepoId(args), checkoutId: typeof args.checkout_id === 'string' ? args.checkout_id : undefined, controllerHome: ctx.controllerHome, allowSoleRepository: false });
+  const permissionSnapshotVersion = currentPermissionSnapshotVersion(ctx.controllerHome, repository.repoId);
+  const repositoryBinding = { repoId: repository.repoId, checkoutId: repository.activeCheckoutId, canonicalRoot: repository.canonicalRoot, branch: repository.checkouts.find((entry) => entry.checkoutId === repository.activeCheckoutId)?.branch ?? null };
   const switching = session.activeRepositoryId !== undefined && (session.activeRepositoryId !== repository.repoId || session.activeCheckoutId !== repository.activeCheckoutId);
+  // Binding an unchanged target must preserve the active Work and session revision.
+  if (!switching && session.activeRepositoryId === repository.repoId && session.activeCheckoutId === repository.activeCheckoutId && session.permissionSnapshotVersion === permissionSnapshotVersion) {
+    return { session, repository: repositoryBinding, switched: false };
+  }
   if (switching) invalidateActiveWork(ctx, session, 'explicit repository or checkout switch invalidated the previous active work handle');
   const next = updateExecutionSession(ctx.controllerHome, identityFor(ctx, args), {
     activeRepositoryId: repository.repoId,
     activeCheckoutId: repository.activeCheckoutId,
     activeWorkId: undefined,
     goalDelegation: undefined,
-    permissionSnapshotVersion: currentPermissionSnapshotVersion(ctx.controllerHome, repository.repoId),
+    permissionSnapshotVersion,
     lastValidatedAt: new Date().toISOString(),
   });
-  return { session: next, repository: { repoId: repository.repoId, checkoutId: repository.activeCheckoutId, canonicalRoot: repository.canonicalRoot, branch: repository.checkouts.find((entry) => entry.checkoutId === repository.activeCheckoutId)?.branch ?? null }, switched: switching };
+  return { session: next, repository: repositoryBinding, switched: switching };
 }
 
 function gitPathSet(root: string, args: string[], code: string): Set<string> {
