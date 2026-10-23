@@ -73,6 +73,7 @@ function fixture() {
   mkdirSync(join(repoRoot, '.forge'), { recursive: true });
   mkdirSync(originRoot, { recursive: true });
   git(originRoot, ['init', '--bare']);
+  git(originRoot, ['symbolic-ref', 'HEAD', 'refs/heads/main']);
   git(repoRoot, ['init', '-b', 'main']);
   git(repoRoot, ['config', 'user.name', 'Test']);
   git(repoRoot, ['config', 'user.email', 'test@example.com']);
