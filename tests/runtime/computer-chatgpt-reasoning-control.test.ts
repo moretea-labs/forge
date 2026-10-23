@@ -276,9 +276,7 @@ Run accepted independent audit`;
   const guarded = `<<<FORGE_DRAFT_REPLACE_V1:${fingerprint}:abcdef0123456789abcdef0123456789>>>
 ${prompt}`;
   const f = fixture({controlPresent:false,projectUrl,initialDraft:priorDraft});
-  expect(await f.prepare(undefined,undefined,prompt,'g-p-abc123')).toMatchObject({prepared:false,reason:'composer_not_empty'});
-  expect(f.textarea.value).toBe(priorDraft);
-  expect(f.state.sendClicks).toBe(0);
+  // An explicit one-use recovery envelope still enforces its original digest.
   expect(await f.dispatch(undefined,undefined,guarded,'g-p-abc123')).toMatchObject({dispatched:false,reason:'composer_replacement_mode_invalid'});
   expect(f.textarea.value).toBe(priorDraft);
   expect(await f.prepare(undefined,undefined,guarded,'g-p-abc123')).toMatchObject({prepared:true});
@@ -350,19 +348,25 @@ test('Supervisor replaces a partial same-effect marked draft before dispatch', a
   expect(f.state.sendClicks).toBe(0);
 });
 
-test('Supervisor refuses unmarked and malformed-magic drafts rather than overwriting them', async () => {
-  const current = '<<<FORGE_WORKFLOW_EFFECT_V1:fx_new_serial_123456789>>>\nCurrent';
-  const drafts = [
-    'A real unsent human draft',
-    'human prefix <<<FORGE_WORKFLOW_EFFECT_V1:fx_old_serial_123456789>>>\nSome text',
+test('Supervisor replaces legacy unmarked drafts only during exact-target prepare', async () => {
+  const current = '<<<FORGE_WORKFLOW_EFFECT_V1:fx_new_serial_123456789>>>\\nCurrent';
+  const conversationId = '12345678-1234-1234-1234-123456789abc';
+  for (const priorDraft of [
+    'An old user-entered shared composer draft',
+    'legacy @forge draft text',
     '<<<FORGE_WORKFLOW_EFFECT_V1:fx_old_serial_123456789>> trailing invalid syntax',
-  ];
-  for (const draft of drafts) {
-    const f = fixture({ controlPresent: false, initialDraft: draft });
-    expect(await f.prepare(undefined, '12345678-1234-1234-1234-123456789abc', current))
-      .toMatchObject({ prepared: false, reason: 'composer_not_empty' });
-    expect(f.textarea.value).toBe(draft);
+  ]) {
+    const f = fixture({ controlPresent: false, initialDraft: priorDraft });
+    expect(await f.dispatch(undefined, conversationId, current))
+      .toMatchObject({ dispatched: false, reason: 'composer_not_empty' });
+    expect(f.textarea.value).toBe(priorDraft);
+    expect(await f.prepare(undefined, conversationId, current))
+      .toMatchObject({ prepared: true });
+    expect(f.textarea.value).toBe(current);
     expect(f.state.sendClicks).toBe(0);
+    expect(await f.dispatch(undefined, conversationId, current))
+      .toMatchObject({ dispatched: true, confirmed: true });
+    expect(f.state.sendClicks).toBe(1);
   }
 });
 
