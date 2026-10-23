@@ -31,7 +31,9 @@ const MAX_PREFERRED_TOOL_COUNT = 24;
 // prepare_codex_goal_from_sprint, write_codex_goal) together with the
 // `forge mcp setup codex` CLI, the doctor Codex report, and the
 // fixedWorkflowCheck policy flag.
-const EXPECTED_EXPOSED_NAME_FINGERPRINT = 'e6e3c8ade6c5a8d5';
+// Explicit ABI retirement: legacy prepare_transfer_artifacts invoked the already-retired
+// task-ledger writer and had no usable output. Preferred ChatGPT Tool ABI is unchanged.
+const EXPECTED_EXPOSED_NAME_FINGERPRINT = '82b27cd7cf273e27';
 
 // #197 decomposition authority: the public/frozen Tool Contract is an explicit
 // baseline, independent from whichever internal adapter currently defines a

@@ -227,10 +227,6 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     paths: { type: 'array', items: { type: 'string' } },
     message: { type: 'string' },
   }, ['paths', 'message'], false),
-  definition('prepare_transfer_artifacts', 'Refresh rebuildable session continuation plus a selected-path patch transfer artifact when recovery context is needed.', {
-    repo_id: repoId,
-    reason: { type: 'string' },
-  }, [], false),
   definition('get_job', 'Read one durable Execution Job. Summary is the default; opt in to full state only when needed.', {
     job_id: { type: 'string' },
     repo_id: repoId,
