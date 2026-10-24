@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { createConnection } from 'node:net';
 import { workflowSupervisorSocketPath } from './paths';
-import type { WorkflowSupervisorConsumerStatus, WorkflowSupervisorContinuationProof, WorkflowSupervisorDiscoveredConversation, WorkflowSupervisorEffect, WorkflowSupervisorTask, WorkflowSupervisorTaskInput, WorkflowSupervisorTaskStall, WorkflowSupervisorTerminalState } from './types';
+import type { WorkflowSupervisorConsumerStatus, WorkflowSupervisorContinuationProof, WorkflowSupervisorDiscoveredConversation, WorkflowSupervisorEffect, WorkflowSupervisorTask, WorkflowSupervisorTaskInput, WorkflowSupervisorTaskStall, WorkflowSupervisorTerminalState, WorkflowSupervisorReviewNotice } from './types';
 
 interface RpcResponse<T> { id: string; ok: boolean; result?: T; error?: { code?: string; message?: string } }
 
@@ -113,6 +113,17 @@ export async function recoverWorkflowSupervisorTask(forgeHome: string, input: { 
 }
 
 /** Read-only stall classification; derived from the effect ledger, not new state. */
+/** Trusted local review/CI ingress. Never authorize merge or provider Send. */
+export async function observeWorkflowSupervisorReviewNotice(forgeHome: string, input: WorkflowSupervisorReviewNotice): Promise<{
+  eventKey: string; deduplicated: boolean; successorEffectId?: string; deferred: boolean;
+}> {
+  return await rpc(forgeHome, 'task_review_notice', {
+    task_id: input.taskId, repo_id: input.repoId, pr_number: input.prNumber,
+    reviewed_head_sha: input.reviewedHeadSha, current_head_sha: input.currentHeadSha,
+    review_id: input.reviewId, source: input.source, outcome: input.outcome,
+  }, SUPERVISOR_RPC_MUTATION_TIMEOUT_MS);
+}
+
 export async function getWorkflowSupervisorTaskStall(forgeHome: string, taskId: string): Promise<WorkflowSupervisorTaskStall> {
   return await rpc<WorkflowSupervisorTaskStall>(forgeHome, 'task_stall', { task_id: taskId });
 }
