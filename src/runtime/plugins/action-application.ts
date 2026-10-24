@@ -12,7 +12,7 @@ import {
   executeAssistantPluginReadDirect,
   executeControllerPluginDirectNonPersistent,
   executeControllerPluginReadDirect,
-  getAssistantPluginManifest,
+  getAssistantPluginManifestForAction,
   getControllerPluginManifest,
   isDirectNonPersistentPluginAction,
   isDirectPluginReadAction,
@@ -83,7 +83,7 @@ export async function executeAssistantPluginActionApplication(input: {
 }): Promise<AssistantPluginActionApplicationResult> {
   const manifest = input.scope.kind === 'controller'
     ? getControllerPluginManifest(input.controllerHome, input.request.pluginId)
-    : getAssistantPluginManifest(input.controllerHome, input.scope.repository, input.request.pluginId);
+    : getAssistantPluginManifestForAction(input.controllerHome, input.scope.repository, input.request);
   const action = manifest.actions.find((entry) => entry.actionId === input.request.actionId);
 
   if (action && isDirectPluginReadAction(action)) {
