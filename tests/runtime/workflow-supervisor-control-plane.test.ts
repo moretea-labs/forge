@@ -766,6 +766,51 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     expect(duplicate.successorEffect?.effectId).toBe(first.successorEffect?.effectId);
   });
 
+  test('Review REVISE joins the original standalone CONTINUE without second effect or stale-head approval', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-review-original-writer-'));
+    roots.push(root);
+    const store = new WorkflowSupervisorStore(root);
+    const control = new WorkflowSupervisorControlPlane(store);
+    const task = control.registerTask({
+      taskId: 'task-review-original-writer',
+      conversationId: '90909090-1111-2222-3333-444444444444',
+      conversationUrl: 'https://chatgpt.com/c/90909090-1111-2222-3333-444444444444',
+      objective: 'Deliver and review the original PR without a replacement writer.',
+      completionContract: { repo_id: 'repo-original' },
+      continuationPolicy: { kind: 'standalone_supervisor' },
+      userBlockerPolicy: {},
+    });
+    const notice = {
+      taskId: task.taskId, repoId: 'repo-original', prNumber: 446,
+      reviewedHeadSha: 'a'.repeat(40), currentHeadSha: 'a'.repeat(40),
+      reviewId: 'review-42', source: 'independent_reviewer' as const, outcome: 'REVISE' as const,
+    };
+    const source = control.reserveEnrollment(task.taskId);
+    control.observeEffect({ effectId: source.effectId, observationId: 'review-source-applied', outcome: 'applied' });
+    expect(control.observeReviewNotice(notice)).toMatchObject({ deduplicated: false, deferred: true });
+    expect(control.observeReviewNotice(notice)).toMatchObject({ deduplicated: true, deferred: true });
+    expect(() => control.observeReviewNotice({ ...notice, currentHeadSha: 'b'.repeat(40) })).toThrow('WORKFLOW_SUPERVISOR_REVIEW_STALE_HEAD');
+    expect(() => control.observeReviewNotice({ ...notice, repoId: 'repo-foreign' })).toThrow('WORKFLOW_SUPERVISOR_REVIEW_REPOSITORY_MISMATCH');
+    expect(control.taskStall(task.taskId).state).not.toBe('deliverable');
+    const completion = await control.observeAssistantTurn({
+      taskId: task.taskId, conversationId: task.conversationId,
+      responseText: renderSupervisorReceipt(task, source.effectId, 'CONTINUE'),
+    });
+    expect(completion.action).toBe('CONTINUE');
+    expect(completion.successorEffect?.prompt).toContain('receipt review-42');
+    expect(completion.successorEffect?.prompt).toContain('REVISE');
+    expect(completion.successorEffect?.prompt).toContain('same PR/branch');
+    expect(store.listPendingReviewNotices()).toHaveLength(0);
+    const after = await control.observeAssistantTurn({
+      taskId: task.taskId, conversationId: task.conversationId,
+      responseText: renderSupervisorReceipt(task, source.effectId, 'CONTINUE'),
+    });
+    expect(after.successorEffect?.effectId).toBe(completion.successorEffect?.effectId);
+    expect(after.deduplicated).toBe(true);
+    expect(control.taskStall(task.taskId)).toMatchObject({ state: 'deliverable', effectId: completion.successorEffect?.effectId });
+    store.close();
+  });
+
   test('WAIT is durable and only the exact bound Scheduler occurrence can wake the same task', async () => {
     const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-scheduled-wake-'));
     roots.push(root);
