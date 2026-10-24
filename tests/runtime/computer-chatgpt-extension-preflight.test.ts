@@ -146,7 +146,8 @@ test('preflight cannot retroactively declare a send not attempted when execution
   expect(f.submissions).toBe(1);
 });
 
-function bootstrapFixture(initialTabs: Array<{ id: number; windowId: number; url: string }> = []) {
+function bootstrapFixture(initialTabs: Array<{ id: number; windowId: number; url: string }> = [],
+  options: { ownerWriteFails?: boolean; ownerWriteDrops?: boolean } = {}) {
   const tabs = [...initialTabs];
   let nextTabId = 200;
   const ownerTokens = new Map<string, string>();
@@ -154,7 +155,10 @@ function bootstrapFixture(initialTabs: Array<{ id: number; windowId: number; url
   const chrome = {
     storage: { session: {
       async get(key: string) { return { [key]: ownerTokens.get(key) }; },
-      async set(values: Record<string, string>) { for (const [key, token] of Object.entries(values)) ownerTokens.set(key, token); },
+      async set(values: Record<string, string>) {
+        if (options.ownerWriteFails) throw new Error('CHROME_STORAGE_SESSION_UNAVAILABLE');
+        if (!options.ownerWriteDrops) for (const [key, token] of Object.entries(values)) ownerTokens.set(key, token);
+      },
     } },
     runtime: {
       lastError: undefined,
@@ -391,7 +395,7 @@ test('find_marker hydrates only the exact pinned migrated conversation after rec
         cb();
       },
     },
-    storage: { session: { async get() { return {}; } } },
+    storage: { session: { async get(k: string) { return { [k]: 'marker-reader-attested' }; } } },
     alarms: { create() {}, onAlarm: { addListener() {} } },
     windows: { onFocusChanged: { addListener() {} } },
   };
@@ -416,7 +420,7 @@ test('find_marker hydrates only the exact pinned migrated conversation after rec
   const command = { identity: { namespace: 'chatgpt.bootstrap',
     bootstrapKey: 'supervisor:exact', projectUrl },
     providerBinding: { providerId: 'browser.chrome-extension',
-      providerSessionId: 'same-provider', windowId: '8', tabId: '81' },
+      providerSessionId: 'same-provider', windowId: '8', tabId: '81', ownerToken: 'marker-reader-attested' },
     marker };
   const found = await find(command, 'same-provider');
   expect(found.matches).toHaveLength(1);
@@ -457,7 +461,8 @@ test('service-worker restart reattaches only the exact Controller-pinned bootstr
   const fixture = bootstrapFixture(tabs); // no ephemeral bootstrap map on this worker
   const android = { namespace: 'chatgpt.bootstrap', bootstrapKey: 'supervisor:android', projectUrl };
   const pin = { providerId: 'browser.chrome-extension', browserProduct: 'chrome',
-    providerSessionId: 'fresh-extension-instance', windowId: '8', tabId: '82' };
+    providerSessionId: 'fresh-extension-instance', windowId: '8', tabId: '82', ownerToken: 'restart-owner' };
+  fixture.attestOwner(82, 'restart-owner');
   const recovered = await fixture.resolve(android, true, pin);
   expect(recovered.created).toBe(false);
   expect(recovered.tab.id).toBe(82);
@@ -777,3 +782,32 @@ test('F11 reused conversation tab id must also prove owner token before binding'
   f.attestOwner(708, 'original-conversation-tab');
   expect((await f.resolve(identity, false, pin)).tab).toMatchObject({ id: 708, windowId: 19 });
 });
+
+// F11/P1: Pre-token legacy pinned bindings cannot borrow another task's
+// same-Project tab. Never upgrade URL or Tab ID alone into Send authority.
+test('F11 legacy pinned Chrome binding without owner token fails closed', async () => {
+  const projectUrl = 'https://chatgpt.com/g/g-p-test/project';
+  const f = bootstrapFixture([{ id: 707, windowId: 99, url: projectUrl }]);
+  const identity = { namespace: 'chatgpt.bootstrap', bootstrapKey: 'supervisor:legacy', projectUrl };
+  const legacy = { providerId: 'browser.chrome-extension', providerSessionId: 'old-profile', tabId: '707', windowId: '99' };
+  await expect(f.resolve(identity, true, legacy)).rejects.toThrow('COMPUTER_CHATGPT_BOOTSTRAP_OWNER_TOKEN_MISSING');
+  expect(await f.resolve(identity, false)).toBeUndefined(); // failure must not seed a same-Project bootstrap map
+  const conversationId = '12345678-1234-1234-1234-123456789abc';
+  const url = `https://chatgpt.com/c/${conversationId}`;
+  const g = bootstrapFixture([{ id: 708, windowId: 19, url }]);
+  await expect(g.resolve({ namespace: 'chatgpt.conversation', conversationId, canonicalUrl: url }, false,
+    { ...legacy, tabId: '708', windowId: '19' })).rejects.toThrow('COMPUTER_CHATGPT_EXTENSION_PINNED_OWNER_TOKEN_MISSING');
+});
+
+// A successful tab.create is insufficient: failed OR dropped session writes
+// leave an unowned shell, never a Controller-pinned Send receiver.
+for (const options of [{ ownerWriteFails: true }, { ownerWriteDrops: true }]) {
+  test(`F11 untrusted new tab owner storage ${options.ownerWriteFails ? 'reject' : 'drop'} never returns success`, async () => {
+    const f = bootstrapFixture([], options);
+    const identity = { namespace: 'chatgpt.bootstrap', bootstrapKey: 'supervisor:new',
+      projectUrl: 'https://chatgpt.com/g/g-p-test/project' };
+    await expect(f.resolve(identity, true)).rejects.toThrow('COMPUTER_CHATGPT_BOOTSTRAP_OWNER_TOKEN_UNAVAILABLE');
+    expect(f.tabs).toHaveLength(1); // preserve, do not close or steal a user-visible tab
+    expect(await f.resolve(identity, false)).toBeUndefined(); // no unverified tab reuse
+  });
+}

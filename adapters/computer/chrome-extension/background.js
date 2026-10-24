@@ -137,6 +137,10 @@ async function requirePinnedOwner(tab, pinnedBinding, identity) {
   const ownerToken = await attestedOwnerToken(tab, pinnedBinding);
   // A reused Chrome tab ID with the same Project or conversation URL is not
   // sufficient authority to adopt a different physical browser tab.
+  if (pinnedBinding?.providerId === PROVIDER_ID && pinnedBinding.tabId && !pinnedBinding.ownerToken)
+    throw new Error(identity?.namespace === 'chatgpt.bootstrap'
+      ? 'COMPUTER_CHATGPT_BOOTSTRAP_OWNER_TOKEN_MISSING'
+      : 'COMPUTER_CHATGPT_EXTENSION_PINNED_OWNER_TOKEN_MISSING');
   if (pinnedBinding?.providerId === PROVIDER_ID && pinnedBinding.ownerToken
     && ownerToken !== pinnedBinding.ownerToken) {
     throw new Error(identity?.namespace === 'chatgpt.bootstrap'
@@ -295,8 +299,9 @@ async function resolveTarget(identity, createIfMissing, pinnedBinding) {
   if (matches.length > 1) throw new Error('COMPUTER_CHATGPT_EXTENSION_EXACT_TARGET_AMBIGUOUS');
   if (matches.length === 1) {
     const tab = matches[0];
+    const ownerToken = await requirePinnedOwner(tab, pinnedBinding, identity);
     if (identity.namespace === 'chatgpt.bootstrap') bootstrapTabs.set(identity.bootstrapKey, tab.id);
-    return { tab, created: false, ownerToken: await requirePinnedOwner(tab, pinnedBinding, identity) };
+    return { tab, created: false, ownerToken };
   }
   if (identity?.namespace === 'chatgpt.bootstrap' && pinnedBinding?.providerId === PROVIDER_ID
     && pinnedBinding.tabId && pinnedBinding.windowId) {
@@ -305,14 +310,19 @@ async function resolveTarget(identity, createIfMissing, pinnedBinding) {
   if (!createIfMissing) return undefined;
   const url = identity.namespace === 'chatgpt.conversation' ? identity.canonicalUrl : identity.projectUrl;
   const tab = await tabCreate(url);
-  if (identity.namespace === 'chatgpt.bootstrap') bootstrapTabs.set(identity.bootstrapKey, tab.id);
   const token = randomId();
-  let ownerToken;
+  const key = ownedTabKey(tab.id);
   try {
-    await chrome.storage.session.set({ [ownedTabKey(tab.id)]: token });
-    ownerToken = token;
-  } catch { /* still preserve the created tab's exact binding, but never auto-close without provenance */ }
-  return { tab, created: true, ownerToken };
+    await chrome.storage.session.set({ [key]: token });
+    const stored = await chrome.storage.session.get(key);
+    if (stored[key] !== token) throw new Error('COMPUTER_CHATGPT_BOOTSTRAP_OWNER_TOKEN_UNAVAILABLE');
+  } catch {
+    // Preserve the visible tab, but neither a Controller binding nor an
+    // in-worker map may adopt an unverified physical tab or enable Send.
+    throw new Error('COMPUTER_CHATGPT_BOOTSTRAP_OWNER_TOKEN_UNAVAILABLE');
+  }
+  if (identity.namespace === 'chatgpt.bootstrap') bootstrapTabs.set(identity.bootstrapKey, tab.id);
+  return { tab, created: true, ownerToken: token };
 }
 function dispatchTransportNotReached(error) {
   const text = String(error?.message ?? error);

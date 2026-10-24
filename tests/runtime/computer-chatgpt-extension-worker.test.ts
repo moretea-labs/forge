@@ -16,11 +16,16 @@ test('new bootstrap tab requires its hydrated editor, not a model picker, before
   ];
   let snapshotCount = 0;
   let created = 0;
+  const ownerTokens = new Map<string, string>();
   const sandbox = {
     ForgeComputerChatgptCore: { projectId: () => 'g-p-abc', parseConversation: () => null },
     navigator: { userAgent: 'Chrome' },
     crypto: { randomUUID: () => 'model-ready-test' },
     chrome: {
+      storage: { session: {
+        async set(values: Record<string, string>) { for (const [k, v] of Object.entries(values)) ownerTokens.set(k, v); },
+        async get(k: string) { return { [k]: ownerTokens.get(k) }; },
+      } },
       runtime: { lastError: null },
       tabs: {
         query: async () => [],
@@ -59,10 +64,14 @@ test('unhydrated bootstrap remains bound to its one created tab without creating
   const tab = { id: 508, windowId: 8, url };
   let created = 0;
   let snapshots = 0;
+  const ownerTokens = new Map<string, string>();
   const sandbox = {
     ForgeComputerChatgptCore: { projectId: () => 'g-p-abc', parseConversation: () => null },
     navigator: { userAgent: 'Chrome' }, crypto: { randomUUID: () => 'unready-test' },
-    chrome: { runtime: { lastError: null }, tabs: {
+    chrome: { runtime: { lastError: null }, storage: { session: {
+      async set(values: Record<string, string>) { for (const [k, v] of Object.entries(values)) ownerTokens.set(k, v); },
+      async get(k: string) { return { [k]: ownerTokens.get(k) }; },
+    } }, tabs: {
       query: async () => [],
       create: (_options: unknown, callback: (t: typeof tab) => void) => { created++; callback(tab); },
       get: (_id: number, callback: (t: typeof tab) => void) => callback(tab),
@@ -145,6 +154,7 @@ test('restarted worker prepares and dispatches only the Controller-pinned bootst
     crypto: { randomUUID: () => 'worker-test' },
     navigator: { userAgent: 'Chrome' },
     chrome: {
+      storage: { session: { async get(k: string) { return { [k]: 'verified-worker-tab' }; } } },
       runtime: { lastError: null },
       tabs: {
         query: async () => tabs,
@@ -168,7 +178,7 @@ test('restarted worker prepares and dispatches only the Controller-pinned bootst
   const command = {
     identity: { namespace: 'chatgpt.bootstrap', bootstrapKey: 'supervisor:saved', projectUrl },
     providerBinding: { providerId: 'browser.chrome-extension', providerSessionId: 'previous-worker',
-      browserProduct: 'chrome', windowId: '8', tabId: '42' },
+      browserProduct: 'chrome', windowId: '8', tabId: '42', ownerToken: 'verified-worker-tab' },
     prompt: '@forge <<<FORGE_WORKFLOW_EFFECT_V1:fx_test>>> body',
   };
   expect(await funcs.testPrepare(command)).toMatchObject({ kind: 'prepared', ready: true });
