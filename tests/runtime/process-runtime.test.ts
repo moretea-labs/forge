@@ -2598,12 +2598,46 @@ describe('Process Runtime real lease contention', () => {
     expect(blocked.completed).toBe(true);
     expect(blocked.ok).not.toBe(true);
     expect(String(blocked.stderr ?? '') + String(blocked.stdout ?? '')).toMatch(/PROCESS_LEASE_CONFLICT|resource busy/i);
+    expect(blocked.concurrencyWait).toMatchObject({
+      source: 'resource_lease',
+      blockingWorkId: 'work-lease-a',
+      blockingProcessId: first.processId,
+      blockingOwnerRelation: 'other_work_or_checkout',
+    });
+
+    const sameWorkDenied = await spawnManagedProcess({
+      controllerHome: fx.controllerHome, repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      executionIdentity: executionIdentityForRepository(fx.repository),
+      workId: 'work-lease-a',
+      command: { kind: 'argv', executable: 'node', args: ['-e', 'process.stdout.write("must-not-run")'], cwd: fx.repoRoot },
+      resourceClaims: [{ resourceKey: `workspace:${fx.repository.activeCheckoutId}`, mode: 'write' }],
+      timeoutMs: 10_000,
+    });
+    expect(sameWorkDenied).toMatchObject({ completed: true, ok: false, concurrencyWait: {
+      source: 'resource_lease', blockingWorkId: 'work-lease-a',
+      blockingProcessId: first.processId, blockingOwnerRelation: 'same_work_same_checkout',
+    } });
+    expect(sameWorkDenied.stdout).not.toContain('must-not-run');
+    const { getWorkContract } = await import('../../src/runtime/control-plane/facade/work-contract-store');
+    expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, 'work-lease-a')?.executionConcurrency).toBeUndefined();
 
     // Parallel reads against a different resource key (or after release) — hold write finished.
     await waitForProcess(fx.controllerHome, fx.repository.repoId, first.processId, { timeoutMs: 10_000 });
     const after = getProcessRecord(fx.controllerHome, fx.repository.repoId, first.processId);
     expect(after?.leasesReleased).toBe(true);
     expect(listActiveLeases(fx.controllerHome, fx.repository.repoId).some((l) => l.ownerJobId === `process:${first.processId}`)).toBe(false);
+
+    const next = await spawnManagedProcess({
+      controllerHome: fx.controllerHome, repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      executionIdentity: executionIdentityForRepository(fx.repository), workId: 'work-lease-a',
+      command: { kind: 'argv', executable: 'node', args: ['-e', 'process.stdout.write("next-action")'], cwd: fx.repoRoot },
+      resourceClaims: [{ resourceKey: `workspace:${fx.repository.activeCheckoutId}`, mode: 'write' }],
+      timeoutMs: 10_000,
+    });
+    expect(next).toMatchObject({ completed: true, ok: true });
+    expect(next.stdout).toContain('next-action');
 
     // Two concurrent reads should both acquire.
     const readA = await spawnManagedProcess({

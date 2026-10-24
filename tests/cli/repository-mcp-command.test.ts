@@ -71,32 +71,6 @@ function git(root: string, args: string[]): void {
   if (result.status !== 0) throw new Error(result.stderr || `git ${args.join(" ")} failed`);
 }
 
-test("repository checkout metadata distinguishes detached HEAD from Git observation failure without losing branch", () => {
-  const workspace = mkdtempSync(join(tmpdir(), "forge-git-branch-observation-"));
-  const controllerHome = join(workspace, "controller-home");
-  const repoRoot = join(workspace, "source");
-  try {
-    mkdirSync(repoRoot, { recursive: true });
-    git(repoRoot, ["init", "-b", "main"]);
-    git(repoRoot, ["config", "user.name", "Forge Test"]);
-    git(repoRoot, ["config", "user.email", "forge-test@example.com"]);
-    writeFileSync(join(repoRoot, "README.md"), "baseline\n");
-    git(repoRoot, ["add", "README.md"]);
-    git(repoRoot, ["commit", "-m", "init"]);
-    const repository = registerRepository({ path: repoRoot, controllerHome, defaultBranch: "main" });
-    git(repoRoot, ["switch", "--detach", "HEAD"]);
-    const detached = refreshRepositoryCheckoutGitMetadata(repository.repoId, controllerHome, repository.activeCheckoutId);
-    expect(detached.checkouts.find((checkout) => checkout.checkoutId === repository.activeCheckoutId)?.branch).toBe(null);
-    git(repoRoot, ["switch", "main"]);
-    refreshRepositoryCheckoutGitMetadata(repository.repoId, controllerHome, repository.activeCheckoutId);
-    rmSync(join(repoRoot, ".git"), { recursive: true, force: true });
-    expect(() => refreshRepositoryCheckoutGitMetadata(repository.repoId, controllerHome, repository.activeCheckoutId)).toThrow("REPOSITORY_CHECKOUT_GIT_BRANCH_OBSERVATION_FAILED");
-    expect(getRepository(repository.repoId, controllerHome).checkouts.find((checkout) => checkout.checkoutId === repository.activeCheckoutId)?.branch).toBe("main");
-  } finally {
-    rmSync(workspace, { recursive: true, force: true });
-  }
-});
-
 test("ripgrep JSON discovery keeps NUL-binary and non-UTF8 candidates from corrupting valid source evidence", () => {
   const workspace = mkdtempSync(join(tmpdir(), "forge-ripgrep-json-framing-"));
   try {
@@ -984,6 +958,31 @@ describe("repository MCP command tools", () => {
   });
 
   test("registering an existing repository worktree preserves canonical repository authority", async () => {
+    {
+      const workspace = mkdtempSync(join(tmpdir(), "forge-git-branch-observation-"));
+      const controllerHome = join(workspace, "controller-home");
+      const repoRoot = join(workspace, "source");
+      try {
+        mkdirSync(repoRoot, { recursive: true });
+        git(repoRoot, ["init", "-b", "main"]);
+        git(repoRoot, ["config", "user.name", "Forge Test"]);
+        git(repoRoot, ["config", "user.email", "forge-test@example.com"]);
+        writeFileSync(join(repoRoot, "README.md"), "baseline\n");
+        git(repoRoot, ["add", "README.md"]);
+        git(repoRoot, ["commit", "-m", "init"]);
+        const repository = registerRepository({ path: repoRoot, controllerHome, defaultBranch: "main" });
+        git(repoRoot, ["switch", "--detach", "HEAD"]);
+        const detached = refreshRepositoryCheckoutGitMetadata(repository.repoId, controllerHome, repository.activeCheckoutId);
+        expect(detached.checkouts.find((checkout) => checkout.checkoutId === repository.activeCheckoutId)?.branch).toBe(null);
+        git(repoRoot, ["switch", "main"]);
+        refreshRepositoryCheckoutGitMetadata(repository.repoId, controllerHome, repository.activeCheckoutId);
+        rmSync(join(repoRoot, ".git"), { recursive: true, force: true });
+        expect(() => refreshRepositoryCheckoutGitMetadata(repository.repoId, controllerHome, repository.activeCheckoutId)).toThrow("REPOSITORY_CHECKOUT_GIT_BRANCH_OBSERVATION_FAILED");
+        expect(getRepository(repository.repoId, controllerHome).checkouts.find((checkout) => checkout.checkoutId === repository.activeCheckoutId)?.branch).toBe("main");
+      } finally {
+        rmSync(workspace, { recursive: true, force: true });
+      }
+    }
     const workspace = mkdtempSync(join(tmpdir(), "forge-register-worktree-"));
     const controllerHome = join(workspace, "controller-home");
     const repoRoot = join(workspace, "source");

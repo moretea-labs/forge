@@ -37,6 +37,7 @@ async function main(): Promise<void> {
   const fence = assertRuntimeMayWrite('cleanup', controllerHome);
   if (!fence.allowed) throw new Error(`PERIODIC_CLEANUP_RUNTIME_FENCED: ${fence.reason}`);
   const repositories = listRepositories(controllerHome).filter((repository) => repository.enabled && !repository.removedAt);
+
   await runSchedulerPeriodicCleanup({
     controllerHome,
     controllerPid,

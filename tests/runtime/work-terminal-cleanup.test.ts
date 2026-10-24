@@ -22,8 +22,9 @@ import type { ManagedProcessRecord } from '../../src/runtime/execution/process-r
 import { callExecutionTool, selectDefaultWorkValidationChecks } from '../../adapters/mcp/runtime-gateway/execution-tools';
 import { ensureManagedWorkspace } from '../../src/runtime/execution/managed-workspace';
 import { cleanupControllerRuntimeState } from '../../src/runtime/control-plane/runtime-cleanup';
+import { cleanupWorkPreservationArtifacts } from '../../src/runtime/control-plane/cleanup-artifact-retention';
 import { collectWorkLifecycleAttention } from '../../src/runtime/control-plane/execution/work-lifecycle-audit';
-import { readControlPlaneRecord, writeControlPlaneRecord } from '../../src/runtime/control-plane/persistence/sqlite-store';
+import { readControlPlaneRecord, withControlPlaneTransaction, writeControlPlaneRecord, writeControlPlaneRecordWithinTransaction } from '../../src/runtime/control-plane/persistence/sqlite-store';
 
 const roots: string[] = [];
 
@@ -972,8 +973,7 @@ describe('terminal Work cleanup', () => {
 
   test('legacy cleaned zero-delta Work rebinds through the existing WorkContract without replaying cleanup', async () => {
     const fx = fixture('legacy-cleaned-rebind');
-    // A new managed Work fetches the integration branch from origin. Keep this
-    // fixture local and self-contained while providing a real Git remote.
+    // Managed placement fetches the real integration ref from a local origin.
     const originRoot = join(fx.root, 'origin.git');
     git(fx.root, ['clone', '--bare', fx.repositoryRoot, originRoot]);
     git(fx.repositoryRoot, ['remote', 'add', 'origin', originRoot]);
@@ -1086,6 +1086,33 @@ describe('terminal Work cleanup', () => {
     expect(recovery.work.workContractId).toBe(sourceId);
     expect(recovery.work.checkoutId).not.toBe(source.checkoutId);
     expect(recovery.work.expectedHead).toBe(mainHead);
+
+    // Semantic sourceId resolves to live physical recovery.work.workId using current checkout
+    const { ensureRepositoryWorkHandle } = await import('../../src/runtime/control-plane/execution/work-handle-authority');
+    const resolvedHandle = ensureRepositoryWorkHandle({
+      controllerHome: fx.controllerHome,
+      repository: fx.repository,
+      workId: sourceId,
+      identity: { sessionId: 'test-session', principalId: 'test-principal' },
+    });
+    expect(resolvedHandle?.workId).toBe(recovery.work.workId);
+    expect(resolvedHandle?.workContractId).toBe(sourceId);
+    expect(resolvedHandle?.checkoutId).toBe(recovery.work.checkoutId);
+
+    // Wrong old checkout throws mismatch
+    expect(() => ensureRepositoryWorkHandle({
+      controllerHome: fx.controllerHome,
+      repository: fx.repository,
+      workId: sourceId,
+      identity: { sessionId: 'test-session', principalId: 'test-principal' },
+      checkoutId: source.checkoutId,
+    })).toThrow('WORK_HANDLE_PLACEMENT_CHECKOUT_MISMATCH');
+
+    // Existing later historical work_inspect still returns cleaned original
+    const cleanedOriginal = readWorkHandle(fx.controllerHome, fx.repository.repoId, sourceId);
+    expect(cleanedOriginal?.state).toBe('cleaned');
+    expect(cleanedOriginal?.checkoutId).toBe(source.checkoutId);
+
     const recoveredContract = getWorkContract(workStore, sourceId)!;
     expect(recoveredContract).toMatchObject({
       semanticState: 'open',
@@ -1135,6 +1162,42 @@ describe('terminal Work cleanup', () => {
     expect(retired?.structuredContent).toMatchObject({
       work: { workId: sourceId, state: 'cleaned' }, readiness: { valid: false },
     });
+
+    // Same-checkout recovery cannot resurrect a cleaned historical identity.
+    // Reuse this fixture rather than adding a separate placeholder test.
+    writeWorkHandle(fx.controllerHome, {
+      ...readWorkHandle(fx.controllerHome, fx.repository.repoId, sourceId)!,
+      checkoutId: recovery.work.checkoutId,
+    });
+    expect(ensureRepositoryWorkHandle({
+      controllerHome: fx.controllerHome, repository: fx.repository, workId: sourceId,
+      identity: { sessionId: 'test-session', principalId: 'test-principal' },
+    })?.workId).toBe(recovery.work.workId);
+
+    // Two live physical Handles on the same checkout cannot silently prefer
+    // the direct historical ID, even if its state is no longer terminal.
+    writeWorkHandle(fx.controllerHome, {
+      ...readWorkHandle(fx.controllerHome, fx.repository.repoId, sourceId)!,
+      state: 'editing',
+    });
+    expect(() => ensureRepositoryWorkHandle({
+      controllerHome: fx.controllerHome, repository: fx.repository, workId: sourceId,
+      identity: { sessionId: 'test-session', principalId: 'test-principal' },
+    })).toThrow('WORK_HANDLE_AMBIGUOUS');
+    writeWorkHandle(fx.controllerHome, {
+      ...readWorkHandle(fx.controllerHome, fx.repository.repoId, sourceId)!,
+      state: 'cleaned',
+    });
+
+    // Without an active successor, a terminal direct Handle fails closed.
+    writeWorkHandle(fx.controllerHome, {
+      ...readWorkHandle(fx.controllerHome, fx.repository.repoId, recovery.work.workId)!,
+      state: 'failed',
+    });
+    expect(() => ensureRepositoryWorkHandle({
+      controllerHome: fx.controllerHome, repository: fx.repository, workId: sourceId,
+      identity: { sessionId: 'test-session', principalId: 'test-principal' },
+    })).toThrow('WORK_HANDLE_NOT_ACTIVE');
   });
 
   test('does not create a bundle for ancestry-only unique commits with no source delta', async () => {
@@ -1239,6 +1302,32 @@ describe('terminal Work cleanup', () => {
     expect(existsSync(bundlePath)).toBe(true);
     expect(report.removedCleanupArtifactPaths).not.toContain(bundlePath);
     expect(report.cycle.skippedByReason.cleanup_artifact_containment_remote_revision_unavailable).toBeGreaterThan(0);
+
+    // The directory must not become an orphan merely because its real Handle
+    // falls beyond the oldest-first 5,000-row listing boundary.
+    withControlPlaneTransaction(fx.controllerHome, (database) => {
+      for (let index = 0; index < 5_000; index += 1) {
+        const workId = `retention-scan-filler-${String(index).padStart(5, '0')}`;
+        const { recordRevision: _revision, ...filler } = fx.handle;
+        writeControlPlaneRecordWithinTransaction(database, {
+          namespace: 'execution_work_handle', scope: fx.repository.repoId,
+          key: workId, schemaVersion: 1,
+          value: { ...filler, workId, state: 'cleaned', cleanupReceipt: undefined },
+          action: 'retention_test_inventory',
+        });
+      }
+    });
+    const recorded = readWorkHandle(fx.controllerHome, fx.repository.repoId, fx.handle.workId)!;
+    writeWorkHandle(fx.controllerHome, {
+      ...recorded, cleanupReceipt: { ...recorded.cleanupReceipt!, complete: false },
+    });
+    const boundedReport = cleanupWorkPreservationArtifacts(fx.controllerHome, {
+      repositoryIds: [fx.repository.repoId], graceMs: 0,
+      maxEntries: 1_000, maxRemovals: 50,
+    });
+    expect(existsSync(bundlePath)).toBe(true);
+    expect(boundedReport.skippedByReason.physical_bundle_incomplete_handle).toBeGreaterThan(0);
+    expect(boundedReport.removedPaths).not.toContain(expect.stringContaining(`${fx.handle.workId}/branch.bundle`));
   });
 
   test('periodic cleanup retains an unreferenced physical bundle when remote source containment is unproven', async () => {

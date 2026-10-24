@@ -241,9 +241,14 @@ export function renderSupervisorPrompt(
     if (!value?.trim()) continue;
     const available = max - length(base) - length(context.join('\n')) - length(label) - 4 - (continuation ? 0 : 243);
     if (available < 2) break;
-    const chars = Array.from(value.trim());
+    // Reference excerpts are prose, not source payloads. Browser-rendered tables
+    // contribute tabs/blank cells that ProseMirror cannot round-trip exactly.
+    // Normalize before freezing the new effect; keep its identity and the
+    // provider's exact pre-send comparison unchanged.
+    const excerpt = value.trim().replace(/\s+/g, ' ');
+    const chars = Array.from(excerpt);
     const budget = Math.min(limit, available);
-    context.push(label + '：' + (chars.length > budget ? chars.slice(0, budget - 1).join('') + '…' : value.trim()));
+    context.push(label + '：' + (chars.length > budget ? chars.slice(0, budget - 1).join('') + '…' : excerpt));
   }
   if (continuation) return [...header, ...context, instruction].join('\n');
 
