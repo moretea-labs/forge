@@ -916,7 +916,14 @@ export class WorkflowSupervisorStore {
     return this.transaction((db) => {
       const prior = statement(db, 'SELECT task_id,payload_json FROM events WHERE event_key=?', (s) => s.get(eventKey)) as { task_id: string; payload_json: string } | undefined;
       if (prior) {
-        if (prior.task_id !== notice.taskId || prior.payload_json !== json(notice)) throw new Error('WORKFLOW_SUPERVISOR_REVIEW_NOTICE_IDENTITY_CONFLICT');
+        // Current HEAD is an observation timestamped by the caller, not the
+        // immutable review identity. A later re-observation with a new current
+        // HEAD must dedupe the SAME review, not create another external effect.
+        const recorded = JSON.parse(prior.payload_json) as WorkflowSupervisorReviewNotice;
+        if (prior.task_id !== notice.taskId
+          || json({ ...recorded, currentHeadSha: '' }) !== json({ ...notice, currentHeadSha: '' })) {
+          throw new Error('WORKFLOW_SUPERVISOR_REVIEW_NOTICE_IDENTITY_CONFLICT');
+        }
         return { eventKey, deduplicated: true };
       }
       if (!statement(db, 'SELECT 1 FROM tasks WHERE task_id=?', (s) => s.get(notice.taskId))) throw new Error('WORKFLOW_SUPERVISOR_TASK_UNKNOWN');
