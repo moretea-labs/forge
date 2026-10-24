@@ -149,8 +149,13 @@ test('preflight cannot retroactively declare a send not attempted when execution
 function bootstrapFixture(initialTabs: Array<{ id: number; windowId: number; url: string }> = []) {
   const tabs = [...initialTabs];
   let nextTabId = 200;
+  const ownerTokens = new Map<string, string>();
   const projectId = (value: string) => /\/g\/(g-p-[^/]+)/.exec(value)?.[1] ?? null;
   const chrome = {
+    storage: { session: {
+      async get(key: string) { return { [key]: ownerTokens.get(key) }; },
+      async set(values: Record<string, string>) { for (const [key, token] of Object.entries(values)) ownerTokens.set(key, token); },
+    } },
     runtime: {
       lastError: undefined,
       connectNative() { return { onMessage: { addListener() {} }, onDisconnect: { addListener() {} }, postMessage() {} }; },
@@ -158,6 +163,9 @@ function bootstrapFixture(initialTabs: Array<{ id: number; windowId: number; url
     },
     tabs: {
       async query() { return [...tabs]; },
+      get(tabId: number, callback: (tab: { id: number; windowId: number; url: string } | undefined) => void) {
+        callback(tabs.find((tab) => tab.id === tabId));
+      },
       create({ url }: { url: string }, callback: (value: { id: number; windowId: number; url: string }) => void) {
         const tab = { id: nextTabId++, windowId: 8, url };
         tabs.push(tab);
@@ -182,6 +190,7 @@ function bootstrapFixture(initialTabs: Array<{ id: number; windowId: number; url
   runInNewContext(source + '\n;globalThis.__resolveTarget = resolveTarget;globalThis.__matchingTabs = matchingTabs;globalThis.__matchesReceiver = receiverMatchesIdentity;globalThis.__markerReadIdentity = markerReconciliationReadIdentity;globalThis.__shouldReload = shouldReloadUnreadableConversation;', context);
   return {
     tabs,
+    attestOwner(tabId: number, token: string) { ownerTokens.set(`forgeComputerOwnedTabV1:${tabId}`, token); },
     shouldReload: (tabId: number, identity: object, observation: object, nowMs: number) =>
       (context as typeof context & { __shouldReload: (tabId: number, identity: object, observation: object, nowMs: number) => boolean })
         .__shouldReload(tabId, identity, observation, nowMs),
@@ -740,3 +749,31 @@ for (const [failure, expected] of [
     expect(f.messages).toEqual(['forge-computer-chatgpt-prepare']);
   });
 }
+
+// F11: An old physical tab ID can be reused in another Chrome window after
+// restart. Even the same Project URL does not prove it is the Controller's tab.
+test('F11 reused bootstrap tab id with missing owner token cannot be adopted or sent to', async () => {
+  const projectUrl = 'https://chatgpt.com/g/g-p-test/project';
+  const f = bootstrapFixture([{ id: 707, windowId: 99, url: projectUrl }]);
+  const identity = { namespace: 'chatgpt.bootstrap', bootstrapKey: 'supervisor:pinned', projectUrl };
+  const pin = { providerId: 'browser.chrome-extension', providerSessionId: 'profile-1',
+    tabId: '707', windowId: '7', ownerToken: 'previous-physical-tab' };
+  await expect(f.resolve(identity, true, pin)).rejects.toThrow('COMPUTER_CHATGPT_BOOTSTRAP_OWNER_TOKEN_MISMATCH');
+  // Moving the SAME physical tab to another Chrome window is safe when the
+  // browser-session owner token still proves its identity.
+  f.attestOwner(707, 'previous-physical-tab');
+  expect((await f.resolve(identity, true, pin)).tab).toMatchObject({ id: 707, windowId: 99, url: projectUrl });
+  expect(f.tabs).toHaveLength(1);
+});
+
+test('F11 reused conversation tab id must also prove owner token before binding', async () => {
+  const conversationId = '12345678-1234-1234-1234-123456789abc';
+  const conversationUrl = `https://chatgpt.com/c/${conversationId}`;
+  const f = bootstrapFixture([{ id: 708, windowId: 19, url: conversationUrl }]);
+  const identity = { namespace: 'chatgpt.conversation', conversationId, canonicalUrl: conversationUrl };
+  const pin = { providerId: 'browser.chrome-extension', providerSessionId: 'profile-1',
+    tabId: '708', windowId: '8', ownerToken: 'original-conversation-tab' };
+  await expect(f.resolve(identity, false, pin)).rejects.toThrow('COMPUTER_CHATGPT_EXTENSION_PINNED_OWNER_TOKEN_MISMATCH');
+  f.attestOwner(708, 'original-conversation-tab');
+  expect((await f.resolve(identity, false, pin)).tab).toMatchObject({ id: 708, windowId: 19 });
+});

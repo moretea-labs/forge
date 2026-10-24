@@ -124,13 +124,26 @@ async function chatgptTabs() { return await chrome.tabs.query({ url: 'https://ch
 // an unrelated restored/user tab.
 function ownedTabKey(tabId) { return `forgeComputerOwnedTabV1:${tabId}`; }
 async function attestedOwnerToken(tab, pinnedBinding) {
-  if (!pinnedBinding?.ownerToken || String(pinnedBinding.tabId) !== String(tab.id)
-    || String(pinnedBinding.windowId) !== String(tab.windowId)) return;
+  // Chrome preserves a tab ID across window moves, so the browser-session
+  // token (not the mutable window ID) attests its physical identity.
+  if (!pinnedBinding?.ownerToken || String(pinnedBinding.tabId) !== String(tab.id)) return;
   try {
     const key = ownedTabKey(tab.id);
     const stored = await chrome.storage.session.get(key);
     if (stored[key] === pinnedBinding.ownerToken) return pinnedBinding.ownerToken;
   } catch { /* missing browser-session provenance is never closure authority */ }
+}
+async function requirePinnedOwner(tab, pinnedBinding, identity) {
+  const ownerToken = await attestedOwnerToken(tab, pinnedBinding);
+  // A reused Chrome tab ID with the same Project or conversation URL is not
+  // sufficient authority to adopt a different physical browser tab.
+  if (pinnedBinding?.providerId === PROVIDER_ID && pinnedBinding.ownerToken
+    && ownerToken !== pinnedBinding.ownerToken) {
+    throw new Error(identity?.namespace === 'chatgpt.bootstrap'
+      ? 'COMPUTER_CHATGPT_BOOTSTRAP_OWNER_TOKEN_MISMATCH'
+      : 'COMPUTER_CHATGPT_EXTENSION_PINNED_OWNER_TOKEN_MISMATCH');
+  }
+  return ownerToken;
 }
 function binding(tab, instanceId, ownerToken) {
   return {
@@ -275,7 +288,7 @@ async function resolveTarget(identity, createIfMissing, pinnedBinding) {
       if (core.parseConversation(pinned.url ?? '')?.conversationId !== identity.conversationId) {
         throw new Error('COMPUTER_CHATGPT_EXTENSION_PINNED_TAB_IDENTITY_CHANGED');
       }
-      return { tab: pinned, created: false, ownerToken: await attestedOwnerToken(pinned, pinnedBinding) };
+      return { tab: pinned, created: false, ownerToken: await requirePinnedOwner(pinned, pinnedBinding, identity) };
     }
   }
   const matches = matchingTabs(tabs, identity, pinnedBinding);
@@ -283,7 +296,7 @@ async function resolveTarget(identity, createIfMissing, pinnedBinding) {
   if (matches.length === 1) {
     const tab = matches[0];
     if (identity.namespace === 'chatgpt.bootstrap') bootstrapTabs.set(identity.bootstrapKey, tab.id);
-    return { tab, created: false, ownerToken: await attestedOwnerToken(tab, pinnedBinding) };
+    return { tab, created: false, ownerToken: await requirePinnedOwner(tab, pinnedBinding, identity) };
   }
   if (identity?.namespace === 'chatgpt.bootstrap' && pinnedBinding?.providerId === PROVIDER_ID
     && pinnedBinding.tabId && pinnedBinding.windowId) {
