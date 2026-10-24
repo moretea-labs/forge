@@ -372,7 +372,7 @@ export class WorkflowSupervisorControlPlane {
    * A notice is not a verified review verdict, CI gate or merge authorization;
    * the model must re-read the platform and current PR HEAD before deciding.
    */
-  observeReviewNotice(notice: WorkflowSupervisorReviewNotice): { eventKey: string; deduplicated: boolean; successorEffectId?: string; deferred: boolean } {
+  observeReviewNotice(notice: WorkflowSupervisorReviewNotice): { eventKey: string; deduplicated: boolean; deferred: boolean } {
     const task = this.requireTask(notice.taskId);
     if (task.completionContract.repo_id !== notice.repoId) throw new Error('WORKFLOW_SUPERVISOR_REVIEW_REPOSITORY_MISMATCH');
     if (!Number.isInteger(notice.prNumber) || notice.prNumber < 1 || notice.prNumber > 1_000_000) throw new Error('WORKFLOW_SUPERVISOR_REVIEW_PR_INVALID');
@@ -386,18 +386,9 @@ export class WorkflowSupervisorControlPlane {
       ...notice, reviewedHeadSha: notice.reviewedHeadSha.toLowerCase(), currentHeadSha: notice.currentHeadSha.toLowerCase(),
     };
     const recorded = this.store.recordReviewNotice(normalized);
-    const effect = this.reserveReviewNotice(normalized, recorded.eventKey);
-    return { ...recorded, ...(effect ? { successorEffectId: effect.effectId } : {}), deferred: !effect };
-  }
-
-  private reserveReviewNotice(notice: WorkflowSupervisorReviewNotice, eventKey: string): WorkflowSupervisorEffect | undefined {
-    const task = this.requireTask(notice.taskId);
-    const effectId = stableEffectId(`review-wake:${eventKey}`);
-    const checkpoint = `Review/CI change observed for repository ${notice.repoId} PR #${notice.prNumber}, HEAD ${notice.reviewedHeadSha}, receipt ${notice.reviewId}, source ${notice.source}, outcome ${notice.outcome}. This is only an event notification and NEVER a verified ACCEPT/merge permission. Re-read current GitHub PR head, full independent Review and CI via the GitHub provider, return REVISE to the original Writer and same PR/branch, require new full-HEAD ACCEPT, never repeat an unknown Send, run real E2E after integration.`;
-    return this.store.reserveReviewWake({
-      eventKey, taskId: task.taskId, effectId,
-      prompt: this.renderPrompt(task, effectId, 'continuation', checkpoint),
-    });
+    // The original task already owns CONTINUE reservation. Do not synthesize a
+    // competing effect or bypass Scheduler-only WAIT eligibility.
+    return { ...recorded, deferred: true };
   }
 
   /** Read-only stall classification for one task; no lifecycle authority. */
@@ -845,14 +836,7 @@ export class WorkflowSupervisorControlPlane {
       });
       reconciled += 1;
     }
-    // Reviews arriving during an active provider turn cannot replace its owner,
-    // interrupt Send, or replay an unknown external effect. A committed WAIT
-    // later makes exactly one original-task successor eligible.
-    const notices = this.store.listPendingReviewNotices(limit);
-    for (const { eventKey, notice } of notices) {
-      if (this.reserveReviewNotice(notice, eventKey)) reconciled += 1;
-    }
-    return { scanned: completions.length + inertTasks.length + notices.length, reconciled };
+    return { scanned: completions.length + inertTasks.length, reconciled };
   }
 
   async observeAssistantTurn(input: WorkflowAssistantObservation): Promise<WorkflowAssistantObservationResult> {
@@ -914,14 +898,21 @@ export class WorkflowSupervisorControlPlane {
   private reserveContinuation(task: WorkflowSupervisorTask, completion: WorkflowSupervisorCompletion) {
     const nextId = stableEffectId(`completion:${completion.completionFingerprint}`);
     const checkpoint = completion.proposal.checkpoint;
+    const notices = this.store.listPendingReviewNotices(128).filter(({ notice }) => notice.taskId === task.taskId).slice(0, 4);
+    const nextContext = notices.length
+      ? `${checkpoint}\nExternal Review/CI notifications (WAKE ONLY, not merge or independent ACCEPT proof):\n${notices.map(({ notice }) =>
+          `PR #${notice.prNumber} HEAD ${notice.reviewedHeadSha} receipt ${notice.reviewId} source ${notice.source} outcome ${notice.outcome}`
+        ).join('\n')}\nRead current GitHub PR, CI and independent Review before the original Writer decides. REVISE returns to same PR/branch; no replay of unknown Sends.`
+      : checkpoint;
     return this.store.commitCompletion(completion, {
       effectId: nextId,
       kind: 'continuation',
-      prompt: this.renderPrompt(task, nextId, 'continuation', checkpoint),
+      ...(notices.length ? { reviewEventKeys: notices.map(({ eventKey }) => eventKey) } : {}),
+      prompt: this.renderPrompt(task, nextId, 'continuation', nextContext),
       // Rebuild from the same durable goal in a new logical conversation after
       // a confirmed receipt cycle; never migrate an uncompleted mutation.
       ...(task.continuationPolicy.kind === 'standalone_supervisor'
-        ? { freshEnrollmentPrompt: this.renderPrompt(task, nextId, 'enrollment', checkpoint) } : {}),
+        ? { freshEnrollmentPrompt: this.renderPrompt(task, nextId, 'enrollment', nextContext) } : {}),
     });
   }
 
