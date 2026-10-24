@@ -789,7 +789,11 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     control.observeEffect({ effectId: source.effectId, observationId: 'review-source-applied', outcome: 'applied' });
     expect(control.observeReviewNotice(notice)).toMatchObject({ deduplicated: false, deferred: true });
     expect(control.observeReviewNotice(notice)).toMatchObject({ deduplicated: true, deferred: true });
-    expect(() => control.observeReviewNotice({ ...notice, currentHeadSha: 'b'.repeat(40) })).toThrow('WORKFLOW_SUPERVISOR_REVIEW_STALE_HEAD');
+    // Stale findings remain useful for REVISE, but never authorize the new HEAD.
+    expect(control.observeReviewNotice({ ...notice, currentHeadSha: 'b'.repeat(40) }))
+      .toMatchObject({ deduplicated: true, deferred: true });
+    expect(control.observeReviewNotice({ ...notice, reviewId: 'review-stale', currentHeadSha: 'b'.repeat(40) }))
+      .toMatchObject({ deduplicated: false, deferred: true });
     expect(() => control.observeReviewNotice({ ...notice, repoId: 'repo-foreign' })).toThrow('WORKFLOW_SUPERVISOR_REVIEW_REPOSITORY_MISMATCH');
     expect(control.taskStall(task.taskId).state).not.toBe('deliverable');
     const completion = await control.observeAssistantTurn({
@@ -798,6 +802,8 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     });
     expect(completion.action).toBe('CONTINUE');
     expect(completion.successorEffect?.prompt).toContain('receipt review-42');
+    expect(completion.successorEffect?.prompt).toContain('[UNVERIFIED STALE_HEAD]');
+    expect(completion.successorEffect?.prompt).toContain('NOT ACCEPTANCE');
     expect(completion.successorEffect?.prompt).toContain('REVISE');
     expect(completion.successorEffect?.prompt).toContain('same PR/branch');
     expect(store.listPendingReviewNotices()).toHaveLength(0);
