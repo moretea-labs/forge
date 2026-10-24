@@ -232,13 +232,13 @@ async function forgeRunTask(task) {
     const capture = await forgeWaitForAssistant(task.timeoutMs || 180000);
     await forgePost('/api/extension/result', {
       taskId: task.id,
-      status: capture.text ? (capture.stable ? 'completed' : 'incomplete_capture') : 'failed',
-      output: capture.text || 'No assistant text was captured before timeout.',
+      status: capture.text && capture.stable ? 'completed' : 'incomplete_capture',
+      output: capture.text || 'Outbound message confirmed, but no assistant text was captured before timeout.',
       conversationUrl: location.href,
       error: capture.text ? undefined : {
-        code: 'CHATGPT_BRIDGE_CAPTURE_TIMEOUT',
-        message: 'no assistant text could be captured before timeout',
-        recovery: 'Inspect the ChatGPT tab, then retry with a longer --timeout-ms.',
+        code: 'CHATGPT_BRIDGE_ASSISTANT_CAPTURE_INCOMPLETE',
+        message: 'outbound message confirmed; assistant reply not captured before timeout',
+        recovery: 'Observe the same ChatGPT conversation for the reply; do not re-submit the prompt.',
       },
     });
   } catch (error) {
