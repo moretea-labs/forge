@@ -403,9 +403,16 @@ async function executePrepare(command) {
     });
     if (result?.prepared !== true) return { kind: 'prepared', ready: false, reasonCode: String(result?.reason ?? 'COMPUTER_CHATGPT_EXTENSION_PREPARE_REJECTED') };
     return { kind: 'prepared', ready: true };
-  } catch {
-    // A prepare command contains no Send action. Failure is not a submitted effect.
-    return { kind: 'prepared', ready: false, reasonCode: 'COMPUTER_CHATGPT_EXTENSION_PREPARE_UNAVAILABLE' };
+  } catch (error) {
+    // Prepare has not clicked Send. Preserve the transport reason for the
+    // Supervisor's exact-effect recovery instead of masking a receiver loss
+    // or a timed-out content script as a generic infrastructure failure.
+    const reasonCode = String(error?.message ?? error) === 'COMPUTER_CHATGPT_EXTENSION_TAB_MESSAGE_TIMEOUT'
+      ? 'COMPUTER_CHATGPT_EXTENSION_TAB_MESSAGE_TIMEOUT'
+      : isMissingContentReceiver(error)
+        ? 'COMPUTER_CHATGPT_EXTENSION_CONTENT_UNAVAILABLE'
+        : 'COMPUTER_CHATGPT_EXTENSION_PREPARE_UNAVAILABLE';
+    return { kind: 'prepared', ready: false, reasonCode };
   }
 }
 async function executeDispatch(command) {

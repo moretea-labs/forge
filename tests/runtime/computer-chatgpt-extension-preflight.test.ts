@@ -11,6 +11,7 @@ type Response = { kind: string; mutation: string; reasonCode?: string; reasoning
 type Scenario = {
   capability?: unknown;
   preflightTransportError?: boolean;
+  prepareTransportError?: 'receiver' | 'timeout' | 'other';
   prepare?: { prepared: boolean; reason?: string; reasoningVerified?: string };
   dispatch?: { dispatched: boolean; confirmed?: boolean; reasoningVerified?: string };
 };
@@ -42,6 +43,15 @@ function fixture(scenario: Scenario) {
           return;
         }
         if (message.type === 'forge-computer-chatgpt-prepare') {
+          if (scenario.prepareTransportError === 'timeout') return; // inject an unanswered Chrome callback
+          if (scenario.prepareTransportError) {
+            chrome.runtime.lastError = { message: scenario.prepareTransportError === 'receiver'
+              ? 'Could not establish connection. Receiving end does not exist.'
+              : 'The message port closed before a response was received.' };
+            callback(undefined);
+            chrome.runtime.lastError = undefined;
+            return;
+          }
           callback(scenario.prepare ?? { prepared: true, reasoningVerified: 'xhigh' });
           return;
         }
@@ -78,7 +88,7 @@ function fixture(scenario: Scenario) {
     setTimeout(callback: () => void, ms: number) {
       // Run only the bounded post-send observation sleep; never schedule the
       // extension's actual background heartbeat/discovery loops in this test.
-      if (ms === 200 || ms === 400 || ms === 600 || ms === 800) queueMicrotask(callback);
+      if (ms === 200 || ms === 400 || ms === 600 || ms === 800 || ms === 7_000) queueMicrotask(callback);
       return 1;
     },
     clearTimeout() {},
@@ -715,3 +725,18 @@ test('content script fences bootstrap sends to the exact Project and rejects mig
     expect(clicks).toBe(0);
   }
 });
+
+// F01: inject each pre-Send Chrome transport failure against the actual extension
+// worker. None may submit, and the diagnostic must preserve the useful cause.
+for (const [failure, expected] of [
+  ['receiver', 'COMPUTER_CHATGPT_EXTENSION_CONTENT_UNAVAILABLE'],
+  ['timeout', 'COMPUTER_CHATGPT_EXTENSION_TAB_MESSAGE_TIMEOUT'],
+  ['other', 'COMPUTER_CHATGPT_EXTENSION_PREPARE_UNAVAILABLE'],
+] as const) {
+  test(`F01 injected prepare ${failure} remains pre-Send and actionable`, async () => {
+    const f = fixture({ prepareTransportError: failure });
+    expect(await f.prepare()).toMatchObject({ kind: 'prepared', ready: false, reasonCode: expected });
+    expect(f.submissions).toBe(0);
+    expect(f.messages).toEqual(['forge-computer-chatgpt-prepare']);
+  });
+}
