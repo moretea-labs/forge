@@ -3,6 +3,7 @@ import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contra
 import {
   getWorkflowSupervisorContinuationProof,
   getWorkflowSupervisorTask,
+  observeWorkflowSupervisorReviewNotice,
   getWorkflowSupervisorTaskStall,
   listWorkflowSupervisorTasks,
   listWorkflowSupervisorTerminalTasks,
@@ -63,6 +64,26 @@ export async function callWorkflowSupervisorAdapter(
     });
     const effect = await reserveWorkflowSupervisorEnrollment(forgeHome, task.taskId);
     return result({ task, effect, summary: `Standalone Supervisor task ${task.taskId} started.` });
+  }
+
+  if (operation === 'review_notice') {
+    const taskId = textArg(args, 'task_id');
+    if (!taskId) throw new Error('WORKFLOW_SUPERVISOR_TASK_ID_REQUIRED');
+    // Reviewers notify an existing task only. This never creates a Work,
+    // Supervisor or GitHub merge permission; only a later original CONTINUE
+    // can consume this signal under its canonical effect CAS.
+    if (!repoId) throw new Error('WORKFLOW_SUPERVISOR_REVIEW_REPOSITORY_REQUIRED');
+    const receipt = await observeWorkflowSupervisorReviewNotice(forgeHome, {
+      taskId, repoId,
+      prNumber: Number(args.pr_number),
+      reviewedHeadSha: textArg(args, 'reviewed_head_sha'),
+      currentHeadSha: textArg(args, 'current_head_sha'),
+      reviewId: textArg(args, 'review_id'),
+      source: textArg(args, 'review_source') as 'github_review' | 'github_ci' | 'independent_reviewer',
+      outcome: textArg(args, 'review_outcome') as 'ACCEPT' | 'REVISE' | 'BLOCK' | 'CI_FAILED' | 'CI_PASSED',
+    });
+    return result({ ...receipt, taskId, status: 'recorded_for_original_writer',
+      summary: `Review/CI notification is journaled for original Supervisor ${taskId}; no approval/merge authority or extra Send was granted.` });
   }
 
   if (operation === 'list') {
