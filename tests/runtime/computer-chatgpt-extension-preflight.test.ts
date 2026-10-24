@@ -169,11 +169,13 @@ function bootstrapFixture(initialTabs: Array<{ id: number; windowId: number; url
     },
     setTimeout() { return 1; }, clearTimeout() {}, setInterval() { return 1; },
   };
-  runInNewContext(source + '\n;globalThis.__resolveTarget = resolveTarget;globalThis.__matchingTabs = matchingTabs;globalThis.__matchesReceiver = receiverMatchesIdentity;', context);
+  runInNewContext(source + '\n;globalThis.__resolveTarget = resolveTarget;globalThis.__matchingTabs = matchingTabs;globalThis.__matchesReceiver = receiverMatchesIdentity;globalThis.__markerReadIdentity = markerReconciliationReadIdentity;', context);
   return {
     tabs,
     matchesReceiver: (tab: { id: number; windowId: number; url: string }, identity: object) =>
       (context as typeof context & { __matchesReceiver: (tab: object, identity: object) => boolean }).__matchesReceiver(tab, identity),
+    markerReadIdentity: (tab: { id: number; windowId: number; url: string }, identity: object) =>
+      (context as typeof context & { __markerReadIdentity: (tab: object, identity: object) => object }).__markerReadIdentity(tab, identity),
     resolve: (identity: object, create: boolean, pinned?: object) =>
       (context as typeof context & { __resolveTarget: (identity: object, create: boolean, pinned?: object) => Promise<{ tab: { id: number; windowId: number; url: string }; created: boolean }> }).__resolveTarget(identity, create, pinned),
   };
@@ -188,6 +190,28 @@ test('bootstrap receiver rejects an existing conversation even inside the same P
     id: 12, windowId: 8,
     url: projectUrl + '/c/12345678-1234-1234-1234-123456789abc',
   }, identity)).toBe(false);
+});
+
+test('pinned bootstrap marker reconciliation reads migrated exact conversation without granting a Send receiver', () => {
+  const projectUrl = 'https://chatgpt.com/g/g-p-avela-project';
+  const otherProject = 'https://chatgpt.com/g/g-p-other-project';
+  const id = '12345678-1234-1234-1234-123456789abc';
+  const newer = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+  const initial = { id: 41, windowId: 8, url: projectUrl };
+  const migrated = { id: 41, windowId: 8, url: projectUrl + '/c/' + id };
+  const foreign = { id: 41, windowId: 8, url: otherProject + '/c/' + id };
+  const switched = { id: 41, windowId: 8, url: projectUrl + '/c/' + newer };
+  const bootstrap = { namespace: 'chatgpt.bootstrap', bootstrapKey: 'supervisor:ios', projectUrl };
+  const fixture = bootstrapFixture([initial]);
+  expect(fixture.markerReadIdentity(initial, bootstrap)).toMatchObject(bootstrap);
+  const read = fixture.markerReadIdentity(migrated, bootstrap);
+  expect(read).toMatchObject({ namespace: 'chatgpt.conversation', conversationId: id });
+  expect(fixture.matchesReceiver(migrated, read)).toBe(true);
+  // This narrower identity only restores read observation, not a bootstrap Send.
+  expect(fixture.matchesReceiver(migrated, bootstrap)).toBe(false);
+  expect(fixture.matchesReceiver(switched, read)).toBe(false);
+  expect(fixture.markerReadIdentity(foreign, bootstrap)).toMatchObject(bootstrap);
+  expect(fixture.matchesReceiver(foreign, bootstrap)).toBe(false);
 });
 
 test('two fresh Supervisor tasks in one Project receive distinct new tabs, never a borrowed Project tab', async () => {

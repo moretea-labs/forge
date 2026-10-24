@@ -258,17 +258,19 @@
     const payload = supervisor ? actualPrompt.replace(/^@forge\s+(?=<<<FORGE_WORKFLOW_EFFECT_V1:(?:fx|crpe)_[a-zA-Z0-9_-]{8,120}>>>)/, '') : actualPrompt;
     const expected = exactComposerText(payload);
     const existing = composerText();
-    // A single serialized Supervisor writer may replace a stale machine-owned
-    // draft by its strict prefix; old body equality is not an ownership test.
-    // Never infer ownership from @forge, incidental text, or an unmarked draft.
-    // Exact backup/retirement envelopes keep their stronger one-use proof.
-    const markedForgeDraft = supervisor && !replacement && !retired
-      && /^<<<FORGE_WORKFLOW_EFFECT_V1:(?:fx|crpe)_[a-zA-Z0-9_-]{8,120}>>>(?:\n|$)/.test(existing);
+    // A draft belongs to this exact conversation/effect, not to every Forge
+    // writer in the account. Existing backup/retirement envelopes are the
+    // only authority for replacing a different effect or a human draft.
+    const effectPrefix = /^<<<FORGE_WORKFLOW_EFFECT_V1:((?:fx|crpe)_[a-zA-Z0-9_-]{8,120})>>>(?:\n|$)/;
+    const currentEffectId = effectPrefix.exec(payload)?.[1];
+    const restoredSameEffectPrefix = Boolean(supervisor && !replacement && !retired
+      && currentEffectId && effectPrefix.exec(existing)?.[1] === currentEffectId
+      && expected.startsWith(existing));
     const ownedDrafts = supervisor
       ? [expected, expected + '\n', exactComposerText(payload + '\n@'), exactComposerText(payload + '\nforge'), exactComposerText('forge ' + payload)]
       : [expected];
     if (node.querySelector('[plugin-mention-name], [app-mention-name]')) return { dispatched: false, reason: 'composer_has_app_mention' };
-    const unowned = Boolean(existing && !ownedDrafts.includes(existing) && !markedForgeDraft);
+    const unowned = Boolean(existing && !ownedDrafts.includes(existing) && !restoredSameEffectPrefix);
     if (unowned && ((!replacement && !retired) || !supervisor)) return { dispatched: false, reason: 'composer_not_empty' };
     if (retired && (!unowned || !existing.startsWith(`<<<FORGE_WORKFLOW_EFFECT_V1:${retired[1]}>>>`))) {
       return { dispatched: false, reason: 'composer_not_empty' };

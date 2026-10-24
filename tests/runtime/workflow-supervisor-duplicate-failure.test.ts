@@ -188,7 +188,7 @@ test('committed CONTINUE dispatches before slow browser cleanup without another 
   }
 });
 
-test('two independent Supervisor adapters serialize bootstrap preparation behind conversation dispatch', async () => {
+test('independent Supervisor tabs prepare concurrently while actual Sends share the provider lane', async () => {
   const { WorkflowSupervisorNativeBrowserAdapter } = await import('../../supervisor/native-browser-adapter');
   const { WorkflowSupervisorEphemeralDiscovery } = await import('../../supervisor/server');
   const { createTestChatgptTargetPort } = await import('./helpers/computer-chatgpt-target-harness');
@@ -271,15 +271,154 @@ test('two independent Supervisor adapters serialize bootstrap preparation behind
     const first = adapterA.runOnce();
     await firstPrepared;
     const second = adapterB.runOnce();
-    await Promise.resolve();
-    expect(events).toEqual(['conversation:prepare']);
+    await second;
+    expect(events).toEqual(['conversation:prepare', 'bootstrap:prepare', 'bootstrap:dispatch']);
     allowFirst();
-    await Promise.all([first, second]);
+    await first;
     expect(events).toEqual([
-      'conversation:prepare', 'conversation:dispatch', 'bootstrap:prepare', 'bootstrap:dispatch',
+      'conversation:prepare', 'bootstrap:prepare', 'bootstrap:dispatch', 'conversation:dispatch',
     ]);
   } finally {
     storeA.close(); storeB.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+
+test('stopping a bootstrap task while its Send is queued never reserves or submits the effect', async () => {
+  const { WorkflowSupervisorNativeBrowserAdapter } = await import('../../supervisor/native-browser-adapter');
+  const { WorkflowSupervisorEphemeralDiscovery } = await import('../../supervisor/server');
+  const { withChatgptProviderDispatchLane } = await import('../../adapters/chatgpt/provider-delivery');
+  const { createTestChatgptTargetPort } = await import('./helpers/computer-chatgpt-target-harness');
+  const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-stop-queued-send-'));
+  const store = new WorkflowSupervisorStore(root);
+  const scope = join(root, 'provider-scope');
+  const taskId = 'supervisor:stop-before-bootstrap-send';
+  const projectUrl = 'https://chatgpt.com/g/g-p-abc123-forge/project';
+  const conversationId = '41414141-aaaa-bbbb-cccc-414141414141';
+  const control = new WorkflowSupervisorControlPlane(store, {}, {
+    browserTaskActive: () => true,
+    projectScopeForTask: () => ({ title: 'forge', repoId: 'repo-forge', controllerHome: root }),
+  });
+  control.registerTask({
+    taskId, conversationId: 'bootstrap:' + taskId, conversationUrl: 'https://chatgpt.com/',
+    objective: 'Never send an enrollment stopped during provider cooldown.',
+    completionContract: {}, continuationPolicy: { kind: 'standalone_supervisor', bootstrap: true },
+    userBlockerPolicy: {},
+  });
+  control.recordBrowserDiscovery('chrome-extension', [{ conversationId,
+    canonicalUrl: 'https://chatgpt.com/c/' + conversationId,
+    projectTitle: 'forge', projectUrl }]);
+  const effect = control.reserveEnrollment(taskId);
+  let unblock!: () => void;
+  let laneEntered!: () => void;
+  let prepared!: () => void;
+  const queued = new Promise<void>((resolve) => { laneEntered = resolve; });
+  const release = new Promise<void>((resolve) => { unblock = resolve; });
+  const prep = new Promise<void>((resolve) => { prepared = resolve; });
+  let sends = 0;
+  const page = { evaluate: async <T>() => false as T, tabRef: () => ({ windowId: 'w2', tabId: 't2' }) };
+  const targetPort = createTestChatgptTargetPort({
+    listTabs: async () => ({ entries: [{ windowId: 'w2', tabId: 't2',
+      url: projectUrl, title: 'Forge', active: true }], unavailableProducts: [] }),
+    reattach: async () => page, create: async () => page, close: async () => undefined,
+    snapshot: async () => ({ url: projectUrl, title: 'Forge', latestUserText: '',
+      latestAssistantResponse: '', composerText: '', composerSelectorVersion: 'visible-single-v2',
+      isGenerating: false, providerActivityText: '', providerFailureText: '' }),
+    preparePrompt: async () => { prepared(); return { ready: true }; },
+    dispatchPrompt: async () => { sends++; return { dispatched: true, confirmed: true }; },
+  });
+  const adapter = new WorkflowSupervisorNativeBrowserAdapter(control,
+    new WorkflowSupervisorEphemeralDiscovery(), {
+      targetPort, providerScopeKey: scope, nowMs: () => Date.now(),
+      providerIdleGraceMs: 60_000, sleep: async () => undefined,
+      setInterval: () => 0 as unknown as ReturnType<typeof setInterval>,
+      clearInterval: () => undefined, onError: (error) => { throw error; },
+    });
+  try {
+    const blocker = withChatgptProviderDispatchLane(scope, async () => {
+      laneEntered();
+      await release;
+      return { providerAccepted: true };
+    }, (value) => value);
+    await queued;
+    const attempt = adapter.runOnce();
+    await prep;
+    control.stopTask(taskId, 'Operator stopped enrollment while it awaited the Send lane.');
+    unblock();
+    await Promise.all([blocker, attempt]);
+    expect(sends).toBe(0);
+    expect(store.effectDispatchBudget(effect.effectId).generations).toBe(0);
+    expect(control.bootstrapPoll(taskId).terminal).toBe('STOPPED');
+  } finally {
+    unblock?.();
+    store.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+
+test('stopping an enrolled conversation while Send is queued preserves zero-dispatch', async () => {
+  const { WorkflowSupervisorNativeBrowserAdapter } = await import('../../supervisor/native-browser-adapter');
+  const { WorkflowSupervisorEphemeralDiscovery } = await import('../../supervisor/server');
+  const { withChatgptProviderDispatchLane } = await import('../../adapters/chatgpt/provider-delivery');
+  const { createTestChatgptTargetPort } = await import('./helpers/computer-chatgpt-target-harness');
+  const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-stop-queued-conversation-'));
+  const store = new WorkflowSupervisorStore(root);
+  const scope = join(root, 'provider-scope');
+  const taskId = 'supervisor:stop-before-conversation-send';
+  const conversationId = '51515151-aaaa-bbbb-cccc-515151515151';
+  const conversationUrl = 'https://chatgpt.com/c/' + conversationId;
+  const control = new WorkflowSupervisorControlPlane(store, {}, { browserTaskActive: () => true });
+  control.registerTask({ taskId, conversationId, conversationUrl,
+    objective: 'Refuse to send a stopped conversation effect.',
+    completionContract: {}, continuationPolicy: {}, userBlockerPolicy: {} });
+  const effect = control.reserveEnrollment(taskId);
+  let unblock!: () => void;
+  let laneEntered!: () => void;
+  let prepared!: () => void;
+  const held = new Promise<void>((resolve) => { laneEntered = resolve; });
+  const release = new Promise<void>((resolve) => { unblock = resolve; });
+  const prep = new Promise<void>((resolve) => { prepared = resolve; });
+  let sends = 0;
+  const page = { evaluate: async <T>() => false as T, tabRef: () => ({ windowId: 'w', tabId: 't' }) };
+  const targetPort = createTestChatgptTargetPort({
+    listTabs: async () => ({ entries: [{ windowId: 'w', tabId: 't',
+      url: conversationUrl, title: 'Forge', active: true }], unavailableProducts: [] }),
+    reattach: async () => page, create: async () => page, close: async () => undefined,
+    snapshot: async () => ({ url: conversationUrl, title: 'Forge',
+      latestUserText: 'Earlier committed message',
+      latestAssistantResponse: 'Earlier completed assistant response',
+      latestTurnRole: 'assistant', composerText: '',
+      isGenerating: false, providerActivityText: '', providerFailureText: '' }),
+    preparePrompt: async () => { prepared(); return { ready: true }; },
+    dispatchPrompt: async () => { sends++; return { dispatched: true, confirmed: true }; },
+  });
+  const adapter = new WorkflowSupervisorNativeBrowserAdapter(control,
+    new WorkflowSupervisorEphemeralDiscovery(), {
+      targetPort, providerScopeKey: scope, nowMs: () => Date.now(),
+      providerIdleGraceMs: 60_000, sleep: async () => undefined,
+      setInterval: () => 0 as unknown as ReturnType<typeof setInterval>,
+      clearInterval: () => undefined, onError: (error) => { throw error; },
+    });
+  try {
+    const blocker = withChatgptProviderDispatchLane(scope, async () => {
+      laneEntered();
+      await release;
+      return { providerAccepted: true };
+    }, (result) => result);
+    await held;
+    const attempt = adapter.runOnce();
+    await prep;
+    control.stopTask(taskId, 'Operator stopped the exact conversation while Send was queued.');
+    unblock();
+    await Promise.all([blocker, attempt]);
+    expect(sends).toBe(0);
+    expect(store.effectDispatchBudget(effect.effectId).generations).toBe(0);
+    expect(control.browserPoll({ conversationId, conversationUrl }).terminal).toBe('STOPPED');
+  } finally {
+    unblock?.();
+    store.close();
     rmSync(root, { recursive: true, force: true });
   }
 });
