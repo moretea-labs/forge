@@ -188,7 +188,7 @@ test('committed CONTINUE dispatches before slow browser cleanup without another 
   }
 });
 
-test('two independent Supervisor adapters serialize bootstrap preparation behind conversation dispatch', async () => {
+test('independent Supervisor tabs prepare concurrently while actual Sends share the provider lane', async () => {
   const { WorkflowSupervisorNativeBrowserAdapter } = await import('../../supervisor/native-browser-adapter');
   const { WorkflowSupervisorEphemeralDiscovery } = await import('../../supervisor/server');
   const { createTestChatgptTargetPort } = await import('./helpers/computer-chatgpt-target-harness');
@@ -271,12 +271,12 @@ test('two independent Supervisor adapters serialize bootstrap preparation behind
     const first = adapterA.runOnce();
     await firstPrepared;
     const second = adapterB.runOnce();
-    await Promise.resolve();
-    expect(events).toEqual(['conversation:prepare']);
+    await second;
+    expect(events).toEqual(['conversation:prepare', 'bootstrap:prepare', 'bootstrap:dispatch']);
     allowFirst();
-    await Promise.all([first, second]);
+    await first;
     expect(events).toEqual([
-      'conversation:prepare', 'conversation:dispatch', 'bootstrap:prepare', 'bootstrap:dispatch',
+      'conversation:prepare', 'bootstrap:prepare', 'bootstrap:dispatch', 'conversation:dispatch',
     ]);
   } finally {
     storeA.close(); storeB.close();

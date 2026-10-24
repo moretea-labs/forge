@@ -958,28 +958,13 @@ export class WorkflowSupervisorNativeBrowserAdapter {
   }
 
   private async bootstrapTask(task: WorkflowSupervisorBrowserTask): Promise<void> {
-    const command = this.control.bootstrapPoll(task.taskId).command;
-    if (!command) return;
-    // Reconciliation can service a fresh send while scanning. Holding the send
-    // lane here would make that successor wait for the lane we cannot release.
-    if (command.mode === 'reconcile') { await this.reconcileBootstrapTask(task, command); return; }
-    if (command.mode !== 'send') return;
-    const outcome: { providerAccepted?: boolean; code?: string; message?: string } = {};
-    return await withChatgptProviderDispatchLane(this.deps.providerScopeKey,
-      () => this.bootstrapTaskWithinLane(task, outcome), () => outcome);
-  }
-
-  private async bootstrapTaskWithinLane(
-    task: WorkflowSupervisorBrowserTask, laneOutcome: { providerAccepted?: boolean; code?: string; message?: string },
-  ): Promise<void> {
     const poll = this.control.bootstrapPoll(task.taskId);
     const command = poll.command;
-    // The command can change while waiting for the lane. Reconcile on the next
-    // tick instead of entering a scan from inside the non-reentrant send lane.
-    if (!command || command.mode !== 'send') return;
-    // Bootstrap opens a provider project surface and then submits the first
-    // prompt. Both are provider requests, so account-wide backpressure defers the
-    // whole attempt instead of racing it against an explicit rate limit.
+    if (!command) return;
+    if (command.mode === 'reconcile') { await this.reconcileBootstrapTask(task, command); return; }
+    if (command.mode !== 'send') return;
+    // Project navigation and draft preparation are task-local. Do not hold
+    // the account-level Send lane while an independent tab hydrates or waits.
     if (chatgptProviderBackpressureRemainingMs(this.deps.providerScopeKey, this.deps.nowMs()) > 0) return;
     const opened = await this.deps.targetPort.openBootstrap(this.control.bootstrapProjectUrl(task.taskId), task.taskId);
     if (opened.state !== 'ready') { this.noteTargetUnavailable(task, command.effectId, opened.failure); return; }
@@ -1053,9 +1038,11 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     this.clearTaskFailure(task.taskId, command.effectId);
     if (!this.control.bootstrapBeginEffect({ taskId: task.taskId, effectId: command.effectId, dispatchId: `bootstrap-${randomUUID()}`, dispatchGeneration: command.dispatchGeneration })) return;
     try {
-      const dispatch = await target.dispatch(command.prompt);
-      if (dispatch.mutation === 'attempted') laneOutcome.providerAccepted = dispatch.confirmed === true;
-      else { laneOutcome.code = dispatch.reasonCode; laneOutcome.message = dispatch.reasonCode; }
+      const dispatch = await withChatgptProviderDispatchLane(this.deps.providerScopeKey,
+        () => target.dispatch(command.prompt),
+        (result) => result.mutation === 'attempted'
+          ? { providerAccepted: result.confirmed === true }
+          : { code: result.reasonCode, message: result.reasonCode });
       if (dispatch.mutation === 'not_attempted') {
         this.control.bootstrapObserveEffect({ taskId: task.taskId, effectId: command.effectId, observationId: `bootstrap-${randomUUID()}`, outcome: 'not_applied', evidence: { dispatch_mutation: 'not_attempted', send_clicked: false, reason: dispatch.reasonCode } });
         this.control.recordProviderPreparationFailure({ taskId: task.taskId, effectId: command.effectId,
@@ -1115,20 +1102,9 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     this.clearTaskFailure(task.taskId, command.effectId);
   }
 
-  private async executeCommand(target: ComputerChatgptConversationTarget, command: WorkflowSupervisorBrowserCommand, task: WorkflowSupervisorBrowserTask): Promise<void> {
-    // One provider lane owns preparation, insertion and submission together.
-    // The Supervisor poll loop already processes tasks sequentially; this also
-    // fences other ChatGPT transports that share the account dispatch lane.
-    if (command.mode !== 'send') return await this.executeCommandWithinLane(target, command, task, {});
-    const outcome: { providerAccepted?: boolean; code?: string; message?: string } = {};
-    return await withChatgptProviderDispatchLane(this.deps.providerScopeKey,
-      () => this.executeCommandWithinLane(target, command, task, outcome),
-      () => outcome);
-  }
-
-  private async executeCommandWithinLane(
+  private async executeCommand(
     target: ComputerChatgptConversationTarget, command: WorkflowSupervisorBrowserCommand,
-    task: WorkflowSupervisorBrowserTask, laneOutcome: { providerAccepted?: boolean; code?: string; message?: string },
+    task: WorkflowSupervisorBrowserTask,
   ): Promise<void> {
     let snapshot = await target.observe({ includeUserHistory: true, includePageText: true });
     if (!exactConversation(snapshot, task)) {
@@ -1208,9 +1184,14 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     }
     let dispatch: Awaited<ReturnType<ComputerChatgptConversationTarget['dispatch']>>;
     try {
-      dispatch = await target.dispatch(command.prompt, { ...(command.kind === 'recovery' ? { mode: 'recover' as const } : {}) });
-      if (dispatch.mutation === 'attempted') laneOutcome.providerAccepted = dispatch.confirmed === true;
-      else { laneOutcome.code = dispatch.reasonCode; laneOutcome.message = dispatch.reasonCode; }
+      // Only actual provider submission consumes the account-wide dispatch lane.
+      // The content script rechecks exact composer, tab, and target after this
+      // await, so preparation cannot authorize a stale or foreign Send.
+      dispatch = await withChatgptProviderDispatchLane(this.deps.providerScopeKey,
+        () => target.dispatch(command.prompt, { ...(command.kind === 'recovery' ? { mode: 'recover' as const } : {}) }),
+        (result) => result.mutation === 'attempted'
+          ? { providerAccepted: result.confirmed === true }
+          : { code: result.reasonCode, message: result.reasonCode });
     } catch (error) {
       this.control.browserObserveEffect({ conversationId: command.conversationId, conversationUrl: command.conversationUrl, effectId: command.effectId,
         observationId: `computer-observe-${randomUUID()}`, outcome: 'unknown',
