@@ -441,6 +441,9 @@ test('adversarial draft matrix never overwrites another effect or human-edited s
     marker + '\nExact canonical continuation plus arbitrary human text',
     marker + '\nExact  canonical continuation',
     'human note\n' + marker,
+    canonical + '\n@',
+    canonical + '\nforge',
+    'forge ' + canonical,
     '<<<FORGE_WORKFLOW_EFFECT_V1:crpe_foreign_123456789>>>\n' + canonical,
   ];
   for (const draft of [...forged, ...edited]) {
