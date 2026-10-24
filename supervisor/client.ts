@@ -115,7 +115,7 @@ export async function recoverWorkflowSupervisorTask(forgeHome: string, input: { 
 /** Read-only stall classification; derived from the effect ledger, not new state. */
 /** Trusted local review/CI ingress. Never authorize merge or provider Send. */
 export async function observeWorkflowSupervisorReviewNotice(forgeHome: string, input: WorkflowSupervisorReviewNotice): Promise<{
-  eventKey: string; deduplicated: boolean; successorEffectId?: string; deferred: boolean;
+  eventKey: string; deduplicated: boolean; deferred: boolean;
 }> {
   return await rpc(forgeHome, 'task_review_notice', {
     task_id: input.taskId, repo_id: input.repoId, pr_number: input.prNumber,
