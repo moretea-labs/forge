@@ -900,9 +900,9 @@ export class WorkflowSupervisorControlPlane {
     const checkpoint = completion.proposal.checkpoint;
     const notices = this.store.listPendingReviewNotices(128).filter(({ notice }) => notice.taskId === task.taskId).slice(0, 4);
     const nextContext = notices.length
-      ? `${checkpoint}\nExternal Review/CI notifications (WAKE ONLY, not merge or independent ACCEPT proof):\n${notices.map(({ notice }) =>
+      ? `External Review/CI notifications (WAKE ONLY, not merge or independent ACCEPT proof):\n${notices.map(({ notice }) =>
           `PR #${notice.prNumber} HEAD ${notice.reviewedHeadSha} receipt ${notice.reviewId} source ${notice.source} outcome ${notice.outcome}`
-        ).join('\n')}\nRead current GitHub PR, CI and independent Review before the original Writer decides. REVISE returns to same PR/branch; no replay of unknown Sends.`
+        ).join('\n')}\nRead current GitHub PR, CI and independent Review before the original Writer decides. REVISE returns to same PR/branch; no replay of unknown Sends.\nPrevious completion: ${checkpoint}`
       : checkpoint;
     return this.store.commitCompletion(completion, {
       effectId: nextId,
