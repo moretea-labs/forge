@@ -1,5 +1,6 @@
 import {
   exactCodeNeedleMatches,
+  exactCodeOwnerEvidence,
   gitSnapshot,
   getRepositoryReadSessionCache,
   searchRepositoryMany,
@@ -104,26 +105,7 @@ function contextPathPriority(path: string, reasons: string[]): number {
   return testBonus + sourceBonus + structuralBonus;
 }
 
-const METHOD_CONTROL_KEYWORDS = new Set([
-  'if', 'for', 'while', 'switch', 'catch', 'with', 'try', 'finally', 'else', 'do',
-  'return', 'throw', 'new', 'delete', 'void', 'typeof', 'instanceof', 'in', 'of',
-  'yield', 'await', 'function', 'class', 'interface', 'type', 'const', 'let', 'var',
-  'case', 'default', 'import', 'export', 'extends', 'implements', 'super', 'this',
-]);
 
-function exactRequiredSymbolOwner(source: string, query: string): { declared: string | undefined; owner: boolean } {
-  const line = source.trimStart().replace(/^\d+:\s*/, '');
-  const declared = /^(?:(?:export|declare|default|async)\s+)*(?:function|class|interface|type|const|let|enum)\s+([\w$]+)/.exec(line)?.[1];
-  const method = /^(?:(?:public|private|protected|static|abstract|override|async|get|set)\s+)*(?:\*\s*)?#?([\w$]+)\s*(?:<[^>\n]+>)?\s*\([^;\n]*\)\s*(?::\s*.*?)?\s*\{/.exec(line)?.[1];
-  const methodDeclared = method && !METHOD_CONTROL_KEYWORDS.has(method.toLowerCase()) ? method : undefined;
-  const ownerName = declared ?? methodDeclared;
-  const caseOwner = /^case\s+['"`]([^'"`]+)['"`]\s*:/.exec(line)?.[1];
-  const normalizedQuery = query.toLowerCase();
-  return {
-    declared: ownerName,
-    owner: ownerName?.toLowerCase() === normalizedQuery || caseOwner?.toLowerCase() === normalizedQuery,
-  };
-}
 
 export function buildControllerContextPack(
   repoRoot: string,
@@ -442,7 +424,7 @@ export function buildControllerContextPack(
       if (candidates.size >= maxFiles * 3 && !candidates.has(hit.path) && !requiredSearchQueries.includes(hit.query)) continue;
       if (requiredSearchQueries.includes(hit.query)) {
         const source = hit.text.trimStart();
-        const { declared, owner } = exactRequiredSymbolOwner(source, hit.query);
+        const { declared, owner } = exactCodeOwnerEvidence(source, hit.query);
         if (useBoundedExactWindows) {
           const exactLines = scopedRequiredHitLines.get(hit.path) ?? [];
           exactLines.push({ line: hit.line, query: hit.query, owner });
@@ -924,7 +906,7 @@ export function buildControllerContextPack(
   const requiredSymbolEvidenceMissing = requiredSearchQueries.some((query) =>
     !files.some((file) => file.snippets.some((snippet) => {
       if (scopedExactKnownFileSearch && useBoundedExactWindows) {
-        return snippet.content.split(/\r?\n/).some((line) => exactRequiredSymbolOwner(line, query).owner);
+        return snippet.content.split(/\r?\n/).some((line) => exactCodeOwnerEvidence(line, query).owner);
       }
       return exactCodeNeedleMatches(snippet.content.toLowerCase(), query.toLowerCase());
     })));

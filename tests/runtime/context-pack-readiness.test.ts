@@ -43,7 +43,7 @@ test('marks exact-known evidence incomplete when an authored required symbol is 
 });
 
 
-test('requires emitted owner evidence before accepting truncated exact-known materialization', () => {
+test('recovers late owners and requires emitted owner evidence before accepting exact-known materialization', () => {
   const root = mkdtempSync(join(tmpdir(), 'forge-context-exact-window-'));
   roots.push(root);
   execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: root });
@@ -69,10 +69,16 @@ test('requires emitted owner evidence before accepting truncated exact-known mat
     '  async betaMethod(value: string): Promise<boolean> { return value.length > 0; }',
     '}',
   ];
+  const objectOwnerLines = [
+    'export const service = {',
+    '  readValue(value: string): string { return value; },',
+    '};',
+  ];
   writeFileSync(join(root, 'src/exact-window.ts'), `${lines.join('\n')}\n`);
   writeFileSync(join(root, 'src/saturated.ts'), `${saturatedLines.join('\n')}\n`);
   writeFileSync(join(root, 'src/late-owner.ts'), `${lateOwnerLines.join('\n')}\n`);
   writeFileSync(join(root, 'src/method-owner.ts'), `${methodOwnerLines.join('\n')}\n`);
+  writeFileSync(join(root, 'src/object-owner.ts'), `${objectOwnerLines.join('\n')}\n`);
   execFileSync('git', ['add', '.'], { cwd: root });
   execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: root });
 
@@ -122,11 +128,10 @@ test('requires emitted owner evidence before accepting truncated exact-known mat
     maxSnippets: 1,
     maxCharsPerSnippet: 2400,
   });
-  expect(lateOwnerPack.files[0]?.snippets.some((snippet) => snippet.content.includes('alphaOwner();'))).toBe(true);
-  expect(lateOwnerPack.files[0]?.snippets.some((snippet) => snippet.content.includes('export function alphaOwner'))).toBe(false);
-  expect(lateOwnerPack.readiness.unresolvedReasonCodes).toContain('required_symbol_not_materialized');
-  expect(lateOwnerPack.readiness.status).toBe('degraded');
-  expect(lateOwnerPack.readiness.readyForHighConfidenceMutation).toBe(false);
+  expect(lateOwnerPack.files[0]?.snippets.some((snippet) => snippet.content.includes('export function alphaOwner'))).toBe(true);
+  expect(lateOwnerPack.readiness.unresolvedReasonCodes).not.toContain('required_symbol_not_materialized');
+  expect(lateOwnerPack.readiness.status).toBe('ready');
+  expect(lateOwnerPack.readiness.readyForHighConfidenceMutation).toBe(true);
 
   const methodOwnerPack = buildControllerContextPack(root, getMcpPolicy('controller'), {
     description: 'Inspect betaMethod in the exact known implementation file.',
@@ -142,6 +147,21 @@ test('requires emitted owner evidence before accepting truncated exact-known mat
   expect(methodOwnerPack.readiness.unresolvedReasonCodes).not.toContain('required_symbol_not_materialized');
   expect(methodOwnerPack.readiness.status).toBe('ready');
   expect(methodOwnerPack.readiness.readyForHighConfidenceMutation).toBe(true);
+
+  const objectOwnerPack = buildControllerContextPack(root, getMcpPolicy('controller'), {
+    description: 'Inspect readValue in the exact known implementation file.',
+    searchTerms: ['readValue'],
+    knownPaths: ['src/object-owner.ts'],
+    retrievalMode: 'implementation',
+    structuralContext: 'off',
+    maxFiles: 1,
+    maxSnippets: 1,
+    maxCharsPerSnippet: 2400,
+  });
+  expect(objectOwnerPack.files[0]?.snippets.some((snippet) => snippet.content.includes('readValue(value: string)'))).toBe(true);
+  expect(objectOwnerPack.readiness.unresolvedReasonCodes).not.toContain('required_symbol_not_materialized');
+  expect(objectOwnerPack.readiness.status).toBe('ready');
+  expect(objectOwnerPack.readiness.readyForHighConfidenceMutation).toBe(true);
 });
 
 test('retains separate explicit code symbols in sync and async discovery beyond the inventory cap', async () => {
