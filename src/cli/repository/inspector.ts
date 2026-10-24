@@ -672,6 +672,7 @@ function ripgrepCandidateLines(
   caseSensitive: boolean,
   maxResultsPerQuery: number,
   skippedBinaryPaths?: Set<string>,
+  maxMatchesPerFile = Math.min(Math.max(maxResultsPerQuery, 32), 500),
 ): Map<string, Array<{ line: number; text: string }>> {
   const found = new Map<string, Array<{ line: number; text: string }>>();
   const allowed = new Set(allowedPaths);
@@ -683,7 +684,7 @@ function ripgrepCandidateLines(
     if (remainingMs <= 0) throw new Error('RIPGREP_SEARCH_TIMEOUT: source discovery exceeded 15s total budget');
     const result = runProcess('rg', [
       '--json', '--with-filename', '--line-number', '--no-heading', '--color', 'never', '--fixed-strings', '--no-ignore', '--no-config', '--no-messages',
-      '--max-count', String(Math.min(Math.max(maxResultsPerQuery, 32), 500)),
+      '--max-count', String(maxMatchesPerFile),
       ...(caseSensitive ? [] : ['--ignore-case']),
       ...queries.flatMap((query) => ['-e', query]),
       '--', ...paths,
@@ -816,11 +817,15 @@ export function searchRepositoryMany(
     && completionMode === 'per_query'
     && requiredQueries.length > 0
     && requiredQueries.length <= 2;
+  // Allow bounded known-file searches to collect enough lexical evidence in
+  // one process. A path that still reaches this cap gets an exact-only pass,
+  // so a late required symbol is never inferred absent from truncated hits.
+  const scopedHitLimit = Math.max(160, Math.min(Math.max(maxResultsPerQuery, 32), 500));
   const scopedHits = boundedScopedSearch && authorizedCandidatePaths.length
-    ? ripgrepCandidateLines(repoRoot, authorizedCandidatePaths, queries, opts.caseSensitive === true, maxResultsPerQuery, skippedBinaryPaths)
+    ? ripgrepCandidateLines(repoRoot, authorizedCandidatePaths, queries, opts.caseSensitive === true, maxResultsPerQuery, skippedBinaryPaths, scopedHitLimit)
     : null;
   const saturatedBroadPath = scopedHits !== null && [...scopedHits.values()].some(
-    (lines) => lines.length >= Math.min(Math.max(maxResultsPerQuery, 32), 500),
+    (lines) => lines.length >= scopedHitLimit,
   );
   const exactHits = authorizedCandidatePaths.length && requiredQueries.length
     ? scopedHits !== null && !saturatedBroadPath
