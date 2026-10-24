@@ -119,14 +119,19 @@
     // history must never be interpreted as a current provider failure.
     const status = Array.from(document.querySelectorAll('[role="alert"], [role="status"], [aria-live="assertive"], [aria-live="polite"]'))
       .filter((node) => !node.closest(TURN) && !node.closest('[data-message-author-role]') && visible(node));
-    const capacity = Array.from(conversationRoot().querySelectorAll('p, span, div'))
-      // Exclude message subtrees before layout-dependent visibility reads.
+    // A navigation/history error is a live empty page, not proof that a
+    // conversation was deleted or that its last provider Send failed.
+    // Reuse the existing single short-banner scan; history remains excluded.
+    const banners = Array.from(conversationRoot().querySelectorAll('p, span, div'))
       .filter((node) => !node.closest(TURN) && !node.closest('[data-message-author-role]') && visible(node))
       .filter((node) => {
         const text = core.normalizeText(node.innerText ?? node.textContent);
-        return text.length <= 250 && /(?:你已达到此对话的长度上限|此对话已达到长度上限|you(?:'ve| have) reached the (?:maximum length for this conversation|conversation length limit)|this conversation has reached its maximum length)/i.test(text);
+        return text.length <= 250 && (
+          /(?:你已达到此对话的长度上限|此对话已达到长度上限|you(?:'ve| have) reached the (?:maximum length for this conversation|conversation length limit)|this conversation has reached its maximum length)/i.test(text)
+          || /^(?:无法加载此 ChatGPT 对话|Unable to load this ChatGPT conversation|Unable to load this conversation)$/i.test(text)
+        );
       });
-    return [...status, ...capacity]
+    return [...status, ...banners]
       .map((node) => core.normalizeText(node.innerText ?? node.textContent))
       .filter(Boolean).slice(-8).join('\n').slice(-PROVIDER_FAILURE_CHARS);
   };
