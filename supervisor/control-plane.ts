@@ -377,7 +377,8 @@ export class WorkflowSupervisorControlPlane {
     if (task.completionContract.repo_id !== notice.repoId) throw new Error('WORKFLOW_SUPERVISOR_REVIEW_REPOSITORY_MISMATCH');
     if (!Number.isInteger(notice.prNumber) || notice.prNumber < 1 || notice.prNumber > 1_000_000) throw new Error('WORKFLOW_SUPERVISOR_REVIEW_PR_INVALID');
     if (!/^[0-9a-f]{40}$/i.test(notice.reviewedHeadSha) || !/^[0-9a-f]{40}$/i.test(notice.currentHeadSha)) throw new Error('WORKFLOW_SUPERVISOR_REVIEW_HEAD_INVALID');
-    if (notice.reviewedHeadSha.toLowerCase() !== notice.currentHeadSha.toLowerCase()) throw new Error('WORKFLOW_SUPERVISOR_REVIEW_STALE_HEAD');
+    // A stale review may be the very REVISE finding the original Writer must
+    // see. Deliver as explicitly unverified context; never as merge approval.
     if (!/^[a-zA-Z0-9_.:-]{1,128}$/.test(notice.reviewId)) throw new Error('WORKFLOW_SUPERVISOR_REVIEW_ID_INVALID');
     if (!['github_review','github_ci','independent_reviewer'].includes(notice.source)
       || !['ACCEPT','REVISE','BLOCK','CI_FAILED','CI_PASSED'].includes(notice.outcome)) throw new Error('WORKFLOW_SUPERVISOR_REVIEW_OUTCOME_INVALID');
@@ -900,9 +901,9 @@ export class WorkflowSupervisorControlPlane {
     const checkpoint = completion.proposal.checkpoint;
     const notices = this.store.listPendingReviewNotices(128).filter(({ notice }) => notice.taskId === task.taskId).slice(0, 4);
     const nextContext = notices.length
-      ? `External Review/CI notifications (WAKE ONLY, not merge or independent ACCEPT proof):\n${notices.map(({ notice }) =>
-          `PR #${notice.prNumber} HEAD ${notice.reviewedHeadSha} receipt ${notice.reviewId} source ${notice.source} outcome ${notice.outcome}`
-        ).join('\n')}\nRead current GitHub PR, CI and independent Review before the original Writer decides. REVISE returns to same PR/branch; no replay of unknown Sends.\nPrevious completion: ${checkpoint}`
+      ? `WARNING: THE FOLLOWING REVIEW/CI NOTICES ARE UNVERIFIED SIGNALS, NOT ACCEPTANCE, GITHUB APPROVAL, OR MERGE/RELEASE AUTHORITY. The current HEAD MUST be rechecked with the GitHub provider:\n${notices.map(({ notice }) =>
+          `[UNVERIFIED${notice.reviewedHeadSha !== notice.currentHeadSha ? ' STALE_HEAD' : ''}] PR #${notice.prNumber} reviewed HEAD ${notice.reviewedHeadSha}, last-observed HEAD ${notice.currentHeadSha}, receipt ${notice.reviewId}, source ${notice.source}, reported outcome ${notice.outcome}`
+        ).join('\n')}\nIndependently verify the current PR HEAD, CI and fixed-candidate Review. Treat stale approvals as invalid; REVISE goes to the original Writer and SAME PR/branch. Never replay unknown Sends.\nPrevious completion: ${checkpoint}`
       : checkpoint;
     return this.store.commitCompletion(completion, {
       effectId: nextId,
