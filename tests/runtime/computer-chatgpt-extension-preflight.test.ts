@@ -214,6 +214,98 @@ test('pinned bootstrap marker reconciliation reads migrated exact conversation w
   expect(fixture.matchesReceiver(foreign, bootstrap)).toBe(false);
 });
 
+test('find_marker hydrates only the exact pinned migrated conversation after receiver loss', async () => {
+  const projectUrl = 'https://chatgpt.com/g/g-p-forge-test';
+  const conversationId = '12345678-1234-1234-1234-123456789abc';
+  const conversationUrl = projectUrl + '/c/' + conversationId;
+  const marker = '<<<FORGE_WORKFLOW_EFFECT_V1:fx_attested_123456789>>>';
+  const pinned = { id: 81, windowId: 8, url: conversationUrl };
+  const decoy = { id: 82, windowId: 8, url: projectUrl };
+  const tabs = [pinned, decoy];
+  let receiverInstalled = false;
+  let reinjections = 0;
+  let sends = 0;
+  const chrome = {
+    runtime: {
+      lastError: undefined as undefined | { message: string },
+      connectNative() { return { onMessage: { addListener() {} }, onDisconnect: { addListener() {} }, postMessage() {} }; },
+      onMessage: { addListener() {} }, onInstalled: { addListener() {} }, onStartup: { addListener() {} },
+    },
+    tabs: {
+      async query() { return [...tabs]; },
+      get(id: number, cb: (value: typeof pinned | undefined) => void) {
+        cb(tabs.find((tab) => tab.id === id));
+      },
+      sendMessage(id: number, message: { type: string }, cb: (value?: object) => void) {
+        if (message.type !== 'forge-computer-chatgpt-snapshot') {
+          sends++;
+          cb({ dispatched: false });
+          return;
+        }
+        if (id !== pinned.id) { cb({ url: decoy.url, latestUserText: '', userMessages: [] }); return; }
+        if (!receiverInstalled) {
+          chrome.runtime.lastError = { message: 'Receiving end does not exist' };
+          cb();
+          chrome.runtime.lastError = undefined;
+          return;
+        }
+        cb({ url: pinned.url, latestUserText: marker + '\nSafe owner message',
+          userMessages: [marker + '\nSafe owner message'] });
+      },
+      onUpdated: { addListener() {} }, onActivated: { addListener() {} }, onRemoved: { addListener() {} },
+    },
+    scripting: {
+      executeScript(args: { target: { tabId: number }; files: string[] }, cb: () => void) {
+        expect(args.target.tabId).toBe(pinned.id);
+        expect(args.files).toEqual(['core.js', 'content.js']);
+        reinjections++;
+        receiverInstalled = true;
+        cb();
+      },
+    },
+    storage: { session: { async get() { return {}; } } },
+    alarms: { create() {}, onAlarm: { addListener() {} } },
+    windows: { onFocusChanged: { addListener() {} } },
+  };
+  const projectId = (value: string) => /\/g\/(g-p-[^/]+)/.exec(value)?.[1] ?? null;
+  const context = {
+    chrome, URL, Date, Math, importScripts() {},
+    ForgeComputerChatgptCore: {
+      parseConversation(value: string) {
+        const match = /\/c\/([0-9a-f-]{36})(?:[/?#]|$)/.exec(value);
+        return match ? { conversationId: match[1], canonicalUrl: value } : null;
+      },
+      projectId,
+      normalizeText(value: unknown) { return String(value ?? '').trim(); },
+    },
+    setTimeout() { return 1; }, clearTimeout() {}, setInterval() { return 1; },
+  };
+  runInNewContext(source + '\n;globalThis.__findMarker = executeFindMarker;', context);
+  const find = (context as typeof context & { __findMarker: (
+    args: object, id: string) => Promise<{ matches: Array<{
+      identity: { conversationId: string }; providerBinding: { tabId: string };
+    }> }> }).__findMarker;
+  const command = { identity: { namespace: 'chatgpt.bootstrap',
+    bootstrapKey: 'supervisor:exact', projectUrl },
+    providerBinding: { providerId: 'browser.chrome-extension',
+      providerSessionId: 'same-provider', windowId: '8', tabId: '81' },
+    marker };
+  const found = await find(command, 'same-provider');
+  expect(found.matches).toHaveLength(1);
+  expect(found.matches[0]?.identity.conversationId).toBe(conversationId);
+  expect(found.matches[0]?.providerBinding.tabId).toBe('81');
+  expect(reinjections).toBe(1);
+  expect(sends).toBe(0);
+  // A receiver may only be rehydrated while the exact pin still belongs to
+  // the original Project. Another Project's tab never earns a read repair.
+  receiverInstalled = false;
+  pinned.url = 'https://chatgpt.com/g/g-p-other-project/c/' + conversationId;
+  const rejected = await find(command, 'same-provider');
+  expect(rejected.matches).toHaveLength(0);
+  expect(reinjections).toBe(1);
+  expect(sends).toBe(0);
+});
+
 test('two fresh Supervisor tasks in one Project receive distinct new tabs, never a borrowed Project tab', async () => {
   const projectUrl = 'https://chatgpt.com/g/g-p-avela-project';
   const fixture = bootstrapFixture([{ id: 41, windowId: 8, url: projectUrl }]);
