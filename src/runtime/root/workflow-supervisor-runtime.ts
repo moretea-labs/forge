@@ -25,6 +25,7 @@ import { findActivePluginCapabilityAuthorization, pluginCapabilityAuthorizationO
 import { readPluginActionReceiptForRequest, submitAssistantPluginAction, type PluginActionReceipt } from '../plugins/store';
 import { loadGmailPluginConfig } from '../plugins/google-shared';
 import { GMAIL_OWNER_NOTIFICATION_CAPABILITY_ID, GMAIL_PLUGIN_ID } from '../plugins/gmail-adapter';
+import { observeGithubReviewWatch } from '../workflow/schedules/github-issue-watch';
 
 /** An uncertain external send remains owned by its original immutable plugin receipt. */
 export function recordUnknownSupervisorNotificationReceipt(
@@ -529,10 +530,56 @@ export async function startWorkflowSupervisorRuntime(
   await once(server, 'listening');
   let closing = false;
   let reconciliationInFlight: Promise<void> | undefined;
+  // Opted-in GitHub PR observation reuses the existing Runtime maintenance tick.
+  // Only named original task/PR bindings are read; no global search, new
+  // scheduler, model decisions, or additional provider Send.
+  let reviewReconciliationInFlight: Promise<void> | undefined;
+  const reviewPollMs = 30_000;
+  let nextReviewPollAt = Date.now() + reviewPollMs;
+  let reviewCursor = 0;
+  const reconcileReviewNotices = (): void => {
+    if (closing || reviewReconciliationInFlight || Date.now() < nextReviewPollAt) return;
+    reviewReconciliationInFlight = (async () => {
+      const watches = store.listReviewWatches(128);
+      const selected = watches.length ? Array.from({ length: Math.min(4, watches.length) },
+        (_, index) => watches[(reviewCursor + index) % watches.length]) : [];
+      if (watches.length) reviewCursor = (reviewCursor + selected.length) % watches.length;
+      for (const watch of selected) {
+        if (closing) break;
+        try {
+          const repository = getRepository(watch.repoId, controllerHome, { includeRemoved: true });
+          const observed = await observeGithubReviewWatch({
+            repoRoot: repository.canonicalRoot,
+            githubRepository: watch.githubRepository,
+            prNumber: watch.prNumber,
+          });
+          if (closing) break;
+          if (!observed.open) {
+            store.retireReviewWatch(watch.taskId, watch.prNumber);
+            continue;
+          }
+          for (const notice of observed.notices) {
+            controlPlane.observeReviewNotice({ taskId: watch.taskId, repoId: watch.repoId,
+              prNumber: watch.prNumber, ...notice });
+          }
+        } catch (error) {
+          // Failed provider observation grants no verdict and never starts a
+          // retry of a potentially applied external Send.
+          process.stderr.write('[supervisor-github-review-observe] ' + watch.taskId + ':' + watch.prNumber + ': '
+            + (error instanceof Error ? error.message : String(error)) + '\n');
+        }
+      }
+    })().catch((error) => {
+      process.stderr.write('[supervisor-github-review-observe] ' + (error instanceof Error ? error.message : String(error)) + '\n');
+    }).finally(() => {
+      nextReviewPollAt = Date.now() + reviewPollMs;
+      reviewReconciliationInFlight = undefined;
+    });
+  };
   const reconcileCommittedContinuations = (): void => {
     if (closing || reconciliationInFlight) return;
     reconciliationInFlight = controlPlane.reconcileCommittedContinuations()
-      .then(() => { reconcileSupervisorNotifications(); })
+      .then(() => { reconcileSupervisorNotifications(); reconcileReviewNotices(); })
       .catch((error) => { process.stderr.write(`[workflow-supervisor-reconcile] ${error instanceof Error ? error.message : String(error)}\\n`); })
       .finally(() => { reconciliationInFlight = undefined; });
   };
@@ -574,6 +621,7 @@ export async function startWorkflowSupervisorRuntime(
       clearInterval(reconciliationTimer);
       try {
         await reconciliationInFlight?.catch(() => undefined);
+        await reviewReconciliationInFlight?.catch(() => undefined);
         await nativeBrowser?.close().catch(() => undefined);
         if (server.listening) {
           await new Promise<void>((resolve, reject) => {

@@ -935,6 +935,44 @@ export class WorkflowSupervisorStore {
     });
   }
 
+  /** An opt-in watch is a single event in this task's existing causal ledger. */
+  bindReviewWatch(input: { taskId: string; repoId: string; githubRepository: string; prNumber: number }): { deduplicated: boolean } {
+    const eventKey = `review-watch:${input.taskId}:${input.prNumber}`;
+    return this.transaction((db) => {
+      const task = statement(db, 'SELECT * FROM tasks WHERE task_id=?', (s) => s.get(input.taskId)) as Record<string, unknown> | undefined;
+      if (!task) throw new Error('WORKFLOW_SUPERVISOR_TASK_UNKNOWN');
+      if (taskFromRow(task).completionContract.repo_id !== input.repoId) throw new Error('WORKFLOW_SUPERVISOR_REVIEW_REPOSITORY_MISMATCH');
+      if (statement(db, "SELECT 1 FROM events WHERE task_id=? AND kind IN ('terminal_done','terminal_needs_user','terminal_stopped') LIMIT 1", (s) => s.get(input.taskId))) throw new Error('WORKFLOW_SUPERVISOR_TASK_TERMINAL');
+      const payload = json(input);
+      const old = statement(db, 'SELECT payload_json FROM events WHERE event_key=?', (s) => s.get(eventKey)) as { payload_json: string } | undefined;
+      if (old && old.payload_json !== payload) throw new Error('WORKFLOW_SUPERVISOR_REVIEW_WATCH_CONFLICT');
+      if (!old) statement(db, 'INSERT INTO events(task_id,event_key,kind,payload_json,occurred_at) VALUES (?,?,?,?,?)', (s) => s.run(
+        input.taskId, eventKey, 'review_watch_bound', payload, now(),
+      ));
+      return { deduplicated: Boolean(old) };
+    });
+  }
+
+  /** Existing SQLite event projection; terminal tasks never receive external notices. */
+  listReviewWatches(limit = 128): Array<{ taskId: string; repoId: string; githubRepository: string; prNumber: number }> {
+    return this.read((db) => statement(db, `SELECT e.payload_json FROM events e
+      WHERE e.kind='review_watch_bound'
+      AND NOT EXISTS (SELECT 1 FROM events t WHERE t.task_id=e.task_id AND t.kind IN ('terminal_done','terminal_needs_user','terminal_stopped'))
+      AND NOT EXISTS (SELECT 1 FROM events retired WHERE retired.event_key='review-watch-retired:' || json_extract(e.payload_json,'$.taskId') || ':' || json_extract(e.payload_json,'$.prNumber'))
+      ORDER BY e.event_id DESC LIMIT ?`, (s) => s.all(Math.max(1, Math.min(128, Math.trunc(limit)))))
+      .map((row) => JSON.parse(String((row as { payload_json: string }).payload_json))));
+  }
+
+  /** Retire an observed closed PR without deleting its canonical review ledger. */
+  retireReviewWatch(taskId: string, prNumber: number): void {
+    this.transaction((db) => {
+      const key = `review-watch-retired:${taskId}:${prNumber}`;
+      statement(db, 'INSERT OR IGNORE INTO events(task_id,event_key,kind,payload_json,occurred_at) VALUES (?,?,?,?,?)', (s) => s.run(
+        taskId, key, 'review_watch_retired', json({ prNumber }), now(),
+      ));
+    });
+  }
+
   listPendingReviewNotices(limit = 32): Array<{ eventKey: string; notice: WorkflowSupervisorReviewNotice }> {
     return this.read((db) => statement(db, `SELECT e.event_key,e.payload_json FROM events e
       WHERE e.kind='review_notice_observed'
