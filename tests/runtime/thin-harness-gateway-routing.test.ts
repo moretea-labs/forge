@@ -14,7 +14,7 @@ import { callCoreCapabilityAdapter } from '../../adapters/mcp/runtime-gateway/co
 import { createMcpToolContext } from '../../adapters/mcp/server';
 import { callMultiRepositoryTool } from '../../adapters/mcp/multi-repository';
 import { ensureControllerHome } from '../../src/effects/controller-home';
-import { addRepositoryCheckout, getRepository, registerRepository, selectRepositoryCheckout } from '../../src/cli/repositories/registry';
+import { addRepositoryCheckout, getRepository, registerRepository, selectRepositoryCheckout, setRepositoryCheckoutLifecycle } from '../../src/cli/repositories/registry';
 import { repositoryGitStatus } from '../../src/cli/repositories/structured-git';
 import { ensureRepositoryRuntimeStorageBinding } from '../../src/cli/repositories/runtime-storage';
 import { listExecutionJobs } from '../../src/runtime/execution/jobs/store';
@@ -30,7 +30,7 @@ import { routeExecution, isFastEligibleTool } from '../../src/runtime/execution/
 import { getProcessRecord, listProcessRecords } from '../../src/runtime/execution/process-runtime/store';
 import { getProcessHandle, waitForProcess } from '../../src/runtime/execution/process-runtime/runtime';
 import { readControlPlaneRecord } from '../../src/runtime/control-plane/persistence/sqlite-store';
-import { startExecutionSession, type ExecutionSessionContext } from '../../src/runtime/control-plane/execution/session-store';
+import { readExecutionSession, startExecutionSession, updateExecutionSession, type ExecutionSessionContext } from '../../src/runtime/control-plane/execution/session-store';
 import { runPersistedCheckViaProcessRuntime } from '../../src/runtime/execution/process-runtime/persisted-check';
 import { readPersistedCheckResultReceipt } from '../../src/runtime/execution/process-runtime/check-result';
 import { resolveRepositoryCheckStorage } from '../../src/runtime/execution/process-runtime/check-storage';
@@ -52,6 +52,7 @@ import {
 import { createWorkContract, getWorkContract, reviseWorkSemanticContext } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { snapshotControllerCheck } from '../../src/cli/controller/check-runner';
 import { readWorkHandle, writeWorkHandle } from '../../src/runtime/control-plane/execution/work-handle-store';
+import { principalFor } from '../../src/runtime/control-plane/execution/work-execution-support';
 import { workHandleRetainsCanonicalMutationOwnership } from '../../src/runtime/control-plane/execution/work-handle-authority';
 import { verificationInputFingerprint, workspaceValidationFingerprint } from '../../src/runtime/control-plane/execution/verification-evidence';
 
@@ -3259,5 +3260,275 @@ describe('work_validate persisted semantic identity', () => {
     }).validation;
     expect(secondValidation).toMatchObject({ passed: true, completed: true });
     expect(secondValidation.checks[0]?.status).toBe('passed');
+  });
+});
+
+describe('Work tools without explicit execution-session preflight', () => {
+  test('prepares, reuses and inspects an isolated Work from repository and Work identity alone', async () => {
+    const fx = fixture();
+    roots.push(fx.root);
+    const prepared = await callExecutionTool(fx.ctx, 'work_prepare', {
+      repo_id: fx.repository.repoId,
+      objective: 'No caller-managed execution Session or Checkout selection',
+      isolation: 'new_worktree',
+      request_id: 'implicit-work-preparation',
+    });
+    if (prepared?.isError) throw new Error(JSON.stringify(prepared.structuredContent ?? prepared));
+    const first = prepared?.structuredContent as { work: { workId: string; checkoutId: string; sessionId: string; managedWorktree: boolean } };
+    expect(first.work.workId).toBeTruthy();
+    expect(first.work.managedWorktree).toBe(true);
+    expect(first.work.checkoutId).not.toBe(fx.repository.activeCheckoutId);
+    expect(readExecutionSession(fx.controllerHome, {
+      sessionId: first.work.sessionId, principalId: principalFor(fx.ctx),
+      controllerInstanceId: fx.ctx.controllerInstanceId,
+    })?.activeWorkId).toBe(first.work.workId);
+    const boundRevision = readControlPlaneRecord(
+      fx.controllerHome, 'execution_session', 'controller', first.work.sessionId,
+    )?.revision;
+    const replay = await callExecutionTool(fx.ctx, 'work_prepare', {
+      repo_id: fx.repository.repoId,
+      objective: 'No caller-managed execution Session or Checkout selection',
+      isolation: 'new_worktree',
+      request_id: 'implicit-work-preparation',
+    });
+    if (replay?.isError) throw new Error(JSON.stringify(replay.structuredContent ?? replay));
+    expect((replay?.structuredContent as { work: { workId: string } }).work.workId).toBe(first.work.workId);
+    expect(readControlPlaneRecord(
+      fx.controllerHome, 'execution_session', 'controller', first.work.sessionId,
+    )?.revision).toBe(boundRevision);
+
+    const reused = await callExecutionTool(fx.ctx, 'work_prepare', {
+      repo_id: fx.repository.repoId, work_id: first.work.workId,
+    });
+    if (reused?.isError) throw new Error(JSON.stringify(reused.structuredContent ?? reused));
+    const second = reused?.structuredContent as { work: { workId: string; checkoutId: string }; reused: boolean };
+    expect(second.reused).toBe(true);
+    expect(second.work.workId).toBe(first.work.workId);
+    expect(second.work.checkoutId).toBe(first.work.checkoutId);
+
+    const inspected = await callExecutionTool(fx.ctx, 'work_inspect', {
+      repo_id: fx.repository.repoId, work_id: first.work.workId,
+    });
+    expect(inspected?.isError).not.toBe(true);
+    expect((inspected?.structuredContent as { work: { workId: string } }).work.workId).toBe(first.work.workId);
+  });
+
+  test('resolves a recovered semantic Work through its unique current physical Handle', async () => {
+    const fx = fixture();
+    roots.push(fx.root);
+    const seeded = await callExecutionTool(fx.ctx, 'work_prepare', {
+      repo_id: fx.repository.repoId, objective: 'Seed historical recovery placement',
+      isolation: 'new_worktree', request_id: 'implicit-semantic-recovery-seed',
+    });
+    if (seeded?.isError) throw new Error(JSON.stringify(seeded.structuredContent));
+    const seededId = (seeded?.structuredContent as { work: { workId: string } }).work.workId;
+    const original = readWorkHandle(fx.controllerHome, fx.repository.repoId, seededId)!;
+    const semanticId = 'work-semantic-implicit-successor';
+    const successorId = 'work-physical-implicit-successor';
+    const head = git(fx.repoRoot, ['rev-parse', 'HEAD']);
+    createWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
+      workId: semanticId, repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId, baseRevision: head,
+      objective: 'Recovered semantic Work uses the current physical successor',
+      acceptanceCriteria: [], allowedPaths: [], forbiddenPaths: [],
+      checks: [], constraints: {}, requestedBy: 'chatgpt',
+      workKind: 'repository_change', dispatchState: 'running', phase: 'implementation',
+    });
+    // The direct historical identity is retained but belongs to the old checkout.
+    writeWorkHandle(fx.controllerHome, {
+      ...original, recordRevision: undefined, workId: semanticId,
+      workContractId: semanticId, state: 'failed',
+      failureReason: `placement_lost_rebound_to:${successorId}`,
+    });
+    writeWorkHandle(fx.controllerHome, {
+      ...original, recordRevision: undefined, workId: successorId,
+      workContractId: semanticId,
+      checkoutId: fx.repository.activeCheckoutId, worktreePath: fx.repoRoot,
+      branch: 'main', sourceCheckoutId: undefined, managedWorktree: false,
+      baseCommit: head, deliveryBaseCommit: head, expectedHead: head,
+      state: 'prepared', failureReason: undefined,
+    });
+    const priorRevision = readControlPlaneRecord(
+      fx.controllerHome, 'execution_session', 'controller', original.sessionId,
+    )?.revision;
+    const rejected = await callExecutionTool(fx.ctx, 'work_inspect', {
+      repo_id: fx.repository.repoId, work_id: semanticId, checkout_id: original.checkoutId,
+    });
+    expect(rejected?.isError).toBe(true);
+    expect(JSON.stringify(rejected?.structuredContent)).toContain('WORK_HANDLE_CHECKOUT_DRIFT');
+    expect(readControlPlaneRecord(
+      fx.controllerHome, 'execution_session', 'controller', original.sessionId,
+    )?.revision).toBe(priorRevision);
+
+    const inspected = await callExecutionTool(fx.ctx, 'work_inspect', {
+      repo_id: fx.repository.repoId, work_id: semanticId,
+    });
+    if (inspected?.isError) throw new Error(JSON.stringify(inspected?.structuredContent));
+    expect((inspected?.structuredContent as { work: { workId: string; checkoutId: string } }).work)
+      .toMatchObject({ workId: successorId, checkoutId: fx.repository.activeCheckoutId });
+  });
+
+  test('rejects invalid repository and checkout without persisting an implicit Session', async () => {
+    const fx = fixture();
+    roots.push(fx.root);
+    for (const item of [
+      { repoId: 'repo-missing-for-implicit', checkoutId: undefined, requestId: 'implicit-invalid-repo' },
+      { repoId: fx.repository.repoId, checkoutId: 'checkout-invalid', requestId: 'implicit-invalid-checkout' },
+    ]) {
+      const failed = await callExecutionTool(fx.ctx, 'work_prepare', {
+        repo_id: item.repoId, ...(item.checkoutId ? { checkout_id: item.checkoutId } : {}),
+        request_id: item.requestId, objective: 'Invalid admission must not leave a Session',
+      });
+      expect(failed?.isError).toBe(true);
+      const seed = [principalFor(fx.ctx), item.repoId, item.requestId].join(':');
+      const id = `sess_auto_${createHash('sha256').update(seed).digest('hex').slice(0, 32)}`;
+      expect(readControlPlaneRecord(fx.controllerHome, 'execution_session', 'controller', id))
+        .toBeUndefined();
+    }
+  });
+
+  test('keeps explicit wrong-checkout requests fenced without session preflight', async () => {
+    const fx = fixture();
+    roots.push(fx.root);
+    const prepared = await callExecutionTool(fx.ctx, 'work_prepare', {
+      repo_id: fx.repository.repoId, objective: 'Fence checkout drift',
+      isolation: 'new_worktree', request_id: 'implicit-checkout-fence',
+    });
+    if (prepared?.isError) throw new Error(JSON.stringify(prepared.structuredContent ?? prepared));
+    const workId = (prepared?.structuredContent as { work: { workId: string } }).work.workId;
+    const inspected = await callExecutionTool(fx.ctx, 'work_inspect', {
+      repo_id: fx.repository.repoId, work_id: workId, checkout_id: fx.repository.activeCheckoutId,
+    });
+    expect(inspected?.isError).toBe(true);
+    expect(JSON.stringify(inspected?.structuredContent)).toContain('WORK_HANDLE_CHECKOUT_DRIFT');
+  });
+});
+
+describe('recorded-HEAD relocation without duplicated model proofs', () => {
+  test('moves an existing clean direct Work into a managed worktree without supplying three identical HEADs', async () => {
+    const fx = fixture();
+    roots.push(fx.root);
+    const initialHead = git(fx.repoRoot, ['rev-parse', 'HEAD']);
+    const direct = await callExecutionTool(fx.ctx, 'work_prepare', {
+      repo_id: fx.repository.repoId, objective: 'Recorded source HEAD is the exact relocation proof',
+      isolation: 'reuse', request_id: 'head-implicit-direct',
+    });
+    if (direct?.isError) throw new Error(JSON.stringify(direct.structuredContent ?? direct));
+    const existing = (direct?.structuredContent as { work: { workId: string; managedWorktree: boolean } }).work;
+    expect(existing.managedWorktree).toBe(false);
+    const moved = await callExecutionTool(fx.ctx, 'work_prepare', {
+      repo_id: fx.repository.repoId, work_id: existing.workId, relocate_to_new_worktree: true,
+    });
+    if (moved?.isError) throw new Error(JSON.stringify(moved.structuredContent ?? moved));
+    const relocated = moved?.structuredContent as { relocated: boolean; work: { checkoutId: string; managedWorktree: boolean; expectedHead: string } };
+    expect(relocated.relocated).toBe(true);
+    expect(relocated.work.managedWorktree).toBe(true);
+    expect(relocated.work.checkoutId).not.toBe(fx.repository.activeCheckoutId);
+    expect(relocated.work.expectedHead).toBe(initialHead);
+    expect(git(fx.repoRoot, ['rev-parse', 'HEAD'])).toBe(initialHead);
+  });
+});
+
+describe('automatic execution identity isolation', () => {
+  test('ignores shared transport Session focus and does not mutate its durable binding', async () => {
+    const fx = fixture();
+    roots.push(fx.root);
+    const explicit = startExecutionSession(fx.controllerHome, {
+      sessionId: 'sess_transport_shared',
+      principalId: principalFor(fx.ctx),
+      controllerInstanceId: fx.ctx.controllerInstanceId,
+    });
+    const bound = updateExecutionSession(fx.controllerHome, {
+      sessionId: explicit.sessionId,
+      principalId: principalFor(fx.ctx),
+      controllerInstanceId: fx.ctx.controllerInstanceId,
+    }, { activeRepositoryId: fx.repository.repoId, activeCheckoutId: fx.repository.activeCheckoutId });
+    const revisionBefore = readControlPlaneRecord(
+      fx.controllerHome, 'execution_session', 'controller', explicit.sessionId,
+    )?.revision;
+    const transported = { ...fx.ctx, sessionId: explicit.sessionId };
+    const first = await callExecutionTool(transported, 'work_prepare', {
+      repo_id: fx.repository.repoId, isolation: 'new_worktree',
+      objective: 'First independently owned Work', request_id: 'transport-isolation-a',
+    });
+    const second = await callExecutionTool(transported, 'work_prepare', {
+      repo_id: fx.repository.repoId, isolation: 'new_worktree',
+      objective: 'Second independently owned Work', request_id: 'transport-isolation-b',
+    });
+    if (first?.isError || second?.isError) throw new Error(JSON.stringify([first?.structuredContent, second?.structuredContent]));
+    const a = (first?.structuredContent as { work: { workId: string; sessionId: string; checkoutId: string } }).work;
+    const b = (second?.structuredContent as { work: { workId: string; sessionId: string; checkoutId: string } }).work;
+    expect(a.workId).not.toBe(b.workId);
+    expect(a.sessionId).not.toBe(b.sessionId);
+    expect(a.checkoutId).not.toBe(b.checkoutId);
+    expect(a.sessionId).not.toBe(explicit.sessionId);
+    expect(readExecutionSession(fx.controllerHome, {
+      sessionId: explicit.sessionId, principalId: principalFor(fx.ctx),
+      controllerInstanceId: fx.ctx.controllerInstanceId,
+    })?.activeCheckoutId).toBe(bound.activeCheckoutId);
+    expect(readControlPlaneRecord(
+      fx.controllerHome, 'execution_session', 'controller', explicit.sessionId,
+    )?.revision).toBe(revisionBefore);
+  });
+
+  test('does not persist a Session for unknown Work inspections', async () => {
+    const fx = fixture();
+    roots.push(fx.root);
+    const result = await callExecutionTool(fx.ctx, 'work_inspect', {
+      repo_id: fx.repository.repoId, work_id: 'work_missing',
+    });
+    expect(result?.isError).toBe(true);
+    expect(JSON.stringify(result?.structuredContent)).toContain('WORK_HANDLE_NOT_FOUND');
+    const seed = [principalFor(fx.ctx), fx.repository.repoId, 'work_missing'].join(':');
+    const candidate = `sess_auto_${createHash('sha256').update(seed).digest('hex').slice(0, 32)}`;
+    expect(readControlPlaneRecord(fx.controllerHome, 'execution_session', 'controller', candidate)).toBeUndefined();
+  });
+});
+
+describe('implicit work preflight failure and retired checkout handling', () => {
+  test('does not create execution-session facts for missing preparation request identity', async () => {
+    const fx = fixture();
+    roots.push(fx.root);
+    const result = await callExecutionTool(fx.ctx, 'work_prepare', {
+      repo_id: fx.repository.repoId, objective: 'Do not pre-write on invalid input',
+    });
+    expect(result?.isError).toBe(true);
+    expect(JSON.stringify(result?.structuredContent)).toContain('WORK_PREPARE_REQUEST_ID_REQUIRED');
+    const seed = [principalFor(fx.ctx), fx.repository.repoId, ''].join(':');
+    const id = `sess_auto_${createHash('sha256').update(seed).digest('hex').slice(0, 32)}`;
+    expect(readControlPlaneRecord(fx.controllerHome, 'execution_session', 'controller', id)).toBeUndefined();
+  });
+
+  test('lets existing Work recovery inspect the active source instead of selecting its retired checkout', async () => {
+    const fx = fixture();
+    roots.push(fx.root);
+    const prepared = await callExecutionTool(fx.ctx, 'work_prepare', {
+      repo_id: fx.repository.repoId, objective: 'Retired placement recovery',
+      isolation: 'new_worktree', request_id: 'retired-placement-source',
+    });
+    if (prepared?.isError) throw new Error(JSON.stringify(prepared?.structuredContent));
+    const old = (prepared?.structuredContent as { work: { workId: string; checkoutId: string } }).work;
+    setRepositoryCheckoutLifecycle({
+      repoId: fx.repository.repoId, checkoutId: old.checkoutId,
+      lifecycle: 'archived', controllerHome: fx.controllerHome,
+      reason: 'Simulate cleanup of the physical placement',
+    });
+    const inspection = await callExecutionTool(fx.ctx, 'work_inspect', {
+      repo_id: fx.repository.repoId, work_id: old.workId,
+    });
+    expect(inspection?.isError).not.toBe(true);
+    expect(JSON.stringify(inspection?.structuredContent)).toContain('placement');
+    const preparedAgain = await callExecutionTool(fx.ctx, 'work_prepare', {
+      repo_id: fx.repository.repoId, work_id: old.workId,
+    });
+    if (preparedAgain?.isError) {
+      const message = JSON.stringify(preparedAgain.structuredContent);
+      expect(message).not.toContain('CHECKOUT_NOT_ACTIVE');
+      expect(message).not.toContain('CHECKOUT_NOT_FOUND');
+      expect(message).not.toContain('SESSION_REPOSITORY_MISMATCH');
+    } else {
+      expect((preparedAgain?.structuredContent as { work: { checkoutId: string } }).work.checkoutId)
+        .not.toBe(old.checkoutId);
+    }
   });
 });
