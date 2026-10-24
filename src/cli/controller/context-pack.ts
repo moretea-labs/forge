@@ -104,14 +104,24 @@ function contextPathPriority(path: string, reasons: string[]): number {
   return testBonus + sourceBonus + structuralBonus;
 }
 
+const METHOD_CONTROL_KEYWORDS = new Set([
+  'if', 'for', 'while', 'switch', 'catch', 'with', 'try', 'finally', 'else', 'do',
+  'return', 'throw', 'new', 'delete', 'void', 'typeof', 'instanceof', 'in', 'of',
+  'yield', 'await', 'function', 'class', 'interface', 'type', 'const', 'let', 'var',
+  'case', 'default', 'import', 'export', 'extends', 'implements', 'super', 'this',
+]);
+
 function exactRequiredSymbolOwner(source: string, query: string): { declared: string | undefined; owner: boolean } {
   const line = source.trimStart().replace(/^\d+:\s*/, '');
   const declared = /^(?:(?:export|declare|default|async)\s+)*(?:function|class|interface|type|const|let|enum)\s+([\w$]+)/.exec(line)?.[1];
+  const method = /^(?:(?:public|private|protected|static|abstract|override|async|get|set)\s+)*(?:\*\s*)?#?([\w$]+)\s*(?:<[^>\n]+>)?\s*\([^;\n]*\)\s*(?::\s*.*?)?\s*\{/.exec(line)?.[1];
+  const methodDeclared = method && !METHOD_CONTROL_KEYWORDS.has(method.toLowerCase()) ? method : undefined;
+  const ownerName = declared ?? methodDeclared;
   const caseOwner = /^case\s+['"`]([^'"`]+)['"`]\s*:/.exec(line)?.[1];
   const normalizedQuery = query.toLowerCase();
   return {
-    declared,
-    owner: declared?.toLowerCase() === normalizedQuery || caseOwner?.toLowerCase() === normalizedQuery,
+    declared: ownerName,
+    owner: ownerName?.toLowerCase() === normalizedQuery || caseOwner?.toLowerCase() === normalizedQuery,
   };
 }
 

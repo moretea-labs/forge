@@ -64,9 +64,15 @@ test('requires emitted owner evidence before accepting truncated exact-known mat
     ...Array.from({ length: 170 }, () => 'alphaOwner();'),
     'export function alphaOwner() { return true; }',
   ];
+  const methodOwnerLines = [
+    'export class Service {',
+    '  async betaMethod(value: string): Promise<boolean> { return value.length > 0; }',
+    '}',
+  ];
   writeFileSync(join(root, 'src/exact-window.ts'), `${lines.join('\n')}\n`);
   writeFileSync(join(root, 'src/saturated.ts'), `${saturatedLines.join('\n')}\n`);
   writeFileSync(join(root, 'src/late-owner.ts'), `${lateOwnerLines.join('\n')}\n`);
+  writeFileSync(join(root, 'src/method-owner.ts'), `${methodOwnerLines.join('\n')}\n`);
   execFileSync('git', ['add', '.'], { cwd: root });
   execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: root });
 
@@ -121,6 +127,21 @@ test('requires emitted owner evidence before accepting truncated exact-known mat
   expect(lateOwnerPack.readiness.unresolvedReasonCodes).toContain('required_symbol_not_materialized');
   expect(lateOwnerPack.readiness.status).toBe('degraded');
   expect(lateOwnerPack.readiness.readyForHighConfidenceMutation).toBe(false);
+
+  const methodOwnerPack = buildControllerContextPack(root, getMcpPolicy('controller'), {
+    description: 'Inspect betaMethod in the exact known implementation file.',
+    searchTerms: ['betaMethod'],
+    knownPaths: ['src/method-owner.ts'],
+    retrievalMode: 'implementation',
+    structuralContext: 'off',
+    maxFiles: 1,
+    maxSnippets: 1,
+    maxCharsPerSnippet: 2400,
+  });
+  expect(methodOwnerPack.files[0]?.snippets.some((snippet) => snippet.content.includes('betaMethod(value: string)'))).toBe(true);
+  expect(methodOwnerPack.readiness.unresolvedReasonCodes).not.toContain('required_symbol_not_materialized');
+  expect(methodOwnerPack.readiness.status).toBe('ready');
+  expect(methodOwnerPack.readiness.readyForHighConfidenceMutation).toBe(true);
 });
 
 test('retains separate explicit code symbols in sync and async discovery beyond the inventory cap', async () => {
