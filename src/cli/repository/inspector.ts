@@ -410,9 +410,8 @@ export function searchRepositoryManyCacheIdentity(opts: SearchRepositoryManyOpti
   const discoveryMinQueryCoverage = completionMode === 'discovery'
     ? Math.min(Math.max(opts.discoveryMinQueryCoverage ?? Math.min(3, queries.length), 1), queries.length)
     : queries.length;
-  const requiredQueries = completionMode === 'discovery'
-    ? Array.from(new Set((opts.requiredQueries ?? []).map((query) => query.trim()).filter((query) => queries.includes(query))))
-    : [];
+  const requiredQueries = Array.from(new Set((opts.requiredQueries ?? [])
+    .map((query) => query.trim()).filter((query) => queries.includes(query))));
   const includeKey = JSON.stringify({
     files: directCandidates,
     includes,
@@ -522,8 +521,12 @@ function searchManyComplete(state: SearchManyMatchState): boolean {
     && coveredQueries >= state.discoveryMinQueryCoverage;
 }
 
+function escapeCodeNeedle(needle: string): string {
+  return needle.replace(/[.*+?^${}()|[\]\\]/g, (match) => '\\' + match);
+}
+
 function exactCodeNeedleMatches(haystack: string, needle: string): boolean {
-  const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const escaped = escapeCodeNeedle(needle);
   return new RegExp(`(?:^|[^\\p{L}\\p{N}_$])${escaped}(?=$|[^\\p{L}\\p{N}_$])`, 'u').test(haystack);
 }
 
@@ -655,7 +658,7 @@ function decodeRipgrepJsonValue(value: RipgrepJsonLine | undefined): string | un
 }
 
 /**
- * ripgrep owns literal matching and returns line-addressed evidence directly.
+ * ripgrep owns literal recall and boundary-aware exact code symbol matching.
  * The caller supplies only policy-checked paths; neither a repository-wide
  * scan nor a second JavaScript file-content scan is permitted.
  *
@@ -673,6 +676,8 @@ function ripgrepCandidateLines(
   caseSensitive: boolean,
   maxResultsPerQuery: number,
   skippedBinaryPaths?: Set<string>,
+  maxMatchesPerFile = Math.min(Math.max(maxResultsPerQuery, 32), 500),
+  exactCodeSymbols = false,
 ): Map<string, Array<{ line: number; text: string }>> {
   const found = new Map<string, Array<{ line: number; text: string }>>();
   const allowed = new Set(allowedPaths);
@@ -683,10 +688,13 @@ function ripgrepCandidateLines(
     const remainingMs = searchDeadline - Date.now();
     if (remainingMs <= 0) throw new Error('RIPGREP_SEARCH_TIMEOUT: source discovery exceeded 15s total budget');
     const result = runProcess('rg', [
-      '--json', '--with-filename', '--line-number', '--no-heading', '--color', 'never', '--fixed-strings', '--no-ignore', '--no-config', '--no-messages',
-      '--max-count', String(Math.min(Math.max(maxResultsPerQuery, 32), 500)),
+      '--json', '--with-filename', '--line-number', '--no-heading', '--color', 'never', '--no-ignore', '--no-config', '--no-messages',
+      ...(exactCodeSymbols ? [] : ['--fixed-strings']),
+      '--max-count', String(maxMatchesPerFile),
       ...(caseSensitive ? [] : ['--ignore-case']),
-      ...queries.flatMap((query) => ['-e', query]),
+      ...queries.flatMap((query) => ['-e', exactCodeSymbols
+        ? `(?:^|[^\\p{L}\\p{N}_$])${escapeCodeNeedle(query)}(?:$|[^\\p{L}\\p{N}_$])`
+        : query]),
       '--', ...paths,
     ], {
       cwd: repoRoot,
@@ -809,21 +817,84 @@ export function searchRepositoryMany(
     if (info.size > policy.maxFileBytes) { skippedLargeFiles += 1; continue; }
     authorizedCandidatePaths.push(path);
   }
+  // Known-file queries can use one rg pass for both broad recall and exact
+  // symbols. Only re-scan exact needles when a file saturates rg's per-file
+  // hit cap, since broad terms could otherwise hide later symbol evidence.
+  const boundedScopedSearch = directCandidates !== undefined
+    && authorizedCandidatePaths.length <= 4
+    && completionMode === 'per_query'
+    && requiredQueries.length > 0
+    && requiredQueries.length <= 2;
+  // Allow bounded known-file searches to collect enough lexical evidence in
+  // one process. A path that still reaches this cap gets an exact-only pass,
+  // so a late required symbol is never inferred absent from truncated hits.
+  const scopedHitLimit = Math.max(160, Math.min(Math.max(maxResultsPerQuery, 32), 500));
+  const scopedHits = boundedScopedSearch && authorizedCandidatePaths.length
+    ? ripgrepCandidateLines(repoRoot, authorizedCandidatePaths, queries, opts.caseSensitive === true, maxResultsPerQuery, skippedBinaryPaths, scopedHitLimit)
+    : null;
   const exactHits = authorizedCandidatePaths.length && requiredQueries.length
-    ? ripgrepCandidateLines(repoRoot, authorizedCandidatePaths, requiredQueries, opts.caseSensitive === true, maxResultsPerQuery, skippedBinaryPaths)
+    ? scopedHits !== null
+      ? (() => {
+          const exact = new Map<string, Array<{ line: number; text: string }>>();
+          const saturatedPaths: string[] = [];
+          for (const [path, lines] of scopedHits) {
+            if (lines.length >= scopedHitLimit) {
+              saturatedPaths.push(path);
+              continue;
+            }
+            const requiredLines = lines.filter(({ text }) => requiredQueries.some((needle) =>
+              exactCodeNeedleMatches(
+                opts.caseSensitive ? text : text.toLowerCase(),
+                opts.caseSensitive ? needle : needle.toLowerCase(),
+              )));
+            if (requiredLines.length > 0) exact.set(path, requiredLines);
+          }
+          // Only a truncated path can conceal a later required symbol.
+          // Unsaturated files already have complete rg evidence.
+          if (saturatedPaths.length > 0) {
+            for (const [path, lines] of ripgrepCandidateLines(
+              repoRoot, saturatedPaths, requiredQueries, opts.caseSensitive === true,
+              maxResultsPerQuery, skippedBinaryPaths, undefined, true,
+            )) exact.set(path, lines);
+          }
+          return exact;
+        })()
+      : ripgrepCandidateLines(
+          repoRoot, authorizedCandidatePaths, requiredQueries, opts.caseSensitive === true,
+          maxResultsPerQuery, skippedBinaryPaths, undefined, true,
+        )
     : null;
   const hasRequiredHit = (needle: string): boolean => exactHits !== null
     && [...exactHits.values()].some((lines) => lines.some(({ text }) => exactCodeNeedleMatches(
       opts.caseSensitive ? text : text.toLowerCase(),
       opts.caseSensitive ? needle : needle.toLowerCase(),
     )));
-  // A complete exact-symbol answer needs no broad recall-token pass. If an
-  // explicitly requested symbol is absent, fall back to ordinary discovery.
-  const hitsByPath = exactHits && requiredQueries.every(hasRequiredHit)
-    ? exactHits
-    : authorizedCandidatePaths.length
+  // Exact hits in a caller-selected file already preserve their source owner.
+  // When one of at most two authored symbols is missing, do not pay for a
+  // second broad rg pass that cannot recover that absent symbol and can bury
+  // the present one behind earlier natural-language matches.
+  const exactSearchSatisfied = exactHits !== null && requiredQueries.every(hasRequiredHit);
+  const partialKnownScopeSatisfied = !exactSearchSatisfied
+    && directCandidates !== undefined
+    && completionMode === 'per_query'
+    && requiredQueries.length > 0
+    && requiredQueries.length <= 2
+    && requiredQueries.some(hasRequiredHit);
+  const hitsByPath = exactSearchSatisfied || partialKnownScopeSatisfied
+    ? exactHits!
+    : scopedHits ?? (authorizedCandidatePaths.length
       ? ripgrepCandidateLines(repoRoot, authorizedCandidatePaths, queries, opts.caseSensitive === true, maxResultsPerQuery, skippedBinaryPaths)
-      : new Map<string, Array<{ line: number; text: string }>>();
+      : new Map<string, Array<{ line: number; text: string }>>());
+  if (exactHits && !exactSearchSatisfied && !partialKnownScopeSatisfied) {
+    // Missing one required symbol must not let broad matches erase another.
+    for (const [path, requiredLines] of exactHits) {
+      const exactLineNumbers = new Set(requiredLines.map((hit) => hit.line));
+      hitsByPath.set(path, [
+        ...requiredLines,
+        ...(hitsByPath.get(path) ?? []).filter((hit) => !exactLineNumbers.has(hit.line)),
+      ].slice(0, Math.max(maxResultsPerQuery, 32)));
+    }
+  }
   // Exact symbol needles must not lose to broad recall-token matches that
   // occur in earlier alphabetic paths.
   const exactHit = (path: string): boolean => requiredQueries.some((needle) =>
@@ -853,7 +924,6 @@ export function searchRepositoryMany(
   // Sorting only paths with evidence preserves the authorized inventory order
   // while avoiding comparisons across thousands of guaranteed no-hit files.
   const pathsWithHits = authorizedCandidatePaths.filter((path) => hitsByPath.has(path));
-  const exactSearchSatisfied = exactHits !== null && requiredQueries.every(hasRequiredHit);
   const orderedPaths = exactSearchSatisfied
     ? pathsWithHits.sort((left, right) =>
         declarationRank(right) - declarationRank(left)

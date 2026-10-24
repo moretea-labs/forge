@@ -378,6 +378,11 @@ export function buildControllerContextPack(
     && structuralMode === "off"
     && impactDomains.length === 0
     && searchIncludeGlobs.length === 0;
+  // Two source windows cannot guarantee coverage for three or more independent
+  // authored symbols. Preserve the old scoped path in those cases rather than
+  // replacing already-correct early evidence with a partial late selection.
+  const useBoundedExactWindows = scopedExactKnownFileSearch && requiredSearchQueries.length <= 2;
+  const scopedRequiredHitLines = new Map<string, Array<{ line: number; query: string; owner: boolean }>>();
 
   // Lexical retrieval is one bounded pass across candidate files for all terms.
   // The old per-term loop reread the same source files up to 14 times even
@@ -394,11 +399,13 @@ export function buildControllerContextPack(
       maxFiles: scopedExactKnownFileSearch ? exactKnownFiles.length : MAX_TOTAL_SEARCHED_FILES,
       caseSensitive: false,
       cacheKey: JSON.stringify({ head: git.head, status: git.status, diffStat: git.diffStat }),
+      // Preserve the baseline for requests with more exact owners than the
+      // bounded two-window selection can represent without new budget proof.
+      requiredQueries: !scopedExactKnownFileSearch || useBoundedExactWindows ? requiredSearchQueries : [],
       ...(!scopedExactKnownFileSearch ? {
         completionMode: 'discovery' as const,
         discoveryTargetFiles: Math.max(maxFiles * 2, 12),
         discoveryMinQueryCoverage: Math.min(3, searchQueries.length),
-        requiredQueries: requiredSearchQueries,
       } : {}),
       session: options.session,
     });
@@ -414,6 +421,14 @@ export function buildControllerContextPack(
       if (requiredSearchQueries.includes(hit.query)) {
         const source = hit.text.trimStart();
         const declared = /^(?:(?:export|declare|default|async)\s+)*(?:function|class|interface|type|const|let|enum)\s+([\w$]+)/.exec(source)?.[1];
+        const caseOwner = /^case\s+['"`]([^'"`]+)['"`]\s*:/.exec(source)?.[1];
+        const owner = declared?.toLowerCase() === hit.query.toLowerCase()
+          || caseOwner?.toLowerCase() === hit.query.toLowerCase();
+        if (useBoundedExactWindows) {
+          const exactLines = scopedRequiredHitLines.get(hit.path) ?? [];
+          exactLines.push({ line: hit.line, query: hit.query, owner });
+          scopedRequiredHitLines.set(hit.path, exactLines);
+        }
         if (declared?.toLowerCase() === hit.query.toLowerCase()) {
           addReason(candidates, hit.path, `${source.startsWith('export ') ? 'exported' : 'local'}-definition:${hit.query}`, hit.line);
         }
@@ -526,13 +541,50 @@ export function buildControllerContextPack(
     const fileSnippetBudget = exactKnown
       ? Math.max(1, remainingSnippets - exactKnownAfter)
       : Math.min(remainingSnippets, waveOnePerFileCap, inferredFairShare);
+    // Keep exact-symbol windows bounded by authored symbol count rather than
+    // expanding a small, formerly broad result to every occurrence in a file.
+    const exactHits = scopedRequiredHitLines.get(entry.path) ?? [];
+    const requiredWindows: Array<{ first: number; last: number; count: number; queries: Set<string>; owners: Set<string> }> = [];
+    for (const hit of [...exactHits].sort((a, b) => a.line - b.line)) {
+      const last = requiredWindows[requiredWindows.length - 1];
+      if (last && hit.line - last.first <= 40) {
+        last.last = hit.line;
+        last.count += 1;
+        last.queries.add(hit.query);
+        if (hit.owner) last.owners.add(hit.query);
+      } else {
+        requiredWindows.push({
+          first: hit.line, last: hit.line, count: 1,
+          queries: new Set([hit.query]), owners: new Set(hit.owner ? [hit.query] : []),
+        });
+      }
+    }
+    // Reserve bounded evidence for distinct authored symbols before allowing
+    // dense references to one symbol to consume both available windows.
+    const rankedRequiredWindows = requiredWindows.sort((a, b) =>
+      b.owners.size - a.owners.size
+      || b.queries.size - a.queries.size || b.count - a.count || a.first - b.first);
+    // Preserve the highest-ranked declaration first, then use the existing
+    // second slot for a different authored symbol before duplicate references.
+    const firstRequiredWindow = rankedRequiredWindows[0];
+    const secondRequiredWindow = firstRequiredWindow && requiredSearchQueries.length > 1
+      ? rankedRequiredWindows.slice(1).find((window) =>
+          [...window.queries].some((query) => !firstRequiredWindow.queries.has(query)))
+        ?? rankedRequiredWindows[1]
+      : undefined;
+    const prioritizedLines = [firstRequiredWindow, secondRequiredWindow]
+      .filter((window) => window !== undefined)
+      // Shift anchors so each bounded source window includes its last hit.
+      .map((window) => Math.max(window.first, window.last - 28));
     let snippets: ControllerContextPackSnippet[] = [];
     try {
       snippets = materializeSource({
         repoRoot,
         policy,
         path: entry.path,
-        hitLines: entry.lines.length > 0 ? entry.lines : [1],
+        // When the caller supplied exact symbols in one known file, return
+        // their windows before spending bytes on generic language matches.
+        hitLines: prioritizedLines.length > 0 ? prioritizedLines : entry.lines.length > 0 ? entry.lines : [1],
         reasons: entry.reasons,
         // Discovery should cover multiple entry points rather than dump one huge file.
         // Explicit known files retain their full evidence budget; only inferred
@@ -554,7 +606,11 @@ export function buildControllerContextPack(
       files.push({
         path: entry.path,
         reasons: entry.reasons,
-        hitLines: Array.from(new Set(entry.lines)).sort((a, b) => a - b).slice(0, 30),
+        // Keep evidence for exact hits even when earlier broad hits exceed
+        // the public thirty-line diagnostic limit.
+        hitLines: Array.from(new Set([
+          ...exactHits.map((hit) => hit.line), ...Array.from(new Set(entry.lines)).sort((a, b) => a - b),
+        ])).slice(0, 30).sort((a, b) => a - b),
         snippetCount: snippets.length,
         snippets,
       });
