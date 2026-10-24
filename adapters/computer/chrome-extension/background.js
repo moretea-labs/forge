@@ -178,6 +178,18 @@ async function restoreExactContentReceiver(tabId, identity) {
 function isMissingContentReceiver(error) {
   return /Receiving end does not exist|Could not establish connection/i.test(String(error?.message ?? error));
 }
+// A pinned bootstrap tab becomes a conversation after its first successful
+// Send. For marker reconciliation ONLY, hydrate a missing read receiver against
+// the new exact conversation while retaining the original physical tab pin.
+// Bootstrap preparation and all Send paths still reject migrated tabs.
+function markerReconciliationReadIdentity(tab, bootstrapIdentity) {
+  if (bootstrapIdentity?.namespace !== 'chatgpt.bootstrap') return bootstrapIdentity;
+  const conversation = core.parseConversation(tab?.url ?? '');
+  const projectId = core.projectId(bootstrapIdentity.projectUrl);
+  if (!conversation || !projectId || core.projectId(tab?.url ?? '') !== projectId) return bootstrapIdentity;
+  return { namespace: 'chatgpt.conversation', conversationId: conversation.conversationId,
+    canonicalUrl: conversation.canonicalUrl };
+}
 async function snapshotWithExactReceiverRecovery(tabId, identity, options = {}) {
   try { return await snapshot(tabId, options); }
   catch (error) {
@@ -412,11 +424,13 @@ async function executeFindMarker(command, instanceId) {
     if (!tab.id) continue;
     const pinned = Boolean(pinnedTarget && String(tab.id) === pinnedTabId);
     try {
+      const readIdentity = pinned
+        ? markerReconciliationReadIdentity(await tabGet(tab.id), command.identity) : undefined;
       const observation = pinned
-        ? await snapshotWithExactReceiverRecovery(tab.id, command.identity, { includeUserHistory: true, includePageText: false })
+        ? await snapshotWithExactReceiverRecovery(tab.id, readIdentity, { includeUserHistory: true, includePageText: false })
         : await snapshot(tab.id, { includeUserHistory: true, includePageText: false });
       const observedTab = pinned ? await tabGet(tab.id) : tab;
-      if (pinned && !receiverMatchesIdentity(observedTab, command.identity))
+      if (pinned && !receiverMatchesIdentity(observedTab, readIdentity))
         throw new Error('COMPUTER_CHATGPT_EXTENSION_RECEIVER_TARGET_CHANGED');
       const identity = core.parseConversation(observation?.url ?? observedTab.url ?? '');
       if (!identity) continue;

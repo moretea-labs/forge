@@ -258,17 +258,20 @@
     const payload = supervisor ? actualPrompt.replace(/^@forge\s+(?=<<<FORGE_WORKFLOW_EFFECT_V1:(?:fx|crpe)_[a-zA-Z0-9_-]{8,120}>>>)/, '') : actualPrompt;
     const expected = exactComposerText(payload);
     const existing = composerText();
-    // A single serialized Supervisor writer may replace a stale machine-owned
-    // draft by its strict prefix; old body equality is not an ownership test.
-    // Never infer ownership from @forge, incidental text, or an unmarked draft.
-    // Exact backup/retirement envelopes keep their stronger one-use proof.
-    const markedForgeDraft = supervisor && !replacement && !retired
-      && /^<<<FORGE_WORKFLOW_EFFECT_V1:(?:fx|crpe)_[a-zA-Z0-9_-]{8,120}>>>(?:\n|$)/.test(existing);
-    const ownedDrafts = supervisor
-      ? [expected, expected + '\n', exactComposerText(payload + '\n@'), exactComposerText(payload + '\nforge'), exactComposerText('forge ' + payload)]
-      : [expected];
+    // A draft belongs to this exact conversation/effect, not to every Forge
+    // writer in the account. Existing backup/retirement envelopes are the
+    // only authority for replacing a different effect or a human draft.
+    const effectPrefix = /^<<<FORGE_WORKFLOW_EFFECT_V1:((?:fx|crpe)_[a-zA-Z0-9_-]{8,120})>>>(?:\n|$)/;
+    const currentEffectId = effectPrefix.exec(payload)?.[1];
+    const restoredSameEffectPrefix = Boolean(supervisor && !replacement && !retired
+      && currentEffectId && effectPrefix.exec(existing)?.[1] === currentEffectId
+      && expected.startsWith(existing));
+    // Only the exact canonical bytes (plus ProseMirror's generated final
+    // newline) are owner-attested. Historical app-mention typing artifacts are
+    // indistinguishable from human edits and must never be overwritten.
+    const ownedDrafts = supervisor ? [expected, expected + '\n'] : [expected];
     if (node.querySelector('[plugin-mention-name], [app-mention-name]')) return { dispatched: false, reason: 'composer_has_app_mention' };
-    const unowned = Boolean(existing && !ownedDrafts.includes(existing) && !markedForgeDraft);
+    const unowned = Boolean(existing && !ownedDrafts.includes(existing) && !restoredSameEffectPrefix);
     if (unowned && ((!replacement && !retired) || !supervisor)) return { dispatched: false, reason: 'composer_not_empty' };
     if (retired && (!unowned || !existing.startsWith(`<<<FORGE_WORKFLOW_EFFECT_V1:${retired[1]}>>>`))) {
       return { dispatched: false, reason: 'composer_not_empty' };
@@ -305,8 +308,15 @@
         if (!exactConversationIsCurrent()) { finish({ reason: 'target_identity_changed' }); return; }
         // ProseMirror may expose one editor-generated final newline. Do not
         // widen matching beyond that break or tolerate another visible draft.
-        const text = composerText();
-        if (text !== expected && text !== expected + '\n') { finish({ reason: 'composer_write_unconfirmed' }); return; }
+        if (composer() !== node) { finish({ reason: 'composer_missing' }); return; }
+        const text = composerText(node);
+        // ProseMirror may commit a programmatic edit after the initial event.
+        // Keep observing only within the existing bounded readiness window;
+        // never click Send until exact bytes are visible in this same editor.
+        if (text !== expected && text !== expected + '\n') {
+          if (expired) finish({ reason: 'composer_write_unconfirmed' });
+          return;
+        }
         if (mode === 'recover' ? hasLiveGenerationSignal() : isGenerating()) { finish({ reason: 'provider_busy' }); return; }
         const buttons = Array.from(document.querySelectorAll(SEND)).filter(visible);
         const send = buttons.length === 1 ? buttons[0] : undefined;

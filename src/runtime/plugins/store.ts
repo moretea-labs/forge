@@ -1168,7 +1168,9 @@ export function executeAssistantPluginDirectNonPersistent(
   const adapter = resolvePluginAdapter(controllerHome, request.pluginId);
   return executePluginDirectNonPersistentInScope(
     controllerHome,
-    adapter && adapterMatchesController(adapter) ? controllerPluginActionScope(controllerHome) : repositoryPluginActionScope(repository),
+    adapter && adapterMatchesController(adapter) && adapter.repositorySurface !== true
+      ? controllerPluginActionScope(controllerHome)
+      : repositoryPluginActionScope(repository),
     { ...request, ...(request.workId ? { workRepoId: request.workRepoId ?? repository.repoId } : {}) },
   );
 }
@@ -1246,7 +1248,9 @@ export function executeAssistantPluginReadDirect(
   const adapter = resolvePluginAdapter(controllerHome, request.pluginId);
   return executePluginReadDirectInScope(
     controllerHome,
-    adapter && adapterMatchesController(adapter) ? controllerPluginActionScope(controllerHome) : repositoryPluginActionScope(repository),
+    adapter && adapterMatchesController(adapter) && adapter.repositorySurface !== true
+      ? controllerPluginActionScope(controllerHome)
+      : repositoryPluginActionScope(repository),
     { ...request, ...(request.workId ? { workRepoId: request.workRepoId ?? repository.repoId } : {}) },
   );
 }

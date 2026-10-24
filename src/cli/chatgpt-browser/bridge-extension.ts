@@ -96,13 +96,7 @@ async function forgeWaitForComposer(timeoutMs) {
   return null;
 }
 
-function forgePromptRemainsQueued(prompt, initialUserMessageCount) {
-  return forgeNormalizeOutboundText(forgeComposerText()) === forgeNormalizeOutboundText(prompt)
-    && document.querySelectorAll(FORGE_CHATGPT_USER).length === initialUserMessageCount
-    && !document.querySelector('[data-testid="stop-button"], button[aria-label*="Stop"]');
-}
-
-async function forgeSubmitPrompt(prompt, initialUserMessageCount) {
+async function forgeSubmitPrompt(prompt) {
   const composer = await forgeWaitForComposer(30000);
   if (!composer) throw new Error('ChatGPT composer is not visible');
   composer.focus();
@@ -124,15 +118,10 @@ async function forgeSubmitPrompt(prompt, initialUserMessageCount) {
   const button = forgeSendButton();
   if (button) {
     button.click();
+    return;
   }
-  await forgeSleep(500);
-  // A visible, unchanged composer means the synthetic button click was ignored.
-  // Only then use the Enter fallback, so an accepted send is never replayed.
-  if (forgePromptRemainsQueued(prompt, initialUserMessageCount)) {
-    composer.focus();
-    composer.dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', code: 'Enter', bubbles: true}));
-    composer.dispatchEvent(new KeyboardEvent('keyup', {key: 'Enter', code: 'Enter', bubbles: true}));
-  }
+  composer.dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', code: 'Enter', bubbles: true}));
+  composer.dispatchEvent(new KeyboardEvent('keyup', {key: 'Enter', code: 'Enter', bubbles: true}));
 }
 
 function forgeAssistantText() {
@@ -226,13 +215,10 @@ async function forgeRunTask(task) {
   await forgePost('/api/extension/task-started', {taskId: task.id, url: location.href});
   try {
     const initialUserMessageCount = document.querySelectorAll(FORGE_CHATGPT_USER).length;
-    await forgeSubmitPrompt(task.prompt, initialUserMessageCount);
-    const confirmation = await forgeWaitForSubmission(
-      Math.min(task.timeoutMs || 10000, 10000),
-      location.href,
-      task.prompt,
-      initialUserMessageCount,
-    );
+    await forgeSubmitPrompt(task.prompt);
+    // A send attempt must be observed before either capture or dispatch-only acknowledgement.
+    // Never re-click or synthesize Enter after an unconfirmed attempt.
+    const confirmation = await forgeWaitForSubmission(Math.min(task.timeoutMs || 10000, 10000), location.href, task.prompt, initialUserMessageCount);
     if (task.dispatchOnly === true) {
       forgeLastDispatch = {taskId: task.id, ...confirmation};
       await forgePost('/api/extension/dispatched', forgeLastDispatch).catch(() => undefined);
