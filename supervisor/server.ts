@@ -379,6 +379,16 @@ async function dispatch(control: WorkflowSupervisorControlPlane, discovery: Work
     ...(p.supersede_unknown === true ? { supersedeUnknown: true } : {}),
     ...(typeof p.authorized_by === 'string' && p.authorized_by.trim() ? { authorizedBy: p.authorized_by.trim() } : {}),
   });
+  if (req.method === 'task_review_watch_bind') return control.bindReviewWatch({
+    taskId: text(p, 'task_id'), repoId: text(p, 'repo_id'),
+    githubRepository: text(p, 'github_repository'), prNumber: positiveInteger(p, 'pr_number'),
+  });
+  if (req.method === 'task_review_notice') return control.observeReviewNotice({
+    taskId: text(p, 'task_id'), repoId: text(p, 'repo_id'), prNumber: positiveInteger(p, 'pr_number'),
+    reviewedHeadSha: text(p, 'reviewed_head_sha'), currentHeadSha: text(p, 'current_head_sha'),
+    reviewId: text(p, 'review_id'), source: text(p, 'source') as 'github_review' | 'github_ci' | 'independent_reviewer',
+    outcome: text(p, 'outcome') as 'ACCEPT' | 'REVISE' | 'BLOCK' | 'CI_FAILED' | 'CI_PASSED',
+  });
   if (req.method === 'task_stall') return control.taskStall(text(p, 'task_id'));
   if (req.method === 'task_bind_scheduled_wake') return control.bindScheduledWake({
     taskId: text(p, 'task_id'), repoId: text(p, 'repo_id'), workId: text(p, 'work_id'), scheduleId: text(p, 'schedule_id'),

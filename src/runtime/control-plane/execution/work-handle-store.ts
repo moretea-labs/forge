@@ -270,6 +270,29 @@ export function listWorkHandles(controllerHome: string, repositoryId: string, li
   }).map((record) => ({ ...record.value, recordRevision: record.revision }));
 }
 
+/**
+ * List WorkHandles with fail-closed behavior when the SQLite hard cap (5000) is
+ * reached. Safety-critical authority/cleanup/recovery operations must use this
+ * instead of listWorkHandles to prevent incomplete inventory from authorizing
+ * mutations, granting ownership, or inferring resource cleanup completion.
+ *
+ * Advisory/status projections that intentionally accept bounded results should
+ * continue using listWorkHandles with an explicit limit.
+ */
+export function listWorkHandlesFailClosed(
+  controllerHome: string,
+  repositoryId: string,
+): WorkHandleState[] {
+  const handles = listWorkHandles(controllerHome, repositoryId, 5_000);
+  // SQLite caps inventory at 5,000. Reaching the cap cannot prove absence of
+  // newer physical Writers or complete resource ownership; reject rather than
+  // infer safety from truncated inventory.
+  if (handles.length === 5_000) {
+    throw new Error('WORK_HANDLE_OWNERSHIP_SCAN_INCOMPLETE');
+  }
+  return handles;
+}
+
 function replaceValidationIndex(
   controllerHome: string,
   repositoryId: string,
@@ -291,7 +314,7 @@ function replaceValidationIndex(
 }
 
 function rebuildValidationIndex(controllerHome: string, repositoryId: string): WorkValidationIndex {
-  const workIds = listWorkHandles(controllerHome, repositoryId, 5_000)
+  const workIds = listWorkHandlesFailClosed(controllerHome, repositoryId)
     .filter(isValidationPending)
     .map((handle) => handle.workId);
   return replaceValidationIndex(
@@ -418,9 +441,11 @@ export function relocateWorkHandlePlacementAtomically(
         || row.value.expectedHead !== prior.expectedHead) {
       throw new Error('WORK_RELOCATION_HANDLE_CAS_CONFLICT');
     }
-    const competing = listControlPlaneRecordsWithinTransaction<WorkHandleState>(database, {
+    const scannedHandles = listControlPlaneRecordsWithinTransaction<WorkHandleState>(database, {
       namespace: 'execution_work_handle', scope: prior.repositoryId, limit: 5000,
-    }).some((entry) => entry.value.workId !== prior.workId && entry.value.checkoutId === target.checkoutId
+    });
+    if (scannedHandles.length === 5000) throw new Error('WORK_HANDLE_OWNERSHIP_SCAN_INCOMPLETE');
+    const competing = scannedHandles.some((entry) => entry.value.workId !== prior.workId && entry.value.checkoutId === target.checkoutId
       && entry.value.state !== 'cleaned');
     if (competing) throw new Error('WORK_RELOCATION_TARGET_OWNED');
     const { recordRevision: _revision, ...persisted } = moved;
