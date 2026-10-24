@@ -1,5 +1,4 @@
 import { createHash } from 'crypto';
-import { isDeepStrictEqual } from 'node:util';
 import { spawnSync } from 'child_process';
 import { existsSync, lstatSync, readFileSync, realpathSync } from 'fs';
 import { resolve, sep } from 'path';
@@ -705,11 +704,18 @@ function relocateExistingWorkToManagedCheckout(
   repository: ReturnType<typeof selectedRepository>,
   existing: WorkHandleState,
 ): Record<string, unknown> {
-  const prior = typeof args.expected_previous_head === 'string' ? args.expected_previous_head.trim() : '';
-  const candidate = typeof args.adopt_candidate_head === 'string' ? args.adopt_candidate_head.trim() : '';
-  const baseRef = typeof args.base_ref === 'string' ? args.base_ref.trim() : '';
+  // Existing Work already owns an exact frozen HEAD. Ordinary relocation
+  // reuses that fact, rather than asking the model to repeat it three times.
+  // A candidate different from that HEAD remains an explicit, audited adoption.
+  const recordedHead = existing.expectedHead?.trim() ?? '';
+  const prior = (typeof args.expected_previous_head === 'string' ? args.expected_previous_head.trim() : '') || recordedHead;
+  const candidate = (typeof args.adopt_candidate_head === 'string' ? args.adopt_candidate_head.trim() : '') || prior;
+  const baseRef = (typeof args.base_ref === 'string' ? args.base_ref.trim() : '') || candidate;
   if (!prior || !candidate || baseRef !== candidate || !/^[0-9a-f]{40}$/.test(candidate)) {
-    throw new Error('WORK_RELOCATION_EXACT_HEADS_REQUIRED: supply expected_previous_head and matching base_ref/adopt_candidate_head');
+    throw new Error('WORK_RELOCATION_EXACT_HEADS_REQUIRED: requested HEADs must be exact and internally consistent');
+  }
+  if (!args.adopt_candidate_head && gitHead(existing.worktreePath) !== candidate) {
+    throw new Error('WORK_RELOCATION_SOURCE_HEAD_CHANGED: recorded HEAD no longer matches the source');
   }
   if (existing.principalId !== session.principalId) throw new Error('WORK_HANDLE_ACCESS_DENIED');
   if (existing.expectedHead !== prior && !(existing.managedWorktree && existing.expectedHead === candidate)) {
@@ -744,8 +750,8 @@ function relocateExistingWorkToManagedCheckout(
   if (listRecoverableProcessRecords(ctx.controllerHome, existing.repositoryId).some((record) => record.workId === existing.workId)) {
     throw new Error('WORK_RELOCATION_ACTIVE_PROCESS');
   }
-  const requestId = typeof args.request_id === 'string' ? args.request_id.trim() : '';
-  if (!requestId) throw new Error('WORK_RELOCATION_REQUEST_ID_REQUIRED');
+  // Existing Work id plus frozen HEAD already provides a stable relocation
+  // identity. No caller-generated request id is necessary for this transition.
   // A deterministic request identity makes physical worktree creation safe to
   // resume after a process crash before the authoritative database transaction.
   const workspace = ensureManagedWorkspace(ctx.controllerHome, repository, {
@@ -947,7 +953,12 @@ export function prepareWork(ctx: McpExecutionContext, args: Record<string, unkno
           { phase: 'implementation', summary: 'Repository Work preparation completed and execution ownership is active.', worktreeRef: existingHandle.worktreePath },
         );
       }
-      const delegation = createGoalDelegation({
+      // Reuse existing session.goalDelegation if exact Work and permission match
+      const priorDelegation = session.goalDelegation;
+      const reuseDelegation = priorDelegation
+        && priorDelegation.workId === createdWorkId
+        && priorDelegation.permissionSnapshotVersion === policy.revision;
+      const delegation = reuseDelegation ? priorDelegation : createGoalDelegation({
         sessionId: session.sessionId,
         repositoryId: repository.repoId,
         workId: createdWorkId,
@@ -957,11 +968,13 @@ export function prepareWork(ctx: McpExecutionContext, args: Record<string, unkno
         permissionSnapshotVersion: policy.revision,
         source: 'gpt_risk_delegate',
       });
-      const priorDelegation = session.goalDelegation;
-      const unchangedDelegation = priorDelegation && isDeepStrictEqual(
-        JSON.parse(JSON.stringify({ ...delegation, createdAt: priorDelegation.createdAt })), priorDelegation,
-      );
-      const nextSession = updateExecutionSession(ctx.controllerHome, identityFor(ctx, args), { activeRepositoryId: repository.repoId, activeCheckoutId: existingHandle.checkoutId, activeWorkId: createdWorkId, permissionSnapshotVersion: policy.revision, goalDelegation: unchangedDelegation ? priorDelegation : delegation });
+      // Avoid unconditional session update when same repo/checkout/Work/permission/delegation
+      const unchangedBinding = session.activeRepositoryId === repository.repoId
+        && session.activeCheckoutId === existingHandle.checkoutId
+        && session.activeWorkId === createdWorkId
+        && session.permissionSnapshotVersion === policy.revision
+        && reuseDelegation;
+      const nextSession = unchangedBinding ? session : updateExecutionSession(ctx.controllerHome, identityFor(ctx, args), { activeRepositoryId: repository.repoId, activeCheckoutId: existingHandle.checkoutId, activeWorkId: createdWorkId, permissionSnapshotVersion: policy.revision, goalDelegation: delegation });
       return { session: nextSession, work: compactHandle(existingHandle), reused: true, isolation: existingHandle.managedWorktree ? 'isolated' : 'current' };
     }
 
@@ -1027,6 +1040,23 @@ export function prepareWork(ctx: McpExecutionContext, args: Record<string, unkno
         );
         if (!materialized) throw new Error(`WORK_PLACEMENT_MATERIALIZATION_LOST: ${contract.workId}`);
         contract = materialized;
+      } else {
+        // Direct reuse must also record its one physical checkout in the same
+        // WorkContract authority. Otherwise identity-preserving relocation
+        // later sees a handle/contract mismatch and rejects a valid Work.
+        contract = updateRepositoryWorkPlacement(
+          { controllerHome: ctx.controllerHome, repoId: repository.repoId },
+          contract.workId,
+          {
+            kind: 'bind_current',
+            expectedCheckoutId: contract.checkoutId,
+            expectedWorktreeRef: contract.worktreeRef,
+            checkoutId: baseCheckoutId,
+            baseRevision: workspace.baseRevision ?? contract.baseRevision,
+            worktreePolicy: { ...contract.worktreePolicy, required: false },
+            constraints: { ...contract.constraints, workspaceMode: 'current' },
+          },
+        );
       }
       const refreshed = getRepository(repository.repoId, ctx.controllerHome);
       const checkout = selectRepositoryCheckout(refreshed, workspace.checkoutId);
