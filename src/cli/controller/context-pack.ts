@@ -559,13 +559,22 @@ export function buildControllerContextPack(
         });
       }
     }
-    const prioritizedLines = requiredWindows
-      // An actual function/case owner outranks repeated references to its name.
-      .sort((a, b) => b.owners.size - a.owners.size
-        || b.queries.size - a.queries.size || b.count - a.count || a.first - b.first)
-      .slice(0, Math.min(2, requiredSearchQueries.length))
-      // A forty-line window can contain both nearby owners only when its
-      // anchor is shifted far enough to cover the last hit.
+    // Reserve bounded evidence for distinct authored symbols before allowing
+    // dense references to one symbol to consume both available windows.
+    const rankedRequiredWindows = requiredWindows.sort((a, b) =>
+      b.owners.size - a.owners.size
+      || b.queries.size - a.queries.size || b.count - a.count || a.first - b.first);
+    // Preserve the highest-ranked declaration first, then use the existing
+    // second slot for a different authored symbol before duplicate references.
+    const firstRequiredWindow = rankedRequiredWindows[0];
+    const secondRequiredWindow = firstRequiredWindow && requiredSearchQueries.length > 1
+      ? rankedRequiredWindows.slice(1).find((window) =>
+          [...window.queries].some((query) => !firstRequiredWindow.queries.has(query)))
+        ?? rankedRequiredWindows[1]
+      : undefined;
+    const prioritizedLines = [firstRequiredWindow, secondRequiredWindow]
+      .filter((window) => window !== undefined)
+      // Shift anchors so each bounded source window includes its last hit.
       .map((window) => Math.max(window.first, window.last - 28));
     let snippets: ControllerContextPackSnippet[] = [];
     try {
