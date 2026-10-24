@@ -3733,6 +3733,64 @@ test('public supervisor_task revise binds the existing task through canonical RP
   }
 });
 
+test('public supervisor_task review_notice persists through the real local RPC and only the original CONTINUE sends', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-review-rpc-'));
+  roots.push(root);
+  const controllerHome = join(root, 'controller');
+  ensureControllerHome(controllerHome);
+  const supervisorHome = join(controllerHome, 'supervisor');
+  mkdirSync(supervisorHome, { recursive: true });
+  const store = new WorkflowSupervisorStore(supervisorHome);
+  const control = new WorkflowSupervisorControlPlane(store);
+  const task = control.registerTask({
+    taskId: 'supervisor:review-rpc-original',
+    conversationId: '88888888-7777-6666-5555-444444444444',
+    conversationUrl: 'https://chatgpt.com/c/88888888-7777-6666-5555-444444444444',
+    objective: 'Apply a review on the original Work and PR.',
+    completionContract: { kind: 'model_semantic_completion', controller_home: controllerHome, repo_id: 'repo-review-rpc' },
+    continuationPolicy: { kind: 'standalone_supervisor', repo_id: 'repo-review-rpc' },
+    userBlockerPolicy: { kind: 'model_semantic_user_blocker' },
+  });
+  const enrollment = control.reserveEnrollment(task.taskId);
+  const server = createWorkflowSupervisorServer({
+    controlPlane: control, socketPath: join(supervisorHome, 'supervisor.sock'),
+    discovery: new WorkflowSupervisorEphemeralDiscovery(), browserAdapterEnabled: true,
+  });
+  await new Promise<void>((resolve, reject) => {
+    if (server.listening) { resolve(); return; }
+    server.once('listening', resolve);
+    server.once('error', reject);
+  });
+  try {
+    const ctx = { controllerHome, repoId: 'repo-review-rpc' } as unknown as Parameters<typeof callWorkflowSupervisorAdapter>[0];
+    const args = {
+      operation: 'review_notice', task_id: task.taskId, repo_id: 'repo-review-rpc', pr_number: 447,
+      reviewed_head_sha: 'a'.repeat(40), current_head_sha: 'b'.repeat(40),
+      review_id: 'review-rpc-1', review_source: 'independent_reviewer', review_outcome: 'REVISE',
+    };
+    const definition = runtimeToolDefinitions.find((entry) => entry.name === 'supervisor_task');
+    expect(JSON.stringify(definition?.inputSchema)).toContain('review_notice');
+    expect((await callWorkflowSupervisorAdapter(ctx, 'supervisor_task', args))?.structuredContent)
+      .toMatchObject({ deferred: true, deduplicated: false, taskId: task.taskId });
+    expect((await callWorkflowSupervisorAdapter(ctx, 'supervisor_task', args))?.structuredContent)
+      .toMatchObject({ deferred: true, deduplicated: true, taskId: task.taskId });
+    expect(store.listPendingReviewNotices()).toHaveLength(1);
+    control.observeEffect({ effectId: enrollment.effectId, observationId: 'review-rpc-applied', outcome: 'applied' });
+    const committed = await control.observeAssistantTurn({
+      taskId: task.taskId, conversationId: task.conversationId,
+      responseText: renderSupervisorReceipt(task, enrollment.effectId, 'CONTINUE'),
+    });
+    expect(committed.successorEffect?.prompt).toContain('[UNVERIFIED STALE_HEAD]');
+    expect(store.listPendingReviewNotices()).toHaveLength(0);
+    expect(control.taskStall(task.taskId)).toMatchObject({
+      state: 'deliverable', effectId: committed.successorEffect?.effectId,
+    });
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    store.close();
+  }
+});
+
 test('public supervisor_task recover routes exhausted provider resume through the canonical single writer', async () => {
   const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-public-recover-'));
   roots.push(root);
