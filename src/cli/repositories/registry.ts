@@ -1089,6 +1089,51 @@ export function refreshRepository(repoId: string, controllerHome?: string): Repo
   return refreshed;
 }
 
+/**
+ * Reconcile the selected checkout's live branch at Work placement, without
+ * changing repository-level identity such as its configured default branch.
+ * Git is the branch authority; Registry is a CAS-protected observation cache.
+ * A checkout may be switched by a permitted Git operation after registration;
+ * Work placement must not then reason from the old branch metadata.
+ */
+export function refreshRepositoryCheckoutGitMetadata(repoId: string, controllerHome?: string, checkoutId?: string): RepositoryRecord {
+  const home = ensureRegistryHome(controllerHome);
+  const registry = loadRepositoryRegistry(home);
+  const index = registry.repositories.findIndex((candidate) => candidate.repoId === repoId);
+  if (index < 0) throw new Error(`repository not found: ${repoId}`);
+  const record = registry.repositories[index];
+  const selectedCheckoutId = checkoutId?.trim();
+  const checkout = selectedCheckoutId
+    ? selectRepositoryCheckout(record, selectedCheckoutId).checkouts.find((candidate) => candidate.checkoutId === selectedCheckoutId)!
+    : activeCheckout(record);
+  // Empty stdout is a valid detached HEAD only after a successful Git exit.
+  // Missing worktrees, timeouts, and Git errors must never erase the last
+  // known branch by being mistaken for detached state.
+  const observation = spawnSync(resolveGitExecutable(), ['-C', checkout.canonicalRoot, 'branch', '--show-current'], {
+    encoding: 'utf-8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: 10_000,
+  });
+  if (observation.error || observation.status !== 0) {
+    throw new Error('REPOSITORY_CHECKOUT_GIT_BRANCH_OBSERVATION_FAILED');
+  }
+  const branch = observation.stdout.trim() || null;
+  if (checkout.branch === branch) return selectRepositoryCheckout(record, checkout.checkoutId);
+
+  const timestamp = now();
+  const next: RepositoryRecord = {
+    ...record,
+    checkouts: record.checkouts.map((candidate) => candidate.checkoutId === checkout.checkoutId
+      ? { ...candidate, branch, updatedAt: timestamp, lastSeenAt: timestamp }
+      : candidate),
+    updatedAt: timestamp,
+    lastSeenAt: timestamp,
+  };
+  registry.repositories[index] = next;
+  saveRepositoryRegistry(registry, home);
+  return selectRepositoryCheckout(next, checkout.checkoutId);
+}
+
 export function focusRepository(repoId: string | undefined, controllerHome?: string): { repoId?: string; updatedAt: string } {
   const home = ensureRegistryHome(controllerHome);
   if (repoId) getRepository(repoId, home);

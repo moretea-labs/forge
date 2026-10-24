@@ -225,6 +225,7 @@ export function resolveActiveWorkHandle(
   controllerHome: string,
   repositoryId: string,
   workId: string,
+  purpose: 'execution' | 'preparation' = 'execution',
 ): WorkHandleState | undefined {
   const direct = readWorkHandle(controllerHome, repositoryId, workId);
   const contract = getWorkContract({ controllerHome, repoId: repositoryId }, workId);
@@ -260,6 +261,9 @@ export function resolveActiveWorkHandle(
   }
 
   if (candidates.length === 0) {
+    // Preparation owns terminal inspection and lost-placement recovery. Only
+    // after ruling out a live successor may it examine the exact old Handle.
+    if (purpose === 'preparation') return direct;
     // A recorded historical Handle is not fresh placement authority.
     if (direct && direct.checkoutId !== canonicalCheckoutId) {
       throw new Error(`WORK_HANDLE_PLACEMENT_CHECKOUT_MISMATCH: ${workId}`);
