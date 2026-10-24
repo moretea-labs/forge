@@ -312,8 +312,13 @@ function shouldReloadUnreadableConversation(tabId, identity, observation, nowMs 
     && /(?:无法加载此 ChatGPT 对话|Unable to load this (?:ChatGPT )?conversation)/i.test(observation.providerFailureText ?? '')
     && !observation.latestUserText?.trim() && !observation.latestAssistantResponse?.trim()
     && !observation.composerText?.trim() && observation.isGenerating !== true;
-  if (!unreadable) { unreadableConversationTabs.delete(tabId); return false; }
+  if (!unreadable) {
+    const prior = unreadableConversationTabs.get(tabId);
+    if (prior) prior.firstObservedAt = undefined;
+    return false;
+  }
   const prior = unreadableConversationTabs.get(tabId) ?? { firstObservedAt: nowMs, lastReloadAt: -Infinity };
+  prior.firstObservedAt ??= nowMs;
   unreadableConversationTabs.set(tabId, prior);
   if (nowMs - prior.firstObservedAt < UNREADABLE_CHAT_GRACE_MS
     || nowMs - prior.lastReloadAt < UNREADABLE_CHAT_RELOAD_INTERVAL_MS) return false;

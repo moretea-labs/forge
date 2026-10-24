@@ -184,7 +184,19 @@ function bootstrapFixture(initialTabs: Array<{ id: number; windowId: number; url
   };
 }
 
-test('unreadable exact conversation is read-only refreshed only after sustained failure and bounded cooldown', () => {
+test('receiver identity and unreadable-page recovery preserve the exact target without Send', async () => {
+  {
+  const projectUrl = 'https://chatgpt.com/g/g-p-avela-project';
+  const identity = { namespace: 'chatgpt.bootstrap', bootstrapKey: 'supervisor:avela', projectUrl };
+  const fixture = bootstrapFixture();
+  expect(fixture.matchesReceiver({ id: 11, windowId: 8, url: projectUrl }, identity)).toBe(true);
+  expect(fixture.matchesReceiver({
+    id: 12, windowId: 8,
+    url: projectUrl + '/c/12345678-1234-1234-1234-123456789abc',
+  }, identity)).toBe(false);
+
+  }
+  {
   const f = bootstrapFixture();
   const obs = {
     url, providerFailureText: '无法加载此 ChatGPT 对话',
@@ -198,14 +210,14 @@ test('unreadable exact conversation is read-only refreshed only after sustained 
   expect(f.shouldReload(42, identity, obs, 370_000)).toBe(true);
   expect(f.shouldReload(42, identity, { ...obs, latestUserText: 'Original effect already submitted' }, 380_000)).toBe(false);
   expect(f.shouldReload(42, identity, obs, 440_000)).toBe(false);
-  expect(f.shouldReload(42, identity, obs, 500_000)).toBe(true);
+  expect(f.shouldReload(42, identity, obs, 500_000)).toBe(false);
+  expect(f.shouldReload(42, identity, obs, 670_000)).toBe(true);
   expect(f.shouldReload(55, { namespace: 'chatgpt.bootstrap', projectUrl: 'https://chatgpt.com/g/g-p-abc/project' }, obs, 900_000)).toBe(false);
   expect(f.shouldReload(55, identity, { ...obs, url: 'https://chatgpt.com/c/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' }, 900_000)).toBe(false);
   expect(f.shouldReload(55, identity, { ...obs, composerText: 'Unowned user draft' }, 900_000)).toBe(false);
   expect(f.shouldReload(55, identity, { ...obs, isGenerating: true }, 900_000)).toBe(false);
-});
-
-test('actual Chrome ensure refreshes only the exact unreadable tab after grace without any Send', async () => {
+  }
+  {
   const source = readFileSync(new URL('../../adapters/computer/chrome-extension/background.js', import.meta.url), 'utf8');
   const tab = { id: 76, windowId: 8, url, discarded: false };
   let nowMs = 10_000;
@@ -257,9 +269,8 @@ test('actual Chrome ensure refreshes only the exact unreadable tab after grace w
   expect(reloads).toBe(1);
   expect(sends).toBe(0);
   expect(tab.url).toBe(url);
-});
-
-test('only a live non-message chat load-error node is recognized, never user transcript content', () => {
+  }
+  {
   const content = readFileSync(new URL('../../adapters/computer/chrome-extension/content.js', import.meta.url), 'utf8');
   const instrumented = content.replace(
     '  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {',
@@ -287,17 +298,7 @@ test('only a live non-message chat load-error node is recognized, never user tra
   expect(failureText()).toContain('无法加载此 ChatGPT 对话');
   isMessage = true;
   expect(failureText()).toBe('');
-});
-
-test('bootstrap receiver rejects an existing conversation even inside the same Project', () => {
-  const projectUrl = 'https://chatgpt.com/g/g-p-avela-project';
-  const identity = { namespace: 'chatgpt.bootstrap', bootstrapKey: 'supervisor:avela', projectUrl };
-  const fixture = bootstrapFixture();
-  expect(fixture.matchesReceiver({ id: 11, windowId: 8, url: projectUrl }, identity)).toBe(true);
-  expect(fixture.matchesReceiver({
-    id: 12, windowId: 8,
-    url: projectUrl + '/c/12345678-1234-1234-1234-123456789abc',
-  }, identity)).toBe(false);
+  }
 });
 
 test('pinned bootstrap marker reconciliation reads migrated exact conversation without granting a Send receiver', () => {
