@@ -3366,6 +3366,33 @@ describe('Work tools without explicit execution-session preflight', () => {
     if (inspected?.isError) throw new Error(JSON.stringify(inspected?.structuredContent));
     expect((inspected?.structuredContent as { work: { workId: string; checkoutId: string } }).work)
       .toMatchObject({ workId: successorId, checkoutId: fx.repository.activeCheckoutId });
+    // A cleaned historical semantic identity on the SAME canonical checkout
+    // must not shadow its unique live successor, even without caller Session.
+    const historical = readWorkHandle(fx.controllerHome, fx.repository.repoId, semanticId)!;
+    writeWorkHandle(fx.controllerHome, {
+      ...historical, checkoutId: fx.repository.activeCheckoutId,
+      worktreePath: fx.repoRoot, branch: 'main',
+      state: 'cleaned', failureReason: undefined,
+    });
+    const sameCheckout = await callExecutionTool(fx.ctx, 'work_inspect', {
+      repo_id: fx.repository.repoId, work_id: semanticId,
+    });
+    if (sameCheckout?.isError) throw new Error(JSON.stringify(sameCheckout.structuredContent));
+    expect((sameCheckout?.structuredContent as { work: { workId: string; checkoutId: string } }).work)
+      .toMatchObject({ workId: successorId, checkoutId: fx.repository.activeCheckoutId });
+
+    const validated = await callExecutionTool(fx.ctx, 'work_validate', {
+      repo_id: fx.repository.repoId, work_id: semanticId, check_ids: [],
+    });
+    if (validated?.isError) throw new Error(JSON.stringify(validated.structuredContent));
+    expect((validated?.structuredContent as {
+      work: { workId: string; checkoutId: string };
+      validation: { passed: boolean; completed: boolean };
+    })).toMatchObject({
+      work: { workId: successorId, checkoutId: fx.repository.activeCheckoutId },
+      validation: { passed: true, completed: true },
+    });
+    expect(readWorkHandle(fx.controllerHome, fx.repository.repoId, semanticId)?.state).toBe('cleaned');
   });
 
   test('rejects invalid repository and checkout without persisting an implicit Session', async () => {
