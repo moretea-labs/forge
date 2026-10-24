@@ -1,76 +1,22 @@
-# Work清理工具 - 快速参考
-
-## 快速命令
+# Work 清理快速参考
 
 ```bash
-# 预览将要清理什么（安全，不做修改）
+# 只清理已经由语义 Writer 完成或取消的 Work
+bun run cleanup:works
+
+# 限制本轮范围
+bun run cleanup:works -- --max-work 10 --min-age-minutes 30
+
+# 无写入模式：当前只报告安全退出，不列举候选
 bun run cleanup:works:dry
 
-# 执行自动清理（推荐）
-bun run cleanup:works
-
-# 强制清理所有clean worktrees
-bun run cleanup:works:force
-```
-
-## 当前状态检查
-
-```bash
-# 查看work分支数量
-git branch | grep work/ | wc -l
-
-# 查看worktrees
+# 查看当前 Git 状态和 checkout
+git status --short
 git worktree list
-
-# 查看managed worktrees
-ls -la ~/.forge/controller/managed-worktrees/repo_*/work-*
-
-# 检查哪些是dirty的
-for wt in ~/.forge/controller/managed-worktrees/repo_*/work-*; do
-  if [ -d "$wt" ]; then
-    name=$(basename "$wt")
-    dirty=$(cd "$wt" && git status --porcelain 2>/dev/null | wc -l | tr -d ' ')
-    if [ "$dirty" != "0" ]; then
-      echo "DIRTY: $name ($dirty changes)"
-    fi
-  fi
-done
 ```
 
-## 手动清理单个dirty worktree
+Git 已合并或工作树干净，不会自动完成开放 Work。已退役的自动终结/强制完成入口不能用于绕过语义 Writer。
 
-```bash
-# 1. 进入worktree
-cd ~/.forge/controller/managed-worktrees/repo_XXXXX/work-XXXXX
+出现 blocked/errors 时，检查原 Work 的清理回执、Git 包含性、活跃 Process/lease 和来源保留证据。放弃 Work 时使用现有 `discard_work` 事务，不直接 reset/clean 或删除工作树。
 
-# 2. 查看修改
-git status
-
-# 3. 决定：提交、丢弃或保留
-# 提交：
-git add . && git commit -m "保存工作" && git push
-
-# 丢弃：
-git reset --hard HEAD && git clean -fd
-
-# 4. 再次运行清理
-cd /Users/greyson/DevProjects/forge
-bun run cleanup:works
-```
-
-## 解决问题
-
-| 错误 | 原因 | 解决方案 |
-|------|------|----------|
-| DIRTY_WORKTREE_RETAINED | 有未提交修改 | 手动commit或reset |
-| BRANCH_UNPRESERVED | 无法创建bundle | 重试或手动检查Git状态 |
-| LIVE_WORK_OWNS_CHECKOUT | 另一个Work在用 | 等待或手动解决冲突 |
-
-## 预防累积
-
-定期运行（已自动化，每小时一次）：
-```bash
-bun run cleanup:works
-```
-
-或者添加到你的日常流程中。
+详见 [Work cleanup](work-cleanup-guide.md)。
