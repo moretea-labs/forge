@@ -816,15 +816,23 @@ export function searchRepositoryMany(
       opts.caseSensitive ? text : text.toLowerCase(),
       opts.caseSensitive ? needle : needle.toLowerCase(),
     )));
-  // A complete exact-symbol answer needs no broad recall-token pass. If an
-  // explicitly requested symbol is absent, fall back to ordinary discovery.
+  // Exact hits in a caller-selected file already preserve their source owner.
+  // When one of at most two authored symbols is missing, do not pay for a
+  // second broad rg pass that cannot recover that absent symbol and can bury
+  // the present one behind earlier natural-language matches.
   const exactSearchSatisfied = exactHits !== null && requiredQueries.every(hasRequiredHit);
-  const hitsByPath = exactSearchSatisfied
+  const partialKnownScopeSatisfied = !exactSearchSatisfied
+    && directCandidates !== undefined
+    && completionMode === 'per_query'
+    && requiredQueries.length > 0
+    && requiredQueries.length <= 2
+    && requiredQueries.some(hasRequiredHit);
+  const hitsByPath = exactSearchSatisfied || partialKnownScopeSatisfied
     ? exactHits!
     : authorizedCandidatePaths.length
       ? ripgrepCandidateLines(repoRoot, authorizedCandidatePaths, queries, opts.caseSensitive === true, maxResultsPerQuery, skippedBinaryPaths)
       : new Map<string, Array<{ line: number; text: string }>>();
-  if (exactHits && !exactSearchSatisfied) {
+  if (exactHits && !exactSearchSatisfied && !partialKnownScopeSatisfied) {
     // Missing one required symbol must not let broad matches erase another.
     for (const [path, requiredLines] of exactHits) {
       const exactLineNumbers = new Set(requiredLines.map((hit) => hit.line));
