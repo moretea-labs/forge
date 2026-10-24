@@ -378,7 +378,7 @@ export function buildControllerContextPack(
     && structuralMode === "off"
     && impactDomains.length === 0
     && searchIncludeGlobs.length === 0;
-  const scopedRequiredHitLines = new Map<string, Set<number>>();
+  const scopedRequiredHitLines = new Map<string, Array<{ line: number; query: string }>>();
 
   // Lexical retrieval is one bounded pass across candidate files for all terms.
   // The old per-term loop reread the same source files up to 14 times even
@@ -414,8 +414,8 @@ export function buildControllerContextPack(
       if (!coveredByGlob(hit.path, searchIncludeGlobs) || excludeGlobs.some((glob) => globMatches(glob, hit.path))) continue;
       if (candidates.size >= maxFiles * 3 && !candidates.has(hit.path) && !requiredSearchQueries.includes(hit.query)) continue;
       if (scopedExactKnownFileSearch && requiredSearchQueries.includes(hit.query)) {
-        const exactLines = scopedRequiredHitLines.get(hit.path) ?? new Set<number>();
-        exactLines.add(hit.line);
+        const exactLines = scopedRequiredHitLines.get(hit.path) ?? [];
+        exactLines.push({ line: hit.line, query: hit.query });
         scopedRequiredHitLines.set(hit.path, exactLines);
       }
       if (requiredSearchQueries.includes(hit.query)) {
@@ -533,6 +533,23 @@ export function buildControllerContextPack(
     const fileSnippetBudget = exactKnown
       ? Math.max(1, remainingSnippets - exactKnownAfter)
       : Math.min(remainingSnippets, waveOnePerFileCap, inferredFairShare);
+    // Keep exact-symbol windows bounded by authored symbol count rather than
+    // expanding a small, formerly broad result to every occurrence in a file.
+    const exactHits = scopedRequiredHitLines.get(entry.path) ?? [];
+    const requiredWindows: Array<{ first: number; count: number; queries: Set<string> }> = [];
+    for (const hit of [...exactHits].sort((a, b) => a.line - b.line)) {
+      const last = requiredWindows[requiredWindows.length - 1];
+      if (last && hit.line - last.first <= 40) {
+        last.count += 1;
+        last.queries.add(hit.query);
+      } else {
+        requiredWindows.push({ first: hit.line, count: 1, queries: new Set([hit.query]) });
+      }
+    }
+    const prioritizedLines = requiredWindows
+      .sort((a, b) => b.queries.size - a.queries.size || b.count - a.count || b.first - a.first)
+      .slice(0, Math.min(2, requiredSearchQueries.length))
+      .map((window) => window.first);
     let snippets: ControllerContextPackSnippet[] = [];
     try {
       snippets = materializeSource({
@@ -541,9 +558,7 @@ export function buildControllerContextPack(
         path: entry.path,
         // When the caller supplied exact symbols in one known file, return
         // their windows before spending bytes on generic language matches.
-        hitLines: scopedRequiredHitLines.get(entry.path)?.size
-          ? [...scopedRequiredHitLines.get(entry.path)!]
-          : entry.lines.length > 0 ? entry.lines : [1],
+        hitLines: prioritizedLines.length > 0 ? prioritizedLines : entry.lines.length > 0 ? entry.lines : [1],
         reasons: entry.reasons,
         // Discovery should cover multiple entry points rather than dump one huge file.
         // Explicit known files retain their full evidence budget; only inferred
@@ -565,7 +580,11 @@ export function buildControllerContextPack(
       files.push({
         path: entry.path,
         reasons: entry.reasons,
-        hitLines: Array.from(new Set(entry.lines)).sort((a, b) => a - b).slice(0, 30),
+        // Keep evidence for exact hits even when earlier broad hits exceed
+        // the public thirty-line diagnostic limit.
+        hitLines: Array.from(new Set([
+          ...exactHits.map((hit) => hit.line), ...Array.from(new Set(entry.lines)).sort((a, b) => a - b),
+        ])).slice(0, 30).sort((a, b) => a - b),
         snippetCount: snippets.length,
         snippets,
       });
