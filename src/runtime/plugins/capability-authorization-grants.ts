@@ -483,6 +483,10 @@ export function migrateControllerPluginCapabilityAuthorizations(
     .map((canonical) => ({ canonical, grant: pluginGrantFromCanonical(canonical) }))
     .filter((entry): entry is { canonical: Grant; grant: PluginCapabilityAuthorizationGrant } => Boolean(entry.grant))
     .filter(({ canonical, grant }) => pluginIdSet.has(grant.pluginId)
+      // Computer's physical-device capability remains repository-owned even
+      // though Browser/Desktop actions of the same plugin are Controller-owned.
+      && !(grant.pluginId === 'computer' && (grant.capabilityId === 'ios-physical-device'
+        || grant.capabilityId.startsWith('action:physical_device_')))
       && !canonical.revokedAt
       && Date.parse(canonical.expiresAt) > at.getTime());
   const existingGlobalTargets = new Set(activeAll
