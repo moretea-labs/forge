@@ -1,11 +1,14 @@
 import { existsSync, readFileSync } from 'fs';
+import { createHash } from 'crypto';
 import type { McpToolDefinition, CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
 import { repositoryGitWorkspaceChanges } from '../../../src/cli/repositories/structured-git';
 import { listControllerChecks } from '../../../src/cli/controller/check-runner';
 import { buildWorkContinuationSnapshot } from '../../../src/runtime/control-plane/facade/work-continuation';
-import { currentControllerInstanceId, startExecutionSession, type ExecutionSessionContext } from '../../../src/runtime/control-plane/execution/session-store';
-import { currentPermissionSnapshotVersion, validateWorkHandle } from '../../../src/runtime/control-plane/execution/validation';
+import { currentControllerInstanceId, readExecutionSession, startExecutionSession, updateExecutionSession, type ExecutionSessionContext } from '../../../src/runtime/control-plane/execution/session-store';
+import { getRepository, selectRepositoryCheckout } from '../../../src/cli/repositories/registry';
+import { resolveActiveWorkHandle } from '../../../src/runtime/control-plane/execution/work-handle-authority';
+import { currentPermissionSnapshotVersion, validateWorkHandle, workHandlePlacementLoss } from '../../../src/runtime/control-plane/execution/validation';
 import { resolveAuthorizationRequest } from '../../../src/runtime/control-plane/governance/authorization';
 import { readControllerResult, searchControllerResult } from '../../../src/runtime/evidence/result-store';
 import { resumeExecutionJobAfterApproval } from '../../../src/runtime/execution/jobs/store';
@@ -46,6 +49,7 @@ export const executionToolDefinitions: McpToolDefinition[] = [
 ];
 
 const executionToolNames = new Set(executionToolDefinitions.map((tool) => tool.name));
+const implicitWorkSessionTools = new Set(['work_prepare', 'work_inspect', 'work_validate']);
 
 /** Repository execution and validation remain Process/WorkHandle operations; semantic Work completion is separate. */
 const DURABLE_WORK_OPERATION_NAMES = new Set([
@@ -155,9 +159,100 @@ function inspectWork(ctx: MultiRepositoryMcpToolContext, args: Record<string, un
   return response;
 }
 
+/**
+ * Mechanical identity resolution for legacy WorkHandle tools. The MCP principal,
+ * WorkHandle and Repository Registry are authoritative; a model need not create
+ * or bind an execution Session before a normal repository Work operation.
+ * Explicit legacy session_id still takes the strict existing route.
+ */
+function withImplicitWorkSession(
+  ctx: MultiRepositoryMcpToolContext,
+  name: string,
+  args: Record<string, unknown>,
+): Record<string, unknown> {
+  if (typeof args.session_id === 'string' && args.session_id.trim()) return args;
+
+  const requestedRepoId = typeof args.repo_id === 'string' && args.repo_id.trim()
+    ? args.repo_id.trim() : ctx.explicitRepository?.repoId;
+  const requestedWorkId = typeof args.work_id === 'string' && args.work_id.trim() ? args.work_id.trim() : undefined;
+  const handle = requestedRepoId && requestedWorkId
+    ? resolveActiveWorkHandle(ctx.controllerHome, requestedRepoId, requestedWorkId, name === 'work_prepare' ? 'preparation' : 'execution')
+    : undefined;
+  // Inspect/validate may not introduce a Session while failing to resolve a Work.
+  if (name !== 'work_prepare' && (!requestedWorkId || !requestedRepoId || !handle)) {
+    throw new Error('WORK_HANDLE_NOT_FOUND: select an existing Work and repository');
+  }
+  const principalId = principalFor(ctx);
+  if (handle && handle.principalId !== principalId) throw new Error('WORK_HANDLE_ACCESS_DENIED');
+  const requestedCheckout = typeof args.checkout_id === 'string' && args.checkout_id.trim() ? args.checkout_id.trim() : undefined;
+  if (handle && requestedCheckout && handle.checkoutId !== requestedCheckout) {
+    throw new Error('WORK_HANDLE_CHECKOUT_DRIFT: explicit checkout disagrees with existing Work placement');
+  }
+
+  // A Work's recorded session id is provenance, not a caller-selected focus.
+  // Request identity makes first preparation retries stable without a new
+  // session_start call; a fresh ordinary invocation has its own identity.
+  const requestId = typeof args.request_id === 'string' && args.request_id.trim() ? args.request_id.trim() : undefined;
+  if (!requestedRepoId) throw new Error('REPOSITORY_ID_REQUIRED: select a repository');
+  if (name === 'work_prepare' && !requestedWorkId && !requestId) {
+    throw new Error('WORK_PREPARE_REQUEST_ID_REQUIRED: new Work preparation needs a stable request_id');
+  }
+  if (requestedWorkId && !handle) throw new Error('WORK_HANDLE_NOT_FOUND: requested Work is not registered');
+  const seed = [principalId, requestedRepoId, requestedWorkId ?? requestId ?? ''].join(':');
+  // A transport session is not a Work owner: multiple Works can share it.
+  // Prefer the durable Work's existing provenance or derive an identity only
+  // from this Work/preparation request, never from mutable transport focus.
+  const sessionId = handle?.sessionId
+    ?? `sess_auto_${createHash('sha256').update(seed).digest('hex').slice(0, 32)}`;
+  const identity = { sessionId, principalId, controllerInstanceId: ctx.controllerInstanceId ?? currentControllerInstanceId() };
+  // Repository, placement and authorization checks are read-only admission.
+  // Never persist a Session for an invalid repository or checkout.
+  const existingSession = readExecutionSession(ctx.controllerHome, identity);
+  const repository = getRepository(requestedRepoId, ctx.controllerHome);
+  const lostPlacement = Boolean(handle && name === 'work_prepare'
+    && workHandlePlacementLoss(repository, handle));
+  const sameRequestReplay = !handle && Boolean(requestId)
+    && existingSession?.activeRepositoryId === requestedRepoId && Boolean(existingSession.activeWorkId);
+  const checkoutId = requestedCheckout
+    ?? (lostPlacement ? repository.activeCheckoutId : handle?.checkoutId)
+    ?? (sameRequestReplay ? existingSession?.activeCheckoutId : undefined)
+    ?? repository.activeCheckoutId;
+  // Historical inspect is read-only and may describe a retired placement.
+  // Preparation redirects a retired placement to the canonical source; all
+  // other operations require an active registered checkout before Session writes.
+  if (!(name === 'work_inspect' && handle && workHandlePlacementLoss(repository, handle))) {
+    selectRepositoryCheckout(repository, checkoutId);
+  }
+  const permissionSnapshotVersion = currentPermissionSnapshotVersion(ctx.controllerHome, requestedRepoId);
+  const session = existingSession ?? startExecutionSession(ctx.controllerHome, {
+    ...identity, capabilitySnapshotVersion: 1,
+  });
+  const activeWorkId = handle?.workId ?? (
+    session.activeRepositoryId === requestedRepoId && session.activeCheckoutId === checkoutId
+      ? session.activeWorkId : undefined
+  );
+  if (session.activeRepositoryId !== requestedRepoId || session.activeCheckoutId !== checkoutId
+      || session.activeWorkId !== activeWorkId || session.permissionSnapshotVersion !== permissionSnapshotVersion) {
+    updateExecutionSession(ctx.controllerHome, identity, {
+      activeRepositoryId: requestedRepoId, activeCheckoutId: checkoutId,
+      activeWorkId, permissionSnapshotVersion,
+    });
+  }
+  return {
+    ...args, session_id: sessionId,
+    ...(requestedRepoId ? { repo_id: requestedRepoId } : {}),
+    ...(handle && requestedWorkId && handle.workId !== requestedWorkId
+      ? { work_id: handle.workId } : {}),
+    ...(handle && !requestedCheckout && !lostPlacement ? { checkout_id: handle.checkoutId } : {}),
+  };
+}
+
 export async function callExecutionTool(ctx: MultiRepositoryMcpToolContext, name: string, args: Record<string, unknown>): Promise<CallToolResult | undefined> {
   if (!executionToolNames.has(name)) return undefined;
   try {
+    if (implicitWorkSessionTools.has(name)) {
+      args = withImplicitWorkSession(ctx, name, args);
+    }
     switch (name) {
       case 'session_start': {
         const session = startOrResumeSession(ctx);
