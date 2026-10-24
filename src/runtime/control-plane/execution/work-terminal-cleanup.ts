@@ -37,7 +37,7 @@ import {
 } from '../../execution/process-runtime';
 import { getProcessRecord, listProcessRecords } from '../../execution/process-runtime/store';
 import {
-  listWorkHandles,
+  listWorkHandlesFailClosed,
   readWorkHandle,
   resolveWorkDeliveryTargetBranch,
   transitionWorkHandle,
@@ -262,7 +262,7 @@ function workHandleOwnsCheckout(controllerHome: string, handle: WorkHandleState)
 }
 
 function assertNoOtherLiveWork(input: TerminalWorkCleanupInput, receipt: WorkCleanupReceipt): void {
-  const live = listWorkHandles(input.controllerHome, input.handle.repositoryId)
+  const live = listWorkHandlesFailClosed(input.controllerHome, input.handle.repositoryId)
     .filter((handle) =>
       handle.workId !== input.handle.workId
       && handle.checkoutId === input.handle.checkoutId
@@ -1261,6 +1261,15 @@ export async function reconcileSingleTerminalWorkCleanup(
   return { status: 'cleaned', workId, handle: persisted, receipt: cleaned.receipt };
 }
 
+/** Complete inventory is required before recovering or deleting unreferenced Work source. */
+function listCleanupWorkContracts(controllerHome: string, repositoryId: string) {
+  const rows = listControlPlaneRecords<WorkContract>(controllerHome, {
+    namespace: 'work_contract', scope: repositoryId, limit: 5_000,
+  });
+  if (rows.length === 5_000) throw new Error('WORK_CONTRACT_CLEANUP_SCAN_INCOMPLETE');
+  return rows;
+}
+
 export async function reconcileTerminalWorkCleanups(
   controllerHome: string,
   options: TerminalWorkCleanupReconcileOptions = {},
@@ -1292,15 +1301,20 @@ export async function reconcileTerminalWorkCleanups(
       return leftOrder.localeCompare(rightOrder) || left.repoId.localeCompare(right.repoId);
     });
   outer: for (const repository of repositories) {
-    const handles = listWorkHandles(controllerHome, repository.repoId, 10_000)
-      .filter((handle) => handle.managedWorktree);
+    let handles: WorkHandleState[];
+    let contractRows: ReturnType<typeof listCleanupWorkContracts>;
+    try {
+      handles = listWorkHandlesFailClosed(controllerHome, repository.repoId)
+        .filter((handle) => handle.managedWorktree);
+      contractRows = listCleanupWorkContracts(controllerHome, repository.repoId);
+    } catch (error) {
+      report.truncated = true;
+      report.errors.push({ workId: `repository:${repository.repoId}`, error: error instanceof Error ? error.message : String(error) });
+      continue;
+    }
     const knownWorkIds = new Set(handles.map((handle) => handle.workId));
     const recoveredWorkIds = new Set<string>();
-    for (const record of listControlPlaneRecords<WorkContract>(controllerHome, {
-      namespace: 'work_contract',
-      scope: repository.repoId,
-      limit: 10_000,
-    })) {
+    for (const record of contractRows) {
       const contract = record.value;
       if (knownWorkIds.has(contract.workId) || semanticWorkState(contract) === 'open') continue;
       if (!contract.worktreeRef?.trim() || !existsSync(contract.worktreeRef)) continue;
@@ -1439,16 +1453,18 @@ function sweepOrphanManagedWorktrees(
       referenced.add(resolve(path));
     }
   };
-  for (const repository of listRepositories(controllerHome, { includeRemoved: true })) {
-    for (const handle of listWorkHandles(controllerHome, repository.repoId, 10_000)) reference(handle.worktreePath);
-    for (const checkout of repository.checkouts) reference(checkout.canonicalRoot);
-    for (const record of listControlPlaneRecords<WorkContract>(controllerHome, {
-      namespace: 'work_contract',
-      scope: repository.repoId,
-      limit: 10_000,
-    })) {
-      reference(record.value.worktreeRef);
+  try {
+    for (const repository of listRepositories(controllerHome, { includeRemoved: true })) {
+      for (const handle of listWorkHandlesFailClosed(controllerHome, repository.repoId)) reference(handle.worktreePath);
+      for (const checkout of repository.checkouts) reference(checkout.canonicalRoot);
+      for (const record of listCleanupWorkContracts(controllerHome, repository.repoId)) {
+        reference(record.value.worktreeRef);
+      }
     }
+  } catch (error) {
+    // An incomplete global reference inventory must never authorize orphan deletion.
+    report.errors.push({ path: storageRoot, error: error instanceof Error ? error.message : String(error) });
+    return report;
   }
 
   // Managed layout is <storageRoot>/<repoId>/<worktree>; a git worktree root is

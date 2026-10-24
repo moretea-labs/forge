@@ -7,7 +7,7 @@ import { appendWorkEvidence, getWorkContract, promoteWorkToRepositoryChange, rec
 import { currentPermissionSnapshotVersion } from './validation';
 import { listActiveLeases } from '../../resources/leases/store';
 import { listRecoverableProcessRecords } from '../../execution/process-runtime/store';
-import { listWorkHandles, readWorkHandle, transitionWorkHandle, writeWorkHandle, type WorkHandleState } from './work-handle-store';
+import { listWorkHandlesFailClosed, readWorkHandle, transitionWorkHandle, writeWorkHandle, type WorkHandleState } from './work-handle-store';
 import { gitIsAncestor } from './work-execution-support';
 
 export interface RepositoryWorkHandleControllerIdentity {
@@ -167,10 +167,7 @@ export function assertCanonicalRepositoryMutationWorkHandleAvailable(input: {
     recoverableProcessWorkIds,
   };
 
-  const scannedHandles = listWorkHandles(input.controllerHome, input.repositoryId, 5_000);
-  // SQLite caps this inventory at 5,000. Reaching the cap cannot prove
-  // absence of a newer physical Writer; reject rather than infer availability.
-  if (scannedHandles.length === 5_000) throw new Error('WORK_HANDLE_OWNERSHIP_SCAN_INCOMPLETE');
+  const scannedHandles = listWorkHandlesFailClosed(input.controllerHome, input.repositoryId);
   const owners = scannedHandles
     .filter((handle) => handle.workId !== input.workId
       && DURABLE_CANONICAL_MUTATION_OWNER_STATES.has(handle.state)
@@ -245,13 +242,15 @@ export function resolveActiveWorkHandle(
   const ACTIVE_STATES = new Set<WorkHandleState['state']>(['prepared', 'editing', 'validating', 'committed', 'merged']);
   // Even a live direct Handle must compete with any successor on the same
   // checkout. An early return would silently admit two physical Writers.
-  const scannedHandles = listWorkHandles(controllerHome, repositoryId, 5_000);
-  if (scannedHandles.length === 5_000) throw new Error('WORK_HANDLE_OWNERSHIP_SCAN_INCOMPLETE');
+  const scannedHandles = listWorkHandlesFailClosed(controllerHome, repositoryId);
   const candidates = scannedHandles
     .filter((handle) =>
       (handle.workId === workId || handle.workContractId === workId)
       && handle.checkoutId === canonicalCheckoutId
-      && ACTIVE_STATES.has(handle.state)
+      && (ACTIVE_STATES.has(handle.state)
+        // Only an exact failed physical Handle of an open Work can resume editing.
+        // A failed successor cannot revive a cleaned historical semantic ID.
+        || (handle.workId === workId && handle.state === 'failed' && semanticWorkState(contract) === 'open'))
     );
   // Exact lookup may find a Handle outside a bounded scan. Count it once,
   // without making the historical direct identity authoritative over a peer.
