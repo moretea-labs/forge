@@ -4951,7 +4951,9 @@ export async function cutoverConfiguredRuntimeReleaseSession(
     try {
       assertStableReleaseSessionIdentityCurrent(config, session.stableRelease);
       const stableBefore = await verifyLocalRuntimeForReleaseCutover(config);
-      if (!stableBefore.ok) {
+      // A historical Stable A can remain the frozen rollback baseline; the
+      // Candidate B below must still pass complete execution-surface validation.
+      if (!stableBefore.ok && !legacyStableContextPackUpgradeBaseline(stableBefore)) {
         const reasonCodes = stableBefore.runtime.reasonCodes.join(',') || 'unknown';
         audit(config, 'release_session_cutover_precondition_deferred', {
           sessionId,
@@ -4998,7 +5000,9 @@ export async function cutoverConfiguredRuntimeReleaseSession(
       // be the exact frozen authority before we enter the one cutover attempt.
       assertStableReleaseSessionIdentityCurrent(config, session.stableRelease);
       const stableAfterPromotion = await verifyLocalRuntimeForReleaseCutover(config);
-      if (!stableAfterPromotion.ok) {
+      // Promotion must not change Stable A; accept only the same narrow
+      // historical omission while still enforcing exact immutable CAS below.
+      if (!stableAfterPromotion.ok && !legacyStableContextPackUpgradeBaseline(stableAfterPromotion)) {
         const reasonCodes = stableAfterPromotion.runtime.reasonCodes.join(',') || 'unknown';
         audit(config, 'release_session_cutover_post_promotion_verification_deferred', {
           sessionId,
