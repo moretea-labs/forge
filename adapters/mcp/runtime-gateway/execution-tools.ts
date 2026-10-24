@@ -176,7 +176,7 @@ function withImplicitWorkSession(
     ? args.repo_id.trim() : ctx.explicitRepository?.repoId;
   const requestedWorkId = typeof args.work_id === 'string' && args.work_id.trim() ? args.work_id.trim() : undefined;
   const handle = requestedRepoId && requestedWorkId
-    ? resolveActiveWorkHandle(ctx.controllerHome, requestedRepoId, requestedWorkId)
+    ? resolveActiveWorkHandle(ctx.controllerHome, requestedRepoId, requestedWorkId, name === 'work_prepare' ? 'preparation' : 'execution')
     : undefined;
   // Inspect/validate may not introduce a Session while failing to resolve a Work.
   if (name !== 'work_prepare' && (!requestedWorkId || !requestedRepoId || !handle)) {
@@ -241,7 +241,7 @@ function withImplicitWorkSession(
   return {
     ...args, session_id: sessionId,
     ...(requestedRepoId ? { repo_id: requestedRepoId } : {}),
-    ...(handle && name !== 'work_prepare' && requestedWorkId && handle.workId !== requestedWorkId
+    ...(handle && requestedWorkId && handle.workId !== requestedWorkId
       ? { work_id: handle.workId } : {}),
     ...(handle && !requestedCheckout && !lostPlacement ? { checkout_id: handle.checkoutId } : {}),
   };

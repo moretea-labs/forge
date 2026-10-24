@@ -1460,6 +1460,13 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     expect((sameCheckout?.structuredContent as { work: { workId: string; checkoutId: string } }).work)
       .toMatchObject({ workId: successorId, checkoutId: fx.repository.activeCheckoutId });
 
+    const preparedSuccessor = await callExecutionTool(fx.ctx, 'work_prepare', {
+      repo_id: fx.repository.repoId, work_id: semanticId,
+    });
+    if (preparedSuccessor?.isError) throw new Error(JSON.stringify(preparedSuccessor.structuredContent));
+    expect((preparedSuccessor?.structuredContent as { work: { workId: string; checkoutId: string } }).work)
+      .toMatchObject({ workId: successorId, checkoutId: fx.repository.activeCheckoutId });
+
     const validated = await callExecutionTool(fx.ctx, 'work_validate', {
       repo_id: fx.repository.repoId, work_id: semanticId, check_ids: [],
     });
@@ -3640,17 +3647,15 @@ describe('implicit work preflight failure and retired checkout handling', () => 
     });
     expect(inspection?.isError).not.toBe(true);
     expect(JSON.stringify(inspection?.structuredContent)).toContain('placement');
+    const historical = readWorkHandle(fx.controllerHome, fx.repository.repoId, old.workId)!;
+    writeWorkHandle(fx.controllerHome, { ...historical, state: 'cleaned' });
     const preparedAgain = await callExecutionTool(fx.ctx, 'work_prepare', {
       repo_id: fx.repository.repoId, work_id: old.workId,
     });
-    if (preparedAgain?.isError) {
-      const message = JSON.stringify(preparedAgain.structuredContent);
-      expect(message).not.toContain('CHECKOUT_NOT_ACTIVE');
-      expect(message).not.toContain('CHECKOUT_NOT_FOUND');
-      expect(message).not.toContain('SESSION_REPOSITORY_MISMATCH');
-    } else {
-      expect((preparedAgain?.structuredContent as { work: { checkoutId: string } }).work.checkoutId)
-        .not.toBe(old.checkoutId);
-    }
+    // Admission must reach the existing recovery owner, whose cleanup proof
+    // rejects this deliberately incomplete historical receipt before mutation.
+    expect(preparedAgain?.isError).toBe(true);
+    expect(JSON.stringify(preparedAgain?.structuredContent)).toContain('WORK_HANDLE_RECOVERY_CLEANUP_NOT_PROVEN');
+    expect(readWorkHandle(fx.controllerHome, fx.repository.repoId, old.workId)?.state).toBe('cleaned');
   });
 });
