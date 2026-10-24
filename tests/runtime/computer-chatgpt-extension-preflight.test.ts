@@ -169,9 +169,12 @@ function bootstrapFixture(initialTabs: Array<{ id: number; windowId: number; url
     },
     setTimeout() { return 1; }, clearTimeout() {}, setInterval() { return 1; },
   };
-  runInNewContext(source + '\n;globalThis.__resolveTarget = resolveTarget;globalThis.__matchingTabs = matchingTabs;globalThis.__matchesReceiver = receiverMatchesIdentity;globalThis.__markerReadIdentity = markerReconciliationReadIdentity;', context);
+  runInNewContext(source + '\n;globalThis.__resolveTarget = resolveTarget;globalThis.__matchingTabs = matchingTabs;globalThis.__matchesReceiver = receiverMatchesIdentity;globalThis.__markerReadIdentity = markerReconciliationReadIdentity;globalThis.__shouldReload = shouldReloadUnreadableConversation;', context);
   return {
     tabs,
+    shouldReload: (tabId: number, identity: object, observation: object, nowMs: number) =>
+      (context as typeof context & { __shouldReload: (tabId: number, identity: object, observation: object, nowMs: number) => boolean })
+        .__shouldReload(tabId, identity, observation, nowMs),
     matchesReceiver: (tab: { id: number; windowId: number; url: string }, identity: object) =>
       (context as typeof context & { __matchesReceiver: (tab: object, identity: object) => boolean }).__matchesReceiver(tab, identity),
     markerReadIdentity: (tab: { id: number; windowId: number; url: string }, identity: object) =>
@@ -180,6 +183,111 @@ function bootstrapFixture(initialTabs: Array<{ id: number; windowId: number; url
       (context as typeof context & { __resolveTarget: (identity: object, create: boolean, pinned?: object) => Promise<{ tab: { id: number; windowId: number; url: string }; created: boolean }> }).__resolveTarget(identity, create, pinned),
   };
 }
+
+test('unreadable exact conversation is read-only refreshed only after sustained failure and bounded cooldown', () => {
+  const f = bootstrapFixture();
+  const obs = {
+    url, providerFailureText: '无法加载此 ChatGPT 对话',
+    latestUserText: '', latestAssistantResponse: '', composerText: undefined, isGenerating: false,
+  };
+  expect(f.shouldReload(42, identity, obs, 10_000)).toBe(false);
+  expect(f.shouldReload(42, identity, obs, 69_999)).toBe(false);
+  expect(f.shouldReload(42, identity, obs, 70_000)).toBe(true);
+  expect(f.shouldReload(42, identity, obs, 80_000)).toBe(false);
+  expect(f.shouldReload(42, identity, obs, 369_999)).toBe(false);
+  expect(f.shouldReload(42, identity, obs, 370_000)).toBe(true);
+  expect(f.shouldReload(42, identity, { ...obs, latestUserText: 'Original effect already submitted' }, 380_000)).toBe(false);
+  expect(f.shouldReload(42, identity, obs, 440_000)).toBe(false);
+  expect(f.shouldReload(42, identity, obs, 500_000)).toBe(true);
+  expect(f.shouldReload(55, { namespace: 'chatgpt.bootstrap', projectUrl: 'https://chatgpt.com/g/g-p-abc/project' }, obs, 900_000)).toBe(false);
+  expect(f.shouldReload(55, identity, { ...obs, url: 'https://chatgpt.com/c/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' }, 900_000)).toBe(false);
+  expect(f.shouldReload(55, identity, { ...obs, composerText: 'Unowned user draft' }, 900_000)).toBe(false);
+  expect(f.shouldReload(55, identity, { ...obs, isGenerating: true }, 900_000)).toBe(false);
+});
+
+test('actual Chrome ensure refreshes only the exact unreadable tab after grace without any Send', async () => {
+  const source = readFileSync(new URL('../../adapters/computer/chrome-extension/background.js', import.meta.url), 'utf8');
+  const tab = { id: 76, windowId: 8, url, discarded: false };
+  let nowMs = 10_000;
+  let reloads = 0;
+  let sends = 0;
+  const snapshot = { url, title: 'Unreadable conversation', latestUserText: '', latestAssistantResponse: '',
+    providerFailureText: '无法加载此 ChatGPT 对话', providerActivityText: '', isGenerating: false };
+  const idle = { addListener() {} };
+  const chrome = {
+    runtime: { lastError: undefined, connectNative() { return { onMessage: idle, onDisconnect: idle, postMessage() {} }; },
+      onMessage: idle, onInstalled: idle, onStartup: idle },
+    storage: { local: { async get() { return { forgeComputerProviderInstanceId: 'test-profile' }; },
+      async set() {} }, session: { async get() { return {}; } } },
+    tabs: {
+      async query() { return [tab]; },
+      get(_tabId: number, callback: (value: typeof tab) => void) { callback(tab); },
+      sendMessage(_tabId: number, message: { type: string }, callback: (value: object) => void) {
+        if (message.type === 'forge-computer-chatgpt-snapshot') callback(snapshot);
+        else if (message.type === 'forge-computer-chatgpt-dispatch') { sends += 1; callback({ dispatched: true }); }
+        else callback({});
+      },
+      reload(_tabId: number, callback: () => void) { reloads++; callback(); },
+      onUpdated: idle, onActivated: idle, onRemoved: idle,
+    },
+    alarms: { create() {}, onAlarm: idle },
+    windows: { onFocusChanged: idle },
+  };
+  const clock = class extends Date { static now() { return nowMs; } };
+  const context = {
+    chrome, URL, Date: clock, Math,
+    ForgeComputerChatgptCore: {
+      parseConversation: (value: string) => value === url ? { conversationId: identity.conversationId, canonicalUrl: url } : null,
+      projectId: () => null, normalizeText: (value: unknown) => String(value ?? '').trim(),
+    },
+    importScripts() {}, setTimeout() { return 1; }, clearTimeout() {}, setInterval() { return 1; },
+  };
+  runInNewContext(source + '\n;globalThis.__ensureUnreadable = executeEnsure;', context);
+  const ensure = (context as typeof context & {
+    __ensureUnreadable: (command: object, instanceId: string) => Promise<{ kind: string; observation?: object }>;
+  }).__ensureUnreadable;
+  const command = { identity, kind: 'ensure' };
+  expect((await ensure(command, 'profile-test')).kind).toBe('ensured');
+  expect(reloads).toBe(0);
+  nowMs = 70_000;
+  expect((await ensure(command, 'profile-test')).kind).toBe('ensured');
+  expect(reloads).toBe(1);
+  nowMs = 72_000;
+  await ensure(command, 'profile-test');
+  expect(reloads).toBe(1);
+  expect(sends).toBe(0);
+  expect(tab.url).toBe(url);
+});
+
+test('only a live non-message chat load-error node is recognized, never user transcript content', () => {
+  const content = readFileSync(new URL('../../adapters/computer/chrome-extension/content.js', import.meta.url), 'utf8');
+  const instrumented = content.replace(
+    '  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {',
+    '  globalThis.__failureText = providerFailureText;\n  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {',
+  );
+  expect(instrumented).not.toBe(content);
+  let isMessage = false;
+  const failure = {
+    innerText: '无法加载此 ChatGPT 对话',
+    getClientRects: () => [{}],
+    closest: () => isMessage ? {} : null,
+  };
+  const main = { getClientRects: () => [{}],
+    querySelectorAll: (selector: string) => selector === 'p, span, div' ? [failure] : [] };
+  const context = {
+    document: { querySelectorAll: (selector: string) => selector === 'main' ? [main] : [] },
+    location: { href: url }, URL, Date, Map, Promise,
+    ForgeComputerChatgptCore: { normalizeText: (v: unknown) => String(v ?? '').replace(/\s+/g, ' ').trim(), parseConversation: () => null },
+    chrome: { runtime: { onMessage: { addListener() {} }, sendMessage() {} } },
+    MutationObserver: class { observe() {} disconnect() {} },
+    setTimeout() { return 1; }, clearTimeout() {},
+  };
+  runInNewContext(instrumented, context);
+  const failureText = (context as typeof context & { __failureText: () => string }).__failureText;
+  expect(failureText()).toContain('无法加载此 ChatGPT 对话');
+  isMessage = true;
+  expect(failureText()).toBe('');
+});
 
 test('bootstrap receiver rejects an existing conversation even inside the same Project', () => {
   const projectUrl = 'https://chatgpt.com/g/g-p-avela-project';
