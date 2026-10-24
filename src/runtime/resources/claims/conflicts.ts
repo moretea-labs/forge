@@ -159,6 +159,10 @@ export function resourceKeysOverlap(leftRaw: string, rightRaw: string): boolean 
     return pathOverlaps(leftPath, rightPath);
   }
 
+  // Repository-scoped Git refs cannot conflict across different repositories.
+  // Same-repository keys already matched above; legacy unscoped git-ref keys
+  // remain conservative because they have no provable repository identity.
+  if (left.startsWith('git-refs:') && right.startsWith('git-refs:')) return false;
   if (isGitRefKey(left) && isGitRefKey(right)) return true;
 
   return false;
