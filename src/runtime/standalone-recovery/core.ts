@@ -3867,6 +3867,24 @@ function candidateControllerHomeForSession(config: RecoveryConfig, sessionId: st
   return join(dirname(resolve(config.controllerHome)), 'candidate-runtime-lanes', sessionId);
 }
 
+/**
+ * A running pre-context-pack Stable A may seed a fully verified replacement.
+ * This is not a general healthy/known-good exception: every other probe,
+ * immutable release identity and live readiness must pass, and all new
+ * Candidate B and post-cutover execution-surface gates remain unchanged.
+ */
+export function legacyStableContextPackUpgradeBaseline(verification: VerifyResult): boolean {
+  return !verification.ok
+    && verification.runtime.ok
+    && verification.releases.coherent
+    && Boolean(verification.releases.active)
+    && verification.probes.runtime_execution_surface?.ok === false
+    && verification.probes.runtime_execution_surface.detail
+      === 'RUNTIME_RELEASE_CONTEXT_PACK_SURFACE_INCOMPLETE: forge-context-pack is required for rh_context'
+    && Object.entries(verification.probes).every(([name, probe]) =>
+      name === 'runtime_execution_surface' || probe.ok === true);
+}
+
 export async function prepareConfiguredRuntimeReleaseSession(
   config: RecoveryConfig,
   dependencies: Pick<ConfiguredRuntimeActivationDependencies, 'stage'> = {},
@@ -3878,9 +3896,16 @@ export async function prepareConfiguredRuntimeReleaseSession(
   if (!sourceRepositoryId) return { ok: false, attempted: false, noOp: true, detail: 'primary Runtime source repository id is not configured in standalone Recovery' };
 
   const verifiedStable = await verifyStableRuntime(config);
-  if (!verifiedStable.ok) {
+  const legacyBaseline = legacyStableContextPackUpgradeBaseline(verifiedStable);
+  if (!verifiedStable.ok && !legacyBaseline) {
     return { ok: false, attempted: false, noOp: true, detail: 'RELEASE_SESSION_STABLE_RUNTIME_NOT_VERIFIED' };
   }
+  // Historical Stable A is only an eligible source for an isolated Candidate B.
+  // Candidate activation and post-cutover attestation retain the full strict gates.
+  if (legacyBaseline) audit(config, 'release_session_legacy_stable_baseline', {
+    stableReleaseId: verifiedStable.releases.active!.revision,
+    missing: 'forge-context-pack',
+  });
 
   const locked = await withLock(config, {
     action: 'release_session_prepare',
@@ -4336,11 +4361,9 @@ async function installReleaseSessionCandidateService(
   if (process.platform === 'linux') {
     const env = runtimeAuthorityFreeEnvironment(process.env);
     writePackageRuntimeSystemdUserService(home, env);
-    for (const argv of systemdRuntimeInstallCommands(forgeRuntimeServicePaths(home).label)) {
-      const [executable, ...args] = argv;
-      if (!executable) continue;
-      const result = await runCommand(executable, args, 20_000);
-      if (!result.ok) throw new Error(`RELEASE_SESSION_CANDIDATE_SYSTEMD_INSTALL_FAILED: ${result.stderr || result.stdout || executable}`);
+    for (const args of systemdRuntimeInstallCommands(forgeRuntimeServicePaths(home).label)) {
+      const result = await runCommand('systemctl', args, 20_000);
+      if (!result.ok) throw new Error(`RELEASE_SESSION_CANDIDATE_SYSTEMD_INSTALL_FAILED: ${result.stderr || result.stdout || 'systemctl'}`);
     }
     return;
   }
@@ -4928,7 +4951,9 @@ export async function cutoverConfiguredRuntimeReleaseSession(
     try {
       assertStableReleaseSessionIdentityCurrent(config, session.stableRelease);
       const stableBefore = await verifyLocalRuntimeForReleaseCutover(config);
-      if (!stableBefore.ok) {
+      // A historical Stable A can remain the frozen rollback baseline; the
+      // Candidate B below must still pass complete execution-surface validation.
+      if (!stableBefore.ok && !legacyStableContextPackUpgradeBaseline(stableBefore)) {
         const reasonCodes = stableBefore.runtime.reasonCodes.join(',') || 'unknown';
         audit(config, 'release_session_cutover_precondition_deferred', {
           sessionId,
@@ -4975,7 +5000,9 @@ export async function cutoverConfiguredRuntimeReleaseSession(
       // be the exact frozen authority before we enter the one cutover attempt.
       assertStableReleaseSessionIdentityCurrent(config, session.stableRelease);
       const stableAfterPromotion = await verifyLocalRuntimeForReleaseCutover(config);
-      if (!stableAfterPromotion.ok) {
+      // Promotion must not change Stable A; accept only the same narrow
+      // historical omission while still enforcing exact immutable CAS below.
+      if (!stableAfterPromotion.ok && !legacyStableContextPackUpgradeBaseline(stableAfterPromotion)) {
         const reasonCodes = stableAfterPromotion.runtime.reasonCodes.join(',') || 'unknown';
         audit(config, 'release_session_cutover_post_promotion_verification_deferred', {
           sessionId,

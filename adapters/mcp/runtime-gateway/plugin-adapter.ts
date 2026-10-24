@@ -30,7 +30,13 @@ function pluginTransportScope(
     throw new Error('PLUGIN_CONTROLLER_REPOSITORY_SENTINEL_RETIRED: controller-scoped plugins no longer use a synthetic repository id');
   }
   const scope = assistantPluginScope(pluginId, ctx.controllerHome);
-  if (scope === 'controller') return { kind: 'controller' };
+  // Computer's physical iPhone actions are repository-bound; its browser and
+  // desktop actions remain Controller-scoped. Match the existing action family
+  // instead of routing the whole dual-surface plugin to the Controller manifest.
+  const repositoryPhoneAction = pluginId === 'computer'
+    && typeof args.action_id === 'string'
+    && args.action_id.startsWith('physical_device_');
+  if (scope === 'controller' && !repositoryPhoneAction) return { kind: 'controller' };
   return { kind: 'repository', repository: selected(ctx, args) };
 }
 

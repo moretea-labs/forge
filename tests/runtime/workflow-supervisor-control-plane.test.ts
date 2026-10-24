@@ -766,6 +766,57 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     expect(duplicate.successorEffect?.effectId).toBe(first.successorEffect?.effectId);
   });
 
+  test('Review REVISE joins the original standalone CONTINUE without second effect or stale-head approval', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-review-original-writer-'));
+    roots.push(root);
+    const store = new WorkflowSupervisorStore(root);
+    const control = new WorkflowSupervisorControlPlane(store);
+    const task = control.registerTask({
+      taskId: 'task-review-original-writer',
+      conversationId: '90909090-1111-2222-3333-444444444444',
+      conversationUrl: 'https://chatgpt.com/c/90909090-1111-2222-3333-444444444444',
+      objective: 'Deliver and review the original PR without a replacement writer.',
+      completionContract: { repo_id: 'repo-original' },
+      continuationPolicy: { kind: 'standalone_supervisor' },
+      userBlockerPolicy: {},
+    });
+    const notice = {
+      taskId: task.taskId, repoId: 'repo-original', prNumber: 446,
+      reviewedHeadSha: 'a'.repeat(40), currentHeadSha: 'a'.repeat(40),
+      reviewId: 'review-42', source: 'independent_reviewer' as const, outcome: 'REVISE' as const,
+    };
+    const source = control.reserveEnrollment(task.taskId);
+    control.observeEffect({ effectId: source.effectId, observationId: 'review-source-applied', outcome: 'applied' });
+    expect(control.observeReviewNotice(notice)).toMatchObject({ deduplicated: false, deferred: true });
+    expect(control.observeReviewNotice(notice)).toMatchObject({ deduplicated: true, deferred: true });
+    // Stale findings remain useful for REVISE, but never authorize the new HEAD.
+    expect(control.observeReviewNotice({ ...notice, currentHeadSha: 'b'.repeat(40) }))
+      .toMatchObject({ deduplicated: true, deferred: true });
+    expect(control.observeReviewNotice({ ...notice, reviewId: 'review-stale', currentHeadSha: 'b'.repeat(40) }))
+      .toMatchObject({ deduplicated: false, deferred: true });
+    expect(() => control.observeReviewNotice({ ...notice, repoId: 'repo-foreign' })).toThrow('WORKFLOW_SUPERVISOR_REVIEW_REPOSITORY_MISMATCH');
+    expect(control.taskStall(task.taskId).state).not.toBe('deliverable');
+    const completion = await control.observeAssistantTurn({
+      taskId: task.taskId, conversationId: task.conversationId,
+      responseText: renderSupervisorReceipt(task, source.effectId, 'CONTINUE'),
+    });
+    expect(completion.action).toBe('CONTINUE');
+    expect(completion.successorEffect?.prompt).toContain('receipt review-42');
+    expect(completion.successorEffect?.prompt).toContain('[UNVERIFIED STALE_HEAD]');
+    expect(completion.successorEffect?.prompt).toContain('NOT ACCEPTANCE');
+    expect(completion.successorEffect?.prompt).toContain('REVISE');
+    expect(completion.successorEffect?.prompt).toContain('SAME PR/branch');
+    expect(store.listPendingReviewNotices()).toHaveLength(0);
+    const after = await control.observeAssistantTurn({
+      taskId: task.taskId, conversationId: task.conversationId,
+      responseText: renderSupervisorReceipt(task, source.effectId, 'CONTINUE'),
+    });
+    expect(after.successorEffect?.effectId).toBe(completion.successorEffect?.effectId);
+    expect(after.deduplicated).toBe(true);
+    expect(control.taskStall(task.taskId)).toMatchObject({ state: 'deliverable', effectId: completion.successorEffect?.effectId });
+    store.close();
+  });
+
   test('WAIT is durable and only the exact bound Scheduler occurrence can wake the same task', async () => {
     const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-scheduled-wake-'));
     roots.push(root);
@@ -2327,7 +2378,7 @@ test('browserTasks prioritizes fresh sends ahead of older reconciliation work', 
   ]);
 });
 
-test('explicit operator repair re-arms a proven pre-send effect once per release without minting generations or infinite retries', () => {
+test('explicit browser repairs re-arm the same proven pre-send effect without changing release or minting generations', () => {
   const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-operator-preflight-repair-'));
   roots.push(root);
   const release = { id: 'browser-release-one' };
@@ -2360,10 +2411,15 @@ test('explicit operator repair re-arms a proven pre-send effect once per release
   // does not turn INSERT OR IGNORE into an unlimited retry loophole.
   store.recordEffectPreparationFailure(effect.effectId, 'COMPUTER_CHATGPT_FORGE_CHIP_NOT_BOUND');
   expect(store.nextBrowserEffect(taskId)).toBeUndefined();
-  expect(() => control.recoverTask({ ...input, requestId: 'operator-attempt-two' }))
-    .toThrow('WORKFLOW_SUPERVISOR_PRE_SEND_OPERATOR_REARM_EXHAUSTED');
-  release.id = 'browser-release-two';
+  expect(control.recoverTask({ ...input, requestId: 'operator-attempt-two',
+    reason: 'Verified composer cleared after preserving the exact draft',
+  }).recoveryEffect.effectId).toBe(effect.effectId);
   expect(store.nextBrowserEffect(taskId)?.effect.effectId).toBe(effect.effectId);
+  store.recordEffectPreparationFailure(effect.effectId, 'COMPUTER_REPAIR_NOT_SUFFICIENT');
+  expect(store.nextBrowserEffect(taskId)).toBeUndefined();
+  release.id = 'browser-release-two';
+  // Explicit repairs never reset the existing automatic preparation ceiling.
+  expect(store.nextBrowserEffect(taskId)).toBeUndefined();
   store.recordEffectPreparationFailure(effect.effectId, 'COMPUTER_PREPARE_FAILED');
   expect(store.nextBrowserEffect(taskId)).toBeUndefined();
   const secondReleaseRepair = control.recoverTask({ ...input, requestId: 'operator-repaired-browser-release-two' });
@@ -2373,8 +2429,12 @@ test('explicit operator repair re-arms a proven pre-send effect once per release
   expect(store.effectDispatchBudget(effect.effectId).generations).toBe(0);
   store.recordEffectPreparationFailure(effect.effectId, 'COMPUTER_PREPARE_FAILED_AFTER_RELEASE_TWO_REARM');
   expect(store.nextBrowserEffect(taskId)).toBeUndefined();
-  expect(() => control.recoverTask({ ...input, requestId: 'operator-attempt-two-release-two' }))
-    .toThrow('WORKFLOW_SUPERVISOR_PRE_SEND_OPERATOR_REARM_EXHAUSTED');
+  expect(control.recoverTask({ ...input, requestId: 'operator-attempt-two-release-two',
+    reason: 'Verified exact provider target repaired',
+  }).recoveryEffect.effectId).toBe(effect.effectId);
+  expect(store.nextBrowserEffect(taskId)?.effect.effectId).toBe(effect.effectId);
+  store.recordEffectPreparationFailure(effect.effectId, 'COMPUTER_REPAIR_NOT_SUFFICIENT');
+  expect(store.nextBrowserEffect(taskId)).toBeUndefined();
   release.id = 'browser-release-three';
   expect(store.nextBrowserEffect(taskId)).toBeUndefined();
   const thirdReleaseRepair = control.recoverTask({ ...input, requestId: 'operator-repaired-browser-release-three' });
@@ -2384,8 +2444,12 @@ test('explicit operator repair re-arms a proven pre-send effect once per release
   expect(store.effectDispatchBudget(effect.effectId).generations).toBe(0);
   store.recordEffectPreparationFailure(effect.effectId, 'COMPUTER_PREPARE_FAILED_AFTER_RELEASE_THREE_REARM');
   expect(store.nextBrowserEffect(taskId)).toBeUndefined();
-  expect(() => control.recoverTask({ ...input, requestId: 'operator-attempt-two-release-three' }))
-    .toThrow('WORKFLOW_SUPERVISOR_PRE_SEND_OPERATOR_REARM_EXHAUSTED');
+  expect(control.recoverTask({ ...input, requestId: 'operator-attempt-two-release-three',
+    reason: 'Verified refreshed extension provider',
+  }).recoveryEffect.effectId).toBe(effect.effectId);
+  expect(store.nextBrowserEffect(taskId)?.effect.effectId).toBe(effect.effectId);
+  store.recordEffectPreparationFailure(effect.effectId, 'COMPUTER_REPAIR_NOT_SUFFICIENT');
+  expect(store.nextBrowserEffect(taskId)).toBeUndefined();
   expect(store.effectDispatchBudget(effect.effectId).generations).toBe(0);
   store.close();
 });
@@ -2494,9 +2558,14 @@ test('Supervisor preparation rejection is durably release-fenced and never spend
     preflightComposerObservation: { chars: 37, classification: 'unattributed', selectorVersion: 'visible-single-v2' } });
   expect(store.nextBrowserEffect(task2)).toBeUndefined();
   expect(store.effectDispatchBudget(effect2.effectId).generations).toBe(0);
-  expect(() => store.authorizeOperatorPreflightRetry({ effectId: effect2.effectId,
-    requestId: 'attempt-second-explicit-rearm', authorizedBy: 'operator', reason: 'repeat',
-  })).toThrow('WORKFLOW_SUPERVISOR_PRE_SEND_OPERATOR_REARM_EXHAUSTED');
+  expect(store.authorizeOperatorPreflightRetry({ effectId: effect2.effectId,
+    requestId: 'attempt-second-explicit-rearm', authorizedBy: 'operator',
+    reason: 'Verified exact backed-up draft was cleared after the first repair failed',
+  })).toEqual({ deduplicated: false });
+  expect(store.nextBrowserEffect(task2)).toMatchObject({ mode: 'send', generation: 1 });
+  control.recordProviderPreparationFailure({ taskId: task2, effectId: effect2.effectId, reasonCode: 'COMPUTER_REPAIR_NOT_SUFFICIENT' });
+  expect(store.nextBrowserEffect(task2)).toBeUndefined();
+  expect(store.effectDispatchBudget(effect2.effectId).generations).toBe(0);
   store.close();
 });
 
@@ -3658,6 +3727,75 @@ test('public supervisor_task revise binds the existing task through canonical RP
     expect(revisedPayload.summary).toContain('semantic completion binding revised');
     expect(store.getEffect(effect.effectId)?.prompt).toBe(effect.prompt);
     expect(store.effectDispatchBudget(effect.effectId)).toMatchObject({ generations: 1 });
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    store.close();
+  }
+});
+
+test('public supervisor_task review_notice persists through the real local RPC and only the original CONTINUE sends', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-review-rpc-'));
+  roots.push(root);
+  const controllerHome = join(root, 'controller');
+  ensureControllerHome(controllerHome);
+  const supervisorHome = join(controllerHome, 'supervisor');
+  mkdirSync(supervisorHome, { recursive: true });
+  const store = new WorkflowSupervisorStore(supervisorHome);
+  const control = new WorkflowSupervisorControlPlane(store);
+  const task = control.registerTask({
+    taskId: 'supervisor:review-rpc-original',
+    conversationId: '88888888-7777-6666-5555-444444444444',
+    conversationUrl: 'https://chatgpt.com/c/88888888-7777-6666-5555-444444444444',
+    objective: 'Apply a review on the original Work and PR.',
+    completionContract: { kind: 'model_semantic_completion', controller_home: controllerHome, repo_id: 'repo-review-rpc' },
+    continuationPolicy: { kind: 'standalone_supervisor', repo_id: 'repo-review-rpc' },
+    userBlockerPolicy: { kind: 'model_semantic_user_blocker' },
+  });
+  const enrollment = control.reserveEnrollment(task.taskId);
+  const server = createWorkflowSupervisorServer({
+    controlPlane: control, socketPath: join(supervisorHome, 'supervisor.sock'),
+    discovery: new WorkflowSupervisorEphemeralDiscovery(), browserAdapterEnabled: true,
+  });
+  await new Promise<void>((resolve, reject) => {
+    if (server.listening) { resolve(); return; }
+    server.once('listening', resolve);
+    server.once('error', reject);
+  });
+  try {
+    const ctx = { controllerHome, repoId: 'repo-review-rpc' } as unknown as Parameters<typeof callWorkflowSupervisorAdapter>[0];
+    const watch = { operation: 'review_watch_bind', task_id: task.taskId, repo_id: 'repo-review-rpc',
+      github_repository: 'moretea-labs/forge', pr_number: 447 };
+    expect((await callWorkflowSupervisorAdapter(ctx, 'supervisor_task', watch))?.structuredContent)
+      .toMatchObject({ deduplicated: false, status: 'original_task_watch_bound' });
+    expect((await callWorkflowSupervisorAdapter(ctx, 'supervisor_task', watch))?.structuredContent)
+      .toMatchObject({ deduplicated: true });
+    expect(store.listReviewWatches()).toMatchObject([{ taskId: task.taskId, prNumber: 447 }]);
+    await expect(callWorkflowSupervisorAdapter(ctx, 'supervisor_task', { ...watch, repo_id: 'repo-foreign' }))
+      .rejects.toThrow('WORKFLOW_SUPERVISOR_REVIEW_REPOSITORY_MISMATCH');
+    const args = {
+      operation: 'review_notice', task_id: task.taskId, repo_id: 'repo-review-rpc', pr_number: 447,
+      reviewed_head_sha: 'a'.repeat(40), current_head_sha: 'b'.repeat(40),
+      review_id: 'review-rpc-1', review_source: 'independent_reviewer', review_outcome: 'REVISE',
+    };
+    const definition = runtimeToolDefinitions.find((entry) => entry.name === 'supervisor_task');
+    expect(JSON.stringify(definition?.inputSchema)).toContain('review_notice');
+    expect((await callWorkflowSupervisorAdapter(ctx, 'supervisor_task', args))?.structuredContent)
+      .toMatchObject({ deferred: true, deduplicated: false, taskId: task.taskId });
+    expect((await callWorkflowSupervisorAdapter(ctx, 'supervisor_task', args))?.structuredContent)
+      .toMatchObject({ deferred: true, deduplicated: true, taskId: task.taskId });
+    expect(store.listPendingReviewNotices()).toHaveLength(1);
+    control.observeEffect({ effectId: enrollment.effectId, observationId: 'review-rpc-applied', outcome: 'applied' });
+    const committed = await control.observeAssistantTurn({
+      taskId: task.taskId, conversationId: task.conversationId,
+      responseText: renderSupervisorReceipt(task, enrollment.effectId, 'CONTINUE'),
+    });
+    expect(committed.successorEffect?.prompt).toContain('[UNVERIFIED STALE_HEAD]');
+    expect(store.listPendingReviewNotices()).toHaveLength(0);
+    expect(control.taskStall(task.taskId)).toMatchObject({
+      state: 'deliverable', effectId: committed.successorEffect?.effectId,
+    });
+    store.retireReviewWatch(task.taskId, 447);
+    expect(store.listReviewWatches()).toHaveLength(0);
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     store.close();
