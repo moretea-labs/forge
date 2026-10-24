@@ -521,8 +521,12 @@ function searchManyComplete(state: SearchManyMatchState): boolean {
     && coveredQueries >= state.discoveryMinQueryCoverage;
 }
 
+function escapeCodeNeedle(needle: string): string {
+  return needle.replace(/[.*+?^${}()|[\]\\]/g, (match) => '\\' + match);
+}
+
 function exactCodeNeedleMatches(haystack: string, needle: string): boolean {
-  const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const escaped = escapeCodeNeedle(needle);
   return new RegExp(`(?:^|[^\\p{L}\\p{N}_$])${escaped}(?=$|[^\\p{L}\\p{N}_$])`, 'u').test(haystack);
 }
 
@@ -654,7 +658,7 @@ function decodeRipgrepJsonValue(value: RipgrepJsonLine | undefined): string | un
 }
 
 /**
- * ripgrep owns literal matching and returns line-addressed evidence directly.
+ * ripgrep owns literal recall and boundary-aware exact code symbol matching.
  * The caller supplies only policy-checked paths; neither a repository-wide
  * scan nor a second JavaScript file-content scan is permitted.
  *
@@ -673,6 +677,7 @@ function ripgrepCandidateLines(
   maxResultsPerQuery: number,
   skippedBinaryPaths?: Set<string>,
   maxMatchesPerFile = Math.min(Math.max(maxResultsPerQuery, 32), 500),
+  exactCodeSymbols = false,
 ): Map<string, Array<{ line: number; text: string }>> {
   const found = new Map<string, Array<{ line: number; text: string }>>();
   const allowed = new Set(allowedPaths);
@@ -683,10 +688,13 @@ function ripgrepCandidateLines(
     const remainingMs = searchDeadline - Date.now();
     if (remainingMs <= 0) throw new Error('RIPGREP_SEARCH_TIMEOUT: source discovery exceeded 15s total budget');
     const result = runProcess('rg', [
-      '--json', '--with-filename', '--line-number', '--no-heading', '--color', 'never', '--fixed-strings', '--no-ignore', '--no-config', '--no-messages',
+      '--json', '--with-filename', '--line-number', '--no-heading', '--color', 'never', '--no-ignore', '--no-config', '--no-messages',
+      ...(exactCodeSymbols ? [] : ['--fixed-strings']),
       '--max-count', String(maxMatchesPerFile),
       ...(caseSensitive ? [] : ['--ignore-case']),
-      ...queries.flatMap((query) => ['-e', query]),
+      ...queries.flatMap((query) => ['-e', exactCodeSymbols
+        ? `(?:^|[^\\p{L}\\p{N}_$])${escapeCodeNeedle(query)}(?:$|[^\\p{L}\\p{N}_$])`
+        : query]),
       '--', ...paths,
     ], {
       cwd: repoRoot,
@@ -835,19 +843,26 @@ export function searchRepositoryMany(
               continue;
             }
             const requiredLines = lines.filter(({ text }) => requiredQueries.some((needle) =>
-              opts.caseSensitive ? text.includes(needle) : text.toLowerCase().includes(needle.toLowerCase())));
+              exactCodeNeedleMatches(
+                opts.caseSensitive ? text : text.toLowerCase(),
+                opts.caseSensitive ? needle : needle.toLowerCase(),
+              )));
             if (requiredLines.length > 0) exact.set(path, requiredLines);
           }
           // Only a truncated path can conceal a later required symbol.
           // Unsaturated files already have complete rg evidence.
           if (saturatedPaths.length > 0) {
             for (const [path, lines] of ripgrepCandidateLines(
-              repoRoot, saturatedPaths, requiredQueries, opts.caseSensitive === true, maxResultsPerQuery, skippedBinaryPaths,
+              repoRoot, saturatedPaths, requiredQueries, opts.caseSensitive === true,
+              maxResultsPerQuery, skippedBinaryPaths, undefined, true,
             )) exact.set(path, lines);
           }
           return exact;
         })()
-      : ripgrepCandidateLines(repoRoot, authorizedCandidatePaths, requiredQueries, opts.caseSensitive === true, maxResultsPerQuery, skippedBinaryPaths)
+      : ripgrepCandidateLines(
+          repoRoot, authorizedCandidatePaths, requiredQueries, opts.caseSensitive === true,
+          maxResultsPerQuery, skippedBinaryPaths, undefined, true,
+        )
     : null;
   const hasRequiredHit = (needle: string): boolean => exactHits !== null
     && [...exactHits.values()].some((lines) => lines.some(({ text }) => exactCodeNeedleMatches(
