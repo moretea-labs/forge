@@ -87,20 +87,13 @@ function sliceNumbered(numbered: string, startLine: number, endLine: number): st
 
 function mergeHitLines(lines: number[]): number[] {
   const sorted = Array.from(new Set(lines.filter((line) => line > 0))).sort((left, right) => left - right);
-  const clusters: number[][] = [];
+  const merged: number[] = [];
   for (const line of sorted) {
-    const cluster = clusters[clusters.length - 1];
-    if (cluster && line - cluster[0]! <= DEFAULT_CONTEXT_BEFORE + DEFAULT_CONTEXT_AFTER) {
-      cluster.push(line);
-    } else {
-      clusters.push([line]);
-    }
+    const previous = merged[merged.length - 1];
+    if (previous !== undefined && line - previous <= DEFAULT_CONTEXT_BEFORE + DEFAULT_CONTEXT_AFTER) continue;
+    merged.push(line);
   }
-  // Prefer windows supported by several distinct hits rather than blindly
-  // spending a small snippet budget on the earliest matching source lines.
-  return clusters
-    .sort((left, right) => right.length - left.length || left[0]! - right[0]!)
-    .map((cluster) => cluster[0]!);
+  return merged;
 }
 
 function sourceSyntaxKind(path: string): string | undefined {
@@ -245,8 +238,7 @@ export function materializeSource(options: MaterializeSourceOptions): Materializ
     : cachedSourceSymbolIndex(options.path, full.sha256, full.content);
   const snippets: MaterializedSourceSnippet[] = [];
   const seen = new Set<string>();
-  const hitWindows = mergeHitLines(options.hitLines.length > 0 ? options.hitLines : [1]);
-  for (const [index, line] of hitWindows.entries()) {
+  for (const line of mergeHitLines(options.hitLines.length > 0 ? options.hitLines : [1])) {
     if (snippets.length >= options.maxSnippets) break;
     const symbol = symbolAtLine(symbolIndex, line);
     const range = symbol
@@ -263,12 +255,7 @@ export function materializeSource(options: MaterializeSourceOptions): Materializ
       range,
       options,
       symbol ? 'symbol' : 'line_window',
-      // A long declaration must not consume the slots reserved for other
-      // independent hit windows. Keep the existing total snippet/byte bounds.
-      Math.max(1, options.maxSnippets - snippets.length - Math.min(
-        hitWindows.length - index - 1,
-        options.maxSnippets - snippets.length - 1,
-      )),
+      options.maxSnippets - snippets.length,
       symbol,
     ));
   }

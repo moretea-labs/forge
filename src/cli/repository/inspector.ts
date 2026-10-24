@@ -410,9 +410,8 @@ export function searchRepositoryManyCacheIdentity(opts: SearchRepositoryManyOpti
   const discoveryMinQueryCoverage = completionMode === 'discovery'
     ? Math.min(Math.max(opts.discoveryMinQueryCoverage ?? Math.min(3, queries.length), 1), queries.length)
     : queries.length;
-  const requiredQueries = completionMode === 'discovery'
-    ? Array.from(new Set((opts.requiredQueries ?? []).map((query) => query.trim()).filter((query) => queries.includes(query))))
-    : [];
+  const requiredQueries = Array.from(new Set((opts.requiredQueries ?? [])
+    .map((query) => query.trim()).filter((query) => queries.includes(query))));
   const includeKey = JSON.stringify({
     files: directCandidates,
     includes,
@@ -819,11 +818,22 @@ export function searchRepositoryMany(
     )));
   // A complete exact-symbol answer needs no broad recall-token pass. If an
   // explicitly requested symbol is absent, fall back to ordinary discovery.
-  const hitsByPath = exactHits && requiredQueries.every(hasRequiredHit)
-    ? exactHits
+  const exactSearchSatisfied = exactHits !== null && requiredQueries.every(hasRequiredHit);
+  const hitsByPath = exactSearchSatisfied
+    ? exactHits!
     : authorizedCandidatePaths.length
       ? ripgrepCandidateLines(repoRoot, authorizedCandidatePaths, queries, opts.caseSensitive === true, maxResultsPerQuery, skippedBinaryPaths)
       : new Map<string, Array<{ line: number; text: string }>>();
+  if (exactHits && !exactSearchSatisfied) {
+    // Missing one required symbol must not let broad matches erase another.
+    for (const [path, requiredLines] of exactHits) {
+      const exactLineNumbers = new Set(requiredLines.map((hit) => hit.line));
+      hitsByPath.set(path, [
+        ...requiredLines,
+        ...(hitsByPath.get(path) ?? []).filter((hit) => !exactLineNumbers.has(hit.line)),
+      ].slice(0, Math.max(maxResultsPerQuery, 32)));
+    }
+  }
   // Exact symbol needles must not lose to broad recall-token matches that
   // occur in earlier alphabetic paths.
   const exactHit = (path: string): boolean => requiredQueries.some((needle) =>
@@ -853,7 +863,6 @@ export function searchRepositoryMany(
   // Sorting only paths with evidence preserves the authorized inventory order
   // while avoiding comparisons across thousands of guaranteed no-hit files.
   const pathsWithHits = authorizedCandidatePaths.filter((path) => hitsByPath.has(path));
-  const exactSearchSatisfied = exactHits !== null && requiredQueries.every(hasRequiredHit);
   const orderedPaths = exactSearchSatisfied
     ? pathsWithHits.sort((left, right) =>
         declarationRank(right) - declarationRank(left)

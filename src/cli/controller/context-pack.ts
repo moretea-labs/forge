@@ -378,6 +378,7 @@ export function buildControllerContextPack(
     && structuralMode === "off"
     && impactDomains.length === 0
     && searchIncludeGlobs.length === 0;
+  const scopedRequiredHitLines = new Map<string, Set<number>>();
 
   // Lexical retrieval is one bounded pass across candidate files for all terms.
   // The old per-term loop reread the same source files up to 14 times even
@@ -394,11 +395,12 @@ export function buildControllerContextPack(
       maxFiles: scopedExactKnownFileSearch ? exactKnownFiles.length : MAX_TOTAL_SEARCHED_FILES,
       caseSensitive: false,
       cacheKey: JSON.stringify({ head: git.head, status: git.status, diffStat: git.diffStat }),
+      // Scoped implementation files still need an exact-code first pass.
+      requiredQueries: requiredSearchQueries,
       ...(!scopedExactKnownFileSearch ? {
         completionMode: 'discovery' as const,
         discoveryTargetFiles: Math.max(maxFiles * 2, 12),
         discoveryMinQueryCoverage: Math.min(3, searchQueries.length),
-        requiredQueries: requiredSearchQueries,
       } : {}),
       session: options.session,
     });
@@ -411,6 +413,11 @@ export function buildControllerContextPack(
     for (const hit of search.results) {
       if (!coveredByGlob(hit.path, searchIncludeGlobs) || excludeGlobs.some((glob) => globMatches(glob, hit.path))) continue;
       if (candidates.size >= maxFiles * 3 && !candidates.has(hit.path) && !requiredSearchQueries.includes(hit.query)) continue;
+      if (scopedExactKnownFileSearch && requiredSearchQueries.includes(hit.query)) {
+        const exactLines = scopedRequiredHitLines.get(hit.path) ?? new Set<number>();
+        exactLines.add(hit.line);
+        scopedRequiredHitLines.set(hit.path, exactLines);
+      }
       if (requiredSearchQueries.includes(hit.query)) {
         const source = hit.text.trimStart();
         const declared = /^(?:(?:export|declare|default|async)\s+)*(?:function|class|interface|type|const|let|enum)\s+([\w$]+)/.exec(source)?.[1];
@@ -532,7 +539,11 @@ export function buildControllerContextPack(
         repoRoot,
         policy,
         path: entry.path,
-        hitLines: entry.lines.length > 0 ? entry.lines : [1],
+        // When the caller supplied exact symbols in one known file, return
+        // their windows before spending bytes on generic language matches.
+        hitLines: scopedRequiredHitLines.get(entry.path)?.size
+          ? [...scopedRequiredHitLines.get(entry.path)!]
+          : entry.lines.length > 0 ? entry.lines : [1],
         reasons: entry.reasons,
         // Discovery should cover multiple entry points rather than dump one huge file.
         // Explicit known files retain their full evidence budget; only inferred
