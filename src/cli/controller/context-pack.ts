@@ -104,6 +104,17 @@ function contextPathPriority(path: string, reasons: string[]): number {
   return testBonus + sourceBonus + structuralBonus;
 }
 
+function exactRequiredSymbolOwner(source: string, query: string): { declared: string | undefined; owner: boolean } {
+  const line = source.trimStart().replace(/^\d+:\s*/, '');
+  const declared = /^(?:(?:export|declare|default|async)\s+)*(?:function|class|interface|type|const|let|enum)\s+([\w$]+)/.exec(line)?.[1];
+  const caseOwner = /^case\s+['"`]([^'"`]+)['"`]\s*:/.exec(line)?.[1];
+  const normalizedQuery = query.toLowerCase();
+  return {
+    declared,
+    owner: declared?.toLowerCase() === normalizedQuery || caseOwner?.toLowerCase() === normalizedQuery,
+  };
+}
+
 export function buildControllerContextPack(
   repoRoot: string,
   policy: McpPolicy,
@@ -421,10 +432,7 @@ export function buildControllerContextPack(
       if (candidates.size >= maxFiles * 3 && !candidates.has(hit.path) && !requiredSearchQueries.includes(hit.query)) continue;
       if (requiredSearchQueries.includes(hit.query)) {
         const source = hit.text.trimStart();
-        const declared = /^(?:(?:export|declare|default|async)\s+)*(?:function|class|interface|type|const|let|enum)\s+([\w$]+)/.exec(source)?.[1];
-        const caseOwner = /^case\s+['"`]([^'"`]+)['"`]\s*:/.exec(source)?.[1];
-        const owner = declared?.toLowerCase() === hit.query.toLowerCase()
-          || caseOwner?.toLowerCase() === hit.query.toLowerCase();
+        const { declared, owner } = exactRequiredSymbolOwner(source, hit.query);
         if (useBoundedExactWindows) {
           const exactLines = scopedRequiredHitLines.get(hit.path) ?? [];
           exactLines.push({ line: hit.line, query: hit.query, owner });
@@ -901,9 +909,15 @@ export function buildControllerContextPack(
   const omittedCandidateCount = rankedCandidates.filter((entry) => !inspectedSet.has(entry.path)).length;
   // A fully materialized known file is not sufficient when an explicitly
   // authored code symbol is absent from the actual snippets emitted to the model.
+  // In the bounded exact-known-file path, references alone are not sufficient
+  // implementation evidence: require the requested owner line in an emitted snippet.
   const requiredSymbolEvidenceMissing = requiredSearchQueries.some((query) =>
-    !files.some((file) => file.snippets.some((snippet) =>
-      exactCodeNeedleMatches(snippet.content.toLowerCase(), query.toLowerCase()))));
+    !files.some((file) => file.snippets.some((snippet) => {
+      if (scopedExactKnownFileSearch && useBoundedExactWindows) {
+        return snippet.content.split(/\r?\n/).some((line) => exactRequiredSymbolOwner(line, query).owner);
+      }
+      return exactCodeNeedleMatches(snippet.content.toLowerCase(), query.toLowerCase());
+    })));
   const exactKnownFilesLosslesslyMaterialized = scopedExactKnownFileSearch
     && exactKnownFiles.length > 0
     && exactKnownFiles.every((path) => files.some((file) => file.path === path

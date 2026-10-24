@@ -43,7 +43,7 @@ test('marks exact-known evidence incomplete when an authored required symbol is 
 });
 
 
-test('treats lossless exact-known window materialization as sufficient despite lexical hit truncation', () => {
+test('requires emitted owner evidence before accepting truncated exact-known materialization', () => {
   const root = mkdtempSync(join(tmpdir(), 'forge-context-exact-window-'));
   roots.push(root);
   execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: root });
@@ -56,11 +56,17 @@ test('treats lossless exact-known window materialization as sufficient despite l
     ...Array.from({ length: 45 }, (_, index) => `export const POST_${index} = ${index};`),
   ];
   const saturatedLines = [
+    'export function alphaOwner() { return true; }',
     ...Array.from({ length: 170 }, () => 'alphaOwner();'),
     'export function betaMethod() { return true; }',
   ];
+  const lateOwnerLines = [
+    ...Array.from({ length: 170 }, () => 'alphaOwner();'),
+    'export function alphaOwner() { return true; }',
+  ];
   writeFileSync(join(root, 'src/exact-window.ts'), `${lines.join('\n')}\n`);
   writeFileSync(join(root, 'src/saturated.ts'), `${saturatedLines.join('\n')}\n`);
+  writeFileSync(join(root, 'src/late-owner.ts'), `${lateOwnerLines.join('\n')}\n`);
   execFileSync('git', ['add', '.'], { cwd: root });
   execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: root });
 
@@ -99,6 +105,22 @@ test('treats lossless exact-known window materialization as sufficient despite l
   expect(pack.readiness.unresolvedReasonCodes).not.toContain('retrieval_truncated');
   expect(pack.readiness.status).toBe('ready');
   expect(pack.readiness.readyForHighConfidenceMutation).toBe(true);
+
+  const lateOwnerPack = buildControllerContextPack(root, getMcpPolicy('controller'), {
+    description: 'Inspect alphaOwner after a dense reference block in the exact known implementation file.',
+    searchTerms: ['alphaOwner'],
+    knownPaths: ['src/late-owner.ts'],
+    retrievalMode: 'implementation',
+    structuralContext: 'off',
+    maxFiles: 1,
+    maxSnippets: 1,
+    maxCharsPerSnippet: 2400,
+  });
+  expect(lateOwnerPack.files[0]?.snippets.some((snippet) => snippet.content.includes('alphaOwner();'))).toBe(true);
+  expect(lateOwnerPack.files[0]?.snippets.some((snippet) => snippet.content.includes('export function alphaOwner'))).toBe(false);
+  expect(lateOwnerPack.readiness.unresolvedReasonCodes).toContain('required_symbol_not_materialized');
+  expect(lateOwnerPack.readiness.status).toBe('degraded');
+  expect(lateOwnerPack.readiness.readyForHighConfidenceMutation).toBe(false);
 });
 
 test('retains separate explicit code symbols in sync and async discovery beyond the inventory cap', async () => {
