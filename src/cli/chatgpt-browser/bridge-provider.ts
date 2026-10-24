@@ -445,6 +445,7 @@ export async function runBridgeProvider(input: BrowserConsultInput, bundle: Prom
   }
 
   const timeoutMs = input.timeoutMs ?? 180_000;
+  const deadline = Date.now() + timeoutMs;
   const host = '127.0.0.1';
   const port = bridgePort();
   const bridgeUrl = chatgptBridgeUrl();
@@ -520,7 +521,11 @@ export async function runBridgeProvider(input: BrowserConsultInput, bundle: Prom
         }
         if (request.method === 'POST' && url.pathname === '/api/extension/task-started') {
           const body = await readJson(request);
-          if (body.taskId === task.id) state.started = true;
+          if (body.taskId !== task.id || !state.claimed || state.started || state.result
+            || Date.now() >= deadline || !chatgptBridgeTargetMatchesPage(task.targetUrl, typeof body.url === 'string' ? body.url : undefined)) {
+            return jsonResponse({ error: { code: 'CHATGPT_BRIDGE_TASK_NOT_CURRENT', message: 'task is not eligible to start on this target' } }, 409);
+          }
+          state.started = true;
           return jsonResponse({ ok: true });
         }
         if (request.method === 'POST' && url.pathname === '/api/extension/dispatched') {
@@ -596,7 +601,6 @@ export async function runBridgeProvider(input: BrowserConsultInput, bundle: Prom
       await openWslWindowsBridgeTarget(input.chatgptUrl ?? DEFAULT_CHATGPT_URL, { browserBinding });
     }
 
-    const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       if (input.dispatchOnly === true && state.dispatched) {
         return {
