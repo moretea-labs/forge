@@ -445,6 +445,7 @@ export async function runBridgeProvider(input: BrowserConsultInput, bundle: Prom
   }
 
   const timeoutMs = input.timeoutMs ?? 180_000;
+  const deadline = Date.now() + timeoutMs;
   const host = '127.0.0.1';
   const port = bridgePort();
   const bridgeUrl = chatgptBridgeUrl();
@@ -520,7 +521,11 @@ export async function runBridgeProvider(input: BrowserConsultInput, bundle: Prom
         }
         if (request.method === 'POST' && url.pathname === '/api/extension/task-started') {
           const body = await readJson(request);
-          if (body.taskId === task.id) state.started = true;
+          if (body.taskId !== task.id || !state.claimed || state.started || state.result
+            || Date.now() >= deadline || !chatgptBridgeTargetMatchesPage(task.targetUrl, typeof body.url === 'string' ? body.url : undefined)) {
+            return jsonResponse({ error: { code: 'CHATGPT_BRIDGE_TASK_NOT_CURRENT', message: 'task is not eligible to start on this target' } }, 409);
+          }
+          state.started = true;
           return jsonResponse({ ok: true });
         }
         if (request.method === 'POST' && url.pathname === '/api/extension/dispatched') {
@@ -596,7 +601,6 @@ export async function runBridgeProvider(input: BrowserConsultInput, bundle: Prom
       await openWslWindowsBridgeTarget(input.chatgptUrl ?? DEFAULT_CHATGPT_URL, { browserBinding });
     }
 
-    const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       if (input.dispatchOnly === true && state.dispatched) {
         return {
@@ -614,6 +618,21 @@ export async function runBridgeProvider(input: BrowserConsultInput, bundle: Prom
         };
       }
       await sleep(500);
+    }
+
+    // A started task can have clicked Send even when its confirmation or result
+    // callback was lost. Never turn transport silence into replay permission.
+    if (state.started) {
+      return {
+        status: 'failed',
+        output: 'ChatGPT bridge task started but produced no conclusive result before timeout.',
+        conversationUrl: state.heartbeat?.url,
+        error: {
+          code: 'CHATGPT_BRIDGE_MUTATION_OUTCOME_UNKNOWN',
+          message: 'ChatGPT bridge began the task but submission and capture outcome remain unconfirmed',
+          recovery: 'Do not replay blindly; inspect the exact ChatGPT conversation and reconcile the outbound message.',
+        },
+      };
     }
 
     const heartbeatFresh = state.heartbeat && Date.now() - state.heartbeat.receivedAt < 15_000;
@@ -641,19 +660,9 @@ export async function runBridgeProvider(input: BrowserConsultInput, bundle: Prom
         `Composer visible: ${state.heartbeat?.composerVisible === true ? 'yes' : 'no'}`,
       ].join('\n'),
       error: {
-        code: input.dispatchOnly === true && state.started
-          ? 'CHATGPT_BRIDGE_MUTATION_OUTCOME_UNKNOWN'
-          : state.started
-            ? 'CHATGPT_BRIDGE_RESULT_TIMEOUT'
-            : 'CHATGPT_BRIDGE_TASK_NOT_CLAIMED',
-        message: input.dispatchOnly === true && state.started
-          ? 'ChatGPT bridge started the dispatch task but did not prove the submission postcondition before timeout'
-          : state.started
-            ? 'ChatGPT bridge task did not finish before timeout'
-            : 'ChatGPT bridge extension did not claim the task before timeout',
-        recovery: input.dispatchOnly === true && state.started
-          ? 'Do not replay blindly; inspect the target ChatGPT conversation before retrying.'
-          : 'Keep the ChatGPT tab active with the composer visible, then retry with a longer --timeout-ms.',
+        code: 'CHATGPT_BRIDGE_TASK_NOT_CLAIMED',
+        message: 'ChatGPT bridge extension did not claim the task before timeout',
+        recovery: 'Keep the ChatGPT tab active with the composer visible, then retry with a longer --timeout-ms.',
       },
     };
   } finally {
