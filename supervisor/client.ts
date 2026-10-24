@@ -113,6 +113,16 @@ export async function recoverWorkflowSupervisorTask(forgeHome: string, input: { 
 }
 
 /** Read-only stall classification; derived from the effect ledger, not new state. */
+/** Original-task explicit opt-in; only the current Supervisor owns watch facts. */
+export async function bindWorkflowSupervisorReviewWatch(forgeHome: string, input: {
+  taskId: string; repoId: string; githubRepository: string; prNumber: number;
+}): Promise<{ deduplicated: boolean }> {
+  return await rpc(forgeHome, 'task_review_watch_bind', {
+    task_id: input.taskId, repo_id: input.repoId,
+    github_repository: input.githubRepository, pr_number: input.prNumber,
+  }, SUPERVISOR_RPC_MUTATION_TIMEOUT_MS);
+}
+
 /** Trusted local review/CI ingress. Never authorize merge or provider Send. */
 export async function observeWorkflowSupervisorReviewNotice(forgeHome: string, input: WorkflowSupervisorReviewNotice): Promise<{
   eventKey: string; deduplicated: boolean; deferred: boolean;

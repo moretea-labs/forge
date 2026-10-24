@@ -3763,6 +3763,15 @@ test('public supervisor_task review_notice persists through the real local RPC a
   });
   try {
     const ctx = { controllerHome, repoId: 'repo-review-rpc' } as unknown as Parameters<typeof callWorkflowSupervisorAdapter>[0];
+    const watch = { operation: 'review_watch_bind', task_id: task.taskId, repo_id: 'repo-review-rpc',
+      github_repository: 'moretea-labs/forge', pr_number: 447 };
+    expect((await callWorkflowSupervisorAdapter(ctx, 'supervisor_task', watch))?.structuredContent)
+      .toMatchObject({ deduplicated: false, status: 'original_task_watch_bound' });
+    expect((await callWorkflowSupervisorAdapter(ctx, 'supervisor_task', watch))?.structuredContent)
+      .toMatchObject({ deduplicated: true });
+    expect(store.listReviewWatches()).toMatchObject([{ taskId: task.taskId, prNumber: 447 }]);
+    await expect(callWorkflowSupervisorAdapter(ctx, 'supervisor_task', { ...watch, repo_id: 'repo-foreign' }))
+      .rejects.toThrow('WORKFLOW_SUPERVISOR_REVIEW_REPOSITORY_MISMATCH');
     const args = {
       operation: 'review_notice', task_id: task.taskId, repo_id: 'repo-review-rpc', pr_number: 447,
       reviewed_head_sha: 'a'.repeat(40), current_head_sha: 'b'.repeat(40),
@@ -3785,6 +3794,8 @@ test('public supervisor_task review_notice persists through the real local RPC a
     expect(control.taskStall(task.taskId)).toMatchObject({
       state: 'deliverable', effectId: committed.successorEffect?.effectId,
     });
+    store.retireReviewWatch(task.taskId, 447);
+    expect(store.listReviewWatches()).toHaveLength(0);
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     store.close();

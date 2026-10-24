@@ -379,6 +379,10 @@ async function dispatch(control: WorkflowSupervisorControlPlane, discovery: Work
     ...(p.supersede_unknown === true ? { supersedeUnknown: true } : {}),
     ...(typeof p.authorized_by === 'string' && p.authorized_by.trim() ? { authorizedBy: p.authorized_by.trim() } : {}),
   });
+  if (req.method === 'task_review_watch_bind') return control.bindReviewWatch({
+    taskId: text(p, 'task_id'), repoId: text(p, 'repo_id'),
+    githubRepository: text(p, 'github_repository'), prNumber: positiveInteger(p, 'pr_number'),
+  });
   if (req.method === 'task_review_notice') return control.observeReviewNotice({
     taskId: text(p, 'task_id'), repoId: text(p, 'repo_id'), prNumber: positiveInteger(p, 'pr_number'),
     reviewedHeadSha: text(p, 'reviewed_head_sha'), currentHeadSha: text(p, 'current_head_sha'),

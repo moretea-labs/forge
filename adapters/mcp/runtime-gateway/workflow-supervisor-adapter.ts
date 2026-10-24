@@ -3,6 +3,7 @@ import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contra
 import {
   getWorkflowSupervisorContinuationProof,
   getWorkflowSupervisorTask,
+  bindWorkflowSupervisorReviewWatch,
   observeWorkflowSupervisorReviewNotice,
   getWorkflowSupervisorTaskStall,
   listWorkflowSupervisorTasks,
@@ -64,6 +65,18 @@ export async function callWorkflowSupervisorAdapter(
     });
     const effect = await reserveWorkflowSupervisorEnrollment(forgeHome, task.taskId);
     return result({ task, effect, summary: `Standalone Supervisor task ${task.taskId} started.` });
+  }
+
+  if (operation === 'review_watch_bind') {
+    const taskId = textArg(args, 'task_id');
+    const githubRepository = textArg(args, 'github_repository');
+    if (!taskId || !repoId) throw new Error('WORKFLOW_SUPERVISOR_REVIEW_WATCH_IDENTITY_REQUIRED');
+    const bound = await bindWorkflowSupervisorReviewWatch(forgeHome, {
+      taskId, repoId, githubRepository, prNumber: Number(args.pr_number),
+    });
+    return result({ ...bound, status: 'original_task_watch_bound', taskId,
+      summary: 'Only the original Supervisor will observe this exact PR using the existing maintenance loop; no Send or merge was authorized.',
+    });
   }
 
   if (operation === 'review_notice') {

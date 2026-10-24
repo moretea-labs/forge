@@ -372,6 +372,14 @@ export class WorkflowSupervisorControlPlane {
    * A notice is not a verified review verdict, CI gate or merge authorization;
    * the model must re-read the platform and current PR HEAD before deciding.
    */
+  bindReviewWatch(input: { taskId: string; repoId: string; githubRepository: string; prNumber: number }): { deduplicated: boolean } {
+    const task = this.requireTask(input.taskId);
+    if (task.completionContract.repo_id !== input.repoId) throw new Error('WORKFLOW_SUPERVISOR_REVIEW_REPOSITORY_MISMATCH');
+    if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(input.githubRepository)) throw new Error('WORKFLOW_SUPERVISOR_GITHUB_REPOSITORY_INVALID');
+    if (!Number.isInteger(input.prNumber) || input.prNumber < 1 || input.prNumber > 1_000_000) throw new Error('WORKFLOW_SUPERVISOR_REVIEW_PR_INVALID');
+    return this.store.bindReviewWatch(input);
+  }
+
   observeReviewNotice(notice: WorkflowSupervisorReviewNotice): { eventKey: string; deduplicated: boolean; deferred: boolean } {
     const task = this.requireTask(notice.taskId);
     if (task.completionContract.repo_id !== notice.repoId) throw new Error('WORKFLOW_SUPERVISOR_REVIEW_REPOSITORY_MISMATCH');
