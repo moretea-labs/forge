@@ -382,7 +382,7 @@ export function buildControllerContextPack(
   // authored symbols. Preserve the old scoped path in those cases rather than
   // replacing already-correct early evidence with a partial late selection.
   const useBoundedExactWindows = scopedExactKnownFileSearch && requiredSearchQueries.length <= 2;
-  const scopedRequiredHitLines = new Map<string, Array<{ line: number; query: string }>>();
+  const scopedRequiredHitLines = new Map<string, Array<{ line: number; query: string; owner: boolean }>>();
 
   // Lexical retrieval is one bounded pass across candidate files for all terms.
   // The old per-term loop reread the same source files up to 14 times even
@@ -418,14 +418,17 @@ export function buildControllerContextPack(
     for (const hit of search.results) {
       if (!coveredByGlob(hit.path, searchIncludeGlobs) || excludeGlobs.some((glob) => globMatches(glob, hit.path))) continue;
       if (candidates.size >= maxFiles * 3 && !candidates.has(hit.path) && !requiredSearchQueries.includes(hit.query)) continue;
-      if (useBoundedExactWindows && requiredSearchQueries.includes(hit.query)) {
-        const exactLines = scopedRequiredHitLines.get(hit.path) ?? [];
-        exactLines.push({ line: hit.line, query: hit.query });
-        scopedRequiredHitLines.set(hit.path, exactLines);
-      }
       if (requiredSearchQueries.includes(hit.query)) {
         const source = hit.text.trimStart();
         const declared = /^(?:(?:export|declare|default|async)\s+)*(?:function|class|interface|type|const|let|enum)\s+([\w$]+)/.exec(source)?.[1];
+        const caseOwner = /^case\s+['"`]([^'"`]+)['"`]\s*:/.exec(source)?.[1];
+        const owner = declared?.toLowerCase() === hit.query.toLowerCase()
+          || caseOwner?.toLowerCase() === hit.query.toLowerCase();
+        if (useBoundedExactWindows) {
+          const exactLines = scopedRequiredHitLines.get(hit.path) ?? [];
+          exactLines.push({ line: hit.line, query: hit.query, owner });
+          scopedRequiredHitLines.set(hit.path, exactLines);
+        }
         if (declared?.toLowerCase() === hit.query.toLowerCase()) {
           addReason(candidates, hit.path, `${source.startsWith('export ') ? 'exported' : 'local'}-definition:${hit.query}`, hit.line);
         }
@@ -541,20 +544,29 @@ export function buildControllerContextPack(
     // Keep exact-symbol windows bounded by authored symbol count rather than
     // expanding a small, formerly broad result to every occurrence in a file.
     const exactHits = scopedRequiredHitLines.get(entry.path) ?? [];
-    const requiredWindows: Array<{ first: number; count: number; queries: Set<string> }> = [];
+    const requiredWindows: Array<{ first: number; last: number; count: number; queries: Set<string>; owners: Set<string> }> = [];
     for (const hit of [...exactHits].sort((a, b) => a.line - b.line)) {
       const last = requiredWindows[requiredWindows.length - 1];
       if (last && hit.line - last.first <= 40) {
+        last.last = hit.line;
         last.count += 1;
         last.queries.add(hit.query);
+        if (hit.owner) last.owners.add(hit.query);
       } else {
-        requiredWindows.push({ first: hit.line, count: 1, queries: new Set([hit.query]) });
+        requiredWindows.push({
+          first: hit.line, last: hit.line, count: 1,
+          queries: new Set([hit.query]), owners: new Set(hit.owner ? [hit.query] : []),
+        });
       }
     }
     const prioritizedLines = requiredWindows
-      .sort((a, b) => b.queries.size - a.queries.size || b.count - a.count || b.first - a.first)
+      // An actual function/case owner outranks repeated references to its name.
+      .sort((a, b) => b.owners.size - a.owners.size
+        || b.queries.size - a.queries.size || b.count - a.count || a.first - b.first)
       .slice(0, Math.min(2, requiredSearchQueries.length))
-      .map((window) => window.first);
+      // A forty-line window can contain both nearby owners only when its
+      // anchor is shifted far enough to cover the last hit.
+      .map((window) => Math.max(window.first, window.last - 28));
     let snippets: ControllerContextPackSnippet[] = [];
     try {
       snippets = materializeSource({
