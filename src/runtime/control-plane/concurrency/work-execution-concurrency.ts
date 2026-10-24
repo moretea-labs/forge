@@ -87,6 +87,8 @@ export function concurrencyWaitEquivalent(
     blockerCode: value.blockerCode,
     disposition: value.disposition,
     blockingWorkId: value.blockingWorkId,
+    blockingProcessId: value.blockingProcessId,
+    blockingOwnerRelation: value.blockingOwnerRelation,
     semanticScopeKeys: value.semanticScopeKeys,
     resourceKeys: value.resourceKeys,
     wakeTrigger: value.wakeTrigger,

@@ -1443,29 +1443,43 @@ export async function spawnManagedProcess(input: SpawnManagedProcessInput): Prom
     }
     if (!acquisition.acquired) {
       const resourceKeys = [...new Set(acquisition.blockers.map((blocker) => blocker.resourceKey))].sort();
-      const blockingWorkId = acquisition.blockers
-        .map((blocker) => blocker.ownerJobId.startsWith('process:')
-          ? getProcessRecord(input.controllerHome, input.repoId, blocker.ownerJobId.slice('process:'.length))?.workId
-          : undefined)
-        .find((value): value is string => Boolean(value));
+      // One owner may hold several claims. Expose a joinable Process only when
+      // every conflict belongs to that one exact owner, never a guessed first.
+      const ownerIds = [...new Set(acquisition.blockers.map((blocker) => blocker.ownerJobId))];
+      const ownerId = ownerIds.length === 1 ? ownerIds[0] : undefined;
+      const blockingProcessId = ownerId?.startsWith('process:') ? ownerId.slice('process:'.length) : undefined;
+      const blockingProcess = blockingProcessId
+        ? getProcessRecord(input.controllerHome, input.repoId, blockingProcessId)
+        : undefined;
+      const blockingOwnerRelation = !ownerId ? 'unknown'
+        : !blockingProcess ? 'non_work_owner'
+        : !blockingProcess.workId ? 'non_work_owner'
+        : blockingProcess.workId === input.workId && blockingProcess.checkoutId === input.checkoutId
+          ? 'same_work_same_checkout' : 'other_work_or_checkout';
       const wait = executionConcurrencyWaitProjection({
         source: 'resource_lease',
         blockerCode: 'resource_claim_conflict',
         disposition: 'wait',
-        blockingWorkId,
+        blockingWorkId: blockingProcess?.workId,
+        blockingProcessId: blockingProcess ? blockingProcessId : undefined,
+        blockingOwnerRelation,
         semanticScopeKeys: [],
         resourceKeys,
         wakeTrigger: { kind: 'resource_release', resourceKeys },
       });
-      recordWorkExecutionConcurrencyWait({
-        controllerHome: input.controllerHome,
-        repoId: input.repoId,
-        workId: input.workId,
-        attemptId: processId,
-        wait,
-        resourceClaims,
-        leaseRepoId: input.repoId,
-    });
+      // This is a dependency on this Work's existing Process, not a semantic
+      // Work blocker. The rejected request never spawned and must not replay.
+      if (blockingOwnerRelation !== 'same_work_same_checkout') {
+        recordWorkExecutionConcurrencyWait({
+          controllerHome: input.controllerHome,
+          repoId: input.repoId,
+          workId: input.workId,
+          attemptId: processId,
+          wait,
+          resourceClaims,
+          leaseRepoId: input.repoId,
+        });
+      }
       updateProcessRecord(input.controllerHome, input.repoId, processId, { concurrencyWait: wait });
       const blockers = acquisition.blockers
         .map((b) => `${b.resourceKey}@${b.ownerJobId}`)
