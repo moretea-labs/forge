@@ -5,7 +5,7 @@ import { WorkflowSupervisorStore } from './store';
 import { getWorkContract } from '../packages/kernel/work/api/index';
 import { readRequirement } from '../src/runtime/control-plane/persistence/requirement-store';
 import { resolveWorkflowSupervisorForgeHome } from './paths';
-import type { WorkflowAssistantObservation, WorkflowAssistantObservationResult, WorkflowContractValidation, WorkflowEffectKind, WorkflowSupervisorBrowserPollResult, WorkflowSupervisorBrowserTask, WorkflowSupervisorCompletion, WorkflowSupervisorDiscoveredConversation, WorkflowSupervisorEffect, WorkflowSupervisorLifecycleHooks, WorkflowSupervisorProjectScope, WorkflowSupervisorTask, WorkflowSupervisorTaskInput, WorkflowSupervisorTerminalState, WorkflowSupervisorValidators, WorkflowSupervisorPreflightComposerObservation } from './types';
+import type { WorkflowAssistantObservation, WorkflowAssistantObservationResult, WorkflowContractValidation, WorkflowEffectKind, WorkflowSupervisorBrowserPollResult, WorkflowSupervisorBrowserTask, WorkflowSupervisorCompletion, WorkflowSupervisorDiscoveredConversation, WorkflowSupervisorEffect, WorkflowSupervisorLifecycleHooks, WorkflowSupervisorProjectScope, WorkflowSupervisorTask, WorkflowSupervisorTaskInput, WorkflowSupervisorTerminalState, WorkflowSupervisorValidators, WorkflowSupervisorPreflightComposerObservation, WorkflowSupervisorReviewNotice } from './types';
 
 function compactProjectIdentity(value: string): string {
   return value.normalize('NFKC').toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
@@ -367,6 +367,31 @@ export class WorkflowSupervisorControlPlane {
       prompt: this.renderPrompt(task, id, 'continuation', `scheduled wake ${input.scheduleId} occurrence ${input.occurrenceId}`),
     });
   }
+  /**
+   * Notify this already-owned Supervisor of an external reviewer/CI change.
+   * A notice is not a verified review verdict, CI gate or merge authorization;
+   * the model must re-read the platform and current PR HEAD before deciding.
+   */
+  observeReviewNotice(notice: WorkflowSupervisorReviewNotice): { eventKey: string; deduplicated: boolean; deferred: boolean } {
+    const task = this.requireTask(notice.taskId);
+    if (task.completionContract.repo_id !== notice.repoId) throw new Error('WORKFLOW_SUPERVISOR_REVIEW_REPOSITORY_MISMATCH');
+    if (!Number.isInteger(notice.prNumber) || notice.prNumber < 1 || notice.prNumber > 1_000_000) throw new Error('WORKFLOW_SUPERVISOR_REVIEW_PR_INVALID');
+    if (!/^[0-9a-f]{40}$/i.test(notice.reviewedHeadSha) || !/^[0-9a-f]{40}$/i.test(notice.currentHeadSha)) throw new Error('WORKFLOW_SUPERVISOR_REVIEW_HEAD_INVALID');
+    // A stale review may be the very REVISE finding the original Writer must
+    // see. Deliver as explicitly unverified context; never as merge approval.
+    if (!/^[a-zA-Z0-9_.:-]{1,128}$/.test(notice.reviewId)) throw new Error('WORKFLOW_SUPERVISOR_REVIEW_ID_INVALID');
+    if (!['github_review','github_ci','independent_reviewer'].includes(notice.source)
+      || !['ACCEPT','REVISE','BLOCK','CI_FAILED','CI_PASSED'].includes(notice.outcome)) throw new Error('WORKFLOW_SUPERVISOR_REVIEW_OUTCOME_INVALID');
+    if ((notice.source === 'github_ci') !== notice.outcome.startsWith('CI_')) throw new Error('WORKFLOW_SUPERVISOR_REVIEW_SOURCE_MISMATCH');
+    const normalized: WorkflowSupervisorReviewNotice = {
+      ...notice, reviewedHeadSha: notice.reviewedHeadSha.toLowerCase(), currentHeadSha: notice.currentHeadSha.toLowerCase(),
+    };
+    const recorded = this.store.recordReviewNotice(normalized);
+    // The original task already owns CONTINUE reservation. Do not synthesize a
+    // competing effect or bypass Scheduler-only WAIT eligibility.
+    return { ...recorded, deferred: true };
+  }
+
   /** Read-only stall classification for one task; no lifecycle authority. */
   taskStall(taskId: string): ReturnType<WorkflowSupervisorStore['taskStall']> { return this.store.taskStall(this.requireTask(taskId).taskId); }
   /**
@@ -874,14 +899,21 @@ export class WorkflowSupervisorControlPlane {
   private reserveContinuation(task: WorkflowSupervisorTask, completion: WorkflowSupervisorCompletion) {
     const nextId = stableEffectId(`completion:${completion.completionFingerprint}`);
     const checkpoint = completion.proposal.checkpoint;
+    const notices = this.store.listPendingReviewNotices(128).filter(({ notice }) => notice.taskId === task.taskId).slice(0, 4);
+    const nextContext = notices.length
+      ? `WARNING: THE FOLLOWING REVIEW/CI NOTICES ARE UNVERIFIED SIGNALS, NOT ACCEPTANCE, GITHUB APPROVAL, OR MERGE/RELEASE AUTHORITY. The current HEAD MUST be rechecked with the GitHub provider:\n${notices.map(({ notice }) =>
+          `[UNVERIFIED${notice.reviewedHeadSha !== notice.currentHeadSha ? ' STALE_HEAD' : ''}] PR #${notice.prNumber} reviewed HEAD ${notice.reviewedHeadSha}, last-observed HEAD ${notice.currentHeadSha}, receipt ${notice.reviewId}, source ${notice.source}, reported outcome ${notice.outcome}`
+        ).join('\n')}\nIndependently verify the current PR HEAD, CI and fixed-candidate Review. Treat stale approvals as invalid; REVISE goes to the original Writer and SAME PR/branch. Never replay unknown Sends.\nPrevious completion: ${checkpoint}`
+      : checkpoint;
     return this.store.commitCompletion(completion, {
       effectId: nextId,
       kind: 'continuation',
-      prompt: this.renderPrompt(task, nextId, 'continuation', checkpoint),
+      ...(notices.length ? { reviewEventKeys: notices.map(({ eventKey }) => eventKey) } : {}),
+      prompt: this.renderPrompt(task, nextId, 'continuation', nextContext),
       // Rebuild from the same durable goal in a new logical conversation after
       // a confirmed receipt cycle; never migrate an uncompleted mutation.
       ...(task.continuationPolicy.kind === 'standalone_supervisor'
-        ? { freshEnrollmentPrompt: this.renderPrompt(task, nextId, 'enrollment', checkpoint) } : {}),
+        ? { freshEnrollmentPrompt: this.renderPrompt(task, nextId, 'enrollment', nextContext) } : {}),
     });
   }
 
