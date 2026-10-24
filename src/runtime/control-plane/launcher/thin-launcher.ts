@@ -77,6 +77,7 @@ export function launcherProcessEnvironment(env: NodeJS.ProcessEnv): NodeJS.Proce
 export function resolveLauncherExecutable(
   request: Pick<ThinLauncherRequest, 'controllerType' | 'executable' | 'cwd'>,
   env: NodeJS.ProcessEnv = process.env,
+  probeAvailability = true,
 ): string {
   if (request.controllerType === 'chatgpt') {
     throw new Error('LAUNCHER_CHATGPT_SUPERVISOR_OWNED');
@@ -89,6 +90,9 @@ export function resolveLauncherExecutable(
       ? 'claude'
       : '';
   if (!executable) throw new Error(`LAUNCHER_EXECUTABLE_REQUIRED: ${request.controllerType} requires an external launcher executable`);
+  // Status queries need an explicit readiness probe. Real launches already
+  // observe spawn errors and early exits through their reservation receipt.
+  if (!probeAvailability) return executable;
   const probe = spawnSync(executable, ['--version'], {
     cwd: request.cwd,
     stdio: 'ignore',
@@ -298,7 +302,7 @@ export async function launchSuperController(
   request: ThinLauncherRequest,
   dependencies: ThinLauncherDependencies = {},
 ): Promise<ThinLauncherResult> {
-  const executable = resolveLauncherExecutable(request);
+  const executable = resolveLauncherExecutable(request, process.env, false);
   const work = getWorkContract(stores.work, request.workId);
   if (!work) throw new Error(`WORK_NOT_FOUND: ${request.workId}`);
   if (request.controllerType === 'chatgpt') {
