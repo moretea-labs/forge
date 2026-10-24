@@ -1799,6 +1799,29 @@ describe('protected Computer console unlock composition', () => {
 
 
 describe('protected Computer stable plugin transport', () => {
+  test('non-idempotent authorized desktop screenshots retain the managed Process request fence', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-computer-capture-contract-'));
+    try {
+      const manifest = computerPluginAdapter.buildManifest(0, undefined, root);
+      const capture = manifest.actions.find((action) => action.actionId === 'desktop_screenshot');
+      expect(capture).toMatchObject({
+        readOnly: true,
+        risk: 'readonly',
+        confirmation: 'authorization',
+        idempotent: false,
+        resourceClaims: [],
+      });
+      // Do not bypass Process request reservation until Runtime-native
+      // same-request fencing and unknown-outcome recovery are proven.
+      expect(capture?.executionMode).toBeUndefined();
+      if (!capture) throw new Error('Computer screenshot action missing');
+      expect(isDirectPluginReadAction(capture)).toBe(false);
+      expect(isDirectNonPersistentPluginAction(capture)).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test('publishes console unlock only as strict direct non-persistent plugin actions', () => {
     const root = mkdtempSync(join(tmpdir(), 'forge-computer-direct-manifest-'));
     try {

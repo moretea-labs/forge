@@ -1543,7 +1543,9 @@ printf '{"ok":true}\\n'
       detail_level: 'summary',
     }));
     const matches = ((payload.data as { capabilitySearch?: { matches?: Array<{ capabilityId?: string }> } }).capabilitySearch?.matches ?? []);
-    expect(matches.some((entry) => entry.capabilityId === 'plugin.computer.physical_device_open')).toBe(true);
+    // Computer publishes repository physical-device actions on macOS only.
+    // Linux/Windows must not advertise unsupported native iPhone control.
+    expect(matches.some((entry) => entry.capabilityId === 'plugin.computer.physical_device_open')).toBe(process.platform === 'darwin');
     expect(matches.some((entry) => entry.capabilityId === 'plugin.ios.physical_device_open')).toBe(false);
   });
 
