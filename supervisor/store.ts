@@ -940,36 +940,6 @@ export class WorkflowSupervisorStore {
       }));
   }
 
-  /** Reuse a committed WAIT and its unique source-completion CAS; never touch in-flight Send. */
-  reserveReviewWake(input: { eventKey: string; taskId: string; effectId: string; prompt: string }): WorkflowSupervisorEffect | undefined {
-    return this.transaction((db) => {
-      const observed = statement(db, "SELECT task_id FROM events WHERE event_key=? AND kind='review_notice_observed'", (s) => s.get(input.eventKey)) as { task_id?: string } | undefined;
-      if (observed?.task_id !== input.taskId) throw new Error('WORKFLOW_SUPERVISOR_REVIEW_NOTICE_TASK_MISMATCH');
-      const originKey = `review-wake:${input.eventKey}`;
-      const prior = statement(db, "SELECT effect_id FROM events WHERE event_key=? AND kind='review_wake_reserved'", (s) => s.get(originKey)) as { effect_id?: string } | undefined;
-      if (prior) {
-        const row = prior.effect_id ? statement(db, 'SELECT * FROM effects WHERE effect_id=?', (s) => s.get(prior.effect_id)) as Record<string, unknown> | undefined : undefined;
-        if (!row || effectFromRow(row).taskId !== input.taskId || effectFromRow(row).effectId !== input.effectId) throw new Error('WORKFLOW_SUPERVISOR_REVIEW_WAKE_IDENTITY_CONFLICT');
-        return effectFromRow(row);
-      }
-      if (statement(db, "SELECT 1 FROM events WHERE task_id=? AND kind IN ('terminal_done','terminal_needs_user','terminal_stopped') LIMIT 1", (s) => s.get(input.taskId))) return undefined;
-      if (oldestUnappliedEffect(db, input.taskId) || appliedEffectAwaitingCompletionWithin(db, input.taskId)) return undefined;
-      const row = statement(db, "SELECT c.* FROM completions c WHERE c.task_id=? ORDER BY COALESCE((SELECT MAX(e.event_id) FROM events e WHERE e.task_id=c.task_id AND e.completion_fingerprint=c.completion_fingerprint AND e.kind='assistant_completion'), c.rowid) DESC LIMIT 1", (s) => s.get(input.taskId)) as Record<string, unknown> | undefined;
-      if (!row) return undefined;
-      const latest = completionFromRow(row);
-      if (latest.action !== 'WAIT') return undefined;
-      if (statement(db, 'SELECT 1 FROM effects WHERE task_id=? AND source_completion_fingerprint=?', (s) => s.get(input.taskId, latest.completionFingerprint))) return undefined;
-      const effect = this.reserveEffectWithin(db, {
-        taskId: input.taskId, effectId: input.effectId, kind: 'continuation', originKey,
-        sourceCompletionFingerprint: latest.completionFingerprint, prompt: input.prompt,
-      });
-      statement(db, 'INSERT INTO events(task_id,event_key,kind,effect_id,completion_fingerprint,payload_json,occurred_at) VALUES (?,?,?,?,?,?,?)', (s) => s.run(
-        input.taskId, originKey, 'review_wake_reserved', effect.effectId, latest.completionFingerprint, json({ observed: input.eventKey }), now(),
-      ));
-      return effect;
-    });
-  }
-
   listTasksWithoutCausalObligation(limit = 16): WorkflowSupervisorTask[] {
     const boundedLimit = Math.max(1, Math.min(Math.trunc(limit), 128));
     return this.read((db) => statement(db, `SELECT t.* FROM tasks t
@@ -1923,7 +1893,7 @@ export class WorkflowSupervisorStore {
     });
   }
 
-  commitCompletion(input: WorkflowSupervisorCompletion, successor?: { effectId: string; kind: WorkflowEffectKind; prompt: string; freshEnrollmentPrompt?: string }): { completion: WorkflowSupervisorCompletion; successorEffect?: WorkflowSupervisorEffect; deduplicated: boolean } {
+  commitCompletion(input: WorkflowSupervisorCompletion, successor?: { effectId: string; kind: WorkflowEffectKind; prompt: string; freshEnrollmentPrompt?: string; reviewEventKeys?: string[] }): { completion: WorkflowSupervisorCompletion; successorEffect?: WorkflowSupervisorEffect; deduplicated: boolean } {
     return this.transaction((db) => {
       const task = statement(db, 'SELECT 1 AS ok FROM tasks WHERE task_id = ?', (s) => s.get(input.taskId));
       if (!task) throw new Error('WORKFLOW_SUPERVISOR_TASK_UNKNOWN');
@@ -2000,6 +1970,16 @@ export class WorkflowSupervisorStore {
             sourceCompletionFingerprint: input.completionFingerprint,
             prompt: rotate ? successor.freshEnrollmentPrompt! : successor.prompt,
           });
+          // Attach already-journaled notices to the SAME causal CONTINUE effect.
+          // If the effect was previously reserved, never rewrite its prompt.
+          for (const reviewKey of successor.reviewEventKeys ?? []) {
+            const observed = statement(db, "SELECT task_id FROM events WHERE event_key=? AND kind='review_notice_observed'", (s) => s.get(reviewKey)) as { task_id?: string } | undefined;
+            if (observed?.task_id !== input.taskId) throw new Error('WORKFLOW_SUPERVISOR_REVIEW_NOTICE_TASK_MISMATCH');
+            statement(db, 'INSERT OR IGNORE INTO events(task_id,event_key,kind,effect_id,completion_fingerprint,payload_json,occurred_at) VALUES (?,?,?,?,?,?,?)', (s) => s.run(
+              input.taskId, `review-wake:${reviewKey}`, 'review_wake_reserved', successorEffect!.effectId,
+              input.completionFingerprint, json({ observed: reviewKey, via: 'existing_continue' }), now(),
+            ));
+          }
           if (rotate) {
             const sourceConversationId = currentTask.conversationId;
             const bootstrapConversationId = `bootstrap:${input.taskId}`;
