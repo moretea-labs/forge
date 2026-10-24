@@ -266,9 +266,10 @@
     const restoredSameEffectPrefix = Boolean(supervisor && !replacement && !retired
       && currentEffectId && effectPrefix.exec(existing)?.[1] === currentEffectId
       && expected.startsWith(existing));
-    const ownedDrafts = supervisor
-      ? [expected, expected + '\n', exactComposerText(payload + '\n@'), exactComposerText(payload + '\nforge'), exactComposerText('forge ' + payload)]
-      : [expected];
+    // Only the exact canonical bytes (plus ProseMirror's generated final
+    // newline) are owner-attested. Historical app-mention typing artifacts are
+    // indistinguishable from human edits and must never be overwritten.
+    const ownedDrafts = supervisor ? [expected, expected + '\n'] : [expected];
     if (node.querySelector('[plugin-mention-name], [app-mention-name]')) return { dispatched: false, reason: 'composer_has_app_mention' };
     const unowned = Boolean(existing && !ownedDrafts.includes(existing) && !restoredSameEffectPrefix);
     if (unowned && ((!replacement && !retired) || !supervisor)) return { dispatched: false, reason: 'composer_not_empty' };
