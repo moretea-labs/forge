@@ -824,16 +824,29 @@ export function searchRepositoryMany(
   const scopedHits = boundedScopedSearch && authorizedCandidatePaths.length
     ? ripgrepCandidateLines(repoRoot, authorizedCandidatePaths, queries, opts.caseSensitive === true, maxResultsPerQuery, skippedBinaryPaths, scopedHitLimit)
     : null;
-  const saturatedBroadPath = scopedHits !== null && [...scopedHits.values()].some(
-    (lines) => lines.length >= scopedHitLimit,
-  );
   const exactHits = authorizedCandidatePaths.length && requiredQueries.length
-    ? scopedHits !== null && !saturatedBroadPath
-      ? new Map([...scopedHits].flatMap(([path, lines]) => {
-          const requiredLines = lines.filter(({ text }) => requiredQueries.some((needle) =>
-            opts.caseSensitive ? text.includes(needle) : text.toLowerCase().includes(needle.toLowerCase())));
-          return requiredLines.length ? [[path, requiredLines] as const] : [];
-        }))
+    ? scopedHits !== null
+      ? (() => {
+          const exact = new Map<string, Array<{ line: number; text: string }>>();
+          const saturatedPaths: string[] = [];
+          for (const [path, lines] of scopedHits) {
+            if (lines.length >= scopedHitLimit) {
+              saturatedPaths.push(path);
+              continue;
+            }
+            const requiredLines = lines.filter(({ text }) => requiredQueries.some((needle) =>
+              opts.caseSensitive ? text.includes(needle) : text.toLowerCase().includes(needle.toLowerCase())));
+            if (requiredLines.length > 0) exact.set(path, requiredLines);
+          }
+          // Only a truncated path can conceal a later required symbol.
+          // Unsaturated files already have complete rg evidence.
+          if (saturatedPaths.length > 0) {
+            for (const [path, lines] of ripgrepCandidateLines(
+              repoRoot, saturatedPaths, requiredQueries, opts.caseSensitive === true, maxResultsPerQuery, skippedBinaryPaths,
+            )) exact.set(path, lines);
+          }
+          return exact;
+        })()
       : ripgrepCandidateLines(repoRoot, authorizedCandidatePaths, requiredQueries, opts.caseSensitive === true, maxResultsPerQuery, skippedBinaryPaths)
     : null;
   const hasRequiredHit = (needle: string): boolean => exactHits !== null
