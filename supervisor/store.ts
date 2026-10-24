@@ -3,7 +3,7 @@ import { createRequire } from 'node:module';
 import { mkdirSync } from 'node:fs';
 import { resolveWorkflowSupervisorForgeHome, workflowSupervisorDatabasePathValue, workflowSupervisorRootPath } from './paths';
 import { validateSupervisorObjective } from './protocol';
-import type { WorkflowEffectKind, WorkflowEffectOutcome, WorkflowSupervisorCompletion, WorkflowSupervisorContinuationProof, WorkflowSupervisorDiscoverySnapshot, WorkflowSupervisorDiscoveredConversation, WorkflowSupervisorEffect, WorkflowSupervisorTask, WorkflowSupervisorTaskInput, WorkflowSupervisorTaskStall, WorkflowSupervisorTerminalState, WorkflowSupervisorPreflightComposerObservation, WorkflowSupervisorSilentTurn } from './types';
+import type { WorkflowEffectKind, WorkflowEffectOutcome, WorkflowSupervisorCompletion, WorkflowSupervisorContinuationProof, WorkflowSupervisorDiscoverySnapshot, WorkflowSupervisorDiscoveredConversation, WorkflowSupervisorEffect, WorkflowSupervisorTask, WorkflowSupervisorTaskInput, WorkflowSupervisorTaskStall, WorkflowSupervisorTerminalState, WorkflowSupervisorPreflightComposerObservation, WorkflowSupervisorSilentTurn, WorkflowSupervisorReviewNotice } from './types';
 export type { WorkflowSupervisorTaskStall } from './types';
 
 interface Statement { get(...params: unknown[]): unknown; all(...params: unknown[]): unknown[]; run(...params: unknown[]): unknown; finalize?(): void }
@@ -907,6 +907,84 @@ export class WorkflowSupervisorStore {
   }
   getTaskByConversationId(conversationId: string): WorkflowSupervisorTask | undefined { return this.read((db) => { const row = statement(db, 'SELECT * FROM tasks WHERE conversation_id = ?', (s) => s.get(conversationId)); return row ? taskFromRow(row as Record<string, unknown>) : undefined; }); }
   listTasks(): WorkflowSupervisorTask[] { return this.read((db) => statement(db, 'SELECT * FROM tasks ORDER BY created_at, task_id', (s) => s.all()).map((row) => taskFromRow(row as Record<string, unknown>))); }
+  /** Journal one external fact notification in the existing task ledger. Never merge approval. */
+  recordReviewNotice(notice: WorkflowSupervisorReviewNotice): { eventKey: string; deduplicated: boolean } {
+    const eventKey = `review-observed:${createHash('sha256').update(json({
+      taskId: notice.taskId, repoId: notice.repoId, prNumber: notice.prNumber,
+      reviewedHeadSha: notice.reviewedHeadSha, reviewId: notice.reviewId, source: notice.source, outcome: notice.outcome,
+    })).digest('hex')}`;
+    return this.transaction((db) => {
+      const prior = statement(db, 'SELECT task_id,payload_json FROM events WHERE event_key=?', (s) => s.get(eventKey)) as { task_id: string; payload_json: string } | undefined;
+      if (prior) {
+        // Current HEAD is an observation timestamped by the caller, not the
+        // immutable review identity. A later re-observation with a new current
+        // HEAD must dedupe the SAME review, not create another external effect.
+        const recorded = JSON.parse(prior.payload_json) as WorkflowSupervisorReviewNotice;
+        if (prior.task_id !== notice.taskId
+          || json({ ...recorded, currentHeadSha: '' }) !== json({ ...notice, currentHeadSha: '' })) {
+          throw new Error('WORKFLOW_SUPERVISOR_REVIEW_NOTICE_IDENTITY_CONFLICT');
+        }
+        return { eventKey, deduplicated: true };
+      }
+      if (!statement(db, 'SELECT 1 FROM tasks WHERE task_id=?', (s) => s.get(notice.taskId))) throw new Error('WORKFLOW_SUPERVISOR_TASK_UNKNOWN');
+      if (statement(db, "SELECT 1 FROM events WHERE task_id=? AND kind IN ('terminal_done','terminal_needs_user','terminal_stopped') LIMIT 1", (s) => s.get(notice.taskId))) throw new Error('WORKFLOW_SUPERVISOR_TASK_TERMINAL');
+      statement(db, 'INSERT INTO events(task_id,event_key,kind,payload_json,occurred_at) VALUES (?,?,?,?,?)', (s) => s.run(
+        notice.taskId, eventKey, 'review_notice_observed', json(notice), now(),
+      ));
+      return { eventKey, deduplicated: false };
+    });
+  }
+
+  /** An opt-in watch is a single event in this task's existing causal ledger. */
+  bindReviewWatch(input: { taskId: string; repoId: string; githubRepository: string; prNumber: number }): { deduplicated: boolean } {
+    const eventKey = `review-watch:${input.taskId}:${input.prNumber}`;
+    return this.transaction((db) => {
+      const task = statement(db, 'SELECT * FROM tasks WHERE task_id=?', (s) => s.get(input.taskId)) as Record<string, unknown> | undefined;
+      if (!task) throw new Error('WORKFLOW_SUPERVISOR_TASK_UNKNOWN');
+      if (taskFromRow(task).completionContract.repo_id !== input.repoId) throw new Error('WORKFLOW_SUPERVISOR_REVIEW_REPOSITORY_MISMATCH');
+      if (statement(db, "SELECT 1 FROM events WHERE task_id=? AND kind IN ('terminal_done','terminal_needs_user','terminal_stopped') LIMIT 1", (s) => s.get(input.taskId))) throw new Error('WORKFLOW_SUPERVISOR_TASK_TERMINAL');
+      const payload = json(input);
+      const old = statement(db, 'SELECT payload_json FROM events WHERE event_key=?', (s) => s.get(eventKey)) as { payload_json: string } | undefined;
+      if (old && old.payload_json !== payload) throw new Error('WORKFLOW_SUPERVISOR_REVIEW_WATCH_CONFLICT');
+      if (!old) statement(db, 'INSERT INTO events(task_id,event_key,kind,payload_json,occurred_at) VALUES (?,?,?,?,?)', (s) => s.run(
+        input.taskId, eventKey, 'review_watch_bound', payload, now(),
+      ));
+      return { deduplicated: Boolean(old) };
+    });
+  }
+
+  /** Existing SQLite event projection; terminal tasks never receive external notices. */
+  listReviewWatches(limit = 128): Array<{ taskId: string; repoId: string; githubRepository: string; prNumber: number }> {
+    return this.read((db) => statement(db, `SELECT e.payload_json FROM events e
+      WHERE e.kind='review_watch_bound'
+      AND NOT EXISTS (SELECT 1 FROM events t WHERE t.task_id=e.task_id AND t.kind IN ('terminal_done','terminal_needs_user','terminal_stopped'))
+      AND NOT EXISTS (SELECT 1 FROM events retired WHERE retired.event_key='review-watch-retired:' || json_extract(e.payload_json,'$.taskId') || ':' || json_extract(e.payload_json,'$.prNumber'))
+      ORDER BY e.event_id DESC LIMIT ?`, (s) => s.all(Math.max(1, Math.min(128, Math.trunc(limit)))))
+      .map((row) => JSON.parse(String((row as { payload_json: string }).payload_json))));
+  }
+
+  /** Retire an observed closed PR without deleting its canonical review ledger. */
+  retireReviewWatch(taskId: string, prNumber: number): void {
+    this.transaction((db) => {
+      const key = `review-watch-retired:${taskId}:${prNumber}`;
+      statement(db, 'INSERT OR IGNORE INTO events(task_id,event_key,kind,payload_json,occurred_at) VALUES (?,?,?,?,?)', (s) => s.run(
+        taskId, key, 'review_watch_retired', json({ prNumber }), now(),
+      ));
+    });
+  }
+
+  listPendingReviewNotices(limit = 32): Array<{ eventKey: string; notice: WorkflowSupervisorReviewNotice }> {
+    return this.read((db) => statement(db, `SELECT e.event_key,e.payload_json FROM events e
+      WHERE e.kind='review_notice_observed'
+      AND NOT EXISTS (SELECT 1 FROM events used WHERE used.event_key='review-wake:' || e.event_key)
+      AND NOT EXISTS (SELECT 1 FROM events terminal WHERE terminal.task_id=e.task_id AND terminal.kind IN ('terminal_done','terminal_needs_user','terminal_stopped'))
+      ORDER BY e.event_id LIMIT ?`, (s) => s.all(Math.max(1, Math.min(Math.trunc(limit), 128))))
+      .map((record) => {
+        const row = record as { event_key: string; payload_json: string };
+        return { eventKey: row.event_key, notice: JSON.parse(row.payload_json) as WorkflowSupervisorReviewNotice };
+      }));
+  }
+
   listTasksWithoutCausalObligation(limit = 16): WorkflowSupervisorTask[] {
     const boundedLimit = Math.max(1, Math.min(Math.trunc(limit), 128));
     return this.read((db) => statement(db, `SELECT t.* FROM tasks t
@@ -1860,7 +1938,7 @@ export class WorkflowSupervisorStore {
     });
   }
 
-  commitCompletion(input: WorkflowSupervisorCompletion, successor?: { effectId: string; kind: WorkflowEffectKind; prompt: string; freshEnrollmentPrompt?: string }): { completion: WorkflowSupervisorCompletion; successorEffect?: WorkflowSupervisorEffect; deduplicated: boolean } {
+  commitCompletion(input: WorkflowSupervisorCompletion, successor?: { effectId: string; kind: WorkflowEffectKind; prompt: string; freshEnrollmentPrompt?: string; reviewEventKeys?: string[] }): { completion: WorkflowSupervisorCompletion; successorEffect?: WorkflowSupervisorEffect; deduplicated: boolean } {
     return this.transaction((db) => {
       const task = statement(db, 'SELECT 1 AS ok FROM tasks WHERE task_id = ?', (s) => s.get(input.taskId));
       if (!task) throw new Error('WORKFLOW_SUPERVISOR_TASK_UNKNOWN');
@@ -1937,6 +2015,16 @@ export class WorkflowSupervisorStore {
             sourceCompletionFingerprint: input.completionFingerprint,
             prompt: rotate ? successor.freshEnrollmentPrompt! : successor.prompt,
           });
+          // Attach already-journaled notices to the SAME causal CONTINUE effect.
+          // If the effect was previously reserved, never rewrite its prompt.
+          for (const reviewKey of successor.reviewEventKeys ?? []) {
+            const observed = statement(db, "SELECT task_id FROM events WHERE event_key=? AND kind='review_notice_observed'", (s) => s.get(reviewKey)) as { task_id?: string } | undefined;
+            if (observed?.task_id !== input.taskId) throw new Error('WORKFLOW_SUPERVISOR_REVIEW_NOTICE_TASK_MISMATCH');
+            statement(db, 'INSERT OR IGNORE INTO events(task_id,event_key,kind,effect_id,completion_fingerprint,payload_json,occurred_at) VALUES (?,?,?,?,?,?,?)', (s) => s.run(
+              input.taskId, `review-wake:${reviewKey}`, 'review_wake_reserved', successorEffect!.effectId,
+              input.completionFingerprint, json({ observed: reviewKey, via: 'existing_continue' }), now(),
+            ));
+          }
           if (rotate) {
             const sourceConversationId = currentTask.conversationId;
             const bootstrapConversationId = `bootstrap:${input.taskId}`;
