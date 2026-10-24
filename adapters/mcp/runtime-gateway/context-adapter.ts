@@ -16,7 +16,7 @@ import { CONTROLLER_CONTEXT_IMPACT_DOMAINS, type ControllerContextImpactDomain }
 import { buildControllerContextPackInSidecar } from "../../../src/runtime/context/context-pack-process";
 import { isCodeShapedTerm } from "../../../src/cli/controller/context/query-planning";
 import { listControllerChecks } from "../../../src/cli/controller/check-runner";
-import { getAssistantPluginManifest, getControllerPluginManifest, listAssistantPluginManifests, listControllerPluginManifests } from "../../../src/runtime/plugins/store";
+import { getAssistantPluginManifest, getAssistantPluginManifestForAction, getControllerPluginManifest, listAssistantPluginManifests, listControllerPluginManifests } from "../../../src/runtime/plugins/store";
 import { allowedFacadeOperations, buildFacadeResult, listCapabilityDescriptors, getCapabilityDescriptor, getCoreCapabilityExecutionSchema, getPluginActionCapabilitySchema, searchCapabilityDescriptors, summarizeCapabilityGroups, listHandoffAttentionItems, listHandoffItems, normalizeCheckIds, summarizeHandoffItem, buildWorkContinuationSnapshot, getPlanContract, planSemanticView, FACADE_TOOLS } from "../../../src/runtime/control-plane/facade";
 import { currentTaskLineageWorkIds, currentTaskSemanticProjectionForWork, getWorkContract, readActiveWorkCandidates, readWorkContractStore, workSemanticView, type InvalidActiveWorkCandidate, type WorkContract } from "../../../packages/kernel/work/api/index";
 import { readRequirement, requirementSemanticView } from '../../../src/runtime/control-plane/persistence/requirement-store';
@@ -835,7 +835,12 @@ export async function callContextAdapter(ctx: MultiRepositoryMcpToolContext, nam
       const manifests = pluginMatch ? (() => {
         const pluginId = pluginMatch[1];
         try {
-          return [getAssistantPluginManifest(ctx.controllerHome, repository, pluginId)];
+          const actionId = pluginMatch[2];
+          // Exact iPhone action schemas do not require the unrelated Controller
+          // legacy migration. All other capability reads keep the usual path.
+          return [pluginId === 'computer' && actionId.startsWith('physical_device_')
+            ? getAssistantPluginManifestForAction(ctx.controllerHome, repository, { pluginId, actionId })
+            : getAssistantPluginManifest(ctx.controllerHome, repository, pluginId)];
         } catch (error) {
           if (!(error instanceof Error) || !error.message.startsWith('PLUGIN_NOT_FOUND:')) throw error;
         }
