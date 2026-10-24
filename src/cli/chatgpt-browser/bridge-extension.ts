@@ -55,11 +55,12 @@ function forgeSendButton() {
 }
 
 async function forgePost(path, payload) {
-  await fetch(FORGE_CHATGPT_BRIDGE_URL + path, {
+  const response = await fetch(FORGE_CHATGPT_BRIDGE_URL + path, {
     method: 'POST',
     headers: forgeAuthHeaders({'content-type': 'application/json'}),
     body: JSON.stringify(payload),
   }).catch(() => undefined);
+  return response?.ok === true;
 }
 
 async function forgeJson(path) {
@@ -96,7 +97,7 @@ async function forgeWaitForComposer(timeoutMs) {
   return null;
 }
 
-async function forgeSubmitPrompt(prompt) {
+async function forgeSubmitPrompt(prompt, markMutationAttempted) {
   const composer = await forgeWaitForComposer(30000);
   if (!composer) throw new Error('ChatGPT composer is not visible');
   composer.focus();
@@ -117,9 +118,11 @@ async function forgeSubmitPrompt(prompt) {
   await forgeSleep(300);
   const button = forgeSendButton();
   if (button) {
+    markMutationAttempted();
     button.click();
     return;
   }
+  markMutationAttempted();
   composer.dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', code: 'Enter', bubbles: true}));
   composer.dispatchEvent(new KeyboardEvent('keyup', {key: 'Enter', code: 'Enter', bubbles: true}));
 }
@@ -212,10 +215,12 @@ async function forgeWaitForAssistant(timeoutMs) {
 }
 
 async function forgeRunTask(task) {
-  await forgePost('/api/extension/task-started', {taskId: task.id, url: location.href});
+  // Do not click Send until the server knows this task may have mutated ChatGPT.
+  if (!await forgePost('/api/extension/task-started', {taskId: task.id, url: location.href})) return;
+  let mutationAttempted = false;
   try {
     const initialUserMessageCount = document.querySelectorAll(FORGE_CHATGPT_USER).length;
-    await forgeSubmitPrompt(task.prompt);
+    await forgeSubmitPrompt(task.prompt, () => { mutationAttempted = true; });
     // A send attempt must be observed before either capture or dispatch-only acknowledgement.
     // Never re-click or synthesize Enter after an unconfirmed attempt.
     const confirmation = await forgeWaitForSubmission(Math.min(task.timeoutMs || 10000, 10000), location.href, task.prompt, initialUserMessageCount);
@@ -237,15 +242,19 @@ async function forgeRunTask(task) {
       },
     });
   } catch (error) {
+    // A timed-out DOM fingerprint is not proof that the user message was not sent.
+    // After physical submission, only observation can authorize a new dispatch.
     await forgePost('/api/extension/result', {
       taskId: task.id,
       status: 'failed',
       output: String(error),
       conversationUrl: location.href,
       error: {
-        code: 'CHATGPT_BRIDGE_TASK_FAILED',
+        code: mutationAttempted ? 'CHATGPT_BRIDGE_MUTATION_OUTCOME_UNKNOWN' : 'CHATGPT_BRIDGE_TASK_FAILED',
         message: String(error),
-        recovery: 'Open ChatGPT in the authorized profile, verify the composer is visible, then retry.',
+        recovery: mutationAttempted
+          ? 'Do not replay blindly; inspect the exact ChatGPT conversation and reconcile the outbound message.'
+          : 'Open ChatGPT in the authorized profile and verify the composer is visible before retrying.',
       },
     });
   }

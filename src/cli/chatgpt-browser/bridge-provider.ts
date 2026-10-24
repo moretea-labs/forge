@@ -616,6 +616,21 @@ export async function runBridgeProvider(input: BrowserConsultInput, bundle: Prom
       await sleep(500);
     }
 
+    // A started task can have clicked Send even when its confirmation or result
+    // callback was lost. Never turn transport silence into replay permission.
+    if (state.started) {
+      return {
+        status: 'failed',
+        output: 'ChatGPT bridge task started but produced no conclusive result before timeout.',
+        conversationUrl: state.heartbeat?.url,
+        error: {
+          code: 'CHATGPT_BRIDGE_MUTATION_OUTCOME_UNKNOWN',
+          message: 'ChatGPT bridge began the task but submission and capture outcome remain unconfirmed',
+          recovery: 'Do not replay blindly; inspect the exact ChatGPT conversation and reconcile the outbound message.',
+        },
+      };
+    }
+
     const heartbeatFresh = state.heartbeat && Date.now() - state.heartbeat.receivedAt < 15_000;
     if (!heartbeatFresh) {
       return {
@@ -641,19 +656,9 @@ export async function runBridgeProvider(input: BrowserConsultInput, bundle: Prom
         `Composer visible: ${state.heartbeat?.composerVisible === true ? 'yes' : 'no'}`,
       ].join('\n'),
       error: {
-        code: input.dispatchOnly === true && state.started
-          ? 'CHATGPT_BRIDGE_MUTATION_OUTCOME_UNKNOWN'
-          : state.started
-            ? 'CHATGPT_BRIDGE_RESULT_TIMEOUT'
-            : 'CHATGPT_BRIDGE_TASK_NOT_CLAIMED',
-        message: input.dispatchOnly === true && state.started
-          ? 'ChatGPT bridge started the dispatch task but did not prove the submission postcondition before timeout'
-          : state.started
-            ? 'ChatGPT bridge task did not finish before timeout'
-            : 'ChatGPT bridge extension did not claim the task before timeout',
-        recovery: input.dispatchOnly === true && state.started
-          ? 'Do not replay blindly; inspect the target ChatGPT conversation before retrying.'
-          : 'Keep the ChatGPT tab active with the composer visible, then retry with a longer --timeout-ms.',
+        code: 'CHATGPT_BRIDGE_TASK_NOT_CLAIMED',
+        message: 'ChatGPT bridge extension did not claim the task before timeout',
+        recovery: 'Keep the ChatGPT tab active with the composer visible, then retry with a longer --timeout-ms.',
       },
     };
   } finally {
