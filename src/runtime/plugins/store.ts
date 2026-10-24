@@ -1613,7 +1613,8 @@ export function readPluginActionReceiptForRequest(
   if (!scopeKey) throw new Error('PLUGIN_RECEIPT_REQUEST_SCOPE_CORRUPT');
   if (repositoryPhone && scopeKey !== repositoryAction.repoId) throw new Error(`REQUEST_ID_SCOPE_CONFLICT: ${requestId}`);
   const receipt = readPluginActionReceipt(controllerHome, scopeKey, index.receiptId);
-  if (!receipt || receipt.requestId !== requestId || receipt.semanticKey !== index.semanticKey) throw new Error('PLUGIN_RECEIPT_LOST');
+  if (!receipt || receipt.receiptId !== index.receiptId || receipt.requestId !== requestId
+    || receipt.semanticKey !== index.semanticKey) throw new Error('PLUGIN_RECEIPT_LOST');
   if (repositoryPhone && (receipt.scopeKey !== repositoryAction.repoId
     || receipt.pluginId !== repositoryAction.pluginId || receipt.actionId !== repositoryAction.actionId)) {
     throw new Error(`REQUEST_ID_SCOPE_CONFLICT: ${requestId}`);

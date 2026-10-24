@@ -128,7 +128,7 @@ describe('Controller-global historical receipt migration', () => {
     const phoneSemantic = `plugin-action:${oldScope}:computer:physical_device_open:12345`;
     const phoneReceipt = { ...oldReceipt, receiptId: phoneReceiptId, requestId: phoneId,
       pluginId: 'computer', actionId: 'physical_device_open', semanticKey: phoneSemantic,
-      status: 'failed', effectOutcome: 'unknown' };
+      status: 'failed', effectOutcome: 'outcome_unknown' };
     const phoneSource = join(receiptRoot, `${phoneReceiptId}.json`);
     const phoneIndex = join(indexRoot, `${createHash('sha256').update(phoneId).digest('hex')}.json`);
     writeFileSync(phoneSource, JSON.stringify(phoneReceipt));
@@ -141,6 +141,9 @@ describe('Controller-global historical receipt migration', () => {
     expect(readFileSync(phoneIndex, 'utf8')).toBe(beforeIndex);
     const phoneContext = { repoId: oldScope, pluginId: 'computer', actionId: 'physical_device_open' };
     expect(readPluginActionReceiptForRequest(home, phoneId, phoneContext)).toMatchObject(phoneReceipt);
+    writeFileSync(phoneSource, JSON.stringify({ ...phoneReceipt, receiptId: 'PLG-corrupt-identity' }));
+    expect(() => readPluginActionReceiptForRequest(home, phoneId, phoneContext)).toThrow('PLUGIN_RECEIPT_LOST');
+    writeFileSync(phoneSource, beforeReceipt);
     expect(() => readPluginActionReceiptForRequest(home, phoneId, { ...phoneContext, repoId: 'other-repo' }))
       .toThrow('REQUEST_ID_SCOPE_CONFLICT');
     expect(() => readPluginActionReceiptForRequest(home, phoneId, { ...phoneContext, actionId: 'physical_device_tap' }))
