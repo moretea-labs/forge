@@ -4336,11 +4336,9 @@ async function installReleaseSessionCandidateService(
   if (process.platform === 'linux') {
     const env = runtimeAuthorityFreeEnvironment(process.env);
     writePackageRuntimeSystemdUserService(home, env);
-    for (const argv of systemdRuntimeInstallCommands(forgeRuntimeServicePaths(home).label)) {
-      const [executable, ...args] = argv;
-      if (!executable) continue;
-      const result = await runCommand(executable, args, 20_000);
-      if (!result.ok) throw new Error(`RELEASE_SESSION_CANDIDATE_SYSTEMD_INSTALL_FAILED: ${result.stderr || result.stdout || executable}`);
+    for (const args of systemdRuntimeInstallCommands(forgeRuntimeServicePaths(home).label)) {
+      const result = await runCommand('systemctl', args, 20_000);
+      if (!result.ok) throw new Error(`RELEASE_SESSION_CANDIDATE_SYSTEMD_INSTALL_FAILED: ${result.stderr || result.stdout || 'systemctl'}`);
     }
     return;
   }
