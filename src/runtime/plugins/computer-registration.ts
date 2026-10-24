@@ -103,7 +103,15 @@ function targetBoundDescriptor(actionId: string): AssistantPluginActionDescripto
       schema.required = schema.required.map((value) => value === 'interaction_id' ? 'target_id' : value);
     }
   }
-  return { ...descriptor, argumentsSchema: schema };
+  // Desktop screenshot returns a bounded artifact path, not inline image bytes.
+  // Keep this read-only capture in the canonical Runtime so repeated calls reuse
+  // the existing Computer provider and one-time Controller migration. The same
+  // durable grant, receipt and target-ownership checks still execute.
+  return {
+    ...descriptor,
+    argumentsSchema: schema,
+    ...(actionId === 'desktop_screenshot' ? { executionMode: 'runtime' as const } : {}),
+  };
 }
 
 export interface ProtectedConsoleUnlockPreparationInput {
