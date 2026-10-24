@@ -805,7 +805,7 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     expect(completion.successorEffect?.prompt).toContain('[UNVERIFIED STALE_HEAD]');
     expect(completion.successorEffect?.prompt).toContain('NOT ACCEPTANCE');
     expect(completion.successorEffect?.prompt).toContain('REVISE');
-    expect(completion.successorEffect?.prompt).toContain('same PR/branch');
+    expect(completion.successorEffect?.prompt).toContain('SAME PR/branch');
     expect(store.listPendingReviewNotices()).toHaveLength(0);
     const after = await control.observeAssistantTurn({
       taskId: task.taskId, conversationId: task.conversationId,
