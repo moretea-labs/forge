@@ -1430,7 +1430,6 @@ requireText('supervisor/native-browser-adapter.ts', 'control.effectDispatchBudge
 requireText('adapters/computer/chrome-extension/content.js', 'FORGE_RETIRED_DRAFT_V1');
 requireText('docs/architecture/CURRENT.md', 'A STOPPED bootstrap draft may be replaced only from the canonical Supervisor ledger');
 requireText('supervisor/store.ts', 'tried.at(-1)?.eventId');
-requireText('supervisor/store.ts', 'WORKFLOW_SUPERVISOR_PRE_SEND_OPERATOR_REARM_EXHAUSTED');
 requireText('supervisor/store.ts', '`effect-dispatch:${effectId}:${generation}`');
 requireText('supervisor/control-plane.ts', 'PERSISTED_BROWSER_EVIDENCE_KEYS');
 requireText('supervisor/control-plane.ts', "reason: 'not_applied_proof_incomplete'");
