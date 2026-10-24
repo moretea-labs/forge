@@ -17,11 +17,9 @@ import { isTerminalSemanticWorkState } from '../facade/types';
 import { updateExecutionSession, type ExecutionSessionContext } from './session-store';
 import { currentPermissionSnapshotVersion, validateWorkHandle, workHandlePlacementLoss } from './validation';
 import { withWorkPrepareRequest } from './work-prepare-request-store';
-import { listWorkHandles, markWorkHandleFailed, newWorkId, readWorkHandle, relocateWorkHandlePlacementAtomically, writeWorkHandle, type WorkFinalizationStages, type WorkHandleState } from './work-handle-store';
+import { listWorkHandles, markWorkHandleFailed, newWorkId, readWorkHandle, relocateWorkHandlePlacementAtomically, writeWorkHandle, listWorkHandlesFailClosed, type WorkFinalizationStages, type WorkHandleState } from './work-handle-store';
 import { createGoalDelegation } from '../governance/authorization';
 import { compactHandle, contractFor, findWorkHandle, gitHead, gitIsAncestor, identityFor, requireSession } from './work-execution-support';
-import { createLightweightSession, shouldUseLightweightMode } from './lightweight-session';
-import { getCachedGitStatus, createDelayedValidation } from './validation-optimization';
 
 function requireExplicitRepoId(args: Record<string, unknown>): string {
   const value = typeof args.repo_id === 'string' ? args.repo_id.trim() : '';
@@ -80,78 +78,6 @@ function invalidateActiveWork(ctx: McpExecutionContext, session: ExecutionSessio
   if (contract?.semanticState === 'completed') return;
   markWorkHandleFailed(ctx.controllerHome, handle, reason);
 }
-
-/**
- * Prepare a lightweight work session for simple reuse operations.
- *
- * This fast path skips WorkHandle/WorkContract creation and provides
- * minimal state tracking for operations on the current branch.
- *
- * Use when:
- * - isolation=reuse (working on current branch)
- * - No existing work_id (not resuming)
- * - Simple edits/commands
- *
- * Benefits:
- * - ~10x faster than full Work preparation
- * - Minimal state persistence
- * - No worktree/branch overhead
- */
-function prepareLightweightSession(
-  ctx: McpExecutionContext,
-  session: ExecutionSessionContext,
-  repository: ReturnType<typeof selectedRepository>,
-  args: Record<string, unknown>,
-): Record<string, unknown> {
-  // 1. Basic validation
-  const baseStatus = repositoryGitStatus(repository);
-  if (!baseStatus.branch) {
-    throw new Error('LIGHTWEIGHT_SESSION_DETACHED_HEAD: lightweight mode requires a branch');
-  }
-  if (!baseStatus.head) {
-    throw new Error('LIGHTWEIGHT_SESSION_NO_HEAD: repository has no commits');
-  }
-
-  // 2. Record baseline (for later diff/rollback)
-  const baselineDirtyPaths = baseStatus.clean ? undefined : [...currentDirtyPaths(repository.canonicalRoot)];
-
-  // 3. Create lightweight session
-  const lightSession = createLightweightSession(ctx.controllerHome, {
-    sessionId: session.sessionId,
-    repoId: repository.repoId,
-    checkoutId: repository.activeCheckoutId,
-    branch: baseStatus.branch,
-    baselineHead: baseStatus.head,
-    baselineDirtyPaths,
-  });
-
-  // 4. Bind to ExecutionSession (minimal update)
-  const policy = readRepositoryAccessPolicy(ctx.controllerHome, repository.repoId);
-  const nextSession = updateExecutionSession(ctx.controllerHome, identityFor(ctx, args), {
-    activeRepositoryId: repository.repoId,
-    activeCheckoutId: repository.activeCheckoutId,
-    // No activeWorkId - lightweight sessions aren't full Work
-    permissionSnapshotVersion: policy.revision,
-    lastValidatedAt: new Date().toISOString(),
-  });
-
-  return {
-    session: nextSession,
-    mode: 'lightweight',
-    checkout: {
-      repoId: repository.repoId,
-      checkoutId: repository.activeCheckoutId,
-      branch: baseStatus.branch,
-      head: baseStatus.head,
-      clean: baseStatus.clean,
-    },
-    baseline: {
-      head: lightSession.baselineHead,
-      dirtyPathCount: lightSession.baselineDirtyPathCount ?? 0,
-    },
-  };
-}
-
 
 export function bindSessionRepository(ctx: McpExecutionContext, args: Record<string, unknown>): Record<string, unknown> {
   const session = requireSession(ctx, args);
@@ -492,7 +418,7 @@ function materializeArchivedWorkPlacement(
   if (checkout.activeCheckoutId !== workspaceCheckoutId || checkout.canonicalRoot !== workspaceRoot) {
     throw new Error('WORK_HANDLE_RECOVERY_SUCCESSOR_CHECKOUT_NOT_SELECTED');
   }
-  const competing = listWorkHandles(ctx.controllerHome, repository.repoId).filter((handle) =>
+  const competing = listWorkHandlesFailClosed(ctx.controllerHome, repository.repoId).filter((handle) =>
     handle.workId !== sourceHandle.workId
     && handle.workId !== targetWorkHandleId
     && LIVE_RECOVERY_HANDLE_STATES.has(handle.state)
@@ -857,9 +783,9 @@ export function prepareWork(ctx: McpExecutionContext, args: Record<string, unkno
   const session = requireSession(ctx, args);
   const repository = selectedRepository(ctx, session, args, true);
 
-  // Fast path: lightweight session for simple reuse operations
-  if (shouldUseLightweightMode(args)) {
-    return prepareLightweightSession(ctx, session, repository, args);
+  // Retired opt-in must not silently create a durable Work for an ordinary edit.
+  if (args.lightweight === true) {
+    throw new Error('WORK_PREPARE_LIGHTWEIGHT_RETIRED: use begin_edit_session or execute_command without work_prepare');
   }
 
   // Prepare only after all applicable validation; each successful branch binds
@@ -942,21 +868,19 @@ export function prepareWork(ctx: McpExecutionContext, args: Record<string, unkno
   const needsDependencies = args.needs_dependencies === true;
   const baseCheckoutId = repository.activeCheckoutId;
 
-  // Optimization: use cached Git status for reuse mode
   const useWorktree = isolation !== 'reuse';
-  const baseStatus = useWorktree ? repositoryGitStatus(repository) : getCachedGitStatus(repository);
+  // Placement and dirty-baseline evidence must reflect this preparation request.
+  const baseStatus = repositoryGitStatus(repository);
 
   // A new Work defaults to an isolated checkout of fetched integration main.
   // Explicit reuse still permits a current-checkout direct edit.
   const deliveryTargetBranch = useWorktree ? repository.defaultBranch : baseStatus.branch;
   if (!deliveryTargetBranch) throw new Error(`WORK_DELIVERY_TARGET_DETACHED: source checkout ${baseCheckoutId} has no branch`);
 
-  // Optimization: skip expensive integration checkout validation for reuse mode
-  const validation = createDelayedValidation(args, session);
-  const integrationCheckouts = (useWorktree && !validation.skipIntegrationChecks) ? repository.checkouts.filter((checkout) =>
+  const integrationCheckouts = useWorktree ? repository.checkouts.filter((checkout) =>
     repositoryCheckoutLifecycle(checkout) === 'active' && checkout.branch === repository.defaultBranch,
   ) : [];
-  if (useWorktree && integrationCheckouts.length !== 1 && !validation.skipIntegrationChecks) {
+  if (useWorktree && integrationCheckouts.length !== 1) {
     throw new Error(`WORK_DELIVERY_MAIN_CHECKOUT_UNPROVEN: ${repository.defaultBranch}; candidates=${integrationCheckouts.length}`);
   }
   const deliveryCheckoutId = useWorktree ? integrationCheckouts[0]!.checkoutId : baseCheckoutId;
