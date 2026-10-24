@@ -167,7 +167,11 @@ export function assertCanonicalRepositoryMutationWorkHandleAvailable(input: {
     recoverableProcessWorkIds,
   };
 
-  const owners = listWorkHandles(input.controllerHome, input.repositoryId, 5_000)
+  const scannedHandles = listWorkHandles(input.controllerHome, input.repositoryId, 5_000);
+  // SQLite caps this inventory at 5,000. Reaching the cap cannot prove
+  // absence of a newer physical Writer; reject rather than infer availability.
+  if (scannedHandles.length === 5_000) throw new Error('WORK_HANDLE_OWNERSHIP_SCAN_INCOMPLETE');
+  const owners = scannedHandles
     .filter((handle) => handle.workId !== input.workId
       && DURABLE_CANONICAL_MUTATION_OWNER_STATES.has(handle.state)
       && workHandleRetainsCanonicalMutationOwnership({
@@ -241,7 +245,9 @@ export function resolveActiveWorkHandle(
   const ACTIVE_STATES = new Set<WorkHandleState['state']>(['prepared', 'editing', 'validating', 'committed', 'merged']);
   // Even a live direct Handle must compete with any successor on the same
   // checkout. An early return would silently admit two physical Writers.
-  const candidates = listWorkHandles(controllerHome, repositoryId, 5_000)
+  const scannedHandles = listWorkHandles(controllerHome, repositoryId, 5_000);
+  if (scannedHandles.length === 5_000) throw new Error('WORK_HANDLE_OWNERSHIP_SCAN_INCOMPLETE');
+  const candidates = scannedHandles
     .filter((handle) =>
       (handle.workId === workId || handle.workContractId === workId)
       && handle.checkoutId === canonicalCheckoutId

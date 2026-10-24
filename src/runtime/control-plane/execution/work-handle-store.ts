@@ -418,9 +418,11 @@ export function relocateWorkHandlePlacementAtomically(
         || row.value.expectedHead !== prior.expectedHead) {
       throw new Error('WORK_RELOCATION_HANDLE_CAS_CONFLICT');
     }
-    const competing = listControlPlaneRecordsWithinTransaction<WorkHandleState>(database, {
+    const scannedHandles = listControlPlaneRecordsWithinTransaction<WorkHandleState>(database, {
       namespace: 'execution_work_handle', scope: prior.repositoryId, limit: 5000,
-    }).some((entry) => entry.value.workId !== prior.workId && entry.value.checkoutId === target.checkoutId
+    });
+    if (scannedHandles.length === 5000) throw new Error('WORK_HANDLE_OWNERSHIP_SCAN_INCOMPLETE');
+    const competing = scannedHandles.some((entry) => entry.value.workId !== prior.workId && entry.value.checkoutId === target.checkoutId
       && entry.value.state !== 'cleaned');
     if (competing) throw new Error('WORK_RELOCATION_TARGET_OWNED');
     const { recordRevision: _revision, ...persisted } = moved;
