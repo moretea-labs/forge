@@ -808,8 +808,28 @@ export function searchRepositoryMany(
     if (info.size > policy.maxFileBytes) { skippedLargeFiles += 1; continue; }
     authorizedCandidatePaths.push(path);
   }
+  // Known-file queries can use one rg pass for both broad recall and exact
+  // symbols. Only re-scan exact needles when a file saturates rg's per-file
+  // hit cap, since broad terms could otherwise hide later symbol evidence.
+  const boundedScopedSearch = directCandidates !== undefined
+    && authorizedCandidatePaths.length <= 4
+    && completionMode === 'per_query'
+    && requiredQueries.length > 0
+    && requiredQueries.length <= 2;
+  const scopedHits = boundedScopedSearch && authorizedCandidatePaths.length
+    ? ripgrepCandidateLines(repoRoot, authorizedCandidatePaths, queries, opts.caseSensitive === true, maxResultsPerQuery, skippedBinaryPaths)
+    : null;
+  const saturatedBroadPath = scopedHits !== null && [...scopedHits.values()].some(
+    (lines) => lines.length >= Math.min(Math.max(maxResultsPerQuery, 32), 500),
+  );
   const exactHits = authorizedCandidatePaths.length && requiredQueries.length
-    ? ripgrepCandidateLines(repoRoot, authorizedCandidatePaths, requiredQueries, opts.caseSensitive === true, maxResultsPerQuery, skippedBinaryPaths)
+    ? scopedHits !== null && !saturatedBroadPath
+      ? new Map([...scopedHits].flatMap(([path, lines]) => {
+          const requiredLines = lines.filter(({ text }) => requiredQueries.some((needle) =>
+            opts.caseSensitive ? text.includes(needle) : text.toLowerCase().includes(needle.toLowerCase())));
+          return requiredLines.length ? [[path, requiredLines] as const] : [];
+        }))
+      : ripgrepCandidateLines(repoRoot, authorizedCandidatePaths, requiredQueries, opts.caseSensitive === true, maxResultsPerQuery, skippedBinaryPaths)
     : null;
   const hasRequiredHit = (needle: string): boolean => exactHits !== null
     && [...exactHits.values()].some((lines) => lines.some(({ text }) => exactCodeNeedleMatches(
@@ -829,9 +849,9 @@ export function searchRepositoryMany(
     && requiredQueries.some(hasRequiredHit);
   const hitsByPath = exactSearchSatisfied || partialKnownScopeSatisfied
     ? exactHits!
-    : authorizedCandidatePaths.length
+    : scopedHits ?? (authorizedCandidatePaths.length
       ? ripgrepCandidateLines(repoRoot, authorizedCandidatePaths, queries, opts.caseSensitive === true, maxResultsPerQuery, skippedBinaryPaths)
-      : new Map<string, Array<{ line: number; text: string }>>();
+      : new Map<string, Array<{ line: number; text: string }>>());
   if (exactHits && !exactSearchSatisfied && !partialKnownScopeSatisfied) {
     // Missing one required symbol must not let broad matches erase another.
     for (const [path, requiredLines] of exactHits) {
