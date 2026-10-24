@@ -378,6 +378,10 @@ export function buildControllerContextPack(
     && structuralMode === "off"
     && impactDomains.length === 0
     && searchIncludeGlobs.length === 0;
+  // Two source windows cannot guarantee coverage for three or more independent
+  // authored symbols. Preserve the old scoped path in those cases rather than
+  // replacing already-correct early evidence with a partial late selection.
+  const useBoundedExactWindows = scopedExactKnownFileSearch && requiredSearchQueries.length <= 2;
   const scopedRequiredHitLines = new Map<string, Array<{ line: number; query: string }>>();
 
   // Lexical retrieval is one bounded pass across candidate files for all terms.
@@ -395,8 +399,9 @@ export function buildControllerContextPack(
       maxFiles: scopedExactKnownFileSearch ? exactKnownFiles.length : MAX_TOTAL_SEARCHED_FILES,
       caseSensitive: false,
       cacheKey: JSON.stringify({ head: git.head, status: git.status, diffStat: git.diffStat }),
-      // Scoped implementation files still need an exact-code first pass.
-      requiredQueries: requiredSearchQueries,
+      // Preserve the baseline for requests with more exact owners than the
+      // bounded two-window selection can represent without new budget proof.
+      requiredQueries: !scopedExactKnownFileSearch || useBoundedExactWindows ? requiredSearchQueries : [],
       ...(!scopedExactKnownFileSearch ? {
         completionMode: 'discovery' as const,
         discoveryTargetFiles: Math.max(maxFiles * 2, 12),
@@ -413,7 +418,7 @@ export function buildControllerContextPack(
     for (const hit of search.results) {
       if (!coveredByGlob(hit.path, searchIncludeGlobs) || excludeGlobs.some((glob) => globMatches(glob, hit.path))) continue;
       if (candidates.size >= maxFiles * 3 && !candidates.has(hit.path) && !requiredSearchQueries.includes(hit.query)) continue;
-      if (scopedExactKnownFileSearch && requiredSearchQueries.includes(hit.query)) {
+      if (useBoundedExactWindows && requiredSearchQueries.includes(hit.query)) {
         const exactLines = scopedRequiredHitLines.get(hit.path) ?? [];
         exactLines.push({ line: hit.line, query: hit.query });
         scopedRequiredHitLines.set(hit.path, exactLines);
