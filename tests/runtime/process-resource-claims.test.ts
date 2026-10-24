@@ -4,7 +4,7 @@ import {
   claimsForRepositoryCommand,
   scopeResourceClaims,
 } from '../../src/runtime/execution/process-runtime/resource-claims';
-import { claimsConflict, resourceKeysOverlap } from '../../src/runtime/resources/claims/conflicts';
+import { claimsConflict } from '../../src/runtime/resources/claims/conflicts';
 import type { ExecutionLease } from '../../src/runtime/resources/leases/types';
 import { claimsForAssistantPluginAction } from '../../src/runtime/plugins/store';
 import type { AssistantPluginActionDescriptor } from '../../src/runtime/plugins/types';
@@ -12,28 +12,6 @@ import type { AssistantPluginActionDescriptor } from '../../src/runtime/plugins/
 function lease(resourceKey: string, mode: 'read' | 'write' | 'exclusive'): ExecutionLease {
   return { resourceKey, mode } as ExecutionLease;
 }
-
-describe('Git refs lease repository boundaries', () => {
-  test('separate repository refs do not serialize; same repository or legacy unscoped ref still conflicts', () => {
-    expect(resourceKeysOverlap('git-refs:repo-a', 'git-refs:repo-b')).toBe(false);
-    expect(claimsConflict(
-      { resourceKey: 'git-refs:repo-a', mode: 'exclusive' },
-      lease('git-refs:repo-b', 'exclusive'),
-    )).toBe(false);
-    expect(claimsConflict(
-      { resourceKey: 'git-refs:repo-a', mode: 'exclusive' },
-      lease('git-refs:repo-a', 'exclusive'),
-    )).toBe(true);
-    expect(claimsConflict(
-      { resourceKey: 'git-refs:repo-a', mode: 'read' },
-      lease('git-refs:repo-a', 'read'),
-    )).toBe(false);
-    expect(claimsConflict(
-      { resourceKey: 'git-refs:repo-a', mode: 'exclusive' },
-      lease('git-ref:HEAD', 'write'),
-    )).toBe(true);
-  });
-});
 
 describe('Process Runtime fine-grained resource claims', () => {
   test('readonly commands claim workspace read only', () => {
@@ -93,7 +71,7 @@ describe('Process Runtime fine-grained resource claims', () => {
       { reads: ['.'], hostServices: ['canonical-runtime', 'forge-recovery'] },
       'live_controller_home',
     );
-    expect(claims).toContainEqual({ resourceKey: 'release:repo1', mode: 'exclusive' });
+    expect(claims).toContainEqual({ resourceKey: 'release:runtime-authority', mode: 'exclusive' });
     expect(claims).toContainEqual({ resourceKey: 'host-service:canonical-runtime', mode: 'write' });
     expect(claims).toContainEqual({ resourceKey: 'host-service:forge-recovery', mode: 'write' });
     expect(claims).toContainEqual({ resourceKey: 'workspace:co1', mode: 'read' });
@@ -161,10 +139,14 @@ describe('Process Runtime fine-grained resource claims', () => {
     expect(claims).toContainEqual({ resourceKey: 'path:co1:src', mode: 'read' });
     expect(claims).toContainEqual({ resourceKey: 'path:co1:reports', mode: 'write' });
     expect(claims).toContainEqual({ resourceKey: 'build-cache:repo1', mode: 'write' });
-    expect(claims).toContainEqual({ resourceKey: 'temp:repo1:custom-report', mode: 'write' });
+    expect(claims).toContainEqual({ resourceKey: 'temp:co1:custom-report', mode: 'write' });
     expect(claims).toContainEqual({ resourceKey: 'git-index:co1', mode: 'read' });
     expect(claims).toContainEqual({ resourceKey: 'git-refs:repo1', mode: 'read' });
-    expect(claims).toContainEqual({ resourceKey: 'network:repo1', mode: 'read' });
+    expect(claims.some((claim) => claimsConflict(claim, lease('git-refs:repo2', 'exclusive')))).toBe(false);
+    expect(claims.some((claim) => claimsConflict(claim, lease('git-refs:repo1', 'exclusive')))).toBe(true);
+    expect(claims.some((claim) => claimsConflict(claim, lease('git-ref:HEAD', 'exclusive')))).toBe(true);
+    // Endpoint-free network flags are not a serialized resource; callers declare real hostServices.
+    expect(claims.some((claim) => claim.resourceKey === 'network:repo1')).toBe(false);
     expect(claims).toContainEqual({ resourceKey: 'host-service:ios-simulator-test', mode: 'write' });
     expect(claims.some((claim) => claim.resourceKey === 'workspace:co1')).toBe(false);
   });
@@ -176,7 +158,7 @@ describe('Process Runtime fine-grained resource claims', () => {
     const typecheck = claimsForCheck('package:check:type', ['bun', 'run', 'check:type'], 'repo1', 'co-type');
 
     expect(browserA).toContainEqual({ resourceKey: 'workspace:co-browser-a', mode: 'read' });
-    expect(browserA).toContainEqual({ resourceKey: 'temp:repo1:package-test-browser-live', mode: 'write' });
+    expect(browserA).toContainEqual({ resourceKey: 'temp:co-browser-a:package-test-browser-live', mode: 'write' });
     expect(browserA).toContainEqual({ resourceKey: 'host-service:browser-live', mode: 'write' });
     expect(browserA.some((claim) => claim.resourceKey === 'build-cache:repo1')).toBe(false);
     expect(browserA.some((claim) => typecheck.some((other) => claimsConflict(claim, lease(other.resourceKey, other.mode))))).toBe(false);

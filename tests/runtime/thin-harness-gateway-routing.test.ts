@@ -118,29 +118,6 @@ afterEach(() => {
   while (roots.length > 0) rmSync(roots.pop()!, { recursive: true, force: true });
 });
 
-test('work_prepare reconciles a stale active-checkout branch before proving the integration checkout', async () => {
-  const fx = fixture();
-  roots.push(fx.root);
-  git(fx.repoRoot, ['switch', '-c', 'metadata-drift']);
-  refreshRepositoryCheckoutGitMetadata(fx.repository.repoId, fx.controllerHome, fx.repository.activeCheckoutId);
-  expect(getRepository(fx.repository.repoId, fx.controllerHome).checkouts.find((checkout) => checkout.checkoutId === fx.repository.activeCheckoutId)?.branch).toBe('metadata-drift');
-  git(fx.repoRoot, ['switch', 'main']);
-
-  const started = await callExecutionTool(fx.ctx, 'session_start', {});
-  const session = (started?.structuredContent as { session: { sessionId: string } }).session;
-  const prepared = await callExecutionTool(fx.ctx, 'work_prepare', {
-    session_id: session.sessionId,
-    repo_id: fx.repository.repoId,
-    request_id: 'prepare-after-active-checkout-branch-drift',
-    objective: 'Prove placement reconciles the active checkout branch.',
-    checks: [],
-    isolation: 'new_worktree',
-  });
-  if (prepared?.isError) throw new Error(JSON.stringify(prepared.structuredContent ?? prepared));
-  expect((prepared?.structuredContent as { work: { deliveryTargetBranch: string } }).work.deliveryTargetBranch).toBe('main');
-  expect(getRepository(fx.repository.repoId, fx.controllerHome).checkouts.find((checkout) => checkout.checkoutId === fx.repository.activeCheckoutId)?.branch).toBe('main');
-});
-
 describe('repository.direct_edit capability', () => {
   test('routes apply through the existing Safe Patch/EditSession owner', async () => {
     const fx = fixture();
@@ -1188,6 +1165,28 @@ describe('repository.git Work delivery', () => {
   });
 
   test('work_prepare durably binds delivery to the exact selected source checkout branch', async () => {
+    {
+      const fx = fixture();
+      roots.push(fx.root);
+      git(fx.repoRoot, ['switch', '-c', 'metadata-drift']);
+      refreshRepositoryCheckoutGitMetadata(fx.repository.repoId, fx.controllerHome, fx.repository.activeCheckoutId);
+      expect(getRepository(fx.repository.repoId, fx.controllerHome).checkouts.find((checkout) => checkout.checkoutId === fx.repository.activeCheckoutId)?.branch).toBe('metadata-drift');
+      git(fx.repoRoot, ['switch', 'main']);
+
+      const started = await callExecutionTool(fx.ctx, 'session_start', {});
+      const session = (started?.structuredContent as { session: { sessionId: string } }).session;
+      const prepared = await callExecutionTool(fx.ctx, 'work_prepare', {
+        session_id: session.sessionId,
+        repo_id: fx.repository.repoId,
+        request_id: 'prepare-after-active-checkout-branch-drift',
+        objective: 'Prove placement reconciles the active checkout branch.',
+        checks: [],
+        isolation: 'new_worktree',
+      });
+      if (prepared?.isError) throw new Error(JSON.stringify(prepared.structuredContent ?? prepared));
+      expect((prepared?.structuredContent as { work: { deliveryTargetBranch: string } }).work.deliveryTargetBranch).toBe('main');
+      expect(getRepository(fx.repository.repoId, fx.controllerHome).checkouts.find((checkout) => checkout.checkoutId === fx.repository.activeCheckoutId)?.branch).toBe('main');
+    }
     const fx = fixture();
     roots.push(fx.root);
     const parentRoot = join(fx.root, 'parent-delivery-checkout');
