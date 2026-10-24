@@ -22,8 +22,9 @@ import type { ManagedProcessRecord } from '../../src/runtime/execution/process-r
 import { callExecutionTool, selectDefaultWorkValidationChecks } from '../../adapters/mcp/runtime-gateway/execution-tools';
 import { ensureManagedWorkspace } from '../../src/runtime/execution/managed-workspace';
 import { cleanupControllerRuntimeState } from '../../src/runtime/control-plane/runtime-cleanup';
+import { cleanupWorkPreservationArtifacts } from '../../src/runtime/control-plane/cleanup-artifact-retention';
 import { collectWorkLifecycleAttention } from '../../src/runtime/control-plane/execution/work-lifecycle-audit';
-import { readControlPlaneRecord, writeControlPlaneRecord } from '../../src/runtime/control-plane/persistence/sqlite-store';
+import { readControlPlaneRecord, withControlPlaneTransaction, writeControlPlaneRecord, writeControlPlaneRecordWithinTransaction } from '../../src/runtime/control-plane/persistence/sqlite-store';
 
 const roots: string[] = [];
 
@@ -1297,6 +1298,32 @@ describe('terminal Work cleanup', () => {
     expect(existsSync(bundlePath)).toBe(true);
     expect(report.removedCleanupArtifactPaths).not.toContain(bundlePath);
     expect(report.cycle.skippedByReason.cleanup_artifact_containment_remote_revision_unavailable).toBeGreaterThan(0);
+
+    // The directory must not become an orphan merely because its real Handle
+    // falls beyond the oldest-first 5,000-row listing boundary.
+    withControlPlaneTransaction(fx.controllerHome, (database) => {
+      for (let index = 0; index < 5_000; index += 1) {
+        const workId = `retention-scan-filler-${String(index).padStart(5, '0')}`;
+        const { recordRevision: _revision, ...filler } = fx.handle;
+        writeControlPlaneRecordWithinTransaction(database, {
+          namespace: 'execution_work_handle', scope: fx.repository.repoId,
+          key: workId, schemaVersion: 1,
+          value: { ...filler, workId, state: 'cleaned', cleanupReceipt: undefined },
+          action: 'retention_test_inventory',
+        });
+      }
+    });
+    const recorded = readWorkHandle(fx.controllerHome, fx.repository.repoId, fx.handle.workId)!;
+    writeWorkHandle(fx.controllerHome, {
+      ...recorded, cleanupReceipt: { ...recorded.cleanupReceipt!, complete: false },
+    });
+    const boundedReport = cleanupWorkPreservationArtifacts(fx.controllerHome, {
+      repositoryIds: [fx.repository.repoId], graceMs: 0,
+      maxEntries: 1_000, maxRemovals: 50,
+    });
+    expect(existsSync(bundlePath)).toBe(true);
+    expect(boundedReport.skippedByReason.physical_bundle_incomplete_handle).toBeGreaterThan(0);
+    expect(boundedReport.removedPaths).not.toContain(expect.stringContaining(`${fx.handle.workId}/branch.bundle`));
   });
 
   test('periodic cleanup retains an unreferenced physical bundle when remote source containment is unproven', async () => {
