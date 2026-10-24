@@ -206,7 +206,8 @@ export async function sendLocalConversation(input: LocalConversationSendInput): 
   if (repoId && repoId.length > 256) throw new Error('LOCAL_CONVERSATION_REPOSITORY_INVALID');
 
   const cwd = localConversationCwd();
-  const executable = resolveLauncherExecutable({ controllerType: 'codex', cwd });
+  // The real conversation spawn reports startup failures; status queries still probe.
+  const executable = resolveLauncherExecutable({ controllerType: 'codex', cwd }, process.env, false);
   const bootstrap = resolveProviderMcpBootstrap(input.controllerHome, 'codex', `local-${conversationId}`);
   const invocation = buildCodexControllerInvocation({
     executable,
