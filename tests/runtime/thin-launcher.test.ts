@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { ensureControllerHome } from '../../src/effects/controller-home';
@@ -109,11 +109,17 @@ describe('Thin Launcher startup observability', () => {
     const bin = join(home, '.local', 'bin');
     mkdirSync(bin, { recursive: true });
     const codex = join(bin, 'codex');
-    writeFileSync(codex, '#!/bin/sh\nexit 0\n', 'utf8');
+    writeFileSync(codex, '#!/bin/sh\nif [ "$1" = "--version" ]; then printf "probe" > "$HOME/probed"; fi\nexit 0\n', 'utf8');
     chmodSync(codex, 0o755);
     const request: ThinLauncherRequest = { controllerType: 'codex', workId: 'WORK-path', cwd: root };
+    const env = { HOME: home, PATH: '' };
 
-    expect(resolveLauncherExecutable(request, { HOME: home, PATH: '' })).toBe('codex');
+    expect(resolveLauncherExecutable(request, env)).toBe('codex');
+    const probeMarker = join(home, 'probed');
+    expect(existsSync(probeMarker)).toBe(true);
+    rmSync(probeMarker);
+    expect(resolveLauncherExecutable(request, env, false)).toBe('codex');
+    expect(existsSync(probeMarker)).toBe(false);
   });
 
   test('isolates launched Codex from global Apps and keeps the reservation-scoped Forge MCP config', () => {
@@ -153,6 +159,14 @@ describe('Thin Launcher startup observability', () => {
       exitCode: 17,
       stderrTail: expect.stringContaining('launcher-startup-boom'),
     });
+
+    // A real launch needs no preflight --version: an unavailable executable
+    // must still fail through the existing startup receipt and free its reservation.
+    await expect(launchSuperController({ work: fx.store, handoff: fx.store }, {
+      controllerType: 'grok', executable: join(fx.root, 'absent-provider'),
+      workId: fx.workId, cwd: fx.root,
+    })).rejects.toThrow('LAUNCHER_STARTUP_FAILED');
+    expect(getExternalControllerLaunchReservation(fx.store, fx.workId)).toBeUndefined();
   });
 
   test('returns only after a live child survives the startup grace', async () => {
