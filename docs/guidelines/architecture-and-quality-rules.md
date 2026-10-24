@@ -364,10 +364,7 @@ find src -name "*.ts" | wc -l
 
 关键路径的性能基准：
 
-- Work 准备时间（轻量级）：< 5ms
-- Work 准备时间（完整）：< 50ms
-- Session 绑定时间：< 1ms
-- Git 状态查询：< 10ms
+报告真实任务的首次有效修改、无效前奏调用和完整交付耗时，并记录成功率与副作用。历史毫秒预算没有可比实测支撑，不作为已达成结果；验收沿用 #312 的三组可比 A/B 与至少 30% 的改进目标。
 
 ### 质量指标
 
@@ -438,8 +435,8 @@ bun run format:check
 
 1. `docs/proposals/simplify-forge-workflow.md` - 理解设计哲学
 2. `docs/architecture/CURRENT.md` - 当前架构状态
-3. `src/runtime/control-plane/execution/lightweight-session.ts` - 简单实现示例
-4. `tests/runtime/lightweight-session.test.ts` - 测试模式
+3. `src/cli/editing/edit-session.ts` - 现有 Direct Edit owner
+4. `tests/runtime/edit-session-continuity.test.ts` - 既有执行与并发保护
 
 ### 贡献代码
 

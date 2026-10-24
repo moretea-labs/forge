@@ -43,12 +43,16 @@ export function settleWorkHandleExpectedHeadAfterRepositoryCommand(input: {
   if (input.ok !== true || input.cancelled === true || input.timedOut === true) {
     return { settled: false, reason: 'command_not_successful' };
   }
-  const originalHandle = readWorkHandle(input.controllerHome, commandExecutionScopeKey(input.repository), workId);
+  // The physical WorkHandle is fenced before spawn; never re-resolve semantic
+  // placement while settling an already executed repository command.
+  const handleId = input.executionIdentity.workId ?? workId;
+  const originalHandle = readWorkHandle(input.controllerHome, commandExecutionScopeKey(input.repository), handleId);
   if (!originalHandle) return { settled: false, reason: 'work_handle_missing' };
   const sameStaticExecutionIdentity = (handle: typeof originalHandle): boolean => (
     handle.repositoryId === input.executionIdentity.repositoryId
     && handle.checkoutId === input.executionIdentity.checkoutId
     && handle.workId === input.executionIdentity.workId
+    && (handle.workId === workId || handle.workContractId === workId)
     && handle.branch === input.executionIdentity.branch
   );
   if (!sameStaticExecutionIdentity(originalHandle)) return { settled: false, reason: 'identity_mismatch' };
@@ -82,7 +86,7 @@ export function settleWorkHandleExpectedHeadAfterRepositoryCommand(input: {
 
   // One concurrent lifecycle write is allowed to win the first CAS. Re-read the
   // exact Work authority and converge only when identity/branch are unchanged.
-  const refreshedHandle = readWorkHandle(input.controllerHome, commandExecutionScopeKey(input.repository), workId);
+  const refreshedHandle = readWorkHandle(input.controllerHome, commandExecutionScopeKey(input.repository), handleId);
   if (!refreshedHandle) return { settled: false, reason: 'work_handle_missing', previousHead: originalHandle.expectedHead, currentHead };
   if (!sameStaticExecutionIdentity(refreshedHandle)) {
     return { settled: false, reason: 'identity_mismatch', previousHead: refreshedHandle.expectedHead, currentHead };
