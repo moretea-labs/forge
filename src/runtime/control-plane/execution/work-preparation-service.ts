@@ -1,5 +1,4 @@
 import { createHash } from 'crypto';
-import { isDeepStrictEqual } from 'node:util';
 import { spawnSync } from 'child_process';
 import { existsSync, lstatSync, readFileSync, realpathSync } from 'fs';
 import { resolve, sep } from 'path';
@@ -17,7 +16,7 @@ import { isTerminalSemanticWorkState } from '../facade/types';
 import { updateExecutionSession, type ExecutionSessionContext } from './session-store';
 import { currentPermissionSnapshotVersion, validateWorkHandle, workHandlePlacementLoss } from './validation';
 import { withWorkPrepareRequest } from './work-prepare-request-store';
-import { listWorkHandles, markWorkHandleFailed, newWorkId, readWorkHandle, relocateWorkHandlePlacementAtomically, writeWorkHandle, type WorkFinalizationStages, type WorkHandleState } from './work-handle-store';
+import { listWorkHandles, markWorkHandleFailed, newWorkId, readWorkHandle, relocateWorkHandlePlacementAtomically, writeWorkHandle, listWorkHandlesFailClosed, type WorkFinalizationStages, type WorkHandleState } from './work-handle-store';
 import { createGoalDelegation } from '../governance/authorization';
 import { compactHandle, contractFor, findWorkHandle, gitHead, gitIsAncestor, identityFor, requireSession } from './work-execution-support';
 
@@ -418,7 +417,7 @@ function materializeArchivedWorkPlacement(
   if (checkout.activeCheckoutId !== workspaceCheckoutId || checkout.canonicalRoot !== workspaceRoot) {
     throw new Error('WORK_HANDLE_RECOVERY_SUCCESSOR_CHECKOUT_NOT_SELECTED');
   }
-  const competing = listWorkHandles(ctx.controllerHome, repository.repoId).filter((handle) =>
+  const competing = listWorkHandlesFailClosed(ctx.controllerHome, repository.repoId).filter((handle) =>
     handle.workId !== sourceHandle.workId
     && handle.workId !== targetWorkHandleId
     && LIVE_RECOVERY_HANDLE_STATES.has(handle.state)
@@ -950,7 +949,12 @@ export function prepareWork(ctx: McpExecutionContext, args: Record<string, unkno
           { phase: 'implementation', summary: 'Repository Work preparation completed and execution ownership is active.', worktreeRef: existingHandle.worktreePath },
         );
       }
-      const delegation = createGoalDelegation({
+      // Reuse existing session.goalDelegation if exact Work and permission match
+      const priorDelegation = session.goalDelegation;
+      const reuseDelegation = priorDelegation
+        && priorDelegation.workId === createdWorkId
+        && priorDelegation.permissionSnapshotVersion === policy.revision;
+      const delegation = reuseDelegation ? priorDelegation : createGoalDelegation({
         sessionId: session.sessionId,
         repositoryId: repository.repoId,
         workId: createdWorkId,
@@ -960,11 +964,13 @@ export function prepareWork(ctx: McpExecutionContext, args: Record<string, unkno
         permissionSnapshotVersion: policy.revision,
         source: 'gpt_risk_delegate',
       });
-      const priorDelegation = session.goalDelegation;
-      const unchangedDelegation = priorDelegation && isDeepStrictEqual(
-        JSON.parse(JSON.stringify({ ...delegation, createdAt: priorDelegation.createdAt })), priorDelegation,
-      );
-      const nextSession = updateExecutionSession(ctx.controllerHome, identityFor(ctx, args), { activeRepositoryId: repository.repoId, activeCheckoutId: existingHandle.checkoutId, activeWorkId: createdWorkId, permissionSnapshotVersion: policy.revision, goalDelegation: unchangedDelegation ? priorDelegation : delegation });
+      // Avoid unconditional session update when same repo/checkout/Work/permission/delegation
+      const unchangedBinding = session.activeRepositoryId === repository.repoId
+        && session.activeCheckoutId === existingHandle.checkoutId
+        && session.activeWorkId === createdWorkId
+        && session.permissionSnapshotVersion === policy.revision
+        && reuseDelegation;
+      const nextSession = unchangedBinding ? session : updateExecutionSession(ctx.controllerHome, identityFor(ctx, args), { activeRepositoryId: repository.repoId, activeCheckoutId: existingHandle.checkoutId, activeWorkId: createdWorkId, permissionSnapshotVersion: policy.revision, goalDelegation: delegation });
       return { session: nextSession, work: compactHandle(existingHandle), reused: true, isolation: existingHandle.managedWorktree ? 'isolated' : 'current' };
     }
 

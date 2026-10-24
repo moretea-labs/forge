@@ -1392,6 +1392,107 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     }).path).toBe('durable');
   });
 
+  test('resolves a recovered semantic Work through its unique current physical Handle', async () => {
+    const fx = fixture();
+    roots.push(fx.root);
+    const seeded = await callExecutionTool(fx.ctx, 'work_prepare', {
+      repo_id: fx.repository.repoId, objective: 'Seed historical recovery placement',
+      isolation: 'new_worktree', request_id: 'implicit-semantic-recovery-seed',
+    });
+    if (seeded?.isError) throw new Error(JSON.stringify(seeded.structuredContent));
+    const seededId = (seeded?.structuredContent as { work: { workId: string } }).work.workId;
+    const original = readWorkHandle(fx.controllerHome, fx.repository.repoId, seededId)!;
+    const semanticId = 'work-semantic-implicit-successor';
+    const successorId = 'work-physical-implicit-successor';
+    const head = git(fx.repoRoot, ['rev-parse', 'HEAD']);
+    createWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
+      workId: semanticId, repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId, baseRevision: head,
+      objective: 'Recovered semantic Work uses the current physical successor',
+      acceptanceCriteria: [], allowedPaths: [], forbiddenPaths: [],
+      checks: [], constraints: {}, requestedBy: 'chatgpt',
+      workKind: 'repository_change', dispatchState: 'running', phase: 'implementation',
+    });
+    // The direct historical identity is retained but belongs to the old checkout.
+    writeWorkHandle(fx.controllerHome, {
+      ...original, recordRevision: undefined, workId: semanticId,
+      workContractId: semanticId, state: 'failed',
+      failureReason: `placement_lost_rebound_to:${successorId}`,
+    });
+    writeWorkHandle(fx.controllerHome, {
+      ...original, recordRevision: undefined, workId: successorId,
+      workContractId: semanticId,
+      checkoutId: fx.repository.activeCheckoutId, worktreePath: fx.repoRoot,
+      branch: 'main', sourceCheckoutId: undefined, managedWorktree: false,
+      baseCommit: head, deliveryBaseCommit: head, expectedHead: head,
+      state: 'prepared', failureReason: undefined,
+    });
+    const priorRevision = readControlPlaneRecord(
+      fx.controllerHome, 'execution_session', 'controller', original.sessionId,
+    )?.revision;
+    const rejected = await callExecutionTool(fx.ctx, 'work_inspect', {
+      repo_id: fx.repository.repoId, work_id: semanticId, checkout_id: original.checkoutId,
+    });
+    expect(rejected?.isError).toBe(true);
+    expect(JSON.stringify(rejected?.structuredContent)).toContain('WORK_HANDLE_CHECKOUT_DRIFT');
+    expect(readControlPlaneRecord(
+      fx.controllerHome, 'execution_session', 'controller', original.sessionId,
+    )?.revision).toBe(priorRevision);
+
+    const inspected = await callExecutionTool(fx.ctx, 'work_inspect', {
+      repo_id: fx.repository.repoId, work_id: semanticId,
+    });
+    if (inspected?.isError) throw new Error(JSON.stringify(inspected?.structuredContent));
+    expect((inspected?.structuredContent as { work: { workId: string; checkoutId: string } }).work)
+      .toMatchObject({ workId: successorId, checkoutId: fx.repository.activeCheckoutId });
+    // A cleaned historical semantic identity on the SAME canonical checkout
+    // must not shadow its unique live successor, even without caller Session.
+    const historical = readWorkHandle(fx.controllerHome, fx.repository.repoId, semanticId)!;
+    writeWorkHandle(fx.controllerHome, {
+      ...historical, checkoutId: fx.repository.activeCheckoutId,
+      worktreePath: fx.repoRoot, branch: 'main',
+      state: 'cleaned', failureReason: undefined,
+    });
+    const sameCheckout = await callExecutionTool(fx.ctx, 'work_inspect', {
+      repo_id: fx.repository.repoId, work_id: semanticId,
+    });
+    if (sameCheckout?.isError) throw new Error(JSON.stringify(sameCheckout.structuredContent));
+    expect((sameCheckout?.structuredContent as { work: { workId: string; checkoutId: string } }).work)
+      .toMatchObject({ workId: successorId, checkoutId: fx.repository.activeCheckoutId });
+
+    const validated = await callExecutionTool(fx.ctx, 'work_validate', {
+      repo_id: fx.repository.repoId, work_id: semanticId, check_ids: [],
+    });
+    if (validated?.isError) throw new Error(JSON.stringify(validated.structuredContent));
+    expect((validated?.structuredContent as {
+      work: { workId: string; checkoutId: string };
+      validation: { passed: boolean; completed: boolean };
+    })).toMatchObject({
+      work: { workId: successorId, checkoutId: fx.repository.activeCheckoutId },
+      validation: { passed: true, completed: true },
+    });
+    expect(readWorkHandle(fx.controllerHome, fx.repository.repoId, semanticId)?.state).toBe('cleaned');
+  });
+
+  test('rejects invalid repository and checkout without persisting an implicit Session', async () => {
+    const fx = fixture();
+    roots.push(fx.root);
+    for (const item of [
+      { repoId: 'repo-missing-for-implicit', checkoutId: undefined, requestId: 'implicit-invalid-repo' },
+      { repoId: fx.repository.repoId, checkoutId: 'checkout-invalid', requestId: 'implicit-invalid-checkout' },
+    ]) {
+      const failed = await callExecutionTool(fx.ctx, 'work_prepare', {
+        repo_id: item.repoId, ...(item.checkoutId ? { checkout_id: item.checkoutId } : {}),
+        request_id: item.requestId, objective: 'Invalid admission must not leave a Session',
+      });
+      expect(failed?.isError).toBe(true);
+      const seed = [principalFor(fx.ctx), item.repoId, item.requestId].join(':');
+      const id = `sess_auto_${createHash('sha256').update(seed).digest('hex').slice(0, 32)}`;
+      expect(readControlPlaneRecord(fx.controllerHome, 'execution_session', 'controller', id))
+        .toBeUndefined();
+    }
+  });
+
   test('Process Runtime async stays local while explicit durable / release work remains durable', () => {
     const cases = [
       ['execute_command', { command: ['git', 'status'], apply_mode: 'async' }, 'fast'],

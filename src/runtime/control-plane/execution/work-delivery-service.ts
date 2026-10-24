@@ -23,7 +23,7 @@ import { assertRuntimeMayWriteOrThrow, isRuntimeWriteFenceError } from '../../ro
 import { cleanupTerminalWork } from './work-terminal-cleanup';
 import { recordWorkDeliveryReceipt } from './work-completion-authority';
 import {
-  listWorkHandles,
+  listWorkHandlesFailClosed,
   readWorkHandle,
   resolveWorkDeliveryTargetBranch,
   transitionWorkHandle,
@@ -143,7 +143,7 @@ function assertTargetMutationAvailable(
   const activeLeaseWorkIds = new Set(activeLeases
     .map((lease) => lease.workId)
     .filter((value): value is string => Boolean(value)));
-  const blockingWork = listWorkHandles(controllerHome, handle.repositoryId)
+  const blockingWork = listWorkHandlesFailClosed(controllerHome, handle.repositoryId)
     .find((other) => other.workId !== handle.workId
       && other.checkoutId === targetCheckoutId
       && other.branch === targetBranch

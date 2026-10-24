@@ -6,8 +6,8 @@ import { repositoryGitWorkspaceChanges } from '../../../src/cli/repositories/str
 import { listControllerChecks } from '../../../src/cli/controller/check-runner';
 import { buildWorkContinuationSnapshot } from '../../../src/runtime/control-plane/facade/work-continuation';
 import { currentControllerInstanceId, readExecutionSession, startExecutionSession, updateExecutionSession, type ExecutionSessionContext } from '../../../src/runtime/control-plane/execution/session-store';
-import { getRepository } from '../../../src/cli/repositories/registry';
-import { readWorkHandle } from '../../../src/runtime/control-plane/execution/work-handle-store';
+import { getRepository, selectRepositoryCheckout } from '../../../src/cli/repositories/registry';
+import { resolveActiveWorkHandle } from '../../../src/runtime/control-plane/execution/work-handle-authority';
 import { currentPermissionSnapshotVersion, validateWorkHandle, workHandlePlacementLoss } from '../../../src/runtime/control-plane/execution/validation';
 import { resolveAuthorizationRequest } from '../../../src/runtime/control-plane/governance/authorization';
 import { readControllerResult, searchControllerResult } from '../../../src/runtime/evidence/result-store';
@@ -25,19 +25,19 @@ function definition(name: string, description: string, properties: Record<string
 
 const sessionId = { type: 'string', description: 'Controller-issued session id returned by session_start. Omit only when the MCP transport binds one.' };
 const workId = { type: 'string', description: 'Controller-owned work handle id returned by work_prepare.' };
-const repoId = { type: 'string', description: 'Stable repository id; no explicit execution-session repository binding is required.' };
+const repoId = { type: 'string', description: 'Stable repository id. Repository switching must be explicit through session_bind_repository.' };
 
 export const executionToolDefinitions: McpToolDefinition[] = [
   definition('session_start', 'Start or resume a controller-owned MCP execution session. Identity comes from the authenticated/controller-issued transport context.', {}, [], false),
   definition('session_bind_repository', 'Explicitly bind the current session to one registered repository and checkout.', { session_id: sessionId, repo_id: repoId, checkout_id: { type: 'string' } }, ['repo_id'], false),
-  definition('work_prepare', 'Prepare or reuse a Work in its stable Git placement. Repository and caller identity are resolved automatically; no session_start or session_bind_repository is required.', {
+  definition('work_prepare', 'Prepare or reuse one controller-owned work handle and bind it to a WorkContract, checkout, branch, and permission snapshot.', {
     session_id: sessionId, repo_id: repoId, checkout_id: { type: 'string' }, work_id: workId,
     objective: { type: 'string' }, goal_id: { type: 'string' }, acceptance_criteria: { type: 'array', items: { type: 'string' } }, checks: { type: 'array', items: { type: 'string' } },
     isolation: { type: 'string', enum: ['reuse', 'new_worktree', 'auto'] }, base_ref: { type: 'string' }, needs_dependencies: { type: 'boolean' },
     expected_previous_head: { type: 'string', description: 'Exact prior WorkHandle HEAD for direct successor adoption. Cleaned-open Work recovery derives it from the stored handle; if supplied there, it must match.' },
     adopt_candidate_head: { type: 'string', description: 'Explicit current successor commit to adopt after exact identity, ownership, cleanliness, and ancestry validation.' },
     dirty_overlap_proofs: { type: 'array', maxItems: 20, description: 'Explicit attested content fingerprints for every overlapping unstaged tracked file; metadata-only successor adoption preserves files and index unchanged.', items: { type: 'object', properties: { path: { type: 'string' }, worktree_sha256: { type: 'string' }, index_blob_oid: { type: 'string' } }, required: ['path', 'worktree_sha256', 'index_blob_oid'], additionalProperties: false } },
-    relocate_to_new_worktree: { type: 'boolean', description: 'Move this existing Work to a managed worktree; the recorded frozen HEAD is reused unless a different candidate is explicitly supplied. The source checkout is not mutated.' },
+    relocate_to_new_worktree: { type: 'boolean', description: 'Move this existing Work identity to its own managed worktree, with exact previous/candidate HEADs and base_ref. WorkHandle and WorkContract placement commit atomically; the source checkout is not mutated.' },
   }, [], false),
   definition('work_inspect', 'Inspect one WorkHandle. Summary (default) returns Git status and changed paths without computing patches; detail includes bounded staged/unstaged diffs.', { session_id: sessionId, repo_id: repoId, work_id: workId, detail: { type: 'string', enum: ['summary', 'detail'] } }, ['work_id'], true),
   definition('work_validate', 'Run targeted checks or read-only validation commands against a work handle with full current-state validation.', {
@@ -176,7 +176,7 @@ function withImplicitWorkSession(
     ? args.repo_id.trim() : ctx.explicitRepository?.repoId;
   const requestedWorkId = typeof args.work_id === 'string' && args.work_id.trim() ? args.work_id.trim() : undefined;
   const handle = requestedRepoId && requestedWorkId
-    ? readWorkHandle(ctx.controllerHome, requestedRepoId, requestedWorkId)
+    ? resolveActiveWorkHandle(ctx.controllerHome, requestedRepoId, requestedWorkId)
     : undefined;
   // Inspect/validate may not introduce a Session while failing to resolve a Work.
   if (name !== 'work_prepare' && (!requestedWorkId || !requestedRepoId || !handle)) {
@@ -205,43 +205,44 @@ function withImplicitWorkSession(
   const sessionId = handle?.sessionId
     ?? `sess_auto_${createHash('sha256').update(seed).digest('hex').slice(0, 32)}`;
   const identity = { sessionId, principalId, controllerInstanceId: ctx.controllerInstanceId ?? currentControllerInstanceId() };
-  const session = readExecutionSession(ctx.controllerHome, identity) ?? startExecutionSession(ctx.controllerHome, {
+  // Repository, placement and authorization checks are read-only admission.
+  // Never persist a Session for an invalid repository or checkout.
+  const existingSession = readExecutionSession(ctx.controllerHome, identity);
+  const repository = getRepository(requestedRepoId, ctx.controllerHome);
+  const lostPlacement = Boolean(handle && name === 'work_prepare'
+    && workHandlePlacementLoss(repository, handle));
+  const sameRequestReplay = !handle && Boolean(requestId)
+    && existingSession?.activeRepositoryId === requestedRepoId && Boolean(existingSession.activeWorkId);
+  const checkoutId = requestedCheckout
+    ?? (lostPlacement ? repository.activeCheckoutId : handle?.checkoutId)
+    ?? (sameRequestReplay ? existingSession?.activeCheckoutId : undefined)
+    ?? repository.activeCheckoutId;
+  // Historical inspect is read-only and may describe a retired placement.
+  // Preparation redirects a retired placement to the canonical source; all
+  // other operations require an active registered checkout before Session writes.
+  if (!(name === 'work_inspect' && handle && workHandlePlacementLoss(repository, handle))) {
+    selectRepositoryCheckout(repository, checkoutId);
+  }
+  const permissionSnapshotVersion = currentPermissionSnapshotVersion(ctx.controllerHome, requestedRepoId);
+  const session = existingSession ?? startExecutionSession(ctx.controllerHome, {
     ...identity, capabilitySnapshotVersion: 1,
   });
-  let lostPlacement = false;
-  if (requestedRepoId) {
-    const repository = getRepository(requestedRepoId, ctx.controllerHome);
-    // A deleted worktree is only a lost physical placement. An existing Work
-    // must be resolved through the active source checkout for the existing
-    // Work recovery path, never force a retired checkout into selection.
-    lostPlacement = Boolean(handle && name === 'work_prepare'
-      && workHandlePlacementLoss(repository, handle));
-    // An identical idempotent preparation retry already owns its isolated
-    // checkout. Omitting checkout_id must not bounce it to canonical main.
-    const sameRequestReplay = !handle && Boolean(requestId)
-      && session.activeRepositoryId === requestedRepoId && Boolean(session.activeWorkId);
-    const checkoutId = requestedCheckout
-      ?? (lostPlacement ? repository.activeCheckoutId : handle?.checkoutId)
-      ?? (sameRequestReplay ? session.activeCheckoutId : undefined)
-      ?? repository.activeCheckoutId;
-    const permissionSnapshotVersion = currentPermissionSnapshotVersion(ctx.controllerHome, requestedRepoId);
-    // An idempotent new-Work retry may already be bound to its admitted Work;
-    // absence of work_id in the request must not clear that settled binding.
-    const activeWorkId = handle?.workId ?? (
-      session.activeRepositoryId === requestedRepoId && session.activeCheckoutId === checkoutId
-        ? session.activeWorkId : undefined
-    );
-    if (session.activeRepositoryId !== requestedRepoId || session.activeCheckoutId !== checkoutId
-        || session.activeWorkId !== activeWorkId || session.permissionSnapshotVersion !== permissionSnapshotVersion) {
-      updateExecutionSession(ctx.controllerHome, identity, {
-        activeRepositoryId: requestedRepoId, activeCheckoutId: checkoutId,
-        activeWorkId, permissionSnapshotVersion,
-      });
-    }
+  const activeWorkId = handle?.workId ?? (
+    session.activeRepositoryId === requestedRepoId && session.activeCheckoutId === checkoutId
+      ? session.activeWorkId : undefined
+  );
+  if (session.activeRepositoryId !== requestedRepoId || session.activeCheckoutId !== checkoutId
+      || session.activeWorkId !== activeWorkId || session.permissionSnapshotVersion !== permissionSnapshotVersion) {
+    updateExecutionSession(ctx.controllerHome, identity, {
+      activeRepositoryId: requestedRepoId, activeCheckoutId: checkoutId,
+      activeWorkId, permissionSnapshotVersion,
+    });
   }
   return {
     ...args, session_id: sessionId,
     ...(requestedRepoId ? { repo_id: requestedRepoId } : {}),
+    ...(handle && name !== 'work_prepare' && requestedWorkId && handle.workId !== requestedWorkId
+      ? { work_id: handle.workId } : {}),
     ...(handle && !requestedCheckout && !lostPlacement ? { checkout_id: handle.checkoutId } : {}),
   };
 }
