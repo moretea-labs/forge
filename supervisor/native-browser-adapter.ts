@@ -21,6 +21,7 @@ import { hasCommittedSupervisorEnvelope, parseSupervisorCompletion, renderEffect
 import type { WorkflowSupervisorEphemeralDiscovery } from './server';
 import type {
   WorkflowSupervisorBrowserCommand,
+  WorkflowSupervisorBrowserPollResult,
   WorkflowSupervisorBrowserTask,
   WorkflowSupervisorConsumerStatus,
   WorkflowSupervisorPreflightComposerObservation,
@@ -1036,13 +1037,30 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       return;
     }
     this.clearTaskFailure(task.taskId, command.effectId);
-    if (!this.control.bootstrapBeginEffect({ taskId: task.taskId, effectId: command.effectId, dispatchId: `bootstrap-${randomUUID()}`, dispatchGeneration: command.dispatchGeneration })) return;
+    let dispatchStarted = false;
     try {
+      // A queued submission must not reserve its effect until it owns the
+      // account Send lane. STOP/rebind can invalidate it while another tab sends.
       const dispatch = await withChatgptProviderDispatchLane(this.deps.providerScopeKey,
-        () => target.dispatch(command.prompt),
-        (result) => result.mutation === 'attempted'
-          ? { providerAccepted: result.confirmed === true }
-          : { code: result.reasonCode, message: result.reasonCode });
+        async () => {
+          let current: WorkflowSupervisorBrowserPollResult;
+          try { current = this.control.bootstrapPoll(task.taskId); }
+          catch { return undefined; }
+          if (current.terminal || current.command?.mode !== 'send'
+            || current.command.effectId !== command.effectId
+            || current.command.dispatchGeneration !== command.dispatchGeneration) return undefined;
+          if (!this.control.bootstrapBeginEffect({ taskId: task.taskId,
+            effectId: command.effectId, dispatchId: `bootstrap-${randomUUID()}`,
+            dispatchGeneration: command.dispatchGeneration })) return undefined;
+          dispatchStarted = true;
+          return await target.dispatch(command.prompt);
+        },
+        (result) => result
+          ? (result.mutation === 'attempted'
+            ? { providerAccepted: result.confirmed === true }
+            : { code: result.reasonCode, message: result.reasonCode })
+          : undefined);
+      if (!dispatch) return; // Stopped/rebound before any mutation.
       if (dispatch.mutation === 'not_attempted') {
         this.control.bootstrapObserveEffect({ taskId: task.taskId, effectId: command.effectId, observationId: `bootstrap-${randomUUID()}`, outcome: 'not_applied', evidence: { dispatch_mutation: 'not_attempted', send_clicked: false, reason: dispatch.reasonCode } });
         this.control.recordProviderPreparationFailure({ taskId: task.taskId, effectId: command.effectId,
@@ -1066,7 +1084,18 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       }
       this.control.bootstrapObserveEffect({ taskId: task.taskId, effectId: command.effectId, observationId: `bootstrap-${randomUUID()}`, outcome: 'unknown', evidence: { reconciliation: true, reason } });
     } catch (error) {
-      this.control.bootstrapObserveEffect({ taskId: task.taskId, effectId: command.effectId, observationId: `bootstrap-${randomUUID()}`, outcome: 'unknown', evidence: { reconciliation: true, reason: error instanceof Error ? error.message : String(error) } });
+      if (!dispatchStarted) {
+        // No journal dispatch or Send occurred.
+        this.control.recordProviderPreparationFailure({ taskId: task.taskId,
+          effectId: command.effectId,
+          reasonCode: consumerFailureCode(error, 'COMPUTER_PRE_SEND_REVALIDATION_FAILED') });
+        this.noteTaskFailure(SUPERVISOR_PRE_SEND_BLOCKED, task, command.effectId);
+        this.deps.onError(error);
+        return;
+      }
+      this.control.bootstrapObserveEffect({ taskId: task.taskId, effectId: command.effectId,
+        observationId: `bootstrap-${randomUUID()}`, outcome: 'unknown',
+        evidence: { reconciliation: true, reason: error instanceof Error ? error.message : String(error) } });
       throw error;
     }
   }
@@ -1161,10 +1190,8 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       }
       if (command.kind !== 'recovery' && snapshot.isGenerating) return;
       this.clearTaskFailure(task.taskId, command.effectId);
-      const begin = this.control.browserBeginEffect({ conversationId: command.conversationId, conversationUrl: command.conversationUrl, effectId: command.effectId,
-        dispatchId: `computer-${randomUUID()}`, dispatchGeneration: command.dispatchGeneration,
-        evidence: { surface: 'computer-chatgpt-target', target_id: target.targetId, latest_user_text: snapshot.latestUserText, latest_assistant_response: snapshot.latestAssistantResponse } });
-      if (!begin.started) mode = 'reconcile';
+      // Reservation moves inside the provider lane. Prepared drafts are not
+      // authority to send if the task changes while queued.
     }
     if (mode === 'reconcile') {
       const exact = normalize(snapshot.latestUserText) === normalize(command.prompt.replace(/^@forge\s+(?=<<<FORGE_WORKFLOW_EFFECT_V1:(?:fx|crpe)_[a-zA-Z0-9_-]{8,120}>>>)/, ''));
@@ -1183,19 +1210,60 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       return;
     }
     let dispatch: Awaited<ReturnType<ComputerChatgptConversationTarget['dispatch']>>;
+    let dispatchStarted = false;
     try {
       // Only actual provider submission consumes the account-wide dispatch lane.
       // The content script rechecks exact composer, tab, and target after this
       // await, so preparation cannot authorize a stale or foreign Send.
-      dispatch = await withChatgptProviderDispatchLane(this.deps.providerScopeKey,
-        () => target.dispatch(command.prompt, { ...(command.kind === 'recovery' ? { mode: 'recover' as const } : {}) }),
-        (result) => result.mutation === 'attempted'
-          ? { providerAccepted: result.confirmed === true }
-          : { code: result.reasonCode, message: result.reasonCode });
+      const result = await withChatgptProviderDispatchLane(this.deps.providerScopeKey,
+        async () => {
+          let current: WorkflowSupervisorBrowserPollResult;
+          try { current = this.control.browserPoll({
+            conversationId: task.conversationId, conversationUrl: task.conversationUrl,
+          }); } catch { return undefined; }
+          if (current.terminal || current.command?.mode !== 'send'
+            || current.command.effectId !== command.effectId
+            || current.command.dispatchGeneration !== command.dispatchGeneration) return undefined;
+          // Fresh causal baseline: an unrelated human or provider turn may have
+          // advanced the conversation after this effect prepared its editor.
+          const ready = await target.observe({ includeUserHistory: true, includePageText: false });
+          if (!exactConversation(ready, task) || !this.taskConversationContentAvailable(task, ready)
+            || (command.kind !== 'recovery' && ready.isGenerating)) return undefined;
+          const begin = this.control.browserBeginEffect({
+            conversationId: command.conversationId, conversationUrl: command.conversationUrl,
+            effectId: command.effectId, dispatchId: `computer-${randomUUID()}`,
+            dispatchGeneration: command.dispatchGeneration,
+            evidence: { surface: 'computer-chatgpt-target', target_id: target.targetId,
+              latest_user_text: ready.latestUserText,
+              latest_assistant_response: ready.latestAssistantResponse },
+          });
+          if (!begin.started) return undefined;
+          dispatchStarted = true;
+          return await target.dispatch(command.prompt, {
+            ...(command.kind === 'recovery' ? { mode: 'recover' as const } : {}),
+          });
+        },
+        (result) => result
+          ? (result.mutation === 'attempted'
+            ? { providerAccepted: result.confirmed === true }
+            : { code: result.reasonCode, message: result.reasonCode })
+          : undefined);
+      if (!result) return; // No Send and no dispatch generation was spent.
+      dispatch = result;
     } catch (error) {
-      this.control.browserObserveEffect({ conversationId: command.conversationId, conversationUrl: command.conversationUrl, effectId: command.effectId,
+      if (!dispatchStarted) {
+        this.control.recordProviderPreparationFailure({ taskId: task.taskId,
+          effectId: command.effectId,
+          reasonCode: consumerFailureCode(error, 'COMPUTER_PRE_SEND_REVALIDATION_FAILED') });
+        this.noteTaskFailure(SUPERVISOR_PRE_SEND_BLOCKED, task, command.effectId);
+        this.deps.onError(error);
+        return;
+      }
+      this.control.browserObserveEffect({ conversationId: command.conversationId,
+        conversationUrl: command.conversationUrl, effectId: command.effectId,
         observationId: `computer-observe-${randomUUID()}`, outcome: 'unknown',
-        evidence: { surface: 'computer-chatgpt-target', target_id: target.targetId, reconciliation: true, reason: consumerFailureCode(error, 'provider_dispatch_exception') } });
+        evidence: { surface: 'computer-chatgpt-target', target_id: target.targetId,
+          reconciliation: true, reason: consumerFailureCode(error, 'provider_dispatch_exception') } });
       throw error;
     }
     if (dispatch.mutation === 'not_attempted') {
