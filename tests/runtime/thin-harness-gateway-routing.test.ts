@@ -14,7 +14,7 @@ import { callCoreCapabilityAdapter } from '../../adapters/mcp/runtime-gateway/co
 import { createMcpToolContext } from '../../adapters/mcp/server';
 import { callMultiRepositoryTool } from '../../adapters/mcp/multi-repository';
 import { ensureControllerHome } from '../../src/effects/controller-home';
-import { addRepositoryCheckout, getRepository, registerRepository, selectRepositoryCheckout, setRepositoryCheckoutLifecycle } from '../../src/cli/repositories/registry';
+import { addRepositoryCheckout, getRepository, refreshRepositoryCheckoutGitMetadata, registerRepository, selectRepositoryCheckout, setRepositoryCheckoutLifecycle } from '../../src/cli/repositories/registry';
 import { repositoryGitStatus } from '../../src/cli/repositories/structured-git';
 import { ensureRepositoryRuntimeStorageBinding } from '../../src/cli/repositories/runtime-storage';
 import { listExecutionJobs } from '../../src/runtime/execution/jobs/store';
@@ -1166,6 +1166,28 @@ describe('repository.git Work delivery', () => {
   });
 
   test('work_prepare durably binds delivery to the exact selected source checkout branch', async () => {
+    {
+      const fx = fixture();
+      roots.push(fx.root);
+      git(fx.repoRoot, ['switch', '-c', 'metadata-drift']);
+      refreshRepositoryCheckoutGitMetadata(fx.repository.repoId, fx.controllerHome, fx.repository.activeCheckoutId);
+      expect(getRepository(fx.repository.repoId, fx.controllerHome).checkouts.find((checkout) => checkout.checkoutId === fx.repository.activeCheckoutId)?.branch).toBe('metadata-drift');
+      git(fx.repoRoot, ['switch', 'main']);
+
+      const started = await callExecutionTool(fx.ctx, 'session_start', {});
+      const session = (started?.structuredContent as { session: { sessionId: string } }).session;
+      const prepared = await callExecutionTool(fx.ctx, 'work_prepare', {
+        session_id: session.sessionId,
+        repo_id: fx.repository.repoId,
+        request_id: 'prepare-after-active-checkout-branch-drift',
+        objective: 'Prove placement reconciles the active checkout branch.',
+        checks: [],
+        isolation: 'new_worktree',
+      });
+      if (prepared?.isError) throw new Error(JSON.stringify(prepared.structuredContent ?? prepared));
+      expect((prepared?.structuredContent as { work: { deliveryTargetBranch: string } }).work.deliveryTargetBranch).toBe('main');
+      expect(getRepository(fx.repository.repoId, fx.controllerHome).checkouts.find((checkout) => checkout.checkoutId === fx.repository.activeCheckoutId)?.branch).toBe('main');
+    }
     const fx = fixture();
     roots.push(fx.root);
     const parentRoot = join(fx.root, 'parent-delivery-checkout');

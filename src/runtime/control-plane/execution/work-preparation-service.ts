@@ -3,7 +3,7 @@ import { spawnSync } from 'child_process';
 import { existsSync, lstatSync, readFileSync, realpathSync } from 'fs';
 import { resolve, sep } from 'path';
 import type { McpExecutionContext } from '../../../../packages/protocols/mcp/execution-context';
-import { getRepository, repositoryCheckoutLifecycle, resolveRepositorySelection, selectRepositoryCheckout } from '../../../cli/repositories/registry';
+import { getRepository, refreshRepositoryCheckoutGitMetadata, repositoryCheckoutLifecycle, resolveRepositorySelection, selectRepositoryCheckout } from '../../../cli/repositories/registry';
 import { repositoryGitStatus } from '../../../cli/repositories/structured-git';
 import { ensureManagedWorkspace } from '../../execution/managed-workspace';
 import { listRecoverableProcessRecords } from '../../execution/process-runtime/store';
@@ -787,7 +787,11 @@ function relocateExistingWorkToManagedCheckout(
 
 export function prepareWork(ctx: McpExecutionContext, args: Record<string, unknown>): Record<string, unknown> {
   const session = requireSession(ctx, args);
-  const repository = selectedRepository(ctx, session, args, true);
+  const selected = selectedRepository(ctx, session, args, true);
+  // Placement is the reconciliation boundary for a checkout that may have been
+  // switched outside a structured repository command. Keep the Registry's
+  // checkout branch factual before selecting the integration checkout.
+  const repository = refreshRepositoryCheckoutGitMetadata(selected.repoId, ctx.controllerHome, selected.activeCheckoutId);
 
   // Retired opt-in must not silently create a durable Work for an ordinary edit.
   if (args.lightweight === true) {
