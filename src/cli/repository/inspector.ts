@@ -525,7 +525,7 @@ function escapeCodeNeedle(needle: string): string {
   return needle.replace(/[.*+?^${}()|[\]\\]/g, (match) => '\\' + match);
 }
 
-function exactCodeNeedleMatches(haystack: string, needle: string): boolean {
+export function exactCodeNeedleMatches(haystack: string, needle: string): boolean {
   const escaped = escapeCodeNeedle(needle);
   return new RegExp(`(?:^|[^\\p{L}\\p{N}_$])${escaped}(?=$|[^\\p{L}\\p{N}_$])`, 'u').test(haystack);
 }
@@ -852,10 +852,21 @@ export function searchRepositoryMany(
           // Only a truncated path can conceal a later required symbol.
           // Unsaturated files already have complete rg evidence.
           if (saturatedPaths.length > 0) {
-            for (const [path, lines] of ripgrepCandidateLines(
-              repoRoot, saturatedPaths, requiredQueries, opts.caseSensitive === true,
-              maxResultsPerQuery, skippedBinaryPaths, undefined, true,
-            )) exact.set(path, lines);
+            // rg --max-count applies across all -e alternatives in one call.
+            // Give each authored symbol its own bounded pass so dense matches
+            // for an earlier symbol cannot consume another symbol's hit budget.
+            for (const query of requiredQueries) {
+              for (const [path, lines] of ripgrepCandidateLines(
+                repoRoot, saturatedPaths, [query], opts.caseSensitive === true,
+                maxResultsPerQuery, skippedBinaryPaths, undefined, true,
+              )) {
+                const merged = new Map<number, { line: number; text: string }>(
+                  (exact.get(path) ?? []).map((line) => [line.line, line] as const),
+                );
+                for (const line of lines) merged.set(line.line, line);
+                exact.set(path, [...merged.values()].sort((left, right) => left.line - right.line));
+              }
+            }
           }
           return exact;
         })()

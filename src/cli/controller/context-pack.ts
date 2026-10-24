@@ -1,4 +1,5 @@
 import {
+  exactCodeNeedleMatches,
   gitSnapshot,
   getRepositoryReadSessionCache,
   searchRepositoryMany,
@@ -898,6 +899,11 @@ export function buildControllerContextPack(
     .map((file) => file.path);
   const materializedExactKnownSet = new Set(materializedExactKnownPaths);
   const omittedCandidateCount = rankedCandidates.filter((entry) => !inspectedSet.has(entry.path)).length;
+  // A fully materialized known file is not sufficient when an explicitly
+  // authored code symbol is absent from the actual snippets emitted to the model.
+  const requiredSymbolEvidenceMissing = requiredSearchQueries.some((query) =>
+    !files.some((file) => file.snippets.some((snippet) =>
+      exactCodeNeedleMatches(snippet.content.toLowerCase(), query.toLowerCase()))));
   const exactKnownFilesLosslesslyMaterialized = scopedExactKnownFileSearch
     && exactKnownFiles.length > 0
     && exactKnownFiles.every((path) => files.some((file) => file.path === path
@@ -911,6 +917,7 @@ export function buildControllerContextPack(
   // separate readiness failure through `rawSnippetTruncated`.
   const evidenceSearchTruncated = searchTruncated
     && !(exactKnownFilesLosslesslyMaterialized
+      && !requiredSymbolEvidenceMissing
       && omittedCandidateCount === 0
       && policyDeniedFiles === 0
       && deniedPaths.length === 0
@@ -926,6 +933,7 @@ export function buildControllerContextPack(
     ...(files.length === 0 ? ["raw_source_unavailable"] : []),
     ...(rawSnippetTruncated ? ["raw_source_truncated"] : []),
     ...(evidenceSearchTruncated ? ["retrieval_truncated"] : []),
+    ...(requiredSymbolEvidenceMissing ? ["required_symbol_not_materialized"] : []),
     ...(structuralMode === "required" && !structuralContext.requiredSatisfied ? ["required_structural_context_unsatisfied"] : []),
     ...(structuralContext.status === "stale" ? ["structural_context_stale"] : []),
     ...(structuralContext.status === "unavailable" || structuralContext.status === "degraded" ? ["structural_provider_degraded"] : []),
