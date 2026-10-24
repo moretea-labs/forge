@@ -81,6 +81,18 @@ describe('Controller-global existing Grant migration', () => {
   test('does not migrate unrelated repository-owned provider grants', () => {
     const home = controllerHome();
     const old = grant(home, 'repo-legacy', 'github.write');
+    const phones = ['ios-physical-device', 'action:physical_device_open'].map((capabilityId) =>
+      recordPluginCapabilityAuthorization(home, {
+        ownerScope: 'mcp:owner', repoId: 'repo-phone', pluginId: 'computer', capabilityId,
+        target, scopes: ['ios.device'], riskCeiling: 'workspace_write', expiresInMinutes: 60,
+      }));
+    const browser = recordPluginCapabilityAuthorization(home, {
+      ownerScope: 'mcp:owner', repoId: 'repo-browser', pluginId: 'computer', capabilityId: 'browser-interaction',
+      target, scopes: ['browser'], riskCeiling: 'workspace_write', expiresInMinutes: 60,
+    });
+    expect(migrateControllerPluginCapabilityAuthorizations(home, ['computer'])).toEqual(['computer']);
+    for (const phone of phones) expect(findActivePluginCapabilityAuthorizationById(home, phone.grantId)?.repoId).toBe('repo-phone');
+    expect(findActivePluginCapabilityAuthorizationById(home, browser.grantId)?.repoId).toBe('controller:global');
     expect(migrateControllerPluginCapabilityAuthorizations(home, ['resend'])).toEqual([]);
     expect(findActivePluginCapabilityAuthorizationById(home, old.grantId)?.repoId).toBe('repo-legacy');
   });
@@ -111,7 +123,28 @@ describe('Controller-global historical receipt migration', () => {
       semanticKey: oldSemantic, createdAt: oldReceipt.createdAt,
     }));
 
+    const phoneId = 'phone-repository-write';
+    const phoneReceiptId = 'PLG-phone-write';
+    const phoneSemantic = `plugin-action:${oldScope}:computer:physical_device_open:12345`;
+    const phoneReceipt = { ...oldReceipt, receiptId: phoneReceiptId, requestId: phoneId,
+      pluginId: 'computer', actionId: 'physical_device_open', semanticKey: phoneSemantic,
+      status: 'failed', effectOutcome: 'unknown' };
+    const phoneSource = join(receiptRoot, `${phoneReceiptId}.json`);
+    const phoneIndex = join(indexRoot, `${createHash('sha256').update(phoneId).digest('hex')}.json`);
+    writeFileSync(phoneSource, JSON.stringify(phoneReceipt));
+    writeFileSync(phoneIndex, JSON.stringify({ requestId: phoneId, scopeKey: oldScope, repoId: oldScope,
+      receiptId: phoneReceiptId, semanticKey: phoneSemantic, createdAt: oldReceipt.createdAt }));
+    const beforeReceipt = readFileSync(phoneSource, 'utf8');
+    const beforeIndex = readFileSync(phoneIndex, 'utf8');
     const migrated = readPluginActionReceiptForRequest(home, requestId);
+    expect(readFileSync(phoneSource, 'utf8')).toBe(beforeReceipt);
+    expect(readFileSync(phoneIndex, 'utf8')).toBe(beforeIndex);
+    const phoneContext = { repoId: oldScope, pluginId: 'computer', actionId: 'physical_device_open' };
+    expect(readPluginActionReceiptForRequest(home, phoneId, phoneContext)).toMatchObject(phoneReceipt);
+    expect(() => readPluginActionReceiptForRequest(home, phoneId, { ...phoneContext, repoId: 'other-repo' }))
+      .toThrow('REQUEST_ID_SCOPE_CONFLICT');
+    expect(() => readPluginActionReceiptForRequest(home, phoneId, { ...phoneContext, actionId: 'physical_device_tap' }))
+      .toThrow('REQUEST_ID_SCOPE_CONFLICT');
     expect(migrated).toMatchObject({
       receiptId, requestId, scopeKey: 'forge-instance',
       workRepoId: oldScope, workId: 'work-mail-legacy',

@@ -1458,6 +1458,7 @@ function migrateControllerPluginActionReceipts(controllerHome: string, pluginIds
     indexPath: string,
   ): boolean => {
     if (!controllerPluginIds.has(receipt.pluginId) || receipt.observationOnly === true) return false;
+    if (repositoryComputerPhysicalAction(resolvePluginAdapter(controllerHome, receipt.pluginId), receipt)) return false;
     if (!receipt.receiptId || !receipt.requestId) return false;
     const recordedScope = receipt.scopeKey?.trim() || receipt.repoId?.trim() || oldScopeKey;
     if (recordedScope !== oldScopeKey && recordedScope !== CONTROLLER_PLUGIN_SCOPE_KEY) return false;
@@ -1595,16 +1596,28 @@ export function findPluginActionReceipt(
 }
 
 /** Exact request lookup for subordinate Workflow recovery; never dispatches an action. */
-export function readPluginActionReceiptForRequest(controllerHome: string, requestId: string): PluginActionReceipt | undefined {
-  ensureControllerPluginStateMigrated(controllerHome);
+export function readPluginActionReceiptForRequest(
+  controllerHome: string,
+  requestId: string,
+  repositoryAction?: { repoId: string; pluginId: string; actionId: string },
+): PluginActionReceipt | undefined {
+  const repositoryPhone = repositoryAction && repositoryComputerPhysicalAction(
+    resolvePluginAdapter(controllerHome, repositoryAction.pluginId), repositoryAction,
+  );
+  if (!repositoryPhone) ensureControllerPluginStateMigrated(controllerHome);
   const path = pluginActionRequestPath(controllerHome, requestId);
   if (!existsSync(path)) return undefined;
   const index = readJsonFile<PluginActionRequestIndex>(path);
   if (index.requestId !== requestId) throw new Error('PLUGIN_RECEIPT_REQUEST_MISMATCH');
   const scopeKey = index.scopeKey?.trim() || index.repoId?.trim();
   if (!scopeKey) throw new Error('PLUGIN_RECEIPT_REQUEST_SCOPE_CORRUPT');
+  if (repositoryPhone && scopeKey !== repositoryAction.repoId) throw new Error(`REQUEST_ID_SCOPE_CONFLICT: ${requestId}`);
   const receipt = readPluginActionReceipt(controllerHome, scopeKey, index.receiptId);
   if (!receipt || receipt.requestId !== requestId || receipt.semanticKey !== index.semanticKey) throw new Error('PLUGIN_RECEIPT_LOST');
+  if (repositoryPhone && (receipt.scopeKey !== repositoryAction.repoId
+    || receipt.pluginId !== repositoryAction.pluginId || receipt.actionId !== repositoryAction.actionId)) {
+    throw new Error(`REQUEST_ID_SCOPE_CONFLICT: ${requestId}`);
+  }
   return receipt;
 }
 
@@ -1855,7 +1868,7 @@ async function submitPluginAction(
   if (!adapter) throw new Error(`PLUGIN_NOT_FOUND: ${request.pluginId}`);
   const manifest = scope.kind === 'controller'
     ? getControllerPluginManifest(controllerHome, request.pluginId)
-    : getAssistantPluginManifest(controllerHome, scope.repository!, request.pluginId);
+    : getAssistantPluginManifestForAction(controllerHome, scope.repository!, request);
   const action = actionForManifest(manifest, request.actionId);
   if (!manifest.enabled && action.actionId !== 'configure') {
     throw new Error(`PLUGIN_DISABLED: ${request.pluginId} is disabled`);
@@ -2152,7 +2165,7 @@ async function submitPluginAction(
     }
     const nextManifest = scope.kind === 'controller'
       ? getControllerPluginManifest(controllerHome, request.pluginId)
-      : getAssistantPluginManifest(controllerHome, scope.repository!, request.pluginId);
+      : getAssistantPluginManifestForAction(controllerHome, scope.repository!, request);
     return {
       manifest: nextManifest,
       action,
