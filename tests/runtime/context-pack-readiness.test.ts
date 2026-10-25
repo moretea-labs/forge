@@ -433,6 +433,23 @@ test('regex literal braces do not terminate nested template interpolation or inv
     expect(exactCodeOwnerQueries(source, ['fakeRegexNestedOwner', 'actualOwnerAfterRegex']))
       .toEqual(['actualOwnerAfterRegex']);
   }
+
+  const controlConditionSource = [
+    'const example = ' + tick + interpolation + ' (() => {',
+    '  if (condition) /}/.test(condition);',
+    '})() + ' + tick,
+    'function fakeRegexAfterControlOwner() { return true; }',
+    tick + '}' + tick + ';',
+    'export function actualOwnerAfterControlRegex() { return true; }',
+  ].join('\n');
+  expect(exactCodeOwnerEvidence(controlConditionSource, 'fakeRegexAfterControlOwner').owner).toBe(false);
+  expect(exactCodeOwnerEvidence(controlConditionSource, 'actualOwnerAfterControlRegex').owner).toBe(true);
+
+  const propertyKeywordDivisionSource = [
+    'const quotient = receiver.if(condition) / 2;',
+    'export function actualOwnerAfterPropertyKeywordDivision() { return quotient; }',
+  ].join('\n');
+  expect(exactCodeOwnerEvidence(propertyKeywordDivisionSource, 'actualOwnerAfterPropertyKeywordDivision').owner).toBe(true);
 });
 
 test('retains separate explicit code symbols in sync and async discovery beyond the inventory cap', async () => {

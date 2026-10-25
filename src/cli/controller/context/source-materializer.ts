@@ -88,6 +88,7 @@ const METHOD_CONTROL_KEYWORDS = new Set([
   'yield', 'await', 'function', 'class', 'interface', 'type', 'const', 'let', 'var',
   'case', 'default', 'import', 'export', 'extends', 'implements', 'super', 'this',
 ]);
+const CONTROL_PAREN_KEYWORDS = new Set(['if', 'for', 'while', 'switch', 'catch', 'with']);
 
 function escapeCodeOwnerNeedle(needle: string): string {
   return needle.replace(/[.*+?^${}()|[\]\\]/g, (match) => '\\' + match);
@@ -110,7 +111,15 @@ function maskCommentsAndStrings(source: string): string {
   // Track template interpolation nesting, not a single template toggle:
   // nested literal text must never become executable owner evidence.
   type Mode = 'code' | 'template' | 'line-comment' | 'block-comment' | 'single-string' | 'double-string' | 'regex';
-  const frames: Array<{ mode: Mode; braceDepth?: number; regexAllowed?: boolean; regexClass?: boolean }> = [{ mode: 'code', regexAllowed: true }];
+  const frames: Array<{
+    mode: Mode;
+    braceDepth?: number;
+    regexAllowed?: boolean;
+    regexClass?: boolean;
+    pendingControlParen?: 'for' | 'control';
+    parenKinds?: boolean[];
+    previousSignificantChar?: string;
+  }> = [{ mode: 'code', regexAllowed: true, parenKinds: [] }];
   const masked = source.split('');
   const hide = (index: number): void => {
     if (source[index] !== '\n' && source[index] !== '\r') masked[index] = ' ';
@@ -168,7 +177,7 @@ function maskCommentsAndStrings(source: string): string {
         hide(index);
         hide(index + 1);
         index += 1;
-        frames.push({ mode: 'code', braceDepth: 1, regexAllowed: true });
+        frames.push({ mode: 'code', braceDepth: 1, regexAllowed: true, parenKinds: [] });
       } else if (current === quote) {
         hide(index);
         frames.pop();
@@ -196,12 +205,33 @@ function maskCommentsAndStrings(source: string): string {
       let end = index + 1;
       while (end < source.length && /[$_\p{L}\p{N}]/u.test(source[end]!)) end += 1;
       const token = source.slice(index, end);
-      frame.regexAllowed = /^(?:return|throw|case|yield|await|delete|typeof|void|in|of)$/.test(token);
+      frame.regexAllowed = /^(?:return|throw|case|yield|await|delete|typeof|void|in|of|else|do)$/.test(token);
+      frame.pendingControlParen = CONTROL_PAREN_KEYWORDS.has(token) && frame.previousSignificantChar !== '.'
+        ? token === 'for' ? 'for' : 'control'
+        : frame.pendingControlParen === 'for' && token === 'await' ? 'for' : undefined;
+      frame.previousSignificantChar = source[end - 1]!;
       index = end - 1;
       continue;
     }
+    if (current === '(') {
+      (frame.parenKinds ??= []).push(frame.pendingControlParen !== undefined);
+      frame.pendingControlParen = undefined;
+      frame.regexAllowed = true;
+      frame.previousSignificantChar = current;
+      continue;
+    }
+    if (current === ')') {
+      frame.regexAllowed = frame.parenKinds?.pop() ?? false;
+      frame.pendingControlParen = undefined;
+      frame.previousSignificantChar = current;
+      continue;
+    }
+    if (!/\s/.test(current) && !(current === '/' && (next === '/' || next === '*'))) {
+      frame.pendingControlParen = undefined;
+    }
     if (current === '/' && next !== '/' && next !== '*' && frame.regexAllowed) {
       hide(index);
+      frame.previousSignificantChar = current;
       frames.push({ mode: 'regex', regexClass: false });
       continue;
     }
@@ -218,13 +248,16 @@ function maskCommentsAndStrings(source: string): string {
     } else if (current === "'" || current === '"') {
       hide(index);
       frame.regexAllowed = false;
+      frame.previousSignificantChar = current;
       frames.push({ mode: current === "'" ? 'single-string' : 'double-string' });
     } else if (current === templateQuote) {
       hide(index);
       frame.regexAllowed = false;
+      frame.previousSignificantChar = current;
       frames.push({ mode: 'template' });
     } else if (!/\s/.test(current)) {
       frame.regexAllowed = !/[\p{N}\])}.]/u.test(current);
+      frame.previousSignificantChar = current;
     }
   }
   return masked.join('');
