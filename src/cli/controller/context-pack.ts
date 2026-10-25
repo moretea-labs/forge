@@ -381,10 +381,13 @@ export function buildControllerContextPack(
     && structuralMode === "off"
     && impactDomains.length === 0
     && searchIncludeGlobs.length === 0;
-  // Two source windows cannot guarantee coverage for three or more independent
-  // authored symbols. Preserve the old scoped path in those cases rather than
-  // replacing already-correct early evidence with a partial late selection.
-  const useBoundedExactWindows = scopedExactKnownFileSearch && requiredSearchQueries.length <= 2;
+  // Reserve one exact declaration window per authored owner only when the
+  // caller supplied enough snippet slots. The two-slot saturated case remains
+  // fail-closed; a three-slot request must not lose its third late owner to
+  // earlier lexical references.
+  const useBoundedExactWindows = scopedExactKnownFileSearch
+    && requiredSearchQueries.length > 0
+    && requiredSearchQueries.length <= requestedMaxSnippets;
   const scopedRequiredHitLines = new Map<string, Array<{ line: number; query: string }>>();
 
   // Lexical retrieval is one bounded pass across candidate files for all terms.
@@ -563,16 +566,19 @@ export function buildControllerContextPack(
     // dense references to one symbol to consume both available windows.
     const rankedRequiredWindows = requiredWindows.sort((a, b) =>
       b.queries.size - a.queries.size || b.count - a.count || a.first - b.first);
-    // Preserve the highest-ranked declaration first, then use the existing
-    // second slot for a different authored symbol before duplicate references.
-    const firstRequiredWindow = rankedRequiredWindows[0];
-    const secondRequiredWindow = firstRequiredWindow && requiredSearchQueries.length > 1
-      ? rankedRequiredWindows.slice(1).find((window) =>
-          [...window.queries].some((query) => !firstRequiredWindow.queries.has(query)))
-        ?? rankedRequiredWindows[1]
-      : undefined;
-    const prioritizedLines = [firstRequiredWindow, secondRequiredWindow]
-      .filter((window) => window !== undefined)
+    // Cover distinct required owners before duplicate dense reference windows.
+    // This is bounded by the caller's existing snippet budget (maximum 80);
+    // no extra file search or source scan is introduced.
+    const chosenRequiredWindows: typeof rankedRequiredWindows = [];
+    const coveredQueries = new Set<string>();
+    for (const window of rankedRequiredWindows) {
+      if (chosenRequiredWindows.length >= Math.min(fileSnippetBudget, requiredSearchQueries.length || 1)) break;
+      if (chosenRequiredWindows.length > 0
+        && ![...window.queries].some((query) => !coveredQueries.has(query))) continue;
+      chosenRequiredWindows.push(window);
+      for (const query of window.queries) coveredQueries.add(query);
+    }
+    const prioritizedLines = chosenRequiredWindows
       // Shift anchors so each bounded source window includes its last hit.
       .map((window) => Math.max(window.first, window.last - 28));
     let snippets: ControllerContextPackSnippet[] = [];
