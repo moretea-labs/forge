@@ -426,6 +426,16 @@ describe('Recovery ReleaseSession', () => {
       });
     } finally { Date.now = wallNow; }
 
+    // Damage in an inventory alone cannot grant a rollback decision when
+    // the fixture has no matching *live* Runtime authority/SQLite snapshot.
+    const damagedFile = join(home, 'recovery', 'state', 'release-sessions', 'damaged-session-123456.json');
+    writeFileSync(damagedFile, '{broken-json');
+    Date.now = () => wallNow() + 31 * 60_000;
+    try {
+      expect(() => decideConfiguredRuntimeReleaseReconciliation(home, () => ({ configured: false })))
+        .toThrow('RELEASE_SESSION_INVENTORY_INCOMPLETE');
+    } finally { Date.now = wallNow; rmSync(damagedFile); }
+
     const thirdCandidate: CandidateExecutionLane = { ...successorCandidate, sessionId: 'release-session-third-123456', controllerHome: join(home, 'candidate-third'), serviceLabel: 'candidate-third', port: 8768, databaseSnapshotPath: join(home, 'candidate-third', 'control-plane.sqlite') };
     expect(() => createReleaseSession({ controllerHome: home, sessionId: thirdCandidate.sessionId, stable, stableRelease: successorStableRelease, candidate: thirdCandidate, sourceRevision: 'ghi789' }))
       .toThrow('RELEASE_SESSION_ACTIVE_EXISTS');

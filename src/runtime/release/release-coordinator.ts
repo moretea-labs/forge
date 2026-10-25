@@ -7,6 +7,7 @@ import {
   releaseSessionIsTerminal,
   type ReleaseSession,
 } from './release-session';
+import { readRuntimeReleaseAuthority } from '../root/release-store';
 
 export interface RuntimeReleaseContext {
   controllerHome: string;
@@ -84,8 +85,38 @@ const MAX_AUTONOMOUS_RELEASE_ADVANCES = 8;
 
 function completeRuntimeReleaseSessions(controllerHome: string): ReleaseSession[] {
   const inventory = listCompleteReleaseSessions(controllerHome);
-  if (inventory.invalidSessionFiles.length > 0) {
-    throw new Error(`RELEASE_SESSION_INVENTORY_INCOMPLETE: invalid=${inventory.invalidSessionFiles.join(',') || 'none'}`);
+  if (inventory.invalidSessionFiles.length > 0 || inventory.truncated) {
+    // An invalid unrelated JSON file must not permanently prevent an exact
+    // already-live Candidate B from reaching its frozen rollback deadline.
+    // This narrow exception is only for deadline reconciliation; no new
+    // sessions/cutovers/known-good recoverability may be authorized by it.
+    const expired = inventory.sessions.filter((s) => releaseSessionAcceptanceTimedOut(s, Date.now()));
+    const authority = readRuntimeReleaseAuthority(controllerHome);
+    const sole = expired.length === 1 ? expired[0] : undefined;
+    const candidate = sole?.candidateRelease;
+    const transaction = sole?.transaction;
+    const exactCutover = Boolean(sole && candidate && transaction && authority
+      && transaction.candidateReleaseId === candidate.releaseId
+      && authority.active.releaseId === candidate.releaseId
+      && authority.active.artifactIdentity === candidate.artifactIdentity
+      && authority.active.manifestSha256 === candidate.manifestSha256
+      && authority.revision === transaction.cutoverAuthorityRevision
+      && authority.previous?.releaseId === sole.stableRelease.releaseId
+      && authority.previous?.artifactIdentity === sole.stableRelease.artifactIdentity
+      && authority.previous?.manifestSha256 === sole.stableRelease.manifestSha256
+      && authority.previous.databaseBackup?.path === transaction.rollbackRelease.databaseBackup?.path);
+    const alreadyRolledBack = Boolean(sole && candidate && authority
+      && authority.operationId.startsWith(`release-session-rollback:${sole.sessionId}:`)
+      && authority.active.releaseId === sole.stableRelease.releaseId
+      && authority.active.artifactIdentity === sole.stableRelease.artifactIdentity
+      && authority.previous?.releaseId === candidate.releaseId
+      && authority.previous.artifactIdentity === candidate.artifactIdentity);
+    if (!sole || (!exactCutover && !alreadyRolledBack)) {
+      throw new Error(`RELEASE_SESSION_INVENTORY_INCOMPLETE: invalid=${inventory.invalidSessionFiles.join(',') || 'none'}`);
+    }
+    // Return only the exact fenced rollback claimant. Damaged inventory
+    // cannot grant progression rights to any unfinished successor.
+    return [sole];
   }
   return inventory.sessions;
 }

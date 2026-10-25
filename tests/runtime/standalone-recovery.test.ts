@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
+import { decideConfiguredRuntimeReleaseReconciliation } from '../../src/runtime/release/release-coordinator';
 import { CLIENT_CAPABILITIES_META_KEY, CLIENT_INFO_META_KEY, PROTOCOL_VERSION_META_KEY } from '@modelcontextprotocol/server';
 import { execFileSync } from 'child_process';
 import { createHash } from 'crypto';
@@ -2984,6 +2985,18 @@ describe('standalone recovery on canonical Runtime', () => {
       const provisional = await attestKnownGood(config);
       expect(provisional.revision).toBe('release-b');
       expect((await listReleases(config)).knownGood).toEqual([]);
+      // Keep unrelated Session JSON corrupt through the *actual* Recovery
+      // reconciliation and rollback. The live authority + frozen predecessor
+      // transaction must allow exactly this rollback, not source progression.
+      const damaged = join(home, 'recovery', 'state', 'release-sessions', 'unreadable-session-123456.json');
+      writeFileSync(damaged, '{broken-json');
+      const wallClock = Date.now;
+      Date.now = () => wallClock() + 31 * 60_000;
+      try {
+        expect(decideConfiguredRuntimeReleaseReconciliation(home, () => {
+          throw new Error('source observer unavailable during corrupt inventory');
+        })).toMatchObject({ required: true, action: 'promote_known_good', session: { sessionId } });
+      } finally { Date.now = wallClock; }
       const promoted = await promoteConfiguredRuntimeReleaseSessionKnownGood(config, sessionId, {
         continuationProof: async () => undefined,
         readCpu: () => ({ cpuMs: cpuMs += 5_000, processStartTime: 'fixture-process-start' }),

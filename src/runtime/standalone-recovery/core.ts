@@ -4977,6 +4977,22 @@ export async function cutoverConfiguredRuntimeReleaseSession(
       return { ok: false as const, attempted: false, noOp: true, detail: `RELEASE_SESSION_CUTOVER_REQUIRES_ELIGIBLE: ${session.phase}`, releaseSession: session };
     }
 
+    // A successor can prepare and verify in parallel but may not cut over
+    // while a predecessor with a bounded Soak acceptance is still unsettled.
+    // This check runs under the same Recovery mutation lock used by rollback.
+    const hasPendingTimedPredecessor = () => {
+      const inventory = listCompleteReleaseSessions(config.controllerHome);
+      if (inventory.invalidSessionFiles.length > 0 || inventory.truncated)
+        throw new Error('RELEASE_SESSION_INVENTORY_INCOMPLETE_BEFORE_CUTOVER');
+      return inventory.sessions.some((previous) => previous.sessionId !== sessionId
+        && previous.phase === 'soaking'
+        && previous.receipts.some((receipt) => receipt.id === 'acceptance_timeout_policy_v1')
+        && releaseSessionIsSoakingPredecessorOfStable(previous, session.stableRelease));
+    };
+    if (hasPendingTimedPredecessor()) {
+      return { ok: false as const, attempted: false, noOp: true,
+        detail: 'RELEASE_SESSION_CUTOVER_DEFERRED_FOR_UNACCEPTED_PREDECESSOR', releaseSession: session };
+    }
     try {
       assertStableReleaseSessionIdentityCurrent(config, session.stableRelease);
       const stableBefore = await verifyLocalRuntimeForReleaseCutover(config);
@@ -5112,6 +5128,12 @@ export async function cutoverConfiguredRuntimeReleaseSession(
           };
         }
 
+        // Re-evaluate at the actual commit boundary: preceding readiness
+        // and connector drain can consume the remainder of the Soak window.
+        if (hasPendingTimedPredecessor()) {
+          return { ok: false as const, attempted: false, noOp: true,
+            detail: 'RELEASE_SESSION_CUTOVER_DEFERRED_FOR_UNACCEPTED_PREDECESSOR', releaseSession: session };
+        }
         session = advanceReleaseSession({
           controllerHome: config.controllerHome,
           sessionId,
