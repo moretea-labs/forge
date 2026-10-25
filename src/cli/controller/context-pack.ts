@@ -603,7 +603,7 @@ export function buildControllerContextPack(
       for (const snippet of snippets) {
         for (const query of snippet.ownerQueries ?? []) emittedOwnerEvidence.add(query);
         if (scopedExactKnownFileSearch && !useBoundedExactWindows) {
-          for (const query of exactCodeOwnerQueries(snippet.content, requiredSearchQueries)) emittedOwnerEvidence.add(query);
+          for (const query of exactCodeOwnerQueries(snippet.content, requiredSearchQueries, true)) emittedOwnerEvidence.add(query);
         }
       }
       snippets = snippets.map(({ ownerQueries: _ownerQueries, ...snippet }) => snippet);

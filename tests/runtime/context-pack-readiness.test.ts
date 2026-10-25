@@ -431,8 +431,18 @@ test('nested templates never manufacture exact owner declarations and interpolat
   expect(exactCodeOwnerEvidence(source, 'fakeNestedOwner').owner).toBe(false);
   expect(exactCodeOwnerEvidence(source, 'fakeQuotedOwner').owner).toBe(false);
   expect(exactCodeOwnerEvidence(source, 'realAfterTemplate').owner).toBe(true);
-  expect(exactCodeOwnerEvidence('1: export function numberedOwner() {}', 'numberedOwner').owner).toBe(true);
-  expect(exactCodeOwnerQueries('1: export function numberedOwner() {}', ['numberedOwner'])).toEqual(['numberedOwner']);
+  expect(exactCodeOwnerEvidence('1: export function numberedOwner() {}', 'numberedOwner').owner).toBe(false);
+  expect(exactCodeOwnerEvidence('1: export function numberedOwner() {}', 'numberedOwner', true).owner).toBe(true);
+  expect(exactCodeOwnerQueries('1: export function numberedOwner() {}', ['numberedOwner'])).toEqual([]);
+  expect(exactCodeOwnerQueries('1: export function numberedOwner() {}', ['numberedOwner'], true)).toEqual(['numberedOwner']);
+
+  // A raw ripgrep line can be a numeric-key object property followed by a
+  // named function expression. It is not a line-number prefix.
+  expect(exactCodeOwnerEvidence('10: function targetSymbol() { return true; }', 'targetSymbol').owner).toBe(false);
+  // In an explicitly numbered materialized snippet, stripping the outer
+  // source line number must preserve the inner numeric property key.
+  expect(exactCodeOwnerEvidence('42: 10: function targetSymbol() { return true; }', 'targetSymbol', true).owner).toBe(false);
+  expect(exactCodeOwnerQueries('10: function targetSymbol() { return true; }', ['targetSymbol'])).toEqual([]);
   expect(exactCodeOwnerEvidence(source, 'realInsideExpression').owner).toBe(true);
   expect(exactCodeOwnerEvidence('export function gammaHandler() {}', 'GammaHandler').owner).toBe(true);
   expect(exactCodeOwnerQueries('export function gammaHandler() {}', ['GammaHandler'])).toEqual(['GammaHandler']);
