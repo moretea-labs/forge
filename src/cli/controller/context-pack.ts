@@ -906,7 +906,7 @@ export function buildControllerContextPack(
   const requiredSymbolEvidenceMissing = requiredSearchQueries.some((query) =>
     !files.some((file) => file.snippets.some((snippet) => {
       if (scopedExactKnownFileSearch && useBoundedExactWindows) {
-        return snippet.content.split(/\r?\n/).some((line) => exactCodeOwnerEvidence(line, query).owner);
+        return exactCodeOwnerEvidence(snippet.content, query).owner;
       }
       return exactCodeNeedleMatches(snippet.content.toLowerCase(), query.toLowerCase());
     })));

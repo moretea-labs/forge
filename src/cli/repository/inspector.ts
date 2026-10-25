@@ -532,29 +532,30 @@ const METHOD_CONTROL_KEYWORDS = new Set([
   'case', 'default', 'import', 'export', 'extends', 'implements', 'super', 'this',
 ]);
 
-function exactCodeOwnerPattern(query: string): string {
+function exactCodeOwnerPatterns(query: string): { declarations: string; caseLabel: string } {
   const escaped = escapeCodeNeedle(query);
   const declaration = '^\\s*(?:(?:export|declare|default|async)\\s+)*(?:function|class|interface|type|const|let|enum)\\s+' + escaped + '(?:$|[^\\p{L}\\p{N}_$])';
-  const method = METHOD_CONTROL_KEYWORDS.has(query.toLowerCase()) ? '' : '|^\\s*(?:(?:public|private|protected|static|abstract|override|async|get|set)\\s+)*(?:\\*\\s*)?#?' + escaped + '\\s*(?:<[^>\\n]+>)?\\s*\\([^;\\n]*\\)\\s*(?::\\s*.*?)?\\s*\\{';
-  const arrow = METHOD_CONTROL_KEYWORDS.has(query.toLowerCase()) ? '' : '|^\\s*(?:(?:public|private|protected|static|readonly|declare)\\s+)*#?' + escaped + '\\??\\s*=\\s*(?:async\\s*)?(?:<[^>\\n]+>\\s*)?(?:\\([^;\\n]*\\)|[\\w$]+)\\s*(?::\\s*[^=;\\n]+)?\\s*=>';
-  const caseLabel = "|^\\s*case\\s+['\"]" + escaped + "['\"]\\s*:";
-  return '(?:' + declaration + method + arrow + caseLabel + ')';
+  const method = METHOD_CONTROL_KEYWORDS.has(query.toLowerCase()) ? '' : '|^\\s*(?:(?:public|private|protected|static|abstract|override|async|get|set)\\s+)*(?:\\*\\s*)?#?' + escaped + '\\s*(?:<[^>\\n]+>)?\\s*\\([^;]{0,499}?\\)\\s*(?::\\s*[^;]{0,499}?)?\\s*\\{';
+  const arrow = METHOD_CONTROL_KEYWORDS.has(query.toLowerCase()) ? '' : '|^\\s*(?:(?:public|private|protected|static|readonly|declare)\\s+)*#?' + escaped + '\\??\\s*=\\s*(?:async\\s*)?(?:<[^>\\n]+>\\s*)?(?:\\([^;]{0,499}?\\)|[\\w$]+)\\s*(?::\\s*[^=;]{0,499}?)?\\s*=>';
+  const quoteChars = "['\"" + String.fromCharCode(96) + "]";
+  const caseLabel = '^\\s*case\\s+' + quoteChars + escaped + quoteChars + '\\s*:';
+  return { declarations: declaration + method + arrow, caseLabel };
+}
+
+function exactCodeOwnerPattern(query: string): string {
+  const patterns = exactCodeOwnerPatterns(query);
+  return '(?ms)(?:' + patterns.declarations + '|' + patterns.caseLabel + ')';
 }
 
 export function exactCodeOwnerEvidence(source: string, query: string): { declared: string | undefined; owner: boolean } {
-  const line = source.trimStart().replace(/^\d+:\s*/, '');
-  const declared = /^(?:(?:export|declare|default|async)\s+)*(?:function|class|interface|type|const|let|enum)\s+([\w$]+)/.exec(line)?.[1];
-  const method = /^(?:(?:public|private|protected|static|abstract|override|async|get|set)\s+)*(?:\*\s*)?#?([\w$]+)\s*(?:<[^>\n]+>)?\s*\([^;\n]*\)\s*(?::\s*.*?)?\s*\{/.exec(line)?.[1];
-  const methodDeclared = method && !METHOD_CONTROL_KEYWORDS.has(method.toLowerCase()) ? method : undefined;
-  const arrow = /^(?:(?:public|private|protected|static|readonly|declare)\s+)*#?([\w$]+)\??\s*=\s*(?:async\s*)?(?:<[^>\n]+>\s*)?(?:\([^;\n]*\)|[\w$]+)\s*(?::\s*[^=;\n]+)?\s*=>/.exec(line)?.[1];
-  const ownerName = declared ?? methodDeclared ?? arrow;
-  const caseOwner = /^case\s+['"\u0060]([^'"\u0060]+)['"\u0060]\s*:/.exec(line)?.[1];
-  const normalizedQuery = query.toLowerCase();
-  return {
-    declared: ownerName,
-    owner: ownerName?.toLowerCase() === normalizedQuery || caseOwner?.toLowerCase() === normalizedQuery,
-  };
+  const normalized = source.split(/\r?\n/).map((line) => line.replace(/^\s*\d+:\s*/, '')).join('\n');
+  const patterns = exactCodeOwnerPatterns(query);
+  const declared = new RegExp('(?:' + patterns.declarations + ')', 'imsu').test(normalized) ? query : undefined;
+  const owner = declared !== undefined || new RegExp('(?:' + patterns.caseLabel + ')', 'imsu').test(normalized);
+  return { declared, owner };
 }
+
+
 
 export function exactCodeNeedleMatches(haystack: string, needle: string): boolean {
   const escaped = escapeCodeNeedle(needle);
@@ -721,6 +722,7 @@ function ripgrepCandidateLines(
     if (remainingMs <= 0) throw new Error('RIPGREP_SEARCH_TIMEOUT: source discovery exceeded 15s total budget');
     const result = runProcess('rg', [
       '--json', '--with-filename', '--line-number', '--no-heading', '--color', 'never', '--no-ignore', '--no-config', '--no-messages',
+      ...(ownerDeclarationsOnly ? ['--multiline'] : []),
       ...(exactCodeSymbols || ownerDeclarationsOnly ? [] : ['--fixed-strings']),
       '--max-count', String(maxMatchesPerFile),
       ...(caseSensitive ? [] : ['--ignore-case']),
@@ -886,16 +888,21 @@ export function searchRepositoryMany(
               )));
             if (requiredLines.length > 0) exact.set(path, prioritizeOwners(requiredLines));
           }
-          // A bounded owner-only pass avoids rg's per-file hit cap being consumed
-          // by references before a late declaration. It runs only on saturated,
-          // already-authorized known files, independently for each authored symbol.
+          // Search saturated paths and any known path with required hits but no
+          // recognized owner line; multiline declarations may start on one hit line.
+          const ownerSearchPaths = new Set<string>(saturatedPaths);
+          for (const [path, lines] of exact) {
+            if (ownerSearchPaths.has(path)) continue;
+            if (requiredQueries.some((query) => !lines.some((line) =>
+              exactCodeOwnerEvidence(line.text, query).owner))) ownerSearchPaths.add(path);
+          }
           // Keep owner lines first so the downstream per-query result cap cannot
           // discard them in favor of earlier references.
-          if (saturatedPaths.length > 0) {
+          if (ownerSearchPaths.size > 0) {
             const ownerLinesByPath = new Map<string, Array<{ line: number; text: string }>>();
             for (const query of requiredQueries) {
               for (const [path, lines] of ripgrepCandidateLines(
-                repoRoot, saturatedPaths, [query], opts.caseSensitive === true,
+                repoRoot, [...ownerSearchPaths], [query], opts.caseSensitive === true,
                 maxResultsPerQuery, skippedBinaryPaths, 1, false, true,
               )) {
                 const merged = new Map<number, { line: number; text: string }>(
@@ -905,7 +912,7 @@ export function searchRepositoryMany(
                 ownerLinesByPath.set(path, [...merged.values()]);
               }
             }
-            for (const path of saturatedPaths) {
+            for (const path of ownerSearchPaths) {
               const merged = new Map<number, { line: number; text: string }>();
               for (const line of ownerLinesByPath.get(path) ?? []) merged.set(line.line, line);
               for (const line of exact.get(path) ?? []) if (!merged.has(line.line)) merged.set(line.line, line);
