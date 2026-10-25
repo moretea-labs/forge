@@ -109,6 +109,11 @@ test('recovers late owners and requires emitted owner evidence before accepting 
     'export function betaMethod() { return true; }',
     'export function gammaHandler() { return true; }',
   ];
+  const multiRequiredCompleteLines = [
+    'export function alphaOwner() { return true; }',
+    'export function betaMethod() { return true; }',
+    'export function gammaHandler() { return true; }',
+  ];
   const caseLabelOwnerLines = [
     ...Array.from({ length: 170 }, () => 'gammaHandler();'),
     'function dispatch(kind: string) {',
@@ -146,6 +151,7 @@ test('recovers late owners and requires emitted owner evidence before accepting 
     'export function templateThenRealOwner() { return true; }',
   ];
   writeFileSync(join(root, 'src/multi-required.ts'), `${multiRequiredLines.join('\n')}\n`);
+  writeFileSync(join(root, 'src/multi-required-complete.ts'), `${multiRequiredCompleteLines.join('\n')}\n`);
   writeFileSync(join(root, 'src/case-label-owner.ts'), `${caseLabelOwnerLines.join('\n')}\n`);
   writeFileSync(join(root, 'src/comment-only-owner.ts'), commentOnlyOwnerLines.join('\n') + '\n');
   writeFileSync(join(root, 'src/comment-before-real-owner.ts'), commentBeforeRealOwnerLines.join('\n') + '\n');
@@ -286,6 +292,25 @@ test('recovers late owners and requires emitted owner evidence before accepting 
   expect(multiRequiredPack.readiness.unresolvedReasonCodes).toContain('required_symbol_not_materialized');
   expect(multiRequiredPack.readiness.status).toBe('degraded');
   expect(multiRequiredPack.readiness.readyForHighConfidenceMutation).toBe(false);
+
+  const completeMultiRequiredPack = buildControllerContextPack(root, getMcpPolicy('controller'), {
+    description: 'Inspect all three required owners in a complete exact-known implementation file.',
+    searchTerms: ['alphaOwner', 'betaMethod', 'gammaHandler'],
+    knownPaths: ['src/multi-required-complete.ts'],
+    retrievalMode: 'implementation',
+    structuralContext: 'off',
+    maxFiles: 1,
+    maxSnippets: 1,
+    maxCharsPerSnippet: 2400,
+  });
+  expect(completeMultiRequiredPack.files[0]?.snippets.length).toBe(1);
+  expect(completeMultiRequiredPack.files[0]?.snippets.some((snippet) =>
+    snippet.content.includes('export function alphaOwner')
+      && snippet.content.includes('export function betaMethod')
+      && snippet.content.includes('export function gammaHandler'))).toBe(true);
+  expect(completeMultiRequiredPack.readiness.unresolvedReasonCodes).not.toContain('required_symbol_not_materialized');
+  expect(completeMultiRequiredPack.readiness.status).toBe('ready');
+  expect(completeMultiRequiredPack.readiness.readyForHighConfidenceMutation).toBe(true);
 
   const caseLabelOwnerPack = buildControllerContextPack(root, getMcpPolicy('controller'), {
     description: 'Inspect gammaHandler after a matching switch case label and dense references in the exact known implementation file.',
