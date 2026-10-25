@@ -1400,6 +1400,15 @@ async function verifyLocalRuntimeForReleaseCutover(config: RecoveryConfig): Prom
   return verifyLocalRuntime({ ...config, primaryConnectorService: undefined }, { probeMcpProtocol: false });
 }
 
+async function verifyRecoveryPreflight(
+  config: RecoveryConfig,
+  observeLocal: (config: RecoveryConfig) => Promise<VerifyResult>,
+  verifyLocal: (config: RecoveryConfig) => Promise<VerifyResult>,
+): Promise<VerifyResult> {
+  const observed = await observeLocal(config);
+  return observed.ok ? verifyLocal(config) : observed;
+}
+
 /**
  * Bounded observation owns health, not release verification. Keep this path
  * deliberately bounded to already-published Runtime authority/status plus local
@@ -2959,7 +2968,7 @@ export async function restartPrimaryRuntime(
 ): Promise<PrimaryRuntimeRestartResult> {
   const verifyLocal = dependencies.verifyLocal ?? verifyLocalRuntime;
   const observeLocal = dependencies.observeLocal ?? (dependencies.verifyLocal ? dependencies.verifyLocal : observePrimaryRuntimeActivationReadiness);
-  const initial = await verifyLocal(config);
+  const initial = await verifyRecoveryPreflight(config, observeLocal, verifyLocal);
   const forceHealthyRestart = dependencies.forceHealthyRestart === true;
   if (initial.ok && !forceHealthyRestart) return { ok: true, attempted: false, noOp: true, detail: 'Canonical Forge Runtime is already healthy', verify: initial };
   const platform = dependencies.platform ?? process.platform;
@@ -2971,7 +2980,7 @@ export async function restartPrimaryRuntime(
   const now = dependencies.now ?? Date.now;
   const wait = dependencies.sleep ?? sleep;
   const locked = await withLock(config, { action: 'restart_primary_runtime' }, async () => {
-    const before = await verifyLocal(config);
+    const before = await verifyRecoveryPreflight(config, observeLocal, verifyLocal);
     if (before.ok && !forceHealthyRestart) return { ok: true, attempted: false, noOp: true, detail: 'Canonical Forge Runtime recovered before restart', serviceTarget: service.target, verify: before } satisfies PrimaryRuntimeRestartResult;
     const runCommand = dependencies.runCommand ?? command;
     const runtimeRunning = dependencies.runtimeRunning ?? ((value: RecoveryConfig) => observeRuntimeStatus(value.controllerHome).running);
@@ -3048,7 +3057,7 @@ export async function recoverPrimaryRuntime(
 ): Promise<PrimaryRuntimeRecoveryResult> {
   const verifyLocal = dependencies.verifyLocal ?? verifyLocalRuntime;
   const observeLocal = dependencies.observeLocal ?? (dependencies.verifyLocal ? dependencies.verifyLocal : observePrimaryRuntimeActivationReadiness);
-  const initial = await verifyLocal(config);
+  const initial = await verifyRecoveryPreflight(config, observeLocal, verifyLocal);
   if (initial.ok) return { ok: true, attempted: false, noOp: true, detail: 'Canonical Forge Runtime recovered before rollback', verify: initial };
 
   const releaseAuthoritySnapshot = releaseAuthority(config);
@@ -3115,7 +3124,7 @@ export async function recoverPrimaryRuntime(
   const wait = dependencies.sleep ?? sleep;
   const runtimeRunning = dependencies.runtimeRunning ?? ((value: RecoveryConfig) => observeRuntimeStatus(value.controllerHome).running);
   const locked = await withLock(config, { action: 'recover_primary_runtime' }, async () => {
-    const before = await verifyLocal(config);
+    const before = await verifyRecoveryPreflight(config, observeLocal, verifyLocal);
     if (before.ok) return { ok: true, attempted: false, noOp: true, detail: 'Canonical Forge Runtime recovered before rollback', serviceTarget: service.target, verify: before } satisfies PrimaryRuntimeRecoveryResult;
 
     const stopped = await stopPrimaryRuntimeForReleaseTransition({ config, service, now, wait, runCommand, runtimeRunning });
