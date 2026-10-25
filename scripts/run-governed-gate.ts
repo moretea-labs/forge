@@ -33,6 +33,13 @@ export function stepsFor(gate: Gate): Step[] {
     { label: 'quality harness benchmark', command: 'bun', args: ['run', 'check:quality-harness'], timeoutMs: 2 * 60_000 },
     { label: 'core regression', command: 'bun', args: ['run', 'test:core'], timeoutMs: 20 * 60_000 },
     { label: 'runtime smoke', command: 'bun', args: ['run', 'check:smoke'], timeoutMs: 10 * 60_000 },
+    // The affected-test selector excludes process-tree suites even when Recovery
+    // code changes. The main release gate always verifies real Stable A rollback
+    // on the bounded-soak deadline and existing runaway-CPU rejection paths.
+    { label: 'Recovery transactional rollback', command: 'bun',
+      args: ['test', 'tests/runtime/standalone-recovery.test.ts', '--test-name-pattern',
+        'new opt-in ReleaseSession rolls back Stable A when causal E2E proof remains missing past 30 minutes|known-good runaway CPU rejection rolls Candidate B back to Stable A instead of repeating soak'],
+      timeoutMs: 5 * 60_000 },
   ];
   return [
     { label: 'main candidate receipt', gate: 'main' },

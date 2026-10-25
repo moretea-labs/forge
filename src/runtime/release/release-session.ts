@@ -109,6 +109,38 @@ export interface ReleaseSession {
   updatedAt: string;
 }
 
+/** Explicitly timebox only sessions created by the new release policy. */
+export const RELEASE_SESSION_ACCEPTANCE_TIMEOUT_MS = 30 * 60_000;
+export function releaseSessionAcceptanceTimedOut(
+  session: Pick<ReleaseSession, 'phase' | 'receipts'>,
+  nowMs: number,
+): boolean {
+  if (session.phase !== 'soaking' || !Number.isFinite(nowMs)) return false;
+  // Historical sessions have no policy receipt: they must not be retroactively
+  // rolled back after a Recovery software upgrade.
+  if (!session.receipts.some((receipt) => receipt.id === 'acceptance_timeout_policy_v1')) return false;
+  // Start at the immutable cutover receipt, never the latest retry/updatedAt.
+  const started = session.receipts.find((receipt) => receipt.id === 'soak_started');
+  const timeMs = Date.parse(started?.recordedAt ?? '');
+  return !Number.isFinite(timeMs) || nowMs >= timeMs + RELEASE_SESSION_ACCEPTANCE_TIMEOUT_MS;
+}
+
+/** Reject late or malformed causal proof for a newly opted-in soak. */
+export function releaseSessionContinuationProofTimely(
+  session: Pick<ReleaseSession, 'phase' | 'receipts'>,
+  lastCommittedAt: string,
+  nowMs: number,
+): boolean {
+  if (!session.receipts.some((r) => r.id === 'acceptance_timeout_policy_v1')) return true;
+  const startedAt = Date.parse(session.receipts.find((r) => r.id === 'soak_started')?.recordedAt ?? '');
+  const provedAt = Date.parse(lastCommittedAt);
+  return session.phase === 'soaking'
+    && Number.isFinite(startedAt) && Number.isFinite(provedAt) && Number.isFinite(nowMs)
+    && provedAt >= startedAt && provedAt <= nowMs
+    && provedAt <= startedAt + RELEASE_SESSION_ACCEPTANCE_TIMEOUT_MS
+    && nowMs < startedAt + RELEASE_SESSION_ACCEPTANCE_TIMEOUT_MS;
+}
+
 const REQUIRED_STATIC_GATES = new Set(['type', 'runtime_architecture', 'architecture_sync', 'bootstrap']);
 const REQUIRED_CANDIDATE_CANARIES = new Set(['recovery', 'mcp', 'scheduler', 'supervisor', 'controller']);
 const REQUIRED_KNOWN_GOOD_SOAK_GATES = new Set(['supervisor_continuation_proof']);
@@ -637,7 +669,11 @@ export function createReleaseSession(input: {
     sourceRevision,
     phase: 'source_frozen',
     revision: 1,
-    receipts: [{ id: `source:${sessionId}`, kind: 'source', recordedAt: timestamp, summary: `source frozen at ${input.sourceRevision.trim()}` }],
+    receipts: [
+      { id: `source:${sessionId}`, kind: 'source', recordedAt: timestamp, summary: `source frozen at ${input.sourceRevision.trim()}` },
+      { id: 'acceptance_timeout_policy_v1', kind: 'source', recordedAt: timestamp,
+        summary: 'Mac-first: accept real causal C-C-D or rollback exact Stable A within 30 minutes from cutover' },
+    ],
     createdAt: timestamp,
     updatedAt: timestamp,
   };

@@ -94,6 +94,8 @@ import {
   readReleaseSession,
   recordReleaseSessionTransaction,
   releaseSessionCandidateIsRetired,
+  releaseSessionAcceptanceTimedOut,
+  releaseSessionContinuationProofTimely,
   releaseSessionIsSoakingPredecessorOfStable,
   releaseSessionIsSoakingSupersededByStableAuthority,
   releaseSessionIsSoakingSupersededByFailedCutoverCompensation,
@@ -331,8 +333,32 @@ function sameReleaseIdentity(left: ReleaseEvidence, right: ReleaseEvidence): boo
     && left.workerProtocolVersion === right.workerProtocolVersion;
 }
 
-function knownGoodAttestationEvidence(config: RecoveryConfig, entry: ReleaseEvidence | undefined): ReleaseEvidence | undefined {
+/**
+ * Attesting a Candidate's performance may commit recovery-bundle bytes before
+ * its ReleaseSession reaches known_good. Those bytes are provisional: other
+ * Recovery paths must not interpret them as a recoverable known-good release
+ * until the matching opt-in Session has completed acceptance. The promotion
+ * owner may read the provisional bundle to reconcile its own crash/retry.
+ */
+function provisionalCanaryKnownGood(config: RecoveryConfig, release: ReleaseEvidence): boolean {
+  try {
+    const inventory = listCompleteReleaseSessions(config.controllerHome);
+    if (inventory.invalidSessionFiles.length > 0 || inventory.truncated) return true;
+    return inventory.sessions.some((session) =>
+      session.receipts.some((receipt) => receipt.id === 'acceptance_timeout_policy_v1')
+      && session.candidateRelease?.releaseId === release.revision
+      && session.candidateRelease.artifactIdentity === release.artifactIdentity
+      && session.candidateRelease.manifestSha256 === release.manifestSha256
+      && session.phase !== 'known_good');
+  } catch {
+    // An incomplete session inventory cannot authorize recoverability.
+    return true;
+  }
+}
+
+function knownGoodAttestationEvidence(config: RecoveryConfig, entry: ReleaseEvidence | undefined, allowProvisional = false): ReleaseEvidence | undefined {
   if (!entry || !entry.attestedAt || !entry.releaseFencingTokenSha256 || typeof entry.controllerHome !== 'string') return undefined;
+  if (!allowProvisional && provisionalCanaryKnownGood(config, entry)) return undefined;
   // Legacy metadata-only attestations are audit history, not recoverable authority.
   // The cheap tier requires durable bundle identity but never reads bundle contents.
   if (!entry.recoveryBundle || entry.recoveryBundle.schemaVersion !== 1) return undefined;
@@ -345,8 +371,8 @@ function knownGoodAttestationEvidence(config: RecoveryConfig, entry: ReleaseEvid
   return candidates.some((release) => sameReleaseIdentity(release, entry)) ? entry : undefined;
 }
 
-function knownGoodEvidence(config: RecoveryConfig, entry: ReleaseEvidence | undefined): ReleaseEvidence | undefined {
-  const attested = knownGoodAttestationEvidence(config, entry);
+function knownGoodEvidence(config: RecoveryConfig, entry: ReleaseEvidence | undefined, allowProvisional = false): ReleaseEvidence | undefined {
+  const attested = knownGoodAttestationEvidence(config, entry, allowProvisional);
   if (!attested) return undefined;
   try { inspectKnownGoodRecoveryBundle(config.controllerHome, attested); }
   catch { return undefined; }
@@ -377,6 +403,9 @@ function inspectKnownGoodRecoverability(config: RecoveryConfig): {
   }
   for (const entry of store.releases) {
     if (!rollbackReleasePaths.has(resolve(dirname(entry.path)))) continue;
+    // Physical bundle bytes are not an accepted restore point until its
+    // matching opt-in ReleaseSession has committed known_good.
+    if (provisionalCanaryKnownGood(config, entry)) continue;
     try {
       const inspected = inspectKnownGoodRecoveryBundle(config.controllerHome, entry);
       if (dirname(inspected.releaseRoot) !== releasesRoot) throw new Error('known-good path is outside Runtime release authority');
@@ -397,9 +426,9 @@ function matchingKnownGoodAttestation(config: RecoveryConfig, release: ReleaseEv
   return knownGoodAttestationEvidence(config, knownGood(config).releases.find((entry) => sameReleaseIdentity(entry, release)));
 }
 
-function matchingKnownGood(config: RecoveryConfig, release: ReleaseEvidence | undefined): ReleaseEvidence | undefined {
+function matchingKnownGood(config: RecoveryConfig, release: ReleaseEvidence | undefined, allowProvisional = false): ReleaseEvidence | undefined {
   if (!release) return undefined;
-  return knownGoodEvidence(config, knownGood(config).releases.find((entry) => sameReleaseIdentity(entry, release)));
+  return knownGoodEvidence(config, knownGood(config).releases.find((entry) => sameReleaseIdentity(entry, release)), allowProvisional);
 }
 
 function sameReleaseEvidenceIdentity(left: ReleaseEvidence | undefined, right: ReleaseEvidence | undefined): boolean {
@@ -4725,9 +4754,154 @@ export async function bootAndVerifyConfiguredRuntimeReleaseSessionCandidate(
 }
 
 
+function releaseSessionHasAcceptanceTimeoutPolicy(session: Pick<ReleaseSession, 'receipts'>): boolean {
+  return session.receipts.some((receipt) => receipt.id === 'acceptance_timeout_policy_v1');
+}
+
+function sameReleaseSessionIdentity(
+  left: { releaseId?: string; artifactIdentity?: string; manifestSha256?: string } | undefined,
+  right: { releaseId?: string; artifactIdentity?: string; manifestSha256?: string } | undefined,
+): boolean {
+  return Boolean(left && right
+    && left.releaseId === right.releaseId
+    && left.artifactIdentity === right.artifactIdentity
+    && left.manifestSha256 === right.manifestSha256);
+}
+
+function timedSoakingPredecessorForSuccessor(
+  config: RecoveryConfig,
+  successor: ReleaseSession,
+): { predecessor?: ReleaseSession; inventoryIncomplete: boolean } {
+  const inventory = listCompleteReleaseSessions(config.controllerHome);
+  const predecessors = inventory.sessions.filter((existing) => existing.sessionId !== successor.sessionId
+    && existing.phase === 'soaking'
+    && releaseSessionHasAcceptanceTimeoutPolicy(existing)
+    && releaseSessionIsSoakingPredecessorOfStable(existing, successor.stableRelease));
+  if (predecessors.length > 1) {
+    throw new Error(`RELEASE_SESSION_MULTIPLE_TIMED_PREDECESSORS: ${predecessors.map((entry) => entry.sessionId).join(',')}`);
+  }
+  return {
+    predecessor: predecessors[0],
+    inventoryIncomplete: inventory.invalidSessionFiles.length > 0 || inventory.truncated,
+  };
+}
+
+/**
+ * Exact durable proof that Recovery compensated one successor C→B while
+ * preserving B's original B→A rollback transaction. The authority revision
+ * remains monotonic; the operation id binds both session identities and the
+ * current active/previous topology. This proof is valid only while that
+ * compensation is still the latest authority write.
+ */
+function releaseSessionChainCompensationAlreadyCommitted(
+  successor: ReleaseSession,
+  predecessor: ReleaseSession,
+  authority: RuntimeReleaseAuthority | undefined,
+): boolean {
+  const successorCandidate = successor.candidateRelease;
+  const successorTransaction = successor.transaction;
+  const predecessorCandidate = predecessor.candidateRelease;
+  const predecessorTransaction = predecessor.transaction;
+  const prefix = `release-session-chain-restore:${successor.sessionId}:${predecessor.sessionId}:`;
+  const operationId = authority?.operationId ?? '';
+  const recordedAt = operationId.startsWith(prefix) ? operationId.slice(prefix.length) : '';
+  return Boolean(
+    recordedAt && /^\d+$/.test(recordedAt) && Number.isSafeInteger(Number(recordedAt))
+    && authority && predecessor.phase === 'soaking'
+    && releaseSessionHasAcceptanceTimeoutPolicy(predecessor)
+    && predecessorCandidate && predecessorTransaction
+    && successorCandidate && successorTransaction
+    && releaseSessionIsSoakingPredecessorOfStable(predecessor, successor.stableRelease)
+    && predecessorTransaction.candidateReleaseId === predecessorCandidate.releaseId
+    && successorTransaction.candidateReleaseId === successorCandidate.releaseId
+    && sameReleaseSessionIdentity(successor.stableRelease, predecessorCandidate)
+    && sameReleaseSessionIdentity(successorTransaction.rollbackRelease, successor.stableRelease)
+    && authority.revision > predecessorTransaction.cutoverAuthorityRevision
+    && sameReleaseSessionIdentity(authority.active, predecessorCandidate)
+    && sameReleaseSessionIdentity(authority.previous, predecessorTransaction.rollbackRelease)
+    && authority.previous?.databaseBackup?.path === predecessorTransaction.rollbackRelease.databaseBackup?.path
+  );
+}
+
+function releaseSessionMatchesCurrentCutoverAuthority(
+  session: ReleaseSession,
+  authority: RuntimeReleaseAuthority | undefined,
+): boolean {
+  const candidate = session.candidateRelease;
+  const transaction = session.transaction;
+  let chainCompensation = false;
+  const operationParts = authority?.operationId.split(':') ?? [];
+  if (operationParts.length === 4
+    && operationParts[0] === 'release-session-chain-restore'
+    && operationParts[2] === session.sessionId
+    && /^\d+$/.test(operationParts[3] ?? '')) {
+    try {
+      const successor = readReleaseSession(session.stable.controllerHome, operationParts[1] ?? '');
+      chainCompensation = Boolean(successor
+        && releaseSessionChainCompensationAlreadyCommitted(successor, session, authority));
+    } catch {
+      chainCompensation = false;
+    }
+  }
+  return Boolean(candidate && transaction && authority
+    && transaction.candidateReleaseId === candidate.releaseId
+    && (authority.revision === transaction.cutoverAuthorityRevision || chainCompensation)
+    && sameReleaseSessionIdentity(authority.active, candidate)
+    && sameReleaseSessionIdentity(authority.previous, transaction.rollbackRelease)
+    && authority.previous?.databaseBackup?.path === transaction.rollbackRelease.databaseBackup?.path
+    && sameReleaseSessionIdentity(transaction.rollbackRelease, session.stableRelease));
+}
+
+function restoreTimedPredecessorAuthorityAfterSuccessorRollback(
+  config: RecoveryConfig,
+  successor: ReleaseSession,
+  authority: RuntimeReleaseAuthority,
+  predecessor: ReleaseSession,
+): RuntimeReleaseAuthority {
+  const candidate = successor.candidateRelease;
+  const successorTransaction = successor.transaction;
+  const predecessorCandidate = predecessor.candidateRelease;
+  const predecessorTransaction = predecessor.transaction;
+  if (!releaseSessionHasAcceptanceTimeoutPolicy(predecessor)
+    || predecessor.phase !== 'soaking'
+    || !releaseSessionIsSoakingPredecessorOfStable(predecessor, successor.stableRelease)
+    || !candidate || !successorTransaction || !predecessorCandidate || !predecessorTransaction
+    || !releaseSessionRollbackAlreadyCommitted(successor, authority)
+    || !sameReleaseSessionIdentity(authority.active, predecessorCandidate)
+    || !sameReleaseSessionIdentity(authority.previous, candidate)
+    || !sameReleaseSessionIdentity(successorTransaction.rollbackRelease, successor.stableRelease)
+    || !sameReleaseSessionIdentity(predecessorTransaction.rollbackRelease, predecessor.stableRelease)) {
+    throw new Error('RELEASE_SESSION_TIMED_PREDECESSOR_CHAIN_IDENTITY_MISMATCH');
+  }
+
+  // The ordinary C→B rollback records C as B's new previous release. Restore
+  // B's exact pre-C authority topology under the same Recovery lock so the
+  // original fenced B→A transaction remains executable without replaying C.
+  const predecessorAuthorityBeforeSuccessor = {
+    ...authority,
+    revision: predecessorTransaction.cutoverAuthorityRevision,
+    previous: predecessorTransaction.rollbackRelease,
+    operationId: predecessorTransaction.operationId,
+  };
+  const restored = reconcileFailedRuntimeReleaseActivationAuthority(
+    config.controllerHome,
+    predecessorAuthorityBeforeSuccessor,
+    candidate.releaseId,
+    `release-session-chain-restore:${successor.sessionId}:${predecessor.sessionId}:${Date.now()}`,
+  );
+  audit(config, 'release_session_timed_predecessor_authority_restored', {
+    predecessorSessionId: predecessor.sessionId,
+    predecessorReleaseId: predecessorCandidate.releaseId,
+    successorSessionId: successor.sessionId,
+    successorReleaseId: candidate.releaseId,
+    restoredRollbackReleaseId: restored.previous?.releaseId,
+  });
+  return restored;
+}
+
 function terminalizeSupersededSoakingPredecessor(config: RecoveryConfig, successor: ReleaseSession): ReleaseSession | undefined {
   const inventory = listCompleteReleaseSessions(config.controllerHome);
-  if (inventory.invalidSessionFiles.length > 0) {
+  if (inventory.invalidSessionFiles.length > 0 || inventory.truncated) {
     throw new Error(`RELEASE_SESSION_INVENTORY_INCOMPLETE: invalid=${inventory.invalidSessionFiles.join(',') || 'none'}`);
   }
   const predecessors = inventory.sessions.filter((existing) =>
@@ -4739,6 +4913,9 @@ function terminalizeSupersededSoakingPredecessor(config: RecoveryConfig, success
   }
   const predecessor = predecessors[0];
   if (!predecessor) return undefined;
+  if (releaseSessionHasAcceptanceTimeoutPolicy(predecessor)) {
+    throw new Error('RELEASE_SESSION_UNACCEPTED_TIMED_PREDECESSOR_MUST_NOT_BE_TERMINALIZED');
+  }
   const terminal = advanceReleaseSession({
     controllerHome: config.controllerHome,
     sessionId: predecessor.sessionId,
@@ -4941,13 +5118,55 @@ export async function cutoverConfiguredRuntimeReleaseSession(
       };
     };
 
+    const resumeInterruptedCutover = async (reason: string): Promise<ConfiguredRuntimeActivationResult> => {
+      session = readReleaseSession(config.controllerHome, sessionId) ?? session;
+      const lookup = timedSoakingPredecessorForSuccessor(config, session);
+      const predecessor = lookup.predecessor;
+      if (lookup.inventoryIncomplete && !predecessor) {
+        return { ok: false as const, attempted: false, noOp: true,
+          detail: 'RELEASE_SESSION_INVENTORY_INCOMPLETE_BEFORE_SUCCESSOR_RECOVERY', releaseSession: session };
+      }
+      if (predecessor) {
+        const authority = readRuntimeReleaseAuthority(config.controllerHome);
+        if (releaseSessionMatchesCurrentCutoverAuthority(session, authority)) {
+          return { ok: false as const, attempted: false, noOp: true,
+            detail: `RELEASE_SESSION_TIMED_PREDECESSOR_ROLLBACK_REQUIRED:${predecessor.sessionId}`, releaseSession: session };
+        }
+        if (releaseSessionRollbackAlreadyCommitted(session, authority)) {
+          restoreTimedPredecessorAuthorityAfterSuccessorRollback(config, session, authority!, predecessor);
+        } else {
+          const predecessorAuthority = predecessor.candidateRelease && predecessor.transaction && authority
+            && authority.revision === predecessor.transaction.cutoverAuthorityRevision
+            && sameReleaseSessionIdentity(authority.active, predecessor.candidateRelease)
+            && sameReleaseSessionIdentity(authority.previous, predecessor.transaction.rollbackRelease)
+            && sameReleaseSessionIdentity(predecessor.transaction.rollbackRelease, predecessor.stableRelease);
+          if (!predecessorAuthority) {
+            return { ok: false as const, attempted: false, noOp: true,
+              detail: 'RELEASE_SESSION_TIMED_PREDECESSOR_AUTHORITY_MISMATCH', releaseSession: session };
+          }
+        }
+      }
+      return reconcileCutoverAttempt(reason);
+    };
+
     if (session.phase === 'cutover_attempting' || session.phase === 'cutover_committed') {
-      return reconcileCutoverAttempt(`resuming ReleaseSession from ${session.phase} without a second activation attempt`);
+      return resumeInterruptedCutover(`resuming ReleaseSession from ${session.phase} without a second activation attempt`);
     }
     if (session.phase !== 'cutover_eligible') {
       return { ok: false as const, attempted: false, noOp: true, detail: `RELEASE_SESSION_CUTOVER_REQUIRES_ELIGIBLE: ${session.phase}`, releaseSession: session };
     }
 
+    // A successor can prepare and verify in parallel but may not cut over
+    // while a predecessor with a bounded Soak acceptance is still unsettled.
+    // Re-read under the same Recovery mutation lock immediately before commit.
+    const predecessorLookup = timedSoakingPredecessorForSuccessor(config, session);
+    if (predecessorLookup.inventoryIncomplete && !predecessorLookup.predecessor) {
+      throw new Error('RELEASE_SESSION_INVENTORY_INCOMPLETE_BEFORE_CUTOVER');
+    }
+    if (predecessorLookup.predecessor) {
+      return { ok: false as const, attempted: false, noOp: true,
+        detail: 'RELEASE_SESSION_CUTOVER_DEFERRED_FOR_UNACCEPTED_PREDECESSOR', releaseSession: session };
+    }
     try {
       assertStableReleaseSessionIdentityCurrent(config, session.stableRelease);
       const stableBefore = await verifyLocalRuntimeForReleaseCutover(config);
@@ -5083,6 +5302,16 @@ export async function cutoverConfiguredRuntimeReleaseSession(
           };
         }
 
+        // Re-evaluate at the actual commit boundary: preceding readiness
+        // and connector drain can consume the remainder of the Soak window.
+        const finalPredecessorLookup = timedSoakingPredecessorForSuccessor(config, session);
+        if (finalPredecessorLookup.inventoryIncomplete && !finalPredecessorLookup.predecessor) {
+          throw new Error('RELEASE_SESSION_INVENTORY_INCOMPLETE_BEFORE_CUTOVER');
+        }
+        if (finalPredecessorLookup.predecessor) {
+          return { ok: false as const, attempted: false, noOp: true,
+            detail: 'RELEASE_SESSION_CUTOVER_DEFERRED_FOR_UNACCEPTED_PREDECESSOR', releaseSession: session };
+        }
         session = advanceReleaseSession({
           controllerHome: config.controllerHome,
           sessionId,
@@ -5116,7 +5345,7 @@ export async function cutoverConfiguredRuntimeReleaseSession(
       const latest = readReleaseSession(config.controllerHome, sessionId) ?? session;
       session = latest;
       if (latest.phase === 'cutover_attempting' || latest.phase === 'cutover_committed') {
-        return reconcileCutoverAttempt(`cutover interrupted after entering ${latest.phase}: ${detail}`);
+        return resumeInterruptedCutover(`cutover interrupted after entering ${latest.phase}: ${detail}`);
       }
       if (latest.phase === 'cutover_eligible') {
         const retirement = await stopReleaseSessionCandidateService(latest);
@@ -5160,7 +5389,37 @@ export async function cutoverConfiguredRuntimeReleaseSession(
     }
   });
   if (!locked.acquired) return { ok: false, attempted: false, noOp: true, detail: recoveryBusyDetail(locked.owner) };
-  return locked.value;
+  const successorRollback = /^RELEASE_SESSION_TIMED_PREDECESSOR_ROLLBACK_REQUIRED:(.+)$/.exec(locked.value.detail);
+  if (!successorRollback) return locked.value;
+
+  const predecessorSessionId = successorRollback[1];
+  const successorResult = await rollbackConfiguredRuntimeReleaseSession(
+    config,
+    sessionId,
+    {},
+    requestId?.trim() ? `${requestId.trim()}:timed-predecessor-successor-rollback` : undefined,
+  );
+  const predecessor = readReleaseSession(config.controllerHome, predecessorSessionId);
+  if (!predecessor || predecessor.phase !== 'soaking'
+    || !releaseSessionAcceptanceTimedOut(predecessor, Date.now())) {
+    return {
+      ...successorResult,
+      ok: false,
+      attempted: true,
+      detail: `unaccepted predecessor ${predecessorSessionId} remains authoritative; successor ${sessionId} was unwound first: ${successorResult.detail}`,
+    };
+  }
+
+  const predecessorResult = await rollbackConfiguredRuntimeReleaseSession(
+    config,
+    predecessorSessionId,
+    {},
+    requestId?.trim() ? `${requestId.trim()}:timed-predecessor-timeout-rollback` : undefined,
+  );
+  return {
+    ...predecessorResult,
+    detail: `successor ${sessionId} was unwound to predecessor ${predecessorSessionId} before enforcing its acceptance deadline; ${predecessorResult.detail}`,
+  };
 }
 
 
@@ -5336,7 +5595,58 @@ export async function rollbackConfiguredRuntimeReleaseSession(
 
     const candidateRelease = session.candidateRelease;
     const transactionBeforeRollback = session.transaction;
+    let timedPredecessor: ReleaseSession | undefined;
+    try {
+      timedPredecessor = timedSoakingPredecessorForSuccessor(config, session).predecessor;
+    } catch (error) {
+      return {
+        ok: false as const,
+        attempted: false,
+        noOp: true,
+        detail: error instanceof Error ? error.message : String(error),
+        releaseSession: session,
+      };
+    }
     const authorityBeforeRollback = readRuntimeReleaseAuthority(config.controllerHome);
+    if (timedPredecessor
+      && releaseSessionChainCompensationAlreadyCommitted(session, timedPredecessor, authorityBeforeRollback)) {
+      const live = observeRuntimeStatus(config.controllerHome);
+      const predecessorIsLive = live.running && live.ready && !live.stale
+        && live.snapshot?.releaseId === session.stableRelease.releaseId
+        && live.snapshot?.artifactIdentity === session.stableRelease.artifactIdentity;
+      if (!predecessorIsLive) {
+        return {
+          ok: false as const,
+          attempted: false,
+          noOp: true,
+          detail: 'RELEASE_SESSION_CHAIN_COMPENSATION_COMMITTED_RUNTIME_NOT_YET_OBSERVED',
+          releaseSession: session,
+        };
+      }
+      session = advanceReleaseSession({
+        controllerHome: config.controllerHome,
+        sessionId,
+        expectedRevision: session.revision,
+        phase: 'rolled_back',
+        receipts: [{
+          id: 'rollback',
+          kind: 'rollback',
+          summary: `reconciled already-committed C→B chain compensation ${authorityBeforeRollback!.operationId}; exact predecessor ${session.stableRelease.releaseId} is live and no rollback effect was replayed`,
+        }],
+      });
+      audit(config, 'release_session_chain_compensation_reconciled', {
+        sessionId,
+        compensationOperationId: authorityBeforeRollback!.operationId,
+        restoredPredecessorReleaseId: session.stableRelease.releaseId,
+      });
+      return {
+        ok: true as const,
+        attempted: false,
+        noOp: true,
+        detail: 'ReleaseSession reconciled already-committed C→B chain compensation without replaying the rollback effect',
+        releaseSession: session,
+      };
+    }
     const rollbackAlreadyCommitted = releaseSessionRollbackAlreadyCommitted(
       session,
       authorityBeforeRollback,
@@ -5354,6 +5664,24 @@ export async function rollbackConfiguredRuntimeReleaseSession(
           detail: 'RELEASE_SESSION_ROLLBACK_COMMITTED_RUNTIME_NOT_YET_OBSERVED',
           releaseSession: session,
         };
+      }
+      if (timedPredecessor) {
+        try {
+          restoreTimedPredecessorAuthorityAfterSuccessorRollback(
+            config,
+            session,
+            authorityBeforeRollback!,
+            timedPredecessor,
+          );
+        } catch (error) {
+          return {
+            ok: false as const,
+            attempted: false,
+            noOp: true,
+            detail: error instanceof Error ? error.message : String(error),
+            releaseSession: session,
+          };
+        }
       }
       session = advanceReleaseSession({
         controllerHome: config.controllerHome,
@@ -5426,6 +5754,14 @@ export async function rollbackConfiguredRuntimeReleaseSession(
       const rollbackResult = rollbackRuntimeReleaseWithResult(config.controllerHome, `release-session-rollback:${session.sessionId}:${Date.now()}`);
       restored = rollbackResult.authority;
       databaseRollbackDisposition = rollbackResult.databaseDisposition;
+      if (timedPredecessor) {
+        restored = restoreTimedPredecessorAuthorityAfterSuccessorRollback(
+          config,
+          session,
+          restored,
+          timedPredecessor,
+        );
+      }
       if (
         restored.active.releaseId !== session.stableRelease.releaseId
         || restored.active.artifactIdentity !== session.stableRelease.artifactIdentity
@@ -5517,6 +5853,175 @@ export async function rollbackConfiguredRuntimeReleaseSession(
 }
 
 
+async function reconcileTimedPredecessorSuccessorBeforePromotion(
+  config: RecoveryConfig,
+  predecessor: ReleaseSession,
+  dependencies: RuntimeReleaseKnownGoodDependencies,
+  requestId?: string,
+): Promise<ConfiguredRuntimeActivationResult | undefined> {
+  if (predecessor.phase !== 'soaking' || !releaseSessionHasAcceptanceTimeoutPolicy(predecessor)) return undefined;
+  const inventory = listCompleteReleaseSessions(config.controllerHome);
+  const inventoryIncomplete = inventory.invalidSessionFiles.length > 0 || inventory.truncated;
+  const successors = inventory.sessions.filter((successor) => successor.sessionId !== predecessor.sessionId
+    && ['cutover_attempting', 'cutover_committed', 'soaking'].includes(successor.phase)
+    && releaseSessionIsSoakingPredecessorOfStable(predecessor, successor.stableRelease));
+  if (successors.length > 1) {
+    return { ok: false, attempted: false, noOp: true,
+      detail: `RELEASE_SESSION_MULTIPLE_TIMED_SUCCESSORS: ${successors.map((entry) => entry.sessionId).join(',')}`,
+      releaseSession: predecessor };
+  }
+
+  const authority = readRuntimeReleaseAuthority(config.controllerHome);
+  const activeSuccessors = successors.filter((successor) => releaseSessionMatchesCurrentCutoverAuthority(successor, authority));
+  const committedSuccessorRollbacks = successors.filter((successor) =>
+    releaseSessionRollbackAlreadyCommitted(successor, authority)
+    || releaseSessionChainCompensationAlreadyCommitted(successor, predecessor, authority));
+  if (activeSuccessors.length > 1 || committedSuccessorRollbacks.length > 1) {
+    return { ok: false, attempted: false, noOp: true,
+      detail: 'RELEASE_SESSION_TIMED_SUCCESSOR_AUTHORITY_AMBIGUOUS', releaseSession: predecessor };
+  }
+  const predecessorIsCurrent = releaseSessionMatchesCurrentCutoverAuthority(predecessor, authority);
+  if (inventoryIncomplete && successors.length === 0) {
+    if (!predecessorIsCurrent) {
+      return { ok: false, attempted: false, noOp: true,
+        detail: 'RELEASE_SESSION_INVENTORY_INCOMPLETE_FOR_TIMED_SUCCESSOR_RECOVERY', releaseSession: predecessor };
+    }
+    if (releaseSessionAcceptanceTimedOut(predecessor, dependencies.wallNow?.() ?? Date.now())) {
+      const rollback = await rollbackConfiguredRuntimeReleaseSession(
+        config,
+        predecessor.sessionId,
+        dependencies.rollback ?? {},
+        requestId?.trim() ? `${requestId.trim()}:inventory-incomplete-timeout` : undefined,
+      );
+      return {
+        ...rollback,
+        ok: false,
+        detail: `incomplete ReleaseSession inventory blocks normal B promotion; exact timed-predecessor rollback was attempted: ${rollback.detail}`,
+        releaseSession: rollback.releaseSession ?? readReleaseSession(config.controllerHome, predecessor.sessionId) ?? predecessor,
+      };
+    }
+    return {
+      ok: false,
+      attempted: false,
+      noOp: true,
+      detail: 'RELEASE_SESSION_INVENTORY_INCOMPLETE_FOR_TIMED_SUCCESSOR_RECOVERY',
+      releaseSession: predecessor,
+    };
+  }
+  const successor = activeSuccessors[0] ?? committedSuccessorRollbacks[0] ?? successors[0];
+  if (!successor) {
+    return predecessorIsCurrent ? undefined : {
+      ok: false,
+      attempted: false,
+      noOp: true,
+      detail: 'RELEASE_SESSION_TIMED_PREDECESSOR_AUTHORITY_MISMATCH',
+      releaseSession: predecessor,
+    };
+  }
+
+  if (activeSuccessors.length === 0 && committedSuccessorRollbacks.length === 0) {
+    // C has a durable cutover-attempt record but never acquired Runtime
+    // authority. Reconcile that exact attempt first; B remains the live
+    // rollback/acceptance owner and may then prove C-C-D or time out to A.
+    if (!predecessorIsCurrent) {
+      return { ok: false, attempted: false, noOp: true,
+        detail: 'RELEASE_SESSION_TIMED_SUCCESSOR_AUTHORITY_MISMATCH', releaseSession: predecessor };
+    }
+    const aborted = await cutoverConfiguredRuntimeReleaseSession(
+      config,
+      successor.sessionId,
+      requestId?.trim() ? `${requestId.trim()}:abort-uncommitted-successor` : undefined,
+    );
+    const latestSuccessor = readReleaseSession(config.controllerHome, successor.sessionId);
+    const afterAbortAuthority = readRuntimeReleaseAuthority(config.controllerHome);
+    const afterAbortRuntime = observeRuntimeStatus(config.controllerHome);
+    const predecessorStillLive = Boolean(predecessor.candidateRelease
+      && releaseSessionMatchesCurrentCutoverAuthority(predecessor, afterAbortAuthority)
+      && afterAbortRuntime.running && afterAbortRuntime.ready && !afterAbortRuntime.stale
+      && afterAbortRuntime.snapshot?.releaseId === predecessor.candidateRelease.releaseId
+      && afterAbortRuntime.snapshot?.artifactIdentity === predecessor.candidateRelease.artifactIdentity);
+    if (latestSuccessor?.phase !== 'rolled_back' || !predecessorStillLive) {
+      return {
+        ok: false,
+        attempted: true,
+        detail: `timed predecessor successor ${successor.sessionId} was not safely aborted while B remained active; ${aborted.detail}`,
+        releaseSession: readReleaseSession(config.controllerHome, predecessor.sessionId) ?? predecessor,
+      };
+    }
+    const latestPredecessor = readReleaseSession(config.controllerHome, predecessor.sessionId) ?? predecessor;
+    if (releaseSessionAcceptanceTimedOut(latestPredecessor, dependencies.wallNow?.() ?? Date.now())) {
+      const predecessorRollback = await rollbackConfiguredRuntimeReleaseSession(
+        config,
+        latestPredecessor.sessionId,
+        dependencies.rollback ?? {},
+        requestId?.trim() ? `${requestId.trim()}:predecessor-timeout` : undefined,
+      );
+      return {
+        ...predecessorRollback,
+        ok: false,
+        attempted: true,
+        detail: `uncommitted successor ${successor.sessionId} was aborted before enforcing predecessor ${latestPredecessor.sessionId}'s deadline; ${predecessorRollback.detail}`,
+      };
+    }
+    if (inventoryIncomplete) {
+      return {
+        ok: false,
+        attempted: true,
+        detail: `RELEASE_SESSION_INVENTORY_INCOMPLETE_FOR_TIMED_SUCCESSOR_RECOVERY: uncommitted successor ${successor.sessionId} was aborted, but normal promotion of predecessor ${latestPredecessor.sessionId} remains blocked until the inventory is complete`,
+        releaseSession: latestPredecessor,
+      };
+    }
+    return undefined;
+  }
+
+  // Recovery owns this ordered unwind. The successor rollback restores B's
+  // original authority topology under its lock; only then can B's frozen
+  // transaction safely roll back to Stable A if its deadline has elapsed.
+  const successorResult = await rollbackConfiguredRuntimeReleaseSession(
+    config,
+    successor.sessionId,
+    dependencies.rollback ?? {},
+    requestId?.trim() ? `${requestId.trim()}:successor-first` : undefined,
+  );
+  const afterSuccessor = readRuntimeReleaseAuthority(config.controllerHome);
+  const predecessorTransaction = predecessor.transaction;
+  const predecessorCandidate = predecessor.candidateRelease;
+  const exactPredecessorRestored = Boolean(predecessorTransaction && predecessorCandidate && afterSuccessor
+    && sameReleaseSessionIdentity(afterSuccessor.active, predecessorCandidate)
+    && sameReleaseSessionIdentity(afterSuccessor.previous, predecessorTransaction.rollbackRelease)
+    && sameReleaseSessionIdentity(predecessorTransaction.rollbackRelease, predecessor.stableRelease));
+  if (!exactPredecessorRestored) {
+    return {
+      ...successorResult,
+      ok: false,
+      attempted: true,
+      detail: `timed successor ${successor.sessionId} was not reconciled to the exact predecessor authority; B→A rollback remains blocked: ${successorResult.detail}`,
+    };
+  }
+
+  const latestPredecessor = readReleaseSession(config.controllerHome, predecessor.sessionId) ?? predecessor;
+  if (releaseSessionAcceptanceTimedOut(latestPredecessor, dependencies.wallNow?.() ?? Date.now())) {
+    const predecessorRollback = await rollbackConfiguredRuntimeReleaseSession(
+      config,
+      predecessor.sessionId,
+      dependencies.rollback ?? {},
+      requestId?.trim() ? `${requestId.trim()}:predecessor-timeout` : undefined,
+    );
+    return {
+      ...predecessorRollback,
+      ok: false,
+      attempted: true,
+      detail: `successor ${successor.sessionId} was unwound to predecessor ${predecessor.sessionId} before enforcing its deadline; ${predecessorRollback.detail}`,
+    };
+  }
+  return {
+    ok: false,
+    attempted: true,
+    detail: `successor ${successor.sessionId} was unwound to preserve predecessor ${predecessor.sessionId}'s remaining acceptance window; ${successorResult.detail}`,
+    releaseSession: latestPredecessor,
+  };
+}
+
 export async function promoteConfiguredRuntimeReleaseSessionKnownGood(
   config: RecoveryConfig,
   sessionId: string,
@@ -5542,6 +6047,13 @@ export async function promoteConfiguredRuntimeReleaseSessionKnownGood(
   }
   const candidateRelease = initial.candidateRelease;
   if (!candidateRelease) return { ok: false, attempted: false, noOp: true, detail: 'RELEASE_SESSION_CANDIDATE_RELEASE_REQUIRED', releaseSession: initial };
+  const timedSuccessorReconciliation = await reconcileTimedPredecessorSuccessorBeforePromotion(
+    config,
+    initial,
+    dependencies,
+    requestId,
+  );
+  if (timedSuccessorReconciliation) return timedSuccessorReconciliation;
 
   let attested: ReleaseEvidence;
   let continuationProof: WorkflowSupervisorContinuationProof;
@@ -5572,12 +6084,16 @@ export async function promoteConfiguredRuntimeReleaseSessionKnownGood(
       );
       if (!proof) throw new Error('RELEASE_SESSION_AUTONOMOUS_CONTINUATION_PROOF_MISSING');
       continuationProof = proof;
+      if (!releaseSessionContinuationProofTimely(initial, proof.lastCommittedAt, dependencies.wallNow?.() ?? Date.now()))
+        throw new Error('RELEASE_SESSION_ACCEPTANCE_PROOF_LATE');
     } catch (error) {
-      if (error instanceof Error && error.message === 'RELEASE_SESSION_AUTONOMOUS_CONTINUATION_PROOF_MISSING') throw error;
+      if (error instanceof Error && (error.message === 'RELEASE_SESSION_AUTONOMOUS_CONTINUATION_PROOF_MISSING' || error.message === 'RELEASE_SESSION_ACCEPTANCE_PROOF_LATE')) throw error;
       throw new Error(`RELEASE_SESSION_AUTONOMOUS_CONTINUATION_PROOF_UNAVAILABLE: ${error instanceof Error ? error.message : String(error)}`);
     }
 
-    const existingAttestation = matchingKnownGood(config, active);
+    // Only the exact ReleaseSession promoter may reconcile a provisional
+    // attestation; all external KnownGood recovery consumers stay fenced.
+    const existingAttestation = matchingKnownGood(config, active, true);
     if (existingAttestation) {
       // A known-good attestation is durable release authority, not a transient
       // observation. Crash/retry reconciliation must reuse it instead of
@@ -5607,6 +6123,11 @@ export async function promoteConfiguredRuntimeReleaseSessionKnownGood(
     const detail = error instanceof Error ? error.message : String(error);
     audit(config, 'release_session_known_good_failed', { sessionId, detail });
 
+    // A new opt-in ReleaseSession may not remain in Soak indefinitely when
+    // causal continuation proof or Runtime health is unavailable. Preserve
+    // the existing exact, fenced Stable A recovery transaction; never resend
+    // a browser Effect to manufacture missing proof.
+    const acceptanceTimedOut = releaseSessionAcceptanceTimedOut(initial, dependencies.wallNow?.() ?? Date.now());
     // A hard runaway-CPU rejection is terminal acceptance evidence, not a
     // transient observation failure. Keeping Candidate B live in `soaking`
     // caused the automatic release driver to launch another full 60-second
@@ -5614,14 +6135,14 @@ export async function promoteConfiguredRuntimeReleaseSessionKnownGood(
     // through the existing ReleaseSession rollback transaction instead. The
     // coordinator will then treat this source revision as already attempted and
     // will not autonomously replay it until source authority changes.
-    if (/^RECOVERY_PERFORMANCE_REJECTED:/.test(detail)) {
+    if (/^RECOVERY_PERFORMANCE_REJECTED:/.test(detail) || acceptanceTimedOut || detail.includes('RELEASE_SESSION_ACCEPTANCE_PROOF_LATE')) {
       const rollback = await rollbackConfiguredRuntimeReleaseSession(
         config,
         sessionId,
         dependencies.rollback ?? {},
-        requestId?.trim() ? `${requestId.trim()}:performance-rejected` : undefined,
+        requestId?.trim() ? `${requestId.trim()}:${acceptanceTimedOut ? 'acceptance-timeout' : 'performance-rejected'}` : undefined,
       );
-      audit(config, 'release_session_known_good_performance_rejected', {
+      audit(config, acceptanceTimedOut ? 'release_session_acceptance_timeout_rollback' : 'release_session_known_good_performance_rejected', {
         sessionId,
         detail,
         rollbackOk: rollback.ok,
@@ -5631,7 +6152,7 @@ export async function promoteConfiguredRuntimeReleaseSessionKnownGood(
         ok: false,
         attempted: true,
         detail: rollback.ok
-          ? `${detail}; Candidate B rejected by the Recovery runaway-CPU gate and Stable A restored`
+          ? `${detail}; Candidate B ${acceptanceTimedOut ? 'acceptance timed out' : 'was rejected by the runaway-CPU gate'} and exact Stable A restored`
           : `${detail}; automatic Stable A rollback failed: ${rollback.detail}`,
         releaseSession: rollback.releaseSession ?? readReleaseSession(config.controllerHome, sessionId) ?? initial,
       };
@@ -5655,6 +6176,8 @@ export async function promoteConfiguredRuntimeReleaseSessionKnownGood(
     // be published successfully, then one transient Gateway/MCP timeout left the
     // ReleaseSession permanently soaking. Under the mutation lock, only fence
     // the identity that could invalidate that attestation.
+    if (!releaseSessionContinuationProofTimely(session, continuationProof.lastCommittedAt, dependencies.wallNow?.() ?? Date.now()))
+      return { ok: false as const, attempted: true, detail: 'RELEASE_SESSION_ACCEPTANCE_PROOF_LATE', releaseSession: session };
     if (!liveRuntimeOwnsRelease(config, attested)) {
       return { ok: false as const, attempted: true, detail: 'RELEASE_SESSION_RUNTIME_CHANGED_AFTER_KNOWN_GOOD_ATTESTATION', releaseSession: session };
     }
@@ -5701,6 +6224,24 @@ export async function promoteConfiguredRuntimeReleaseSessionKnownGood(
     };
   });
   if (!locked.acquired) return { ok: false, attempted: false, noOp: true, detail: recoveryBusyDetail(locked.owner), releaseSession: initial };
+  // The final deadline fence runs under the mutation lock. After it releases,
+  // immediately reconcile the exact Stable A rollback transaction rather than
+  // waiting another daemon tick. Never attempt a nested Recovery lock.
+  if (locked.value.detail === 'RELEASE_SESSION_ACCEPTANCE_PROOF_LATE') {
+    const rollback = await rollbackConfiguredRuntimeReleaseSession(
+      config,
+      sessionId,
+      dependencies.rollback ?? {},
+      requestId?.trim() ? `${requestId.trim()}:late-proof-rollback` : undefined,
+    );
+    return {
+      ok: false, attempted: true,
+      detail: rollback.ok
+        ? 'RELEASE_SESSION_ACCEPTANCE_PROOF_LATE; exact Stable A restored'
+        : `RELEASE_SESSION_ACCEPTANCE_PROOF_LATE; automatic Stable A rollback failed: ${rollback.detail}`,
+      releaseSession: rollback.releaseSession ?? readReleaseSession(config.controllerHome, sessionId) ?? initial,
+    };
+  }
   return locked.value;
 }
 
