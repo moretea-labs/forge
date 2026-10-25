@@ -421,8 +421,17 @@ async function executeObserve(command, instanceId) {
     return { kind: 'failed', code: String(error?.message ?? error).split(':')[0] || 'COMPUTER_CHATGPT_EXTENSION_OBSERVE_FAILED', retryable: true, failoverSafe: true };
   }
 }
+function targetResolutionReasonCode(error) {
+  const code = String(error?.message ?? error).split(':')[0];
+  // Preserve only stable local target-refusal codes, never arbitrary message
+  // content or a transport-failure claim of whether Send was attempted.
+  return /^COMPUTER_CHATGPT_[A-Z0-9_]+$/.test(code)
+    ? code : 'COMPUTER_CHATGPT_EXTENSION_TARGET_MISSING';
+}
 async function executePrepare(command) {
-  const target = await resolveTarget(command.identity, false, command.providerBinding).catch(() => undefined);
+  let target;
+  try { target = await resolveTarget(command.identity, false, command.providerBinding); }
+  catch (error) { return { kind: 'prepared', ready: false, reasonCode: targetResolutionReasonCode(error) }; }
   if (!target) return { kind: 'prepared', ready: false, reasonCode: 'COMPUTER_CHATGPT_EXTENSION_TARGET_MISSING' };
   const expectedProjectId = command.identity?.namespace === 'chatgpt.bootstrap' ? core.projectId(command.identity.projectUrl) : undefined;
   if (command.identity?.namespace === 'chatgpt.bootstrap' && !expectedProjectId)
@@ -460,7 +469,9 @@ async function executePrepare(command) {
   }
 }
 async function executeDispatch(command) {
-  const target = await resolveTarget(command.identity, false, command.providerBinding).catch(() => undefined);
+  let target;
+  try { target = await resolveTarget(command.identity, false, command.providerBinding); }
+  catch (error) { return { kind: 'dispatch', mutation: 'not_attempted', reasonCode: targetResolutionReasonCode(error) }; }
   if (!target) return { kind: 'dispatch', mutation: 'not_attempted', reasonCode: 'COMPUTER_CHATGPT_EXTENSION_TARGET_MISSING' };
   const expectedProjectId = command.identity?.namespace === 'chatgpt.bootstrap' ? core.projectId(command.identity.projectUrl) : undefined;
   if (command.identity?.namespace === 'chatgpt.bootstrap' && !expectedProjectId)
@@ -495,8 +506,13 @@ async function executeDispatch(command) {
   return { kind: 'dispatch', mutation: 'attempted', confirmed: result.confirmed === true };
 }
 async function executeFindMarker(command, instanceId) {
-  const matches = [];
   const pinnedBinding = command.providerBinding;
+  // Discovery can read unrelated browser pages, but must never convert an
+  // explicit other-Provider binding into Chrome's actionable owner identity.
+  // Reject before any Chrome tab query or marker scan.
+  if (pinnedBinding != null && pinnedBinding.providerId !== PROVIDER_ID)
+    return { kind: 'failed', code: 'COMPUTER_CHATGPT_EXTENSION_PROVIDER_BINDING_MISMATCH', retryable: false };
+  const matches = [];
   let pinnedTarget;
   if (command.identity?.namespace === 'chatgpt.bootstrap'
     && pinnedBinding?.providerId === PROVIDER_ID
@@ -529,7 +545,8 @@ async function executeFindMarker(command, instanceId) {
       if (!texts.some((text) => String(text ?? '').includes(command.marker))) continue;
       // Only the originally pinned physical tab can re-attest its session
       // ownerToken. Never copy the token to a same-URL or another-profile tab.
-      const ownerToken = command.providerBinding && String(command.providerBinding.tabId) === String(tab.id)
+      const ownerToken = command.providerBinding?.providerId === PROVIDER_ID
+        && String(command.providerBinding.tabId) === String(tab.id)
         && command.providerBinding.providerSessionId === instanceId
         ? await attestedOwnerToken(tab, command.providerBinding) : undefined;
       matches.push({ identity: { namespace: 'chatgpt.conversation', conversationId: identity.conversationId, canonicalUrl: identity.canonicalUrl }, providerBinding: binding(observedTab, instanceId, ownerToken), observation });

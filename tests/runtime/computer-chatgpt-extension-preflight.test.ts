@@ -156,10 +156,11 @@ test('preflight cannot retroactively declare a send not attempted when execution
 });
 
 function bootstrapFixture(initialTabs: Array<{ id: number; windowId: number; url: string }> = [],
-  options: { ownerWriteFails?: boolean; ownerWriteDrops?: boolean } = {}) {
+  options: { ownerWriteFails?: boolean; ownerWriteDrops?: boolean; markerObservation?: boolean } = {}) {
   const tabs = [...initialTabs];
   let nextTabId = 200;
   let dispatchSends = 0;
+  let snapshotReads = 0;
   const ownerTokens = new Map<string, string>();
   const projectId = (value: string) => /\/g\/(g-p-[^/]+)/.exec(value)?.[1] ?? null;
   const chrome = {
@@ -178,7 +179,11 @@ function bootstrapFixture(initialTabs: Array<{ id: number; windowId: number; url
     tabs: {
       async query() { return [...tabs]; },
       sendMessage(_tabId: number, message: { type: string }, callback: (result: object) => void) {
-        if (message.type === 'forge-computer-chatgpt-dispatch') {
+        if (message.type === 'forge-computer-chatgpt-snapshot' && options.markerObservation) {
+          snapshotReads++;
+          callback({ url: tabs.find((tab) => tab.id === _tabId)?.url,
+            latestUserText: 'exact-marker-test-v1', userMessages: ['exact-marker-test-v1'] });
+        } else if (message.type === 'forge-computer-chatgpt-dispatch') {
           dispatchSends += 1;
           callback({ dispatched: true });
         } else if (message.type === 'forge-computer-chatgpt-prepare') callback({ prepared: true });
@@ -202,16 +207,20 @@ function bootstrapFixture(initialTabs: Array<{ id: number; windowId: number; url
     ForgeComputerChatgptCore: {
       parseConversation(value: string) {
         const found = /\/c\/([0-9a-f-]{36})(?:[/?#]|$)/.exec(value);
-        return found ? { conversationId: found[1] } : null;
+        return found ? { conversationId: found[1], canonicalUrl: value } : null;
       }, projectId,
       normalizeText(value: unknown) { return String(value ?? '').trim(); },
     },
     setTimeout() { return 1; }, clearTimeout() {}, setInterval() { return 1; },
   };
-  runInNewContext(source + '\n;globalThis.__resolveTarget = resolveTarget;globalThis.__matchingTabs = matchingTabs;globalThis.__matchesReceiver = receiverMatchesIdentity;globalThis.__markerReadIdentity = markerReconciliationReadIdentity;globalThis.__shouldReload = shouldReloadUnreadableConversation;globalThis.__testPrepare=executePrepare;globalThis.__testDispatch=executeDispatch;', context);
+  runInNewContext(source + '\n;globalThis.__resolveTarget = resolveTarget;globalThis.__matchingTabs = matchingTabs;globalThis.__matchesReceiver = receiverMatchesIdentity;globalThis.__markerReadIdentity = markerReconciliationReadIdentity;globalThis.__shouldReload = shouldReloadUnreadableConversation;globalThis.__testPrepare=executePrepare;globalThis.__testDispatch=executeDispatch;globalThis.__testFindMarker=executeFindMarker;', context);
   return {
     tabs,
     get dispatchSends() { return dispatchSends; },
+    get snapshotReads() { return snapshotReads; },
+    findMarker: (identity: object, pinned: object, instanceId: string) => (context as typeof context & {
+      __testFindMarker: (cmd: object, instanceId: string) => Promise<{ kind: string; code?: string; matches?: Array<{ providerBinding?: object }> }>;
+    }).__testFindMarker({ kind: 'find_marker', identity, providerBinding: pinned, marker: 'exact-marker-test-v1' }, instanceId),
     prepare: (identity: object, pinned: object) => (context as typeof context & {
       __testPrepare: (cmd: object) => Promise<{ ready: boolean; reasonCode?: string }>;
     }).__testPrepare({ kind: 'prepare', identity, providerBinding: pinned, prompt: 'test only' }),
@@ -460,6 +469,14 @@ test('find_marker hydrates only the exact pinned migrated conversation after rec
   expect(found.matches[0]?.identity.conversationId).toBe(conversationId);
   expect(found.matches[0]?.providerBinding.tabId).toBe('81');
   expect(reinjections).toBe(1);
+  expect(sends).toBe(0);
+  // Foreign providerId cannot launder its exact Chrome tab/session/Token
+  // through marker reconciliation into a fresh Chrome Send authorization.
+  const foreign = await find({ ...command, providerBinding: {
+    ...command.providerBinding, providerId: 'browser.other',
+  } }, 'same-provider');
+  expect(foreign).toMatchObject({ kind: 'failed',
+    code: 'COMPUTER_CHATGPT_EXTENSION_PROVIDER_BINDING_MISMATCH' });
   expect(sends).toBe(0);
   // A receiver may only be rehydrated while the exact pin still belongs to
   // the original Project. Another Project's tab never earns a read repair.
@@ -896,14 +913,54 @@ test('F11 conflicting bootstrap Provider cannot bypass cached map or execute Sen
   const foreign = { providerId: 'browser.other', providerSessionId: 'other-provider',
     tabId: String(created.tab.id), windowId: '8', ownerToken: created.ownerToken };
   await expect(f.resolve(identity, false, foreign)).rejects.toThrow('COMPUTER_CHATGPT_EXTENSION_PROVIDER_BINDING_MISMATCH');
-  expect(await f.prepare(identity, foreign)).toMatchObject({ ready: false });
-  expect(await f.dispatch(identity, foreign)).toMatchObject({ mutation: 'not_attempted' });
+  expect(await f.prepare(identity, foreign)).toMatchObject({ ready: false,
+    reasonCode: 'COMPUTER_CHATGPT_EXTENSION_PROVIDER_BINDING_MISMATCH' });
+  expect(await f.dispatch(identity, foreign)).toMatchObject({ mutation: 'not_attempted',
+    reasonCode: 'COMPUTER_CHATGPT_EXTENSION_PROVIDER_BINDING_MISMATCH' });
   const incomplete = { providerId: 'browser.chrome-extension', ownerToken: created.ownerToken };
   await expect(f.resolve(identity, false, incomplete)).rejects.toThrow('COMPUTER_CHATGPT_EXTENSION_PINNED_BINDING_INCOMPLETE');
+  expect(await f.prepare(identity, incomplete)).toMatchObject({ ready: false,
+    reasonCode: 'COMPUTER_CHATGPT_EXTENSION_PINNED_BINDING_INCOMPLETE' });
   await expect(f.resolve(identity, false)).rejects.toThrow('COMPUTER_CHATGPT_BOOTSTRAP_BINDING_REQUIRED');
   expect(f.dispatchSends).toBe(0);
   expect(f.tabs).toHaveLength(1);
   const valid = { providerId: 'browser.chrome-extension', providerSessionId: 'test-provider',
     tabId: String(created.tab.id), windowId: '8', ownerToken: created.ownerToken };
   expect((await f.resolve(identity, false, valid)).tab.id).toBe(created.tab.id);
+});
+
+// Sixth independent Review P1: marker discovery must not launder another
+// Provider's explicit binding into this Chrome profile's owned tab.
+test('F11 find_marker rejects foreign Provider before reading tabs or returning a Chrome binding', async () => {
+  const conversationUrl = 'https://chatgpt.com/c/12345678-1234-1234-1234-123456789abc';
+  const f = bootstrapFixture([{ id: 88, windowId: 8, url: conversationUrl }], { markerObservation: true });
+  f.attestOwner(88, 'real-chrome-owner');
+  const foreign = { providerId: 'browser.other', providerSessionId: 'profile-attested',
+    tabId: '88', windowId: '8', ownerToken: 'real-chrome-owner' };
+  const identity = { namespace: 'chatgpt.bootstrap', bootstrapKey: 'supervisor:foreign',
+    projectUrl: 'https://chatgpt.com/g/g-p-test/project' };
+  expect(await f.findMarker(identity, foreign, 'profile-attested')).toMatchObject({
+    kind: 'failed', code: 'COMPUTER_CHATGPT_EXTENSION_PROVIDER_BINDING_MISMATCH',
+  });
+  expect(f.snapshotReads).toBe(0);
+  expect(f.dispatchSends).toBe(0);
+});
+
+test('F11 Prepare and Dispatch retain typed refusal reasons, never Send on a conflicting Provider', async () => {
+  const f = bootstrapFixture();
+  const identity = { namespace: 'chatgpt.bootstrap', bootstrapKey: 'supervisor:typed',
+    projectUrl: 'https://chatgpt.com/g/g-p-test/project' };
+  const own = await f.resolve(identity, true);
+  const foreign = { providerId: 'browser.other', providerSessionId: 'foreign',
+    tabId: String(own.tab.id), windowId: '8', ownerToken: own.ownerToken };
+  expect(await f.prepare(identity, foreign)).toMatchObject({ kind: 'prepared', ready: false,
+    reasonCode: 'COMPUTER_CHATGPT_EXTENSION_PROVIDER_BINDING_MISMATCH' });
+  expect(await f.dispatch(identity, foreign)).toMatchObject({ kind: 'dispatch', mutation: 'not_attempted',
+    reasonCode: 'COMPUTER_CHATGPT_EXTENSION_PROVIDER_BINDING_MISMATCH' });
+  const incomplete = { providerId: 'browser.chrome-extension', ownerToken: own.ownerToken };
+  expect(await f.prepare(identity, incomplete)).toMatchObject({ ready: false,
+    reasonCode: 'COMPUTER_CHATGPT_EXTENSION_PINNED_BINDING_INCOMPLETE' });
+  expect(await f.dispatch(identity, incomplete)).toMatchObject({ mutation: 'not_attempted',
+    reasonCode: 'COMPUTER_CHATGPT_EXTENSION_PINNED_BINDING_INCOMPLETE' });
+  expect(f.dispatchSends).toBe(0);
 });
