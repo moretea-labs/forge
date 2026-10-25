@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { RELEASE_SESSION_PHASES, advanceReleaseSession, createReleaseSession, listCompleteReleaseSessions, listReleaseSessions, migrateReleaseSessionState, readReleaseSession, recordReleaseSessionTransaction, releaseSessionCandidateIsRetired, releaseSessionIsSoakingSupersededByStableAuthority, releaseSessionIsSoakingSupersededByFailedCutoverCompensation, type ReleaseSessionCandidateRelease, type ReleaseSessionStableRelease, type ReleaseSessionTransaction } from '../../src/runtime/release/release-session';
+import { RELEASE_SESSION_PHASES, RELEASE_SESSION_ACCEPTANCE_TIMEOUT_MS, releaseSessionAcceptanceTimedOut, advanceReleaseSession, createReleaseSession, listCompleteReleaseSessions, listReleaseSessions, migrateReleaseSessionState, readReleaseSession, recordReleaseSessionTransaction, releaseSessionCandidateIsRetired, releaseSessionIsSoakingSupersededByStableAuthority, releaseSessionIsSoakingSupersededByFailedCutoverCompensation, type ReleaseSessionCandidateRelease, type ReleaseSessionStableRelease, type ReleaseSessionTransaction } from '../../src/runtime/release/release-session';
 import type { RuntimeReleaseAuthority } from '../../src/runtime/root/release-store';
 import { advanceConfiguredRuntimeRelease, decideConfiguredRuntimeReleaseAction, decideConfiguredRuntimeReleaseReconciliation } from '../../src/runtime/release/release-coordinator';
 import { cancelConfiguredRuntimeReleaseSession, createRecoveryConfig } from '../../src/runtime/standalone-recovery/core';
@@ -982,4 +982,20 @@ describe('Recovery ReleaseSession', () => {
     advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'built', candidateRelease });
     expect(() => advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'failed' })).toThrow('RELEASE_SESSION_REVISION_FENCED');
   });
+});
+
+// A policy introduced later must not roll back historical production sessions.
+test('Mac-first acceptance expires only a newly opted-in ReleaseSession at the durable cutover deadline', () => {
+  const start = Date.parse('2026-10-25T00:00:00Z');
+  const receipts = [
+    { id: 'acceptance_timeout_policy_v1', kind: 'source' as const, recordedAt: '2026-10-24T23:00:00Z', summary: 'policy' },
+    { id: 'soak_started', kind: 'soak' as const, recordedAt: '2026-10-25T00:00:00Z', summary: 'cutover' },
+  ];
+  const current = { phase: 'soaking' as const, receipts };
+  expect(releaseSessionAcceptanceTimedOut(current, start + RELEASE_SESSION_ACCEPTANCE_TIMEOUT_MS - 1)).toBe(false);
+  expect(releaseSessionAcceptanceTimedOut(current, start + RELEASE_SESSION_ACCEPTANCE_TIMEOUT_MS)).toBe(true);
+  expect(releaseSessionAcceptanceTimedOut({ ...current, receipts: receipts.slice(1) }, start + 100 * 3600_000)).toBe(false);
+  expect(releaseSessionAcceptanceTimedOut({ ...current, receipts: receipts.slice(0, 1) }, start + 100 * 3600_000)).toBe(false);
+  expect(releaseSessionAcceptanceTimedOut({ ...current, phase: 'known_good' }, start + 100 * 3600_000)).toBe(false);
+  expect(releaseSessionAcceptanceTimedOut(current, Number.NaN)).toBe(false);
 });

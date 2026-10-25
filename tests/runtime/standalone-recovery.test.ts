@@ -2857,6 +2857,162 @@ describe('standalone recovery on canonical Runtime', () => {
     }
   });
 
+  test('new opt-in ReleaseSession rolls back Stable A when causal E2E proof remains missing past 30 minutes', async () => {
+    const home = controllerHome();
+    const previousHome = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      const first = manifest(home, 'release-a', 'artifact-a');
+      const second = manifest(home, 'release-b', 'artifact-b');
+      const baselineAuthority = ensureActiveRuntimeRelease(home, first);
+      publishRuntimeRelease(home, second, 'optin-e2e-expired-cutover');
+      const cutoverAuthority = readRuntimeReleaseAuthority(home)!;
+      const runtime = await runtimeServer();
+      writeMainToken(home);
+      const ownership = startObservedRuntime(home, runtime.endpoint, cutoverAuthority.active.releaseId, cutoverAuthority.active.artifactIdentity);
+      ensureForgeRuntimeLaunchAgentContract({ controllerHome: home, installUserLaunchAgent: true });
+
+      const sessionId = 'release-optin-e2e-expired-12345678';
+      const candidateHome = join(home, 'candidate-runtime-lanes', sessionId);
+      mkdirSync(candidateHome, { recursive: true });
+      const stable = {
+        schemaVersion: 1 as const,
+        kind: 'stable' as const,
+        controllerHome: home,
+        serviceLabel: 'stable-runtime',
+        port: 8765,
+        authTokenFile: `${home}/fixture-runtime-token`,
+      };
+      const stableRelease = {
+        authorityRevision: baselineAuthority.revision,
+        releaseId: baselineAuthority.active.releaseId,
+        artifactIdentity: baselineAuthority.active.artifactIdentity,
+        manifestSha256: baselineAuthority.active.manifestSha256,
+        workerProtocolVersion: baselineAuthority.active.workerProtocolVersion,
+        releaseFencingTokenSha256: 'fixture-release-fence',
+      };
+      const candidate = {
+        schemaVersion: 1 as const,
+        kind: 'candidate' as const,
+        sessionId,
+        controllerHome: candidateHome,
+        serviceLabel: 'candidate-runtime',
+        port: 8766,
+        authTokenFile: `${home}/fixture-runtime-token`,
+        databaseSnapshotPath: join(candidateHome, 'control-plane.sqlite'),
+        sourceStableControllerHome: home,
+        createdAt: new Date().toISOString(),
+      };
+      const candidateRelease = {
+        releaseId: cutoverAuthority.active.releaseId,
+        manifestPath: cutoverAuthority.active.manifestPath,
+        artifactIdentity: cutoverAuthority.active.artifactIdentity,
+        manifestSha256: cutoverAuthority.active.manifestSha256,
+        treeSha256: 'b'.repeat(64),
+        sourceCommit: 'known-good-reject-source',
+        sourceRepositoryId: 'repo-known-good-reject',
+      };
+      let session = createReleaseSession({ controllerHome: home, sessionId, stable, stableRelease, candidate, sourceRevision: candidateRelease.sourceCommit });
+      session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'built', candidateRelease });
+      session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'static_verified', receipts: ['type', 'runtime_architecture', 'architecture_sync', 'bootstrap'].map((id) => ({ id, kind: 'static_gate' as const, summary: id })) });
+      session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'candidate_booted' });
+      session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'candidate_verified', receipts: ['recovery', 'mcp', 'scheduler', 'supervisor', 'controller'].map((id) => ({ id, kind: 'candidate_canary' as const, summary: id })) });
+      session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'cutover_eligible' });
+      session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'cutover_attempting' });
+      const rollback = cutoverAuthority.previous!;
+      session = recordReleaseSessionTransaction({
+        controllerHome: home,
+        sessionId,
+        expectedRevision: session.revision,
+        transaction: {
+          schemaVersion: 1,
+          operationId: 'optin-e2e-expired-cutover',
+          candidateReleaseId: candidateRelease.releaseId,
+          cutoverAuthorityRevision: cutoverAuthority.revision,
+          rollbackRelease: {
+            releaseId: rollback.releaseId,
+            artifactIdentity: rollback.artifactIdentity,
+            manifestPath: rollback.manifestPath,
+            manifestSha256: rollback.manifestSha256,
+            workerProtocolVersion: rollback.workerProtocolVersion,
+            publishedAt: rollback.publishedAt,
+            databaseBackup: rollback.databaseBackup!,
+          },
+          startedAt: new Date().toISOString(),
+        },
+      });
+      session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'cutover_committed' });
+      session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'soaking', receipts: [{ id: 'soak_started', kind: 'soak', summary: 'cutover' }] });
+
+      let elapsed = 0;
+      let cpuMs = 0;
+      let launchdLoaded = true;
+      let clock = 0;
+      const config = createRecoveryConfig(home, { publicMcpUrl: runtime.endpoint, primaryRuntimeService: { platform: 'launchd' } });
+      const promoted = await promoteConfiguredRuntimeReleaseSessionKnownGood(config, sessionId, {
+        continuationProof: async () => undefined,
+        readCpu: () => ({ cpuMs: cpuMs += 5_000, processStartTime: 'fixture-process-start' }),
+        monotonicNow: () => elapsed,
+        wallNow: () => Date.now() + 31 * 60_000 + elapsed,
+        sleep: async (ms) => { elapsed += ms; },
+        rollback: {
+          platform: 'darwin',
+          currentUid: async () => 501,
+          runCommand: async (name, args) => {
+            if (name === 'lsof') return { ok: false, status: 1, stdout: '', stderr: '' };
+            if (args[0] === 'bootout') {
+              launchdLoaded = false;
+              removeOwnership(ownership);
+            }
+            if (args[0] === 'print') return launchdLoaded
+              ? { ok: true, status: 0, stdout: 'loaded', stderr: '' }
+              : { ok: false, status: 113, stdout: '', stderr: 'service not loaded' };
+            if (args[0] === 'bootstrap' || args[0] === 'kickstart') launchdLoaded = true;
+            return { ok: true, status: 0, stdout: '', stderr: '' };
+          },
+          runtimeRunning: () => false,
+          ensureRuntimeLaunchContract: () => undefined,
+          repairPrimaryConnectorBinding: async () => ({ ok: true, attempted: false, noOp: true, detail: 'fixture connector binding' }),
+          verifyLocal: async () => healthyVerify(),
+          now: () => clock += 1_000,
+          sleep: async () => undefined,
+        },
+      }, 'optin-e2e-expired');
+
+      expect(promoted).toMatchObject({ ok: false, attempted: true, releaseSession: { phase: 'rolled_back' } });
+      expect(promoted.detail).toContain('RELEASE_SESSION_AUTONOMOUS_CONTINUATION_PROOF_MISSING');
+      expect(promoted.detail).toContain('exact Stable A restored');
+      expect(readRuntimeReleaseAuthority(home)?.active.releaseId).toBe('release-a');
+
+      // Model a process death after the rollback authority write but before the
+      // ReleaseSession terminal receipt. A later known-good retry must settle
+      // that durable rollback locally, rather than retry Candidate B's full
+      // verification, public transport probes, or CPU sampler.
+      const strandedPath = join(home, 'recovery', 'state', 'release-sessions', `${sessionId}.json`);
+      const stranded = JSON.parse(readFileSync(strandedPath, 'utf8')) as { phase: string; revision: number; updatedAt: string };
+      stranded.phase = 'soaking';
+      stranded.revision += 1;
+      stranded.updatedAt = new Date().toISOString();
+      writeFileSync(strandedPath, `${JSON.stringify(stranded, null, 2)}\n`);
+      startObservedRuntime(home, runtime.endpoint, 'release-a', 'artifact-a');
+      const requestsBeforeReconcile = runtime.requests.length;
+
+      const reconciled = await promoteConfiguredRuntimeReleaseSessionKnownGood(
+        config,
+        sessionId,
+        idleCpuDependencies(),
+        'known-good-reconcile-committed-rollback',
+      );
+
+      expect(reconciled).toMatchObject({ ok: true, attempted: false, noOp: true, releaseSession: { phase: 'rolled_back' } });
+      expect(reconciled.detail).toContain('reconciled the already-committed Stable A rollback');
+      expect(runtime.requests).toHaveLength(requestsBeforeReconcile);
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+    }
+  });
+
   test('frozen Recovery clients can use their exported activation schema while partial or wrong explicit identity still fails closed', async () => {
     const home = controllerHome();
     const config = createRecoveryConfig(home);
