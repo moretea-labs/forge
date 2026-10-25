@@ -212,6 +212,7 @@ function exactCodeOwnerLocations(source: string, queries: readonly string[]): Ex
     new RegExp('(?:' + exactCodeOwnerPatterns(query) + ')', 'imsu'),
   ]));
   const queryByLowercase = new Map(queries.map((query) => [query.toLowerCase(), query]));
+  const lowerQueries = queries.map((query) => query.toLowerCase());
   const firstByQuery = new Map<string, ExactCodeOwnerLocation>();
   const exportedByQuery = new Map<string, ExactCodeOwnerLocation>();
   let lineOffset = 0;
@@ -219,7 +220,10 @@ function exactCodeOwnerLocations(source: string, queries: readonly string[]): Ex
     const line = codeLines[index] ?? '';
     const currentOffset = lineOffset;
     lineOffset += line.length + 1;
-    if (!queries.some((query) => line.toLowerCase().includes(query.toLowerCase()))) continue;
+    if (!queries.some((query) => line.includes(query))) {
+      const lowerLine = line.toLowerCase();
+      if (!lowerQueries.some((query) => lowerLine.includes(query))) continue;
+    }
     const trimmedLine = line.trim();
     // Dense same-line calls are the common saturation case. Skip them before
     // testing declaration patterns; signatures without bodies are not owners.
