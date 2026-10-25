@@ -5577,6 +5577,10 @@ export async function promoteConfiguredRuntimeReleaseSessionKnownGood(
       if (error instanceof Error && error.message === 'RELEASE_SESSION_AUTONOMOUS_CONTINUATION_PROOF_MISSING') throw error;
       throw new Error(`RELEASE_SESSION_AUTONOMOUS_CONTINUATION_PROOF_UNAVAILABLE: ${error instanceof Error ? error.message : String(error)}`);
     }
+    // An otherwise valid proof arriving after the acceptance deadline must
+    // not allow an unaccepted Candidate B to become known-good.
+    if (releaseSessionAcceptanceTimedOut(initial, dependencies.wallNow?.() ?? Date.now()))
+      throw new Error('RELEASE_SESSION_ACCEPTANCE_TIMEOUT');
 
     const existingAttestation = matchingKnownGood(config, active);
     if (existingAttestation) {
@@ -5618,7 +5622,7 @@ export async function promoteConfiguredRuntimeReleaseSessionKnownGood(
     // through the existing ReleaseSession rollback transaction instead. The
     // coordinator will then treat this source revision as already attempted and
     // will not autonomously replay it until source authority changes.
-    if (/^RECOVERY_PERFORMANCE_REJECTED:/.test(detail) || acceptanceTimedOut) {
+    if (/^RECOVERY_PERFORMANCE_REJECTED:/.test(detail) || acceptanceTimedOut || detail === 'RELEASE_SESSION_ACCEPTANCE_TIMEOUT') {
       const rollback = await rollbackConfiguredRuntimeReleaseSession(
         config,
         sessionId,
@@ -5652,6 +5656,12 @@ export async function promoteConfiguredRuntimeReleaseSessionKnownGood(
     if (!session) return { ok: false as const, attempted: true, detail: 'RELEASE_SESSION_MISSING' };
     if (session.phase !== 'soaking') {
       return { ok: false as const, attempted: true, detail: `RELEASE_SESSION_CHANGED_DURING_KNOWN_GOOD_ATTESTATION: ${session.phase}`, releaseSession: session };
+    }
+    // Final deadline fence: verification and performance observation may have
+    // started before expiry but finished after. Do not commit known_good.
+    // Rollback must run outside the Recovery mutation lock below.
+    if (releaseSessionAcceptanceTimedOut(session, dependencies.wallNow?.() ?? Date.now())) {
+      return { ok: false as const, attempted: true, detail: 'RELEASE_SESSION_ACCEPTANCE_TIMEOUT', releaseSession: session };
     }
     // The expensive independent verification and performance observation are
     // already embodied by `attested`. Re-running the full network probe suite
@@ -5705,6 +5715,21 @@ export async function promoteConfiguredRuntimeReleaseSessionKnownGood(
     };
   });
   if (!locked.acquired) return { ok: false, attempted: false, noOp: true, detail: recoveryBusyDetail(locked.owner), releaseSession: initial };
+  if (locked.value.detail === 'RELEASE_SESSION_ACCEPTANCE_TIMEOUT') {
+    const rollback = await rollbackConfiguredRuntimeReleaseSession(
+      config, sessionId, dependencies.rollback ?? {},
+      requestId?.trim() ? `${requestId.trim()}:acceptance-expired` : undefined,
+    );
+    audit(config, 'release_session_acceptance_timeout_rollback', {
+      sessionId, detail: locked.value.detail, rollbackOk: rollback.ok, rollbackDetail: rollback.detail,
+    });
+    return { ok: false, attempted: true,
+      detail: rollback.ok
+        ? 'RELEASE_SESSION_ACCEPTANCE_TIMEOUT; Candidate B expired before known_good and exact Stable A restored'
+        : `RELEASE_SESSION_ACCEPTANCE_TIMEOUT; automatic Stable A rollback failed: ${rollback.detail}`,
+      releaseSession: rollback.releaseSession ?? readReleaseSession(config.controllerHome, sessionId) ?? initial,
+    };
+  }
   return locked.value;
 }
 

@@ -5874,7 +5874,8 @@ test('recovery release install still fails closed when the Recovery mutation nev
   })).rejects.toThrow('RECOVERY_OPERATION_LOCK_BUSY');
 });
 
-test('new bounded soak missing C→C→D proof restores Stable A with durable rollback', async () => {
+test('new bounded soak rolls back missing proof and a valid proof received after deadline', async () => {
+  for (const lateValidProof of [false, true]) {
   const home = controllerHome();
   const oldHome = process.env.HOME;
   process.env.HOME = home;
@@ -5975,7 +5976,7 @@ test('new bounded soak missing C→C→D proof restores Stable A with durable ro
       primaryRuntimeService: { platform: 'launchd' },
     });
     const result = await promoteConfiguredRuntimeReleaseSessionKnownGood(config, sessionId, {
-      continuationProof: async () => undefined,
+      continuationProof: lateValidProof ? supervisorContinuationProofDependency() : async () => undefined,
       wallNow: () => Date.now() + 31 * 60_000,
       rollback: {
         platform: 'darwin',
@@ -6002,11 +6003,14 @@ test('new bounded soak missing C→C→D proof restores Stable A with durable ro
     expect(result).toMatchObject({
       ok: false, attempted: true, releaseSession: { phase: 'rolled_back' },
     });
-    expect(result.detail).toContain('RELEASE_SESSION_AUTONOMOUS_CONTINUATION_PROOF_MISSING');
+    expect(result.detail).toContain(lateValidProof
+      ? 'RELEASE_SESSION_ACCEPTANCE_TIMEOUT'
+      : 'RELEASE_SESSION_AUTONOMOUS_CONTINUATION_PROOF_MISSING');
     expect(result.detail).toContain('exact Stable A restored');
     expect(readRuntimeReleaseAuthority(home)?.active.releaseId).toBe('timeout-stable-a');
   } finally {
     if (oldHome === undefined) delete process.env.HOME;
     else process.env.HOME = oldHome;
+  }
   }
 });
