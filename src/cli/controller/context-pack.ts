@@ -1,6 +1,5 @@
 import {
   exactCodeNeedleMatches,
-  exactCodeOwnerEvidence,
   gitSnapshot,
   getRepositoryReadSessionCache,
   searchRepositoryMany,
@@ -10,7 +9,7 @@ import {
 import { globMatches } from "../../../adapters/mcp/paths";
 import { posix } from "path";
 import type { McpPolicy } from "../../../adapters/mcp/types";
-import { materializeSource } from "./context/source-materializer";
+import { exactCodeOwnerEvidence, materializeSource } from "./context/source-materializer";
 import { projectBoard } from "./issue-store";
 import { buildControllerTaskLedgerProjection } from "./task-ledger";
 import { legacyIssueAuthorityRetired } from "./legacy-issue-cutover";
@@ -386,7 +385,7 @@ export function buildControllerContextPack(
   // authored symbols. Preserve the old scoped path in those cases rather than
   // replacing already-correct early evidence with a partial late selection.
   const useBoundedExactWindows = scopedExactKnownFileSearch && requiredSearchQueries.length <= 2;
-  const scopedRequiredHitLines = new Map<string, Array<{ line: number; query: string; owner: boolean }>>();
+  const scopedRequiredHitLines = new Map<string, Array<{ line: number; query: string }>>();
 
   // Lexical retrieval is one bounded pass across candidate files for all terms.
   // The old per-term loop reread the same source files up to 14 times even
@@ -424,13 +423,13 @@ export function buildControllerContextPack(
       if (candidates.size >= maxFiles * 3 && !candidates.has(hit.path) && !requiredSearchQueries.includes(hit.query)) continue;
       if (requiredSearchQueries.includes(hit.query)) {
         const source = hit.text.trimStart();
-        const { declared, owner } = exactCodeOwnerEvidence(source, hit.query);
+        const ownerEvidence = scopedExactKnownFileSearch ? undefined : exactCodeOwnerEvidence(source, hit.query);
         if (useBoundedExactWindows) {
           const exactLines = scopedRequiredHitLines.get(hit.path) ?? [];
-          exactLines.push({ line: hit.line, query: hit.query, owner });
+          exactLines.push({ line: hit.line, query: hit.query });
           scopedRequiredHitLines.set(hit.path, exactLines);
         }
-        if (declared?.toLowerCase() === hit.query.toLowerCase()) {
+        if (ownerEvidence?.declared?.toLowerCase() === hit.query.toLowerCase()) {
           addReason(candidates, hit.path, `${source.startsWith('export ') ? 'exported' : 'local'}-definition:${hit.query}`, hit.line);
         }
       }
@@ -519,6 +518,7 @@ export function buildControllerContextPack(
 
   let remainingSnippets = maxSnippets;
   const files: ControllerContextPackFile[] = [];
+  const emittedOwnerEvidence = new Set<string>();
   const expansionDiscoveredPaths: string[] = [];
   const expansionMaterializedPaths: string[] = [];
   const materializationStartedAt = performance.now();
@@ -545,26 +545,24 @@ export function buildControllerContextPack(
     // Keep exact-symbol windows bounded by authored symbol count rather than
     // expanding a small, formerly broad result to every occurrence in a file.
     const exactHits = scopedRequiredHitLines.get(entry.path) ?? [];
-    const requiredWindows: Array<{ first: number; last: number; count: number; queries: Set<string>; owners: Set<string> }> = [];
+    const requiredWindows: Array<{ first: number; last: number; count: number; queries: Set<string> }> = [];
     for (const hit of [...exactHits].sort((a, b) => a.line - b.line)) {
       const last = requiredWindows[requiredWindows.length - 1];
       if (last && hit.line - last.first <= 40) {
         last.last = hit.line;
         last.count += 1;
         last.queries.add(hit.query);
-        if (hit.owner) last.owners.add(hit.query);
       } else {
         requiredWindows.push({
           first: hit.line, last: hit.line, count: 1,
-          queries: new Set([hit.query]), owners: new Set(hit.owner ? [hit.query] : []),
+          queries: new Set([hit.query]),
         });
       }
     }
     // Reserve bounded evidence for distinct authored symbols before allowing
     // dense references to one symbol to consume both available windows.
     const rankedRequiredWindows = requiredWindows.sort((a, b) =>
-      b.owners.size - a.owners.size
-      || b.queries.size - a.queries.size || b.count - a.count || a.first - b.first);
+      b.queries.size - a.queries.size || b.count - a.count || a.first - b.first);
     // Preserve the highest-ranked declaration first, then use the existing
     // second slot for a different authored symbol before duplicate references.
     const firstRequiredWindow = rankedRequiredWindows[0];
@@ -594,7 +592,12 @@ export function buildControllerContextPack(
         maxCharsPerSnippet: exactKnown && options.maxCharsPerSnippet === undefined ? 8000 : maxCharsPerSnippet,
         session: options.session,
         preferSymbolRanges,
+        ...(scopedExactKnownFileSearch && useBoundedExactWindows ? { requiredOwnerQueries: requiredSearchQueries } : {}),
       });
+      for (const snippet of snippets) {
+        for (const query of snippet.ownerQueries ?? []) emittedOwnerEvidence.add(query);
+      }
+      snippets = snippets.map(({ ownerQueries: _ownerQueries, ...snippet }) => snippet);
       for (const snippet of snippets) {
         if (snippet.cacheHit) rangeCacheHits += 1;
         else rangeCacheMisses += 1;
@@ -903,13 +906,11 @@ export function buildControllerContextPack(
   // authored code symbol is absent from the actual snippets emitted to the model.
   // In the bounded exact-known-file path, references alone are not sufficient
   // implementation evidence: require the requested owner line in an emitted snippet.
-  const requiredSymbolEvidenceMissing = requiredSearchQueries.some((query) =>
-    !files.some((file) => file.snippets.some((snippet) => {
-      if (scopedExactKnownFileSearch) {
-        return exactCodeOwnerEvidence(snippet.content, query).owner;
-      }
-      return exactCodeNeedleMatches(snippet.content.toLowerCase(), query.toLowerCase());
-    })));
+  const requiredSymbolEvidenceMissing = scopedExactKnownFileSearch
+    ? requiredSearchQueries.some((query) => !emittedOwnerEvidence.has(query))
+    : requiredSearchQueries.some((query) =>
+        !files.some((file) => file.snippets.some((snippet) =>
+          exactCodeNeedleMatches(snippet.content.toLowerCase(), query.toLowerCase()))));
   const exactKnownFilesLosslesslyMaterialized = scopedExactKnownFileSearch
     && exactKnownFiles.length > 0
     && exactKnownFiles.every((path) => files.some((file) => file.path === path

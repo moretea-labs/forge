@@ -1,7 +1,7 @@
 import type { McpPolicy } from '../../../../adapters/mcp/types';
 import { extractTypeScriptSourceSymbolsInSidecar } from '../../../runtime/context/typescript-navigation-process';
 import { redactMcpText } from '../../../../adapters/mcp/redaction';
-import { readRepositoryRange, type RepositoryReadSession } from '../../repository/inspector';
+import { exactCodeNeedleMatches, readRepositoryRange, type RepositoryReadSession } from '../../repository/inspector';
 
 const DEFAULT_CONTEXT_BEFORE = 12;
 const DEFAULT_CONTEXT_AFTER = 28;
@@ -20,6 +20,8 @@ export interface MaterializedSourceSnippet {
   redactions: Array<{ type: string; count: number }>;
   reason: string;
   cacheHit?: boolean;
+  /** Internal proof: required owner declarations actually present in this emitted snippet. */
+  ownerQueries?: string[];
   materialization: SourceMaterializationKind;
   symbol?: {
     kind: string;
@@ -38,6 +40,8 @@ export interface MaterializeSourceOptions {
   session?: RepositoryReadSession;
   /** Ordinary lexical implementation search must not spawn another TypeScript compiler sidecar. */
   preferSymbolRanges?: boolean;
+  /** Required code symbols whose actual declaration lines must be considered before lexical hits. */
+  requiredOwnerQueries?: string[];
 }
 
 interface SymbolRange {
@@ -76,6 +80,159 @@ function plainSource(numbered: string): string {
     .split(/\r?\n/)
     .map((line) => line.replace(/^\d+: /, ''))
     .join('\n');
+}
+
+const METHOD_CONTROL_KEYWORDS = new Set([
+  'if', 'for', 'while', 'switch', 'catch', 'with', 'try', 'finally', 'else', 'do',
+  'return', 'throw', 'new', 'delete', 'void', 'typeof', 'instanceof', 'in', 'of',
+  'yield', 'await', 'function', 'class', 'interface', 'type', 'const', 'let', 'var',
+  'case', 'default', 'import', 'export', 'extends', 'implements', 'super', 'this',
+]);
+
+function escapeCodeOwnerNeedle(needle: string): string {
+  return needle.replace(/[.*+?^${}()|[\]\\]/g, (match) => '\\' + match);
+}
+
+function exactCodeOwnerPatterns(query: string): string {
+  const escaped = escapeCodeOwnerNeedle(query);
+  const declaration = '^\\s*(?:(?:export|declare|default|async)\\s+)*(?:function|class|interface|type|const|let|enum)\\s+' + escaped + '(?:$|[^\\p{L}\\p{N}_$])';
+  const boundedSignature = '(?:[^;{}]{0,99}|\\{[^{}]{0,99}\\}){0,5}?';
+  const method = METHOD_CONTROL_KEYWORDS.has(query.toLowerCase()) ? '' : '|^\\s*(?:(?:public|private|protected|static|abstract|override|async|get|set)\\s+)*(?:\\*\\s*)?#?' + escaped + '\\s*(?:<[^>\\n]+>)?\\s*\\(' + boundedSignature + '\\)\\s*(?::\\s*' + boundedSignature + ')?\\s*\\{';
+  const arrow = METHOD_CONTROL_KEYWORDS.has(query.toLowerCase()) ? '' : '|^\\s*(?:(?:public|private|protected|static|readonly|declare)\\s+)*#?' + escaped + '\\??\\s*=\\s*(?:async\\s*)?(?:<[^>\\n]+>\\s*)?(?:\\(' + boundedSignature + '\\)|[\\w$]+)\\s*(?::\\s*' + boundedSignature + ')?\\s*=>';
+  return declaration + method + arrow;
+}
+
+function maskCommentsAndStrings(source: string): string {
+  const templateQuote = String.fromCharCode(96);
+  if (!source.includes('//') && !source.includes('/*') && !source.includes("'")
+    && !source.includes('"') && !source.includes(templateQuote)) return source;
+  const masked = source.split('');
+  let mode: 'code' | 'line-comment' | 'block-comment' | 'single-string' | 'double-string' | 'template-string' = 'code';
+  for (let index = 0; index < source.length; index += 1) {
+    const current = source[index]!;
+    const next = source[index + 1];
+    if (mode === 'code') {
+      if (current === '/' && next === '/') {
+        masked[index] = ' ';
+        masked[index + 1] = ' ';
+        index += 1;
+        mode = 'line-comment';
+      } else if (current === '/' && next === '*') {
+        masked[index] = ' ';
+        masked[index + 1] = ' ';
+        index += 1;
+        mode = 'block-comment';
+      } else if (current === "'") {
+        masked[index] = ' ';
+        mode = 'single-string';
+      } else if (current === '"') {
+        masked[index] = ' ';
+        mode = 'double-string';
+      } else if (current === templateQuote) {
+        masked[index] = ' ';
+        mode = 'template-string';
+      }
+      continue;
+    }
+    if (mode === 'line-comment') {
+      if (current === '\n') mode = 'code';
+      else if (current !== '\r') masked[index] = ' ';
+      continue;
+    }
+    if (mode === 'block-comment') {
+      if (current === '*' && next === '/') {
+        masked[index] = ' ';
+        masked[index + 1] = ' ';
+        index += 1;
+        mode = 'code';
+      } else if (current !== '\n' && current !== '\r') {
+        masked[index] = ' ';
+      }
+      continue;
+    }
+    const quote = mode === 'single-string' ? "'" : mode === 'double-string' ? '"' : templateQuote;
+    if (current === '\\') {
+      masked[index] = ' ';
+      if (index + 1 < source.length) {
+        if (source[index + 1] !== '\n' && source[index + 1] !== '\r') masked[index + 1] = ' ';
+        index += 1;
+      }
+    } else if (current === quote) {
+      masked[index] = ' ';
+      mode = 'code';
+    } else if (current !== '\n' && current !== '\r') {
+      masked[index] = ' ';
+    }
+  }
+  return masked.join('');
+}
+
+interface ExactCodeOwnerLocation {
+  query: string;
+  line: number;
+  exported: boolean;
+}
+
+function exactCodeOwnerLocations(source: string, queries: readonly string[]): ExactCodeOwnerLocation[] {
+  if (queries.length === 0) return [];
+  const code = maskCommentsAndStrings(source);
+  const codeLines = code.split('\n');
+  const alternatives = queries.map(escapeCodeOwnerNeedle).join('|');
+  const declarationStart = new RegExp(
+    '^\\s*(?:(?:export|declare|default|async)\\s+)*(?:function|class|interface|type|const|let|enum)\\s+('
+      + alternatives + ')(?:$|[^\\p{L}\\p{N}_$])',
+    'iu',
+  );
+  const memberStart = new RegExp(
+    '^\\s*(?:(?:public|private|protected|static|abstract|override|async|get|set|readonly|declare)\\s+)*(?:\\*\\s*)?#?('
+      + alternatives + ')\\??\\s*(?:<[^>\\n]+>\\s*)?(?:\\(|=)',
+    'iu',
+  );
+  const ownerPatterns = new Map(queries.map((query) => [
+    query,
+    new RegExp('(?:' + exactCodeOwnerPatterns(query) + ')', 'imsu'),
+  ]));
+  const queryByLowercase = new Map(queries.map((query) => [query.toLowerCase(), query]));
+  const firstByQuery = new Map<string, ExactCodeOwnerLocation>();
+  const exportedByQuery = new Map<string, ExactCodeOwnerLocation>();
+  let lineOffset = 0;
+  for (let index = 0; index < codeLines.length; index += 1) {
+    const line = codeLines[index] ?? '';
+    const currentOffset = lineOffset;
+    lineOffset += line.length + 1;
+    const trimmedLine = line.trim();
+    // Dense same-line calls are the common saturation case. Skip them before
+    // testing declaration patterns; signatures without bodies are not owners.
+    if (trimmedLine.endsWith(';') && trimmedLine.includes(')')
+      && !trimmedLine.includes('=>') && !trimmedLine.includes('{')) continue;
+    const candidate = declarationStart.exec(line) ?? memberStart.exec(line);
+    if (!candidate?.[1]) continue;
+    const query = queryByLowercase.get(candidate[1].toLowerCase());
+    if (!query || exportedByQuery.has(query)) continue;
+    const ownerPattern = ownerPatterns.get(query);
+    const match = ownerPattern?.exec(code.slice(currentOffset, currentOffset + 700));
+    // The bounded signature must start on this candidate line; never accept a
+    // later declaration merely because it falls inside the look-ahead window.
+    if (!match || match.index !== 0) continue;
+    const location = {
+      query,
+      line: index + 1,
+      exported: /^(?:export|declare|default)\b/.test(line.trimStart()),
+    };
+    if (!firstByQuery.has(query)) firstByQuery.set(query, location);
+    if (location.exported) exportedByQuery.set(query, location);
+  }
+  return queries.flatMap((query) => {
+    const selected = exportedByQuery.get(query) ?? firstByQuery.get(query);
+    return selected ? [selected] : [];
+  });
+}
+
+export function exactCodeOwnerEvidence(source: string, query: string): { declared: string | undefined; owner: boolean } {
+  const normalized = source.split(/\r?\n/).map((line) => line.replace(/^\s*\d+:\s*/, '')).join('\n');
+  const code = maskCommentsAndStrings(normalized);
+  const declared = new RegExp('(?:' + exactCodeOwnerPatterns(query) + ')', 'imsu').test(code) ? query : undefined;
+  return { declared, owner: declared !== undefined };
 }
 
 function sliceNumbered(numbered: string, startLine: number, endLine: number): string {
@@ -230,15 +387,24 @@ export function materializeSource(options: MaterializeSourceOptions): Materializ
     options.session,
   );
   if (full.totalLines <= COMPLETE_FILE_MAX_LINES && full.content.length <= options.maxCharsPerSnippet) {
-    return [materializedSnippet(full, { startLine: 1, endLine: full.totalLines }, options, 'complete_file')];
+    const complete = materializedSnippet(full, { startLine: 1, endLine: full.totalLines }, options, 'complete_file');
+    const ownerQueries = (options.requiredOwnerQueries ?? [])
+      .filter((query) => exactCodeOwnerEvidence(complete.content, query).owner);
+    return ownerQueries.length > 0 ? [{ ...complete, ownerQueries }] : [complete];
   }
 
   const symbolIndex = options.preferSymbolRanges === false
     ? undefined
     : cachedSourceSymbolIndex(options.path, full.sha256, full.content);
+  const ownerLocations = options.requiredOwnerQueries?.length
+    ? exactCodeOwnerLocations(plainSource(full.content), options.requiredOwnerQueries)
+    : [];
+  const ownerLines = ownerLocations.map((owner) => owner.line);
+  const fallbackLines = mergeHitLines(options.hitLines.length > 0 ? options.hitLines : [1]);
+  const prioritizedLines = [...ownerLines, ...fallbackLines.filter((line) => !ownerLines.includes(line))];
   const snippets: MaterializedSourceSnippet[] = [];
   const seen = new Set<string>();
-  for (const line of mergeHitLines(options.hitLines.length > 0 ? options.hitLines : [1])) {
+  for (const line of prioritizedLines) {
     if (snippets.length >= options.maxSnippets) break;
     const symbol = symbolAtLine(symbolIndex, line);
     const range = symbol
@@ -259,5 +425,13 @@ export function materializeSource(options: MaterializeSourceOptions): Materializ
       symbol,
     ));
   }
-  return snippets;
+  return snippets.map((snippet) => {
+    const ownerQueries = ownerLocations.filter((owner) => {
+      if (owner.line < snippet.startLine || owner.line > snippet.endLine) return false;
+      const emittedLine = snippet.content.split(/\r?\n/).find((line) => line.startsWith(String(owner.line) + ':'));
+      if (!emittedLine) return false;
+      return exactCodeNeedleMatches(emittedLine.slice(emittedLine.indexOf(':') + 1).toLowerCase(), owner.query.toLowerCase());
+    }).map((owner) => owner.query);
+    return ownerQueries.length > 0 ? { ...snippet, ownerQueries } : snippet;
+  });
 }

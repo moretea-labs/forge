@@ -525,35 +525,6 @@ function escapeCodeNeedle(needle: string): string {
   return needle.replace(/[.*+?^${}()|[\]\\]/g, (match) => '\\' + match);
 }
 
-const METHOD_CONTROL_KEYWORDS = new Set([
-  'if', 'for', 'while', 'switch', 'catch', 'with', 'try', 'finally', 'else', 'do',
-  'return', 'throw', 'new', 'delete', 'void', 'typeof', 'instanceof', 'in', 'of',
-  'yield', 'await', 'function', 'class', 'interface', 'type', 'const', 'let', 'var',
-  'case', 'default', 'import', 'export', 'extends', 'implements', 'super', 'this',
-]);
-
-function exactCodeOwnerPatterns(query: string): string {
-  const escaped = escapeCodeNeedle(query);
-  const declaration = '^\\s*(?:(?:export|declare|default|async)\\s+)*(?:function|class|interface|type|const|let|enum)\\s+' + escaped + '(?:$|[^\\p{L}\\p{N}_$])';
-  const boundedSignature = '(?:[^;{}]{0,99}|\\{[^{}]{0,99}\\}){0,5}?';
-  const method = METHOD_CONTROL_KEYWORDS.has(query.toLowerCase()) ? '' : '|^\\s*(?:(?:public|private|protected|static|abstract|override|async|get|set)\\s+)*(?:\\*\\s*)?#?' + escaped + '\\s*(?:<[^>\\n]+>)?\\s*\\(' + boundedSignature + '\\)\\s*(?::\\s*' + boundedSignature + ')?\\s*\\{';
-  const arrow = METHOD_CONTROL_KEYWORDS.has(query.toLowerCase()) ? '' : '|^\\s*(?:(?:public|private|protected|static|readonly|declare)\\s+)*#?' + escaped + '\\??\\s*=\\s*(?:async\\s*)?(?:<[^>\\n]+>\\s*)?(?:\\(' + boundedSignature + '\\)|[\\w$]+)\\s*(?::\\s*' + boundedSignature + ')?\\s*=>';
-  return declaration + method + arrow;
-}
-
-function exactCodeOwnerPattern(query: string): string {
-  return '(?ms)(?:' + exactCodeOwnerPatterns(query) + ')';
-}
-
-export function exactCodeOwnerEvidence(source: string, query: string): { declared: string | undefined; owner: boolean } {
-  const normalized = source.split(/\r?\n/).map((line) => line.replace(/^\s*\d+:\s*/, '')).join('\n');
-  const declared = new RegExp('(?:' + exactCodeOwnerPatterns(query) + ')', 'imsu').test(normalized) ? query : undefined;
-  // A switch case is reference evidence, not the declaration that owns a symbol.
-  return { declared, owner: declared !== undefined };
-}
-
-
-
 export function exactCodeNeedleMatches(haystack: string, needle: string): boolean {
   const escaped = escapeCodeNeedle(needle);
   return new RegExp(`(?:^|[^\\p{L}\\p{N}_$])${escaped}(?=$|[^\\p{L}\\p{N}_$])`, 'u').test(haystack);
@@ -707,7 +678,6 @@ function ripgrepCandidateLines(
   skippedBinaryPaths?: Set<string>,
   maxMatchesPerFile = Math.min(Math.max(maxResultsPerQuery, 32), 500),
   exactCodeSymbols = false,
-  ownerDeclarationsOnly = false,
 ): Map<string, Array<{ line: number; text: string }>> {
   const found = new Map<string, Array<{ line: number; text: string }>>();
   const allowed = new Set(allowedPaths);
@@ -719,13 +689,10 @@ function ripgrepCandidateLines(
     if (remainingMs <= 0) throw new Error('RIPGREP_SEARCH_TIMEOUT: source discovery exceeded 15s total budget');
     const result = runProcess('rg', [
       '--json', '--with-filename', '--line-number', '--no-heading', '--color', 'never', '--no-ignore', '--no-config', '--no-messages',
-      ...(ownerDeclarationsOnly ? ['--multiline'] : []),
-      ...(exactCodeSymbols || ownerDeclarationsOnly ? [] : ['--fixed-strings']),
+      ...(exactCodeSymbols ? [] : ['--fixed-strings']),
       '--max-count', String(maxMatchesPerFile),
       ...(caseSensitive ? [] : ['--ignore-case']),
-      ...queries.flatMap((query) => ['-e', ownerDeclarationsOnly
-        ? exactCodeOwnerPattern(query)
-        : exactCodeSymbols
+      ...queries.flatMap((query) => ['-e', exactCodeSymbols
         ? `(?:^|[^\\p{L}\\p{N}_$])${escapeCodeNeedle(query)}(?:$|[^\\p{L}\\p{N}_$])`
         : query]),
       '--', ...paths,
@@ -858,70 +825,33 @@ export function searchRepositoryMany(
     && completionMode === 'per_query'
     && requiredQueries.length > 0
     && requiredQueries.length <= 2;
-  // Allow bounded known-file searches to collect enough lexical evidence in
-  // one process. A path that still reaches this cap gets an exact-only pass,
-  // so a late required symbol is never inferred absent from truncated hits.
-  const scopedHitLimit = Math.max(160, Math.min(Math.max(maxResultsPerQuery, 32), 500));
+  // Keep lexical retrieval at the normal bounded per-file budget. Exact owner
+  // windows are selected from the authorized full source by Source Materializer,
+  // so dense references cannot hide a late declaration or justify a large rg cap.
   const scopedHits = boundedScopedSearch && authorizedCandidatePaths.length
-    ? ripgrepCandidateLines(repoRoot, authorizedCandidatePaths, queries, opts.caseSensitive === true, maxResultsPerQuery, skippedBinaryPaths, scopedHitLimit)
+    ? ripgrepCandidateLines(repoRoot, authorizedCandidatePaths, queries, opts.caseSensitive === true, maxResultsPerQuery, skippedBinaryPaths)
     : null;
   const exactHits = authorizedCandidatePaths.length && requiredQueries.length
-    ? scopedHits !== null
-      ? (() => {
-          const exact = new Map<string, Array<{ line: number; text: string }>>();
-          const saturatedPaths: string[] = [];
-          const prioritizeOwners = (lines: Array<{ line: number; text: string }>) => {
-            const ownerLines = lines.filter(({ text }) => requiredQueries.some((query) =>
-              exactCodeOwnerEvidence(text, query).owner));
-            const ownerNumbers = new Set(ownerLines.map(({ line }) => line));
-            return [...ownerLines, ...lines.filter(({ line }) => !ownerNumbers.has(line))];
-          };
-          for (const [path, lines] of scopedHits) {
-            if (lines.length >= scopedHitLimit) saturatedPaths.push(path);
-            const requiredLines = lines.filter(({ text }) => requiredQueries.some((needle) =>
-              exactCodeNeedleMatches(
-                opts.caseSensitive ? text : text.toLowerCase(),
-                opts.caseSensitive ? needle : needle.toLowerCase(),
-              )));
-            if (requiredLines.length > 0) exact.set(path, prioritizeOwners(requiredLines));
-          }
-          // Search saturated paths and any known path with required hits but no
-          // recognized owner line; multiline declarations may start on one hit line.
-          const ownerSearchPaths = new Set<string>(saturatedPaths);
-          for (const [path, lines] of exact) {
-            if (ownerSearchPaths.has(path)) continue;
-            if (requiredQueries.some((query) => !lines.some((line) =>
-              exactCodeOwnerEvidence(line.text, query).owner))) ownerSearchPaths.add(path);
-          }
-          // Keep owner lines first so the downstream per-query result cap cannot
-          // discard them in favor of earlier references.
-          if (ownerSearchPaths.size > 0) {
-            const ownerLinesByPath = new Map<string, Array<{ line: number; text: string }>>();
-            for (const query of requiredQueries) {
-              for (const [path, lines] of ripgrepCandidateLines(
-                repoRoot, [...ownerSearchPaths], [query], opts.caseSensitive === true,
-                maxResultsPerQuery, skippedBinaryPaths, 1, false, true,
-              )) {
-                const merged = new Map<number, { line: number; text: string }>(
-                  (ownerLinesByPath.get(path) ?? []).map((line) => [line.line, line] as const),
-                );
-                for (const line of lines) merged.set(line.line, line);
-                ownerLinesByPath.set(path, [...merged.values()]);
+    ? (() => {
+        const exact = scopedHits !== null
+          ? (() => {
+              const selected = new Map<string, Array<{ line: number; text: string }>>();
+              for (const [path, lines] of scopedHits) {
+                const requiredLines = lines.filter(({ text }) => requiredQueries.some((needle) =>
+                  exactCodeNeedleMatches(
+                    opts.caseSensitive ? text : text.toLowerCase(),
+                    opts.caseSensitive ? needle : needle.toLowerCase(),
+                  )));
+                if (requiredLines.length > 0) selected.set(path, requiredLines);
               }
-            }
-            for (const path of ownerSearchPaths) {
-              const merged = new Map<number, { line: number; text: string }>();
-              for (const line of ownerLinesByPath.get(path) ?? []) merged.set(line.line, line);
-              for (const line of exact.get(path) ?? []) if (!merged.has(line.line)) merged.set(line.line, line);
-              if (merged.size > 0) exact.set(path, [...merged.values()]);
-            }
-          }
-          return exact;
-        })()
-      : ripgrepCandidateLines(
-          repoRoot, authorizedCandidatePaths, requiredQueries, opts.caseSensitive === true,
-          maxResultsPerQuery, skippedBinaryPaths, undefined, true,
-        )
+              return selected;
+            })()
+          : ripgrepCandidateLines(
+              repoRoot, authorizedCandidatePaths, requiredQueries, opts.caseSensitive === true,
+              maxResultsPerQuery, skippedBinaryPaths, undefined, true,
+            );
+        return exact;
+      })()
     : null;
   const hasRequiredHit = (needle: string): boolean => exactHits !== null
     && [...exactHits.values()].some((lines) => lines.some(({ text }) => exactCodeNeedleMatches(

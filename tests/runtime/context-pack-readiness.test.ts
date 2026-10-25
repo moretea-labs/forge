@@ -5,6 +5,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { buildControllerContextPack, buildControllerContextPackAsync, type ControllerContextPackOptions } from '../../src/cli/controller/context-pack';
 import { getMcpPolicy } from '../../adapters/mcp/policy';
+import { exactCodeOwnerEvidence } from '../../src/cli/controller/context/source-materializer';
 
 const roots: string[] = [];
 afterEach(() => { while (roots.length) rmSync(roots.pop()!, { recursive: true, force: true }); });
@@ -118,8 +119,38 @@ test('recovers late owners and requires emitted owner evidence before accepting 
     ...Array.from({ length: 80 }, (_, index) => 'const CASE_LABEL_PAD_' + index + ' = ' + index + ';'),
     'export function gammaHandler() { return true; }',
   ];
+  const commentOnlyOwnerLines = [
+    '/*',
+    'function commentOnlyOwner() { return true; }',
+    '*/',
+    ...Array.from({ length: 170 }, () => 'commentOnlyOwner();'),
+  ];
+  const commentBeforeRealOwnerLines = [
+    '/*',
+    'function commentThenRealOwner() { return true; }',
+    '*/',
+    ...Array.from({ length: 170 }, () => 'commentThenRealOwner();'),
+    'export function commentThenRealOwner() { return true; }',
+  ];
+  const templateOnlyOwnerLines = [
+    'const example = ' + String.fromCharCode(96),
+    'function templateOnlyOwner() { return true; }',
+    String.fromCharCode(96) + ';',
+    ...Array.from({ length: 170 }, () => 'templateOnlyOwner();'),
+  ];
+  const templateBeforeRealOwnerLines = [
+    'const example = ' + String.fromCharCode(96),
+    'function templateThenRealOwner() { return true; }',
+    String.fromCharCode(96) + ';',
+    ...Array.from({ length: 170 }, () => 'templateThenRealOwner();'),
+    'export function templateThenRealOwner() { return true; }',
+  ];
   writeFileSync(join(root, 'src/multi-required.ts'), `${multiRequiredLines.join('\n')}\n`);
   writeFileSync(join(root, 'src/case-label-owner.ts'), `${caseLabelOwnerLines.join('\n')}\n`);
+  writeFileSync(join(root, 'src/comment-only-owner.ts'), commentOnlyOwnerLines.join('\n') + '\n');
+  writeFileSync(join(root, 'src/comment-before-real-owner.ts'), commentBeforeRealOwnerLines.join('\n') + '\n');
+  writeFileSync(join(root, 'src/template-only-owner.ts'), templateOnlyOwnerLines.join('\n') + '\n');
+  writeFileSync(join(root, 'src/template-before-real-owner.ts'), templateBeforeRealOwnerLines.join('\n') + '\n');
   execFileSync('git', ['add', '.'], { cwd: root });
   execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: root });
 
@@ -245,9 +276,12 @@ test('recovers late owners and requires emitted owner evidence before accepting 
     maxCharsPerSnippet: 2400,
   });
   expect(multiRequiredPack.search.truncated).toBe(true);
-  expect(multiRequiredPack.files[0]?.snippets.some((snippet) => snippet.content.includes('export function alphaOwner'))).toBe(false);
-  expect(multiRequiredPack.files[0]?.snippets.some((snippet) => snippet.content.includes('export function betaMethod'))).toBe(false);
-  expect(multiRequiredPack.files[0]?.snippets.some((snippet) => snippet.content.includes('export function gammaHandler'))).toBe(false);
+  const emittedMultiOwners = [
+    multiRequiredPack.files[0]?.snippets.some((snippet) => snippet.content.includes('export function alphaOwner')) ?? false,
+    multiRequiredPack.files[0]?.snippets.some((snippet) => snippet.content.includes('export function betaMethod')) ?? false,
+    multiRequiredPack.files[0]?.snippets.some((snippet) => snippet.content.includes('export function gammaHandler')) ?? false,
+  ];
+  expect(emittedMultiOwners.some(Boolean)).toBe(false);
   expect(multiRequiredPack.search.evidenceTruncated).toBe(true);
   expect(multiRequiredPack.readiness.unresolvedReasonCodes).toContain('required_symbol_not_materialized');
   expect(multiRequiredPack.readiness.status).toBe('degraded');
@@ -268,6 +302,69 @@ test('recovers late owners and requires emitted owner evidence before accepting 
   expect(caseLabelOwnerPack.readiness.unresolvedReasonCodes).not.toContain('required_symbol_not_materialized');
   expect(caseLabelOwnerPack.readiness.status).toBe('ready');
   expect(caseLabelOwnerPack.readiness.readyForHighConfidenceMutation).toBe(true);
+
+  expect(exactCodeOwnerEvidence('/*\nfunction fakeOwner() { return true; }\n*/', 'fakeOwner')).toEqual({ declared: undefined, owner: false });
+  expect(exactCodeOwnerEvidence('const example = ' + String.fromCharCode(96) + '\nfunction fakeOwner() { return true; }\n' + String.fromCharCode(96) + ';', 'fakeOwner')).toEqual({ declared: undefined, owner: false });
+
+  const commentOnlyOwnerPack = buildControllerContextPack(root, getMcpPolicy('controller'), {
+    description: 'Inspect commentOnlyOwner in the exact known implementation file.',
+    searchTerms: ['commentOnlyOwner'],
+    knownPaths: ['src/comment-only-owner.ts'],
+    retrievalMode: 'implementation',
+    structuralContext: 'off',
+    maxFiles: 1,
+    maxSnippets: 1,
+    maxCharsPerSnippet: 2400,
+  });
+  expect(commentOnlyOwnerPack.files[0]?.snippets.some((snippet) => snippet.content.includes('function commentOnlyOwner'))).toBe(true);
+  expect(commentOnlyOwnerPack.readiness.unresolvedReasonCodes).toContain('required_symbol_not_materialized');
+  expect(commentOnlyOwnerPack.readiness.status).toBe('degraded');
+  expect(commentOnlyOwnerPack.readiness.readyForHighConfidenceMutation).toBe(false);
+
+  const commentBeforeRealOwnerPack = buildControllerContextPack(root, getMcpPolicy('controller'), {
+    description: 'Inspect commentThenRealOwner after an earlier commented-out declaration in the exact known implementation file.',
+    searchTerms: ['commentThenRealOwner'],
+    knownPaths: ['src/comment-before-real-owner.ts'],
+    retrievalMode: 'implementation',
+    structuralContext: 'off',
+    maxFiles: 1,
+    maxSnippets: 1,
+    maxCharsPerSnippet: 2400,
+  });
+  expect(commentBeforeRealOwnerPack.files[0]?.snippets.some((snippet) => snippet.content.includes('export function commentThenRealOwner'))).toBe(true);
+  expect(commentBeforeRealOwnerPack.readiness.unresolvedReasonCodes).not.toContain('required_symbol_not_materialized');
+  expect(commentBeforeRealOwnerPack.readiness.status).toBe('ready');
+  expect(commentBeforeRealOwnerPack.readiness.readyForHighConfidenceMutation).toBe(true);
+
+  const templateOnlyOwnerPack = buildControllerContextPack(root, getMcpPolicy('controller'), {
+    description: 'Inspect templateOnlyOwner in the exact known implementation file.',
+    searchTerms: ['templateOnlyOwner'],
+    knownPaths: ['src/template-only-owner.ts'],
+    retrievalMode: 'implementation',
+    structuralContext: 'off',
+    maxFiles: 1,
+    maxSnippets: 1,
+    maxCharsPerSnippet: 2400,
+  });
+  expect(templateOnlyOwnerPack.files[0]?.snippets.some((snippet) => snippet.content.includes('function templateOnlyOwner'))).toBe(true);
+  expect(templateOnlyOwnerPack.readiness.unresolvedReasonCodes).toContain('required_symbol_not_materialized');
+  expect(templateOnlyOwnerPack.readiness.status).toBe('degraded');
+  expect(templateOnlyOwnerPack.readiness.readyForHighConfidenceMutation).toBe(false);
+
+  const templateBeforeRealOwnerPack = buildControllerContextPack(root, getMcpPolicy('controller'), {
+    description: 'Inspect templateThenRealOwner after earlier template-literal text in the exact known implementation file.',
+    searchTerms: ['templateThenRealOwner'],
+    knownPaths: ['src/template-before-real-owner.ts'],
+    retrievalMode: 'implementation',
+    structuralContext: 'off',
+    maxFiles: 1,
+    maxSnippets: 1,
+    maxCharsPerSnippet: 2400,
+  });
+  expect(templateBeforeRealOwnerPack.files[0]?.snippets.some((snippet) => snippet.content.includes('export function templateThenRealOwner'))).toBe(true);
+  expect(templateBeforeRealOwnerPack.readiness.unresolvedReasonCodes).not.toContain('required_symbol_not_materialized');
+  expect(templateBeforeRealOwnerPack.readiness.status).toBe('ready');
+  expect(templateBeforeRealOwnerPack.readiness.readyForHighConfidenceMutation).toBe(true);
 });
 
 test('retains separate explicit code symbols in sync and async discovery beyond the inventory cap', async () => {
