@@ -535,8 +535,9 @@ const METHOD_CONTROL_KEYWORDS = new Set([
 function exactCodeOwnerPatterns(query: string): { declarations: string; caseLabel: string } {
   const escaped = escapeCodeNeedle(query);
   const declaration = '^\\s*(?:(?:export|declare|default|async)\\s+)*(?:function|class|interface|type|const|let|enum)\\s+' + escaped + '(?:$|[^\\p{L}\\p{N}_$])';
-  const method = METHOD_CONTROL_KEYWORDS.has(query.toLowerCase()) ? '' : '|^\\s*(?:(?:public|private|protected|static|abstract|override|async|get|set)\\s+)*(?:\\*\\s*)?#?' + escaped + '\\s*(?:<[^>\\n]+>)?\\s*\\([^;]{0,499}?\\)\\s*(?::\\s*[^;]{0,499}?)?\\s*\\{';
-  const arrow = METHOD_CONTROL_KEYWORDS.has(query.toLowerCase()) ? '' : '|^\\s*(?:(?:public|private|protected|static|readonly|declare)\\s+)*#?' + escaped + '\\??\\s*=\\s*(?:async\\s*)?(?:<[^>\\n]+>\\s*)?(?:\\([^;]{0,499}?\\)|[\\w$]+)\\s*(?::\\s*[^=;]{0,499}?)?\\s*=>';
+  const boundedSignature = '(?:[^;{}]{0,99}|\\{[^{}]{0,99}\\}){0,5}?';
+  const method = METHOD_CONTROL_KEYWORDS.has(query.toLowerCase()) ? '' : '|^\\s*(?:(?:public|private|protected|static|abstract|override|async|get|set)\\s+)*(?:\\*\\s*)?#?' + escaped + '\\s*(?:<[^>\\n]+>)?\\s*\\(' + boundedSignature + '\\)\\s*(?::\\s*' + boundedSignature + ')?\\s*\\{';
+  const arrow = METHOD_CONTROL_KEYWORDS.has(query.toLowerCase()) ? '' : '|^\\s*(?:(?:public|private|protected|static|readonly|declare)\\s+)*#?' + escaped + '\\??\\s*=\\s*(?:async\\s*)?(?:<[^>\\n]+>\\s*)?(?:\\(' + boundedSignature + '\\)|[\\w$]+)\\s*(?::\\s*' + boundedSignature + ')?\\s*=>';
   const quoteChars = "['\"" + String.fromCharCode(96) + "]";
   const caseLabel = '^\\s*case\\s+' + quoteChars + escaped + quoteChars + '\\s*:';
   return { declarations: declaration + method + arrow, caseLabel };

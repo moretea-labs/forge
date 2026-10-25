@@ -68,8 +68,8 @@ test('recovers late owners and requires emitted owner evidence before accepting 
     ...Array.from({ length: 170 }, () => 'betaMethod();'),
     'export class Service {',
     '  async betaMethod(',
-    '    value: string,',
-    '  ): Promise<boolean> { return value.length > 0; }',
+    '    value: { id: string; count: number },',
+    '  ): Promise<{ ok: boolean; count: number }> { return { ok: true, count: 1 }; }',
     '}',
   ];
   const methodOwnerLines = [
@@ -82,9 +82,16 @@ test('recovers late owners and requires emitted owner evidence before accepting 
   const objectOwnerLines = [
     'export const service = {',
     '  readValue(',
-    '    value: string,',
-    '  ): string { return value; },',
+    '    value: { name: string; active: boolean },',
+    '  ): { name: string; active: boolean } { return value; },',
     '};',
+  ];
+  const arrowOwnerLines = [
+    'export class Service {',
+    '  readValue = (',
+    '    value: { id: string; count: number },',
+    '  ): { id: string; count: number } => value;',
+    '}',
   ];
   writeFileSync(join(root, 'src/exact-window.ts'), `${lines.join('\n')}\n`);
   writeFileSync(join(root, 'src/saturated.ts'), `${saturatedLines.join('\n')}\n`);
@@ -92,6 +99,7 @@ test('recovers late owners and requires emitted owner evidence before accepting 
   writeFileSync(join(root, 'src/late-method-owner.ts'), `${lateMethodOwnerLines.join('\n')}\n`);
   writeFileSync(join(root, 'src/method-owner.ts'), `${methodOwnerLines.join('\n')}\n`);
   writeFileSync(join(root, 'src/object-owner.ts'), `${objectOwnerLines.join('\n')}\n`);
+  writeFileSync(join(root, 'src/arrow-owner.ts'), `${arrowOwnerLines.join('\n')}\n`);
   execFileSync('git', ['add', '.'], { cwd: root });
   execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: root });
 
@@ -190,6 +198,21 @@ test('recovers late owners and requires emitted owner evidence before accepting 
   expect(objectOwnerPack.readiness.unresolvedReasonCodes).not.toContain('required_symbol_not_materialized');
   expect(objectOwnerPack.readiness.status).toBe('ready');
   expect(objectOwnerPack.readiness.readyForHighConfidenceMutation).toBe(true);
+
+  const arrowOwnerPack = buildControllerContextPack(root, getMcpPolicy('controller'), {
+    description: 'Inspect readValue arrow property with a multiline inline object type in the exact known implementation file.',
+    searchTerms: ['readValue'],
+    knownPaths: ['src/arrow-owner.ts'],
+    retrievalMode: 'implementation',
+    structuralContext: 'off',
+    maxFiles: 1,
+    maxSnippets: 1,
+    maxCharsPerSnippet: 2400,
+  });
+  expect(arrowOwnerPack.files[0]?.snippets.some((snippet) => snippet.content.includes('readValue = ('))).toBe(true);
+  expect(arrowOwnerPack.readiness.unresolvedReasonCodes).not.toContain('required_symbol_not_materialized');
+  expect(arrowOwnerPack.readiness.status).toBe('ready');
+  expect(arrowOwnerPack.readiness.readyForHighConfidenceMutation).toBe(true);
 });
 
 test('retains separate explicit code symbols in sync and async discovery beyond the inventory cap', async () => {
