@@ -278,6 +278,7 @@ function exactCodeOwnerLocations(source: string, queries: readonly string[]): Ex
   const code = maskCommentsAndStrings(source);
   const codeLines = code.split('\n');
   const alternatives = queries.map(escapeCodeOwnerNeedle).join('|');
+  const queryOccurrence = new RegExp(alternatives, 'iu');
   const declarationStart = new RegExp(
     '^\\s*(?:(?:export|declare|default|async)\\s+)*(?:function|class|interface|type|const|let|enum)\\s+('
       + alternatives + ')(?:$|[^\\p{L}\\p{N}_$])',
@@ -293,7 +294,6 @@ function exactCodeOwnerLocations(source: string, queries: readonly string[]): Ex
     new RegExp('(?:' + exactCodeOwnerPatterns(query) + ')', 'imsu'),
   ]));
   const queryByLowercase = new Map(queries.map((query) => [query.toLowerCase(), query]));
-  const lowerQueries = queries.map((query) => query.toLowerCase());
   const firstByQuery = new Map<string, ExactCodeOwnerLocation>();
   const exportedByQuery = new Map<string, ExactCodeOwnerLocation>();
   let lineOffset = 0;
@@ -301,10 +301,7 @@ function exactCodeOwnerLocations(source: string, queries: readonly string[]): Ex
     const line = codeLines[index] ?? '';
     const currentOffset = lineOffset;
     lineOffset += line.length + 1;
-    if (!queries.some((query) => line.includes(query))) {
-      const lowerLine = line.toLowerCase();
-      if (!lowerQueries.some((query) => lowerLine.includes(query))) continue;
-    }
+    if (!queryOccurrence.test(line)) continue;
     const trimmedLine = line.trim();
     // Dense same-line calls are the common saturation case. Skip them before
     // testing declaration patterns; signatures without bodies are not owners.
