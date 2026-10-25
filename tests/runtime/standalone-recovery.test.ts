@@ -62,6 +62,7 @@ import {
   RECOVERY_VERIFIER_OAUTH_REDIRECT_URI,
   resetWatchdogStateForRecoveryRelease,
   nextReleaseReconcileBackoff,
+  boundReleaseReconcileDelayForAcceptance,
 } from '../../src/runtime/standalone-recovery/entry';
 import { RecoveryMcpServer } from '../../src/runtime/standalone-recovery/mcp-server';
 import { readControlPlaneRecord, writeControlPlaneRecord } from '../../src/runtime/control-plane/persistence/sqlite-store';
@@ -1338,6 +1339,13 @@ test('automatic release reconciliation backs off a non-converging step instead o
 
   // A successful step restores the base cadence and clears the failure identity.
   expect(nextReleaseReconcileBackoff(progressed, false, undefined)).toEqual({ fingerprint: undefined, consecutiveFailures: 0, delayMs: 15_000 });
+});
+
+test('new Mac-first soaking candidate limits 15-minute provider backoff to a 15-second safety check', () => {
+  expect(boundReleaseReconcileDelayForAcceptance(900_000, true)).toBe(15_000);
+  expect(boundReleaseReconcileDelayForAcceptance(30_000, true)).toBe(15_000);
+  expect(boundReleaseReconcileDelayForAcceptance(9_000, true)).toBe(9_000);
+  expect(boundReleaseReconcileDelayForAcceptance(900_000, false)).toBe(900_000);
 });
 
 test('standalone Recovery classifies an externally managed OpenAI tunnel runtime as healthy transport', () => {
@@ -2786,7 +2794,7 @@ describe('standalone recovery on canonical Runtime', () => {
         },
       });
       session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'cutover_committed' });
-      session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'soaking' });
+      session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'soaking', receipts: [{ id: 'soak_started', kind: 'soak', summary: 'cutover' }] });
 
       let elapsed = 0;
       let cpuMs = 0;

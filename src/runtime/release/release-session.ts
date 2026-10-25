@@ -122,7 +122,22 @@ export function releaseSessionAcceptanceTimedOut(
   // Start at the immutable cutover receipt, never the latest retry/updatedAt.
   const started = session.receipts.find((receipt) => receipt.id === 'soak_started');
   const timeMs = Date.parse(started?.recordedAt ?? '');
-  return Number.isFinite(timeMs) && nowMs >= timeMs + RELEASE_SESSION_ACCEPTANCE_TIMEOUT_MS;
+  return !Number.isFinite(timeMs) || nowMs >= timeMs + RELEASE_SESSION_ACCEPTANCE_TIMEOUT_MS;
+}
+
+/** Reject late or malformed causal proof for a newly opted-in soak. */
+export function releaseSessionContinuationProofTimely(
+  session: Pick<ReleaseSession, 'phase' | 'receipts'>,
+  lastCommittedAt: string,
+  nowMs: number,
+): boolean {
+  if (!session.receipts.some((r) => r.id === 'acceptance_timeout_policy_v1')) return true;
+  const startedAt = Date.parse(session.receipts.find((r) => r.id === 'soak_started')?.recordedAt ?? '');
+  const provedAt = Date.parse(lastCommittedAt);
+  return session.phase === 'soaking'
+    && Number.isFinite(startedAt) && Number.isFinite(provedAt) && Number.isFinite(nowMs)
+    && provedAt >= startedAt && provedAt <= startedAt + RELEASE_SESSION_ACCEPTANCE_TIMEOUT_MS
+    && nowMs < startedAt + RELEASE_SESSION_ACCEPTANCE_TIMEOUT_MS;
 }
 
 const REQUIRED_STATIC_GATES = new Set(['type', 'runtime_architecture', 'architecture_sync', 'bootstrap']);

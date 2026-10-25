@@ -95,6 +95,7 @@ import {
   recordReleaseSessionTransaction,
   releaseSessionCandidateIsRetired,
   releaseSessionAcceptanceTimedOut,
+  releaseSessionContinuationProofTimely,
   releaseSessionIsSoakingPredecessorOfStable,
   releaseSessionIsSoakingSupersededByStableAuthority,
   releaseSessionIsSoakingSupersededByFailedCutoverCompensation,
@@ -5573,8 +5574,10 @@ export async function promoteConfiguredRuntimeReleaseSessionKnownGood(
       );
       if (!proof) throw new Error('RELEASE_SESSION_AUTONOMOUS_CONTINUATION_PROOF_MISSING');
       continuationProof = proof;
+      if (!releaseSessionContinuationProofTimely(initial, proof.lastCommittedAt, dependencies.wallNow?.() ?? Date.now()))
+        throw new Error('RELEASE_SESSION_ACCEPTANCE_PROOF_LATE');
     } catch (error) {
-      if (error instanceof Error && error.message === 'RELEASE_SESSION_AUTONOMOUS_CONTINUATION_PROOF_MISSING') throw error;
+      if (error instanceof Error && (error.message === 'RELEASE_SESSION_AUTONOMOUS_CONTINUATION_PROOF_MISSING' || error.message === 'RELEASE_SESSION_ACCEPTANCE_PROOF_LATE')) throw error;
       throw new Error(`RELEASE_SESSION_AUTONOMOUS_CONTINUATION_PROOF_UNAVAILABLE: ${error instanceof Error ? error.message : String(error)}`);
     }
 
@@ -5620,7 +5623,7 @@ export async function promoteConfiguredRuntimeReleaseSessionKnownGood(
     // through the existing ReleaseSession rollback transaction instead. The
     // coordinator will then treat this source revision as already attempted and
     // will not autonomously replay it until source authority changes.
-    if (/^RECOVERY_PERFORMANCE_REJECTED:/.test(detail) || acceptanceTimedOut) {
+    if (/^RECOVERY_PERFORMANCE_REJECTED:/.test(detail) || acceptanceTimedOut || detail.includes('RELEASE_SESSION_ACCEPTANCE_PROOF_LATE')) {
       const rollback = await rollbackConfiguredRuntimeReleaseSession(
         config,
         sessionId,
@@ -5661,6 +5664,8 @@ export async function promoteConfiguredRuntimeReleaseSessionKnownGood(
     // be published successfully, then one transient Gateway/MCP timeout left the
     // ReleaseSession permanently soaking. Under the mutation lock, only fence
     // the identity that could invalidate that attestation.
+    if (!releaseSessionContinuationProofTimely(session, continuationProof.lastCommittedAt, dependencies.wallNow?.() ?? Date.now()))
+      return { ok: false as const, attempted: true, detail: 'RELEASE_SESSION_ACCEPTANCE_PROOF_LATE', releaseSession: session };
     if (!liveRuntimeOwnsRelease(config, attested)) {
       return { ok: false as const, attempted: true, detail: 'RELEASE_SESSION_RUNTIME_CHANGED_AFTER_KNOWN_GOOD_ATTESTATION', releaseSession: session };
     }

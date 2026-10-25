@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { RELEASE_SESSION_PHASES, RELEASE_SESSION_ACCEPTANCE_TIMEOUT_MS, releaseSessionAcceptanceTimedOut, advanceReleaseSession, createReleaseSession, listCompleteReleaseSessions, listReleaseSessions, migrateReleaseSessionState, readReleaseSession, recordReleaseSessionTransaction, releaseSessionCandidateIsRetired, releaseSessionIsSoakingSupersededByStableAuthority, releaseSessionIsSoakingSupersededByFailedCutoverCompensation, type ReleaseSessionCandidateRelease, type ReleaseSessionStableRelease, type ReleaseSessionTransaction } from '../../src/runtime/release/release-session';
+import { RELEASE_SESSION_PHASES, RELEASE_SESSION_ACCEPTANCE_TIMEOUT_MS, releaseSessionAcceptanceTimedOut, releaseSessionContinuationProofTimely, advanceReleaseSession, createReleaseSession, listCompleteReleaseSessions, listReleaseSessions, migrateReleaseSessionState, readReleaseSession, recordReleaseSessionTransaction, releaseSessionCandidateIsRetired, releaseSessionIsSoakingSupersededByStableAuthority, releaseSessionIsSoakingSupersededByFailedCutoverCompensation, type ReleaseSessionCandidateRelease, type ReleaseSessionStableRelease, type ReleaseSessionTransaction } from '../../src/runtime/release/release-session';
 import type { RuntimeReleaseAuthority } from '../../src/runtime/root/release-store';
 import { advanceConfiguredRuntimeRelease, decideConfiguredRuntimeReleaseAction, decideConfiguredRuntimeReleaseReconciliation } from '../../src/runtime/release/release-coordinator';
 import { cancelConfiguredRuntimeReleaseSession, createRecoveryConfig } from '../../src/runtime/standalone-recovery/core';
@@ -995,7 +995,21 @@ test('Mac-first acceptance expires only a newly opted-in ReleaseSession at the d
   expect(releaseSessionAcceptanceTimedOut(current, start + RELEASE_SESSION_ACCEPTANCE_TIMEOUT_MS - 1)).toBe(false);
   expect(releaseSessionAcceptanceTimedOut(current, start + RELEASE_SESSION_ACCEPTANCE_TIMEOUT_MS)).toBe(true);
   expect(releaseSessionAcceptanceTimedOut({ ...current, receipts: receipts.slice(1) }, start + 100 * 3600_000)).toBe(false);
-  expect(releaseSessionAcceptanceTimedOut({ ...current, receipts: receipts.slice(0, 1) }, start + 100 * 3600_000)).toBe(false);
+  expect(releaseSessionAcceptanceTimedOut({ ...current, receipts: receipts.slice(0, 1) }, start + 100 * 3600_000)).toBe(true);
   expect(releaseSessionAcceptanceTimedOut({ ...current, phase: 'known_good' }, start + 100 * 3600_000)).toBe(false);
   expect(releaseSessionAcceptanceTimedOut(current, Number.NaN)).toBe(false);
+});
+
+
+test('Mac-first late C-C-D proof cannot promote known_good after acceptance deadline', () => {
+  const start = Date.parse('2026-10-25T00:00:00Z');
+  const session = { phase: 'soaking' as const, receipts: [
+    { id: 'acceptance_timeout_policy_v1', kind: 'source' as const, recordedAt: '2026-10-24T23:00:00Z', summary: 'policy' },
+    { id: 'soak_started', kind: 'soak' as const, recordedAt: '2026-10-25T00:00:00Z', summary: 'cutover' },
+  ] };
+  expect(releaseSessionContinuationProofTimely(session, new Date(start + 1000).toISOString(), start + 120000)).toBe(true);
+  expect(releaseSessionContinuationProofTimely(session, new Date(start + 31 * 60000).toISOString(), start + 31 * 60000)).toBe(false);
+  expect(releaseSessionContinuationProofTimely(session, new Date(start + 1000).toISOString(), start + 31 * 60000)).toBe(false);
+  expect(releaseSessionContinuationProofTimely({ ...session, receipts: session.receipts.slice(1) }, '', start + 100 * 60000)).toBe(true);
+  expect(releaseSessionContinuationProofTimely({ ...session, receipts: session.receipts.slice(0, 1) }, '', start + 100 * 60000)).toBe(false);
 });
