@@ -3081,13 +3081,15 @@ describe('standalone recovery on canonical Runtime', () => {
       { suffix: 'attempting-active-after', successorState: 'attempting-active', deadlineElapsed: true },
       { suffix: 'inventory-incomplete-before', successorState: 'inventory-incomplete', deadlineElapsed: false },
       { suffix: 'inventory-incomplete-after', successorState: 'inventory-incomplete', deadlineElapsed: true },
+      { suffix: 'inventory-incomplete-visible-before', successorState: 'inventory-incomplete-visible', deadlineElapsed: false },
+      { suffix: 'inventory-incomplete-visible-after', successorState: 'inventory-incomplete-visible', deadlineElapsed: true },
     ] as const;
     for (const scenario of scenarios) {
       const crashAfterSuccessorRollbackCommit = scenario.successorState === 'rollback-committed';
       const crashAfterChainRestore = scenario.successorState === 'chain-restored';
-      const successorCommitted = scenario.successorState !== 'uncommitted'
-        && scenario.successorState !== 'inventory-incomplete';
-      const inventoryIncomplete = scenario.successorState === 'inventory-incomplete';
+      const inventoryIncomplete = scenario.successorState.startsWith('inventory-incomplete');
+      const inventoryIncompleteVisibleSuccessor = scenario.successorState === 'inventory-incomplete-visible';
+      const successorCommitted = scenario.successorState !== 'uncommitted' && !inventoryIncomplete;
       const home = controllerHome();
       const previousHome = process.env.HOME;
       process.env.HOME = home;
@@ -3266,11 +3268,12 @@ describe('standalone recovery on canonical Runtime', () => {
         }
 
         if (inventoryIncomplete) {
-          // Reproduce a provisional B attestation plus an unreadable C session
-          // while B still owns the exact B→A Runtime authority.
+          // Reproduce a provisional B attestation plus a malformed hidden
+          // session. The visible-successor cases retain uncommitted C to prove
+          // that aborting C cannot certify the missing inventory as complete.
           await attestKnownGood(config);
           const sessionsDirectory = join(home, 'recovery', 'state', 'release-sessions');
-          rmSync(join(sessionsDirectory, `${cSessionId}.json`));
+          if (!inventoryIncompleteVisibleSuccessor) rmSync(join(sessionsDirectory, `${cSessionId}.json`));
           damagedInventoryPath = join(sessionsDirectory, `unreadable-session-${scenario.suffix}.json`);
           writeFileSync(damagedInventoryPath, '{broken-json');
         }
@@ -3326,9 +3329,17 @@ describe('standalone recovery on canonical Runtime', () => {
           if (inventoryIncomplete) {
             expect(promoted).toMatchObject(scenario.deadlineElapsed
               ? { ok: false, attempted: true, releaseSession: { sessionId: bSessionId, phase: 'rolled_back' } }
-              : { ok: false, attempted: false, noOp: true, detail: 'RELEASE_SESSION_INVENTORY_INCOMPLETE_FOR_TIMED_SUCCESSOR_RECOVERY',
-                  releaseSession: { sessionId: bSessionId, phase: 'soaking' } });
-            expect(readReleaseSession(home, cSessionId)).toBeUndefined();
+              : inventoryIncompleteVisibleSuccessor
+                ? { ok: false, attempted: true, detail: expect.stringContaining('RELEASE_SESSION_INVENTORY_INCOMPLETE_FOR_TIMED_SUCCESSOR_RECOVERY'),
+                    releaseSession: { sessionId: bSessionId, phase: 'soaking' } }
+                : { ok: false, attempted: false, noOp: true, detail: 'RELEASE_SESSION_INVENTORY_INCOMPLETE_FOR_TIMED_SUCCESSOR_RECOVERY',
+                    releaseSession: { sessionId: bSessionId, phase: 'soaking' } });
+            if (inventoryIncompleteVisibleSuccessor) {
+              expect(readReleaseSession(home, cSessionId)?.phase).toBe('rolled_back');
+            } else {
+              expect(readReleaseSession(home, cSessionId)).toBeUndefined();
+            }
+            expect((await listReleases(config)).knownGood).toEqual([]);
           } else {
             expect(promoted).toMatchObject({ ok: false, attempted: true, releaseSession: {
               sessionId: bSessionId, phase: scenario.deadlineElapsed ? 'rolled_back' : 'soaking',
@@ -3410,7 +3421,7 @@ describe('standalone recovery on canonical Runtime', () => {
         else process.env.HOME = previousHome;
       }
     }
-  });
+  }, 15_000);
 
   test('on-time C-C-D proof followed by late final acceptance fence immediately rolls back Stable A', async () => {
     const home = controllerHome();

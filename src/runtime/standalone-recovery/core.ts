@@ -5963,6 +5963,14 @@ async function reconcileTimedPredecessorSuccessorBeforePromotion(
         detail: `uncommitted successor ${successor.sessionId} was aborted before enforcing predecessor ${latestPredecessor.sessionId}'s deadline; ${predecessorRollback.detail}`,
       };
     }
+    if (inventoryIncomplete) {
+      return {
+        ok: false,
+        attempted: true,
+        detail: `RELEASE_SESSION_INVENTORY_INCOMPLETE_FOR_TIMED_SUCCESSOR_RECOVERY: uncommitted successor ${successor.sessionId} was aborted, but normal promotion of predecessor ${latestPredecessor.sessionId} remains blocked until the inventory is complete`,
+        releaseSession: latestPredecessor,
+      };
+    }
     return undefined;
   }
 
