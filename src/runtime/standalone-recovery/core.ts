@@ -4786,17 +4786,69 @@ function timedSoakingPredecessorForSuccessor(
   };
 }
 
+/**
+ * Exact durable proof that Recovery compensated one successor C→B while
+ * preserving B's original B→A rollback transaction. The authority revision
+ * remains monotonic; the operation id binds both session identities and the
+ * current active/previous topology. This proof is valid only while that
+ * compensation is still the latest authority write.
+ */
+function releaseSessionChainCompensationAlreadyCommitted(
+  successor: ReleaseSession,
+  predecessor: ReleaseSession,
+  authority: RuntimeReleaseAuthority | undefined,
+): boolean {
+  const successorCandidate = successor.candidateRelease;
+  const successorTransaction = successor.transaction;
+  const predecessorCandidate = predecessor.candidateRelease;
+  const predecessorTransaction = predecessor.transaction;
+  const prefix = `release-session-chain-restore:${successor.sessionId}:${predecessor.sessionId}:`;
+  const operationId = authority?.operationId ?? '';
+  const recordedAt = operationId.startsWith(prefix) ? operationId.slice(prefix.length) : '';
+  return Boolean(
+    recordedAt && /^\d+$/.test(recordedAt) && Number.isSafeInteger(Number(recordedAt))
+    && authority && predecessor.phase === 'soaking'
+    && releaseSessionHasAcceptanceTimeoutPolicy(predecessor)
+    && predecessorCandidate && predecessorTransaction
+    && successorCandidate && successorTransaction
+    && releaseSessionIsSoakingPredecessorOfStable(predecessor, successor.stableRelease)
+    && predecessorTransaction.candidateReleaseId === predecessorCandidate.releaseId
+    && successorTransaction.candidateReleaseId === successorCandidate.releaseId
+    && sameReleaseSessionIdentity(successor.stableRelease, predecessorCandidate)
+    && sameReleaseSessionIdentity(successorTransaction.rollbackRelease, successor.stableRelease)
+    && authority.revision > predecessorTransaction.cutoverAuthorityRevision
+    && sameReleaseSessionIdentity(authority.active, predecessorCandidate)
+    && sameReleaseSessionIdentity(authority.previous, predecessorTransaction.rollbackRelease)
+    && authority.previous?.databaseBackup?.path === predecessorTransaction.rollbackRelease.databaseBackup?.path
+  );
+}
+
 function releaseSessionMatchesCurrentCutoverAuthority(
   session: ReleaseSession,
   authority: RuntimeReleaseAuthority | undefined,
 ): boolean {
   const candidate = session.candidateRelease;
   const transaction = session.transaction;
+  let chainCompensation = false;
+  const operationParts = authority?.operationId.split(':') ?? [];
+  if (operationParts.length === 4
+    && operationParts[0] === 'release-session-chain-restore'
+    && operationParts[2] === session.sessionId
+    && /^\d+$/.test(operationParts[3] ?? '')) {
+    try {
+      const successor = readReleaseSession(session.stable.controllerHome, operationParts[1] ?? '');
+      chainCompensation = Boolean(successor
+        && releaseSessionChainCompensationAlreadyCommitted(successor, session, authority));
+    } catch {
+      chainCompensation = false;
+    }
+  }
   return Boolean(candidate && transaction && authority
     && transaction.candidateReleaseId === candidate.releaseId
-    && authority.revision === transaction.cutoverAuthorityRevision
+    && (authority.revision === transaction.cutoverAuthorityRevision || chainCompensation)
     && sameReleaseSessionIdentity(authority.active, candidate)
     && sameReleaseSessionIdentity(authority.previous, transaction.rollbackRelease)
+    && authority.previous?.databaseBackup?.path === transaction.rollbackRelease.databaseBackup?.path
     && sameReleaseSessionIdentity(transaction.rollbackRelease, session.stableRelease));
 }
 
@@ -5556,6 +5608,45 @@ export async function rollbackConfiguredRuntimeReleaseSession(
       };
     }
     const authorityBeforeRollback = readRuntimeReleaseAuthority(config.controllerHome);
+    if (timedPredecessor
+      && releaseSessionChainCompensationAlreadyCommitted(session, timedPredecessor, authorityBeforeRollback)) {
+      const live = observeRuntimeStatus(config.controllerHome);
+      const predecessorIsLive = live.running && live.ready && !live.stale
+        && live.snapshot?.releaseId === session.stableRelease.releaseId
+        && live.snapshot?.artifactIdentity === session.stableRelease.artifactIdentity;
+      if (!predecessorIsLive) {
+        return {
+          ok: false as const,
+          attempted: false,
+          noOp: true,
+          detail: 'RELEASE_SESSION_CHAIN_COMPENSATION_COMMITTED_RUNTIME_NOT_YET_OBSERVED',
+          releaseSession: session,
+        };
+      }
+      session = advanceReleaseSession({
+        controllerHome: config.controllerHome,
+        sessionId,
+        expectedRevision: session.revision,
+        phase: 'rolled_back',
+        receipts: [{
+          id: 'rollback',
+          kind: 'rollback',
+          summary: `reconciled already-committed C→B chain compensation ${authorityBeforeRollback!.operationId}; exact predecessor ${session.stableRelease.releaseId} is live and no rollback effect was replayed`,
+        }],
+      });
+      audit(config, 'release_session_chain_compensation_reconciled', {
+        sessionId,
+        compensationOperationId: authorityBeforeRollback!.operationId,
+        restoredPredecessorReleaseId: session.stableRelease.releaseId,
+      });
+      return {
+        ok: true as const,
+        attempted: false,
+        noOp: true,
+        detail: 'ReleaseSession reconciled already-committed C→B chain compensation without replaying the rollback effect',
+        releaseSession: session,
+      };
+    }
     const rollbackAlreadyCommitted = releaseSessionRollbackAlreadyCommitted(
       session,
       authorityBeforeRollback,
@@ -5783,7 +5874,8 @@ async function reconcileTimedPredecessorSuccessorBeforePromotion(
   const authority = readRuntimeReleaseAuthority(config.controllerHome);
   const activeSuccessors = successors.filter((successor) => releaseSessionMatchesCurrentCutoverAuthority(successor, authority));
   const committedSuccessorRollbacks = successors.filter((successor) =>
-    releaseSessionRollbackAlreadyCommitted(successor, authority));
+    releaseSessionRollbackAlreadyCommitted(successor, authority)
+    || releaseSessionChainCompensationAlreadyCommitted(successor, predecessor, authority));
   if (activeSuccessors.length > 1 || committedSuccessorRollbacks.length > 1) {
     return { ok: false, attempted: false, noOp: true,
       detail: 'RELEASE_SESSION_TIMED_SUCCESSOR_AUTHORITY_AMBIGUOUS', releaseSession: predecessor };

@@ -78,6 +78,7 @@ import {
   ensureActiveRuntimeRelease,
   publishRuntimeRelease,
   readRuntimeReleaseAuthority,
+  reconcileFailedRuntimeReleaseActivationAuthority,
   rollbackRuntimeReleaseWithResult,
 } from '../../src/runtime/root/release-store';
 import { advanceReleaseSession, createReleaseSession, readReleaseSession, recordReleaseSessionTransaction } from '../../src/runtime/release/release-session';
@@ -3072,14 +3073,20 @@ describe('standalone recovery on canonical Runtime', () => {
       { suffix: 'crash-after', successorState: 'rollback-committed', deadlineElapsed: true },
       { suffix: 'uncommitted-before', successorState: 'uncommitted', deadlineElapsed: false },
       { suffix: 'uncommitted-after', successorState: 'uncommitted', deadlineElapsed: true },
+      { suffix: 'chain-restored-before', successorState: 'chain-restored', deadlineElapsed: false },
+      { suffix: 'chain-restored-after', successorState: 'chain-restored', deadlineElapsed: true },
+      { suffix: 'attempting-active-before', successorState: 'attempting-active', deadlineElapsed: false },
+      { suffix: 'attempting-active-after', successorState: 'attempting-active', deadlineElapsed: true },
     ] as const;
     for (const scenario of scenarios) {
       const crashAfterSuccessorRollbackCommit = scenario.successorState === 'rollback-committed';
+      const crashAfterChainRestore = scenario.successorState === 'chain-restored';
       const successorCommitted = scenario.successorState !== 'uncommitted';
       const home = controllerHome();
       const previousHome = process.env.HOME;
       process.env.HOME = home;
       let ownership: RuntimeOwnershipHandle | undefined;
+      let chainRestoreAuthority: ReturnType<typeof readRuntimeReleaseAuthority> | undefined;
       let launchdLoaded = true;
       try {
         const first = manifest(home, 'release-a', 'artifact-a');
@@ -3192,7 +3199,8 @@ describe('standalone recovery on canonical Runtime', () => {
         const cSessionId = 'release-chain-c-' + scenario.suffix + '-12345678';
         const bSession = createCommittedSession(bSessionId, stableReleaseFor(baselineAuthority, 'a'), bAuthority, 'source-release-b', true);
         const cSession = successorCommitted
-          ? createCommittedSession(cSessionId, stableReleaseFor(bAuthority, 'b'), cAuthority, 'source-release-c', false)
+          ? createCommittedSession(cSessionId, stableReleaseFor(bAuthority, 'b'), cAuthority, 'source-release-c', false,
+            scenario.successorState === 'attempting-active' ? { commitCutover: false } : {})
           : createCommittedSession(cSessionId, stableReleaseFor(bAuthority, 'b'), bAuthority, 'source-release-c', false, {
             candidateRelease: {
               releaseId: 'release-c',
@@ -3224,10 +3232,39 @@ describe('standalone recovery on canonical Runtime', () => {
           ownership = startObservedRuntime(home, runtime.endpoint, 'release-b', 'artifact-b');
           expect(readRuntimeReleaseAuthority(home)).toMatchObject({ active: { releaseId: 'release-b' }, previous: { releaseId: 'release-c' } });
         }
+        if (crashAfterChainRestore) {
+          if (ownership) removeOwnership(ownership);
+          ownership = undefined;
+          const cRollback = rollbackRuntimeReleaseWithResult(
+            home,
+            'release-session-rollback:' + cSessionId + ':simulated-chain-restore-crash',
+          ).authority;
+          const bTransaction = bSession.transaction!;
+          chainRestoreAuthority = reconcileFailedRuntimeReleaseActivationAuthority(home, {
+            ...cRollback,
+            revision: bTransaction.cutoverAuthorityRevision,
+            previous: bTransaction.rollbackRelease,
+            operationId: bTransaction.operationId,
+          }, 'release-c', `release-session-chain-restore:${cSessionId}:${bSessionId}:${Date.now()}`);
+          ownership = startObservedRuntime(home, runtime.endpoint, 'release-b', 'artifact-b');
+          expect(readRuntimeReleaseAuthority(home)).toMatchObject({
+            active: { releaseId: 'release-b', artifactIdentity: 'artifact-b' },
+            previous: { releaseId: 'release-a', artifactIdentity: 'artifact-a' },
+            operationId: chainRestoreAuthority.operationId,
+            revision: chainRestoreAuthority.revision,
+          });
+          // Simulate process death after the B/A topology is durably restored,
+          // but before C's ReleaseSession terminal receipt is written.
+          expect(readReleaseSession(home, cSessionId)?.phase).toBe('cutover_committed');
+        }
 
         const wallClock = Date.now;
         const elapsedAcceptanceMs = scenario.deadlineElapsed ? 31 * 60_000 : 10 * 60_000;
         Date.now = () => wallClock() + elapsedAcceptanceMs;
+        if (chainRestoreAuthority) {
+          if (ownership) removeOwnership(ownership);
+          ownership = startObservedRuntime(home, runtime.endpoint, 'release-b', 'artifact-b');
+        }
         let proofCalls = 0;
         let clock = 0;
         try {
@@ -3281,8 +3318,61 @@ describe('standalone recovery on canonical Runtime', () => {
           expect(existsSync(recoveryOperationLockPath(home))).toBe(false);
           expect(bSession.sessionId).toBe(bSessionId);
           expect(cSession.sessionId).toBe(cSessionId);
+          if (chainRestoreAuthority) {
+            const afterReconciliation = readRuntimeReleaseAuthority(home)!;
+            if (scenario.deadlineElapsed) {
+              expect(afterReconciliation.revision).toBe(chainRestoreAuthority.revision + 1);
+              expect(afterReconciliation.operationId.startsWith(`release-session-rollback:${bSessionId}:`)).toBe(true);
+            } else {
+              expect(afterReconciliation.revision).toBe(chainRestoreAuthority.revision);
+              expect(afterReconciliation.operationId).toBe(chainRestoreAuthority.operationId);
+            }
+          }
         } finally {
           Date.now = wallClock;
+        }
+
+        if (!scenario.deadlineElapsed
+          && (scenario.successorState === 'active' || scenario.successorState === 'chain-restored')) {
+          const retry = await promoteConfiguredRuntimeReleaseSessionKnownGood(config, bSessionId, {
+            ...idleCpuDependencies(),
+            wallNow: () => Date.now(),
+            continuationProof: supervisorContinuationProofDependency(),
+            rollback: {
+              platform: 'darwin',
+              currentUid: async () => 501,
+              runCommand: async (name, args) => {
+                if (name === 'lsof') return { ok: false, status: 1, stdout: '', stderr: '' };
+                if (args[0] === 'bootout') {
+                  launchdLoaded = false;
+                  if (ownership) removeOwnership(ownership);
+                  ownership = undefined;
+                }
+                if (args[0] === 'print') return launchdLoaded
+                  ? { ok: true, status: 0, stdout: 'loaded', stderr: '' }
+                  : { ok: false, status: 113, stdout: '', stderr: 'service not loaded' };
+                if (args[0] === 'bootstrap') launchdLoaded = true;
+                if (args[0] === 'kickstart') {
+                  launchdLoaded = true;
+                  const active = readRuntimeReleaseAuthority(home)!.active;
+                  ownership = startObservedRuntime(home, runtime.endpoint, active.releaseId, active.artifactIdentity);
+                }
+                return { ok: true, status: 0, stdout: '', stderr: '' };
+              },
+              runtimeRunning: () => false,
+              ensureRuntimeLaunchContract: () => undefined,
+              repairPrimaryConnectorBinding: async () => ({ ok: true, attempted: false, noOp: true, detail: 'fixture connector binding' }),
+              verifyLocal: async () => healthyVerify(),
+              now: () => clock += 1_000,
+              sleep: async () => undefined,
+            },
+          }, 'release-chain-' + scenario.suffix + '-retry-accept');
+          expect(retry).toMatchObject({ ok: true, attempted: true, releaseSession: { sessionId: bSessionId, phase: 'known_good' } });
+          expect(readReleaseSession(home, cSessionId)?.phase).toBe('rolled_back');
+          expect(readRuntimeReleaseAuthority(home)).toMatchObject({
+            active: { releaseId: 'release-b', artifactIdentity: 'artifact-b' },
+            previous: { releaseId: 'release-a', artifactIdentity: 'artifact-a' },
+          });
         }
       } finally {
         if (ownership) removeOwnership(ownership);
