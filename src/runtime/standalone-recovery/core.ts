@@ -5881,9 +5881,32 @@ async function reconcileTimedPredecessorSuccessorBeforePromotion(
       detail: 'RELEASE_SESSION_TIMED_SUCCESSOR_AUTHORITY_AMBIGUOUS', releaseSession: predecessor };
   }
   const predecessorIsCurrent = releaseSessionMatchesCurrentCutoverAuthority(predecessor, authority);
-  if (inventoryIncomplete && successors.length === 0 && !predecessorIsCurrent) {
-    return { ok: false, attempted: false, noOp: true,
-      detail: 'RELEASE_SESSION_INVENTORY_INCOMPLETE_FOR_TIMED_SUCCESSOR_RECOVERY', releaseSession: predecessor };
+  if (inventoryIncomplete && successors.length === 0) {
+    if (!predecessorIsCurrent) {
+      return { ok: false, attempted: false, noOp: true,
+        detail: 'RELEASE_SESSION_INVENTORY_INCOMPLETE_FOR_TIMED_SUCCESSOR_RECOVERY', releaseSession: predecessor };
+    }
+    if (releaseSessionAcceptanceTimedOut(predecessor, dependencies.wallNow?.() ?? Date.now())) {
+      const rollback = await rollbackConfiguredRuntimeReleaseSession(
+        config,
+        predecessor.sessionId,
+        dependencies.rollback ?? {},
+        requestId?.trim() ? `${requestId.trim()}:inventory-incomplete-timeout` : undefined,
+      );
+      return {
+        ...rollback,
+        ok: false,
+        detail: `incomplete ReleaseSession inventory blocks normal B promotion; exact timed-predecessor rollback was attempted: ${rollback.detail}`,
+        releaseSession: rollback.releaseSession ?? readReleaseSession(config.controllerHome, predecessor.sessionId) ?? predecessor,
+      };
+    }
+    return {
+      ok: false,
+      attempted: false,
+      noOp: true,
+      detail: 'RELEASE_SESSION_INVENTORY_INCOMPLETE_FOR_TIMED_SUCCESSOR_RECOVERY',
+      releaseSession: predecessor,
+    };
   }
   const successor = activeSuccessors[0] ?? committedSuccessorRollbacks[0] ?? successors[0];
   if (!successor) {

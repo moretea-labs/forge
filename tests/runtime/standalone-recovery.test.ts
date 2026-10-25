@@ -2987,9 +2987,10 @@ describe('standalone recovery on canonical Runtime', () => {
       const provisional = await attestKnownGood(config);
       expect(provisional.revision).toBe('release-b');
       expect((await listReleases(config)).knownGood).toEqual([]);
-      // Keep unrelated Session JSON corrupt through the *actual* Recovery
-      // reconciliation and rollback. The live authority + frozen predecessor
-      // transaction must allow exactly this rollback, not source progression.
+      // Corrupt inventory must not hide the timed B session from the
+      // coordinator. This fixture removes the damage before the promotion
+      // call so it independently exercises the missing-proof timeout path;
+      // the chain matrix covers exact rollback while damage remains present.
       const damaged = join(home, 'recovery', 'state', 'release-sessions', 'unreadable-session-123456.json');
       writeFileSync(damaged, '{broken-json');
       const wallClock = Date.now;
@@ -2999,6 +3000,7 @@ describe('standalone recovery on canonical Runtime', () => {
           throw new Error('source observer unavailable during corrupt inventory');
         })).toMatchObject({ required: true, action: 'promote_known_good', session: { sessionId } });
       } finally { Date.now = wallClock; }
+      rmSync(damaged);
       const promoted = await promoteConfiguredRuntimeReleaseSessionKnownGood(config, sessionId, {
         continuationProof: async () => undefined,
         readCpu: () => ({ cpuMs: cpuMs += 5_000, processStartTime: 'fixture-process-start' }),
@@ -3077,16 +3079,21 @@ describe('standalone recovery on canonical Runtime', () => {
       { suffix: 'chain-restored-after', successorState: 'chain-restored', deadlineElapsed: true },
       { suffix: 'attempting-active-before', successorState: 'attempting-active', deadlineElapsed: false },
       { suffix: 'attempting-active-after', successorState: 'attempting-active', deadlineElapsed: true },
+      { suffix: 'inventory-incomplete-before', successorState: 'inventory-incomplete', deadlineElapsed: false },
+      { suffix: 'inventory-incomplete-after', successorState: 'inventory-incomplete', deadlineElapsed: true },
     ] as const;
     for (const scenario of scenarios) {
       const crashAfterSuccessorRollbackCommit = scenario.successorState === 'rollback-committed';
       const crashAfterChainRestore = scenario.successorState === 'chain-restored';
-      const successorCommitted = scenario.successorState !== 'uncommitted';
+      const successorCommitted = scenario.successorState !== 'uncommitted'
+        && scenario.successorState !== 'inventory-incomplete';
+      const inventoryIncomplete = scenario.successorState === 'inventory-incomplete';
       const home = controllerHome();
       const previousHome = process.env.HOME;
       process.env.HOME = home;
       let ownership: RuntimeOwnershipHandle | undefined;
       let chainRestoreAuthority: ReturnType<typeof readRuntimeReleaseAuthority> | undefined;
+      let damagedInventoryPath: string | undefined;
       let launchdLoaded = true;
       try {
         const first = manifest(home, 'release-a', 'artifact-a');
@@ -3258,6 +3265,16 @@ describe('standalone recovery on canonical Runtime', () => {
           expect(readReleaseSession(home, cSessionId)?.phase).toBe('cutover_committed');
         }
 
+        if (inventoryIncomplete) {
+          // Reproduce a provisional B attestation plus an unreadable C session
+          // while B still owns the exact B→A Runtime authority.
+          await attestKnownGood(config);
+          const sessionsDirectory = join(home, 'recovery', 'state', 'release-sessions');
+          rmSync(join(sessionsDirectory, `${cSessionId}.json`));
+          damagedInventoryPath = join(sessionsDirectory, `unreadable-session-${scenario.suffix}.json`);
+          writeFileSync(damagedInventoryPath, '{broken-json');
+        }
+
         const wallClock = Date.now;
         const elapsedAcceptanceMs = scenario.deadlineElapsed ? 31 * 60_000 : 10 * 60_000;
         Date.now = () => wallClock() + elapsedAcceptanceMs;
@@ -3268,8 +3285,12 @@ describe('standalone recovery on canonical Runtime', () => {
         let proofCalls = 0;
         let clock = 0;
         try {
+          const validProof = supervisorContinuationProofDependency();
           const promoted = await promoteConfiguredRuntimeReleaseSessionKnownGood(config, bSessionId, {
-            continuationProof: async () => { proofCalls += 1; return undefined; },
+            continuationProof: async (forgeHome, proofInput) => {
+              proofCalls += 1;
+              return inventoryIncomplete ? validProof(forgeHome, proofInput) : undefined;
+            },
             wallNow: () => wallClock() + elapsedAcceptanceMs,
             rollback: {
               platform: 'darwin',
@@ -3302,11 +3323,19 @@ describe('standalone recovery on canonical Runtime', () => {
           }, 'release-chain-' + scenario.suffix);
 
           expect(proofCalls).toBe(!scenario.deadlineElapsed && scenario.successorState === 'uncommitted' ? 1 : 0);
-          expect(promoted).toMatchObject({ ok: false, attempted: true, releaseSession: {
-            sessionId: bSessionId, phase: scenario.deadlineElapsed ? 'rolled_back' : 'soaking',
-          } });
-          if (scenario.deadlineElapsed || successorCommitted) expect(promoted.detail).toContain('successor');
-          expect(readReleaseSession(home, cSessionId)?.phase).toBe('rolled_back');
+          if (inventoryIncomplete) {
+            expect(promoted).toMatchObject(scenario.deadlineElapsed
+              ? { ok: false, attempted: true, releaseSession: { sessionId: bSessionId, phase: 'rolled_back' } }
+              : { ok: false, attempted: false, noOp: true, detail: 'RELEASE_SESSION_INVENTORY_INCOMPLETE_FOR_TIMED_SUCCESSOR_RECOVERY',
+                  releaseSession: { sessionId: bSessionId, phase: 'soaking' } });
+            expect(readReleaseSession(home, cSessionId)).toBeUndefined();
+          } else {
+            expect(promoted).toMatchObject({ ok: false, attempted: true, releaseSession: {
+              sessionId: bSessionId, phase: scenario.deadlineElapsed ? 'rolled_back' : 'soaking',
+            } });
+            if (scenario.deadlineElapsed || successorCommitted) expect(promoted.detail).toContain('successor');
+            expect(readReleaseSession(home, cSessionId)?.phase).toBe('rolled_back');
+          }
           expect(readReleaseSession(home, bSessionId)?.phase).toBe(scenario.deadlineElapsed ? 'rolled_back' : 'soaking');
           expect(readRuntimeReleaseAuthority(home)).toMatchObject(scenario.deadlineElapsed
             ? { active: { releaseId: 'release-a', artifactIdentity: 'artifact-a' }, previous: { releaseId: 'release-b' } }
@@ -3376,6 +3405,7 @@ describe('standalone recovery on canonical Runtime', () => {
         }
       } finally {
         if (ownership) removeOwnership(ownership);
+        if (damagedInventoryPath && existsSync(damagedInventoryPath)) rmSync(damagedInventoryPath);
         if (previousHome === undefined) delete process.env.HOME;
         else process.env.HOME = previousHome;
       }
