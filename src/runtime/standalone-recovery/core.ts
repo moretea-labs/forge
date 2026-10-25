@@ -94,6 +94,7 @@ import {
   readReleaseSession,
   recordReleaseSessionTransaction,
   releaseSessionCandidateIsRetired,
+  releaseSessionAcceptanceTimedOut,
   releaseSessionIsSoakingPredecessorOfStable,
   releaseSessionIsSoakingSupersededByStableAuthority,
   releaseSessionIsSoakingSupersededByFailedCutoverCompensation,
@@ -5607,6 +5608,9 @@ export async function promoteConfiguredRuntimeReleaseSessionKnownGood(
     const detail = error instanceof Error ? error.message : String(error);
     audit(config, 'release_session_known_good_failed', { sessionId, detail });
 
+    // Missing causal proof or persistent health failure must not leave B live
+    // forever. The durable cutover receipt anchors the bounded soak clock.
+    const acceptanceTimedOut = releaseSessionAcceptanceTimedOut(initial, dependencies.wallNow?.() ?? Date.now());
     // A hard runaway-CPU rejection is terminal acceptance evidence, not a
     // transient observation failure. Keeping Candidate B live in `soaking`
     // caused the automatic release driver to launch another full 60-second
@@ -5614,14 +5618,14 @@ export async function promoteConfiguredRuntimeReleaseSessionKnownGood(
     // through the existing ReleaseSession rollback transaction instead. The
     // coordinator will then treat this source revision as already attempted and
     // will not autonomously replay it until source authority changes.
-    if (/^RECOVERY_PERFORMANCE_REJECTED:/.test(detail)) {
+    if (/^RECOVERY_PERFORMANCE_REJECTED:/.test(detail) || acceptanceTimedOut) {
       const rollback = await rollbackConfiguredRuntimeReleaseSession(
         config,
         sessionId,
         dependencies.rollback ?? {},
         requestId?.trim() ? `${requestId.trim()}:performance-rejected` : undefined,
       );
-      audit(config, 'release_session_known_good_performance_rejected', {
+      audit(config, acceptanceTimedOut ? 'release_session_acceptance_timeout_rollback' : 'release_session_known_good_performance_rejected', {
         sessionId,
         detail,
         rollbackOk: rollback.ok,
@@ -5631,7 +5635,7 @@ export async function promoteConfiguredRuntimeReleaseSessionKnownGood(
         ok: false,
         attempted: true,
         detail: rollback.ok
-          ? `${detail}; Candidate B rejected by the Recovery runaway-CPU gate and Stable A restored`
+          ? `${detail}; Candidate B ${acceptanceTimedOut ? 'acceptance timed out' : 'was rejected by the runaway-CPU gate'} and exact Stable A restored`
           : `${detail}; automatic Stable A rollback failed: ${rollback.detail}`,
         releaseSession: rollback.releaseSession ?? readReleaseSession(config.controllerHome, sessionId) ?? initial,
       };

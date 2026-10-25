@@ -109,6 +109,23 @@ export interface ReleaseSession {
   updatedAt: string;
 }
 
+/** Fail an unaccepted Candidate B after the durable soak grace window. */
+export const RELEASE_SESSION_ACCEPTANCE_TIMEOUT_MS = 30 * 60_000;
+export function releaseSessionAcceptanceTimedOut(
+  session: Pick<ReleaseSession, 'phase' | 'receipts' | 'updatedAt'>,
+  nowMs: number,
+): boolean {
+  if (session.phase !== 'soaking') return false;
+  // Explicit policy is issued only on newly created ReleaseSessions. The
+  // long-running legacy soaking sessions must never inherit a new timeout.
+  if (!session.receipts.some((receipt) => receipt.id === 'acceptance_timeout_policy_v1')) return false;
+  const marker = session.receipts.find((receipt) => receipt.id === 'soak_started');
+  if (!marker) return false;
+  const startedAt = Date.parse(marker.recordedAt);
+  return Number.isFinite(startedAt) && Number.isFinite(nowMs)
+    && nowMs >= startedAt + RELEASE_SESSION_ACCEPTANCE_TIMEOUT_MS;
+}
+
 const REQUIRED_STATIC_GATES = new Set(['type', 'runtime_architecture', 'architecture_sync', 'bootstrap']);
 const REQUIRED_CANDIDATE_CANARIES = new Set(['recovery', 'mcp', 'scheduler', 'supervisor', 'controller']);
 const REQUIRED_KNOWN_GOOD_SOAK_GATES = new Set(['supervisor_continuation_proof']);
@@ -637,7 +654,11 @@ export function createReleaseSession(input: {
     sourceRevision,
     phase: 'source_frozen',
     revision: 1,
-    receipts: [{ id: `source:${sessionId}`, kind: 'source', recordedAt: timestamp, summary: `source frozen at ${input.sourceRevision.trim()}` }],
+    receipts: [
+      { id: `source:${sessionId}`, kind: 'source', recordedAt: timestamp, summary: `source frozen at ${input.sourceRevision.trim()}` },
+      { id: 'acceptance_timeout_policy_v1', kind: 'source', recordedAt: timestamp,
+        summary: 'New Candidate B requires causal E2E acceptance or exact Stable A rollback within 30 minutes of cutover' },
+    ],
     createdAt: timestamp,
     updatedAt: timestamp,
   };

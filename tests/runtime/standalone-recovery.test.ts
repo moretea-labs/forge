@@ -5873,3 +5873,140 @@ test('recovery release install still fails closed when the Recovery mutation nev
     report: () => {},
   })).rejects.toThrow('RECOVERY_OPERATION_LOCK_BUSY');
 });
+
+test('new bounded soak missing C→C→D proof restores Stable A with durable rollback', async () => {
+  const home = controllerHome();
+  const oldHome = process.env.HOME;
+  process.env.HOME = home;
+  try {
+    const baseline = manifest(home, 'timeout-stable-a', 'artifact-timeout-a');
+    const candidateManifest = manifest(home, 'timeout-candidate-b', 'artifact-timeout-b');
+    const initialAuthority = ensureActiveRuntimeRelease(home, baseline);
+    publishRuntimeRelease(home, candidateManifest, 'timeout-cutover');
+    const cutoverAuthority = readRuntimeReleaseAuthority(home)!;
+    const server = await runtimeServer();
+    writeMainToken(home);
+    const ownership = startObservedRuntime(
+      home, server.endpoint, cutoverAuthority.active.releaseId, cutoverAuthority.active.artifactIdentity,
+    );
+    ensureForgeRuntimeLaunchAgentContract({ controllerHome: home, installUserLaunchAgent: true });
+    const sessionId = 'release-new-timeout-12345678';
+    const candidateHome = join(home, 'candidate-runtime-lanes', sessionId);
+    mkdirSync(candidateHome, { recursive: true });
+    const stable = {
+      schemaVersion: 1 as const, kind: 'stable' as const,
+      controllerHome: home, serviceLabel: 'stable-runtime', port: 8765,
+      authTokenFile: join(home, 'mcp', 'runtime-token'),
+    };
+    const stableRelease = {
+      authorityRevision: initialAuthority.revision,
+      releaseId: initialAuthority.active.releaseId,
+      artifactIdentity: initialAuthority.active.artifactIdentity,
+      manifestSha256: initialAuthority.active.manifestSha256,
+      workerProtocolVersion: initialAuthority.active.workerProtocolVersion,
+      releaseFencingTokenSha256: 'f'.repeat(64),
+    };
+    const candidate = {
+      schemaVersion: 1 as const, kind: 'candidate' as const,
+      sessionId, controllerHome: candidateHome,
+      serviceLabel: 'candidate-runtime', port: 8766,
+      authTokenFile: join(candidateHome, 'mcp', 'runtime-token'),
+      databaseSnapshotPath: join(candidateHome, 'control-plane.sqlite'),
+      sourceStableControllerHome: home, createdAt: new Date().toISOString(),
+    };
+    const candidateRelease = {
+      releaseId: cutoverAuthority.active.releaseId,
+      manifestPath: cutoverAuthority.active.manifestPath,
+      artifactIdentity: cutoverAuthority.active.artifactIdentity,
+      manifestSha256: cutoverAuthority.active.manifestSha256,
+      treeSha256: 'b'.repeat(64),
+      sourceCommit: 'source-with-timeboxed-acceptance',
+      sourceRepositoryId: 'repo-release-timebox-test',
+    };
+    let session = createReleaseSession({
+      controllerHome: home, sessionId, stable, stableRelease, candidate,
+      sourceRevision: candidateRelease.sourceCommit,
+    });
+    expect(session.receipts.some((x) => x.id === 'acceptance_timeout_policy_v1')).toBe(true);
+    session = advanceReleaseSession({ controllerHome: home, sessionId,
+      expectedRevision: session.revision, phase: 'built', candidateRelease });
+    session = advanceReleaseSession({ controllerHome: home, sessionId,
+      expectedRevision: session.revision, phase: 'static_verified',
+      receipts: ['type', 'runtime_architecture', 'architecture_sync', 'bootstrap']
+        .map((id) => ({ id, kind: 'static_gate' as const, summary: id })) });
+    session = advanceReleaseSession({ controllerHome: home, sessionId,
+      expectedRevision: session.revision, phase: 'candidate_booted' });
+    session = advanceReleaseSession({ controllerHome: home, sessionId,
+      expectedRevision: session.revision, phase: 'candidate_verified',
+      receipts: ['recovery', 'mcp', 'scheduler', 'supervisor', 'controller']
+        .map((id) => ({ id, kind: 'candidate_canary' as const, summary: id })) });
+    session = advanceReleaseSession({ controllerHome: home, sessionId,
+      expectedRevision: session.revision, phase: 'cutover_eligible' });
+    session = advanceReleaseSession({ controllerHome: home, sessionId,
+      expectedRevision: session.revision, phase: 'cutover_attempting' });
+    const previous = cutoverAuthority.previous!;
+    session = recordReleaseSessionTransaction({
+      controllerHome: home, sessionId, expectedRevision: session.revision,
+      transaction: {
+        schemaVersion: 1, operationId: 'timeout-cutover',
+        candidateReleaseId: candidateRelease.releaseId,
+        cutoverAuthorityRevision: cutoverAuthority.revision,
+        rollbackRelease: {
+          releaseId: previous.releaseId,
+          artifactIdentity: previous.artifactIdentity,
+          manifestPath: previous.manifestPath,
+          manifestSha256: previous.manifestSha256,
+          workerProtocolVersion: previous.workerProtocolVersion,
+          publishedAt: previous.publishedAt,
+          databaseBackup: previous.databaseBackup!,
+        },
+        startedAt: new Date().toISOString(),
+      },
+    });
+    session = advanceReleaseSession({ controllerHome: home, sessionId,
+      expectedRevision: session.revision, phase: 'cutover_committed' });
+    session = advanceReleaseSession({ controllerHome: home, sessionId,
+      expectedRevision: session.revision, phase: 'soaking',
+      receipts: [{ id: 'soak_started', kind: 'soak' as const, summary: 'candidate cutover' }] });
+    let loaded = true;
+    let tick = 0;
+    const config = createRecoveryConfig(home, {
+      publicMcpUrl: server.endpoint,
+      primaryRuntimeService: { platform: 'launchd' },
+    });
+    const result = await promoteConfiguredRuntimeReleaseSessionKnownGood(config, sessionId, {
+      continuationProof: async () => undefined,
+      wallNow: () => Date.now() + 31 * 60_000,
+      rollback: {
+        platform: 'darwin',
+        currentUid: async () => 501,
+        runCommand: async (name, args) => {
+          if (name === 'lsof') return { ok: false, status: 1, stdout: '', stderr: '' };
+          if (args[0] === 'bootout') { loaded = false; removeOwnership(ownership); }
+          if (args[0] === 'print') return loaded
+            ? { ok: true, status: 0, stdout: 'loaded', stderr: '' }
+            : { ok: false, status: 113, stdout: '', stderr: 'not loaded' };
+          if (args[0] === 'bootstrap' || args[0] === 'kickstart') loaded = true;
+          return { ok: true, status: 0, stdout: '', stderr: '' };
+        },
+        runtimeRunning: () => false,
+        ensureRuntimeLaunchContract: () => undefined,
+        repairPrimaryConnectorBinding: async () => ({
+          ok: true, attempted: false, noOp: true, detail: 'fixture connector healthy',
+        }),
+        verifyLocal: async () => healthyVerify(),
+        now: () => tick += 1_000,
+        sleep: async () => undefined,
+      },
+    }, 'timeout-recovery');
+    expect(result).toMatchObject({
+      ok: false, attempted: true, releaseSession: { phase: 'rolled_back' },
+    });
+    expect(result.detail).toContain('RELEASE_SESSION_AUTONOMOUS_CONTINUATION_PROOF_MISSING');
+    expect(result.detail).toContain('exact Stable A restored');
+    expect(readRuntimeReleaseAuthority(home)?.active.releaseId).toBe('timeout-stable-a');
+  } finally {
+    if (oldHome === undefined) delete process.env.HOME;
+    else process.env.HOME = oldHome;
+  }
+});

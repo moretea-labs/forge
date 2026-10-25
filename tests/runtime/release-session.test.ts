@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { RELEASE_SESSION_PHASES, advanceReleaseSession, createReleaseSession, listCompleteReleaseSessions, listReleaseSessions, migrateReleaseSessionState, readReleaseSession, recordReleaseSessionTransaction, releaseSessionCandidateIsRetired, releaseSessionIsSoakingSupersededByStableAuthority, releaseSessionIsSoakingSupersededByFailedCutoverCompensation, type ReleaseSessionCandidateRelease, type ReleaseSessionStableRelease, type ReleaseSessionTransaction } from '../../src/runtime/release/release-session';
+import { RELEASE_SESSION_PHASES, RELEASE_SESSION_ACCEPTANCE_TIMEOUT_MS, releaseSessionAcceptanceTimedOut, advanceReleaseSession, createReleaseSession, listCompleteReleaseSessions, listReleaseSessions, migrateReleaseSessionState, readReleaseSession, recordReleaseSessionTransaction, releaseSessionCandidateIsRetired, releaseSessionIsSoakingSupersededByStableAuthority, releaseSessionIsSoakingSupersededByFailedCutoverCompensation, type ReleaseSessionCandidateRelease, type ReleaseSessionStableRelease, type ReleaseSessionTransaction } from '../../src/runtime/release/release-session';
 import type { RuntimeReleaseAuthority } from '../../src/runtime/root/release-store';
 import { advanceConfiguredRuntimeRelease, decideConfiguredRuntimeReleaseAction, decideConfiguredRuntimeReleaseReconciliation } from '../../src/runtime/release/release-coordinator';
 import { cancelConfiguredRuntimeReleaseSession, createRecoveryConfig } from '../../src/runtime/standalone-recovery/core';
@@ -982,4 +982,23 @@ describe('Recovery ReleaseSession', () => {
     advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'built', candidateRelease });
     expect(() => advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'failed' })).toThrow('RELEASE_SESSION_REVISION_FENCED');
   });
+});
+
+// Candidate B cannot remain soaking indefinitely without authentic E2E proof.
+test('ReleaseSession acceptance timeout uses durable cutover time, not retry timestamp', () => {
+  const start = Date.parse('2026-10-25T00:00:00Z');
+  const session = { phase: 'soaking' as const, updatedAt: '2026-10-25T00:25:00Z',
+    receipts: [
+      { id: 'acceptance_timeout_policy_v1', kind: 'source' as const, recordedAt: '2026-10-24T23:00:00Z', summary: 'opt-in' },
+      { id: 'soak_started', kind: 'soak' as const, recordedAt: '2026-10-25T00:00:00Z', summary: 'cutover' },
+    ] };
+  expect(releaseSessionAcceptanceTimedOut(session, start + RELEASE_SESSION_ACCEPTANCE_TIMEOUT_MS - 1)).toBe(false);
+  expect(releaseSessionAcceptanceTimedOut(session, start + RELEASE_SESSION_ACCEPTANCE_TIMEOUT_MS)).toBe(true);
+  expect(releaseSessionAcceptanceTimedOut({ ...session, phase: 'known_good' }, start + 3600_000)).toBe(false);
+  expect(releaseSessionAcceptanceTimedOut({ ...session, phase: 'failed' }, start + 3600_000)).toBe(false);
+  // A legacy soaking session must remain under its historical policy.
+  expect(releaseSessionAcceptanceTimedOut({ ...session, receipts: session.receipts.filter(r => r.id !== 'acceptance_timeout_policy_v1') }, start + 100 * 3600_000)).toBe(false);
+  expect(releaseSessionAcceptanceTimedOut({ ...session, receipts: [] }, start + 100 * 3600_000)).toBe(false);
+  expect(releaseSessionAcceptanceTimedOut({ ...session, receipts: session.receipts.filter(r => r.id !== 'soak_started') }, start + 100 * 3600_000)).toBe(false);
+  expect(releaseSessionAcceptanceTimedOut(session, Number.NaN)).toBe(false);
 });
