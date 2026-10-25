@@ -418,6 +418,23 @@ test('nested templates never manufacture exact owner declarations and interpolat
   expect(exactCodeOwnerQueries(source, ['fakeNestedOwner', 'realAfterTemplate'])).toEqual(['realAfterTemplate']);
 });
 
+test('regex literal braces do not terminate nested template interpolation or invent owner declarations', () => {
+  const tick = String.fromCharCode(96);
+  const interpolation = '$' + '{';
+  for (const pattern of ['/}/', '/\\}/', '/[}]/', '/[\\/}]/']) {
+    const source = [
+      'const example = ' + tick + 'outer ' + interpolation + ' ' + pattern + '.test(value) ? ' + tick,
+      'function fakeRegexNestedOwner() { return true; }',
+      tick + ' : "" } suffix' + tick + ';',
+      'const division = 4 / 2;',
+      'export function actualOwnerAfterRegex() { return division; }',
+    ].join('\n');
+    expect(exactCodeOwnerEvidence(source, 'fakeRegexNestedOwner').owner).toBe(false);
+    expect(exactCodeOwnerQueries(source, ['fakeRegexNestedOwner', 'actualOwnerAfterRegex']))
+      .toEqual(['actualOwnerAfterRegex']);
+  }
+});
+
 test('retains separate explicit code symbols in sync and async discovery beyond the inventory cap', async () => {
   const root = mkdtempSync(join(tmpdir(), 'forge-context-multi-symbol-'));
   roots.push(root);

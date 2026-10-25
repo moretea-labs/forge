@@ -109,8 +109,8 @@ function maskCommentsAndStrings(source: string): string {
 
   // Track template interpolation nesting, not a single template toggle:
   // nested literal text must never become executable owner evidence.
-  type Mode = 'code' | 'template' | 'line-comment' | 'block-comment' | 'single-string' | 'double-string';
-  const frames: Array<{ mode: Mode; braceDepth?: number }> = [{ mode: 'code' }];
+  type Mode = 'code' | 'template' | 'line-comment' | 'block-comment' | 'single-string' | 'double-string' | 'regex';
+  const frames: Array<{ mode: Mode; braceDepth?: number; regexAllowed?: boolean; regexClass?: boolean }> = [{ mode: 'code', regexAllowed: true }];
   const masked = source.split('');
   const hide = (index: number): void => {
     if (source[index] !== '\n' && source[index] !== '\r') masked[index] = ' ';
@@ -134,6 +134,28 @@ function maskCommentsAndStrings(source: string): string {
       } else hide(index);
       continue;
     }
+    if (frame.mode === 'regex') {
+      // Regex braces are literal pattern content, never interpolation braces.
+      // Character classes also protect slashes: /[\/}]/ is one regex literal.
+      if (current === '\\') {
+        hide(index);
+        if (index + 1 < source.length) {
+          hide(index + 1);
+          index += 1;
+        }
+      } else if (current === '[' && !frame.regexClass) {
+        frame.regexClass = true;
+        hide(index);
+      } else if (current === ']' && frame.regexClass) {
+        frame.regexClass = false;
+        hide(index);
+      } else if (current === '/' && !frame.regexClass) {
+        hide(index);
+        frames.pop();
+        frames[frames.length - 1]!.regexAllowed = false;
+      } else hide(index);
+      continue;
+    }
     if (frame.mode === 'single-string' || frame.mode === 'double-string' || frame.mode === 'template') {
       const quote = frame.mode === 'single-string' ? "'" : frame.mode === 'double-string' ? '"' : templateQuote;
       if (current === '\\') {
@@ -146,10 +168,11 @@ function maskCommentsAndStrings(source: string): string {
         hide(index);
         hide(index + 1);
         index += 1;
-        frames.push({ mode: 'code', braceDepth: 1 });
+        frames.push({ mode: 'code', braceDepth: 1, regexAllowed: true });
       } else if (current === quote) {
         hide(index);
         frames.pop();
+        frames[frames.length - 1]!.regexAllowed = false;
       } else hide(index);
       continue;
     }
@@ -165,6 +188,23 @@ function maskCommentsAndStrings(source: string): string {
         }
       }
     }
+    // A token boundary distinguishes a regex literal from division. Treat a
+    // leading regex after an operand-introducing token (or interpolation open)
+    // as string-like text. This is deliberately lexically bounded: no parser
+    // sidecar is invoked on the context materializer's hot path.
+    if (/[$_\p{L}]/u.test(current)) {
+      let end = index + 1;
+      while (end < source.length && /[$_\p{L}\p{N}]/u.test(source[end]!)) end += 1;
+      const token = source.slice(index, end);
+      frame.regexAllowed = /^(?:return|throw|case|yield|await|delete|typeof|void|in|of)$/.test(token);
+      index = end - 1;
+      continue;
+    }
+    if (current === '/' && next !== '/' && next !== '*' && frame.regexAllowed) {
+      hide(index);
+      frames.push({ mode: 'regex', regexClass: false });
+      continue;
+    }
     if (current === '/' && next === '/') {
       hide(index);
       hide(index + 1);
@@ -177,10 +217,14 @@ function maskCommentsAndStrings(source: string): string {
       frames.push({ mode: 'block-comment' });
     } else if (current === "'" || current === '"') {
       hide(index);
+      frame.regexAllowed = false;
       frames.push({ mode: current === "'" ? 'single-string' : 'double-string' });
     } else if (current === templateQuote) {
       hide(index);
+      frame.regexAllowed = false;
       frames.push({ mode: 'template' });
+    } else if (!/\s/.test(current)) {
+      frame.regexAllowed = !/[\p{N}\])}.]/u.test(current);
     }
   }
   return masked.join('');
