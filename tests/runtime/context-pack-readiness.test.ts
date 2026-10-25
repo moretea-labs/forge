@@ -412,6 +412,8 @@ test('nested templates never manufacture exact owner declarations and interpolat
   expect(exactCodeOwnerEvidence(source, 'fakeNestedOwner').owner).toBe(false);
   expect(exactCodeOwnerEvidence(source, 'fakeQuotedOwner').owner).toBe(false);
   expect(exactCodeOwnerEvidence(source, 'realAfterTemplate').owner).toBe(true);
+  expect(exactCodeOwnerEvidence('1: export function numberedOwner() {}', 'numberedOwner').owner).toBe(true);
+  expect(exactCodeOwnerQueries('1: export function numberedOwner() {}', ['numberedOwner'])).toEqual(['numberedOwner']);
   expect(exactCodeOwnerEvidence(source, 'realInsideExpression').owner).toBe(true);
   expect(exactCodeOwnerEvidence('export function gammaHandler() {}', 'GammaHandler').owner).toBe(true);
   expect(exactCodeOwnerQueries('export function gammaHandler() {}', ['GammaHandler'])).toEqual(['GammaHandler']);

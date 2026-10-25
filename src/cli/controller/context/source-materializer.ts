@@ -268,6 +268,11 @@ interface ExactCodeOwnerLocation {
   exported: boolean;
 }
 
+function normalizeNumberedSource(source: string): string {
+  if (!/^[ \t]*\d+:[ \t]*/m.test(source)) return source;
+  return source.split(/\r?\n/).map((line) => line.replace(/^\s*\d+:\s*/, '')).join('\n');
+}
+
 function exactCodeOwnerLocations(source: string, queries: readonly string[]): ExactCodeOwnerLocation[] {
   if (queries.length === 0) return [];
   const code = maskCommentsAndStrings(source);
@@ -329,14 +334,14 @@ function exactCodeOwnerLocations(source: string, queries: readonly string[]): Ex
 }
 
 export function exactCodeOwnerEvidence(source: string, query: string): { declared: string | undefined; owner: boolean } {
-  const normalized = source.split(/\r?\n/).map((line) => line.replace(/^\s*\d+:\s*/, '')).join('\n');
+  const normalized = normalizeNumberedSource(source);
   const code = maskCommentsAndStrings(normalized);
   const declared = new RegExp('(?:' + exactCodeOwnerPatterns(query) + ')', 'imsu').test(code) ? query : undefined;
   return { declared, owner: declared !== undefined };
 }
 
 export function exactCodeOwnerQueries(source: string, queries: readonly string[]): string[] {
-  const normalized = source.split(/\r?\n/).map((line) => line.replace(/^\s*\d+:\s*/, '')).join('\n');
+  const normalized = normalizeNumberedSource(source);
   return exactCodeOwnerLocations(normalized, queries).map((location) => location.query);
 }
 
