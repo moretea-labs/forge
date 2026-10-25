@@ -907,7 +907,9 @@ export function buildControllerContextPack(
   // In the bounded exact-known-file path, references alone are not sufficient
   // implementation evidence: require the requested owner line in an emitted snippet.
   const requiredSymbolEvidenceMissing = scopedExactKnownFileSearch
-    ? requiredSearchQueries.some((query) => !emittedOwnerEvidence.has(query))
+    ? requiredSearchQueries.some((query) => !emittedOwnerEvidence.has(query)
+      && (useBoundedExactWindows || !files.some((file) => exactKnownFiles.includes(file.path)
+        && file.snippets.some((snippet) => exactCodeOwnerEvidence(snippet.content, query).owner))))
     : requiredSearchQueries.some((query) =>
         !files.some((file) => file.snippets.some((snippet) =>
           exactCodeNeedleMatches(snippet.content.toLowerCase(), query.toLowerCase()))));
