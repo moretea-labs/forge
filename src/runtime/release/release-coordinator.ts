@@ -3,6 +3,7 @@ import {
   listCompleteReleaseSessions,
   readReleaseSession,
   releaseSessionIsSoakingPredecessorOfStable,
+  releaseSessionAcceptanceTimedOut,
   releaseSessionIsTerminal,
   type ReleaseSession,
 } from './release-session';
@@ -106,6 +107,18 @@ function coordinatorSession(active: ReleaseSession[]): ReleaseSession | undefine
   throw new Error(`RELEASE_SESSION_MULTIPLE_ACTIVE: ${active.map((session) => `${session.sessionId}:${session.phase}`).join(',')}`);
 }
 
+/** Expired opt-in soaking predecessor wins over an unfinished successor.
+ * Validate the normal successor placement contract first; never choose a
+ * session from an ambiguous multiple-active inventory.
+ */
+function deadlinePrioritySession(active: ReleaseSession[], nowMs: number): ReleaseSession | undefined {
+  const chosen = coordinatorSession(active);
+  if (active.length < 2) return chosen;
+  const expired = active.filter((item) =>
+    item.phase === 'soaking' && releaseSessionAcceptanceTimedOut(item, nowMs));
+  return expired.length === 1 ? expired[0] : chosen;
+}
+
 function runtimeReleaseActionForSession(session: ReleaseSession): RuntimeReleaseCoordinatorAction {
   switch (session.phase) {
     case 'source_frozen': return 'prepare';
@@ -126,7 +139,7 @@ function runtimeReleaseActionForSession(session: ReleaseSession): RuntimeRelease
 
 export function decideConfiguredRuntimeReleaseAction(controllerHome: string): RuntimeReleaseCoordinatorDecision {
   const active = activeRuntimeReleaseSessions(controllerHome);
-  const session = coordinatorSession(active);
+  const session = deadlinePrioritySession(active, Date.now());
   if (!session) return { action: 'prepare' };
   return { action: runtimeReleaseActionForSession(session), session };
 }
@@ -148,7 +161,7 @@ export function decideConfiguredRuntimeReleaseReconciliation(
 ): RuntimeReleaseReconciliationDecision {
   const sessions = completeRuntimeReleaseSessions(controllerHome);
   const active = sessions.filter((session) => !releaseSessionIsTerminal(session));
-  const session = coordinatorSession(active);
+  const session = deadlinePrioritySession(active, Date.now());
   // A single soaking predecessor remains rollback authority, but inability to
   // certify it must not forever prevent a newer immutable source revision from
   // preparing its own Candidate B. Two active sessions are allowed only by the

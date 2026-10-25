@@ -342,7 +342,9 @@ function sameReleaseIdentity(left: ReleaseEvidence, right: ReleaseEvidence): boo
  */
 function provisionalCanaryKnownGood(config: RecoveryConfig, release: ReleaseEvidence): boolean {
   try {
-    return listCompleteReleaseSessions(config.controllerHome).sessions.some((session) =>
+    const inventory = listCompleteReleaseSessions(config.controllerHome);
+    if (inventory.invalidSessionFiles.length > 0 || inventory.truncated) return true;
+    return inventory.sessions.some((session) =>
       session.receipts.some((receipt) => receipt.id === 'acceptance_timeout_policy_v1')
       && session.candidateRelease?.releaseId === release.revision
       && session.candidateRelease.artifactIdentity === release.artifactIdentity
@@ -5739,6 +5741,24 @@ export async function promoteConfiguredRuntimeReleaseSessionKnownGood(
     };
   });
   if (!locked.acquired) return { ok: false, attempted: false, noOp: true, detail: recoveryBusyDetail(locked.owner), releaseSession: initial };
+  // The final deadline fence runs under the mutation lock. After it releases,
+  // immediately reconcile the exact Stable A rollback transaction rather than
+  // waiting another daemon tick. Never attempt a nested Recovery lock.
+  if (locked.value.detail === 'RELEASE_SESSION_ACCEPTANCE_PROOF_LATE') {
+    const rollback = await rollbackConfiguredRuntimeReleaseSession(
+      config,
+      sessionId,
+      dependencies.rollback ?? {},
+      requestId?.trim() ? `${requestId.trim()}:late-proof-rollback` : undefined,
+    );
+    return {
+      ok: false, attempted: true,
+      detail: rollback.ok
+        ? 'RELEASE_SESSION_ACCEPTANCE_PROOF_LATE; exact Stable A restored'
+        : `RELEASE_SESSION_ACCEPTANCE_PROOF_LATE; automatic Stable A rollback failed: ${rollback.detail}`,
+      releaseSession: rollback.releaseSession ?? readReleaseSession(config.controllerHome, sessionId) ?? initial,
+    };
+  }
   return locked.value;
 }
 

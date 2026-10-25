@@ -382,7 +382,7 @@ describe('Recovery ReleaseSession', () => {
       },
     });
     predecessor = advanceReleaseSession({ controllerHome: home, sessionId: predecessor.sessionId, expectedRevision: predecessor.revision, phase: 'cutover_committed' });
-    predecessor = advanceReleaseSession({ controllerHome: home, sessionId: predecessor.sessionId, expectedRevision: predecessor.revision, phase: 'soaking' });
+    predecessor = advanceReleaseSession({ controllerHome: home, sessionId: predecessor.sessionId, expectedRevision: predecessor.revision, phase: 'soaking', receipts: [{ id: 'soak_started', kind: 'soak', summary: 'cutover' }] });
 
     const successorStableRelease = { ...stableRelease, authorityRevision: 8, releaseId: candidateRelease.releaseId, artifactIdentity: candidateRelease.artifactIdentity, manifestSha256: candidateRelease.manifestSha256 };
     const successorCandidate: CandidateExecutionLane = {
@@ -408,6 +408,23 @@ describe('Recovery ReleaseSession', () => {
       action: 'prepare',
       session: { sessionId: successor.sessionId },
     });
+
+    // Candidate B reaches its fixed deadline while a permitted successor
+    // remains pre-cutover. Both decision paths must now target the expired
+    // predecessor, not keep preparing its successor forever.
+    const wallNow = Date.now;
+    Date.now = () => wallNow() + 31 * 60_000;
+    try {
+      expect(decideConfiguredRuntimeReleaseAction(home)).toMatchObject({
+        action: 'promote_known_good', session: { sessionId: predecessor.sessionId },
+      });
+      expect(decideConfiguredRuntimeReleaseReconciliation(home, () => {
+        throw new Error('Git observer should stay lazy for overdue predecessor');
+      })).toMatchObject({
+        required: true, action: 'promote_known_good',
+        session: { sessionId: predecessor.sessionId },
+      });
+    } finally { Date.now = wallNow; }
 
     const thirdCandidate: CandidateExecutionLane = { ...successorCandidate, sessionId: 'release-session-third-123456', controllerHome: join(home, 'candidate-third'), serviceLabel: 'candidate-third', port: 8768, databaseSnapshotPath: join(home, 'candidate-third', 'control-plane.sqlite') };
     expect(() => createReleaseSession({ controllerHome: home, sessionId: thirdCandidate.sessionId, stable, stableRelease: successorStableRelease, candidate: thirdCandidate, sourceRevision: 'ghi789' }))
