@@ -156,7 +156,7 @@ test('preflight cannot retroactively declare a send not attempted when execution
 });
 
 function bootstrapFixture(initialTabs: Array<{ id: number; windowId: number; url: string }> = [],
-  options: { ownerWriteFails?: boolean; ownerWriteDrops?: boolean; markerObservation?: boolean } = {}) {
+  options: { ownerWriteFails?: boolean; ownerWriteDrops?: boolean; markerObservation?: boolean; validEnsureSnapshot?: boolean } = {}) {
   const tabs = [...initialTabs];
   let nextTabId = 200;
   let dispatchSends = 0;
@@ -180,7 +180,11 @@ function bootstrapFixture(initialTabs: Array<{ id: number; windowId: number; url
     tabs: {
       async query() { tabQueries++; return [...tabs]; },
       sendMessage(_tabId: number, message: { type: string }, callback: (result: object) => void) {
-        if (message.type === 'forge-computer-chatgpt-snapshot' && options.markerObservation) {
+        if (message.type === 'forge-computer-chatgpt-snapshot' && options.validEnsureSnapshot) {
+          snapshotReads++;
+          callback({ url: tabs.find((tab) => tab.id === _tabId)?.url,
+            composerText: '', latestUserText: '', latestAssistantResponse: '', isGenerating: false });
+        } else if (message.type === 'forge-computer-chatgpt-snapshot' && options.markerObservation) {
           snapshotReads++;
           callback({ url: tabs.find((tab) => tab.id === _tabId)?.url,
             latestUserText: 'exact-marker-test-v1', userMessages: ['exact-marker-test-v1'] });
@@ -994,4 +998,22 @@ test('F11 stale providerSessionId with valid token fails closed before any brows
   expect(f.tabQueries).toBe(0);
   expect(f.snapshotReads).toBe(0);
   expect(f.dispatchSends).toBe(0);
+});
+
+// Eighth independent Review P2: a validated previously-owned Bootstrap pin
+// must still be recoverable by Ensure after the tab moves to another window.
+test('F11 valid pinned Ensure with matching providerSessionId and owner Token succeeds after window move', async () => {
+  const projectUrl = 'https://chatgpt.com/g/g-p-test/project';
+  const f = bootstrapFixture([{ id: 88, windowId: 99, url: projectUrl }], { validEnsureSnapshot: true });
+  f.attestOwner(88, 'verified-bootstrap-owner');
+  const identity = { namespace: 'chatgpt.bootstrap', bootstrapKey: 'supervisor:valid-ensure', projectUrl };
+  const pinned = { providerId: 'browser.chrome-extension', providerSessionId: 'active-chrome-profile',
+    tabId: '88', windowId: '8', ownerToken: 'verified-bootstrap-owner' };
+  expect(await f.ensure(identity, pinned, 'active-chrome-profile')).toMatchObject({ kind: 'ensured',
+    providerBinding: { providerId: 'browser.chrome-extension', providerSessionId: 'active-chrome-profile',
+      tabId: '88', windowId: '99', ownerToken: 'verified-bootstrap-owner' } });
+  expect(f.tabQueries).toBe(1);
+  expect(f.snapshotReads).toBe(1);
+  expect(f.dispatchSends).toBe(0);
+  expect(f.tabs).toHaveLength(1);
 });
