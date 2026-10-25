@@ -105,8 +105,7 @@ function exactCodeOwnerPatterns(query: string): string {
 
 function maskCommentsAndStrings(source: string): string {
   const templateQuote = String.fromCharCode(96);
-  if (!source.includes('//') && !source.includes('/*') && !source.includes("'")
-    && !source.includes('"') && !source.includes(templateQuote)) return source;
+  if (!/\/\/|\/\*|[\'"`]/.test(source)) return source;
 
   // Track template interpolation nesting, not a single template toggle:
   // nested literal text must never become executable owner evidence.
