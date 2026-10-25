@@ -134,6 +134,16 @@ function adapterMatchesRepository(adapter: AssistantPluginAdapter, _repository: 
   return (adapter.scope ?? 'repository') === 'repository' || adapter.repositorySurface === true;
 }
 
+/** Repository-owned phone actions do not consume Controller legacy plugin state. */
+function repositoryComputerPhysicalAction(
+  adapter: AssistantPluginAdapter | undefined,
+  request: Pick<AssistantPluginActionRequest, 'pluginId' | 'actionId'>,
+): adapter is AssistantPluginAdapter {
+  return request.pluginId === 'computer'
+    && request.actionId.startsWith('physical_device_')
+    && adapter?.repositorySurface === true;
+}
+
 const controllerPluginStateMigrationFingerprints = new Map<string, string>();
 
 /** Retire obsolete per-repository manifest projections for plugins now owned by Controller. */
@@ -1001,6 +1011,19 @@ export function getAssistantPluginManifest(
   return getAssistantPluginManifestForExecution(controllerHome, repository, pluginId, adapter).manifest;
 }
 
+/** Resolve a repository action without triggering unrelated Controller migrations. */
+export function getAssistantPluginManifestForAction(
+  controllerHome: string,
+  repository: RepositoryRecord,
+  request: Pick<AssistantPluginActionRequest, 'pluginId' | 'actionId'>,
+): AssistantPluginManifest {
+  const adapter = resolvePluginAdapter(controllerHome, request.pluginId);
+  if (repositoryComputerPhysicalAction(adapter, request)) {
+    return getAssistantPluginManifestForExecution(controllerHome, repository, request.pluginId, adapter).manifest;
+  }
+  return getAssistantPluginManifest(controllerHome, repository, request.pluginId);
+}
+
 export function syncAssistantPluginRegistry(
   controllerHome: string,
   repository: RepositoryRecord,
@@ -1164,8 +1187,8 @@ export function executeAssistantPluginDirectNonPersistent(
   repository: RepositoryRecord,
   request: AssistantPluginActionRequest,
 ) {
-  ensureControllerPluginStateMigrated(controllerHome);
   const adapter = resolvePluginAdapter(controllerHome, request.pluginId);
+  if (!repositoryComputerPhysicalAction(adapter, request)) ensureControllerPluginStateMigrated(controllerHome);
   return executePluginDirectNonPersistentInScope(
     controllerHome,
     adapter && adapterMatchesController(adapter) && adapter.repositorySurface !== true
@@ -1190,7 +1213,7 @@ async function executePluginReadDirectInScope(
 ): Promise<{ manifest: AssistantPluginManifest; action: AssistantPluginActionDescriptor; result: Record<string, unknown>; receipt: PluginActionReceipt }> {
   const manifest = scope.kind === 'controller'
     ? getControllerPluginManifest(controllerHome, request.pluginId)
-    : getAssistantPluginManifest(controllerHome, scope.repository!, request.pluginId);
+    : getAssistantPluginManifestForAction(controllerHome, scope.repository!, request);
   const action = actionForManifest(manifest, request.actionId);
   if (!manifest.enabled && action.actionId !== 'configure') {
     throw new Error(`PLUGIN_DISABLED: ${request.pluginId} is disabled`);
@@ -1244,8 +1267,8 @@ export function executeAssistantPluginReadDirect(
   repository: RepositoryRecord,
   request: AssistantPluginActionRequest,
 ) {
-  ensureControllerPluginStateMigrated(controllerHome);
   const adapter = resolvePluginAdapter(controllerHome, request.pluginId);
+  if (!repositoryComputerPhysicalAction(adapter, request)) ensureControllerPluginStateMigrated(controllerHome);
   return executePluginReadDirectInScope(
     controllerHome,
     adapter && adapterMatchesController(adapter) && adapter.repositorySurface !== true
@@ -1435,6 +1458,7 @@ function migrateControllerPluginActionReceipts(controllerHome: string, pluginIds
     indexPath: string,
   ): boolean => {
     if (!controllerPluginIds.has(receipt.pluginId) || receipt.observationOnly === true) return false;
+    if (repositoryComputerPhysicalAction(resolvePluginAdapter(controllerHome, receipt.pluginId), receipt)) return false;
     if (!receipt.receiptId || !receipt.requestId) return false;
     const recordedScope = receipt.scopeKey?.trim() || receipt.repoId?.trim() || oldScopeKey;
     if (recordedScope !== oldScopeKey && recordedScope !== CONTROLLER_PLUGIN_SCOPE_KEY) return false;
@@ -1572,16 +1596,29 @@ export function findPluginActionReceipt(
 }
 
 /** Exact request lookup for subordinate Workflow recovery; never dispatches an action. */
-export function readPluginActionReceiptForRequest(controllerHome: string, requestId: string): PluginActionReceipt | undefined {
-  ensureControllerPluginStateMigrated(controllerHome);
+export function readPluginActionReceiptForRequest(
+  controllerHome: string,
+  requestId: string,
+  repositoryAction?: { repoId: string; pluginId: string; actionId: string },
+): PluginActionReceipt | undefined {
+  const repositoryPhone = repositoryAction && repositoryComputerPhysicalAction(
+    resolvePluginAdapter(controllerHome, repositoryAction.pluginId), repositoryAction,
+  );
+  if (!repositoryPhone) ensureControllerPluginStateMigrated(controllerHome);
   const path = pluginActionRequestPath(controllerHome, requestId);
   if (!existsSync(path)) return undefined;
   const index = readJsonFile<PluginActionRequestIndex>(path);
   if (index.requestId !== requestId) throw new Error('PLUGIN_RECEIPT_REQUEST_MISMATCH');
   const scopeKey = index.scopeKey?.trim() || index.repoId?.trim();
   if (!scopeKey) throw new Error('PLUGIN_RECEIPT_REQUEST_SCOPE_CORRUPT');
+  if (repositoryPhone && scopeKey !== repositoryAction.repoId) throw new Error(`REQUEST_ID_SCOPE_CONFLICT: ${requestId}`);
   const receipt = readPluginActionReceipt(controllerHome, scopeKey, index.receiptId);
-  if (!receipt || receipt.requestId !== requestId || receipt.semanticKey !== index.semanticKey) throw new Error('PLUGIN_RECEIPT_LOST');
+  if (!receipt || receipt.receiptId !== index.receiptId || receipt.requestId !== requestId
+    || receipt.semanticKey !== index.semanticKey) throw new Error('PLUGIN_RECEIPT_LOST');
+  if (repositoryPhone && (receipt.scopeKey !== repositoryAction.repoId
+    || receipt.pluginId !== repositoryAction.pluginId || receipt.actionId !== repositoryAction.actionId)) {
+    throw new Error(`REQUEST_ID_SCOPE_CONFLICT: ${requestId}`);
+  }
   return receipt;
 }
 
@@ -1832,7 +1869,7 @@ async function submitPluginAction(
   if (!adapter) throw new Error(`PLUGIN_NOT_FOUND: ${request.pluginId}`);
   const manifest = scope.kind === 'controller'
     ? getControllerPluginManifest(controllerHome, request.pluginId)
-    : getAssistantPluginManifest(controllerHome, scope.repository!, request.pluginId);
+    : getAssistantPluginManifestForAction(controllerHome, scope.repository!, request);
   const action = actionForManifest(manifest, request.actionId);
   if (!manifest.enabled && action.actionId !== 'configure') {
     throw new Error(`PLUGIN_DISABLED: ${request.pluginId} is disabled`);
@@ -2129,7 +2166,7 @@ async function submitPluginAction(
     }
     const nextManifest = scope.kind === 'controller'
       ? getControllerPluginManifest(controllerHome, request.pluginId)
-      : getAssistantPluginManifest(controllerHome, scope.repository!, request.pluginId);
+      : getAssistantPluginManifestForAction(controllerHome, scope.repository!, request);
     return {
       manifest: nextManifest,
       action,
@@ -2228,8 +2265,10 @@ export function submitAssistantPluginAction(
   repository: RepositoryRecord,
   request: AssistantPluginActionRequest,
 ) {
-  ensureControllerPluginStateMigrated(controllerHome);
   const adapter = resolvePluginAdapter(controllerHome, request.pluginId);
+  // Keep Controller migration for every other action; phone receipts, grants and
+  // exact request replay remain repository-scoped and are still checked below.
+  if (!repositoryComputerPhysicalAction(adapter, request)) ensureControllerPluginStateMigrated(controllerHome);
   // A controller-scoped adapter with a repository surface keeps repository-
   // bound actions (computer physical_device_*) on the repository action
   // scope; diverting them to the controller scope hides those actions.

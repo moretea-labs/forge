@@ -12,7 +12,7 @@ import {
   executeAssistantPluginReadDirect,
   executeControllerPluginDirectNonPersistent,
   executeControllerPluginReadDirect,
-  getAssistantPluginManifest,
+  getAssistantPluginManifestForAction,
   getControllerPluginManifest,
   isDirectNonPersistentPluginAction,
   isDirectPluginReadAction,
@@ -83,8 +83,11 @@ export async function executeAssistantPluginActionApplication(input: {
 }): Promise<AssistantPluginActionApplicationResult> {
   const manifest = input.scope.kind === 'controller'
     ? getControllerPluginManifest(input.controllerHome, input.request.pluginId)
-    : getAssistantPluginManifest(input.controllerHome, input.scope.repository, input.request.pluginId);
+    : getAssistantPluginManifestForAction(input.controllerHome, input.scope.repository, input.request);
   const action = manifest.actions.find((entry) => entry.actionId === input.request.actionId);
+  const repositoryAction = input.scope.kind === 'repository'
+    ? { repoId: input.scope.repository.repoId, pluginId: input.request.pluginId, actionId: input.request.actionId }
+    : undefined;
 
   if (action && isDirectPluginReadAction(action)) {
     const direct = input.scope.kind === 'controller'
@@ -116,7 +119,7 @@ export async function executeAssistantPluginActionApplication(input: {
 
   // Reject an invalid Work binding before allocating an immutable Process request ID.
   // Reattach any existing authoritative provider receipt without fresh preflight.
-  if (action && input.request.workId && !readPluginActionReceiptForRequest(input.controllerHome, input.request.requestId)) {
+  if (action && input.request.workId && !readPluginActionReceiptForRequest(input.controllerHome, input.request.requestId, repositoryAction)) {
     preflightPluginActionWorkBinding(input.controllerHome, input.scope, action, input.request);
   }
 
@@ -180,7 +183,7 @@ export async function executeAssistantPluginActionApplication(input: {
     // Provider settlement remains authoritative across a sidecar failure.
     // Re-enter the store below to validate exact args/scope/Work before reading
     // any recorded outcome; process failure alone never authorizes redispatch.
-    if (!handle.ok && !readPluginActionReceiptForRequest(input.controllerHome, input.request.requestId)) {
+    if (!handle.ok && !readPluginActionReceiptForRequest(input.controllerHome, input.request.requestId, repositoryAction)) {
       return {
         kind: 'managed_failed',
         manifest,

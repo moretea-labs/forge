@@ -11,6 +11,8 @@ type Response = { kind: string; mutation: string; reasonCode?: string; reasoning
 type Scenario = {
   capability?: unknown;
   preflightTransportError?: boolean;
+  unbound?: boolean;
+  prepareTransportError?: 'receiver' | 'timeout' | 'other';
   prepare?: { prepared: boolean; reason?: string; reasoningVerified?: string };
   dispatch?: { dispatched: boolean; confirmed?: boolean; reasoningVerified?: string };
 };
@@ -18,7 +20,13 @@ function fixture(scenario: Scenario) {
   const tab = { id: 42, windowId: 8, url, title: 'Test conversation' };
   const messages: string[] = [];
   let submissions = 0;
+  const ownerStorage = new Map([['forgeComputerOwnedTabV1:42', 'verified-conversation-owner']]);
+  const providerBinding = { providerId: 'browser.chrome-extension', providerSessionId: 'test-profile',
+    tabId: '42', windowId: '8', ownerToken: 'verified-conversation-owner' };
   const chrome = {
+    storage: { session: { async get(key: string) {
+      return ownerStorage.has(key) ? { [key]: ownerStorage.get(key) } : {};
+    } } },
     runtime: {
       lastError: undefined as undefined | { message: string },
       connectNative() { return { onMessage: { addListener() {} }, onDisconnect: { addListener() {} }, postMessage() {} }; },
@@ -42,6 +50,15 @@ function fixture(scenario: Scenario) {
           return;
         }
         if (message.type === 'forge-computer-chatgpt-prepare') {
+          if (scenario.prepareTransportError === 'timeout') return; // inject an unanswered Chrome callback
+          if (scenario.prepareTransportError) {
+            chrome.runtime.lastError = { message: scenario.prepareTransportError === 'receiver'
+              ? 'Could not establish connection. Receiving end does not exist.'
+              : 'The message port closed before a response was received.' };
+            callback(undefined);
+            chrome.runtime.lastError = undefined;
+            return;
+          }
           callback(scenario.prepare ?? { prepared: true, reasoningVerified: 'xhigh' });
           return;
         }
@@ -78,7 +95,7 @@ function fixture(scenario: Scenario) {
     setTimeout(callback: () => void, ms: number) {
       // Run only the bounded post-send observation sleep; never schedule the
       // extension's actual background heartbeat/discovery loops in this test.
-      if (ms === 200 || ms === 400 || ms === 600 || ms === 800) queueMicrotask(callback);
+      if (ms === 200 || ms === 400 || ms === 600 || ms === 800 || ms === 7_000) queueMicrotask(callback);
       return 1;
     },
     clearTimeout() {},
@@ -92,12 +109,14 @@ function fixture(scenario: Scenario) {
   void scope;
   const dispatch = (reasoning?: 'xhigh') =>
     (testContext as typeof testContext & {
-      __testDispatch: (value: object) => Promise<Response>;
-    }).__testDispatch({ kind: 'dispatch', identity, prompt: 'source delivery', ...(reasoning ? { reasoning } : {}) });
+      __testDispatch: (value: object, instanceId: string) => Promise<Response>;
+    }).__testDispatch({ kind: 'dispatch', identity, prompt: 'source delivery',
+      ...(!scenario.unbound ? { providerBinding } : {}), ...(reasoning ? { reasoning } : {}) }, 'test-profile');
   const prepare = (reasoning?: 'xhigh') =>
     (testContext as typeof testContext & {
-      __testPrepare: (value: object) => Promise<{ kind: string; ready: boolean; reasoningVerified?: string; reasonCode?: string }>;
-    }).__testPrepare({ kind: 'prepare', identity, prompt: 'source delivery', ...(reasoning ? { reasoning } : {}) });
+      __testPrepare: (value: object, instanceId: string) => Promise<{ kind: string; ready: boolean; reasoningVerified?: string; reasonCode?: string }>;
+    }).__testPrepare({ kind: 'prepare', identity, prompt: 'source delivery',
+      ...(!scenario.unbound ? { providerBinding } : {}), ...(reasoning ? { reasoning } : {}) }, 'test-profile');
   return { dispatch, prepare, messages, get submissions() { return submissions; } };
 }
 
@@ -136,18 +155,48 @@ test('preflight cannot retroactively declare a send not attempted when execution
   expect(f.submissions).toBe(1);
 });
 
-function bootstrapFixture(initialTabs: Array<{ id: number; windowId: number; url: string }> = []) {
+function bootstrapFixture(initialTabs: Array<{ id: number; windowId: number; url: string }> = [],
+  options: { ownerWriteFails?: boolean; ownerWriteDrops?: boolean; markerObservation?: boolean; validEnsureSnapshot?: boolean } = {}) {
   const tabs = [...initialTabs];
   let nextTabId = 200;
+  let dispatchSends = 0;
+  let snapshotReads = 0;
+  let tabQueries = 0;
+  const ownerTokens = new Map<string, string>();
   const projectId = (value: string) => /\/g\/(g-p-[^/]+)/.exec(value)?.[1] ?? null;
   const chrome = {
+    storage: { session: {
+      async get(key: string) { return { [key]: ownerTokens.get(key) }; },
+      async set(values: Record<string, string>) {
+        if (options.ownerWriteFails) throw new Error('CHROME_STORAGE_SESSION_UNAVAILABLE');
+        if (!options.ownerWriteDrops) for (const [key, token] of Object.entries(values)) ownerTokens.set(key, token);
+      },
+    } },
     runtime: {
       lastError: undefined,
       connectNative() { return { onMessage: { addListener() {} }, onDisconnect: { addListener() {} }, postMessage() {} }; },
       onMessage: { addListener() {} }, onInstalled: { addListener() {} }, onStartup: { addListener() {} },
     },
     tabs: {
-      async query() { return [...tabs]; },
+      async query() { tabQueries++; return [...tabs]; },
+      sendMessage(_tabId: number, message: { type: string }, callback: (result: object) => void) {
+        if (message.type === 'forge-computer-chatgpt-snapshot' && options.validEnsureSnapshot) {
+          snapshotReads++;
+          callback({ url: tabs.find((tab) => tab.id === _tabId)?.url,
+            composerText: '', latestUserText: '', latestAssistantResponse: '', isGenerating: false });
+        } else if (message.type === 'forge-computer-chatgpt-snapshot' && options.markerObservation) {
+          snapshotReads++;
+          callback({ url: tabs.find((tab) => tab.id === _tabId)?.url,
+            latestUserText: 'exact-marker-test-v1', userMessages: ['exact-marker-test-v1'] });
+        } else if (message.type === 'forge-computer-chatgpt-dispatch') {
+          dispatchSends += 1;
+          callback({ dispatched: true });
+        } else if (message.type === 'forge-computer-chatgpt-prepare') callback({ prepared: true });
+        else callback({ bootstrapTargetGuard: 'project-checked-before-send-v1' });
+      },
+      get(tabId: number, callback: (tab: { id: number; windowId: number; url: string } | undefined) => void) {
+        callback(tabs.find((tab) => tab.id === tabId));
+      },
       create({ url }: { url: string }, callback: (value: { id: number; windowId: number; url: string }) => void) {
         const tab = { id: nextTabId++, windowId: 8, url };
         tabs.push(tab);
@@ -163,15 +212,34 @@ function bootstrapFixture(initialTabs: Array<{ id: number; windowId: number; url
     ForgeComputerChatgptCore: {
       parseConversation(value: string) {
         const found = /\/c\/([0-9a-f-]{36})(?:[/?#]|$)/.exec(value);
-        return found ? { conversationId: found[1] } : null;
+        return found ? { conversationId: found[1], canonicalUrl: value } : null;
       }, projectId,
       normalizeText(value: unknown) { return String(value ?? '').trim(); },
     },
     setTimeout() { return 1; }, clearTimeout() {}, setInterval() { return 1; },
   };
-  runInNewContext(source + '\n;globalThis.__resolveTarget = resolveTarget;globalThis.__matchingTabs = matchingTabs;globalThis.__matchesReceiver = receiverMatchesIdentity;globalThis.__markerReadIdentity = markerReconciliationReadIdentity;globalThis.__shouldReload = shouldReloadUnreadableConversation;', context);
+  runInNewContext(source + '\n;globalThis.__resolveTarget = resolveTarget;globalThis.__matchingTabs = matchingTabs;globalThis.__matchesReceiver = receiverMatchesIdentity;globalThis.__markerReadIdentity = markerReconciliationReadIdentity;globalThis.__shouldReload = shouldReloadUnreadableConversation;globalThis.__testPrepare=executePrepare;globalThis.__testDispatch=executeDispatch;globalThis.__testFindMarker=executeFindMarker;globalThis.__testEnsure=executeEnsure;globalThis.__testObserve=executeObserve;', context);
   return {
     tabs,
+    get dispatchSends() { return dispatchSends; },
+    get snapshotReads() { return snapshotReads; },
+    get tabQueries() { return tabQueries; },
+    ensure: (identity: object, pinned: object, instanceId: string) => (context as typeof context & {
+      __testEnsure: (cmd: object, instanceId: string) => Promise<{ kind: string; code?: string }>;
+    }).__testEnsure({ kind: 'ensure', identity, providerBinding: pinned }, instanceId),
+    observe: (identity: object, pinned: object, instanceId: string) => (context as typeof context & {
+      __testObserve: (cmd: object, instanceId: string) => Promise<{ kind: string; code?: string }>;
+    }).__testObserve({ kind: 'observe', identity, providerBinding: pinned }, instanceId),
+    findMarker: (identity: object, pinned: object, instanceId: string) => (context as typeof context & {
+      __testFindMarker: (cmd: object, instanceId: string) => Promise<{ kind: string; code?: string; matches?: Array<{ providerBinding?: object }> }>;
+    }).__testFindMarker({ kind: 'find_marker', identity, providerBinding: pinned, marker: 'exact-marker-test-v1' }, instanceId),
+    prepare: (identity: object, pinned: object, instanceId = 'test-provider') => (context as typeof context & {
+      __testPrepare: (cmd: object, instanceId: string) => Promise<{ ready: boolean; reasonCode?: string }>;
+    }).__testPrepare({ kind: 'prepare', identity, providerBinding: pinned, prompt: 'test only' }, instanceId),
+    dispatch: (identity: object, pinned: object, instanceId = 'test-provider') => (context as typeof context & {
+      __testDispatch: (cmd: object, instanceId: string) => Promise<{ mutation: string; reasonCode?: string }>;
+    }).__testDispatch({ kind: 'dispatch', identity, providerBinding: pinned, prompt: 'test only' }, instanceId),
+    attestOwner(tabId: number, token: string) { ownerTokens.set(`forgeComputerOwnedTabV1:${tabId}`, token); },
     shouldReload: (tabId: number, identity: object, observation: object, nowMs: number) =>
       (context as typeof context & { __shouldReload: (tabId: number, identity: object, observation: object, nowMs: number) => boolean })
         .__shouldReload(tabId, identity, observation, nowMs),
@@ -179,8 +247,8 @@ function bootstrapFixture(initialTabs: Array<{ id: number; windowId: number; url
       (context as typeof context & { __matchesReceiver: (tab: object, identity: object) => boolean }).__matchesReceiver(tab, identity),
     markerReadIdentity: (tab: { id: number; windowId: number; url: string }, identity: object) =>
       (context as typeof context & { __markerReadIdentity: (tab: object, identity: object) => object }).__markerReadIdentity(tab, identity),
-    resolve: (identity: object, create: boolean, pinned?: object) =>
-      (context as typeof context & { __resolveTarget: (identity: object, create: boolean, pinned?: object) => Promise<{ tab: { id: number; windowId: number; url: string }; created: boolean }> }).__resolveTarget(identity, create, pinned),
+    resolve: (identity: object, create: boolean, pinned?: object, instanceId = 'profile-1') =>
+      (context as typeof context & { __resolveTarget: (identity: object, create: boolean, pinned?: object, instanceId?: string) => Promise<{ tab: { id: number; windowId: number; url: string }; created: boolean; ownerToken?: string }> }).__resolveTarget(identity, create, pinned, instanceId),
   };
 }
 
@@ -223,6 +291,7 @@ test('receiver identity and unreadable-page recovery preserve the exact target w
   let nowMs = 10_000;
   let reloads = 0;
   let sends = 0;
+  const ownerStorage = new Map([['forgeComputerOwnedTabV1:76', 'unreadable-owner']]);
   const snapshot = { url, title: 'Unreadable conversation', latestUserText: '', latestAssistantResponse: '',
     providerFailureText: '无法加载此 ChatGPT 对话', providerActivityText: '', isGenerating: false };
   const idle = { addListener() {} };
@@ -230,7 +299,9 @@ test('receiver identity and unreadable-page recovery preserve the exact target w
     runtime: { lastError: undefined, connectNative() { return { onMessage: idle, onDisconnect: idle, postMessage() {} }; },
       onMessage: idle, onInstalled: idle, onStartup: idle },
     storage: { local: { async get() { return { forgeComputerProviderInstanceId: 'test-profile' }; },
-      async set() {} }, session: { async get() { return {}; } } },
+      async set() {} }, session: { async get(key: string) {
+        return ownerStorage.has(key) ? { [key]: ownerStorage.get(key) } : {};
+      } } },
     tabs: {
       async query() { return [tab]; },
       get(_tabId: number, callback: (value: typeof tab) => void) { callback(tab); },
@@ -258,7 +329,10 @@ test('receiver identity and unreadable-page recovery preserve the exact target w
   const ensure = (context as typeof context & {
     __ensureUnreadable: (command: object, instanceId: string) => Promise<{ kind: string; observation?: object }>;
   }).__ensureUnreadable;
-  const command = { identity, kind: 'ensure' };
+  const command = { identity, kind: 'ensure', providerBinding: {
+    providerId: 'browser.chrome-extension', providerSessionId: 'profile-test',
+    tabId: '76', windowId: '8', ownerToken: 'unreadable-owner',
+  } };
   expect((await ensure(command, 'profile-test')).kind).toBe('ensured');
   expect(reloads).toBe(0);
   nowMs = 70_000;
@@ -331,6 +405,7 @@ test('find_marker hydrates only the exact pinned migrated conversation after rec
   const pinned = { id: 81, windowId: 8, url: conversationUrl };
   const decoy = { id: 82, windowId: 8, url: projectUrl };
   const tabs = [pinned, decoy];
+  const ownerStorage = new Map([['forgeComputerOwnedTabV1:81', 'marker-reader-attested']]);
   let receiverInstalled = false;
   let reinjections = 0;
   let sends = 0;
@@ -372,7 +447,9 @@ test('find_marker hydrates only the exact pinned migrated conversation after rec
         cb();
       },
     },
-    storage: { session: { async get() { return {}; } } },
+    storage: { session: { async get(k: string) {
+      return ownerStorage.has(k) ? { [k]: ownerStorage.get(k) } : {};
+    } } },
     alarms: { create() {}, onAlarm: { addListener() {} } },
     windows: { onFocusChanged: { addListener() {} } },
   };
@@ -397,13 +474,21 @@ test('find_marker hydrates only the exact pinned migrated conversation after rec
   const command = { identity: { namespace: 'chatgpt.bootstrap',
     bootstrapKey: 'supervisor:exact', projectUrl },
     providerBinding: { providerId: 'browser.chrome-extension',
-      providerSessionId: 'same-provider', windowId: '8', tabId: '81' },
+      providerSessionId: 'same-provider', windowId: '8', tabId: '81', ownerToken: 'marker-reader-attested' },
     marker };
   const found = await find(command, 'same-provider');
   expect(found.matches).toHaveLength(1);
   expect(found.matches[0]?.identity.conversationId).toBe(conversationId);
   expect(found.matches[0]?.providerBinding.tabId).toBe('81');
   expect(reinjections).toBe(1);
+  expect(sends).toBe(0);
+  // Foreign providerId cannot launder its exact Chrome tab/session/Token
+  // through marker reconciliation into a fresh Chrome Send authorization.
+  const foreign = await find({ ...command, providerBinding: {
+    ...command.providerBinding, providerId: 'browser.other',
+  } }, 'same-provider');
+  expect(foreign).toMatchObject({ kind: 'failed',
+    code: 'COMPUTER_CHATGPT_EXTENSION_PROVIDER_BINDING_MISMATCH' });
   expect(sends).toBe(0);
   // A receiver may only be rehydrated while the exact pin still belongs to
   // the original Project. Another Project's tab never earns a read repair.
@@ -438,14 +523,15 @@ test('service-worker restart reattaches only the exact Controller-pinned bootstr
   const fixture = bootstrapFixture(tabs); // no ephemeral bootstrap map on this worker
   const android = { namespace: 'chatgpt.bootstrap', bootstrapKey: 'supervisor:android', projectUrl };
   const pin = { providerId: 'browser.chrome-extension', browserProduct: 'chrome',
-    providerSessionId: 'fresh-extension-instance', windowId: '8', tabId: '82' };
-  const recovered = await fixture.resolve(android, true, pin);
+    providerSessionId: 'fresh-extension-instance', windowId: '8', tabId: '82', ownerToken: 'restart-owner' };
+  fixture.attestOwner(82, 'restart-owner');
+  const recovered = await fixture.resolve(android, true, pin, 'fresh-extension-instance');
   expect(recovered.created).toBe(false);
   expect(recovered.tab.id).toBe(82);
   expect(fixture.tabs).toHaveLength(2);
-  await expect(fixture.resolve(android, true, { ...pin, tabId: '999' }))
+  await expect(fixture.resolve(android, true, { ...pin, tabId: '999' }, 'fresh-extension-instance'))
     .rejects.toThrow('COMPUTER_CHATGPT_BOOTSTRAP_PINNED_TAB_MISSING');
-  await expect(fixture.resolve({ ...android, projectUrl: 'https://chatgpt.com/g/g-p-unrelated' }, true, { ...pin, tabId: '81' }))
+  await expect(fixture.resolve({ ...android, projectUrl: 'https://chatgpt.com/g/g-p-unrelated' }, true, { ...pin, tabId: '81' }, 'fresh-extension-instance'))
     .rejects.toThrow('COMPUTER_CHATGPT_BOOTSTRAP_PINNED_TAB_IDENTITY_CHANGED');
   expect(fixture.tabs).toHaveLength(2);
 });
@@ -714,4 +800,220 @@ test('content script fences bootstrap sends to the exact Project and rejects mig
     expect(result).toMatchObject({ dispatched: false, reason: expectedReason });
     expect(clicks).toBe(0);
   }
+});
+
+// F01: inject each pre-Send Chrome transport failure against the actual extension
+// worker. None may submit, and the diagnostic must preserve the useful cause.
+for (const [failure, expected] of [
+  ['receiver', 'COMPUTER_CHATGPT_EXTENSION_CONTENT_UNAVAILABLE'],
+  ['timeout', 'COMPUTER_CHATGPT_EXTENSION_TAB_MESSAGE_TIMEOUT'],
+  ['other', 'COMPUTER_CHATGPT_EXTENSION_PREPARE_UNAVAILABLE'],
+] as const) {
+  test(`F01 injected prepare ${failure} remains pre-Send and actionable`, async () => {
+    const f = fixture({ prepareTransportError: failure });
+    expect(await f.prepare()).toMatchObject({ kind: 'prepared', ready: false, reasonCode: expected });
+    expect(f.submissions).toBe(0);
+    expect(f.messages).toEqual(['forge-computer-chatgpt-prepare']);
+  });
+}
+
+// F11: An old physical tab ID can be reused in another Chrome window after
+// restart. Even the same Project URL does not prove it is the Controller's tab.
+test('F11 reused bootstrap tab id with missing owner token cannot be adopted or sent to', async () => {
+  const projectUrl = 'https://chatgpt.com/g/g-p-test/project';
+  const f = bootstrapFixture([{ id: 707, windowId: 99, url: projectUrl }]);
+  const identity = { namespace: 'chatgpt.bootstrap', bootstrapKey: 'supervisor:pinned', projectUrl };
+  const pin = { providerId: 'browser.chrome-extension', providerSessionId: 'profile-1',
+    tabId: '707', windowId: '7', ownerToken: 'previous-physical-tab' };
+  await expect(f.resolve(identity, true, pin)).rejects.toThrow('COMPUTER_CHATGPT_BOOTSTRAP_OWNER_TOKEN_MISMATCH');
+  // Moving the SAME physical tab to another Chrome window is safe when the
+  // browser-session owner token still proves its identity.
+  f.attestOwner(707, 'previous-physical-tab');
+  expect((await f.resolve(identity, true, pin)).tab).toMatchObject({ id: 707, windowId: 99, url: projectUrl });
+  expect(f.tabs).toHaveLength(1);
+});
+
+test('F11 reused conversation tab id must also prove owner token before binding', async () => {
+  const conversationId = '12345678-1234-1234-1234-123456789abc';
+  const conversationUrl = `https://chatgpt.com/c/${conversationId}`;
+  const f = bootstrapFixture([{ id: 708, windowId: 19, url: conversationUrl }]);
+  const identity = { namespace: 'chatgpt.conversation', conversationId, canonicalUrl: conversationUrl };
+  const pin = { providerId: 'browser.chrome-extension', providerSessionId: 'profile-1',
+    tabId: '708', windowId: '8', ownerToken: 'original-conversation-tab' };
+  await expect(f.resolve(identity, false, pin)).rejects.toThrow('COMPUTER_CHATGPT_EXTENSION_PINNED_OWNER_TOKEN_MISMATCH');
+  f.attestOwner(708, 'original-conversation-tab');
+  expect((await f.resolve(identity, false, pin)).tab).toMatchObject({ id: 708, windowId: 19 });
+});
+
+// F11/P1: Pre-token legacy pinned bindings cannot borrow another task's
+// same-Project tab. Never upgrade URL or Tab ID alone into Send authority.
+test('F11 legacy pinned Chrome binding without owner token fails closed', async () => {
+  const projectUrl = 'https://chatgpt.com/g/g-p-test/project';
+  const f = bootstrapFixture([{ id: 707, windowId: 99, url: projectUrl }]);
+  const identity = { namespace: 'chatgpt.bootstrap', bootstrapKey: 'supervisor:legacy', projectUrl };
+  const legacy = { providerId: 'browser.chrome-extension', providerSessionId: 'old-profile', tabId: '707', windowId: '99' };
+  await expect(f.resolve(identity, true, legacy)).rejects.toThrow('COMPUTER_CHATGPT_BOOTSTRAP_OWNER_TOKEN_MISSING');
+  expect(await f.resolve(identity, false)).toBeUndefined(); // failure must not seed a same-Project bootstrap map
+  const conversationId = '12345678-1234-1234-1234-123456789abc';
+  const url = `https://chatgpt.com/c/${conversationId}`;
+  const g = bootstrapFixture([{ id: 708, windowId: 19, url }]);
+  await expect(g.resolve({ namespace: 'chatgpt.conversation', conversationId, canonicalUrl: url }, false,
+    { ...legacy, tabId: '708', windowId: '19' })).rejects.toThrow('COMPUTER_CHATGPT_EXTENSION_PINNED_OWNER_TOKEN_MISSING');
+});
+
+// A successful tab.create is insufficient: failed OR dropped session writes
+// leave an unowned shell, never a Controller-pinned Send receiver.
+for (const options of [{ ownerWriteFails: true }, { ownerWriteDrops: true }]) {
+  test(`F11 untrusted new tab owner storage ${options.ownerWriteFails ? 'reject' : 'drop'} never returns success`, async () => {
+    const f = bootstrapFixture([], options);
+    const identity = { namespace: 'chatgpt.bootstrap', bootstrapKey: 'supervisor:new',
+      projectUrl: 'https://chatgpt.com/g/g-p-test/project' };
+    await expect(f.resolve(identity, true)).rejects.toThrow('COMPUTER_CHATGPT_BOOTSTRAP_OWNER_TOKEN_UNAVAILABLE');
+    expect(f.tabs).toHaveLength(1); // preserve, do not close or steal a user-visible tab
+    expect(await f.resolve(identity, false)).toBeUndefined(); // no unverified tab reuse
+  });
+}
+
+// Third independent Review P1: an ownerless pinned conversation can have no
+// surviving physical tab; target creation still must fail BEFORE lookup or tab.create.
+test('F11 absent pinned legacy tab never silently creates replacement', async () => {
+  const f = bootstrapFixture();
+  const conversationId = '12345678-1234-1234-1234-123456789abc';
+  const url = `https://chatgpt.com/c/${conversationId}`;
+  const pin = { providerId: 'browser.chrome-extension', providerSessionId: 'legacy-instance',
+    tabId: '999', windowId: '19' };
+  await expect(f.resolve({ namespace: 'chatgpt.conversation', conversationId, canonicalUrl: url }, true, pin))
+    .rejects.toThrow('COMPUTER_CHATGPT_EXTENSION_PINNED_OWNER_TOKEN_MISSING');
+  expect(f.tabs).toHaveLength(0);
+  const bootstrapIdentity = { namespace: 'chatgpt.bootstrap', bootstrapKey: 'supervisor:old',
+    projectUrl: 'https://chatgpt.com/g/g-p-test/project' };
+  await expect(f.resolve(bootstrapIdentity, true, pin)).rejects.toThrow('COMPUTER_CHATGPT_BOOTSTRAP_OWNER_TOKEN_MISSING');
+  expect(f.tabs).toHaveLength(0);
+});
+
+// Fourth independent Review P1: URL-only discovery may inspect an existing
+// conversation, but it is not physical-tab ownership and cannot authorize Send.
+test('F11 unbound existing conversation refuses Prepare and Dispatch without Send', async () => {
+  const f = fixture({ unbound: true });
+  expect(await f.prepare()).toMatchObject({ kind: 'prepared', ready: false,
+    reasonCode: 'COMPUTER_CHATGPT_EXTENSION_TARGET_MISSING' });
+  expect(await f.dispatch()).toMatchObject({ kind: 'dispatch', mutation: 'not_attempted',
+    reasonCode: 'COMPUTER_CHATGPT_EXTENSION_TARGET_MISSING' });
+  expect(f.submissions).toBe(0);
+  expect(f.messages).toEqual([]);
+});
+
+test('F11 first conversation Ensure creates a dedicated attested tab, never borrows an unbound existing tab', async () => {
+  const id = '12345678-1234-1234-1234-123456789abc';
+  const url = `https://chatgpt.com/c/${id}`;
+  const f = bootstrapFixture([{ id: 55, windowId: 3, url }]);
+  const resolved = await f.resolve({ namespace: 'chatgpt.conversation', conversationId: id, canonicalUrl: url }, true);
+  expect(resolved.created).toBe(true);
+  expect(resolved.tab.id).not.toBe(55);
+  expect(resolved.ownerToken).toBeTruthy();
+  expect(f.tabs).toHaveLength(2);
+  expect(f.tabs[0]?.id).toBe(55);
+});
+
+// Fifth independent Review P1: a task may own an in-memory Bootstrap tab from
+// a previous Ensure, but an explicit different Provider is a conflicting owner.
+test('F11 conflicting bootstrap Provider cannot bypass cached map or execute Send', async () => {
+  const f = bootstrapFixture();
+  const identity = { namespace: 'chatgpt.bootstrap', bootstrapKey: 'supervisor:cached',
+    projectUrl: 'https://chatgpt.com/g/g-p-test/project' };
+  const created = await f.resolve(identity, true);
+  const foreign = { providerId: 'browser.other', providerSessionId: 'other-provider',
+    tabId: String(created.tab.id), windowId: '8', ownerToken: created.ownerToken };
+  await expect(f.resolve(identity, false, foreign)).rejects.toThrow('COMPUTER_CHATGPT_EXTENSION_PROVIDER_BINDING_MISMATCH');
+  expect(await f.prepare(identity, foreign)).toMatchObject({ ready: false,
+    reasonCode: 'COMPUTER_CHATGPT_EXTENSION_PROVIDER_BINDING_MISMATCH' });
+  expect(await f.dispatch(identity, foreign)).toMatchObject({ mutation: 'not_attempted',
+    reasonCode: 'COMPUTER_CHATGPT_EXTENSION_PROVIDER_BINDING_MISMATCH' });
+  const incomplete = { providerId: 'browser.chrome-extension', ownerToken: created.ownerToken };
+  await expect(f.resolve(identity, false, incomplete)).rejects.toThrow('COMPUTER_CHATGPT_EXTENSION_PINNED_BINDING_INCOMPLETE');
+  expect(await f.prepare(identity, incomplete)).toMatchObject({ ready: false,
+    reasonCode: 'COMPUTER_CHATGPT_EXTENSION_PINNED_BINDING_INCOMPLETE' });
+  await expect(f.resolve(identity, false)).rejects.toThrow('COMPUTER_CHATGPT_BOOTSTRAP_BINDING_REQUIRED');
+  expect(f.dispatchSends).toBe(0);
+  expect(f.tabs).toHaveLength(1);
+  const valid = { providerId: 'browser.chrome-extension', providerSessionId: 'test-provider',
+    tabId: String(created.tab.id), windowId: '8', ownerToken: created.ownerToken };
+  expect((await f.resolve(identity, false, valid, 'test-provider')).tab.id).toBe(created.tab.id);
+});
+
+// Sixth independent Review P1: marker discovery must not launder another
+// Provider's explicit binding into this Chrome profile's owned tab.
+test('F11 find_marker rejects foreign Provider before reading tabs or returning a Chrome binding', async () => {
+  const conversationUrl = 'https://chatgpt.com/c/12345678-1234-1234-1234-123456789abc';
+  const f = bootstrapFixture([{ id: 88, windowId: 8, url: conversationUrl }], { markerObservation: true });
+  f.attestOwner(88, 'real-chrome-owner');
+  const foreign = { providerId: 'browser.other', providerSessionId: 'profile-attested',
+    tabId: '88', windowId: '8', ownerToken: 'real-chrome-owner' };
+  const identity = { namespace: 'chatgpt.bootstrap', bootstrapKey: 'supervisor:foreign',
+    projectUrl: 'https://chatgpt.com/g/g-p-test/project' };
+  expect(await f.findMarker(identity, foreign, 'profile-attested')).toMatchObject({
+    kind: 'failed', code: 'COMPUTER_CHATGPT_EXTENSION_PROVIDER_BINDING_MISMATCH',
+  });
+  expect(f.tabQueries).toBe(0);
+  expect(f.snapshotReads).toBe(0);
+  expect(f.dispatchSends).toBe(0);
+});
+
+test('F11 Prepare and Dispatch retain typed refusal reasons, never Send on a conflicting Provider', async () => {
+  const f = bootstrapFixture();
+  const identity = { namespace: 'chatgpt.bootstrap', bootstrapKey: 'supervisor:typed',
+    projectUrl: 'https://chatgpt.com/g/g-p-test/project' };
+  const own = await f.resolve(identity, true);
+  const foreign = { providerId: 'browser.other', providerSessionId: 'foreign',
+    tabId: String(own.tab.id), windowId: '8', ownerToken: own.ownerToken };
+  expect(await f.prepare(identity, foreign)).toMatchObject({ kind: 'prepared', ready: false,
+    reasonCode: 'COMPUTER_CHATGPT_EXTENSION_PROVIDER_BINDING_MISMATCH' });
+  expect(await f.dispatch(identity, foreign)).toMatchObject({ kind: 'dispatch', mutation: 'not_attempted',
+    reasonCode: 'COMPUTER_CHATGPT_EXTENSION_PROVIDER_BINDING_MISMATCH' });
+  const incomplete = { providerId: 'browser.chrome-extension', ownerToken: own.ownerToken };
+  expect(await f.prepare(identity, incomplete)).toMatchObject({ ready: false,
+    reasonCode: 'COMPUTER_CHATGPT_EXTENSION_PINNED_BINDING_INCOMPLETE' });
+  expect(await f.dispatch(identity, incomplete)).toMatchObject({ mutation: 'not_attempted',
+    reasonCode: 'COMPUTER_CHATGPT_EXTENSION_PINNED_BINDING_INCOMPLETE' });
+  expect(f.dispatchSends).toBe(0);
+});
+
+// Seventh independent Review P1: valid tab ID and Chrome session owner token
+// do NOT override an incompatible providerSessionId. Every direct target entry
+// fails before a chrome.tabs.query, snapshot, or Send side effect.
+test('F11 stale providerSessionId with valid token fails closed before any browser tab access', async () => {
+  const f = bootstrapFixture([{ id: 88, windowId: 99, url: 'https://chatgpt.com/g/g-p-test/project' }]);
+  f.attestOwner(88, 'legit-owned-tab');
+  const identity = { namespace: 'chatgpt.bootstrap', bootstrapKey: 'supervisor:stale-profile',
+    projectUrl: 'https://chatgpt.com/g/g-p-test/project' };
+  const stale = { providerId: 'browser.chrome-extension', providerSessionId: 'stale-chrome-profile',
+    tabId: '88', windowId: '8', ownerToken: 'legit-owned-tab' };
+  const reason = 'COMPUTER_CHATGPT_EXTENSION_PROVIDER_SESSION_MISMATCH';
+  await expect(f.resolve(identity, false, stale, 'active-chrome-profile')).rejects.toThrow(reason);
+  expect(await f.ensure(identity, stale, 'active-chrome-profile')).toMatchObject({ kind: 'failed', code: reason });
+  expect(await f.observe(identity, stale, 'active-chrome-profile')).toMatchObject({ kind: 'failed', code: reason });
+  expect(await f.prepare(identity, stale, 'active-chrome-profile')).toMatchObject({ ready: false, reasonCode: reason });
+  expect(await f.dispatch(identity, stale, 'active-chrome-profile')).toMatchObject({ mutation: 'not_attempted', reasonCode: reason });
+  expect(await f.findMarker(identity, stale, 'active-chrome-profile')).toMatchObject({ kind: 'failed', code: reason });
+  expect(f.tabQueries).toBe(0);
+  expect(f.snapshotReads).toBe(0);
+  expect(f.dispatchSends).toBe(0);
+});
+
+// Eighth independent Review P2: a validated previously-owned Bootstrap pin
+// must still be recoverable by Ensure after the tab moves to another window.
+test('F11 valid pinned Ensure with matching providerSessionId and owner Token succeeds after window move', async () => {
+  const projectUrl = 'https://chatgpt.com/g/g-p-test/project';
+  const f = bootstrapFixture([{ id: 88, windowId: 99, url: projectUrl }], { validEnsureSnapshot: true });
+  f.attestOwner(88, 'verified-bootstrap-owner');
+  const identity = { namespace: 'chatgpt.bootstrap', bootstrapKey: 'supervisor:valid-ensure', projectUrl };
+  const pinned = { providerId: 'browser.chrome-extension', providerSessionId: 'active-chrome-profile',
+    tabId: '88', windowId: '8', ownerToken: 'verified-bootstrap-owner' };
+  expect(await f.ensure(identity, pinned, 'active-chrome-profile')).toMatchObject({ kind: 'ensured',
+    providerBinding: { providerId: 'browser.chrome-extension', providerSessionId: 'active-chrome-profile',
+      tabId: '88', windowId: '99', ownerToken: 'verified-bootstrap-owner' } });
+  expect(f.tabQueries).toBe(1);
+  expect(f.snapshotReads).toBe(1);
+  expect(f.dispatchSends).toBe(0);
+  expect(f.tabs).toHaveLength(1);
 });

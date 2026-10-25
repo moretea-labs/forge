@@ -45,7 +45,6 @@ interface RawPlanSummary {
   revision: number;
   requirementId?: string;
   goal: string;
-  status: string;
   updatedAt?: string;
   recordedAt?: string;
   items?: Array<{ id: string; objective: string }>;
@@ -195,28 +194,28 @@ function localizeRuntimeError(error: unknown): Error {
 }
 
 function projectTask(task: RawSupervisorTask): AutomaticContinuationTaskProjection {
-  const switching = task.conversationId.startsWith('bootstrap:');
+  const unbound = task.conversationId.startsWith('bootstrap:');
   const workId = textField(task.completionContract, 'work_id') ?? textField(task.continuationPolicy, 'work_id');
   const repoId = textField(task.completionContract, 'repo_id') ?? textField(task.continuationPolicy, 'repo_id');
   const requirementId = textField(task.completionContract, 'requirement_id');
-  const exactConversation = !switching && /\/c\//.test(task.conversationUrl);
+  const exactConversation = !unbound && /\/c\//.test(task.conversationUrl);
   return {
     taskId: task.taskId,
     ...(workId ? { workId } : {}),
     title: workId ? '自动推进' : '独立自动推进',
     objective: task.objective,
-    status: switching ? 'switching_conversation' : 'running',
-    statusLabel: switching ? '正在切换会话' : '推进中',
-    detail: switching
-      ? '自动推进监督器正在创建并绑定新的精确 ChatGPT 会话。'
-      : '自动推进监督器负责该任务的下一轮外层推进。',
+    status: unbound ? 'unbound' : 'registered',
+    statusLabel: unbound ? '尚未绑定会话' : '任务已登记',
+    detail: unbound
+      ? '监督器尚未提供精确会话绑定；无法据此判断是否正在切换或发送。'
+      : '此列表证明任务已登记，不包含实时执行状态。',
     conversation: exactConversation ? {
       conversationId: task.conversationId,
       conversationUrl: task.conversationUrl,
     } : null,
-    nextAction: switching
-      ? '等待新会话的接管消息被观察并完成绑定。'
-      : '继续已绑定会话，或显式切换到新的 ChatGPT 会话。',
+    nextAction: unbound
+      ? '通过监督器检查精确会话绑定和下一轮执行事实。'
+      : '查看已绑定会话，或通过监督器显式迁移会话。',
     ...(repoId ? { repoId } : {}),
     ...(requirementId ? { requirementId } : {}),
     ...(task.createdAt ? { createdAt: task.createdAt } : {}),
@@ -383,7 +382,6 @@ export async function readProjectWorkspace(
       planId: selectedPlan.planId,
       revision: selectedPlan.revision,
       goal: selectedPlan.goal,
-      status: selectedPlan.status,
       ...(selectedPlan.requirementId ? { requirementId: selectedPlan.requirementId } : {}),
       ...(selectedPlan.updatedAt ? { updatedAt: selectedPlan.updatedAt } : {}),
       items: selectedPlan.items ?? [],

@@ -1405,7 +1405,17 @@ requireText('adapters/computer/chrome-extension/content.js', 'exactComposerText(
 requireText('adapters/computer/chrome-extension/content.js', "return text.trim() ? text : '';");
 requireText('adapters/computer/chrome-extension/content.js', "blocks.every((block) => block.tagName === 'P')");
 requireText('adapters/computer/chrome-extension/content.js', "blocks.map((block) => {");
-requireText('adapters/computer/chrome-extension/background.js', 'resolveTarget(command.identity, false, command.providerBinding)');
+requireText('adapters/computer/chrome-extension/background.js', 'resolveTarget(command.identity, true, command.providerBinding, instanceId)');
+requireText('adapters/computer/chrome-extension/background.js', 'resolveTarget(command.identity, false, command.providerBinding, instanceId)');
+forbid('adapters/computer/chrome-extension/background.js', /resolveTarget\(command\.identity,\s*(?:true|false),\s*command\.providerBinding\)/, 'Both Ensure and read/send target resolution must verify the active Chrome provider session');
+for (const [kind, handler] of [
+  ['ensure', 'executeEnsure'], ['observe', 'executeObserve'],
+  ['prepare', 'executePrepare'], ['dispatch', 'executeDispatch'],
+  ['find_marker', 'executeFindMarker'], ['close', 'executeClose'],
+]) {
+  requireText('adapters/computer/chrome-extension/background.js',
+    `if (command.kind === '${kind}') return await ${handler}(command, instanceId);`);
+}
 requireText('adapters/computer/chatgpt-extension-target.ts', "response.result.code === 'COMPUTER_CHATGPT_BOOTSTRAP_PINNED_TAB_MISSING'");
 requireText('adapters/computer/chatgpt-extension-target.ts', 'this.authority.withSurfaceLease(this.controllerHome, previous.targetId');
 requireText('adapters/computer/chatgpt-extension-target.ts', 'return await this.openBootstrap(projectUrl, bootstrapKey, false)');
