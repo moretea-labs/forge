@@ -9,7 +9,7 @@ import {
 import { globMatches } from "../../../adapters/mcp/paths";
 import { posix } from "path";
 import type { McpPolicy } from "../../../adapters/mcp/types";
-import { exactCodeOwnerEvidence, materializeSource } from "./context/source-materializer";
+import { exactCodeOwnerEvidence, exactCodeOwnerQueries, materializeSource } from "./context/source-materializer";
 import { projectBoard } from "./issue-store";
 import { buildControllerTaskLedgerProjection } from "./task-ledger";
 import { legacyIssueAuthorityRetired } from "./legacy-issue-cutover";
@@ -596,6 +596,9 @@ export function buildControllerContextPack(
       });
       for (const snippet of snippets) {
         for (const query of snippet.ownerQueries ?? []) emittedOwnerEvidence.add(query);
+        if (scopedExactKnownFileSearch && !useBoundedExactWindows) {
+          for (const query of exactCodeOwnerQueries(snippet.content, requiredSearchQueries)) emittedOwnerEvidence.add(query);
+        }
       }
       snippets = snippets.map(({ ownerQueries: _ownerQueries, ...snippet }) => snippet);
       for (const snippet of snippets) {
@@ -907,9 +910,7 @@ export function buildControllerContextPack(
   // In the bounded exact-known-file path, references alone are not sufficient
   // implementation evidence: require the requested owner line in an emitted snippet.
   const requiredSymbolEvidenceMissing = scopedExactKnownFileSearch
-    ? requiredSearchQueries.some((query) => !emittedOwnerEvidence.has(query)
-      && (useBoundedExactWindows || !files.some((file) => exactKnownFiles.includes(file.path)
-        && file.snippets.some((snippet) => exactCodeOwnerEvidence(snippet.content, query).owner))))
+    ? requiredSearchQueries.some((query) => !emittedOwnerEvidence.has(query))
     : requiredSearchQueries.some((query) =>
         !files.some((file) => file.snippets.some((snippet) =>
           exactCodeNeedleMatches(snippet.content.toLowerCase(), query.toLowerCase()))));

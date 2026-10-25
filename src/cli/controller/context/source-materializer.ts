@@ -236,6 +236,11 @@ export function exactCodeOwnerEvidence(source: string, query: string): { declare
   return { declared, owner: declared !== undefined };
 }
 
+export function exactCodeOwnerQueries(source: string, queries: readonly string[]): string[] {
+  const normalized = source.split(/\r?\n/).map((line) => line.replace(/^\s*\d+:\s*/, '')).join('\n');
+  return exactCodeOwnerLocations(normalized, queries).map((location) => location.query);
+}
+
 function sliceNumbered(numbered: string, startLine: number, endLine: number): string {
   return numbered
     .split(/\r?\n/)
