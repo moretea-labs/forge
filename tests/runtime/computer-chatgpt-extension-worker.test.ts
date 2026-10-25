@@ -147,6 +147,7 @@ test('restarted worker prepares and dispatches only the Controller-pinned bootst
     // Moving the pinned tab to another window preserves its physical tab id.
     { id: 42, windowId: 9, url: tabUrl },
   ];
+  const ownerStorage = new Map([['forgeComputerOwnedTabV1:42', 'verified-worker-tab']]);
   const sandbox = {
     ForgeComputerChatgptCore: {
       projectId: (value: string) => /^\/g\/(g-p-[a-z0-9]+)/i.exec(new URL(value).pathname)?.[1] ?? null,
@@ -154,7 +155,9 @@ test('restarted worker prepares and dispatches only the Controller-pinned bootst
     crypto: { randomUUID: () => 'worker-test' },
     navigator: { userAgent: 'Chrome' },
     chrome: {
-      storage: { session: { async get(k: string) { return { [k]: 'verified-worker-tab' }; } } },
+      storage: { session: { async get(k: string) {
+        return ownerStorage.has(k) ? { [k]: ownerStorage.get(k) } : {};
+      } } },
       runtime: { lastError: null },
       tabs: {
         query: async () => tabs,

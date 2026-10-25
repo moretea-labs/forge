@@ -354,6 +354,7 @@ test('find_marker hydrates only the exact pinned migrated conversation after rec
   const pinned = { id: 81, windowId: 8, url: conversationUrl };
   const decoy = { id: 82, windowId: 8, url: projectUrl };
   const tabs = [pinned, decoy];
+  const ownerStorage = new Map([['forgeComputerOwnedTabV1:81', 'marker-reader-attested']]);
   let receiverInstalled = false;
   let reinjections = 0;
   let sends = 0;
@@ -395,7 +396,9 @@ test('find_marker hydrates only the exact pinned migrated conversation after rec
         cb();
       },
     },
-    storage: { session: { async get(k: string) { return { [k]: 'marker-reader-attested' }; } } },
+    storage: { session: { async get(k: string) {
+      return ownerStorage.has(k) ? { [k]: ownerStorage.get(k) } : {};
+    } } },
     alarms: { create() {}, onAlarm: { addListener() {} } },
     windows: { onFocusChanged: { addListener() {} } },
   };
@@ -811,3 +814,20 @@ for (const options of [{ ownerWriteFails: true }, { ownerWriteDrops: true }]) {
     expect(await f.resolve(identity, false)).toBeUndefined(); // no unverified tab reuse
   });
 }
+
+// Third independent Review P1: an ownerless pinned conversation can have no
+// surviving physical tab; target creation still must fail BEFORE lookup or tab.create.
+test('F11 absent pinned legacy tab never silently creates replacement', async () => {
+  const f = bootstrapFixture();
+  const conversationId = '12345678-1234-1234-1234-123456789abc';
+  const url = `https://chatgpt.com/c/${conversationId}`;
+  const pin = { providerId: 'browser.chrome-extension', providerSessionId: 'legacy-instance',
+    tabId: '999', windowId: '19' };
+  await expect(f.resolve({ namespace: 'chatgpt.conversation', conversationId, canonicalUrl: url }, true, pin))
+    .rejects.toThrow('COMPUTER_CHATGPT_EXTENSION_PINNED_OWNER_TOKEN_MISSING');
+  expect(f.tabs).toHaveLength(0);
+  const bootstrapIdentity = { namespace: 'chatgpt.bootstrap', bootstrapKey: 'supervisor:old',
+    projectUrl: 'https://chatgpt.com/g/g-p-test/project' };
+  await expect(f.resolve(bootstrapIdentity, true, pin)).rejects.toThrow('COMPUTER_CHATGPT_BOOTSTRAP_OWNER_TOKEN_MISSING');
+  expect(f.tabs).toHaveLength(0);
+});

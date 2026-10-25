@@ -278,6 +278,12 @@ function matchingTabs(tabs, identity, pinnedBinding) {
   return [];
 }
 async function resolveTarget(identity, createIfMissing, pinnedBinding) {
+  // A legacy Chrome pin without owner attestation cannot be replaced merely
+  // because its old tab disappeared. Reject before lookup, fallback, or create.
+  if (pinnedBinding?.providerId === PROVIDER_ID && pinnedBinding.tabId && !pinnedBinding.ownerToken)
+    throw new Error(identity?.namespace === 'chatgpt.bootstrap'
+      ? 'COMPUTER_CHATGPT_BOOTSTRAP_OWNER_TOKEN_MISSING'
+      : 'COMPUTER_CHATGPT_EXTENSION_PINNED_OWNER_TOKEN_MISSING');
   const tabs = await chatgptTabs();
   if (identity?.namespace === 'chatgpt.conversation' && pinnedBinding?.providerId === PROVIDER_ID && pinnedBinding.tabId) {
     // Window moves preserve Chrome's profile-local tab id. A vanished id may
