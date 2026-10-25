@@ -88,6 +88,13 @@ describe('execution-speed test governance', () => {
     expect(stepsFor('task').some((step) => !('gate' in step) && step.label === 'affected tests')).toBe(true);
     expect(stepsFor('main').some((step) => !('gate' in step) && step.label === 'frozen MCP tool contract')).toBe(true);
     expect(stepsFor('main').some((step) => !('gate' in step) && step.label === 'quality harness benchmark')).toBe(true);
+    expect(stepsFor('main')).toContainEqual({
+      label: 'Recovery transactional rollback',
+      command: 'bun',
+      args: ['test', 'tests/runtime/standalone-recovery.test.ts', '--test-name-pattern',
+        'new opt-in ReleaseSession rolls back Stable A when causal E2E proof remains missing past 30 minutes|known-good runaway CPU rejection rolls Candidate B back to Stable A instead of repeating soak'],
+      timeoutMs: 5 * 60_000,
+    });
     expect(stepsFor('main').some((step) => 'gate' in step && step.gate === 'task')).toBe(true);
     expect(stepsFor('release').some((step) => 'gate' in step && step.gate === 'main')).toBe(true);
     expect(gateDefinitionDigest('release')).not.toBe(gateDefinitionDigest('main'));

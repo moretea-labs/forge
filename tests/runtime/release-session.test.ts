@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { RELEASE_SESSION_PHASES, advanceReleaseSession, createReleaseSession, listCompleteReleaseSessions, listReleaseSessions, migrateReleaseSessionState, readReleaseSession, recordReleaseSessionTransaction, releaseSessionCandidateIsRetired, releaseSessionIsSoakingSupersededByStableAuthority, releaseSessionIsSoakingSupersededByFailedCutoverCompensation, type ReleaseSessionCandidateRelease, type ReleaseSessionStableRelease, type ReleaseSessionTransaction } from '../../src/runtime/release/release-session';
+import { RELEASE_SESSION_PHASES, RELEASE_SESSION_ACCEPTANCE_TIMEOUT_MS, releaseSessionAcceptanceTimedOut, releaseSessionContinuationProofTimely, advanceReleaseSession, createReleaseSession, listCompleteReleaseSessions, listReleaseSessions, migrateReleaseSessionState, readReleaseSession, recordReleaseSessionTransaction, releaseSessionCandidateIsRetired, releaseSessionIsSoakingSupersededByStableAuthority, releaseSessionIsSoakingSupersededByFailedCutoverCompensation, type ReleaseSessionCandidateRelease, type ReleaseSessionStableRelease, type ReleaseSessionTransaction } from '../../src/runtime/release/release-session';
 import type { RuntimeReleaseAuthority } from '../../src/runtime/root/release-store';
 import { advanceConfiguredRuntimeRelease, decideConfiguredRuntimeReleaseAction, decideConfiguredRuntimeReleaseReconciliation } from '../../src/runtime/release/release-coordinator';
 import { cancelConfiguredRuntimeReleaseSession, createRecoveryConfig } from '../../src/runtime/standalone-recovery/core';
@@ -291,6 +291,16 @@ describe('Recovery ReleaseSession', () => {
     session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'cutover_committed' });
     session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'soaking' });
 
+    // Even if the repository HEAD changes or a Git read fails, the existing
+    // opt-in soaking Candidate remains its own exact rollback authority.
+    expect(decideConfiguredRuntimeReleaseReconciliation(home, () => ({
+      configured: true, sourceRevision: 'new-head', activeSourceCommit: 'old-head',
+    }))).toMatchObject({ required: true, action: 'promote_known_good', session: { sessionId: session.sessionId } });
+    expect(decideConfiguredRuntimeReleaseReconciliation(home, () => {
+      throw new Error('Git/source observation unavailable');
+    })).toMatchObject({ required: true, action: 'promote_known_good', session: { sessionId: session.sessionId } });
+
+
     const exactCandidateAtSameRevision: ReleaseSessionStableRelease = { ...stableRelease, authorityRevision: 8, releaseId: candidateRelease.releaseId, artifactIdentity: candidateRelease.artifactIdentity, manifestSha256: candidateRelease.manifestSha256 };
     expect(releaseSessionIsSoakingSupersededByStableAuthority(session, exactCandidateAtSameRevision)).toBe(false);
     expect(releaseSessionIsSoakingSupersededByStableAuthority(session, { ...exactCandidateAtSameRevision, authorityRevision: 9 })).toBe(false);
@@ -372,7 +382,7 @@ describe('Recovery ReleaseSession', () => {
       },
     });
     predecessor = advanceReleaseSession({ controllerHome: home, sessionId: predecessor.sessionId, expectedRevision: predecessor.revision, phase: 'cutover_committed' });
-    predecessor = advanceReleaseSession({ controllerHome: home, sessionId: predecessor.sessionId, expectedRevision: predecessor.revision, phase: 'soaking' });
+    predecessor = advanceReleaseSession({ controllerHome: home, sessionId: predecessor.sessionId, expectedRevision: predecessor.revision, phase: 'soaking', receipts: [{ id: 'soak_started', kind: 'soak', summary: 'cutover' }] });
 
     const successorStableRelease = { ...stableRelease, authorityRevision: 8, releaseId: candidateRelease.releaseId, artifactIdentity: candidateRelease.artifactIdentity, manifestSha256: candidateRelease.manifestSha256 };
     const successorCandidate: CandidateExecutionLane = {
@@ -398,6 +408,33 @@ describe('Recovery ReleaseSession', () => {
       action: 'prepare',
       session: { sessionId: successor.sessionId },
     });
+
+    // Candidate B reaches its fixed deadline while a permitted successor
+    // remains pre-cutover. Both decision paths must now target the expired
+    // predecessor, not keep preparing its successor forever.
+    const wallNow = Date.now;
+    Date.now = () => wallNow() + 31 * 60_000;
+    try {
+      expect(decideConfiguredRuntimeReleaseAction(home)).toMatchObject({
+        action: 'promote_known_good', session: { sessionId: predecessor.sessionId },
+      });
+      expect(decideConfiguredRuntimeReleaseReconciliation(home, () => {
+        throw new Error('Git observer should stay lazy for overdue predecessor');
+      })).toMatchObject({
+        required: true, action: 'promote_known_good',
+        session: { sessionId: predecessor.sessionId },
+      });
+    } finally { Date.now = wallNow; }
+
+    // Damage in an inventory alone cannot grant a rollback decision when
+    // the fixture has no matching *live* Runtime authority/SQLite snapshot.
+    const damagedFile = join(home, 'recovery', 'state', 'release-sessions', 'damaged-session-123456.json');
+    writeFileSync(damagedFile, '{broken-json');
+    Date.now = () => wallNow() + 31 * 60_000;
+    try {
+      expect(() => decideConfiguredRuntimeReleaseReconciliation(home, () => ({ configured: false })))
+        .toThrow('RELEASE_SESSION_INVENTORY_INCOMPLETE');
+    } finally { Date.now = wallNow; rmSync(damagedFile); }
 
     const thirdCandidate: CandidateExecutionLane = { ...successorCandidate, sessionId: 'release-session-third-123456', controllerHome: join(home, 'candidate-third'), serviceLabel: 'candidate-third', port: 8768, databaseSnapshotPath: join(home, 'candidate-third', 'control-plane.sqlite') };
     expect(() => createReleaseSession({ controllerHome: home, sessionId: thirdCandidate.sessionId, stable, stableRelease: successorStableRelease, candidate: thirdCandidate, sourceRevision: 'ghi789' }))
@@ -982,4 +1019,35 @@ describe('Recovery ReleaseSession', () => {
     advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'built', candidateRelease });
     expect(() => advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'failed' })).toThrow('RELEASE_SESSION_REVISION_FENCED');
   });
+});
+
+// A policy introduced later must not roll back historical production sessions.
+test('Mac-first acceptance expires only a newly opted-in ReleaseSession at the durable cutover deadline', () => {
+  const start = Date.parse('2026-10-25T00:00:00Z');
+  const receipts = [
+    { id: 'acceptance_timeout_policy_v1', kind: 'source' as const, recordedAt: '2026-10-24T23:00:00Z', summary: 'policy' },
+    { id: 'soak_started', kind: 'soak' as const, recordedAt: '2026-10-25T00:00:00Z', summary: 'cutover' },
+  ];
+  const current = { phase: 'soaking' as const, receipts };
+  expect(releaseSessionAcceptanceTimedOut(current, start + RELEASE_SESSION_ACCEPTANCE_TIMEOUT_MS - 1)).toBe(false);
+  expect(releaseSessionAcceptanceTimedOut(current, start + RELEASE_SESSION_ACCEPTANCE_TIMEOUT_MS)).toBe(true);
+  expect(releaseSessionAcceptanceTimedOut({ ...current, receipts: receipts.slice(1) }, start + 100 * 3600_000)).toBe(false);
+  expect(releaseSessionAcceptanceTimedOut({ ...current, receipts: receipts.slice(0, 1) }, start + 100 * 3600_000)).toBe(true);
+  expect(releaseSessionAcceptanceTimedOut({ ...current, phase: 'known_good' }, start + 100 * 3600_000)).toBe(false);
+  expect(releaseSessionAcceptanceTimedOut(current, Number.NaN)).toBe(false);
+});
+
+
+test('Mac-first late C-C-D proof cannot promote known_good after acceptance deadline', () => {
+  const start = Date.parse('2026-10-25T00:00:00Z');
+  const session = { phase: 'soaking' as const, receipts: [
+    { id: 'acceptance_timeout_policy_v1', kind: 'source' as const, recordedAt: '2026-10-24T23:00:00Z', summary: 'policy' },
+    { id: 'soak_started', kind: 'soak' as const, recordedAt: '2026-10-25T00:00:00Z', summary: 'cutover' },
+  ] };
+  expect(releaseSessionContinuationProofTimely(session, new Date(start + 1000).toISOString(), start + 120000)).toBe(true);
+  expect(releaseSessionContinuationProofTimely(session, new Date(start + 25 * 60000).toISOString(), start + 10 * 60000)).toBe(false);
+  expect(releaseSessionContinuationProofTimely(session, new Date(start + 31 * 60000).toISOString(), start + 31 * 60000)).toBe(false);
+  expect(releaseSessionContinuationProofTimely(session, new Date(start + 1000).toISOString(), start + 31 * 60000)).toBe(false);
+  expect(releaseSessionContinuationProofTimely({ ...session, receipts: session.receipts.slice(1) }, '', start + 100 * 60000)).toBe(true);
+  expect(releaseSessionContinuationProofTimely({ ...session, receipts: session.receipts.slice(0, 1) }, '', start + 100 * 60000)).toBe(false);
 });

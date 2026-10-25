@@ -3,9 +3,11 @@ import {
   listCompleteReleaseSessions,
   readReleaseSession,
   releaseSessionIsSoakingPredecessorOfStable,
+  releaseSessionAcceptanceTimedOut,
   releaseSessionIsTerminal,
   type ReleaseSession,
 } from './release-session';
+import { readRuntimeReleaseAuthority } from '../root/release-store';
 
 export interface RuntimeReleaseContext {
   controllerHome: string;
@@ -81,10 +83,78 @@ export interface RuntimeReleaseReconciliationDecision {
 
 const MAX_AUTONOMOUS_RELEASE_ADVANCES = 8;
 
+function hasAcceptanceTimeoutPolicy(session: Pick<ReleaseSession, 'receipts'>): boolean {
+  return session.receipts.some((receipt) => receipt.id === 'acceptance_timeout_policy_v1');
+}
+
+function sameReleaseIdentity(
+  left: { releaseId?: string; artifactIdentity?: string; manifestSha256?: string } | undefined,
+  right: { releaseId?: string; artifactIdentity?: string; manifestSha256?: string } | undefined,
+): boolean {
+  return Boolean(left && right
+    && left.releaseId === right.releaseId
+    && left.artifactIdentity === right.artifactIdentity
+    && left.manifestSha256 === right.manifestSha256);
+}
+
 function completeRuntimeReleaseSessions(controllerHome: string): ReleaseSession[] {
   const inventory = listCompleteReleaseSessions(controllerHome);
-  if (inventory.invalidSessionFiles.length > 0) {
-    throw new Error(`RELEASE_SESSION_INVENTORY_INCOMPLETE: invalid=${inventory.invalidSessionFiles.join(',') || 'none'}`);
+  if (inventory.invalidSessionFiles.length > 0 || inventory.truncated) {
+    // Damaged inventory may authorize only one existing timed predecessor whose
+    // exact current cutover or successor-rollback transaction is independently
+    // matched to Runtime Authority. It never authorizes successor progression.
+    const expired = inventory.sessions.filter((session) => releaseSessionAcceptanceTimedOut(session, Date.now()));
+    const timedSoaks = inventory.sessions.filter((session) => session.phase === 'soaking' && hasAcceptanceTimeoutPolicy(session));
+    const authority = readRuntimeReleaseAuthority(controllerHome);
+    const sole = expired.length === 1 ? expired[0]
+      : expired.length === 0 && timedSoaks.length === 1 ? timedSoaks[0] : undefined;
+    const candidate = sole?.candidateRelease;
+    const transaction = sole?.transaction;
+    const exactCutover = Boolean(sole && candidate && transaction && authority
+      && transaction.candidateReleaseId === candidate.releaseId
+      && sameReleaseIdentity(authority.active, candidate)
+      && authority.revision === transaction.cutoverAuthorityRevision
+      && sameReleaseIdentity(authority.previous, transaction.rollbackRelease)
+      && sameReleaseIdentity(transaction.rollbackRelease, sole.stableRelease)
+      && authority.previous?.databaseBackup?.path === transaction.rollbackRelease.databaseBackup?.path);
+    const alreadyRolledBack = Boolean(sole && candidate && authority
+      && authority.operationId.startsWith(`release-session-rollback:${sole.sessionId}:`)
+      && sameReleaseIdentity(authority.active, sole.stableRelease)
+      && sameReleaseIdentity(authority.previous, candidate));
+    const activeSuccessors = sole && candidate && authority ? inventory.sessions.filter((successor) => {
+      const next = successor.candidateRelease;
+      const nextTransaction = successor.transaction;
+      return successor.sessionId !== sole.sessionId
+        && ['cutover_attempting', 'cutover_committed', 'soaking'].includes(successor.phase)
+        && Boolean(next && nextTransaction)
+        && releaseSessionIsSoakingPredecessorOfStable(sole, successor.stableRelease)
+        && nextTransaction!.candidateReleaseId === next!.releaseId
+        && authority.revision === nextTransaction!.cutoverAuthorityRevision
+        && sameReleaseIdentity(authority.active, next)
+        && sameReleaseIdentity(authority.previous, nextTransaction!.rollbackRelease)
+        && sameReleaseIdentity(nextTransaction!.rollbackRelease, candidate);
+    }) : [];
+    const committedSuccessorRollbacks = sole && candidate && authority ? inventory.sessions.filter((successor) => {
+      const next = successor.candidateRelease;
+      const nextTransaction = successor.transaction;
+      return successor.sessionId !== sole.sessionId
+        && ['cutover_attempting', 'cutover_committed', 'soaking'].includes(successor.phase)
+        && Boolean(next && nextTransaction)
+        && releaseSessionIsSoakingPredecessorOfStable(sole, successor.stableRelease)
+        && authority.operationId.startsWith(`release-session-rollback:${successor.sessionId}:`)
+        && sameReleaseIdentity(authority.active, successor.stableRelease)
+        && sameReleaseIdentity(authority.previous, next)
+        && nextTransaction!.candidateReleaseId === next!.releaseId
+        && sameReleaseIdentity(nextTransaction!.rollbackRelease, successor.stableRelease)
+        && sameReleaseIdentity(successor.stableRelease, candidate);
+    }) : [];
+    if (!sole || (!exactCutover && !alreadyRolledBack
+      && activeSuccessors.length !== 1 && committedSuccessorRollbacks.length !== 1)) {
+      throw new Error(`RELEASE_SESSION_INVENTORY_INCOMPLETE: invalid=${inventory.invalidSessionFiles.join(',') || 'none'}`);
+    }
+    // The predecessor alone owns reconciliation. A matched successor is only
+    // evidence for the Recovery owner to unwind C→B before any B→A timeout.
+    return [sole];
   }
   return inventory.sessions;
 }
@@ -104,6 +174,27 @@ function coordinatorSession(active: ReleaseSession[]): ReleaseSession | undefine
     if (successors.length === 1) return successors[0];
   }
   throw new Error(`RELEASE_SESSION_MULTIPLE_ACTIVE: ${active.map((session) => `${session.sessionId}:${session.phase}`).join(',')}`);
+}
+
+/** Expired opt-in soaking predecessor wins over an unfinished successor.
+ * Validate the normal successor placement contract first; never choose a
+ * session from an ambiguous multiple-active inventory.
+ */
+function deadlinePrioritySession(active: ReleaseSession[], nowMs: number): ReleaseSession | undefined {
+  const chosen = coordinatorSession(active);
+  if (active.length < 2) return chosen;
+  // A timed predecessor keeps rollback/acceptance ownership until it is
+  // accepted or rolled back. An already-switched successor must not starve it
+  // even before the deadline; Recovery will unwind the exact C→B chain first.
+  const timedPredecessors = active.filter((predecessor) =>
+    predecessor.phase === 'soaking' && hasAcceptanceTimeoutPolicy(predecessor)
+    && active.some((successor) => successor.sessionId !== predecessor.sessionId
+      && ['cutover_attempting', 'cutover_committed', 'soaking'].includes(successor.phase)
+      && releaseSessionIsSoakingPredecessorOfStable(predecessor, successor.stableRelease)));
+  if (timedPredecessors.length === 1) return timedPredecessors[0];
+  const expired = active.filter((item) =>
+    item.phase === 'soaking' && releaseSessionAcceptanceTimedOut(item, nowMs));
+  return expired.length === 1 ? expired[0] : chosen;
 }
 
 function runtimeReleaseActionForSession(session: ReleaseSession): RuntimeReleaseCoordinatorAction {
@@ -126,7 +217,7 @@ function runtimeReleaseActionForSession(session: ReleaseSession): RuntimeRelease
 
 export function decideConfiguredRuntimeReleaseAction(controllerHome: string): RuntimeReleaseCoordinatorDecision {
   const active = activeRuntimeReleaseSessions(controllerHome);
-  const session = coordinatorSession(active);
+  const session = deadlinePrioritySession(active, Date.now());
   if (!session) return { action: 'prepare' };
   return { action: runtimeReleaseActionForSession(session), session };
 }
@@ -148,13 +239,17 @@ export function decideConfiguredRuntimeReleaseReconciliation(
 ): RuntimeReleaseReconciliationDecision {
   const sessions = completeRuntimeReleaseSessions(controllerHome);
   const active = sessions.filter((session) => !releaseSessionIsTerminal(session));
-  const session = coordinatorSession(active);
+  const session = deadlinePrioritySession(active, Date.now());
   // A single soaking predecessor remains rollback authority, but inability to
   // certify it must not forever prevent a newer immutable source revision from
   // preparing its own Candidate B. Two active sessions are allowed only by the
   // existing exact soaking-predecessor/successor placement contract.
   const onlySoakingPredecessor = active.length === 1 && session?.phase === 'soaking';
-  if (session && !onlySoakingPredecessor) {
+  // A new opted-in soaking Candidate remains rollback authority independent
+  // of Git HEAD drift or source observation errors.
+  const timedSoak = onlySoakingPredecessor
+    && session.receipts.some((receipt) => receipt.id === 'acceptance_timeout_policy_v1');
+  if (session && (!onlySoakingPredecessor || timedSoak)) {
     return { required: true, reason: 'active_session', action: runtimeReleaseActionForSession(session), session };
   }
 

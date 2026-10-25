@@ -71,6 +71,7 @@ import {
   advanceConfiguredRuntimeRelease,
   advanceConfiguredRuntimeReleaseStep,
   decideConfiguredRuntimeReleaseReconciliation,
+  activeRuntimeReleaseSessions,
   type RuntimeReleaseProvider,
 } from '../release/release-coordinator';
 import { runBoundedChild } from '../shared/bounded-child-supervisor';
@@ -1060,18 +1061,37 @@ async function runAutomaticReleaseReconciliationStep(
   }
 }
 
+/** New soaking candidates cannot inherit the generic 15-minute error backoff. */
+export function boundReleaseReconcileDelayForAcceptance(
+  delayMs: number,
+  deadlinePending: boolean,
+): number {
+  return deadlinePending ? Math.min(delayMs, RECOVERY_AUTOMATIC_RELEASE_INTERVAL_MS) : delayMs;
+}
+
 async function startAutomaticReleaseReconciliation(config: RecoveryConfig): Promise<never> {
   let lastFailedFingerprint: string | undefined;
   let consecutiveFailures = 0;
   for (;;) {
     const observed: { fingerprint?: string } = {};
+    let acceptanceDeadlinePending = false;
     let failure: string | undefined;
     try {
+      // All active opted-in soaking predecessors keep a 15s reconciliation
+      // cap even when a legal successor is the current coordinator target.
+      // Incomplete inventories must also avoid the generic long backoff.
+      try {
+        acceptanceDeadlinePending = activeRuntimeReleaseSessions(config.controllerHome)
+          .some((item) => item.phase === 'soaking'
+            && item.receipts.some((receipt) => receipt.id === 'acceptance_timeout_policy_v1'));
+      } catch { acceptanceDeadlinePending = true; }
       const decision = decideConfiguredRuntimeReleaseReconciliation(
         config.controllerHome,
         () => configuredRuntimeReleaseSourceState(config),
       );
       observed.fingerprint = decision.required ? releaseReconciliationFingerprint(decision) : undefined;
+      acceptanceDeadlinePending ||= decision.session?.phase === 'soaking'
+        && decision.session.receipts.some((r) => r.id === 'acceptance_timeout_policy_v1');
       // ReleaseSession cutover owns the one Connector drain/quietness fence.
       // A read-only busy pre-gate here would prevent that drain from ever
       // starting under sustained MCP traffic, starving the verified candidate.
@@ -1092,7 +1112,11 @@ async function startAutomaticReleaseReconciliation(config: RecoveryConfig): Prom
         `automatic release reconciliation backing off ${Math.round(backoff.delayMs / 1000)}s after ${backoff.consecutiveFailures} consecutive failures of ${backoff.fingerprint}\n`,
       );
     }
-    await new Promise((resolveSleep) => setTimeout(resolveSleep, backoff.delayMs));
+    // Safety deadline has priority over generic exponential failure backoff.
+    // Bound every reconciliation attempt to at most 15 seconds while an opted-in
+    // Candidate B is soaking, even when the same provider error repeats.
+    await new Promise((resolveSleep) => setTimeout(resolveSleep,
+      boundReleaseReconcileDelayForAcceptance(backoff.delayMs, acceptanceDeadlinePending)));
   }
 }
 
