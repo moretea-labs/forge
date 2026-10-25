@@ -278,12 +278,21 @@ function matchingTabs(tabs, identity, pinnedBinding) {
   return [];
 }
 async function resolveTarget(identity, createIfMissing, pinnedBinding) {
-  // A legacy Chrome pin without owner attestation cannot be replaced merely
-  // because its old tab disappeared. Reject before lookup, fallback, or create.
-  if (pinnedBinding?.providerId === PROVIDER_ID && pinnedBinding.tabId && !pinnedBinding.ownerToken)
-    throw new Error(identity?.namespace === 'chatgpt.bootstrap'
-      ? 'COMPUTER_CHATGPT_BOOTSTRAP_OWNER_TOKEN_MISSING'
-      : 'COMPUTER_CHATGPT_EXTENSION_PINNED_OWNER_TOKEN_MISSING');
+  // A provider switch or incomplete legacy pin must not silently fall back
+  // to the extension's cached Bootstrap tab, nor allocate a new Send target.
+  if (pinnedBinding != null) {
+    if (pinnedBinding.providerId !== PROVIDER_ID)
+      throw new Error('COMPUTER_CHATGPT_EXTENSION_PROVIDER_BINDING_MISMATCH');
+    if (pinnedBinding.tabId && !pinnedBinding.ownerToken)
+      throw new Error(identity?.namespace === 'chatgpt.bootstrap'
+        ? 'COMPUTER_CHATGPT_BOOTSTRAP_OWNER_TOKEN_MISSING'
+        : 'COMPUTER_CHATGPT_EXTENSION_PINNED_OWNER_TOKEN_MISSING');
+    if (!pinnedBinding.tabId || !pinnedBinding.windowId || !pinnedBinding.ownerToken)
+      throw new Error('COMPUTER_CHATGPT_EXTENSION_PINNED_BINDING_INCOMPLETE');
+  } else if (identity?.namespace === 'chatgpt.bootstrap' && bootstrapTabs.has(identity.bootstrapKey)) {
+    // A same-worker map is not itself a Controller owner authorization.
+    throw new Error('COMPUTER_CHATGPT_BOOTSTRAP_BINDING_REQUIRED');
+  }
   const tabs = await chatgptTabs();
   if (identity?.namespace === 'chatgpt.conversation' && pinnedBinding?.providerId === PROVIDER_ID && pinnedBinding.tabId) {
     // Window moves preserve Chrome's profile-local tab id. A vanished id may

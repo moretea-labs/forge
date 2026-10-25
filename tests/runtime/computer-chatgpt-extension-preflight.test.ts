@@ -159,6 +159,7 @@ function bootstrapFixture(initialTabs: Array<{ id: number; windowId: number; url
   options: { ownerWriteFails?: boolean; ownerWriteDrops?: boolean } = {}) {
   const tabs = [...initialTabs];
   let nextTabId = 200;
+  let dispatchSends = 0;
   const ownerTokens = new Map<string, string>();
   const projectId = (value: string) => /\/g\/(g-p-[^/]+)/.exec(value)?.[1] ?? null;
   const chrome = {
@@ -176,6 +177,13 @@ function bootstrapFixture(initialTabs: Array<{ id: number; windowId: number; url
     },
     tabs: {
       async query() { return [...tabs]; },
+      sendMessage(_tabId: number, message: { type: string }, callback: (result: object) => void) {
+        if (message.type === 'forge-computer-chatgpt-dispatch') {
+          dispatchSends += 1;
+          callback({ dispatched: true });
+        } else if (message.type === 'forge-computer-chatgpt-prepare') callback({ prepared: true });
+        else callback({ bootstrapTargetGuard: 'project-checked-before-send-v1' });
+      },
       get(tabId: number, callback: (tab: { id: number; windowId: number; url: string } | undefined) => void) {
         callback(tabs.find((tab) => tab.id === tabId));
       },
@@ -200,9 +208,16 @@ function bootstrapFixture(initialTabs: Array<{ id: number; windowId: number; url
     },
     setTimeout() { return 1; }, clearTimeout() {}, setInterval() { return 1; },
   };
-  runInNewContext(source + '\n;globalThis.__resolveTarget = resolveTarget;globalThis.__matchingTabs = matchingTabs;globalThis.__matchesReceiver = receiverMatchesIdentity;globalThis.__markerReadIdentity = markerReconciliationReadIdentity;globalThis.__shouldReload = shouldReloadUnreadableConversation;', context);
+  runInNewContext(source + '\n;globalThis.__resolveTarget = resolveTarget;globalThis.__matchingTabs = matchingTabs;globalThis.__matchesReceiver = receiverMatchesIdentity;globalThis.__markerReadIdentity = markerReconciliationReadIdentity;globalThis.__shouldReload = shouldReloadUnreadableConversation;globalThis.__testPrepare=executePrepare;globalThis.__testDispatch=executeDispatch;', context);
   return {
     tabs,
+    get dispatchSends() { return dispatchSends; },
+    prepare: (identity: object, pinned: object) => (context as typeof context & {
+      __testPrepare: (cmd: object) => Promise<{ ready: boolean; reasonCode?: string }>;
+    }).__testPrepare({ kind: 'prepare', identity, providerBinding: pinned, prompt: 'test only' }),
+    dispatch: (identity: object, pinned: object) => (context as typeof context & {
+      __testDispatch: (cmd: object) => Promise<{ mutation: string; reasonCode?: string }>;
+    }).__testDispatch({ kind: 'dispatch', identity, providerBinding: pinned, prompt: 'test only' }),
     attestOwner(tabId: number, token: string) { ownerTokens.set(`forgeComputerOwnedTabV1:${tabId}`, token); },
     shouldReload: (tabId: number, identity: object, observation: object, nowMs: number) =>
       (context as typeof context & { __shouldReload: (tabId: number, identity: object, observation: object, nowMs: number) => boolean })
@@ -869,4 +884,26 @@ test('F11 first conversation Ensure creates a dedicated attested tab, never borr
   expect(resolved.ownerToken).toBeTruthy();
   expect(f.tabs).toHaveLength(2);
   expect(f.tabs[0]?.id).toBe(55);
+});
+
+// Fifth independent Review P1: a task may own an in-memory Bootstrap tab from
+// a previous Ensure, but an explicit different Provider is a conflicting owner.
+test('F11 conflicting bootstrap Provider cannot bypass cached map or execute Send', async () => {
+  const f = bootstrapFixture();
+  const identity = { namespace: 'chatgpt.bootstrap', bootstrapKey: 'supervisor:cached',
+    projectUrl: 'https://chatgpt.com/g/g-p-test/project' };
+  const created = await f.resolve(identity, true);
+  const foreign = { providerId: 'browser.other', providerSessionId: 'other-provider',
+    tabId: String(created.tab.id), windowId: '8', ownerToken: created.ownerToken };
+  await expect(f.resolve(identity, false, foreign)).rejects.toThrow('COMPUTER_CHATGPT_EXTENSION_PROVIDER_BINDING_MISMATCH');
+  expect(await f.prepare(identity, foreign)).toMatchObject({ ready: false });
+  expect(await f.dispatch(identity, foreign)).toMatchObject({ mutation: 'not_attempted' });
+  const incomplete = { providerId: 'browser.chrome-extension', ownerToken: created.ownerToken };
+  await expect(f.resolve(identity, false, incomplete)).rejects.toThrow('COMPUTER_CHATGPT_EXTENSION_PINNED_BINDING_INCOMPLETE');
+  await expect(f.resolve(identity, false)).rejects.toThrow('COMPUTER_CHATGPT_BOOTSTRAP_BINDING_REQUIRED');
+  expect(f.dispatchSends).toBe(0);
+  expect(f.tabs).toHaveLength(1);
+  const valid = { providerId: 'browser.chrome-extension', providerSessionId: 'test-provider',
+    tabId: String(created.tab.id), windowId: '8', ownerToken: created.ownerToken };
+  expect((await f.resolve(identity, false, valid)).tab.id).toBe(created.tab.id);
 });
