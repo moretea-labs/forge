@@ -24,6 +24,7 @@ export function stepsFor(gate: Gate): Step[] {
     { label: 'generated authority', command: 'node', args: ['scripts/sync-generated-authority.mjs', '--check'], timeoutMs: 2 * 60_000 },
     { label: 'source duplication', command: 'node', args: ['scripts/check-source-duplication.mjs'], timeoutMs: 2 * 60_000 },
     { label: 'test manifest', command: 'bun', args: ['run', 'check:test-governance'], timeoutMs: 5 * 60_000 },
+    { label: 'context pack readiness regression', command: 'bun', args: ['test', 'tests/runtime/context-pack-readiness.test.ts'], timeoutMs: 2 * 60_000 },
     { label: 'affected tests', command: 'bun', args: ['run', 'test'], timeoutMs: 30 * 60_000 },
   ];
   if (gate === 'main') return [
