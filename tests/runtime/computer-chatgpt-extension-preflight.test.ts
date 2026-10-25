@@ -109,14 +109,14 @@ function fixture(scenario: Scenario) {
   void scope;
   const dispatch = (reasoning?: 'xhigh') =>
     (testContext as typeof testContext & {
-      __testDispatch: (value: object) => Promise<Response>;
+      __testDispatch: (value: object, instanceId: string) => Promise<Response>;
     }).__testDispatch({ kind: 'dispatch', identity, prompt: 'source delivery',
-      ...(!scenario.unbound ? { providerBinding } : {}), ...(reasoning ? { reasoning } : {}) });
+      ...(!scenario.unbound ? { providerBinding } : {}), ...(reasoning ? { reasoning } : {}) }, 'test-profile');
   const prepare = (reasoning?: 'xhigh') =>
     (testContext as typeof testContext & {
-      __testPrepare: (value: object) => Promise<{ kind: string; ready: boolean; reasoningVerified?: string; reasonCode?: string }>;
+      __testPrepare: (value: object, instanceId: string) => Promise<{ kind: string; ready: boolean; reasoningVerified?: string; reasonCode?: string }>;
     }).__testPrepare({ kind: 'prepare', identity, prompt: 'source delivery',
-      ...(!scenario.unbound ? { providerBinding } : {}), ...(reasoning ? { reasoning } : {}) });
+      ...(!scenario.unbound ? { providerBinding } : {}), ...(reasoning ? { reasoning } : {}) }, 'test-profile');
   return { dispatch, prepare, messages, get submissions() { return submissions; } };
 }
 
@@ -161,6 +161,7 @@ function bootstrapFixture(initialTabs: Array<{ id: number; windowId: number; url
   let nextTabId = 200;
   let dispatchSends = 0;
   let snapshotReads = 0;
+  let tabQueries = 0;
   const ownerTokens = new Map<string, string>();
   const projectId = (value: string) => /\/g\/(g-p-[^/]+)/.exec(value)?.[1] ?? null;
   const chrome = {
@@ -177,7 +178,7 @@ function bootstrapFixture(initialTabs: Array<{ id: number; windowId: number; url
       onMessage: { addListener() {} }, onInstalled: { addListener() {} }, onStartup: { addListener() {} },
     },
     tabs: {
-      async query() { return [...tabs]; },
+      async query() { tabQueries++; return [...tabs]; },
       sendMessage(_tabId: number, message: { type: string }, callback: (result: object) => void) {
         if (message.type === 'forge-computer-chatgpt-snapshot' && options.markerObservation) {
           snapshotReads++;
@@ -213,20 +214,27 @@ function bootstrapFixture(initialTabs: Array<{ id: number; windowId: number; url
     },
     setTimeout() { return 1; }, clearTimeout() {}, setInterval() { return 1; },
   };
-  runInNewContext(source + '\n;globalThis.__resolveTarget = resolveTarget;globalThis.__matchingTabs = matchingTabs;globalThis.__matchesReceiver = receiverMatchesIdentity;globalThis.__markerReadIdentity = markerReconciliationReadIdentity;globalThis.__shouldReload = shouldReloadUnreadableConversation;globalThis.__testPrepare=executePrepare;globalThis.__testDispatch=executeDispatch;globalThis.__testFindMarker=executeFindMarker;', context);
+  runInNewContext(source + '\n;globalThis.__resolveTarget = resolveTarget;globalThis.__matchingTabs = matchingTabs;globalThis.__matchesReceiver = receiverMatchesIdentity;globalThis.__markerReadIdentity = markerReconciliationReadIdentity;globalThis.__shouldReload = shouldReloadUnreadableConversation;globalThis.__testPrepare=executePrepare;globalThis.__testDispatch=executeDispatch;globalThis.__testFindMarker=executeFindMarker;globalThis.__testEnsure=executeEnsure;globalThis.__testObserve=executeObserve;', context);
   return {
     tabs,
     get dispatchSends() { return dispatchSends; },
     get snapshotReads() { return snapshotReads; },
+    get tabQueries() { return tabQueries; },
+    ensure: (identity: object, pinned: object, instanceId: string) => (context as typeof context & {
+      __testEnsure: (cmd: object, instanceId: string) => Promise<{ kind: string; code?: string }>;
+    }).__testEnsure({ kind: 'ensure', identity, providerBinding: pinned }, instanceId),
+    observe: (identity: object, pinned: object, instanceId: string) => (context as typeof context & {
+      __testObserve: (cmd: object, instanceId: string) => Promise<{ kind: string; code?: string }>;
+    }).__testObserve({ kind: 'observe', identity, providerBinding: pinned }, instanceId),
     findMarker: (identity: object, pinned: object, instanceId: string) => (context as typeof context & {
       __testFindMarker: (cmd: object, instanceId: string) => Promise<{ kind: string; code?: string; matches?: Array<{ providerBinding?: object }> }>;
     }).__testFindMarker({ kind: 'find_marker', identity, providerBinding: pinned, marker: 'exact-marker-test-v1' }, instanceId),
-    prepare: (identity: object, pinned: object) => (context as typeof context & {
-      __testPrepare: (cmd: object) => Promise<{ ready: boolean; reasonCode?: string }>;
-    }).__testPrepare({ kind: 'prepare', identity, providerBinding: pinned, prompt: 'test only' }),
-    dispatch: (identity: object, pinned: object) => (context as typeof context & {
-      __testDispatch: (cmd: object) => Promise<{ mutation: string; reasonCode?: string }>;
-    }).__testDispatch({ kind: 'dispatch', identity, providerBinding: pinned, prompt: 'test only' }),
+    prepare: (identity: object, pinned: object, instanceId = 'test-provider') => (context as typeof context & {
+      __testPrepare: (cmd: object, instanceId: string) => Promise<{ ready: boolean; reasonCode?: string }>;
+    }).__testPrepare({ kind: 'prepare', identity, providerBinding: pinned, prompt: 'test only' }, instanceId),
+    dispatch: (identity: object, pinned: object, instanceId = 'test-provider') => (context as typeof context & {
+      __testDispatch: (cmd: object, instanceId: string) => Promise<{ mutation: string; reasonCode?: string }>;
+    }).__testDispatch({ kind: 'dispatch', identity, providerBinding: pinned, prompt: 'test only' }, instanceId),
     attestOwner(tabId: number, token: string) { ownerTokens.set(`forgeComputerOwnedTabV1:${tabId}`, token); },
     shouldReload: (tabId: number, identity: object, observation: object, nowMs: number) =>
       (context as typeof context & { __shouldReload: (tabId: number, identity: object, observation: object, nowMs: number) => boolean })
@@ -235,8 +243,8 @@ function bootstrapFixture(initialTabs: Array<{ id: number; windowId: number; url
       (context as typeof context & { __matchesReceiver: (tab: object, identity: object) => boolean }).__matchesReceiver(tab, identity),
     markerReadIdentity: (tab: { id: number; windowId: number; url: string }, identity: object) =>
       (context as typeof context & { __markerReadIdentity: (tab: object, identity: object) => object }).__markerReadIdentity(tab, identity),
-    resolve: (identity: object, create: boolean, pinned?: object) =>
-      (context as typeof context & { __resolveTarget: (identity: object, create: boolean, pinned?: object) => Promise<{ tab: { id: number; windowId: number; url: string }; created: boolean; ownerToken?: string }> }).__resolveTarget(identity, create, pinned),
+    resolve: (identity: object, create: boolean, pinned?: object, instanceId = 'profile-1') =>
+      (context as typeof context & { __resolveTarget: (identity: object, create: boolean, pinned?: object, instanceId?: string) => Promise<{ tab: { id: number; windowId: number; url: string }; created: boolean; ownerToken?: string }> }).__resolveTarget(identity, create, pinned, instanceId),
   };
 }
 
@@ -513,13 +521,13 @@ test('service-worker restart reattaches only the exact Controller-pinned bootstr
   const pin = { providerId: 'browser.chrome-extension', browserProduct: 'chrome',
     providerSessionId: 'fresh-extension-instance', windowId: '8', tabId: '82', ownerToken: 'restart-owner' };
   fixture.attestOwner(82, 'restart-owner');
-  const recovered = await fixture.resolve(android, true, pin);
+  const recovered = await fixture.resolve(android, true, pin, 'fresh-extension-instance');
   expect(recovered.created).toBe(false);
   expect(recovered.tab.id).toBe(82);
   expect(fixture.tabs).toHaveLength(2);
-  await expect(fixture.resolve(android, true, { ...pin, tabId: '999' }))
+  await expect(fixture.resolve(android, true, { ...pin, tabId: '999' }, 'fresh-extension-instance'))
     .rejects.toThrow('COMPUTER_CHATGPT_BOOTSTRAP_PINNED_TAB_MISSING');
-  await expect(fixture.resolve({ ...android, projectUrl: 'https://chatgpt.com/g/g-p-unrelated' }, true, { ...pin, tabId: '81' }))
+  await expect(fixture.resolve({ ...android, projectUrl: 'https://chatgpt.com/g/g-p-unrelated' }, true, { ...pin, tabId: '81' }, 'fresh-extension-instance'))
     .rejects.toThrow('COMPUTER_CHATGPT_BOOTSTRAP_PINNED_TAB_IDENTITY_CHANGED');
   expect(fixture.tabs).toHaveLength(2);
 });
@@ -926,7 +934,7 @@ test('F11 conflicting bootstrap Provider cannot bypass cached map or execute Sen
   expect(f.tabs).toHaveLength(1);
   const valid = { providerId: 'browser.chrome-extension', providerSessionId: 'test-provider',
     tabId: String(created.tab.id), windowId: '8', ownerToken: created.ownerToken };
-  expect((await f.resolve(identity, false, valid)).tab.id).toBe(created.tab.id);
+  expect((await f.resolve(identity, false, valid, 'test-provider')).tab.id).toBe(created.tab.id);
 });
 
 // Sixth independent Review P1: marker discovery must not launder another
@@ -942,6 +950,7 @@ test('F11 find_marker rejects foreign Provider before reading tabs or returning 
   expect(await f.findMarker(identity, foreign, 'profile-attested')).toMatchObject({
     kind: 'failed', code: 'COMPUTER_CHATGPT_EXTENSION_PROVIDER_BINDING_MISMATCH',
   });
+  expect(f.tabQueries).toBe(0);
   expect(f.snapshotReads).toBe(0);
   expect(f.dispatchSends).toBe(0);
 });
@@ -962,5 +971,27 @@ test('F11 Prepare and Dispatch retain typed refusal reasons, never Send on a con
     reasonCode: 'COMPUTER_CHATGPT_EXTENSION_PINNED_BINDING_INCOMPLETE' });
   expect(await f.dispatch(identity, incomplete)).toMatchObject({ mutation: 'not_attempted',
     reasonCode: 'COMPUTER_CHATGPT_EXTENSION_PINNED_BINDING_INCOMPLETE' });
+  expect(f.dispatchSends).toBe(0);
+});
+
+// Seventh independent Review P1: valid tab ID and Chrome session owner token
+// do NOT override an incompatible providerSessionId. Every direct target entry
+// fails before a chrome.tabs.query, snapshot, or Send side effect.
+test('F11 stale providerSessionId with valid token fails closed before any browser tab access', async () => {
+  const f = bootstrapFixture([{ id: 88, windowId: 99, url: 'https://chatgpt.com/g/g-p-test/project' }]);
+  f.attestOwner(88, 'legit-owned-tab');
+  const identity = { namespace: 'chatgpt.bootstrap', bootstrapKey: 'supervisor:stale-profile',
+    projectUrl: 'https://chatgpt.com/g/g-p-test/project' };
+  const stale = { providerId: 'browser.chrome-extension', providerSessionId: 'stale-chrome-profile',
+    tabId: '88', windowId: '8', ownerToken: 'legit-owned-tab' };
+  const reason = 'COMPUTER_CHATGPT_EXTENSION_PROVIDER_SESSION_MISMATCH';
+  await expect(f.resolve(identity, false, stale, 'active-chrome-profile')).rejects.toThrow(reason);
+  expect(await f.ensure(identity, stale, 'active-chrome-profile')).toMatchObject({ kind: 'failed', code: reason });
+  expect(await f.observe(identity, stale, 'active-chrome-profile')).toMatchObject({ kind: 'failed', code: reason });
+  expect(await f.prepare(identity, stale, 'active-chrome-profile')).toMatchObject({ ready: false, reasonCode: reason });
+  expect(await f.dispatch(identity, stale, 'active-chrome-profile')).toMatchObject({ mutation: 'not_attempted', reasonCode: reason });
+  expect(await f.findMarker(identity, stale, 'active-chrome-profile')).toMatchObject({ kind: 'failed', code: reason });
+  expect(f.tabQueries).toBe(0);
+  expect(f.snapshotReads).toBe(0);
   expect(f.dispatchSends).toBe(0);
 });

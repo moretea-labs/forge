@@ -175,8 +175,8 @@ test('restarted worker prepares and dispatches only the Controller-pinned bootst
   };
   runInNewContext(worker, sandbox);
   const funcs = sandbox as typeof sandbox & {
-    testPrepare: (cmd: unknown) => Promise<Record<string, unknown>>;
-    testDispatch: (cmd: unknown) => Promise<Record<string, unknown>>;
+    testPrepare: (cmd: unknown, instanceId: string) => Promise<Record<string, unknown>>;
+    testDispatch: (cmd: unknown, instanceId: string) => Promise<Record<string, unknown>>;
   };
   const command = {
     identity: { namespace: 'chatgpt.bootstrap', bootstrapKey: 'supervisor:saved', projectUrl },
@@ -184,8 +184,8 @@ test('restarted worker prepares and dispatches only the Controller-pinned bootst
       browserProduct: 'chrome', windowId: '8', tabId: '42', ownerToken: 'verified-worker-tab' },
     prompt: '@forge <<<FORGE_WORKFLOW_EFFECT_V1:fx_test>>> body',
   };
-  expect(await funcs.testPrepare(command)).toMatchObject({ kind: 'prepared', ready: true });
-  expect(await funcs.testDispatch(command)).toMatchObject({ kind: 'dispatch', mutation: 'not_attempted', reasonCode: 'test_no_send' });
+  expect(await funcs.testPrepare(command, 'previous-worker')).toMatchObject({ kind: 'prepared', ready: true });
+  expect(await funcs.testDispatch(command, 'previous-worker')).toMatchObject({ kind: 'dispatch', mutation: 'not_attempted', reasonCode: 'test_no_send' });
   expect(messages).toHaveLength(4);
   expect(messages.map(x => x.tabId)).toEqual([42, 42, 42, 42]);
   expect(messages.map(x => x.message.expectedProjectId)).toEqual([undefined, 'g-p-abc', undefined, 'g-p-abc']);
@@ -197,9 +197,9 @@ test('restarted worker prepares and dispatches only the Controller-pinned bootst
   // must reject both preparation and submission before reaching its Send path.
   oldContentScript = true;
   messages.length = 0;
-  expect(await funcs.testPrepare(command)).toMatchObject({ kind: 'prepared', ready: false,
+  expect(await funcs.testPrepare(command, 'previous-worker')).toMatchObject({ kind: 'prepared', ready: false,
     reasonCode: 'COMPUTER_CHATGPT_BOOTSTRAP_PROJECT_GUARD_UNSUPPORTED' });
-  expect(await funcs.testDispatch(command)).toMatchObject({ kind: 'dispatch', mutation: 'not_attempted',
+  expect(await funcs.testDispatch(command, 'previous-worker')).toMatchObject({ kind: 'dispatch', mutation: 'not_attempted',
     reasonCode: 'COMPUTER_CHATGPT_BOOTSTRAP_PROJECT_GUARD_UNSUPPORTED' });
   expect(messages.map(x => x.message.type)).toEqual([
     'forge-computer-chatgpt-capabilities', 'forge-computer-chatgpt-capabilities',

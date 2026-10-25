@@ -277,7 +277,7 @@ function matchingTabs(tabs, identity, pinnedBinding) {
   }
   return [];
 }
-async function resolveTarget(identity, createIfMissing, pinnedBinding) {
+async function resolveTarget(identity, createIfMissing, pinnedBinding, instanceId) {
   // A provider switch or incomplete legacy pin must not silently fall back
   // to the extension's cached Bootstrap tab, nor allocate a new Send target.
   if (pinnedBinding != null) {
@@ -289,6 +289,11 @@ async function resolveTarget(identity, createIfMissing, pinnedBinding) {
         : 'COMPUTER_CHATGPT_EXTENSION_PINNED_OWNER_TOKEN_MISSING');
     if (!pinnedBinding.tabId || !pinnedBinding.windowId || !pinnedBinding.ownerToken)
       throw new Error('COMPUTER_CHATGPT_EXTENSION_PINNED_BINDING_INCOMPLETE');
+    // Tab ID and Token cannot authorize a different Chrome profile/session.
+    // Reject before lookup, snapshot or any possible Send.
+    if (!instanceId || !pinnedBinding.providerSessionId
+      || pinnedBinding.providerSessionId !== instanceId)
+      throw new Error('COMPUTER_CHATGPT_EXTENSION_PROVIDER_SESSION_MISMATCH');
   } else if (identity?.namespace === 'chatgpt.bootstrap' && bootstrapTabs.has(identity.bootstrapKey)) {
     // A same-worker map is not itself a Controller owner authorization.
     throw new Error('COMPUTER_CHATGPT_BOOTSTRAP_BINDING_REQUIRED');
@@ -372,7 +377,7 @@ function shouldReloadUnreadableConversation(tabId, identity, observation, nowMs 
 async function executeEnsure(command, instanceId) {
   let target;
   try {
-    target = await resolveTarget(command.identity, true, command.providerBinding);
+    target = await resolveTarget(command.identity, true, command.providerBinding, instanceId);
     // Created and already-bound tabs share one exact-identity receiver repair.
     // The editor must hydrate before 'ensured'; on failure the existing typed
     // failed receipt still carries this tab's binding without permitting Send.
@@ -410,7 +415,7 @@ async function executeEnsure(command, instanceId) {
 }
 async function executeObserve(command, instanceId) {
   try {
-    const target = await resolveTarget(command.identity, false, command.providerBinding);
+    const target = await resolveTarget(command.identity, false, command.providerBinding, instanceId);
     if (!target) return { kind: 'failed', code: 'COMPUTER_CHATGPT_EXTENSION_TARGET_MISSING', retryable: true, failoverSafe: true };
     const observation = await snapshotWithExactReceiverRecovery(target.tab.id, command.identity, command.options ?? {});
     const refreshed = await tabGet(target.tab.id);
@@ -428,9 +433,9 @@ function targetResolutionReasonCode(error) {
   return /^COMPUTER_CHATGPT_[A-Z0-9_]+$/.test(code)
     ? code : 'COMPUTER_CHATGPT_EXTENSION_TARGET_MISSING';
 }
-async function executePrepare(command) {
+async function executePrepare(command, instanceId) {
   let target;
-  try { target = await resolveTarget(command.identity, false, command.providerBinding); }
+  try { target = await resolveTarget(command.identity, false, command.providerBinding, instanceId); }
   catch (error) { return { kind: 'prepared', ready: false, reasonCode: targetResolutionReasonCode(error) }; }
   if (!target) return { kind: 'prepared', ready: false, reasonCode: 'COMPUTER_CHATGPT_EXTENSION_TARGET_MISSING' };
   const expectedProjectId = command.identity?.namespace === 'chatgpt.bootstrap' ? core.projectId(command.identity.projectUrl) : undefined;
@@ -468,9 +473,9 @@ async function executePrepare(command) {
     return { kind: 'prepared', ready: false, reasonCode };
   }
 }
-async function executeDispatch(command) {
+async function executeDispatch(command, instanceId) {
   let target;
-  try { target = await resolveTarget(command.identity, false, command.providerBinding); }
+  try { target = await resolveTarget(command.identity, false, command.providerBinding, instanceId); }
   catch (error) { return { kind: 'dispatch', mutation: 'not_attempted', reasonCode: targetResolutionReasonCode(error) }; }
   if (!target) return { kind: 'dispatch', mutation: 'not_attempted', reasonCode: 'COMPUTER_CHATGPT_EXTENSION_TARGET_MISSING' };
   const expectedProjectId = command.identity?.namespace === 'chatgpt.bootstrap' ? core.projectId(command.identity.projectUrl) : undefined;
@@ -512,13 +517,16 @@ async function executeFindMarker(command, instanceId) {
   // Reject before any Chrome tab query or marker scan.
   if (pinnedBinding != null && pinnedBinding.providerId !== PROVIDER_ID)
     return { kind: 'failed', code: 'COMPUTER_CHATGPT_EXTENSION_PROVIDER_BINDING_MISMATCH', retryable: false };
+  if (pinnedBinding != null && (!pinnedBinding.providerSessionId
+    || pinnedBinding.providerSessionId !== instanceId))
+    return { kind: 'failed', code: 'COMPUTER_CHATGPT_EXTENSION_PROVIDER_SESSION_MISMATCH', retryable: false };
   const matches = [];
   let pinnedTarget;
   if (command.identity?.namespace === 'chatgpt.bootstrap'
     && pinnedBinding?.providerId === PROVIDER_ID
     && pinnedBinding.providerSessionId === instanceId
     && pinnedBinding.tabId && pinnedBinding.windowId) {
-    try { pinnedTarget = await resolveTarget(command.identity, false, pinnedBinding); }
+    try { pinnedTarget = await resolveTarget(command.identity, false, pinnedBinding, instanceId); }
     catch { /* Invalid pin never permits repair or other-tab adoption. */ }
   }
   const tabs = await chatgptTabs();
@@ -591,8 +599,8 @@ async function executeCommand(command, instanceId) {
   if (!command || typeof command.commandId !== 'string') return { kind: 'failed', code: 'COMPUTER_CHATGPT_EXTENSION_COMMAND_INVALID', retryable: false, failoverSafe: true };
   if (command.kind === 'ensure') return await executeEnsure(command, instanceId);
   if (command.kind === 'observe') return await executeObserve(command, instanceId);
-  if (command.kind === 'prepare') return await executePrepare(command);
-  if (command.kind === 'dispatch') return await executeDispatch(command);
+  if (command.kind === 'prepare') return await executePrepare(command, instanceId);
+  if (command.kind === 'dispatch') return await executeDispatch(command, instanceId);
   if (command.kind === 'find_marker') return await executeFindMarker(command, instanceId);
   if (command.kind === 'close') return await executeClose(command, instanceId);
   return { kind: 'failed', code: 'COMPUTER_CHATGPT_EXTENSION_COMMAND_UNKNOWN', retryable: false, failoverSafe: true };

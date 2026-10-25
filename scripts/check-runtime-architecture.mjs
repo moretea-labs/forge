@@ -1405,7 +1405,8 @@ requireText('adapters/computer/chrome-extension/content.js', 'exactComposerText(
 requireText('adapters/computer/chrome-extension/content.js', "return text.trim() ? text : '';");
 requireText('adapters/computer/chrome-extension/content.js', "blocks.every((block) => block.tagName === 'P')");
 requireText('adapters/computer/chrome-extension/content.js', "blocks.map((block) => {");
-requireText('adapters/computer/chrome-extension/background.js', 'resolveTarget(command.identity, false, command.providerBinding)');
+requireText('adapters/computer/chrome-extension/background.js', 'resolveTarget(command.identity, false, command.providerBinding, instanceId)');
+forbid('adapters/computer/chrome-extension/background.js', /resolveTarget\(command\.identity,\s*false,\s*command\.providerBinding\)/, 'Every pinned Chrome read/send target must verify its current provider session identity');
 requireText('adapters/computer/chatgpt-extension-target.ts', "response.result.code === 'COMPUTER_CHATGPT_BOOTSTRAP_PINNED_TAB_MISSING'");
 requireText('adapters/computer/chatgpt-extension-target.ts', 'this.authority.withSurfaceLease(this.controllerHome, previous.targetId');
 requireText('adapters/computer/chatgpt-extension-target.ts', 'return await this.openBootstrap(projectUrl, bootstrapKey, false)');
