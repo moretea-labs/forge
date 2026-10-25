@@ -200,6 +200,7 @@ function exactCodeOwnerLocations(source: string, queries: readonly string[]): Ex
     const line = codeLines[index] ?? '';
     const currentOffset = lineOffset;
     lineOffset += line.length + 1;
+    if (!queries.some((query) => line.includes(query))) continue;
     const trimmedLine = line.trim();
     // Dense same-line calls are the common saturation case. Skip them before
     // testing declaration patterns; signatures without bodies are not owners.
