@@ -293,6 +293,25 @@ test('recovers late owners and requires emitted owner evidence before accepting 
   expect(multiRequiredPack.readiness.status).toBe('degraded');
   expect(multiRequiredPack.readiness.readyForHighConfidenceMutation).toBe(false);
 
+  const saturatedThreeOwnerPack = buildControllerContextPack(root, getMcpPolicy('controller'), {
+    description: 'Recover all three required owners after saturated earlier references within three exact-known windows.',
+    searchTerms: ['alphaOwner', 'betaMethod', 'gammaHandler'],
+    knownPaths: ['src/multi-required.ts'],
+    retrievalMode: 'implementation',
+    structuralContext: 'off',
+    maxFiles: 1,
+    maxSnippets: 3,
+    maxCharsPerSnippet: 2400,
+  });
+  expect(saturatedThreeOwnerPack.files[0]?.snippets.length).toBeLessThanOrEqual(3);
+  for (const symbol of ['alphaOwner', 'betaMethod', 'gammaHandler']) {
+    expect(saturatedThreeOwnerPack.files[0]?.snippets.some((snippet) =>
+      snippet.content.includes('export function ' + symbol + '('))).toBe(true);
+  }
+  expect(saturatedThreeOwnerPack.readiness.unresolvedReasonCodes).not.toContain('required_symbol_not_materialized');
+  expect(saturatedThreeOwnerPack.readiness.status).toBe('ready');
+  expect(saturatedThreeOwnerPack.readiness.readyForHighConfidenceMutation).toBe(true);
+
   const completeMultiRequiredPack = buildControllerContextPack(root, getMcpPolicy('controller'), {
     description: 'Inspect all three required owners in a complete exact-known implementation file.',
     searchTerms: ['alphaOwner', 'betaMethod', 'gammaHandler'],
