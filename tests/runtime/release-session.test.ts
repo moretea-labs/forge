@@ -291,6 +291,16 @@ describe('Recovery ReleaseSession', () => {
     session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'cutover_committed' });
     session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'soaking' });
 
+    // Even if the repository HEAD changes or a Git read fails, the existing
+    // opt-in soaking Candidate remains its own exact rollback authority.
+    expect(decideConfiguredRuntimeReleaseReconciliation(home, () => ({
+      configured: true, sourceRevision: 'new-head', activeSourceCommit: 'old-head',
+    }))).toMatchObject({ required: true, action: 'promote_known_good', session: { sessionId: session.sessionId } });
+    expect(decideConfiguredRuntimeReleaseReconciliation(home, () => {
+      throw new Error('Git/source observation unavailable');
+    })).toMatchObject({ required: true, action: 'promote_known_good', session: { sessionId: session.sessionId } });
+
+
     const exactCandidateAtSameRevision: ReleaseSessionStableRelease = { ...stableRelease, authorityRevision: 8, releaseId: candidateRelease.releaseId, artifactIdentity: candidateRelease.artifactIdentity, manifestSha256: candidateRelease.manifestSha256 };
     expect(releaseSessionIsSoakingSupersededByStableAuthority(session, exactCandidateAtSameRevision)).toBe(false);
     expect(releaseSessionIsSoakingSupersededByStableAuthority(session, { ...exactCandidateAtSameRevision, authorityRevision: 9 })).toBe(false);

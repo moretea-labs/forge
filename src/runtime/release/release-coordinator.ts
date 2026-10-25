@@ -154,7 +154,11 @@ export function decideConfiguredRuntimeReleaseReconciliation(
   // preparing its own Candidate B. Two active sessions are allowed only by the
   // existing exact soaking-predecessor/successor placement contract.
   const onlySoakingPredecessor = active.length === 1 && session?.phase === 'soaking';
-  if (session && !onlySoakingPredecessor) {
+  // A new opted-in soaking Candidate remains rollback authority independent
+  // of Git HEAD drift or source observation errors.
+  const timedSoak = onlySoakingPredecessor
+    && session.receipts.some((receipt) => receipt.id === 'acceptance_timeout_policy_v1');
+  if (session && (!onlySoakingPredecessor || timedSoak)) {
     return { required: true, reason: 'active_session', action: runtimeReleaseActionForSession(session), session };
   }
 

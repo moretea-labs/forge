@@ -333,8 +333,30 @@ function sameReleaseIdentity(left: ReleaseEvidence, right: ReleaseEvidence): boo
     && left.workerProtocolVersion === right.workerProtocolVersion;
 }
 
-function knownGoodAttestationEvidence(config: RecoveryConfig, entry: ReleaseEvidence | undefined): ReleaseEvidence | undefined {
+/**
+ * Attesting a Candidate's performance may commit recovery-bundle bytes before
+ * its ReleaseSession reaches known_good. Those bytes are provisional: other
+ * Recovery paths must not interpret them as a recoverable known-good release
+ * until the matching opt-in Session has completed acceptance. The promotion
+ * owner may read the provisional bundle to reconcile its own crash/retry.
+ */
+function provisionalCanaryKnownGood(config: RecoveryConfig, release: ReleaseEvidence): boolean {
+  try {
+    return listCompleteReleaseSessions(config.controllerHome).sessions.some((session) =>
+      session.receipts.some((receipt) => receipt.id === 'acceptance_timeout_policy_v1')
+      && session.candidateRelease?.releaseId === release.revision
+      && session.candidateRelease.artifactIdentity === release.artifactIdentity
+      && session.candidateRelease.manifestSha256 === release.manifestSha256
+      && session.phase !== 'known_good');
+  } catch {
+    // An incomplete session inventory cannot authorize recoverability.
+    return true;
+  }
+}
+
+function knownGoodAttestationEvidence(config: RecoveryConfig, entry: ReleaseEvidence | undefined, allowProvisional = false): ReleaseEvidence | undefined {
   if (!entry || !entry.attestedAt || !entry.releaseFencingTokenSha256 || typeof entry.controllerHome !== 'string') return undefined;
+  if (!allowProvisional && provisionalCanaryKnownGood(config, entry)) return undefined;
   // Legacy metadata-only attestations are audit history, not recoverable authority.
   // The cheap tier requires durable bundle identity but never reads bundle contents.
   if (!entry.recoveryBundle || entry.recoveryBundle.schemaVersion !== 1) return undefined;
@@ -347,8 +369,8 @@ function knownGoodAttestationEvidence(config: RecoveryConfig, entry: ReleaseEvid
   return candidates.some((release) => sameReleaseIdentity(release, entry)) ? entry : undefined;
 }
 
-function knownGoodEvidence(config: RecoveryConfig, entry: ReleaseEvidence | undefined): ReleaseEvidence | undefined {
-  const attested = knownGoodAttestationEvidence(config, entry);
+function knownGoodEvidence(config: RecoveryConfig, entry: ReleaseEvidence | undefined, allowProvisional = false): ReleaseEvidence | undefined {
+  const attested = knownGoodAttestationEvidence(config, entry, allowProvisional);
   if (!attested) return undefined;
   try { inspectKnownGoodRecoveryBundle(config.controllerHome, attested); }
   catch { return undefined; }
@@ -379,6 +401,9 @@ function inspectKnownGoodRecoverability(config: RecoveryConfig): {
   }
   for (const entry of store.releases) {
     if (!rollbackReleasePaths.has(resolve(dirname(entry.path)))) continue;
+    // Physical bundle bytes are not an accepted restore point until its
+    // matching opt-in ReleaseSession has committed known_good.
+    if (provisionalCanaryKnownGood(config, entry)) continue;
     try {
       const inspected = inspectKnownGoodRecoveryBundle(config.controllerHome, entry);
       if (dirname(inspected.releaseRoot) !== releasesRoot) throw new Error('known-good path is outside Runtime release authority');
@@ -399,9 +424,9 @@ function matchingKnownGoodAttestation(config: RecoveryConfig, release: ReleaseEv
   return knownGoodAttestationEvidence(config, knownGood(config).releases.find((entry) => sameReleaseIdentity(entry, release)));
 }
 
-function matchingKnownGood(config: RecoveryConfig, release: ReleaseEvidence | undefined): ReleaseEvidence | undefined {
+function matchingKnownGood(config: RecoveryConfig, release: ReleaseEvidence | undefined, allowProvisional = false): ReleaseEvidence | undefined {
   if (!release) return undefined;
-  return knownGoodEvidence(config, knownGood(config).releases.find((entry) => sameReleaseIdentity(entry, release)));
+  return knownGoodEvidence(config, knownGood(config).releases.find((entry) => sameReleaseIdentity(entry, release)), allowProvisional);
 }
 
 function sameReleaseEvidenceIdentity(left: ReleaseEvidence | undefined, right: ReleaseEvidence | undefined): boolean {
@@ -5581,7 +5606,9 @@ export async function promoteConfiguredRuntimeReleaseSessionKnownGood(
       throw new Error(`RELEASE_SESSION_AUTONOMOUS_CONTINUATION_PROOF_UNAVAILABLE: ${error instanceof Error ? error.message : String(error)}`);
     }
 
-    const existingAttestation = matchingKnownGood(config, active);
+    // Only the exact ReleaseSession promoter may reconcile a provisional
+    // attestation; all external KnownGood recovery consumers stay fenced.
+    const existingAttestation = matchingKnownGood(config, active, true);
     if (existingAttestation) {
       // A known-good attestation is durable release authority, not a transient
       // observation. Crash/retry reconciliation must reuse it instead of

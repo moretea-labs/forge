@@ -2681,7 +2681,15 @@ describe('standalone recovery on canonical Runtime', () => {
       },
     });
     session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'cutover_committed' });
-    session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'soaking' });
+    session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'soaking', receipts: [{ id: 'soak_started', kind: 'soak', summary: 'cutover' }] });
+
+    // A durable performance/bundle attestation is provisional until the
+    // exact opt-in ReleaseSession commits known_good; unrelated Recovery
+    // restore consumers must never select it during Soak.
+    expect((await verifyStableRuntime(config)).releases.knownGood).toBeUndefined();
+    const provisionalListing = await listReleases(config);
+    expect((provisionalListing.knownGood as Array<{ revision: string }>).some(
+      (entry) => entry.revision === cutoverAuthority.active.releaseId)).toBe(false);
 
     const failing = await failingPublicGatewayServer();
     const reconcileConfig = createRecoveryConfig(home, { publicMcpUrl: failing.endpoint });
@@ -2703,6 +2711,10 @@ describe('standalone recovery on canonical Runtime', () => {
     );
 
     expect(promoted).toMatchObject({ ok: true, attempted: true, releaseSession: { phase: 'known_good' } });
+    expect((await verifyStableRuntime(config)).releases.knownGood?.revision).toBe(cutoverAuthority.active.releaseId);
+    const acceptedListing = await listReleases(config);
+    expect((acceptedListing.knownGood as Array<{ revision: string }>).some(
+      (entry) => entry.revision === cutoverAuthority.active.releaseId)).toBe(true);
     expect(promoted.releaseSession?.receipts).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: 'supervisor_continuation_proof', kind: 'soak' }),
     ]));
@@ -2957,6 +2969,13 @@ describe('standalone recovery on canonical Runtime', () => {
       let launchdLoaded = true;
       let clock = 0;
       const config = createRecoveryConfig(home, { publicMcpUrl: runtime.endpoint, primaryRuntimeService: { platform: 'launchd' } });
+      // Simulate the dangerous crash window: a valid performance attestation
+      // and recovery bundle have already been persisted, but this ReleaseSession
+      // has NOT accepted the Candidate. No Recovery consumer may treat it as
+      // known-good, before OR after the deadline rollback.
+      const provisional = await attestKnownGood(config);
+      expect(provisional.revision).toBe('release-b');
+      expect((await listReleases(config)).knownGood).toEqual([]);
       const promoted = await promoteConfiguredRuntimeReleaseSessionKnownGood(config, sessionId, {
         continuationProof: async () => undefined,
         readCpu: () => ({ cpuMs: cpuMs += 5_000, processStartTime: 'fixture-process-start' }),
@@ -2991,6 +3010,8 @@ describe('standalone recovery on canonical Runtime', () => {
       expect(promoted.detail).toContain('RELEASE_SESSION_AUTONOMOUS_CONTINUATION_PROOF_MISSING');
       expect(promoted.detail).toContain('exact Stable A restored');
       expect(readRuntimeReleaseAuthority(home)?.active.releaseId).toBe('release-a');
+      expect((await listReleases(config)).knownGood).toEqual([]);
+
 
       // Model a process death after the rollback authority write but before the
       // ReleaseSession terminal receipt. A later known-good retry must settle
