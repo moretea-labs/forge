@@ -4398,9 +4398,7 @@ describe('standalone recovery on canonical Runtime', () => {
             : { ok: false, status: 3, stdout: '', stderr: 'service not found' };
           return { ok: true, status: 0, stdout: '', stderr: '' };
         },
-        verifyLocal: async () => ++strictProbes >= 3
-          ? healthyVerify()
-          : { ...healthyVerify(), ok: false, runtime: { ok: false, running: false, ready: false, stale: false, reasonCodes: ['RUNTIME_UNAVAILABLE'] } },
+        verifyLocal: async () => { strictProbes += 1; return healthyVerify(); },
         observeLocal: async () => ++readinessProbes >= 3
           ? healthyVerify()
           : { ...healthyVerify(), ok: false, runtime: { ok: false, running: false, ready: false, stale: false, reasonCodes: ['RUNTIME_UNAVAILABLE'] } },
@@ -4408,7 +4406,7 @@ describe('standalone recovery on canonical Runtime', () => {
         sleep: async () => undefined,
       });
       expect(result).toMatchObject({ ok: true, attempted: true });
-      expect(strictProbes).toBe(3);
+      expect(strictProbes).toBe(1);
       expect(readinessProbes).toBe(3);
       const bootoutIndex = commands.findIndex((args) => args.includes('bootout'));
       const kickstartIndex = commands.findIndex((args) => args.includes('kickstart'));
@@ -4452,16 +4450,16 @@ describe('standalone recovery on canonical Runtime', () => {
         },
         runtimeRunning: () => launchdLoaded,
         repairPrimaryConnectorBinding: async () => ({ ok: true, attempted: false, noOp: true, detail: 'connector already bound' }),
-        verifyLocal: async () => ++strictProbes >= 3
-          ? healthyVerify()
-          : { ...healthyVerify(), ok: false, runtime: { ok: false, running: false, ready: false, stale: false, reasonCodes: ['RUNTIME_UNAVAILABLE'] } },
-        observeLocal: async () => ++readinessProbes >= 2
+        verifyLocal: async () => { strictProbes += 1; return healthyVerify(); },
+        observeLocal: async () => ++readinessProbes >= 3
           ? healthyVerify()
           : { ...healthyVerify(), ok: false, runtime: { ok: false, running: false, ready: false, stale: false, reasonCodes: ['RUNTIME_UNAVAILABLE'] } },
         now: (() => { let value = 0; return () => value += 250; })(),
         sleep: async () => undefined,
       });
       expect(result).toMatchObject({ ok: true, attempted: true });
+      expect(strictProbes).toBe(1);
+      expect(readinessProbes).toBe(3);
       const reboundLaunchContract = readFileSync(paths.installedPlistPath, 'utf8');
       expect(reboundLaunchContract).toContain(join(home, 'runtime', 'releases', 'release-current', 'manifest.json'));
       expect(reboundLaunchContract).not.toContain('release-stale');
