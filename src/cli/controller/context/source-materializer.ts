@@ -106,62 +106,81 @@ function maskCommentsAndStrings(source: string): string {
   const templateQuote = String.fromCharCode(96);
   if (!source.includes('//') && !source.includes('/*') && !source.includes("'")
     && !source.includes('"') && !source.includes(templateQuote)) return source;
+
+  // Track template interpolation nesting, not a single template toggle:
+  // nested literal text must never become executable owner evidence.
+  type Mode = 'code' | 'template' | 'line-comment' | 'block-comment' | 'single-string' | 'double-string';
+  const frames: Array<{ mode: Mode; braceDepth?: number }> = [{ mode: 'code' }];
   const masked = source.split('');
-  let mode: 'code' | 'line-comment' | 'block-comment' | 'single-string' | 'double-string' | 'template-string' = 'code';
+  const hide = (index: number): void => {
+    if (source[index] !== '\n' && source[index] !== '\r') masked[index] = ' ';
+  };
   for (let index = 0; index < source.length; index += 1) {
     const current = source[index]!;
     const next = source[index + 1];
-    if (mode === 'code') {
-      if (current === '/' && next === '/') {
-        masked[index] = ' ';
-        masked[index + 1] = ' ';
-        index += 1;
-        mode = 'line-comment';
-      } else if (current === '/' && next === '*') {
-        masked[index] = ' ';
-        masked[index + 1] = ' ';
-        index += 1;
-        mode = 'block-comment';
-      } else if (current === "'") {
-        masked[index] = ' ';
-        mode = 'single-string';
-      } else if (current === '"') {
-        masked[index] = ' ';
-        mode = 'double-string';
-      } else if (current === templateQuote) {
-        masked[index] = ' ';
-        mode = 'template-string';
-      }
+    const frame = frames[frames.length - 1]!;
+
+    if (frame.mode === 'line-comment') {
+      if (current === '\n') frames.pop();
+      else hide(index);
       continue;
     }
-    if (mode === 'line-comment') {
-      if (current === '\n') mode = 'code';
-      else if (current !== '\r') masked[index] = ' ';
-      continue;
-    }
-    if (mode === 'block-comment') {
+    if (frame.mode === 'block-comment') {
       if (current === '*' && next === '/') {
-        masked[index] = ' ';
-        masked[index + 1] = ' ';
+        hide(index);
+        hide(index + 1);
         index += 1;
-        mode = 'code';
-      } else if (current !== '\n' && current !== '\r') {
-        masked[index] = ' ';
-      }
+        frames.pop();
+      } else hide(index);
       continue;
     }
-    const quote = mode === 'single-string' ? "'" : mode === 'double-string' ? '"' : templateQuote;
-    if (current === '\\') {
-      masked[index] = ' ';
-      if (index + 1 < source.length) {
-        if (source[index + 1] !== '\n' && source[index + 1] !== '\r') masked[index + 1] = ' ';
+    if (frame.mode === 'single-string' || frame.mode === 'double-string' || frame.mode === 'template') {
+      const quote = frame.mode === 'single-string' ? "'" : frame.mode === 'double-string' ? '"' : templateQuote;
+      if (current === '\\') {
+        hide(index);
+        if (index + 1 < source.length) {
+          hide(index + 1);
+          index += 1;
+        }
+      } else if (frame.mode === 'template' && current === '$' && next === '{') {
+        hide(index);
+        hide(index + 1);
         index += 1;
+        frames.push({ mode: 'code', braceDepth: 1 });
+      } else if (current === quote) {
+        hide(index);
+        frames.pop();
+      } else hide(index);
+      continue;
+    }
+
+    if (frame.braceDepth !== undefined) {
+      if (current === '{') frame.braceDepth += 1;
+      if (current === '}') {
+        frame.braceDepth -= 1;
+        if (frame.braceDepth === 0) {
+          hide(index);
+          frames.pop();
+          continue;
+        }
       }
-    } else if (current === quote) {
-      masked[index] = ' ';
-      mode = 'code';
-    } else if (current !== '\n' && current !== '\r') {
-      masked[index] = ' ';
+    }
+    if (current === '/' && next === '/') {
+      hide(index);
+      hide(index + 1);
+      index += 1;
+      frames.push({ mode: 'line-comment' });
+    } else if (current === '/' && next === '*') {
+      hide(index);
+      hide(index + 1);
+      index += 1;
+      frames.push({ mode: 'block-comment' });
+    } else if (current === "'" || current === '"') {
+      hide(index);
+      frames.push({ mode: current === "'" ? 'single-string' : 'double-string' });
+    } else if (current === templateQuote) {
+      hide(index);
+      frames.push({ mode: 'template' });
     }
   }
   return masked.join('');
@@ -200,7 +219,7 @@ function exactCodeOwnerLocations(source: string, queries: readonly string[]): Ex
     const line = codeLines[index] ?? '';
     const currentOffset = lineOffset;
     lineOffset += line.length + 1;
-    if (!queries.some((query) => line.includes(query))) continue;
+    if (!queries.some((query) => line.toLowerCase().includes(query.toLowerCase()))) continue;
     const trimmedLine = line.trim();
     // Dense same-line calls are the common saturation case. Skip them before
     // testing declaration patterns; signatures without bodies are not owners.

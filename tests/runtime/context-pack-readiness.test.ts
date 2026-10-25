@@ -5,7 +5,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { buildControllerContextPack, buildControllerContextPackAsync, type ControllerContextPackOptions } from '../../src/cli/controller/context-pack';
 import { getMcpPolicy } from '../../adapters/mcp/policy';
-import { exactCodeOwnerEvidence } from '../../src/cli/controller/context/source-materializer';
+import { exactCodeOwnerEvidence, exactCodeOwnerQueries } from '../../src/cli/controller/context/source-materializer';
 
 const roots: string[] = [];
 afterEach(() => { while (roots.length) rmSync(roots.pop()!, { recursive: true, force: true }); });
@@ -365,6 +365,32 @@ test('recovers late owners and requires emitted owner evidence before accepting 
   expect(templateBeforeRealOwnerPack.readiness.unresolvedReasonCodes).not.toContain('required_symbol_not_materialized');
   expect(templateBeforeRealOwnerPack.readiness.status).toBe('ready');
   expect(templateBeforeRealOwnerPack.readiness.readyForHighConfidenceMutation).toBe(true);
+});
+
+test('nested templates never manufacture exact owner declarations and interpolation remains code', () => {
+  const tick = String.fromCharCode(96);
+  const expression = '$' + '{';
+  const source = [
+    'const message = ' + tick + 'outer ' + expression + ' (() => {',
+    '  const inner = ' + tick,
+    'export function fakeNestedOwner() { return true; }',
+    tick + ';',
+    '  const after = "function fakeQuotedOwner() {}";',
+    '  return inner + after;',
+    '})() } suffix' + tick + ';',
+    'export function realAfterTemplate() { return true; }',
+    'const invocation = ' + tick + 'prefix ' + expression + ' (() => {',
+    '  function realInsideExpression() { return 1; }',
+    '  return realInsideExpression();',
+    '})() } suffix' + tick + ';',
+  ].join('\n');
+  expect(exactCodeOwnerEvidence(source, 'fakeNestedOwner').owner).toBe(false);
+  expect(exactCodeOwnerEvidence(source, 'fakeQuotedOwner').owner).toBe(false);
+  expect(exactCodeOwnerEvidence(source, 'realAfterTemplate').owner).toBe(true);
+  expect(exactCodeOwnerEvidence(source, 'realInsideExpression').owner).toBe(true);
+  expect(exactCodeOwnerEvidence('export function gammaHandler() {}', 'GammaHandler').owner).toBe(true);
+  expect(exactCodeOwnerQueries('export function gammaHandler() {}', ['GammaHandler'])).toEqual(['GammaHandler']);
+  expect(exactCodeOwnerQueries(source, ['fakeNestedOwner', 'realAfterTemplate'])).toEqual(['realAfterTemplate']);
 });
 
 test('retains separate explicit code symbols in sync and async discovery beyond the inventory cap', async () => {
