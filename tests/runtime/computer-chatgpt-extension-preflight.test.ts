@@ -11,6 +11,7 @@ type Response = { kind: string; mutation: string; reasonCode?: string; reasoning
 type Scenario = {
   capability?: unknown;
   preflightTransportError?: boolean;
+  unbound?: boolean;
   prepareTransportError?: 'receiver' | 'timeout' | 'other';
   prepare?: { prepared: boolean; reason?: string; reasoningVerified?: string };
   dispatch?: { dispatched: boolean; confirmed?: boolean; reasoningVerified?: string };
@@ -19,7 +20,13 @@ function fixture(scenario: Scenario) {
   const tab = { id: 42, windowId: 8, url, title: 'Test conversation' };
   const messages: string[] = [];
   let submissions = 0;
+  const ownerStorage = new Map([['forgeComputerOwnedTabV1:42', 'verified-conversation-owner']]);
+  const providerBinding = { providerId: 'browser.chrome-extension', providerSessionId: 'test-profile',
+    tabId: '42', windowId: '8', ownerToken: 'verified-conversation-owner' };
   const chrome = {
+    storage: { session: { async get(key: string) {
+      return ownerStorage.has(key) ? { [key]: ownerStorage.get(key) } : {};
+    } } },
     runtime: {
       lastError: undefined as undefined | { message: string },
       connectNative() { return { onMessage: { addListener() {} }, onDisconnect: { addListener() {} }, postMessage() {} }; },
@@ -103,11 +110,13 @@ function fixture(scenario: Scenario) {
   const dispatch = (reasoning?: 'xhigh') =>
     (testContext as typeof testContext & {
       __testDispatch: (value: object) => Promise<Response>;
-    }).__testDispatch({ kind: 'dispatch', identity, prompt: 'source delivery', ...(reasoning ? { reasoning } : {}) });
+    }).__testDispatch({ kind: 'dispatch', identity, prompt: 'source delivery',
+      ...(!scenario.unbound ? { providerBinding } : {}), ...(reasoning ? { reasoning } : {}) });
   const prepare = (reasoning?: 'xhigh') =>
     (testContext as typeof testContext & {
       __testPrepare: (value: object) => Promise<{ kind: string; ready: boolean; reasoningVerified?: string; reasonCode?: string }>;
-    }).__testPrepare({ kind: 'prepare', identity, prompt: 'source delivery', ...(reasoning ? { reasoning } : {}) });
+    }).__testPrepare({ kind: 'prepare', identity, prompt: 'source delivery',
+      ...(!scenario.unbound ? { providerBinding } : {}), ...(reasoning ? { reasoning } : {}) });
   return { dispatch, prepare, messages, get submissions() { return submissions; } };
 }
 
@@ -203,7 +212,7 @@ function bootstrapFixture(initialTabs: Array<{ id: number; windowId: number; url
     markerReadIdentity: (tab: { id: number; windowId: number; url: string }, identity: object) =>
       (context as typeof context & { __markerReadIdentity: (tab: object, identity: object) => object }).__markerReadIdentity(tab, identity),
     resolve: (identity: object, create: boolean, pinned?: object) =>
-      (context as typeof context & { __resolveTarget: (identity: object, create: boolean, pinned?: object) => Promise<{ tab: { id: number; windowId: number; url: string }; created: boolean }> }).__resolveTarget(identity, create, pinned),
+      (context as typeof context & { __resolveTarget: (identity: object, create: boolean, pinned?: object) => Promise<{ tab: { id: number; windowId: number; url: string }; created: boolean; ownerToken?: string }> }).__resolveTarget(identity, create, pinned),
   };
 }
 
@@ -246,6 +255,7 @@ test('receiver identity and unreadable-page recovery preserve the exact target w
   let nowMs = 10_000;
   let reloads = 0;
   let sends = 0;
+  const ownerStorage = new Map([['forgeComputerOwnedTabV1:76', 'unreadable-owner']]);
   const snapshot = { url, title: 'Unreadable conversation', latestUserText: '', latestAssistantResponse: '',
     providerFailureText: '无法加载此 ChatGPT 对话', providerActivityText: '', isGenerating: false };
   const idle = { addListener() {} };
@@ -253,7 +263,9 @@ test('receiver identity and unreadable-page recovery preserve the exact target w
     runtime: { lastError: undefined, connectNative() { return { onMessage: idle, onDisconnect: idle, postMessage() {} }; },
       onMessage: idle, onInstalled: idle, onStartup: idle },
     storage: { local: { async get() { return { forgeComputerProviderInstanceId: 'test-profile' }; },
-      async set() {} }, session: { async get() { return {}; } } },
+      async set() {} }, session: { async get(key: string) {
+        return ownerStorage.has(key) ? { [key]: ownerStorage.get(key) } : {};
+      } } },
     tabs: {
       async query() { return [tab]; },
       get(_tabId: number, callback: (value: typeof tab) => void) { callback(tab); },
@@ -281,7 +293,10 @@ test('receiver identity and unreadable-page recovery preserve the exact target w
   const ensure = (context as typeof context & {
     __ensureUnreadable: (command: object, instanceId: string) => Promise<{ kind: string; observation?: object }>;
   }).__ensureUnreadable;
-  const command = { identity, kind: 'ensure' };
+  const command = { identity, kind: 'ensure', providerBinding: {
+    providerId: 'browser.chrome-extension', providerSessionId: 'profile-test',
+    tabId: '76', windowId: '8', ownerToken: 'unreadable-owner',
+  } };
   expect((await ensure(command, 'profile-test')).kind).toBe('ensured');
   expect(reloads).toBe(0);
   nowMs = 70_000;
@@ -830,4 +845,28 @@ test('F11 absent pinned legacy tab never silently creates replacement', async ()
     projectUrl: 'https://chatgpt.com/g/g-p-test/project' };
   await expect(f.resolve(bootstrapIdentity, true, pin)).rejects.toThrow('COMPUTER_CHATGPT_BOOTSTRAP_OWNER_TOKEN_MISSING');
   expect(f.tabs).toHaveLength(0);
+});
+
+// Fourth independent Review P1: URL-only discovery may inspect an existing
+// conversation, but it is not physical-tab ownership and cannot authorize Send.
+test('F11 unbound existing conversation refuses Prepare and Dispatch without Send', async () => {
+  const f = fixture({ unbound: true });
+  expect(await f.prepare()).toMatchObject({ kind: 'prepared', ready: false,
+    reasonCode: 'COMPUTER_CHATGPT_EXTENSION_TARGET_MISSING' });
+  expect(await f.dispatch()).toMatchObject({ kind: 'dispatch', mutation: 'not_attempted',
+    reasonCode: 'COMPUTER_CHATGPT_EXTENSION_TARGET_MISSING' });
+  expect(f.submissions).toBe(0);
+  expect(f.messages).toEqual([]);
+});
+
+test('F11 first conversation Ensure creates a dedicated attested tab, never borrows an unbound existing tab', async () => {
+  const id = '12345678-1234-1234-1234-123456789abc';
+  const url = `https://chatgpt.com/c/${id}`;
+  const f = bootstrapFixture([{ id: 55, windowId: 3, url }]);
+  const resolved = await f.resolve({ namespace: 'chatgpt.conversation', conversationId: id, canonicalUrl: url }, true);
+  expect(resolved.created).toBe(true);
+  expect(resolved.tab.id).not.toBe(55);
+  expect(resolved.ownerToken).toBeTruthy();
+  expect(f.tabs).toHaveLength(2);
+  expect(f.tabs[0]?.id).toBe(55);
 });

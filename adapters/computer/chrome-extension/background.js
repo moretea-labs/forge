@@ -301,7 +301,13 @@ async function resolveTarget(identity, createIfMissing, pinnedBinding) {
       return { tab: pinned, created: false, ownerToken: await requirePinnedOwner(pinned, pinnedBinding, identity) };
     }
   }
-  const matches = matchingTabs(tabs, identity, pinnedBinding);
+  // An exact Conversation URL proves page identity, not ownership of the
+  // physical tab. First-time Ensure can create a dedicated attested tab;
+  // Prepare and Dispatch cannot borrow an existing user's unbound tab.
+  const trustedConversationPin = identity?.namespace === 'chatgpt.conversation'
+    && pinnedBinding?.providerId === PROVIDER_ID && pinnedBinding.tabId && pinnedBinding.ownerToken;
+  const matches = identity?.namespace === 'chatgpt.conversation' && !trustedConversationPin
+    ? [] : matchingTabs(tabs, identity, pinnedBinding);
   if (matches.length > 1) throw new Error('COMPUTER_CHATGPT_EXTENSION_EXACT_TARGET_AMBIGUOUS');
   if (matches.length === 1) {
     const tab = matches[0];
