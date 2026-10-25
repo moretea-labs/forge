@@ -78,9 +78,10 @@ import {
   ensureActiveRuntimeRelease,
   publishRuntimeRelease,
   readRuntimeReleaseAuthority,
+  rollbackRuntimeReleaseWithResult,
 } from '../../src/runtime/root/release-store';
-import { advanceReleaseSession, createReleaseSession, recordReleaseSessionTransaction } from '../../src/runtime/release/release-session';
-import { writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
+import { advanceReleaseSession, createReleaseSession, readReleaseSession, recordReleaseSessionTransaction } from '../../src/runtime/release/release-session';
+import { readRuntimeStatusSnapshot, writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
 import { ensureForgeRuntimeLaunchAgentContract, forgeRuntimeServicePaths } from '../../src/runtime/root/service';
 import { systemdUserUnitPath } from '../../src/cli/controller/systemd-user';
 import {
@@ -2715,7 +2716,7 @@ describe('standalone recovery on canonical Runtime', () => {
     const promoted = await promoteConfiguredRuntimeReleaseSessionKnownGood(
       reconcileConfig,
       sessionId,
-      { ...idleCpuDependencies(), continuationProof: supervisorContinuationProofDependency() },
+      { ...idleCpuDependencies(), wallNow: () => Date.now(), continuationProof: supervisorContinuationProofDependency() },
       'known-good-reconcile',
     );
 
@@ -2826,7 +2827,7 @@ describe('standalone recovery on canonical Runtime', () => {
         continuationProof: supervisorContinuationProofDependency(),
         readCpu: () => ({ cpuMs: cpuMs += 5_000, processStartTime: 'fixture-process-start' }),
         monotonicNow: () => elapsed,
-        wallNow: () => Date.now() - 60_000 + elapsed,
+        wallNow: () => Date.now() + elapsed,
         sleep: async (ms) => { elapsed += ms; },
         rollback: {
           platform: 'darwin',
@@ -3060,6 +3061,234 @@ describe('standalone recovery on canonical Runtime', () => {
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
+    }
+  });
+
+  test('timed predecessor recovery fences active, uncommitted, and rollback-committed successors across B deadline', async () => {
+    const scenarios = [
+      { suffix: 'active-before', successorState: 'active', deadlineElapsed: false },
+      { suffix: 'active-after', successorState: 'active', deadlineElapsed: true },
+      { suffix: 'crash-before', successorState: 'rollback-committed', deadlineElapsed: false },
+      { suffix: 'crash-after', successorState: 'rollback-committed', deadlineElapsed: true },
+      { suffix: 'uncommitted-before', successorState: 'uncommitted', deadlineElapsed: false },
+      { suffix: 'uncommitted-after', successorState: 'uncommitted', deadlineElapsed: true },
+    ] as const;
+    for (const scenario of scenarios) {
+      const crashAfterSuccessorRollbackCommit = scenario.successorState === 'rollback-committed';
+      const successorCommitted = scenario.successorState !== 'uncommitted';
+      const home = controllerHome();
+      const previousHome = process.env.HOME;
+      process.env.HOME = home;
+      let ownership: RuntimeOwnershipHandle | undefined;
+      let launchdLoaded = true;
+      try {
+        const first = manifest(home, 'release-a', 'artifact-a');
+        const second = manifest(home, 'release-b', 'artifact-b');
+        const third = manifest(home, 'release-c', 'artifact-c');
+        const baselineAuthority = ensureActiveRuntimeRelease(home, first);
+        publishRuntimeRelease(home, second, 'release-chain-b-cutover');
+        const bAuthority = readRuntimeReleaseAuthority(home)!;
+        let cAuthority = bAuthority;
+        if (successorCommitted) {
+          publishRuntimeRelease(home, third, 'release-chain-c-cutover');
+          cAuthority = readRuntimeReleaseAuthority(home)!;
+        }
+        const runtime = await runtimeServer();
+        writeMainToken(home);
+        ensureForgeRuntimeLaunchAgentContract({ controllerHome: home, installUserLaunchAgent: true });
+        const config = createRecoveryConfig(home, { publicMcpUrl: runtime.endpoint, primaryRuntimeService: { platform: 'launchd' } });
+        const stable = {
+          schemaVersion: 1 as const,
+          kind: 'stable' as const,
+          controllerHome: home,
+          serviceLabel: 'stable-runtime',
+          port: 8765,
+          authTokenFile: join(home, 'mcp', 'runtime-token'),
+        };
+        const stableReleaseFor = (authority: NonNullable<ReturnType<typeof readRuntimeReleaseAuthority>>, fencing: string) => ({
+          authorityRevision: authority.revision,
+          releaseId: authority.active.releaseId,
+          artifactIdentity: authority.active.artifactIdentity,
+          manifestSha256: authority.active.manifestSha256,
+          workerProtocolVersion: authority.active.workerProtocolVersion,
+          releaseFencingTokenSha256: fencing.repeat(64).slice(0, 64),
+        });
+        const makeCandidateLane = (sessionId: string) => {
+          const candidateHome = join(home, 'candidate-runtime-lanes', sessionId);
+          mkdirSync(candidateHome, { recursive: true });
+          return {
+            schemaVersion: 1 as const,
+            kind: 'candidate' as const,
+            sessionId,
+            controllerHome: candidateHome,
+            serviceLabel: 'candidate-runtime',
+            port: 8766,
+            authTokenFile: join(candidateHome, 'mcp', 'runtime-token'),
+            databaseSnapshotPath: join(candidateHome, 'control-plane.sqlite'),
+            sourceStableControllerHome: home,
+            createdAt: new Date().toISOString(),
+          };
+        };
+        const createCommittedSession = (
+          sessionId: string,
+          stableRelease: ReturnType<typeof stableReleaseFor>,
+          authority: NonNullable<ReturnType<typeof readRuntimeReleaseAuthority>>,
+          sourceCommit: string,
+          soak: boolean,
+          options: {
+            candidateRelease?: NonNullable<ReturnType<typeof readReleaseSession>>['candidateRelease'];
+            rollbackAuthority?: NonNullable<ReturnType<typeof readRuntimeReleaseAuthority>>['active'];
+            cutoverAuthorityRevision?: number;
+            commitCutover?: boolean;
+          } = {},
+        ) => {
+          const candidateRelease = options.candidateRelease ?? {
+            releaseId: authority.active.releaseId,
+            manifestPath: authority.active.manifestPath,
+            artifactIdentity: authority.active.artifactIdentity,
+            manifestSha256: authority.active.manifestSha256,
+            treeSha256: 'c'.repeat(64),
+            sourceCommit,
+            sourceRepositoryId: 'repo-pr462-release-chain',
+          };
+          let current = createReleaseSession({ controllerHome: home, sessionId, stable, stableRelease, candidate: makeCandidateLane(sessionId), sourceRevision: sourceCommit });
+          current = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: current.revision, phase: 'built', candidateRelease });
+          current = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: current.revision, phase: 'static_verified', receipts: ['type', 'runtime_architecture', 'architecture_sync', 'bootstrap'].map((id) => ({ id, kind: 'static_gate' as const, summary: id })) });
+          current = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: current.revision, phase: 'candidate_booted' });
+          current = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: current.revision, phase: 'candidate_verified', receipts: ['recovery', 'mcp', 'scheduler', 'supervisor', 'controller'].map((id) => ({ id, kind: 'candidate_canary' as const, summary: id })) });
+          current = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: current.revision, phase: 'cutover_eligible' });
+          current = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: current.revision, phase: 'cutover_attempting' });
+          const rollback = options.rollbackAuthority ?? authority.previous!;
+          current = recordReleaseSessionTransaction({
+            controllerHome: home,
+            sessionId,
+            expectedRevision: current.revision,
+            transaction: {
+              schemaVersion: 1,
+              operationId: 'release-chain-cutover:' + sessionId,
+              candidateReleaseId: candidateRelease.releaseId,
+              cutoverAuthorityRevision: options.cutoverAuthorityRevision ?? authority.revision,
+              rollbackRelease: {
+                releaseId: rollback.releaseId,
+                artifactIdentity: rollback.artifactIdentity,
+                manifestPath: rollback.manifestPath,
+                manifestSha256: rollback.manifestSha256,
+                workerProtocolVersion: rollback.workerProtocolVersion,
+                publishedAt: rollback.publishedAt,
+                databaseBackup: rollback.databaseBackup!,
+              },
+              startedAt: new Date().toISOString(),
+            },
+          });
+          if (options.commitCutover !== false) current = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: current.revision, phase: 'cutover_committed' });
+          if (soak) current = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: current.revision, phase: 'soaking', receipts: [
+            { id: 'soak_started', kind: 'soak', summary: 'cutover' },
+            { id: 'acceptance_timeout_policy_v1', kind: 'source', summary: 'bounded acceptance deadline' },
+          ] });
+          return current;
+        };
+
+        const bSessionId = 'release-chain-b-' + scenario.suffix + '-12345678';
+        const cSessionId = 'release-chain-c-' + scenario.suffix + '-12345678';
+        const bSession = createCommittedSession(bSessionId, stableReleaseFor(baselineAuthority, 'a'), bAuthority, 'source-release-b', true);
+        const cSession = successorCommitted
+          ? createCommittedSession(cSessionId, stableReleaseFor(bAuthority, 'b'), cAuthority, 'source-release-c', false)
+          : createCommittedSession(cSessionId, stableReleaseFor(bAuthority, 'b'), bAuthority, 'source-release-c', false, {
+            candidateRelease: {
+              releaseId: 'release-c',
+              manifestPath: third,
+              artifactIdentity: 'artifact-c',
+              manifestSha256: createHash('sha256').update(readFileSync(third)).digest('hex'),
+              treeSha256: 'c'.repeat(64),
+              sourceCommit: 'source-release-c',
+              sourceRepositoryId: 'repo-pr462-release-chain',
+            },
+            rollbackAuthority: {
+              ...bAuthority.active,
+              databaseBackup: {
+                path: join(home, 'runtime', 'backups', 'release-b-before-c.sqlite'),
+                schemaVersion: 1,
+                createdAt: new Date().toISOString(),
+              },
+            },
+            cutoverAuthorityRevision: bAuthority.revision + 1,
+            commitCutover: false,
+          });
+        ownership = startObservedRuntime(home, runtime.endpoint,
+          successorCommitted && !crashAfterSuccessorRollbackCommit ? 'release-c' : 'release-b',
+          successorCommitted && !crashAfterSuccessorRollbackCommit ? 'artifact-c' : 'artifact-b');
+
+        if (crashAfterSuccessorRollbackCommit) {
+          rollbackRuntimeReleaseWithResult(home, 'release-session-rollback:' + cSessionId + ':simulated-crash-window');
+          if (ownership) removeOwnership(ownership);
+          ownership = startObservedRuntime(home, runtime.endpoint, 'release-b', 'artifact-b');
+          expect(readRuntimeReleaseAuthority(home)).toMatchObject({ active: { releaseId: 'release-b' }, previous: { releaseId: 'release-c' } });
+        }
+
+        const wallClock = Date.now;
+        const elapsedAcceptanceMs = scenario.deadlineElapsed ? 31 * 60_000 : 10 * 60_000;
+        Date.now = () => wallClock() + elapsedAcceptanceMs;
+        let proofCalls = 0;
+        let clock = 0;
+        try {
+          const promoted = await promoteConfiguredRuntimeReleaseSessionKnownGood(config, bSessionId, {
+            continuationProof: async () => { proofCalls += 1; return undefined; },
+            wallNow: () => wallClock() + elapsedAcceptanceMs,
+            rollback: {
+              platform: 'darwin',
+              currentUid: async () => 501,
+              runCommand: async (name, args) => {
+                if (name === 'lsof') return { ok: false, status: 1, stdout: '', stderr: '' };
+                if (args[0] === 'bootout') {
+                  launchdLoaded = false;
+                  if (ownership) removeOwnership(ownership);
+                  ownership = undefined;
+                }
+                if (args[0] === 'print') return launchdLoaded
+                  ? { ok: true, status: 0, stdout: 'loaded', stderr: '' }
+                  : { ok: false, status: 113, stdout: '', stderr: 'service not loaded' };
+                if (args[0] === 'bootstrap') launchdLoaded = true;
+                if (args[0] === 'kickstart') {
+                  launchdLoaded = true;
+                  const active = readRuntimeReleaseAuthority(home)!.active;
+                  ownership = startObservedRuntime(home, runtime.endpoint, active.releaseId, active.artifactIdentity);
+                }
+                return { ok: true, status: 0, stdout: '', stderr: '' };
+              },
+              runtimeRunning: () => false,
+              ensureRuntimeLaunchContract: () => undefined,
+              repairPrimaryConnectorBinding: async () => ({ ok: true, attempted: false, noOp: true, detail: 'fixture connector binding' }),
+              verifyLocal: async () => healthyVerify(),
+              now: () => clock += 1_000,
+              sleep: async () => undefined,
+            },
+          }, 'release-chain-' + scenario.suffix);
+
+          expect(proofCalls).toBe(!scenario.deadlineElapsed && scenario.successorState === 'uncommitted' ? 1 : 0);
+          expect(promoted).toMatchObject({ ok: false, attempted: true, releaseSession: {
+            sessionId: bSessionId, phase: scenario.deadlineElapsed ? 'rolled_back' : 'soaking',
+          } });
+          if (scenario.deadlineElapsed || successorCommitted) expect(promoted.detail).toContain('successor');
+          expect(readReleaseSession(home, cSessionId)?.phase).toBe('rolled_back');
+          expect(readReleaseSession(home, bSessionId)?.phase).toBe(scenario.deadlineElapsed ? 'rolled_back' : 'soaking');
+          expect(readRuntimeReleaseAuthority(home)).toMatchObject(scenario.deadlineElapsed
+            ? { active: { releaseId: 'release-a', artifactIdentity: 'artifact-a' }, previous: { releaseId: 'release-b' } }
+            : { active: { releaseId: 'release-b', artifactIdentity: 'artifact-b' }, previous: { releaseId: 'release-a' } });
+          expect(readRuntimeStatusSnapshot(home)).toMatchObject(scenario.deadlineElapsed
+            ? { releaseId: 'release-a', artifactIdentity: 'artifact-a' }
+            : { releaseId: 'release-b', artifactIdentity: 'artifact-b' });
+          expect((await listReleases(config)).knownGood).toEqual([]);
+          expect(existsSync(recoveryOperationLockPath(home))).toBe(false);
+          expect(bSession.sessionId).toBe(bSessionId);
+          expect(cSession.sessionId).toBe(cSessionId);
+        } finally {
+          Date.now = wallClock;
+        }
+      } finally {
+        if (ownership) removeOwnership(ownership);
+        if (previousHome === undefined) delete process.env.HOME;
+        else process.env.HOME = previousHome;
+      }
     }
   });
 
@@ -5599,6 +5828,7 @@ describe('standalone recovery on canonical Runtime', () => {
         label: 'com.moretea.forge-recovery-tunnel',
         plistPath: '/tmp/forge-test-home/Library/LaunchAgents/com.moretea.forge-recovery-tunnel.plist',
       },
+      primaryRuntimeService: { platform: 'launchd' },
     });
     const descriptor = recoveryConnectorDescriptor(home, {
       platform: 'darwin',

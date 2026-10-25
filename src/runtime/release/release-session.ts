@@ -136,7 +136,8 @@ export function releaseSessionContinuationProofTimely(
   const provedAt = Date.parse(lastCommittedAt);
   return session.phase === 'soaking'
     && Number.isFinite(startedAt) && Number.isFinite(provedAt) && Number.isFinite(nowMs)
-    && provedAt >= startedAt && provedAt <= startedAt + RELEASE_SESSION_ACCEPTANCE_TIMEOUT_MS
+    && provedAt >= startedAt && provedAt <= nowMs
+    && provedAt <= startedAt + RELEASE_SESSION_ACCEPTANCE_TIMEOUT_MS
     && nowMs < startedAt + RELEASE_SESSION_ACCEPTANCE_TIMEOUT_MS;
 }
 

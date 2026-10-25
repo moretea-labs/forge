@@ -1045,6 +1045,7 @@ test('Mac-first late C-C-D proof cannot promote known_good after acceptance dead
     { id: 'soak_started', kind: 'soak' as const, recordedAt: '2026-10-25T00:00:00Z', summary: 'cutover' },
   ] };
   expect(releaseSessionContinuationProofTimely(session, new Date(start + 1000).toISOString(), start + 120000)).toBe(true);
+  expect(releaseSessionContinuationProofTimely(session, new Date(start + 25 * 60000).toISOString(), start + 10 * 60000)).toBe(false);
   expect(releaseSessionContinuationProofTimely(session, new Date(start + 31 * 60000).toISOString(), start + 31 * 60000)).toBe(false);
   expect(releaseSessionContinuationProofTimely(session, new Date(start + 1000).toISOString(), start + 31 * 60000)).toBe(false);
   expect(releaseSessionContinuationProofTimely({ ...session, receipts: session.receipts.slice(1) }, '', start + 100 * 60000)).toBe(true);
