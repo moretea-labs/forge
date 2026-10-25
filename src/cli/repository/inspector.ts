@@ -532,28 +532,24 @@ const METHOD_CONTROL_KEYWORDS = new Set([
   'case', 'default', 'import', 'export', 'extends', 'implements', 'super', 'this',
 ]);
 
-function exactCodeOwnerPatterns(query: string): { declarations: string; caseLabel: string } {
+function exactCodeOwnerPatterns(query: string): string {
   const escaped = escapeCodeNeedle(query);
   const declaration = '^\\s*(?:(?:export|declare|default|async)\\s+)*(?:function|class|interface|type|const|let|enum)\\s+' + escaped + '(?:$|[^\\p{L}\\p{N}_$])';
   const boundedSignature = '(?:[^;{}]{0,99}|\\{[^{}]{0,99}\\}){0,5}?';
   const method = METHOD_CONTROL_KEYWORDS.has(query.toLowerCase()) ? '' : '|^\\s*(?:(?:public|private|protected|static|abstract|override|async|get|set)\\s+)*(?:\\*\\s*)?#?' + escaped + '\\s*(?:<[^>\\n]+>)?\\s*\\(' + boundedSignature + '\\)\\s*(?::\\s*' + boundedSignature + ')?\\s*\\{';
   const arrow = METHOD_CONTROL_KEYWORDS.has(query.toLowerCase()) ? '' : '|^\\s*(?:(?:public|private|protected|static|readonly|declare)\\s+)*#?' + escaped + '\\??\\s*=\\s*(?:async\\s*)?(?:<[^>\\n]+>\\s*)?(?:\\(' + boundedSignature + '\\)|[\\w$]+)\\s*(?::\\s*' + boundedSignature + ')?\\s*=>';
-  const quoteChars = "['\"" + String.fromCharCode(96) + "]";
-  const caseLabel = '^\\s*case\\s+' + quoteChars + escaped + quoteChars + '\\s*:';
-  return { declarations: declaration + method + arrow, caseLabel };
+  return declaration + method + arrow;
 }
 
 function exactCodeOwnerPattern(query: string): string {
-  const patterns = exactCodeOwnerPatterns(query);
-  return '(?ms)(?:' + patterns.declarations + '|' + patterns.caseLabel + ')';
+  return '(?ms)(?:' + exactCodeOwnerPatterns(query) + ')';
 }
 
 export function exactCodeOwnerEvidence(source: string, query: string): { declared: string | undefined; owner: boolean } {
   const normalized = source.split(/\r?\n/).map((line) => line.replace(/^\s*\d+:\s*/, '')).join('\n');
-  const patterns = exactCodeOwnerPatterns(query);
-  const declared = new RegExp('(?:' + patterns.declarations + ')', 'imsu').test(normalized) ? query : undefined;
-  const owner = declared !== undefined || new RegExp('(?:' + patterns.caseLabel + ')', 'imsu').test(normalized);
-  return { declared, owner };
+  const declared = new RegExp('(?:' + exactCodeOwnerPatterns(query) + ')', 'imsu').test(normalized) ? query : undefined;
+  // A switch case is reference evidence, not the declaration that owns a symbol.
+  return { declared, owner: declared !== undefined };
 }
 
 

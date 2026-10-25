@@ -100,6 +100,26 @@ test('recovers late owners and requires emitted owner evidence before accepting 
   writeFileSync(join(root, 'src/method-owner.ts'), `${methodOwnerLines.join('\n')}\n`);
   writeFileSync(join(root, 'src/object-owner.ts'), `${objectOwnerLines.join('\n')}\n`);
   writeFileSync(join(root, 'src/arrow-owner.ts'), `${arrowOwnerLines.join('\n')}\n`);
+  const multiRequiredLines = [
+    ...Array.from({ length: 170 }, () => 'alphaOwner();'),
+    ...Array.from({ length: 170 }, () => 'betaMethod();'),
+    ...Array.from({ length: 170 }, () => 'gammaHandler();'),
+    'export function alphaOwner() { return true; }',
+    'export function betaMethod() { return true; }',
+    'export function gammaHandler() { return true; }',
+  ];
+  const caseLabelOwnerLines = [
+    ...Array.from({ length: 170 }, () => 'gammaHandler();'),
+    'function dispatch(kind: string) {',
+    '  switch (kind) {',
+    "    case 'gammaHandler': return true;",
+    '  }',
+    '}',
+    ...Array.from({ length: 80 }, (_, index) => 'const CASE_LABEL_PAD_' + index + ' = ' + index + ';'),
+    'export function gammaHandler() { return true; }',
+  ];
+  writeFileSync(join(root, 'src/multi-required.ts'), `${multiRequiredLines.join('\n')}\n`);
+  writeFileSync(join(root, 'src/case-label-owner.ts'), `${caseLabelOwnerLines.join('\n')}\n`);
   execFileSync('git', ['add', '.'], { cwd: root });
   execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: root });
 
@@ -213,6 +233,41 @@ test('recovers late owners and requires emitted owner evidence before accepting 
   expect(arrowOwnerPack.readiness.unresolvedReasonCodes).not.toContain('required_symbol_not_materialized');
   expect(arrowOwnerPack.readiness.status).toBe('ready');
   expect(arrowOwnerPack.readiness.readyForHighConfidenceMutation).toBe(true);
+
+  const multiRequiredPack = buildControllerContextPack(root, getMcpPolicy('controller'), {
+    description: 'Inspect alphaOwner, betaMethod, and gammaHandler in the exact known implementation file.',
+    searchTerms: ['alphaOwner', 'betaMethod', 'gammaHandler'],
+    knownPaths: ['src/multi-required.ts'],
+    retrievalMode: 'implementation',
+    structuralContext: 'off',
+    maxFiles: 1,
+    maxSnippets: 2,
+    maxCharsPerSnippet: 2400,
+  });
+  expect(multiRequiredPack.search.truncated).toBe(true);
+  expect(multiRequiredPack.files[0]?.snippets.some((snippet) => snippet.content.includes('export function alphaOwner'))).toBe(false);
+  expect(multiRequiredPack.files[0]?.snippets.some((snippet) => snippet.content.includes('export function betaMethod'))).toBe(false);
+  expect(multiRequiredPack.files[0]?.snippets.some((snippet) => snippet.content.includes('export function gammaHandler'))).toBe(false);
+  expect(multiRequiredPack.search.evidenceTruncated).toBe(true);
+  expect(multiRequiredPack.readiness.unresolvedReasonCodes).toContain('required_symbol_not_materialized');
+  expect(multiRequiredPack.readiness.status).toBe('degraded');
+  expect(multiRequiredPack.readiness.readyForHighConfidenceMutation).toBe(false);
+
+  const caseLabelOwnerPack = buildControllerContextPack(root, getMcpPolicy('controller'), {
+    description: 'Inspect gammaHandler after a matching switch case label and dense references in the exact known implementation file.',
+    searchTerms: ['gammaHandler'],
+    knownPaths: ['src/case-label-owner.ts'],
+    retrievalMode: 'implementation',
+    structuralContext: 'off',
+    maxFiles: 1,
+    maxSnippets: 1,
+    maxCharsPerSnippet: 2400,
+  });
+  expect(caseLabelOwnerPack.files[0]?.snippets.some((snippet) => snippet.content.includes('export function gammaHandler'))).toBe(true);
+  expect(caseLabelOwnerPack.files[0]?.snippets.some((snippet) => snippet.content.includes("case 'gammaHandler':"))).toBe(false);
+  expect(caseLabelOwnerPack.readiness.unresolvedReasonCodes).not.toContain('required_symbol_not_materialized');
+  expect(caseLabelOwnerPack.readiness.status).toBe('ready');
+  expect(caseLabelOwnerPack.readiness.readyForHighConfidenceMutation).toBe(true);
 });
 
 test('retains separate explicit code symbols in sync and async discovery beyond the inventory cap', async () => {

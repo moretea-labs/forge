@@ -905,7 +905,7 @@ export function buildControllerContextPack(
   // implementation evidence: require the requested owner line in an emitted snippet.
   const requiredSymbolEvidenceMissing = requiredSearchQueries.some((query) =>
     !files.some((file) => file.snippets.some((snippet) => {
-      if (scopedExactKnownFileSearch && useBoundedExactWindows) {
+      if (scopedExactKnownFileSearch) {
         return exactCodeOwnerEvidence(snippet.content, query).owner;
       }
       return exactCodeNeedleMatches(snippet.content.toLowerCase(), query.toLowerCase());
