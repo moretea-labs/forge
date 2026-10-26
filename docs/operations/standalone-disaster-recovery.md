@@ -143,6 +143,8 @@ The installer owns Recovery publication and role reconciliation. It activates on
 
 Forge deliberately has no blue-green Runtime topology. There is one active whole-release authority and one canonical service. Candidate validation happens before activation; activation stops the complete Runtime, switches the atomic active release, starts one Runtime, and gates on whole-Runtime readiness. Failure restores the previous whole release and its bound SQLite backup.
 
+Runtime cutover permits a short MCP disconnect. Recovery withdraws admission from the exact old Connector generation; the canonical Runtime gives admitted requests its existing five-second drain, then settles unfinished calls as `MCP_RUNTIME_CUTOVER_OUTCOME_UNKNOWN` before closing sockets. Busy HTTP counters are diagnostic and cannot indefinitely defer the switch. After recovery, reconnect and inspect the original Process/request/effect before retrying a mutation whose result is unknown. A request rejected before admission can be submitted again; interruption never grants automatic replay of an unknown effect.
+
 No rollout, service installation, or live restart is implied by source changes. Activating a new primary Runtime release still requires separate explicit authorization and exact release evidence.
 
 ## Operator CLI
