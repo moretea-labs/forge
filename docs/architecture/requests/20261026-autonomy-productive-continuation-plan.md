@@ -1,7 +1,7 @@
-# Forge #313 — 自动续跑、可靠投递与有效产出（Plan r9 审查稿）
+# Forge #313 — 自动续跑、可靠投递与有效产出（Plan r10 审查稿）
 
 > **DESIGN ONLY · Draft PR #468 · 尚无本候选独立 ACCEPT · 禁止生产源码实施。**
-> 本文须与唯一 Forge Plan `PLAN-forge-thin-delivery-efficiency-code-slimming-20261019` **r9** 和本 PR 当前完整 HEAD 同时审查。历史 r4/r5/r6 的 REVISE 不是本候选 ACCEPT。评审冻结后任何修改都必须重新以新 HEAD 审查。
+> 本文须与唯一 Forge Plan `PLAN-forge-thin-delivery-efficiency-code-slimming-20261019` **r10** 和本 PR 当前完整 HEAD 同时审查。历史 r4/r5/r6 的 REVISE 不是本候选 ACCEPT。评审冻结后任何修改都必须重新以新 HEAD 审查。
 
 ## 0. Authority、优先级与成功判据
 
@@ -39,6 +39,30 @@
 - **两次 live 检查的因果边界**：`supervisor/native-browser-adapter.ts:executeCommand` 保留 `provider_recovery_stop_pending` 早退；加原有 `noteTaskFailure('WORKFLOW_SUPERVISOR_RECOVERY_WAITING_LIVE_TURN',task,effectId,false)`。第二次检查在现有 `withChatgptProviderDispatchLane` 内、fresh exact `target.observe` 后且 `browserBeginEffect` CAS **之前**：若真正 live，就零 Stop/Editor/Send/dispatch-start，不生成新 generation。**CAS 之后**才出现 live 则 generation 可能已消耗，Editor 也可能变化；不能再宣称“零 generation/零 Editor”，需按已证实负面结果或 UNKNOWN 对账。
 - **可解释但不伪造成功**：现有约 30s 的 per-task transport degraded 投影只给这条代码具体 WAIT/原 Owner 操作理由，不能笼统说 auto-recovering 或制造 NEEDS_USER/DONE。只有旧回复 settled idle 或明确 Provider failure 后，原 effect 才能在 CAS 下 Send 一次。Stop 缺失并不单独证明已结束；五条旧 applied 祖先、late completion 与未知外部 mutation 仍按原账本保护。
 
+### P1.1 内容脚本负面证明回执：必须有类型、有身份、有明确阶段
+
+本条是 r9 独立因果安全 Reviewer A 的 P0 REVISE 修订，详见 [6415169634](https://github.com/moretea-labs/forge/pull/468#issuecomment-6415169634)。目前 `background.js:505` 会把任意 `dispatched:false` 当成 `mutation:not_attempted`，`supervisor/control-plane.ts:744,750` 的 `browserObserveDispatchFailure` 又记 `pre_send_rejection:true`，`supervisor/store.ts:1929` 可能据此退还 generation。**因此仅凭布尔 `dispatched:false` 不得退款。**
+
+在原 Native command、Computer Target 与 Supervisor effect 之间定义**唯一类型化负面证明**（下列是待审的新源码契约，不是声称现已存在）：
+
+```text
+kind: prewrite_no_mutation_proof
+instanceId + commandId: match original claimed Native/Extension command
+providerSessionId + profile/window/tab/owner binding: match the exact pinned target
+loadedCapability: recover-no-stop-prewrite-v1 (attested at prepare AND dispatch)
+phase: content_script_prewrite_or_preclick
+reason: closed set of reasons proven before ANY mutation
+editor_touched: false
+stop_clicked: false
+send_clicked: false
+effectId + dispatchGeneration: verified at Supervisor boundary against original CAS
+```
+
+- **正面授权边界：** 只有当前已加载、已确认版本的内容脚本在**尚未改动任何页面/草稿或点击按钮**时，才能返回上述证明。后台必须验证该回复属于相同已 claim 的 `instanceId + commandId`、同一 exact profile/tab/owner；Target Adapter 保留并传递原命令关联，Supervisor 只对**匹配的 effect + generation**按现有幂等账本记一次已证实的 `not_attempted`，调用 `browserObserveDispatchFailure` 退还一次预算。
+- **反面边界：** 目标查找失败、加载内容脚本陈旧/版本不明、Prepare 与 Dispatch 间换版、Native/receiver 超时、无效格式、claim 不可验证、任何 `editor_touched:true`、Stop/Send 可能已点击或新消息提交结果未知，都不具备上述负面证明。不得从 `dispatched:false` 降级猜成 `not_attempted`；保留 attempted/unknown、仅只读 reconcile，绝不再次 Send。
+- **竞态解释：** 若恢复在 `browserBeginEffect` **之前**因 live/Stop 被拒绝，则没有 dispatch-start，本来就无需 refund。若 **CAS 之后**内容脚本给出完整、同代次写入前负面证明，才可能合法 refund；CAS 之后若草稿已写入或回执丢失，不能退款，也不能承诺 generation 从未消耗。**同一旧 generation 的证明不得退还较新代次。**
+- **不扩权：** 不新增 Effect Writer、认证 Provider、持久状态库或替代迁移通道；仅在原有 `content.js → background.js → chatgpt-extension-target.ts → native-browser-adapter.ts → control-plane.ts/store.ts` 证据链做最小 typed result/验证。
+
 ## 4. P2：Provider 投递诊断先于改动
 
 **候选落点：** `adapters/computer/chatgpt-extension-target.ts:freshProviders/ensureExact/submit`，`adapters/computer/chrome-extension/background.js:tabMessage/providerTick/heartbeatTick/nativeRpc`，`supervisor/native-messaging/host.ts`。
@@ -70,15 +94,17 @@
 2. POST-CAS、PRE-WRITE live：可能已有 dispatch generation，但通过**已证明加载的新 content 能力**，零 Stop/Editor/Send；任何真正的退款必须有可信 pre-write/pre-click negative proof。
 3. POST-WRITE live：generation 与 Editor 草稿可能已变化，仍不 Stop/Send；必须如实记录 Editor touched，不能以 `not_attempted` 伪造无页面变更，也不能直接重发。
 
+补充 r10 类型化负面证明测试：旧/缺失能力、不同的 prepare/dispatch 加载脚本、错 profile/tab/owner、错 instanceId/commandId、非法 reason、格式错误、接收超时、post-write provider_busy 或 editor_touched 都不产生 not_attempted/refund/重复 Send；有效同命令同代次 prewrite_no_mutation_proof 才退还对应 generation 恰好一次，旧代次不能退新代次。
+
 额外负例：旧 content.js + 新 background 的版本组合；能力接口缺失/过期；同 tab 的 Prepare 通过但 Dispatch 时加载不同代码；错 Profile/Tab、陌生草稿、晚到 parent completion、五条已 applied 未完成导致迁移拒绝；Native 发送/响应未知跨 Runtime 重启零重复外部副作用。只有 settled idle/provider failure 可以单次恢复。P3/P4 后续片段不得假装当前已有自动 Reviewer wake。真实 Windows Chrome 原 Work C→C→D + 有效源码修改 + 固定 HEAD 审查/CI + Recovery 授权发布；三组可比 A/B 30% 目标缺可比证据则保留 IMPROVEMENT NOT PROVEN。
 
 ## 8. P6/P7：双独立设计 ACCEPT 只授权 P1/P2 实施
 
-**当前只是 r9 / #468 Draft 的候选，0/2 独立 ACCEPT。** 历史 r4–r7 均有独立 REVISE，最近 r7 两份固定 HEAD 证据见 [6414844309](https://github.com/moretea-labs/forge/pull/468#issuecomment-6414844309)。
+**当前只是 r10 / #468 Draft 的候选，0/2 独立 ACCEPT。** 历史 r9 因果 Reviewer A REVISE、Reviewer B 超时无结论，均不能跨版本计票（[6415169634](https://github.com/moretea-labs/forge/pull/468#issuecomment-6415169634)）。 历史 r4–r7 均有独立 REVISE，最近 r7 两份固定 HEAD 证据见 [6414844309](https://github.com/moretea-labs/forge/pull/468#issuecomment-6414844309)。
 
-- **实际 Plan r9 依赖字段（无环）：** `P0 → P6（仅设计双独立审查）→ P1/P2 代码实施 → P5 验证`；P7 在 P6 批准后才取得唯一 Writer 交付授权。P6 不再以 P1/P2/P5 的代码完成为前置。P3/P4 仍是同 Plan/Work 最终有效产出和自动审查治理的必交付切片，但不阻塞本次 P1/P2 安全恢复。
+- **实际 Plan r10 依赖字段（无环）：** `P0 → P6（仅设计双独立审查）→ P1/P2 代码实施 → P5 验证`；P7 在 P6 批准后才取得唯一 Writer 交付授权。P6 不再以 P1/P2/P5 的代码完成为前置。P3/P4 仍是同 Plan/Work 最终有效产出和自动审查治理的必交付切片，但不阻塞本次 P1/P2 安全恢复。
 - **P6 依赖是设计前置，不是代码完成：** P0 因果矩阵、P1/P2 的路径和安全契约、P5 测试设计接受审查；P3/P4 是后续非阻塞实施切片，P5 测试的实际执行也不是 P6 的设计 Review 前提。
-- 两个**不同**独立只读模型会话必须审查同一个原 Plan r9 与同一个 #468 固定最新 HEAD，并各给 `ACCEPT/REVISE/BLOCK` + 精确源码行证据。任一 REVISE 只能返回原 Plan/同 PR，新 HEAD 重审，不允许把旧版 ACCEPT 转移过来。
+- 两个**不同**独立只读模型会话必须审查同一个原 Plan r10 与同一个 #468 固定最新 HEAD，并各给 `ACCEPT/REVISE/BLOCK` + 精确源码行证据。任一 REVISE 只能返回原 Plan/同 PR，新 HEAD 重审，不允许把旧版 ACCEPT 转移过来。
 - 双 ACCEPT + 必要 docs CI 才允许原唯一 Windows WSL2 Writer 在原 Work 上修改 P1（no Stop、exact tab script attestation、负面证明）与证据证明必要的 P2 最小传输路径，之后按 P5 运行测试/Live；**P3/P4 没有因此被授权提前实施，也不能反向卡住 P1/P2**。
 - 源码实现为同一 #313 任务下的一条代码 PR，和 #465 分开；固定 HEAD 独立源码 Review/CI、唯一集成 Writer 合并、Recovery 真实发布、零重复外部副作用。Mac 只负责只读 Review/原生 E2E，不持有 Forge 源码写入权。
 
@@ -86,4 +112,4 @@
 
 不因 Gateway 工具表指纹失配换不稳定 Runtime；不因 Mac/WSL 任一连接超时重复发送已可能产生副作用的原效应；不因检测到 Stop 擅自终止旧回复；不抹除旧 completion，不降低 applied ancestor 会话迁移拒绝；任何未知 Send 先同原 exact target 只读 reconcile。模型纠偏必须验证下一次真实产出，失败返回原 Plan 的 REVISE 或同一个实现 PR 修复，而非新 Scheduler/Layer/Plan/Writer。
 
-**冻结标识（审查时以 GitHub 当前 HEAD 为准）：** PR #468 / canonical Plan r9 / Git base 2cc71021d / 原 Writer supervisor:d09f4e6bb4014a894db105ec / 原 Work work-forge-source-bug-convergence-v1 / 原待发送 fx_170155dcd5cfe2a220238aff61d04f20。
+**冻结标识（审查时以 GitHub 当前 HEAD 为准）：** PR #468 / canonical Plan r10 / Git base 2cc71021d / 原 Writer supervisor:d09f4e6bb4014a894db105ec / 原 Work work-forge-source-bug-convergence-v1 / 原待发送 fx_170155dcd5cfe2a220238aff61d04f20。
