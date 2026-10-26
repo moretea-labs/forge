@@ -1,7 +1,7 @@
-# Forge #313 — 自动续跑、可靠投递与有效产出（Plan r12 审查稿）
+# Forge #313 — 自动续跑、可靠投递与有效产出（Plan r13 审查稿）
 
 > **DESIGN ONLY · Draft PR #468 · 尚无本候选独立 ACCEPT · 禁止生产源码实施。**
-> 本文须与唯一 Forge Plan `PLAN-forge-thin-delivery-efficiency-code-slimming-20261019` **r12** 和本 PR 当前完整 HEAD 同时审查。历史 r4/r5/r6 的 REVISE 不是本候选 ACCEPT。评审冻结后任何修改都必须重新以新 HEAD 审查。
+> 本文须与唯一 Forge Plan `PLAN-forge-thin-delivery-efficiency-code-slimming-20261019` **r13** 和本 PR 当前完整 HEAD 同时审查。历史 r4/r5/r6 的 REVISE 不是本候选 ACCEPT。评审冻结后任何修改都必须重新以新 HEAD 审查。
 
 ## 0. Authority、优先级与成功判据
 
@@ -34,8 +34,8 @@
 安全权威：`docs/architecture/decisions/20261001-supervisor-turn-authority.md:212–220` 明文禁止恢复时自动 Stop 正在生成的旧回复。源码已有 `content.js:244` 的 stop.click，与此契约不符。实施仅由原 WSL Writer 在双 ACCEPT 后进行。
 
 - **旧版脚本不能假冒安全实现**：当前 `background.js:445–505` 已有向 exact tab 发送 `forge-computer-chatgpt-capabilities` 的路径，但主要用于 bootstrap/草稿替换。对普通 conversation recovery **在 executePrepare 与 executeDispatch 两处**都要求原精确 tab 当前加载的 content script 返回 `recover-no-stop-prewrite-v1`。旧/缺失/错误版本在调用内容脚本变更前即拒绝；仅背景 service worker 更新不代表 tab 脚本更新。复用此消息与现有 typed 结果，不添第二 Provider、数据库或认证权威。
-- **content.js:dispatchPrompt(recover)**：永久删除自动 `stop.click()`。ChatGPT 会残留可见 Stop 控件；因此 Stop **单独不是 live-generation 证明**。将真实信号与 Stop 分开：当前 conversation turn 的可见 `[data-is-streaming="true"]`、`aria-busy=true` 是正向 live 信号；最后一条实际消息角色仍为 user 也属于未完成/歧义，须 fail-closed；若最后一条实际消息为 assistant 且没有 stream/busy 信号，单独残留的 Stop 视为 stale UI，不阻断恢复。Prepare 和 Dispatch 均以相同组合判据检查精确 tab、URL、草稿归属；绝不点击 Stop。调用 `writeComposer` 前若存在正向 live 或 user-turn 歧义，零 Editor/Send；写入后重新出现正向 live 时仍禁止 Stop/Send，**但可能已修改草稿**，如实报告 Editor-touched，不伪造零副作用。
-- **真正的未执行证明**：`background.js:executeDispatch` 不能再将所有 `dispatched:false` 无条件转换为 `mutation:not_attempted`。只有完成上述 exact-tab 能力证明且内容明确回复 pre-write/pre-click 失败，才可产生 no-mutation 负面证明、沿 `native-browser-adapter.ts:browserObserveDispatchFailure` / `supervisor/store.ts` refund。发生 Editor 改动、旧 script 版本不明、Send/Native claim 结果未知时保守记录 attempted/UNKNOWN，只读 reconcile，绝不盲重发。
+- **content.js:dispatchPrompt(recover)**：永久删除自动 `stop.click()`。可见 Stop **单独不是 live-generation 证明**，但只有正面确认 turn 身份时才能忽略它。首先必须识别精确 conversationRoot 中最后一条实际 assistant/user 消息、当前最后一个 `TURN` 容器，并证明该 assistant 消息属于同一个 `TURN`；同时分别检查该 `TURN` 与消息节点上的可见 `data-is-streaming=true` / `aria-busy=true`。若容器缺失、消息不在容器内、角色/容器无法映射或最后角色为 user，则 liveness=UNKNOWN 并 fail-closed，不能以找不到 selector 当作 idle。仅当 last assistant 被证明属于 exact current TURN 且 TURN 与消息节点均无 stream/busy 时，残留 Stop 才视为 stale UI。Prepare/Dispatch 以相同判据检查精确 tab、URL、草稿；绝不点击 Stop。写入前的 true-live/UNKNOWN 为零 Editor/Send；写入后重新出现 live 时仍禁止 Stop/Send，但如实记录 Editor-touched。
+- **真正的未执行证明**：`background.js:executeDispatch` 不得将任意 `dispatched:false` 转成 `mutation:not_attempted`。普通 `browserObserveDispatchFailure` 与 `control-plane.ts:bootstrapObserveEffect(outcome=not_applied)` 两条现存 refund 路径，必须都验证同一 command/target/capability/effect/dispatchGeneration-bound `prewrite_no_mutation_proof`；bootstrap 不能只凭 `dispatch_mutation:not_attempted + send_clicked:false` 退款。仅已加载合规 exact-tab 脚本明确证明页面/Editor/Stop/Send 全未触碰，才可把该原代次退还一次。Editor 改动、旧版本不明、目标错位、Native claim/Send 结果未知、超时/非法格式均是 attempted/UNKNOWN，只读 reconcile，绝不盲重发。
 - **两次 live 检查的因果边界**：`supervisor/native-browser-adapter.ts:executeCommand` 不得仅因 Stop 控件可见就静默早退；沿用现有 `noteTaskFailure('WORKFLOW_SUPERVISOR_RECOVERY_WAITING_LIVE_TURN',task,effectId,false)` 仅报告真正 live 或无法消歧的 user-turn 状态。现有 `withChatgptProviderDispatchLane` 在 fresh exact `target.observe` 后、`browserBeginEffect` CAS **之前**同样用组合信号复核：真正 stream/busy 或 last-role-user 则零 Stop/Editor/Send/dispatch-start，不生成新 generation；last-role-assistant + Stop-only 则继续安全 prepare。**CAS 之后**才出现 live 则 generation 可能已消耗、Editor 也可能变化；只能按已证明负面结果或 UNKNOWN 对账。
 - **可解释但不伪造成功**：现有约 30s 的 per-task transport degraded 投影只给这条代码具体 WAIT/原 Owner 操作理由，不能笼统说 auto-recovering 或制造 NEEDS_USER/DONE。只有旧回复 settled idle 或明确 Provider failure 后，原 effect 才能在 CAS 下 Send 一次。Stop 缺失并不单独证明已结束；五条旧 applied 祖先、late completion 与未知外部 mutation 仍按原账本保护。
 
@@ -94,25 +94,27 @@ effectId + dispatchGeneration: verified at Supervisor boundary against original 
 2. POST-CAS、PRE-WRITE live：可能已有 dispatch generation，但通过**已证明加载的新 content 能力**，零 Stop/Editor/Send；任何真正的退款必须有可信 pre-write/pre-click negative proof。
 3. POST-WRITE live：generation 与 Editor 草稿可能已变化，仍不 Stop/Send；必须如实记录 Editor touched，不能以 `not_attempted` 伪造无页面变更，也不能直接重发。
 
-补充 r10 类型化负面证明测试：旧/缺失能力、不同的 prepare/dispatch 加载脚本、错 profile/tab/owner、错 instanceId/commandId、非法 reason、格式错误、接收超时、post-write provider_busy 或 editor_touched 都不产生 not_attempted/refund/重复 Send；有效同命令同代次 prewrite_no_mutation_proof 才退还对应 generation 恰好一次，旧代次不能退新代次。
+补充 r13 安全负例：Stop + assistant 节点无法映射到精确 TURN、TURN 缺失或 aria-busy 仅在消息节点 → UNKNOWN，Prepare/Dispatch 零 Editor/Send/Stop/refund/replay；只有 assistant 明确属于 exact last TURN 且 TURN 与消息均无 stream/busy，才把 Stop-only 判为 stale。旧/缺失能力、prepare/dispatch 版本不一致、错 profile/tab/owner、错 instanceId/commandId、非法 reason/格式、接收超时、post-write provider_busy/editor_touched 不得 not_attempted/refund/重复 Send。覆盖普通 `browserObserveDispatchFailure` 与 `bootstrapObserveEffect(not_applied)` 两条退款路径：均拒绝只含布尔 `not_attempted` 的回执；有效同命令同代次 proof 仅退对应 generation 一次，旧代次不能退新代次。
 
 额外负例：旧 content.js + 新 background 的版本组合；能力接口缺失/过期；同 tab 的 Prepare 通过但 Dispatch 时加载不同代码；错 Profile/Tab、陌生草稿、晚到 parent completion、五条已 applied 未完成导致迁移拒绝；Native 发送/响应未知跨 Runtime 重启零重复外部副作用。只有 settled idle/provider failure 可以单次恢复。P3/P4 后续片段不得假装当前已有自动 Reviewer wake。真实 Windows Chrome 原 Work C→C→D + 有效源码修改 + 固定 HEAD 审查/CI + Recovery 授权发布；三组可比 A/B 30% 目标缺可比证据则保留 IMPROVEMENT NOT PROVEN。
 
-## 8. P6/P7：双独立设计 ACCEPT 只授权 P1/P2 实施
+## 8. P6/P7/P8：设计双审、唯一实现 PR、独立验证与发布
 
-**当前只是 r12 / #468 Draft 的候选，0/2 独立 ACCEPT。** 历史 r10 的两位独立 Reviewer 均仅因 P7 硬编码旧 r9 审核版本而 REVISE；Plan r12 取消 P6/P7 授权条件中的任何硬编码修订号，改为同一最新受审 Plan revision + 当前 immutable PR HEAD。参见 [6415339550](https://github.com/moretea-labs/forge/pull/468#issuecomment-6415339550)。 历史 r9 因果 Reviewer A REVISE、Reviewer B 超时无结论，均不能跨版本计票（[6415169634](https://github.com/moretea-labs/forge/pull/468#issuecomment-6415169634)）。 历史 r4–r7 均有独立 REVISE，最近 r7 两份固定 HEAD 证据见 [6414844309](https://github.com/moretea-labs/forge/pull/468#issuecomment-6414844309)。
+**当前只是 r13 / #468 Draft 候选，0/2 独立 ACCEPT。** r12 两位独立 Reviewer 均 REVISE：A 要求 current TURN 与 last assistant node 的正面归属/双位置 busy 检查；B 要求所有退款路径含 bootstrap 共用 typed proof，并将实施与发布解耦（[6429652078](https://github.com/moretea-labs/forge/pull/468#issuecomment-6429652078)）。r11 ACCEPT 不转移至 r12/r13。
 
-- **实际 Plan r11 依赖字段（无环）：** `P0 → P6（仅设计双独立审查）→ P1/P2 代码实施 → P5 验证`；P7 在 P6 批准后才取得唯一 Writer 交付授权。P6 不再以 P1/P2/P5 的代码完成为前置。P3/P4 仍是同 Plan/Work 最终有效产出和自动审查治理的必交付切片，但不阻塞本次 P1/P2 安全恢复。
-- **P6 依赖是设计前置，不是代码完成：** P0 因果矩阵、P1/P2 的路径和安全契约、P5 测试设计接受审查；P3/P4 是后续非阻塞实施切片，P5 测试的实际执行也不是 P6 的设计 Review 前提。
-- 两个**不同**独立只读模型会话必须对**同一当前 canonical Plan 修订（本轮 r12）与同一 #468 固定 HEAD**，并各给 `ACCEPT/REVISE/BLOCK` + 精确源码行证据。任一 REVISE 只能返回原 Plan/同 PR，新 HEAD 重审，不允许把旧版 ACCEPT 转移过来。
-- 双 ACCEPT + 必要 docs CI 才允许原唯一 Windows WSL2 Writer 在原 Work 上修改 P1（no Stop、exact tab script attestation、负面证明）与证据证明必要的 P2 最小传输路径，之后按 P5 运行测试/Live；**P3/P4 没有因此被授权提前实施，也不能反向卡住 P1/P2**。
-- 沿 AGENTS.md `Forge-source PR continuation` 复用原 Work 已链接的现有 Draft 源码 PR **#457**，不新建同义实现 PR；当前 #457 的旧 ACCEPT/CI 在新增提交后不再算数，必须在新固定 HEAD 上重新独立 Review+CI。#465 保持独立不受自动授权；固定 HEAD 独立源码 Review/CI、唯一集成 Writer 合并、Recovery 真实发布、零重复外部副作用。Mac 只负责只读 Review/原生 E2E，不持有 Forge 源码写入权。
+- **DAG：** `P0 → P6（仅设计双独立审查）→ P7（唯一源码实施）；P1/P2 完成后 P5 验证；P8 发布/合并依赖 **P7 + P5**。P6 不等待源码实施或 P5 实测，不产生循环；P7 只授权写代码，不授予合并/发布。
+- **设计审查：** 两个**不同**独立只读模型必须对同一当前 canonical Plan revision r13 与同一固定 #468 HEAD 给出 `ACCEPT/REVISE/BLOCK` + 代码行证据。任何 REVISE 返回同 Plan/同 #468 更新后重新审查；旧 HEAD 的 ACCEPT 不可继承。
+- **源码 PR：** 根据 AGENTS.md “Forge-source PR continuation”，复用原 WSL Work 已链接的 **现有源码 PR #457**，不新建相同实现 PR。其旧 ACCEPT/CI 只适用于 SHA `b9394e8`，新增提交后必须针对新 SHA 重新运行 CI/Windows smoke 与独立 code Review。仅原 WSL A-line Writer `supervisor:d09f4e6bb4014a894db105ec` 写代码，Mac 只读。
+- **P7 实施边界：** 双独立设计 ACCEPT + docs CI 后，在原 Work/原 PR #457 仅实施 P1 stale-Stop composite signal、loaded content attestation、两条退款路径统一 typed proof，以及有实证的窄 P2；保持 context-pack/recovery 现有改动与测试，绝不碰 canonical main checkout 中其他 Owner 的 dirty `src/cli/controller/launch-agents.ts`。未知 Send、旧 applied ancestors 和原 CAS 不可绕过。
+- **P5 验证：** existing tests 覆盖 stale Stop + exact TURN/assistant mapping、真实 stream/busy、UNKNOWN turn、普通与 bootstrap refund、post-CAS generation、late completion、5 applied ancestor migration fence、restart unknown 不重放。真实 Windows Chrome 原 Work C→C→D 及有效第一源码修改是必要证据。
+- **P8 合并/发布：** 只有 P5 全通过、独立 code Reviewer ACCEPT 当前 #457 精确 HEAD、必需 CI+Windows smoke SUCCESS、唯一集成权限确认后，才允许合并并由 Recovery 发布匹配源码/扩展构建；其后验证加载版本与真实 runtime E2E。P3/P4 自动产出检测/Reviewer event governance 以及三项可比 A/B ≥30% 目标仍是同一 Plan/Work 的后续必交付，不得标 DONE/已量化而无实据。
 
 ## 9. 回滚与禁止路径
 
 不因 Gateway 工具表指纹失配换不稳定 Runtime；不因 Mac/WSL 任一连接超时重复发送已可能产生副作用的原效应；不因检测到 Stop 擅自终止旧回复；不抹除旧 completion，不降低 applied ancestor 会话迁移拒绝；任何未知 Send 先同原 exact target 只读 reconcile。模型纠偏必须验证下一次真实产出，失败返回原 Plan 的 REVISE 或同一个实现 PR 修复，而非新 Scheduler/Layer/Plan/Writer。
 
-**冻结标识（审查时以 GitHub 当前 HEAD 为准）：** PR #468 / canonical Plan r12 / Git base 2cc71021d / 原 Writer supervisor:d09f4e6bb4014a894db105ec / 原 Work work-forge-source-bug-convergence-v1 / 原待发送 fx_170155dcd5cfe2a220238aff61d04f20。
-## 10. r12 change from operator-confirmed ChatGPT stale Stop behavior
+**冻结标识（审查时以 GitHub 当前 HEAD 为准）：** PR #468 / canonical Plan r13 / Git base 2cc71021d / 原 Writer supervisor:d09f4e6bb4014a894db105ec / 原 Work work-forge-source-bug-convergence-v1 / 原待发送 fx_170155dcd5cfe2a220238aff61d04f20。
+## 10. r13 response to operator-confirmed ChatGPT stale Stop behavior
 
-The operator confirms the prior ChatGPT response had already stopped; ChatGPT may leave a stale Stop control. Plan r11 double-ACCEPT was not proof this edge was solved: its visible-Stop-as-hard-block rule could reproduce the same liveness deadlock. r12 is a minimal refinement: **never click Stop; do not treat Stop alone as proof of a live generation**. A visible streaming indicator / current-turn busy signal, or an unfinished latest user turn, stays fail-closed. Latest assistant turn with no stream/busy signal permits treating the leftover Stop as stale UI and proceeding through existing exact-target guards. Add those positive/negative fixtures to existing tests. Unknown previously applied effect remains non-replayable and the original recovery effect stays under the canonical Supervisor ledger.
+The operator confirms the prior ChatGPT response had already stopped; ChatGPT may leave a stale Stop control. r13 only treats Stop-only as stale when the exact last assistant message is positively mapped inside the exact current last TURN and both the TURN and message node lack visible stream/busy signals. Missing/mismatched turn mapping is UNKNOWN and fails closed. The same typed command/target/capability/effect/generation-bound negative proof is mandatory for every refund path, including bootstrap.
+
