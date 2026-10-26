@@ -5,7 +5,7 @@
 >
 > 设计基线：canonical Windows WSL2 repo `repo_f37fe508f6e8dabb8fe607e4`，`/home/greyson/src/forge`，检查时 HEAD `db7c463d`（2026-10-26）。当前源代码工作树另有 `src/cli/controller/launch-agents.ts` +41 行未提交，归原 P0 代码 Owner，不属于本文 PR。GitHub 文档分支独立、不触碰 WSL 源码工作树。
 >
-> 事实源：原 Plan `PLAN-forge-thin-delivery-efficiency-code-slimming-20261019` **revision 4**（14 项），原源码 Work `work-forge-source-bug-convergence-v1`，原唯一 WSL A-line Writer `supervisor:d09f4e6bb4014a894db105ec`。协作 Issue [#313](https://github.com/moretea-labs/forge/issues/313)；关联但不得冒名实施的 UI 重构 [#465](https://github.com/moretea-labs/forge/issues/465)。本文仅为方案审查候选，不创建 Work、Writer、Scheduler 或 Approval Authority。
+> 事实源：原 Plan `PLAN-forge-thin-delivery-efficiency-code-slimming-20261019` **revision 5**（14 项），原源码 Work `work-forge-source-bug-convergence-v1`，原唯一 WSL A-line Writer `supervisor:d09f4e6bb4014a894db105ec`。协作 Issue [#313](https://github.com/moretea-labs/forge/issues/313)；关联但不得冒名实施的 UI 重构 [#465](https://github.com/moretea-labs/forge/issues/465)。本文仅为方案审查候选，不创建 Work、Writer、Scheduler 或 Approval Authority。
 
 ## 0. 目的、成功标准与边界
 
@@ -92,7 +92,36 @@ late reply 优先：在对旧 Stop 采取任何 mutation 前，同一 exact conv
 
 ### P1.2 与历史 S0–S4 的范围边界
 
-原 Forge Plan r4 仍保留 2026-10-19 的 S0–S4（旧 Mac/WSL 同步、GPU/Ollama、代码瘦身等）。它们是**长期效率工作，非此次 #313 P0 自动推进恢复的前置条件**；原目标中 Mac 源码同步表述是历史事实，2026-10-24 后唯一 Forge 源码 Writer 为 Windows WSL2。双独立 Review 仅评价 P0–P7 的这次故障收敛以及不得破坏 S0–S4 长期边界，不得让实验 GPU 或大规模瘦身拖延最小有效修复。Reviewer B 仍必须判断如此复用原 Plan 是否过度混合，若 REVISE，原地修 Plan 和同一 PR。
+原 Forge Plan r5 仍保留 2026-10-19 的 S0–S4（旧 Mac/WSL 同步、GPU/Ollama、代码瘦身等）。它们是**长期效率工作，非此次 #313 P0 自动推进恢复的前置条件**；原目标中 Mac 源码同步表述是历史事实，2026-10-24 后唯一 Forge 源码 Writer 为 Windows WSL2。双独立 Review 仅评价 P0–P7 的这次故障收敛以及不得破坏 S0–S4 长期边界，不得让实验 GPU 或大规模瘦身拖延最小有效修复。Reviewer B 仍必须判断如此复用原 Plan 是否过度混合，若 REVISE，原地修 Plan 和同一 PR。
+
+### P1.3 Plan r5 的安全路线（回应独立 Reviewer A REVISE，未获双 ACCEPT）
+
+[独立 Reviewer A 的固定 r4/HEAD 审查](https://github.com/moretea-labs/forge/pull/468#issuecomment-6413904259) 判定 **REVISE**：20261001 已 ACCEPT 的 `docs/architecture/decisions/20261001-supervisor-turn-authority.md:212–220` 明确规定：**reserved recovery 从不授权停止仍在生成的 provider turn**。因此 r4 “跳过 prepare stop-pending，复用 `recover dispatch` 去点击 Stop”的候选被**废弃**。本 r5 **不**修改 ADR 赋予自动 Stop 权，不增加独立 Stop mutation/effect Owner。
+
+**进入实现阶段后的精确最小改法（源码尚未修改）：**
+
+1. `adapters/computer/chrome-extension/content.js:244–256`：`dispatchPrompt(mode='recover')` 的 **prepare 与 dispatch 两个入口**，均只做无副作用 Stop/live-generation 检查。可见 Stop 或 `hasLiveGenerationSignal()` 时返回既有 `provider_recovery_stop_pending` / `provider_busy`，**不执行 `stop.click()`**、不覆盖 editor、不点击 Send。删除现在仅在 dispatch 分支存在的 Stop-click+2s-loop；即使 prepare 与真正 dispatch 之间页面又进入生成，也必须在同一 exact target 上 fail-closed。移除这一唯一不被架构允许的自动 Stop 后，`background.js:executeDispatch` 的 `mutation:'not_attempted'` 才能真实意味着该调用没有 Stop/Send 副作用；对任何已 claimed Send 或 Native Message outcome unknown，仍返回 attempted/unknown，不能退款。
+2. `supervisor/native-browser-adapter.ts:1134–1290`：**保留** recover 的 `provider_recovery_stop_pending` 无发送分支，不允许仅删除早退。将原先完全静默的无限 WAIT 转为现有 `noteTaskFailure` / `reportTaskStall` 与已有相同错误去重机制中**一次**可行动的精确阻塞事实（`taskId` / `effectId` / exact target / live provider observation），而不是反复给模型发送 CONTINUE，或假设已退出正在生成。真实 external WAIT 不算系统失效，旧生成缺失结算又缺少合法取消授权时应请求原 Owner 采取明确人工恢复动作。
+3. 只有 **settled idle assistant 或显式 provider failure**，以及同一绑定 Chrome Profile/Tab、无陌生草稿、旧回执核对后，才能进入既有 `prepare → browserPoll → browserBeginEffect → dispatch → observe`。Stop 消失本身**不代表**旧 effect 已完成，也不直接放行 recovery。
+4. `supervisor/store.ts:1866–1888` 的现有 CAS 保持竞争分界：有效父 completion **先**持久化 → 后续 recovery dispatch-start 必须拒绝；若 recovery 的 dispatch-start CAS **先**持久化，之后旧回复只能作为只读对账证据，不能再产生竞争的子 effect。若 commit 后至 Send 前崩溃，必须依原 generation+negative proof 规则核对，**未知 outcome 只读观察不重发**。无需增加第二个 planner/Work/schema。
+5. 如果真实生产错误为 `COMPUTER_CHATGPT_EXTENSION_NOT_CONNECTED`，不应猜测 Stop 导致：先按 `chatgpt-extension-target.ts` 的 provider instance/15s heartbeat、`background.js` Native Messaging claim/timeout 与真实 exact tab 证据找到通信根因；只在已有单一 Browser Provider Authority 内修复。
+
+**五条历史因果债务逐条表**（2026-10-26 WSL Supervisor SQLite 只读查询，均 dispatch 1 次、applied 1 次，当前无 own completion、无已完成 recovery child；不包含新 recovery `fx_170155...`）：
+
+| Effect | Kind / causal predecessor | Applied UTC | 当前唯一合法动作 |
+| --- | --- | --- | --- |
+| `fx_d25d5a64ae0f1ad1772b3a7cfa04adb7` | continuation ← completion `34d6aa9...` | 10/25 01:04:54 | 读已发消息/旧回复回执；不能迁移或重发 |
+| `fx_82b30c0c9b8ae0a3dcd09c3dbbdf36c1` | recovery ← `fx_d25d5a...` | 10/25 01:41:54 | 读回执/已完成 recovery child；不能因子 effect reserved 即结清父 |
+| `fx_7a4338f84c790c78e214192cb7e283d9` | recovery ← `fx_82b30c...` | 10/25 01:59:37 | 原 causal observation / 禁止推断未发 |
+| `fx_4cec5c414ee1bdd1832e7f5c0bcbe85a` | recovery ← `fx_7a4338...` | 10/25 11:39:30 | 原 causal observation / 禁止推断未发 |
+| `fx_92e0e9a2998a887ee067ebc60130ff41` | continuation ← completion `dbd463d...` | 10/25 13:53:08 | 读最后合法旧完成与最新 recovery 的关系，不准盲重发 |
+
+`supervisor/store.ts:178–196,1722,1785` 的 migration guard 在**全部** applied-without-completion 的因果义务依法结算前继续拒绝迁移。上表是审核用**派生快照**，不是独立状态数据库；早期 event 可能晚到，因此实施前必须重新只读查询，不能依旧表更新生产账本。
+
+**需追加的确定性反例**：Stop 一直存在 → 0 Stop/0 Send/0 draft mutation/0 新 generation，单次有界诊断；Stop 在 prepare 后出现 → dispatch 仍 0 mutation；Stop 消失但仍 generating → 不发送；settled idle/failure → 原唯一 effect 正常自动恢复；old completion-before-CAS 与 after-CAS → 恰有一个合法 successor；Send claimed timeout→unknown 且重启不重发；5 applied ancestors 阻止会话迁移；Reviewer 无新 HEAD 不循环 C。保留原 `tests/runtime/workflow-supervisor-control-plane.test.ts` 等测试范围，不默认新建套件。
+
+**边界**：本方案改善常规可归属的自动续跑以及死循环诊断，但不承诺未经用户授权自动取消一个真实仍在运行的 ChatGPT 生成。若产品未来需要“自动 Stop”，必须另经用户明确授权、修改已 ACCEPT ADR、再证明完整 Stop-only durable side-effect 语义；这**不属于本次 P0 的必要改动**。
+
 
 ### P2. 只在实证支持时修复 Extension 的连接不稳定
 
