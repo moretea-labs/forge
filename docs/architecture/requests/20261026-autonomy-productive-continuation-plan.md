@@ -1,7 +1,7 @@
-# Forge #313 — 自动续跑、可靠投递与有效产出（Plan r14 审查稿）
+# Forge #313 — 自动续跑、可靠投递与有效产出（Plan r15 审查稿）
 
 > **DESIGN ONLY · Draft PR #468 · 尚无本候选独立 ACCEPT · 禁止生产源码实施。**
-> 本文须与唯一 Forge Plan `PLAN-forge-thin-delivery-efficiency-code-slimming-20261019` **r14** 和本 PR 当前完整 HEAD 同时审查。历史 r4/r5/r6 的 REVISE 不是本候选 ACCEPT。评审冻结后任何修改都必须重新以新 HEAD 审查。
+> 本文须与唯一 Forge Plan `PLAN-forge-thin-delivery-efficiency-code-slimming-20261019` **r15** 和本 PR 当前完整 HEAD 同时审查。历史 r4/r5/r6 的 REVISE 不是本候选 ACCEPT。评审冻结后任何修改都必须重新以新 HEAD 审查。
 
 ## 0. Authority、优先级与成功判据
 
@@ -35,7 +35,7 @@
 
 - **旧版脚本不能假冒安全实现**：当前 `background.js:445–505` 已有向 exact tab 发送 `forge-computer-chatgpt-capabilities` 的路径，但主要用于 bootstrap/草稿替换。对普通 conversation recovery **在 executePrepare 与 executeDispatch 两处**都要求原精确 tab 当前加载的 content script 返回 `recover-no-stop-prewrite-v1`。旧/缺失/错误版本在调用内容脚本变更前即拒绝；仅背景 service worker 更新不代表 tab 脚本更新。复用此消息与现有 typed 结果，不添第二 Provider、数据库或认证权威。
 - **content.js:dispatchPrompt(recover)**：永久删除自动 `stop.click()`。可见 Stop **单独不是 live-generation 证明**，但只有正面确认 turn 身份时才能忽略它。首先必须识别精确 conversationRoot 中最后一条实际 assistant/user 消息、当前最后一个 `TURN` 容器，并证明该 assistant 消息属于同一个 `TURN`；同时分别检查该 `TURN` 与消息节点上的可见 `data-is-streaming=true` / `aria-busy=true`。若容器缺失、消息不在容器内、角色/容器无法映射或最后角色为 user，则 liveness=UNKNOWN 并 fail-closed，不能以找不到 selector 当作 idle。仅当 last assistant 被证明属于 exact current TURN 且 TURN 与消息节点均无 stream/busy 时，残留 Stop 才视为 stale UI。Prepare/Dispatch 以相同判据检查精确 tab、URL、草稿；绝不点击 Stop。写入前的 true-live/UNKNOWN 为零 Editor/Send；写入后重新出现 live 时仍禁止 Stop/Send，但如实记录 Editor-touched。
-- **所有退款 authority 的共享类型化证明**：普通 `browserObserveDispatchFailure`、`control-plane.ts:bootstrapObserveEffect(not_applied)`，以及 `store.ts:reconcileNativePreSendFailure`/`recordEffectNotAppliedProof` 的 macos-native 兼容路径，都不能从 `dispatched:false`、`send_clicked:false` 或持久化旧 `pre_send_rejection` 直接退款。共享 discriminated `prewrite_no_mutation_proof` 必须绑定同一 effect+dispatchGeneration 且只验证一次；browser surface 要求当前已加载 `recover-no-stop-prewrite-v1`、同一 claimed instanceId+commandId、exact profile/window/tab/owner；macos-native surface 必须是新鲜 native command/session receipt 与 exact provider/target owner 绑定。两者都证明 closed pre-mutation reason、editor_touched=false、stop_clicked=false、send_clicked=false。旧的 proofless macos-native 记录一律 UNKNOWN/non-refunding，不自动重发；超时、格式错误、目标不符、Editor touched 或 Send unknown 同样 UNKNOWN。
+- **共享的退款证明与唯一写入者**：先确认 Chrome ordinary dispatch、bootstrap、macos-native compatibility、operator retry 都不能直接写 `effect_dispatch_budget_refunded`。唯一合法 Writer 是现有 `store.ts` 内一个 central validator+refund insertion；任何 caller 只能提交 discriminated `prewrite_no_mutation_proof`，Store 在同一事务核实 effectId 与精确 dispatchGeneration、freshness、surface、exact target owner、typed fields，并通过既有幂等键至多一次插入退款事件。Chrome 要求 fresh `recover-no-stop-prewrite-v1`、claimed instanceId+commandId、精确 profile/window/tab/owner；macos-native 要求 fresh native command/session receipt 与精确 provider/target owner。所有 surface 都须证明 closed pre-mutation reason、editor_touched=false、stop_clicked=false、send_clicked=false。`authorizeOperatorRetry` 必须调用此 validator，不得直接插入退款事件；`reconcileNativePreSendFailure` 不得从旧 `effect_unknown` reason 衍生 typed proof；`recordEffectNotAppliedProof` 不得从布尔 `pre_send_rejection` 决定退款。旧 proofless `effect_not_applied` / `pre_send_rejection` / `send_clicked:false` 持久记录一律 UNKNOWN/non-refunding，永不自动重发。
 - **两次 live 检查的因果边界**：`supervisor/native-browser-adapter.ts:executeCommand` 不得仅因 Stop 控件可见就静默早退；沿用现有 `noteTaskFailure('WORKFLOW_SUPERVISOR_RECOVERY_WAITING_LIVE_TURN',task,effectId,false)` 仅报告真正 live 或无法消歧的 user-turn 状态。现有 `withChatgptProviderDispatchLane` 在 fresh exact `target.observe` 后、`browserBeginEffect` CAS **之前**同样用组合信号复核：真正 stream/busy 或 last-role-user 则零 Stop/Editor/Send/dispatch-start，不生成新 generation；last-role-assistant + Stop-only 则继续安全 prepare。**CAS 之后**才出现 live 则 generation 可能已消耗、Editor 也可能变化；只能按已证明负面结果或 UNKNOWN 对账。
 - **可解释但不伪造成功**：现有约 30s 的 per-task transport degraded 投影只给这条代码具体 WAIT/原 Owner 操作理由，不能笼统说 auto-recovering 或制造 NEEDS_USER/DONE。只有旧回复 settled idle 或明确 Provider failure 后，原 effect 才能在 CAS 下 Send 一次。Stop 缺失并不单独证明已结束；五条旧 applied 祖先、late completion 与未知外部 mutation 仍按原账本保护。
 
@@ -94,27 +94,27 @@ effectId + dispatchGeneration: verified at Supervisor boundary against original 
 2. POST-CAS、PRE-WRITE live：可能已有 dispatch generation，但通过**已证明加载的新 content 能力**，零 Stop/Editor/Send；任何真正的退款必须有可信 pre-write/pre-click negative proof。
 3. POST-WRITE live：generation 与 Editor 草稿可能已变化，仍不 Stop/Send；必须如实记录 Editor touched，不能以 `not_attempted` 伪造无页面变更，也不能直接重发。
 
-补充 r14 负例：Stop + assistant 节点无法映射到 exact TURN、TURN 缺失或 aria-busy 仅在消息节点 → UNKNOWN、零 Editor/Send/Stop/refund/replay；只有 assistant 明确属于 exact last TURN 且 TURN 与消息均无 stream/busy，才把 Stop-only 判为 stale。旧/缺失能力、version drift、错 profile/tab/owner、错 instance/command、格式/timeout/editor_touched/unknown Send，不得 not_attempted/refund/replay。普通 browserObserveDispatchFailure 与 bootstrapObserveEffect(not_applied) 都拒绝布尔回执；store.reconcileNativePreSendFailure 和 macos-native 兼容 refund 同样不得信任 legacy persisted pre_send_rejection/send_clicked=false。只有正确 surface-discriminated、fresh、同命令/target/effect/generation 的 typed proof 才退对应代次一次。
+补充 r15 负例：Stop + assistant 节点无法映射到 exact TURN、TURN 缺失或 aria-busy 仅在消息节点 → UNKNOWN，零 Editor/Send/Stop/refund/replay；只有 assistant 明确属于 exact last TURN 且 TURN 与消息均无 stream/busy，才把 Stop-only 判为 stale。旧/缺失能力、version drift、错 profile/tab/owner、错 instance/command、格式/timeout/editor_touched/unknown Send，不得 not_attempted/refund/replay。用 `rg effect_dispatch_budget_refunded` 枚举当前全部写入点，并确保只有一个 Store-owned refund insertion；`authorizeOperatorRetry` 不得直接写退款；`reconcileNativePreSendFailure` 不得从旧 reason 推导证明；`recordEffectNotAppliedProof` 不得只看 `pre_send_rejection` 布尔。Operator retry、browser dispatch、bootstrap、macos-native 四条路径分别测试有效/无效 typed proof，错误 generation/surface/target，以及 proofless legacy event；旧事件都拒绝退款/重发。
 
 额外负例：旧 content.js + 新 background 的版本组合；能力接口缺失/过期；同 tab 的 Prepare 通过但 Dispatch 时加载不同代码；错 Profile/Tab、陌生草稿、晚到 parent completion、五条已 applied 未完成导致迁移拒绝；Native 发送/响应未知跨 Runtime 重启零重复外部副作用。只有 settled idle/provider failure 可以单次恢复。P3/P4 后续片段不得假装当前已有自动 Reviewer wake。真实 Windows Chrome 原 Work C→C→D + 有效源码修改 + 固定 HEAD 审查/CI + Recovery 授权发布；三组可比 A/B 30% 目标缺可比证据则保留 IMPROVEMENT NOT PROVEN。
 
 ## 8. P6/P7/P8：设计双审、唯一实现 PR、独立验证与发布
 
-**当前只是 r14 / #468 Draft 候选，0/2 独立 ACCEPT。** r13 Reviewer B ACCEPT；Reviewer A REVISE，因为 `store.ts:1805–1825 reconcileNativePreSendFailure` 仍可从 persisted `macos-native` legacy evidence 生成 refund（[6429740448](https://github.com/moretea-labs/forge/pull/468#issuecomment-6429740448)）。r13/r11 ACCEPT 不转移至 r14。
+**当前只是 r15 / #468 Draft 候选，0/2 独立 ACCEPT。** r14 架构 Reviewer B ACCEPT；因果 Reviewer A REVISE，因为 `authorizeOperatorRetry` 直接写 `effect_dispatch_budget_refunded`，信任任意后续 `effect_not_applied`（[6429810764](https://github.com/moretea-labs/forge/pull/468#issuecomment-6429810764)）。r14/r13/r11 的 ACCEPT 不转移至 r15。
 
 - **DAG：** `P0 → P6（仅设计双独立审查）→ P7（源码实施）；P1/P2 完成后 P5 验证；P8 合并/发布依赖 **P7 + P5**。P6 不依赖源码或 P5 实测，P7 无合并/发布权限。
-- **设计审查：** 两个不同独立只读模型必须对同一当前 canonical Plan revision r14 与同一 immutable #468 HEAD 给出 ACCEPT/REVISE/BLOCK + 行级证据。旧版本 ACCEPT 不迁移；REVISE 只更新同一 Plan/PR。
+- **设计审查：** 两个不同独立只读模型必须对同一当前 canonical Plan revision r15 与同一 immutable #468 HEAD 给出 ACCEPT/REVISE/BLOCK + 行级证据。旧版本 ACCEPT 不迁移；REVISE 只更新同一 Plan/PR。
 - **唯一源码 PR：** AGENTS.md 要求复用原 Work 已链接的现有源码 PR **#457**。其旧 ACCEPT/CI 仅覆盖 SHA `b9394e8`，新增代码后必须重新跑固定 HEAD CI/Windows smoke 与独立代码 Review。只有原 WSL A-line Writer 写源代码，Mac 只读。
-- **P7 实施：** 双设计 ACCEPT + docs CI 后，在原 Work/PR #457 实施 stale-Stop exact TURN predicate、加载能力证明、统一 typed no-mutation proof（Chrome/browser + bootstrap + macos-native compatible refund）、有证据的窄 P2，复用现有测试。保留 context-pack/recovery 变化及其 Gate；不可碰另一 Owner 的 dirty `src/cli/controller/launch-agents.ts`，不可清理/重发旧 effect。
-- **P5 验证：** exact TURN/assistant mapping、双位置 stream/busy、UNKNOWN turn；所有 refund surface 的有效/无效 typed proof；legacy native proofless record 非退款；unknown Send/late completion/five applied ancestors/restart no replay；Windows Chrome 原 Work C→C→D 与首个可归属 source diff。
-- **P8 合并/发布：** P5 全过后，独立代码 Reviewer ACCEPT 当前 #457 SHA、必要 CI/Windows smoke SUCCESS、唯一 integration Owner 合并、Recovery 发布与匹配扩展/host bundle 验证，最后真实 runtime E2E。P3/P4 和三项可比 A/B ≥30% 仍为同一 Plan/Work 后续必交付，无实证不得宣称 DONE。
+- **P7 实施：** 双设计 ACCEPT + docs CI 后，在原 Work/PR #457 实施 exact-TURN stale-Stop guard、loaded capability、单一 Store refund writer/validator 与所有 caller 收敛、证据支持的窄 P2；保留现有 PR 代码与测试，不碰另一 Owner dirty `src/cli/controller/launch-agents.ts`；旧 effect/5 applied ancestors 不清理/不重发。
+- **P5 验证：** exact TURN/assistant mapping、双位置 stream/busy、UNKNOWN turn；所有 refund writers 收敛为单一插入；operator retry、browser dispatch、bootstrap、native compatibility 四路径的有效/无效 typed proof；proofless legacy records 不退款；unknown Send、late completion、5 applied ancestors、restart no replay；Windows Chrome 原 Work C→C→D 与首个可归属 source diff。
+- **P8 合并/发布：** P5 全过后，独立代码 Reviewer ACCEPT 当前 #457 SHA、必要 CI+Windows smoke SUCCESS、唯一 integration Owner 合并、Recovery 发布匹配扩展/host bundle，最后真实 runtime E2E。P3/P4 与三项可比 A/B ≥30% 仍为同一 Plan/Work 后续必交付，无证据不得 DONE。
 
 ## 9. 回滚与禁止路径
 
 不因 Gateway 工具表指纹失配换不稳定 Runtime；不因 Mac/WSL 任一连接超时重复发送已可能产生副作用的原效应；不因检测到 Stop 擅自终止旧回复；不抹除旧 completion，不降低 applied ancestor 会话迁移拒绝；任何未知 Send 先同原 exact target 只读 reconcile。模型纠偏必须验证下一次真实产出，失败返回原 Plan 的 REVISE 或同一个实现 PR 修复，而非新 Scheduler/Layer/Plan/Writer。
 
-**冻结标识（审查时以 GitHub 当前 HEAD 为准）：** PR #468 / canonical Plan r14 / Git base 2cc71021d / 原 Writer supervisor:d09f4e6bb4014a894db105ec / 原 Work work-forge-source-bug-convergence-v1 / 原待发送 fx_170155dcd5cfe2a220238aff61d04f20。
-## 10. r14 — current turn evidence and every refund authority
+**冻结标识（审查时以 GitHub 当前 HEAD 为准）：** PR #468 / canonical Plan r15 / Git base 2cc71021d / 原 Writer supervisor:d09f4e6bb4014a894db105ec / 原 Work work-forge-source-bug-convergence-v1 / 原待发送 fx_170155dcd5cfe2a220238aff61d04f20。
+## 10. r15 — one Store-owned refund authority
 
-ChatGPT can leave a stale visible Stop control after a turn stops. Treat it as stale only with positively verified last-assistant containment in the exact final TURN and no stream/busy at either node; unknown structure fails closed. One common typed discriminated negative proof is mandatory across browser, bootstrap and native compatibility refund paths. Browser proof requires current loaded content capability and claimed extension command/target. Native proof requires a fresh native command/session receipt and exact provider/target owner binding. Legacy proofless stored rejection evidence is UNKNOWN/non-refunding and can never authorize resend.
+Every call site capable of creating `effect_dispatch_budget_refunded` is routed through one Store-owned typed validator and insertion. `authorizeOperatorRetry`, `reconcileNativePreSendFailure`, `recordEffectNotAppliedProof`, browser dispatch and bootstrap may not infer refund eligibility independently. A proofless legacy event is UNKNOWN/non-refunding; persisted reasons are never converted into fresh proof. Surface-specific identity evidence is required, but the Store is the only owner of the exactly-once refund event.
 
