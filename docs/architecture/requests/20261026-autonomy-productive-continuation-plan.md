@@ -5,7 +5,7 @@
 >
 > 设计基线：canonical Windows WSL2 repo `repo_f37fe508f6e8dabb8fe607e4`，`/home/greyson/src/forge`，检查时 HEAD `db7c463d`（2026-10-26）。当前源代码工作树另有 `src/cli/controller/launch-agents.ts` +41 行未提交，归原 P0 代码 Owner，不属于本文 PR。GitHub 文档分支独立、不触碰 WSL 源码工作树。
 >
-> 事实源：原 Plan `PLAN-forge-thin-delivery-efficiency-code-slimming-20261019` **revision 5**（14 项），原源码 Work `work-forge-source-bug-convergence-v1`，原唯一 WSL A-line Writer `supervisor:d09f4e6bb4014a894db105ec`。协作 Issue [#313](https://github.com/moretea-labs/forge/issues/313)；关联但不得冒名实施的 UI 重构 [#465](https://github.com/moretea-labs/forge/issues/465)。本文仅为方案审查候选，不创建 Work、Writer、Scheduler 或 Approval Authority。
+> 事实源：原 Plan `PLAN-forge-thin-delivery-efficiency-code-slimming-20261019` **revision 6**（14 项），原源码 Work `work-forge-source-bug-convergence-v1`，原唯一 WSL A-line Writer `supervisor:d09f4e6bb4014a894db105ec`。协作 Issue [#313](https://github.com/moretea-labs/forge/issues/313)；关联但不得冒名实施的 UI 重构 [#465](https://github.com/moretea-labs/forge/issues/465)。本文仅为方案审查候选，不创建 Work、Writer、Scheduler 或 Approval Authority。
 
 ## 0. 目的、成功标准与边界
 
@@ -92,7 +92,7 @@ late reply 优先：在对旧 Stop 采取任何 mutation 前，同一 exact conv
 
 ### P1.2 与历史 S0–S4 的范围边界
 
-原 Forge Plan r5 仍保留 2026-10-19 的 S0–S4（旧 Mac/WSL 同步、GPU/Ollama、代码瘦身等）。它们是**长期效率工作，非此次 #313 P0 自动推进恢复的前置条件**；原目标中 Mac 源码同步表述是历史事实，2026-10-24 后唯一 Forge 源码 Writer 为 Windows WSL2。双独立 Review 仅评价 P0–P7 的这次故障收敛以及不得破坏 S0–S4 长期边界，不得让实验 GPU 或大规模瘦身拖延最小有效修复。Reviewer B 仍必须判断如此复用原 Plan 是否过度混合，若 REVISE，原地修 Plan 和同一 PR。
+原 Forge Plan r6 仍保留 2026-10-19 的 S0–S4（旧 Mac/WSL 同步、GPU/Ollama、代码瘦身等）。它们是**长期效率工作，非此次 #313 P0 自动推进恢复的前置条件**；原目标中 Mac 源码同步表述是历史事实，2026-10-24 后唯一 Forge 源码 Writer 为 Windows WSL2。双独立 Review 仅评价 P0–P7 的这次故障收敛以及不得破坏 S0–S4 长期边界，不得让实验 GPU 或大规模瘦身拖延最小有效修复。Reviewer B 仍必须判断如此复用原 Plan 是否过度混合，若 REVISE，原地修 Plan 和同一 PR。
 
 ### P1.3 Plan r5 的安全路线（回应独立 Reviewer A REVISE，未获双 ACCEPT）
 
@@ -121,6 +121,27 @@ late reply 优先：在对旧 Stop 采取任何 mutation 前，同一 exact conv
 **需追加的确定性反例**：Stop 一直存在 → 0 Stop/0 Send/0 draft mutation/0 新 generation，单次有界诊断；Stop 在 prepare 后出现 → dispatch 仍 0 mutation；Stop 消失但仍 generating → 不发送；settled idle/failure → 原唯一 effect 正常自动恢复；old completion-before-CAS 与 after-CAS → 恰有一个合法 successor；Send claimed timeout→unknown 且重启不重发；5 applied ancestors 阻止会话迁移；Reviewer 无新 HEAD 不循环 C。保留原 `tests/runtime/workflow-supervisor-control-plane.test.ts` 等测试范围，不默认新建套件。
 
 **边界**：本方案改善常规可归属的自动续跑以及死循环诊断，但不承诺未经用户授权自动取消一个真实仍在运行的 ChatGPT 生成。若产品未来需要“自动 Stop”，必须另经用户明确授权、修改已 ACCEPT ADR、再证明完整 Stop-only durable side-effect 语义；这**不属于本次 P0 的必要改动**。
+
+
+### P1.4 Plan r6：回应 Mac Reviewer B REVISE 的**既有代码落点**（未获双 ACCEPT）
+
+2026-10-26 [Mac Claude 独立 Reviewer B](https://github.com/moretea-labs/forge/pull/468#issuecomment-6414169206) 对 Plan r5/HEAD `39fffc7` 给出 **REVISE**。本节不替代 r5 的 No-Stop/单 CAS 安全限制；只澄清它要求的实施落点和数据边界。
+
+**P0 只读因果矩阵不是新功能。** 前文五行 `fx_...` 表由现有 `supervisor.sqlite` 的 `effects/events/completions` JOIN 查询构成，输出为本 PR 的**人工只读验收证据**；实施前再查一遍是否出现 late receipt。不创建 `reconcileAppliedEffectCausalMatrix` 生产函数、状态表或第二份 authoritative ledger。不用历史表结算旧效应，也不修改迁移 guard。
+
+**P1 无授权 Stop 的有界诊断：** `supervisor/native-browser-adapter.ts:1163` 的 `provider_recovery_stop_pending` 保留无发送早退，但在它之前（或同分支内）调用既有 `this.noteTaskFailure('WORKFLOW_SUPERVISOR_RECOVERY_WAITING_LIVE_TURN',task,command.effectId,false)`。现有 `taskTransportFailures` 会依据 `USER_VISIBLE_DEGRADED_AFTER_MS=30_000` 只对该 task/effect/reason 输出一次 `reportTransportState({state:'degraded',...})`；`false` 禁止每 tick 往事件账本写新失败。现有 `src/runtime/root/workflow-supervisor-runtime.ts:reportTransportState` 对该精确 code 给出“仍在生成，原 Owner 需确认或显式操作”的行动提示，不谎称 auto-recovering。**不得**把 provider 仍在生成伪装成 `provider_resume_exhausted`、终止 Task 或自动点击 Stop。真 idle/明确 provider failure 后，依原有 `clearTaskFailure` 一次撤除 degraded 投影并由同一 effect 续跑。既有 `reportTaskStall` 只表示真实 exhausted/recovered 的旧事实，不滥用它。
+
+**P2 有证据的顺序调整：** 只读 WSL Supervisor SQLite 对 2026-10-26 00:00–09:00 UTC 统计：原 Reviewer 有 218 次 `COMPUTER_CHATGPT_EXTENSION_TAB_MESSAGE_TIMEOUT`、2 次 `RECEIVER_TARGET_CHANGED`、2 次 `NOT_CONNECTED`；原 Writer 有 1 次 `NOT_CONNECTED`。因此 Reviewer 数百轮活跃不等于“主要是同一 HEAD 重审”。**先**定位 `adapters/computer/chatgpt-extension-target.ts` 的 exact provider claim/heartbeat 与 `adapters/computer/chrome-extension/background.js` 的 `tabMessage` 接收器/Native Messaging 超时，再做 Review 模型空转策略，不以更密轮询或第二 Provider fallback 掩盖连接问题。记录实测的 claim ID、timeout 和 exact tab/extension 版本，不持久化浏览器正文或用户草稿。
+
+**P3 只读成果投影的最小路径：** 在 `packages/kernel/controller/domain/execution-quality.ts:deriveExecutionQualitySignals` 已存在的 evidence-only signal 基础上，将原任务的 `assistant_completion/effect_applied/browser_delivery_attempt_failed` 与 `src/runtime/control-plane/execution/work-evidence-policy.ts:evaluateWorkImplementationEvidence` 的 `repository_change` 净修改证据按 Work 关联，优先通过现有 `src/runtime/root/workflow-supervisor-runtime.ts` 的任务 transport/status 诊断投影给**同一个原 Owner 模型**。仅输出 `activityCount`、`lastVerifiedMaterialDelta`、`timeToFirstChange`、`causalBlocker`、`evidenceCoverage=known|unknown` 的派生提示。非代码任务需要自己的可验证成果，不能仅凭 Git diff=0 判断无效；coverage unknown 不触发强制改道。若不具备现有 Work 归属凭证，**不开发新的跨系统映射数据库**，先输出局部事实与缺口，待原 Work 可验证能力具备再补证据。人工模型决定路线，Forge 不做第二套 Planner。
+
+**P4 Review 事件：现有去重已经存在。** `supervisor/store.ts:recordReviewNotice` 将 task/PR/reviewId/reviewedHeadSHA/outcome 哈希成唯一 `review-observed` eventKey，重复观察同一 GitHub review/CI 会返回 `deduplicated:true`；`src/runtime/root/workflow-supervisor-runtime.ts:reconcileReviewNotices` 每 30 秒仅廉价查询最多 4 个 watch，**不代表每次查询都派发模型 C**。问题在已有独立 Reviewer 对未变化的候选仍选择 `CONTINUE`：由模型在无新固定 HEAD/CI/Review 证据时选择已有 `WAIT`，新候选由原 Writer/已有合法调度触发同一身份的新审查；只复用 `supervisor/control-plane.ts:observeReviewNotice` 和同一 Task 账本。**不新增** ReviewNotice 状态表、第二 Scheduler，**不谎称 WAIT 自身保证自动唤醒**；唤醒源缺失则明确标记为尚未验收。关注“模型轮次的重复”，而不是企图删除必要的廉价 GitHub 状态查询。
+
+**P5 两层验收，30% 目标不造假。** 安全/功能交付：确定性 Stop=0 mutation、unknown 不重发、五祖先 guard、原 Writer 的首笔真实修改、同一会话 C→C→D 和 Runtime 重启、固定 HEAD 独立 Review/CI（这些全部必过）。效率交付：三组真实可比任务的首次修改/无效前奏/完整交付三指标 **≥30% 下降**、成功率不降、副作用=0 仍是用户要求；若历史样本不足，明确 `NOT_YET_PROVEN` 并保留性能目标 OPEN，不把安全热修复误记成性能验收通过，也不以伪造 A/B 数据拒绝一项已经安全验收的修复。
+
+**范围与所有权：** P0–P7 是本次 #313 P0 优先主线；旧 S0–S4 保留为历史效率工作、无依赖、无 Mac 源码 Writer 权限。Plan 原 goal 字段中的旧 Mac 同步表述按本节及 r6 resolved decisions 的更新事实解释；不新建同义 Plan/Work。实测 Reader B 建议创建新 Plan/Review 表被有证据拒绝，因为已存在原唯一 Authority 与去重主键。
+
+**Review 状态：** r4 独立 Windows Codex Reviewer A `REVISE`，r5 独立 Mac Claude Reviewer B `REVISE`。r5 第二 Codex 进程超时，无结论，不能计票。本 r6 尚未获得针对自身固定 HEAD 的 ACCEPT；必须两名不同只读 Reviewers 再审，不因作者修订即实施源码。
 
 
 ### P2. 只在实证支持时修复 Extension 的连接不稳定
