@@ -1,4 +1,4 @@
-# Forge #313 — 自动续跑、可靠投递与有效产出（Plan r7 审查稿）
+# Forge #313 — 自动续跑、可靠投递与有效产出（Plan r8 审查稿）
 
 > **DESIGN ONLY · Draft PR #468 · 尚无本候选独立 ACCEPT · 禁止生产源码实施。**
 > 本文须与唯一 Forge Plan `PLAN-forge-thin-delivery-efficiency-code-slimming-20261019` **r7** 和本 PR 当前完整 HEAD 同时审查。历史 r4/r5/r6 的 REVISE 不是本候选 ACCEPT。评审冻结后任何修改都必须重新以新 HEAD 审查。
@@ -29,16 +29,15 @@
 
 从唯一 Controller Home 现有 SQLite 只读投影，为五个应用祖先逐条列出：`effect_id`、kind/origin、已记录 dispatch generation、applied receipt、原 valid completion 或 completed recovery child、unknown/未结、所属精确会话/物理 tab、允许的下一操作。另列当前未发送 `fx_170155...`。该矩阵是评审与操作诊断材料，不是新持久状态或第二 Authority；旧数据可能有晚到完成回执，实施之前只读刷新。没有真实回执不补写“已完成”，不得移除迁移拒绝条件。
 
-## 3. P1：合法、有限、能说明真实阻塞的恢复链
+## 3. P1：唯一恢复效应 + 精确内容脚本能力确认（r8 首要修订）
 
-**目标修改文件/函数：**
+安全权威：`docs/architecture/decisions/20261001-supervisor-turn-authority.md:212–220` 明文禁止恢复时自动 Stop 正在生成的旧回复。源码已有 `content.js:244` 的 stop.click，与此契约不符。实施仅由原 WSL Writer 在双 ACCEPT 后进行。
 
-1. `adapters/computer/chrome-extension/content.js:dispatchPrompt(mode=recover)`：移除当前先于草稿所有权检查的 `stop.click()` 行为。**Prepare 与 Dispatch 都检查精确 tab 上可见 Stop/真正 live generation；有则立即拒绝并且零 Stop、零 editor 写入、零 Send。** 历史 user-only turn 与真实直播信号必须区分；Stop 消失但旧回复未 settled，不得误判已可新 Send。保留既有 profile/tab/草稿/URL fail-closed 检查。
-2. `supervisor/native-browser-adapter.ts:executeCommand`：保留 `provider_recovery_stop_pending` 的 prepare 早退；仅增加已有的 `noteTaskFailure('WORKFLOW_SUPERVISOR_RECOVERY_WAITING_LIVE_TURN', task, effectId, false)`，不产生重复 event、不扣预发送失败预算、不新设终态。
-3. **关键 CAS 时序：** `supervisor/native-browser-adapter.ts:withChatgptProviderDispatchLane` 内，在第二次 `browserPoll`、新鲜 `target.observe` / exactConversation 确认之后，**调用 `browserBeginEffect` 之前**也要检查恢复任务的 `ready.isGenerating`（由 Chrome 现有 `hasLiveGenerationSignal` 在精确观察中派生的真实 live/Stop 信号）；若仍 live，就以只读结果离开，不发消息、不进入 begin/不产生新的 generation，也不退款。正常旧父效应完成与 recovery CAS 仍在 `supervisor/store.ts` 同一事务内竞争，禁止双 successor。
-4. **CAS 之后又恢复 live 的竞争：** content.js 终端检查继续拒绝，确保零 Stop/editor/Send；但 `effect_dispatch_started` **可能已经存在**，此时严禁声称“零 generation”。只有真的收到可信 `not_attempted` 证据才能走既有 `browserObserveDispatchFailure` 与 generation budget-refund；Native/claim/Send outcome 不明只读 reconcile，绝不能自动重发。
-5. `src/runtime/root/workflow-supervisor-runtime.ts:reportTransportState`：沿用原 per-task failure 和约 30 秒已有降级投影。对 `WORKFLOW_SUPERVISOR_RECOVERY_WAITING_LIVE_TURN` 显示可操作的代码专属理由“原会话仍在生成，按既有 ADR 不自动 Stop，需等待 settled/failure 或经原 Owner 明确处理”，**不显示“auto-recovering”或伪造 NEEDS_USER/terminal**。Transport degraded 是观察，不是 C→C→D 成功。
-6. **合法进展条件：** settled idle assistant 或有真实 explicit provider failure，在同一 exact-target/同原 effect`browserPoll→browserBeginEffect CAS→唯一 Send`；未知外部 Send 仍拒绝重放。**真实 live turn 下自动恢复可能仍然无法完成，这是安全要求的可解释 WAIT，不是对用户保证全自动取消旧生成。** 五个已 applied 祖先没有合法完成之前，会话迁移仍被禁止。
+- **旧版脚本不能假冒安全实现**：当前 `background.js:445–505` 已有向 exact tab 发送 `forge-computer-chatgpt-capabilities` 的路径，但主要用于 bootstrap/草稿替换。对普通 conversation recovery **在 executePrepare 与 executeDispatch 两处**都要求原精确 tab 当前加载的 content script 返回 `recover-no-stop-prewrite-v1`。旧/缺失/错误版本在调用内容脚本变更前即拒绝；仅背景 service worker 更新不代表 tab 脚本更新。复用此消息与现有 typed 结果，不添第二 Provider、数据库或认证权威。
+- **content.js:dispatchPrompt(recover)**：删除自动 `stop.click()`；调用 `writeComposer` **之前**检查 visible Stop / live generation、exact identity、草稿归属；不安全即零 Stop、零 Editor 写入、零 Send。写入后 React readiness/Send 之前若重新变为 live：仍禁止 Stop/Send，**但可能已写入恢复草稿**，必须如实报告 Editor-touched，而不是声称页面完全没改动。
+- **真正的未执行证明**：`background.js:executeDispatch` 不能再将所有 `dispatched:false` 无条件转换为 `mutation:not_attempted`。只有完成上述 exact-tab 能力证明且内容明确回复 pre-write/pre-click 失败，才可产生 no-mutation 负面证明、沿 `native-browser-adapter.ts:browserObserveDispatchFailure` / `supervisor/store.ts` refund。发生 Editor 改动、旧 script 版本不明、Send/Native claim 结果未知时保守记录 attempted/UNKNOWN，只读 reconcile，绝不盲重发。
+- **两次 live 检查的因果边界**：`supervisor/native-browser-adapter.ts:executeCommand` 保留 `provider_recovery_stop_pending` 早退；加原有 `noteTaskFailure('WORKFLOW_SUPERVISOR_RECOVERY_WAITING_LIVE_TURN',task,effectId,false)`。第二次检查在现有 `withChatgptProviderDispatchLane` 内、fresh exact `target.observe` 后且 `browserBeginEffect` CAS **之前**：若真正 live，就零 Stop/Editor/Send/dispatch-start，不生成新 generation。**CAS 之后**才出现 live 则 generation 可能已消耗，Editor 也可能变化；不能再宣称“零 generation/零 Editor”，需按已证实负面结果或 UNKNOWN 对账。
+- **可解释但不伪造成功**：现有约 30s 的 per-task transport degraded 投影只给这条代码具体 WAIT/原 Owner 操作理由，不能笼统说 auto-recovering 或制造 NEEDS_USER/DONE。只有旧回复 settled idle 或明确 Provider failure 后，原 effect 才能在 CAS 下 Send 一次。Stop 缺失并不单独证明已结束；五条旧 applied 祖先、late completion 与未知外部 mutation 仍按原账本保护。
 
 ## 4. P2：Provider 投递诊断先于改动
 
@@ -63,25 +62,27 @@
 
 因此本次 P4 的合法首步是**原 Reviewer 行为规则**：没有新的 PR HEAD、Plan revision、CI、实质 Finding/外部事件时，使用既有审查结论返回 WAIT，不再主动消耗重复模型回合；后续由原 Writer 新候选或手工授权唤醒。它还不是自动化实现/自动化测试通过。只有发现现成的合法 reviewer-turn admission 可消费上述事实，才可设计真正自动的事件唤醒；严禁新增 review scheduler/table/替模型执行的第二脑。重复无效执行 2–3 次由 Owner 记录单次诊断、下一可验证产出，不在同一旧指纹上无限修改 Plan。
 
-## 7. P5：定向测试、负例和真实验证
+## 7. P5：定向验证与真实验收
 
-优先在**已有测试文件**做定向补充：`tests/runtime/workflow-supervisor-control-plane.test.ts` 的 Stop-pending 旧测试、`tests/runtime/computer-interaction-target.test.ts`、`tests/runtime/computer-chatgpt-extension-preflight.test.ts:805–818`、`tests/runtime/workflow-supervisor-duplicate-failure.test.ts`、`tests/runtime/workflow-supervisor-automation-receipt.test.ts`。P3 证据链真实接入时再使用 `execution-quality.test.ts`。现有 Gate 同 change set 复用，不增加无必要套件。
+只在既有 `tests/runtime/workflow-supervisor-control-plane.test.ts`、`computer-interaction-target.test.ts`、`computer-chatgpt-extension-preflight.test.ts`、`workflow-supervisor-automation-receipt.test.ts` 必需的位置补充测试，不增加通用新套件。测试必须明确区分三个阶段：
 
-须至少区分：**CAS 之前** live Stop → 无 Stop/editor/Send/dispatch-start；**CAS 之后** Stop 突现 → 页面零修改但可能耗费 dispatch generation，按可信 not-applied vs unknown 对账；旧 valid completion 在 begin CAS 前/后竞争；Send clicked 回执丢失绝不重发；错 tab/profile/草稿 fail closed；五个已 applied 祖先不得非法迁移；Runtime restart 下原 effect 没有重复副作用；已 settled/provider failure 才允许唯一恢复。30s 诊断要可见但不伪装为自动修复。P4 WAIT 目前只按模型制度人工/原任务证据核对，**不能写“自动 stop reviewer loop”测试并声称通过**；非代码 Work/外部 WAIT 不能被 Git diff 零错误定性。
+1. PRE-CAS live：同一精确 tab 上没有 Stop/Editor/Send/dispatch-start；30s 后只有真实降级提示，不等于 DONE。
+2. POST-CAS、PRE-WRITE live：可能已有 dispatch generation，但通过**已证明加载的新 content 能力**，零 Stop/Editor/Send；任何真正的退款必须有可信 pre-write/pre-click negative proof。
+3. POST-WRITE live：generation 与 Editor 草稿可能已变化，仍不 Stop/Send；必须如实记录 Editor touched，不能以 `not_attempted` 伪造无页面变更，也不能直接重发。
 
-验收先做到真实 Windows Chrome original-source Writer C→C→D、第一笔有效源码修改、Git/PR fixed HEAD Review+CI、授权唯一集成和独立 Recovery 发布。三组可比 A/B 仍追求首修改/无效前奏/完整交付 >=30% 降低，成功率不降，重复作用零；不可比则仍 OPEN 且明确“不具备改善量化证明”。
+额外负例：旧 content.js + 新 background 的版本组合；能力接口缺失/过期；同 tab 的 Prepare 通过但 Dispatch 时加载不同代码；错 Profile/Tab、陌生草稿、晚到 parent completion、五条已 applied 未完成导致迁移拒绝；Native 发送/响应未知跨 Runtime 重启零重复外部副作用。只有 settled idle/provider failure 可以单次恢复。P3/P4 后续片段不得假装当前已有自动 Reviewer wake。真实 Windows Chrome 原 Work C→C→D + 有效源码修改 + 固定 HEAD 审查/CI + Recovery 授权发布；三组可比 A/B 30% 目标缺可比证据则保留 IMPROVEMENT NOT PROVEN。
 
-## 8. P6 / P7：固定版本两名独立 Reviewer → 原 Writer 实施
+## 8. P6/P7：双独立设计 ACCEPT 只授权 P1/P2 实施
 
-现有 PR #468 只含本文 docs；此前固定版本意见：r4 Windows Codex A REVISE（[6413904259](https://github.com/moretea-labs/forge/pull/468#issuecomment-6413904259)），r5 Mac Claude B REVISE（[6414169206](https://github.com/moretea-labs/forge/pull/468#issuecomment-6414169206)），r6 两个不同 Mac Codex 会话 A/B REVISE（[6414528933](https://github.com/moretea-labs/forge/pull/468#issuecomment-6414528933)、[6414507281](https://github.com/moretea-labs/forge/pull/468#issuecomment-6414507281)）。**这些旧候选没有给 r7 授权。**
+**当前只是 r8 / #468 Draft 的候选，0/2 独立 ACCEPT。** 历史 r4–r7 均有独立 REVISE，最近 r7 两份固定 HEAD 证据见 [6414844309](https://github.com/moretea-labs/forge/pull/468#issuecomment-6414844309)。
 
-1. 本 PR 固定最新 HEAD 与 Forge Plan r7 → 由两个不同已授权 ChatGPT/Codex/Claude **只读会话**分别审因果安全和 Thin/交付完整性；每个给出 `ACCEPT/REVISE/BLOCK` 和 source filename:line 证据。未运行/超时/评论数都不算 ACCEPT。
-2. 任一 REVISE → **同一个 Plan、同一个 PR** 原地修订，固定新 HEAD 再审，不新建工作流或无限审同 HEAD。
-3. **两份当前固定 HEAD 的 ACCEPT + 必要文档 CI** 才允许现有 WSL 唯一源码 Writer 在原 Work 进行 P1/P2 最小代码实施；它的原未结 effect 和五个已应用祖先不得越过防重放护栏。P3/P4 后续片段不自动授权。
-4. 源码实现仅一个新的 #313 实现 PR（与独立 #465 无关）；固定 HEAD 独立 Reviewer ACCEPT、必要 CI、原唯一集成 Owner 合并，Recovery 批准更新 Runtime，完成实际有效修改/零重复副作用/性能可比验收。文档 PR 本身从不等于 Runtime 发布。
+- **P6 依赖是设计前置，不是代码完成：** P0 因果矩阵、P1/P2 的路径和安全契约、P5 测试设计接受审查；P3/P4 是后续非阻塞实施切片，P5 测试的实际执行也不是 P6 的设计 Review 前提。
+- 两个**不同**独立只读模型会话必须审查同一个原 Plan r8 与同一个 #468 固定最新 HEAD，并各给 `ACCEPT/REVISE/BLOCK` + 精确源码行证据。任一 REVISE 只能返回原 Plan/同 PR，新 HEAD 重审，不允许把旧版 ACCEPT 转移过来。
+- 双 ACCEPT + 必要 docs CI 才允许原唯一 Windows WSL2 Writer 在原 Work 上修改 P1（no Stop、exact tab script attestation、负面证明）与证据证明必要的 P2 最小传输路径，之后按 P5 运行测试/Live；**P3/P4 没有因此被授权提前实施，也不能反向卡住 P1/P2**。
+- 源码实现为同一 #313 任务下的一条代码 PR，和 #465 分开；固定 HEAD 独立源码 Review/CI、唯一集成 Writer 合并、Recovery 真实发布、零重复外部副作用。Mac 只负责只读 Review/原生 E2E，不持有 Forge 源码写入权。
 
 ## 9. 回滚与禁止路径
 
 不因 Gateway 工具表指纹失配换不稳定 Runtime；不因 Mac/WSL 任一连接超时重复发送已可能产生副作用的原效应；不因检测到 Stop 擅自终止旧回复；不抹除旧 completion，不降低 applied ancestor 会话迁移拒绝；任何未知 Send 先同原 exact target 只读 reconcile。模型纠偏必须验证下一次真实产出，失败返回原 Plan 的 REVISE 或同一个实现 PR 修复，而非新 Scheduler/Layer/Plan/Writer。
 
-**冻结标识（审查时以 GitHub 当前 HEAD 为准）：** PR #468 / canonical Plan r7 / Git base 2cc71021d / 原 Writer supervisor:d09f4e6bb4014a894db105ec / 原 Work work-forge-source-bug-convergence-v1 / 原待发送 fx_170155dcd5cfe2a220238aff61d04f20。
+**冻结标识（审查时以 GitHub 当前 HEAD 为准）：** PR #468 / canonical Plan r8 / Git base 2cc71021d / 原 Writer supervisor:d09f4e6bb4014a894db105ec / 原 Work work-forge-source-bug-convergence-v1 / 原待发送 fx_170155dcd5cfe2a220238aff61d04f20。
