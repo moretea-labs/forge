@@ -5,7 +5,7 @@
 >
 > 设计基线：canonical Windows WSL2 repo `repo_f37fe508f6e8dabb8fe607e4`，`/home/greyson/src/forge`，检查时 HEAD `db7c463d`（2026-10-26）。当前源代码工作树另有 `src/cli/controller/launch-agents.ts` +41 行未提交，归原 P0 代码 Owner，不属于本文 PR。GitHub 文档分支独立、不触碰 WSL 源码工作树。
 >
-> 事实源：原 Plan `PLAN-forge-thin-delivery-efficiency-code-slimming-20261019` **revision 3**（14 项），原源码 Work `work-forge-source-bug-convergence-v1`，原唯一 WSL A-line Writer `supervisor:d09f4e6bb4014a894db105ec`。协作 Issue [#313](https://github.com/moretea-labs/forge/issues/313)；关联但不得冒名实施的 UI 重构 [#465](https://github.com/moretea-labs/forge/issues/465)。本文仅为方案审查候选，不创建 Work、Writer、Scheduler 或 Approval Authority。
+> 事实源：原 Plan `PLAN-forge-thin-delivery-efficiency-code-slimming-20261019` **revision 4**（14 项），原源码 Work `work-forge-source-bug-convergence-v1`，原唯一 WSL A-line Writer `supervisor:d09f4e6bb4014a894db105ec`。协作 Issue [#313](https://github.com/moretea-labs/forge/issues/313)；关联但不得冒名实施的 UI 重构 [#465](https://github.com/moretea-labs/forge/issues/465)。本文仅为方案审查候选，不创建 Work、Writer、Scheduler 或 Approval Authority。
 
 ## 0. 目的、成功标准与边界
 
@@ -79,6 +79,21 @@ Existing Work + user Objective
 
 late reply 优先：在对旧 Stop 采取任何 mutation 前，同一 exact conversation 先尝试观察合法 final reply / effect marker，若旧 source 已完成则由原模型 completion 先结算，不再 Stop/Send。若无法证明旧 Stop 属于哪个源效应，禁止自动取消并给原 Owner 一个**有界且单次**可执行的阻塞事实，而非无限重试。
 
+### P1.1 已确认的 Stop-only 副作用分类缺口（Plan r4 作者修订，不代表独立 Review）
+
+源码中 `adapters/computer/chrome-extension/content.js:245–254` 的 recover 分支先执行 `stop.click()`，再检查 editor 是否可安全占用或存在人工/其他 effect 的草稿。若 Stop 已按下而后续遭遇 `composer_not_empty`、`send_button_disabled`、`target_identity_changed`，content 可能返回 `{dispatched:false}`。`adapters/computer/chrome-extension/background.js:executeDispatch` 对所有 `dispatched:false` 统一返回 `mutation:'not_attempted'`，而 `supervisor/native-browser-adapter.ts:executeCommand` 将其当作可证明未发生 provider mutation 的失败。**这是源码层已证实的风险，不是现场 Writer Stop 按钮状态的已证实原因。**
+
+**实施之前必须由独立 Reviewer A 定案：**
+
+1. **Stop 前的因果与用户草稿归属证明**：验证旧正在生成的 Turn 对应唯一真实已应用但未完成的源 effect，尚无有效晚到 completion；精确 profile/session/window/tab 与 URL 未漂移；单一 composer 无陌生草稿；未通过任何一项就不得点击 Stop 或 Send。
+2. **两种副作用区别**：Stop 旧回复可以发生而新消息 Send 没发生。Stop-only 不是 `mutation:'not_attempted'`（如果“mutation”字段泛指外部页面副作用），也不是新 effect `applied`。须在既有 Supervisor/Computer receipt 内表达可观测阶段，并防止 Resume CAS 将 Stop-only 当作可盲重试的新恢复发送。原则上不添加第二个持久 effect Owner。
+3. **未知时只读对账**：当 Native RPC/Extension claim 在 Stop 点击后失去回复，无法证明 Send 是否发生，保持原 effect unknown 与 exact-target 只读 reconcile；禁止利用浏览器刷新或另一 tab 回避未知副作用。
+4. **不只删除 `provider_recovery_stop_pending` 早退**：只有完整跨 `content.js → background.js → chatgpt-extension-target.ts → native-browser-adapter.ts → supervisor/store.ts` 的真实阶段证明，才能让原恢复在同一 effect dispatch lane 内推进。
+
+### P1.2 与历史 S0–S4 的范围边界
+
+原 Forge Plan r4 仍保留 2026-10-19 的 S0–S4（旧 Mac/WSL 同步、GPU/Ollama、代码瘦身等）。它们是**长期效率工作，非此次 #313 P0 自动推进恢复的前置条件**；原目标中 Mac 源码同步表述是历史事实，2026-10-24 后唯一 Forge 源码 Writer 为 Windows WSL2。双独立 Review 仅评价 P0–P7 的这次故障收敛以及不得破坏 S0–S4 长期边界，不得让实验 GPU 或大规模瘦身拖延最小有效修复。Reviewer B 仍必须判断如此复用原 Plan 是否过度混合，若 REVISE，原地修 Plan 和同一 PR。
+
 ### P2. 只在实证支持时修复 Extension 的连接不稳定
 
 - `adapters/computer/chatgpt-extension-target.ts`：`HEARTBEAT_FRESH_MS=15_000`、`freshProviders`、`selectProviderInstance`、`submit`、`ensureExact`。
@@ -126,7 +141,7 @@ late reply 优先：在对旧 Stop 采取任何 mutation 前，同一 exact conv
 
 ## 6. Review / 迭代顺序（现阶段最重要的 Gate）
 
-1. **本 PR 仅为文档提案，Draft**，固定本 PR HEAD 与 Forge Plan r3。它不修改任一 src/、tests/、runtime、Scheduler 或旧 Writer effect；不能 merge 当作代码修复。
+1. **本 PR 仅为文档提案，Draft**，固定本 PR HEAD 与 Forge Plan r4。它不修改任一 src/、tests/、runtime、Scheduler 或旧 Writer effect；不能 merge 当作代码修复。
 2. **Reviewer A：独立 ChatGPT 会话**，审 `supervisor/store.ts` 因果链 / Stop+Send 单 writer / unknown effect / release rollback。回答：真实可安全恢复路线是否足够具体？是否有更简单方式？给出 `ACCEPT/REVISE/BLOCK` 与文件:函数证据。
 3. **Reviewer B：与 A 不同的独立 ChatGPT 会话**，审 Thin 架构、Plan r3 旧 S0–S4 混合、文件级范围、非代码 Work、Review 去重、30% 对照可比性、对现有 AGENTS.md 的符合性。给出独立 `ACCEPT/REVISE/BLOCK`。
 4. 任一 `REVISE`：由同一 Plan 作者改原 Forge Plan 和同一文档 PR，固定新 HEAD；两位 Reviewer 对**新候选**复审差量/受影响全局。不因“已评论”视作 ACCEPT；同一 HEAD 无新证据不重复计数。
