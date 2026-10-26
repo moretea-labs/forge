@@ -1043,14 +1043,6 @@ async function runAutomaticReleaseReconciliationStep(
         : 'automatic release reconciliation failed';
     throw new Error(`RECOVERY_AUTOMATIC_RELEASE_STEP_FAILED: ${detail.slice(0, 500)}`);
   }
-  // An idle-window timeout is a legitimate no-cutover outcome, but not
-  // forward progress. Feed it into the existing phase/revision backoff so
-  // repeated drains cannot monopolize the Connector every 15 seconds.
-  if (parsed.decision?.action === 'cutover'
-    && typeof parsed.result?.detail === 'string'
-    && parsed.result.detail.startsWith('RELEASE_SESSION_CUTOVER_DEFERRED_FOR_MCP_ACTIVITY')) {
-    throw new Error(`RECOVERY_AUTOMATIC_RELEASE_CUTOVER_DEFERRED: ${parsed.result.detail.slice(0, 500)}`);
-  }
   if (parsed.decision?.action) {
     process.stdout.write(JSON.stringify({
       at: new Date().toISOString(),
