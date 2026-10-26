@@ -1,7 +1,7 @@
-# Forge #313 — 自动续跑、可靠投递与有效产出（Plan r10 审查稿）
+# Forge #313 — 自动续跑、可靠投递与有效产出（Plan r11 审查稿）
 
 > **DESIGN ONLY · Draft PR #468 · 尚无本候选独立 ACCEPT · 禁止生产源码实施。**
-> 本文须与唯一 Forge Plan `PLAN-forge-thin-delivery-efficiency-code-slimming-20261019` **r10** 和本 PR 当前完整 HEAD 同时审查。历史 r4/r5/r6 的 REVISE 不是本候选 ACCEPT。评审冻结后任何修改都必须重新以新 HEAD 审查。
+> 本文须与唯一 Forge Plan `PLAN-forge-thin-delivery-efficiency-code-slimming-20261019` **r11** 和本 PR 当前完整 HEAD 同时审查。历史 r4/r5/r6 的 REVISE 不是本候选 ACCEPT。评审冻结后任何修改都必须重新以新 HEAD 审查。
 
 ## 0. Authority、优先级与成功判据
 
@@ -100,11 +100,11 @@ effectId + dispatchGeneration: verified at Supervisor boundary against original 
 
 ## 8. P6/P7：双独立设计 ACCEPT 只授权 P1/P2 实施
 
-**当前只是 r10 / #468 Draft 的候选，0/2 独立 ACCEPT。** 历史 r9 因果 Reviewer A REVISE、Reviewer B 超时无结论，均不能跨版本计票（[6415169634](https://github.com/moretea-labs/forge/pull/468#issuecomment-6415169634)）。 历史 r4–r7 均有独立 REVISE，最近 r7 两份固定 HEAD 证据见 [6414844309](https://github.com/moretea-labs/forge/pull/468#issuecomment-6414844309)。
+**当前只是 r11 / #468 Draft 的候选，0/2 独立 ACCEPT。** 历史 r10 的两位独立 Reviewer 均仅因 P7 硬编码旧 r9 审核版本而 REVISE；Plan r11 取消 P6/P7 授权条件中的任何硬编码修订号，改为同一最新受审 Plan revision + 当前 immutable PR HEAD。参见 [6415339550](https://github.com/moretea-labs/forge/pull/468#issuecomment-6415339550)。 历史 r9 因果 Reviewer A REVISE、Reviewer B 超时无结论，均不能跨版本计票（[6415169634](https://github.com/moretea-labs/forge/pull/468#issuecomment-6415169634)）。 历史 r4–r7 均有独立 REVISE，最近 r7 两份固定 HEAD 证据见 [6414844309](https://github.com/moretea-labs/forge/pull/468#issuecomment-6414844309)。
 
-- **实际 Plan r10 依赖字段（无环）：** `P0 → P6（仅设计双独立审查）→ P1/P2 代码实施 → P5 验证`；P7 在 P6 批准后才取得唯一 Writer 交付授权。P6 不再以 P1/P2/P5 的代码完成为前置。P3/P4 仍是同 Plan/Work 最终有效产出和自动审查治理的必交付切片，但不阻塞本次 P1/P2 安全恢复。
+- **实际 Plan r11 依赖字段（无环）：** `P0 → P6（仅设计双独立审查）→ P1/P2 代码实施 → P5 验证`；P7 在 P6 批准后才取得唯一 Writer 交付授权。P6 不再以 P1/P2/P5 的代码完成为前置。P3/P4 仍是同 Plan/Work 最终有效产出和自动审查治理的必交付切片，但不阻塞本次 P1/P2 安全恢复。
 - **P6 依赖是设计前置，不是代码完成：** P0 因果矩阵、P1/P2 的路径和安全契约、P5 测试设计接受审查；P3/P4 是后续非阻塞实施切片，P5 测试的实际执行也不是 P6 的设计 Review 前提。
-- 两个**不同**独立只读模型会话必须审查同一个原 Plan r10 与同一个 #468 固定最新 HEAD，并各给 `ACCEPT/REVISE/BLOCK` + 精确源码行证据。任一 REVISE 只能返回原 Plan/同 PR，新 HEAD 重审，不允许把旧版 ACCEPT 转移过来。
+- 两个**不同**独立只读模型会话必须对**同一当前 canonical Plan 修订（本轮 r11）与同一 #468 固定 HEAD**，并各给 `ACCEPT/REVISE/BLOCK` + 精确源码行证据。任一 REVISE 只能返回原 Plan/同 PR，新 HEAD 重审，不允许把旧版 ACCEPT 转移过来。
 - 双 ACCEPT + 必要 docs CI 才允许原唯一 Windows WSL2 Writer 在原 Work 上修改 P1（no Stop、exact tab script attestation、负面证明）与证据证明必要的 P2 最小传输路径，之后按 P5 运行测试/Live；**P3/P4 没有因此被授权提前实施，也不能反向卡住 P1/P2**。
 - 源码实现为同一 #313 任务下的一条代码 PR，和 #465 分开；固定 HEAD 独立源码 Review/CI、唯一集成 Writer 合并、Recovery 真实发布、零重复外部副作用。Mac 只负责只读 Review/原生 E2E，不持有 Forge 源码写入权。
 
@@ -112,4 +112,4 @@ effectId + dispatchGeneration: verified at Supervisor boundary against original 
 
 不因 Gateway 工具表指纹失配换不稳定 Runtime；不因 Mac/WSL 任一连接超时重复发送已可能产生副作用的原效应；不因检测到 Stop 擅自终止旧回复；不抹除旧 completion，不降低 applied ancestor 会话迁移拒绝；任何未知 Send 先同原 exact target 只读 reconcile。模型纠偏必须验证下一次真实产出，失败返回原 Plan 的 REVISE 或同一个实现 PR 修复，而非新 Scheduler/Layer/Plan/Writer。
 
-**冻结标识（审查时以 GitHub 当前 HEAD 为准）：** PR #468 / canonical Plan r10 / Git base 2cc71021d / 原 Writer supervisor:d09f4e6bb4014a894db105ec / 原 Work work-forge-source-bug-convergence-v1 / 原待发送 fx_170155dcd5cfe2a220238aff61d04f20。
+**冻结标识（审查时以 GitHub 当前 HEAD 为准）：** PR #468 / canonical Plan r11 / Git base 2cc71021d / 原 Writer supervisor:d09f4e6bb4014a894db105ec / 原 Work work-forge-source-bug-convergence-v1 / 原待发送 fx_170155dcd5cfe2a220238aff61d04f20。
