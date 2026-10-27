@@ -1,0 +1,1244 @@
+{
+  "sourceBase": "fb75fbbb7e3d2db99b4bbdb9ac64e8032becb575",
+  "sourceDiffSha256": "22af26b32f927971cf6eccb0bc409e55c82a8a8bef66f7ae3cd13d0900ae9feb",
+  "candidateFiles": {
+    "adapters/mcp/runtime-gateway/gateway-execution-adapter.ts": "bd7f0b617784d3dc64a10a8ec23ec41744a29c8bb13ed8f80f72e21c8c7306cc",
+    "tests/runtime/thin-harness-gateway-routing.test.ts": "2ad85733506ced2d6d932144000bdf5c16994a64611ca153506bb5256919af8d",
+    "docs/architecture/CURRENT.md": "374dc032b7a4b125838360b467f1442c2e8cc7a0cdb462bf8926a262d92af9e2"
+  },
+  "independentReview": {
+    "verdict": "ACCEPT",
+    "modelUsage": {
+      "claude-sonnet-5-5": {
+        "inputTokens": 16116,
+        "outputTokens": 2066,
+        "cacheReadInputTokens": 41,
+        "cacheCreationInputTokens": 3696,
+        "webSearchRequests": 0,
+        "costUSD": 0.06213609999999999,
+        "contextWindow": 1000000,
+        "maxOutputTokens": 128000,
+        "thinkingTokens": 0,
+        "cacheCreationEphemeral5mInputTokens": 0,
+        "cacheCreationEphemeral1hInputTokens": 0,
+        "canonicalModel": "claude-sonnet-5-5",
+        "provider": "firstParty",
+        "costBasis": "list"
+      }
+    },
+    "durationMs": 50403,
+    "result": "**ACCEPT**\n\n## Findings\n\n### Correctness ✓\n\n1. **Bug fix is correct**: Non-Work Direct Edit sessions now receive proper `{ repoId, checkoutId, principalId }` binding instead of `undefined`, while Work-owned sessions retain exact Work-based binding logic unchanged.\n\n2. **Authentication preserved**: Both paths require `principalId?.trim()` - no weakening of principal authentication.\n\n3. **Identity validation intact**: \n   - Repository/checkout identity derived from already-validated `resolveEditValidationRepository` result\n   - `assertEditSessionDurableBinding` still enforces exact matches for all present fields\n   - Work path explicitly validates Work existence, state, and checkout match\n\n4. **No ambient Work inference**: Code explicitly avoids calling `claimedSessionEditBinding` for non-Work edits, preventing any transport session Work leakage.\n\n5. **Partial binding is safe**: Non-Work binding omits `workId` and `controllerInstanceId` correctly:\n   - `assertEditSessionDurableBinding` only checks fields present in both session and binding\n   - `bindSessionControllerInstance` has explicit guard: \"A non-Work Safe Patch session has no Controller instance owner to rebind\"\n   - Matches documented invariant\n\n### Test Coverage ✓\n\n- Both non-Work (`withWork=false`) and Work (`withWork=true`) paths exercised\n- Foreign/missing principal rejection verified with no side effects (Process count unchanged, session unchanged)\n- Full lifecycle: verify → finalize → Work existence check\n- Real Process execution and completion proven\n- RED→GREEN transition with 2 cases/28 assertions\n\n### Architecture Compliance ✓\n\n- No new persistence, schema, state machine, or lifecycle authority\n- No new resource fence, retry, provider, network effect, or deployment topology\n- Changes isolated to MCP composition layer (`gateway-execution-adapter.ts`)\n- Reuses existing APIs: `resolveEditValidationRepository`, `claimedSessionEditBinding`, `assertEditSessionDurableBinding`\n- Controller instance rebinding remains owned by existing `bindSessionControllerInstance` primitive\n- Documentation updated in `CURRENT.md` with precise boundary statement\n\n### Security ✓\n\n- Principal authentication required for both paths\n- No privilege escalation: non-Work path cannot claim Work authority\n- Repository/checkout isolation preserved\n- Concurrent writer/Process lease systems untouched\n- Revision-bound receipts unchanged\n\n## Recommendation\n\n**ACCEPT** for merge. The candidate correctly solves the stated bug without weakening any security or correctness boundaries. Implementation is minimal, well-tested, and maintains all existing invariants."
+  },
+  "mcpAcceptance": {
+    "sourceBase": "fb75fbbb7e3d2db99b4bbdb9ac64e8032becb575",
+    "sessionId": "EDIT-1793094762316-623b99aa",
+    "revisions": 2,
+    "worksCreated": 0,
+    "failedCheck": false,
+    "passedCheck": true,
+    "finalStatus": "finalized",
+    "reconnected": true,
+    "events": [
+      {
+        "name": "begin_edit_session",
+        "ms": 92,
+        "isError": false,
+        "payload": {
+          "schemaVersion": 3,
+          "sessionId": "EDIT-1793094762316-623b99aa",
+          "repoId": "repo_local_db2ac0f45ab344f29c832b55cde7c24a",
+          "checkoutId": "checkout_0d784c1d5be3586077b6fb1b",
+          "principalId": "acceptance-controller",
+          "workspaceFingerprint": "8e96de8329e89ed3871ce54dd25c954fe8d766acebfb4c4a6694b0e6b1b3241c",
+          "purpose": "same session repairs failed source check across MCP reconnect",
+          "status": "open",
+          "allowedPaths": [
+            "source.ts"
+          ],
+          "maxFiles": 100,
+          "maxChangedLines": 50000,
+          "requestedChecks": [
+            "verify"
+          ],
+          "operations": [],
+          "revisions": [],
+          "savepoints": [],
+          "currentRevision": 0,
+          "checkResults": [],
+          "baseRevision": "c33d4f1d19f7f3a74569d403bd4842f0a762875b",
+          "createdAt": "2026-10-27T09:52:42.316Z",
+          "updatedAt": "2026-10-27T09:52:42.316Z",
+          "repository": {
+            "repoId": "repo_local_db2ac0f45ab344f29c832b55cde7c24a",
+            "checkoutId": "checkout_0d784c1d5be3586077b6fb1b",
+            "displayName": "475 MCP acceptance",
+            "defaultBranch": "main"
+          },
+          "runtimeStorage": {
+            "readyForExecution": true,
+            "usesStableRoot": true,
+            "warningCount": 0
+          },
+          "responseMeta": {
+            "traceId": "2e638eaa-2b4d-4175-8ad9-ffa0fc97d1dc",
+            "requestId": "mcp-call:261484c2-7104-4bdc-b898-9595eb7e22a4",
+            "serverStartedAt": "2026-10-27T09:52:42.284Z",
+            "serverDurationMs": 87.49
+          }
+        }
+      },
+      {
+        "name": "apply_patch",
+        "ms": 102,
+        "isError": false,
+        "payload": {
+          "schemaVersion": 3,
+          "sessionId": "EDIT-1793094762316-623b99aa",
+          "repoId": "repo_local_db2ac0f45ab344f29c832b55cde7c24a",
+          "checkoutId": "checkout_0d784c1d5be3586077b6fb1b",
+          "principalId": "acceptance-controller",
+          "workspaceFingerprint": "6b87315a4d0b11d9ac09ebdc29ecdccb76f94304f8fd76372e2d47dc8dcaa4ab",
+          "assurance": {
+            "changedPaths": [
+              "source.ts"
+            ],
+            "protectedPaths": [],
+            "changedLines": 1,
+            "semanticRisk": "low",
+            "requiredChecks": [
+              "verify"
+            ],
+            "approvalRequired": false,
+            "verificationDepth": "focused",
+            "calculatedAt": "2026-10-27T09:52:42.443Z"
+          },
+          "purpose": "same session repairs failed source check across MCP reconnect",
+          "status": "dirty",
+          "allowedPaths": [
+            "source.ts"
+          ],
+          "maxFiles": 100,
+          "maxChangedLines": 50000,
+          "requestedChecks": [
+            "verify"
+          ],
+          "operations": [
+            {
+              "revision": 1,
+              "operationIndex": 1,
+              "type": "replace",
+              "path": "source.ts",
+              "beforeSha256": "e22445c7c5ef7b19b64996dfd7c78b39a0f9436fb265185ae056d4f7b93f51a2",
+              "afterSha256": "115882c72725abf263713a5c90ed115d43ac66fa6026ebab3b019ae3fda16998",
+              "backupPath": ".ai/harness/edit-sessions/EDIT-1793094762316-623b99aa/backups/r0001-0001-source.ts.bak",
+              "changedLines": 1,
+              "beforeMode": 420,
+              "afterMode": 420
+            }
+          ],
+          "revisions": [
+            {
+              "revision": 1,
+              "operations": [
+                {
+                  "revision": 1,
+                  "operationIndex": 1,
+                  "type": "replace",
+                  "path": "source.ts",
+                  "beforeSha256": "e22445c7c5ef7b19b64996dfd7c78b39a0f9436fb265185ae056d4f7b93f51a2",
+                  "afterSha256": "115882c72725abf263713a5c90ed115d43ac66fa6026ebab3b019ae3fda16998",
+                  "backupPath": ".ai/harness/edit-sessions/EDIT-1793094762316-623b99aa/backups/r0001-0001-source.ts.bak",
+                  "changedLines": 1,
+                  "beforeMode": 420,
+                  "afterMode": 420
+                }
+              ],
+              "changedFiles": 1,
+              "changedLines": 1,
+              "patchPath": ".ai/harness/edit-sessions/EDIT-1793094762316-623b99aa/revisions/0001.patch",
+              "patchSha256": "af1afdf9aa926edee068c1374035b029d51a386a49282d096b46b8ad12d406be",
+              "createdAt": "2026-10-27T09:52:42.443Z"
+            }
+          ],
+          "savepoints": [],
+          "currentRevision": 1,
+          "checkResults": [],
+          "baseRevision": "c33d4f1d19f7f3a74569d403bd4842f0a762875b",
+          "diffPath": ".ai/harness/edit-sessions/EDIT-1793094762316-623b99aa/changes.patch",
+          "diffSha256": "af1afdf9aa926edee068c1374035b029d51a386a49282d096b46b8ad12d406be",
+          "createdAt": "2026-10-27T09:52:42.316Z",
+          "updatedAt": "2026-10-27T09:52:42.443Z",
+          "appliedAt": "2026-10-27T09:52:42.443Z",
+          "repository": {
+            "repoId": "repo_local_db2ac0f45ab344f29c832b55cde7c24a",
+            "checkoutId": "checkout_0d784c1d5be3586077b6fb1b",
+            "displayName": "475 MCP acceptance",
+            "defaultBranch": "main"
+          },
+          "runtimeStorage": {
+            "readyForExecution": true,
+            "usesStableRoot": true,
+            "warningCount": 0
+          },
+          "responseMeta": {
+            "traceId": "aed1c5ce-f925-44f2-803d-501a11789b96",
+            "requestId": "mcp-call:170903c8-2101-45a1-ad1e-f34821b93337",
+            "serverStartedAt": "2026-10-27T09:52:42.374Z",
+            "serverDurationMs": 101.13
+          }
+        }
+      },
+      {
+        "name": "verify_edit_session",
+        "requestId": "475-fail-r1",
+        "ms": 222,
+        "isError": false,
+        "payload": {
+          "accepted": true,
+          "mode": "managed",
+          "path": "process_managed",
+          "completed": false,
+          "sessionId": "EDIT-1793094762316-623b99aa",
+          "editRevision": 1,
+          "validationRequestId": "475-fail-r1",
+          "validationId": "editval_d6f85589cb6d943d53086e74",
+          "processes": [
+            {
+              "checkId": "verify",
+              "processId": "proc_mvqibpnp_85d6ed40",
+              "requestId": "475-fail-r1:check:1:a12dd3a7fd32",
+              "completed": false,
+              "ok": false,
+              "status": "running"
+            }
+          ],
+          "session": {
+            "schemaVersion": 3,
+            "sessionId": "EDIT-1793094762316-623b99aa",
+            "repoId": "repo_local_db2ac0f45ab344f29c832b55cde7c24a",
+            "checkoutId": "checkout_0d784c1d5be3586077b6fb1b",
+            "principalId": "acceptance-controller",
+            "workspaceFingerprint": "6b87315a4d0b11d9ac09ebdc29ecdccb76f94304f8fd76372e2d47dc8dcaa4ab",
+            "assurance": {
+              "changedPaths": [
+                "source.ts"
+              ],
+              "protectedPaths": [],
+              "changedLines": 1,
+              "semanticRisk": "low",
+              "requiredChecks": [
+                "verify"
+              ],
+              "approvalRequired": false,
+              "verificationDepth": "focused",
+              "calculatedAt": "2026-10-27T09:52:42.443Z"
+            },
+            "purpose": "same session repairs failed source check across MCP reconnect",
+            "status": "dirty",
+            "allowedPaths": [
+              "source.ts"
+            ],
+            "maxFiles": 100,
+            "maxChangedLines": 50000,
+            "requestedChecks": [
+              "verify"
+            ],
+            "operations": [
+              {
+                "revision": 1,
+                "operationIndex": 1,
+                "type": "replace",
+                "path": "source.ts",
+                "beforeSha256": "e22445c7c5ef7b19b64996dfd7c78b39a0f9436fb265185ae056d4f7b93f51a2",
+                "afterSha256": "115882c72725abf263713a5c90ed115d43ac66fa6026ebab3b019ae3fda16998",
+                "backupPath": ".ai/harness/edit-sessions/EDIT-1793094762316-623b99aa/backups/r0001-0001-source.ts.bak",
+                "changedLines": 1,
+                "beforeMode": 420,
+                "afterMode": 420
+              }
+            ],
+            "revisions": [
+              {
+                "revision": 1,
+                "operations": [
+                  {
+                    "revision": 1,
+                    "operationIndex": 1,
+                    "type": "replace",
+                    "path": "source.ts",
+                    "beforeSha256": "e22445c7c5ef7b19b64996dfd7c78b39a0f9436fb265185ae056d4f7b93f51a2",
+                    "afterSha256": "115882c72725abf263713a5c90ed115d43ac66fa6026ebab3b019ae3fda16998",
+                    "backupPath": ".ai/harness/edit-sessions/EDIT-1793094762316-623b99aa/backups/r0001-0001-source.ts.bak",
+                    "changedLines": 1,
+                    "beforeMode": 420,
+                    "afterMode": 420
+                  }
+                ],
+                "changedFiles": 1,
+                "changedLines": 1,
+                "patchPath": ".ai/harness/edit-sessions/EDIT-1793094762316-623b99aa/revisions/0001.patch",
+                "patchSha256": "af1afdf9aa926edee068c1374035b029d51a386a49282d096b46b8ad12d406be",
+                "createdAt": "2026-10-27T09:52:42.443Z"
+              }
+            ],
+            "savepoints": [],
+            "currentRevision": 1,
+            "checkResults": [],
+            "baseRevision": "c33d4f1d19f7f3a74569d403bd4842f0a762875b",
+            "diffPath": ".ai/harness/edit-sessions/EDIT-1793094762316-623b99aa/changes.patch",
+            "diffSha256": "af1afdf9aa926edee068c1374035b029d51a386a49282d096b46b8ad12d406be",
+            "createdAt": "2026-10-27T09:52:42.316Z",
+            "updatedAt": "2026-10-27T09:52:42.443Z",
+            "appliedAt": "2026-10-27T09:52:42.443Z"
+          },
+          "next": "Validation is running in Process Runtime. Forge Scheduler will advance conflict lanes automatically; continue independent work and join once when validation becomes a real dependency.",
+          "durableSideEffects": {
+            "executionJobCount": 0,
+            "localJobCount": 0,
+            "workerSpawnCount": 0,
+            "projectionUpdateCount": 0
+          },
+          "responseMeta": {
+            "traceId": "45247ffe-22a7-44fa-8c1a-32ff7cbe94f0",
+            "requestId": "475-fail-r1",
+            "serverStartedAt": "2026-10-27T09:52:42.476Z",
+            "serverDurationMs": 221.62
+          }
+        }
+      },
+      {
+        "name": "verify_edit_session",
+        "requestId": "475-fail-r1",
+        "ms": 58,
+        "isError": false,
+        "payload": {
+          "accepted": true,
+          "mode": "direct",
+          "path": "process_direct",
+          "completed": true,
+          "ok": false,
+          "sessionId": "EDIT-1793094762316-623b99aa",
+          "editRevision": 1,
+          "validationRequestId": "475-fail-r1",
+          "validationId": "editval_d6f85589cb6d943d53086e74",
+          "processes": [
+            {
+              "checkId": "verify",
+              "processId": "proc_mvqibpnp_85d6ed40",
+              "requestId": "475-fail-r1:check:1:a12dd3a7fd32",
+              "completed": true,
+              "ok": false,
+              "status": "failed"
+            }
+          ],
+          "receipts": [
+            {
+              "schemaVersion": 1,
+              "repoId": "repo_local_db2ac0f45ab344f29c832b55cde7c24a",
+              "checkoutId": "checkout_0d784c1d5be3586077b6fb1b",
+              "editSessionId": "EDIT-1793094762316-623b99aa",
+              "editRevision": 1,
+              "checkId": "verify",
+              "processId": "proc_mvqibpnp_85d6ed40",
+              "commandId": "475-fail-r1:check:1:a12dd3a7fd32",
+              "sourceCheckoutId": "checkout_0d784c1d5be3586077b6fb1b",
+              "checkCacheKey": "4dafc48a2f2bf487ffe9c7dc",
+              "checkRevision": "da2fc54edb38da81cad6898e",
+              "checkDefinitionDigest": "814cda7e9abdd909ec7670cfe88f1487ce2052bd5c4bb4100c6eb261b08c99b5",
+              "checkEnvironmentFingerprint": "0227a940af69bbfb6a59754f",
+              "reusedExecution": true,
+              "status": "failed",
+              "runtimeStatus": "failed",
+              "ok": false,
+              "exitCode": 1,
+              "timedOut": false,
+              "cancelled": false,
+              "artifactPath": "controller-home://checks/controller/latest-verify.json",
+              "summary": "Failed with persisted Process evidence: proc_mvqibpnp_85d6ed40",
+              "startedAt": "2026-10-27T09:52:42.669Z",
+              "finishedAt": "2026-10-27T09:52:42.966Z",
+              "resultDigest": "928a8fcec52b9b2796596da11167e98d449567cadc125d573abfb2526d5c7c89",
+              "receiptId": "check_receipt_928a8fcec52b9b2796596da1"
+            }
+          ],
+          "session": {
+            "schemaVersion": 3,
+            "sessionId": "EDIT-1793094762316-623b99aa",
+            "repoId": "repo_local_db2ac0f45ab344f29c832b55cde7c24a",
+            "checkoutId": "checkout_0d784c1d5be3586077b6fb1b",
+            "principalId": "acceptance-controller",
+            "workspaceFingerprint": "6b87315a4d0b11d9ac09ebdc29ecdccb76f94304f8fd76372e2d47dc8dcaa4ab",
+            "assurance": {
+              "changedPaths": [
+                "source.ts"
+              ],
+              "protectedPaths": [],
+              "changedLines": 1,
+              "semanticRisk": "low",
+              "requiredChecks": [
+                "verify"
+              ],
+              "approvalRequired": false,
+              "verificationDepth": "focused",
+              "calculatedAt": "2026-10-27T09:52:42.443Z"
+            },
+            "purpose": "same session repairs failed source check across MCP reconnect",
+            "status": "check_failed",
+            "allowedPaths": [
+              "source.ts"
+            ],
+            "maxFiles": 100,
+            "maxChangedLines": 50000,
+            "requestedChecks": [
+              "verify"
+            ],
+            "operations": [
+              {
+                "revision": 1,
+                "operationIndex": 1,
+                "type": "replace",
+                "path": "source.ts",
+                "beforeSha256": "e22445c7c5ef7b19b64996dfd7c78b39a0f9436fb265185ae056d4f7b93f51a2",
+                "afterSha256": "115882c72725abf263713a5c90ed115d43ac66fa6026ebab3b019ae3fda16998",
+                "backupPath": ".ai/harness/edit-sessions/EDIT-1793094762316-623b99aa/backups/r0001-0001-source.ts.bak",
+                "changedLines": 1,
+                "beforeMode": 420,
+                "afterMode": 420
+              }
+            ],
+            "revisions": [
+              {
+                "revision": 1,
+                "operations": [
+                  {
+                    "revision": 1,
+                    "operationIndex": 1,
+                    "type": "replace",
+                    "path": "source.ts",
+                    "beforeSha256": "e22445c7c5ef7b19b64996dfd7c78b39a0f9436fb265185ae056d4f7b93f51a2",
+                    "afterSha256": "115882c72725abf263713a5c90ed115d43ac66fa6026ebab3b019ae3fda16998",
+                    "backupPath": ".ai/harness/edit-sessions/EDIT-1793094762316-623b99aa/backups/r0001-0001-source.ts.bak",
+                    "changedLines": 1,
+                    "beforeMode": 420,
+                    "afterMode": 420
+                  }
+                ],
+                "changedFiles": 1,
+                "changedLines": 1,
+                "patchPath": ".ai/harness/edit-sessions/EDIT-1793094762316-623b99aa/revisions/0001.patch",
+                "patchSha256": "af1afdf9aa926edee068c1374035b029d51a386a49282d096b46b8ad12d406be",
+                "createdAt": "2026-10-27T09:52:42.443Z"
+              }
+            ],
+            "savepoints": [],
+            "currentRevision": 1,
+            "checkResults": [
+              {
+                "checkId": "verify",
+                "ok": false,
+                "summary": "Failed with persisted Process evidence: proc_mvqibpnp_85d6ed40",
+                "artifactPath": "controller-home://checks/controller/latest-verify.json",
+                "executedAt": "2026-10-27T09:52:42.966Z",
+                "status": "failed",
+                "receiptId": "check_receipt_928a8fcec52b9b2796596da1",
+                "processId": "proc_mvqibpnp_85d6ed40",
+                "resultDigest": "928a8fcec52b9b2796596da11167e98d449567cadc125d573abfb2526d5c7c89",
+                "revision": 1,
+                "receipt": {
+                  "schemaVersion": 1,
+                  "repoId": "repo_local_db2ac0f45ab344f29c832b55cde7c24a",
+                  "checkoutId": "checkout_0d784c1d5be3586077b6fb1b",
+                  "editSessionId": "EDIT-1793094762316-623b99aa",
+                  "editRevision": 1,
+                  "checkId": "verify",
+                  "processId": "proc_mvqibpnp_85d6ed40",
+                  "commandId": "475-fail-r1:check:1:a12dd3a7fd32",
+                  "sourceCheckoutId": "checkout_0d784c1d5be3586077b6fb1b",
+                  "checkCacheKey": "4dafc48a2f2bf487ffe9c7dc",
+                  "checkRevision": "da2fc54edb38da81cad6898e",
+                  "checkDefinitionDigest": "814cda7e9abdd909ec7670cfe88f1487ce2052bd5c4bb4100c6eb261b08c99b5",
+                  "checkEnvironmentFingerprint": "0227a940af69bbfb6a59754f",
+                  "reusedExecution": true,
+                  "status": "failed",
+                  "runtimeStatus": "failed",
+                  "ok": false,
+                  "exitCode": 1,
+                  "timedOut": false,
+                  "cancelled": false,
+                  "artifactPath": "controller-home://checks/controller/latest-verify.json",
+                  "summary": "Failed with persisted Process evidence: proc_mvqibpnp_85d6ed40",
+                  "startedAt": "2026-10-27T09:52:42.669Z",
+                  "finishedAt": "2026-10-27T09:52:42.966Z",
+                  "resultDigest": "928a8fcec52b9b2796596da11167e98d449567cadc125d573abfb2526d5c7c89",
+                  "receiptId": "check_receipt_928a8fcec52b9b2796596da1"
+                }
+              }
+            ],
+            "baseRevision": "c33d4f1d19f7f3a74569d403bd4842f0a762875b",
+            "diffPath": ".ai/harness/edit-sessions/EDIT-1793094762316-623b99aa/changes.patch",
+            "diffSha256": "af1afdf9aa926edee068c1374035b029d51a386a49282d096b46b8ad12d406be",
+            "reviewer": "chatgpt-controller",
+            "createdAt": "2026-10-27T09:52:42.316Z",
+            "updatedAt": "2026-10-27T09:52:43.042Z",
+            "appliedAt": "2026-10-27T09:52:42.443Z"
+          },
+          "next": "Validation is complete for the exact edit revision.",
+          "durableSideEffects": {
+            "executionJobCount": 0,
+            "localJobCount": 0,
+            "workerSpawnCount": 0,
+            "projectionUpdateCount": 0
+          },
+          "responseMeta": {
+            "traceId": "8b249e79-e7b7-475b-891a-3504347f446d",
+            "requestId": "475-fail-r1",
+            "serverStartedAt": "2026-10-27T09:52:42.992Z",
+            "serverDurationMs": 57.45
+          }
+        }
+      },
+      {
+        "name": "apply_patch",
+        "ms": 156,
+        "isError": false,
+        "payload": {
+          "schemaVersion": 3,
+          "sessionId": "EDIT-1793094762316-623b99aa",
+          "repoId": "repo_local_db2ac0f45ab344f29c832b55cde7c24a",
+          "checkoutId": "checkout_0d784c1d5be3586077b6fb1b",
+          "principalId": "acceptance-controller",
+          "workspaceFingerprint": "6b87315a4d0b11d9ac09ebdc29ecdccb76f94304f8fd76372e2d47dc8dcaa4ab",
+          "assurance": {
+            "changedPaths": [
+              "source.ts"
+            ],
+            "protectedPaths": [],
+            "changedLines": 2,
+            "semanticRisk": "low",
+            "requiredChecks": [
+              "verify"
+            ],
+            "approvalRequired": false,
+            "verificationDepth": "focused",
+            "calculatedAt": "2026-10-27T09:52:43.139Z"
+          },
+          "purpose": "same session repairs failed source check across MCP reconnect",
+          "status": "dirty",
+          "allowedPaths": [
+            "source.ts"
+          ],
+          "maxFiles": 100,
+          "maxChangedLines": 50000,
+          "requestedChecks": [
+            "verify"
+          ],
+          "operations": [
+            {
+              "revision": 1,
+              "operationIndex": 1,
+              "type": "replace",
+              "path": "source.ts",
+              "beforeSha256": "e22445c7c5ef7b19b64996dfd7c78b39a0f9436fb265185ae056d4f7b93f51a2",
+              "afterSha256": "115882c72725abf263713a5c90ed115d43ac66fa6026ebab3b019ae3fda16998",
+              "backupPath": ".ai/harness/edit-sessions/EDIT-1793094762316-623b99aa/backups/r0001-0001-source.ts.bak",
+              "changedLines": 1,
+              "beforeMode": 420,
+              "afterMode": 420
+            },
+            {
+              "revision": 2,
+              "operationIndex": 1,
+              "type": "replace",
+              "path": "source.ts",
+              "beforeSha256": "115882c72725abf263713a5c90ed115d43ac66fa6026ebab3b019ae3fda16998",
+              "afterSha256": "0afff94bd4b6c4e28185d2d027cc243850f5709da568dea39280455e561f5422",
+              "backupPath": ".ai/harness/edit-sessions/EDIT-1793094762316-623b99aa/backups/r0002-0001-source.ts.bak",
+              "changedLines": 1,
+              "beforeMode": 420,
+              "afterMode": 420
+            }
+          ],
+          "revisions": [
+            {
+              "revision": 1,
+              "operations": [
+                {
+                  "revision": 1,
+                  "operationIndex": 1,
+                  "type": "replace",
+                  "path": "source.ts",
+                  "beforeSha256": "e22445c7c5ef7b19b64996dfd7c78b39a0f9436fb265185ae056d4f7b93f51a2",
+                  "afterSha256": "115882c72725abf263713a5c90ed115d43ac66fa6026ebab3b019ae3fda16998",
+                  "backupPath": ".ai/harness/edit-sessions/EDIT-1793094762316-623b99aa/backups/r0001-0001-source.ts.bak",
+                  "changedLines": 1,
+                  "beforeMode": 420,
+                  "afterMode": 420
+                }
+              ],
+              "changedFiles": 1,
+              "changedLines": 1,
+              "patchPath": ".ai/harness/edit-sessions/EDIT-1793094762316-623b99aa/revisions/0001.patch",
+              "patchSha256": "af1afdf9aa926edee068c1374035b029d51a386a49282d096b46b8ad12d406be",
+              "createdAt": "2026-10-27T09:52:42.443Z"
+            },
+            {
+              "revision": 2,
+              "operations": [
+                {
+                  "revision": 2,
+                  "operationIndex": 1,
+                  "type": "replace",
+                  "path": "source.ts",
+                  "beforeSha256": "115882c72725abf263713a5c90ed115d43ac66fa6026ebab3b019ae3fda16998",
+                  "afterSha256": "0afff94bd4b6c4e28185d2d027cc243850f5709da568dea39280455e561f5422",
+                  "backupPath": ".ai/harness/edit-sessions/EDIT-1793094762316-623b99aa/backups/r0002-0001-source.ts.bak",
+                  "changedLines": 1,
+                  "beforeMode": 420,
+                  "afterMode": 420
+                }
+              ],
+              "changedFiles": 1,
+              "changedLines": 1,
+              "patchPath": ".ai/harness/edit-sessions/EDIT-1793094762316-623b99aa/revisions/0002.patch",
+              "patchSha256": "029e1f95986f4ba7774fd9d1cde7bb10bf241695417d3cd0f187b62ffd41dc6d",
+              "createdAt": "2026-10-27T09:52:43.139Z"
+            }
+          ],
+          "savepoints": [],
+          "currentRevision": 2,
+          "checkResults": [],
+          "baseRevision": "c33d4f1d19f7f3a74569d403bd4842f0a762875b",
+          "diffPath": ".ai/harness/edit-sessions/EDIT-1793094762316-623b99aa/changes.patch",
+          "diffSha256": "d22dd905ef34e3da07f4462fa27a93651f30e08cb350974bfea9021437d296c6",
+          "reviewer": "chatgpt-controller",
+          "createdAt": "2026-10-27T09:52:42.316Z",
+          "updatedAt": "2026-10-27T09:52:43.139Z",
+          "appliedAt": "2026-10-27T09:52:42.443Z",
+          "repository": {
+            "repoId": "repo_local_db2ac0f45ab344f29c832b55cde7c24a",
+            "checkoutId": "checkout_0d784c1d5be3586077b6fb1b",
+            "displayName": "475 MCP acceptance",
+            "defaultBranch": "main"
+          },
+          "runtimeStorage": {
+            "readyForExecution": true,
+            "usesStableRoot": true,
+            "warningCount": 0
+          },
+          "responseMeta": {
+            "traceId": "03d8d329-d8d5-4971-93a3-1bccdc8be61d",
+            "requestId": "mcp-call:e7afcc5e-04d2-442c-9513-d2f9b46d4b8d",
+            "serverStartedAt": "2026-10-27T09:52:43.053Z",
+            "serverDurationMs": 155.59
+          }
+        }
+      },
+      {
+        "name": "verify_edit_session",
+        "requestId": "475-pass-r2",
+        "ms": 226,
+        "isError": false,
+        "payload": {
+          "accepted": true,
+          "mode": "managed",
+          "path": "process_managed",
+          "completed": false,
+          "sessionId": "EDIT-1793094762316-623b99aa",
+          "editRevision": 2,
+          "validationRequestId": "475-pass-r2",
+          "validationId": "editval_c38bfeb40df989bf63fdf221",
+          "processes": [
+            {
+              "checkId": "verify",
+              "processId": "proc_mvqibq86_0ce106a3",
+              "requestId": "475-pass-r2:check:1:a12dd3a7fd32",
+              "completed": false,
+              "ok": false,
+              "status": "running"
+            }
+          ],
+          "session": {
+            "schemaVersion": 3,
+            "sessionId": "EDIT-1793094762316-623b99aa",
+            "repoId": "repo_local_db2ac0f45ab344f29c832b55cde7c24a",
+            "checkoutId": "checkout_0d784c1d5be3586077b6fb1b",
+            "principalId": "acceptance-controller",
+            "workspaceFingerprint": "6b87315a4d0b11d9ac09ebdc29ecdccb76f94304f8fd76372e2d47dc8dcaa4ab",
+            "assurance": {
+              "changedPaths": [
+                "source.ts"
+              ],
+              "protectedPaths": [],
+              "changedLines": 2,
+              "semanticRisk": "low",
+              "requiredChecks": [
+                "verify"
+              ],
+              "approvalRequired": false,
+              "verificationDepth": "focused",
+              "calculatedAt": "2026-10-27T09:52:43.139Z"
+            },
+            "purpose": "same session repairs failed source check across MCP reconnect",
+            "status": "dirty",
+            "allowedPaths": [
+              "source.ts"
+            ],
+            "maxFiles": 100,
+            "maxChangedLines": 50000,
+            "requestedChecks": [
+              "verify"
+            ],
+            "operations": [
+              {
+                "revision": 1,
+                "operationIndex": 1,
+                "type": "replace",
+                "path": "source.ts",
+                "beforeSha256": "e22445c7c5ef7b19b64996dfd7c78b39a0f9436fb265185ae056d4f7b93f51a2",
+                "afterSha256": "115882c72725abf263713a5c90ed115d43ac66fa6026ebab3b019ae3fda16998",
+                "backupPath": ".ai/harness/edit-sessions/EDIT-1793094762316-623b99aa/backups/r0001-0001-source.ts.bak",
+                "changedLines": 1,
+                "beforeMode": 420,
+                "afterMode": 420
+              },
+              {
+                "revision": 2,
+                "operationIndex": 1,
+                "type": "replace",
+                "path": "source.ts",
+                "beforeSha256": "115882c72725abf263713a5c90ed115d43ac66fa6026ebab3b019ae3fda16998",
+                "afterSha256": "0afff94bd4b6c4e28185d2d027cc243850f5709da568dea39280455e561f5422",
+                "backupPath": ".ai/harness/edit-sessions/EDIT-1793094762316-623b99aa/backups/r0002-0001-source.ts.bak",
+                "changedLines": 1,
+                "beforeMode": 420,
+                "afterMode": 420
+              }
+            ],
+            "revisions": [
+              {
+                "revision": 1,
+                "operations": [
+                  {
+                    "revision": 1,
+                    "operationIndex": 1,
+                    "type": "replace",
+                    "path": "source.ts",
+                    "beforeSha256": "e22445c7c5ef7b19b64996dfd7c78b39a0f9436fb265185ae056d4f7b93f51a2",
+                    "afterSha256": "115882c72725abf263713a5c90ed115d43ac66fa6026ebab3b019ae3fda16998",
+                    "backupPath": ".ai/harness/edit-sessions/EDIT-1793094762316-623b99aa/backups/r0001-0001-source.ts.bak",
+                    "changedLines": 1,
+                    "beforeMode": 420,
+                    "afterMode": 420
+                  }
+                ],
+                "changedFiles": 1,
+                "changedLines": 1,
+                "patchPath": ".ai/harness/edit-sessions/EDIT-1793094762316-623b99aa/revisions/0001.patch",
+                "patchSha256": "af1afdf9aa926edee068c1374035b029d51a386a49282d096b46b8ad12d406be",
+                "createdAt": "2026-10-27T09:52:42.443Z"
+              },
+              {
+                "revision": 2,
+                "operations": [
+                  {
+                    "revision": 2,
+                    "operationIndex": 1,
+                    "type": "replace",
+                    "path": "source.ts",
+                    "beforeSha256": "115882c72725abf263713a5c90ed115d43ac66fa6026ebab3b019ae3fda16998",
+                    "afterSha256": "0afff94bd4b6c4e28185d2d027cc243850f5709da568dea39280455e561f5422",
+                    "backupPath": ".ai/harness/edit-sessions/EDIT-1793094762316-623b99aa/backups/r0002-0001-source.ts.bak",
+                    "changedLines": 1,
+                    "beforeMode": 420,
+                    "afterMode": 420
+                  }
+                ],
+                "changedFiles": 1,
+                "changedLines": 1,
+                "patchPath": ".ai/harness/edit-sessions/EDIT-1793094762316-623b99aa/revisions/0002.patch",
+                "patchSha256": "029e1f95986f4ba7774fd9d1cde7bb10bf241695417d3cd0f187b62ffd41dc6d",
+                "createdAt": "2026-10-27T09:52:43.139Z"
+              }
+            ],
+            "savepoints": [],
+            "currentRevision": 2,
+            "checkResults": [],
+            "baseRevision": "c33d4f1d19f7f3a74569d403bd4842f0a762875b",
+            "diffPath": ".ai/harness/edit-sessions/EDIT-1793094762316-623b99aa/changes.patch",
+            "diffSha256": "d22dd905ef34e3da07f4462fa27a93651f30e08cb350974bfea9021437d296c6",
+            "reviewer": "chatgpt-controller",
+            "createdAt": "2026-10-27T09:52:42.316Z",
+            "updatedAt": "2026-10-27T09:52:43.139Z",
+            "appliedAt": "2026-10-27T09:52:42.443Z"
+          },
+          "next": "Validation is running in Process Runtime. Forge Scheduler will advance conflict lanes automatically; continue independent work and join once when validation becomes a real dependency.",
+          "durableSideEffects": {
+            "executionJobCount": 0,
+            "localJobCount": 0,
+            "workerSpawnCount": 0,
+            "projectionUpdateCount": 0
+          },
+          "responseMeta": {
+            "traceId": "2ccd805a-29f4-4086-99a4-d1cefd838995",
+            "requestId": "475-pass-r2",
+            "serverStartedAt": "2026-10-27T09:52:43.210Z",
+            "serverDurationMs": 225.11
+          }
+        }
+      },
+      {
+        "name": "verify_edit_session",
+        "requestId": "475-pass-r2",
+        "ms": 71,
+        "isError": false,
+        "payload": {
+          "accepted": true,
+          "mode": "direct",
+          "path": "process_direct",
+          "completed": true,
+          "ok": true,
+          "sessionId": "EDIT-1793094762316-623b99aa",
+          "editRevision": 2,
+          "validationRequestId": "475-pass-r2",
+          "validationId": "editval_c38bfeb40df989bf63fdf221",
+          "processes": [
+            {
+              "checkId": "verify",
+              "processId": "proc_mvqibq86_0ce106a3",
+              "requestId": "475-pass-r2:check:1:a12dd3a7fd32",
+              "completed": true,
+              "ok": true,
+              "status": "succeeded"
+            }
+          ],
+          "receipts": [
+            {
+              "schemaVersion": 1,
+              "repoId": "repo_local_db2ac0f45ab344f29c832b55cde7c24a",
+              "checkoutId": "checkout_0d784c1d5be3586077b6fb1b",
+              "editSessionId": "EDIT-1793094762316-623b99aa",
+              "editRevision": 2,
+              "checkId": "verify",
+              "processId": "proc_mvqibq86_0ce106a3",
+              "commandId": "475-pass-r2:check:1:a12dd3a7fd32",
+              "sourceCheckoutId": "checkout_0d784c1d5be3586077b6fb1b",
+              "checkCacheKey": "9d17dc885b6af83735a58f81",
+              "checkRevision": "41d69007bd6f5999082df112",
+              "checkDefinitionDigest": "814cda7e9abdd909ec7670cfe88f1487ce2052bd5c4bb4100c6eb261b08c99b5",
+              "checkEnvironmentFingerprint": "0227a940af69bbfb6a59754f",
+              "reusedExecution": true,
+              "status": "passed",
+              "runtimeStatus": "succeeded",
+              "ok": true,
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "artifactPath": "controller-home://checks/controller/latest-verify.json",
+              "summary": "Passed with persisted Process evidence: proc_mvqibq86_0ce106a3 (shared semantic Check execution)",
+              "startedAt": "2026-10-27T09:52:43.407Z",
+              "finishedAt": "2026-10-27T09:52:43.844Z",
+              "resultDigest": "b5ef97fad9631365707dcf179b812717ac154474938fc2fbdc469f33ac80f81d",
+              "receiptId": "check_receipt_b5ef97fad9631365707dcf17"
+            }
+          ],
+          "session": {
+            "schemaVersion": 3,
+            "sessionId": "EDIT-1793094762316-623b99aa",
+            "repoId": "repo_local_db2ac0f45ab344f29c832b55cde7c24a",
+            "checkoutId": "checkout_0d784c1d5be3586077b6fb1b",
+            "principalId": "acceptance-controller",
+            "workspaceFingerprint": "6b87315a4d0b11d9ac09ebdc29ecdccb76f94304f8fd76372e2d47dc8dcaa4ab",
+            "assurance": {
+              "changedPaths": [
+                "source.ts"
+              ],
+              "protectedPaths": [],
+              "changedLines": 2,
+              "semanticRisk": "low",
+              "requiredChecks": [
+                "verify"
+              ],
+              "approvalRequired": false,
+              "verificationDepth": "focused",
+              "calculatedAt": "2026-10-27T09:52:43.139Z"
+            },
+            "purpose": "same session repairs failed source check across MCP reconnect",
+            "status": "checked",
+            "allowedPaths": [
+              "source.ts"
+            ],
+            "maxFiles": 100,
+            "maxChangedLines": 50000,
+            "requestedChecks": [
+              "verify"
+            ],
+            "operations": [
+              {
+                "revision": 1,
+                "operationIndex": 1,
+                "type": "replace",
+                "path": "source.ts",
+                "beforeSha256": "e22445c7c5ef7b19b64996dfd7c78b39a0f9436fb265185ae056d4f7b93f51a2",
+                "afterSha256": "115882c72725abf263713a5c90ed115d43ac66fa6026ebab3b019ae3fda16998",
+                "backupPath": ".ai/harness/edit-sessions/EDIT-1793094762316-623b99aa/backups/r0001-0001-source.ts.bak",
+                "changedLines": 1,
+                "beforeMode": 420,
+                "afterMode": 420
+              },
+              {
+                "revision": 2,
+                "operationIndex": 1,
+                "type": "replace",
+                "path": "source.ts",
+                "beforeSha256": "115882c72725abf263713a5c90ed115d43ac66fa6026ebab3b019ae3fda16998",
+                "afterSha256": "0afff94bd4b6c4e28185d2d027cc243850f5709da568dea39280455e561f5422",
+                "backupPath": ".ai/harness/edit-sessions/EDIT-1793094762316-623b99aa/backups/r0002-0001-source.ts.bak",
+                "changedLines": 1,
+                "beforeMode": 420,
+                "afterMode": 420
+              }
+            ],
+            "revisions": [
+              {
+                "revision": 1,
+                "operations": [
+                  {
+                    "revision": 1,
+                    "operationIndex": 1,
+                    "type": "replace",
+                    "path": "source.ts",
+                    "beforeSha256": "e22445c7c5ef7b19b64996dfd7c78b39a0f9436fb265185ae056d4f7b93f51a2",
+                    "afterSha256": "115882c72725abf263713a5c90ed115d43ac66fa6026ebab3b019ae3fda16998",
+                    "backupPath": ".ai/harness/edit-sessions/EDIT-1793094762316-623b99aa/backups/r0001-0001-source.ts.bak",
+                    "changedLines": 1,
+                    "beforeMode": 420,
+                    "afterMode": 420
+                  }
+                ],
+                "changedFiles": 1,
+                "changedLines": 1,
+                "patchPath": ".ai/harness/edit-sessions/EDIT-1793094762316-623b99aa/revisions/0001.patch",
+                "patchSha256": "af1afdf9aa926edee068c1374035b029d51a386a49282d096b46b8ad12d406be",
+                "createdAt": "2026-10-27T09:52:42.443Z"
+              },
+              {
+                "revision": 2,
+                "operations": [
+                  {
+                    "revision": 2,
+                    "operationIndex": 1,
+                    "type": "replace",
+                    "path": "source.ts",
+                    "beforeSha256": "115882c72725abf263713a5c90ed115d43ac66fa6026ebab3b019ae3fda16998",
+                    "afterSha256": "0afff94bd4b6c4e28185d2d027cc243850f5709da568dea39280455e561f5422",
+                    "backupPath": ".ai/harness/edit-sessions/EDIT-1793094762316-623b99aa/backups/r0002-0001-source.ts.bak",
+                    "changedLines": 1,
+                    "beforeMode": 420,
+                    "afterMode": 420
+                  }
+                ],
+                "changedFiles": 1,
+                "changedLines": 1,
+                "patchPath": ".ai/harness/edit-sessions/EDIT-1793094762316-623b99aa/revisions/0002.patch",
+                "patchSha256": "029e1f95986f4ba7774fd9d1cde7bb10bf241695417d3cd0f187b62ffd41dc6d",
+                "createdAt": "2026-10-27T09:52:43.139Z"
+              }
+            ],
+            "savepoints": [],
+            "currentRevision": 2,
+            "checkResults": [
+              {
+                "checkId": "verify",
+                "ok": true,
+                "summary": "Passed with persisted Process evidence: proc_mvqibq86_0ce106a3 (shared semantic Check execution)",
+                "artifactPath": "controller-home://checks/controller/latest-verify.json",
+                "executedAt": "2026-10-27T09:52:43.844Z",
+                "status": "passed",
+                "receiptId": "check_receipt_b5ef97fad9631365707dcf17",
+                "processId": "proc_mvqibq86_0ce106a3",
+                "resultDigest": "b5ef97fad9631365707dcf179b812717ac154474938fc2fbdc469f33ac80f81d",
+                "revision": 2,
+                "receipt": {
+                  "schemaVersion": 1,
+                  "repoId": "repo_local_db2ac0f45ab344f29c832b55cde7c24a",
+                  "checkoutId": "checkout_0d784c1d5be3586077b6fb1b",
+                  "editSessionId": "EDIT-1793094762316-623b99aa",
+                  "editRevision": 2,
+                  "checkId": "verify",
+                  "processId": "proc_mvqibq86_0ce106a3",
+                  "commandId": "475-pass-r2:check:1:a12dd3a7fd32",
+                  "sourceCheckoutId": "checkout_0d784c1d5be3586077b6fb1b",
+                  "checkCacheKey": "9d17dc885b6af83735a58f81",
+                  "checkRevision": "41d69007bd6f5999082df112",
+                  "checkDefinitionDigest": "814cda7e9abdd909ec7670cfe88f1487ce2052bd5c4bb4100c6eb261b08c99b5",
+                  "checkEnvironmentFingerprint": "0227a940af69bbfb6a59754f",
+                  "reusedExecution": true,
+                  "status": "passed",
+                  "runtimeStatus": "succeeded",
+                  "ok": true,
+                  "exitCode": 0,
+                  "timedOut": false,
+                  "cancelled": false,
+                  "artifactPath": "controller-home://checks/controller/latest-verify.json",
+                  "summary": "Passed with persisted Process evidence: proc_mvqibq86_0ce106a3 (shared semantic Check execution)",
+                  "startedAt": "2026-10-27T09:52:43.407Z",
+                  "finishedAt": "2026-10-27T09:52:43.844Z",
+                  "resultDigest": "b5ef97fad9631365707dcf179b812717ac154474938fc2fbdc469f33ac80f81d",
+                  "receiptId": "check_receipt_b5ef97fad9631365707dcf17"
+                }
+              }
+            ],
+            "baseRevision": "c33d4f1d19f7f3a74569d403bd4842f0a762875b",
+            "diffPath": ".ai/harness/edit-sessions/EDIT-1793094762316-623b99aa/changes.patch",
+            "diffSha256": "d22dd905ef34e3da07f4462fa27a93651f30e08cb350974bfea9021437d296c6",
+            "reviewer": "chatgpt-controller",
+            "createdAt": "2026-10-27T09:52:42.316Z",
+            "updatedAt": "2026-10-27T09:52:43.928Z",
+            "appliedAt": "2026-10-27T09:52:42.443Z",
+            "verifiedAt": "2026-10-27T09:52:43.928Z"
+          },
+          "next": "Validation is complete for the exact edit revision.",
+          "durableSideEffects": {
+            "executionJobCount": 0,
+            "localJobCount": 0,
+            "workerSpawnCount": 0,
+            "projectionUpdateCount": 0
+          },
+          "responseMeta": {
+            "traceId": "4352b985-5cd1-4627-8263-3ad714919d6a",
+            "requestId": "475-pass-r2",
+            "serverStartedAt": "2026-10-27T09:52:43.869Z",
+            "serverDurationMs": 69.76
+          }
+        }
+      },
+      {
+        "name": "finalize_edit_session",
+        "ms": 116,
+        "isError": false,
+        "payload": {
+          "schemaVersion": 3,
+          "sessionId": "EDIT-1793094762316-623b99aa",
+          "repoId": "repo_local_db2ac0f45ab344f29c832b55cde7c24a",
+          "checkoutId": "checkout_0d784c1d5be3586077b6fb1b",
+          "principalId": "acceptance-controller",
+          "workspaceFingerprint": "6b87315a4d0b11d9ac09ebdc29ecdccb76f94304f8fd76372e2d47dc8dcaa4ab",
+          "assurance": {
+            "changedPaths": [
+              "source.ts"
+            ],
+            "protectedPaths": [],
+            "changedLines": 2,
+            "semanticRisk": "low",
+            "requiredChecks": [
+              "verify"
+            ],
+            "approvalRequired": false,
+            "verificationDepth": "focused",
+            "calculatedAt": "2026-10-27T09:52:43.139Z"
+          },
+          "purpose": "same session repairs failed source check across MCP reconnect",
+          "status": "finalized",
+          "allowedPaths": [
+            "source.ts"
+          ],
+          "maxFiles": 100,
+          "maxChangedLines": 50000,
+          "requestedChecks": [
+            "verify"
+          ],
+          "operations": [
+            {
+              "revision": 1,
+              "operationIndex": 1,
+              "type": "replace",
+              "path": "source.ts",
+              "beforeSha256": "e22445c7c5ef7b19b64996dfd7c78b39a0f9436fb265185ae056d4f7b93f51a2",
+              "afterSha256": "115882c72725abf263713a5c90ed115d43ac66fa6026ebab3b019ae3fda16998",
+              "backupPath": ".ai/harness/edit-sessions/EDIT-1793094762316-623b99aa/backups/r0001-0001-source.ts.bak",
+              "changedLines": 1,
+              "beforeMode": 420,
+              "afterMode": 420
+            },
+            {
+              "revision": 2,
+              "operationIndex": 1,
+              "type": "replace",
+              "path": "source.ts",
+              "beforeSha256": "115882c72725abf263713a5c90ed115d43ac66fa6026ebab3b019ae3fda16998",
+              "afterSha256": "0afff94bd4b6c4e28185d2d027cc243850f5709da568dea39280455e561f5422",
+              "backupPath": ".ai/harness/edit-sessions/EDIT-1793094762316-623b99aa/backups/r0002-0001-source.ts.bak",
+              "changedLines": 1,
+              "beforeMode": 420,
+              "afterMode": 420
+            }
+          ],
+          "revisions": [
+            {
+              "revision": 1,
+              "operations": [
+                {
+                  "revision": 1,
+                  "operationIndex": 1,
+                  "type": "replace",
+                  "path": "source.ts",
+                  "beforeSha256": "e22445c7c5ef7b19b64996dfd7c78b39a0f9436fb265185ae056d4f7b93f51a2",
+                  "afterSha256": "115882c72725abf263713a5c90ed115d43ac66fa6026ebab3b019ae3fda16998",
+                  "backupPath": ".ai/harness/edit-sessions/EDIT-1793094762316-623b99aa/backups/r0001-0001-source.ts.bak",
+                  "changedLines": 1,
+                  "beforeMode": 420,
+                  "afterMode": 420
+                }
+              ],
+              "changedFiles": 1,
+              "changedLines": 1,
+              "patchPath": ".ai/harness/edit-sessions/EDIT-1793094762316-623b99aa/revisions/0001.patch",
+              "patchSha256": "af1afdf9aa926edee068c1374035b029d51a386a49282d096b46b8ad12d406be",
+              "createdAt": "2026-10-27T09:52:42.443Z"
+            },
+            {
+              "revision": 2,
+              "operations": [
+                {
+                  "revision": 2,
+                  "operationIndex": 1,
+                  "type": "replace",
+                  "path": "source.ts",
+                  "beforeSha256": "115882c72725abf263713a5c90ed115d43ac66fa6026ebab3b019ae3fda16998",
+                  "afterSha256": "0afff94bd4b6c4e28185d2d027cc243850f5709da568dea39280455e561f5422",
+                  "backupPath": ".ai/harness/edit-sessions/EDIT-1793094762316-623b99aa/backups/r0002-0001-source.ts.bak",
+                  "changedLines": 1,
+                  "beforeMode": 420,
+                  "afterMode": 420
+                }
+              ],
+              "changedFiles": 1,
+              "changedLines": 1,
+              "patchPath": ".ai/harness/edit-sessions/EDIT-1793094762316-623b99aa/revisions/0002.patch",
+              "patchSha256": "029e1f95986f4ba7774fd9d1cde7bb10bf241695417d3cd0f187b62ffd41dc6d",
+              "createdAt": "2026-10-27T09:52:43.139Z"
+            }
+          ],
+          "savepoints": [],
+          "currentRevision": 2,
+          "checkResults": [
+            {
+              "checkId": "verify",
+              "ok": true,
+              "summary": "Passed with persisted Process evidence: proc_mvqibq86_0ce106a3 (shared semantic Check execution)",
+              "artifactPath": "controller-home://checks/controller/latest-verify.json",
+              "executedAt": "2026-10-27T09:52:43.844Z",
+              "status": "passed",
+              "receiptId": "check_receipt_b5ef97fad9631365707dcf17",
+              "processId": "proc_mvqibq86_0ce106a3",
+              "resultDigest": "b5ef97fad9631365707dcf179b812717ac154474938fc2fbdc469f33ac80f81d",
+              "revision": 2,
+              "receipt": {
+                "schemaVersion": 1,
+                "repoId": "repo_local_db2ac0f45ab344f29c832b55cde7c24a",
+                "checkoutId": "checkout_0d784c1d5be3586077b6fb1b",
+                "editSessionId": "EDIT-1793094762316-623b99aa",
+                "editRevision": 2,
+                "checkId": "verify",
+                "processId": "proc_mvqibq86_0ce106a3",
+                "commandId": "475-pass-r2:check:1:a12dd3a7fd32",
+                "sourceCheckoutId": "checkout_0d784c1d5be3586077b6fb1b",
+                "checkCacheKey": "9d17dc885b6af83735a58f81",
+                "checkRevision": "41d69007bd6f5999082df112",
+                "checkDefinitionDigest": "814cda7e9abdd909ec7670cfe88f1487ce2052bd5c4bb4100c6eb261b08c99b5",
+                "checkEnvironmentFingerprint": "0227a940af69bbfb6a59754f",
+                "reusedExecution": true,
+                "status": "passed",
+                "runtimeStatus": "succeeded",
+                "ok": true,
+                "exitCode": 0,
+                "timedOut": false,
+                "cancelled": false,
+                "artifactPath": "controller-home://checks/controller/latest-verify.json",
+                "summary": "Passed with persisted Process evidence: proc_mvqibq86_0ce106a3 (shared semantic Check execution)",
+                "startedAt": "2026-10-27T09:52:43.407Z",
+                "finishedAt": "2026-10-27T09:52:43.844Z",
+                "resultDigest": "b5ef97fad9631365707dcf179b812717ac154474938fc2fbdc469f33ac80f81d",
+                "receiptId": "check_receipt_b5ef97fad9631365707dcf17"
+              }
+            }
+          ],
+          "baseRevision": "c33d4f1d19f7f3a74569d403bd4842f0a762875b",
+          "diffPath": ".ai/harness/edit-sessions/EDIT-1793094762316-623b99aa/changes.patch",
+          "diffSha256": "d22dd905ef34e3da07f4462fa27a93651f30e08cb350974bfea9021437d296c6",
+          "reviewer": "isolated MCP acceptance",
+          "createdAt": "2026-10-27T09:52:42.316Z",
+          "updatedAt": "2026-10-27T09:52:44.050Z",
+          "appliedAt": "2026-10-27T09:52:42.443Z",
+          "verifiedAt": "2026-10-27T09:52:43.928Z",
+          "finalizedAt": "2026-10-27T09:52:44.050Z",
+          "repository": {
+            "repoId": "repo_local_db2ac0f45ab344f29c832b55cde7c24a",
+            "checkoutId": "checkout_0d784c1d5be3586077b6fb1b",
+            "displayName": "475 MCP acceptance",
+            "defaultBranch": "main"
+          },
+          "runtimeStorage": {
+            "readyForExecution": true,
+            "usesStableRoot": true,
+            "warningCount": 0
+          },
+          "responseMeta": {
+            "traceId": "6eea4897-4ca0-4514-9afd-83d2bc191acf",
+            "requestId": "mcp-call:02545df3-706f-46fa-b503-ffac42da26af",
+            "serverStartedAt": "2026-10-27T09:52:43.940Z",
+            "serverDurationMs": 114.58
+          }
+        }
+      }
+    ]
+  },
+  "acceptanceScript": "import assert from 'node:assert/strict';\nimport {mkdirSync,writeFileSync,readFileSync} from 'node:fs';\nimport {join} from 'node:path';\nimport {spawnSync} from 'node:child_process';\nimport {createHash} from 'node:crypto';\nimport {Client} from '/Users/greyson/DevProjects/forge/node_modules/@modelcontextprotocol/client';\nimport {InMemoryTransport} from '/Users/greyson/DevProjects/forge/node_modules/@modelcontextprotocol/server';\nimport {createMcpToolContext,createForgeMcpServerFromContext} from '/Users/greyson/DevProjects/forge/adapters/mcp/server';\nimport {ensureControllerHome} from '/Users/greyson/DevProjects/forge/src/effects/controller-home';\nimport {registerRepository} from '/Users/greyson/DevProjects/forge/src/cli/repositories/registry';\nimport {getEditSession} from '/Users/greyson/DevProjects/forge/src/cli/editing/edit-session';\nimport {listWorkContracts} from '/Users/greyson/DevProjects/forge/src/runtime/control-plane/facade/work-contract-store';\nimport {waitForProcess} from '/Users/greyson/DevProjects/forge/src/runtime/execution/process-runtime/runtime';\nconst root=import.meta.dir,home=join(root,'controller-fixed'),repo=join(root,'repo-fixed');\nprocess.env.FORGE_CONTROLLER_HOME=home;\nmkdirSync(join(repo,'.forge'),{recursive:true});\nfunction git(...args:string[]){const r=spawnSync('git',args,{cwd:repo,encoding:'utf8'});assert.equal(r.status,0,r.stderr);}\ngit('init','-q','-b','main');git('config','user.name','Acceptance');git('config','user.email','acceptance@example.test');\nwriteFileSync(join(repo,'source.ts'),'export const n = 1;\\n');\nwriteFileSync(join(repo,'.forge/checks.json'),JSON.stringify({version:1,checks:{verify:{description:'real source bytes',command:[process.execPath,'-e',`const fs=require('fs');if(fs.readFileSync('source.ts','utf8')!=='export const n = 3;'+String.fromCharCode(10))process.exit(1);`],timeoutMs:10000,effects:{reads:['source.ts']}}}}));\ngit('add','.');git('commit','-qm','acceptance fixture');ensureControllerHome(home);\nconst repository=registerRepository({path:repo,controllerHome:home,displayName:'475 MCP acceptance'});\nconst events:any[]=[];\nasync function connect(sessionId:string){\n const ctx=createMcpToolContext({controllerHome:home,profile:'controller',repo,principalId:'acceptance-controller',sessionId});\n const server=createForgeMcpServerFromContext(ctx);const [a,b]=InMemoryTransport.createLinkedPair();await server.connect(b);\n const client=new Client({name:'475-acceptance',version:'1.0.0'},{capabilities:{}});await client.connect(a);return {client,server};\n}\nlet pair=await connect('before-reconnect');\nasync function call(name:string,args:any){const start=Date.now();const r:any=await pair.client.callTool({name,arguments:{repo_id:repository.repoId,...args}});const payload=r.structuredContent??JSON.parse(r.content.find((x:any)=>x.type==='text').text);events.push({name,requestId:args.request_id,ms:Date.now()-start,isError:r.isError??false,payload});assert.notEqual(r.isError,true,JSON.stringify(payload));return payload;}\nasync function verify(id:string,request:string){let v=await call('verify_edit_session',{session_id:id,check_ids:['verify'],request_id:request});for(const p of v.processes??[])await waitForProcess(home,repository.repoId,p.processId,{timeoutMs:10000});if(!v.completed)v=await call('verify_edit_session',{session_id:id,check_ids:['verify'],request_id:request});return v;}\nconst session=await call('begin_edit_session',{purpose:'same session repairs failed source check across MCP reconnect',allowed_paths:['source.ts'],checks:['verify']});\nconst sha=(s:string)=>createHash('sha256').update(s).digest('hex');\nawait call('apply_patch',{session_id:session.sessionId,expected_revision:0,operations:[{type:'replace',path:'source.ts',expected_sha256:sha(readFileSync(join(repo,'source.ts'),'utf8')),replacements:[{old_text:'n = 1',new_text:'n = 2'}]}]});\nconst failed=await verify(session.sessionId,'475-fail-r1');assert.equal(failed.ok,false);assert.equal(getEditSession(repo,session.sessionId).status,'check_failed');\nawait pair.client.close();await pair.server.close();pair=await connect('after-reconnect');\nawait call('apply_patch',{session_id:session.sessionId,expected_revision:1,operations:[{type:'replace',path:'source.ts',expected_sha256:sha(readFileSync(join(repo,'source.ts'),'utf8')),replacements:[{old_text:'n = 2',new_text:'n = 3'}]}]});\nconst passed=await verify(session.sessionId,'475-pass-r2');assert.equal(passed.ok,true);assert.equal(passed.editRevision,2);\nconst closed=await call('finalize_edit_session',{session_id:session.sessionId,reviewer:'isolated MCP acceptance'});assert.equal(closed.status,'finalized');assert.equal(listWorkContracts({controllerHome:home,repoId:repository.repoId}).length,0);\nawait pair.client.close();await pair.server.close();\nwriteFileSync(join(root,'receipt.json'),JSON.stringify({sourceBase:'fb75fbbb7e3d2db99b4bbdb9ac64e8032becb575',sessionId:session.sessionId,revisions:2,worksCreated:0,failedCheck:failed.ok,passedCheck:passed.ok,finalStatus:closed.status,reconnected:true,events},null,2));\nconsole.log('ACCEPT: MCP begin → patch → failed check → reconnect → patch → passed check → finalize; same Session, two revisions, zero Work');\n",
+  "acceptanceEnvironment": "isolated Controller Home; actual MCP SDK transport; no production Runtime activation",
+  "harnessRepair": "First isolated run had malformed newline quoting in check command. Raw failed process logs retained; fixed checker used a fresh isolated fixture and passed. No production patch changed for this repair.",
+  "verificationProcesses": {
+    "red": "proc_mvqi633s_85a38267",
+    "green": "proc_mvqi6ibv_6852ad72",
+    "relatedRegressions": {
+      "processId": "proc_mvqi7wip_48e70711",
+      "passed": 25,
+      "assertions": 189,
+      "exitCode": 0
+    },
+    "type": {
+      "processId": "proc_mvqi92hb_c8600464",
+      "exitCode": 0
+    },
+    "moduleBoundaries": {
+      "processId": "proc_mvqiacqd_fb9edb10",
+      "exitCode": 0
+    },
+    "taskGate": {
+      "processId": "proc_mvqiksc8_c75a5816",
+      "status": "succeeded",
+      "exitCode": 0,
+      "selectedTestFiles": 15,
+      "checkpointHits": 14,
+      "failures": 0,
+      "gatewayTests": 70,
+      "gatewayAssertions": 605,
+      "receipt": "controller-home://cache/governed-gates/a5ca10a298f9cbeddb718ac2/063f60613dce87d19cd24f8b14cbb99dd6b6600a4d9c25256f2f94dde680ac9a-task.json",
+      "priorAttempt": {
+        "processId": "proc_mvqicb1k_86360b99",
+        "status": "timed_out",
+        "timeoutMs": 300000
+      }
+    }
+  },
+  "runtimeObservation": {
+    "activeReleaseId": "1793063073070-2cc71021db0a291037c4755dc04ce9c1884417e6",
+    "activeSourceCommit": "2cc71021db0a291037c4755dc04ce9c1884417e6",
+    "authorityRevision": 981,
+    "ready": true,
+    "observationMethod": "existing local Recovery helper runtime_status, 10-second bounded fetch",
+    "openReleaseSessions": 0,
+    "releaseInventoryInspected": 676,
+    "scope": "read-only release admission inventory, not unrelated Work discovery",
+    "listReleases": "timed out; not retried or interpreted as Runtime failure"
+  }
+}
