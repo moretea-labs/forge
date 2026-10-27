@@ -21,11 +21,22 @@ async function runEditSessionValidationViaProcessRuntime(
 ): Promise<CallToolResult> {
   const resolved = resolveEditValidationRepository(repository, editSessionId);
   const explicitWorkId = typeof args.work_id === 'string' && args.work_id.trim() ? args.work_id.trim() : undefined;
-  const binding = claimedSessionEditBinding(ctx.controllerHome, resolved.repository, {
-    sessionId: ctx.sessionId,
-    principalId: ctx.principalId,
-    controllerInstanceId: ctx.controllerInstanceId,
-  }, explicitWorkId ?? resolved.session.workId);
+  const workId = explicitWorkId ?? resolved.session.workId;
+  // Ordinary Direct Edit has repository/caller identity without a Work claim.
+  // Never infer a different Work from the transport session for this edit.
+  const binding = workId
+    ? claimedSessionEditBinding(ctx.controllerHome, resolved.repository, {
+      sessionId: ctx.sessionId,
+      principalId: ctx.principalId,
+      controllerInstanceId: ctx.controllerInstanceId,
+    }, workId)
+    : ctx.principalId?.trim()
+      ? {
+        repoId: resolved.repository.repoId,
+        checkoutId: resolved.repository.activeCheckoutId,
+        principalId: ctx.principalId.trim(),
+      }
+      : undefined;
   assertEditSessionDurableBinding(resolved.session, binding, { requireBoundIdentity: true });
   const validation = await startOrJoinEditValidation(ctx.controllerHome, resolved.repository, {
     editSessionId,
