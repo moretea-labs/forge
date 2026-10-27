@@ -414,6 +414,7 @@ test('find_marker hydrates only the exact pinned migrated conversation after rec
   let receiverInstalled = false;
   let reinjections = 0;
   let sends = 0;
+  let unrelatedSnapshots = 0;
   const chrome = {
     runtime: {
       lastError: undefined as undefined | { message: string },
@@ -431,7 +432,7 @@ test('find_marker hydrates only the exact pinned migrated conversation after rec
           cb({ dispatched: false });
           return;
         }
-        if (id !== pinned.id) { cb({ url: decoy.url, latestUserText: '', userMessages: [] }); return; }
+        if (id !== pinned.id) { unrelatedSnapshots++; cb({ url: decoy.url, latestUserText: '', userMessages: [] }); return; }
         if (!receiverInstalled) {
           chrome.runtime.lastError = { message: 'Receiving end does not exist' };
           cb();
@@ -486,7 +487,13 @@ test('find_marker hydrates only the exact pinned migrated conversation after rec
   expect(found.matches[0]?.identity.conversationId).toBe(conversationId);
   expect(found.matches[0]?.providerBinding.tabId).toBe('81');
   expect(reinjections).toBe(1);
+  expect(unrelatedSnapshots).toBe(0);
   expect(sends).toBe(0);
+  tabs.shift();
+  const missing = await find(command, 'same-provider');
+  expect(missing).toMatchObject({ kind: 'failed', code: 'COMPUTER_CHATGPT_BOOTSTRAP_PINNED_TAB_MISSING' });
+  expect(unrelatedSnapshots).toBe(0);
+  tabs.unshift(pinned);
   // Foreign providerId cannot launder its exact Chrome tab/session/Token
   // through marker reconciliation into a fresh Chrome Send authorization.
   const foreign = await find({ ...command, providerBinding: {
@@ -500,7 +507,7 @@ test('find_marker hydrates only the exact pinned migrated conversation after rec
   receiverInstalled = false;
   pinned.url = 'https://chatgpt.com/g/g-p-other-project/c/' + conversationId;
   const rejected = await find(command, 'same-provider');
-  expect(rejected.matches).toHaveLength(0);
+  expect(rejected).toMatchObject({ kind: 'failed', code: 'COMPUTER_CHATGPT_BOOTSTRAP_PINNED_TAB_IDENTITY_CHANGED' });
   expect(reinjections).toBe(1);
   expect(sends).toBe(0);
 });

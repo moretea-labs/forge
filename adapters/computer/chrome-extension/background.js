@@ -561,14 +561,17 @@ async function executeFindMarker(command, instanceId) {
     && pinnedBinding.providerSessionId === instanceId
     && pinnedBinding.tabId && pinnedBinding.windowId) {
     try { pinnedTarget = await resolveTarget(command.identity, false, pinnedBinding, instanceId); }
-    catch { /* Invalid pin never permits repair or other-tab adoption. */ }
+    catch (error) { return { kind: 'failed', code: targetResolutionReasonCode(error), retryable: false }; }
   }
+  // A malformed command with a pin but no bootstrap identity must not fall
+  // through to discovery of unrelated tabs.
+  if (pinnedBinding && !pinnedTarget)
+    return { kind: 'failed', code: 'COMPUTER_CHATGPT_BOOTSTRAP_PINNED_TAB_MISSING', retryable: false };
   const tabs = await chatgptTabs();
   const pinnedTabId = pinnedTarget ? String(pinnedTarget.tab.id) : undefined;
-  // Only the exact pinned physical tab can receive receiver restoration.
-  const orderedTabs = pinnedTarget
-    ? [pinnedTarget.tab, ...tabs.filter((tab) => String(tab.id) !== pinnedTabId)]
-    : tabs;
+  // A persisted pin is the only acceptable result for this bootstrap. Do not
+  // let unrelated tabs exhaust the broker timeout after that result is found.
+  const orderedTabs = pinnedBinding ? (pinnedTarget ? [pinnedTarget.tab] : []) : tabs;
   for (const tab of orderedTabs) {
     if (!tab.id) continue;
     const pinned = Boolean(pinnedTarget && String(tab.id) === pinnedTabId);
