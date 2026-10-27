@@ -43,7 +43,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     detail_level: { type: 'string', enum: ['summary', 'detail'] },
     limit: { type: 'number' },
   }),
-  definition('rh_context', 'Read-only semantic repository retrieval and advisory context, including source snippets, paths, symbols, relationships and optional project knowledge. Requested compiler navigation locations are returned as bounded flat semanticEvidence.locations alongside navigation diagnostics. The model chooses when to retrieve context, when to use terminal search through execute_command, and whether the retrieved evidence is sufficient. This tool does not authorize execution or impose a required workflow.', {
+  definition('rh_context', 'Read-only semantic repository retrieval and advisory context, including source snippets, paths, symbols, relationships and optional project knowledge. Requested compiler navigation locations are returned as bounded flat semanticEvidence.locations alongside navigation diagnostics. Reuse already known context within the conversation; retrieve only changed or missing evidence, and restore minimal durable task facts on a new conversation. Use exact file reads for known paths and search for new dependencies or insufficient context. Execution facts still require live verification at the operation boundary. This tool does not authorize execution or impose a required workflow.', {
     repo_id: repoId,
     checkout_id: { type: 'string', description: 'Optional checkout identity for repositories with multiple worktrees.' },
     operation: { type: 'string', enum: ['list', 'get', 'search'], description: 'Defaults to get. Search returns semantic source candidates when the model selects this retrieval capability.' },
@@ -60,7 +60,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     knowledge_source_kind: { type: 'string', enum: ['experience', 'outcome', 'knowledge', 'controller', 'system', 'external'], description: 'Optional provenance source-kind filter.' },
     knowledge_source_work_id: { type: 'string', description: 'Optional provenance source Work filter.' },
     knowledge_limit: { type: 'number', minimum: 1, maximum: 100, description: 'Per-call read envelope for explicit Cognitive audit/expansion; defaults to 24. This is a context/transport budget, not a semantic claim that N memories are sufficient.' },
-    known_paths: { type: 'array', items: { type: 'string' }, description: 'Optional exact paths or globs that should receive highest retrieval priority.' },
+    known_paths: { type: 'array', items: { type: 'string' }, description: 'Optional exact paths or globs that should receive highest retrieval priority. Prefer exact file reads when paths are already known; use retrieval only for missing or changed evidence.' },
     include_globs: { type: 'array', items: { type: 'string' } },
     exclude_globs: { type: 'array', items: { type: 'string' } },
     retrieval_mode: { type: 'string', enum: ['implementation', 'plan', 'debug', 'review'], description: 'Defaults to implementation. Implementation returns current raw impact evidence for ChatGPT to judge; plan/debug/review intentionally widen evidence.' },
@@ -89,7 +89,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     requested_check_ids: { type: 'array', items: { type: 'string' }, description: 'Optional execution preflight. When supplied, returns registered checks plus dependency and resource-compatible scheduling readiness; omit for source-only retrieval.' },
     capability_id: { type: 'string', description: 'Optional capability identity. For plugin.<pluginId>.<actionId>, returns the exact typed action schema/policy for plugin_action_execute.' },
     work_id: { type: 'string' },
-    detail_level: { type: 'string', enum: ['summary', 'detail', 'raw'], description: 'Defaults to summary; raw is still bounded.' },
+    detail_level: { type: 'string', enum: ['summary', 'detail', 'raw'], description: 'Defaults to summary. Source search keeps snippets, exact provenance and readiness/gaps; detail/raw adds retrieval diagnostics and candidate lists. Expand only when those diagnostics can change the next decision; raw is still bounded.' },
   }),
   definition('rh_work', 'Preferred ChatGPT facade for optional durable Requirement/Plan/Work semantic context, explicit recovery, scheduling/workflow intent, and external controller launch. Ordinary execution and validation use direct domain capabilities; provider/session binding, retries, transport recovery, dedupe, and other mechanical bookkeeping stay internal.', {
     repo_id: repoId,
