@@ -99,6 +99,24 @@ function enrollmentDependencies(enrollments: { count: number }) {
 }
 
 describe('autonomous Work liveness reconciliation', () => {
+  test('non-finite continuation budgets retain the bounded default scan', async () => {
+    for (const maxContinuations of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+      const controllerHome = home();
+      createRunningWork(controllerHome, { workId: 'WORK-NONFINITE-BUDGET' });
+      bindReleasedChatgptController(controllerHome, 'WORK-NONFINITE-BUDGET');
+      const enrollments = { count: 0 };
+      const result = await runSchedulerAutonomousContinuationReconciliation({
+        controllerHome,
+        nowMs: Date.parse('2026-10-27T12:00:00.000Z'),
+        repositories: [{ repoId: 'repo-a', canonicalRoot: controllerHome, localRoot: controllerHome }],
+        maxContinuations,
+        dependencies: enrollmentDependencies(enrollments),
+      });
+      expect(result).toMatchObject({ eligible: 1, supervisorEnrolled: 1, dispatched: 0, failed: 0 });
+      expect(enrollments.count).toBe(1);
+    }
+  });
+
   test('materializes an ownerless Plan Work and enrolls the Workflow Supervisor', async () => {
     const controllerHome = home();
     createRequirement({ controllerHome }, {
