@@ -2667,82 +2667,65 @@ test('recovery stop-pending is a live-turn observation, not a failed preparation
   store.close();
 });
 
-test('dispatch-owner no-click refunds each exact generation while the existing three-release preflight gate bounds retries', () => {
-  const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-no-click-refund-'));
+test('only a fresh typed Chrome no-stop proof refunds one generation; proofless failures remain unknown', () => {
+  const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-typed-refund-'));
   roots.push(root);
-  let activeReleaseId = 'release-1';
-  const store = new WorkflowSupervisorStore(join(root, 'supervisor-home'), { activeReleaseId: () => activeReleaseId });
+  const store = new WorkflowSupervisorStore(join(root, 'supervisor-home'));
   const control = new WorkflowSupervisorControlPlane(store, {}, { browserTaskActive: () => true });
-  const taskId = 'dispatch-owner-no-click-refund';
+  const taskId = 'typed-refund-proof';
   const conversationId = 'abababab-1111-2222-3333-444444444444';
   const conversationUrl = `https://chatgpt.com/c/${conversationId}`;
-  control.registerTask({
-    taskId, conversationId, conversationUrl, objective: 'No-click proofs do not spend actual send budget.',
-    completionContract: {}, continuationPolicy: { kind: 'standalone_supervisor' }, userBlockerPolicy: {},
-  });
+  control.registerTask({ taskId, conversationId, conversationUrl, objective: 'Refund only a fresh exact-target no-mutation receipt.',
+    completionContract: {}, continuationPolicy: { kind: 'standalone_supervisor' }, userBlockerPolicy: {} });
   const effect = control.reserveEnrollment(taskId);
-  const ownerReturn = (generation: number, reason: string): void => {
-    expect(store.nextBrowserEffect(taskId, { nowMs: Date.now() + 600_000 })).toMatchObject({ mode: 'send', generation });
-    expect(store.recordEffectDispatchStarted(effect.effectId, generation, `owner-${generation}`, { surface: 'macos-native' })).toBe(true);
-    control.browserObserveDispatchFailure({
-      conversationId, conversationUrl, effectId: effect.effectId,
-      observationId: `owner-no-click-${generation}`, dispatchGeneration: generation, reason,
-    });
-    expect(store.nextBrowserEffect(taskId, { nowMs: Date.now() + 600_000 })).toBeUndefined();
-  };
-  ownerReturn(1, 'composer_missing');
-  activeReleaseId = 'release-2';
-  ownerReturn(2, 'send_button_missing');
-  activeReleaseId = 'release-3';
-  ownerReturn(3, 'composer_missing');
-  expect(store.effectDispatchBudget(effect.effectId)).toMatchObject({ generations: 3, maxGenerations: 3, exhausted: false });
-  expect(control.taskStall(taskId)).toMatchObject({
-    state: 'spaced', effectId: effect.effectId, reason: 'pre_send_infrastructure_blocked',
+  const receipt = (reason: string) => ({
+    kind: 'prewrite_no_mutation_proof' as const, phase: 'prewrite_or_preclick' as const, reason,
+    issued_at_ms: Date.now(), editor_touched: false as const, stop_clicked: false as const, send_clicked: false as const,
+    loaded_capability: 'recover-no-stop-prewrite-v1' as const, provider_id: 'browser.chrome-extension' as const,
+    provider_instance_id: 'profile-instance', provider_session_id: 'profile-instance', profile_id: 'profile-instance',
+    command_id: 'claimed-command-1', window_id: '7', tab_id: '9', owner_token: 'exact-owner-token',
   });
+  expect(store.recordEffectDispatchStarted(effect.effectId, 1, 'owner-1', { surface: 'computer-chatgpt-target', target_id: 'exact-target' })).toBe(true);
+  expect(store.recordEffectNotAppliedProof(effect.effectId, 'typed-no-stop-proof-1', {
+    ...receipt('provider_recovery_turn_unknown'), effect_id: effect.effectId, dispatch_generation: 1,
+    dispatch_id: 'owner-1', surface: 'computer-chatgpt-target', target_id: 'exact-target',
+  })).toBe(true);
+  expect(store.effectDispatchBudget(effect.effectId)).toMatchObject({ generations: 1, maxGenerations: 3, exhausted: false });
+  expect(store.nextBrowserEffect(taskId, { nowMs: Date.now() + 600_000 })).toMatchObject({ mode: 'send', generation: 2 });
+
+  expect(store.recordEffectDispatchStarted(effect.effectId, 2, 'owner-2', { surface: 'computer-chatgpt-target', target_id: 'exact-target' })).toBe(true);
+  control.browserObserveDispatchFailure({ conversationId, conversationUrl, effectId: effect.effectId, observationId: 'proofless-no-click-2',
+    dispatchGeneration: 2, dispatchId: 'owner-2', targetId: 'exact-target', surface: 'computer-chatgpt-target', reason: 'composer_missing' });
+  expect(store.effectDispatchBudget(effect.effectId)).toMatchObject({ generations: 2, maxGenerations: 3, exhausted: false });
+  expect(store.nextBrowserEffect(taskId, { nowMs: Date.now() + 600_000 })).toMatchObject({ mode: 'reconcile', generation: 2 });
   store.close();
 });
 
-test('bootstrap no-click refunds the exact generation and shares the bounded release gate', () => {
+test('proofless bootstrap not-applied evidence stays unknown and cannot refund or authorize a retry', () => {
   const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-bootstrap-no-click-proof-'));
   roots.push(root);
   const release = { id: 'release-1' };
   const store = new WorkflowSupervisorStore(join(root, 'supervisor-home'), { activeReleaseId: () => release.id });
   const control = new WorkflowSupervisorControlPlane(store, {}, { browserTaskActive: () => true });
   const taskId = 'bootstrap-no-click-proof';
-  control.registerTask({
-    taskId, conversationId: `bootstrap:${taskId}`, conversationUrl: 'https://chatgpt.com/',
-    objective: 'A proven bootstrap no-click refunds only its started generation.',
-    completionContract: {}, continuationPolicy: { kind: 'standalone_supervisor', bootstrap: true }, userBlockerPolicy: {},
-  });
+  control.registerTask({ taskId, conversationId: `bootstrap:${taskId}`, conversationUrl: 'https://chatgpt.com/',
+    objective: 'Proofless legacy bootstrap evidence cannot authorize a new Send.',
+    completionContract: {}, continuationPolicy: { kind: 'standalone_supervisor', bootstrap: true }, userBlockerPolicy: {} });
   const effect = control.reserveEnrollment(taskId);
-  expect(control.bootstrapBeginEffect({
-    taskId, effectId: effect.effectId, dispatchId: 'bootstrap-no-click-dispatch-1', dispatchGeneration: 1,
-  })).toBe(true);
-  // A generic observer cannot turn an outcome-unknown bootstrap dispatch into
-  // a reusable provider Send merely by reporting not_applied.
-  for (const evidence of [
-    {},
-    { dispatch_mutation: 'attempted', send_clicked: false },
-    { dispatch_mutation: 'not_attempted', send_clicked: true },
-  ]) {
-    expect(() => control.bootstrapObserveEffect({
-      taskId, effectId: effect.effectId, observationId: `untrusted-${JSON.stringify(evidence)}`,
-      outcome: 'not_applied', evidence,
-    })).toThrow('WORKFLOW_SUPERVISOR_BOOTSTRAP_NOT_APPLIED_PROOF_INVALID');
+  expect(control.bootstrapBeginEffect({ taskId, effectId: effect.effectId, dispatchId: 'bootstrap-no-click-dispatch-1', dispatchGeneration: 1 })).toBe(true);
+  for (const evidence of [{}, { dispatch_mutation: 'attempted', send_clicked: false }, { dispatch_mutation: 'not_attempted', send_clicked: true }]) {
+    expect(() => control.bootstrapObserveEffect({ taskId, effectId: effect.effectId, observationId: `untrusted-${JSON.stringify(evidence)}`,
+      outcome: 'not_applied', evidence })).toThrow('WORKFLOW_SUPERVISOR_BOOTSTRAP_NOT_APPLIED_PROOF_INVALID');
   }
   expect(store.recordEffectDispatchStarted(effect.effectId, 2, 'unproven-bootstrap-retry')).toBe(false);
-  control.bootstrapObserveEffect({
-    taskId, effectId: effect.effectId, observationId: 'bootstrap-no-click-proof-1', outcome: 'not_applied',
-    evidence: { dispatch_mutation: 'not_attempted', send_clicked: false },
-  });
-  control.recordProviderPreparationFailure({ taskId, effectId: effect.effectId, reasonCode: 'composer_missing' });
+  control.bootstrapObserveEffect({ taskId, effectId: effect.effectId, observationId: 'bootstrap-no-click-proof-1', outcome: 'not_applied',
+    evidence: { dispatch_mutation: 'not_attempted', send_clicked: false } });
+  expect(() => control.recordProviderPreparationFailure({ taskId, effectId: effect.effectId, reasonCode: 'composer_missing' }))
+    .toThrow('WORKFLOW_SUPERVISOR_PRE_SEND_FAILURE_OUTCOME_NOT_PROVEN');
   expect(store.effectDispatchBudget(effect.effectId)).toMatchObject({ generations: 1, maxGenerations: 3, exhausted: false });
   expect(store.nextBrowserEffect(taskId)).toBeUndefined();
-
   release.id = 'release-2';
-  expect(store.nextBrowserEffect(taskId, { nowMs: Date.now() + 600_000 })).toMatchObject({
-    mode: 'send', generation: 2, effect: { effectId: effect.effectId, kind: 'enrollment' },
-  });
+  expect(store.nextBrowserEffect(taskId, { nowMs: Date.now() + 600_000 })).toMatchObject({ mode: 'reconcile', generation: 1 });
   store.close();
 });
 
@@ -3055,7 +3038,7 @@ test('enrolled reconciliation reopens only its exact conversation and never repe
   store.close();
 });
 
-test('retries a bootstrap effect after a proven pre-send failure instead of reconciling it forever', () => {
+test('bootstrap legacy no-click boolean cannot authorize another dispatch after send intent', () => {
   const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-bootstrap-negative-proof-'));
   roots.push(root);
   const dispatchedAt = 1_700_000_000_000;
@@ -3073,14 +3056,14 @@ test('retries a bootstrap effect after a proven pre-send failure instead of reco
     taskId: 'bootstrap-negative-proof-task', effectId: effect.effectId,
     dispatchId: 'dispatch-pre-send-failure', dispatchGeneration: 1,
   })).toBe(true);
-  control.bootstrapObserveEffect({
+  expect(control.bootstrapObserveEffect({
     taskId: 'bootstrap-negative-proof-task', effectId: effect.effectId,
-    observationId: 'proven-no-send', outcome: 'not_applied',
+    observationId: 'legacy-no-click', outcome: 'not_applied',
     evidence: { dispatch_mutation: 'not_attempted', send_clicked: false },
-  });
-
-  expect(store.nextBrowserEffect('bootstrap-negative-proof-task', { nowMs: dispatchedAt + 30_000 }))
-    .toEqual(expect.objectContaining({ effect: expect.objectContaining({ effectId: effect.effectId }), mode: 'send', generation: 2 }));
+  })).toBe(false);
+  expect(store.effectDispatchBudget(effect.effectId)).toMatchObject({ generations: 1, exhausted: false });
+  expect(store.nextBrowserEffect('bootstrap-negative-proof-task', { nowMs: dispatchedAt + 30_000 })).toBeUndefined();
+  expect(store.recordEffectDispatchStarted(effect.effectId, 2, 'unproven-second-send')).toBe(false);
 });
 
 test('bootstrap does not require window.name and reconciles the exact effect marker after navigation', async () => {
@@ -3657,13 +3640,16 @@ test('Resume stream unavailable uses a bounded same-conversation recovery chain 
   store.recordEffectObservation(operatorRecovery.effectId, 'extension-transport-unknown', 'unknown', { reason: 'The message port closed before a response was received.' });
   expect(() => control.recoverTask({ ...operatorRequest, sourceEffectId: operatorRecovery.effectId })).toThrow('WORKFLOW_SUPERVISOR_RECOVERY_OUTCOME_UNKNOWN');
   store.recordEffectObservation(operatorRecovery.effectId, 'legacy-owner-no-click', 'unknown', { surface: 'macos-native', reason: 'composer_missing' });
-  expect(control.recoverTask({ ...operatorRequest, sourceEffectId: operatorRecovery.effectId }).recoveryEffect.effectId).toBe(operatorRecovery.effectId);
+  // A persisted legacy reason is not an exact provider no-click receipt.
+  expect(() => control.recoverTask({ ...operatorRequest, sourceEffectId: operatorRecovery.effectId }))
+    .toThrow('WORKFLOW_SUPERVISOR_RECOVERY_OUTCOME_UNKNOWN');
   expect(store.nextBrowserEffect(taskId, { nowMs: Date.now() + 60_000 })).toMatchObject({
-    mode: 'send', generation: 2, effect: { effectId: operatorRecovery.effectId },
+    mode: 'reconcile', generation: 1, effect: { effectId: operatorRecovery.effectId },
   });
-  control.browserObserveDispatchFailure({ conversationId, conversationUrl, effectId: operatorRecovery.effectId, observationId: 'owner-no-click', dispatchGeneration: 1, reason: 'composer_missing' });
-  expect(store.nextBrowserEffect(taskId, { nowMs: Date.now() + 60_000 })).toBeUndefined();
-  expect(control.taskStall(taskId)).toMatchObject({ state: 'spaced', effectId: operatorRecovery.effectId, reason: 'pre_send_infrastructure_blocked' });
+  control.browserObserveDispatchFailure({ conversationId, conversationUrl, effectId: operatorRecovery.effectId, observationId: 'owner-no-click',
+    dispatchGeneration: 1, dispatchId: 'operator-recovery-send', targetId: 'test-target', surface: 'macos-native', reason: 'composer_missing' });
+  expect(store.nextBrowserEffect(taskId, { nowMs: Date.now() + 60_000 })).toMatchObject({ mode: 'reconcile', generation: 1 });
+  expect(control.taskStall(taskId)).toMatchObject({ state: 'spaced', effectId: operatorRecovery.effectId, reason: 'unknown_observation_spacing' });
   expect(store.effectDispatchBudget(operatorRecovery.effectId)).toMatchObject({ generations: 1, exhausted: false });
 });
 
@@ -4485,16 +4471,19 @@ test('bounds and spaces provider re-dispatch of one un-applied effect, then rele
       effectId: effect.effectId,
       dispatchId: `dispatch-budget-${generation}`,
       dispatchGeneration: generation,
-      evidence: { surface: 'test', ...snapshotEvidence },
+      evidence: { surface: 'test', target_id: 'exact-target', ...snapshotEvidence },
     })).toMatchObject({ started: true, mode: 'send', generation });
   };
   const proveNotApplied = (observationId: string): void => {
-    // Exercise bounded retry with trusted dispatch-owner evidence, never with
-    // a post-send DOM observation claiming provider rejection.
-    store.recordEffectNotAppliedProof(effect.effectId, observationId, {
+    // A positive provider non-application receipt permits bounded resend but
+    // cannot refund a dispatch; old generic no-click strings cannot do either.
+    expect(store.recordEffectNotAppliedProof(effect.effectId, observationId, {
+      effect_id: effect.effectId,
+      dispatch_id: `dispatch-budget-${store.latestEffectDispatch(effect.effectId)!.generation}`,
       dispatch_generation: store.latestEffectDispatch(effect.effectId)!.generation,
-      reason: 'provider_rejected_before_submission',
-    });
+      surface: 'test', target_id: 'exact-target', reason: 'provider_confirmed_not_applied', send_clicked: true,
+      provider_receipt: 'confirmed_not_applied_after_dispatch',
+    })).toBe(false);
   };
 
   dispatch(1);
@@ -4531,22 +4520,28 @@ test('delayed negative proof from an older dispatch cannot authorize an unknown 
     objective: 'Do not replay an unknown generation after an earlier proof arrives late.',
     completionContract: {}, continuationPolicy: {}, userBlockerPolicy: {} });
   const effect = control.reserveEnrollment(taskId);
-  expect(store.recordEffectDispatchStarted(effect.effectId, 1, 'generation-one')).toBe(true);
-  const firstProof = { dispatch_generation: 1, send_clicked: false, pre_send_rejection: true };
-  store.recordEffectNotAppliedProof(effect.effectId, 'first-proof', firstProof);
-  expect(store.recordEffectDispatchStarted(effect.effectId, 2, 'generation-two')).toBe(true);
-  // Repeating an existing receipt is idempotent, but an arriving generation-one
-  // proof cannot settle generation two or refund its provider Send budget.
-  expect(() => store.recordEffectNotAppliedProof(effect.effectId, 'first-proof', firstProof)).not.toThrow();
-  expect(() => store.recordEffectNotAppliedProof(effect.effectId, 'late-first-proof', firstProof))
+  expect(store.recordEffectDispatchStarted(effect.effectId, 1, 'generation-one', { surface: 'computer-chatgpt-target', target_id: 'test-target' })).toBe(true);
+  const makeProof = (generation: number, dispatchId: string) => ({
+    effect_id: effect.effectId, dispatch_generation: generation, dispatch_id: dispatchId,
+    surface: 'computer-chatgpt-target', target_id: 'test-target',
+    kind: 'prewrite_no_mutation_proof', phase: 'prewrite_or_preclick', reason: 'provider_recovery_turn_unknown',
+    issued_at_ms: Date.now(), editor_touched: false, stop_clicked: false, send_clicked: false,
+    loaded_capability: 'recover-no-stop-prewrite-v1', provider_id: 'browser.chrome-extension',
+    provider_instance_id: 'profile-instance', provider_session_id: 'profile-instance', profile_id: 'profile-instance',
+    command_id: `claimed-command-${generation}`, window_id: '7', tab_id: '9', owner_token: 'exact-owner-token',
+  });
+  const firstProof = makeProof(1, 'generation-one');
+  expect(store.recordEffectNotAppliedProof(effect.effectId, 'first-proof', firstProof)).toBe(true);
+  expect(store.recordEffectDispatchStarted(effect.effectId, 2, 'generation-two', { surface: 'computer-chatgpt-target', target_id: 'test-target' })).toBe(true);
+  // Identical receipt replay is idempotent even after the next generation starts.
+  expect(store.recordEffectNotAppliedProof(effect.effectId, 'first-proof', firstProof)).toBe(true);
+  expect(() => store.recordEffectNotAppliedProof(effect.effectId, 'late-first-proof', makeProof(1, 'generation-one')))
     .toThrow('WORKFLOW_SUPERVISOR_NOT_APPLIED_PROOF_GENERATION_STALE');
   expect(() => store.recordEffectNotAppliedProof(effect.effectId, 'unattributed-proof', { send_clicked: false }))
     .toThrow('WORKFLOW_SUPERVISOR_NOT_APPLIED_PROOF_GENERATION_STALE');
   expect(store.recordEffectDispatchStarted(effect.effectId, 3, 'premature-third')).toBe(false);
-  store.recordEffectNotAppliedProof(effect.effectId, 'second-proof', {
-    dispatch_generation: 2, send_clicked: false, pre_send_rejection: true,
-  });
-  expect(store.recordEffectDispatchStarted(effect.effectId, 3, 'authorized-third')).toBe(true);
+  expect(store.recordEffectNotAppliedProof(effect.effectId, 'second-proof', makeProof(2, 'generation-two'))).toBe(true);
+  expect(store.recordEffectDispatchStarted(effect.effectId, 3, 'authorized-third', { surface: 'computer-chatgpt-target', target_id: 'test-target' })).toBe(true);
   store.close();
 });
 
@@ -4565,8 +4560,9 @@ describe('Workflow Supervisor operator recovery and conversation replacement', (
     });
     const effect = control.reserveEnrollment(taskId);
     const ownerReturn = (generation: number, reason: string): void => {
-      store.recordEffectDispatchStarted(effect.effectId, generation, `owner-${generation}`, { surface: 'macos-native' });
+      store.recordEffectDispatchStarted(effect.effectId, generation, `owner-${generation}`, { surface: 'macos-native', target_id: 'native-bound-target' });
       store.recordEffectNotAppliedProof(effect.effectId, `provider-confirmed-not-applied-${generation}`, {
+        effect_id: effect.effectId, dispatch_id: `owner-${generation}`, target_id: 'native-bound-target',
         surface: 'macos-native', dispatch_generation: generation, send_clicked: true,
         provider_receipt: 'confirmed_not_applied_after_dispatch', reason,
       });
@@ -4613,19 +4609,12 @@ describe('Workflow Supervisor operator recovery and conversation replacement', (
     }));
     expect(() => control.recoverTask({ taskId, sourceEffectId: effect.effectId, requestId: '', reason: 'missing request id' }))
       .toThrow('WORKFLOW_SUPERVISOR_RECOVERY_REASON_REQUIRED');
-    const recovered = control.recoverTask({ taskId, sourceEffectId: effect.effectId, requestId: 'op-retry-1', reason: 'The local composer obstacle was fixed.' });
-    expect(recovered.action).toBe('retry_authorized');
-    expect(recovered.recoveryEffect.effectId).toBe(effect.effectId);
-    expect(store.nextBrowserEffect(taskId, { nowMs: Date.now() + 600_000 })).toMatchObject({ mode: 'send', generation: 4 });
-    await adapter.runOnce();
-    expect(stallProjections).toContainEqual(expect.objectContaining({
-      taskId, effectId: effect.effectId, state: 'recovered', stallKind: 'retryable',
-    }));
-    // Idempotent per request id, and the explicit budget stays bounded.
-    expect(control.recoverTask({ taskId, sourceEffectId: effect.effectId, requestId: 'op-retry-1', reason: 'repeat' }).recoveryEffect.effectId).toBe(effect.effectId);
-    control.recoverTask({ taskId, sourceEffectId: effect.effectId, requestId: 'op-retry-2', reason: 'Second explicit grant.' });
-    expect(() => control.recoverTask({ taskId, sourceEffectId: effect.effectId, requestId: 'op-retry-3', reason: 'Third explicit grant.' }))
-      .toThrow('WORKFLOW_SUPERVISOR_RECOVERY_REFUND_BUDGET_EXHAUSTED');
+    // A positive post-dispatch provider receipt allows bounded resend without a refund,
+    // but cannot be upgraded into operator refund authority.
+    expect(() => control.recoverTask({ taskId, sourceEffectId: effect.effectId, requestId: 'op-retry-1', reason: 'The local composer obstacle was fixed.' }))
+      .toThrow('WORKFLOW_SUPERVISOR_RECOVERY_OUTCOME_UNKNOWN');
+    expect(store.effectDispatchBudget(effect.effectId)).toMatchObject({ generations: 3, maxGenerations: 3, exhausted: true });
+    expect(store.nextBrowserEffect(taskId, { nowMs: Date.now() + 600_000 })).toBeUndefined();
     await adapter.close();
     store.close();
   });
@@ -4718,15 +4707,17 @@ describe('Workflow Supervisor operator recovery and conversation replacement', (
       completionContract: {}, continuationPolicy: { kind: 'standalone_supervisor' }, userBlockerPolicy: {},
     });
     const unknownEffect = control.reserveEnrollment('migration-unknown');
-    store.recordEffectDispatchStarted(unknownEffect.effectId, 1, 'uncertain-send', { surface: 'macos-native' });
+    store.recordEffectDispatchStarted(unknownEffect.effectId, 1, 'uncertain-send', { surface: 'macos-native', target_id: 'native-bound-target' });
     store.recordEffectObservation(unknownEffect.effectId, 'unknown-after-send', 'unknown', { surface: 'macos-native', reconciliation: true, reason: 'outbound_not_confirmed' });
     expect(() => control.migrateConversation({
       taskId: 'migration-unknown', expectedConversationId: conversationF, conversationId: conversationE, conversationUrl: url(conversationE),
       requestId: 'migrate-unknown', reason: 'cannot abandon an unresolved submission',
     })).toThrow('WORKFLOW_SUPERVISOR_MIGRATION_OUTCOME_UNKNOWN');
     // A mechanically proven un-applied effect is safe to carry to the replacement.
-    store.recordEffectNotAppliedProof(unknownEffect.effectId, 'owner-no-click', {
-      surface: 'macos-native', reason: 'composer_missing', send_clicked: false, dispatch_generation: 1, pre_send_rejection: true,
+    store.recordEffectNotAppliedProof(unknownEffect.effectId, 'owner-confirmed-not-applied', {
+      effect_id: unknownEffect.effectId, dispatch_id: 'uncertain-send', target_id: 'native-bound-target',
+      surface: 'macos-native', reason: 'provider_receipt_not_applied', send_clicked: true,
+      provider_receipt: 'confirmed_not_applied_after_dispatch', dispatch_generation: 1,
     });
     expect(control.migrateConversation({
       taskId: 'migration-unknown', expectedConversationId: conversationF, conversationId: conversationE, conversationUrl: url(conversationE),

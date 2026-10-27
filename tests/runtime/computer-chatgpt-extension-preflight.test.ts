@@ -689,6 +689,55 @@ test('real Chrome content script preserves all prompt spaces and newlines during
   expect(fullPageTextReads).toBe(1);
 });
 
+test('recovery never clicks Stop and requires an exact idle assistant turn before editor mutation', () => {
+  const source = readFileSync(new URL('../../adapters/computer/chrome-extension/content.js', import.meta.url), 'utf8');
+  expect(source).not.toContain('stop.click()');
+  const instrumented = source.replace(
+    '  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {',
+    '  globalThis.__recoverNoStopReadiness = recoverNoStopReadiness;\n  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {',
+  );
+  expect(instrumented).not.toBe(source);
+  const collection = <T,>(values: T[]) => Object.assign(values, { item: (index: number) => values[index] });
+  const run = (options: { lastRole?: 'user' | 'assistant'; mapped?: boolean; turnBusy?: boolean; messageBusy?: boolean }) => {
+    const turn = {
+      getClientRects: () => [1],
+      matches: (selector: string) => options.turnBusy === true && selector.includes('aria-busy'),
+      querySelectorAll: (selector: string) => selector.includes('aria-busy') && options.turnBusy ? collection([{ getClientRects: () => [1] }]) : collection([] as unknown[]),
+    };
+    const message = {
+      getClientRects: () => [1],
+      getAttribute: (name: string) => name === 'data-message-author-role' ? options.lastRole ?? 'assistant' : '',
+      closest: (selector: string) => selector.includes('conversation-turn') && options.mapped !== false ? turn : null,
+      matches: (selector: string) => options.messageBusy === true && selector.includes('aria-busy'),
+      querySelectorAll: (selector: string) => selector.includes('aria-busy') && options.messageBusy ? collection([{ getClientRects: () => [1] }]) : collection([] as unknown[]),
+    };
+    const main = {
+      getClientRects: () => [1],
+      querySelectorAll: (selector: string) => selector.includes('conversation-turn') ? collection([turn])
+        : selector.includes('data-message-author-role="user"') && selector.includes('data-message-author-role="assistant"') ? collection([message])
+          : selector.includes('data-message-author-role="user"') ? collection(options.lastRole === 'user' ? [message] : [])
+            : selector.includes('data-message-author-role="assistant"') ? collection(options.lastRole === 'user' ? [] : [message])
+              : collection([] as unknown[]),
+    };
+    const context = {
+      document: { documentElement: {}, querySelectorAll: (selector: string) => selector === 'main' ? collection([main]) : collection([] as unknown[]) },
+      location: { href: 'https://chatgpt.com/c/12345678-1234-1234-1234-123456789abc' },
+      URL, Date, Map, Promise,
+      ForgeComputerChatgptCore: { normalizeText: (value: unknown) => String(value ?? '').trim(), parseConversation: () => null },
+      chrome: { runtime: { onMessage: { addListener() {} }, sendMessage() {} } },
+      MutationObserver: class { observe() {} disconnect() {} },
+      setTimeout() { return 1; }, clearTimeout() {},
+    };
+    runInNewContext(instrumented, context);
+    return (context as typeof context & { __recoverNoStopReadiness: () => { ready: boolean; reason?: string; capability?: string } }).__recoverNoStopReadiness();
+  };
+  expect(run({ lastRole: 'assistant' })).toMatchObject({ ready: true, capability: 'recover-no-stop-prewrite-v1' });
+  expect(run({ lastRole: 'user' })).toMatchObject({ ready: false, reason: 'provider_recovery_turn_unknown' });
+  expect(run({ lastRole: 'assistant', mapped: false })).toMatchObject({ ready: false, reason: 'provider_recovery_turn_unknown' });
+  expect(run({ lastRole: 'assistant', turnBusy: true })).toMatchObject({ ready: false, reason: 'provider_recovery_turn_live' });
+  expect(run({ lastRole: 'assistant', messageBusy: true })).toMatchObject({ ready: false, reason: 'provider_recovery_turn_live' });
+});
+
 test('live current-turn activity changes before the assistant role commits', () => {
   const content = readFileSync(new URL('../../adapters/computer/chrome-extension/content.js', import.meta.url), 'utf8');
   const instrumented = content.replace(

@@ -43,6 +43,26 @@ export interface ComputerChatgptConversationObservationOptions {
  * identity; provider ids and tab/window handles remain inside the Computer
  * implementation and can be replaced without changing Supervisor authority.
  */
+/** Fresh exact-tab receipt proving a recovery dispatch was refused before any UI mutation. */
+export interface ComputerChatgptPrewriteNoMutationReceipt {
+  kind: 'prewrite_no_mutation_proof';
+  phase: 'prewrite_or_preclick';
+  reason: string;
+  issued_at_ms: number;
+  editor_touched: false;
+  stop_clicked: false;
+  send_clicked: false;
+  loaded_capability: 'recover-no-stop-prewrite-v1';
+  provider_id: 'browser.chrome-extension';
+  provider_instance_id: string;
+  command_id: string;
+  provider_session_id: string;
+  profile_id: string;
+  window_id: string;
+  tab_id: string;
+  owner_token: string;
+}
+
 export interface ComputerChatgptConversationTarget {
   targetId: string;
   identity: ComputerChatgptTargetIdentity;
@@ -53,7 +73,7 @@ export interface ComputerChatgptConversationTarget {
     prompt: string,
     options?: { mode?: 'send' | 'resume' | 'recover' },
   ): Promise<
-    | { mutation: 'not_attempted'; reasonCode: string }
+    | { mutation: 'not_attempted'; reasonCode: string; prewriteNoMutationReceipt?: ComputerChatgptPrewriteNoMutationReceipt }
     | { mutation: 'attempted'; confirmed?: boolean }
   >;
 }
@@ -115,7 +135,7 @@ export type ComputerChatgptExtensionCommandResult =
   | { kind: 'observation'; providerBinding?: ComputerSurfaceProviderBinding; observation: ComputerChatgptConversationObservation }
   | { kind: 'prepared'; ready: true }
   | { kind: 'prepared'; ready: false; reasonCode: string }
-  | { kind: 'dispatch'; mutation: 'not_attempted'; reasonCode: string }
+  | { kind: 'dispatch'; mutation: 'not_attempted'; reasonCode: string; prewriteNoMutationReceipt?: ComputerChatgptPrewriteNoMutationReceipt }
   | { kind: 'dispatch'; mutation: 'attempted'; confirmed?: boolean; observation?: ComputerChatgptConversationObservation }
   | { kind: 'marker_matches'; matches: Array<{ identity: ComputerChatgptConversationIdentity; providerBinding?: ComputerSurfaceProviderBinding; observation: ComputerChatgptConversationObservation }> }
   | { kind: 'closed' }

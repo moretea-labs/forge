@@ -345,8 +345,7 @@ function provisionalCanaryKnownGood(config: RecoveryConfig, release: ReleaseEvid
     const inventory = listCompleteReleaseSessions(config.controllerHome);
     if (inventory.invalidSessionFiles.length > 0 || inventory.truncated) return true;
     return inventory.sessions.some((session) =>
-      session.receipts.some((receipt) => receipt.id === 'acceptance_timeout_policy_v1')
-      && session.candidateRelease?.releaseId === release.revision
+      session.candidateRelease?.releaseId === release.revision
       && session.candidateRelease.artifactIdentity === release.artifactIdentity
       && session.candidateRelease.manifestSha256 === release.manifestSha256
       && session.phase !== 'known_good');
@@ -6064,9 +6063,9 @@ export async function promoteConfiguredRuntimeReleaseSessionKnownGood(
       if (!proof) throw new Error('RELEASE_SESSION_AUTONOMOUS_CONTINUATION_PROOF_MISSING');
       continuationProof = proof;
       if (!releaseSessionContinuationProofTimely(initial, proof.lastCommittedAt, dependencies.wallNow?.() ?? Date.now()))
-        throw new Error('RELEASE_SESSION_ACCEPTANCE_PROOF_LATE');
+        throw new Error('RELEASE_SESSION_ACCEPTANCE_PROOF_INVALID');
     } catch (error) {
-      if (error instanceof Error && (error.message === 'RELEASE_SESSION_AUTONOMOUS_CONTINUATION_PROOF_MISSING' || error.message === 'RELEASE_SESSION_ACCEPTANCE_PROOF_LATE')) throw error;
+      if (error instanceof Error && (error.message === 'RELEASE_SESSION_AUTONOMOUS_CONTINUATION_PROOF_MISSING' || error.message === 'RELEASE_SESSION_ACCEPTANCE_PROOF_INVALID')) throw error;
       throw new Error(`RELEASE_SESSION_AUTONOMOUS_CONTINUATION_PROOF_UNAVAILABLE: ${error instanceof Error ? error.message : String(error)}`);
     }
 
@@ -6102,11 +6101,8 @@ export async function promoteConfiguredRuntimeReleaseSessionKnownGood(
     const detail = error instanceof Error ? error.message : String(error);
     audit(config, 'release_session_known_good_failed', { sessionId, detail });
 
-    // A new opt-in ReleaseSession may not remain in Soak indefinitely when
-    // causal continuation proof or Runtime health is unavailable. Preserve
-    // the existing exact, fenced Stable A recovery transaction; never resend
-    // a browser Effect to manufacture missing proof.
-    const acceptanceTimedOut = releaseSessionAcceptanceTimedOut(initial, dependencies.wallNow?.() ?? Date.now());
+    // Missing proof remains an open acceptance obligation. Only a measured
+    // Runtime failure (not elapsed wall-clock time) authorizes rollback.
     // A hard runaway-CPU rejection is terminal acceptance evidence, not a
     // transient observation failure. Keeping Candidate B live in `soaking`
     // caused the automatic release driver to launch another full 60-second
@@ -6114,14 +6110,14 @@ export async function promoteConfiguredRuntimeReleaseSessionKnownGood(
     // through the existing ReleaseSession rollback transaction instead. The
     // coordinator will then treat this source revision as already attempted and
     // will not autonomously replay it until source authority changes.
-    if (/^RECOVERY_PERFORMANCE_REJECTED:/.test(detail) || acceptanceTimedOut || detail.includes('RELEASE_SESSION_ACCEPTANCE_PROOF_LATE')) {
+    if (/^RECOVERY_PERFORMANCE_REJECTED:/.test(detail)) {
       const rollback = await rollbackConfiguredRuntimeReleaseSession(
         config,
         sessionId,
         dependencies.rollback ?? {},
-        requestId?.trim() ? `${requestId.trim()}:${acceptanceTimedOut ? 'acceptance-timeout' : 'performance-rejected'}` : undefined,
+        requestId?.trim() ? `${requestId.trim()}:performance-rejected` : undefined,
       );
-      audit(config, acceptanceTimedOut ? 'release_session_acceptance_timeout_rollback' : 'release_session_known_good_performance_rejected', {
+      audit(config, 'release_session_known_good_performance_rejected', {
         sessionId,
         detail,
         rollbackOk: rollback.ok,
@@ -6131,7 +6127,7 @@ export async function promoteConfiguredRuntimeReleaseSessionKnownGood(
         ok: false,
         attempted: true,
         detail: rollback.ok
-          ? `${detail}; Candidate B ${acceptanceTimedOut ? 'acceptance timed out' : 'was rejected by the runaway-CPU gate'} and exact Stable A restored`
+          ? `${detail}; Candidate B was rejected by the runaway-CPU gate and exact Stable A restored`
           : `${detail}; automatic Stable A rollback failed: ${rollback.detail}`,
         releaseSession: rollback.releaseSession ?? readReleaseSession(config.controllerHome, sessionId) ?? initial,
       };
@@ -6156,7 +6152,7 @@ export async function promoteConfiguredRuntimeReleaseSessionKnownGood(
     // ReleaseSession permanently soaking. Under the mutation lock, only fence
     // the identity that could invalidate that attestation.
     if (!releaseSessionContinuationProofTimely(session, continuationProof.lastCommittedAt, dependencies.wallNow?.() ?? Date.now()))
-      return { ok: false as const, attempted: true, detail: 'RELEASE_SESSION_ACCEPTANCE_PROOF_LATE', releaseSession: session };
+      return { ok: false as const, attempted: true, detail: 'RELEASE_SESSION_ACCEPTANCE_PROOF_INVALID', releaseSession: session };
     if (!liveRuntimeOwnsRelease(config, attested)) {
       return { ok: false as const, attempted: true, detail: 'RELEASE_SESSION_RUNTIME_CHANGED_AFTER_KNOWN_GOOD_ATTESTATION', releaseSession: session };
     }
@@ -6203,24 +6199,8 @@ export async function promoteConfiguredRuntimeReleaseSessionKnownGood(
     };
   });
   if (!locked.acquired) return { ok: false, attempted: false, noOp: true, detail: recoveryBusyDetail(locked.owner), releaseSession: initial };
-  // The final deadline fence runs under the mutation lock. After it releases,
-  // immediately reconcile the exact Stable A rollback transaction rather than
-  // waiting another daemon tick. Never attempt a nested Recovery lock.
-  if (locked.value.detail === 'RELEASE_SESSION_ACCEPTANCE_PROOF_LATE') {
-    const rollback = await rollbackConfiguredRuntimeReleaseSession(
-      config,
-      sessionId,
-      dependencies.rollback ?? {},
-      requestId?.trim() ? `${requestId.trim()}:late-proof-rollback` : undefined,
-    );
-    return {
-      ok: false, attempted: true,
-      detail: rollback.ok
-        ? 'RELEASE_SESSION_ACCEPTANCE_PROOF_LATE; exact Stable A restored'
-        : `RELEASE_SESSION_ACCEPTANCE_PROOF_LATE; automatic Stable A rollback failed: ${rollback.detail}`,
-      releaseSession: rollback.releaseSession ?? readReleaseSession(config.controllerHome, sessionId) ?? initial,
-    };
-  }
+  // An invalid causal proof cannot promote known-good, but cannot authorize a
+  // time-based rollback of a healthy active Runtime either.
   return locked.value;
 }
 
