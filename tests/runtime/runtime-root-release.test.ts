@@ -129,10 +129,14 @@ function executionSurfaceFixture(input: {
   writeFileSync(join(releaseRoot, 'package', 'src', 'cli', 'index.ts'), 'process.exit(0);\n');
   const processRunner = input.processRunnerSource ?? `#!/bin/sh\nexit ${input.processExit ?? 0}\n`;
   const checkRunner = `#!/bin/sh\nexit ${input.checkExit ?? 0}\n`;
+  // Current Runtime release contract requires these manifest-owned sidecars.
+  const requiredSidecar = '#!/bin/sh\nexit 0\n';
   for (const [name, content] of [
     ['forge-runtime', runtime],
     ['process-runner.js', processRunner],
     ['forge-check-runner', checkRunner],
+    ['forge-context-pack', requiredSidecar],
+    ['forge-plugin-action-sidecar', requiredSidecar],
   ] as const) {
     writeFileSync(join(releaseRoot, name), content);
     chmodSync(join(releaseRoot, name), 0o700);
@@ -146,6 +150,10 @@ function executionSurfaceFixture(input: {
     processRunnerArtifactIdentity: `sha256:${sha256Text(processRunner)}`,
     checkRunnerEntrypoint: 'forge-check-runner',
     checkRunnerArtifactIdentity: `sha256:${sha256Text(checkRunner)}`,
+    contextPackEntrypoint: 'forge-context-pack',
+    contextPackArtifactIdentity: `sha256:${sha256Text(requiredSidecar)}`,
+    pluginActionSidecarEntrypoint: 'forge-plugin-action-sidecar',
+    pluginActionSidecarArtifactIdentity: `sha256:${sha256Text(requiredSidecar)}`,
     arguments: [],
     configurationSchemaVersion: 1,
     controllerHome: input.controllerHome,
@@ -164,7 +172,7 @@ describe('immutable Runtime Process Runtime execution surface', () => {
     roots.push(controllerHome);
     const manifestPath = executionSurfaceFixture({ controllerHome, releaseId: 'canary-ok' });
     const surface = assertRuntimeReleaseExecutionCanaries(manifestPath, controllerHome);
-    expect(surface.entries.map((entry) => entry.name)).toEqual(['process_runner', 'check_runner']);
+    expect(surface.entries.map((entry) => entry.name)).toEqual(['process_runner', 'check_runner', 'context_pack', 'plugin_action_sidecar']);
     expect(await runPersistedCheckSidecar(['--forge-release-canary-child'])).toBe(0);
   });
 
@@ -393,7 +401,7 @@ describe('runtime release materialization', () => {
         futureSidecarEntrypoint: 'future-sidecar-v2',
       }) };
     }, runExecutionEntryCanary: (request) => { canaries.push(request.name); return { ok: true }; } });
-    expect(canaries).toEqual(['runtime_interpreter', 'process_runner', 'check_runner', 'typescript_navigation', 'context_pack', 'scheduler_worker', 'periodic_cleanup']);
+    expect(canaries).toEqual(['runtime_interpreter', 'process_runner', 'check_runner', 'typescript_navigation', 'context_pack', 'plugin_action_sidecar', 'scheduler_worker', 'periodic_cleanup']);
     expect(existsSync(join(staged.releasePath, 'future-sidecar-v2'))).toBe(true);
     expect(loadRuntimeReleaseManifest(staged.manifestPath, controllerHome).releaseId).toBe(staged.releaseId);
   });
