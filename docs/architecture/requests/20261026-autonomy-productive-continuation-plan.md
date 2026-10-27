@@ -1,15 +1,21 @@
-# Forge #313 — 自动续跑、可靠投递与有效产出（Plan r15 审查稿）
+# Forge #313 — 自动续跑、可靠投递与有效产出（Plan r16 审查稿）
 
 > **DESIGN ONLY · Draft PR #468 · 尚无本候选独立 ACCEPT · 禁止生产源码实施。**
-> 本文须与唯一 Forge Plan `PLAN-forge-thin-delivery-efficiency-code-slimming-20261019` **r15** 和本 PR 当前完整 HEAD 同时审查。历史 r4/r5/r6 的 REVISE 不是本候选 ACCEPT。评审冻结后任何修改都必须重新以新 HEAD 审查。
+> 本文须与唯一 Forge Plan `PLAN-forge-thin-delivery-efficiency-code-slimming-20261019` **r16** 和本 PR 当前完整 HEAD 同时审查。历史 r4/r5/r6 的 REVISE 不是本候选 ACCEPT。评审冻结后任何修改都必须重新以新 HEAD 审查。
 
 ## 0. Authority、优先级与成功判据
 
-- **唯一生产源码 Writer：** Windows WSL2 `/home/greyson/src/forge`, repo_id `repo_f37fe508f6e8dabb8fe607e4`，原 Supervisor `supervisor:d09f4e6bb4014a894db105ec`，原 Work `work-forge-source-bug-convergence-v1`。Mac 只做只读 Review、远程维护和独立 E2E，绝不恢复 Mac 源码 Writer。
+- **唯一生产源码 Writer：** Windows WSL2 `/home/greyson/src/forge`, repo_id `repo_f37fe508f6e8dabb8fe607e4`，历史 Supervisor `supervisor:d09f4e6bb4014a894db105ec`（用户已要求停止，禁止恢复），原 Work `work-forge-source-bug-convergence-v1`。Mac 只做只读 Review、远程维护和独立 E2E，绝不恢复 Mac 源码 Writer。
 - **源码审查快照：** PR base `2cc71021db0a291037c4755dc04ce9c1884417e6`；WSL checkout 上另一个 P0 原 Owner 有未提交 `src/cli/controller/launch-agents.ts`，不允许该设计 PR 或新实现 PR 触碰。
 - **当前优先交付 P0–P2：** 原 Writer 的合法发送/Provider 诊断/真实来源修改；**P3–P4** 是同一 Plan/Work 中后续独立实施切片，仍须解决自动发现低产出问题，但不得假装现有组件已经支持全部信号或自动唤醒。历史 **S0–S4** 的 Mac/WSL sync、GPU/Ollama、代码瘦身是*保留的非阻塞后续目标*，不能覆盖本次优先级或授权 Mac 写 Forge 源码。
 - **最终成功**不是 Reviewer CONTINUE、Runtime READY 或 PR 评论：原 WSL Writer 完成真实 Work 的 CONTINUE→CONTINUE→DONE、可归属的第一笔有效源码修改、固定 HEAD Review/CI、安全合并、Recovery 下真实 Runtime 验收；3 个可比工程任务的首有效修改/无效前奏/完整交付时间目标均下降 ≥30%，成功率不降，重复外部副作用 = 0。缺少可比历史样本时必须写 **IMPROVEMENT NOT PROVEN**，不捏造数据。
 - **架构禁止项：** 新 Kernel Planner/独立任务大脑、新 Work/Plan/Supervisor、新进度数据库、新 browser fallback 或 profile 自动切换、第二源码 Writer、未知 Send 重发、为这次修复新建多份实现 PR。遵守 `AGENTS.md` 的 Forge-source PR continuation 与现有 ADR。
+
+### 当前人工修复边界（2026-10-27 用户最新指令）
+
+用户要求“自动推进有bug，先全部关闭，只做修复”。Mac 8 个、WSL 3 个活跃 Supervisor 已 canonical STOPPED；相关定时触发已暂停，复查两端 active task 均为 0。只允许当前 Controller 通过原 WSL Work/checkout 手动修复，不新建/恢复 Supervisor、Schedule、Canary，不重发任何历史 effect。停止旧 Supervisor 不取消原 Work、Plan、PR 或源码字节，也不解除单 Writer、Git CAS 和未知 Send 保护。
+
+P5 的离线/已有 focused 检查可继续；需要自动派发的真实生产任务验收和 P8 发布后自动推进验证 **DEFER 至用户明确重新授权**，仍保留原义务，不得用离线绿灯或新 Runtime 的 READY 宣称完成。修复不自动重启这些任务。
 
 ## 1. 事实基线与必须保留的不确定性
 
@@ -28,6 +34,18 @@
 **落点：** `supervisor/store.ts:178,1722,1785,1866,1941`；`supervisor/control-plane.ts:migrateConversation/browserPoll`；`supervisor/server.ts` 已存在的只读查询；Computer Target Authority 绑定。
 
 从唯一 Controller Home 现有 SQLite 只读投影，为五个应用祖先逐条列出：`effect_id`、kind/origin、已记录 dispatch generation、applied receipt、原 valid completion 或 completed recovery child、unknown/未结、所属精确会话/物理 tab、允许的下一操作。另列当前未发送 `fx_170155...`。该矩阵是评审与操作诊断材料，不是新持久状态或第二 Authority；旧数据可能有晚到完成回执，实施之前只读刷新。没有真实回执不补写“已完成”，不得移除迁移拒绝条件。
+
+### P0.1 原 WorkHandle 的精确 HEAD 结算
+
+此前 `WORK_HANDLE_HEAD_CHANGED` 是历史证据，不能代替当前观察。2026-10-27 只读读取 canonical `readWorkHandle` 和真实 Git 后确认：原 Work `work-forge-source-bug-convergence-v1` 的 handle `expectedHead` 已是完整 `b9394e841eb91997678dd3db797dc0b7fd019ee5`，state=prepared；checkout `checkout_6c8c39f277ce84473f058b19` 实际 HEAD 同值，branch=`work/relocate-existing-work-to-managed-checkout-63384736c973`，原 9 文件未提交实现仍在。故本次不再执行 adoption，也不重新创建 Work 或 checkout。
+
+实施前原地重读 handle、Work/checkout 所有权、Git branch/HEAD、index/unstaged/untracked 和活跃 Process：
+
+1. `expectedHead == actualHead == b9394e8…` 且所有权有效：通过原 Work 的执行身份/lease 继续原 checkout；dirty 是待审实现，不是要求清空的理由。
+2. 若今后真实出现线性 successor drift，唯一允许的结算是既有 `work_prepare(work_id=原Work, checkout_id=原checkout, expected_previous_head=精确旧值, adopt_candidate_head=精确当前值)`。`work-preparation-service.ts::adoptExplicitSuccessorHead` 验证同 owner/session、same checkout、实际 HEAD、祖先关系、state 和 Process/dirty 条件，再原子更新既有 handle；没有新身份或第二 writer。managed dirty 会机械拒绝，**不得绕过**；先保留字节并报告确切冲突，不 reset/stash/clean、不手改 SQLite/expectedHead、不移到其他 checkout 写源代码。
+3. 每次合法提交只用原 Work 的 `git_commit_paths`，由现有 `settleWorkHandleExpectedHeadAfterRepositoryCommand` 结算新 HEAD。外部 Git 提交成功但 metadata 结算失败必须观察原结果并走同一 owner 的上述 reconcile，不能重复 commit。
+
+该步骤关闭 r15 Review 的执行路径缺口，属于原 P0 的只读刷新/已有 CAS 复用，不新增 Gate、工作流或新持久 writer。另一 checkout 的 `launch-agents.ts` 保持不动。
 
 ## 3. P1：唯一恢复效应 + 精确内容脚本能力确认（r8 首要修订）
 
@@ -88,33 +106,42 @@ effectId + dispatchGeneration: verified at Supervisor boundary against original 
 
 ## 7. P5：定向验证与真实验收
 
-只在既有 `tests/runtime/workflow-supervisor-control-plane.test.ts`、`computer-interaction-target.test.ts`、`computer-chatgpt-extension-preflight.test.ts`、`workflow-supervisor-automation-receipt.test.ts` 必需的位置补充测试，不增加通用新套件。测试必须明确区分三个阶段：
+遵守根 AGENTS 的用户验证优先指令：运行既有 focused 检查并用仓库外直接探针验证真实边界；未经用户明确变更，不新增自动测试 case/文件。保留原候选已存在的测试修改，不削弱断言。验证必须明确区分三个阶段：
 
-1. PRE-CAS true live/ambiguous user-turn：同一精确 tab 上没有 Stop/Editor/Send/dispatch-start；30s 后只有真实降级提示，不等于 DONE。新增 stale-UI 回归：可见 Stop + last-role-assistant + no stream/busy → 当作 stale Stop，可继续恢复且不点击 Stop；可见 Stop + stream/busy 或 last-role-user → fail-closed。
+1. PRE-CAS true live/ambiguous user-turn：同一精确 tab 上没有 Stop/Editor/Send/dispatch-start；30s 后只有真实降级提示，不等于 DONE。直接验证 stale-UI：可见 Stop + last-role-assistant + no stream/busy → 当作 stale Stop，可继续恢复且不点击 Stop；可见 Stop + stream/busy 或 last-role-user → fail-closed。
 2. POST-CAS、PRE-WRITE live：可能已有 dispatch generation，但通过**已证明加载的新 content 能力**，零 Stop/Editor/Send；任何真正的退款必须有可信 pre-write/pre-click negative proof。
 3. POST-WRITE live：generation 与 Editor 草稿可能已变化，仍不 Stop/Send；必须如实记录 Editor touched，不能以 `not_attempted` 伪造无页面变更，也不能直接重发。
 
-补充 r15 负例：Stop + assistant 节点无法映射到 exact TURN、TURN 缺失或 aria-busy 仅在消息节点 → UNKNOWN，零 Editor/Send/Stop/refund/replay；只有 assistant 明确属于 exact last TURN 且 TURN 与消息均无 stream/busy，才把 Stop-only 判为 stale。旧/缺失能力、version drift、错 profile/tab/owner、错 instance/command、格式/timeout/editor_touched/unknown Send，不得 not_attempted/refund/replay。用 `rg effect_dispatch_budget_refunded` 枚举当前全部写入点，并确保只有一个 Store-owned refund insertion；`authorizeOperatorRetry` 不得直接写退款；`reconcileNativePreSendFailure` 不得从旧 reason 推导证明；`recordEffectNotAppliedProof` 不得只看 `pre_send_rejection` 布尔。Operator retry、browser dispatch、bootstrap、macos-native 四条路径分别测试有效/无效 typed proof，错误 generation/surface/target，以及 proofless legacy event；旧事件都拒绝退款/重发。
+补充 r16 负例：Stop + assistant 节点无法映射到 exact TURN、TURN 缺失或 aria-busy 仅在消息节点 → UNKNOWN，零 Editor/Send/Stop/refund/replay；只有 assistant 明确属于 exact last TURN 且 TURN 与消息均无 stream/busy，才把 Stop-only 判为 stale。旧/缺失能力、version drift、错 profile/tab/owner、错 instance/command、格式/timeout/editor_touched/unknown Send，不得 not_attempted/refund/replay。用 `rg effect_dispatch_budget_refunded` 枚举当前全部写入点，并确保只有一个 Store-owned refund insertion；`authorizeOperatorRetry` 不得直接写退款；`reconcileNativePreSendFailure` 不得从旧 reason 推导证明；`recordEffectNotAppliedProof` 不得只看 `pre_send_rejection` 布尔。Operator retry、browser dispatch、bootstrap、macos-native 四条路径分别验证有效/无效 typed proof，错误 generation/surface/target，以及 proofless legacy event；旧事件都拒绝退款/重发。
 
 额外负例：旧 content.js + 新 background 的版本组合；能力接口缺失/过期；同 tab 的 Prepare 通过但 Dispatch 时加载不同代码；错 Profile/Tab、陌生草稿、晚到 parent completion、五条已 applied 未完成导致迁移拒绝；Native 发送/响应未知跨 Runtime 重启零重复外部副作用。只有 settled idle/provider failure 可以单次恢复。P3/P4 后续片段不得假装当前已有自动 Reviewer wake。真实 Windows Chrome 原 Work C→C→D + 有效源码修改 + 固定 HEAD 审查/CI + Recovery 授权发布；三组可比 A/B 30% 目标缺可比证据则保留 IMPROVEMENT NOT PROVEN。
 
 ## 8. P6/P7/P8：设计双审、唯一实现 PR、独立验证与发布
 
-**当前只是 r15 / #468 Draft 候选，0/2 独立 ACCEPT。** r14 架构 Reviewer B ACCEPT；因果 Reviewer A REVISE，因为 `authorizeOperatorRetry` 直接写 `effect_dispatch_budget_refunded`，信任任意后续 `effect_not_applied`（[6429810764](https://github.com/moretea-labs/forge/pull/468#issuecomment-6429810764)）。r14/r13/r11 的 ACCEPT 不转移至 r15。
+**当前只是 r16 / #468 Draft 候选，0/2 独立 ACCEPT。** r14 架构 Reviewer B ACCEPT；因果 Reviewer A REVISE，因为 `authorizeOperatorRetry` 直接写 `effect_dispatch_budget_refunded`，信任任意后续 `effect_not_applied`（[6429810764](https://github.com/moretea-labs/forge/pull/468#issuecomment-6429810764)）。r14/r13/r11 的 ACCEPT 不转移至 r16。
 
 - **DAG：** `P0 → P6（仅设计双独立审查）→ P7（源码实施）；P1/P2 完成后 P5 验证；P8 合并/发布依赖 **P7 + P5**。P6 不依赖源码或 P5 实测，P7 无合并/发布权限。
-- **设计审查：** 两个不同独立只读模型必须对同一当前 canonical Plan revision r15 与同一 immutable #468 HEAD 给出 ACCEPT/REVISE/BLOCK + 行级证据。旧版本 ACCEPT 不迁移；REVISE 只更新同一 Plan/PR。
+- **设计审查：** 两个不同独立只读模型必须对同一当前 canonical Plan revision r16 与同一 immutable #468 HEAD 给出 ACCEPT/REVISE/BLOCK + 行级证据。旧版本 ACCEPT 不迁移；REVISE 只更新同一 Plan/PR。
 - **唯一源码 PR：** AGENTS.md 要求复用原 Work 已链接的现有源码 PR **#457**。其旧 ACCEPT/CI 仅覆盖 SHA `b9394e8`，新增代码后必须重新跑固定 HEAD CI/Windows smoke 与独立代码 Review。只有原 WSL A-line Writer 写源代码，Mac 只读。
 - **P7 实施：** 双设计 ACCEPT + docs CI 后，在原 Work/PR #457 实施 exact-TURN stale-Stop guard、loaded capability、单一 Store refund writer/validator 与所有 caller 收敛、证据支持的窄 P2；保留现有 PR 代码与测试，不碰另一 Owner dirty `src/cli/controller/launch-agents.ts`；旧 effect/5 applied ancestors 不清理/不重发。
-- **P5 验证：** exact TURN/assistant mapping、双位置 stream/busy、UNKNOWN turn；所有 refund writers 收敛为单一插入；operator retry、browser dispatch、bootstrap、native compatibility 四路径的有效/无效 typed proof；proofless legacy records 不退款；unknown Send、late completion、5 applied ancestors、restart no replay；Windows Chrome 原 Work C→C→D 与首个可归属 source diff。
+- **P5 验证：** exact TURN/assistant mapping、双位置 stream/busy、UNKNOWN turn；所有 refund writers 收敛为单一插入；operator retry、browser dispatch、bootstrap、native compatibility 四路径的有效/无效 typed proof；proofless legacy records 不退款；unknown Send、late completion、5 applied ancestors、restart no replay；首个可归属 source diff；Windows Chrome 原 Work C→C→D 在自动推进关闭期间保留为待授权验收。
 - **P8 合并/发布：** P5 全过后，独立代码 Reviewer ACCEPT 当前 #457 SHA、必要 CI+Windows smoke SUCCESS、唯一 integration Owner 合并、Recovery 发布匹配扩展/host bundle，最后真实 runtime E2E。P3/P4 与三项可比 A/B ≥30% 仍为同一 Plan/Work 后续必交付，无证据不得 DONE。
 
 ## 9. 回滚与禁止路径
 
 不因 Gateway 工具表指纹失配换不稳定 Runtime；不因 Mac/WSL 任一连接超时重复发送已可能产生副作用的原效应；不因检测到 Stop 擅自终止旧回复；不抹除旧 completion，不降低 applied ancestor 会话迁移拒绝；任何未知 Send 先同原 exact target 只读 reconcile。模型纠偏必须验证下一次真实产出，失败返回原 Plan 的 REVISE 或同一个实现 PR 修复，而非新 Scheduler/Layer/Plan/Writer。
 
-**冻结标识（审查时以 GitHub 当前 HEAD 为准）：** PR #468 / canonical Plan r15 / Git base 2cc71021d / 原 Writer supervisor:d09f4e6bb4014a894db105ec / 原 Work work-forge-source-bug-convergence-v1 / 原待发送 fx_170155dcd5cfe2a220238aff61d04f20。
-## 10. r15 — one Store-owned refund authority
+**冻结标识（审查时以 GitHub 当前 HEAD 为准）：** PR #468 / canonical Plan r16 / Git base 2cc71021d / 原 Writer supervisor:d09f4e6bb4014a894db105ec / 原 Work work-forge-source-bug-convergence-v1 / 原待发送 fx_170155dcd5cfe2a220238aff61d04f20。
+## 10. 保留 r15 设计：one Store-owned refund authority
 
 Every call site capable of creating `effect_dispatch_budget_refunded` is routed through one Store-owned typed validator and insertion. `authorizeOperatorRetry`, `reconcileNativePreSendFailure`, `recordEffectNotAppliedProof`, browser dispatch and bootstrap may not infer refund eligibility independently. A proofless legacy event is UNKNOWN/non-refunding; persisted reasons are never converted into fresh proof. Surface-specific identity evidence is required, but the Store is the only owner of the exactly-once refund event.
 
+
+## 11. r16 修订与原义务对账
+
+- **KEEP：** r15 单一 Store typed refund writer/所有 caller、exact TURN、no Stop、unknown 不重发、原 Work/#457、P3/P4 与三任务效率目标，全保留于原 P1/P2/P3/P4/P5/P7/P8。
+- **CHANGE：** 原 P0/P7 增补上文 P0.1 的现有 WorkHandle 只读比对与唯一 canonical adoption/commit settlement 路径；当前事实已同 HEAD，不做无意义 adoption。
+- **DEFER：** 用户关闭自动推进后，P5/P8 的自动生产任务/Canary 验收等待明确重新授权；离线修复不受影响，不声称全目标完成。
+- **CHANGE：** 验证方式遵守用户“不新增自动测试 case/文件”，复用现有检查和仓库外直接探针；覆盖义务不删除。
+
+当前 r16 必须绑定本文实际 immutable PR HEAD 与 canonical Plan r16 同时独立双审。PR 描述须同步当前 revision/HEAD；历史审查不自动继承。
