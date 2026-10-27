@@ -1223,11 +1223,23 @@ requireText('adapters/mcp/runtime-gateway/workflow-supervisor-adapter.ts', "...(
 requireText('supervisor/forge-validators.ts', "requirement.state === 'waiting_for_user'");
 requireText('supervisor/native-browser-adapter.ts', "command.kind === 'recovery' && prepared.reasonCode === 'provider_recovery_stop_pending'");
 requireText('supervisor/native-browser-adapter.ts', 'provider-turn observation, not an infrastructure preparation failure');
-requireText('supervisor/store.ts', 'proofGeneration === ledger.lastGeneration');
-requireText('supervisor/store.ts', 'dispatch_generation: dispatch.lastGeneration');
-requireText('supervisor/store.ts', 'dispatch_generation: row?.dispatch_generation, pre_send_rejection: true');
-requireText('supervisor/store.ts', 'effect-dispatch-budget-refund:${effectId}:${proofGeneration}');
-requireText('supervisor/control-plane.ts', 'const recoveryStopPending = effect.kind === \'recovery\' && input.reason.trim() === \'provider_recovery_stop_pending\';');
+// A single Store-owned typed proof validator and refund writer replace the
+// legacy generic pre_send_rejection/no-click string authority. Keep these
+// guards pointed at the actual safety boundary, not obsolete implementation text.
+requireText('supervisor/store.ts', 'proofGeneration !== ledger.lastGeneration');
+requireText('supervisor/store.ts', 'insertValidatedDispatchBudgetRefundWithin(db,');
+requireText('supervisor/store.ts', 'effect-dispatch-budget-refund:${input.effectId}:${input.generation}');
+requireText('supervisor/store.ts', 'proof.effect_id === effectId');
+requireText('supervisor/store.ts', "proof.dispatch_id === String(dispatchPayload.dispatchId ?? '')");
+requireText('supervisor/store.ts', "proof.target_id === String(dispatchPayload.target_id ?? '')");
+requireText('supervisor/store.ts', 'proof_identity_validated');
+requireText('supervisor/store.ts', 'proof_rejected: true');
+requireText('supervisor/control-plane.ts', 'if (!accepted) return;');
+requireText('adapters/computer/chrome-extension/content.js', 'recoverNoStopReadiness');
+requireText('adapters/computer/chrome-extension/background.js', 'requiresRecoveryCapability');
+forbid('adapters/computer/chrome-extension/content.js', /\bstop\.click\s*\(/, 'recovery must not click Stop and interfere with a possibly live provider turn');
+forbid('supervisor/control-plane.ts', /['"]effect_dispatch_budget_refunded['"]/, 'refund events must have exactly one Store writer, not a Control Plane writer');
+forbid('supervisor/native-browser-adapter.ts', /['"]effect_dispatch_budget_refunded['"]/, 'provider adapter must not own a second refund writer');
 requireText('supervisor/native-browser-adapter.ts', "reasonCode: dispatch.reasonCode ?? 'COMPUTER_CHATGPT_DISPATCH_NOT_ATTEMPTED'");
 forbid('src/runtime/root/workflow-supervisor-composition.ts', /WorkflowSupervisorStore|supervisor\.sqlite|registerTask\(|reserveEffect\(/, 'Forge composition must access Supervisor state only through daemon RPC, never open its database or become a second writer');
 requireText('src/runtime/root/workflow-supervisor-composition.ts', 'workflowSupervisorBoundaryForWork');

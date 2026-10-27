@@ -940,7 +940,9 @@ export class WorkflowSupervisorNativeBrowserAdapter {
         observedAtMs: this.deps.nowMs(), graceMs: this.deps.providerIdleGraceMs });
       poll = this.control.browserPoll({ conversationId: task.conversationId, conversationUrl: task.conversationUrl });
       const staleTurnRecovery = poll.command?.kind === 'recovery';
-      if (providerBusy && !providerFailureCode && !staleTurnRecovery) return;
+      // Recovery no longer clicks Stop: a live provider turn always wins.
+      // Keep the original generation untouched until the provider is idle or reports failure.
+      if (providerBusy && !providerFailureCode) return;
       if (latestRoleStillUser && !providerFailureCode && !staleTurnRecovery) return;
     }
     providerBackpressureMs = chatgptProviderBackpressureRemainingMs(this.deps.providerScopeKey, this.deps.nowMs());
@@ -1062,9 +1064,15 @@ export class WorkflowSupervisorNativeBrowserAdapter {
           : undefined);
       if (!dispatch) return; // Stopped/rebound before any mutation.
       if (dispatch.mutation === 'not_attempted') {
-        this.control.bootstrapObserveEffect({ taskId: task.taskId, effectId: command.effectId, observationId: `bootstrap-${randomUUID()}`, outcome: 'not_applied', evidence: { dispatch_mutation: 'not_attempted', send_clicked: false, reason: dispatch.reasonCode } });
-        this.control.recordProviderPreparationFailure({ taskId: task.taskId, effectId: command.effectId,
-          reasonCode: dispatch.reasonCode ?? 'COMPUTER_CHATGPT_DISPATCH_NOT_ATTEMPTED', composerObservation: preflightComposerObservation(beforeSend, command.effectId) });
+        const proved = this.control.bootstrapObserveEffect({ taskId: task.taskId, effectId: command.effectId,
+          observationId: `bootstrap-${randomUUID()}`, outcome: 'not_applied',
+          evidence: { dispatch_mutation: 'not_attempted', send_clicked: false, reason: dispatch.reasonCode } });
+        // An already-started dispatch must never be rewritten as preflight
+        // failed from a legacy boolean. Keep UNKNOWN read-only if unproven.
+        if (proved) this.control.recordProviderPreparationFailure({ taskId: task.taskId, effectId: command.effectId,
+          reasonCode: dispatch.reasonCode ?? 'COMPUTER_CHATGPT_DISPATCH_NOT_ATTEMPTED',
+          composerObservation: preflightComposerObservation(beforeSend, command.effectId) });
+        else this.noteTaskFailure('WORKFLOW_SUPERVISOR_BOOTSTRAP_DISPATCH_OUTCOME_UNKNOWN', task, command.effectId, false);
         await this.deps.targetPort.release(target.targetId).catch(() => undefined);
         return;
       }
@@ -1107,7 +1115,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       async () => { await this.serviceFreshSend(task.taskId); },
     );
     const ready = matches.filter((result): result is Extract<typeof result, { state: 'ready' }> => result.state === 'ready');
-    const observeUnknown = (reason: string): void => this.control.bootstrapObserveEffect({ taskId: task.taskId, effectId: command.effectId, observationId: `bootstrap-reconcile-${randomUUID()}`, outcome: 'unknown', evidence: { reconciliation: true, reason } });
+    const observeUnknown = (reason: string): void => { this.control.bootstrapObserveEffect({ taskId: task.taskId, effectId: command.effectId, observationId: `bootstrap-reconcile-${randomUUID()}`, outcome: 'unknown', evidence: { reconciliation: true, reason } }); };
     if (ready.length === 0) { observeUnknown('bootstrap_target_not_observed'); return; }
     if (ready.length !== 1) { observeUnknown('bootstrap_reconcile_ambiguous'); return; }
     const match = ready[0]!;
@@ -1211,6 +1219,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     }
     let dispatch: Awaited<ReturnType<ComputerChatgptConversationTarget['dispatch']>>;
     let dispatchStarted = false;
+    const dispatchId = `computer-${randomUUID()}`;
     try {
       // Only actual provider submission consumes the account-wide dispatch lane.
       // The content script rechecks exact composer, tab, and target after this
@@ -1231,7 +1240,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
             || (command.kind !== 'recovery' && ready.isGenerating)) return undefined;
           const begin = this.control.browserBeginEffect({
             conversationId: command.conversationId, conversationUrl: command.conversationUrl,
-            effectId: command.effectId, dispatchId: `computer-${randomUUID()}`,
+            effectId: command.effectId, dispatchId,
             dispatchGeneration: command.dispatchGeneration,
             evidence: { surface: 'computer-chatgpt-target', target_id: target.targetId,
               latest_user_text: ready.latestUserText,
@@ -1268,7 +1277,8 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     }
     if (dispatch.mutation === 'not_attempted') {
       this.control.browserObserveDispatchFailure({ conversationId: command.conversationId, conversationUrl: command.conversationUrl, effectId: command.effectId,
-        observationId: `computer-observe-${randomUUID()}`, dispatchGeneration: command.dispatchGeneration, reason: dispatch.reasonCode });
+        observationId: `computer-observe-${randomUUID()}`, dispatchGeneration: command.dispatchGeneration, dispatchId, targetId: target.targetId,
+        surface: 'computer-chatgpt-target', reason: dispatch.reasonCode, prewriteNoMutationReceipt: dispatch.prewriteNoMutationReceipt });
       return;
     }
     if (dispatch.confirmed) {
