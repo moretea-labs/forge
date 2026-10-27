@@ -88,6 +88,40 @@ function resolvedIdentityFingerprint(
   return ownedResourceLocatorFingerprint(ownerForgeInstanceId, locator);
 }
 
+/**
+ * macOS can renumber the same mounted APFS volume after a reboot. Old worktree
+ * witnesses include dev_t, so retain the original SHA-256 proof while testing
+ * only the bounded BSD mount minor range against the SAME path and inode.
+ * A recreated directory (birth after registration) cannot inherit this proof.
+ */
+function matchesMacOSRemountedWorktree(resource: OwnedResource): boolean {
+  if (process.platform !== 'darwin' || resource.kind !== 'worktree'
+    || resource.locator?.kind !== 'filesystem_path'
+    || !resource.ownerForgeInstanceId) return false;
+  const canonicalPath = realpathSync(resource.locator.value);
+  const stat = lstatSync(canonicalPath);
+  const recordedAt = Date.parse(resource.provenance.createdAt);
+  if (!stat.isDirectory() || !Number.isFinite(recordedAt)
+    || !Number.isFinite(stat.birthtimeMs) || stat.birthtimeMs <= 0
+    || Math.floor(stat.birthtimeMs) > recordedAt) return false;
+
+  const majorBase = Math.floor(stat.dev / 0x1000000) * 0x1000000;
+  for (let minor = 0; minor < 256; minor++) {
+    const priorDevice = majorBase + minor;
+    if (priorDevice === stat.dev) continue;
+    const fingerprint = createHash('sha256').update([
+      resource.ownerForgeInstanceId.trim(),
+      'filesystem_path',
+      canonicalPath,
+      String(priorDevice),
+      String(stat.ino),
+      'directory',
+    ].join('\0')).digest('hex');
+    if (fingerprint === resource.identityFingerprint) return true;
+  }
+  return false;
+}
+
 export interface OwnedResourceCleanupTargetInput {
   resourceId: string;
   kind: OwnedResourceKind;
@@ -126,7 +160,8 @@ export function assertOwnedResourceCleanupTarget(
     || (resource.locator.kind === 'filesystem_path'
       ? ownedFilesystemIdentityFingerprint(currentInstance, resource.locator.value)
       : ownedResourceLocatorFingerprint(currentInstance, expectedLocator));
-  if (observedFingerprint !== resource.identityFingerprint) {
+  if (observedFingerprint !== resource.identityFingerprint
+    && !matchesMacOSRemountedWorktree(resource)) {
     throw new Error(`OWNED_RESOURCE_IDENTITY_FINGERPRINT_MISMATCH: ${input.resourceId}`);
   }
   return resource;

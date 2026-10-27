@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 import { execFileSync } from 'child_process';
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'fs';
+import { createHash } from 'crypto';
+import { existsSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
@@ -29,7 +30,7 @@ import { createPlanContract } from '../../src/runtime/control-plane/facade/plan-
 import { claimControllerSession, releaseControllerSession } from '../../packages/kernel/controller/api/index';
 import { applyControllerHomeMigration } from '../../src/runtime/control-plane/persistence/controller-home-migration';
 import { writeWorkHandle } from '../../src/runtime/control-plane/execution/work-handle-store';
-import { getOwnedResource, recordOwnedResource } from '../../packages/kernel/identity/api/index';
+import { assertOwnedResourceCleanupTarget, getOwnedResource, recordOwnedResource } from '../../packages/kernel/identity/api/index';
 import { managedBranchOwnedResourceId, managedBranchOwnedResourceLocator, managedWorkspaceOwnedResourceId } from '../../src/runtime/execution/managed-workspace';
 import {
   applyExternalFilesystemGrant,
@@ -1485,5 +1486,69 @@ describe('sandbox patch handoff artifact', () => {
 
   it('detects dirty path conflicts before integration', () => {
     expect(detectDirtyPathConflicts(['src/a.ts', 'src/b.ts'], ['src/b.ts'])).toEqual(['src/b.ts']);
+  });
+});
+
+describe('owned worktree identity across macOS remounts', () => {
+  it('accepts an exact old-device witness but rejects changed inode or recreated directory', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-remount-identity-'));
+    temporaryRoots.push(root);
+    const controllerHome = join(root, 'controller');
+    const worktree = join(root, 'worktree');
+    mkdirSync(worktree);
+    const resource = recordOwnedResource(controllerHome, {
+      resourceId: 'remount-device-witness',
+      kind: 'worktree',
+      targetRef: worktree,
+      creator: 'forge:managed-workspace',
+      retentionIntent: 'temporary',
+    });
+    const canonicalPath = realpathSync(worktree);
+    const stat = lstatSync(canonicalPath);
+    const majorBase = Math.floor(stat.dev / 0x1000000) * 0x1000000;
+    const priorDevice = majorBase + ((stat.dev - majorBase + 3) % 256);
+    const fingerprint = (device: number, ino: number): string => createHash('sha256').update([
+      resource.ownerForgeInstanceId,
+      'filesystem_path',
+      canonicalPath,
+      String(device),
+      String(ino),
+      'directory',
+    ].join('\0')).digest('hex');
+    const resourceFile = join(controllerHome, 'owned-resources', 'remount-device-witness.json');
+    const writeWitness = (identityFingerprint: string, createdAt = resource.provenance.createdAt): void => {
+      writeFileSync(resourceFile, JSON.stringify({
+        ...resource,
+        provenance: { ...resource.provenance, createdAt },
+        identityFingerprint,
+      }));
+    };
+
+    writeWitness(fingerprint(priorDevice, stat.ino));
+    const cleanupTarget = {
+      resourceId: resource.resourceId,
+      kind: 'worktree' as const,
+      targetRef: worktree,
+    };
+    if (process.platform === 'darwin') {
+      expect(() => assertOwnedResourceCleanupTarget(controllerHome, cleanupTarget)).not.toThrow();
+    } else {
+      expect(() => assertOwnedResourceCleanupTarget(controllerHome, cleanupTarget))
+        .toThrow('OWNED_RESOURCE_IDENTITY_FINGERPRINT_MISMATCH');
+    }
+
+    // An old device number cannot disguise a different inode.
+    writeWitness(fingerprint(priorDevice, stat.ino + 1));
+    expect(() => assertOwnedResourceCleanupTarget(controllerHome, cleanupTarget))
+      .toThrow('OWNED_RESOURCE_IDENTITY_FINGERPRINT_MISMATCH');
+
+    // Even a valid device/inode hash for a newly created directory must not
+    // inherit a resource record that predates the replacement.
+    rmSync(worktree, { recursive: true });
+    mkdirSync(worktree);
+    const replacement = lstatSync(worktree);
+    writeWitness(fingerprint(priorDevice, replacement.ino), '2000-01-01T00:00:00.000Z');
+    expect(() => assertOwnedResourceCleanupTarget(controllerHome, cleanupTarget))
+      .toThrow('OWNED_RESOURCE_IDENTITY_FINGERPRINT_MISMATCH');
   });
 });
