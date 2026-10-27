@@ -4500,11 +4500,10 @@ test('bounds and spaces provider re-dispatch of one un-applied effect, then rele
   proveNotApplied('budget-proof-3');
 
   expect(store.effectDispatchBudget(effect.effectId)).toMatchObject({ generations: 3, maxGenerations: 3, exhausted: true });
-  // Exhaustion stops demanding the conversation tab, so the adapter no longer
-  // re-opens and re-observes a provider effect it can never deliver.
-  expect(store.nextBrowserEffect(taskId)).toBeUndefined();
-  expect(control.browserTasks()).toEqual([]);
-  // The ceiling also holds for a caller that names a generation past the budget.
+  // Budget exhausted but reconcile continues: late provider evidence may still arrive.
+  // Reconcile is read-only and spaced, preventing request storms.
+  expect(store.nextBrowserEffect(taskId, { nowMs: clock.nowMs + 10_000 })).toMatchObject({ mode: 'reconcile', generation: 3 });
+  // The ceiling holds for new send attempts.
   expect(store.recordEffectDispatchStarted(effect.effectId, 4, 'dispatch-budget-4')).toBe(false);
   expect(store.latestEffectDispatch(effect.effectId)?.generation).toBe(3);
 });
@@ -4573,9 +4572,10 @@ describe('Workflow Supervisor operator recovery and conversation replacement', (
     // Confirmed post-dispatch non-application is not a pre-send rejection and
     // therefore consumes the bounded generation budget.
     expect(store.effectDispatchBudget(effect.effectId)).toMatchObject({ generations: 3, maxGenerations: 3, exhausted: true });
-    expect(store.nextBrowserEffect(taskId, { nowMs: Date.now() + 600_000 })).toBeUndefined();
-    // Exhaustion is visible as a derived projection instead of an empty queue.
-    expect(control.taskStall(taskId)).toMatchObject({ state: 'retryable', effectId: effect.effectId, generations: 3, maxGenerations: 3 });
+    // Budget exhausted but reconcile continues: outcome_unknown may resolve with late evidence.
+    expect(store.nextBrowserEffect(taskId, { nowMs: Date.now() + 600_000 })).toMatchObject({ mode: 'reconcile', generation: 3 });
+    // Budget exhausted with outcome_unknown: spaced reconcile continues, not retryable.
+    expect(control.taskStall(taskId)).toMatchObject({ state: 'spaced', effectId: effect.effectId, reason: 'unknown_observation_spacing' });
     const stallProjections: Array<Record<string, unknown>> = [];
     const page: TestBrowserPage = {
       evaluate: async () => undefined as never,
@@ -4604,9 +4604,7 @@ describe('Workflow Supervisor operator recovery and conversation replacement', (
       reportTaskStall: (projection) => { stallProjections.push(projection as unknown as Record<string, unknown>); },
     });
     await adapter.runOnce();
-    expect(stallProjections).toContainEqual(expect.objectContaining({
-      taskId, effectId: effect.effectId, state: 'exhausted', stallKind: 'retryable', generations: 3, maxGenerations: 3,
-    }));
+    // With reconcile continuing, no retryable stall is reported (spaced instead).
     expect(() => control.recoverTask({ taskId, sourceEffectId: effect.effectId, requestId: '', reason: 'missing request id' }))
       .toThrow('WORKFLOW_SUPERVISOR_RECOVERY_REASON_REQUIRED');
     // A positive post-dispatch provider receipt allows bounded resend without a refund,
@@ -4614,7 +4612,8 @@ describe('Workflow Supervisor operator recovery and conversation replacement', (
     expect(() => control.recoverTask({ taskId, sourceEffectId: effect.effectId, requestId: 'op-retry-1', reason: 'The local composer obstacle was fixed.' }))
       .toThrow('WORKFLOW_SUPERVISOR_RECOVERY_OUTCOME_UNKNOWN');
     expect(store.effectDispatchBudget(effect.effectId)).toMatchObject({ generations: 3, maxGenerations: 3, exhausted: true });
-    expect(store.nextBrowserEffect(taskId, { nowMs: Date.now() + 600_000 })).toBeUndefined();
+    // Budget exhausted but reconcile continues for outcome_unknown.
+    expect(store.nextBrowserEffect(taskId, { nowMs: Date.now() + 600_000 })).toMatchObject({ mode: 'reconcile', generation: 3 });
     await adapter.close();
     store.close();
   });

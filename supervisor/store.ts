@@ -1230,7 +1230,13 @@ export class WorkflowSupervisorStore {
         if (!unknownObservationDue(db, effect.effectId, ledger.lastEventId, nowMs)) return undefined;
         return { effect, mode: 'reconcile', generation: ledger.lastGeneration };
       }
-      if (ledger.generations >= WORKFLOW_SUPERVISOR_MAX_DISPATCH_GENERATIONS + ledger.budgetRefunds) return undefined;
+      // Dispatch budget exhausted: no new send generations, but reconcile remains
+      // eligible forever at spaced intervals so late provider evidence can recover.
+      const budgetExhausted = ledger.generations >= WORKFLOW_SUPERVISOR_MAX_DISPATCH_GENERATIONS + ledger.budgetRefunds;
+      if (budgetExhausted) {
+        if (!unknownObservationDue(db, effect.effectId, ledger.lastEventId, nowMs)) return undefined;
+        return { effect, mode: 'reconcile', generation: ledger.lastGeneration };
+      }
       if (this.preflightBlocked(db, effect.effectId)) return undefined;
       if (nowMs - ledger.lastOccurredAtMs < workflowSupervisorDispatchRetryDelayMs(ledger.lastGeneration)) {
         return undefined;
