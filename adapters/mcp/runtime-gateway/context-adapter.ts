@@ -739,6 +739,8 @@ export async function callContextAdapter(ctx: MultiRepositoryMcpToolContext, nam
       const warnings = structuralContext === 'required' && !pack.structuralContext.requiredSatisfied
         ? [pack.structuralContext.fallbackReason ?? 'Required structural context is not ready; lexical retrieval results are returned as degraded evidence.']
         : [];
+      const detailLevel = args.detail_level === 'detail' || args.detail_level === 'raw' ? args.detail_level : 'summary';
+      const isSummary = detailLevel === 'summary';
       const facade = buildFacadeResult({
         status: 'ok',
         summary: pack.files.length
@@ -748,39 +750,53 @@ export async function callContextAdapter(ctx: MultiRepositoryMcpToolContext, nam
           operation,
           repoId: repository.repoId,
           goal: pack.goal,
-          search: pack.search,
-          structuralContext: pack.structuralContext,
-          impactContext: pack.impactContext,
-          semanticNavigation,
+          search: isSummary ? {
+            terms: pack.search.terms,
+            truncated: pack.search.truncated,
+            evidenceTruncated: pack.search.evidenceTruncated,
+          } : pack.search,
+          ...(!isSummary || structuralContext !== 'off' ? { structuralContext: pack.structuralContext } : {}),
+          ...(!isSummary || impactDomains.length > 0 || retrievalMode !== 'implementation' ? { impactContext: pack.impactContext } : {}),
+          ...(!isSummary || semanticNavigation.requested > 0 ? { semanticNavigation } : {}),
           ...(semanticEvidence ? { semanticEvidence } : {}),
           contextClosure,
           readiness,
-          expansion: pack.expansion,
           files: pack.files,
-          coverage: pack.coverage,
-          cache: pack.cache,
-          timingsMs: pack.timingsMs,
+          coverage: isSummary ? {
+            exactKnownPaths: pack.coverage.exactKnownPaths,
+            unresolvedRelationships: pack.coverage.unresolvedRelationships,
+            skippedCandidates: pack.coverage.skippedCandidates,
+            likelyRelatedNotInspectedCount: pack.coverage.likelyRelatedNotInspected.length,
+          } : pack.coverage,
           deniedPaths: pack.deniedPaths,
-          omitted: pack.omitted,
           limits: pack.limits,
-          contextContract: pack.contextContract,
+          ...(isSummary ? {
+            omittedCandidateCount: pack.omitted.length,
+            detailPointer: { tool: 'rh_context', arguments: { ...args, detail_level: 'detail' } },
+          } : {
+            expansion: pack.expansion,
+            cache: pack.cache,
+            timingsMs: pack.timingsMs,
+            omitted: pack.omitted,
+            contextContract: pack.contextContract,
+            retrievalPolicy: {
+              defaultBackend: 'bounded_lexical',
+              structuralBackend: 'retired',
+              rawReadTool: 'read_repository_file',
+              shellSearchFallbackOnly: true,
+              executionReadiness: 'requested_check_ids_only',
+            },
+          }),
           ...(cognitionAudit ? { cognitionAudit } : {}),
           ...(learningRecall ? { learningRecall } : {}),
           ...(executionReadiness ? {
             executionReadiness,
             registeredChecks: checks.slice(0, 80).map((check) => ({ id: check.id, description: check.description, source: check.source, effects: check.effects })),
           } : {}),
-          retrievalPolicy: {
-            defaultBackend: 'bounded_lexical',
-            structuralBackend: 'retired',
-            rawReadTool: 'read_repository_file',
-            shellSearchFallbackOnly: true,
-            executionReadiness: 'requested_check_ids_only',
-          },
         },
         warnings,
         suggestedNextActions: [],
-        detailLevel: args.detail_level === 'detail' || args.detail_level === 'raw' ? args.detail_level : 'summary',
+        detailLevel,
         rawAvailable: true,
       });
       // ContextClosureReceipt already enforces bounded paths, tests, skills, semantic providers,
