@@ -109,36 +109,31 @@ export interface ReleaseSession {
   updatedAt: string;
 }
 
-/** Explicitly timebox only sessions created by the new release policy. */
-export const RELEASE_SESSION_ACCEPTANCE_TIMEOUT_MS = 30 * 60_000;
+/**
+ * Missing causal continuation proof is an incomplete acceptance gate, never
+ * permission to discard a healthy deployed release. Historical persisted
+ * deadline receipts remain readable, but have no rollback authority.
+ */
 export function releaseSessionAcceptanceTimedOut(
-  session: Pick<ReleaseSession, 'phase' | 'receipts'>,
-  nowMs: number,
+  _session: Pick<ReleaseSession, 'phase' | 'receipts'>,
+  _nowMs: number,
 ): boolean {
-  if (session.phase !== 'soaking' || !Number.isFinite(nowMs)) return false;
-  // Historical sessions have no policy receipt: they must not be retroactively
-  // rolled back after a Recovery software upgrade.
-  if (!session.receipts.some((receipt) => receipt.id === 'acceptance_timeout_policy_v1')) return false;
-  // Start at the immutable cutover receipt, never the latest retry/updatedAt.
-  const started = session.receipts.find((receipt) => receipt.id === 'soak_started');
-  const timeMs = Date.parse(started?.recordedAt ?? '');
-  return !Number.isFinite(timeMs) || nowMs >= timeMs + RELEASE_SESSION_ACCEPTANCE_TIMEOUT_MS;
+  return false;
 }
 
-/** Reject late or malformed causal proof for a newly opted-in soak. */
+/** Proof may arrive after prolonged soak; it must still follow cutover. */
 export function releaseSessionContinuationProofTimely(
   session: Pick<ReleaseSession, 'phase' | 'receipts'>,
   lastCommittedAt: string,
   nowMs: number,
 ): boolean {
-  if (!session.receipts.some((r) => r.id === 'acceptance_timeout_policy_v1')) return true;
-  const startedAt = Date.parse(session.receipts.find((r) => r.id === 'soak_started')?.recordedAt ?? '');
+  const started = session.receipts.find((r) => r.id === 'soak_started');
+  if (!started) return true; // Historical sessions retain their legacy contract.
+  const startedAt = Date.parse(started.recordedAt ?? '');
   const provedAt = Date.parse(lastCommittedAt);
   return session.phase === 'soaking'
     && Number.isFinite(startedAt) && Number.isFinite(provedAt) && Number.isFinite(nowMs)
-    && provedAt >= startedAt && provedAt <= nowMs
-    && provedAt <= startedAt + RELEASE_SESSION_ACCEPTANCE_TIMEOUT_MS
-    && nowMs < startedAt + RELEASE_SESSION_ACCEPTANCE_TIMEOUT_MS;
+    && provedAt >= startedAt && provedAt <= nowMs;
 }
 
 const REQUIRED_STATIC_GATES = new Set(['type', 'runtime_architecture', 'architecture_sync', 'bootstrap']);
@@ -671,8 +666,6 @@ export function createReleaseSession(input: {
     revision: 1,
     receipts: [
       { id: `source:${sessionId}`, kind: 'source', recordedAt: timestamp, summary: `source frozen at ${input.sourceRevision.trim()}` },
-      { id: 'acceptance_timeout_policy_v1', kind: 'source', recordedAt: timestamp,
-        summary: 'Mac-first: accept real causal C-C-D or rollback exact Stable A within 30 minutes from cutover' },
     ],
     createdAt: timestamp,
     updatedAt: timestamp,
