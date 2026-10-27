@@ -442,7 +442,8 @@ async function executePrepare(command, instanceId) {
   if (command.identity?.namespace === 'chatgpt.bootstrap' && !expectedProjectId)
     return { kind: 'prepared', ready: false, reasonCode: 'COMPUTER_CHATGPT_BOOTSTRAP_PROJECT_UNPROVEN' };
   const requiresDraftReplacement = typeof command.prompt === 'string' && command.prompt.startsWith('<<<FORGE_DRAFT_REPLACE_V1:');
-  if (expectedProjectId || requiresDraftReplacement) {
+  const requiresRecoveryCapability = command.mode === 'recover' && command.identity?.namespace === 'chatgpt.conversation';
+  if (expectedProjectId || requiresDraftReplacement || requiresRecoveryCapability) {
     let capability;
     try { capability = await tabMessage(target.tab.id, { type: 'forge-computer-chatgpt-capabilities' }); }
     catch { return { kind: 'prepared', ready: false, reasonCode: 'COMPUTER_CHATGPT_CONTENT_CAPABILITIES_UNAVAILABLE' }; }
@@ -452,6 +453,8 @@ async function executePrepare(command, instanceId) {
       return { kind: 'prepared', ready: false, reasonCode: 'COMPUTER_CHATGPT_BOOTSTRAP_PROJECT_GUARD_UNSUPPORTED' };
     if (requiresDraftReplacement && capability?.composerReplacementContract !== 'exact-backed-up-project-draft-v1')
       return { kind: 'prepared', ready: false, reasonCode: 'COMPUTER_CHATGPT_BOOTSTRAP_LOADED_SCRIPT_STALE' };
+    if (requiresRecoveryCapability && capability?.recoveryCapability !== 'recover-no-stop-prewrite-v1')
+      return { kind: 'prepared', ready: false, reasonCode: 'COMPUTER_CHATGPT_RECOVERY_CAPABILITY_UNSUPPORTED' };
   }
   try {
     const result = await tabMessage(target.tab.id, {
@@ -460,7 +463,9 @@ async function executePrepare(command, instanceId) {
       ...(expectedProjectId ? { expectedProjectId } : {}),
     });
     if (result?.prepared !== true) return { kind: 'prepared', ready: false, reasonCode: String(result?.reason ?? 'COMPUTER_CHATGPT_EXTENSION_PREPARE_REJECTED') };
-    return { kind: 'prepared', ready: true };
+    if (requiresRecoveryCapability && result?.recoveryCapability !== 'recover-no-stop-prewrite-v1')
+      return { kind: 'prepared', ready: false, reasonCode: 'COMPUTER_CHATGPT_RECOVERY_CAPABILITY_UNSUPPORTED' };
+    return { kind: 'prepared', ready: true, ...(requiresRecoveryCapability ? { recoveryCapability: result.recoveryCapability } : {}) };
   } catch (error) {
     // Prepare has not clicked Send. Preserve the transport reason for the
     // Supervisor's exact-effect recovery instead of masking a receiver loss
@@ -484,12 +489,15 @@ async function executeDispatch(command, instanceId) {
   // An old tab may still contain a pre-upgrade content script after the
   // extension/runtime has been upgraded. Probe the *exact target tab* before
   // submitting; a background/version heartbeat alone cannot prove it.
-  if (expectedProjectId) {
+  const requiresRecoveryCapability = command.mode === 'recover' && command.identity?.namespace === 'chatgpt.conversation';
+  if (expectedProjectId || requiresRecoveryCapability) {
     let capability;
     try { capability = await tabMessage(target.tab.id, { type: 'forge-computer-chatgpt-capabilities' }); }
     catch { return { kind: 'dispatch', mutation: 'not_attempted', reasonCode: 'COMPUTER_CHATGPT_CONTENT_CAPABILITIES_UNAVAILABLE' }; }
     if (expectedProjectId && capability?.bootstrapTargetGuard !== 'project-checked-before-send-v1')
       return { kind: 'dispatch', mutation: 'not_attempted', reasonCode: 'COMPUTER_CHATGPT_BOOTSTRAP_PROJECT_GUARD_UNSUPPORTED' };
+    if (requiresRecoveryCapability && capability?.recoveryCapability !== 'recover-no-stop-prewrite-v1')
+      return { kind: 'dispatch', mutation: 'not_attempted', reasonCode: 'COMPUTER_CHATGPT_RECOVERY_CAPABILITY_UNSUPPORTED' };
   }
   let result;
   try { result = await tabMessage(target.tab.id, {
@@ -502,13 +510,39 @@ async function executeDispatch(command, instanceId) {
       ? { kind: 'dispatch', mutation: 'not_attempted', reasonCode: 'COMPUTER_CHATGPT_EXTENSION_CONTENT_UNAVAILABLE' }
       : { kind: 'dispatch', mutation: 'attempted' };
   }
-  if (result?.dispatched === false) return { kind: 'dispatch', mutation: 'not_attempted', reasonCode: String(result?.reason ?? 'COMPUTER_CHATGPT_EXTENSION_PRE_MUTATION_REJECTION') };
+  if (result?.dispatched === false) {
+    const rawProof = result?.prewriteNoMutationProof;
+    const reason = String(result?.reason ?? 'COMPUTER_CHATGPT_EXTENSION_PRE_MUTATION_REJECTION');
+    const proofReasonAllowed = reason === 'provider_recovery_turn_unknown' || reason === 'provider_recovery_turn_live';
+    const ownerToken = typeof target.ownerToken === 'string' ? target.ownerToken : '';
+    const recoveryCapability = requiresRecoveryCapability && result?.recoveryCapability === 'recover-no-stop-prewrite-v1'
+      ? result.recoveryCapability : undefined;
+    const prewriteNoMutationReceipt = recoveryCapability && proofReasonAllowed
+      && rawProof?.kind === 'prewrite_no_mutation_proof'
+      && rawProof?.phase === 'prewrite_or_preclick'
+      && rawProof?.editor_touched === false && rawProof?.stop_clicked === false && rawProof?.send_clicked === false
+      && rawProof?.loaded_capability === recoveryCapability
+      && Number.isSafeInteger(rawProof?.issued_at_ms) && Math.abs(Date.now() - rawProof.issued_at_ms) <= 30_000
+      && ownerToken && String(target.tab?.id) && String(target.tab?.windowId)
+      ? {
+          kind: 'prewrite_no_mutation_proof', phase: 'prewrite_or_preclick', reason,
+          issued_at_ms: rawProof.issued_at_ms, editor_touched: false, stop_clicked: false, send_clicked: false,
+          loaded_capability: 'recover-no-stop-prewrite-v1', provider_id: PROVIDER_ID,
+          provider_instance_id: instanceId, command_id: command.commandId,
+          provider_session_id: String(command.providerBinding?.providerSessionId ?? instanceId),
+          profile_id: instanceId, window_id: String(target.tab.windowId), tab_id: String(target.tab.id), owner_token: ownerToken,
+        }
+      : undefined;
+    return { kind: 'dispatch', mutation: 'not_attempted', reasonCode: reason,
+      ...(recoveryCapability ? { recoveryCapability } : {}),
+      ...(prewriteNoMutationReceipt ? { prewriteNoMutationReceipt } : {}) };
+  }
   // A missing/malformed reply after dispatch crossed the content-script boundary
   // is not an attestation that Send never ran.
   if (result?.dispatched !== true) return { kind: 'dispatch', mutation: 'attempted', confirmed: false };
   // The content script observes the committed user turn within the same page.
   // A missing/negative receipt is an outcome-unknown submission, not a retry grant.
-  return { kind: 'dispatch', mutation: 'attempted', confirmed: result.confirmed === true };
+  return { kind: 'dispatch', mutation: 'attempted', confirmed: result.confirmed === true, ...(requiresRecoveryCapability && result?.recoveryCapability === 'recover-no-stop-prewrite-v1' ? { recoveryCapability: result.recoveryCapability } : {}) };
 }
 async function executeFindMarker(command, instanceId) {
   const pinnedBinding = command.providerBinding;

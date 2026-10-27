@@ -166,7 +166,7 @@ function latestNotAppliedProofEventId(db: Database, effectId: string): number {
   // read-side fence to journals written by earlier releases as well.
   const dispatch = statement(db, "SELECT event_id,payload_json FROM events WHERE effect_id = ? AND kind = 'effect_dispatch_started' ORDER BY event_id DESC LIMIT 1", (s) => s.get(effectId)) as { event_id?: number; payload_json?: string } | undefined;
   if (!dispatch?.event_id) return 0;
-  const notApplied = statement(db, "SELECT event_id FROM events WHERE effect_id = ? AND kind = 'effect_not_applied' AND event_id > ? AND json_extract(payload_json,'$.dispatch_generation') = ? ORDER BY event_id DESC LIMIT 1", (s) => s.get(effectId, dispatch.event_id, storedGeneration(dispatch.payload_json))) as { event_id?: number } | undefined;
+  const notApplied = statement(db, "SELECT event_id FROM events WHERE effect_id = ? AND kind = 'effect_not_applied' AND event_id > ? AND json_extract(payload_json,'$.dispatch_generation') = ? AND (json_extract(payload_json,'$.proof_validated') = 1 OR (json_extract(payload_json,'$.provider_receipt') = 'confirmed_not_applied_after_dispatch' AND json_extract(payload_json,'$.proof_identity_validated') = 1 AND json_extract(payload_json,'$.send_clicked') = 1)) ORDER BY event_id DESC LIMIT 1", (s) => s.get(effectId, dispatch.event_id, storedGeneration(dispatch.payload_json))) as { event_id?: number } | undefined;
   return Number(notApplied?.event_id ?? 0);
 }
 
@@ -215,6 +215,26 @@ function providerRecoveryDepthWithin(db: Database, effectId: string): number {
 function operatorAuthorizedRefundCount(db: Database, effectId: string): number {
   const row = statement(db, "SELECT COUNT(*) AS total FROM events WHERE effect_id = ? AND kind = 'effect_dispatch_budget_refunded' AND json_extract(payload_json,'$.reason') = 'operator_authorized_retry'", (s) => s.get(effectId)) as { total?: number } | undefined;
   return Number(row?.total ?? 0);
+}
+
+/** The only writer of effect_dispatch_budget_refunded. A current, validated typed proof must already be journaled. */
+function insertValidatedDispatchBudgetRefundWithin(db: Database, input: {
+  effectId: string; taskId: string; generation: number; reason: string; requestId?: string; authorizedBy?: string; reasonText?: string;
+}): boolean {
+  const dispatch = statement(db, "SELECT event_id FROM events WHERE effect_id = ? AND kind = 'effect_dispatch_started' ORDER BY event_id DESC LIMIT 1", (s) => s.get(input.effectId)) as { event_id?: number } | undefined;
+  if (!dispatch?.event_id) return false;
+  const proof = statement(db, "SELECT event_id FROM events WHERE effect_id = ? AND kind = 'effect_not_applied' AND event_id > ? AND json_extract(payload_json,'$.proof_validated') = 1 AND json_extract(payload_json,'$.dispatch_generation') = ? ORDER BY event_id DESC LIMIT 1", (s) => s.get(input.effectId, dispatch.event_id, input.generation)) as { event_id?: number } | undefined;
+  if (!proof?.event_id) return false;
+  const key = `effect-dispatch-budget-refund:${input.effectId}:${input.generation}`;
+  if (statement(db, 'SELECT 1 AS ok FROM events WHERE event_key = ?', (s) => s.get(key))) return false;
+  statement(db, 'INSERT INTO events(task_id,event_key,kind,effect_id,payload_json,occurred_at) VALUES (?,?,?,?,?,?)', (s) => s.run(
+    input.taskId, key, 'effect_dispatch_budget_refunded', input.effectId,
+    json({ reason: input.reason, dispatch_generation: input.generation, proof_event_id: proof.event_id,
+      attestation: 'store_validated_prewrite_no_mutation_proof',
+      ...(input.requestId ? { request_id: input.requestId } : {}),
+      ...(input.authorizedBy ? { authorized_by: input.authorizedBy } : {}),
+      ...(input.reasonText ? { reason_text: input.reasonText } : {}) }), now()));
+  return true;
 }
 
 function oldestUnappliedEffect(db: Database, taskId: string): WorkflowSupervisorEffect | undefined {
@@ -1381,19 +1401,20 @@ export class WorkflowSupervisorStore {
       if (ledger.generations === 0 || latestNotAppliedProofEventId(db, input.effectId) <= ledger.lastEventId) {
         throw new Error('WORKFLOW_SUPERVISOR_RECOVERY_OUTCOME_UNKNOWN');
       }
+      const latestTypedProof = statement(db, "SELECT 1 AS ok FROM events WHERE effect_id = ? AND kind = 'effect_not_applied' AND json_extract(payload_json,'$.proof_validated') = 1 AND json_extract(payload_json,'$.dispatch_generation') = ? AND event_id > (SELECT COALESCE(MAX(event_id),0) FROM events WHERE effect_id = ? AND kind = 'effect_dispatch_started') LIMIT 1", (s) => s.get(input.effectId, ledger.lastGeneration, input.effectId));
+      if (!latestTypedProof) throw new Error('WORKFLOW_SUPERVISOR_RECOVERY_OUTCOME_UNKNOWN');
       const key = `effect-dispatch-operator-refund:${input.effectId}:${input.requestId}`;
       const existing = statement(db, 'SELECT 1 AS ok FROM events WHERE event_key = ?', (s) => s.get(key));
-      if (existing) return { refunds: operatorAuthorizedRefundCount(db, input.effectId), generations: ledger.generations, deduplicated: true };
+      if (existing) return { refunds: ledger.budgetRefunds, generations: ledger.generations, deduplicated: true };
       if (operatorAuthorizedRefundCount(db, input.effectId) >= WORKFLOW_SUPERVISOR_MAX_OPERATOR_REFUNDS) {
         throw new Error('WORKFLOW_SUPERVISOR_RECOVERY_REFUND_BUDGET_EXHAUSTED');
       }
-      statement(db, 'INSERT INTO events(task_id,event_key,kind,effect_id,payload_json,occurred_at) VALUES (?,?,?,?,?,?)', (s) => s.run(
-        effect.task_id!, key, 'effect_dispatch_budget_refunded', input.effectId,
-        json({
-          reason: 'operator_authorized_retry', request_id: input.requestId, authorized_by: input.authorizedBy,
-          reason_text: input.reason, prior_generations: ledger.generations, attestation: 'mechanical_pre_send_negative_proof',
-        }), now()));
-      return { refunds: operatorAuthorizedRefundCount(db, input.effectId), generations: ledger.generations, deduplicated: false };
+      // A validated proof already owns the one refund for this generation. The operator path may
+      // authorize only that same proof; it cannot create another refund or upgrade a legacy event.
+      const inserted = insertValidatedDispatchBudgetRefundWithin(db, { effectId: input.effectId, taskId: effect.task_id!, generation: ledger.lastGeneration,
+        reason: 'operator_authorized_retry', requestId: input.requestId, authorizedBy: input.authorizedBy, reasonText: input.reason });
+      const current = effectDispatchLedger(db, input.effectId);
+      return { refunds: current.budgetRefunds, generations: current.generations, deduplicated: !inserted };
     });
   }
   /**
@@ -1802,28 +1823,14 @@ export class WorkflowSupervisorStore {
       return { task: taskFromRow(updated), migrated: true };
     });
   }
-  reconcileNativePreSendFailure(effectId: string, requestId: string): boolean {
-    // Bounded compatibility repair for the pre-20261002 native dispatcher.
-    // These exact returned reasons occur before Send is clicked. Other unknown
-    // observations, including transport exceptions, are never negative proof.
-    const row = this.read((db) => {
+  reconcileNativePreSendFailure(effectId: string, _requestId: string): boolean {
+    // Legacy native reason strings are not typed, fresh no-mutation proof. Never
+    // upgrade persisted effect_unknown facts into retry/refund authority.
+    return this.read((db) => {
       const dispatch = effectDispatchLedger(db, effectId);
-      const owner = statement(db, "SELECT payload_json FROM events WHERE event_id=? AND kind='effect_dispatch_started'", (s) => s.get(dispatch.lastEventId)) as { payload_json?: string } | undefined;
-      if (parsedObject(owner?.payload_json).surface !== 'macos-native') return undefined;
-      // Other observers can report a transport error while the native sender
-      // is still preparing. Only that generation's dispatch owner can prove
-      // it returned before clicking Send.
-      const unknown = statement(db, "SELECT payload_json FROM events WHERE effect_id=? AND kind='effect_unknown' AND event_id>? AND json_extract(payload_json,'$.surface')='macos-native' ORDER BY event_id LIMIT 1", (s) => s.get(effectId, dispatch.lastEventId)) as { payload_json?: string } | undefined;
-      return unknown ? { ...unknown, dispatch_generation: dispatch.lastGeneration } : undefined;
+      const row = statement(db, "SELECT 1 AS ok FROM events WHERE effect_id=? AND kind='effect_not_applied' AND event_id>? AND json_extract(payload_json,'$.proof_validated')=1 AND json_extract(payload_json,'$.dispatch_generation')=? LIMIT 1", (s) => s.get(effectId, dispatch.lastEventId, dispatch.lastGeneration)) as { ok?: number } | undefined;
+      return Boolean(row?.ok);
     });
-    const evidence = parsedObject(row?.payload_json);
-    const beforeSend = new Set(['composer_missing', 'composer_not_empty', 'composer_selection_unavailable', 'composer_text_insertion_rejected', 'composer_text_unconfirmed', 'composer_submit_mismatch', 'send_button_missing']);
-    if (evidence.surface !== 'macos-native' || evidence.reconciliation === true || !beforeSend.has(String(evidence.reason))) return false;
-    this.recordEffectNotAppliedProof(effectId, `operator-pre-send:${requestId}`, {
-      ...evidence, send_clicked: false, dispatch_generation: row?.dispatch_generation, pre_send_rejection: true,
-      requested_by: 'user', request_id: requestId, attestation: 'persisted_native_pre_send_return',
-    });
-    return true;
   }
   private reserveEffectWithin(db: Database, input: { taskId: string; effectId: string; kind: WorkflowEffectKind; originKey: string; sourceCompletionFingerprint?: string; prompt: string }): WorkflowSupervisorEffect {
     statement(db, 'INSERT OR IGNORE INTO effects(effect_id,task_id,kind,origin_key,source_completion_fingerprint,prompt_text,created_at) VALUES (?,?,?,?,?,?,?)', (s) => s.run(input.effectId, input.taskId, input.kind, input.originKey, input.sourceCompletionFingerprint ?? null, input.prompt, now()));
@@ -1907,34 +1914,71 @@ export class WorkflowSupervisorStore {
     });
   }
 
-  recordEffectNotAppliedProof(effectId: string, observationId: string, proof: Record<string, unknown>): void {
-    this.transaction((db) => {
+  recordEffectNotAppliedProof(effectId: string, observationId: string, proof: Record<string, unknown>): boolean {
+    return this.transaction((db) => {
       const effect = statement(db, 'SELECT task_id FROM effects WHERE effect_id = ?', (s) => s.get(effectId)) as { task_id?: string } | undefined;
       if (!effect?.task_id) throw new Error('WORKFLOW_SUPERVISOR_EFFECT_UNKNOWN');
       const applied = statement(db, "SELECT 1 AS ok FROM events WHERE effect_id = ? AND kind = 'effect_applied' LIMIT 1", (s) => s.get(effectId));
       if (applied) throw new Error('WORKFLOW_SUPERVISOR_EFFECT_ALREADY_APPLIED');
       const key = `effect-observation:${effectId}:${observationId}`;
-      const payload = json(proof);
-      const existing = statement(db, 'SELECT kind,payload_json FROM events WHERE event_key = ?', (s) => s.get(key)) as { kind?: string; payload_json?: string } | undefined;
-      if (existing && (existing.kind !== 'effect_not_applied' || existing.payload_json !== payload)) throw new Error('WORKFLOW_SUPERVISOR_OBSERVATION_ID_CONFLICT');
-      if (existing) return; // An identical old receipt is idempotent, not fresh retry authority.
-      const ledger = effectDispatchLedger(db, effectId);
       const proofGeneration = Number(proof.dispatch_generation);
-      if (!Number.isInteger(proofGeneration) || proofGeneration < 1 || proofGeneration !== ledger.lastGeneration) {
+      const existing = statement(db, 'SELECT kind,payload_json FROM events WHERE event_key = ?', (s) => s.get(key)) as { kind?: string; payload_json?: string } | undefined;
+      if (existing) {
+        const persisted = parsedObject(existing.payload_json);
+        const comparable = { ...persisted };
+        delete comparable.proof_validated;
+        delete comparable.proof_rejected;
+        if (existing.kind === 'effect_not_applied' && Number(persisted.dispatch_generation) === proofGeneration && json(comparable) === json(proof)) {
+          return persisted.proof_validated === true;
+        }
+        if (existing.kind === 'effect_unknown' && json(persisted) === json({ ...proof, proof_rejected: true })) return false;
+        throw new Error('WORKFLOW_SUPERVISOR_OBSERVATION_ID_CONFLICT');
+      }
+      const dispatch = statement(db, "SELECT event_id,payload_json FROM events WHERE effect_id = ? AND kind = 'effect_dispatch_started' ORDER BY event_id DESC LIMIT 1", (s) => s.get(effectId)) as { event_id?: number; payload_json?: string } | undefined;
+      const ledger = effectDispatchLedger(db, effectId);
+      if (!dispatch?.event_id || !Number.isInteger(proofGeneration) || proofGeneration < 1 || proofGeneration !== ledger.lastGeneration) {
         throw new Error('WORKFLOW_SUPERVISOR_NOT_APPLIED_PROOF_GENERATION_STALE');
       }
-      statement(db, 'INSERT OR IGNORE INTO events(task_id,event_key,kind,effect_id,payload_json,occurred_at) VALUES (?,?,?,?,?,?)', (s) => s.run(effect.task_id, key, 'effect_not_applied', effectId, payload, now()));
-      const legacyRefund = statement(db, 'SELECT event_id FROM events WHERE event_key = ?', (s) => s.get(`effect-dispatch-budget-refund:${effectId}`)) as { event_id?: number } | undefined;
-      const legacyRefundCoversGeneration = proofGeneration === WORKFLOW_SUPERVISOR_MAX_DISPATCH_GENERATIONS && Boolean(legacyRefund);
-      if (proof.pre_send_rejection === true
-        && Number.isInteger(proofGeneration) && proofGeneration > 0
-        && proofGeneration === ledger.lastGeneration
-        && !legacyRefundCoversGeneration) {
-        statement(db, 'INSERT OR IGNORE INTO events(task_id,event_key,kind,effect_id,payload_json,occurred_at) VALUES (?,?,?,?,?,?)', (s) => s.run(
-          effect.task_id, `effect-dispatch-budget-refund:${effectId}:${proofGeneration}`, 'effect_dispatch_budget_refunded', effectId,
-          json({ reason: 'pre_send_rejection_did_not_reach_provider', dispatch_generation: proofGeneration }), now(),
-        ));
+      const dispatchPayload = parsedObject(dispatch.payload_json);
+      const nowMs = this.clockMs();
+      const issuedAtMs = Number(proof.issued_at_ms);
+      const nonblank = (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0 && value.length <= 512;
+      const validTypedPrewriteProof = proof.kind === 'prewrite_no_mutation_proof'
+        && proof.effect_id === effectId
+        && proof.phase === 'prewrite_or_preclick'
+        && proof.proof_validated !== true
+        && proof.loaded_capability === 'recover-no-stop-prewrite-v1'
+        && ['provider_recovery_turn_unknown', 'provider_recovery_turn_live'].includes(String(proof.reason))
+        && Number.isSafeInteger(issuedAtMs) && issuedAtMs <= nowMs + 5_000 && nowMs - issuedAtMs <= 30_000
+        && proof.editor_touched === false && proof.stop_clicked === false && proof.send_clicked === false
+        && nonblank(proof.dispatch_id) && proof.dispatch_id === String(dispatchPayload.dispatchId ?? '')
+        && nonblank(proof.surface) && proof.surface === String(dispatchPayload.surface ?? '')
+        && nonblank(proof.target_id) && proof.target_id === String(dispatchPayload.target_id ?? '')
+        && nonblank(proof.provider_id) && proof.provider_id === 'browser.chrome-extension'
+        && nonblank(proof.provider_instance_id) && proof.provider_instance_id === proof.provider_session_id
+        && proof.profile_id === proof.provider_instance_id
+        && nonblank(proof.command_id) && nonblank(proof.window_id) && nonblank(proof.tab_id) && nonblank(proof.owner_token);
+      const confirmedProviderNonApplication = proof.provider_receipt === 'confirmed_not_applied_after_dispatch'
+        && proof.send_clicked === true && proof.effect_id === effectId
+        && nonblank(proof.dispatch_id) && proof.dispatch_id === String(dispatchPayload.dispatchId ?? '')
+        && nonblank(proof.surface) && proof.surface === String(dispatchPayload.surface ?? '')
+        && nonblank(proof.target_id) && proof.target_id === String(dispatchPayload.target_id ?? '')
+        && nonblank(proof.reason);
+      if (!validTypedPrewriteProof && !confirmedProviderNonApplication) {
+        // Legacy booleans and persisted reason strings remain UNKNOWN/non-refunding.
+        statement(db, 'INSERT INTO events(task_id,event_key,kind,effect_id,payload_json,occurred_at) VALUES (?,?,?,?,?,?)', (s) => s.run(
+          effect.task_id, key, 'effect_unknown', effectId, json({ ...proof, proof_rejected: true }), now()));
+        return false;
       }
+      const accepted = validTypedPrewriteProof
+        ? { ...proof, proof_validated: true }
+        : { ...proof, proof_validated: false, proof_identity_validated: true };
+      statement(db, 'INSERT INTO events(task_id,event_key,kind,effect_id,payload_json,occurred_at) VALUES (?,?,?,?,?,?)', (s) => s.run(
+        effect.task_id, key, 'effect_not_applied', effectId, json(accepted), now()));
+      if (validTypedPrewriteProof) insertValidatedDispatchBudgetRefundWithin(db, {
+        effectId, taskId: effect.task_id, generation: proofGeneration, reason: 'pre_send_rejection_did_not_reach_provider',
+      });
+      return validTypedPrewriteProof;
     });
   }
 

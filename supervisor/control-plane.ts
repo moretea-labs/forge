@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { parseChatgptConversationIdentity } from './chatgpt-conversation';
 import { parseSupervisorCompletion, renderEffectMarker, renderSupervisorPrompt, sha256, validateEffectId, validateSupervisorObjective } from './protocol';
 import { WorkflowSupervisorStore } from './store';
+import type { ComputerChatgptPrewriteNoMutationReceipt } from '../packages/plugin-runtime/computer/conversation-target';
 import { getWorkContract } from '../packages/kernel/work/api/index';
 import { readRequirement } from '../src/runtime/control-plane/persistence/requirement-store';
 import { resolveWorkflowSupervisorForgeHome } from './paths';
@@ -650,7 +651,7 @@ export class WorkflowSupervisorControlPlane {
       ...(this.hooks.effectDispatchEvidence?.({ task, effectId: input.effectId }) ?? {}),
     });
   }
-  bootstrapObserveEffect(input: { taskId: string; effectId: string; observationId: string; outcome: 'applied' | 'not_applied' | 'unknown'; evidence?: Record<string, unknown>; reconciled?: boolean }): void {
+  bootstrapObserveEffect(input: { taskId: string; effectId: string; observationId: string; outcome: 'applied' | 'not_applied' | 'unknown'; evidence?: Record<string, unknown>; reconciled?: boolean }): boolean {
     const task = this.requireTask(input.taskId);
     // A bootstrap provider turn becomes applied through the canonical adapter
     // only after the exact conversation URL has been promoted and bound. An
@@ -676,17 +677,19 @@ export class WorkflowSupervisorControlPlane {
         || input.evidence?.send_clicked !== false) {
         throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_NOT_APPLIED_PROOF_INVALID');
       }
-      this.store.recordEffectNotAppliedProof(effect.effectId, input.observationId, {
+      // The provider's pre-click result is an observation, not automatic
+      // refund authority. The Store validates any retryable no-mutation proof.
+      return this.store.recordEffectNotAppliedProof(effect.effectId, input.observationId, {
         surface: 'computer-bootstrap', send_clicked: false,
         dispatch_generation: dispatch.generation,
         pre_send_rejection: true,
         attestation: 'local_computer_dispatch_returned_without_send',
       });
-      return;
     }
     const evidence = { surface: 'computer-bootstrap', ...(input.evidence ?? {}) };
     this.observeEffect({ effectId: effect.effectId, observationId: input.observationId, outcome: input.outcome, evidence });
     if (input.outcome === 'applied') this.hooks.effectApplied?.(task, effect, { observationId: input.observationId, evidence });
+    return false;
   }
   /** Persist a bounded preflight rejection; started generations require an exact no-click proof first. */
   recordProviderPreparationFailure(input: { taskId: string; effectId: string; reasonCode: string; composerObservation?: WorkflowSupervisorPreflightComposerObservation }): void {
@@ -716,6 +719,8 @@ export class WorkflowSupervisorControlPlane {
       baseline_assistant_sha256: sha256(snapshot.latestAssistantResponse),
       baseline_has_source_completion: Boolean(pending.effect.sourceCompletionFingerprint),
       ...(this.hooks.effectDispatchEvidence?.({ task, effectId }) ?? {}),
+      ...(typeof input.evidence?.target_id === 'string' && input.evidence.target_id.trim()
+        ? { target_id: input.evidence.target_id.trim().slice(0, 256) } : {}),
     };
     const started = this.store.recordEffectDispatchStarted(effectId, input.dispatchGeneration, input.dispatchId, dispatchEvidence);
     return { started, mode: started ? 'send' : 'reconcile', generation: input.dispatchGeneration };
@@ -741,23 +746,25 @@ export class WorkflowSupervisorControlPlane {
     return { recorded: true };
   }
   /** Dispatch-owner attestation. Only the adapter that reserved this generation may call it. */
-  browserObserveDispatchFailure(input: { conversationId: string; conversationUrl: string; effectId: string; observationId: string; dispatchGeneration: number; reason: string; surface?: string }): void {
+  browserObserveDispatchFailure(input: { conversationId: string; conversationUrl: string; effectId: string; observationId: string; dispatchGeneration: number; dispatchId: string; targetId: string; reason: string; surface?: string; prewriteNoMutationReceipt?: ComputerChatgptPrewriteNoMutationReceipt }): void {
     const task = this.requireBrowserTask(input.conversationId, input.conversationUrl);
     const effect = this.store.getEffect(input.effectId);
     if (effect?.taskId !== task.taskId) throw new Error('WORKFLOW_SUPERVISOR_BROWSER_EFFECT_TASK_MISMATCH');
     const dispatch = this.store.latestEffectDispatch(input.effectId);
     if (dispatch?.generation !== input.dispatchGeneration) throw new Error('WORKFLOW_SUPERVISOR_DISPATCH_GENERATION_CHANGED');
-    this.store.recordEffectNotAppliedProof(input.effectId, input.observationId, {
-      surface: input.surface?.trim().slice(0, 128) || 'macos-native', reason: input.reason, send_clicked: false, dispatch_generation: input.dispatchGeneration,
-      // This call is the dispatch owner's exact mechanical return before any
-      // Send click. The store refunds this generation once; the existing preflight
-      // gate bounds ordinary repeats without spending actual send budget.
-      pre_send_rejection: true,
+    const accepted = this.store.recordEffectNotAppliedProof(input.effectId, input.observationId, {
+      ...(input.prewriteNoMutationReceipt ?? {}),
+      effect_id: input.effectId, dispatch_generation: input.dispatchGeneration, dispatch_id: input.dispatchId,
+      target_id: input.targetId, surface: input.surface?.trim().slice(0, 128) || 'computer-chatgpt-target',
     });
-    const recoveryStopPending = effect.kind === 'recovery' && input.reason.trim() === 'provider_recovery_stop_pending';
-    if (!recoveryStopPending) {
-      this.recordProviderPreparationFailure({ taskId: task.taskId, effectId: effect.effectId, reasonCode: input.reason });
-    }
+    // A missing/invalid typed receipt is durably UNKNOWN and cannot create retry
+    // or refund authority. The original observation loop will reconcile it.
+    if (!accepted) return;
+    // Recovery readiness refusals happen before composer mutation and are expected
+    // to become retryable after bounded spacing; don't convert them into a sticky
+    // preflight block or click Stop to make progress.
+    if (effect.kind === 'recovery' && ['provider_recovery_stop_pending', 'provider_recovery_turn_unknown', 'provider_recovery_turn_live'].includes(input.reason.trim())) return;
+    this.recordProviderPreparationFailure({ taskId: task.taskId, effectId: effect.effectId, reasonCode: input.reason });
   }
   browserObserveProviderTurn(input: { conversationId: string; conversationUrl: string; generating: boolean; latestAssistantResponse: string; providerActivityText?: string; providerFailureCode?: string; receiptMissing?: boolean; observedAtMs: number; graceMs: number }): { state: 'inactive' | 'none' | 'generating' | 'idle_pending' | 'recovery_reserved' | 'exhausted'; recoveryEffect?: WorkflowSupervisorEffect } {
     const task = this.requireBrowserTask(input.conversationId, input.conversationUrl);

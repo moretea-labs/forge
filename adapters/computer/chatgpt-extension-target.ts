@@ -6,6 +6,7 @@ import type {
   ComputerChatgptConversationObservation,
   ComputerChatgptConversationObservationOptions,
   ComputerChatgptConversationTarget,
+  ComputerChatgptPrewriteNoMutationReceipt,
   ComputerChatgptConversationTargetPort,
   ComputerChatgptExtensionBrokerRpc,
   ComputerChatgptExtensionCommand,
@@ -331,7 +332,8 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
         }
         if (response.result.kind === 'dispatch') {
           if (response.result.mutation === 'attempted') return { mutation: 'attempted' as const, ...(response.result.confirmed === undefined ? {} : { confirmed: response.result.confirmed }) };
-          if (response.result.mutation === 'not_attempted') return { mutation: 'not_attempted' as const, reasonCode: response.result.reasonCode };
+          if (response.result.mutation === 'not_attempted') return { mutation: 'not_attempted' as const, reasonCode: response.result.reasonCode,
+            ...(response.result.prewriteNoMutationReceipt ? { prewriteNoMutationReceipt: response.result.prewriteNoMutationReceipt as ComputerChatgptPrewriteNoMutationReceipt } : {}) };
         }
         // Only a typed dispatch/not_attempted result proves no Send click. A
         // generic failure or wrong response kind cannot authorize another send.
