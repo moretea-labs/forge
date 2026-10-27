@@ -2454,6 +2454,54 @@ test('explicit browser repairs re-arm the same proven pre-send effect without ch
   store.close();
 });
 
+test('F01 Supervisor never dispatches when Prepare callback times out after draft write', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-f01-prepare-timeout-'));
+  roots.push(root);
+  const store = new WorkflowSupervisorStore(join(root, 'supervisor-home'));
+  const control = new WorkflowSupervisorControlPlane(store, {}, { browserTaskActive: () => true });
+  const taskId = 'f01-prepare-timeout-task';
+  const conversationId = '43434343-5656-7878-9090-151515151515';
+  const conversationUrl = `https://chatgpt.com/c/${conversationId}`;
+  control.registerTask({ taskId, conversationId, conversationUrl,
+    objective: 'Never send after a lost Prepare acknowledgment.',
+    completionContract: {}, continuationPolicy: {}, userBlockerPolicy: {} });
+  const effect = control.reserveEnrollment(taskId);
+  let draftWrites = 0;
+  let sends = 0;
+  const page: TestBrowserPage = {
+    evaluate: async () => undefined as never,
+    tabRef: () => ({ windowId: 'f01-window', tabId: 'f01-tab' }),
+  };
+  const targetPort = createTestChatgptTargetPort({
+    listTabs: async () => ({ entries: [{ windowId: 'f01-window', tabId: 'f01-tab',
+      active: true, url: conversationUrl, title: 'F01 timeout', browserProduct: 'chrome' }] }),
+    reattach: async () => page,
+    create: async () => { throw new Error('Must not replace the pinned conversation'); },
+    close: async () => undefined,
+    snapshot: async () => ({ url: conversationUrl, title: 'F01 timeout', latestUserText: '',
+      latestAssistantResponse: '', composerText: '', isGenerating: false,
+      providerActivityText: '', providerFailureText: '' }),
+    preparePrompt: async () => {
+      draftWrites++;
+      return { ready: false as const, reasonCode: 'COMPUTER_CHATGPT_EXTENSION_TAB_MESSAGE_TIMEOUT' };
+    },
+    dispatchPrompt: async () => { sends++; return { dispatched: true, confirmed: true }; },
+  });
+  const adapter = new WorkflowSupervisorNativeBrowserAdapter(control, new WorkflowSupervisorEphemeralDiscovery(), {
+    targetPort, nowMs: () => Date.now(), providerIdleGraceMs: 60_000,
+    providerScopeKey: join(root, 'provider-scope'), sleep: async () => undefined,
+    setInterval: () => 0 as unknown as ReturnType<typeof setInterval>,
+    clearInterval: () => undefined, onError: () => undefined,
+  });
+  await adapter.runOnce();
+  expect(draftWrites).toBe(1);
+  expect(sends).toBe(0);
+  expect(store.effectDispatchBudget(effect.effectId).generations).toBe(0);
+  expect(store.latestEffectDispatch(effect.effectId)).toBeUndefined();
+  await adapter.close();
+  store.close();
+});
+
 test('Supervisor preparation rejection is durably release-fenced and never spends a provider generation', async () => {
   const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-pre-send-boundary-'));
   roots.push(root);

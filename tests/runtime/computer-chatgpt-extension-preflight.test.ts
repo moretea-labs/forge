@@ -13,6 +13,7 @@ type Scenario = {
   preflightTransportError?: boolean;
   unbound?: boolean;
   prepareTransportError?: 'receiver' | 'timeout' | 'other';
+  prepareDraftWrittenBeforeTimeout?: boolean;
   prepare?: { prepared: boolean; reason?: string; reasoningVerified?: string };
   dispatch?: { dispatched: boolean; confirmed?: boolean; reasoningVerified?: string };
 };
@@ -20,6 +21,7 @@ function fixture(scenario: Scenario) {
   const tab = { id: 42, windowId: 8, url, title: 'Test conversation' };
   const messages: string[] = [];
   let submissions = 0;
+  let draftWrites = 0;
   const ownerStorage = new Map([['forgeComputerOwnedTabV1:42', 'verified-conversation-owner']]);
   const providerBinding = { providerId: 'browser.chrome-extension', providerSessionId: 'test-profile',
     tabId: '42', windowId: '8', ownerToken: 'verified-conversation-owner' };
@@ -50,7 +52,10 @@ function fixture(scenario: Scenario) {
           return;
         }
         if (message.type === 'forge-computer-chatgpt-prepare') {
-          if (scenario.prepareTransportError === 'timeout') return; // inject an unanswered Chrome callback
+          if (scenario.prepareTransportError === 'timeout') {
+            if (scenario.prepareDraftWrittenBeforeTimeout) draftWrites += 1;
+            return; // callback lost, possibly after the exact draft was written
+          }
           if (scenario.prepareTransportError) {
             chrome.runtime.lastError = { message: scenario.prepareTransportError === 'receiver'
               ? 'Could not establish connection. Receiving end does not exist.'
@@ -117,7 +122,7 @@ function fixture(scenario: Scenario) {
       __testPrepare: (value: object, instanceId: string) => Promise<{ kind: string; ready: boolean; reasoningVerified?: string; reasonCode?: string }>;
     }).__testPrepare({ kind: 'prepare', identity, prompt: 'source delivery',
       ...(!scenario.unbound ? { providerBinding } : {}), ...(reasoning ? { reasoning } : {}) }, 'test-profile');
-  return { dispatch, prepare, messages, get submissions() { return submissions; } };
+  return { dispatch, prepare, messages, get submissions() { return submissions; }, get draftWrites() { return draftWrites; } };
 }
 
 test('exact conversation send requires no model-picker capability', async () => {
@@ -865,6 +870,16 @@ for (const [failure, expected] of [
     expect(f.messages).toEqual(['forge-computer-chatgpt-prepare']);
   });
 }
+
+// F01: Lost Prepare acknowledgment after a draft write grants no Send authority.
+test('F01 prepare timeout after draft write remains unconfirmed without dispatch', async () => {
+  const f = fixture({ prepareTransportError: 'timeout', prepareDraftWrittenBeforeTimeout: true });
+  expect(await f.prepare()).toMatchObject({ kind: 'prepared', ready: false,
+    reasonCode: 'COMPUTER_CHATGPT_EXTENSION_TAB_MESSAGE_TIMEOUT' });
+  expect(f.draftWrites).toBe(1);
+  expect(f.submissions).toBe(0);
+  expect(f.messages).toEqual(['forge-computer-chatgpt-prepare']);
+});
 
 // F11: An old physical tab ID can be reused in another Chrome window after
 // restart. Even the same Project URL does not prove it is the Controller's tab.
