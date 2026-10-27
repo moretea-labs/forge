@@ -1400,6 +1400,15 @@ async function verifyLocalRuntimeForReleaseCutover(config: RecoveryConfig): Prom
   return verifyLocalRuntime({ ...config, primaryConnectorService: undefined }, { probeMcpProtocol: false });
 }
 
+async function verifyRecoveryPreflight(
+  config: RecoveryConfig,
+  observeLocal: (config: RecoveryConfig) => Promise<VerifyResult>,
+  verifyLocal: (config: RecoveryConfig) => Promise<VerifyResult>,
+): Promise<VerifyResult> {
+  const observed = await observeLocal(config);
+  return observed.ok ? verifyLocal(config) : observed;
+}
+
 /**
  * Bounded observation owns health, not release verification. Keep this path
  * deliberately bounded to already-published Runtime authority/status plus local
@@ -2075,7 +2084,6 @@ export interface AutomaticReleaseCutoverReadiness {
 
 const AUTOMATIC_RELEASE_CUTOVER_QUIET_MS = 30_000;
 const AUTOMATIC_RELEASE_CUTOVER_HEALTH_TIMEOUT_MS = 2_000;
-const RELEASE_SESSION_CONNECTOR_DRAIN_WAIT_MS = 180_000;
 
 function primaryConnectorHealthEndpoint(config: RecoveryConfig): string | undefined {
   const localMcpUrl = config.primaryConnectorService?.localMcpUrl?.trim();
@@ -2959,7 +2967,7 @@ export async function restartPrimaryRuntime(
 ): Promise<PrimaryRuntimeRestartResult> {
   const verifyLocal = dependencies.verifyLocal ?? verifyLocalRuntime;
   const observeLocal = dependencies.observeLocal ?? (dependencies.verifyLocal ? dependencies.verifyLocal : observePrimaryRuntimeActivationReadiness);
-  const initial = await verifyLocal(config);
+  const initial = await verifyRecoveryPreflight(config, observeLocal, verifyLocal);
   const forceHealthyRestart = dependencies.forceHealthyRestart === true;
   if (initial.ok && !forceHealthyRestart) return { ok: true, attempted: false, noOp: true, detail: 'Canonical Forge Runtime is already healthy', verify: initial };
   const platform = dependencies.platform ?? process.platform;
@@ -2971,7 +2979,7 @@ export async function restartPrimaryRuntime(
   const now = dependencies.now ?? Date.now;
   const wait = dependencies.sleep ?? sleep;
   const locked = await withLock(config, { action: 'restart_primary_runtime' }, async () => {
-    const before = await verifyLocal(config);
+    const before = await verifyRecoveryPreflight(config, observeLocal, verifyLocal);
     if (before.ok && !forceHealthyRestart) return { ok: true, attempted: false, noOp: true, detail: 'Canonical Forge Runtime recovered before restart', serviceTarget: service.target, verify: before } satisfies PrimaryRuntimeRestartResult;
     const runCommand = dependencies.runCommand ?? command;
     const runtimeRunning = dependencies.runtimeRunning ?? ((value: RecoveryConfig) => observeRuntimeStatus(value.controllerHome).running);
@@ -3048,7 +3056,7 @@ export async function recoverPrimaryRuntime(
 ): Promise<PrimaryRuntimeRecoveryResult> {
   const verifyLocal = dependencies.verifyLocal ?? verifyLocalRuntime;
   const observeLocal = dependencies.observeLocal ?? (dependencies.verifyLocal ? dependencies.verifyLocal : observePrimaryRuntimeActivationReadiness);
-  const initial = await verifyLocal(config);
+  const initial = await verifyRecoveryPreflight(config, observeLocal, verifyLocal);
   if (initial.ok) return { ok: true, attempted: false, noOp: true, detail: 'Canonical Forge Runtime recovered before rollback', verify: initial };
 
   const releaseAuthoritySnapshot = releaseAuthority(config);
@@ -3115,7 +3123,7 @@ export async function recoverPrimaryRuntime(
   const wait = dependencies.sleep ?? sleep;
   const runtimeRunning = dependencies.runtimeRunning ?? ((value: RecoveryConfig) => observeRuntimeStatus(value.controllerHome).running);
   const locked = await withLock(config, { action: 'recover_primary_runtime' }, async () => {
-    const before = await verifyLocal(config);
+    const before = await verifyRecoveryPreflight(config, observeLocal, verifyLocal);
     if (before.ok) return { ok: true, attempted: false, noOp: true, detail: 'Canonical Forge Runtime recovered before rollback', serviceTarget: service.target, verify: before } satisfies PrimaryRuntimeRecoveryResult;
 
     const stopped = await stopPrimaryRuntimeForReleaseTransition({ config, service, now, wait, runCommand, runtimeRunning });
@@ -5241,11 +5249,10 @@ export async function cutoverConfiguredRuntimeReleaseSession(
         || stableAfterPromotion.releases.active?.artifactIdentity !== session.stableRelease.artifactIdentity
       ) throw new Error('RELEASE_SESSION_STABLE_CHANGED_DURING_PROMOTION');
 
-      // Connector quietness is a cutover invariant, not an automatic-release
-      // policy. Passive observation alone can starve forever under continuous
-      // valid MCP traffic, so the existing Package Connector generation is
-      // mechanically fenced from admitting new POSTs while already-admitted
-      // responses drain. The marker is scoped to this exact Stable A Connector
+      // Withdraw admission from the existing Package Connector generation.
+      // HTTP activity is diagnostic, not release authority: the canonical
+      // Runtime stop owns bounded request draining and explicit outcome-unknown
+      // settlement before socket teardown. The marker is scoped to this Stable A Connector
       // authority generation; Candidate/rollback rebinds change that generation
       // and therefore remain able to perform post-cutover verification.
       const connectorAuthority = readPackageConnectorServiceAuthority(config.controllerHome);
@@ -5258,30 +5265,9 @@ export async function cutoverConfiguredRuntimeReleaseSession(
           })
         : undefined;
       try {
-        let readiness = await probeReleaseCutoverReadiness(config);
-        // The caller that requested cutover may itself still be one admitted MCP
-        // POST until a detached Recovery process takes over. Keep the fence up
-        // long enough for that response plus other already-admitted POSTs to
-        // settle, then preserve the existing 30s session-idle invariant.
-        const quietWaitDeadline = Date.now() + RELEASE_SESSION_CONNECTOR_DRAIN_WAIT_MS;
-        while (!readiness.ready && Date.now() < quietWaitDeadline) {
-          const hasInFlightActivity = (readiness.activePosts ?? 0) > 0
-            || (readiness.activeStreams ?? 0) > 0
-            || (readiness.initializing ?? 0) > 0;
-          const awaitingQuietWindow = readiness.activePosts === 0
-            && readiness.activeStreams === 0
-            && readiness.initializing === 0
-            && Number.isFinite(readiness.latestActivityAgeMs)
-            && (readiness.latestActivityAgeMs ?? AUTOMATIC_RELEASE_CUTOVER_QUIET_MS) < AUTOMATIC_RELEASE_CUTOVER_QUIET_MS;
-          if (!(connectorDrain && hasInFlightActivity) && !awaitingQuietWindow) break;
-          const remainingMs = awaitingQuietWindow
-            ? Math.max(50, AUTOMATIC_RELEASE_CUTOVER_QUIET_MS - (readiness.latestActivityAgeMs ?? 0) + 25)
-            : 500;
-          await sleep(Math.min(2_000, remainingMs));
-          readiness = await probeReleaseCutoverReadiness(config);
-        }
+        const readiness = await probeReleaseCutoverReadiness(config);
         if (!readiness.ready) {
-          audit(config, 'release_session_cutover_deferred_for_mcp_activity', {
+          audit(config, 'release_session_cutover_mcp_activity', {
             sessionId,
             detail: readiness.detail,
             activeSessions: readiness.activeSessions,
@@ -5293,17 +5279,10 @@ export async function cutoverConfiguredRuntimeReleaseSession(
             connectorDrainArmed: Boolean(connectorDrain),
             requestKind: requestId?.startsWith('recovery-auto-release:') ? 'automatic' : 'explicit',
           });
-          return {
-            ok: true as const,
-            attempted: false,
-            noOp: true,
-            detail: `RELEASE_SESSION_CUTOVER_DEFERRED_FOR_MCP_ACTIVITY: ${readiness.detail}`,
-            releaseSession: session,
-          };
         }
 
         // Re-evaluate at the actual commit boundary: preceding readiness
-        // and connector drain can consume the remainder of the Soak window.
+        // and transport observation can consume the remainder of the Soak window.
         const finalPredecessorLookup = timedSoakingPredecessorForSuccessor(config, session);
         if (finalPredecessorLookup.inventoryIncomplete && !finalPredecessorLookup.predecessor) {
           throw new Error('RELEASE_SESSION_INVENTORY_INCOMPLETE_BEFORE_CUTOVER');
