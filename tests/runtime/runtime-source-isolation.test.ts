@@ -247,6 +247,9 @@ describe('runtime source isolation', () => {
       requirement_id: requirementId,
       expected_revision: 1,
       requirement_outcome: 'Revise Requirement directly by stable id without repository selection.',
+      requirement_progress_summary: 'Source under review',
+      requirement_remaining_work: ['Runtime acceptance'],
+      requirement_accepted_evidence_refs: ['git:reviewed'],
     }));
     const revisedPlan = structured(await callRuntimeTool(unscoped, 'rh_work', {
       operation: 'plan_revise',
@@ -264,7 +267,17 @@ describe('runtime source isolation', () => {
     const revisedRequirementData = (revisedRequirement as unknown as { data?: { requirement?: Record<string, unknown> } }).data;
     const revisedPlanData = (revisedPlan as unknown as { data?: { plan?: Record<string, unknown> } }).data;
     const revisedWorkData = (revisedWork as unknown as { data?: { work?: Record<string, unknown> } }).data;
-    expect(revisedRequirementData?.requirement).toMatchObject({ requirementId, revision: 2 });
+    expect(revisedRequirementData?.requirement).toMatchObject({
+      requirementId, revision: 2, progressSummary: 'Source under review',
+      remainingWork: ['Runtime acceptance'], acceptedEvidenceRefs: ['git:reviewed'],
+    });
+    const resumedRequirement = structured(await callRuntimeTool(unscoped, 'rh_work', {
+      operation: 'requirement_get', requirement_id: requirementId,
+    }));
+    expect((resumedRequirement as unknown as { data?: { progress?: Record<string, unknown> } }).data?.progress).toEqual({
+      source: 'requirement', summary: 'Source under review',
+      remainingWork: ['Runtime acceptance'], acceptedEvidenceRefs: ['git:reviewed'],
+    });
     expect(revisedPlanData?.plan).toMatchObject({ planId, revision: 2 });
     expect(revisedWorkData?.work).toMatchObject({ workId, revision: 2 });
 

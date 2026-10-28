@@ -20,6 +20,10 @@ export interface Requirement {
   outcomeStatement: string;
   acceptanceCriteria: string[];
   requiredDeliveryReferences: string[];
+  /** Model-authored progress and accepted delivery evidence; never projected from Work. */
+  progressSummary?: string;
+  remainingWork?: string[];
+  acceptedEvidenceRefs?: string[];
   /** @deprecated Migration compatibility pointer only. Current Plan.requirementId is the relationship authority. */
   activePlanId?: string;
   state: RequirementState;
@@ -67,6 +71,9 @@ export interface RequirementSemanticView {
   outcomeStatement: string;
   acceptanceCriteria: string[];
   requiredDeliveryReferences: string[];
+  progressSummary: string;
+  remainingWork: string[];
+  acceptedEvidenceRefs: string[];
   state: SemanticRequirementState;
   createdAt: string;
   updatedAt: string;
@@ -83,6 +90,9 @@ export interface ReviseRequirementSemanticInput {
   outcomeStatement?: string;
   acceptanceCriteria?: string[];
   requiredDeliveryReferences?: string[];
+  progressSummary?: string;
+  remainingWork?: string[];
+  acceptedEvidenceRefs?: string[];
   state?: SemanticRequirementState;
 }
 
@@ -125,6 +135,9 @@ export function requirementSemanticView(requirement: Requirement): RequirementSe
     outcomeStatement: requirement.outcomeStatement,
     acceptanceCriteria: [...requirement.acceptanceCriteria],
     requiredDeliveryReferences: [...requirement.requiredDeliveryReferences],
+    progressSummary: requirement.progressSummary ?? '',
+    remainingWork: [...(requirement.remainingWork ?? [])],
+    acceptedEvidenceRefs: [...(requirement.acceptedEvidenceRefs ?? [])],
     state: semanticRequirementState(requirement),
     createdAt: requirement.createdAt,
     updatedAt: requirement.semanticUpdatedAt ?? requirement.createdAt,
@@ -240,6 +253,9 @@ export function reviseRequirementSemantic(
       outcomeStatement,
       acceptanceCriteria: input.acceptanceCriteria === undefined ? [...current.value.acceptanceCriteria] : bounded(input.acceptanceCriteria, 50),
       requiredDeliveryReferences: input.requiredDeliveryReferences === undefined ? [...current.value.requiredDeliveryReferences] : bounded(input.requiredDeliveryReferences, 50),
+      progressSummary: input.progressSummary === undefined ? current.value.progressSummary ?? '' : String(input.progressSummary).trim().slice(0, 2_000),
+      remainingWork: input.remainingWork === undefined ? [...(current.value.remainingWork ?? [])] : bounded(input.remainingWork, 50),
+      acceptedEvidenceRefs: input.acceptedEvidenceRefs === undefined ? [...(current.value.acceptedEvidenceRefs ?? [])] : bounded(input.acceptedEvidenceRefs, 100, 512),
       state: legacyState,
       ...(requestedState ? { needsAttention: false, attentionSummary: undefined } : {}),
       semanticRevision: semanticRevision + 1,
@@ -268,6 +284,9 @@ export function createRequirement(
     outcomeStatement: String(input.outcomeStatement ?? '').trim().slice(0, 2_000),
     acceptanceCriteria: bounded(input.acceptanceCriteria, 50),
     requiredDeliveryReferences: bounded(input.requiredDeliveryReferences, 50),
+    progressSummary: '',
+    remainingWork: [],
+    acceptedEvidenceRefs: [],
     auditRefs: bounded(input.auditRefs, 50),
     state: 'planned',
     needsAttention: false,
