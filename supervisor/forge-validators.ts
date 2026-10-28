@@ -88,8 +88,9 @@ function validateRequirementCompletion(task: WorkflowSupervisorTask, proposal: W
   if (requirement.state !== 'done' || !requirement.semanticAcceptance) {
     return { valid: false, reason: 'requirement_not_semantically_done:' + requirement.state, evidence: requirement.auditRefs.slice(-8) };
   }
-  return boundWorkLineage(task, requirement.requirementId)
-    ?? { valid: true, reason: 'requirement_semantic_acceptance_committed', evidence: requirement.auditRefs.slice(-8) };
+  // Requirement is the sole semantic completion authority. Work lineage is
+  // execution history, not a hidden completion prerequisite for a Goal.
+  return { valid: true, reason: 'requirement_semantic_acceptance_committed', evidence: requirement.auditRefs.slice(-8) };
 }
 
 /**
