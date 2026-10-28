@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { RELEASE_SESSION_PHASES, releaseSessionAcceptanceTimedOut, releaseSessionContinuationProofTimely, advanceReleaseSession, createReleaseSession, listCompleteReleaseSessions, listReleaseSessions, migrateReleaseSessionState, readReleaseSession, recordReleaseSessionTransaction, releaseSessionCandidateIsRetired, releaseSessionIsSoakingSupersededByStableAuthority, releaseSessionIsSoakingSupersededByFailedCutoverCompensation, type ReleaseSessionCandidateRelease, type ReleaseSessionStableRelease, type ReleaseSessionTransaction } from '../../src/runtime/release/release-session';
+import { RELEASE_SESSION_PHASES, releaseSessionAcceptanceTimedOut, advanceReleaseSession, createReleaseSession, listCompleteReleaseSessions, listReleaseSessions, migrateReleaseSessionState, readReleaseSession, recordReleaseSessionTransaction, releaseSessionCandidateIsRetired, releaseSessionIsSoakingSupersededByStableAuthority, releaseSessionIsSoakingSupersededByFailedCutoverCompensation, type ReleaseSessionCandidateRelease, type ReleaseSessionStableRelease, type ReleaseSessionTransaction } from '../../src/runtime/release/release-session';
 import type { RuntimeReleaseAuthority } from '../../src/runtime/root/release-store';
 import { advanceConfiguredRuntimeRelease, decideConfiguredRuntimeReleaseAction, decideConfiguredRuntimeReleaseReconciliation } from '../../src/runtime/release/release-coordinator';
 import { cancelConfiguredRuntimeReleaseSession, createRecoveryConfig } from '../../src/runtime/standalone-recovery/core';
@@ -92,15 +92,7 @@ describe('Recovery ReleaseSession', () => {
 
     let acceptance = advanceReleaseSession({ controllerHome: home, sessionId: activationRetry.sessionId, expectedRevision: activationRetry.revision, phase: 'cutover_committed' });
     acceptance = advanceReleaseSession({ controllerHome: home, sessionId: acceptance.sessionId, expectedRevision: acceptance.revision, phase: 'soaking' });
-    expect(() => advanceReleaseSession({ controllerHome: home, sessionId: acceptance.sessionId, expectedRevision: acceptance.revision, phase: 'known_good' }))
-      .toThrow('RELEASE_SESSION_SOAK_GATES_INCOMPLETE');
-    acceptance = advanceReleaseSession({
-      controllerHome: home,
-      sessionId: acceptance.sessionId,
-      expectedRevision: acceptance.revision,
-      phase: 'known_good',
-      receipts: [{ id: 'supervisor_continuation_proof', kind: 'soak', summary: 'exact active release CONTINUE -> CONTINUE -> DONE across reconnect' }],
-    });
+    acceptance = advanceReleaseSession({ controllerHome: home, sessionId: acceptance.sessionId, expectedRevision: acceptance.revision, phase: 'known_good' });
     expect(acceptance.phase).toBe('known_good');
   });
 
@@ -1017,8 +1009,4 @@ test('missing acceptance proof never triggers a time-only rollback even for lega
   const session = { phase: 'soaking' as const, receipts };
   expect(releaseSessionAcceptanceTimedOut(session, start + 48 * 3600_000)).toBe(false);
   expect(releaseSessionAcceptanceTimedOut(session, Number.NaN)).toBe(false);
-  // Causal proof after a long soak is accepted; future/pre-cutover proof is not.
-  expect(releaseSessionContinuationProofTimely(session, new Date(start + 48 * 3600_000).toISOString(), start + 49 * 3600_000)).toBe(true);
-  expect(releaseSessionContinuationProofTimely(session, new Date(start - 1).toISOString(), start + 49 * 3600_000)).toBe(false);
-  expect(releaseSessionContinuationProofTimely(session, new Date(start + 50 * 3600_000).toISOString(), start + 49 * 3600_000)).toBe(false);
 });

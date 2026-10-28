@@ -1,5 +1,4 @@
-import { assertRuntimePerformanceEvidence, measureRuntimePerformance, samePerformanceIdentity, type RuntimePerformanceDependencies, type RuntimePerformanceEvidence, type RuntimePerformanceIdentity } from './performance';
-import { runBoundedChild } from '../shared/bounded-child-supervisor';
+import { measureRuntimePerformance, type RuntimePerformanceDependencies, type RuntimePerformanceEvidence, type RuntimePerformanceIdentity } from './performance';
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'crypto';
 import { spawn, spawnSync } from 'child_process';
 import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'fs';
@@ -74,8 +73,6 @@ import { createRecoveryHttpTransport, type RecoveryHttpTransport } from './http-
 import { observeRecoveryWatchdogHealth } from './watchdog-heartbeat';
 import { RECOVERY_DAEMON_LABEL } from './service-labels';
 import { resolveWorkflowSupervisorForgeHome, workflowSupervisorSocketPath } from '../../../supervisor/paths';
-import { getWorkflowSupervisorContinuationProof } from '../../../supervisor/client';
-import type { WorkflowSupervisorContinuationProof } from '../../../supervisor/types';
 import { reconcileStoppedWorkflowSupervisorSocket } from '../../../supervisor/server';
 import {
   migrateStoppedRepoLocalControllerHomeStorage,
@@ -95,7 +92,6 @@ import {
   recordReleaseSessionTransaction,
   releaseSessionCandidateIsRetired,
   releaseSessionAcceptanceTimedOut,
-  releaseSessionContinuationProofTimely,
   releaseSessionIsSoakingPredecessorOfStable,
   releaseSessionIsSoakingSupersededByStableAuthority,
   releaseSessionIsSoakingSupersededByFailedCutoverCompensation,
@@ -1080,48 +1076,44 @@ function estimateReleaseSessionCandidateBytes(config: RecoveryConfig, manifestPa
   return { requiredBytes: measuredBytes, reserveBytes: measuredBytes };
 }
 
-/** Explicitly records evidence only after the full independent verification passed. */
-function persistVerifiedKnownGood(config: RecoveryConfig, verified: VerifyResult, performance: RuntimePerformanceEvidence): ReleaseEvidence {
+/** Persist recoverability only after strict whole-Runtime mechanical verification. */
+function persistVerifiedKnownGood(config: RecoveryConfig, verified: VerifyResult): ReleaseEvidence {
   const authority = releaseAuthority(config);
-    const active = verified.releases.active;
-    if (
-      !verified.ok
-      || !authority
-      || !active
-      || authority.active.releaseId !== active.revision
-      || authority.active.artifactIdentity !== active.artifactIdentity
-      || authority.active.manifestSha256 !== active.manifestSha256
-      || authority.active.workerProtocolVersion !== active.workerProtocolVersion
-    ) {
-      throw new Error('RECOVERY_KNOWN_GOOD_ATTESTATION_REQUIRES_FULL_VERIFY_AND_RELEASE_AUTHORITY');
-    }
-    assertRuntimePerformanceEvidence(performance, runtimePerformanceIdentity(config));
-    const attested: ReleaseEvidence = {
-      ...active,
-      performance,
-      controllerHome: resolve(config.controllerHome),
-      releaseAuthorityRevision: authority.revision,
-      releaseFencingTokenSha256: createHash('sha256').update(authority.fencingToken).digest('hex'),
-      attestedAt: new Date().toISOString(),
-      recoveryBundle: createKnownGoodRecoveryBundle(config),
-    };
-    const store = knownGood(config);
-    const previous = authority.previous ? releaseEvidence(config.controllerHome, authority.previous, authority) : undefined;
-    const releases = [
-      attested,
-      ...(previous ? store.releases.filter((entry) => sameReleaseIdentity(entry, previous)) : []),
-    ];
-    writeJson(statePath(config), { schemaVersion: 2, releases, updatedAt: new Date().toISOString() } satisfies KnownGoodStore);
-    // State is durable before cleanup. A crash between these lines leaves an
-    // orphaned bundle, which this same owner removes on the next attestation;
-    // it never invalidates a published recovery point.
-    pruneRetiredKnownGoodRecoveryBundles(config, releases);
-    audit(config, 'known_good_attested', {
-      revision: active.revision,
-      artifactIdentity: active.artifactIdentity,
-      manifestSha256: active.manifestSha256,
-      releaseAuthorityRevision: authority.revision,
-    });
+  const active = verified.releases.active;
+  if (
+    !verified.ok
+    || !authority
+    || !active
+    || authority.active.releaseId !== active.revision
+    || authority.active.artifactIdentity !== active.artifactIdentity
+    || authority.active.manifestSha256 !== active.manifestSha256
+    || authority.active.workerProtocolVersion !== active.workerProtocolVersion
+    || !liveRuntimeOwnsRelease(config, active)
+  ) {
+    throw new Error('RECOVERY_KNOWN_GOOD_ATTESTATION_REQUIRES_FULL_VERIFY_AND_RELEASE_AUTHORITY');
+  }
+  const attested: ReleaseEvidence = {
+    ...active,
+    controllerHome: resolve(config.controllerHome),
+    releaseAuthorityRevision: authority.revision,
+    releaseFencingTokenSha256: createHash('sha256').update(authority.fencingToken).digest('hex'),
+    attestedAt: new Date().toISOString(),
+    recoveryBundle: createKnownGoodRecoveryBundle(config),
+  };
+  const store = knownGood(config);
+  const previous = authority.previous ? releaseEvidence(config.controllerHome, authority.previous, authority) : undefined;
+  const releases = [
+    attested,
+    ...(previous ? store.releases.filter((entry) => sameReleaseIdentity(entry, previous)) : []),
+  ];
+  writeJson(statePath(config), { schemaVersion: 2, releases, updatedAt: new Date().toISOString() } satisfies KnownGoodStore);
+  pruneRetiredKnownGoodRecoveryBundles(config, releases);
+  audit(config, 'known_good_attested', {
+    revision: active.revision,
+    artifactIdentity: active.artifactIdentity,
+    manifestSha256: active.manifestSha256,
+    releaseAuthorityRevision: authority.revision,
+  });
   return attested;
 }
 
@@ -1135,12 +1127,13 @@ function runtimePerformanceIdentity(config: RecoveryConfig): RuntimePerformanceI
     throw new Error('RECOVERY_PERFORMANCE_UNKNOWN: coherent live Runtime required');
   }
   return {
-    releaseId: authority.active.releaseId, authorityRevision: authority.revision,
-    pid: snapshot.pid, runtimeInstanceId: snapshot.runtimeInstanceId, startedAt: snapshot.startedAt,
+    releaseId: authority.active.releaseId,
+    authorityRevision: authority.revision,
+    pid: snapshot.pid,
+    runtimeInstanceId: snapshot.runtimeInstanceId,
+    startedAt: snapshot.startedAt,
   };
 }
-
-export const RECOVERY_INTERNAL_PERFORMANCE_COMMAND = '__measure-runtime-performance';
 
 export async function measureConfiguredRuntimePerformance(
   config: RecoveryConfig,
@@ -1149,108 +1142,19 @@ export async function measureConfiguredRuntimePerformance(
   return await measureRuntimePerformance(() => runtimePerformanceIdentity(config), dependencies);
 }
 
-function hasRuntimePerformanceTestSeam(dependencies: RuntimePerformanceDependencies): boolean {
-  return dependencies.readCpu !== undefined
-    || dependencies.monotonicNow !== undefined
-    || dependencies.wallNow !== undefined
-    || dependencies.sleep !== undefined;
-}
+export const RECOVERY_INTERNAL_PERFORMANCE_COMMAND = '__measure-runtime-performance';
 
-async function measureRuntimePerformanceIsolated(
-  config: RecoveryConfig,
-  expectedIdentity: RuntimePerformanceIdentity,
-): Promise<RuntimePerformanceEvidence> {
-  const recoveryBefore = readCurrentRecoveryRelease(config.controllerHome);
-  if (!recoveryBefore) throw new Error('RECOVERY_PERFORMANCE_UNKNOWN: current immutable Recovery release unavailable');
-  const executable = join(recoveryBefore.releasePath, 'forge-recovery');
-  if (!existsSync(executable)) throw new Error('RECOVERY_PERFORMANCE_UNKNOWN: immutable Recovery sampler executable unavailable');
-
-  const result = await runBoundedChild(
-    executable,
-    [RECOVERY_INTERNAL_PERFORMANCE_COMMAND, '--controller-home', config.controllerHome],
-    {
-      timeoutMs: 100_000,
-      maxOutputBytes: 32 * 1024,
-      forwardSignals: false,
-      env: runtimeAuthorityFreeEnvironment(process.env),
-    },
-  );
-  if (result.status !== 0 || result.failureCode || result.timedOut) {
-    const detail = result.failureCode ?? result.error ?? (result.stderr.trim() || `exit=${result.status}`);
-    throw new Error(`RECOVERY_PERFORMANCE_UNKNOWN: isolated sampler failed (${detail.slice(0, 240)})`);
+async function attestVerifiedKnownGood(config: RecoveryConfig, verified: VerifyResult): Promise<ReleaseEvidence> {
+  if (!verified.ok || !verified.releases.active || !liveRuntimeOwnsRelease(config, verified.releases.active)) {
+    throw new Error('RECOVERY_KNOWN_GOOD_ATTESTATION_REQUIRES_FULL_VERIFY_AND_RELEASE_AUTHORITY');
   }
-
-  let envelope: unknown;
-  try {
-    envelope = JSON.parse(result.stdout);
-  } catch {
-    throw new Error('RECOVERY_PERFORMANCE_UNKNOWN: isolated sampler returned malformed evidence');
-  }
-  if (!envelope || typeof envelope !== 'object' || Array.isArray(envelope)) {
-    throw new Error('RECOVERY_PERFORMANCE_UNKNOWN: isolated sampler returned invalid evidence envelope');
-  }
-  const parsed = envelope as { schemaVersion?: unknown; ok?: unknown; evidence?: unknown; error?: unknown };
-  if (parsed.schemaVersion !== 1 || typeof parsed.ok !== 'boolean') {
-    throw new Error('RECOVERY_PERFORMANCE_UNKNOWN: isolated sampler returned invalid evidence envelope');
-  }
-  if (!parsed.ok) {
-    const detail = typeof parsed.error === 'string' ? parsed.error : '';
-    if (/^RECOVERY_PERFORMANCE_(?:UNKNOWN|REJECTED):/.test(detail)) throw new Error(detail);
-    throw new Error('RECOVERY_PERFORMANCE_UNKNOWN: isolated sampler returned an unclassified failure');
-  }
-  if (!parsed.evidence || typeof parsed.evidence !== 'object' || Array.isArray(parsed.evidence)) {
-    throw new Error('RECOVERY_PERFORMANCE_UNKNOWN: isolated sampler omitted performance evidence');
-  }
-  const performance = parsed.evidence as RuntimePerformanceEvidence;
-  assertRuntimePerformanceEvidence(performance, expectedIdentity);
-
-  const recoveryAfter = readCurrentRecoveryRelease(config.controllerHome);
-  if (!recoveryAfter
-    || recoveryAfter.releaseRevision !== recoveryBefore.releaseRevision
-    || recoveryAfter.manifestSha256 !== recoveryBefore.manifestSha256) {
-    throw new Error('RECOVERY_PERFORMANCE_UNKNOWN: Recovery release changed during performance observation');
-  }
-  if (!samePerformanceIdentity(expectedIdentity, runtimePerformanceIdentity(config))) {
-    throw new Error('RECOVERY_PERFORMANCE_UNKNOWN: Runtime or release authority changed after performance observation');
-  }
-  return performance;
-}
-
-export async function attestKnownGood(
-  config: RecoveryConfig,
-  dependencies: RuntimePerformanceDependencies = {},
-): Promise<ReleaseEvidence> {
-  const initialIdentity = runtimePerformanceIdentity(config);
-  const before = await verifyStableRuntime(config);
-  if (!before.ok) throw new Error('RECOVERY_KNOWN_GOOD_ATTESTATION_REQUIRES_FULL_VERIFY_AND_RELEASE_AUTHORITY');
-  const verifiedIdentity = runtimePerformanceIdentity(config);
-  if (!samePerformanceIdentity(initialIdentity, verifiedIdentity)
-    || before.releases.active?.revision !== verifiedIdentity.releaseId) {
-    throw new Error('RECOVERY_PERFORMANCE_UNKNOWN: Runtime or release authority changed during functional verification');
-  }
-
-  // Production observation executes in one short-lived child of the exact
-  // immutable Recovery release so Gateway/watchdog work in the persistent
-  // daemon cannot stretch the sampler's monotonic windows. Explicit dependency
-  // hooks remain the in-process test seam only. Both paths stay read-only and
-  // outside the Recovery mutation lock; exact Runtime identity remains fenced.
-  const performance = hasRuntimePerformanceTestSeam(dependencies)
-    ? await measureRuntimePerformance(() => {
-        const current = runtimePerformanceIdentity(config);
-        if (!samePerformanceIdentity(verifiedIdentity, current)) {
-          throw new Error('RECOVERY_PERFORMANCE_UNKNOWN: Runtime or release authority changed after functional verification');
-        }
-        return current;
-      }, dependencies)
-    : await measureRuntimePerformanceIsolated(config, verifiedIdentity);
-
-  const locked = await withLock(config, { action: 'attest_known_good' }, async () => {
-    const verified = await verifyStableRuntime(config);
-    if (!verified.ok) throw new Error('RECOVERY_KNOWN_GOOD_ATTESTATION_REQUIRES_FULL_VERIFY_AND_RELEASE_AUTHORITY');
-    return persistVerifiedKnownGood(config, verified, performance);
-  });
+  const locked = await withLock(config, { action: 'attest_known_good' }, async () => persistVerifiedKnownGood(config, verified));
   if (!locked.acquired) throw new Error(recoveryBusyDetail(locked.owner));
   return locked.value;
+}
+
+export async function attestKnownGood(config: RecoveryConfig): Promise<ReleaseEvidence> {
+  return attestVerifiedKnownGood(config, await verifyStableRuntime(config));
 }
 
 function quarantine(config: RecoveryConfig, release: ReleaseEvidence | undefined, reason: string): void {
@@ -1848,14 +1752,9 @@ export interface PrimaryRuntimeRecoveryDependencies {
   sleep?: (ms: number) => Promise<void>;
 }
 
-export interface RuntimeReleaseKnownGoodDependencies extends RuntimePerformanceDependencies {
-  /** Test/host seam for the existing whole-Runtime rollback transaction. */
+export interface RuntimeReleaseKnownGoodDependencies {
   rollback?: PrimaryRuntimeRecoveryDependencies;
-  /** Exact active-release live continuation proof; production defaults to the Supervisor single-writer ledger. */
-  continuationProof?: (
-    forgeHome: string,
-    input: { repoId?: string; activeReleaseId: string; notBefore: string },
-  ) => Promise<WorkflowSupervisorContinuationProof | undefined>;
+  wallNow?: () => number;
 }
 
 export interface RuntimeReleaseActivationGuard {
@@ -5919,7 +5818,6 @@ export async function promoteConfiguredRuntimeReleaseSessionKnownGood(
   if (timedSuccessorReconciliation) return timedSuccessorReconciliation;
 
   let attested: ReleaseEvidence;
-  let continuationProof: WorkflowSupervisorContinuationProof;
   try {
     const active = activeAuthorityRelease(config);
     if (
@@ -5928,7 +5826,6 @@ export async function promoteConfiguredRuntimeReleaseSessionKnownGood(
       || active.artifactIdentity !== candidateRelease.artifactIdentity
       || active.manifestSha256 !== candidateRelease.manifestSha256
     ) throw new Error('RELEASE_SESSION_SOAK_RUNTIME_IDENTITY_MISMATCH');
-
     const activeAuthority = readRuntimeReleaseAuthority(config.controllerHome);
     if (
       !activeAuthority
@@ -5936,44 +5833,15 @@ export async function promoteConfiguredRuntimeReleaseSessionKnownGood(
       || activeAuthority.active.artifactIdentity !== candidateRelease.artifactIdentity
       || activeAuthority.active.manifestSha256 !== candidateRelease.manifestSha256
     ) throw new Error('RELEASE_SESSION_SOAK_RUNTIME_IDENTITY_MISMATCH');
-    try {
-      const proof = await (dependencies.continuationProof ?? getWorkflowSupervisorContinuationProof)(
-        resolveWorkflowSupervisorForgeHome(config.controllerHome),
-        {
-          ...(candidateRelease.sourceRepositoryId ? { repoId: candidateRelease.sourceRepositoryId } : {}),
-          activeReleaseId: candidateRelease.releaseId,
-          notBefore: activeAuthority.committedAt,
-        },
-      );
-      if (!proof) throw new Error('RELEASE_SESSION_AUTONOMOUS_CONTINUATION_PROOF_MISSING');
-      continuationProof = proof;
-      if (!releaseSessionContinuationProofTimely(initial, proof.lastCommittedAt, dependencies.wallNow?.() ?? Date.now()))
-        throw new Error('RELEASE_SESSION_ACCEPTANCE_PROOF_INVALID');
-    } catch (error) {
-      if (error instanceof Error && (error.message === 'RELEASE_SESSION_AUTONOMOUS_CONTINUATION_PROOF_MISSING' || error.message === 'RELEASE_SESSION_ACCEPTANCE_PROOF_INVALID')) throw error;
-      throw new Error(`RELEASE_SESSION_AUTONOMOUS_CONTINUATION_PROOF_UNAVAILABLE: ${error instanceof Error ? error.message : String(error)}`);
-    }
-
-    // Only the exact ReleaseSession promoter may reconcile a provisional
-    // attestation; all external KnownGood recovery consumers stay fenced.
     const existingAttestation = matchingKnownGood(config, active, true);
     if (existingAttestation) {
-      // A known-good attestation is durable release authority, not a transient
-      // observation. Crash/retry reconciliation must reuse it instead of
-      // replaying performance observation and public MCP probes. The live
-      // Runtime still has to own the exact same release and remain locally
-      // live/ready/non-stale before the ReleaseSession can terminalize.
-      if (!liveRuntimeOwnsRelease(config, existingAttestation)) {
-        throw new Error('RELEASE_SESSION_ATTESTED_RUNTIME_NOT_CURRENT');
-      }
+      if (!liveRuntimeOwnsRelease(config, existingAttestation)) throw new Error('RELEASE_SESSION_ATTESTED_RUNTIME_NOT_CURRENT');
       attested = existingAttestation;
     } else {
       const before = await verifyStableRuntime(config);
       if (!before.ok) throw new Error('RELEASE_SESSION_SOAK_RUNTIME_VERIFY_FAILED');
-      if (!sameReleaseEvidenceIdentity(before.releases.active, active)) {
-        throw new Error('RELEASE_SESSION_SOAK_RUNTIME_IDENTITY_MISMATCH');
-      }
-      attested = await attestKnownGood(config, dependencies);
+      if (!sameReleaseEvidenceIdentity(before.releases.active, active)) throw new Error('RELEASE_SESSION_SOAK_RUNTIME_IDENTITY_MISMATCH');
+      attested = await attestVerifiedKnownGood(config, before);
     }
     if (
       attested.revision !== candidateRelease.releaseId
@@ -5985,39 +5853,6 @@ export async function promoteConfiguredRuntimeReleaseSessionKnownGood(
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     audit(config, 'release_session_known_good_failed', { sessionId, detail });
-
-    // Missing proof remains an open acceptance obligation. Only a measured
-    // Runtime failure (not elapsed wall-clock time) authorizes rollback.
-    // A hard runaway-CPU rejection is terminal acceptance evidence, not a
-    // transient observation failure. Keeping Candidate B live in `soaking`
-    // caused the automatic release driver to launch another full 60-second
-    // sampler on every reconciliation cycle. Restore the exact frozen Stable A
-    // through the existing ReleaseSession rollback transaction instead. The
-    // coordinator will then treat this source revision as already attempted and
-    // will not autonomously replay it until source authority changes.
-    if (/^RECOVERY_PERFORMANCE_REJECTED:/.test(detail)) {
-      const rollback = await rollbackConfiguredRuntimeReleaseSession(
-        config,
-        sessionId,
-        dependencies.rollback ?? {},
-        requestId?.trim() ? `${requestId.trim()}:performance-rejected` : undefined,
-      );
-      audit(config, 'release_session_known_good_performance_rejected', {
-        sessionId,
-        detail,
-        rollbackOk: rollback.ok,
-        rollbackDetail: rollback.detail,
-      });
-      return {
-        ok: false,
-        attempted: true,
-        detail: rollback.ok
-          ? `${detail}; Candidate B was rejected by the runaway-CPU gate and exact Stable A restored`
-          : `${detail}; automatic Stable A rollback failed: ${rollback.detail}`,
-        releaseSession: rollback.releaseSession ?? readReleaseSession(config.controllerHome, sessionId) ?? initial,
-      };
-    }
-
     return { ok: false, attempted: true, detail, releaseSession: readReleaseSession(config.controllerHome, sessionId) ?? initial };
   }
 
@@ -6030,14 +5865,6 @@ export async function promoteConfiguredRuntimeReleaseSessionKnownGood(
     if (session.phase !== 'soaking') {
       return { ok: false as const, attempted: true, detail: `RELEASE_SESSION_CHANGED_DURING_KNOWN_GOOD_ATTESTATION: ${session.phase}`, releaseSession: session };
     }
-    // The expensive independent verification and performance observation are
-    // already embodied by `attested`. Re-running the full network probe suite
-    // here created a split-brain transaction: the durable recovery bundle could
-    // be published successfully, then one transient Gateway/MCP timeout left the
-    // ReleaseSession permanently soaking. Under the mutation lock, only fence
-    // the identity that could invalidate that attestation.
-    if (!releaseSessionContinuationProofTimely(session, continuationProof.lastCommittedAt, dependencies.wallNow?.() ?? Date.now()))
-      return { ok: false as const, attempted: true, detail: 'RELEASE_SESSION_ACCEPTANCE_PROOF_INVALID', releaseSession: session };
     if (!liveRuntimeOwnsRelease(config, attested)) {
       return { ok: false as const, attempted: true, detail: 'RELEASE_SESSION_RUNTIME_CHANGED_AFTER_KNOWN_GOOD_ATTESTATION', releaseSession: session };
     }
@@ -6056,18 +5883,11 @@ export async function promoteConfiguredRuntimeReleaseSessionKnownGood(
       sessionId,
       expectedRevision: session.revision,
       phase: 'known_good',
-      receipts: [
-        {
-          id: 'supervisor_continuation_proof',
-          kind: 'soak',
-          summary: `Supervisor task ${continuationProof.taskId} proved ${continuationProof.actions.join(' -> ')} on active release ${continuationProof.activeReleaseId} across Runtime instances ${continuationProof.runtimeInstanceIds.join(',')}`,
-        },
-        {
-          id: 'known_good',
-          kind: 'known_good',
-          summary: `release ${attested.revision} passed soak/performance observation and owns recoverable bundle ${attested.recoveryBundle!.attestationId}`,
-        },
-      ],
+      receipts: [{
+        id: 'known_good',
+        kind: 'known_good',
+        summary: `release ${attested.revision} passed strict whole-Runtime verification and owns recoverable bundle ${attested.recoveryBundle!.attestationId}`,
+      }],
     });
     audit(config, 'release_session_known_good', {
       sessionId,
@@ -6079,13 +5899,11 @@ export async function promoteConfiguredRuntimeReleaseSessionKnownGood(
     return {
       ok: true as const,
       attempted: true,
-      detail: 'ReleaseSession became known-good only after full Runtime verification, performance observation, and recoverable release+SQLite+service bundle attestation',
+      detail: 'ReleaseSession became known-good after strict whole-Runtime verification and recoverable release+SQLite+service bundle attestation',
       releaseSession: session,
     };
   });
   if (!locked.acquired) return { ok: false, attempted: false, noOp: true, detail: recoveryBusyDetail(locked.owner), releaseSession: initial };
-  // An invalid causal proof cannot promote known-good, but cannot authorize a
-  // time-based rollback of a healthy active Runtime either.
   return locked.value;
 }
 
