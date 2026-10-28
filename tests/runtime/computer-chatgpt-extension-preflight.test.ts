@@ -701,7 +701,7 @@ test('real Chrome content script preserves all prompt spaces and newlines during
   expect(fullPageTextReads).toBe(1);
 });
 
-test('recovery never clicks Stop and requires an exact idle assistant turn before editor mutation', () => {
+test('recovery never clicks Stop and requires an exact idle assistant or explicit terminated-stream evidence', () => {
   const source = readFileSync(new URL('../../adapters/computer/chrome-extension/content.js', import.meta.url), 'utf8');
   expect(source).not.toContain('stop.click()');
   const instrumented = source.replace(
@@ -710,7 +710,12 @@ test('recovery never clicks Stop and requires an exact idle assistant turn befor
   );
   expect(instrumented).not.toBe(source);
   const collection = <T,>(values: T[]) => Object.assign(values, { item: (index: number) => values[index] });
-  const run = (options: { lastRole?: 'user' | 'assistant'; mapped?: boolean; turnBusy?: boolean; messageBusy?: boolean }) => {
+  const run = (options: { lastRole?: 'user' | 'assistant'; mapped?: boolean; turnBusy?: boolean; messageBusy?: boolean; stopVisible?: boolean; failureVisible?: boolean; failureInsideMessage?: boolean; failureText?: string }) => {
+    const banner = {
+      innerText: options.failureText ?? '连接已中断，正在等待完整答复',
+      getClientRects: () => options.failureVisible === true ? [1] : [],
+      closest: (selector: string) => options.failureInsideMessage && selector.includes('conversation-turn') ? {} : null,
+    };
     const turn = {
       getClientRects: () => [1],
       matches: (selector: string) => options.turnBusy === true && selector.includes('aria-busy'),
@@ -732,7 +737,9 @@ test('recovery never clicks Stop and requires an exact idle assistant turn befor
               : collection([] as unknown[]),
     };
     const context = {
-      document: { documentElement: {}, querySelectorAll: (selector: string) => selector === 'main' ? collection([main]) : collection([] as unknown[]) },
+      document: { documentElement: {}, querySelectorAll: (selector: string) => selector === 'main' ? collection([main])
+        : selector.includes('stop-button') ? collection(options.stopVisible ? [{ getClientRects: () => [1] }] : [])
+        : selector.includes('[role="alert"]') ? collection([banner]) : collection([] as unknown[]) },
       location: { href: 'https://chatgpt.com/c/12345678-1234-1234-1234-123456789abc' },
       URL, Date, Map, Promise,
       ForgeComputerChatgptCore: { normalizeText: (value: unknown) => String(value ?? '').trim(), parseConversation: () => null },
@@ -745,6 +752,12 @@ test('recovery never clicks Stop and requires an exact idle assistant turn befor
   };
   expect(run({ lastRole: 'assistant' })).toMatchObject({ ready: true, capability: 'recover-no-stop-prewrite-v1' });
   expect(run({ lastRole: 'user' })).toMatchObject({ ready: false, reason: 'provider_recovery_turn_unknown' });
+  expect(run({ lastRole: 'user', failureVisible: true })).toMatchObject({ ready: true, capability: 'recover-no-stop-prewrite-v1' });
+  expect(run({ lastRole: 'user', failureVisible: true, mapped: false })).toMatchObject({ ready: false, reason: 'provider_recovery_turn_unknown' });
+  expect(run({ lastRole: 'user', failureVisible: true, failureInsideMessage: true })).toMatchObject({ ready: false, reason: 'provider_recovery_turn_unknown' });
+  expect(run({ lastRole: 'user', failureVisible: true, failureText: 'This is ordinary conversation prose' })).toMatchObject({ ready: false, reason: 'provider_recovery_turn_unknown' });
+  expect(run({ lastRole: 'user', failureVisible: true, turnBusy: true })).toMatchObject({ ready: false, reason: 'provider_recovery_turn_live' });
+  expect(run({ lastRole: 'user', failureVisible: true, stopVisible: true })).toMatchObject({ ready: false, reason: 'provider_recovery_turn_live' });
   expect(run({ lastRole: 'assistant', mapped: false })).toMatchObject({ ready: false, reason: 'provider_recovery_turn_unknown' });
   expect(run({ lastRole: 'assistant', turnBusy: true })).toMatchObject({ ready: false, reason: 'provider_recovery_turn_live' });
   expect(run({ lastRole: 'assistant', messageBusy: true })).toMatchObject({ ready: false, reason: 'provider_recovery_turn_live' });
