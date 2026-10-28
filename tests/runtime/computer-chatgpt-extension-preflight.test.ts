@@ -1012,6 +1012,58 @@ test('F11 conflicting bootstrap Provider cannot bypass cached map or execute Sen
   expect((await f.resolve(identity, false, valid, 'test-provider')).tab.id).toBe(created.tab.id);
 });
 
+// Regression: a completed bootstrap Send migrates its owned Project tab to a
+// conversation. A later continuation may bootstrap the SAME task again, but
+// the MV3 worker's old map must not permanently block an unspent enrollment.
+test('F11 stale bootstrap map after conversation migration permits a new attested Ensure, never tab reuse', async () => {
+  const projectUrl = 'https://chatgpt.com/g/g-p-test/project';
+  const identity = { namespace: 'chatgpt.bootstrap', bootstrapKey: 'supervisor:resumed', projectUrl };
+  const f = bootstrapFixture();
+  const first = await f.resolve(identity, true);
+  first.tab.url = projectUrl + '/c/12345678-1234-1234-1234-123456789abc';
+  await expect(f.resolve(identity, false)).rejects.toThrow('COMPUTER_CHATGPT_BOOTSTRAP_BINDING_REQUIRED');
+  const successor = await f.resolve(identity, true);
+  expect(successor.created).toBe(true);
+  expect(successor.tab.id).not.toBe(first.tab.id);
+  expect(successor.tab.url).toBe(projectUrl);
+  expect(successor.ownerToken).toBeTruthy();
+  expect(f.tabs).toHaveLength(2);
+  expect(first.tab.url).toContain('/c/12345678-');
+  expect(f.dispatchSends).toBe(0);
+});
+
+test('F11 missing stale bootstrap tab can be replaced only by Ensure; live Project tab still blocks without pin', async () => {
+  const projectUrl = 'https://chatgpt.com/g/g-p-test/project';
+  const identity = { namespace: 'chatgpt.bootstrap', bootstrapKey: 'supervisor:same', projectUrl };
+  const f = bootstrapFixture();
+  const first = await f.resolve(identity, true);
+  await expect(f.resolve(identity, true)).rejects.toThrow('COMPUTER_CHATGPT_BOOTSTRAP_BINDING_REQUIRED');
+  expect(f.tabs).toHaveLength(1);
+  f.tabs.splice(f.tabs.indexOf(first.tab), 1);
+  await expect(f.resolve(identity, false)).rejects.toThrow('COMPUTER_CHATGPT_BOOTSTRAP_BINDING_REQUIRED');
+  const next = await f.resolve(identity, true);
+  expect(next.created).toBe(true);
+  expect(next.tab.id).not.toBe(first.tab.id);
+  expect(f.tabs).toHaveLength(1);
+  expect(f.dispatchSends).toBe(0);
+});
+
+test('F11 stale-map recovery never adopts a different task sharing the same Project', async () => {
+  const projectUrl = 'https://chatgpt.com/g/g-p-test/project';
+  const f = bootstrapFixture();
+  const firstId = { namespace: 'chatgpt.bootstrap', bootstrapKey: 'supervisor:a', projectUrl };
+  const otherId = { namespace: 'chatgpt.bootstrap', bootstrapKey: 'supervisor:b', projectUrl };
+  const first = await f.resolve(firstId, true);
+  const other = await f.resolve(otherId, true);
+  first.tab.url = projectUrl + '/c/12345678-1234-1234-1234-123456789abc';
+  const successor = await f.resolve(firstId, true);
+  expect(successor.tab.id).not.toBe(first.tab.id);
+  expect(successor.tab.id).not.toBe(other.tab.id);
+  await expect(f.resolve(otherId, true)).rejects.toThrow('COMPUTER_CHATGPT_BOOTSTRAP_BINDING_REQUIRED');
+  expect(other.tab.url).toBe(projectUrl);
+  expect(f.dispatchSends).toBe(0);
+});
+
 // Sixth independent Review P1: marker discovery must not launder another
 // Provider's explicit binding into this Chrome profile's owned tab.
 test('F11 find_marker rejects foreign Provider before reading tabs or returning a Chrome binding', async () => {

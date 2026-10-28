@@ -295,8 +295,22 @@ async function resolveTarget(identity, createIfMissing, pinnedBinding, instanceI
       || pinnedBinding.providerSessionId !== instanceId)
       throw new Error('COMPUTER_CHATGPT_EXTENSION_PROVIDER_SESSION_MISMATCH');
   } else if (identity?.namespace === 'chatgpt.bootstrap' && bootstrapTabs.has(identity.bootstrapKey)) {
-    // A same-worker map is not itself a Controller owner authorization.
-    throw new Error('COMPUTER_CHATGPT_BOOTSTRAP_BINDING_REQUIRED');
+    // A same-worker map cannot authorize Prepare/Dispatch or borrowing a
+    // Project composer without the Controller's pinned owner binding.
+    if (!createIfMissing) throw new Error('COMPUTER_CHATGPT_BOOTSTRAP_BINDING_REQUIRED');
+    const mappedId = bootstrapTabs.get(identity.bootstrapKey);
+    const currentTabs = await chatgptTabs();
+    const mapped = currentTabs.find((tab) => tab.id === mappedId);
+    if (mapped && receiverMatchesIdentity(mapped, identity)) {
+      throw new Error('COMPUTER_CHATGPT_BOOTSTRAP_BINDING_REQUIRED');
+    }
+    // After a completed bootstrap migration the pinned tab can be a /c/...
+    // conversation (or have closed), while this MV3 worker still remembers
+    // its old bootstrap id. The Controller no longer owns a bootstrap pin.
+    // Retire ONLY this stale in-worker hint; never close/adopt/navigate its
+    // former tab. A fresh Ensure must still create and attest its own tab
+    // before the Controller can bind it and authorize any Send.
+    bootstrapTabs.delete(identity.bootstrapKey);
   }
   const tabs = await chatgptTabs();
   if (identity?.namespace === 'chatgpt.conversation' && pinnedBinding?.providerId === PROVIDER_ID && pinnedBinding.tabId) {
