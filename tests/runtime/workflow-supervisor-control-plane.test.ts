@@ -547,6 +547,54 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     const advanced = hooks.workProgressFingerprint?.(task);
     expect(advanced).toMatch(/^[0-9a-f]{64}$/);
     expect(advanced).not.toBe(initial);
+    expect(hooks.browserTaskActive?.(task)).toBe(true);
+  });
+
+  test('Requirement-bound standalone Supervisor stops new sends at Requirement wait or terminal state', () => {
+    const fx = fixture();
+    const hooks = forgeWorkflowSupervisorLifecycleHooks(fx.controllerHome);
+    const makeTask = (requirementId: string) => ({
+      taskId: `supervisor:${requirementId}`,
+      conversationId: `conversation-${requirementId}`,
+      conversationUrl: `https://chatgpt.com/c/conversation-${requirementId}`,
+      objective: requirementId,
+      completionContract: {
+        kind: 'model_semantic_completion', controller_home: fx.controllerHome,
+        repo_id: fx.repository.repoId, requirement_id: requirementId,
+      },
+      continuationPolicy: { kind: 'standalone_supervisor', repo_id: fx.repository.repoId },
+      userBlockerPolicy: { kind: 'model_semantic_user_blocker' },
+      createdAt: '2026-01-01T00:00:00.000Z',
+    });
+
+    createRequirement({ controllerHome: fx.controllerHome }, {
+      requirementId: 'REQ-STANDALONE-WAITING', title: 'Waiting', outcomeStatement: 'Wait for explicit user input.',
+    });
+    const waitingTask = makeTask('REQ-STANDALONE-WAITING');
+    updateRequirement({ controllerHome: fx.controllerHome }, {
+      requirementId: 'REQ-STANDALONE-WAITING', action: 'wait_for_user',
+      mutate: (current) => ({ ...current, state: 'waiting_for_user' }),
+    });
+    expect(hooks.browserTaskActive?.(waitingTask)).toBe(false);
+
+    createRequirement({ controllerHome: fx.controllerHome }, {
+      requirementId: 'REQ-STANDALONE-CANCELLED', title: 'Cancelled', outcomeStatement: 'Stop new sends.',
+    });
+    const cancelledTask = makeTask('REQ-STANDALONE-CANCELLED');
+    expect(hooks.browserTaskActive?.(cancelledTask)).toBe(true);
+    reviseRequirementSemantic({ controllerHome: fx.controllerHome }, 'REQ-STANDALONE-CANCELLED', {
+      expectedRevision: 1, state: 'cancelled',
+    });
+    expect(hooks.browserTaskActive?.(cancelledTask)).toBe(false);
+
+    createRequirement({ controllerHome: fx.controllerHome }, {
+      requirementId: 'REQ-STANDALONE-DONE', title: 'Done', outcomeStatement: 'Stop after acceptance.',
+    });
+    const doneTask = makeTask('REQ-STANDALONE-DONE');
+    reviseRequirementSemantic({ controllerHome: fx.controllerHome }, 'REQ-STANDALONE-DONE', {
+      expectedRevision: 1, state: 'completed', remainingWork: [], acceptedEvidenceRefs: ['review:accepted'],
+    });
+    expect(hooks.browserTaskActive?.(doneTask)).toBe(false);
   });
 
   test('derives standalone project scope from Supervisor-owned Controller Home', () => {

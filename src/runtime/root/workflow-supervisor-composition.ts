@@ -223,11 +223,16 @@ function workflowSupervisorProjectAliases(task: WorkflowSupervisorTask): string[
  */
 function createForgeWorkflowSupervisorBrowserTaskActive(controllerHome: string): (task: WorkflowSupervisorTask) => boolean {
   return (task) => {
-    if (task.continuationPolicy.kind === 'standalone_supervisor') return true;
-    if (task.continuationPolicy.kind !== 'forge_goal_outer_turn') return false;
-    const repoId = workflowSupervisorContractText(task, 'repo_id');
     const requirementId = workflowSupervisorContractText(task, 'requirement_id');
     const taskControllerHome = workflowSupervisorContractText(task, 'controller_home');
+    if (task.continuationPolicy.kind === 'standalone_supervisor') {
+      if (!requirementId) return true;
+      if (taskControllerHome && taskControllerHome !== controllerHome) return false;
+      const requirement = readRequirement({ controllerHome }, requirementId)?.value;
+      return Boolean(requirement && !['waiting_for_user', 'done', 'cancelled'].includes(requirement.state));
+    }
+    if (task.continuationPolicy.kind !== 'forge_goal_outer_turn') return false;
+    const repoId = workflowSupervisorContractText(task, 'repo_id');
     if (!repoId || taskControllerHome !== controllerHome) return false;
     if (requirementId && readRequirement({ controllerHome }, requirementId)?.value.state === 'cancelled') return false;
     const workId = workflowSupervisorOriginWorkId(task, repoId, controllerHome);
