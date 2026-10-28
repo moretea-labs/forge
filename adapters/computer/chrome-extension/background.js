@@ -295,14 +295,25 @@ async function resolveTarget(identity, createIfMissing, pinnedBinding, instanceI
       || pinnedBinding.providerSessionId !== instanceId)
       throw new Error('COMPUTER_CHATGPT_EXTENSION_PROVIDER_SESSION_MISMATCH');
   } else if (identity?.namespace === 'chatgpt.bootstrap' && bootstrapTabs.has(identity.bootstrapKey)) {
-    // A same-worker map cannot authorize Prepare/Dispatch or borrowing a
-    // Project composer without the Controller's pinned owner binding.
+    // A same-worker map never authorizes Prepare/Dispatch or URL-only adoption.
+    // Ensure may only reconstruct a Controller pin when this exact task's
+    // mapped physical tab is still on the bootstrap Project AND the same
+    // browser session proves the owner token written when that tab was created.
+    // This closes the crash/lost-receipt window after tabCreate but before the
+    // Controller persisted providerBinding, without creating or sending again.
     if (!createIfMissing) throw new Error('COMPUTER_CHATGPT_BOOTSTRAP_BINDING_REQUIRED');
     const mappedId = bootstrapTabs.get(identity.bootstrapKey);
     const currentTabs = await chatgptTabs();
     const mapped = currentTabs.find((tab) => tab.id === mappedId);
     if (mapped && receiverMatchesIdentity(mapped, identity)) {
-      throw new Error('COMPUTER_CHATGPT_BOOTSTRAP_BINDING_REQUIRED');
+      let ownerToken;
+      try {
+        const stored = await chrome.storage.session.get(ownedTabKey(mapped.id));
+        ownerToken = stored[ownedTabKey(mapped.id)];
+      } catch { /* absence is not ownership proof */ }
+      if (typeof ownerToken !== 'string' || !ownerToken)
+        throw new Error('COMPUTER_CHATGPT_BOOTSTRAP_BINDING_REQUIRED');
+      return { tab: mapped, created: false, ownerToken };
     }
     // After a completed bootstrap migration the pinned tab can be a /c/...
     // conversation (or have closed), while this MV3 worker still remembers

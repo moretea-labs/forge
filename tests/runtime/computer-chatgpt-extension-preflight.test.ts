@@ -1018,6 +1018,11 @@ test('F11 conflicting bootstrap Provider cannot bypass cached map or execute Sen
   expect(await f.prepare(identity, incomplete)).toMatchObject({ ready: false,
     reasonCode: 'COMPUTER_CHATGPT_EXTENSION_PINNED_BINDING_INCOMPLETE' });
   await expect(f.resolve(identity, false)).rejects.toThrow('COMPUTER_CHATGPT_BOOTSTRAP_BINDING_REQUIRED');
+  // Ensure may reconstruct only this same task's owner-attested pin; that does
+  // not let a foreign provider or unpinned Prepare/Dispatch borrow the tab.
+  const sameTaskRecovered = await f.resolve(identity, true);
+  expect(sameTaskRecovered.tab.id).toBe(created.tab.id);
+  expect(sameTaskRecovered.ownerToken).toBe(created.ownerToken);
   expect(f.dispatchSends).toBe(0);
   expect(f.tabs).toHaveLength(1);
   const valid = { providerId: 'browser.chrome-extension', providerSessionId: 'test-provider',
@@ -1045,13 +1050,23 @@ test('F11 stale bootstrap map after conversation migration permits a new atteste
   expect(f.dispatchSends).toBe(0);
 });
 
-test('F11 missing stale bootstrap tab can be replaced only by Ensure; live Project tab still blocks without pin', async () => {
+test('F11 lost Controller bootstrap-pin receipt is recovered only by owner-attested Ensure', async () => {
   const projectUrl = 'https://chatgpt.com/g/g-p-test/project';
   const identity = { namespace: 'chatgpt.bootstrap', bootstrapKey: 'supervisor:same', projectUrl };
   const f = bootstrapFixture();
   const first = await f.resolve(identity, true);
-  await expect(f.resolve(identity, true)).rejects.toThrow('COMPUTER_CHATGPT_BOOTSTRAP_BINDING_REQUIRED');
+  // Prepare/observe-style resolution without a Controller pin still fails.
+  await expect(f.resolve(identity, false)).rejects.toThrow('COMPUTER_CHATGPT_BOOTSTRAP_BINDING_REQUIRED');
+  // Re-running Ensure after the first response was lost returns the SAME
+  // owner-attested physical tab so Controller can persist its pin. No Send and
+  // no second tab are created.
+  const recovered = await f.resolve(identity, true);
+  expect(recovered).toMatchObject({ created: false, tab: { id: first.tab.id } });
+  expect(recovered.ownerToken).toBe(first.ownerToken);
   expect(f.tabs).toHaveLength(1);
+  expect(f.dispatchSends).toBe(0);
+
+  // If the proven tab disappears, only a later Ensure may create a replacement.
   f.tabs.splice(f.tabs.indexOf(first.tab), 1);
   await expect(f.resolve(identity, false)).rejects.toThrow('COMPUTER_CHATGPT_BOOTSTRAP_BINDING_REQUIRED');
   const next = await f.resolve(identity, true);
@@ -1072,7 +1087,11 @@ test('F11 stale-map recovery never adopts a different task sharing the same Proj
   const successor = await f.resolve(firstId, true);
   expect(successor.tab.id).not.toBe(first.tab.id);
   expect(successor.tab.id).not.toBe(other.tab.id);
-  await expect(f.resolve(otherId, true)).rejects.toThrow('COMPUTER_CHATGPT_BOOTSTRAP_BINDING_REQUIRED');
+  await expect(f.resolve(otherId, false)).rejects.toThrow('COMPUTER_CHATGPT_BOOTSTRAP_BINDING_REQUIRED');
+  const otherRecovered = await f.resolve(otherId, true);
+  expect(otherRecovered.tab.id).toBe(other.tab.id);
+  expect(otherRecovered.tab.id).not.toBe(successor.tab.id);
+  expect(otherRecovered.ownerToken).toBe(other.ownerToken);
   expect(other.tab.url).toBe(projectUrl);
   expect(f.dispatchSends).toBe(0);
 });
