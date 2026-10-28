@@ -557,6 +557,10 @@
       "module": "ios",
       "resource": "pure"
     },
+    "tests/runtime/launch-agent-idempotence.test.ts": {
+      "module": "release",
+      "resource": "temp-isolated"
+    },
     "tests/runtime/local-recovery-plugin.test.ts": {
       "module": "process-runtime",
       "resource": "pure"
