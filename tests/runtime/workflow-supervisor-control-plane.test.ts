@@ -2617,7 +2617,8 @@ test('Supervisor preparation rejection is durably release-fenced and never spend
   store.close();
 });
 
-test('recovery stop-pending is a live-turn observation, not a failed preparation', async () => {
+for (const transientReason of ['provider_recovery_stop_pending', 'provider_recovery_turn_unknown', 'provider_recovery_turn_live'] as const) {
+test(`recovery ${transientReason} is a live-turn observation, not a failed preparation`, async () => {
   const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-recovery-stop-pending-'));
   roots.push(root);
   const clock = { nowMs: Date.now() };
@@ -2675,7 +2676,7 @@ test('recovery stop-pending is a live-turn observation, not a failed preparation
       preparations++;
       return preparationReady
         ? { ready: true as const }
-        : { ready: false as const, reasonCode: 'provider_recovery_stop_pending' };
+        : { ready: false as const, reasonCode: transientReason };
     },
     dispatchPrompt: async (_page, prompt) => {
       sends++;
@@ -2704,7 +2705,7 @@ test('recovery stop-pending is a live-turn observation, not a failed preparation
 
   preparationReady = true;
   providerGenerating = false;
-  clock.nowMs += 2_000;
+  clock.nowMs += transientReason === 'provider_recovery_stop_pending' ? 2_000 : 31_000;
   await adapter.runOnce();
   expect(preparations).toBe(2);
   expect(sends).toBe(1);
@@ -2714,6 +2715,7 @@ test('recovery stop-pending is a live-turn observation, not a failed preparation
   await adapter.close();
   store.close();
 });
+}
 
 test('only a fresh typed Chrome no-stop proof refunds one generation; proofless failures remain unknown', () => {
   const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-typed-refund-'));
