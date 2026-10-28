@@ -679,6 +679,7 @@ function assertTransition(session: ReleaseSession, phase: ReleaseSessionPhase): 
     throw new Error('RELEASE_SESSION_TERMINAL');
   }
   if (phase === 'failed') return;
+  if (phase === 'static_verified') throw new Error('RELEASE_SESSION_STATIC_VERIFIED_LEGACY_ONLY');
   if (phase === 'rolled_back') {
     if (order.indexOf(session.phase) < order.indexOf('cutover_attempting')) {
       throw new Error('RELEASE_SESSION_ROLLBACK_BEFORE_CUTOVER_ATTEMPT');
@@ -689,7 +690,7 @@ function assertTransition(session: ReleaseSession, phase: ReleaseSessionPhase): 
   if (!directBuiltToCandidateBoot && order.indexOf(phase) !== order.indexOf(session.phase) + 1) {
     throw new Error('RELEASE_SESSION_TRANSITION_INVALID');
   }
-  if ((phase === 'built' || phase === 'static_verified') && !session.candidateRelease) {
+  if (phase === 'built' && !session.candidateRelease) {
     throw new Error('RELEASE_SESSION_CANDIDATE_RELEASE_REQUIRED');
   }
   if (phase === 'candidate_verified' && [...REQUIRED_CANDIDATE_CANARIES].some((id) => !receiptIds(session, 'candidate_canary').has(id))) {

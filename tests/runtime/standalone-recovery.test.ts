@@ -2098,10 +2098,8 @@ test('ReleaseSession preparation builds the isolated immutable candidate without
     controllerHome: home,
     sessionId: progressed.sessionId,
     expectedRevision: progressed.revision,
-    phase: 'static_verified',
-    receipts: ['type', 'runtime_architecture', 'architecture_sync', 'bootstrap'].map((id) => ({ id, kind: 'static_gate' as const, summary: id })),
+    phase: 'candidate_booted',
   });
-  progressed = advanceReleaseSession({ controllerHome: home, sessionId: progressed.sessionId, expectedRevision: progressed.revision, phase: 'candidate_booted' });
   progressed = advanceReleaseSession({
     controllerHome: home,
     sessionId: progressed.sessionId,
@@ -2734,10 +2732,8 @@ describe('standalone recovery on canonical Runtime', () => {
       controllerHome: home,
       sessionId,
       expectedRevision: session.revision,
-      phase: 'static_verified',
-      receipts: ['type', 'runtime_architecture', 'architecture_sync', 'bootstrap'].map((id) => ({ id, kind: 'static_gate' as const, summary: id })),
+      phase: 'candidate_booted',
     });
-    session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'candidate_booted' });
     session = advanceReleaseSession({
       controllerHome: home,
       sessionId,
@@ -2865,7 +2861,6 @@ describe('standalone recovery on canonical Runtime', () => {
       };
       let session = createReleaseSession({ controllerHome: home, sessionId, stable, stableRelease, candidate, sourceRevision: candidateRelease.sourceCommit });
       session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'built', candidateRelease });
-      session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'static_verified', receipts: ['type', 'runtime_architecture', 'architecture_sync', 'bootstrap'].map((id) => ({ id, kind: 'static_gate' as const, summary: id })) });
       session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'candidate_booted' });
       session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'candidate_verified', receipts: ['recovery', 'mcp', 'scheduler', 'supervisor', 'controller'].map((id) => ({ id, kind: 'candidate_canary' as const, summary: id })) });
       session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'cutover_eligible' });
@@ -2970,7 +2965,6 @@ describe('standalone recovery on canonical Runtime', () => {
       };
       let session = createReleaseSession({ controllerHome: home, sessionId, stable, stableRelease, candidate, sourceRevision: candidateRelease.sourceCommit });
       session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'built', candidateRelease });
-      session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'static_verified', receipts: ['type', 'runtime_architecture', 'architecture_sync', 'bootstrap'].map((id) => ({ id, kind: 'static_gate' as const, summary: id })) });
       session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'candidate_booted' });
       session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'candidate_verified', receipts: ['recovery', 'mcp', 'scheduler', 'supervisor', 'controller'].map((id) => ({ id, kind: 'candidate_canary' as const, summary: id })) });
       session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'cutover_eligible' });
