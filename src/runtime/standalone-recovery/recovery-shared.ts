@@ -206,7 +206,6 @@ export type RecoveryMutationAction =
   | 'pin_runtime_release'
   | 'unpin_runtime_release'
   | 'activate_pinned_runtime_release'
-  | 'stage_and_activate_runtime_release'
   | 'release_session_prepare'
   | 'release_session_candidate_boot'
   | 'release_session_cutover'

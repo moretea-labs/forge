@@ -2158,7 +2158,7 @@ describe('command classifier safe shell combinations', () => {
   test('rejects standalone Recovery lifecycle mutations from repository Process Runtime without blocking observations', () => {
     const lifecycleCommands: Array<string | string[]> = [
       ['forge', 'recovery', 'activate-runtime', '--release-manifest', '/tmp/release/manifest.json'],
-      ['bun', 'bin/forge.mjs', 'recovery', 'stage-and-activate-runtime', '--repo', '.'],
+      ['bun', 'bin/forge.mjs', 'recovery', 'prepare-runtime-release-session', '--repo', '.'],
       ['node', '/tmp/forge/bin/forge.mjs', 'recovery', 'restart-runtime'],
       ['bash', '-lc', 'bun bin/forge.mjs recovery recover --source-root .'],
       'forge recovery rollback --controller-home /tmp/controller',

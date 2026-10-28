@@ -36,7 +36,6 @@ import {
   repairPublicTunnel,
   restartPrimaryConnector,
   restartPrimaryRuntime,
-  stageAndActivateConfiguredRuntimeRelease,
   unpinRuntimeRelease,
   rollbackPrevious,
   secureEqual,
@@ -150,7 +149,6 @@ export const RECOVERY_CLI_COMMANDS = [
   'restart-primary-connector',
   'recover-primary-runtime',
   'activate-runtime-release',
-  'stage-and-activate-runtime-release',
   'release-session-status',
   'release-session-advance',
   'release-session-prepare',
@@ -270,7 +268,6 @@ async function cli(): Promise<void> {
       }));
       return;
     }
-    case 'stage-and-activate-runtime-release': assertIndependentReleaseCliOwner(config.controllerHome); output(await stageAndActivateConfiguredRuntimeRelease(config, {}, `recovery-cli:${process.pid}:${Date.now()}`)); return;
     case 'release-session-status': {
       const sessionId = option('--session-id');
       if (!sessionId) throw new Error('RECOVERY_RELEASE_SESSION_ID_REQUIRED');
@@ -477,7 +474,6 @@ export const RECOVERY_TOOLS = [
   { name: 'pin_runtime_release', description: 'Pin one extant legacy/home-bound immutable Runtime release so retention preserves it for explicit Runtime-only recovery activation. Portable source candidates are rejected and must use ReleaseSession.', inputSchema: mutationInputSchema({ release_path: { type: 'string', minLength: 8, maxLength: 1024, description: 'Absolute path to the immutable Runtime release directory or manifest.' } }, ['release_path']) },
   { name: 'unpin_runtime_release', description: 'Remove the explicit stable Runtime retention pin without deleting or activating any release.', inputSchema: mutationInputSchema() },
   { name: 'activate_pinned_runtime_release', description: 'Activate the explicitly pinned legacy/home-bound Runtime release without restoring an older SQLite backup; portable source candidates are rejected and must use ReleaseSession.', inputSchema: mutationInputSchema({ expected_active_release_id: { type: 'string', minLength: 1, maxLength: 256 }, expected_authority_revision: { type: 'integer', minimum: 1 } }, ['expected_active_release_id', 'expected_authority_revision']) },
-  { name: 'stage_and_activate_runtime_release', description: 'Compatibility alias: freeze the fixed configured source, create isolated Candidate B, and build one portable immutable Runtime release into a durable ReleaseSession. It no longer activates Stable A.', inputSchema: mutationInputSchema() },
   { name: 'release_session_status', description: 'Read one durable ReleaseSession and its exact Stable A/Candidate B phase and evidence.', inputSchema: { type: 'object', properties: { session_id: { type: 'string', minLength: 8, maxLength: 120 } }, required: ['session_id'], additionalProperties: false } },
   { name: 'advance_runtime_release_session', description: 'Run the single active normal Runtime ReleaseSession autonomously through all immediately executable phases until known-good or a genuine provider/safety boundary. ReleaseSession remains the sole durable progression authority and no Work is created per phase.', inputSchema: mutationInputSchema() },
   { name: 'prepare_runtime_release_session', description: 'Freeze configured source and Stable A authority, create isolated Candidate B, and build a portable byte-identifiable Runtime artifact without stopping Stable A.', inputSchema: mutationInputSchema() },
@@ -864,11 +860,6 @@ export async function dispatchRecoveryTool(config: RecoveryConfig, name: string,
         expectedAuthorityRevision: Number(args.expected_authority_revision),
       }));
     }
-    case 'stage_and_activate_runtime_release': {
-      if (!requestId(args.request_id)) throw new Error('RECOVERY_REQUEST_ID_REQUIRED');
-      assertRecoveryGatewayMutationIdentity(config, args);
-      return mutationResponse(config, await stageAndActivateConfiguredRuntimeRelease(config, {}, `recovery-gateway:${args.request_id}`));
-    }
     case 'release_session_status': {
       if (typeof args.session_id !== 'string' || !args.session_id.trim()) throw new Error('RECOVERY_RELEASE_SESSION_ID_REQUIRED');
       return readReleaseSession(config.controllerHome, args.session_id.trim()) ?? null;
@@ -1140,7 +1131,7 @@ async function startGateway(config: RecoveryConfig, daemonIdentity?: RecoveryRun
   const recoveryMcp = new RecoveryMcpServer({
     tools: recoveryTools,
     dispatchTool: async (name, args, context) => {
-      if (name === 'attest_known_good' || name === 'rollback_previous' || name === 'restart_primary_runtime' || name === 'restart_primary_connector' || name === 'recover_primary_runtime' || name === 'activate_runtime_release' || name === 'pin_runtime_release' || name === 'unpin_runtime_release' || name === 'activate_pinned_runtime_release' || name === 'stage_and_activate_runtime_release' || name === 'prepare_runtime_release_session' || name === 'verify_runtime_release_session_candidate' || name === 'cutover_runtime_release_session' || name === 'promote_runtime_release_session_known_good' || name === 'migrate_controller_home' || name === 'restart_public_tunnel') {
+      if (name === 'attest_known_good' || name === 'rollback_previous' || name === 'restart_primary_runtime' || name === 'restart_primary_connector' || name === 'recover_primary_runtime' || name === 'activate_runtime_release' || name === 'pin_runtime_release' || name === 'unpin_runtime_release' || name === 'activate_pinned_runtime_release' || name === 'prepare_runtime_release_session' || name === 'verify_runtime_release_session_candidate' || name === 'cutover_runtime_release_session' || name === 'promote_runtime_release_session_known_good' || name === 'migrate_controller_home' || name === 'restart_public_tunnel') {
         const now = Date.now();
         const window = (recentMutations.get(context.remoteAddress) ?? []).filter((at) => now - at < 60_000);
         if (window.length >= 3) throw new Error('Recovery mutation rate limit exceeded.');
