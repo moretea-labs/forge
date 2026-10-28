@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { strict as assert } from 'node:assert';
 import { createConnection } from 'node:net';
-import { createRequirement, updateRequirement } from '../src/runtime/control-plane/persistence/requirement-store';
+import { createRequirement, reviseRequirementSemantic, updateRequirement } from '../src/runtime/control-plane/persistence/requirement-store';
 import {
   registerWorkflowSupervisorTask,
   reserveWorkflowSupervisorEnrollment,
@@ -83,9 +83,8 @@ try {
     createdAt: new Date().toISOString(),
   };
   assert.equal((await validators.completionContract(doneTask, { action: 'DONE', sourceEffectId: 'fx_smokevalidator', checkpoint: 'done', reason: 'done', evidence: [] })).valid, false);
-  updateRequirement({ controllerHome }, {
-    requirementId: 'REQ-SUPERVISOR-DONE', action: 'smoke_semantic_acceptance',
-    mutate: (current) => ({ ...current, state: 'done', semanticAcceptance: { reviewer: 'smoke', rationale: 'validated', planIds: [], acceptedAt: new Date().toISOString() } }),
+  reviseRequirementSemantic({ controllerHome }, 'REQ-SUPERVISOR-DONE', {
+    expectedRevision: 1, state: 'completed', remainingWork: [], acceptedEvidenceRefs: ['smoke:validated'],
   });
   assert.equal((await validators.completionContract(doneTask, { action: 'DONE', sourceEffectId: 'fx_smokevalidator', checkpoint: 'done', reason: 'done', evidence: [] })).valid, true);
 
