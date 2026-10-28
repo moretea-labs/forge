@@ -136,7 +136,6 @@ export function releaseSessionContinuationProofTimely(
     && provedAt >= startedAt && provedAt <= nowMs;
 }
 
-const REQUIRED_STATIC_GATES = new Set(['type', 'runtime_architecture', 'architecture_sync', 'bootstrap']);
 const REQUIRED_CANDIDATE_CANARIES = new Set(['recovery', 'mcp', 'scheduler', 'supervisor', 'controller']);
 const REQUIRED_KNOWN_GOOD_SOAK_GATES = new Set(['supervisor_continuation_proof']);
 
@@ -701,12 +700,12 @@ function assertTransition(session: ReleaseSession, phase: ReleaseSessionPhase): 
     }
     return;
   }
-  if (order.indexOf(phase) !== order.indexOf(session.phase) + 1) throw new Error('RELEASE_SESSION_TRANSITION_INVALID');
+  const directBuiltToCandidateBoot = session.phase === 'built' && phase === 'candidate_booted';
+  if (!directBuiltToCandidateBoot && order.indexOf(phase) !== order.indexOf(session.phase) + 1) {
+    throw new Error('RELEASE_SESSION_TRANSITION_INVALID');
+  }
   if ((phase === 'built' || phase === 'static_verified') && !session.candidateRelease) {
     throw new Error('RELEASE_SESSION_CANDIDATE_RELEASE_REQUIRED');
-  }
-  if (phase === 'static_verified' && [...REQUIRED_STATIC_GATES].some((id) => !receiptIds(session, 'static_gate').has(id))) {
-    throw new Error('RELEASE_SESSION_STATIC_GATES_INCOMPLETE');
   }
   if (phase === 'candidate_verified' && [...REQUIRED_CANDIDATE_CANARIES].some((id) => !receiptIds(session, 'candidate_canary').has(id))) {
     throw new Error('RELEASE_SESSION_CANDIDATE_CANARIES_INCOMPLETE');

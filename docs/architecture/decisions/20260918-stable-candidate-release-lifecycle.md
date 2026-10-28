@@ -120,16 +120,13 @@ RuntimeReleaseAuthority schema 2 is the physical active/previous pointer plus
 rollback SQLite artifact only; it carries no ReleaseSession transaction state.
 
 ```text
-source_frozen → built → static_verified → candidate_booted
+source_frozen → built → candidate_booted
   → candidate_verified → cutover_eligible → cutover_attempting
   → cutover_committed → soaking → known_good
                          ↘ rolled_back / failed
 ```
 
-`static_verified` requires type, runtime-architecture, architecture-sync and
-bootstrap receipts from the frozen source revision. `candidate_verified`
-requires Recovery restart, MCP, Scheduler, Supervisor and controller receipts
-from isolated B. `cutover_eligible` is impossible while A and B collide on Home
+Source correctness is accepted before Recovery receives the immutable candidate; Recovery no longer reruns type, runtime-architecture, architecture-sync or bootstrap gates. The historical `static_verified` phase remains wire-readable for older persisted sessions but new sessions progress directly from `built` to `candidate_booted`. `candidate_verified` requires Recovery restart, MCP, Scheduler, Supervisor and controller receipts from isolated B. `cutover_eligible` is impossible while A and B collide on Home
 or port. Before the first production activation, a transient failure to obtain a
 fresh Stable A verification leaves the same ReleaseSession `cutover_eligible` so
 the exact candidate can be retried after observation recovers; proven Stable A

@@ -18,7 +18,6 @@ export const ACTIONS = [
   'stage_and_activate_runtime_release',
   'release_session_status',
   'advance_runtime_release_session',
-  'verify_runtime_release_session_static',
   'verify_runtime_release_session_candidate',
   'cutover_runtime_release_session',
   'cancel_runtime_release_session',
@@ -27,7 +26,6 @@ export const ACTIONS = [
 ];
 const RELEASE_SESSION_ACTIONS = new Set([
   'release_session_status',
-  'verify_runtime_release_session_static',
   'verify_runtime_release_session_candidate',
   'cutover_runtime_release_session',
   'cancel_runtime_release_session',
@@ -37,7 +35,6 @@ const RELEASE_SESSION_ACTIONS = new Set([
 const MUTATING_ACTIONS = new Set([
   'stage_and_activate_runtime_release',
   'advance_runtime_release_session',
-  'verify_runtime_release_session_static',
   'verify_runtime_release_session_candidate',
   'cutover_runtime_release_session',
   'cancel_runtime_release_session',

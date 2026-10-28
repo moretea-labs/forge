@@ -2498,10 +2498,10 @@ describe('standalone recovery on canonical Runtime', () => {
     expect(RECOVERY_TOOLS.map((tool) => tool.name)).toContain('pin_runtime_release');
     expect(RECOVERY_TOOLS.map((tool) => tool.name)).toContain('unpin_runtime_release');
     expect(RECOVERY_TOOLS.map((tool) => tool.name)).toContain('activate_pinned_runtime_release');
+    expect(RECOVERY_TOOLS.map((tool) => tool.name)).not.toContain('verify_runtime_release_session_static');
     expect(RECOVERY_TOOLS.map((tool) => tool.name)).toEqual(expect.arrayContaining([
       'release_session_status',
       'prepare_runtime_release_session',
-      'verify_runtime_release_session_static',
       'verify_runtime_release_session_candidate',
       'cutover_runtime_release_session',
       'cancel_runtime_release_session',
@@ -2544,7 +2544,6 @@ describe('standalone recovery on canonical Runtime', () => {
       'activate_pinned_runtime_release',
       'stage_and_activate_runtime_release',
       'prepare_runtime_release_session',
-      'verify_runtime_release_session_static',
       'verify_runtime_release_session_candidate',
       'cutover_runtime_release_session',
       'rollback_runtime_release_session',
@@ -2564,7 +2563,6 @@ describe('standalone recovery on canonical Runtime', () => {
     expect(RECOVERY_CLI_COMMANDS).toEqual(expect.arrayContaining([
       'release-session-status',
       'release-session-prepare',
-      'release-session-static-verify',
       'release-session-candidate-verify',
       'release-session-cutover',
       'release-session-cancel',
