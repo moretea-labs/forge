@@ -48,7 +48,7 @@ test('a cancelled Work is never evidence for forge_work_done', async () => {
     .toMatchObject({ valid: false, reason: 'work_not_completed' });
 });
 
-test('Requirement DONE must include a later open predecessor successor, not only the accepted origin', async () => {
+test('Requirement DONE follows committed acceptance independently of open successor Work', async () => {
   const controllerHome = home(), repoId = 'repo-predecessor', requirementId = 'REQ-predecessor';
   accepted(controllerHome, requirementId);
   work(controllerHome, repoId, 'origin', { requirementId });
@@ -62,7 +62,7 @@ test('Requirement DONE must include a later open predecessor successor, not only
     .toMatchObject({ valid: true, reason: 'requirement_semantic_acceptance_committed' });
 });
 
-test('Requirement DONE must follow explicitly superseding primary Work without pulling unrelated Work', async () => {
+test('Requirement DONE ignores superseding Work lineage after semantic acceptance', async () => {
   const controllerHome = home(), repoId = 'repo-supersedes', requirementId = 'REQ-supersedes';
   accepted(controllerHome, requirementId);
   work(controllerHome, repoId, 'original', { requirementId });
