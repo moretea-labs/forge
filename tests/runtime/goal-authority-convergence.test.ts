@@ -113,6 +113,17 @@ describe('Goal authority convergence', () => {
       { revision: 2, progressSummary: 'Source change under review' },
       { revision: 1, remainingWork: [] },
     ]);
+    expect(() => reviseRequirementSemantic({ controllerHome }, requirementId, {
+      expectedRevision: requirementSemanticView(done).revision, state: 'cancelled',
+    })).toThrow('REQUIREMENT_SEMANTIC_TERMINAL_TRANSITION_FORBIDDEN');
+
+    const cancelledId = 'REQ-CANCELLED-TERMINAL';
+    createRequirement({ controllerHome }, { requirementId: cancelledId, title: cancelledId, outcomeStatement: 'Cancelled stays terminal.' });
+    const cancelled = reviseRequirementSemantic({ controllerHome }, cancelledId, { expectedRevision: 1, state: 'cancelled' });
+    expect(() => reviseRequirementSemantic({ controllerHome }, cancelledId, {
+      expectedRevision: requirementSemanticView(cancelled).revision, state: 'completed',
+      remainingWork: [], acceptedEvidenceRefs: ['review:accepted'],
+    })).toThrow('REQUIREMENT_SEMANTIC_TERMINAL_TRANSITION_FORBIDDEN');
   });
 
   test('persists thin Requirement/Plan semantic revisions with fail-closed CAS', () => {
@@ -429,6 +440,8 @@ describe('Goal authority convergence', () => {
     const explicitlyCompleted = reviseRequirementSemantic({ controllerHome }, requirementId, {
       expectedRevision: currentRequirement.revision,
       state: 'completed',
+      remainingWork: [],
+      acceptedEvidenceRefs: ['review:work-evidence-independent'],
     });
     expect(requirementSemanticView(explicitlyCompleted).state).toBe('completed');
   });

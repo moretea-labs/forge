@@ -29,12 +29,6 @@ export interface Requirement {
   state: RequirementState;
   needsAttention: boolean;
   attentionSummary?: string;
-  semanticAcceptance?: {
-    reviewer: string;
-    rationale: string;
-    planIds: string[];
-    acceptedAt: string;
-  };
   /** Semantic authored-context revision. Legacy rows normalize to semantic revision 1 until first thin semantic write. */
   semanticRevision?: number;
   /** Timestamp of the authored semantic content; mechanical Requirement updates must not change it. */
@@ -234,9 +228,6 @@ export function reviseRequirementSemantic(
       });
     }
     const requestedState = input.state;
-    if (requestedState === 'open' && (current.value.state === 'done' || current.value.state === 'cancelled')) {
-      throw new Error(`REQUIREMENT_SEMANTIC_REOPEN_FORBIDDEN:${requirementId}:${current.value.state}`);
-    }
     const legacyState: RequirementState = requestedState === 'completed'
       ? 'done'
       : requestedState === 'cancelled'
@@ -244,18 +235,35 @@ export function reviseRequirementSemantic(
         : requestedState === 'open'
           ? 'active'
           : current.value.state;
+    if (requestedState === 'open' && (current.value.state === 'done' || current.value.state === 'cancelled')) {
+      throw new Error(`REQUIREMENT_SEMANTIC_REOPEN_FORBIDDEN:${requirementId}:${current.value.state}`);
+    }
+    if (requestedState && (current.value.state === 'done' || current.value.state === 'cancelled') && legacyState !== current.value.state) {
+      throw new Error(`REQUIREMENT_SEMANTIC_TERMINAL_TRANSITION_FORBIDDEN:${requirementId}:${current.value.state}->${legacyState}`);
+    }
+    const remainingWork = input.remainingWork === undefined ? [...(current.value.remainingWork ?? [])] : bounded(input.remainingWork, 50);
+    const acceptedEvidenceRefs = input.acceptedEvidenceRefs === undefined
+      ? [...(current.value.acceptedEvidenceRefs ?? [])]
+      : bounded(input.acceptedEvidenceRefs, 100, 512);
+    if (legacyState === 'done' && (remainingWork.length > 0 || acceptedEvidenceRefs.length === 0)) {
+      throw new Error(`REQUIREMENT_SEMANTIC_ACCEPTANCE_EVIDENCE_REQUIRED:${requirementId}`);
+    }
+    // Old rows may contain the former acceptance marker. Requirement-first
+    // completion is now represented only by state + accepted evidence.
+    const currentValue = { ...current.value } as Requirement & { semanticAcceptance?: unknown };
+    delete currentValue.semanticAcceptance;
     const title = input.title === undefined ? current.value.title : String(input.title).trim().slice(0, 500);
     const outcomeStatement = input.outcomeStatement === undefined ? current.value.outcomeStatement : String(input.outcomeStatement).trim().slice(0, 2_000);
     if (!title || !outcomeStatement) throw new Error('REQUIREMENT_CONTENT_REQUIRED');
     const updated: Requirement = {
-      ...current.value,
+      ...currentValue,
       title,
       outcomeStatement,
       acceptanceCriteria: input.acceptanceCriteria === undefined ? [...current.value.acceptanceCriteria] : bounded(input.acceptanceCriteria, 50),
       requiredDeliveryReferences: input.requiredDeliveryReferences === undefined ? [...current.value.requiredDeliveryReferences] : bounded(input.requiredDeliveryReferences, 50),
       progressSummary: input.progressSummary === undefined ? current.value.progressSummary ?? '' : String(input.progressSummary).trim().slice(0, 2_000),
-      remainingWork: input.remainingWork === undefined ? [...(current.value.remainingWork ?? [])] : bounded(input.remainingWork, 50),
-      acceptedEvidenceRefs: input.acceptedEvidenceRefs === undefined ? [...(current.value.acceptedEvidenceRefs ?? [])] : bounded(input.acceptedEvidenceRefs, 100, 512),
+      remainingWork,
+      acceptedEvidenceRefs,
       state: legacyState,
       ...(requestedState ? { needsAttention: false, attentionSummary: undefined } : {}),
       semanticRevision: semanticRevision + 1,

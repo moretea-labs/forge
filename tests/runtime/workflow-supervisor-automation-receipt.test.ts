@@ -11,7 +11,7 @@ import { callCoreCapabilityAdapter } from '../../adapters/mcp/runtime-gateway/co
 import { createWorkflowSupervisorServer } from '../../supervisor/server';
 import { workflowSupervisorSocketPath } from '../../supervisor/paths';
 import { createWorkSemanticContext, reviseWorkSemanticContext } from '../../packages/kernel/work/api/index';
-import { createRequirement, updateRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
+import { createRequirement, reviseRequirementSemantic, updateRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
 import { SEMANTIC_SCOPE_KEY } from '../../src/effects/controller-home';
 
 const roots: string[] = [];
@@ -189,11 +189,8 @@ describe('Workflow Supervisor automation receipts', () => {
       requirementId: 'REQ-LINEAGE', action: 'fixture_activate',
       mutate: (current) => ({ ...current, state: 'active' }),
     });
-    updateRequirement({ controllerHome: root }, {
-      requirementId: 'REQ-LINEAGE', action: 'fixture_acceptance',
-      mutate: (current) => ({ ...current, state: 'done', semanticAcceptance: {
-        reviewer: 'test', rationale: 'goal accepted', planIds: [], acceptedAt: new Date().toISOString(),
-      } }),
+    reviseRequirementSemantic({ controllerHome: root }, 'REQ-LINEAGE', {
+      expectedRevision: 1, state: 'completed', remainingWork: [], acceptedEvidenceRefs: ['review:goal-accepted'],
     });
     const parent = createWorkSemanticContext(options, {
       workId: 'lineage-parent', objective: 'Bound parent', requirementId: 'REQ-LINEAGE',
@@ -209,7 +206,7 @@ describe('Workflow Supervisor automation receipts', () => {
       completionContract: { kind: 'forge_requirement_done', controller_home: root, repo_id: options.repoId, requirement_id: 'REQ-LINEAGE' },
       continuationPolicy: {}, userBlockerPolicy: {},
     };
-    expect((await validators.completionContract!(validationTask, proposal)).valid).toBe(false);
+    expect((await validators.completionContract!(validationTask, proposal)).valid).toBe(true);
     const workTask = { ...validationTask, completionContract: {
       kind: 'forge_work_done', controller_home: root, repo_id: options.repoId, work_id: parent.workId,
     } };
@@ -235,12 +232,7 @@ describe('Workflow Supervisor automation receipts', () => {
       dependsOnWorkIds: [dependency.workId],
     });
     reviseWorkSemanticContext(portable, 'portable-child', { expectedRevision: 1, state: 'completed' });
-    const portableRequirementTask = { ...validationTask, completionContract: {
-      kind: 'forge_requirement_done', controller_home: root, requirement_id: 'REQ-LINEAGE',
-    } };
-    expect((await validators.completionContract!(portableRequirementTask, proposal)).valid).toBe(false);
-    reviseWorkSemanticContext(portable, dependency.workId, { expectedRevision: 1, state: 'completed' });
-    expect((await validators.completionContract!(portableRequirementTask, proposal)).valid).toBe(true);
+    // Requirement completion uses its own accepted evidence, not a hidden Work-lineage gate.
 
     const store = new WorkflowSupervisorStore(root);
     const control = new WorkflowSupervisorControlPlane(store, forgeWorkflowSupervisorValidators());
