@@ -66,3 +66,59 @@ test('postMessage failure invalidates the port and the next call reconnects', as
   receive?.({ id: sentId, ok: true, result: { connected: true } });
   expect(await next).toEqual({ connected: true });
 });
+
+test('a timed-out completion schedules a new heartbeat rather than replaying the claimed command', async () => {
+  const source = readFileSync('adapters/computer/chrome-extension/background.js', 'utf8');
+  const code = source.slice(source.indexOf('let nativePort;'), source.indexOf('function tabMessage('));
+  const timers = new Map<number, () => void>();
+  let nextTimer = 0;
+  let nextId = 0;
+  let heartbeatTicks = 0;
+  const ports: Array<{
+    sent: Array<{ id: string; method: string }>;
+    disconnected: boolean;
+    onMessage?: (response: { id: string; ok: boolean; result: object }) => void;
+  }> = [];
+  const chrome = { runtime: { lastError: undefined, connectNative() {
+    const p: (typeof ports)[number] = { sent: [], disconnected: false };
+    ports.push(p);
+    return {
+      onMessage: { addListener(fn: typeof p.onMessage) { p.onMessage = fn; } },
+      onDisconnect: { addListener() {} },
+      postMessage(message: { id: string; method: string }) { p.sent.push(message); },
+      disconnect() { p.disconnected = true; },
+    };
+  } } };
+  let rpc: (method: string) => Promise<unknown>;
+  const context = {
+    chrome, NATIVE_HOST: 'test', RPC_TIMEOUT_MS: 30_000, randomId: () => String(++nextId),
+    setTimeout(fn: () => void) { const n = ++nextTimer; timers.set(n, fn); return n; },
+    clearTimeout(n: number) { timers.delete(n); },
+    providerTick: async () => {
+      const heartbeat = rpc('computer_extension_heartbeat');
+      const p = ports[ports.length - 1];
+      const message = p.sent[0];
+      p.onMessage?.({ id: message.id, ok: true, result: { fresh: true } });
+      await heartbeat;
+      heartbeatTicks++;
+    },
+  };
+  rpc = runInNewContext(code + '\nnativeRpc', context) as typeof rpc;
+  const completion = rpc('computer_extension_complete').catch((error: Error) => error.message);
+  const expire = timers.get(1);
+  expect(expire).toBeDefined();
+  timers.delete(1);
+  expire?.();
+  expect(await completion).toContain('TIMEOUT');
+  expect(ports[0].disconnected).toBe(true);
+
+  // The recovery tick is transport-only: it must not repeat the old completion.
+  const retry = timers.get(2);
+  expect(retry).toBeDefined();
+  retry?.();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  expect(heartbeatTicks).toBe(1);
+  expect(ports).toHaveLength(2);
+  expect(ports[0].sent.map((entry) => entry.method)).toEqual(['computer_extension_complete']);
+  expect(ports[1].sent.map((entry) => entry.method)).toEqual(['computer_extension_heartbeat']);
+});
