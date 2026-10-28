@@ -1741,6 +1741,7 @@ export interface PrimaryRuntimeRecoveryDependencies {
   requestId?: string;
   expectedAuthorityRevision?: number;
   expectedActiveReleaseId?: string;
+  expectedRuntimeInstanceId?: string;
   platform?: NodeJS.Platform;
   currentUid?: () => Promise<number | undefined>;
   runCommand?: CommandRunner;
@@ -2895,6 +2896,14 @@ export async function restartPrimaryRuntime(
         observedActiveReleaseId: authority?.active.releaseId,
       });
       return { ok: false, attempted: false, noOp: true, detail, serviceTarget: service.target, verify: before } satisfies PrimaryRuntimeRestartResult;
+    }
+    if (forceHealthyRestart && dependencies.expectedRuntimeInstanceId !== undefined) {
+      const observedInstance = observeRuntimeStatus(config.controllerHome).snapshot?.runtimeInstanceId;
+      if (observedInstance !== dependencies.expectedRuntimeInstanceId) {
+        const detail = `RECOVERY_RUNTIME_RESTART_STALE_INSTANCE: expected ${dependencies.expectedRuntimeInstanceId}, observed ${observedInstance ?? 'none'}`;
+        audit(config, 'primary_runtime_restart_stale_instance', { requestId: dependencies.requestId, expectedRuntimeInstanceId: dependencies.expectedRuntimeInstanceId, observedRuntimeInstanceId: observedInstance });
+        return { ok: false, attempted: false, noOp: true, detail, serviceTarget: service.target, verify: before } satisfies PrimaryRuntimeRestartResult;
+      }
     }
     const runCommand = dependencies.runCommand ?? command;
     const runtimeRunning = dependencies.runtimeRunning ?? ((value: RecoveryConfig) => observeRuntimeStatus(value.controllerHome).running);

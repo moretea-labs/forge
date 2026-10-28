@@ -468,7 +468,7 @@ export const RECOVERY_TOOLS = [
   { name: 'verify_external_runtime', description: 'Verify the external primary MCP endpoint.', inputSchema: { type: 'object', additionalProperties: false } },
   { name: 'attest_known_good', description: 'Record the active release as known-good only after full independent verification succeeds.', inputSchema: mutationInputSchema() },
   { name: 'rollback_previous', description: 'While Canonical Runtime is stopped, atomically restore its attested previous whole-Runtime release and SQLite backup.', inputSchema: mutationInputSchema() },
-  { name: 'restart_primary_runtime', description: 'Recover the canonical Runtime against the caller-observed active release and authority revision. Healthy Runtime is a no-op unless force_healthy_restart is explicitly true; restart actions are attributed and verified.', inputSchema: mutationInputSchema({ expected_active_release_id: { type: 'string', minLength: 1, maxLength: 256 }, expected_authority_revision: { type: 'integer', minimum: 1 }, force_healthy_restart: { type: 'boolean' } }, ['expected_active_release_id', 'expected_authority_revision']) },
+  { name: 'restart_primary_runtime', description: 'Recover the canonical Runtime against the caller-observed active release and authority revision. Healthy Runtime is a no-op unless force_healthy_restart is explicitly true; restart actions are attributed and verified.', inputSchema: mutationInputSchema({ expected_active_release_id: { type: 'string', minLength: 1, maxLength: 256 }, expected_authority_revision: { type: 'integer', minimum: 1 }, force_healthy_restart: { type: 'boolean' }, expected_runtime_instance_id: { type: 'string', minLength: 8, maxLength: 128 } }, ['expected_active_release_id', 'expected_authority_revision']) },
   { name: 'restart_primary_connector', description: 'Explicitly restart the configured primary OAuth/Connector service, including when endpoint probes pass, only after exact Recovery machine identity and local Canonical Runtime verification succeed; verify the listener and public endpoint again afterward.', inputSchema: mutationInputSchema() },
   { name: 'recover_primary_runtime', description: 'Stop the canonical Runtime, restore the attested previous whole-Runtime release and SQLite backup, restart it, and require verification.', inputSchema: mutationInputSchema() },
   { name: 'stage_runtime_release', description: 'Materialize one model-selected accepted source commit into canonical immutable Runtime release storage without changing Runtime authority, SQLite, or services.', inputSchema: mutationInputSchema({ expected_source_revision: { type: 'string', pattern: '^[a-fA-F0-9]{40}$' } }, ['expected_source_revision']) },
@@ -818,8 +818,13 @@ export async function dispatchRecoveryTool(config: RecoveryConfig, name: string,
         throw new Error('RECOVERY_RUNTIME_RESTART_AUTHORITY_FENCE_REQUIRED');
       }
       if (args.force_healthy_restart !== undefined && typeof args.force_healthy_restart !== 'boolean') throw new Error('RECOVERY_RUNTIME_RESTART_FORCE_INVALID');
+      if (args.force_healthy_restart === true && (typeof args.expected_runtime_instance_id !== 'string'
+        || args.expected_runtime_instance_id.length < 8 || args.expected_runtime_instance_id.length > 128)) {
+        throw new Error('RECOVERY_RUNTIME_RESTART_INSTANCE_FENCE_REQUIRED');
+      }
       return mutationResponse(config, await restartPrimaryRuntime(config, {
         requestId: `recovery-gateway:${restartRequestId}`,
+        expectedRuntimeInstanceId: args.force_healthy_restart === true ? (args.expected_runtime_instance_id as string) : undefined,
         forceHealthyRestart: args.force_healthy_restart === true,
         expectedActiveReleaseId: args.expected_active_release_id.trim(),
         expectedAuthorityRevision: args.expected_authority_revision as number,

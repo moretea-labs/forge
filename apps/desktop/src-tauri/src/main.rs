@@ -225,7 +225,15 @@ fn recovery_mutation_arguments(status: &Value, action_prefix: &str) -> Result<Va
             .ok_or_else(|| "FORGE_DESKTOP_RECOVERY_AUTHORITY_REVISION_UNAVAILABLE".to_string())?;
         arguments["expected_active_release_id"] = json!(active_release);
         arguments["expected_authority_revision"] = json!(authority_revision);
-        arguments["force_healthy_restart"] = json!(true);
+        if status.get("running").and_then(Value::as_bool) == Some(true)
+            && status.get("ready").and_then(Value::as_bool) == Some(true) {
+            let instance = status.get("snapshot").and_then(Value::as_object)
+                .and_then(|snapshot| snapshot.get("runtimeInstanceId")).and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| "FORGE_DESKTOP_RECOVERY_RUNTIME_INSTANCE_UNAVAILABLE".to_string())?;
+            arguments["expected_runtime_instance_id"] = json!(instance);
+            arguments["force_healthy_restart"] = json!(true);
+        }
     }
     Ok(arguments)
 }
@@ -562,6 +570,9 @@ mod tests {
     #[test]
     fn restart_runtime_requires_and_transmits_the_exact_active_authority_fence() {
         let status = json!({
+            "running": true,
+            "ready": true,
+            "snapshot": { "runtimeInstanceId": "runtime-current-12345678" },
             "identity": {
                 "host": "machine.test",
                 "platform": "darwin",
@@ -578,6 +589,13 @@ mod tests {
         assert_eq!(restart["expected_active_release_id"], "release-current");
         assert_eq!(restart["expected_authority_revision"], 990);
         assert_eq!(restart["force_healthy_restart"], true);
+        assert_eq!(restart["expected_runtime_instance_id"], "runtime-current-12345678");
+        let mut stopped_status = status.clone();
+        stopped_status["running"] = json!(false);
+        stopped_status["ready"] = json!(false);
+        let start = recovery_mutation_arguments(&stopped_status, "restart-runtime").expect("start from stopped state");
+        assert!(start.get("force_healthy_restart").is_none());
+        assert!(start.get("expected_runtime_instance_id").is_none());
         let recovery = recovery_mutation_arguments(&status, "recover-runtime").expect("recovery keeps old schema");
         assert!(recovery.get("force_healthy_restart").is_none());
         assert!(recovery.get("expected_authority_revision").is_none());
