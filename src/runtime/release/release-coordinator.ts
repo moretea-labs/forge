@@ -257,7 +257,7 @@ export function decideConfiguredRuntimeReleaseReconciliation(
   // from a HEAD comparison alone. The configured source participates in a
   // release only through the explicit model-reviewed ReleaseSession
   // primitives (release-session-prepare/advance/cutover, or
-  // stage-and-activate-runtime-release).
+  // prepare_runtime_release_session).
   return { required: false, reason: 'source_mismatch' };
 }
 

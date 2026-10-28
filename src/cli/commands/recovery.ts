@@ -42,7 +42,7 @@ import {
   restartPrimaryConnector,
   restartPrimaryRuntime,
   restartRecoveryGateway,
-  stageAndActivateConfiguredRuntimeRelease,
+  prepareConfiguredRuntimeReleaseSession,
   rollbackPrevious,
   runtimeStatus,
   verifyStableRuntime,
@@ -743,60 +743,6 @@ export function buildRecoveryCommand(): Command {
       if (!result.ok) process.exitCode = 1;
     });
 
-  command.command('bootstrap-cutover')
-    .description('One-time external lifecycle bootstrap: upgrade standalone Recovery, activate current Runtime source transactionally, then restart the explicit primary Connector')
-    .requiredOption('--controller-home <path>', 'Explicit Controller Home')
-    .requiredOption('--repo <path>', 'Forge source repository root used for Recovery and Runtime immutable releases')
-    .requiredOption('--primary-connector-service-label <label>', 'Primary OAuth/Connector launchd label')
-    .option('--primary-connector-service-plist <path>', 'Absolute primary OAuth/Connector launchd plist path')
-    .action(async (opts: {
-      controllerHome: string;
-      repo: string;
-      primaryConnectorServiceLabel: string;
-      primaryConnectorServicePlist?: string;
-    }) => {
-      const home = resolveControllerHome(opts.controllerHome);
-      const repoRoot = resolve(opts.repo);
-      const primaryRuntimeSourceRepository = findRegisteredRepositoryByCheckoutRoot(repoRoot, home);
-      if (!primaryRuntimeSourceRepository) {
-        throw new Error(`RECOVERY_PRIMARY_RUNTIME_SOURCE_REPOSITORY_NOT_REGISTERED: ${repoRoot}`);
-      }
-      const current = loadRecoveryConfig(home);
-      const primaryConnectorBase = launchdService(
-        opts.primaryConnectorServiceLabel,
-        opts.primaryConnectorServicePlist,
-        'RECOVERY_PRIMARY_CONNECTOR',
-      ) as PrimaryConnectorServiceConfig;
-      const primaryConnectorService: PrimaryConnectorServiceConfig = {
-        ...primaryConnectorBase,
-        ...(current.primaryConnectorService?.localMcpUrl ? { localMcpUrl: current.primaryConnectorService.localMcpUrl } : {}),
-      };
-      const installed = await installStandaloneRecovery({
-        controllerHome: home,
-        repoRoot,
-        primaryRuntimeSourceRepositoryId: primaryRuntimeSourceRepository.repoId,
-        port: current.gateway?.port ?? 8787,
-        publicMcpUrl: current.publicMcpUrl,
-        recoveryPublicUrl: current.recoveryPublicUrl,
-        recoveryTunnelService: current.recoveryTunnelService,
-        primaryPublicTunnelService: current.primaryPublicTunnelService,
-        primaryRuntimeService: current.primaryRuntimeService ?? defaultPrimaryRuntimeServiceConfig(),
-        primaryConnectorService,
-        profile: 'self-healing',
-      });
-      const refreshed = loadRecoveryConfig(home);
-      const runtime = await stageAndActivateConfiguredRuntimeRelease(refreshed);
-      if (!runtime.ok) {
-        output({ ok: false, phase: 'runtime_activation', recovery: installed, runtime });
-        process.exitCode = 1;
-        return;
-      }
-      const connector = await restartPrimaryConnector(refreshed);
-      const ok = connector.ok;
-      output({ ok, phase: !connector.ok ? 'connector_restart' : 'complete', recovery: installed, runtime, connector });
-      if (!ok) process.exitCode = 1;
-    });
-
   command.command('restart-connector')
     .description('Restart the explicitly configured primary OAuth/Connector launchd service through standalone Recovery')
     .requiredOption('--controller-home <path>', 'Explicit Controller Home')
@@ -807,12 +753,12 @@ export function buildRecoveryCommand(): Command {
       if (!result.ok) process.exitCode = 1;
     });
 
-  command.command('stage-and-activate-runtime')
-    .description('Stage current configured Runtime source as an immutable release and activate it transactionally through standalone Recovery')
+  command.command('prepare-runtime-release-session')
+    .description('Prepare the configured Runtime source as an isolated durable ReleaseSession without activating Stable A')
     .requiredOption('--controller-home <path>', 'Explicit Controller Home')
     .action(async (opts: { controllerHome: string }) => {
       const home = resolveControllerHome(opts.controllerHome);
-      const result = await stageAndActivateConfiguredRuntimeRelease(loadRecoveryConfig(home));
+      const result = await prepareConfiguredRuntimeReleaseSession(loadRecoveryConfig(home));
       output(result);
       if (!result.ok) process.exitCode = 1;
     });

@@ -32,16 +32,16 @@ describe('local_recovery managed transport provider', () => {
       calls.push({ controllerHome, name, args });
       return { ok: true, staged: { releaseId: 'candidate' } };
     };
-    const result = await executeAction('stage_and_activate_runtime_release', {}, { controllerHome: '/tmp/controller' }, {
+    const result = await executeAction('prepare_runtime_release_session', {}, { controllerHome: '/tmp/controller' }, {
       callRecoveryTool,
       loadRecoveryConfig: () => ({ controllerHome: '/tmp/controller', primaryRuntimeSourceRoot: '/tmp', primaryRuntimeSourceRepositoryId: 'repo_fixture' }),
       getRepository: () => ({ repoId: 'repo_fixture', enabled: true, canonicalRoot: '/tmp' }),
       findRegisteredRepositoryByCheckoutRoot: () => ({ repoId: 'repo_fixture' }),
-      requestId: 'bootstrap-cutover-1',
+      requestId: 'release-prepare-1',
     });
     expect(result).toEqual({ ok: true, staged: { releaseId: 'candidate' } });
     expect(calls).toHaveLength(1);
-    expect(calls[0]).toMatchObject({ controllerHome: '/tmp/controller', name: 'stage_and_activate_runtime_release' });
+    expect(calls[0]).toMatchObject({ controllerHome: '/tmp/controller', name: 'prepare_runtime_release_session' });
     expect((calls[0] as any).args).toEqual({ request_id: expect.stringMatching(/^local-recovery:[a-f0-9]{32}$/) });
 
     await executeAction('advance_runtime_release_session', {}, { controllerHome: '/tmp/controller' }, {
@@ -155,7 +155,7 @@ describe('local_recovery managed transport provider', () => {
       { command: ['forge-recovery'] },
       { request_id: 'caller-owned' },
     ]) {
-      await expect(executeAction('stage_and_activate_runtime_release', input, { controllerHome: '/tmp/controller' }, { callRecoveryTool }))
+      await expect(executeAction('prepare_runtime_release_session', input, { controllerHome: '/tmp/controller' }, { callRecoveryTool }))
         .rejects.toThrow(/accept no caller/);
     }
     expect(called).toBe(false);
@@ -180,7 +180,7 @@ test('Local Recovery MCP client uses one authenticated loopback session and clos
     if (!next) throw new Error('unexpected fetch');
     return next;
   };
-  const result = await callRecoveryTool('/tmp/controller', 'stage_and_activate_runtime_release', { request_id: 'local-recovery:0123456789abcdef0123456789abcdef' }, {
+  const result = await callRecoveryTool('/tmp/controller', 'prepare_runtime_release_session', { request_id: 'local-recovery:0123456789abcdef0123456789abcdef' }, {
     loadRecoveryConfig: () => ({ schemaVersion: 1, controllerHome: '/tmp/controller', gateway: { host: '127.0.0.1', port: 8787, bearerTokenFile: '/ignored' } }),
     gatewayToken: () => 'x'.repeat(32),
     fetch: fakeFetch,
@@ -193,7 +193,7 @@ test('Local Recovery MCP client uses one authenticated loopback session and clos
   const call = JSON.parse(String(requests[2]!.init.body));
   expect(initialize.method).toBe('initialize');
   expect(notification.method).toBe('notifications/initialized');
-  expect(call).toMatchObject({ method: 'tools/call', params: { name: 'stage_and_activate_runtime_release', arguments: { request_id: 'local-recovery:0123456789abcdef0123456789abcdef' } } });
+  expect(call).toMatchObject({ method: 'tools/call', params: { name: 'prepare_runtime_release_session', arguments: { request_id: 'local-recovery:0123456789abcdef0123456789abcdef' } } });
   expect((requests[0]!.init.headers as Record<string, string>).authorization).toBe(`Bearer ${'x'.repeat(32)}`);
   expect((requests[2]!.init.headers as Record<string, string>)['mcp-session-id']).toBe('session-local-recovery');
   expect((requests[3]!.init.headers as Record<string, string>)['mcp-session-id']).toBe('session-local-recovery');
@@ -242,7 +242,7 @@ test('Local Recovery MCP client preserves Recovery tool errors instead of parsin
     if (!next) throw new Error('unexpected fetch');
     return next;
   };
-  await expect(callRecoveryTool('/tmp/controller', 'stage_and_activate_runtime_release', { request_id: 'local-recovery:0123456789abcdef0123456789abcdef' }, {
+  await expect(callRecoveryTool('/tmp/controller', 'prepare_runtime_release_session', { request_id: 'local-recovery:0123456789abcdef0123456789abcdef' }, {
     loadRecoveryConfig: () => ({ schemaVersion: 1, controllerHome: '/tmp/controller', gateway: { host: '127.0.0.1', port: 8787, bearerTokenFile: '/tmp/token' } }),
     gatewayToken: () => 'x'.repeat(32),
     fetch: fakeFetch,

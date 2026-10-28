@@ -3822,7 +3822,7 @@ export function legacyStableContextPackUpgradeBaseline(verification: VerifyResul
 
 export async function prepareConfiguredRuntimeReleaseSession(
   config: RecoveryConfig,
-  dependencies: Pick<ConfiguredRuntimeActivationDependencies, 'stage'> = {},
+  dependencies: ConfiguredRuntimePreparationDependencies = {},
   requestId?: string,
 ): Promise<ConfiguredRuntimeActivationResult> {
   const sourceRoot = config.primaryRuntimeSourceRoot?.trim();
@@ -5907,19 +5907,8 @@ export async function promoteConfiguredRuntimeReleaseSessionKnownGood(
   return locked.value;
 }
 
-export interface ConfiguredRuntimeActivationDependencies {
+export interface ConfiguredRuntimePreparationDependencies {
   stage?: typeof stageRuntimeReleaseFromCandidateSource;
-  activate?: (config: RecoveryConfig, manifestPath: string, guard: RuntimeReleaseActivationGuard) => Promise<RuntimeReleaseActivationResult>;
-}
-
-export async function stageAndActivateConfiguredRuntimeRelease(
-  config: RecoveryConfig,
-  dependencies: ConfiguredRuntimeActivationDependencies = {},
-  requestId?: string,
-): Promise<ConfiguredRuntimeActivationResult> {
-  // Frozen-client compatibility alias. It deliberately stops at Candidate B
-  // build/session preparation. Activation is a separate ReleaseSession phase.
-  return prepareConfiguredRuntimeReleaseSession(config, dependencies, requestId);
 }
 
 function tunnelLaunchdService(configured: RecoveryTunnelServiceConfig | undefined, uid: number): LaunchdService | undefined {

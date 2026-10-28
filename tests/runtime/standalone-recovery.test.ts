@@ -39,7 +39,7 @@ import {
   restartPrimaryRuntime,
   restartRecoveryGateway,
   scopeWatchdogStateToRuntimeRelease,
-  stageAndActivateConfiguredRuntimeRelease,
+  prepareConfiguredRuntimeReleaseSession,
   unpinRuntimeRelease,
   rollbackPrevious,
   runtimeStatus,
@@ -1897,7 +1897,7 @@ test('Recovery activate_runtime_release resolves release_path as an immutable re
   }
 });
 
-test('legacy stage-and-activate ABI only prepares isolated Candidate B and never mutates Stable A', async () => {
+test('ReleaseSession preparation builds isolated Candidate B and never mutates Stable A', async () => {
   const home = controllerHome();
   const sourceRoot = join(home, 'source');
   const sourceRevision = committedRecoverySource(sourceRoot);
@@ -1923,8 +1923,7 @@ test('legacy stage-and-activate ABI only prepares isolated Candidate B and never
   execFileSync('git', ['update-ref', 'refs/remotes/origin/main', sourceRevision], { cwd: sourceRoot });
   let stagedFrom = '';
   let candidateHome = '';
-  let activationCalled = false;
-  const result = await stageAndActivateConfiguredRuntimeRelease(config, {
+  const result = await prepareConfiguredRuntimeReleaseSession(config, {
     stage: (input) => {
       stagedFrom = input.sourceRoot;
       candidateHome = input.controllerHome;
@@ -1973,14 +1972,9 @@ test('legacy stage-and-activate ABI only prepares isolated Candidate B and never
         sourceCommit: sourceRevision,
       };
     },
-    activate: async () => {
-      activationCalled = true;
-      throw new Error('compatibility alias must never activate Stable A');
-    },
   }, 'recovery-gateway:stage-request-1');
   expect(stagedFrom).not.toBe(resolve(sourceRoot));
   expect(candidateHome).not.toBe(resolve(home));
-  expect(activationCalled).toBe(false);
   expect(result).toMatchObject({
     ok: true,
     attempted: true,
@@ -2015,7 +2009,7 @@ test('legacy stage-and-activate ABI only prepares isolated Candidate B and never
   });
   progressed = advanceReleaseSession({ controllerHome: home, sessionId: progressed.sessionId, expectedRevision: progressed.revision, phase: 'cutover_eligible' });
   let repeatedStageCalls = 0;
-  const repeated = await stageAndActivateConfiguredRuntimeRelease(config, {
+  const repeated = await prepareConfiguredRuntimeReleaseSession(config, {
     stage: () => {
       repeatedStageCalls += 1;
       throw new Error('already-progressed matching ReleaseSession must not rebuild');
@@ -2084,7 +2078,7 @@ test('ReleaseSession preparation reconciles terminal and orphan Candidate B lane
     };
   };
 
-  const first = await stageAndActivateConfiguredRuntimeRelease(config, { stage }, 'terminal-lane-cleanup-first');
+  const first = await prepareConfiguredRuntimeReleaseSession(config, { stage }, 'terminal-lane-cleanup-first');
   expect(first).toMatchObject({ ok: true, releaseSession: { phase: 'built' } });
   let terminal = first.releaseSession!;
   const leakedCandidateHome = terminal.candidate.controllerHome;
@@ -2102,7 +2096,7 @@ test('ReleaseSession preparation reconciles terminal and orphan Candidate B lane
   execFileSync('git', ['-c', 'user.name=Forge Test', '-c', 'user.email=forge-test@example.invalid', 'commit', '-qm', 'recovery source v2'], { cwd: sourceRoot });
   execFileSync('git', ['update-ref', 'refs/remotes/origin/main', 'HEAD'], { cwd: sourceRoot });
 
-  const second = await stageAndActivateConfiguredRuntimeRelease(config, {
+  const second = await prepareConfiguredRuntimeReleaseSession(config, {
     stage: (input) => {
       expect(existsSync(leakedCandidateHome)).toBe(false);
       return stage(input);
@@ -2128,7 +2122,7 @@ test('ReleaseSession preparation reconciles terminal and orphan Candidate B lane
   execFileSync('git', ['-c', 'user.name=Forge Test', '-c', 'user.email=forge-test@example.invalid', 'commit', '-qm', 'recovery source v3'], { cwd: sourceRoot });
   execFileSync('git', ['update-ref', 'refs/remotes/origin/main', 'HEAD'], { cwd: sourceRoot });
 
-  const third = await stageAndActivateConfiguredRuntimeRelease(config, {
+  const third = await prepareConfiguredRuntimeReleaseSession(config, {
     stage: (input) => {
       expect(existsSync(orphanCandidateHome)).toBe(false);
       return stage(input);
@@ -2165,7 +2159,7 @@ test('watchdog defers Recovery self-repair while an attributable mutation lock i
     pid: process.pid,
     instanceId: 'test-live-stage-mutation',
     acquiredAt: new Date().toISOString(),
-    action: 'stage_and_activate_runtime_release',
+    action: 'release_session_prepare',
     requestId: 'recovery-gateway:test-live-stage-mutation',
   }));
 
@@ -2179,7 +2173,7 @@ test('watchdog defers Recovery self-repair while an attributable mutation lock i
   expect(tick.verify.probes.recovery_gateway?.ok).toBe(false);
   expect(tick.decision).toMatchObject({
     action: 'degraded',
-    reason: expect.stringContaining('stage_and_activate_runtime_release'),
+    reason: expect.stringContaining('release_session_prepare'),
   });
   expect(tick.state.failures).toBe(0);
   expect(tick.state.firstFailureAt).toBeUndefined();
@@ -2525,7 +2519,6 @@ describe('standalone recovery on canonical Runtime', () => {
       'pin_runtime_release',
       'unpin_runtime_release',
       'activate_pinned_runtime_release',
-      'stage_and_activate_runtime_release',
       'prepare_runtime_release_session',
       'verify_runtime_release_session_candidate',
       'cutover_runtime_release_session',

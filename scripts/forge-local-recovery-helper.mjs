@@ -15,7 +15,7 @@ export const ACTIONS = [
   'runtime_status',
   'list_releases',
   'verify_stable_runtime',
-  'stage_and_activate_runtime_release',
+  'prepare_runtime_release_session',
   'release_session_status',
   'advance_runtime_release_session',
   'verify_runtime_release_session_candidate',
@@ -33,7 +33,7 @@ const RELEASE_SESSION_ACTIONS = new Set([
   'promote_runtime_release_session_known_good',
 ]);
 const MUTATING_ACTIONS = new Set([
-  'stage_and_activate_runtime_release',
+  'prepare_runtime_release_session',
   'advance_runtime_release_session',
   'verify_runtime_release_session_candidate',
   'cutover_runtime_release_session',
@@ -216,7 +216,7 @@ export async function executeAction(actionId, input, providerConfig, injected = 
   const sessionArgs = RELEASE_SESSION_ACTIONS.has(actionId) ? releaseSessionInput(input) : undefined;
   if (!sessionArgs) assertEmptyInput(input);
   const callTool = injected.callRecoveryTool ?? callRecoveryTool;
-  if (actionId === 'stage_and_activate_runtime_release' || actionId === 'advance_runtime_release_session') ensureSourceRepositoryProvenance(config.controllerHome, injected);
+  if (actionId === 'prepare_runtime_release_session' || actionId === 'advance_runtime_release_session') ensureSourceRepositoryProvenance(config.controllerHome, injected);
   const args = {
     ...(sessionArgs ?? {}),
     ...(MUTATING_ACTIONS.has(actionId) ? { request_id: mutationRequestId(injected.requestId ?? actionId) } : {}),
