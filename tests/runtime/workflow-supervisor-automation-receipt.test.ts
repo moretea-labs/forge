@@ -276,4 +276,64 @@ describe('Workflow Supervisor automation receipts', () => {
     });
     store.close();
   });
+
+  test('advances a Requirement-bound standalone Supervisor CONTINUE -> CONTINUE -> DONE without Work or Plan', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-requirement-ccd-'));
+    roots.push(root);
+    const requirementId = 'REQ-STANDALONE-CCD';
+    createRequirement({ controllerHome: root }, {
+      requirementId,
+      title: 'Requirement-only autonomous delivery',
+      outcomeStatement: 'Complete through Requirement semantic acceptance without Work or Plan.',
+    });
+    const store = new WorkflowSupervisorStore(root);
+    const control = new WorkflowSupervisorControlPlane(store, forgeWorkflowSupervisorValidators());
+    const task = control.registerTask({
+      taskId: 'supervisor:standalone-requirement-ccd',
+      conversationId: '22222222-aaaa-bbbb-cccc-333333333333',
+      conversationUrl: 'https://chatgpt.com/c/22222222-aaaa-bbbb-cccc-333333333333',
+      objective: 'Advance the Requirement directly until accepted.',
+      completionContract: {
+        kind: 'model_semantic_completion', controller_home: root,
+        repo_id: 'repo-requirement-ccd', requirement_id: requirementId,
+      },
+      continuationPolicy: { kind: 'standalone_supervisor', repo_id: 'repo-requirement-ccd' },
+      userBlockerPolicy: { kind: 'model_semantic_user_blocker' },
+    });
+
+    const firstEffect = control.reserveEnrollment(task.taskId);
+    control.observeEffect({ effectId: firstEffect.effectId, observationId: 'requirement-applied-1', outcome: 'applied' });
+    const first = await control.observeAssistantTurn({
+      taskId: task.taskId, conversationId: task.conversationId,
+      responseText: 'Source progress.\n' + renderSupervisorReceipt(task, firstEffect.effectId, 'CONTINUE'),
+    });
+    expect(first).toMatchObject({ action: 'CONTINUE', terminal: false });
+
+    const secondEffect = (first as { successorEffect: { effectId: string } }).successorEffect;
+    control.observeEffect({ effectId: secondEffect.effectId, observationId: 'requirement-applied-2', outcome: 'applied' });
+    const second = await control.observeAssistantTurn({
+      taskId: task.taskId, conversationId: task.conversationId,
+      responseText: 'Review progress.\n' + renderSupervisorReceipt(task, secondEffect.effectId, 'CONTINUE'),
+    });
+    expect(second).toMatchObject({ action: 'CONTINUE', terminal: false });
+
+    reviseRequirementSemantic({ controllerHome: root }, requirementId, {
+      expectedRevision: 1,
+      state: 'completed',
+      progressSummary: 'Accepted delivery evidence committed.',
+      remainingWork: [],
+      acceptedEvidenceRefs: ['git:fixed-head', 'review:accepted', 'runtime:verified'],
+    });
+    const thirdEffect = (second as { successorEffect: { effectId: string } }).successorEffect;
+    control.observeEffect({ effectId: thirdEffect.effectId, observationId: 'requirement-applied-3', outcome: 'applied' });
+    const third = await control.observeAssistantTurn({
+      taskId: task.taskId, conversationId: task.conversationId,
+      responseText: 'Requirement accepted.\n' + renderSupervisorReceipt(task, thirdEffect.effectId, 'DONE'),
+    });
+    expect(third).toMatchObject({
+      action: 'DONE', terminal: true,
+      validation: { valid: true, reason: 'requirement_accepted_evidence_committed' },
+    });
+    store.close();
+  });
 });
