@@ -43,11 +43,19 @@ function rejectNativePending(error) {
   for (const pending of pendingNative.values()) { clearTimeout(pending.timer); pending.reject(error); }
   pendingNative.clear();
 }
+function invalidateNativePort(port, error) {
+  if (nativePort !== port) return;
+  nativePort = undefined;
+  rejectNativePending(error);
+  try { port.disconnect(); } catch { /* already disconnected */ }
+  setTimeout(() => { void providerTick().catch(() => undefined); }, 500);
+}
 function ensureNativePort() {
   if (nativePort) return nativePort;
   const port = chrome.runtime.connectNative(NATIVE_HOST);
   nativePort = port;
   port.onMessage.addListener((response) => {
+    if (nativePort !== port) return;
     const pending = pendingNative.get(response?.id);
     if (!pending) return;
     pendingNative.delete(response.id);
@@ -56,23 +64,25 @@ function ensureNativePort() {
     else pending.reject(new Error(response?.error?.message ?? 'COMPUTER_CHATGPT_NATIVE_RPC_FAILED'));
   });
   port.onDisconnect.addListener(() => {
-    if (nativePort !== port) return;
-    nativePort = undefined;
-    rejectNativePending(new Error(chrome.runtime.lastError?.message ?? 'COMPUTER_CHATGPT_NATIVE_PORT_DISCONNECTED'));
-    setTimeout(() => { void providerTick().catch(() => undefined); }, 500);
+    invalidateNativePort(port, new Error(chrome.runtime.lastError?.message ?? 'COMPUTER_CHATGPT_NATIVE_PORT_DISCONNECTED'));
   });
   return port;
 }
 function nativeRpc(method, params = {}) {
   return new Promise((resolve, reject) => {
     const id = randomId();
+    let port;
     const timer = setTimeout(() => {
-      pendingNative.delete(id);
-      reject(new Error(`COMPUTER_CHATGPT_NATIVE_RPC_TIMEOUT:${method}`));
+      const error = new Error(`COMPUTER_CHATGPT_NATIVE_RPC_TIMEOUT:${method}`);
+      if (port && nativePort === port) invalidateNativePort(port, error);
+      else { pendingNative.delete(id); reject(error); }
     }, RPC_TIMEOUT_MS);
     pendingNative.set(id, { resolve, reject, timer });
-    try { ensureNativePort().postMessage({ id, method, params }); }
-    catch (error) { clearTimeout(timer); pendingNative.delete(id); reject(error); }
+    try { port = ensureNativePort(); port.postMessage({ id, method, params }); }
+    catch (error) {
+      if (port && nativePort === port) invalidateNativePort(port, error);
+      else { clearTimeout(timer); pendingNative.delete(id); reject(error); }
+    }
   });
 }
 function tabMessage(tabId, message) {
