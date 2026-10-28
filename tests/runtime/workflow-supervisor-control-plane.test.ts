@@ -502,6 +502,53 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     expect(hooks.workProgressFingerprint?.(task)).toBeUndefined();
   });
 
+  test('Requirement-only standalone Supervisor progress stays rooted in Requirement semantic CAS', () => {
+    const fx = fixture();
+    const requirementId = 'REQ-STANDALONE-ROOT';
+    const conversationId = 'c3333333-4444-5555-6666-777777777777';
+    createRequirement({ controllerHome: fx.controllerHome }, {
+      requirementId,
+      title: 'Requirement-rooted continuation',
+      outcomeStatement: 'Continue from Requirement semantic evidence without Work ownership.',
+    });
+    const task = {
+      taskId: 'supervisor:standalone-requirement-root',
+      conversationId,
+      conversationUrl: `https://chatgpt.com/c/${conversationId}`,
+      objective: 'Requirement-rooted continuation',
+      completionContract: {
+        kind: 'model_semantic_completion', controller_home: fx.controllerHome,
+        repo_id: fx.repository.repoId, requirement_id: requirementId,
+      },
+      continuationPolicy: { kind: 'standalone_supervisor', repo_id: fx.repository.repoId },
+      userBlockerPolicy: { kind: 'model_semantic_user_blocker' },
+      createdAt: '2026-01-01T00:00:00.000Z',
+    };
+    const hooks = forgeWorkflowSupervisorLifecycleHooks(fx.controllerHome);
+    const initial = hooks.workProgressFingerprint?.(task);
+    expect(initial).toMatch(/^[0-9a-f]{64}$/);
+
+    const workId = 'work-incidental-requirement-root';
+    createWorkContract(fx.store, {
+      workId, repoId: fx.repository.repoId, checkoutId: fx.repository.activeCheckoutId,
+      objective: 'Incidental lower-layer Work', acceptanceCriteria: [],
+      allowedPaths: [], forbiddenPaths: [], checks: [],
+      constraints: { workspaceMode: 'current' }, requestedBy: 'chatgpt', dispatchState: 'running',
+    });
+    bindChatgptWorkConversation(fx.store, { workId, conversationUrl: task.conversationUrl });
+    expect(hooks.workProgressFingerprint?.(task)).toBe(initial);
+
+    reviseRequirementSemantic({ controllerHome: fx.controllerHome }, requirementId, {
+      expectedRevision: 1,
+      progressSummary: 'Requirement semantic progress advanced.',
+      remainingWork: ['Runtime acceptance'],
+      acceptedEvidenceRefs: ['git:test'],
+    });
+    const advanced = hooks.workProgressFingerprint?.(task);
+    expect(advanced).toMatch(/^[0-9a-f]{64}$/);
+    expect(advanced).not.toBe(initial);
+  });
+
   test('derives standalone project scope from Supervisor-owned Controller Home', () => {
     const fx = fixture();
     const supervisorStore = new WorkflowSupervisorStore(join(fx.root, 'standalone-project-scope'));
