@@ -42,7 +42,7 @@ import {
   restartPrimaryConnector,
   restartPrimaryRuntime,
   restartRecoveryGateway,
-  stageAndActivateConfiguredRuntimeRelease,
+  prepareConfiguredRuntimeReleaseSession,
   rollbackPrevious,
   runtimeStatus,
   verifyStableRuntime,
@@ -785,15 +785,15 @@ export function buildRecoveryCommand(): Command {
         profile: 'self-healing',
       });
       const refreshed = loadRecoveryConfig(home);
-      const runtime = await stageAndActivateConfiguredRuntimeRelease(refreshed);
-      if (!runtime.ok) {
-        output({ ok: false, phase: 'runtime_activation', recovery: installed, runtime });
+      const releaseSession = await prepareConfiguredRuntimeReleaseSession(refreshed);
+      if (!releaseSession.ok) {
+        output({ ok: false, phase: 'runtime_release_prepare', recovery: installed, releaseSession });
         process.exitCode = 1;
         return;
       }
       const connector = await restartPrimaryConnector(refreshed);
       const ok = connector.ok;
-      output({ ok, phase: !connector.ok ? 'connector_restart' : 'complete', recovery: installed, runtime, connector });
+      output({ ok, phase: !connector.ok ? 'connector_restart' : 'complete', recovery: installed, releaseSession, connector });
       if (!ok) process.exitCode = 1;
     });
 
@@ -807,12 +807,12 @@ export function buildRecoveryCommand(): Command {
       if (!result.ok) process.exitCode = 1;
     });
 
-  command.command('stage-and-activate-runtime')
-    .description('Stage current configured Runtime source as an immutable release and activate it transactionally through standalone Recovery')
+  command.command('prepare-runtime-release-session')
+    .description('Freeze the configured Runtime source and build one immutable release into the canonical durable ReleaseSession')
     .requiredOption('--controller-home <path>', 'Explicit Controller Home')
     .action(async (opts: { controllerHome: string }) => {
       const home = resolveControllerHome(opts.controllerHome);
-      const result = await stageAndActivateConfiguredRuntimeRelease(loadRecoveryConfig(home));
+      const result = await prepareConfiguredRuntimeReleaseSession(loadRecoveryConfig(home));
       output(result);
       if (!result.ok) process.exitCode = 1;
     });

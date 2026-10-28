@@ -5912,16 +5912,6 @@ export interface ConfiguredRuntimeActivationDependencies {
   activate?: (config: RecoveryConfig, manifestPath: string, guard: RuntimeReleaseActivationGuard) => Promise<RuntimeReleaseActivationResult>;
 }
 
-export async function stageAndActivateConfiguredRuntimeRelease(
-  config: RecoveryConfig,
-  dependencies: ConfiguredRuntimeActivationDependencies = {},
-  requestId?: string,
-): Promise<ConfiguredRuntimeActivationResult> {
-  // Frozen-client compatibility alias. It deliberately stops at Candidate B
-  // build/session preparation. Activation is a separate ReleaseSession phase.
-  return prepareConfiguredRuntimeReleaseSession(config, dependencies, requestId);
-}
-
 function tunnelLaunchdService(configured: RecoveryTunnelServiceConfig | undefined, uid: number): LaunchdService | undefined {
   if (!configured || configured.platform !== 'launchd') return undefined;
   if (!/^com\.[A-Za-z0-9._-]{1,180}$/.test(configured.label)) return undefined;

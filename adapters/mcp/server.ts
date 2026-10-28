@@ -386,7 +386,7 @@ function recoveryRuntimeReleaseActivationInProgress(controllerHome: string): boo
       action?: string;
       acquiredAt?: string;
     };
-    if (lock.action !== 'activate_runtime_release' && lock.action !== 'stage_and_activate_runtime_release') return false;
+    if (lock.action !== 'activate_runtime_release') return false;
     return timestampIsRecent(lock.acquiredAt, Date.now(), CANONICAL_RUNTIME_HANDOFF_SIGNAL_TTL_MS);
   } catch {
     return false;

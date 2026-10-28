@@ -30,7 +30,7 @@ export interface CapabilityRecoveryApplicationResult {
 }
 
 const INSTANCE_RECOVERY_ACTION_IDS = new Set([
-  'recovery.stage_and_activate_runtime_release',
+  'recovery.prepare_runtime_release_session',
   'recovery.restart_primary_connector',
   'recovery.probe_again',
   'recovery.workspace_auth_login_prepare',
@@ -105,7 +105,7 @@ export async function executeCapabilityRecoveryAction(
   let payload: Record<string, unknown>;
   let affectedPaths: string[] = [];
   switch (action.id) {
-    case 'recovery.stage_and_activate_runtime_release': {
+    case 'recovery.prepare_runtime_release_session': {
       payload = await input.callStandaloneRecoveryTool('prepare_runtime_release_session', {
         request_id: `runtime-release-session-${Date.now()}`,
       });
