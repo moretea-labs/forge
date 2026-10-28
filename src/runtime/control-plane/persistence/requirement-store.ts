@@ -218,15 +218,6 @@ export function reviseRequirementSemantic(
     if (semanticRevision !== input.expectedRevision) {
       throw new Error(`REQUIREMENT_REVISION_CONFLICT:${requirementId}:expected=${input.expectedRevision}:actual=${semanticRevision}`);
     }
-    const at = nowIso(options);
-    const revisionKey = requirementRevisionKey(requirementId, semanticRevision);
-    if (!readControlPlaneRecordWithinTransaction<RequirementRevisionRecord>(database, REVISION_NAMESPACE, SCOPE, revisionKey)) {
-      const archived: RequirementRevisionRecord = { schemaVersion: 1, ...requirementSemanticView(current.value), recordedAt: at };
-      writeControlPlaneRecordWithinTransaction(database, {
-        namespace: REVISION_NAMESPACE, scope: SCOPE, key: revisionKey, schemaVersion: 1,
-        value: archived, action: 'requirement_semantic_revision_archived', expectedRevision: null,
-      });
-    }
     const requestedState = input.state;
     const legacyState: RequirementState = requestedState === 'completed'
       ? 'done'
@@ -235,11 +226,24 @@ export function reviseRequirementSemantic(
         : requestedState === 'open'
           ? 'active'
           : current.value.state;
-    if (requestedState === 'open' && (current.value.state === 'done' || current.value.state === 'cancelled')) {
+    const currentTerminal = current.value.state === 'done' || current.value.state === 'cancelled';
+    if (requestedState === 'open' && currentTerminal) {
       throw new Error(`REQUIREMENT_SEMANTIC_REOPEN_FORBIDDEN:${requirementId}:${current.value.state}`);
     }
-    if (requestedState && (current.value.state === 'done' || current.value.state === 'cancelled') && legacyState !== current.value.state) {
+    if (requestedState && currentTerminal && legacyState !== current.value.state) {
       throw new Error(`REQUIREMENT_SEMANTIC_TERMINAL_TRANSITION_FORBIDDEN:${requirementId}:${current.value.state}->${legacyState}`);
+    }
+    if (currentTerminal) {
+      throw new Error(`REQUIREMENT_SEMANTIC_TERMINAL_IMMUTABLE:${requirementId}:${current.value.state}`);
+    }
+    const at = nowIso(options);
+    const revisionKey = requirementRevisionKey(requirementId, semanticRevision);
+    if (!readControlPlaneRecordWithinTransaction<RequirementRevisionRecord>(database, REVISION_NAMESPACE, SCOPE, revisionKey)) {
+      const archived: RequirementRevisionRecord = { schemaVersion: 1, ...requirementSemanticView(current.value), recordedAt: at };
+      writeControlPlaneRecordWithinTransaction(database, {
+        namespace: REVISION_NAMESPACE, scope: SCOPE, key: revisionKey, schemaVersion: 1,
+        value: archived, action: 'requirement_semantic_revision_archived', expectedRevision: null,
+      });
     }
     const remainingWork = input.remainingWork === undefined ? [...(current.value.remainingWork ?? [])] : bounded(input.remainingWork, 50);
     const acceptedEvidenceRefs = input.acceptedEvidenceRefs === undefined
@@ -387,6 +391,9 @@ export function updateRequirement(
     if (!current) throw new Error(`REQUIREMENT_NOT_FOUND: ${requirementId}`);
     const next = input.mutate(current.value);
     if (next === current.value) return current.value;
+    if (current.value.state === 'done' || current.value.state === 'cancelled') {
+      throw new Error(`REQUIREMENT_TERMINAL_IMMUTABLE:${requirementId}:${current.value.state}`);
+    }
     if (!REQUIREMENT_STATE_TRANSITIONS[current.value.state].includes(next.state)) {
       throw new Error(`REQUIREMENT_STATE_TRANSITION_INVALID: ${current.value.state} -> ${next.state}`);
     }

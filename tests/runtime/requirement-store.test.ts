@@ -109,13 +109,21 @@ test('rejects reopening a completed Requirement without an explicit replacement 
     .toThrow(/REQUIREMENT_STATE_TRANSITION_INVALID/);
   reviseRequirementSemantic(options, 'req-2', { expectedRevision: 1, state: 'completed', remainingWork: [], acceptedEvidenceRefs: ['review:accepted'] });
   expect(() => updateRequirement(options, { requirementId: 'req-2', action: 'cancel_completed', mutate: (current) => ({ ...current, state: 'cancelled' }) }))
-    .toThrow(/REQUIREMENT_STATE_TRANSITION_INVALID/);
+    .toThrow(/REQUIREMENT_TERMINAL_IMMUTABLE/);
   const completed = readRequirement(options, 'req-2')!.value;
   expect(() => reviseRequirementSemantic(options, 'req-2', {
     expectedRevision: completed.semanticRevision ?? 2,
     state: 'cancelled',
   })).toThrow(/REQUIREMENT_SEMANTIC_TERMINAL_TRANSITION_FORBIDDEN/);
-  expect(() => updateRequirement(options, { requirementId: 'req-2', action: 'reopen', mutate: (current) => ({ ...current, state: 'active' }) })).toThrow(/REQUIREMENT_STATE_TRANSITION_INVALID/);
+  expect(() => reviseRequirementSemantic(options, 'req-2', {
+    expectedRevision: completed.semanticRevision ?? 2,
+    outcomeStatement: 'A completed Requirement cannot be rewritten.',
+  })).toThrow(/REQUIREMENT_SEMANTIC_TERMINAL_IMMUTABLE/);
+  expect(() => updateRequirement(options, {
+    requirementId: 'req-2', action: 'rewrite_completed',
+    mutate: (current) => ({ ...current, outcomeStatement: 'Legacy writer cannot rewrite terminal facts.' }),
+  })).toThrow(/REQUIREMENT_TERMINAL_IMMUTABLE/);
+  expect(() => updateRequirement(options, { requirementId: 'req-2', action: 'reopen', mutate: (current) => ({ ...current, state: 'active' }) })).toThrow(/REQUIREMENT_TERMINAL_IMMUTABLE/);
 });
 
 test('semantic Requirement CAS forbids cancelled-to-done terminal rewrite', () => {
@@ -131,6 +139,10 @@ test('semantic Requirement CAS forbids cancelled-to-done terminal rewrite', () =
     remainingWork: [],
     acceptedEvidenceRefs: ['review:accepted'],
   })).toThrow(/REQUIREMENT_SEMANTIC_TERMINAL_TRANSITION_FORBIDDEN/);
+  expect(() => reviseRequirementSemantic(options, 'req-cancelled-terminal', {
+    expectedRevision: cancelled.semanticRevision ?? 2,
+    acceptanceCriteria: ['A cancelled Requirement cannot be rewritten.'],
+  })).toThrow(/REQUIREMENT_SEMANTIC_TERMINAL_IMMUTABLE/);
 });
 
 test('restores a verified SQLite backup without losing Requirement authority', () => {
@@ -174,7 +186,7 @@ test('historical cancelled Work evidence cannot reopen a reviewed Requirement ou
     requirementId: 'req-reviewed',
     action: 'stale_run_reopen',
     mutate: (current) => ({ ...current, state: 'active' }),
-  })).toThrow(/REQUIREMENT_STATE_TRANSITION_INVALID/);
+  })).toThrow(/REQUIREMENT_TERMINAL_IMMUTABLE/);
 
   const retained = recordWorkEvidenceState({ controllerHome: home, repoId: 'repo-reviewed' }, work.workId, 'failed');
   expect(retained.semanticState).toBe('cancelled');
