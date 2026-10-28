@@ -456,6 +456,11 @@
     timer = setTimeout(() => {
       const current = core.parseConversation(location.href);
       try {
+        if (!chrome.runtime?.sendMessage) {
+          contextInvalidated = true;
+          observer.disconnect();
+          return;
+        }
         chrome.runtime.sendMessage({
           type: 'forge-computer-chatgpt-page',
           ...(current ?? {}),
