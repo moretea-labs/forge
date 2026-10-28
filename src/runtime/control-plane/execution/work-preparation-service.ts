@@ -5,7 +5,7 @@ import { resolve, sep } from 'path';
 import type { McpExecutionContext } from '../../../../packages/protocols/mcp/execution-context';
 import { getRepository, refreshRepositoryCheckoutGitMetadata, repositoryCheckoutLifecycle, resolveRepositorySelection, selectRepositoryCheckout } from '../../../cli/repositories/registry';
 import { repositoryGitStatus } from '../../../cli/repositories/structured-git';
-import { ensureManagedWorkspace } from '../../execution/managed-workspace';
+import { ensureManagedWorkspace, ManagedWorkspaceBranchMismatchError } from '../../execution/managed-workspace';
 import { listRecoverableProcessRecords } from '../../execution/process-runtime/store';
 import { listActiveLeases } from '../../resources/leases/store';
 import { proveWorkPreservationContained } from '../cleanup-artifact-retention';
@@ -392,13 +392,37 @@ function materializeArchivedWorkPlacement(
     sourceHandle.state === 'cleaned',
     sourceHandle,
   );
-  const workspace = ensureManagedWorkspace(ctx.controllerHome, repository, {
+  const workspaceInput = {
     requestId: workspaceRequestId,
     title: contract.objective,
     associatedWorkId: contract.workId,
     baseRef: proof.candidateHead,
     prepareDependencies: args.needs_dependencies === true,
-  });
+  };
+  let workspace: ReturnType<typeof ensureManagedWorkspace>;
+  try {
+    workspace = ensureManagedWorkspace(ctx.controllerHome, repository, workspaceInput);
+  } catch (error) {
+    // A previous recovery request may now point at a worktree reused by a
+    // different branch/owner. Never switch or adopt that physical checkout.
+    // The first attempt fails before a mutation; derive one stable, separately
+    // fenced successor identity from the already-validated exact head proof.
+    if (!(error instanceof ManagedWorkspaceBranchMismatchError)) {
+      throw error;
+    }
+    const collisionIdentity = createHash('sha256').update(JSON.stringify({
+      schemaVersion: 1,
+      workId: contract.workId,
+      sourceHandleId: sourceHandle.workId,
+      workspaceRequestId,
+      previousHead: proof.previousHead,
+      candidateHead: proof.candidateHead,
+    })).digest('hex').slice(0, 16);
+    workspace = ensureManagedWorkspace(ctx.controllerHome, repository, {
+      ...workspaceInput,
+      requestId: `${workspaceRequestId}-recovered-${collisionIdentity}`,
+    });
+  }
   const workspaceRoot = workspace.root;
   const workspaceCheckoutId = workspace.checkoutId;
   if (!workspace.managed || !workspaceRoot || !workspaceCheckoutId
