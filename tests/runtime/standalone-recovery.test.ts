@@ -3744,6 +3744,74 @@ describe('standalone recovery on canonical Runtime', () => {
     }).action).toBe('degraded');
   });
 
+  test('MCP Runtime restart requires caller-observed release fence and opts into healthy force explicitly', async () => {
+    const home = controllerHome();
+    const config = createRecoveryConfig(home);
+    const schema = RECOVERY_TOOLS.find((tool) => tool.name === 'restart_primary_runtime')?.inputSchema as {
+      required: string[];
+      properties: Record<string, unknown>;
+    };
+    expect(schema.required).toContain('expected_active_release_id');
+    expect(schema.required).toContain('expected_authority_revision');
+    expect(schema.properties.force_healthy_restart).toEqual({ type: 'boolean' });
+    await expect(dispatchRecoveryTool(config, 'restart_primary_runtime', {
+      request_id: 'test-unfenced-restart',
+    })).rejects.toThrow('RECOVERY_RUNTIME_RESTART_AUTHORITY_FENCE_REQUIRED');
+    await expect(dispatchRecoveryTool(config, 'restart_primary_runtime', {
+      request_id: 'test-invalid-force',
+      expected_active_release_id: 'release-current',
+      expected_authority_revision: 1,
+      force_healthy_restart: 'yes',
+    })).rejects.toThrow('RECOVERY_RUNTIME_RESTART_FORCE_INVALID');
+  });
+
+  test('stale Runtime restart authority is rejected under the Recovery lock before any bootout with caller attribution', async () => {
+    const home = controllerHome();
+    const previousHome = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      const paths = forgeRuntimeServicePaths(home);
+      mkdirSync(dirname(paths.installedPlistPath), { recursive: true });
+      writeFileSync(paths.installedPlistPath, '<plist/>');
+      ensureActiveRuntimeRelease(home, manifest(home, 'release-current', 'artifact-current'));
+      const authority = readRuntimeReleaseAuthority(home)!;
+      const config = createRecoveryConfig(home, { primaryRuntimeService: { platform: 'launchd' } });
+      let commands = 0;
+      let observedLockRequest: string | undefined;
+      const requestId = 'recovery-gateway:test-stale-runtime-restart';
+      const restart = await restartPrimaryRuntime(config, {
+        requestId,
+        forceHealthyRestart: true,
+        expectedActiveReleaseId: authority.active.releaseId,
+        expectedAuthorityRevision: authority.revision + 1,
+        platform: 'darwin',
+        currentUid: async () => 501,
+        verifyLocal: async () => {
+          const lockFile = join(home, 'recovery', 'locks', 'operation.lock');
+          if (existsSync(lockFile)) {
+            const lock = JSON.parse(readFileSync(lockFile, 'utf8')) as { requestId?: string };
+            observedLockRequest = lock.requestId;
+          }
+          return healthyVerify();
+        },
+        runCommand: async () => {
+          commands += 1;
+          throw new Error('must not attempt launchd command with stale release authority');
+        },
+      });
+      expect(restart).toMatchObject({ ok: false, attempted: false, noOp: true });
+      expect(restart.detail).toContain('RECOVERY_RUNTIME_RESTART_STALE_AUTHORITY');
+      expect(commands).toBe(0);
+      expect(observedLockRequest).toBe(requestId);
+      const audit = readFileSync(join(home, 'recovery', 'audit', 'recovery.jsonl'), 'utf8');
+      expect(audit).toContain('primary_runtime_restart_stale_authority');
+      expect(audit).toContain(requestId);
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+    }
+  });
+
   test('explicit healthy Runtime restart recycles the service while default recovery semantics remain no-op', async () => {
     const home = controllerHome();
     const previousHome = process.env.HOME;
