@@ -451,10 +451,8 @@ describe('Goal authority convergence', () => {
     const repoId = 'repo-goal-terminal';
     const requirementId = 'REQ-GOAL-TERMINAL';
     activateRequirement(controllerHome, requirementId);
-    updateRequirement({ controllerHome }, {
-      requirementId,
-      action: 'test_semantic_done',
-      mutate: (current) => ({ ...current, state: 'done' }),
+    reviseRequirementSemantic({ controllerHome }, requirementId, {
+      expectedRevision: 1, state: 'completed', remainingWork: [], acceptedEvidenceRefs: ['review:terminal-plan-admission'],
     });
     expect(() => createPlanContract({ controllerHome, repoId }, {
       planId: 'PLAN-AFTER-GOAL-COMPLETE',

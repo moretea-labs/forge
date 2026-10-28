@@ -2,7 +2,7 @@ import { afterEach, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'fs';
 import { join } from 'path';
 import { backupControlPlaneDatabase, restoreControlPlaneDatabase } from '../../src/runtime/control-plane/persistence/sqlite-store';
-import { createRequirement, readRequirement, updateRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
+import { createRequirement, readRequirement, reviseRequirementSemantic, updateRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
 import { cancelWorkContract, createWorkContract, listWorkContracts, recordWorkCompletionReceipt, recordWorkEvidenceState, recordWorkImplementationReview, supersedeWorkContract, transitionWorkContractPhase, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { implementationReviewChangedPathDigest } from '../../packages/kernel/work/api/index';
 import { executionPlacement, scopeRef, semanticRecordMetadata } from '../../packages/kernel/identity/api/index';
@@ -105,7 +105,11 @@ test('rejects reopening a completed Requirement without an explicit replacement 
   const options = { controllerHome: home };
   createRequirement(options, { requirementId: 'req-2', title: 'Outcome', outcomeStatement: 'Outcome statement' });
   updateRequirement(options, { requirementId: 'req-2', action: 'activate', mutate: (current) => ({ ...current, state: 'active' }) });
-  updateRequirement(options, { requirementId: 'req-2', action: 'complete', mutate: (current) => ({ ...current, state: 'done' }) });
+  expect(() => updateRequirement(options, { requirementId: 'req-2', action: 'complete', mutate: (current) => ({ ...current, state: 'done' }) }))
+    .toThrow(/REQUIREMENT_STATE_TRANSITION_INVALID/);
+  reviseRequirementSemantic(options, 'req-2', { expectedRevision: 1, state: 'completed', remainingWork: [], acceptedEvidenceRefs: ['review:accepted'] });
+  expect(() => updateRequirement(options, { requirementId: 'req-2', action: 'cancel_completed', mutate: (current) => ({ ...current, state: 'cancelled' }) }))
+    .toThrow(/REQUIREMENT_STATE_TRANSITION_INVALID/);
   expect(() => updateRequirement(options, { requirementId: 'req-2', action: 'reopen', mutate: (current) => ({ ...current, state: 'active' }) })).toThrow(/REQUIREMENT_STATE_TRANSITION_INVALID/);
 });
 
@@ -127,7 +131,9 @@ test('historical cancelled Work evidence cannot reopen a reviewed Requirement ou
   const options = { controllerHome: home, now: () => '2026-08-02T00:00:00.000Z' };
   createRequirement(options, { requirementId: 'req-reviewed', title: 'Reviewed outcome', outcomeStatement: 'The reviewed outcome remains done.' });
   updateRequirement(options, { requirementId: 'req-reviewed', action: 'activate', mutate: (current) => ({ ...current, state: 'active' }) });
-  updateRequirement(options, { requirementId: 'req-reviewed', action: 'reviewed_done', mutate: (current) => ({ ...current, state: 'done' }) });
+  reviseRequirementSemantic(options, 'req-reviewed', {
+    expectedRevision: 1, state: 'completed', remainingWork: [], acceptedEvidenceRefs: ['review:accepted'],
+  });
 
   const work = createCancelledWork({ controllerHome: home, repoId: 'repo-reviewed' }, {
     workId: 'work-historical-cancelled',
