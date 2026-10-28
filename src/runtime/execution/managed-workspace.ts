@@ -341,6 +341,15 @@ export function materializeManagedWorkspaceCheckDependencies(repoRoot: string): 
   return materializeManagedWorkspaceDependencies(repoRoot);
 }
 
+export class ManagedWorkspaceBranchMismatchError extends Error {
+  readonly code = 'MANAGED_WORKSPACE_BRANCH_MISMATCH';
+
+  constructor(expected: string, observed: string) {
+    super(`MANAGED_WORKSPACE_BRANCH_MISMATCH: expected ${expected}, found ${observed || 'detached'}`);
+    this.name = 'ManagedWorkspaceBranchMismatchError';
+  }
+}
+
 function existingWorkspace(path: string, branch: string): boolean {
   if (!existsSync(path)) return false;
   const root = runProcess(resolveGitExecutable(), ['-C', path, 'rev-parse', '--show-toplevel'], {
@@ -353,7 +362,7 @@ function existingWorkspace(path: string, branch: string): boolean {
   }
   const currentBranch = git(path, ['branch', '--show-current']);
   if (currentBranch !== branch) {
-    throw new Error(`MANAGED_WORKSPACE_BRANCH_MISMATCH: expected ${branch}, found ${currentBranch || 'detached'}`);
+    throw new ManagedWorkspaceBranchMismatchError(branch, currentBranch);
   }
   return true;
 }
