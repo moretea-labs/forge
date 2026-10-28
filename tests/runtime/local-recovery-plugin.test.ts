@@ -26,23 +26,24 @@ describe('local_recovery managed transport provider', () => {
     ]);
   });
 
-  test('preparation and coordinator advance delegate with provider-owned request identity', async () => {
+  test('exact source staging and explicit migration advance delegate with provider-owned request identity', async () => {
     const calls: unknown[] = [];
     const callRecoveryTool = async (controllerHome: string, name: string, args: object) => {
       calls.push({ controllerHome, name, args });
       return { ok: true, staged: { releaseId: 'candidate' } };
     };
-    const result = await executeAction('prepare_runtime_release_session', {}, { controllerHome: '/tmp/controller' }, {
+    const sourceRevision = 'a'.repeat(40);
+    const result = await executeAction('stage_runtime_release', { expected_source_revision: sourceRevision }, { controllerHome: '/tmp/controller' }, {
       callRecoveryTool,
       loadRecoveryConfig: () => ({ controllerHome: '/tmp/controller', primaryRuntimeSourceRoot: '/tmp', primaryRuntimeSourceRepositoryId: 'repo_fixture' }),
       getRepository: () => ({ repoId: 'repo_fixture', enabled: true, canonicalRoot: '/tmp' }),
       findRegisteredRepositoryByCheckoutRoot: () => ({ repoId: 'repo_fixture' }),
-      requestId: 'prepare-release-session-1',
+      requestId: 'stage-release-1',
     });
     expect(result).toEqual({ ok: true, staged: { releaseId: 'candidate' } });
     expect(calls).toHaveLength(1);
-    expect(calls[0]).toMatchObject({ controllerHome: '/tmp/controller', name: 'prepare_runtime_release_session' });
-    expect((calls[0] as any).args).toEqual({ request_id: expect.stringMatching(/^local-recovery:[a-f0-9]{32}$/) });
+    expect(calls[0]).toMatchObject({ controllerHome: '/tmp/controller', name: 'stage_runtime_release' });
+    expect((calls[0] as any).args).toEqual({ expected_source_revision: sourceRevision, request_id: expect.stringMatching(/^local-recovery:[a-f0-9]{32}$/) });
 
     await executeAction('advance_runtime_release_session', {}, { controllerHome: '/tmp/controller' }, {
       callRecoveryTool,
@@ -145,18 +146,20 @@ describe('local_recovery managed transport provider', () => {
     })).toThrow(/canonical root is unavailable/);
   });
 
-  test('rejects every caller-controlled mutation parameter before Recovery dispatch', async () => {
+  test('stage accepts only one exact source revision and rejects every other caller-controlled mutation parameter', async () => {
     let called = false;
     const callRecoveryTool = async () => { called = true; return {}; };
     for (const input of [
+      {},
+      { expected_source_revision: 'not-a-sha' },
       { source_root: '/tmp/source' },
       { release_path: '/tmp/release' },
       { endpoint: 'http://127.0.0.1:1' },
       { command: ['forge-recovery'] },
       { request_id: 'caller-owned' },
     ]) {
-      await expect(executeAction('prepare_runtime_release_session', input, { controllerHome: '/tmp/controller' }, { callRecoveryTool }))
-        .rejects.toThrow(/accept no caller/);
+      await expect(executeAction('stage_runtime_release', input, { controllerHome: '/tmp/controller' }, { callRecoveryTool }))
+        .rejects.toThrow();
     }
     expect(called).toBe(false);
   });

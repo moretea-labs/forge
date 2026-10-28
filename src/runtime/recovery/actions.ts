@@ -81,10 +81,10 @@ export const RECOVERY_ACTIONS = {
     localOnly: true,
     boundedTo: ['forge_runtime_storage', 'forge_temp_dirs'],
   },
-  prepareRuntimeReleaseSession: {
-    id: 'recovery.prepare_runtime_release_session',
-    title: 'Prepare Runtime ReleaseSession',
-    description: 'Ask standalone Recovery to freeze its configured source and Stable A authority and build one immutable release into the durable ReleaseSession.',
+  stageRuntimeRelease: {
+    id: 'recovery.stage_runtime_release',
+    title: 'Stage Runtime release',
+    description: 'Materialize one exact model-selected accepted source commit into canonical immutable Runtime release storage without changing live Runtime authority.',
     class: 'stale_runtime_state',
     risk: 'medium',
     confirmation: 'authorization',

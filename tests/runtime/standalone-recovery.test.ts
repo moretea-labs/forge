@@ -39,6 +39,7 @@ import {
   restartPrimaryRuntime,
   restartRecoveryGateway,
   scopeWatchdogStateToRuntimeRelease,
+  stageConfiguredRuntimeRelease,
   prepareConfiguredRuntimeReleaseSession,
   unpinRuntimeRelease,
   rollbackPrevious,
@@ -1887,6 +1888,7 @@ test('Recovery activate_runtime_release resolves release_path as an immutable re
       request_id: requestId,
       ...recoveryMutationIdentityArgs(config),
       release_path: releasePath,
+      expected_source_revision: 'a'.repeat(40),
       expected_active_release_id: 'release-baseline',
       expected_authority_revision: 1,
     }) as { attempted?: boolean; noOp?: boolean; detail?: string };
@@ -1895,6 +1897,106 @@ test('Recovery activate_runtime_release resolves release_path as an immutable re
     expect(result.detail).not.toContain('EISDIR');
     expect(result.detail).not.toContain('RELEASE_MANIFEST_INVALID');
   }
+});
+
+test('normal staging materializes one exact accepted source into Stable Home without mutating Runtime authority', () => {
+  const home = controllerHome();
+  const sourceRoot = join(home, 'source-direct-stage');
+  const sourceRevision = committedRecoverySource(sourceRoot);
+  const baseline = verifiedManifest(home, 'release-direct-stage-baseline');
+  const before = ensureActiveRuntimeRelease(home, baseline.path);
+  const config = createRecoveryConfig(home, {
+    primaryRuntimeSourceRoot: sourceRoot,
+    primaryRuntimeSourceRepositoryId: 'repo_direct_stage',
+  });
+  let stagedFrom = '';
+  let stagedHome = '';
+  const result = stageConfiguredRuntimeRelease(config, sourceRevision, {
+    stage: (input) => {
+      stagedFrom = resolve(input.sourceRoot);
+      stagedHome = resolve(input.controllerHome);
+      expect(stagedHome).toBe(resolve(home));
+      expect(stagedFrom).not.toBe(resolve(sourceRoot));
+      expect(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: input.sourceRoot, encoding: 'utf8' }).trim()).toBe(sourceRevision);
+      expect(input.sourceRepositoryId).toBe('repo_direct_stage');
+      const staged = verifiedManifest(input.controllerHome, 'release-direct-stage-candidate');
+      const rawManifest = JSON.parse(readFileSync(staged.path, 'utf8')) as Record<string, unknown>;
+      const { controllerHome: _embeddedControllerHome, ...manifest } = rawManifest;
+      const next = {
+        ...manifest,
+        deploymentScope: 'portable',
+        sourceCommit: sourceRevision,
+        sourceRepositoryId: 'repo_direct_stage',
+      };
+      writeFileSync(staged.path, `${JSON.stringify(next, null, 2)}
+`);
+      return {
+        ...next,
+        controllerHome: input.controllerHome,
+        releasePath: dirname(staged.path),
+        manifestPath: staged.path,
+        manifestSha256: createHash('sha256').update(readFileSync(staged.path)).digest('hex'),
+      } as any;
+    },
+  }, 'direct-stage-test');
+  expect(result).toMatchObject({
+    ok: true,
+    attempted: true,
+    release: { sourceCommit: sourceRevision, sourceRepositoryId: 'repo_direct_stage' },
+  });
+  expect(stagedHome).toBe(resolve(home));
+  expect(stagedFrom).not.toBe(resolve(sourceRoot));
+  expect(existsSync(join(home, 'candidate-runtime-lanes'))).toBe(false);
+  expect(readRuntimeReleaseAuthority(home)).toMatchObject({
+    revision: before.revision,
+    active: { releaseId: before.active.releaseId, artifactIdentity: before.active.artifactIdentity },
+  });
+});
+
+test('portable direct activation requires exact source fence before any Runtime mutation', async () => {
+  const home = controllerHome();
+  const sourceRevision = 'a'.repeat(40);
+  const baseline = verifiedManifest(home, 'release-direct-fence-baseline');
+  const candidate = verifiedManifest(home, 'release-direct-fence-candidate');
+  const authority = ensureActiveRuntimeRelease(home, baseline.path);
+  const rawManifestBody = JSON.parse(readFileSync(candidate.path, 'utf8')) as Record<string, unknown>;
+  const { controllerHome: _embeddedControllerHome, ...manifestBody } = rawManifestBody;
+  writeFileSync(candidate.path, `${JSON.stringify({
+    ...manifestBody,
+    deploymentScope: 'portable',
+    sourceCommit: sourceRevision,
+    sourceRepositoryId: 'repo_direct_fence',
+  }, null, 2)}
+`);
+  const config = createRecoveryConfig(home, { primaryRuntimeSourceRepositoryId: 'repo_direct_fence' });
+  const missing = await activateRuntimeRelease(config, candidate.path, {}, {
+    expectedActiveReleaseId: authority.active.releaseId,
+    expectedAuthorityRevision: authority.revision,
+  });
+  expect(missing).toMatchObject({ ok: false, attempted: false, noOp: true, detail: 'RUNTIME_RELEASE_EXPECTED_SOURCE_REVISION_REQUIRED' });
+  const mismatch = await activateRuntimeRelease(config, candidate.path, {}, {
+    expectedSourceRevision: 'b'.repeat(40),
+    expectedActiveReleaseId: authority.active.releaseId,
+    expectedAuthorityRevision: authority.revision,
+  });
+  expect(mismatch).toMatchObject({ ok: false, attempted: false, noOp: true });
+  expect(mismatch.detail).toContain('RUNTIME_RELEASE_SOURCE_REVISION_MISMATCH');
+  const foreignRepository = await activateRuntimeRelease(
+    createRecoveryConfig(home, { primaryRuntimeSourceRepositoryId: 'repo_unrelated' }),
+    candidate.path,
+    {},
+    {
+      expectedSourceRevision: sourceRevision,
+      expectedActiveReleaseId: authority.active.releaseId,
+      expectedAuthorityRevision: authority.revision,
+    },
+  );
+  expect(foreignRepository).toMatchObject({ ok: false, attempted: false, noOp: true });
+  expect(foreignRepository.detail).toContain('RUNTIME_RELEASE_SOURCE_REPOSITORY_MISMATCH');
+  expect(readRuntimeReleaseAuthority(home)).toMatchObject({
+    revision: authority.revision,
+    active: { releaseId: authority.active.releaseId, artifactIdentity: authority.active.artifactIdentity },
+  });
 });
 
 test('ReleaseSession preparation builds the isolated immutable candidate without mutating Stable A', async () => {
@@ -1996,10 +2098,8 @@ test('ReleaseSession preparation builds the isolated immutable candidate without
     controllerHome: home,
     sessionId: progressed.sessionId,
     expectedRevision: progressed.revision,
-    phase: 'static_verified',
-    receipts: ['type', 'runtime_architecture', 'architecture_sync', 'bootstrap'].map((id) => ({ id, kind: 'static_gate' as const, summary: id })),
+    phase: 'candidate_booted',
   });
-  progressed = advanceReleaseSession({ controllerHome: home, sessionId: progressed.sessionId, expectedRevision: progressed.revision, phase: 'candidate_booted' });
   progressed = advanceReleaseSession({
     controllerHome: home,
     sessionId: progressed.sessionId,
@@ -2471,6 +2571,7 @@ describe('standalone recovery on canonical Runtime', () => {
     expect(RECOVERY_TOOLS.map((tool) => tool.name)).toContain('runtime_status');
     expect(RECOVERY_TOOLS.map((tool) => tool.name)).toContain('restart_primary_runtime');
     expect(RECOVERY_TOOLS.map((tool) => tool.name)).toContain('recover_primary_runtime');
+    expect(RECOVERY_TOOLS.map((tool) => tool.name)).toContain('stage_runtime_release');
     expect(RECOVERY_TOOLS.map((tool) => tool.name)).toContain('activate_runtime_release');
     expect(RECOVERY_TOOLS.map((tool) => tool.name)).toContain('pin_runtime_release');
     expect(RECOVERY_TOOLS.map((tool) => tool.name)).toContain('unpin_runtime_release');
@@ -2503,18 +2604,27 @@ describe('standalone recovery on canonical Runtime', () => {
       'request_id',
       ...Array.from(RECOVERY_MUTATION_IDENTITY_FIELDS),
       'release_path',
+      'expected_source_revision',
       'expected_active_release_id',
       'expected_authority_revision',
     ]));
     expect(activateSchema?.properties?.release_path).toMatchObject({
       description: 'Absolute path to the staged immutable Runtime release directory.',
     });
+    const stageTool = RECOVERY_TOOLS.find((tool) => tool.name === 'stage_runtime_release');
+    const stageSchema = stageTool?.inputSchema as { required?: readonly string[]; properties?: Record<string, unknown> } | undefined;
+    expect(stageSchema?.required).toEqual(expect.arrayContaining([
+      'request_id',
+      ...Array.from(RECOVERY_MUTATION_IDENTITY_FIELDS),
+      'expected_source_revision',
+    ]));
     for (const toolName of [
       'attest_known_good',
       'rollback_previous',
       'restart_primary_runtime',
       'restart_primary_connector',
       'recover_primary_runtime',
+      'stage_runtime_release',
       'activate_runtime_release',
       'pin_runtime_release',
       'unpin_runtime_release',
@@ -2622,10 +2732,8 @@ describe('standalone recovery on canonical Runtime', () => {
       controllerHome: home,
       sessionId,
       expectedRevision: session.revision,
-      phase: 'static_verified',
-      receipts: ['type', 'runtime_architecture', 'architecture_sync', 'bootstrap'].map((id) => ({ id, kind: 'static_gate' as const, summary: id })),
+      phase: 'candidate_booted',
     });
-    session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'candidate_booted' });
     session = advanceReleaseSession({
       controllerHome: home,
       sessionId,
@@ -2753,7 +2861,6 @@ describe('standalone recovery on canonical Runtime', () => {
       };
       let session = createReleaseSession({ controllerHome: home, sessionId, stable, stableRelease, candidate, sourceRevision: candidateRelease.sourceCommit });
       session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'built', candidateRelease });
-      session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'static_verified', receipts: ['type', 'runtime_architecture', 'architecture_sync', 'bootstrap'].map((id) => ({ id, kind: 'static_gate' as const, summary: id })) });
       session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'candidate_booted' });
       session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'candidate_verified', receipts: ['recovery', 'mcp', 'scheduler', 'supervisor', 'controller'].map((id) => ({ id, kind: 'candidate_canary' as const, summary: id })) });
       session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'cutover_eligible' });
@@ -2858,7 +2965,6 @@ describe('standalone recovery on canonical Runtime', () => {
       };
       let session = createReleaseSession({ controllerHome: home, sessionId, stable, stableRelease, candidate, sourceRevision: candidateRelease.sourceCommit });
       session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'built', candidateRelease });
-      session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'static_verified', receipts: ['type', 'runtime_architecture', 'architecture_sync', 'bootstrap'].map((id) => ({ id, kind: 'static_gate' as const, summary: id })) });
       session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'candidate_booted' });
       session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'candidate_verified', receipts: ['recovery', 'mcp', 'scheduler', 'supervisor', 'controller'].map((id) => ({ id, kind: 'candidate_canary' as const, summary: id })) });
       session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'cutover_eligible' });
@@ -4702,13 +4808,15 @@ describe('standalone recovery on canonical Runtime', () => {
     }
   });
 
-  test('activates an already staged immutable Runtime release and keeps the previous whole release for rollback', async () => {
+  test('activates an exact-source portable Runtime release and keeps the previous whole release for rollback', async () => {
     const home = controllerHome();
     const previousHome = process.env.HOME;
     process.env.HOME = home;
     try {
       const first = manifest(home, 'release-a', 'artifact-a');
       const candidateReleaseId = 'release-candidate';
+      const acceptedSourceRevision = 'a'.repeat(40);
+      const acceptedSourceRepositoryId = 'repo_direct_activation';
       const candidateRoot = join(home, 'runtime', 'releases', candidateReleaseId);
       mkdirSync(candidateRoot, { recursive: true });
       writeFileSync(join(candidateRoot, 'forge-runtime'), '#!/bin/sh\nexit 0\n', { mode: 0o700 });
@@ -4725,18 +4833,21 @@ describe('standalone recovery on canonical Runtime', () => {
         ...executionSurface,
         arguments: [],
         configurationSchemaVersion: 1,
-        controllerHome: resolve(home),
+        deploymentScope: 'portable',
+        sourceCommit: acceptedSourceRevision,
+        sourceRepositoryId: acceptedSourceRepositoryId,
         databaseSchemaCompatibility: { minimum: 1, maximum: 1 },
         workerProtocolVersion: 1,
         createdAt: new Date().toISOString(),
       }, null, 2)}\n`);
 
-      ensureActiveRuntimeRelease(home, first);
+      const authorityBefore = ensureActiveRuntimeRelease(home, first);
       const runtime = await runtimeServer();
       writeMainToken(home);
       const ownership = startObservedRuntime(home, runtime.endpoint, 'release-a', 'artifact-a');
       const config = createRecoveryConfig(home, {
         publicMcpUrl: runtime.endpoint,
+        primaryRuntimeSourceRepositoryId: acceptedSourceRepositoryId,
         primaryRuntimeService: { platform: 'launchd', postRestartVerifyTimeoutMs: 10_000 },
       });
       removeOwnership(ownership);
@@ -4779,6 +4890,10 @@ describe('standalone recovery on canonical Runtime', () => {
           : { ...healthyVerify(), ok: false, runtime: { ok: false, running: false, ready: false, stale: false, reasonCodes: ['RUNTIME_UNAVAILABLE'] } },
         now: (() => { let value = 0; return () => value += 250; })(),
         sleep: async () => undefined,
+      }, {
+        expectedSourceRevision: acceptedSourceRevision,
+        expectedActiveReleaseId: authorityBefore.active.releaseId,
+        expectedAuthorityRevision: authorityBefore.revision,
       });
       expect(result).toMatchObject({ ok: true, attempted: true });
       expect(strictLocalProbes).toBe(1);

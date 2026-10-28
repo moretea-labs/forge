@@ -15,7 +15,7 @@ export const ACTIONS = [
   'runtime_status',
   'list_releases',
   'verify_stable_runtime',
-  'prepare_runtime_release_session',
+  'stage_runtime_release',
   'release_session_status',
   'advance_runtime_release_session',
   'verify_runtime_release_session_candidate',
@@ -33,7 +33,7 @@ const RELEASE_SESSION_ACTIONS = new Set([
   'promote_runtime_release_session_known_good',
 ]);
 const MUTATING_ACTIONS = new Set([
-  'prepare_runtime_release_session',
+  'stage_runtime_release',
   'advance_runtime_release_session',
   'verify_runtime_release_session_candidate',
   'cutover_runtime_release_session',
@@ -163,6 +163,17 @@ function releaseSessionInput(input) {
   return { session_id: sessionId };
 }
 
+function stageRuntimeReleaseInput(input) {
+  if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).length !== 1 || typeof input.expected_source_revision !== 'string') {
+    throw providerError('LOCAL_RECOVERY_STAGE_ARGUMENTS_INVALID', 'stage_runtime_release accepts only expected_source_revision.');
+  }
+  const revision = input.expected_source_revision.trim();
+  if (!/^[a-f0-9]{40}$/i.test(revision)) {
+    throw providerError('LOCAL_RECOVERY_EXPECTED_SOURCE_REVISION_INVALID', 'expected_source_revision must be one exact 40-hex Git commit.');
+  }
+  return { expected_source_revision: revision };
+}
+
 function mutationRequestId(requestId) {
   return `local-recovery:${createHash('sha256').update(String(requestId)).digest('hex').slice(0, 32)}`;
 }
@@ -214,11 +225,13 @@ export async function executeAction(actionId, input, providerConfig, injected = 
   const config = validateProviderConfig(providerConfig);
   if (!ACTIONS.includes(actionId)) throw providerError('LOCAL_RECOVERY_ACTION_UNSUPPORTED', 'Unsupported Local Recovery action.');
   const sessionArgs = RELEASE_SESSION_ACTIONS.has(actionId) ? releaseSessionInput(input) : undefined;
-  if (!sessionArgs) assertEmptyInput(input);
+  const stageArgs = actionId === 'stage_runtime_release' ? stageRuntimeReleaseInput(input) : undefined;
+  if (!sessionArgs && !stageArgs) assertEmptyInput(input);
   const callTool = injected.callRecoveryTool ?? callRecoveryTool;
-  if (actionId === 'prepare_runtime_release_session' || actionId === 'advance_runtime_release_session') ensureSourceRepositoryProvenance(config.controllerHome, injected);
+  if (actionId === 'stage_runtime_release' || actionId === 'advance_runtime_release_session') ensureSourceRepositoryProvenance(config.controllerHome, injected);
   const args = {
     ...(sessionArgs ?? {}),
+    ...(stageArgs ?? {}),
     ...(MUTATING_ACTIONS.has(actionId) ? { request_id: mutationRequestId(injected.requestId ?? actionId) } : {}),
   };
   return await callTool(config.controllerHome, actionId, args, injected);

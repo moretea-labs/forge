@@ -110,6 +110,8 @@ connections, not in-flight mutation evidence; HTTP request counts cannot add a
 second quiescence gate. The existing service handoff still proves the previous
 process has stopped and the exact replacement is serving before acceptance.
 
+The ordinary compatible source-release path has been superseded by a thinner direct artifact handoff. Source acceptance remains outside Recovery: the model/workflow supplies one exact accepted source SHA to `stage_runtime_release`, which writes only an immutable portable artifact into the Stable Controller Home release store and runs file plus execution canaries. A separate `activate_runtime_release` call must fence that artifact's source SHA together with the caller-observed active release id and RuntimeReleaseAuthority revision before the existing transactional activation may touch SQLite, services or release authority. Candidate B is therefore not created for ordinary compatible releases. The ReleaseSession state machine below remains the explicit incompatible-migration and historical-reconciliation path; its persisted wire values remain readable so rollback and older Recovery releases do not acquire a second compatibility authority.
+
 ReleaseSession separates wire compatibility from semantic authority. One-way migration also reconciles historical legacy `soaking` records without guesswork: Candidate B is terminalized as `known_good` only when exact durable lineage proves it became a later Stable A, or current RuntimeReleaseAuthority `previous` references that exact release identity; missing proof fails closed. Multiple later ReleaseSession attempts that all name the same exact Candidate B as Stable A are corroborating acceptance evidence, not branches. Successor proof is derived from one pre-migration inventory snapshot, so rewrite order cannot manufacture or erase acceptance evidence. Its
 storage `schemaVersion` remains 1 so the immediately previous Recovery release
 can still inventory the record after an exact rollback; current code requires
@@ -182,10 +184,12 @@ Stable A rollback identity. Recovery never replays a cutover merely because a
 helper response was lost.
 Automatic source reconciliation is also revision-bounded: once an immutable
 source revision has any terminal ReleaseSession, the daemon will not create a
-second automatic ReleaseSession for that same revision. Explicit human release
-operations remain available, and a changed source revision becomes eligible for
-a new automatic attempt. This rule is derived from ReleaseSession history; it
-introduces no retry ledger or second release authority.
+second migration ReleaseSession for that same revision. Source drift itself is
+not release authority: a changed `origin/main` is reported as `source_mismatch`
+until the model/workflow explicitly selects the accepted SHA for direct staging
+or deliberately starts the incompatible-migration path. This preserves one
+release-decision owner and prevents Recovery from turning Git freshness into a
+product-release policy.
 
 Successful cutover enters `soaking` as soon as the canonical live Runtime observation proves the expected release/artifact identity is running, ready and non-stale. Cutover reconciliation does not rerun the expensive full verification suite after activation. `known_good` is terminalized only after strict whole-Runtime verification of the exact active release, durable release/SQLite/service recovery-bundle attestation, and validation of the ReleaseSession rollback transaction. Performance observation and Supervisor/product continuation proof remain independent diagnostics or product-acceptance evidence; neither can authorize or veto Recovery known-good, and neither triggers automatic rollback. Transient/unknown mechanical observations remain non-terminal and may be reconciled against the same ReleaseSession. The state machine records redacted receipt ids and summaries, never tokens, raw database payloads or browser messages.
 

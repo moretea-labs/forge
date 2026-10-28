@@ -26,7 +26,7 @@ describe('Recovery ReleaseSession', () => {
     const { stable, stableRelease, candidate, candidateRelease } = lanes(home);
     let session = createReleaseSession({ controllerHome: home, sessionId: candidate.sessionId, stable, stableRelease, candidate, sourceRevision: 'abc123' });
     session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'built', candidateRelease, receipts: [{ id: 'build', kind: 'build', summary: 'built' }] });
-    session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'static_verified' });
+    expect(() => advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'static_verified' })).toThrow('RELEASE_SESSION_STATIC_VERIFIED_LEGACY_ONLY');
     session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'candidate_booted' });
     expect(() => advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'candidate_verified' })).toThrow('RELEASE_SESSION_CANDIDATE_CANARIES_INCOMPLETE');
     session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'candidate_verified', receipts: ['recovery', 'mcp', 'scheduler', 'supervisor', 'controller'].map((id) => ({ id, kind: 'candidate_canary' as const, summary: id })) });
@@ -43,7 +43,6 @@ describe('Recovery ReleaseSession', () => {
     const { stable, stableRelease, candidate, candidateRelease } = lanes(home);
     let session = createReleaseSession({ controllerHome: home, sessionId: candidate.sessionId, stable, stableRelease, candidate, sourceRevision: 'abc123' });
     session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'built', candidateRelease });
-    session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'static_verified', receipts: ['type', 'runtime_architecture', 'architecture_sync', 'bootstrap'].map((id) => ({ id, kind: 'static_gate' as const, summary: id })) });
     session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'candidate_booted' });
     session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'candidate_verified', receipts: ['recovery', 'mcp', 'scheduler', 'supervisor', 'controller'].map((id) => ({ id, kind: 'candidate_canary' as const, summary: id })) });
     session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'cutover_eligible' });
@@ -169,8 +168,7 @@ describe('Recovery ReleaseSession', () => {
       controllerHome,
       sessionId,
       expectedRevision: session.revision,
-      phase: 'static_verified',
-      receipts: ['type', 'runtime_architecture', 'architecture_sync', 'bootstrap'].map((id) => ({ id, kind: 'static_gate' as const, summary: id })),
+      phase: 'candidate_booted',
     });
 
     const cancelled = await cancelConfiguredRuntimeReleaseSession(createRecoveryConfig(controllerHome), sessionId, 'test-cancel');
@@ -253,7 +251,6 @@ describe('Recovery ReleaseSession', () => {
     const { stable, stableRelease, candidate, candidateRelease } = lanes(home);
     let session = createReleaseSession({ controllerHome: home, sessionId: candidate.sessionId, stable, stableRelease, candidate, sourceRevision: 'abc123' });
     session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'built', candidateRelease });
-    session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'static_verified', receipts: ['type', 'runtime_architecture', 'architecture_sync', 'bootstrap'].map((id) => ({ id, kind: 'static_gate' as const, summary: id })) });
     session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'candidate_booted' });
     session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'candidate_verified', receipts: ['recovery', 'mcp', 'scheduler', 'supervisor', 'controller'].map((id) => ({ id, kind: 'candidate_canary' as const, summary: id })) });
     session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'cutover_eligible' });
@@ -346,7 +343,6 @@ describe('Recovery ReleaseSession', () => {
     const { stable, stableRelease, candidate, candidateRelease } = lanes(home);
     let predecessor = createReleaseSession({ controllerHome: home, sessionId: candidate.sessionId, stable, stableRelease, candidate, sourceRevision: 'abc123' });
     predecessor = advanceReleaseSession({ controllerHome: home, sessionId: predecessor.sessionId, expectedRevision: predecessor.revision, phase: 'built', candidateRelease });
-    predecessor = advanceReleaseSession({ controllerHome: home, sessionId: predecessor.sessionId, expectedRevision: predecessor.revision, phase: 'static_verified', receipts: ['type', 'runtime_architecture', 'architecture_sync', 'bootstrap'].map((id) => ({ id, kind: 'static_gate' as const, summary: id })) });
     predecessor = advanceReleaseSession({ controllerHome: home, sessionId: predecessor.sessionId, expectedRevision: predecessor.revision, phase: 'candidate_booted' });
     predecessor = advanceReleaseSession({ controllerHome: home, sessionId: predecessor.sessionId, expectedRevision: predecessor.revision, phase: 'candidate_verified', receipts: ['recovery', 'mcp', 'scheduler', 'supervisor', 'controller'].map((id) => ({ id, kind: 'candidate_canary' as const, summary: id })) });
     predecessor = advanceReleaseSession({ controllerHome: home, sessionId: predecessor.sessionId, expectedRevision: predecessor.revision, phase: 'cutover_eligible' });
@@ -430,7 +426,7 @@ describe('Recovery ReleaseSession', () => {
       .toThrow('RELEASE_SESSION_ACTIVE_EXISTS');
   });
 
-  test('derives the next normal release action only from durable ReleaseSession phase', () => {
+  test('derives the next incompatible-migration action only from durable ReleaseSession phase', () => {
     const home = mkdtempSync(join(tmpdir(), 'forge-release-session-coordinator-'));
     roots.push(home);
     expect(decideConfiguredRuntimeReleaseAction(home)).toEqual({ action: 'prepare' });
@@ -439,8 +435,9 @@ describe('Recovery ReleaseSession', () => {
     expect(decideConfiguredRuntimeReleaseAction(home)).toMatchObject({ action: 'prepare', session: { sessionId: session.sessionId } });
     session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'built', candidateRelease });
     expect(decideConfiguredRuntimeReleaseAction(home)).toMatchObject({ action: 'verify_candidate', session: { revision: session.revision } });
-    const legacy = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'static_verified' });
-    expect(decideConfiguredRuntimeReleaseAction(home)).toMatchObject({ action: 'verify_candidate', session: { revision: legacy.revision } });
+    expect(() => advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'static_verified' })).toThrow('RELEASE_SESSION_STATIC_VERIFIED_LEGACY_ONLY');
+    session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'candidate_booted' });
+    expect(decideConfiguredRuntimeReleaseAction(home)).toMatchObject({ action: 'verify_candidate', session: { revision: session.revision } });
   });
 
   test('automatic reconciliation reads source lazily and never replays a terminal source revision', () => {

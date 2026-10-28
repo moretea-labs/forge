@@ -794,12 +794,23 @@ export function buildRecoveryCommand(): Command {
     });
 
   command.command('activate-runtime')
-    .description('Activate an already staged immutable Runtime release: stop, atomically switch whole-release authority, start, verify, and restore the previous whole release on failure')
+    .description('Activate one staged immutable Runtime release only while exact accepted source and observed Runtime authority still match')
     .requiredOption('--controller-home <path>', 'Explicit Controller Home')
     .requiredOption('--release-manifest <path>', 'Absolute manifest.json of the staged immutable Runtime release')
-    .action(async (opts: { controllerHome: string; releaseManifest: string }) => {
+    .requiredOption('--expected-source-revision <sha>', 'Exact accepted 40-hex source commit')
+    .requiredOption('--expected-active-release-id <id>', 'Active Runtime release observed before activation')
+    .requiredOption('--expected-authority-revision <revision>', 'RuntimeReleaseAuthority revision observed before activation')
+    .action(async (opts: { controllerHome: string; releaseManifest: string; expectedSourceRevision: string; expectedActiveReleaseId: string; expectedAuthorityRevision: string }) => {
       const home = resolveControllerHome(opts.controllerHome);
-      const result = await activateRuntimeRelease(loadRecoveryConfig(home), resolve(opts.releaseManifest));
+      const authorityRevision = Number(opts.expectedAuthorityRevision);
+      if (!/^[a-f0-9]{40}$/i.test(opts.expectedSourceRevision) || !Number.isInteger(authorityRevision) || authorityRevision < 1) {
+        throw new Error('RECOVERY_RUNTIME_RELEASE_ACTIVATION_FENCE_INVALID');
+      }
+      const result = await activateRuntimeRelease(loadRecoveryConfig(home), resolve(opts.releaseManifest), {}, {
+        expectedSourceRevision: opts.expectedSourceRevision,
+        expectedActiveReleaseId: opts.expectedActiveReleaseId,
+        expectedAuthorityRevision: authorityRevision,
+      });
       output(result);
       if (!result.ok) process.exitCode = 1;
     });

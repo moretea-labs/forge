@@ -30,6 +30,7 @@ import {
   loadRecoveryConfig,
   loadWatchdogState,
   saveWatchdogState,
+  stageConfiguredRuntimeRelease,
   reconnectMain,
   recoverPrimaryRuntime,
   recoveryMachineIdentity,
@@ -470,7 +471,8 @@ export const RECOVERY_TOOLS = [
   { name: 'restart_primary_runtime', description: 'Explicitly restart the installed canonical Forge Runtime service, including when currently healthy, then require whole-Runtime verification after exact Recovery machine identity matches.', inputSchema: mutationInputSchema() },
   { name: 'restart_primary_connector', description: 'Explicitly restart the configured primary OAuth/Connector service, including when endpoint probes pass, only after exact Recovery machine identity and local Canonical Runtime verification succeed; verify the listener and public endpoint again afterward.', inputSchema: mutationInputSchema() },
   { name: 'recover_primary_runtime', description: 'Stop the canonical Runtime, restore the attested previous whole-Runtime release and SQLite backup, restart it, and require verification.', inputSchema: mutationInputSchema() },
-  { name: 'activate_runtime_release', description: 'Activate an already staged immutable Runtime release only if machine identity and caller-observed active release/authority revision are still current. Reverse activation of current.previous is rejected; use rollback_previous/recover_primary_runtime instead.', inputSchema: mutationInputSchema({ release_path: { type: 'string', minLength: 8, maxLength: 1024, description: 'Absolute path to the staged immutable Runtime release directory.' }, expected_active_release_id: { type: 'string', minLength: 1, maxLength: 256 }, expected_authority_revision: { type: 'integer', minimum: 1 } }, ['release_path', 'expected_active_release_id', 'expected_authority_revision']) },
+  { name: 'stage_runtime_release', description: 'Materialize one model-selected accepted source commit into canonical immutable Runtime release storage without changing Runtime authority, SQLite, or services.', inputSchema: mutationInputSchema({ expected_source_revision: { type: 'string', pattern: '^[a-fA-F0-9]{40}$' } }, ['expected_source_revision']) },
+  { name: 'activate_runtime_release', description: 'Activate one canonical staged immutable Runtime release only if its source commit and caller-observed active release/authority revision are still exact. Reverse activation of current.previous is rejected; use rollback_previous/recover_primary_runtime instead.', inputSchema: mutationInputSchema({ release_path: { type: 'string', minLength: 8, maxLength: 1024, description: 'Absolute path to the staged immutable Runtime release directory.' }, expected_source_revision: { type: 'string', pattern: '^[a-fA-F0-9]{40}$' }, expected_active_release_id: { type: 'string', minLength: 1, maxLength: 256 }, expected_authority_revision: { type: 'integer', minimum: 1 } }, ['release_path', 'expected_source_revision', 'expected_active_release_id', 'expected_authority_revision']) },
   { name: 'pin_runtime_release', description: 'Pin one extant legacy/home-bound immutable Runtime release so retention preserves it for explicit Runtime-only recovery activation. Portable source candidates are rejected and must use ReleaseSession.', inputSchema: mutationInputSchema({ release_path: { type: 'string', minLength: 8, maxLength: 1024, description: 'Absolute path to the immutable Runtime release directory or manifest.' } }, ['release_path']) },
   { name: 'unpin_runtime_release', description: 'Remove the explicit stable Runtime retention pin without deleting or activating any release.', inputSchema: mutationInputSchema() },
   { name: 'activate_pinned_runtime_release', description: 'Activate the explicitly pinned legacy/home-bound Runtime release without restoring an older SQLite backup; portable source candidates are rejected and must use ReleaseSession.', inputSchema: mutationInputSchema({ expected_active_release_id: { type: 'string', minLength: 1, maxLength: 256 }, expected_authority_revision: { type: 'integer', minimum: 1 } }, ['expected_active_release_id', 'expected_authority_revision']) },
@@ -822,16 +824,24 @@ export async function dispatchRecoveryTool(config: RecoveryConfig, name: string,
       assertRecoveryGatewayMutationIdentity(config, args);
       return mutationResponse(config, await recoverPrimaryRuntime(config, `recovery-gateway:${args.request_id}`));
     }
+    case 'stage_runtime_release': {
+      if (!requestId(args.request_id)) throw new Error('RECOVERY_REQUEST_ID_REQUIRED');
+      assertRecoveryGatewayMutationIdentity(config, args);
+      if (typeof args.expected_source_revision !== 'string' || !/^[a-f0-9]{40}$/i.test(args.expected_source_revision.trim())) throw new Error('RECOVERY_EXPECTED_SOURCE_REVISION_REQUIRED');
+      return mutationResponse(config, stageConfiguredRuntimeRelease(config, args.expected_source_revision.trim(), {}, `recovery-gateway:${args.request_id}`));
+    }
     case 'activate_runtime_release': {
       if (!requestId(args.request_id)) throw new Error('RECOVERY_REQUEST_ID_REQUIRED');
       assertRecoveryGatewayMutationIdentity(config, args);
       if (typeof args.release_path !== 'string' || !args.release_path.trim()) throw new Error('RECOVERY_RELEASE_PATH_REQUIRED');
+      if (typeof args.expected_source_revision !== 'string' || !/^[a-f0-9]{40}$/i.test(args.expected_source_revision.trim())) throw new Error('RECOVERY_EXPECTED_SOURCE_REVISION_REQUIRED');
       if (typeof args.expected_active_release_id !== 'string' || !args.expected_active_release_id.trim()) throw new Error('RECOVERY_EXPECTED_ACTIVE_RELEASE_REQUIRED');
       if (!Number.isInteger(args.expected_authority_revision) || Number(args.expected_authority_revision) < 1) throw new Error('RECOVERY_EXPECTED_AUTHORITY_REVISION_REQUIRED');
       const releasePath = args.release_path.trim();
       const manifestPath = basename(releasePath) === 'manifest.json' ? releasePath : join(releasePath, 'manifest.json');
       return mutationResponse(config, await activateRuntimeRelease(config, manifestPath, {}, {
         requestId: `recovery-gateway:${args.request_id}`,
+        expectedSourceRevision: args.expected_source_revision.trim(),
         expectedActiveReleaseId: args.expected_active_release_id.trim(),
         expectedAuthorityRevision: Number(args.expected_authority_revision),
       }));
@@ -1131,7 +1141,7 @@ async function startGateway(config: RecoveryConfig, daemonIdentity?: RecoveryRun
   const recoveryMcp = new RecoveryMcpServer({
     tools: recoveryTools,
     dispatchTool: async (name, args, context) => {
-      if (name === 'attest_known_good' || name === 'rollback_previous' || name === 'restart_primary_runtime' || name === 'restart_primary_connector' || name === 'recover_primary_runtime' || name === 'activate_runtime_release' || name === 'pin_runtime_release' || name === 'unpin_runtime_release' || name === 'activate_pinned_runtime_release' || name === 'prepare_runtime_release_session' || name === 'verify_runtime_release_session_candidate' || name === 'cutover_runtime_release_session' || name === 'promote_runtime_release_session_known_good' || name === 'migrate_controller_home' || name === 'restart_public_tunnel') {
+      if (name === 'attest_known_good' || name === 'rollback_previous' || name === 'restart_primary_runtime' || name === 'restart_primary_connector' || name === 'recover_primary_runtime' || name === 'stage_runtime_release' || name === 'activate_runtime_release' || name === 'pin_runtime_release' || name === 'unpin_runtime_release' || name === 'activate_pinned_runtime_release' || name === 'prepare_runtime_release_session' || name === 'verify_runtime_release_session_candidate' || name === 'cutover_runtime_release_session' || name === 'promote_runtime_release_session_known_good' || name === 'migrate_controller_home' || name === 'restart_public_tunnel') {
         const now = Date.now();
         const window = (recentMutations.get(context.remoteAddress) ?? []).filter((at) => now - at < 60_000);
         if (window.length >= 3) throw new Error('Recovery mutation rate limit exceeded.');
