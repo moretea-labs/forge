@@ -122,22 +122,7 @@ export function releaseSessionAcceptanceTimedOut(
 }
 
 /** Proof may arrive after prolonged soak; it must still follow cutover. */
-export function releaseSessionContinuationProofTimely(
-  session: Pick<ReleaseSession, 'phase' | 'receipts'>,
-  lastCommittedAt: string,
-  nowMs: number,
-): boolean {
-  const started = session.receipts.find((r) => r.id === 'soak_started');
-  if (!started) return true; // Historical sessions retain their legacy contract.
-  const startedAt = Date.parse(started.recordedAt ?? '');
-  const provedAt = Date.parse(lastCommittedAt);
-  return session.phase === 'soaking'
-    && Number.isFinite(startedAt) && Number.isFinite(provedAt) && Number.isFinite(nowMs)
-    && provedAt >= startedAt && provedAt <= nowMs;
-}
-
 const REQUIRED_CANDIDATE_CANARIES = new Set(['recovery', 'mcp', 'scheduler', 'supervisor', 'controller']);
-const REQUIRED_KNOWN_GOOD_SOAK_GATES = new Set(['supervisor_continuation_proof']);
 
 function sessionPath(controllerHome: string, sessionId: string): string {
   return join(resolve(controllerHome), 'recovery', 'state', 'release-sessions', `${sessionId}.json`);
@@ -709,9 +694,6 @@ function assertTransition(session: ReleaseSession, phase: ReleaseSessionPhase): 
   }
   if (phase === 'candidate_verified' && [...REQUIRED_CANDIDATE_CANARIES].some((id) => !receiptIds(session, 'candidate_canary').has(id))) {
     throw new Error('RELEASE_SESSION_CANDIDATE_CANARIES_INCOMPLETE');
-  }
-  if (phase === 'known_good' && [...REQUIRED_KNOWN_GOOD_SOAK_GATES].some((id) => !receiptIds(session, 'soak').has(id))) {
-    throw new Error('RELEASE_SESSION_SOAK_GATES_INCOMPLETE');
   }
   if (phase === 'cutover_eligible' && (session.stable.controllerHome === session.candidate.controllerHome || session.stable.port === session.candidate.port)) {
     throw new Error('RELEASE_SESSION_LANE_COLLISION');

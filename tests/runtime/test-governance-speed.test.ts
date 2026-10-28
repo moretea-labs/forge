@@ -90,10 +90,10 @@ describe('execution-speed test governance', () => {
     expect(stepsFor('main').some((step) => !('gate' in step) && step.label === 'frozen MCP tool contract')).toBe(true);
     expect(stepsFor('main').some((step) => !('gate' in step) && step.label === 'quality harness benchmark')).toBe(true);
     expect(stepsFor('main')).toContainEqual({
-      label: 'Recovery transactional rollback',
+      label: 'Recovery rollback and known-good authority',
       command: 'bun',
       args: ['test', 'tests/runtime/standalone-recovery.test.ts', '--test-name-pattern',
-        'new opt-in ReleaseSession rolls back Stable A when causal E2E proof remains missing past 30 minutes|known-good runaway CPU rejection rolls Candidate B back to Stable A instead of repeating soak'],
+        'restores only the attested previous whole-Runtime release while Runtime is stopped|independent CPU rejection does not own ReleaseSession rollback or known-good|long soak and absent Supervisor proof do not veto mechanical known-good'],
       timeoutMs: 5 * 60_000,
     });
     expect(stepsFor('main').some((step) => 'gate' in step && step.gate === 'task')).toBe(true);

@@ -187,12 +187,7 @@ operations remain available, and a changed source revision becomes eligible for
 a new automatic attempt. This rule is derived from ReleaseSession history; it
 introduces no retry ledger or second release authority.
 
-Successful cutover enters `soaking` as soon as the canonical live Runtime observation proves the expected release/artifact identity is running, ready and non-stale. Cutover reconciliation does not rerun the expensive full verification suite after activation. Only the existing full verification + performance observation + recoverable release/SQLite/service bundle attestation may terminalize `known_good`. A definitive runaway-CPU rejection is an acceptance
-failure, so Recovery executes the existing exact Stable A rollback transaction
-instead of leaving Candidate B in `soaking` for repeated performance sampling.
-Transient/unknown observations remain non-terminal and may be reconciled against
-the same ReleaseSession. The state machine records redacted receipt ids and
-summaries, never tokens, raw database payloads or browser messages.
+Successful cutover enters `soaking` as soon as the canonical live Runtime observation proves the expected release/artifact identity is running, ready and non-stale. Cutover reconciliation does not rerun the expensive full verification suite after activation. `known_good` is terminalized only after strict whole-Runtime verification of the exact active release, durable release/SQLite/service recovery-bundle attestation, and validation of the ReleaseSession rollback transaction. Performance observation and Supervisor/product continuation proof remain independent diagnostics or product-acceptance evidence; neither can authorize or veto Recovery known-good, and neither triggers automatic rollback. Transient/unknown mechanical observations remain non-terminal and may be reconciled against the same ReleaseSession. The state machine records redacted receipt ids and summaries, never tokens, raw database payloads or browser messages.
 
 ## Persistent-state contract
 
@@ -225,7 +220,7 @@ the service contract records a token *path*, while each B token is an independen
 - stale or missing known-good bundle material cannot protect a release;
 - ReleaseSession cannot advance past static/candidate gates or a stale CAS;
 - no-op automatic reconciliation does not fork a Recovery worker, and terminal source revisions are not autonomously replayed;
-- definitive runaway-CPU rejection restores Stable A through the existing ReleaseSession rollback authority rather than repeating soak measurement;
+- performance/runaway evidence is diagnostic or governed benchmark evidence and never independently restores or rejects a mechanically recoverable release;
 - terminal Process observation and full maintenance both reconcile any exact leftover workspace lease; `completed_unknown` cannot permanently fence a checkout;
 - periodic Runtime maintenance is the production retention caller; its rotating removal phase reaches release history without starving the other cleanup classes, while committed Runtime authority protects active/previous release trees, the serving Connector release and the previous rollback SQLite backup; historical known-good evidence alone does not pin release trees;
 - final live release testing remains a separate, one-shot governed operation.

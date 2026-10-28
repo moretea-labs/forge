@@ -12,7 +12,7 @@ import { parseOpenAiSecureTunnelRuntimeStatus } from '../../adapters/mcp/tunnels
 import {
   activateRuntimeRelease,
   activatePinnedRuntimeRelease,
-  attestKnownGood as attestKnownGoodWithCpu,
+  attestKnownGood,
   createRecoveryConfig,
   configuredRuntimeReleaseSourceState,
   decideWatchdog,
@@ -29,6 +29,7 @@ import {
   resolveRecoveryPackageConnectorExecutable,
   listRecoveryHistory,
   listReleases,
+  measureConfiguredRuntimePerformance,
   pinRuntimeRelease,
   promoteConfiguredRuntimeReleaseSessionKnownGood,
   recoverPrimaryRuntime,
@@ -111,20 +112,6 @@ import { inspectWorkflowSupervisorBrowserAdapter, installWorkflowSupervisorBrows
 
 import { measureRuntimePerformance, assertRuntimePerformanceEvidence, readRuntimeCpu, RECOVERY_RUNAWAY_MEAN_CPU_PERCENT, RECOVERY_RUNAWAY_P95_CPU_PERCENT } from '../../src/runtime/standalone-recovery/performance';
 
-function supervisorContinuationProofDependency() {
-  return async (_forgeHome: string, input: { repoId?: string; activeReleaseId: string; notBefore: string }) => ({
-    taskId: 'supervisor:test-live-proof',
-    conversationId: 'test-live-proof-conversation',
-    activeReleaseId: input.activeReleaseId,
-    actions: ['CONTINUE', 'CONTINUE', 'DONE'] as ['CONTINUE', 'CONTINUE', 'DONE'],
-    completionFingerprints: ['completion-1', 'completion-2', 'completion-3'] as [string, string, string],
-    sourceEffectIds: ['effect-1', 'effect-2', 'effect-3'] as [string, string, string],
-    runtimeInstanceIds: ['runtime-before-reconnect', 'runtime-after-reconnect'],
-    firstCommittedAt: input.notBefore,
-    lastCommittedAt: new Date(Math.max(Date.parse(input.notBefore), Date.now())).toISOString(),
-  });
-}
-
 function idleCpuDependencies() {
   let elapsed = 0;
   const base = Date.now() - 60_000;
@@ -134,10 +121,6 @@ function idleCpuDependencies() {
     wallNow: () => base + elapsed,
     sleep: async (ms: number) => { elapsed += ms; },
   };
-}
-
-function attestKnownGood(config: Parameters<typeof attestKnownGoodWithCpu>[0]) {
-  return attestKnownGoodWithCpu(config, idleCpuDependencies());
 }
 
 const roots: string[] = [];
@@ -2702,35 +2685,25 @@ describe('standalone recovery on canonical Runtime', () => {
 
     const failing = await failingPublicGatewayServer();
     const reconcileConfig = createRecoveryConfig(home, { publicMcpUrl: failing.endpoint });
-    const missingProof = await promoteConfiguredRuntimeReleaseSessionKnownGood(
-      reconcileConfig,
-      sessionId,
-      { ...idleCpuDependencies(), continuationProof: async () => undefined },
-      'known-good-proof-missing',
-    );
-    expect(missingProof).toMatchObject({ ok: false, attempted: true, releaseSession: { phase: 'soaking' } });
-    expect(missingProof.detail).toContain('RELEASE_SESSION_AUTONOMOUS_CONTINUATION_PROOF_MISSING');
-    expect(failing.requests).toHaveLength(0);
-
     const promoted = await promoteConfiguredRuntimeReleaseSessionKnownGood(
       reconcileConfig,
       sessionId,
-      { ...idleCpuDependencies(), wallNow: () => Date.now(), continuationProof: supervisorContinuationProofDependency() },
+      {},
       'known-good-reconcile',
     );
-
     expect(promoted).toMatchObject({ ok: true, attempted: true, releaseSession: { phase: 'known_good' } });
     expect((await verifyStableRuntime(config)).releases.knownGood?.revision).toBe(cutoverAuthority.active.releaseId);
     const acceptedListing = await listReleases(config);
     expect((acceptedListing.knownGood as Array<{ revision: string }>).some(
       (entry) => entry.revision === cutoverAuthority.active.releaseId)).toBe(true);
     expect(promoted.releaseSession?.receipts).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: 'supervisor_continuation_proof', kind: 'soak' }),
+      expect.objectContaining({ id: 'known_good', kind: 'known_good' }),
     ]));
     expect(failing.requests).toHaveLength(0);
+
   });
 
-  test('known-good runaway CPU rejection rolls Candidate B back to Stable A instead of repeating soak', async () => {
+  test('independent CPU rejection does not own ReleaseSession rollback or known-good', async () => {
     const home = controllerHome();
     const previousHome = process.env.HOME;
     process.env.HOME = home;
@@ -2817,76 +2790,25 @@ describe('standalone recovery on canonical Runtime', () => {
       session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'cutover_committed' });
       session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'soaking', receipts: [{ id: 'soak_started', kind: 'soak', summary: 'cutover' }] });
 
-      let elapsed = 0;
-      let cpuMs = 0;
-      let launchdLoaded = true;
-      let clock = 0;
       const config = createRecoveryConfig(home, { publicMcpUrl: runtime.endpoint, primaryRuntimeService: { platform: 'launchd' } });
-      const promoted = await promoteConfiguredRuntimeReleaseSessionKnownGood(config, sessionId, {
-        continuationProof: supervisorContinuationProofDependency(),
-        readCpu: () => ({ cpuMs: cpuMs += 5_000, processStartTime: 'fixture-process-start' }),
-        monotonicNow: () => elapsed,
-        wallNow: () => Date.now() + elapsed,
-        sleep: async (ms) => { elapsed += ms; },
-        rollback: {
-          platform: 'darwin',
-          currentUid: async () => 501,
-          runCommand: async (name, args) => {
-            if (name === 'lsof') return { ok: false, status: 1, stdout: '', stderr: '' };
-            if (args[0] === 'bootout') {
-              launchdLoaded = false;
-              removeOwnership(ownership);
-            }
-            if (args[0] === 'print') return launchdLoaded
-              ? { ok: true, status: 0, stdout: 'loaded', stderr: '' }
-              : { ok: false, status: 113, stdout: '', stderr: 'service not loaded' };
-            if (args[0] === 'bootstrap' || args[0] === 'kickstart') launchdLoaded = true;
-            return { ok: true, status: 0, stdout: '', stderr: '' };
-          },
-          runtimeRunning: () => false,
-          ensureRuntimeLaunchContract: () => undefined,
-          repairPrimaryConnectorBinding: async () => ({ ok: true, attempted: false, noOp: true, detail: 'fixture connector binding' }),
-          verifyLocal: async () => healthyVerify(),
-          now: () => clock += 1_000,
-          sleep: async () => undefined,
-        },
-      }, 'known-good-reject');
-
-      expect(promoted).toMatchObject({ ok: false, attempted: true, releaseSession: { phase: 'rolled_back' } });
-      expect(promoted.detail).toContain('RECOVERY_PERFORMANCE_REJECTED');
-      expect(promoted.detail).toContain('Stable A restored');
-      expect(readRuntimeReleaseAuthority(home)?.active.releaseId).toBe('release-a');
-
-      // Model a process death after the rollback authority write but before the
-      // ReleaseSession terminal receipt. A later known-good retry must settle
-      // that durable rollback locally, rather than retry Candidate B's full
-      // verification, public transport probes, or CPU sampler.
-      const strandedPath = join(home, 'recovery', 'state', 'release-sessions', `${sessionId}.json`);
-      const stranded = JSON.parse(readFileSync(strandedPath, 'utf8')) as { phase: string; revision: number; updatedAt: string };
-      stranded.phase = 'soaking';
-      stranded.revision += 1;
-      stranded.updatedAt = new Date().toISOString();
-      writeFileSync(strandedPath, `${JSON.stringify(stranded, null, 2)}\n`);
-      startObservedRuntime(home, runtime.endpoint, 'release-a', 'artifact-a');
-      const requestsBeforeReconcile = runtime.requests.length;
-
-      const reconciled = await promoteConfiguredRuntimeReleaseSessionKnownGood(
-        config,
-        sessionId,
-        idleCpuDependencies(),
-        'known-good-reconcile-committed-rollback',
-      );
-
-      expect(reconciled).toMatchObject({ ok: true, attempted: false, noOp: true, releaseSession: { phase: 'rolled_back' } });
-      expect(reconciled.detail).toContain('reconciled the already-committed Stable A rollback');
-      expect(runtime.requests).toHaveLength(requestsBeforeReconcile);
+      const busy = idleCpuDependencies();
+      await expect(measureConfiguredRuntimePerformance(config, {
+        ...busy,
+        readCpu: () => ({ cpuMs: busy.monotonicNow(), processStartTime: 'fixture-process-start' }),
+      })).rejects.toThrow('RECOVERY_PERFORMANCE_REJECTED');
+      expect(readRuntimeReleaseAuthority(home)?.active.releaseId).toBe('release-b');
+      expect(readReleaseSession(home, sessionId)?.phase).toBe('soaking');
+      const promoted = await promoteConfiguredRuntimeReleaseSessionKnownGood(config, sessionId, {}, 'known-good-after-independent-performance');
+      expect(promoted).toMatchObject({ ok: true, attempted: true, releaseSession: { phase: 'known_good' } });
+      expect(readRuntimeReleaseAuthority(home)?.active.releaseId).toBe('release-b');
+      removeOwnership(ownership);
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
     }
   });
 
-  test('unproved long-soaking release stays active but cannot become known-good', async () => {
+  test('long soak and absent Supervisor proof do not veto mechanical known-good', async () => {
     const home = controllerHome();
     const previousHome = process.env.HOME;
     process.env.HOME = home;
@@ -2973,25 +2895,18 @@ describe('standalone recovery on canonical Runtime', () => {
       session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'cutover_committed' });
       session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'soaking', receipts: [{ id: 'soak_started', kind: 'soak', summary: 'cutover' }] });
 
-      let elapsed = 0;
-      let cpuMs = 0;
-      let launchdLoaded = true;
-      let clock = 0;
       const config = createRecoveryConfig(home, { publicMcpUrl: runtime.endpoint, primaryRuntimeService: { platform: 'launchd' } });
-      // Even if an attestation bundle was persisted, an unaccepted candidate
-      // must remain provisional without applying an elapsed-time rollback.
       const provisional = await attestKnownGood(config);
       expect(provisional.revision).toBe('release-b');
       expect((await listReleases(config)).knownGood).toEqual([]);
       const promoted = await promoteConfiguredRuntimeReleaseSessionKnownGood(config, sessionId, {
-        continuationProof: async () => undefined,
         wallNow: () => Date.now() + 48 * 3600_000,
       });
-      expect(promoted.ok).toBe(false);
-      expect(promoted.detail).toContain('RELEASE_SESSION_AUTONOMOUS_CONTINUATION_PROOF_MISSING');
-      expect(readReleaseSession(home, sessionId)?.phase).toBe('soaking');
+      expect(promoted).toMatchObject({ ok: true, attempted: true, releaseSession: { phase: 'known_good' } });
       expect(readRuntimeReleaseAuthority(home)?.active.releaseId).toBe('release-b');
-      expect((await listReleases(config)).knownGood).toEqual([]);
+      expect((await listReleases(config)).knownGood).toEqual(expect.arrayContaining([
+        expect.objectContaining({ revision: 'release-b' }),
+      ]));
       removeOwnership(ownership);
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
@@ -5812,7 +5727,7 @@ describe('Recovery verifier OAuth registration lifecycle', () => {
 });
 
 
-describe('Recovery explicit performance acceptance', () => {
+describe('Recovery independent performance diagnostics', () => {
   const identity = { releaseId: 'candidate', authorityRevision: 3, runtimeInstanceId: 'runtime', pid: 123, startedAt: 'start' };
 
   test('CPU-time samples enforce thresholds, identity, expiry and measurement availability', async () => {
@@ -5883,7 +5798,7 @@ describe('Recovery explicit performance acceptance', () => {
     expect(readRuntimeCpu(process.pid).cpuMs).toBeGreaterThanOrEqual(0);
   });
 
-  test('performance observation does not hold the Recovery mutation lock and final attestation still requires it', async () => {
+  test('performance observation is independent while known-good persistence still requires the Recovery lock', async () => {
     const home = controllerHome();
     const activeManifest = manifest(home, 'release-cpu-lock', 'artifact-cpu-lock');
     ensureActiveRuntimeRelease(home, activeManifest);
@@ -5892,34 +5807,27 @@ describe('Recovery explicit performance acceptance', () => {
     startObservedRuntime(home, runtime.endpoint, 'release-cpu-lock', 'artifact-cpu-lock');
     const config = createRecoveryConfig(home, { publicMcpUrl: runtime.endpoint });
     const deps = idleCpuDependencies();
-    let sleepCount = 0;
-    let heldFinalLock: ReturnType<typeof acquireRecoveryOperationLock> | undefined;
-    const pending = attestKnownGoodWithCpu(config, {
+    let probes = 0;
+    const evidence = await measureConfiguredRuntimePerformance(config, {
       ...deps,
       sleep: async (ms: number) => {
-        sleepCount += 1;
-        const probe = acquireRecoveryOperationLock({
-          controllerHome: home,
-          action: 'test_probe_during_performance_observation',
-          requestId: `test-probe-${sleepCount}`,
-        });
+        const probe = acquireRecoveryOperationLock({ controllerHome: home, action: 'test_probe_during_performance_observation', requestId: `test-probe-${++probes}` });
         expect(probe.acquired).toBe(true);
-        if (sleepCount === 24) heldFinalLock = probe;
-        else if (probe.acquired) probe.handle.close();
+        if (probe.acquired) probe.handle.close();
         await deps.sleep(ms);
       },
     });
-    await expect(pending).rejects.toThrow('Recovery mutation already in progress');
-    expect(sleepCount).toBe(24);
-    expect(heldFinalLock?.acquired).toBe(true);
-    if (heldFinalLock?.acquired) heldFinalLock.handle.close();
-    expect(existsSync(join(home, 'recovery', 'state', 'known-good.json'))).toBe(false);
-
+    expect(evidence.sampleCount).toBe(20);
+    expect(probes).toBeGreaterThan(0);
+    const held = acquireRecoveryOperationLock({ controllerHome: home, action: 'test_attestation_lock', requestId: 'test-attestation-lock' });
+    expect(held.acquired).toBe(true);
+    await expect(attestKnownGood(config)).rejects.toThrow('Recovery mutation already in progress');
+    if (held.acquired) held.handle.close();
     const attested = await attestKnownGood(config);
-    expect(attested.performance?.sampleCount).toBe(20);
+    expect(attested.performance).toBeUndefined();
   });
 
-  test('functional health cannot attest a busy Runtime; explicit rollback of an attested live Runtime still requires stop', async () => {
+  test('busy CPU diagnostic does not veto recoverability; explicit rollback still requires stop', async () => {
     const home = controllerHome();
     const activeManifest = manifest(home, 'release-cpu', 'artifact-cpu');
     ensureActiveRuntimeRelease(home, activeManifest);
@@ -5928,18 +5836,17 @@ describe('Recovery explicit performance acceptance', () => {
     startObservedRuntime(home, runtime.endpoint, 'release-cpu', 'artifact-cpu');
     const config = createRecoveryConfig(home, { publicMcpUrl: runtime.endpoint });
     const busy = idleCpuDependencies();
-    await expect(attestKnownGoodWithCpu(config, {
+    await expect(measureConfiguredRuntimePerformance(config, {
       ...busy, readCpu: () => ({ cpuMs: busy.monotonicNow(), processStartTime: 'same' }),
     })).rejects.toThrow('RECOVERY_PERFORMANCE_REJECTED');
-    expect(existsSync(join(home, 'recovery', 'state', 'known-good.json'))).toBe(false);
     const attested = await attestKnownGood(config);
-    expect(attested.performance?.sampleCount).toBe(20);
+    expect(attested.performance).toBeUndefined();
     const result = await rollbackPrevious(config, 'explicit performance regression');
     expect(result.ok).toBe(false);
     expect(result.detail).toContain('stop the complete Canonical Runtime');
   });
 
-  test('attestation rejects a release switch after functional verification and before CPU sampling', async () => {
+  test('performance observation rejects a release switch without mutating known-good state', async () => {
     const home = controllerHome();
     const first = manifest(home, 'release-before-cpu', 'artifact-before-cpu');
     const second = manifest(home, 'release-after-verify', 'artifact-after-verify', 2);
@@ -5950,19 +5857,20 @@ describe('Recovery explicit performance acceptance', () => {
     const config = createRecoveryConfig(home, { publicMcpUrl: runtime.endpoint });
     const dependencies = idleCpuDependencies();
     let switched = false;
-    await expect(attestKnownGoodWithCpu(config, {
+    await expect(measureConfiguredRuntimePerformance(config, {
       ...dependencies,
       readCpu: () => {
         if (!switched) {
           switched = true;
           removeOwnership(ownership);
-          publishRuntimeRelease(home, second, 'switch-after-functional-verify');
+          publishRuntimeRelease(home, second, 'switch-during-performance-observation');
         }
         return { cpuMs: 0, processStartTime: 'same' };
       },
     })).rejects.toThrow('RECOVERY_PERFORMANCE_UNKNOWN');
     expect(existsSync(join(home, 'recovery', 'state', 'known-good.json'))).toBe(false);
   });
+
 });
 
 test('recovery release install waits for an in-flight Recovery mutation instead of failing immediately', async () => {
