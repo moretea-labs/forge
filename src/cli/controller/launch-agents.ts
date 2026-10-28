@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync, rmSync } from 'fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync, rmSync } from 'fs';
 import { basename, dirname, join } from 'path';
 import { homedir } from 'os';
 import { runProcess } from '../../effects/process-runner';
@@ -106,9 +106,20 @@ export function snapshotLaunchAgent(path: string): LaunchAgentFileSnapshot {
 export function installLaunchAgent(sourcePath: string, label: string): LaunchAgentFileSnapshot {
   const target = launchAgentPath(label);
   const snapshot = snapshotLaunchAgent(target);
+  const desiredContent = readFileSync(sourcePath);
+  if (snapshot.content?.equals(desiredContent)) {
+    try {
+      const installed = lstatSync(target);
+      if (installed.isFile() && !installed.isSymbolicLink() && (installed.mode & 0o777) === 0o600) {
+        return snapshot;
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+  }
   mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
   const temporary = `${target}.${process.pid}.tmp`;
-  writeFileSync(temporary, readFileSync(sourcePath), { mode: 0o600 });
+  writeFileSync(temporary, desiredContent, { mode: 0o600 });
   try { chmodSync(temporary, 0o600); } catch { /* best effort */ }
   renameSync(temporary, target);
   return snapshot;
