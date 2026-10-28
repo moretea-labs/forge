@@ -4808,13 +4808,15 @@ describe('standalone recovery on canonical Runtime', () => {
     }
   });
 
-  test('activates an already staged immutable Runtime release and keeps the previous whole release for rollback', async () => {
+  test('activates an exact-source portable Runtime release and keeps the previous whole release for rollback', async () => {
     const home = controllerHome();
     const previousHome = process.env.HOME;
     process.env.HOME = home;
     try {
       const first = manifest(home, 'release-a', 'artifact-a');
       const candidateReleaseId = 'release-candidate';
+      const acceptedSourceRevision = 'a'.repeat(40);
+      const acceptedSourceRepositoryId = 'repo_direct_activation';
       const candidateRoot = join(home, 'runtime', 'releases', candidateReleaseId);
       mkdirSync(candidateRoot, { recursive: true });
       writeFileSync(join(candidateRoot, 'forge-runtime'), '#!/bin/sh\nexit 0\n', { mode: 0o700 });
@@ -4831,18 +4833,21 @@ describe('standalone recovery on canonical Runtime', () => {
         ...executionSurface,
         arguments: [],
         configurationSchemaVersion: 1,
-        controllerHome: resolve(home),
+        deploymentScope: 'portable',
+        sourceCommit: acceptedSourceRevision,
+        sourceRepositoryId: acceptedSourceRepositoryId,
         databaseSchemaCompatibility: { minimum: 1, maximum: 1 },
         workerProtocolVersion: 1,
         createdAt: new Date().toISOString(),
       }, null, 2)}\n`);
 
-      ensureActiveRuntimeRelease(home, first);
+      const authorityBefore = ensureActiveRuntimeRelease(home, first);
       const runtime = await runtimeServer();
       writeMainToken(home);
       const ownership = startObservedRuntime(home, runtime.endpoint, 'release-a', 'artifact-a');
       const config = createRecoveryConfig(home, {
         publicMcpUrl: runtime.endpoint,
+        primaryRuntimeSourceRepositoryId: acceptedSourceRepositoryId,
         primaryRuntimeService: { platform: 'launchd', postRestartVerifyTimeoutMs: 10_000 },
       });
       removeOwnership(ownership);
@@ -4885,6 +4890,10 @@ describe('standalone recovery on canonical Runtime', () => {
           : { ...healthyVerify(), ok: false, runtime: { ok: false, running: false, ready: false, stale: false, reasonCodes: ['RUNTIME_UNAVAILABLE'] } },
         now: (() => { let value = 0; return () => value += 250; })(),
         sleep: async () => undefined,
+      }, {
+        expectedSourceRevision: acceptedSourceRevision,
+        expectedActiveReleaseId: authorityBefore.active.releaseId,
+        expectedAuthorityRevision: authorityBefore.revision,
       });
       expect(result).toMatchObject({ ok: true, attempted: true });
       expect(strictLocalProbes).toBe(1);
