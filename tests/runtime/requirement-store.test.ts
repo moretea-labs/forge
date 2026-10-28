@@ -110,7 +110,27 @@ test('rejects reopening a completed Requirement without an explicit replacement 
   reviseRequirementSemantic(options, 'req-2', { expectedRevision: 1, state: 'completed', remainingWork: [], acceptedEvidenceRefs: ['review:accepted'] });
   expect(() => updateRequirement(options, { requirementId: 'req-2', action: 'cancel_completed', mutate: (current) => ({ ...current, state: 'cancelled' }) }))
     .toThrow(/REQUIREMENT_STATE_TRANSITION_INVALID/);
+  const completed = readRequirement(options, 'req-2')!.value;
+  expect(() => reviseRequirementSemantic(options, 'req-2', {
+    expectedRevision: completed.semanticRevision ?? 2,
+    state: 'cancelled',
+  })).toThrow(/REQUIREMENT_SEMANTIC_TERMINAL_TRANSITION_FORBIDDEN/);
   expect(() => updateRequirement(options, { requirementId: 'req-2', action: 'reopen', mutate: (current) => ({ ...current, state: 'active' }) })).toThrow(/REQUIREMENT_STATE_TRANSITION_INVALID/);
+});
+
+test('semantic Requirement CAS forbids cancelled-to-done terminal rewrite', () => {
+  const home = mkdtempSync(join('/tmp', 'forge-requirement-'));
+  homes.push(home);
+  const options = { controllerHome: home };
+  createRequirement(options, { requirementId: 'req-cancelled-terminal', title: 'Outcome', outcomeStatement: 'Outcome statement' });
+  reviseRequirementSemantic(options, 'req-cancelled-terminal', { expectedRevision: 1, state: 'cancelled' });
+  const cancelled = readRequirement(options, 'req-cancelled-terminal')!.value;
+  expect(() => reviseRequirementSemantic(options, 'req-cancelled-terminal', {
+    expectedRevision: cancelled.semanticRevision ?? 2,
+    state: 'completed',
+    remainingWork: [],
+    acceptedEvidenceRefs: ['review:accepted'],
+  })).toThrow(/REQUIREMENT_SEMANTIC_TERMINAL_TRANSITION_FORBIDDEN/);
 });
 
 test('restores a verified SQLite backup without losing Requirement authority', () => {
