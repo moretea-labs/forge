@@ -229,20 +229,30 @@ export function renderSupervisorPrompt(
   const outcome = scheduled ? '当日完 W、未完 C、需用户 U' : '未完 C、交付 D、需用户 U';
   const receiptInstruction = `${instruction} 仅确需跨轮时 C；${outcome}。末行：字母 空格 receipt 值。`;
   const max = kind === 'enrollment' ? MAX_SUPERVISOR_PROMPT_CHARS : MAX_SUPERVISOR_CONTINUATION_PROMPT_CHARS;
+  const length = (value: string): number => Array.from(value).length;
   const base = [...header, '目标摘录：', receiptInstruction].join('\n');
-  if (Array.from(base).length >= max) throw new Error('WORKFLOW_SUPERVISOR_PROMPT_TOO_LARGE');
-  // Only current correction/event identity may travel with the wake-up.
-  // The durable journal retains historical checkpoint and learning context.
-  const events = [
-    ...(correctionReason ? ['纠正原因：' + Array.from(correctionReason.trim().replace(/\s+/g, ' ')).slice(0, 90).join('')] : []),
-    ...(lowerLayerContext ? ['待核验事件：' + Array.from(lowerLayerContext.trim().replace(/\s+/g, ' ')).slice(0, 170).join('')] : []),
-  ];
-  const context = events.join('\n');
-  const available = max - Array.from([...header, receiptInstruction, context, '目标摘录：'].filter(Boolean).join('\n')).length - 2;
-  if (available < 1) throw new Error('WORKFLOW_SUPERVISOR_PROMPT_TOO_LARGE');
-  const excerpt = goal.slice(0, Math.min(120, available)).join('');
-  const prompt = [...header, '目标摘录：' + excerpt + (goal.length > Array.from(excerpt).length ? '…' : ''), ...events, receiptInstruction].join('\n');
-  if (Array.from(prompt).length > max) throw new Error('WORKFLOW_SUPERVISOR_PROMPT_TOO_LARGE');
+  const capacity = max - length(base);
+  // Identity, causal receipt, a nonempty goal pointer and response contract
+  // are mandatory; optional events must not veto a valid continuation.
+  if (capacity < 1 || goal.length === 0) throw new Error('WORKFLOW_SUPERVISOR_PROMPT_TOO_LARGE');
+  const goalChars = Math.min(120, goal.length, Math.max(1, Math.floor(capacity / 2)));
+  const excerpt = goal.slice(0, goalChars).join('');
+  const tail = goalChars < goal.length && goalChars < capacity ? '…' : '';
+  const events: string[] = [];
+  let remaining = max - length([...header, '目标摘录：' + excerpt + tail, receiptInstruction].join('\n'));
+  // Current bounded events only; full notices/checkpoints stay in the journal.
+  for (const [prefix, raw, bound] of [
+    ['纠正原因：', correctionReason, 90],
+    ['待核验事件：', lowerLayerContext, 230],
+  ] as const) {
+    const available = remaining - 1 - length(prefix);
+    if (!raw?.trim() || available < 1) continue;
+    const value = Array.from(raw.trim().replace(/\s+/g, ' ')).slice(0, Math.min(bound, available)).join('');
+    events.push(prefix + value);
+    remaining -= 1 + length(prefix + value);
+  }
+  const prompt = [...header, '目标摘录：' + excerpt + tail, ...events, receiptInstruction].join('\n');
+  if (length(prompt) > max) throw new Error('WORKFLOW_SUPERVISOR_PROMPT_TOO_LARGE');
   return prompt;
 }
 

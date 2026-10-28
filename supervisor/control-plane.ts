@@ -914,10 +914,12 @@ export class WorkflowSupervisorControlPlane {
   private reserveContinuation(task: WorkflowSupervisorTask, completion: WorkflowSupervisorCompletion) {
     const nextId = stableEffectId(`completion:${completion.completionFingerprint}`);
     const notices = this.store.listPendingReviewNotices(128).filter(({ notice }) => notice.taskId === task.taskId).slice(0, 4);
-    const nextContext = notices.length
-      ? notices.map(({ notice }) =>
-          `PR#${notice.prNumber} receipt ${notice.reviewId} [UNVERIFIED${notice.reviewedHeadSha !== notice.currentHeadSha ? ' STALE_HEAD' : ''}] ${notice.outcome}`
-        ).join('; ')
+    // Prefer a stale-head signal when several notices are pending. The full
+    // notice set remains queryable in Supervisor Journal, never in the prompt.
+    const prioritized = notices.find(({ notice }) => notice.reviewedHeadSha !== notice.currentHeadSha) ?? notices[0];
+    const review = prioritized?.notice;
+    const nextContext = review
+      ? `[UNVERIFIED${review.reviewedHeadSha !== review.currentHeadSha ? ' STALE_HEAD' : ''}] PR#${review.prNumber} reviewed=${review.reviewedHeadSha.slice(0, 12)} current=${review.currentHeadSha.slice(0, 12)} source=${review.source} outcome=${review.outcome}; receipt ${notices[0].notice.reviewId}; ${notices.length} notices; NOT APPROVAL/MERGE AUTHORITY; verify current HEAD/CI/Review; REVISE original Writer SAME PR`
       : undefined;
     return this.store.commitCompletion(completion, {
       effectId: nextId,

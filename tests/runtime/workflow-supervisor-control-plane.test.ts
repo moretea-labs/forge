@@ -324,6 +324,35 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     expect(hooks.canonicalObjectiveForTask?.(task)).toBe('Requirement REQ-supervisor-outcome-authority：Supervisor outcome authority');
   });
 
+  test('keeps a historical Work-only short goal as a pointer to its full safety contract', () => {
+    const fx = fixture();
+    const workId = 'work-supervisor-historical-goal-pointer';
+    const objective = 'Review established code and do not make any destructive change. ' +
+      'SAFETY_CONSTRAINT_MUST_CHECK_FULL_WORK'.repeat(8);
+    createWorkContract(fx.store, {
+      workId, repoId: fx.repository.repoId, checkoutId: fx.repository.activeCheckoutId,
+      objective, acceptanceCriteria: ['Preserve original full safety contract'],
+      allowedPaths: [], forbiddenPaths: [], checks: [],
+      constraints: { workspaceMode: 'current' },
+      requestedBy: 'chatgpt', dispatchState: 'running',
+    });
+    const task = {
+      taskId: 'historical-work-short-goal',
+      conversationId: '77777777-8888-9999-aaaa-bbbbbbbbbbbb',
+      conversationUrl: 'https://chatgpt.com/c/77777777-8888-9999-aaaa-bbbbbbbbbbbb',
+      objective: 'Old snapshot text',
+      completionContract: { controller_home: fx.controllerHome, repo_id: fx.repository.repoId, work_id: workId },
+      continuationPolicy: { kind: 'forge_goal_outer_turn' },
+      userBlockerPolicy: {},
+      createdAt: '2026-01-01T00:00:00.000Z',
+    };
+    const pointer = forgeWorkflowSupervisorLifecycleHooks(fx.controllerHome).canonicalObjectiveForTask?.(task);
+    expect(pointer).toContain('Work ' + workId);
+    expect(pointer).toContain('读取完整 Work 目标');
+    expect(pointer).not.toContain('SAFETY_CONSTRAINT_MUST_CHECK_FULL_WORK');
+    expect(pointer?.length).toBeLessThan(160);
+  });
+
   test('revises an active task outcome in place and refreshes only an undispatched effect prompt', () => {
     const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-objective-revise-'));
     roots.push(root);
@@ -771,6 +800,36 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     store.close();
   });
 
+  test('bounds long identity, correction and multiple review notices without losing the causal receipt', () => {
+    const task = {
+      taskId: 'task-' + 't'.repeat(125),
+      conversationId: '11111111-2222-3333-4444-555555555555',
+      conversationUrl: 'https://chatgpt.com/c/11111111-2222-3333-4444-555555555555',
+      objective: 'Continue verified delivery and preserve all existing constraints. '.repeat(100),
+      completionContract: {
+        repo_id: 'repo-' + 'r'.repeat(110),
+        requirement_id: 'REQ-' + 'q'.repeat(110),
+      },
+      continuationPolicy: { kind: 'standalone_supervisor' },
+      userBlockerPolicy: {},
+      createdAt: '2026-01-01T00:00:00.000Z',
+    };
+    const correction = 'C'.repeat(180);
+    const reviewNotices = Array.from({ length: 4 }, (_, n) =>
+      'PR#' + (500 + n) + ' [UNVERIFIED STALE_HEAD] reviewed=123456789abc current=abcdef012345 source=review outcome=REVISE; verify HEAD/CI/Review, not merge authority'
+    ).join('; ');
+    const prompt = renderSupervisorPrompt(
+      task, 'fx_12345678', 'continuation', undefined, correction, reviewNotices,
+    );
+    expect(Array.from(prompt).length).toBeLessThanOrEqual(650);
+    expect(prompt).toContain('task_id:' + JSON.stringify(task.taskId));
+    expect(prompt).toContain('requirement_id:' + task.completionContract.requirement_id);
+    expect(prompt).toContain('receipt:' + supervisorReceiptChallenge(task, 'fx_12345678'));
+    expect(prompt).toContain('目标摘录：');
+    expect(prompt).toContain('末行：字母 空格 receipt 值');
+    expect(prompt).not.toContain('SENSITIVE_PREVIOUS_CHECKPOINT');
+  });
+
   test('pins the exact assistant action enum and validates compact causal receipts while retaining legacy reads', () => {
     const task = {
       taskId: 'task-supervisor-action-contract',
@@ -908,6 +967,10 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     expect(completion.action).toBe('CONTINUE');
     expect(completion.successorEffect?.prompt).toContain('receipt review-42');
     expect(completion.successorEffect?.prompt).toContain('[UNVERIFIED STALE_HEAD]');
+    expect(completion.successorEffect?.prompt).toContain('reviewed=' + 'a'.repeat(12));
+    expect(completion.successorEffect?.prompt).toContain('current=' + 'b'.repeat(12));
+    expect(completion.successorEffect?.prompt).toContain('source=independent_reviewer');
+    expect(completion.successorEffect?.prompt).toContain('NOT APPROVAL/MERGE AUTHORITY');
     expect(completion.successorEffect?.prompt).toContain('UNVERIFIED');
     expect(completion.successorEffect?.prompt).toContain('REVISE');
     expect(completion.successorEffect?.prompt).toContain('仅需要时读取最新 Requirement');
