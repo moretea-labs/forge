@@ -739,6 +739,33 @@ export async function callContextAdapter(ctx: MultiRepositoryMcpToolContext, nam
       const warnings = structuralContext === 'required' && !pack.structuralContext.requiredSatisfied
         ? [pack.structuralContext.fallbackReason ?? 'Required structural context is not ready; lexical retrieval results are returned as degraded evidence.']
         : [];
+      // Surface an exact, optional next read when bounded discovery found more
+      // source candidates than could be materialized. This is evidence, not an
+      // admission gate, semantic completeness claim, or automatic search loop.
+      const omittedSourcePaths = Array.from(new Set(pack.omitted.map((entry) => entry.path)))
+        .filter((path) => !pack.files.some((file) => file.path === path))
+        .slice(0, 3);
+      const progressiveSourceAction = omittedSourcePaths.length > 0 ? [{
+        label: 'Inspect omitted source candidates before deciding whether they affect the goal',
+        tool: 'rh_context' as const,
+        operation: 'search',
+        payload: {
+          repo_id: repository.repoId,
+          checkout_id: repository.activeCheckoutId,
+          query: retrievalQuery,
+          known_paths: omittedSourcePaths,
+          ...(codeSearchTerms.length ? { search_terms: codeSearchTerms } : {}),
+          retrieval_mode: 'implementation',
+          include_learning_recall: false,
+          max_files: Math.max(omittedSourcePaths.length, 3),
+          max_snippets: Math.max(omittedSourcePaths.length * 2, 6),
+        },
+        risk: 'readonly' as const,
+        confidence: 'medium' as const,
+      }] : [];
+      if (readiness.status !== 'ready' && omittedSourcePaths.length === 0) {
+        warnings.push('Search evidence is incomplete; assess unresolved reason codes and use targeted source reads or symbol navigation only if the gaps affect the goal.');
+      }
       const detailLevel = args.detail_level === 'detail' || args.detail_level === 'raw' ? args.detail_level : 'summary';
       const isSummary = detailLevel === 'summary';
       const facade = buildFacadeResult({
@@ -795,7 +822,7 @@ export async function callContextAdapter(ctx: MultiRepositoryMcpToolContext, nam
           } : {}),
         },
         warnings,
-        suggestedNextActions: [],
+        suggestedNextActions: progressiveSourceAction,
         detailLevel,
         rawAvailable: true,
       });

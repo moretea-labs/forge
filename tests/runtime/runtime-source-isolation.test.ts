@@ -1479,12 +1479,36 @@ printf '{"ok":true}\\n'
     expect(source?.content).toContain('END_OF_SOURCE_EVIDENCE');
   });
 
+  test('rh_context offers exact bounded follow-up when related source candidates were omitted', async () => {
+    const business = tempRoot('forge-context-progressive-candidates-');
+    const controllerHome = tempRoot('forge-home-context-progressive-candidates-');
+    initGitRepo(business, 'context-progressive-candidates');
+    writeFileSync(join(business, 'src', 'owner.ts'), 'export function progressiveOwner() { return true; }\n');
+    writeFileSync(join(business, 'src', 'consumer.ts'), "import { progressiveOwner } from './owner';\nexport const result = progressiveOwner();\n");
+    const repository = registerRepository({ path: business, controllerHome, displayName: 'Context Progressive Candidates' });
+    const payload = structured(await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_context', {
+      repo_id: repository.repoId, operation: 'search', query: 'Inspect progressiveOwner references',
+      search_terms: ['progressiveOwner'], retrieval_mode: 'plan', structural_context: 'off',
+      max_files: 1, max_snippets: 2, detail_level: 'detail', include_learning_recall: false,
+    }));
+    const data = payload.data as { readiness?: { retrieval?: { omittedCandidateCount?: number } } };
+    expect(data.readiness?.retrieval?.omittedCandidateCount).toBeGreaterThan(0);
+    expect(payload.suggestedNextActions).toContainEqual(expect.objectContaining({
+      tool: 'rh_context', operation: 'search', risk: 'readonly',
+      payload: expect.objectContaining({
+        known_paths: expect.arrayContaining(['src/consumer.ts']),
+        include_learning_recall: false,
+      }),
+    }));
+  });
+
   test('rh_context runtime-issued closure round-trips into engineering preconditions without depth corruption', async () => {
     const business = tempRoot('forge-context-roundtrip-facade-');
     const controllerHome = tempRoot('forge-home-context-roundtrip-facade-');
     initGitRepo(business, 'context-roundtrip-facade');
+    writeFileSync(join(business, 'src', 'index.ts'), 'export const ENTRY_MARKER = true;\n');
     writeProjectEngineeringContract(business);
-    git(business, 'add', '.forge/project-engineering.json');
+    git(business, 'add', '.forge/project-engineering.json', 'src/index.ts');
     git(business, 'commit', '-m', 'add engineering contract');
     const sourceRevision = git(business, 'rev-parse', 'HEAD');
     const repository = registerRepository({ path: business, controllerHome, displayName: 'Context Roundtrip Facade' });
