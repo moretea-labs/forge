@@ -20,14 +20,13 @@ function lanes(home: string): { stable: StableExecutionLane; stableRelease: Rele
 }
 
 describe('Recovery ReleaseSession', () => {
-  test('requires all static and isolated-candidate evidence before cutover eligibility', () => {
+  test('keeps legacy static phase readable while candidate canaries gate cutover eligibility', () => {
     const home = mkdtempSync(join(tmpdir(), 'forge-release-session-'));
     roots.push(home);
     const { stable, stableRelease, candidate, candidateRelease } = lanes(home);
     let session = createReleaseSession({ controllerHome: home, sessionId: candidate.sessionId, stable, stableRelease, candidate, sourceRevision: 'abc123' });
     session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'built', candidateRelease, receipts: [{ id: 'build', kind: 'build', summary: 'built' }] });
-    expect(() => advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'static_verified' })).toThrow('RELEASE_SESSION_STATIC_GATES_INCOMPLETE');
-    session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'static_verified', receipts: ['type', 'runtime_architecture', 'architecture_sync', 'bootstrap'].map((id) => ({ id, kind: 'static_gate' as const, summary: id })) });
+    session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'static_verified' });
     session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'candidate_booted' });
     expect(() => advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'candidate_verified' })).toThrow('RELEASE_SESSION_CANDIDATE_CANARIES_INCOMPLETE');
     session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'candidate_verified', receipts: ['recovery', 'mcp', 'scheduler', 'supervisor', 'controller'].map((id) => ({ id, kind: 'candidate_canary' as const, summary: id })) });
@@ -447,9 +446,9 @@ describe('Recovery ReleaseSession', () => {
     let session = createReleaseSession({ controllerHome: home, sessionId: candidate.sessionId, stable, stableRelease, candidate, sourceRevision: 'abc123' });
     expect(decideConfiguredRuntimeReleaseAction(home)).toMatchObject({ action: 'prepare', session: { sessionId: session.sessionId } });
     session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'built', candidateRelease });
-    expect(decideConfiguredRuntimeReleaseAction(home)).toMatchObject({ action: 'verify_static', session: { revision: session.revision } });
-    session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'static_verified', receipts: ['type', 'runtime_architecture', 'architecture_sync', 'bootstrap'].map((id) => ({ id, kind: 'static_gate' as const, summary: id })) });
-    expect(decideConfiguredRuntimeReleaseAction(home)).toMatchObject({ action: 'verify_candidate' });
+    expect(decideConfiguredRuntimeReleaseAction(home)).toMatchObject({ action: 'verify_candidate', session: { revision: session.revision } });
+    const legacy = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'static_verified' });
+    expect(decideConfiguredRuntimeReleaseAction(home)).toMatchObject({ action: 'verify_candidate', session: { revision: legacy.revision } });
   });
 
   test('automatic reconciliation reads source lazily and never replays a terminal source revision', () => {
@@ -514,17 +513,6 @@ describe('Recovery ReleaseSession', () => {
         }
         return { ok: true, attempted: true, detail: 'built', releaseSession: session };
       },
-      verifyStatic: async (_config: typeof config, sessionId: string) => {
-        const session = readReleaseSession(home, sessionId)!;
-        const advanced = advanceReleaseSession({
-          controllerHome: home,
-          sessionId,
-          expectedRevision: session.revision,
-          phase: 'static_verified',
-          receipts: ['type', 'runtime_architecture', 'architecture_sync', 'bootstrap'].map((id) => ({ id, kind: 'static_gate' as const, summary: id })),
-        });
-        return { ok: true, attempted: true, detail: 'static', releaseSession: advanced };
-      },
       verifyCandidate: async (_config: typeof config, sessionId: string) => {
         let session = readReleaseSession(home, sessionId)!;
         session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'candidate_booted' });
@@ -552,7 +540,7 @@ describe('Recovery ReleaseSession', () => {
       ok: true,
       releaseSession: { phase: 'cutover_eligible' },
       releaseRun: {
-        actions: ['prepare', 'verify_static', 'verify_candidate', 'mark_cutover_eligible', 'cutover'],
+        actions: ['prepare', 'verify_candidate', 'mark_cutover_eligible', 'cutover'],
         boundary: 'provider_boundary',
       },
     });

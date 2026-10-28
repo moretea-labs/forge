@@ -4224,126 +4224,6 @@ export async function prepareConfiguredRuntimeReleaseSession(
 }
 
 
-const RELEASE_SESSION_STATIC_GATES = [
-  { id: 'type', args: ['run', 'check:type'], timeoutMs: 10 * 60_000 },
-  { id: 'runtime_architecture', args: ['run', 'check:runtime-architecture'], timeoutMs: 5 * 60_000 },
-  { id: 'architecture_sync', args: ['run', 'check:architecture-sync'], timeoutMs: 5 * 60_000 },
-  { id: 'bootstrap', args: ['run', 'check:bootstrap-files'], timeoutMs: 5 * 60_000 },
-] as const;
-
-export async function verifyConfiguredRuntimeReleaseSessionStaticGates(
-  config: RecoveryConfig,
-  sessionId: string,
-  requestId?: string,
-): Promise<ConfiguredRuntimeActivationResult> {
-  const sourceRoot = config.primaryRuntimeSourceRoot?.trim();
-  if (!sourceRoot) return { ok: false, attempted: false, noOp: true, detail: 'primary Runtime source root is not configured in standalone Recovery' };
-  const locked = await withLock(config, {
-    action: 'release_session_static_verify',
-    ...(requestId?.trim() ? { requestId: requestId.trim() } : {}),
-  }, async () => {
-    let session = readReleaseSession(config.controllerHome, sessionId);
-    if (!session) return { ok: false as const, attempted: false, noOp: true, detail: 'RELEASE_SESSION_MISSING' };
-    if (session.phase !== 'built') {
-      return { ok: false as const, attempted: false, noOp: true, detail: `RELEASE_SESSION_STATIC_VERIFY_REQUIRES_BUILT: ${session.phase}`, releaseSession: session };
-    }
-    const candidate = session.candidateRelease;
-    if (!candidate) return { ok: false as const, attempted: false, noOp: true, detail: 'RELEASE_SESSION_CANDIDATE_RELEASE_REQUIRED', releaseSession: session };
-    const frozenSourceRevision = session.sourceRevision;
-    const stableRelease = session.stableRelease;
-    try {
-      assertStableReleaseSessionIdentityCurrent(config, stableRelease);
-      const manifest = loadRuntimeReleaseManifest(candidate.manifestPath, session.candidate.controllerHome);
-      if (
-        manifest.deploymentScope !== 'portable'
-        || manifest.releaseId !== candidate.releaseId
-        || manifest.artifactIdentity !== candidate.artifactIdentity
-        || createHash('sha256').update(readFileSync(candidate.manifestPath)).digest('hex') !== candidate.manifestSha256
-        || runtimeReleaseTreeSha256(dirname(candidate.manifestPath)) !== candidate.treeSha256
-      ) throw new Error('RELEASE_SESSION_CANDIDATE_IDENTITY_MISMATCH');
-
-      const receipts = withRuntimeReleaseSourceSnapshot({
-        sourceRoot,
-        sourceRevision: frozenSourceRevision,
-      }, frozenSourceRoot => {
-        const gateReceipts: Array<{ id: string; kind: 'static_gate'; summary: string }> = [];
-        for (const gate of RELEASE_SESSION_STATIC_GATES) {
-          assertStableReleaseSessionIdentityCurrent(config, stableRelease);
-          const startedAt = Date.now();
-          const bunExecutable = resolveBunExecutable();
-          const boundedRunner = join(frozenSourceRoot, 'scripts', 'run-bounded-command.mjs');
-          const result = spawnSync(bunExecutable, [
-            boundedRunner,
-            '--timeout-ms', String(gate.timeoutMs),
-            '--',
-            bunExecutable,
-            ...gate.args,
-          ], {
-            cwd: frozenSourceRoot,
-            env: { ...runtimeAuthorityFreeEnvironment(process.env), PATH: recoveryCommandPath() },
-            encoding: 'utf8',
-            // The inner bounded runner owns the command process group and gets a
-            // brief escalation window to terminate descendants before this
-            // outer Recovery watchdog is allowed to intervene.
-            timeout: gate.timeoutMs + 15_000,
-            maxBuffer: 8 * 1024 * 1024,
-          });
-          const durationMs = Date.now() - startedAt;
-          if (result.error || result.status !== 0) {
-            const detail = result.error instanceof Error
-              ? result.error.message
-              : (result.stderr || result.stdout || `exit ${result.status ?? 'unknown'}`).trim().slice(-2000);
-            throw new Error(`RELEASE_SESSION_STATIC_GATE_FAILED:${gate.id}: ${detail}`);
-          }
-          gateReceipts.push({
-            id: gate.id,
-            kind: 'static_gate',
-            summary: `${gate.id} passed on frozen source ${frozenSourceRevision} in ${durationMs}ms`,
-          });
-        }
-        return gateReceipts;
-      });
-      assertStableReleaseSessionIdentityCurrent(config, session.stableRelease);
-      session = advanceReleaseSession({
-        controllerHome: config.controllerHome,
-        sessionId,
-        expectedRevision: session.revision,
-        phase: 'static_verified',
-        receipts,
-      });
-      audit(config, 'release_session_static_verified', {
-        sessionId,
-        sourceRevision: session.sourceRevision,
-        candidateReleaseId: candidate.releaseId,
-        gates: RELEASE_SESSION_STATIC_GATES.map((gate) => gate.id),
-      });
-      return {
-        ok: true as const,
-        attempted: true,
-        detail: 'ReleaseSession static gates passed on the frozen source revision; Stable A remained unchanged',
-        releaseSession: session,
-      };
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      try {
-        session = advanceReleaseSession({
-          controllerHome: config.controllerHome,
-          sessionId,
-          expectedRevision: session.revision,
-          phase: 'failed',
-          receipts: [{ id: 'static_failed', kind: 'static_gate', summary: detail.slice(0, 500) }],
-        });
-      } catch { /* preserve the original static verification failure */ }
-      cleanupRetiredCandidateLane(config, session);
-      audit(config, 'release_session_static_failed', { sessionId, detail });
-      return { ok: false as const, attempted: true, detail, releaseSession: session };
-    }
-  });
-  if (!locked.acquired) return { ok: false, attempted: false, noOp: true, detail: recoveryBusyDetail(locked.owner) };
-  return locked.value;
-}
-
-
 const RELEASE_SESSION_CANDIDATE_VERIFY_TIMEOUT_MS = 60_000;
 
 function candidateRecoveryConfig(session: ReleaseSession): RecoveryConfig {
@@ -4649,8 +4529,8 @@ export async function bootAndVerifyConfiguredRuntimeReleaseSessionCandidate(
         releaseSession: session,
       };
     }
-    if (session.phase !== 'static_verified') {
-      return { ok: false as const, attempted: false, noOp: true, detail: `RELEASE_SESSION_CANDIDATE_BOOT_REQUIRES_STATIC_VERIFIED: ${session.phase}`, releaseSession: session };
+    if (session.phase !== 'built' && session.phase !== 'static_verified') {
+      return { ok: false as const, attempted: false, noOp: true, detail: `RELEASE_SESSION_CANDIDATE_BOOT_REQUIRES_BUILT_ARTIFACT: ${session.phase}`, releaseSession: session };
     }
     const candidateRelease = session.candidateRelease;
     if (!candidateRelease) return { ok: false as const, attempted: false, noOp: true, detail: 'RELEASE_SESSION_CANDIDATE_RELEASE_REQUIRED', releaseSession: session };
@@ -4658,9 +4538,14 @@ export async function bootAndVerifyConfiguredRuntimeReleaseSessionCandidate(
     const candidateConfig = candidateRecoveryConfig(session);
     try {
       assertStableReleaseSessionIdentityCurrent(config, session.stableRelease);
-      if (runtimeReleaseTreeSha256(dirname(candidateRelease.manifestPath)) !== candidateRelease.treeSha256) {
-        throw new Error('RELEASE_SESSION_CANDIDATE_TREE_CHANGED');
-      }
+      const manifest = loadRuntimeReleaseManifest(candidateRelease.manifestPath, session.candidate.controllerHome);
+      if (
+        manifest.deploymentScope !== 'portable'
+        || manifest.releaseId !== candidateRelease.releaseId
+        || manifest.artifactIdentity !== candidateRelease.artifactIdentity
+        || createHash('sha256').update(readFileSync(candidateRelease.manifestPath)).digest('hex') !== candidateRelease.manifestSha256
+        || runtimeReleaseTreeSha256(dirname(candidateRelease.manifestPath)) !== candidateRelease.treeSha256
+      ) throw new Error('RELEASE_SESSION_CANDIDATE_IDENTITY_MISMATCH');
       await installReleaseSessionCandidateService(session, runCommand);
 
       let initialVerify = await verifyPrimaryRuntimeAfterStart({

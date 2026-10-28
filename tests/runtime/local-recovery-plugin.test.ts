@@ -260,7 +260,6 @@ test('ReleaseSession actions expose only the exact session id and provider-owned
 
   await executeAction('release_session_status', { session_id: sessionId }, providerConfig, { callRecoveryTool, requestId: 'session-status' });
   for (const actionId of [
-    'verify_runtime_release_session_static',
     'verify_runtime_release_session_candidate',
     'cutover_runtime_release_session',
     'cancel_runtime_release_session',
@@ -287,6 +286,8 @@ test('ReleaseSession actions expose only the exact session id and provider-owned
     .rejects.toThrow(/accept only session_id/);
   await expect(executeAction('cutover_runtime_release_session', { session_id: sessionId, request_id: 'caller-owned' }, providerConfig, { callRecoveryTool }))
     .rejects.toThrow(/accept only session_id/);
-  await expect(executeAction('verify_runtime_release_session_static', { session_id: 'short' }, providerConfig, { callRecoveryTool }))
+  await expect(executeAction('verify_runtime_release_session_static', { session_id: sessionId }, providerConfig, { callRecoveryTool }))
+    .rejects.toThrow(/Unsupported Local Recovery action/);
+  await expect(executeAction('verify_runtime_release_session_candidate', { session_id: 'short' }, providerConfig, { callRecoveryTool }))
     .rejects.toThrow(/8 to 120/);
 });
