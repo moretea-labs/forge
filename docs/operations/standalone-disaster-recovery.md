@@ -47,6 +47,7 @@ attest_known_good
 restart_primary_runtime
 recover_primary_runtime
 rollback_previous
+stage_runtime_release
 activate_runtime_release
 restart_public_tunnel
 reconnect_primary_connector
@@ -54,7 +55,7 @@ reconnect_primary_connector
 
 `restart_primary_runtime` restarts only the installed canonical Forge Runtime service and requires whole-Runtime verification. `recover_primary_runtime` is the complete failure transaction: stop the canonical service, restore the attested previous whole release and its SQLite backup, restart the service, and require verification.
 
-`activate_runtime_release` is the controlled bootstrap/upgrade escape hatch. It accepts an already staged and validated immutable Runtime release manifest and executes the same bounded transaction without depending on the primary Runtime execution plane: stop the complete canonical service, atomically switch active/previous whole-release authority with a local SQLite backup, start the one Runtime service, require whole-Runtime verification, and on failure restore the previous whole release and its SQLite backup before restarting. The candidate must match its manifest artifact identity and database schema compatibility; a fenced or stale primary Runtime is never required to stage, validate, or activate the release.
+`stage_runtime_release` accepts a model-selected exact 40-hex source commit and materializes its immutable release in the canonical Stable Home without stopping services or changing RuntimeReleaseAuthority. Normal activation then calls `activate_runtime_release` with this manifest path and the accepted source SHA, caller-observed active release ID, and authority revision as three independent fences. Isolated Candidate B/ReleaseSession is reserved for explicitly incompatible migrations. Activation accepts an already staged and validated immutable Runtime release manifest and executes the same bounded transaction without depending on the primary Runtime execution plane: stop the complete canonical service, atomically switch active/previous whole-release authority with a local SQLite backup, start the one Runtime service, require whole-Runtime verification, and on failure restore the previous whole release and its SQLite backup before restarting. The candidate must match its manifest artifact identity and database schema compatibility; a fenced or stale primary Runtime is never required to stage, validate, or activate the release.
 
 The existing publication leases protect the entire pre-activation active/previous release and backup topology until activation or compensation settles. A newly started Runtime may run retention while verification is still pending; it must not reclaim the predecessor that failed-activation compensation will restore. Leases are released on every completion/error path and dead-owner leases remain reclaimable by existing retention. A failed compensation is reported as failed recovery, never as a restored previous release. No additional release state or cleanup owner is introduced.
 

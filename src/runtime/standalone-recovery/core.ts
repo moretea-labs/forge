@@ -1770,7 +1770,8 @@ export interface RuntimeReleaseActivationGuard {
   expectedAuthorityRevision?: number | null;
   /** Active release observed when the caller decided to activate; null means the caller observed no active release. */
   expectedActiveReleaseId?: string | null;
-  /** Fresh portable source candidates may activate only after this exact Recovery ReleaseSession becomes cutover-eligible. */
+  expectedSourceRevision?: string;
+  /** Explicit incompatible-migration path may bind activation to one isolated Recovery ReleaseSession. */
   releaseSessionId?: string;
 }
 
@@ -3112,8 +3113,16 @@ function validateRuntimeReleaseCandidate(
   const resolvedManifestPath = resolve(manifestPath);
   const manifest = loadRuntimeReleaseManifest(resolvedManifestPath, config.controllerHome);
   const releaseRoot = dirname(resolvedManifestPath);
-  if (basename(releaseRoot) !== manifest.releaseId) {
-    throw new Error('RUNTIME_RELEASE_CANDIDATE_ID_MISMATCH: manifest releaseId must match the immutable release directory');
+  const releasesRoot = resolve(config.controllerHome, 'runtime', 'releases');
+  if (basename(resolvedManifestPath) !== 'manifest.json'
+    || basename(releaseRoot) !== manifest.releaseId
+    || !existsSync(releasesRoot)
+    || dirname(realpathSync(releaseRoot)) !== realpathSync(releasesRoot)) {
+    throw new Error('RUNTIME_RELEASE_CANDIDATE_PATH_INVALID: manifest must be the canonical immutable release under this Controller Home');
+  }
+  const expectedRepositoryId = config.primaryRuntimeSourceRepositoryId?.trim();
+  if (manifest.deploymentScope === 'portable' && expectedRepositoryId && manifest.sourceRepositoryId !== expectedRepositoryId) {
+    throw new Error(`RUNTIME_RELEASE_SOURCE_REPOSITORY_MISMATCH: expected ${expectedRepositoryId}, got ${manifest.sourceRepositoryId ?? 'missing'}`);
   }
   const executable = join(releaseRoot, manifest.entrypoint);
   if (!existsSync(executable)) throw new Error(`RUNTIME_RELEASE_CANDIDATE_ENTRYPOINT_MISSING: ${executable}`);
@@ -3147,16 +3156,28 @@ async function activateRuntimeReleaseInternal(
     audit(config, 'runtime_release_activation_candidate_invalid', { detail, ...(guard.requestId ? { requestId: guard.requestId } : {}) });
     return { ok: false, attempted: false, noOp: true, detail };
   }
-  if (candidate.manifest.deploymentScope === 'portable' && !guard.requiredPinnedReleaseRevision) {
-    const releaseSessionId = guard.releaseSessionId?.trim();
-    if (!releaseSessionId) {
-      const detail = 'RELEASE_SESSION_CUTOVER_REQUIRED: portable Runtime candidates cannot activate outside an exact ReleaseSession';
-      audit(config, 'runtime_release_activation_release_session_required', {
-        candidateRevision: candidate.manifest.releaseId,
-        ...(guard.requestId ? { requestId: guard.requestId } : {}),
-      });
-      return { ok: false, attempted: false, noOp: true, detail };
+  const expectedSourceRevision = guard.expectedSourceRevision?.trim();
+  if (candidate.manifest.deploymentScope === 'portable'
+    && !guard.requiredPinnedReleaseRevision
+    && !guard.releaseSessionId?.trim()
+    && !expectedSourceRevision) {
+    return { ok: false, attempted: false, noOp: true, detail: 'RUNTIME_RELEASE_EXPECTED_SOURCE_REVISION_REQUIRED' };
+  }
+  if (expectedSourceRevision) {
+    if (!/^[a-f0-9]{40}$/i.test(expectedSourceRevision)) {
+      return { ok: false, attempted: false, noOp: true, detail: 'RUNTIME_RELEASE_EXPECTED_SOURCE_REVISION_INVALID' };
     }
+    if (candidate.manifest.sourceCommit !== expectedSourceRevision) {
+      return {
+        ok: false,
+        attempted: false,
+        noOp: true,
+        detail: `RUNTIME_RELEASE_SOURCE_REVISION_MISMATCH: expected ${expectedSourceRevision}, got ${candidate.manifest.sourceCommit}`,
+      };
+    }
+  }
+  if (candidate.manifest.deploymentScope === 'portable' && !guard.requiredPinnedReleaseRevision && guard.releaseSessionId?.trim()) {
+    const releaseSessionId = guard.releaseSessionId.trim();
     let session: ReleaseSession | undefined;
     try {
       session = readReleaseSession(config.controllerHome, releaseSessionId);
@@ -3818,6 +3839,87 @@ export function legacyStableContextPackUpgradeBaseline(verification: VerifyResul
       === 'RUNTIME_RELEASE_CONTEXT_PACK_SURFACE_INCOMPLETE: forge-context-pack is required for rh_context'
     && Object.entries(verification.probes).every(([name, probe]) =>
       name === 'runtime_execution_surface' || probe.ok === true);
+}
+
+export interface ConfiguredRuntimeStageResult {
+  ok: boolean;
+  attempted: boolean;
+  noOp?: boolean;
+  detail: string;
+  release?: {
+    releaseId: string;
+    releasePath: string;
+    manifestPath: string;
+    artifactIdentity: string;
+    manifestSha256: string;
+    treeSha256: string;
+    sourceCommit: string;
+    sourceRepositoryId: string;
+  };
+}
+
+export function stageConfiguredRuntimeRelease(
+  config: RecoveryConfig,
+  expectedSourceRevision: string,
+  dependencies: Pick<ConfiguredRuntimeActivationDependencies, 'stage'> = {},
+  requestId?: string,
+): ConfiguredRuntimeStageResult {
+  const sourceRoot = config.primaryRuntimeSourceRoot?.trim();
+  if (!sourceRoot) return { ok: false, attempted: false, noOp: true, detail: 'primary Runtime source root is not configured in standalone Recovery' };
+  const sourceRepositoryId = config.primaryRuntimeSourceRepositoryId?.trim();
+  if (!sourceRepositoryId) return { ok: false, attempted: false, noOp: true, detail: 'primary Runtime source repository id is not configured in standalone Recovery' };
+  const sourceRevision = expectedSourceRevision.trim();
+  if (!/^[a-f0-9]{40}$/i.test(sourceRevision)) {
+    return { ok: false, attempted: false, noOp: true, detail: 'RUNTIME_RELEASE_EXPECTED_SOURCE_REVISION_INVALID' };
+  }
+  try {
+    const staged = withRuntimeReleaseSourceSnapshot({ sourceRoot, sourceRevision }, frozenSourceRoot =>
+      (dependencies.stage ?? stageRuntimeReleaseFromCandidateSource)({
+        controllerHome: config.controllerHome,
+        sourceRoot: frozenSourceRoot,
+        dependencyRoot: sourceRoot,
+        sourceRepositoryId,
+      }));
+    assertRuntimeReleaseFiles(staged);
+    assertRuntimeReleaseExecutionCanaries(staged.manifestPath, config.controllerHome);
+    if (staged.sourceCommit !== sourceRevision || staged.sourceRepositoryId !== sourceRepositoryId) {
+      throw new Error('RUNTIME_RELEASE_STAGED_SOURCE_IDENTITY_MISMATCH');
+    }
+    const release = {
+      releaseId: staged.releaseId,
+      releasePath: staged.releasePath,
+      manifestPath: staged.manifestPath,
+      artifactIdentity: staged.artifactIdentity,
+      manifestSha256: staged.manifestSha256,
+      treeSha256: runtimeReleaseTreeSha256(staged.releasePath),
+      sourceCommit: staged.sourceCommit,
+      sourceRepositoryId,
+    };
+    audit(config, 'runtime_release_staged', {
+      ...(requestId?.trim() ? { requestId: requestId.trim() } : {}),
+      releaseId: release.releaseId,
+      sourceCommit: release.sourceCommit,
+      sourceRepositoryId,
+      artifactIdentity: release.artifactIdentity,
+      manifestSha256: release.manifestSha256,
+      treeSha256: release.treeSha256,
+    });
+    return {
+      ok: true,
+      attempted: true,
+      detail: `staged exact accepted Runtime source ${sourceRevision} as immutable release ${release.releaseId}; live Runtime authority is unchanged`,
+      release,
+    };
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    audit(config, 'runtime_release_stage_failed', {
+      ...(requestId?.trim() ? { requestId: requestId.trim() } : {}),
+      sourceCommit: sourceRevision,
+      sourceRepositoryId,
+      detail: detail.slice(0, 500),
+    });
+    return { ok: false, attempted: true, detail };
+  }
 }
 
 export async function prepareConfiguredRuntimeReleaseSession(
